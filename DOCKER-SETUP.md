@@ -144,18 +144,17 @@ make restart
 ```
 
 ### cbpr Not Found in Container
-The issue is likely that cbpr isn't mounted correctly.
+The cbpr binary needs to be built for Linux and copied into the Docker image.
 
 ```bash
-# Find cbpr on your host
-which cbpr
+# Build cbpr for Linux
+./build-cbpr-linux.sh
 
-# Update CBPR_PATH in .env
-echo "CBPR_PATH=/path/to/your/cbpr" >> .env
-
-# Restart
-make restart
+# Rebuild the Docker image
+make rebuild
 ```
+
+If you don't have cbpr source code, the server will run but won't generate reviews.
 
 ### Want to Start Fresh
 ```bash
@@ -165,6 +164,19 @@ make start
 ```
 
 ---
+
+### cbpr Binary for Docker
+The Docker container runs Linux, so it needs a Linux-compatible cbpr binary.
+
+```bash
+# If you have cbpr source code, build for Linux:
+./build-cbpr-linux.sh
+
+# Then rebuild the Docker image:
+make rebuild
+```
+
+Without the Linux cbpr binary, the server will run but won't generate reviews.
 
 ## Understanding the Setup
 
@@ -195,7 +207,9 @@ If you want the server to start automatically when you login without running any
 ### Create a LaunchAgent for Docker Compose
 
 ```bash
-# Create the plist file
+# IMPORTANT: Update the paths below to match your actual repository location
+# Replace /path/to/pr-review-server with your actual path (e.g., $HOME/pr-review-server)
+
 cat > ~/Library/LaunchAgents/com.user.pr-review-docker.plist << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -208,32 +222,38 @@ cat > ~/Library/LaunchAgents/com.user.pr-review-docker.plist << 'EOF'
     <array>
         <string>/usr/local/bin/docker-compose</string>
         <string>-f</string>
-        <string>/Users/zbedmm/pr-review-server/docker-compose.yml</string>
+        <!-- REPLACE THIS PATH -->
+        <string>/path/to/pr-review-server/docker-compose.yml</string>
         <string>up</string>
         <string>-d</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/zbedmm/pr-review-server</string>
+    <!-- REPLACE THIS PATH -->
+    <string>/path/to/pr-review-server</string>
 
     <key>RunAtLoad</key>
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/zbedmm/pr-review-server/logs/launchd-stdout.log</string>
+    <!-- REPLACE THIS PATH -->
+    <string>/path/to/pr-review-server/logs/launchd-stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/zbedmm/pr-review-server/logs/launchd-stderr.log</string>
+    <!-- REPLACE THIS PATH -->
+    <string>/path/to/pr-review-server/logs/launchd-stderr.log</string>
 </dict>
 </plist>
 EOF
 
-# Create logs directory
-mkdir -p ~/pr-review-server/logs
+# Create logs directory (update path!)
+mkdir -p /path/to/pr-review-server/logs
 
 # Load the service
 launchctl load ~/Library/LaunchAgents/com.user.pr-review-docker.plist
 ```
+
+**Note:** Before running these commands, replace all instances of `/path/to/pr-review-server` with your actual repository path.
 
 Now it will start automatically on login!
 

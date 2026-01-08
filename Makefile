@@ -67,8 +67,6 @@ clean:
 
 rebuild:
 	@echo "Rebuilding and restarting..."
-	docker-compose down
-	docker-compose build --no-cache
-	docker-compose up -d
+	docker-compose up --build -d
 	@echo "✅ Rebuild complete"
 	@echo "📝 View logs: make logs"

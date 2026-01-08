@@ -16,21 +16,42 @@ COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o pr-review-server .
 
 # Final stage
-FROM alpine:latest
+FROM alpine:3.20
 
 # Install required packages
 RUN apk --no-cache add \
     ca-certificates \
     sqlite-libs \
-    bash
+    bash \
+    wget
 
 WORKDIR /app
 
-# Copy the binary from builder
+# Copy the Go binary from builder
 COPY --from=builder /app/pr-review-server .
+
+# Copy cbpr binary (either real Linux binary or placeholder)
+# To use real cbpr: run ./build-cbpr-linux.sh before docker build
+COPY bin/ /tmp/bin/
+RUN if [ -f /tmp/bin/cbpr-linux ]; then \
+        mv /tmp/bin/cbpr-linux /usr/local/bin/cbpr && \
+        chmod +x /usr/local/bin/cbpr && \
+        echo "✓ cbpr binary installed"; \
+    else \
+        mv /tmp/bin/cbpr-placeholder.sh /usr/local/bin/cbpr && \
+        chmod +x /usr/local/bin/cbpr && \
+        echo "⚠ cbpr placeholder installed - run ./build-cbpr-linux.sh to enable reviews"; \
+    fi && rm -rf /tmp/bin
 
 # Create directories for data
 RUN mkdir -p /app/reviews /app/data
+
+# Create non-root user for security
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
+    chown -R appuser:appgroup /app/reviews /app/data /app/pr-review-server
+
+# Switch to non-root user
+USER appuser
 
 # Volume mounts for persistence
 VOLUME ["/app/reviews", "/app/data"]

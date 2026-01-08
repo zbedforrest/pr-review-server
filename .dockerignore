@@ -2,6 +2,7 @@
 .env
 .env.example
 *.md
+!DOCKER-SETUP.md
 .git
 .gitignore
 reviews/
@@ -13,3 +14,5 @@ pr-review-server
 docker-compose.yml
 Dockerfile
 .dockerignore
+# Keep bin/ directory (for cbpr-linux binary)
+!bin/
