@@ -28,15 +28,19 @@ type Poller struct {
 	cbprPID         int
 	cbprStartTime   time.Time
 	cbprMutex       sync.Mutex
+	// Track active review processes for cancellation
+	activeReviews map[string]int // prKey (owner/repo/number) -> PID
+	reviewsMutex  sync.Mutex
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Poller {
 	return &Poller{
-		cfg:         cfg,
-		db:          database,
-		ghClient:    ghClient,
-		reviewDir:   cfg.ReviewsDir,
-		triggerChan: make(chan struct{}, 1), // Buffered to prevent blocking
+		cfg:           cfg,
+		db:            database,
+		ghClient:      ghClient,
+		reviewDir:     cfg.ReviewsDir,
+		triggerChan:   make(chan struct{}, 1), // Buffered to prevent blocking
+		activeReviews: make(map[string]int),
 	}
 }
 
@@ -132,6 +136,57 @@ func (p *Poller) isPIDRunning(pid int) bool {
 	// Signal 0 doesn't actually send a signal, but checks if we can
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
+}
+
+// prKey creates a unique key for tracking a PR
+func prKey(owner, repo string, number int) string {
+	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
+}
+
+// trackReview adds a PR's review process to the active reviews map
+func (p *Poller) trackReview(owner, repo string, number, pid int) {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	key := prKey(owner, repo, number)
+	p.activeReviews[key] = pid
+	log.Printf("[TRACK] Tracking review for %s with PID %d", key, pid)
+}
+
+// untrackReview removes a PR's review process from the active reviews map
+func (p *Poller) untrackReview(owner, repo string, number int) {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	key := prKey(owner, repo, number)
+	delete(p.activeReviews, key)
+	log.Printf("[TRACK] Untracked review for %s", key)
+}
+
+// killReview kills an active review process if it exists
+func (p *Poller) killReview(owner, repo string, number int) bool {
+	p.reviewsMutex.Lock()
+	key := prKey(owner, repo, number)
+	pid, exists := p.activeReviews[key]
+	p.reviewsMutex.Unlock()
+
+	if !exists {
+		return false
+	}
+
+	log.Printf("[KILL] Attempting to kill review process for %s (PID %d)", key, pid)
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		log.Printf("[KILL] Failed to find process %d: %v", pid, err)
+		return false
+	}
+
+	if err := process.Kill(); err != nil {
+		log.Printf("[KILL] Failed to kill process %d: %v", pid, err)
+		return false
+	}
+
+	log.Printf("[KILL] Successfully killed process %d for %s", pid, key)
+	p.untrackReview(owner, repo, number)
+	return true
 }
 
 func (p *Poller) startPoll(ctx context.Context, trigger string) {
@@ -299,6 +354,14 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 					log.Printf("[OUTDATED] Warning: Failed to delete old HTML file %s: %v", oldHTMLPath, err)
 				} else if err == nil {
 					log.Printf("[OUTDATED] Deleted old HTML file: %s", pr.ReviewHTMLPath)
+				}
+			}
+
+			// If the PR was actively generating, kill the process
+			if wasGenerating {
+				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
+					log.Printf("[OUTDATED] Killed active review process for %s/%s#%d",
+						pr.RepoOwner, pr.RepoName, pr.PRNumber)
 				}
 			}
 
@@ -763,12 +826,17 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			continue // Skip to next PR
 		}
 
+		pid := cmd.Process.Pid
+
 		p.cbprMutex.Lock()
-		p.cbprPID = cmd.Process.Pid
+		p.cbprPID = pid
 		p.cbprStartTime = execStart
 		p.cbprMutex.Unlock()
 
-		log.Printf("[CBPR] Process started with PID %d", cmd.Process.Pid)
+		// Track this review for cancellation
+		p.trackReview(pr.Owner, pr.Repo, pr.Number, pid)
+
+		log.Printf("[CBPR] Process started with PID %d", pid)
 
 		// Wait for command to complete
 		err := cmd.Wait()
@@ -778,6 +846,9 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 		p.cbprMutex.Lock()
 		p.cbprPID = 0
 		p.cbprMutex.Unlock()
+
+		// Untrack this review
+		p.untrackReview(pr.Owner, pr.Repo, pr.Number)
 
 		if err != nil {
 			log.Printf("[CBPR] ERROR: Command failed for PR %d after %v: %v", pr.Number, execDuration, err)
