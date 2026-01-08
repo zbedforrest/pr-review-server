@@ -24,16 +24,7 @@ nano .env  # or use your favorite editor
 # GITHUB_USERNAME=your_username
 ```
 
-### 4. Locate Your cbpr Binary
-```bash
-# Find where cbpr is installed
-which cbpr
-
-# If it outputs /usr/local/bin/cbpr, you're good!
-# Otherwise, update CBPR_PATH in .env with the correct path
-```
-
-### 5. Build the Docker Image (First Time Only)
+### 4. Build the Docker Image (First Time Only)
 ```bash
 make build
 # or

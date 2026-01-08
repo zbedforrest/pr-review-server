@@ -47,11 +47,14 @@ RUN if [ -f /tmp/bin/cbpr-linux ]; then \
 RUN mkdir -p /app/reviews /app/data
 
 # Create non-root user for security
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
+RUN addgroup -S appgroup && adduser -S -h /home/appuser appuser -G appgroup && \
     chown -R appuser:appgroup /app/reviews /app/data /app/pr-review-server
 
 # Switch to non-root user
 USER appuser
+
+# Set home directory to allow tools like git to find user-level config
+ENV HOME=/home/appuser
 
 # Volume mounts for persistence
 VOLUME ["/app/reviews", "/app/data"]

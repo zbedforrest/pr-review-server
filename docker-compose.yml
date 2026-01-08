@@ -16,11 +16,9 @@ services:
       - ./reviews:/app/reviews
       - ./data:/app/data
       # Mount .gitconfig for cbpr to use git credentials if needed
-      - ~/.gitconfig:/root/.gitconfig:ro
+      - ~/.gitconfig:/home/appuser/.gitconfig:ro
       # Optional: mount specific config folder cbpr needs, e.g. for gh cli
-      # - ~/.config/gh:/root/.config/gh:ro
-    env_file:
-      - .env
+      # - ~/.config/gh:/home/appuser/.config/gh:ro
     logging:
       driver: "json-file"
       options:

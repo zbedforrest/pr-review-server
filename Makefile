@@ -48,7 +48,7 @@ logs:
 status:
 	@docker-compose ps
 	@echo ""
-	@if docker-compose ps | grep -q "Up"; then \
+	@if docker-compose ps pr-review-server | grep -q "Up"; then \
 		echo "✅ Server is running"; \
 		echo "📊 Dashboard: http://localhost:7769"; \
 	else \
