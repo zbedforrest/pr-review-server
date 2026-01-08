@@ -17,6 +17,9 @@ import (
 
 type PollerInterface interface {
 	GetCbprStatus() (running bool, duration time.Duration)
+	GetLastPollTime() time.Time
+	GetPollingInterval() time.Duration
+	GetSecondsUntilNextPoll() int
 }
 
 type Server struct {
@@ -91,6 +94,11 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of the HTML page
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
 	html := `<!DOCTYPE html>
 <html>
 <head>
@@ -305,7 +313,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
         }
 
         function renderPRRow(pr) {
-            const reviewLink = pr.review_html_path
+            // Only show review link if PR is completed AND has a review path
+            const reviewLink = (pr.status === 'completed' && pr.review_html_path)
                 ? '<a href="/reviews/' + pr.review_html_path + '" target="_blank">View Review</a>'
                 : '<span style="color: #ffa726; font-weight: 500;">Not yet reviewed</span>';
 
@@ -322,8 +331,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
             statusBadge += '</span>';
 
-            const deleteBtn = '<button class="delete-btn" onclick="deletePR(\'' +
-                pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>';
+            // Only show delete button for completed reviews
+            const deleteBtn = pr.status === 'completed'
+                ? '<button class="delete-btn" onclick="deletePR(\'' +
+                    pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>'
+                : '';
 
             return '<tr id="pr-' + pr.owner + '-' + pr.repo + '-' + pr.number + '">' +
                 '<td>' + pr.owner + '/' + pr.repo + '</td>' +
@@ -337,8 +349,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                 '<td>' + formatDate(pr.last_reviewed_at) + '</td>' +
                 '<td>' +
                     '<a href="' + pr.github_url + '" target="_blank">GitHub</a> | ' +
-                    reviewLink + ' | ' +
-                    deleteBtn +
+                    reviewLink +
+                    (deleteBtn ? ' | ' + deleteBtn : '') +
                 '</td>' +
             '</tr>';
         }
@@ -359,6 +371,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
                     let html = '<div class="status-dot"></div>';
                     html += '<div class="status-item"><span class="status-label">Uptime:</span> <span class="status-value">' + formatUptime(data.uptime_seconds) + '</span></div>';
+                    if (data.seconds_until_next_poll !== undefined) {
+                        html += '<div class="status-item"><span class="status-label">Next poll:</span> <span class="status-value">' + data.seconds_until_next_poll + 's</span></div>';
+                    }
                     html += '<div class="status-item"><span class="status-label">Completed:</span> <span class="status-value">' + data.counts.completed + '</span></div>';
 
                     if (data.counts.generating > 0) {
@@ -460,11 +475,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
         fetchServerStatus();
         fetchPRs();
 
-        // Poll every 5 seconds for real-time updates
+        // Poll every 1 second for real-time updates
         setInterval(() => {
             fetchServerStatus();
             fetchPRs();
-        }, 5000);
+        }, 1000);
 
         // Update elapsed times every second
         setInterval(updateElapsedTimes, 1000);
@@ -476,6 +491,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of API responses
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
 	// Fetch all PRs from database (source of truth)
 	dbPRs, err := s.db.GetAllPRs()
 	if err != nil {
@@ -595,6 +615,11 @@ func (s *Server) handleDeletePR(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of API responses
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
 	// Get PR counts by status
 	prs, err := s.db.GetAllPRs()
 	if err != nil {
@@ -615,8 +640,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// Get cbpr status from poller
 	var cbprRunning bool
 	var cbprDuration time.Duration
+	var secondsUntilNextPoll int
 	if s.poller != nil {
 		cbprRunning, cbprDuration = s.poller.GetCbprStatus()
+		// Get accurate countdown based on ticker timing
+		secondsUntilNextPoll = s.poller.GetSecondsUntilNextPoll()
 	}
 
 	// Get recent completions (last 3)
@@ -642,13 +670,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]interface{}{
-		"uptime_seconds":         int(time.Since(s.startTime).Seconds()),
-		"cbpr_running":           cbprRunning,
-		"cbpr_duration_seconds":  int(cbprDuration.Seconds()),
-		"counts":                 counts,
-		"recent_completions":     recentCompletions,
-		"missing_metadata_count": missingMetadataCount,
-		"timestamp":              time.Now().Unix(),
+		"uptime_seconds":           int(time.Since(s.startTime).Seconds()),
+		"cbpr_running":             cbprRunning,
+		"cbpr_duration_seconds":    int(cbprDuration.Seconds()),
+		"counts":                   counts,
+		"recent_completions":       recentCompletions,
+		"missing_metadata_count":   missingMetadataCount,
+		"timestamp":                time.Now().Unix(),
+		"seconds_until_next_poll":  secondsUntilNextPoll,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -28,15 +29,24 @@ type Poller struct {
 	cbprPID         int
 	cbprStartTime   time.Time
 	cbprMutex       sync.Mutex
+	// Track active review processes for cancellation
+	activeReviews map[string]int // prKey (owner/repo/number) -> PID
+	reviewsMutex  sync.Mutex
+	// Track last poll time for countdown display
+	lastPollTime time.Time
+	pollTimeMutex sync.RWMutex
+	// Track ticker start time for accurate countdown
+	tickerStartTime time.Time
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Poller {
 	return &Poller{
-		cfg:         cfg,
-		db:          database,
-		ghClient:    ghClient,
-		reviewDir:   cfg.ReviewsDir,
-		triggerChan: make(chan struct{}, 1), // Buffered to prevent blocking
+		cfg:           cfg,
+		db:            database,
+		ghClient:      ghClient,
+		reviewDir:     cfg.ReviewsDir,
+		triggerChan:   make(chan struct{}, 1), // Buffered to prevent blocking
+		activeReviews: make(map[string]int),
 	}
 }
 
@@ -55,8 +65,14 @@ func (p *Poller) Trigger() {
 }
 
 func (p *Poller) Start(ctx context.Context) {
+	tickerStartTime := time.Now()
 	ticker := time.NewTicker(p.cfg.PollingInterval)
 	defer ticker.Stop()
+
+	// Store ticker start time for accurate countdown
+	p.pollTimeMutex.Lock()
+	p.tickerStartTime = tickerStartTime
+	p.pollTimeMutex.Unlock()
 
 	// Start cbpr process monitor
 	monitorTicker := time.NewTicker(30 * time.Second)
@@ -64,6 +80,7 @@ func (p *Poller) Start(ctx context.Context) {
 	go p.monitorCbprProcesses(ctx, monitorTicker)
 
 	log.Println("Starting poller...")
+	log.Printf("Ticker created at %s, will fire every %v", tickerStartTime.Format("15:04:05.000"), p.cfg.PollingInterval)
 
 	// Run immediately on start
 	p.startPoll(ctx, "initial")
@@ -73,7 +90,9 @@ func (p *Poller) Start(ctx context.Context) {
 		case <-ctx.Done():
 			log.Println("Poller stopped")
 			return
-		case <-ticker.C:
+		case tickTime := <-ticker.C:
+			elapsed := tickTime.Sub(tickerStartTime)
+			log.Printf("Ticker fired at %s (%.3fs since ticker start)", tickTime.Format("15:04:05.000"), elapsed.Seconds())
 			p.startPoll(ctx, "scheduled")
 		case <-p.triggerChan:
 			p.startPoll(ctx, "manual")
@@ -124,6 +143,51 @@ func (p *Poller) GetCbprStatus() (running bool, duration time.Duration) {
 	return false, 0
 }
 
+func (p *Poller) GetLastPollTime() time.Time {
+	p.pollTimeMutex.RLock()
+	defer p.pollTimeMutex.RUnlock()
+	return p.lastPollTime
+}
+
+func (p *Poller) GetPollingInterval() time.Duration {
+	return p.cfg.PollingInterval
+}
+
+// GetSecondsUntilNextPoll calculates accurate countdown based on ticker timing
+func (p *Poller) GetSecondsUntilNextPoll() int {
+	p.pollTimeMutex.RLock()
+	tickerStart := p.tickerStartTime
+	p.pollTimeMutex.RUnlock()
+
+	if tickerStart.IsZero() {
+		return 0
+	}
+
+	now := time.Now()
+	interval := p.cfg.PollingInterval
+
+	// Calculate how long since ticker started
+	elapsed := now.Sub(tickerStart)
+
+	// Calculate which tick number we're waiting for
+	// Add 1 because we want the NEXT tick
+	tickNumber := int(elapsed/interval) + 1
+
+	// Calculate when that tick will fire
+	nextTickTime := tickerStart.Add(time.Duration(tickNumber) * interval)
+
+	// Calculate remaining time
+	remaining := nextTickTime.Sub(now)
+
+	if remaining < 0 {
+		return 0
+	}
+
+	seconds := int(remaining.Seconds())
+
+	return seconds
+}
+
 func (p *Poller) isPIDRunning(pid int) bool {
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -132,6 +196,57 @@ func (p *Poller) isPIDRunning(pid int) bool {
 	// Signal 0 doesn't actually send a signal, but checks if we can
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
+}
+
+// prKey creates a unique key for tracking a PR
+func prKey(owner, repo string, number int) string {
+	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
+}
+
+// trackReview adds a PR's review process to the active reviews map
+func (p *Poller) trackReview(owner, repo string, number, pid int) {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	key := prKey(owner, repo, number)
+	p.activeReviews[key] = pid
+	log.Printf("[TRACK] Tracking review for %s with PID %d", key, pid)
+}
+
+// untrackReview removes a PR's review process from the active reviews map
+func (p *Poller) untrackReview(owner, repo string, number int) {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	key := prKey(owner, repo, number)
+	delete(p.activeReviews, key)
+	log.Printf("[TRACK] Untracked review for %s", key)
+}
+
+// killReview kills an active review process if it exists
+func (p *Poller) killReview(owner, repo string, number int) bool {
+	p.reviewsMutex.Lock()
+	key := prKey(owner, repo, number)
+	pid, exists := p.activeReviews[key]
+	p.reviewsMutex.Unlock()
+
+	if !exists {
+		return false
+	}
+
+	log.Printf("[KILL] Attempting to kill review process for %s (PID %d)", key, pid)
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		log.Printf("[KILL] Failed to find process %d: %v", pid, err)
+		return false
+	}
+
+	if err := process.Kill(); err != nil {
+		log.Printf("[KILL] Failed to kill process %d: %v", pid, err)
+		return false
+	}
+
+	log.Printf("[KILL] Successfully killed process %d for %s", pid, key)
+	p.untrackReview(owner, repo, number)
+	return true
 }
 
 func (p *Poller) startPoll(ctx context.Context, trigger string) {
@@ -208,6 +323,30 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 	return removed, nil
 }
 
+// speak uses macOS say command for voice notifications (macOS only)
+func (p *Poller) speak(message string) {
+	if !p.cfg.EnableVoiceNotifications {
+		log.Printf("[VOICE] Skipped (disabled): %s", message)
+		return
+	}
+
+	// Voice notifications only work on macOS
+	if runtime.GOOS != "darwin" {
+		log.Printf("[VOICE] Skipped (unsupported OS %s): %s", runtime.GOOS, message)
+		return
+	}
+
+	log.Printf("[VOICE] Speaking: %s", message)
+
+	// Run say command in a goroutine to avoid blocking and prevent zombie processes
+	go func() {
+		cmd := exec.Command("say", message)
+		if err := cmd.Run(); err != nil {
+			log.Printf("[VOICE] ERROR: 'say' command failed: %v", err)
+		}
+	}()
+}
+
 // backfillPRMetadata fills in missing title/author for existing PRs by fetching from GitHub
 func (p *Poller) backfillPRMetadata(ctx context.Context) (int, error) {
 	// Get PRs with missing metadata
@@ -245,8 +384,99 @@ func (p *Poller) backfillPRMetadata(ctx context.Context) (int, error) {
 	return updated, nil
 }
 
+// checkForOutdatedReviews detects PRs with new commits and resets them to pending
+func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
+	// Get all PRs from database
+	allPRs, err := p.db.GetAllPRs()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get PRs from database: %w", err)
+	}
+
+	outdated := 0
+	checkedCount := 0
+	for _, pr := range allPRs {
+		// Check PRs that are completed OR currently generating
+		// If a PR is generating and gets a new commit, we need to cancel and restart
+		if pr.Status != "completed" && pr.Status != "generating" {
+			continue
+		}
+
+		checkedCount++
+
+		// Fetch current HEAD SHA from GitHub
+		currentSHA, err := p.ghClient.GetPRHeadSHA(ctx, pr.RepoOwner, pr.RepoName, pr.PRNumber)
+		if err != nil {
+			log.Printf("[OUTDATED] Warning: Could not fetch current HEAD SHA for %s/%s#%d: %v",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+			continue
+		}
+
+		log.Printf("[OUTDATED] Checking %s/%s#%d: stored=%s current=%s status=%s",
+			pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA[:7], currentSHA[:7], pr.Status)
+
+		// Compare commit SHAs
+		if currentSHA != pr.LastCommitSHA {
+			wasGenerating := pr.Status == "generating"
+			statusMsg := "completed"
+			if wasGenerating {
+				statusMsg = "generating (cancelling)"
+			}
+			log.Printf("[OUTDATED] PR %s/%s#%d (%s) has new commits (old: %s, new: %s), resetting to pending",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber, statusMsg, pr.LastCommitSHA[:7], currentSHA[:7])
+
+			// Delete old HTML file if it exists
+			if pr.ReviewHTMLPath != "" {
+				oldHTMLPath := filepath.Join(p.reviewDir, pr.ReviewHTMLPath)
+				if err := os.Remove(oldHTMLPath); err != nil && !os.IsNotExist(err) {
+					log.Printf("[OUTDATED] Warning: Failed to delete old HTML file %s: %v", oldHTMLPath, err)
+				} else if err == nil {
+					log.Printf("[OUTDATED] Deleted old HTML file: %s", pr.ReviewHTMLPath)
+				}
+			}
+
+			// If the PR was actively generating, kill the process
+			if wasGenerating {
+				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
+					log.Printf("[OUTDATED] Killed active review process for %s/%s#%d",
+						pr.RepoOwner, pr.RepoName, pr.PRNumber)
+				}
+			}
+
+			// Reset PR to pending with new commit SHA and clear old review data
+			if err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, currentSHA); err != nil {
+				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s/%s#%d: %v",
+					pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+				continue
+			}
+
+			// Voice notification for outdated review
+			var message string
+			if wasGenerating {
+				message = fmt.Sprintf("PR number %d has a new commit while generating. Cancelling old review and starting fresh.", pr.PRNumber)
+			} else {
+				message = fmt.Sprintf("PR number %d has a new commit. Removing stale review and generating a new one.", pr.PRNumber)
+			}
+			p.speak(message)
+
+			outdated++
+		}
+	}
+
+	if checkedCount > 0 {
+		log.Printf("[OUTDATED] Checked %d PRs (%d completed or generating)", checkedCount, len(allPRs))
+	}
+
+	return outdated, nil
+}
+
 func (p *Poller) poll(ctx context.Context) {
 	startTime := time.Now()
+
+	// Update last poll time for countdown display
+	p.pollTimeMutex.Lock()
+	p.lastPollTime = startTime
+	p.pollTimeMutex.Unlock()
+
 	log.Printf("[POLL] Starting poll at %s", startTime.Format("15:04:05"))
 
 	// Reset any PRs stuck in "generating" for more than 2 minutes
@@ -293,6 +523,17 @@ func (p *Poller) poll(ctx context.Context) {
 		log.Printf("[POLL] No PRs need metadata backfill")
 	}
 
+	// Check for outdated reviews (PRs with new commits)
+	log.Printf("[POLL] Checking for outdated reviews...")
+	outdatedCount, err := p.checkForOutdatedReviews(ctx)
+	if err != nil {
+		log.Printf("[POLL] ERROR: Failed to check for outdated reviews: %v", err)
+	} else if outdatedCount > 0 {
+		log.Printf("[POLL] OUTDATED: Reset %d PRs with new commits to pending", outdatedCount)
+	} else {
+		log.Printf("[POLL] No outdated reviews found")
+	}
+
 	log.Printf("[POLL] Fetching PRs requesting review from GitHub...")
 	reviewPRs, err := p.ghClient.GetPRsRequestingReview(ctx)
 	if err != nil {
@@ -301,6 +542,17 @@ func (p *Poller) poll(ctx context.Context) {
 		reviewPRs = []github.PullRequest{}
 	} else {
 		log.Printf("[POLL] Found %d PRs requesting review", len(reviewPRs))
+
+		// Check for new PRs (not in database yet) and announce them
+		for _, pr := range reviewPRs {
+			existingPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+			if err == nil && existingPR == nil {
+				// This is a new PR
+				message := fmt.Sprintf("Your review is newly requested on PR number %d", pr.Number)
+				p.speak(message)
+				log.Printf("[VOICE] New review request: PR #%d", pr.Number)
+			}
+		}
 	}
 
 	log.Printf("[POLL] Fetching my own open PRs from GitHub...")
@@ -423,6 +675,22 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, i
 		if err != nil {
 			log.Printf("Error checking PR %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 			continue
+		}
+
+		// Check if this is a new commit for an existing PR (outdated review)
+		// This is a safeguard against commits pushed after checkForOutdatedReviews() ran at poll start
+		// but before this batch processing began. Ensures we don't regenerate stale reviews.
+		if existingPR != nil && existingPR.LastCommitSHA != pr.CommitSHA && (existingPR.Status == "completed" || existingPR.Status == "generating") {
+			log.Printf("[PROCESSING] PR %s/%s#%d has new commit (old: %s, new: %s), will regenerate",
+				pr.Owner, pr.Repo, pr.Number, existingPR.LastCommitSHA[:7], pr.CommitSHA[:7])
+			wasGenerating := existingPR.Status == "generating"
+			var message string
+			if wasGenerating {
+				message = fmt.Sprintf("PR number %d has a new commit while generating. Cancelling old review and starting fresh.", pr.Number)
+			} else {
+				message = fmt.Sprintf("PR number %d has a new commit. Removing stale review and generating a new one.", pr.Number)
+			}
+			p.speak(message)
 		}
 
 		// Skip if already reviewed at this commit AND HTML file exists
@@ -659,12 +927,17 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			continue // Skip to next PR
 		}
 
+		pid := cmd.Process.Pid
+
 		p.cbprMutex.Lock()
-		p.cbprPID = cmd.Process.Pid
+		p.cbprPID = pid
 		p.cbprStartTime = execStart
 		p.cbprMutex.Unlock()
 
-		log.Printf("[CBPR] Process started with PID %d", cmd.Process.Pid)
+		// Track this review for cancellation
+		p.trackReview(pr.Owner, pr.Repo, pr.Number, pid)
+
+		log.Printf("[CBPR] Process started with PID %d", pid)
 
 		// Wait for command to complete
 		err := cmd.Wait()
@@ -677,9 +950,20 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 
 		if err != nil {
 			log.Printf("[CBPR] ERROR: Command failed for PR %d after %v: %v", pr.Number, execDuration, err)
-			// Mark as error immediately
-			p.db.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error")
-			log.Printf("[CBPR] Marked PR %d as 'error' in database", pr.Number)
+
+			// Before marking as error, check if the PR was cancelled due to being outdated.
+			// If so, another poll cycle has already handled it, and we should not overwrite the status.
+			currentPR, dbErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+			if dbErr == nil && currentPR != nil && currentPR.Status == "pending" && currentPR.LastCommitSHA != pr.CommitSHA {
+				log.Printf("[CBPR] Review for PR %d was cancelled because it became outdated. The PR is already re-queued.", pr.Number)
+			} else {
+				// Mark as error only for genuine failures
+				p.db.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error")
+				log.Printf("[CBPR] Marked PR %d as 'error' in database", pr.Number)
+			}
+
+			// Untrack after DB operation completes
+			p.untrackReview(pr.Owner, pr.Repo, pr.Number)
 			continue // Skip to next PR
 		}
 
@@ -693,13 +977,31 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			log.Printf("[CBPR] Marked PR %d as 'error' in database", pr.Number)
 		} else {
 			log.Printf("[CBPR] Verified file exists: %s", filename)
-			// Mark as completed immediately
-			if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
-				log.Printf("[CBPR] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
+
+			// Before marking as completed, verify the commit SHA hasn't changed
+			// Protects against race condition where a new commit is pushed AFTER cbpr starts generating
+			// but BEFORE it finishes. In this case, we discard the stale review and let the outdated
+			// review detection on the next poll cycle regenerate with the latest commit.
+			currentPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+			if err != nil {
+				log.Printf("[CBPR] ERROR: Failed to fetch PR from DB: %v", err)
+			} else if currentPR != nil && currentPR.LastCommitSHA != pr.CommitSHA {
+				// Commit has changed since we started - discard this stale review
+				log.Printf("[CBPR] STALE REVIEW: PR %d commit changed during generation (reviewed: %s, current: %s), discarding result and deleting file",
+					pr.Number, pr.CommitSHA[:7], currentPR.LastCommitSHA[:7])
+				os.Remove(outputPath) // Clean up the stale review file
 			} else {
-				log.Printf("[CBPR] Marked PR %d as 'completed' in database", pr.Number)
+				// Commit matches - safe to mark as completed
+				if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
+					log.Printf("[CBPR] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
+				} else {
+					log.Printf("[CBPR] Marked PR %d as 'completed' in database", pr.Number)
+				}
 			}
 		}
+
+		// Untrack after all DB operations complete (prevents race with checkForOutdatedReviews)
+		p.untrackReview(pr.Owner, pr.Repo, pr.Number)
 	}
 
 	return nil

@@ -34,6 +34,7 @@ The server now has automatic recovery:
 2. **Error PR Retry** (`ResetErrorPRs`): PRs in "error" state for >5 minutes are reset to "pending" for automatic retry
 3. **Partial Success Recovery**: If cbpr completes but some files weren't created, only missing files are marked as errors (not the entire batch)
 4. **Closed PR Cleanup** (`cleanupClosedPRs`): Every poll cycle checks all tracked PRs on GitHub and removes any that are closed/merged, deleting both database entry and HTML file. If a closed PR is reopened, it will be picked up again on the next poll.
+5. **Outdated Review Detection** (`checkForOutdatedReviews`): Every poll cycle checks all completed PRs to see if new commits have been pushed. Compares the stored commit SHA against GitHub's current HEAD SHA. When a mismatch is detected, the PR is reset to "pending" status and will be re-reviewed automatically with the latest changes.
 
 ### 5. Database Schema
 The `prs` table tracks:
@@ -55,12 +56,16 @@ The `prs` table tracks:
 ### 7. Processing Flow
 1. Poll runs every 1 minute
 2. Reset stale/error PRs first (self-healing)
-3. Fetch PRs from GitHub (both review requests and your own PRs)
-4. Group PRs by repository
-5. Split into batches of 5
-6. Process each PR individually with `--output` flag
-7. **Immediately** mark as completed/error after each PR (not after batch)
-8. Continue to next PR in batch
+3. Clean up closed PRs (remove from database/filesystem)
+4. Backfill missing PR metadata (title/author)
+5. **Check for outdated reviews** (detect PRs with new commits and reset to pending)
+6. Fetch PRs from GitHub (both review requests and your own PRs)
+7. Check database for pending PRs (ensures processing even when GitHub API fails)
+8. Group PRs by repository
+9. Split into batches of 5
+10. Process each PR individually with `--output` flag
+11. **Immediately** mark as completed/error after each PR (not after batch)
+12. Continue to next PR in batch
 
 ## Environment Variables
 Required:

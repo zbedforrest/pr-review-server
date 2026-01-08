@@ -175,3 +175,13 @@ func (c *Client) GetPRDetails(ctx context.Context, owner, repo string, prNumber 
 
 	return pr.GetTitle(), pr.GetUser().GetLogin(), nil
 }
+
+// GetPRHeadSHA fetches the current HEAD commit SHA for a PR
+func (c *Client) GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber int) (string, error) {
+	pr, _, err := c.gh.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return "", err
+	}
+
+	return pr.GetHead().GetSHA(), nil
+}
