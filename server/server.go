@@ -17,6 +17,8 @@ import (
 
 type PollerInterface interface {
 	GetCbprStatus() (running bool, duration time.Duration)
+	GetLastPollTime() time.Time
+	GetPollingInterval() time.Duration
 }
 
 type Server struct {
@@ -363,6 +365,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
                     let html = '<div class="status-dot"></div>';
                     html += '<div class="status-item"><span class="status-label">Uptime:</span> <span class="status-value">' + formatUptime(data.uptime_seconds) + '</span></div>';
+                    if (data.seconds_until_next_poll !== undefined) {
+                        html += '<div class="status-item"><span class="status-label">Next poll:</span> <span class="status-value">' + data.seconds_until_next_poll + 's</span></div>';
+                    }
                     html += '<div class="status-item"><span class="status-label">Completed:</span> <span class="status-value">' + data.counts.completed + '</span></div>';
 
                     if (data.counts.generating > 0) {
@@ -619,8 +624,22 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// Get cbpr status from poller
 	var cbprRunning bool
 	var cbprDuration time.Duration
+	var secondsUntilNextPoll int
 	if s.poller != nil {
 		cbprRunning, cbprDuration = s.poller.GetCbprStatus()
+
+		// Calculate seconds until next poll
+		lastPollTime := s.poller.GetLastPollTime()
+		pollingInterval := s.poller.GetPollingInterval()
+		if !lastPollTime.IsZero() {
+			elapsed := time.Since(lastPollTime)
+			remaining := pollingInterval - elapsed
+			if remaining > 0 {
+				secondsUntilNextPoll = int(remaining.Seconds())
+			} else {
+				secondsUntilNextPoll = 0
+			}
+		}
 	}
 
 	// Get recent completions (last 3)
@@ -646,13 +665,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]interface{}{
-		"uptime_seconds":         int(time.Since(s.startTime).Seconds()),
-		"cbpr_running":           cbprRunning,
-		"cbpr_duration_seconds":  int(cbprDuration.Seconds()),
-		"counts":                 counts,
-		"recent_completions":     recentCompletions,
-		"missing_metadata_count": missingMetadataCount,
-		"timestamp":              time.Now().Unix(),
+		"uptime_seconds":           int(time.Since(s.startTime).Seconds()),
+		"cbpr_running":             cbprRunning,
+		"cbpr_duration_seconds":    int(cbprDuration.Seconds()),
+		"counts":                   counts,
+		"recent_completions":       recentCompletions,
+		"missing_metadata_count":   missingMetadataCount,
+		"timestamp":                time.Now().Unix(),
+		"seconds_until_next_poll":  secondsUntilNextPoll,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

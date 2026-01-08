@@ -31,6 +31,9 @@ type Poller struct {
 	// Track active review processes for cancellation
 	activeReviews map[string]int // prKey (owner/repo/number) -> PID
 	reviewsMutex  sync.Mutex
+	// Track last poll time for countdown display
+	lastPollTime time.Time
+	pollTimeMutex sync.RWMutex
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Poller {
@@ -126,6 +129,16 @@ func (p *Poller) GetCbprStatus() (running bool, duration time.Duration) {
 		return true, time.Since(p.cbprStartTime)
 	}
 	return false, 0
+}
+
+func (p *Poller) GetLastPollTime() time.Time {
+	p.pollTimeMutex.RLock()
+	defer p.pollTimeMutex.RUnlock()
+	return p.lastPollTime
+}
+
+func (p *Poller) GetPollingInterval() time.Duration {
+	return p.cfg.PollingInterval
 }
 
 func (p *Poller) isPIDRunning(pid int) bool {
@@ -390,6 +403,12 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 
 func (p *Poller) poll(ctx context.Context) {
 	startTime := time.Now()
+
+	// Update last poll time for countdown display
+	p.pollTimeMutex.Lock()
+	p.lastPollTime = startTime
+	p.pollTimeMutex.Unlock()
+
 	log.Printf("[POLL] Starting poll at %s", startTime.Format("15:04:05"))
 
 	// Reset any PRs stuck in "generating" for more than 2 minutes
