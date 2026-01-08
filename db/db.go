@@ -149,7 +149,7 @@ func (db *DB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA s
 		UPDATE prs
 		SET status = 'pending',
 		    last_commit_sha = ?,
-		    review_html_path = '',
+		    review_html_path = NULL,
 		    last_reviewed_at = NULL,
 		    generating_since = NULL
 		WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
@@ -165,9 +165,9 @@ func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title
 	}
 	_, err := db.conn.Exec(`
 		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status, generating_since, is_mine, title, author, review_html_path)
-		VALUES (?, ?, ?, ?, 'generating', ?, ?, ?, ?, '')
+		VALUES (?, ?, ?, ?, 'generating', ?, ?, ?, ?, NULL)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
-		DO UPDATE SET last_commit_sha = ?, status = 'generating', generating_since = ?, is_mine = ?, title = ?, author = ?, review_html_path = ''
+		DO UPDATE SET last_commit_sha = ?, status = 'generating', generating_since = ?, is_mine = ?, title = ?, author = ?, review_html_path = NULL
 	`, owner, repo, prNumber, commitSHA, now, isMineInt, title, author, commitSHA, now, isMineInt, title, author)
 	return err
 }

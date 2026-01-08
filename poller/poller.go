@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -322,10 +323,16 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 	return removed, nil
 }
 
-// speak uses macOS say command for voice notifications
+// speak uses macOS say command for voice notifications (macOS only)
 func (p *Poller) speak(message string) {
 	if !p.cfg.EnableVoiceNotifications {
 		log.Printf("[VOICE] Skipped (disabled): %s", message)
+		return
+	}
+
+	// Voice notifications only work on macOS
+	if runtime.GOOS != "darwin" {
+		log.Printf("[VOICE] Skipped (unsupported OS %s): %s", runtime.GOOS, message)
 		return
 	}
 
@@ -614,22 +621,20 @@ func (p *Poller) poll(ctx context.Context) {
 		myPRsByRepo[repoKey] = append(myPRsByRepo[repoKey], pr)
 	}
 
-	// Process review PRs in smaller batches (async)
-	log.Printf("[POLL] Queueing %d repositories for review PRs", len(reviewPRsByRepo))
+	// Process review PRs in smaller batches
+	log.Printf("[POLL] Processing %d repositories for review PRs", len(reviewPRsByRepo))
 	for repoKey, repoPRs := range reviewPRsByRepo {
-		log.Printf("[POLL] Queueing review PRs for repository %s with %d PRs", repoKey, len(repoPRs))
+		log.Printf("[POLL] Processing review PRs for repository %s with %d PRs", repoKey, len(repoPRs))
 		// Split into smaller batches of 5 PRs to avoid timeout
-		// Process asynchronously so poll can complete quickly
-		go p.processInBatches(ctx, repoPRs, false, 5)
+		p.processInBatches(ctx, repoPRs, false, 5)
 	}
 
-	// Process my PRs in smaller batches (async)
-	log.Printf("[POLL] Queueing %d repositories for my PRs", len(myPRsByRepo))
+	// Process my PRs in smaller batches
+	log.Printf("[POLL] Processing %d repositories for my PRs", len(myPRsByRepo))
 	for repoKey, repoPRs := range myPRsByRepo {
-		log.Printf("[POLL] Queueing my PRs for repository %s with %d PRs", repoKey, len(repoPRs))
+		log.Printf("[POLL] Processing my PRs for repository %s with %d PRs", repoKey, len(repoPRs))
 		// Split into smaller batches of 5 PRs to avoid timeout
-		// Process asynchronously so poll can complete quickly
-		go p.processInBatches(ctx, repoPRs, true, 5)
+		p.processInBatches(ctx, repoPRs, true, 5)
 	}
 
 	duration := time.Since(startTime)
