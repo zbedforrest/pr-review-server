@@ -246,10 +246,6 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
         }
 
         function deletePR(owner, repo, number) {
-            if (!confirm('Delete review for ' + owner + '/' + repo + ' #' + number + '?')) {
-                return;
-            }
-
             // Immediately remove the row from UI (optimistic update)
             const rowId = 'pr-' + owner + '-' + repo + '-' + number;
             const row = document.getElementById(rowId);
