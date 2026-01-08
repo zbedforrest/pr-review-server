@@ -15,11 +15,12 @@ import (
 )
 
 type Server struct {
-	cfg         *config.Config
-	db          *db.DB
-	ghClient    *github.Client
-	prCache     []github.PullRequest
-	prCacheMux  sync.RWMutex
+	cfg            *config.Config
+	db             *db.DB
+	ghClient       *github.Client
+	prCache        []github.PullRequest
+	prCacheMux     sync.RWMutex
+	pollTriggerFunc func()
 }
 
 type PRResponse struct {
@@ -58,6 +59,10 @@ func (s *Server) GetCachedPRs() []github.PullRequest {
 	result := make([]github.PullRequest, len(s.prCache))
 	copy(result, s.prCache)
 	return result
+}
+
+func (s *Server) SetPollTrigger(f func()) {
+	s.pollTriggerFunc = f
 }
 
 func (s *Server) Start() error {
@@ -406,6 +411,11 @@ func (s *Server) handleDeletePR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Deleted review for %s/%s#%d", req.Owner, req.Repo, req.Number)
+
+	// Trigger immediate poll to regenerate review
+	if s.pollTriggerFunc != nil {
+		s.pollTriggerFunc()
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})

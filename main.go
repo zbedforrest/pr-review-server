@@ -54,6 +54,9 @@ func main() {
 	// Wire poller to update server's cache
 	p.SetCacheUpdateFunc(srv.UpdatePRCache)
 
+	// Wire server to trigger poller on delete
+	srv.SetPollTrigger(p.Trigger)
+
 	// Start poller in background
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
