@@ -279,13 +279,18 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 // speak uses macOS say command for voice notifications
 func (p *Poller) speak(message string) {
 	if !p.cfg.EnableVoiceNotifications {
+		log.Printf("[VOICE] Skipped (disabled): %s", message)
 		return
 	}
+
+	log.Printf("[VOICE] Speaking: %s", message)
 
 	// Run say command in background (non-blocking)
 	cmd := exec.Command("say", message)
 	if err := cmd.Start(); err != nil {
-		log.Printf("[VOICE] Warning: Failed to speak notification: %v", err)
+		log.Printf("[VOICE] ERROR: Failed to speak notification: %v", err)
+	} else {
+		log.Printf("[VOICE] Successfully started say command")
 	}
 }
 
@@ -335,12 +340,15 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 	}
 
 	outdated := 0
+	checkedCount := 0
 	for _, pr := range allPRs {
 		// Check PRs that are completed OR currently generating
 		// If a PR is generating and gets a new commit, we need to cancel and restart
 		if pr.Status != "completed" && pr.Status != "generating" {
 			continue
 		}
+
+		checkedCount++
 
 		// Fetch current HEAD SHA from GitHub
 		currentSHA, err := p.ghClient.GetPRHeadSHA(ctx, pr.RepoOwner, pr.RepoName, pr.PRNumber)
@@ -349,6 +357,9 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
 			continue
 		}
+
+		log.Printf("[OUTDATED] Checking %s/%s#%d: stored=%s current=%s status=%s",
+			pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA[:7], currentSHA[:7], pr.Status)
 
 		// Compare commit SHAs
 		if currentSHA != pr.LastCommitSHA {
@@ -396,6 +407,10 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 
 			outdated++
 		}
+	}
+
+	if checkedCount > 0 {
+		log.Printf("[OUTDATED] Checked %d PRs (%d completed or generating)", checkedCount, len(allPRs))
 	}
 
 	return outdated, nil
@@ -609,6 +624,20 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, i
 		if err != nil {
 			log.Printf("Error checking PR %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 			continue
+		}
+
+		// Check if this is a new commit for an existing PR (outdated review)
+		if existingPR != nil && existingPR.LastCommitSHA != pr.CommitSHA && (existingPR.Status == "completed" || existingPR.Status == "generating") {
+			log.Printf("[PROCESSING] PR %s/%s#%d has new commit (old: %s, new: %s), will regenerate",
+				pr.Owner, pr.Repo, pr.Number, existingPR.LastCommitSHA[:7], pr.CommitSHA[:7])
+			wasGenerating := existingPR.Status == "generating"
+			var message string
+			if wasGenerating {
+				message = fmt.Sprintf("PR number %d has a new commit while generating. Cancelling old review and starting fresh.", pr.Number)
+			} else {
+				message = fmt.Sprintf("PR number %d has a new commit. Removing stale review and generating a new one.", pr.Number)
+			}
+			p.speak(message)
 		}
 
 		// Skip if already reviewed at this commit AND HTML file exists
