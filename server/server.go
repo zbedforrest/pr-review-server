@@ -8,11 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/github"
 )
+
+type PollerInterface interface {
+	GetCbprStatus() (running bool, duration time.Duration)
+}
 
 type Server struct {
 	cfg            *config.Config
@@ -21,6 +26,8 @@ type Server struct {
 	prCache        []github.PullRequest
 	prCacheMux     sync.RWMutex
 	pollTriggerFunc func()
+	poller         PollerInterface
+	startTime      time.Time
 }
 
 type PRResponse struct {
@@ -41,10 +48,15 @@ type PRResponse struct {
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
 	return &Server{
-		cfg:      cfg,
-		db:       database,
-		ghClient: ghClient,
+		cfg:       cfg,
+		db:        database,
+		ghClient:  ghClient,
+		startTime: time.Now(),
 	}
+}
+
+func (s *Server) SetPoller(p PollerInterface) {
+	s.poller = p
 }
 
 func (s *Server) UpdatePRCache(prs []github.PullRequest) {
@@ -70,6 +82,7 @@ func (s *Server) Start() error {
 	http.HandleFunc("/", s.handleIndex)
 	http.HandleFunc("/api/prs", s.handleGetPRs)
 	http.HandleFunc("/api/prs/delete", s.handleDeletePR)
+	http.HandleFunc("/api/status", s.handleStatus)
 	http.Handle("/reviews/", http.StripPrefix("/reviews/", http.FileServer(http.Dir(s.cfg.ReviewsDir))))
 
 	addr := ":" + s.cfg.ServerPort
@@ -137,9 +150,41 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
             text-decoration: underline;
         }
         .status {
-            font-size: 11px;
+            font-size: 12px;
+            color: #c9d1d9;
+            margin-bottom: 16px;
+            padding: 10px 12px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            display: flex;
+            gap: 24px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .status-label {
             color: #7d8590;
-            margin-bottom: 8px;
+            font-size: 11px;
+        }
+        .status-value {
+            font-weight: 600;
+            color: #58a6ff;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #7ee787;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
         }
         .loading {
             text-align: center;
@@ -298,6 +343,42 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
             '</tr>';
         }
 
+        function formatUptime(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            if (hours > 0) return hours + 'h ' + minutes + 'm';
+            return minutes + 'm';
+        }
+
+        function fetchServerStatus() {
+            fetch('/api/status')
+                .then(response => response.ok ? response.json() : null)
+                .then(data => {
+                    if (!data) return;
+                    const status = document.getElementById('status');
+
+                    let html = '<div class="status-dot"></div>';
+                    html += '<div class="status-item"><span class="status-label">Uptime:</span> <span class="status-value">' + formatUptime(data.uptime_seconds) + '</span></div>';
+                    html += '<div class="status-item"><span class="status-label">Completed:</span> <span class="status-value">' + data.counts.completed + '</span></div>';
+
+                    if (data.counts.generating > 0) {
+                        html += '<div class="status-item"><span class="status-label">Generating:</span> <span class="status-value">' + data.counts.generating + '</span></div>';
+                    }
+                    if (data.cbpr_running) {
+                        html += '<div class="status-item"><span class="status-label">Current task:</span> <span class="status-value">' + formatUptime(data.cbpr_duration_seconds) + '</span></div>';
+                    }
+                    if (data.counts.pending > 0) {
+                        html += '<div class="status-item"><span class="status-label">Pending:</span> <span class="status-value">' + data.counts.pending + '</span></div>';
+                    }
+                    if (data.counts.error > 0) {
+                        html += '<div class="status-item"><span class="status-label">Errors:</span> <span class="status-value" style="color: #ffa198;">' + data.counts.error + '</span></div>';
+                    }
+
+                    status.innerHTML = html;
+                })
+                .catch(() => {});  // Silently fail - status is non-critical
+        }
+
         function fetchPRs() {
             fetch('/api/prs')
                 .then(response => {
@@ -307,7 +388,6 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                 .then(data => {
                     const myPRList = document.getElementById('my-pr-list');
                     const reviewPRList = document.getElementById('pr-list');
-                    const status = document.getElementById('status');
                     const myPRTable = document.getElementById('my-pr-table');
                     const reviewPRTable = document.getElementById('pr-table');
                     const errorDiv = document.getElementById('error');
@@ -317,9 +397,6 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                     // Separate PRs into my PRs and review PRs
                     const myPRs = data.filter(pr => pr.is_mine);
                     const reviewPRs = data.filter(pr => !pr.is_mine);
-
-                    // Update status
-                    status.textContent = 'Last updated: ' + new Date().toLocaleTimeString();
 
                     // Render My PRs
                     if (myPRs.length > 0) {
@@ -335,11 +412,6 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                         reviewPRList.innerHTML = reviewPRs.map(renderPRRow).join('');
                     } else {
                         reviewPRTable.style.display = 'none';
-                    }
-
-                    // Update status message if no PRs at all
-                    if (data.length === 0) {
-                        status.textContent = 'No PRs found';
                     }
                 })
                 .catch(error => {
@@ -384,9 +456,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
             });
         }
 
-        // Fetch immediately and then every 30 seconds
+        // Initial load
+        fetchServerStatus();
         fetchPRs();
-        setInterval(fetchPRs, 30000);
+
+        // Poll every 5 seconds for real-time updates
+        setInterval(() => {
+            fetchServerStatus();
+            fetchPRs();
+        }, 5000);
 
         // Update elapsed times every second
         setInterval(updateElapsedTimes, 1000);
@@ -398,52 +476,69 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
-	// Use cached PRs instead of fetching from GitHub on every request
+	// Fetch all PRs from database (source of truth)
+	dbPRs, err := s.db.GetAllPRs()
+	if err != nil {
+		http.Error(w, "Failed to fetch PRs from database", http.StatusInternalServerError)
+		return
+	}
+
+	// Try to get cached GitHub data to fill in titles/URLs if available
 	githubPRs := s.GetCachedPRs()
+	githubMap := make(map[string]github.PullRequest)
+	for _, ghPR := range githubPRs {
+		key := fmt.Sprintf("%s/%s/%d", ghPR.Owner, ghPR.Repo, ghPR.Number)
+		githubMap[key] = ghPR
+	}
 
-	response := make([]PRResponse, len(githubPRs))
-	for i, ghPR := range githubPRs {
-		// Get status from database
-		dbPR, err := s.db.GetPR(ghPR.Owner, ghPR.Repo, ghPR.Number)
-
-		status := "pending"
+	response := make([]PRResponse, 0, len(dbPRs))
+	for _, dbPR := range dbPRs {
 		var reviewedAt *string
 		var generatingSince *string
-		reviewHTMLPath := ""
 
-		if err == nil && dbPR != nil {
-			status = dbPR.Status
-			if dbPR.LastReviewedAt != nil {
-				formatted := dbPR.LastReviewedAt.UTC().Format("2006-01-02T15:04:05Z")
-				reviewedAt = &formatted
-			}
-			if dbPR.GeneratingSince != nil {
-				formatted := dbPR.GeneratingSince.UTC().Format("2006-01-02T15:04:05Z")
-				generatingSince = &formatted
-			}
-			reviewHTMLPath = dbPR.ReviewHTMLPath
+		if dbPR.LastReviewedAt != nil {
+			formatted := dbPR.LastReviewedAt.UTC().Format("2006-01-02T15:04:05Z")
+			reviewedAt = &formatted
+		}
+		if dbPR.GeneratingSince != nil {
+			formatted := dbPR.GeneratingSince.UTC().Format("2006-01-02T15:04:05Z")
+			generatingSince = &formatted
 		}
 
-		isMine := false
-		if dbPR != nil {
-			isMine = dbPR.IsMine
+		// Try to get GitHub URL from cache, fallback to constructed URL
+		key := fmt.Sprintf("%s/%s/%d", dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber)
+		ghPR, hasCachedData := githubMap[key]
+
+		title := dbPR.Title
+		if title == "" {
+			title = fmt.Sprintf("PR #%d", dbPR.PRNumber)
 		}
 
-		response[i] = PRResponse{
-			Owner:           ghPR.Owner,
-			Repo:            ghPR.Repo,
-			Number:          ghPR.Number,
-			CommitSHA:       ghPR.CommitSHA,
-			Title:           ghPR.Title,
-			Author:          ghPR.Author,
+		author := dbPR.Author
+		if author == "" {
+			author = "Unknown"
+		}
+
+		githubURL := fmt.Sprintf("https://github.com/%s/%s/pull/%d", dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber)
+		if hasCachedData {
+			githubURL = ghPR.URL
+		}
+
+		response = append(response, PRResponse{
+			Owner:           dbPR.RepoOwner,
+			Repo:            dbPR.RepoName,
+			Number:          dbPR.PRNumber,
+			CommitSHA:       dbPR.LastCommitSHA,
+			Title:           title,
+			Author:          author,
 			LastReviewedAt:  reviewedAt,
-			ReviewHTMLPath:  reviewHTMLPath,
-			GitHubURL:       ghPR.URL,
-			ReviewURL:       filepath.Join("/reviews", reviewHTMLPath),
-			Status:          status,
+			ReviewHTMLPath:  dbPR.ReviewHTMLPath,
+			GitHubURL:       githubURL,
+			ReviewURL:       filepath.Join("/reviews", dbPR.ReviewHTMLPath),
+			Status:          dbPR.Status,
 			GeneratingSince: generatingSince,
-			IsMine:          isMine,
-		}
+			IsMine:          dbPR.IsMine,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -497,4 +592,65 @@ func (s *Server) handleDeletePR(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	// Get PR counts by status
+	prs, err := s.db.GetAllPRs()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get PRs: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	counts := map[string]int{
+		"completed":  0,
+		"generating": 0,
+		"pending":    0,
+		"error":      0,
+	}
+	for _, pr := range prs {
+		counts[pr.Status]++
+	}
+
+	// Get cbpr status from poller
+	var cbprRunning bool
+	var cbprDuration time.Duration
+	if s.poller != nil {
+		cbprRunning, cbprDuration = s.poller.GetCbprStatus()
+	}
+
+	// Get recent completions (last 3)
+	recentCompletions := []map[string]interface{}{}
+	completedCount := 0
+	for i := len(prs) - 1; i >= 0 && completedCount < 3; i-- {
+		if prs[i].Status == "completed" && prs[i].LastReviewedAt != nil {
+			recentCompletions = append(recentCompletions, map[string]interface{}{
+				"number":     prs[i].PRNumber,
+				"repo":       fmt.Sprintf("%s/%s", prs[i].RepoOwner, prs[i].RepoName),
+				"reviewed_at": prs[i].LastReviewedAt.Format(time.RFC3339),
+			})
+			completedCount++
+		}
+	}
+
+	// Count PRs with missing metadata
+	missingMetadataCount := 0
+	for _, pr := range prs {
+		if pr.Title == "" || pr.Author == "" {
+			missingMetadataCount++
+		}
+	}
+
+	response := map[string]interface{}{
+		"uptime_seconds":         int(time.Since(s.startTime).Seconds()),
+		"cbpr_running":           cbprRunning,
+		"cbpr_duration_seconds":  int(cbprDuration.Seconds()),
+		"counts":                 counts,
+		"recent_completions":     recentCompletions,
+		"missing_metadata_count": missingMetadataCount,
+		"timestamp":              time.Now().Unix(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }

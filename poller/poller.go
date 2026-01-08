@@ -157,6 +157,94 @@ func (p *Poller) startPoll(ctx context.Context, trigger string) {
 	}()
 }
 
+// cleanupClosedPRs removes PRs from the database and filesystem if they're closed on GitHub
+func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
+	// Get all PRs from database
+	allPRs, err := p.db.GetAllPRs()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get PRs from database: %w", err)
+	}
+
+	removed := 0
+	for _, pr := range allPRs {
+		// Check if PR is still open on GitHub
+		isOpen, err := p.ghClient.IsPROpen(ctx, pr.RepoOwner, pr.RepoName, pr.PRNumber)
+		if err != nil {
+			// If we can't fetch the PR, it might be deleted or we don't have access
+			// Log but continue - we'll handle it on next poll
+			log.Printf("[CLEANUP] Warning: Could not check status of PR %s/%s#%d: %v",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+			continue
+		}
+
+		// If PR is closed, remove it
+		if !isOpen {
+			log.Printf("[CLEANUP] PR %s/%s#%d is closed, removing from system",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber)
+
+			// Delete HTML file if it exists
+			if pr.ReviewHTMLPath != "" {
+				htmlPath := filepath.Join(p.reviewDir, pr.ReviewHTMLPath)
+				if err := os.Remove(htmlPath); err != nil && !os.IsNotExist(err) {
+					log.Printf("[CLEANUP] Warning: Failed to delete HTML file %s: %v", htmlPath, err)
+				} else if err == nil {
+					log.Printf("[CLEANUP] Deleted HTML file: %s", htmlPath)
+				}
+			}
+
+			// Delete from database
+			if err := p.db.DeletePR(pr.RepoOwner, pr.RepoName, pr.PRNumber); err != nil {
+				log.Printf("[CLEANUP] ERROR: Failed to delete PR %s/%s#%d from database: %v",
+					pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+				continue
+			}
+
+			log.Printf("[CLEANUP] Successfully removed closed PR %s/%s#%d",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			removed++
+		}
+	}
+
+	return removed, nil
+}
+
+// backfillPRMetadata fills in missing title/author for existing PRs by fetching from GitHub
+func (p *Poller) backfillPRMetadata(ctx context.Context) (int, error) {
+	// Get PRs with missing metadata
+	prs, err := p.db.GetPRsWithMissingMetadata()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get PRs with missing metadata: %w", err)
+	}
+
+	if len(prs) == 0 {
+		return 0, nil
+	}
+
+	updated := 0
+	for _, pr := range prs {
+		// Fetch PR details from GitHub
+		title, author, err := p.ghClient.GetPRDetails(ctx, pr.RepoOwner, pr.RepoName, pr.PRNumber)
+		if err != nil {
+			log.Printf("[BACKFILL] Warning: Could not fetch PR details for %s/%s#%d: %v",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+			continue
+		}
+
+		// Update database with metadata
+		if err := p.db.UpdatePRMetadata(pr.RepoOwner, pr.RepoName, pr.PRNumber, title, author); err != nil {
+			log.Printf("[BACKFILL] ERROR: Failed to update metadata for %s/%s#%d: %v",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+			continue
+		}
+
+		log.Printf("[BACKFILL] Updated metadata for PR %s/%s#%d: %s by %s",
+			pr.RepoOwner, pr.RepoName, pr.PRNumber, title, author)
+		updated++
+	}
+
+	return updated, nil
+}
+
 func (p *Poller) poll(ctx context.Context) {
 	startTime := time.Now()
 	log.Printf("[POLL] Starting poll at %s", startTime.Format("15:04:05"))
@@ -183,13 +271,37 @@ func (p *Poller) poll(ctx context.Context) {
 		log.Printf("[POLL] No error PRs to retry")
 	}
 
+	// Clean up closed PRs (self-healing)
+	log.Printf("[POLL] Checking for closed PRs to remove...")
+	removedCount, err := p.cleanupClosedPRs(ctx)
+	if err != nil {
+		log.Printf("[POLL] ERROR: Failed to cleanup closed PRs: %v", err)
+	} else if removedCount > 0 {
+		log.Printf("[POLL] CLEANUP: Removed %d closed PRs from system", removedCount)
+	} else {
+		log.Printf("[POLL] No closed PRs to remove")
+	}
+
+	// Backfill missing PR metadata (self-healing)
+	log.Printf("[POLL] Checking for PRs with missing metadata...")
+	backfilledCount, err := p.backfillPRMetadata(ctx)
+	if err != nil {
+		log.Printf("[POLL] ERROR: Failed to backfill metadata: %v", err)
+	} else if backfilledCount > 0 {
+		log.Printf("[POLL] BACKFILL: Updated metadata for %d PRs", backfilledCount)
+	} else {
+		log.Printf("[POLL] No PRs need metadata backfill")
+	}
+
 	log.Printf("[POLL] Fetching PRs requesting review from GitHub...")
 	reviewPRs, err := p.ghClient.GetPRsRequestingReview(ctx)
 	if err != nil {
 		log.Printf("[POLL] ERROR: Failed to fetch PRs requesting review: %v", err)
-		return
+		// Continue even if this fails - we can still process "my PRs"
+		reviewPRs = []github.PullRequest{}
+	} else {
+		log.Printf("[POLL] Found %d PRs requesting review", len(reviewPRs))
 	}
-	log.Printf("[POLL] Found %d PRs requesting review", len(reviewPRs))
 
 	log.Printf("[POLL] Fetching my own open PRs from GitHub...")
 	myPRs, err := p.ghClient.GetMyOpenPRs(ctx)
@@ -206,6 +318,41 @@ func (p *Poller) poll(ctx context.Context) {
 	// Update cache for fast dashboard loading
 	if p.cacheUpdateFunc != nil {
 		p.cacheUpdateFunc(allPRs)
+	}
+
+	// CRITICAL: Also check database for pending PRs that need processing
+	// This ensures we process PRs even when GitHub API fails
+	log.Printf("[POLL] Checking database for pending PRs...")
+	dbPRs, err := p.db.GetAllPRs()
+	if err != nil {
+		log.Printf("[POLL] ERROR: Failed to get PRs from database: %v", err)
+	} else {
+		pendingCount := 0
+		for _, dbPR := range dbPRs {
+			if dbPR.Status == "pending" {
+				// Convert DB PR to GitHub PR format for processing
+				ghPR := github.PullRequest{
+					Owner:     dbPR.RepoOwner,
+					Repo:      dbPR.RepoName,
+					Number:    dbPR.PRNumber,
+					CommitSHA: dbPR.LastCommitSHA,
+					Title:     dbPR.Title,
+					Author:    dbPR.Author,
+					URL:       fmt.Sprintf("https://github.com/%s/%s/pull/%d", dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber),
+				}
+
+				// Add to appropriate list based on is_mine flag
+				if dbPR.IsMine {
+					myPRs = append(myPRs, ghPR)
+				} else {
+					reviewPRs = append(reviewPRs, ghPR)
+				}
+				pendingCount++
+			}
+		}
+		if pendingCount > 0 {
+			log.Printf("[POLL] Found %d pending PRs in database to process", pendingCount)
+		}
 	}
 
 	// Group review PRs by repository for batch processing
@@ -312,7 +459,7 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, i
 	// Mark all PRs as generating
 	log.Printf("[BATCH] Marking %d %s PRs as 'generating'", len(prsToReview), prType)
 	for _, pr := range prsToReview {
-		if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, isMine); err != nil {
+		if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, isMine); err != nil {
 			log.Printf("[BATCH] ERROR: Failed to set generating status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 		}
 	}
@@ -347,7 +494,7 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, i
 
 		if _, err := os.Stat(htmlPath); err == nil {
 			// File exists - mark as completed
-			if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", isMine); err != nil {
+			if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
 				log.Printf("[BATCH] ERROR: Failed to update DB for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 			} else {
 				completedCount++
@@ -399,7 +546,7 @@ func (p *Poller) processPR(ctx context.Context, pr github.PullRequest, isMine bo
 	log.Printf("Generating review for %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 
 	// Set status to generating
-	if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, isMine); err != nil {
+	if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, isMine); err != nil {
 		return fmt.Errorf("failed to set PR generating status: %w", err)
 	}
 
@@ -411,7 +558,7 @@ func (p *Poller) processPR(ctx context.Context, pr github.PullRequest, isMine bo
 	}
 
 	// Update database with completed status
-	if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, htmlPath, "completed", isMine); err != nil {
+	if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, htmlPath, "completed", pr.Title, pr.Author, isMine); err != nil {
 		return fmt.Errorf("failed to update DB: %w", err)
 	}
 
@@ -547,7 +694,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 		} else {
 			log.Printf("[CBPR] Verified file exists: %s", filename)
 			// Mark as completed immediately
-			if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", isMine); err != nil {
+			if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
 				log.Printf("[CBPR] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
 			} else {
 				log.Printf("[CBPR] Marked PR %d as 'completed' in database", pr.Number)

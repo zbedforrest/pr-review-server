@@ -33,6 +33,7 @@ The server now has automatic recovery:
 1. **Stale PR Reset** (`ResetStaleGeneratingPRs`): PRs stuck in "generating" for >2 minutes are reset to "pending"
 2. **Error PR Retry** (`ResetErrorPRs`): PRs in "error" state for >5 minutes are reset to "pending" for automatic retry
 3. **Partial Success Recovery**: If cbpr completes but some files weren't created, only missing files are marked as errors (not the entire batch)
+4. **Closed PR Cleanup** (`cleanupClosedPRs`): Every poll cycle checks all tracked PRs on GitHub and removes any that are closed/merged, deleting both database entry and HTML file. If a closed PR is reopened, it will be picked up again on the next poll.
 
 ### 5. Database Schema
 The `prs` table tracks:
@@ -93,6 +94,47 @@ cbpr review --repo-name=owner/repo -n 1 -p 123 --output=/path/to/output.html
 - **Poller** (`poller/poller.go`): Fetches PRs and triggers reviews
 - **Database** (`db/db.go`): SQLite storage for PR state
 - **Server** (`server/server.go`): Web UI for viewing reviews
-- **GitHub Client** (`github/github.go`): GitHub API interactions
+- **GitHub Client** (`github/client.go`): GitHub API interactions
 
 The poller and server run concurrently. The poller updates the cache whenever it finds new PRs, and the server serves the cached data for fast dashboard loading.
+
+## Data Integrity & Regression Prevention
+
+### Problem: Missing Author/Title Fields (2026-01-08)
+**What happened**: Database schema was extended with `title` and `author` columns, but existing PRs had empty values. When GitHub API failed, no new data came in, leaving the dashboard with empty author columns.
+
+**Root causes**:
+1. Database schema changes without data migration/backfill
+2. No validation that required fields have data
+3. Silent failures when GitHub API doesn't work
+
+### Prevention Mechanisms Implemented
+
+1. **Automatic Metadata Backfill** (`backfillPRMetadata`):
+   - Runs on every poll cycle (self-healing)
+   - Identifies PRs with missing title/author
+   - Fetches data directly from GitHub PR API
+   - Updates database immediately
+   - Logs all backfill operations
+
+2. **Fallback Values**:
+   - API returns "Unknown" for empty author fields
+   - API returns "PR #N" for empty titles
+   - Ensures dashboard never shows completely blank fields
+
+3. **Health Monitoring**:
+   - `/api/status` endpoint includes `missing_metadata_count`
+   - Alerts when PRs need metadata backfill
+   - Helps diagnose GitHub API issues early
+
+4. **Database Functions for Prevention**:
+   - `GetPRsWithMissingMetadata()`: Identifies PRs needing backfill
+   - `UpdatePRMetadata()`: Updates only title/author without affecting other fields
+   - Prevents accidental overwrites during backfill
+
+### Best Practices Going Forward
+- **Schema changes**: Always add backfill logic for existing rows
+- **Required fields**: Add NOT NULL constraints and defaults where appropriate
+- **API dependencies**: Always have fallback values when external APIs fail
+- **Monitoring**: Track data quality metrics in status endpoints
+- **Self-healing**: Automatically fix data issues rather than requiring manual intervention

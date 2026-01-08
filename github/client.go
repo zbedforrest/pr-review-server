@@ -154,3 +154,24 @@ func (c *Client) GetMyOpenPRs(ctx context.Context) ([]PullRequest, error) {
 
 	return prs, nil
 }
+
+// IsPROpen checks if a PR is currently open (not closed or merged)
+func (c *Client) IsPROpen(ctx context.Context, owner, repo string, prNumber int) (bool, error) {
+	pr, _, err := c.gh.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return false, err
+	}
+
+	// PR is open if state is "open"
+	return pr.GetState() == "open", nil
+}
+
+// GetPRDetails fetches title and author for a specific PR
+func (c *Client) GetPRDetails(ctx context.Context, owner, repo string, prNumber int) (title, author string, err error) {
+	pr, _, err := c.gh.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return "", "", err
+	}
+
+	return pr.GetTitle(), pr.GetUser().GetLogin(), nil
+}

@@ -57,6 +57,9 @@ func main() {
 	// Wire server to trigger poller on delete
 	srv.SetPollTrigger(p.Trigger)
 
+	// Wire poller to server for status queries
+	srv.SetPoller(p)
+
 	// Start poller in background
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
