@@ -678,6 +678,8 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, i
 		}
 
 		// Check if this is a new commit for an existing PR (outdated review)
+		// This is a safeguard against commits pushed after checkForOutdatedReviews() ran at poll start
+		// but before this batch processing began. Ensures we don't regenerate stale reviews.
 		if existingPR != nil && existingPR.LastCommitSHA != pr.CommitSHA && (existingPR.Status == "completed" || existingPR.Status == "generating") {
 			log.Printf("[PROCESSING] PR %s/%s#%d has new commit (old: %s, new: %s), will regenerate",
 				pr.Owner, pr.Repo, pr.Number, existingPR.LastCommitSHA[:7], pr.CommitSHA[:7])
@@ -969,7 +971,9 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			log.Printf("[CBPR] Verified file exists: %s", filename)
 
 			// Before marking as completed, verify the commit SHA hasn't changed
-			// (protects against race condition where new commit came in while generating)
+			// Protects against race condition where a new commit is pushed AFTER cbpr starts generating
+			// but BEFORE it finishes. In this case, we discard the stale review and let the outdated
+			// review detection on the next poll cycle regenerate with the latest commit.
 			currentPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
 			if err != nil {
 				log.Printf("[CBPR] ERROR: Failed to fetch PR from DB: %v", err)
