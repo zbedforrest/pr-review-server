@@ -245,6 +245,48 @@ func (p *Poller) backfillPRMetadata(ctx context.Context) (int, error) {
 	return updated, nil
 }
 
+// checkForOutdatedReviews detects PRs with new commits and resets them to pending
+func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
+	// Get all PRs from database
+	allPRs, err := p.db.GetAllPRs()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get PRs from database: %w", err)
+	}
+
+	outdated := 0
+	for _, pr := range allPRs {
+		// Only check PRs that have been reviewed (completed status)
+		if pr.Status != "completed" {
+			continue
+		}
+
+		// Fetch current HEAD SHA from GitHub
+		currentSHA, err := p.ghClient.GetPRHeadSHA(ctx, pr.RepoOwner, pr.RepoName, pr.PRNumber)
+		if err != nil {
+			log.Printf("[OUTDATED] Warning: Could not fetch current HEAD SHA for %s/%s#%d: %v",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+			continue
+		}
+
+		// Compare commit SHAs
+		if currentSHA != pr.LastCommitSHA {
+			log.Printf("[OUTDATED] PR %s/%s#%d has new commits (old: %s, new: %s), resetting to pending",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA[:7], currentSHA[:7])
+
+			// Reset to pending so it gets re-reviewed
+			if err := p.db.UpdatePRStatus(pr.RepoOwner, pr.RepoName, pr.PRNumber, "pending"); err != nil {
+				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s/%s#%d: %v",
+					pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+				continue
+			}
+
+			outdated++
+		}
+	}
+
+	return outdated, nil
+}
+
 func (p *Poller) poll(ctx context.Context) {
 	startTime := time.Now()
 	log.Printf("[POLL] Starting poll at %s", startTime.Format("15:04:05"))
@@ -291,6 +333,17 @@ func (p *Poller) poll(ctx context.Context) {
 		log.Printf("[POLL] BACKFILL: Updated metadata for %d PRs", backfilledCount)
 	} else {
 		log.Printf("[POLL] No PRs need metadata backfill")
+	}
+
+	// Check for outdated reviews (PRs with new commits)
+	log.Printf("[POLL] Checking for outdated reviews...")
+	outdatedCount, err := p.checkForOutdatedReviews(ctx)
+	if err != nil {
+		log.Printf("[POLL] ERROR: Failed to check for outdated reviews: %v", err)
+	} else if outdatedCount > 0 {
+		log.Printf("[POLL] OUTDATED: Reset %d PRs with new commits to pending", outdatedCount)
+	} else {
+		log.Printf("[POLL] No outdated reviews found")
 	}
 
 	log.Printf("[POLL] Fetching PRs requesting review from GitHub...")
