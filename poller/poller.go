@@ -208,6 +208,19 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 	return removed, nil
 }
 
+// speak uses macOS say command for voice notifications
+func (p *Poller) speak(message string) {
+	if !p.cfg.EnableVoiceNotifications {
+		return
+	}
+
+	// Run say command in background (non-blocking)
+	cmd := exec.Command("say", message)
+	if err := cmd.Start(); err != nil {
+		log.Printf("[VOICE] Warning: Failed to speak notification: %v", err)
+	}
+}
+
 // backfillPRMetadata fills in missing title/author for existing PRs by fetching from GitHub
 func (p *Poller) backfillPRMetadata(ctx context.Context) (int, error) {
 	// Get PRs with missing metadata
@@ -273,12 +286,26 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 			log.Printf("[OUTDATED] PR %s/%s#%d has new commits (old: %s, new: %s), resetting to pending",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA[:7], currentSHA[:7])
 
-			// Reset to pending so it gets re-reviewed
-			if err := p.db.UpdatePRStatus(pr.RepoOwner, pr.RepoName, pr.PRNumber, "pending"); err != nil {
+			// Delete old HTML file if it exists
+			if pr.ReviewHTMLPath != "" {
+				oldHTMLPath := filepath.Join(p.reviewDir, pr.ReviewHTMLPath)
+				if err := os.Remove(oldHTMLPath); err != nil && !os.IsNotExist(err) {
+					log.Printf("[OUTDATED] Warning: Failed to delete old HTML file %s: %v", oldHTMLPath, err)
+				} else if err == nil {
+					log.Printf("[OUTDATED] Deleted old HTML file: %s", pr.ReviewHTMLPath)
+				}
+			}
+
+			// Reset PR to pending with new commit SHA and clear old review data
+			if err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, currentSHA); err != nil {
 				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s/%s#%d: %v",
 					pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
 				continue
 			}
+
+			// Voice notification for outdated review
+			message := fmt.Sprintf("PR number %d has a new commit. Removing stale review and generating a new one.", pr.PRNumber)
+			p.speak(message)
 
 			outdated++
 		}
@@ -354,6 +381,17 @@ func (p *Poller) poll(ctx context.Context) {
 		reviewPRs = []github.PullRequest{}
 	} else {
 		log.Printf("[POLL] Found %d PRs requesting review", len(reviewPRs))
+
+		// Check for new PRs (not in database yet) and announce them
+		for _, pr := range reviewPRs {
+			existingPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+			if err == nil && existingPR == nil {
+				// This is a new PR
+				message := fmt.Sprintf("Your review is newly requested on PR number %d", pr.Number)
+				p.speak(message)
+				log.Printf("[VOICE] New review request: PR #%d", pr.Number)
+			}
+		}
 	}
 
 	log.Printf("[POLL] Fetching my own open PRs from GitHub...")

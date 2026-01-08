@@ -143,6 +143,20 @@ func (db *DB) UpdatePRStatus(owner, repo string, prNumber int, status string) er
 	return err
 }
 
+// ResetPRToOutdated resets a PR to pending status with new commit SHA and clears old review data
+func (db *DB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) error {
+	_, err := db.conn.Exec(`
+		UPDATE prs
+		SET status = 'pending',
+		    last_commit_sha = ?,
+		    review_html_path = '',
+		    last_reviewed_at = NULL,
+		    generating_since = NULL
+		WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
+	`, newCommitSHA, owner, repo, prNumber)
+	return err
+}
+
 func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, isMine bool) error {
 	now := time.Now().UTC()
 	isMineInt := 0
@@ -150,10 +164,10 @@ func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title
 		isMineInt = 1
 	}
 	_, err := db.conn.Exec(`
-		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status, generating_since, is_mine, title, author)
-		VALUES (?, ?, ?, ?, 'generating', ?, ?, ?, ?)
+		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status, generating_since, is_mine, title, author, review_html_path)
+		VALUES (?, ?, ?, ?, 'generating', ?, ?, ?, ?, '')
 		ON CONFLICT(repo_owner, repo_name, pr_number)
-		DO UPDATE SET last_commit_sha = ?, status = 'generating', generating_since = ?, is_mine = ?, title = ?, author = ?
+		DO UPDATE SET last_commit_sha = ?, status = 'generating', generating_since = ?, is_mine = ?, title = ?, author = ?, review_html_path = ''
 	`, owner, repo, prNumber, commitSHA, now, isMineInt, title, author, commitSHA, now, isMineInt, title, author)
 	return err
 }

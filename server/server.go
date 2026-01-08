@@ -305,7 +305,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
         }
 
         function renderPRRow(pr) {
-            const reviewLink = pr.review_html_path
+            // Only show review link if PR is completed AND has a review path
+            const reviewLink = (pr.status === 'completed' && pr.review_html_path)
                 ? '<a href="/reviews/' + pr.review_html_path + '" target="_blank">View Review</a>'
                 : '<span style="color: #ffa726; font-weight: 500;">Not yet reviewed</span>';
 
@@ -322,8 +323,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
             statusBadge += '</span>';
 
-            const deleteBtn = '<button class="delete-btn" onclick="deletePR(\'' +
-                pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>';
+            // Only show delete button for completed reviews
+            const deleteBtn = pr.status === 'completed'
+                ? '<button class="delete-btn" onclick="deletePR(\'' +
+                    pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>'
+                : '';
 
             return '<tr id="pr-' + pr.owner + '-' + pr.repo + '-' + pr.number + '">' +
                 '<td>' + pr.owner + '/' + pr.repo + '</td>' +
@@ -337,8 +341,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                 '<td>' + formatDate(pr.last_reviewed_at) + '</td>' +
                 '<td>' +
                     '<a href="' + pr.github_url + '" target="_blank">GitHub</a> | ' +
-                    reviewLink + ' | ' +
-                    deleteBtn +
+                    reviewLink +
+                    (deleteBtn ? ' | ' + deleteBtn : '') +
                 '</td>' +
             '</tr>';
         }
