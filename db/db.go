@@ -15,6 +15,7 @@ type PR struct {
 	LastCommitSHA  string
 	LastReviewedAt *time.Time
 	ReviewHTMLPath string
+	Status         string // "pending", "generating", "completed", "error"
 }
 
 type DB struct {
@@ -49,22 +50,32 @@ func (db *DB) initSchema() error {
 		last_commit_sha TEXT NOT NULL,
 		last_reviewed_at TIMESTAMP,
 		review_html_path TEXT,
+		status TEXT DEFAULT 'pending',
 		UNIQUE(repo_owner, repo_name, pr_number)
 	);
 	`
-	_, err := db.conn.Exec(schema)
-	return err
+	if _, err := db.conn.Exec(schema); err != nil {
+		return err
+	}
+
+	// Add status column if it doesn't exist (migration for existing DBs)
+	_, err := db.conn.Exec(`ALTER TABLE prs ADD COLUMN status TEXT DEFAULT 'pending'`)
+	if err != nil && err.Error() != "duplicate column name: status" {
+		// Ignore "duplicate column" error
+	}
+
+	return nil
 }
 
 func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	pr := &PR{}
 	var reviewedAt sql.NullTime
 	err := db.conn.QueryRow(`
-		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path
+		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending')
 		FROM prs WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
 	`, owner, repo, prNumber).Scan(
 		&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
-		&pr.LastCommitSHA, &reviewedAt, &pr.ReviewHTMLPath,
+		&pr.LastCommitSHA, &reviewedAt, &pr.ReviewHTMLPath, &pr.Status,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -78,22 +89,46 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	return pr, nil
 }
 
-func (db *DB) UpsertPR(owner, repo string, prNumber int, commitSHA, htmlPath string) error {
+func (db *DB) UpsertPR(owner, repo string, prNumber int, commitSHA, htmlPath, status string) error {
 	_, err := db.conn.Exec(`
-		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
-		DO UPDATE SET last_commit_sha = ?, last_reviewed_at = ?, review_html_path = ?
-	`, owner, repo, prNumber, commitSHA, time.Now(), htmlPath,
-		commitSHA, time.Now(), htmlPath)
+		DO UPDATE SET last_commit_sha = ?, last_reviewed_at = ?, review_html_path = ?, status = ?
+	`, owner, repo, prNumber, commitSHA, time.Now(), htmlPath, status,
+		commitSHA, time.Now(), htmlPath, status)
+	return err
+}
+
+func (db *DB) UpdatePRStatus(owner, repo string, prNumber int, status string) error {
+	_, err := db.conn.Exec(`
+		UPDATE prs SET status = ? WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
+	`, status, owner, repo, prNumber)
+	return err
+}
+
+func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA string) error {
+	_, err := db.conn.Exec(`
+		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status)
+		VALUES (?, ?, ?, ?, 'generating')
+		ON CONFLICT(repo_owner, repo_name, pr_number)
+		DO UPDATE SET last_commit_sha = ?, status = 'generating'
+	`, owner, repo, prNumber, commitSHA, commitSHA)
 	return err
 }
 
 func (db *DB) GetAllPRs() ([]PR, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path
+		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending')
 		FROM prs
-		ORDER BY last_reviewed_at DESC
+		ORDER BY
+			CASE status
+				WHEN 'generating' THEN 1
+				WHEN 'pending' THEN 2
+				WHEN 'completed' THEN 3
+				ELSE 4
+			END,
+			last_reviewed_at DESC
 	`)
 	if err != nil {
 		return nil, err
@@ -105,7 +140,7 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 		pr := PR{}
 		var reviewedAt sql.NullTime
 		if err := rows.Scan(&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
-			&pr.LastCommitSHA, &reviewedAt, &pr.ReviewHTMLPath); err != nil {
+			&pr.LastCommitSHA, &reviewedAt, &pr.ReviewHTMLPath, &pr.Status); err != nil {
 			return nil, err
 		}
 		if reviewedAt.Valid {
@@ -114,6 +149,13 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 		prs = append(prs, pr)
 	}
 	return prs, rows.Err()
+}
+
+func (db *DB) DeletePR(owner, repo string, prNumber int) error {
+	_, err := db.conn.Exec(`
+		DELETE FROM prs WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
+	`, owner, repo, prNumber)
+	return err
 }
 
 func (db *DB) Close() error {

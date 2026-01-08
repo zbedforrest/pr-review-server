@@ -55,7 +55,7 @@ func main() {
 	go p.Start(ctx)
 
 	// Initialize and start HTTP server
-	srv := server.New(cfg, database)
+	srv := server.New(cfg, database, ghClient)
 
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)

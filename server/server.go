@@ -1,19 +1,23 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 
 	"pr-review-server/config"
 	"pr-review-server/db"
+	"pr-review-server/github"
 )
 
 type Server struct {
-	cfg *config.Config
-	db  *db.DB
+	cfg      *config.Config
+	db       *db.DB
+	ghClient *github.Client
 }
 
 type PRResponse struct {
@@ -25,18 +29,23 @@ type PRResponse struct {
 	ReviewHTMLPath string  `json:"review_html_path"`
 	GitHubURL      string  `json:"github_url"`
 	ReviewURL      string  `json:"review_url"`
+	Status         string  `json:"status"` // "pending", "generating", "completed", "error"
+	Title          string  `json:"title"`
+	Author         string  `json:"author"`
 }
 
-func New(cfg *config.Config, database *db.DB) *Server {
+func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
 	return &Server{
-		cfg: cfg,
-		db:  database,
+		cfg:      cfg,
+		db:       database,
+		ghClient: ghClient,
 	}
 }
 
 func (s *Server) Start() error {
 	http.HandleFunc("/", s.handleIndex)
 	http.HandleFunc("/api/prs", s.handleGetPRs)
+	http.HandleFunc("/api/prs/delete", s.handleDeletePR)
 	http.Handle("/reviews/", http.StripPrefix("/reviews/", http.FileServer(http.Dir(s.cfg.ReviewsDir))))
 
 	addr := ":" + s.cfg.ServerPort
@@ -108,6 +117,45 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
             font-size: 0.9em;
             color: #666;
         }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+        .status-pending { background: #ffa726; color: white; }
+        .status-generating {
+            background: #42a5f5;
+            color: white;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        .status-completed { background: #66bb6a; color: white; }
+        .status-error { background: #ef5350; color: white; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        .pr-title {
+            font-size: 0.9em;
+            color: #666;
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .delete-btn {
+            background: #ef5350;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85em;
+        }
+        .delete-btn:hover {
+            background: #e53935;
+        }
     </style>
 </head>
 <body>
@@ -118,7 +166,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
         <thead>
             <tr>
                 <th>Repository</th>
-                <th>PR #</th>
+                <th>PR # / Title</th>
+                <th>Author</th>
+                <th>Status</th>
                 <th>Commit SHA</th>
                 <th>Last Reviewed</th>
                 <th>Links</th>
@@ -161,16 +211,29 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                     prList.innerHTML = data.map(pr => {
                         const reviewLink = pr.review_html_path
                             ? '<a href="/reviews/' + pr.review_html_path + '" target="_blank">View Review</a>'
-                            : 'Pending...';
+                            : '<span style="color: #ffa726; font-weight: 500;">Not yet reviewed</span>';
+
+                        const statusBadge = '<span class="status-badge status-' + pr.status + '">' +
+                            pr.status.charAt(0).toUpperCase() + pr.status.slice(1) +
+                        '</span>';
+
+                        const deleteBtn = '<button class="delete-btn" onclick="deletePR(\'' +
+                            pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>';
 
                         return '<tr>' +
                             '<td>' + pr.owner + '/' + pr.repo + '</td>' +
-                            '<td><a href="' + pr.github_url + '" target="_blank">#' + pr.number + '</a></td>' +
+                            '<td>' +
+                                '<a href="' + pr.github_url + '" target="_blank">#' + pr.number + '</a>' +
+                                '<div class="pr-title" title="' + pr.title + '">' + pr.title + '</div>' +
+                            '</td>' +
+                            '<td>' + pr.author + '</td>' +
+                            '<td>' + statusBadge + '</td>' +
                             '<td class="commit-sha">' + pr.commit_sha.substring(0, 7) + '</td>' +
                             '<td>' + formatDate(pr.last_reviewed_at) + '</td>' +
                             '<td>' +
                                 '<a href="' + pr.github_url + '" target="_blank">GitHub</a> | ' +
-                                reviewLink +
+                                reviewLink + ' | ' +
+                                deleteBtn +
                             '</td>' +
                         '</tr>';
                     }).join('');
@@ -180,6 +243,28 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                     errorDiv.textContent = 'Error: ' + error.message;
                     errorDiv.style.display = 'block';
                 });
+        }
+
+        function deletePR(owner, repo, number) {
+            if (!confirm('Delete review for ' + owner + '/' + repo + ' #' + number + '?')) {
+                return;
+            }
+
+            fetch('/api/prs/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ owner, repo, number })
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Failed to delete PR');
+                return response.json();
+            })
+            .then(() => {
+                fetchPRs(); // Refresh the list
+            })
+            .catch(error => {
+                alert('Error deleting PR: ' + error.message);
+            });
         }
 
         // Fetch immediately and then every 30 seconds
@@ -193,32 +278,92 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
-	prs, err := s.db.GetAllPRs()
+	ctx := context.Background()
+
+	// Fetch all PRs from GitHub
+	githubPRs, err := s.ghClient.GetPRsRequestingReview(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to fetch PRs: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to fetch PRs from GitHub: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	response := make([]PRResponse, len(prs))
-	for i, pr := range prs {
+	response := make([]PRResponse, len(githubPRs))
+	for i, ghPR := range githubPRs {
+		// Get status from database
+		dbPR, err := s.db.GetPR(ghPR.Owner, ghPR.Repo, ghPR.Number)
+
+		status := "pending"
 		var reviewedAt *string
-		if pr.LastReviewedAt != nil {
-			formatted := pr.LastReviewedAt.Format("2006-01-02T15:04:05Z")
-			reviewedAt = &formatted
+		reviewHTMLPath := ""
+
+		if err == nil && dbPR != nil {
+			status = dbPR.Status
+			if dbPR.LastReviewedAt != nil {
+				formatted := dbPR.LastReviewedAt.Format("2006-01-02T15:04:05Z")
+				reviewedAt = &formatted
+			}
+			reviewHTMLPath = dbPR.ReviewHTMLPath
 		}
 
 		response[i] = PRResponse{
-			Owner:          pr.RepoOwner,
-			Repo:           pr.RepoName,
-			Number:         pr.PRNumber,
-			CommitSHA:      pr.LastCommitSHA,
+			Owner:          ghPR.Owner,
+			Repo:           ghPR.Repo,
+			Number:         ghPR.Number,
+			CommitSHA:      ghPR.CommitSHA,
+			Title:          ghPR.Title,
+			Author:         ghPR.Author,
 			LastReviewedAt: reviewedAt,
-			ReviewHTMLPath: pr.ReviewHTMLPath,
-			GitHubURL:      fmt.Sprintf("https://github.com/%s/%s/pull/%d", pr.RepoOwner, pr.RepoName, pr.PRNumber),
-			ReviewURL:      filepath.Join("/reviews", pr.ReviewHTMLPath),
+			ReviewHTMLPath: reviewHTMLPath,
+			GitHubURL:      ghPR.URL,
+			ReviewURL:      filepath.Join("/reviews", reviewHTMLPath),
+			Status:         status,
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) handleDeletePR(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse request body
+	var req struct {
+		Owner  string `json:"owner"`
+		Repo   string `json:"repo"`
+		Number int    `json:"number"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Get PR from DB to find HTML file
+	pr, err := s.db.GetPR(req.Owner, req.Repo, req.Number)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get PR: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Delete HTML file if it exists
+	if pr != nil && pr.ReviewHTMLPath != "" {
+		htmlPath := filepath.Join(s.cfg.ReviewsDir, pr.ReviewHTMLPath)
+		if err := os.Remove(htmlPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("Warning: failed to delete HTML file %s: %v", htmlPath, err)
+		}
+	}
+
+	// Delete from database
+	if err := s.db.DeletePR(req.Owner, req.Repo, req.Number); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to delete PR: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Deleted review for %s/%s#%d", req.Owner, req.Repo, req.Number)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }

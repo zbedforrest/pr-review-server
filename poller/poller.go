@@ -75,22 +75,34 @@ func (p *Poller) processPR(ctx context.Context, pr github.PullRequest) error {
 		return fmt.Errorf("failed to get PR from DB: %w", err)
 	}
 
-	// If we've already reviewed this commit SHA, skip
-	if existingPR != nil && existingPR.LastCommitSHA == pr.CommitSHA {
+	// If we've already reviewed this commit SHA and it's completed, skip
+	if existingPR != nil && existingPR.LastCommitSHA == pr.CommitSHA && existingPR.Status == "completed" {
 		log.Printf("PR %s/%s#%d already reviewed at commit %s", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+		return nil
+	}
+
+	// Skip if currently generating
+	if existingPR != nil && existingPR.Status == "generating" {
+		log.Printf("PR %s/%s#%d is currently being reviewed, skipping", pr.Owner, pr.Repo, pr.Number)
 		return nil
 	}
 
 	log.Printf("Generating review for %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 
+	// Set status to generating
+	if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA); err != nil {
+		return fmt.Errorf("failed to set PR generating status: %w", err)
+	}
+
 	// Generate review using cbpr
 	htmlPath, err := p.generateReview(ctx, pr)
 	if err != nil {
+		p.db.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error")
 		return fmt.Errorf("failed to generate review: %w", err)
 	}
 
-	// Update database
-	if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, htmlPath); err != nil {
+	// Update database with completed status
+	if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, htmlPath, "completed"); err != nil {
 		return fmt.Errorf("failed to update DB: %w", err)
 	}
 
@@ -117,12 +129,14 @@ func (p *Poller) generateReview(ctx context.Context, pr github.PullRequest) (str
 		"-n", "3",
 		"-p", fmt.Sprintf("%d", pr.Number),
 		"--html",
+		"--fast",    // Development mode for faster iterations
+		"--no-open", // Don't open in browser (for server use)
 	)
 
-	// Capture output
-	output, err := cmd.CombinedOutput()
+	// Capture stdout (HTML) only, stderr goes to logs
+	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("cbpr command failed: %w (output: %s)", err, string(output))
+		return "", fmt.Errorf("cbpr command failed: %w", err)
 	}
 
 	// Write HTML output to file

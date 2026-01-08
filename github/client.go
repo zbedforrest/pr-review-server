@@ -3,6 +3,8 @@ package github
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
 
 	"github.com/google/go-github/v57/github"
 	"golang.org/x/oauth2"
@@ -20,6 +22,7 @@ type PullRequest struct {
 	CommitSHA string
 	Title     string
 	URL       string
+	Author    string
 }
 
 func NewClient(token, username string) *Client {
@@ -38,15 +41,20 @@ func NewClient(token, username string) *Client {
 func (c *Client) GetPRsRequestingReview(ctx context.Context) ([]PullRequest, error) {
 	// Search for PRs where the user is a requested reviewer
 	query := fmt.Sprintf("type:pr state:open review-requested:%s", c.username)
+	log.Printf("GitHub search query: %s", query)
 
 	opts := &github.SearchOptions{
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
-	result, _, err := c.gh.Search.Issues(ctx, query, opts)
+	result, resp, err := c.gh.Search.Issues(ctx, query, opts)
 	if err != nil {
+		log.Printf("GitHub search error: %v", err)
 		return nil, err
 	}
+
+	log.Printf("GitHub search returned %d total results (rate limit: %d/%d remaining)",
+		result.GetTotal(), resp.Rate.Remaining, resp.Rate.Limit)
 
 	var prs []PullRequest
 	for _, issue := range result.Issues {
@@ -55,13 +63,23 @@ func (c *Client) GetPRsRequestingReview(ctx context.Context) ([]PullRequest, err
 		}
 
 		// Extract owner and repo from repository URL
-		repoOwner := issue.Repository.GetOwner().GetLogin()
-		repoName := issue.Repository.GetName()
+		// RepositoryURL format: https://api.github.com/repos/{owner}/{repo}
+		repoURL := issue.GetRepositoryURL()
+		parts := strings.Split(repoURL, "/")
+		if len(parts) < 2 {
+			log.Printf("Invalid repository URL: %s", repoURL)
+			continue
+		}
+		repoOwner := parts[len(parts)-2]
+		repoName := parts[len(parts)-1]
 		prNumber := issue.GetNumber()
+
+		log.Printf("Found PR: %s/%s#%d - %s", repoOwner, repoName, prNumber, issue.GetTitle())
 
 		// Get the PR to fetch the HEAD commit SHA
 		pr, _, err := c.gh.PullRequests.Get(ctx, repoOwner, repoName, prNumber)
 		if err != nil {
+			log.Printf("Error fetching PR details for %s/%s#%d: %v", repoOwner, repoName, prNumber, err)
 			continue // Skip this PR if we can't fetch it
 		}
 
@@ -72,6 +90,7 @@ func (c *Client) GetPRsRequestingReview(ctx context.Context) ([]PullRequest, err
 			CommitSHA: pr.GetHead().GetSHA(),
 			Title:     pr.GetTitle(),
 			URL:       pr.GetHTMLURL(),
+			Author:    pr.GetUser().GetLogin(),
 		})
 	}
 
