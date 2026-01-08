@@ -82,101 +82,132 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 <head>
     <title>PR Review Dashboard</title>
     <style>
+        * { box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            max-width: 1200px;
+            max-width: 1600px;
             margin: 0 auto;
-            padding: 20px;
-            background: #f5f5f5;
+            padding: 12px;
+            background: #0d1117;
+            color: #c9d1d9;
+            font-size: 13px;
         }
         h1 {
-            color: #333;
+            color: #58a6ff;
+            font-size: 20px;
+            font-weight: 600;
+            margin: 0 0 12px 0;
+            padding: 0;
         }
         table {
             width: 100%;
-            background: white;
+            background: #161b22;
             border-collapse: collapse;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-top: 20px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            overflow: hidden;
+            font-size: 12px;
         }
         th, td {
-            padding: 12px;
+            padding: 6px 10px;
             text-align: left;
-            border-bottom: 1px solid #ddd;
+            border-bottom: 1px solid #21262d;
         }
         th {
-            background: #4CAF50;
-            color: white;
+            background: #21262d;
+            color: #8b949e;
             font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
         tr:hover {
-            background: #f5f5f5;
+            background: #1c2128;
+        }
+        tr:last-child td {
+            border-bottom: none;
         }
         a {
-            color: #4CAF50;
+            color: #58a6ff;
             text-decoration: none;
         }
         a:hover {
             text-decoration: underline;
         }
         .status {
-            font-size: 0.9em;
-            color: #666;
+            font-size: 11px;
+            color: #7d8590;
+            margin-bottom: 8px;
         }
         .loading {
             text-align: center;
             padding: 20px;
-            color: #666;
+            color: #7d8590;
         }
         .error {
-            background: #f44336;
+            background: #da3633;
             color: white;
-            padding: 10px;
-            border-radius: 4px;
-            margin-top: 20px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            font-size: 12px;
         }
         .commit-sha {
-            font-family: monospace;
-            font-size: 0.9em;
-            color: #666;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 11px;
+            color: #7d8590;
+            background: #21262d;
+            padding: 2px 5px;
+            border-radius: 3px;
         }
         .status-badge {
             display: inline-block;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 0.85em;
-            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+            line-height: 18px;
         }
-        .status-pending { background: #ffa726; color: white; }
+        .status-pending { background: #9e6a03; color: #f0d062; }
         .status-generating {
-            background: #42a5f5;
-            color: white;
+            background: #0969da;
+            color: #79c0ff;
             animation: pulse 1.5s ease-in-out infinite;
         }
-        .status-completed { background: #66bb6a; color: white; }
-        .status-error { background: #ef5350; color: white; }
+        .status-completed { background: #1a7f37; color: #7ee787; }
+        .status-error { background: #da3633; color: #ffa198; }
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.6; }
         }
         .pr-title {
-            font-size: 0.9em;
-            color: #666;
-            max-width: 500px;
+            font-size: 12px;
+            color: #8b949e;
+            max-width: 600px;
             word-wrap: break-word;
             white-space: normal;
+            line-height: 1.4;
+            margin-top: 2px;
         }
         .delete-btn {
-            background: #ef5350;
-            color: white;
-            border: none;
-            padding: 4px 8px;
-            border-radius: 4px;
+            background: transparent;
+            color: #da3633;
+            border: 1px solid #da3633;
+            padding: 2px 8px;
+            border-radius: 6px;
             cursor: pointer;
-            font-size: 0.85em;
+            font-size: 11px;
+            transition: all 0.2s;
         }
         .delete-btn:hover {
-            background: #e53935;
+            background: #da3633;
+            color: white;
+        }
+        .elapsed-time {
+            display: block;
+            font-size: 9px;
+            margin-top: 2px;
+            opacity: 0.7;
         }
     </style>
 </head>
