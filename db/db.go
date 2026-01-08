@@ -8,14 +8,15 @@ import (
 )
 
 type PR struct {
-	ID             int
-	RepoOwner      string
-	RepoName       string
-	PRNumber       int
-	LastCommitSHA  string
-	LastReviewedAt *time.Time
-	ReviewHTMLPath string
-	Status         string // "pending", "generating", "completed", "error"
+	ID              int
+	RepoOwner       string
+	RepoName        string
+	PRNumber        int
+	LastCommitSHA   string
+	LastReviewedAt  *time.Time
+	ReviewHTMLPath  string
+	Status          string // "pending", "generating", "completed", "error"
+	GeneratingSince *time.Time
 }
 
 type DB struct {
@@ -74,12 +75,13 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	pr := &PR{}
 	var reviewedAt sql.NullTime
 	var htmlPath sql.NullString
+	var generatingSince sql.NullTime
 	err := db.conn.QueryRow(`
-		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending')
+		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since
 		FROM prs WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
 	`, owner, repo, prNumber).Scan(
 		&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
-		&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status,
+		&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -92,6 +94,9 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	}
 	if htmlPath.Valid {
 		pr.ReviewHTMLPath = htmlPath.String
+	}
+	if generatingSince.Valid {
+		pr.GeneratingSince = &generatingSince.Time
 	}
 	return pr, nil
 }

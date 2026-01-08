@@ -23,17 +23,18 @@ type Server struct {
 }
 
 type PRResponse struct {
-	Owner          string  `json:"owner"`
-	Repo           string  `json:"repo"`
-	Number         int     `json:"number"`
-	CommitSHA      string  `json:"commit_sha"`
-	LastReviewedAt *string `json:"last_reviewed_at"`
-	ReviewHTMLPath string  `json:"review_html_path"`
-	GitHubURL      string  `json:"github_url"`
-	ReviewURL      string  `json:"review_url"`
-	Status         string  `json:"status"` // "pending", "generating", "completed", "error"
-	Title          string  `json:"title"`
-	Author         string  `json:"author"`
+	Owner           string  `json:"owner"`
+	Repo            string  `json:"repo"`
+	Number          int     `json:"number"`
+	CommitSHA       string  `json:"commit_sha"`
+	LastReviewedAt  *string `json:"last_reviewed_at"`
+	ReviewHTMLPath  string  `json:"review_html_path"`
+	GitHubURL       string  `json:"github_url"`
+	ReviewURL       string  `json:"review_url"`
+	Status          string  `json:"status"` // "pending", "generating", "completed", "error"
+	Title           string  `json:"title"`
+	Author          string  `json:"author"`
+	GeneratingSince *string `json:"generating_since"`
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
@@ -229,9 +230,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                             ? '<a href="/reviews/' + pr.review_html_path + '" target="_blank">View Review</a>'
                             : '<span style="color: #ffa726; font-weight: 500;">Not yet reviewed</span>';
 
-                        const statusBadge = '<span class="status-badge status-' + pr.status + '">' +
-                            pr.status.charAt(0).toUpperCase() + pr.status.slice(1) +
-                        '</span>';
+                        let statusBadge = '<span class="status-badge status-' + pr.status + '">' +
+                            pr.status.charAt(0).toUpperCase() + pr.status.slice(1);
+
+                        // Add elapsed time for generating status
+                        if (pr.status === 'generating' && pr.generating_since) {
+                            const startTime = new Date(pr.generating_since).getTime();
+                            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                            statusBadge += '<br><span class="elapsed-time" data-start="' + startTime + '" style="font-size: 0.7em; font-weight: normal;">' +
+                                elapsed + 's</span>';
+                        }
+
+                        statusBadge += '</span>';
 
                         const deleteBtn = '<button class="delete-btn" onclick="deletePR(\'' +
                             pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>';
@@ -287,9 +297,22 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
             });
         }
 
+        // Update elapsed time for generating PRs every second
+        function updateElapsedTimes() {
+            const elapsedElements = document.querySelectorAll('.elapsed-time');
+            elapsedElements.forEach(el => {
+                const startTime = parseInt(el.dataset.start);
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                el.textContent = elapsed + 's';
+            });
+        }
+
         // Fetch immediately and then every 30 seconds
         fetchPRs();
         setInterval(fetchPRs, 30000);
+
+        // Update elapsed times every second
+        setInterval(updateElapsedTimes, 1000);
     </script>
 </body>
 </html>`
@@ -308,6 +331,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 
 		status := "pending"
 		var reviewedAt *string
+		var generatingSince *string
 		reviewHTMLPath := ""
 
 		if err == nil && dbPR != nil {
@@ -316,21 +340,26 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 				formatted := dbPR.LastReviewedAt.Format("2006-01-02T15:04:05Z")
 				reviewedAt = &formatted
 			}
+			if dbPR.GeneratingSince != nil {
+				formatted := dbPR.GeneratingSince.Format("2006-01-02T15:04:05Z")
+				generatingSince = &formatted
+			}
 			reviewHTMLPath = dbPR.ReviewHTMLPath
 		}
 
 		response[i] = PRResponse{
-			Owner:          ghPR.Owner,
-			Repo:           ghPR.Repo,
-			Number:         ghPR.Number,
-			CommitSHA:      ghPR.CommitSHA,
-			Title:          ghPR.Title,
-			Author:         ghPR.Author,
-			LastReviewedAt: reviewedAt,
-			ReviewHTMLPath: reviewHTMLPath,
-			GitHubURL:      ghPR.URL,
-			ReviewURL:      filepath.Join("/reviews", reviewHTMLPath),
-			Status:         status,
+			Owner:           ghPR.Owner,
+			Repo:            ghPR.Repo,
+			Number:          ghPR.Number,
+			CommitSHA:       ghPR.CommitSHA,
+			Title:           ghPR.Title,
+			Author:          ghPR.Author,
+			LastReviewedAt:  reviewedAt,
+			ReviewHTMLPath:  reviewHTMLPath,
+			GitHubURL:       ghPR.URL,
+			ReviewURL:       filepath.Join("/reviews", reviewHTMLPath),
+			Status:          status,
+			GeneratingSince: generatingSince,
 		}
 	}
 
