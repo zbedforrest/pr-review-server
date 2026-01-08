@@ -1,0 +1,15 @@
+# Binary
+pr-review-server
+
+# Database
+*.db
+*.db-journal
+
+# Reviews
+reviews/
+
+# Environment
+.env
+
+# Go
+vendor/
