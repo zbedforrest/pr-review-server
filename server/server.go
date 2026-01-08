@@ -19,6 +19,7 @@ type PollerInterface interface {
 	GetCbprStatus() (running bool, duration time.Duration)
 	GetLastPollTime() time.Time
 	GetPollingInterval() time.Duration
+	GetSecondsUntilNextPoll() int
 }
 
 type Server struct {
@@ -627,19 +628,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	var secondsUntilNextPoll int
 	if s.poller != nil {
 		cbprRunning, cbprDuration = s.poller.GetCbprStatus()
-
-		// Calculate seconds until next poll
-		lastPollTime := s.poller.GetLastPollTime()
-		pollingInterval := s.poller.GetPollingInterval()
-		if !lastPollTime.IsZero() {
-			elapsed := time.Since(lastPollTime)
-			remaining := pollingInterval - elapsed
-			if remaining > 0 {
-				secondsUntilNextPoll = int(remaining.Seconds())
-			} else {
-				secondsUntilNextPoll = 0
-			}
-		}
+		// Get accurate countdown based on ticker timing
+		secondsUntilNextPoll = s.poller.GetSecondsUntilNextPoll()
 	}
 
 	// Get recent completions (last 3)

@@ -34,6 +34,8 @@ type Poller struct {
 	// Track last poll time for countdown display
 	lastPollTime time.Time
 	pollTimeMutex sync.RWMutex
+	// Track ticker start time for accurate countdown
+	tickerStartTime time.Time
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Poller {
@@ -62,8 +64,14 @@ func (p *Poller) Trigger() {
 }
 
 func (p *Poller) Start(ctx context.Context) {
+	tickerStartTime := time.Now()
 	ticker := time.NewTicker(p.cfg.PollingInterval)
 	defer ticker.Stop()
+
+	// Store ticker start time for accurate countdown
+	p.pollTimeMutex.Lock()
+	p.tickerStartTime = tickerStartTime
+	p.pollTimeMutex.Unlock()
 
 	// Start cbpr process monitor
 	monitorTicker := time.NewTicker(30 * time.Second)
@@ -71,6 +79,7 @@ func (p *Poller) Start(ctx context.Context) {
 	go p.monitorCbprProcesses(ctx, monitorTicker)
 
 	log.Println("Starting poller...")
+	log.Printf("Ticker created at %s, will fire every %v", tickerStartTime.Format("15:04:05.000"), p.cfg.PollingInterval)
 
 	// Run immediately on start
 	p.startPoll(ctx, "initial")
@@ -80,7 +89,9 @@ func (p *Poller) Start(ctx context.Context) {
 		case <-ctx.Done():
 			log.Println("Poller stopped")
 			return
-		case <-ticker.C:
+		case tickTime := <-ticker.C:
+			elapsed := tickTime.Sub(tickerStartTime)
+			log.Printf("Ticker fired at %s (%.3fs since ticker start)", tickTime.Format("15:04:05.000"), elapsed.Seconds())
 			p.startPoll(ctx, "scheduled")
 		case <-p.triggerChan:
 			p.startPoll(ctx, "manual")
@@ -139,6 +150,41 @@ func (p *Poller) GetLastPollTime() time.Time {
 
 func (p *Poller) GetPollingInterval() time.Duration {
 	return p.cfg.PollingInterval
+}
+
+// GetSecondsUntilNextPoll calculates accurate countdown based on ticker timing
+func (p *Poller) GetSecondsUntilNextPoll() int {
+	p.pollTimeMutex.RLock()
+	tickerStart := p.tickerStartTime
+	p.pollTimeMutex.RUnlock()
+
+	if tickerStart.IsZero() {
+		return 0
+	}
+
+	now := time.Now()
+	interval := p.cfg.PollingInterval
+
+	// Calculate how long since ticker started
+	elapsed := now.Sub(tickerStart)
+
+	// Calculate which tick number we're waiting for
+	// Add 1 because we want the NEXT tick
+	tickNumber := int(elapsed/interval) + 1
+
+	// Calculate when that tick will fire
+	nextTickTime := tickerStart.Add(time.Duration(tickNumber) * interval)
+
+	// Calculate remaining time
+	remaining := nextTickTime.Sub(now)
+
+	if remaining < 0 {
+		return 0
+	}
+
+	seconds := int(remaining.Seconds())
+
+	return seconds
 }
 
 func (p *Poller) isPIDRunning(pid int) bool {
