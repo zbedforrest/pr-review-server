@@ -950,9 +950,18 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 
 		if err != nil {
 			log.Printf("[CBPR] ERROR: Command failed for PR %d after %v: %v", pr.Number, execDuration, err)
-			// Mark as error immediately
-			p.db.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error")
-			log.Printf("[CBPR] Marked PR %d as 'error' in database", pr.Number)
+
+			// Before marking as error, check if the PR was cancelled due to being outdated.
+			// If so, another poll cycle has already handled it, and we should not overwrite the status.
+			currentPR, dbErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+			if dbErr == nil && currentPR != nil && currentPR.Status == "pending" && currentPR.LastCommitSHA != pr.CommitSHA {
+				log.Printf("[CBPR] Review for PR %d was cancelled because it became outdated. The PR is already re-queued.", pr.Number)
+			} else {
+				// Mark as error only for genuine failures
+				p.db.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error")
+				log.Printf("[CBPR] Marked PR %d as 'error' in database", pr.Number)
+			}
+
 			// Untrack after DB operation completes
 			p.untrackReview(pr.Owner, pr.Repo, pr.Number)
 			continue // Skip to next PR
