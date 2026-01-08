@@ -1,0 +1,15 @@
+# Don't copy these into Docker image
+.env
+.env.example
+*.md
+.git
+.gitignore
+reviews/
+data/
+pr-review.db
+logs/
+pr-review-server
+.DS_Store
+docker-compose.yml
+Dockerfile
+.dockerignore
