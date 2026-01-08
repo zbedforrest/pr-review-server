@@ -45,17 +45,20 @@ func main() {
 	ghClient := github.NewClient(cfg.GitHubToken, cfg.GitHubUsername)
 	log.Println("GitHub client initialized")
 
+	// Initialize server first (so poller can update its cache)
+	srv := server.New(cfg, database, ghClient)
+
 	// Initialize poller
 	p := poller.New(cfg, database, ghClient)
+
+	// Wire poller to update server's cache
+	p.SetCacheUpdateFunc(srv.UpdatePRCache)
 
 	// Start poller in background
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go p.Start(ctx)
-
-	// Initialize and start HTTP server
-	srv := server.New(cfg, database, ghClient)
 
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)

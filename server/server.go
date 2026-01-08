@@ -1,13 +1,13 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"pr-review-server/config"
 	"pr-review-server/db"
@@ -15,9 +15,11 @@ import (
 )
 
 type Server struct {
-	cfg      *config.Config
-	db       *db.DB
-	ghClient *github.Client
+	cfg         *config.Config
+	db          *db.DB
+	ghClient    *github.Client
+	prCache     []github.PullRequest
+	prCacheMux  sync.RWMutex
 }
 
 type PRResponse struct {
@@ -40,6 +42,21 @@ func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
 		db:       database,
 		ghClient: ghClient,
 	}
+}
+
+func (s *Server) UpdatePRCache(prs []github.PullRequest) {
+	s.prCacheMux.Lock()
+	defer s.prCacheMux.Unlock()
+	s.prCache = prs
+}
+
+func (s *Server) GetCachedPRs() []github.PullRequest {
+	s.prCacheMux.RLock()
+	defer s.prCacheMux.RUnlock()
+	// Return a copy to avoid race conditions
+	result := make([]github.PullRequest, len(s.prCache))
+	copy(result, s.prCache)
+	return result
 }
 
 func (s *Server) Start() error {
@@ -281,14 +298,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
-
-	// Fetch all PRs from GitHub
-	githubPRs, err := s.ghClient.GetPRsRequestingReview(ctx)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to fetch PRs from GitHub: %v", err), http.StatusInternalServerError)
-		return
-	}
+	// Use cached PRs instead of fetching from GitHub on every request
+	githubPRs := s.GetCachedPRs()
 
 	response := make([]PRResponse, len(githubPRs))
 	for i, ghPR := range githubPRs {

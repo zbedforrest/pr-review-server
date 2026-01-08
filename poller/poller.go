@@ -15,10 +15,11 @@ import (
 )
 
 type Poller struct {
-	cfg       *config.Config
-	db        *db.DB
-	ghClient  *github.Client
-	reviewDir string
+	cfg            *config.Config
+	db             *db.DB
+	ghClient       *github.Client
+	reviewDir      string
+	cacheUpdateFunc func([]github.PullRequest)
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Poller {
@@ -28,6 +29,10 @@ func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Poller {
 		ghClient:  ghClient,
 		reviewDir: cfg.ReviewsDir,
 	}
+}
+
+func (p *Poller) SetCacheUpdateFunc(f func([]github.PullRequest)) {
+	p.cacheUpdateFunc = f
 }
 
 func (p *Poller) Start(ctx context.Context) {
@@ -60,6 +65,11 @@ func (p *Poller) poll(ctx context.Context) {
 	}
 
 	log.Printf("Found %d PRs requesting review", len(prs))
+
+	// Update cache for fast dashboard loading
+	if p.cacheUpdateFunc != nil {
+		p.cacheUpdateFunc(prs)
+	}
 
 	for _, pr := range prs {
 		if err := p.processPR(ctx, pr); err != nil {
@@ -113,10 +123,16 @@ func (p *Poller) processPR(ctx context.Context, pr github.PullRequest) error {
 func (p *Poller) generateReview(ctx context.Context, pr github.PullRequest) (string, error) {
 	// Create filename for the review
 	filename := fmt.Sprintf("%s_%s_%d.html", pr.Owner, pr.Repo, pr.Number)
-	outputPath := filepath.Join(p.reviewDir, filename)
+
+	// Use absolute path for output
+	absReviewDir, err := filepath.Abs(p.reviewDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+	outputPath := filepath.Join(absReviewDir, filename)
 
 	// Ensure reviews directory exists
-	if err := os.MkdirAll(p.reviewDir, 0755); err != nil {
+	if err := os.MkdirAll(absReviewDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create reviews directory: %w", err)
 	}
 
@@ -128,20 +144,21 @@ func (p *Poller) generateReview(ctx context.Context, pr github.PullRequest) (str
 		fmt.Sprintf("--repo-name=%s", repoName),
 		"-n", "3",
 		"-p", fmt.Sprintf("%d", pr.Number),
-		"--html",
-		"--fast",    // Development mode for faster iterations
-		"--no-open", // Don't open in browser (for server use)
+		"--fast",                               // Development mode for faster iterations
+		fmt.Sprintf("--output=%s", outputPath), // Specify output file directly
 	)
 
-	// Capture stdout (HTML) only, stderr goes to logs
-	output, err := cmd.Output()
-	if err != nil {
+	log.Printf("Running cbpr: %s %v", p.cfg.CbprPath, cmd.Args)
+	log.Printf("Output path: %s", outputPath)
+
+	// Run command, output goes to stderr (logs)
+	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("cbpr command failed: %w", err)
 	}
 
-	// Write HTML output to file
-	if err := os.WriteFile(outputPath, output, 0644); err != nil {
-		return "", fmt.Errorf("failed to write HTML file: %w", err)
+	// Verify file was created
+	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("cbpr succeeded but file not created at %s", outputPath)
 	}
 
 	return filename, nil
