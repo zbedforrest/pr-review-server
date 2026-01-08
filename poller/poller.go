@@ -338,13 +338,13 @@ func (p *Poller) speak(message string) {
 
 	log.Printf("[VOICE] Speaking: %s", message)
 
-	// Run say command in background (non-blocking)
-	cmd := exec.Command("say", message)
-	if err := cmd.Start(); err != nil {
-		log.Printf("[VOICE] ERROR: Failed to speak notification: %v", err)
-	} else {
-		log.Printf("[VOICE] Successfully started say command")
-	}
+	// Run say command in a goroutine to avoid blocking and prevent zombie processes
+	go func() {
+		cmd := exec.Command("say", message)
+		if err := cmd.Run(); err != nil {
+			log.Printf("[VOICE] ERROR: 'say' command failed: %v", err)
+		}
+	}()
 }
 
 // backfillPRMetadata fills in missing title/author for existing PRs by fetching from GitHub
