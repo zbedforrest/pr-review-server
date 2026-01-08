@@ -948,14 +948,13 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 		p.cbprPID = 0
 		p.cbprMutex.Unlock()
 
-		// Untrack this review
-		p.untrackReview(pr.Owner, pr.Repo, pr.Number)
-
 		if err != nil {
 			log.Printf("[CBPR] ERROR: Command failed for PR %d after %v: %v", pr.Number, execDuration, err)
 			// Mark as error immediately
 			p.db.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error")
 			log.Printf("[CBPR] Marked PR %d as 'error' in database", pr.Number)
+			// Untrack after DB operation completes
+			p.untrackReview(pr.Owner, pr.Repo, pr.Number)
 			continue // Skip to next PR
 		}
 
@@ -991,6 +990,9 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				}
 			}
 		}
+
+		// Untrack after all DB operations complete (prevents race with checkForOutdatedReviews)
+		p.untrackReview(pr.Owner, pr.Repo, pr.Number)
 	}
 
 	return nil
