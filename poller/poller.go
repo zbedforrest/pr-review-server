@@ -268,8 +268,9 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 
 	outdated := 0
 	for _, pr := range allPRs {
-		// Only check PRs that have been reviewed (completed status)
-		if pr.Status != "completed" {
+		// Check PRs that are completed OR currently generating
+		// If a PR is generating and gets a new commit, we need to cancel and restart
+		if pr.Status != "completed" && pr.Status != "generating" {
 			continue
 		}
 
@@ -283,8 +284,13 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 
 		// Compare commit SHAs
 		if currentSHA != pr.LastCommitSHA {
-			log.Printf("[OUTDATED] PR %s/%s#%d has new commits (old: %s, new: %s), resetting to pending",
-				pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA[:7], currentSHA[:7])
+			wasGenerating := pr.Status == "generating"
+			statusMsg := "completed"
+			if wasGenerating {
+				statusMsg = "generating (cancelling)"
+			}
+			log.Printf("[OUTDATED] PR %s/%s#%d (%s) has new commits (old: %s, new: %s), resetting to pending",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber, statusMsg, pr.LastCommitSHA[:7], currentSHA[:7])
 
 			// Delete old HTML file if it exists
 			if pr.ReviewHTMLPath != "" {
@@ -304,7 +310,12 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 			}
 
 			// Voice notification for outdated review
-			message := fmt.Sprintf("PR number %d has a new commit. Removing stale review and generating a new one.", pr.PRNumber)
+			var message string
+			if wasGenerating {
+				message = fmt.Sprintf("PR number %d has a new commit while generating. Cancelling old review and starting fresh.", pr.PRNumber)
+			} else {
+				message = fmt.Sprintf("PR number %d has a new commit. Removing stale review and generating a new one.", pr.PRNumber)
+			}
 			p.speak(message)
 
 			outdated++
@@ -786,11 +797,24 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			log.Printf("[CBPR] Marked PR %d as 'error' in database", pr.Number)
 		} else {
 			log.Printf("[CBPR] Verified file exists: %s", filename)
-			// Mark as completed immediately
-			if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
-				log.Printf("[CBPR] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
+
+			// Before marking as completed, verify the commit SHA hasn't changed
+			// (protects against race condition where new commit came in while generating)
+			currentPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+			if err != nil {
+				log.Printf("[CBPR] ERROR: Failed to fetch PR from DB: %v", err)
+			} else if currentPR != nil && currentPR.LastCommitSHA != pr.CommitSHA {
+				// Commit has changed since we started - discard this stale review
+				log.Printf("[CBPR] STALE REVIEW: PR %d commit changed during generation (reviewed: %s, current: %s), discarding result and deleting file",
+					pr.Number, pr.CommitSHA[:7], currentPR.LastCommitSHA[:7])
+				os.Remove(outputPath) // Clean up the stale review file
 			} else {
-				log.Printf("[CBPR] Marked PR %d as 'completed' in database", pr.Number)
+				// Commit matches - safe to mark as completed
+				if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
+					log.Printf("[CBPR] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
+				} else {
+					log.Printf("[CBPR] Marked PR %d as 'completed' in database", pr.Number)
+				}
 			}
 		}
 	}
