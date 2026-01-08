@@ -460,20 +460,22 @@ func (p *Poller) poll(ctx context.Context) {
 		myPRsByRepo[repoKey] = append(myPRsByRepo[repoKey], pr)
 	}
 
-	// Process review PRs in smaller batches
-	log.Printf("[POLL] Processing %d repositories for review PRs", len(reviewPRsByRepo))
+	// Process review PRs in smaller batches (async)
+	log.Printf("[POLL] Queueing %d repositories for review PRs", len(reviewPRsByRepo))
 	for repoKey, repoPRs := range reviewPRsByRepo {
-		log.Printf("[POLL] Processing review PRs for repository %s with %d PRs", repoKey, len(repoPRs))
+		log.Printf("[POLL] Queueing review PRs for repository %s with %d PRs", repoKey, len(repoPRs))
 		// Split into smaller batches of 5 PRs to avoid timeout
-		p.processInBatches(ctx, repoPRs, false, 5)
+		// Process asynchronously so poll can complete quickly
+		go p.processInBatches(ctx, repoPRs, false, 5)
 	}
 
-	// Process my PRs in smaller batches
-	log.Printf("[POLL] Processing %d repositories for my PRs", len(myPRsByRepo))
+	// Process my PRs in smaller batches (async)
+	log.Printf("[POLL] Queueing %d repositories for my PRs", len(myPRsByRepo))
 	for repoKey, repoPRs := range myPRsByRepo {
-		log.Printf("[POLL] Processing my PRs for repository %s with %d PRs", repoKey, len(repoPRs))
+		log.Printf("[POLL] Queueing my PRs for repository %s with %d PRs", repoKey, len(repoPRs))
 		// Split into smaller batches of 5 PRs to avoid timeout
-		p.processInBatches(ctx, repoPRs, true, 5)
+		// Process asynchronously so poll can complete quickly
+		go p.processInBatches(ctx, repoPRs, true, 5)
 	}
 
 	duration := time.Since(startTime)
