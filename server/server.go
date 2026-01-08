@@ -94,6 +94,11 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of the HTML page
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
 	html := `<!DOCTYPE html>
 <html>
 <head>
@@ -486,6 +491,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of API responses
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
 	// Fetch all PRs from database (source of truth)
 	dbPRs, err := s.db.GetAllPRs()
 	if err != nil {
@@ -605,6 +615,11 @@ func (s *Server) handleDeletePR(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of API responses
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
 	// Get PR counts by status
 	prs, err := s.db.GetAllPRs()
 	if err != nil {
