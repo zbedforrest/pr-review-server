@@ -219,7 +219,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                         const deleteBtn = '<button class="delete-btn" onclick="deletePR(\'' +
                             pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>';
 
-                        return '<tr>' +
+                        const prKey = pr.owner + '/' + pr.repo + '#' + pr.number;
+                        return '<tr id="pr-' + pr.owner + '-' + pr.repo + '-' + pr.number + '">' +
                             '<td>' + pr.owner + '/' + pr.repo + '</td>' +
                             '<td>' +
                                 '<a href="' + pr.github_url + '" target="_blank">#' + pr.number + '</a>' +
@@ -249,6 +250,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                 return;
             }
 
+            // Immediately remove the row from UI (optimistic update)
+            const rowId = 'pr-' + owner + '-' + repo + '-' + number;
+            const row = document.getElementById(rowId);
+            if (row) {
+                row.remove();
+            }
+
+            // Call API to delete on backend
             fetch('/api/prs/delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -258,11 +267,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                 if (!response.ok) throw new Error('Failed to delete PR');
                 return response.json();
             })
-            .then(() => {
-                fetchPRs(); // Refresh the list
-            })
             .catch(error => {
                 alert('Error deleting PR: ' + error.message);
+                // Refresh to restore correct state if delete failed
+                fetchPRs();
             });
         }
 
