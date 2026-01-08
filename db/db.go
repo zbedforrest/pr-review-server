@@ -64,6 +64,9 @@ func (db *DB) initSchema() error {
 		// Ignore "duplicate column" error
 	}
 
+	// Add generating_since column for tracking stale generation attempts
+	db.conn.Exec(`ALTER TABLE prs ADD COLUMN generating_since TIMESTAMP`)
+
 	return nil
 }
 
@@ -95,10 +98,10 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 
 func (db *DB) UpsertPR(owner, repo string, prNumber int, commitSHA, htmlPath, status string) error {
 	_, err := db.conn.Exec(`
-		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, status, generating_since)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
-		DO UPDATE SET last_commit_sha = ?, last_reviewed_at = ?, review_html_path = ?, status = ?
+		DO UPDATE SET last_commit_sha = ?, last_reviewed_at = ?, review_html_path = ?, status = ?, generating_since = NULL
 	`, owner, repo, prNumber, commitSHA, time.Now(), htmlPath, status,
 		commitSHA, time.Now(), htmlPath, status)
 	return err
@@ -112,12 +115,13 @@ func (db *DB) UpdatePRStatus(owner, repo string, prNumber int, status string) er
 }
 
 func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA string) error {
+	now := time.Now()
 	_, err := db.conn.Exec(`
-		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status)
-		VALUES (?, ?, ?, ?, 'generating')
+		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status, generating_since)
+		VALUES (?, ?, ?, ?, 'generating', ?)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
-		DO UPDATE SET last_commit_sha = ?, status = 'generating'
-	`, owner, repo, prNumber, commitSHA, commitSHA)
+		DO UPDATE SET last_commit_sha = ?, status = 'generating', generating_since = ?
+	`, owner, repo, prNumber, commitSHA, now, commitSHA, now)
 	return err
 }
 
@@ -164,6 +168,21 @@ func (db *DB) DeletePR(owner, repo string, prNumber int) error {
 		DELETE FROM prs WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
 	`, owner, repo, prNumber)
 	return err
+}
+
+func (db *DB) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) {
+	cutoff := time.Now().Add(-time.Duration(timeoutMinutes) * time.Minute)
+	result, err := db.conn.Exec(`
+		UPDATE prs
+		SET status = 'pending', generating_since = NULL
+		WHERE status = 'generating'
+		AND (generating_since IS NULL OR generating_since < ?)
+	`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	count, _ := result.RowsAffected()
+	return int(count), nil
 }
 
 func (db *DB) Close() error {

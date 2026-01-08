@@ -58,6 +58,14 @@ func (p *Poller) Start(ctx context.Context) {
 func (p *Poller) poll(ctx context.Context) {
 	log.Println("Polling for PRs...")
 
+	// Reset any PRs stuck in "generating" for more than 5 minutes
+	resetCount, err := p.db.ResetStaleGeneratingPRs(5)
+	if err != nil {
+		log.Printf("Error resetting stale PRs: %v", err)
+	} else if resetCount > 0 {
+		log.Printf("Reset %d stale PRs from 'generating' to 'pending'", resetCount)
+	}
+
 	prs, err := p.ghClient.GetPRsRequestingReview(ctx)
 	if err != nil {
 		log.Printf("Error fetching PRs: %v", err)
