@@ -70,12 +70,13 @@ func (db *DB) initSchema() error {
 func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	pr := &PR{}
 	var reviewedAt sql.NullTime
+	var htmlPath sql.NullString
 	err := db.conn.QueryRow(`
 		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending')
 		FROM prs WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
 	`, owner, repo, prNumber).Scan(
 		&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
-		&pr.LastCommitSHA, &reviewedAt, &pr.ReviewHTMLPath, &pr.Status,
+		&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -85,6 +86,9 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	}
 	if reviewedAt.Valid {
 		pr.LastReviewedAt = &reviewedAt.Time
+	}
+	if htmlPath.Valid {
+		pr.ReviewHTMLPath = htmlPath.String
 	}
 	return pr, nil
 }
@@ -139,12 +143,16 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 	for rows.Next() {
 		pr := PR{}
 		var reviewedAt sql.NullTime
+		var htmlPath sql.NullString
 		if err := rows.Scan(&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
-			&pr.LastCommitSHA, &reviewedAt, &pr.ReviewHTMLPath, &pr.Status); err != nil {
+			&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status); err != nil {
 			return nil, err
 		}
 		if reviewedAt.Valid {
 			pr.LastReviewedAt = &reviewedAt.Time
+		}
+		if htmlPath.Valid {
+			pr.ReviewHTMLPath = htmlPath.String
 		}
 		prs = append(prs, pr)
 	}
