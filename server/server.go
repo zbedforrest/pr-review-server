@@ -36,6 +36,7 @@ type PRResponse struct {
 	Title           string  `json:"title"`
 	Author          string  `json:"author"`
 	GeneratingSince *string `json:"generating_since"`
+	IsMine          bool    `json:"is_mine"`
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
@@ -81,6 +82,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 <html>
 <head>
     <title>PR Review Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%230d1117'/%3E%3Cpath d='M20 50 L40 70 L80 30' stroke='%237ee787' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <style>
         * { box-sizing: border-box; }
         body {
@@ -215,6 +217,25 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
     <h1>PR Review Dashboard</h1>
     <div class="status" id="status">Loading...</div>
     <div id="error" class="error" style="display:none;"></div>
+
+    <h2 style="color: #58a6ff; font-size: 16px; font-weight: 600; margin: 24px 0 8px 0;">My PRs</h2>
+    <table id="my-pr-table" style="display:none; margin-bottom: 24px;">
+        <thead>
+            <tr>
+                <th>Repository</th>
+                <th>PR # / Title</th>
+                <th>Author</th>
+                <th>Status</th>
+                <th>Commit SHA</th>
+                <th>Last Reviewed</th>
+                <th>Links</th>
+            </tr>
+        </thead>
+        <tbody id="my-pr-list">
+        </tbody>
+    </table>
+
+    <h2 style="color: #58a6ff; font-size: 16px; font-weight: 600; margin: 24px 0 8px 0;">PRs to Review</h2>
     <table id="pr-table" style="display:none;">
         <thead>
             <tr>
@@ -238,6 +259,45 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
             return date.toLocaleString();
         }
 
+        function renderPRRow(pr) {
+            const reviewLink = pr.review_html_path
+                ? '<a href="/reviews/' + pr.review_html_path + '" target="_blank">View Review</a>'
+                : '<span style="color: #ffa726; font-weight: 500;">Not yet reviewed</span>';
+
+            let statusBadge = '<span class="status-badge status-' + pr.status + '">' +
+                pr.status.charAt(0).toUpperCase() + pr.status.slice(1);
+
+            // Add elapsed time for generating status
+            if (pr.status === 'generating' && pr.generating_since) {
+                const startTime = new Date(pr.generating_since).getTime();
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                statusBadge += '<br><span class="elapsed-time" data-start="' + startTime + '" style="font-size: 0.7em; font-weight: normal;">' +
+                    elapsed + 's</span>';
+            }
+
+            statusBadge += '</span>';
+
+            const deleteBtn = '<button class="delete-btn" onclick="deletePR(\'' +
+                pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>';
+
+            return '<tr id="pr-' + pr.owner + '-' + pr.repo + '-' + pr.number + '">' +
+                '<td>' + pr.owner + '/' + pr.repo + '</td>' +
+                '<td>' +
+                    '<a href="' + pr.github_url + '" target="_blank">#' + pr.number + '</a>' +
+                    '<div class="pr-title" title="' + pr.title + '">' + pr.title + '</div>' +
+                '</td>' +
+                '<td>' + pr.author + '</td>' +
+                '<td>' + statusBadge + '</td>' +
+                '<td class="commit-sha">' + pr.commit_sha.substring(0, 7) + '</td>' +
+                '<td>' + formatDate(pr.last_reviewed_at) + '</td>' +
+                '<td>' +
+                    '<a href="' + pr.github_url + '" target="_blank">GitHub</a> | ' +
+                    reviewLink + ' | ' +
+                    deleteBtn +
+                '</td>' +
+            '</tr>';
+        }
+
         function fetchPRs() {
             fetch('/api/prs')
                 .then(response => {
@@ -245,61 +305,42 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                     return response.json();
                 })
                 .then(data => {
-                    const prList = document.getElementById('pr-list');
+                    const myPRList = document.getElementById('my-pr-list');
+                    const reviewPRList = document.getElementById('pr-list');
                     const status = document.getElementById('status');
-                    const table = document.getElementById('pr-table');
+                    const myPRTable = document.getElementById('my-pr-table');
+                    const reviewPRTable = document.getElementById('pr-table');
                     const errorDiv = document.getElementById('error');
 
                     errorDiv.style.display = 'none';
 
-                    if (data.length === 0) {
-                        status.textContent = 'No PRs requesting your review';
-                        table.style.display = 'none';
-                        return;
+                    // Separate PRs into my PRs and review PRs
+                    const myPRs = data.filter(pr => pr.is_mine);
+                    const reviewPRs = data.filter(pr => !pr.is_mine);
+
+                    // Update status
+                    status.textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+
+                    // Render My PRs
+                    if (myPRs.length > 0) {
+                        myPRTable.style.display = 'table';
+                        myPRList.innerHTML = myPRs.map(renderPRRow).join('');
+                    } else {
+                        myPRTable.style.display = 'none';
                     }
 
-                    status.textContent = 'Last updated: ' + new Date().toLocaleTimeString();
-                    table.style.display = 'table';
+                    // Render Review PRs
+                    if (reviewPRs.length > 0) {
+                        reviewPRTable.style.display = 'table';
+                        reviewPRList.innerHTML = reviewPRs.map(renderPRRow).join('');
+                    } else {
+                        reviewPRTable.style.display = 'none';
+                    }
 
-                    prList.innerHTML = data.map(pr => {
-                        const reviewLink = pr.review_html_path
-                            ? '<a href="/reviews/' + pr.review_html_path + '" target="_blank">View Review</a>'
-                            : '<span style="color: #ffa726; font-weight: 500;">Not yet reviewed</span>';
-
-                        let statusBadge = '<span class="status-badge status-' + pr.status + '">' +
-                            pr.status.charAt(0).toUpperCase() + pr.status.slice(1);
-
-                        // Add elapsed time for generating status
-                        if (pr.status === 'generating' && pr.generating_since) {
-                            const startTime = new Date(pr.generating_since).getTime();
-                            const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                            statusBadge += '<br><span class="elapsed-time" data-start="' + startTime + '" style="font-size: 0.7em; font-weight: normal;">' +
-                                elapsed + 's</span>';
-                        }
-
-                        statusBadge += '</span>';
-
-                        const deleteBtn = '<button class="delete-btn" onclick="deletePR(\'' +
-                            pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>';
-
-                        const prKey = pr.owner + '/' + pr.repo + '#' + pr.number;
-                        return '<tr id="pr-' + pr.owner + '-' + pr.repo + '-' + pr.number + '">' +
-                            '<td>' + pr.owner + '/' + pr.repo + '</td>' +
-                            '<td>' +
-                                '<a href="' + pr.github_url + '" target="_blank">#' + pr.number + '</a>' +
-                                '<div class="pr-title" title="' + pr.title + '">' + pr.title + '</div>' +
-                            '</td>' +
-                            '<td>' + pr.author + '</td>' +
-                            '<td>' + statusBadge + '</td>' +
-                            '<td class="commit-sha">' + pr.commit_sha.substring(0, 7) + '</td>' +
-                            '<td>' + formatDate(pr.last_reviewed_at) + '</td>' +
-                            '<td>' +
-                                '<a href="' + pr.github_url + '" target="_blank">GitHub</a> | ' +
-                                reviewLink + ' | ' +
-                                deleteBtn +
-                            '</td>' +
-                        '</tr>';
-                    }).join('');
+                    // Update status message if no PRs at all
+                    if (data.length === 0) {
+                        status.textContent = 'No PRs found';
+                    }
                 })
                 .catch(error => {
                     const errorDiv = document.getElementById('error');
@@ -373,14 +414,19 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 		if err == nil && dbPR != nil {
 			status = dbPR.Status
 			if dbPR.LastReviewedAt != nil {
-				formatted := dbPR.LastReviewedAt.Format("2006-01-02T15:04:05Z")
+				formatted := dbPR.LastReviewedAt.UTC().Format("2006-01-02T15:04:05Z")
 				reviewedAt = &formatted
 			}
 			if dbPR.GeneratingSince != nil {
-				formatted := dbPR.GeneratingSince.Format("2006-01-02T15:04:05Z")
+				formatted := dbPR.GeneratingSince.UTC().Format("2006-01-02T15:04:05Z")
 				generatingSince = &formatted
 			}
 			reviewHTMLPath = dbPR.ReviewHTMLPath
+		}
+
+		isMine := false
+		if dbPR != nil {
+			isMine = dbPR.IsMine
 		}
 
 		response[i] = PRResponse{
@@ -396,6 +442,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			ReviewURL:       filepath.Join("/reviews", reviewHTMLPath),
 			Status:          status,
 			GeneratingSince: generatingSince,
+			IsMine:          isMine,
 		}
 	}
 

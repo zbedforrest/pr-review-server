@@ -17,6 +17,7 @@ type PR struct {
 	ReviewHTMLPath  string
 	Status          string // "pending", "generating", "completed", "error"
 	GeneratingSince *time.Time
+	IsMine          bool // true if this is my PR (authored by me)
 }
 
 type DB struct {
@@ -68,6 +69,9 @@ func (db *DB) initSchema() error {
 	// Add generating_since column for tracking stale generation attempts
 	db.conn.Exec(`ALTER TABLE prs ADD COLUMN generating_since TIMESTAMP`)
 
+	// Add is_mine column to distinguish my PRs from PRs to review
+	db.conn.Exec(`ALTER TABLE prs ADD COLUMN is_mine INTEGER DEFAULT 0`)
+
 	return nil
 }
 
@@ -76,12 +80,13 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	var reviewedAt sql.NullTime
 	var htmlPath sql.NullString
 	var generatingSince sql.NullTime
+	var isMine int
 	err := db.conn.QueryRow(`
-		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since
+		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since, COALESCE(is_mine, 0)
 		FROM prs WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
 	`, owner, repo, prNumber).Scan(
 		&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
-		&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince,
+		&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince, &isMine,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -98,17 +103,23 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	if generatingSince.Valid {
 		pr.GeneratingSince = &generatingSince.Time
 	}
+	pr.IsMine = isMine == 1
 	return pr, nil
 }
 
-func (db *DB) UpsertPR(owner, repo string, prNumber int, commitSHA, htmlPath, status string) error {
+func (db *DB) UpsertPR(owner, repo string, prNumber int, commitSHA, htmlPath, status string, isMine bool) error {
+	now := time.Now().UTC()
+	isMineInt := 0
+	if isMine {
+		isMineInt = 1
+	}
 	_, err := db.conn.Exec(`
-		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, status, generating_since)
-		VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, status, generating_since, is_mine)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
-		DO UPDATE SET last_commit_sha = ?, last_reviewed_at = ?, review_html_path = ?, status = ?, generating_since = NULL
-	`, owner, repo, prNumber, commitSHA, time.Now(), htmlPath, status,
-		commitSHA, time.Now(), htmlPath, status)
+		DO UPDATE SET last_commit_sha = ?, last_reviewed_at = ?, review_html_path = ?, status = ?, generating_since = NULL, is_mine = ?
+	`, owner, repo, prNumber, commitSHA, now, htmlPath, status, isMineInt,
+		commitSHA, now, htmlPath, status, isMineInt)
 	return err
 }
 
@@ -119,20 +130,24 @@ func (db *DB) UpdatePRStatus(owner, repo string, prNumber int, status string) er
 	return err
 }
 
-func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA string) error {
-	now := time.Now()
+func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA string, isMine bool) error {
+	now := time.Now().UTC()
+	isMineInt := 0
+	if isMine {
+		isMineInt = 1
+	}
 	_, err := db.conn.Exec(`
-		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status, generating_since)
-		VALUES (?, ?, ?, ?, 'generating', ?)
+		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status, generating_since, is_mine)
+		VALUES (?, ?, ?, ?, 'generating', ?, ?)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
-		DO UPDATE SET last_commit_sha = ?, status = 'generating', generating_since = ?
-	`, owner, repo, prNumber, commitSHA, now, commitSHA, now)
+		DO UPDATE SET last_commit_sha = ?, status = 'generating', generating_since = ?, is_mine = ?
+	`, owner, repo, prNumber, commitSHA, now, isMineInt, commitSHA, now, isMineInt)
 	return err
 }
 
 func (db *DB) GetAllPRs() ([]PR, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending')
+		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since, COALESCE(is_mine, 0)
 		FROM prs
 		ORDER BY
 			CASE status
@@ -153,8 +168,10 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 		pr := PR{}
 		var reviewedAt sql.NullTime
 		var htmlPath sql.NullString
+		var generatingSince sql.NullTime
+		var isMine int
 		if err := rows.Scan(&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
-			&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status); err != nil {
+			&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince, &isMine); err != nil {
 			return nil, err
 		}
 		if reviewedAt.Valid {
@@ -163,6 +180,10 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 		if htmlPath.Valid {
 			pr.ReviewHTMLPath = htmlPath.String
 		}
+		if generatingSince.Valid {
+			pr.GeneratingSince = &generatingSince.Time
+		}
+		pr.IsMine = isMine == 1
 		prs = append(prs, pr)
 	}
 	return prs, rows.Err()
@@ -176,12 +197,29 @@ func (db *DB) DeletePR(owner, repo string, prNumber int) error {
 }
 
 func (db *DB) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) {
-	cutoff := time.Now().Add(-time.Duration(timeoutMinutes) * time.Minute)
+	cutoff := time.Now().UTC().Add(-time.Duration(timeoutMinutes) * time.Minute)
 	result, err := db.conn.Exec(`
 		UPDATE prs
 		SET status = 'pending', generating_since = NULL
 		WHERE status = 'generating'
 		AND (generating_since IS NULL OR generating_since < ?)
+	`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	count, _ := result.RowsAffected()
+	return int(count), nil
+}
+
+func (db *DB) ResetErrorPRs(maxAgeMinutes int) (int, error) {
+	// Reset PRs that have been in error state for more than maxAgeMinutes
+	// This allows them to be retried on the next poll
+	cutoff := time.Now().UTC().Add(-time.Duration(maxAgeMinutes) * time.Minute)
+	result, err := db.conn.Exec(`
+		UPDATE prs
+		SET status = 'pending'
+		WHERE status = 'error'
+		AND (last_reviewed_at IS NULL OR last_reviewed_at < ?)
 	`, cutoff)
 	if err != nil {
 		return 0, err

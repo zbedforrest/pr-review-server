@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"syscall"
 	"time"
 
 	"pr-review-server/config"
@@ -21,6 +23,11 @@ type Poller struct {
 	reviewDir       string
 	cacheUpdateFunc func([]github.PullRequest)
 	triggerChan     chan struct{}
+	polling         bool
+	pollMutex       sync.Mutex
+	cbprPID         int
+	cbprStartTime   time.Time
+	cbprMutex       sync.Mutex
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Poller {
@@ -51,10 +58,15 @@ func (p *Poller) Start(ctx context.Context) {
 	ticker := time.NewTicker(p.cfg.PollingInterval)
 	defer ticker.Stop()
 
+	// Start cbpr process monitor
+	monitorTicker := time.NewTicker(30 * time.Second)
+	defer monitorTicker.Stop()
+	go p.monitorCbprProcesses(ctx, monitorTicker)
+
 	log.Println("Starting poller...")
 
 	// Run immediately on start
-	p.poll(ctx)
+	p.startPoll(ctx, "initial")
 
 	for {
 		select {
@@ -62,57 +74,200 @@ func (p *Poller) Start(ctx context.Context) {
 			log.Println("Poller stopped")
 			return
 		case <-ticker.C:
-			p.poll(ctx)
+			p.startPoll(ctx, "scheduled")
 		case <-p.triggerChan:
-			log.Println("Manually triggered poll")
-			p.poll(ctx)
+			p.startPoll(ctx, "manual")
 		}
 	}
+}
+
+func (p *Poller) monitorCbprProcesses(ctx context.Context, ticker *time.Ticker) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.cbprMutex.Lock()
+			if p.cbprPID != 0 {
+				elapsed := time.Since(p.cbprStartTime)
+				if elapsed > 5*time.Minute {
+					log.Printf("[MONITOR] WARNING: cbpr process %d has been running for %v, killing it", p.cbprPID, elapsed)
+					// Kill the process
+					process, err := os.FindProcess(p.cbprPID)
+					if err == nil {
+						process.Kill()
+					}
+					p.cbprPID = 0
+				} else if elapsed > 2*time.Minute {
+					log.Printf("[MONITOR] WARNING: cbpr process %d has been running for %v (threshold: 2m)", p.cbprPID, elapsed)
+				} else {
+					log.Printf("[MONITOR] cbpr process %d running normally (%v elapsed)", p.cbprPID, elapsed)
+				}
+			}
+			p.cbprMutex.Unlock()
+		}
+	}
+}
+
+func (p *Poller) GetCbprStatus() (running bool, duration time.Duration) {
+	p.cbprMutex.Lock()
+	defer p.cbprMutex.Unlock()
+	if p.cbprPID != 0 {
+		// Verify the process is actually still running
+		if !p.isPIDRunning(p.cbprPID) {
+			log.Printf("[MONITOR] WARNING: Tracked PID %d is no longer running, clearing", p.cbprPID)
+			p.cbprPID = 0
+			return false, 0
+		}
+		return true, time.Since(p.cbprStartTime)
+	}
+	return false, 0
+}
+
+func (p *Poller) isPIDRunning(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// Signal 0 doesn't actually send a signal, but checks if we can
+	err = process.Signal(syscall.Signal(0))
+	return err == nil
+}
+
+func (p *Poller) startPoll(ctx context.Context, trigger string) {
+	p.pollMutex.Lock()
+	if p.polling {
+		log.Printf("Poll already in progress, skipping %s trigger", trigger)
+		p.pollMutex.Unlock()
+		return
+	}
+	p.polling = true
+	p.pollMutex.Unlock()
+
+	log.Printf("Starting %s poll", trigger)
+
+	go func() {
+		defer func() {
+			p.pollMutex.Lock()
+			p.polling = false
+			p.pollMutex.Unlock()
+			log.Printf("Completed %s poll", trigger)
+		}()
+		p.poll(ctx)
+	}()
 }
 
 func (p *Poller) poll(ctx context.Context) {
-	log.Println("Polling for PRs...")
+	startTime := time.Now()
+	log.Printf("[POLL] Starting poll at %s", startTime.Format("15:04:05"))
 
-	// Reset any PRs stuck in "generating" for more than 5 minutes
-	resetCount, err := p.db.ResetStaleGeneratingPRs(5)
+	// Reset any PRs stuck in "generating" for more than 2 minutes
+	log.Printf("[POLL] Checking for stale PRs...")
+	resetCount, err := p.db.ResetStaleGeneratingPRs(2)
 	if err != nil {
-		log.Printf("Error resetting stale PRs: %v", err)
+		log.Printf("[POLL] ERROR: Failed to reset stale PRs: %v", err)
 	} else if resetCount > 0 {
-		log.Printf("Reset %d stale PRs from 'generating' to 'pending'", resetCount)
+		log.Printf("[POLL] Reset %d stale PRs from 'generating' to 'pending'", resetCount)
+	} else {
+		log.Printf("[POLL] No stale PRs found")
 	}
 
-	prs, err := p.ghClient.GetPRsRequestingReview(ctx)
+	// Reset PRs in error state that are older than 5 minutes (self-healing)
+	log.Printf("[POLL] Checking for error PRs to retry...")
+	errorResetCount, err := p.db.ResetErrorPRs(5)
 	if err != nil {
-		log.Printf("Error fetching PRs: %v", err)
+		log.Printf("[POLL] ERROR: Failed to reset error PRs: %v", err)
+	} else if errorResetCount > 0 {
+		log.Printf("[POLL] SELF-HEALING: Reset %d error PRs to 'pending' for retry", errorResetCount)
+	} else {
+		log.Printf("[POLL] No error PRs to retry")
+	}
+
+	log.Printf("[POLL] Fetching PRs requesting review from GitHub...")
+	reviewPRs, err := p.ghClient.GetPRsRequestingReview(ctx)
+	if err != nil {
+		log.Printf("[POLL] ERROR: Failed to fetch PRs requesting review: %v", err)
 		return
 	}
+	log.Printf("[POLL] Found %d PRs requesting review", len(reviewPRs))
 
-	log.Printf("Found %d PRs requesting review", len(prs))
+	log.Printf("[POLL] Fetching my own open PRs from GitHub...")
+	myPRs, err := p.ghClient.GetMyOpenPRs(ctx)
+	if err != nil {
+		log.Printf("[POLL] ERROR: Failed to fetch my open PRs: %v", err)
+		// Continue even if this fails
+		myPRs = []github.PullRequest{}
+	}
+	log.Printf("[POLL] Found %d of my own open PRs", len(myPRs))
+
+	// Combine all PRs for cache
+	allPRs := append(reviewPRs, myPRs...)
 
 	// Update cache for fast dashboard loading
 	if p.cacheUpdateFunc != nil {
-		p.cacheUpdateFunc(prs)
+		p.cacheUpdateFunc(allPRs)
 	}
 
-	// Group PRs by repository for batch processing
-	prsByRepo := make(map[string][]github.PullRequest)
-	for _, pr := range prs {
+	// Group review PRs by repository for batch processing
+	reviewPRsByRepo := make(map[string][]github.PullRequest)
+	for _, pr := range reviewPRs {
 		repoKey := fmt.Sprintf("%s/%s", pr.Owner, pr.Repo)
-		prsByRepo[repoKey] = append(prsByRepo[repoKey], pr)
+		reviewPRsByRepo[repoKey] = append(reviewPRsByRepo[repoKey], pr)
 	}
 
-	// Process each repository's PRs in batch
-	for repoKey, repoPRs := range prsByRepo {
-		if err := p.processPRBatch(ctx, repoPRs); err != nil {
-			log.Printf("Error processing PRs for %s: %v", repoKey, err)
+	// Group my PRs by repository for batch processing
+	myPRsByRepo := make(map[string][]github.PullRequest)
+	for _, pr := range myPRs {
+		repoKey := fmt.Sprintf("%s/%s", pr.Owner, pr.Repo)
+		myPRsByRepo[repoKey] = append(myPRsByRepo[repoKey], pr)
+	}
+
+	// Process review PRs in smaller batches
+	log.Printf("[POLL] Processing %d repositories for review PRs", len(reviewPRsByRepo))
+	for repoKey, repoPRs := range reviewPRsByRepo {
+		log.Printf("[POLL] Processing review PRs for repository %s with %d PRs", repoKey, len(repoPRs))
+		// Split into smaller batches of 5 PRs to avoid timeout
+		p.processInBatches(ctx, repoPRs, false, 5)
+	}
+
+	// Process my PRs in smaller batches
+	log.Printf("[POLL] Processing %d repositories for my PRs", len(myPRsByRepo))
+	for repoKey, repoPRs := range myPRsByRepo {
+		log.Printf("[POLL] Processing my PRs for repository %s with %d PRs", repoKey, len(repoPRs))
+		// Split into smaller batches of 5 PRs to avoid timeout
+		p.processInBatches(ctx, repoPRs, true, 5)
+	}
+
+	duration := time.Since(startTime)
+	log.Printf("[POLL] Poll completed in %v", duration)
+}
+
+func (p *Poller) processInBatches(ctx context.Context, prs []github.PullRequest, isMine bool, batchSize int) {
+	for i := 0; i < len(prs); i += batchSize {
+		end := i + batchSize
+		if end > len(prs) {
+			end = len(prs)
+		}
+		batch := prs[i:end]
+		log.Printf("[POLL] Processing batch %d-%d of %d PRs", i+1, end, len(prs))
+		if err := p.processPRBatch(ctx, batch, isMine); err != nil {
+			log.Printf("[POLL] ERROR: Batch %d-%d failed: %v", i+1, end, err)
+		} else {
+			log.Printf("[POLL] Successfully processed batch %d-%d", i+1, end)
 		}
 	}
 }
 
-func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest) error {
+func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, isMine bool) error {
 	if len(prs) == 0 {
 		return nil
 	}
+
+	prType := "review"
+	if isMine {
+		prType = "my"
+	}
+	log.Printf("[BATCH] Processing %d %s PRs", len(prs), prType)
 
 	// Filter PRs that need review
 	var prsToReview []github.PullRequest
@@ -155,34 +310,62 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest) e
 	}
 
 	// Mark all PRs as generating
+	log.Printf("[BATCH] Marking %d %s PRs as 'generating'", len(prsToReview), prType)
 	for _, pr := range prsToReview {
-		if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA); err != nil {
-			log.Printf("Error setting generating status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+		if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, isMine); err != nil {
+			log.Printf("[BATCH] ERROR: Failed to set generating status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 		}
 	}
 
 	owner := prsToReview[0].Owner
 	repo := prsToReview[0].Repo
-	log.Printf("Generating reviews for %s/%s PRs: %v", owner, repo, getPRNumbers(prsToReview))
+	prNumbers := getPRNumbers(prsToReview)
+	log.Printf("[BATCH] Starting cbpr batch for %s/%s PRs: %v", owner, repo, prNumbers)
 
+	startTime := time.Now()
 	// Generate reviews using cbpr (batch)
-	if err := p.generateReviewsBatch(ctx, prsToReview); err != nil {
-		// Mark all as error
-		for _, pr := range prsToReview {
-			p.db.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error")
-		}
-		return fmt.Errorf("failed to generate reviews: %w", err)
+	batchErr := p.generateReviewsBatch(ctx, prsToReview, isMine)
+	duration := time.Since(startTime)
+
+	if batchErr != nil {
+		log.Printf("[BATCH] ERROR: cbpr batch failed after %v: %v", duration, batchErr)
+		// Don't mark all as error immediately - check which files were actually created
+		// This provides resilience against partial failures
+	} else {
+		log.Printf("[BATCH] cbpr batch completed in %v", duration)
 	}
 
-	// Update all as completed
+	// Check each PR individually to see if its file exists
+	// This allows partial success recovery when cbpr is killed mid-execution
+	absReviewDir, _ := filepath.Abs(p.reviewDir)
+	completedCount := 0
+	errorCount := 0
+
 	for _, pr := range prsToReview {
 		filename := fmt.Sprintf("%s_%s_%d.html", pr.Owner, pr.Repo, pr.Number)
-		if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed"); err != nil {
-			log.Printf("Error updating DB for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+		htmlPath := filepath.Join(absReviewDir, filename)
+
+		if _, err := os.Stat(htmlPath); err == nil {
+			// File exists - mark as completed
+			if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", isMine); err != nil {
+				log.Printf("[BATCH] ERROR: Failed to update DB for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+			} else {
+				completedCount++
+			}
+		} else {
+			// File doesn't exist - mark as error
+			p.db.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error")
+			errorCount++
 		}
 	}
 
-	log.Printf("Successfully generated reviews for %s/%s PRs: %v", owner, repo, getPRNumbers(prsToReview))
+	log.Printf("[BATCH] Results: %d completed, %d errors (out of %d %s PRs)", completedCount, errorCount, len(prsToReview), prType)
+
+	if batchErr != nil && completedCount == 0 {
+		return fmt.Errorf("failed to generate reviews: %w", batchErr)
+	}
+
+	log.Printf("[BATCH] Successfully generated reviews for %s/%s PRs: %v", owner, repo, prNumbers)
 	return nil
 }
 
@@ -194,7 +377,7 @@ func getPRNumbers(prs []github.PullRequest) []int {
 	return nums
 }
 
-func (p *Poller) processPR(ctx context.Context, pr github.PullRequest) error {
+func (p *Poller) processPR(ctx context.Context, pr github.PullRequest, isMine bool) error {
 	// Check if we've already reviewed this commit
 	existingPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
@@ -216,7 +399,7 @@ func (p *Poller) processPR(ctx context.Context, pr github.PullRequest) error {
 	log.Printf("Generating review for %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 
 	// Set status to generating
-	if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA); err != nil {
+	if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, isMine); err != nil {
 		return fmt.Errorf("failed to set PR generating status: %w", err)
 	}
 
@@ -228,7 +411,7 @@ func (p *Poller) processPR(ctx context.Context, pr github.PullRequest) error {
 	}
 
 	// Update database with completed status
-	if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, htmlPath, "completed"); err != nil {
+	if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, htmlPath, "completed", isMine); err != nil {
 		return fmt.Errorf("failed to update DB: %w", err)
 	}
 
@@ -260,15 +443,19 @@ func (p *Poller) generateReview(ctx context.Context, pr github.PullRequest) (str
 		fmt.Sprintf("--repo-name=%s", repoName),
 		"-n", "3",
 		"-p", fmt.Sprintf("%d", pr.Number),
-		"--fast",                               // Development mode for faster iterations
 		fmt.Sprintf("--output=%s", outputPath), // Specify output file directly
 	)
 
 	log.Printf("Running cbpr: %s %v", p.cfg.CbprPath, cmd.Args)
 	log.Printf("Output path: %s", outputPath)
 
-	// Run command, output goes to stderr (logs)
-	if err := cmd.Run(); err != nil {
+	// Capture output for debugging
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("cbpr command failed with error: %v", err)
+		if len(output) > 0 {
+			log.Printf("cbpr output: %s", string(output))
+		}
 		return "", fmt.Errorf("cbpr command failed: %w", err)
 	}
 
@@ -280,13 +467,10 @@ func (p *Poller) generateReview(ctx context.Context, pr github.PullRequest) (str
 	return filename, nil
 }
 
-func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequest) error {
+func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequest, isMine bool) error {
 	if len(prs) == 0 {
 		return nil
 	}
-
-	owner := prs[0].Owner
-	repo := prs[0].Repo
 
 	// Use absolute path for output directory
 	absReviewDir, err := filepath.Abs(p.reviewDir)
@@ -299,46 +483,75 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 		return fmt.Errorf("failed to create reviews directory: %w", err)
 	}
 
-	// Build comma-separated list of PR numbers
-	prNumbers := make([]string, len(prs))
+	// Process each PR individually since cbpr doesn't write to cwd in batch mode
+	// cbpr writes to temp dir when using --html --no-open, so we must use --output
 	for i, pr := range prs {
-		prNumbers[i] = fmt.Sprintf("%d", pr.Number)
-	}
-	prNumbersStr := fmt.Sprintf("%s", prNumbers[0])
-	for i := 1; i < len(prNumbers); i++ {
-		prNumbersStr += "," + prNumbers[i]
-	}
+		log.Printf("[CBPR] Processing PR %d/%d: %s/%s#%d", i+1, len(prs), pr.Owner, pr.Repo, pr.Number)
 
-	// Build cbpr command with multiple PRs
-	repoName := fmt.Sprintf("%s/%s", owner, repo)
-	cmd := exec.CommandContext(ctx,
-		p.cfg.CbprPath,
-		"review",
-		fmt.Sprintf("--repo-name=%s", repoName),
-		"-n", "3",
-		"-p", prNumbersStr,
-		"--fast",
-		"--html",
-		"--no-open", // Don't open in browser
-	)
-
-	// Set working directory to reviews directory so cbpr writes files there
-	cmd.Dir = absReviewDir
-
-	log.Printf("Running batch cbpr: %s %v", p.cfg.CbprPath, cmd.Args)
-	log.Printf("Working directory: %s", absReviewDir)
-
-	// Run command, output goes to stderr (logs)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("cbpr command failed: %w", err)
-	}
-
-	// Verify files were created
-	for _, pr := range prs {
-		filename := fmt.Sprintf("%s_%s_%d.html", owner, repo, pr.Number)
+		filename := fmt.Sprintf("%s_%s_%d.html", pr.Owner, pr.Repo, pr.Number)
 		outputPath := filepath.Join(absReviewDir, filename)
+
+		// Build cbpr command with --output flag
+		repoName := fmt.Sprintf("%s/%s", pr.Owner, pr.Repo)
+		cmd := exec.CommandContext(ctx,
+			p.cfg.CbprPath,
+			"review",
+			fmt.Sprintf("--repo-name=%s", repoName),
+			"-n", "3",
+			"-p", fmt.Sprintf("%d", pr.Number),
+			fmt.Sprintf("--output=%s", outputPath),
+		)
+
+		log.Printf("[CBPR] Executing: cbpr review --repo-name=%s -n 3 -p %d --output=%s", repoName, pr.Number, outputPath)
+
+		execStart := time.Now()
+
+		// Track cbpr process
+		if err := cmd.Start(); err != nil {
+			log.Printf("[CBPR] ERROR: Failed to start command for PR %d: %v", pr.Number, err)
+			continue // Skip to next PR
+		}
+
+		p.cbprMutex.Lock()
+		p.cbprPID = cmd.Process.Pid
+		p.cbprStartTime = execStart
+		p.cbprMutex.Unlock()
+
+		log.Printf("[CBPR] Process started with PID %d", cmd.Process.Pid)
+
+		// Wait for command to complete
+		err := cmd.Wait()
+		execDuration := time.Since(execStart)
+
+		// Clear tracked process
+		p.cbprMutex.Lock()
+		p.cbprPID = 0
+		p.cbprMutex.Unlock()
+
+		if err != nil {
+			log.Printf("[CBPR] ERROR: Command failed for PR %d after %v: %v", pr.Number, execDuration, err)
+			// Mark as error immediately
+			p.db.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error")
+			log.Printf("[CBPR] Marked PR %d as 'error' in database", pr.Number)
+			continue // Skip to next PR
+		}
+
+		log.Printf("[CBPR] Command completed successfully for PR %d in %v", pr.Number, execDuration)
+
+		// Verify file was created and update status immediately
 		if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-			return fmt.Errorf("cbpr succeeded but file not created at %s", outputPath)
+			log.Printf("[CBPR] ERROR: File not created for PR %d: %s", pr.Number, outputPath)
+			// Mark as error immediately
+			p.db.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error")
+			log.Printf("[CBPR] Marked PR %d as 'error' in database", pr.Number)
+		} else {
+			log.Printf("[CBPR] Verified file exists: %s", filename)
+			// Mark as completed immediately
+			if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", isMine); err != nil {
+				log.Printf("[CBPR] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
+			} else {
+				log.Printf("[CBPR] Marked PR %d as 'completed' in database", pr.Number)
+			}
 		}
 	}
 
