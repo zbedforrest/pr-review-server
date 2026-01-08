@@ -464,11 +464,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
         fetchServerStatus();
         fetchPRs();
 
-        // Poll every 5 seconds for real-time updates
+        // Poll every 1 second for real-time updates
         setInterval(() => {
             fetchServerStatus();
             fetchPRs();
-        }, 5000);
+        }, 1000);
 
         // Update elapsed times every second
         setInterval(updateElapsedTimes, 1000);
