@@ -318,7 +318,8 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 		"-n", "3",
 		"-p", prNumbersStr,
 		"--fast",
-		"--html", // Generate HTML output
+		"--html",
+		"--no-open", // Don't open in browser
 	)
 
 	// Set working directory to reviews directory so cbpr writes files there
