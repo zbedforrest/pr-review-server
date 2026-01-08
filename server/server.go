@@ -139,10 +139,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
         .pr-title {
             font-size: 0.9em;
             color: #666;
-            max-width: 300px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            max-width: 500px;
+            word-wrap: break-word;
+            white-space: normal;
         }
         .delete-btn {
             background: #ef5350;
