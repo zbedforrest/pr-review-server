@@ -11,5 +11,8 @@ reviews/
 # Environment
 .env
 
+# Logs
+*.log
+
 # Go
 vendor/
