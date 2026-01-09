@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"github.com/google/go-github/v57/github"
+	"github.com/shurcooL/githubv4"
 	"golang.org/x/oauth2"
 )
 
 type Client struct {
 	gh       *github.Client
+	ghv4     *githubv4.Client
 	username string
 }
 
@@ -32,6 +34,15 @@ type PullRequest struct {
 	Author    string
 }
 
+// PRReviewData holds review information for a single PR
+type PRReviewData struct {
+	Owner          string
+	Repo           string
+	Number         int
+	ApprovalCount  int
+	MyReviewStatus string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+}
+
 func NewClient(token, username string) *Client {
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(
@@ -41,6 +52,7 @@ func NewClient(token, username string) *Client {
 
 	return &Client{
 		gh:       github.NewClient(tc),
+		ghv4:     githubv4.NewClient(tc),
 		username: username,
 	}
 }
@@ -297,4 +309,124 @@ func (c *Client) GetApprovalCount(ctx context.Context, owner, repo string, prNum
 	}
 
 	return approvalCount, false, nil
+}
+
+// BatchGetPRReviewData fetches review data for multiple PRs efficiently using GraphQL.
+// Groups PRs by repository and makes one query per repository.
+// Returns a map of "owner/repo/number" -> PRReviewData
+func (c *Client) BatchGetPRReviewData(ctx context.Context, prs []PullRequest) (map[string]*PRReviewData, error) {
+	if len(prs) == 0 {
+		return make(map[string]*PRReviewData), nil
+	}
+
+	// Group PRs by repository
+	prsByRepo := make(map[string][]PullRequest)
+	for _, pr := range prs {
+		key := fmt.Sprintf("%s/%s", pr.Owner, pr.Repo)
+		prsByRepo[key] = append(prsByRepo[key], pr)
+	}
+
+	results := make(map[string]*PRReviewData)
+
+	// Fetch review data for each repository
+	for repoKey, repoPRs := range prsByRepo {
+		log.Printf("[GRAPHQL] Fetching review data for %d PRs in %s", len(repoPRs), repoKey)
+
+		repoData, err := c.fetchReviewDataForRepo(ctx, repoPRs)
+		if err != nil {
+			log.Printf("[GRAPHQL] Error fetching review data for %s: %v", repoKey, err)
+			// Continue with other repos even if one fails
+			continue
+		}
+
+		// Merge results
+		for k, v := range repoData {
+			results[k] = v
+		}
+	}
+
+	log.Printf("[GRAPHQL] Successfully fetched review data for %d/%d PRs", len(results), len(prs))
+	return results, nil
+}
+
+// fetchReviewDataForRepo fetches review data for all PRs in a single repository using GraphQL
+func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) (map[string]*PRReviewData, error) {
+	if len(prs) == 0 {
+		return make(map[string]*PRReviewData), nil
+	}
+
+	owner := prs[0].Owner
+	repo := prs[0].Repo
+
+	// Query each PR using GraphQL (still more efficient than REST for review data)
+	results := make(map[string]*PRReviewData)
+
+	for _, pr := range prs {
+		// Query structure for a single PR
+		var singleQuery struct {
+			Repository struct {
+				PullRequest struct {
+					Number  int
+					Reviews struct {
+						Nodes []struct {
+							Author struct {
+								Login string
+							}
+							State string
+						}
+					} `graphql:"reviews(first: 100)"`
+				} `graphql:"pullRequest(number: $prNumber)"`
+			} `graphql:"repository(owner: $owner, name: $repo)"`
+		}
+
+		variables := map[string]interface{}{
+			"owner":    githubv4.String(owner),
+			"repo":     githubv4.String(repo),
+			"prNumber": githubv4.Int(pr.Number),
+		}
+
+		err := c.ghv4.Query(ctx, &singleQuery, variables)
+		if err != nil {
+			log.Printf("[GRAPHQL] Error querying PR %s/%s#%d: %v", owner, repo, pr.Number, err)
+			continue
+		}
+
+		// Process reviews to count approvals and find my review status
+		userLatestReview := make(map[string]string)
+		for _, review := range singleQuery.Repository.PullRequest.Reviews.Nodes {
+			username := review.Author.Login
+			state := review.State
+			// Track latest review per user (reviews are in chronological order)
+			if state != "PENDING" && state != "DISMISSED" {
+				userLatestReview[username] = state
+			}
+		}
+
+		// Count approvals
+		approvalCount := 0
+		for _, state := range userLatestReview {
+			if state == "APPROVED" {
+				approvalCount++
+			}
+		}
+
+		// Find my review status
+		myReviewStatus := ""
+		if status, exists := userLatestReview[c.username]; exists {
+			myReviewStatus = status
+		}
+
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, pr.Number)
+		results[key] = &PRReviewData{
+			Owner:          owner,
+			Repo:           repo,
+			Number:         pr.Number,
+			ApprovalCount:  approvalCount,
+			MyReviewStatus: myReviewStatus,
+		}
+
+		log.Printf("[GRAPHQL] PR %s/%s#%d: %d approvals, my status: %s", owner, repo, pr.Number, approvalCount, myReviewStatus)
+	}
+
+	return results, nil
 }
