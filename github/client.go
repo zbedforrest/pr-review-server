@@ -379,6 +379,11 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 	for i, pr := range prs {
 		alias := fmt.Sprintf("pr%d", i)
 		prAliases[alias] = pr.Number
+		// NOTE: reviews(last: 100) fetches the most recent 100 reviews.
+		// For PRs with >100 review events, we might miss older review states.
+		// This is acceptable since we only care about the most recent state per reviewer.
+		// If a PR has >100 reviews from unique reviewers, approval counts may be incomplete,
+		// but this is rare in practice. Full pagination would add significant complexity.
 		queryBuilder.WriteString(fmt.Sprintf(`
 			%s: repository(owner: "%s", name: "%s") {
 				pullRequest(number: %d) {

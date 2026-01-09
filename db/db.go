@@ -2,7 +2,7 @@ package db
 
 import (
 	"database/sql"
-	"log"
+	"fmt"
 	"strings"
 	"time"
 
@@ -49,15 +49,17 @@ func New(dbPath string) (*DB, error) {
 	return db, nil
 }
 
-// execMigration runs an ALTER TABLE migration, ignoring "duplicate column" errors but logging others
-func (db *DB) execMigration(migration string) {
+// execMigration runs an ALTER TABLE migration, ignoring "duplicate column" errors but returning others
+func (db *DB) execMigration(migration string) error {
 	_, err := db.conn.Exec(migration)
 	if err != nil {
 		// Only ignore "duplicate column" errors - these are expected for existing databases
-		if !strings.Contains(err.Error(), "duplicate column") {
-			log.Printf("[DB] WARNING: Migration failed: %v\nMigration SQL: %s", err, migration)
+		if strings.Contains(err.Error(), "duplicate column") {
+			return nil // Expected error, safe to ignore
 		}
+		return fmt.Errorf("migration failed: %w\nSQL: %s", err, migration)
 	}
+	return nil
 }
 
 func (db *DB) initSchema() error {
@@ -79,15 +81,23 @@ func (db *DB) initSchema() error {
 	}
 
 	// Run migrations for additional columns (safe to run multiple times)
-	// These will log warnings for any errors other than "duplicate column"
-	db.execMigration(`ALTER TABLE prs ADD COLUMN status TEXT DEFAULT 'pending'`)
-	db.execMigration(`ALTER TABLE prs ADD COLUMN generating_since TIMESTAMP`)
-	db.execMigration(`ALTER TABLE prs ADD COLUMN is_mine INTEGER DEFAULT 0`)
-	db.execMigration(`ALTER TABLE prs ADD COLUMN title TEXT DEFAULT ''`)
-	db.execMigration(`ALTER TABLE prs ADD COLUMN author TEXT DEFAULT ''`)
-	db.execMigration(`ALTER TABLE prs ADD COLUMN approval_count INTEGER DEFAULT 0`)
-	db.execMigration(`ALTER TABLE prs ADD COLUMN my_review_status TEXT DEFAULT ''`)
-	db.execMigration(`ALTER TABLE prs ADD COLUMN created_at TIMESTAMP`)
+	// Duplicate column errors are ignored, but other errors will fail fast
+	migrations := []string{
+		`ALTER TABLE prs ADD COLUMN status TEXT DEFAULT 'pending'`,
+		`ALTER TABLE prs ADD COLUMN generating_since TIMESTAMP`,
+		`ALTER TABLE prs ADD COLUMN is_mine INTEGER DEFAULT 0`,
+		`ALTER TABLE prs ADD COLUMN title TEXT DEFAULT ''`,
+		`ALTER TABLE prs ADD COLUMN author TEXT DEFAULT ''`,
+		`ALTER TABLE prs ADD COLUMN approval_count INTEGER DEFAULT 0`,
+		`ALTER TABLE prs ADD COLUMN my_review_status TEXT DEFAULT ''`,
+		`ALTER TABLE prs ADD COLUMN created_at TIMESTAMP`,
+	}
+
+	for _, migration := range migrations {
+		if err := db.execMigration(migration); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
