@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"pr-review-server/config"
@@ -32,6 +33,15 @@ func main() {
 	log.Printf("Server Port: %s", cfg.ServerPort)
 	log.Printf("Reviews Directory: %s", cfg.ReviewsDir)
 	log.Printf("CBPR Path: %s", cfg.CbprPath)
+
+	// Create required directories
+	dbDir := filepath.Dir(cfg.DBPath)
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		log.Fatalf("Failed to create data directory: %v", err)
+	}
+	if err := os.MkdirAll(cfg.ReviewsDir, 0755); err != nil {
+		log.Fatalf("Failed to create reviews directory: %v", err)
+	}
 
 	// Initialize database
 	database, err := db.New(cfg.DBPath)
