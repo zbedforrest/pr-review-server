@@ -640,6 +640,38 @@ func (p *Poller) poll(ctx context.Context) {
 		p.cacheUpdateFunc(allPRs)
 	}
 
+	// CRITICAL: Also add ALL database PRs to ensure we update review data even for PRs
+	// that are no longer in GitHub search (e.g., you've already reviewed them)
+	dbPRsForReviewUpdate, err := p.db.GetAllPRs()
+	if err != nil {
+		log.Printf("[POLL] WARNING: Failed to get database PRs for review update: %v", err)
+	} else {
+		// Create a map of PRs we already have to avoid duplicates
+		prMap := make(map[string]github.PullRequest)
+		for _, pr := range allPRs {
+			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+			prMap[key] = pr
+		}
+
+		// Add database PRs that aren't already in our list
+		for _, dbPR := range dbPRsForReviewUpdate {
+			key := fmt.Sprintf("%s/%s/%d", dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber)
+			if _, exists := prMap[key]; !exists {
+				// Add this PR from database
+				allPRs = append(allPRs, github.PullRequest{
+					Owner:     dbPR.RepoOwner,
+					Repo:      dbPR.RepoName,
+					Number:    dbPR.PRNumber,
+					CommitSHA: dbPR.LastCommitSHA,
+					Title:     dbPR.Title,
+					Author:    dbPR.Author,
+					URL:       fmt.Sprintf("https://github.com/%s/%s/pull/%d", dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber),
+				})
+			}
+		}
+		log.Printf("[POLL] Added %d database PRs to review update list (total: %d PRs)", len(allPRs)-len(prMap), len(allPRs))
+	}
+
 	// Batch fetch review data for all PRs using GraphQL (much more efficient)
 	log.Printf("[POLL] Batch fetching review data for %d PRs using GraphQL...", len(allPRs))
 	if len(allPRs) > 0 {
