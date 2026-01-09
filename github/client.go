@@ -431,65 +431,52 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 		return nil, fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
 	}
 
-	// Parse response
-	var graphqlResp struct {
-		Data map[string]interface{} `json:"data"`
+	// Define structs for type-safe GraphQL response parsing
+	type ReviewAuthor struct {
+		Login string `json:"login"`
 	}
+	type ReviewNode struct {
+		Author *ReviewAuthor `json:"author"`
+		State  string        `json:"state"`
+	}
+	type ReviewsData struct {
+		Nodes []ReviewNode `json:"nodes"`
+	}
+	type PRData struct {
+		Reviews ReviewsData `json:"reviews"`
+	}
+	type RepoData struct {
+		PullRequest PRData `json:"pullRequest"`
+	}
+	type GraphQLResponse struct {
+		Data map[string]RepoData `json:"data"`
+	}
+
+	// Parse response
+	var graphqlResp GraphQLResponse
 	if err := json.NewDecoder(resp.Body).Decode(&graphqlResp); err != nil {
 		return nil, fmt.Errorf("failed to decode GraphQL response: %w", err)
 	}
 
-	result := graphqlResp.Data
-
 	// Parse results
 	results := make(map[string]*PRReviewData)
 	for alias, prNumber := range prAliases {
-		repoData, ok := result[alias].(map[string]interface{})
+		repoData, ok := graphqlResp.Data[alias]
 		if !ok {
 			log.Printf("[GRAPHQL] Warning: Failed to parse repo data for alias %s", alias)
 			continue
 		}
 
-		prData, ok := repoData["pullRequest"].(map[string]interface{})
-		if !ok {
-			log.Printf("[GRAPHQL] Warning: Failed to parse PR data for alias %s", alias)
-			continue
-		}
-
-		reviewsData, ok := prData["reviews"].(map[string]interface{})
-		if !ok {
-			log.Printf("[GRAPHQL] Warning: No reviews data for PR %d", prNumber)
-			continue
-		}
-
-		nodes, ok := reviewsData["nodes"].([]interface{})
-		if !ok {
-			log.Printf("[GRAPHQL] Warning: Failed to parse reviews nodes for PR %d", prNumber)
-			continue
-		}
-
 		// Process reviews to count approvals and find my review status
 		userLatestReview := make(map[string]string)
-		for _, node := range nodes {
-			reviewNode, ok := node.(map[string]interface{})
-			if !ok {
+		for _, reviewNode := range repoData.PullRequest.Reviews.Nodes {
+			// Bot reviews or deleted users might have nil author
+			if reviewNode.Author == nil {
 				continue
 			}
 
-			authorData, ok := reviewNode["author"].(map[string]interface{})
-			if !ok || authorData == nil {
-				continue // Bot reviews or deleted users might have nil author
-			}
-
-			username, ok := authorData["login"].(string)
-			if !ok {
-				continue
-			}
-
-			state, ok := reviewNode["state"].(string)
-			if !ok {
-				continue
-			}
+			username := reviewNode.Author.Login
+			state := reviewNode.State
 
 			// Track latest review per user (reviews are in chronological order)
 			if state != "PENDING" && state != "DISMISSED" {

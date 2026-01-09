@@ -222,7 +222,7 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 				WHEN 'completed' THEN 3
 				ELSE 4
 			END,
-			created_at DESC
+			created_at DESC NULLS LAST
 	`)
 	if err != nil {
 		return nil, err
