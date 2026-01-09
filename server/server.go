@@ -31,6 +31,10 @@ type Server struct {
 	pollTriggerFunc func()
 	poller         PollerInterface
 	startTime      time.Time
+	// Cache for rate limit info to avoid calling GitHub API on every status request
+	rateLimitCache    *github.RateLimitInfo
+	rateLimitCacheMux sync.RWMutex
+	rateLimitCacheTime time.Time
 }
 
 type PRResponse struct {
@@ -704,9 +708,29 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get GitHub API rate limit status
-	ctx := r.Context()
-	rateLimitInfo, err := s.ghClient.GetRateLimitInfo(ctx)
+	// Get GitHub API rate limit status (cached to avoid excessive API calls)
+	// Web client polls every 1 second, so we cache for 30 seconds
+	s.rateLimitCacheMux.RLock()
+	cachedInfo := s.rateLimitCache
+	cacheAge := time.Since(s.rateLimitCacheTime)
+	s.rateLimitCacheMux.RUnlock()
+
+	// Refresh cache if older than 30 seconds or not set
+	if cachedInfo == nil || cacheAge > 30*time.Second {
+		ctx := r.Context()
+		freshInfo, err := s.ghClient.GetRateLimitInfo(ctx)
+		if err == nil {
+			s.rateLimitCacheMux.Lock()
+			s.rateLimitCache = freshInfo
+			s.rateLimitCacheTime = time.Now()
+			cachedInfo = freshInfo
+			s.rateLimitCacheMux.Unlock()
+		} else {
+			log.Printf("[STATUS] Warning: Failed to refresh rate limit info: %v", err)
+			// Keep using old cache if we have it
+		}
+	}
+
 	rateLimitData := map[string]interface{}{
 		"remaining": 0,
 		"limit":     5000,
@@ -714,14 +738,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"is_limited": true,
 		"error":     "",
 	}
-	if err != nil {
-		rateLimitData["error"] = err.Error()
-		log.Printf("[STATUS] Warning: Failed to get rate limit info: %v", err)
-	} else {
-		rateLimitData["remaining"] = rateLimitInfo.Remaining
-		rateLimitData["limit"] = rateLimitInfo.Limit
-		rateLimitData["reset_at"] = rateLimitInfo.ResetTime.Format(time.RFC3339)
-		rateLimitData["is_limited"] = rateLimitInfo.Remaining < 10
+	if cachedInfo != nil {
+		rateLimitData["remaining"] = cachedInfo.Remaining
+		rateLimitData["limit"] = cachedInfo.Limit
+		rateLimitData["reset_at"] = cachedInfo.ResetTime.Format(time.RFC3339)
+		rateLimitData["is_limited"] = cachedInfo.Remaining < 10
 	}
 
 	response := map[string]interface{}{
