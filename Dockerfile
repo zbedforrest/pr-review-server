@@ -23,7 +23,10 @@ RUN apk --no-cache add \
     ca-certificates \
     sqlite-libs \
     bash \
-    wget
+    wget \
+    espeak-ng \
+    alsa-utils \
+    pulseaudio-utils
 
 WORKDIR /app
 

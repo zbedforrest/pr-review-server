@@ -9,6 +9,10 @@ services:
       - POLLING_INTERVAL=${POLLING_INTERVAL:-1m}
       - SERVER_PORT=8080
       - CBPR_PATH=/usr/local/bin/cbpr
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      # Audio configuration for PulseAudio (see AUDIO_SETUP.md)
+      - PULSE_SERVER=host.docker.internal
+      - PULSE_COOKIE=/tmp/pulse-cookie
     ports:
       - "${SERVER_PORT:-7769}:8080"
     volumes:
@@ -19,6 +23,8 @@ services:
       - ~/.gitconfig:/home/appuser/.gitconfig:ro
       # Optional: mount specific config folder cbpr needs, e.g. for gh cli
       # - ~/.config/gh:/home/appuser/.config/gh:ro
+      # Audio: mount PulseAudio cookie for authentication
+      - ~/.config/pulse/cookie:/tmp/pulse-cookie:ro
     logging:
       driver: "json-file"
       options:

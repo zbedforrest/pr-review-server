@@ -36,7 +36,7 @@ func Load() *Config {
 		GitHubToken:              os.Getenv("GITHUB_TOKEN"),
 		GitHubUsername:           os.Getenv("GITHUB_USERNAME"),
 		PollingInterval:          pollingInterval,
-		DBPath:                   "./pr-review.db",
+		DBPath:                   "./data/pr-review.db",
 		ReviewsDir:               "./reviews",
 		ServerPort:               getEnvOrDefault("SERVER_PORT", "8080"),
 		CbprPath:                 cbprPath,

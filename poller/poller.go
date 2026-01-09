@@ -52,7 +52,7 @@ func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Poller {
 
 // upsertPRPreservingReviewData upserts a PR while preserving existing review data (doesn't fetch from GitHub)
 // This is used when updating PR status/files but we want to keep approval counts unchanged
-func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool) error {
+func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool, createdAt time.Time) error {
 	// Get existing PR to preserve review data
 	existingPR, err := p.db.GetPR(owner, repo, prNumber)
 	if err != nil {
@@ -67,12 +67,12 @@ func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo s
 		myReviewStatus = existingPR.MyReviewStatus
 	}
 
-	return p.db.UpsertPR(owner, repo, prNumber, commitSHA, htmlPath, status, title, author, isMine, approvalCount, myReviewStatus)
+	return p.db.UpsertPR(owner, repo, prNumber, commitSHA, htmlPath, status, title, author, isMine, approvalCount, myReviewStatus, createdAt)
 }
 
 // upsertPRWithReviewData fetches review data from GitHub and upserts the PR in the database
 // DEPRECATED: Use batch GraphQL fetching at poll level instead of individual calls
-func (p *Poller) upsertPRWithReviewData(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool) error {
+func (p *Poller) upsertPRWithReviewData(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool, createdAt time.Time) error {
 	// Get existing PR to preserve values if we're rate limited
 	existingPR, err := p.db.GetPR(owner, repo, prNumber)
 	if err != nil {
@@ -115,7 +115,7 @@ func (p *Poller) upsertPRWithReviewData(ctx context.Context, owner, repo string,
 		}
 	}
 
-	return p.db.UpsertPR(owner, repo, prNumber, commitSHA, htmlPath, status, title, author, isMine, approvalCount, myReviewStatus)
+	return p.db.UpsertPR(owner, repo, prNumber, commitSHA, htmlPath, status, title, author, isMine, approvalCount, myReviewStatus, createdAt)
 }
 
 func (p *Poller) SetCacheUpdateFunc(f func([]github.PullRequest)) {
@@ -391,26 +391,34 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 	return removed, nil
 }
 
-// speak uses macOS say command for voice notifications (macOS only)
+// speak uses platform-appropriate TTS command for voice notifications
+// macOS: say command, Linux: espeak-ng
 func (p *Poller) speak(message string) {
 	if !p.cfg.EnableVoiceNotifications {
 		log.Printf("[VOICE] Skipped (disabled): %s", message)
 		return
 	}
 
-	// Voice notifications only work on macOS
-	if runtime.GOOS != "darwin" {
-		log.Printf("[VOICE] Skipped (unsupported OS %s): %s", runtime.GOOS, message)
-		return
-	}
-
 	log.Printf("[VOICE] Speaking: %s", message)
 
-	// Run say command in a goroutine to avoid blocking and prevent zombie processes
+	// Run TTS command in a goroutine to avoid blocking and prevent zombie processes
 	go func() {
-		cmd := exec.Command("say", message)
+		var cmd *exec.Cmd
+
+		switch runtime.GOOS {
+		case "darwin":
+			// macOS: use say command
+			cmd = exec.Command("say", message)
+		case "linux":
+			// Linux: use espeak-ng with reasonable speed and voice
+			cmd = exec.Command("espeak-ng", "-s", "175", message)
+		default:
+			log.Printf("[VOICE] ERROR: Unsupported OS %s", runtime.GOOS)
+			return
+		}
+
 		if err := cmd.Run(); err != nil {
-			log.Printf("[VOICE] ERROR: 'say' command failed: %v", err)
+			log.Printf("[VOICE] ERROR: TTS command failed on %s: %v", runtime.GOOS, err)
 		}
 	}()
 }
@@ -704,6 +712,7 @@ func (p *Poller) poll(ctx context.Context) {
 						isMine,
 						reviewData.ApprovalCount,
 						reviewData.MyReviewStatus,
+						pr.CreatedAt,
 					)
 					if err != nil {
 						log.Printf("[POLL] ERROR: Failed to update review data for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
@@ -871,7 +880,7 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, i
 	// Mark all PRs as generating
 	log.Printf("[BATCH] Marking %d %s PRs as 'generating'", len(prsToReview), prType)
 	for _, pr := range prsToReview {
-		if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, isMine); err != nil {
+		if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, isMine, pr.CreatedAt); err != nil {
 			log.Printf("[BATCH] ERROR: Failed to set generating status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 		}
 	}
@@ -906,7 +915,7 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, i
 
 		if _, err := os.Stat(htmlPath); err == nil {
 			// File exists - mark as completed (review data will be updated in batch later)
-			if err := p.upsertPRPreservingReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
+			if err := p.upsertPRPreservingReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine, pr.CreatedAt); err != nil {
 				log.Printf("[BATCH] ERROR: Failed to update DB for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 			} else {
 				completedCount++
@@ -958,7 +967,7 @@ func (p *Poller) processPR(ctx context.Context, pr github.PullRequest, isMine bo
 	log.Printf("Generating review for %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 
 	// Set status to generating
-	if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, isMine); err != nil {
+	if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, isMine, pr.CreatedAt); err != nil {
 		return fmt.Errorf("failed to set PR generating status: %w", err)
 	}
 
@@ -970,7 +979,7 @@ func (p *Poller) processPR(ctx context.Context, pr github.PullRequest, isMine bo
 	}
 
 	// Update database with completed status (review data will be updated in batch later)
-	if err := p.upsertPRPreservingReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, htmlPath, "completed", pr.Title, pr.Author, isMine); err != nil {
+	if err := p.upsertPRPreservingReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, htmlPath, "completed", pr.Title, pr.Author, isMine, pr.CreatedAt); err != nil {
 		return fmt.Errorf("failed to update DB: %w", err)
 	}
 
@@ -1136,7 +1145,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				os.Remove(outputPath) // Clean up the stale review file
 			} else {
 				// Commit matches - safe to mark as completed (review data updated in batch later)
-				if err := p.upsertPRPreservingReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
+				if err := p.upsertPRPreservingReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine, pr.CreatedAt); err != nil {
 					log.Printf("[CBPR] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
 				} else {
 					log.Printf("[CBPR] Marked PR %d as 'completed' in database", pr.Number)

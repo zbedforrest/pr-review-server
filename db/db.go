@@ -17,9 +17,12 @@ type PR struct {
 	ReviewHTMLPath  string
 	Status          string // "pending", "generating", "completed", "error"
 	GeneratingSince *time.Time
-	IsMine          bool   // true if this is my PR (authored by me)
-	Title           string // PR title from GitHub
-	Author          string // PR author from GitHub
+	IsMine          bool      // true if this is my PR (authored by me)
+	Title           string    // PR title from GitHub
+	Author          string    // PR author from GitHub
+	ApprovalCount   int       // Number of current approvals
+	MyReviewStatus  string    // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	CreatedAt       time.Time // PR creation timestamp from GitHub
 }
 
 type DB struct {
@@ -78,6 +81,13 @@ func (db *DB) initSchema() error {
 	db.conn.Exec(`ALTER TABLE prs ADD COLUMN title TEXT DEFAULT ''`)
 	db.conn.Exec(`ALTER TABLE prs ADD COLUMN author TEXT DEFAULT ''`)
 
+	// Add approval_count and my_review_status columns for caching GitHub review data
+	db.conn.Exec(`ALTER TABLE prs ADD COLUMN approval_count INTEGER DEFAULT 0`)
+	db.conn.Exec(`ALTER TABLE prs ADD COLUMN my_review_status TEXT DEFAULT ''`)
+
+	// Add created_at column for storing PR creation timestamp from GitHub
+	db.conn.Exec(`ALTER TABLE prs ADD COLUMN created_at TIMESTAMP`)
+
 	return nil
 }
 
@@ -86,14 +96,15 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	var reviewedAt sql.NullTime
 	var htmlPath sql.NullString
 	var generatingSince sql.NullTime
+	var createdAt sql.NullTime
 	var isMine int
-	var title, author sql.NullString
+	var title, author, myReviewStatus sql.NullString
 	err := db.conn.QueryRow(`
-		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since, COALESCE(is_mine, 0), COALESCE(title, ''), COALESCE(author, '')
+		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since, COALESCE(is_mine, 0), COALESCE(title, ''), COALESCE(author, ''), COALESCE(approval_count, 0), COALESCE(my_review_status, ''), created_at
 		FROM prs WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
 	`, owner, repo, prNumber).Scan(
 		&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
-		&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince, &isMine, &title, &author,
+		&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince, &isMine, &title, &author, &pr.ApprovalCount, &myReviewStatus, &createdAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -110,6 +121,9 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	if generatingSince.Valid {
 		pr.GeneratingSince = &generatingSince.Time
 	}
+	if createdAt.Valid {
+		pr.CreatedAt = createdAt.Time
+	}
 	pr.IsMine = isMine == 1
 	if title.Valid {
 		pr.Title = title.String
@@ -117,22 +131,25 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	if author.Valid {
 		pr.Author = author.String
 	}
+	if myReviewStatus.Valid {
+		pr.MyReviewStatus = myReviewStatus.String
+	}
 	return pr, nil
 }
 
-func (db *DB) UpsertPR(owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool) error {
+func (db *DB) UpsertPR(owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool, approvalCount int, myReviewStatus string, createdAt time.Time) error {
 	now := time.Now().UTC()
 	isMineInt := 0
 	if isMine {
 		isMineInt = 1
 	}
 	_, err := db.conn.Exec(`
-		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, status, generating_since, is_mine, title, author)
-		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, status, generating_since, is_mine, title, author, approval_count, my_review_status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
-		DO UPDATE SET last_commit_sha = ?, last_reviewed_at = ?, review_html_path = ?, status = ?, generating_since = NULL, is_mine = ?, title = ?, author = ?
-	`, owner, repo, prNumber, commitSHA, now, htmlPath, status, isMineInt, title, author,
-		commitSHA, now, htmlPath, status, isMineInt, title, author)
+		DO UPDATE SET last_commit_sha = ?, last_reviewed_at = ?, review_html_path = ?, status = ?, generating_since = NULL, is_mine = ?, title = ?, author = ?, approval_count = ?, my_review_status = ?, created_at = ?
+	`, owner, repo, prNumber, commitSHA, now, htmlPath, status, isMineInt, title, author, approvalCount, myReviewStatus, createdAt,
+		commitSHA, now, htmlPath, status, isMineInt, title, author, approvalCount, myReviewStatus, createdAt)
 	return err
 }
 
@@ -157,24 +174,24 @@ func (db *DB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA s
 	return err
 }
 
-func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, isMine bool) error {
+func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, isMine bool, createdAt time.Time) error {
 	now := time.Now().UTC()
 	isMineInt := 0
 	if isMine {
 		isMineInt = 1
 	}
 	_, err := db.conn.Exec(`
-		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status, generating_since, is_mine, title, author, review_html_path)
-		VALUES (?, ?, ?, ?, 'generating', ?, ?, ?, ?, NULL)
+		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status, generating_since, is_mine, title, author, review_html_path, created_at)
+		VALUES (?, ?, ?, ?, 'generating', ?, ?, ?, ?, NULL, ?)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
-		DO UPDATE SET last_commit_sha = ?, status = 'generating', generating_since = ?, is_mine = ?, title = ?, author = ?, review_html_path = NULL
-	`, owner, repo, prNumber, commitSHA, now, isMineInt, title, author, commitSHA, now, isMineInt, title, author)
+		DO UPDATE SET last_commit_sha = ?, status = 'generating', generating_since = ?, is_mine = ?, title = ?, author = ?, review_html_path = NULL, created_at = ?
+	`, owner, repo, prNumber, commitSHA, now, isMineInt, title, author, createdAt, commitSHA, now, isMineInt, title, author, createdAt)
 	return err
 }
 
 func (db *DB) GetAllPRs() ([]PR, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since, COALESCE(is_mine, 0), COALESCE(title, ''), COALESCE(author, '')
+		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since, COALESCE(is_mine, 0), COALESCE(title, ''), COALESCE(author, ''), COALESCE(approval_count, 0), COALESCE(my_review_status, ''), created_at
 		FROM prs
 		ORDER BY
 			CASE status
@@ -183,7 +200,7 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 				WHEN 'completed' THEN 3
 				ELSE 4
 			END,
-			last_reviewed_at DESC
+			created_at DESC
 	`)
 	if err != nil {
 		return nil, err
@@ -196,10 +213,11 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 		var reviewedAt sql.NullTime
 		var htmlPath sql.NullString
 		var generatingSince sql.NullTime
+		var createdAt sql.NullTime
 		var isMine int
-		var title, author sql.NullString
+		var title, author, myReviewStatus sql.NullString
 		if err := rows.Scan(&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
-			&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince, &isMine, &title, &author); err != nil {
+			&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince, &isMine, &title, &author, &pr.ApprovalCount, &myReviewStatus, &createdAt); err != nil {
 			return nil, err
 		}
 		if reviewedAt.Valid {
@@ -211,12 +229,18 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 		if generatingSince.Valid {
 			pr.GeneratingSince = &generatingSince.Time
 		}
+		if createdAt.Valid {
+			pr.CreatedAt = createdAt.Time
+		}
 		pr.IsMine = isMine == 1
 		if title.Valid {
 			pr.Title = title.String
 		}
 		if author.Valid {
 			pr.Author = author.String
+		}
+		if myReviewStatus.Valid {
+			pr.MyReviewStatus = myReviewStatus.String
 		}
 		prs = append(prs, pr)
 	}
