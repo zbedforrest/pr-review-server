@@ -151,14 +151,14 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	return pr, nil
 }
 
-func (db *DB) UpsertPR(owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool, approvalCount int, myReviewStatus string, createdAt time.Time, draft bool) error {
+func (db *DB) UpsertPR(pr *PR) error {
 	now := time.Now().UTC()
 	isMineInt := 0
-	if isMine {
+	if pr.IsMine {
 		isMineInt = 1
 	}
 	draftInt := 0
-	if draft {
+	if pr.Draft {
 		draftInt = 1
 	}
 	_, err := db.conn.Exec(`
@@ -166,8 +166,8 @@ func (db *DB) UpsertPR(owner, repo string, prNumber int, commitSHA, htmlPath, st
 		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
 		DO UPDATE SET last_commit_sha = ?, last_reviewed_at = ?, review_html_path = ?, status = ?, generating_since = NULL, is_mine = ?, title = ?, author = ?, approval_count = ?, my_review_status = ?, created_at = ?, draft = ?
-	`, owner, repo, prNumber, commitSHA, now, htmlPath, status, isMineInt, title, author, approvalCount, myReviewStatus, createdAt, draftInt,
-		commitSHA, now, htmlPath, status, isMineInt, title, author, approvalCount, myReviewStatus, createdAt, draftInt)
+	`, pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA, now, pr.ReviewHTMLPath, pr.Status, isMineInt, pr.Title, pr.Author, pr.ApprovalCount, pr.MyReviewStatus, pr.CreatedAt, draftInt,
+		pr.LastCommitSHA, now, pr.ReviewHTMLPath, pr.Status, isMineInt, pr.Title, pr.Author, pr.ApprovalCount, pr.MyReviewStatus, pr.CreatedAt, draftInt)
 	return err
 }
 

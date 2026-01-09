@@ -67,7 +67,22 @@ func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo s
 		myReviewStatus = existingPR.MyReviewStatus
 	}
 
-	return p.db.UpsertPR(owner, repo, prNumber, commitSHA, htmlPath, status, title, author, isMine, approvalCount, myReviewStatus, createdAt, draft)
+	pr := &db.PR{
+		RepoOwner:      owner,
+		RepoName:       repo,
+		PRNumber:       prNumber,
+		LastCommitSHA:  commitSHA,
+		ReviewHTMLPath: htmlPath,
+		Status:         status,
+		Title:          title,
+		Author:         author,
+		IsMine:         isMine,
+		ApprovalCount:  approvalCount,
+		MyReviewStatus: myReviewStatus,
+		CreatedAt:      createdAt,
+		Draft:          draft,
+	}
+	return p.db.UpsertPR(pr)
 }
 
 // upsertPRWithReviewData fetches review data from GitHub and upserts the PR in the database
@@ -115,7 +130,22 @@ func (p *Poller) upsertPRWithReviewData(ctx context.Context, owner, repo string,
 		}
 	}
 
-	return p.db.UpsertPR(owner, repo, prNumber, commitSHA, htmlPath, status, title, author, isMine, approvalCount, myReviewStatus, createdAt, draft)
+	pr := &db.PR{
+		RepoOwner:      owner,
+		RepoName:       repo,
+		PRNumber:       prNumber,
+		LastCommitSHA:  commitSHA,
+		ReviewHTMLPath: htmlPath,
+		Status:         status,
+		Title:          title,
+		Author:         author,
+		IsMine:         isMine,
+		ApprovalCount:  approvalCount,
+		MyReviewStatus: myReviewStatus,
+		CreatedAt:      createdAt,
+		Draft:          draft,
+	}
+	return p.db.UpsertPR(pr)
 }
 
 func (p *Poller) SetCacheUpdateFunc(f func([]github.PullRequest)) {
@@ -702,19 +732,22 @@ func (p *Poller) poll(ctx context.Context) {
 					isMine := existingPR.IsMine
 
 					// Update approval count, my review status, and draft status (always use fresh value from GitHub)
-					err = p.db.UpsertPR(
-						pr.Owner, pr.Repo, pr.Number,
-						existingPR.LastCommitSHA,
-						existingPR.ReviewHTMLPath,
-						existingPR.Status,
-						existingPR.Title,
-						existingPR.Author,
-						isMine,
-						reviewData.ApprovalCount,
-						reviewData.MyReviewStatus,
-						pr.CreatedAt,
-						pr.Draft, // IMPORTANT: Always use fresh draft status from GitHub, never cached value
-					)
+					prToUpdate := &db.PR{
+						RepoOwner:      pr.Owner,
+						RepoName:       pr.Repo,
+						PRNumber:       pr.Number,
+						LastCommitSHA:  existingPR.LastCommitSHA,
+						ReviewHTMLPath: existingPR.ReviewHTMLPath,
+						Status:         existingPR.Status,
+						Title:          existingPR.Title,
+						Author:         existingPR.Author,
+						IsMine:         isMine,
+						ApprovalCount:  reviewData.ApprovalCount,
+						MyReviewStatus: reviewData.MyReviewStatus,
+						CreatedAt:      pr.CreatedAt,
+						Draft:          pr.Draft, // IMPORTANT: Always use fresh draft status from GitHub, never cached value
+					}
+					err = p.db.UpsertPR(prToUpdate)
 					if err != nil {
 						log.Printf("[POLL] ERROR: Failed to update review data for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 					} else {
