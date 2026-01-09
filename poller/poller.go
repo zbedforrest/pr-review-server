@@ -82,69 +82,13 @@ func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo s
 		CreatedAt:      createdAt,
 		Draft:          draft,
 	}
-	return p.db.UpsertPR(pr)
-}
 
-// upsertPRWithReviewData fetches review data from GitHub and upserts the PR in the database
-// DEPRECATED: Use batch GraphQL fetching at poll level instead of individual calls
-func (p *Poller) upsertPRWithReviewData(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool, createdAt time.Time, draft bool) error {
-	// Get existing PR to preserve values if we're rate limited
-	existingPR, err := p.db.GetPR(owner, repo, prNumber)
-	if err != nil {
-		log.Printf("[REVIEW_DATA] Warning: failed to get existing PR data for %s/%s#%d: %v", owner, repo, prNumber, err)
+	// Set LastReviewedAt when marking as completed
+	if status == "completed" {
+		now := time.Now().UTC()
+		pr.LastReviewedAt = &now
 	}
 
-	// Default to existing values (or 0 if no existing PR)
-	approvalCount := 0
-	myReviewStatus := ""
-	if existingPR != nil {
-		approvalCount = existingPR.ApprovalCount
-		myReviewStatus = existingPR.MyReviewStatus
-	}
-
-	// Try to fetch fresh approval count
-	if approvalCountVal, wasRateLimited, err := p.ghClient.GetApprovalCount(ctx, owner, repo, prNumber); err != nil {
-		if wasRateLimited {
-			log.Printf("[REVIEW_DATA] RATE LIMITED: Preserving existing approval count (%d) for %s/%s#%d", approvalCount, owner, repo, prNumber)
-		} else {
-			log.Printf("[REVIEW_DATA] Warning: failed to fetch approval count for %s/%s#%d: %v", owner, repo, prNumber, err)
-		}
-		// Keep existing approvalCount value
-	} else {
-		// Successfully fetched new value
-		approvalCount = approvalCountVal
-	}
-
-	// Fetch my review status only for PRs to review (not my PRs)
-	if !isMine {
-		if reviewStatus, wasRateLimited, err := p.ghClient.GetMyReviewStatus(ctx, owner, repo, prNumber); err != nil {
-			if wasRateLimited {
-				log.Printf("[REVIEW_DATA] RATE LIMITED: Preserving existing review status (%s) for %s/%s#%d", myReviewStatus, owner, repo, prNumber)
-			} else {
-				log.Printf("[REVIEW_DATA] Warning: failed to fetch review status for %s/%s#%d: %v", owner, repo, prNumber, err)
-			}
-			// Keep existing myReviewStatus value
-		} else {
-			// Successfully fetched new value
-			myReviewStatus = reviewStatus
-		}
-	}
-
-	pr := &db.PR{
-		RepoOwner:      owner,
-		RepoName:       repo,
-		PRNumber:       prNumber,
-		LastCommitSHA:  commitSHA,
-		ReviewHTMLPath: htmlPath,
-		Status:         status,
-		Title:          title,
-		Author:         author,
-		IsMine:         isMine,
-		ApprovalCount:  approvalCount,
-		MyReviewStatus: myReviewStatus,
-		CreatedAt:      createdAt,
-		Draft:          draft,
-	}
 	return p.db.UpsertPR(pr)
 }
 
