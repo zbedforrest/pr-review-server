@@ -56,7 +56,8 @@ func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo s
 	// Get existing PR to preserve review data
 	existingPR, err := p.db.GetPR(owner, repo, prNumber)
 	if err != nil {
-		log.Printf("[DB] Warning: failed to get existing PR data for %s/%s#%d: %v", owner, repo, prNumber, err)
+		log.Printf("[DB] Error: failed to get existing PR data for %s/%s#%d: %v", owner, repo, prNumber, err)
+		return err // Propagate DB error to prevent data loss
 	}
 
 	// Default to existing values (or 0 if no existing PR)
