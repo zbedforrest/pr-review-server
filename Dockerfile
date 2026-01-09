@@ -51,7 +51,7 @@ RUN mkdir -p /app/reviews /app/data
 
 # Create non-root user for security
 RUN addgroup -S appgroup && adduser -S -h /home/appuser appuser -G appgroup && \
-    chown -R appuser:appgroup /app/reviews /app/data /app/pr-review-server
+    chown -R appuser:appgroup /app
 
 # Switch to non-root user
 USER appuser
