@@ -50,6 +50,53 @@ func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Poller {
 	}
 }
 
+// upsertPRWithReviewData fetches review data from GitHub and upserts the PR in the database
+func (p *Poller) upsertPRWithReviewData(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool) error {
+	// Get existing PR to preserve values if we're rate limited
+	existingPR, err := p.db.GetPR(owner, repo, prNumber)
+	if err != nil {
+		log.Printf("[REVIEW_DATA] Warning: failed to get existing PR data for %s/%s#%d: %v", owner, repo, prNumber, err)
+	}
+
+	// Default to existing values (or 0 if no existing PR)
+	approvalCount := 0
+	myReviewStatus := ""
+	if existingPR != nil {
+		approvalCount = existingPR.ApprovalCount
+		myReviewStatus = existingPR.MyReviewStatus
+	}
+
+	// Try to fetch fresh approval count
+	if approvalCountVal, wasRateLimited, err := p.ghClient.GetApprovalCount(ctx, owner, repo, prNumber); err != nil {
+		if wasRateLimited {
+			log.Printf("[REVIEW_DATA] RATE LIMITED: Preserving existing approval count (%d) for %s/%s#%d", approvalCount, owner, repo, prNumber)
+		} else {
+			log.Printf("[REVIEW_DATA] Warning: failed to fetch approval count for %s/%s#%d: %v", owner, repo, prNumber, err)
+		}
+		// Keep existing approvalCount value
+	} else {
+		// Successfully fetched new value
+		approvalCount = approvalCountVal
+	}
+
+	// Fetch my review status only for PRs to review (not my PRs)
+	if !isMine {
+		if reviewStatus, wasRateLimited, err := p.ghClient.GetMyReviewStatus(ctx, owner, repo, prNumber); err != nil {
+			if wasRateLimited {
+				log.Printf("[REVIEW_DATA] RATE LIMITED: Preserving existing review status (%s) for %s/%s#%d", myReviewStatus, owner, repo, prNumber)
+			} else {
+				log.Printf("[REVIEW_DATA] Warning: failed to fetch review status for %s/%s#%d: %v", owner, repo, prNumber, err)
+			}
+			// Keep existing myReviewStatus value
+		} else {
+			// Successfully fetched new value
+			myReviewStatus = reviewStatus
+		}
+	}
+
+	return p.db.UpsertPR(owner, repo, prNumber, commitSHA, htmlPath, status, title, author, isMine, approvalCount, myReviewStatus)
+}
+
 func (p *Poller) SetCacheUpdateFunc(f func([]github.PullRequest)) {
 	p.cacheUpdateFunc = f
 }
@@ -762,7 +809,7 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, i
 
 		if _, err := os.Stat(htmlPath); err == nil {
 			// File exists - mark as completed
-			if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
+			if err := p.upsertPRWithReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
 				log.Printf("[BATCH] ERROR: Failed to update DB for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 			} else {
 				completedCount++
@@ -826,7 +873,7 @@ func (p *Poller) processPR(ctx context.Context, pr github.PullRequest, isMine bo
 	}
 
 	// Update database with completed status
-	if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, htmlPath, "completed", pr.Title, pr.Author, isMine); err != nil {
+	if err := p.upsertPRWithReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, htmlPath, "completed", pr.Title, pr.Author, isMine); err != nil {
 		return fmt.Errorf("failed to update DB: %w", err)
 	}
 
@@ -992,7 +1039,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				os.Remove(outputPath) // Clean up the stale review file
 			} else {
 				// Commit matches - safe to mark as completed
-				if err := p.db.UpsertPR(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
+				if err := p.upsertPRWithReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, isMine); err != nil {
 					log.Printf("[CBPR] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
 				} else {
 					log.Printf("[CBPR] Marked PR %d as 'completed' in database", pr.Number)

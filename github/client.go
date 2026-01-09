@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v57/github"
 	"golang.org/x/oauth2"
@@ -13,6 +14,12 @@ import (
 type Client struct {
 	gh       *github.Client
 	username string
+}
+
+type RateLimitInfo struct {
+	Limit     int
+	Remaining int
+	ResetTime time.Time
 }
 
 type PullRequest struct {
@@ -184,4 +191,110 @@ func (c *Client) GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber 
 	}
 
 	return pr.GetHead().GetSHA(), nil
+}
+
+// GetMyReviewStatus returns the current user's most recent review state on a PR
+// Returns: (status, wasRateLimited, error)
+// Status: "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "PENDING", or "" (no review)
+func (c *Client) GetMyReviewStatus(ctx context.Context, owner, repo string, prNumber int) (string, bool, error) {
+	opts := &github.ListOptions{PerPage: 100}
+	reviews, resp, err := c.gh.PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
+	if err != nil {
+		// Check if this is a rate limit error
+		if resp != nil && resp.Rate.Remaining == 0 {
+			resetIn := time.Until(resp.Rate.Reset.Time)
+			log.Printf("[RATE_LIMIT] API call BLOCKED by rate limit (resets in %v at %s)",
+				resetIn.Round(time.Minute), resp.Rate.Reset.Time.Format("15:04:05 MST"))
+			return "", true, fmt.Errorf("rate limited (resets at %s): %w", resp.Rate.Reset.Time.Format("15:04:05"), err)
+		}
+		return "", false, err
+	}
+
+	// Find the most recent review by the current user
+	// Reviews are returned in chronological order, so we iterate backwards
+	for i := len(reviews) - 1; i >= 0; i-- {
+		review := reviews[i]
+		if review.GetUser().GetLogin() == c.username {
+			state := review.GetState()
+			// Return the most recent non-DISMISSED, non-PENDING state
+			if state != "DISMISSED" && state != "PENDING" {
+				return state, false, nil
+			}
+		}
+	}
+
+	return "", false, nil // No review found
+}
+
+// GetRateLimitInfo returns the current rate limit status
+func (c *Client) GetRateLimitInfo(ctx context.Context) (*RateLimitInfo, error) {
+	limits, _, err := c.gh.RateLimit.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	core := limits.GetCore()
+	return &RateLimitInfo{
+		Limit:     core.Limit,
+		Remaining: core.Remaining,
+		ResetTime: core.Reset.Time,
+	}, nil
+}
+
+// IsRateLimited checks if we're currently rate limited (has few or no requests remaining)
+func (c *Client) IsRateLimited(ctx context.Context) bool {
+	info, err := c.GetRateLimitInfo(ctx)
+	if err != nil {
+		log.Printf("[RATE_LIMIT] Warning: Failed to check rate limit: %v", err)
+		return false // Assume not rate limited if we can't check
+	}
+
+	// Consider rate limited if we have less than 10 requests remaining
+	// or if we're completely out
+	isLimited := info.Remaining < 10
+	if isLimited {
+		resetIn := time.Until(info.ResetTime)
+		log.Printf("[RATE_LIMIT] WARNING: Rate limit low! %d/%d requests remaining (resets in %v at %s)",
+			info.Remaining, info.Limit, resetIn.Round(time.Minute), info.ResetTime.Format("15:04:05 MST"))
+	}
+	return isLimited
+}
+
+// GetApprovalCount returns the number of current approvals on a PR
+// This counts unique users whose most recent review is APPROVED
+// Returns (approvalCount, wasRateLimited, error)
+func (c *Client) GetApprovalCount(ctx context.Context, owner, repo string, prNumber int) (int, bool, error) {
+	opts := &github.ListOptions{PerPage: 100}
+	reviews, resp, err := c.gh.PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
+	if err != nil {
+		// Check if this is a rate limit error
+		if resp != nil && resp.Rate.Remaining == 0 {
+			resetIn := time.Until(resp.Rate.Reset.Time)
+			log.Printf("[RATE_LIMIT] API call BLOCKED by rate limit (resets in %v at %s)",
+				resetIn.Round(time.Minute), resp.Rate.Reset.Time.Format("15:04:05 MST"))
+			return 0, true, fmt.Errorf("rate limited (resets at %s): %w", resp.Rate.Reset.Time.Format("15:04:05"), err)
+		}
+		return 0, false, err
+	}
+
+	// Track the most recent review state for each user
+	userLatestReview := make(map[string]string)
+	for _, review := range reviews {
+		username := review.GetUser().GetLogin()
+		state := review.GetState()
+		// Only track non-PENDING, non-DISMISSED reviews
+		if state != "PENDING" && state != "DISMISSED" {
+			userLatestReview[username] = state
+		}
+	}
+
+	// Count how many users have APPROVED as their latest review
+	approvalCount := 0
+	for _, state := range userLatestReview {
+		if state == "APPROVED" {
+			approvalCount++
+		}
+	}
+
+	return approvalCount, false, nil
 }

@@ -47,6 +47,8 @@ type PRResponse struct {
 	Author          string  `json:"author"`
 	GeneratingSince *string `json:"generating_since"`
 	IsMine          bool    `json:"is_mine"`
+	MyReviewStatus  string  `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	ApprovalCount   int     `json:"approval_count"`   // Number of current approvals
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
@@ -102,6 +104,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	html := `<!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
     <title>PR Review Dashboard</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%230d1117'/%3E%3Cpath d='M20 50 L40 70 L80 30' stroke='%237ee787' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <style>
@@ -278,6 +281,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                 <th>Repository</th>
                 <th>PR # / Title</th>
                 <th>Author</th>
+                <th>Approvals</th>
                 <th>Status</th>
                 <th>Commit SHA</th>
                 <th>Last Reviewed</th>
@@ -295,6 +299,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                 <th>Repository</th>
                 <th>PR # / Title</th>
                 <th>Author</th>
+                <th>My Review</th>
+                <th>Approvals</th>
                 <th>Status</th>
                 <th>Commit SHA</th>
                 <th>Last Reviewed</th>
@@ -310,6 +316,19 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
             if (!dateStr) return 'Not yet reviewed';
             const date = new Date(dateStr);
             return date.toLocaleString();
+        }
+
+        function getReviewStatusEmoji(status) {
+            switch(status) {
+                case 'APPROVED':
+                    return '<span style="font-size: 18px;" title="Approved">✅</span>';
+                case 'CHANGES_REQUESTED':
+                    return '<span style="font-size: 18px;" title="Changes Requested">🚧</span>';
+                case 'COMMENTED':
+                    return '<span style="font-size: 18px;" title="Commented">💬</span>';
+                default:
+                    return '<span style="font-size: 18px; opacity: 0.5;" title="Not Reviewed">📥</span>';
+            }
         }
 
         function renderPRRow(pr) {
@@ -337,14 +356,26 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                     pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>'
                 : '';
 
-            return '<tr id="pr-' + pr.owner + '-' + pr.repo + '-' + pr.number + '">' +
+            // Build row with conditional review status column
+            let row = '<tr id="pr-' + pr.owner + '-' + pr.repo + '-' + pr.number + '">' +
                 '<td>' + pr.owner + '/' + pr.repo + '</td>' +
                 '<td>' +
                     '<a href="' + pr.github_url + '" target="_blank">#' + pr.number + '</a>' +
                     '<div class="pr-title" title="' + pr.title + '">' + pr.title + '</div>' +
                 '</td>' +
-                '<td>' + pr.author + '</td>' +
-                '<td>' + statusBadge + '</td>' +
+                '<td>' + pr.author + '</td>';
+
+            // Only add review status column for PRs to review (not my PRs)
+            if (!pr.is_mine) {
+                row += '<td style="text-align: center;">' + getReviewStatusEmoji(pr.my_review_status) + '</td>';
+            }
+
+            // Add approval count (for all PRs)
+            const approvalColor = pr.approval_count > 0 ? '#7ee787' : '#7d8590';
+            row += '<td style="text-align: center; color: ' + approvalColor + '; font-weight: 600;">' +
+                pr.approval_count + '</td>';
+
+            row += '<td>' + statusBadge + '</td>' +
                 '<td class="commit-sha">' + pr.commit_sha.substring(0, 7) + '</td>' +
                 '<td>' + formatDate(pr.last_reviewed_at) + '</td>' +
                 '<td>' +
@@ -353,6 +384,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                     (deleteBtn ? ' | ' + deleteBtn : '') +
                 '</td>' +
             '</tr>';
+
+            return row;
         }
 
         function formatUptime(seconds) {
@@ -558,6 +591,8 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			Status:          dbPR.Status,
 			GeneratingSince: generatingSince,
 			IsMine:          dbPR.IsMine,
+			MyReviewStatus:  dbPR.MyReviewStatus,
+			ApprovalCount:   dbPR.ApprovalCount,
 		})
 	}
 
@@ -669,6 +704,26 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Get GitHub API rate limit status
+	ctx := r.Context()
+	rateLimitInfo, err := s.ghClient.GetRateLimitInfo(ctx)
+	rateLimitData := map[string]interface{}{
+		"remaining": 0,
+		"limit":     5000,
+		"reset_at":  "",
+		"is_limited": true,
+		"error":     "",
+	}
+	if err != nil {
+		rateLimitData["error"] = err.Error()
+		log.Printf("[STATUS] Warning: Failed to get rate limit info: %v", err)
+	} else {
+		rateLimitData["remaining"] = rateLimitInfo.Remaining
+		rateLimitData["limit"] = rateLimitInfo.Limit
+		rateLimitData["reset_at"] = rateLimitInfo.ResetTime.Format(time.RFC3339)
+		rateLimitData["is_limited"] = rateLimitInfo.Remaining < 10
+	}
+
 	response := map[string]interface{}{
 		"uptime_seconds":           int(time.Since(s.startTime).Seconds()),
 		"cbpr_running":             cbprRunning,
@@ -678,6 +733,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"missing_metadata_count":   missingMetadataCount,
 		"timestamp":                time.Now().Unix(),
 		"seconds_until_next_poll":  secondsUntilNextPoll,
+		"rate_limit":               rateLimitData,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
