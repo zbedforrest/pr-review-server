@@ -38,6 +38,7 @@ type PullRequest struct {
 	URL       string
 	Author    string
 	CreatedAt time.Time
+	Draft     bool
 }
 
 // PRReviewData holds review information for a single PR
@@ -119,6 +120,7 @@ func (c *Client) GetPRsRequestingReview(ctx context.Context) ([]PullRequest, err
 			URL:       pr.GetHTMLURL(),
 			Author:    pr.GetUser().GetLogin(),
 			CreatedAt: pr.GetCreatedAt().Time,
+			Draft:     pr.GetDraft(),
 		})
 	}
 
@@ -178,6 +180,7 @@ func (c *Client) GetMyOpenPRs(ctx context.Context) ([]PullRequest, error) {
 			URL:       pr.GetHTMLURL(),
 			Author:    pr.GetUser().GetLogin(),
 			CreatedAt: pr.GetCreatedAt().Time,
+			Draft:     pr.GetDraft(),
 		})
 	}
 

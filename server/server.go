@@ -53,6 +53,7 @@ type PRResponse struct {
 	IsMine          bool    `json:"is_mine"`
 	MyReviewStatus  string  `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
 	ApprovalCount   int     `json:"approval_count"`   // Number of current approvals
+	Draft           bool    `json:"draft"`            // true if PR is in draft mode
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
@@ -361,10 +362,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                 : '';
 
             // Build row with conditional review status column
+            const draftIndicator = pr.draft ? ' <span style="color: #8b949e; font-weight: 600;">(draft)</span>' : '';
             let row = '<tr id="pr-' + pr.owner + '-' + pr.repo + '-' + pr.number + '">' +
                 '<td>' + pr.owner + '/' + pr.repo + '</td>' +
                 '<td>' +
-                    '<a href="' + pr.github_url + '" target="_blank">#' + pr.number + '</a>' +
+                    '<a href="' + pr.github_url + '" target="_blank">#' + pr.number + draftIndicator + '</a>' +
                     '<div class="pr-title" title="' + pr.title + '">' + pr.title + '</div>' +
                 '</td>' +
                 '<td>' + pr.author + '</td>';
@@ -597,6 +599,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			IsMine:          dbPR.IsMine,
 			MyReviewStatus:  dbPR.MyReviewStatus,
 			ApprovalCount:   dbPR.ApprovalCount,
+			Draft:           dbPR.Draft,
 		})
 	}
 
