@@ -2,6 +2,8 @@ package db
 
 import (
 	"database/sql"
+	"log"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -47,6 +49,17 @@ func New(dbPath string) (*DB, error) {
 	return db, nil
 }
 
+// execMigration runs an ALTER TABLE migration, ignoring "duplicate column" errors but logging others
+func (db *DB) execMigration(migration string) {
+	_, err := db.conn.Exec(migration)
+	if err != nil {
+		// Only ignore "duplicate column" errors - these are expected for existing databases
+		if !strings.Contains(err.Error(), "duplicate column") {
+			log.Printf("[DB] WARNING: Migration failed: %v\nMigration SQL: %s", err, migration)
+		}
+	}
+}
+
 func (db *DB) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS prs (
@@ -65,28 +78,16 @@ func (db *DB) initSchema() error {
 		return err
 	}
 
-	// Add status column if it doesn't exist (migration for existing DBs)
-	_, err := db.conn.Exec(`ALTER TABLE prs ADD COLUMN status TEXT DEFAULT 'pending'`)
-	if err != nil && err.Error() != "duplicate column name: status" {
-		// Ignore "duplicate column" error
-	}
-
-	// Add generating_since column for tracking stale generation attempts
-	db.conn.Exec(`ALTER TABLE prs ADD COLUMN generating_since TIMESTAMP`)
-
-	// Add is_mine column to distinguish my PRs from PRs to review
-	db.conn.Exec(`ALTER TABLE prs ADD COLUMN is_mine INTEGER DEFAULT 0`)
-
-	// Add title and author columns for displaying PR metadata
-	db.conn.Exec(`ALTER TABLE prs ADD COLUMN title TEXT DEFAULT ''`)
-	db.conn.Exec(`ALTER TABLE prs ADD COLUMN author TEXT DEFAULT ''`)
-
-	// Add approval_count and my_review_status columns for caching GitHub review data
-	db.conn.Exec(`ALTER TABLE prs ADD COLUMN approval_count INTEGER DEFAULT 0`)
-	db.conn.Exec(`ALTER TABLE prs ADD COLUMN my_review_status TEXT DEFAULT ''`)
-
-	// Add created_at column for storing PR creation timestamp from GitHub
-	db.conn.Exec(`ALTER TABLE prs ADD COLUMN created_at TIMESTAMP`)
+	// Run migrations for additional columns (safe to run multiple times)
+	// These will log warnings for any errors other than "duplicate column"
+	db.execMigration(`ALTER TABLE prs ADD COLUMN status TEXT DEFAULT 'pending'`)
+	db.execMigration(`ALTER TABLE prs ADD COLUMN generating_since TIMESTAMP`)
+	db.execMigration(`ALTER TABLE prs ADD COLUMN is_mine INTEGER DEFAULT 0`)
+	db.execMigration(`ALTER TABLE prs ADD COLUMN title TEXT DEFAULT ''`)
+	db.execMigration(`ALTER TABLE prs ADD COLUMN author TEXT DEFAULT ''`)
+	db.execMigration(`ALTER TABLE prs ADD COLUMN approval_count INTEGER DEFAULT 0`)
+	db.execMigration(`ALTER TABLE prs ADD COLUMN my_review_status TEXT DEFAULT ''`)
+	db.execMigration(`ALTER TABLE prs ADD COLUMN created_at TIMESTAMP`)
 
 	return nil
 }

@@ -1,9 +1,12 @@
 package github
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -13,9 +16,11 @@ import (
 )
 
 type Client struct {
-	gh       *github.Client
-	ghv4     *githubv4.Client
-	username string
+	gh         *github.Client
+	ghv4       *githubv4.Client
+	httpClient *http.Client
+	token      string
+	username   string
 }
 
 type RateLimitInfo struct {
@@ -52,9 +57,11 @@ func NewClient(token, username string) *Client {
 	tc := oauth2.NewClient(ctx, ts)
 
 	return &Client{
-		gh:       github.NewClient(tc),
-		ghv4:     githubv4.NewClient(tc),
-		username: username,
+		gh:         github.NewClient(tc),
+		ghv4:       githubv4.NewClient(tc),
+		httpClient: tc,
+		token:      token,
+		username:   username,
 	}
 }
 
@@ -353,6 +360,7 @@ func (c *Client) BatchGetPRReviewData(ctx context.Context, prs []PullRequest) (m
 }
 
 // fetchReviewDataForRepo fetches review data for all PRs in a single repository using GraphQL
+// Makes ONE batched query per repository using aliases for all PRs
 func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) (map[string]*PRReviewData, error) {
 	if len(prs) == 0 {
 		return make(map[string]*PRReviewData), nil
@@ -361,44 +369,120 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 	owner := prs[0].Owner
 	repo := prs[0].Repo
 
-	// Query each PR using GraphQL (still more efficient than REST for review data)
-	results := make(map[string]*PRReviewData)
+	// Build a single GraphQL query with aliases for all PRs in this repo
+	// This reduces N queries to 1 query per repository
+	var queryBuilder strings.Builder
+	queryBuilder.WriteString("query {")
 
-	for _, pr := range prs {
-		// Query structure for a single PR
-		var singleQuery struct {
-			Repository struct {
-				PullRequest struct {
-					Number  int
-					Reviews struct {
-						Nodes []struct {
-							Author struct {
-								Login string
+	// Create an alias for each PR (pr1, pr2, etc.)
+	prAliases := make(map[string]int) // alias -> PR number
+	for i, pr := range prs {
+		alias := fmt.Sprintf("pr%d", i)
+		prAliases[alias] = pr.Number
+		queryBuilder.WriteString(fmt.Sprintf(`
+			%s: repository(owner: "%s", name: "%s") {
+				pullRequest(number: %d) {
+					number
+					reviews(last: 100) {
+						nodes {
+							author {
+								login
 							}
-							State string
+							state
 						}
-					} `graphql:"reviews(first: 100)"`
-				} `graphql:"pullRequest(number: $prNumber)"`
-			} `graphql:"repository(owner: $owner, name: $repo)"`
+					}
+				}
+			}
+		`, alias, owner, repo, pr.Number))
+	}
+
+	queryBuilder.WriteString("}")
+
+	// Execute the batched query using raw HTTP POST to GitHub GraphQL API
+	graphqlQuery := map[string]string{"query": queryBuilder.String()}
+	jsonData, err := json.Marshal(graphqlQuery)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal GraphQL query: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.github.com/graphql", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to build HTTP request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute GraphQL query: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
+	}
+
+	// Parse response
+	var graphqlResp struct {
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&graphqlResp); err != nil {
+		return nil, fmt.Errorf("failed to decode GraphQL response: %w", err)
+	}
+
+	result := graphqlResp.Data
+
+	// Parse results
+	results := make(map[string]*PRReviewData)
+	for alias, prNumber := range prAliases {
+		repoData, ok := result[alias].(map[string]interface{})
+		if !ok {
+			log.Printf("[GRAPHQL] Warning: Failed to parse repo data for alias %s", alias)
+			continue
 		}
 
-		variables := map[string]interface{}{
-			"owner":    githubv4.String(owner),
-			"repo":     githubv4.String(repo),
-			"prNumber": githubv4.Int(pr.Number),
+		prData, ok := repoData["pullRequest"].(map[string]interface{})
+		if !ok {
+			log.Printf("[GRAPHQL] Warning: Failed to parse PR data for alias %s", alias)
+			continue
 		}
 
-		err := c.ghv4.Query(ctx, &singleQuery, variables)
-		if err != nil {
-			log.Printf("[GRAPHQL] Error querying PR %s/%s#%d: %v", owner, repo, pr.Number, err)
+		reviewsData, ok := prData["reviews"].(map[string]interface{})
+		if !ok {
+			log.Printf("[GRAPHQL] Warning: No reviews data for PR %d", prNumber)
+			continue
+		}
+
+		nodes, ok := reviewsData["nodes"].([]interface{})
+		if !ok {
+			log.Printf("[GRAPHQL] Warning: Failed to parse reviews nodes for PR %d", prNumber)
 			continue
 		}
 
 		// Process reviews to count approvals and find my review status
 		userLatestReview := make(map[string]string)
-		for _, review := range singleQuery.Repository.PullRequest.Reviews.Nodes {
-			username := review.Author.Login
-			state := review.State
+		for _, node := range nodes {
+			reviewNode, ok := node.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			authorData, ok := reviewNode["author"].(map[string]interface{})
+			if !ok || authorData == nil {
+				continue // Bot reviews or deleted users might have nil author
+			}
+
+			username, ok := authorData["login"].(string)
+			if !ok {
+				continue
+			}
+
+			state, ok := reviewNode["state"].(string)
+			if !ok {
+				continue
+			}
+
 			// Track latest review per user (reviews are in chronological order)
 			if state != "PENDING" && state != "DISMISSED" {
 				userLatestReview[username] = state
@@ -419,16 +503,16 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 			myReviewStatus = status
 		}
 
-		key := fmt.Sprintf("%s/%s/%d", owner, repo, pr.Number)
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, prNumber)
 		results[key] = &PRReviewData{
 			Owner:          owner,
 			Repo:           repo,
-			Number:         pr.Number,
+			Number:         prNumber,
 			ApprovalCount:  approvalCount,
 			MyReviewStatus: myReviewStatus,
 		}
 
-		log.Printf("[GRAPHQL] PR %s/%s#%d: %d approvals, my status: %s", owner, repo, pr.Number, approvalCount, myReviewStatus)
+		log.Printf("[GRAPHQL] PR %s/%s#%d: %d approvals, my status: %s", owner, repo, prNumber, approvalCount, myReviewStatus)
 	}
 
 	return results, nil
