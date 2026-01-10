@@ -37,7 +37,7 @@ type PullRequest struct {
 	Title     string
 	URL       string
 	Author    string
-	CreatedAt time.Time
+	CreatedAt *time.Time
 	Draft     bool
 }
 
@@ -111,6 +111,7 @@ func (c *Client) GetPRsRequestingReview(ctx context.Context) ([]PullRequest, err
 			continue // Skip this PR if we can't fetch it
 		}
 
+		createdAt := pr.GetCreatedAt().Time
 		prs = append(prs, PullRequest{
 			Owner:     repoOwner,
 			Repo:      repoName,
@@ -119,7 +120,7 @@ func (c *Client) GetPRsRequestingReview(ctx context.Context) ([]PullRequest, err
 			Title:     pr.GetTitle(),
 			URL:       pr.GetHTMLURL(),
 			Author:    pr.GetUser().GetLogin(),
-			CreatedAt: pr.GetCreatedAt().Time,
+			CreatedAt: &createdAt,
 			Draft:     pr.GetDraft(),
 		})
 	}
@@ -171,6 +172,7 @@ func (c *Client) GetMyOpenPRs(ctx context.Context) ([]PullRequest, error) {
 			continue
 		}
 
+		createdAt := pr.GetCreatedAt().Time
 		prs = append(prs, PullRequest{
 			Owner:     repoOwner,
 			Repo:      repoName,
@@ -179,7 +181,7 @@ func (c *Client) GetMyOpenPRs(ctx context.Context) ([]PullRequest, error) {
 			Title:     pr.GetTitle(),
 			URL:       pr.GetHTMLURL(),
 			Author:    pr.GetUser().GetLogin(),
-			CreatedAt: pr.GetCreatedAt().Time,
+			CreatedAt: &createdAt,
 			Draft:     pr.GetDraft(),
 		})
 	}
@@ -216,6 +218,17 @@ func (c *Client) GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber 
 	}
 
 	return pr.GetHead().GetSHA(), nil
+}
+
+// GetPR fetches a full PR object from GitHub
+func (c *Client) GetPR(ctx context.Context, owner, repo string, prNumber int) (*github.PullRequest, *github.Response, error) {
+	return c.gh.PullRequests.Get(ctx, owner, repo, prNumber)
+}
+
+// ListReviews fetches all reviews for a PR
+func (c *Client) ListReviews(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestReview, *github.Response, error) {
+	opts := &github.ListOptions{PerPage: 100}
+	return c.gh.PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
 }
 
 // GetMyReviewStatus returns the current user's most recent review state on a PR

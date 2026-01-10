@@ -52,7 +52,7 @@ func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Poller {
 
 // upsertPRPreservingReviewData upserts a PR while preserving existing review data (doesn't fetch from GitHub)
 // This is used when updating PR status/files but we want to keep approval counts unchanged
-func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool, createdAt time.Time, draft bool) error {
+func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, isMine bool, createdAt *time.Time, draft bool) error {
 	// Get existing PR to preserve review data
 	existingPR, err := p.db.GetPR(owner, repo, prNumber)
 	if err != nil {

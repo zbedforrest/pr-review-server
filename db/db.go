@@ -23,9 +23,9 @@ type PR struct {
 	Title           string    // PR title from GitHub
 	Author          string    // PR author from GitHub
 	ApprovalCount   int       // Number of current approvals
-	MyReviewStatus  string    // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
-	CreatedAt       time.Time // PR creation timestamp from GitHub
-	Draft           bool      // true if PR is in draft mode
+	MyReviewStatus  string     // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	CreatedAt       *time.Time // PR creation timestamp from GitHub
+	Draft           bool       // true if PR is in draft mode
 }
 
 type DB struct {
@@ -50,19 +50,6 @@ func New(dbPath string) (*DB, error) {
 	return db, nil
 }
 
-// execMigration runs an ALTER TABLE migration, ignoring "duplicate column" errors but returning others
-func (db *DB) execMigration(migration string) error {
-	_, err := db.conn.Exec(migration)
-	if err != nil {
-		// Only ignore "duplicate column" errors - these are expected for existing databases
-		if strings.Contains(err.Error(), "duplicate column") {
-			return nil // Expected error, safe to ignore
-		}
-		return fmt.Errorf("migration failed: %w\nSQL: %s", err, migration)
-	}
-	return nil
-}
-
 func (db *DB) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS prs (
@@ -83,6 +70,7 @@ func (db *DB) initSchema() error {
 
 	// Run migrations for additional columns (safe to run multiple times)
 	// Duplicate column errors are ignored, but other errors will fail fast
+	// Wrap all migrations in a transaction for atomicity
 	migrations := []string{
 		`ALTER TABLE prs ADD COLUMN status TEXT DEFAULT 'pending'`,
 		`ALTER TABLE prs ADD COLUMN generating_since TIMESTAMP`,
@@ -95,10 +83,27 @@ func (db *DB) initSchema() error {
 		`ALTER TABLE prs ADD COLUMN draft INTEGER DEFAULT 0`,
 	}
 
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin migration transaction: %w", err)
+	}
+
 	for _, migration := range migrations {
-		if err := db.execMigration(migration); err != nil {
-			return err
+		_, err := tx.Exec(migration)
+		if err != nil {
+			// Only ignore "duplicate column" errors - these are expected for existing databases
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue // Expected error, safe to ignore
+			}
+			// Rollback transaction on any other error
+			tx.Rollback()
+			return fmt.Errorf("migration failed: %w\nSQL: %s", err, migration)
 		}
+	}
+
+	// Commit all migrations atomically
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit migrations: %w", err)
 	}
 
 	return nil
@@ -135,7 +140,7 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 		pr.GeneratingSince = &generatingSince.Time
 	}
 	if createdAt.Valid {
-		pr.CreatedAt = createdAt.Time
+		pr.CreatedAt = &createdAt.Time
 	}
 	pr.IsMine = isMine == 1
 	pr.Draft = draft == 1
@@ -167,6 +172,12 @@ func (db *DB) UpsertPR(pr *PR) error {
 		lastReviewedAt = *pr.LastReviewedAt
 	}
 
+	// Use the provided CreatedAt, or NULL if not set
+	var createdAt interface{}
+	if pr.CreatedAt != nil {
+		createdAt = *pr.CreatedAt
+	}
+
 	_, err := db.conn.Exec(`
 		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, status, generating_since, is_mine, title, author, approval_count, my_review_status, created_at, draft)
 		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
@@ -184,8 +195,8 @@ func (db *DB) UpsertPR(pr *PR) error {
 			my_review_status = ?,
 			created_at = ?,
 			draft = ?
-	`, pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA, lastReviewedAt, pr.ReviewHTMLPath, pr.Status, isMineInt, pr.Title, pr.Author, pr.ApprovalCount, pr.MyReviewStatus, pr.CreatedAt, draftInt,
-		pr.LastCommitSHA, lastReviewedAt, pr.ReviewHTMLPath, pr.Status, isMineInt, pr.Title, pr.Author, pr.ApprovalCount, pr.MyReviewStatus, pr.CreatedAt, draftInt)
+	`, pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA, lastReviewedAt, pr.ReviewHTMLPath, pr.Status, isMineInt, pr.Title, pr.Author, pr.ApprovalCount, pr.MyReviewStatus, createdAt, draftInt,
+		pr.LastCommitSHA, lastReviewedAt, pr.ReviewHTMLPath, pr.Status, isMineInt, pr.Title, pr.Author, pr.ApprovalCount, pr.MyReviewStatus, createdAt, draftInt)
 	return err
 }
 
@@ -210,7 +221,7 @@ func (db *DB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA s
 	return err
 }
 
-func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, isMine bool, createdAt time.Time, draft bool) error {
+func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, isMine bool, createdAt *time.Time, draft bool) error {
 	now := time.Now().UTC()
 	isMineInt := 0
 	if isMine {
@@ -220,12 +231,19 @@ func (db *DB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title
 	if draft {
 		draftInt = 1
 	}
+
+	// Use the provided CreatedAt, or NULL if not set
+	var createdAtVal interface{}
+	if createdAt != nil {
+		createdAtVal = *createdAt
+	}
+
 	_, err := db.conn.Exec(`
 		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, status, generating_since, is_mine, title, author, review_html_path, created_at, draft)
 		VALUES (?, ?, ?, ?, 'generating', ?, ?, ?, ?, NULL, ?, ?)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
 		DO UPDATE SET last_commit_sha = ?, status = 'generating', generating_since = ?, is_mine = ?, title = ?, author = ?, review_html_path = NULL, created_at = ?, draft = ?
-	`, owner, repo, prNumber, commitSHA, now, isMineInt, title, author, createdAt, draftInt, commitSHA, now, isMineInt, title, author, createdAt, draftInt)
+	`, owner, repo, prNumber, commitSHA, now, isMineInt, title, author, createdAtVal, draftInt, commitSHA, now, isMineInt, title, author, createdAtVal, draftInt)
 	return err
 }
 
@@ -270,7 +288,7 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 			pr.GeneratingSince = &generatingSince.Time
 		}
 		if createdAt.Valid {
-			pr.CreatedAt = createdAt.Time
+			pr.CreatedAt = &createdAt.Time
 		}
 		pr.IsMine = isMine == 1
 		pr.Draft = draft == 1
