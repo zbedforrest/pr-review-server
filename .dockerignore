@@ -16,3 +16,18 @@ Dockerfile
 .dockerignore
 # Keep bin/ directory (for cbpr-linux binary)
 !bin/
+
+# Frontend development artifacts
+frontend/node_modules
+frontend/dist
+frontend/.vite
+server/dist
+
+# Keep frontend source for Docker build
+!frontend/src
+!frontend/public
+!frontend/index.html
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/vite.config.ts
+!frontend/tsconfig.json

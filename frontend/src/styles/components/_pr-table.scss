@@ -1,0 +1,91 @@
+@use '../abstracts/variables' as *;
+@use '../abstracts/mixins' as *;
+
+.pr-table-container {
+  @include card;
+  padding: 0;
+  margin-bottom: $spacing-2xl;
+}
+
+.pr-table {
+  width: 100%;
+  border-collapse: collapse;
+  overflow: hidden;
+  font-size: $font-size-md;
+
+  th, td {
+    padding: $spacing-sm $spacing-md;
+    text-align: left;
+    border-bottom: 1px solid $color-bg-tertiary;
+  }
+
+  thead th {
+    background: $color-bg-tertiary;
+    color: $color-text-secondary;
+    font-weight: 600;
+    font-size: $font-size-sm;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  tbody tr {
+    @include hover-lift;
+
+    &:last-child td {
+      border-bottom: none;
+    }
+  }
+
+  &__title {
+    font-size: $font-size-md;
+    color: $color-text-secondary;
+    max-width: 600px;
+    word-wrap: break-word;
+    white-space: normal;
+    line-height: 1.4;
+    margin-top: 2px;
+  }
+
+  &__draft-indicator {
+    color: $color-text-secondary;
+    font-weight: 600;
+  }
+
+  &__approval-count {
+    text-align: center;
+    font-weight: 600;
+
+    &--positive {
+      color: $color-success;
+    }
+
+    &--zero {
+      color: $color-text-tertiary;
+    }
+  }
+
+  &__review-emoji {
+    text-align: center;
+    font-size: 18px;
+  }
+
+  &__delete-btn {
+    @include button-base;
+    color: $color-error;
+    border-color: $color-error;
+
+    &:hover {
+      background: $color-error;
+      color: white;
+    }
+  }
+}
+
+.error-message {
+  background: $color-error;
+  color: white;
+  padding: $spacing-md $spacing-lg;
+  border-radius: $radius-md;
+  margin-bottom: $spacing-lg;
+  font-size: $font-size-md;
+}

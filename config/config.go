@@ -14,6 +14,7 @@ type Config struct {
 	ServerPort               string
 	CbprPath                 string
 	EnableVoiceNotifications bool
+	DevMode                  bool
 }
 
 func Load() *Config {
@@ -32,6 +33,9 @@ func Load() *Config {
 	// Enable voice notifications by default (can be disabled with ENABLE_VOICE_NOTIFICATIONS=false)
 	enableVoice := getEnvOrDefault("ENABLE_VOICE_NOTIFICATIONS", "true") == "true"
 
+	// Dev mode for local development with Vite dev server
+	devMode := getEnvOrDefault("DEV_MODE", "false") == "true"
+
 	return &Config{
 		GitHubToken:              os.Getenv("GITHUB_TOKEN"),
 		GitHubUsername:           os.Getenv("GITHUB_USERNAME"),
@@ -41,6 +45,7 @@ func Load() *Config {
 		ServerPort:               getEnvOrDefault("SERVER_PORT", "8080"),
 		CbprPath:                 cbprPath,
 		EnableVoiceNotifications: enableVoice,
+		DevMode:                  devMode,
 	}
 }
 

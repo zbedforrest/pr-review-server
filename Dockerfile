@@ -1,4 +1,20 @@
-FROM golang:1.24-alpine AS builder
+# Stage 1: Build React frontend
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app/frontend
+
+# Copy frontend package files
+COPY frontend/package*.json ./
+RUN npm ci --only=production
+
+# Copy frontend source
+COPY frontend/ ./
+
+# Build React app (outputs to ../server/dist)
+RUN npm run build
+
+# Stage 2: Build Go backend
+FROM golang:1.24-alpine AS backend-builder
 
 # Install build dependencies for CGO (needed for SQLite)
 RUN apk add --no-cache gcc musl-dev sqlite-dev
@@ -12,10 +28,13 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the application
+# Copy built frontend from previous stage
+COPY --from=frontend-builder /app/server/dist ./server/dist
+
+# Build the application with embedded React app
 RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o pr-review-server .
 
-# Final stage
+# Stage 3: Final runtime image
 FROM alpine:3.20
 
 # Install required packages
@@ -31,7 +50,7 @@ RUN apk --no-cache add \
 WORKDIR /app
 
 # Copy the Go binary from builder
-COPY --from=builder /app/pr-review-server .
+COPY --from=backend-builder /app/pr-review-server .
 
 # Copy cbpr binary (either real Linux binary or placeholder)
 # To use real cbpr: run ./build-cbpr-linux.sh before docker build

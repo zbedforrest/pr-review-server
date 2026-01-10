@@ -1,23 +1,29 @@
 package server
 
 import (
-	_ "embed"
+	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/prioritization"
 )
 
 //go:embed templates/index.html
 var indexHTML string
+
+//go:embed dist/*
+var reactDist embed.FS
 
 type PollerInterface interface {
 	GetCbprStatus() (running bool, duration time.Duration)
@@ -39,6 +45,10 @@ type Server struct {
 	rateLimitCache    *github.RateLimitInfo
 	rateLimitCacheMux sync.RWMutex
 	rateLimitCacheTime time.Time
+	// Prioritization cache
+	priorityResult    *prioritization.Result
+	priorityResultMux sync.RWMutex
+	prioritizer       *prioritization.Prioritizer
 }
 
 type PRResponse struct {
@@ -61,11 +71,14 @@ type PRResponse struct {
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
+	prioritizer := prioritization.New(database, ghClient, cfg.GitHubUsername)
+
 	return &Server{
-		cfg:       cfg,
-		db:        database,
-		ghClient:  ghClient,
-		startTime: time.Now(),
+		cfg:         cfg,
+		db:          database,
+		ghClient:    ghClient,
+		startTime:   time.Now(),
+		prioritizer: prioritizer,
 	}
 }
 
@@ -93,15 +106,64 @@ func (s *Server) SetPollTrigger(f func()) {
 }
 
 func (s *Server) Start() error {
-	http.HandleFunc("/", s.handleIndex)
+	// API routes
 	http.HandleFunc("/api/prs", s.handleGetPRs)
 	http.HandleFunc("/api/prs/delete", s.handleDeletePR)
 	http.HandleFunc("/api/status", s.handleStatus)
+	http.HandleFunc("/api/priorities", s.handleGetPriorities)
 	http.Handle("/reviews/", http.StripPrefix("/reviews/", http.FileServer(http.Dir(s.cfg.ReviewsDir))))
+
+	// Frontend routes (dev vs production)
+	if s.cfg.DevMode {
+		log.Println("DEV MODE: Visit http://localhost:" + s.cfg.ServerPort + " for instructions")
+		http.HandleFunc("/", s.handleDevProxy)
+	} else {
+		log.Println("PRODUCTION MODE: Serving embedded React app")
+		http.HandleFunc("/", s.handleReactApp)
+	}
 
 	addr := ":" + s.cfg.ServerPort
 	log.Printf("Starting server on http://localhost%s", addr)
 	return http.ListenAndServe(addr, nil)
+}
+
+// StartPrioritization starts the background prioritization job
+// Should be called after server is initialized
+func (s *Server) StartPrioritization(ctx context.Context) {
+	// Run immediately on startup
+	go s.updatePriorities(ctx)
+
+	// Then run every 30 minutes
+	ticker := time.NewTicker(30 * time.Minute)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				s.updatePriorities(ctx)
+			case <-ctx.Done():
+				ticker.Stop()
+				log.Println("[PRIORITIZATION] Stopping prioritization service")
+				return
+			}
+		}
+	}()
+
+	log.Println("[PRIORITIZATION] Started prioritization service (runs every 30 minutes)")
+}
+
+// updatePriorities calculates priorities and updates the cache
+func (s *Server) updatePriorities(ctx context.Context) {
+	result, err := s.prioritizer.Calculate(ctx)
+	if err != nil {
+		log.Printf("[PRIORITIZATION] Error calculating priorities: %v", err)
+		return
+	}
+
+	s.priorityResultMux.Lock()
+	s.priorityResult = result
+	s.priorityResultMux.Unlock()
+
+	log.Printf("[PRIORITIZATION] Updated priorities: %d PRs scored", result.TotalPRsScored)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -347,4 +409,117 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) handleGetPriorities(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of API responses
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	s.priorityResultMux.RLock()
+	result := s.priorityResult
+	s.priorityResultMux.RUnlock()
+
+	if result == nil {
+		// Return empty result if prioritization hasn't run yet
+		result = &prioritization.Result{
+			Timestamp:      time.Now(),
+			TopPRs:         []prioritization.PrioritizedPR{},
+			TotalPRsScored: 0,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleReactApp serves the embedded React production build with SPA routing support
+func (s *Server) handleReactApp(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of HTML
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	path := r.URL.Path
+	if path == "/" {
+		path = "dist/index.html"
+	} else {
+		path = "dist" + path
+	}
+
+	// Try to read the requested file
+	content, err := reactDist.ReadFile(path)
+	if err != nil {
+		// File not found - serve index.html for SPA routing
+		content, err = reactDist.ReadFile("dist/index.html")
+		if err != nil {
+			http.Error(w, "Failed to load application", http.StatusInternalServerError)
+			log.Printf("Error serving React app: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	} else {
+		// Set content type based on file extension
+		contentType := getContentType(path)
+		w.Header().Set("Content-Type", contentType)
+
+		// Cache static assets (not HTML)
+		if !strings.HasSuffix(path, ".html") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
+	}
+
+	w.Write(content)
+}
+
+// handleDevProxy provides instructions for dev mode
+func (s *Server) handleDevProxy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<!DOCTYPE html>
+<html>
+<head>
+	<title>PR Review Dashboard - Dev Mode</title>
+	<style>
+		body { font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 40px; }
+		h1 { color: #58a6ff; }
+		pre { background: #161b22; padding: 20px; border-radius: 6px; }
+		a { color: #58a6ff; }
+	</style>
+</head>
+<body>
+	<h1>Development Mode Active</h1>
+	<p>The Go backend is running in dev mode.</p>
+	<p>To access the React frontend, start the Vite dev server:</p>
+	<pre>cd frontend && npm run dev</pre>
+	<p>Then visit: <a href="http://localhost:3000">http://localhost:3000</a></p>
+	<hr>
+	<p>API endpoints are available at:</p>
+	<ul>
+		<li><a href="/api/status">/api/status</a></li>
+		<li><a href="/api/prs">/api/prs</a></li>
+		<li><a href="/api/priorities">/api/priorities</a></li>
+	</ul>
+</body>
+</html>`)
+}
+
+// getContentType returns appropriate content type for file extension
+func getContentType(path string) string {
+	if strings.HasSuffix(path, ".html") {
+		return "text/html; charset=utf-8"
+	} else if strings.HasSuffix(path, ".js") {
+		return "application/javascript"
+	} else if strings.HasSuffix(path, ".css") {
+		return "text/css"
+	} else if strings.HasSuffix(path, ".json") {
+		return "application/json"
+	} else if strings.HasSuffix(path, ".png") {
+		return "image/png"
+	} else if strings.HasSuffix(path, ".svg") {
+		return "image/svg+xml"
+	} else if strings.HasSuffix(path, ".ico") {
+		return "image/x-icon"
+	}
+	return "application/octet-stream"
 }
