@@ -658,6 +658,15 @@ func (p *Poller) poll(ctx context.Context) {
 	// Batch fetch review data for all PRs using GraphQL (much more efficient)
 	log.Printf("[POLL] Batch fetching review data for %d PRs using GraphQL...", len(allPRs))
 	if len(allPRs) > 0 {
+		// Create a map of existing PRs from database to avoid N+1 queries in the update loop
+		existingPRsMap := make(map[string]*db.PR)
+		if dbPRsForReviewUpdate != nil {
+			for i := range dbPRsForReviewUpdate {
+				key := fmt.Sprintf("%s/%s/%d", dbPRsForReviewUpdate[i].RepoOwner, dbPRsForReviewUpdate[i].RepoName, dbPRsForReviewUpdate[i].PRNumber)
+				existingPRsMap[key] = &dbPRsForReviewUpdate[i]
+			}
+		}
+
 		reviewDataMap, err := p.ghClient.BatchGetPRReviewData(ctx, allPRs)
 		if err != nil {
 			log.Printf("[POLL] WARNING: Failed to batch fetch review data: %v", err)
@@ -667,9 +676,9 @@ func (p *Poller) poll(ctx context.Context) {
 			for _, pr := range allPRs {
 				key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
 				if reviewData, exists := reviewDataMap[key]; exists {
-					// Update PR with review data
-					existingPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-					if err != nil || existingPR == nil {
+					// Look up PR from the map instead of querying database (avoids N+1 queries)
+					existingPR, existsInDB := existingPRsMap[key]
+					if !existsInDB {
 						continue
 					}
 
