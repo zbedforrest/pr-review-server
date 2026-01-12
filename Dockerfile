@@ -32,7 +32,8 @@ COPY . .
 COPY --from=frontend-builder /app/server/dist ./server/dist
 
 # Build the application with embedded React app
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o pr-review-server .
+# Use -ldflags="-w -s" to strip debug info and reduce binary size
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o pr-review-server .
 
 # Stage 3: Final runtime image
 FROM alpine:3.20
