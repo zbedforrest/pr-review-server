@@ -102,8 +102,8 @@ func (p *Prioritizer) Calculate(ctx context.Context) (*Result, error) {
 		})
 	}
 
-	// Batch fetch PR details (additions, deletions, review counts, etc.)
-	prDetails, err := p.batchFetchPRDetails(ctx, ghPRs)
+	// Batch fetch PR details using GraphQL (additions, deletions, review counts, etc.)
+	prDetails, err := p.ghClient.BatchGetPRDetails(ctx, ghPRs)
 	if err != nil {
 		log.Printf("[PRIORITIZATION] Warning: Failed to fetch some PR details: %v", err)
 		// Continue with what we have
@@ -155,70 +155,8 @@ func (p *Prioritizer) Calculate(ctx context.Context) (*Result, error) {
 	}, nil
 }
 
-// PRDetails holds GitHub data fetched for a PR
-type PRDetails struct {
-	CreatedAt      time.Time
-	Additions      int
-	Deletions      int
-	ChangedFiles   int
-	ReviewCount    int
-	RequestedMe    bool
-}
-
-// batchFetchPRDetails fetches details for multiple PRs from GitHub
-func (p *Prioritizer) batchFetchPRDetails(ctx context.Context, prs []github.PullRequest) (map[string]*PRDetails, error) {
-	results := make(map[string]*PRDetails)
-
-	// Fetch each PR's details
-	// TODO: Could optimize this with GraphQL batching, but REST API is simpler for now
-	for _, pr := range prs {
-		ghPR, _, err := p.ghClient.GetPR(ctx, pr.Owner, pr.Repo, pr.Number)
-		if err != nil {
-			log.Printf("[PRIORITIZATION] Error fetching details for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
-			continue
-		}
-
-		// Count reviews (exclude bot reviews)
-		reviews, _, err := p.ghClient.ListReviews(ctx, pr.Owner, pr.Repo, pr.Number)
-		reviewCount := 0
-		if err == nil {
-			// Count unique reviewers (not individual review events)
-			reviewers := make(map[string]bool)
-			for _, review := range reviews {
-				if review.GetUser() != nil {
-					reviewers[review.GetUser().GetLogin()] = true
-				}
-			}
-			reviewCount = len(reviewers)
-		}
-
-		// Check if we're explicitly requested
-		requestedMe := false
-		if ghPR.RequestedReviewers != nil {
-			for _, reviewer := range ghPR.RequestedReviewers {
-				if reviewer != nil && reviewer.GetLogin() == p.username {
-					requestedMe = true
-					break
-				}
-			}
-		}
-
-		key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
-		results[key] = &PRDetails{
-			CreatedAt:    ghPR.GetCreatedAt().Time,
-			Additions:    ghPR.GetAdditions(),
-			Deletions:    ghPR.GetDeletions(),
-			ChangedFiles: ghPR.GetChangedFiles(),
-			ReviewCount:  reviewCount,
-			RequestedMe:  requestedMe,
-		}
-	}
-
-	return results, nil
-}
-
 // scorePR calculates the priority score for a single PR
-func (p *Prioritizer) scorePR(pr *db.PR, details *PRDetails) PrioritizedPR {
+func (p *Prioritizer) scorePR(pr *db.PR, details *github.PRDetails) PrioritizedPR {
 	score := 0
 	var reasons []string
 

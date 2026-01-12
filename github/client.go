@@ -50,6 +50,19 @@ type PRReviewData struct {
 	MyReviewStatus string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
 }
 
+// PRDetails holds detailed information for prioritization
+type PRDetails struct {
+	Owner            string
+	Repo             string
+	Number           int
+	CreatedAt        time.Time
+	Additions        int
+	Deletions        int
+	ChangedFiles     int
+	ReviewCount      int  // Number of unique reviewers
+	RequestedMe      bool // Whether the user is explicitly requested
+}
+
 func NewClient(token, username string) *Client {
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(
@@ -521,6 +534,216 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 		}
 
 		log.Printf("[GRAPHQL] PR %s/%s#%d: %d approvals, my status: %s", owner, repo, prNumber, approvalCount, myReviewStatus)
+	}
+
+	return results, nil
+}
+
+// BatchGetPRDetails fetches detailed PR information for prioritization using GraphQL.
+// Groups PRs by repository and makes one query per repository to fetch additions, deletions,
+// changedFiles, createdAt, reviewers, and requestedReviewers.
+// Returns a map of "owner/repo/number" -> PRDetails
+func (c *Client) BatchGetPRDetails(ctx context.Context, prs []PullRequest) (map[string]*PRDetails, error) {
+	if len(prs) == 0 {
+		return make(map[string]*PRDetails), nil
+	}
+
+	// Group PRs by repository
+	prsByRepo := make(map[string][]PullRequest)
+	for _, pr := range prs {
+		key := fmt.Sprintf("%s/%s", pr.Owner, pr.Repo)
+		prsByRepo[key] = append(prsByRepo[key], pr)
+	}
+
+	results := make(map[string]*PRDetails)
+
+	// Fetch details for each repository
+	for repoKey, repoPRs := range prsByRepo {
+		log.Printf("[GRAPHQL] Fetching details for %d PRs in %s", len(repoPRs), repoKey)
+
+		repoData, err := c.fetchDetailsForRepo(ctx, repoPRs)
+		if err != nil {
+			log.Printf("[GRAPHQL] Error fetching details for %s: %v", repoKey, err)
+			// Continue with other repos even if one fails
+			continue
+		}
+
+		// Merge results
+		for k, v := range repoData {
+			results[k] = v
+		}
+	}
+
+	log.Printf("[GRAPHQL] Successfully fetched details for %d/%d PRs", len(results), len(prs))
+	return results, nil
+}
+
+// fetchDetailsForRepo fetches PR details for all PRs in a single repository using GraphQL
+func (c *Client) fetchDetailsForRepo(ctx context.Context, prs []PullRequest) (map[string]*PRDetails, error) {
+	if len(prs) == 0 {
+		return make(map[string]*PRDetails), nil
+	}
+
+	owner := prs[0].Owner
+	repo := prs[0].Repo
+
+	// Build a single GraphQL query with aliases for all PRs in this repo
+	var queryBuilder strings.Builder
+	queryBuilder.WriteString("query {")
+
+	// Create an alias for each PR (pr1, pr2, etc.)
+	prAliases := make(map[string]int) // alias -> PR number
+	for i, pr := range prs {
+		alias := fmt.Sprintf("pr%d", i)
+		prAliases[alias] = pr.Number
+		queryBuilder.WriteString(fmt.Sprintf(`
+			%s: repository(owner: "%s", name: "%s") {
+				pullRequest(number: %d) {
+					number
+					createdAt
+					additions
+					deletions
+					changedFiles
+					reviews(last: 100) {
+						nodes {
+							author {
+								login
+							}
+						}
+					}
+					reviewRequests(first: 100) {
+						nodes {
+							requestedReviewer {
+								... on User {
+									login
+								}
+							}
+						}
+					}
+				}
+			}
+		`, alias, owner, repo, pr.Number))
+	}
+
+	queryBuilder.WriteString("}")
+
+	// Execute the batched query
+	graphqlQuery := map[string]string{"query": queryBuilder.String()}
+	jsonData, err := json.Marshal(graphqlQuery)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal GraphQL query: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.github.com/graphql", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to build HTTP request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute GraphQL query: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := json.Marshal(graphqlQuery)
+		return nil, fmt.Errorf("GraphQL query failed with status %d, query: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// Define structs for GraphQL response parsing
+	type ReviewAuthor struct {
+		Login string `json:"login"`
+	}
+	type ReviewNode struct {
+		Author *ReviewAuthor `json:"author"`
+	}
+	type ReviewsData struct {
+		Nodes []ReviewNode `json:"nodes"`
+	}
+	type ReviewRequester struct {
+		RequestedReviewer struct {
+			Login string `json:"login"`
+		} `json:"requestedReviewer"`
+	}
+	type ReviewRequestsData struct {
+		Nodes []ReviewRequester `json:"nodes"`
+	}
+	type PRData struct {
+		Number         int                `json:"number"`
+		CreatedAt      string             `json:"createdAt"`
+		Additions      int                `json:"additions"`
+		Deletions      int                `json:"deletions"`
+		ChangedFiles   int                `json:"changedFiles"`
+		Reviews        ReviewsData        `json:"reviews"`
+		ReviewRequests ReviewRequestsData `json:"reviewRequests"`
+	}
+	type RepoData struct {
+		PullRequest PRData `json:"pullRequest"`
+	}
+	type GraphQLResponse struct {
+		Data map[string]RepoData `json:"data"`
+	}
+
+	// Parse response
+	var graphqlResp GraphQLResponse
+	if err := json.NewDecoder(resp.Body).Decode(&graphqlResp); err != nil {
+		return nil, fmt.Errorf("failed to decode GraphQL response: %w", err)
+	}
+
+	// Parse results
+	results := make(map[string]*PRDetails)
+	for alias, prNumber := range prAliases {
+		repoData, ok := graphqlResp.Data[alias]
+		if !ok {
+			log.Printf("[GRAPHQL] Warning: No data for alias %s (PR %d)", alias, prNumber)
+			continue
+		}
+
+		prData := repoData.PullRequest
+
+		// Parse createdAt timestamp
+		createdAt, err := time.Parse(time.RFC3339, prData.CreatedAt)
+		if err != nil {
+			log.Printf("[GRAPHQL] Warning: Failed to parse createdAt for PR %d: %v", prNumber, err)
+			createdAt = time.Now() // Fallback
+		}
+
+		// Count unique reviewers
+		reviewerSet := make(map[string]bool)
+		for _, review := range prData.Reviews.Nodes {
+			if review.Author != nil {
+				reviewerSet[review.Author.Login] = true
+			}
+		}
+		reviewCount := len(reviewerSet)
+
+		// Check if user is in requested reviewers
+		requestedMe := false
+		for _, request := range prData.ReviewRequests.Nodes {
+			if request.RequestedReviewer.Login == c.username {
+				requestedMe = true
+				break
+			}
+		}
+
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, prNumber)
+		results[key] = &PRDetails{
+			Owner:        owner,
+			Repo:         repo,
+			Number:       prNumber,
+			CreatedAt:    createdAt,
+			Additions:    prData.Additions,
+			Deletions:    prData.Deletions,
+			ChangedFiles: prData.ChangedFiles,
+			ReviewCount:  reviewCount,
+			RequestedMe:  requestedMe,
+		}
+
+		log.Printf("[GRAPHQL] PR %s/%s#%d: +%d/-%d, %d files, %d reviewers, requested:%v",
+			owner, repo, prNumber, prData.Additions, prData.Deletions, prData.ChangedFiles, reviewCount, requestedMe)
 	}
 
 	return results, nil
