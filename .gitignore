@@ -16,3 +16,9 @@ reviews/
 
 # Go
 vendor/
+server/dist/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/

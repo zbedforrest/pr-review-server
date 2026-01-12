@@ -1,0 +1,38 @@
+services:
+  pr-review-server:
+    build: .
+    container_name: pr-review-server
+    restart: unless-stopped
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_USERNAME=${GITHUB_USERNAME}
+      - POLLING_INTERVAL=${POLLING_INTERVAL:-1m}
+      - SERVER_PORT=8080
+      - CBPR_PATH=/usr/local/bin/cbpr
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      # Audio configuration for PulseAudio (see AUDIO_SETUP.md)
+      - PULSE_SERVER=host.docker.internal
+      - PULSE_COOKIE=/tmp/pulse-cookie
+    ports:
+      - "${SERVER_PORT:-7769}:8080"
+    volumes:
+      # Persistent data
+      - ./reviews:/app/reviews
+      - ./data:/app/data
+      # Mount .gitconfig for cbpr to use git credentials if needed
+      - ~/.gitconfig:/home/appuser/.gitconfig:ro
+      # Optional: mount specific config folder cbpr needs, e.g. for gh cli
+      # - ~/.config/gh:/home/appuser/.config/gh:ro
+      # Audio: mount PulseAudio cookie for authentication
+      - ~/.config/pulse/cookie:/tmp/pulse-cookie:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

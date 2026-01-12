@@ -1,0 +1,68 @@
+// GitHub dark theme colors
+$color-bg-primary: #0d1117;
+$color-bg-secondary: #161b22;
+$color-bg-tertiary: #21262d;
+$color-bg-hover: #1c2128;
+$color-border: #30363d;
+
+$color-text-primary: #c9d1d9;
+$color-text-secondary: #8b949e;
+$color-text-tertiary: #7d8590;
+$color-text-muted: #6e7681;
+
+$color-link: #58a6ff;
+$color-link-hover: #79c0ff;
+
+$color-success: #7ee787;
+$color-success-emphasis: #1a7f37;
+$color-warning: #d29922;
+$color-warning-text: #f0d062;
+$color-error: #da3633;
+$color-error-text: #ffa198;
+
+// Priority colors
+$color-priority-high: #f85149;
+$color-priority-medium: #d29922;
+$color-priority-low: #3fb950;
+
+// Status colors
+$color-status-pending: #9e6a03;
+$color-status-pending-text: #f0d062;
+$color-status-generating: #0969da;
+$color-status-generating-text: #79c0ff;
+$color-status-completed: #1a7f37;
+$color-status-completed-text: #7ee787;
+$color-status-error: #da3633;
+$color-status-error-text: #ffa198;
+
+// Spacing
+$spacing-xs: 4px;
+$spacing-sm: 6px;
+$spacing-md: 10px;
+$spacing-lg: 12px;
+$spacing-xl: 16px;
+$spacing-2xl: 24px;
+$spacing-3xl: 32px;
+
+// Border radius
+$radius-sm: 3px;
+$radius-md: 6px;
+$radius-lg: 12px;
+
+// Transitions
+$transition-fast: 0.2s ease;
+$transition-medium: 0.3s ease;
+
+// Font families
+$font-system: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+$font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+// Font sizes
+$font-size-xs: 9px;
+$font-size-sm: 11px;
+$font-size-md: 12px;
+$font-size-base: 13px;
+$font-size-lg: 16px;
+$font-size-xl: 20px;
+$font-size-2xl: 24px;
+$font-size-3xl: 32px;

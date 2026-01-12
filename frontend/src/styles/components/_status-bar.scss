@@ -1,0 +1,35 @@
+@use '../abstracts/variables' as *;
+@use '../abstracts/mixins' as *;
+
+.status-bar {
+  @include card;
+  display: flex;
+  gap: $spacing-2xl;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: $spacing-xl;
+
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: $spacing-sm;
+  }
+
+  &__label {
+    color: $color-text-tertiary;
+    font-size: $font-size-sm;
+  }
+
+  &__value {
+    font-weight: 600;
+    color: $color-link;
+  }
+
+  &__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: $color-success;
+    @include pulse-animation;
+  }
+}

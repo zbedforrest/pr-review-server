@@ -1,0 +1,39 @@
+@use '../abstracts/variables' as *;
+@use '../abstracts/mixins' as *;
+
+.status-badge {
+  @include status-badge($color-bg-tertiary, $color-text-primary);
+
+  &--pending {
+    @include status-badge($color-status-pending, $color-status-pending-text);
+  }
+
+  &--generating {
+    @include status-badge($color-status-generating, $color-status-generating-text);
+    @include pulse-animation;
+  }
+
+  &--completed {
+    @include status-badge($color-status-completed, $color-status-completed-text);
+  }
+
+  &--error {
+    @include status-badge($color-status-error, $color-status-error-text);
+  }
+
+  &__elapsed-time {
+    display: block;
+    font-size: $font-size-xs;
+    margin-top: 2px;
+    opacity: 0.7;
+  }
+}
+
+.commit-sha {
+  font-family: $font-mono;
+  font-size: $font-size-sm;
+  color: $color-text-tertiary;
+  background: $color-bg-tertiary;
+  padding: 2px 5px;
+  border-radius: $radius-sm;
+}

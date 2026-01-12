@@ -1,0 +1,11 @@
+@use '../abstracts/variables' as *;
+
+.app-container {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: $spacing-lg;
+}
+
+.section {
+  margin-bottom: $spacing-2xl;
+}

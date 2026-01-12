@@ -1,0 +1,93 @@
+@use './variables' as *;
+
+// Card styling
+@mixin card {
+  background: $color-bg-secondary;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+  padding: $spacing-lg;
+}
+
+// Hover lift effect
+@mixin hover-lift {
+  transition: all $transition-fast;
+
+  &:hover {
+    background: $color-bg-hover;
+    transform: translateX(2px);
+  }
+}
+
+// Status badge mixin
+@mixin status-badge($bg-color, $text-color) {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: $radius-lg;
+  font-size: $font-size-sm;
+  font-weight: 500;
+  line-height: 18px;
+  background: $bg-color;
+  color: $text-color;
+}
+
+// Button base styling
+@mixin button-base {
+  background: transparent;
+  border: 1px solid $color-border;
+  color: $color-text-secondary;
+  padding: $spacing-xs $spacing-md;
+  border-radius: $radius-md;
+  cursor: pointer;
+  font-size: $font-size-sm;
+  font-family: $font-system;
+  transition: all $transition-fast;
+
+  &:hover {
+    background: $color-bg-tertiary;
+    color: $color-link;
+    border-color: $color-link;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+// Truncate text with ellipsis
+@mixin truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// Scrollbar styling (GitHub-like)
+@mixin custom-scrollbar {
+  &::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: $color-bg-primary;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: $color-border;
+    border-radius: $radius-sm;
+
+    &:hover {
+      background: $color-text-tertiary;
+    }
+  }
+}
+
+// Pulse animation
+@mixin pulse-animation {
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  animation: pulse 2s ease-in-out infinite;
+}

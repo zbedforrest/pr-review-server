@@ -1,0 +1,122 @@
+@use '../abstracts/variables' as *;
+@use '../abstracts/mixins' as *;
+
+.priority-section {
+  @include card;
+  margin-bottom: $spacing-2xl;
+
+  &.collapsed .priority-section__header {
+    margin-bottom: 0;
+  }
+}
+
+.priority-section__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: $spacing-lg;
+}
+
+.priority-section__count {
+  color: $color-text-secondary;
+  font-size: $font-size-md;
+}
+
+.priority-section__timestamp {
+  font-size: $font-size-xs;
+  color: $color-text-muted;
+}
+
+.priority-section__toggle {
+  @include button-base;
+}
+
+.priority-section__list {
+  &.collapsed {
+    display: none;
+  }
+}
+
+.priority-item {
+  background: $color-bg-hover;
+  border: 1px solid $color-border;
+  border-radius: $radius-sm;
+  padding: $spacing-md $spacing-lg;
+  margin-bottom: $spacing-md;
+  @include hover-lift;
+
+  &--high {
+    border-left: 4px solid $color-priority-high;
+  }
+
+  &--medium {
+    border-left: 4px solid $color-priority-medium;
+  }
+
+  &--low {
+    border-left: 4px solid $color-priority-low;
+  }
+}
+
+.priority-item__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: $spacing-xs;
+}
+
+.priority-item__title {
+  font-size: $font-size-md;
+  font-weight: 600;
+  color: $color-text-primary;
+}
+
+.priority-item__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-xs;
+  padding: 2px $spacing-md;
+  border-radius: $radius-lg;
+  font-size: $font-size-xs;
+  font-weight: 600;
+
+  &--high {
+    background: $color-priority-high;
+    color: white;
+  }
+
+  &--medium {
+    background: $color-priority-medium;
+    color: white;
+  }
+
+  &--low {
+    background: $color-priority-low;
+    color: white;
+  }
+}
+
+.priority-item__subtitle {
+  font-size: $font-size-sm;
+  color: $color-text-secondary;
+  margin-top: 2px;
+}
+
+.priority-item__meta {
+  display: flex;
+  gap: $spacing-xl;
+  font-size: $font-size-sm;
+  color: $color-text-tertiary;
+  margin-top: $spacing-sm;
+}
+
+.priority-item__reasons {
+  font-size: $font-size-sm;
+  color: $color-text-secondary;
+  margin-top: $spacing-xs;
+}
+
+.priority-item__links {
+  margin-top: $spacing-md;
+  font-size: $font-size-sm;
+}

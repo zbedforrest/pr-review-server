@@ -1,19 +1,26 @@
 package server
 
 import (
+	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/prioritization"
 )
+
+//go:embed dist/*
+var reactDist embed.FS
 
 type PollerInterface interface {
 	GetCbprStatus() (running bool, duration time.Duration)
@@ -31,6 +38,14 @@ type Server struct {
 	pollTriggerFunc func()
 	poller         PollerInterface
 	startTime      time.Time
+	// Cache for rate limit info to avoid calling GitHub API on every status request
+	rateLimitCache    *github.RateLimitInfo
+	rateLimitCacheMux sync.RWMutex
+	rateLimitCacheTime time.Time
+	// Prioritization cache
+	priorityResult    *prioritization.Result
+	priorityResultMux sync.RWMutex
+	prioritizer       *prioritization.Prioritizer
 }
 
 type PRResponse struct {
@@ -47,14 +62,20 @@ type PRResponse struct {
 	Author          string  `json:"author"`
 	GeneratingSince *string `json:"generating_since"`
 	IsMine          bool    `json:"is_mine"`
+	MyReviewStatus  string  `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	ApprovalCount   int     `json:"approval_count"`   // Number of current approvals
+	Draft           bool    `json:"draft"`            // true if PR is in draft mode
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
+	prioritizer := prioritization.New(database, ghClient, cfg.GitHubUsername)
+
 	return &Server{
-		cfg:       cfg,
-		db:        database,
-		ghClient:  ghClient,
-		startTime: time.Now(),
+		cfg:         cfg,
+		db:          database,
+		ghClient:    ghClient,
+		startTime:   time.Now(),
+		prioritizer: prioritizer,
 	}
 }
 
@@ -82,412 +103,58 @@ func (s *Server) SetPollTrigger(f func()) {
 }
 
 func (s *Server) Start() error {
-	http.HandleFunc("/", s.handleIndex)
+	// API routes
 	http.HandleFunc("/api/prs", s.handleGetPRs)
 	http.HandleFunc("/api/prs/delete", s.handleDeletePR)
 	http.HandleFunc("/api/status", s.handleStatus)
+	http.HandleFunc("/api/priorities", s.handleGetPriorities)
 	http.Handle("/reviews/", http.StripPrefix("/reviews/", http.FileServer(http.Dir(s.cfg.ReviewsDir))))
+
+	// Frontend: Serve React app
+	http.HandleFunc("/", s.handleReactApp)
 
 	addr := ":" + s.cfg.ServerPort
 	log.Printf("Starting server on http://localhost%s", addr)
 	return http.ListenAndServe(addr, nil)
 }
 
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	// Prevent caching of the HTML page
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
+// StartPrioritization starts the background prioritization job
+// Should be called after server is initialized
+func (s *Server) StartPrioritization(ctx context.Context) {
+	// Run immediately on startup
+	go s.updatePriorities(ctx)
 
-	html := `<!DOCTYPE html>
-<html>
-<head>
-    <title>PR Review Dashboard</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%230d1117'/%3E%3Cpath d='M20 50 L40 70 L80 30' stroke='%237ee787' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-    <style>
-        * { box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            max-width: 1600px;
-            margin: 0 auto;
-            padding: 12px;
-            background: #0d1117;
-            color: #c9d1d9;
-            font-size: 13px;
-        }
-        h1 {
-            color: #58a6ff;
-            font-size: 20px;
-            font-weight: 600;
-            margin: 0 0 12px 0;
-            padding: 0;
-        }
-        table {
-            width: 100%;
-            background: #161b22;
-            border-collapse: collapse;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            overflow: hidden;
-            font-size: 12px;
-        }
-        th, td {
-            padding: 6px 10px;
-            text-align: left;
-            border-bottom: 1px solid #21262d;
-        }
-        th {
-            background: #21262d;
-            color: #8b949e;
-            font-weight: 600;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        tr:hover {
-            background: #1c2128;
-        }
-        tr:last-child td {
-            border-bottom: none;
-        }
-        a {
-            color: #58a6ff;
-            text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-        .status {
-            font-size: 12px;
-            color: #c9d1d9;
-            margin-bottom: 16px;
-            padding: 10px 12px;
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            display: flex;
-            gap: 24px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        .status-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .status-label {
-            color: #7d8590;
-            font-size: 11px;
-        }
-        .status-value {
-            font-weight: 600;
-            color: #58a6ff;
-        }
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #7ee787;
-            animation: pulse 2s ease-in-out infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .loading {
-            text-align: center;
-            padding: 20px;
-            color: #7d8590;
-        }
-        .error {
-            background: #da3633;
-            color: white;
-            padding: 8px 12px;
-            border-radius: 6px;
-            margin-bottom: 12px;
-            font-size: 12px;
-        }
-        .commit-sha {
-            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-            font-size: 11px;
-            color: #7d8590;
-            background: #21262d;
-            padding: 2px 5px;
-            border-radius: 3px;
-        }
-        .status-badge {
-            display: inline-block;
-            padding: 2px 7px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 500;
-            line-height: 18px;
-        }
-        .status-pending { background: #9e6a03; color: #f0d062; }
-        .status-generating {
-            background: #0969da;
-            color: #79c0ff;
-            animation: pulse 1.5s ease-in-out infinite;
-        }
-        .status-completed { background: #1a7f37; color: #7ee787; }
-        .status-error { background: #da3633; color: #ffa198; }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-        .pr-title {
-            font-size: 12px;
-            color: #8b949e;
-            max-width: 600px;
-            word-wrap: break-word;
-            white-space: normal;
-            line-height: 1.4;
-            margin-top: 2px;
-        }
-        .delete-btn {
-            background: transparent;
-            color: #da3633;
-            border: 1px solid #da3633;
-            padding: 2px 8px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 11px;
-            transition: all 0.2s;
-        }
-        .delete-btn:hover {
-            background: #da3633;
-            color: white;
-        }
-        .elapsed-time {
-            display: block;
-            font-size: 9px;
-            margin-top: 2px;
-            opacity: 0.7;
-        }
-    </style>
-</head>
-<body>
-    <h1>PR Review Dashboard</h1>
-    <div class="status" id="status">Loading...</div>
-    <div id="error" class="error" style="display:none;"></div>
+	// Then run every 30 minutes
+	ticker := time.NewTicker(30 * time.Minute)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				s.updatePriorities(ctx)
+			case <-ctx.Done():
+				ticker.Stop()
+				log.Println("[PRIORITIZATION] Stopping prioritization service")
+				return
+			}
+		}
+	}()
 
-    <h2 style="color: #58a6ff; font-size: 16px; font-weight: 600; margin: 24px 0 8px 0;">My PRs</h2>
-    <table id="my-pr-table" style="display:none; margin-bottom: 24px;">
-        <thead>
-            <tr>
-                <th>Repository</th>
-                <th>PR # / Title</th>
-                <th>Author</th>
-                <th>Status</th>
-                <th>Commit SHA</th>
-                <th>Last Reviewed</th>
-                <th>Links</th>
-            </tr>
-        </thead>
-        <tbody id="my-pr-list">
-        </tbody>
-    </table>
+	log.Println("[PRIORITIZATION] Started prioritization service (runs every 30 minutes)")
+}
 
-    <h2 style="color: #58a6ff; font-size: 16px; font-weight: 600; margin: 24px 0 8px 0;">PRs to Review</h2>
-    <table id="pr-table" style="display:none;">
-        <thead>
-            <tr>
-                <th>Repository</th>
-                <th>PR # / Title</th>
-                <th>Author</th>
-                <th>Status</th>
-                <th>Commit SHA</th>
-                <th>Last Reviewed</th>
-                <th>Links</th>
-            </tr>
-        </thead>
-        <tbody id="pr-list">
-        </tbody>
-    </table>
+// updatePriorities calculates priorities and updates the cache
+func (s *Server) updatePriorities(ctx context.Context) {
+	result, err := s.prioritizer.Calculate(ctx)
+	if err != nil {
+		log.Printf("[PRIORITIZATION] Error calculating priorities: %v", err)
+		return
+	}
 
-    <script>
-        function formatDate(dateStr) {
-            if (!dateStr) return 'Not yet reviewed';
-            const date = new Date(dateStr);
-            return date.toLocaleString();
-        }
+	s.priorityResultMux.Lock()
+	s.priorityResult = result
+	s.priorityResultMux.Unlock()
 
-        function renderPRRow(pr) {
-            // Only show review link if PR is completed AND has a review path
-            const reviewLink = (pr.status === 'completed' && pr.review_html_path)
-                ? '<a href="/reviews/' + pr.review_html_path + '" target="_blank">View Review</a>'
-                : '<span style="color: #ffa726; font-weight: 500;">Not yet reviewed</span>';
-
-            let statusBadge = '<span class="status-badge status-' + pr.status + '">' +
-                pr.status.charAt(0).toUpperCase() + pr.status.slice(1);
-
-            // Add elapsed time for generating status
-            if (pr.status === 'generating' && pr.generating_since) {
-                const startTime = new Date(pr.generating_since).getTime();
-                const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                statusBadge += '<br><span class="elapsed-time" data-start="' + startTime + '" style="font-size: 0.7em; font-weight: normal;">' +
-                    elapsed + 's</span>';
-            }
-
-            statusBadge += '</span>';
-
-            // Only show delete button for completed reviews
-            const deleteBtn = pr.status === 'completed'
-                ? '<button class="delete-btn" onclick="deletePR(\'' +
-                    pr.owner + '\', \'' + pr.repo + '\', ' + pr.number + ')">Delete</button>'
-                : '';
-
-            return '<tr id="pr-' + pr.owner + '-' + pr.repo + '-' + pr.number + '">' +
-                '<td>' + pr.owner + '/' + pr.repo + '</td>' +
-                '<td>' +
-                    '<a href="' + pr.github_url + '" target="_blank">#' + pr.number + '</a>' +
-                    '<div class="pr-title" title="' + pr.title + '">' + pr.title + '</div>' +
-                '</td>' +
-                '<td>' + pr.author + '</td>' +
-                '<td>' + statusBadge + '</td>' +
-                '<td class="commit-sha">' + pr.commit_sha.substring(0, 7) + '</td>' +
-                '<td>' + formatDate(pr.last_reviewed_at) + '</td>' +
-                '<td>' +
-                    '<a href="' + pr.github_url + '" target="_blank">GitHub</a> | ' +
-                    reviewLink +
-                    (deleteBtn ? ' | ' + deleteBtn : '') +
-                '</td>' +
-            '</tr>';
-        }
-
-        function formatUptime(seconds) {
-            const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            if (hours > 0) return hours + 'h ' + minutes + 'm';
-            return minutes + 'm';
-        }
-
-        function fetchServerStatus() {
-            fetch('/api/status')
-                .then(response => response.ok ? response.json() : null)
-                .then(data => {
-                    if (!data) return;
-                    const status = document.getElementById('status');
-
-                    let html = '<div class="status-dot"></div>';
-                    html += '<div class="status-item"><span class="status-label">Uptime:</span> <span class="status-value">' + formatUptime(data.uptime_seconds) + '</span></div>';
-                    if (data.seconds_until_next_poll !== undefined) {
-                        html += '<div class="status-item"><span class="status-label">Next poll:</span> <span class="status-value">' + data.seconds_until_next_poll + 's</span></div>';
-                    }
-                    html += '<div class="status-item"><span class="status-label">Completed:</span> <span class="status-value">' + data.counts.completed + '</span></div>';
-
-                    if (data.counts.generating > 0) {
-                        html += '<div class="status-item"><span class="status-label">Generating:</span> <span class="status-value">' + data.counts.generating + '</span></div>';
-                    }
-                    if (data.cbpr_running) {
-                        html += '<div class="status-item"><span class="status-label">Current task:</span> <span class="status-value">' + formatUptime(data.cbpr_duration_seconds) + '</span></div>';
-                    }
-                    if (data.counts.pending > 0) {
-                        html += '<div class="status-item"><span class="status-label">Pending:</span> <span class="status-value">' + data.counts.pending + '</span></div>';
-                    }
-                    if (data.counts.error > 0) {
-                        html += '<div class="status-item"><span class="status-label">Errors:</span> <span class="status-value" style="color: #ffa198;">' + data.counts.error + '</span></div>';
-                    }
-
-                    status.innerHTML = html;
-                })
-                .catch(() => {});  // Silently fail - status is non-critical
-        }
-
-        function fetchPRs() {
-            fetch('/api/prs')
-                .then(response => {
-                    if (!response.ok) throw new Error('Failed to fetch PRs');
-                    return response.json();
-                })
-                .then(data => {
-                    const myPRList = document.getElementById('my-pr-list');
-                    const reviewPRList = document.getElementById('pr-list');
-                    const myPRTable = document.getElementById('my-pr-table');
-                    const reviewPRTable = document.getElementById('pr-table');
-                    const errorDiv = document.getElementById('error');
-
-                    errorDiv.style.display = 'none';
-
-                    // Separate PRs into my PRs and review PRs
-                    const myPRs = data.filter(pr => pr.is_mine);
-                    const reviewPRs = data.filter(pr => !pr.is_mine);
-
-                    // Render My PRs
-                    if (myPRs.length > 0) {
-                        myPRTable.style.display = 'table';
-                        myPRList.innerHTML = myPRs.map(renderPRRow).join('');
-                    } else {
-                        myPRTable.style.display = 'none';
-                    }
-
-                    // Render Review PRs
-                    if (reviewPRs.length > 0) {
-                        reviewPRTable.style.display = 'table';
-                        reviewPRList.innerHTML = reviewPRs.map(renderPRRow).join('');
-                    } else {
-                        reviewPRTable.style.display = 'none';
-                    }
-                })
-                .catch(error => {
-                    const errorDiv = document.getElementById('error');
-                    errorDiv.textContent = 'Error: ' + error.message;
-                    errorDiv.style.display = 'block';
-                });
-        }
-
-        function deletePR(owner, repo, number) {
-            // Immediately remove the row from UI (optimistic update)
-            const rowId = 'pr-' + owner + '-' + repo + '-' + number;
-            const row = document.getElementById(rowId);
-            if (row) {
-                row.remove();
-            }
-
-            // Call API to delete on backend
-            fetch('/api/prs/delete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ owner, repo, number })
-            })
-            .then(response => {
-                if (!response.ok) throw new Error('Failed to delete PR');
-                return response.json();
-            })
-            .catch(error => {
-                alert('Error deleting PR: ' + error.message);
-                // Refresh to restore correct state if delete failed
-                fetchPRs();
-            });
-        }
-
-        // Update elapsed time for generating PRs every second
-        function updateElapsedTimes() {
-            const elapsedElements = document.querySelectorAll('.elapsed-time');
-            elapsedElements.forEach(el => {
-                const startTime = parseInt(el.dataset.start);
-                const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                el.textContent = elapsed + 's';
-            });
-        }
-
-        // Initial load
-        fetchServerStatus();
-        fetchPRs();
-
-        // Poll every 1 second for real-time updates
-        setInterval(() => {
-            fetchServerStatus();
-            fetchPRs();
-        }, 1000);
-
-        // Update elapsed times every second
-        setInterval(updateElapsedTimes, 1000);
-    </script>
-</body>
-</html>`
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
+	log.Printf("[PRIORITIZATION] Updated priorities: %d PRs scored", result.TotalPRsScored)
 }
 
 func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
@@ -558,6 +225,9 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			Status:          dbPR.Status,
 			GeneratingSince: generatingSince,
 			IsMine:          dbPR.IsMine,
+			MyReviewStatus:  dbPR.MyReviewStatus,
+			ApprovalCount:   dbPR.ApprovalCount,
+			Draft:           dbPR.Draft,
 		})
 	}
 
@@ -669,6 +339,43 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Get GitHub API rate limit status (cached to avoid excessive API calls)
+	// Web client polls every 1 second, so we cache for 30 seconds
+	s.rateLimitCacheMux.RLock()
+	cachedInfo := s.rateLimitCache
+	cacheAge := time.Since(s.rateLimitCacheTime)
+	s.rateLimitCacheMux.RUnlock()
+
+	// Refresh cache if older than 30 seconds or not set
+	if cachedInfo == nil || cacheAge > 30*time.Second {
+		ctx := r.Context()
+		freshInfo, err := s.ghClient.GetRateLimitInfo(ctx)
+		if err == nil {
+			s.rateLimitCacheMux.Lock()
+			s.rateLimitCache = freshInfo
+			s.rateLimitCacheTime = time.Now()
+			cachedInfo = freshInfo
+			s.rateLimitCacheMux.Unlock()
+		} else {
+			log.Printf("[STATUS] Warning: Failed to refresh rate limit info: %v", err)
+			// Keep using old cache if we have it
+		}
+	}
+
+	rateLimitData := map[string]interface{}{
+		"remaining": 0,
+		"limit":     5000,
+		"reset_at":  "",
+		"is_limited": true,
+		"error":     "",
+	}
+	if cachedInfo != nil {
+		rateLimitData["remaining"] = cachedInfo.Remaining
+		rateLimitData["limit"] = cachedInfo.Limit
+		rateLimitData["reset_at"] = cachedInfo.ResetTime.Format(time.RFC3339)
+		rateLimitData["is_limited"] = cachedInfo.Remaining < 10
+	}
+
 	response := map[string]interface{}{
 		"uptime_seconds":           int(time.Since(s.startTime).Seconds()),
 		"cbpr_running":             cbprRunning,
@@ -678,8 +385,91 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"missing_metadata_count":   missingMetadataCount,
 		"timestamp":                time.Now().Unix(),
 		"seconds_until_next_poll":  secondsUntilNextPoll,
+		"rate_limit":               rateLimitData,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) handleGetPriorities(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of API responses
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	s.priorityResultMux.RLock()
+	result := s.priorityResult
+	s.priorityResultMux.RUnlock()
+
+	if result == nil {
+		// Return empty result if prioritization hasn't run yet
+		result = &prioritization.Result{
+			Timestamp:      time.Now(),
+			TopPRs:         []prioritization.PrioritizedPR{},
+			TotalPRsScored: 0,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleReactApp serves the embedded React production build with SPA routing support
+func (s *Server) handleReactApp(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of HTML
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	path := r.URL.Path
+	if path == "/" {
+		path = "dist/index.html"
+	} else {
+		path = "dist" + path
+	}
+
+	// Try to read the requested file
+	content, err := reactDist.ReadFile(path)
+	if err != nil {
+		// File not found - serve index.html for SPA routing
+		content, err = reactDist.ReadFile("dist/index.html")
+		if err != nil {
+			http.Error(w, "Failed to load application", http.StatusInternalServerError)
+			log.Printf("Error serving React app: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	} else {
+		// Set content type based on file extension
+		contentType := getContentType(path)
+		w.Header().Set("Content-Type", contentType)
+
+		// Cache static assets (not HTML)
+		if !strings.HasSuffix(path, ".html") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
+	}
+
+	w.Write(content)
+}
+
+// getContentType returns appropriate content type for file extension
+func getContentType(path string) string {
+	if strings.HasSuffix(path, ".html") {
+		return "text/html; charset=utf-8"
+	} else if strings.HasSuffix(path, ".js") {
+		return "application/javascript"
+	} else if strings.HasSuffix(path, ".css") {
+		return "text/css"
+	} else if strings.HasSuffix(path, ".json") {
+		return "application/json"
+	} else if strings.HasSuffix(path, ".png") {
+		return "image/png"
+	} else if strings.HasSuffix(path, ".svg") {
+		return "image/svg+xml"
+	} else if strings.HasSuffix(path, ".ico") {
+		return "image/x-icon"
+	}
+	return "application/octet-stream"
 }
