@@ -2,11 +2,12 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
 )
 
 type PR struct {
@@ -92,8 +93,14 @@ func (db *DB) initSchema() error {
 		_, err := tx.Exec(migration)
 		if err != nil {
 			// Only ignore "duplicate column" errors - these are expected for existing databases
-			if strings.Contains(err.Error(), "duplicate column") {
-				continue // Expected error, safe to ignore
+			// Use type assertion to check for sqlite3.Error for more robust error handling
+			var sqliteErr sqlite3.Error
+			if errors.As(err, &sqliteErr) {
+				// Check if it's a duplicate column error by examining the error message
+				// SQLite returns "duplicate column" in the error message for ALTER TABLE ADD COLUMN
+				if strings.Contains(sqliteErr.Error(), "duplicate column") {
+					continue // Expected error, safe to ignore
+				}
 			}
 			// Rollback transaction on any other error
 			tx.Rollback()
