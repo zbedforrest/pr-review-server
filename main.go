@@ -76,6 +76,9 @@ func main() {
 
 	go p.Start(ctx)
 
+	// Start prioritization service
+	srv.StartPrioritization(ctx)
+
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)

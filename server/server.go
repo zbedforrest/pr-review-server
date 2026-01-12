@@ -19,9 +19,6 @@ import (
 	"pr-review-server/prioritization"
 )
 
-//go:embed templates/index.html
-var indexHTML string
-
 //go:embed dist/*
 var reactDist embed.FS
 
@@ -113,14 +110,8 @@ func (s *Server) Start() error {
 	http.HandleFunc("/api/priorities", s.handleGetPriorities)
 	http.Handle("/reviews/", http.StripPrefix("/reviews/", http.FileServer(http.Dir(s.cfg.ReviewsDir))))
 
-	// Frontend routes (dev vs production)
-	if s.cfg.DevMode {
-		log.Println("DEV MODE: Visit http://localhost:" + s.cfg.ServerPort + " for instructions")
-		http.HandleFunc("/", s.handleDevProxy)
-	} else {
-		log.Println("PRODUCTION MODE: Serving embedded React app")
-		http.HandleFunc("/", s.handleReactApp)
-	}
+	// Frontend: Serve React app
+	http.HandleFunc("/", s.handleReactApp)
 
 	addr := ":" + s.cfg.ServerPort
 	log.Printf("Starting server on http://localhost%s", addr)
@@ -164,16 +155,6 @@ func (s *Server) updatePriorities(ctx context.Context) {
 	s.priorityResultMux.Unlock()
 
 	log.Printf("[PRIORITIZATION] Updated priorities: %d PRs scored", result.TotalPRsScored)
-}
-
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	// Prevent caching of the HTML page
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(indexHTML))
 }
 
 func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
@@ -471,37 +452,6 @@ func (s *Server) handleReactApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Write(content)
-}
-
-// handleDevProxy provides instructions for dev mode
-func (s *Server) handleDevProxy(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!DOCTYPE html>
-<html>
-<head>
-	<title>PR Review Dashboard - Dev Mode</title>
-	<style>
-		body { font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 40px; }
-		h1 { color: #58a6ff; }
-		pre { background: #161b22; padding: 20px; border-radius: 6px; }
-		a { color: #58a6ff; }
-	</style>
-</head>
-<body>
-	<h1>Development Mode Active</h1>
-	<p>The Go backend is running in dev mode.</p>
-	<p>To access the React frontend, start the Vite dev server:</p>
-	<pre>cd frontend && npm run dev</pre>
-	<p>Then visit: <a href="http://localhost:3000">http://localhost:3000</a></p>
-	<hr>
-	<p>API endpoints are available at:</p>
-	<ul>
-		<li><a href="/api/status">/api/status</a></li>
-		<li><a href="/api/prs">/api/prs</a></li>
-		<li><a href="/api/priorities">/api/priorities</a></li>
-	</ul>
-</body>
-</html>`)
 }
 
 // getContentType returns appropriate content type for file extension

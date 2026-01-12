@@ -28,7 +28,7 @@ export const PRTableRow = memo(function PRTableRow({ pr, showMyReview = false }:
   return (
     <tr>
       <td>
-        <a href={prUrl} target="_blank" rel="noopener noreferrer">
+        <a href={prUrl}>
           {pr.owner}/{pr.repo} #{pr.number}
         </a>
         {pr.draft && <span className="pr-table__draft-indicator"> (Draft)</span>}
@@ -51,7 +51,7 @@ export const PRTableRow = memo(function PRTableRow({ pr, showMyReview = false }:
       </td>
       <td>
         {reviewUrl ? (
-          <a href={reviewUrl} target="_blank" rel="noopener noreferrer">
+          <a href={reviewUrl}>
             View Review
           </a>
         ) : (

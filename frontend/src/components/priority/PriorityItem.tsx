@@ -26,7 +26,7 @@ export const PriorityItem = memo(function PriorityItem({ item }: PriorityItemPro
     <div className={`priority-item ${priorityClass}`}>
       <div className="priority-item__header">
         <div className="priority-item__title">
-          <a href={item.github_url} target="_blank" rel="noopener noreferrer">
+          <a href={item.github_url}>
             {item.owner}/{item.repo} #{item.number}
           </a>
         </div>
@@ -53,11 +53,11 @@ export const PriorityItem = memo(function PriorityItem({ item }: PriorityItemPro
       )}
 
       <div className="priority-item__links">
-        <a href={item.github_url} target="_blank" rel="noopener noreferrer">
+        <a href={item.github_url}>
           View PR
         </a>
         {' | '}
-        <a href={item.review_url} target="_blank" rel="noopener noreferrer">
+        <a href={item.review_url}>
           View Review
         </a>
       </div>

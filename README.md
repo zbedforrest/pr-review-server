@@ -68,6 +68,44 @@ Environment variables:
 4. Reviews are automatically generated and updated when new commits arrive
 5. Click "View Review" to see the generated HTML review
 
+## Scripts
+
+### review-next.sh - PR Prioritization
+
+A script that intelligently prioritizes which PRs you should review next based on multiple factors:
+
+```bash
+./review-next.sh                                  # Show top 3 PRs to review
+./review-next.sh --show-all                       # Show all PRs with scores
+./review-next.sh --top 5                          # Show top 5 PRs
+./review-next.sh --repo multimediallc/chaturbate  # Filter by repository
+```
+
+**Prioritization Algorithm:**
+
+The script assigns scores to PRs based on:
+- **Age**: Older PRs get higher priority (respects author's waiting time)
+- **Approval Gap**: PRs with many reviews but no approvals (suggests blocking issues)
+- **Size vs Attention**: Large PRs with few reviews need more eyes
+- **Explicit Request**: When you're specifically requested as a reviewer
+- **Coverage Penalty**: PRs with 5+ reviews and approvals get lower priority
+- **Already Reviewed**: PRs you've already approved/commented get lower priority
+
+**Example Output:**
+```
+🎯 Top 3 PRs to Review
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. 🔴 HIGH (Score: 90)
+   multimediallc/chaturbate #24792
+   "feature: ts lingo chat cache" by @mvpowers
+
+   📏 Size: 15 files, +1280/-57 lines
+   ⏰ Age: 3 days
+   ✅ Reviews: 7 reviews, 0 approvals
+
+   📋 Reasons: Old (3d);7 reviews but no approvals;Very large (1280+ lines)
+```
+
 ## Project Structure
 
 ```
