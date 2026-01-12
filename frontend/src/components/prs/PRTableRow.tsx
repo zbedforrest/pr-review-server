@@ -2,6 +2,7 @@ import { memo, useCallback } from 'react';
 import type { PR } from '@/types/pr';
 import { CommitSha, StatusBadge, ReviewStatusEmoji } from '@/components/common';
 import { useDeletePR } from '@/hooks/usePRs';
+import { NotesCell } from './NotesCell';
 
 interface PRTableRowProps {
   pr: PR;
@@ -46,6 +47,14 @@ export const PRTableRow = memo(function PRTableRow({ pr, showMyReview = false }:
           <ReviewStatusEmoji status={pr.my_review_status} />
         </td>
       )}
+      <td className="pr-table__notes">
+        <NotesCell
+          owner={pr.owner}
+          repo={pr.repo}
+          number={pr.number}
+          initialNotes={pr.notes}
+        />
+      </td>
       <td className={`pr-table__approval-count ${pr.approval_count > 0 ? 'pr-table__approval-count--positive' : 'pr-table__approval-count--zero'}`}>
         {pr.approval_count}
       </td>

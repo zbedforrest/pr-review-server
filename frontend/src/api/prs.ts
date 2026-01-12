@@ -14,3 +14,14 @@ export interface DeletePRParams {
 export async function deletePR(params: DeletePRParams): Promise<{ status: string }> {
   return apiPost<{ status: string }>('/api/prs/delete', params);
 }
+
+export interface UpdatePRNotesParams {
+  owner: string;
+  repo: string;
+  number: number;
+  notes: string;
+}
+
+export async function updatePRNotes(params: UpdatePRNotesParams): Promise<{ status: string; notes: string }> {
+  return apiPost<{ status: string; notes: string }>('/api/prs/notes', params);
+}

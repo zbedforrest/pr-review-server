@@ -15,4 +15,5 @@ export interface PR {
   my_review_status: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | '';
   approval_count: number;
   draft: boolean;
+  notes: string;
 }
