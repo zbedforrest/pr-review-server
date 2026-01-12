@@ -116,27 +116,8 @@ func (db *DB) initSchema() error {
 	return nil
 }
 
-func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
-	pr := &PR{}
-	var reviewedAt sql.NullTime
-	var htmlPath sql.NullString
-	var generatingSince sql.NullTime
-	var createdAt sql.NullTime
-	var isMine, draft int
-	var title, author, myReviewStatus sql.NullString
-	err := db.conn.QueryRow(`
-		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since, COALESCE(is_mine, 0), COALESCE(title, ''), COALESCE(author, ''), COALESCE(approval_count, 0), COALESCE(my_review_status, ''), created_at, COALESCE(draft, 0)
-		FROM prs WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
-	`, owner, repo, prNumber).Scan(
-		&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
-		&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince, &isMine, &title, &author, &pr.ApprovalCount, &myReviewStatus, &createdAt, &draft,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
+// scanPRRow scans a database row into a PR struct, handling nullable fields
+func scanPRRow(pr *PR, reviewedAt, generatingSince, createdAt sql.NullTime, htmlPath sql.NullString, isMine, draft int, title, author, myReviewStatus sql.NullString) {
 	if reviewedAt.Valid {
 		pr.LastReviewedAt = &reviewedAt.Time
 	}
@@ -160,6 +141,30 @@ func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	if myReviewStatus.Valid {
 		pr.MyReviewStatus = myReviewStatus.String
 	}
+}
+
+func (db *DB) GetPR(owner, repo string, prNumber int) (*PR, error) {
+	pr := &PR{}
+	var reviewedAt sql.NullTime
+	var htmlPath sql.NullString
+	var generatingSince sql.NullTime
+	var createdAt sql.NullTime
+	var isMine, draft int
+	var title, author, myReviewStatus sql.NullString
+	err := db.conn.QueryRow(`
+		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since, COALESCE(is_mine, 0), COALESCE(title, ''), COALESCE(author, ''), COALESCE(approval_count, 0), COALESCE(my_review_status, ''), created_at, COALESCE(draft, 0)
+		FROM prs WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
+	`, owner, repo, prNumber).Scan(
+		&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber,
+		&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince, &isMine, &title, &author, &pr.ApprovalCount, &myReviewStatus, &createdAt, &draft,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	scanPRRow(pr, reviewedAt, generatingSince, createdAt, htmlPath, isMine, draft, title, author, myReviewStatus)
 	return pr, nil
 }
 
@@ -285,29 +290,7 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 			&pr.LastCommitSHA, &reviewedAt, &htmlPath, &pr.Status, &generatingSince, &isMine, &title, &author, &pr.ApprovalCount, &myReviewStatus, &createdAt, &draft); err != nil {
 			return nil, err
 		}
-		if reviewedAt.Valid {
-			pr.LastReviewedAt = &reviewedAt.Time
-		}
-		if htmlPath.Valid {
-			pr.ReviewHTMLPath = htmlPath.String
-		}
-		if generatingSince.Valid {
-			pr.GeneratingSince = &generatingSince.Time
-		}
-		if createdAt.Valid {
-			pr.CreatedAt = &createdAt.Time
-		}
-		pr.IsMine = isMine == 1
-		pr.Draft = draft == 1
-		if title.Valid {
-			pr.Title = title.String
-		}
-		if author.Valid {
-			pr.Author = author.String
-		}
-		if myReviewStatus.Valid {
-			pr.MyReviewStatus = myReviewStatus.String
-		}
+		scanPRRow(&pr, reviewedAt, generatingSince, createdAt, htmlPath, isMine, draft, title, author, myReviewStatus)
 		prs = append(prs, pr)
 	}
 	return prs, rows.Err()
