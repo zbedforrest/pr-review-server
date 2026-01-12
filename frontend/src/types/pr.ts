@@ -16,4 +16,6 @@ export interface PR {
   approval_count: number;
   draft: boolean;
   notes: string;
+  ci_state: 'success' | 'failure' | 'pending' | 'unknown';
+  ci_failed_checks: string[];
 }

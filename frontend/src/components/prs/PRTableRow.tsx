@@ -3,6 +3,7 @@ import type { PR } from '@/types/pr';
 import { CommitSha, StatusBadge, ReviewStatusEmoji } from '@/components/common';
 import { useDeletePR } from '@/hooks/usePRs';
 import { NotesCell } from './NotesCell';
+import { CIStatusIndicator } from './CIStatusIndicator';
 
 interface PRTableRowProps {
   pr: PR;
@@ -41,6 +42,9 @@ export const PRTableRow = memo(function PRTableRow({ pr, showMyReview = false }:
       </td>
       <td>
         <StatusBadge status={pr.status} generatingSince={pr.generating_since} />
+      </td>
+      <td className="pr-table__ci-status">
+        <CIStatusIndicator state={pr.ci_state} failedChecks={pr.ci_failed_checks} />
       </td>
       {showMyReview && (
         <td className="pr-table__review-emoji">

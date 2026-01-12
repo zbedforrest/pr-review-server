@@ -49,23 +49,25 @@ type Server struct {
 }
 
 type PRResponse struct {
-	Owner           string  `json:"owner"`
-	Repo            string  `json:"repo"`
-	Number          int     `json:"number"`
-	CommitSHA       string  `json:"commit_sha"`
-	LastReviewedAt  *string `json:"last_reviewed_at"`
-	ReviewHTMLPath  string  `json:"review_html_path"`
-	GitHubURL       string  `json:"github_url"`
-	ReviewURL       string  `json:"review_url"`
-	Status          string  `json:"status"` // "pending", "generating", "completed", "error"
-	Title           string  `json:"title"`
-	Author          string  `json:"author"`
-	GeneratingSince *string `json:"generating_since"`
-	IsMine          bool    `json:"is_mine"`
-	MyReviewStatus  string  `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
-	ApprovalCount   int     `json:"approval_count"`   // Number of current approvals
-	Draft           bool    `json:"draft"`            // true if PR is in draft mode
-	Notes           string  `json:"notes"`            // User notes (max 15 chars)
+	Owner           string   `json:"owner"`
+	Repo            string   `json:"repo"`
+	Number          int      `json:"number"`
+	CommitSHA       string   `json:"commit_sha"`
+	LastReviewedAt  *string  `json:"last_reviewed_at"`
+	ReviewHTMLPath  string   `json:"review_html_path"`
+	GitHubURL       string   `json:"github_url"`
+	ReviewURL       string   `json:"review_url"`
+	Status          string   `json:"status"` // "pending", "generating", "completed", "error"
+	Title           string   `json:"title"`
+	Author          string   `json:"author"`
+	GeneratingSince *string  `json:"generating_since"`
+	IsMine          bool     `json:"is_mine"`
+	MyReviewStatus  string   `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	ApprovalCount   int      `json:"approval_count"`   // Number of current approvals
+	Draft           bool     `json:"draft"`            // true if PR is in draft mode
+	Notes           string   `json:"notes"`            // User notes (max 15 chars)
+	CIState         string   `json:"ci_state"`         // "success", "failure", "pending", "unknown"
+	CIFailedChecks  []string `json:"ci_failed_checks"` // Names of failed checks
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
@@ -213,6 +215,15 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			githubURL = ghPR.URL
 		}
 
+		// Parse CI failed checks JSON array
+		var ciFailedChecks []string
+		if dbPR.CIFailedChecks != "" && dbPR.CIFailedChecks != "[]" {
+			json.Unmarshal([]byte(dbPR.CIFailedChecks), &ciFailedChecks)
+		}
+		if ciFailedChecks == nil {
+			ciFailedChecks = []string{}
+		}
+
 		response = append(response, PRResponse{
 			Owner:           dbPR.RepoOwner,
 			Repo:            dbPR.RepoName,
@@ -231,6 +242,8 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			ApprovalCount:   dbPR.ApprovalCount,
 			Draft:           dbPR.Draft,
 			Notes:           dbPR.Notes,
+			CIState:         dbPR.CIState,
+			CIFailedChecks:  ciFailedChecks,
 		})
 	}
 

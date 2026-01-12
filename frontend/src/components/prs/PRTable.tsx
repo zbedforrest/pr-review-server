@@ -20,6 +20,7 @@ export function PRTable({ prs, showMyReview = false }: PRTableProps) {
             <th>Author</th>
             <th>Commit</th>
             <th>Status</th>
+            <th>CI</th>
             {showMyReview && <th>My Review</th>}
             <th>Notes</th>
             <th>Approvals</th>

@@ -84,6 +84,33 @@
     width: 120px;
     padding: 0 !important;
   }
+
+  &__ci-status {
+    text-align: center;
+    width: 40px;
+  }
+}
+
+.ci-status {
+  font-size: 20px;
+  cursor: help;
+
+  &--success {
+    color: $color-success;
+  }
+
+  &--failure {
+    color: $color-error;
+  }
+
+  &--pending {
+    color: $color-warning;
+  }
+
+  &--unknown {
+    color: $color-text-tertiary;
+    opacity: 0.5;
+  }
 }
 
 .notes-cell {
