@@ -276,6 +276,27 @@ Get a GitHub token at: https://github.com/settings/tokens
    - Priority indicators
    - Review statistics
 
+## Project Structure
+
+```
+.
+├── config/              # Configuration loading
+├── db/                  # SQLite database layer
+├── github/              # GitHub API client
+├── poller/              # Polling service and review generator
+├── prioritization/      # PR prioritization logic
+├── server/              # HTTP server and web UI
+├── frontend/            # React dashboard
+│   ├── src/
+│   └── package.json
+├── reviews/             # Generated HTML review files (created at runtime)
+├── main.go              # Application entry point
+├── Dockerfile           # Docker image definition
+├── docker-compose.yml   # Docker Compose configuration
+├── Makefile             # Docker management commands
+└── review-next.sh       # PR prioritization CLI tool
+```
+
 ## Additional Documentation
 
 - **[docs/DOCKER-SETUP.md](./docs/DOCKER-SETUP.md)**: Detailed Docker usage guide

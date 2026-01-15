@@ -35,20 +35,20 @@ func main() {
 	log.Printf("Reviews Directory: %s", cfg.ReviewsDir)
 	log.Printf("CBPR Path: %s", cfg.CbprPath)
 
-	// Check if cbpr is available (warn but don't fail)
-	if _, err := os.Stat(cfg.CbprPath); err != nil {
-		// If cbpr path is not absolute, check PATH
-		if !filepath.IsAbs(cfg.CbprPath) {
-			if _, err := exec.LookPath(cfg.CbprPath); err != nil {
-				log.Printf("⚠️  WARNING: cbpr not found at '%s' or in PATH", cfg.CbprPath)
-				log.Printf("⚠️  Server will start but review generation will fail until cbpr is installed")
-				log.Printf("⚠️  PRs will show 'Error' status in the dashboard")
-			}
+	// Check if cbpr is available and configured for AI reviews
+	cbprPath, err := exec.LookPath(cfg.CbprPath)
+	if err != nil {
+		// Don't log a scary warning if the user just doesn't have cbpr installed
+		if cfg.CbprPath != "cbpr" {
+			log.Printf("⚠️  WARNING: cbpr not found at specified path '%s'. AI review generation is disabled.", cfg.CbprPath)
 		} else {
-			log.Printf("⚠️  WARNING: cbpr not found at '%s'", cfg.CbprPath)
-			log.Printf("⚠️  Server will start but review generation will fail until cbpr is installed")
-			log.Printf("⚠️  PRs will show 'Error' status in the dashboard")
+			log.Println("ⓘ  INFO: cbpr not found in PATH. AI review generation is disabled. This is normal if you don't intend to use it.")
 		}
+	} else if cfg.GeminiAPIKey == "" {
+		log.Printf("⚠️  WARNING: cbpr found at '%s' but GEMINI_API_KEY is not set. AI review generation is disabled.", cbprPath)
+	} else {
+		log.Printf("✅ cbpr found at '%s'. AI review generation is enabled.", cbprPath)
+		cfg.CbprEnabled = true
 	}
 
 	// Create required directories

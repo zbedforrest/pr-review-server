@@ -927,6 +927,29 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, i
 	}
 	log.Printf("[BATCH] Processing %d %s PRs", len(prs), prType)
 
+	// If cbpr is not enabled, just update PR metadata without generating reviews
+	if !p.cfg.CbprEnabled {
+		for _, pr := range prs {
+			// Store PR metadata so it appears in the dashboard
+			dbPR := &db.PR{
+				RepoOwner:     pr.Owner,
+				RepoName:      pr.Repo,
+				PRNumber:      pr.Number,
+				LastCommitSHA: pr.CommitSHA,
+				Title:         pr.Title,
+				Author:        pr.Author,
+				IsMine:        isMine,
+				CreatedAt:     pr.CreatedAt,
+				Draft:         pr.Draft,
+				Status:        "pending", // Keep as pending since we can't generate reviews
+			}
+			if err := p.db.UpsertPR(dbPR); err != nil {
+				log.Printf("[BATCH] ERROR: Failed to upsert PR metadata for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+			}
+		}
+		return nil
+	}
+
 	// Filter PRs that need review
 	var prsToReview []github.PullRequest
 	for _, pr := range prs {

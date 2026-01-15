@@ -13,6 +13,8 @@ type Config struct {
 	ReviewsDir               string
 	ServerPort               string
 	CbprPath                 string
+	CbprEnabled              bool
+	GeminiAPIKey             string
 	EnableVoiceNotifications bool
 }
 
@@ -40,6 +42,8 @@ func Load() *Config {
 		ReviewsDir:               getEnvOrDefault("REVIEWS_DIR", "./reviews"),
 		ServerPort:               getEnvOrDefault("SERVER_PORT", "8080"),
 		CbprPath:                 cbprPath,
+		CbprEnabled:              false, // Will be set to true in main.go if cbpr is available
+		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
 		EnableVoiceNotifications: enableVoice,
 	}
 }
