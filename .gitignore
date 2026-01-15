@@ -1,5 +1,6 @@
-# Binary
+# Binaries
 pr-review-server
+bin/cbpr-linux
 
 # Database
 *.db
@@ -8,11 +9,18 @@ pr-review-server
 # Reviews
 reviews/
 
-# Environment
+# Environment files (keep .env.example)
 .env
+.env.docker
 
-# Logs
+# Logs and debug files
 *.log
+*.log.*
+
+# Internal development docs (not for distribution)
+TODO.md
+TODO-*.md
+CLAUDE.md
 
 # Go
 vendor/
@@ -22,3 +30,16 @@ server/dist/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+
+# Docker volumes
+data/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

@@ -205,28 +205,50 @@ func (db *DB) UpsertPR(pr *PR) error {
 		createdAt = *pr.CreatedAt
 	}
 
-	_, err := db.conn.Exec(`
+	// Use NULL for generating_since in UpsertPR (it's only set via SetPRGenerating)
+	var generatingSince interface{}
+
+	// Build UPDATE clause dynamically: only update created_at if provided (not nil)
+	updateClause := `
+		last_commit_sha = ?,
+		last_reviewed_at = COALESCE(?, last_reviewed_at),
+		review_html_path = ?,
+		status = ?,
+		generating_since = NULL,
+		is_mine = ?,
+		title = ?,
+		author = ?,
+		approval_count = ?,
+		my_review_status = ?,`
+
+	updateParams := []interface{}{
+		pr.LastCommitSHA, lastReviewedAt, pr.ReviewHTMLPath, pr.Status, isMineInt, pr.Title, pr.Author, pr.ApprovalCount, pr.MyReviewStatus,
+	}
+
+	// Only update created_at if we have a value (not nil), otherwise preserve database value
+	if pr.CreatedAt != nil {
+		updateClause += `
+		created_at = ?,`
+		updateParams = append(updateParams, createdAt)
+	}
+
+	updateClause += `
+		draft = ?,
+		notes = ?,
+		ci_state = ?,
+		ci_failed_checks = ?`
+	updateParams = append(updateParams, draftInt, pr.Notes, pr.CIState, pr.CIFailedChecks)
+
+	query := `
 		INSERT INTO prs (repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, status, generating_since, is_mine, title, author, approval_count, my_review_status, created_at, draft, notes, ci_state, ci_failed_checks)
-		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo_owner, repo_name, pr_number)
-		DO UPDATE SET
-			last_commit_sha = ?,
-			last_reviewed_at = COALESCE(?, last_reviewed_at),
-			review_html_path = ?,
-			status = ?,
-			generating_since = NULL,
-			is_mine = ?,
-			title = ?,
-			author = ?,
-			approval_count = ?,
-			my_review_status = ?,
-			created_at = ?,
-			draft = ?,
-			notes = ?,
-			ci_state = ?,
-			ci_failed_checks = ?
-	`, pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA, lastReviewedAt, pr.ReviewHTMLPath, pr.Status, isMineInt, pr.Title, pr.Author, pr.ApprovalCount, pr.MyReviewStatus, createdAt, draftInt, pr.Notes, pr.CIState, pr.CIFailedChecks,
-		pr.LastCommitSHA, lastReviewedAt, pr.ReviewHTMLPath, pr.Status, isMineInt, pr.Title, pr.Author, pr.ApprovalCount, pr.MyReviewStatus, createdAt, draftInt, pr.Notes, pr.CIState, pr.CIFailedChecks)
+		DO UPDATE SET` + updateClause
+
+	insertParams := []interface{}{pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA, lastReviewedAt, pr.ReviewHTMLPath, pr.Status, generatingSince, isMineInt, pr.Title, pr.Author, pr.ApprovalCount, pr.MyReviewStatus, createdAt, draftInt, pr.Notes, pr.CIState, pr.CIFailedChecks}
+	allParams := append(insertParams, updateParams...)
+
+	_, err := db.conn.Exec(query, allParams...)
 	return err
 }
 
@@ -282,13 +304,14 @@ func (db *DB) GetAllPRs() ([]PR, error) {
 		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha, last_reviewed_at, review_html_path, COALESCE(status, 'pending'), generating_since, COALESCE(is_mine, 0), COALESCE(title, ''), COALESCE(author, ''), COALESCE(approval_count, 0), COALESCE(my_review_status, ''), created_at, COALESCE(draft, 0), COALESCE(notes, ''), COALESCE(ci_state, 'unknown'), COALESCE(ci_failed_checks, '[]')
 		FROM prs
 		ORDER BY
+			is_mine ASC,
+			created_at DESC NULLS LAST,
 			CASE status
 				WHEN 'generating' THEN 1
 				WHEN 'pending' THEN 2
 				WHEN 'completed' THEN 3
 				ELSE 4
-			END,
-			created_at DESC NULLS LAST
+			END
 	`)
 	if err != nil {
 		return nil, err
@@ -419,5 +442,36 @@ func (db *DB) UpdatePRNotes(owner, repo string, prNumber int, notes string) erro
 	_, err := db.conn.Exec(`
 		UPDATE prs SET notes = ? WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
 	`, notes, owner, repo, prNumber)
+	return err
+}
+
+// GetPRsWithMissingCreatedAt returns PRs that don't have created_at set
+func (db *DB) GetPRsWithMissingCreatedAt() ([]PR, error) {
+	rows, err := db.conn.Query(`
+		SELECT id, repo_owner, repo_name, pr_number, last_commit_sha
+		FROM prs
+		WHERE created_at IS NULL
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var prs []PR
+	for rows.Next() {
+		pr := PR{}
+		if err := rows.Scan(&pr.ID, &pr.RepoOwner, &pr.RepoName, &pr.PRNumber, &pr.LastCommitSHA); err != nil {
+			return nil, err
+		}
+		prs = append(prs, pr)
+	}
+	return prs, rows.Err()
+}
+
+// UpdatePRCreatedAt updates only the created_at field for a PR
+func (db *DB) UpdatePRCreatedAt(owner, repo string, prNumber int, createdAt time.Time) error {
+	_, err := db.conn.Exec(`
+		UPDATE prs SET created_at = ? WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
+	`, createdAt, owner, repo, prNumber)
 	return err
 }

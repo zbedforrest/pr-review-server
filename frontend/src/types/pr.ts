@@ -18,4 +18,5 @@ export interface PR {
   notes: string;
   ci_state: 'success' | 'failure' | 'pending' | 'unknown';
   ci_failed_checks: string[];
+  created_at: string | null;
 }

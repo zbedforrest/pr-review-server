@@ -68,6 +68,7 @@ type PRResponse struct {
 	Notes           string   `json:"notes"`            // User notes (max 15 chars)
 	CIState         string   `json:"ci_state"`         // "success", "failure", "pending", "unknown"
 	CIFailedChecks  []string `json:"ci_failed_checks"` // Names of failed checks
+	CreatedAt       *string  `json:"created_at"`       // PR creation timestamp from GitHub
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
@@ -186,6 +187,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 	for _, dbPR := range dbPRs {
 		var reviewedAt *string
 		var generatingSince *string
+		var createdAt *string
 
 		if dbPR.LastReviewedAt != nil {
 			formatted := dbPR.LastReviewedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -194,6 +196,10 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 		if dbPR.GeneratingSince != nil {
 			formatted := dbPR.GeneratingSince.UTC().Format("2006-01-02T15:04:05Z")
 			generatingSince = &formatted
+		}
+		if dbPR.CreatedAt != nil {
+			formatted := dbPR.CreatedAt.UTC().Format("2006-01-02T15:04:05Z")
+			createdAt = &formatted
 		}
 
 		// Try to get GitHub URL from cache, fallback to constructed URL
@@ -244,6 +250,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			Notes:           dbPR.Notes,
 			CIState:         dbPR.CIState,
 			CIFailedChecks:  ciFailedChecks,
+			CreatedAt:       createdAt,
 		})
 	}
 
