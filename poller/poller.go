@@ -930,20 +930,30 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, i
 	// If cbpr is not enabled, just update PR metadata without generating reviews
 	if !p.cfg.CbprEnabled {
 		for _, pr := range prs {
-			// Store PR metadata so it appears in the dashboard
-			dbPR := &db.PR{
-				RepoOwner:     pr.Owner,
-				RepoName:      pr.Repo,
-				PRNumber:      pr.Number,
-				LastCommitSHA: pr.CommitSHA,
-				Title:         pr.Title,
-				Author:        pr.Author,
-				IsMine:        isMine,
-				CreatedAt:     pr.CreatedAt,
-				Draft:         pr.Draft,
-				Status:        "pending", // Keep as pending since we can't generate reviews
+			// Get existing PR data to avoid overwriting fields like 'Notes' and 'ApprovalCount'
+			existingPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+			if err != nil {
+				// Log the error but continue; we can still try to upsert the basic data
+				log.Printf("[BATCH] WARNING: Could not get existing PR for %s/%s#%d: %v. Metadata may be incomplete.", pr.Owner, pr.Repo, pr.Number, err)
 			}
-			if err := p.db.UpsertPR(dbPR); err != nil {
+
+			if existingPR == nil {
+				// This is a new PR
+				existingPR = &db.PR{Status: "pending"}
+			}
+
+			// Update with fresh data from GitHub (preserve existing fields like Notes, ApprovalCount, etc.)
+			existingPR.RepoOwner = pr.Owner
+			existingPR.RepoName = pr.Repo
+			existingPR.PRNumber = pr.Number
+			existingPR.LastCommitSHA = pr.CommitSHA
+			existingPR.Title = pr.Title
+			existingPR.Author = pr.Author
+			existingPR.IsMine = isMine
+			existingPR.CreatedAt = pr.CreatedAt
+			existingPR.Draft = pr.Draft
+
+			if err := p.db.UpsertPR(existingPR); err != nil {
 				log.Printf("[BATCH] ERROR: Failed to upsert PR metadata for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 			}
 		}

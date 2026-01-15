@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const DefaultCbprPath = "cbpr"
+
 type Config struct {
 	GitHubToken              string
 	GitHubUsername           string
@@ -28,7 +30,7 @@ func Load() *Config {
 
 	cbprPath := os.Getenv("CBPR_PATH")
 	if cbprPath == "" {
-		cbprPath = "cbpr" // assume it's in PATH
+		cbprPath = DefaultCbprPath // assume it's in PATH
 	}
 
 	// Enable voice notifications by default (can be disabled with ENABLE_VOICE_NOTIFICATIONS=false)

@@ -415,7 +415,7 @@ tail -f server.log
 5. **PRs in error state**:
    - If cbpr fails, PRs will show "Error" status in the dashboard
    - The system will automatically retry failed PRs after 5 minutes
-   - Without cbpr, PRs will remain in "pending" or "error" state (this is normal)
+   - Without cbpr, PRs will be tracked and remain in the "pending" state on the dashboard (this is normal)
 
 ### Dashboard not loading
 

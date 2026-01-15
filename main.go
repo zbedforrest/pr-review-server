@@ -39,7 +39,7 @@ func main() {
 	cbprPath, err := exec.LookPath(cfg.CbprPath)
 	if err != nil {
 		// Don't log a scary warning if the user just doesn't have cbpr installed
-		if cfg.CbprPath != "cbpr" {
+		if cfg.CbprPath != config.DefaultCbprPath {
 			log.Printf("⚠️  WARNING: cbpr not found at specified path '%s'. AI review generation is disabled.", cfg.CbprPath)
 		} else {
 			log.Println("ⓘ  INFO: cbpr not found in PATH. AI review generation is disabled. This is normal if you don't intend to use it.")
