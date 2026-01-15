@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -33,6 +34,22 @@ func main() {
 	log.Printf("Server Port: %s", cfg.ServerPort)
 	log.Printf("Reviews Directory: %s", cfg.ReviewsDir)
 	log.Printf("CBPR Path: %s", cfg.CbprPath)
+
+	// Check if cbpr is available (warn but don't fail)
+	if _, err := os.Stat(cfg.CbprPath); err != nil {
+		// If cbpr path is not absolute, check PATH
+		if !filepath.IsAbs(cfg.CbprPath) {
+			if _, err := exec.LookPath(cfg.CbprPath); err != nil {
+				log.Printf("⚠️  WARNING: cbpr not found at '%s' or in PATH", cfg.CbprPath)
+				log.Printf("⚠️  Server will start but review generation will fail until cbpr is installed")
+				log.Printf("⚠️  PRs will show 'Error' status in the dashboard")
+			}
+		} else {
+			log.Printf("⚠️  WARNING: cbpr not found at '%s'", cfg.CbprPath)
+			log.Printf("⚠️  Server will start but review generation will fail until cbpr is installed")
+			log.Printf("⚠️  PRs will show 'Error' status in the dashboard")
+		}
+	}
 
 	// Create required directories
 	dbDir := filepath.Dir(cfg.DBPath)

@@ -16,14 +16,16 @@ An automated local server that monitors GitHub PRs where you're a requested revi
 
 - **For Docker Installation (Recommended)**:
   - Docker Desktop
-  - `cbpr` binary for Linux (see setup instructions)
+  - `cbpr` binary for Linux (optional but recommended - see setup instructions)
   - GitHub personal access token with `repo` scope
 
 - **For Manual Installation**:
   - Go 1.24 or later
   - Node.js 18+ and npm
-  - `cbpr` command-line tool
+  - `cbpr` command-line tool (optional but recommended)
   - GitHub personal access token with `repo` scope
+
+**Note**: The server will start and run without `cbpr`, but AI review generation will fail gracefully. PRs will appear in the dashboard with "Error" status if cbpr is not available.
 
 ## Quick Start
 
@@ -205,10 +207,11 @@ Get a GitHub token at: https://github.com/settings/tokens
    - Runs cbpr to generate comprehensive code review
    - Saves HTML output to `./reviews/` directory
    - Updates database with completion status
+   - **Graceful Degradation**: If cbpr is not available, PRs are marked as "error" and the dashboard continues to function
 
 4. **Self-Healing**:
    - Resets stale "generating" PRs after 2 minutes
-   - Retries failed reviews after 5 minutes
+   - Retries failed reviews after 5 minutes (including those without cbpr)
    - Removes closed/merged PRs automatically
    - Detects outdated reviews and regenerates when new commits arrive
 
@@ -329,17 +332,33 @@ tail -f server.log
 
 ### Reviews not generating
 
-1. Verify cbpr is installed and accessible:
+**Important**: The server will start and run even if cbpr is not installed. PRs will show "Error" status in the dashboard when cbpr fails to generate reviews.
+
+1. **Check if cbpr is installed**:
    ```bash
    cbpr --version
    ```
 
-2. Check cbpr has necessary authentication configured
+   If cbpr is not installed, reviews cannot be generated but the dashboard will still work.
 
-3. Review server logs for cbpr errors:
+2. **Check server startup logs** for cbpr warnings:
+   ```bash
+   # Look for warnings like:
+   # ⚠️  WARNING: cbpr not found at 'cbpr' or in PATH
+   tail -20 server.log
+   ```
+
+3. **Check cbpr has necessary authentication configured**
+
+4. **Review server logs for cbpr errors**:
    ```bash
    tail -f server.log | grep cbpr
    ```
+
+5. **PRs in error state**:
+   - PRs marked as "Error" in the dashboard had review generation failures
+   - The system will automatically retry failed PRs after 5 minutes
+   - You can also manually trigger a retry by deleting the PR from the system (it will be re-added on next poll)
 
 ### Dashboard not loading
 
