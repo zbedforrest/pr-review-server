@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const DefaultCbprPath = "cbpr"
+
 type Config struct {
 	GitHubToken              string
 	GitHubUsername           string
@@ -13,6 +15,8 @@ type Config struct {
 	ReviewsDir               string
 	ServerPort               string
 	CbprPath                 string
+	CbprEnabled              bool
+	GeminiAPIKey             string
 	EnableVoiceNotifications bool
 }
 
@@ -26,7 +30,7 @@ func Load() *Config {
 
 	cbprPath := os.Getenv("CBPR_PATH")
 	if cbprPath == "" {
-		cbprPath = "cbpr" // assume it's in PATH
+		cbprPath = DefaultCbprPath // assume it's in PATH
 	}
 
 	// Enable voice notifications by default (can be disabled with ENABLE_VOICE_NOTIFICATIONS=false)
@@ -40,6 +44,8 @@ func Load() *Config {
 		ReviewsDir:               getEnvOrDefault("REVIEWS_DIR", "./reviews"),
 		ServerPort:               getEnvOrDefault("SERVER_PORT", "8080"),
 		CbprPath:                 cbprPath,
+		CbprEnabled:              false, // Will be set to true in main.go if cbpr is available
+		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
 		EnableVoiceNotifications: enableVoice,
 	}
 }

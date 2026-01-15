@@ -1,33 +1,82 @@
 # PR Review Server
 
-An automated local server that monitors GitHub PRs where you're a requested reviewer, automatically generates reviews using [cbpr](https://github.com/google/cbpr), and provides a web dashboard to view them.
+An automated local server that monitors GitHub PRs where you're a requested reviewer, provides a web dashboard to track them, and optionally generates automated reviews using [cbpr](https://github.com/google/cbpr).
 
 ## Features
 
 - **Automated Monitoring**: Polls GitHub every minute for PRs requesting your review
-- **Automatic Review Generation**: Generates comprehensive reviews using cbpr when new commits are pushed
+- **Web Dashboard**: Clean interface to view all PRs and track their status
 - **Track Your Own PRs**: Monitors PRs you've created and their review status
-- **Web Dashboard**: Clean interface to view all PRs and their generated reviews
 - **Smart Prioritization**: Includes a CLI tool to intelligently prioritize which PRs to review next
+- **Optional AI Reviews**: Generates comprehensive reviews using cbpr when available (requires Gemini API key)
 - **Self-Healing**: Automatically recovers from errors and handles stale reviews
 - **Persistent Storage**: SQLite database tracks PR history and review status
+- **Graceful Degradation**: Works fully without cbpr - just won't generate AI reviews
 
 ## Prerequisites
 
+### Required
+
 - **For Docker Installation (Recommended)**:
   - Docker Desktop
-  - `cbpr` binary for Linux (see setup instructions)
   - GitHub personal access token with `repo` scope
 
 - **For Manual Installation**:
   - Go 1.24 or later
   - Node.js 18+ and npm
-  - `cbpr` command-line tool
   - GitHub personal access token with `repo` scope
+
+### Optional (For AI Review Generation)
+
+To enable automated review generation with cbpr, you'll also need:
+- `cbpr` binary (Linux binary for Docker, or native binary for manual installation)
+- Gemini API key from Google AI Studio
+
+**Note**: The server works perfectly without cbpr - you'll still get PR tracking, prioritization, and the dashboard. AI review generation simply won't be available.
 
 ## Quick Start
 
-### Installation Option 1: Docker (Recommended)
+### Installing Without cbpr or Gemini API Key
+
+If you don't have cbpr or a Gemini API key, you can still use the server for PR tracking and prioritization:
+
+**Docker Installation (without AI reviews)**:
+```bash
+# Clone and set up environment
+git clone <repository-url>
+cd pr-review-server
+cp .env.example .env
+
+# Edit .env with just GitHub credentials (skip GEMINI_API_KEY)
+# GITHUB_TOKEN=ghp_your_token_here
+# GITHUB_USERNAME=your_github_username
+
+# Build and start (skip the cbpr build step)
+docker-compose up --build -d
+```
+
+**Manual Installation (without AI reviews)**:
+```bash
+# Clone and set up environment
+git clone <repository-url>
+cd pr-review-server
+cp .env.example .env
+
+# Edit .env with just GitHub credentials
+
+# Build frontend
+cd frontend && npm install && npm run build && cd ..
+
+# Build and run server
+go build -o pr-review-server
+./pr-review-server
+```
+
+The dashboard will work normally. PRs will show in the interface, but without "View Review" links. You can still use all tracking and prioritization features.
+
+---
+
+### Installation Option 1: Docker (Recommended with AI Reviews)
 
 Docker installation is recommended for most users as it handles all dependencies automatically and runs reliably in the background.
 
@@ -42,18 +91,19 @@ Docker installation is recommended for most users as it handles all dependencies
    cp .env.example .env
    ```
 
-   Edit `.env` and add your GitHub credentials:
+   Edit `.env` and add your credentials:
    ```bash
    GITHUB_TOKEN=ghp_your_token_here
    GITHUB_USERNAME=your_github_username
+   GEMINI_API_KEY=your_gemini_key_here  # Optional - only needed for AI reviews
    ```
 
-3. **Build cbpr for Linux** (required for Docker):
+3. **Build cbpr for Linux** (optional - only for AI reviews):
    ```bash
    ./build-cbpr-linux.sh
    ```
 
-   Note: This requires access to cbpr source code. If you don't have it, the server will run but won't generate reviews.
+   **Skip this step** if you don't have cbpr or don't want AI reviews. The server will work fine without it.
 
 4. **Build and start the server**:
    ```bash
@@ -65,7 +115,7 @@ Docker installation is recommended for most users as it handles all dependencies
 
 For detailed Docker usage, see [docs/DOCKER-SETUP.md](./docs/DOCKER-SETUP.md).
 
-### Installation Option 2: Manual Installation
+### Installation Option 2: Manual Installation (with AI Reviews)
 
 Use manual installation if you're developing the tool or prefer not to use Docker.
 
@@ -80,13 +130,19 @@ Use manual installation if you're developing the tool or prefer not to use Docke
    cp .env.example .env
    ```
 
-   Edit `.env` and add your GitHub credentials:
+   Edit `.env` and add your credentials:
    ```bash
    GITHUB_TOKEN=ghp_your_token_here
    GITHUB_USERNAME=your_github_username
+   GEMINI_API_KEY=your_gemini_key_here  # Optional - only needed for AI reviews
    ```
 
-3. **Build the frontend**:
+3. **Install cbpr** (optional - only for AI reviews):
+   - Install cbpr following its documentation
+   - Ensure `cbpr` is in your PATH or set `CBPR_PATH` in `.env`
+   - **Skip this step** if you don't want AI reviews
+
+4. **Build the frontend**:
    ```bash
    cd frontend
    npm install
@@ -94,12 +150,12 @@ Use manual installation if you're developing the tool or prefer not to use Docke
    cd ..
    ```
 
-4. **Build the server**:
+5. **Build the server**:
    ```bash
    go build -o pr-review-server
    ```
 
-5. **Run the server**:
+6. **Run the server**:
    ```bash
    source .env
    ./pr-review-server
@@ -110,10 +166,10 @@ Use manual installation if you're developing the tool or prefer not to use Docke
    GITHUB_TOKEN=xxx GITHUB_USERNAME=xxx go run main.go
    ```
 
-6. **Access the dashboard**:
+7. **Access the dashboard**:
    Open http://localhost:8080 in your browser (or your configured SERVER_PORT).
 
-**Important**: If you modify frontend code, you must rebuild it (step 3) before rebuilding the Go server.
+**Important**: If you modify frontend code, you must rebuild it (step 4) before rebuilding the Go server.
 
 ## Usage
 
@@ -184,9 +240,10 @@ Get a GitHub token at: https://github.com/settings/tokens
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `GEMINI_API_KEY` | (none) | Gemini API key for cbpr AI reviews - **only needed if using cbpr** |
+| `CBPR_PATH` | `cbpr` | Path to cbpr binary (if not in PATH) - **only needed if using cbpr** |
 | `POLLING_INTERVAL` | `1m` | How often to check for PR updates (e.g., `30s`, `1m`, `5m`) |
 | `SERVER_PORT` | `8080` | Port for the web dashboard |
-| `CBPR_PATH` | `cbpr` | Path to cbpr binary (if not in PATH) |
 | `DEV_MODE` | `false` | Enable development mode (for contributors) |
 
 ## How It Works
@@ -201,14 +258,15 @@ Get a GitHub token at: https://github.com/settings/tokens
    - CI status
    - Approval count
 
-3. **Review Generation**: When changes are detected:
+3. **Review Generation** (optional - only if cbpr is configured):
    - Runs cbpr to generate comprehensive code review
    - Saves HTML output to `./reviews/` directory
    - Updates database with completion status
+   - **Graceful Degradation**: If cbpr is not available, reviews won't be generated but all other features work normally
 
 4. **Self-Healing**:
    - Resets stale "generating" PRs after 2 minutes
-   - Retries failed reviews after 5 minutes
+   - Retries failed reviews after 5 minutes (including those without cbpr)
    - Removes closed/merged PRs automatically
    - Detects outdated reviews and regenerates when new commits arrive
 
@@ -327,19 +385,37 @@ which cbpr
 tail -f server.log
 ```
 
-### Reviews not generating
+### AI Reviews not generating (cbpr)
 
-1. Verify cbpr is installed and accessible:
+**Important**: The server works perfectly without cbpr - you'll still get PR tracking, prioritization, and the dashboard. This section only applies if you're trying to use AI review generation.
+
+1. **Check if cbpr is installed and configured**:
    ```bash
    cbpr --version
    ```
 
-2. Check cbpr has necessary authentication configured
+   If cbpr is not installed, AI reviews cannot be generated. Install cbpr and set your `GEMINI_API_KEY` to enable this feature.
 
-3. Review server logs for cbpr errors:
+2. **Check if GEMINI_API_KEY is set**:
+   ```bash
+   echo $GEMINI_API_KEY
+   ```
+
+   cbpr requires a Gemini API key. Get one from [Google AI Studio](https://aistudio.google.com/app/apikey).
+
+3. **Check cbpr has necessary authentication configured**
+   - Ensure cbpr can access your Gemini API key
+   - Test cbpr manually: `cbpr review --help`
+
+4. **Review server logs for cbpr errors**:
    ```bash
    tail -f server.log | grep cbpr
    ```
+
+5. **PRs in error state**:
+   - If cbpr fails, PRs will show "Error" status in the dashboard
+   - The system will automatically retry failed PRs after 5 minutes
+   - Without cbpr, PRs will be tracked and remain in the "pending" state on the dashboard (this is normal)
 
 ### Dashboard not loading
 

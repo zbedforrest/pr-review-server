@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -33,6 +34,22 @@ func main() {
 	log.Printf("Server Port: %s", cfg.ServerPort)
 	log.Printf("Reviews Directory: %s", cfg.ReviewsDir)
 	log.Printf("CBPR Path: %s", cfg.CbprPath)
+
+	// Check if cbpr is available and configured for AI reviews
+	cbprPath, err := exec.LookPath(cfg.CbprPath)
+	if err != nil {
+		// Don't log a scary warning if the user just doesn't have cbpr installed
+		if cfg.CbprPath != config.DefaultCbprPath {
+			log.Printf("⚠️  WARNING: cbpr not found at specified path '%s'. AI review generation is disabled.", cfg.CbprPath)
+		} else {
+			log.Println("ⓘ  INFO: cbpr not found in PATH. AI review generation is disabled. This is normal if you don't intend to use it.")
+		}
+	} else if cfg.GeminiAPIKey == "" {
+		log.Printf("⚠️  WARNING: cbpr found at '%s' but GEMINI_API_KEY is not set. AI review generation is disabled.", cbprPath)
+	} else {
+		log.Printf("✅ cbpr found at '%s'. AI review generation is enabled.", cbprPath)
+		cfg.CbprEnabled = true
+	}
 
 	// Create required directories
 	dbDir := filepath.Dir(cfg.DBPath)
