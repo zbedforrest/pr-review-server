@@ -49,22 +49,26 @@ type Server struct {
 }
 
 type PRResponse struct {
-	Owner           string  `json:"owner"`
-	Repo            string  `json:"repo"`
-	Number          int     `json:"number"`
-	CommitSHA       string  `json:"commit_sha"`
-	LastReviewedAt  *string `json:"last_reviewed_at"`
-	ReviewHTMLPath  string  `json:"review_html_path"`
-	GitHubURL       string  `json:"github_url"`
-	ReviewURL       string  `json:"review_url"`
-	Status          string  `json:"status"` // "pending", "generating", "completed", "error"
-	Title           string  `json:"title"`
-	Author          string  `json:"author"`
-	GeneratingSince *string `json:"generating_since"`
-	IsMine          bool    `json:"is_mine"`
-	MyReviewStatus  string  `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
-	ApprovalCount   int     `json:"approval_count"`   // Number of current approvals
-	Draft           bool    `json:"draft"`            // true if PR is in draft mode
+	Owner           string   `json:"owner"`
+	Repo            string   `json:"repo"`
+	Number          int      `json:"number"`
+	CommitSHA       string   `json:"commit_sha"`
+	LastReviewedAt  *string  `json:"last_reviewed_at"`
+	ReviewHTMLPath  string   `json:"review_html_path"`
+	GitHubURL       string   `json:"github_url"`
+	ReviewURL       string   `json:"review_url"`
+	Status          string   `json:"status"` // "pending", "generating", "completed", "error"
+	Title           string   `json:"title"`
+	Author          string   `json:"author"`
+	GeneratingSince *string  `json:"generating_since"`
+	IsMine          bool     `json:"is_mine"`
+	MyReviewStatus  string   `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	ApprovalCount   int      `json:"approval_count"`   // Number of current approvals
+	Draft           bool     `json:"draft"`            // true if PR is in draft mode
+	Notes           string   `json:"notes"`            // User notes (max 15 chars)
+	CIState         string   `json:"ci_state"`         // "success", "failure", "pending", "unknown"
+	CIFailedChecks  []string `json:"ci_failed_checks"` // Names of failed checks
+	CreatedAt       *string  `json:"created_at"`       // PR creation timestamp from GitHub
 }
 
 func New(cfg *config.Config, database *db.DB, ghClient *github.Client) *Server {
@@ -106,6 +110,7 @@ func (s *Server) Start() error {
 	// API routes
 	http.HandleFunc("/api/prs", s.handleGetPRs)
 	http.HandleFunc("/api/prs/delete", s.handleDeletePR)
+	http.HandleFunc("/api/prs/notes", s.handleUpdatePRNotes)
 	http.HandleFunc("/api/status", s.handleStatus)
 	http.HandleFunc("/api/priorities", s.handleGetPriorities)
 	http.Handle("/reviews/", http.StripPrefix("/reviews/", http.FileServer(http.Dir(s.cfg.ReviewsDir))))
@@ -182,6 +187,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 	for _, dbPR := range dbPRs {
 		var reviewedAt *string
 		var generatingSince *string
+		var createdAt *string
 
 		if dbPR.LastReviewedAt != nil {
 			formatted := dbPR.LastReviewedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -190,6 +196,10 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 		if dbPR.GeneratingSince != nil {
 			formatted := dbPR.GeneratingSince.UTC().Format("2006-01-02T15:04:05Z")
 			generatingSince = &formatted
+		}
+		if dbPR.CreatedAt != nil {
+			formatted := dbPR.CreatedAt.UTC().Format("2006-01-02T15:04:05Z")
+			createdAt = &formatted
 		}
 
 		// Try to get GitHub URL from cache, fallback to constructed URL
@@ -211,6 +221,15 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			githubURL = ghPR.URL
 		}
 
+		// Parse CI failed checks JSON array
+		var ciFailedChecks []string
+		if dbPR.CIFailedChecks != "" && dbPR.CIFailedChecks != "[]" {
+			json.Unmarshal([]byte(dbPR.CIFailedChecks), &ciFailedChecks)
+		}
+		if ciFailedChecks == nil {
+			ciFailedChecks = []string{}
+		}
+
 		response = append(response, PRResponse{
 			Owner:           dbPR.RepoOwner,
 			Repo:            dbPR.RepoName,
@@ -228,6 +247,10 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			MyReviewStatus:  dbPR.MyReviewStatus,
 			ApprovalCount:   dbPR.ApprovalCount,
 			Draft:           dbPR.Draft,
+			Notes:           dbPR.Notes,
+			CIState:         dbPR.CIState,
+			CIFailedChecks:  ciFailedChecks,
+			CreatedAt:       createdAt,
 		})
 	}
 
@@ -282,6 +305,44 @@ func (s *Server) handleDeletePR(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+func (s *Server) handleUpdatePRNotes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPatch {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Owner  string `json:"owner"`
+		Repo   string `json:"repo"`
+		Number int    `json:"number"`
+		Notes  string `json:"notes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate length
+	if len(req.Notes) > 15 {
+		http.Error(w, "Notes must be 15 characters or less", http.StatusBadRequest)
+		return
+	}
+
+	// Update database
+	if err := s.db.UpdatePRNotes(req.Owner, req.Repo, req.Number, req.Notes); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to update notes: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Updated notes for %s/%s#%d: %q", req.Owner, req.Repo, req.Number, req.Notes)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "success",
+		"notes":  req.Notes,
+	})
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

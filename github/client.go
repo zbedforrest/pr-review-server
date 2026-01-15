@@ -63,6 +63,15 @@ type PRDetails struct {
 	RequestedMe      bool // Whether the user is explicitly requested
 }
 
+// CIStatus holds CI check run status for a PR
+type CIStatus struct {
+	Owner        string
+	Repo         string
+	Number       int
+	State        string   // "success", "failure", "pending", "unknown"
+	FailedChecks []string // Names of failed checks
+}
+
 func NewClient(token, username string) *Client {
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(
@@ -744,6 +753,168 @@ func (c *Client) fetchDetailsForRepo(ctx context.Context, prs []PullRequest) (ma
 
 		log.Printf("[GRAPHQL] PR %s/%s#%d: +%d/-%d, %d files, %d reviewers, requested:%v",
 			owner, repo, prNumber, prData.Additions, prData.Deletions, prData.ChangedFiles, reviewCount, requestedMe)
+	}
+
+	return results, nil
+}
+
+// BatchGetCIStatus fetches CI check status for multiple PRs using GraphQL
+func (c *Client) BatchGetCIStatus(ctx context.Context, prs []struct{ Owner, Repo string; Number int; CommitSHA string }) (map[string]*CIStatus, error) {
+	if len(prs) == 0 {
+		return make(map[string]*CIStatus), nil
+	}
+
+	// Build GraphQL query with aliases for each PR
+	var queryBuilder strings.Builder
+	queryBuilder.WriteString("query {")
+
+	prAliases := make(map[string]struct{ Owner, Repo string; Number int })
+	for i, pr := range prs {
+		alias := fmt.Sprintf("pr%d", i)
+		prAliases[alias] = struct{ Owner, Repo string; Number int }{pr.Owner, pr.Repo, pr.Number}
+
+		queryBuilder.WriteString(fmt.Sprintf(`
+			%s: repository(owner: "%s", name: "%s") {
+				object(oid: "%s") {
+					... on Commit {
+						statusCheckRollup {
+							state
+							contexts(first: 100) {
+								nodes {
+									... on CheckRun {
+										__typename
+										name
+										conclusion
+										status
+									}
+									... on StatusContext {
+										__typename
+										context
+										state
+									}
+								}
+							}
+						}
+					}
+				}
+			}`,
+			alias, pr.Owner, pr.Repo, pr.CommitSHA))
+	}
+	queryBuilder.WriteString("}")
+
+	// Execute GraphQL query
+	graphqlQuery := map[string]interface{}{
+		"query": queryBuilder.String(),
+	}
+
+	reqBody, err := json.Marshal(graphqlQuery)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal GraphQL query: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.github.com/graphql", bytes.NewBuffer(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute GraphQL query: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
+	}
+
+	// Parse response
+	type CheckNode struct {
+		TypeName   string `json:"__typename"`
+		Name       string `json:"name"`
+		Conclusion string `json:"conclusion"`
+		Status     string `json:"status"`
+		Context    string `json:"context"`
+		State      string `json:"state"`
+	}
+	type ContextsData struct {
+		Nodes []CheckNode `json:"nodes"`
+	}
+	type StatusCheckRollup struct {
+		State    string       `json:"state"`
+		Contexts ContextsData `json:"contexts"`
+	}
+	type CommitObject struct {
+		StatusCheckRollup *StatusCheckRollup `json:"statusCheckRollup"`
+	}
+	type RepoData struct {
+		Object *CommitObject `json:"object"`
+	}
+	type GraphQLResponse struct {
+		Data map[string]RepoData `json:"data"`
+	}
+
+	var graphqlResp GraphQLResponse
+	if err := json.NewDecoder(resp.Body).Decode(&graphqlResp); err != nil {
+		return nil, fmt.Errorf("failed to decode GraphQL response: %w", err)
+	}
+
+	// Parse results
+	results := make(map[string]*CIStatus)
+	for alias, prInfo := range prAliases {
+		repoData, ok := graphqlResp.Data[alias]
+		if !ok || repoData.Object == nil || repoData.Object.StatusCheckRollup == nil {
+			// No CI checks found
+			key := fmt.Sprintf("%s/%s/%d", prInfo.Owner, prInfo.Repo, prInfo.Number)
+			results[key] = &CIStatus{
+				Owner:        prInfo.Owner,
+				Repo:         prInfo.Repo,
+				Number:       prInfo.Number,
+				State:        "unknown",
+				FailedChecks: []string{},
+			}
+			continue
+		}
+
+		rollup := repoData.Object.StatusCheckRollup
+		state := strings.ToLower(rollup.State)
+
+		// Collect failed checks
+		var failedChecks []string
+		for _, node := range rollup.Contexts.Nodes {
+			if node.TypeName == "CheckRun" {
+				// CheckRun conclusion: SUCCESS, FAILURE, NEUTRAL, CANCELLED, SKIPPED, TIMED_OUT, ACTION_REQUIRED
+				// Status: QUEUED, IN_PROGRESS, COMPLETED
+				if node.Status != "COMPLETED" {
+					state = "pending"
+				} else if node.Conclusion == "FAILURE" || node.Conclusion == "TIMED_OUT" || node.Conclusion == "ACTION_REQUIRED" {
+					failedChecks = append(failedChecks, node.Name)
+				}
+			} else if node.TypeName == "StatusContext" {
+				// StatusContext state: ERROR, EXPECTED, FAILURE, PENDING, SUCCESS
+				if node.State == "PENDING" {
+					state = "pending"
+				} else if node.State == "ERROR" || node.State == "FAILURE" {
+					failedChecks = append(failedChecks, node.Context)
+				}
+			}
+		}
+
+		// Override state based on failed checks
+		if len(failedChecks) > 0 {
+			state = "failure"
+		}
+
+		key := fmt.Sprintf("%s/%s/%d", prInfo.Owner, prInfo.Repo, prInfo.Number)
+		results[key] = &CIStatus{
+			Owner:        prInfo.Owner,
+			Repo:         prInfo.Repo,
+			Number:       prInfo.Number,
+			State:        state,
+			FailedChecks: failedChecks,
+		}
 	}
 
 	return results, nil

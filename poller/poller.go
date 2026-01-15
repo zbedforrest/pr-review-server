@@ -2,6 +2,7 @@ package poller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -63,9 +64,11 @@ func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo s
 	// Default to existing values (or 0 if no existing PR)
 	approvalCount := 0
 	myReviewStatus := ""
+	notes := ""
 	if existingPR != nil {
 		approvalCount = existingPR.ApprovalCount
 		myReviewStatus = existingPR.MyReviewStatus
+		notes = existingPR.Notes
 	}
 
 	pr := &db.PR{
@@ -82,6 +85,7 @@ func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo s
 		MyReviewStatus: myReviewStatus,
 		CreatedAt:      createdAt,
 		Draft:          draft,
+		Notes:          notes,
 	}
 
 	// Set LastReviewedAt when marking as completed
@@ -435,6 +439,45 @@ func (p *Poller) backfillPRMetadata(ctx context.Context) (int, error) {
 	return updated, nil
 }
 
+// backfillPRCreatedAt fills in missing created_at timestamps for existing PRs by fetching from GitHub
+func (p *Poller) backfillPRCreatedAt(ctx context.Context) (int, error) {
+	// Get PRs with missing created_at
+	prs, err := p.db.GetPRsWithMissingCreatedAt()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get PRs with missing created_at: %w", err)
+	}
+
+	if len(prs) == 0 {
+		return 0, nil
+	}
+
+	updated := 0
+	for _, pr := range prs {
+		// Fetch PR details from GitHub
+		ghPR, _, err := p.ghClient.GetPR(ctx, pr.RepoOwner, pr.RepoName, pr.PRNumber)
+		if err != nil {
+			log.Printf("[BACKFILL] Warning: Could not fetch PR for created_at %s/%s#%d: %v",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+			continue
+		}
+
+		createdAt := ghPR.GetCreatedAt().Time
+
+		// Update database with created_at
+		if err := p.db.UpdatePRCreatedAt(pr.RepoOwner, pr.RepoName, pr.PRNumber, createdAt); err != nil {
+			log.Printf("[BACKFILL] ERROR: Failed to update created_at for %s/%s#%d: %v",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+			continue
+		}
+
+		log.Printf("[BACKFILL] Updated created_at for PR %s/%s#%d: %s",
+			pr.RepoOwner, pr.RepoName, pr.PRNumber, createdAt.Format("2006-01-02 15:04:05"))
+		updated++
+	}
+
+	return updated, nil
+}
+
 // checkForOutdatedReviews detects PRs with new commits and resets them to pending
 func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 	// Get all PRs from database
@@ -574,6 +617,17 @@ func (p *Poller) poll(ctx context.Context) {
 		log.Printf("[POLL] No PRs need metadata backfill")
 	}
 
+	// Backfill missing created_at timestamps (self-healing)
+	log.Printf("[POLL] Checking for PRs with missing created_at...")
+	timestampBackfilledCount, err := p.backfillPRCreatedAt(ctx)
+	if err != nil {
+		log.Printf("[POLL] ERROR: Failed to backfill created_at: %v", err)
+	} else if timestampBackfilledCount > 0 {
+		log.Printf("[POLL] BACKFILL: Updated created_at for %d PRs", timestampBackfilledCount)
+	} else {
+		log.Printf("[POLL] No PRs need created_at backfill")
+	}
+
 	// Check for outdated reviews (PRs with new commits)
 	log.Printf("[POLL] Checking for outdated reviews...")
 	outdatedCount, err := p.checkForOutdatedReviews(ctx)
@@ -649,6 +703,8 @@ func (p *Poller) poll(ctx context.Context) {
 					Title:     dbPR.Title,
 					Author:    dbPR.Author,
 					URL:       fmt.Sprintf("https://github.com/%s/%s/pull/%d", dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber),
+					CreatedAt: dbPR.CreatedAt, // Preserve created_at from database
+					Draft:     dbPR.Draft,
 				})
 			}
 		}
@@ -700,6 +756,7 @@ func (p *Poller) poll(ctx context.Context) {
 						MyReviewStatus: reviewData.MyReviewStatus,
 						CreatedAt:      pr.CreatedAt,
 						Draft:          pr.Draft, // IMPORTANT: Always use fresh draft status from GitHub, never cached value
+						Notes:          existingPR.Notes, // IMPORTANT: Preserve user notes
 					}
 					err = p.db.UpsertPR(prToUpdate)
 					if err != nil {
@@ -710,6 +767,67 @@ func (p *Poller) poll(ctx context.Context) {
 				}
 			}
 			log.Printf("[POLL] Successfully updated review data for %d/%d PRs", updateCount, len(allPRs))
+		}
+	}
+
+	// Batch fetch CI status for all PRs using GraphQL
+	log.Printf("[POLL] Batch fetching CI status for %d PRs using GraphQL...", len(allPRs))
+	if len(allPRs) > 0 {
+		// Prepare PR list with commit SHAs for CI status check
+		var prsWithSHA []struct {
+			Owner, Repo string
+			Number      int
+			CommitSHA   string
+		}
+		for _, pr := range allPRs {
+			prsWithSHA = append(prsWithSHA, struct {
+				Owner, Repo string
+				Number      int
+				CommitSHA   string
+			}{
+				Owner:     pr.Owner,
+				Repo:      pr.Repo,
+				Number:    pr.Number,
+				CommitSHA: pr.CommitSHA,
+			})
+		}
+
+		ciStatusMap, err := p.ghClient.BatchGetCIStatus(ctx, prsWithSHA)
+		if err != nil {
+			log.Printf("[POLL] WARNING: Failed to batch fetch CI status: %v", err)
+		} else {
+			// Update database with CI status
+			updateCount := 0
+			for _, pr := range allPRs {
+				key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+				if ciStatus, exists := ciStatusMap[key]; exists {
+					// Get existing PR data from database
+					existingPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+					if err != nil || existingPR == nil {
+						log.Printf("[POLL] ERROR: Could not get PR %s from database: %v", key, err)
+						continue
+					}
+
+					// Serialize failed checks to JSON
+					failedChecksJSON := "[]"
+					if len(ciStatus.FailedChecks) > 0 {
+						if jsonBytes, err := json.Marshal(ciStatus.FailedChecks); err == nil {
+							failedChecksJSON = string(jsonBytes)
+						}
+					}
+
+					// Update CI status in database
+					existingPR.CIState = ciStatus.State
+					existingPR.CIFailedChecks = failedChecksJSON
+					err = p.db.UpsertPR(existingPR)
+					if err != nil {
+						log.Printf("[POLL] ERROR: Failed to update CI status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+					} else {
+						updateCount++
+					}
+				}
+			}
+			log.Printf("[POLL] Successfully updated CI status for %d/%d PRs", updateCount, len(allPRs))
 		}
 	}
 
