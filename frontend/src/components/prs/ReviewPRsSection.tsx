@@ -80,7 +80,7 @@ export function ReviewPRsSection({ showReviewColumns = true, onToggleColumns, se
           </p>
         )}
         {!isLoading && !error && myPRs.length > 0 && (
-          <PRTable prs={myPRs} showReviewColumns={showReviewColumns} />
+          <PRTable prs={myPRs} showReviewColumns={showReviewColumns} showViaTeams={false} />
         )}
       </section>
 

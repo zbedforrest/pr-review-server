@@ -4,9 +4,10 @@ import { PRTableRow } from './PRTableRow';
 interface PRTableProps {
   prs: PR[];
   showReviewColumns?: boolean;
+  showViaTeams?: boolean;
 }
 
-export function PRTable({ prs, showReviewColumns = true }: PRTableProps) {
+export function PRTable({ prs, showReviewColumns = true, showViaTeams = true }: PRTableProps) {
   if (prs.length === 0) {
     return <p>No PRs found.</p>;
   }
@@ -23,7 +24,7 @@ export function PRTable({ prs, showReviewColumns = true }: PRTableProps) {
             <th>CI</th>
             <th>Approvals</th>
             <th>My Review</th>
-            <th>Via Teams</th>
+            {showViaTeams && <th>Via Teams</th>}
             <th>Notes</th>
             {showReviewColumns && <th>Review</th>}
             <th>Actions</th>
@@ -35,6 +36,7 @@ export function PRTable({ prs, showReviewColumns = true }: PRTableProps) {
               key={`${pr.owner}/${pr.repo}/${pr.number}`}
               pr={pr}
               showReviewColumns={showReviewColumns}
+              showViaTeams={showViaTeams}
             />
           ))}
         </tbody>

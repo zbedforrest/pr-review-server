@@ -53,32 +53,35 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Kill any existing process on port 5432 (stale proxy, local postgres, etc.)
 if lsof -i :5432 >/dev/null 2>&1; then
-    echo "Port 5432 already in use (Cloud SQL Proxy or local Postgres)"
-else
-    echo "Starting Cloud SQL Proxy..."
-    if [ ! -f ./cloud-sql-proxy ]; then
-        echo "Error: ./cloud-sql-proxy binary not found"
-        echo "Download from: https://cloud.google.com/sql/docs/postgres/sql-proxy"
+    echo "Killing existing process on port 5432..."
+    lsof -ti :5432 | xargs kill -9 2>/dev/null || true
+    sleep 1
+fi
+
+echo "Starting Cloud SQL Proxy..."
+if [ ! -f ./cloud-sql-proxy ]; then
+    echo "Error: ./cloud-sql-proxy binary not found"
+    echo "Download from: https://cloud.google.com/sql/docs/postgres/sql-proxy"
+    exit 1
+fi
+
+./cloud-sql-proxy "${CLOUD_SQL_INSTANCE:?CLOUD_SQL_INSTANCE is required}" > cloud-sql-proxy.log 2>&1 &
+PROXY_PID=$!
+
+echo "Waiting for proxy..."
+for i in {1..30}; do
+    if grep -q "The proxy has started successfully" cloud-sql-proxy.log 2>/dev/null; then
+        echo "Cloud SQL Proxy started"
+        break
+    fi
+    if ! ps -p $PROXY_PID > /dev/null 2>&1; then
+        echo "Cloud SQL Proxy failed. Check cloud-sql-proxy.log"
         exit 1
     fi
-
-    ./cloud-sql-proxy "${CLOUD_SQL_INSTANCE:?CLOUD_SQL_INSTANCE is required}" > cloud-sql-proxy.log 2>&1 &
-    PROXY_PID=$!
-
-    echo "Waiting for proxy..."
-    for i in {1..30}; do
-        if grep -q "The proxy has started successfully" cloud-sql-proxy.log 2>/dev/null; then
-            echo "Cloud SQL Proxy started"
-            break
-        fi
-        if ! ps -p $PROXY_PID > /dev/null 2>&1; then
-            echo "Cloud SQL Proxy failed. Check cloud-sql-proxy.log"
-            exit 1
-        fi
-        sleep 1
-    done
-fi
+    sleep 1
+done
 
 # ==========================================
 # BUILD AND RUN
