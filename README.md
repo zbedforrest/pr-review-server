@@ -1,6 +1,6 @@
 # PR Review Server
 
-AI-powered code review dashboard for GitHub pull requests.
+Code review dashboard for GitHub pull requests.  
 
 ## Team Deployment Requirements
 
