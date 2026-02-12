@@ -2,6 +2,7 @@ import { memo, useCallback } from 'react';
 import type { PR } from '@/types/pr';
 import { CommitSha, StatusBadge } from '@/components/common';
 import { useDeletePR, useTriggerReview } from '@/hooks/usePRs';
+import { useTelemetry } from '@/hooks/useTelemetry';
 import { CIStatusIndicator } from './CIStatusIndicator';
 import { NotesCell } from './NotesCell';
 import { VIA_TEAMS_PERSONAL } from '@/constants';
@@ -19,31 +20,34 @@ export const PRTableRow = memo(function PRTableRow({
 }: PRTableRowProps) {
   const deleteMutation = useDeletePR();
   const triggerReviewMutation = useTriggerReview();
+  const { track } = useTelemetry();
   const prUrl = `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
   const reviewUrl = pr.status === 'completed' && pr.review_url
     ? pr.review_url
     : null;
 
   const handleDelete = useCallback(() => {
+    track('delete_pr', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
     deleteMutation.mutate({
       owner: pr.owner,
       repo: pr.repo,
       number: pr.number,
     });
-  }, [pr.owner, pr.repo, pr.number, deleteMutation]);
+  }, [pr.owner, pr.repo, pr.number, deleteMutation, track]);
 
   const handleTriggerReview = useCallback(() => {
+    track('trigger_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
     triggerReviewMutation.mutate({
       owner: pr.owner,
       repo: pr.repo,
       number: pr.number,
     });
-  }, [pr.owner, pr.repo, pr.number, triggerReviewMutation]);
+  }, [pr.owner, pr.repo, pr.number, triggerReviewMutation, track]);
 
   return (
     <tr>
       <td>
-        <a href={prUrl}>
+        <a href={prUrl} onClick={() => track('open_pr_github', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}>
           {pr.owner}/{pr.repo} #{pr.number}
         </a>
         {pr.draft && <span className="pr-table__draft-indicator"> (Draft)</span>}
@@ -98,7 +102,7 @@ export const PRTableRow = memo(function PRTableRow({
       {showReviewColumns && (
         <td>
           {reviewUrl ? (
-            <a href={reviewUrl}>
+            <a href={reviewUrl} onClick={() => track('view_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}>
               View Review
             </a>
           ) : (

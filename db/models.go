@@ -124,6 +124,24 @@ func (UserPRViewModel) TableName() string {
 	return "user_pr_views"
 }
 
+// TelemetryEventModel represents a user interaction event (GORM model)
+type TelemetryEventModel struct {
+	ID        uint      `gorm:"primaryKey;autoIncrement"`
+	UserID    uint      `gorm:"index;not null"`
+	User      UserModel `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE"`
+	Action    string    `gorm:"size:50;index;not null"`
+	Label     string    `gorm:"size:255"`
+	PROwner   string    `gorm:"size:255"`
+	PRRepo    string    `gorm:"size:255"`
+	PRNumber  int       `gorm:"default:0"`
+	CreatedAt time.Time `gorm:"autoCreateTime;index"`
+}
+
+// TableName specifies the table name for TelemetryEventModel
+func (TelemetryEventModel) TableName() string {
+	return "telemetry_events"
+}
+
 // SettingModel represents a key-value setting (GORM model)
 type SettingModel struct {
 	Key   string `gorm:"primaryKey;size:255"`

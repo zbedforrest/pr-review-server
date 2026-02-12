@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -128,6 +129,17 @@ type CIStatus struct {
 	Number       int
 	State        string   // "success", "failure", "pending", "unknown"
 	FailedChecks []string // Names of failed checks
+}
+
+// NewTestClient creates a Client for testing with a custom base URL for the REST API.
+func NewTestClient(baseURL, username string) *Client {
+	ghClient := github.NewClient(nil)
+	u, _ := url.Parse(baseURL + "/")
+	ghClient.BaseURL = u
+	return &Client{
+		gh:       ghClient,
+		username: username,
+	}
 }
 
 func NewClient(token, username string) *Client {

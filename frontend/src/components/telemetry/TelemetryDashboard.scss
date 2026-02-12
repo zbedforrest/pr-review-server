@@ -1,0 +1,215 @@
+@use '@/styles/abstracts/variables' as *;
+
+.telemetry-dashboard {
+  background: $color-bg-secondary;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+  padding: $spacing-xl;
+  margin-bottom: $spacing-xl;
+
+  &__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: $spacing-xl;
+
+    h3 {
+      margin: 0;
+      font-size: $font-size-lg;
+      color: $color-text-primary;
+    }
+  }
+
+  &__range-selector {
+    display: flex;
+    gap: $spacing-xs;
+
+    button {
+      padding: $spacing-xs $spacing-md;
+      font-size: $font-size-sm;
+      border-radius: $radius-sm;
+      border: 1px solid $color-border;
+      background: $color-bg-tertiary;
+      color: $color-text-secondary;
+      cursor: pointer;
+      transition: background $transition-fast;
+
+      &.active {
+        background: #1f6feb;
+        color: #fff;
+        border-color: #1f6feb;
+      }
+
+      &:hover:not(.active) {
+        background: $color-bg-hover;
+      }
+    }
+  }
+
+  &__loading {
+    color: $color-text-secondary;
+    font-style: italic;
+  }
+
+  &__summary {
+    display: flex;
+    gap: $spacing-lg;
+    margin-bottom: $spacing-xl;
+  }
+
+  &__card {
+    flex: 1;
+    background: $color-bg-primary;
+    border: 1px solid $color-border;
+    border-radius: $radius-sm;
+    padding: $spacing-lg;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: $spacing-xs;
+  }
+
+  &__card-value {
+    font-size: $font-size-xl;
+    font-weight: bold;
+    color: $color-text-primary;
+  }
+
+  &__card-label {
+    font-size: $font-size-sm;
+    color: $color-text-secondary;
+  }
+
+  &__section {
+    margin-bottom: $spacing-xl;
+
+    h4 {
+      margin: 0 0 $spacing-md;
+      font-size: $font-size-base;
+      color: $color-text-secondary;
+    }
+  }
+
+  &__bars {
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-sm;
+  }
+
+  &__bar-row {
+    display: flex;
+    align-items: center;
+    gap: $spacing-md;
+  }
+
+  &__bar-label {
+    width: 140px;
+    font-size: $font-size-sm;
+    color: $color-text-secondary;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  &__bar-track {
+    flex: 1;
+    height: 16px;
+    background: $color-bg-primary;
+    border-radius: $radius-sm;
+    overflow: hidden;
+  }
+
+  &__bar-fill {
+    height: 100%;
+    background: #1f6feb;
+    border-radius: $radius-sm;
+    min-width: 2px;
+    transition: width $transition-medium;
+  }
+
+  &__bar-count {
+    width: 40px;
+    font-size: $font-size-sm;
+    color: $color-text-secondary;
+    flex-shrink: 0;
+  }
+
+  // Daily activity vertical bar chart
+  &__day-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 80px;
+  }
+
+  &__day-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 100%;
+  }
+
+  &__day-bar-wrapper {
+    flex: 1;
+    width: 100%;
+    display: flex;
+    align-items: flex-end;
+  }
+
+  &__day-bar {
+    width: 100%;
+    background: #1f6feb;
+    border-radius: $radius-sm $radius-sm 0 0;
+    min-height: 2px;
+    transition: height $transition-medium;
+  }
+
+  &__day-label {
+    font-size: $font-size-xs;
+    color: $color-text-muted;
+    margin-top: 2px;
+  }
+
+  // Ranked lists
+  &__ranked-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: rank;
+
+    li {
+      counter-increment: rank;
+      display: flex;
+      align-items: center;
+      padding: $spacing-xs 0;
+      border-bottom: 1px solid $color-bg-primary;
+
+      &::before {
+        content: counter(rank) ".";
+        width: 24px;
+        font-size: $font-size-sm;
+        color: $color-text-muted;
+        flex-shrink: 0;
+      }
+    }
+  }
+
+  &__ranked-text {
+    flex: 1;
+    font-size: $font-size-sm;
+    color: $color-text-primary;
+  }
+
+  &__ranked-count {
+    font-size: $font-size-sm;
+    color: $color-text-secondary;
+    margin-left: $spacing-md;
+  }
+
+  &__empty {
+    color: $color-text-muted;
+    font-style: italic;
+    text-align: center;
+    padding: $spacing-xl;
+  }
+}

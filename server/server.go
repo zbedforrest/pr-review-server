@@ -196,6 +196,8 @@ func (s *Server) Start() error {
 	http.Handle("/api/reviewer-health", withAuth(s.handleReviewerHealth))
 	http.Handle("/api/settings", withAuth(s.handleSettings))
 	http.Handle("/api/user", withAuth(s.handleGetUser))
+	http.Handle("/api/telemetry/track", withAuth(s.handleTrackTelemetry))
+	http.Handle("/api/telemetry/stats", withAuth(s.handleTelemetryStats))
 
 	// Static content (not protected)
 	http.HandleFunc("/reviews/", s.handleReviewFromGCS)
@@ -466,16 +468,20 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Note: Previous reviews are kept in GCS for historical reference
-	// A new review will be generated with the current commit SHA
+	// Fetch the latest commit SHA from GitHub so the review is always against the current HEAD
+	latestSHA, err := s.ghClient.GetPRHeadSHA(r.Context(), req.Owner, req.Repo, req.Number)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to fetch latest commit from GitHub: %v", err), http.StatusInternalServerError)
+		return
+	}
 
-	// Mark PR as generating to trigger review generation
-	if err := s.db.UpdatePRStatus(req.Owner, req.Repo, req.Number, "generating"); err != nil {
+	// Mark PR as generating with the latest SHA so the poller reviews the right commit
+	if err := s.db.SetPRGenerating(req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to update PR status: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("[API] Manually triggered review generation for %s/%s#%d", req.Owner, req.Repo, req.Number)
+	log.Printf("[API] Manually triggered review generation for %s/%s#%d (commit: %s)", req.Owner, req.Repo, req.Number, latestSHA[:7])
 
 	// Notify clients
 	s.BroadcastEvent(EventPRUpdated, s.getPRResponse(req.Owner, req.Repo, req.Number))

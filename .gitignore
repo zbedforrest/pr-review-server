@@ -48,6 +48,10 @@ data/
 *.swo
 *~
 
+# Certificates and keys
+*.pem
+*.key
+
 # Claude Code
 .claude/
 cloud-sql-proxy

@@ -152,6 +152,8 @@ func (m *MockDatabase) UpdateUserViaTeams(userID, prID int, viaTeams []string) e
 func (m *MockDatabase) HidePRForUser(userID, prID int) error                         { return nil }
 func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error { return nil }
 func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error)             { return 0, nil }
+func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error { return nil }
+func (m *MockDatabase) GetTelemetryStats(days int) (*db.TelemetryStats, error) { return &db.TelemetryStats{}, nil }
 func (m *MockDatabase) Close() error                                           { return nil }
 
 // Test helper to create a test Auth instance

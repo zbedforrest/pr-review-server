@@ -117,14 +117,12 @@ func TestReportHTMLSnapshot(t *testing.T) {
 	_, err = fmt.Sscanf(string(prNumberBytes), "%d", &prNumber)
 	require.NoError(t, err)
 
-	// Use a placeholder API key for testing to ensure real keys never appear in snapshots
-	testAPIKey := "TEST_API_KEY_PLACEHOLDER"
 	testModelName := "TEST_MODEL_NAME_PLACEHOLDER"
 	testPrompt := "TEST_PROMPT_PLACEHOLDER"
 	testCommitSHA := "abc1234567890def"
 	testPRURL := fmt.Sprintf("https://github.com/test-owner/test-repo/pull/%d", prNumber)
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	htmlContent, err := GenerateReport(comments, diff, prNumber, testPRURL, prBody, testPrompt, testCommitSHA, testAPIKey, testModelName, int32(100), int32(200), int32(300), testTime)
+	htmlContent, err := GenerateReport(comments, diff, prNumber, testPRURL, prBody, testPrompt, testCommitSHA, testModelName, int32(100), int32(200), int32(300), testTime)
 	require.NoError(t, err)
 
 	goldenFile := filepath.Join("testdata", "report.html.golden")
@@ -175,7 +173,7 @@ index 123..456 100644
  }`
 
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReport(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "test-key", "gemini-pro", 0, 0, 0, testTime)
+	report, err := GenerateReport(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime)
 	assert.NoError(t, err)
 
 	// Should contain general comments section
@@ -240,7 +238,7 @@ func main() {
 	}
 
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "test-key", "gemini-pro", 0, 0, 0, testTime, fileContents)
+	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime, fileContents)
 	assert.NoError(t, err)
 
 	// Should contain adjacent comments section for comment that can't be displayed inline
@@ -295,7 +293,7 @@ index 123..456 100644
 
 	// Use GenerateReport (no file contents) to simulate adjacent comments disabled
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReport(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "test-key", "gemini-pro", 0, 0, 0, testTime)
+	report, err := GenerateReport(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime)
 	assert.NoError(t, err)
 
 	// Should NOT contain adjacent comments section since fileContents is nil
@@ -349,7 +347,7 @@ index 123..456 100644
  }`
 
 	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "test-key", "gemini-pro", 0, 0, 0, testTime, fileContents)
+	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime, fileContents)
 	assert.NoError(t, err)
 
 	// Should contain adjacent section with context lines using diff-file structure

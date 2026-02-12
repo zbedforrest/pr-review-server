@@ -116,12 +116,12 @@ func ParseDiff(diff string) []*DiffFile {
 }
 
 // GenerateReport creates an HTML report from a slice of line comments and a diff string.
-func GenerateReport(comments []types.LineComment, diff string, prNumber int, prURL string, prBody string, prompt string, commitSHA string, apiKey string, modelName string, promptTokenCount int32, candidatesTokenCount int32, totalTokenCount int32, generatedAt time.Time) (string, error) {
-	return GenerateReportWithContext(comments, diff, prNumber, prURL, prBody, prompt, commitSHA, apiKey, modelName, promptTokenCount, candidatesTokenCount, totalTokenCount, generatedAt, nil)
+func GenerateReport(comments []types.LineComment, diff string, prNumber int, prURL string, prBody string, prompt string, commitSHA string, modelName string, promptTokenCount int32, candidatesTokenCount int32, totalTokenCount int32, generatedAt time.Time) (string, error) {
+	return GenerateReportWithContext(comments, diff, prNumber, prURL, prBody, prompt, commitSHA, modelName, promptTokenCount, candidatesTokenCount, totalTokenCount, generatedAt, nil)
 }
 
 // GenerateReportWithContext creates an HTML report with additional file context for adjacent comments and token counting.
-func GenerateReportWithContext(comments []types.LineComment, diff string, prNumber int, prURL string, prBody string, prompt string, commitSHA string, apiKey string, modelName string, promptTokenCount int32, candidatesTokenCount int32, totalTokenCount int32, generatedAt time.Time, fileContents map[string]string) (string, error) {
+func GenerateReportWithContext(comments []types.LineComment, diff string, prNumber int, prURL string, prBody string, prompt string, commitSHA string, modelName string, promptTokenCount int32, candidatesTokenCount int32, totalTokenCount int32, generatedAt time.Time, fileContents map[string]string) (string, error) {
 	diffFiles := ParseDiff(diff)
 	commentsByFile := make(map[string]map[int][]CommentView)
 	var summaryComments []CommentView
@@ -201,7 +201,6 @@ func GenerateReportWithContext(comments []types.LineComment, diff string, prNumb
 		GeneralComments      []CommentView
 		AdjacentComments     []CommentView
 		RawDiff              string
-		APIKey               string
 		ModelName            string
 		PromptTokenCount     int32
 		CandidatesTokenCount int32
@@ -220,7 +219,6 @@ func GenerateReportWithContext(comments []types.LineComment, diff string, prNumb
 		GeneralComments:      generalComments,
 		AdjacentComments:     adjacentComments,
 		RawDiff:              diff,
-		APIKey:               apiKey,
 		ModelName:            modelName,
 		PromptTokenCount:     promptTokenCount,
 		CandidatesTokenCount: candidatesTokenCount,

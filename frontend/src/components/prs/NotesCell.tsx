@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useUpdatePRNotes } from '@/hooks/usePRs';
+import { useTelemetry } from '@/hooks/useTelemetry';
 import './NotesCell.scss';
 
 interface NotesCellProps {
@@ -14,6 +15,7 @@ export function NotesCell({ owner, repo, number, notes }: NotesCellProps) {
   const [editValue, setEditValue] = useState(notes);
   const inputRef = useRef<HTMLInputElement>(null);
   const updateNotes = useUpdatePRNotes();
+  const { track } = useTelemetry();
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -31,6 +33,7 @@ export function NotesCell({ owner, repo, number, notes }: NotesCellProps) {
   const handleSave = useCallback(() => {
     const trimmedValue = editValue.trim().slice(0, 15);
     if (trimmedValue !== notes) {
+      track('edit_notes', { pr_owner: owner, pr_repo: repo, pr_number: number });
       updateNotes.mutate({
         owner,
         repo,
@@ -39,7 +42,7 @@ export function NotesCell({ owner, repo, number, notes }: NotesCellProps) {
       });
     }
     setIsEditing(false);
-  }, [owner, repo, number, notes, editValue, updateNotes]);
+  }, [owner, repo, number, notes, editValue, updateNotes, track]);
 
   const handleCancel = useCallback(() => {
     setEditValue(notes);

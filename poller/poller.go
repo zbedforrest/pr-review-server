@@ -1306,7 +1306,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 					err = svcErr
 				} else {
 					// Generate HTML Report content
-					htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, p.cfg.GeminiAPIKey, llm.ProModel)
+					htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModel)
 					if htmlContent == nil {
 						err = fmt.Errorf("failed to generate HTML content")
 					} else {

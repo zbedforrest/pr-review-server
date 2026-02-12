@@ -474,6 +474,14 @@ func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error) {
 	return 0, nil
 }
 
+func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error {
+	return nil
+}
+
+func (m *MockDatabase) GetTelemetryStats(days int) (*db.TelemetryStats, error) {
+	return &db.TelemetryStats{}, nil
+}
+
 func (m *MockDatabase) Close() error {
 	return nil
 }
