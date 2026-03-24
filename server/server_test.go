@@ -3,14 +3,17 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"pr-review-server/auth"
 	"pr-review-server/config"
 	"pr-review-server/db"
+	gh "pr-review-server/github"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -534,4 +537,135 @@ func TestPRResponse_JSONSerialization_MyReviewStatus_Exists(t *testing.T) {
 	status, exists := decoded["my_review_status"]
 	assert.True(t, exists, "my_review_status field must exist in JSON output")
 	assert.Equal(t, "APPROVED", status.(string))
+}
+
+// =============================================================================
+// handleTriggerReview Tests
+// =============================================================================
+
+// newTestServerWithGH creates a server with an in-memory database and a GitHub client for testing
+func newTestServerWithGH(t *testing.T, username string, ghClient *gh.Client) (*Server, *db.GormDB) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+
+	cfg := &config.Config{
+		GitHubUsername: username,
+		ServerPort:     "8080",
+		ReviewsDir:     "/tmp/reviews",
+	}
+
+	s := New(cfg, database, ghClient, nil)
+	// Start broadcaster so BroadcastEvent doesn't block
+	go s.broadcaster()
+	return s, database
+}
+
+func TestHandleTriggerReview_FetchesLatestCommitSHA(t *testing.T) {
+	// Mock GitHub API that returns a PR with a specific HEAD SHA
+	latestSHA := "newcommit999888777666555444333222111000aaa"
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"number":1,"head":{"sha":"%s"}}`, latestSHA)
+	}))
+	defer mockGH.Close()
+
+	ghClient := gh.NewTestClient(mockGH.URL, "testuser")
+	server, database := newTestServerWithGH(t, "testuser", ghClient)
+	defer database.Close()
+
+	// Insert a PR with a stale commit SHA
+	staleSHA := "oldcommitaaa111222333444555666777888999000"
+	createdAt := time.Now().UTC().Truncate(time.Second)
+	pr := &db.PR{
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      1,
+		LastCommitSHA: staleSHA,
+		Status:        "completed",
+		Title:         "Test PR",
+		Author:        "otheruser",
+		CreatedAt:     &createdAt,
+	}
+	err := database.UpsertPR(pr)
+	require.NoError(t, err)
+
+	// Trigger review
+	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/trigger-review", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleTriggerReview(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Verify the DB was updated with the latest SHA, not the stale one
+	updatedPR, err := database.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Equal(t, latestSHA, updatedPR.LastCommitSHA, "Trigger review should update to latest commit SHA from GitHub")
+	assert.Equal(t, "generating", updatedPR.Status, "Status should be set to generating")
+	assert.NotNil(t, updatedPR.GeneratingSince, "GeneratingSince should be set")
+}
+
+func TestHandleTriggerReview_GitHubAPIError_Returns500(t *testing.T) {
+	// Mock GitHub API that returns an error
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"message":"internal error"}`)
+	}))
+	defer mockGH.Close()
+
+	ghClient := gh.NewTestClient(mockGH.URL, "testuser")
+	server, database := newTestServerWithGH(t, "testuser", ghClient)
+	defer database.Close()
+
+	// Insert a PR
+	pr := &db.PR{
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      1,
+		LastCommitSHA: "oldsha123456789012345678901234567890abcd",
+		Status:        "completed",
+		Title:         "Test PR",
+		Author:        "otheruser",
+	}
+	err := database.UpsertPR(pr)
+	require.NoError(t, err)
+
+	// Trigger review - should fail because GitHub API returns error
+	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/trigger-review", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleTriggerReview(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code, "Should return 500 when GitHub API fails")
+
+	// Verify the PR status was NOT changed (still completed, not generating)
+	unchangedPR, err := database.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", unchangedPR.Status, "PR status should remain unchanged when GitHub API fails")
+	assert.Equal(t, "oldsha123456789012345678901234567890abcd", unchangedPR.LastCommitSHA, "Commit SHA should remain unchanged")
+}
+
+func TestHandleTriggerReview_PRNotFound_Returns404(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("GitHub API should not be called when PR is not in database")
+	}))
+	defer mockGH.Close()
+
+	ghClient := gh.NewTestClient(mockGH.URL, "testuser")
+	server, database := newTestServerWithGH(t, "testuser", ghClient)
+	defer database.Close()
+
+	// Don't insert any PR - trigger review for non-existent PR
+	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":999}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/trigger-review", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleTriggerReview(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code, "Should return 404 for non-existent PR")
 }

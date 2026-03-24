@@ -1,5 +1,6 @@
 import { usePRs } from '@/hooks/usePRs';
 import { useSettings, useUpdateSettings } from '@/hooks/useSettings';
+import { useTelemetry } from '@/hooks/useTelemetry';
 import { PRTable } from './PRTable';
 import { LoadingSpinner, ErrorMessage } from '@/components/common';
 import { PR } from '@/types/pr';
@@ -41,6 +42,7 @@ export function ReviewPRsSection({ showReviewColumns = true, onToggleColumns, se
   const { data: prs, isLoading, error } = usePRs();
   const { data: settings } = useSettings();
   const updateSettings = useUpdateSettings();
+  const { track } = useTelemetry();
 
   // Split PRs into "My PRs" and "PRs to Review"
   const allPRs = prs || [];
@@ -58,8 +60,10 @@ export function ReviewPRsSection({ showReviewColumns = true, onToggleColumns, se
 
   const handleToggleAutoReview = () => {
     if (!settings) return;
+    const next = !settings.auto_review_requested_prs;
+    track('toggle_auto_review', { label: next ? 'on' : 'off' });
     updateSettings.mutate({
-      auto_review_requested_prs: !settings.auto_review_requested_prs
+      auto_review_requested_prs: next
     });
   };
 

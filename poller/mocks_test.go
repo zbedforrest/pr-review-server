@@ -45,6 +45,12 @@ type MockGitHubClient struct {
 	// BatchGetCIStatusResults to return from BatchGetCIStatus
 	BatchGetCIStatusResults map[string]*github.CIStatus
 
+	// BatchGetReviewerGroupsResults to return from BatchGetReviewerGroups
+	BatchGetReviewerGroupsResults map[string]*github.ReviewerGroupData
+
+	// GetOrgTeamMembersFunc optional function to customize GetOrgTeamMembers behavior
+	GetOrgTeamMembersFunc func(ctx context.Context, orgName, teamSlug string) ([]string, error)
+
 	// Track calls for verification
 	IsPROpenCalls []struct {
 		Owner    string
@@ -56,6 +62,11 @@ type MockGitHubClient struct {
 		Repo     string
 		PRNumber int
 	}
+	BatchGetPRReviewDataCalls [][]github.PullRequest
+
+	// CallLog records the order of method calls for sequencing verification
+	CallLog   []string
+	callLogMu sync.Mutex
 }
 
 func NewMockGitHubClient() *MockGitHubClient {
@@ -97,6 +108,9 @@ func (m *MockGitHubClient) IsPROpen(ctx context.Context, owner, repo string, prN
 		Repo     string
 		PRNumber int
 	}{owner, repo, prNumber})
+	m.callLogMu.Lock()
+	m.CallLog = append(m.CallLog, "IsPROpen")
+	m.callLogMu.Unlock()
 
 	if result, ok := m.IsPROpenResults[key]; ok {
 		return result.IsOpen, result.Err
@@ -119,6 +133,9 @@ func (m *MockGitHubClient) GetPRHeadSHA(ctx context.Context, owner, repo string,
 		Repo     string
 		PRNumber int
 	}{owner, repo, prNumber})
+	m.callLogMu.Lock()
+	m.CallLog = append(m.CallLog, "GetPRHeadSHA")
+	m.callLogMu.Unlock()
 
 	if result, ok := m.GetPRHeadSHAResults[key]; ok {
 		return result.SHA, result.Err
@@ -135,6 +152,10 @@ func (m *MockGitHubClient) GetPR(ctx context.Context, owner, repo string, prNumb
 }
 
 func (m *MockGitHubClient) BatchGetPRReviewData(ctx context.Context, prs []github.PullRequest) (map[string]*github.PRReviewData, error) {
+	m.BatchGetPRReviewDataCalls = append(m.BatchGetPRReviewDataCalls, prs)
+	m.callLogMu.Lock()
+	m.CallLog = append(m.CallLog, "BatchGetPRReviewData")
+	m.callLogMu.Unlock()
 	return m.BatchGetPRReviewDataResults, nil
 }
 
@@ -147,6 +168,16 @@ func (m *MockGitHubClient) BatchGetCIStatus(ctx context.Context, prs []struct {
 }
 
 func (m *MockGitHubClient) BatchGetReviewerGroups(ctx context.Context, prs []github.PullRequest) (map[string]*github.ReviewerGroupData, error) {
+	if m.BatchGetReviewerGroupsResults != nil {
+		return m.BatchGetReviewerGroupsResults, nil
+	}
+	return nil, nil
+}
+
+func (m *MockGitHubClient) GetOrgTeamMembers(ctx context.Context, orgName, teamSlug string) ([]string, error) {
+	if m.GetOrgTeamMembersFunc != nil {
+		return m.GetOrgTeamMembersFunc(ctx, orgName, teamSlug)
+	}
 	return nil, nil
 }
 
@@ -179,6 +210,25 @@ type MockDatabase struct {
 		PRNumber     int
 		NewCommitSHA string
 	}
+	UpdateUserReviewStatusCalls []struct {
+		UserID int
+		PRID   int
+		Status string
+	}
+	UpdateUserViaTeamsCalls []struct {
+		UserID   int
+		PRID     int
+		ViaTeams []string
+	}
+
+	EnsureUserPRViewCalls []struct {
+		UserID   int
+		PRID     int
+		IsAuthor bool
+	}
+
+	// User PR assignments (keyed by "userID/prID")
+	UserPRAssignments map[string]*db.UserPRAssignment
 
 	// Error injection
 	DeletePRError          error
@@ -433,8 +483,14 @@ func (m *MockDatabase) DeleteSession(id string) error {
 	return nil
 }
 
-// User-PR view operations (not needed for poller tests, stub implementations)
+// User-PR view operations
 func (m *MockDatabase) GetUserPRAssignment(userID, prID int) (*db.UserPRAssignment, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := fmt.Sprintf("%d/%d", userID, prID)
+	if a, ok := m.UserPRAssignments[key]; ok {
+		return a, nil
+	}
 	return nil, nil
 }
 
@@ -455,10 +511,24 @@ func (m *MockDatabase) UpdateUserPRNotes(userID, prID int, notes string) error {
 }
 
 func (m *MockDatabase) UpdateUserReviewStatus(userID, prID int, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.UpdateUserReviewStatusCalls = append(m.UpdateUserReviewStatusCalls, struct {
+		UserID int
+		PRID   int
+		Status string
+	}{userID, prID, status})
 	return nil
 }
 
 func (m *MockDatabase) UpdateUserViaTeams(userID, prID int, viaTeams []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.UpdateUserViaTeamsCalls = append(m.UpdateUserViaTeamsCalls, struct {
+		UserID   int
+		PRID     int
+		ViaTeams []string
+	}{userID, prID, viaTeams})
 	return nil
 }
 
@@ -467,11 +537,26 @@ func (m *MockDatabase) HidePRForUser(userID, prID int) error {
 }
 
 func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.EnsureUserPRViewCalls = append(m.EnsureUserPRViewCalls, struct {
+		UserID   int
+		PRID     int
+		IsAuthor bool
+	}{userID, prID, isAuthor})
 	return nil
 }
 
 func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error) {
 	return 0, nil
+}
+
+func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error {
+	return nil
+}
+
+func (m *MockDatabase) GetTelemetryStats(days int) (*db.TelemetryStats, error) {
+	return &db.TelemetryStats{}, nil
 }
 
 func (m *MockDatabase) Close() error {

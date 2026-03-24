@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { PR } from '../../types/pr';
 import { categorizePR, type TriageFilter } from './triageUtils';
+import { useTelemetry } from '@/hooks/useTelemetry';
 import './TriageSummary.scss';
 
 interface TriageSummaryProps {
@@ -19,6 +20,7 @@ interface TriageCategory {
 
 export function TriageSummary({ prs, onFilterChange }: TriageSummaryProps) {
   const [activeFilter, setActiveFilter] = useState<TriageFilter | null>(null);
+  const { track } = useTelemetry();
 
   const categories = useMemo((): TriageCategory[] => {
     // Only consider PRs that need review (not mine, completed status)
@@ -88,6 +90,7 @@ export function TriageSummary({ prs, onFilterChange }: TriageSummaryProps) {
     const newFilter = activeFilter === categoryId ? null : categoryId;
     setActiveFilter(newFilter);
     onFilterChange?.(newFilter);
+    track('triage_filter', { label: newFilter ?? 'clear' });
   };
 
   if (totalReviewPRs === 0) {

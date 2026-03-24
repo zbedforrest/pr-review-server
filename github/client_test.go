@@ -8,18 +8,19 @@ import (
 )
 
 func TestBatchGetReviewerGroups(t *testing.T) {
-	// Mock response data matches the structure expected by client.go
+	// Mock response data matches the timeline-based structure expected by client.go
 	mockResponse := `{
 		"data": {
 			"pr0": {
 				"pullRequest": {
 					"number": 101,
-					"reviewRequests": {
+					"timelineItems": {
 						"nodes": [
 							{
 								"requestedReviewer": {
 									"__typename": "Team",
-									"name": "backend-team"
+									"name": "backend-team",
+									"slug": "backend-team"
 								}
 							},
 							{
@@ -35,7 +36,7 @@ func TestBatchGetReviewerGroups(t *testing.T) {
 			"pr1": {
 				"pullRequest": {
 					"number": 102,
-					"reviewRequests": {
+					"timelineItems": {
 						"nodes": [
 							{
 								"requestedReviewer": {
@@ -50,7 +51,7 @@ func TestBatchGetReviewerGroups(t *testing.T) {
 			"pr2": {
 				"pullRequest": {
 					"number": 103,
-					"reviewRequests": {
+					"timelineItems": {
 						"nodes": []
 					}
 				}

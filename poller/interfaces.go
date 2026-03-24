@@ -41,6 +41,9 @@ type GitHubClient interface {
 
 	// BatchGetReviewerGroups fetches reviewer group info for multiple PRs using GraphQL
 	BatchGetReviewerGroups(ctx context.Context, prs []github.PullRequest) (map[string]*github.ReviewerGroupData, error)
+
+	// GetOrgTeamMembers fetches members of a GitHub team by org and team slug
+	GetOrgTeamMembers(ctx context.Context, orgName, teamSlug string) ([]string, error)
 }
 
 // Verify that github.Client implements GitHubClient interface at compile time

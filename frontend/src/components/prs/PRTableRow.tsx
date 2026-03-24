@@ -2,6 +2,7 @@ import { memo, useCallback } from 'react';
 import type { PR } from '@/types/pr';
 import { CommitSha, StatusBadge } from '@/components/common';
 import { useDeletePR, useTriggerReview } from '@/hooks/usePRs';
+import { useTelemetry } from '@/hooks/useTelemetry';
 import { CIStatusIndicator } from './CIStatusIndicator';
 import { NotesCell } from './NotesCell';
 import { VIA_TEAMS_PERSONAL } from '@/constants';
@@ -19,31 +20,34 @@ export const PRTableRow = memo(function PRTableRow({
 }: PRTableRowProps) {
   const deleteMutation = useDeletePR();
   const triggerReviewMutation = useTriggerReview();
+  const { track } = useTelemetry();
   const prUrl = `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
   const reviewUrl = pr.status === 'completed' && pr.review_url
     ? pr.review_url
     : null;
 
   const handleDelete = useCallback(() => {
+    track('delete_pr', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
     deleteMutation.mutate({
       owner: pr.owner,
       repo: pr.repo,
       number: pr.number,
     });
-  }, [pr.owner, pr.repo, pr.number, deleteMutation]);
+  }, [pr.owner, pr.repo, pr.number, deleteMutation, track]);
 
   const handleTriggerReview = useCallback(() => {
+    track('trigger_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
     triggerReviewMutation.mutate({
       owner: pr.owner,
       repo: pr.repo,
       number: pr.number,
     });
-  }, [pr.owner, pr.repo, pr.number, triggerReviewMutation]);
+  }, [pr.owner, pr.repo, pr.number, triggerReviewMutation, track]);
 
   return (
     <tr>
       <td>
-        <a href={prUrl}>
+        <a href={prUrl} onClick={() => track('open_pr_github', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}>
           {pr.owner}/{pr.repo} #{pr.number}
         </a>
         {pr.draft && <span className="pr-table__draft-indicator"> (Draft)</span>}
@@ -75,12 +79,29 @@ export const PRTableRow = memo(function PRTableRow({
           {pr.via_teams && pr.via_teams.length > 0 ? (
             (() => {
               const hasPersonal = pr.via_teams.includes(VIA_TEAMS_PERSONAL);
-              const teams = pr.via_teams.filter(t => t !== VIA_TEAMS_PERSONAL);
+              const teamEntries = pr.via_teams
+                .filter(t => t !== VIA_TEAMS_PERSONAL)
+                .map(t => {
+                  const colonIdx = t.indexOf(':');
+                  if (colonIdx >= 0) {
+                    return { name: t.slice(0, colonIdx), status: t.slice(colonIdx + 1) };
+                  }
+                  return { name: t, status: 'pending' };
+                });
               const parts = [
-                ...(hasPersonal ? ['@you'] : []),
-                ...teams,
+                ...(hasPersonal ? [{ name: '@you', status: 'personal' }] : []),
+                ...teamEntries,
               ];
-              return <span className={hasPersonal ? 'pr-table__via-teams--personal' : undefined} title={parts.join(', ')}>{parts.join(', ')}</span>;
+              return (
+                <span title={parts.map(p => `${p.name} (${p.status})`).join(', ')}>
+                  {parts.map((p, i) => (
+                    <span key={i}>
+                      {i > 0 && ', '}
+                      <span className={`pr-table__via-teams--${p.status}`}>{p.name}</span>
+                    </span>
+                  ))}
+                </span>
+              );
             })()
           ) : (
             <span className="pr-table__via-teams--none" title="Via team (auto-assigned)">-</span>
@@ -98,7 +119,7 @@ export const PRTableRow = memo(function PRTableRow({
       {showReviewColumns && (
         <td>
           {reviewUrl ? (
-            <a href={reviewUrl}>
+            <a href={reviewUrl} onClick={() => track('view_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}>
               View Review
             </a>
           ) : (

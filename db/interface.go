@@ -86,6 +86,52 @@ type PRWithUserView struct {
 	ViaTeams     []string // Team names from user_pr_views
 }
 
+// TelemetryEvent represents a single telemetry event for creation
+type TelemetryEvent struct {
+	UserID   int
+	Action   string
+	Label    string
+	PROwner  string
+	PRRepo   string
+	PRNumber int
+}
+
+// TelemetryStats represents aggregated telemetry statistics
+type TelemetryStats struct {
+	TotalEvents  int                    `json:"total_events"`
+	ActiveUsers  int                    `json:"active_users"`
+	ByAction     []ActionCount          `json:"by_action"`
+	ByDay        []DayCount             `json:"by_day"`
+	TopSearches  []LabelCount           `json:"top_searches"`
+	TopPRs       []PRInteractionCount   `json:"top_prs"`
+}
+
+// ActionCount represents event count per action
+type ActionCount struct {
+	Action string `json:"action"`
+	Count  int    `json:"count"`
+}
+
+// DayCount represents event count per day
+type DayCount struct {
+	Date  string `json:"date"`
+	Count int    `json:"count"`
+}
+
+// LabelCount represents count per label
+type LabelCount struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+// PRInteractionCount represents interaction count per PR
+type PRInteractionCount struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	Count  int    `json:"count"`
+}
+
 // Database defines the interface that both SQLite and PostgreSQL implementations must satisfy
 type Database interface {
 	// PR operations
@@ -137,6 +183,10 @@ type Database interface {
 	HidePRForUser(userID, prID int) error
 	EnsureUserPRView(userID, prID int, isAuthor bool) error
 	MigrateLegacyNotes(userID int) (int, error)
+
+	// Telemetry operations
+	CreateTelemetryEvents(events []TelemetryEvent) error
+	GetTelemetryStats(days int) (*TelemetryStats, error)
 
 	// Lifecycle
 	Close() error

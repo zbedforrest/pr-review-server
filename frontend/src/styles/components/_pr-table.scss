@@ -237,3 +237,29 @@
   color: $color-text-tertiary;
   opacity: 0.5;
 }
+
+// Via Teams Status Styles
+.pr-table__via-teams--approved {
+  color: $color-success;
+}
+
+.pr-table__via-teams--changes_requested {
+  color: $color-error;
+}
+
+.pr-table__via-teams--pending {
+  // Default text color, no special styling needed
+}
+
+.pr-table__via-teams--my_pending {
+  color: $color-warning-text;
+}
+
+.pr-table__via-teams--my_changes_requested {
+  color: $color-warning-text;
+}
+
+.pr-table__via-teams--personal {
+  color: $color-link;
+  font-style: italic;
+}

@@ -37,6 +37,8 @@ type PollerInterface interface {
 	GetLastPollTime() time.Time
 	GetPollingInterval() time.Duration
 	GetSecondsUntilNextPoll() int
+	ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool)
+	IsReviewTracked(owner, repo string, number int) bool
 }
 
 // AuthHandler interface for authentication
@@ -63,6 +65,9 @@ type Server struct {
 	rateLimitCache     *github.RateLimitInfo
 	rateLimitCacheMux  sync.RWMutex
 	rateLimitCacheTime time.Time
+	// Cached dev user ID for WebSocket broadcasts (resolved lazily)
+	devUserID  int
+	devUserMux sync.RWMutex
 	// WebSocket connections
 	upgrader    websocket.Upgrader
 	clients     map[*websocket.Conn]bool
@@ -196,9 +201,11 @@ func (s *Server) Start() error {
 	http.Handle("/api/reviewer-health", withAuth(s.handleReviewerHealth))
 	http.Handle("/api/settings", withAuth(s.handleSettings))
 	http.Handle("/api/user", withAuth(s.handleGetUser))
+	http.Handle("/api/telemetry/track", withAuth(s.handleTrackTelemetry))
+	http.Handle("/api/telemetry/stats", withAuth(s.handleTelemetryStats))
 
-	// Static content (not protected)
-	http.HandleFunc("/reviews/", s.handleReviewFromGCS)
+	// Static content (protected - reviews contain sensitive code)
+	http.Handle("/reviews/", withAuth(s.handleReviewFromGCS))
 
 	// WebSocket route (not protected - uses session-based auth internally if needed)
 	http.HandleFunc("/ws", s.handleWebSocket)
@@ -294,6 +301,12 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			notes = dbPR.Notes
 		}
 
+		// Ensure ViaTeams is never nil (JSON null), always at least empty array
+		viaTeams := prView.ViaTeams
+		if viaTeams == nil {
+			viaTeams = []string{}
+		}
+
 		response = append(response, PRResponse{
 			Owner:           dbPR.RepoOwner,
 			Repo:            dbPR.RepoName,
@@ -314,7 +327,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			CIFailedChecks:  ciFailedChecks,
 			CreatedAt:       createdAt,
 			IsMine:          prView.IsAuthor, // Use IsAuthor from user_pr_views
-			ViaTeams:        prView.ViaTeams, // Team names from user_pr_views
+			ViaTeams:        viaTeams,
 			CriticalCount:   dbPR.CriticalCount,
 			MediumCount:     dbPR.MediumCount,
 			LowCount:        dbPR.LowCount,
@@ -466,23 +479,30 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Note: Previous reviews are kept in GCS for historical reference
-	// A new review will be generated with the current commit SHA
+	// Fetch the latest commit SHA from GitHub so the review is always against the current HEAD
+	latestSHA, err := s.ghClient.GetPRHeadSHA(r.Context(), req.Owner, req.Repo, req.Number)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to fetch latest commit from GitHub: %v", err), http.StatusInternalServerError)
+		return
+	}
 
-	// Mark PR as generating to trigger review generation
-	if err := s.db.UpdatePRStatus(req.Owner, req.Repo, req.Number, "generating"); err != nil {
+	// Mark PR as generating with the latest SHA so the poller reviews the right commit
+	if err := s.db.SetPRGenerating(req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to update PR status: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("[API] Manually triggered review generation for %s/%s#%d", req.Owner, req.Repo, req.Number)
+	log.Printf("[API] Manually triggered review generation for %s/%s#%d (commit: %s)", req.Owner, req.Repo, req.Number, latestSHA[:7])
 
 	// Notify clients
 	s.BroadcastEvent(EventPRUpdated, s.getPRResponse(req.Owner, req.Repo, req.Number))
 
-	// Trigger immediate poll to start review generation
-	if s.pollTriggerFunc != nil {
-		s.pollTriggerFunc()
+	// Start review immediately, bypassing the full poll cycle.
+	// ProcessReviewImmediate tracks the review synchronously and spawns
+	// a goroutine for the actual generation work.
+	// Use background context since the review outlives this HTTP request.
+	if s.poller != nil {
+		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -947,7 +967,34 @@ func (s *Server) BroadcastEvent(eventType string, payload interface{}) {
 	s.broadcastCh <- message
 }
 
-// getPRResponse constructs a full PRResponse object from the database
+// getDevUserID resolves the dev user's database ID, caching the result.
+// Returns 0 if not in dev mode or if the user hasn't been created yet.
+func (s *Server) getDevUserID() int {
+	s.devUserMux.RLock()
+	if s.devUserID > 0 {
+		s.devUserMux.RUnlock()
+		return s.devUserID
+	}
+	s.devUserMux.RUnlock()
+
+	if s.cfg.GitHubUsername == "" {
+		return 0
+	}
+
+	user, err := s.db.GetUserByUsername(s.cfg.GitHubUsername)
+	if err != nil || user == nil {
+		return 0
+	}
+
+	s.devUserMux.Lock()
+	s.devUserID = user.ID
+	s.devUserMux.Unlock()
+
+	return user.ID
+}
+
+// getPRResponse constructs a full PRResponse object from the database,
+// including user-specific data from user_pr_views (via_teams, review status, etc.).
 func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 	// Get the full PR details from the database
 	pr, err := s.db.GetPR(owner, repo, number)
@@ -984,13 +1031,34 @@ func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 		ciFailedChecks = []string{}
 	}
 
-	// Determine if this is the current user's PR (same logic as handleGetPRs)
+	// Get user-specific view data (via_teams, review status, notes, is_author).
+	// Without this, WebSocket broadcasts would send null for these fields,
+	// causing the frontend to overwrite good data with null.
+	var viaTeams []string
+	myReviewStatus := pr.MyReviewStatus
+	notes := pr.Notes
 	author := pr.Author
 	if author == "" {
 		author = "Unknown"
 	}
-	currentUsername := strings.ToLower(s.cfg.GitHubUsername)
-	isMine := strings.ToLower(author) == currentUsername
+	isMine := strings.EqualFold(author, s.cfg.GitHubUsername)
+
+	if userID := s.getDevUserID(); userID > 0 {
+		if assignment, err := s.db.GetUserPRAssignment(userID, pr.ID); err == nil && assignment != nil {
+			_ = json.Unmarshal([]byte(assignment.ReviewerGroups), &viaTeams)
+			if assignment.MyReviewStatus != "" {
+				myReviewStatus = assignment.MyReviewStatus
+			}
+			if assignment.Notes != "" {
+				notes = assignment.Notes
+			}
+			isMine = assignment.IsAuthor
+		}
+	}
+
+	if viaTeams == nil {
+		viaTeams = []string{}
+	}
 
 	return &PRResponse{
 		Owner:           pr.RepoOwner,
@@ -998,7 +1066,7 @@ func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 		Number:          pr.PRNumber,
 		CommitSHA:       pr.LastCommitSHA,
 		Title:           pr.Title,
-		Author:          pr.Author,
+		Author:          author,
 		LastReviewedAt:  reviewedAt,
 		ReviewHTMLPath:  pr.ReviewHTMLPath,
 		GitHubURL:       githubURL,
@@ -1006,16 +1074,17 @@ func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 		Status:          pr.Status,
 		GeneratingSince: generatingSince,
 		ApprovalCount:   pr.ApprovalCount,
-		MyReviewStatus:  pr.MyReviewStatus,
+		MyReviewStatus:  myReviewStatus,
 		Draft:           pr.Draft,
 		CIState:         pr.CIState,
 		CIFailedChecks:  ciFailedChecks,
 		CreatedAt:       createdAt,
 		IsMine:          isMine,
+		ViaTeams:        viaTeams,
 		CriticalCount:   pr.CriticalCount,
 		MediumCount:     pr.MediumCount,
 		LowCount:        pr.LowCount,
-		Notes:           pr.Notes,
+		Notes:           notes,
 	}
 }
 
@@ -1029,6 +1098,14 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Prevent path traversal attacks
+	cleaned := filepath.Clean(filename)
+	if strings.Contains(cleaned, "..") || filepath.IsAbs(cleaned) {
+		http.Error(w, "Invalid filename", http.StatusBadRequest)
+		return
+	}
+	filename = cleaned
+
 	var content []byte
 	var err error
 
@@ -1039,7 +1116,7 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			// Successfully fetched from GCS
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 			_, _ = w.Write(content) // nolint:errcheck
 			return
 		}
@@ -1064,7 +1141,7 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 
 	// Set headers
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable") // Reviews are immutable per commit
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 
 	_, _ = w.Write(content) // nolint:errcheck
 }

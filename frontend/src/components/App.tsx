@@ -5,6 +5,8 @@ import { Header, StatusBar } from '@/components/layout';
 import { ReviewPRsSection, TriageSummary, TriageFilter } from '@/components/prs';
 import { useReviewerHealth } from '@/hooks/useReviewerHealth';
 import { usePRs } from '@/hooks/usePRs';
+import { useTelemetry } from '@/hooks/useTelemetry';
+import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
 import { PR } from '@/types/pr';
 import '@/styles/main.scss';
 
@@ -57,6 +59,7 @@ function AppContent() {
   const { data: reviewerHealth } = useReviewerHealth();
   const { data: prs } = usePRs();
   const queryClient = useQueryClient();
+  const { track, trackSearch } = useTelemetry();
 
   // Column visibility state - default based on reviewer health
   // We use an internal state to track if we've already performed the initial setup
@@ -162,20 +165,25 @@ function AppContent() {
   }, [queryClient]);
 
   const handleToggleColumns = () => {
-    setShowReviewColumns(!showReviewColumns);
+    const next = !showReviewColumns;
+    setShowReviewColumns(next);
+    track('toggle_columns', { label: next ? 'show' : 'hide' });
   };
 
   return (
     <div className="app-container">
       <Header />
       <StatusBar connectionStatus={connectionStatus} />
-      
+
       <div className="search-container" style={{ marginBottom: '20px' }}>
         <input
           type="text"
           placeholder="Search PRs (title, repo, author, number)..."
           value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
+          onChange={(e) => {
+            setSearchTerm(e.target.value);
+            trackSearch(e.target.value);
+          }}
           style={{
             width: '100%',
             padding: '12px 16px',
@@ -201,11 +209,21 @@ function AppContent() {
   );
 }
 
+function AppRouter() {
+  const path = window.location.pathname;
+
+  if (path === '/usage-stats') {
+    return <UsageStatsPage />;
+  }
+
+  return <AppContent />;
+}
+
 function App() {
   return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        <AppContent />
+        <AppRouter />
         <ReactQueryDevtools initialIsOpen={false} />
       </QueryClientProvider>
     </ErrorBoundary>

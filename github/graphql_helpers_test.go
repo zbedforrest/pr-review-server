@@ -123,7 +123,7 @@ func TestCountUserApprovals(t *testing.T) {
 		},
 	}
 
-	approvalCount, myReviewStatus := client.countUserApprovals(reviews)
+	approvalCount, myReviewStatus, userReviews := client.countUserApprovals(reviews)
 
 	// user1: COMMENTED (latest), user2: CHANGES_REQUESTED, current-user: APPROVED
 	// So only current-user has APPROVED
@@ -134,70 +134,148 @@ func TestCountUserApprovals(t *testing.T) {
 	if myReviewStatus != "APPROVED" {
 		t.Errorf("Expected myReviewStatus to be APPROVED, got %q", myReviewStatus)
 	}
+
+	// Verify userReviews map contains all users with valid review states
+	if len(userReviews) != 3 {
+		t.Errorf("Expected 3 user reviews, got %d", len(userReviews))
+	}
+	if userReviews["user1"] != "COMMENTED" {
+		t.Errorf("Expected user1 state COMMENTED, got %q", userReviews["user1"])
+	}
+	if userReviews["user2"] != "CHANGES_REQUESTED" {
+		t.Errorf("Expected user2 state CHANGES_REQUESTED, got %q", userReviews["user2"])
+	}
+	if userReviews["current-user"] != "APPROVED" {
+		t.Errorf("Expected current-user state APPROVED, got %q", userReviews["current-user"])
+	}
+	// user3 had PENDING which should be excluded
+	if _, exists := userReviews["user3"]; exists {
+		t.Errorf("Expected user3 to be excluded (PENDING), but found in map")
+	}
+}
+
+func TestCountUserApprovals_DismissedClearsPreviousState(t *testing.T) {
+	client := NewClient("token", "current-user")
+
+	// Scenario: user requested changes, then approved, then the approval was dismissed
+	// (e.g., stale review dismissed due to new commits).
+	// The user should have NO active review state after dismissal.
+	reviews := ReviewsData{
+		Nodes: []ReviewNode{
+			{Author: &ReviewAuthor{Login: "reviewer1"}, State: "CHANGES_REQUESTED"},
+			{Author: &ReviewAuthor{Login: "reviewer1"}, State: "DISMISSED"}, // approval was dismissed
+			{Author: &ReviewAuthor{Login: "reviewer2"}, State: "APPROVED"},  // still valid
+		},
+	}
+
+	approvalCount, _, userReviews := client.countUserApprovals(reviews)
+
+	// reviewer1 should be absent (dismissed clears their state)
+	if _, exists := userReviews["reviewer1"]; exists {
+		t.Errorf("Expected reviewer1 to be absent after dismissal, but found state %q", userReviews["reviewer1"])
+	}
+
+	// reviewer2 should still be approved
+	if userReviews["reviewer2"] != "APPROVED" {
+		t.Errorf("Expected reviewer2 state APPROVED, got %q", userReviews["reviewer2"])
+	}
+
+	// Only reviewer2's approval should count
+	if approvalCount != 1 {
+		t.Errorf("Expected 1 approval, got %d", approvalCount)
+	}
+}
+
+func TestCountUserApprovals_DismissedThenReApproved(t *testing.T) {
+	client := NewClient("token", "current-user")
+
+	// Scenario: user's review was dismissed, then they re-approved.
+	// The re-approval should be the final state.
+	reviews := ReviewsData{
+		Nodes: []ReviewNode{
+			{Author: &ReviewAuthor{Login: "reviewer1"}, State: "APPROVED"},
+			{Author: &ReviewAuthor{Login: "reviewer1"}, State: "DISMISSED"},
+			{Author: &ReviewAuthor{Login: "reviewer1"}, State: "APPROVED"}, // re-approved
+		},
+	}
+
+	approvalCount, _, userReviews := client.countUserApprovals(reviews)
+
+	if userReviews["reviewer1"] != "APPROVED" {
+		t.Errorf("Expected reviewer1 state APPROVED after re-approval, got %q", userReviews["reviewer1"])
+	}
+	if approvalCount != 1 {
+		t.Errorf("Expected 1 approval, got %d", approvalCount)
+	}
 }
 
 func TestExtractReviewerGroups(t *testing.T) {
 	client := NewClient("token", "current-user")
 
+	type orgInfo = struct {
+		Login string `json:"login"`
+	}
+	type reqReviewer = struct {
+		TypeName     string `json:"__typename"`
+		Login        string `json:"login"`
+		Name         string `json:"name"`
+		Slug         string `json:"slug"`
+		Organization orgInfo `json:"organization"`
+	}
+
 	tests := []struct {
 		name     string
-		requests ReviewRequestsData
+		items    TimelineItemsData
 		expected []string
 	}{
 		{
 			name: "Team request only",
-			requests: ReviewRequestsData{
-				Nodes: []ReviewRequester{
-					{RequestedReviewer: struct {
-						TypeName string `json:"__typename"`
-						Login    string `json:"login"`
-						Name     string `json:"name"`
-					}{TypeName: "Team", Name: "backend-team"}},
+			items: TimelineItemsData{
+				Nodes: []TimelineReviewRequested{
+					{RequestedReviewer: reqReviewer{TypeName: "Team", Name: "backend-team", Slug: "backend-team"}},
 				},
 			},
 			expected: []string{"backend-team"},
 		},
 		{
 			name: "Personal request only",
-			requests: ReviewRequestsData{
-				Nodes: []ReviewRequester{
-					{RequestedReviewer: struct {
-						TypeName string `json:"__typename"`
-						Login    string `json:"login"`
-						Name     string `json:"name"`
-					}{TypeName: "User", Login: "current-user"}},
+			items: TimelineItemsData{
+				Nodes: []TimelineReviewRequested{
+					{RequestedReviewer: reqReviewer{TypeName: "User", Login: "current-user"}},
 				},
 			},
 			expected: []string{"__PERSONAL__"},
 		},
 		{
 			name: "Team and personal request - team takes precedence",
-			requests: ReviewRequestsData{
-				Nodes: []ReviewRequester{
-					{RequestedReviewer: struct {
-						TypeName string `json:"__typename"`
-						Login    string `json:"login"`
-						Name     string `json:"name"`
-					}{TypeName: "User", Login: "current-user"}},
-					{RequestedReviewer: struct {
-						TypeName string `json:"__typename"`
-						Login    string `json:"login"`
-						Name     string `json:"name"`
-					}{TypeName: "Team", Name: "frontend-team"}},
+			items: TimelineItemsData{
+				Nodes: []TimelineReviewRequested{
+					{RequestedReviewer: reqReviewer{TypeName: "User", Login: "current-user"}},
+					{RequestedReviewer: reqReviewer{TypeName: "Team", Name: "frontend-team", Slug: "frontend-team"}},
 				},
 			},
 			expected: []string{"frontend-team"},
 		},
 		{
-			name:     "No requests",
-			requests: ReviewRequestsData{Nodes: []ReviewRequester{}},
+			name:     "No events",
+			items:    TimelineItemsData{Nodes: []TimelineReviewRequested{}},
 			expected: []string{},
+		},
+		{
+			name: "Duplicate team requests are deduplicated",
+			items: TimelineItemsData{
+				Nodes: []TimelineReviewRequested{
+					{RequestedReviewer: reqReviewer{TypeName: "Team", Name: "backend-team", Slug: "backend-team"}},
+					{RequestedReviewer: reqReviewer{TypeName: "Team", Name: "backend-team", Slug: "backend-team"}},
+				},
+			},
+			expected: []string{"backend-team"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := client.extractReviewerGroups(tt.requests)
+			result, _, _ := client.extractReviewerGroups(tt.items)
 			if len(result) != len(tt.expected) {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 				return
@@ -209,6 +287,71 @@ func TestExtractReviewerGroups(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExtractReviewerGroups_CollectsSlugs(t *testing.T) {
+	client := NewClient("token", "current-user")
+
+	type orgInfo = struct {
+		Login string `json:"login"`
+	}
+	type reqReviewer = struct {
+		TypeName     string `json:"__typename"`
+		Login        string `json:"login"`
+		Name         string `json:"name"`
+		Slug         string `json:"slug"`
+		Organization orgInfo `json:"organization"`
+	}
+
+	items := TimelineItemsData{
+		Nodes: []TimelineReviewRequested{
+			{RequestedReviewer: reqReviewer{TypeName: "Team", Name: "Platform", Slug: "platform", Organization: orgInfo{Login: "myorg"}}},
+			{RequestedReviewer: reqReviewer{TypeName: "Team", Name: "Security Team", Slug: "security-team", Organization: orgInfo{Login: "myorg"}}},
+			{RequestedReviewer: reqReviewer{TypeName: "User", Login: "current-user"}},
+		},
+	}
+
+	groups, slugs, orgName := client.extractReviewerGroups(items)
+
+	if len(groups) != 2 {
+		t.Errorf("Expected 2 groups, got %d", len(groups))
+	}
+	if slugs["Platform"] != "platform" {
+		t.Errorf("Expected slug 'platform' for Platform, got %q", slugs["Platform"])
+	}
+	if slugs["Security Team"] != "security-team" {
+		t.Errorf("Expected slug 'security-team' for Security Team, got %q", slugs["Security Team"])
+	}
+	if orgName != "myorg" {
+		t.Errorf("Expected orgName 'myorg', got %q", orgName)
+	}
+}
+
+func TestExtractReviewerGroups_OrgNameEmpty_WhenNoTeams(t *testing.T) {
+	client := NewClient("token", "current-user")
+
+	type orgInfo = struct {
+		Login string `json:"login"`
+	}
+	type reqReviewer = struct {
+		TypeName     string `json:"__typename"`
+		Login        string `json:"login"`
+		Name         string `json:"name"`
+		Slug         string `json:"slug"`
+		Organization orgInfo `json:"organization"`
+	}
+
+	// Only user requests, no teams — orgName should be empty
+	items := TimelineItemsData{
+		Nodes: []TimelineReviewRequested{
+			{RequestedReviewer: reqReviewer{TypeName: "User", Login: "current-user"}},
+		},
+	}
+
+	_, _, orgName := client.extractReviewerGroups(items)
+	if orgName != "" {
+		t.Errorf("Expected empty orgName for user-only requests, got %q", orgName)
 	}
 }
 

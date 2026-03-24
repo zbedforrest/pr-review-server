@@ -77,8 +77,8 @@ func isValidReviewState(state string) bool {
 }
 
 // countUserApprovals processes review nodes and counts approvals, tracking each user's latest review.
-// Returns the approval count and the current user's review status.
-func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myReviewStatus string) {
+// Returns the approval count, the current user's review status, and a map of all users' latest review states.
+func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myReviewStatus string, userReviews map[string]string) {
 	userLatestReview := make(map[string]string)
 
 	for _, reviewNode := range reviews.Nodes {
@@ -91,7 +91,12 @@ func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myR
 		state := reviewNode.State
 
 		// Track latest review per user (reviews are in chronological order)
-		if isValidReviewState(state) {
+		if state == "DISMISSED" {
+			// Dismissal invalidates the user's previous review state.
+			// e.g. CHANGES_REQUESTED -> APPROVED -> DISMISSED means the user
+			// has no active review and needs to re-review.
+			delete(userLatestReview, username)
+		} else if isValidReviewState(state) {
 			userLatestReview[username] = state
 		}
 	}
@@ -108,7 +113,7 @@ func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myR
 		myReviewStatus = status
 	}
 
-	return approvalCount, myReviewStatus
+	return approvalCount, myReviewStatus, userLatestReview
 }
 
 // prKey generates a unique key for a PR in the format "owner/repo/number".
