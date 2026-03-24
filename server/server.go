@@ -1041,7 +1041,7 @@ func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 	if author == "" {
 		author = "Unknown"
 	}
-	isMine := strings.ToLower(author) == strings.ToLower(s.cfg.GitHubUsername)
+	isMine := strings.EqualFold(author, s.cfg.GitHubUsername)
 
 	if userID := s.getDevUserID(); userID > 0 {
 		if assignment, err := s.db.GetUserPRAssignment(userID, pr.ID); err == nil && assignment != nil {
