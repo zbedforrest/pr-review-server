@@ -71,6 +71,10 @@ type Poller struct {
 	tickerStartTime time.Time
 	// Dev user for syncing user_pr_views in dev mode
 	devUser *db.User
+	// Team member cache for resolving team review statuses
+	teamMemberCache map[string][]string // team slug -> member logins
+	teamCacheMutex  sync.RWMutex
+	teamCacheExpiry time.Time
 }
 
 func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsClient *gcs.Client) *Poller {
@@ -156,6 +160,37 @@ func (p *Poller) SetCacheUpdateFunc(f func([]github.PullRequest)) {
 // SetDevUser sets the dev user for syncing user_pr_views in dev mode
 func (p *Poller) SetDevUser(user *db.User) {
 	p.devUser = user
+}
+
+// getTeamMembers returns team members with a 5-minute cache TTL.
+func (p *Poller) getTeamMembers(ctx context.Context, orgName, teamSlug string) ([]string, error) {
+	p.teamCacheMutex.RLock()
+	if time.Now().Before(p.teamCacheExpiry) {
+		if members, ok := p.teamMemberCache[teamSlug]; ok {
+			p.teamCacheMutex.RUnlock()
+			return members, nil
+		}
+	}
+	p.teamCacheMutex.RUnlock()
+
+	members, err := p.ghClient.GetOrgTeamMembers(ctx, orgName, teamSlug)
+	if err != nil {
+		return nil, err
+	}
+
+	p.teamCacheMutex.Lock()
+	if p.teamMemberCache == nil {
+		p.teamMemberCache = make(map[string][]string)
+	}
+	// If cache is expired, clear it and reset expiry
+	if time.Now().After(p.teamCacheExpiry) {
+		p.teamMemberCache = make(map[string][]string)
+		p.teamCacheExpiry = time.Now().Add(5 * time.Minute)
+	}
+	p.teamMemberCache[teamSlug] = members
+	p.teamCacheMutex.Unlock()
+
+	return members, nil
 }
 
 func (p *Poller) Trigger() {
@@ -351,6 +386,49 @@ func (p *Poller) killReview(owner, repo string, number int) bool {
 	log.Printf("[TRACK] Removing review for %s from tracking (goroutine will complete on its own)", key)
 	p.untrackReview(owner, repo, number)
 	return true
+}
+
+// ProcessReviewImmediate starts review generation for a single PR immediately,
+// bypassing the full poll cycle. The PR must already be in "generating" status
+// in the database. trackReview is called synchronously before the goroutine
+// launches so the poll cycle's shouldReview/isTracked guard sees it immediately.
+func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool) {
+	// Track synchronously BEFORE spawning goroutine so that any concurrent
+	// poll cycle will see this PR as tracked and skip it.
+	p.trackReview(owner, repo, number, 0)
+
+	go func() {
+		pr := github.PullRequest{
+			Owner:     owner,
+			Repo:      repo,
+			Number:    number,
+			CommitSHA: commitSHA,
+			Title:     title,
+			Author:    author,
+			CreatedAt: createdAt,
+			Draft:     draft,
+		}
+		// Run the single-PR review through generateReviewsBatch (reuses all
+		// existing logic: existence check, LLM call, save, DB update, untrack).
+		// Note: generateReviewsBatch calls trackReview again internally, but
+		// since it's the same key the map entry is simply overwritten (harmless).
+		if err := p.generateReviewsBatch(ctx, []github.PullRequest{pr}); err != nil {
+			log.Printf("[IMMEDIATE] ERROR: Immediate review failed for %s/%s#%d: %v", owner, repo, number, err)
+			// generateReviewsBatch handles per-PR error/untrack internally,
+			// but if the batch-level error fires (e.g. API key validation),
+			// we need to clean up.
+			if p.isTracked(owner, repo, number) {
+				_ = p.UpdatePRStatus(owner, repo, number, "error")
+				p.untrackReview(owner, repo, number)
+			}
+		}
+	}()
+}
+
+// IsReviewTracked returns whether a PR is currently being actively reviewed.
+// Exported for use by the stale-reset guard in the poll cycle.
+func (p *Poller) IsReviewTracked(owner, repo string, number int) bool {
+	return p.isTracked(owner, repo, number)
 }
 
 func (p *Poller) startPoll(ctx context.Context, trigger string) {
@@ -648,9 +726,9 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 	return outdated, nil
 }
 
-// syncUserPRViews ensures all PRs have user_pr_view records for the dev user
-// This is called after fetching PRs to populate the user-PR relationships
-func (p *Poller) syncUserPRViews(ctx context.Context, allPRs []github.PullRequest) {
+// syncUserPRViews ensures all PRs have user_pr_view records for the dev user.
+// Uses the pre-built dbPRMap to avoid N+1 GetPR queries.
+func (p *Poller) syncUserPRViews(allPRs []github.PullRequest, dbPRMap map[string]*db.PR) {
 	if p.devUser == nil {
 		return // Not in dev mode, skip
 	}
@@ -659,16 +737,14 @@ func (p *Poller) syncUserPRViews(ctx context.Context, allPRs []github.PullReques
 	username := strings.ToLower(p.devUser.GitHubUsername)
 
 	for _, pr := range allPRs {
-		// Get PR from database to get its ID
-		dbPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-		if err != nil || dbPR == nil {
+		key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+		dbPR, exists := dbPRMap[key]
+		if !exists {
 			continue // PR not in database yet
 		}
 
-		// Determine if this is the user's own PR
 		isAuthor := strings.EqualFold(pr.Author, username)
 
-		// Ensure user_pr_view record exists
 		if err := p.db.EnsureUserPRView(userID, dbPR.ID, isAuthor); err != nil {
 			log.Printf("[POLL] Warning: Failed to ensure user_pr_view for user %d, PR %d: %v",
 				userID, dbPR.ID, err)
@@ -686,6 +762,8 @@ func (p *Poller) poll(ctx context.Context) {
 
 	log.Printf("[POLL] Starting poll at %s", startTime.Format("15:04:05"))
 
+	// --- Phase 1: Fast DB self-healing ---
+
 	// Reset any PRs stuck in "generating" for too long
 	log.Printf("[POLL] Checking for stale PRs...")
 	resetCount, err := p.db.ResetStaleGeneratingPRs(int(StaleReviewResetTimeout.Minutes()))
@@ -693,8 +771,27 @@ func (p *Poller) poll(ctx context.Context) {
 		log.Printf("[POLL] ERROR: Failed to reset stale PRs: %v", err)
 	} else if resetCount > 0 {
 		log.Printf("[POLL] Reset %d stale PRs from 'generating' to 'pending'", resetCount)
-		// We don't easily know WHICH ones were reset without modifying ResetStaleGeneratingPRs to return them
-		// For now, let the individual PR updates handle it or wait for the next full poll result
+		// Guard: if any actively-tracked reviews were reset (e.g. a long-running
+		// immediate review), restore them to "generating" so the goroutine's
+		// eventual DB write doesn't collide with a re-queued pending review.
+		p.reviewsMutex.Lock()
+		trackedKeys := make(map[string]bool, len(p.activeReviews))
+		for k := range p.activeReviews {
+			trackedKeys[k] = true
+		}
+		p.reviewsMutex.Unlock()
+		if len(trackedKeys) > 0 {
+			allPRsForCheck, checkErr := p.db.GetAllPRs()
+			if checkErr == nil {
+				for _, dbPR := range allPRsForCheck {
+					key := prKey(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber)
+					if trackedKeys[key] && dbPR.Status == "pending" {
+						log.Printf("[POLL] Restoring actively-tracked PR %s from 'pending' back to 'generating'", key)
+						_ = p.db.SetPRGenerating(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber, dbPR.LastCommitSHA, dbPR.Title, dbPR.Author, dbPR.CreatedAt, dbPR.Draft)
+					}
+				}
+			}
+		}
 	} else {
 		log.Printf("[POLL] No stale PRs found")
 	}
@@ -709,6 +806,335 @@ func (p *Poller) poll(ctx context.Context) {
 	} else {
 		log.Printf("[POLL] No error PRs to retry")
 	}
+
+	// --- Phase 2: Fast metadata refresh (critical path for ≤60s dashboard staleness) ---
+	// GitHub search + batched GraphQL metadata runs before slow self-healing operations
+	// to minimize time between poll start and fresh dashboard data.
+
+	// Check auto-review setting to determine if we should process new PRs
+	autoReviewEnabled, autoReviewErr := p.db.GetAutoReviewRequestedPRs()
+	if autoReviewErr != nil {
+		log.Printf("[POLL] Warning: Failed to get auto-review setting: %v", autoReviewErr)
+		autoReviewEnabled = true // Default to enabled on error
+	}
+
+	log.Printf("[POLL] Fetching PRs requesting review from GitHub...")
+	reviewPRs, err := p.ghClient.GetPRsRequestingReview(ctx)
+	if err != nil {
+		log.Printf("[POLL] ERROR: Failed to fetch PRs requesting review: %v", err)
+		// Continue even if this fails - we can still process "my PRs"
+		reviewPRs = []github.PullRequest{}
+	} else {
+		log.Printf("[POLL] Found %d PRs requesting review", len(reviewPRs))
+	}
+
+	log.Printf("[POLL] Fetching my own open PRs from GitHub...")
+	myPRs, err := p.ghClient.GetMyOpenPRs(ctx)
+	if err != nil {
+		log.Printf("[POLL] ERROR: Failed to fetch my open PRs: %v", err)
+		// Continue even if this fails
+		myPRs = []github.PullRequest{}
+	}
+	log.Printf("[POLL] Found %d of my own open PRs", len(myPRs))
+
+	// Combine all PRs for cache
+	allPRs := append(reviewPRs, myPRs...)
+
+	// Update cache for fast dashboard loading
+	if p.cacheUpdateFunc != nil {
+		p.cacheUpdateFunc(allPRs)
+	}
+
+	// Build the canonical DB state map ONCE. Every phase below uses this map
+	// instead of per-PR GetPR queries, eliminating N+1 patterns.
+	dbPRMap := make(map[string]*db.PR)
+	dbPRsAll, err := p.db.GetAllPRs()
+	if err != nil {
+		log.Printf("[POLL] WARNING: Failed to get database PRs: %v", err)
+		dbPRsAll = nil
+	} else {
+		for i := range dbPRsAll {
+			key := fmt.Sprintf("%s/%s/%d", dbPRsAll[i].RepoOwner, dbPRsAll[i].RepoName, dbPRsAll[i].PRNumber)
+			dbPRMap[key] = &dbPRsAll[i]
+		}
+	}
+
+	// Ensure all GitHub-fetched PRs exist in the database BEFORE syncUserPRViews.
+	// Without this, new PRs discovered from GitHub won't have a prs row yet,
+	// so syncUserPRViews can't create the user_pr_views record (FK constraint),
+	// and the PR stays invisible on the dashboard until the NEXT poll cycle.
+	for _, pr := range allPRs {
+		key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+		if _, exists := dbPRMap[key]; !exists {
+			newPR := &db.PR{
+				RepoOwner:     pr.Owner,
+				RepoName:      pr.Repo,
+				PRNumber:      pr.Number,
+				LastCommitSHA: pr.CommitSHA,
+				Title:         pr.Title,
+				Author:        pr.Author,
+				CreatedAt:     pr.CreatedAt,
+				Draft:         pr.Draft,
+				Status:        "pending",
+			}
+			if err := p.db.UpsertPR(newPR); err != nil {
+				log.Printf("[POLL] Warning: Failed to pre-insert PR %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+			} else {
+				log.Printf("[POLL] Pre-inserted new PR %s/%s#%d into database", pr.Owner, pr.Repo, pr.Number)
+				p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+				// Fetch the new PR's database ID and add to the map so downstream
+				// phases (reviewer groups, CI, etc.) can find it immediately.
+				if inserted, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number); err == nil && inserted != nil {
+					dbPRMap[key] = inserted
+				}
+			}
+		}
+	}
+
+	// Add database PRs not in the GitHub search to allPRs so we update their
+	// metadata too (e.g., PRs you've already reviewed but still track).
+	{
+		ghKeys := make(map[string]bool, len(allPRs))
+		for _, pr := range allPRs {
+			ghKeys[fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)] = true
+		}
+		added := 0
+		for key, dbPR := range dbPRMap {
+			if !ghKeys[key] {
+				allPRs = append(allPRs, buildPRFromDB(*dbPR))
+				added++
+			}
+		}
+		if added > 0 {
+			log.Printf("[POLL] Added %d database PRs to update list (total: %d PRs)", added, len(allPRs))
+		}
+	}
+
+	// Sync user_pr_views for dev mode (ensure all PRs have user-PR relationship records)
+	p.syncUserPRViews(allPRs, dbPRMap)
+
+	// Track which PRs changed across all metadata phases, then broadcast once at the end.
+	// This ensures the frontend receives a consistent snapshot (approval count + via_teams + CI status
+	// all current) rather than partial updates from individual phases.
+	changedPRs := make(map[string]bool)
+
+	// Batch fetch review data for all PRs using GraphQL (much more efficient)
+	log.Printf("[POLL] Batch fetching review data for %d PRs using GraphQL...", len(allPRs))
+	if len(allPRs) > 0 {
+		reviewDataMap, err := p.ghClient.BatchGetPRReviewData(ctx, allPRs)
+		if err != nil {
+			log.Printf("[POLL] WARNING: Failed to batch fetch review data: %v", err)
+		} else {
+			// Update database with batch review data
+			updateCount := 0
+			for _, pr := range allPRs {
+				key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+				if reviewData, exists := reviewDataMap[key]; exists {
+					// Look up PR from the map instead of querying database (avoids N+1 queries)
+					existingPR, existsInDB := dbPRMap[key]
+					if !existsInDB {
+						continue
+					}
+
+					// Always sync user_pr_views with latest review status from GitHub
+					if p.devUser != nil {
+						if err := p.db.UpdateUserReviewStatus(p.devUser.ID, existingPR.ID, reviewData.MyReviewStatus); err != nil {
+							log.Printf("[POLL] Warning: Failed to update user review status for PR %d: %v", existingPR.ID, err)
+						}
+					}
+
+					// Check if anything actually changed in prs table
+					approvalChanged := existingPR.ApprovalCount != reviewData.ApprovalCount
+					reviewStatusChanged := existingPR.MyReviewStatus != reviewData.MyReviewStatus
+					draftChanged := existingPR.Draft != pr.Draft
+
+					if !approvalChanged && !reviewStatusChanged && !draftChanged {
+						continue // Nothing changed in prs table, skip update
+					}
+
+					// Update approval count, my review status, and draft status (always use fresh values from GitHub)
+					// IMPORTANT: Preserve all existing fields to avoid wiping CI data
+					existingPR.ApprovalCount = reviewData.ApprovalCount
+					existingPR.MyReviewStatus = reviewData.MyReviewStatus
+					existingPR.Draft = pr.Draft
+					if pr.CreatedAt != nil {
+						existingPR.CreatedAt = pr.CreatedAt
+					}
+
+					err = p.db.UpsertPR(existingPR)
+					if err != nil {
+						log.Printf("[POLL] ERROR: Failed to update review data for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+					} else {
+						changedPRs[key] = true
+						updateCount++
+					}
+				}
+			}
+			log.Printf("[POLL] Updated review data for %d PRs (only those with changes)", updateCount)
+		}
+
+		// Batch fetch reviewer groups (via timeline events) and resolve team review statuses.
+		// Timeline events give us ALL teams ever requested, not just currently-pending ones.
+		if p.devUser != nil {
+			log.Printf("[POLL] Batch fetching reviewer groups for %d PRs...", len(allPRs))
+			reviewerGroupsMap, err := p.ghClient.BatchGetReviewerGroups(ctx, allPRs)
+			if err != nil {
+				log.Printf("[POLL] WARNING: Failed to batch fetch reviewer groups: %v", err)
+			} else {
+				// Determine org name from timeline data (no config needed)
+				orgName := p.cfg.GitHubOrgName
+				if orgName == "" {
+					for _, data := range reviewerGroupsMap {
+						if data.OrgName != "" {
+							orgName = data.OrgName
+							break
+						}
+					}
+				}
+
+				// Pre-fetch team members for all team slugs across all PRs
+				teamMembersMap := map[string][]string{}
+				if orgName != "" {
+					uniqueSlugs := collectUniqueSlugs(reviewerGroupsMap)
+					for slug := range uniqueSlugs {
+						members, err := p.getTeamMembers(ctx, orgName, slug)
+						if err != nil {
+							log.Printf("[POLL] Warning: Failed to get members for team %s: %v", slug, err)
+							continue
+						}
+						teamMembersMap[slug] = members
+					}
+				}
+
+				for _, pr := range allPRs {
+					key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+					groupData, exists := reviewerGroupsMap[key]
+					if !exists {
+						continue
+					}
+					existingPR, existsInDB := dbPRMap[key]
+					if !existsInDB {
+						continue
+					}
+
+					// Get per-user review data for this PR
+					var userReviews map[string]string
+					if reviewData, exists := reviewDataMap[key]; exists {
+						userReviews = reviewData.UserReviews
+					}
+
+					// Resolve team statuses using timeline data (all teams ever requested)
+					teamStatuses := resolveTeamReviewStatuses(
+						groupData.ReviewerGroups,
+						nil, // no previousTeams needed — timeline gives us everything
+						teamMembersMap,
+						groupData.TeamSlugs,
+						userReviews,
+						p.devUser.GitHubUsername,
+					)
+
+					// Build via_teams with status annotations
+					var viaTeams []string
+					for team, status := range teamStatuses {
+						viaTeams = append(viaTeams, team+":"+status)
+					}
+					// Preserve __PERSONAL__ if present
+					if containsPersonal(groupData.ReviewerGroups) {
+						viaTeams = append(viaTeams, "__PERSONAL__")
+					}
+
+					if shouldUpdateViaTeams(viaTeams) {
+						if err := p.db.UpdateUserViaTeams(p.devUser.ID, existingPR.ID, viaTeams); err != nil {
+							log.Printf("[POLL] Warning: Failed to update via_teams for PR %d: %v", existingPR.ID, err)
+						} else {
+							changedPRs[key] = true
+						}
+					} else {
+						log.Printf("[POLL] Skipping via_teams update for PR %d: empty result (preserving existing data)", existingPR.ID)
+					}
+				}
+				log.Printf("[POLL] Updated reviewer groups for %d PRs", len(reviewerGroupsMap))
+			}
+		}
+	}
+
+	// Batch fetch CI status for all PRs using GraphQL
+	log.Printf("[POLL] Batch fetching CI status for %d PRs using GraphQL...", len(allPRs))
+	if len(allPRs) > 0 {
+		// Prepare PR list with commit SHAs for CI status check
+		var prsWithSHA []struct {
+			Owner, Repo string
+			Number      int
+			CommitSHA   string
+		}
+		for _, pr := range allPRs {
+			prsWithSHA = append(prsWithSHA, struct {
+				Owner, Repo string
+				Number      int
+				CommitSHA   string
+			}{
+				Owner:     pr.Owner,
+				Repo:      pr.Repo,
+				Number:    pr.Number,
+				CommitSHA: pr.CommitSHA,
+			})
+		}
+
+		ciStatusMap, err := p.ghClient.BatchGetCIStatus(ctx, prsWithSHA)
+		if err != nil {
+			log.Printf("[POLL] WARNING: Failed to batch fetch CI status: %v", err)
+		} else {
+			// Update database with CI status using dbPRMap (no per-PR GetPR queries)
+			updateCount := 0
+			for _, pr := range allPRs {
+				key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+				ciStatus, hasCIData := ciStatusMap[key]
+				if !hasCIData {
+					continue
+				}
+				existingPR, existsInDB := dbPRMap[key]
+				if !existsInDB {
+					continue
+				}
+
+				// Serialize failed checks to JSON
+				failedChecksJSON := "[]"
+				if len(ciStatus.FailedChecks) > 0 {
+					if jsonBytes, err := json.Marshal(ciStatus.FailedChecks); err == nil {
+						failedChecksJSON = string(jsonBytes)
+					}
+				}
+
+				// Check if anything actually changed
+				if existingPR.CIState == ciStatus.State && existingPR.CIFailedChecks == failedChecksJSON {
+					continue
+				}
+
+				// Update CI status in database
+				existingPR.CIState = ciStatus.State
+				existingPR.CIFailedChecks = failedChecksJSON
+				if err := p.db.UpsertPR(existingPR); err != nil {
+					log.Printf("[POLL] ERROR: Failed to update CI status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+				} else {
+					changedPRs[key] = true
+					updateCount++
+				}
+			}
+			log.Printf("[POLL] Updated CI status for %d PRs (only those with changes)", updateCount)
+		}
+	}
+
+	// Broadcast all changed PRs once, after all metadata phases are complete.
+	// This ensures the frontend receives a consistent snapshot (approval count +
+	// via_teams + CI status all current) rather than partial updates.
+	for _, pr := range allPRs {
+		key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+		if changedPRs[key] {
+			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+		}
+	}
+
+	// --- Phase 3: Slow self-healing (runs after metadata is already fresh) ---
 
 	// Clean up closed PRs (self-healing)
 	log.Printf("[POLL] Checking for closed PRs to remove...")
@@ -754,268 +1180,19 @@ func (p *Poller) poll(ctx context.Context) {
 		log.Printf("[POLL] No outdated reviews found")
 	}
 
-	// Check auto-review setting to determine if we should process new PRs
-	autoReviewEnabled, autoReviewErr := p.db.GetAutoReviewRequestedPRs()
-	if autoReviewErr != nil {
-		log.Printf("[POLL] Warning: Failed to get auto-review setting: %v", autoReviewErr)
-		autoReviewEnabled = true // Default to enabled on error
-	}
+	// --- Phase 4: Review generation ---
 
-	log.Printf("[POLL] Fetching PRs requesting review from GitHub...")
-	reviewPRs, err := p.ghClient.GetPRsRequestingReview(ctx)
-	if err != nil {
-		log.Printf("[POLL] ERROR: Failed to fetch PRs requesting review: %v", err)
-		// Continue even if this fails - we can still process "my PRs"
-		reviewPRs = []github.PullRequest{}
-	} else {
-		log.Printf("[POLL] Found %d PRs requesting review", len(reviewPRs))
-
-		// Log new PRs (not in database yet)
-		for _, pr := range reviewPRs {
-			existingPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-			if err == nil && existingPR == nil {
-				log.Printf("[POLL] New review request: PR #%d", pr.Number)
-			}
-		}
-	}
-
-	log.Printf("[POLL] Fetching my own open PRs from GitHub...")
-	myPRs, err := p.ghClient.GetMyOpenPRs(ctx)
-	if err != nil {
-		log.Printf("[POLL] ERROR: Failed to fetch my open PRs: %v", err)
-		// Continue even if this fails
-		myPRs = []github.PullRequest{}
-	}
-	log.Printf("[POLL] Found %d of my own open PRs", len(myPRs))
-
-	// Combine all PRs for cache
-	allPRs := append(reviewPRs, myPRs...)
-
-	// Update cache for fast dashboard loading
-	if p.cacheUpdateFunc != nil {
-		p.cacheUpdateFunc(allPRs)
-	}
-
-	// CRITICAL: Also add ALL database PRs to ensure we update review data even for PRs
-	// that are no longer in GitHub search (e.g., you've already reviewed them)
-	dbPRsForReviewUpdate, err := p.db.GetAllPRs()
-	if err != nil {
-		log.Printf("[POLL] WARNING: Failed to get database PRs for review update: %v", err)
-	} else {
-		// Create a map of PRs we already have to avoid duplicates
-		prMap := make(map[string]github.PullRequest)
-		for _, pr := range allPRs {
-			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
-			prMap[key] = pr
-		}
-
-		// Add database PRs that aren't already in our list
-		// IMPORTANT: When auto-review is OFF, we already filtered out PRs that don't exist in DB
-		// So we should NOT re-add them here, as that would bypass the filter
-		for _, dbPR := range dbPRsForReviewUpdate {
-			key := fmt.Sprintf("%s/%s/%d", dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber)
-			if _, exists := prMap[key]; !exists {
-				// If auto-review is disabled, skip adding this database PR back to allPRs
-				// This prevents deleted PRs from being re-created via batch updates
-				// EXCEPTION: Always include PRs that are actively generating (manual triggers)
-				if !autoReviewEnabled && dbPR.Status != "generating" {
-					// Log that we're skipping this database PR
-					log.Printf("[POLL] Skipping database PR %s/%s#%d (auto-review disabled, not in GitHub results)",
-						dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber)
-					continue
-				}
-
-				// Add this PR from database
-				allPRs = append(allPRs, github.PullRequest{
-					Owner:     dbPR.RepoOwner,
-					Repo:      dbPR.RepoName,
-					Number:    dbPR.PRNumber,
-					CommitSHA: dbPR.LastCommitSHA,
-					Title:     dbPR.Title,
-					Author:    dbPR.Author,
-					URL:       fmt.Sprintf("https://github.com/%s/%s/pull/%d", dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber),
-					CreatedAt: dbPR.CreatedAt, // Preserve created_at from database
-					Draft:     dbPR.Draft,
-				})
-			}
-		}
-		log.Printf("[POLL] Added %d database PRs to review update list (total: %d PRs)", len(allPRs)-len(prMap), len(allPRs))
-	}
-
-	// Sync user_pr_views for dev mode (ensure all PRs have user-PR relationship records)
-	p.syncUserPRViews(ctx, allPRs)
-
-	// Batch fetch review data for all PRs using GraphQL (much more efficient)
-	log.Printf("[POLL] Batch fetching review data for %d PRs using GraphQL...", len(allPRs))
-	if len(allPRs) > 0 {
-		// Create a map of existing PRs from database to avoid N+1 queries in the update loop
-		existingPRsMap := make(map[string]*db.PR)
-		for i := range dbPRsForReviewUpdate {
-			key := fmt.Sprintf("%s/%s/%d", dbPRsForReviewUpdate[i].RepoOwner, dbPRsForReviewUpdate[i].RepoName, dbPRsForReviewUpdate[i].PRNumber)
-			existingPRsMap[key] = &dbPRsForReviewUpdate[i]
-		}
-
-		reviewDataMap, err := p.ghClient.BatchGetPRReviewData(ctx, allPRs)
-		if err != nil {
-			log.Printf("[POLL] WARNING: Failed to batch fetch review data: %v", err)
-		} else {
-			// Update database with batch review data
-			updateCount := 0
-			for _, pr := range allPRs {
-				key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
-				if reviewData, exists := reviewDataMap[key]; exists {
-					// Look up PR from the map instead of querying database (avoids N+1 queries)
-					existingPR, existsInDB := existingPRsMap[key]
-					if !existsInDB {
-						continue
-					}
-
-					// Always sync user_pr_views with latest review status from GitHub
-					if p.devUser != nil {
-						if err := p.db.UpdateUserReviewStatus(p.devUser.ID, existingPR.ID, reviewData.MyReviewStatus); err != nil {
-							log.Printf("[POLL] Warning: Failed to update user review status for PR %d: %v", existingPR.ID, err)
-						}
-					}
-
-					// Check if anything actually changed in prs table
-					approvalChanged := existingPR.ApprovalCount != reviewData.ApprovalCount
-					reviewStatusChanged := existingPR.MyReviewStatus != reviewData.MyReviewStatus
-					draftChanged := existingPR.Draft != pr.Draft
-
-					if !approvalChanged && !reviewStatusChanged && !draftChanged {
-						continue // Nothing changed in prs table, skip update
-					}
-
-					// Update approval count, my review status, and draft status (always use fresh values from GitHub)
-					// IMPORTANT: Preserve all existing fields to avoid wiping CI data
-					existingPR.ApprovalCount = reviewData.ApprovalCount
-					existingPR.MyReviewStatus = reviewData.MyReviewStatus
-					existingPR.Draft = pr.Draft
-					if pr.CreatedAt != nil {
-						existingPR.CreatedAt = pr.CreatedAt
-					}
-
-					err = p.db.UpsertPR(existingPR)
-					if err != nil {
-						log.Printf("[POLL] ERROR: Failed to update review data for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
-					} else {
-						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-						updateCount++
-					}
-				}
-			}
-			log.Printf("[POLL] Updated review data for %d PRs (only those with changes)", updateCount)
-		}
-
-		// Batch fetch reviewer groups and sync to user_pr_views
-		if p.devUser != nil {
-			log.Printf("[POLL] Batch fetching reviewer groups for %d PRs...", len(allPRs))
-			reviewerGroupsMap, err := p.ghClient.BatchGetReviewerGroups(ctx, allPRs)
-			if err != nil {
-				log.Printf("[POLL] WARNING: Failed to batch fetch reviewer groups: %v", err)
-			} else {
-				for _, pr := range allPRs {
-					key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
-					if groupData, exists := reviewerGroupsMap[key]; exists {
-						existingPR, existsInDB := existingPRsMap[key]
-						if !existsInDB {
-							continue
-						}
-						if err := p.db.UpdateUserViaTeams(p.devUser.ID, existingPR.ID, groupData.ReviewerGroups); err != nil {
-							log.Printf("[POLL] Warning: Failed to update via_teams for PR %d: %v", existingPR.ID, err)
-						}
-					}
-				}
-				log.Printf("[POLL] Updated reviewer groups for %d PRs", len(reviewerGroupsMap))
-			}
-		}
-	}
-
-	// Batch fetch CI status for all PRs using GraphQL
-	log.Printf("[POLL] Batch fetching CI status for %d PRs using GraphQL...", len(allPRs))
-	if len(allPRs) > 0 {
-		// Prepare PR list with commit SHAs for CI status check
-		var prsWithSHA []struct {
-			Owner, Repo string
-			Number      int
-			CommitSHA   string
-		}
-		for _, pr := range allPRs {
-			prsWithSHA = append(prsWithSHA, struct {
-				Owner, Repo string
-				Number      int
-				CommitSHA   string
-			}{
-				Owner:     pr.Owner,
-				Repo:      pr.Repo,
-				Number:    pr.Number,
-				CommitSHA: pr.CommitSHA,
-			})
-		}
-
-		ciStatusMap, err := p.ghClient.BatchGetCIStatus(ctx, prsWithSHA)
-		if err != nil {
-			log.Printf("[POLL] WARNING: Failed to batch fetch CI status: %v", err)
-		} else {
-			// Update database with CI status
-			updateCount := 0
-			for _, pr := range allPRs {
-				key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
-				if ciStatus, exists := ciStatusMap[key]; exists {
-					// Get existing PR data from database
-					existingPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-					if err != nil || existingPR == nil {
-						log.Printf("[POLL] ERROR: Could not get PR %s from database: %v", key, err)
-						continue
-					}
-
-					// Serialize failed checks to JSON
-					failedChecksJSON := "[]"
-					if len(ciStatus.FailedChecks) > 0 {
-						if jsonBytes, err := json.Marshal(ciStatus.FailedChecks); err == nil {
-							failedChecksJSON = string(jsonBytes)
-						}
-					}
-
-					// Check if anything actually changed
-					stateChanged := existingPR.CIState != ciStatus.State
-					checksChanged := existingPR.CIFailedChecks != failedChecksJSON
-
-					if !stateChanged && !checksChanged {
-						continue // Nothing changed, skip update
-					}
-
-					// Update CI status in database
-					existingPR.CIState = ciStatus.State
-					existingPR.CIFailedChecks = failedChecksJSON
-					err = p.db.UpsertPR(existingPR)
-					if err != nil {
-						log.Printf("[POLL] ERROR: Failed to update CI status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
-					} else {
-						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-						updateCount++
-					}
-				}
-			}
-			log.Printf("[POLL] Updated CI status for %d PRs (only those with changes)", updateCount)
-		}
-	}
-
-	// CRITICAL: Also check database for pending PRs that need processing
-	// This ensures we process PRs even when GitHub API fails
+	// Re-query pending/generating PRs from database. We need fresh status data here
+	// because Phase 3 (outdated review detection) may have reset PRs to "pending".
 	log.Printf("[POLL] Checking database for pending PRs...")
 
-	// Re-use auto-review setting from earlier (already checked at line 656)
-
-	dbPRs, err := p.db.GetAllPRs()
+	freshDBPRs, err := p.db.GetAllPRs()
 	if err != nil {
 		log.Printf("[POLL] ERROR: Failed to get PRs from database: %v", err)
 	} else {
 		pendingCount := 0
 		skippedCount := 0
-		for _, dbPR := range dbPRs {
-			// Check for pending OR generating PRs
-			// We must pick up 'generating' PRs because they might be manual triggers that haven't started yet
+		for _, dbPR := range freshDBPRs {
 			if dbPR.Status == "pending" || dbPR.Status == "generating" {
 				// Skip pending PRs if auto-review is disabled
 				// BUT: Always process 'generating' PRs (manual triggers)
@@ -1024,21 +1201,11 @@ func (p *Poller) poll(ctx context.Context) {
 					continue
 				}
 
-				// Convert DB PR to GitHub PR format for processing
-				ghPR := github.PullRequest{
-					Owner:     dbPR.RepoOwner,
-					Repo:      dbPR.RepoName,
-					Number:    dbPR.PRNumber,
-					CommitSHA: dbPR.LastCommitSHA,
-					Title:     dbPR.Title,
-					Author:    dbPR.Author,
-					URL:       fmt.Sprintf("https://github.com/%s/%s/pull/%d", dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber),
-				}
+				ghPR := buildPRFromDB(dbPR)
 
 				// In single-user mode, determine if the PR is "mine" to avoid self-review
 				isMine := p.cfg.GitHubUsername != "" && strings.EqualFold(dbPR.Author, p.cfg.GitHubUsername)
 
-				// Add to appropriate list based on ownership
 				if isMine {
 					myPRs = append(myPRs, ghPR)
 				} else {

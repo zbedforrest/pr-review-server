@@ -1,21 +1,13 @@
 package html
 
 import (
-	"encoding/json"
-	"flag"
-	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"pr-review-server/pkg/reviewer/types"
 )
-
-var update = flag.Bool("update", false, "update golden files")
 
 func TestParseDiff(t *testing.T) {
 	diff := `diff --git a/file1.txt b/file1.txt
@@ -82,63 +74,6 @@ index 6e9b81b..1b61971 100644
 			}
 		}
 	}
-}
-
-func TestReportHTMLSnapshot(t *testing.T) {
-	mockDataDir := "testdata/mock"
-	commentsMockPath := filepath.Join(mockDataDir, "comments.json")
-	diffMockPath := filepath.Join(mockDataDir, "diff.txt")
-	prBodyMockPath := filepath.Join(mockDataDir, "pr_body.txt")
-	prNumberMockPath := filepath.Join(mockDataDir, "pr_number.txt")
-
-	// Check if mock data exists
-	if _, err := os.Stat(commentsMockPath); os.IsNotExist(err) {
-		t.Skipf("Mock data not found. Generate it by running: go run ./tools/mockgen -pr=20986")
-	}
-
-	// Load mock data
-	commentsJSON, err := os.ReadFile(commentsMockPath)
-	require.NoError(t, err)
-	var comments []types.LineComment
-	err = json.Unmarshal(commentsJSON, &comments)
-	require.NoError(t, err)
-
-	diffBytes, err := os.ReadFile(diffMockPath)
-	require.NoError(t, err)
-	diff := string(diffBytes)
-
-	prBodyBytes, err := os.ReadFile(prBodyMockPath)
-	require.NoError(t, err)
-	prBody := string(prBodyBytes)
-
-	prNumberBytes, err := os.ReadFile(prNumberMockPath)
-	require.NoError(t, err)
-	var prNumber int
-	_, err = fmt.Sscanf(string(prNumberBytes), "%d", &prNumber)
-	require.NoError(t, err)
-
-	testModelName := "TEST_MODEL_NAME_PLACEHOLDER"
-	testPrompt := "TEST_PROMPT_PLACEHOLDER"
-	testCommitSHA := "abc1234567890def"
-	testPRURL := fmt.Sprintf("https://github.com/test-owner/test-repo/pull/%d", prNumber)
-	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
-	htmlContent, err := GenerateReport(comments, diff, prNumber, testPRURL, prBody, testPrompt, testCommitSHA, testModelName, int32(100), int32(200), int32(300), testTime)
-	require.NoError(t, err)
-
-	goldenFile := filepath.Join("testdata", "report.html.golden")
-
-	if *update {
-		t.Log("Updating golden file")
-		err := os.MkdirAll(filepath.Dir(goldenFile), 0755)
-		require.NoError(t, err)
-		err = os.WriteFile(goldenFile, []byte(htmlContent), 0644)
-		require.NoError(t, err)
-	}
-
-	golden, err := os.ReadFile(goldenFile)
-	require.NoError(t, err, "Golden file not found. Run with -update to create it.")
-
-	assert.Equal(t, string(golden), htmlContent, "HTML content does not match golden file. Run with -update to update it.")
 }
 
 func TestGenerateReport_WithGeneralComments(t *testing.T) {

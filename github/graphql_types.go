@@ -33,26 +33,31 @@ type GraphQLReviewResponse struct {
 	Data map[string]RepoReviewData `json:"data"`
 }
 
-// GraphQL response types for reviewer groups queries
+// GraphQL response types for reviewer groups queries (via timeline events)
 
-// ReviewRequester represents a requested reviewer (User or Team)
-type ReviewRequester struct {
+// TimelineReviewRequested represents a REVIEW_REQUESTED_EVENT from the PR timeline.
+// This captures ALL teams/users ever requested, not just currently-pending ones.
+type TimelineReviewRequested struct {
 	RequestedReviewer struct {
-		TypeName string `json:"__typename"` // "User" or "Team"
-		Login    string `json:"login"`      // User only
-		Name     string `json:"name"`       // Team only
+		TypeName     string `json:"__typename"` // "User" or "Team"
+		Login        string `json:"login"`      // User only
+		Name         string `json:"name"`       // Team only
+		Slug         string `json:"slug"`       // Team only
+		Organization struct {
+			Login string `json:"login"`
+		} `json:"organization"` // Team only — the owning org
 	} `json:"requestedReviewer"`
 }
 
-// ReviewRequestsData holds the collection of review requesters
-type ReviewRequestsData struct {
-	Nodes []ReviewRequester `json:"nodes"`
+// TimelineItemsData holds the collection of timeline events
+type TimelineItemsData struct {
+	Nodes []TimelineReviewRequested `json:"nodes"`
 }
 
 // PRReviewerGroupsGraphQL represents PR reviewer groups data in GraphQL response
 type PRReviewerGroupsGraphQL struct {
-	Number         int                `json:"number"`
-	ReviewRequests ReviewRequestsData `json:"reviewRequests"`
+	Number        int               `json:"number"`
+	TimelineItems TimelineItemsData `json:"timelineItems"`
 }
 
 // RepoReviewerGroupsData represents repository data containing PR reviewer groups info

@@ -742,6 +742,52 @@ func TestGormDB_UpsertUserPRAssignment(t *testing.T) {
 	assert.Equal(t, "test notes", fetched.Notes)
 }
 
+// Regression test: UpsertUserPRAssignment must NOT overwrite existing via_teams on conflict.
+// via_teams is only written by UpdateUserViaTeams (guarded by shouldUpdateViaTeams).
+func TestGormDB_UpsertUserPRAssignment_PreservesViaTeams(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "testuser"}
+	err := db.CreateUser(user)
+	require.NoError(t, err)
+
+	pr := &PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "pending",
+	}
+	err = db.UpsertPR(pr)
+	require.NoError(t, err)
+	fetchedPR, _ := db.GetPR("owner", "repo", 1)
+
+	// Step 1: Create the initial user_pr_view record
+	err = db.UpsertUserPRAssignment(&UserPRAssignment{
+		UserID: user.ID, PRID: fetchedPR.ID, IsReviewer: true,
+	})
+	require.NoError(t, err)
+
+	// Step 2: Set via_teams through the dedicated function (the only sanctioned writer)
+	err = db.UpdateUserViaTeams(user.ID, fetchedPR.ID, []string{"frontend-team:approved", "backend-team:pending"})
+	require.NoError(t, err)
+
+	// Step 3: Upsert again with empty ReviewerGroups (simulates poll updating review_status)
+	err = db.UpsertUserPRAssignment(&UserPRAssignment{
+		UserID: user.ID, PRID: fetchedPR.ID, IsReviewer: true,
+		MyReviewStatus: "APPROVED",
+		ReviewerGroups: "", // empty — must NOT wipe via_teams
+	})
+	require.NoError(t, err)
+
+	// Verify via_teams was preserved
+	fetched, err := db.GetUserPRAssignment(user.ID, fetchedPR.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "APPROVED", fetched.MyReviewStatus, "review_status should be updated")
+	assert.Contains(t, fetched.ReviewerGroups, "frontend-team:approved",
+		"via_teams must be preserved when UpsertUserPRAssignment is called with empty ReviewerGroups")
+	assert.Contains(t, fetched.ReviewerGroups, "backend-team:pending",
+		"via_teams must be preserved when UpsertUserPRAssignment is called with empty ReviewerGroups")
+}
+
 func TestGormDB_GetPRsForUser(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()
@@ -951,6 +997,46 @@ func TestGormDB_EnsureUserPRView_UnhidesHiddenPR(t *testing.T) {
 	prs, err = db.GetPRsForUser(user.ID)
 	require.NoError(t, err)
 	assert.Len(t, prs, 1, "PR should be un-hidden after EnsureUserPRView")
+}
+
+// Regression test: EnsureUserPRView must NOT touch via_teams on conflict.
+// via_teams is only written by UpdateUserViaTeams (guarded by shouldUpdateViaTeams).
+func TestGormDB_EnsureUserPRView_PreservesViaTeams(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "testuser"}
+	err := db.CreateUser(user)
+	require.NoError(t, err)
+
+	pr := &PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "completed",
+	}
+	err = db.UpsertPR(pr)
+	require.NoError(t, err)
+	fetchedPR, _ := db.GetPR("owner", "repo", 1)
+
+	// Step 1: Create user_pr_view via EnsureUserPRView
+	err = db.EnsureUserPRView(user.ID, fetchedPR.ID, false)
+	require.NoError(t, err)
+
+	// Step 2: Set via_teams through the dedicated function
+	err = db.UpdateUserViaTeams(user.ID, fetchedPR.ID, []string{"team-alpha:approved", "team-beta:pending"})
+	require.NoError(t, err)
+
+	// Step 3: Call EnsureUserPRView again (simulates next poll cycle)
+	err = db.EnsureUserPRView(user.ID, fetchedPR.ID, false)
+	require.NoError(t, err)
+
+	// Verify via_teams was NOT wiped
+	prsWithViews, err := db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, prsWithViews, 1)
+	assert.Contains(t, prsWithViews[0].ViaTeams, "team-alpha:approved",
+		"via_teams must survive EnsureUserPRView calls")
+	assert.Contains(t, prsWithViews[0].ViaTeams, "team-beta:pending",
+		"via_teams must survive EnsureUserPRView calls")
 }
 
 // =============================================================================

@@ -111,7 +111,8 @@ type PRReviewData struct {
 	Repo           string
 	Number         int
 	ApprovalCount  int
-	MyReviewStatus string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	MyReviewStatus string            // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	UserReviews    map[string]string // Username -> latest review state (e.g. "APPROVED", "CHANGES_REQUESTED")
 }
 
 // ReviewerGroupData holds information about requested reviewer groups
@@ -119,7 +120,9 @@ type ReviewerGroupData struct {
 	Owner          string
 	Repo           string
 	Number         int
-	ReviewerGroups []string // Team names OR ["__PERSONAL__"] for personal-only requests
+	ReviewerGroups []string          // Team names OR ["__PERSONAL__"] for personal-only requests
+	TeamSlugs      map[string]string // Team name -> slug (for API calls)
+	OrgName        string            // GitHub org that owns the teams (from timeline data)
 }
 
 // CIStatus holds CI check run status for a PR
@@ -452,7 +455,7 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 		}
 
 		// Process reviews using helper
-		approvalCount, myReviewStatus := c.countUserApprovals(repoData.PullRequest.Reviews)
+		approvalCount, myReviewStatus, userReviews := c.countUserApprovals(repoData.PullRequest.Reviews)
 
 		key := prKey(owner, repo, prNumber)
 		results[key] = &PRReviewData{
@@ -461,6 +464,7 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 			Number:         prNumber,
 			ApprovalCount:  approvalCount,
 			MyReviewStatus: myReviewStatus,
+			UserReviews:    userReviews,
 		}
 
 		log.Printf("[GRAPHQL] PR %s/%s#%d: %d approvals, my status: %s", owner, repo, prNumber, approvalCount, myReviewStatus)
@@ -567,7 +571,7 @@ func (c *Client) fetchReviewerGroupsForRepo(ctx context.Context, prs []PullReque
 		}
 
 		// Extract reviewer groups using helper
-		reviewerGroupsDisplay := c.extractReviewerGroups(repoData.PullRequest.ReviewRequests)
+		reviewerGroupsDisplay, teamSlugs, orgName := c.extractReviewerGroups(repoData.PullRequest.TimelineItems)
 
 		key := prKey(owner, repo, prNumber)
 		results[key] = &ReviewerGroupData{
@@ -575,6 +579,8 @@ func (c *Client) fetchReviewerGroupsForRepo(ctx context.Context, prs []PullReque
 			Repo:           repo,
 			Number:         prNumber,
 			ReviewerGroups: reviewerGroupsDisplay,
+			TeamSlugs:      teamSlugs,
+			OrgName:        orgName,
 		}
 
 		log.Printf("[GRAPHQL] PR %s/%s#%d: reviewer groups:%v",
@@ -584,7 +590,9 @@ func (c *Client) fetchReviewerGroupsForRepo(ctx context.Context, prs []PullReque
 	return results, nil
 }
 
-// buildReviewerGroupsQuery builds a GraphQL query to fetch reviewer groups for PRs in a single repository.
+// buildReviewerGroupsQuery builds a GraphQL query to fetch all teams ever requested
+// for PRs in a single repository, using timeline events instead of reviewRequests.
+// This captures teams whose reviews were already satisfied (removed from reviewRequests by GitHub).
 func (c *Client) buildReviewerGroupsQuery(owner, repo string, prs []PullRequest) string {
 	var queryBuilder strings.Builder
 	queryBuilder.WriteString("query {")
@@ -595,15 +603,19 @@ func (c *Client) buildReviewerGroupsQuery(owner, repo string, prs []PullRequest)
 			%s: repository(owner: "%s", name: "%s") {
 				pullRequest(number: %d) {
 					number
-					reviewRequests(first: 100) {
+					timelineItems(first: 100, itemTypes: REVIEW_REQUESTED_EVENT) {
 						nodes {
-							requestedReviewer {
-								__typename
-								... on User {
-									login
-								}
-								... on Team {
-									name
+							... on ReviewRequestedEvent {
+								requestedReviewer {
+									__typename
+									... on User {
+										login
+									}
+									... on Team {
+										name
+										slug
+										organization { login }
+									}
 								}
 							}
 						}
@@ -617,31 +629,43 @@ func (c *Client) buildReviewerGroupsQuery(owner, repo string, prs []PullRequest)
 	return queryBuilder.String()
 }
 
-// extractReviewerGroups processes review requests and returns the appropriate reviewer groups display value.
-func (c *Client) extractReviewerGroups(reviewRequests ReviewRequestsData) []string {
+// extractReviewerGroups processes timeline events (REVIEW_REQUESTED_EVENT) and returns
+// all teams ever requested for the PR (deduplicated), along with a mapping of team name to slug.
+// Uses timeline instead of reviewRequests to capture teams whose reviews were already satisfied.
+func (c *Client) extractReviewerGroups(timelineItems TimelineItemsData) ([]string, map[string]string, string) {
 	personallyRequested := false
+	teamSlugs := make(map[string]string)
+	seenTeams := make(map[string]bool)
 	var reviewerGroups []string
-	hasTeamRequest := false
+	var orgName string
 
-	for _, request := range reviewRequests.Nodes {
-		if request.RequestedReviewer.TypeName == "User" && request.RequestedReviewer.Login == c.username {
+	for _, event := range timelineItems.Nodes {
+		if event.RequestedReviewer.TypeName == "User" && event.RequestedReviewer.Login == c.username {
 			personallyRequested = true
-		} else if request.RequestedReviewer.TypeName == "Team" && request.RequestedReviewer.Name != "" {
-			reviewerGroups = append(reviewerGroups, request.RequestedReviewer.Name)
-			hasTeamRequest = true
+		} else if event.RequestedReviewer.TypeName == "Team" && event.RequestedReviewer.Name != "" {
+			name := event.RequestedReviewer.Name
+			if !seenTeams[name] {
+				seenTeams[name] = true
+				reviewerGroups = append(reviewerGroups, name)
+				if event.RequestedReviewer.Slug != "" {
+					teamSlugs[name] = event.RequestedReviewer.Slug
+				}
+			}
+			if orgName == "" && event.RequestedReviewer.Organization.Login != "" {
+				orgName = event.RequestedReviewer.Organization.Login
+			}
 		}
 	}
 
-	// Determine display value for ReviewerGroups column
 	// If team request(s) exist: show team names (even if also personal)
 	// If ONLY personal request: store special marker
 	// If no requests: empty array
-	if hasTeamRequest {
-		return reviewerGroups
+	if len(reviewerGroups) > 0 {
+		return reviewerGroups, teamSlugs, orgName
 	} else if personallyRequested {
-		return []string{"__PERSONAL__"}
+		return []string{"__PERSONAL__"}, teamSlugs, orgName
 	}
-	return []string{}
+	return []string{}, teamSlugs, orgName
 }
 
 // BatchGetCIStatus fetches CI check status for multiple PRs using GraphQL
@@ -775,6 +799,28 @@ func parseCIStatusFromRollup(rollup *StatusCheckRollup) (state string, failedChe
 	}
 
 	return state, failedChecks
+}
+
+// GetOrgTeamMembers fetches the members of a GitHub team by organization and team slug.
+func (c *Client) GetOrgTeamMembers(ctx context.Context, orgName, teamSlug string) ([]string, error) {
+	opts := &github.TeamListTeamMembersOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+	var members []string
+	for {
+		teamMembers, resp, err := c.gh.Teams.ListTeamMembersBySlug(ctx, orgName, teamSlug, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list team members for %s/%s: %w", orgName, teamSlug, err)
+		}
+		for _, member := range teamMembers {
+			members = append(members, member.GetLogin())
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return members, nil
 }
 
 func (c *Client) GetPRDiff(token, owner, repoName string, prNumber int) (string, error) {

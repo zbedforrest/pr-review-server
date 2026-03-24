@@ -144,36 +144,303 @@ func TestBuildPRFromDB_ConvertsAllFields(t *testing.T) {
 	}
 }
 
-func TestShouldSkipDatabasePR_AutoReviewEnabled(t *testing.T) {
-	// When auto-review is enabled, never skip pending PRs
-	dbPR := db.PR{Status: "pending"}
-	if shouldSkipDatabasePR(dbPR, true) {
-		t.Error("should not skip pending PR when auto-review is enabled")
-	}
+func TestResolveTeamReviewStatuses_AllPending(t *testing.T) {
+	result := resolveTeamReviewStatuses(
+		[]string{"platform", "security"},
+		nil,
+		map[string][]string{
+			"platform": {"alice", "bob"},
+			"security": {"carol"},
+		},
+		map[string]string{"platform": "platform", "security": "security"},
+		map[string]string{}, // no reviews
+		"",                  // no current user
+	)
 
-	// Completed PRs are not skipped either (they just won't be re-processed)
-	dbPR = db.PR{Status: "completed"}
-	if shouldSkipDatabasePR(dbPR, true) {
-		t.Error("should not skip completed PR when auto-review is enabled")
+	if result["platform"] != "pending" {
+		t.Errorf("expected platform=pending, got %q", result["platform"])
+	}
+	if result["security"] != "pending" {
+		t.Errorf("expected security=pending, got %q", result["security"])
 	}
 }
 
-func TestShouldSkipDatabasePR_AutoReviewDisabled(t *testing.T) {
-	// When auto-review is disabled, skip pending PRs
-	dbPR := db.PR{Status: "pending"}
-	if !shouldSkipDatabasePR(dbPR, false) {
-		t.Error("should skip pending PR when auto-review is disabled")
+func TestResolveTeamReviewStatuses_OneTeamApproved(t *testing.T) {
+	result := resolveTeamReviewStatuses(
+		[]string{"platform", "security"},
+		nil,
+		map[string][]string{
+			"platform": {"alice", "bob"},
+			"security": {"carol"},
+		},
+		map[string]string{"platform": "platform", "security": "security"},
+		map[string]string{"alice": "APPROVED"},
+		"",
+	)
+
+	if result["platform"] != "approved" {
+		t.Errorf("expected platform=approved, got %q", result["platform"])
+	}
+	if result["security"] != "pending" {
+		t.Errorf("expected security=pending, got %q", result["security"])
+	}
+}
+
+func TestResolveTeamReviewStatuses_ChangesRequestedTakesPriority(t *testing.T) {
+	result := resolveTeamReviewStatuses(
+		[]string{"platform"},
+		nil,
+		map[string][]string{
+			"platform": {"alice", "bob"},
+		},
+		map[string]string{"platform": "platform"},
+		map[string]string{
+			"alice": "APPROVED",
+			"bob":   "CHANGES_REQUESTED",
+		},
+		"",
+	)
+
+	if result["platform"] != "changes_requested" {
+		t.Errorf("expected platform=changes_requested, got %q", result["platform"])
+	}
+}
+
+func TestResolveTeamReviewStatuses_HighWaterMark(t *testing.T) {
+	// Team was in previousTeams but not currentTeams (member already reviewed)
+	result := resolveTeamReviewStatuses(
+		[]string{},                       // current: empty (all teams reviewed)
+		[]string{"platform", "security"}, // previous: had both teams
+		map[string][]string{
+			"platform": {"alice"},
+			"security": {"carol"},
+		},
+		map[string]string{"platform": "platform", "security": "security"},
+		map[string]string{"alice": "APPROVED"},
+		"",
+	)
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 teams in result, got %d", len(result))
+	}
+	if result["platform"] != "approved" {
+		t.Errorf("expected platform=approved, got %q", result["platform"])
+	}
+	if result["security"] != "pending" {
+		t.Errorf("expected security=pending, got %q", result["security"])
+	}
+}
+
+func TestResolveTeamReviewStatuses_EmptyInputs(t *testing.T) {
+	result := resolveTeamReviewStatuses(nil, nil, nil, nil, nil, "")
+	if len(result) != 0 {
+		t.Errorf("expected empty result, got %v", result)
+	}
+}
+
+func TestResolveTeamReviewStatuses_UnknownTeamSlug(t *testing.T) {
+	result := resolveTeamReviewStatuses(
+		[]string{"unknown-team"},
+		nil,
+		map[string][]string{},
+		map[string]string{}, // no slug mapping
+		map[string]string{"alice": "APPROVED"},
+		"",
+	)
+
+	if result["unknown-team"] != "pending" {
+		t.Errorf("expected unknown-team=pending, got %q", result["unknown-team"])
+	}
+}
+
+func TestResolveTeamReviewStatuses_MyTeamPending(t *testing.T) {
+	// Current user "bob" is on platform team. Platform is unsatisfied → my_pending.
+	// Security team (user is NOT a member) stays "pending".
+	result := resolveTeamReviewStatuses(
+		[]string{"platform", "security"},
+		nil,
+		map[string][]string{
+			"platform": {"alice", "bob"},
+			"security": {"carol"},
+		},
+		map[string]string{"platform": "platform", "security": "security"},
+		map[string]string{}, // no reviews
+		"bob",
+	)
+
+	if result["platform"] != "my_pending" {
+		t.Errorf("expected platform=my_pending, got %q", result["platform"])
+	}
+	if result["security"] != "pending" {
+		t.Errorf("expected security=pending, got %q", result["security"])
+	}
+}
+
+func TestResolveTeamReviewStatuses_MyTeamApproved_NoPrefix(t *testing.T) {
+	// Current user "bob" is on platform team but it's already approved → stays "approved" (no my_ prefix)
+	result := resolveTeamReviewStatuses(
+		[]string{"platform"},
+		nil,
+		map[string][]string{
+			"platform": {"alice", "bob"},
+		},
+		map[string]string{"platform": "platform"},
+		map[string]string{"alice": "APPROVED"},
+		"bob",
+	)
+
+	if result["platform"] != "approved" {
+		t.Errorf("expected platform=approved, got %q", result["platform"])
+	}
+}
+
+func TestResolveTeamReviewStatuses_MyTeamChangesRequested(t *testing.T) {
+	// Current user "bob" is on platform team with changes_requested → my_changes_requested
+	result := resolveTeamReviewStatuses(
+		[]string{"platform"},
+		nil,
+		map[string][]string{
+			"platform": {"alice", "bob"},
+		},
+		map[string]string{"platform": "platform"},
+		map[string]string{"alice": "CHANGES_REQUESTED"},
+		"bob",
+	)
+
+	if result["platform"] != "my_changes_requested" {
+		t.Errorf("expected platform=my_changes_requested, got %q", result["platform"])
+	}
+}
+
+func TestResolveTeamReviewStatuses_MyTeamCaseInsensitive(t *testing.T) {
+	// Username matching should be case-insensitive
+	result := resolveTeamReviewStatuses(
+		[]string{"platform"},
+		nil,
+		map[string][]string{
+			"platform": {"Alice", "Bob"},
+		},
+		map[string]string{"platform": "platform"},
+		map[string]string{},
+		"bob", // lowercase vs "Bob" in members
+	)
+
+	if result["platform"] != "my_pending" {
+		t.Errorf("expected platform=my_pending, got %q", result["platform"])
+	}
+}
+
+func TestParseTeamNames(t *testing.T) {
+	result := parseTeamNames([]string{"team1:approved", "team2:pending", "__PERSONAL__"})
+	if len(result) != 2 {
+		t.Errorf("expected 2 team names, got %d: %v", len(result), result)
+	}
+	if result[0] != "team1" {
+		t.Errorf("expected team1, got %q", result[0])
+	}
+	if result[1] != "team2" {
+		t.Errorf("expected team2, got %q", result[1])
 	}
 
-	// But never skip generating PRs (manual triggers)
-	dbPR = db.PR{Status: "generating"}
-	if shouldSkipDatabasePR(dbPR, false) {
-		t.Error("should NOT skip generating PR even when auto-review is disabled")
+	// Test with no status suffix (backward compat)
+	result = parseTeamNames([]string{"platform"})
+	if len(result) != 1 || result[0] != "platform" {
+		t.Errorf("expected [platform], got %v", result)
 	}
 
-	// Completed PRs are not explicitly skipped (they're handled by shouldReview logic)
-	dbPR = db.PR{Status: "completed"}
-	if shouldSkipDatabasePR(dbPR, false) {
-		t.Error("should not skip completed PR")
+	// Test empty
+	result = parseTeamNames(nil)
+	if len(result) != 0 {
+		t.Errorf("expected empty, got %v", result)
+	}
+}
+
+func TestContainsPersonal(t *testing.T) {
+	if !containsPersonal([]string{"team1", "__PERSONAL__"}) {
+		t.Error("expected true when __PERSONAL__ present")
+	}
+	if containsPersonal([]string{"team1", "team2"}) {
+		t.Error("expected false when __PERSONAL__ not present")
+	}
+	if containsPersonal(nil) {
+		t.Error("expected false for nil input")
+	}
+}
+
+func TestSlugifyTeamName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"Viewer Team", "viewer-team"},
+		{"Platform Engineers", "platform-engineers"},
+		{"security", "security"},
+		{"My Cool Team!", "my-cool-team"},
+		{"  spaces  ", "spaces"},
+		{"UPPER-case", "upper-case"},
+		{"already-slugified", "already-slugified"},
+		{"multiple   spaces", "multiple-spaces"},
+	}
+	for _, tt := range tests {
+		result := slugifyTeamName(tt.input)
+		if result != tt.expected {
+			t.Errorf("slugifyTeamName(%q) = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestResolveTeamReviewStatuses_DerivedSlugFallback(t *testing.T) {
+	// Team "Viewer Team" is not in teamSlugs, but slugifyTeamName("Viewer Team") -> "viewer-team"
+	// which has members in teamMembers
+	result := resolveTeamReviewStatuses(
+		[]string{"Viewer Team"},
+		nil,
+		map[string][]string{
+			"viewer-team": {"alice"},
+		},
+		map[string]string{}, // no explicit slug mapping
+		map[string]string{"alice": "APPROVED"},
+		"",
+	)
+
+	if result["Viewer Team"] != "approved" {
+		t.Errorf("expected Viewer Team=approved, got %q", result["Viewer Team"])
+	}
+}
+
+func TestCollectUniqueSlugs(t *testing.T) {
+	data := map[string]*github.ReviewerGroupData{
+		"owner/repo/1": {TeamSlugs: map[string]string{"Platform": "platform", "Security": "security"}},
+		"owner/repo/2": {TeamSlugs: map[string]string{"Platform": "platform"}}, // duplicate
+	}
+	slugs := collectUniqueSlugs(data)
+	if len(slugs) != 2 {
+		t.Errorf("expected 2 unique slugs, got %d", len(slugs))
+	}
+	if !slugs["platform"] || !slugs["security"] {
+		t.Errorf("expected platform and security slugs, got %v", slugs)
+	}
+}
+
+func TestShouldUpdateViaTeams(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []string
+		expected bool
+	}{
+		{"non-empty teams", []string{"platform:pending", "security:approved"}, true},
+		{"single team", []string{"platform:pending"}, true},
+		{"personal only", []string{"__PERSONAL__"}, true},
+		{"teams plus personal", []string{"platform:approved", "__PERSONAL__"}, true},
+		{"nil", nil, false},
+		{"empty slice", []string{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldUpdateViaTeams(tt.input)
+			if got != tt.expected {
+				t.Errorf("shouldUpdateViaTeams(%v) = %v, want %v", tt.input, got, tt.expected)
+			}
+		})
 	}
 }
