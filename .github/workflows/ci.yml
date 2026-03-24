@@ -32,7 +32,7 @@ jobs:
           git diff --exit-code go.mod go.sum || (echo "go.mod/go.sum not tidy - run 'go mod tidy'" && exit 1)
 
       - name: Generate dummy dist
-        run: mkdir -p server/dist && touch server/dist/.gitkeep
+        run: mkdir -p server/dist && echo '<!doctype html>' > server/dist/index.html
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v4

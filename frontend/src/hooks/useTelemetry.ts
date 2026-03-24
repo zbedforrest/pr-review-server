@@ -6,6 +6,7 @@ const FLUSH_THRESHOLD = 20;
 const SEARCH_DEBOUNCE_MS = 1000;
 
 // Singleton queue shared across all hook instances
+// eslint-disable-next-line prefer-const -- mutated via push/splice
 let queue: TelemetryEventPayload[] = [];
 let flushTimer: ReturnType<typeof setInterval> | null = null;
 let instanceCount = 0;
