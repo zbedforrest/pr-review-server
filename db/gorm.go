@@ -77,7 +77,7 @@ func (g *GormDB) Close() error {
 // initDefaultSettings initializes default settings if they don't exist
 func (g *GormDB) initDefaultSettings() error {
 	defaults := map[string]string{
-		"auto_review_requested_prs": "true",
+		"auto_review_requested_prs": "false",
 		"review_n_requests":         "3",
 		"generate_html":             "true",
 	}

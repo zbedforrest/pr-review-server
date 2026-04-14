@@ -216,10 +216,10 @@ func TestExtractReviewerGroups(t *testing.T) {
 		Login string `json:"login"`
 	}
 	type reqReviewer = struct {
-		TypeName     string `json:"__typename"`
-		Login        string `json:"login"`
-		Name         string `json:"name"`
-		Slug         string `json:"slug"`
+		TypeName     string  `json:"__typename"`
+		Login        string  `json:"login"`
+		Name         string  `json:"name"`
+		Slug         string  `json:"slug"`
 		Organization orgInfo `json:"organization"`
 	}
 
@@ -238,16 +238,16 @@ func TestExtractReviewerGroups(t *testing.T) {
 			expected: []string{"backend-team"},
 		},
 		{
-			name: "Personal request only",
+			name: "Personal request only - no teams, user in requestedUsers",
 			items: TimelineItemsData{
 				Nodes: []TimelineReviewRequested{
 					{RequestedReviewer: reqReviewer{TypeName: "User", Login: "current-user"}},
 				},
 			},
-			expected: []string{"__PERSONAL__"},
+			expected: []string{},
 		},
 		{
-			name: "Team and personal request - team takes precedence",
+			name: "Team and personal request - both captured separately",
 			items: TimelineItemsData{
 				Nodes: []TimelineReviewRequested{
 					{RequestedReviewer: reqReviewer{TypeName: "User", Login: "current-user"}},
@@ -275,7 +275,7 @@ func TestExtractReviewerGroups(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, _, _ := client.extractReviewerGroups(tt.items)
+			result, _, _, _ := client.extractReviewerGroups(tt.items)
 			if len(result) != len(tt.expected) {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 				return
@@ -297,10 +297,10 @@ func TestExtractReviewerGroups_CollectsSlugs(t *testing.T) {
 		Login string `json:"login"`
 	}
 	type reqReviewer = struct {
-		TypeName     string `json:"__typename"`
-		Login        string `json:"login"`
-		Name         string `json:"name"`
-		Slug         string `json:"slug"`
+		TypeName     string  `json:"__typename"`
+		Login        string  `json:"login"`
+		Name         string  `json:"name"`
+		Slug         string  `json:"slug"`
 		Organization orgInfo `json:"organization"`
 	}
 
@@ -312,7 +312,7 @@ func TestExtractReviewerGroups_CollectsSlugs(t *testing.T) {
 		},
 	}
 
-	groups, slugs, orgName := client.extractReviewerGroups(items)
+	groups, slugs, orgName, requestedUsers := client.extractReviewerGroups(items)
 
 	if len(groups) != 2 {
 		t.Errorf("Expected 2 groups, got %d", len(groups))
@@ -326,6 +326,9 @@ func TestExtractReviewerGroups_CollectsSlugs(t *testing.T) {
 	if orgName != "myorg" {
 		t.Errorf("Expected orgName 'myorg', got %q", orgName)
 	}
+	if len(requestedUsers) != 1 || requestedUsers[0] != "current-user" {
+		t.Errorf("Expected requestedUsers ['current-user'], got %v", requestedUsers)
+	}
 }
 
 func TestExtractReviewerGroups_OrgNameEmpty_WhenNoTeams(t *testing.T) {
@@ -335,10 +338,10 @@ func TestExtractReviewerGroups_OrgNameEmpty_WhenNoTeams(t *testing.T) {
 		Login string `json:"login"`
 	}
 	type reqReviewer = struct {
-		TypeName     string `json:"__typename"`
-		Login        string `json:"login"`
-		Name         string `json:"name"`
-		Slug         string `json:"slug"`
+		TypeName     string  `json:"__typename"`
+		Login        string  `json:"login"`
+		Name         string  `json:"name"`
+		Slug         string  `json:"slug"`
 		Organization orgInfo `json:"organization"`
 	}
 
@@ -349,7 +352,7 @@ func TestExtractReviewerGroups_OrgNameEmpty_WhenNoTeams(t *testing.T) {
 		},
 	}
 
-	_, _, orgName := client.extractReviewerGroups(items)
+	_, _, orgName, _ := client.extractReviewerGroups(items)
 	if orgName != "" {
 		t.Errorf("Expected empty orgName for user-only requests, got %q", orgName)
 	}

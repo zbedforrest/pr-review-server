@@ -60,7 +60,7 @@ func (UserModel) TableName() string {
 
 // SessionModel represents a user session (GORM model)
 type SessionModel struct {
-	ID        string    `gorm:"primaryKey;size:36"` // UUID string
+	ID        string    `gorm:"primaryKey;size:64"`
 	UserID    uint      `gorm:"index;not null"`
 	User      UserModel `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE"`
 	ExpiresAt time.Time `gorm:"index;not null"`

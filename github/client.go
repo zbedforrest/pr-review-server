@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/v57/github"
@@ -21,6 +22,99 @@ type Client struct {
 	httpClient *http.Client
 	token      string
 	username   string
+	appClient  *AppClient
+}
+
+// SetAppClient sets the AppClient for org-wide operations (multi-user mode)
+func (c *Client) SetAppClient(ac *AppClient) {
+	c.appClient = ac
+}
+
+// GetAllOpenPRs fetches all open PRs for the given org using the App installation token.
+// Requires SetAppClient to have been called first.
+func (c *Client) GetAllOpenPRs(ctx context.Context, orgName string) ([]PullRequest, error) {
+	if c.appClient == nil {
+		return nil, fmt.Errorf("appClient not set: GetAllOpenPRs requires a GitHub App client")
+	}
+	return c.appClient.GetAllOpenPRsForOrg(ctx, orgName)
+}
+
+// SearchOpenPRs returns lightweight PR identifiers for all open PRs in the org.
+func (c *Client) SearchOpenPRs(ctx context.Context, orgName string) ([]PRInfo, error) {
+	if c.appClient == nil {
+		return nil, fmt.Errorf("appClient not set: SearchOpenPRs requires a GitHub App client")
+	}
+	return c.appClient.SearchOpenPRsForOrg(ctx, orgName)
+}
+
+// BatchGetPRDetails fetches full PR details for multiple PRs via GraphQL.
+func (c *Client) BatchGetPRDetails(ctx context.Context, prs []PRInfo) (map[string]PullRequest, error) {
+	if c.appClient == nil {
+		return nil, fmt.Errorf("appClient not set: BatchGetPRDetails requires a GitHub App client")
+	}
+	return c.appClient.BatchGetPRDetails(ctx, prs)
+}
+
+// BatchGetPRState fetches state (open/closed/merged) and HEAD SHA for multiple PRs using batched GraphQL.
+// Returns a map keyed by "owner/repo/number".
+func (c *Client) BatchGetPRState(ctx context.Context, prs []PRInfo) (map[string]*PRState, error) {
+	const batchSize = 100
+	if len(prs) == 0 {
+		return make(map[string]*PRState), nil
+	}
+
+	var (
+		mu      sync.Mutex
+		results = make(map[string]*PRState)
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, 10)
+	)
+
+	for i := 0; i < len(prs); i += batchSize {
+		end := i + batchSize
+		if end > len(prs) {
+			end = len(prs)
+		}
+		chunk := prs[i:end]
+		chunkStart := i + 1
+
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(c2 []PRInfo, start, end2 int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			query := buildPRStateQuery(c2)
+
+			var graphqlResp GraphQLPRStateResponse
+			if err := c.executeGraphQL(ctx, query, &graphqlResp); err != nil {
+				log.Printf("[GRAPHQL] Warning: Failed to fetch PR state batch %d-%d: %v", start, end2, err)
+				return
+			}
+
+			mu.Lock()
+			for j, pr := range c2 {
+				alias := fmt.Sprintf("pr%d", j)
+				repoData, ok := graphqlResp.Data[alias]
+				if !ok {
+					continue
+				}
+				key := prKey(pr.Owner, pr.Repo, pr.Number)
+				results[key] = &PRState{
+					Owner:      pr.Owner,
+					Repo:       pr.Repo,
+					Number:     pr.Number,
+					State:      repoData.PullRequest.State,
+					HeadRefOid: repoData.PullRequest.HeadRefOid,
+				}
+			}
+			mu.Unlock()
+		}(chunk, chunkStart, end)
+	}
+	wg.Wait()
+
+	log.Printf("[GRAPHQL] Fetched PR state for %d/%d PRs", len(results), len(prs))
+	return results, nil
 }
 
 type RateLimitInfo struct {
@@ -120,9 +214,19 @@ type ReviewerGroupData struct {
 	Owner          string
 	Repo           string
 	Number         int
-	ReviewerGroups []string          // Team names OR ["__PERSONAL__"] for personal-only requests
+	ReviewerGroups []string          // Team names (no longer includes __PERSONAL__)
 	TeamSlugs      map[string]string // Team name -> slug (for API calls)
 	OrgName        string            // GitHub org that owns the teams (from timeline data)
+	RequestedUsers []string          // Individual users ever requested as reviewers
+}
+
+// PRState holds state and HEAD SHA for a PR (batch result)
+type PRState struct {
+	Owner      string
+	Repo       string
+	Number     int
+	State      string // "OPEN", "CLOSED", "MERGED"
+	HeadRefOid string // current HEAD commit SHA
 }
 
 // CIStatus holds CI check run status for a PR
@@ -402,24 +506,36 @@ func (c *Client) BatchGetPRReviewData(ctx context.Context, prs []PullRequest) (m
 		prsByRepo[key] = append(prsByRepo[key], pr)
 	}
 
-	results := make(map[string]*PRReviewData)
+	var (
+		mu      sync.Mutex
+		results = make(map[string]*PRReviewData)
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, 10) // limit to 10 concurrent GitHub API calls
+	)
 
-	// Fetch review data for each repository
 	for repoKey, repoPRs := range prsByRepo {
-		log.Printf("[GRAPHQL] Fetching review data for %d PRs in %s", len(repoPRs), repoKey)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(rk string, rps []PullRequest) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		repoData, err := c.fetchReviewDataForRepo(ctx, repoPRs)
-		if err != nil {
-			log.Printf("[GRAPHQL] Error fetching review data for %s: %v", repoKey, err)
-			// Continue with other repos even if one fails
-			continue
-		}
+			log.Printf("[GRAPHQL] Fetching review data for %d PRs in %s", len(rps), rk)
 
-		// Merge results
-		for k, v := range repoData {
-			results[k] = v
-		}
+			repoData, err := c.fetchReviewDataForRepo(ctx, rps)
+			if err != nil {
+				log.Printf("[GRAPHQL] Error fetching review data for %s: %v", rk, err)
+				return
+			}
+
+			mu.Lock()
+			for k, v := range repoData {
+				results[k] = v
+			}
+			mu.Unlock()
+		}(repoKey, repoPRs)
 	}
+	wg.Wait()
 
 	log.Printf("[GRAPHQL] Successfully fetched review data for %d/%d PRs", len(results), len(prs))
 	return results, nil
@@ -519,24 +635,36 @@ func (c *Client) BatchGetReviewerGroups(ctx context.Context, prs []PullRequest) 
 		prsByRepo[key] = append(prsByRepo[key], pr)
 	}
 
-	results := make(map[string]*ReviewerGroupData)
+	var (
+		mu      sync.Mutex
+		results = make(map[string]*ReviewerGroupData)
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, 10) // limit to 10 concurrent GitHub API calls
+	)
 
-	// Fetch details for each repository
 	for repoKey, repoPRs := range prsByRepo {
-		log.Printf("[GRAPHQL] Fetching reviewer groups for %d PRs in %s", len(repoPRs), repoKey)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(rk string, rps []PullRequest) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		repoData, err := c.fetchReviewerGroupsForRepo(ctx, repoPRs)
-		if err != nil {
-			log.Printf("[GRAPHQL] Error fetching reviewer groups for %s: %v", repoKey, err)
-			// Continue with other repos even if one fails
-			continue
-		}
+			log.Printf("[GRAPHQL] Fetching reviewer groups for %d PRs in %s", len(rps), rk)
 
-		// Merge results
-		for k, v := range repoData {
-			results[k] = v
-		}
+			repoData, err := c.fetchReviewerGroupsForRepo(ctx, rps)
+			if err != nil {
+				log.Printf("[GRAPHQL] Error fetching reviewer groups for %s: %v", rk, err)
+				return
+			}
+
+			mu.Lock()
+			for k, v := range repoData {
+				results[k] = v
+			}
+			mu.Unlock()
+		}(repoKey, repoPRs)
 	}
+	wg.Wait()
 
 	log.Printf("[GRAPHQL] Successfully fetched reviewer groups for %d/%d PRs", len(results), len(prs))
 	return results, nil
@@ -571,7 +699,7 @@ func (c *Client) fetchReviewerGroupsForRepo(ctx context.Context, prs []PullReque
 		}
 
 		// Extract reviewer groups using helper
-		reviewerGroupsDisplay, teamSlugs, orgName := c.extractReviewerGroups(repoData.PullRequest.TimelineItems)
+		reviewerGroupsDisplay, teamSlugs, orgName, requestedUsers := c.extractReviewerGroups(repoData.PullRequest.TimelineItems)
 
 		key := prKey(owner, repo, prNumber)
 		results[key] = &ReviewerGroupData{
@@ -581,6 +709,7 @@ func (c *Client) fetchReviewerGroupsForRepo(ctx context.Context, prs []PullReque
 			ReviewerGroups: reviewerGroupsDisplay,
 			TeamSlugs:      teamSlugs,
 			OrgName:        orgName,
+			RequestedUsers: requestedUsers,
 		}
 
 		log.Printf("[GRAPHQL] PR %s/%s#%d: reviewer groups:%v",
@@ -630,18 +759,25 @@ func (c *Client) buildReviewerGroupsQuery(owner, repo string, prs []PullRequest)
 }
 
 // extractReviewerGroups processes timeline events (REVIEW_REQUESTED_EVENT) and returns
-// all teams ever requested for the PR (deduplicated), along with a mapping of team name to slug.
+// all teams ever requested for the PR (deduplicated), along with a mapping of team name to slug,
+// and all individually requested user logins.
 // Uses timeline instead of reviewRequests to capture teams whose reviews were already satisfied.
-func (c *Client) extractReviewerGroups(timelineItems TimelineItemsData) ([]string, map[string]string, string) {
-	personallyRequested := false
+// The __PERSONAL__ marker is no longer determined here — callers handle per-user logic.
+func (c *Client) extractReviewerGroups(timelineItems TimelineItemsData) ([]string, map[string]string, string, []string) {
 	teamSlugs := make(map[string]string)
 	seenTeams := make(map[string]bool)
+	seenUsers := make(map[string]bool)
 	var reviewerGroups []string
+	var requestedUsers []string
 	var orgName string
 
 	for _, event := range timelineItems.Nodes {
-		if event.RequestedReviewer.TypeName == "User" && event.RequestedReviewer.Login == c.username {
-			personallyRequested = true
+		if event.RequestedReviewer.TypeName == "User" && event.RequestedReviewer.Login != "" {
+			login := event.RequestedReviewer.Login
+			if !seenUsers[login] {
+				seenUsers[login] = true
+				requestedUsers = append(requestedUsers, login)
+			}
 		} else if event.RequestedReviewer.TypeName == "Team" && event.RequestedReviewer.Name != "" {
 			name := event.RequestedReviewer.Name
 			if !seenTeams[name] {
@@ -657,15 +793,7 @@ func (c *Client) extractReviewerGroups(timelineItems TimelineItemsData) ([]strin
 		}
 	}
 
-	// If team request(s) exist: show team names (even if also personal)
-	// If ONLY personal request: store special marker
-	// If no requests: empty array
-	if len(reviewerGroups) > 0 {
-		return reviewerGroups, teamSlugs, orgName
-	} else if personallyRequested {
-		return []string{"__PERSONAL__"}, teamSlugs, orgName
-	}
-	return []string{}, teamSlugs, orgName
+	return reviewerGroups, teamSlugs, orgName, requestedUsers
 }
 
 // BatchGetCIStatus fetches CI check status for multiple PRs using GraphQL

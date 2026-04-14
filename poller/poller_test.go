@@ -1303,11 +1303,10 @@ func TestPoll_CleansUpClosedPRs(t *testing.T) {
 		Status:        "completed",
 	}
 
-	// Setup: PR is closed on GitHub
-	mockGH.IsPROpenResults["owner/repo/1"] = struct {
-		IsOpen bool
-		Err    error
-	}{false, nil}
+	// Setup: PR is closed on GitHub (batch state)
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "CLOSED", HeadRefOid: "abc123def456789012345678901234567890abcd"},
+	}
 
 	// Setup: No PRs from GitHub
 	mockGH.PRsRequestingReview = []github.PullRequest{}
@@ -1393,17 +1392,10 @@ func TestPoll_DetectsOutdatedReviews(t *testing.T) {
 		Author:        "author",
 	}
 
-	// Setup: PR is still open
-	mockGH.IsPROpenResults["owner/repo/1"] = struct {
-		IsOpen bool
-		Err    error
-	}{true, nil}
-
-	// Setup: NEW commit on GitHub (PR is outdated)
-	mockGH.GetPRHeadSHAResults["owner/repo/1"] = struct {
-		SHA string
-		Err error
-	}{"newcommit987654321098765432109876543210fe", nil}
+	// Setup: PR is still open with NEW commit (batch state)
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "OPEN", HeadRefOid: "newcommit987654321098765432109876543210fe"},
+	}
 
 	// Setup: No PRs from GitHub search
 	mockGH.PRsRequestingReview = []github.PullRequest{}
@@ -1561,7 +1553,7 @@ func TestPoll_ReviewDataUpdate_NoBroadcastWhenUnchanged(t *testing.T) {
 
 	// Setup: GitHub returns the SAME review data (no changes)
 	mockGH.BatchGetPRReviewDataResults["owner/repo/1"] = &github.PRReviewData{
-		ApprovalCount:  2,        // Same as database
+		ApprovalCount:  2,          // Same as database
 		MyReviewStatus: "APPROVED", // Same as database
 	}
 
@@ -1743,8 +1735,8 @@ func TestPoll_CIStatusUpdate_BroadcastsWhenStateChanges(t *testing.T) {
 
 	// Setup: GitHub returns DIFFERENT CI status
 	mockGH.BatchGetCIStatusResults["owner/repo/1"] = &github.CIStatus{
-		State:        "failure",                    // CHANGED from pending to failure
-		FailedChecks: []string{"test", "lint"},     // Now has failed checks
+		State:        "failure",                // CHANGED from pending to failure
+		FailedChecks: []string{"test", "lint"}, // Now has failed checks
 	}
 
 	mockGH.IsPROpenResults["owner/repo/1"] = struct {
@@ -1830,7 +1822,7 @@ func TestPoll_CIStatusUpdate_NoBroadcastWhenUnchanged(t *testing.T) {
 
 	// Setup: GitHub returns SAME CI status
 	mockGH.BatchGetCIStatusResults["owner/repo/1"] = &github.CIStatus{
-		State:        "failure",      // Same
+		State:        "failure",        // Same
 		FailedChecks: []string{"test"}, // Same
 	}
 
@@ -2107,7 +2099,7 @@ func TestPoller_ResolvesTeamReviewStatuses(t *testing.T) {
 		GetOrgTeamMembersFunc: func(ctx context.Context, orgName, teamSlug string) ([]string, error) {
 			switch teamSlug {
 			case "viewer-team":
-				return []string{"alice", "bob"}, nil
+				return []string{"alice", "testuser"}, nil // testuser is on viewer-team
 			case "security":
 				return []string{"carol"}, nil
 			}
@@ -2161,11 +2153,14 @@ func TestPoller_ResolvesTeamReviewStatuses(t *testing.T) {
 		}
 	}
 
+	// testuser is on viewer-team (which alice approved), so should see "approved"
 	if teamStatuses["Viewer Team"] != "approved" {
 		t.Errorf("expected Viewer Team=approved, got %q", teamStatuses["Viewer Team"])
 	}
+	// testuser is NOT on security team, but ALL requested teams should appear in via_teams.
+	// Since testuser is not a member, no "my_" prefix — just "pending".
 	if teamStatuses["Security"] != "pending" {
-		t.Errorf("expected Security=pending, got %q", teamStatuses["Security"])
+		t.Errorf("expected Security=pending (shown but not highlighted), got %q", teamStatuses["Security"])
 	}
 }
 
@@ -2202,7 +2197,7 @@ func TestPoller_ResolvesTeamStatuses_OrgNameFromData(t *testing.T) {
 				t.Errorf("expected orgName 'myorg', got %q", orgName)
 			}
 			if teamSlug == "platform" {
-				return []string{"alice"}, nil
+				return []string{"alice", "testuser"}, nil // testuser is on platform team
 			}
 			return nil, nil
 		},
@@ -2322,7 +2317,7 @@ func TestPoller_UpdatesViaTeamsWhenDataIsNonEmpty(t *testing.T) {
 		},
 		GetOrgTeamMembersFunc: func(ctx context.Context, orgName, teamSlug string) ([]string, error) {
 			if teamSlug == "platform" {
-				return []string{"alice"}, nil
+				return []string{"alice", "testuser"}, nil // testuser is on platform team
 			}
 			return nil, nil
 		},
@@ -2360,14 +2355,79 @@ func TestPoller_UpdatesViaTeamsWhenDataIsNonEmpty(t *testing.T) {
 		}
 	}
 
-	if teamStatuses["Platform"] != "pending" {
-		t.Errorf("expected Platform=pending, got %q", teamStatuses["Platform"])
+	if teamStatuses["Platform"] != "my_pending" {
+		t.Errorf("expected Platform=my_pending, got %q", teamStatuses["Platform"])
+	}
+}
+
+func TestPoller_NoViewCreatedForNonReviewer(t *testing.T) {
+	// Verify that a user who is NOT a team member and NOT personally requested
+	// does NOT get a user_pr_view record created.
+
+	cfg := testConfig()
+	cfg.GitHubOrgName = "myorg"
+
+	mockGH := &MockGitHubClient{
+		PRsRequestingReview: []github.PullRequest{
+			{Owner: "owner", Repo: "repo", Number: 1, CommitSHA: "sha1", Author: "someone-else"},
+		},
+		BatchGetPRReviewDataResults: map[string]*github.PRReviewData{
+			"owner/repo/1": {UserReviews: map[string]string{"alice": "APPROVED"}},
+		},
+		BatchGetReviewerGroupsResults: map[string]*github.ReviewerGroupData{
+			"owner/repo/1": {
+				Owner:          "owner",
+				Repo:           "repo",
+				Number:         1,
+				ReviewerGroups: []string{"Backend Team"},
+				TeamSlugs:      map[string]string{"Backend Team": "backend-team"},
+				RequestedUsers: []string{"alice"},
+			},
+		},
+		GetOrgTeamMembersFunc: func(ctx context.Context, orgName, teamSlug string) ([]string, error) {
+			if teamSlug == "backend-team" {
+				return []string{"alice", "bob"}, nil // testuser is NOT on this team
+			}
+			return nil, nil
+		},
+	}
+
+	mockDB := NewMockDatabase()
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 1, RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "sha1", Status: "completed", Author: "someone-else",
+	}
+
+	poller := &Poller{
+		cfg:           cfg,
+		db:            mockDB,
+		ghClient:      mockGH,
+		activeReviews: make(map[string]ProcessInfo),
+		devUser:       &db.User{ID: 1, GitHubUsername: "testuser"},
+	}
+	poller.EventFunc = func(eventType string, payload interface{}) {}
+
+	poller.poll(context.Background())
+
+	// testuser is NOT the author, NOT on backend-team, NOT personally requested,
+	// and has no review status — EnsureUserPRView should NOT be called
+	for _, call := range mockDB.EnsureUserPRViewCalls {
+		if call.UserID == 1 && call.PRID == 1 {
+			t.Errorf("EnsureUserPRView should NOT have been called for testuser on PR 1 (not a reviewer or author)")
+		}
+	}
+
+	// UpdateUserViaTeams should NOT be called for testuser
+	for _, call := range mockDB.UpdateUserViaTeamsCalls {
+		if call.UserID == 1 && call.PRID == 1 {
+			t.Errorf("UpdateUserViaTeams should NOT have been called for testuser on PR 1")
+		}
 	}
 }
 
 func TestPoller_PersonalOnlyUpdatesViaTeams(t *testing.T) {
-	// Edge case: when ReviewerGroups contains only __PERSONAL__ (direct personal
-	// review request, no team), the poller should still update via_teams.
+	// Edge case: when user is individually requested (in RequestedUsers, no teams),
+	// the poller should set __PERSONAL__ in via_teams.
 
 	mockGH := &MockGitHubClient{
 		PRsRequestingReview: []github.PullRequest{
@@ -2381,8 +2441,9 @@ func TestPoller_PersonalOnlyUpdatesViaTeams(t *testing.T) {
 				Owner:          "owner",
 				Repo:           "repo",
 				Number:         1,
-				ReviewerGroups: []string{"__PERSONAL__"},
+				ReviewerGroups: []string{},
 				TeamSlugs:      map[string]string{},
+				RequestedUsers: []string{"testuser"},
 			},
 		},
 	}
@@ -2472,6 +2533,7 @@ func TestPoll_ApprovalAndReviewStatusUpdateWhenAutoReviewDisabled(t *testing.T) 
 	mockGH.BatchGetPRReviewDataResults["owner/repo/1"] = &github.PRReviewData{
 		ApprovalCount:  3,
 		MyReviewStatus: "APPROVED",
+		UserReviews:    map[string]string{"testuser": "APPROVED"},
 	}
 
 	// CI stays the same
@@ -2677,17 +2739,10 @@ func TestPoll_MetadataUpdatesRunBeforeCleanup(t *testing.T) {
 		FailedChecks: []string{},
 	}
 
-	// PR is still open (cleanupClosedPRs will check this)
-	mockGH.IsPROpenResults["owner/repo/1"] = struct {
-		IsOpen bool
-		Err    error
-	}{true, nil}
-
-	// Same commit (checkForOutdatedReviews will check this)
-	mockGH.GetPRHeadSHAResults["owner/repo/1"] = struct {
-		SHA string
-		Err error
-	}{"abc123def456789012345678901234567890abcd", nil}
+	// PR is still open with same commit (batch state)
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "OPEN", HeadRefOid: "abc123def456789012345678901234567890abcd"},
+	}
 
 	// No new PRs from GitHub search (PR only comes from DB)
 	mockGH.PRsRequestingReview = []github.PullRequest{}
@@ -2701,42 +2756,31 @@ func TestPoll_MetadataUpdatesRunBeforeCleanup(t *testing.T) {
 	ctx := context.Background()
 	poller.poll(ctx)
 
-	// Verify call ordering: BatchGetPRReviewData must come before IsPROpen and GetPRHeadSHA
-	batchIdx := -1
-	isPROpenIdx := -1
-	getPRHeadSHAIdx := -1
+	// Verify call ordering: BatchGetPRReviewData must come before BatchGetPRState
+	reviewDataIdx := -1
+	prStateIdx := -1
 	for i, call := range mockGH.CallLog {
 		switch call {
 		case "BatchGetPRReviewData":
-			if batchIdx == -1 {
-				batchIdx = i
+			if reviewDataIdx == -1 {
+				reviewDataIdx = i
 			}
-		case "IsPROpen":
-			if isPROpenIdx == -1 {
-				isPROpenIdx = i
-			}
-		case "GetPRHeadSHA":
-			if getPRHeadSHAIdx == -1 {
-				getPRHeadSHAIdx = i
+		case "BatchGetPRState":
+			if prStateIdx == -1 {
+				prStateIdx = i
 			}
 		}
 	}
 
-	if batchIdx == -1 {
+	if reviewDataIdx == -1 {
 		t.Fatal("BatchGetPRReviewData was never called")
 	}
-	if isPROpenIdx == -1 {
-		t.Fatal("IsPROpen was never called (cleanupClosedPRs did not run)")
-	}
-	if getPRHeadSHAIdx == -1 {
-		t.Fatal("GetPRHeadSHA was never called (checkForOutdatedReviews did not run)")
+	if prStateIdx == -1 {
+		t.Fatal("BatchGetPRState was never called (cleanup+outdated did not run)")
 	}
 
-	if batchIdx > isPROpenIdx {
-		t.Errorf("BatchGetPRReviewData (index %d) should run BEFORE IsPROpen (index %d) - metadata must be refreshed before slow cleanup", batchIdx, isPROpenIdx)
-	}
-	if batchIdx > getPRHeadSHAIdx {
-		t.Errorf("BatchGetPRReviewData (index %d) should run BEFORE GetPRHeadSHA (index %d) - metadata must be refreshed before outdated check", batchIdx, getPRHeadSHAIdx)
+	if reviewDataIdx > prStateIdx {
+		t.Errorf("BatchGetPRReviewData (index %d) should run BEFORE BatchGetPRState (index %d) - metadata must be refreshed before cleanup", reviewDataIdx, prStateIdx)
 	}
 
 	// Also verify metadata WAS updated despite cleanup running after
@@ -3086,7 +3130,7 @@ func TestProcessReviewImmediate_PollCycleSkipsTrackedPR(t *testing.T) {
 	pr := github.PullRequest{
 		Owner: "owner", Repo: "repo", Number: 1,
 		CommitSHA: "abc123def456789012345678901234567890abcd",
-		Title: "Test PR", Author: "author",
+		Title:     "Test PR", Author: "author",
 	}
 	dbPR := mockDB.PRs["owner/repo/1"]
 	isTracked := poller.isTracked("owner", "repo", 1)

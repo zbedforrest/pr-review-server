@@ -119,6 +119,34 @@ func (g *GormDB) UpsertPR(pr *PR) error {
 	}).Create(model).Error
 }
 
+// BatchUpsertPRs inserts or updates multiple PRs in a single batch operation.
+func (g *GormDB) BatchUpsertPRs(prs []*PR) error {
+	if len(prs) == 0 {
+		return nil
+	}
+
+	models := make([]PRModel, len(prs))
+	for i, p := range prs {
+		models[i] = *prToPRModel(p)
+	}
+
+	return g.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"last_commit_sha",
+			"review_path",
+			"status",
+			"title",
+			"author",
+			"approval_count",
+			"my_review_status",
+			"draft",
+			"ci_state",
+			"ci_failed_checks",
+		}),
+	}).CreateInBatches(&models, 500).Error
+}
+
 // UpdatePRStatus updates the status of a PR
 func (g *GormDB) UpdatePRStatus(owner, repo string, prNumber int, status string) error {
 	updates := map[string]interface{}{"status": status}

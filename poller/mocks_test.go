@@ -48,11 +48,23 @@ type MockGitHubClient struct {
 	// BatchGetReviewerGroupsResults to return from BatchGetReviewerGroups
 	BatchGetReviewerGroupsResults map[string]*github.ReviewerGroupData
 
+	// AllOpenPRs to return from GetAllOpenPRs
+	AllOpenPRs []github.PullRequest
+
+	// SearchOpenPRsResults to return from SearchOpenPRs
+	SearchOpenPRsResults []github.PRInfo
+	// BatchGetPRDetailsResults to return from BatchGetPRDetails
+	BatchGetPRDetailsResults map[string]github.PullRequest
+
+	// BatchGetPRStateResults to return from BatchGetPRState
+	BatchGetPRStateResults map[string]*github.PRState
+
 	// GetOrgTeamMembersFunc optional function to customize GetOrgTeamMembers behavior
 	GetOrgTeamMembersFunc func(ctx context.Context, orgName, teamSlug string) ([]string, error)
 
 	// Track calls for verification
-	IsPROpenCalls []struct {
+	GetAllOpenPRsCalls []string // org names passed
+	IsPROpenCalls      []struct {
 		Owner    string
 		Repo     string
 		PRNumber int
@@ -94,11 +106,42 @@ func NewMockGitHubClient() *MockGitHubClient {
 }
 
 func (m *MockGitHubClient) GetPRsRequestingReview(ctx context.Context) ([]github.PullRequest, error) {
+	m.callLogMu.Lock()
+	m.CallLog = append(m.CallLog, "GetPRsRequestingReview")
+	m.callLogMu.Unlock()
 	return m.PRsRequestingReview, nil
 }
 
 func (m *MockGitHubClient) GetMyOpenPRs(ctx context.Context) ([]github.PullRequest, error) {
+	m.callLogMu.Lock()
+	m.CallLog = append(m.CallLog, "GetMyOpenPRs")
+	m.callLogMu.Unlock()
 	return m.MyOpenPRs, nil
+}
+
+func (m *MockGitHubClient) GetAllOpenPRs(ctx context.Context, orgName string) ([]github.PullRequest, error) {
+	m.callLogMu.Lock()
+	m.CallLog = append(m.CallLog, "GetAllOpenPRs")
+	m.GetAllOpenPRsCalls = append(m.GetAllOpenPRsCalls, orgName)
+	m.callLogMu.Unlock()
+	return m.AllOpenPRs, nil
+}
+
+func (m *MockGitHubClient) SearchOpenPRs(ctx context.Context, orgName string) ([]github.PRInfo, error) {
+	m.callLogMu.Lock()
+	m.CallLog = append(m.CallLog, "SearchOpenPRs")
+	m.callLogMu.Unlock()
+	return m.SearchOpenPRsResults, nil
+}
+
+func (m *MockGitHubClient) BatchGetPRDetails(ctx context.Context, prs []github.PRInfo) (map[string]github.PullRequest, error) {
+	m.callLogMu.Lock()
+	m.CallLog = append(m.CallLog, "BatchGetPRDetails")
+	m.callLogMu.Unlock()
+	if m.BatchGetPRDetailsResults != nil {
+		return m.BatchGetPRDetailsResults, nil
+	}
+	return make(map[string]github.PullRequest), nil
 }
 
 func (m *MockGitHubClient) IsPROpen(ctx context.Context, owner, repo string, prNumber int) (bool, error) {
@@ -174,6 +217,17 @@ func (m *MockGitHubClient) BatchGetReviewerGroups(ctx context.Context, prs []git
 	return nil, nil
 }
 
+func (m *MockGitHubClient) BatchGetPRState(ctx context.Context, prs []github.PRInfo) (map[string]*github.PRState, error) {
+	m.callLogMu.Lock()
+	m.CallLog = append(m.CallLog, "BatchGetPRState")
+	m.callLogMu.Unlock()
+	if m.BatchGetPRStateResults != nil {
+		return m.BatchGetPRStateResults, nil
+	}
+	// Default: return empty map (no state data — phases will skip all PRs)
+	return make(map[string]*github.PRState), nil
+}
+
 func (m *MockGitHubClient) GetOrgTeamMembers(ctx context.Context, orgName, teamSlug string) ([]string, error) {
 	if m.GetOrgTeamMembersFunc != nil {
 		return m.GetOrgTeamMembersFunc(ctx, orgName, teamSlug)
@@ -226,6 +280,9 @@ type MockDatabase struct {
 		PRID     int
 		IsAuthor bool
 	}
+
+	// Users in the mock database
+	Users []db.User
 
 	// User PR assignments (keyed by "userID/prID")
 	UserPRAssignments map[string]*db.UserPRAssignment
@@ -462,6 +519,13 @@ func (m *MockDatabase) GetUserByUsername(username string) (*db.User, error) {
 	return nil, nil
 }
 
+func (m *MockDatabase) GetAllUsers() ([]db.User, error) {
+	if m.Users == nil {
+		return []db.User{}, nil
+	}
+	return m.Users, nil
+}
+
 func (m *MockDatabase) CreateUser(user *db.User) error {
 	return nil
 }
@@ -544,6 +608,44 @@ func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error {
 		PRID     int
 		IsAuthor bool
 	}{userID, prID, isAuthor})
+	return nil
+}
+
+func (m *MockDatabase) BatchUpsertPRs(prs []*db.PR) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, pr := range prs {
+		key := prDBKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+		m.PRs[key] = pr
+	}
+	return nil
+}
+
+func (m *MockDatabase) BatchUpsertUserPRViews(items []db.UserPRViewBatchItem) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Decompose into individual call trackers for backward compatibility
+	for _, item := range items {
+		m.EnsureUserPRViewCalls = append(m.EnsureUserPRViewCalls, struct {
+			UserID   int
+			PRID     int
+			IsAuthor bool
+		}{item.UserID, item.PRID, item.IsAuthor})
+		if item.ReviewStatus != nil {
+			m.UpdateUserReviewStatusCalls = append(m.UpdateUserReviewStatusCalls, struct {
+				UserID int
+				PRID   int
+				Status string
+			}{item.UserID, item.PRID, *item.ReviewStatus})
+		}
+		if item.ViaTeams != nil {
+			m.UpdateUserViaTeamsCalls = append(m.UpdateUserViaTeamsCalls, struct {
+				UserID   int
+				PRID     int
+				ViaTeams []string
+			}{item.UserID, item.PRID, *item.ViaTeams})
+		}
+	}
 	return nil
 }
 

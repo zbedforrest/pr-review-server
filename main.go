@@ -136,7 +136,13 @@ func start(cfg *config.Config) {
 			log.Fatalf("Failed to get GitHub App installation token: %v", err)
 		}
 		ghClient = github.NewClient(token, "")
-		log.Println("GitHub client initialized with installation token")
+		ghClient.SetAppClient(appClient)
+		log.Println("GitHub client initialized with installation token (multi-user mode)")
+		if cfg.GitHubOrgName != "" {
+			log.Printf("Polling all open PRs for org: %s", cfg.GitHubOrgName)
+		} else {
+			log.Println("WARNING: GITHUB_ORG_NAME not set, poller will not find PRs in multi-user mode")
+		}
 	}
 
 	// Initialize GCS client (optional in dev mode)

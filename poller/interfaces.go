@@ -42,6 +42,18 @@ type GitHubClient interface {
 	// BatchGetReviewerGroups fetches reviewer group info for multiple PRs using GraphQL
 	BatchGetReviewerGroups(ctx context.Context, prs []github.PullRequest) (map[string]*github.ReviewerGroupData, error)
 
+	// GetAllOpenPRs returns all open PRs for the given org (used in multi-user mode)
+	GetAllOpenPRs(ctx context.Context, orgName string) ([]github.PullRequest, error)
+
+	// SearchOpenPRs returns lightweight PR identifiers for all open PRs in the org
+	SearchOpenPRs(ctx context.Context, orgName string) ([]github.PRInfo, error)
+
+	// BatchGetPRDetails fetches full details for a set of PRs via GraphQL
+	BatchGetPRDetails(ctx context.Context, prs []github.PRInfo) (map[string]github.PullRequest, error)
+
+	// BatchGetPRState fetches state (open/closed/merged) and HEAD SHA for multiple PRs using GraphQL
+	BatchGetPRState(ctx context.Context, prs []github.PRInfo) (map[string]*github.PRState, error)
+
 	// GetOrgTeamMembers fetches members of a GitHub team by org and team slug
 	GetOrgTeamMembers(ctx context.Context, orgName, teamSlug string) ([]string, error)
 }

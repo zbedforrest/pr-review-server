@@ -16,7 +16,7 @@ type Config struct {
 	GitHubAppClientID       string
 	GitHubAppClientSecret   string
 	GitHubAppInstallationID string
-	GitHubOrgName           string // Organization name for membership verification
+	GitHubOrgName           string // Organization name for membership verification and PR polling
 
 	// OAuth configuration
 	OAuthCallbackURL string
@@ -78,7 +78,7 @@ func Load() *Config {
 		GitHubAppClientID:       os.Getenv("GITHUB_APP_CLIENT_ID"),
 		GitHubAppClientSecret:   os.Getenv("GITHUB_APP_CLIENT_SECRET"),
 		GitHubAppInstallationID: os.Getenv("GITHUB_APP_INSTALLATION_ID"),
-		GitHubOrgName:           os.Getenv("GITHUB_ORG_NAME"), // Required for multi-user mode
+		GitHubOrgName:           os.Getenv("GITHUB_ORG_NAME"),
 
 		// OAuth
 		OAuthCallbackURL: os.Getenv("OAUTH_CALLBACK_URL"),

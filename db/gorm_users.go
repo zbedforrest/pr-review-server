@@ -86,6 +86,19 @@ func (g *GormDB) UpdateUserLastLogin(userID int) error {
 	return g.db.Model(&UserModel{}).Where("id = ?", userID).Update("last_login_at", now).Error
 }
 
+// GetAllUsers returns all users in the database
+func (g *GormDB) GetAllUsers() ([]User, error) {
+	var models []UserModel
+	if err := g.db.Find(&models).Error; err != nil {
+		return nil, err
+	}
+	users := make([]User, len(models))
+	for i, m := range models {
+		users[i] = *userModelToUser(&m)
+	}
+	return users, nil
+}
+
 // GetUserByUsername retrieves a user by their GitHub username
 func (g *GormDB) GetUserByUsername(username string) (*User, error) {
 	var model UserModel
