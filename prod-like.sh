@@ -92,6 +92,7 @@ cd frontend && npm run build && cd ..
 
 echo ""
 echo "Building backend..."
+go mod download
 go build -o pr-review-server .
 
 echo ""

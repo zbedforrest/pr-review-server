@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,15 +201,14 @@ func (c *AppClient) GetToken(ctx context.Context) (string, error) {
 	return c.getInstallationToken(ctx)
 }
 
-// GetAllOpenPRsForOrg fetches all open PRs across all org repos
-// This is used by the shared poller to find PRs for all users
-func (c *AppClient) GetAllOpenPRsForOrg(ctx context.Context, orgName string) ([]PullRequest, error) {
+// SearchOpenPRsForOrg returns lightweight PR identifiers for all open PRs in the org.
+// This uses the GitHub Search API and is fast (no per-PR detail fetches).
+func (c *AppClient) SearchOpenPRsForOrg(ctx context.Context, orgName string) ([]PRInfo, error) {
 	gh, err := c.GetClient(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Search for all open PRs in the org
 	query := fmt.Sprintf("type:pr state:open org:%s", orgName)
 	log.Printf("[GITHUB APP] Search query: %s", query)
 
@@ -216,7 +216,7 @@ func (c *AppClient) GetAllOpenPRsForOrg(ctx context.Context, orgName string) ([]
 		ListOptions: gogithub.ListOptions{PerPage: 100},
 	}
 
-	var allPRs []PullRequest
+	var allPRs []PRInfo
 	for {
 		result, resp, err := gh.Search.Issues(ctx, query, opts)
 		if err != nil {
@@ -230,35 +230,17 @@ func (c *AppClient) GetAllOpenPRsForOrg(ctx context.Context, orgName string) ([]
 				continue
 			}
 
-			// Extract owner and repo from repository URL
 			repoURL := issue.GetRepositoryURL()
 			parts := splitRepoURL(repoURL)
 			if len(parts) < 2 {
 				log.Printf("[GITHUB APP] Invalid repository URL: %s", repoURL)
 				continue
 			}
-			owner := parts[0]
-			repo := parts[1]
-			prNumber := issue.GetNumber()
 
-			// Get full PR details to get HEAD SHA
-			pr, _, err := gh.PullRequests.Get(ctx, owner, repo, prNumber)
-			if err != nil {
-				log.Printf("[GITHUB APP] Error fetching PR details for %s/%s#%d: %v", owner, repo, prNumber, err)
-				continue
-			}
-
-			createdAt := pr.GetCreatedAt().Time
-			allPRs = append(allPRs, PullRequest{
-				Owner:     owner,
-				Repo:      repo,
-				Number:    prNumber,
-				CommitSHA: pr.GetHead().GetSHA(),
-				Title:     pr.GetTitle(),
-				URL:       pr.GetHTMLURL(),
-				Author:    pr.GetUser().GetLogin(),
-				CreatedAt: &createdAt,
-				Draft:     pr.GetDraft(),
+			allPRs = append(allPRs, PRInfo{
+				Owner:  parts[0],
+				Repo:   parts[1],
+				Number: issue.GetNumber(),
 			})
 		}
 
@@ -266,6 +248,122 @@ func (c *AppClient) GetAllOpenPRsForOrg(ctx context.Context, orgName string) ([]
 			break
 		}
 		opts.Page = resp.NextPage
+	}
+
+	return allPRs, nil
+}
+
+// batchGetPRDetailsChunk fetches PR details for a batch of PRs via GraphQL.
+// Max ~50 PRs per call to stay within GraphQL complexity limits.
+func (c *AppClient) batchGetPRDetailsChunk(ctx context.Context, prs []PRInfo) (map[string]PullRequest, error) {
+	if len(prs) == 0 {
+		return make(map[string]PullRequest), nil
+	}
+
+	// Build GraphQL query with aliases
+	var queryBuilder strings.Builder
+	queryBuilder.WriteString("query {")
+	aliasMap := make(map[string]PRInfo) // alias -> PRInfo
+
+	for i, pr := range prs {
+		alias := fmt.Sprintf("pr%d", i)
+		aliasMap[alias] = pr
+		queryBuilder.WriteString(fmt.Sprintf(`
+			%s: repository(owner: %q, name: %q) {
+				pullRequest(number: %d) {
+					number
+					title
+					url
+					author { login }
+					createdAt
+					isDraft
+					headRefOid
+				}
+			}
+		`, alias, pr.Owner, pr.Repo, pr.Number))
+	}
+	queryBuilder.WriteString("}")
+
+	var graphqlResp GraphQLPRDetailsResponse
+	if err := c.executeGraphQL(ctx, queryBuilder.String(), &graphqlResp); err != nil {
+		return nil, err
+	}
+
+	results := make(map[string]PullRequest)
+	for alias, info := range aliasMap {
+		repoData, ok := graphqlResp.Data[alias]
+		if !ok {
+			log.Printf("[GITHUB APP] Warning: No data for alias %s (PR %s/%s#%d)", alias, info.Owner, info.Repo, info.Number)
+			continue
+		}
+
+		pr := repoData.PullRequest
+		var createdAt *time.Time
+		if t, err := time.Parse(time.RFC3339, pr.CreatedAt); err == nil {
+			createdAt = &t
+		}
+
+		key := prKey(info.Owner, info.Repo, pr.Number)
+		results[key] = PullRequest{
+			Owner:     info.Owner,
+			Repo:      info.Repo,
+			Number:    pr.Number,
+			CommitSHA: pr.HeadRefOid,
+			Title:     pr.Title,
+			URL:       pr.URL,
+			Author:    pr.Author.Login,
+			CreatedAt: createdAt,
+			Draft:     pr.IsDraft,
+		}
+	}
+
+	return results, nil
+}
+
+// BatchGetPRDetails fetches full PR details for multiple PRs using GraphQL.
+// PRs are batched in groups of 50 to stay within GraphQL complexity limits.
+func (c *AppClient) BatchGetPRDetails(ctx context.Context, prs []PRInfo) (map[string]PullRequest, error) {
+	const batchSize = 50
+	results := make(map[string]PullRequest)
+
+	for i := 0; i < len(prs); i += batchSize {
+		end := i + batchSize
+		if end > len(prs) {
+			end = len(prs)
+		}
+		chunk := prs[i:end]
+
+		log.Printf("[GITHUB APP] Fetching PR details batch %d-%d of %d via GraphQL", i+1, end, len(prs))
+		chunkResults, err := c.batchGetPRDetailsChunk(ctx, chunk)
+		if err != nil {
+			log.Printf("[GITHUB APP] Warning: Failed to fetch PR details batch: %v", err)
+			continue
+		}
+
+		for k, v := range chunkResults {
+			results[k] = v
+		}
+	}
+
+	return results, nil
+}
+
+// GetAllOpenPRsForOrg fetches all open PRs across all org repos.
+// Uses search API for discovery + GraphQL for batch detail fetching.
+func (c *AppClient) GetAllOpenPRsForOrg(ctx context.Context, orgName string) ([]PullRequest, error) {
+	infos, err := c.SearchOpenPRsForOrg(ctx, orgName)
+	if err != nil {
+		return nil, err
+	}
+
+	detailsMap, err := c.BatchGetPRDetails(ctx, infos)
+	if err != nil {
+		return nil, err
+	}
+
+	allPRs := make([]PullRequest, 0, len(detailsMap))
+	for _, pr := range detailsMap {
+		allPRs = append(allPRs, pr)
 	}
 
 	return allPRs, nil

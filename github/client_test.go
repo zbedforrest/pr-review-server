@@ -92,31 +92,40 @@ func TestBatchGetReviewerGroups(t *testing.T) {
 		t.Fatalf("BatchGetReviewerGroups failed: %v", err)
 	}
 
-	// Verify PR 101: Has team "backend-team"
+	// Verify PR 101: Has team "backend-team" and user "other-user" in RequestedUsers
 	data101, ok := results["owner/repo/101"]
 	if !ok {
 		t.Fatal("Result for PR 101 not found")
 	}
 	if len(data101.ReviewerGroups) != 1 || data101.ReviewerGroups[0] != "backend-team" {
-		t.Errorf("PR 101: Expected ['backend-team'], got %v", data101.ReviewerGroups)
+		t.Errorf("PR 101: Expected ReviewerGroups ['backend-team'], got %v", data101.ReviewerGroups)
+	}
+	if len(data101.RequestedUsers) != 1 || data101.RequestedUsers[0] != "other-user" {
+		t.Errorf("PR 101: Expected RequestedUsers ['other-user'], got %v", data101.RequestedUsers)
 	}
 
-	// Verify PR 102: Has personal request for "test-user" (me) -> ["__PERSONAL__"]
+	// Verify PR 102: Personal request for "test-user" -> no teams, but in RequestedUsers
 	data102, ok := results["owner/repo/102"]
 	if !ok {
 		t.Fatal("Result for PR 102 not found")
 	}
-	if len(data102.ReviewerGroups) != 1 || data102.ReviewerGroups[0] != "__PERSONAL__" {
-		t.Errorf("PR 102: Expected ['__PERSONAL__'], got %v", data102.ReviewerGroups)
+	if len(data102.ReviewerGroups) != 0 {
+		t.Errorf("PR 102: Expected empty ReviewerGroups, got %v", data102.ReviewerGroups)
+	}
+	if len(data102.RequestedUsers) != 1 || data102.RequestedUsers[0] != "test-user" {
+		t.Errorf("PR 102: Expected RequestedUsers ['test-user'], got %v", data102.RequestedUsers)
 	}
 
-	// Verify PR 103: No requests -> []
+	// Verify PR 103: No requests -> empty
 	data103, ok := results["owner/repo/103"]
 	if !ok {
 		t.Fatal("Result for PR 103 not found")
 	}
 	if len(data103.ReviewerGroups) != 0 {
-		t.Errorf("PR 103: Expected [], got %v", data103.ReviewerGroups)
+		t.Errorf("PR 103: Expected empty ReviewerGroups, got %v", data103.ReviewerGroups)
+	}
+	if len(data103.RequestedUsers) != 0 {
+		t.Errorf("PR 103: Expected empty RequestedUsers, got %v", data103.RequestedUsers)
 	}
 }
 

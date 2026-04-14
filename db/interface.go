@@ -76,6 +76,16 @@ type UserPRView struct {
 	Hidden       bool   // Whether this PR is hidden from the user's view
 }
 
+// UserPRViewBatchItem represents a single row for batch upsert into user_pr_views.
+// Pointer fields mean "update this column on conflict"; nil means "preserve existing value".
+type UserPRViewBatchItem struct {
+	UserID       int
+	PRID         int
+	IsAuthor     bool
+	ReviewStatus *string   // nil = don't update
+	ViaTeams     *[]string // nil = don't update
+}
+
 // PRWithUserView combines PR data with user-specific view data
 type PRWithUserView struct {
 	PR
@@ -98,12 +108,12 @@ type TelemetryEvent struct {
 
 // TelemetryStats represents aggregated telemetry statistics
 type TelemetryStats struct {
-	TotalEvents  int                    `json:"total_events"`
-	ActiveUsers  int                    `json:"active_users"`
-	ByAction     []ActionCount          `json:"by_action"`
-	ByDay        []DayCount             `json:"by_day"`
-	TopSearches  []LabelCount           `json:"top_searches"`
-	TopPRs       []PRInteractionCount   `json:"top_prs"`
+	TotalEvents int                  `json:"total_events"`
+	ActiveUsers int                  `json:"active_users"`
+	ByAction    []ActionCount        `json:"by_action"`
+	ByDay       []DayCount           `json:"by_day"`
+	TopSearches []LabelCount         `json:"top_searches"`
+	TopPRs      []PRInteractionCount `json:"top_prs"`
 }
 
 // ActionCount represents event count per action
@@ -164,6 +174,7 @@ type Database interface {
 	GetUserByGitHubID(githubID int64) (*User, error)
 	GetUserByID(id int) (*User, error)
 	GetUserByUsername(username string) (*User, error)
+	GetAllUsers() ([]User, error)
 	CreateUser(user *User) error
 	UpdateUserLastLogin(userID int) error
 
@@ -183,6 +194,10 @@ type Database interface {
 	HidePRForUser(userID, prID int) error
 	EnsureUserPRView(userID, prID int, isAuthor bool) error
 	MigrateLegacyNotes(userID int) (int, error)
+
+	// Batch operations (used by poller for efficiency)
+	BatchUpsertPRs(prs []*PR) error
+	BatchUpsertUserPRViews(views []UserPRViewBatchItem) error
 
 	// Telemetry operations
 	CreateTelemetryEvents(events []TelemetryEvent) error

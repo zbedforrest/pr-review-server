@@ -108,6 +108,24 @@ type GraphQLCIStatusResponse struct {
 	Data map[string]RepoCIStatusData `json:"data"`
 }
 
+// GraphQL response types for PR state queries (open/closed + HEAD SHA)
+
+// PRStateGraphQL represents PR state data in GraphQL response
+type PRStateGraphQL struct {
+	State      string `json:"state"`      // OPEN, CLOSED, MERGED
+	HeadRefOid string `json:"headRefOid"` // current HEAD SHA
+}
+
+// RepoStateData represents repository data containing PR state info
+type RepoStateData struct {
+	PullRequest PRStateGraphQL `json:"pullRequest"`
+}
+
+// GraphQLPRStateResponse represents the full GraphQL response for PR state queries
+type GraphQLPRStateResponse struct {
+	Data map[string]RepoStateData `json:"data"`
+}
+
 // PRInfo holds basic PR identification info for batch operations
 type PRInfo struct {
 	Owner  string
@@ -121,4 +139,30 @@ type PRInfoWithCommit struct {
 	Repo      string
 	Number    int
 	CommitSHA string
+}
+
+// PRDetailsAuthor represents the author in a PR details GraphQL response
+type PRDetailsAuthor struct {
+	Login string `json:"login"`
+}
+
+// PRDetailsGraphQL represents PR details returned by a GraphQL query
+type PRDetailsGraphQL struct {
+	Number     int             `json:"number"`
+	Title      string          `json:"title"`
+	URL        string          `json:"url"`
+	Author     PRDetailsAuthor `json:"author"`
+	CreatedAt  string          `json:"createdAt"`
+	IsDraft    bool            `json:"isDraft"`
+	HeadRefOid string          `json:"headRefOid"`
+}
+
+// RepoPRDetailsData represents repository data containing PR details
+type RepoPRDetailsData struct {
+	PullRequest PRDetailsGraphQL `json:"pullRequest"`
+}
+
+// GraphQLPRDetailsResponse represents the full GraphQL response for PR detail queries
+type GraphQLPRDetailsResponse struct {
+	Data map[string]RepoPRDetailsData `json:"data"`
 }

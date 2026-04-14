@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 const graphQLEndpoint = "https://api.github.com/graphql"
@@ -24,7 +25,53 @@ func (c *Client) executeGraphQL(ctx context.Context, query string, result interf
 		return fmt.Errorf("failed to build HTTP request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	// Use fresh installation token from AppClient if available (tokens expire after 1 hour).
+	// Fall back to static token for single-user/dev mode.
+	authToken := c.token
+	if c.appClient != nil {
+		if freshToken, err := c.appClient.GetToken(ctx); err == nil {
+			authToken = freshToken
+		}
+	}
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute GraphQL query: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+		return fmt.Errorf("failed to decode GraphQL response: %w", err)
+	}
+
+	return nil
+}
+
+// executeGraphQL on AppClient executes a GraphQL query using the App installation token.
+func (c *AppClient) executeGraphQL(ctx context.Context, query string, result interface{}) error {
+	token, err := c.getInstallationToken(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get installation token: %w", err)
+	}
+
+	graphqlQuery := map[string]string{"query": query}
+	jsonData, err := json.Marshal(graphqlQuery)
+	if err != nil {
+		return fmt.Errorf("failed to marshal GraphQL query: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", graphQLEndpoint, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to build HTTP request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -119,4 +166,16 @@ func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myR
 // prKey generates a unique key for a PR in the format "owner/repo/number".
 func prKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s/%d", owner, repo, number)
+}
+
+// buildPRStateQuery builds a GraphQL query to fetch state + HEAD SHA for multiple PRs.
+// Each PR gets its own alias with a full repository lookup (cross-repo pattern).
+func buildPRStateQuery(prs []PRInfo) string {
+	var qb strings.Builder
+	qb.WriteString("query {")
+	for i, pr := range prs {
+		fmt.Fprintf(&qb, ` pr%d: repository(owner: %q, name: %q) { pullRequest(number: %d) { state headRefOid } }`, i, pr.Owner, pr.Repo, pr.Number)
+	}
+	qb.WriteString(" }")
+	return qb.String()
 }

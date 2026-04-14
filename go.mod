@@ -1,8 +1,8 @@
 module pr-review-server
 
-go 1.24.0
+go 1.25.0
 
-toolchain go1.24.11
+toolchain go1.25.8
 
 require (
 	cloud.google.com/go/storage v1.59.2

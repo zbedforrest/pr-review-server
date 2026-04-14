@@ -69,8 +69,27 @@ export function ReviewPRsSection({ showReviewColumns = true, onToggleColumns, se
 
   const autoReviewEnabled = settings?.auto_review_requested_prs ?? true;
 
+  const showSyncBanner = !isLoading && !error && allPRs.length === 0;
+
   return (
     <>
+      {showSyncBanner && (
+        <div style={{
+          background: '#3d3520',
+          border: '1px solid #6e5c2e',
+          borderRadius: '6px',
+          padding: '16px',
+          marginBottom: '24px',
+          color: '#e3b341',
+          textAlign: 'center',
+        }}>
+          <strong>Syncing your PRs...</strong>
+          <p style={{ margin: '8px 0 0', color: '#c9a83c', fontSize: '0.9em' }}>
+            We&apos;re loading your team assignments and PR data. This usually takes a minute or two on first login.
+          </p>
+        </div>
+      )}
+
       {/* My PRs Section */}
       <section style={{ marginBottom: '32px' }}>
         <div className="section-header">

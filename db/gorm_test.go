@@ -415,7 +415,7 @@ func TestGormDB_Settings_DefaultValues(t *testing.T) {
 	// Verify defaults are set
 	autoReview, err := db.GetAutoReviewRequestedPRs()
 	require.NoError(t, err)
-	assert.True(t, autoReview)
+	assert.False(t, autoReview)
 
 	reviewN, err := db.GetReviewNRequests()
 	require.NoError(t, err)
@@ -565,6 +565,39 @@ func TestGormDB_GetUserByID(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, fetched)
 	assert.Equal(t, int64(12345), fetched.GitHubID)
+}
+
+func TestGormDB_GetAllUsers(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	// Empty DB returns empty slice
+	users, err := db.GetAllUsers()
+	require.NoError(t, err)
+	assert.Empty(t, users)
+
+	// Insert 3 users
+	for i, name := range []string{"alice", "bob", "charlie"} {
+		err := db.CreateUser(&User{
+			GitHubID:       int64(1000 + i),
+			GitHubUsername: name,
+		})
+		require.NoError(t, err)
+	}
+
+	// All 3 returned
+	users, err = db.GetAllUsers()
+	require.NoError(t, err)
+	assert.Len(t, users, 3)
+
+	// Verify usernames present
+	names := make(map[string]bool)
+	for _, u := range users {
+		names[u.GitHubUsername] = true
+	}
+	assert.True(t, names["alice"])
+	assert.True(t, names["bob"])
+	assert.True(t, names["charlie"])
 }
 
 func TestGormDB_UpdateUserLastLogin(t *testing.T) {

@@ -65,6 +65,10 @@ func (m *MockDatabase) GetUserByUsername(username string) (*db.User, error) {
 	return nil, nil
 }
 
+func (m *MockDatabase) GetAllUsers() ([]db.User, error) {
+	return []db.User{}, nil
+}
+
 func (m *MockDatabase) CreateUser(user *db.User) error {
 	if m.CreateUserErr != nil {
 		return m.CreateUserErr
@@ -150,11 +154,15 @@ func (m *MockDatabase) UpdateUserPRNotes(userID, prID int, notes string) error  
 func (m *MockDatabase) UpdateUserReviewStatus(userID, prID int, status string) error { return nil }
 func (m *MockDatabase) UpdateUserViaTeams(userID, prID int, viaTeams []string) error { return nil }
 func (m *MockDatabase) HidePRForUser(userID, prID int) error                         { return nil }
-func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error { return nil }
-func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error)             { return 0, nil }
-func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error { return nil }
-func (m *MockDatabase) GetTelemetryStats(days int) (*db.TelemetryStats, error) { return &db.TelemetryStats{}, nil }
-func (m *MockDatabase) Close() error                                           { return nil }
+func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error       { return nil }
+func (m *MockDatabase) BatchUpsertPRs(prs []*db.PR) error                            { return nil }
+func (m *MockDatabase) BatchUpsertUserPRViews(views []db.UserPRViewBatchItem) error  { return nil }
+func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error)                   { return 0, nil }
+func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error       { return nil }
+func (m *MockDatabase) GetTelemetryStats(days int) (*db.TelemetryStats, error) {
+	return &db.TelemetryStats{}, nil
+}
+func (m *MockDatabase) Close() error { return nil }
 
 // Test helper to create a test Auth instance
 func newTestAuth(database db.Database) *Auth {

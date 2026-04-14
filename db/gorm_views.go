@@ -149,6 +149,73 @@ func (g *GormDB) UpdateUserViaTeams(userID, prID int, viaTeams []string) error {
 		Update("via_teams", JSONStringArray(viaTeams)).Error
 }
 
+// BatchUpsertUserPRViews batch-inserts or updates user_pr_view records.
+// Items are grouped by which optional fields are set, and each group gets a single
+// INSERT ... ON CONFLICT DO UPDATE with the appropriate columns.
+func (g *GormDB) BatchUpsertUserPRViews(items []UserPRViewBatchItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Group items by which optional fields are set
+	type group struct {
+		models    []UserPRViewModel
+		doUpdates []string
+	}
+
+	groups := map[string]*group{
+		"ensure":       {doUpdates: []string{"hidden", "is_author"}},
+		"review":       {doUpdates: []string{"hidden", "is_author", "review_status"}},
+		"teams":        {doUpdates: []string{"hidden", "is_author", "via_teams"}},
+		"review+teams": {doUpdates: []string{"hidden", "is_author", "review_status", "via_teams"}},
+	}
+
+	for _, item := range items {
+		model := UserPRViewModel{
+			UserID:   uint(item.UserID),
+			PRID:     uint(item.PRID),
+			IsAuthor: item.IsAuthor,
+			Hidden:   false,
+		}
+
+		var groupKey string
+		hasReview := item.ReviewStatus != nil
+		hasTeams := item.ViaTeams != nil
+
+		if hasReview && hasTeams {
+			groupKey = "review+teams"
+			model.ReviewStatus = *item.ReviewStatus
+			model.ViaTeams = JSONStringArray(*item.ViaTeams)
+		} else if hasReview {
+			groupKey = "review"
+			model.ReviewStatus = *item.ReviewStatus
+		} else if hasTeams {
+			groupKey = "teams"
+			model.ViaTeams = JSONStringArray(*item.ViaTeams)
+		} else {
+			groupKey = "ensure"
+		}
+
+		groups[groupKey].models = append(groups[groupKey].models, model)
+	}
+
+	// Flush each group
+	for _, grp := range groups {
+		if len(grp.models) == 0 {
+			continue
+		}
+		err := g.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "user_id"}, {Name: "pr_id"}},
+			DoUpdates: clause.AssignmentColumns(grp.doUpdates),
+		}).CreateInBatches(&grp.models, 500).Error
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // HidePRForUser hides a PR from a user's view (soft delete)
 func (g *GormDB) HidePRForUser(userID, prID int) error {
 	return g.db.Model(&UserPRViewModel{}).

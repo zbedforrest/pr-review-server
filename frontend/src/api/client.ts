@@ -12,6 +12,12 @@ export class APIError extends Error {
   }
 }
 
+function handleUnauthorized(response: Response): void {
+  if (response.status === 401) {
+    window.location.href = '/login';
+  }
+}
+
 export async function apiGet<T>(endpoint: string): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     headers: {
@@ -20,6 +26,8 @@ export async function apiGet<T>(endpoint: string): Promise<T> {
       'Expires': '0',
     },
   });
+
+  handleUnauthorized(response);
 
   if (!response.ok) {
     throw new APIError(
@@ -41,6 +49,8 @@ export async function apiPost<T>(endpoint: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
 
+  handleUnauthorized(response);
+
   if (!response.ok) {
     throw new APIError(
       `API error: ${response.statusText}`,
@@ -60,6 +70,8 @@ export async function apiDelete<T>(endpoint: string, body: unknown): Promise<T> 
     },
     body: JSON.stringify(body),
   });
+
+  handleUnauthorized(response);
 
   if (!response.ok) {
     throw new APIError(
