@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,8 @@ type Poller struct {
 	teamMemberCache map[string][]string // team slug -> member logins
 	teamCacheMutex  sync.RWMutex
 	teamCacheExpiry time.Time
+	// Poll economy: track cycles for periodic full refresh
+	pollCount int
 }
 
 func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsClient *gcs.Client) *Poller {
@@ -935,6 +938,7 @@ func (p *Poller) poll(ctx context.Context) {
 
 	// Fetch PRs from GitHub — mode depends on whether we have an org (multi-user) or a dev user (single-user)
 	var allPRs []github.PullRequest
+	var prInfoMap map[string]*time.Time // PR key -> search updatedAt (for poll economy, multi-user only)
 	if p.devUser == nil && p.cfg.GitHubOrgName != "" {
 		// Multi-user mode: fast search + skip known PRs + batch GraphQL for unknowns
 		log.Printf("[POLL] Searching open PRs for org %s...", p.cfg.GitHubOrgName)
@@ -944,6 +948,13 @@ func (p *Poller) poll(ctx context.Context) {
 			prInfos = []github.PRInfo{}
 		}
 		log.Printf("[POLL] Found %d open PRs for org %s", len(prInfos), p.cfg.GitHubOrgName)
+
+		// Build updatedAt map for poll economy change detection
+		prInfoMap = make(map[string]*time.Time, len(prInfos))
+		for _, info := range prInfos {
+			key := fmt.Sprintf("%s/%s/%d", info.Owner, info.Repo, info.Number)
+			prInfoMap[key] = info.UpdatedAt
+		}
 
 		// Partition into known (in DB) vs unknown PRs
 		var unknownPRs []github.PRInfo
@@ -1069,6 +1080,42 @@ func (p *Poller) poll(ctx context.Context) {
 	// all current) rather than partial updates from individual phases.
 	changedPRs := make(map[string]bool)
 
+	// --- Poll economy: determine which PRs need metadata refresh ---
+	// Compare GitHub's updated_at from search with stored values to skip unchanged PRs.
+	p.pollCount++
+	isFullRefresh := p.devUser != nil || prInfoMap == nil || p.pollCount%10 == 0
+	if isFullRefresh && p.pollCount%10 == 0 {
+		log.Printf("[POLL] Full refresh (cycle %d)", p.pollCount)
+	}
+
+	var metadataPRs []github.PullRequest
+	if !isFullRefresh {
+		changedPRKeys := make(map[string]bool)
+		for key, searchUpdatedAt := range prInfoMap {
+			dbPR, exists := dbPRMap[key]
+			if !exists || dbPR.GitHubUpdatedAt == nil || searchUpdatedAt == nil ||
+				!searchUpdatedAt.Truncate(time.Second).Equal(dbPR.GitHubUpdatedAt.Truncate(time.Second)) {
+				changedPRKeys[key] = true
+			}
+		}
+		// DB-only PRs (not in search) always included — unknown state
+		for _, pr := range allPRs {
+			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+			if _, inSearch := prInfoMap[key]; !inSearch {
+				changedPRKeys[key] = true
+			}
+		}
+		for _, pr := range allPRs {
+			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+			if changedPRKeys[key] {
+				metadataPRs = append(metadataPRs, pr)
+			}
+		}
+		log.Printf("[POLL] %d/%d PRs changed, skipping %d unchanged", len(metadataPRs), len(allPRs), len(allPRs)-len(metadataPRs))
+	} else {
+		metadataPRs = allPRs
+	}
+
 	// --- Parallel GitHub API fetches ---
 	// All three data sources (review data, reviewer groups, CI status) are independent.
 	// Fetch them concurrently, then process results sequentially.
@@ -1077,29 +1124,31 @@ func (p *Poller) poll(ctx context.Context) {
 	var ciStatusMap map[string]*github.CIStatus
 
 	if len(allPRs) > 0 {
-		log.Printf("[POLL] Parallel-fetching review data + reviewer groups + CI status for %d PRs...", len(allPRs))
+		log.Printf("[POLL] Parallel-fetching review data + reviewer groups for %d changed PRs, CI status for all %d PRs...", len(metadataPRs), len(allPRs))
 
 		var fetchWg sync.WaitGroup
 
-		// Fetch review data
-		fetchWg.Add(1)
-		go func() {
-			defer fetchWg.Done()
-			var err error
-			reviewDataMap, err = p.ghClient.BatchGetPRReviewData(ctx, allPRs)
-			if err != nil {
-				log.Printf("[POLL] WARNING: Failed to batch fetch review data: %v", err)
-				reviewDataMap = nil
-			}
-		}()
-
-		// Fetch reviewer groups
-		if len(allUsers) > 0 {
+		// Fetch review data (only changed PRs)
+		if len(metadataPRs) > 0 {
 			fetchWg.Add(1)
 			go func() {
 				defer fetchWg.Done()
 				var err error
-				reviewerGroupsMap, err = p.ghClient.BatchGetReviewerGroups(ctx, allPRs)
+				reviewDataMap, err = p.ghClient.BatchGetPRReviewData(ctx, metadataPRs)
+				if err != nil {
+					log.Printf("[POLL] WARNING: Failed to batch fetch review data: %v", err)
+					reviewDataMap = nil
+				}
+			}()
+		}
+
+		// Fetch reviewer groups (only changed PRs)
+		if len(allUsers) > 0 && len(metadataPRs) > 0 {
+			fetchWg.Add(1)
+			go func() {
+				defer fetchWg.Done()
+				var err error
+				reviewerGroupsMap, err = p.ghClient.BatchGetReviewerGroups(ctx, metadataPRs)
 				if err != nil {
 					log.Printf("[POLL] WARNING: Failed to batch fetch reviewer groups: %v", err)
 					reviewerGroupsMap = nil
@@ -1107,7 +1156,8 @@ func (p *Poller) poll(ctx context.Context) {
 			}()
 		}
 
-		// Fetch CI status
+		// Fetch CI status for ALL PRs every cycle — CI check completions
+		// don't update GitHub's PR updated_at, so we can't rely on change detection.
 		fetchWg.Add(1)
 		go func() {
 			defer fetchWg.Done()
@@ -1348,6 +1398,31 @@ func (p *Poller) poll(ctx context.Context) {
 		key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
 		if changedPRs[key] {
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+		}
+	}
+
+	// --- Poll economy: persist GitHub updatedAt for change detection next cycle ---
+	if len(prInfoMap) > 0 {
+		updated := 0
+		for key, ts := range prInfoMap {
+			if ts == nil {
+				continue
+			}
+			dbPR, exists := dbPRMap[key]
+			if !exists || dbPR.GitHubUpdatedAt == nil || !ts.Equal(*dbPR.GitHubUpdatedAt) {
+				parts := strings.SplitN(key, "/", 3)
+				if len(parts) == 3 {
+					num, _ := strconv.Atoi(parts[2])
+					if err := p.db.UpdatePRGitHubUpdatedAt(parts[0], parts[1], num, *ts); err != nil {
+						log.Printf("[POLL] Warning: Failed to update GitHubUpdatedAt for %s: %v", key, err)
+					} else {
+						updated++
+					}
+				}
+			}
+		}
+		if updated > 0 {
+			log.Printf("[POLL] Updated GitHubUpdatedAt for %d PRs", updated)
 		}
 	}
 

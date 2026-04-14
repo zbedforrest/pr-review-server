@@ -55,14 +55,23 @@ func NewGormPostgres(databaseURL string) (*GormDB, error) {
 
 // AutoMigrate creates or updates the database schema
 func (g *GormDB) AutoMigrate() error {
-	return g.db.AutoMigrate(
+	if err := g.db.AutoMigrate(
 		&UserModel{},
 		&SessionModel{},
 		&PRModel{},
 		&UserPRViewModel{},
 		&SettingModel{},
 		&TelemetryEventModel{},
-	)
+	); err != nil {
+		return err
+	}
+
+	// Explicit column additions for PostgreSQL (AutoMigrate can miss new columns)
+	g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS github_updated_at timestamptz")
+	// Clean up wrongly-named column from GORM default naming (git_hub_updated_at vs github_updated_at)
+	g.db.Exec("ALTER TABLE prs DROP COLUMN IF EXISTS git_hub_updated_at")
+
+	return nil
 }
 
 // Close closes the database connection

@@ -43,6 +43,7 @@ func prModelToPR(m *PRModel) *PR {
 		MediumCount:     m.MediumCount,
 		LowCount:        m.LowCount,
 		Notes:           m.Notes,
+		GitHubUpdatedAt: m.GitHubUpdatedAt,
 	}
 }
 
@@ -79,6 +80,7 @@ func prToPRModel(p *PR) *PRModel {
 		MediumCount:     p.MediumCount,
 		LowCount:        p.LowCount,
 		Notes:           p.Notes,
+		GitHubUpdatedAt: p.GitHubUpdatedAt,
 	}
 }
 
@@ -338,4 +340,11 @@ func (g *GormDB) UpdatePRCreatedAt(owner, repo string, prNumber int, createdAt t
 	return g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
 		Update("created_at", createdAt).Error
+}
+
+// UpdatePRGitHubUpdatedAt updates the github_updated_at field for poll economy change detection
+func (g *GormDB) UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updatedAt time.Time) error {
+	return g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Update("github_updated_at", updatedAt).Error
 }

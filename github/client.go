@@ -45,11 +45,11 @@ type appTokenSource struct {
 }
 
 func (s *appTokenSource) Token() (*oauth2.Token, error) {
-	token, err := s.appClient.GetToken(context.Background())
+	token, expiry, err := s.appClient.GetTokenWithExpiry(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	return &oauth2.Token{AccessToken: token}, nil
+	return &oauth2.Token{AccessToken: token, Expiry: expiry}, nil
 }
 
 // GetAllOpenPRs fetches all open PRs for the given org using the App installation token.

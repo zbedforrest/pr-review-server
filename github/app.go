@@ -201,6 +201,20 @@ func (c *AppClient) GetToken(ctx context.Context) (string, error) {
 	return c.getInstallationToken(ctx)
 }
 
+// GetTokenWithExpiry returns the installation token and its expiration time.
+// Used by appTokenSource to set oauth2.Token.Expiry so the oauth2 transport
+// knows when to request a fresh token.
+func (c *AppClient) GetTokenWithExpiry(ctx context.Context) (string, time.Time, error) {
+	token, err := c.getInstallationToken(ctx)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	c.installationTokenLock.RLock()
+	exp := c.installationTokenExp
+	c.installationTokenLock.RUnlock()
+	return token, exp, nil
+}
+
 // SearchOpenPRsForOrg returns lightweight PR identifiers for all open PRs in the org.
 // This uses the GitHub Search API and is fast (no per-PR detail fetches).
 func (c *AppClient) SearchOpenPRsForOrg(ctx context.Context, orgName string) ([]PRInfo, error) {
@@ -237,11 +251,16 @@ func (c *AppClient) SearchOpenPRsForOrg(ctx context.Context, orgName string) ([]
 				continue
 			}
 
-			allPRs = append(allPRs, PRInfo{
+			info := PRInfo{
 				Owner:  parts[0],
 				Repo:   parts[1],
 				Number: issue.GetNumber(),
-			})
+			}
+			if ua := issue.GetUpdatedAt(); !ua.IsZero() {
+				t := ua.Time
+				info.UpdatedAt = &t
+			}
+			allPRs = append(allPRs, info)
 		}
 
 		if resp.NextPage == 0 {

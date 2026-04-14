@@ -472,6 +472,10 @@ func (m *MockDatabase) UpdatePRCreatedAt(owner, repo string, prNumber int, creat
 	return nil
 }
 
+func (m *MockDatabase) UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updatedAt time.Time) error {
+	return nil
+}
+
 func (m *MockDatabase) GetSetting(key string) (string, error) {
 	return "", nil
 }

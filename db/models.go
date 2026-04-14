@@ -97,6 +97,8 @@ type PRModel struct {
 	LowCount      int `gorm:"default:0"`
 	// User notes (single-user mode)
 	Notes string `gorm:"size:15"`
+	// Poll economy: last seen updated_at from GitHub search API
+	GitHubUpdatedAt *time.Time `gorm:"column:github_updated_at"`
 }
 
 // TableName specifies the table name for PRModel

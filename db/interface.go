@@ -29,6 +29,8 @@ type PR struct {
 	LowCount      int // Number of LOW importance comments
 	// User notes (single-user mode)
 	Notes string
+	// Poll economy: last seen updated_at from GitHub search API
+	GitHubUpdatedAt *time.Time
 }
 
 // User represents a user in multi-user mode
@@ -159,6 +161,7 @@ type Database interface {
 	UpdatePRNotes(owner, repo string, prNumber int, notes string) error
 	GetPRsWithMissingCreatedAt() ([]PR, error)
 	UpdatePRCreatedAt(owner, repo string, prNumber int, createdAt time.Time) error
+	UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updatedAt time.Time) error
 
 	// Settings operations
 	GetSetting(key string) (string, error)

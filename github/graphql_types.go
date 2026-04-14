@@ -1,5 +1,7 @@
 package github
 
+import "time"
+
 // GraphQL response types for review data queries
 
 // ReviewAuthor represents the author of a review
@@ -128,9 +130,10 @@ type GraphQLPRStateResponse struct {
 
 // PRInfo holds basic PR identification info for batch operations
 type PRInfo struct {
-	Owner  string
-	Repo   string
-	Number int
+	Owner     string
+	Repo      string
+	Number    int
+	UpdatedAt *time.Time // GitHub updated_at (populated by search, nil otherwise)
 }
 
 // PRInfoWithCommit holds PR identification info including commit SHA
