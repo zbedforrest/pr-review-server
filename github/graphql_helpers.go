@@ -25,7 +25,15 @@ func (c *Client) executeGraphQL(ctx context.Context, query string, result interf
 		return fmt.Errorf("failed to build HTTP request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	// Use fresh installation token from AppClient if available (tokens expire after 1 hour).
+	// Fall back to static token for single-user/dev mode.
+	authToken := c.token
+	if c.appClient != nil {
+		if freshToken, err := c.appClient.GetToken(ctx); err == nil {
+			authToken = freshToken
+		}
+	}
+	req.Header.Set("Authorization", "Bearer "+authToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)

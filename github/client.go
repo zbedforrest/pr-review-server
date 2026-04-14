@@ -25,9 +25,31 @@ type Client struct {
 	appClient  *AppClient
 }
 
-// SetAppClient sets the AppClient for org-wide operations (multi-user mode)
+// SetAppClient sets the AppClient for org-wide operations (multi-user mode).
+// It also reconfigures the REST and GraphQL clients to use a refreshable token source
+// so that installation tokens are automatically renewed when they expire.
 func (c *Client) SetAppClient(ac *AppClient) {
 	c.appClient = ac
+
+	// Replace the static token source with one that refreshes via AppClient
+	ts := &appTokenSource{appClient: ac}
+	tc := oauth2.NewClient(context.Background(), ts)
+	c.gh = github.NewClient(tc)
+	c.ghv4 = githubv4.NewClient(tc)
+	c.httpClient = tc
+}
+
+// appTokenSource implements oauth2.TokenSource using AppClient's refreshable installation token.
+type appTokenSource struct {
+	appClient *AppClient
+}
+
+func (s *appTokenSource) Token() (*oauth2.Token, error) {
+	token, err := s.appClient.GetToken(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return &oauth2.Token{AccessToken: token}, nil
 }
 
 // GetAllOpenPRs fetches all open PRs for the given org using the App installation token.
@@ -67,7 +89,7 @@ func (c *Client) BatchGetPRState(ctx context.Context, prs []PRInfo) (map[string]
 		mu      sync.Mutex
 		results = make(map[string]*PRState)
 		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 10)
+		sem     = make(chan struct{}, 5)
 	)
 
 	for i := 0; i < len(prs); i += batchSize {
@@ -510,7 +532,7 @@ func (c *Client) BatchGetPRReviewData(ctx context.Context, prs []PullRequest) (m
 		mu      sync.Mutex
 		results = make(map[string]*PRReviewData)
 		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 10) // limit to 10 concurrent GitHub API calls
+		sem     = make(chan struct{}, 5) // limit to 10 concurrent GitHub API calls
 	)
 
 	for repoKey, repoPRs := range prsByRepo {
@@ -639,7 +661,7 @@ func (c *Client) BatchGetReviewerGroups(ctx context.Context, prs []PullRequest) 
 		mu      sync.Mutex
 		results = make(map[string]*ReviewerGroupData)
 		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 10) // limit to 10 concurrent GitHub API calls
+		sem     = make(chan struct{}, 5) // limit to 10 concurrent GitHub API calls
 	)
 
 	for repoKey, repoPRs := range prsByRepo {
