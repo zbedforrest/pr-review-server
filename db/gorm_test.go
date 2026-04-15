@@ -1196,3 +1196,27 @@ func TestGormDB_CreateTelemetryEvents_StoresLongLabels(t *testing.T) {
 	require.Len(t, stats.TopSearches, 1)
 	assert.Equal(t, longLabel, stats.TopSearches[0].Label)
 }
+
+func TestGormDB_GetUserByUsername_PrefersMostRecentlyActiveDuplicate(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	older := &User{
+		GitHubID:       111,
+		GitHubUsername: "duplicate-user",
+	}
+	require.NoError(t, db.CreateUser(older))
+
+	newer := &User{
+		GitHubID:       222,
+		GitHubUsername: "duplicate-user",
+	}
+	require.NoError(t, db.CreateUser(newer))
+	require.NoError(t, db.UpdateUserLastLogin(newer.ID))
+
+	user, err := db.GetUserByUsername("duplicate-user")
+	require.NoError(t, err)
+	require.NotNil(t, user)
+	assert.Equal(t, newer.ID, user.ID)
+	assert.Equal(t, int64(222), user.GitHubID)
+}

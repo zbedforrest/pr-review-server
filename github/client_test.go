@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -127,6 +129,95 @@ func TestBatchGetReviewerGroups(t *testing.T) {
 	if len(data103.RequestedUsers) != 0 {
 		t.Errorf("PR 103: Expected empty RequestedUsers, got %v", data103.RequestedUsers)
 	}
+}
+
+func TestSearchOpenPRs_FallsBackToRESTWithoutAppClient(t *testing.T) {
+	mockResponse := `{
+		"total_count": 1,
+		"items": [
+			{
+				"number": 101,
+				"title": "Example PR",
+				"repository_url": "https://api.github.com/repos/acme/widgets",
+				"updated_at": "2026-04-15T17:00:00Z",
+				"pull_request": {}
+			}
+		]
+	}`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.RawQuery, "q=type%3Apr+state%3Aopen+org%3Aacme") {
+			t.Fatalf("unexpected query string: %s", r.URL.RawQuery)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(mockResponse))
+	}))
+	defer ts.Close()
+
+	client := NewClient("dummy-token", "test-user")
+	client.gh.BaseURL = mustParseURL(ts.URL + "/")
+	client.gh.UploadURL = mustParseURL(ts.URL + "/")
+
+	results, err := client.SearchOpenPRs(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("SearchOpenPRs failed: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Owner != "acme" || results[0].Repo != "widgets" || results[0].Number != 101 {
+		t.Fatalf("unexpected result: %+v", results[0])
+	}
+	if results[0].UpdatedAt == nil {
+		t.Fatal("expected UpdatedAt to be populated")
+	}
+}
+
+func TestBatchGetPRDetails_FallsBackToRESTWithoutAppClient(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/widgets/pulls/101" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"number": 101,
+			"title": "Example PR",
+			"html_url": "https://github.com/acme/widgets/pull/101",
+			"user": { "login": "test-user" },
+			"created_at": "2026-04-15T17:00:00Z",
+			"draft": false,
+			"head": { "sha": "abc123def456" }
+		}`))
+	}))
+	defer ts.Close()
+
+	client := NewClient("dummy-token", "test-user")
+	client.gh.BaseURL = mustParseURL(ts.URL + "/")
+	client.gh.UploadURL = mustParseURL(ts.URL + "/")
+
+	results, err := client.BatchGetPRDetails(context.Background(), []PRInfo{
+		{Owner: "acme", Repo: "widgets", Number: 101},
+	})
+	if err != nil {
+		t.Fatalf("BatchGetPRDetails failed: %v", err)
+	}
+
+	pr, ok := results["acme/widgets/101"]
+	if !ok {
+		t.Fatal("expected PR details to be returned")
+	}
+	if pr.Title != "Example PR" || pr.Author != "test-user" || pr.CommitSHA != "abc123def456" {
+		t.Fatalf("unexpected PR details: %+v", pr)
+	}
+}
+
+func mustParseURL(raw string) *url.URL {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
 }
 
 // redirectTransport redirects all requests to the target URL

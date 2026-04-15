@@ -173,6 +173,9 @@ func start(cfg *config.Config) {
 	srv.SetPollTrigger(p.Trigger)
 	srv.SetPoller(p)
 	p.EventFunc = srv.BroadcastEvent
+	p.StatusEventFunc = func() {
+		srv.BroadcastStatusSnapshot(context.Background())
+	}
 
 	// In dev mode, set up the dev user for the poller to use
 	if cfg.IsDevMode() {

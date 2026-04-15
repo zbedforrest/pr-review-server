@@ -59,6 +59,7 @@ type Poller struct {
 	reviewDir        string          // Local storage path (used when GCS is not configured)
 	cacheUpdateFunc  func([]github.PullRequest)
 	EventFunc        func(eventType string, payload interface{})
+	StatusEventFunc  func()
 	triggerChan      chan struct{}
 	polling          bool
 	pollMutex        sync.Mutex
@@ -445,6 +446,9 @@ func (p *Poller) startPoll(ctx context.Context, trigger string) {
 	p.pollMutex.Unlock()
 
 	log.Printf("Starting %s poll", trigger)
+	if p.StatusEventFunc != nil {
+		p.StatusEventFunc()
+	}
 
 	go func() {
 		defer func() {
@@ -452,6 +456,9 @@ func (p *Poller) startPoll(ctx context.Context, trigger string) {
 			p.polling = false
 			p.pollMutex.Unlock()
 			log.Printf("Completed %s poll", trigger)
+			if p.StatusEventFunc != nil {
+				p.StatusEventFunc()
+			}
 		}()
 		p.poll(ctx)
 	}()
@@ -936,11 +943,15 @@ func (p *Poller) poll(ctx context.Context) {
 		}
 	}
 
-	// Fetch PRs from GitHub — mode depends on whether we have an org (multi-user) or a dev user (single-user)
+	// Fetch PRs from GitHub.
+	// If an org is configured, always use the org-wide search path so dev mode
+	// sees the same universe of PRs as prod (including team-requested PRs).
+	// In dev mode we still only sync user_pr_views for the dev user, so this
+	// does not turn local development into a multi-user dashboard.
 	var allPRs []github.PullRequest
 	var prInfoMap map[string]*time.Time // PR key -> search updatedAt (for poll economy, multi-user only)
-	if p.devUser == nil && p.cfg.GitHubOrgName != "" {
-		// Multi-user mode: fast search + skip known PRs + batch GraphQL for unknowns
+	if p.cfg.GitHubOrgName != "" {
+		// Org-wide mode: fast search + skip known PRs + batch GraphQL for unknowns
 		log.Printf("[POLL] Searching open PRs for org %s...", p.cfg.GitHubOrgName)
 		prInfos, err := p.ghClient.SearchOpenPRs(ctx, p.cfg.GitHubOrgName)
 		if err != nil {

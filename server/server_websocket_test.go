@@ -4,17 +4,37 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"pr-review-server/auth"
+	"pr-review-server/config"
 	"pr-review-server/db"
+	gh "pr-review-server/github"
 
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func newWebSocketTestServerApp(t *testing.T, username string) (*Server, *db.GormDB) {
+	t.Helper()
+
+	dbPath := filepath.Join(t.TempDir(), "websocket-test.db")
+	database, err := db.NewGormSQLite(dbPath)
+	require.NoError(t, err)
+
+	cfg := &config.Config{
+		GitHubUsername: username,
+		ServerPort:     "8080",
+		ReviewsDir:     "/tmp/reviews",
+	}
+
+	server := New(cfg, database, nil, nil)
+	return server, database
+}
 
 func startWebSocketTestServer(t *testing.T, server *Server) *httptest.Server {
 	t.Helper()
@@ -68,8 +88,17 @@ func waitForCondition(t *testing.T, description string, condition func() bool) {
 	t.Fatalf("timed out waiting for %s", description)
 }
 
+func readWebSocketMessage(t *testing.T, conn *websocket.Conn) WebSocketMessage {
+	t.Helper()
+
+	var message WebSocketMessage
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+	require.NoError(t, conn.ReadJSON(&message))
+	return message
+}
+
 func TestHandleWebSocket_ValidSessionUpgradeBindsUser(t *testing.T) {
-	server, database := newTestServer(t, "")
+	server, database := newWebSocketTestServerApp(t, "")
 	defer database.Close()
 	server.cfg.GitHubAppClientID = "client-id"
 
@@ -92,10 +121,13 @@ func TestHandleWebSocket_ValidSessionUpgradeBindsUser(t *testing.T) {
 		}
 		return false
 	})
+
+	message := readWebSocketMessage(t, conn)
+	assert.Equal(t, "status_snapshot", message.Type)
 }
 
 func TestHandleWebSocket_MissingSessionRejected(t *testing.T) {
-	server, database := newTestServer(t, "")
+	server, database := newWebSocketTestServerApp(t, "")
 	defer database.Close()
 	server.cfg.GitHubAppClientID = "client-id"
 
@@ -110,7 +142,7 @@ func TestHandleWebSocket_MissingSessionRejected(t *testing.T) {
 }
 
 func TestHandleWebSocket_ExpiredSessionRejected(t *testing.T) {
-	server, database := newTestServer(t, "")
+	server, database := newWebSocketTestServerApp(t, "")
 	defer database.Close()
 	server.cfg.GitHubAppClientID = "client-id"
 
@@ -128,7 +160,7 @@ func TestHandleWebSocket_ExpiredSessionRejected(t *testing.T) {
 }
 
 func TestHandleWebSocket_TelemetryBatchPersistsEvents(t *testing.T) {
-	server, database := newTestServer(t, "")
+	server, database := newWebSocketTestServerApp(t, "")
 	defer database.Close()
 	server.cfg.GitHubAppClientID = "client-id"
 
@@ -170,7 +202,7 @@ func TestHandleWebSocket_TelemetryBatchPersistsEvents(t *testing.T) {
 }
 
 func TestHandleWebSocket_TelemetryBatchCapEnforced(t *testing.T) {
-	server, database := newTestServer(t, "")
+	server, database := newWebSocketTestServerApp(t, "")
 	defer database.Close()
 	server.cfg.GitHubAppClientID = "client-id"
 
@@ -207,7 +239,7 @@ func TestHandleWebSocket_TelemetryBatchCapEnforced(t *testing.T) {
 }
 
 func TestHandleWebSocket_MalformedAndUnknownMessagesDoNotBreakConnection(t *testing.T) {
-	server, database := newTestServer(t, "")
+	server, database := newWebSocketTestServerApp(t, "")
 	defer database.Close()
 	server.cfg.GitHubAppClientID = "client-id"
 
@@ -243,7 +275,7 @@ func TestHandleWebSocket_MalformedAndUnknownMessagesDoNotBreakConnection(t *test
 }
 
 func TestBroadcastEvent_PRUpdateStillDeliveredOverWebSocket(t *testing.T) {
-	server, database := newTestServer(t, "")
+	server, database := newWebSocketTestServerApp(t, "")
 	defer database.Close()
 	server.cfg.GitHubAppClientID = "client-id"
 
@@ -275,15 +307,16 @@ func TestBroadcastEvent_PRUpdateStillDeliveredOverWebSocket(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Close()
 
+	initialMessage := readWebSocketMessage(t, conn)
+	assert.Equal(t, "status_snapshot", initialMessage.Type)
+
 	server.BroadcastEvent(EventPRUpdated, map[string]interface{}{
 		"owner":  "owner",
 		"repo":   "repo",
 		"number": 7,
 	})
 
-	var message WebSocketMessage
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
-	require.NoError(t, conn.ReadJSON(&message))
+	message := readWebSocketMessage(t, conn)
 	assert.Equal(t, EventPRUpdated, message.Type)
 
 	payloadBytes, err := json.Marshal(message.Payload)
@@ -295,4 +328,65 @@ func TestBroadcastEvent_PRUpdateStillDeliveredOverWebSocket(t *testing.T) {
 	assert.Equal(t, "repo", response.Repo)
 	assert.Equal(t, 7, response.Number)
 	assert.Equal(t, "Broadcast PR", response.Title)
+}
+
+func TestHandleTriggerReview_EmitsStatusSnapshotAfterPRUpdate(t *testing.T) {
+	latestSHA := "newcommit999888777666555444333222111000aaa"
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"number":1,"head":{"sha":"` + latestSHA + `"}}`))
+	}))
+	defer mockGH.Close()
+
+	ghClient := gh.NewTestClient(mockGH.URL, "testuser")
+	server, database := newWebSocketTestServerApp(t, "")
+	defer database.Close()
+	server.cfg.GitHubAppClientID = "client-id"
+	server.ghClient = ghClient
+	go server.broadcaster()
+
+	user := createTestUser(t, database, "status-user")
+	session := createTestSession(t, database, user.ID, time.Now().Add(time.Hour))
+
+	pr := &db.PR{
+		ID:             1,
+		RepoOwner:      "owner",
+		RepoName:       "repo",
+		PRNumber:       1,
+		LastCommitSHA:  "oldcommit123",
+		Status:         "completed",
+		Title:          "Trigger review PR",
+		Author:         "otheruser",
+		ApprovalCount:  0,
+		MyReviewStatus: "",
+	}
+	require.NoError(t, database.UpsertPR(pr))
+	storedPR, err := database.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	require.NotNil(t, storedPR)
+	ensureUserPRView(t, database, user.ID, storedPR.ID, false)
+
+	ts := startWebSocketTestServer(t, server)
+	defer ts.Close()
+
+	conn, _, err := dialWebSocket(t, wsURLFromHTTP(ts.URL)+"/ws", session.ID)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	initial := readWebSocketMessage(t, conn)
+	assert.Equal(t, "status_snapshot", initial.Type)
+
+	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/trigger-review", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleTriggerReview(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	prUpdate := readWebSocketMessage(t, conn)
+	assert.Equal(t, EventPRUpdated, prUpdate.Type)
+
+	statusUpdate := readWebSocketMessage(t, conn)
+	assert.Equal(t, "status_snapshot", statusUpdate.Type)
 }

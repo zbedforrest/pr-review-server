@@ -64,7 +64,7 @@ func (c *Client) GetAllOpenPRs(ctx context.Context, orgName string) ([]PullReque
 // SearchOpenPRs returns lightweight PR identifiers for all open PRs in the org.
 func (c *Client) SearchOpenPRs(ctx context.Context, orgName string) ([]PRInfo, error) {
 	if c.appClient == nil {
-		return nil, fmt.Errorf("appClient not set: SearchOpenPRs requires a GitHub App client")
+		return c.searchOpenPRsWithREST(ctx, orgName)
 	}
 	return c.appClient.SearchOpenPRsForOrg(ctx, orgName)
 }
@@ -72,9 +72,91 @@ func (c *Client) SearchOpenPRs(ctx context.Context, orgName string) ([]PRInfo, e
 // BatchGetPRDetails fetches full PR details for multiple PRs via GraphQL.
 func (c *Client) BatchGetPRDetails(ctx context.Context, prs []PRInfo) (map[string]PullRequest, error) {
 	if c.appClient == nil {
-		return nil, fmt.Errorf("appClient not set: BatchGetPRDetails requires a GitHub App client")
+		return c.batchGetPRDetailsWithREST(ctx, prs)
 	}
 	return c.appClient.BatchGetPRDetails(ctx, prs)
+}
+
+func (c *Client) searchOpenPRsWithREST(ctx context.Context, orgName string) ([]PRInfo, error) {
+	query := fmt.Sprintf("type:pr state:open org:%s", orgName)
+	log.Printf("GitHub search query (org-wide): %s", query)
+
+	opts := &github.SearchOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+
+	var allPRs []PRInfo
+	for {
+		result, resp, err := c.gh.Search.Issues(ctx, query, opts)
+		if err != nil {
+			log.Printf("GitHub search error (org-wide): %v", err)
+			return nil, err
+		}
+
+		for _, issue := range result.Issues {
+			if issue.PullRequestLinks == nil {
+				continue
+			}
+
+			repoOwner, repoName, err := parseRepoFromURL(issue.GetRepositoryURL())
+			if err != nil {
+				log.Printf("Invalid repository URL: %s", issue.GetRepositoryURL())
+				continue
+			}
+
+			info := PRInfo{
+				Owner:  repoOwner,
+				Repo:   repoName,
+				Number: issue.GetNumber(),
+			}
+			if updatedAt := issue.GetUpdatedAt(); !updatedAt.IsZero() {
+				t := updatedAt.Time
+				info.UpdatedAt = &t
+			}
+			allPRs = append(allPRs, info)
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return allPRs, nil
+}
+
+func pullRequestFromGitHubPR(owner, repo string, pr *github.PullRequest) PullRequest {
+	var createdAt *time.Time
+	if pr.GetCreatedAt().Time.Unix() != 0 {
+		t := pr.GetCreatedAt().Time
+		createdAt = &t
+	}
+
+	return PullRequest{
+		Owner:     owner,
+		Repo:      repo,
+		Number:    pr.GetNumber(),
+		CommitSHA: pr.GetHead().GetSHA(),
+		Title:     pr.GetTitle(),
+		URL:       pr.GetHTMLURL(),
+		Author:    pr.GetUser().GetLogin(),
+		CreatedAt: createdAt,
+		Draft:     pr.GetDraft(),
+	}
+}
+
+func (c *Client) batchGetPRDetailsWithREST(ctx context.Context, prs []PRInfo) (map[string]PullRequest, error) {
+	results := make(map[string]PullRequest, len(prs))
+	for _, info := range prs {
+		pr, _, err := c.gh.PullRequests.Get(ctx, info.Owner, info.Repo, info.Number)
+		if err != nil {
+			log.Printf("Error fetching PR details for %s/%s#%d: %v", info.Owner, info.Repo, info.Number, err)
+			continue
+		}
+
+		results[prKey(info.Owner, info.Repo, info.Number)] = pullRequestFromGitHubPR(info.Owner, info.Repo, pr)
+	}
+	return results, nil
 }
 
 // BatchGetPRState fetches state (open/closed/merged) and HEAD SHA for multiple PRs using batched GraphQL.
@@ -338,18 +420,7 @@ func (c *Client) searchAndFetchPRs(ctx context.Context, query, queryType string)
 			continue // Skip this PR if we can't fetch it
 		}
 
-		createdAt := pr.GetCreatedAt().Time
-		prs = append(prs, PullRequest{
-			Owner:     repoOwner,
-			Repo:      repoName,
-			Number:    prNumber,
-			CommitSHA: pr.GetHead().GetSHA(),
-			Title:     pr.GetTitle(),
-			URL:       pr.GetHTMLURL(),
-			Author:    pr.GetUser().GetLogin(),
-			CreatedAt: &createdAt,
-			Draft:     pr.GetDraft(),
-		})
+		prs = append(prs, pullRequestFromGitHubPR(repoOwner, repoName, pr))
 	}
 
 	return prs, nil

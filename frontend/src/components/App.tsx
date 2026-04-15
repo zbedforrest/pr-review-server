@@ -7,7 +7,9 @@ import { useReviewerHealth } from '@/hooks/useReviewerHealth';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
 import { PR } from '@/types/pr';
-import { ConnectionStatus, ServerWebSocketMessage, subscribeToWebSocketMessages, subscribeToWebSocketStatus } from '@/utils/websocket';
+import { ServerStatus } from '@/types/status';
+import { ConnectionStatus, subscribeToWebSocketMessages, subscribeToWebSocketStatus } from '@/utils/websocket';
+import { applyPRWebSocketMessage, applyStatusWebSocketMessage } from '@/utils/websocketCacheUpdates';
 import '@/styles/main.scss';
 
 // Create query client
@@ -19,45 +21,6 @@ const queryClient = new QueryClient({
     },
   },
 });
-
-function applyPRWebSocketMessage(oldData: PR[] | undefined, message: ServerWebSocketMessage): PR[] | undefined {
-  if (!oldData) return oldData;
-  if (!message.payload) return oldData;
-
-  switch (message.type) {
-    case 'pr_created': {
-      const newPR = message.payload as PR;
-      if (!newPR) return oldData;
-
-      if (oldData.some(pr => pr.number === newPR.number && pr.repo === newPR.repo && pr.owner === newPR.owner)) {
-        return oldData.map(pr =>
-          pr.number === newPR.number && pr.repo === newPR.repo && pr.owner === newPR.owner ? newPR : pr
-        );
-      }
-
-      return [newPR, ...oldData];
-    }
-
-    case 'pr_updated': {
-      const updatedPR = message.payload as PR;
-      return oldData.map((pr) =>
-        pr.number === updatedPR.number && pr.repo === updatedPR.repo && pr.owner === updatedPR.owner
-          ? { ...updatedPR, is_mine: pr.is_mine }
-          : pr
-      );
-    }
-
-    case 'pr_deleted': {
-      const { owner, repo, number } = message.payload as Pick<PR, 'owner' | 'repo' | 'number'>;
-      return oldData.filter((pr) =>
-        !(pr.number === number && pr.repo === repo && pr.owner === owner)
-      );
-    }
-
-    default:
-      return oldData;
-  }
-}
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -131,6 +94,7 @@ function AppContent() {
 
     const unsubscribeMessages = subscribeToWebSocketMessages((message) => {
       queryClient.setQueryData<PR[]>(['prs'], (oldData) => applyPRWebSocketMessage(oldData, message));
+      queryClient.setQueryData<ServerStatus | undefined>(['status'], (oldData) => applyStatusWebSocketMessage(oldData, message));
     });
 
     return () => {

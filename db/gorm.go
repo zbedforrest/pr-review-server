@@ -2,6 +2,8 @@ package db
 
 import (
 	"fmt"
+	"os"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -28,9 +30,19 @@ func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 
 	gormDB := &GormDB{db: db}
 
+	// Configure connection pool to stay within Cloud SQL limits (db-f1-micro = 25 max)
+	sqlDB, err := db.DB()
+	if err == nil {
+		sqlDB.SetMaxOpenConns(10)              // Leave headroom for Cloud SQL overhead + local dev
+		sqlDB.SetMaxIdleConns(5)               // Keep a few warm connections
+		sqlDB.SetConnMaxLifetime(30 * time.Minute) // Recycle connections to avoid stale sockets
+	}
+
 	// Run auto-migrations
-	if err := gormDB.AutoMigrate(); err != nil {
-		return nil, fmt.Errorf("failed to run migrations: %w", err)
+	if os.Getenv("SKIP_DB_MIGRATIONS") != "true" {
+		if err := gormDB.AutoMigrate(); err != nil {
+			return nil, fmt.Errorf("failed to run migrations: %w", err)
+		}
 	}
 
 	// Initialize default settings

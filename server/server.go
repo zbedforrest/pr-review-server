@@ -113,6 +113,43 @@ type PRResponse struct {
 	Notes string `json:"notes"`
 }
 
+type StatusCounts struct {
+	Completed  int `json:"completed"`
+	Generating int `json:"generating"`
+	Pending    int `json:"pending"`
+	Error      int `json:"error"`
+}
+
+type RecentCompletion struct {
+	Number     int    `json:"number"`
+	Repo       string `json:"repo"`
+	ReviewedAt string `json:"reviewed_at"`
+}
+
+type StatusRateLimit struct {
+	Remaining int    `json:"remaining"`
+	Limit     int    `json:"limit"`
+	ResetAt   string `json:"reset_at"`
+	IsLimited bool   `json:"is_limited"`
+	Error     string `json:"error"`
+}
+
+type StatusSnapshot struct {
+	UptimeSeconds           int                `json:"uptime_seconds"`
+	ServerTimeUnix          int64              `json:"server_time_unix"`
+	ServerStartedAtUnix     int64              `json:"server_started_at_unix"`
+	ReviewerRunning         bool               `json:"reviewer_running"`
+	ReviewerDurationSeconds int                `json:"reviewer_duration_seconds"`
+	ReviewerStartedAtUnix   *int64             `json:"reviewer_started_at_unix"`
+	Counts                  StatusCounts       `json:"counts"`
+	RecentCompletions       []RecentCompletion `json:"recent_completions"`
+	MissingMetadataCount    int                `json:"missing_metadata_count"`
+	Timestamp               int64              `json:"timestamp"`
+	SecondsUntilNextPoll    int                `json:"seconds_until_next_poll"`
+	NextPollAtUnix          *int64             `json:"next_poll_at_unix"`
+	RateLimit               StatusRateLimit    `json:"rate_limit"`
+}
+
 // WebSocket message types
 
 type WebSocketMessage struct {
@@ -520,6 +557,7 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 		"repo":   req.Repo,
 		"number": req.Number,
 	})
+	s.BroadcastStatusSnapshot(r.Context())
 
 	// Start review immediately, bypassing the full poll cycle.
 	// ProcessReviewImmediate tracks the review synchronously and spawns
@@ -551,54 +589,59 @@ func (s *Server) handleTriggerPoll(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "poll triggered"})
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	// Prevent caching of API responses
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-
-	// Get PR counts by status
+func (s *Server) buildStatusSnapshot(ctx context.Context) (*StatusSnapshot, error) {
 	prs, err := s.db.GetAllPRs()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get PRs: %v", err), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("failed to get PRs: %w", err)
 	}
 
-	counts := map[string]int{
-		"completed":  0,
-		"generating": 0,
-		"pending":    0,
-		"error":      0,
-	}
+	counts := StatusCounts{}
 	for _, pr := range prs {
-		counts[pr.Status]++
+		switch pr.Status {
+		case "completed":
+			counts.Completed++
+		case "generating":
+			counts.Generating++
+		case "pending":
+			counts.Pending++
+		case "error":
+			counts.Error++
+		}
 	}
 
-	// Get reviewer status from poller
+	now := time.Now()
+
 	var reviewerRunning bool
 	var reviewerDuration time.Duration
 	var secondsUntilNextPoll int
+	var reviewerStartedAtUnix *int64
+	var nextPollAtUnix *int64
 	if s.poller != nil {
 		reviewerRunning, reviewerDuration = s.poller.GetReviewerStatus()
-		// Get accurate countdown based on ticker timing
 		secondsUntilNextPoll = s.poller.GetSecondsUntilNextPoll()
+		if reviewerRunning && reviewerDuration > 0 {
+			startedAt := now.Add(-reviewerDuration).Unix()
+			reviewerStartedAtUnix = &startedAt
+		}
+		if secondsUntilNextPoll > 0 {
+			nextPollAt := now.Add(time.Duration(secondsUntilNextPoll) * time.Second).Unix()
+			nextPollAtUnix = &nextPollAt
+		}
 	}
 
-	// Get recent completions (last 3)
-	recentCompletions := []map[string]interface{}{}
+	recentCompletions := make([]RecentCompletion, 0, 3)
 	completedCount := 0
 	for i := len(prs) - 1; i >= 0 && completedCount < 3; i-- {
 		if prs[i].Status == "completed" && prs[i].LastReviewedAt != nil {
-			recentCompletions = append(recentCompletions, map[string]interface{}{
-				"number":      prs[i].PRNumber,
-				"repo":        fmt.Sprintf("%s/%s", prs[i].RepoOwner, prs[i].RepoName),
-				"reviewed_at": prs[i].LastReviewedAt.Format(time.RFC3339),
+			recentCompletions = append(recentCompletions, RecentCompletion{
+				Number:     prs[i].PRNumber,
+				Repo:       fmt.Sprintf("%s/%s", prs[i].RepoOwner, prs[i].RepoName),
+				ReviewedAt: prs[i].LastReviewedAt.Format(time.RFC3339),
 			})
 			completedCount++
 		}
 	}
 
-	// Count PRs with missing metadata
 	missingMetadataCount := 0
 	for _, pr := range prs {
 		if pr.Title == "" || pr.Author == "" {
@@ -606,17 +649,25 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get GitHub API rate limit status (cached to avoid excessive API calls)
-	// Web client polls every 1 second, so we cache for 30 seconds
 	s.rateLimitCacheMux.RLock()
 	cachedInfo := s.rateLimitCache
 	cacheAge := time.Since(s.rateLimitCacheTime)
 	s.rateLimitCacheMux.RUnlock()
 
-	// Refresh cache if older than 30 seconds or not set
-	if cachedInfo == nil || cacheAge > 30*time.Second {
-		ctx := r.Context()
-		freshInfo, err := s.ghClient.GetRateLimitInfo(ctx)
+	if s.ghClient != nil && (cachedInfo == nil || cacheAge > 30*time.Second) {
+		var (
+			freshInfo *github.RateLimitInfo
+			err       error
+		)
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					err = fmt.Errorf("panic fetching rate limit info: %v", recovered)
+				}
+			}()
+			freshInfo, err = s.ghClient.GetRateLimitInfo(ctx)
+		}()
+
 		if err == nil {
 			s.rateLimitCacheMux.Lock()
 			s.rateLimitCache = freshInfo
@@ -625,34 +676,63 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			s.rateLimitCacheMux.Unlock()
 		} else {
 			log.Printf("[STATUS] GitHub rate limit query failed (using cached): %v", err)
-			// Keep using cached value if we have it
 		}
 	}
 
-	rateLimitData := map[string]interface{}{
-		"remaining":  0,
-		"limit":      5000,
-		"reset_at":   "",
-		"is_limited": true,
-		"error":      "",
+	rateLimit := StatusRateLimit{
+		Remaining: 0,
+		Limit:     5000,
+		ResetAt:   "",
+		IsLimited: true,
+		Error:     "",
 	}
 	if cachedInfo != nil {
-		rateLimitData["remaining"] = cachedInfo.Remaining
-		rateLimitData["limit"] = cachedInfo.Limit
-		rateLimitData["reset_at"] = cachedInfo.ResetTime.Format(time.RFC3339)
-		rateLimitData["is_limited"] = cachedInfo.Remaining < 10
+		rateLimit.Remaining = cachedInfo.Remaining
+		rateLimit.Limit = cachedInfo.Limit
+		rateLimit.ResetAt = cachedInfo.ResetTime.Format(time.RFC3339)
+		rateLimit.IsLimited = cachedInfo.Remaining < 10
 	}
 
-	response := map[string]interface{}{
-		"uptime_seconds":            int(time.Since(s.startTime).Seconds()),
-		"reviewer_running":          reviewerRunning,
-		"reviewer_duration_seconds": int(reviewerDuration.Seconds()),
-		"counts":                    counts,
-		"recent_completions":        recentCompletions,
-		"missing_metadata_count":    missingMetadataCount,
-		"timestamp":                 time.Now().Unix(),
-		"seconds_until_next_poll":   secondsUntilNextPoll,
-		"rate_limit":                rateLimitData,
+	return &StatusSnapshot{
+		UptimeSeconds:           int(time.Since(s.startTime).Seconds()),
+		ServerTimeUnix:          now.Unix(),
+		ServerStartedAtUnix:     s.startTime.Unix(),
+		ReviewerRunning:         reviewerRunning,
+		ReviewerDurationSeconds: int(reviewerDuration.Seconds()),
+		ReviewerStartedAtUnix:   reviewerStartedAtUnix,
+		Counts:                  counts,
+		RecentCompletions:       recentCompletions,
+		MissingMetadataCount:    missingMetadataCount,
+		Timestamp:               now.Unix(),
+		SecondsUntilNextPoll:    secondsUntilNextPoll,
+		NextPollAtUnix:          nextPollAtUnix,
+		RateLimit:               rateLimit,
+	}, nil
+}
+
+func (s *Server) BroadcastStatusSnapshot(ctx context.Context) {
+	snapshot, err := s.buildStatusSnapshot(ctx)
+	if err != nil {
+		log.Printf("[WS] Failed to build status snapshot: %v", err)
+		return
+	}
+
+	s.broadcastCh <- wsOutboundMessage{
+		Type:    "status_snapshot",
+		Payload: snapshot,
+	}
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	// Prevent caching of API responses
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	response, err := s.buildStatusSnapshot(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1031,6 +1111,16 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.clients[conn] = client
 	clientCount := len(s.clients)
 	s.clientsMux.Unlock()
+
+	if snapshot, err := s.buildStatusSnapshot(r.Context()); err != nil {
+		log.Printf("[WS] Failed to build initial status snapshot: %v", err)
+	} else if err := conn.WriteJSON(WebSocketMessage{
+		Type:    "status_snapshot",
+		Payload: snapshot,
+	}); err != nil {
+		log.Printf("[WS] Failed to send initial status snapshot: %v", err)
+		return
+	}
 
 	log.Printf("[WS] Client connected from %s as %s (total: %d)", r.RemoteAddr, user.GitHubUsername, clientCount)
 

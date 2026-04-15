@@ -21,12 +21,17 @@ export interface RateLimitInfo {
 
 export interface ServerStatus {
   uptime_seconds: number;
+  server_time_unix: number;
+  server_started_at_unix: number;
   reviewer_running: boolean;
   reviewer_duration_seconds: number;
+  reviewer_started_at_unix: number | null;
   counts: StatusCounts;
   recent_completions: RecentCompletion[];
   missing_metadata_count: number;
   timestamp: number;
   seconds_until_next_poll: number;
+  next_poll_at_unix: number | null;
   rate_limit: RateLimitInfo;
+  snapshot_received_at_ms?: number;
 }
