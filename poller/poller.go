@@ -1053,27 +1053,28 @@ func (p *Poller) poll(ctx context.Context) {
 		}
 	}
 
-	// Add database PRs not in the GitHub search to allPRs so we update their
-	// metadata too (e.g., PRs you've already reviewed but still track).
-	{
-		ghKeys := make(map[string]bool, len(allPRs))
-		for _, pr := range allPRs {
-			ghKeys[fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)] = true
-		}
-		added := 0
-		for key, dbPR := range dbPRMap {
-			if !ghKeys[key] {
-				allPRs = append(allPRs, buildPRFromDB(*dbPR))
-				added++
-			}
-		}
-		if added > 0 {
-			log.Printf("[POLL] Added %d database PRs to update list (total: %d PRs)", added, len(allPRs))
-		}
-	}
-
 	// Sync user_pr_views for all users (ensure all PRs have user-PR relationship records)
 	p.syncUserPRViews(allPRs, dbPRMap, allUsers)
+
+	// Add database PRs not in the GitHub fetch to allPRs so metadata still refreshes
+	// for already-tracked PRs (for example, approval counts after a user reviews a PR).
+	//
+	// This happens AFTER syncUserPRViews so dev mode does not create spurious user_pr_views
+	// for unrelated PRs from a shared database, while still keeping metadata current.
+	ghKeys := make(map[string]bool, len(allPRs))
+	for _, pr := range allPRs {
+		ghKeys[fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)] = true
+	}
+	added := 0
+	for key, dbPR := range dbPRMap {
+		if !ghKeys[key] {
+			allPRs = append(allPRs, buildPRFromDB(*dbPR))
+			added++
+		}
+	}
+	if added > 0 {
+		log.Printf("[POLL] Added %d database PRs to metadata update list (total: %d PRs)", added, len(allPRs))
+	}
 
 	// Track which PRs changed across all metadata phases, then broadcast once at the end.
 	// This ensures the frontend receives a consistent snapshot (approval count + via_teams + CI status

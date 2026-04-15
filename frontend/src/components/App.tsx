@@ -2,12 +2,12 @@ import { Component, ErrorInfo, ReactNode, useState, useEffect } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { Header, StatusBar } from '@/components/layout';
-import { ReviewPRsSection, TriageSummary, TriageFilter } from '@/components/prs';
+import { ReviewPRsSection } from '@/components/prs';
 import { useReviewerHealth } from '@/hooks/useReviewerHealth';
-import { usePRs } from '@/hooks/usePRs';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
 import { PR } from '@/types/pr';
+import { ConnectionStatus, ServerWebSocketMessage, subscribeToWebSocketMessages, subscribeToWebSocketStatus } from '@/utils/websocket';
 import '@/styles/main.scss';
 
 // Create query client
@@ -19,6 +19,45 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+function applyPRWebSocketMessage(oldData: PR[] | undefined, message: ServerWebSocketMessage): PR[] | undefined {
+  if (!oldData) return oldData;
+  if (!message.payload) return oldData;
+
+  switch (message.type) {
+    case 'pr_created': {
+      const newPR = message.payload as PR;
+      if (!newPR) return oldData;
+
+      if (oldData.some(pr => pr.number === newPR.number && pr.repo === newPR.repo && pr.owner === newPR.owner)) {
+        return oldData.map(pr =>
+          pr.number === newPR.number && pr.repo === newPR.repo && pr.owner === newPR.owner ? newPR : pr
+        );
+      }
+
+      return [newPR, ...oldData];
+    }
+
+    case 'pr_updated': {
+      const updatedPR = message.payload as PR;
+      return oldData.map((pr) =>
+        pr.number === updatedPR.number && pr.repo === updatedPR.repo && pr.owner === updatedPR.owner
+          ? { ...updatedPR, is_mine: pr.is_mine }
+          : pr
+      );
+    }
+
+    case 'pr_deleted': {
+      const { owner, repo, number } = message.payload as Pick<PR, 'owner' | 'repo' | 'number'>;
+      return oldData.filter((pr) =>
+        !(pr.number === number && pr.repo === repo && pr.owner === owner)
+      );
+    }
+
+    default:
+      return oldData;
+  }
+}
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -57,7 +96,6 @@ class ErrorBoundary extends Component<
 
 function AppContent() {
   const { data: reviewerHealth } = useReviewerHealth();
-  const { data: prs } = usePRs();
   const queryClient = useQueryClient();
   const { track, trackSearch } = useTelemetry();
 
@@ -73,94 +111,31 @@ function AppContent() {
   }
 
   // Connection status state
-  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'connecting'>('connecting');
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
 
   // Search state
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Triage filter state
-  const [triageFilter, setTriageFilter] = useState<TriageFilter | null>(null);
+  // Filter state
+  const [selectedTeams, setSelectedTeams] = useState<string[]>([]);
+  const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
 
-  // WebSocket connection
+  // Shared WebSocket connection
   useEffect(() => {
-    let ws: WebSocket | null = null;
-    let reconnectTimeout: ReturnType<typeof setTimeout>;
-
-    const connect = () => {
-      setConnectionStatus('connecting');
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-
-      ws.onopen = () => {
-        console.log('WebSocket connected');
-        setConnectionStatus('connected');
-        // Refetch queries on connect to sync state (catch-up)
+    const unsubscribeStatus = subscribeToWebSocketStatus((status) => {
+      setConnectionStatus(status);
+      if (status === 'connected') {
         queryClient.invalidateQueries({ queryKey: ['prs'] });
-      };
+      }
+    });
 
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          const { type, payload } = message;
-
-          queryClient.setQueryData<PR[]>(['prs'], (oldData) => {
-            if (!oldData) return oldData;
-            if (!payload) return oldData; // Guard against null payload
-
-            switch (type) {
-              case 'pr_created': {
-                const newPR = payload as PR;
-                if (!newPR) return oldData; // Extra safety
-                // Avoid duplicates
-                if (oldData.some(pr => pr.number === newPR.number && pr.repo === newPR.repo && pr.owner === newPR.owner)) {
-                  return oldData.map(pr => 
-                    pr.number === newPR.number && pr.repo === newPR.repo && pr.owner === newPR.owner ? newPR : pr
-                  );
-                }
-                return [newPR, ...oldData];
-              }
-
-              case 'pr_updated': {
-                const updatedPR = payload as PR;
-                return oldData.map((pr) =>
-                  pr.number === updatedPR.number && pr.repo === updatedPR.repo && pr.owner === updatedPR.owner
-                    ? updatedPR
-                    : pr
-                );
-              }
-
-              case 'pr_deleted': {
-                const { owner, repo, number } = payload;
-                return oldData.filter((pr) => 
-                  !(pr.number === number && pr.repo === repo && pr.owner === owner)
-                );
-              }
-
-              default:
-                return oldData;
-            }
-          });
-        } catch (error) {
-          console.error('Error processing WebSocket message:', error);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
-
-      ws.onclose = () => {
-        console.log('WebSocket disconnected, attempting to reconnect...');
-        setConnectionStatus('disconnected');
-        reconnectTimeout = setTimeout(connect, 3000); // Reconnect after 3 seconds
-      };
-    };
-
-    connect();
+    const unsubscribeMessages = subscribeToWebSocketMessages((message) => {
+      queryClient.setQueryData<PR[]>(['prs'], (oldData) => applyPRWebSocketMessage(oldData, message));
+    });
 
     return () => {
-      if (ws) ws.close();
-      clearTimeout(reconnectTimeout);
+      unsubscribeMessages();
+      unsubscribeStatus();
     };
   }, [queryClient]);
 
@@ -175,7 +150,7 @@ function AppContent() {
       <Header />
       <StatusBar connectionStatus={connectionStatus} />
 
-      <div className="search-container" style={{ marginBottom: '20px' }}>
+      <div className="search-container">
         <input
           type="text"
           placeholder="Search PRs (title, repo, author, number)..."
@@ -184,26 +159,19 @@ function AppContent() {
             setSearchTerm(e.target.value);
             trackSearch(e.target.value);
           }}
-          style={{
-            width: '100%',
-            padding: '12px 16px',
-            fontSize: '16px',
-            borderRadius: '6px',
-            border: '1px solid #30363d',
-            backgroundColor: '#0d1117',
-            color: '#c9d1d9',
-            outline: 'none',
-          }}
         />
       </div>
 
-      <TriageSummary prs={prs || []} onFilterChange={setTriageFilter} />
+
 
       <ReviewPRsSection
         showReviewColumns={showReviewColumns}
         onToggleColumns={handleToggleColumns}
         searchTerm={searchTerm}
-        triageFilter={triageFilter}
+        selectedTeams={selectedTeams}
+        selectedRepos={selectedRepos}
+        onTeamsChange={setSelectedTeams}
+        onReposChange={setSelectedRepos}
       />
     </div>
   );

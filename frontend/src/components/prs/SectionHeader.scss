@@ -9,6 +9,11 @@
     margin: 0;
   }
 
+  &__actions {
+    display: flex;
+    gap: 8px;
+  }
+
   .column-toggle-btn {
     padding: 4px 10px;
     font-size: 11px;
@@ -33,5 +38,10 @@
     &:active {
       transform: scale(0.97);
     }
+  }
+
+  .column-toggle-btn--inactive {
+    opacity: 0.6;
+    font-weight: normal;
   }
 }

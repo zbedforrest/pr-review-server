@@ -1,4 +1,5 @@
-import { apiPost, apiGet } from './client';
+import { apiGet } from './client';
+import { sendWebSocketMessage } from '@/utils/websocket';
 
 export interface TelemetryEventPayload {
   action: string;
@@ -18,7 +19,10 @@ export interface TelemetryStats {
 }
 
 export async function trackEvents(events: TelemetryEventPayload[]): Promise<void> {
-  await apiPost('/api/telemetry/track', { events });
+  sendWebSocketMessage({
+    type: 'telemetry_batch',
+    payload: { events },
+  });
 }
 
 export async function fetchTelemetryStats(days: number): Promise<TelemetryStats> {

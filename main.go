@@ -182,6 +182,13 @@ func start(cfg *config.Config) {
 		}
 		p.SetDevUser(devUser)
 		log.Printf("Dev user configured for poller: %s (ID: %d)", devUser.GitHubUsername, devUser.ID)
+
+		// Clear stale views so the poller recreates only the correct ones
+		if cleared, err := database.DeleteAllUserPRViews(devUser.ID); err != nil {
+			log.Printf("Warning: failed to clear dev user views: %v", err)
+		} else if cleared > 0 {
+			log.Printf("Cleared %d stale user_pr_views for dev user (will repopulate on first poll)", cleared)
+		}
 	}
 
 	// Start poller in background

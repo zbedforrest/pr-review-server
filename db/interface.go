@@ -194,6 +194,7 @@ type Database interface {
 	UpdateUserPRNotes(userID, prID int, notes string) error
 	UpdateUserReviewStatus(userID, prID int, reviewStatus string) error
 	UpdateUserViaTeams(userID, prID int, viaTeams []string) error
+	DeleteAllUserPRViews(userID int) (int64, error)
 	HidePRForUser(userID, prID int) error
 	EnsureUserPRView(userID, prID int, isAuthor bool) error
 	MigrateLegacyNotes(userID int) (int, error)

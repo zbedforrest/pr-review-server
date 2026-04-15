@@ -1,0 +1,206 @@
+@use '../../styles/abstracts/variables' as *;
+
+.filter-bar {
+  margin-bottom: $spacing-xl;
+
+  &__toggle {
+    display: flex;
+    align-items: center;
+    gap: $spacing-sm;
+    background: none;
+    border: none;
+    color: $color-text-secondary;
+    font-size: $font-size-base;
+    font-family: $font-system;
+    cursor: pointer;
+    padding: $spacing-xs 0;
+    transition: color $transition-fast;
+
+    &:hover {
+      color: $color-text-primary;
+    }
+  }
+
+  &__chevron {
+    transition: transform $transition-fast;
+
+    &--open {
+      transform: rotate(90deg);
+    }
+  }
+
+  &__count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 $spacing-xs;
+    border-radius: $radius-lg;
+    background: $color-link;
+    color: $color-bg-primary;
+    font-size: $font-size-xs;
+    font-weight: 600;
+  }
+
+  &__content {
+    margin-top: $spacing-md;
+    padding: $spacing-lg;
+    background: $color-bg-secondary;
+    border: 1px solid $color-border;
+    border-radius: $radius-md;
+  }
+
+  &__section {
+    display: flex;
+    align-items: flex-start;
+    gap: $spacing-md;
+    margin-bottom: $spacing-md;
+
+    &:last-of-type {
+      margin-bottom: 0;
+    }
+  }
+
+  &__label {
+    flex-shrink: 0;
+    width: 50px;
+    padding-top: $spacing-xs;
+    font-size: $font-size-sm;
+    color: $color-text-tertiary;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+
+  &__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $spacing-sm;
+  }
+
+  &__repo-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: $spacing-sm;
+  }
+
+  &__dropdown {
+    position: relative;
+  }
+
+  &__add-btn {
+    background: none;
+    border: 1px dashed $color-border;
+    color: $color-text-secondary;
+    font-size: $font-size-sm;
+    font-family: $font-system;
+    padding: $spacing-xs $spacing-md;
+    border-radius: $radius-lg;
+    cursor: pointer;
+    transition: all $transition-fast;
+
+    &:hover {
+      border-color: $color-link;
+      color: $color-link;
+    }
+  }
+
+  &__dropdown-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 100;
+    min-width: 200px;
+    max-height: 240px;
+    overflow-y: auto;
+    margin: 0;
+    padding: $spacing-xs 0;
+    list-style: none;
+    background: $color-bg-secondary;
+    border: 1px solid $color-border;
+    border-radius: $radius-md;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+
+    li button {
+      display: block;
+      width: 100%;
+      padding: $spacing-sm $spacing-lg;
+      background: none;
+      border: none;
+      color: $color-text-primary;
+      font-size: $font-size-base;
+      font-family: $font-system;
+      text-align: left;
+      cursor: pointer;
+
+      &:hover {
+        background: $color-bg-hover;
+      }
+    }
+  }
+
+  &__clear {
+    margin-top: $spacing-md;
+    background: none;
+    border: none;
+    color: $color-text-tertiary;
+    font-size: $font-size-sm;
+    font-family: $font-system;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+
+    &:hover {
+      color: $color-text-secondary;
+    }
+  }
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-xs;
+  padding: $spacing-xs $spacing-md;
+  border-radius: $radius-lg;
+  border: 1px solid $color-border;
+  background: transparent;
+  color: $color-text-secondary;
+  font-size: $font-size-sm;
+  font-family: $font-system;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover {
+    border-color: $color-text-tertiary;
+    color: $color-text-primary;
+  }
+
+  &--active {
+    border-color: $color-link;
+    background: rgba(56, 139, 253, 0.1);
+    color: $color-link;
+
+    &:hover {
+      background: rgba(56, 139, 253, 0.15);
+    }
+  }
+
+  &__label {
+    white-space: nowrap;
+  }
+
+  &__remove {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 2px;
+    opacity: 0.7;
+    transition: opacity $transition-fast;
+
+    &:hover {
+      opacity: 1;
+    }
+  }
+}

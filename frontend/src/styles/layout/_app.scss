@@ -53,6 +53,21 @@ section {
   }
 }
 
+.search-container {
+  margin-bottom: $spacing-2xl;
+
+  input {
+    width: 100%;
+    padding: $spacing-lg $spacing-xl;
+    font-size: $font-size-lg;
+    border-radius: $radius-md;
+    border: 1px solid $color-border;
+    background-color: $color-bg-primary;
+    color: $color-text-primary;
+    outline: none;
+  }
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

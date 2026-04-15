@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -70,9 +71,9 @@ type Server struct {
 	devUserMux sync.RWMutex
 	// WebSocket connections
 	upgrader    websocket.Upgrader
-	clients     map[*websocket.Conn]bool
+	clients     map[*websocket.Conn]*wsClient
 	clientsMux  sync.RWMutex
-	broadcastCh chan interface{}
+	broadcastCh chan wsOutboundMessage
 }
 
 // reviewURL returns the review URL path if htmlPath is set, otherwise empty string
@@ -120,6 +121,22 @@ type WebSocketMessage struct {
 	Payload interface{} `json:"payload"`
 }
 
+type inboundWebSocketMessage struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+type wsClient struct {
+	UserID         int
+	GitHubUsername string
+}
+
+type wsOutboundMessage struct {
+	Type         string
+	Payload      interface{}
+	TargetUserID int
+}
+
 func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsClient *gcs.Client) *Server {
 	return &Server{
 		cfg:       cfg,
@@ -135,8 +152,8 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 				return true
 			},
 		},
-		clients:     make(map[*websocket.Conn]bool),
-		broadcastCh: make(chan interface{}),
+		clients:     make(map[*websocket.Conn]*wsClient),
+		broadcastCh: make(chan wsOutboundMessage),
 	}
 }
 
@@ -382,9 +399,8 @@ func (s *Server) handleDeletePR(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[API] User %d hid PR %s/%s#%d", user.ID, req.Owner, req.Repo, req.Number)
 
-	// Notify this user's clients (broadcast deletion event)
-	// Note: In multi-user mode, this event is user-specific
-	s.BroadcastEvent(EventPRDeleted, map[string]interface{}{
+	// Notify only this user's clients. Hidden PRs are user-specific.
+	s.BroadcastEventToUser(user.ID, EventPRDeleted, map[string]interface{}{
 		"owner":  req.Owner,
 		"repo":   req.Repo,
 		"number": req.Number,
@@ -439,8 +455,12 @@ func (s *Server) handleUpdatePRNotes(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[API] Updated notes for user %d on %s/%s#%d: %q", user.ID, req.Owner, req.Repo, req.Number, req.Notes)
 
-	// Notify clients (for this user)
-	s.BroadcastEvent(EventPRUpdated, s.getPRResponse(req.Owner, req.Repo, req.Number))
+	// Notify only this user's clients. Notes are user-specific.
+	s.BroadcastEventToUser(user.ID, EventPRUpdated, map[string]interface{}{
+		"owner":  req.Owner,
+		"repo":   req.Repo,
+		"number": req.Number,
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{ // nolint:errcheck
@@ -494,8 +514,12 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[API] Manually triggered review generation for %s/%s#%d (commit: %s)", req.Owner, req.Repo, req.Number, latestSHA[:7])
 
-	// Notify clients
-	s.BroadcastEvent(EventPRUpdated, s.getPRResponse(req.Owner, req.Repo, req.Number))
+	// Notify all clients. The broadcaster resolves user-specific fields per connection.
+	s.BroadcastEvent(EventPRUpdated, map[string]interface{}{
+		"owner":  req.Owner,
+		"repo":   req.Repo,
+		"number": req.Number,
+	})
 
 	// Start review immediately, bypassing the full poll cycle.
 	// ProcessReviewImmediate tracks the review synchronously and spawns
@@ -871,8 +895,126 @@ func getContentType(path string) string {
 	return "application/octet-stream"
 }
 
+func hashWebSocketDevUsername(username string) uint32 {
+	var hash uint32 = 5381
+	for _, c := range username {
+		hash = ((hash << 5) + hash) + uint32(c)
+	}
+	return hash
+}
+
+func (s *Server) getOrCreateDevWebSocketUser() (*db.User, error) {
+	username := s.cfg.GitHubUsername
+	if username == "" {
+		return nil, fmt.Errorf("GITHUB_USERNAME is required for dev websocket auth")
+	}
+
+	user, err := s.db.GetUserByUsername(username)
+	if err != nil {
+		return nil, fmt.Errorf("lookup dev websocket user: %w", err)
+	}
+	if user != nil {
+		return user, nil
+	}
+
+	user = &db.User{
+		GitHubID:        int64(hashWebSocketDevUsername(username)),
+		GitHubUsername:  username,
+		GitHubAvatarURL: fmt.Sprintf("https://github.com/%s.png", username),
+	}
+	if err := s.db.CreateUser(user); err != nil {
+		return nil, fmt.Errorf("create dev websocket user: %w", err)
+	}
+
+	return user, nil
+}
+
+func (s *Server) authenticateWebSocketUser(r *http.Request) (*db.User, error) {
+	if s.cfg.IsDevMode() {
+		return s.getOrCreateDevWebSocketUser()
+	}
+
+	cookie, err := r.Cookie(auth.SessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return nil, fmt.Errorf("missing session cookie")
+	}
+
+	session, err := s.db.GetSession(cookie.Value)
+	if err != nil {
+		return nil, fmt.Errorf("fetch session: %w", err)
+	}
+	if session == nil || session.ExpiresAt.Before(time.Now()) {
+		return nil, fmt.Errorf("session expired or invalid")
+	}
+
+	user, err := s.db.GetUserByID(session.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch websocket user: %w", err)
+	}
+	if user == nil {
+		return nil, fmt.Errorf("websocket user not found")
+	}
+
+	return user, nil
+}
+
+func (s *Server) handleWebSocketTelemetryMessage(userID int, payload json.RawMessage) {
+	var batch telemetryBatchInput
+	if err := json.Unmarshal(payload, &batch); err != nil {
+		log.Printf("[WS] Invalid telemetry batch payload: %v", err)
+		return
+	}
+	if len(batch.Events) == 0 {
+		return
+	}
+	if err := s.ingestTelemetryEvents(userID, batch.Events); err != nil {
+		log.Printf("[WS] Failed to persist telemetry batch: %v", err)
+	}
+}
+
+func extractPRIdentity(payload interface{}) (string, string, int, bool) {
+	switch value := payload.(type) {
+	case map[string]interface{}:
+		owner, ownerOK := value["owner"].(string)
+		repo, repoOK := value["repo"].(string)
+		number, numberOK := value["number"].(int)
+		return owner, repo, number, ownerOK && repoOK && numberOK
+	case *PRResponse:
+		if value == nil {
+			return "", "", 0, false
+		}
+		return value.Owner, value.Repo, value.Number, true
+	case PRResponse:
+		return value.Owner, value.Repo, value.Number, true
+	default:
+		return "", "", 0, false
+	}
+}
+
+func (s *Server) resolveBroadcastPayloadForClient(client *wsClient, eventType string, payload interface{}) interface{} {
+	if payload == nil {
+		return nil
+	}
+
+	if eventType == EventPRCreated || eventType == EventPRUpdated {
+		owner, repo, number, ok := extractPRIdentity(payload)
+		if ok {
+			return s.getPRResponseForUser(client.UserID, owner, repo, number)
+		}
+	}
+
+	return payload
+}
+
 // handleWebSocket handles WebSocket connection requests
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	user, err := s.authenticateWebSocketUser(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		log.Printf("[WS] Rejecting websocket connection from %s: %v", r.RemoteAddr, err)
+		return
+	}
+
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[WS] Error upgrading connection: %v", err)
@@ -880,28 +1022,52 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Register new client
+	client := &wsClient{
+		UserID:         user.ID,
+		GitHubUsername: user.GitHubUsername,
+	}
+
 	s.clientsMux.Lock()
-	s.clients[conn] = true
+	s.clients[conn] = client
 	clientCount := len(s.clients)
 	s.clientsMux.Unlock()
 
-	log.Printf("[WS] Client connected from %s (total: %d)", r.RemoteAddr, clientCount)
+	log.Printf("[WS] Client connected from %s as %s (total: %d)", r.RemoteAddr, user.GitHubUsername, clientCount)
 
-	// Unregister client on disconnect
 	defer func() {
 		s.clientsMux.Lock()
 		delete(s.clients, conn)
 		clientCount := len(s.clients)
 		s.clientsMux.Unlock()
-		log.Printf("[WS] Client disconnected from %s (remaining: %d)", r.RemoteAddr, clientCount)
+		log.Printf("[WS] Client disconnected from %s as %s (remaining: %d)", r.RemoteAddr, user.GitHubUsername, clientCount)
 	}()
 
-	// Keep connection alive
 	for {
-		// Read message (and discard). This is to detect client disconnects.
-		if _, _, err := conn.NextReader(); err != nil {
+		messageType, reader, err := conn.NextReader()
+		if err != nil {
 			break
+		}
+		if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
+			continue
+		}
+
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			log.Printf("[WS] Error reading message body: %v", err)
+			continue
+		}
+
+		var message inboundWebSocketMessage
+		if err := json.Unmarshal(body, &message); err != nil {
+			log.Printf("[WS] Ignoring malformed message from %s: %v", user.GitHubUsername, err)
+			continue
+		}
+
+		switch message.Type {
+		case "telemetry_batch":
+			s.handleWebSocketTelemetryMessage(user.ID, message.Payload)
+		default:
+			log.Printf("[WS] Ignoring unknown client message type %q from %s", message.Type, user.GitHubUsername)
 		}
 	}
 }
@@ -911,14 +1077,26 @@ func (s *Server) broadcaster() {
 	for {
 		message := <-s.broadcastCh
 		s.clientsMux.RLock()
-		for client := range s.clients {
-			err := client.WriteJSON(message)
+		for conn, client := range s.clients {
+			if message.TargetUserID > 0 && client.UserID != message.TargetUserID {
+				continue
+			}
+
+			payload := s.resolveBroadcastPayloadForClient(client, message.Type, message.Payload)
+			if payload == nil {
+				continue
+			}
+
+			err := conn.WriteJSON(WebSocketMessage{
+				Type:    message.Type,
+				Payload: payload,
+			})
 			if err != nil {
 				log.Printf("[WS] Error writing to client: %v", err)
-				_ = client.Close() // nolint:errcheck
+				_ = conn.Close() // nolint:errcheck
 				s.clientsMux.RUnlock()
 				s.clientsMux.Lock()
-				delete(s.clients, client)
+				delete(s.clients, conn)
 				s.clientsMux.Unlock()
 				s.clientsMux.RLock()
 			}
@@ -927,44 +1105,26 @@ func (s *Server) broadcaster() {
 	}
 }
 
-// BroadcastEvent sends an event to all connected WebSocket clients
+// BroadcastEvent sends an event to all connected WebSocket clients.
 func (s *Server) BroadcastEvent(eventType string, payload interface{}) {
-	// For updated/created events, we want to ensure we send the full PR response
-	// If payload is just basic PR info, fetch the full details
-	if eventType == EventPRUpdated || eventType == EventPRCreated {
-		if basicInfo, ok := payload.(map[string]interface{}); ok {
-			// Extract owner, repo, number if possible
-			var owner, repo string
-			var number int
-			var hasID bool
-
-			if o, ok := basicInfo["owner"].(string); ok {
-				owner = o
-			}
-			if r, ok := basicInfo["repo"].(string); ok {
-				repo = r
-			}
-			if n, ok := basicInfo["number"].(int); ok {
-				number = n
-				hasID = true
-			}
-
-			if owner != "" && repo != "" && hasID {
-				payload = s.getPRResponse(owner, repo, number)
-			}
-		}
-	}
-
-	if payload == nil {
-		return
-	}
-
-	message := WebSocketMessage{
+	s.broadcastCh <- wsOutboundMessage{
 		Type:    eventType,
 		Payload: payload,
 	}
+}
 
-	s.broadcastCh <- message
+// BroadcastEventToUser sends an event only to a single user's connected clients.
+func (s *Server) BroadcastEventToUser(userID int, eventType string, payload interface{}) {
+	s.broadcastCh <- wsOutboundMessage{
+		Type:         eventType,
+		Payload:      payload,
+		TargetUserID: userID,
+	}
+}
+
+// getPRResponse constructs a PR response using the default dev-mode user context.
+func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
+	return s.getPRResponseForUser(s.getDevUserID(), owner, repo, number)
 }
 
 // getDevUserID resolves the dev user's database ID, caching the result.
@@ -993,17 +1153,15 @@ func (s *Server) getDevUserID() int {
 	return user.ID
 }
 
-// getPRResponse constructs a full PRResponse object from the database,
+// getPRResponseForUser constructs a full PRResponse object from the database,
 // including user-specific data from user_pr_views (via_teams, review status, etc.).
-func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
-	// Get the full PR details from the database
+func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int) *PRResponse {
 	pr, err := s.db.GetPR(owner, repo, number)
 	if err != nil || pr == nil {
 		log.Printf("[WS] Error getting PR for broadcast: %v", err)
 		return nil
 	}
 
-	// Create the response object
 	var reviewedAt *string
 	var generatingSince *string
 	var createdAt *string
@@ -1031,9 +1189,6 @@ func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 		ciFailedChecks = []string{}
 	}
 
-	// Get user-specific view data (via_teams, review status, notes, is_author).
-	// Without this, WebSocket broadcasts would send null for these fields,
-	// causing the frontend to overwrite good data with null.
 	var viaTeams []string
 	myReviewStatus := pr.MyReviewStatus
 	notes := pr.Notes
@@ -1043,7 +1198,7 @@ func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 	}
 	isMine := strings.EqualFold(author, s.cfg.GitHubUsername)
 
-	if userID := s.getDevUserID(); userID > 0 {
+	if userID > 0 {
 		if assignment, err := s.db.GetUserPRAssignment(userID, pr.ID); err == nil && assignment != nil {
 			_ = json.Unmarshal([]byte(assignment.ReviewerGroups), &viaTeams)
 			if assignment.MyReviewStatus != "" {

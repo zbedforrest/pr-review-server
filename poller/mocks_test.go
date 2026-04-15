@@ -600,6 +600,10 @@ func (m *MockDatabase) UpdateUserViaTeams(userID, prID int, viaTeams []string) e
 	return nil
 }
 
+func (m *MockDatabase) DeleteAllUserPRViews(userID int) (int64, error) {
+	return 0, nil
+}
+
 func (m *MockDatabase) HidePRForUser(userID, prID int) error {
 	return nil
 }
