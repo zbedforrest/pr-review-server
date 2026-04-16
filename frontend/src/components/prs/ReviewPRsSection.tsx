@@ -7,9 +7,7 @@ import { LoadingSpinner, ErrorMessage } from '@/components/common';
 import { PR } from '@/types/pr';
 import { VIA_TEAMS_PERSONAL } from '@/constants';
 import { TriageFilter, categorizePR } from './triageUtils';
-import { AutoReviewToggle } from './AutoReviewToggle';
 import './SectionHeader.scss';
-import { FilterBar } from '../filters';
 
 interface ReviewPRsSectionProps {
   showReviewColumns?: boolean;
@@ -18,8 +16,6 @@ interface ReviewPRsSectionProps {
   triageFilter?: TriageFilter | null;
   selectedTeams?: string[];
   selectedRepos?: string[];
-  onTeamsChange?: (teams: string[]) => void;
-  onReposChange?: (repos: string[]) => void;
 }
 
 interface FilterOptions {
@@ -77,8 +73,6 @@ export function ReviewPRsSection({
   triageFilter = null,
   selectedTeams = [],
   selectedRepos = [],
-  onTeamsChange,
-  onReposChange,
 }: ReviewPRsSectionProps) {
   const { data: prs, isLoading, error } = usePRs();
   const { data: currentUser } = useCurrentUser();
@@ -114,31 +108,23 @@ export function ReviewPRsSection({
   return (
     <>
       {showSyncBanner && (
-        <div style={{
-          background: '#3d3520',
-          border: '1px solid #6e5c2e',
-          borderRadius: '6px',
-          padding: '16px',
-          marginBottom: '24px',
-          color: '#e3b341',
-          textAlign: 'center',
-        }}>
+        <div className="review-prs__sync-banner">
           <strong>Syncing your PRs...</strong>
-          <p style={{ margin: '8px 0 0', color: '#c9a83c', fontSize: '0.9em' }}>
+          <p className="review-prs__sync-banner-copy">
             We&apos;re loading your team assignments and PR data. This usually takes a minute or two on first login.
           </p>
         </div>
       )}
 
       {/* My PRs Section */}
-      <section style={{ marginBottom: '32px' }}>
+      <section className="review-prs__my-section">
         <div className="section-header">
           <h2>My PRs ({myPRs.length})</h2>
         </div>
         {isLoading && <LoadingSpinner />}
         {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
         {!isLoading && !error && myPRs.length === 0 && (
-          <p style={{ color: '#8b949e', fontStyle: 'italic', padding: '16px 0' }}>
+          <p className="review-prs__empty-state">
             No PRs authored by you
           </p>
         )}
@@ -152,7 +138,6 @@ export function ReviewPRsSection({
         <div className="section-header">
           <h2>PRs to Review ({reviewPRs.length})</h2>
           <div className="section-header__actions">
-            <AutoReviewToggle />
             {onToggleColumns && (
               <button
                 className="column-toggle-btn"
@@ -164,14 +149,6 @@ export function ReviewPRsSection({
             )}
           </div>
         </div>
-        {onTeamsChange && onReposChange && (
-          <FilterBar
-            selectedTeams={selectedTeams}
-            onTeamsChange={onTeamsChange}
-            selectedRepos={selectedRepos}
-            onReposChange={onReposChange}
-          />
-        )}
         {isLoading && <LoadingSpinner />}
         {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
         {!isLoading && !error && (

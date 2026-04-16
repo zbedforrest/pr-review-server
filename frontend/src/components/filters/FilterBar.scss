@@ -3,6 +3,33 @@
 .filter-bar {
   margin-bottom: $spacing-xl;
 
+  &--inline {
+    display: contents;
+
+    .filter-bar__toggle {
+      grid-column: 1;
+      grid-row: 1;
+      align-self: stretch;
+      padding: 0 $spacing-lg;
+      border: 1px solid $color-border;
+      border-radius: $radius-md;
+      background: $color-bg-tertiary;
+      color: $color-text-primary;
+      white-space: nowrap;
+
+      &:hover {
+        border-color: $color-text-tertiary;
+        background: $color-bg-hover;
+      }
+    }
+
+    .filter-bar__content {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      margin-top: 0;
+    }
+  }
+
   &__toggle {
     display: flex;
     align-items: center;

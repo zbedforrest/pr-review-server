@@ -1,6 +1,6 @@
 import { memo, useCallback } from 'react';
 import type { PR } from '@/types/pr';
-import { CommitSha, StatusBadge } from '@/components/common';
+import { CommitSha } from '@/components/common';
 import { useDeletePR, useTriggerReview } from '@/hooks/usePRs';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { CIStatusIndicator } from './CIStatusIndicator';
@@ -57,11 +57,6 @@ export const PRTableRow = memo(function PRTableRow({
       <td>
         <CommitSha sha={pr.commit_sha} owner={pr.owner} repo={pr.repo} />
       </td>
-      {showReviewColumns && (
-        <td>
-          <StatusBadge status={pr.status} generatingSince={pr.generating_since} />
-        </td>
-      )}
       <td className="pr-table__ci-status">
         <CIStatusIndicator state={pr.ci_state} failedChecks={pr.ci_failed_checks} />
       </td>
@@ -117,10 +112,14 @@ export const PRTableRow = memo(function PRTableRow({
         />
       </td>
       {showReviewColumns && (
-        <td>
+        <td className="pr-table__review-cell">
           {reviewUrl ? (
-            <a href={reviewUrl} onClick={() => track('view_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}>
-              View Review
+            <a
+              href={reviewUrl}
+              className="pr-table__review-link"
+              onClick={() => track('view_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}
+            >
+              View
             </a>
           ) : (
             <span>-</span>
@@ -128,7 +127,7 @@ export const PRTableRow = memo(function PRTableRow({
         </td>
       )}
       <td>
-        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+        <div className="pr-table__actions">
           <button
             className="pr-table__action-btn"
             onClick={handleTriggerReview}

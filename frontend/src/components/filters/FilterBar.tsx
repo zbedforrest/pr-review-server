@@ -6,6 +6,8 @@ import { VIA_TEAMS_PERSONAL } from '@/constants';
 import './FilterBar.scss';
 
 interface FilterBarProps {
+  className?: string;
+  layout?: 'stacked' | 'inline';
   selectedTeams: string[];
   onTeamsChange: (teams: string[]) => void;
   selectedRepos: string[];
@@ -21,7 +23,14 @@ function getTeamFilterName(team: string, username?: string): string {
   return suffixIndex === -1 ? team : team.slice(0, suffixIndex);
 }
 
-export function FilterBar({ selectedTeams, onTeamsChange, selectedRepos, onReposChange }: FilterBarProps) {
+export function FilterBar({
+  className = '',
+  layout = 'stacked',
+  selectedTeams,
+  onTeamsChange,
+  selectedRepos,
+  onReposChange,
+}: FilterBarProps) {
   const { data: prs } = usePRs();
   const { data: currentUser } = useCurrentUser();
   const { track } = useTelemetry();
@@ -77,7 +86,7 @@ export function FilterBar({ selectedTeams, onTeamsChange, selectedRepos, onRepos
   if (allTeams.length === 0 && allRepos.length === 0) return null;
 
   return (
-    <div className="filter-bar">
+    <div className={`filter-bar filter-bar--${layout} ${className}`.trim()}>
       <button
         className="filter-bar__toggle"
         onClick={() => {

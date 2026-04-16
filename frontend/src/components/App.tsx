@@ -2,6 +2,7 @@ import { Component, ErrorInfo, ReactNode, useState, useEffect } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { Header, StatusBar } from '@/components/layout';
+import { FilterBar } from '@/components/filters';
 import { ReviewPRsSection } from '@/components/prs';
 import { useReviewerHealth } from '@/hooks/useReviewerHealth';
 import { useTelemetry } from '@/hooks/useTelemetry';
@@ -42,9 +43,9 @@ class ErrorBoundary extends Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '20px', color: '#ff6b6b', backgroundColor: '#161b22' }}>
+        <div className="app-error-boundary">
           <h1>Something went wrong</h1>
-          <pre style={{ color: '#8b949e', fontSize: '12px', overflow: 'auto' }}>
+          <pre className="app-error-boundary__stack">
             {this.state.error?.toString()}
             {'\n'}
             {this.state.error?.stack}
@@ -114,28 +115,33 @@ function AppContent() {
       <Header />
       <StatusBar connectionStatus={connectionStatus} />
 
-      <div className="search-container">
-        <input
-          type="text"
-          placeholder="Search PRs (title, repo, author, number)..."
-          value={searchTerm}
-          onChange={(e) => {
-            setSearchTerm(e.target.value);
-            trackSearch(e.target.value);
-          }}
+      <div className="search-controls">
+        <FilterBar
+          className="search-controls__filter"
+          layout="inline"
+          selectedTeams={selectedTeams}
+          onTeamsChange={setSelectedTeams}
+          selectedRepos={selectedRepos}
+          onReposChange={setSelectedRepos}
         />
+        <div className="search-container">
+          <input
+            type="text"
+            placeholder="Search PRs (title, repo, author, number)..."
+            value={searchTerm}
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              trackSearch(e.target.value);
+            }}
+          />
+        </div>
       </div>
-
-
-
       <ReviewPRsSection
         showReviewColumns={showReviewColumns}
         onToggleColumns={handleToggleColumns}
         searchTerm={searchTerm}
         selectedTeams={selectedTeams}
         selectedRepos={selectedRepos}
-        onTeamsChange={setSelectedTeams}
-        onReposChange={setSelectedRepos}
       />
     </div>
   );
