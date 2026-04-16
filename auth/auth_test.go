@@ -134,6 +134,9 @@ func (m *MockDatabase) GetPRsWithMissingCreatedAt() ([]db.PR, error) { return ni
 func (m *MockDatabase) UpdatePRCreatedAt(owner, repo string, prNumber int, createdAt time.Time) error {
 	return nil
 }
+func (m *MockDatabase) UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updatedAt time.Time) error {
+	return nil
+}
 func (m *MockDatabase) GetSetting(key string) (string, error)        { return "", nil }
 func (m *MockDatabase) SetSetting(key, value string) error           { return nil }
 func (m *MockDatabase) GetAutoReviewRequestedPRs() (bool, error)     { return false, nil }
@@ -153,6 +156,7 @@ func (m *MockDatabase) GetPRsForUserWithNotes(userID int) ([]db.PRWithUserView, 
 func (m *MockDatabase) UpdateUserPRNotes(userID, prID int, notes string) error       { return nil }
 func (m *MockDatabase) UpdateUserReviewStatus(userID, prID int, status string) error { return nil }
 func (m *MockDatabase) UpdateUserViaTeams(userID, prID int, viaTeams []string) error { return nil }
+func (m *MockDatabase) DeleteAllUserPRViews(userID int) (int64, error)               { return 0, nil }
 func (m *MockDatabase) HidePRForUser(userID, prID int) error                         { return nil }
 func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error       { return nil }
 func (m *MockDatabase) BatchUpsertPRs(prs []*db.PR) error                            { return nil }

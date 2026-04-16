@@ -2,6 +2,8 @@ package db
 
 import (
 	"fmt"
+	"os"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -28,9 +30,19 @@ func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 
 	gormDB := &GormDB{db: db}
 
+	// Configure connection pool to stay within Cloud SQL limits (db-f1-micro = 25 max)
+	sqlDB, err := db.DB()
+	if err == nil {
+		sqlDB.SetMaxOpenConns(10)              // Leave headroom for Cloud SQL overhead + local dev
+		sqlDB.SetMaxIdleConns(5)               // Keep a few warm connections
+		sqlDB.SetConnMaxLifetime(30 * time.Minute) // Recycle connections to avoid stale sockets
+	}
+
 	// Run auto-migrations
-	if err := gormDB.AutoMigrate(); err != nil {
-		return nil, fmt.Errorf("failed to run migrations: %w", err)
+	if os.Getenv("SKIP_DB_MIGRATIONS") != "true" {
+		if err := gormDB.AutoMigrate(); err != nil {
+			return nil, fmt.Errorf("failed to run migrations: %w", err)
+		}
 	}
 
 	// Initialize default settings
@@ -55,14 +67,23 @@ func NewGormPostgres(databaseURL string) (*GormDB, error) {
 
 // AutoMigrate creates or updates the database schema
 func (g *GormDB) AutoMigrate() error {
-	return g.db.AutoMigrate(
+	if err := g.db.AutoMigrate(
 		&UserModel{},
 		&SessionModel{},
 		&PRModel{},
 		&UserPRViewModel{},
 		&SettingModel{},
 		&TelemetryEventModel{},
-	)
+	); err != nil {
+		return err
+	}
+
+	// Explicit column additions for PostgreSQL (AutoMigrate can miss new columns)
+	g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS github_updated_at timestamptz")
+	// Clean up wrongly-named column from GORM default naming (git_hub_updated_at vs github_updated_at)
+	g.db.Exec("ALTER TABLE prs DROP COLUMN IF EXISTS git_hub_updated_at")
+
+	return nil
 }
 
 // Close closes the database connection

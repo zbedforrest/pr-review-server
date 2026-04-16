@@ -20,40 +20,21 @@ export function Header() {
 
   return (
     <header className="app-header">
-      <h1>PR Review Dashboard</h1>
-      <div style={{ display: 'flex', gap: '8px' }}>
+      <div className="app-header__branding">
+        <h1 className="app-header__title">PRism</h1>
+        <p className="app-header__subtitle">PR Review Dashboard</p>
+      </div>
+      <div className="app-header__actions">
         <a
           href="/usage-stats"
-          style={{
-            padding: '8px 16px',
-            fontSize: '14px',
-            borderRadius: '6px',
-            border: '1px solid #30363d',
-            backgroundColor: '#21262d',
-            color: '#c9d1d9',
-            textDecoration: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-          }}
+          className="app-header__action-link"
         >
           Stats
         </a>
         <button
           onClick={handleTriggerPoll}
           disabled={isPolling}
-          style={{
-            padding: '8px 16px',
-            fontSize: '14px',
-            borderRadius: '6px',
-            border: '1px solid #30363d',
-            backgroundColor: '#21262d',
-            color: '#c9d1d9',
-            cursor: isPolling ? 'not-allowed' : 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-          }}
+          className="app-header__action-btn"
         >
           {isPolling ? 'Polling...' : 'Refresh PRs'}
         </button>

@@ -1,6 +1,8 @@
+import { useEffect, useMemo, useState } from 'react';
 import { useStatus } from '@/hooks/useStatus';
 import { formatUptime } from '@/utils/formatUptime';
 import { formatTime } from '@/utils/formatDate';
+import { deriveStatusTimes } from '@/utils/statusTime';
 
 interface StatusBarProps {
   connectionStatus?: 'connected' | 'disconnected' | 'connecting';
@@ -8,6 +10,22 @@ interface StatusBarProps {
 
 export function StatusBar({ connectionStatus = 'connecting' }: StatusBarProps) {
   const { data: status, isLoading, error } = useStatus();
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const derivedTimes = useMemo(
+    () => (status && status.snapshot_received_at_ms
+      ? deriveStatusTimes(status, nowMs, status.snapshot_received_at_ms)
+      : null),
+    [status, nowMs]
+  );
 
   const getConnectionBadge = () => {
     switch (connectionStatus) {
@@ -45,7 +63,9 @@ export function StatusBar({ connectionStatus = 'connecting' }: StatusBarProps) {
 
   if (!status) return null;
 
-  const { counts, uptime_seconds, rate_limit, reviewer_running, seconds_until_next_poll } = status;
+  const { counts, rate_limit, reviewer_running } = status;
+  const uptimeSeconds = derivedTimes?.uptimeSeconds ?? status.uptime_seconds;
+  const nextPollSeconds = derivedTimes?.nextPollSeconds ?? status.seconds_until_next_poll;
 
   return (
     <div className="status-bar status-bar--running">
@@ -78,17 +98,17 @@ export function StatusBar({ connectionStatus = 'connecting' }: StatusBarProps) {
         </div>
       )}
 
-      {seconds_until_next_poll !== undefined && (
+      {nextPollSeconds !== null && (
         <div className="status-bar__item">
           <span className="status-bar__label">Next Poll:</span>
-          <span className="status-bar__value">{seconds_until_next_poll}s</span>
+          <span className="status-bar__value">{nextPollSeconds}s</span>
         </div>
       )}
 
-      {uptime_seconds !== undefined && (
+      {uptimeSeconds !== undefined && (
         <div className="status-bar__item">
           <span className="status-bar__label">Uptime:</span>
-          <span className="status-bar__value">{formatUptime(uptime_seconds)}</span>
+          <span className="status-bar__value">{formatUptime(uptimeSeconds)}</span>
         </div>
       )}
 

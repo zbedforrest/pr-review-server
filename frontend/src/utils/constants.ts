@@ -1,8 +1,9 @@
 // Polling intervals
-// With WebSockets, we can disable periodic background polling for data
-// 0 means disabled for React Query refetchInterval
+// WebSockets drive most real-time updates. Keep only low-frequency fallback
+// polling where it still adds resilience.
+// 0 means disabled for React Query refetchInterval.
 export const PR_POLL_INTERVAL = 0; 
-export const STATUS_POLL_INTERVAL = 10000; // Keep status polling for heartbeat/uptime
+export const STATUS_POLL_INTERVAL = 60000; // Conservative fallback for status snapshots
 export const PRIORITY_POLL_INTERVAL = 0;
 export const HEALTH_POLL_INTERVAL = 0;
 

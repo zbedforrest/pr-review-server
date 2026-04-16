@@ -25,10 +25,17 @@ export default defineConfig({
         target: BACKEND_PROXY_URL,
         changeOrigin: true,
       },
+      '/ws': {
+        target: BACKEND_PROXY_URL,
+        ws: true,
+      },
     },
   },
   build: {
     outDir: '../server/dist',
     emptyOutDir: true,
+  },
+  test: {
+    environment: 'jsdom',
   },
 });

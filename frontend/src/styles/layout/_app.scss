@@ -12,10 +12,67 @@
   text-align: center;
   margin-bottom: $spacing-2xl;
 
-  h1 {
-    font-size: $font-size-3xl;
-    color: $color-text-primary;
+  &__branding {
+    margin-bottom: $spacing-xl;
+  }
+
+  &__title {
     margin: 0;
+    font-size: 48px;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    background: linear-gradient(
+      90deg,
+      #ff5f6d 0%,
+      #ffc371 18%,
+      #ffe066 34%,
+      #7ee787 50%,
+      #58a6ff 68%,
+      #bc8cff 84%,
+      #ff5f6d 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  &__subtitle {
+    margin-top: $spacing-sm;
+    font-size: $font-size-base;
+    color: $color-text-secondary;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  &__actions {
+    display: flex;
+    justify-content: center;
+    gap: $spacing-sm;
+  }
+
+  &__action-link,
+  &__action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: $spacing-sm;
+    padding: 8px 16px;
+    font-size: 14px;
+    font-family: $font-system;
+    border-radius: $radius-md;
+    border: 1px solid $color-border;
+    background-color: $color-bg-tertiary;
+    color: $color-text-primary;
+    text-decoration: none;
+  }
+
+  &__action-btn {
+    cursor: pointer;
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.7;
+    }
   }
 }
 
@@ -50,6 +107,51 @@ section {
   p {
     margin: 0;
     font-size: $font-size-md;
+  }
+}
+
+.app-error-boundary {
+  padding: 20px;
+  color: #ff6b6b;
+  background-color: #161b22;
+
+  &__stack {
+    color: $color-text-secondary;
+    font-size: $font-size-md;
+    overflow: auto;
+  }
+}
+
+.search-controls {
+  $control-height: ($spacing-lg * 2) + $font-size-lg + 2px;
+
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: $spacing-md;
+  align-items: start;
+  margin-bottom: $spacing-2xl;
+
+  .search-container input,
+  .filter-bar--inline .filter-bar__toggle {
+    height: $control-height;
+    box-sizing: border-box;
+  }
+}
+
+.search-container {
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+
+  input {
+    width: 100%;
+    padding: $spacing-lg $spacing-xl;
+    font-size: $font-size-lg;
+    border-radius: $radius-md;
+    border: 1px solid $color-border;
+    background-color: $color-bg-primary;
+    color: $color-text-primary;
+    outline: none;
   }
 }
 

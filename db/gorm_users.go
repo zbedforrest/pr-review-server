@@ -102,7 +102,12 @@ func (g *GormDB) GetAllUsers() ([]User, error) {
 // GetUserByUsername retrieves a user by their GitHub username
 func (g *GormDB) GetUserByUsername(username string) (*User, error) {
 	var model UserModel
-	result := g.db.Where("github_username = ?", username).First(&model)
+	result := g.db.
+		Where("github_username = ?", username).
+		Order("last_login_at DESC NULLS LAST").
+		Order("created_at DESC").
+		Order("id DESC").
+		First(&model)
 
 	if result.Error == gorm.ErrRecordNotFound {
 		return nil, nil

@@ -45,11 +45,11 @@ type appTokenSource struct {
 }
 
 func (s *appTokenSource) Token() (*oauth2.Token, error) {
-	token, err := s.appClient.GetToken(context.Background())
+	token, expiry, err := s.appClient.GetTokenWithExpiry(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	return &oauth2.Token{AccessToken: token}, nil
+	return &oauth2.Token{AccessToken: token, Expiry: expiry}, nil
 }
 
 // GetAllOpenPRs fetches all open PRs for the given org using the App installation token.
@@ -64,7 +64,7 @@ func (c *Client) GetAllOpenPRs(ctx context.Context, orgName string) ([]PullReque
 // SearchOpenPRs returns lightweight PR identifiers for all open PRs in the org.
 func (c *Client) SearchOpenPRs(ctx context.Context, orgName string) ([]PRInfo, error) {
 	if c.appClient == nil {
-		return nil, fmt.Errorf("appClient not set: SearchOpenPRs requires a GitHub App client")
+		return c.searchOpenPRsWithREST(ctx, orgName)
 	}
 	return c.appClient.SearchOpenPRsForOrg(ctx, orgName)
 }
@@ -72,9 +72,91 @@ func (c *Client) SearchOpenPRs(ctx context.Context, orgName string) ([]PRInfo, e
 // BatchGetPRDetails fetches full PR details for multiple PRs via GraphQL.
 func (c *Client) BatchGetPRDetails(ctx context.Context, prs []PRInfo) (map[string]PullRequest, error) {
 	if c.appClient == nil {
-		return nil, fmt.Errorf("appClient not set: BatchGetPRDetails requires a GitHub App client")
+		return c.batchGetPRDetailsWithREST(ctx, prs)
 	}
 	return c.appClient.BatchGetPRDetails(ctx, prs)
+}
+
+func (c *Client) searchOpenPRsWithREST(ctx context.Context, orgName string) ([]PRInfo, error) {
+	query := fmt.Sprintf("type:pr state:open org:%s", orgName)
+	log.Printf("GitHub search query (org-wide): %s", query)
+
+	opts := &github.SearchOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+
+	var allPRs []PRInfo
+	for {
+		result, resp, err := c.gh.Search.Issues(ctx, query, opts)
+		if err != nil {
+			log.Printf("GitHub search error (org-wide): %v", err)
+			return nil, err
+		}
+
+		for _, issue := range result.Issues {
+			if issue.PullRequestLinks == nil {
+				continue
+			}
+
+			repoOwner, repoName, err := parseRepoFromURL(issue.GetRepositoryURL())
+			if err != nil {
+				log.Printf("Invalid repository URL: %s", issue.GetRepositoryURL())
+				continue
+			}
+
+			info := PRInfo{
+				Owner:  repoOwner,
+				Repo:   repoName,
+				Number: issue.GetNumber(),
+			}
+			if updatedAt := issue.GetUpdatedAt(); !updatedAt.IsZero() {
+				t := updatedAt.Time
+				info.UpdatedAt = &t
+			}
+			allPRs = append(allPRs, info)
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return allPRs, nil
+}
+
+func pullRequestFromGitHubPR(owner, repo string, pr *github.PullRequest) PullRequest {
+	var createdAt *time.Time
+	if pr.GetCreatedAt().Time.Unix() != 0 {
+		t := pr.GetCreatedAt().Time
+		createdAt = &t
+	}
+
+	return PullRequest{
+		Owner:     owner,
+		Repo:      repo,
+		Number:    pr.GetNumber(),
+		CommitSHA: pr.GetHead().GetSHA(),
+		Title:     pr.GetTitle(),
+		URL:       pr.GetHTMLURL(),
+		Author:    pr.GetUser().GetLogin(),
+		CreatedAt: createdAt,
+		Draft:     pr.GetDraft(),
+	}
+}
+
+func (c *Client) batchGetPRDetailsWithREST(ctx context.Context, prs []PRInfo) (map[string]PullRequest, error) {
+	results := make(map[string]PullRequest, len(prs))
+	for _, info := range prs {
+		pr, _, err := c.gh.PullRequests.Get(ctx, info.Owner, info.Repo, info.Number)
+		if err != nil {
+			log.Printf("Error fetching PR details for %s/%s#%d: %v", info.Owner, info.Repo, info.Number, err)
+			continue
+		}
+
+		results[prKey(info.Owner, info.Repo, info.Number)] = pullRequestFromGitHubPR(info.Owner, info.Repo, pr)
+	}
+	return results, nil
 }
 
 // BatchGetPRState fetches state (open/closed/merged) and HEAD SHA for multiple PRs using batched GraphQL.
@@ -338,18 +420,7 @@ func (c *Client) searchAndFetchPRs(ctx context.Context, query, queryType string)
 			continue // Skip this PR if we can't fetch it
 		}
 
-		createdAt := pr.GetCreatedAt().Time
-		prs = append(prs, PullRequest{
-			Owner:     repoOwner,
-			Repo:      repoName,
-			Number:    prNumber,
-			CommitSHA: pr.GetHead().GetSHA(),
-			Title:     pr.GetTitle(),
-			URL:       pr.GetHTMLURL(),
-			Author:    pr.GetUser().GetLogin(),
-			CreatedAt: &createdAt,
-			Draft:     pr.GetDraft(),
-		})
+		prs = append(prs, pullRequestFromGitHubPR(repoOwner, repoName, pr))
 	}
 
 	return prs, nil
@@ -818,20 +889,22 @@ func (c *Client) extractReviewerGroups(timelineItems TimelineItemsData) ([]strin
 	return reviewerGroups, teamSlugs, orgName, requestedUsers
 }
 
-// BatchGetCIStatus fetches CI check status for multiple PRs using GraphQL
+// BatchGetCIStatus fetches CI check status for multiple PRs using batched GraphQL.
+// Batches into chunks of 50 PRs (CI queries are heavier due to statusCheckRollup contexts).
 func (c *Client) BatchGetCIStatus(ctx context.Context, prs []struct {
 	Owner, Repo string
 	Number      int
 	CommitSHA   string
 }) (map[string]*CIStatus, error) {
+	const batchSize = 50
 	if len(prs) == 0 {
 		return make(map[string]*CIStatus), nil
 	}
 
-	// Convert to PRInfoWithCommit slice for helper function
-	prInfos := make([]PRInfoWithCommit, len(prs))
+	// Convert to PRInfoWithCommit slice
+	allInfos := make([]PRInfoWithCommit, len(prs))
 	for i, pr := range prs {
-		prInfos[i] = PRInfoWithCommit{
+		allInfos[i] = PRInfoWithCommit{
 			Owner:     pr.Owner,
 			Repo:      pr.Repo,
 			Number:    pr.Number,
@@ -839,46 +912,66 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []struct {
 		}
 	}
 
-	// Build the GraphQL query
-	query := buildCIStatusQuery(prInfos)
-	prAliases := buildPRInfoAliasMap(prInfos)
+	var (
+		mu      sync.Mutex
+		results = make(map[string]*CIStatus)
+		wg      sync.WaitGroup
+		sem     = make(chan struct{}, 5)
+	)
 
-	// Execute the query using helper
-	var graphqlResp GraphQLCIStatusResponse
-	if err := c.executeGraphQL(ctx, query, &graphqlResp); err != nil {
-		return nil, err
-	}
+	for i := 0; i < len(allInfos); i += batchSize {
+		end := i + batchSize
+		if end > len(allInfos) {
+			end = len(allInfos)
+		}
+		chunk := allInfos[i:end]
 
-	// Parse results
-	results := make(map[string]*CIStatus)
-	for alias, prInfo := range prAliases {
-		repoData, ok := graphqlResp.Data[alias]
-		if !ok || repoData.Object == nil || repoData.Object.StatusCheckRollup == nil {
-			// No CI checks found
-			key := prKey(prInfo.Owner, prInfo.Repo, prInfo.Number)
-			results[key] = &CIStatus{
-				Owner:        prInfo.Owner,
-				Repo:         prInfo.Repo,
-				Number:       prInfo.Number,
-				State:        "unknown",
-				FailedChecks: []string{},
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(batch []PRInfoWithCommit) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			query := buildCIStatusQuery(batch)
+			prAliases := buildPRInfoAliasMap(batch)
+
+			var graphqlResp GraphQLCIStatusResponse
+			if err := c.executeGraphQL(ctx, query, &graphqlResp); err != nil {
+				log.Printf("[GRAPHQL] Warning: Failed to fetch CI status batch: %v", err)
+				return
 			}
-			continue
-		}
 
-		// Parse CI status using helper
-		state, failedChecks := parseCIStatusFromRollup(repoData.Object.StatusCheckRollup)
+			mu.Lock()
+			for alias, prInfo := range prAliases {
+				repoData, ok := graphqlResp.Data[alias]
+				if !ok || repoData.Object == nil || repoData.Object.StatusCheckRollup == nil {
+					key := prKey(prInfo.Owner, prInfo.Repo, prInfo.Number)
+					results[key] = &CIStatus{
+						Owner:        prInfo.Owner,
+						Repo:         prInfo.Repo,
+						Number:       prInfo.Number,
+						State:        "unknown",
+						FailedChecks: []string{},
+					}
+					continue
+				}
 
-		key := prKey(prInfo.Owner, prInfo.Repo, prInfo.Number)
-		results[key] = &CIStatus{
-			Owner:        prInfo.Owner,
-			Repo:         prInfo.Repo,
-			Number:       prInfo.Number,
-			State:        state,
-			FailedChecks: failedChecks,
-		}
+				state, failedChecks := parseCIStatusFromRollup(repoData.Object.StatusCheckRollup)
+				key := prKey(prInfo.Owner, prInfo.Repo, prInfo.Number)
+				results[key] = &CIStatus{
+					Owner:        prInfo.Owner,
+					Repo:         prInfo.Repo,
+					Number:       prInfo.Number,
+					State:        state,
+					FailedChecks: failedChecks,
+				}
+			}
+			mu.Unlock()
+		}(chunk)
 	}
+	wg.Wait()
 
+	log.Printf("[GRAPHQL] Fetched CI status for %d/%d PRs", len(results), len(prs))
 	return results, nil
 }
 

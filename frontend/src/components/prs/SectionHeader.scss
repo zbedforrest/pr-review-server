@@ -9,6 +9,11 @@
     margin: 0;
   }
 
+  &__actions {
+    display: flex;
+    gap: 8px;
+  }
+
   .column-toggle-btn {
     padding: 4px 10px;
     font-size: 11px;
@@ -33,5 +38,38 @@
     &:active {
       transform: scale(0.97);
     }
+  }
+
+  .column-toggle-btn--inactive {
+    opacity: 0.6;
+    font-weight: normal;
+  }
+}
+
+.review-prs {
+  &__sync-banner {
+    background: #3d3520;
+    border: 1px solid #6e5c2e;
+    border-radius: 6px;
+    padding: 16px;
+    margin-bottom: 24px;
+    color: #e3b341;
+    text-align: center;
+  }
+
+  &__sync-banner-copy {
+    margin: 8px 0 0;
+    color: #c9a83c;
+    font-size: 0.9em;
+  }
+
+  &__my-section {
+    margin-bottom: 32px;
+  }
+
+  &__empty-state {
+    color: #8b949e;
+    font-style: italic;
+    padding: 16px 0;
   }
 }

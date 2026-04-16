@@ -1,6 +1,7 @@
 package db
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -1134,4 +1135,88 @@ func TestGormDB_DatabaseLifecycle(t *testing.T) {
 	// Close and verify
 	err = db.Close()
 	require.NoError(t, err)
+}
+
+// =============================================================================
+// Telemetry Operations Tests
+// =============================================================================
+
+func TestGormDB_CreateTelemetryEvents_AndGetTelemetryStats(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user1 := &User{GitHubID: 111, GitHubUsername: "user-one"}
+	user2 := &User{GitHubID: 222, GitHubUsername: "user-two"}
+	require.NoError(t, db.CreateUser(user1))
+	require.NoError(t, db.CreateUser(user2))
+
+	events := []TelemetryEvent{
+		{UserID: user1.ID, Action: "search", Label: "bugfix"},
+		{UserID: user1.ID, Action: "view_review", PROwner: "owner", PRRepo: "repo", PRNumber: 11},
+		{UserID: user2.ID, Action: "view_review", PROwner: "owner", PRRepo: "repo", PRNumber: 11},
+		{UserID: user2.ID, Action: "filter_repo", Label: "owner/repo"},
+	}
+
+	require.NoError(t, db.CreateTelemetryEvents(events))
+
+	stats, err := db.GetTelemetryStats(7)
+	require.NoError(t, err)
+
+	assert.Equal(t, 4, stats.TotalEvents)
+	assert.Equal(t, 2, stats.ActiveUsers)
+	require.NotEmpty(t, stats.ByAction)
+	assert.Equal(t, "view_review", stats.ByAction[0].Action)
+	assert.Equal(t, 2, stats.ByAction[0].Count)
+
+	require.Len(t, stats.TopSearches, 1)
+	assert.Equal(t, "bugfix", stats.TopSearches[0].Label)
+	assert.Equal(t, 1, stats.TopSearches[0].Count)
+
+	require.Len(t, stats.TopPRs, 1)
+	assert.Equal(t, "owner", stats.TopPRs[0].Owner)
+	assert.Equal(t, "repo", stats.TopPRs[0].Repo)
+	assert.Equal(t, 11, stats.TopPRs[0].Number)
+	assert.Equal(t, 2, stats.TopPRs[0].Count)
+}
+
+func TestGormDB_CreateTelemetryEvents_StoresLongLabels(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 333, GitHubUsername: "telemetry-user"}
+	require.NoError(t, db.CreateUser(user))
+
+	longLabel := strings.Repeat("x", 255)
+	require.NoError(t, db.CreateTelemetryEvents([]TelemetryEvent{
+		{UserID: user.ID, Action: "search", Label: longLabel},
+	}))
+
+	stats, err := db.GetTelemetryStats(7)
+	require.NoError(t, err)
+	require.Len(t, stats.TopSearches, 1)
+	assert.Equal(t, longLabel, stats.TopSearches[0].Label)
+}
+
+func TestGormDB_GetUserByUsername_PrefersMostRecentlyActiveDuplicate(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	older := &User{
+		GitHubID:       111,
+		GitHubUsername: "duplicate-user",
+	}
+	require.NoError(t, db.CreateUser(older))
+
+	newer := &User{
+		GitHubID:       222,
+		GitHubUsername: "duplicate-user",
+	}
+	require.NoError(t, db.CreateUser(newer))
+	require.NoError(t, db.UpdateUserLastLogin(newer.ID))
+
+	user, err := db.GetUserByUsername("duplicate-user")
+	require.NoError(t, err)
+	require.NotNil(t, user)
+	assert.Equal(t, newer.ID, user.ID)
+	assert.Equal(t, int64(222), user.GitHubID)
 }

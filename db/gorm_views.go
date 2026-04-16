@@ -216,6 +216,13 @@ func (g *GormDB) BatchUpsertUserPRViews(items []UserPRViewBatchItem) error {
 	return nil
 }
 
+// DeleteAllUserPRViews removes all user_pr_view records for a user.
+// Used in dev mode to reset stale views on startup.
+func (g *GormDB) DeleteAllUserPRViews(userID int) (int64, error) {
+	result := g.db.Where("user_id = ?", userID).Delete(&UserPRViewModel{})
+	return result.RowsAffected, result.Error
+}
+
 // HidePRForUser hides a PR from a user's view (soft delete)
 func (g *GormDB) HidePRForUser(userID, prID int) error {
 	return g.db.Model(&UserPRViewModel{}).

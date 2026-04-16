@@ -24,6 +24,7 @@ sleep 0.5
 export GITHUB_TOKEN="${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
 export GITHUB_USERNAME="${GITHUB_USERNAME:?GITHUB_USERNAME is required}"
 export SERVER_PORT="${SERVER_PORT:-8080}"
+export SKIP_DB_MIGRATIONS="${SKIP_DB_MIGRATIONS:-true}"
 
 # PostgreSQL - try Secret Manager if not set
 if [ -z "$DATABASE_URL" ]; then

@@ -140,6 +140,33 @@ func TestShouldReview(t *testing.T) {
 	}
 }
 
+func TestStartPoll_EmitsStatusEventsAtStartAndCompletion(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockStorage := NewMockReviewStorage()
+	mockGenerator := NewMockReviewGenerator()
+
+	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
+
+	events := make(chan struct{}, 2)
+	poller.StatusEventFunc = func() {
+		events <- struct{}{}
+	}
+
+	poller.startPoll(context.Background(), "manual")
+
+	timeout := time.After(2 * time.Second)
+	received := 0
+	for received < 2 {
+		select {
+		case <-events:
+			received++
+		case <-timeout:
+			t.Fatalf("expected 2 status events, received %d", received)
+		}
+	}
+}
+
 // =============================================================================
 // cleanupClosedPRs Tests
 // =============================================================================
@@ -2619,6 +2646,101 @@ func TestPoll_ApprovalAndReviewStatusUpdateWhenAutoReviewDisabled(t *testing.T) 
 	}
 	if prUpdatedCount == 0 {
 		t.Error("expected at least one pr_updated event when approval count changed")
+	}
+}
+
+func TestPoll_DevModeWithOrgConfigured_IncludesTeamRequestedPRs(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockStorage := NewMockReviewStorage()
+	mockGenerator := NewMockReviewGenerator()
+
+	mockGH.SearchOpenPRsResults = []github.PRInfo{
+		{
+			Owner:  "owner",
+			Repo:   "repo",
+			Number: 42,
+		},
+	}
+	mockGH.BatchGetPRDetailsResults = map[string]github.PullRequest{
+		"owner/repo/42": {
+			Owner:     "owner",
+			Repo:      "repo",
+			Number:    42,
+			CommitSHA: "abc123def456789012345678901234567890abcd",
+			Title:     "Team requested PR",
+			Author:    "someoneelse",
+		},
+	}
+	mockGH.BatchGetReviewerGroupsResults = map[string]*github.ReviewerGroupData{
+		"owner/repo/42": {
+			Owner:          "owner",
+			Repo:           "repo",
+			Number:         42,
+			ReviewerGroups: []string{"Creator Team"},
+			TeamSlugs: map[string]string{
+				"Creator Team": "creator-team",
+			},
+		},
+	}
+	mockGH.GetOrgTeamMembersFunc = func(ctx context.Context, orgName, teamSlug string) ([]string, error) {
+		if orgName == "test-org" && teamSlug == "creator-team" {
+			return []string{"testuser"}, nil
+		}
+		return nil, nil
+	}
+	mockGH.BatchGetCIStatusResults["owner/repo/42"] = &github.CIStatus{
+		State:        "success",
+		FailedChecks: []string{},
+	}
+	mockGH.BatchGetPRReviewDataResults["owner/repo/42"] = &github.PRReviewData{
+		ApprovalCount: 0,
+		UserReviews:   map[string]string{},
+	}
+
+	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
+	poller.cfg.GitHubOrgName = "test-org"
+	poller.devUser = &db.User{ID: 1, GitHubUsername: "testuser"}
+	poller.EventFunc = func(eventType string, payload interface{}) {}
+
+	poller.poll(context.Background())
+
+	searchCalled := false
+	for _, call := range mockGH.CallLog {
+		if call == "SearchOpenPRs" {
+			searchCalled = true
+			break
+		}
+	}
+	if !searchCalled {
+		t.Fatal("expected SearchOpenPRs to be used in dev mode when org is configured")
+	}
+
+	pr, err := mockDB.GetPR("owner", "repo", 42)
+	if err != nil || pr == nil {
+		t.Fatal("expected team-requested PR to be inserted into the database")
+	}
+
+	foundView := false
+	for _, call := range mockDB.EnsureUserPRViewCalls {
+		if call.UserID == 1 && call.PRID == pr.ID {
+			foundView = true
+			break
+		}
+	}
+	if !foundView {
+		t.Fatalf("expected EnsureUserPRView to be called for dev user on team-requested PR, calls: %+v", mockDB.EnsureUserPRViewCalls)
+	}
+
+	foundViaTeams := false
+	for _, call := range mockDB.UpdateUserViaTeamsCalls {
+		if call.UserID == 1 && call.PRID == pr.ID {
+			foundViaTeams = true
+			break
+		}
+	}
+	if !foundViaTeams {
+		t.Fatalf("expected UpdateUserViaTeams to be called for dev user on team-requested PR, calls: %+v", mockDB.UpdateUserViaTeamsCalls)
 	}
 }
 

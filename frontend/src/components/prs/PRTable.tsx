@@ -20,13 +20,12 @@ export function PRTable({ prs, showReviewColumns = true, showViaTeams = true }: 
             <th>PR</th>
             <th>Author</th>
             <th>Commit</th>
-            {showReviewColumns && <th>Status</th>}
             <th>CI</th>
             <th>Approvals</th>
             <th>My Review</th>
             {showViaTeams && <th>Via Teams</th>}
             <th>Notes</th>
-            {showReviewColumns && <th>Review</th>}
+            {showReviewColumns && <th>AI Review</th>}
             <th>Actions</th>
           </tr>
         </thead>

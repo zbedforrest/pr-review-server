@@ -472,6 +472,10 @@ func (m *MockDatabase) UpdatePRCreatedAt(owner, repo string, prNumber int, creat
 	return nil
 }
 
+func (m *MockDatabase) UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updatedAt time.Time) error {
+	return nil
+}
+
 func (m *MockDatabase) GetSetting(key string) (string, error) {
 	return "", nil
 }
@@ -594,6 +598,10 @@ func (m *MockDatabase) UpdateUserViaTeams(userID, prID int, viaTeams []string) e
 		ViaTeams []string
 	}{userID, prID, viaTeams})
 	return nil
+}
+
+func (m *MockDatabase) DeleteAllUserPRViews(userID int) (int64, error) {
+	return 0, nil
 }
 
 func (m *MockDatabase) HidePRForUser(userID, prID int) error {
