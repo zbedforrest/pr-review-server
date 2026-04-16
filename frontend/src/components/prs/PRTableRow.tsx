@@ -47,7 +47,7 @@ export const PRTableRow = memo(function PRTableRow({
   return (
     <tr>
       <td>
-        <a href={prUrl} onClick={() => track('open_pr_github', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}>
+        <a href={prUrl} target="_blank" rel="noopener noreferrer" onClick={() => track('open_pr_github', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}>
           {pr.owner}/{pr.repo} #{pr.number}
         </a>
         {pr.draft && <span className="pr-table__draft-indicator"> (Draft)</span>}
@@ -116,6 +116,8 @@ export const PRTableRow = memo(function PRTableRow({
           {reviewUrl ? (
             <a
               href={reviewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
               className="pr-table__review-link"
               onClick={() => track('view_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}
             >

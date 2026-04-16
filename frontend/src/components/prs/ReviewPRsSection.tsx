@@ -144,7 +144,7 @@ export function ReviewPRsSection({
                 onClick={onToggleColumns}
                 title={showReviewColumns ? 'Hide Status & Review columns' : 'Show Status & Review columns'}
               >
-                {showReviewColumns ? '👁️ Hide AI Reviews' : '👁️ Show AI Reviews'}
+                {showReviewColumns ? '👁️ Hide AI Columns' : '👁️ Show AI Columns'}
               </button>
             )}
           </div>
