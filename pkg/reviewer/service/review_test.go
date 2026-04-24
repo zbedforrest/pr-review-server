@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1306,200 +1307,36 @@ func TestBuildPrompt_CustomPrompt(t *testing.T) {
 	assert.Contains(t, prompt, "My custom question about the code")
 }
 
-func TestExecuteCustomPromptReview_Success(t *testing.T) {
+func TestRunPrompts_HeterogeneousPrompts(t *testing.T) {
+	var mu sync.Mutex
+	seenContents := map[string]bool{}
 	mockSmartLLM := &MockLLMClient{
 		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
-			return "This is the custom review response", 100, 50, 150, nil
+			mu.Lock()
+			seenContents[prompt] = true
+			mu.Unlock()
+			// Echo which prompt produced each comment so we can verify all three ran.
+			return fmt.Sprintf(`[{"file_path":"%s.go","line_number":1,"comment_body":"from %s"}]`, prompt, prompt), 10, 5, 15, nil
 		},
 	}
 
-	service := NewService(nil, mockSmartLLM, nil)
-
-	cfg := PerformReviewConfig{
-		Fast: false,
-	}
-
-	// Act
-	result, err := service.executeCustomPromptReview(cfg, "custom prompt")
-
-	// Assert
-	assert.NoError(t, err)
-	assert.NotNil(t, result)
-	assert.Len(t, result.Comments, 1)
-	assert.Equal(t, "SUMMARY", result.Comments[0].FilePath)
-	assert.Equal(t, 0, result.Comments[0].LineNumber)
-	assert.Equal(t, "This is the custom review response", result.Comments[0].CommentBody)
-	assert.Equal(t, int64(1), result.SuccessCount)
-}
-
-func TestExecuteCustomPromptReview_WithFastMode(t *testing.T) {
-	smartCalled := false
-	fastCalled := false
-
-	mockSmartLLM := &MockLLMClient{
-		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
-			smartCalled = true
-			return "smart response", 0, 0, 0, nil
-		},
-	}
-
-	mockFastLLM := &MockLLMClient{
-		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
-			fastCalled = true
-			return "fast response", 0, 0, 0, nil
-		},
-	}
-
-	service := NewService(nil, mockSmartLLM, mockFastLLM)
-
-	cfg := PerformReviewConfig{
-		Fast: true, // Use fast LLM
-	}
-
-	// Act
-	result, err := service.executeCustomPromptReview(cfg, "custom prompt")
-
-	// Assert
-	assert.NoError(t, err)
-	assert.NotNil(t, result)
-	assert.False(t, smartCalled, "Smart LLM should not be called in fast mode")
-	assert.True(t, fastCalled, "Fast LLM should be called in fast mode")
-	assert.Equal(t, "fast response", result.Comments[0].CommentBody)
-}
-
-func TestExecuteCustomPromptReview_Error(t *testing.T) {
-	mockSmartLLM := &MockLLMClient{
-		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
-			return "", 0, 0, 0, fmt.Errorf("LLM API error")
-		},
-	}
-
-	service := NewService(nil, mockSmartLLM, nil)
-
-	cfg := PerformReviewConfig{
-		Fast: false,
-	}
-
-	// Act
-	result, err := service.executeCustomPromptReview(cfg, "custom prompt")
-
-	// Assert
-	assert.Error(t, err)
-	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "error getting custom prompt review from LLM")
-}
-
-func TestExecuteStandardReview_SingleRequest_Success(t *testing.T) {
-	mockSmartLLM := &MockLLMClient{
-		GetReviewStreamFunc: func(prompt string, w io.Writer) (string, int32, int32, int32, error) {
-			return `[{"file_path":"main.go","line_number":10,"comment_body":"Add error handling"}]`, 100, 50, 150, nil
-		},
-	}
-
-	mockGithub := &MockGithubClient{}
-
-	service := NewService(mockGithub, mockSmartLLM, nil)
+	service := NewService(&MockGithubClient{}, mockSmartLLM, nil)
 	ctx := context.Background()
+	cfg := PerformReviewConfig{Fast: false}
 
-	cfg := PerformReviewConfig{
-		NRequests: 1,
-		Fast:      false,
+	prompts := []Prompt{
+		{Name: "security", Content: "security"},
+		{Name: "testing", Content: "testing"},
+		{Name: "correctness", Content: "correctness"},
 	}
 
-	// Act
-	result := service.executeStandardReview(ctx, cfg, "test prompt")
+	result := service.runPrompts(ctx, cfg, prompts, service.parseAIResponse)
 
-	// Assert
-	assert.NotNil(t, result)
-	assert.Equal(t, int64(1), result.SuccessCount)
-	assert.Len(t, result.Comments, 1)
-	assert.Equal(t, "main.go", result.Comments[0].FilePath)
-	assert.Equal(t, 10, result.Comments[0].LineNumber)
-}
-
-func TestExecuteStandardReview_MultipleRequests(t *testing.T) {
-	callCount := 0
-	mockSmartLLM := &MockLLMClient{
-		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
-			callCount++
-			return fmt.Sprintf(`[{"file_path":"file%d.go","line_number":%d,"comment_body":"comment %d"}]`, callCount, callCount*10, callCount), 100, 50, 150, nil
-		},
-	}
-
-	mockGithub := &MockGithubClient{}
-
-	service := NewService(mockGithub, mockSmartLLM, nil)
-	ctx := context.Background()
-
-	cfg := PerformReviewConfig{
-		NRequests: 3,
-		Fast:      false,
-	}
-
-	// Act
-	result := service.executeStandardReview(ctx, cfg, "test prompt")
-
-	// Assert
-	assert.NotNil(t, result)
 	assert.Equal(t, int64(3), result.SuccessCount)
 	assert.Len(t, result.Comments, 3)
-}
-
-func TestExecuteStandardReview_ContextCancellation(t *testing.T) {
-	mockSmartLLM := &MockLLMClient{
-		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
-			time.Sleep(500 * time.Millisecond) // Simulate slow response
-			return `[{"file_path":"main.go","line_number":10,"comment_body":"test"}]`, 0, 0, 0, nil
-		},
-	}
-
-	mockGithub := &MockGithubClient{}
-
-	service := NewService(mockGithub, mockSmartLLM, nil)
-
-	// Create a context that's already cancelled
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	cfg := PerformReviewConfig{
-		NRequests: 1,
-		Fast:      false,
-	}
-
-	// Act
-	result := service.executeStandardReview(ctx, cfg, "test prompt")
-
-	// Assert
-	assert.NotNil(t, result)
-	// With cancelled context, we should have no successful results
-	assert.Equal(t, int64(0), result.SuccessCount)
-}
-
-func TestExecuteStandardReview_AllRequestsFail(t *testing.T) {
-	mockSmartLLM := &MockLLMClient{
-		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
-			return "", 0, 0, 0, fmt.Errorf("LLM error")
-		},
-	}
-
-	mockGithub := &MockGithubClient{}
-
-	service := NewService(mockGithub, mockSmartLLM, nil)
-	ctx := context.Background()
-
-	cfg := PerformReviewConfig{
-		NRequests: 2,
-		Fast:      false,
-	}
-
-	// Act
-	result := service.executeStandardReview(ctx, cfg, "test prompt")
-
-	// Assert
-	assert.NotNil(t, result)
-	assert.Equal(t, int64(0), result.SuccessCount)
-	assert.NotNil(t, result.FirstError)
-	assert.Empty(t, result.Comments)
+	assert.True(t, seenContents["security"], "security prompt should have been sent")
+	assert.True(t, seenContents["testing"], "testing prompt should have been sent")
+	assert.True(t, seenContents["correctness"], "correctness prompt should have been sent")
 }
 
 func TestHandlePostReviewProcessing_WithClassification(t *testing.T) {

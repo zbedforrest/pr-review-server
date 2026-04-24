@@ -114,32 +114,15 @@ func (s *Service) buildPrompt(cfg PerformReviewConfig, data *PRData) string {
 	return s.buildReviewPrompt(data.PR.Body, cfg.ExtraContext, data.FileContext, data.Diff, data.PreviousCommentsContext)
 }
 
-// executeCustomPromptReview executes a review with a custom prompt (plain text response)
-func (s *Service) executeCustomPromptReview(cfg PerformReviewConfig, fullPrompt string) (*ReviewExecutionResult, error) {
-	prefix := prLogPrefix(cfg.Owner, cfg.RepoName, cfg.PRNumber)
-	var llmClient llm.IClient = s.smartLlmClient
-	if cfg.Fast {
-		llmClient = s.fastLlmClient
-	}
-
-	reviewContent, _, _, _, err := llmClient.GetReview(fullPrompt)
-	if err != nil {
-		return nil, fmt.Errorf("error getting custom prompt review from LLM: %w", err)
-	}
-
-	// Add as a summary comment
-	summaryComment := types.LineComment{
-		FilePath:    "SUMMARY",
-		LineNumber:  0,
-		CommentBody: reviewContent,
-	}
-	color.Green("%s Successfully received custom prompt response.", prefix)
-
-	return &ReviewExecutionResult{
-		Comments:     []types.LineComment{summaryComment},
-		SuccessCount: 1,
-	}, nil
+// Prompt is a fully-assembled LLM prompt, ready to send. Callers bake the
+// static template and per-PR context together into Content.
+type Prompt struct {
+	Name    string // identifier for logs/errors, e.g. "standard#2", "custom"
+	Content string // complete prompt string sent to the LLM
 }
+
+// Parser converts a raw LLM response into LineComments.
+type Parser func(raw string) ([]types.LineComment, error)
 
 // reviewResultMsg is the message type for successful review results
 type reviewResultMsg struct {
@@ -153,34 +136,39 @@ type reviewResultMsg struct {
 type reviewErrorMsg struct {
 	err    error
 	reqNum int
+	name   string
 }
 
 // rawResponseMsg is the message type for raw (unparseable) responses
 type rawResponseMsg struct {
 	content string
 	reqNum  int
+	name    string
 }
 
-// executeStandardReview executes the standard JSON-based review flow with concurrent requests
-func (s *Service) executeStandardReview(ctx context.Context, cfg PerformReviewConfig, fullPrompt string) *ReviewExecutionResult {
+// runPrompts sends each Prompt to the LLM concurrently (staggered 250ms when
+// more than one), parses each response with parse, and aggregates the results.
+// For a single prompt the first attempt streams to stdout.
+func (s *Service) runPrompts(ctx context.Context, cfg PerformReviewConfig, prompts []Prompt, parse Parser) *ReviewExecutionResult {
 	result := &ReviewExecutionResult{}
 	prefix := prLogPrefix(cfg.Owner, cfg.RepoName, cfg.PRNumber)
 
-	color.White("%s Making %d review request(s)...", prefix, cfg.NRequests)
+	n := len(prompts)
+	color.White("%s Making %d review request(s)...", prefix, n)
 	var wg sync.WaitGroup
 	var firstErrorMu sync.Mutex
 
-	resultsChan := make(chan reviewResultMsg, cfg.NRequests)
-	errorChan := make(chan reviewErrorMsg, cfg.NRequests)
-	rawResponseChan := make(chan rawResponseMsg, cfg.NRequests)
+	resultsChan := make(chan reviewResultMsg, n)
+	errorChan := make(chan reviewErrorMsg, n)
+	rawResponseChan := make(chan rawResponseMsg, n)
 
-	for i := 0; i < cfg.NRequests; i++ {
+	for i, p := range prompts {
 		wg.Add(1)
-		go func(requestNum int) {
+		go func(requestNum int, prompt Prompt) {
 			defer wg.Done()
-			s.executeSingleReview(ctx, cfg, fullPrompt, requestNum, resultsChan, errorChan, rawResponseChan, result, &firstErrorMu)
-		}(i + 1)
-		if cfg.NRequests > 1 {
+			s.runSinglePrompt(ctx, cfg, prompt, requestNum, n, parse, resultsChan, errorChan, rawResponseChan, result, &firstErrorMu)
+		}(i+1, p)
+		if n > 1 {
 			time.Sleep(250 * time.Millisecond) // Stagger requests
 		}
 	}
@@ -190,7 +178,6 @@ func (s *Service) executeStandardReview(ctx context.Context, cfg PerformReviewCo
 	close(errorChan)
 	close(rawResponseChan)
 
-	// Collect results
 	for r := range resultsChan {
 		result.Comments = append(result.Comments, r.comments...)
 		result.PromptTokenCount = r.promptTokenCount
@@ -198,24 +185,27 @@ func (s *Service) executeStandardReview(ctx context.Context, cfg PerformReviewCo
 		result.TotalTokenCount += r.totalTokenCount
 	}
 	for e := range errorChan {
-		color.Red("%s Request %d failed: %v", prefix, e.reqNum, e.err)
+		color.Red("%s Request %d (%s) failed: %v", prefix, e.reqNum, e.name, e.err)
 	}
 	for resp := range rawResponseChan {
 		if cfg.WithComments {
-			color.Yellow("%s Posting raw AI response as a general comment for request %d.", prefix, resp.reqNum)
-			_ = s.githubClient.PostPRComment(cfg.Token, cfg.Owner, cfg.RepoName, cfg.PRNumber, fmt.Sprintf("Request %d failed to produce valid JSON. Raw response:\n\n%s", resp.reqNum, resp.content))
+			color.Yellow("%s Posting raw AI response as a general comment for request %d (%s).", prefix, resp.reqNum, resp.name)
+			_ = s.githubClient.PostPRComment(cfg.Token, cfg.Owner, cfg.RepoName, cfg.PRNumber, fmt.Sprintf("Request %d (%s) failed to produce valid JSON. Raw response:\n\n%s", resp.reqNum, resp.name, resp.content))
 		}
 	}
 
 	return result
 }
 
-// executeSingleReview executes a single review request with retries
-func (s *Service) executeSingleReview(
+// runSinglePrompt sends one Prompt to the LLM with a single retry and parses
+// the response.
+func (s *Service) runSinglePrompt(
 	ctx context.Context,
 	cfg PerformReviewConfig,
-	fullPrompt string,
+	prompt Prompt,
 	requestNum int,
+	totalRequests int,
+	parse Parser,
 	resultsChan chan<- reviewResultMsg,
 	errorChan chan<- reviewErrorMsg,
 	rawResponseChan chan<- rawResponseMsg,
@@ -223,7 +213,7 @@ func (s *Service) executeSingleReview(
 	firstErrorMu *sync.Mutex,
 ) {
 	prefix := prLogPrefix(cfg.Owner, cfg.RepoName, cfg.PRNumber)
-	color.White("%s Starting review request %d/%d", prefix, requestNum, cfg.NRequests)
+	color.White("%s Starting review request %d/%d (%s)", prefix, requestNum, totalRequests, prompt.Name)
 
 	maxAttempts := 2
 	var reviewContent string
@@ -233,16 +223,15 @@ func (s *Service) executeSingleReview(
 	var errReview error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		// Check for context cancellation
 		select {
 		case <-ctx.Done():
-			errorChan <- reviewErrorMsg{err: ctx.Err(), reqNum: requestNum}
+			errorChan <- reviewErrorMsg{err: ctx.Err(), reqNum: requestNum, name: prompt.Name}
 			return
 		default:
 		}
 
 		if attempt > 1 {
-			color.Yellow("%s Retrying AI review (attempt %d/%d) for request %d...", prefix, attempt, maxAttempts, requestNum)
+			color.Yellow("%s Retrying AI review (attempt %d/%d) for request %d (%s)...", prefix, attempt, maxAttempts, requestNum, prompt.Name)
 		}
 
 		var llmClient llm.IClient = s.smartLlmClient
@@ -254,21 +243,21 @@ func (s *Service) executeSingleReview(
 			color.Yellow("%s LLM Client type: %T", prefix, llmClient)
 		}
 
-		if cfg.NRequests == 1 && attempt == 1 {
+		if totalRequests == 1 && attempt == 1 {
 			white.Printf("%s Streaming response:\n", prefix)
-			reviewContent, promptTokenCount, candidatesTokenCount, totalTokenCount, errReview = llmClient.GetReviewStream(fullPrompt, os.Stdout)
+			reviewContent, promptTokenCount, candidatesTokenCount, totalTokenCount, errReview = llmClient.GetReviewStream(prompt.Content, os.Stdout)
 			fmt.Println() // Newline after streaming
 		} else {
-			reviewContent, promptTokenCount, candidatesTokenCount, totalTokenCount, errReview = llmClient.GetReview(fullPrompt)
+			reviewContent, promptTokenCount, candidatesTokenCount, totalTokenCount, errReview = llmClient.GetReview(prompt.Content)
 		}
 
 		if errReview != nil {
-			color.Red("%s Error getting review from LLM (attempt %d) on request %d: %v", prefix, attempt, requestNum, errReview)
+			color.Red("%s Error getting review from LLM (attempt %d) on request %d (%s): %v", prefix, attempt, requestNum, prompt.Name, errReview)
 			if attempt < maxAttempts {
 				continue
 			}
-			color.Red("%s Failed to get review from LLM after %d attempts for request %d. Skipping.", prefix, maxAttempts, requestNum)
-			errorChan <- reviewErrorMsg{err: errReview, reqNum: requestNum}
+			color.Red("%s Failed to get review from LLM after %d attempts for request %d (%s). Skipping.", prefix, maxAttempts, requestNum, prompt.Name)
+			errorChan <- reviewErrorMsg{err: errReview, reqNum: requestNum, name: prompt.Name}
 			firstErrorMu.Lock()
 			if result.FirstError == nil {
 				result.FirstError = errReview
@@ -277,9 +266,9 @@ func (s *Service) executeSingleReview(
 			return
 		}
 
-		comments, err := s.parseAIResponse(reviewContent)
+		comments, err := parse(reviewContent)
 		if err == nil {
-			color.Green("%s Successfully parsed AI review for request %d.", prefix, requestNum)
+			color.Green("%s Successfully parsed AI review for request %d (%s).", prefix, requestNum, prompt.Name)
 			atomic.AddInt64(&result.SuccessCount, 1)
 			resultsChan <- reviewResultMsg{
 				comments:             comments,
@@ -291,14 +280,23 @@ func (s *Service) executeSingleReview(
 		}
 
 		if attempt < maxAttempts {
-			color.Yellow("%s AI returned non-JSON response for request %d. Will retry.", prefix, requestNum)
+			color.Yellow("%s AI returned non-parseable response for request %d (%s). Will retry.", prefix, requestNum, prompt.Name)
 			continue
 		}
 
-		// Final failure after retries
-		color.Red("%s Error parsing AI review after %d attempts for request %d: %v", prefix, maxAttempts, requestNum, err)
-		rawResponseChan <- rawResponseMsg{content: reviewContent, reqNum: requestNum}
+		color.Red("%s Error parsing AI review after %d attempts for request %d (%s): %v", prefix, maxAttempts, requestNum, prompt.Name, err)
+		rawResponseChan <- rawResponseMsg{content: reviewContent, reqNum: requestNum, name: prompt.Name}
 	}
+}
+
+// summaryParser wraps a raw LLM response as a single SUMMARY line comment.
+// Used for custom-prompt mode where responses are free-form text, not JSON.
+func summaryParser(raw string) ([]types.LineComment, error) {
+	return []types.LineComment{{
+		FilePath:    "SUMMARY",
+		LineNumber:  0,
+		CommentBody: raw,
+	}}, nil
 }
 
 // handlePostReviewProcessing handles classification, summary generation, and posting
