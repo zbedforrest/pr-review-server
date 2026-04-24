@@ -91,6 +91,13 @@
       opacity: 0.5;
       cursor: not-allowed;
     }
+
+    &--reviewing,
+    &--reviewing:disabled {
+      color: $color-warning-text;
+      border-color: $color-warning;
+      opacity: 1;
+    }
   }
 
   &__delete-btn {

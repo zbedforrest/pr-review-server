@@ -131,12 +131,18 @@ export const PRTableRow = memo(function PRTableRow({
       <td>
         <div className="pr-table__actions">
           <button
-            className="pr-table__action-btn"
+            className={`pr-table__action-btn${
+              triggerReviewMutation.isPending || pr.status === 'generating'
+                ? ' pr-table__action-btn--reviewing'
+                : ''
+            }`}
             onClick={handleTriggerReview}
             disabled={triggerReviewMutation.isPending || pr.status === 'generating'}
             title="Generate or regenerate review for this PR"
           >
-            {triggerReviewMutation.isPending ? 'Triggering...' : '🔄 Review'}
+            {triggerReviewMutation.isPending || pr.status === 'generating'
+              ? 'REVIEWING'
+              : '🔄 Review'}
           </button>
           <button
             className="pr-table__delete-btn"
