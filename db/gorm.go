@@ -33,8 +33,8 @@ func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 	// Configure connection pool to stay within Cloud SQL limits (db-f1-micro = 25 max)
 	sqlDB, err := db.DB()
 	if err == nil {
-		sqlDB.SetMaxOpenConns(10)              // Leave headroom for Cloud SQL overhead + local dev
-		sqlDB.SetMaxIdleConns(5)               // Keep a few warm connections
+		sqlDB.SetMaxOpenConns(10)                  // Leave headroom for Cloud SQL overhead + local dev
+		sqlDB.SetMaxIdleConns(5)                   // Keep a few warm connections
 		sqlDB.SetConnMaxLifetime(30 * time.Minute) // Recycle connections to avoid stale sockets
 	}
 
