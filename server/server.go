@@ -1107,11 +1107,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		GitHubUsername: user.GitHubUsername,
 	}
 
-	s.clientsMux.Lock()
-	s.clients[conn] = client
-	clientCount := len(s.clients)
-	s.clientsMux.Unlock()
-
+	// Send the initial snapshot before registering the client so the broadcaster
+	// goroutine can't write to this conn concurrently with the snapshot write
+	// (gorilla/websocket only permits one concurrent writer per conn).
 	if snapshot, err := s.buildStatusSnapshot(r.Context()); err != nil {
 		log.Printf("[WS] Failed to build initial status snapshot: %v", err)
 	} else if err := conn.WriteJSON(WebSocketMessage{
@@ -1121,6 +1119,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[WS] Failed to send initial status snapshot: %v", err)
 		return
 	}
+
+	s.clientsMux.Lock()
+	s.clients[conn] = client
+	clientCount := len(s.clients)
+	s.clientsMux.Unlock()
 
 	log.Printf("[WS] Client connected from %s as %s (total: %d)", r.RemoteAddr, user.GitHubUsername, clientCount)
 
