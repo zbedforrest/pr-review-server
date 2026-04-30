@@ -1389,9 +1389,9 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 			// Successfully fetched from GCS
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			// Reviews used to be immutable per commit, but the manual trigger now
-		// force-overwrites the same filename. Make the browser revalidate so
-		// the new content shows up after a regen.
-		w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+			// force-overwrites the same filename. Make the browser revalidate so
+			// the new content shows up after a regen.
+			w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
 			_, _ = w.Write(content) // nolint:errcheck
 			return
 		}

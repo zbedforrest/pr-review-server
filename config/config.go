@@ -37,11 +37,11 @@ type Config struct {
 	GeminiAPIKey    string
 
 	// Agent review (Claude Code subprocess) — dev-only for now.
-	AgenticReviews     bool
-	AgentCloneRootDir  string
-	AgentLogsDir       string
-	AgentWallClockSec  int
-	AgentMaxTurns      int
+	AgenticReviews    bool
+	AgentCloneRootDir string
+	AgentLogsDir      string
+	AgentWallClockSec int
+	AgentMaxTurns     int
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
