@@ -101,6 +101,50 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 // Tests inject a stub to avoid actually invoking the claude CLI.
 func (p *Poller) SetAgentSpawner(s service.Spawner) { p.agentSpawner = s }
 
+// runAgentStage runs the claude-agent pass on a Gemini ReviewResult: flips
+// the PR status to agent_reviewing, spawns the agent against a clone of the
+// PR head, replaces the comment set with the agent's refined output, and
+// re-renders via the same HTML pipeline so the inline-comment UI is intact.
+func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, result *service.ReviewResult) (*ReviewResult, error) {
+	log.Printf("[REVIEWER] PR %d: Gemini pass done (comments=%d), entering agent stage",
+		pr.Number, len(result.Comments))
+	if setErr := p.db.SetPRAgentReviewing(pr.Owner, pr.Repo, pr.Number); setErr != nil {
+		log.Printf("[REVIEWER] WARNING: could not set agent_reviewing status for PR %d: %v", pr.Number, setErr)
+	}
+	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+
+	agentCfg := service.AgentConfig{
+		CloneRootDir: p.cfg.AgentCloneRootDir,
+		LogsDir:      p.cfg.AgentLogsDir,
+		WallClock:    time.Duration(p.cfg.AgentWallClockSec) * time.Second,
+		MaxTurns:     p.cfg.AgentMaxTurns,
+		GitHubToken:  p.cfg.GitHubToken,
+	}
+	agentOut, agentErr := service.RunAgentReview(ctx, agentCfg, p.agentSpawner,
+		pr.Owner, pr.Repo, "", pr.Number, pr.CommitSHA, result.Comments)
+	if agentErr != nil {
+		log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
+		return nil, fmt.Errorf("agent review: %w", agentErr)
+	}
+
+	result.Comments = agentOut.Comments
+	result.ComputeImportanceCounts()
+	log.Printf("[REVIEWER] PR %d: agent stage ok (clone=%s, log=%s, comments=%d, critical=%d, medium=%d, low=%d)",
+		pr.Number, agentOut.CloneDir, agentOut.LogPath, len(agentOut.Comments),
+		result.CriticalCount, result.MediumCount, result.LowCount)
+
+	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModel)
+	if htmlContent == nil {
+		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
+	}
+	return &ReviewResult{
+		HTMLContent:   htmlContent,
+		CriticalCount: result.CriticalCount,
+		MediumCount:   result.MediumCount,
+		LowCount:      result.LowCount,
+	}, nil
+}
+
 // broadcastPRUpdate helper to send update events
 func (p *Poller) broadcastPRUpdate(owner, repo string, number int) {
 	if p.EventFunc != nil {
@@ -1742,48 +1786,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				if svcErr != nil {
 					err = svcErr
 				} else if p.cfg.AgenticReviews {
-					// Agent stage: flip status, run claude, replace Gemini comments with
-					// the agent's refined/validated set, then render via the existing
-					// HTML pipeline so the diff/inline-comment UI stays intact.
-					log.Printf("[REVIEWER] PR %d: Gemini pass done (comments=%d), entering agent stage",
-						pr.Number, len(result.Comments))
-					if setErr := p.db.SetPRAgentReviewing(pr.Owner, pr.Repo, pr.Number); setErr != nil {
-						log.Printf("[REVIEWER] WARNING: could not set agent_reviewing status for PR %d: %v", pr.Number, setErr)
-					}
-					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-
-					agentCfg := service.AgentConfig{
-						CloneRootDir: p.cfg.AgentCloneRootDir,
-						LogsDir:      p.cfg.AgentLogsDir,
-						WallClock:    time.Duration(p.cfg.AgentWallClockSec) * time.Second,
-						MaxTurns:     p.cfg.AgentMaxTurns,
-						GitHubToken:  p.cfg.GitHubToken,
-					}
-					agentOut, agentErr := service.RunAgentReview(ctx, agentCfg, p.agentSpawner,
-						pr.Owner, pr.Repo, "", pr.Number, pr.CommitSHA, result.Comments)
-					if agentErr != nil {
-						log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
-						err = fmt.Errorf("agent review: %w", agentErr)
-					} else {
-						// Replace Gemini's comments with the agent's and recompute counts.
-						result.Comments = agentOut.Comments
-						result.ComputeImportanceCounts()
-						log.Printf("[REVIEWER] PR %d: agent stage ok (clone=%s, log=%s, comments=%d, critical=%d, medium=%d, low=%d)",
-							pr.Number, agentOut.CloneDir, agentOut.LogPath, len(agentOut.Comments),
-							result.CriticalCount, result.MediumCount, result.LowCount)
-
-						htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModel)
-						if htmlContent == nil {
-							err = fmt.Errorf("failed to generate HTML content from agent comments")
-						} else {
-							reviewResult = &ReviewResult{
-								HTMLContent:   htmlContent,
-								CriticalCount: result.CriticalCount,
-								MediumCount:   result.MediumCount,
-								LowCount:      result.LowCount,
-							}
-						}
-					}
+					reviewResult, err = p.runAgentStage(ctx, pr, result)
 				} else {
 					// Legacy HTML report path.
 					htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModel)
