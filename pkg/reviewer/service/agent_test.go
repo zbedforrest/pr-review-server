@@ -145,10 +145,6 @@ func TestParseAgentStream_HappyPath(t *testing.T) {
 	if !strings.Contains(res.finalOutput, "Approve") {
 		t.Errorf("final output missing: %q", res.finalOutput)
 	}
-	// Transcript should have: assistant text, tool_use Read, tool_result, assistant text.
-	if len(res.transcript) != 4 {
-		t.Errorf("transcript length: got %d want 4 — %+v", len(res.transcript), res.transcript)
-	}
 	if !bytes.Contains(logBuf.Bytes(), []byte(`"type":"result"`)) {
 		t.Error("log file missing result event")
 	}
@@ -173,31 +169,6 @@ func TestParseAgentStream_MaxTurnsKills(t *testing.T) {
 	}
 	if !proc.killed {
 		t.Error("expected proc to be killed")
-	}
-}
-
-// TestAssembleMarkdown_IncludesHeaderAndTranscript.
-func TestAssembleMarkdown_IncludesHeaderAndTranscript(t *testing.T) {
-	r := &agentParseResult{
-		finalOutput:    "body",
-		assistantTurns: 2,
-		transcript: []transcriptEntry{
-			{Kind: "assistant", Preview: "think"},
-			{Kind: "tool_use", Name: "Read", Preview: `{"path":"x"}`},
-		},
-	}
-	md := assembleMarkdown("acme", "proj", 42, "abcdef1234567890", r)
-	if !strings.Contains(md, "acme/proj#42") {
-		t.Error("header missing")
-	}
-	if !strings.Contains(md, "body") {
-		t.Error("final output missing")
-	}
-	if !strings.Contains(md, "Agent transcript") {
-		t.Error("transcript section missing")
-	}
-	if !strings.Contains(md, "tool_use: `Read`") {
-		t.Error("tool_use entry missing")
 	}
 }
 

@@ -184,8 +184,8 @@ func RunAgentReview(
 			CommentBody: parseResult.finalOutput,
 		}}
 	}
-	log.Printf("%s complete in %s (turns=%d, transcript_entries=%d, comments=%d)",
-		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(parseResult.transcript), len(comments))
+	log.Printf("%s complete in %s (turns=%d, comments=%d)",
+		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments))
 
 	return &AgentReview{
 		Comments: comments,
@@ -334,19 +334,11 @@ func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 }
 
 // parseAgentStream reads stream-json events line-by-line from the subprocess,
-// counts assistant turns, collects transcript entries, extracts the final
-// result, and tees the raw bytes into a log file. Kills the subprocess when
-// maxTurns is exceeded.
+// counts assistant turns, extracts the final result, and tees the raw bytes
+// into a log file. Kills the subprocess when maxTurns is exceeded.
 type agentParseResult struct {
 	finalOutput    string
 	assistantTurns int
-	transcript     []transcriptEntry
-}
-
-type transcriptEntry struct {
-	Kind    string // "assistant", "tool_use", "tool_result", "system"
-	Name    string // tool name or "" for assistant/system
-	Preview string // human-readable content preview
 }
 
 func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
@@ -361,7 +353,6 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 
 		var ev map[string]any
 		if err := json.Unmarshal(line, &ev); err != nil {
-			// Ignore malformed lines; still logged raw.
 			continue
 		}
 
@@ -375,30 +366,6 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 				_ = proc.Kill()
 				return nil, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
 			}
-			text, toolCalls := extractAssistantBlocks(ev)
-			if text != "" {
-				result.transcript = append(result.transcript, transcriptEntry{
-					Kind:    "assistant",
-					Preview: truncate(text, 800),
-				})
-			}
-			for _, tc := range toolCalls {
-				result.transcript = append(result.transcript, transcriptEntry{
-					Kind:    "tool_use",
-					Name:    tc.Name,
-					Preview: truncate(tc.Input, 300),
-				})
-			}
-		case "user":
-			// Tool results are delivered as user messages containing tool_result blocks.
-			for _, tr := range extractToolResults(ev) {
-				result.transcript = append(result.transcript, transcriptEntry{
-					Kind:    "tool_result",
-					Preview: truncate(tr, 500),
-				})
-			}
-		case "system":
-			// Skip; not useful in transcript.
 		case "result":
 			if s, ok := ev["result"].(string); ok {
 				result.finalOutput = s
@@ -410,102 +377,6 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		return nil, fmt.Errorf("read stdout: %w", err)
 	}
 	return result, nil
-}
-
-type toolCallPreview struct {
-	Name  string
-	Input string
-}
-
-func extractAssistantBlocks(ev map[string]any) (text string, toolCalls []toolCallPreview) {
-	msg, ok := ev["message"].(map[string]any)
-	if !ok {
-		return "", nil
-	}
-	content, ok := msg["content"].([]any)
-	if !ok {
-		return "", nil
-	}
-	var textParts []string
-	for _, b := range content {
-		block, ok := b.(map[string]any)
-		if !ok {
-			continue
-		}
-		switch block["type"] {
-		case "text":
-			if s, ok := block["text"].(string); ok {
-				textParts = append(textParts, s)
-			}
-		case "tool_use":
-			name, _ := block["name"].(string)
-			inputBytes, _ := json.Marshal(block["input"])
-			toolCalls = append(toolCalls, toolCallPreview{Name: name, Input: string(inputBytes)})
-		}
-	}
-	return strings.Join(textParts, "\n"), toolCalls
-}
-
-func extractToolResults(ev map[string]any) []string {
-	msg, ok := ev["message"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	content, ok := msg["content"].([]any)
-	if !ok {
-		return nil
-	}
-	var out []string
-	for _, b := range content {
-		block, ok := b.(map[string]any)
-		if !ok {
-			continue
-		}
-		if block["type"] != "tool_result" {
-			continue
-		}
-		switch c := block["content"].(type) {
-		case string:
-			out = append(out, c)
-		case []any:
-			var parts []string
-			for _, p := range c {
-				if pm, ok := p.(map[string]any); ok {
-					if s, ok := pm["text"].(string); ok {
-						parts = append(parts, s)
-					}
-				}
-			}
-			out = append(out, strings.Join(parts, "\n"))
-		}
-	}
-	return out
-}
-
-func assembleMarkdown(owner, repo string, prNumber int, commitSHA string, r *agentParseResult) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Agent review — %s/%s#%d @ %s\n\n", owner, repo, prNumber, shortSHA(commitSHA))
-	sb.WriteString(r.finalOutput)
-	sb.WriteString("\n\n---\n\n## Agent transcript\n\n")
-	fmt.Fprintf(&sb, "_%d assistant turn(s), %d transcript entries._\n\n", r.assistantTurns, len(r.transcript))
-	for i, e := range r.transcript {
-		switch e.Kind {
-		case "assistant":
-			fmt.Fprintf(&sb, "### Turn %d — assistant\n\n%s\n\n", i+1, e.Preview)
-		case "tool_use":
-			fmt.Fprintf(&sb, "### Turn %d — tool_use: `%s`\n\n```\n%s\n```\n\n", i+1, e.Name, e.Preview)
-		case "tool_result":
-			fmt.Fprintf(&sb, "### Turn %d — tool_result\n\n```\n%s\n```\n\n", i+1, e.Preview)
-		}
-	}
-	return sb.String()
-}
-
-func shortSHA(sha string) string {
-	if len(sha) > 7 {
-		return sha[:7]
-	}
-	return sha
 }
 
 func truncate(s string, max int) string {
