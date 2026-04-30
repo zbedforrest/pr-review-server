@@ -39,11 +39,19 @@ RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o pr-review-server .
 FROM alpine:3.20
 
 # Install required packages
+# - git: cloning PR branches for the agent reviewer
+# - nodejs/npm: hosting the claude CLI
+# - @anthropic-ai/claude-code: the CLI the agent reviewer shells out to
 RUN apk --no-cache add \
     ca-certificates \
     sqlite-libs \
     bash \
-    wget
+    wget \
+    git \
+    nodejs \
+    npm \
+ && npm install -g @anthropic-ai/claude-code \
+ && npm cache clean --force
 
 WORKDIR /app
 
