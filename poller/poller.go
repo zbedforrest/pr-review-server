@@ -598,19 +598,19 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 	return removed, outdated, nil
 }
 
-// reviewExists checks if a review already exists for the given PR+commit+ext.
+// reviewExists checks if a review already exists for the given PR+commit.
 // If a storage interface is set (for testing), it uses that.
 // Otherwise, checks GCS if bucket is configured, or local file storage.
-func (p *Poller) reviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA, ext string) (bool, error) {
+func (p *Poller) reviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (bool, error) {
 	if p.storage != nil {
-		return p.storage.ReviewExists(ctx, owner, repo, prNumber, commitSHA, ext)
+		return p.storage.ReviewExists(ctx, owner, repo, prNumber, commitSHA)
 	}
 
 	if p.gcsClient != nil && p.gcsClient.BucketName() != "" {
-		return p.gcsClient.ReviewExists(ctx, owner, repo, prNumber, commitSHA, ext)
+		return p.gcsClient.ReviewExists(ctx, owner, repo, prNumber, commitSHA)
 	}
 
-	filename := gcs.ReviewFileName(owner, repo, prNumber, commitSHA, ext)
+	filename := gcs.ReviewFileName(owner, repo, prNumber, commitSHA)
 	localPath := filepath.Join(p.reviewDir, filename)
 	_, err := os.Stat(localPath)
 	if err == nil {
@@ -623,17 +623,16 @@ func (p *Poller) reviewExists(ctx context.Context, owner, repo string, prNumber 
 }
 
 // saveReview persists review content to storage (GCS or local disk).
-// ext is "html" for the legacy report or "md" for agent-mode markdown.
-func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte, ext string) (string, error) {
+func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	if p.storage != nil {
-		return p.storage.SaveReview(ctx, owner, repo, prNumber, commitSHA, content, ext)
+		return p.storage.SaveReview(ctx, owner, repo, prNumber, commitSHA, content)
 	}
 
 	if p.gcsClient != nil && p.gcsClient.BucketName() != "" {
-		return p.gcsClient.UploadReview(ctx, owner, repo, prNumber, commitSHA, content, ext)
+		return p.gcsClient.UploadReview(ctx, owner, repo, prNumber, commitSHA, content)
 	}
 
-	filename := gcs.ReviewFileName(owner, repo, prNumber, commitSHA, ext)
+	filename := gcs.ReviewFileName(owner, repo, prNumber, commitSHA)
 	localPath := filepath.Join(p.reviewDir, filename)
 
 	if err := os.MkdirAll(p.reviewDir, 0755); err != nil {
@@ -1689,16 +1688,12 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 
 			log.Printf("[REVIEWER] Processing PR: %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA[:7])
 
-			// Output extension is always html — the agent flow produces structured
-			// comments that feed the same HTML renderer, not a separate markdown doc.
-			outputExt := "html"
-
 			// Check if review already exists (in GCS if configured, otherwise locally).
 			// Skipped when force=true so the manual trigger always regenerates.
 			exists := false
 			var existsErr error
 			if !force {
-				exists, existsErr = p.reviewExists(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, outputExt)
+				exists, existsErr = p.reviewExists(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 			} else {
 				log.Printf("[REVIEWER] PR %d: force=true, skipping existing-review cache check", pr.Number)
 			}
@@ -1708,7 +1703,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			} else if exists {
 				log.Printf("[REVIEWER] Review already exists for PR %d commit %s, skipping generation", pr.Number, pr.CommitSHA[:7])
 				// Update database to point to existing review, preserving importance counts
-				filename := gcs.ReviewFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, outputExt)
+				filename := gcs.ReviewFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 				// Get existing importance counts from database
 				existingPR, _ := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
 				criticalCount, mediumCount, lowCount := 0, 0, 0
@@ -1850,7 +1845,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			log.Printf("[REVIEWER] Review completed successfully for PR %d in %v", pr.Number, execDuration)
 
 			// Save review (to GCS if configured, otherwise locally)
-			filename, err := p.saveReview(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent, outputExt)
+			filename, err := p.saveReview(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent)
 			if err != nil {
 				log.Printf("[REVIEWER] ERROR: Failed to save review for PR %d: %v", pr.Number, err)
 				if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {

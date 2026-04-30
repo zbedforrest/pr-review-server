@@ -32,35 +32,22 @@ func NewClient(ctx context.Context, bucketName string) (*Client, error) {
 }
 
 // ReviewFileName generates a filename for a review based on PR info and commit SHA.
-// ext is "html" for the legacy report or "md" for the agent-review markdown.
-// Format: {owner}_{repo}_{prNumber}_{commitSHA}.{ext}
-func ReviewFileName(owner, repo string, prNumber int, commitSHA, ext string) string {
+// Format: {owner}_{repo}_{prNumber}_{commitSHA}.html
+func ReviewFileName(owner, repo string, prNumber int, commitSHA string) string {
 	shortSHA := commitSHA
 	if len(commitSHA) > 7 {
 		shortSHA = commitSHA[:7]
 	}
-	if ext == "" {
-		ext = "html"
-	}
-	return fmt.Sprintf("%s_%s_%d_%s.%s", owner, repo, prNumber, shortSHA, ext)
-}
-
-func contentTypeForExt(ext string) string {
-	switch ext {
-	case "md":
-		return "text/markdown; charset=utf-8"
-	default:
-		return "text/html; charset=utf-8"
-	}
+	return fmt.Sprintf("%s_%s_%d_%s.html", owner, repo, prNumber, shortSHA)
 }
 
 // UploadReview uploads review content to GCS and returns the object path.
-func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte, ext string) (string, error) {
-	filename := ReviewFileName(owner, repo, prNumber, commitSHA, ext)
+func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
+	filename := ReviewFileName(owner, repo, prNumber, commitSHA)
 
 	obj := c.bucket.Object(filename)
 	writer := obj.NewWriter(ctx)
-	writer.ContentType = contentTypeForExt(ext)
+	writer.ContentType = "text/html; charset=utf-8"
 
 	// Reviews used to be considered immutable per commit, but the manual
 	// trigger now force-overwrites the same filename when the user clicks
@@ -82,9 +69,9 @@ func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber 
 	return filename, nil
 }
 
-// ReviewExists checks if a review already exists for a given PR and commit at the given extension.
-func (c *Client) ReviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA, ext string) (bool, error) {
-	filename := ReviewFileName(owner, repo, prNumber, commitSHA, ext)
+// ReviewExists checks if a review already exists for a given PR and commit.
+func (c *Client) ReviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (bool, error) {
+	filename := ReviewFileName(owner, repo, prNumber, commitSHA)
 
 	obj := c.bucket.Object(filename)
 	_, err := obj.Attrs(ctx)
@@ -96,12 +83,6 @@ func (c *Client) ReviewExists(ctx context.Context, owner, repo string, prNumber 
 	}
 
 	return true, nil
-}
-
-// GetReviewURL returns the public URL for a review file at the given extension.
-func (c *Client) GetReviewURL(owner, repo string, prNumber int, commitSHA, ext string) string {
-	filename := ReviewFileName(owner, repo, prNumber, commitSHA, ext)
-	return fmt.Sprintf("https://storage.googleapis.com/%s/%s", c.bucketName, filename)
 }
 
 // GetReviewURLByFilename returns the public URL for a review file by filename
@@ -127,17 +108,12 @@ func (c *Client) ListReviewsForPR(ctx context.Context, owner, repo string, prNum
 			return nil, fmt.Errorf("failed to list objects: %w", err)
 		}
 
-		// Filename format: {owner}_{repo}_{prNumber}_{commitSHA}.{html|md}
+		// Filename format: {owner}_{repo}_{prNumber}_{commitSHA}.html
 		name := attrs.Name
-		trimmed := ""
-		switch {
-		case strings.HasSuffix(name, ".html"):
-			trimmed = strings.TrimSuffix(name, ".html")
-		case strings.HasSuffix(name, ".md"):
-			trimmed = strings.TrimSuffix(name, ".md")
-		default:
+		if !strings.HasSuffix(name, ".html") {
 			continue
 		}
+		trimmed := strings.TrimSuffix(name, ".html")
 
 		parts := strings.Split(trimmed, "_")
 		if len(parts) < 4 {

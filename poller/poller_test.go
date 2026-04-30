@@ -919,7 +919,7 @@ func TestReviewExists_UsesStorageInterface(t *testing.T) {
 	ctx := context.Background()
 
 	// Check existing review
-	exists, err := poller.reviewExists(ctx, "owner", "repo", 1, "abc123def456", "html")
+	exists, err := poller.reviewExists(ctx, "owner", "repo", 1, "abc123def456")
 	if err != nil {
 		t.Fatalf("reviewExists returned error: %v", err)
 	}
@@ -928,7 +928,7 @@ func TestReviewExists_UsesStorageInterface(t *testing.T) {
 	}
 
 	// Check non-existing review
-	exists, err = poller.reviewExists(ctx, "owner", "repo", 2, "xyz789", "html")
+	exists, err = poller.reviewExists(ctx, "owner", "repo", 2, "xyz789")
 	if err != nil {
 		t.Fatalf("reviewExists returned error: %v", err)
 	}
@@ -951,7 +951,7 @@ func TestReviewExists_PropagatesError(t *testing.T) {
 	poller := newTestPollerWithStorage(mockGH, mockDB, mockStorage)
 	ctx := context.Background()
 
-	_, err := poller.reviewExists(ctx, "owner", "repo", 1, "abc123", "html")
+	_, err := poller.reviewExists(ctx, "owner", "repo", 1, "abc123")
 	if err == nil {
 		t.Error("expected error to be propagated")
 	}
@@ -969,7 +969,7 @@ func TestSaveReview_UsesStorageInterface(t *testing.T) {
 	ctx := context.Background()
 
 	htmlContent := []byte("<html><body>Review content</body></html>")
-	filename, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123def456", htmlContent, "html")
+	filename, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123def456", htmlContent)
 
 	if err != nil {
 		t.Fatalf("saveReview returned error: %v", err)
@@ -1002,7 +1002,7 @@ func TestSaveReview_PropagatesError(t *testing.T) {
 	poller := newTestPollerWithStorage(mockGH, mockDB, mockStorage)
 	ctx := context.Background()
 
-	_, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123", []byte("content"), "html")
+	_, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123", []byte("content"))
 	if err == nil {
 		t.Error("expected error to be propagated")
 	}

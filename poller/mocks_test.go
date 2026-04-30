@@ -731,7 +731,6 @@ type MockReviewStorage struct {
 		Repo      string
 		PRNumber  int
 		CommitSHA string
-		Ext       string
 	}
 	SaveReviewCalls []struct {
 		Owner     string
@@ -739,7 +738,6 @@ type MockReviewStorage struct {
 		PRNumber  int
 		CommitSHA string
 		Content   []byte
-		Ext       string
 	}
 
 	// Mutex for thread safety
@@ -753,7 +751,7 @@ func NewMockReviewStorage() *MockReviewStorage {
 	}
 }
 
-func (m *MockReviewStorage) ReviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA, ext string) (bool, error) {
+func (m *MockReviewStorage) ReviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -763,8 +761,7 @@ func (m *MockReviewStorage) ReviewExists(ctx context.Context, owner, repo string
 		Repo      string
 		PRNumber  int
 		CommitSHA string
-		Ext       string
-	}{owner, repo, prNumber, commitSHA, ext})
+	}{owner, repo, prNumber, commitSHA})
 
 	if m.ReviewExistsError != nil {
 		return false, m.ReviewExistsError
@@ -774,7 +771,7 @@ func (m *MockReviewStorage) ReviewExists(ctx context.Context, owner, repo string
 	return exists, nil
 }
 
-func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte, ext string) (string, error) {
+func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -785,8 +782,7 @@ func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, 
 		PRNumber  int
 		CommitSHA string
 		Content   []byte
-		Ext       string
-	}{owner, repo, prNumber, commitSHA, content, ext})
+	}{owner, repo, prNumber, commitSHA, content})
 
 	if m.SaveReviewError != nil {
 		return "", m.SaveReviewError
