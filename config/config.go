@@ -108,7 +108,7 @@ func Load() *Config {
 		AgenticReviews:    os.Getenv("AGENTIC_REVIEWS") == "true",
 		AgentCloneRootDir: getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
 		AgentLogsDir:      getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
-		AgentWallClockSec: getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 180),
+		AgentWallClockSec: getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 360),
 		AgentMaxTurns:     getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
 	}
 }
