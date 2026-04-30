@@ -112,32 +112,6 @@ func (p *Poller) broadcastPRUpdate(owner, repo string, number int) {
 	}
 }
 
-// upsertPRPreservingReviewData upserts a PR while preserving existing review data (doesn't fetch from GitHub)
-// This is used when updating PR status/files but we want to keep approval counts unchanged
-// upsertPRPreservingReviewData transitions a PR to the given terminal status
-// (today: only "completed") and records the review's persisted location +
-// importance counts. Uses MarkPRCompleted's explicit UPDATE so it can't be
-// clobbered by a concurrent poll-cycle upsert with a stale read.
-func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, createdAt *time.Time, draft bool, criticalCount, mediumCount, lowCount int) error {
-	if status != "completed" {
-		// Defensive: every caller passes "completed". If a future caller
-		// needs another terminal status, add a dedicated setter rather than
-		// re-broadening UpsertPR.
-		return fmt.Errorf("upsertPRPreservingReviewData: unsupported status %q", status)
-	}
-	if err := p.db.MarkPRCompleted(owner, repo, prNumber, commitSHA, htmlPath, criticalCount, mediumCount, lowCount); err != nil {
-		return err
-	}
-	p.broadcastPRUpdate(owner, repo, prNumber)
-	// title, author, createdAt, draft are already kept fresh by every poll
-	// cycle's metadata UpsertPR — no need to re-write them here.
-	_ = title
-	_ = author
-	_ = createdAt
-	_ = draft
-	return nil
-}
-
 func (p *Poller) SetCacheUpdateFunc(f func([]github.PullRequest)) {
 	p.cacheUpdateFunc = f
 }
@@ -1712,8 +1686,10 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 					mediumCount = existingPR.MediumCount
 					lowCount = existingPR.LowCount
 				}
-				if err := p.upsertPRPreservingReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, pr.CreatedAt, pr.Draft, criticalCount, mediumCount, lowCount); err != nil {
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
+				} else {
+					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				}
 				return
 			}
@@ -1866,9 +1842,10 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				log.Printf("[REVIEWER] STALE REVIEW: PR %d commit changed during generation, but keeping in GCS for history", pr.Number)
 				// Don't update DB - the next poll will generate a new review for the new commit
 			} else {
-				if err := p.upsertPRPreservingReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, pr.CreatedAt, pr.Draft, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount); err != nil {
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
 				} else {
+					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 					log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount)
 				}
 			}
