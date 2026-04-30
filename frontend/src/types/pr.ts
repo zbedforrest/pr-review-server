@@ -7,7 +7,8 @@ export interface PR {
   review_html_path: string;
   github_url: string;
   review_url: string;
-  status: 'pending' | 'generating' | 'completed' | 'error';
+  status: 'pending' | 'generating' | 'agent_reviewing' | 'completed' | 'error';
+  error_message?: string;
   title: string;
   author: string;
   generating_since: string | null;

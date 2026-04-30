@@ -99,6 +99,8 @@ type PRModel struct {
 	Notes string `gorm:"size:15"`
 	// Poll economy: last seen updated_at from GitHub search API
 	GitHubUpdatedAt *time.Time `gorm:"column:github_updated_at"`
+	// Populated when Status=="error"; surfaced to the UI.
+	ErrorMessage string `gorm:"column:error_message;type:text"`
 }
 
 // TableName specifies the table name for PRModel

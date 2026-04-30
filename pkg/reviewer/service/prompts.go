@@ -202,6 +202,33 @@ Provide a well-structured testing assessment that includes:
 **Output Format:**
 Provide your summary as plain text (not JSON). Structure it clearly with headers and bullet points for testing readability.`
 
+// promptAgentReview is the system-prompt template handed to the Claude Code
+// agent. The caller appends a JSON array of Gemini comments before invoking.
+// The agent runs with its cwd set to a shallow checkout of the PR branch.
+const promptAgentReview = `You are reviewing a pull request. A first-pass Gemini-based review has already produced a list of raw comments (appended below as JSON). Your working directory is a checkout of the PR branch — read any files you need to verify or refute each comment.
+
+Tasks, in order:
+
+1. For each Gemini comment: silently drop the ones that are trivial, wrong, already addressed, or not worth a human reviewer's time. For the rest, rephrase clearly and include a concrete recommendation with a code-level suggestion when possible.
+2. After processing all Gemini comments, do your own review pass. Look for issues Gemini missed — bugs, unsafe concurrency, broken invariants, missing tests, security footguns, performance regressions. Include any new findings.
+
+**Output format (STRICT):**
+
+Respond with a single JSON array of review comment objects, nothing else. No prose before or after. No code-fence wrapper.
+
+Each object must have these fields:
+- "file_path" (string): the path to the file the comment targets. Use "SUMMARY" for an overall narrative entry.
+- "line_number" (integer): the line to anchor the comment to. Use 0 for SUMMARY entries or whole-file notes.
+- "comment_body" (string): the comment text. Markdown is fine. For concrete code changes include a ` + "```suggestion" + ` block inside the body.
+- "importance" (string): "LOW", "MEDIUM", or "CRITICAL". Use CRITICAL for bugs/security, MEDIUM for things a reviewer should address, LOW for nits. SUMMARY entries can use any level.
+
+Include exactly one "SUMMARY" entry summarizing your overall take + verdict (approve / approve with suggestions / request changes).
+
+If you find no issues worth flagging, return a single SUMMARY entry only.
+
+--- GEMINI COMMENTS (JSON) ---
+`
+
 // promptClassification is a fmt format string; %s placeholders receive
 // prBody, fileContext, diff, and the indexed comment list in that order.
 const promptClassification = `You are an expert software engineer tasked with classifying the importance of code review comments.

@@ -113,7 +113,11 @@ export const PRTableRow = memo(function PRTableRow({
       </td>
       {showReviewColumns && (
         <td className="pr-table__review-cell">
-          {reviewUrl ? (
+          {pr.status === 'error' ? (
+            <span className="pr-table__review-error" title={pr.error_message || 'Review failed'}>
+              ERROR
+            </span>
+          ) : reviewUrl ? (
             <a
               href={reviewUrl}
               target="_blank"
@@ -134,13 +138,21 @@ export const PRTableRow = memo(function PRTableRow({
             className={`pr-table__action-btn${
               triggerReviewMutation.isPending || pr.status === 'generating'
                 ? ' pr-table__action-btn--reviewing'
-                : ''
+                : pr.status === 'agent_reviewing'
+                  ? ' pr-table__action-btn--agent-reviewing'
+                  : ''
             }`}
             onClick={handleTriggerReview}
-            disabled={triggerReviewMutation.isPending || pr.status === 'generating'}
+            disabled={
+              triggerReviewMutation.isPending ||
+              pr.status === 'generating' ||
+              pr.status === 'agent_reviewing'
+            }
             title="Generate or regenerate review for this PR"
           >
-            {triggerReviewMutation.isPending || pr.status === 'generating'
+            {triggerReviewMutation.isPending ||
+            pr.status === 'generating' ||
+            pr.status === 'agent_reviewing'
               ? 'REVIEWING'
               : '🔄 Review'}
           </button>

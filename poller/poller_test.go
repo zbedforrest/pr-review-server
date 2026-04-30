@@ -424,7 +424,7 @@ func TestGenerateReviewsBatch_SkipsExistingReviews(t *testing.T) {
 		{Owner: "owner", Repo: "repo", Number: 1, CommitSHA: "abc123def456789012345678901234567890abcd", Title: "Test PR", Author: "user"},
 	}
 
-	err := poller.generateReviewsBatch(ctx, prs)
+	err := poller.generateReviewsBatch(ctx, prs, false)
 	if err != nil {
 		t.Fatalf("generateReviewsBatch returned error: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestGenerateReviewsBatch_SetsGeneratingStatus(t *testing.T) {
 		{Owner: "owner", Repo: "repo", Number: 1, CommitSHA: "abc123def456789012345678901234567890abcd", Title: "Test PR", Author: "user"},
 	}
 
-	err := poller.generateReviewsBatch(ctx, prs)
+	err := poller.generateReviewsBatch(ctx, prs, false)
 	if err != nil {
 		t.Fatalf("generateReviewsBatch returned error: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestGenerateReviewsBatch_HandlesGenerationError(t *testing.T) {
 	}
 
 	// Should not return error (handles per-PR errors gracefully)
-	err := poller.generateReviewsBatch(ctx, prs)
+	err := poller.generateReviewsBatch(ctx, prs, false)
 	if err != nil {
 		t.Fatalf("generateReviewsBatch should not return error for individual PR failures: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestGenerateReviewsBatch_UpdatesDBOnSuccess(t *testing.T) {
 		{Owner: "owner", Repo: "repo", Number: 1, CommitSHA: "abc123def456789012345678901234567890abcd", Title: "Test PR", Author: "testuser"},
 	}
 
-	err := poller.generateReviewsBatch(ctx, prs)
+	err := poller.generateReviewsBatch(ctx, prs, false)
 	if err != nil {
 		t.Fatalf("generateReviewsBatch returned error: %v", err)
 	}
@@ -663,7 +663,7 @@ func TestGenerateReviewsBatch_ConcurrencyLimit(t *testing.T) {
 	ctx := context.Background()
 
 	start := time.Now()
-	err := poller.generateReviewsBatch(ctx, prs)
+	err := poller.generateReviewsBatch(ctx, prs, false)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -919,7 +919,7 @@ func TestReviewExists_UsesStorageInterface(t *testing.T) {
 	ctx := context.Background()
 
 	// Check existing review
-	exists, err := poller.reviewExists(ctx, "owner", "repo", 1, "abc123def456")
+	exists, err := poller.reviewExists(ctx, "owner", "repo", 1, "abc123def456", "html")
 	if err != nil {
 		t.Fatalf("reviewExists returned error: %v", err)
 	}
@@ -928,7 +928,7 @@ func TestReviewExists_UsesStorageInterface(t *testing.T) {
 	}
 
 	// Check non-existing review
-	exists, err = poller.reviewExists(ctx, "owner", "repo", 2, "xyz789")
+	exists, err = poller.reviewExists(ctx, "owner", "repo", 2, "xyz789", "html")
 	if err != nil {
 		t.Fatalf("reviewExists returned error: %v", err)
 	}
@@ -951,7 +951,7 @@ func TestReviewExists_PropagatesError(t *testing.T) {
 	poller := newTestPollerWithStorage(mockGH, mockDB, mockStorage)
 	ctx := context.Background()
 
-	_, err := poller.reviewExists(ctx, "owner", "repo", 1, "abc123")
+	_, err := poller.reviewExists(ctx, "owner", "repo", 1, "abc123", "html")
 	if err == nil {
 		t.Error("expected error to be propagated")
 	}
@@ -969,7 +969,7 @@ func TestSaveReview_UsesStorageInterface(t *testing.T) {
 	ctx := context.Background()
 
 	htmlContent := []byte("<html><body>Review content</body></html>")
-	filename, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123def456", htmlContent)
+	filename, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123def456", htmlContent, "html")
 
 	if err != nil {
 		t.Fatalf("saveReview returned error: %v", err)
@@ -1002,7 +1002,7 @@ func TestSaveReview_PropagatesError(t *testing.T) {
 	poller := newTestPollerWithStorage(mockGH, mockDB, mockStorage)
 	ctx := context.Background()
 
-	_, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123", []byte("content"))
+	_, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123", []byte("content"), "html")
 	if err == nil {
 		t.Error("expected error to be propagated")
 	}
@@ -3189,7 +3189,7 @@ func TestProcessReviewImmediate_StartsReviewWithoutPoll(t *testing.T) {
 	ctx := context.Background()
 
 	// Call ProcessReviewImmediate
-	poller.ProcessReviewImmediate(ctx, "owner", "repo", 1, "abc123def456789012345678901234567890abcd", "Test PR", "author", nil, false)
+	poller.ProcessReviewImmediate(ctx, "owner", "repo", 1, "abc123def456789012345678901234567890abcd", "Test PR", "author", nil, false, false)
 
 	// PR should be tracked immediately (synchronous)
 	if !poller.IsReviewTracked("owner", "repo", 1) {

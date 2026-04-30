@@ -114,10 +114,20 @@ export function StatusBar({ connectionStatus = 'connecting' }: StatusBarProps) {
 
       {rate_limit && (
         <div className="status-bar__item">
-          <span className="status-bar__label">Rate Limit:</span>
+          <span className="status-bar__label">REST:</span>
           <span className="status-bar__value">
             {rate_limit.remaining}/{rate_limit.limit}
             {rate_limit.reset_at && ` (resets ${formatTime(rate_limit.reset_at)})`}
+          </span>
+        </div>
+      )}
+
+      {rate_limit && rate_limit.graphql_limit > 0 && (
+        <div className="status-bar__item">
+          <span className="status-bar__label">GraphQL:</span>
+          <span className="status-bar__value">
+            {rate_limit.graphql_remaining}/{rate_limit.graphql_limit}
+            {rate_limit.graphql_reset_at && ` (resets ${formatTime(rate_limit.graphql_reset_at)})`}
           </span>
         </div>
       )}

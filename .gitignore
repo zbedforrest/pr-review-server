@@ -35,8 +35,15 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
-# Docker volumes
-data/
+# Docker volumes (ignore contents, not the dir itself — so we can track
+# agent-review scratch subdirs with .gitkeep placeholders)
+data/*
+!data/agent-clones/
+!data/agent-logs/
+data/agent-clones/*
+data/agent-logs/*
+!data/agent-clones/.gitkeep
+!data/agent-logs/.gitkeep
 
 # macOS
 .DS_Store

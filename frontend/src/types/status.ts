@@ -17,6 +17,9 @@ export interface RateLimitInfo {
   reset_at: string;
   is_limited: boolean;
   error: string;
+  graphql_remaining: number;
+  graphql_limit: number;
+  graphql_reset_at: string;
 }
 
 export interface ServerStatus {

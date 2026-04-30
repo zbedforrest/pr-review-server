@@ -38,7 +38,7 @@ type PollerInterface interface {
 	GetLastPollTime() time.Time
 	GetPollingInterval() time.Duration
 	GetSecondsUntilNextPoll() int
-	ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool)
+	ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool)
 	IsReviewTracked(owner, repo string, number int) bool
 }
 
@@ -111,6 +111,8 @@ type PRResponse struct {
 	LowCount      int `json:"low_count"`      // Number of LOW importance comments
 	// User notes
 	Notes string `json:"notes"`
+	// Populated when Status=="error".
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 type StatusCounts struct {
@@ -127,11 +129,17 @@ type RecentCompletion struct {
 }
 
 type StatusRateLimit struct {
+	// REST core bucket.
 	Remaining int    `json:"remaining"`
 	Limit     int    `json:"limit"`
 	ResetAt   string `json:"reset_at"`
 	IsLimited bool   `json:"is_limited"`
 	Error     string `json:"error"`
+
+	// GraphQL bucket — separate quota from REST.
+	GraphQLRemaining int    `json:"graphql_remaining"`
+	GraphQLLimit     int    `json:"graphql_limit"`
+	GraphQLResetAt   string `json:"graphql_reset_at"`
 }
 
 type StatusSnapshot struct {
@@ -386,6 +394,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			MediumCount:     dbPR.MediumCount,
 			LowCount:        dbPR.LowCount,
 			Notes:           notes,
+			ErrorMessage:    dbPR.ErrorMessage,
 		})
 	}
 
@@ -518,13 +527,16 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 		Number int    `json:"number"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("[API] trigger-review: bad request body: %v", err)
 		http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
 		return
 	}
+	log.Printf("[API] trigger-review: received for %s/%s#%d", req.Owner, req.Repo, req.Number)
 
 	// Get existing PR from database
 	pr, err := s.db.GetPR(req.Owner, req.Repo, req.Number)
 	if err != nil {
+		log.Printf("[API] trigger-review: GetPR failed for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
 		http.Error(w, fmt.Sprintf("Failed to get PR: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -532,6 +544,7 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 	// If PR doesn't exist in database, we can't trigger a review
 	// (It needs to be fetched from GitHub first via the poller)
 	if pr == nil {
+		log.Printf("[API] trigger-review: PR %s/%s#%d not in DB yet", req.Owner, req.Repo, req.Number)
 		http.Error(w, "PR not found in database. Wait for next poll cycle to fetch it from GitHub.", http.StatusNotFound)
 		return
 	}
@@ -539,12 +552,14 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 	// Fetch the latest commit SHA from GitHub so the review is always against the current HEAD
 	latestSHA, err := s.ghClient.GetPRHeadSHA(r.Context(), req.Owner, req.Repo, req.Number)
 	if err != nil {
+		log.Printf("[API] trigger-review: GetPRHeadSHA failed for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
 		http.Error(w, fmt.Sprintf("Failed to fetch latest commit from GitHub: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	// Mark PR as generating with the latest SHA so the poller reviews the right commit
 	if err := s.db.SetPRGenerating(req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft); err != nil {
+		log.Printf("[API] trigger-review: SetPRGenerating failed for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
 		http.Error(w, fmt.Sprintf("Failed to update PR status: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -564,7 +579,9 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 	// a goroutine for the actual generation work.
 	// Use background context since the review outlives this HTTP request.
 	if s.poller != nil {
-		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft)
+		// force=true on manual trigger: bypass the per-commit cache so a button
+		// click always regenerates (overwrites the previous review for this commit).
+		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, true)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -691,6 +708,12 @@ func (s *Server) buildStatusSnapshot(ctx context.Context) (*StatusSnapshot, erro
 		rateLimit.Limit = cachedInfo.Limit
 		rateLimit.ResetAt = cachedInfo.ResetTime.Format(time.RFC3339)
 		rateLimit.IsLimited = cachedInfo.Remaining < 10
+
+		rateLimit.GraphQLRemaining = cachedInfo.GraphQLRemaining
+		rateLimit.GraphQLLimit = cachedInfo.GraphQLLimit
+		if !cachedInfo.GraphQLResetTime.IsZero() {
+			rateLimit.GraphQLResetAt = cachedInfo.GraphQLResetTime.Format(time.RFC3339)
+		}
 	}
 
 	return &StatusSnapshot{
@@ -1333,6 +1356,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		MediumCount:     pr.MediumCount,
 		LowCount:        pr.LowCount,
 		Notes:           notes,
+		ErrorMessage:    pr.ErrorMessage,
 	}
 }
 
@@ -1364,7 +1388,10 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			// Successfully fetched from GCS
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+			// Reviews used to be immutable per commit, but the manual trigger now
+		// force-overwrites the same filename. Make the browser revalidate so
+		// the new content shows up after a regen.
+		w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
 			_, _ = w.Write(content) // nolint:errcheck
 			return
 		}

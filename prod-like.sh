@@ -26,6 +26,13 @@ export GITHUB_USERNAME="${GITHUB_USERNAME:?GITHUB_USERNAME is required}"
 export SERVER_PORT="${SERVER_PORT:-8080}"
 export SKIP_DB_MIGRATIONS="${SKIP_DB_MIGRATIONS:-true}"
 
+# Agentic review knobs — opt-in, only picked up when set in .env.
+export AGENTIC_REVIEWS="${AGENTIC_REVIEWS:-false}"
+export AGENT_CLONE_ROOT_DIR="${AGENT_CLONE_ROOT_DIR:-./data/agent-clones}"
+export AGENT_LOGS_DIR="${AGENT_LOGS_DIR:-./data/agent-logs}"
+export AGENT_WALL_CLOCK_SEC="${AGENT_WALL_CLOCK_SEC:-180}"
+export AGENT_MAX_TURNS="${AGENT_MAX_TURNS:-40}"
+
 # PostgreSQL - try Secret Manager if not set
 if [ -z "$DATABASE_URL" ]; then
     echo "Fetching DATABASE_URL from Secret Manager..."
@@ -103,4 +110,7 @@ echo "  Storage:  GCS ($GCS_BUCKET)"
 echo "  Port:     $SERVER_PORT"
 echo ""
 
-./pr-review-server
+echo "  Logs:     ./server.log (also streamed to this terminal)"
+echo ""
+
+./pr-review-server 2>&1 | tee server.log

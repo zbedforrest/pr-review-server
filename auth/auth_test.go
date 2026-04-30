@@ -119,6 +119,13 @@ func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCo
 func (m *MockDatabase) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error {
 	return nil
 }
+func (m *MockDatabase) SetPRAgentReviewing(owner, repo string, prNumber int) error { return nil }
+func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message string) error {
+	return nil
+}
+func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int) error {
+	return nil
+}
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error)                             { return nil, nil }
 func (m *MockDatabase) DeletePR(owner, repo string, prNumber int) error         { return nil }
 func (m *MockDatabase) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) { return 0, nil }

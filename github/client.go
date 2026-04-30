@@ -221,10 +221,18 @@ func (c *Client) BatchGetPRState(ctx context.Context, prs []PRInfo) (map[string]
 	return results, nil
 }
 
+// RateLimitInfo holds the current rate-limit status for both buckets we care
+// about. REST (Core) and GraphQL are tracked as separate quotas by GitHub.
 type RateLimitInfo struct {
+	// REST core bucket (5,000/hr for personal tokens).
 	Limit     int
 	Remaining int
 	ResetTime time.Time
+
+	// GraphQL bucket (5,000 points/hr) — points scale with query complexity.
+	GraphQLLimit     int
+	GraphQLRemaining int
+	GraphQLResetTime time.Time
 }
 
 type PullRequest struct {
@@ -511,7 +519,8 @@ func (c *Client) GetMyReviewStatus(ctx context.Context, owner, repo string, prNu
 	return "", false, nil // No review found
 }
 
-// GetRateLimitInfo returns the current rate limit status
+// GetRateLimitInfo returns the current REST + GraphQL rate-limit status.
+// One API call returns both buckets.
 func (c *Client) GetRateLimitInfo(ctx context.Context) (*RateLimitInfo, error) {
 	limits, _, err := c.gh.RateLimit.Get(ctx)
 	if err != nil {
@@ -519,11 +528,17 @@ func (c *Client) GetRateLimitInfo(ctx context.Context) (*RateLimitInfo, error) {
 	}
 
 	core := limits.GetCore()
-	return &RateLimitInfo{
+	info := &RateLimitInfo{
 		Limit:     core.Limit,
 		Remaining: core.Remaining,
 		ResetTime: core.Reset.Time,
-	}, nil
+	}
+	if gql := limits.GetGraphQL(); gql != nil {
+		info.GraphQLLimit = gql.Limit
+		info.GraphQLRemaining = gql.Remaining
+		info.GraphQLResetTime = gql.Reset.Time
+	}
+	return info, nil
 }
 
 // IsRateLimited checks if we're currently rate limited (has few or no requests remaining)

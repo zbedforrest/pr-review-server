@@ -98,6 +98,20 @@
       border-color: $color-warning;
       opacity: 1;
     }
+
+    &--agent-reviewing,
+    &--agent-reviewing:disabled {
+      color: $color-agent-reviewing-text;
+      border-color: $color-agent-reviewing;
+      opacity: 1;
+    }
+  }
+
+  &__review-error {
+    color: $color-error-text;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    cursor: help;
   }
 
   &__delete-btn {

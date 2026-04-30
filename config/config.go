@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -34,6 +35,13 @@ type Config struct {
 	ServerPort      string
 	ReviewerEnabled bool
 	GeminiAPIKey    string
+
+	// Agent review (Claude Code subprocess) — dev-only for now.
+	AgenticReviews     bool
+	AgentCloneRootDir  string
+	AgentLogsDir       string
+	AgentWallClockSec  int
+	AgentMaxTurns      int
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -96,7 +104,22 @@ func Load() *Config {
 		ServerPort:      getEnvOrDefault("SERVER_PORT", "8080"),
 		ReviewerEnabled: false, // Will be set to true in main.go if API key is available
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
+
+		AgenticReviews:    os.Getenv("AGENTIC_REVIEWS") == "true",
+		AgentCloneRootDir: getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
+		AgentLogsDir:      getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
+		AgentWallClockSec: getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 180),
+		AgentMaxTurns:     getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
 	}
+}
+
+func getEnvIntOrDefault(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if n, err := strconv.Atoi(value); err == nil {
+			return n
+		}
+	}
+	return defaultValue
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
