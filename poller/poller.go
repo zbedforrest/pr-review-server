@@ -101,6 +101,13 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 // Tests inject a stub to avoid actually invoking the claude CLI.
 func (p *Poller) SetAgentSpawner(s service.Spawner) { p.agentSpawner = s }
 
+// isReviewInFlight reports whether a PR's status indicates an in-progress
+// review (Gemini "generating" or Claude "agent_reviewing"). Used by the
+// outdated-detection paths to decide whether to cancel the active review.
+func isReviewInFlight(status string) bool {
+	return status == "generating" || status == "agent_reviewing"
+}
+
 // runAgentStage runs the claude-agent pass on a Gemini ReviewResult: flips
 // the PR status to agent_reviewing, spawns the agent against a clone of the
 // PR head, replaces the comment set with the agent's refined output, and
@@ -576,7 +583,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 
 		// --- Outdated review detection ---
 		if state.HeadRefOid != pr.LastCommitSHA {
-			wasGenerating := pr.Status == "generating"
+			wasInFlight := isReviewInFlight(pr.Status)
 			oldSHA, newSHA := pr.LastCommitSHA, state.HeadRefOid
 			if len(oldSHA) > 7 {
 				oldSHA = oldSHA[:7]
@@ -595,8 +602,8 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 				}
 			}
 
-			// If the PR was actively generating, kill the process
-			if wasGenerating {
+			// If the PR had an active Gemini or agent review, kill the process.
+			if wasInFlight {
 				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
 					log.Printf("[OUTDATED] Killed active review process for %s", key)
 				}
@@ -773,10 +780,10 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 
 		// Compare commit SHAs
 		if currentSHA != pr.LastCommitSHA {
-			wasGenerating := pr.Status == "generating"
+			wasInFlight := isReviewInFlight(pr.Status)
 			statusMsg := pr.Status
-			if wasGenerating {
-				statusMsg = "generating (cancelling)"
+			if wasInFlight {
+				statusMsg = pr.Status + " (cancelling)"
 			}
 			log.Printf("[OUTDATED] PR %s/%s#%d (%s) has new commits (old: %s, new: %s), resetting to pending",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, statusMsg, pr.LastCommitSHA[:7], currentSHA[:7])
@@ -791,8 +798,8 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 				}
 			}
 
-			// If the PR was actively generating, kill the process
-			if wasGenerating {
+			// If the PR had an active Gemini or agent review, kill the process.
+			if wasInFlight {
 				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
 					log.Printf("[OUTDATED] Killed active review process for %s/%s#%d",
 						pr.RepoOwner, pr.RepoName, pr.PRNumber)
@@ -808,8 +815,8 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 
 			p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
 
-			if wasGenerating {
-				log.Printf("[OUTDATED] PR %d has a new commit while generating. Cancelled old review.", pr.PRNumber)
+			if wasInFlight {
+				log.Printf("[OUTDATED] PR %d had new commit while in-flight (%s). Cancelled old review.", pr.PRNumber, pr.Status)
 			} else if pr.Status == "completed" {
 				log.Printf("[OUTDATED] PR %d has a new commit. Removed stale review.", pr.PRNumber)
 			} else {

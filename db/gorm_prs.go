@@ -337,11 +337,18 @@ func (g *GormDB) DeletePR(owner, repo string, prNumber int) error {
 		Delete(&PRModel{}).Error
 }
 
-// ResetStaleGeneratingPRs resets PRs that have been in "generating" status for too long
+// ResetStaleGeneratingPRs resets PRs stuck in any in-flight review status
+// (generating or agent_reviewing) for longer than timeoutMinutes back to
+// pending. The status name is historical; the function covers both the
+// Gemini and Claude stages so a hung agent run self-heals across restarts.
+//
+// generating_since is set when entering "generating" by SetPRGenerating and
+// is preserved through the transition to "agent_reviewing", so it represents
+// "when did this in-flight review begin" for either stage.
 func (g *GormDB) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) {
 	cutoff := time.Now().UTC().Add(-time.Duration(timeoutMinutes) * time.Minute)
 	result := g.db.Model(&PRModel{}).
-		Where("status = ?", "generating").
+		Where("status IN ?", []string{"generating", "agent_reviewing"}).
 		Where("generating_since IS NULL OR generating_since < ?", cutoff).
 		Updates(map[string]interface{}{
 			"status":           "pending",
