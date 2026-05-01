@@ -282,9 +282,13 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 		}
 		cloneArgs = append(cloneArgs, url, cacheDir)
 		if out, err := runGit(ctx, "", cloneArgs...); err != nil {
-			// Best-effort: leave a partial cache dir for inspection rather than
-			// auto-cleaning, so the user can see what git produced.
-			return fmt.Errorf("git clone (cache init): %w (%s)", err, out)
+			// Remove the partial directory so a future run won't see a half-clone
+			// as a cache hit and try to fetch into a corrupt repo. Diagnostics
+			// are in the returned error + log, not the on-disk leftovers.
+			if rmErr := os.RemoveAll(cacheDir); rmErr != nil {
+				log.Printf("%s WARN: failed to clean partial cache dir %s: %v", logPrefix, cacheDir, rmErr)
+			}
+			return fmt.Errorf("git clone (cache init): %w (%s)", err, redactToken(out, token))
 		}
 		log.Printf("%s cache initial clone DONE in %s", logPrefix, time.Since(t0))
 	} else if err != nil {
@@ -300,7 +304,7 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	log.Printf("%s git fetch origin %s (in cache) START", logPrefix, fetchSpec)
 	t1 := time.Now()
 	if out, err := runGit(ctx, cacheDir, "fetch", "--depth", "200", "origin", fetchSpec); err != nil {
-		return fmt.Errorf("git fetch pr (cache): %w (%s)", err, out)
+		return fmt.Errorf("git fetch pr (cache): %w (%s)", err, redactToken(out, token))
 	}
 	log.Printf("%s git fetch DONE in %s", logPrefix, time.Since(t1))
 
@@ -322,6 +326,16 @@ func buildCloneURL(owner, repo, token string) string {
 		return fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", token, owner, repo)
 	}
 	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+}
+
+// redactToken replaces any literal occurrence of token in s with "***".
+// Used before including git output in error messages so an authenticated
+// clone URL echoed by git can't leak the GitHub installation token.
+func redactToken(s, token string) string {
+	if token == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, token, "***")
 }
 
 func runGit(ctx context.Context, cwd string, args ...string) (string, error) {

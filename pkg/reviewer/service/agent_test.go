@@ -206,5 +206,24 @@ func TestBuildCloneURL(t *testing.T) {
 	}
 }
 
+// TestRedactToken locks in that any literal token occurrence in git output
+// gets scrubbed before it reaches an error wrap. Regression guard against
+// a future change that forgets to redact.
+func TestRedactToken(t *testing.T) {
+	const tok = "ghs_thisisasecrettoken"
+	in := "fatal: could not read Username for 'https://x-access-token:" + tok + "@github.com'"
+	out := redactToken(in, tok)
+	if strings.Contains(out, tok) {
+		t.Errorf("token leaked through redactToken: %q", out)
+	}
+	if !strings.Contains(out, "***") {
+		t.Errorf("expected ***, got: %q", out)
+	}
+	// Empty token must be a no-op (don't replace empty string).
+	if got := redactToken("hello", ""); got != "hello" {
+		t.Errorf("empty token should no-op, got %q", got)
+	}
+}
+
 // Keep errors import alive.
 var _ = errors.New
