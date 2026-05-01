@@ -253,7 +253,12 @@ func TestParseAgentJSON(t *testing.T) {
 		{"plain fence", "```\n[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n```", 1},
 		{"conversational prefix", "Here is the review:\n\n[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]", 1},
 		{"prefix and suffix", "Sure, here you go:\n[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n\nLet me know!", 1},
+		// Critical regression: array starts at position 0 (no prefix) but
+		// has a trailing suffix. Prior to the start>=0 fix this slipped past
+		// the slicing branch and json.Unmarshal failed on the trailing text.
+		{"suffix only", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n\nHope that helps!", 1},
 		{"empty array", `[]`, 0},
+		{"empty array with suffix", "[]\nNo issues found.", 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

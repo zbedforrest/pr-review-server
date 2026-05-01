@@ -385,12 +385,25 @@ func (p *Poller) trackReview(parent context.Context, owner, repo string, number,
 }
 
 // untrackReview removes a PR's review process from the active reviews map
+// AND invokes its stored Cancel func. Both happen under the same mutex hold
+// so no concurrent caller observes the entry as still-tracked-but-cancelled.
+//
+// Calling Cancel on the happy path (review completed normally) is required:
+// trackReview made a context.WithCancel, and `go vet`'s lostcancel rule
+// (rightly) complains if we drop the cancel func without calling it. After
+// successful completion the cancel is a no-op for the work, but it releases
+// the bookkeeping the WithCancel goroutine holds.
 func (p *Poller) untrackReview(owner, repo string, number int) {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
 	key := prKey(owner, repo, number)
-	delete(p.activeReviews, key)
-	log.Printf("[TRACK] Untracked review for %s", key)
+	if info, ok := p.activeReviews[key]; ok {
+		if info.Cancel != nil {
+			info.Cancel()
+		}
+		delete(p.activeReviews, key)
+		log.Printf("[TRACK] Untracked review for %s", key)
+	}
 }
 
 // isTracked checks if a PR is currently being processed
@@ -404,25 +417,28 @@ func (p *Poller) isTracked(owner, repo string, number int) bool {
 
 // killReview cancels an active review's context (which propagates to the
 // agent subprocess via DefaultSpawner's ctx-watcher) and removes the entry
-// from tracking. Returns false if no review was tracked. The goroutine
-// detects the cancel via ctx.Err() in its current LLM call or claude
-// subprocess, exits, and skips the SetPRError write so a concurrent
+// from tracking, atomically. Returns false if no review was tracked. The
+// goroutine detects the cancel via ctx.Err() in its current LLM call or
+// claude subprocess, exits, and skips the SetPRError write so a concurrent
 // ResetPRToOutdated isn't clobbered.
 func (p *Poller) killReview(owner, repo string, number int) bool {
 	p.reviewsMutex.Lock()
 	key := prKey(owner, repo, number)
 	info, exists := p.activeReviews[key]
+	if exists {
+		// Cancel + delete inside the same critical section so no concurrent
+		// caller sees the entry as tracked-but-cancelled.
+		if info.Cancel != nil {
+			info.Cancel()
+		}
+		delete(p.activeReviews, key)
+	}
 	p.reviewsMutex.Unlock()
 
 	if !exists {
 		return false
 	}
-
-	log.Printf("[TRACK] Cancelling review for %s", key)
-	if info.Cancel != nil {
-		info.Cancel()
-	}
-	p.untrackReview(owner, repo, number)
+	log.Printf("[TRACK] Cancelled and untracked review for %s", key)
 	return true
 }
 

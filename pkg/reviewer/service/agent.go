@@ -226,7 +226,11 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 	// first one; the matching close is the last `]` in the trimmed string,
 	// since a valid review payload is a single array. (Per-character
 	// bracket-balance parsing isn't worth the complexity for our content.)
-	if start := strings.Index(trimmed, "["); start > 0 {
+	//
+	// Use start >= 0 not start > 0: when the model emits a clean array
+	// followed by a conversational suffix ("[...]\nLet me know!"), start
+	// is 0 and we still need to strip the suffix at end+1.
+	if start := strings.Index(trimmed, "["); start >= 0 {
 		if end := strings.LastIndex(trimmed, "]"); end > start {
 			trimmed = trimmed[start : end+1]
 		}
