@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -292,12 +293,16 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 		}
 		log.Printf("%s cache MISS — initial clone of %s -> %s (depth=200) START", logPrefix, sanitizedURL, cacheDir)
 		t0 := time.Now()
-		url := buildCloneURL(owner, repo, token)
-		cloneArgs := []string{"clone", "--depth", "200"}
+		// Auth via http.extraheader rather than embedding in the URL: the
+		// token stays out of .git/config (and so out of view of the agent's
+		// Read tool), and out of the persisted clone URL git echoes on
+		// failures. Argv exposure during the brief git invocation remains.
+		cloneArgs := authHeaderArgs(token)
+		cloneArgs = append(cloneArgs, "clone", "--depth", "200")
 		if defaultBranch != "" {
 			cloneArgs = append(cloneArgs, "--branch", defaultBranch)
 		}
-		cloneArgs = append(cloneArgs, url, cacheDir)
+		cloneArgs = append(cloneArgs, sanitizedURL, cacheDir)
 		if out, err := runGit(ctx, "", cloneArgs...); err != nil {
 			// Remove the partial directory so a future run won't see a half-clone
 			// as a cache hit and try to fetch into a corrupt repo. Diagnostics
@@ -320,7 +325,9 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	fetchSpec := fmt.Sprintf("+pull/%d/head:refs/agent-pr/%d", prNumber, prNumber)
 	log.Printf("%s git fetch origin %s (in cache) START", logPrefix, fetchSpec)
 	t1 := time.Now()
-	if out, err := runGit(ctx, cacheDir, "fetch", "--depth", "200", "origin", fetchSpec); err != nil {
+	fetchArgs := authHeaderArgs(token)
+	fetchArgs = append(fetchArgs, "fetch", "--depth", "200", "origin", fetchSpec)
+	if out, err := runGit(ctx, cacheDir, fetchArgs...); err != nil {
 		return noopCleanup, fmt.Errorf("git fetch pr (cache): %w (%s)", err, redactToken(out, token))
 	}
 	log.Printf("%s git fetch DONE in %s", logPrefix, time.Since(t1))
@@ -359,11 +366,23 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	return cleanup, nil
 }
 
-func buildCloneURL(owner, repo, token string) string {
-	if token != "" {
-		return fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", token, owner, repo)
+// authHeaderArgs returns the leading `git -c http.extraheader=...` flags
+// needed to authenticate to github.com using a GitHub installation token,
+// or an empty slice if token is empty (public repo). Using the header
+// instead of embedding the token in the clone URL keeps the token out of
+// .git/config (which the agent's Read tool could otherwise scrape) and
+// out of any URL git echoes back on errors.
+//
+// The token still appears briefly in argv during the git invocation, so
+// `ps aux` from a sibling process during that window would see it. For our
+// single-tenant Cloud Run container this is tolerable; the only sibling is
+// the claude subprocess which we spawn ourselves.
+func authHeaderArgs(token string) []string {
+	if token == "" {
+		return nil
 	}
-	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return []string{"-c", "http.extraheader=Authorization: Basic " + auth}
 }
 
 // redactToken replaces any literal occurrence of token in s with "***".
@@ -499,14 +518,27 @@ func (e *execProcess) Wait() error {
 
 // Kill sends SIGKILL to the entire process group so any subprocesses
 // (e.g. bash spawned by claude --tools Bash) go down with the parent.
+// Also closes stdout/stderr explicitly so any reader still blocked on
+// the pipes unblocks immediately — defense against a future caller that
+// returns from the parser without first draining stdout, which would
+// otherwise deadlock proc.Wait() waiting for the pipe to close.
 func (e *execProcess) Kill() error {
 	if e.cmd.Process == nil {
 		return nil
 	}
 	// Negative PID targets the process group. Setpgid was set in Spawn, so
 	// the group ID equals the leader's PID.
-	if err := syscall.Kill(-e.cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-		return err
+	killErr := syscall.Kill(-e.cmd.Process.Pid, syscall.SIGKILL)
+	if killErr == syscall.ESRCH {
+		killErr = nil
 	}
-	return nil
+	// Best-effort pipe close. Errors here are uninteresting (already-closed
+	// pipes are common when the kernel reaped the descriptors first).
+	if e.stdout != nil {
+		_ = e.stdout.Close()
+	}
+	if e.stderr != nil {
+		_ = e.stderr.Close()
+	}
+	return killErr
 }

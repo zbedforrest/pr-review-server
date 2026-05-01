@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"os"
@@ -196,13 +197,27 @@ func TestCloneForAgent_LocalBare(t *testing.T) {
 	}
 }
 
-// TestBuildCloneURL confirms token injection + public fallback.
-func TestBuildCloneURL(t *testing.T) {
-	if got := buildCloneURL("acme", "proj", ""); got != "https://github.com/acme/proj.git" {
-		t.Errorf("public: %q", got)
+// TestAuthHeaderArgs locks in that token-bearing args use http.extraheader
+// (so the token never lands in .git/config or in the persisted clone URL),
+// and that the public path returns no auth args at all.
+func TestAuthHeaderArgs(t *testing.T) {
+	if got := authHeaderArgs(""); got != nil {
+		t.Errorf("public token: expected nil, got %v", got)
 	}
-	if got := buildCloneURL("acme", "proj", "tok"); got != "https://x-access-token:tok@github.com/acme/proj.git" {
-		t.Errorf("auth: %q", got)
+	got := authHeaderArgs("tok")
+	if len(got) != 2 || got[0] != "-c" {
+		t.Fatalf("expected [-c <header>], got %v", got)
+	}
+	expected := "http.extraheader=Authorization: Basic " +
+		base64.StdEncoding.EncodeToString([]byte("x-access-token:tok"))
+	if got[1] != expected {
+		t.Errorf("header arg: got %q want %q", got[1], expected)
+	}
+	// Token should NOT appear unencoded in the args.
+	for _, a := range got {
+		if strings.Contains(a, "tok@github") {
+			t.Errorf("plain token leaked into argv: %q", a)
+		}
 	}
 }
 
