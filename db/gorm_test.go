@@ -128,6 +128,82 @@ func TestGormDB_UpsertPR_UpdatesPollerWrittenColumns(t *testing.T) {
 	assert.Equal(t, `["build","test"]`, fetched.CIFailedChecks, "ci_failed_checks must be updated on conflict")
 }
 
+// Regression: when a PR is in-flight (status=generating or agent_reviewing),
+// a stale poll-cycle UpsertPR with the previous SHA must NOT overwrite the
+// freshly-set last_commit_sha. Without the CASE expression in upsertOnConflict
+// this drift would cause checkForOutdatedReviews to see a phantom mismatch
+// and kill the legitimate in-flight review.
+func TestGormDB_UpsertPR_PreservesSHAWhileInFlight(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	cases := []string{"generating", "agent_reviewing"}
+	for _, status := range cases {
+		t.Run(status, func(t *testing.T) {
+			// Manual trigger has just bumped the row to commit B.
+			err := db.UpsertPR(&PR{
+				RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+				LastCommitSHA: "newSHA_B", Status: "pending",
+			})
+			require.NoError(t, err)
+			err = db.SetPRGenerating("owner", "repo", 1, "newSHA_B", "T", "A", nil, false)
+			require.NoError(t, err)
+			if status == "agent_reviewing" {
+				require.NoError(t, db.SetPRAgentReviewing("owner", "repo", 1))
+			}
+
+			// Stale poll cycle's BatchUpsertPRs writes the old SHA.
+			err = db.BatchUpsertPRs([]*PR{{
+				RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+				LastCommitSHA: "staleSHA_A",
+				Title:         "fresh title from poll",
+			}})
+			require.NoError(t, err)
+
+			fetched, err := db.GetPR("owner", "repo", 1)
+			require.NoError(t, err)
+			assert.Equal(t, "newSHA_B", fetched.LastCommitSHA,
+				"in-flight last_commit_sha must not be clobbered by stale poll")
+			assert.Equal(t, "fresh title from poll", fetched.Title,
+				"non-SHA metadata fields should still update")
+			assert.Equal(t, status, fetched.Status, "status must be unchanged")
+
+			require.NoError(t, db.DeletePR("owner", "repo", 1))
+		})
+	}
+}
+
+// Companion: when the row is NOT in-flight, the upsert SHOULD update
+// last_commit_sha so the poll cycle continues to track new commits on
+// completed/pending rows.
+func TestGormDB_UpsertPR_UpdatesSHAWhenNotInFlight(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	for _, status := range []string{"completed", "pending", "error"} {
+		t.Run(status, func(t *testing.T) {
+			require.NoError(t, db.UpsertPR(&PR{
+				RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+				LastCommitSHA: "oldSHA", Status: status,
+			}))
+			// Force the status (UpsertPR doesn't touch status on conflict).
+			require.NoError(t, db.UpdatePRStatus("owner", "repo", 1, status))
+
+			require.NoError(t, db.UpsertPR(&PR{
+				RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+				LastCommitSHA: "freshSHA",
+			}))
+
+			fetched, err := db.GetPR("owner", "repo", 1)
+			require.NoError(t, err)
+			assert.Equal(t, "freshSHA", fetched.LastCommitSHA,
+				"last_commit_sha should track the latest poll for non-in-flight rows")
+
+			require.NoError(t, db.DeletePR("owner", "repo", 1))
+		})
+	}
+}
+
 // Regression: UpsertPR must NOT touch status / review_path / importance counts
 // on conflict — those are owned by the dedicated setters and a stale read in
 // the poll cycle could otherwise clobber a fresh review's terminal state.

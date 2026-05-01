@@ -102,17 +102,21 @@ func (g *GormDB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	return prModelToPR(&model), nil
 }
 
-// upsertMetadataColumns is the set of columns UpsertPR / BatchUpsertPRs are
-// allowed to touch on conflict. Excludes status / review_path / importance
-// counts so a stale read from the polling cycle can't clobber a fresh write
-// from the orchestration goroutine — those have dedicated setters
-// (SetPRGenerating, SetPRAgentReviewing, SetPRError, MarkPRCompleted).
+// upsertMetadataColumns is the set of columns UpsertPR / BatchUpsertPRs
+// unconditionally update on conflict. Excludes status / review_path /
+// importance counts so a stale read from the polling cycle can't clobber
+// a fresh write from the orchestration goroutine — those have dedicated
+// setters (SetPRGenerating, SetPRAgentReviewing, SetPRError, MarkPRCompleted).
+//
+// last_commit_sha is also excluded here and handled separately below: the
+// poll cycle legitimately needs to update it for non-in-flight rows, but
+// must NOT clobber a freshly-triggered review's SHA. See the CASE expression
+// in upsertOnConflict.
 //
 // approval_count, my_review_status, ci_state, ci_failed_checks ARE included:
 // the poller's reviewPRBatch / ciPRBatch flushes in poller.go are the only
 // writers for those columns, so the stale-clobber concern doesn't apply.
 var upsertMetadataColumns = []string{
-	"last_commit_sha",
 	"title",
 	"author",
 	"draft",
@@ -124,20 +128,45 @@ var upsertMetadataColumns = []string{
 	"ci_failed_checks",
 }
 
+// upsertOnConflict returns the OnConflict clause used by UpsertPR /
+// BatchUpsertPRs. last_commit_sha is updated only for rows whose status is
+// NOT in-flight (generating / agent_reviewing); for in-flight rows the
+// existing value is preserved. This prevents poll phase 2 from overwriting
+// a SHA that a manual SetPRGenerating call has just written, which would
+// then make checkForOutdatedReviews see a phantom "outdated" review and
+// kill the in-flight goroutine.
+//
+// Both Postgres and SQLite support the `excluded.<column>` reference inside
+// `ON CONFLICT DO UPDATE`, so this is portable across our prod and dev
+// dialects. The IN clause uses literal strings rather than placeholders
+// because GORM doesn't bind into clause.Expr arguments cleanly here.
+func upsertOnConflict() clause.OnConflict {
+	assignments := map[string]interface{}{
+		"last_commit_sha": gorm.Expr(
+			"CASE WHEN prs.status IN ('generating','agent_reviewing') " +
+				"THEN prs.last_commit_sha ELSE excluded.last_commit_sha END",
+		),
+	}
+	for _, col := range upsertMetadataColumns {
+		assignments[col] = gorm.Expr("excluded." + col)
+	}
+	return clause.OnConflict{
+		Columns:   []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
+		DoUpdates: clause.Assignments(assignments),
+	}
+}
+
 // UpsertPR inserts or updates a PR's metadata. Status / review_path /
 // importance counts are NOT touched on conflict — use the dedicated setters
 // (SetPRGenerating, SetPRAgentReviewing, SetPRError, MarkPRCompleted) to
-// transition those fields safely.
+// transition those fields safely. last_commit_sha is preserved on in-flight
+// rows; see upsertOnConflict.
 func (g *GormDB) UpsertPR(pr *PR) error {
 	model := prToPRModel(pr)
-
-	return g.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
-		DoUpdates: clause.AssignmentColumns(upsertMetadataColumns),
-	}).Create(model).Error
+	return g.db.Clauses(upsertOnConflict()).Create(model).Error
 }
 
-// BatchUpsertPRs is the batch equivalent of UpsertPR. Same narrow column set.
+// BatchUpsertPRs is the batch equivalent of UpsertPR. Same conflict semantics.
 func (g *GormDB) BatchUpsertPRs(prs []*PR) error {
 	if len(prs) == 0 {
 		return nil
@@ -148,10 +177,7 @@ func (g *GormDB) BatchUpsertPRs(prs []*PR) error {
 		models[i] = *prToPRModel(p)
 	}
 
-	return g.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
-		DoUpdates: clause.AssignmentColumns(upsertMetadataColumns),
-	}).CreateInBatches(&models, 500).Error
+	return g.db.Clauses(upsertOnConflict()).CreateInBatches(&models, 500).Error
 }
 
 // MarkPRCompleted atomically transitions a PR to "completed" and records the
