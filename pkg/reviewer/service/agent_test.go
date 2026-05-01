@@ -240,5 +240,33 @@ func TestRedactToken(t *testing.T) {
 	}
 }
 
+// TestParseAgentJSON covers the agent-output-shape defenses: code-fences,
+// conversational prefix/suffix, and clean JSON.
+func TestParseAgentJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want int // expected comment count
+	}{
+		{"clean array", `[{"file_path":"a.go","line_number":1,"comment_body":"x"}]`, 1},
+		{"json fence", "```json\n[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n```", 1},
+		{"plain fence", "```\n[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n```", 1},
+		{"conversational prefix", "Here is the review:\n\n[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]", 1},
+		{"prefix and suffix", "Sure, here you go:\n[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n\nLet me know!", 1},
+		{"empty array", `[]`, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseAgentJSON(c.in)
+			if err != nil {
+				t.Fatalf("parseAgentJSON: %v (input=%q)", err, c.in)
+			}
+			if len(got) != c.want {
+				t.Errorf("got %d comments, want %d", len(got), c.want)
+			}
+		})
+	}
+}
+
 // Keep errors import alive.
 var _ = errors.New

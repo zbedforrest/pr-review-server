@@ -549,6 +549,18 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Short-circuit if a review is already in flight for this PR. Without
+	// this guard, a double-click (or two users clicking concurrently) would
+	// spawn parallel agent runs for the same PR — each cloning the repo and
+	// burning Opus tokens. The check is racy with the goroutine that calls
+	// ProcessReviewImmediate below, but the dedup is good enough for human
+	// click cadence; trackReview is the canonical synchronous source of truth.
+	if s.poller != nil && s.poller.IsReviewTracked(req.Owner, req.Repo, req.Number) {
+		log.Printf("[API] trigger-review: PR %s/%s#%d already in flight, returning 409", req.Owner, req.Repo, req.Number)
+		http.Error(w, "Review already in progress for this PR", http.StatusConflict)
+		return
+	}
+
 	// Fetch the latest commit SHA from GitHub so the review is always against the current HEAD
 	latestSHA, err := s.ghClient.GetPRHeadSHA(r.Context(), req.Owner, req.Repo, req.Number)
 	if err != nil {

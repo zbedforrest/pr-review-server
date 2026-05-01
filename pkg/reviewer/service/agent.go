@@ -206,14 +206,32 @@ func RunAgentReview(
 	}, nil
 }
 
-// parseAgentJSON extracts a []LineComment from the agent's final output,
-// stripping any ```json fences the model may have added despite instructions.
+// parseAgentJSON extracts a []LineComment from the agent's final output.
+// Defensive against three failure modes we've observed in agent transcripts:
+//   - ```json or plain ``` code fences wrapping the array
+//   - conversational prefix ("Here is the review:\n[...]")
+//   - conversational suffix after the array
+//
+// Strategy: locate the outermost top-level JSON array bracket pair and
+// parse only that span. If the model emits something that doesn't contain
+// a valid array span, return the unmarshal error from the trimmed slice
+// so the caller's diagnostic still points at the malformed content.
 func parseAgentJSON(raw string) ([]types.LineComment, error) {
 	trimmed := strings.TrimSpace(raw)
 	trimmed = strings.TrimPrefix(trimmed, "```json")
 	trimmed = strings.TrimPrefix(trimmed, "```")
 	trimmed = strings.TrimSuffix(trimmed, "```")
 	trimmed = strings.TrimSpace(trimmed)
+
+	// If there's a top-level array, slice to it. The opening `[` is the
+	// first one; the matching close is the last `]` in the trimmed string,
+	// since a valid review payload is a single array. (Per-character
+	// bracket-balance parsing isn't worth the complexity for our content.)
+	if start := strings.Index(trimmed, "["); start > 0 {
+		if end := strings.LastIndex(trimmed, "]"); end > start {
+			trimmed = trimmed[start : end+1]
+		}
+	}
 
 	var comments []types.LineComment
 	if err := json.Unmarshal([]byte(trimmed), &comments); err != nil {
@@ -298,7 +316,9 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 		// Read tool), and out of the persisted clone URL git echoes on
 		// failures. Argv exposure during the brief git invocation remains.
 		cloneArgs := authHeaderArgs(token)
-		cloneArgs = append(cloneArgs, "clone", "--depth", "200")
+		// --quiet suppresses progress/banner output that CombinedOutput()
+		// would otherwise buffer in memory for the duration of the clone.
+		cloneArgs = append(cloneArgs, "clone", "--quiet", "--depth", "200")
 		if defaultBranch != "" {
 			cloneArgs = append(cloneArgs, "--branch", defaultBranch)
 		}
@@ -326,7 +346,7 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	log.Printf("%s git fetch origin %s (in cache) START", logPrefix, fetchSpec)
 	t1 := time.Now()
 	fetchArgs := authHeaderArgs(token)
-	fetchArgs = append(fetchArgs, "fetch", "--depth", "200", "origin", fetchSpec)
+	fetchArgs = append(fetchArgs, "fetch", "--quiet", "--depth", "200", "origin", fetchSpec)
 	if out, err := runGit(ctx, cacheDir, fetchArgs...); err != nil {
 		return noopCleanup, fmt.Errorf("git fetch pr (cache): %w (%s)", err, redactToken(out, token))
 	}
