@@ -92,6 +92,76 @@ func TestGormDB_UpsertPR_Update(t *testing.T) {
 	assert.Equal(t, "Updated Title", fetched.Title)
 }
 
+// Regression: UpsertPR's OnConflict whitelist (upsertMetadataColumns) must
+// include the columns the poller's reviewPRBatch / ciPRBatch flushes write
+// to — approval_count, my_review_status, ci_state, ci_failed_checks. If any
+// of these get dropped from the whitelist, those updates silently no-op on
+// existing rows (the mock DB used in poller_test does a full struct
+// overwrite and won't catch this).
+func TestGormDB_UpsertPR_UpdatesPollerWrittenColumns(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	// Insert initial PR with zero values for the columns the poller writes.
+	err := db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "pending",
+	})
+	require.NoError(t, err)
+
+	// Simulate the poller flushing review/CI updates onto the existing row.
+	err = db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123",
+		ApprovalCount:  2,
+		MyReviewStatus: "APPROVED",
+		CIState:        "failure",
+		CIFailedChecks: `["build","test"]`,
+	})
+	require.NoError(t, err)
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Equal(t, 2, fetched.ApprovalCount, "approval_count must be updated on conflict")
+	assert.Equal(t, "APPROVED", fetched.MyReviewStatus, "my_review_status must be updated on conflict")
+	assert.Equal(t, "failure", fetched.CIState, "ci_state must be updated on conflict")
+	assert.Equal(t, `["build","test"]`, fetched.CIFailedChecks, "ci_failed_checks must be updated on conflict")
+}
+
+// Regression: UpsertPR must NOT touch status / review_path / importance counts
+// on conflict — those are owned by the dedicated setters and a stale read in
+// the poll cycle could otherwise clobber a fresh review's terminal state.
+func TestGormDB_UpsertPR_DoesNotClobberReviewState(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	// Initial pending row.
+	err := db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "pending",
+	})
+	require.NoError(t, err)
+
+	// Mark it completed via the dedicated setter.
+	err = db.MarkPRCompleted("owner", "repo", 1, "abc123", "review.html", 1, 2, 3)
+	require.NoError(t, err)
+
+	// The poller does a metadata refresh with a stale read still showing pending.
+	err = db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "pending", // stale
+		Title: "Updated Title",
+	})
+	require.NoError(t, err)
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", fetched.Status, "status must not be clobbered by a stale poller upsert")
+	assert.Equal(t, "review.html", fetched.ReviewHTMLPath, "review_path must not be cleared")
+	assert.Equal(t, 1, fetched.CriticalCount, "critical_count must not be reset")
+	assert.Equal(t, "Updated Title", fetched.Title, "title (whitelisted) should still update")
+}
+
 func TestGormDB_UpdatePRStatus(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()

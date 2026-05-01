@@ -103,11 +103,14 @@ func (g *GormDB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 }
 
 // upsertMetadataColumns is the set of columns UpsertPR / BatchUpsertPRs are
-// allowed to touch on conflict. Intentionally narrow: these are the fields
-// the polling refresh actually wants to keep current. Status, review_path,
-// importance counts, approval_count, my_review_status, and ci_* are managed
-// by their own dedicated update paths so a stale read in processPRBatch
-// can't clobber a fresh write from the orchestration goroutine.
+// allowed to touch on conflict. Excludes status / review_path / importance
+// counts so a stale read from the polling cycle can't clobber a fresh write
+// from the orchestration goroutine — those have dedicated setters
+// (SetPRGenerating, SetPRAgentReviewing, SetPRError, MarkPRCompleted).
+//
+// approval_count, my_review_status, ci_state, ci_failed_checks ARE included:
+// the poller's reviewPRBatch / ciPRBatch flushes in poller.go are the only
+// writers for those columns, so the stale-clobber concern doesn't apply.
 var upsertMetadataColumns = []string{
 	"last_commit_sha",
 	"title",
@@ -115,6 +118,10 @@ var upsertMetadataColumns = []string{
 	"draft",
 	"created_at",
 	"github_updated_at",
+	"approval_count",
+	"my_review_status",
+	"ci_state",
+	"ci_failed_checks",
 }
 
 // UpsertPR inserts or updates a PR's metadata. Status / review_path /

@@ -95,9 +95,21 @@ func (g *GormDB) AutoMigrate() error {
 // ensureIdempotentColumns applies `ADD COLUMN IF NOT EXISTS` for columns that
 // were added after the initial schema. Runs even when SKIP_DB_MIGRATIONS=true
 // because these are trivial and safe to re-execute on every boot.
+//
+// Postgres-only: SQLite (used by the dev/test path) doesn't support
+// `ADD COLUMN IF NOT EXISTS` and doesn't have the `timestamptz` type. SQLite
+// goes through full AutoMigrate when migrations are enabled, so this no-op
+// is the correct behavior.
 func (g *GormDB) ensureIdempotentColumns() error {
-	g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS github_updated_at timestamptz")
-	g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS error_message text")
+	if g.db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS github_updated_at timestamptz").Error; err != nil {
+		return fmt.Errorf("add github_updated_at: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS error_message text").Error; err != nil {
+		return fmt.Errorf("add error_message: %w", err)
+	}
 	return nil
 }
 
