@@ -94,13 +94,22 @@ func RunAgentReview(
 	defer cancel()
 
 	cloneStart := time.Now()
-	if err := cloneForAgent(runCtx, agentCfg.CloneRootDir, cloneDir, owner, repo, defaultBranch, prNumber, commitSHA, agentCfg.GitHubToken); err != nil {
+	cleanupClone, err := cloneForAgent(runCtx, agentCfg.CloneRootDir, cloneDir, owner, repo, defaultBranch, prNumber, commitSHA, agentCfg.GitHubToken)
+	if err != nil {
 		log.Printf("%s clone FAILED after %s: %v", logPrefix, time.Since(cloneStart), err)
 		if runCtx.Err() == context.DeadlineExceeded {
 			return nil, fmt.Errorf("agent: wall-clock timeout (%s) during clone", agentCfg.WallClock)
 		}
 		return nil, fmt.Errorf("agent: clone: %w", err)
 	}
+	// Remove the per-run worktree once we're done with it. On Cloud Run the
+	// clones live on /tmp (= memory), so leaking ~350MB per chaturbate review
+	// would OOM the instance after a handful of runs.
+	defer func() {
+		if cerr := cleanupClone(); cerr != nil {
+			log.Printf("%s WARN: worktree cleanup failed: %v", logPrefix, cerr)
+		}
+	}()
 	log.Printf("%s clone ok (%s) at %s", logPrefix, time.Since(cloneStart), cloneDir)
 
 	prompt, err := buildAgentPromptContent(geminiComments)
@@ -240,22 +249,29 @@ func cacheLock(key string) *sync.Mutex {
 //     share the cache's object store, so this step is near-instant even on
 //     monorepos.
 //
+// On success returns a cleanup function the caller MUST defer to remove the
+// worktree (both the on-disk files and git's worktree registration). On
+// failure cleanup is a no-op (the partial state is already cleaned by the
+// failure path) and the returned error wraps git's output.
+//
 // The cache step holds a per-repo mutex so concurrent reviews of the same
 // repo serialize their fetches; reviews of *different* repos run in parallel.
 //
 // Each step logs a START / DONE pair with a duration so it's obvious where
 // any future slowness lives.
-func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBranch string, prNumber int, commitSHA, token string) error {
+func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBranch string, prNumber int, commitSHA, token string) (cleanup func() error, err error) {
+	noopCleanup := func() error { return nil }
+
 	// Absolute paths everywhere — git's `worktree add <relative-path>` resolves
 	// the path against the cmd's cwd, which would land worktrees inside the
 	// cache dir. Make the cwd-binding moot.
 	absCloneRoot, err := filepath.Abs(cloneRoot)
 	if err != nil {
-		return fmt.Errorf("abs cloneRoot: %w", err)
+		return noopCleanup, fmt.Errorf("abs cloneRoot: %w", err)
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
-		return fmt.Errorf("abs worktree dir: %w", err)
+		return noopCleanup, fmt.Errorf("abs worktree dir: %w", err)
 	}
 
 	cacheKey := fmt.Sprintf("%s/%s", owner, repo)
@@ -271,7 +287,7 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	cacheGitDir := filepath.Join(cacheDir, ".git")
 	if _, err := os.Stat(cacheGitDir); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
-			return fmt.Errorf("create cache parent: %w", err)
+			return noopCleanup, fmt.Errorf("create cache parent: %w", err)
 		}
 		log.Printf("%s cache MISS — initial clone of %s -> %s (depth=200) START", logPrefix, sanitizedURL, cacheDir)
 		t0 := time.Now()
@@ -288,11 +304,11 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 			if rmErr := os.RemoveAll(cacheDir); rmErr != nil {
 				log.Printf("%s WARN: failed to clean partial cache dir %s: %v", logPrefix, cacheDir, rmErr)
 			}
-			return fmt.Errorf("git clone (cache init): %w (%s)", err, redactToken(out, token))
+			return noopCleanup, fmt.Errorf("git clone (cache init): %w (%s)", err, redactToken(out, token))
 		}
 		log.Printf("%s cache initial clone DONE in %s", logPrefix, time.Since(t0))
 	} else if err != nil {
-		return fmt.Errorf("stat cache .git: %w", err)
+		return noopCleanup, fmt.Errorf("stat cache .git: %w", err)
 	} else {
 		log.Printf("%s cache HIT at %s", logPrefix, cacheDir)
 	}
@@ -304,7 +320,7 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	log.Printf("%s git fetch origin %s (in cache) START", logPrefix, fetchSpec)
 	t1 := time.Now()
 	if out, err := runGit(ctx, cacheDir, "fetch", "--depth", "200", "origin", fetchSpec); err != nil {
-		return fmt.Errorf("git fetch pr (cache): %w (%s)", err, redactToken(out, token))
+		return noopCleanup, fmt.Errorf("git fetch pr (cache): %w (%s)", err, redactToken(out, token))
 	}
 	log.Printf("%s git fetch DONE in %s", logPrefix, time.Since(t1))
 
@@ -315,10 +331,31 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	log.Printf("%s git worktree add %s @ %s START", logPrefix, absDir, commitSHA)
 	t2 := time.Now()
 	if out, err := runGit(ctx, cacheDir, "worktree", "add", "--detach", absDir, commitSHA); err != nil {
-		return fmt.Errorf("git worktree add: %w (%s)", err, out)
+		return noopCleanup, fmt.Errorf("git worktree add: %w (%s)", err, out)
 	}
 	log.Printf("%s git worktree add DONE in %s", logPrefix, time.Since(t2))
-	return nil
+
+	// Cleanup: remove the worktree (files + git's worktree registration).
+	// `worktree remove --force` handles both atomically; we use a fresh
+	// background context because the run's ctx may already be expired by
+	// the time the deferred cleanup runs.
+	cleanup = func() error {
+		log.Printf("%s git worktree remove %s START", logPrefix, absDir)
+		t := time.Now()
+		mu := cacheLock(cacheKey)
+		mu.Lock()
+		defer mu.Unlock()
+		if out, err := runGit(context.Background(), cacheDir, "worktree", "remove", "--force", absDir); err != nil {
+			// Fallback: nuke the dir directly + prune so the cache's worktree
+			// list doesn't accumulate dead entries.
+			_ = os.RemoveAll(absDir)
+			_, _ = runGit(context.Background(), cacheDir, "worktree", "prune")
+			return fmt.Errorf("git worktree remove: %w (%s)", err, out)
+		}
+		log.Printf("%s git worktree remove DONE in %s", logPrefix, time.Since(t))
+		return nil
+	}
+	return cleanup, nil
 }
 
 func buildCloneURL(owner, repo, token string) string {
