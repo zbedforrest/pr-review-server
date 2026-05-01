@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"pr-review-server/pkg/reviewer/types"
@@ -437,14 +438,23 @@ func truncate(s string, max int) string {
 	return s[:max] + "…(truncated)"
 }
 
-// DefaultSpawner wraps exec.CommandContext for production use.
+// DefaultSpawner wraps exec.CommandContext for production use. The spawned
+// process is placed in its own process group so any subprocesses it forks
+// (e.g. bash via `claude --tools Bash`) can be killed as a group rather
+// than orphaned when the parent exits.
 type DefaultSpawner struct{}
 
 func (DefaultSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	// Use Command (not CommandContext) so we control the kill behavior
+	// ourselves — CommandContext's auto-kill only signals the direct child,
+	// leaving any process-group children orphaned. We watch ctx.Done in a
+	// goroutine and group-kill instead.
+	cmd := exec.Command(name, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -456,21 +466,47 @@ func (DefaultSpawner) Spawn(ctx context.Context, name string, args []string, dir
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &execProcess{cmd: cmd, stdout: stdout, stderr: stderr}, nil
+
+	p := &execProcess{cmd: cmd, stdout: stdout, stderr: stderr, done: make(chan struct{})}
+
+	// When ctx expires (wall-clock timeout, parent cancelled), group-kill
+	// so child shells go down with claude. Idempotent with explicit Kill().
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = p.Kill()
+		case <-p.done:
+		}
+	}()
+	return p, nil
 }
 
 type execProcess struct {
 	cmd    *exec.Cmd
 	stdout io.ReadCloser
 	stderr io.ReadCloser
+	done   chan struct{} // closed by Wait() so the ctx-watcher goroutine exits
+	once   sync.Once
 }
 
 func (e *execProcess) Stdout() io.Reader { return e.stdout }
 func (e *execProcess) Stderr() io.Reader { return e.stderr }
-func (e *execProcess) Wait() error       { return e.cmd.Wait() }
+func (e *execProcess) Wait() error {
+	err := e.cmd.Wait()
+	e.once.Do(func() { close(e.done) })
+	return err
+}
+
+// Kill sends SIGKILL to the entire process group so any subprocesses
+// (e.g. bash spawned by claude --tools Bash) go down with the parent.
 func (e *execProcess) Kill() error {
 	if e.cmd.Process == nil {
 		return nil
 	}
-	return e.cmd.Process.Kill()
+	// Negative PID targets the process group. Setpgid was set in Spawn, so
+	// the group ID equals the leader's PID.
+	if err := syscall.Kill(-e.cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+		return err
+	}
+	return nil
 }
