@@ -1130,7 +1130,7 @@ func TestCheckForOutdatedReviews_GeneratingWithNewCommit_KillsProcess(t *testing
 	// Simulate an active review process (but don't actually create a real process)
 	// The killReview function will try to find and kill the process, but that's OK
 	// for testing - we just want to verify the logic flow
-	poller.trackReview("owner", "repo", 1, 99999) // Fake PID
+	poller.trackReview(context.Background(), "owner", "repo", 1, 99999) // Fake PID
 
 	ctx := context.Background()
 	outdated, err := poller.checkForOutdatedReviews(ctx)
@@ -3235,7 +3235,7 @@ func TestProcessReviewImmediate_PollCycleSkipsTrackedPR(t *testing.T) {
 
 	// Simulate: ProcessReviewImmediate has already tracked this PR
 	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
-	poller.trackReview("owner", "repo", 1, 0)
+	poller.trackReview(context.Background(), "owner", "repo", 1, 0)
 
 	// PR is in "generating" status (set by the trigger handler)
 	mockDB.PRs["owner/repo/1"] = &db.PR{
@@ -3296,7 +3296,7 @@ func TestStaleReset_DoesNotResetTrackedReviews(t *testing.T) {
 
 	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
 	// Simulate: this PR is being processed by ProcessReviewImmediate
-	poller.trackReview("owner", "repo", 1, 0)
+	poller.trackReview(context.Background(), "owner", "repo", 1, 0)
 
 	// Run the stale reset (mimicking what poll Phase 1 does)
 	resetCount, err := mockDB.ResetStaleGeneratingPRs(5)

@@ -46,6 +46,11 @@ const (
 type ProcessInfo struct {
 	PID       int
 	StartTime time.Time
+	// Ctx is the per-review cancellable context. The goroutine MUST use this
+	// for all downstream work (LLM calls, agent subprocess) so killReview
+	// can abort it mid-flight by calling Cancel.
+	Ctx    context.Context
+	Cancel context.CancelFunc
 }
 
 type Poller struct {
@@ -350,16 +355,33 @@ func prKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
 }
 
-// trackReview adds a PR's review to the active reviews map
-func (p *Poller) trackReview(owner, repo string, number, pid int) {
+// trackReview adds a PR's review to the active reviews map and returns a
+// per-review cancellable context derived from parent. Callers MUST use the
+// returned context for the rest of the review work; killReview cancels it
+// to abort the in-flight goroutine.
+//
+// If an entry already exists for this PR (e.g. ProcessReviewImmediate's
+// outer trackReview followed by generateReviewsBatch's inner trackReview),
+// returns the existing context unchanged so the running goroutine isn't
+// disrupted. The caller's parent ctx is therefore ignored in that case —
+// the outer caller is the canonical owner of the lifecycle.
+func (p *Poller) trackReview(parent context.Context, owner, repo string, number, pid int) context.Context {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
 	key := prKey(owner, repo, number)
+	if existing, ok := p.activeReviews[key]; ok && existing.Ctx != nil {
+		log.Printf("[TRACK] Re-tracking %s (re-using existing ctx)", key)
+		return existing.Ctx
+	}
+	ctx, cancel := context.WithCancel(parent)
 	p.activeReviews[key] = ProcessInfo{
 		PID:       pid,
 		StartTime: time.Now(),
+		Ctx:       ctx,
+		Cancel:    cancel,
 	}
 	log.Printf("[TRACK] Tracking review for %s", key)
+	return ctx
 }
 
 // untrackReview removes a PR's review process from the active reviews map
@@ -380,20 +402,26 @@ func (p *Poller) isTracked(owner, repo string, number int) bool {
 	return exists
 }
 
-// killReview removes an active review from tracking
-// Note: Since reviews run as in-process goroutines, we cannot actually stop them.
-// This only removes the review from tracking; the goroutine will complete on its own.
+// killReview cancels an active review's context (which propagates to the
+// agent subprocess via DefaultSpawner's ctx-watcher) and removes the entry
+// from tracking. Returns false if no review was tracked. The goroutine
+// detects the cancel via ctx.Err() in its current LLM call or claude
+// subprocess, exits, and skips the SetPRError write so a concurrent
+// ResetPRToOutdated isn't clobbered.
 func (p *Poller) killReview(owner, repo string, number int) bool {
 	p.reviewsMutex.Lock()
 	key := prKey(owner, repo, number)
-	_, exists := p.activeReviews[key]
+	info, exists := p.activeReviews[key]
 	p.reviewsMutex.Unlock()
 
 	if !exists {
 		return false
 	}
 
-	log.Printf("[TRACK] Removing review for %s from tracking (goroutine will complete on its own)", key)
+	log.Printf("[TRACK] Cancelling review for %s", key)
+	if info.Cancel != nil {
+		info.Cancel()
+	}
 	p.untrackReview(owner, repo, number)
 	return true
 }
@@ -408,8 +436,9 @@ func (p *Poller) killReview(owner, repo string, number int) bool {
 // previous review for the same commit).
 func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool) {
 	// Track synchronously BEFORE spawning goroutine so that any concurrent
-	// poll cycle will see this PR as tracked and skip it.
-	p.trackReview(owner, repo, number, 0)
+	// poll cycle will see this PR as tracked and skip it. The returned ctx
+	// is what killReview cancels — we MUST use it for the actual work.
+	reviewCtx := p.trackReview(ctx, owner, repo, number, 0)
 
 	go func() {
 		pr := github.PullRequest{
@@ -424,15 +453,21 @@ func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string,
 		}
 		// Run the single-PR review through generateReviewsBatch (reuses all
 		// existing logic: existence check, LLM call, save, DB update, untrack).
-		// Note: generateReviewsBatch calls trackReview again internally, but
-		// since it's the same key the map entry is simply overwritten (harmless).
-		if err := p.generateReviewsBatch(ctx, []github.PullRequest{pr}, force); err != nil {
+		// generateReviewsBatch calls trackReview again internally; the second
+		// call sees the existing entry and returns the same ctx so we don't
+		// disrupt this run.
+		if err := p.generateReviewsBatch(reviewCtx, []github.PullRequest{pr}, force); err != nil {
 			log.Printf("[IMMEDIATE] ERROR: Immediate review failed for %s/%s#%d: %v", owner, repo, number, err)
 			// generateReviewsBatch handles per-PR error/untrack internally,
 			// but if the batch-level error fires (e.g. API key validation),
-			// we need to clean up.
+			// we need to clean up. Skip the error write if we were cancelled —
+			// killReview's caller (outdated detection) has already reset the row.
 			if p.isTracked(owner, repo, number) {
-				_ = p.UpdatePRStatus(owner, repo, number, "error")
+				if reviewCtx.Err() == nil {
+					if setErr := p.db.SetPRError(owner, repo, number, err.Error()); setErr != nil {
+						log.Printf("[IMMEDIATE] WARNING: failed to persist error status: %v", setErr)
+					}
+				}
 				p.untrackReview(owner, repo, number)
 			}
 		}
@@ -1752,8 +1787,11 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			}
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 
-			// Track this review (using dummy PID since we're running in-process)
-			p.trackReview(pr.Owner, pr.Repo, pr.Number, 0)
+			// Track this review (using dummy PID since we're running in-process).
+			// The returned ctx is what killReview cancels — use it for the rest
+			// of the review work so cancellation actually aborts the LLM call /
+			// agent subprocess rather than only flipping the tracking map.
+			prCtx := p.trackReview(ctx, pr.Owner, pr.Repo, pr.Number, 0)
 
 			execStart := time.Now()
 
@@ -1775,7 +1813,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 					Fast:         false,
 					NRequests:    nRequests,
 				}
-				reviewResult, err = p.reviewGenerator.GenerateReview(ctx, genCfg)
+				reviewResult, err = p.reviewGenerator.GenerateReview(prCtx, genCfg)
 			} else {
 				// Use real reviewer service
 				reviewCfg := service.PerformReviewConfig{
@@ -1789,11 +1827,11 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 					NRequests:    nRequests,
 				}
 
-				result, svcErr := reviewSvc.PerformReview(reviewCfg)
+				result, svcErr := reviewSvc.PerformReviewWithContext(prCtx, reviewCfg)
 				if svcErr != nil {
 					err = svcErr
 				} else if p.cfg.AgenticReviews {
-					reviewResult, err = p.runAgentStage(ctx, pr, result)
+					reviewResult, err = p.runAgentStage(prCtx, pr, result)
 				} else {
 					// Legacy HTML report path.
 					htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModel)
@@ -1813,6 +1851,16 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 
 			if err != nil {
 				log.Printf("[REVIEWER] ERROR: Review failed for PR %d after %v: %v", pr.Number, execDuration, err)
+
+				// Skip the error write if the review was cancelled (killReview
+				// fired because of a new commit or external trigger). The caller
+				// has already reset the row to a sane state and we'd just clobber
+				// it with status=error.
+				if prCtx.Err() != nil {
+					log.Printf("[REVIEWER] PR %d review was cancelled (ctx=%v); skipping error write", pr.Number, prCtx.Err())
+					p.untrackReview(pr.Owner, pr.Repo, pr.Number)
+					return
+				}
 
 				// Check if outdated
 				currentPR, dbErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
