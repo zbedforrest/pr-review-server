@@ -1223,6 +1223,43 @@ func TestGormDB_EnsureUserPRView_PreservesViaTeams(t *testing.T) {
 // Edge Cases and Integration Tests
 // =============================================================================
 
+// Regression: BatchUpsertUserPRViews must drop items whose pr_id has been
+// deleted between the poller's dbPRMap snapshot and the views flush. Without
+// the pre-filter, the FK violation aborts the entire batch, losing all
+// in-flight writes. With the pre-filter, only the orphaned items are
+// dropped; the rest succeed and the warning lands in the log.
+func TestGormDB_BatchUpsertUserPRViews_DropsOrphans(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "u"}
+	require.NoError(t, db.CreateUser(user))
+
+	// Two PRs exist; we'll delete one to simulate the race.
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "o", RepoName: "r", PRNumber: 1, Status: "completed"}))
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "o", RepoName: "r", PRNumber: 2, Status: "completed"}))
+	pr1, _ := db.GetPR("o", "r", 1)
+	pr2, _ := db.GetPR("o", "r", 2)
+	deletedID := pr2.ID + 9999 // an id that will never exist
+
+	require.NoError(t, db.DeletePR("o", "r", 2))
+
+	// Mix three items: one valid, one for a never-existed PR, one for a
+	// just-deleted PR. Only the valid one should be written.
+	err := db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr1.ID, IsAuthor: true},
+		{UserID: user.ID, PRID: deletedID, IsAuthor: false},
+		{UserID: user.ID, PRID: pr2.ID, IsAuthor: false},
+	})
+	require.NoError(t, err, "batch must not fail despite orphan items")
+
+	// Verify the valid item landed.
+	view, err := db.GetUserPRAssignment(user.ID, pr1.ID)
+	require.NoError(t, err)
+	require.NotNil(t, view)
+	assert.True(t, view.IsAuthor)
+}
+
 func TestGormDB_CIFailedChecks_JSONHandling(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()

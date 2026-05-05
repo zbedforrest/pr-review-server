@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"log"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -149,10 +150,72 @@ func (g *GormDB) UpdateUserViaTeams(userID, prID int, viaTeams []string) error {
 		Update("via_teams", JSONStringArray(viaTeams)).Error
 }
 
+// filterItemsWithExistingPRs returns the subset of items whose PRID exists in
+// the prs table, plus the count of dropped items. A single SELECT covers all
+// items rather than per-item existence checks. Used to defend against the
+// poll-cycle TOCTOU where dbPRMap was snapshotted before a parallel
+// PR delete (manual or cleanup-driven) removed the parent row.
+func (g *GormDB) filterItemsWithExistingPRs(items []UserPRViewBatchItem) ([]UserPRViewBatchItem, int) {
+	if len(items) == 0 {
+		return items, 0
+	}
+
+	// Collect distinct PR IDs to query.
+	idSet := make(map[int]struct{}, len(items))
+	for _, it := range items {
+		idSet[it.PRID] = struct{}{}
+	}
+	ids := make([]int, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+
+	var existing []int
+	if err := g.db.Model(&PRModel{}).Where("id IN ?", ids).Pluck("id", &existing).Error; err != nil {
+		// On query failure, skip the filter rather than dropping the whole
+		// batch. The original FK constraint will still catch any bad rows;
+		// we'd just lose the warning-level diagnostic.
+		log.Printf("[DB] WARN: filterItemsWithExistingPRs query failed; skipping pre-filter: %v", err)
+		return items, 0
+	}
+
+	existingSet := make(map[int]struct{}, len(existing))
+	for _, id := range existing {
+		existingSet[id] = struct{}{}
+	}
+
+	kept := items[:0]
+	dropped := 0
+	for _, it := range items {
+		if _, ok := existingSet[it.PRID]; ok {
+			kept = append(kept, it)
+		} else {
+			dropped++
+		}
+	}
+	return kept, dropped
+}
+
 // BatchUpsertUserPRViews batch-inserts or updates user_pr_view records.
 // Items are grouped by which optional fields are set, and each group gets a single
 // INSERT ... ON CONFLICT DO UPDATE with the appropriate columns.
+//
+// Defensively drops items whose pr_id no longer exists in `prs`. The poll
+// cycle snapshots dbPRMap early and the views flush happens later; if a PR
+// is deleted in between (manual delete via the dashboard, or closed-PR
+// cleanup in another goroutine), the user_pr_views FK to prs(id) would
+// fail and abort the entire batch. The pre-filter keeps the rest of the
+// batch from taking collateral damage and logs a warning so it's still
+// observable.
 func (g *GormDB) BatchUpsertUserPRViews(items []UserPRViewBatchItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	items, dropped := g.filterItemsWithExistingPRs(items)
+	if dropped > 0 {
+		log.Printf("[DB] BatchUpsertUserPRViews: dropped %d item(s) referencing deleted PRs", dropped)
+	}
 	if len(items) == 0 {
 		return nil
 	}
