@@ -43,6 +43,13 @@ func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 		if err := gormDB.AutoMigrate(); err != nil {
 			return nil, fmt.Errorf("failed to run migrations: %w", err)
 		}
+	} else {
+		// Even when full migrations are disabled, apply trivial idempotent
+		// column additions. These are safe to re-run and keep the schema
+		// compatible with newly-added model fields.
+		if err := gormDB.ensureIdempotentColumns(); err != nil {
+			return nil, fmt.Errorf("failed to apply idempotent column adds: %w", err)
+		}
 	}
 
 	// Initialize default settings
@@ -78,11 +85,34 @@ func (g *GormDB) AutoMigrate() error {
 		return err
 	}
 
-	// Explicit column additions for PostgreSQL (AutoMigrate can miss new columns)
-	g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS github_updated_at timestamptz")
 	// Clean up wrongly-named column from GORM default naming (git_hub_updated_at vs github_updated_at)
 	g.db.Exec("ALTER TABLE prs DROP COLUMN IF EXISTS git_hub_updated_at")
 
+	// Explicit column additions (AutoMigrate can miss new columns).
+	return g.ensureIdempotentColumns()
+}
+
+// ensureIdempotentColumns applies `ADD COLUMN IF NOT EXISTS` for columns that
+// were added after the initial schema. Runs even when SKIP_DB_MIGRATIONS=true
+// because these are trivial and safe to re-execute on every boot.
+//
+// Postgres-only: SQLite (used by the dev/test path) doesn't support
+// `ADD COLUMN IF NOT EXISTS` and doesn't have the `timestamptz` type. SQLite
+// goes through full AutoMigrate when migrations are enabled, so this no-op
+// is the correct behavior.
+func (g *GormDB) ensureIdempotentColumns() error {
+	if g.db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS github_updated_at timestamptz").Error; err != nil {
+		return fmt.Errorf("add github_updated_at: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS error_message text").Error; err != nil {
+		return fmt.Errorf("add error_message: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS error_retry_count integer NOT NULL DEFAULT 0").Error; err != nil {
+		return fmt.Errorf("add error_retry_count: %w", err)
+	}
 	return nil
 }
 

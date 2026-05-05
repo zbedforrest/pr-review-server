@@ -424,7 +424,7 @@ func TestGenerateReviewsBatch_SkipsExistingReviews(t *testing.T) {
 		{Owner: "owner", Repo: "repo", Number: 1, CommitSHA: "abc123def456789012345678901234567890abcd", Title: "Test PR", Author: "user"},
 	}
 
-	err := poller.generateReviewsBatch(ctx, prs)
+	err := poller.generateReviewsBatch(ctx, prs, false)
 	if err != nil {
 		t.Fatalf("generateReviewsBatch returned error: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestGenerateReviewsBatch_SetsGeneratingStatus(t *testing.T) {
 		{Owner: "owner", Repo: "repo", Number: 1, CommitSHA: "abc123def456789012345678901234567890abcd", Title: "Test PR", Author: "user"},
 	}
 
-	err := poller.generateReviewsBatch(ctx, prs)
+	err := poller.generateReviewsBatch(ctx, prs, false)
 	if err != nil {
 		t.Fatalf("generateReviewsBatch returned error: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestGenerateReviewsBatch_HandlesGenerationError(t *testing.T) {
 	}
 
 	// Should not return error (handles per-PR errors gracefully)
-	err := poller.generateReviewsBatch(ctx, prs)
+	err := poller.generateReviewsBatch(ctx, prs, false)
 	if err != nil {
 		t.Fatalf("generateReviewsBatch should not return error for individual PR failures: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestGenerateReviewsBatch_UpdatesDBOnSuccess(t *testing.T) {
 		{Owner: "owner", Repo: "repo", Number: 1, CommitSHA: "abc123def456789012345678901234567890abcd", Title: "Test PR", Author: "testuser"},
 	}
 
-	err := poller.generateReviewsBatch(ctx, prs)
+	err := poller.generateReviewsBatch(ctx, prs, false)
 	if err != nil {
 		t.Fatalf("generateReviewsBatch returned error: %v", err)
 	}
@@ -663,7 +663,7 @@ func TestGenerateReviewsBatch_ConcurrencyLimit(t *testing.T) {
 	ctx := context.Background()
 
 	start := time.Now()
-	err := poller.generateReviewsBatch(ctx, prs)
+	err := poller.generateReviewsBatch(ctx, prs, false)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -1130,7 +1130,7 @@ func TestCheckForOutdatedReviews_GeneratingWithNewCommit_KillsProcess(t *testing
 	// Simulate an active review process (but don't actually create a real process)
 	// The killReview function will try to find and kill the process, but that's OK
 	// for testing - we just want to verify the logic flow
-	poller.trackReview("owner", "repo", 1, 99999) // Fake PID
+	poller.trackReview(context.Background(), "owner", "repo", 1, 99999) // Fake PID
 
 	ctx := context.Background()
 	outdated, err := poller.checkForOutdatedReviews(ctx)
@@ -3189,7 +3189,7 @@ func TestProcessReviewImmediate_StartsReviewWithoutPoll(t *testing.T) {
 	ctx := context.Background()
 
 	// Call ProcessReviewImmediate
-	poller.ProcessReviewImmediate(ctx, "owner", "repo", 1, "abc123def456789012345678901234567890abcd", "Test PR", "author", nil, false)
+	poller.ProcessReviewImmediate(ctx, "owner", "repo", 1, "abc123def456789012345678901234567890abcd", "Test PR", "author", nil, false, false)
 
 	// PR should be tracked immediately (synchronous)
 	if !poller.IsReviewTracked("owner", "repo", 1) {
@@ -3235,7 +3235,7 @@ func TestProcessReviewImmediate_PollCycleSkipsTrackedPR(t *testing.T) {
 
 	// Simulate: ProcessReviewImmediate has already tracked this PR
 	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
-	poller.trackReview("owner", "repo", 1, 0)
+	poller.trackReview(context.Background(), "owner", "repo", 1, 0)
 
 	// PR is in "generating" status (set by the trigger handler)
 	mockDB.PRs["owner/repo/1"] = &db.PR{
@@ -3296,7 +3296,7 @@ func TestStaleReset_DoesNotResetTrackedReviews(t *testing.T) {
 
 	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
 	// Simulate: this PR is being processed by ProcessReviewImmediate
-	poller.trackReview("owner", "repo", 1, 0)
+	poller.trackReview(context.Background(), "owner", "repo", 1, 0)
 
 	// Run the stale reset (mimicking what poll Phase 1 does)
 	resetCount, err := mockDB.ResetStaleGeneratingPRs(5)

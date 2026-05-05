@@ -92,6 +92,152 @@ func TestGormDB_UpsertPR_Update(t *testing.T) {
 	assert.Equal(t, "Updated Title", fetched.Title)
 }
 
+// Regression: UpsertPR's OnConflict whitelist (upsertMetadataColumns) must
+// include the columns the poller's reviewPRBatch / ciPRBatch flushes write
+// to — approval_count, my_review_status, ci_state, ci_failed_checks. If any
+// of these get dropped from the whitelist, those updates silently no-op on
+// existing rows (the mock DB used in poller_test does a full struct
+// overwrite and won't catch this).
+func TestGormDB_UpsertPR_UpdatesPollerWrittenColumns(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	// Insert initial PR with zero values for the columns the poller writes.
+	err := db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "pending",
+	})
+	require.NoError(t, err)
+
+	// Simulate the poller flushing review/CI updates onto the existing row.
+	err = db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA:  "abc123",
+		ApprovalCount:  2,
+		MyReviewStatus: "APPROVED",
+		CIState:        "failure",
+		CIFailedChecks: `["build","test"]`,
+	})
+	require.NoError(t, err)
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Equal(t, 2, fetched.ApprovalCount, "approval_count must be updated on conflict")
+	assert.Equal(t, "APPROVED", fetched.MyReviewStatus, "my_review_status must be updated on conflict")
+	assert.Equal(t, "failure", fetched.CIState, "ci_state must be updated on conflict")
+	assert.Equal(t, `["build","test"]`, fetched.CIFailedChecks, "ci_failed_checks must be updated on conflict")
+}
+
+// Regression: when a PR is in-flight (status=generating or agent_reviewing),
+// a stale poll-cycle UpsertPR with the previous SHA must NOT overwrite the
+// freshly-set last_commit_sha. Without the CASE expression in upsertOnConflict
+// this drift would cause checkForOutdatedReviews to see a phantom mismatch
+// and kill the legitimate in-flight review.
+func TestGormDB_UpsertPR_PreservesSHAWhileInFlight(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	cases := []string{"generating", "agent_reviewing"}
+	for _, status := range cases {
+		t.Run(status, func(t *testing.T) {
+			// Manual trigger has just bumped the row to commit B.
+			err := db.UpsertPR(&PR{
+				RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+				LastCommitSHA: "newSHA_B", Status: "pending",
+			})
+			require.NoError(t, err)
+			err = db.SetPRGenerating("owner", "repo", 1, "newSHA_B", "T", "A", nil, false)
+			require.NoError(t, err)
+			if status == "agent_reviewing" {
+				require.NoError(t, db.SetPRAgentReviewing("owner", "repo", 1))
+			}
+
+			// Stale poll cycle's BatchUpsertPRs writes the old SHA.
+			err = db.BatchUpsertPRs([]*PR{{
+				RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+				LastCommitSHA: "staleSHA_A",
+				Title:         "fresh title from poll",
+			}})
+			require.NoError(t, err)
+
+			fetched, err := db.GetPR("owner", "repo", 1)
+			require.NoError(t, err)
+			assert.Equal(t, "newSHA_B", fetched.LastCommitSHA,
+				"in-flight last_commit_sha must not be clobbered by stale poll")
+			assert.Equal(t, "fresh title from poll", fetched.Title,
+				"non-SHA metadata fields should still update")
+			assert.Equal(t, status, fetched.Status, "status must be unchanged")
+
+			require.NoError(t, db.DeletePR("owner", "repo", 1))
+		})
+	}
+}
+
+// Companion: when the row is NOT in-flight, the upsert SHOULD update
+// last_commit_sha so the poll cycle continues to track new commits on
+// completed/pending rows.
+func TestGormDB_UpsertPR_UpdatesSHAWhenNotInFlight(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	for _, status := range []string{"completed", "pending", "error"} {
+		t.Run(status, func(t *testing.T) {
+			require.NoError(t, db.UpsertPR(&PR{
+				RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+				LastCommitSHA: "oldSHA", Status: status,
+			}))
+			// Force the status (UpsertPR doesn't touch status on conflict).
+			require.NoError(t, db.UpdatePRStatus("owner", "repo", 1, status))
+
+			require.NoError(t, db.UpsertPR(&PR{
+				RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+				LastCommitSHA: "freshSHA",
+			}))
+
+			fetched, err := db.GetPR("owner", "repo", 1)
+			require.NoError(t, err)
+			assert.Equal(t, "freshSHA", fetched.LastCommitSHA,
+				"last_commit_sha should track the latest poll for non-in-flight rows")
+
+			require.NoError(t, db.DeletePR("owner", "repo", 1))
+		})
+	}
+}
+
+// Regression: UpsertPR must NOT touch status / review_path / importance counts
+// on conflict — those are owned by the dedicated setters and a stale read in
+// the poll cycle could otherwise clobber a fresh review's terminal state.
+func TestGormDB_UpsertPR_DoesNotClobberReviewState(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	// Initial pending row.
+	err := db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "pending",
+	})
+	require.NoError(t, err)
+
+	// Mark it completed via the dedicated setter.
+	err = db.MarkPRCompleted("owner", "repo", 1, "abc123", "review.html", 1, 2, 3)
+	require.NoError(t, err)
+
+	// The poller does a metadata refresh with a stale read still showing pending.
+	err = db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "pending", // stale
+		Title: "Updated Title",
+	})
+	require.NoError(t, err)
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", fetched.Status, "status must not be clobbered by a stale poller upsert")
+	assert.Equal(t, "review.html", fetched.ReviewHTMLPath, "review_path must not be cleared")
+	assert.Equal(t, 1, fetched.CriticalCount, "critical_count must not be reset")
+	assert.Equal(t, "Updated Title", fetched.Title, "title (whitelisted) should still update")
+}
+
 func TestGormDB_UpdatePRStatus(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()
@@ -277,14 +423,61 @@ func TestGormDB_ResetErrorPRs(t *testing.T) {
 	err := db.UpsertPR(pr)
 	require.NoError(t, err)
 
-	// Reset error PRs older than 5 minutes
-	count, err := db.ResetErrorPRs(5)
+	// Reset error PRs older than 5 minutes; allow up to 1 auto-retry.
+	count, err := db.ResetErrorPRs(5, 1)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
 
 	fetched, err := db.GetPR("owner", "repo", 1)
 	require.NoError(t, err)
 	assert.Equal(t, "pending", fetched.Status)
+}
+
+// Regression: once a PR has hit the auto-retry cap, ResetErrorPRs must
+// stop resetting it back to pending so deterministic failures don't burn
+// quota in a 5-minute loop. SetPRGenerating (manual trigger) re-arms the
+// counter.
+func TestGormDB_ResetErrorPRs_RespectsRetryCap(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	// Insert an error PR old enough to be eligible for retry.
+	oldTime := time.Now().UTC().Add(-10 * time.Minute)
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner: "o", RepoName: "r", PRNumber: 1,
+		LastCommitSHA: "sha", Status: "error", LastReviewedAt: &oldTime,
+	}))
+
+	// First auto-retry succeeds and increments the counter.
+	count, err := db.ResetErrorPRs(5, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "first auto-retry should fire")
+
+	// Put it back in error state with an old timestamp (simulating the
+	// retried run failing again). Raw SQL avoids depending on a setter
+	// that might also touch error_retry_count.
+	require.NoError(t, db.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ?", "o", "r").
+		Updates(map[string]interface{}{"status": "error", "last_reviewed_at": oldTime}).Error)
+
+	// Second auto-retry should be blocked by the cap.
+	count, err = db.ResetErrorPRs(5, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "second auto-retry should be blocked by cap")
+
+	fetched, err := db.GetPR("o", "r", 1)
+	require.NoError(t, err)
+	assert.Equal(t, "error", fetched.Status)
+
+	// Manual trigger (SetPRGenerating) re-arms the counter and the next
+	// auto-retry can fire.
+	require.NoError(t, db.SetPRGenerating("o", "r", 1, "newsha", "T", "A", nil, false))
+	require.NoError(t, db.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ?", "o", "r").
+		Updates(map[string]interface{}{"status": "error", "last_reviewed_at": oldTime}).Error)
+	count, err = db.ResetErrorPRs(5, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "manual trigger should re-arm the retry counter")
 }
 
 func TestGormDB_GetPRsWithMissingMetadata(t *testing.T) {
@@ -1076,6 +1269,43 @@ func TestGormDB_EnsureUserPRView_PreservesViaTeams(t *testing.T) {
 // =============================================================================
 // Edge Cases and Integration Tests
 // =============================================================================
+
+// Regression: BatchUpsertUserPRViews must drop items whose pr_id has been
+// deleted between the poller's dbPRMap snapshot and the views flush. Without
+// the pre-filter, the FK violation aborts the entire batch, losing all
+// in-flight writes. With the pre-filter, only the orphaned items are
+// dropped; the rest succeed and the warning lands in the log.
+func TestGormDB_BatchUpsertUserPRViews_DropsOrphans(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "u"}
+	require.NoError(t, db.CreateUser(user))
+
+	// Two PRs exist; we'll delete one to simulate the race.
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "o", RepoName: "r", PRNumber: 1, Status: "completed"}))
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "o", RepoName: "r", PRNumber: 2, Status: "completed"}))
+	pr1, _ := db.GetPR("o", "r", 1)
+	pr2, _ := db.GetPR("o", "r", 2)
+	deletedID := pr2.ID + 9999 // an id that will never exist
+
+	require.NoError(t, db.DeletePR("o", "r", 2))
+
+	// Mix three items: one valid, one for a never-existed PR, one for a
+	// just-deleted PR. Only the valid one should be written.
+	err := db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr1.ID, IsAuthor: true},
+		{UserID: user.ID, PRID: deletedID, IsAuthor: false},
+		{UserID: user.ID, PRID: pr2.ID, IsAuthor: false},
+	})
+	require.NoError(t, err, "batch must not fail despite orphan items")
+
+	// Verify the valid item landed.
+	view, err := db.GetUserPRAssignment(user.ID, pr1.ID)
+	require.NoError(t, err)
+	require.NotNil(t, view)
+	assert.True(t, view.IsAuthor)
+}
 
 func TestGormDB_CIFailedChecks_JSONHandling(t *testing.T) {
 	db := newTestDB(t)

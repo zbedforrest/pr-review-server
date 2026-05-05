@@ -31,6 +31,8 @@ type PR struct {
 	Notes string
 	// Poll economy: last seen updated_at from GitHub search API
 	GitHubUpdatedAt *time.Time
+	// Populated when Status=="error"; surfaced to the UI.
+	ErrorMessage string
 }
 
 // User represents a user in multi-user mode
@@ -152,10 +154,13 @@ type Database interface {
 	UpdatePRStatus(owner, repo string, prNumber int, status string) error
 	ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) error
 	SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error
+	SetPRAgentReviewing(owner, repo string, prNumber int) error
+	SetPRError(owner, repo string, prNumber int, message string) error
+	MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int) error
 	GetAllPRs() ([]PR, error)
 	DeletePR(owner, repo string, prNumber int) error
 	ResetStaleGeneratingPRs(timeoutMinutes int) (int, error)
-	ResetErrorPRs(maxAgeMinutes int) (int, error)
+	ResetErrorPRs(maxAgeMinutes int, maxRetries int) (int, error)
 	GetPRsWithMissingMetadata() ([]PR, error)
 	UpdatePRMetadata(owner, repo string, prNumber int, title, author string) error
 	UpdatePRNotes(owner, repo string, prNumber int, notes string) error

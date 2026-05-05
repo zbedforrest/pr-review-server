@@ -25,6 +25,19 @@ type Client struct {
 	appClient  *AppClient
 }
 
+// CurrentToken returns the access token currently used by this Client for
+// HTTPS operations: a fresh GitHub App installation token in multi-user/prod
+// mode, or the static personal-access token in single-user/dev mode. The
+// agent reviewer's git clone needs this to authenticate against private
+// repos because git is invoked as a subprocess and can't share the
+// oauth2.TokenSource the REST/GraphQL clients use.
+func (c *Client) CurrentToken(ctx context.Context) (string, error) {
+	if c.appClient != nil {
+		return c.appClient.GetToken(ctx)
+	}
+	return c.token, nil
+}
+
 // SetAppClient sets the AppClient for org-wide operations (multi-user mode).
 // It also reconfigures the REST and GraphQL clients to use a refreshable token source
 // so that installation tokens are automatically renewed when they expire.
@@ -221,10 +234,18 @@ func (c *Client) BatchGetPRState(ctx context.Context, prs []PRInfo) (map[string]
 	return results, nil
 }
 
+// RateLimitInfo holds the current rate-limit status for both buckets we care
+// about. REST (Core) and GraphQL are tracked as separate quotas by GitHub.
 type RateLimitInfo struct {
+	// REST core bucket (5,000/hr for personal tokens).
 	Limit     int
 	Remaining int
 	ResetTime time.Time
+
+	// GraphQL bucket (5,000 points/hr) — points scale with query complexity.
+	GraphQLLimit     int
+	GraphQLRemaining int
+	GraphQLResetTime time.Time
 }
 
 type PullRequest struct {
@@ -511,7 +532,8 @@ func (c *Client) GetMyReviewStatus(ctx context.Context, owner, repo string, prNu
 	return "", false, nil // No review found
 }
 
-// GetRateLimitInfo returns the current rate limit status
+// GetRateLimitInfo returns the current REST + GraphQL rate-limit status.
+// One API call returns both buckets.
 func (c *Client) GetRateLimitInfo(ctx context.Context) (*RateLimitInfo, error) {
 	limits, _, err := c.gh.RateLimit.Get(ctx)
 	if err != nil {
@@ -519,11 +541,17 @@ func (c *Client) GetRateLimitInfo(ctx context.Context) (*RateLimitInfo, error) {
 	}
 
 	core := limits.GetCore()
-	return &RateLimitInfo{
+	info := &RateLimitInfo{
 		Limit:     core.Limit,
 		Remaining: core.Remaining,
 		ResetTime: core.Reset.Time,
-	}, nil
+	}
+	if gql := limits.GetGraphQL(); gql != nil {
+		info.GraphQLLimit = gql.Limit
+		info.GraphQLRemaining = gql.Remaining
+		info.GraphQLResetTime = gql.Reset.Time
+	}
+	return info, nil
 }
 
 // IsRateLimited checks if we're currently rate limited (has few or no requests remaining)

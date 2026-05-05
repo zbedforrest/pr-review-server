@@ -58,6 +58,9 @@ function makeStatus(partial: Partial<ServerStatus>): ServerStatus {
       reset_at: '2026-04-15T12:00:00Z',
       is_limited: false,
       error: '',
+      graphql_remaining: 4999,
+      graphql_limit: 5000,
+      graphql_reset_at: '2026-04-15T12:00:00Z',
     },
     ...partial,
   };

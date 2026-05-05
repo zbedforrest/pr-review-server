@@ -399,6 +399,46 @@ func (m *MockDatabase) SetPRGenerating(owner, repo string, prNumber int, commitS
 	return nil
 }
 
+func (m *MockDatabase) SetPRAgentReviewing(owner, repo string, prNumber int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if pr, exists := m.PRs[key]; exists {
+		pr.Status = "agent_reviewing"
+		pr.ErrorMessage = ""
+	}
+	return nil
+}
+
+func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if pr, exists := m.PRs[key]; exists {
+		pr.Status = "error"
+		pr.ErrorMessage = message
+	}
+	return nil
+}
+
+func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if pr, exists := m.PRs[key]; exists {
+		now := time.Now()
+		pr.Status = "completed"
+		pr.LastCommitSHA = commitSHA
+		pr.ReviewHTMLPath = reviewPath
+		pr.LastReviewedAt = &now
+		pr.CriticalCount = critical
+		pr.MediumCount = medium
+		pr.LowCount = low
+		pr.ErrorMessage = ""
+	}
+	return nil
+}
+
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -435,7 +475,7 @@ func (m *MockDatabase) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) 
 	return 0, nil
 }
 
-func (m *MockDatabase) ResetErrorPRs(maxAgeMinutes int) (int, error) {
+func (m *MockDatabase) ResetErrorPRs(maxAgeMinutes int, maxRetries int) (int, error) {
 	return 0, nil
 }
 
@@ -731,7 +771,7 @@ func (m *MockReviewStorage) ReviewExists(ctx context.Context, owner, repo string
 	return exists, nil
 }
 
-func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, htmlContent []byte) (string, error) {
+func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -742,14 +782,13 @@ func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, 
 		PRNumber  int
 		CommitSHA string
 		Content   []byte
-	}{owner, repo, prNumber, commitSHA, htmlContent})
+	}{owner, repo, prNumber, commitSHA, content})
 
 	if m.SaveReviewError != nil {
 		return "", m.SaveReviewError
 	}
 
-	m.SavedReviews[key] = htmlContent
-	// Return a filename similar to what the real implementation returns
+	m.SavedReviews[key] = content
 	return fmt.Sprintf("review-%s-%s-%d-%s.html", owner, repo, prNumber, commitSHA[:7]), nil
 }
 

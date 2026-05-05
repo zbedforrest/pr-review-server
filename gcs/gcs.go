@@ -31,10 +31,9 @@ func NewClient(ctx context.Context, bucketName string) (*Client, error) {
 	}, nil
 }
 
-// ReviewFileName generates a filename for a review based on PR info and commit SHA
+// ReviewFileName generates a filename for a review based on PR info and commit SHA.
 // Format: {owner}_{repo}_{prNumber}_{commitSHA}.html
 func ReviewFileName(owner, repo string, prNumber int, commitSHA string) string {
-	// Use first 7 chars of commit SHA for readability
 	shortSHA := commitSHA
 	if len(commitSHA) > 7 {
 		shortSHA = commitSHA[:7]
@@ -42,18 +41,22 @@ func ReviewFileName(owner, repo string, prNumber int, commitSHA string) string {
 	return fmt.Sprintf("%s_%s_%d_%s.html", owner, repo, prNumber, shortSHA)
 }
 
-// UploadReview uploads HTML content to GCS and returns the object path
-func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, htmlContent []byte) (string, error) {
+// UploadReview uploads review content to GCS and returns the object path.
+func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	filename := ReviewFileName(owner, repo, prNumber, commitSHA)
 
 	obj := c.bucket.Object(filename)
 	writer := obj.NewWriter(ctx)
-	writer.ContentType = "text/html"
+	writer.ContentType = "text/html; charset=utf-8"
 
-	// Set cache control to allow caching since reviews are immutable per commit
-	writer.CacheControl = "public, max-age=31536000"
+	// Reviews used to be considered immutable per commit, but the manual
+	// trigger now force-overwrites the same filename when the user clicks
+	// "Review" — so browsers must revalidate to pick up the new content.
+	// `no-cache` doesn't mean "don't store"; it means "always revalidate
+	// before using". GCS serves an ETag, so revalidation is a cheap 304.
+	writer.CacheControl = "public, no-cache, must-revalidate"
 
-	if _, err := writer.Write(htmlContent); err != nil {
+	if _, err := writer.Write(content); err != nil {
 		writer.Close()
 		return "", fmt.Errorf("failed to write to GCS: %w", err)
 	}
@@ -66,7 +69,7 @@ func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber 
 	return filename, nil
 }
 
-// ReviewExists checks if a review already exists for a given PR and commit
+// ReviewExists checks if a review already exists for a given PR and commit.
 func (c *Client) ReviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (bool, error) {
 	filename := ReviewFileName(owner, repo, prNumber, commitSHA)
 
@@ -80,13 +83,6 @@ func (c *Client) ReviewExists(ctx context.Context, owner, repo string, prNumber 
 	}
 
 	return true, nil
-}
-
-// GetReviewURL returns the public URL for a review file
-// Authenticated users with bucket access can access directly
-func (c *Client) GetReviewURL(owner, repo string, prNumber int, commitSHA string) string {
-	filename := ReviewFileName(owner, repo, prNumber, commitSHA)
-	return fmt.Sprintf("https://storage.googleapis.com/%s/%s", c.bucketName, filename)
 }
 
 // GetReviewURLByFilename returns the public URL for a review file by filename
@@ -112,15 +108,14 @@ func (c *Client) ListReviewsForPR(ctx context.Context, owner, repo string, prNum
 			return nil, fmt.Errorf("failed to list objects: %w", err)
 		}
 
-		// Parse commit SHA from filename
 		// Filename format: {owner}_{repo}_{prNumber}_{commitSHA}.html
 		name := attrs.Name
 		if !strings.HasSuffix(name, ".html") {
 			continue
 		}
+		trimmed := strings.TrimSuffix(name, ".html")
 
-		// Extract commit SHA from filename
-		parts := strings.Split(strings.TrimSuffix(name, ".html"), "_")
+		parts := strings.Split(trimmed, "_")
 		if len(parts) < 4 {
 			continue
 		}

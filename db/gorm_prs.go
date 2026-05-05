@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"log"
 	"time"
 
 	"gorm.io/gorm"
@@ -44,6 +45,7 @@ func prModelToPR(m *PRModel) *PR {
 		LowCount:        m.LowCount,
 		Notes:           m.Notes,
 		GitHubUpdatedAt: m.GitHubUpdatedAt,
+		ErrorMessage:    m.ErrorMessage,
 	}
 }
 
@@ -81,6 +83,7 @@ func prToPRModel(p *PR) *PRModel {
 		LowCount:        p.LowCount,
 		Notes:           p.Notes,
 		GitHubUpdatedAt: p.GitHubUpdatedAt,
+		ErrorMessage:    p.ErrorMessage,
 	}
 }
 
@@ -99,29 +102,71 @@ func (g *GormDB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 	return prModelToPR(&model), nil
 }
 
-// UpsertPR inserts or updates a PR
-func (g *GormDB) UpsertPR(pr *PR) error {
-	model := prToPRModel(pr)
-
-	// Use GORM's Clauses for upsert behavior
-	return g.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"last_commit_sha",
-			"review_path",
-			"status",
-			"title",
-			"author",
-			"approval_count",
-			"my_review_status",
-			"draft",
-			"ci_state",
-			"ci_failed_checks",
-		}),
-	}).Create(model).Error
+// upsertMetadataColumns is the set of columns UpsertPR / BatchUpsertPRs
+// unconditionally update on conflict. Excludes status / review_path /
+// importance counts so a stale read from the polling cycle can't clobber
+// a fresh write from the orchestration goroutine — those have dedicated
+// setters (SetPRGenerating, SetPRAgentReviewing, SetPRError, MarkPRCompleted).
+//
+// last_commit_sha is also excluded here and handled separately below: the
+// poll cycle legitimately needs to update it for non-in-flight rows, but
+// must NOT clobber a freshly-triggered review's SHA. See the CASE expression
+// in upsertOnConflict.
+//
+// approval_count, my_review_status, ci_state, ci_failed_checks ARE included:
+// the poller's reviewPRBatch / ciPRBatch flushes in poller.go are the only
+// writers for those columns, so the stale-clobber concern doesn't apply.
+var upsertMetadataColumns = []string{
+	"title",
+	"author",
+	"draft",
+	"created_at",
+	"github_updated_at",
+	"approval_count",
+	"my_review_status",
+	"ci_state",
+	"ci_failed_checks",
 }
 
-// BatchUpsertPRs inserts or updates multiple PRs in a single batch operation.
+// upsertOnConflict returns the OnConflict clause used by UpsertPR /
+// BatchUpsertPRs. last_commit_sha is updated only for rows whose status is
+// NOT in-flight (generating / agent_reviewing); for in-flight rows the
+// existing value is preserved. This prevents poll phase 2 from overwriting
+// a SHA that a manual SetPRGenerating call has just written, which would
+// then make checkForOutdatedReviews see a phantom "outdated" review and
+// kill the in-flight goroutine.
+//
+// Both Postgres and SQLite support the `excluded.<column>` reference inside
+// `ON CONFLICT DO UPDATE`, so this is portable across our prod and dev
+// dialects. The IN clause uses literal strings rather than placeholders
+// because GORM doesn't bind into clause.Expr arguments cleanly here.
+func upsertOnConflict() clause.OnConflict {
+	assignments := map[string]interface{}{
+		"last_commit_sha": gorm.Expr(
+			"CASE WHEN prs.status IN ('generating','agent_reviewing') " +
+				"THEN prs.last_commit_sha ELSE excluded.last_commit_sha END",
+		),
+	}
+	for _, col := range upsertMetadataColumns {
+		assignments[col] = gorm.Expr("excluded." + col)
+	}
+	return clause.OnConflict{
+		Columns:   []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
+		DoUpdates: clause.Assignments(assignments),
+	}
+}
+
+// UpsertPR inserts or updates a PR's metadata. Status / review_path /
+// importance counts are NOT touched on conflict — use the dedicated setters
+// (SetPRGenerating, SetPRAgentReviewing, SetPRError, MarkPRCompleted) to
+// transition those fields safely. last_commit_sha is preserved on in-flight
+// rows; see upsertOnConflict.
+func (g *GormDB) UpsertPR(pr *PR) error {
+	model := prToPRModel(pr)
+	return g.db.Clauses(upsertOnConflict()).Create(model).Error
+}
+
+// BatchUpsertPRs is the batch equivalent of UpsertPR. Same conflict semantics.
 func (g *GormDB) BatchUpsertPRs(prs []*PR) error {
 	if len(prs) == 0 {
 		return nil
@@ -132,21 +177,51 @@ func (g *GormDB) BatchUpsertPRs(prs []*PR) error {
 		models[i] = *prToPRModel(p)
 	}
 
-	return g.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"last_commit_sha",
-			"review_path",
-			"status",
-			"title",
-			"author",
-			"approval_count",
-			"my_review_status",
-			"draft",
-			"ci_state",
-			"ci_failed_checks",
-		}),
-	}).CreateInBatches(&models, 500).Error
+	return g.db.Clauses(upsertOnConflict()).CreateInBatches(&models, 500).Error
+}
+
+// MarkPRCompleted atomically transitions a PR to "completed" and records the
+// review's persisted location + importance counts. Uses an explicit UPDATE
+// (not an upsert) so it can't be defeated by a concurrent stale-read from
+// the polling cycle.
+func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int) error {
+	now := time.Now().UTC()
+
+	// Diagnostic: read status before the UPDATE so we know what we were
+	// transitioning from.
+	var before PRModel
+	_ = g.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).First(&before).Error
+
+	res := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Updates(map[string]interface{}{
+			"status":           "completed",
+			"review_path":      reviewPath,
+			"last_commit_sha":  commitSHA,
+			"last_reviewed_at": now,
+			"critical_count":   critical,
+			"medium_count":     medium,
+			"low_count":        low,
+			"error_message":    "",
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+
+	// Diagnostic: read status after the UPDATE to confirm the write took.
+	var after PRModel
+	_ = g.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).First(&after).Error
+	beforeReviewedAt := ""
+	if before.LastReviewedAt != nil {
+		beforeReviewedAt = before.LastReviewedAt.Format("15:04:05.000")
+	}
+	afterReviewedAt := ""
+	if after.LastReviewedAt != nil {
+		afterReviewedAt = after.LastReviewedAt.Format("15:04:05.000")
+	}
+	log.Printf("[DB] MarkPRCompleted %s/%s#%d: rows=%d status_before=%q status_after=%q lr_before=%s lr_after=%s now=%s",
+		owner, repo, prNumber, res.RowsAffected, before.Status, after.Status, beforeReviewedAt, afterReviewedAt, now.Format("15:04:05.000"))
+	return nil
 }
 
 // UpdatePRStatus updates the status of a PR
@@ -183,6 +258,38 @@ func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSH
 		}).Error
 }
 
+// SetPRAgentReviewing moves an existing PR to the agent_reviewing status.
+// Unlike SetPRGenerating it does not create a row — the PR must already exist
+// (the Gemini stage creates it). Clears any stored error_message from an
+// earlier failed run of this commit.
+func (g *GormDB) SetPRAgentReviewing(owner, repo string, prNumber int) error {
+	res := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Updates(map[string]interface{}{
+			"status":        "agent_reviewing",
+			"error_message": "",
+		})
+	if res.Error == nil {
+		var after PRModel
+		_ = g.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).First(&after).Error
+		log.Printf("[DB] SetPRAgentReviewing %s/%s#%d: rows=%d status_after=%q", owner, repo, prNumber, res.RowsAffected, after.Status)
+	}
+	return res.Error
+}
+
+// SetPRError marks a PR as error and stores a human-readable message.
+// Replaces UpdatePRStatus(..., "error") so the message isn't lost.
+func (g *GormDB) SetPRError(owner, repo string, prNumber int, message string) error {
+	now := time.Now().UTC()
+	return g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Updates(map[string]interface{}{
+			"status":           "error",
+			"error_message":    message,
+			"last_reviewed_at": now,
+		}).Error
+}
+
 // SetPRGenerating creates or updates a PR and sets it to generating status
 func (g *GormDB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error {
 	now := time.Now().UTC()
@@ -200,7 +307,7 @@ func (g *GormDB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, ti
 		Draft:           draft,
 	}
 
-	return g.db.Clauses(clause.OnConflict{
+	err := g.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"last_commit_sha",
@@ -212,6 +319,19 @@ func (g *GormDB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, ti
 			"draft",
 		}),
 	}).Create(model).Error
+	if err != nil {
+		return err
+	}
+	// A fresh generation attempt supersedes any prior error for this PR
+	// and re-arms the auto-retry counter. Best-effort writes; a missing
+	// column (e.g. migration skipped) shouldn't block the trigger.
+	_ = g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Updates(map[string]interface{}{
+			"error_message":     "",
+			"error_retry_count": 0,
+		}).Error
+	return nil
 }
 
 // GetAllPRs returns all PRs ordered by status priority
@@ -221,6 +341,7 @@ func (g *GormDB) GetAllPRs() ([]PR, error) {
 		created_at DESC NULLS LAST,
 		CASE status
 			WHEN 'generating' THEN 1
+			WHEN 'agent_reviewing' THEN 1
 			WHEN 'pending' THEN 2
 			WHEN 'completed' THEN 3
 			ELSE 4
@@ -245,11 +366,18 @@ func (g *GormDB) DeletePR(owner, repo string, prNumber int) error {
 		Delete(&PRModel{}).Error
 }
 
-// ResetStaleGeneratingPRs resets PRs that have been in "generating" status for too long
+// ResetStaleGeneratingPRs resets PRs stuck in any in-flight review status
+// (generating or agent_reviewing) for longer than timeoutMinutes back to
+// pending. The status name is historical; the function covers both the
+// Gemini and Claude stages so a hung agent run self-heals across restarts.
+//
+// generating_since is set when entering "generating" by SetPRGenerating and
+// is preserved through the transition to "agent_reviewing", so it represents
+// "when did this in-flight review begin" for either stage.
 func (g *GormDB) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) {
 	cutoff := time.Now().UTC().Add(-time.Duration(timeoutMinutes) * time.Minute)
 	result := g.db.Model(&PRModel{}).
-		Where("status = ?", "generating").
+		Where("status IN ?", []string{"generating", "agent_reviewing"}).
 		Where("generating_since IS NULL OR generating_since < ?", cutoff).
 		Updates(map[string]interface{}{
 			"status":           "pending",
@@ -263,13 +391,26 @@ func (g *GormDB) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) {
 	return int(result.RowsAffected), nil
 }
 
-// ResetErrorPRs resets PRs that have been in "error" status for too long
-func (g *GormDB) ResetErrorPRs(maxAgeMinutes int) (int, error) {
+// ResetErrorPRs resets error-state PRs back to pending so the next poll
+// can retry them. Capped at maxRetries auto-retries per error; once a PR
+// has been auto-reset that many times without a manual trigger
+// resetting the counter, it stays in error state to prevent indefinite
+// quota burn from deterministic failures.
+//
+// maxAgeMinutes is the cool-off between auto-retries. maxRetries is the
+// per-PR cap (typically 1: one auto-retry, then human action required).
+// Increments error_retry_count atomically with the reset so concurrent
+// pollers can't both grab the same row.
+func (g *GormDB) ResetErrorPRs(maxAgeMinutes int, maxRetries int) (int, error) {
 	cutoff := time.Now().UTC().Add(-time.Duration(maxAgeMinutes) * time.Minute)
 	result := g.db.Model(&PRModel{}).
 		Where("status = ?", "error").
 		Where("last_reviewed_at IS NULL OR last_reviewed_at < ?", cutoff).
-		Update("status", "pending")
+		Where("error_retry_count < ?", maxRetries).
+		Updates(map[string]interface{}{
+			"status":            "pending",
+			"error_retry_count": gorm.Expr("error_retry_count + 1"),
+		})
 
 	if result.Error != nil {
 		return 0, result.Error

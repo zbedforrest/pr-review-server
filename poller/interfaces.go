@@ -64,14 +64,14 @@ var _ GitHubClient = (*github.Client)(nil)
 // ReviewStorage defines the interface for storing and checking reviews.
 // This interface enables mocking storage operations in tests.
 type ReviewStorage interface {
-	// ReviewExists checks if a review already exists for the given PR+commit
+	// ReviewExists checks if a review already exists for the given PR+commit.
 	ReviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (bool, error)
 
-	// SaveReview saves the review HTML content and returns the filename/path
-	SaveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, htmlContent []byte) (string, error)
+	// SaveReview persists the review content and returns the filename/path.
+	SaveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error)
 }
 
-// ReviewResult contains the output from generating a review
+// ReviewResult contains the output from generating a review.
 type ReviewResult struct {
 	HTMLContent   []byte
 	CriticalCount int

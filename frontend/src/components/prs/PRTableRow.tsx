@@ -9,13 +9,11 @@ import { VIA_TEAMS_PERSONAL } from '@/constants';
 
 interface PRTableRowProps {
   pr: PR;
-  showReviewColumns?: boolean;
   showViaTeams?: boolean;
 }
 
 export const PRTableRow = memo(function PRTableRow({
   pr,
-  showReviewColumns = true,
   showViaTeams = true
 }: PRTableRowProps) {
   const deleteMutation = useDeletePR();
@@ -111,32 +109,48 @@ export const PRTableRow = memo(function PRTableRow({
           notes={pr.notes || ''}
         />
       </td>
-      {showReviewColumns && (
-        <td className="pr-table__review-cell">
-          {reviewUrl ? (
-            <a
-              href={reviewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="pr-table__review-link"
-              onClick={() => track('view_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}
-            >
-              View
-            </a>
-          ) : (
-            <span>-</span>
-          )}
-        </td>
-      )}
+      <td className="pr-table__review-cell">
+        {pr.status === 'error' ? (
+          <span className="pr-table__review-error" title={pr.error_message || 'Review failed'}>
+            ERROR
+          </span>
+        ) : reviewUrl ? (
+          <a
+            href={reviewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="pr-table__review-link"
+            onClick={() => track('view_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}
+          >
+            View
+          </a>
+        ) : (
+          <span>-</span>
+        )}
+      </td>
       <td>
         <div className="pr-table__actions">
           <button
-            className="pr-table__action-btn"
+            className={`pr-table__action-btn${
+              triggerReviewMutation.isPending || pr.status === 'generating'
+                ? ' pr-table__action-btn--reviewing'
+                : pr.status === 'agent_reviewing'
+                  ? ' pr-table__action-btn--agent-reviewing'
+                  : ''
+            }`}
             onClick={handleTriggerReview}
-            disabled={triggerReviewMutation.isPending || pr.status === 'generating'}
+            disabled={
+              triggerReviewMutation.isPending ||
+              pr.status === 'generating' ||
+              pr.status === 'agent_reviewing'
+            }
             title="Generate or regenerate review for this PR"
           >
-            {triggerReviewMutation.isPending ? 'Triggering...' : '🔄 Review'}
+            {triggerReviewMutation.isPending ||
+            pr.status === 'generating' ||
+            pr.status === 'agent_reviewing'
+              ? 'REVIEWING'
+              : '🔄 Review'}
           </button>
           <button
             className="pr-table__delete-btn"

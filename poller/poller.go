@@ -41,11 +41,24 @@ const (
 
 	// ErrorPRRetryTimeout is how long to wait before retrying a PR in "error" state.
 	ErrorPRRetryTimeout = 5 * time.Minute
+
+	// ErrorPRMaxAutoRetries caps how many times the poll cycle will reset
+	// an error-state PR back to pending. After this many auto-retries the
+	// PR stays in error state until a manual trigger resets the counter
+	// via SetPRGenerating. Prevents deterministic failures (auth misconfig,
+	// model outage, persistent bad-prompt state) from burning quota in a
+	// 5-minute loop.
+	ErrorPRMaxAutoRetries = 1
 )
 
 type ProcessInfo struct {
 	PID       int
 	StartTime time.Time
+	// Ctx is the per-review cancellable context. The goroutine MUST use this
+	// for all downstream work (LLM calls, agent subprocess) so killReview
+	// can abort it mid-flight by calling Cancel.
+	Ctx    context.Context
+	Cancel context.CancelFunc
 }
 
 type Poller struct {
@@ -79,10 +92,18 @@ type Poller struct {
 	teamCacheExpiry time.Time
 	// Poll economy: track cycles for periodic full refresh
 	pollCount int
+	// Agent-review subprocess spawner (nil-safe: defaults to the real claude CLI).
+	agentSpawner service.Spawner
+	// agentSlots caps concurrent agent reviews per process. Each agent run
+	// holds ~1 GB of /tmp (clone) + claude memory; without a cap, two PRs
+	// triggered close together can exhaust the instance's memory budget.
+	// Buffered to AgentMaxConcurrent; nil if AgentMaxConcurrent <= 0
+	// (unlimited, used by tests).
+	agentSlots chan struct{}
 }
 
 func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsClient *gcs.Client) *Poller {
-	return &Poller{
+	p := &Poller{
 		cfg:              cfg,
 		db:               database,
 		ghClient:         ghClient,
@@ -91,7 +112,92 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		reviewDir:        cfg.ReviewsDir,
 		triggerChan:      make(chan struct{}, 1), // Buffered to prevent blocking
 		activeReviews:    make(map[string]ProcessInfo),
+		agentSpawner:     service.DefaultSpawner{},
 	}
+	if cfg.AgentMaxConcurrent > 0 {
+		p.agentSlots = make(chan struct{}, cfg.AgentMaxConcurrent)
+	}
+	return p
+}
+
+// SetAgentSpawner overrides the subprocess spawner used for agent reviews.
+// Tests inject a stub to avoid actually invoking the claude CLI.
+func (p *Poller) SetAgentSpawner(s service.Spawner) { p.agentSpawner = s }
+
+// isReviewInFlight reports whether a PR's status indicates an in-progress
+// review (Gemini "generating" or Claude "agent_reviewing"). Used by the
+// outdated-detection paths to decide whether to cancel the active review.
+func isReviewInFlight(status string) bool {
+	return status == "generating" || status == "agent_reviewing"
+}
+
+// runAgentStage runs the claude-agent pass on a Gemini ReviewResult: flips
+// the PR status to agent_reviewing, spawns the agent against a clone of the
+// PR head, replaces the comment set with the agent's refined output, and
+// re-renders via the same HTML pipeline so the inline-comment UI is intact.
+//
+// If a concurrency cap is configured (AGENT_MAX_CONCURRENT), this acquires
+// a slot before the clone and releases it when done. When the cap is
+// saturated the goroutine blocks here — caller is queued behind in-flight
+// reviews rather than competing for memory.
+func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, result *service.ReviewResult) (*ReviewResult, error) {
+	if p.agentSlots != nil {
+		select {
+		case p.agentSlots <- struct{}{}:
+			defer func() { <-p.agentSlots }()
+		case <-ctx.Done():
+			return nil, fmt.Errorf("agent review: cancelled while waiting for concurrency slot: %w", ctx.Err())
+		}
+	}
+
+	log.Printf("[REVIEWER] PR %d: Gemini pass done (comments=%d), entering agent stage",
+		pr.Number, len(result.Comments))
+	if setErr := p.db.SetPRAgentReviewing(pr.Owner, pr.Repo, pr.Number); setErr != nil {
+		log.Printf("[REVIEWER] WARNING: could not set agent_reviewing status for PR %d: %v", pr.Number, setErr)
+	}
+	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+
+	// Fetch a fresh token at agent-stage start. In prod (GitHub App auth)
+	// p.cfg.GitHubToken is empty and we need to mint an installation token
+	// from the App; the agent's git subprocess can't share the REST client's
+	// oauth2.TokenSource. CurrentToken transparently returns the static PAT
+	// in single-user/dev mode and the App installation token in multi-user/
+	// prod mode.
+	gitToken, tokenErr := p.ghClientConcrete.CurrentToken(ctx)
+	if tokenErr != nil {
+		log.Printf("[REVIEWER] ERROR: PR %d failed to get GitHub token for clone: %v", pr.Number, tokenErr)
+		return nil, fmt.Errorf("agent review: get GitHub token: %w", tokenErr)
+	}
+	agentCfg := service.AgentConfig{
+		CloneRootDir: p.cfg.AgentCloneRootDir,
+		LogsDir:      p.cfg.AgentLogsDir,
+		WallClock:    time.Duration(p.cfg.AgentWallClockSec) * time.Second,
+		MaxTurns:     p.cfg.AgentMaxTurns,
+		GitHubToken:  gitToken,
+	}
+	agentOut, agentErr := service.RunAgentReview(ctx, agentCfg, p.agentSpawner,
+		pr.Owner, pr.Repo, "", pr.Number, pr.CommitSHA, result.Comments)
+	if agentErr != nil {
+		log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
+		return nil, fmt.Errorf("agent review: %w", agentErr)
+	}
+
+	result.Comments = agentOut.Comments
+	result.ComputeImportanceCounts()
+	log.Printf("[REVIEWER] PR %d: agent stage ok (clone=%s, log=%s, comments=%d, critical=%d, medium=%d, low=%d)",
+		pr.Number, agentOut.CloneDir, agentOut.LogPath, len(agentOut.Comments),
+		result.CriticalCount, result.MediumCount, result.LowCount)
+
+	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModel)
+	if htmlContent == nil {
+		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
+	}
+	return &ReviewResult{
+		HTMLContent:   htmlContent,
+		CriticalCount: result.CriticalCount,
+		MediumCount:   result.MediumCount,
+		LowCount:      result.LowCount,
+	}, nil
 }
 
 // broadcastPRUpdate helper to send update events
@@ -103,58 +209,6 @@ func (p *Poller) broadcastPRUpdate(owner, repo string, number int) {
 			"number": number,
 		})
 	}
-}
-
-// upsertPRPreservingReviewData upserts a PR while preserving existing review data (doesn't fetch from GitHub)
-// This is used when updating PR status/files but we want to keep approval counts unchanged
-func (p *Poller) upsertPRPreservingReviewData(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlPath, status, title, author string, createdAt *time.Time, draft bool, criticalCount, mediumCount, lowCount int) error {
-	// Get existing PR to preserve review data
-	existingPR, err := p.db.GetPR(owner, repo, prNumber)
-	if err != nil {
-		log.Printf("[DB] Error: failed to get existing PR data for %s/%s#%d: %v", owner, repo, prNumber, err)
-		return err // Propagate DB error to prevent data loss
-	}
-
-	// Default to existing values (or zero values if no existing PR)
-	approvalCount := 0
-	myReviewStatus := ""
-	notes := ""
-	if existingPR != nil {
-		approvalCount = existingPR.ApprovalCount
-		myReviewStatus = existingPR.MyReviewStatus
-		notes = existingPR.Notes
-	}
-
-	pr := &db.PR{
-		RepoOwner:      owner,
-		RepoName:       repo,
-		PRNumber:       prNumber,
-		LastCommitSHA:  commitSHA,
-		ReviewHTMLPath: htmlPath,
-		Status:         status,
-		Title:          title,
-		Author:         author,
-		ApprovalCount:  approvalCount,
-		MyReviewStatus: myReviewStatus,
-		CreatedAt:      createdAt,
-		Draft:          draft,
-		CriticalCount:  criticalCount,
-		MediumCount:    mediumCount,
-		LowCount:       lowCount,
-		Notes:          notes,
-	}
-
-	// Set LastReviewedAt when marking as completed
-	if status == "completed" {
-		now := time.Now().UTC()
-		pr.LastReviewedAt = &now
-	}
-
-	err = p.db.UpsertPR(pr)
-	if err == nil {
-		p.broadcastPRUpdate(owner, repo, prNumber)
-	}
-	return err
 }
 
 func (p *Poller) SetCacheUpdateFunc(f func([]github.PullRequest)) {
@@ -344,25 +398,55 @@ func prKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
 }
 
-// trackReview adds a PR's review to the active reviews map
-func (p *Poller) trackReview(owner, repo string, number, pid int) {
+// trackReview adds a PR's review to the active reviews map and returns a
+// per-review cancellable context derived from parent. Callers MUST use the
+// returned context for the rest of the review work; killReview cancels it
+// to abort the in-flight goroutine.
+//
+// If an entry already exists for this PR (e.g. ProcessReviewImmediate's
+// outer trackReview followed by generateReviewsBatch's inner trackReview),
+// returns the existing context unchanged so the running goroutine isn't
+// disrupted. The caller's parent ctx is therefore ignored in that case —
+// the outer caller is the canonical owner of the lifecycle.
+func (p *Poller) trackReview(parent context.Context, owner, repo string, number, pid int) context.Context {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
 	key := prKey(owner, repo, number)
+	if existing, ok := p.activeReviews[key]; ok && existing.Ctx != nil {
+		log.Printf("[TRACK] Re-tracking %s (re-using existing ctx)", key)
+		return existing.Ctx
+	}
+	ctx, cancel := context.WithCancel(parent)
 	p.activeReviews[key] = ProcessInfo{
 		PID:       pid,
 		StartTime: time.Now(),
+		Ctx:       ctx,
+		Cancel:    cancel,
 	}
 	log.Printf("[TRACK] Tracking review for %s", key)
+	return ctx
 }
 
 // untrackReview removes a PR's review process from the active reviews map
+// AND invokes its stored Cancel func. Both happen under the same mutex hold
+// so no concurrent caller observes the entry as still-tracked-but-cancelled.
+//
+// Calling Cancel on the happy path (review completed normally) is required:
+// trackReview made a context.WithCancel, and `go vet`'s lostcancel rule
+// (rightly) complains if we drop the cancel func without calling it. After
+// successful completion the cancel is a no-op for the work, but it releases
+// the bookkeeping the WithCancel goroutine holds.
 func (p *Poller) untrackReview(owner, repo string, number int) {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
 	key := prKey(owner, repo, number)
-	delete(p.activeReviews, key)
-	log.Printf("[TRACK] Untracked review for %s", key)
+	if info, ok := p.activeReviews[key]; ok {
+		if info.Cancel != nil {
+			info.Cancel()
+		}
+		delete(p.activeReviews, key)
+		log.Printf("[TRACK] Untracked review for %s", key)
+	}
 }
 
 // isTracked checks if a PR is currently being processed
@@ -374,21 +458,30 @@ func (p *Poller) isTracked(owner, repo string, number int) bool {
 	return exists
 }
 
-// killReview removes an active review from tracking
-// Note: Since reviews run as in-process goroutines, we cannot actually stop them.
-// This only removes the review from tracking; the goroutine will complete on its own.
+// killReview cancels an active review's context (which propagates to the
+// agent subprocess via DefaultSpawner's ctx-watcher) and removes the entry
+// from tracking, atomically. Returns false if no review was tracked. The
+// goroutine detects the cancel via ctx.Err() in its current LLM call or
+// claude subprocess, exits, and skips the SetPRError write so a concurrent
+// ResetPRToOutdated isn't clobbered.
 func (p *Poller) killReview(owner, repo string, number int) bool {
 	p.reviewsMutex.Lock()
 	key := prKey(owner, repo, number)
-	_, exists := p.activeReviews[key]
+	info, exists := p.activeReviews[key]
+	if exists {
+		// Cancel + delete inside the same critical section so no concurrent
+		// caller sees the entry as tracked-but-cancelled.
+		if info.Cancel != nil {
+			info.Cancel()
+		}
+		delete(p.activeReviews, key)
+	}
 	p.reviewsMutex.Unlock()
 
 	if !exists {
 		return false
 	}
-
-	log.Printf("[TRACK] Removing review for %s from tracking (goroutine will complete on its own)", key)
-	p.untrackReview(owner, repo, number)
+	log.Printf("[TRACK] Cancelled and untracked review for %s", key)
 	return true
 }
 
@@ -396,10 +489,15 @@ func (p *Poller) killReview(owner, repo string, number int) bool {
 // bypassing the full poll cycle. The PR must already be in "generating" status
 // in the database. trackReview is called synchronously before the goroutine
 // launches so the poll cycle's shouldReview/isTracked guard sees it immediately.
-func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool) {
+//
+// If force is true, the existing-review cache check is skipped — useful for
+// the manual "Review" button so a click always regenerates (overwriting the
+// previous review for the same commit).
+func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool) {
 	// Track synchronously BEFORE spawning goroutine so that any concurrent
-	// poll cycle will see this PR as tracked and skip it.
-	p.trackReview(owner, repo, number, 0)
+	// poll cycle will see this PR as tracked and skip it. The returned ctx
+	// is what killReview cancels — we MUST use it for the actual work.
+	reviewCtx := p.trackReview(ctx, owner, repo, number, 0)
 
 	go func() {
 		pr := github.PullRequest{
@@ -414,15 +512,21 @@ func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string,
 		}
 		// Run the single-PR review through generateReviewsBatch (reuses all
 		// existing logic: existence check, LLM call, save, DB update, untrack).
-		// Note: generateReviewsBatch calls trackReview again internally, but
-		// since it's the same key the map entry is simply overwritten (harmless).
-		if err := p.generateReviewsBatch(ctx, []github.PullRequest{pr}); err != nil {
+		// generateReviewsBatch calls trackReview again internally; the second
+		// call sees the existing entry and returns the same ctx so we don't
+		// disrupt this run.
+		if err := p.generateReviewsBatch(reviewCtx, []github.PullRequest{pr}, force); err != nil {
 			log.Printf("[IMMEDIATE] ERROR: Immediate review failed for %s/%s#%d: %v", owner, repo, number, err)
 			// generateReviewsBatch handles per-PR error/untrack internally,
 			// but if the batch-level error fires (e.g. API key validation),
-			// we need to clean up.
+			// we need to clean up. Skip the error write if we were cancelled —
+			// killReview's caller (outdated detection) has already reset the row.
 			if p.isTracked(owner, repo, number) {
-				_ = p.UpdatePRStatus(owner, repo, number, "error")
+				if reviewCtx.Err() == nil {
+					if setErr := p.db.SetPRError(owner, repo, number, err.Error()); setErr != nil {
+						log.Printf("[IMMEDIATE] WARNING: failed to persist error status: %v", setErr)
+					}
+				}
 				p.untrackReview(owner, repo, number)
 			}
 		}
@@ -573,7 +677,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 
 		// --- Outdated review detection ---
 		if state.HeadRefOid != pr.LastCommitSHA {
-			wasGenerating := pr.Status == "generating"
+			wasInFlight := isReviewInFlight(pr.Status)
 			oldSHA, newSHA := pr.LastCommitSHA, state.HeadRefOid
 			if len(oldSHA) > 7 {
 				oldSHA = oldSHA[:7]
@@ -592,8 +696,8 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 				}
 			}
 
-			// If the PR was actively generating, kill the process
-			if wasGenerating {
+			// If the PR had an active Gemini or agent review, kill the process.
+			if wasInFlight {
 				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
 					log.Printf("[OUTDATED] Killed active review process for %s", key)
 				}
@@ -617,17 +721,14 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 // If a storage interface is set (for testing), it uses that.
 // Otherwise, checks GCS if bucket is configured, or local file storage.
 func (p *Poller) reviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (bool, error) {
-	// Use storage interface if set (for testing)
 	if p.storage != nil {
 		return p.storage.ReviewExists(ctx, owner, repo, prNumber, commitSHA)
 	}
 
-	// Check GCS if bucket is configured
 	if p.gcsClient != nil && p.gcsClient.BucketName() != "" {
 		return p.gcsClient.ReviewExists(ctx, owner, repo, prNumber, commitSHA)
 	}
 
-	// Check local file storage
 	filename := gcs.ReviewFileName(owner, repo, prNumber, commitSHA)
 	localPath := filepath.Join(p.reviewDir, filename)
 	_, err := os.Stat(localPath)
@@ -640,31 +741,24 @@ func (p *Poller) reviewExists(ctx context.Context, owner, repo string, prNumber 
 	return false, err
 }
 
-// saveReview saves the review HTML content to storage.
-// If a storage interface is set (for testing), it uses that.
-// Otherwise, if GCS bucket is configured, uploads to GCS. Otherwise saves locally.
-func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, htmlContent []byte) (string, error) {
-	// Use storage interface if set (for testing)
+// saveReview persists review content to storage (GCS or local disk).
+func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	if p.storage != nil {
-		return p.storage.SaveReview(ctx, owner, repo, prNumber, commitSHA, htmlContent)
+		return p.storage.SaveReview(ctx, owner, repo, prNumber, commitSHA, content)
 	}
 
-	// Check if GCS bucket is configured
 	if p.gcsClient != nil && p.gcsClient.BucketName() != "" {
-		return p.gcsClient.UploadReview(ctx, owner, repo, prNumber, commitSHA, htmlContent)
+		return p.gcsClient.UploadReview(ctx, owner, repo, prNumber, commitSHA, content)
 	}
 
-	// Fall back to local file storage
 	filename := gcs.ReviewFileName(owner, repo, prNumber, commitSHA)
 	localPath := filepath.Join(p.reviewDir, filename)
 
-	// Ensure reviews directory exists
 	if err := os.MkdirAll(p.reviewDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create reviews directory: %w", err)
 	}
 
-	// Write to local file
-	if err := os.WriteFile(localPath, htmlContent, 0644); err != nil {
+	if err := os.WriteFile(localPath, content, 0644); err != nil {
 		return "", fmt.Errorf("failed to write review file: %w", err)
 	}
 
@@ -780,10 +874,10 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 
 		// Compare commit SHAs
 		if currentSHA != pr.LastCommitSHA {
-			wasGenerating := pr.Status == "generating"
+			wasInFlight := isReviewInFlight(pr.Status)
 			statusMsg := pr.Status
-			if wasGenerating {
-				statusMsg = "generating (cancelling)"
+			if wasInFlight {
+				statusMsg = pr.Status + " (cancelling)"
 			}
 			log.Printf("[OUTDATED] PR %s/%s#%d (%s) has new commits (old: %s, new: %s), resetting to pending",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, statusMsg, pr.LastCommitSHA[:7], currentSHA[:7])
@@ -798,8 +892,8 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 				}
 			}
 
-			// If the PR was actively generating, kill the process
-			if wasGenerating {
+			// If the PR had an active Gemini or agent review, kill the process.
+			if wasInFlight {
 				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
 					log.Printf("[OUTDATED] Killed active review process for %s/%s#%d",
 						pr.RepoOwner, pr.RepoName, pr.PRNumber)
@@ -815,8 +909,8 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 
 			p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
 
-			if wasGenerating {
-				log.Printf("[OUTDATED] PR %d has a new commit while generating. Cancelled old review.", pr.PRNumber)
+			if wasInFlight {
+				log.Printf("[OUTDATED] PR %d had new commit while in-flight (%s). Cancelled old review.", pr.PRNumber, pr.Status)
 			} else if pr.Status == "completed" {
 				log.Printf("[OUTDATED] PR %d has a new commit. Removed stale review.", pr.PRNumber)
 			} else {
@@ -907,11 +1001,11 @@ func (p *Poller) poll(ctx context.Context) {
 
 	// Reset PRs in error state after timeout (self-healing)
 	log.Printf("[POLL] Checking for error PRs to retry...")
-	errorResetCount, err := p.db.ResetErrorPRs(int(ErrorPRRetryTimeout.Minutes()))
+	errorResetCount, err := p.db.ResetErrorPRs(int(ErrorPRRetryTimeout.Minutes()), ErrorPRMaxAutoRetries)
 	if err != nil {
 		log.Printf("[POLL] ERROR: Failed to reset error PRs: %v", err)
 	} else if errorResetCount > 0 {
-		log.Printf("[POLL] SELF-HEALING: Reset %d error PRs to 'pending' for retry", errorResetCount)
+		log.Printf("[POLL] SELF-HEALING: Reset %d error PRs to 'pending' (cap: %d auto-retries before requiring manual trigger)", errorResetCount, ErrorPRMaxAutoRetries)
 	} else {
 		log.Printf("[POLL] No error PRs to retry")
 	}
@@ -1640,8 +1734,10 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, a
 	log.Printf("[BATCH] Starting reviewer batch for %s/%s PRs: %v", owner, repo, prNumbers)
 
 	startTime := time.Now()
-	// Generate reviews using native reviewer (batch)
-	batchErr := p.generateReviewsBatch(ctx, prsToReview)
+	// Generate reviews using native reviewer (batch). force=false on the
+	// auto-poll path: respect the per-commit cache so we don't burn cycles
+	// regenerating reviews for already-reviewed commits.
+	batchErr := p.generateReviewsBatch(ctx, prsToReview, false)
 	duration := time.Since(startTime)
 
 	if batchErr != nil {
@@ -1669,7 +1765,13 @@ func (p *Poller) UpdatePRStatus(owner, repo string, prNumber int, status string)
 	return nil
 }
 
-func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequest) error {
+// generateReviewsBatch runs Gemini (and optionally agent) review generation
+// for one or more PRs. When force is true, the existing-review cache check
+// is skipped — the caller wants a fresh review even if one already exists
+// for the same commit. The auto-poll path uses force=false to avoid
+// re-reviewing already-reviewed commits; the manual API trigger uses
+// force=true so a click always regenerates.
+func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequest, force bool) error {
 	if len(prs) == 0 {
 		return nil
 	}
@@ -1705,8 +1807,15 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 
 			log.Printf("[REVIEWER] Processing PR: %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA[:7])
 
-			// Check if review already exists (in GCS if configured, otherwise locally)
-			exists, existsErr := p.reviewExists(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+			// Check if review already exists (in GCS if configured, otherwise locally).
+			// Skipped when force=true so the manual trigger always regenerates.
+			exists := false
+			var existsErr error
+			if !force {
+				exists, existsErr = p.reviewExists(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+			} else {
+				log.Printf("[REVIEWER] PR %d: force=true, skipping existing-review cache check", pr.Number)
+			}
 			if existsErr != nil {
 				log.Printf("[REVIEWER] Warning: Failed to check for existing review: %v", existsErr)
 				// Continue anyway - will regenerate if needed
@@ -1722,8 +1831,10 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 					mediumCount = existingPR.MediumCount
 					lowCount = existingPR.LowCount
 				}
-				if err := p.upsertPRPreservingReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, pr.CreatedAt, pr.Draft, criticalCount, mediumCount, lowCount); err != nil {
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
+				} else {
+					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				}
 				return
 			}
@@ -1735,8 +1846,11 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			}
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 
-			// Track this review (using dummy PID since we're running in-process)
-			p.trackReview(pr.Owner, pr.Repo, pr.Number, 0)
+			// Track this review (using dummy PID since we're running in-process).
+			// The returned ctx is what killReview cancels — use it for the rest
+			// of the review work so cancellation actually aborts the LLM call /
+			// agent subprocess rather than only flipping the tracking map.
+			prCtx := p.trackReview(ctx, pr.Owner, pr.Repo, pr.Number, 0)
 
 			execStart := time.Now()
 
@@ -1758,7 +1872,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 					Fast:         false,
 					NRequests:    nRequests,
 				}
-				reviewResult, err = p.reviewGenerator.GenerateReview(ctx, genCfg)
+				reviewResult, err = p.reviewGenerator.GenerateReview(prCtx, genCfg)
 			} else {
 				// Use real reviewer service
 				reviewCfg := service.PerformReviewConfig{
@@ -1772,11 +1886,13 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 					NRequests:    nRequests,
 				}
 
-				result, svcErr := reviewSvc.PerformReview(reviewCfg)
+				result, svcErr := reviewSvc.PerformReviewWithContext(prCtx, reviewCfg)
 				if svcErr != nil {
 					err = svcErr
+				} else if p.cfg.AgenticReviews {
+					reviewResult, err = p.runAgentStage(prCtx, pr, result)
 				} else {
-					// Generate HTML Report content
+					// Legacy HTML report path.
 					htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModel)
 					if htmlContent == nil {
 						err = fmt.Errorf("failed to generate HTML content")
@@ -1795,12 +1911,25 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			if err != nil {
 				log.Printf("[REVIEWER] ERROR: Review failed for PR %d after %v: %v", pr.Number, execDuration, err)
 
+				// Skip the error write if the review was cancelled (killReview
+				// fired because of a new commit or external trigger). The caller
+				// has already reset the row to a sane state and we'd just clobber
+				// it with status=error.
+				if prCtx.Err() != nil {
+					log.Printf("[REVIEWER] PR %d review was cancelled (ctx=%v); skipping error write", pr.Number, prCtx.Err())
+					p.untrackReview(pr.Owner, pr.Repo, pr.Number)
+					return
+				}
+
 				// Check if outdated
 				currentPR, dbErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
 				if dbErr == nil && currentPR != nil && currentPR.Status == "pending" && currentPR.LastCommitSHA != pr.CommitSHA {
 					log.Printf("[REVIEWER] Review for PR %d was cancelled because it became outdated.", pr.Number)
 				} else {
-					_ = p.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error") // nolint:errcheck
+					if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
+						log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+					}
+					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				}
 				p.untrackReview(pr.Owner, pr.Repo, pr.Number)
 				return
@@ -1812,7 +1941,10 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			filename, err := p.saveReview(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent)
 			if err != nil {
 				log.Printf("[REVIEWER] ERROR: Failed to save review for PR %d: %v", pr.Number, err)
-				_ = p.UpdatePRStatus(pr.Owner, pr.Repo, pr.Number, "error") // nolint:errcheck
+				if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
+					log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+				}
+				p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				p.untrackReview(pr.Owner, pr.Repo, pr.Number)
 				return
 			}
@@ -1827,9 +1959,10 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				log.Printf("[REVIEWER] STALE REVIEW: PR %d commit changed during generation, but keeping in GCS for history", pr.Number)
 				// Don't update DB - the next poll will generate a new review for the new commit
 			} else {
-				if err := p.upsertPRPreservingReviewData(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, "completed", pr.Title, pr.Author, pr.CreatedAt, pr.Draft, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount); err != nil {
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
 				} else {
+					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 					log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount)
 				}
 			}
