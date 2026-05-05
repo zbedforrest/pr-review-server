@@ -125,12 +125,23 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 	}
 	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 
+	// Fetch a fresh token at agent-stage start. In prod (GitHub App auth)
+	// p.cfg.GitHubToken is empty and we need to mint an installation token
+	// from the App; the agent's git subprocess can't share the REST client's
+	// oauth2.TokenSource. CurrentToken transparently returns the static PAT
+	// in single-user/dev mode and the App installation token in multi-user/
+	// prod mode.
+	gitToken, tokenErr := p.ghClientConcrete.CurrentToken(ctx)
+	if tokenErr != nil {
+		log.Printf("[REVIEWER] ERROR: PR %d failed to get GitHub token for clone: %v", pr.Number, tokenErr)
+		return nil, fmt.Errorf("agent review: get GitHub token: %w", tokenErr)
+	}
 	agentCfg := service.AgentConfig{
 		CloneRootDir: p.cfg.AgentCloneRootDir,
 		LogsDir:      p.cfg.AgentLogsDir,
 		WallClock:    time.Duration(p.cfg.AgentWallClockSec) * time.Second,
 		MaxTurns:     p.cfg.AgentMaxTurns,
-		GitHubToken:  p.cfg.GitHubToken,
+		GitHubToken:  gitToken,
 	}
 	agentOut, agentErr := service.RunAgentReview(ctx, agentCfg, p.agentSpawner,
 		pr.Owner, pr.Repo, "", pr.Number, pr.CommitSHA, result.Comments)

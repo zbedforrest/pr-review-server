@@ -25,6 +25,19 @@ type Client struct {
 	appClient  *AppClient
 }
 
+// CurrentToken returns the access token currently used by this Client for
+// HTTPS operations: a fresh GitHub App installation token in multi-user/prod
+// mode, or the static personal-access token in single-user/dev mode. The
+// agent reviewer's git clone needs this to authenticate against private
+// repos because git is invoked as a subprocess and can't share the
+// oauth2.TokenSource the REST/GraphQL clients use.
+func (c *Client) CurrentToken(ctx context.Context) (string, error) {
+	if c.appClient != nil {
+		return c.appClient.GetToken(ctx)
+	}
+	return c.token, nil
+}
+
 // SetAppClient sets the AppClient for org-wide operations (multi-user mode).
 // It also reconfigures the REST and GraphQL clients to use a refreshable token source
 // so that installation tokens are automatically renewed when they expire.
