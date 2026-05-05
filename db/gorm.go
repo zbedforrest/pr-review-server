@@ -110,6 +110,9 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS error_message text").Error; err != nil {
 		return fmt.Errorf("add error_message: %w", err)
 	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS error_retry_count integer NOT NULL DEFAULT 0").Error; err != nil {
+		return fmt.Errorf("add error_retry_count: %w", err)
+	}
 	return nil
 }
 

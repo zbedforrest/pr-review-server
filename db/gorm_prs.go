@@ -322,12 +322,15 @@ func (g *GormDB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, ti
 	if err != nil {
 		return err
 	}
-	// A fresh generation attempt supersedes any prior error for this PR. This
-	// is a best-effort write; a missing error_message column (e.g. if the
-	// migration was skipped) shouldn't block the trigger.
+	// A fresh generation attempt supersedes any prior error for this PR
+	// and re-arms the auto-retry counter. Best-effort writes; a missing
+	// column (e.g. migration skipped) shouldn't block the trigger.
 	_ = g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
-		Update("error_message", "").Error
+		Updates(map[string]interface{}{
+			"error_message":     "",
+			"error_retry_count": 0,
+		}).Error
 	return nil
 }
 
@@ -388,13 +391,26 @@ func (g *GormDB) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) {
 	return int(result.RowsAffected), nil
 }
 
-// ResetErrorPRs resets PRs that have been in "error" status for too long
-func (g *GormDB) ResetErrorPRs(maxAgeMinutes int) (int, error) {
+// ResetErrorPRs resets error-state PRs back to pending so the next poll
+// can retry them. Capped at maxRetries auto-retries per error; once a PR
+// has been auto-reset that many times without a manual trigger
+// resetting the counter, it stays in error state to prevent indefinite
+// quota burn from deterministic failures.
+//
+// maxAgeMinutes is the cool-off between auto-retries. maxRetries is the
+// per-PR cap (typically 1: one auto-retry, then human action required).
+// Increments error_retry_count atomically with the reset so concurrent
+// pollers can't both grab the same row.
+func (g *GormDB) ResetErrorPRs(maxAgeMinutes int, maxRetries int) (int, error) {
 	cutoff := time.Now().UTC().Add(-time.Duration(maxAgeMinutes) * time.Minute)
 	result := g.db.Model(&PRModel{}).
 		Where("status = ?", "error").
 		Where("last_reviewed_at IS NULL OR last_reviewed_at < ?", cutoff).
-		Update("status", "pending")
+		Where("error_retry_count < ?", maxRetries).
+		Updates(map[string]interface{}{
+			"status":            "pending",
+			"error_retry_count": gorm.Expr("error_retry_count + 1"),
+		})
 
 	if result.Error != nil {
 		return 0, result.Error

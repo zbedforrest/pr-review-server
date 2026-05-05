@@ -423,14 +423,61 @@ func TestGormDB_ResetErrorPRs(t *testing.T) {
 	err := db.UpsertPR(pr)
 	require.NoError(t, err)
 
-	// Reset error PRs older than 5 minutes
-	count, err := db.ResetErrorPRs(5)
+	// Reset error PRs older than 5 minutes; allow up to 1 auto-retry.
+	count, err := db.ResetErrorPRs(5, 1)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
 
 	fetched, err := db.GetPR("owner", "repo", 1)
 	require.NoError(t, err)
 	assert.Equal(t, "pending", fetched.Status)
+}
+
+// Regression: once a PR has hit the auto-retry cap, ResetErrorPRs must
+// stop resetting it back to pending so deterministic failures don't burn
+// quota in a 5-minute loop. SetPRGenerating (manual trigger) re-arms the
+// counter.
+func TestGormDB_ResetErrorPRs_RespectsRetryCap(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	// Insert an error PR old enough to be eligible for retry.
+	oldTime := time.Now().UTC().Add(-10 * time.Minute)
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner: "o", RepoName: "r", PRNumber: 1,
+		LastCommitSHA: "sha", Status: "error", LastReviewedAt: &oldTime,
+	}))
+
+	// First auto-retry succeeds and increments the counter.
+	count, err := db.ResetErrorPRs(5, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "first auto-retry should fire")
+
+	// Put it back in error state with an old timestamp (simulating the
+	// retried run failing again). Raw SQL avoids depending on a setter
+	// that might also touch error_retry_count.
+	require.NoError(t, db.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ?", "o", "r").
+		Updates(map[string]interface{}{"status": "error", "last_reviewed_at": oldTime}).Error)
+
+	// Second auto-retry should be blocked by the cap.
+	count, err = db.ResetErrorPRs(5, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "second auto-retry should be blocked by cap")
+
+	fetched, err := db.GetPR("o", "r", 1)
+	require.NoError(t, err)
+	assert.Equal(t, "error", fetched.Status)
+
+	// Manual trigger (SetPRGenerating) re-arms the counter and the next
+	// auto-retry can fire.
+	require.NoError(t, db.SetPRGenerating("o", "r", 1, "newsha", "T", "A", nil, false))
+	require.NoError(t, db.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ?", "o", "r").
+		Updates(map[string]interface{}{"status": "error", "last_reviewed_at": oldTime}).Error)
+	count, err = db.ResetErrorPRs(5, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "manual trigger should re-arm the retry counter")
 }
 
 func TestGormDB_GetPRsWithMissingMetadata(t *testing.T) {

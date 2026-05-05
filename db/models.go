@@ -101,6 +101,11 @@ type PRModel struct {
 	GitHubUpdatedAt *time.Time `gorm:"column:github_updated_at"`
 	// Populated when Status=="error"; surfaced to the UI.
 	ErrorMessage string `gorm:"column:error_message;type:text"`
+	// How many times the auto-retry path has reset this PR back to pending
+	// after an error. Capped by ResetErrorPRs so deterministic failures
+	// (auth misconfig, model outage) don't burn quota indefinitely. Reset
+	// to 0 by SetPRGenerating (manual trigger or fresh poll-cycle attempt).
+	ErrorRetryCount int `gorm:"column:error_retry_count;default:0"`
 }
 
 // TableName specifies the table name for PRModel

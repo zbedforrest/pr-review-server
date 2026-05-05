@@ -41,6 +41,14 @@ const (
 
 	// ErrorPRRetryTimeout is how long to wait before retrying a PR in "error" state.
 	ErrorPRRetryTimeout = 5 * time.Minute
+
+	// ErrorPRMaxAutoRetries caps how many times the poll cycle will reset
+	// an error-state PR back to pending. After this many auto-retries the
+	// PR stays in error state until a manual trigger resets the counter
+	// via SetPRGenerating. Prevents deterministic failures (auth misconfig,
+	// model outage, persistent bad-prompt state) from burning quota in a
+	// 5-minute loop.
+	ErrorPRMaxAutoRetries = 1
 )
 
 type ProcessInfo struct {
@@ -993,11 +1001,11 @@ func (p *Poller) poll(ctx context.Context) {
 
 	// Reset PRs in error state after timeout (self-healing)
 	log.Printf("[POLL] Checking for error PRs to retry...")
-	errorResetCount, err := p.db.ResetErrorPRs(int(ErrorPRRetryTimeout.Minutes()))
+	errorResetCount, err := p.db.ResetErrorPRs(int(ErrorPRRetryTimeout.Minutes()), ErrorPRMaxAutoRetries)
 	if err != nil {
 		log.Printf("[POLL] ERROR: Failed to reset error PRs: %v", err)
 	} else if errorResetCount > 0 {
-		log.Printf("[POLL] SELF-HEALING: Reset %d error PRs to 'pending' for retry", errorResetCount)
+		log.Printf("[POLL] SELF-HEALING: Reset %d error PRs to 'pending' (cap: %d auto-retries before requiring manual trigger)", errorResetCount, ErrorPRMaxAutoRetries)
 	} else {
 		log.Printf("[POLL] No error PRs to retry")
 	}

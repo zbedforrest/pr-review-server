@@ -160,7 +160,7 @@ type Database interface {
 	GetAllPRs() ([]PR, error)
 	DeletePR(owner, repo string, prNumber int) error
 	ResetStaleGeneratingPRs(timeoutMinutes int) (int, error)
-	ResetErrorPRs(maxAgeMinutes int) (int, error)
+	ResetErrorPRs(maxAgeMinutes int, maxRetries int) (int, error)
 	GetPRsWithMissingMetadata() ([]PR, error)
 	UpdatePRMetadata(owner, repo string, prNumber int, title, author string) error
 	UpdatePRNotes(owner, repo string, prNumber int, notes string) error

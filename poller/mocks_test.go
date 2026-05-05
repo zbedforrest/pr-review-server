@@ -475,7 +475,7 @@ func (m *MockDatabase) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) 
 	return 0, nil
 }
 
-func (m *MockDatabase) ResetErrorPRs(maxAgeMinutes int) (int, error) {
+func (m *MockDatabase) ResetErrorPRs(maxAgeMinutes int, maxRetries int) (int, error) {
 	return 0, nil
 }
 
