@@ -104,8 +104,9 @@ func RunAgentReview(
 		return nil, fmt.Errorf("agent: clone: %w", err)
 	}
 	// Remove the per-run worktree once we're done with it. On Cloud Run the
-	// clones live on /tmp (= memory), so leaking ~350MB per chaturbate review
-	// would OOM the instance after a handful of runs.
+	// clones live on /tmp (= memory), so leaking a per-review worktree on
+	// every successful run would OOM the instance after a handful of large-
+	// repo reviews.
 	defer func() {
 		if cerr := cleanupClone(); cerr != nil {
 			log.Printf("%s WARN: worktree cleanup failed: %v", logPrefix, cerr)
