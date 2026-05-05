@@ -37,11 +37,12 @@ type Config struct {
 	GeminiAPIKey    string
 
 	// Agent review (Claude Code subprocess) — dev-only for now.
-	AgenticReviews    bool
-	AgentCloneRootDir string
-	AgentLogsDir      string
-	AgentWallClockSec int
-	AgentMaxTurns     int
+	AgenticReviews     bool
+	AgentCloneRootDir  string
+	AgentLogsDir       string
+	AgentWallClockSec  int
+	AgentMaxTurns      int
+	AgentMaxConcurrent int // <=0 disables the cap (unlimited concurrency)
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -108,8 +109,9 @@ func Load() *Config {
 		AgenticReviews:    os.Getenv("AGENTIC_REVIEWS") == "true",
 		AgentCloneRootDir: getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
 		AgentLogsDir:      getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
-		AgentWallClockSec: getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 360),
-		AgentMaxTurns:     getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
+		AgentWallClockSec:  getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 360),
+		AgentMaxTurns:      getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
+		AgentMaxConcurrent: getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
 	}
 }
 

@@ -86,10 +86,16 @@ type Poller struct {
 	pollCount int
 	// Agent-review subprocess spawner (nil-safe: defaults to the real claude CLI).
 	agentSpawner service.Spawner
+	// agentSlots caps concurrent agent reviews per process. Each agent run
+	// holds ~1 GB of /tmp (clone) + claude memory; without a cap, two PRs
+	// triggered close together can exhaust the instance's memory budget.
+	// Buffered to AgentMaxConcurrent; nil if AgentMaxConcurrent <= 0
+	// (unlimited, used by tests).
+	agentSlots chan struct{}
 }
 
 func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsClient *gcs.Client) *Poller {
-	return &Poller{
+	p := &Poller{
 		cfg:              cfg,
 		db:               database,
 		ghClient:         ghClient,
@@ -100,6 +106,10 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		activeReviews:    make(map[string]ProcessInfo),
 		agentSpawner:     service.DefaultSpawner{},
 	}
+	if cfg.AgentMaxConcurrent > 0 {
+		p.agentSlots = make(chan struct{}, cfg.AgentMaxConcurrent)
+	}
+	return p
 }
 
 // SetAgentSpawner overrides the subprocess spawner used for agent reviews.
@@ -117,7 +127,21 @@ func isReviewInFlight(status string) bool {
 // the PR status to agent_reviewing, spawns the agent against a clone of the
 // PR head, replaces the comment set with the agent's refined output, and
 // re-renders via the same HTML pipeline so the inline-comment UI is intact.
+//
+// If a concurrency cap is configured (AGENT_MAX_CONCURRENT), this acquires
+// a slot before the clone and releases it when done. When the cap is
+// saturated the goroutine blocks here — caller is queued behind in-flight
+// reviews rather than competing for memory.
 func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, result *service.ReviewResult) (*ReviewResult, error) {
+	if p.agentSlots != nil {
+		select {
+		case p.agentSlots <- struct{}{}:
+			defer func() { <-p.agentSlots }()
+		case <-ctx.Done():
+			return nil, fmt.Errorf("agent review: cancelled while waiting for concurrency slot: %w", ctx.Err())
+		}
+	}
+
 	log.Printf("[REVIEWER] PR %d: Gemini pass done (comments=%d), entering agent stage",
 		pr.Number, len(result.Comments))
 	if setErr := p.db.SetPRAgentReviewing(pr.Owner, pr.Repo, pr.Number); setErr != nil {
