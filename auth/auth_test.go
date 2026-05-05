@@ -132,7 +132,7 @@ func (m *MockDatabase) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) 
 func (m *MockDatabase) ResetErrorPRs(maxAgeMinutes int, maxRetries int) (int, error) {
 	return 0, nil
 }
-func (m *MockDatabase) GetPRsWithMissingMetadata() ([]db.PR, error)             { return nil, nil }
+func (m *MockDatabase) GetPRsWithMissingMetadata() ([]db.PR, error) { return nil, nil }
 func (m *MockDatabase) UpdatePRMetadata(owner, repo string, prNumber int, title, author string) error {
 	return nil
 }

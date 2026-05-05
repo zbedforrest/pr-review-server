@@ -41,23 +41,6 @@ func (f *fakeProcess) Kill() error {
 	return nil
 }
 
-type fakeSpawner struct {
-	proc            *fakeProcess
-	capturedArgs    []string
-	capturedDir     string
-	spawnErr        error
-	spawnNameWanted string
-}
-
-func (s *fakeSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
-	s.capturedArgs = args
-	s.capturedDir = dir
-	if s.spawnErr != nil {
-		return nil, s.spawnErr
-	}
-	return s.proc, nil
-}
-
 // skipIfNoGit skips tests that need a working git binary (the clone step).
 func skipIfNoGit(t *testing.T) {
 	t.Helper()

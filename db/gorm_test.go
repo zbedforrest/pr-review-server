@@ -112,7 +112,7 @@ func TestGormDB_UpsertPR_UpdatesPollerWrittenColumns(t *testing.T) {
 	// Simulate the poller flushing review/CI updates onto the existing row.
 	err = db.UpsertPR(&PR{
 		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
-		LastCommitSHA: "abc123",
+		LastCommitSHA:  "abc123",
 		ApprovalCount:  2,
 		MyReviewStatus: "APPROVED",
 		CIState:        "failure",

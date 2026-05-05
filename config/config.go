@@ -106,9 +106,9 @@ func Load() *Config {
 		ReviewerEnabled: false, // Will be set to true in main.go if API key is available
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
 
-		AgenticReviews:    os.Getenv("AGENTIC_REVIEWS") == "true",
-		AgentCloneRootDir: getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
-		AgentLogsDir:      getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
+		AgenticReviews:     os.Getenv("AGENTIC_REVIEWS") == "true",
+		AgentCloneRootDir:  getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
+		AgentLogsDir:       getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
 		AgentWallClockSec:  getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 360),
 		AgentMaxTurns:      getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
 		AgentMaxConcurrent: getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
