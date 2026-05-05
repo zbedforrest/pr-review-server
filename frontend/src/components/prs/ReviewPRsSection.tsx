@@ -10,8 +10,6 @@ import { TriageFilter, categorizePR } from './triageUtils';
 import './SectionHeader.scss';
 
 interface ReviewPRsSectionProps {
-  showReviewColumns?: boolean;
-  onToggleColumns?: () => void;
   searchTerm?: string;
   triageFilter?: TriageFilter | null;
   selectedTeams?: string[];
@@ -67,8 +65,6 @@ function filterAndSortPRs(prs: PR[], { searchTerm, selectedTeams, selectedRepos,
 }
 
 export function ReviewPRsSection({
-  showReviewColumns = true,
-  onToggleColumns,
   searchTerm = '',
   triageFilter = null,
   selectedTeams = [],
@@ -129,7 +125,7 @@ export function ReviewPRsSection({
           </p>
         )}
         {!isLoading && !error && myPRs.length > 0 && (
-          <PRTable prs={myPRs} showReviewColumns={showReviewColumns} showViaTeams={false} />
+          <PRTable prs={myPRs} showViaTeams={false} />
         )}
       </section>
 
@@ -137,22 +133,11 @@ export function ReviewPRsSection({
       <section>
         <div className="section-header">
           <h2>PRs to Review ({reviewPRs.length})</h2>
-          <div className="section-header__actions">
-            {onToggleColumns && (
-              <button
-                className="column-toggle-btn"
-                onClick={onToggleColumns}
-                title={showReviewColumns ? 'Hide Status & Review columns' : 'Show Status & Review columns'}
-              >
-                {showReviewColumns ? '👁️ Hide AI Columns' : '👁️ Show AI Columns'}
-              </button>
-            )}
-          </div>
         </div>
         {isLoading && <LoadingSpinner />}
         {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
         {!isLoading && !error && (
-          <PRTable prs={reviewPRs} showReviewColumns={showReviewColumns} />
+          <PRTable prs={reviewPRs} />
         )}
       </section>
     </>

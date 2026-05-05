@@ -4,7 +4,6 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { Header, StatusBar } from '@/components/layout';
 import { FilterBar } from '@/components/filters';
 import { ReviewPRsSection } from '@/components/prs';
-import { useReviewerHealth } from '@/hooks/useReviewerHealth';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
 import { PR } from '@/types/pr';
@@ -59,20 +58,8 @@ class ErrorBoundary extends Component<
 }
 
 function AppContent() {
-  const { data: reviewerHealth } = useReviewerHealth();
   const queryClient = useQueryClient();
-  const { track, trackSearch } = useTelemetry();
-
-  // Column visibility state - default based on reviewer health
-  // We use an internal state to track if we've already performed the initial setup
-  const [hasInitializedColumns, setHasInitializedColumns] = useState(false);
-  const [showReviewColumns, setShowReviewColumns] = useState(true);
-
-  // Auto-hide columns if reviewer is unhealthy (only on first load when data arrives)
-  if (!hasInitializedColumns && reviewerHealth) {
-    setShowReviewColumns(reviewerHealth.recommendation === 'show_columns');
-    setHasInitializedColumns(true);
-  }
+  const { trackSearch } = useTelemetry();
 
   // Connection status state
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
@@ -104,12 +91,6 @@ function AppContent() {
     };
   }, [queryClient]);
 
-  const handleToggleColumns = () => {
-    const next = !showReviewColumns;
-    setShowReviewColumns(next);
-    track('toggle_columns', { label: next ? 'show' : 'hide' });
-  };
-
   return (
     <div className="app-container">
       <Header />
@@ -137,8 +118,6 @@ function AppContent() {
         </div>
       </div>
       <ReviewPRsSection
-        showReviewColumns={showReviewColumns}
-        onToggleColumns={handleToggleColumns}
         searchTerm={searchTerm}
         selectedTeams={selectedTeams}
         selectedRepos={selectedRepos}
