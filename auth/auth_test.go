@@ -923,6 +923,167 @@ func TestGetDevUser_ReturnsUser(t *testing.T) {
 	}
 }
 
+// --- Bearer token middleware tests ---
+
+// fakeGitHubUserAPI returns an httptest server that emulates GET /user. It
+// records how many times it was called so cache tests can assert the second
+// call hits the cache instead.
+func fakeGitHubUserAPI(t *testing.T, expectedToken, returnLogin string, returnStatus int) (*httptest.Server, *int) {
+	t.Helper()
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		got := r.Header.Get("Authorization")
+		if got != "Bearer "+expectedToken {
+			t.Errorf("expected Authorization 'Bearer %s', got %q", expectedToken, got)
+		}
+		calls++
+		if returnStatus != http.StatusOK {
+			w.WriteHeader(returnStatus)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(GitHubUser{ID: 1, Login: returnLogin})
+	}))
+	return srv, &calls
+}
+
+func TestMiddleware_BearerPAT_KnownUser_AddsUserToContext(t *testing.T) {
+	mockDB := newMockDatabase()
+	user := &db.User{GitHubID: 42, GitHubUsername: "alice"}
+	_ = mockDB.CreateUser(user)
+
+	srv, _ := fakeGitHubUserAPI(t, "tok-good", "alice", http.StatusOK)
+	defer srv.Close()
+
+	authInst := newTestAuth(mockDB)
+	authInst.githubAPIBase = srv.URL
+
+	var seen *db.User
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = GetCurrentUser(r)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+	req.Header.Set("Authorization", "Bearer tok-good")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", w.Code, w.Body.String())
+	}
+	if seen == nil {
+		t.Fatal("expected user in context")
+	}
+	if seen.GitHubUsername != "alice" {
+		t.Errorf("expected alice, got %s", seen.GitHubUsername)
+	}
+}
+
+func TestMiddleware_BearerPAT_UnknownLogin_Returns401(t *testing.T) {
+	mockDB := newMockDatabase() // no users registered
+
+	srv, _ := fakeGitHubUserAPI(t, "tok-anon", "stranger", http.StatusOK)
+	defer srv.Close()
+
+	authInst := newTestAuth(mockDB)
+	authInst.githubAPIBase = srv.URL
+
+	called := false
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+	req.Header.Set("Authorization", "Bearer tok-anon")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for unknown login, got %d", w.Code)
+	}
+	if called {
+		t.Error("downstream handler must not run when bearer auth fails")
+	}
+}
+
+func TestMiddleware_BearerPAT_GitHubRejects_Returns401(t *testing.T) {
+	mockDB := newMockDatabase()
+
+	srv, _ := fakeGitHubUserAPI(t, "tok-bad", "", http.StatusUnauthorized)
+	defer srv.Close()
+
+	authInst := newTestAuth(mockDB)
+	authInst.githubAPIBase = srv.URL
+
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+	req.Header.Set("Authorization", "Bearer tok-bad")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 when GitHub rejects token, got %d", w.Code)
+	}
+}
+
+func TestMiddleware_BearerPAT_CachesLookup(t *testing.T) {
+	mockDB := newMockDatabase()
+	user := &db.User{GitHubID: 99, GitHubUsername: "bob"}
+	_ = mockDB.CreateUser(user)
+
+	srv, calls := fakeGitHubUserAPI(t, "tok-cache", "bob", http.StatusOK)
+	defer srv.Close()
+
+	authInst := newTestAuth(mockDB)
+	authInst.githubAPIBase = srv.URL
+
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+		req.Header.Set("Authorization", "Bearer tok-cache")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("call %d: expected 200, got %d", i, w.Code)
+		}
+	}
+
+	if *calls != 1 {
+		t.Errorf("expected exactly 1 GitHub /user call across 3 requests, got %d", *calls)
+	}
+}
+
+func TestMiddleware_NoAuthHeader_FallsThroughToCookieFlow(t *testing.T) {
+	// Sanity: an /api/* request with no Authorization header AND no session
+	// cookie still 401s via the existing cookie path. This guards against
+	// the bearer branch accidentally short-circuiting the cookie flow.
+	mockDB := newMockDatabase()
+	authInst := newTestAuth(mockDB)
+
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
 // Helper function
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))

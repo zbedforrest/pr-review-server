@@ -265,6 +265,7 @@ func (s *Server) Start() error {
 	http.Handle("/api/user", withAuth(s.handleGetUser))
 	http.Handle("/api/telemetry/track", withAuth(s.handleTrackTelemetry))
 	http.Handle("/api/telemetry/stats", withAuth(s.handleTelemetryStats))
+	http.Handle("/api/review/", withAuth(s.handleGetReview))
 
 	// Static content (protected - reviews contain sensitive code)
 	http.Handle("/reviews/", withAuth(s.handleReviewFromGCS))
