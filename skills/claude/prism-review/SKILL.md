@@ -24,9 +24,19 @@ Where `<pr-ref>` can be any of:
 - `owner/repo#N` shorthand (e.g. `acme/example#6`).
 - A full GitHub PR URL (e.g. `https://github.com/acme/example/pull/6`).
 
-The script prints a metadata header followed by `=== REVIEW HTML ===` and
-the raw HTML body of the review. Read the HTML directly — it is structured
-markup (headings per file, code blocks with line numbers, severity tags).
+The script prints a metadata header followed by `=== FINDINGS (N) ===`
+and one block per finding. Each block has:
+
+- `--- [SEVERITY] file:line ---` header
+- `COMMENT:` the reviewer's markdown text
+- `DIFF HUNK:` the unified-diff hunk containing the cited line
+- `SOURCE CONTEXT:` a window of post-image source around the line
+  (the cited line is the LAST line of `source_before`)
+
+The `DIFF HUNK` and `SOURCE CONTEXT` together tell you exactly what the
+comment refers to without having to re-read the file from scratch — though
+you should still open the file to see callers / tests / wider context
+before forming a judgment.
 
 ## What to do with the review
 
@@ -36,25 +46,28 @@ user explicitly asked you to apply / fix / handle the suggestions in their
 original message. If unsure, ask before editing.
 
 0. **Check the status header first.** Three states can come back:
-   - `Status: review is in flight` — no HTML yet. Tell the user the review
-     is still generating and that they can retry in ~30 seconds (or you can
-     poll for them by re-running the skill).
+   - `Status: review is in flight` — no findings yet. Tell the user the
+     review is still generating and that they can retry in ~30 seconds (or
+     you can poll for them by re-running the skill).
    - `Status: review generation FAILED` — surface the error message to the
      user and suggest re-triggering from the prism dashboard. Do NOT try to
      act on a missing review.
-   - Normal output (`PR: …` / `=== REVIEW HTML ===`) — continue below.
+   - `=== NO STRUCTURED FINDINGS ===` — the review predates the JSON
+     sidecar (older runs). Point the user at the `Review URL` for the HTML
+     view, or ask them to regenerate to get structured output.
+   - Normal output (`=== FINDINGS (N) ===`) — continue below.
 1. **Check `Stale: true` in the header.** If true, the review was generated
    against an older commit than the PR's current HEAD. Surface this to the
    user as a one-line warning before going further; offer to regenerate.
    Also note `In flight (regenerating): true` — that means a fresh review
-   is being computed right now, so the HTML you're reading will be
+   is being computed right now, so the findings you're reading will be
    superseded shortly. Mention this to the user before acting.
-2. **Walk the findings in severity order**: critical → medium → low. The
-   review groups them by file and cites line numbers.
-3. **For each finding, investigate before judging.** Read the cited file at
-   the cited lines AND enough surrounding context to understand intent —
-   callers, tests, related modules. PRism can be confidently wrong about
-   intent; don't take its word.
+2. **Walk the findings in the order printed**: they're already sorted
+   critical → medium → low → unknown, then by file/line.
+3. **For each finding, investigate before judging.** Use the included
+   `DIFF HUNK` + `SOURCE CONTEXT` as your starting point, then open the
+   cited file for wider context — callers, tests, related modules. PRism
+   can be confidently wrong about intent; don't take its word.
 4. **Form an independent assessment.** For each finding, decide:
    - **Agree** — the issue is real and the suggested direction is sound.
    - **Agree on problem, different fix** — issue is real but PRism's proposed

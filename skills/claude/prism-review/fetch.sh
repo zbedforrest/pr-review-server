@@ -137,22 +137,57 @@ if [ "$http_code" != "200" ]; then
   exit 4
 fi
 
-# Pretty-print metadata header + raw HTML body for the model to consume.
-# Use jq if available for clean extraction; otherwise pass the JSON through.
-if command -v jq >/dev/null 2>&1; then
-  jq -r '
-    "PR: \(.owner)/\(.repo)#\(.pr_number)",
-    "Reviewed commit: \(.commit_sha)",
-    "Current HEAD:    \(.head_sha)",
-    "Stale: \(.is_stale)",
-    "In flight (regenerating): \(.is_in_flight)",
-    "Generated at: \(.generated_at)",
-    "Counts: critical=\(.counts.critical) medium=\(.counts.medium) low=\(.counts.low)",
-    "Review URL: \(.review_url)",
-    "",
-    "=== REVIEW HTML ===",
-    .html
-  ' "$tmp_body"
-else
+# Pretty-print the metadata header + structured findings. Each finding is
+# rendered as a markdown block with its file:line, severity, the diff hunk
+# from the unified diff that contains the cited line, and a window of
+# surrounding post-image source so the model can reason about context
+# without re-fetching the file.
+#
+# If the server reports findings_available=false (older review with no JSON
+# sidecar yet), tell the user to regenerate.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "prism-review: jq is required to render the structured payload" >&2
   cat "$tmp_body"
+  exit 0
 fi
+
+jq -r '
+  "PR: \(.owner)/\(.repo)#\(.pr_number)",
+  "Reviewed commit: \(.commit_sha)",
+  "Current HEAD:    \(.head_sha)",
+  "Stale: \(.is_stale)",
+  "In flight (regenerating): \(.is_in_flight)",
+  "Generated at: \(.generated_at)",
+  "Counts: critical=\(.counts.critical) medium=\(.counts.medium) low=\(.counts.low)",
+  "Review URL: \(.review_url)",
+  "Schema: \(.schema_version // "unknown")",
+  "",
+  (if .findings_available then
+     "=== FINDINGS (\(.findings | length)) ===",
+     (.findings[] |
+       "",
+       "--- [\(.severity | ascii_upcase)] \(.file):\(.line) ---",
+       "",
+       "COMMENT:",
+       .comment,
+       "",
+       (if .diff_hunk and .diff_hunk != "" then
+          ("DIFF HUNK:", "```diff", .diff_hunk, "```", "")
+        else empty end),
+       (if (.source_before | length) > 0 or (.source_after | length) > 0 then
+          ("SOURCE CONTEXT (cited line is the LAST line of source_before):",
+           "```",
+           (.source_before // [] | to_entries | map(.value) | .[]),
+           "----- cited line above -----",
+           (.source_after // [] | to_entries | map(.value) | .[]),
+           "```", "")
+        else empty end)
+     )
+   else
+     "=== NO STRUCTURED FINDINGS ===",
+     "",
+     "This review was generated before the JSON sidecar was available, or",
+     "the sidecar could not be loaded. Open \(.review_url) for the HTML",
+     "report, or ask the user to regenerate the review."
+   end)
+' "$tmp_body"

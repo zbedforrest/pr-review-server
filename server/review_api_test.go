@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/gcs"
+	"pr-review-server/pkg/reviewer/payload"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,6 +38,16 @@ func writeReviewFile(t *testing.T, dir, owner, repo string, pr int, shortSHA, bo
 	path := filepath.Join(dir, name)
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 	return name
+}
+
+// writeSidecarFile drops a .json findings sidecar alongside a .html review
+// file. Mirrors what the poller does after MarkPRCompleted.
+func writeSidecarFile(t *testing.T, dir, htmlFilename string, pl payload.Payload) {
+	t.Helper()
+	sidecarName := gcs.ReviewJSONFileName(htmlFilename)
+	body, err := json.Marshal(pl)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, sidecarName), body, 0o644))
 }
 
 func itoa(n int) string {
@@ -98,6 +110,17 @@ func TestReviewAPI_200_returns_full_payload(t *testing.T) {
 	// MarkPRCompleted is the production path that populates review_path +
 	// importance counts atomically. Use it to lock in the contract.
 	filename := writeReviewFile(t, dir, "owner", "repo", 7, "abc1234", "<html>review body</html>")
+	writeSidecarFile(t, dir, filename, payload.Payload{
+		SchemaVersion: "1",
+		Owner:         "owner",
+		Repo:          "repo",
+		PRNumber:      7,
+		CommitSHA:     "abc1234",
+		Counts:        payload.Counts{Critical: 1, Medium: 3, Low: 2},
+		Findings: []payload.Finding{
+			{Severity: "critical", File: "main.go", Line: 42, Comment: "boom", DiffHunk: "@@ -40,3 +40,3 @@\n-old\n+new"},
+		},
+	})
 	require.NoError(t, database.MarkPRCompleted("owner", "repo", 7, "abc1234deadbeef", filename, 1, 3, 2))
 	_ = reviewedAt // touched via DB row below
 
@@ -118,7 +141,13 @@ func TestReviewAPI_200_returns_full_payload(t *testing.T) {
 	assert.Equal(t, 1, resp.Counts.Critical)
 	assert.Equal(t, 3, resp.Counts.Medium)
 	assert.Equal(t, 2, resp.Counts.Low)
-	assert.Equal(t, "<html>review body</html>", resp.HTML)
+	assert.True(t, resp.FindingsAvailable)
+	assert.Equal(t, "1", resp.SchemaVersion)
+	require.Len(t, resp.Findings, 1)
+	assert.Equal(t, "main.go", resp.Findings[0].File)
+	assert.Equal(t, 42, resp.Findings[0].Line)
+	assert.Equal(t, "boom", resp.Findings[0].Comment)
+	assert.Contains(t, resp.Findings[0].DiffHunk, "+new")
 	require.NotNil(t, resp.GeneratedAt, "MarkPRCompleted should populate last_reviewed_at")
 }
 
@@ -160,9 +189,17 @@ func TestReviewAPI_pin_by_sha(t *testing.T) {
 		LastCommitSHA: "bbbbbbb2222",
 		Status:        "pending",
 	}))
-	// Two review files on disk, one for each commit.
-	writeReviewFile(t, dir, "owner", "repo", 9, "aaaaaaa", "<html>OLD</html>")
+	// Two review files on disk, one for each commit, each with its own sidecar.
+	oldName := writeReviewFile(t, dir, "owner", "repo", 9, "aaaaaaa", "<html>OLD</html>")
+	writeSidecarFile(t, dir, oldName, payload.Payload{
+		SchemaVersion: "1",
+		Findings:      []payload.Finding{{Severity: "low", File: "f.go", Line: 1, Comment: "OLD"}},
+	})
 	newName := writeReviewFile(t, dir, "owner", "repo", 9, "bbbbbbb", "<html>NEW</html>")
+	writeSidecarFile(t, dir, newName, payload.Payload{
+		SchemaVersion: "1",
+		Findings:      []payload.Finding{{Severity: "low", File: "f.go", Line: 1, Comment: "NEW"}},
+	})
 	require.NoError(t, database.MarkPRCompleted("owner", "repo", 9, "bbbbbbb2222", newName, 0, 0, 0))
 
 	// No pin → returns the latest review (per DB).
@@ -170,14 +207,16 @@ func TestReviewAPI_pin_by_sha(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	var latest reviewAPIResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &latest))
-	assert.Contains(t, latest.HTML, "NEW")
+	require.Len(t, latest.Findings, 1)
+	assert.Equal(t, "NEW", latest.Findings[0].Comment)
 
 	// Pin to the older sha → returns the older file even though DB points at the newer one.
 	w = doReviewAPIGet(t, server, user, "/api/review/owner/repo/9?sha=aaaaaaa")
 	require.Equal(t, http.StatusOK, w.Code)
 	var pinned reviewAPIResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &pinned))
-	assert.Contains(t, pinned.HTML, "OLD")
+	require.Len(t, pinned.Findings, 1)
+	assert.Equal(t, "OLD", pinned.Findings[0].Comment)
 	assert.Equal(t, "aaaaaaa", pinned.CommitSHA)
 }
 
@@ -239,6 +278,34 @@ func TestReviewAPI_format_html_returns_raw(t *testing.T) {
 	assert.Equal(t, "<html>raw passthrough</html>", w.Body.String())
 }
 
+// Backward-compat: an older review on disk without a .json sidecar still
+// returns 200 + a meaningful envelope, with findings_available=false so the
+// CLI can tell the user to regenerate.
+func TestReviewAPI_findings_unavailable_when_no_sidecar(t *testing.T) {
+	server, database, user, dir := newReviewAPITestServer(t)
+
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      30,
+		LastCommitSHA: "abc1234",
+		Status:        "pending",
+	}))
+	// HTML only — no sidecar written.
+	filename := writeReviewFile(t, dir, "owner", "repo", 30, "abc1234", "<html>legacy</html>")
+	require.NoError(t, database.MarkPRCompleted("owner", "repo", 30, "abc1234", filename, 0, 0, 0))
+
+	w := doReviewAPIGet(t, server, user, "/api/review/owner/repo/30")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var resp reviewAPIResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.False(t, resp.FindingsAvailable, "no sidecar → findings_available=false")
+	assert.Empty(t, resp.Findings)
+	// HTML view URL is still served so the user has somewhere to look.
+	assert.Contains(t, resp.ReviewURL, "/reviews/"+filename)
+}
+
 // In-flight: PR exists, status=generating, no review_path → 202 Accepted
 // with pr_status / is_in_flight set so the CLI knows to retry.
 func TestReviewAPI_202_when_generating_no_prior_review(t *testing.T) {
@@ -260,7 +327,8 @@ func TestReviewAPI_202_when_generating_no_prior_review(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "generating", resp.PRStatus)
 	assert.True(t, resp.IsInFlight)
-	assert.Empty(t, resp.HTML, "no html in 202 response")
+	assert.False(t, resp.FindingsAvailable, "no findings in 202 response")
+	assert.Empty(t, resp.Findings)
 	assert.Empty(t, resp.ReviewPath)
 	assert.Equal(t, "abc1234", resp.HeadSHA)
 }
@@ -301,6 +369,10 @@ func TestReviewAPI_200_with_in_flight_true_when_regenerating(t *testing.T) {
 		Status:        "pending",
 	}))
 	filename := writeReviewFile(t, dir, "owner", "repo", 22, "abc1234", "<html>previous</html>")
+	writeSidecarFile(t, dir, filename, payload.Payload{
+		SchemaVersion: "1",
+		Findings:      []payload.Finding{{Severity: "low", File: "f.go", Line: 1, Comment: "previous"}},
+	})
 	require.NoError(t, database.MarkPRCompleted("owner", "repo", 22, "abc1234", filename, 0, 0, 0))
 	// User triggers a re-review: poller flips to generating, but review_path
 	// stays pointed at the prior html until MarkPRCompleted runs again.
@@ -313,7 +385,8 @@ func TestReviewAPI_200_with_in_flight_true_when_regenerating(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "generating", resp.PRStatus)
 	assert.True(t, resp.IsInFlight, "consumer must know a fresh review is in flight")
-	assert.Contains(t, resp.HTML, "previous", "old review still served while new one runs")
+	require.Len(t, resp.Findings, 1, "old review still served while new one runs")
+	assert.Equal(t, "previous", resp.Findings[0].Comment)
 }
 
 // Error state with no prior review → 424 Failed Dependency, error_message
@@ -339,7 +412,8 @@ func TestReviewAPI_424_when_error_no_prior_review(t *testing.T) {
 	assert.Equal(t, "error", resp.PRStatus)
 	assert.False(t, resp.IsInFlight)
 	assert.Equal(t, "anthropic api auth failed", resp.ErrorMessage)
-	assert.Empty(t, resp.HTML)
+	assert.False(t, resp.FindingsAvailable)
+	assert.Empty(t, resp.Findings)
 }
 
 // 404 path now also returns JSON with pr_status (not plain text), so callers

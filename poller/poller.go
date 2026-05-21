@@ -17,6 +17,7 @@ import (
 	"pr-review-server/gcs"
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/llm"
+	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/service"
 )
 
@@ -197,6 +198,9 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		CriticalCount: result.CriticalCount,
 		MediumCount:   result.MediumCount,
 		LowCount:      result.LowCount,
+		Comments:      result.Comments,
+		Diff:          result.Diff,
+		FileContents:  result.FileContents,
 	}, nil
 }
 
@@ -764,6 +768,47 @@ func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber in
 
 	log.Printf("[LOCAL] Saved review to: %s", localPath)
 	return filename, nil
+}
+
+// saveReviewSidecar persists an auxiliary review artifact (currently the
+// structured findings JSON) alongside the rendered HTML. Best-effort: HTML
+// is the source of truth, so callers log and continue on failure rather
+// than failing the whole review.
+func (p *Poller) saveReviewSidecar(ctx context.Context, filename, contentType string, content []byte) error {
+	if p.storage != nil {
+		return p.storage.SaveReviewSidecar(ctx, filename, contentType, content)
+	}
+	if p.gcsClient != nil && p.gcsClient.BucketName() != "" {
+		return p.gcsClient.UploadReviewSidecar(ctx, filename, contentType, content)
+	}
+
+	localPath := filepath.Join(p.reviewDir, filename)
+	if err := os.MkdirAll(p.reviewDir, 0755); err != nil {
+		return fmt.Errorf("failed to create reviews directory: %w", err)
+	}
+	if err := os.WriteFile(localPath, content, 0644); err != nil {
+		return fmt.Errorf("failed to write sidecar file: %w", err)
+	}
+	log.Printf("[LOCAL] Saved sidecar to: %s", localPath)
+	return nil
+}
+
+// writeSidecarBestEffort builds the structured findings payload and uploads it
+// to the same backend the HTML lives in. Errors are logged but swallowed —
+// the HTML review is the canonical artifact.
+func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlFilename string, rr *ReviewResult) {
+	pl := payload.Build(owner, repo, prNumber, commitSHA, rr.Comments, rr.Diff, rr.FileContents)
+	body, err := json.Marshal(pl)
+	if err != nil {
+		log.Printf("[REVIEWER] WARN: marshal findings sidecar for %s/%s#%d: %v", owner, repo, prNumber, err)
+		return
+	}
+	sidecarName := gcs.ReviewJSONFileName(htmlFilename)
+	if err := p.saveReviewSidecar(ctx, sidecarName, "application/json", body); err != nil {
+		log.Printf("[REVIEWER] WARN: save findings sidecar %s: %v", sidecarName, err)
+		return
+	}
+	log.Printf("[REVIEWER] Saved findings sidecar: %s (%d findings)", sidecarName, len(pl.Findings))
 }
 
 // backfillPRMetadata fills in missing title/author for existing PRs by fetching from GitHub
@@ -1902,6 +1947,9 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 							CriticalCount: result.CriticalCount,
 							MediumCount:   result.MediumCount,
 							LowCount:      result.LowCount,
+							Comments:      result.Comments,
+							Diff:          result.Diff,
+							FileContents:  result.FileContents,
 						}
 					}
 				}
@@ -1950,6 +1998,14 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			}
 
 			log.Printf("[REVIEWER] Saved review: %s", filename)
+
+			// Best-effort: write the structured findings sidecar so /api/review
+			// can serve a parseable payload without scraping HTML. Failure here
+			// is logged but does NOT abort the review — HTML remains the source
+			// of truth and the API endpoint falls back gracefully.
+			if len(reviewResult.Comments) > 0 || reviewResult.Diff != "" {
+				p.writeSidecarBestEffort(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult)
+			}
 
 			// Verify commit SHA matches (hasn't changed during generation)
 			currentPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)

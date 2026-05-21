@@ -15,6 +15,7 @@ import (
 
 	"pr-review-server/auth"
 	"pr-review-server/gcs"
+	"pr-review-server/pkg/reviewer/payload"
 )
 
 // reviewAPIPathPrefix is the route prefix for the JSON review fetch endpoint.
@@ -22,27 +23,36 @@ import (
 const reviewAPIPathPrefix = "/api/review/"
 
 // reviewAPIResponse is the JSON payload returned by GET /api/review/{owner}/{repo}/{pr}.
-// `html` is the same body /reviews/{filename} would serve — inlined so a CLI
-// caller (the prism-review skill) gets everything in one round trip.
+//
+// `findings` is the structured form of the review: each item has the cited
+// file/line, the unified-diff hunk that contains the line, and a window of
+// surrounding post-image source. This is the shape an LLM/CLI consumer
+// should use; the rendered HTML at `review_url` is still available for
+// humans (and via ?format=html for raw passthrough).
 //
 // `pr_status` and `is_in_flight` let the caller distinguish the three states
 // the prior shape couldn't: (a) review never generated, (b) review currently
 // in flight, (c) stale review present while a fresh one is generating.
+//
+// `findings_available` is false when the underlying review predates the
+// JSON sidecar (older reviews on disk): regenerate the review to populate it.
 type reviewAPIResponse struct {
-	Owner        string          `json:"owner"`
-	Repo         string          `json:"repo"`
-	PRNumber     int             `json:"pr_number"`
-	PRStatus     string          `json:"pr_status"`
-	IsInFlight   bool            `json:"is_in_flight"`
-	ErrorMessage string          `json:"error_message,omitempty"`
-	CommitSHA    string          `json:"commit_sha,omitempty"`
-	HeadSHA      string          `json:"head_sha"`
-	IsStale      bool            `json:"is_stale"`
-	GeneratedAt  *time.Time      `json:"generated_at,omitempty"`
-	ReviewPath   string          `json:"review_path,omitempty"`
-	ReviewURL    string          `json:"review_url,omitempty"`
-	Counts       reviewAPICounts `json:"counts"`
-	HTML         string          `json:"html,omitempty"`
+	Owner             string            `json:"owner"`
+	Repo              string            `json:"repo"`
+	PRNumber          int               `json:"pr_number"`
+	PRStatus          string            `json:"pr_status"`
+	IsInFlight        bool              `json:"is_in_flight"`
+	ErrorMessage      string            `json:"error_message,omitempty"`
+	CommitSHA         string            `json:"commit_sha,omitempty"`
+	HeadSHA           string            `json:"head_sha"`
+	IsStale           bool              `json:"is_stale"`
+	GeneratedAt       *time.Time        `json:"generated_at,omitempty"`
+	ReviewPath        string            `json:"review_path,omitempty"`
+	ReviewURL         string            `json:"review_url,omitempty"`
+	Counts            reviewAPICounts   `json:"counts"`
+	FindingsAvailable bool              `json:"findings_available"`
+	Findings          []payload.Finding `json:"findings,omitempty"`
+	SchemaVersion     string            `json:"schema_version,omitempty"`
 }
 
 // isInFlightStatus reports whether the PR currently has a review actively
@@ -144,20 +154,34 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 	}
 	filename = cleaned
 
-	html, fetchErr := s.fetchReviewBytes(r.Context(), filename)
-	if fetchErr != nil {
+	// ?format=html keeps the raw HTML escape hatch for humans / debugging.
+	// Everything else returns the structured payload.
+	if r.URL.Query().Get("format") == "html" {
+		html, fetchErr := s.fetchReviewBytes(r.Context(), filename)
+		if fetchErr != nil {
+			if errors.Is(fetchErr, errReviewNotFound) {
+				http.Error(w, "Review file not found", http.StatusNotFound)
+				return
+			}
+			log.Printf("[API/review] fetch error for %s: %v", filename, fetchErr)
+			http.Error(w, "Failed to fetch review", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(html) // nolint:errcheck
+		return
+	}
+
+	// Confirm the HTML object still exists before claiming the review is
+	// available — otherwise a pinned ?sha= to a non-existent file would
+	// return a "success-looking" envelope.
+	if _, fetchErr := s.fetchReviewBytes(r.Context(), filename); fetchErr != nil {
 		if errors.Is(fetchErr, errReviewNotFound) {
 			http.Error(w, "Review file not found", http.StatusNotFound)
 			return
 		}
 		log.Printf("[API/review] fetch error for %s: %v", filename, fetchErr)
 		http.Error(w, "Failed to fetch review", http.StatusBadGateway)
-		return
-	}
-
-	if r.URL.Query().Get("format") == "html" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(html) // nolint:errcheck
 		return
 	}
 
@@ -180,7 +204,26 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 			Medium:   pr.MediumCount,
 			Low:      pr.LowCount,
 		},
-		HTML: string(html),
+	}
+
+	// Try to load the structured findings sidecar. If absent (review predates
+	// the sidecar) or malformed, return the envelope with findings_available
+	// false so the CLI can tell the user to regenerate. Don't 5xx — the HTML
+	// view at review_url still works.
+	sidecarName := gcs.ReviewJSONFileName(filename)
+	sidecarBytes, sidecarErr := s.fetchReviewBytes(r.Context(), sidecarName)
+	if sidecarErr == nil {
+		var pl payload.Payload
+		if err := json.Unmarshal(sidecarBytes, &pl); err != nil {
+			log.Printf("[API/review] malformed sidecar %s: %v", sidecarName, err)
+		} else {
+			resp.Findings = pl.Findings
+			resp.SchemaVersion = pl.SchemaVersion
+			resp.FindingsAvailable = true
+		}
+	} else if !errors.Is(sidecarErr, errReviewNotFound) {
+		// Non-not-found sidecar error: log but don't fail. HTML view still works.
+		log.Printf("[API/review] sidecar fetch error for %s: %v", sidecarName, sidecarErr)
 	}
 
 	writeReviewJSON(w, http.StatusOK, resp)
