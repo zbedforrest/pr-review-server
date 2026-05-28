@@ -10,11 +10,25 @@ import (
 	"time"
 
 	"github.com/gomarkdown/markdown"
+	"github.com/microcosm-cc/bluemonday"
 	"pr-review-server/pkg/reviewer/types"
 )
 
 //go:embed templates
 var templateFS embed.FS
+
+// mdSanitizer strips dangerous HTML (script tags, event handlers, etc.) from
+// rendered Markdown so that untrusted input (PR descriptions, AI review text)
+// cannot inject script into the review page.
+var mdSanitizer = bluemonday.UGCPolicy()
+
+// renderMarkdown converts Markdown to HTML and sanitizes the result. Use this
+// for genuine Markdown fields. Do NOT use it for code or diff text — that is
+// not Markdown and must be passed through html.EscapeString instead.
+func renderMarkdown(s string) template.HTML {
+	unsafe := markdown.ToHTML([]byte(s), nil, nil)
+	return template.HTML(mdSanitizer.SanitizeBytes(unsafe))
+}
 
 // Line represents a single line in a diff.
 type Line struct {
@@ -209,10 +223,13 @@ func GenerateReportWithContext(comments []types.LineComment, diff string, prNumb
 		CommitSHA            string
 		ShortCommitSHA       string
 	}{
-		PRNumber:             prNumber,
-		PRURL:                prURL,
-		PRBody:               template.HTML(markdown.ToHTML([]byte(prBody), nil, nil)),
-		Prompt:               template.HTML(markdown.ToHTML([]byte(prompt), nil, nil)),
+		PRNumber: prNumber,
+		PRURL:    prURL,
+		PRBody:   renderMarkdown(prBody),
+		// The prompt embeds raw diff/code (e.g. template syntax, <script> tags,
+		// jQuery). It is NOT Markdown — escape it so it renders as literal text
+		// instead of being interpreted as HTML/math. CSS handles line wrapping.
+		Prompt:               template.HTML(html.EscapeString(prompt)),
 		Files:                diffFiles,
 		Comments:             commentsByFile,
 		SummaryComments:      summaryComments,
@@ -230,10 +247,7 @@ func GenerateReportWithContext(comments []types.LineComment, diff string, prNumb
 
 	funcMap := template.FuncMap{
 		"markdownify": func(s string) template.HTML {
-			// Unescape HTML entities that were auto-escaped by the template engine
-			unescaped := html.UnescapeString(s)
-			htmlBytes := markdown.ToHTML([]byte(unescaped), nil, nil)
-			return template.HTML(htmlBytes)
+			return renderMarkdown(s)
 		},
 		"dict": func(values ...interface{}) (map[string]interface{}, error) {
 			if len(values)%2 != 0 {
@@ -297,7 +311,7 @@ func GenerateContextLinesForTest(filePath string, lineNumber int, fileContents m
 	for i := start; i <= end; i++ {
 		contextLine := ContextLine{
 			LineNumber: i + 1, // Convert back to 1-based
-			Content:    template.HTML(lines[i]),
+			Content:    template.HTML(html.EscapeString(lines[i])),
 			IsTarget:   i+1 == lineNumber,
 		}
 		contextLines = append(contextLines, contextLine)
