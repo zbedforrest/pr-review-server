@@ -189,6 +189,91 @@ func TestBuild_EmptyComments(t *testing.T) {
 	}
 }
 
+func TestToCompactMarkdown_FullFinding(t *testing.T) {
+	p := Payload{
+		SchemaVersion: "1",
+		Owner:         "acme",
+		Repo:          "example",
+		PRNumber:      42,
+		CommitSHA:     "abc1234",
+		Counts:        Counts{Critical: 1, Medium: 0, Low: 0},
+		Findings: []Finding{
+			{
+				Severity:     "critical",
+				File:         "auth/login.go",
+				Line:         12,
+				Comment:      "Missing nil check.",
+				DiffHunk:     "@@ -10,3 +10,4 @@\n+\tx := f()",
+				SourceBefore: []string{"line10", "line11", "line12"},
+				SourceAfter:  []string{"line13"},
+			},
+		},
+	}
+	meta := CompactMeta{
+		HeadSHA:           "def5678",
+		IsStale:           true,
+		IsInFlight:        false,
+		GeneratedAt:       "2026-05-29T17:00:00Z",
+		ReviewURL:         "https://example.test/reviews/acme_example_42_abc1234.html",
+		FindingsAvailable: true,
+	}
+
+	out := p.ToCompactMarkdown(meta)
+
+	for _, want := range []string{
+		"PR: acme/example#42",
+		"Reviewed commit: abc1234",
+		"Current HEAD:    def5678",
+		"Stale: true",
+		"In flight (regenerating): false",
+		"Generated at: 2026-05-29T17:00:00Z",
+		"Counts: critical=1 medium=0 low=0",
+		"Schema: 1",
+		"=== FINDINGS (1) ===",
+		"--- [CRITICAL] auth/login.go:12 ---",
+		"COMMENT:\nMissing nil check.",
+		"DIFF HUNK:\n```diff\n@@ -10,3 +10,4 @@\n+\tx := f()\n```",
+		"SOURCE CONTEXT",
+		"----- cited line above -----",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("compact markdown missing %q\n--- got ---\n%s", want, out)
+		}
+	}
+}
+
+func TestToCompactMarkdown_NoFindingsAvailable(t *testing.T) {
+	p := Payload{Owner: "acme", Repo: "example", PRNumber: 7}
+	out := p.ToCompactMarkdown(CompactMeta{FindingsAvailable: false})
+
+	if !strings.Contains(out, "=== NO STRUCTURED FINDINGS ===") {
+		t.Errorf("expected no-findings notice, got:\n%s", out)
+	}
+	if strings.Contains(out, "=== FINDINGS") {
+		t.Errorf("should not render a findings section when unavailable:\n%s", out)
+	}
+	if !strings.Contains(out, "Schema: unknown") {
+		t.Errorf("expected schema fallback to 'unknown', got:\n%s", out)
+	}
+}
+
+func TestToCompactMarkdown_OmitsEmptyHunkAndSource(t *testing.T) {
+	p := Payload{
+		SchemaVersion: "1",
+		Findings: []Finding{
+			{Severity: "low", File: "x.go", Line: 3, Comment: "nit"},
+		},
+	}
+	out := p.ToCompactMarkdown(CompactMeta{FindingsAvailable: true})
+
+	if strings.Contains(out, "DIFF HUNK") {
+		t.Errorf("should omit DIFF HUNK when empty:\n%s", out)
+	}
+	if strings.Contains(out, "SOURCE CONTEXT") {
+		t.Errorf("should omit SOURCE CONTEXT when empty:\n%s", out)
+	}
+}
+
 // --- helpers ---
 
 func joinLines(ls ...string) string {

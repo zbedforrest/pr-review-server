@@ -73,6 +73,7 @@ type reviewAPICounts struct {
 // Query:   ?sha=<full_or_short_sha>   pin to a specific commit's review
 //
 //	?format=html                return raw HTML body instead of JSON
+//	?format=md                  return the compact Markdown export (attachment)
 //
 // Auth:    handled by the same middleware that protects /api/* routes.
 //
@@ -224,6 +225,42 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 	} else if !errors.Is(sidecarErr, errReviewNotFound) {
 		// Non-not-found sidecar error: log but don't fail. HTML view still works.
 		log.Printf("[API/review] sidecar fetch error for %s: %v", sidecarName, sidecarErr)
+	}
+
+	// ?format=md returns the compact, coding-agent-optimized Markdown export as
+	// a downloadable attachment. Built from the same structured findings as the
+	// JSON response, via the canonical payload formatter.
+	if f := r.URL.Query().Get("format"); f == "md" || f == "markdown" {
+		genAt := ""
+		if resp.GeneratedAt != nil {
+			genAt = resp.GeneratedAt.Format(time.RFC3339)
+		}
+		pl := payload.Payload{
+			SchemaVersion: resp.SchemaVersion,
+			Owner:         owner,
+			Repo:          repo,
+			PRNumber:      prNumber,
+			CommitSHA:     reviewSHA,
+			Counts: payload.Counts{
+				Critical: resp.Counts.Critical,
+				Medium:   resp.Counts.Medium,
+				Low:      resp.Counts.Low,
+			},
+			Findings: resp.Findings,
+		}
+		md := pl.ToCompactMarkdown(payload.CompactMeta{
+			HeadSHA:           resp.HeadSHA,
+			IsStale:           resp.IsStale,
+			IsInFlight:        resp.IsInFlight,
+			GeneratedAt:       genAt,
+			ReviewURL:         resp.ReviewURL,
+			FindingsAvailable: resp.FindingsAvailable,
+		})
+		downloadName := strings.TrimSuffix(filename, ".html") + ".md"
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", downloadName))
+		_, _ = w.Write([]byte(md)) // nolint:errcheck
+		return
 	}
 
 	writeReviewJSON(w, http.StatusOK, resp)

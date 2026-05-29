@@ -9,6 +9,7 @@
 package payload
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -147,6 +148,86 @@ func Build(
 		Counts:        counts,
 		Findings:      findings,
 	}
+}
+
+// CompactMeta carries the request-time envelope fields that live outside the
+// persisted Payload (head SHA, staleness, etc.) but appear in the compact
+// Markdown header. The HTTP layer fills these from the review API envelope.
+type CompactMeta struct {
+	HeadSHA           string
+	IsStale           bool
+	IsInFlight        bool
+	GeneratedAt       string // pre-formatted; "" renders as "unknown"
+	ReviewURL         string
+	FindingsAvailable bool
+}
+
+// ToCompactMarkdown renders the review as a compact, self-contained Markdown
+// document intended for pasting into a coding agent. Each finding carries its
+// severity, location, the reviewer comment, the unified-diff hunk, and the
+// surrounding source window — enough to act on without re-fetching files.
+//
+// This is the single canonical server-side formatter; it mirrors the layout
+// the prism-review skill renders client-side so the two can converge.
+func (p Payload) ToCompactMarkdown(meta CompactMeta) string {
+	var b strings.Builder
+
+	schema := p.SchemaVersion
+	if schema == "" {
+		schema = "unknown"
+	}
+	gen := meta.GeneratedAt
+	if gen == "" {
+		gen = "unknown"
+	}
+
+	fmt.Fprintf(&b, "PR: %s/%s#%d\n", p.Owner, p.Repo, p.PRNumber)
+	fmt.Fprintf(&b, "Reviewed commit: %s\n", p.CommitSHA)
+	fmt.Fprintf(&b, "Current HEAD:    %s\n", meta.HeadSHA)
+	fmt.Fprintf(&b, "Stale: %t\n", meta.IsStale)
+	fmt.Fprintf(&b, "In flight (regenerating): %t\n", meta.IsInFlight)
+	fmt.Fprintf(&b, "Generated at: %s\n", gen)
+	fmt.Fprintf(&b, "Counts: critical=%d medium=%d low=%d\n", p.Counts.Critical, p.Counts.Medium, p.Counts.Low)
+	fmt.Fprintf(&b, "Review URL: %s\n", meta.ReviewURL)
+	fmt.Fprintf(&b, "Schema: %s\n\n", schema)
+
+	if !meta.FindingsAvailable {
+		b.WriteString("=== NO STRUCTURED FINDINGS ===\n\n")
+		b.WriteString("This review was generated before the JSON sidecar was available, or\n")
+		b.WriteString("the sidecar could not be loaded. Open the Review URL above for the HTML\n")
+		b.WriteString("report, or regenerate the review.\n")
+		return b.String()
+	}
+
+	fmt.Fprintf(&b, "=== FINDINGS (%d) ===\n", len(p.Findings))
+	for _, f := range p.Findings {
+		fmt.Fprintf(&b, "\n--- [%s] %s:%d ---\n\n", strings.ToUpper(f.Severity), f.File, f.Line)
+		b.WriteString("COMMENT:\n")
+		b.WriteString(strings.TrimRight(f.Comment, "\n"))
+		b.WriteString("\n")
+
+		if f.DiffHunk != "" {
+			b.WriteString("\nDIFF HUNK:\n```diff\n")
+			b.WriteString(strings.TrimRight(f.DiffHunk, "\n"))
+			b.WriteString("\n```\n")
+		}
+
+		if len(f.SourceBefore) > 0 || len(f.SourceAfter) > 0 {
+			b.WriteString("\nSOURCE CONTEXT (cited line is the LAST line before the marker):\n```\n")
+			for _, ln := range f.SourceBefore {
+				b.WriteString(ln)
+				b.WriteString("\n")
+			}
+			b.WriteString("----- cited line above -----\n")
+			for _, ln := range f.SourceAfter {
+				b.WriteString(ln)
+				b.WriteString("\n")
+			}
+			b.WriteString("```\n")
+		}
+	}
+
+	return b.String()
 }
 
 func severityRank(sev string) int {
