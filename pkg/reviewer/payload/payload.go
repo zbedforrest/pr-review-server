@@ -251,7 +251,10 @@ func severityRank(sev string) int {
 // returns (nil, nil). Trailing newline characters are trimmed per-line so
 // the caller doesn't have to.
 func SourceWindow(contents string, line, context int) (before, after []string) {
-	if contents == "" || line <= 0 || context <= 0 {
+	// context == 0 is valid: the cited line itself is still returned (the
+	// "defensive" case the inline comment below documents). Only empty input,
+	// a non-positive line, or a negative context yield (nil, nil).
+	if contents == "" || line <= 0 || context < 0 {
 		return nil, nil
 	}
 	// Normalize CRLF → LF so line counting matches what the reviewer saw.

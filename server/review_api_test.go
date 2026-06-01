@@ -278,6 +278,47 @@ func TestReviewAPI_format_html_returns_raw(t *testing.T) {
 	assert.Equal(t, "<html>raw passthrough</html>", w.Body.String())
 }
 
+// 10. ?format=md returns the compact Markdown export as a download attachment,
+// built from the findings sidecar.
+func TestReviewAPI_format_md_returns_attachment(t *testing.T) {
+	server, database, user, dir := newReviewAPITestServer(t)
+
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      12,
+		LastCommitSHA: "abc1234deadbeef",
+		Status:        "pending",
+	}))
+	filename := writeReviewFile(t, dir, "owner", "repo", 12, "abc1234", "<html>review</html>")
+	writeSidecarFile(t, dir, filename, payload.Payload{
+		SchemaVersion: "1",
+		Owner:         "owner",
+		Repo:          "repo",
+		PRNumber:      12,
+		CommitSHA:     "abc1234",
+		Counts:        payload.Counts{Critical: 1, Medium: 0, Low: 0},
+		Findings: []payload.Finding{
+			{Severity: "critical", File: "main.go", Line: 42, Comment: "boom", DiffHunk: "@@ -40,3 +40,3 @@\n-old\n+new"},
+		},
+	})
+	require.NoError(t, database.MarkPRCompleted("owner", "repo", 12, "abc1234deadbeef", filename, 1, 0, 0))
+
+	w := doReviewAPIGet(t, server, user, "/api/review/owner/repo/12?format=md")
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, "text/markdown; charset=utf-8", w.Header().Get("Content-Type"))
+	assert.Equal(t, `attachment; filename="owner_repo_12_abc1234.md"`, w.Header().Get("Content-Disposition"))
+
+	body := w.Body.String()
+	assert.Contains(t, body, "PR: owner/repo#12")
+	assert.Contains(t, body, "Counts: critical=1 medium=0 low=0")
+	assert.Contains(t, body, "=== FINDINGS (1) ===")
+	assert.Contains(t, body, "--- [CRITICAL] main.go:42 ---")
+	assert.Contains(t, body, "boom")
+	assert.Contains(t, body, "```diff")
+}
+
 // Backward-compat: an older review on disk without a .json sidecar still
 // returns 200 + a meaningful envelope, with findings_available=false so the
 // CLI can tell the user to regenerate.

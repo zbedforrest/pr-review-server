@@ -30,6 +30,9 @@ BASE_URL="${PRISM_BASE_URL:-}"
 if [ -z "$BASE_URL" ]; then
   die "PRISM_BASE_URL is not set — point it at your prism server (e.g. http://localhost:8080)"
 fi
+# Trim a trailing slash so "${BASE_URL}/api/..." can't become "//api/...",
+# which Go's ServeMux 301-redirects (and the curl below doesn't follow -L).
+BASE_URL="${BASE_URL%/}"
 
 if [ "$#" -lt 1 ]; then
   die "usage: fetch.sh <pr-number | owner/repo#N | github-url>"

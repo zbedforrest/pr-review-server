@@ -304,7 +304,9 @@ var errReviewNotFound = errors.New("review not found")
 // bytes for the same filename.
 func (s *Server) fetchReviewBytes(ctx context.Context, filename string) ([]byte, error) {
 	if s.gcsClient != nil && s.gcsClient.BucketName() != "" {
-		// Use a fresh context so a slow client disconnect doesn't poison GCS.
+		// Bound the GCS fetch with a 10s timeout. It still inherits cancellation
+		// from the request context, so a client disconnect aborts the fetch —
+		// which is the behavior we want.
 		fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		content, err := s.gcsClient.GetReviewContent(fetchCtx, filename)
@@ -379,10 +381,18 @@ func isSafeSHA(s string) bool {
 // then r.TLS, then http as the dev-loop fallback.
 func buildReviewURL(r *http.Request, filename string) string {
 	scheme := "http"
-	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
-		scheme = fwd
-	} else if r.TLS != nil {
+	if r.TLS != nil {
 		scheme = "https"
+	}
+	// X-Forwarded-Proto may carry a comma-separated list across chained
+	// proxies (e.g. "https, http"); use only the first hop, and ignore the
+	// header entirely unless it's a recognized scheme so a smuggled value
+	// can't leak into the URL.
+	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
+		first := strings.ToLower(strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0]))
+		if first == "http" || first == "https" {
+			scheme = first
+		}
 	}
 	host := r.Host
 	if host == "" {
