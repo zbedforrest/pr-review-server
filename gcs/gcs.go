@@ -41,6 +41,17 @@ func ReviewFileName(owner, repo string, prNumber int, commitSHA string) string {
 	return fmt.Sprintf("%s_%s_%d_%s.html", owner, repo, prNumber, shortSHA)
 }
 
+// ReviewJSONFileName returns the sidecar JSON object name for a given HTML
+// review filename. The .json sidecar holds the structured findings payload
+// served by /api/review; the .html object is unchanged and continues to be
+// the browser-rendered view.
+func ReviewJSONFileName(htmlFilename string) string {
+	if strings.HasSuffix(htmlFilename, ".html") {
+		return strings.TrimSuffix(htmlFilename, ".html") + ".json"
+	}
+	return htmlFilename + ".json"
+}
+
 // UploadReview uploads review content to GCS and returns the object path.
 func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	filename := ReviewFileName(owner, repo, prNumber, commitSHA)
@@ -67,6 +78,28 @@ func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber 
 
 	log.Printf("[GCS] Uploaded review: gs://%s/%s", c.bucketName, filename)
 	return filename, nil
+}
+
+// UploadReviewSidecar uploads an arbitrary object (e.g. the .json findings
+// sidecar) under the given filename with the given content type. Same cache
+// policy as UploadReview so a regenerated review's sidecar is picked up by
+// callers on next fetch.
+func (c *Client) UploadReviewSidecar(ctx context.Context, filename, contentType string, content []byte) error {
+	obj := c.bucket.Object(filename)
+	writer := obj.NewWriter(ctx)
+	writer.ContentType = contentType
+	writer.CacheControl = "public, no-cache, must-revalidate"
+
+	if _, err := writer.Write(content); err != nil {
+		writer.Close()
+		return fmt.Errorf("failed to write sidecar to GCS: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("failed to close GCS sidecar writer: %w", err)
+	}
+
+	log.Printf("[GCS] Uploaded sidecar: gs://%s/%s", c.bucketName, filename)
+	return nil
 }
 
 // ReviewExists checks if a review already exists for a given PR and commit.

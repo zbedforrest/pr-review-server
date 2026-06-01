@@ -296,3 +296,94 @@ index 123..456 100644
 	assert.Contains(t, report, "<h2>Review Summary</h2>")
 	assert.Contains(t, report, "Testing Summary")
 }
+
+// TestGenerateReport_EscapesUntrustedHTML guards against HTML injection / stored
+// XSS: code, diffs, PR descriptions, and AI comments come from untrusted sources
+// and must never be rendered as live HTML in the review page.
+func TestGenerateReport_EscapesUntrustedHTML(t *testing.T) {
+	comments := []types.LineComment{
+		{
+			FilePath:    "evil.js",
+			LineNumber:  2, // not in diff -> rendered via context lines
+			CommentBody: "Look here: <img src=x onerror=COMMENT_XSS()>",
+			Importance:  "CRITICAL",
+		},
+	}
+
+	// Source code containing markup that must be escaped, not executed.
+	fileContents := map[string]string{
+		"evil.js": "function init() {\n  $('<script>CTX_XSS()</script>');\n  {% if user %}\n}\n",
+	}
+
+	diff := `diff --git a/other.go b/other.go
+index 123..456 100644
+--- a/other.go
++++ b/other.go
+@@ -1,2 +1,3 @@
+ package main
++// added
+ func main() {}`
+
+	prBody := "PR description with injected <script>BODY_XSS()</script> markup"
+	prompt := "Review this code:\n<script type=\"text/javascript\">PROMPT_XSS()</script>\n$('#token_table')"
+
+	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+	report, err := GenerateReportWithContext(comments, diff, 1, "https://github.com/acme/example/pull/1", prBody, prompt, "abc1234", "gemini-pro", 0, 0, 0, testTime, fileContents)
+	assert.NoError(t, err)
+
+	// No injected payload may appear as a live element/handler anywhere.
+	assert.NotContains(t, report, "<script>BODY_XSS()", "PR body script must be sanitized")
+	assert.NotContains(t, report, "<script>CTX_XSS()", "context-line script must be escaped")
+	assert.NotContains(t, report, "<script type=\"text/javascript\">PROMPT_XSS()", "prompt script must be escaped")
+	assert.NotContains(t, report, "onerror=", "comment-body event handler must be sanitized")
+
+	// The prompt and context code must survive as escaped, readable text.
+	assert.Contains(t, report, "&lt;script", "escaped markup should still be visible")
+
+	// And the benign parts of the untrusted input must still render, so we'd
+	// catch a regression where sanitizing accidentally strips everything.
+	assert.Contains(t, report, "PR description with injected", "PR body text should still render")
+	assert.Contains(t, report, "{% if user %}", "context-line code should still render (escaped)")
+	assert.Contains(t, report, "Look here:", "comment body text should still render")
+}
+
+func TestRenderMarkdown(t *testing.T) {
+	t.Run("strips dangerous HTML", func(t *testing.T) {
+		out := string(renderMarkdown("hello <script>alert(1)</script> world"))
+		assert.NotContains(t, out, "<script>")
+		assert.NotContains(t, out, "alert(1)")
+	})
+
+	t.Run("strips event-handler attributes", func(t *testing.T) {
+		out := string(renderMarkdown("![x](data:image/png;base64,abc) <img src=x onerror=alert(1)>"))
+		assert.NotContains(t, out, "onerror")
+	})
+
+	t.Run("preserves real markdown formatting", func(t *testing.T) {
+		out := string(renderMarkdown("This is **bold** and _italic_."))
+		assert.Contains(t, out, "<strong>bold</strong>")
+		assert.Contains(t, out, "<em>italic</em>")
+	})
+
+	t.Run("renders code spans with their angle brackets escaped, not executed", func(t *testing.T) {
+		out := string(renderMarkdown("use the `<div>` element"))
+		assert.Contains(t, out, "<code>&lt;div&gt;</code>")
+		assert.NotContains(t, out, "<div>")
+	})
+}
+
+func TestGenerateContextLines_EscapesContent(t *testing.T) {
+	fileContents := map[string]string{
+		"x.js": "line one\n<script>alert(1)</script>\nline three\n",
+	}
+
+	lines := GenerateContextLinesForTest("x.js", 2, fileContents)
+	if assert.NotEmpty(t, lines) {
+		var joined string
+		for _, l := range lines {
+			joined += string(l.Content)
+		}
+		assert.Contains(t, joined, "&lt;script&gt;", "source code must be HTML-escaped")
+		assert.NotContains(t, joined, "<script>", "source code must not render as a live tag")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	gh "github.com/google/go-github/v57/github"
 
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/types"
 )
 
 // GitHubClient defines the interface for GitHub API operations used by the poller.
@@ -69,14 +70,29 @@ type ReviewStorage interface {
 
 	// SaveReview persists the review content and returns the filename/path.
 	SaveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error)
+
+	// SaveReviewSidecar persists an extra artifact (e.g. the structured
+	// findings JSON) under the given filename. Returns nil on success or
+	// when the storage backend silently no-ops (local-only deployments may
+	// choose to skip sidecars). HTML is the source of truth — callers
+	// should log + continue if this fails, not abort the review.
+	SaveReviewSidecar(ctx context.Context, filename, contentType string, content []byte) error
 }
 
 // ReviewResult contains the output from generating a review.
+//
+// HTMLContent + counts feed the existing HTML pipeline.
+// Comments / Diff / FileContents are the structured form used to build the
+// JSON sidecar; they may be nil for mock generators in tests.
 type ReviewResult struct {
 	HTMLContent   []byte
 	CriticalCount int
 	MediumCount   int
 	LowCount      int
+
+	Comments     []types.LineComment
+	Diff         string
+	FileContents map[string]string
 }
 
 // ReviewGeneratorConfig contains configuration for generating a review

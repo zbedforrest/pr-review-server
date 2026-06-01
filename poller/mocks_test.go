@@ -792,6 +792,13 @@ func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, 
 	return fmt.Sprintf("review-%s-%s-%d-%s.html", owner, repo, prNumber, commitSHA[:7]), nil
 }
 
+// SaveReviewSidecar is a no-op for the mock — tests that need to inspect the
+// sidecar can extend this struct, but the default behavior is to swallow it
+// since the poller treats sidecar writes as best-effort.
+func (m *MockReviewStorage) SaveReviewSidecar(ctx context.Context, filename, contentType string, content []byte) error {
+	return nil
+}
+
 // MockReviewGenerator implements ReviewGenerator for testing
 type MockReviewGenerator struct {
 	// Results maps "owner/repo/number" to (result, error)

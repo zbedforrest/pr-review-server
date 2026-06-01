@@ -5,6 +5,7 @@ import { useDeletePR, useTriggerReview } from '@/hooks/usePRs';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { CIStatusIndicator } from './CIStatusIndicator';
 import { NotesCell } from './NotesCell';
+import { ReviewLinkMenu } from './ReviewLinkMenu';
 import { VIA_TEAMS_PERSONAL } from '@/constants';
 
 interface PRTableRowProps {
@@ -115,15 +116,7 @@ export const PRTableRow = memo(function PRTableRow({
             ERROR
           </span>
         ) : reviewUrl ? (
-          <a
-            href={reviewUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="pr-table__review-link"
-            onClick={() => track('view_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}
-          >
-            View
-          </a>
+          <ReviewLinkMenu pr={pr} reviewUrl={reviewUrl} />
         ) : (
           <span>-</span>
         )}
