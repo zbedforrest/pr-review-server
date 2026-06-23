@@ -209,8 +209,17 @@ const promptAgentReview = `You are reviewing a pull request. A first-pass Gemini
 
 Tasks, in order:
 
-1. For each Gemini comment: silently drop the ones that are trivial, wrong, already addressed, or not worth a human reviewer's time. For the rest, rephrase clearly and include a concrete recommendation with a code-level suggestion when possible.
-2. After processing all Gemini comments, do your own review pass. Look for issues Gemini missed — bugs, unsafe concurrency, broken invariants, missing tests, security footguns, performance regressions. Include any new findings.
+1. Triage each Gemini comment — keep, rephrase, or dismiss:
+   - A comment alleging a bug, crash, security issue, or data-correctness problem may be DISMISSED only if you can cite a specific file:line that proves it cannot occur. Quote that evidence. If you are not certain it is a non-issue, KEEP it — downgrade to LOW rather than dropping it silently.
+   - Pure style/nits with no correctness impact may be dropped freely.
+   - For every kept comment, rephrase clearly with a concrete, code-level recommendation.
+   - A type annotation, interface, or "typed contract" does NOT guarantee runtime values at a service / API / deserialization / external-input boundary. Do not dismiss a crash- or input-handling concern on the grounds that "the type says it can't be null / non-string / absent".
+2. Coverage: the CHANGED FILES manifest below lists every file this PR touches. Read EVERY one before drawing conclusions. Give extra scrutiny to incidental edits in shared / base / common files — a one-line change to a shared component or base class is a frequent cause of regressions even when the PR's headline is elsewhere. Do not let the obvious "main" file dominate the review.
+3. Reachability: for each NEW exported symbol the PR adds (function, method, component, route, push topic, setting, handler), grep for its call sites. If the only match is its own definition (and its tests), it is never invoked — flag it; a new mount/handler that nothing calls is a common, high-impact defect.
+4. Cross-file contracts: when the PR changes a contract another file must mirror — a backend topic/route/event/enum a frontend registry or consumer depends on, an override of a base method, or one half of a registry pair — verify the counterpart in the repo. Only raise such a concern if you can cite the specific file:line of the mismatch; if you find no evidence, do not speculate.
+5. After the above, do your own review pass for issues Gemini missed — bugs, unsafe concurrency, broken invariants, missing tests, security footguns, performance regressions. Include any new findings.
+
+In your SUMMARY entry, include a "Considered & dismissed" list: for each bug/crash/security/correctness comment you dismissed (Gemini's or your own), give the file:line evidence that justified dismissing it. (Style nits need not be listed.)
 
 **Output format (STRICT):**
 
@@ -225,9 +234,16 @@ Each object must have these fields:
 Include exactly one "SUMMARY" entry summarizing your overall take + verdict (approve / approve with suggestions / request changes).
 
 If you find no issues worth flagging, return a single SUMMARY entry only.
-
---- GEMINI COMMENTS (JSON) ---
 `
+
+// agentChangedFilesHeader precedes the changed-file manifest (git diff
+// --name-status base...head) injected by buildAgentPromptContent. Omitted when
+// the manifest can't be computed (stale/missing base ref) — the agent is still
+// instructed to read the changed files, it just has to enumerate them itself.
+const agentChangedFilesHeader = "\n--- CHANGED FILES (git diff --name-status, base...head) ---\n"
+
+// agentGeminiCommentsHeader precedes the JSON array of Gemini comments.
+const agentGeminiCommentsHeader = "\n--- GEMINI COMMENTS (JSON) ---\n"
 
 // promptClassification is a fmt format string; %s placeholders receive
 // prBody, fileContext, diff, and the indexed comment list in that order.

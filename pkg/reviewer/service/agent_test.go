@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pr-review-server/pkg/reviewer/types"
 )
 
 // fakeProcess implements SpawnedProcess by replaying a canned stdout buffer.
@@ -258,3 +260,60 @@ func TestParseAgentJSON(t *testing.T) {
 
 // Keep errors import alive.
 var _ = errors.New
+
+// TestBuildAgentPromptContent_NoManifest verifies the prompt assembly when the
+// changed-file manifest can't be computed (empty cloneDir): the manifest header
+// is omitted, the Gemini-comments header + JSON are present, and the Phase-1
+// don't-drop / coverage rules are in the template.
+func TestBuildAgentPromptContent_NoManifest(t *testing.T) {
+	comments := []types.LineComment{{FilePath: "a.go", LineNumber: 5, CommentBody: "x"}}
+	got, err := buildAgentPromptContent(context.Background(), "", "", comments)
+	if err != nil {
+		t.Fatalf("buildAgentPromptContent: %v", err)
+	}
+	if strings.Contains(got, agentChangedFilesHeader) {
+		t.Error("manifest header should be omitted when cloneDir is empty")
+	}
+	if !strings.Contains(got, agentGeminiCommentsHeader) {
+		t.Error("gemini-comments header missing")
+	}
+	if !strings.Contains(got, `"file_path": "a.go"`) {
+		t.Error("gemini comment JSON missing")
+	}
+	for _, want := range []string{
+		"may be DISMISSED only if you can cite",
+		"Considered & dismissed",
+		"CHANGED FILES manifest",
+		"Reachability",
+		"Cross-file contracts",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing Phase-1 rule text: %q", want)
+		}
+	}
+}
+
+// TestChangedFilesManifest verifies the manifest reflects the PR diff against
+// the base branch and is empty (not fatal) when the base ref is missing.
+func TestChangedFilesManifest(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	dir := filepath.Join(t.TempDir(), "clone")
+	if out, err := runGit(context.Background(), "", "clone", "--depth", "200", bare, dir); err != nil {
+		t.Fatalf("clone: %v (%s)", err, out)
+	}
+	if out, err := runGit(context.Background(), dir, "fetch", "--depth", "200", "origin", "pull/1/head:pr-1"); err != nil {
+		t.Fatalf("fetch pr: %v (%s)", err, out)
+	}
+	if out, err := runGit(context.Background(), dir, "checkout", sha); err != nil {
+		t.Fatalf("checkout: %v (%s)", err, out)
+	}
+	// Base branch is "main"; the PR commit added change.txt on top of it.
+	manifest := changedFilesManifest(context.Background(), dir, "main")
+	if !strings.Contains(manifest, "change.txt") {
+		t.Errorf("manifest should list change.txt; got %q", manifest)
+	}
+	// Missing base ref -> empty, not a panic/fatal.
+	if m := changedFilesManifest(context.Background(), dir, "nonexistent-branch"); m != "" {
+		t.Errorf("expected empty manifest for missing base ref, got %q", m)
+	}
+}

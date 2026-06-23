@@ -118,7 +118,7 @@ func RunAgentReview(
 	}()
 	log.Printf("%s clone ok (%s) at %s", logPrefix, time.Since(cloneStart), cloneDir)
 
-	prompt, err := buildAgentPromptContent(geminiComments)
+	prompt, err := buildAgentPromptContent(runCtx, cloneDir, defaultBranch, geminiComments)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
@@ -253,14 +253,42 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 	return comments, nil
 }
 
-// buildAgentPromptContent prepends the static prompt template to a JSON block
-// of Gemini comments.
-func buildAgentPromptContent(geminiComments []types.LineComment) (string, error) {
+// buildAgentPromptContent assembles the agent prompt: the static template, then
+// the changed-file manifest (best-effort), then the JSON block of Gemini
+// comments. The manifest is computed in-worktree as the PR diff against the base
+// branch; if it can't be computed (stale/missing base ref, shallow-clone gap) it
+// is omitted and the prompt still instructs the agent to enumerate changed files.
+func buildAgentPromptContent(ctx context.Context, cloneDir, defaultBranch string, geminiComments []types.LineComment) (string, error) {
 	commentsJSON, err := json.MarshalIndent(geminiComments, "", "  ")
 	if err != nil {
 		return "", err
 	}
-	return promptAgentReview + string(commentsJSON), nil
+	var b strings.Builder
+	b.WriteString(promptAgentReview)
+	if manifest := changedFilesManifest(ctx, cloneDir, defaultBranch); manifest != "" {
+		b.WriteString(agentChangedFilesHeader)
+		b.WriteString(manifest)
+	}
+	b.WriteString(agentGeminiCommentsHeader)
+	b.Write(commentsJSON)
+	return b.String(), nil
+}
+
+// changedFilesManifest returns `git diff --name-status <base>...HEAD` run in the
+// worktree, or "" if it can't be computed. Three-dot diff = changes on the PR
+// head since its merge-base with the base branch (the same set GitHub shows as
+// the PR's files). Best-effort: any error yields "" rather than failing the run.
+func changedFilesManifest(ctx context.Context, cloneDir, defaultBranch string) string {
+	if cloneDir == "" || defaultBranch == "" {
+		return ""
+	}
+	base := "origin/" + defaultBranch
+	out, err := runGit(ctx, cloneDir, "diff", "--name-status", base+"...HEAD")
+	if err != nil {
+		log.Printf("[AGENT] changed-file manifest unavailable (%v); agent will enumerate changes itself", err)
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // cacheMutexes serializes cache-repo work per (owner, repo). Each repo gets

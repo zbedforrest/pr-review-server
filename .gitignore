@@ -66,3 +66,8 @@ cloud-sql-proxy
 # Local-only ops docs — never commit
 ARCHITECTURE.md
 DEPLOY.md
+
+# Eval harness — LOCAL ONLY. Carries real org/repo strings, branch names,
+# and private file paths in its case manifests; must never enter this public
+# repo (same rationale as CLAUDE.md above).
+benchmark/
