@@ -289,11 +289,45 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 			firstPassCriticals = append(firstPassCriticals, c)
 		}
 	}
+	// Optional premortem second pass: an independent defect-hunting agent.
+	// Only its PROVEN findings enter the merge; its "Highest-risk areas"
+	// summary section is appended to the final SUMMARY as advisory context.
+	var premortemFindings []types.LineComment
+	premortemRisk := ""
+	if p.cfg.PremortemReviews {
+		pmCfg := agentCfg
+		pmCfg.Premortem = true
+		pmCfg.WallClock = time.Duration(p.cfg.PremortemWallClockSec) * time.Second
+		pmOut, pmErr := service.RunAgentReview(ctx, pmCfg, p.agentSpawner,
+			pr.Owner, pr.Repo, "", pr.Number, pr.CommitSHA, nil)
+		if pmErr != nil {
+			// Best-effort: a failed premortem never fails the review.
+			log.Printf("[REVIEWER] WARN: premortem pass failed for PR %d: %v", pr.Number, pmErr)
+		} else {
+			for _, c := range pmOut.Comments {
+				if c.FilePath == "SUMMARY" {
+					premortemRisk = c.CommentBody
+					continue
+				}
+				premortemFindings = append(premortemFindings, c)
+			}
+		}
+	}
+
 	merged := service.MergeFindings(
 		service.FindingSet{Provenance: "agent", Comments: agentOut.Comments},
 		service.FindingSet{Provenance: "first-pass", Comments: firstPassCriticals},
+		service.FindingSet{Provenance: "premortem", Comments: premortemFindings},
 		service.FindingSet{Provenance: "mechanical", Comments: agentOut.Gates},
 	)
+	if premortemRisk != "" {
+		for i := range merged {
+			if merged[i].FilePath == "SUMMARY" {
+				merged[i].CommentBody += "\n\n---\n**Premortem (independent defect hunt):**\n" + premortemRisk
+				break
+			}
+		}
+	}
 	readmitted := len(merged) - len(agentOut.Comments)
 	result.Comments = merged
 	result.ComputeImportanceCounts()
@@ -450,6 +484,10 @@ func (p *Poller) reviewProcessTimeout() time.Duration {
 	t := ReviewPipelineMargin
 	if p.cfg != nil && p.cfg.AgentWallClockSec > 0 {
 		t += time.Duration(p.cfg.AgentWallClockSec) * time.Second
+	}
+	// The premortem second pass runs inside the same review window.
+	if p.cfg != nil && p.cfg.PremortemReviews && p.cfg.PremortemWallClockSec > 0 {
+		t += time.Duration(p.cfg.PremortemWallClockSec) * time.Second
 	}
 	return t
 }

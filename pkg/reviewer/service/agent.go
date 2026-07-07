@@ -35,6 +35,7 @@ type AgentConfig struct {
 	GitHubToken  string        // optional; HTTPS clone auth
 	Model        string        // `claude` model id; defaults to DefaultAgentModel if empty
 	Effort       string        // `claude` reasoning effort; defaults to DefaultAgentEffort if empty
+	Premortem    bool          // second-pass posture: hunt the defect instead of reviewing
 }
 
 // AgentReview is the result of a successful agent run.
@@ -132,9 +133,18 @@ func RunAgentReview(
 		log.Printf("%s mechanical gates fired: %d", logPrefix, len(gates))
 	}
 
-	prompt, err := buildAgentPromptContent(geminiComments, gates)
-	if err != nil {
-		return nil, fmt.Errorf("agent: build prompt: %w", err)
+	var prompt string
+	var promptErr error
+	if agentCfg.Premortem {
+		// The premortem pass is deliberately independent: it gets the gate
+		// alerts but NOT the first-pass comments, so its candidate ranking is
+		// an uncorrelated draw rather than an echo of the reviewer pass.
+		prompt, promptErr = buildPremortemPromptContent(gates)
+	} else {
+		prompt, promptErr = buildAgentPromptContent(geminiComments, gates)
+	}
+	if promptErr != nil {
+		return nil, fmt.Errorf("agent: build prompt: %w", promptErr)
 	}
 
 	model := agentCfg.Model
@@ -304,6 +314,21 @@ func matchBracket(s string, start int) int {
 		}
 	}
 	return -1
+}
+
+// buildPremortemPromptContent assembles the premortem prompt: the inverted
+// posture template plus the mechanical-gate alerts (no first-pass comments -
+// the premortem draw stays independent of the reviewer pass).
+func buildPremortemPromptContent(gates []types.LineComment) (string, error) {
+	var b strings.Builder
+	b.WriteString(promptAgentPremortem)
+	if len(gates) > 0 {
+		b.WriteString("\n--- MECHANICAL ALERTS (deterministic checks; weigh these as candidates) ---\n")
+		for _, g := range gates {
+			b.WriteString("- [" + g.FilePath + "] " + g.CommentBody + "\n")
+		}
+	}
+	return b.String(), nil
 }
 
 // buildAgentPromptContent assembles the agent prompt: the static template,

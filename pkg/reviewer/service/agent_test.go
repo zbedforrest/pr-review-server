@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pr-review-server/pkg/reviewer/types"
 )
 
 // fakeProcess implements SpawnedProcess by replaying a canned stdout buffer.
@@ -265,3 +267,31 @@ func TestParseAgentJSON(t *testing.T) {
 
 // Keep errors import alive.
 var _ = errors.New
+
+// TestBuildPremortemPromptContent — inverted-posture prompt: no first-pass
+// comments (independent draw), gates included, proven-vs-risk-area contract.
+func TestBuildPremortemPromptContent(t *testing.T) {
+	gates := []types.LineComment{{FilePath: "a/models.py", CommentBody: "gate text"}}
+	got, err := buildPremortemPromptContent(gates)
+	if err != nil {
+		t.Fatalf("buildPremortemPromptContent: %v", err)
+	}
+	for _, want := range []string{
+		"post-mortem, not a review",
+		"Highest-risk areas",
+		"MECHANICAL ALERTS",
+		"gate text",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	if strings.Contains(got, "GEMINI COMMENTS") {
+		t.Error("premortem prompt must not carry first-pass comments")
+	}
+	// No gates -> no alerts section.
+	got, _ = buildPremortemPromptContent(nil)
+	if strings.Contains(got, "MECHANICAL ALERTS") {
+		t.Error("empty gates should omit the alerts section")
+	}
+}

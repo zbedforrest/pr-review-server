@@ -152,6 +152,8 @@ docker run --rm \
   -e "AGENT_MODEL=${AGENT_MODEL:-}" \
   -e "AGENT_EFFORT=${AGENT_EFFORT:-}" \
   -e "DISABLE_POLLING=${DISABLE_POLLING:-}" \
+  -e "PREMORTEM_REVIEWS=${PREMORTEM_REVIEWS:-}" \
+  -e "PREMORTEM_WALL_CLOCK_SEC=${PREMORTEM_WALL_CLOCK_SEC:-}" \
   -e "SERVER_PORT=8080" \
   -e "SKIP_DB_MIGRATIONS=$SKIP_DB_MIGRATIONS" \
   -e "GOOGLE_APPLICATION_CREDENTIALS=/home/appuser/.config/gcloud/application_default_credentials.json" \

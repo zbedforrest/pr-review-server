@@ -46,6 +46,11 @@ type Config struct {
 	AgentMaxConcurrent int    // <=0 disables the cap (unlimited concurrency)
 	AgentModel         string // `claude` model id for agent reviews (empty = service default)
 	AgentEffort        string // `claude` reasoning effort for agent reviews (empty = service default)
+
+	// Premortem second pass (optional): an independent defect-hunting agent
+	// run after the reviewer pass; proven findings merge into the review.
+	PremortemReviews      bool
+	PremortemWallClockSec int
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -110,14 +115,16 @@ func Load() *Config {
 		ReviewerEnabled: false, // Will be set to true in main.go if API key is available
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
 
-		AgenticReviews:     os.Getenv("AGENTIC_REVIEWS") == "true",
-		AgentCloneRootDir:  getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
-		AgentLogsDir:       getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
-		AgentWallClockSec:  getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 360),
-		AgentMaxTurns:      getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
-		AgentMaxConcurrent: getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
-		AgentModel:         os.Getenv("AGENT_MODEL"),
-		AgentEffort:        os.Getenv("AGENT_EFFORT"),
+		AgenticReviews:        os.Getenv("AGENTIC_REVIEWS") == "true",
+		AgentCloneRootDir:     getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
+		AgentLogsDir:          getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
+		AgentWallClockSec:     getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 360),
+		AgentMaxTurns:         getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
+		AgentMaxConcurrent:    getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
+		AgentModel:            os.Getenv("AGENT_MODEL"),
+		AgentEffort:           os.Getenv("AGENT_EFFORT"),
+		PremortemReviews:      os.Getenv("PREMORTEM_REVIEWS") == "true",
+		PremortemWallClockSec: getEnvIntOrDefault("PREMORTEM_WALL_CLOCK_SEC", 360),
 	}
 }
 
