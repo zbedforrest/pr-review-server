@@ -203,6 +203,17 @@ func RunAgentReview(
 	waitErr := proc.Wait()
 	stderrWG.Wait()
 
+	// Check the deadline first: a wall-clock kill closes the stdout pipe and
+	// surfaces as a parse/read error, which would otherwise mask the timeout.
+	if runCtx.Err() == context.DeadlineExceeded {
+		turns := 0
+		if parseResult != nil {
+			turns = parseResult.assistantTurns
+		}
+		return nil, fmt.Errorf("agent: wall-clock timeout (%s) after %d turns (stderr: %s)",
+			agentCfg.WallClock, turns, truncate(stderrBuf.String(), 1000))
+	}
+
 	if parseErr != nil {
 		// Turn-cap hit or parse error — subprocess already killed inside parser.
 		return nil, fmt.Errorf("agent: %w (stderr: %s)", parseErr, truncate(stderrBuf.String(), 1000))
