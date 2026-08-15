@@ -100,6 +100,12 @@ The remaining feature flags (`SURFACE_ALERTS`, `CARRY_FORWARD_FINDINGS`, `FINDIN
 - `POST /api/prs/generate-review` — trigger a review for any PR by reference, including merged/closed PRs
 - `GET /api/status` — health check
 
+## Themes
+
+The dashboard ships twenty themes — One Dark/Light, GitHub, Gruvbox, Solarized, Monokai, Dracula, Nord, Night Owl, Tokyo Night, the four Catppuccin flavors, Everforest, Rose Pine and SynthWave '84. Pick one from the **Theme** control in the header; the choice is a per-browser preference stored in `localStorage` under `prism.theme.v1` and re-applied before the first paint, so it survives reloads without flashing the default. With nothing stored, the OS light/dark preference decides.
+
+Each theme is a block of CSS custom properties in `frontend/src/styles/themes/_palettes.scss`, selected by `data-theme` on `<html>`; `_derived.scss` computes the handful of tokens the palettes don't carry, and `styles/abstracts/_variables.scss` maps the Sass variables components use onto those tokens. To add a theme, add its palette block and list it in `VALID_THEMES`/`THEME_OPTIONS` in `frontend/src/utils/theme.ts` — the tests fail if the two ever disagree, or if a palette omits a token the others define. Components should reference the `$color-*` variables rather than literal colors, and reach for the `*-dim` tokens instead of `rgba()` (the Sass color functions can't operate on a `var()` reference).
+
 ## Auxiliary tools
 
 - `go run ./cmd/gatecheck <worktree-dir> <base-branch>` — offline report of what the deterministic layer (gates + bug memory) would contribute for a diff; no LLM calls or API keys needed

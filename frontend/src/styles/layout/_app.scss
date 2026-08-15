@@ -22,15 +22,19 @@
     font-weight: 800;
     line-height: 1;
     letter-spacing: -0.03em;
+    // A fixed spectrum, not theme colors — it is the PRism wordmark, and it
+    // should read the same whichever palette is active. The stops are mid-tones
+    // rather than pastels for exactly that reason: the original pale yellow and
+    // green vanished against the light themes' near-white background.
     background: linear-gradient(
       90deg,
-      #ff5f6d 0%,
-      #ffc371 18%,
-      #ffe066 34%,
-      #7ee787 50%,
-      #58a6ff 68%,
-      #bc8cff 84%,
-      #ff5f6d 100%
+      #e5484d 0%,
+      #d97706 18%,
+      #b08600 34%,
+      #2ea043 50%,
+      #4493f8 68%,
+      #a371f7 84%,
+      #e5484d 100%
     );
     -webkit-background-clip: text;
     background-clip: text;
@@ -112,7 +116,7 @@
     }
 
     &--error {
-      color: #ff6b6b;
+      color: $color-error-text;
     }
   }
 }
@@ -153,8 +157,8 @@ section {
 
 .app-error-boundary {
   padding: 20px;
-  color: #ff6b6b;
-  background-color: #161b22;
+  color: $color-error-text;
+  background-color: $color-bg-secondary;
 
   &__stack {
     color: $color-text-secondary;

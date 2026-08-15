@@ -1,0 +1,43 @@
+@use '../../styles/abstracts/variables' as *;
+
+// Sized to sit level with the other header actions (.app-header__action-btn).
+.theme-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-sm;
+
+  &__label {
+    font-size: $font-size-sm;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: $color-text-secondary;
+  }
+
+  &__select {
+    padding: 8px 12px;
+    font-size: 14px;
+    font-family: $font-system;
+    border-radius: $radius-md;
+    border: 1px solid $color-border;
+    background-color: $color-bg-tertiary;
+    color: $color-text-primary;
+    cursor: pointer;
+
+    &:hover {
+      border-color: $color-link;
+    }
+
+    &:focus-visible {
+      outline: none;
+      border-color: $color-link;
+      box-shadow: $shadow-glow;
+    }
+
+    // The dropdown list is drawn by the OS, which does not inherit the
+    // control's colors on every platform — set them on the options too.
+    option {
+      background-color: $color-bg-secondary;
+      color: $color-text-primary;
+    }
+  }
+}

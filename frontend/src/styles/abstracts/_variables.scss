@@ -1,41 +1,88 @@
-// GitHub dark theme colors
-$color-bg-primary: #0d1117;
-$color-bg-secondary: #161b22;
-$color-bg-tertiary: #21262d;
-$color-bg-hover: #1c2128;
-$color-border: #30363d;
+// Sass variables used across the app.
+//
+// The colors are aliases for the CSS custom properties the active theme
+// publishes (see `styles/themes/_palettes.scss`), not literal values. That way
+// existing `$color-*` call sites keep working while the actual color is
+// resolved at paint time from `data-theme` on <html>.
+//
+// Because these are `var()` references, Sass color functions (`rgba()`,
+// `darken()`, `mix()`, …) cannot be applied to them. Where a translucent tint
+// is needed, use the palette's own dim tokens — `$color-bg-*-dim`,
+// `$color-border-*-dim` — instead of building one with `rgba()`.
 
-$color-text-primary: #c9d1d9;
-$color-text-secondary: #8b949e;
-$color-text-tertiary: #7d8590;
-$color-text-muted: #6e7681;
+// Surfaces
+$color-bg-primary: var(--bg-primary);
+$color-bg-secondary: var(--bg-secondary);
+$color-bg-tertiary: var(--bg-tertiary);
+$color-bg-hover: var(--bg-hover);
+$color-border: var(--border);
+$color-overlay: var(--overlay-bg);
 
-$color-link: #58a6ff;
-$color-link-hover: #79c0ff;
+// Text.
+//
+// The app has two dim levels where the palettes have one usable one. Its
+// $color-text-tertiary is a *readable* label tone — small caps, counters,
+// status labels — so it maps to --text-secondary, not --text-tertiary: in
+// these palettes --text-tertiary is a ghost/disabled tone (Dracula's comment
+// color, Nord's #4c566a) that drops below 2:1 on a card. Genuinely ghosted
+// text uses $color-text-muted, which is where --text-tertiary belongs.
+$color-text-primary: var(--text-primary);
+$color-text-secondary: var(--text-secondary);
+$color-text-tertiary: var(--text-secondary);
+$color-text-muted: var(--text-muted);
 
-$color-success: #7ee787;
-$color-success-emphasis: #1a7f37;
-$color-warning: #d29922;
-$color-warning-text: #f0d062;
-$color-agent-reviewing: #f78c39;
-$color-agent-reviewing-text: #ffb981;
-$color-error: #da3633;
-$color-error-text: #ffa198;
+// Links / accent
+$color-link: var(--accent);
+$color-link-hover: var(--accent-hover);
+
+// Status. The `-emphasis` colors are solid fills; the plain ones are tuned to
+// be legible as text on the theme's own background.
+$color-success: var(--text-success);
+$color-success-emphasis: var(--success);
+$color-warning: var(--warning);
+$color-warning-text: var(--text-warning);
+$color-agent-reviewing: var(--agent-reviewing);
+$color-agent-reviewing-text: var(--agent-reviewing-text);
+$color-error: var(--danger);
+$color-error-text: var(--text-danger);
+$color-merged: var(--text-merged);
 
 // Priority colors
-$color-priority-high: #f85149;
-$color-priority-medium: #d29922;
-$color-priority-low: #3fb950;
+$color-priority-high: var(--text-danger);
+$color-priority-medium: var(--text-warning);
+$color-priority-low: var(--text-success);
 
-// Status colors
-$color-status-pending: #9e6a03;
-$color-status-pending-text: #f0d062;
-$color-status-generating: #0969da;
-$color-status-generating-text: #79c0ff;
-$color-status-completed: #1a7f37;
-$color-status-completed-text: #7ee787;
-$color-status-error: #da3633;
-$color-status-error-text: #ffa198;
+// Translucent tints, for hover fills and soft-filled badges.
+$color-bg-success-dim: var(--bg-success-dim);
+$color-bg-error-dim: var(--bg-danger-dim);
+$color-bg-warning-dim: var(--bg-warning-dim);
+$color-bg-merged-dim: var(--bg-merged-dim);
+$color-bg-info-dim: var(--bg-info-dim);
+$color-bg-info-dim-strong: var(--bg-info-dim-strong);
+$color-bg-neutral-dim: var(--accent-dim);
+
+$color-border-success-dim: var(--border-success-dim);
+$color-border-error-dim: var(--border-danger-dim);
+$color-border-warning-dim: var(--border-warning-dim);
+$color-border-info-dim: var(--border-info-dim);
+$color-border-merged-dim: var(--border-merged-dim);
+
+// Status badge fills. Soft rather than solid so a single pair reads correctly
+// on both light and dark palettes.
+$color-status-pending: var(--bg-warning-dim);
+$color-status-pending-text: var(--text-warning);
+$color-status-generating: var(--bg-info-dim-strong);
+$color-status-generating-text: var(--accent);
+$color-status-completed: var(--bg-success-dim);
+$color-status-completed-text: var(--text-success);
+$color-status-error: var(--bg-danger-dim);
+$color-status-error-text: var(--text-danger);
+
+// Shadows
+$shadow-sm: var(--shadow-sm);
+$shadow-md: var(--shadow-md);
+$shadow-lg: var(--shadow-lg);
+$shadow-glow: var(--shadow-glow);
 
 // Spacing
 $spacing-xs: 4px;

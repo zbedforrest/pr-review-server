@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { GenerateReviewForm } from './GenerateReviewForm';
+import { ThemeSelector } from './ThemeSelector';
 
 export function Header() {
   const [isPolling, setIsPolling] = useState(false);
@@ -40,6 +41,7 @@ export function Header() {
         >
           {isPolling ? 'Polling...' : 'Refresh PRs'}
         </button>
+        <ThemeSelector />
       </div>
     </header>
   );

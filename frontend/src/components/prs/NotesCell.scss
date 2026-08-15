@@ -1,3 +1,5 @@
+@use '../../styles/abstracts/variables' as *;
+
 .notes-cell {
   cursor: pointer;
   padding: 4px 8px;
@@ -8,16 +10,16 @@
   transition: background-color 0.15s ease;
 
   &:hover {
-    background-color: rgba(88, 166, 255, 0.1);
+    background-color: $color-bg-info-dim;
   }
 
   &--has-content {
-    color: #58a6ff;
+    color: $color-link;
     font-weight: 500;
   }
 
   &--empty {
-    color: #8b949e;
+    color: $color-text-secondary;
   }
 
   &__placeholder {
@@ -32,18 +34,18 @@
     width: 100%;
     padding: 4px 8px;
     font-size: 12px;
-    border: 1px solid #58a6ff;
+    border: 1px solid $color-link;
     border-radius: 4px;
-    background-color: #0d1117;
-    color: #c9d1d9;
+    background-color: $color-bg-primary;
+    color: $color-text-primary;
     outline: none;
 
     &:focus {
-      box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.3);
+      box-shadow: 0 0 0 2px $color-border-info-dim;
     }
 
     &::placeholder {
-      color: #8b949e;
+      color: $color-text-secondary;
     }
   }
 }

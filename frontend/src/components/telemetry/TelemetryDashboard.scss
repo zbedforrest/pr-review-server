@@ -35,9 +35,9 @@
       transition: background $transition-fast;
 
       &.active {
-        background: #1f6feb;
-        color: #fff;
-        border-color: #1f6feb;
+        background: $color-link;
+        color: $color-bg-primary;
+        border-color: $color-link;
       }
 
       &:hover:not(.active) {
@@ -120,7 +120,7 @@
 
   &__bar-fill {
     height: 100%;
-    background: #1f6feb;
+    background: $color-link;
     border-radius: $radius-sm;
     min-width: 2px;
     transition: width $transition-medium;
@@ -158,7 +158,7 @@
 
   &__day-bar {
     width: 100%;
-    background: #1f6feb;
+    background: $color-link;
     border-radius: $radius-sm $radius-sm 0 0;
     min-height: 2px;
     transition: height $transition-medium;

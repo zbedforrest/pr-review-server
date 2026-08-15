@@ -33,7 +33,7 @@
   }
 
   &__error {
-    color: $color-error;
+    color: $color-error-text;
   }
 
   &__dot {
@@ -52,21 +52,21 @@
     text-transform: uppercase;
     
     &--connected {
-      background-color: rgba($color-success, 0.2);
+      background-color: $color-bg-success-dim;
       color: $color-success;
-      border: 1px solid rgba($color-success, 0.3);
+      border: 1px solid $color-border-success-dim;
     }
 
     &--disconnected {
-      background-color: rgba($color-error, 0.2);
-      color: $color-error;
-      border: 1px solid rgba($color-error, 0.3);
+      background-color: $color-bg-error-dim;
+      color: $color-error-text;
+      border: 1px solid $color-border-error-dim;
     }
 
     &--connecting {
-      background-color: rgba($color-warning, 0.2);
-      color: $color-warning;
-      border: 1px solid rgba($color-warning, 0.3);
+      background-color: $color-bg-warning-dim;
+      color: $color-warning-text;
+      border: 1px solid $color-border-warning-dim;
     }
   }
 

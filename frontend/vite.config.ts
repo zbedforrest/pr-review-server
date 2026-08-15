@@ -37,5 +37,11 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // Compile SCSS in tests rather than stubbing it out. Costs a little
+    // transform time and buys two things: `?raw` imports of stylesheets
+    // resolve to real text (theme.test.ts checks the palettes against the
+    // theme list that way), and a stylesheet that no longer compiles fails
+    // the suite instead of only the build.
+    css: true,
   },
 });

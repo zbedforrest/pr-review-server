@@ -1,0 +1,39 @@
+// Tokens PRism needs that the shared palettes don't carry.
+//
+// Rather than hand-tuning five extra values across twenty palettes (and having
+// to re-tune them every time a palette changes), these are derived from the
+// palette each theme already defines. They live on `:root` so they inherit the
+// active theme's values through `var()` — a `[data-theme]` block never has to
+// mention them.
+//
+// The plain aliases below are the floor: they are always correct, just less
+// nuanced. The `@supports` block refines the ones that benefit from a blend,
+// using `color-mix()` where the browser has it (Chrome 111+, Firefox 113+,
+// Safari 16.2+).
+
+:root {
+  // Row/menu hover fill: a step away from the page background.
+  --bg-hover: var(--bg-tertiary);
+
+  // Ghosted text: placeholders, empty-state dashes, disabled counters.
+  --text-muted: var(--text-tertiary);
+
+  // Hovered link/accent.
+  --accent-hover: var(--accent);
+
+  // The agent-review stage, which needs to read as distinct from the yellow
+  // "generating" stage — orange, i.e. warning pulled toward danger.
+  --agent-reviewing: var(--warning);
+  --agent-reviewing-text: var(--text-warning);
+}
+
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+  :root {
+    --bg-hover: color-mix(in srgb, var(--bg-tertiary) 55%, var(--bg-primary));
+    // Toward the foreground: lightens the accent on dark themes, darkens it on
+    // light ones, so the hover reads as "more" in either direction.
+    --accent-hover: color-mix(in srgb, var(--accent) 78%, var(--text-primary));
+    --agent-reviewing: color-mix(in srgb, var(--warning) 65%, var(--danger));
+    --agent-reviewing-text: color-mix(in srgb, var(--text-warning) 60%, var(--text-danger));
+  }
+}

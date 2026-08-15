@@ -110,7 +110,7 @@
     text-decoration: none;
 
     &:hover {
-      background: rgba($color-success, 0.12);
+      background: $color-bg-success-dim;
       border-color: $color-success;
       color: $color-link-hover;
     }
@@ -123,7 +123,9 @@
 
     &:hover:not(:disabled) {
       background: $color-link;
-      color: white;
+      // The page background, not literal white: on a light theme the accent is
+      // dark and needs light text, on a dark theme the reverse.
+      color: $color-bg-primary;
     }
 
     &:disabled {
@@ -164,9 +166,8 @@
     opacity: 0.5;
   }
 
-  // GitHub's merged purple
   &--merged {
-    color: #a371f7;
+    color: $color-merged;
   }
 
   &--closed {
@@ -186,7 +187,7 @@
 
   &--view {
     &:hover {
-      background: rgba($color-link, 0.1);
+      background: $color-bg-info-dim;
       border-radius: $radius-sm;
     }
   }
@@ -221,7 +222,7 @@
 
     &:focus {
       border-color: $color-link-hover;
-      box-shadow: 0 0 0 2px rgba($color-link, 0.2);
+      box-shadow: 0 0 0 2px $color-border-info-dim;
     }
 
     &--warning {

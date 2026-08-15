@@ -1,6 +1,8 @@
+@use '../../styles/abstracts/variables' as *;
+
 .triage-summary {
-  background-color: #161b22;
-  border: 1px solid #30363d;
+  background-color: $color-bg-secondary;
+  border: 1px solid $color-border;
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 20px;
@@ -16,12 +18,12 @@
     margin: 0;
     font-size: 14px;
     font-weight: 600;
-    color: #c9d1d9;
+    color: $color-text-primary;
   }
 
   .triage-total {
     font-size: 12px;
-    color: #8b949e;
+    color: $color-text-secondary;
   }
 }
 
@@ -37,15 +39,15 @@
   gap: 8px;
   padding: 10px 16px;
   border-radius: 6px;
-  border: 1px solid #30363d;
-  background-color: #0d1117;
+  border: 1px solid $color-border;
+  background-color: $color-bg-primary;
   cursor: pointer;
   transition: all 0.15s ease;
   font-family: inherit;
 
   &:hover:not(:disabled) {
-    border-color: #58a6ff;
-    background-color: #161b22;
+    border-color: $color-link;
+    background-color: $color-bg-secondary;
   }
 
   &:disabled {
@@ -54,37 +56,37 @@
   }
 
   &.active {
-    border-color: #58a6ff;
-    background-color: rgba(88, 166, 255, 0.1);
+    border-color: $color-link;
+    background-color: $color-bg-info-dim;
   }
 
   &.critical {
     .category-count {
-      color: #f85149;
+      color: $color-priority-high;
     }
     &.active {
-      border-color: #f85149;
-      background-color: rgba(248, 81, 73, 0.1);
+      border-color: $color-priority-high;
+      background-color: $color-bg-error-dim;
     }
   }
 
   &.medium {
     .category-count {
-      color: #d29922;
+      color: $color-priority-medium;
     }
     &.active {
-      border-color: #d29922;
-      background-color: rgba(210, 153, 34, 0.1);
+      border-color: $color-priority-medium;
+      background-color: $color-bg-warning-dim;
     }
   }
 
   &.quick-approve {
     .category-count {
-      color: #3fb950;
+      color: $color-priority-low;
     }
     &.active {
-      border-color: #3fb950;
-      background-color: rgba(63, 185, 80, 0.1);
+      border-color: $color-priority-low;
+      background-color: $color-bg-success-dim;
     }
   }
 
@@ -100,17 +102,17 @@
 
   .category-label {
     font-size: 13px;
-    color: #8b949e;
+    color: $color-text-secondary;
   }
 }
 
 .triage-filter-hint {
   margin-top: 12px;
   padding: 8px 12px;
-  background-color: rgba(88, 166, 255, 0.1);
+  background-color: $color-bg-info-dim;
   border-radius: 4px;
   font-size: 12px;
-  color: #58a6ff;
+  color: $color-link;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -118,14 +120,14 @@
   .clear-filter {
     background: none;
     border: none;
-    color: #58a6ff;
+    color: $color-link;
     cursor: pointer;
     padding: 2px 6px;
     border-radius: 3px;
     font-size: 12px;
 
     &:hover {
-      background-color: rgba(88, 166, 255, 0.2);
+      background-color: $color-bg-info-dim-strong;
     }
   }
 }
