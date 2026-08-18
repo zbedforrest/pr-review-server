@@ -22,7 +22,9 @@ var _ Database = (*GormDB)(nil)
 // NewGormDB creates a new GormDB with the given GORM dialector
 func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 	db, err := gorm.Open(dialector, &gorm.Config{
-		Logger:         logger.Default.LogMode(logger.Silent),
+		Logger: logger.Default.LogMode(logger.Silent),
+		// Translate constraint errors so CreateReviewRun can expose one
+		// dialect-independent idempotency conflict contract on SQLite/Postgres.
 		TranslateError: true,
 	})
 	if err != nil {

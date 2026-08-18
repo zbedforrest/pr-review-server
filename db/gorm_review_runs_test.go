@@ -194,23 +194,28 @@ func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
 	require.NotNil(t, fetched)
 	assert.Nil(t, fetched.LeaseExpiresAt)
 
-	// An expired running lease can be taken over and increments the attempt.
+	// A running run with no live lease can be reclaimed and increments the attempt.
+	claimed, err = database.ClaimReviewRun(run.RunID, "worker-b", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.True(t, claimed)
+
+	// An expired running lease can also be taken over.
 	expired := now.Add(-time.Second)
 	require.NoError(t, database.PatchReviewRun(run.RunID, ReviewRunPatch{LeaseExpiresAt: &expired}))
-	claimed, err = database.ClaimReviewRun(run.RunID, "worker-b", now, now.Add(time.Minute))
+	claimed, err = database.ClaimReviewRun(run.RunID, "worker-c", now, now.Add(time.Minute))
 	require.NoError(t, err)
 	assert.True(t, claimed)
 	fetched, err = database.GetReviewRun(run.RunID)
 	require.NoError(t, err)
 	require.NotNil(t, fetched)
-	assert.Equal(t, "worker-b", fetched.LeaseHolder)
-	assert.Equal(t, 2, fetched.ExecutionAttempt)
+	assert.Equal(t, "worker-c", fetched.LeaseHolder)
+	assert.Equal(t, 3, fetched.ExecutionAttempt)
 
 	completed := ReviewRunStatusCompleted
 	patched, err := database.PatchReviewRunAsHolder(run.RunID, "worker-a", now, ReviewRunPatch{Status: &completed})
 	require.NoError(t, err)
 	assert.False(t, patched, "stale worker must not commit a terminal result")
-	patched, err = database.PatchReviewRunAsHolder(run.RunID, "worker-b", now, ReviewRunPatch{Status: &completed})
+	patched, err = database.PatchReviewRunAsHolder(run.RunID, "worker-c", now, ReviewRunPatch{Status: &completed})
 	require.NoError(t, err)
 	assert.True(t, patched)
 	fetched, err = database.GetReviewRun(run.RunID)

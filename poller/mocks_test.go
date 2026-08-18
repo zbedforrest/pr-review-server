@@ -863,6 +863,16 @@ func (m *MockDatabase) GetTelemetryStats(days int) (*db.TelemetryStats, error) {
 func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, exists := m.ReviewRuns[run.RunID]; exists {
+		return fmt.Errorf("%w: run_id=%s", db.ErrReviewRunConflict, run.RunID)
+	}
+	if run.IdempotencyKeyHash != "" {
+		for _, existing := range m.ReviewRuns {
+			if existing.IdempotencyScope == run.IdempotencyScope && existing.IdempotencyKeyHash == run.IdempotencyKeyHash {
+				return fmt.Errorf("%w: run_id=%s", db.ErrReviewRunConflict, run.RunID)
+			}
+		}
+	}
 	copy := *run
 	m.ReviewRuns[run.RunID] = &copy
 	return nil
@@ -882,8 +892,11 @@ func (m *MockDatabase) GetReviewRun(runID string) (*db.ReviewRun, error) {
 func (m *MockDatabase) GetReviewRunByIdempotency(scope, keyHash string) (*db.ReviewRun, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if scope == "" || keyHash == "" {
+		return nil, nil
+	}
 	for _, run := range m.ReviewRuns {
-		if run.IdempotencyScope == scope && run.IdempotencyKeyHash == keyHash && keyHash != "" {
+		if run.IdempotencyScope == scope && run.IdempotencyKeyHash == keyHash {
 			copy := *run
 			return &copy, nil
 		}
@@ -1025,7 +1038,7 @@ func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt 
 		return false, nil
 	}
 	claimable := run.Status == db.ReviewRunStatusQueued ||
-		(run.Status == db.ReviewRunStatusRunning && run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(now))
+		(run.Status == db.ReviewRunStatusRunning && (run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(now)))
 	if !claimable {
 		return false, nil
 	}

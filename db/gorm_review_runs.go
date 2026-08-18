@@ -213,7 +213,7 @@ func (g *GormDB) ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.T
 		return false, fmt.Errorf("claim review run: run ID, holder, and a future lease expiry are required")
 	}
 	result := g.db.Model(&ReviewRunModel{}).
-		Where("run_id = ? AND (status = ? OR (status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?))",
+		Where("run_id = ? AND (status = ? OR (status = ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)))",
 			runID, ReviewRunStatusQueued, ReviewRunStatusRunning, now).
 		Updates(map[string]any{
 			"status":            ReviewRunStatusRunning,
@@ -253,25 +253,32 @@ func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
 	// round-tripped auto-increment ID, which could conflict independently on
 	// SQLite/Postgres before the natural-key conflict is resolved.
 	model.ID = 0
-	err := g.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "run_id"}, {Name: "stage"}, {Name: "invocation_number"}, {Name: "attempt_number"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"provider", "backend", "requested_model", "resolved_model",
-			"observed_served_models", "primary_served_model", "served_model_source",
-			"serving_model_verified", "fallback", "fallback_reason", "matcher_version",
-			"effort", "status", "assistant_turns", "input_tokens", "output_tokens",
-			"total_tokens", "started_at", "completed_at", "duration_ms", "stop_reason",
-			"error_code", "error_summary", "updated_at",
-		}),
-	}).Create(&model).Error
+	err := g.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "run_id"}, {Name: "stage"}, {Name: "invocation_number"}, {Name: "attempt_number"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"provider", "backend", "requested_model", "resolved_model",
+				"observed_served_models", "primary_served_model", "served_model_source",
+				"serving_model_verified", "fallback", "fallback_reason", "matcher_version",
+				"effort", "status", "assistant_turns", "input_tokens", "output_tokens",
+				"total_tokens", "started_at", "completed_at", "duration_ms", "stop_reason",
+				"error_code", "error_summary", "updated_at",
+			}),
+		}).Create(&model).Error; err != nil {
+			return fmt.Errorf("upsert: %w", err)
+		}
+		var persisted ReviewStageAttemptModel
+		if err := tx.Where(
+			"run_id = ? AND stage = ? AND invocation_number = ? AND attempt_number = ?",
+			attempt.RunID, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber,
+		).First(&persisted).Error; err != nil {
+			return fmt.Errorf("reload: %w", err)
+		}
+		model = persisted
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("upsert review stage attempt %s/%s/%d/%d: %w", attempt.RunID, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber, err)
-	}
-	if err := g.db.Where(
-		"run_id = ? AND stage = ? AND invocation_number = ? AND attempt_number = ?",
-		attempt.RunID, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber,
-	).First(&model).Error; err != nil {
-		return fmt.Errorf("reload review stage attempt %s/%s/%d/%d: %w", attempt.RunID, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber, err)
 	}
 	*attempt = reviewStageAttemptFromModel(model)
 	return nil

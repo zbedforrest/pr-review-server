@@ -133,12 +133,12 @@ func (PRModel) TableName() string {
 // own a cascading PR relationship: closed PR rows are routinely cleaned up,
 // while review history must survive.
 type ReviewRunModel struct {
-	RunID             string `gorm:"column:run_id;primaryKey;size:36"`
+	RunID             string `gorm:"column:run_id;primaryKey;size:36;index:idx_review_runs_pr_history,priority:5;index:idx_review_runs_commit_history,priority:5"`
 	PRID              *uint  `gorm:"column:pr_id;index"`
 	RepoOwner         string `gorm:"size:255;not null;index:idx_review_runs_pr_history,priority:1;index:idx_review_runs_commit_history,priority:1"`
 	RepoName          string `gorm:"size:255;not null;index:idx_review_runs_pr_history,priority:2;index:idx_review_runs_commit_history,priority:2"`
-	PRNumber          int    `gorm:"not null;index:idx_review_runs_pr_history,priority:3;index:idx_review_runs_commit_history,priority:3"`
-	CommitSHA         string `gorm:"size:40;not null;index:idx_review_runs_commit_history,priority:4"`
+	PRNumber          int    `gorm:"not null;index:idx_review_runs_pr_history,priority:3"`
+	CommitSHA         string `gorm:"size:40;not null;index:idx_review_runs_commit_history,priority:3"`
 	RequestedByUserID *uint  `gorm:"column:requested_by_user_id;index"`
 	TriggerSource     string `gorm:"size:32;not null;index"`
 	Status            string `gorm:"size:32;not null;index"`
@@ -155,7 +155,7 @@ type ReviewRunModel struct {
 	AgentWallClockSec int    `gorm:"column:agent_wall_clock_sec"`
 	AgentMaxTurns     int    `gorm:"column:agent_max_turns"`
 
-	AcceptedAt  time.Time  `gorm:"column:accepted_at;not null;index;index:idx_review_runs_pr_history,priority:4;index:idx_review_runs_commit_history,priority:5"`
+	AcceptedAt  time.Time  `gorm:"column:accepted_at;not null;index;index:idx_review_runs_pr_history,priority:4;index:idx_review_runs_commit_history,priority:4"`
 	QueuedAt    time.Time  `gorm:"column:queued_at;not null;index"`
 	StartedAt   *time.Time `gorm:"column:started_at;index"`
 	CompletedAt *time.Time `gorm:"column:completed_at;index"`
@@ -193,7 +193,7 @@ func (ReviewRunModel) TableName() string { return "review_runs" }
 // forcing the evolving long-tail of model metadata into review_runs columns.
 type ReviewStageAttemptModel struct {
 	ID                   uint            `gorm:"primaryKey;autoIncrement"`
-	RunID                string          `gorm:"column:run_id;size:36;not null;index;uniqueIndex:idx_review_stage_attempt_unique,priority:1"`
+	RunID                string          `gorm:"column:run_id;size:36;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:1"`
 	Stage                string          `gorm:"size:64;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:2;index:idx_review_stage_attempt_model,priority:1"`
 	InvocationNumber     int             `gorm:"column:invocation_number;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:3"`
 	AttemptNumber        int             `gorm:"column:attempt_number;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:4"`
