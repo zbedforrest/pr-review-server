@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"pr-review-server/pkg/reviewer/types"
 )
@@ -40,6 +41,11 @@ type Payload struct {
 	Counts   Counts    `json:"counts"`
 	Findings []Finding `json:"findings"`
 
+	// ReviewRun identifies this execution and records every model role in the
+	// pipeline. The artifact filename remains stable by PR + commit; RunID is
+	// the opaque identifier consumers should use when correlating telemetry.
+	ReviewRun *ReviewRunInfo `json:"review_run,omitempty"`
+
 	// BugMemory is present when the bug-memory feature injected (or excluded)
 	// pattern-library entries for this review; consumers use it to attribute
 	// findings to injected priors.
@@ -56,6 +62,33 @@ type Payload struct {
 	// staleness filter. Absent when the feature is off or no prior review
 	// exists, so legacy sidecars are byte-identical.
 	CarriedFindings *CarryForwardInfo `json:"carried_findings,omitempty"`
+}
+
+// ReviewRunInfo is the durable execution metadata attached to a review.
+// It is additive to schema v1 so older sidecar consumers can ignore it.
+type ReviewRunInfo struct {
+	RunID       string     `json:"run_id"`
+	HTMLPath    string     `json:"html_path"`
+	JSONPath    string     `json:"json_path"`
+	StartedAt   time.Time  `json:"started_at"`
+	CompletedAt time.Time  `json:"completed_at"`
+	DurationMS  int64      `json:"duration_ms"`
+	Models      []ModelUse `json:"models"`
+}
+
+// ModelUse describes one role in the review pipeline. RequestedModel is the
+// configured input; ServedModel is populated when the runtime reports it.
+// ServingModelVerified distinguishes a reported model from a pinned request
+// copied into telemetry by a client whose event stream omits routing details.
+type ModelUse struct {
+	Stage                string `json:"stage"`
+	Provider             string `json:"provider"`
+	Backend              string `json:"backend,omitempty"`
+	RequestedModel       string `json:"requested_model"`
+	ServedModel          string `json:"served_model,omitempty"`
+	ServingModelVerified bool   `json:"serving_model_verified"`
+	Effort               string `json:"effort,omitempty"`
+	Fallback             bool   `json:"fallback"`
 }
 
 // CarryForwardInfo is the cross-review carry-forward telemetry.

@@ -102,7 +102,7 @@ type Poller struct {
 	teamCacheExpiry time.Time
 	// Poll economy: track cycles for periodic full refresh
 	pollCount int
-	// Agent-review subprocess spawner (nil-safe: defaults to the real claude CLI).
+	// Agent-review subprocess spawner (nil-safe: defaults to the configured CLI).
 	agentSpawner service.Spawner
 	// compareFilesFn resolves the files changed between two commits of a repo
 	// for the carry-forward staleness filter (nil-safe: defaults to the GitHub
@@ -111,7 +111,7 @@ type Poller struct {
 	// caller must not carry anything forward.
 	compareFilesFn func(ctx context.Context, owner, repo, base, head, token string) (files []string, ok bool)
 	// agentSlots caps concurrent agent reviews per process. Each agent run
-	// holds ~1 GB of /tmp (clone) + claude memory; without a cap, two PRs
+	// holds ~1 GB of /tmp (clone) + agent memory; without a cap, two PRs
 	// triggered close together can exhaust the instance's memory budget.
 	// Buffered to AgentMaxConcurrent; nil if AgentMaxConcurrent <= 0
 	// (unlimited, used by tests).
@@ -145,6 +145,51 @@ func newHolderID() string {
 		return fmt.Sprintf("%s-%d", revisionName(), time.Now().UnixNano())
 	}
 	return fmt.Sprintf("%s-%s", revisionName(), hex.EncodeToString(buf))
+}
+
+// newReviewRunID returns an opaque, globally unique execution identifier.
+// It intentionally does not contain model names: those are mutable metadata,
+// while this value is safe to index and use for telemetry correlation.
+func newReviewRunID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("run-%d", time.Now().UnixNano())
+	}
+	return "run-" + hex.EncodeToString(buf)
+}
+
+func geminiModelUses() []payload.ModelUse {
+	return []payload.ModelUse{
+		{
+			Stage:          "first_pass",
+			Provider:       "google",
+			Backend:        "gemini_api",
+			RequestedModel: llm.ProModelName(),
+		},
+		{
+			Stage:          "classification_summary",
+			Provider:       "google",
+			Backend:        "gemini_api",
+			RequestedModel: llm.FlashModelName(),
+		},
+	}
+}
+
+func agentModelUse(review *service.AgentReview) payload.ModelUse {
+	provider := "anthropic"
+	if review.Backend == service.AgentBackendOpenRouter {
+		provider = "openrouter"
+	}
+	return payload.ModelUse{
+		Stage:                "agent",
+		Provider:             provider,
+		Backend:              review.Backend,
+		RequestedModel:       review.RequestedModel,
+		ServedModel:          review.ServedModel,
+		ServingModelVerified: review.ServingModelVerified,
+		Effort:               review.Effort,
+		Fallback:             review.ModelFallback,
+	}
 }
 
 func revisionName() string {
@@ -264,11 +309,11 @@ func (p *Poller) loadBugMemory() {
 }
 
 // SetAgentSpawner overrides the subprocess spawner used for agent reviews.
-// Tests inject a stub to avoid actually invoking the claude CLI.
+// Tests inject a stub to avoid actually invoking an agent CLI.
 func (p *Poller) SetAgentSpawner(s service.Spawner) { p.agentSpawner = s }
 
 // persistAgentFailureLog uploads a failed agent run's raw stream-json log to
-// GCS under agent-logs/ — the only durable record of what the claude CLI
+// GCS under agent-logs/ — the only durable record of what the agent CLI
 // reported. Best-effort: an upload failure must never mask the review error.
 func (p *Poller) persistAgentFailureLog(logPath string) {
 	if p.gcsClient == nil {
@@ -335,7 +380,7 @@ func isReviewInFlight(status string) bool {
 	return status == "generating" || status == "agent_reviewing"
 }
 
-// runAgentStage runs the claude-agent pass on a Gemini ReviewResult: flips
+// runAgentStage runs the configured agent pass on a Gemini ReviewResult: flips
 // the PR status to agent_reviewing, spawns the agent against a clone of the
 // PR head, replaces the comment set with the agent's refined output, and
 // re-renders via the same HTML pipeline so the inline-comment UI is intact.
@@ -373,16 +418,18 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		return nil, fmt.Errorf("agent review: get GitHub token: %w", tokenErr)
 	}
 	agentCfg := service.AgentConfig{
-		CloneRootDir:   p.cfg.AgentCloneRootDir,
-		LogsDir:        p.cfg.AgentLogsDir,
-		WallClock:      time.Duration(p.cfg.AgentWallClockSec) * time.Second,
-		MaxTurns:       p.cfg.AgentMaxTurns,
-		GitHubToken:    gitToken,
-		Model:          p.cfg.AgentModel,
-		Effort:         p.cfg.AgentEffort,
-		BugMemory:      p.bugMemory,
-		RequiredChecks: p.cfg.RequiredChecks,
-		FailureLogSink: p.persistAgentFailureLog,
+		CloneRootDir:      p.cfg.AgentCloneRootDir,
+		LogsDir:           p.cfg.AgentLogsDir,
+		WallClock:         time.Duration(p.cfg.AgentWallClockSec) * time.Second,
+		MaxTurns:          p.cfg.AgentMaxTurns,
+		GitHubToken:       gitToken,
+		Backend:           p.cfg.AgentBackend,
+		Model:             p.cfg.AgentModel,
+		Effort:            p.cfg.AgentEffort,
+		OpenRouterBaseURL: p.cfg.OpenRouterBaseURL,
+		BugMemory:         p.bugMemory,
+		RequiredChecks:    p.cfg.RequiredChecks,
+		FailureLogSink:    p.persistAgentFailureLog,
 	}
 	// Pass the PR's true base branch so the clone and the deterministic-layer
 	// diff (gates, bug memory, required checks) are computed against it. With
@@ -473,6 +520,9 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		BugMemory:     agentOut.BugMemory,
 		Checks:        agentOut.Checks,
 		ModelFallback: agentOut.ModelFallback,
+		ReviewRun: &payload.ReviewRunInfo{
+			Models: append(geminiModelUses(), agentModelUse(agentOut)),
+		},
 		// Copied (not aliased) so the no-swallow check reads the pre-merge
 		// alert set even if a later stage mutates the agent output.
 		GateAlerts: append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
@@ -1023,7 +1073,7 @@ func (p *Poller) isTracked(owner, repo string, number int) bool {
 // agent subprocess via DefaultSpawner's ctx-watcher) and removes the entry
 // from tracking, atomically. Returns false if no review was tracked. The
 // goroutine detects the cancel via ctx.Err() in its current LLM call or
-// claude subprocess, exits, and skips the SetPRError write so a concurrent
+// agent subprocess, exits, and skips the SetPRError write so a concurrent
 // ResetPRToOutdated isn't clobbered.
 func (p *Poller) killReview(owner, repo string, number int) bool {
 	p.reviewsMutex.Lock()
@@ -1383,7 +1433,14 @@ func (p *Poller) reviewExists(ctx context.Context, owner, repo string, prNumber 
 }
 
 // saveReview persists review content to storage (GCS or local disk).
-func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
+func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, reviewRun *payload.ReviewRunInfo, content []byte) (string, error) {
+	if reviewRun == nil || reviewRun.HTMLPath == "" {
+		return "", fmt.Errorf("save review: immutable review-run path is required")
+	}
+	if err := p.saveImmutableReviewArtifact(ctx, reviewRun.HTMLPath, "text/html; charset=utf-8", content); err != nil {
+		return "", fmt.Errorf("save immutable review %s: %w", reviewRun.RunID, err)
+	}
+
 	if p.storage != nil {
 		return p.storage.SaveReview(ctx, owner, repo, prNumber, commitSHA, content)
 	}
@@ -1407,6 +1464,29 @@ func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber in
 	return filename, nil
 }
 
+// saveImmutableReviewArtifact persists an object that is uniquely keyed by a
+// run ID. Unlike canonical sidecars it never performs archive-on-overwrite.
+func (p *Poller) saveImmutableReviewArtifact(ctx context.Context, filename, contentType string, content []byte) error {
+	if p.storage != nil {
+		// ReviewStorage's auxiliary-artifact method accepts arbitrary names and
+		// content types, which keeps existing test/custom backends compatible.
+		return p.storage.SaveReviewSidecar(ctx, filename, contentType, content)
+	}
+	if p.gcsClient != nil && p.gcsClient.BucketName() != "" {
+		return p.gcsClient.UploadImmutableReviewArtifact(ctx, filename, contentType, content)
+	}
+
+	localPath := filepath.Join(p.reviewDir, filename)
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		return fmt.Errorf("create immutable review directory: %w", err)
+	}
+	if err := os.WriteFile(localPath, content, 0644); err != nil {
+		return fmt.Errorf("write immutable review artifact: %w", err)
+	}
+	log.Printf("[LOCAL] Saved immutable review artifact to: %s", localPath)
+	return nil
+}
+
 // saveReviewSidecar persists an auxiliary review artifact (currently the
 // structured findings JSON) alongside the rendered HTML. Best-effort: HTML
 // is the source of truth, so callers log and continue on failure rather
@@ -1420,7 +1500,7 @@ func (p *Poller) saveReviewSidecar(ctx context.Context, filename, contentType st
 	}
 
 	localPath := filepath.Join(p.reviewDir, filename)
-	if err := os.MkdirAll(p.reviewDir, 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 		return fmt.Errorf("failed to create reviews directory: %w", err)
 	}
 	if err := os.WriteFile(localPath, content, 0644); err != nil {
@@ -1461,10 +1541,18 @@ func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string,
 	// the same reason as the funnels above. Nil (field omitted) when the
 	// feature is off, keeping legacy sidecars byte-identical.
 	pl.CarriedFindings = rr.Carried
+	pl.ReviewRun = rr.ReviewRun
 	body, err := json.Marshal(pl)
 	if err != nil {
 		log.Printf("[REVIEWER] WARN: marshal findings sidecar for %s/%s#%d: %v", owner, repo, prNumber, err)
 		return
+	}
+	if rr.ReviewRun != nil && rr.ReviewRun.JSONPath != "" {
+		if err := p.saveImmutableReviewArtifact(ctx, rr.ReviewRun.JSONPath, "application/json", body); err != nil {
+			log.Printf("[REVIEWER] WARN: save immutable findings sidecar %s: %v", rr.ReviewRun.JSONPath, err)
+		} else {
+			log.Printf("[REVIEWER] Saved immutable findings sidecar: %s", rr.ReviewRun.JSONPath)
+		}
 	}
 	sidecarName := gcs.ReviewJSONFileName(htmlFilename)
 	if err := p.saveReviewSidecar(ctx, sidecarName, "application/json", body); err != nil {
@@ -2568,14 +2656,17 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				// Get existing importance counts + verdict from database
 				existingPR, _ := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
 				criticalCount, mediumCount, lowCount, verdict, modelFallback := 0, 0, 0, "", false
+				reviewRunID, reviewRunJSON := "", ""
 				if existingPR != nil {
 					criticalCount = existingPR.CriticalCount
 					mediumCount = existingPR.MediumCount
 					lowCount = existingPR.LowCount
 					verdict = existingPR.ReviewVerdict
 					modelFallback = existingPR.ModelFallback
+					reviewRunID = existingPR.ReviewRunID
+					reviewRunJSON = existingPR.ReviewRunJSON
 				}
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback); err != nil {
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunID, reviewRunJSON); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
 				} else {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
@@ -2596,7 +2687,8 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			// agent subprocess rather than only flipping the tracking map.
 			prCtx := p.trackReview(ctx, pr.Owner, pr.Repo, pr.Number, 0)
 
-			execStart := time.Now()
+			runID := newReviewRunID()
+			execStart := time.Now().UTC()
 
 			nRequests, _ := p.db.GetReviewNRequests()
 
@@ -2653,7 +2745,8 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 					}
 				}
 			}
-			execDuration := time.Since(execStart)
+			execCompleted := time.Now().UTC()
+			execDuration := execCompleted.Sub(execStart)
 
 			if err != nil {
 				log.Printf("[REVIEWER] ERROR: Review failed for PR %d after %v: %v", pr.Number, execDuration, err)
@@ -2683,9 +2776,22 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			}
 
 			log.Printf("[REVIEWER] Review completed successfully for PR %d in %v", pr.Number, execDuration)
+			if reviewResult.ReviewRun == nil {
+				reviewResult.ReviewRun = &payload.ReviewRunInfo{}
+			}
+			if p.reviewGenerator == nil && len(reviewResult.ReviewRun.Models) == 0 {
+				reviewResult.ReviewRun.Models = geminiModelUses()
+			}
+			reviewResult.ReviewRun.RunID = runID
+			reviewResult.ReviewRun.StartedAt = execStart
+			reviewResult.ReviewRun.CompletedAt = execCompleted
+			reviewResult.ReviewRun.DurationMS = execDuration.Milliseconds()
+			reviewResult.ReviewRun.HTMLPath = gcs.ReviewRunFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, runID)
+			reviewResult.ReviewRun.JSONPath = gcs.ReviewRunJSONFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, runID)
+			log.Printf("[REVIEWER] PR %d review run: %s", pr.Number, runID)
 
 			// Save review (to GCS if configured, otherwise locally)
-			filename, err := p.saveReview(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent)
+			filename, err := p.saveReview(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.ReviewRun, reviewResult.HTMLContent)
 			if err != nil {
 				log.Printf("[REVIEWER] ERROR: Failed to save review for PR %d: %v", pr.Number, err)
 				if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
@@ -2718,7 +2824,12 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				// (unknown) when the mock generator supplies no comments or
 				// the SUMMARY has no recognizable verdict phrasing.
 				verdict := service.VerdictFromComments(reviewResult.Comments)
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback); err != nil {
+				reviewRunJSON, marshalErr := json.Marshal(reviewResult.ReviewRun)
+				if marshalErr != nil {
+					log.Printf("[REVIEWER] WARNING: failed to marshal review-run metadata for PR %d: %v", pr.Number, marshalErr)
+					reviewRunJSON = nil
+				}
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback, reviewResult.ReviewRun.RunID, string(reviewRunJSON)); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
 				} else {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)

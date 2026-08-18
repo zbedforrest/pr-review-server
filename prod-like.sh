@@ -3,11 +3,11 @@
 # deploy to Cloud Run, so the local dev loop matches prod as closely as
 # possible.
 #
-# - Image: prism-local:dev (built from ./Dockerfile, includes claude CLI + git)
+# - Image: prism-local:dev (built from ./Dockerfile, includes both agent CLIs + git)
 # - Database: PostgreSQL via Cloud SQL Proxy on the host (reached from the
 #   container as host.docker.internal:5432)
 # - GCS:    uses your gcloud Application Default Credentials, mounted in
-# - Auth (Claude): uses ANTHROPIC_API_KEY (NOT the local `claude login` OAuth)
+# - Agent auth: ANTHROPIC_API_KEY or OPENROUTER_API_KEY, selected by backend
 # - Auth (app):    dev mode auto-login based on GITHUB_USERNAME
 
 set -e
@@ -25,12 +25,26 @@ fi
 : "${GCS_BUCKET:?GCS_BUCKET is required}"
 : "${CLOUD_SQL_INSTANCE:?CLOUD_SQL_INSTANCE is required}"
 : "${GOOGLE_PROJECT_ID:?GOOGLE_PROJECT_ID is required}"
-: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required (export it in your shell)}"
 : "${GEMINI_API_KEY:?GEMINI_API_KEY is required (the agent stage runs after a Gemini pass)}"
 
 export SERVER_PORT="${SERVER_PORT:-8080}"
 export SKIP_DB_MIGRATIONS="${SKIP_DB_MIGRATIONS:-true}"
 export AGENTIC_REVIEWS="${AGENTIC_REVIEWS:-false}"
+export AGENT_BACKEND="${AGENT_BACKEND:-claude}"
+if [ "$AGENTIC_REVIEWS" = "true" ]; then
+  case "$AGENT_BACKEND" in
+    claude)
+      : "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required for AGENT_BACKEND=claude}"
+      ;;
+    openrouter)
+      : "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required for AGENT_BACKEND=openrouter}"
+      ;;
+    *)
+      echo "ERROR: AGENT_BACKEND must be claude or openrouter (got $AGENT_BACKEND)"
+      exit 1
+      ;;
+  esac
+fi
 # Inside the container, route the agent's data dirs at fixed paths regardless
 # of what's in .env — those .env defaults are for the bare-host dev path.
 AGENT_CLONE_ROOT_DIR_CONTAINER="/app/data/agent-clones"
@@ -128,7 +142,7 @@ echo "  Image:       $IMAGE_TAG"
 echo "  Container:   $CONTAINER_NAME"
 echo "  Database:    PostgreSQL (via host.docker.internal:5432)"
 echo "  Storage:     GCS ($GCS_BUCKET)"
-echo "  Claude auth: ANTHROPIC_API_KEY"
+echo "  Agent:       $AGENT_BACKEND"
 echo "  Port:        $SERVER_PORT"
 echo "  Logs:        ./server.log (also streamed to this terminal)"
 echo ""
@@ -152,9 +166,12 @@ docker run --rm \
   -e "GCS_BUCKET=$GCS_BUCKET" \
   -e "GOOGLE_PROJECT_ID=$GOOGLE_PROJECT_ID" \
   -e "GOOGLE_CLOUD_PROJECT=$GOOGLE_PROJECT_ID" \
-  -e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" \
+  -e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}" \
+  -e "OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}" \
+  -e "OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-}" \
   -e "GEMINI_API_KEY=$GEMINI_API_KEY" \
   -e "AGENTIC_REVIEWS=$AGENTIC_REVIEWS" \
+  -e "AGENT_BACKEND=$AGENT_BACKEND" \
   -e "AGENT_CLONE_ROOT_DIR=$AGENT_CLONE_ROOT_DIR_CONTAINER" \
   -e "AGENT_LOGS_DIR=$AGENT_LOGS_DIR_CONTAINER" \
   -e "AGENT_WALL_CLOCK_SEC=$AGENT_WALL_CLOCK_SEC" \

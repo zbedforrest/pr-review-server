@@ -20,22 +20,24 @@ import (
 	"pr-review-server/pkg/reviewer/types"
 )
 
-// DefaultAgentModel is the `claude` model used when AgentConfig.Model is empty.
+// DefaultAgentModel is the Claude model used when AgentConfig.Model is empty.
 const DefaultAgentModel = "claude-opus-4-8"
 
-// DefaultAgentEffort is the `claude` reasoning effort used when
-// AgentConfig.Effort is empty. Kept at the historical hardcoded value.
+// DefaultAgentEffort is the reasoning effort used when AgentConfig.Effort is
+// empty. Kept at the historical hardcoded value for both backends.
 const DefaultAgentEffort = "medium"
 
 // AgentConfig holds runtime knobs for a single agent-review invocation.
 type AgentConfig struct {
-	CloneRootDir string        // parent dir for per-invocation clones
-	LogsDir      string        // parent dir for raw stream-json logs
-	WallClock    time.Duration // hard wall-clock timeout
-	MaxTurns     int           // abort after this many assistant turns
-	GitHubToken  string        // optional; HTTPS clone auth
-	Model        string        // `claude` model id; defaults to DefaultAgentModel if empty
-	Effort       string        // `claude` reasoning effort; defaults to DefaultAgentEffort if empty
+	CloneRootDir      string        // parent dir for per-invocation clones
+	LogsDir           string        // parent dir for raw stream-json logs
+	WallClock         time.Duration // hard wall-clock timeout
+	MaxTurns          int           // abort after this many assistant turns
+	GitHubToken       string        // optional; HTTPS clone auth
+	Backend           string        // claude (default) or openrouter
+	Model             string        // backend model id; defaults according to Backend
+	Effort            string        // backend reasoning effort; defaults to DefaultAgentEffort
+	OpenRouterBaseURL string        // optional OpenRouter API root; used only by the openrouter backend
 
 	// BugMemory is the optional pattern library (nil = feature off). The
 	// matcher excludes entries sourced from the PR under review; see
@@ -71,16 +73,22 @@ type AgentReview struct {
 	CloneDir string // path to the per-invocation clone (kept for inspection)
 	LogPath  string // where the raw stream-json was written (removed by then — /tmp hygiene)
 
-	// Model verification: the CLI reports the serving model in the stream
-	// (init + assistant events). ModelFallback means it did not satisfy the
-	// requested model — the review still publishes, but callers must surface
-	// it loudly (log, telemetry, dashboard badge).
+	// Model verification: Claude reports the serving model in init + assistant
+	// events. Codex JSONL does not, so OpenRouter reports its exact pinned
+	// request model. ModelFallback means a reported model did not satisfy the
+	// request — the review still publishes, but callers surface it loudly.
 	RequestedModel string
 	ServedModel    string
 	ModelFallback  bool
+	Backend        string
+	Effort         string
+	// ServingModelVerified is true only when the agent stream explicitly
+	// reported the model that served the request. Codex/OpenRouter currently
+	// pins the requested model but does not expose the routed model in JSONL.
+	ServingModelVerified bool
 }
 
-// Spawner abstracts subprocess creation so tests can stub the `claude` CLI.
+// Spawner abstracts subprocess creation so tests can stub the agent CLI.
 type Spawner interface {
 	Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error)
 }
@@ -93,8 +101,8 @@ type SpawnedProcess interface {
 	Kill() error
 }
 
-// RunAgentReview clones the PR branch, spawns `claude -p`, parses its
-// stream-json output, and returns the assembled markdown. On any failure
+// RunAgentReview clones the PR branch, spawns the configured agent CLI, parses
+// its JSONL output, and returns the assembled markdown. On any failure
 // (clone error, timeout, turn-cap hit, non-zero exit) it returns a descriptive
 // error — caller is expected to surface it loud.
 //
@@ -116,6 +124,10 @@ func RunAgentReview(
 	if agentCfg.WallClock <= 0 {
 		return nil, errors.New("agent: WallClock must be > 0")
 	}
+	runtime, err := resolveAgentRuntime(agentCfg)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := os.MkdirAll(agentCfg.CloneRootDir, 0o755); err != nil {
 		return nil, fmt.Errorf("agent: create clone root: %w", err)
@@ -132,7 +144,7 @@ func RunAgentReview(
 	log.Printf("%s starting (clone=%s, log=%s, wall_clock=%s, max_turns=%d, gemini_comments=%d)",
 		logPrefix, cloneDir, logPath, agentCfg.WallClock, agentCfg.MaxTurns, len(geminiComments))
 
-	// Single wall-clock budget covers BOTH the clone and the claude subprocess.
+	// Single wall-clock budget covers BOTH the clone and the agent subprocess.
 	// That way a slow clone can't burn the budget and leave nothing for thinking
 	// (or worse, run unbounded under the outer context).
 	runCtx, cancel := context.WithTimeout(ctx, agentCfg.WallClock)
@@ -203,37 +215,20 @@ func RunAgentReview(
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
 
-	model := agentCfg.Model
-	if model == "" {
-		model = DefaultAgentModel
-	}
-	effort := agentCfg.Effort
-	if effort == "" {
-		effort = DefaultAgentEffort
-	}
-
-	args := []string{
-		"-p", prompt,
-		"--model", model,
-		"--effort", effort,
-		"--tools", "Read,Grep,Glob,Bash",
-		"--permission-mode", "bypassPermissions",
-		"--output-format", "stream-json",
-		"--verbose", // required by `claude` when combining --print + stream-json
-	}
+	args := runtime.args(prompt)
 
 	// Log the argv without the full prompt (too big; promptAgentReview is static
 	// and the comment list is in geminiComments count above).
-	log.Printf("%s spawning claude (model=%s, effort=%s, tools=Read,Grep,Glob,Bash, prompt_chars=%d)",
-		logPrefix, model, effort, len(prompt))
+	log.Printf("%s spawning %s (backend=%s, model=%s, effort=%s, prompt_chars=%d)",
+		logPrefix, runtime.command, runtime.backend, runtime.model, runtime.effort, len(prompt))
 
 	spawnStart := time.Now()
-	proc, err := spawner.Spawn(runCtx, "claude", args, cloneDir)
+	proc, err := spawner.Spawn(runCtx, runtime.command, args, cloneDir)
 	if err != nil {
 		log.Printf("%s spawn FAILED: %v", logPrefix, err)
-		return nil, fmt.Errorf("agent: spawn claude: %w", err)
+		return nil, fmt.Errorf("agent: spawn %s: %w", runtime.command, err)
 	}
-	log.Printf("%s claude spawned, streaming output to %s", logPrefix, logPath)
+	log.Printf("%s %s spawned, streaming output to %s", logPrefix, runtime.command, logPath)
 
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -253,7 +248,7 @@ func RunAgentReview(
 	}()
 
 	// Drain stderr to a buffer so we can include it on failure. Safe to be
-	// unbounded for now — dev use, sensible claude outputs.
+	// unbounded for now — dev use, sensible agent outputs.
 	var stderrBuf strings.Builder
 	var stderrWG sync.WaitGroup
 	stderrWG.Add(1)
@@ -263,7 +258,7 @@ func RunAgentReview(
 	}()
 
 	// Stream stdout: tee to log file and parse turn-by-turn.
-	parseResult, parseErr := parseAgentStream(proc, logFile, agentCfg.MaxTurns)
+	parseResult, parseErr := runtime.parseStream(proc, logFile, agentCfg.MaxTurns)
 
 	waitErr := proc.Wait()
 	stderrWG.Wait()
@@ -291,8 +286,8 @@ func RunAgentReview(
 
 	if waitErr != nil {
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: claude exited with error: %w (stream: %s) (stderr: %s)",
-			waitErr, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: %s exited with error: %w (stream: %s) (stderr: %s)",
+			runtime.command, waitErr, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	// The CLI can exit 0 after an error result event; ungated, the error text
@@ -304,7 +299,7 @@ func RunAgentReview(
 	}
 
 	if parseResult.finalOutput == "" {
-		log.Printf("%s claude finished with no final result after %d turn(s)", logPrefix, parseResult.assistantTurns)
+		log.Printf("%s %s finished with no final result after %d turn(s)", logPrefix, runtime.command, parseResult.assistantTurns)
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: no final result emitted after %d turn(s) (stream: %s) (stderr: %s)",
 			parseResult.assistantTurns, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
@@ -345,13 +340,21 @@ func RunAgentReview(
 	modelFallback := false
 	if len(parseResult.servedModels) > 0 {
 		servedModel = parseResult.servedModels[0]
+	} else if !runtime.reportsServingModel {
+		// Codex's stable JSONL schema does not expose the response model. The
+		// OpenRouter backend pins one exact model slug and does not configure a
+		// model fallback list, so report that request while keeping the
+		// telemetry limitation explicit in logs.
+		servedModel = runtime.model
+		log.Printf("%s serving model not present in %s stream; using pinned request model %s",
+			logPrefix, runtime.command, runtime.model)
 	} else {
 		// Fail-open for a monitoring feature: make a silent regression in
 		// the CLI's model reporting visible in logs.
 		log.Printf("%s WARNING: stream reported no serving model — fallback detection skipped", logPrefix)
 	}
 	for _, m := range parseResult.servedModels {
-		if !modelMatches(model, m) {
+		if !modelMatches(runtime.model, m) {
 			servedModel = m
 			modelFallback = true
 			break
@@ -359,7 +362,7 @@ func RunAgentReview(
 	}
 	if modelFallback {
 		log.Printf("%s WARNING: MODEL FALLBACK: requested=%s served=%s (all seen: %v) — review ran on the wrong model",
-			logPrefix, model, servedModel, parseResult.servedModels)
+			logPrefix, runtime.model, servedModel, parseResult.servedModels)
 	}
 
 	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
@@ -367,17 +370,20 @@ func RunAgentReview(
 
 	logRemovable = true
 	return &AgentReview{
-		Comments:       comments,
-		Gates:          gates,
-		BugMemory:      memMatch,
-		Checks:         checkTel,
-		CheckFindings:  checkFindings,
-		RawFinal:       parseResult.finalOutput,
-		CloneDir:       cloneDir,
-		LogPath:        logPath,
-		RequestedModel: model,
-		ServedModel:    servedModel,
-		ModelFallback:  modelFallback,
+		Comments:             comments,
+		Gates:                gates,
+		BugMemory:            memMatch,
+		Checks:               checkTel,
+		CheckFindings:        checkFindings,
+		RawFinal:             parseResult.finalOutput,
+		CloneDir:             cloneDir,
+		LogPath:              logPath,
+		RequestedModel:       runtime.model,
+		ServedModel:          servedModel,
+		ModelFallback:        modelFallback,
+		Backend:              runtime.backend,
+		Effort:               runtime.effort,
+		ServingModelVerified: runtime.reportsServingModel && len(parseResult.servedModels) > 0,
 	}, nil
 }
 
@@ -676,7 +682,7 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 // The token still appears briefly in argv during the git invocation, so
 // `ps aux` from a sibling process during that window would see it. For our
 // single-tenant Cloud Run container this is tolerable; the only sibling is
-// the claude subprocess which we spawn ourselves.
+// the agent subprocess which we spawn ourselves.
 func authHeaderArgs(token string) []string {
 	if token == "" {
 		return nil
@@ -836,7 +842,7 @@ func truncate(s string, max int) string {
 
 // DefaultSpawner is implemented per-platform; see agent_spawn_unix.go and
 // agent_spawn_windows.go. The unix implementation uses Setpgid + group-kill
-// so subprocesses spawned by claude --tools Bash are torn down with the
+// so subprocesses spawned by an agent's shell tool are torn down with the
 // parent rather than orphaned. The Windows stub exists only so the package
 // compiles; agent reviews are not supported on Windows (no test, no deploy
 // target).

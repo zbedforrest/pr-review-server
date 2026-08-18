@@ -4,9 +4,45 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"pr-review-server/pkg/reviewer/types"
 )
+
+func TestPayload_ReviewRunJSON(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	p := Payload{ReviewRun: &ReviewRunInfo{
+		RunID:       "run-0123456789abcdef0123456789abcdef",
+		HTMLPath:    "runs/acme/widgets/7/abcdef0/run-0123456789abcdef0123456789abcdef.html",
+		JSONPath:    "runs/acme/widgets/7/abcdef0/run-0123456789abcdef0123456789abcdef.json",
+		StartedAt:   now,
+		CompletedAt: now.Add(2 * time.Minute),
+		DurationMS:  120000,
+		Models: []ModelUse{{
+			Stage:                "agent",
+			Provider:             "openrouter",
+			Backend:              "openrouter",
+			RequestedModel:       "openai/gpt-5.6-sol",
+			ServedModel:          "openai/gpt-5.6-sol",
+			ServingModelVerified: false,
+			Effort:               "medium",
+		}},
+	}}
+
+	body, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{
+		`"review_run"`, `"run_id":"run-0123456789abcdef0123456789abcdef"`,
+		`"html_path":"runs/acme/widgets/7/abcdef0/run-0123456789abcdef0123456789abcdef.html"`,
+		`"provider":"openrouter"`, `"serving_model_verified":false`,
+	} {
+		if !strings.Contains(string(body), fragment) {
+			t.Errorf("review-run JSON missing %s: %s", fragment, body)
+		}
+	}
+}
 
 func TestSourceWindow_BasicSlice(t *testing.T) {
 	src := joinLines("L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10")

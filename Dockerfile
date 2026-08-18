@@ -40,8 +40,8 @@ FROM alpine:3.20
 
 # Install required packages
 # - git: cloning PR branches for the agent reviewer
-# - nodejs/npm: hosting the claude CLI
-# - @anthropic-ai/claude-code: the CLI the agent reviewer shells out to
+# - nodejs/npm: hosting the agent CLIs
+# - Claude Code and Codex: selectable agent-review backends
 RUN apk --no-cache add \
     ca-certificates \
     sqlite-libs \
@@ -50,7 +50,7 @@ RUN apk --no-cache add \
     git \
     nodejs \
     npm \
- && npm install -g @anthropic-ai/claude-code \
+ && npm install -g @anthropic-ai/claude-code @openai/codex \
  && npm cache clean --force
 
 WORKDIR /app

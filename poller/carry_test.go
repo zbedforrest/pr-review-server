@@ -271,6 +271,40 @@ func TestWriteSidecar_EnvOffByteIdentical(t *testing.T) {
 	}
 }
 
+func TestWriteSidecar_WritesImmutableRunAndLatestAlias(t *testing.T) {
+	storage := &capturingSidecarStorage{}
+	p := carryTestPoller(t)
+	p.storage = storage
+	const (
+		sha   = "ccccccc3333333333333"
+		runID = "run-0123456789abcdef0123456789abcdef"
+	)
+	run := &payload.ReviewRunInfo{
+		RunID:    runID,
+		HTMLPath: gcs.ReviewRunFileName("acme", "widgets", 7, sha, runID),
+		JSONPath: gcs.ReviewRunJSONFileName("acme", "widgets", 7, sha, runID),
+	}
+	rr := &ReviewResult{
+		ReviewRun: run,
+		Comments: []types.LineComment{{
+			FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "check this",
+		}},
+	}
+	htmlName := gcs.ReviewFileName("acme", "widgets", 7, sha)
+	latest := gcs.ReviewJSONFileName(htmlName)
+
+	p.writeSidecarBestEffort(context.Background(), "acme", "widgets", 7, sha, htmlName, rr)
+
+	immutableBody, immutableOK := storage.sidecars[run.JSONPath]
+	latestBody, latestOK := storage.sidecars[latest]
+	if !immutableOK || !latestOK {
+		t.Fatalf("sidecar keys = %v, want immutable %q and latest %q", storage.sidecars, run.JSONPath, latest)
+	}
+	if string(immutableBody) != string(latestBody) {
+		t.Fatalf("immutable and latest sidecars differ:\nimmutable=%s\nlatest=%s", immutableBody, latestBody)
+	}
+}
+
 // githubCompareChangedFiles: "ahead" comparisons yield the changed-file list
 // (rename old paths included); diverged/truncated/error responses are
 // unreliable and must report ok=false.

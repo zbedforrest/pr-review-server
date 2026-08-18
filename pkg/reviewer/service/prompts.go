@@ -202,8 +202,8 @@ Provide a well-structured testing assessment that includes:
 **Output Format:**
 Provide your summary as plain text (not JSON). Structure it clearly with headers and bullet points for testing readability.`
 
-// promptAgentReview is the system-prompt template handed to the Claude Code
-// agent. The caller appends a JSON array of Gemini comments before invoking.
+// promptAgentReview is the system-prompt template handed to the agent. The
+// caller appends a JSON array of Gemini comments before invoking it.
 // The agent runs with its cwd set to a shallow checkout of the PR branch.
 const promptAgentReview = `You are reviewing a pull request. A first-pass Gemini-based review has already produced a list of raw comments (appended below as JSON). Your working directory is a checkout of the PR branch — read any files you need to verify or refute each comment.
 

@@ -219,7 +219,8 @@ func TestGormDB_UpsertPR_DoesNotClobberReviewState(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mark it completed via the dedicated setter.
-	err = db.MarkPRCompleted("owner", "repo", 1, "abc123", "review.html", 1, 2, 3, "request_changes", false)
+	err = db.MarkPRCompleted("owner", "repo", 1, "abc123", "review.html", 1, 2, 3, "request_changes", false,
+		"run-0123456789abcdef0123456789abcdef", `{"run_id":"run-0123456789abcdef0123456789abcdef"}`)
 	require.NoError(t, err)
 
 	// The poller does a metadata refresh with a stale read still showing pending.
@@ -236,6 +237,8 @@ func TestGormDB_UpsertPR_DoesNotClobberReviewState(t *testing.T) {
 	assert.Equal(t, "review.html", fetched.ReviewHTMLPath, "review_path must not be cleared")
 	assert.Equal(t, 1, fetched.CriticalCount, "critical_count must not be reset")
 	assert.Equal(t, "request_changes", fetched.ReviewVerdict, "review_verdict must not be cleared")
+	assert.Equal(t, "run-0123456789abcdef0123456789abcdef", fetched.ReviewRunID)
+	assert.Contains(t, fetched.ReviewRunJSON, `"run_id"`)
 	assert.Equal(t, "Updated Title", fetched.Title, "title (whitelisted) should still update")
 }
 
