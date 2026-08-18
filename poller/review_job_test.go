@@ -271,6 +271,28 @@ func TestQueuedReviewBudgetStartsAtExecution(t *testing.T) {
 	p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 }
 
+func TestMonitorReapsAbandonedQueuedTracking(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	job := customReviewJob(t, "run-24200000000000000000000000000001")
+	queuedCtx, queuedCancel := context.WithCancel(context.Background())
+	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	p.activeReviews[key] = ProcessInfo{
+		TrackedAt: time.Now().Add(-ReviewQueueAbandonAfter - time.Minute),
+		Timeout:   reviewTimeout(job.Config.Effective), RunID: job.RunID,
+		Ctx: queuedCtx, Cancel: queuedCancel,
+	}
+	monitorCtx, stopMonitor := context.WithCancel(context.Background())
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	defer stopMonitor()
+	go p.monitorReviewerProcesses(monitorCtx, ticker)
+
+	require.Eventually(t, func() bool {
+		return !p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	}, time.Second, 5*time.Millisecond)
+	assert.ErrorIs(t, queuedCtx.Err(), context.Canceled)
+}
+
 func TestAgentSlotWaitDoesNotStartBudgetOrLease(t *testing.T) {
 	database := NewMockDatabase()
 	generator := NewMockReviewGenerator()

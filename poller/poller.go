@@ -67,6 +67,7 @@ const (
 
 type ProcessInfo struct {
 	PID       int
+	TrackedAt time.Time
 	StartTime time.Time
 	Timeout   time.Duration
 	RunID     string
@@ -472,7 +473,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	}
 	p.recordStageAttempt(execution, db.ReviewStageAttempt{
 		Stage: "agent", InvocationNumber: 1, AttemptNumber: 1, Provider: provider,
-		Backend: agentOut.Backend, RequestedModel: agentOut.RequestedModel, ResolvedModel: agentSettings.Model,
+		Backend: agentOut.Backend, RequestedModel: agentSettings.Model, ResolvedModel: agentOut.RequestedModel,
 		ObservedServedModels: append([]string(nil), agentOut.ObservedServedModels...), PrimaryServedModel: agentOut.ServedModel,
 		ServedModelSource: servedModelSource, ServingModelVerified: agentOut.ServingModelVerified,
 		Fallback: agentOut.ModelFallback, FallbackReason: fallbackReason, MatcherVersion: "v1",
@@ -961,7 +962,13 @@ func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Tick
 			p.reviewsMutex.Lock()
 			for key, info := range p.activeReviews {
 				if info.StartTime.IsZero() {
-					log.Printf("[MONITOR] review for %s is queued", key)
+					if !info.TrackedAt.IsZero() && time.Since(info.TrackedAt) > ReviewQueueAbandonAfter {
+						log.Printf("[MONITOR] WARNING: queued review for %s exceeded %v, removing from tracking", key, ReviewQueueAbandonAfter)
+						if info.Cancel != nil {
+							info.Cancel()
+						}
+						delete(p.activeReviews, key)
+					}
 					continue
 				}
 				timeout := info.Timeout
@@ -1091,10 +1098,12 @@ func (p *Poller) trackReviewWithTimeout(parent context.Context, owner, repo stri
 	if timeout <= 0 {
 		timeout = p.reviewProcessTimeout()
 	}
+	now := time.Now()
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	p.activeReviews[key] = ProcessInfo{
 		PID:       pid,
-		StartTime: time.Now(),
+		TrackedAt: now,
+		StartTime: now,
 		Timeout:   timeout,
 		RunID:     runID,
 		Ctx:       ctx,
@@ -1113,7 +1122,7 @@ func (p *Poller) tryTrackReviewJob(parent context.Context, job ReviewJob) (conte
 	}
 	ctx, cancel := context.WithCancel(parent)
 	p.activeReviews[key] = ProcessInfo{
-		Timeout: reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
+		TrackedAt: time.Now(), Timeout: reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
 	}
 	log.Printf("[TRACK] Tracking queued review job %s for %s", job.RunID, key)
 	return ctx, true
@@ -1134,7 +1143,7 @@ func (p *Poller) trackOrAdoptReviewJob(parent context.Context, job ReviewJob) (c
 	}
 	ctx, cancel := context.WithCancel(parent)
 	p.activeReviews[key] = ProcessInfo{
-		Timeout: reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
+		TrackedAt: time.Now(), Timeout: reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
 	}
 	log.Printf("[TRACK] Tracking queued review job %s for %s", job.RunID, key)
 	return ctx, true
@@ -2783,7 +2792,10 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 
 	// Batch tokens are held across the agent stage, so a batch limit below
 	// AgentMaxConcurrent would silently cap agent concurrency under the
-	// configured value.
+	// configured value. Agent slots are intentionally reserved for the full
+	// first-pass + agent pipeline below: a lease/deadline cannot safely pause
+	// during an agent-slot wait. This trades some first-pass pipelining for the
+	// invariant that queue time never consumes a caller's execution budget.
 	concurrencyLimit := 5
 	if p.cfg.AgentMaxConcurrent > concurrencyLimit {
 		concurrencyLimit = p.cfg.AgentMaxConcurrent
@@ -2793,8 +2805,15 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 
 	// Process each PR concurrently
 	for _, job := range jobs {
-		wg.Add(1)
-		sem <- struct{}{} // Acquire token
+		queuedCtx := jobContexts[job.RunID]
+		select {
+		case sem <- struct{}{}: // Acquire token
+			wg.Add(1)
+		case <-queuedCtx.Done():
+			p.rejectQueuedReviewJob(job, "cancelled", "dispatch", queuedCtx.Err())
+			p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
+			continue
+		}
 
 		go func(job ReviewJob) {
 			defer wg.Done()
