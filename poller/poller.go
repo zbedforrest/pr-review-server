@@ -947,13 +947,19 @@ func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Tick
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if abandoned, err := p.db.AbandonExpiredReviewRuns(time.Now().UTC(), ReviewLeaseCompletionGrace); err != nil {
-				log.Printf("[MONITOR] WARNING: failed to abandon expired review runs: %v", err)
-			} else if abandoned > 0 {
-				log.Printf("[MONITOR] marked %d expired review runs timed out", abandoned)
+			if p.isLeader() {
+				if abandoned, err := p.db.AbandonExpiredReviewRuns(time.Now().UTC(), ReviewLeaseCompletionGrace); err != nil {
+					log.Printf("[MONITOR] WARNING: failed to abandon expired review runs: %v", err)
+				} else if abandoned > 0 {
+					log.Printf("[MONITOR] marked %d expired review runs timed out", abandoned)
+				}
 			}
 			p.reviewsMutex.Lock()
 			for key, info := range p.activeReviews {
+				if info.StartTime.IsZero() {
+					log.Printf("[MONITOR] review for %s is queued", key)
+					continue
+				}
 				timeout := info.Timeout
 				if timeout <= 0 {
 					timeout = p.reviewProcessTimeout()
@@ -994,7 +1000,10 @@ func (p *Poller) GetReviewerStatus() (running bool, duration time.Duration) {
 	for _, info := range p.activeReviews {
 		// Reviews run as in-process goroutines, just count active ones
 		count++
-		d := time.Since(info.StartTime)
+		d := time.Duration(0)
+		if !info.StartTime.IsZero() {
+			d = time.Since(info.StartTime)
+		}
 		if d > maxDuration {
 			maxDuration = d
 		}
@@ -1098,13 +1107,11 @@ func (p *Poller) tryTrackReviewJob(parent context.Context, job ReviewJob) (conte
 	if _, exists := p.activeReviews[key]; exists {
 		return nil, false
 	}
-	timeout := reviewTimeout(job.Config.Effective)
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithCancel(parent)
 	p.activeReviews[key] = ProcessInfo{
-		StartTime: time.Now(), Timeout: timeout, RunID: job.RunID,
-		Ctx: ctx, Cancel: cancel,
+		Timeout: reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
 	}
-	log.Printf("[TRACK] Tracking review job %s for %s", job.RunID, key)
+	log.Printf("[TRACK] Tracking queued review job %s for %s", job.RunID, key)
 	return ctx, true
 }
 
@@ -1121,14 +1128,40 @@ func (p *Poller) trackOrAdoptReviewJob(parent context.Context, job ReviewJob) (c
 		}
 		return nil, false
 	}
-	timeout := reviewTimeout(job.Config.Effective)
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithCancel(parent)
 	p.activeReviews[key] = ProcessInfo{
-		StartTime: time.Now(), Timeout: timeout, RunID: job.RunID,
-		Ctx: ctx, Cancel: cancel,
+		Timeout: reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
 	}
-	log.Printf("[TRACK] Tracking review job %s for %s", job.RunID, key)
+	log.Printf("[TRACK] Tracking queued review job %s for %s", job.RunID, key)
 	return ctx, true
+}
+
+// startTrackedReviewJob starts the configured execution budget only after the
+// batch semaphore grants a worker slot. Ownership is established earlier, but
+// time spent queued must not reduce a per-review wall-clock allowance.
+func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, bool) {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	info, exists := p.activeReviews[key]
+	if !exists || info.RunID != job.RunID || info.Ctx == nil || !info.StartTime.IsZero() {
+		return nil, false
+	}
+	timeout := reviewTimeout(job.Config.Effective)
+	runCtx, runCancel := context.WithTimeout(info.Ctx, timeout)
+	queuedCancel := info.Cancel
+	info.StartTime = time.Now()
+	info.Timeout = timeout
+	info.Ctx = runCtx
+	info.Cancel = func() {
+		runCancel()
+		if queuedCancel != nil {
+			queuedCancel()
+		}
+	}
+	p.activeReviews[key] = info
+	log.Printf("[TRACK] Started review job %s for %s (timeout=%s)", job.RunID, key, timeout)
+	return runCtx, true
 }
 
 // untrackReview removes a PR's review process from the active reviews map
@@ -2766,7 +2799,12 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			defer wg.Done()
 			defer func() { <-sem }() // Release token
 			pr := job.PR
-			prCtx := jobContexts[job.RunID]
+			prCtx, started := p.startTrackedReviewJob(job)
+			if !started {
+				log.Printf("[REVIEWER] PR %d lost queued ownership before execution; rejecting %s", pr.Number, job.RunID)
+				p.rejectQueuedReviewJob(job, "pr_already_claimed", "dispatch", ErrReviewAlreadyTracked)
+				return
+			}
 
 			log.Printf("[REVIEWER] Processing PR: %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA[:7])
 

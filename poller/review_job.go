@@ -136,7 +136,10 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 	if err := job.Validate(); err != nil {
 		return err
 	}
-	reviewCtx, tracked := p.tryTrackReviewJob(ctx, job)
+	// Acceptance is durable and execution is asynchronous, so an HTTP request
+	// ending must not cancel the accepted run. Preserve context values while
+	// replacing the caller's cancellation/deadline with the run's own timeout.
+	reviewCtx, tracked := p.tryTrackReviewJob(context.WithoutCancel(ctx), job)
 	if !tracked {
 		return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
 	}
@@ -255,8 +258,11 @@ func (p *Poller) beginReviewExecution(job ReviewJob) (*reviewExecution, error) {
 		return nil, fmt.Errorf("%w: %s", ErrReviewRunNotClaimed, job.RunID)
 	}
 	run, err := p.db.GetReviewRun(job.RunID)
-	if err != nil || run == nil {
+	if err != nil {
 		return nil, fmt.Errorf("reload claimed review run %s: %w", job.RunID, err)
+	}
+	if run == nil {
+		return nil, fmt.Errorf("reload claimed review run %s: not found", job.RunID)
 	}
 	runStartedAt := now
 	if run.StartedAt != nil {
@@ -357,7 +363,10 @@ func (p *Poller) rejectQueuedReviewJob(job ReviewJob, terminalCode, failureStage
 		status = db.ReviewRunStatusCancelled
 	}
 	completedAt := time.Now().UTC()
-	errorSummary := cause.Error()
+	errorSummary := "review job rejected"
+	if cause != nil {
+		errorSummary = cause.Error()
+	}
 	if err := p.db.PatchReviewRun(job.RunID, db.ReviewRunPatch{
 		Status: &status, CompletedAt: &completedAt, TerminalCode: &terminalCode,
 		FailureStage: &failureStage, ErrorSummary: &errorSummary,

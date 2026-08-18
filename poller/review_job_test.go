@@ -160,6 +160,25 @@ func TestProcessReviewJobPersistsConfigAndCompletesLedger(t *testing.T) {
 	assert.Equal(t, job.Config.Hash, metadata.Config.Hash)
 }
 
+func TestProcessReviewJobOutlivesRequestContext(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), NewMockReviewGenerator())
+	job := customReviewJob(t, "run-15000000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	cancelRequest()
+
+	require.NoError(t, p.ProcessReviewJob(requestCtx, job))
+	waitForReviewJob(t, p, job)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCompleted, run.Status)
+}
+
 func TestProcessReviewJobRejectsSecondActiveRun(t *testing.T) {
 	database := NewMockDatabase()
 	generator := NewMockReviewGenerator()
@@ -225,6 +244,31 @@ func TestRunScopedCleanupCannotCancelReplacement(t *testing.T) {
 	assert.NoError(t, secondCtx.Err())
 	assert.True(t, p.IsReviewTracked(second.PR.Owner, second.PR.Repo, second.PR.Number))
 	p.untrackReviewRun(second.PR.Owner, second.PR.Repo, second.PR.Number, second.RunID)
+}
+
+func TestQueuedReviewBudgetStartsAtExecution(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	job := customReviewJob(t, "run-24000000000000000000000000000001")
+	queuedCtx, tracked := p.tryTrackReviewJob(context.Background(), job)
+	require.True(t, tracked)
+	_, hasQueuedDeadline := queuedCtx.Deadline()
+	assert.False(t, hasQueuedDeadline)
+	p.reviewsMutex.Lock()
+	queuedInfo := p.activeReviews[prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)]
+	p.reviewsMutex.Unlock()
+	assert.True(t, queuedInfo.StartTime.IsZero())
+
+	runCtx, started := p.startTrackedReviewJob(job)
+	require.True(t, started)
+	deadline, hasRunDeadline := runCtx.Deadline()
+	require.True(t, hasRunDeadline)
+	assert.WithinDuration(t, time.Now().Add(reviewTimeout(job.Config.Effective)), deadline, time.Second)
+	p.reviewsMutex.Lock()
+	runningInfo := p.activeReviews[prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)]
+	p.reviewsMutex.Unlock()
+	assert.False(t, runningInfo.StartTime.IsZero())
+	assert.Equal(t, reviewTimeout(job.Config.Effective), runningInfo.Timeout)
+	p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 }
 
 func TestProcessReviewJobPersistsTerminalFailure(t *testing.T) {

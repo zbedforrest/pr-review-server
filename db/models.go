@@ -141,7 +141,7 @@ type ReviewRunModel struct {
 	CommitSHA         string `gorm:"size:40;not null;index:idx_review_runs_commit_history,priority:3"`
 	RequestedByUserID *uint  `gorm:"column:requested_by_user_id;index"`
 	TriggerSource     string `gorm:"size:32;not null;index"`
-	Status            string `gorm:"size:32;not null;index"`
+	Status            string `gorm:"size:32;not null;index;index:idx_review_runs_status_lease,priority:1"`
 
 	RequestedConfigJSON string `gorm:"column:requested_config_json;type:text;not null"`
 	EffectiveConfigJSON string `gorm:"column:effective_config_json;type:text;not null"`
@@ -178,7 +178,7 @@ type ReviewRunModel struct {
 
 	ServiceRevision    string     `gorm:"column:service_revision;size:255"`
 	LeaseHolder        string     `gorm:"column:lease_holder;size:255;index"`
-	LeaseExpiresAt     *time.Time `gorm:"column:lease_expires_at;index"`
+	LeaseExpiresAt     *time.Time `gorm:"column:lease_expires_at;index;index:idx_review_runs_status_lease,priority:2"`
 	ExecutionAttempt   int        `gorm:"column:execution_attempt;default:0"`
 	IdempotencyScope   string     `gorm:"column:idempotency_scope;size:255;uniqueIndex:idx_review_runs_idempotency,where:idempotency_key_hash <> '',priority:1"`
 	IdempotencyKeyHash string     `gorm:"column:idempotency_key_hash;size:64;uniqueIndex:idx_review_runs_idempotency,where:idempotency_key_hash <> '',priority:2"`

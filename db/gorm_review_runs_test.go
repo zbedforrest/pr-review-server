@@ -394,6 +394,7 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	defer database.Close()
 	assert.True(t, database.db.Migrator().HasTable(&ReviewRunModel{}))
 	assert.True(t, database.db.Migrator().HasTable(&ReviewStageAttemptModel{}))
+	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_status_lease"))
 }
 
 func TestReviewStageAttemptUpsertCoversEveryMutableColumn(t *testing.T) {
