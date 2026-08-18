@@ -1,7 +1,9 @@
 package db
 
 import (
+	"errors"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -28,6 +30,9 @@ func (g *GormDB) CreateReviewRun(run *ReviewRun) error {
 	}
 	model := reviewRunToModel(*run)
 	if err := g.db.Create(&model).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return fmt.Errorf("%w: run_id=%s", ErrReviewRunConflict, run.RunID)
+		}
 		return fmt.Errorf("create review run %s: %w", run.RunID, err)
 	}
 	*run = reviewRunFromModel(model)
@@ -86,7 +91,7 @@ func (g *GormDB) ListReviewRuns(filter ReviewRunFilter) ([]ReviewRun, error) {
 		limit = 500
 	}
 	var models []ReviewRunModel
-	if err := query.Order("accepted_at DESC").Limit(limit).Find(&models).Error; err != nil {
+	if err := query.Order("accepted_at DESC, run_id DESC").Limit(limit).Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("list review runs: %w", err)
 	}
 	runs := make([]ReviewRun, len(models))
@@ -153,7 +158,11 @@ func (g *GormDB) PatchReviewRun(runID string, patch ReviewRunPatch) error {
 		updates["lease_holder"] = *patch.LeaseHolder
 	}
 	if patch.LeaseExpiresAt != nil {
-		updates["lease_expires_at"] = *patch.LeaseExpiresAt
+		if patch.LeaseExpiresAt.IsZero() {
+			updates["lease_expires_at"] = nil
+		} else {
+			updates["lease_expires_at"] = *patch.LeaseExpiresAt
+		}
 	}
 	if patch.ExecutionAttempt != nil {
 		updates["execution_attempt"] = *patch.ExecutionAttempt
@@ -171,11 +180,53 @@ func (g *GormDB) PatchReviewRun(runID string, patch ReviewRunPatch) error {
 	return nil
 }
 
+// ClaimReviewRun atomically acquires a queued run or takes over a running run
+// whose lease expired. Exactly one concurrent worker can observe claimed=true.
+func (g *GormDB) ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	if runID == "" || holder == "" || now.IsZero() || !leaseExpiresAt.After(now) {
+		return false, fmt.Errorf("claim review run: run ID, holder, and a future lease expiry are required")
+	}
+	result := g.db.Model(&ReviewRunModel{}).
+		Where("run_id = ? AND (status = ? OR (status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?))",
+			runID, ReviewRunStatusQueued, ReviewRunStatusRunning, now).
+		Updates(map[string]any{
+			"status":            ReviewRunStatusRunning,
+			"started_at":        gorm.Expr("COALESCE(started_at, ?)", now),
+			"lease_holder":      holder,
+			"lease_expires_at":  leaseExpiresAt,
+			"execution_attempt": gorm.Expr("execution_attempt + 1"),
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("claim review run %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// RenewReviewRunLease extends a live lease only for its current holder. An
+// expired lease cannot be resurrected; the worker must claim the run again.
+func (g *GormDB) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	if runID == "" || holder == "" || now.IsZero() || !leaseExpiresAt.After(now) {
+		return false, fmt.Errorf("renew review run lease: run ID, holder, and a future lease expiry are required")
+	}
+	result := g.db.Model(&ReviewRunModel{}).
+		Where("run_id = ? AND status = ? AND lease_holder = ? AND lease_expires_at > ?",
+			runID, ReviewRunStatusRunning, holder, now).
+		Update("lease_expires_at", leaseExpiresAt)
+	if result.Error != nil {
+		return false, fmt.Errorf("renew review run lease %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
 func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
 	if attempt == nil {
 		return fmt.Errorf("upsert review stage attempt: attempt is nil")
 	}
 	model := reviewStageAttemptToModel(*attempt)
+	// The natural attempt key owns the upsert. Never send a previously
+	// round-tripped auto-increment ID, which could conflict independently on
+	// SQLite/Postgres before the natural-key conflict is resolved.
+	model.ID = 0
 	err := g.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "run_id"}, {Name: "stage"}, {Name: "invocation_number"}, {Name: "attempt_number"}},
 		DoUpdates: clause.AssignmentColumns([]string{

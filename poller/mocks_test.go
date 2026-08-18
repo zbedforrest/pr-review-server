@@ -913,7 +913,12 @@ func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun
 		}
 		runs = append(runs, *run)
 	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].AcceptedAt.After(runs[j].AcceptedAt) })
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].AcceptedAt.Equal(runs[j].AcceptedAt) {
+			return runs[i].RunID > runs[j].RunID
+		}
+		return runs[i].AcceptedAt.After(runs[j].AcceptedAt)
+	})
 	if filter.Limit > 0 && len(runs) > filter.Limit {
 		runs = runs[:filter.Limit]
 	}
@@ -982,12 +987,53 @@ func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) err
 		run.LeaseHolder = *patch.LeaseHolder
 	}
 	if patch.LeaseExpiresAt != nil {
-		run.LeaseExpiresAt = patch.LeaseExpiresAt
+		if patch.LeaseExpiresAt.IsZero() {
+			run.LeaseExpiresAt = nil
+		} else {
+			run.LeaseExpiresAt = patch.LeaseExpiresAt
+		}
 	}
 	if patch.ExecutionAttempt != nil {
 		run.ExecutionAttempt = *patch.ExecutionAttempt
 	}
 	return nil
+}
+
+func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.ReviewRuns[runID]
+	if run == nil {
+		return false, nil
+	}
+	claimable := run.Status == db.ReviewRunStatusQueued ||
+		(run.Status == db.ReviewRunStatusRunning && run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(now))
+	if !claimable {
+		return false, nil
+	}
+	run.Status = db.ReviewRunStatusRunning
+	if run.StartedAt == nil {
+		started := now
+		run.StartedAt = &started
+	}
+	run.LeaseHolder = holder
+	expires := leaseExpiresAt
+	run.LeaseExpiresAt = &expires
+	run.ExecutionAttempt++
+	return true, nil
+}
+
+func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.ReviewRuns[runID]
+	if run == nil || run.Status != db.ReviewRunStatusRunning || run.LeaseHolder != holder ||
+		run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(now) {
+		return false, nil
+	}
+	expires := leaseExpiresAt
+	run.LeaseExpiresAt = &expires
+	return true, nil
 }
 
 func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error {

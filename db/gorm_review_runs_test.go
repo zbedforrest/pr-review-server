@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -90,6 +91,14 @@ func TestGormDBReviewRunIdempotencyLookup(t *testing.T) {
 	missing, err := database.GetReviewRunByIdempotency("", "")
 	require.NoError(t, err)
 	assert.Nil(t, missing)
+
+	conflict := reviewRunFixture("run-00000000000000000000000000000006", time.Now().UTC())
+	conflict.IdempotencyScope = run.IdempotencyScope
+	conflict.IdempotencyKeyHash = run.IdempotencyKeyHash
+	err = database.CreateReviewRun(&conflict)
+	if !errors.Is(err, ErrReviewRunConflict) {
+		t.Fatalf("conflict err=%v", err)
+	}
 }
 
 func TestGormDBCreateReviewRunRejectsIncompleteLedgerEntry(t *testing.T) {
@@ -138,6 +147,72 @@ func TestGormDBUpsertReviewStageAttempt(t *testing.T) {
 	assert.Equal(t, 13, attempts[0].AssistantTurns)
 	assert.Equal(t, []string{"claude-fable-5", "claude-opus-4-8"}, attempts[0].ObservedServedModels)
 	assert.True(t, attempts[0].ServingModelVerified)
+}
+
+func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	run := reviewRunFixture("run-00000000000000000000000000000007", now)
+	require.NoError(t, database.CreateReviewRun(&run))
+
+	claimed, err := database.ClaimReviewRun(run.RunID, "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.True(t, claimed)
+	claimed, err = database.ClaimReviewRun(run.RunID, "worker-b", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, claimed)
+
+	renewed, err := database.RenewReviewRunLease(run.RunID, "worker-b", now, now.Add(2*time.Minute))
+	require.NoError(t, err)
+	assert.False(t, renewed)
+	renewed, err = database.RenewReviewRunLease(run.RunID, "worker-a", now, now.Add(2*time.Minute))
+	require.NoError(t, err)
+	assert.True(t, renewed)
+
+	fetched, err := database.GetReviewRun(run.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	assert.Equal(t, ReviewRunStatusRunning, fetched.Status)
+	assert.Equal(t, "worker-a", fetched.LeaseHolder)
+	assert.Equal(t, 1, fetched.ExecutionAttempt)
+	require.NotNil(t, fetched.LeaseExpiresAt)
+
+	zero := time.Time{}
+	require.NoError(t, database.PatchReviewRun(run.RunID, ReviewRunPatch{LeaseExpiresAt: &zero}))
+	fetched, err = database.GetReviewRun(run.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	assert.Nil(t, fetched.LeaseExpiresAt)
+
+	// An expired running lease can be taken over and increments the attempt.
+	expired := now.Add(-time.Second)
+	require.NoError(t, database.PatchReviewRun(run.RunID, ReviewRunPatch{LeaseExpiresAt: &expired}))
+	claimed, err = database.ClaimReviewRun(run.RunID, "worker-b", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.True(t, claimed)
+	fetched, err = database.GetReviewRun(run.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	assert.Equal(t, "worker-b", fetched.LeaseHolder)
+	assert.Equal(t, 2, fetched.ExecutionAttempt)
+}
+
+func TestGormDBReviewRunHistoryUsesRunIDTieBreaker(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	first := reviewRunFixture("run-00000000000000000000000000000008", now)
+	second := reviewRunFixture("run-00000000000000000000000000000009", now)
+	require.NoError(t, database.CreateReviewRun(&first))
+	require.NoError(t, database.CreateReviewRun(&second))
+
+	runs, err := database.ListReviewRuns(ReviewRunFilter{RepoOwner: "acme", RepoName: "widgets", PRNumber: 42})
+	require.NoError(t, err)
+	require.Len(t, runs, 2)
+	assert.Equal(t, second.RunID, runs[0].RunID)
 }
 
 func TestGormDBMigratesReviewRunTables(t *testing.T) {

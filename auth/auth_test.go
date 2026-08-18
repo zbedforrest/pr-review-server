@@ -117,7 +117,13 @@ func (m *MockDatabase) GetReviewRunByIdempotency(scope, keyHash string) (*db.Rev
 func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun, error) {
 	return nil, nil
 }
-func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) error    { return nil }
+func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) error { return nil }
+func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	return false, nil
+}
+func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	return false, nil
+}
 func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error { return nil }
 func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAttempt, error) {
 	return nil, nil

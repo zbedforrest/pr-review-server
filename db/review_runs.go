@@ -1,6 +1,14 @@
 package db
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrReviewRunConflict is returned when a run insert conflicts with an
+// existing run ID or caller-scoped idempotency key. Callers can re-fetch by
+// idempotency key without parsing dialect-specific database errors.
+var ErrReviewRunConflict = errors.New("review run already exists")
 
 const (
 	ReviewRunStatusQueued    = "queued"
@@ -81,6 +89,8 @@ type ReviewRunFilter struct {
 
 // ReviewRunPatch updates mutable lifecycle/result fields. Pointer fields
 // distinguish "do not update" from a deliberate zero/false/empty value.
+// For LeaseExpiresAt only, a non-nil pointer to the zero time clears the
+// nullable column; lease acquisition itself must use ClaimReviewRun.
 type ReviewRunPatch struct {
 	Status                   *string
 	StartedAt                *time.Time

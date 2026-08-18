@@ -22,7 +22,8 @@ var _ Database = (*GormDB)(nil)
 // NewGormDB creates a new GormDB with the given GORM dialector
 func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 	db, err := gorm.Open(dialector, &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger:         logger.Default.LogMode(logger.Silent),
+		TranslateError: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
