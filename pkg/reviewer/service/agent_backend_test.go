@@ -70,7 +70,7 @@ func TestOpenRouterRuntimeBuildsIsolatedCodexInvocation(t *testing.T) {
 		`model_providers.openrouter.wire_api="responses"`,
 		`model_reasoning_effort="high"`,
 		`shell_environment_policy.ignore_default_excludes=false`,
-		`shell_environment_policy.exclude=["DATABASE_URL","GOOGLE_APPLICATION_CREDENTIALS"]`,
+		`shell_environment_policy.exclude=["DATABASE_URL","GOOGLE_APPLICATION_CREDENTIALS","GITHUB_TOKEN","GEMINI_API_KEY","OPENROUTER_API_KEY","ANTHROPIC_API_KEY","GITHUB_APP_PRIVATE_KEY_PATH","GITHUB_APP_CLIENT_SECRET","SESSION_SECRET"]`,
 		DefaultOpenRouterAgentModel,
 		"review this",
 	} {

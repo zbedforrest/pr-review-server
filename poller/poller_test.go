@@ -16,6 +16,18 @@ import (
 	"pr-review-server/pkg/reviewer/payload"
 )
 
+func TestReviewRunIDFromTimeMatchesAPIContract(t *testing.T) {
+	got := reviewRunIDFromTime(time.Unix(1, 2))
+	if len(got) != 36 || !strings.HasPrefix(got, "run-") {
+		t.Fatalf("reviewRunIDFromTime() = %q; want run- plus 32 hex characters", got)
+	}
+	for _, r := range strings.TrimPrefix(got, "run-") {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			t.Fatalf("reviewRunIDFromTime() = %q; contains non-hex character %q", got, r)
+		}
+	}
+}
+
 func TestShouldReview(t *testing.T) {
 	now := time.Now()
 

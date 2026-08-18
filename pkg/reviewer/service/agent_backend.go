@@ -132,7 +132,7 @@ func (r agentRuntime) args(prompt string) []string {
 		// process itself. Codex can still authenticate to OpenRouter, while its
 		// shell tool cannot inspect credentials inherited from the server.
 		"-c", `shell_environment_policy.ignore_default_excludes=false`,
-		"-c", `shell_environment_policy.exclude=["DATABASE_URL","GOOGLE_APPLICATION_CREDENTIALS"]`,
+		"-c", `shell_environment_policy.exclude=["DATABASE_URL","GOOGLE_APPLICATION_CREDENTIALS","GITHUB_TOKEN","GEMINI_API_KEY","OPENROUTER_API_KEY","ANTHROPIC_API_KEY","GITHUB_APP_PRIVATE_KEY_PATH","GITHUB_APP_CLIENT_SECRET","SESSION_SECRET"]`,
 		"-m", r.model,
 		prompt,
 	}

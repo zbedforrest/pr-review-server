@@ -153,9 +153,15 @@ func newHolderID() string {
 func newReviewRunID() string {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("run-%d", time.Now().UnixNano())
+		return reviewRunIDFromTime(time.Now())
 	}
 	return "run-" + hex.EncodeToString(buf)
+}
+
+// reviewRunIDFromTime preserves the run-{32 lowercase hex} contract even in
+// the effectively impossible event that the system random source fails.
+func reviewRunIDFromTime(t time.Time) string {
+	return fmt.Sprintf("run-%032x", t.UnixNano())
 }
 
 func geminiModelUses() []payload.ModelUse {
