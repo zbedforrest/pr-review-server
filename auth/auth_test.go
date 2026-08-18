@@ -109,7 +109,29 @@ func (m *MockDatabase) DeleteSession(id string) error {
 
 // Stub implementations for unused methods
 func (m *MockDatabase) GetPR(owner, repo string, prNumber int) (*db.PR, error) { return nil, nil }
-func (m *MockDatabase) UpsertPR(pr *db.PR) error                               { return nil }
+func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error                { return nil }
+func (m *MockDatabase) GetReviewRun(runID string) (*db.ReviewRun, error)       { return nil, nil }
+func (m *MockDatabase) GetReviewRunByIdempotency(scope, keyHash string) (*db.ReviewRun, error) {
+	return nil, nil
+}
+func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun, error) {
+	return nil, nil
+}
+func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) error { return nil }
+func (m *MockDatabase) PatchReviewRunAsHolder(runID, holder string, now time.Time, patch db.ReviewRunPatch) (bool, error) {
+	return false, nil
+}
+func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	return false, nil
+}
+func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	return false, nil
+}
+func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error { return nil }
+func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAttempt, error) {
+	return nil, nil
+}
+func (m *MockDatabase) UpsertPR(pr *db.PR) error { return nil }
 func (m *MockDatabase) UpdatePRStatus(owner, repo string, prNumber int, status string) error {
 	return nil
 }

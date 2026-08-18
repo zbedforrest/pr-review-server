@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -235,7 +236,9 @@ func (m *MockGitHubClient) GetOrgTeamMembers(ctx context.Context, orgName, teamS
 
 // MockDatabase implements db.Database for testing
 type MockDatabase struct {
-	mu sync.RWMutex
+	mu                  sync.RWMutex
+	ReviewRuns          map[string]*db.ReviewRun
+	ReviewStageAttempts map[string][]db.ReviewStageAttempt
 
 	// PRs stored in the mock database (keyed by "owner/repo/number")
 	PRs map[string]*db.PR
@@ -310,10 +313,12 @@ type MockDatabase struct {
 
 func NewMockDatabase() *MockDatabase {
 	return &MockDatabase{
-		PRs:               make(map[string]*db.PR),
-		UserPRViews:       make(map[string]*db.UserPRView),
-		AutoReviewEnabled: true,
-		ReviewNRequests:   3,
+		PRs:                 make(map[string]*db.PR),
+		ReviewRuns:          make(map[string]*db.ReviewRun),
+		ReviewStageAttempts: make(map[string][]db.ReviewStageAttempt),
+		UserPRViews:         make(map[string]*db.UserPRView),
+		AutoReviewEnabled:   true,
+		ReviewNRequests:     3,
 	}
 }
 
@@ -853,6 +858,289 @@ func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error {
 
 func (m *MockDatabase) GetTelemetryStats(days int) (*db.TelemetryStats, error) {
 	return &db.TelemetryStats{}, nil
+}
+
+func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if run == nil {
+		return fmt.Errorf("create review run: run is nil")
+	}
+	if run.RunID == "" || run.RepoOwner == "" || run.RepoName == "" || run.PRNumber <= 0 || run.CommitSHA == "" ||
+		run.TriggerSource == "" || run.Status == "" || run.RequestedConfigJSON == "" ||
+		run.EffectiveConfigJSON == "" || run.ConfigSourcesJSON == "" || run.AcceptedAt.IsZero() || run.QueuedAt.IsZero() {
+		return fmt.Errorf("create review run %s: required ledger fields are missing", run.RunID)
+	}
+	if (run.PRID != nil && *run.PRID <= 0) || (run.RequestedByUserID != nil && *run.RequestedByUserID <= 0) {
+		return fmt.Errorf("create review run %s: optional database IDs must be positive", run.RunID)
+	}
+	if (run.IdempotencyScope == "") != (run.IdempotencyKeyHash == "") {
+		return fmt.Errorf("create review run %s: idempotency scope and key hash must be set together", run.RunID)
+	}
+	if _, exists := m.ReviewRuns[run.RunID]; exists {
+		return fmt.Errorf("%w: run_id=%s", db.ErrReviewRunConflict, run.RunID)
+	}
+	if run.IdempotencyKeyHash != "" {
+		for _, existing := range m.ReviewRuns {
+			if existing.IdempotencyScope == run.IdempotencyScope && existing.IdempotencyKeyHash == run.IdempotencyKeyHash {
+				return fmt.Errorf("%w: run_id=%s", db.ErrReviewRunConflict, run.RunID)
+			}
+		}
+	}
+	copy := *run
+	m.ReviewRuns[run.RunID] = &copy
+	return nil
+}
+
+func (m *MockDatabase) GetReviewRun(runID string) (*db.ReviewRun, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	run := m.ReviewRuns[runID]
+	if run == nil {
+		return nil, nil
+	}
+	copy := *run
+	return &copy, nil
+}
+
+func (m *MockDatabase) GetReviewRunByIdempotency(scope, keyHash string) (*db.ReviewRun, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if scope == "" || keyHash == "" {
+		return nil, nil
+	}
+	for _, run := range m.ReviewRuns {
+		if run.IdempotencyScope == scope && run.IdempotencyKeyHash == keyHash {
+			copy := *run
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var runs []db.ReviewRun
+	for _, run := range m.ReviewRuns {
+		if filter.RepoOwner != "" && run.RepoOwner != filter.RepoOwner {
+			continue
+		}
+		if filter.RepoName != "" && run.RepoName != filter.RepoName {
+			continue
+		}
+		if filter.PRNumber > 0 && run.PRNumber != filter.PRNumber {
+			continue
+		}
+		if filter.CommitSHA != "" && run.CommitSHA != filter.CommitSHA {
+			continue
+		}
+		if filter.Status != "" && run.Status != filter.Status {
+			continue
+		}
+		runs = append(runs, *run)
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].AcceptedAt.Equal(runs[j].AcceptedAt) {
+			return runs[i].RunID > runs[j].RunID
+		}
+		return runs[i].AcceptedAt.After(runs[j].AcceptedAt)
+	})
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if len(runs) > limit {
+		runs = runs[:limit]
+	}
+	return runs, nil
+}
+
+func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.ReviewRuns[runID]
+	if run == nil {
+		return fmt.Errorf("review run %s not found", runID)
+	}
+	return m.patchReviewRunLocked(run, patch)
+}
+
+func (m *MockDatabase) patchReviewRunLocked(run *db.ReviewRun, patch db.ReviewRunPatch) error {
+	if patch == (db.ReviewRunPatch{}) {
+		return fmt.Errorf("patch review run %s: patch is empty", run.RunID)
+	}
+	if patch.Status != nil {
+		run.Status = *patch.Status
+	}
+	if patch.StartedAt != nil {
+		run.StartedAt = patch.StartedAt
+	}
+	if patch.CompletedAt != nil {
+		run.CompletedAt = patch.CompletedAt
+	}
+	if patch.DurationMS != nil {
+		run.DurationMS = *patch.DurationMS
+	}
+	if patch.HTMLPath != nil {
+		run.HTMLPath = *patch.HTMLPath
+	}
+	if patch.JSONPath != nil {
+		run.JSONPath = *patch.JSONPath
+	}
+	if patch.CriticalCount != nil {
+		run.CriticalCount = *patch.CriticalCount
+	}
+	if patch.MediumCount != nil {
+		run.MediumCount = *patch.MediumCount
+	}
+	if patch.LowCount != nil {
+		run.LowCount = *patch.LowCount
+	}
+	if patch.Verdict != nil {
+		run.Verdict = *patch.Verdict
+	}
+	if patch.ModelFallback != nil {
+		run.ModelFallback = *patch.ModelFallback
+	}
+	if patch.ServingModelVerification != nil {
+		run.ServingModelVerification = *patch.ServingModelVerification
+	}
+	if patch.ActualModelsJSON != nil {
+		run.ActualModelsJSON = *patch.ActualModelsJSON
+	}
+	if patch.PublicationStatus != nil {
+		run.PublicationStatus = *patch.PublicationStatus
+	}
+	if patch.TerminalCode != nil {
+		run.TerminalCode = *patch.TerminalCode
+	}
+	if patch.FailureStage != nil {
+		run.FailureStage = *patch.FailureStage
+	}
+	if patch.ErrorSummary != nil {
+		run.ErrorSummary = *patch.ErrorSummary
+	}
+	if patch.LeaseHolder != nil {
+		run.LeaseHolder = *patch.LeaseHolder
+	}
+	if patch.LeaseExpiresAt != nil {
+		if patch.LeaseExpiresAt.IsZero() {
+			run.LeaseExpiresAt = nil
+		} else {
+			run.LeaseExpiresAt = patch.LeaseExpiresAt
+		}
+	}
+	if patch.ExecutionAttempt != nil {
+		run.ExecutionAttempt = *patch.ExecutionAttempt
+	}
+	return nil
+}
+
+func (m *MockDatabase) PatchReviewRunAsHolder(runID, holder string, now time.Time, patch db.ReviewRunPatch) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.ReviewRuns[runID]
+	if run == nil || run.Status != db.ReviewRunStatusRunning || run.LeaseHolder != holder ||
+		run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(now) {
+		return false, nil
+	}
+	if err := m.patchReviewRunLocked(run, patch); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.ReviewRuns[runID]
+	if run == nil {
+		return false, nil
+	}
+	claimable := run.Status == db.ReviewRunStatusQueued ||
+		(run.Status == db.ReviewRunStatusRunning && (run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(now)))
+	if !claimable {
+		return false, nil
+	}
+	run.Status = db.ReviewRunStatusRunning
+	if run.StartedAt == nil {
+		started := now
+		run.StartedAt = &started
+	}
+	run.LeaseHolder = holder
+	expires := leaseExpiresAt
+	run.LeaseExpiresAt = &expires
+	run.ExecutionAttempt++
+	run.CompletedAt = nil
+	run.DurationMS = 0
+	run.HTMLPath = ""
+	run.JSONPath = ""
+	run.CriticalCount = 0
+	run.MediumCount = 0
+	run.LowCount = 0
+	run.Verdict = ""
+	run.ModelFallback = false
+	run.ServingModelVerification = ""
+	run.ActualModelsJSON = ""
+	run.PublicationStatus = ""
+	run.TerminalCode = ""
+	run.FailureStage = ""
+	run.ErrorSummary = ""
+	return true, nil
+}
+
+func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.ReviewRuns[runID]
+	if run == nil || run.Status != db.ReviewRunStatusRunning || run.LeaseHolder != holder ||
+		run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(now) {
+		return false, nil
+	}
+	expires := leaseExpiresAt
+	run.LeaseExpiresAt = &expires
+	return true, nil
+}
+
+func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if attempt == nil || attempt.RunID == "" || attempt.ExecutionAttempt <= 0 || attempt.Stage == "" || attempt.InvocationNumber <= 0 || attempt.AttemptNumber <= 0 {
+		return fmt.Errorf("upsert review stage attempt: required key fields are missing")
+	}
+	attempts := m.ReviewStageAttempts[attempt.RunID]
+	for i := range attempts {
+		if attempts[i].ExecutionAttempt == attempt.ExecutionAttempt && attempts[i].Stage == attempt.Stage && attempts[i].InvocationNumber == attempt.InvocationNumber && attempts[i].AttemptNumber == attempt.AttemptNumber {
+			attempts[i] = *attempt
+			m.ReviewStageAttempts[attempt.RunID] = attempts
+			return nil
+		}
+	}
+	m.ReviewStageAttempts[attempt.RunID] = append(attempts, *attempt)
+	return nil
+}
+
+func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAttempt, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	attempts := append([]db.ReviewStageAttempt(nil), m.ReviewStageAttempts[runID]...)
+	sort.Slice(attempts, func(i, j int) bool {
+		if attempts[i].ExecutionAttempt != attempts[j].ExecutionAttempt {
+			return attempts[i].ExecutionAttempt < attempts[j].ExecutionAttempt
+		}
+		if attempts[i].Stage != attempts[j].Stage {
+			return attempts[i].Stage < attempts[j].Stage
+		}
+		if attempts[i].InvocationNumber != attempts[j].InvocationNumber {
+			return attempts[i].InvocationNumber < attempts[j].InvocationNumber
+		}
+		return attempts[i].AttemptNumber < attempts[j].AttemptNumber
+	})
+	return attempts, nil
 }
 
 func (m *MockDatabase) Close() error {

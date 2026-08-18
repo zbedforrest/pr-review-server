@@ -23,6 +23,9 @@ var _ Database = (*GormDB)(nil)
 func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 	db, err := gorm.Open(dialector, &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
+		// Translation is process-wide and lets CreateReviewRun expose one
+		// dialect-independent idempotency conflict contract on SQLite/Postgres.
+		TranslateError: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -83,6 +86,8 @@ func (g *GormDB) AutoMigrate() error {
 		&TelemetryEventModel{},
 		&PollerLeaseModel{},
 		&FindingOutcomeModel{},
+		&ReviewRunModel{},
+		&ReviewStageAttemptModel{},
 	); err != nil {
 		return err
 	}
@@ -110,6 +115,16 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&FindingOutcomeModel{}) {
 		if err := g.db.Migrator().CreateTable(&FindingOutcomeModel{}); err != nil {
 			return fmt.Errorf("create finding_outcomes: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&ReviewRunModel{}) {
+		if err := g.db.Migrator().CreateTable(&ReviewRunModel{}); err != nil {
+			return fmt.Errorf("create review_runs: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&ReviewStageAttemptModel{}) {
+		if err := g.db.Migrator().CreateTable(&ReviewStageAttemptModel{}); err != nil {
+			return fmt.Errorf("create review_stage_attempts: %w", err)
 		}
 	}
 
