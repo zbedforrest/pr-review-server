@@ -454,6 +454,45 @@ func TestOrganicArtifactTimeoutProjectsBoundedPRError(t *testing.T) {
 	assert.Equal(t, reviewBudgetExceededMessage, pr.ErrorMessage)
 }
 
+func TestOrganicTimeoutCannotClobberSuccessorRun(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := reviewJobWithoutAgent(t, "run-25800000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "agent_reviewing",
+	}))
+	execution, err := p.beginReviewExecution(job)
+	require.NoError(t, err)
+	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	p.activeReviews[key] = ProcessInfo{RunID: "run-25800000000000000000000000000002"}
+	timedOutCtx, cancel := context.WithCancelCause(context.Background())
+	cancel(errReviewRunBudgetExceeded)
+
+	assert.True(t, p.finishInterruptedReviewExecution(execution, timedOutCtx, "execution", context.DeadlineExceeded))
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusTimedOut, run.Status)
+	assert.Equal(t, "run_timeout", run.TerminalCode)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "agent_reviewing", pr.Status)
+	assert.Empty(t, pr.ErrorMessage)
+}
+
+func TestRunAgentStageRequiresPreReservedSlot(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.agentSlots = make(chan struct{}, 1)
+	job := customReviewJob(t, "run-25900000000000000000000000000001")
+
+	_, err := p.runAgentStage(context.Background(), &reviewExecution{Job: job}, &service.ReviewResult{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "concurrency slot was not reserved")
+	assert.Empty(t, p.agentSlots)
+}
+
 func TestCancelledArtifactSavePreservesResetPRState(t *testing.T) {
 	database := NewMockDatabase()
 	storage := NewMockReviewStorage()

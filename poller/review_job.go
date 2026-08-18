@@ -151,7 +151,7 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 	go func() {
 		if err := p.generateReviewJobs(reviewCtx, []ReviewJob{job}); err != nil {
 			log.Printf("[IMMEDIATE] ERROR: review job %s failed for %s/%s#%d: %v", job.RunID, job.PR.Owner, job.PR.Repo, job.PR.Number, err)
-			p.rejectQueuedReviewJob(job, "dispatch_failed", "dispatch", err)
+			p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "dispatch_failed", "dispatch", err)
 			p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 		}
 	}()
@@ -257,6 +257,9 @@ func (p *Poller) beginReviewExecution(job ReviewJob) (*reviewExecution, error) {
 	now := time.Now().UTC()
 	timeout := p.reviewTimeout(job.Config.Effective)
 	holder := newHolderID()
+	// The lease deliberately spans the frozen execution budget plus completion
+	// grace. There is no execution heartbeat yet, so crash recovery latency is
+	// bounded by that interval; publication renews without shortening it.
 	claimed, err := p.db.ClaimReviewRun(job.RunID, holder, now, now.Add(timeout+ReviewLeaseCompletionGrace))
 	if err != nil {
 		return nil, err
@@ -338,11 +341,15 @@ func (p *Poller) finishInterruptedReviewExecution(exec *reviewExecution, ctx con
 		log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping timeout error projection", exec.Job.RunID)
 		return false
 	}
-	pr := exec.Job.PR
-	if err := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, reviewBudgetExceededMessage); err != nil {
-		log.Printf("[REVIEWER] WARNING: failed to persist timeout status for PR %d: %v", pr.Number, err)
+	projected, err := p.setPRErrorUnlessReplaced(exec.Job, reviewBudgetExceededMessage)
+	if err != nil {
+		log.Printf("[REVIEWER] WARNING: failed to persist timeout status for PR %d: %v", exec.Job.PR.Number, err)
 	}
-	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+	if !projected {
+		log.Printf("[REVIEWER] STALE WORKER: run %s was replaced; skipping timeout error projection", exec.Job.RunID)
+		return true
+	}
+	p.broadcastPRUpdate(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number)
 	return true
 }
 
@@ -393,14 +400,10 @@ func (p *Poller) finishCompletedReviewExecution(exec *reviewExecution, result *R
 	return p.finishReviewExecution(exec, patch)
 }
 
-func (p *Poller) rejectQueuedReviewJob(job ReviewJob, terminalCode, failureStage string, cause error) bool {
+func (p *Poller) rejectQueuedReviewJob(job ReviewJob, status, terminalCode, failureStage string, cause error) bool {
 	if err := p.ensureReviewRun(job); err != nil {
 		log.Printf("[REVIEWER] WARN: persist rejected run %s: %v", job.RunID, err)
 		return false
-	}
-	status := db.ReviewRunStatusFailed
-	if terminalCode == "review_cached" || terminalCode == "pr_already_claimed" || terminalCode == "cancelled" {
-		status = db.ReviewRunStatusCancelled
 	}
 	completedAt := time.Now().UTC()
 	errorSummary := "review job rejected"
