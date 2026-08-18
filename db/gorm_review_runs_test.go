@@ -343,7 +343,7 @@ func TestGormDBAbandonsOnlyLeasesExpiredBeyondGrace(t *testing.T) {
 	require.NotNil(t, abandoned)
 	assert.Equal(t, ReviewRunStatusTimedOut, abandoned.Status)
 	assert.Equal(t, "lease_abandoned", abandoned.TerminalCode)
-	assert.Equal(t, "dispatch", abandoned.FailureStage)
+	assert.Equal(t, "execution", abandoned.FailureStage)
 	assert.Empty(t, abandoned.LeaseHolder)
 	assert.Nil(t, abandoned.LeaseExpiresAt)
 	require.NotNil(t, abandoned.CompletedAt)

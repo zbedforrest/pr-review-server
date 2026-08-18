@@ -435,6 +435,88 @@ func TestProcessReviewJobStaleWorkerCannotPublishLatestProjection(t *testing.T) 
 	assert.Empty(t, run.PublicationStatus)
 }
 
+func TestProcessReviewJobStaleGenerationFailureCannotProjectPRError(t *testing.T) {
+	database := NewMockDatabase()
+	generator := NewMockReviewGenerator()
+	generator.SimulateDelay = 200 * time.Millisecond
+	generator.Results["acme/widgets/7"] = struct {
+		Result *ReviewResult
+		Err    error
+	}{Err: errors.New("provider unavailable")}
+	job := customReviewJob(t, "run-27600000000000000000000000000001")
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewRunStatus(t, database, job.RunID, db.ReviewRunStatusRunning)
+
+	expired := time.Now().UTC().Add(-time.Second)
+	require.NoError(t, database.PatchReviewRun(job.RunID, db.ReviewRunPatch{LeaseExpiresAt: &expired}))
+	require.NoError(t, database.UpdatePRStatus(job.PR.Owner, job.PR.Repo, job.PR.Number, "agent_reviewing"))
+	waitForReviewJob(t, p, job)
+
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "agent_reviewing", pr.Status)
+	assert.Empty(t, pr.ErrorMessage)
+}
+
+func TestProcessReviewJobStaleArtifactFailureCannotProjectPRError(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	saveStarted := make(chan struct{})
+	releaseSave := make(chan struct{})
+	storage.SaveReviewFunc = func(context.Context, string, string, int, string, []byte) (string, error) {
+		close(saveStarted)
+		<-releaseSave
+		return "", errors.New("storage unavailable")
+	}
+	job := customReviewJob(t, "run-27700000000000000000000000000001")
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	select {
+	case <-saveStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("review did not reach artifact save")
+	}
+	expired := time.Now().UTC().Add(-time.Second)
+	require.NoError(t, database.PatchReviewRun(job.RunID, db.ReviewRunPatch{LeaseExpiresAt: &expired}))
+	require.NoError(t, database.UpdatePRStatus(job.PR.Owner, job.PR.Repo, job.PR.Number, "agent_reviewing"))
+	close(releaseSave)
+	waitForReviewJob(t, p, job)
+
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "agent_reviewing", pr.Status)
+	assert.Empty(t, pr.ErrorMessage)
+}
+
+func TestGetReviewerStatusExcludesQueuedJobs(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	job := customReviewJob(t, "run-27800000000000000000000000000001")
+	_, tracked := p.tryTrackReviewJob(context.Background(), job)
+	require.True(t, tracked)
+	defer p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
+
+	running, duration := p.GetReviewerStatus()
+	assert.False(t, running)
+	assert.Zero(t, duration)
+
+	_, started := p.startTrackedReviewJob(job)
+	require.True(t, started)
+	running, duration = p.GetReviewerStatus()
+	assert.True(t, running)
+	assert.GreaterOrEqual(t, duration, time.Duration(0))
+}
+
 func TestPublicationRenewalNeverShortensLease(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPoller(NewMockGitHubClient(), database)

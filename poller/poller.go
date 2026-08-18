@@ -65,6 +65,8 @@ const (
 	ErrorPRMaxAutoRetries = 1
 )
 
+var errReviewRunBudgetExceeded = errors.New("review run wall-clock budget exceeded")
+
 type ProcessInfo struct {
 	PID       int
 	TrackedAt time.Time
@@ -1009,12 +1011,13 @@ func (p *Poller) GetReviewerStatus() (running bool, duration time.Duration) {
 	// Since we might delete, it's safer to just check existence here, or rely on monitor to clean up
 	// For status check, we'll just read.
 	for _, info := range p.activeReviews {
-		// Reviews run as in-process goroutines, just count active ones
-		count++
-		d := time.Duration(0)
-		if !info.StartTime.IsZero() {
-			d = time.Since(info.StartTime)
+		// Queued jobs are owned but are not yet consuming execution capacity.
+		if info.StartTime.IsZero() {
+			continue
 		}
+		// Reviews run as in-process goroutines, just count executing ones.
+		count++
+		d := time.Since(info.StartTime)
 		if d > maxDuration {
 			maxDuration = d
 		}
@@ -1073,16 +1076,9 @@ func prKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
 }
 
-// trackReview adds a PR's review to the active reviews map and returns a
-// per-review cancellable context derived from parent. Callers MUST use the
-// returned context for the rest of the review work; killReview cancels it
-// to abort the in-flight goroutine.
-//
-// If an entry already exists for this PR (e.g. ProcessReviewImmediate's
-// outer trackReview followed by generateReviewsBatch's inner trackReview),
-// returns the existing context unchanged so the running goroutine isn't
-// disrupted. The caller's parent ctx is therefore ignored in that case —
-// the outer caller is the canonical owner of the lifecycle.
+// trackReview is retained as a test/compatibility helper for callers that do
+// not yet have a durable ReviewJob. Production dispatch uses the run-aware
+// tracking methods below.
 func (p *Poller) trackReview(parent context.Context, owner, repo string, number, pid int) context.Context {
 	return p.trackReviewWithTimeout(parent, owner, repo, number, pid, "", p.reviewProcessTimeout())
 }
@@ -1109,7 +1105,7 @@ func (p *Poller) trackReviewWithTimeout(parent context.Context, owner, repo stri
 		Ctx:       ctx,
 		Cancel:    cancel,
 	}
-	log.Printf("[TRACK] Tracking review for %s", key)
+	log.Printf("[TRACK] Tracking compatibility review for %s", key)
 	return ctx
 }
 
@@ -1161,7 +1157,7 @@ func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, bool) {
 		return nil, false
 	}
 	timeout := reviewTimeout(job.Config.Effective)
-	runCtx, runCancel := context.WithTimeout(info.Ctx, timeout)
+	runCtx, runCancel := context.WithTimeoutCause(info.Ctx, timeout, errReviewRunBudgetExceeded)
 	queuedCancel := info.Cancel
 	info.StartTime = time.Now()
 	info.Timeout = timeout
@@ -1182,7 +1178,7 @@ func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, bool) {
 // happen under one mutex hold so stale workers cannot cancel a replacement.
 //
 // Calling Cancel on the happy path (review completed normally) is required:
-// trackReview made a context.WithCancel, and `go vet`'s lostcancel rule
+// the tracking entry owns a context.WithCancel, and `go vet`'s lostcancel rule
 // (rightly) complains if we drop the cancel func without calling it. After
 // successful completion the cancel is a no-op for the work, but it releases
 // the bookkeeping the WithCancel goroutine holds.
@@ -1239,10 +1235,9 @@ func (p *Poller) killReview(owner, repo string, number int) bool {
 	return true
 }
 
-// ProcessReviewImmediate starts review generation for a single PR immediately,
-// bypassing the full poll cycle. The PR must already be in "generating" status
-// in the database. trackReview is called synchronously before the goroutine
-// launches so the poll cycle's shouldReview/isTracked guard sees it immediately.
+// ProcessReviewImmediate adapts the legacy immediate-review entry point into an
+// immutable ReviewJob. ProcessReviewJob durably creates and synchronously tracks
+// the queued run before launching its worker, so poll-cycle guards see it.
 //
 // If force is true, the existing-review cache check is skipped — useful for
 // the manual "Review" button so a click always regenerates (overwriting the
@@ -2986,7 +2981,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					log.Printf("[REVIEWER] PR %d review was cancelled (ctx=%v); skipping error write", pr.Number, prCtx.Err())
 					status := db.ReviewRunStatusCancelled
 					terminalCode := "cancelled"
-					if errors.Is(prCtx.Err(), context.DeadlineExceeded) {
+					if errors.Is(context.Cause(prCtx), errReviewRunBudgetExceeded) {
 						status = db.ReviewRunStatusTimedOut
 						terminalCode = "run_timeout"
 					}
@@ -3011,11 +3006,14 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					terminalCode := "review_failed"
 					failureStage := "generation"
 					errorSummary := err.Error()
-					p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
-					if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
-						log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+					if p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary}) {
+						if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
+							log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+						}
+						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+					} else {
+						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping generation error projection", job.RunID)
 					}
-					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				}
 				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 				return
@@ -3047,20 +3045,25 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				if prCtx.Err() != nil {
 					status = db.ReviewRunStatusCancelled
 					terminalCode = "cancelled"
-					if errors.Is(prCtx.Err(), context.DeadlineExceeded) {
+					if errors.Is(context.Cause(prCtx), errReviewRunBudgetExceeded) {
 						status = db.ReviewRunStatusTimedOut
 						terminalCode = "run_timeout"
 					}
 					log.Printf("[REVIEWER] PR %d artifact save was cancelled (ctx=%v); preserving PR state", pr.Number, prCtx.Err())
-				} else {
-					if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
-						log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
-					}
-					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				}
 				failureStage := "artifact_save"
 				errorSummary := err.Error()
-				p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
+				finished := p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
+				if prCtx.Err() == nil {
+					if finished {
+						if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
+							log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+						}
+						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+					} else {
+						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact-save error projection", job.RunID)
+					}
+				}
 				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 				return
 			}

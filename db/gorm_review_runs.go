@@ -295,7 +295,7 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMax
 			"status":           ReviewRunStatusTimedOut,
 			"completed_at":     now,
 			"terminal_code":    "lease_abandoned",
-			"failure_stage":    "dispatch",
+			"failure_stage":    "execution",
 			"error_summary":    "review worker lease expired before terminal completion",
 			"lease_holder":     "",
 			"lease_expires_at": nil,

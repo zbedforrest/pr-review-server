@@ -1136,13 +1136,16 @@ func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, que
 	abandoned := 0
 	for _, run := range m.ReviewRuns {
 		terminalCode := ""
+		failureStage := ""
 		errorSummary := ""
 		switch {
 		case run.Status == db.ReviewRunStatusRunning && run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(runningCutoff):
 			terminalCode = "lease_abandoned"
+			failureStage = "execution"
 			errorSummary = "review worker lease expired before terminal completion"
 		case run.Status == db.ReviewRunStatusQueued && !run.QueuedAt.After(queuedCutoff):
 			terminalCode = "queue_abandoned"
+			failureStage = "dispatch"
 			errorSummary = "review run remained queued beyond the dispatch recovery window"
 		default:
 			continue
@@ -1151,7 +1154,7 @@ func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, que
 		run.Status = db.ReviewRunStatusTimedOut
 		run.CompletedAt = &completedAt
 		run.TerminalCode = terminalCode
-		run.FailureStage = "dispatch"
+		run.FailureStage = failureStage
 		run.ErrorSummary = errorSummary
 		run.LeaseHolder = ""
 		run.LeaseExpiresAt = nil
