@@ -182,6 +182,15 @@ func Validate(cfg Effective, policy Policy) error {
 	backend := strings.ToLower(strings.TrimSpace(cfg.Agent.Backend))
 	backendPolicy, ok := policy.Backends[backend]
 	if !ok {
+		for name, candidate := range policy.Backends {
+			if strings.EqualFold(strings.TrimSpace(name), backend) {
+				backendPolicy = candidate
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok {
 		return invalid("agent.backend", "unsupported backend %q", cfg.Agent.Backend)
 	}
 	if !backendPolicy.Available {
@@ -222,11 +231,15 @@ func Hash(cfg Effective) (string, error) {
 
 // AvailableBackends returns stable, sorted backend names for capability APIs.
 func (p Policy) AvailableBackends() []string {
-	backends := make([]string, 0, len(p.Backends))
+	available := make(map[string]struct{}, len(p.Backends))
 	for name, backend := range p.Backends {
 		if backend.Available {
-			backends = append(backends, name)
+			available[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
 		}
+	}
+	backends := make([]string, 0, len(available))
+	for name := range available {
+		backends = append(backends, name)
 	}
 	sort.Strings(backends)
 	return backends

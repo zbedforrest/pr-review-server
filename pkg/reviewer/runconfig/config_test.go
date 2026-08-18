@@ -117,6 +117,25 @@ func TestResolveRejectsUnavailableBackend(t *testing.T) {
 	}
 }
 
+func TestPolicyBackendNamesRoundTripCanonically(t *testing.T) {
+	policy := testPolicy()
+	claude := policy.Backends["claude"]
+	delete(policy.Backends, "claude")
+	policy.Backends[" Claude "] = claude
+
+	snapshot, err := Resolve(Overrides{}, testDefaults(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Effective.Agent.Backend != "claude" {
+		t.Fatalf("backend=%q", snapshot.Effective.Agent.Backend)
+	}
+	available := policy.AvailableBackends()
+	if len(available) != 2 || available[0] != "claude" || available[1] != "openrouter" {
+		t.Fatalf("available=%v", available)
+	}
+}
+
 func TestResolveRejectsModelBackendMismatch(t *testing.T) {
 	_, err := Resolve(Overrides{Agent: &AgentOverrides{
 		Model: ptr("openai/gpt-5.6-sol"),

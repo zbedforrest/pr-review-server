@@ -278,6 +278,9 @@ func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, fetched)
 	assert.Equal(t, ReviewRunStatusCompleted, fetched.Status)
+	claimed, err = database.ClaimReviewRun(run.RunID, "worker-d", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, claimed, "a terminal run must not be claimable")
 }
 
 func TestGormDBReviewRunClaimHasSingleConcurrentWinner(t *testing.T) {

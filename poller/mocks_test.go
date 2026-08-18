@@ -871,6 +871,9 @@ func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error {
 		run.EffectiveConfigJSON == "" || run.ConfigSourcesJSON == "" || run.AcceptedAt.IsZero() || run.QueuedAt.IsZero() {
 		return fmt.Errorf("create review run %s: required ledger fields are missing", run.RunID)
 	}
+	if (run.PRID != nil && *run.PRID <= 0) || (run.RequestedByUserID != nil && *run.RequestedByUserID <= 0) {
+		return fmt.Errorf("create review run %s: optional database IDs must be positive", run.RunID)
+	}
 	if (run.IdempotencyScope == "") != (run.IdempotencyKeyHash == "") {
 		return fmt.Errorf("create review run %s: idempotency scope and key hash must be set together", run.RunID)
 	}

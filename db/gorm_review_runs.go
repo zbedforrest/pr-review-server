@@ -19,6 +19,9 @@ func (g *GormDB) CreateReviewRun(run *ReviewRun) error {
 	if run.RepoOwner == "" || run.RepoName == "" || run.PRNumber <= 0 || run.CommitSHA == "" {
 		return fmt.Errorf("create review run %s: complete PR target is required", run.RunID)
 	}
+	if (run.PRID != nil && *run.PRID <= 0) || (run.RequestedByUserID != nil && *run.RequestedByUserID <= 0) {
+		return fmt.Errorf("create review run %s: optional database IDs must be positive", run.RunID)
+	}
 	if run.TriggerSource == "" || run.Status == "" {
 		return fmt.Errorf("create review run %s: trigger source and status are required", run.RunID)
 	}
@@ -405,7 +408,7 @@ func reviewStageAttemptFromModel(model ReviewStageAttemptModel) ReviewStageAttem
 }
 
 func intPtrToUint(value *int) *uint {
-	if value == nil {
+	if value == nil || *value <= 0 {
 		return nil
 	}
 	converted := uint(*value)

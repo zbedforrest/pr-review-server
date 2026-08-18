@@ -7,7 +7,8 @@ import (
 
 // ErrReviewRunConflict is returned when a run insert conflicts with an
 // existing run ID or caller-scoped idempotency key. Callers can re-fetch by
-// idempotency key without parsing dialect-specific database errors.
+// idempotency key without parsing dialect-specific database errors, but a nil
+// result means the conflict was the run ID and must be treated as a hard error.
 var ErrReviewRunConflict = errors.New("review run already exists")
 
 const (
