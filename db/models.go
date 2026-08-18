@@ -155,7 +155,7 @@ type ReviewRunModel struct {
 	AgentWallClockSec int    `gorm:"column:agent_wall_clock_sec"`
 	AgentMaxTurns     int    `gorm:"column:agent_max_turns"`
 
-	AcceptedAt  time.Time  `gorm:"column:accepted_at;not null;index"`
+	AcceptedAt  time.Time  `gorm:"column:accepted_at;not null;index;index:idx_review_runs_pr_history,priority:4;index:idx_review_runs_commit_history,priority:5"`
 	QueuedAt    time.Time  `gorm:"column:queued_at;not null;index"`
 	StartedAt   *time.Time `gorm:"column:started_at;index"`
 	CompletedAt *time.Time `gorm:"column:completed_at;index"`

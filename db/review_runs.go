@@ -90,7 +90,9 @@ type ReviewRunFilter struct {
 // ReviewRunPatch updates mutable lifecycle/result fields. Pointer fields
 // distinguish "do not update" from a deliberate zero/false/empty value.
 // For LeaseExpiresAt only, a non-nil pointer to the zero time clears the
-// nullable column; lease acquisition itself must use ClaimReviewRun.
+// nullable column. Worker result/lifecycle writes must use
+// PatchReviewRunAsHolder; PatchReviewRun is reserved for administrative and
+// reconciliation writes. Lease acquisition itself must use ClaimReviewRun.
 type ReviewRunPatch struct {
 	Status                   *string
 	StartedAt                *time.Time

@@ -932,6 +932,10 @@ func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) err
 	if run == nil {
 		return fmt.Errorf("review run %s not found", runID)
 	}
+	return m.patchReviewRunLocked(run, patch)
+}
+
+func (m *MockDatabase) patchReviewRunLocked(run *db.ReviewRun, patch db.ReviewRunPatch) error {
 	if patch.Status != nil {
 		run.Status = *patch.Status
 	}
@@ -997,6 +1001,20 @@ func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) err
 		run.ExecutionAttempt = *patch.ExecutionAttempt
 	}
 	return nil
+}
+
+func (m *MockDatabase) PatchReviewRunAsHolder(runID, holder string, now time.Time, patch db.ReviewRunPatch) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.ReviewRuns[runID]
+	if run == nil || run.Status != db.ReviewRunStatusRunning || run.LeaseHolder != holder ||
+		run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(now) {
+		return false, nil
+	}
+	if err := m.patchReviewRunLocked(run, patch); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {

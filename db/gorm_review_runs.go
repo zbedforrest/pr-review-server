@@ -102,6 +102,42 @@ func (g *GormDB) ListReviewRuns(filter ReviewRunFilter) ([]ReviewRun, error) {
 }
 
 func (g *GormDB) PatchReviewRun(runID string, patch ReviewRunPatch) error {
+	updates := reviewRunPatchUpdates(patch)
+	if len(updates) == 0 {
+		return nil
+	}
+	result := g.db.Model(&ReviewRunModel{}).Where("run_id = ?", runID).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("patch review run %s: %w", runID, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("patch review run %s: not found", runID)
+	}
+	return nil
+}
+
+// PatchReviewRunAsHolder applies a worker lifecycle/result update only while
+// holder still owns a live lease. The predicate fences out a stale worker
+// after another worker has taken over the run.
+func (g *GormDB) PatchReviewRunAsHolder(runID, holder string, now time.Time, patch ReviewRunPatch) (bool, error) {
+	if runID == "" || holder == "" || now.IsZero() {
+		return false, fmt.Errorf("patch review run as holder: run ID, holder, and current time are required")
+	}
+	updates := reviewRunPatchUpdates(patch)
+	if len(updates) == 0 {
+		return false, fmt.Errorf("patch review run as holder %s: patch is empty", runID)
+	}
+	result := g.db.Model(&ReviewRunModel{}).
+		Where("run_id = ? AND status = ? AND lease_holder = ? AND lease_expires_at > ?",
+			runID, ReviewRunStatusRunning, holder, now).
+		Updates(updates)
+	if result.Error != nil {
+		return false, fmt.Errorf("patch review run as holder %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func reviewRunPatchUpdates(patch ReviewRunPatch) map[string]any {
 	updates := map[string]any{}
 	if patch.Status != nil {
 		updates["status"] = *patch.Status
@@ -167,17 +203,7 @@ func (g *GormDB) PatchReviewRun(runID string, patch ReviewRunPatch) error {
 	if patch.ExecutionAttempt != nil {
 		updates["execution_attempt"] = *patch.ExecutionAttempt
 	}
-	if len(updates) == 0 {
-		return nil
-	}
-	result := g.db.Model(&ReviewRunModel{}).Where("run_id = ?", runID).Updates(updates)
-	if result.Error != nil {
-		return fmt.Errorf("patch review run %s: %w", runID, result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("patch review run %s: not found", runID)
-	}
-	return nil
+	return updates
 }
 
 // ClaimReviewRun atomically acquires a queued run or takes over a running run
@@ -240,6 +266,12 @@ func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
 	}).Create(&model).Error
 	if err != nil {
 		return fmt.Errorf("upsert review stage attempt %s/%s/%d/%d: %w", attempt.RunID, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber, err)
+	}
+	if err := g.db.Where(
+		"run_id = ? AND stage = ? AND invocation_number = ? AND attempt_number = ?",
+		attempt.RunID, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber,
+	).First(&model).Error; err != nil {
+		return fmt.Errorf("reload review stage attempt %s/%s/%d/%d: %w", attempt.RunID, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber, err)
 	}
 	*attempt = reviewStageAttemptFromModel(model)
 	return nil

@@ -2,6 +2,8 @@ package db
 
 import (
 	"errors"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -136,10 +138,16 @@ func TestGormDBUpsertReviewStageAttempt(t *testing.T) {
 		StartedAt:            &now,
 	}
 	require.NoError(t, database.UpsertReviewStageAttempt(&attempt))
+	require.NotZero(t, attempt.ID)
+	require.False(t, attempt.CreatedAt.IsZero())
+	createdID := attempt.ID
+	createdAt := attempt.CreatedAt
 
 	attempt.AssistantTurns = 13
 	attempt.StopReason = "complete"
 	require.NoError(t, database.UpsertReviewStageAttempt(&attempt))
+	assert.Equal(t, createdID, attempt.ID)
+	assert.Equal(t, createdAt, attempt.CreatedAt)
 
 	attempts, err := database.ListReviewStageAttempts(run.RunID)
 	require.NoError(t, err)
@@ -197,6 +205,59 @@ func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
 	require.NotNil(t, fetched)
 	assert.Equal(t, "worker-b", fetched.LeaseHolder)
 	assert.Equal(t, 2, fetched.ExecutionAttempt)
+
+	completed := ReviewRunStatusCompleted
+	patched, err := database.PatchReviewRunAsHolder(run.RunID, "worker-a", now, ReviewRunPatch{Status: &completed})
+	require.NoError(t, err)
+	assert.False(t, patched, "stale worker must not commit a terminal result")
+	patched, err = database.PatchReviewRunAsHolder(run.RunID, "worker-b", now, ReviewRunPatch{Status: &completed})
+	require.NoError(t, err)
+	assert.True(t, patched)
+	fetched, err = database.GetReviewRun(run.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	assert.Equal(t, ReviewRunStatusCompleted, fetched.Status)
+}
+
+func TestGormDBReviewRunClaimHasSingleConcurrentWinner(t *testing.T) {
+	database, err := NewGormSQLite("file:" + filepath.Join(t.TempDir(), "claims.db") + "?_busy_timeout=5000&_journal_mode=WAL")
+	require.NoError(t, err)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	run := reviewRunFixture("run-00000000000000000000000000000010", now)
+	require.NoError(t, database.CreateReviewRun(&run))
+
+	const workers = 12
+	start := make(chan struct{})
+	results := make(chan bool, workers)
+	errors := make(chan error, workers)
+	var group sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		group.Add(1)
+		go func(worker int) {
+			defer group.Done()
+			<-start
+			claimed, claimErr := database.ClaimReviewRun(run.RunID, string(rune('a'+worker)), now, now.Add(time.Minute))
+			results <- claimed
+			errors <- claimErr
+		}(i)
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	close(errors)
+
+	winners := 0
+	for claimed := range results {
+		if claimed {
+			winners++
+		}
+	}
+	for claimErr := range errors {
+		require.NoError(t, claimErr)
+	}
+	assert.Equal(t, 1, winners)
 }
 
 func TestGormDBReviewRunHistoryUsesRunIDTieBreaker(t *testing.T) {
