@@ -975,6 +975,19 @@ func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) err
 	return m.patchReviewRunLocked(run, patch)
 }
 
+func (m *MockDatabase) PatchQueuedReviewRun(runID string, patch db.ReviewRunPatch) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.ReviewRuns[runID]
+	if run == nil || run.Status != db.ReviewRunStatusQueued {
+		return false, nil
+	}
+	if err := m.patchReviewRunLocked(run, patch); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (m *MockDatabase) patchReviewRunLocked(run *db.ReviewRun, patch db.ReviewRunPatch) error {
 	if patch == (db.ReviewRunPatch{}) {
 		return fmt.Errorf("patch review run %s: patch is empty", run.RunID)
@@ -1112,24 +1125,34 @@ func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpir
 	return true, nil
 }
 
-func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, grace time.Duration) (int, error) {
+func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if now.IsZero() || grace < 0 {
+	if now.IsZero() || runningGrace < 0 || queuedMaxAge <= 0 {
 		return 0, fmt.Errorf("abandon expired review runs: invalid arguments")
 	}
-	cutoff := now.Add(-grace)
+	runningCutoff := now.Add(-runningGrace)
+	queuedCutoff := now.Add(-queuedMaxAge)
 	abandoned := 0
 	for _, run := range m.ReviewRuns {
-		if run.Status != db.ReviewRunStatusRunning || run.LeaseExpiresAt == nil || run.LeaseExpiresAt.After(cutoff) {
+		terminalCode := ""
+		errorSummary := ""
+		switch {
+		case run.Status == db.ReviewRunStatusRunning && run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(runningCutoff):
+			terminalCode = "lease_abandoned"
+			errorSummary = "review worker lease expired before terminal completion"
+		case run.Status == db.ReviewRunStatusQueued && !run.QueuedAt.After(queuedCutoff):
+			terminalCode = "queue_abandoned"
+			errorSummary = "review run remained queued beyond the dispatch recovery window"
+		default:
 			continue
 		}
 		completedAt := now
 		run.Status = db.ReviewRunStatusTimedOut
 		run.CompletedAt = &completedAt
-		run.TerminalCode = "lease_abandoned"
+		run.TerminalCode = terminalCode
 		run.FailureStage = "dispatch"
-		run.ErrorSummary = "review worker lease expired before terminal completion"
+		run.ErrorSummary = errorSummary
 		run.LeaseHolder = ""
 		run.LeaseExpiresAt = nil
 		abandoned++

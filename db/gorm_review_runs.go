@@ -122,6 +122,22 @@ func (g *GormDB) PatchReviewRun(runID string, patch ReviewRunPatch) error {
 	return nil
 }
 
+// PatchQueuedReviewRun applies a dispatch result only while the run remains
+// queued. It races safely with ClaimReviewRun: exactly one transition wins.
+func (g *GormDB) PatchQueuedReviewRun(runID string, patch ReviewRunPatch) (bool, error) {
+	updates := reviewRunPatchUpdates(patch)
+	if len(updates) == 0 {
+		return false, fmt.Errorf("patch queued review run %s: patch is empty", runID)
+	}
+	result := g.db.Model(&ReviewRunModel{}).
+		Where("run_id = ? AND status = ?", runID, ReviewRunStatusQueued).
+		Updates(updates)
+	if result.Error != nil {
+		return false, fmt.Errorf("patch queued review run %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
 // PatchReviewRunAsHolder applies a worker lifecycle/result update only while
 // holder still owns a live lease. The predicate fences out a stale worker
 // after another worker has taken over the run.
@@ -265,16 +281,16 @@ func (g *GormDB) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt t
 	return result.RowsAffected == 1, nil
 }
 
-// AbandonExpiredReviewRuns terminalizes running rows whose worker lease has
-// remained expired through the supplied grace period. The conditional update
-// is atomic with lease renewal, so a worker that renewed in time is untouched.
-func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, grace time.Duration) (int, error) {
-	if now.IsZero() || grace < 0 {
-		return 0, fmt.Errorf("abandon expired review runs: current time and a non-negative grace period are required")
+// AbandonExpiredReviewRuns terminalizes running rows whose worker lease stayed
+// expired through the grace period and queued rows left behind by a dispatcher
+// crash. Both updates race safely with the atomic queued-to-running claim.
+func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error) {
+	if now.IsZero() || runningGrace < 0 || queuedMaxAge <= 0 {
+		return 0, fmt.Errorf("abandon expired review runs: current time, non-negative running grace, and positive queue max age are required")
 	}
-	cutoff := now.Add(-grace)
-	result := g.db.Model(&ReviewRunModel{}).
-		Where("status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", ReviewRunStatusRunning, cutoff).
+	runningCutoff := now.Add(-runningGrace)
+	running := g.db.Model(&ReviewRunModel{}).
+		Where("status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", ReviewRunStatusRunning, runningCutoff).
 		Updates(map[string]any{
 			"status":           ReviewRunStatusTimedOut,
 			"completed_at":     now,
@@ -284,10 +300,25 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, grace time.Duration) (i
 			"lease_holder":     "",
 			"lease_expires_at": nil,
 		})
-	if result.Error != nil {
-		return 0, fmt.Errorf("abandon expired review runs: %w", result.Error)
+	if running.Error != nil {
+		return 0, fmt.Errorf("abandon expired running review runs: %w", running.Error)
 	}
-	return int(result.RowsAffected), nil
+	queuedCutoff := now.Add(-queuedMaxAge)
+	queued := g.db.Model(&ReviewRunModel{}).
+		Where("status = ? AND queued_at <= ?", ReviewRunStatusQueued, queuedCutoff).
+		Updates(map[string]any{
+			"status":           ReviewRunStatusTimedOut,
+			"completed_at":     now,
+			"terminal_code":    "queue_abandoned",
+			"failure_stage":    "dispatch",
+			"error_summary":    "review run remained queued beyond the dispatch recovery window",
+			"lease_holder":     "",
+			"lease_expires_at": nil,
+		})
+	if queued.Error != nil {
+		return int(running.RowsAffected), fmt.Errorf("abandon expired queued review runs: %w", queued.Error)
+	}
+	return int(running.RowsAffected + queued.RowsAffected), nil
 }
 
 func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {

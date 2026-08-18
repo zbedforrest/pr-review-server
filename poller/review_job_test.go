@@ -271,6 +271,39 @@ func TestQueuedReviewBudgetStartsAtExecution(t *testing.T) {
 	p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 }
 
+func TestAgentSlotWaitDoesNotStartBudgetOrLease(t *testing.T) {
+	database := NewMockDatabase()
+	generator := NewMockReviewGenerator()
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	p.agentSlots = make(chan struct{}, 1)
+	p.agentSlots <- struct{}{} // occupy the only agent slot
+	job := customReviewJob(t, "run-24500000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusQueued, run.Status)
+	assert.Nil(t, run.LeaseExpiresAt)
+	p.reviewsMutex.Lock()
+	queuedInfo := p.activeReviews[prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)]
+	p.reviewsMutex.Unlock()
+	assert.True(t, queuedInfo.StartTime.IsZero())
+	_, hasDeadline := queuedInfo.Ctx.Deadline()
+	assert.False(t, hasDeadline)
+
+	<-p.agentSlots // allow execution to acquire the reserved slot
+	waitForReviewJob(t, p, job)
+	run, err = database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCompleted, run.Status)
+}
+
 func TestProcessReviewJobPersistsTerminalFailure(t *testing.T) {
 	database := NewMockDatabase()
 	generator := NewMockReviewGenerator()
@@ -367,7 +400,7 @@ func TestProcessReviewJobStaleWorkerCannotPublishLatestProjection(t *testing.T) 
 	run, err := database.GetReviewRun(job.RunID)
 	require.NoError(t, err)
 	require.NotNil(t, run)
-	abandoned, err := database.AbandonExpiredReviewRuns(time.Now().UTC(), 0)
+	abandoned, err := database.AbandonExpiredReviewRuns(time.Now().UTC(), 0, ReviewQueueAbandonAfter)
 	require.NoError(t, err)
 	assert.Equal(t, 1, abandoned)
 	run, err = database.GetReviewRun(job.RunID)

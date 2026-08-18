@@ -138,6 +138,35 @@ func TestGormDBCreateReviewRunRejectsIncompleteLedgerEntry(t *testing.T) {
 	assert.Contains(t, err.Error(), "complete PR target")
 }
 
+func TestGormDBPatchQueuedReviewRunIsFencedByStatus(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	run := reviewRunFixture("run-00000000000000000000000000000019", now)
+	require.NoError(t, database.CreateReviewRun(&run))
+	failed := ReviewRunStatusFailed
+	terminalCode := "dispatch_failed"
+	updated, err := database.PatchQueuedReviewRun(run.RunID, ReviewRunPatch{Status: &failed, TerminalCode: &terminalCode})
+	require.NoError(t, err)
+	assert.True(t, updated)
+
+	running := reviewRunFixture("run-00000000000000000000000000000020", now)
+	running.IdempotencyScope = ""
+	running.IdempotencyKeyHash = ""
+	require.NoError(t, database.CreateReviewRun(&running))
+	claimed, err := database.ClaimReviewRun(running.RunID, "worker-a", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	updated, err = database.PatchQueuedReviewRun(running.RunID, ReviewRunPatch{Status: &failed, TerminalCode: &terminalCode})
+	require.NoError(t, err)
+	assert.False(t, updated)
+	active, err := database.GetReviewRun(running.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, active)
+	assert.Equal(t, ReviewRunStatusRunning, active.Status)
+}
+
 func TestGormDBUpsertReviewStageAttempt(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()
@@ -305,7 +334,7 @@ func TestGormDBAbandonsOnlyLeasesExpiredBeyondGrace(t *testing.T) {
 	requireClaim(withinGrace.RunID, now.Add(-time.Minute))
 	requireClaim(live.RunID, now.Add(time.Minute))
 
-	count, err := database.AbandonExpiredReviewRuns(now, 2*time.Minute)
+	count, err := database.AbandonExpiredReviewRuns(now, 2*time.Minute, time.Hour)
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
 
@@ -327,9 +356,36 @@ func TestGormDBAbandonsOnlyLeasesExpiredBeyondGrace(t *testing.T) {
 		assert.Equal(t, ReviewRunStatusRunning, run.Status)
 	}
 
-	count, err = database.AbandonExpiredReviewRuns(now.Add(time.Minute), -time.Second)
+	count, err = database.AbandonExpiredReviewRuns(now.Add(time.Minute), -time.Second, time.Hour)
 	require.Error(t, err)
 	assert.Zero(t, count)
+}
+
+func TestGormDBAbandonsOnlyStaleQueuedRuns(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	stale := reviewRunFixture("run-00000000000000000000000000000017", now.Add(-2*time.Hour))
+	recent := reviewRunFixture("run-00000000000000000000000000000018", now.Add(-time.Minute))
+	for _, run := range []*ReviewRun{&stale, &recent} {
+		run.IdempotencyScope = ""
+		run.IdempotencyKeyHash = ""
+		require.NoError(t, database.CreateReviewRun(run))
+	}
+
+	count, err := database.AbandonExpiredReviewRuns(now, 2*time.Minute, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	abandoned, err := database.GetReviewRun(stale.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, abandoned)
+	assert.Equal(t, ReviewRunStatusTimedOut, abandoned.Status)
+	assert.Equal(t, "queue_abandoned", abandoned.TerminalCode)
+	active, err := database.GetReviewRun(recent.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, active)
+	assert.Equal(t, ReviewRunStatusQueued, active.Status)
 }
 
 func TestGormDBReviewRunClaimHasSingleConcurrentWinner(t *testing.T) {
@@ -395,6 +451,7 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	assert.True(t, database.db.Migrator().HasTable(&ReviewRunModel{}))
 	assert.True(t, database.db.Migrator().HasTable(&ReviewStageAttemptModel{}))
 	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_status_lease"))
+	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_status_queue"))
 }
 
 func TestReviewStageAttemptUpsertCoversEveryMutableColumn(t *testing.T) {

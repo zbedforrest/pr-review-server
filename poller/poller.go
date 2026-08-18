@@ -45,6 +45,10 @@ const (
 	// reviews were untracked mid-flight; under concurrency their results were
 	// then lost to stale-reset/retrigger races instead of being saved.
 	ReviewPipelineMargin = 8 * time.Minute
+	// ReviewQueueAbandonAfter bounds durable queued rows after a worker crash.
+	// It is deliberately much larger than normal concurrency waits so a live
+	// process is never mistaken for an abandoned dispatcher.
+	ReviewQueueAbandonAfter = 24 * time.Hour
 
 	// ReviewProcessWarningThreshold is when to start warning about long-running reviews.
 	ReviewProcessWarningThreshold = 2 * time.Minute
@@ -401,7 +405,7 @@ func isReviewInFlight(status string) bool {
 func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, result *service.ReviewResult) (*ReviewResult, error) {
 	pr := execution.Job.PR
 	agentSettings := execution.Job.Config.Effective.Agent
-	if p.agentSlots != nil {
+	if p.agentSlots != nil && !execution.AgentSlotReserved {
 		select {
 		case p.agentSlots <- struct{}{}:
 			defer func() { <-p.agentSlots }()
@@ -948,7 +952,7 @@ func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Tick
 			return
 		case <-ticker.C:
 			if p.isLeader() {
-				if abandoned, err := p.db.AbandonExpiredReviewRuns(time.Now().UTC(), ReviewLeaseCompletionGrace); err != nil {
+				if abandoned, err := p.db.AbandonExpiredReviewRuns(time.Now().UTC(), ReviewLeaseCompletionGrace, ReviewQueueAbandonAfter); err != nil {
 					log.Printf("[MONITOR] WARNING: failed to abandon expired review runs: %v", err)
 				} else if abandoned > 0 {
 					log.Printf("[MONITOR] marked %d expired review runs timed out", abandoned)
@@ -1164,25 +1168,21 @@ func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, bool) {
 	return runCtx, true
 }
 
-// untrackReview removes a PR's review process from the active reviews map
-// AND invokes its stored Cancel func. Both happen under the same mutex hold
-// so no concurrent caller observes the entry as still-tracked-but-cancelled.
+// untrackReviewRun removes a PR's review process from the active reviews map
+// only when runID still owns it, and invokes its stored Cancel func. Both
+// happen under one mutex hold so stale workers cannot cancel a replacement.
 //
 // Calling Cancel on the happy path (review completed normally) is required:
 // trackReview made a context.WithCancel, and `go vet`'s lostcancel rule
 // (rightly) complains if we drop the cancel func without calling it. After
 // successful completion the cancel is a no-op for the work, but it releases
 // the bookkeeping the WithCancel goroutine holds.
-func (p *Poller) untrackReview(owner, repo string, number int) {
-	p.untrackReviewRun(owner, repo, number, "")
-}
-
 func (p *Poller) untrackReviewRun(owner, repo string, number int, runID string) {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
 	key := prKey(owner, repo, number)
 	if info, ok := p.activeReviews[key]; ok {
-		if runID != "" && info.RunID != runID {
+		if runID == "" || info.RunID != runID {
 			log.Printf("[TRACK] Refusing to untrack %s: owner run=%s, stale run=%s", key, info.RunID, runID)
 			return
 		}
@@ -1253,6 +1253,7 @@ func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string,
 			if setErr := p.db.SetPRError(owner, repo, number, err.Error()); setErr != nil {
 				log.Printf("[IMMEDIATE] WARNING: failed to persist error status: %v", setErr)
 			}
+			p.broadcastPRUpdate(owner, repo, number)
 		}
 	}
 }
@@ -2799,12 +2800,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			defer wg.Done()
 			defer func() { <-sem }() // Release token
 			pr := job.PR
-			prCtx, started := p.startTrackedReviewJob(job)
-			if !started {
-				log.Printf("[REVIEWER] PR %d lost queued ownership before execution; rejecting %s", pr.Number, job.RunID)
-				p.rejectQueuedReviewJob(job, "pr_already_claimed", "dispatch", ErrReviewAlreadyTracked)
-				return
-			}
+			queuedCtx := jobContexts[job.RunID]
 
 			log.Printf("[REVIEWER] Processing PR: %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA[:7])
 
@@ -2813,7 +2809,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			exists := false
 			var existsErr error
 			if !job.Force {
-				exists, existsErr = p.reviewExists(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+				exists, existsErr = p.reviewExists(queuedCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 			} else {
 				log.Printf("[REVIEWER] PR %d: force=true, skipping existing-review cache check", pr.Number)
 			}
@@ -2847,6 +2843,28 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				return
 			}
 
+			agentSlotReserved := false
+			if job.Config.Effective.Agent.Enabled && p.agentSlots != nil {
+				// Reserve scarce agent capacity while the job still has its
+				// un-deadlined queued context. Neither the configured execution
+				// budget nor the worker lease burns down waiting for this slot.
+				select {
+				case p.agentSlots <- struct{}{}:
+					agentSlotReserved = true
+					defer func() { <-p.agentSlots }()
+				case <-queuedCtx.Done():
+					p.rejectQueuedReviewJob(job, "cancelled", "dispatch", queuedCtx.Err())
+					p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
+					return
+				}
+			}
+			prCtx, started := p.startTrackedReviewJob(job)
+			if !started {
+				log.Printf("[REVIEWER] PR %d lost queued ownership before execution; rejecting %s", pr.Number, job.RunID)
+				p.rejectQueuedReviewJob(job, "pr_already_claimed", "dispatch", ErrReviewAlreadyTracked)
+				return
+			}
+
 			// Set status to generating
 			if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft); err != nil {
 				log.Printf("[BATCH] ERROR: Failed to set generating status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
@@ -2859,12 +2877,19 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			execution, beginErr := p.beginReviewExecution(job)
 			if beginErr != nil {
 				log.Printf("[REVIEWER] ERROR: Could not begin review run %s: %v", job.RunID, beginErr)
-				if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, beginErr.Error()); setErr != nil {
-					log.Printf("[REVIEWER] WARNING: failed to persist begin error for PR %d: %v", pr.Number, setErr)
+				rejectedQueued := p.rejectQueuedReviewJob(job, "claim_failed", "dispatch", beginErr)
+				// A not-claimed run may be executing on another instance; never
+				// overwrite its PR projection. Other failures belong to this worker.
+				if rejectedQueued || !errors.Is(beginErr, ErrReviewRunNotClaimed) {
+					if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, beginErr.Error()); setErr != nil {
+						log.Printf("[REVIEWER] WARNING: failed to persist begin error for PR %d: %v", pr.Number, setErr)
+					}
+					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				}
 				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 				return
 			}
+			execution.AgentSlotReserved = agentSlotReserved
 			execStart := execution.AttemptStartedAt
 			nRequests := job.Config.Effective.FirstPass.Samples
 

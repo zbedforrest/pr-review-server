@@ -210,10 +210,11 @@ type Database interface {
 	GetReviewRunByIdempotency(scope, keyHash string) (*ReviewRun, error)
 	ListReviewRuns(filter ReviewRunFilter) ([]ReviewRun, error)
 	PatchReviewRun(runID string, patch ReviewRunPatch) error
+	PatchQueuedReviewRun(runID string, patch ReviewRunPatch) (bool, error)
 	PatchReviewRunAsHolder(runID, holder string, now time.Time, patch ReviewRunPatch) (bool, error)
 	ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.Time) (bool, error)
 	RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error)
-	AbandonExpiredReviewRuns(now time.Time, grace time.Duration) (int, error)
+	AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error)
 	UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error
 	ListReviewStageAttempts(runID string) ([]ReviewStageAttempt, error)
 

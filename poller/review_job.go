@@ -38,12 +38,13 @@ type ReviewJob struct {
 }
 
 type reviewExecution struct {
-	Job              ReviewJob
-	Holder           string
-	ExecutionAttempt int
-	AttemptStartedAt time.Time
-	RunStartedAt     time.Time
-	Timeout          time.Duration
+	Job               ReviewJob
+	Holder            string
+	ExecutionAttempt  int
+	AttemptStartedAt  time.Time
+	RunStartedAt      time.Time
+	Timeout           time.Duration
+	AgentSlotReserved bool
 }
 
 func (j ReviewJob) Validate() error {
@@ -150,14 +151,8 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 	go func() {
 		if err := p.generateReviewJobs(reviewCtx, []ReviewJob{job}); err != nil {
 			log.Printf("[IMMEDIATE] ERROR: review job %s failed for %s/%s#%d: %v", job.RunID, job.PR.Owner, job.PR.Repo, job.PR.Number, err)
-			if p.isTracked(job.PR.Owner, job.PR.Repo, job.PR.Number) {
-				if reviewCtx.Err() == nil {
-					if setErr := p.db.SetPRError(job.PR.Owner, job.PR.Repo, job.PR.Number, err.Error()); setErr != nil {
-						log.Printf("[IMMEDIATE] WARNING: failed to persist error status: %v", setErr)
-					}
-				}
-				p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
-			}
+			p.rejectQueuedReviewJob(job, "dispatch_failed", "dispatch", err)
+			p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 		}
 	}()
 	return nil
@@ -349,17 +344,13 @@ func (p *Poller) finishCompletedReviewExecution(exec *reviewExecution, result *R
 	return p.finishReviewExecution(exec, patch)
 }
 
-func (p *Poller) rejectQueuedReviewJob(job ReviewJob, terminalCode, failureStage string, cause error) {
+func (p *Poller) rejectQueuedReviewJob(job ReviewJob, terminalCode, failureStage string, cause error) bool {
 	if err := p.ensureReviewRun(job); err != nil {
 		log.Printf("[REVIEWER] WARN: persist rejected run %s: %v", job.RunID, err)
-		return
-	}
-	run, err := p.db.GetReviewRun(job.RunID)
-	if err != nil || run == nil || run.Status != db.ReviewRunStatusQueued {
-		return
+		return false
 	}
 	status := db.ReviewRunStatusFailed
-	if terminalCode == "review_cached" || terminalCode == "pr_already_claimed" {
+	if terminalCode == "review_cached" || terminalCode == "pr_already_claimed" || terminalCode == "cancelled" {
 		status = db.ReviewRunStatusCancelled
 	}
 	completedAt := time.Now().UTC()
@@ -367,12 +358,15 @@ func (p *Poller) rejectQueuedReviewJob(job ReviewJob, terminalCode, failureStage
 	if cause != nil {
 		errorSummary = cause.Error()
 	}
-	if err := p.db.PatchReviewRun(job.RunID, db.ReviewRunPatch{
+	updated, err := p.db.PatchQueuedReviewRun(job.RunID, db.ReviewRunPatch{
 		Status: &status, CompletedAt: &completedAt, TerminalCode: &terminalCode,
 		FailureStage: &failureStage, ErrorSummary: &errorSummary,
-	}); err != nil {
+	})
+	if err != nil {
 		log.Printf("[REVIEWER] WARN: reject queued run %s: %v", job.RunID, err)
+		return false
 	}
+	return updated
 }
 
 func ptrString(value string) *string { return &value }

@@ -141,7 +141,7 @@ type ReviewRunModel struct {
 	CommitSHA         string `gorm:"size:40;not null;index:idx_review_runs_commit_history,priority:3"`
 	RequestedByUserID *uint  `gorm:"column:requested_by_user_id;index"`
 	TriggerSource     string `gorm:"size:32;not null;index"`
-	Status            string `gorm:"size:32;not null;index;index:idx_review_runs_status_lease,priority:1"`
+	Status            string `gorm:"size:32;not null;index;index:idx_review_runs_status_lease,priority:1;index:idx_review_runs_status_queue,priority:1"`
 
 	RequestedConfigJSON string `gorm:"column:requested_config_json;type:text;not null"`
 	EffectiveConfigJSON string `gorm:"column:effective_config_json;type:text;not null"`
@@ -156,7 +156,7 @@ type ReviewRunModel struct {
 	AgentMaxTurns     int    `gorm:"column:agent_max_turns"`
 
 	AcceptedAt  time.Time  `gorm:"column:accepted_at;not null;index;index:idx_review_runs_pr_history,priority:4;index:idx_review_runs_commit_history,priority:4"`
-	QueuedAt    time.Time  `gorm:"column:queued_at;not null;index"`
+	QueuedAt    time.Time  `gorm:"column:queued_at;not null;index;index:idx_review_runs_status_queue,priority:2"`
 	StartedAt   *time.Time `gorm:"column:started_at;index"`
 	CompletedAt *time.Time `gorm:"column:completed_at;index"`
 	DurationMS  int64      `gorm:"column:duration_ms"`

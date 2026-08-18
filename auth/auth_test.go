@@ -118,6 +118,9 @@ func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun
 	return nil, nil
 }
 func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) error { return nil }
+func (m *MockDatabase) PatchQueuedReviewRun(runID string, patch db.ReviewRunPatch) (bool, error) {
+	return false, nil
+}
 func (m *MockDatabase) PatchReviewRunAsHolder(runID, holder string, now time.Time, patch db.ReviewRunPatch) (bool, error) {
 	return false, nil
 }
@@ -127,7 +130,7 @@ func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt 
 func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
 	return false, nil
 }
-func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, grace time.Duration) (int, error) {
+func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error) {
 	return 0, nil
 }
 func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error { return nil }
