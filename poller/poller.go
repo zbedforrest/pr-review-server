@@ -67,6 +67,8 @@ const (
 
 var errReviewRunBudgetExceeded = errors.New("review run wall-clock budget exceeded")
 
+const reviewBudgetExceededMessage = "review exceeded its execution budget"
+
 type ProcessInfo struct {
 	PID       int
 	TrackedAt time.Time
@@ -126,6 +128,10 @@ type Poller struct {
 	// Buffered to AgentMaxConcurrent; nil if AgentMaxConcurrent <= 0
 	// (unlimited, used by tests).
 	agentSlots chan struct{}
+	// reviewPipelineMargin overrides ReviewPipelineMargin in focused tests so
+	// the organic run-timeout path can be exercised without an eight-minute
+	// test. Zero retains the production constant.
+	reviewPipelineMargin time.Duration
 	// Leader election: only the instance holding the DB lease runs the automatic
 	// poll cycle, so multiple instances (e.g. a deploy overlap) never poll
 	// concurrently. holderID is unique per instance; isLeaderFlag is kept fresh
@@ -1118,7 +1124,7 @@ func (p *Poller) tryTrackReviewJob(parent context.Context, job ReviewJob) (conte
 	}
 	ctx, cancel := context.WithCancel(parent)
 	p.activeReviews[key] = ProcessInfo{
-		TrackedAt: time.Now(), Timeout: reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
+		TrackedAt: time.Now(), Timeout: p.reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
 	}
 	log.Printf("[TRACK] Tracking queued review job %s for %s", job.RunID, key)
 	return ctx, true
@@ -1139,7 +1145,7 @@ func (p *Poller) trackOrAdoptReviewJob(parent context.Context, job ReviewJob) (c
 	}
 	ctx, cancel := context.WithCancel(parent)
 	p.activeReviews[key] = ProcessInfo{
-		TrackedAt: time.Now(), Timeout: reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
+		TrackedAt: time.Now(), Timeout: p.reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
 	}
 	log.Printf("[TRACK] Tracking queued review job %s for %s", job.RunID, key)
 	return ctx, true
@@ -1156,7 +1162,7 @@ func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, bool) {
 	if !exists || info.RunID != job.RunID || info.Ctx == nil || !info.StartTime.IsZero() {
 		return nil, false
 	}
-	timeout := reviewTimeout(job.Config.Effective)
+	timeout := p.reviewTimeout(job.Config.Effective)
 	runCtx, runCancel := context.WithTimeoutCause(info.Ctx, timeout, errReviewRunBudgetExceeded)
 	queuedCancel := info.Cancel
 	info.StartTime = time.Now()
@@ -2719,14 +2725,26 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 		return nil
 	}
 	jobs := make([]ReviewJob, 0, len(prs))
+	var dispatchErrors []error
 	for _, pr := range prs {
 		job, err := p.defaultReviewJob(pr, force, "poller")
 		if err != nil {
-			return err
+			configErr := fmt.Errorf("invalid deployment review defaults for %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, err)
+			log.Printf("[REVIEWER] ERROR: %v", configErr)
+			if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, configErr.Error()); setErr != nil {
+				dispatchErrors = append(dispatchErrors, fmt.Errorf("%w (also failed to persist PR error: %v)", configErr, setErr))
+			} else {
+				dispatchErrors = append(dispatchErrors, configErr)
+			}
+			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+			continue
 		}
 		jobs = append(jobs, job)
 	}
-	return p.generateReviewJobs(ctx, jobs)
+	if err := p.generateReviewJobs(ctx, jobs); err != nil {
+		dispatchErrors = append(dispatchErrors, err)
+	}
+	return errors.Join(dispatchErrors...)
 }
 
 func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error {
@@ -2973,21 +2991,12 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if err != nil {
 				log.Printf("[REVIEWER] ERROR: Review failed for PR %d after %v: %v", pr.Number, execDuration, err)
 
-				// Skip the error write if the review was cancelled (killReview
-				// fired because of a new commit or external trigger). The caller
-				// has already reset the row to a sane state and we'd just clobber
-				// it with status=error.
+				// External cancellation leaves the PR projection to its caller;
+				// an organic execution-budget timeout is projected as an error by
+				// finishInterruptedReviewExecution so retries remain bounded.
 				if prCtx.Err() != nil {
-					log.Printf("[REVIEWER] PR %d review was cancelled (ctx=%v); skipping error write", pr.Number, prCtx.Err())
-					status := db.ReviewRunStatusCancelled
-					terminalCode := "cancelled"
-					if errors.Is(context.Cause(prCtx), errReviewRunBudgetExceeded) {
-						status = db.ReviewRunStatusTimedOut
-						terminalCode = "run_timeout"
-					}
-					failureStage := "execution"
-					errorSummary := err.Error()
-					p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
+					log.Printf("[REVIEWER] PR %d review was interrupted (ctx=%v)", pr.Number, prCtx.Err())
+					p.finishInterruptedReviewExecution(execution, prCtx, "execution", err)
 					p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 					return
 				}
@@ -3040,21 +3049,15 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			filename, err := p.saveReview(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.ReviewRun, reviewResult.HTMLContent)
 			if err != nil {
 				log.Printf("[REVIEWER] ERROR: Failed to save review for PR %d: %v", pr.Number, err)
-				status := db.ReviewRunStatusFailed
-				terminalCode := "artifact_save_failed"
 				if prCtx.Err() != nil {
-					status = db.ReviewRunStatusCancelled
-					terminalCode = "cancelled"
-					if errors.Is(context.Cause(prCtx), errReviewRunBudgetExceeded) {
-						status = db.ReviewRunStatusTimedOut
-						terminalCode = "run_timeout"
-					}
-					log.Printf("[REVIEWER] PR %d artifact save was cancelled (ctx=%v); preserving PR state", pr.Number, prCtx.Err())
-				}
-				failureStage := "artifact_save"
-				errorSummary := err.Error()
-				finished := p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
-				if prCtx.Err() == nil {
+					log.Printf("[REVIEWER] PR %d artifact save was interrupted (ctx=%v)", pr.Number, prCtx.Err())
+					p.finishInterruptedReviewExecution(execution, prCtx, "artifact_save", err)
+				} else {
+					status := db.ReviewRunStatusFailed
+					terminalCode := "artifact_save_failed"
+					failureStage := "artifact_save"
+					errorSummary := err.Error()
+					finished := p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
 					if finished {
 						if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
 							log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)

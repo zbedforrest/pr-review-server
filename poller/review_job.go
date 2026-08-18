@@ -159,11 +159,23 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 }
 
 func reviewTimeout(cfg runconfig.Effective) time.Duration {
-	timeout := ReviewPipelineMargin
+	return reviewTimeoutWithMargin(cfg, ReviewPipelineMargin)
+}
+
+func reviewTimeoutWithMargin(cfg runconfig.Effective, margin time.Duration) time.Duration {
+	timeout := margin
 	if cfg.Agent.Enabled && cfg.Agent.WallClockSeconds > 0 {
 		timeout += time.Duration(cfg.Agent.WallClockSeconds) * time.Second
 	}
 	return timeout
+}
+
+func (p *Poller) reviewTimeout(cfg runconfig.Effective) time.Duration {
+	margin := p.reviewPipelineMargin
+	if margin <= 0 {
+		margin = ReviewPipelineMargin
+	}
+	return reviewTimeoutWithMargin(cfg, margin)
 }
 
 func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string) service.AgentConfig {
@@ -243,7 +255,7 @@ func (p *Poller) beginReviewExecution(job ReviewJob) (*reviewExecution, error) {
 		return nil, err
 	}
 	now := time.Now().UTC()
-	timeout := reviewTimeout(job.Config.Effective)
+	timeout := p.reviewTimeout(job.Config.Effective)
 	holder := newHolderID()
 	claimed, err := p.db.ClaimReviewRun(job.RunID, holder, now, now.Add(timeout+ReviewLeaseCompletionGrace))
 	if err != nil {
@@ -295,6 +307,43 @@ func (p *Poller) finishReviewExecution(exec *reviewExecution, patch db.ReviewRun
 		return false
 	}
 	return updated
+}
+
+// finishInterruptedReviewExecution distinguishes external cancellation (whose
+// caller owns the PR projection) from the run's organic wall-clock timeout.
+// Organic timeouts become PR errors so the bounded error-retry policy applies
+// instead of stale reset creating an endless timeout/requeue loop.
+func (p *Poller) finishInterruptedReviewExecution(exec *reviewExecution, ctx context.Context, failureStage string, cause error) bool {
+	status := db.ReviewRunStatusCancelled
+	terminalCode := "cancelled"
+	budgetTimeout := errors.Is(context.Cause(ctx), errReviewRunBudgetExceeded)
+	if budgetTimeout {
+		status = db.ReviewRunStatusTimedOut
+		terminalCode = "run_timeout"
+	}
+	errorSummary := "review execution interrupted"
+	if contextCause := context.Cause(ctx); contextCause != nil {
+		errorSummary = contextCause.Error()
+	}
+	if cause != nil {
+		errorSummary = cause.Error()
+	}
+	finished := p.finishReviewExecution(exec, db.ReviewRunPatch{
+		Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary,
+	})
+	if !budgetTimeout {
+		return finished
+	}
+	if !finished {
+		log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping timeout error projection", exec.Job.RunID)
+		return false
+	}
+	pr := exec.Job.PR
+	if err := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, reviewBudgetExceededMessage); err != nil {
+		log.Printf("[REVIEWER] WARNING: failed to persist timeout status for PR %d: %v", pr.Number, err)
+	}
+	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+	return true
 }
 
 func (p *Poller) renewReviewExecutionForPublication(exec *reviewExecution) bool {

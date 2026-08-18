@@ -55,6 +55,15 @@ func customReviewJob(t *testing.T, runID string) ReviewJob {
 	}
 }
 
+func reviewJobWithoutAgent(t *testing.T, runID string) ReviewJob {
+	t.Helper()
+	job := customReviewJob(t, runID)
+	effective := job.Config.Effective
+	effective.Agent.Enabled = false
+	job.Config = reviewJobSnapshot(t, effective)
+	return job
+}
+
 func waitForReviewJob(t *testing.T, p *Poller, job ReviewJob) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -108,6 +117,41 @@ func TestDefaultReviewJobSnapshotsDeploymentConfig(t *testing.T) {
 	assert.Equal(t, 5, job.Config.Effective.FirstPass.Samples)
 	assert.True(t, job.Config.Effective.RequiredChecks)
 	assert.Equal(t, ReviewPipelineMargin+91*time.Second, reviewTimeout(job.Config.Effective))
+}
+
+func TestGenerateReviewsBatchSurfacesInvalidDefaultsForEveryPR(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "")
+	database := NewMockDatabase()
+	generator := NewMockReviewGenerator()
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	p.cfg.AgenticReviews = true
+	p.cfg.AgentBackend = service.AgentBackendOpenRouter
+	p.cfg.AgentModel = service.DefaultOpenRouterAgentModel
+	p.cfg.AgentEffort = "high"
+	p.cfg.AgentWallClockSec = 30
+	p.cfg.AgentMaxTurns = 5
+	prs := []github.PullRequest{
+		{Owner: "acme", Repo: "widgets", Number: 7, CommitSHA: "0123456789abcdef0123456789abcdef01234567"},
+		{Owner: "acme", Repo: "widgets", Number: 8, CommitSHA: "1123456789abcdef0123456789abcdef01234567"},
+	}
+	for _, pr := range prs {
+		require.NoError(t, database.UpsertPR(&db.PR{
+			RepoOwner: pr.Owner, RepoName: pr.Repo, PRNumber: pr.Number,
+			LastCommitSHA: pr.CommitSHA, Status: "pending",
+		}))
+	}
+
+	err := p.generateReviewsBatch(context.Background(), prs, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid deployment review defaults")
+	for _, target := range prs {
+		pr, getErr := database.GetPR(target.Owner, target.Repo, target.Number)
+		require.NoError(t, getErr)
+		require.NotNil(t, pr)
+		assert.Equal(t, "error", pr.Status)
+		assert.Contains(t, pr.ErrorMessage, "invalid deployment review defaults")
+	}
+	assert.Empty(t, generator.GenerateReviewCalls)
 }
 
 func TestProcessReviewJobPersistsConfigAndCompletesLedger(t *testing.T) {
@@ -351,6 +395,63 @@ func TestProcessReviewJobPersistsTerminalFailure(t *testing.T) {
 	assert.Contains(t, run.ErrorSummary, "provider unavailable")
 	assert.Empty(t, run.LeaseHolder)
 	assert.Nil(t, run.LeaseExpiresAt)
+}
+
+func TestOrganicGenerationTimeoutProjectsBoundedPRError(t *testing.T) {
+	database := NewMockDatabase()
+	generator := NewMockReviewGenerator()
+	generator.SimulateDelay = 100 * time.Millisecond
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	p.reviewPipelineMargin = 20 * time.Millisecond
+	job := reviewJobWithoutAgent(t, "run-25500000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusTimedOut, run.Status)
+	assert.Equal(t, "run_timeout", run.TerminalCode)
+	assert.Equal(t, "execution", run.FailureStage)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "error", pr.Status)
+	assert.Equal(t, reviewBudgetExceededMessage, pr.ErrorMessage)
+}
+
+func TestOrganicArtifactTimeoutProjectsBoundedPRError(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	storage.SaveReviewFunc = func(ctx context.Context, _ string, _ string, _ int, _ string, _ []byte) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	p.reviewPipelineMargin = 50 * time.Millisecond
+	job := reviewJobWithoutAgent(t, "run-25700000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusTimedOut, run.Status)
+	assert.Equal(t, "run_timeout", run.TerminalCode)
+	assert.Equal(t, "artifact_save", run.FailureStage)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "error", pr.Status)
+	assert.Equal(t, reviewBudgetExceededMessage, pr.ErrorMessage)
 }
 
 func TestCancelledArtifactSavePreservesResetPRState(t *testing.T) {
