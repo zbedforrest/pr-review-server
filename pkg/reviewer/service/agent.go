@@ -79,9 +79,14 @@ type AgentReview struct {
 	// request — the review still publishes, but callers surface it loudly.
 	RequestedModel string
 	ServedModel    string
-	ModelFallback  bool
-	Backend        string
-	Effort         string
+	// ObservedServedModels preserves every model identity reported by the
+	// provider stream, including mid-run switches.
+	ObservedServedModels []string
+	ModelFallback        bool
+	Backend              string
+	Effort               string
+	AssistantTurns       int
+	DurationMS           int64
 	// ServingModelVerified is true only when the agent stream explicitly
 	// reported the model that served the request. Codex/OpenRouter currently
 	// pins the requested model but does not expose the routed model in JSONL.
@@ -365,8 +370,9 @@ func RunAgentReview(
 			logPrefix, runtime.model, servedModel, parseResult.servedModels)
 	}
 
+	agentDuration := time.Since(spawnStart)
 	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
-		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments), servedModel)
+		logPrefix, agentDuration, parseResult.assistantTurns, len(comments), servedModel)
 
 	logRemovable = true
 	return &AgentReview{
@@ -380,9 +386,12 @@ func RunAgentReview(
 		LogPath:              logPath,
 		RequestedModel:       runtime.model,
 		ServedModel:          servedModel,
+		ObservedServedModels: append([]string(nil), parseResult.servedModels...),
 		ModelFallback:        modelFallback,
 		Backend:              runtime.backend,
 		Effort:               runtime.effort,
+		AssistantTurns:       parseResult.assistantTurns,
+		DurationMS:           agentDuration.Milliseconds(),
 		ServingModelVerified: runtime.reportsServingModel && len(parseResult.servedModels) > 0,
 	}, nil
 }

@@ -1,0 +1,396 @@
+package poller
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+	"time"
+
+	"pr-review-server/db"
+	"pr-review-server/gcs"
+	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/llm"
+	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/runconfig"
+	"pr-review-server/pkg/reviewer/service"
+)
+
+const ReviewLeaseCompletionGrace = 2 * time.Minute
+
+var ErrReviewRunNotClaimed = errors.New("review run was not claimed")
+var ErrReviewAlreadyTracked = errors.New("a review is already active for this PR")
+
+// ReviewJob is the immutable execution handoff. Config must already be fully
+// resolved and validated; workers never consult mutable deployment defaults
+// for caller-customizable review behavior.
+type ReviewJob struct {
+	PR                github.PullRequest
+	RunID             string
+	Config            runconfig.Snapshot
+	TriggerSource     string
+	RequestedByUserID *int
+	Force             bool
+}
+
+type reviewExecution struct {
+	Job              ReviewJob
+	Holder           string
+	ExecutionAttempt int
+	AttemptStartedAt time.Time
+	RunStartedAt     time.Time
+	Timeout          time.Duration
+}
+
+func (j ReviewJob) Validate() error {
+	if j.RunID == "" || j.PR.Owner == "" || j.PR.Repo == "" || j.PR.Number <= 0 || j.PR.CommitSHA == "" {
+		return fmt.Errorf("review job: run ID and complete PR target are required")
+	}
+	if j.TriggerSource == "" {
+		return fmt.Errorf("review job %s: trigger source is required", j.RunID)
+	}
+	if j.Config.Effective.SchemaVersion != runconfig.SchemaVersion || j.Config.Effective.FirstPass.Samples <= 0 {
+		return fmt.Errorf("review job %s: resolved config is incomplete", j.RunID)
+	}
+	if j.Config.Effective.Agent.Enabled && (j.Config.Effective.Agent.Backend == "" || j.Config.Effective.Agent.Model == "" ||
+		j.Config.Effective.Agent.Effort == "" || j.Config.Effective.Agent.WallClockSeconds <= 0 || j.Config.Effective.Agent.MaxTurns <= 0) {
+		return fmt.Errorf("review job %s: enabled agent config is incomplete", j.RunID)
+	}
+	hash, err := runconfig.Hash(j.Config.Effective)
+	if err != nil {
+		return fmt.Errorf("review job %s: hash config: %w", j.RunID, err)
+	}
+	if j.Config.Hash == "" || j.Config.Hash != hash {
+		return fmt.Errorf("review job %s: config hash does not match effective config", j.RunID)
+	}
+	return nil
+}
+
+func (p *Poller) defaultReviewJob(pr github.PullRequest, force bool, triggerSource string) (ReviewJob, error) {
+	nRequests, err := p.db.GetReviewNRequests()
+	if err != nil || nRequests <= 0 {
+		nRequests = 1
+	}
+	backend := strings.ToLower(strings.TrimSpace(p.cfg.AgentBackend))
+	if backend == "" {
+		backend = service.AgentBackendClaude
+	}
+	model := strings.TrimSpace(p.cfg.AgentModel)
+	if model == "" {
+		if backend == service.AgentBackendOpenRouter {
+			model = service.DefaultOpenRouterAgentModel
+		} else {
+			model = service.DefaultAgentModel
+		}
+	}
+	effort := strings.ToLower(strings.TrimSpace(p.cfg.AgentEffort))
+	if effort == "" {
+		effort = service.DefaultAgentEffort
+	}
+	defaults := runconfig.Effective{
+		SchemaVersion: runconfig.SchemaVersion,
+		Agent: runconfig.Agent{
+			Enabled:          p.cfg.AgenticReviews,
+			Backend:          backend,
+			Model:            model,
+			Effort:           effort,
+			WallClockSeconds: p.cfg.AgentWallClockSec,
+			MaxTurns:         p.cfg.AgentMaxTurns,
+		},
+		FirstPass:      runconfig.FirstPass{Samples: nRequests},
+		RequiredChecks: p.cfg.RequiredChecks,
+	}
+	policy := runconfig.Policy{
+		Backends: map[string]runconfig.BackendPolicy{
+			backend: {
+				Available: backend != service.AgentBackendOpenRouter || strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "",
+				Models:    []string{model},
+				Efforts:   []string{effort},
+			},
+		},
+		MaxWallClockSeconds: defaults.Agent.WallClockSeconds,
+		MaxTurns:            defaults.Agent.MaxTurns,
+		MaxFirstPassSamples: defaults.FirstPass.Samples,
+	}
+	snapshot, err := runconfig.Resolve(runconfig.Overrides{}, defaults, policy)
+	if err != nil {
+		return ReviewJob{}, fmt.Errorf("resolve deployment review defaults: %w", err)
+	}
+	return ReviewJob{
+		PR:            pr,
+		RunID:         newReviewRunID(),
+		Config:        snapshot,
+		TriggerSource: triggerSource,
+		Force:         force,
+	}, nil
+}
+
+// ProcessReviewJob durably accepts one job and starts it asynchronously. The
+// review-run row and active-review entry exist before this method returns, so
+// callers can immediately poll by run ID without racing worker startup.
+func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
+	if err := job.Validate(); err != nil {
+		return err
+	}
+	reviewCtx, tracked := p.tryTrackReviewJob(ctx, job)
+	if !tracked {
+		return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
+	}
+	if err := p.ensureReviewRun(job); err != nil {
+		p.untrackReview(job.PR.Owner, job.PR.Repo, job.PR.Number)
+		return err
+	}
+	go func() {
+		if err := p.generateReviewJobs(reviewCtx, []ReviewJob{job}); err != nil {
+			log.Printf("[IMMEDIATE] ERROR: review job %s failed for %s/%s#%d: %v", job.RunID, job.PR.Owner, job.PR.Repo, job.PR.Number, err)
+			if p.isTracked(job.PR.Owner, job.PR.Repo, job.PR.Number) {
+				if reviewCtx.Err() == nil {
+					if setErr := p.db.SetPRError(job.PR.Owner, job.PR.Repo, job.PR.Number, err.Error()); setErr != nil {
+						log.Printf("[IMMEDIATE] WARNING: failed to persist error status: %v", setErr)
+					}
+				}
+				p.untrackReview(job.PR.Owner, job.PR.Repo, job.PR.Number)
+			}
+		}
+	}()
+	return nil
+}
+
+func reviewTimeout(cfg runconfig.Effective) time.Duration {
+	timeout := ReviewPipelineMargin
+	if cfg.Agent.Enabled && cfg.Agent.WallClockSeconds > 0 {
+		timeout += time.Duration(cfg.Agent.WallClockSeconds) * time.Second
+	}
+	return timeout
+}
+
+func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string) service.AgentConfig {
+	agent := exec.Job.Config.Effective.Agent
+	return service.AgentConfig{
+		CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
+		WallClock: time.Duration(agent.WallClockSeconds) * time.Second, MaxTurns: agent.MaxTurns,
+		GitHubToken: gitToken, Backend: agent.Backend, Model: agent.Model, Effort: agent.Effort,
+		OpenRouterBaseURL: p.cfg.OpenRouterBaseURL, BugMemory: p.bugMemory,
+		RequiredChecks: exec.Job.Config.Effective.RequiredChecks, FailureLogSink: p.persistAgentFailureLog,
+	}
+}
+
+func (p *Poller) ensureReviewRun(job ReviewJob) error {
+	if err := job.Validate(); err != nil {
+		return err
+	}
+	requestedJSON, err := json.Marshal(job.Config.Requested)
+	if err != nil {
+		return fmt.Errorf("marshal requested config: %w", err)
+	}
+	effectiveJSON, err := json.Marshal(job.Config.Effective)
+	if err != nil {
+		return fmt.Errorf("marshal effective config: %w", err)
+	}
+	sourcesJSON, err := json.Marshal(job.Config.Sources)
+	if err != nil {
+		return fmt.Errorf("marshal config sources: %w", err)
+	}
+	existing, err := p.db.GetReviewRun(job.RunID)
+	if err != nil {
+		return fmt.Errorf("get review run %s: %w", job.RunID, err)
+	}
+	if existing != nil {
+		if existing.RepoOwner != job.PR.Owner || existing.RepoName != job.PR.Repo || existing.PRNumber != job.PR.Number ||
+			existing.CommitSHA != job.PR.CommitSHA || existing.ConfigHash != job.Config.Hash ||
+			existing.RequestedConfigJSON != string(requestedJSON) || existing.EffectiveConfigJSON != string(effectiveJSON) ||
+			existing.ConfigSourcesJSON != string(sourcesJSON) || existing.TriggerSource != job.TriggerSource ||
+			!equalOptionalInt(existing.RequestedByUserID, job.RequestedByUserID) {
+			return fmt.Errorf("review run %s already exists with a different target or config", job.RunID)
+		}
+		return nil
+	}
+	now := time.Now().UTC()
+	var prID *int
+	if current, getErr := p.db.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number); getErr == nil && current != nil && current.ID > 0 {
+		id := current.ID
+		prID = &id
+	}
+	run := &db.ReviewRun{
+		RunID: job.RunID, PRID: prID, RepoOwner: job.PR.Owner, RepoName: job.PR.Repo,
+		PRNumber: job.PR.Number, CommitSHA: job.PR.CommitSHA, RequestedByUserID: job.RequestedByUserID,
+		TriggerSource: job.TriggerSource, Status: db.ReviewRunStatusQueued,
+		RequestedConfigJSON: string(requestedJSON), EffectiveConfigJSON: string(effectiveJSON),
+		ConfigSourcesJSON: string(sourcesJSON), ConfigHash: job.Config.Hash,
+		ConfigSchemaVersion: job.Config.Effective.SchemaVersion,
+		AgentBackend:        job.Config.Effective.Agent.Backend, AgentModel: job.Config.Effective.Agent.Model,
+		AgentEffort: job.Config.Effective.Agent.Effort, AgentWallClockSec: job.Config.Effective.Agent.WallClockSeconds,
+		AgentMaxTurns: job.Config.Effective.Agent.MaxTurns, AcceptedAt: now, QueuedAt: now,
+		ServiceRevision: revisionName(),
+	}
+	if err := p.db.CreateReviewRun(run); err != nil {
+		return fmt.Errorf("create review run %s: %w", job.RunID, err)
+	}
+	return nil
+}
+
+func equalOptionalInt(left, right *int) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func (p *Poller) beginReviewExecution(job ReviewJob) (*reviewExecution, error) {
+	if err := p.ensureReviewRun(job); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	timeout := reviewTimeout(job.Config.Effective)
+	holder := newHolderID()
+	claimed, err := p.db.ClaimReviewRun(job.RunID, holder, now, now.Add(timeout+ReviewLeaseCompletionGrace))
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return nil, fmt.Errorf("%w: %s", ErrReviewRunNotClaimed, job.RunID)
+	}
+	run, err := p.db.GetReviewRun(job.RunID)
+	if err != nil || run == nil {
+		return nil, fmt.Errorf("reload claimed review run %s: %w", job.RunID, err)
+	}
+	runStartedAt := now
+	if run.StartedAt != nil {
+		runStartedAt = *run.StartedAt
+	}
+	return &reviewExecution{
+		Job: job, Holder: holder, ExecutionAttempt: run.ExecutionAttempt,
+		AttemptStartedAt: now, RunStartedAt: runStartedAt, Timeout: timeout,
+	}, nil
+}
+
+func (p *Poller) reviewRunInfo(exec *reviewExecution, completedAt time.Time) *payload.ReviewRunInfo {
+	return &payload.ReviewRunInfo{
+		RunID: exec.Job.RunID, ExecutionAttempt: exec.ExecutionAttempt,
+		HTMLPath:  gcs.ReviewRunFileName(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.PR.CommitSHA, exec.Job.RunID),
+		JSONPath:  gcs.ReviewRunJSONFileName(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.PR.CommitSHA, exec.Job.RunID),
+		StartedAt: exec.RunStartedAt, CompletedAt: completedAt,
+		DurationMS: completedAt.Sub(exec.RunStartedAt).Milliseconds(), Config: &exec.Job.Config,
+	}
+}
+
+func (p *Poller) finishReviewExecution(exec *reviewExecution, patch db.ReviewRunPatch) bool {
+	now := time.Now().UTC()
+	completedAt := now
+	durationMS := now.Sub(exec.RunStartedAt).Milliseconds()
+	emptyHolder := ""
+	zeroLease := time.Time{}
+	patch.CompletedAt = &completedAt
+	patch.DurationMS = &durationMS
+	patch.LeaseHolder = &emptyHolder
+	patch.LeaseExpiresAt = &zeroLease
+	updated, err := p.db.PatchReviewRunAsHolder(exec.Job.RunID, exec.Holder, now, patch)
+	if err != nil {
+		log.Printf("[REVIEWER] WARN: finalize review run %s: %v", exec.Job.RunID, err)
+		return false
+	}
+	return updated
+}
+
+func (p *Poller) renewReviewExecutionForPublication(exec *reviewExecution) bool {
+	now := time.Now().UTC()
+	renewed, err := p.db.RenewReviewRunLease(exec.Job.RunID, exec.Holder, now, now.Add(ReviewLeaseCompletionGrace))
+	if err != nil {
+		log.Printf("[REVIEWER] WARN: renew review run %s before publication: %v", exec.Job.RunID, err)
+		return false
+	}
+	return renewed
+}
+
+func (p *Poller) setReviewRunPublication(runID, publicationStatus string) {
+	if err := p.db.PatchReviewRun(runID, db.ReviewRunPatch{PublicationStatus: &publicationStatus}); err != nil {
+		log.Printf("[REVIEWER] WARN: update publication status for run %s: %v", runID, err)
+	}
+}
+
+func (p *Poller) finishCompletedReviewExecution(exec *reviewExecution, result *ReviewResult, publicationStatus string) bool {
+	status := db.ReviewRunStatusCompleted
+	terminalCode := "success"
+	verdict := service.VerdictFromComments(result.Comments)
+	modelsJSON, err := json.Marshal(result.ReviewRun.Models)
+	if err != nil {
+		modelsJSON = []byte("[]")
+	}
+	verification := "not_reported"
+	for _, model := range result.ReviewRun.Models {
+		if model.ServingModelVerified {
+			verification = "verified"
+			break
+		}
+		if model.Stage == "agent" {
+			verification = "unverified"
+		}
+	}
+	patch := db.ReviewRunPatch{
+		Status: &status, HTMLPath: &result.ReviewRun.HTMLPath, JSONPath: &result.ReviewRun.JSONPath,
+		CriticalCount: &result.CriticalCount, MediumCount: &result.MediumCount, LowCount: &result.LowCount,
+		Verdict: &verdict, ModelFallback: &result.ModelFallback, ServingModelVerification: &verification,
+		ActualModelsJSON: ptrString(string(modelsJSON)), PublicationStatus: &publicationStatus, TerminalCode: &terminalCode,
+	}
+	return p.finishReviewExecution(exec, patch)
+}
+
+func (p *Poller) rejectQueuedReviewJob(job ReviewJob, terminalCode, failureStage string, cause error) {
+	if err := p.ensureReviewRun(job); err != nil {
+		log.Printf("[REVIEWER] WARN: persist rejected run %s: %v", job.RunID, err)
+		return
+	}
+	run, err := p.db.GetReviewRun(job.RunID)
+	if err != nil || run == nil || run.Status != db.ReviewRunStatusQueued {
+		return
+	}
+	status := db.ReviewRunStatusFailed
+	if terminalCode == "review_cached" {
+		status = db.ReviewRunStatusCancelled
+	}
+	completedAt := time.Now().UTC()
+	errorSummary := cause.Error()
+	if err := p.db.PatchReviewRun(job.RunID, db.ReviewRunPatch{
+		Status: &status, CompletedAt: &completedAt, TerminalCode: &terminalCode,
+		FailureStage: &failureStage, ErrorSummary: &errorSummary,
+	}); err != nil {
+		log.Printf("[REVIEWER] WARN: reject queued run %s: %v", job.RunID, err)
+	}
+}
+
+func ptrString(value string) *string { return &value }
+
+func (p *Poller) recordStageAttempt(exec *reviewExecution, attempt db.ReviewStageAttempt) {
+	attempt.RunID = exec.Job.RunID
+	attempt.ExecutionAttempt = exec.ExecutionAttempt
+	if err := p.db.UpsertReviewStageAttempt(&attempt); err != nil {
+		log.Printf("[REVIEWER] WARN: persist stage attempt for run %s: %v", exec.Job.RunID, err)
+	}
+}
+
+func (p *Poller) recordGeminiAttempts(exec *reviewExecution, startedAt, completedAt time.Time, status, errorSummary string) {
+	duration := completedAt.Sub(startedAt).Milliseconds()
+	invocations := exec.Job.Config.Effective.FirstPass.Samples
+	if status != "completed" {
+		invocations = 1 // the service does not expose which parallel draw failed
+	}
+	for invocation := 1; invocation <= invocations; invocation++ {
+		p.recordStageAttempt(exec, db.ReviewStageAttempt{
+			Stage: "first_pass", InvocationNumber: invocation, AttemptNumber: 1,
+			Provider: "google", Backend: "gemini_api", RequestedModel: llm.ProModelName(),
+			ResolvedModel: llm.ProModelName(), Status: status, StartedAt: &startedAt,
+			CompletedAt: &completedAt, DurationMS: duration, ErrorSummary: errorSummary,
+		})
+	}
+	if status == "completed" {
+		p.recordStageAttempt(exec, db.ReviewStageAttempt{
+			Stage: "classification_summary", InvocationNumber: 1, AttemptNumber: 1,
+			Provider: "google", Backend: "gemini_api", RequestedModel: llm.FlashModelName(),
+			ResolvedModel: llm.FlashModelName(), Status: status, StartedAt: &startedAt,
+			CompletedAt: &completedAt, DurationMS: duration,
+		})
+	}
+}

@@ -371,6 +371,9 @@ func TestRunAgentReview_DetectsModelFallback(t *testing.T) {
 	if out.Backend != AgentBackendClaude || !out.ServingModelVerified {
 		t.Errorf("backend metadata: backend=%q verified=%t", out.Backend, out.ServingModelVerified)
 	}
+	if out.AssistantTurns != 1 || len(out.ObservedServedModels) != 1 || out.DurationMS < 0 {
+		t.Errorf("execution metadata: turns=%d models=%v duration_ms=%d", out.AssistantTurns, out.ObservedServedModels, out.DurationMS)
+	}
 }
 
 func TestRunAgentReview_DetectsMidRunFallback(t *testing.T) {

@@ -1,0 +1,269 @@
+package poller
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"pr-review-server/db"
+	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/runconfig"
+	"pr-review-server/pkg/reviewer/service"
+)
+
+func reviewJobSnapshot(t *testing.T, effective runconfig.Effective) runconfig.Snapshot {
+	t.Helper()
+	snapshot, err := runconfig.Resolve(runconfig.Overrides{}, effective, runconfig.Policy{
+		Backends: map[string]runconfig.BackendPolicy{
+			effective.Agent.Backend: {
+				Available: true,
+				Models:    []string{effective.Agent.Model},
+				Efforts:   []string{effective.Agent.Effort},
+			},
+		},
+		MaxWallClockSeconds: effective.Agent.WallClockSeconds,
+		MaxTurns:            effective.Agent.MaxTurns,
+		MaxFirstPassSamples: effective.FirstPass.Samples,
+	})
+	require.NoError(t, err)
+	return snapshot
+}
+
+func customReviewJob(t *testing.T, runID string) ReviewJob {
+	t.Helper()
+	snapshot := reviewJobSnapshot(t, runconfig.Effective{
+		SchemaVersion: runconfig.SchemaVersion,
+		Agent: runconfig.Agent{
+			Enabled: true, Backend: service.AgentBackendOpenRouter, Model: service.DefaultOpenRouterAgentModel,
+			Effort: "xhigh", WallClockSeconds: 73, MaxTurns: 19,
+		},
+		FirstPass:      runconfig.FirstPass{Samples: 4},
+		RequiredChecks: true,
+	})
+	return ReviewJob{
+		PR: github.PullRequest{
+			Owner: "acme", Repo: "widgets", Number: 7,
+			CommitSHA: "0123456789abcdef0123456789abcdef01234567", Title: "Review me", Author: "alice",
+		},
+		RunID: runID, Config: snapshot, TriggerSource: "api", Force: true,
+	}
+}
+
+func waitForReviewJob(t *testing.T, p *Poller, job ReviewJob) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for review job %s", job.RunID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestDefaultReviewJobSnapshotsDeploymentConfig(t *testing.T) {
+	database := NewMockDatabase()
+	database.ReviewNRequests = 5
+	p := newTestPoller(NewMockGitHubClient(), database)
+	p.cfg.AgenticReviews = true
+	p.cfg.AgentBackend = service.AgentBackendClaude
+	p.cfg.AgentModel = "claude-fable-5"
+	p.cfg.AgentEffort = "high"
+	p.cfg.AgentWallClockSec = 91
+	p.cfg.AgentMaxTurns = 27
+	p.cfg.RequiredChecks = true
+
+	job, err := p.defaultReviewJob(github.PullRequest{
+		Owner: "acme", Repo: "widgets", Number: 7, CommitSHA: "0123456789abcdef0123456789abcdef01234567",
+	}, false, "poller")
+	require.NoError(t, err)
+	assert.Equal(t, "claude-fable-5", job.Config.Effective.Agent.Model)
+	assert.Equal(t, 91, job.Config.Effective.Agent.WallClockSeconds)
+	assert.Equal(t, 27, job.Config.Effective.Agent.MaxTurns)
+	assert.Equal(t, 5, job.Config.Effective.FirstPass.Samples)
+	assert.True(t, job.Config.Effective.RequiredChecks)
+	assert.Equal(t, ReviewPipelineMargin+91*time.Second, reviewTimeout(job.Config.Effective))
+}
+
+func TestProcessReviewJobPersistsConfigAndCompletesLedger(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	generator := NewMockReviewGenerator()
+	generator.SimulateDelay = 50 * time.Millisecond
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, generator)
+	job := customReviewJob(t, "run-10000000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		ID: 9, RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating", Title: job.PR.Title, Author: job.PR.Author,
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	assert.True(t, p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number))
+	accepted, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, accepted)
+	assert.Contains(t, []string{db.ReviewRunStatusQueued, db.ReviewRunStatusRunning}, accepted.Status)
+	waitForReviewJob(t, p, job)
+
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCompleted, run.Status)
+	assert.Equal(t, "published", run.PublicationStatus)
+	assert.Equal(t, service.DefaultOpenRouterAgentModel, run.AgentModel)
+	assert.Equal(t, 73, run.AgentWallClockSec)
+	assert.Equal(t, 19, run.AgentMaxTurns)
+	assert.Equal(t, 1, run.ExecutionAttempt)
+	assert.Empty(t, run.LeaseHolder)
+	assert.Nil(t, run.LeaseExpiresAt)
+
+	generator.mu.Lock()
+	require.Len(t, generator.GenerateReviewCalls, 1)
+	assert.Equal(t, 4, generator.GenerateReviewCalls[0].NRequests)
+	assert.Equal(t, job.RunID, generator.GenerateReviewCalls[0].RunID)
+	assert.Equal(t, job.Config.Hash, generator.GenerateReviewCalls[0].Config.Hash)
+	generator.mu.Unlock()
+
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, job.RunID, pr.ReviewRunID)
+	var metadata payload.ReviewRunInfo
+	require.NoError(t, json.Unmarshal([]byte(pr.ReviewRunJSON), &metadata))
+	assert.Equal(t, 1, metadata.ExecutionAttempt)
+	require.NotNil(t, metadata.Config)
+	assert.Equal(t, job.Config.Hash, metadata.Config.Hash)
+}
+
+func TestProcessReviewJobRejectsSecondActiveRun(t *testing.T) {
+	database := NewMockDatabase()
+	generator := NewMockReviewGenerator()
+	generator.SimulateDelay = 200 * time.Millisecond
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	first := customReviewJob(t, "run-20000000000000000000000000000001")
+	second := customReviewJob(t, "run-20000000000000000000000000000002")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: first.PR.Owner, RepoName: first.PR.Repo, PRNumber: first.PR.Number,
+		LastCommitSHA: first.PR.CommitSHA, Status: "generating",
+	}))
+	require.NoError(t, p.ProcessReviewJob(context.Background(), first))
+	err := p.ProcessReviewJob(context.Background(), second)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrReviewAlreadyTracked))
+	missing, getErr := database.GetReviewRun(second.RunID)
+	require.NoError(t, getErr)
+	assert.Nil(t, missing)
+	waitForReviewJob(t, p, first)
+}
+
+func TestProcessReviewJobPersistsTerminalFailure(t *testing.T) {
+	database := NewMockDatabase()
+	generator := NewMockReviewGenerator()
+	job := customReviewJob(t, "run-25000000000000000000000000000001")
+	generator.Results["acme/widgets/7"] = struct {
+		Result *ReviewResult
+		Err    error
+	}{Err: errors.New("provider unavailable")}
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusFailed, run.Status)
+	assert.Equal(t, "review_failed", run.TerminalCode)
+	assert.Equal(t, "generation", run.FailureStage)
+	assert.Contains(t, run.ErrorSummary, "provider unavailable")
+	assert.Empty(t, run.LeaseHolder)
+	assert.Nil(t, run.LeaseExpiresAt)
+}
+
+func TestProcessReviewJobStaleWorkerCannotPublishLatestProjection(t *testing.T) {
+	database := NewMockDatabase()
+	generator := NewMockReviewGenerator()
+	generator.SimulateDelay = 200 * time.Millisecond
+	job := customReviewJob(t, "run-27500000000000000000000000000001")
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		run, err := database.GetReviewRun(job.RunID)
+		require.NoError(t, err)
+		if run != nil && run.Status == db.ReviewRunStatusRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("run was not claimed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	expired := time.Now().UTC().Add(-time.Second)
+	require.NoError(t, database.PatchReviewRun(job.RunID, db.ReviewRunPatch{LeaseExpiresAt: &expired}))
+	waitForReviewJob(t, p, job)
+
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.NotEqual(t, "completed", pr.Status)
+	assert.Empty(t, pr.ReviewRunID)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusRunning, run.Status)
+	assert.Empty(t, run.PublicationStatus)
+}
+
+func TestAgentConfigComesFromReviewJob(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.AgentWallClockSec = 999
+	p.cfg.AgentMaxTurns = 999
+	p.cfg.AgentBackend = service.AgentBackendClaude
+	p.cfg.AgentModel = "deployment-model"
+	p.cfg.AgentEffort = "low"
+	job := customReviewJob(t, "run-30000000000000000000000000000001")
+	exec := &reviewExecution{Job: job}
+
+	cfg := p.agentConfigForExecution(exec, "github-token")
+	assert.Equal(t, 73*time.Second, cfg.WallClock)
+	assert.Equal(t, 19, cfg.MaxTurns)
+	assert.Equal(t, service.AgentBackendOpenRouter, cfg.Backend)
+	assert.Equal(t, service.DefaultOpenRouterAgentModel, cfg.Model)
+	assert.Equal(t, "xhigh", cfg.Effort)
+	assert.True(t, cfg.RequiredChecks)
+}
+
+func TestRecordGeminiAttemptsUsesRunExecutionAttempt(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-40000000000000000000000000000001")
+	exec, err := p.beginReviewExecution(job)
+	require.NoError(t, err)
+	started := time.Now().UTC().Add(-time.Second)
+	completed := time.Now().UTC()
+	p.recordGeminiAttempts(exec, started, completed, "completed", "")
+
+	attempts, err := database.ListReviewStageAttempts(job.RunID)
+	require.NoError(t, err)
+	require.Len(t, attempts, 5)
+	for _, attempt := range attempts {
+		assert.Equal(t, 1, attempt.ExecutionAttempt)
+		assert.Equal(t, "completed", attempt.Status)
+	}
+	assert.Equal(t, "classification_summary", attempts[0].Stage)
+	assert.Equal(t, "first_pass", attempts[1].Stage)
+}

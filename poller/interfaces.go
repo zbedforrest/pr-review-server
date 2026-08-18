@@ -7,6 +7,7 @@ import (
 
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/types"
 )
@@ -127,6 +128,8 @@ type ReviewResult struct {
 
 // ReviewGeneratorConfig contains configuration for generating a review
 type ReviewGeneratorConfig struct {
+	RunID        string
+	Config       runconfig.Snapshot
 	Token        string
 	Owner        string
 	RepoName     string

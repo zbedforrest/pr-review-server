@@ -457,6 +457,12 @@ func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitS
 		pr.ReviewVerdict = verdict
 		pr.ModelFallback = modelFallback
 		pr.ErrorMessage = ""
+		if len(reviewRun) > 0 {
+			pr.ReviewRunID = reviewRun[0]
+		}
+		if len(reviewRun) > 1 {
+			pr.ReviewRunJSON = reviewRun[1]
+		}
 	}
 	return nil
 }
