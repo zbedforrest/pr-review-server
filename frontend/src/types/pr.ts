@@ -56,6 +56,40 @@ export interface ReviewRun {
   completed_at: string;
   duration_ms: number;
   models: ReviewModelUse[];
+  config?: ReviewConfigSnapshot;
+}
+
+export interface ReviewConfigSnapshot {
+  requested: ReviewConfigOverrides;
+  effective: EffectiveReviewConfig;
+  sources: Record<string, string>;
+  hash: string;
+}
+
+export interface ReviewConfigOverrides {
+  agent?: Partial<EffectiveAgentConfig>;
+  first_pass?: Partial<EffectiveFirstPassConfig>;
+  required_checks?: boolean;
+}
+
+export interface EffectiveReviewConfig {
+  schema_version: number;
+  agent: EffectiveAgentConfig;
+  first_pass: EffectiveFirstPassConfig;
+  required_checks: boolean;
+}
+
+export interface EffectiveAgentConfig {
+  enabled: boolean;
+  backend: string;
+  model: string;
+  effort: string;
+  wall_clock_seconds: number;
+  max_turns: number;
+}
+
+export interface EffectiveFirstPassConfig {
+  samples: number;
 }
 
 export interface ReviewModelUse {

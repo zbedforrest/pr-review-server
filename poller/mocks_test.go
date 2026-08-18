@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -235,7 +236,9 @@ func (m *MockGitHubClient) GetOrgTeamMembers(ctx context.Context, orgName, teamS
 
 // MockDatabase implements db.Database for testing
 type MockDatabase struct {
-	mu sync.RWMutex
+	mu                  sync.RWMutex
+	ReviewRuns          map[string]*db.ReviewRun
+	ReviewStageAttempts map[string][]db.ReviewStageAttempt
 
 	// PRs stored in the mock database (keyed by "owner/repo/number")
 	PRs map[string]*db.PR
@@ -310,10 +313,12 @@ type MockDatabase struct {
 
 func NewMockDatabase() *MockDatabase {
 	return &MockDatabase{
-		PRs:               make(map[string]*db.PR),
-		UserPRViews:       make(map[string]*db.UserPRView),
-		AutoReviewEnabled: true,
-		ReviewNRequests:   3,
+		PRs:                 make(map[string]*db.PR),
+		ReviewRuns:          make(map[string]*db.ReviewRun),
+		ReviewStageAttempts: make(map[string][]db.ReviewStageAttempt),
+		UserPRViews:         make(map[string]*db.UserPRView),
+		AutoReviewEnabled:   true,
+		ReviewNRequests:     3,
 	}
 }
 
@@ -853,6 +858,157 @@ func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error {
 
 func (m *MockDatabase) GetTelemetryStats(days int) (*db.TelemetryStats, error) {
 	return &db.TelemetryStats{}, nil
+}
+
+func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	copy := *run
+	m.ReviewRuns[run.RunID] = &copy
+	return nil
+}
+
+func (m *MockDatabase) GetReviewRun(runID string) (*db.ReviewRun, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	run := m.ReviewRuns[runID]
+	if run == nil {
+		return nil, nil
+	}
+	copy := *run
+	return &copy, nil
+}
+
+func (m *MockDatabase) GetReviewRunByIdempotency(scope, keyHash string) (*db.ReviewRun, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, run := range m.ReviewRuns {
+		if run.IdempotencyScope == scope && run.IdempotencyKeyHash == keyHash && keyHash != "" {
+			copy := *run
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var runs []db.ReviewRun
+	for _, run := range m.ReviewRuns {
+		if filter.RepoOwner != "" && run.RepoOwner != filter.RepoOwner {
+			continue
+		}
+		if filter.RepoName != "" && run.RepoName != filter.RepoName {
+			continue
+		}
+		if filter.PRNumber > 0 && run.PRNumber != filter.PRNumber {
+			continue
+		}
+		if filter.CommitSHA != "" && run.CommitSHA != filter.CommitSHA {
+			continue
+		}
+		if filter.Status != "" && run.Status != filter.Status {
+			continue
+		}
+		runs = append(runs, *run)
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].AcceptedAt.After(runs[j].AcceptedAt) })
+	if filter.Limit > 0 && len(runs) > filter.Limit {
+		runs = runs[:filter.Limit]
+	}
+	return runs, nil
+}
+
+func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.ReviewRuns[runID]
+	if run == nil {
+		return fmt.Errorf("review run %s not found", runID)
+	}
+	if patch.Status != nil {
+		run.Status = *patch.Status
+	}
+	if patch.StartedAt != nil {
+		run.StartedAt = patch.StartedAt
+	}
+	if patch.CompletedAt != nil {
+		run.CompletedAt = patch.CompletedAt
+	}
+	if patch.DurationMS != nil {
+		run.DurationMS = *patch.DurationMS
+	}
+	if patch.HTMLPath != nil {
+		run.HTMLPath = *patch.HTMLPath
+	}
+	if patch.JSONPath != nil {
+		run.JSONPath = *patch.JSONPath
+	}
+	if patch.CriticalCount != nil {
+		run.CriticalCount = *patch.CriticalCount
+	}
+	if patch.MediumCount != nil {
+		run.MediumCount = *patch.MediumCount
+	}
+	if patch.LowCount != nil {
+		run.LowCount = *patch.LowCount
+	}
+	if patch.Verdict != nil {
+		run.Verdict = *patch.Verdict
+	}
+	if patch.ModelFallback != nil {
+		run.ModelFallback = *patch.ModelFallback
+	}
+	if patch.ServingModelVerification != nil {
+		run.ServingModelVerification = *patch.ServingModelVerification
+	}
+	if patch.ActualModelsJSON != nil {
+		run.ActualModelsJSON = *patch.ActualModelsJSON
+	}
+	if patch.PublicationStatus != nil {
+		run.PublicationStatus = *patch.PublicationStatus
+	}
+	if patch.TerminalCode != nil {
+		run.TerminalCode = *patch.TerminalCode
+	}
+	if patch.FailureStage != nil {
+		run.FailureStage = *patch.FailureStage
+	}
+	if patch.ErrorSummary != nil {
+		run.ErrorSummary = *patch.ErrorSummary
+	}
+	if patch.LeaseHolder != nil {
+		run.LeaseHolder = *patch.LeaseHolder
+	}
+	if patch.LeaseExpiresAt != nil {
+		run.LeaseExpiresAt = patch.LeaseExpiresAt
+	}
+	if patch.ExecutionAttempt != nil {
+		run.ExecutionAttempt = *patch.ExecutionAttempt
+	}
+	return nil
+}
+
+func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	attempts := m.ReviewStageAttempts[attempt.RunID]
+	for i := range attempts {
+		if attempts[i].Stage == attempt.Stage && attempts[i].InvocationNumber == attempt.InvocationNumber && attempts[i].AttemptNumber == attempt.AttemptNumber {
+			attempts[i] = *attempt
+			m.ReviewStageAttempts[attempt.RunID] = attempts
+			return nil
+		}
+	}
+	m.ReviewStageAttempts[attempt.RunID] = append(attempts, *attempt)
+	return nil
+}
+
+func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAttempt, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]db.ReviewStageAttempt(nil), m.ReviewStageAttempts[runID]...), nil
 }
 
 func (m *MockDatabase) Close() error {

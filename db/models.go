@@ -128,6 +128,105 @@ func (PRModel) TableName() string {
 	return "prs"
 }
 
+// ReviewRunModel is the append-only identity/configuration record plus the
+// mutable lifecycle projection for one execution. It deliberately does not
+// own a cascading PR relationship: closed PR rows are routinely cleaned up,
+// while review history must survive.
+type ReviewRunModel struct {
+	RunID             string `gorm:"column:run_id;primaryKey;size:36"`
+	PRID              *uint  `gorm:"column:pr_id;index"`
+	RepoOwner         string `gorm:"size:255;not null;index:idx_review_runs_pr_history,priority:1;index:idx_review_runs_commit_history,priority:1"`
+	RepoName          string `gorm:"size:255;not null;index:idx_review_runs_pr_history,priority:2;index:idx_review_runs_commit_history,priority:2"`
+	PRNumber          int    `gorm:"not null;index:idx_review_runs_pr_history,priority:3;index:idx_review_runs_commit_history,priority:3"`
+	CommitSHA         string `gorm:"size:40;not null;index:idx_review_runs_commit_history,priority:4"`
+	RequestedByUserID *uint  `gorm:"column:requested_by_user_id;index"`
+	TriggerSource     string `gorm:"size:32;not null;index"`
+	Status            string `gorm:"size:32;not null;index"`
+
+	RequestedConfigJSON string `gorm:"column:requested_config_json;type:text;not null"`
+	EffectiveConfigJSON string `gorm:"column:effective_config_json;type:text;not null"`
+	ConfigSourcesJSON   string `gorm:"column:config_sources_json;type:text;not null"`
+	ConfigHash          string `gorm:"column:config_hash;size:64;not null;index"`
+	ConfigSchemaVersion int    `gorm:"column:config_schema_version;not null"`
+
+	AgentBackend      string `gorm:"column:agent_backend;size:32;index"`
+	AgentModel        string `gorm:"column:agent_model;size:255;index"`
+	AgentEffort       string `gorm:"column:agent_effort;size:32"`
+	AgentWallClockSec int    `gorm:"column:agent_wall_clock_sec"`
+	AgentMaxTurns     int    `gorm:"column:agent_max_turns"`
+
+	AcceptedAt  time.Time  `gorm:"column:accepted_at;not null;index"`
+	QueuedAt    time.Time  `gorm:"column:queued_at;not null;index"`
+	StartedAt   *time.Time `gorm:"column:started_at;index"`
+	CompletedAt *time.Time `gorm:"column:completed_at;index"`
+	DurationMS  int64      `gorm:"column:duration_ms"`
+
+	HTMLPath                 string `gorm:"column:html_path;type:text"`
+	JSONPath                 string `gorm:"column:json_path;type:text"`
+	CriticalCount            int    `gorm:"column:critical_count"`
+	MediumCount              int    `gorm:"column:medium_count"`
+	LowCount                 int    `gorm:"column:low_count"`
+	Verdict                  string `gorm:"size:32"`
+	ModelFallback            bool   `gorm:"column:model_fallback;default:false;index"`
+	ServingModelVerification string `gorm:"column:serving_model_verification;size:16"`
+	ActualModelsJSON         string `gorm:"column:actual_models_json;type:text"`
+	PublicationStatus        string `gorm:"column:publication_status;size:32"`
+
+	TerminalCode string `gorm:"column:terminal_code;size:64;index"`
+	FailureStage string `gorm:"column:failure_stage;size:64"`
+	ErrorSummary string `gorm:"column:error_summary;type:text"`
+
+	ServiceRevision    string     `gorm:"column:service_revision;size:255"`
+	LeaseHolder        string     `gorm:"column:lease_holder;size:255;index"`
+	LeaseExpiresAt     *time.Time `gorm:"column:lease_expires_at;index"`
+	ExecutionAttempt   int        `gorm:"column:execution_attempt;default:0"`
+	IdempotencyScope   string     `gorm:"column:idempotency_scope;size:255;uniqueIndex:idx_review_runs_idempotency,where:idempotency_key_hash <> '',priority:1"`
+	IdempotencyKeyHash string     `gorm:"column:idempotency_key_hash;size:64;uniqueIndex:idx_review_runs_idempotency,where:idempotency_key_hash <> '',priority:2"`
+	RequestHash        string     `gorm:"column:request_hash;size:64"`
+	CreatedAt          time.Time  `gorm:"autoCreateTime"`
+	UpdatedAt          time.Time  `gorm:"autoUpdateTime"`
+}
+
+func (ReviewRunModel) TableName() string { return "review_runs" }
+
+// ReviewStageAttemptModel records provider-level execution details without
+// forcing the evolving long-tail of model metadata into review_runs columns.
+type ReviewStageAttemptModel struct {
+	ID                   uint            `gorm:"primaryKey;autoIncrement"`
+	RunID                string          `gorm:"column:run_id;size:36;not null;index;uniqueIndex:idx_review_stage_attempt_unique,priority:1"`
+	Stage                string          `gorm:"size:64;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:2;index:idx_review_stage_attempt_model,priority:1"`
+	InvocationNumber     int             `gorm:"column:invocation_number;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:3"`
+	AttemptNumber        int             `gorm:"column:attempt_number;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:4"`
+	Provider             string          `gorm:"size:64;index"`
+	Backend              string          `gorm:"size:64;index:idx_review_stage_attempt_model,priority:2"`
+	RequestedModel       string          `gorm:"column:requested_model;size:255;index:idx_review_stage_attempt_model,priority:3"`
+	ResolvedModel        string          `gorm:"column:resolved_model;size:255"`
+	ObservedServedModels JSONStringArray `gorm:"column:observed_served_models;type:text"`
+	PrimaryServedModel   string          `gorm:"column:primary_served_model;size:255"`
+	ServedModelSource    string          `gorm:"column:served_model_source;size:32"`
+	ServingModelVerified bool            `gorm:"column:serving_model_verified;default:false"`
+	Fallback             bool            `gorm:"default:false;index"`
+	FallbackReason       string          `gorm:"column:fallback_reason;size:255"`
+	MatcherVersion       string          `gorm:"column:matcher_version;size:32"`
+	Effort               string          `gorm:"size:32"`
+	Status               string          `gorm:"size:32;index"`
+	AssistantTurns       int             `gorm:"column:assistant_turns"`
+	InputTokens          int64           `gorm:"column:input_tokens"`
+	OutputTokens         int64           `gorm:"column:output_tokens"`
+	TotalTokens          int64           `gorm:"column:total_tokens"`
+	StartedAt            *time.Time      `gorm:"column:started_at;index"`
+	CompletedAt          *time.Time      `gorm:"column:completed_at"`
+	DurationMS           int64           `gorm:"column:duration_ms"`
+	StopReason           string          `gorm:"column:stop_reason;size:64"`
+	ErrorCode            string          `gorm:"column:error_code;size:64"`
+	ErrorSummary         string          `gorm:"column:error_summary;type:text"`
+	CreatedAt            time.Time       `gorm:"autoCreateTime"`
+	UpdatedAt            time.Time       `gorm:"autoUpdateTime"`
+	ReviewRun            ReviewRunModel  `gorm:"foreignKey:RunID;references:RunID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (ReviewStageAttemptModel) TableName() string { return "review_stage_attempts" }
+
 // UserPRViewModel represents the relationship between users and PRs (GORM model)
 type UserPRViewModel struct {
 	ID           uint            `gorm:"primaryKey;autoIncrement"`

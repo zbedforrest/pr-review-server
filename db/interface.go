@@ -203,6 +203,16 @@ type PRInteractionCount struct {
 
 // Database defines the interface that both SQLite and PostgreSQL implementations must satisfy
 type Database interface {
+	// Review-run operations. review_runs is the historical source of truth;
+	// the PR row remains only a latest-success projection.
+	CreateReviewRun(run *ReviewRun) error
+	GetReviewRun(runID string) (*ReviewRun, error)
+	GetReviewRunByIdempotency(scope, keyHash string) (*ReviewRun, error)
+	ListReviewRuns(filter ReviewRunFilter) ([]ReviewRun, error)
+	PatchReviewRun(runID string, patch ReviewRunPatch) error
+	UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error
+	ListReviewStageAttempts(runID string) ([]ReviewStageAttempt, error)
+
 	// PR operations
 	GetPR(owner, repo string, prNumber int) (*PR, error)
 	UpsertPR(pr *PR) error

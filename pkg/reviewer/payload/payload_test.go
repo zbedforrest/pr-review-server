@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -27,6 +28,18 @@ func TestPayload_ReviewRunJSON(t *testing.T) {
 			ServingModelVerified: false,
 			Effort:               "medium",
 		}},
+		Config: &runconfig.Snapshot{
+			Effective: runconfig.Effective{
+				SchemaVersion: runconfig.SchemaVersion,
+				Agent: runconfig.Agent{
+					Enabled: true, Backend: "openrouter", Model: "openai/gpt-5.6-sol",
+					Effort: "medium", WallClockSeconds: 900, MaxTurns: 120,
+				},
+				FirstPass: runconfig.FirstPass{Samples: 3},
+			},
+			Sources: map[string]string{"agent.model": runconfig.SourceRequest},
+			Hash:    "config-hash",
+		},
 	}}
 
 	body, err := json.Marshal(p)
@@ -37,6 +50,7 @@ func TestPayload_ReviewRunJSON(t *testing.T) {
 		`"review_run"`, `"run_id":"run-0123456789abcdef0123456789abcdef"`,
 		`"html_path":"runs/acme/widgets/7/abcdef0/run-0123456789abcdef0123456789abcdef.html"`,
 		`"provider":"openrouter"`, `"serving_model_verified":false`,
+		`"wall_clock_seconds":900`, `"agent.model":"request"`, `"hash":"config-hash"`,
 	} {
 		if !strings.Contains(string(body), fragment) {
 			t.Errorf("review-run JSON missing %s: %s", fragment, body)

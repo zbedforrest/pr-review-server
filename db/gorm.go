@@ -83,6 +83,8 @@ func (g *GormDB) AutoMigrate() error {
 		&TelemetryEventModel{},
 		&PollerLeaseModel{},
 		&FindingOutcomeModel{},
+		&ReviewRunModel{},
+		&ReviewStageAttemptModel{},
 	); err != nil {
 		return err
 	}
@@ -110,6 +112,16 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&FindingOutcomeModel{}) {
 		if err := g.db.Migrator().CreateTable(&FindingOutcomeModel{}); err != nil {
 			return fmt.Errorf("create finding_outcomes: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&ReviewRunModel{}) {
+		if err := g.db.Migrator().CreateTable(&ReviewRunModel{}); err != nil {
+			return fmt.Errorf("create review_runs: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&ReviewStageAttemptModel{}) {
+		if err := g.db.Migrator().CreateTable(&ReviewStageAttemptModel{}); err != nil {
+			return fmt.Errorf("create review_stage_attempts: %w", err)
 		}
 	}
 

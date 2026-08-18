@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -74,6 +75,9 @@ type ReviewRunInfo struct {
 	CompletedAt time.Time  `json:"completed_at"`
 	DurationMS  int64      `json:"duration_ms"`
 	Models      []ModelUse `json:"models"`
+	// Config is the immutable requested/effective configuration snapshot.
+	// It is omitted on legacy runs created before first-class run metadata.
+	Config *runconfig.Snapshot `json:"config,omitempty"`
 }
 
 // ModelUse describes one role in the review pipeline. RequestedModel is the
