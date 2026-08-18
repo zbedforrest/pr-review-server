@@ -4,7 +4,7 @@ A self-hostable code review dashboard for GitHub pull requests, with an optional
 
 **Dashboard** — polls GitHub for PRs assigned to you (or your org), shows CI status, draft/ready state, and merged/closed indicators, with filtering and search mirrored into the URL for shareable views. Rows can be hidden into a collapsed section, and reviews you request by pasting any PR URL land in a "Requested by Me" section.
 
-**AI reviews** — a Gemini pass generates review comments; optionally a Claude Code agent stage clones the PR, verifies and refines those comments against the real code, and produces the final report. Reports are rendered as HTML with per-comment deep links (`#comment-N`), J/K keyboard navigation, and a Markdown export optimized for coding agents. A deterministic layer (mechanical gates + a "bug memory" of past bug patterns) can inject forced checks into the agent's review.
+**AI reviews** — a Gemini pass generates review comments; optionally a Claude Code or Codex/OpenRouter agent stage clones the PR, verifies and refines those comments against the real code, and produces the final report. Reports are rendered as HTML with per-comment deep links (`#comment-N`), J/K keyboard navigation, and a Markdown export optimized for coding agents. A deterministic layer (mechanical gates + a "bug memory" of past bug patterns) can inject forced checks into the agent's review.
 
 **Review API** — reviews are also exposed as structured JSON (findings with file/line, diff hunks, and source context) at `/api/review/{owner}/{repo}/{pr}`, and can be generated on demand for any PR — including merged and closed ones — via `POST /api/prs/generate-review`. A bundled Claude Code skill (`skills/claude/prism-review/`) consumes this API.
 
@@ -13,7 +13,7 @@ A self-hostable code review dashboard for GitHub pull requests, with an optional
 - **Go 1.25+** with CGO enabled (the SQLite driver requires it)
 - **Node 20+** and npm (the dashboard is built with Vite and embedded into the Go binary)
 - **git** on `PATH`
-- Optional: **Docker** (recommended run path), the **`claude` CLI** (installed and authenticated) for agentic reviews
+- Optional: **Docker** (recommended run path), or the **`claude` / `codex` CLI** required by your selected agent backend
 
 ## Quick Start (Docker)
 
@@ -47,7 +47,7 @@ export GEMINI_API_KEY=your_key       # optional, enables AI reviews
 | **Database** | SQLite (default) or PostgreSQL | Set `DATABASE_URL` for PostgreSQL; SQLite works for small teams |
 | **GitHub auth** | PAT (single-user dev mode) or GitHub App | GitHub App provides OAuth login and org-wide PR access for multi-user deployments |
 | **Gemini API** | Optional | Required for AI-generated reviews |
-| **Anthropic / `claude` CLI** | Optional | Required for the agentic review stage (`AGENTIC_REVIEWS=true`) |
+| **Agent runtime** | Optional | Claude Code + Anthropic auth, or Codex + an OpenRouter key, for `AGENTIC_REVIEWS=true` |
 | **GCS bucket** | Optional | Stores review artifacts (HTML/Markdown + JSON findings) in cloud deployments; defaults to local disk |
 
 Minimal deployment: a single VM with Docker and a GitHub App.
@@ -67,13 +67,27 @@ The most common ones:
 | `GITHUB_USERNAME` | Dev mode | Auto-login user and poller identity |
 | `GITHUB_APP_*`, `OAUTH_CALLBACK_URL`, `SESSION_SECRET` | Multi-user mode | GitHub App auth (see `.env.example`) |
 | `GEMINI_API_KEY` | No | Enables AI-generated reviews |
-| `AGENTIC_REVIEWS` | No | Pipe reviews through a Claude Code agent stage (needs the `claude` CLI) |
+| `AGENTIC_REVIEWS` | No | Pipe reviews through the selected agent stage after Gemini |
+| `AGENT_BACKEND` | No | `claude` (default) or `openrouter` |
+| `AGENT_MODEL` | No | Backend model; OpenRouter defaults to `openai/gpt-5.6-sol` |
+| `OPENROUTER_API_KEY` | OpenRouter backend | Authenticates Codex requests routed through OpenRouter |
 | `DATABASE_URL` | No | PostgreSQL connection string; unset = SQLite at `DB_PATH` |
 | `SERVER_PORT` | No | Default `8080` (docker-compose publishes it on `7769`) |
 | `POLLING_INTERVAL` | No | GitHub poll cadence, default `1m` |
 | `DISABLE_POLLING` | No | Run purely as an on-demand review API |
 
 See `.env.example` for the full reference, including agent tuning (`AGENT_*`), deterministic gates (`GATE_*`), bug memory, and feature flags.
+
+To try GPT-5.6 Sol through OpenRouter while retaining Gemini as the first pass:
+
+```bash
+AGENTIC_REVIEWS=true
+AGENT_BACKEND=openrouter
+OPENROUTER_API_KEY=sk-or-...
+# AGENT_MODEL=openai/gpt-5.6-sol  # this is already the backend default
+```
+
+The OpenRouter path runs `codex exec` in a read-only sandbox with ephemeral state and filters server credentials out of model-invoked shell commands. Its CLI JSONL currently does not report the serving model, so the review records the exact pinned request model; Claude fallback detection remains stream-verified.
 
 ### Recommended configuration
 
@@ -96,7 +110,7 @@ The remaining feature flags (`SURFACE_ALERTS`, `CARRY_FORWARD_FINDINGS`, `FINDIN
 
 ## API
 
-- `GET /api/review/{owner}/{repo}/{pr}` — structured review JSON (`?format=html` / `?format=md` for rendered output, `?sha=` to pin a commit)
+- `GET /api/review/{owner}/{repo}/{pr}` — structured review JSON (`?format=html` / `?format=md` for rendered output, `?sha=` to pin a commit, or `?sha=<sha>&run_id=<id>` to fetch one immutable execution)
 - `POST /api/prs/generate-review` — trigger a review for any PR by reference, including merged/closed PRs
 - `GET /api/status` — health check
 

@@ -37,15 +37,17 @@ type Config struct {
 	ReviewerEnabled bool
 	GeminiAPIKey    string
 
-	// Agent review (Claude Code subprocess) — dev-only for now.
+	// Agent review (Claude Code or Codex/OpenRouter subprocess).
 	AgenticReviews     bool
 	AgentCloneRootDir  string
 	AgentLogsDir       string
 	AgentWallClockSec  int
 	AgentMaxTurns      int
 	AgentMaxConcurrent int    // <=0 disables the cap (unlimited concurrency)
-	AgentModel         string // `claude` model id for agent reviews (empty = service default)
-	AgentEffort        string // `claude` reasoning effort for agent reviews (empty = service default)
+	AgentBackend       string // claude (default) or openrouter
+	AgentModel         string // backend model id for agent reviews (empty = backend default)
+	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
+	OpenRouterBaseURL  string // OpenRouter API root (empty = service default)
 	BugMemoryPath      string // local path to a bug-memory library JSON (dev/benchmark)
 	BugMemoryObject    string // GCS object name of the library (prod); Path wins if both set
 	RequiredChecks     bool   // convert fired gates/memory entries into forced-choice agent checks (service/checks.go)
@@ -119,8 +121,10 @@ func Load() *Config {
 		AgentWallClockSec:  getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 360),
 		AgentMaxTurns:      getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
 		AgentMaxConcurrent: getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
+		AgentBackend:       getEnvOrDefault("AGENT_BACKEND", "claude"),
 		AgentModel:         os.Getenv("AGENT_MODEL"),
 		AgentEffort:        os.Getenv("AGENT_EFFORT"),
+		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
 		BugMemoryPath:      os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:    os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:     os.Getenv("REQUIRED_CHECKS") == "true",

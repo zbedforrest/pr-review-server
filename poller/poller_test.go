@@ -4,13 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/payload"
 )
+
+func TestReviewRunIDFromTimeMatchesAPIContract(t *testing.T) {
+	got := reviewRunIDFromTime(time.Unix(1, 2))
+	if len(got) != 36 || !strings.HasPrefix(got, "run-") {
+		t.Fatalf("reviewRunIDFromTime() = %q; want run- plus 32 hex characters", got)
+	}
+	for _, r := range strings.TrimPrefix(got, "run-") {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			t.Fatalf("reviewRunIDFromTime() = %q; contains non-hex character %q", got, r)
+		}
+	}
+}
 
 func TestShouldReview(t *testing.T) {
 	now := time.Now()
@@ -1110,7 +1126,11 @@ func TestSaveReview_UsesStorageInterface(t *testing.T) {
 	ctx := context.Background()
 
 	htmlContent := []byte("<html><body>Review content</body></html>")
-	filename, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123def456", htmlContent)
+	run := &payload.ReviewRunInfo{
+		RunID:    "run-0123456789abcdef0123456789abcdef",
+		HTMLPath: "runs/owner/repo/1/abc123d/run-0123456789abcdef0123456789abcdef.html",
+	}
+	filename, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123def456", run, htmlContent)
 
 	if err != nil {
 		t.Fatalf("saveReview returned error: %v", err)
@@ -1143,12 +1163,44 @@ func TestSaveReview_PropagatesError(t *testing.T) {
 	poller := newTestPollerWithStorage(mockGH, mockDB, mockStorage)
 	ctx := context.Background()
 
-	_, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123", []byte("content"))
+	run := &payload.ReviewRunInfo{
+		RunID:    "run-0123456789abcdef0123456789abcdef",
+		HTMLPath: "runs/owner/repo/1/abc123/run-0123456789abcdef0123456789abcdef.html",
+	}
+	_, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123", run, []byte("content"))
 	if err == nil {
 		t.Error("expected error to be propagated")
 	}
 	if err.Error() != "save error" {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSaveReview_LocalWritesImmutableRunAndLatestAlias(t *testing.T) {
+	reviewDir := t.TempDir()
+	poller := &Poller{reviewDir: reviewDir}
+	const (
+		sha   = "abc123def456"
+		runID = "run-0123456789abcdef0123456789abcdef"
+	)
+	run := &payload.ReviewRunInfo{
+		RunID:    runID,
+		HTMLPath: gcs.ReviewRunFileName("owner", "repo", 1, sha, runID),
+	}
+	content := []byte("<html>immutable run</html>")
+
+	latest, err := poller.saveReview(context.Background(), "owner", "repo", 1, sha, run, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{latest, run.HTMLPath} {
+		got, err := os.ReadFile(filepath.Join(reviewDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(got) != string(content) {
+			t.Errorf("%s content = %q, want %q", name, got, content)
+		}
 	}
 }
 

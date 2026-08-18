@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,6 +219,80 @@ func TestReviewAPI_pin_by_sha(t *testing.T) {
 	require.Len(t, pinned.Findings, 1)
 	assert.Equal(t, "OLD", pinned.Findings[0].Comment)
 	assert.Equal(t, "aaaaaaa", pinned.CommitSHA)
+}
+
+func TestReviewAPI_pin_by_run_id(t *testing.T) {
+	server, database, user, dir := newReviewAPITestServer(t)
+
+	const (
+		sha   = "abc1234deadbeef"
+		runID = "run-0123456789abcdef0123456789abcdef"
+	)
+	reviewRun := &payload.ReviewRunInfo{
+		RunID:       runID,
+		HTMLPath:    gcs.ReviewRunFileName("owner", "repo", 27, sha, runID),
+		JSONPath:    gcs.ReviewRunJSONFileName("owner", "repo", 27, sha, runID),
+		StartedAt:   time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC),
+		CompletedAt: time.Date(2026, 8, 18, 10, 2, 0, 0, time.UTC),
+		DurationMS:  120000,
+		Models: []payload.ModelUse{{
+			Stage:          "agent",
+			Provider:       "openrouter",
+			RequestedModel: "openai/gpt-5.6-sol",
+		}},
+	}
+
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 27,
+		LastCommitSHA: sha, Status: "pending",
+	}))
+	require.NoError(t, database.MarkPRCompleted("owner", "repo", 27, sha,
+		gcs.ReviewFileName("owner", "repo", 27, sha), 9, 9, 9, "", false))
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, reviewRun.HTMLPath)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, reviewRun.HTMLPath), []byte("<html>immutable</html>"), 0o644))
+	body, err := json.Marshal(payload.Payload{
+		SchemaVersion: "1",
+		Owner:         "owner",
+		Repo:          "repo",
+		PRNumber:      27,
+		CommitSHA:     sha,
+		Counts:        payload.Counts{Critical: 1, Medium: 2, Low: 3},
+		ReviewRun:     reviewRun,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, reviewRun.JSONPath), body, 0o644))
+
+	target := "/api/review/owner/repo/27?sha=" + sha + "&run_id=" + runID
+	w := doReviewAPIGet(t, server, user, target)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var resp reviewAPIResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, reviewRun.HTMLPath, resp.ReviewPath)
+	require.NotNil(t, resp.ReviewRun)
+	assert.Equal(t, runID, resp.ReviewRun.RunID)
+	assert.Contains(t, resp.RunReviewURL, "/reviews/"+reviewRun.HTMLPath)
+	assert.Contains(t, resp.RunFindingsURL, "/reviews/"+reviewRun.JSONPath)
+	assert.Equal(t, reviewRun.CompletedAt, *resp.GeneratedAt)
+	assert.Equal(t, reviewAPICounts{Critical: 1, Medium: 2, Low: 3}, resp.Counts,
+		"historical counts must come from the immutable sidecar, not the latest PR row")
+}
+
+func TestReviewAPI_run_id_requires_sha_and_valid_id(t *testing.T) {
+	server, database, user, _ := newReviewAPITestServer(t)
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 28,
+		LastCommitSHA: "abc1234deadbeef", Status: "completed",
+	}))
+
+	for _, target := range []string{
+		"/api/review/owner/repo/28?run_id=run-0123456789abcdef0123456789abcdef",
+		"/api/review/owner/repo/28?sha=abc1234&run_id=../../etc/passwd",
+	} {
+		w := doReviewAPIGet(t, server, user, target)
+		assert.Equal(t, http.StatusBadRequest, w.Code, target)
+	}
 }
 
 // 6. ?sha= pin to a sha with no on-disk file → 404.
@@ -514,6 +589,9 @@ func TestHandleReviewFromGCS_JSONSidecarContentType(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "owner_repo_28951_8c147ff.json"), []byte(`{"ok":true}`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "owner_repo_28951_8c147ff.html"), []byte(`<html></html>`), 0o644))
+	runPath := gcs.ReviewRunFileName("owner", "repo", 28951, "8c147ff", "run-0123456789abcdef0123456789abcdef")
+	require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, runPath)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, runPath), []byte(`<html>run</html>`), 0o644))
 
 	cases := []struct {
 		path     string
@@ -521,6 +599,7 @@ func TestHandleReviewFromGCS_JSONSidecarContentType(t *testing.T) {
 	}{
 		{"/reviews/owner_repo_28951_8c147ff.json", "application/json"},
 		{"/reviews/owner_repo_28951_8c147ff.html", "text/html; charset=utf-8"},
+		{"/reviews/" + runPath, "text/html; charset=utf-8"},
 	}
 	for _, tc := range cases {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
@@ -528,5 +607,8 @@ func TestHandleReviewFromGCS_JSONSidecarContentType(t *testing.T) {
 		server.handleReviewFromGCS(w, req)
 		assert.Equal(t, http.StatusOK, w.Code, tc.path)
 		assert.Equal(t, tc.wantType, w.Header().Get("Content-Type"), tc.path)
+		if strings.Contains(tc.path, "/runs/") {
+			assert.Contains(t, w.Header().Get("Cache-Control"), "immutable")
+		}
 	}
 }

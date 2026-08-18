@@ -12,6 +12,7 @@ import (
 	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/payload"
 )
 
 // MockGitHubClient implements GitHubClient for testing
@@ -435,7 +436,7 @@ func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message stri
 	return nil
 }
 
-func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool) error {
+func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRun ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := prDBKey(owner, repo, prNumber)
@@ -993,10 +994,27 @@ func (m *MockReviewGenerator) GenerateReview(ctx context.Context, cfg ReviewGene
 
 	key := fmt.Sprintf("%s/%s/%d", cfg.Owner, cfg.RepoName, cfg.PRNumber)
 	if result, ok := m.Results[key]; ok {
-		return result.Result, result.Err
+		return cloneMockReviewResult(result.Result), result.Err
 	}
 
-	return m.DefaultResult, nil
+	return cloneMockReviewResult(m.DefaultResult), nil
+}
+
+// cloneMockReviewResult models the production generator contract: each call
+// returns an independently owned result. The poller attaches run metadata to
+// that result, so sharing the default pointer across concurrent calls creates
+// an artificial race that cannot occur with real review generation.
+func cloneMockReviewResult(result *ReviewResult) *ReviewResult {
+	if result == nil {
+		return nil
+	}
+	cloned := *result
+	if result.ReviewRun != nil {
+		reviewRun := *result.ReviewRun
+		reviewRun.Models = append([]payload.ModelUse(nil), result.ReviewRun.Models...)
+		cloned.ReviewRun = &reviewRun
+	}
+	return &cloned
 }
 
 // testConfig returns a minimal config for testing

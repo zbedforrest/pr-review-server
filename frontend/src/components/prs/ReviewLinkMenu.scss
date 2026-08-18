@@ -106,6 +106,43 @@ $panel-width: 240px;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
 
+  &__models {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
+    margin-top: $spacing-xs;
+    color: $color-text-secondary;
+    font-size: $font-size-xs;
+    line-height: 1.35;
+  }
+
+  &__models-label {
+    color: $color-text-muted;
+    margin-right: 2px;
+  }
+
+  &__model {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+  }
+
+  &__model-arrow {
+    color: $color-text-muted;
+    margin-right: 3px;
+  }
+
+  &__run-id {
+    display: inline-block;
+    margin-top: 2px;
+    color: $color-text-muted;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: $font-size-xs;
+    text-decoration: none;
+
+    &:hover { color: $color-link-hover; }
+  }
+
   &__divider {
     height: 1px;
     background: $color-border;

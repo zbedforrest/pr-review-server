@@ -20,6 +20,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/payload"
 
 	"github.com/gorilla/websocket"
 )
@@ -116,6 +117,8 @@ type PRResponse struct {
 	ReviewVerdict string `json:"review_verdict"`
 	// Latest review ran on a fallback model, not the requested one
 	ModelFallback bool `json:"model_fallback"`
+	// Structured execution and model provenance for the latest review.
+	ReviewRun *payload.ReviewRunInfo `json:"review_run,omitempty"`
 	// User notes
 	Notes string `json:"notes"`
 	// User moved this PR to the collapsed Hidden section
@@ -124,6 +127,18 @@ type PRResponse struct {
 	ViaManual bool `json:"via_manual"`
 	// Populated when Status=="error".
 	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+func decodeReviewRun(raw, owner, repo string, number int) *payload.ReviewRunInfo {
+	if raw == "" {
+		return nil
+	}
+	var decoded payload.ReviewRunInfo
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		log.Printf("[API] malformed review-run metadata for %s/%s#%d: %v", owner, repo, number, err)
+		return nil
+	}
+	return &decoded
 }
 
 type StatusCounts struct {
@@ -411,6 +426,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			LowCount:        dbPR.LowCount,
 			ReviewVerdict:   dbPR.ReviewVerdict,
 			ModelFallback:   dbPR.ModelFallback,
+			ReviewRun:       decodeReviewRun(dbPR.ReviewRunJSON, dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber),
 			Notes:           notes,
 			Hidden:          prView.UserHidden,
 			ViaManual:       prView.ViaManual,
@@ -1639,6 +1655,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		LowCount:        pr.LowCount,
 		ReviewVerdict:   pr.ReviewVerdict,
 		ModelFallback:   pr.ModelFallback,
+		ReviewRun:       decodeReviewRun(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber),
 		Notes:           notes,
 		Hidden:          hidden,
 		ViaManual:       viaManual,
@@ -1684,7 +1701,11 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 			// Reviews used to be immutable per commit, but the manual trigger now
 			// force-overwrites the same filename. Make the browser revalidate so
 			// the new content shows up after a regen.
-			w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+			if strings.HasPrefix(filename, "runs/") {
+				w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+			} else {
+				w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+			}
 			_, _ = w.Write(content) // nolint:errcheck
 			return
 		}
@@ -1711,7 +1732,11 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 	// per commit, but the manual trigger now force-overwrites the same
 	// filename, so browsers must revalidate to pick up the new content.
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+	if strings.HasPrefix(filename, "runs/") {
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+	}
 
 	_, _ = w.Write(content) // nolint:errcheck
 }

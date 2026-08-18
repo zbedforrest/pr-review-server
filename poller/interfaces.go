@@ -107,6 +107,10 @@ type ReviewResult struct {
 	// the dashboard can badge it.
 	ModelFallback bool
 
+	// ReviewRun is the durable execution identity and model provenance written
+	// to the sidecar and mirrored onto the latest PR database row.
+	ReviewRun *payload.ReviewRunInfo
+
 	// GateAlerts is every deterministic alert that fed the review (mechanical
 	// gate firings + required-check escalations), pre-merge. It exists solely
 	// for payload.Build's no-swallow assertion: each alert must still be

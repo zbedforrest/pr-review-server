@@ -129,6 +129,58 @@ describe('ReviewLinkMenu model-fallback badge', () => {
   });
 });
 
+describe('ReviewLinkMenu review-run metadata', () => {
+  beforeEach(() => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it('shows the model pipeline and short run ID in the review menu', () => {
+    renderMenu({
+      pr: makePR({
+        review_run: {
+          run_id: 'run-0123456789abcdef0123456789abcdef',
+          html_path: 'runs/test-org/test-repo/1/abc123/run-0123456789abcdef0123456789abcdef.html',
+          json_path: 'runs/test-org/test-repo/1/abc123/run-0123456789abcdef0123456789abcdef.json',
+          started_at: '2026-08-18T12:00:00Z',
+          completed_at: '2026-08-18T12:02:00Z',
+          duration_ms: 120000,
+          models: [
+            {
+              stage: 'first_pass',
+              provider: 'google',
+              backend: 'gemini_api',
+              requested_model: 'gemini-3.1-pro-preview',
+              serving_model_verified: false,
+              fallback: false,
+            },
+            {
+              stage: 'agent',
+              provider: 'openrouter',
+              backend: 'openrouter',
+              requested_model: 'openai/gpt-5.6-sol',
+              serving_model_verified: false,
+              fallback: false,
+            },
+          ],
+        },
+      }),
+    });
+
+    fireEvent.mouseEnter(screen.getByRole('link', { name: /view/i }).parentElement!);
+    act(() => vi.advanceTimersByTime(300));
+
+    expect(screen.getByLabelText('Models used').textContent).toContain('gemini-3.1-pro-preview');
+    expect(screen.getByLabelText('Models used').textContent).toContain('gpt-5.6-sol');
+    const runLink = screen.getByRole('link', { name: 'Run 01234567 ↗' });
+    expect(runLink.getAttribute('href')).toContain('/reviews/runs/test-org/test-repo/1/abc123/');
+  });
+});
+
 describe('ReviewLinkMenu regenerate action', () => {
   beforeEach(() => {
     useTelemetryMock.mockReturnValue({ track: vi.fn() });

@@ -159,11 +159,18 @@ func TestParseAgentStream_MaxTurnsKills(t *testing.T) {
 
 // fakeSpawner returns a canned process regardless of the command.
 type fakeSpawner struct {
-	proc *fakeProcess
+	proc     *fakeProcess
+	name     string
+	args     []string
+	dir      string
+	spawnErr error
 }
 
 func (s *fakeSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
-	return s.proc, nil
+	s.name = name
+	s.args = append([]string(nil), args...)
+	s.dir = dir
+	return s.proc, s.spawnErr
 }
 
 // seedAgentCache pre-populates the clone cache for owner/repo with a clone of
@@ -360,6 +367,9 @@ func TestRunAgentReview_DetectsModelFallback(t *testing.T) {
 	}
 	if out.ServedModel != "claude-opus-4-8" || out.RequestedModel != "claude-fable-5" {
 		t.Errorf("model fields: served=%q requested=%q", out.ServedModel, out.RequestedModel)
+	}
+	if out.Backend != AgentBackendClaude || !out.ServingModelVerified {
+		t.Errorf("backend metadata: backend=%q verified=%t", out.Backend, out.ServingModelVerified)
 	}
 }
 

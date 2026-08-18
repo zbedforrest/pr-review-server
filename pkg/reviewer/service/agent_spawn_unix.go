@@ -11,7 +11,7 @@ import (
 )
 
 // DefaultSpawner runs commands as the leader of a fresh process group so any
-// subprocesses they fork (e.g. bash via `claude --tools Bash`) can be torn
+// subprocesses they fork (e.g. bash via an agent shell tool) can be torn
 // down as a group rather than orphaned when the parent exits.
 type DefaultSpawner struct{}
 
@@ -40,7 +40,7 @@ func (DefaultSpawner) Spawn(ctx context.Context, name string, args []string, dir
 
 	p := &execProcess{cmd: cmd, stdout: stdout, stderr: stderr, done: make(chan struct{})}
 
-	// When ctx expires, group-kill so child shells go down with claude.
+	// When ctx expires, group-kill so child shells go down with the agent.
 	// Idempotent with explicit Kill().
 	go func() {
 		select {
@@ -69,7 +69,7 @@ func (e *execProcess) Wait() error {
 }
 
 // Kill sends SIGKILL to the entire process group so any subprocesses
-// (e.g. bash spawned by claude --tools Bash) go down with the parent.
+// (e.g. bash spawned by an agent shell tool) go down with the parent.
 // Also closes stdout/stderr explicitly so any reader still blocked on
 // the pipes unblocks immediately — defense against a future caller that
 // returns from the parser without first draining stdout, which would

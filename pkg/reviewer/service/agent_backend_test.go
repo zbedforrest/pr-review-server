@@ -1,0 +1,202 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestResolveAgentRuntimeDefaultsToClaude(t *testing.T) {
+	runtime, err := resolveAgentRuntime(AgentConfig{})
+	if err != nil {
+		t.Fatalf("resolveAgentRuntime: %v", err)
+	}
+	if runtime.backend != AgentBackendClaude || runtime.command != "claude" {
+		t.Fatalf("backend=%q command=%q", runtime.backend, runtime.command)
+	}
+	if runtime.model != DefaultAgentModel || runtime.effort != DefaultAgentEffort {
+		t.Errorf("model=%q effort=%q", runtime.model, runtime.effort)
+	}
+
+	args := runtime.args("review this")
+	got := strings.Join(args, "\x00")
+	want := strings.Join([]string{
+		"-p", "review this",
+		"--model", DefaultAgentModel,
+		"--effort", DefaultAgentEffort,
+		"--tools", "Read,Grep,Glob,Bash",
+		"--permission-mode", "bypassPermissions",
+		"--output-format", "stream-json",
+		"--verbose",
+	}, "\x00")
+	if got != want {
+		t.Errorf("Claude argv changed:\n got: %q\nwant: %q", args, strings.Split(want, "\x00"))
+	}
+}
+
+func TestResolveAgentRuntimeOpenRouterRequiresKey(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "")
+	_, err := resolveAgentRuntime(AgentConfig{Backend: AgentBackendOpenRouter})
+	if err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+		t.Fatalf("expected missing-key error, got %v", err)
+	}
+}
+
+func TestOpenRouterRuntimeBuildsIsolatedCodexInvocation(t *testing.T) {
+	const secret = "sk-or-test-secret-that-must-not-appear-in-argv"
+	t.Setenv("OPENROUTER_API_KEY", secret)
+	runtime, err := resolveAgentRuntime(AgentConfig{Backend: " OpenRouter ", Effort: "high"})
+	if err != nil {
+		t.Fatalf("resolveAgentRuntime: %v", err)
+	}
+	if runtime.command != "codex" || runtime.model != DefaultOpenRouterAgentModel {
+		t.Fatalf("command=%q model=%q", runtime.command, runtime.model)
+	}
+
+	args := runtime.args("review this")
+	joined := strings.Join(args, "\n")
+	for _, want := range []string{
+		"exec",
+		"--json",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--ignore-rules",
+		"read-only",
+		`model_provider="openrouter"`,
+		`model_providers.openrouter.base_url="https://openrouter.ai/api/v1"`,
+		`model_providers.openrouter.env_key="OPENROUTER_API_KEY"`,
+		`model_providers.openrouter.wire_api="responses"`,
+		`model_reasoning_effort="high"`,
+		`shell_environment_policy.ignore_default_excludes=false`,
+		`shell_environment_policy.exclude=["DATABASE_URL","GOOGLE_APPLICATION_CREDENTIALS","GITHUB_TOKEN","GEMINI_API_KEY","OPENROUTER_API_KEY","ANTHROPIC_API_KEY","GITHUB_APP_PRIVATE_KEY_PATH","GITHUB_APP_CLIENT_SECRET","SESSION_SECRET"]`,
+		DefaultOpenRouterAgentModel,
+		"review this",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("Codex argv missing %q: %q", want, args)
+		}
+	}
+	if strings.Contains(joined, secret) {
+		t.Fatal("OpenRouter key leaked into Codex argv")
+	}
+}
+
+func TestResolveAgentRuntimeRejectsUnknownBackend(t *testing.T) {
+	_, err := resolveAgentRuntime(AgentConfig{Backend: "mystery"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported backend") {
+		t.Fatalf("expected unsupported-backend error, got %v", err)
+	}
+}
+
+func TestParseCodexStreamHappyPath(t *testing.T) {
+	stream := `{"type":"thread.started","thread_id":"thread_123"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"git diff","status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"[{\"file_path\":\"SUMMARY\",\"line_number\":0,\"comment_body\":\"Looks good.\"}]"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseCodexStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseCodexStream: %v", err)
+	}
+	if res.assistantTurns != 1 {
+		t.Errorf("turns=%d want 1", res.assistantTurns)
+	}
+	if !strings.Contains(res.finalOutput, "Looks good") {
+		t.Errorf("final output missing: %q", res.finalOutput)
+	}
+	if !strings.Contains(logBuf.String(), "turn.completed") {
+		t.Error("raw log missing turn.completed event")
+	}
+}
+
+func TestParseCodexStreamCapturesFailure(t *testing.T) {
+	stream := `{"type":"thread.started","thread_id":"thread_123"}
+{"type":"turn.failed","error":{"message":"OpenRouter rate limit exceeded"}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, 10)
+	if err != nil {
+		t.Fatalf("parseCodexStream: %v", err)
+	}
+	if !strings.Contains(res.streamErr, "rate limit") {
+		t.Errorf("streamErr=%q", res.streamErr)
+	}
+}
+
+func TestParseCodexStreamMaxTurnsKills(t *testing.T) {
+	stream := strings.Repeat(`{"type":"item.completed","item":{"type":"agent_message","text":"working"}}`+"\n", 3)
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	_, err := parseCodexStream(proc, &bytes.Buffer{}, 2)
+	if err == nil || !strings.Contains(err.Error(), "max-turns") {
+		t.Fatalf("expected max-turns error, got %v", err)
+	}
+	if !proc.killed {
+		t.Error("expected process to be killed")
+	}
+}
+
+func TestRunAgentReviewOpenRouter(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "sk-or-test-secret")
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	stream := `{"type":"thread.started","thread_id":"thread_123"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20}}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+		Backend:      AgentBackendOpenRouter,
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner,
+		"acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if spawner.name != "codex" {
+		t.Errorf("spawned %q want codex", spawner.name)
+	}
+	if spawner.dir == "" || !strings.Contains(strings.Join(spawner.args, "\n"), DefaultOpenRouterAgentModel) {
+		t.Errorf("unexpected spawn: dir=%q args=%q", spawner.dir, spawner.args)
+	}
+	if out.RequestedModel != DefaultOpenRouterAgentModel || out.ServedModel != DefaultOpenRouterAgentModel {
+		t.Errorf("requested=%q served=%q", out.RequestedModel, out.ServedModel)
+	}
+	if out.ModelFallback {
+		t.Error("unexpected model fallback for pinned OpenRouter model")
+	}
+	if out.Backend != AgentBackendOpenRouter || out.ServingModelVerified {
+		t.Errorf("backend metadata: backend=%q verified=%t", out.Backend, out.ServingModelVerified)
+	}
+	if out.Effort != DefaultAgentEffort {
+		t.Errorf("effort=%q want %q", out.Effort, DefaultAgentEffort)
+	}
+}

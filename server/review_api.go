@@ -37,22 +37,25 @@ const reviewAPIPathPrefix = "/api/review/"
 // `findings_available` is false when the underlying review predates the
 // JSON sidecar (older reviews on disk): regenerate the review to populate it.
 type reviewAPIResponse struct {
-	Owner             string            `json:"owner"`
-	Repo              string            `json:"repo"`
-	PRNumber          int               `json:"pr_number"`
-	PRStatus          string            `json:"pr_status"`
-	IsInFlight        bool              `json:"is_in_flight"`
-	ErrorMessage      string            `json:"error_message,omitempty"`
-	CommitSHA         string            `json:"commit_sha,omitempty"`
-	HeadSHA           string            `json:"head_sha"`
-	IsStale           bool              `json:"is_stale"`
-	GeneratedAt       *time.Time        `json:"generated_at,omitempty"`
-	ReviewPath        string            `json:"review_path,omitempty"`
-	ReviewURL         string            `json:"review_url,omitempty"`
-	Counts            reviewAPICounts   `json:"counts"`
-	FindingsAvailable bool              `json:"findings_available"`
-	Findings          []payload.Finding `json:"findings,omitempty"`
-	SchemaVersion     string            `json:"schema_version,omitempty"`
+	Owner             string                 `json:"owner"`
+	Repo              string                 `json:"repo"`
+	PRNumber          int                    `json:"pr_number"`
+	PRStatus          string                 `json:"pr_status"`
+	IsInFlight        bool                   `json:"is_in_flight"`
+	ErrorMessage      string                 `json:"error_message,omitempty"`
+	CommitSHA         string                 `json:"commit_sha,omitempty"`
+	HeadSHA           string                 `json:"head_sha"`
+	IsStale           bool                   `json:"is_stale"`
+	GeneratedAt       *time.Time             `json:"generated_at,omitempty"`
+	ReviewPath        string                 `json:"review_path,omitempty"`
+	ReviewURL         string                 `json:"review_url,omitempty"`
+	RunReviewURL      string                 `json:"run_review_url,omitempty"`
+	RunFindingsURL    string                 `json:"run_findings_url,omitempty"`
+	Counts            reviewAPICounts        `json:"counts"`
+	FindingsAvailable bool                   `json:"findings_available"`
+	Findings          []payload.Finding      `json:"findings,omitempty"`
+	SchemaVersion     string                 `json:"schema_version,omitempty"`
+	ReviewRun         *payload.ReviewRunInfo `json:"review_run,omitempty"`
 }
 
 // isInFlightStatus reports whether the PR currently has a review actively
@@ -70,10 +73,12 @@ type reviewAPICounts struct {
 // handleGetReview serves GET /api/review/{owner}/{repo}/{pr}.
 //
 // Path:    /api/review/{owner}/{repo}/{pr}
-// Query:   ?sha=<full_or_short_sha>   pin to a specific commit's review
+// Query:   ?sha=<full_or_short_sha>   pin to a specific commit's latest review
 //
-//	?format=html                return raw HTML body instead of JSON
-//	?format=md                  return the compact Markdown export (attachment)
+//	         ?sha=<sha>&run_id=<id>     pin to one immutable execution
+//
+//		?format=html                return raw HTML body instead of JSON
+//		?format=md                  return the compact Markdown export (attachment)
 //
 // Auth:    handled by the same middleware that protects /api/* routes.
 //
@@ -110,8 +115,19 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve which review filename to serve, if any.
 	pinnedSHA := strings.TrimSpace(r.URL.Query().Get("sha"))
+	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
 	var filename string
-	if pinnedSHA != "" {
+	if runID != "" {
+		if !isSafeRunID(runID) {
+			http.Error(w, "Invalid run_id", http.StatusBadRequest)
+			return
+		}
+		if !isSafeSHA(pinnedSHA) {
+			http.Error(w, "sha is required with run_id", http.StatusBadRequest)
+			return
+		}
+		filename = gcs.ReviewRunFileName(owner, repo, prNumber, pinnedSHA, runID)
+	} else if pinnedSHA != "" {
 		if !isSafeSHA(pinnedSHA) {
 			http.Error(w, "Invalid sha", http.StatusBadRequest)
 			return
@@ -149,7 +165,7 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 
 	// Defense-in-depth path-traversal guard, mirroring handleReviewFromGCS.
 	cleaned := filepath.Clean(filename)
-	if strings.Contains(cleaned, "..") || filepath.IsAbs(cleaned) || strings.ContainsRune(cleaned, '/') {
+	if strings.Contains(cleaned, "..") || filepath.IsAbs(cleaned) || (runID == "" && strings.ContainsRune(cleaned, '/')) {
 		http.Error(w, "Invalid review path", http.StatusBadRequest)
 		return
 	}
@@ -186,7 +202,10 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reviewSHA := commitSHAFromFilename(filename)
+	reviewSHA := pinnedSHA
+	if reviewSHA == "" {
+		reviewSHA = commitSHAFromFilename(filename)
+	}
 	resp := reviewAPIResponse{
 		Owner:        owner,
 		Repo:         repo,
@@ -220,6 +239,24 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 		} else {
 			resp.Findings = pl.Findings
 			resp.SchemaVersion = pl.SchemaVersion
+			resp.ReviewRun = pl.ReviewRun
+			if pl.ReviewRun != nil {
+				if pl.ReviewRun.HTMLPath != "" {
+					resp.RunReviewURL = buildReviewURL(r, pl.ReviewRun.HTMLPath)
+				}
+				if pl.ReviewRun.JSONPath != "" {
+					resp.RunFindingsURL = buildReviewURL(r, pl.ReviewRun.JSONPath)
+				}
+			}
+			resp.Counts = reviewAPICounts{
+				Critical: pl.Counts.Critical,
+				Medium:   pl.Counts.Medium,
+				Low:      pl.Counts.Low,
+			}
+			if pl.ReviewRun != nil && !pl.ReviewRun.CompletedAt.IsZero() {
+				completedAt := pl.ReviewRun.CompletedAt
+				resp.GeneratedAt = &completedAt
+			}
 			resp.FindingsAvailable = true
 		}
 	} else if !errors.Is(sidecarErr, errReviewNotFound) {
@@ -246,7 +283,8 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 				Medium:   resp.Counts.Medium,
 				Low:      resp.Counts.Low,
 			},
-			Findings: resp.Findings,
+			Findings:  resp.Findings,
+			ReviewRun: resp.ReviewRun,
 		}
 		md := pl.ToCompactMarkdown(payload.CompactMeta{
 			HeadSHA:           resp.HeadSHA,
@@ -369,6 +407,20 @@ func isSafeSHA(s string) bool {
 		case r >= 'a' && r <= 'f':
 		case r >= 'A' && r <= 'F':
 		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isSafeRunID validates the generated run-{32 lowercase hex} identifier before
+// it is interpolated into either a GCS object name or a local filesystem path.
+func isSafeRunID(s string) bool {
+	if len(s) != 36 || !strings.HasPrefix(s, "run-") {
+		return false
+	}
+	for _, r := range strings.TrimPrefix(s, "run-") {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
 			return false
 		}
 	}
