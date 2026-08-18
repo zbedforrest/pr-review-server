@@ -115,7 +115,7 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 			sources["agent.enabled"] = SourceRequest
 		}
 		if a.Backend != nil {
-			effective.Agent.Backend = strings.ToLower(strings.TrimSpace(*a.Backend))
+			effective.Agent.Backend = *a.Backend
 			sources["agent.backend"] = SourceRequest
 		}
 		if a.Model != nil {
@@ -123,7 +123,7 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 			sources["agent.model"] = SourceRequest
 		}
 		if a.Effort != nil {
-			effective.Agent.Effort = strings.ToLower(strings.TrimSpace(*a.Effort))
+			effective.Agent.Effort = *a.Effort
 			sources["agent.effort"] = SourceRequest
 		}
 		if a.WallClockSeconds != nil {
@@ -143,6 +143,12 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 		effective.RequiredChecks = *requested.RequiredChecks
 		sources["required_checks"] = SourceRequest
 	}
+
+	// Canonicalize regardless of source so durable snapshots and hashes remain
+	// stable when deployment defaults use non-canonical casing or whitespace.
+	effective.Agent.Backend = strings.ToLower(strings.TrimSpace(effective.Agent.Backend))
+	effective.Agent.Model = strings.TrimSpace(effective.Agent.Model)
+	effective.Agent.Effort = strings.ToLower(strings.TrimSpace(effective.Agent.Effort))
 
 	if err := Validate(effective, policy); err != nil {
 		return Snapshot{}, err

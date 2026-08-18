@@ -23,7 +23,7 @@ var _ Database = (*GormDB)(nil)
 func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 	db, err := gorm.Open(dialector, &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
-		// Translate constraint errors so CreateReviewRun can expose one
+		// Translation is process-wide and lets CreateReviewRun expose one
 		// dialect-independent idempotency conflict contract on SQLite/Postgres.
 		TranslateError: true,
 	})

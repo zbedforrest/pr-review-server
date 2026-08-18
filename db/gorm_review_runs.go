@@ -31,7 +31,7 @@ func (g *GormDB) CreateReviewRun(run *ReviewRun) error {
 	model := reviewRunToModel(*run)
 	if err := g.db.Create(&model).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			return fmt.Errorf("%w: run_id=%s", ErrReviewRunConflict, run.RunID)
+			return fmt.Errorf("%w: run_id=%s scope=%s (run ID or idempotency key conflict)", ErrReviewRunConflict, run.RunID, run.IdempotencyScope)
 		}
 		return fmt.Errorf("create review run %s: %w", run.RunID, err)
 	}
@@ -255,15 +255,8 @@ func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
 	model.ID = 0
 	err := g.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "run_id"}, {Name: "stage"}, {Name: "invocation_number"}, {Name: "attempt_number"}},
-			DoUpdates: clause.AssignmentColumns([]string{
-				"provider", "backend", "requested_model", "resolved_model",
-				"observed_served_models", "primary_served_model", "served_model_source",
-				"serving_model_verified", "fallback", "fallback_reason", "matcher_version",
-				"effort", "status", "assistant_turns", "input_tokens", "output_tokens",
-				"total_tokens", "started_at", "completed_at", "duration_ms", "stop_reason",
-				"error_code", "error_summary", "updated_at",
-			}),
+			Columns:   []clause.Column{{Name: "run_id"}, {Name: "stage"}, {Name: "invocation_number"}, {Name: "attempt_number"}},
+			DoUpdates: clause.AssignmentColumns(reviewStageAttemptMutableColumns),
 		}).Create(&model).Error; err != nil {
 			return fmt.Errorf("upsert: %w", err)
 		}
@@ -282,6 +275,15 @@ func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
 	}
 	*attempt = reviewStageAttemptFromModel(model)
 	return nil
+}
+
+var reviewStageAttemptMutableColumns = []string{
+	"provider", "backend", "requested_model", "resolved_model",
+	"observed_served_models", "primary_served_model", "served_model_source",
+	"serving_model_verified", "fallback", "fallback_reason", "matcher_version",
+	"effort", "status", "assistant_turns", "input_tokens", "output_tokens",
+	"total_tokens", "started_at", "completed_at", "duration_ms", "stop_reason",
+	"error_code", "error_summary", "updated_at",
 }
 
 func (g *GormDB) ListReviewStageAttempts(runID string) ([]ReviewStageAttempt, error) {

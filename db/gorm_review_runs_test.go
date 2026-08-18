@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm/schema"
 )
 
 func reviewRunFixture(runID string, acceptedAt time.Time) ReviewRun {
@@ -202,6 +203,14 @@ func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
 	// An expired running lease can also be taken over.
 	expired := now.Add(-time.Second)
 	require.NoError(t, database.PatchReviewRun(run.RunID, ReviewRunPatch{LeaseExpiresAt: &expired}))
+	renewed, err = database.RenewReviewRunLease(run.RunID, "worker-b", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, renewed, "expired lease must not be resurrected by renewal")
+	completed := ReviewRunStatusCompleted
+	patched, err := database.PatchReviewRunAsHolder(run.RunID, "worker-b", now, ReviewRunPatch{Status: &completed})
+	require.NoError(t, err)
+	assert.False(t, patched, "holder with expired lease must not commit results")
+
 	claimed, err = database.ClaimReviewRun(run.RunID, "worker-c", now, now.Add(time.Minute))
 	require.NoError(t, err)
 	assert.True(t, claimed)
@@ -211,8 +220,7 @@ func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
 	assert.Equal(t, "worker-c", fetched.LeaseHolder)
 	assert.Equal(t, 3, fetched.ExecutionAttempt)
 
-	completed := ReviewRunStatusCompleted
-	patched, err := database.PatchReviewRunAsHolder(run.RunID, "worker-a", now, ReviewRunPatch{Status: &completed})
+	patched, err = database.PatchReviewRunAsHolder(run.RunID, "worker-a", now, ReviewRunPatch{Status: &completed})
 	require.NoError(t, err)
 	assert.False(t, patched, "stale worker must not commit a terminal result")
 	patched, err = database.PatchReviewRunAsHolder(run.RunID, "worker-c", now, ReviewRunPatch{Status: &completed})
@@ -286,4 +294,25 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	defer database.Close()
 	assert.True(t, database.db.Migrator().HasTable(&ReviewRunModel{}))
 	assert.True(t, database.db.Migrator().HasTable(&ReviewStageAttemptModel{}))
+}
+
+func TestReviewStageAttemptUpsertCoversEveryMutableColumn(t *testing.T) {
+	modelSchema, err := schema.Parse(&ReviewStageAttemptModel{}, &sync.Map{}, schema.NamingStrategy{})
+	require.NoError(t, err)
+	immutable := map[string]bool{
+		"id": true, "run_id": true, "stage": true, "invocation_number": true,
+		"attempt_number": true, "created_at": true,
+	}
+	mutable := make(map[string]bool, len(reviewStageAttemptMutableColumns))
+	for _, column := range reviewStageAttemptMutableColumns {
+		mutable[column] = true
+	}
+	for _, field := range modelSchema.Fields {
+		if field.DBName == "" || immutable[field.DBName] {
+			continue
+		}
+		assert.Truef(t, mutable[field.DBName], "column %s must be included in conflict updates or documented immutable", field.DBName)
+		delete(mutable, field.DBName)
+	}
+	assert.Empty(t, mutable, "upsert update list contains unknown columns")
 }

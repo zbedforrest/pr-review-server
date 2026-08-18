@@ -863,6 +863,14 @@ func (m *MockDatabase) GetTelemetryStats(days int) (*db.TelemetryStats, error) {
 func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if run == nil {
+		return fmt.Errorf("create review run: run is nil")
+	}
+	if run.RunID == "" || run.RepoOwner == "" || run.RepoName == "" || run.PRNumber <= 0 || run.CommitSHA == "" ||
+		run.TriggerSource == "" || run.Status == "" || run.RequestedConfigJSON == "" ||
+		run.EffectiveConfigJSON == "" || run.ConfigSourcesJSON == "" || run.AcceptedAt.IsZero() || run.QueuedAt.IsZero() {
+		return fmt.Errorf("create review run %s: required ledger fields are missing", run.RunID)
+	}
 	if _, exists := m.ReviewRuns[run.RunID]; exists {
 		return fmt.Errorf("%w: run_id=%s", db.ErrReviewRunConflict, run.RunID)
 	}
@@ -932,8 +940,15 @@ func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun
 		}
 		return runs[i].AcceptedAt.After(runs[j].AcceptedAt)
 	})
-	if filter.Limit > 0 && len(runs) > filter.Limit {
-		runs = runs[:filter.Limit]
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if len(runs) > limit {
+		runs = runs[:limit]
 	}
 	return runs, nil
 }
@@ -1085,7 +1100,17 @@ func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) 
 func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAttempt, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return append([]db.ReviewStageAttempt(nil), m.ReviewStageAttempts[runID]...), nil
+	attempts := append([]db.ReviewStageAttempt(nil), m.ReviewStageAttempts[runID]...)
+	sort.Slice(attempts, func(i, j int) bool {
+		if attempts[i].Stage != attempts[j].Stage {
+			return attempts[i].Stage < attempts[j].Stage
+		}
+		if attempts[i].InvocationNumber != attempts[j].InvocationNumber {
+			return attempts[i].InvocationNumber < attempts[j].InvocationNumber
+		}
+		return attempts[i].AttemptNumber < attempts[j].AttemptNumber
+	})
+	return attempts, nil
 }
 
 func (m *MockDatabase) Close() error {

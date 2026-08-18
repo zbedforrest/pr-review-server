@@ -59,6 +59,27 @@ func TestResolveUsesDefaultsWithoutOverrides(t *testing.T) {
 	}
 }
 
+func TestResolveCanonicalizesDefaultsBeforeHashing(t *testing.T) {
+	canonical, err := Resolve(Overrides{}, testDefaults(), testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	variantDefaults := testDefaults()
+	variantDefaults.Agent.Backend = " Claude "
+	variantDefaults.Agent.Model = " claude-fable-5 "
+	variantDefaults.Agent.Effort = " Medium "
+	variant, err := Resolve(Overrides{}, variantDefaults, testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if variant.Effective != canonical.Effective {
+		t.Fatalf("effective=%+v want %+v", variant.Effective, canonical.Effective)
+	}
+	if variant.Hash != canonical.Hash {
+		t.Fatalf("hash=%q want %q", variant.Hash, canonical.Hash)
+	}
+}
+
 func TestResolveAppliesAndAttributesOverrides(t *testing.T) {
 	requested := Overrides{Agent: &AgentOverrides{
 		Backend:          ptr(" openrouter "),
