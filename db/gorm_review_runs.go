@@ -265,6 +265,31 @@ func (g *GormDB) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt t
 	return result.RowsAffected == 1, nil
 }
 
+// AbandonExpiredReviewRuns terminalizes running rows whose worker lease has
+// remained expired through the supplied grace period. The conditional update
+// is atomic with lease renewal, so a worker that renewed in time is untouched.
+func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, grace time.Duration) (int, error) {
+	if now.IsZero() || grace < 0 {
+		return 0, fmt.Errorf("abandon expired review runs: current time and a non-negative grace period are required")
+	}
+	cutoff := now.Add(-grace)
+	result := g.db.Model(&ReviewRunModel{}).
+		Where("status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", ReviewRunStatusRunning, cutoff).
+		Updates(map[string]any{
+			"status":           ReviewRunStatusTimedOut,
+			"completed_at":     now,
+			"terminal_code":    "lease_abandoned",
+			"failure_stage":    "dispatch",
+			"error_summary":    "review worker lease expired before terminal completion",
+			"lease_holder":     "",
+			"lease_expires_at": nil,
+		})
+	if result.Error != nil {
+		return 0, fmt.Errorf("abandon expired review runs: %w", result.Error)
+	}
+	return int(result.RowsAffected), nil
+}
+
 func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
 	if attempt == nil {
 		return fmt.Errorf("upsert review stage attempt: attempt is nil")

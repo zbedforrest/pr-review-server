@@ -1112,6 +1112,31 @@ func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpir
 	return true, nil
 }
 
+func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, grace time.Duration) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if now.IsZero() || grace < 0 {
+		return 0, fmt.Errorf("abandon expired review runs: invalid arguments")
+	}
+	cutoff := now.Add(-grace)
+	abandoned := 0
+	for _, run := range m.ReviewRuns {
+		if run.Status != db.ReviewRunStatusRunning || run.LeaseExpiresAt == nil || run.LeaseExpiresAt.After(cutoff) {
+			continue
+		}
+		completedAt := now
+		run.Status = db.ReviewRunStatusTimedOut
+		run.CompletedAt = &completedAt
+		run.TerminalCode = "lease_abandoned"
+		run.FailureStage = "dispatch"
+		run.ErrorSummary = "review worker lease expired before terminal completion"
+		run.LeaseHolder = ""
+		run.LeaseExpiresAt = nil
+		abandoned++
+	}
+	return abandoned, nil
+}
+
 func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1164,6 +1189,7 @@ type MockReviewStorage struct {
 	// Error injection
 	ReviewExistsError error
 	SaveReviewError   error
+	SaveReviewFunc    func(context.Context, string, string, int, string, []byte) (string, error)
 
 	// Track calls
 	ReviewExistsCalls []struct {
@@ -1213,8 +1239,6 @@ func (m *MockReviewStorage) ReviewExists(ctx context.Context, owner, repo string
 
 func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := fmt.Sprintf("%s/%s/%d/%s", owner, repo, prNumber, commitSHA)
 	m.SaveReviewCalls = append(m.SaveReviewCalls, struct {
 		Owner     string
@@ -1223,12 +1247,20 @@ func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, 
 		CommitSHA string
 		Content   []byte
 	}{owner, repo, prNumber, commitSHA, content})
+	saveErr := m.SaveReviewError
+	saveFunc := m.SaveReviewFunc
+	m.mu.Unlock()
 
-	if m.SaveReviewError != nil {
-		return "", m.SaveReviewError
+	if saveFunc != nil {
+		return saveFunc(ctx, owner, repo, prNumber, commitSHA, content)
+	}
+	if saveErr != nil {
+		return "", saveErr
 	}
 
+	m.mu.Lock()
 	m.SavedReviews[key] = content
+	m.mu.Unlock()
 	return fmt.Sprintf("review-%s-%s-%d-%s.html", owner, repo, prNumber, commitSHA[:7]), nil
 }
 

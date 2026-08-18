@@ -213,6 +213,7 @@ type Database interface {
 	PatchReviewRunAsHolder(runID, holder string, now time.Time, patch ReviewRunPatch) (bool, error)
 	ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.Time) (bool, error)
 	RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error)
+	AbandonExpiredReviewRuns(now time.Time, grace time.Duration) (int, error)
 	UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error
 	ListReviewStageAttempts(runID string) ([]ReviewStageAttempt, error)
 

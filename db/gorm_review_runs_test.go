@@ -283,6 +283,55 @@ func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
 	assert.False(t, claimed, "a terminal run must not be claimable")
 }
 
+func TestGormDBAbandonsOnlyLeasesExpiredBeyondGrace(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	expired := reviewRunFixture("run-00000000000000000000000000000014", now)
+	withinGrace := reviewRunFixture("run-00000000000000000000000000000015", now)
+	live := reviewRunFixture("run-00000000000000000000000000000016", now)
+	for _, run := range []*ReviewRun{&expired, &withinGrace, &live} {
+		run.IdempotencyScope = ""
+		run.IdempotencyKeyHash = ""
+		require.NoError(t, database.CreateReviewRun(run))
+	}
+	requireClaim := func(runID string, expiresAt time.Time) {
+		claimed, err := database.ClaimReviewRun(runID, "worker-"+runID, now.Add(-time.Hour), expiresAt)
+		require.NoError(t, err)
+		require.True(t, claimed)
+	}
+	requireClaim(expired.RunID, now.Add(-10*time.Minute))
+	requireClaim(withinGrace.RunID, now.Add(-time.Minute))
+	requireClaim(live.RunID, now.Add(time.Minute))
+
+	count, err := database.AbandonExpiredReviewRuns(now, 2*time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+
+	abandoned, err := database.GetReviewRun(expired.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, abandoned)
+	assert.Equal(t, ReviewRunStatusTimedOut, abandoned.Status)
+	assert.Equal(t, "lease_abandoned", abandoned.TerminalCode)
+	assert.Equal(t, "dispatch", abandoned.FailureStage)
+	assert.Empty(t, abandoned.LeaseHolder)
+	assert.Nil(t, abandoned.LeaseExpiresAt)
+	require.NotNil(t, abandoned.CompletedAt)
+	assert.WithinDuration(t, now, *abandoned.CompletedAt, time.Millisecond)
+
+	for _, runID := range []string{withinGrace.RunID, live.RunID} {
+		run, getErr := database.GetReviewRun(runID)
+		require.NoError(t, getErr)
+		require.NotNil(t, run)
+		assert.Equal(t, ReviewRunStatusRunning, run.Status)
+	}
+
+	count, err = database.AbandonExpiredReviewRuns(now.Add(time.Minute), -time.Second)
+	require.Error(t, err)
+	assert.Zero(t, count)
+}
+
 func TestGormDBReviewRunClaimHasSingleConcurrentWinner(t *testing.T) {
 	database, err := NewGormSQLite("file:" + filepath.Join(t.TempDir(), "claims.db") + "?_busy_timeout=5000&_journal_mode=WAL")
 	require.NoError(t, err)

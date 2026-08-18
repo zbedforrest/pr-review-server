@@ -25,8 +25,9 @@ var ErrReviewRunNotClaimed = errors.New("review run was not claimed")
 var ErrReviewAlreadyTracked = errors.New("a review is already active for this PR")
 
 // ReviewJob is the immutable execution handoff. Config must already be fully
-// resolved and validated; workers never consult mutable deployment defaults
-// for caller-customizable review behavior.
+// resolved and policy-validated by the caller; Validate below enforces only
+// structural completeness and hash integrity. Workers never consult mutable
+// deployment defaults for caller-customizable review behavior.
 type ReviewJob struct {
 	PR                github.PullRequest
 	RunID             string
@@ -140,7 +141,7 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 		return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
 	}
 	if err := p.ensureReviewRun(job); err != nil {
-		p.untrackReview(job.PR.Owner, job.PR.Repo, job.PR.Number)
+		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 		return err
 	}
 	go func() {
@@ -152,7 +153,7 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 						log.Printf("[IMMEDIATE] WARNING: failed to persist error status: %v", setErr)
 					}
 				}
-				p.untrackReview(job.PR.Owner, job.PR.Repo, job.PR.Number)
+				p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 			}
 		}
 	}()
@@ -297,7 +298,11 @@ func (p *Poller) finishReviewExecution(exec *reviewExecution, patch db.ReviewRun
 
 func (p *Poller) renewReviewExecutionForPublication(exec *reviewExecution) bool {
 	now := time.Now().UTC()
-	renewed, err := p.db.RenewReviewRunLease(exec.Job.RunID, exec.Holder, now, now.Add(ReviewLeaseCompletionGrace))
+	leaseExpiresAt := now.Add(ReviewLeaseCompletionGrace)
+	if run, err := p.db.GetReviewRun(exec.Job.RunID); err == nil && run != nil && run.LeaseExpiresAt != nil && run.LeaseExpiresAt.After(leaseExpiresAt) {
+		leaseExpiresAt = *run.LeaseExpiresAt
+	}
+	renewed, err := p.db.RenewReviewRunLease(exec.Job.RunID, exec.Holder, now, leaseExpiresAt)
 	if err != nil {
 		log.Printf("[REVIEWER] WARN: renew review run %s before publication: %v", exec.Job.RunID, err)
 		return false
@@ -348,7 +353,7 @@ func (p *Poller) rejectQueuedReviewJob(job ReviewJob, terminalCode, failureStage
 		return
 	}
 	status := db.ReviewRunStatusFailed
-	if terminalCode == "review_cached" {
+	if terminalCode == "review_cached" || terminalCode == "pr_already_claimed" {
 		status = db.ReviewRunStatusCancelled
 	}
 	completedAt := time.Now().UTC()
@@ -373,24 +378,21 @@ func (p *Poller) recordStageAttempt(exec *reviewExecution, attempt db.ReviewStag
 
 func (p *Poller) recordGeminiAttempts(exec *reviewExecution, startedAt, completedAt time.Time, status, errorSummary string) {
 	duration := completedAt.Sub(startedAt).Milliseconds()
-	invocations := exec.Job.Config.Effective.FirstPass.Samples
-	if status != "completed" {
-		invocations = 1 // the service does not expose which parallel draw failed
-	}
-	for invocation := 1; invocation <= invocations; invocation++ {
-		p.recordStageAttempt(exec, db.ReviewStageAttempt{
-			Stage: "first_pass", InvocationNumber: invocation, AttemptNumber: 1,
-			Provider: "google", Backend: "gemini_api", RequestedModel: llm.ProModelName(),
-			ResolvedModel: llm.ProModelName(), Status: status, StartedAt: &startedAt,
-			CompletedAt: &completedAt, DurationMS: duration, ErrorSummary: errorSummary,
-		})
-	}
+	// The reviewer service exposes only one aggregate window for all parallel
+	// first-pass draws, not per-draw timings. Record exactly one aggregate row
+	// so consumers cannot accidentally sum fabricated invocation durations.
+	p.recordStageAttempt(exec, db.ReviewStageAttempt{
+		Stage: "first_pass", InvocationNumber: 1, AttemptNumber: 1,
+		Provider: "google", Backend: "gemini_api", RequestedModel: llm.ProModelName(),
+		ResolvedModel: llm.ProModelName(), Status: status, StartedAt: &startedAt,
+		CompletedAt: &completedAt, DurationMS: duration, StopReason: "aggregate_window", ErrorSummary: errorSummary,
+	})
 	if status == "completed" {
 		p.recordStageAttempt(exec, db.ReviewStageAttempt{
 			Stage: "classification_summary", InvocationNumber: 1, AttemptNumber: 1,
 			Provider: "google", Backend: "gemini_api", RequestedModel: llm.FlashModelName(),
 			ResolvedModel: llm.FlashModelName(), Status: status, StartedAt: &startedAt,
-			CompletedAt: &completedAt, DurationMS: duration,
+			CompletedAt: &completedAt, StopReason: "timing_included_in_first_pass_aggregate",
 		})
 	}
 }

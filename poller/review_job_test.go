@@ -66,6 +66,26 @@ func waitForReviewJob(t *testing.T, p *Poller, job ReviewJob) {
 	}
 }
 
+func waitForReviewRunStatus(t *testing.T, database *MockDatabase, runID string, statuses ...string) *db.ReviewRun {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		run, err := database.GetReviewRun(runID)
+		require.NoError(t, err)
+		if run != nil {
+			for _, status := range statuses {
+				if run.Status == status {
+					return run
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for review run %s status in %v", runID, statuses)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestDefaultReviewJobSnapshotsDeploymentConfig(t *testing.T) {
 	database := NewMockDatabase()
 	database.ReviewNRequests = 5
@@ -161,6 +181,52 @@ func TestProcessReviewJobRejectsSecondActiveRun(t *testing.T) {
 	waitForReviewJob(t, p, first)
 }
 
+func TestGenerateReviewJobRejectsRivalBeforeMutatingPRState(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), NewMockReviewGenerator())
+	owner := customReviewJob(t, "run-22500000000000000000000000000001")
+	rival := customReviewJob(t, "run-22500000000000000000000000000002")
+	reviewCtx, tracked := p.tryTrackReviewJob(context.Background(), owner)
+	require.True(t, tracked)
+	require.NoError(t, reviewCtx.Err())
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: owner.PR.Owner, RepoName: owner.PR.Repo, PRNumber: owner.PR.Number,
+		LastCommitSHA: owner.PR.CommitSHA, Status: "agent_reviewing",
+	}))
+
+	require.NoError(t, p.generateReviewJobs(context.Background(), []ReviewJob{rival}))
+	pr, err := database.GetPR(owner.PR.Owner, owner.PR.Repo, owner.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "agent_reviewing", pr.Status)
+	run, err := database.GetReviewRun(rival.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCancelled, run.Status)
+	assert.Equal(t, "pr_already_claimed", run.TerminalCode)
+	assert.NoError(t, reviewCtx.Err(), "rejecting a rival must not cancel the owning run")
+	p.untrackReviewRun(owner.PR.Owner, owner.PR.Repo, owner.PR.Number, owner.RunID)
+}
+
+func TestRunScopedCleanupCannotCancelReplacement(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	first := customReviewJob(t, "run-23000000000000000000000000000001")
+	second := customReviewJob(t, "run-23000000000000000000000000000002")
+	firstCtx, tracked := p.tryTrackReviewJob(context.Background(), first)
+	require.True(t, tracked)
+	adoptedCtx, adopted := p.trackOrAdoptReviewJob(context.Background(), first)
+	require.True(t, adopted)
+	assert.Equal(t, firstCtx, adoptedCtx)
+	p.untrackReviewRun(first.PR.Owner, first.PR.Repo, first.PR.Number, first.RunID)
+	secondCtx, tracked := p.tryTrackReviewJob(context.Background(), second)
+	require.True(t, tracked)
+
+	p.untrackReviewRun(first.PR.Owner, first.PR.Repo, first.PR.Number, first.RunID)
+	assert.NoError(t, secondCtx.Err())
+	assert.True(t, p.IsReviewTracked(second.PR.Owner, second.PR.Repo, second.PR.Number))
+	p.untrackReviewRun(second.PR.Owner, second.PR.Repo, second.PR.Number, second.RunID)
+}
+
 func TestProcessReviewJobPersistsTerminalFailure(t *testing.T) {
 	database := NewMockDatabase()
 	generator := NewMockReviewGenerator()
@@ -186,6 +252,39 @@ func TestProcessReviewJobPersistsTerminalFailure(t *testing.T) {
 	assert.Contains(t, run.ErrorSummary, "provider unavailable")
 	assert.Empty(t, run.LeaseHolder)
 	assert.Nil(t, run.LeaseExpiresAt)
+}
+
+func TestCancelledArtifactSavePreservesResetPRState(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	saveStarted := make(chan struct{})
+	storage.SaveReviewFunc = func(ctx context.Context, _ string, _ string, _ int, _ string, _ []byte) (string, error) {
+		close(saveStarted)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	job := customReviewJob(t, "run-26000000000000000000000000000001")
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	select {
+	case <-saveStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("review did not reach artifact save")
+	}
+	require.NoError(t, database.UpdatePRStatus(job.PR.Owner, job.PR.Repo, job.PR.Number, "pending"))
+	require.True(t, p.killReview(job.PR.Owner, job.PR.Repo, job.PR.Number))
+	run := waitForReviewRunStatus(t, database, job.RunID, db.ReviewRunStatusCancelled)
+	assert.Equal(t, "cancelled", run.TerminalCode)
+	assert.Equal(t, "artifact_save", run.FailureStage)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "pending", pr.Status)
+	assert.Empty(t, pr.ErrorMessage)
 }
 
 func TestProcessReviewJobStaleWorkerCannotPublishLatestProjection(t *testing.T) {
@@ -224,8 +323,35 @@ func TestProcessReviewJobStaleWorkerCannotPublishLatestProjection(t *testing.T) 
 	run, err := database.GetReviewRun(job.RunID)
 	require.NoError(t, err)
 	require.NotNil(t, run)
-	assert.Equal(t, db.ReviewRunStatusRunning, run.Status)
+	abandoned, err := database.AbandonExpiredReviewRuns(time.Now().UTC(), 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, abandoned)
+	run, err = database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusTimedOut, run.Status)
+	assert.Equal(t, "lease_abandoned", run.TerminalCode)
+	assert.Empty(t, run.LeaseHolder)
+	assert.Nil(t, run.LeaseExpiresAt)
 	assert.Empty(t, run.PublicationStatus)
+}
+
+func TestPublicationRenewalNeverShortensLease(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-28000000000000000000000000000001")
+	exec, err := p.beginReviewExecution(job)
+	require.NoError(t, err)
+	before, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, before)
+	require.NotNil(t, before.LeaseExpiresAt)
+	assert.True(t, p.renewReviewExecutionForPublication(exec))
+	after, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, after)
+	require.NotNil(t, after.LeaseExpiresAt)
+	assert.False(t, after.LeaseExpiresAt.Before(*before.LeaseExpiresAt))
 }
 
 func TestAgentConfigComesFromReviewJob(t *testing.T) {
@@ -259,11 +385,13 @@ func TestRecordGeminiAttemptsUsesRunExecutionAttempt(t *testing.T) {
 
 	attempts, err := database.ListReviewStageAttempts(job.RunID)
 	require.NoError(t, err)
-	require.Len(t, attempts, 5)
+	require.Len(t, attempts, 2)
 	for _, attempt := range attempts {
 		assert.Equal(t, 1, attempt.ExecutionAttempt)
 		assert.Equal(t, "completed", attempt.Status)
 	}
 	assert.Equal(t, "classification_summary", attempts[0].Stage)
 	assert.Equal(t, "first_pass", attempts[1].Stage)
+	assert.Zero(t, attempts[0].DurationMS)
+	assert.Equal(t, "aggregate_window", attempts[1].StopReason)
 }

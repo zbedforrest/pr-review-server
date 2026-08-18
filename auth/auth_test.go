@@ -127,6 +127,9 @@ func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt 
 func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
 	return false, nil
 }
+func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, grace time.Duration) (int, error) {
+	return 0, nil
+}
 func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error { return nil }
 func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAttempt, error) {
 	return nil, nil
