@@ -121,6 +121,7 @@ type ReviewRunPatch struct {
 type ReviewStageAttempt struct {
 	ID                   int
 	RunID                string
+	ExecutionAttempt     int
 	Stage                string
 	InvocationNumber     int
 	AttemptNumber        int

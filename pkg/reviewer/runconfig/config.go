@@ -187,6 +187,8 @@ func Validate(cfg Effective, policy Policy) error {
 	if !backendPolicy.Available {
 		return invalid("agent.backend", "backend %q is not available in this deployment", backend)
 	}
+	// Provider model IDs are case-sensitive; unlike backend and effort, model
+	// matching is deliberately exact.
 	if !contains(backendPolicy.Models, cfg.Agent.Model) {
 		return invalid("agent.model", "model %q is not allowed for backend %q", cfg.Agent.Model, backend)
 	}

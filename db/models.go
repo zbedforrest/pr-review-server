@@ -194,9 +194,10 @@ func (ReviewRunModel) TableName() string { return "review_runs" }
 type ReviewStageAttemptModel struct {
 	ID                   uint            `gorm:"primaryKey;autoIncrement"`
 	RunID                string          `gorm:"column:run_id;size:36;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:1"`
-	Stage                string          `gorm:"size:64;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:2;index:idx_review_stage_attempt_model,priority:1"`
-	InvocationNumber     int             `gorm:"column:invocation_number;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:3"`
-	AttemptNumber        int             `gorm:"column:attempt_number;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:4"`
+	ExecutionAttempt     int             `gorm:"column:execution_attempt;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:2"`
+	Stage                string          `gorm:"size:64;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:3;index:idx_review_stage_attempt_model,priority:1"`
+	InvocationNumber     int             `gorm:"column:invocation_number;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:4"`
+	AttemptNumber        int             `gorm:"column:attempt_number;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:5"`
 	Provider             string          `gorm:"size:64;index"`
 	Backend              string          `gorm:"size:64;index:idx_review_stage_attempt_model,priority:2"`
 	RequestedModel       string          `gorm:"column:requested_model;size:255;index:idx_review_stage_attempt_model,priority:3"`

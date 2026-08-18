@@ -28,6 +28,9 @@ func (g *GormDB) CreateReviewRun(run *ReviewRun) error {
 	if run.AcceptedAt.IsZero() || run.QueuedAt.IsZero() {
 		return fmt.Errorf("create review run %s: accepted_at and queued_at are required", run.RunID)
 	}
+	if (run.IdempotencyScope == "") != (run.IdempotencyKeyHash == "") {
+		return fmt.Errorf("create review run %s: idempotency scope and key hash must be set together", run.RunID)
+	}
 	model := reviewRunToModel(*run)
 	if err := g.db.Create(&model).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -104,7 +107,7 @@ func (g *GormDB) ListReviewRuns(filter ReviewRunFilter) ([]ReviewRun, error) {
 func (g *GormDB) PatchReviewRun(runID string, patch ReviewRunPatch) error {
 	updates := reviewRunPatchUpdates(patch)
 	if len(updates) == 0 {
-		return nil
+		return fmt.Errorf("patch review run %s: patch is empty", runID)
 	}
 	result := g.db.Model(&ReviewRunModel{}).Where("run_id = ?", runID).Updates(updates)
 	if result.Error != nil {
@@ -216,11 +219,26 @@ func (g *GormDB) ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.T
 		Where("run_id = ? AND (status = ? OR (status = ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)))",
 			runID, ReviewRunStatusQueued, ReviewRunStatusRunning, now).
 		Updates(map[string]any{
-			"status":            ReviewRunStatusRunning,
-			"started_at":        gorm.Expr("COALESCE(started_at, ?)", now),
-			"lease_holder":      holder,
-			"lease_expires_at":  leaseExpiresAt,
-			"execution_attempt": gorm.Expr("execution_attempt + 1"),
+			"status":                     ReviewRunStatusRunning,
+			"started_at":                 gorm.Expr("COALESCE(started_at, ?)", now),
+			"completed_at":               nil,
+			"duration_ms":                0,
+			"html_path":                  "",
+			"json_path":                  "",
+			"critical_count":             0,
+			"medium_count":               0,
+			"low_count":                  0,
+			"verdict":                    "",
+			"model_fallback":             false,
+			"serving_model_verification": "",
+			"actual_models_json":         "",
+			"publication_status":         "",
+			"terminal_code":              "",
+			"failure_stage":              "",
+			"error_summary":              "",
+			"lease_holder":               holder,
+			"lease_expires_at":           leaseExpiresAt,
+			"execution_attempt":          gorm.Expr("execution_attempt + 1"),
 		})
 	if result.Error != nil {
 		return false, fmt.Errorf("claim review run %s: %w", runID, result.Error)
@@ -248,6 +266,9 @@ func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
 	if attempt == nil {
 		return fmt.Errorf("upsert review stage attempt: attempt is nil")
 	}
+	if attempt.RunID == "" || attempt.ExecutionAttempt <= 0 || attempt.Stage == "" || attempt.InvocationNumber <= 0 || attempt.AttemptNumber <= 0 {
+		return fmt.Errorf("upsert review stage attempt: run ID, execution attempt, stage, invocation number, and attempt number are required")
+	}
 	model := reviewStageAttemptToModel(*attempt)
 	// The natural attempt key owns the upsert. Never send a previously
 	// round-tripped auto-increment ID, which could conflict independently on
@@ -255,15 +276,15 @@ func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
 	model.ID = 0
 	err := g.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "run_id"}, {Name: "stage"}, {Name: "invocation_number"}, {Name: "attempt_number"}},
+			Columns:   []clause.Column{{Name: "run_id"}, {Name: "execution_attempt"}, {Name: "stage"}, {Name: "invocation_number"}, {Name: "attempt_number"}},
 			DoUpdates: clause.AssignmentColumns(reviewStageAttemptMutableColumns),
 		}).Create(&model).Error; err != nil {
 			return fmt.Errorf("upsert: %w", err)
 		}
 		var persisted ReviewStageAttemptModel
 		if err := tx.Where(
-			"run_id = ? AND stage = ? AND invocation_number = ? AND attempt_number = ?",
-			attempt.RunID, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber,
+			"run_id = ? AND execution_attempt = ? AND stage = ? AND invocation_number = ? AND attempt_number = ?",
+			attempt.RunID, attempt.ExecutionAttempt, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber,
 		).First(&persisted).Error; err != nil {
 			return fmt.Errorf("reload: %w", err)
 		}
@@ -271,7 +292,7 @@ func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("upsert review stage attempt %s/%s/%d/%d: %w", attempt.RunID, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber, err)
+		return fmt.Errorf("upsert review stage attempt %s/%d/%s/%d/%d: %w", attempt.RunID, attempt.ExecutionAttempt, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber, err)
 	}
 	*attempt = reviewStageAttemptFromModel(model)
 	return nil
@@ -289,7 +310,7 @@ var reviewStageAttemptMutableColumns = []string{
 func (g *GormDB) ListReviewStageAttempts(runID string) ([]ReviewStageAttempt, error) {
 	var models []ReviewStageAttemptModel
 	err := g.db.Where("run_id = ?", runID).
-		Order("stage ASC, invocation_number ASC, attempt_number ASC").
+		Order("execution_attempt ASC, stage ASC, invocation_number ASC, attempt_number ASC").
 		Find(&models).Error
 	if err != nil {
 		return nil, fmt.Errorf("list review stage attempts for %s: %w", runID, err)
@@ -351,7 +372,7 @@ func reviewRunFromModel(model ReviewRunModel) ReviewRun {
 
 func reviewStageAttemptToModel(attempt ReviewStageAttempt) ReviewStageAttemptModel {
 	return ReviewStageAttemptModel{
-		ID: uint(attempt.ID), RunID: attempt.RunID, Stage: attempt.Stage,
+		ID: uint(attempt.ID), RunID: attempt.RunID, ExecutionAttempt: attempt.ExecutionAttempt, Stage: attempt.Stage,
 		InvocationNumber: attempt.InvocationNumber, AttemptNumber: attempt.AttemptNumber,
 		Provider: attempt.Provider, Backend: attempt.Backend, RequestedModel: attempt.RequestedModel,
 		ResolvedModel: attempt.ResolvedModel, ObservedServedModels: JSONStringArray(attempt.ObservedServedModels),
@@ -368,7 +389,7 @@ func reviewStageAttemptToModel(attempt ReviewStageAttempt) ReviewStageAttemptMod
 
 func reviewStageAttemptFromModel(model ReviewStageAttemptModel) ReviewStageAttempt {
 	return ReviewStageAttempt{
-		ID: int(model.ID), RunID: model.RunID, Stage: model.Stage,
+		ID: int(model.ID), RunID: model.RunID, ExecutionAttempt: model.ExecutionAttempt, Stage: model.Stage,
 		InvocationNumber: model.InvocationNumber, AttemptNumber: model.AttemptNumber,
 		Provider: model.Provider, Backend: model.Backend, RequestedModel: model.RequestedModel,
 		ResolvedModel: model.ResolvedModel, ObservedServedModels: []string(model.ObservedServedModels),

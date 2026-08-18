@@ -871,6 +871,9 @@ func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error {
 		run.EffectiveConfigJSON == "" || run.ConfigSourcesJSON == "" || run.AcceptedAt.IsZero() || run.QueuedAt.IsZero() {
 		return fmt.Errorf("create review run %s: required ledger fields are missing", run.RunID)
 	}
+	if (run.IdempotencyScope == "") != (run.IdempotencyKeyHash == "") {
+		return fmt.Errorf("create review run %s: idempotency scope and key hash must be set together", run.RunID)
+	}
 	if _, exists := m.ReviewRuns[run.RunID]; exists {
 		return fmt.Errorf("%w: run_id=%s", db.ErrReviewRunConflict, run.RunID)
 	}
@@ -964,6 +967,9 @@ func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) err
 }
 
 func (m *MockDatabase) patchReviewRunLocked(run *db.ReviewRun, patch db.ReviewRunPatch) error {
+	if patch == (db.ReviewRunPatch{}) {
+		return fmt.Errorf("patch review run %s: patch is empty", run.RunID)
+	}
 	if patch.Status != nil {
 		run.Status = *patch.Status
 	}
@@ -1066,6 +1072,21 @@ func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt 
 	expires := leaseExpiresAt
 	run.LeaseExpiresAt = &expires
 	run.ExecutionAttempt++
+	run.CompletedAt = nil
+	run.DurationMS = 0
+	run.HTMLPath = ""
+	run.JSONPath = ""
+	run.CriticalCount = 0
+	run.MediumCount = 0
+	run.LowCount = 0
+	run.Verdict = ""
+	run.ModelFallback = false
+	run.ServingModelVerification = ""
+	run.ActualModelsJSON = ""
+	run.PublicationStatus = ""
+	run.TerminalCode = ""
+	run.FailureStage = ""
+	run.ErrorSummary = ""
 	return true, nil
 }
 
@@ -1085,9 +1106,12 @@ func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpir
 func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if attempt == nil || attempt.RunID == "" || attempt.ExecutionAttempt <= 0 || attempt.Stage == "" || attempt.InvocationNumber <= 0 || attempt.AttemptNumber <= 0 {
+		return fmt.Errorf("upsert review stage attempt: required key fields are missing")
+	}
 	attempts := m.ReviewStageAttempts[attempt.RunID]
 	for i := range attempts {
-		if attempts[i].Stage == attempt.Stage && attempts[i].InvocationNumber == attempt.InvocationNumber && attempts[i].AttemptNumber == attempt.AttemptNumber {
+		if attempts[i].ExecutionAttempt == attempt.ExecutionAttempt && attempts[i].Stage == attempt.Stage && attempts[i].InvocationNumber == attempt.InvocationNumber && attempts[i].AttemptNumber == attempt.AttemptNumber {
 			attempts[i] = *attempt
 			m.ReviewStageAttempts[attempt.RunID] = attempts
 			return nil
@@ -1102,6 +1126,9 @@ func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAt
 	defer m.mu.RUnlock()
 	attempts := append([]db.ReviewStageAttempt(nil), m.ReviewStageAttempts[runID]...)
 	sort.Slice(attempts, func(i, j int) bool {
+		if attempts[i].ExecutionAttempt != attempts[j].ExecutionAttempt {
+			return attempts[i].ExecutionAttempt < attempts[j].ExecutionAttempt
+		}
 		if attempts[i].Stage != attempts[j].Stage {
 			return attempts[i].Stage < attempts[j].Stage
 		}

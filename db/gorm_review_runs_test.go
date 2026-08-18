@@ -78,6 +78,10 @@ func TestGormDBReviewRunLifecycleAndHistory(t *testing.T) {
 	require.Len(t, runs, 2)
 	assert.Equal(t, newer.RunID, runs[0].RunID)
 	assert.Equal(t, older.RunID, runs[1].RunID)
+
+	err = database.PatchReviewRun(newer.RunID, ReviewRunPatch{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "patch is empty")
 }
 
 func TestGormDBReviewRunIdempotencyLookup(t *testing.T) {
@@ -102,6 +106,27 @@ func TestGormDBReviewRunIdempotencyLookup(t *testing.T) {
 	if !errors.Is(err, ErrReviewRunConflict) {
 		t.Fatalf("conflict err=%v", err)
 	}
+
+	mismatched := reviewRunFixture("run-00000000000000000000000000000011", time.Now().UTC())
+	mismatched.IdempotencyScope = ""
+	err = database.CreateReviewRun(&mismatched)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be set together")
+}
+
+func TestGormDBAllowsMultipleRunsWithoutIdempotencyKey(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	for _, id := range []string{
+		"run-00000000000000000000000000000012",
+		"run-00000000000000000000000000000013",
+	} {
+		run := reviewRunFixture(id, time.Now().UTC())
+		run.IdempotencyScope = ""
+		run.IdempotencyKeyHash = ""
+		require.NoError(t, database.CreateReviewRun(&run))
+	}
 }
 
 func TestGormDBCreateReviewRunRejectsIncompleteLedgerEntry(t *testing.T) {
@@ -122,6 +147,7 @@ func TestGormDBUpsertReviewStageAttempt(t *testing.T) {
 	require.NoError(t, database.CreateReviewRun(&run))
 	attempt := ReviewStageAttempt{
 		RunID:                run.RunID,
+		ExecutionAttempt:     1,
 		Stage:                "agent",
 		InvocationNumber:     1,
 		AttemptNumber:        1,
@@ -156,6 +182,17 @@ func TestGormDBUpsertReviewStageAttempt(t *testing.T) {
 	assert.Equal(t, 13, attempts[0].AssistantTurns)
 	assert.Equal(t, []string{"claude-fable-5", "claude-opus-4-8"}, attempts[0].ObservedServedModels)
 	assert.True(t, attempts[0].ServingModelVerified)
+
+	retry := attempt
+	retry.ID = 0
+	retry.ExecutionAttempt = 2
+	retry.AssistantTurns = 4
+	require.NoError(t, database.UpsertReviewStageAttempt(&retry))
+	attempts, err = database.ListReviewStageAttempts(run.RunID)
+	require.NoError(t, err)
+	require.Len(t, attempts, 2)
+	assert.Equal(t, 1, attempts[0].ExecutionAttempt)
+	assert.Equal(t, 2, attempts[1].ExecutionAttempt)
 }
 
 func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
@@ -202,7 +239,15 @@ func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
 
 	// An expired running lease can also be taken over.
 	expired := now.Add(-time.Second)
-	require.NoError(t, database.PatchReviewRun(run.RunID, ReviewRunPatch{LeaseExpiresAt: &expired}))
+	partialPath := "partial/review.json"
+	oldError := "worker crashed"
+	oldCriticalCount := 2
+	require.NoError(t, database.PatchReviewRun(run.RunID, ReviewRunPatch{
+		LeaseExpiresAt: &expired,
+		JSONPath:       &partialPath,
+		ErrorSummary:   &oldError,
+		CriticalCount:  &oldCriticalCount,
+	}))
 	renewed, err = database.RenewReviewRunLease(run.RunID, "worker-b", now, now.Add(time.Minute))
 	require.NoError(t, err)
 	assert.False(t, renewed, "expired lease must not be resurrected by renewal")
@@ -219,6 +264,9 @@ func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
 	require.NotNil(t, fetched)
 	assert.Equal(t, "worker-c", fetched.LeaseHolder)
 	assert.Equal(t, 3, fetched.ExecutionAttempt)
+	assert.Empty(t, fetched.JSONPath)
+	assert.Empty(t, fetched.ErrorSummary)
+	assert.Zero(t, fetched.CriticalCount)
 
 	patched, err = database.PatchReviewRunAsHolder(run.RunID, "worker-a", now, ReviewRunPatch{Status: &completed})
 	require.NoError(t, err)
@@ -300,8 +348,8 @@ func TestReviewStageAttemptUpsertCoversEveryMutableColumn(t *testing.T) {
 	modelSchema, err := schema.Parse(&ReviewStageAttemptModel{}, &sync.Map{}, schema.NamingStrategy{})
 	require.NoError(t, err)
 	immutable := map[string]bool{
-		"id": true, "run_id": true, "stage": true, "invocation_number": true,
-		"attempt_number": true, "created_at": true,
+		"id": true, "run_id": true, "execution_attempt": true, "stage": true,
+		"invocation_number": true, "attempt_number": true, "created_at": true,
 	}
 	mutable := make(map[string]bool, len(reviewStageAttemptMutableColumns))
 	for _, column := range reviewStageAttemptMutableColumns {
