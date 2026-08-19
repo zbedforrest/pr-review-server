@@ -295,27 +295,36 @@ command_create() {
 
   http_request POST '/api/v1/review-runs' "$request" "$idempotency_key"
   case "$HTTP_CODE" in
-    200|202) jq . "$TMP_BODY" ;;
-    404|405)
-      if [ "$has_customization" -ne 0 ]; then
-        die "this deployment only supports legacy review creation; refusing to drop requested customization or idempotency guarantees" 6
-      fi
-      legacy_request=$(jq -cn --arg owner "$OWNER" --arg repo "$REPO" --argjson number "$PR_NUMBER" \
-        '{owner:$owner,repo:$repo,number:$number}')
-      http_request POST '/api/prs/generate-review' "$legacy_request"
-      if [ "$HTTP_CODE" = 200 ] || [ "$HTTP_CODE" = 202 ]; then
-        legacy_commit=$(jq -r '.commit // ""' "$TMP_BODY")
-        if [ "$legacy_commit" != "$expected_head" ]; then
-          die "legacy review creation did not confirm the exact expected HEAD; refusing an ambiguous result" 6
-        fi
-        jq '. + {api_version:"legacy"}' "$TMP_BODY"
-      else
-        print_http_error
-        exit 4
+    200|202)
+      if jq -e '.run_id | strings | test("^run-[0-9a-f]{32}$")' "$TMP_BODY" >/dev/null 2>&1; then
+        jq . "$TMP_BODY"
+        return
       fi
       ;;
+    404|405) ;;
     *) print_http_error; exit 4 ;;
   esac
+
+  # Older deployments route an unknown /api/v1 path to the HTML app shell
+  # with HTTP 200. A response without a valid v1 run ID is therefore the same
+  # compatibility signal as 404/405, but fallback remains forbidden whenever
+  # it would weaken caller-requested semantics.
+  if [ "$has_customization" -ne 0 ]; then
+    die "this deployment only supports legacy review creation; refusing to drop requested customization or idempotency guarantees" 6
+  fi
+  legacy_request=$(jq -cn --arg owner "$OWNER" --arg repo "$REPO" --argjson number "$PR_NUMBER" \
+    '{owner:$owner,repo:$repo,number:$number}')
+  http_request POST '/api/prs/generate-review' "$legacy_request"
+  if [ "$HTTP_CODE" = 200 ] || [ "$HTTP_CODE" = 202 ]; then
+    legacy_commit=$(jq -r '.commit // ""' "$TMP_BODY")
+    if [ "$legacy_commit" != "$expected_head" ]; then
+      die "legacy review creation did not confirm the exact expected HEAD; refusing an ambiguous result" 6
+    fi
+    jq '. + {api_version:"legacy"}' "$TMP_BODY"
+  else
+    print_http_error
+    exit 4
+  fi
 }
 
 command_get() {

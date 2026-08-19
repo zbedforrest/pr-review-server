@@ -108,7 +108,9 @@ The client may fall back to `POST /api/prs/generate-review` only when no review
 configuration or explicit idempotency key was requested. It refuses to silently
 drop custom settings or retry guarantees and requires the legacy response to
 confirm the exact expected commit. `fetch` continues to use the legacy read
-endpoint for backward compatibility.
+endpoint for backward compatibility. Pre-v1 deployments may return their HTML
+app shell with HTTP 200 for unknown versioned paths; the client recognizes that
+as unsupported only when the body lacks a valid v1 run ID.
 
 ## Environment
 

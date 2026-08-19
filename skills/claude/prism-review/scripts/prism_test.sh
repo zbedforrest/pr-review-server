@@ -66,13 +66,20 @@ case "$method $url" in
   "POST "*/api/v1/review-runs)
     printf '%s' "$data" >"${FAKE_LAST_REQUEST:?}"
     printf '%s' "$headers" >"${FAKE_LAST_HEADERS:?}"
-    if [ "${FAKE_V1_CREATE_CODE:-202}" = 404 ]; then
-      printf '%s\n' '{"error":{"code":"not_found","message":"v1 unavailable"}}' >"$output"
-      printf 404
-    else
-      cp "${FIXTURE_DIR:?}/run_completed.json" "$output"
-      printf 202
-    fi
+    case "${FAKE_V1_CREATE_CODE:-202}" in
+      404)
+        printf '%s\n' '{"error":{"code":"not_found","message":"v1 unavailable"}}' >"$output"
+        printf 404
+        ;;
+      200_html)
+        printf '%s\n' '<!doctype html><title>PR Review Server</title>' >"$output"
+        printf 200
+        ;;
+      *)
+        cp "${FIXTURE_DIR:?}/run_completed.json" "$output"
+        printf 202
+        ;;
+    esac
     ;;
   "GET "*/api/v1/review-runs/run-*)
     cp "${FIXTURE_DIR:?}/run_completed.json" "$output"
@@ -173,12 +180,13 @@ assert_eq "$origin_status" "2"
 assert_contains "$(cat "$TEST_TMP/origin.err")" "run ID or review findings URL"
 assert_eq "$(cat "$FAKE_TRACE")" ""
 
-export FAKE_V1_CREATE_CODE=404
+export FAKE_V1_CREATE_CODE=200_html
 : >"$FAKE_TRACE"
 legacy=$("$CLIENT" create acme/widgets#42)
 assert_eq "$(printf '%s' "$legacy" | jq -r '.api_version')" "legacy"
 assert_contains "$(cat "$FAKE_TRACE")" "/api/prs/generate-review"
 
+export FAKE_V1_CREATE_CODE=404
 : >"$FAKE_TRACE"
 set +e
 "$CLIENT" create acme/widgets#42 --model claude-fable-5 >"$TEST_TMP/rejected.out" 2>"$TEST_TMP/rejected.err"
