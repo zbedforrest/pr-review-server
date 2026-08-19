@@ -53,6 +53,11 @@ const (
 	// loop. A deploy/crash therefore terminalizes accepted queued work quickly,
 	// while a healthy capacity wait may remain queued for as long as necessary.
 	ReviewQueueLeaseTTL = 2 * time.Minute
+	// ReviewProjectionCrashStaleAfter is the minimum age at which an orphaned
+	// generating projection may be repaired from cache. The DB restore also
+	// requires that no queued/live run exists for the target; projection writers
+	// must create their ledger row before, or within this window after, claiming.
+	ReviewProjectionCrashStaleAfter = ReviewQueueLeaseTTL
 	// ReviewCacheLookupTimeout bounds network storage checks while jobs are
 	// still queued and therefore have no execution deadline of their own.
 	ReviewCacheLookupTimeout = time.Minute
@@ -2979,6 +2984,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			defer wg.Done()
 			defer func() { <-sem }() // Release token
 			pr := job.PR
+			defer p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 			queuedCtx := jobContexts[job.RunID]
 
 			log.Printf("[REVIEWER] Processing PR: %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA[:7])
@@ -3019,7 +3025,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						reviewRunID, reviewRunJSON = existingPR.ReviewRunID, existingPR.ReviewRunJSON
 					}
 				}
-				inFlightStaleBefore := time.Now().UTC().Add(-ReviewQueueLeaseTTL)
+				inFlightStaleBefore := time.Now().UTC().Add(-ReviewProjectionCrashStaleAfter)
 				if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON, inFlightStaleBefore); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
 				} else if projected {
@@ -3028,7 +3034,6 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
 				}
 				p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "review_cached", "dispatch", fmt.Errorf("review artifact already exists"))
-				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 				return
 			}
 
@@ -3043,7 +3048,6 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					defer func() { <-p.agentSlots }()
 				case <-queuedCtx.Done():
 					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
-					p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 					return
 				}
 			}
@@ -3062,7 +3066,6 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if err := p.db.SetPRGeneratingForReviewRun(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, job.RunID); err != nil {
 				log.Printf("[BATCH] ERROR: Failed to set generating status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 				p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "pr_state_failed", "dispatch", err)
-				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 				return
 			}
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
@@ -3090,7 +3093,6 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					}
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				}
-				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 				return
 			}
 			execution.AgentSlotReserved = agentSlotReserved
@@ -3169,7 +3171,6 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				if prCtx.Err() != nil {
 					log.Printf("[REVIEWER] PR %d review was interrupted (ctx=%v)", pr.Number, prCtx.Err())
 					p.finishInterruptedReviewExecution(execution, prCtx, "execution", err)
-					p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 					return
 				}
 
@@ -3205,7 +3206,6 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						}
 					}
 				}
-				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 				return
 			}
 
@@ -3218,7 +3218,6 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			}
 			if !p.renewReviewExecutionForPublication(execution) {
 				log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact publication", job.RunID)
-				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 				return
 			}
 			runInfo := p.reviewRunInfo(execution, execCompleted)
@@ -3253,7 +3252,6 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact-save error projection", job.RunID)
 					}
 				}
-				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 				return
 			}
 
@@ -3288,7 +3286,6 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				}
 				if !p.finishCompletedReviewExecution(execution, reviewResult, "artifact_saved") {
 					log.Printf("[REVIEWER] STALE WORKER: run %s lost its lease before projection; skipping latest-review update", job.RunID)
-					p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 					return
 				}
 				projected, err := p.db.MarkPRCompletedForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, job.RunID, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback, string(reviewRunJSON))
@@ -3303,8 +3300,6 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict)
 				}
 			}
-
-			p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 		}(job)
 	}
 
