@@ -1688,7 +1688,12 @@ func (p *Poller) reviewExistsWithTimeout(ctx context.Context, timeout time.Durat
 	return p.reviewExists(lookupCtx, owner, repo, prNumber, commitSHA)
 }
 
-// saveReview persists review content to storage (GCS or local disk).
+// saveReview is retained only for legacy storage tests.
+//
+// Deprecated: review execution must save immutable artifacts before atomic
+// finalization and may refresh canonical aliases only after publication wins.
+// Calling this unfenced convenience helper from a worker would reintroduce the
+// stale-alias overwrite hazard that FinalizeReviewRunSuccess prevents.
 func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, reviewRun *payload.ReviewRunInfo, content []byte) (string, error) {
 	if reviewRun == nil || reviewRun.HTMLPath == "" {
 		return "", fmt.Errorf("save review: immutable review-run path is required")
