@@ -73,6 +73,7 @@ const (
 )
 
 var errReviewRunBudgetExceeded = errors.New("review run wall-clock budget exceeded")
+var errReviewRunSuperseded = errors.New("review run no longer owns the PR projection")
 
 const reviewBudgetExceededMessage = "review exceeded its execution budget"
 
@@ -448,7 +449,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	if setErr != nil {
 		log.Printf("[REVIEWER] WARNING: could not set agent_reviewing status for PR %d: %v", pr.Number, setErr)
 	} else if !projected {
-		return nil, fmt.Errorf("agent review: run %s no longer owns the PR projection", execution.Job.RunID)
+		return nil, fmt.Errorf("agent review: %w: run %s", errReviewRunSuperseded, execution.Job.RunID)
 	}
 	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 
@@ -3172,32 +3173,36 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					return
 				}
 
-				// Check if outdated
-				currentPR, dbErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-				if dbErr == nil && currentPR != nil && currentPR.Status == "pending" && currentPR.LastCommitSHA != pr.CommitSHA {
-					log.Printf("[REVIEWER] Review for PR %d was cancelled because it became outdated.", pr.Number)
-					status := db.ReviewRunStatusCancelled
-					terminalCode := "commit_outdated"
-					failureStage := "publication"
-					errorSummary := "PR head changed while the review was running"
-					p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
+				if errors.Is(err, errReviewRunSuperseded) {
+					p.finishSupersededReviewExecution(execution, err)
 				} else {
-					status := db.ReviewRunStatusFailed
-					terminalCode := "review_failed"
-					failureStage := "generation"
-					errorSummary := err.Error()
-					if p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary}) {
-						projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, err.Error())
-						if setErr != nil {
-							log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
-						} else if !projected {
-							log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping generation error", job.RunID)
-						}
-						if projected {
-							p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-						}
+					// Check if outdated
+					currentPR, dbErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+					if dbErr == nil && currentPR != nil && currentPR.Status == "pending" && currentPR.LastCommitSHA != pr.CommitSHA {
+						log.Printf("[REVIEWER] Review for PR %d was cancelled because it became outdated.", pr.Number)
+						status := db.ReviewRunStatusCancelled
+						terminalCode := "commit_outdated"
+						failureStage := "publication"
+						errorSummary := "PR head changed while the review was running"
+						p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
 					} else {
-						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping generation error projection", job.RunID)
+						status := db.ReviewRunStatusFailed
+						terminalCode := "review_failed"
+						failureStage := "generation"
+						errorSummary := err.Error()
+						if p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary}) {
+							projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, err.Error())
+							if setErr != nil {
+								log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+							} else if !projected {
+								log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping generation error", job.RunID)
+							}
+							if projected {
+								p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+							}
+						} else {
+							log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping generation error projection", job.RunID)
+						}
 					}
 				}
 				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)

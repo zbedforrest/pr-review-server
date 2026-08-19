@@ -374,6 +374,19 @@ func (p *Poller) finishReviewExecution(exec *reviewExecution, patch db.ReviewRun
 	return updated
 }
 
+func (p *Poller) finishSupersededReviewExecution(exec *reviewExecution, cause error) bool {
+	status := db.ReviewRunStatusCancelled
+	terminalCode := "superseded"
+	failureStage := "projection"
+	errorSummary := "review run no longer owns the PR projection"
+	if cause != nil {
+		errorSummary = cause.Error()
+	}
+	return p.finishReviewExecution(exec, db.ReviewRunPatch{
+		Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary,
+	})
+}
+
 // finishInterruptedReviewExecution distinguishes external cancellation (whose
 // caller owns the PR projection) from the run's organic wall-clock timeout.
 // Organic timeouts become PR errors so the bounded error-retry policy applies

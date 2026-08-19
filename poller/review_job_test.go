@@ -803,6 +803,44 @@ func TestRunAgentStageRequiresPreReservedSlot(t *testing.T) {
 	assert.Empty(t, p.agentSlots)
 }
 
+func TestRunAgentStageProjectionLossIsRecordedAsSuperseded(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-25950000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "pending",
+	}))
+	execution, err := p.beginReviewExecution(job)
+	require.NoError(t, err)
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA, job.PR.Title, job.PR.Author, nil, false, job.RunID,
+	))
+	successorRunID := "run-25950000000000000000000000000002"
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA, job.PR.Title, job.PR.Author, nil, false, successorRunID,
+	))
+
+	_, err = p.runAgentStage(context.Background(), execution, &service.ReviewResult{})
+	require.ErrorIs(t, err, errReviewRunSuperseded)
+	assert.True(t, p.finishSupersededReviewExecution(execution, err))
+
+	run, getErr := database.GetReviewRun(job.RunID)
+	require.NoError(t, getErr)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCancelled, run.Status)
+	assert.Equal(t, "superseded", run.TerminalCode)
+	assert.Equal(t, "projection", run.FailureStage)
+	assert.Empty(t, run.LeaseHolder)
+	assert.Nil(t, run.LeaseExpiresAt)
+	pr, getErr := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, getErr)
+	require.NotNil(t, pr)
+	assert.Equal(t, successorRunID, database.ProjectionRunIDs[prDBKey(job.PR.Owner, job.PR.Repo, job.PR.Number)])
+	assert.Equal(t, "generating", pr.Status)
+	assert.Empty(t, pr.ErrorMessage)
+}
+
 func TestCancelledArtifactSavePreservesResetPRState(t *testing.T) {
 	database := NewMockDatabase()
 	storage := NewMockReviewStorage()
