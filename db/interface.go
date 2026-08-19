@@ -10,6 +10,10 @@ import (
 // (e.g. as a 404) instead of reporting a no-op success.
 var ErrUserPRViewNotFound = errors.New("user PR view not found")
 
+// ErrReviewRunActiveConflict is returned when another queued/running run
+// already owns the same PR target. Terminal history remains unrestricted.
+var ErrReviewRunActiveConflict = errors.New("another review run is active for this PR")
+
 // PR represents a pull request in the database
 type PR struct {
 	ID              int
@@ -210,9 +214,12 @@ type Database interface {
 	GetReviewRunByIdempotency(scope, keyHash string) (*ReviewRun, error)
 	ListReviewRuns(filter ReviewRunFilter) ([]ReviewRun, error)
 	PatchReviewRun(runID string, patch ReviewRunPatch) error
+	PatchQueuedReviewRun(runID string, patch ReviewRunPatch) (bool, error)
 	PatchReviewRunAsHolder(runID, holder string, now time.Time, patch ReviewRunPatch) (bool, error)
+	ClaimOrRenewQueuedReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error)
 	ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.Time) (bool, error)
 	RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error)
+	AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error)
 	UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error
 	ListReviewStageAttempts(runID string) ([]ReviewStageAttempt, error)
 
@@ -225,6 +232,12 @@ type Database interface {
 	SetPRAgentReviewing(owner, repo string, prNumber int) error
 	SetPRError(owner, repo string, prNumber int, message string) error
 	MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRun ...string) error
+	SetPRGeneratingForReviewRun(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool, runID string) error
+	SetPRAgentReviewingForReviewRun(owner, repo string, prNumber int, runID string) (bool, error)
+	SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error)
+	SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error)
+	MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error)
+	RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string, inFlightStaleBefore time.Time) (bool, error)
 	GetAllPRs() ([]PR, error)
 	DeletePR(owner, repo string, prNumber int) error
 	ResetStaleGeneratingPRs(timeoutMinutes int) (int, error)

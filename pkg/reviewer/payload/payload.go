@@ -68,9 +68,13 @@ type Payload struct {
 // ReviewRunInfo is the durable execution metadata attached to a review.
 // It is additive to schema v1 so older sidecar consumers can ignore it.
 type ReviewRunInfo struct {
-	RunID       string     `json:"run_id"`
-	HTMLPath    string     `json:"html_path"`
-	JSONPath    string     `json:"json_path"`
+	RunID            string `json:"run_id"`
+	ExecutionAttempt int    `json:"execution_attempt,omitempty"`
+	HTMLPath         string `json:"html_path"`
+	JSONPath         string `json:"json_path"`
+	// StartedAt is the first execution-attempt start. DurationMS therefore
+	// measures the complete run across any lease takeovers; per-attempt timing
+	// is stored in review_stage_attempts.
 	StartedAt   time.Time  `json:"started_at"`
 	CompletedAt time.Time  `json:"completed_at"`
 	DurationMS  int64      `json:"duration_ms"`

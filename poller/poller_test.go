@@ -559,16 +559,18 @@ func TestGenerateReviewsBatch_SkipsExistingReviews(t *testing.T) {
 	mockStorage := NewMockReviewStorage()
 	mockGenerator := NewMockReviewGenerator()
 
-	// Add PR to database
+	// Add a completed legacy PR projection whose exact-commit HTML artifact is
+	// still present but predates sidecar metadata.
 	mockDB.PRs["owner/repo/1"] = &db.PR{
-		RepoOwner:     "owner",
-		RepoName:      "repo",
-		PRNumber:      1,
-		LastCommitSHA: "abc123def456789012345678901234567890abcd",
-		Status:        "pending",
-		CriticalCount: 5,
-		MediumCount:   10,
-		LowCount:      15,
+		RepoOwner:      "owner",
+		RepoName:       "repo",
+		PRNumber:       1,
+		LastCommitSHA:  "abc123def456789012345678901234567890abcd",
+		Status:         "completed",
+		ReviewHTMLPath: "review-owner-repo-1-abc123d.html",
+		CriticalCount:  5,
+		MediumCount:    10,
+		LowCount:       15,
 	}
 
 	// Mark review as already existing

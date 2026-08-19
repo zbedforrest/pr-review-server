@@ -118,6 +118,12 @@ func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun
 	return nil, nil
 }
 func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) error { return nil }
+func (m *MockDatabase) PatchQueuedReviewRun(runID string, patch db.ReviewRunPatch) (bool, error) {
+	return false, nil
+}
+func (m *MockDatabase) ClaimOrRenewQueuedReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	return false, nil
+}
 func (m *MockDatabase) PatchReviewRunAsHolder(runID, holder string, now time.Time, patch db.ReviewRunPatch) (bool, error) {
 	return false, nil
 }
@@ -126,6 +132,9 @@ func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt 
 }
 func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
 	return false, nil
+}
+func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error) {
+	return 0, nil
 }
 func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error { return nil }
 func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAttempt, error) {
@@ -147,6 +156,24 @@ func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message stri
 }
 func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRun ...string) error {
 	return nil
+}
+func (m *MockDatabase) SetPRGeneratingForReviewRun(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool, runID string) error {
+	return nil
+}
+func (m *MockDatabase) SetPRAgentReviewingForReviewRun(owner, repo string, prNumber int, runID string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string, inFlightStaleBefore time.Time) (bool, error) {
+	return true, nil
 }
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error)                             { return nil, nil }
 func (m *MockDatabase) DeletePR(owner, repo string, prNumber int) error         { return nil }

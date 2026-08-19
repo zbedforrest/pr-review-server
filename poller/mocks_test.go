@@ -236,16 +236,22 @@ func (m *MockGitHubClient) GetOrgTeamMembers(ctx context.Context, orgName, teamS
 
 // MockDatabase implements db.Database for testing
 type MockDatabase struct {
-	mu                  sync.RWMutex
-	ReviewRuns          map[string]*db.ReviewRun
-	ReviewStageAttempts map[string][]db.ReviewStageAttempt
+	mu                                     sync.RWMutex
+	ReviewRuns                             map[string]*db.ReviewRun
+	ReviewStageAttempts                    map[string][]db.ReviewStageAttempt
+	GetReviewRunFunc                       func(string) (*db.ReviewRun, error)
+	BeforeClaimOrRenewQueuedReviewRunLease func()
+	PatchReviewRunAsHolderErrors           []error
+	RenewReviewRunLeaseErrors              []error
 
 	// PRs stored in the mock database (keyed by "owner/repo/number")
-	PRs map[string]*db.PR
+	PRs              map[string]*db.PR
+	ProjectionRunIDs map[string]string
 
 	// Settings
-	AutoReviewEnabled bool
-	ReviewNRequests   int
+	AutoReviewEnabled       bool
+	ReviewNRequests         int
+	GetReviewNRequestsCalls int
 
 	// Track calls for verification
 	UpdatePRMetadataCalls []string // "owner/repo/number" keys, in call order
@@ -314,6 +320,7 @@ type MockDatabase struct {
 func NewMockDatabase() *MockDatabase {
 	return &MockDatabase{
 		PRs:                 make(map[string]*db.PR),
+		ProjectionRunIDs:    make(map[string]string),
 		ReviewRuns:          make(map[string]*db.ReviewRun),
 		ReviewStageAttempts: make(map[string][]db.ReviewStageAttempt),
 		UserPRViews:         make(map[string]*db.UserPRView),
@@ -385,7 +392,9 @@ func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCo
 		pr.LastCommitSHA = newCommitSHA
 		pr.Status = "pending"
 		pr.ReviewHTMLPath = ""
+		pr.ErrorMessage = ""
 	}
+	delete(m.ProjectionRunIDs, key)
 	return nil
 }
 
@@ -457,8 +466,152 @@ func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitS
 		pr.ReviewVerdict = verdict
 		pr.ModelFallback = modelFallback
 		pr.ErrorMessage = ""
+		if len(reviewRun) > 0 {
+			pr.ReviewRunID = reviewRun[0]
+		}
+		if len(reviewRun) > 1 {
+			pr.ReviewRunJSON = reviewRun[1]
+		}
 	}
 	return nil
+}
+
+func (m *MockDatabase) SetPRGeneratingForReviewRun(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool, runID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	now := time.Now()
+	pr, exists := m.PRs[key]
+	if !exists {
+		pr = &db.PR{RepoOwner: owner, RepoName: repo, PRNumber: prNumber}
+		m.PRs[key] = pr
+	}
+	pr.Status = "generating"
+	pr.GeneratingSince = &now
+	pr.LastCommitSHA = commitSHA
+	pr.Title = title
+	pr.Author = author
+	pr.CreatedAt = createdAt
+	pr.Draft = draft
+	pr.ErrorMessage = ""
+	m.ProjectionRunIDs[key] = runID
+	return nil
+}
+
+func (m *MockDatabase) SetPRAgentReviewingForReviewRun(owner, repo string, prNumber int, runID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if m.ProjectionRunIDs[key] != runID {
+		return false, nil
+	}
+	if pr := m.PRs[key]; pr != nil {
+		pr.Status = "agent_reviewing"
+		pr.ErrorMessage = ""
+	}
+	return true, nil
+}
+
+func (m *MockDatabase) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if m.ProjectionRunIDs[key] != runID {
+		return false, nil
+	}
+	if pr := m.PRs[key]; pr != nil {
+		pr.Status = "error"
+		pr.ErrorMessage = message
+		pr.GeneratingSince = nil
+	}
+	return true, nil
+}
+
+func (m *MockDatabase) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if pr := m.PRs[key]; pr != nil && pr.Status == "completed" {
+		return false, nil
+	}
+	for _, ownerRun := range m.ReviewRuns {
+		if ownerRun.RepoOwner == owner && ownerRun.RepoName == repo && ownerRun.PRNumber == prNumber &&
+			(ownerRun.Status == db.ReviewRunStatusQueued ||
+				(ownerRun.Status == db.ReviewRunStatusRunning && (ownerRun.LeaseExpiresAt == nil || ownerRun.LeaseExpiresAt.After(time.Now())))) {
+			return false, nil
+		}
+	}
+	if pr := m.PRs[key]; pr != nil {
+		pr.Status = "error"
+		pr.ErrorMessage = message
+		pr.GeneratingSince = nil
+		return true, nil
+	}
+	return false, nil
+}
+
+func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if m.ProjectionRunIDs[key] != projectionRunID {
+		return false, nil
+	}
+	if pr := m.PRs[key]; pr != nil {
+		now := time.Now()
+		pr.Status = "completed"
+		pr.LastCommitSHA = commitSHA
+		pr.ReviewHTMLPath = reviewPath
+		pr.LastReviewedAt = &now
+		pr.GeneratingSince = nil
+		pr.CriticalCount = critical
+		pr.MediumCount = medium
+		pr.LowCount = low
+		pr.ReviewVerdict = verdict
+		pr.ModelFallback = modelFallback
+		pr.ErrorMessage = ""
+		pr.ReviewRunID = reviewRunID
+		pr.ReviewRunJSON = reviewRunJSON
+	}
+	return true, nil
+}
+
+func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string, inFlightStaleBefore time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	pr := m.PRs[key]
+	if pr == nil || pr.Status == "completed" {
+		return false, nil
+	}
+	if pr.Status == "generating" || pr.Status == "agent_reviewing" {
+		if m.ProjectionRunIDs[key] == "" || (pr.GeneratingSince != nil && pr.GeneratingSince.After(inFlightStaleBefore)) {
+			return false, nil
+		}
+	}
+	for _, ownerRun := range m.ReviewRuns {
+		if ownerRun.RunID != projectionRunID && ownerRun.RepoOwner == owner && ownerRun.RepoName == repo && ownerRun.PRNumber == prNumber &&
+			(ownerRun.Status == db.ReviewRunStatusQueued ||
+				(ownerRun.Status == db.ReviewRunStatusRunning && (ownerRun.LeaseExpiresAt == nil || ownerRun.LeaseExpiresAt.After(time.Now())))) {
+			return false, nil
+		}
+	}
+	now := time.Now()
+	pr.Status = "completed"
+	pr.LastCommitSHA = commitSHA
+	pr.ReviewHTMLPath = reviewPath
+	pr.LastReviewedAt = &now
+	pr.GeneratingSince = nil
+	pr.CriticalCount = critical
+	pr.MediumCount = medium
+	pr.LowCount = low
+	pr.ReviewVerdict = verdict
+	pr.ModelFallback = modelFallback
+	pr.ErrorMessage = ""
+	pr.ReviewRunID = reviewRunID
+	pr.ReviewRunJSON = reviewRunJSON
+	m.ProjectionRunIDs[key] = projectionRunID
+	return true, nil
 }
 
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error) {
@@ -566,6 +719,9 @@ func (m *MockDatabase) SetAutoReviewRequestedPRs(enabled bool) error {
 }
 
 func (m *MockDatabase) GetReviewNRequests() (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.GetReviewNRequestsCalls++
 	return m.ReviewNRequests, nil
 }
 
@@ -893,6 +1049,9 @@ func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error {
 }
 
 func (m *MockDatabase) GetReviewRun(runID string) (*db.ReviewRun, error) {
+	if m.GetReviewRunFunc != nil {
+		return m.GetReviewRunFunc(runID)
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	run := m.ReviewRuns[runID]
@@ -969,6 +1128,19 @@ func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) err
 	return m.patchReviewRunLocked(run, patch)
 }
 
+func (m *MockDatabase) PatchQueuedReviewRun(runID string, patch db.ReviewRunPatch) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.ReviewRuns[runID]
+	if run == nil || run.Status != db.ReviewRunStatusQueued {
+		return false, nil
+	}
+	if err := m.patchReviewRunLocked(run, patch); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (m *MockDatabase) patchReviewRunLocked(run *db.ReviewRun, patch db.ReviewRunPatch) error {
 	if patch == (db.ReviewRunPatch{}) {
 		return fmt.Errorf("patch review run %s: patch is empty", run.RunID)
@@ -1043,6 +1215,13 @@ func (m *MockDatabase) patchReviewRunLocked(run *db.ReviewRun, patch db.ReviewRu
 func (m *MockDatabase) PatchReviewRunAsHolder(runID, holder string, now time.Time, patch db.ReviewRunPatch) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.PatchReviewRunAsHolderErrors) > 0 {
+		err := m.PatchReviewRunAsHolderErrors[0]
+		m.PatchReviewRunAsHolderErrors = m.PatchReviewRunAsHolderErrors[1:]
+		if err != nil {
+			return false, err
+		}
+	}
 	run := m.ReviewRuns[runID]
 	if run == nil || run.Status != db.ReviewRunStatusRunning || run.LeaseHolder != holder ||
 		run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(now) {
@@ -1093,9 +1272,36 @@ func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt 
 	return true, nil
 }
 
+func (m *MockDatabase) ClaimOrRenewQueuedReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	if m.BeforeClaimOrRenewQueuedReviewRunLease != nil {
+		m.BeforeClaimOrRenewQueuedReviewRunLease()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if runID == "" || holder == "" || now.IsZero() || !leaseExpiresAt.After(now) {
+		return false, fmt.Errorf("claim queued review run lease: invalid arguments")
+	}
+	run := m.ReviewRuns[runID]
+	if run == nil || run.Status != db.ReviewRunStatusQueued ||
+		(run.LeaseHolder != "" && run.LeaseHolder != holder && run.LeaseExpiresAt != nil && run.LeaseExpiresAt.After(now)) {
+		return false, nil
+	}
+	run.LeaseHolder = holder
+	expires := leaseExpiresAt
+	run.LeaseExpiresAt = &expires
+	return true, nil
+}
+
 func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.RenewReviewRunLeaseErrors) > 0 {
+		err := m.RenewReviewRunLeaseErrors[0]
+		m.RenewReviewRunLeaseErrors = m.RenewReviewRunLeaseErrors[1:]
+		if err != nil {
+			return false, err
+		}
+	}
 	run := m.ReviewRuns[runID]
 	if run == nil || run.Status != db.ReviewRunStatusRunning || run.LeaseHolder != holder ||
 		run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(now) {
@@ -1104,6 +1310,69 @@ func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpir
 	expires := leaseExpiresAt
 	run.LeaseExpiresAt = &expires
 	return true, nil
+}
+
+func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error) {
+	const mockReviewRunAbandonBatchSize = 500
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if now.IsZero() || runningGrace < 0 || queuedMaxAge <= 0 {
+		return 0, fmt.Errorf("abandon expired review runs: invalid arguments")
+	}
+	runningCutoff := now.Add(-runningGrace)
+	queuedCutoff := now.Add(-queuedMaxAge)
+	abandonedRuns := make([]*db.ReviewRun, 0)
+	for _, run := range m.ReviewRuns {
+		terminalCode := ""
+		failureStage := ""
+		errorSummary := ""
+		switch {
+		case run.Status == db.ReviewRunStatusRunning && run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(runningCutoff):
+			terminalCode = "lease_abandoned"
+			failureStage = "execution"
+			errorSummary = "review worker lease expired before terminal completion"
+		case run.Status == db.ReviewRunStatusQueued &&
+			((run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(runningCutoff)) ||
+				(run.LeaseExpiresAt == nil && !run.QueuedAt.After(queuedCutoff))):
+			terminalCode = "queue_abandoned"
+			failureStage = "dispatch"
+			errorSummary = "review run remained queued beyond the dispatch recovery window"
+		default:
+			continue
+		}
+		if len(abandonedRuns) == mockReviewRunAbandonBatchSize {
+			break
+		}
+		completedAt := now
+		run.Status = db.ReviewRunStatusTimedOut
+		run.CompletedAt = &completedAt
+		run.TerminalCode = terminalCode
+		run.FailureStage = failureStage
+		run.ErrorSummary = errorSummary
+		run.LeaseHolder = ""
+		run.LeaseExpiresAt = nil
+		abandonedRuns = append(abandonedRuns, run)
+	}
+	for _, run := range abandonedRuns {
+		key := prDBKey(run.RepoOwner, run.RepoName, run.PRNumber)
+		hasLiveReplacement := false
+		for _, candidate := range m.ReviewRuns {
+			if candidate.RunID != run.RunID && candidate.RepoOwner == run.RepoOwner && candidate.RepoName == run.RepoName && candidate.PRNumber == run.PRNumber &&
+				(candidate.Status == db.ReviewRunStatusQueued ||
+					(candidate.Status == db.ReviewRunStatusRunning && (candidate.LeaseExpiresAt == nil || candidate.LeaseExpiresAt.After(now)))) {
+				hasLiveReplacement = true
+				break
+			}
+		}
+		if pr := m.PRs[key]; pr != nil && pr.Status != "completed" && !hasLiveReplacement && m.ProjectionRunIDs[key] == run.RunID {
+			completedAt := now
+			pr.Status = "error"
+			pr.ErrorMessage = "review run abandoned after lease expiry"
+			pr.LastReviewedAt = &completedAt
+			pr.GeneratingSince = nil
+		}
+	}
+	return len(abandonedRuns), nil
 }
 
 func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error {
@@ -1157,7 +1426,9 @@ type MockReviewStorage struct {
 
 	// Error injection
 	ReviewExistsError error
+	ReviewExistsFunc  func(context.Context, string, string, int, string) (bool, error)
 	SaveReviewError   error
+	SaveReviewFunc    func(context.Context, string, string, int, string, []byte) (string, error)
 
 	// Track calls
 	ReviewExistsCalls []struct {
@@ -1187,8 +1458,6 @@ func NewMockReviewStorage() *MockReviewStorage {
 
 func (m *MockReviewStorage) ReviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (bool, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := fmt.Sprintf("%s/%s/%d/%s", owner, repo, prNumber, commitSHA)
 	m.ReviewExistsCalls = append(m.ReviewExistsCalls, struct {
 		Owner     string
@@ -1197,18 +1466,21 @@ func (m *MockReviewStorage) ReviewExists(ctx context.Context, owner, repo string
 		CommitSHA string
 	}{owner, repo, prNumber, commitSHA})
 
-	if m.ReviewExistsError != nil {
-		return false, m.ReviewExistsError
-	}
-
+	fn := m.ReviewExistsFunc
+	err := m.ReviewExistsError
 	exists := m.ExistingReviews[key]
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, owner, repo, prNumber, commitSHA)
+	}
+	if err != nil {
+		return false, err
+	}
 	return exists, nil
 }
 
 func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := fmt.Sprintf("%s/%s/%d/%s", owner, repo, prNumber, commitSHA)
 	m.SaveReviewCalls = append(m.SaveReviewCalls, struct {
 		Owner     string
@@ -1217,12 +1489,20 @@ func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, 
 		CommitSHA string
 		Content   []byte
 	}{owner, repo, prNumber, commitSHA, content})
+	saveErr := m.SaveReviewError
+	saveFunc := m.SaveReviewFunc
+	m.mu.Unlock()
 
-	if m.SaveReviewError != nil {
-		return "", m.SaveReviewError
+	if saveFunc != nil {
+		return saveFunc(ctx, owner, repo, prNumber, commitSHA, content)
+	}
+	if saveErr != nil {
+		return "", saveErr
 	}
 
+	m.mu.Lock()
 	m.SavedReviews[key] = content
+	m.mu.Unlock()
 	return fmt.Sprintf("review-%s-%s-%d-%s.html", owner, repo, prNumber, commitSHA[:7]), nil
 }
 
@@ -1340,10 +1620,10 @@ func newTestPollerWithStorage(mockGH *MockGitHubClient, mockDB *MockDatabase, mo
 }
 
 // newTestPollerFull creates a Poller with all mock dependencies
-func newTestPollerFull(mockGH *MockGitHubClient, mockDB *MockDatabase, mockStorage *MockReviewStorage, mockGenerator *MockReviewGenerator) *Poller {
+func newTestPollerFull(mockGH *MockGitHubClient, database db.Database, mockStorage *MockReviewStorage, mockGenerator *MockReviewGenerator) *Poller {
 	p := &Poller{
 		cfg:           testConfig(),
-		db:            mockDB,
+		db:            database,
 		ghClient:      mockGH,
 		reviewDir:     "/tmp/test-reviews",
 		activeReviews: make(map[string]ProcessInfo),

@@ -9,6 +9,141 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const reviewRunAbandonBatchSize = 500
+
+// SetPRGeneratingForReviewRun atomically claims the mutable PR projection for
+// runID while moving it into the generating state. A later run may replace the
+// claim; all subsequent projection writes below are conditional on ownership.
+func (g *GormDB) SetPRGeneratingForReviewRun(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool, runID string) error {
+	if owner == "" || repo == "" || prNumber <= 0 || commitSHA == "" || runID == "" {
+		return fmt.Errorf("set PR generating for review run: complete PR target, commit, and run ID are required")
+	}
+	now := time.Now().UTC()
+	model := &PRModel{
+		RepoOwner: owner, RepoName: repo, PRNumber: prNumber, LastCommitSHA: commitSHA,
+		Status: "generating", GeneratingSince: &now, Title: title, Author: author,
+		CreatedAt: createdAt, Draft: draft, ProjectionRunID: runID,
+	}
+	updateColumns := []string{
+		"last_commit_sha", "status", "generating_since", "title", "author", "draft",
+		"projection_run_id", "error_message",
+	}
+	// A missing GitHub created_at is represented as nil. Preserve an existing
+	// timestamp on conflict so temporary upstream omissions do not degrade PR
+	// ordering or trigger avoidable metadata backfills.
+	if createdAt != nil {
+		updateColumns = append(updateColumns, "created_at")
+	}
+	return g.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
+		DoUpdates: clause.AssignmentColumns(updateColumns),
+	}).Create(model).Error
+}
+
+func (g *GormDB) SetPRAgentReviewingForReviewRun(owner, repo string, prNumber int, runID string) (bool, error) {
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ?", owner, repo, prNumber, runID).
+		Updates(map[string]any{"status": "agent_reviewing", "error_message": ""})
+	if result.Error != nil {
+		return false, fmt.Errorf("set PR agent reviewing for run %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func (g *GormDB) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error) {
+	now := time.Now().UTC()
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ?", owner, repo, prNumber, runID).
+		Updates(map[string]any{
+			"status": "error", "error_message": message, "last_reviewed_at": now, "generating_since": nil,
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("set PR error for run %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// SetPRErrorIfNoLiveReview records an admission/dispatch failure only when the
+// target PR has no queued or live-leased run. The target-wide predicate covers
+// newly accepted work before its run ID claims the mutable PR projection.
+func (g *GormDB) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error) {
+	now := time.Now().UTC()
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Where("status <> ?", "completed").
+		Where(`NOT EXISTS (
+			SELECT 1 FROM review_runs
+			WHERE review_runs.repo_owner = prs.repo_owner
+			  AND review_runs.repo_name = prs.repo_name
+			  AND review_runs.pr_number = prs.pr_number
+			  AND (review_runs.status = ? OR
+			       (review_runs.status = ? AND (review_runs.lease_expires_at IS NULL OR review_runs.lease_expires_at > ?)))
+		)`, ReviewRunStatusQueued, ReviewRunStatusRunning, now).
+		Updates(map[string]any{
+			"status": "error", "error_message": message, "last_reviewed_at": now, "generating_since": nil,
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("set PR error without live review: %w", result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func (g *GormDB) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+	now := time.Now().UTC()
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ?", owner, repo, prNumber, projectionRunID).
+		Updates(map[string]any{
+			"status": "completed", "review_path": reviewPath, "last_commit_sha": commitSHA,
+			"last_reviewed_at": now, "generating_since": nil, "critical_count": critical,
+			"medium_count": medium, "low_count": low, "review_verdict": verdict,
+			"model_fallback": modelFallback, "review_run_id": reviewRunID,
+			"review_run_json": reviewRunJSON, "error_message": "", "error_retry_count": 0,
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("mark PR completed for run %s: %w", projectionRunID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// RestorePRCompletedFromCacheForReviewRun projects an existing artifact only
+// while no active run owns the PR and the row is not already completed. An
+// in-flight-looking row is recoverable only when it has aged beyond the caller's
+// admission window and no queued/live run exists for the PR. The target-wide
+// live-run check also protects a newly accepted run before it claims the mutable
+// projection, including when that projection still names an older terminal run.
+func (g *GormDB) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string, inFlightStaleBefore time.Time) (bool, error) {
+	if owner == "" || repo == "" || prNumber <= 0 || projectionRunID == "" || commitSHA == "" || reviewPath == "" || inFlightStaleBefore.IsZero() {
+		return false, fmt.Errorf("restore cached PR for review run: complete PR target, projection run, commit, path, and stale cutoff are required")
+	}
+	now := time.Now().UTC()
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Where("status <> ?", "completed").
+		Where("status NOT IN ? OR (COALESCE(projection_run_id, '') <> '' AND (generating_since IS NULL OR generating_since <= ?))",
+			[]string{"generating", "agent_reviewing"}, inFlightStaleBefore).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM review_runs
+			WHERE review_runs.repo_owner = prs.repo_owner
+			  AND review_runs.repo_name = prs.repo_name
+			  AND review_runs.pr_number = prs.pr_number
+			  AND review_runs.run_id <> ?
+			  AND (review_runs.status = ? OR
+			       (review_runs.status = ? AND (review_runs.lease_expires_at IS NULL OR review_runs.lease_expires_at > ?)))
+		)`, projectionRunID, ReviewRunStatusQueued, ReviewRunStatusRunning, now).
+		Updates(map[string]any{
+			"status": "completed", "projection_run_id": projectionRunID,
+			"review_path": reviewPath, "last_commit_sha": commitSHA, "last_reviewed_at": now,
+			"generating_since": nil, "critical_count": critical, "medium_count": medium,
+			"low_count": low, "review_verdict": verdict, "model_fallback": modelFallback,
+			"review_run_id": reviewRunID, "review_run_json": reviewRunJSON,
+			"error_message": "", "error_retry_count": 0,
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("restore cached PR for run %s: %w", projectionRunID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
 func (g *GormDB) CreateReviewRun(run *ReviewRun) error {
 	if run == nil {
 		return fmt.Errorf("create review run: run is nil")
@@ -37,6 +172,22 @@ func (g *GormDB) CreateReviewRun(run *ReviewRun) error {
 	model := reviewRunToModel(*run)
 	if err := g.db.Create(&model).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			var identityConflict ReviewRunModel
+			if g.db.Where("run_id = ?", run.RunID).First(&identityConflict).Error == nil {
+				return fmt.Errorf("%w: run_id=%s scope=%s (run ID or idempotency key conflict)", ErrReviewRunConflict, run.RunID, run.IdempotencyScope)
+			}
+			if run.IdempotencyScope != "" && run.IdempotencyKeyHash != "" &&
+				g.db.Where("idempotency_scope = ? AND idempotency_key_hash = ?", run.IdempotencyScope, run.IdempotencyKeyHash).First(&identityConflict).Error == nil {
+				return fmt.Errorf("%w: run_id=%s scope=%s (run ID or idempotency key conflict)", ErrReviewRunConflict, run.RunID, run.IdempotencyScope)
+			}
+			var live ReviewRunModel
+			liveErr := g.db.Where(
+				"repo_owner = ? AND repo_name = ? AND pr_number = ? AND status IN ?",
+				run.RepoOwner, run.RepoName, run.PRNumber, []string{ReviewRunStatusQueued, ReviewRunStatusRunning},
+			).First(&live).Error
+			if liveErr == nil && live.RunID != run.RunID {
+				return fmt.Errorf("%w: target=%s/%s#%d active_run_id=%s", ErrReviewRunActiveConflict, run.RepoOwner, run.RepoName, run.PRNumber, live.RunID)
+			}
 			return fmt.Errorf("%w: run_id=%s scope=%s (run ID or idempotency key conflict)", ErrReviewRunConflict, run.RunID, run.IdempotencyScope)
 		}
 		return fmt.Errorf("create review run %s: %w", run.RunID, err)
@@ -120,6 +271,39 @@ func (g *GormDB) PatchReviewRun(runID string, patch ReviewRunPatch) error {
 		return fmt.Errorf("patch review run %s: not found", runID)
 	}
 	return nil
+}
+
+// PatchQueuedReviewRun applies a dispatch result only while the run remains
+// queued. It races safely with ClaimReviewRun: exactly one transition wins.
+func (g *GormDB) PatchQueuedReviewRun(runID string, patch ReviewRunPatch) (bool, error) {
+	updates := reviewRunPatchUpdates(patch)
+	if len(updates) == 0 {
+		return false, fmt.Errorf("patch queued review run %s: patch is empty", runID)
+	}
+	result := g.db.Model(&ReviewRunModel{}).
+		Where("run_id = ? AND status = ?", runID, ReviewRunStatusQueued).
+		Updates(updates)
+	if result.Error != nil {
+		return false, fmt.Errorf("patch queued review run %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// ClaimOrRenewQueuedReviewRunLease records that an in-process dispatcher is
+// still responsible for a durably accepted queued run. A different dispatcher
+// may take over only after the previous lease expires.
+func (g *GormDB) ClaimOrRenewQueuedReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	if runID == "" || holder == "" || now.IsZero() || !leaseExpiresAt.After(now) {
+		return false, fmt.Errorf("claim queued review run lease: run ID, holder, and a future expiry are required")
+	}
+	result := g.db.Model(&ReviewRunModel{}).
+		Where("run_id = ? AND status = ? AND (lease_holder = ? OR lease_holder = '' OR lease_expires_at IS NULL OR lease_expires_at <= ?)",
+			runID, ReviewRunStatusQueued, holder, now).
+		Updates(map[string]any{"lease_holder": holder, "lease_expires_at": leaseExpiresAt})
+	if result.Error != nil {
+		return false, fmt.Errorf("claim queued review run lease %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
 }
 
 // PatchReviewRunAsHolder applies a worker lifecycle/result update only while
@@ -263,6 +447,97 @@ func (g *GormDB) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt t
 		return false, fmt.Errorf("renew review run lease %s: %w", runID, result.Error)
 	}
 	return result.RowsAffected == 1, nil
+}
+
+// AbandonExpiredReviewRuns terminalizes running rows whose worker lease stayed
+// expired through the grace period and queued rows left behind by a dispatcher
+// crash. Both updates race safely with the atomic queued-to-running claim.
+func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error) {
+	if now.IsZero() || runningGrace < 0 || queuedMaxAge <= 0 {
+		return 0, fmt.Errorf("abandon expired review runs: current time, non-negative running grace, and positive queue max age are required")
+	}
+	runningCutoff := now.Add(-runningGrace)
+	queuedCutoff := now.Add(-queuedMaxAge)
+	abandoned := 0
+	err := g.db.Transaction(func(tx *gorm.DB) error {
+		var candidateIDs []string
+		if err := tx.Model(&ReviewRunModel{}).
+			Where("(status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND queued_at <= ?)))",
+				ReviewRunStatusRunning, runningCutoff, ReviewRunStatusQueued, runningCutoff, queuedCutoff).
+			Order("run_id ASC").
+			Limit(reviewRunAbandonBatchSize).
+			Pluck("run_id", &candidateIDs).Error; err != nil {
+			return fmt.Errorf("list candidate rows: %w", err)
+		}
+		if len(candidateIDs) == 0 {
+			return nil
+		}
+		running := tx.Model(&ReviewRunModel{}).
+			Where("run_id IN ? AND status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", candidateIDs, ReviewRunStatusRunning, runningCutoff).
+			Updates(map[string]any{
+				"status":           ReviewRunStatusTimedOut,
+				"completed_at":     now,
+				"terminal_code":    "lease_abandoned",
+				"failure_stage":    "execution",
+				"error_summary":    "review worker lease expired before terminal completion",
+				"lease_holder":     "",
+				"lease_expires_at": nil,
+			})
+		if running.Error != nil {
+			return fmt.Errorf("running rows: %w", running.Error)
+		}
+		queued := tx.Model(&ReviewRunModel{}).
+			Where("run_id IN ? AND status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND queued_at <= ?))",
+				candidateIDs, ReviewRunStatusQueued, runningCutoff, queuedCutoff).
+			Updates(map[string]any{
+				"status":           ReviewRunStatusTimedOut,
+				"completed_at":     now,
+				"terminal_code":    "queue_abandoned",
+				"failure_stage":    "dispatch",
+				"error_summary":    "review run remained queued beyond the dispatch recovery window",
+				"lease_holder":     "",
+				"lease_expires_at": nil,
+			})
+		if queued.Error != nil {
+			return fmt.Errorf("queued rows: %w", queued.Error)
+		}
+		abandoned = int(running.RowsAffected + queued.RowsAffected)
+		if abandoned == 0 {
+			return nil
+		}
+		var runIDs []string
+		if err := tx.Model(&ReviewRunModel{}).
+			Where("run_id IN ? AND status = ? AND terminal_code IN ?", candidateIDs, ReviewRunStatusTimedOut, []string{"lease_abandoned", "queue_abandoned"}).
+			Pluck("run_id", &runIDs).Error; err != nil {
+			return fmt.Errorf("list abandoned rows: %w", err)
+		}
+		if len(runIDs) == 0 {
+			return nil
+		}
+		result := tx.Model(&PRModel{}).
+			Where("projection_run_id IN ?", runIDs).
+			Where("status <> ?", "completed").
+			Where(`NOT EXISTS (
+				SELECT 1 FROM review_runs
+				WHERE review_runs.repo_owner = prs.repo_owner
+				  AND review_runs.repo_name = prs.repo_name
+				  AND review_runs.pr_number = prs.pr_number
+				  AND (review_runs.status = ? OR
+				       (review_runs.status = ? AND (review_runs.lease_expires_at IS NULL OR review_runs.lease_expires_at > ?)))
+			)`, ReviewRunStatusQueued, ReviewRunStatusRunning, now).
+			Updates(map[string]any{
+				"status": "error", "error_message": "review run abandoned after lease expiry",
+				"last_reviewed_at": now, "generating_since": nil,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("project abandoned rows: %w", result.Error)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("abandon expired review runs: %w", err)
+	}
+	return abandoned, nil
 }
 
 func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {

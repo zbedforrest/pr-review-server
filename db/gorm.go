@@ -127,8 +127,49 @@ func (g *GormDB) ensureIdempotentColumns() error {
 			return fmt.Errorf("create review_stage_attempts: %w", err)
 		}
 	}
-
+	// Older revisions did not enforce one live run per target. Prefer work that
+	// is demonstrably executing, then an actively leased dispatcher, before
+	// recency. This avoids preserving a newer orphaned queue row over a live
+	// worker and pinning the new unique index until queue abandonment.
+	if err := g.db.Exec(`WITH ranked_live_runs AS (
+		SELECT run_id,
+			ROW_NUMBER() OVER (
+				PARTITION BY repo_owner, repo_name, pr_number
+				ORDER BY CASE
+					WHEN status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at > CURRENT_TIMESTAMP) THEN 4
+					WHEN status = 'queued' AND COALESCE(lease_holder, '') <> '' AND lease_expires_at > CURRENT_TIMESTAMP THEN 3
+					WHEN status = 'running' THEN 2
+					WHEN status = 'queued' AND COALESCE(lease_holder, '') <> '' THEN 1
+					ELSE 0
+				END DESC, accepted_at DESC, run_id DESC
+			) AS survivor_rank
+		FROM review_runs
+		WHERE status IN ('queued', 'running')
+	)
+	UPDATE review_runs
+		SET status = 'timed_out', terminal_code = 'migration_deduped', failure_stage = 'migration',
+			error_summary = 'terminalized by one-live-run-per-PR migration', completed_at = CURRENT_TIMESTAMP,
+			lease_holder = '', lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE run_id IN (SELECT run_id FROM ranked_live_runs WHERE survivor_rank > 1)`).Error; err != nil {
+		return fmt.Errorf("dedupe live review runs: %w", err)
+	}
+	if err := g.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_runs_one_live_per_pr
+		ON review_runs(repo_owner, repo_name, pr_number)
+		WHERE status IN ('queued', 'running')`).Error; err != nil {
+		return fmt.Errorf("index one live review run per PR: %w", err)
+	}
 	if g.db.Dialector.Name() != "postgres" {
+		if !g.db.Migrator().HasTable(&PRModel{}) {
+			return nil
+		}
+		if !g.db.Migrator().HasColumn(&PRModel{}, "projection_run_id") {
+			if err := g.db.Migrator().AddColumn(&PRModel{}, "ProjectionRunID"); err != nil {
+				return fmt.Errorf("add projection_run_id: %w", err)
+			}
+		}
+		if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
+			return fmt.Errorf("backfill projection_run_id: %w", err)
+		}
 		return nil
 	}
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS github_updated_at timestamptz").Error; err != nil {
@@ -161,8 +202,20 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS review_run_json text").Error; err != nil {
 		return fmt.Errorf("add review_run_json: %w", err)
 	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS projection_run_id varchar(36)").Error; err != nil {
+		return fmt.Errorf("add projection_run_id: %w", err)
+	}
+	if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
+		return fmt.Errorf("backfill projection_run_id: %w", err)
+	}
 	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_prs_review_run_id ON prs(review_run_id)").Error; err != nil {
 		return fmt.Errorf("index review_run_id: %w", err)
+	}
+	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_review_runs_status_lease ON review_runs(status, lease_expires_at)").Error; err != nil {
+		return fmt.Errorf("index review_runs status/lease: %w", err)
+	}
+	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_review_runs_status_queue ON review_runs(status, queued_at)").Error; err != nil {
+		return fmt.Errorf("index review_runs status/queue: %w", err)
 	}
 	return nil
 }

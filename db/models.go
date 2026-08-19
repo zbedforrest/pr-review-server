@@ -102,6 +102,10 @@ type PRModel struct {
 	// the full additive payload.ReviewRunInfo without coupling db to payload.
 	ReviewRunID   string `gorm:"column:review_run_id;size:36;index"`
 	ReviewRunJSON string `gorm:"column:review_run_json;type:text"`
+	// ProjectionRunID fences mutable PR status/result writes across overlapping
+	// service instances. It records the most recent run allowed to project and
+	// intentionally remains set after that run becomes terminal.
+	ProjectionRunID string `gorm:"column:projection_run_id;size:36"`
 	// Review importance counts (populated after review generation)
 	CriticalCount int `gorm:"default:0"`
 	MediumCount   int `gorm:"default:0"`
@@ -118,8 +122,9 @@ type PRModel struct {
 	ErrorMessage string `gorm:"column:error_message;type:text"`
 	// How many times the auto-retry path has reset this PR back to pending
 	// after an error. Capped by ResetErrorPRs so deterministic failures
-	// (auth misconfig, model outage) don't burn quota indefinitely. Reset
-	// to 0 by SetPRGenerating (manual trigger or fresh poll-cycle attempt).
+	// (auth misconfig, model outage) don't burn quota indefinitely. Legacy
+	// manual admission and successful completion reset it; run-aware automatic
+	// admission intentionally preserves it so retries cannot re-arm themselves.
 	ErrorRetryCount int `gorm:"column:error_retry_count;default:0"`
 }
 
@@ -141,7 +146,7 @@ type ReviewRunModel struct {
 	CommitSHA         string `gorm:"size:40;not null;index:idx_review_runs_commit_history,priority:3"`
 	RequestedByUserID *uint  `gorm:"column:requested_by_user_id;index"`
 	TriggerSource     string `gorm:"size:32;not null;index"`
-	Status            string `gorm:"size:32;not null;index"`
+	Status            string `gorm:"size:32;not null;index;index:idx_review_runs_status_lease,priority:1;index:idx_review_runs_status_queue,priority:1"`
 
 	RequestedConfigJSON string `gorm:"column:requested_config_json;type:text;not null"`
 	EffectiveConfigJSON string `gorm:"column:effective_config_json;type:text;not null"`
@@ -156,7 +161,7 @@ type ReviewRunModel struct {
 	AgentMaxTurns     int    `gorm:"column:agent_max_turns"`
 
 	AcceptedAt  time.Time  `gorm:"column:accepted_at;not null;index;index:idx_review_runs_pr_history,priority:4;index:idx_review_runs_commit_history,priority:4"`
-	QueuedAt    time.Time  `gorm:"column:queued_at;not null;index"`
+	QueuedAt    time.Time  `gorm:"column:queued_at;not null;index;index:idx_review_runs_status_queue,priority:2"`
 	StartedAt   *time.Time `gorm:"column:started_at;index"`
 	CompletedAt *time.Time `gorm:"column:completed_at;index"`
 	DurationMS  int64      `gorm:"column:duration_ms"`
@@ -178,7 +183,7 @@ type ReviewRunModel struct {
 
 	ServiceRevision    string     `gorm:"column:service_revision;size:255"`
 	LeaseHolder        string     `gorm:"column:lease_holder;size:255;index"`
-	LeaseExpiresAt     *time.Time `gorm:"column:lease_expires_at;index"`
+	LeaseExpiresAt     *time.Time `gorm:"column:lease_expires_at;index;index:idx_review_runs_status_lease,priority:2"`
 	ExecutionAttempt   int        `gorm:"column:execution_attempt;default:0"`
 	IdempotencyScope   string     `gorm:"column:idempotency_scope;size:255;uniqueIndex:idx_review_runs_idempotency,where:idempotency_key_hash <> '',priority:1"`
 	IdempotencyKeyHash string     `gorm:"column:idempotency_key_hash;size:64;uniqueIndex:idx_review_runs_idempotency,where:idempotency_key_hash <> '',priority:2"`
