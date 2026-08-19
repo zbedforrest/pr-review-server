@@ -249,8 +249,9 @@ type MockDatabase struct {
 	ProjectionRunIDs map[string]string
 
 	// Settings
-	AutoReviewEnabled bool
-	ReviewNRequests   int
+	AutoReviewEnabled       bool
+	ReviewNRequests         int
+	GetReviewNRequestsCalls int
 
 	// Track calls for verification
 	UpdatePRMetadataCalls []string // "owner/repo/number" keys, in call order
@@ -718,6 +719,9 @@ func (m *MockDatabase) SetAutoReviewRequestedPRs(enabled bool) error {
 }
 
 func (m *MockDatabase) GetReviewNRequests() (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.GetReviewNRequestsCalls++
 	return m.ReviewNRequests, nil
 }
 

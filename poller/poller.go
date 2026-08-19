@@ -2868,10 +2868,10 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 	}
 	jobs := make([]ReviewJob, 0, len(prs))
 	var dispatchErrors []error
+	snapshot, snapshotErr := p.defaultReviewSnapshot()
 	for _, pr := range prs {
-		job, err := p.defaultReviewJob(pr, force, "poller")
-		if err != nil {
-			configErr := fmt.Errorf("invalid deployment review defaults for %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, err)
+		if snapshotErr != nil {
+			configErr := fmt.Errorf("invalid deployment review defaults for %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, snapshotErr)
 			log.Printf("[REVIEWER] ERROR: %v", configErr)
 			projected, setErr := p.db.SetPRErrorIfNoLiveReview(pr.Owner, pr.Repo, pr.Number, configErr.Error())
 			if setErr != nil {
@@ -2884,7 +2884,10 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			}
 			continue
 		}
-		jobs = append(jobs, job)
+		jobs = append(jobs, ReviewJob{
+			PR: pr, RunID: newReviewRunID(), Config: snapshot,
+			TriggerSource: "poller", Force: force,
+		})
 	}
 	if err := p.generateReviewJobs(ctx, jobs); err != nil {
 		dispatchErrors = append(dispatchErrors, err)

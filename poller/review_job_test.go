@@ -150,6 +150,7 @@ func TestGenerateReviewsBatchSurfacesInvalidDefaultsForEveryPR(t *testing.T) {
 	err := p.generateReviewsBatch(context.Background(), prs, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid deployment review defaults")
+	assert.Equal(t, 1, database.GetReviewNRequestsCalls, "one batch must freeze one deployment-default snapshot")
 	for _, target := range prs {
 		pr, getErr := database.GetPR(target.Owner, target.Repo, target.Number)
 		require.NoError(t, getErr)

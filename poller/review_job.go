@@ -89,7 +89,7 @@ func (p *Poller) validateReviewJob(job ReviewJob) error {
 	return nil
 }
 
-func (p *Poller) defaultReviewJob(pr github.PullRequest, force bool, triggerSource string) (ReviewJob, error) {
+func (p *Poller) defaultReviewSnapshot() (runconfig.Snapshot, error) {
 	nRequests, err := p.db.GetReviewNRequests()
 	if err != nil || nRequests <= 0 {
 		nRequests = 1
@@ -137,7 +137,15 @@ func (p *Poller) defaultReviewJob(pr github.PullRequest, force bool, triggerSour
 	}
 	snapshot, err := runconfig.Resolve(runconfig.Overrides{}, defaults, policy)
 	if err != nil {
-		return ReviewJob{}, fmt.Errorf("resolve deployment review defaults: %w", err)
+		return runconfig.Snapshot{}, fmt.Errorf("resolve deployment review defaults: %w", err)
+	}
+	return snapshot, nil
+}
+
+func (p *Poller) defaultReviewJob(pr github.PullRequest, force bool, triggerSource string) (ReviewJob, error) {
+	snapshot, err := p.defaultReviewSnapshot()
+	if err != nil {
+		return ReviewJob{}, err
 	}
 	return ReviewJob{
 		PR:            pr,
