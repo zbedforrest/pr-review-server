@@ -546,6 +546,39 @@ func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber 
 	return true, nil
 }
 
+func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	pr := m.PRs[key]
+	if pr == nil || pr.Status == "generating" || pr.Status == "agent_reviewing" || pr.Status == "completed" {
+		return false, nil
+	}
+	if ownerRunID := m.ProjectionRunIDs[key]; ownerRunID != "" {
+		if ownerRun := m.ReviewRuns[ownerRunID]; ownerRun != nil &&
+			(ownerRun.Status == db.ReviewRunStatusQueued ||
+				(ownerRun.Status == db.ReviewRunStatusRunning && (ownerRun.LeaseExpiresAt == nil || ownerRun.LeaseExpiresAt.After(time.Now())))) {
+			return false, nil
+		}
+	}
+	now := time.Now()
+	pr.Status = "completed"
+	pr.LastCommitSHA = commitSHA
+	pr.ReviewHTMLPath = reviewPath
+	pr.LastReviewedAt = &now
+	pr.GeneratingSince = nil
+	pr.CriticalCount = critical
+	pr.MediumCount = medium
+	pr.LowCount = low
+	pr.ReviewVerdict = verdict
+	pr.ModelFallback = modelFallback
+	pr.ErrorMessage = ""
+	pr.ReviewRunID = reviewRunID
+	pr.ReviewRunJSON = reviewRunJSON
+	m.ProjectionRunIDs[key] = projectionRunID
+	return true, nil
+}
+
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

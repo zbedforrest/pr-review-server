@@ -120,6 +120,65 @@ func TestGormDBReviewProjectionFencesSupersededRuns(t *testing.T) {
 	assert.Equal(t, runB, pr.ReviewRunID)
 }
 
+func TestGormDBCachedProjectionCannotSupersedeLiveRun(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	const (
+		owner    = "acme"
+		repo     = "widgets"
+		prNum    = 42
+		sha      = "0123456789abcdef0123456789abcdef01234567"
+		liveRun  = "run-000000000000000000000000000000d1"
+		cacheRun = "run-000000000000000000000000000000d2"
+	)
+	reviewRun := reviewRunFixture(liveRun, time.Now().UTC())
+	require.NoError(t, database.CreateReviewRun(&reviewRun))
+	claimed, err := database.ClaimReviewRun(liveRun, "worker-a", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, database.SetPRGeneratingForReviewRun(owner, repo, prNum, sha, "Title", "alice", nil, false, liveRun))
+	// Model the stale-generating reset racing the still-live worker. The run
+	// subquery, not just the visible status, must protect its projection.
+	require.NoError(t, database.UpdatePRStatus(owner, repo, prNum, "pending"))
+
+	restored, err := database.RestorePRCompletedFromCacheForReviewRun(
+		owner, repo, prNum, cacheRun, "old-success", sha, "cached.html", 1, 2, 3, "request_changes", false, `{}`,
+	)
+	require.NoError(t, err)
+	assert.False(t, restored)
+	var model PRModel
+	require.NoError(t, database.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNum).First(&model).Error)
+	assert.Equal(t, liveRun, model.ProjectionRunID)
+	assert.Equal(t, "pending", model.Status)
+}
+
+func TestGormDBCachedProjectionRestoresIdlePendingPR(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	const (
+		owner    = "acme"
+		repo     = "idle-cache"
+		prNum    = 7
+		sha      = "1123456789abcdef0123456789abcdef01234567"
+		cacheRun = "run-000000000000000000000000000000d3"
+	)
+	require.NoError(t, database.UpsertPR(&PR{
+		RepoOwner: owner, RepoName: repo, PRNumber: prNum, LastCommitSHA: sha, Status: "pending",
+	}))
+	restored, err := database.RestorePRCompletedFromCacheForReviewRun(
+		owner, repo, prNum, cacheRun, "old-success", sha, "cached.html", 0, 1, 0, "approve_suggestions", false, `{}`,
+	)
+	require.NoError(t, err)
+	require.True(t, restored)
+	var model PRModel
+	require.NoError(t, database.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNum).First(&model).Error)
+	assert.Equal(t, cacheRun, model.ProjectionRunID)
+	assert.Equal(t, "completed", model.Status)
+	assert.Equal(t, "cached.html", model.ReviewPath)
+}
+
 func TestGormDBAutomaticReviewAdmissionPreservesRetryCap(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()

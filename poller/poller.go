@@ -2882,12 +2882,12 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					reviewRunID = existingPR.ReviewRunID
 					reviewRunJSON = existingPR.ReviewRunJSON
 				}
-				if err := p.db.SetPRGeneratingForReviewRun(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, job.RunID); err != nil {
-					log.Printf("[REVIEWER] ERROR: Failed to claim cached-review projection: %v", err)
-				} else if projected, err := p.db.MarkPRCompletedForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON); err != nil {
+				if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
 				} else if projected {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+				} else {
+					log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
 				}
 				p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "review_cached", "dispatch", fmt.Errorf("review artifact already exists"))
 				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)

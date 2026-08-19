@@ -166,6 +166,9 @@ func (m *MockDatabase) SetPRErrorForReviewRun(owner, repo string, prNumber int, 
 func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
 	return true, nil
 }
+func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+	return true, nil
+}
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error)                             { return nil, nil }
 func (m *MockDatabase) DeletePR(owner, repo string, prNumber int) error         { return nil }
 func (m *MockDatabase) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) { return 0, nil }

@@ -71,6 +71,38 @@ func (g *GormDB) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, p
 	return result.RowsAffected == 1, nil
 }
 
+// RestorePRCompletedFromCacheForReviewRun projects an existing artifact only
+// while no active run owns the PR and the row is not already completed. The
+// status and review-run subquery are part of the same UPDATE, so a cache hit
+// cannot steal the projection from a concurrent forced regeneration.
+func (g *GormDB) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+	if owner == "" || repo == "" || prNumber <= 0 || projectionRunID == "" || commitSHA == "" || reviewPath == "" {
+		return false, fmt.Errorf("restore cached PR for review run: complete PR target, projection run, commit, and path are required")
+	}
+	now := time.Now().UTC()
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Where("status NOT IN ?", []string{"generating", "agent_reviewing", "completed"}).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM review_runs
+			WHERE review_runs.run_id = prs.projection_run_id
+			  AND (review_runs.status = ? OR
+			       (review_runs.status = ? AND (review_runs.lease_expires_at IS NULL OR review_runs.lease_expires_at > ?)))
+		)`, ReviewRunStatusQueued, ReviewRunStatusRunning, now).
+		Updates(map[string]any{
+			"status": "completed", "projection_run_id": projectionRunID,
+			"review_path": reviewPath, "last_commit_sha": commitSHA, "last_reviewed_at": now,
+			"generating_since": nil, "critical_count": critical, "medium_count": medium,
+			"low_count": low, "review_verdict": verdict, "model_fallback": modelFallback,
+			"review_run_id": reviewRunID, "review_run_json": reviewRunJSON,
+			"error_message": "", "error_retry_count": 0,
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("restore cached PR for run %s: %w", projectionRunID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
 func (g *GormDB) CreateReviewRun(run *ReviewRun) error {
 	if run == nil {
 		return fmt.Errorf("create review run: run is nil")

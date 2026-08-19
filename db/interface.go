@@ -231,6 +231,7 @@ type Database interface {
 	SetPRAgentReviewingForReviewRun(owner, repo string, prNumber int, runID string) (bool, error)
 	SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error)
 	MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error)
+	RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error)
 	GetAllPRs() ([]PR, error)
 	DeletePR(owner, repo string, prNumber int) error
 	ResetStaleGeneratingPRs(timeoutMinutes int) (int, error)
