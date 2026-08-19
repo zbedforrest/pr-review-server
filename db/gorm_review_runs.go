@@ -867,7 +867,7 @@ func reviewRunFromModel(model ReviewRunModel) ReviewRun {
 
 func reviewStageAttemptToModel(attempt ReviewStageAttempt) ReviewStageAttemptModel {
 	return ReviewStageAttemptModel{
-		ID: uint(attempt.ID), RunID: attempt.RunID, ExecutionAttempt: attempt.ExecutionAttempt, Stage: attempt.Stage,
+		ID: uint(attempt.ID), ReviewRunID: attempt.RunID, ExecutionAttempt: attempt.ExecutionAttempt, Stage: attempt.Stage,
 		InvocationNumber: attempt.InvocationNumber, AttemptNumber: attempt.AttemptNumber,
 		Provider: attempt.Provider, Backend: attempt.Backend, RequestedModel: attempt.RequestedModel,
 		ResolvedModel: attempt.ResolvedModel, ObservedServedModels: JSONStringArray(attempt.ObservedServedModels),
@@ -886,7 +886,7 @@ func reviewStageAttemptToModel(attempt ReviewStageAttempt) ReviewStageAttemptMod
 
 func reviewStageAttemptFromModel(model ReviewStageAttemptModel) ReviewStageAttempt {
 	return ReviewStageAttempt{
-		ID: int(model.ID), RunID: model.RunID, ExecutionAttempt: model.ExecutionAttempt, Stage: model.Stage,
+		ID: int(model.ID), RunID: model.ReviewRunID, ExecutionAttempt: model.ExecutionAttempt, Stage: model.Stage,
 		InvocationNumber: model.InvocationNumber, AttemptNumber: model.AttemptNumber,
 		Provider: model.Provider, Backend: model.Backend, RequestedModel: model.RequestedModel,
 		ResolvedModel: model.ResolvedModel, ObservedServedModels: []string(model.ObservedServedModels),

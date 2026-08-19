@@ -1427,6 +1427,24 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	assert.True(t, database.db.Migrator().HasColumn(&ReviewStageAttemptModel{}, "turn_budget_version"))
 }
 
+func TestReviewStageAttemptMigrationOwnsForeignKeyToReviewRun(t *testing.T) {
+	modelSchema, err := schema.Parse(&ReviewStageAttemptModel{}, &sync.Map{}, schema.NamingStrategy{})
+	require.NoError(t, err)
+	relation := modelSchema.Relationships.Relations["ReviewRun"]
+	require.NotNil(t, relation)
+	constraint := relation.ParseConstraint()
+	require.NotNil(t, constraint)
+
+	assert.Equal(t, "review_stage_attempts", constraint.Schema.Table)
+	assert.Equal(t, "review_runs", constraint.ReferenceSchema.Table)
+	require.Len(t, constraint.ForeignKeys, 1)
+	require.Len(t, constraint.References, 1)
+	assert.Equal(t, "run_id", constraint.ForeignKeys[0].DBName)
+	assert.Equal(t, "run_id", constraint.References[0].DBName)
+	assert.Equal(t, "CASCADE", constraint.OnUpdate)
+	assert.Equal(t, "CASCADE", constraint.OnDelete)
+}
+
 func TestGormDBSkipMigrationsAppliesIdempotentSchemaUpdates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "skip-migrations.db")
 	database, err := NewGormSQLite(path)
