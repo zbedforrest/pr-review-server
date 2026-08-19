@@ -316,11 +316,26 @@ command_create() {
     '{owner:$owner,repo:$repo,number:$number}')
   http_request POST '/api/prs/generate-review' "$legacy_request"
   if [ "$HTTP_CODE" = 200 ] || [ "$HTTP_CODE" = 202 ]; then
-    legacy_commit=$(jq -r '.commit // ""' "$TMP_BODY")
+    cp "$TMP_BODY" "$TMP_RUN"
+    legacy_commit=$(jq -r '.commit // ""' "$TMP_RUN")
     if [ "$legacy_commit" != "$expected_head" ]; then
-      die "legacy review creation did not confirm the exact expected HEAD; refusing an ambiguous result" 6
+      if [ -n "$legacy_commit" ]; then
+        [ "${#legacy_commit}" -ge 7 ] || die "legacy review creation returned an invalid commit identifier" 6
+        case "$expected_head" in
+          "$legacy_commit"*) ;;
+          *) die "legacy review creation targeted a different commit" 6 ;;
+        esac
+      fi
+      http_request GET "/api/review/$OWNER/$REPO/$PR_NUMBER"
+      if [ "$HTTP_CODE" != 200 ] && [ "$HTTP_CODE" != 202 ]; then
+        die "legacy review creation did not expose a verifiable target HEAD" 6
+      fi
+      legacy_head=$(jq -r '.head_sha // ""' "$TMP_BODY")
+      if [ "$legacy_head" != "$expected_head" ]; then
+        die "legacy review creation did not confirm the exact expected HEAD; refusing an ambiguous result" 6
+      fi
     fi
-    jq '. + {api_version:"legacy"}' "$TMP_BODY"
+    jq '. + {api_version:"legacy"}' "$TMP_RUN"
   else
     print_http_error
     exit 4

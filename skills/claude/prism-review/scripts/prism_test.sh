@@ -108,7 +108,7 @@ case "$method $url" in
     ;;
   "POST "*/api/prs/generate-review)
     printf '{"status":"success","commit":"%s","review_url":"/reviews/acme_widgets_42_0123456.html","findings_url":"/reviews/acme_widgets_42_0123456.json"}\n' \
-      "${FAKE_HEAD_SHA:?}" >"$output"
+      "${FAKE_LEGACY_COMMIT:-${FAKE_HEAD_SHA:?}}" >"$output"
     printf 202
     ;;
   *)
@@ -181,12 +181,15 @@ assert_contains "$(cat "$TEST_TMP/origin.err")" "run ID or review findings URL"
 assert_eq "$(cat "$FAKE_TRACE")" ""
 
 export FAKE_V1_CREATE_CODE=200_html
+export FAKE_LEGACY_COMMIT="0123456"
 : >"$FAKE_TRACE"
 legacy=$("$CLIENT" create acme/widgets#42)
 assert_eq "$(printf '%s' "$legacy" | jq -r '.api_version')" "legacy"
 assert_contains "$(cat "$FAKE_TRACE")" "/api/prs/generate-review"
+assert_contains "$(cat "$FAKE_TRACE")" "/api/review/acme/widgets/42"
 
 export FAKE_V1_CREATE_CODE=404
+unset FAKE_LEGACY_COMMIT
 : >"$FAKE_TRACE"
 set +e
 "$CLIENT" create acme/widgets#42 --model claude-fable-5 >"$TEST_TMP/rejected.out" 2>"$TEST_TMP/rejected.err"
