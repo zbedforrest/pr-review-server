@@ -188,6 +188,26 @@ func TestParseCodexStreamMaxTurnsKills(t *testing.T) {
 	}
 }
 
+func TestParseCodexStreamCapsBudgetExemptItems(t *testing.T) {
+	const maxTurns = 2
+	stream := strings.Repeat(`{"type":"item.completed","item":{"type":"agent_message","text":"working"}}`+"\n", 2*maxTurns+17)
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, maxTurns)
+	if err == nil || !strings.Contains(err.Error(), "completed-item ceiling") {
+		t.Fatalf("expected completed-item ceiling error, got %v", err)
+	}
+	if res.budgetUnits != 0 {
+		t.Fatalf("message-only stream consumed work budget: %d", res.budgetUnits)
+	}
+	if !proc.killed {
+		t.Error("expected process to be killed")
+	}
+}
+
 func TestRunAgentReviewOpenRouter(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "ambient-key-must-not-reach-child")
 	bare, sha := setupLocalBareRepo(t)

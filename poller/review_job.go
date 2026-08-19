@@ -29,8 +29,11 @@ var ErrReviewAlreadyTracked = errors.New("a review is already active for this PR
 
 const (
 	fallbackReviewMaxWallClockSec     = 360
-	fallbackReviewMaxTurns            = 40
+	fallbackReviewMaxTurns            = 200
+	fallbackClaudeMaxTurns            = 40
+	fallbackOpenRouterMaxTurns        = 200
 	fallbackReviewMaxFirstPassSamples = 3
+	fallbackReviewFirstPassConcurrent = 5
 )
 
 // ReviewJob is the immutable execution handoff. Config must already be fully
@@ -228,23 +231,28 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	}
 	defaults.Agent.TurnBudgetUnit, defaults.Agent.TurnBudgetVersion = runconfig.TurnBudgetSemantics(backend)
 	gitAvailable := p.executableAvailable("git")
+	maxTurns := reviewPolicyMaximum(p.cfg.ReviewMaxTurns, defaults.Agent.MaxTurns, fallbackReviewMaxTurns)
 	policy := runconfig.Policy{
 		Backends: map[string]runconfig.BackendPolicy{
+			// Claude credentials are advisory readiness metadata: the CLI may use
+			// its own OAuth session, and its native authentication flow is retained.
 			service.AgentBackendClaude: p.reviewBackendPolicy(
-				service.AgentBackendClaude, "claude", gitAvailable, strings.TrimSpace(p.cfg.AnthropicAPIKey) != "", false, claudeModels, claudeEfforts,
+				service.AgentBackendClaude, "claude", gitAvailable, strings.TrimSpace(p.cfg.AnthropicAPIKey) != "", false,
+				reviewBackendDefaultMaxTurns(service.AgentBackendClaude, backend, defaults.Agent.MaxTurns), maxTurns, claudeModels, claudeEfforts,
 			),
 			service.AgentBackendOpenRouter: p.reviewBackendPolicy(
-				service.AgentBackendOpenRouter, "codex", gitAvailable, strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "", true, openRouterModels, openRouterEfforts,
+				service.AgentBackendOpenRouter, "codex", gitAvailable, strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "", true,
+				reviewBackendDefaultMaxTurns(service.AgentBackendOpenRouter, backend, defaults.Agent.MaxTurns), maxTurns, openRouterModels, openRouterEfforts,
 			),
 		},
 		MaxWallClockSeconds: reviewPolicyMaximum(p.cfg.ReviewMaxWallClockSec, defaults.Agent.WallClockSeconds, fallbackReviewMaxWallClockSec),
-		MaxTurns:            reviewPolicyMaximum(p.cfg.ReviewMaxTurns, defaults.Agent.MaxTurns, fallbackReviewMaxTurns),
+		MaxTurns:            maxTurns,
 		MaxFirstPassSamples: reviewPolicyMaximum(p.cfg.ReviewMaxFirstPassSamples, defaults.FirstPass.Samples, fallbackReviewMaxFirstPassSamples),
 	}
 	return defaults, policy, nil
 }
 
-func (p *Poller) reviewBackendPolicy(backend, command string, gitAvailable, credentialConfigured, credentialRequired bool, models, efforts []string) runconfig.BackendPolicy {
+func (p *Poller) reviewBackendPolicy(backend, command string, gitAvailable, credentialConfigured, credentialRequired bool, defaultMaxTurns, maxTurns int, models, efforts []string) runconfig.BackendPolicy {
 	policyEnabled := p.cfg.AgenticReviews
 	cliAvailable := p.executableAvailable(command)
 	reasons := make([]string, 0, 4)
@@ -268,8 +276,19 @@ func (p *Poller) reviewBackendPolicy(backend, command string, gitAvailable, cred
 		PolicyEnabled: policyEnabled, CredentialConfigured: credentialConfigured, CredentialRequired: credentialRequired,
 		ExecutableAvailable: gitAvailable && cliAvailable, UnavailableReasons: reasons,
 		TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
+		DefaultMaxTurns: defaultMaxTurns, MaxTurns: maxTurns,
 		Models: append([]string(nil), models...), Efforts: append([]string(nil), efforts...),
 	}
+}
+
+func reviewBackendDefaultMaxTurns(backend, activeBackend string, activeMaxTurns int) int {
+	if backend == activeBackend && activeMaxTurns > 0 {
+		return activeMaxTurns
+	}
+	if backend == service.AgentBackendOpenRouter {
+		return fallbackOpenRouterMaxTurns
+	}
+	return fallbackClaudeMaxTurns
 }
 
 func policyValues(configured []string, fallback string) []string {

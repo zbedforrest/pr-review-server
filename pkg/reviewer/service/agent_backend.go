@@ -143,6 +143,8 @@ func (r agentRuntime) args(prompt string) []string {
 // serving model, so model verification is handled by the pinned runtime model.
 func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
 	result := &agentParseResult{}
+	totalCompletedItems := 0
+	completedItemCeiling := 2*maxTurns + 16
 	scanner := bufio.NewScanner(proc.Stdout())
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 
@@ -164,6 +166,13 @@ func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		case "item.completed":
 			item, _ := ev["item"].(map[string]any)
 			itemType, _ := item["type"].(string)
+			if itemType != "" {
+				totalCompletedItems++
+				if totalCompletedItems > completedItemCeiling {
+					_ = proc.Kill()
+					return result, fmt.Errorf("exceeded completed-item ceiling (%d)", completedItemCeiling)
+				}
+			}
 			// Preserve the completed terminal response. It represents the result of
 			// prior work, not another work item, so it does not consume budget.
 			if itemType == "agent_message" {

@@ -89,7 +89,7 @@ OPENROUTER_API_KEY=sk-or-...
 
 The OpenRouter path runs `codex exec` in a read-only sandbox with ephemeral state and filters server credentials out of model-invoked shell commands. Its CLI JSONL currently does not report the serving model, so the review records the exact pinned request model; Claude fallback detection remains stream-verified.
 
-Review-config schema v2 makes the `max_turns` unit backend-specific and records it in every run. Claude counts assistant stream events; OpenRouter/Codex counts completed non-reasoning work items such as tool commands and file changes, excluding the terminal answer. Its unset default is therefore 200 instead of Claude's 40. Existing OpenRouter deployments upgrading from schema v1 should review explicit `AGENT_MAX_TURNS` and `REVIEW_MAX_TURNS` values because the new unit is intentionally more granular.
+Review-config schema v2 makes the `max_turns` unit backend-specific and records it in every run. Claude counts assistant stream events; OpenRouter/Codex counts completed non-reasoning work items such as tool commands and file changes, excluding the terminal answer. Their defaults are 40 and 200 respectively; when a request switches backend without specifying `max_turns`, Prism derives the selected backend's default, bounded by its advertised ceiling. A separate generous completed-item ceiling still terminates malformed message-only or reasoning-only streams. Existing OpenRouter deployments upgrading from schema v1 should review explicit `AGENT_MAX_TURNS` and `REVIEW_MAX_TURNS` values because the new unit is intentionally more granular.
 
 ### Recommended configuration
 

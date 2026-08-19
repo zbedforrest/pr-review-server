@@ -162,6 +162,8 @@ type reviewBackendCapability struct {
 	UnavailableReasons   []string `json:"unavailable_reasons"`
 	TurnBudgetUnit       string   `json:"turn_budget_unit"`
 	TurnBudgetVersion    int      `json:"turn_budget_version"`
+	DefaultMaxTurns      int      `json:"default_max_turns"`
+	MaxTurns             int      `json:"max_turns"`
 	Models               []string `json:"models"`
 	Efforts              []string `json:"efforts"`
 }
@@ -636,6 +638,7 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 			ExecutableAvailable: backend.ExecutableAvailable,
 			UnavailableReasons:  append([]string{}, backend.UnavailableReasons...),
 			TurnBudgetUnit:      backend.TurnBudgetUnit, TurnBudgetVersion: backend.TurnBudgetVersion,
+			DefaultMaxTurns: backend.DefaultMaxTurns, MaxTurns: backend.MaxTurns,
 			Models: append([]string(nil), backend.Models...), Efforts: append([]string(nil), backend.Efforts...),
 		}
 	}

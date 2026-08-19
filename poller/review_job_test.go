@@ -214,6 +214,29 @@ func TestPrepareReviewJobRequiresModelWhenChangingBackend(t *testing.T) {
 	assert.Equal(t, "agent.model", validationErr.Field)
 }
 
+func TestPrepareReviewJobDerivesTurnDefaultForSelectedBackend(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.AgenticReviews = true
+	p.cfg.AgentBackend = service.AgentBackendClaude
+	p.cfg.AgentModel = "claude-fable-5"
+	p.cfg.AgentWallClockSec = fallbackReviewMaxWallClockSec
+	p.cfg.AgentMaxTurns = fallbackClaudeMaxTurns
+	p.cfg.ReviewMaxWallClockSec = fallbackReviewMaxWallClockSec
+	p.cfg.ReviewMaxTurns = fallbackReviewMaxTurns
+	p.cfg.OpenRouterAPIKey = "configured"
+	p.cfg.ReviewAgentModelsOpenRouter = []string{service.DefaultOpenRouterAgentModel}
+	backend := service.AgentBackendOpenRouter
+	model := service.DefaultOpenRouterAgentModel
+
+	job, err := p.PrepareReviewJob(github.PullRequest{
+		Owner: "acme", Repo: "widgets", Number: 7, CommitSHA: "0123456789abcdef0123456789abcdef01234567",
+	}, runconfig.Overrides{Agent: &runconfig.AgentOverrides{Backend: &backend, Model: &model}}, true, "api_v1", nil)
+	require.NoError(t, err)
+	assert.Equal(t, fallbackOpenRouterMaxTurns, job.Config.Effective.Agent.MaxTurns)
+	assert.Equal(t, runconfig.SourceDerived, job.Config.Sources["agent.max_turns"])
+	assert.Equal(t, runconfig.TurnBudgetUnitCompletedNonReasoningItem, job.Config.Effective.Agent.TurnBudgetUnit)
+}
+
 func TestReviewPolicyIsBoundedAndConsistentForZeroOrLowerCeilings(t *testing.T) {
 	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
 	p.cfg.AgenticReviews = true
@@ -276,6 +299,8 @@ func TestReviewBackendReadinessReportsStableReasonsAndTurnSemantics(t *testing.T
 	assert.True(t, claude.ExecutableAvailable)
 	assert.Empty(t, claude.UnavailableReasons)
 	assert.Equal(t, runconfig.TurnBudgetUnitAssistantEvent, claude.TurnBudgetUnit)
+	assert.Equal(t, fallbackClaudeMaxTurns, claude.DefaultMaxTurns)
+	assert.Equal(t, fallbackReviewMaxTurns, claude.MaxTurns)
 	assert.Equal(t, runconfig.TurnBudgetUnitAssistantEvent, defaults.Agent.TurnBudgetUnit)
 
 	openRouter := policy.Backends[service.AgentBackendOpenRouter]
@@ -289,6 +314,8 @@ func TestReviewBackendReadinessReportsStableReasonsAndTurnSemantics(t *testing.T
 		runconfig.BackendUnavailableCLIMissing,
 	}, openRouter.UnavailableReasons)
 	assert.Equal(t, runconfig.TurnBudgetUnitCompletedNonReasoningItem, openRouter.TurnBudgetUnit)
+	assert.Equal(t, fallbackOpenRouterMaxTurns, openRouter.DefaultMaxTurns)
+	assert.Equal(t, fallbackReviewMaxTurns, openRouter.MaxTurns)
 }
 
 func TestNewPollerCreatesProcessGlobalFirstPassCapacity(t *testing.T) {
@@ -299,6 +326,11 @@ func TestNewPollerCreatesProcessGlobalFirstPassCapacity(t *testing.T) {
 	assert.Equal(t, 3, cap(p.firstPassSlots))
 	require.NotNil(t, p.dispatchSlots)
 	assert.Equal(t, 3, cap(p.dispatchSlots))
+
+	cfg.ReviewMaxFirstPassConcurrent = 0
+	p = New(cfg, NewMockDatabase(), nil, nil)
+	assert.Equal(t, fallbackReviewFirstPassConcurrent, cap(p.firstPassSlots))
+	assert.Equal(t, fallbackReviewFirstPassConcurrent, cap(p.dispatchSlots))
 }
 
 func TestReviewJobValidateRequiresCompleteIdempotencyMetadata(t *testing.T) {

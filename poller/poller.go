@@ -318,10 +318,12 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 	if cfg.AgentMaxConcurrent > 0 {
 		p.agentSlots = make(chan struct{}, cfg.AgentMaxConcurrent)
 	}
-	if cfg.ReviewMaxFirstPassConcurrent > 0 {
-		p.firstPassSlots = make(chan struct{}, cfg.ReviewMaxFirstPassConcurrent)
-		p.dispatchSlots = make(chan struct{}, cfg.ReviewMaxFirstPassConcurrent)
+	firstPassConcurrent := cfg.ReviewMaxFirstPassConcurrent
+	if firstPassConcurrent <= 0 {
+		firstPassConcurrent = fallbackReviewFirstPassConcurrent
 	}
+	p.firstPassSlots = make(chan struct{}, firstPassConcurrent)
+	p.dispatchSlots = make(chan struct{}, firstPassConcurrent)
 	p.loadBugMemory()
 	return p
 }

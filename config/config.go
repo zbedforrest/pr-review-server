@@ -59,7 +59,7 @@ type Config struct {
 	AgentBackend       string // claude (default) or openrouter
 	AgentModel         string // backend model id for agent reviews (empty = backend default)
 	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
-	AnthropicAPIKey    string // Anthropic credential; deployment-only, never exposed in capabilities
+	AnthropicAPIKey    string // frozen readiness signal; Claude retains its CLI-native auth flow
 	OpenRouterAPIKey   string // OpenRouter credential; deployment-only, never exposed in capabilities
 	OpenRouterBaseURL  string // OpenRouter API root (empty = service default)
 	BugMemoryPath      string // local path to a bug-memory library JSON (dev/benchmark)
@@ -157,6 +157,12 @@ func Load() *Config {
 
 	maxWallClockDefault := positiveOrDefault(agentWallClockSec, defaultAgentWallClockSec)
 	maxTurnsDefault := positiveOrDefault(agentMaxTurns, agentMaxTurnsDefault)
+	reviewMaxTurnsDefault := maxTurnsDefault
+	if reviewMaxTurnsDefault < defaultOpenRouterAgentMaxTurns {
+		// The deployment default remains backend-specific, but an unset caller
+		// ceiling must leave room for every selectable backend's default unit.
+		reviewMaxTurnsDefault = defaultOpenRouterAgentMaxTurns
+	}
 
 	return &Config{
 		// Legacy single-user mode
@@ -210,7 +216,7 @@ func Load() *Config {
 		ReviewAgentEffortsClaude:     claudeEfforts,
 		ReviewAgentEffortsOpenRouter: openRouterEfforts,
 		ReviewMaxWallClockSec:        getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
-		ReviewMaxTurns:               getPositiveEnvIntOrDefault("REVIEW_MAX_TURNS", maxTurnsDefault),
+		ReviewMaxTurns:               getPositiveEnvIntOrDefault("REVIEW_MAX_TURNS", reviewMaxTurnsDefault),
 		ReviewMaxFirstPassSamples:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
 		ReviewMaxFirstPassConcurrent: getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
 	}

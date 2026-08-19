@@ -94,6 +94,8 @@ type BackendPolicy struct {
 	UnavailableReasons   []string
 	TurnBudgetUnit       string
 	TurnBudgetVersion    int
+	DefaultMaxTurns      int
+	MaxTurns             int
 	Models               []string
 	Efforts              []string
 }
@@ -175,6 +177,19 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 	effective.Agent.Model = strings.TrimSpace(effective.Agent.Model)
 	effective.Agent.Effort = strings.ToLower(strings.TrimSpace(effective.Agent.Effort))
 	effective.Agent.TurnBudgetUnit, effective.Agent.TurnBudgetVersion = TurnBudgetSemantics(effective.Agent.Backend)
+	// A backend switch changes the unit represented by max_turns. When the
+	// caller omitted max_turns, derive that backend's default instead of
+	// carrying a number expressed in the deployment backend's unit.
+	if sources["agent.max_turns"] != SourceRequest &&
+		effective.Agent.TurnBudgetUnit != defaults.Agent.TurnBudgetUnit {
+		if backendPolicy, ok := findBackendPolicy(policy, effective.Agent.Backend); ok && backendPolicy.DefaultMaxTurns > 0 {
+			effective.Agent.MaxTurns = backendPolicy.DefaultMaxTurns
+			if backendPolicy.MaxTurns > 0 && effective.Agent.MaxTurns > backendPolicy.MaxTurns {
+				effective.Agent.MaxTurns = backendPolicy.MaxTurns
+			}
+			sources["agent.max_turns"] = SourceDerived
+		}
+	}
 
 	if err := Validate(effective, policy); err != nil {
 		return Snapshot{}, err
@@ -206,16 +221,7 @@ func Validate(cfg Effective, policy Policy) error {
 	}
 
 	backend := strings.ToLower(strings.TrimSpace(cfg.Agent.Backend))
-	backendPolicy, ok := policy.Backends[backend]
-	if !ok {
-		for name, candidate := range policy.Backends {
-			if strings.EqualFold(strings.TrimSpace(name), backend) {
-				backendPolicy = candidate
-				ok = true
-				break
-			}
-		}
-	}
+	backendPolicy, ok := findBackendPolicy(policy, backend)
 	if !ok {
 		return invalid("agent.backend", "unsupported backend %q", cfg.Agent.Backend)
 	}
@@ -242,10 +248,27 @@ func Validate(cfg Effective, policy Policy) error {
 	if cfg.Agent.MaxTurns <= 0 {
 		return invalid("agent.max_turns", "must be greater than zero")
 	}
-	if policy.MaxTurns > 0 && cfg.Agent.MaxTurns > policy.MaxTurns {
-		return invalid("agent.max_turns", "must be at most %d", policy.MaxTurns)
+	maxTurns := backendPolicy.MaxTurns
+	if maxTurns <= 0 {
+		maxTurns = policy.MaxTurns
+	}
+	if maxTurns > 0 && cfg.Agent.MaxTurns > maxTurns {
+		return invalid("agent.max_turns", "must be at most %d", maxTurns)
 	}
 	return nil
+}
+
+func findBackendPolicy(policy Policy, backend string) (BackendPolicy, bool) {
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	if candidate, ok := policy.Backends[backend]; ok {
+		return candidate, true
+	}
+	for name, candidate := range policy.Backends {
+		if strings.EqualFold(strings.TrimSpace(name), backend) {
+			return candidate, true
+		}
+	}
+	return BackendPolicy{}, false
 }
 
 // TurnBudgetSemantics returns the immutable counter contract for a backend.
