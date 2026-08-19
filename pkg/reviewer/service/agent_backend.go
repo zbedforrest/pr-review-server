@@ -193,7 +193,7 @@ func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 				}
 				if result.budgetUnits > maxTurns {
 					_ = proc.Kill()
-					return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
+					return result, fmt.Errorf("exceeded max-turns (%d) after %d budget units", maxTurns, result.budgetUnits)
 				}
 			}
 		case "turn.failed":

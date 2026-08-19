@@ -17,10 +17,10 @@ func TestAgentChildEnvironmentIsDefaultDenyWithFrozenCredential(t *testing.T) {
 	environment := agentChildEnvironment([]string{
 		"PATH=/usr/bin", "HOME=/home/reviewer", "DATABASE_URL=postgres://secret",
 		"ANTHROPIC_API_KEY=ambient", "CUSTOM_FUTURE_SECRET=must-not-pass",
-		"PATH=/duplicate",
+		"PATH=/duplicate", "https_proxy=http://proxy.example",
 	}, "ANTHROPIC_API_KEY", "frozen")
 	joined := strings.Join(environment, "\n")
-	for _, want := range []string{"PATH=/usr/bin", "HOME=/home/reviewer", "ANTHROPIC_API_KEY=frozen"} {
+	for _, want := range []string{"PATH=/usr/bin", "HOME=/home/reviewer", "https_proxy=http://proxy.example", "ANTHROPIC_API_KEY=frozen"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("child environment missing %q: %q", want, environment)
 		}
@@ -202,6 +202,9 @@ func TestParseCodexStreamMaxTurnsKills(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "max-turns") {
 		t.Fatalf("expected max-turns error, got %v", err)
 	}
+	if !strings.Contains(err.Error(), "after 3 budget units") {
+		t.Fatalf("budget usage missing from error: %v", err)
+	}
 	if !proc.killed {
 		t.Error("expected process to be killed")
 	}
@@ -274,6 +277,7 @@ func TestRunAgentReviewOpenRouter(t *testing.T) {
 
 	stream := `{"type":"thread.started","thread_id":"thread_123"}
 {"type":"turn.started"}
+{"type":"item.completed","item":{"type":"command_execution","status":"completed"}}
 {"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
 {"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20}}
 `
@@ -329,6 +333,9 @@ func TestRunAgentReviewOpenRouter(t *testing.T) {
 	if out.Effort != DefaultAgentEffort {
 		t.Errorf("effort=%q want %q", out.Effort, DefaultAgentEffort)
 	}
+	if out.BudgetUnitsUsed != 1 {
+		t.Errorf("budget units=%d want 1", out.BudgetUnitsUsed)
+	}
 }
 
 func TestRunAgentReviewClaudeUsesFilteredFrozenEnvironment(t *testing.T) {
@@ -348,8 +355,12 @@ func TestRunAgentReviewClaudeUsesFilteredFrozenEnvironment(t *testing.T) {
 		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
 		Backend: AgentBackendClaude, AnthropicAPIKey: "frozen-anthropic-key",
 	}
-	if _, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil); err != nil {
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
 		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if out.BudgetUnitsUsed != 1 || out.AssistantTurns != 1 {
+		t.Fatalf("Claude usage: assistant turns=%d budget units=%d", out.AssistantTurns, out.BudgetUnitsUsed)
 	}
 	joined := strings.Join(spawner.environment, "\n")
 	if !strings.Contains(joined, "ANTHROPIC_API_KEY=frozen-anthropic-key") {

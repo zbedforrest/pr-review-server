@@ -317,6 +317,7 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 	}
 	agentConcurrent := cfg.AgentMaxConcurrent
 	if agentConcurrent <= 0 {
+		log.Printf("[POLLER] AGENT_MAX_CONCURRENT<=0; capping agent concurrency at %d", fallbackAgentConcurrent)
 		agentConcurrent = fallbackAgentConcurrent
 	}
 	p.agentSlots = make(chan struct{}, agentConcurrent)
@@ -3284,6 +3285,8 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				}
 
 				result, svcErr := reviewSvc.PerformReviewWithContext(prCtx, reviewCfg)
+				// Provider capacity ends here. Non-agent publication may overlap because
+				// it holds no clone/CLI memory; agent jobs retain their separate slot.
 				releaseFirstPassSlot()
 				if svcErr != nil {
 					err = svcErr

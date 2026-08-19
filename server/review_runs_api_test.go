@@ -56,7 +56,7 @@ func newReviewAPITestPoller(database db.Database) *reviewAPITestPoller {
 				service.AgentBackendOpenRouter: {
 					Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, CredentialRequired: true, ExecutableAvailable: true,
 					TurnBudgetUnit: runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
-					DefaultMaxTurns: 200, MaxTurns: 120,
+					DefaultMaxTurns: 120, MaxTurns: 120,
 					Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
 				},
 			},
@@ -326,7 +326,7 @@ func TestReviewCapabilitiesExposePolicyButNoSecrets(t *testing.T) {
 		Available: false, Ready: false, PolicyEnabled: true, CredentialConfigured: false, CredentialRequired: true, ExecutableAvailable: true,
 		UnavailableReasons: []string{runconfig.BackendUnavailableCredentialMissing},
 		TurnBudgetUnit:     runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
-		DefaultMaxTurns: 200, MaxTurns: 120,
+		DefaultMaxTurns: 120, MaxTurns: 120,
 		Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
 	}
 
@@ -340,7 +340,7 @@ func TestReviewCapabilitiesExposePolicyButNoSecrets(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"credential_required":true`)
 	assert.Contains(t, recorder.Body.String(), `"unavailable_reasons":["credential_missing"]`)
 	assert.Contains(t, recorder.Body.String(), `"turn_budget_unit":"completed_non_reasoning_item"`)
-	assert.Contains(t, recorder.Body.String(), `"default_max_turns":200`)
+	assert.Contains(t, recorder.Body.String(), `"default_max_turns":120`)
 	assert.Contains(t, recorder.Body.String(), `"max_turns":120`)
 	assert.Contains(t, recorder.Body.String(), `"max_wall_clock_seconds":900`)
 	assert.NotContains(t, strings.ToLower(recorder.Body.String()), "api_key")

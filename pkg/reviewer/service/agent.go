@@ -94,6 +94,7 @@ type AgentReview struct {
 	Backend              string
 	Effort               string
 	AssistantTurns       int
+	BudgetUnitsUsed      int
 	DurationMS           int64
 	// ServingModelVerified is true only when the agent stream explicitly
 	// reported the model that served the request. Codex/OpenRouter currently
@@ -370,6 +371,7 @@ func RunAgentReview(
 	waitErr := proc.Wait()
 	agentCompletedAt = time.Now().UTC()
 	stderrWG.Wait()
+	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d", parseResult.assistantTurns, parseResult.budgetUnits)
 
 	persistFailureLog := func() {
 		if agentCfg.FailureLogSink == nil {
@@ -383,34 +385,34 @@ func RunAgentReview(
 	if parseErr != nil {
 		// Turn-cap hit or parse error — subprocess already killed inside parser.
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: %w (stderr: %s)", parseErr, truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: %w (%s; stderr: %s)", parseErr, usage, truncate(stderrBuf.String(), 1000))
 	}
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: wall-clock timeout (%s) after %d turns (stderr: %s)",
-			agentCfg.WallClock, parseResult.assistantTurns, truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: wall-clock timeout (%s; %s; stderr: %s)",
+			agentCfg.WallClock, usage, truncate(stderrBuf.String(), 1000))
 	}
 
 	if waitErr != nil {
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: %s exited with error: %w (stream: %s) (stderr: %s)",
-			runtime.command, waitErr, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: %s exited with error: %w (%s; stream: %s; stderr: %s)",
+			runtime.command, waitErr, usage, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	// The CLI can exit 0 after an error result event; ungated, the error text
 	// would publish as a "successful" SUMMARY review.
 	if parseResult.streamErr != "" {
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (stderr: %s)",
-			truncate(parseResult.streamErr, 1000), truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (%s; stderr: %s)",
+			truncate(parseResult.streamErr, 1000), usage, truncate(stderrBuf.String(), 1000))
 	}
 
 	if parseResult.finalOutput == "" {
-		log.Printf("%s %s finished with no final result after %d turn(s)", logPrefix, runtime.command, parseResult.assistantTurns)
+		log.Printf("%s %s finished with no final result (%s)", logPrefix, runtime.command, usage)
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: no final result emitted after %d turn(s) (stream: %s) (stderr: %s)",
-			parseResult.assistantTurns, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: no final result emitted (%s; stream: %s; stderr: %s)",
+			usage, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	comments, parseErr := parseAgentJSON(parseResult.finalOutput)
@@ -474,8 +476,8 @@ func RunAgentReview(
 	}
 
 	agentDuration := agentCompletedAt.Sub(agentStartedAt)
-	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
-		logPrefix, agentDuration, parseResult.assistantTurns, len(comments), servedModel)
+	log.Printf("%s complete in %s (%s, comments=%d, model=%s)",
+		logPrefix, agentDuration, usage, len(comments), servedModel)
 
 	logRemovable = true
 	return &AgentReview{
@@ -494,6 +496,7 @@ func RunAgentReview(
 		Backend:              runtime.backend,
 		Effort:               runtime.effort,
 		AssistantTurns:       parseResult.assistantTurns,
+		BudgetUnitsUsed:      parseResult.budgetUnits,
 		DurationMS:           agentDuration.Milliseconds(),
 		ServingModelVerified: runtime.reportsServingModel && len(parseResult.servedModels) > 0,
 	}, nil
@@ -892,6 +895,7 @@ func agentChildEnvironment(base []string, credentialKey, credentialValue string)
 		"SHELL": {}, "SSL_CERT_DIR": {}, "SSL_CERT_FILE": {}, "TERM": {},
 		"TERM_PROGRAM": {}, "TMPDIR": {}, "TZ": {}, "USER": {},
 		"XDG_CACHE_HOME": {}, "XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {},
+		"http_proxy": {}, "https_proxy": {}, "no_proxy": {},
 	}
 	environment := make([]string, 0, len(base)+1)
 	seen := make(map[string]struct{}, len(allowed))

@@ -279,6 +279,9 @@ func (p *Poller) reviewBackendPolicy(backend, command string, gitAvailable, cred
 	}
 	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(backend)
 	ready := policyEnabled && (!credentialRequired || credentialConfigured) && gitAvailable && cliAvailable
+	if maxTurns > 0 && defaultMaxTurns > maxTurns {
+		defaultMaxTurns = maxTurns
+	}
 	return runconfig.BackendPolicy{
 		Available:     ready,
 		Ready:         ready,
