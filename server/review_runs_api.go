@@ -151,6 +151,8 @@ type reviewCapabilitiesResponse struct {
 }
 
 type reviewBackendCapability struct {
+	// Available and Ready intentionally carry the same runnable-readiness value;
+	// Available is retained for clients of the original capability contract.
 	Available            bool     `json:"available"`
 	Ready                bool     `json:"ready"`
 	PolicyEnabled        bool     `json:"policy_enabled"`

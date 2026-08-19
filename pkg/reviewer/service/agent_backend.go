@@ -164,20 +164,18 @@ func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		case "item.completed":
 			item, _ := ev["item"].(map[string]any)
 			itemType, _ := item["type"].(string)
-			// Preserve a completed terminal response even when it is the item that
-			// crosses the configured budget. The run still fails closed below, but
-			// diagnostics and telemetry retain the provider's final message.
+			// Preserve the completed terminal response. It represents the result of
+			// prior work, not another work item, so it does not consume budget.
 			if itemType == "agent_message" {
 				result.assistantTurns++
 				if text, ok := item["text"].(string); ok {
 					result.finalOutput = text
 				}
 			}
-			// Codex emits one assistant message for the final response even when it
-			// performs many tool/file operations. Count every completed concrete
-			// item so MaxTurns remains a meaningful work bound; reasoning items are
-			// excluded because they are provider-internal and schema-volume driven.
-			if itemType != "" && itemType != "reasoning" {
+			// Count completed concrete work items so MaxTurns remains a meaningful
+			// work bound. Provider-internal reasoning and the terminal answer are
+			// excluded because neither represents another tool/file operation.
+			if itemType != "" && itemType != "reasoning" && itemType != "agent_message" {
 				result.budgetUnits++
 				if result.budgetUnits%5 == 0 || result.budgetUnits == 1 {
 					log.Printf("[AGENT] turn-budget unit %d/%d (completed non-reasoning items)", result.budgetUnits, maxTurns)

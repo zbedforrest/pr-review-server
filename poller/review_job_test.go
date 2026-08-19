@@ -39,6 +39,13 @@ func (g *blockingReviewGenerator) GenerateReview(ctx context.Context, cfg Review
 	}
 }
 
+func newTestPollerWithGenerator(mockGH *MockGitHubClient, database db.Database, storage *MockReviewStorage, generator ReviewGenerator) *Poller {
+	return &Poller{
+		cfg: testConfig(), db: database, ghClient: mockGH, storage: storage,
+		reviewGenerator: generator, reviewDir: "/tmp/test-reviews", activeReviews: make(map[string]ProcessInfo),
+	}
+}
+
 func reviewJobSnapshot(t *testing.T, effective runconfig.Effective) runconfig.Snapshot {
 	t.Helper()
 	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(effective.Agent.Backend)
@@ -272,7 +279,7 @@ func TestReviewBackendReadinessReportsStableReasonsAndTurnSemantics(t *testing.T
 	assert.Equal(t, runconfig.TurnBudgetUnitAssistantEvent, defaults.Agent.TurnBudgetUnit)
 
 	openRouter := policy.Backends[service.AgentBackendOpenRouter]
-	assert.True(t, openRouter.Available)
+	assert.False(t, openRouter.Available)
 	assert.False(t, openRouter.Ready)
 	assert.False(t, openRouter.CredentialConfigured)
 	assert.True(t, openRouter.CredentialRequired)
@@ -1106,7 +1113,7 @@ func TestAgentSlotWaitDoesNotStartBudgetOrExecutionLease(t *testing.T) {
 func TestSeparateAPIRunsShareProcessGlobalFirstPassCapacity(t *testing.T) {
 	database := NewMockDatabase()
 	generator := &blockingReviewGenerator{started: make(chan int, 2), release: make(chan struct{})}
-	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	p := newTestPollerWithGenerator(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
 	p.firstPassSlots = make(chan struct{}, 1)
 	first := reviewJobWithoutAgent(t, "run-24510000000000000000000000000001")
 	second := reviewJobWithoutAgent(t, "run-24510000000000000000000000000002")

@@ -321,7 +321,7 @@ func TestWaitForIdempotentReviewRunBridgesAdmissionCommitWindow(t *testing.T) {
 func TestReviewCapabilitiesExposePolicyButNoSecrets(t *testing.T) {
 	s, _, apiPoller, userID := newReviewAPIServer(t, githubPRResponse("0123456789abcdef0123456789abcdef01234567"))
 	apiPoller.policy.Backends[service.AgentBackendOpenRouter] = runconfig.BackendPolicy{
-		Available: true, Ready: false, PolicyEnabled: true, CredentialConfigured: false, CredentialRequired: true, ExecutableAvailable: true,
+		Available: false, Ready: false, PolicyEnabled: true, CredentialConfigured: false, CredentialRequired: true, ExecutableAvailable: true,
 		UnavailableReasons: []string{runconfig.BackendUnavailableCredentialMissing},
 		TurnBudgetUnit:     runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 		Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
@@ -331,7 +331,7 @@ func TestReviewCapabilitiesExposePolicyButNoSecrets(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	s.handleReviewCapabilities(recorder, request)
 	require.Equal(t, http.StatusOK, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), `"openrouter":{"available":true`)
+	assert.Contains(t, recorder.Body.String(), `"openrouter":{"available":false`)
 	assert.Contains(t, recorder.Body.String(), `"ready":false`)
 	assert.Contains(t, recorder.Body.String(), `"credential_configured":false`)
 	assert.Contains(t, recorder.Body.String(), `"credential_required":true`)

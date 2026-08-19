@@ -10,6 +10,7 @@ import (
 const (
 	defaultAgentWallClockSec         = 360
 	defaultAgentMaxTurns             = 40
+	defaultOpenRouterAgentMaxTurns   = 200
 	defaultReviewFirstPassSamples    = 3
 	defaultReviewFirstPassConcurrent = 5
 	defaultClaudeAgentModel          = "claude-opus-4-8"
@@ -110,9 +111,13 @@ func Load() *Config {
 		}
 	}
 
-	agentWallClockSec := getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", defaultAgentWallClockSec)
-	agentMaxTurns := getEnvIntOrDefault("AGENT_MAX_TURNS", defaultAgentMaxTurns)
 	agentBackend := getEnvOrDefault("AGENT_BACKEND", "claude")
+	agentWallClockSec := getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", defaultAgentWallClockSec)
+	agentMaxTurnsDefault := defaultAgentMaxTurns
+	if strings.EqualFold(strings.TrimSpace(agentBackend), "openrouter") {
+		agentMaxTurnsDefault = defaultOpenRouterAgentMaxTurns
+	}
+	agentMaxTurns := getEnvIntOrDefault("AGENT_MAX_TURNS", agentMaxTurnsDefault)
 	agentModel := os.Getenv("AGENT_MODEL")
 	agentEffort := os.Getenv("AGENT_EFFORT")
 
@@ -151,7 +156,7 @@ func Load() *Config {
 	}
 
 	maxWallClockDefault := positiveOrDefault(agentWallClockSec, defaultAgentWallClockSec)
-	maxTurnsDefault := positiveOrDefault(agentMaxTurns, defaultAgentMaxTurns)
+	maxTurnsDefault := positiveOrDefault(agentMaxTurns, agentMaxTurnsDefault)
 
 	return &Config{
 		// Legacy single-user mode

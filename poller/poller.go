@@ -329,7 +329,9 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 func (p *Poller) executableAvailable(name string) bool {
 	lookPath := p.lookPath
 	if lookPath == nil {
-		lookPath = osexec.LookPath
+		// Production Pollers are constructed by New, which always installs the
+		// real PATH probe. Nil is reserved for lightweight test doubles.
+		return true
 	}
 	_, err := lookPath(name)
 	return err == nil

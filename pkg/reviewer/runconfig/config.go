@@ -80,8 +80,9 @@ type FirstPass struct {
 // BackendPolicy describes one deployment-enabled agent backend. Models and
 // Efforts are allowlists; an empty list permits no caller-visible values.
 type BackendPolicy struct {
-	// Available is the policy-admission signal retained for API compatibility;
-	// Ready additionally requires runtime preflight.
+	// Available retains the legacy runnable-readiness signal. Ready is an
+	// explicit alias for newer clients; producers intentionally keep them equal.
+	// PolicyEnabled separately exposes deployment policy admission.
 	// The readiness fields explain failures without exposing credential values
 	// or executable paths.
 	Available            bool
@@ -218,10 +219,7 @@ func Validate(cfg Effective, policy Policy) error {
 	if !ok {
 		return invalid("agent.backend", "unsupported backend %q", cfg.Agent.Backend)
 	}
-	if !backendPolicy.Available {
-		return invalid("agent.backend", "backend %q is disabled by deployment policy", backend)
-	}
-	if !backendPolicy.Ready {
+	if !backendPolicy.Available || !backendPolicy.Ready {
 		return invalid("agent.backend", "backend %q is not ready in this deployment", backend)
 	}
 	if cfg.Agent.TurnBudgetUnit != backendPolicy.TurnBudgetUnit || cfg.Agent.TurnBudgetVersion != backendPolicy.TurnBudgetVersion {
@@ -278,7 +276,7 @@ func Hash(cfg Effective) (string, error) {
 func (p Policy) AvailableBackends() []string {
 	available := make(map[string]struct{}, len(p.Backends))
 	for name, backend := range p.Backends {
-		if backend.Ready {
+		if backend.Available && backend.Ready {
 			available[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
 		}
 	}

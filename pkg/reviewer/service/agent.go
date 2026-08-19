@@ -37,7 +37,7 @@ type AgentConfig struct {
 	Backend           string        // claude (default) or openrouter
 	Model             string        // backend model id; defaults according to Backend
 	Effort            string        // backend reasoning effort; defaults to DefaultAgentEffort
-	OpenRouterAPIKey  string        // frozen deployment credential; Codex still reads its process environment
+	OpenRouterAPIKey  string        // frozen deployment credential; injected into the Codex child environment
 	OpenRouterBaseURL string        // optional OpenRouter API root; used only by the openrouter backend
 
 	// BugMemory is the optional pattern library (nil = feature off). The
@@ -103,6 +103,13 @@ type AgentReview struct {
 // Spawner abstracts subprocess creation so tests can stub the agent CLI.
 type Spawner interface {
 	Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error)
+}
+
+// EnvironmentSpawner is required by backends whose frozen credential must be
+// injected into the child without placing it in argv. The slice is the complete
+// child environment, already deduplicated by environmentWithOverride.
+type EnvironmentSpawner interface {
+	SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error)
 }
 
 // SpawnedProcess is what a Spawner returns.
@@ -244,7 +251,18 @@ func RunAgentReview(
 	if observerErr := observeProviderAttempt(agentCfg.AttemptObserver, startedEvent); errors.Is(observerErr, ErrProviderAttemptAborted) {
 		return nil, fmt.Errorf("agent: %w", observerErr)
 	}
-	proc, err := spawner.Spawn(runCtx, runtime.command, args, cloneDir)
+	var proc SpawnedProcess
+	if runtime.backend == AgentBackendOpenRouter {
+		envSpawner, ok := spawner.(EnvironmentSpawner)
+		if !ok {
+			err = errors.New("agent: OpenRouter spawner does not support frozen credential injection")
+		} else {
+			proc, err = envSpawner.SpawnWithEnv(runCtx, runtime.command, args, cloneDir,
+				environmentWithOverride(os.Environ(), "OPENROUTER_API_KEY", agentCfg.OpenRouterAPIKey))
+		}
+	} else {
+		proc, err = spawner.Spawn(runCtx, runtime.command, args, cloneDir)
+	}
 	if err != nil {
 		log.Printf("%s spawn FAILED: %v", logPrefix, err)
 		completedAt := time.Now().UTC()
@@ -854,10 +872,21 @@ func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 type agentParseResult struct {
 	finalOutput    string
 	assistantTurns int
-	budgetUnits    int
+	budgetUnits    int      // equals assistantTurns for Claude; counts completed work items for Codex
 	streamErr      string   // error the CLI reported inside the stream (result event with error subtype)
 	lastEvent      string   // raw last stream line, fallback diagnostic when no structured error arrived
 	servedModels   []string // distinct models the stream reported, in first-seen order; empty if never reported
+}
+
+func environmentWithOverride(base []string, key, value string) []string {
+	prefix := key + "="
+	environment := make([]string, 0, len(base)+1)
+	for _, entry := range base {
+		if !strings.HasPrefix(entry, prefix) {
+			environment = append(environment, entry)
+		}
+	}
+	return append(environment, prefix+value)
 }
 
 // diagnostic returns the best available explanation of a failed run — under

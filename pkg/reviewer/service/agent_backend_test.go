@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+type envCapturingSpawner struct {
+	*fakeSpawner
+	environment []string
+}
+
+func (s *envCapturingSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
+	s.environment = append([]string(nil), environment...)
+	return s.fakeSpawner.Spawn(ctx, name, args, dir)
+}
+
 func TestResolveAgentRuntimeDefaultsToClaude(t *testing.T) {
 	runtime, err := resolveAgentRuntime(AgentConfig{})
 	if err != nil {
@@ -109,8 +119,8 @@ func TestParseCodexStreamHappyPath(t *testing.T) {
 	if res.assistantTurns != 1 {
 		t.Errorf("turns=%d want 1", res.assistantTurns)
 	}
-	if res.budgetUnits != 2 {
-		t.Errorf("budget units=%d want 2", res.budgetUnits)
+	if res.budgetUnits != 1 {
+		t.Errorf("budget units=%d want 1", res.budgetUnits)
 	}
 	if !strings.Contains(res.finalOutput, "Looks good") {
 		t.Errorf("final output missing: %q", res.finalOutput)
@@ -120,7 +130,7 @@ func TestParseCodexStreamHappyPath(t *testing.T) {
 	}
 }
 
-func TestParseCodexStreamTurnBudgetCountsCompletedNonReasoningItems(t *testing.T) {
+func TestParseCodexStreamTurnBudgetExcludesReasoningAndTerminalMessage(t *testing.T) {
 	stream := `{"type":"item.completed","item":{"type":"reasoning"}}
 {"type":"item.completed","item":{"type":"command_execution"}}
 {"type":"item.completed","item":{"type":"file_change"}}
@@ -130,17 +140,17 @@ func TestParseCodexStreamTurnBudgetCountsCompletedNonReasoningItems(t *testing.T
 		stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{}),
 	}
 	res, err := parseCodexStream(proc, &bytes.Buffer{}, 2)
-	if err == nil || !strings.Contains(err.Error(), "max-turns") {
-		t.Fatalf("expected completed-item budget error, got %v", err)
+	if err != nil {
+		t.Fatalf("parseCodexStream: %v", err)
 	}
-	if res.assistantTurns != 1 || res.budgetUnits != 3 {
+	if res.assistantTurns != 1 || res.budgetUnits != 2 {
 		t.Fatalf("assistant turns=%d budget units=%d", res.assistantTurns, res.budgetUnits)
 	}
 	if res.finalOutput != "[]" {
 		t.Fatalf("terminal output was discarded: %q", res.finalOutput)
 	}
-	if !proc.killed {
-		t.Fatal("expected process to be killed")
+	if proc.killed {
+		t.Fatal("terminal answer incorrectly consumed work-item budget")
 	}
 }
 
@@ -163,7 +173,7 @@ func TestParseCodexStreamCapturesFailure(t *testing.T) {
 }
 
 func TestParseCodexStreamMaxTurnsKills(t *testing.T) {
-	stream := strings.Repeat(`{"type":"item.completed","item":{"type":"agent_message","text":"working"}}`+"\n", 3)
+	stream := strings.Repeat(`{"type":"item.completed","item":{"type":"command_execution","status":"completed"}}`+"\n", 3)
 	proc := &fakeProcess{
 		stdout: bytes.NewBufferString(stream),
 		stderr: &bytes.Buffer{},
@@ -179,6 +189,7 @@ func TestParseCodexStreamMaxTurnsKills(t *testing.T) {
 }
 
 func TestRunAgentReviewOpenRouter(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "ambient-key-must-not-reach-child")
 	bare, sha := setupLocalBareRepo(t)
 	cloneRoot := t.TempDir()
 	seedAgentCache(t, cloneRoot, "acme", "example", bare)
@@ -188,18 +199,18 @@ func TestRunAgentReviewOpenRouter(t *testing.T) {
 {"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
 {"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20}}
 `
-	spawner := &fakeSpawner{proc: &fakeProcess{
+	spawner := &envCapturingSpawner{fakeSpawner: &fakeSpawner{proc: &fakeProcess{
 		stdout: bytes.NewBufferString(stream),
 		stderr: &bytes.Buffer{},
 		killCh: make(chan struct{}),
-	}}
+	}}}
 	cfg := AgentConfig{
 		CloneRootDir:     cloneRoot,
 		LogsDir:          t.TempDir(),
 		WallClock:        time.Minute,
 		MaxTurns:         10,
 		Backend:          AgentBackendOpenRouter,
-		OpenRouterAPIKey: "sk-or-test-secret",
+		OpenRouterAPIKey: "frozen-key",
 	}
 
 	out, err := RunAgentReview(context.Background(), cfg, spawner,
@@ -212,6 +223,18 @@ func TestRunAgentReviewOpenRouter(t *testing.T) {
 	}
 	if spawner.dir == "" || !strings.Contains(strings.Join(spawner.args, "\n"), DefaultOpenRouterAgentModel) {
 		t.Errorf("unexpected spawn: dir=%q args=%q", spawner.dir, spawner.args)
+	}
+	openRouterEntries := make([]string, 0, 1)
+	for _, entry := range spawner.environment {
+		if strings.HasPrefix(entry, "OPENROUTER_API_KEY=") {
+			openRouterEntries = append(openRouterEntries, entry)
+		}
+	}
+	if len(openRouterEntries) != 1 || openRouterEntries[0] != "OPENROUTER_API_KEY=frozen-key" {
+		t.Fatalf("child OpenRouter credential=%q", openRouterEntries)
+	}
+	if strings.Contains(strings.Join(spawner.args, "\n"), "frozen-key") {
+		t.Fatal("frozen OpenRouter key leaked into argv")
 	}
 	if out.RequestedModel != DefaultOpenRouterAgentModel || out.ServedModel != DefaultOpenRouterAgentModel {
 		t.Errorf("requested=%q served=%q", out.RequestedModel, out.ServedModel)

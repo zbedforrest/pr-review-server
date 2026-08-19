@@ -16,11 +16,22 @@ import (
 type DefaultSpawner struct{}
 
 func (DefaultSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
+	return spawnCommand(ctx, name, args, dir, nil)
+}
+
+func (DefaultSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
+	return spawnCommand(ctx, name, args, dir, environment)
+}
+
+func spawnCommand(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
 	// Use Command (not CommandContext) so we control kill behavior ourselves.
 	// CommandContext's auto-kill only signals the direct child, leaving any
 	// process-group children orphaned. We watch ctx.Done in a goroutine and
 	// group-kill instead.
 	cmd := exec.Command(name, args...)
+	if environment != nil {
+		cmd.Env = append([]string(nil), environment...)
+	}
 	if dir != "" {
 		cmd.Dir = dir
 	}

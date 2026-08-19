@@ -41,6 +41,8 @@ func TestLoadAgentBackendDefaultsToClaude(t *testing.T) {
 
 func TestLoadOpenRouterAgentConfig(t *testing.T) {
 	t.Setenv("AGENT_BACKEND", "openrouter")
+	t.Setenv("AGENT_MAX_TURNS", "")
+	t.Setenv("REVIEW_MAX_TURNS", "")
 	t.Setenv("AGENT_MODEL", "openai/gpt-5.6-sol")
 	t.Setenv("AGENT_EFFORT", "xhigh")
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-test")
@@ -54,6 +56,9 @@ func TestLoadOpenRouterAgentConfig(t *testing.T) {
 	}
 	if cfg.OpenRouterAPIKey != "sk-or-test" {
 		t.Error("OpenRouterAPIKey was not loaded")
+	}
+	if cfg.AgentMaxTurns != defaultOpenRouterAgentMaxTurns || cfg.ReviewMaxTurns != defaultOpenRouterAgentMaxTurns {
+		t.Errorf("OpenRouter turn defaults: active=%d ceiling=%d want %d", cfg.AgentMaxTurns, cfg.ReviewMaxTurns, defaultOpenRouterAgentMaxTurns)
 	}
 }
 

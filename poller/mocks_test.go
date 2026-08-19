@@ -1730,13 +1730,12 @@ func cloneMockReviewResult(result *ReviewResult) *ReviewResult {
 // testConfig returns a minimal config for testing
 func testConfig() *config.Config {
 	return &config.Config{
-		GitHubUsername: "testuser", GitHubToken: "test-token",
-		PollingInterval: time.Minute, ReviewsDir: "/tmp/test-reviews",
-		AnthropicAPIKey: "test-anthropic", OpenRouterAPIKey: "test-openrouter",
+		GitHubUsername:  "testuser",
+		GitHubToken:     "test-token",
+		PollingInterval: time.Minute,
+		ReviewsDir:      "/tmp/test-reviews",
 	}
 }
-
-func testExecutableLookup(name string) (string, error) { return "/test/bin/" + name, nil }
 
 // newTestPoller creates a Poller with mock dependencies for testing
 func newTestPoller(mockGH *MockGitHubClient, mockDB *MockDatabase) *Poller {
@@ -1746,7 +1745,6 @@ func newTestPoller(mockGH *MockGitHubClient, mockDB *MockDatabase) *Poller {
 		ghClient:      mockGH,
 		reviewDir:     "/tmp/test-reviews",
 		activeReviews: make(map[string]ProcessInfo),
-		lookPath:      testExecutableLookup,
 	}
 }
 
@@ -1758,21 +1756,19 @@ func newTestPollerWithStorage(mockGH *MockGitHubClient, mockDB *MockDatabase, mo
 		ghClient:      mockGH,
 		reviewDir:     "/tmp/test-reviews",
 		activeReviews: make(map[string]ProcessInfo),
-		lookPath:      testExecutableLookup,
 	}
 	p.storage = mockStorage
 	return p
 }
 
 // newTestPollerFull creates a Poller with all mock dependencies
-func newTestPollerFull(mockGH *MockGitHubClient, database db.Database, mockStorage *MockReviewStorage, mockGenerator ReviewGenerator) *Poller {
+func newTestPollerFull(mockGH *MockGitHubClient, database db.Database, mockStorage *MockReviewStorage, mockGenerator *MockReviewGenerator) *Poller {
 	p := &Poller{
 		cfg:           testConfig(),
 		db:            database,
 		ghClient:      mockGH,
 		reviewDir:     "/tmp/test-reviews",
 		activeReviews: make(map[string]ProcessInfo),
-		lookPath:      testExecutableLookup,
 	}
 	p.storage = mockStorage
 	p.reviewGenerator = mockGenerator
