@@ -49,6 +49,9 @@ const (
 	// It is deliberately much larger than normal concurrency waits so a live
 	// process is never mistaken for an abandoned dispatcher.
 	ReviewQueueAbandonAfter = 24 * time.Hour
+	// ReviewCacheLookupTimeout bounds network storage checks while jobs are
+	// still queued and therefore have no execution deadline of their own.
+	ReviewCacheLookupTimeout = time.Minute
 
 	// ReviewProcessWarningThreshold is when to start warning about long-running reviews.
 	ReviewProcessWarningThreshold = 2 * time.Minute
@@ -727,6 +730,50 @@ func (p *Poller) loadPriorReviewPayload(ctx context.Context, owner, repo string,
 		return nil, fmt.Errorf("read sidecar %s: %w", newestName, err)
 	}
 	return parseSidecarPayload(body)
+}
+
+// loadReviewPayload loads the structured sidecar for one exact commit. Cache
+// restoration must use this artifact's metadata rather than whatever review
+// happens to be projected on the mutable PR row after later force-pushes.
+func (p *Poller) loadReviewPayload(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (*payload.Payload, error) {
+	name := gcs.ReviewJSONFileName(gcs.ReviewFileName(owner, repo, prNumber, commitSHA))
+	var body []byte
+	var err error
+	if p.gcsClient != nil && p.gcsClient.BucketName() != "" {
+		body, err = p.gcsClient.GetReviewContent(ctx, name)
+	} else {
+		body, err = os.ReadFile(filepath.Join(p.reviewDir, name))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load review sidecar %s: %w", name, err)
+	}
+	pl, err := parseSidecarPayload(body)
+	if err != nil {
+		return nil, fmt.Errorf("parse review sidecar %s: %w", name, err)
+	}
+	if !isSameCommit(commitSHA, pl.CommitSHA) {
+		return nil, fmt.Errorf("review sidecar %s contains commit %q, expected %q", name, pl.CommitSHA, commitSHA)
+	}
+	return pl, nil
+}
+
+func cachedProjectionMetadata(pl *payload.Payload) (critical, medium, low int, verdict string, modelFallback bool, reviewRunID, reviewRunJSON string) {
+	if pl == nil {
+		return
+	}
+	critical, medium, low = pl.Counts.Critical, pl.Counts.Medium, pl.Counts.Low
+	verdict = service.VerdictFromComments(pl.ToLineComments())
+	if pl.ReviewRun == nil {
+		return
+	}
+	reviewRunID = pl.ReviewRun.RunID
+	for _, model := range pl.ReviewRun.Models {
+		modelFallback = modelFallback || model.Fallback
+	}
+	if encoded, err := json.Marshal(pl.ReviewRun); err == nil {
+		reviewRunJSON = string(encoded)
+	}
+	return
 }
 
 // parseSidecarPayload unmarshals a findings sidecar. A payload with zero
@@ -1576,6 +1623,12 @@ func (p *Poller) reviewExists(ctx context.Context, owner, repo string, prNumber 
 		return false, nil
 	}
 	return false, err
+}
+
+func (p *Poller) reviewExistsWithTimeout(ctx context.Context, timeout time.Duration, owner, repo string, prNumber int, commitSHA string) (bool, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return p.reviewExists(lookupCtx, owner, repo, prNumber, commitSHA)
 }
 
 // saveReview persists review content to storage (GCS or local disk).
@@ -2870,7 +2923,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			exists := false
 			var existsErr error
 			if !job.Force {
-				exists, existsErr = p.reviewExists(queuedCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+				exists, existsErr = p.reviewExistsWithTimeout(queuedCtx, ReviewCacheLookupTimeout, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 			} else {
 				log.Printf("[REVIEWER] PR %d: force=true, skipping existing-review cache check", pr.Number)
 			}
@@ -2879,20 +2932,27 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				// Continue anyway - will regenerate if needed
 			} else if exists {
 				log.Printf("[REVIEWER] Review already exists for PR %d commit %s, skipping generation", pr.Number, pr.CommitSHA[:7])
-				// Update database to point to existing review, preserving importance counts
+				// Update the database from the exact per-commit sidecar. The mutable
+				// PR row may describe a different commit after a force-push.
 				filename := gcs.ReviewFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
-				// Get existing importance counts + verdict from database
-				existingPR, _ := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-				criticalCount, mediumCount, lowCount, verdict, modelFallback := 0, 0, 0, "", false
-				reviewRunID, reviewRunJSON := "", ""
-				if existingPR != nil {
-					criticalCount = existingPR.CriticalCount
-					mediumCount = existingPR.MediumCount
-					lowCount = existingPR.LowCount
-					verdict = existingPR.ReviewVerdict
-					modelFallback = existingPR.ModelFallback
-					reviewRunID = existingPR.ReviewRunID
-					reviewRunJSON = existingPR.ReviewRunJSON
+				var cachedPayload *payload.Payload
+				sidecarCtx, sidecarCancel := context.WithTimeout(queuedCtx, ReviewCacheLookupTimeout)
+				cachedPayload, sidecarErr := p.loadReviewPayload(sidecarCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+				sidecarCancel()
+				if sidecarErr != nil {
+					log.Printf("[REVIEWER] WARNING: cached review sidecar metadata unavailable for PR %d: %v", pr.Number, sidecarErr)
+				}
+				criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunID, reviewRunJSON := cachedProjectionMetadata(cachedPayload)
+				// Legacy HTML-only reviews have no sidecar. Preserve their DB
+				// metadata only when the row explicitly identifies this same commit;
+				// never mix a force-pushed commit's artifact with another commit's
+				// counts or run identity.
+				if cachedPayload == nil {
+					if existingPR, getErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number); getErr == nil && existingPR != nil && isSameCommit(existingPR.LastCommitSHA, pr.CommitSHA) {
+						criticalCount, mediumCount, lowCount = existingPR.CriticalCount, existingPR.MediumCount, existingPR.LowCount
+						verdict, modelFallback = existingPR.ReviewVerdict, existingPR.ModelFallback
+						reviewRunID, reviewRunJSON = existingPR.ReviewRunID, existingPR.ReviewRunJSON
+					}
 				}
 				if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)

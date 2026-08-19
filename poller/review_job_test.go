@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"pr-review-server/db"
+	"pr-review-server/gcs"
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
@@ -404,6 +408,69 @@ func TestProviderInitFailureRejectsRunWithoutConsumingPRRetry(t *testing.T) {
 	assert.False(t, p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number))
 }
 
+func TestQueuedCacheLookupHasIndependentTimeout(t *testing.T) {
+	storage := NewMockReviewStorage()
+	storage.ReviewExistsFunc = func(ctx context.Context, _ string, _ string, _ int, _ string) (bool, error) {
+		<-ctx.Done()
+		return false, ctx.Err()
+	}
+	p := newTestPollerWithStorage(NewMockGitHubClient(), NewMockDatabase(), storage)
+	started := time.Now()
+	exists, err := p.reviewExistsWithTimeout(context.Background(), 20*time.Millisecond, "acme", "widgets", 7, "abc1234")
+	assert.False(t, exists)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(started), 500*time.Millisecond)
+}
+
+func TestCacheRestoreUsesExactCommitSidecarMetadata(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	p.reviewDir = t.TempDir()
+	job := customReviewJob(t, "run-24400000000000000000000000000001")
+	job.Force = false
+	storage.ExistingReviews[fmt.Sprintf("%s/%s/%d/%s", job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA)] = true
+	artifactRunID := "run-24400000000000000000000000000000"
+	sidecar := payload.Payload{
+		SchemaVersion: "1", Owner: job.PR.Owner, Repo: job.PR.Repo,
+		PRNumber: job.PR.Number, CommitSHA: job.PR.CommitSHA,
+		Counts:   payload.Counts{Critical: 2, Medium: 3, Low: 4},
+		Findings: []payload.Finding{{Severity: "medium", File: "SUMMARY", Comment: "**Verdict: approve with suggestions.**"}},
+		ReviewRun: &payload.ReviewRunInfo{
+			RunID:  artifactRunID,
+			Models: []payload.ModelUse{{Stage: "agent", RequestedModel: "requested", ServedModel: "fallback", Fallback: true}},
+		},
+	}
+	body, err := json.Marshal(sidecar)
+	require.NoError(t, err)
+	sidecarName := gcs.ReviewJSONFileName(gcs.ReviewFileName(job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA))
+	require.NoError(t, os.WriteFile(filepath.Join(p.reviewDir, sidecarName), body, 0600))
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: "different-commit", Status: "pending", CriticalCount: 99,
+		ReviewVerdict: "request_changes", ReviewRunID: "wrong-run",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, job.PR.CommitSHA, pr.LastCommitSHA)
+	assert.Equal(t, 2, pr.CriticalCount)
+	assert.Equal(t, 3, pr.MediumCount)
+	assert.Equal(t, 4, pr.LowCount)
+	assert.Equal(t, "approve_suggestions", pr.ReviewVerdict)
+	assert.True(t, pr.ModelFallback)
+	assert.Equal(t, artifactRunID, pr.ReviewRunID)
+	assert.Contains(t, pr.ReviewRunJSON, artifactRunID)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCancelled, run.Status)
+	assert.Equal(t, "review_cached", run.TerminalCode)
+}
+
 func TestMonitorReapsAbandonedQueuedTracking(t *testing.T) {
 	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
 	job := customReviewJob(t, "run-24200000000000000000000000000001")
@@ -506,6 +573,7 @@ func TestOrganicGenerationTimeoutProjectsBoundedPRError(t *testing.T) {
 	assert.Equal(t, db.ReviewRunStatusTimedOut, run.Status)
 	assert.Equal(t, "run_timeout", run.TerminalCode)
 	assert.Equal(t, "execution", run.FailureStage)
+	assert.Contains(t, run.ErrorSummary, "wall-clock budget exceeded")
 	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
 	require.NoError(t, err)
 	require.NotNil(t, pr)
@@ -773,6 +841,35 @@ func TestPublicationRenewalNeverShortensLease(t *testing.T) {
 	require.NotNil(t, after)
 	require.NotNil(t, after.LeaseExpiresAt)
 	assert.False(t, after.LeaseExpiresAt.Before(*before.LeaseExpiresAt))
+}
+
+func TestBeginReviewExecutionReleasesLeaseWhenClaimReloadFails(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-29000000000000000000000000000001")
+	getCalls := 0
+	database.GetReviewRunFunc = func(string) (*db.ReviewRun, error) {
+		getCalls++
+		if getCalls == 1 {
+			return nil, nil
+		}
+		return nil, errors.New("transient reload failure")
+	}
+
+	exec, err := p.beginReviewExecution(job)
+	assert.Nil(t, exec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transient reload failure")
+	database.GetReviewRunFunc = nil
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusFailed, run.Status)
+	assert.Equal(t, "claim_reload_failed", run.TerminalCode)
+	assert.Equal(t, "dispatch", run.FailureStage)
+	assert.Empty(t, run.LeaseHolder)
+	assert.Nil(t, run.LeaseExpiresAt)
+	assert.NotNil(t, run.CompletedAt)
 }
 
 func TestAgentConfigComesFromReviewJob(t *testing.T) {

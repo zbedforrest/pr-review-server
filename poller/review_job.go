@@ -284,11 +284,29 @@ func (p *Poller) beginReviewExecution(job ReviewJob) (*reviewExecution, error) {
 		return nil, fmt.Errorf("%w: %s", ErrReviewRunNotClaimed, job.RunID)
 	}
 	run, err := p.db.GetReviewRun(job.RunID)
-	if err != nil {
-		return nil, fmt.Errorf("reload claimed review run %s: %w", job.RunID, err)
-	}
-	if run == nil {
-		return nil, fmt.Errorf("reload claimed review run %s: not found", job.RunID)
+	if err != nil || run == nil {
+		reloadErr := fmt.Errorf("reload claimed review run %s: not found", job.RunID)
+		if err != nil {
+			reloadErr = fmt.Errorf("reload claimed review run %s: %w", job.RunID, err)
+		}
+		status := db.ReviewRunStatusFailed
+		terminalCode := "claim_reload_failed"
+		failureStage := "dispatch"
+		errorSummary := reloadErr.Error()
+		completedAt := time.Now().UTC()
+		emptyHolder := ""
+		zeroLease := time.Time{}
+		updated, patchErr := p.db.PatchReviewRunAsHolder(job.RunID, holder, completedAt, db.ReviewRunPatch{
+			Status: &status, CompletedAt: &completedAt, TerminalCode: &terminalCode,
+			FailureStage: &failureStage, ErrorSummary: &errorSummary,
+			LeaseHolder: &emptyHolder, LeaseExpiresAt: &zeroLease,
+		})
+		if patchErr != nil {
+			log.Printf("[REVIEWER] WARN: release lease for run %s after reload failure: %v", job.RunID, patchErr)
+		} else if !updated {
+			log.Printf("[REVIEWER] WARN: run %s lost its lease before reload-failure cleanup", job.RunID)
+		}
+		return nil, reloadErr
 	}
 	runStartedAt := now
 	if run.StartedAt != nil {
@@ -341,11 +359,11 @@ func (p *Poller) finishInterruptedReviewExecution(exec *reviewExecution, ctx con
 		terminalCode = "run_timeout"
 	}
 	errorSummary := "review execution interrupted"
-	if contextCause := context.Cause(ctx); contextCause != nil {
-		errorSummary = contextCause.Error()
-	}
 	if cause != nil {
 		errorSummary = cause.Error()
+	}
+	if contextCause := context.Cause(ctx); budgetTimeout && contextCause != nil {
+		errorSummary = contextCause.Error()
 	}
 	finished := p.finishReviewExecution(exec, db.ReviewRunPatch{
 		Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary,

@@ -239,6 +239,7 @@ type MockDatabase struct {
 	mu                  sync.RWMutex
 	ReviewRuns          map[string]*db.ReviewRun
 	ReviewStageAttempts map[string][]db.ReviewStageAttempt
+	GetReviewRunFunc    func(string) (*db.ReviewRun, error)
 
 	// PRs stored in the mock database (keyed by "owner/repo/number")
 	PRs              map[string]*db.PR
@@ -1031,6 +1032,9 @@ func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error {
 }
 
 func (m *MockDatabase) GetReviewRun(runID string) (*db.ReviewRun, error) {
+	if m.GetReviewRunFunc != nil {
+		return m.GetReviewRunFunc(runID)
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	run := m.ReviewRuns[runID]
@@ -1346,6 +1350,7 @@ type MockReviewStorage struct {
 
 	// Error injection
 	ReviewExistsError error
+	ReviewExistsFunc  func(context.Context, string, string, int, string) (bool, error)
 	SaveReviewError   error
 	SaveReviewFunc    func(context.Context, string, string, int, string, []byte) (string, error)
 
@@ -1377,8 +1382,6 @@ func NewMockReviewStorage() *MockReviewStorage {
 
 func (m *MockReviewStorage) ReviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (bool, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := fmt.Sprintf("%s/%s/%d/%s", owner, repo, prNumber, commitSHA)
 	m.ReviewExistsCalls = append(m.ReviewExistsCalls, struct {
 		Owner     string
@@ -1387,11 +1390,16 @@ func (m *MockReviewStorage) ReviewExists(ctx context.Context, owner, repo string
 		CommitSHA string
 	}{owner, repo, prNumber, commitSHA})
 
-	if m.ReviewExistsError != nil {
-		return false, m.ReviewExistsError
-	}
-
+	fn := m.ReviewExistsFunc
+	err := m.ReviewExistsError
 	exists := m.ExistingReviews[key]
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, owner, repo, prNumber, commitSHA)
+	}
+	if err != nil {
+		return false, err
+	}
 	return exists, nil
 }
 
