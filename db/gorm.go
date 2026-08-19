@@ -152,6 +152,14 @@ func (g *GormDB) ensureIdempotentColumns() error {
 		return fmt.Errorf("index one live review run per PR: %w", err)
 	}
 	if g.db.Dialector.Name() != "postgres" {
+		if !g.db.Migrator().HasTable(&PRModel{}) {
+			return nil
+		}
+		if !g.db.Migrator().HasColumn(&PRModel{}, "projection_run_id") {
+			if err := g.db.Migrator().AddColumn(&PRModel{}, "ProjectionRunID"); err != nil {
+				return fmt.Errorf("add projection_run_id: %w", err)
+			}
+		}
 		if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
 			return fmt.Errorf("backfill projection_run_id: %w", err)
 		}

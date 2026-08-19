@@ -834,6 +834,21 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
 }
 
+func TestGormDBSkipMigrationsAddsMissingSQLiteProjectionColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skip-migrations.db")
+	database, err := NewGormSQLite(path)
+	require.NoError(t, err)
+	require.NoError(t, database.db.Migrator().DropColumn(&PRModel{}, "ProjectionRunID"))
+	assert.False(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
+	require.NoError(t, database.Close())
+
+	t.Setenv("SKIP_DB_MIGRATIONS", "true")
+	database, err = NewGormSQLite(path)
+	require.NoError(t, err)
+	defer database.Close()
+	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
+}
+
 func TestGormDBOneLiveRunMigrationRepairsExistingRows(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()
