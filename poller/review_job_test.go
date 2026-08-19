@@ -352,6 +352,51 @@ func TestQueuedReviewBudgetStartsAtExecution(t *testing.T) {
 	p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 }
 
+func TestStartedReviewKeysExcludeQueuedJobs(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	queued := customReviewJob(t, "run-24100000000000000000000000000001")
+	_, tracked := p.tryTrackReviewJob(context.Background(), queued)
+	require.True(t, tracked)
+
+	runningKey := prKey("acme", "running", 8)
+	p.trackReviewWithTimeout(context.Background(), "acme", "running", 8, 0,
+		"run-24100000000000000000000000000002", time.Minute)
+
+	started := p.startedReviewKeys()
+	assert.NotContains(t, started, prKey(queued.PR.Owner, queued.PR.Repo, queued.PR.Number))
+	assert.True(t, started[runningKey])
+
+	p.untrackReviewRun(queued.PR.Owner, queued.PR.Repo, queued.PR.Number, queued.RunID)
+	p.untrackReviewRun("acme", "running", 8, "run-24100000000000000000000000000002")
+}
+
+func TestProviderInitFailureRejectsRunWithoutConsumingPRRetry(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-24300000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "pending",
+	}))
+	_, tracked := p.tryTrackReviewJob(context.Background(), job)
+	require.True(t, tracked)
+
+	p.rejectProviderInitJobs([]ReviewJob{job}, errors.New("provider temporarily unavailable"))
+
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusFailed, run.Status)
+	assert.Equal(t, "provider_init_failed", run.TerminalCode)
+	assert.Equal(t, "dispatch", run.FailureStage)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "pending", pr.Status)
+	assert.Empty(t, database.ProjectionRunIDs[prDBKey(job.PR.Owner, job.PR.Repo, job.PR.Number)])
+	assert.False(t, p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number))
+}
+
 func TestMonitorReapsAbandonedQueuedTracking(t *testing.T) {
 	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
 	job := customReviewJob(t, "run-24200000000000000000000000000001")

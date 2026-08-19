@@ -1074,6 +1074,22 @@ func (p *Poller) GetSecondsUntilNextPoll() int {
 	return seconds
 }
 
+// startedReviewKeys snapshots only reviews whose execution budget has begun.
+// Queued entries also live in activeReviews for local ownership, but they have
+// not claimed the mutable PR projection and must not participate in stale-row
+// restoration.
+func (p *Poller) startedReviewKeys() map[string]bool {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	started := make(map[string]bool, len(p.activeReviews))
+	for key, info := range p.activeReviews {
+		if !info.StartTime.IsZero() {
+			started[key] = true
+		}
+	}
+	return started
+}
+
 // prKey creates a unique key for tracking a PR
 func prKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
@@ -1894,12 +1910,10 @@ func (p *Poller) poll(ctx context.Context) {
 		// Guard: if any actively-tracked reviews were reset (e.g. a long-running
 		// immediate review), restore them to "generating" so the goroutine's
 		// eventual DB write doesn't collide with a re-queued pending review.
-		p.reviewsMutex.Lock()
-		trackedKeys := make(map[string]bool, len(p.activeReviews))
-		for k := range p.activeReviews {
-			trackedKeys[k] = true
-		}
-		p.reviewsMutex.Unlock()
+		// Queued jobs have ownership in activeReviews but have not started an
+		// execution budget or claimed the PR projection, so they must remain
+		// pending while waiting for capacity.
+		trackedKeys := p.startedReviewKeys()
 		if len(trackedKeys) > 0 {
 			allPRsForCheck, checkErr := p.db.GetAllPRs()
 			if checkErr == nil {
@@ -2798,6 +2812,13 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			reviewSvc = service.NewService(p.ghClientConcrete, smartLlmClient, fastLlmClient)
 		}
 	}
+	if reviewSvcInitErr != nil {
+		// Provider initialization is deployment-wide and may be transient. Keep
+		// a terminal run ledger for each accepted request, but do not claim or
+		// error the PR projection (which would consume its bounded auto-retry).
+		p.rejectProviderInitJobs(jobs, reviewSvcInitErr)
+		return errors.Join(append(validationErrors, reviewSvcInitErr)...)
+	}
 
 	// Batch tokens are held across the agent stage, so a batch limit below
 	// AgentMaxConcurrent would silently cap agent concurrency under the
@@ -2874,7 +2895,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			}
 
 			agentSlotReserved := false
-			if reviewSvcInitErr == nil && job.Config.Effective.Agent.Enabled && p.agentSlots != nil {
+			if job.Config.Effective.Agent.Enabled && p.agentSlots != nil {
 				// Reserve scarce agent capacity while the job still has its
 				// un-deadlined queued context. Neither the configured execution
 				// budget nor the worker lease burns down waiting for this slot.
@@ -2930,9 +2951,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			// Generate review using mock interface (testing) or real service
 			var err error
 			var reviewResult *ReviewResult
-			if reviewSvcInitErr != nil {
-				err = reviewSvcInitErr
-			} else if p.reviewGenerator != nil {
+			if p.reviewGenerator != nil {
 				// Use mock generator for testing
 				genCfg := ReviewGeneratorConfig{
 					RunID:        job.RunID,

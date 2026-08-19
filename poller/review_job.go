@@ -437,6 +437,13 @@ func (p *Poller) rejectQueuedReviewJob(job ReviewJob, status, terminalCode, fail
 	return updated
 }
 
+func (p *Poller) rejectProviderInitJobs(jobs []ReviewJob, cause error) {
+	for _, job := range jobs {
+		p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "provider_init_failed", "dispatch", cause)
+		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
+	}
+}
+
 func ptrString(value string) *string { return &value }
 
 func (p *Poller) recordStageAttempt(exec *reviewExecution, attempt db.ReviewStageAttempt) {
