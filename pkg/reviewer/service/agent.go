@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -239,10 +240,12 @@ func RunAgentReview(
 		logPrefix, runtime.command, runtime.backend, runtime.model, runtime.effort, len(prompt))
 
 	agentStartedAt := time.Now().UTC()
+	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(runtime.backend)
 	startedEvent := ProviderAttemptEvent{
 		Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
 		Provider: agentProviderName(runtime.backend), Backend: runtime.backend,
 		RequestedModel: runtime.model, ResolvedModel: runtime.model, Effort: runtime.effort,
+		TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
 		StartedAt: &agentStartedAt, Status: "started", MatcherVersion: "v1",
 	}
 	if observerErr := observeProviderAttempt(agentCfg.AttemptObserver, startedEvent); errors.Is(observerErr, ErrProviderAttemptAborted) {
@@ -281,18 +284,21 @@ func RunAgentReview(
 			Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
 			Provider: agentProviderName(runtime.backend), Backend: runtime.backend,
 			RequestedModel: runtime.model, ResolvedModel: runtime.model, Effort: runtime.effort,
+			TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
 			StartedAt: &agentStartedAt, CompletedAt: &completedAt,
 			DurationMS: completedAt.Sub(agentStartedAt).Milliseconds(),
 			Status:     "completed", StopReason: "completed", MatcherVersion: "v1",
 		}
 		if parseResult != nil {
 			event.AssistantTurns = parseResult.assistantTurns
+			event.BudgetUnitsUsed = parseResult.budgetUnits
 			event.ObservedServedModels = append([]string(nil), parseResult.servedModels...)
 			event.PrimaryServedModel, event.ServedModelSource, event.ServingModelVerified,
 				event.Fallback, event.FallbackReason = agentServingMetadata(runtime, parseResult.servedModels)
 		}
 		if review != nil {
 			event.AssistantTurns = review.AssistantTurns
+			event.BudgetUnitsUsed = review.BudgetUnitsUsed
 			event.ObservedServedModels = append([]string(nil), review.ObservedServedModels...)
 			event.PrimaryServedModel = review.ServedModel
 			event.ServingModelVerified = review.ServingModelVerified

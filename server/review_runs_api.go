@@ -122,6 +122,9 @@ type reviewRunAttemptResponse struct {
 	Effort               string     `json:"effort,omitempty"`
 	Status               string     `json:"status"`
 	AssistantTurns       int        `json:"assistant_turns"`
+	BudgetUnitsUsed      int        `json:"budget_units_used"`
+	TurnBudgetUnit       string     `json:"turn_budget_unit,omitempty"`
+	TurnBudgetVersion    int        `json:"turn_budget_version,omitempty"`
 	InputTokens          int64      `json:"input_tokens"`
 	OutputTokens         int64      `json:"output_tokens"`
 	TotalTokens          int64      `json:"total_tokens"`
@@ -727,6 +730,8 @@ func (s *Server) buildReviewRunResponse(run *db.ReviewRun, includeAttempts bool)
 				ServingModelVerified: attempt.ServingModelVerified, Fallback: attempt.Fallback,
 				FallbackReason: attempt.FallbackReason, MatcherVersion: attempt.MatcherVersion,
 				Effort: attempt.Effort, Status: attempt.Status, AssistantTurns: attempt.AssistantTurns,
+				BudgetUnitsUsed: attempt.BudgetUnitsUsed,
+				TurnBudgetUnit:  attempt.TurnBudgetUnit, TurnBudgetVersion: attempt.TurnBudgetVersion,
 				InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens, TotalTokens: attempt.TotalTokens,
 				StartedAt: attempt.StartedAt, CompletedAt: attempt.CompletedAt, DurationMS: attempt.DurationMS,
 				StopReason: attempt.StopReason, ErrorCode: attempt.ErrorCode,

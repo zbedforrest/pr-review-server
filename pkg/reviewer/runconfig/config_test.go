@@ -99,6 +99,24 @@ func TestResolveRejectsRequestedTurnsAboveBackendCeiling(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsMissingPerBackendCeilingInMultiBackendPolicy(t *testing.T) {
+	policy := testPolicy()
+	openRouter := policy.Backends["openrouter"]
+	openRouter.MaxTurns = 0
+	policy.Backends["openrouter"] = openRouter
+	requested := Overrides{Agent: &AgentOverrides{
+		Backend:  ptr("openrouter"),
+		Model:    ptr("openai/gpt-5.6-sol"),
+		MaxTurns: ptr(80),
+	}}
+
+	_, err := Resolve(requested, testDefaults(), policy)
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Field != "agent.max_turns" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestResolveRejectsBackendSwitchWithoutTurnDefault(t *testing.T) {
 	policy := testPolicy()
 	openRouter := policy.Backends["openrouter"]
