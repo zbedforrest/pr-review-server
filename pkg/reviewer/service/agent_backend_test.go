@@ -3,10 +3,104 @@ package service
 import (
 	"bytes"
 	"context"
+	"io"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+type envCapturingSpawner struct {
+	*fakeSpawner
+	environment []string
+}
+
+// Existing test doubles opt into the production environment contract while
+// retaining their canned Spawn behavior.
+func (s *fakeSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, _ []string) (SpawnedProcess, error) {
+	return s.Spawn(ctx, name, args, dir)
+}
+
+func (s *staticProcessSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, _ []string) (SpawnedProcess, error) {
+	return s.Spawn(ctx, name, args, dir)
+}
+
+func (s *cancelAfterSpawnSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, _ []string) (SpawnedProcess, error) {
+	return s.Spawn(ctx, name, args, dir)
+}
+
+func TestAgentChildEnvironmentIsDefaultDenyWithFrozenCredential(t *testing.T) {
+	environment := agentChildEnvironment([]string{
+		"PATH=/usr/bin", "HOME=/home/reviewer", "DATABASE_URL=postgres://secret",
+		"ANTHROPIC_API_KEY=ambient", "CUSTOM_FUTURE_SECRET=must-not-pass",
+		"CLAUDE_CODE_OAUTH_TOKEN=oauth-token", "ANTHROPIC_AUTH_TOKEN=auth-token",
+		"ANTHROPIC_BASE_URL=https://anthropic-gateway.example",
+		"NODE_EXTRA_CA_CERTS=/certs/node.pem", "CURL_CA_BUNDLE=/certs/curl.pem",
+		"GIT_SSL_CAINFO=/certs/git.pem",
+		"PATH=/duplicate", "https_proxy=http://proxy.example",
+	}, "ANTHROPIC_API_KEY", "frozen")
+	joined := strings.Join(environment, "\n")
+	for _, want := range []string{
+		"PATH=/usr/bin", "HOME=/home/reviewer", "https_proxy=http://proxy.example",
+		"ANTHROPIC_API_KEY=frozen", "CLAUDE_CODE_OAUTH_TOKEN=oauth-token",
+		"ANTHROPIC_AUTH_TOKEN=auth-token", "ANTHROPIC_BASE_URL=https://anthropic-gateway.example",
+		"NODE_EXTRA_CA_CERTS=/certs/node.pem", "CURL_CA_BUNDLE=/certs/curl.pem",
+		"GIT_SSL_CAINFO=/certs/git.pem",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("child environment missing %q: %q", want, environment)
+		}
+	}
+	for _, forbidden := range []string{"postgres://secret", "ambient", "must-not-pass", "PATH=/duplicate"} {
+		if strings.Contains(joined, forbidden) {
+			t.Errorf("child environment retained %q: %q", forbidden, environment)
+		}
+	}
+
+	openRouterEnvironment := strings.Join(agentChildEnvironment([]string{
+		"CLAUDE_CODE_OAUTH_TOKEN=oauth-token", "ANTHROPIC_AUTH_TOKEN=auth-token",
+		"ANTHROPIC_BASE_URL=https://anthropic-gateway.example",
+	}, "OPENROUTER_API_KEY", "frozen-openrouter"), "\n")
+	for _, forbidden := range []string{"oauth-token", "auth-token", "anthropic-gateway.example"} {
+		if strings.Contains(openRouterEnvironment, forbidden) {
+			t.Errorf("OpenRouter child retained Claude-only value %q: %q", forbidden, openRouterEnvironment)
+		}
+	}
+}
+
+func TestDefaultSpawnerPreservesExplicitEmptyEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("agent subprocesses are unsupported on Windows")
+	}
+	envExecutable, err := exec.LookPath("env")
+	if err != nil {
+		t.Fatalf("locate env executable: %v", err)
+	}
+	proc, err := (DefaultSpawner{}).SpawnWithEnv(context.Background(), envExecutable, nil, "", []string{})
+	if err != nil {
+		t.Fatalf("spawn env: %v", err)
+	}
+	stdout, err := io.ReadAll(proc.Stdout())
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	stderr, stderrErr := io.ReadAll(proc.Stderr())
+	if stderrErr != nil {
+		t.Fatalf("read stderr: %v", stderrErr)
+	}
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("wait: %v; stderr=%s", err, stderr)
+	}
+	if len(bytes.TrimSpace(stdout)) != 0 {
+		t.Fatalf("empty child environment inherited parent values: %s", stdout)
+	}
+}
+
+func (s *envCapturingSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
+	s.environment = append([]string(nil), environment...)
+	return s.fakeSpawner.Spawn(ctx, name, args, dir)
+}
 
 func TestResolveAgentRuntimeDefaultsToClaude(t *testing.T) {
 	runtime, err := resolveAgentRuntime(AgentConfig{})
@@ -36,8 +130,8 @@ func TestResolveAgentRuntimeDefaultsToClaude(t *testing.T) {
 	}
 }
 
-func TestResolveAgentRuntimeOpenRouterRequiresKey(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "")
+func TestResolveAgentRuntimeOpenRouterRequiresFrozenKey(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "ambient-key-must-not-bypass-config")
 	_, err := resolveAgentRuntime(AgentConfig{Backend: AgentBackendOpenRouter})
 	if err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
 		t.Fatalf("expected missing-key error, got %v", err)
@@ -46,8 +140,7 @@ func TestResolveAgentRuntimeOpenRouterRequiresKey(t *testing.T) {
 
 func TestOpenRouterRuntimeBuildsIsolatedCodexInvocation(t *testing.T) {
 	const secret = "sk-or-test-secret-that-must-not-appear-in-argv"
-	t.Setenv("OPENROUTER_API_KEY", secret)
-	runtime, err := resolveAgentRuntime(AgentConfig{Backend: " OpenRouter ", Effort: "high"})
+	runtime, err := resolveAgentRuntime(AgentConfig{Backend: " OpenRouter ", Effort: "high", OpenRouterAPIKey: secret})
 	if err != nil {
 		t.Fatalf("resolveAgentRuntime: %v", err)
 	}
@@ -110,11 +203,38 @@ func TestParseCodexStreamHappyPath(t *testing.T) {
 	if res.assistantTurns != 1 {
 		t.Errorf("turns=%d want 1", res.assistantTurns)
 	}
+	if res.budgetUnits != 1 {
+		t.Errorf("budget units=%d want 1", res.budgetUnits)
+	}
 	if !strings.Contains(res.finalOutput, "Looks good") {
 		t.Errorf("final output missing: %q", res.finalOutput)
 	}
 	if !strings.Contains(logBuf.String(), "turn.completed") {
 		t.Error("raw log missing turn.completed event")
+	}
+}
+
+func TestParseCodexStreamTurnBudgetExcludesReasoningAndTerminalMessage(t *testing.T) {
+	stream := `{"type":"item.completed","item":{"type":"reasoning"}}
+{"type":"item.completed","item":{"type":"command_execution"}}
+{"type":"item.completed","item":{"type":"file_change"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{}),
+	}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, 2)
+	if err != nil {
+		t.Fatalf("parseCodexStream: %v", err)
+	}
+	if res.assistantTurns != 1 || res.budgetUnits != 2 {
+		t.Fatalf("assistant turns=%d budget units=%d", res.assistantTurns, res.budgetUnits)
+	}
+	if res.finalOutput != "[]" {
+		t.Fatalf("terminal output was discarded: %q", res.finalOutput)
+	}
+	if proc.killed {
+		t.Fatal("terminal answer incorrectly consumed work-item budget")
 	}
 }
 
@@ -137,7 +257,7 @@ func TestParseCodexStreamCapturesFailure(t *testing.T) {
 }
 
 func TestParseCodexStreamMaxTurnsKills(t *testing.T) {
-	stream := strings.Repeat(`{"type":"item.completed","item":{"type":"agent_message","text":"working"}}`+"\n", 3)
+	stream := strings.Repeat(`{"type":"item.completed","item":{"type":"command_execution","status":"completed"}}`+"\n", 3)
 	proc := &fakeProcess{
 		stdout: bytes.NewBufferString(stream),
 		stderr: &bytes.Buffer{},
@@ -147,33 +267,97 @@ func TestParseCodexStreamMaxTurnsKills(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "max-turns") {
 		t.Fatalf("expected max-turns error, got %v", err)
 	}
+	if !strings.Contains(err.Error(), "after 3 budget units") {
+		t.Fatalf("budget usage missing from error: %v", err)
+	}
 	if !proc.killed {
 		t.Error("expected process to be killed")
 	}
 }
 
+func TestParseCodexStreamCapsBudgetExemptItems(t *testing.T) {
+	const maxTurns = 2
+	stream := strings.Repeat(`{"type":"item.completed","item":{"type":"agent_message","text":"working"}}`+"\n", 2*maxTurns+17)
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, maxTurns)
+	if err == nil || !strings.Contains(err.Error(), "budget-exempt item ceiling") {
+		t.Fatalf("expected budget-exempt item ceiling error, got %v", err)
+	}
+	if res.budgetUnits != 0 {
+		t.Fatalf("message-only stream consumed work budget: %d", res.budgetUnits)
+	}
+	if !proc.killed {
+		t.Error("expected process to be killed")
+	}
+}
+
+func TestParseCodexStreamCapsMalformedUntypedItems(t *testing.T) {
+	const maxTurns = 2
+	stream := strings.Repeat(`{"type":"item.completed","item":{}}`+"\n", 2*maxTurns+17)
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{}),
+	}
+	_, err := parseCodexStream(proc, &bytes.Buffer{}, maxTurns)
+	if err == nil || !strings.Contains(err.Error(), "budget-exempt item ceiling") {
+		t.Fatalf("expected malformed-item ceiling error, got %v", err)
+	}
+	if !proc.killed {
+		t.Error("expected malformed stream to be killed")
+	}
+}
+
+func TestParseCodexStreamProductiveWorkResetsExemptItemCeiling(t *testing.T) {
+	const maxTurns = 2
+	reasoningBlock := strings.Repeat(`{"type":"item.completed","item":{"type":"reasoning"}}`+"\n", 2*maxTurns+16)
+	stream := reasoningBlock + `{"type":"item.completed","item":{"type":"command_execution"}}` + "\n" +
+		reasoningBlock + `{"type":"item.completed","item":{"type":"file_change"}}` + "\n" +
+		`{"type":"item.completed","item":{"type":"agent_message","text":"[]"}}` + "\n"
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, maxTurns)
+	if err != nil {
+		t.Fatalf("productive stream was capped: %v", err)
+	}
+	if res.budgetUnits != maxTurns || res.finalOutput != "[]" {
+		t.Fatalf("result=%+v", res)
+	}
+	if proc.killed {
+		t.Fatal("productive stream was killed")
+	}
+}
+
 func TestRunAgentReviewOpenRouter(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "sk-or-test-secret")
+	t.Setenv("OPENROUTER_API_KEY", "ambient-key-must-not-reach-child")
+	t.Setenv("GITHUB_TOKEN", "server-secret-must-not-reach-child")
 	bare, sha := setupLocalBareRepo(t)
 	cloneRoot := t.TempDir()
 	seedAgentCache(t, cloneRoot, "acme", "example", bare)
 
 	stream := `{"type":"thread.started","thread_id":"thread_123"}
 {"type":"turn.started"}
+{"type":"item.completed","item":{"type":"command_execution","status":"completed"}}
 {"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
 {"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20}}
 `
-	spawner := &fakeSpawner{proc: &fakeProcess{
+	spawner := &envCapturingSpawner{fakeSpawner: &fakeSpawner{proc: &fakeProcess{
 		stdout: bytes.NewBufferString(stream),
 		stderr: &bytes.Buffer{},
 		killCh: make(chan struct{}),
-	}}
+	}}}
 	cfg := AgentConfig{
-		CloneRootDir: cloneRoot,
-		LogsDir:      t.TempDir(),
-		WallClock:    time.Minute,
-		MaxTurns:     10,
-		Backend:      AgentBackendOpenRouter,
+		CloneRootDir:     cloneRoot,
+		LogsDir:          t.TempDir(),
+		WallClock:        time.Minute,
+		MaxTurns:         10,
+		Backend:          AgentBackendOpenRouter,
+		OpenRouterAPIKey: "frozen-key",
 	}
 
 	out, err := RunAgentReview(context.Background(), cfg, spawner,
@@ -187,6 +371,21 @@ func TestRunAgentReviewOpenRouter(t *testing.T) {
 	if spawner.dir == "" || !strings.Contains(strings.Join(spawner.args, "\n"), DefaultOpenRouterAgentModel) {
 		t.Errorf("unexpected spawn: dir=%q args=%q", spawner.dir, spawner.args)
 	}
+	openRouterEntries := make([]string, 0, 1)
+	for _, entry := range spawner.environment {
+		if strings.HasPrefix(entry, "OPENROUTER_API_KEY=") {
+			openRouterEntries = append(openRouterEntries, entry)
+		}
+	}
+	if len(openRouterEntries) != 1 || openRouterEntries[0] != "OPENROUTER_API_KEY=frozen-key" {
+		t.Fatalf("child OpenRouter credential=%q", openRouterEntries)
+	}
+	if strings.Contains(strings.Join(spawner.environment, "\n"), "server-secret-must-not-reach-child") {
+		t.Fatal("unrelated server credential leaked into Codex environment")
+	}
+	if strings.Contains(strings.Join(spawner.args, "\n"), "frozen-key") {
+		t.Fatal("frozen OpenRouter key leaked into argv")
+	}
 	if out.RequestedModel != DefaultOpenRouterAgentModel || out.ServedModel != DefaultOpenRouterAgentModel {
 		t.Errorf("requested=%q served=%q", out.RequestedModel, out.ServedModel)
 	}
@@ -198,5 +397,43 @@ func TestRunAgentReviewOpenRouter(t *testing.T) {
 	}
 	if out.Effort != DefaultAgentEffort {
 		t.Errorf("effort=%q want %q", out.Effort, DefaultAgentEffort)
+	}
+	if out.BudgetUnitsUsed != 1 {
+		t.Errorf("budget units=%d want 1", out.BudgetUnitsUsed)
+	}
+}
+
+func TestRunAgentReviewClaudeUsesFilteredFrozenEnvironment(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "ambient-anthropic-key")
+	t.Setenv("OPENROUTER_API_KEY", "unrelated-server-secret")
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-4-8"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"done"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &envCapturingSpawner{fakeSpawner: &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{}),
+	}}}
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		Backend: AgentBackendClaude, AnthropicAPIKey: "frozen-anthropic-key",
+	}
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if out.BudgetUnitsUsed != 1 || out.AssistantTurns != 1 {
+		t.Fatalf("Claude usage: assistant turns=%d budget units=%d", out.AssistantTurns, out.BudgetUnitsUsed)
+	}
+	joined := strings.Join(spawner.environment, "\n")
+	if !strings.Contains(joined, "ANTHROPIC_API_KEY=frozen-anthropic-key") {
+		t.Fatalf("Claude child did not receive frozen credential: %q", spawner.environment)
+	}
+	for _, forbidden := range []string{"ambient-anthropic-key", "unrelated-server-secret"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("Claude child inherited server secret %q", forbidden)
+		}
 	}
 }

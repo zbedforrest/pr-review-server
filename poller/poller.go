@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -145,9 +146,20 @@ type Poller struct {
 	// agentSlots caps concurrent agent reviews per process. Each agent run
 	// holds ~1 GB of /tmp (clone) + agent memory; without a cap, two PRs
 	// triggered close together can exhaust the instance's memory budget.
-	// Buffered to AgentMaxConcurrent; nil if AgentMaxConcurrent <= 0
-	// (unlimited, used by tests).
+	// Buffered to AgentMaxConcurrent, with a safe fallback in New. Focused
+	// tests may still construct a Poller directly with a nil channel.
 	agentSlots chan struct{}
+	// firstPassSlots caps provider-heavy first-pass pipelines across every
+	// batch and immediate API request in this process. Jobs acquire agent
+	// capacity first (when needed), then this slot, before starting their
+	// execution lease or wall clock.
+	firstPassSlots chan struct{}
+	// dispatchSlots bounds pre-provider cache/storage/DB work. It is released
+	// before agent/first-pass capacity waits, so it cannot cap agent throughput.
+	dispatchSlots chan struct{}
+	// lookPath is injectable so capability readiness can be tested without
+	// depending on the developer or CI machine's installed CLIs.
+	lookPath func(string) (string, error)
 	// reviewPipelineMargin overrides ReviewPipelineMargin in focused tests so
 	// the organic run-timeout path can be exercised without an eight-minute
 	// test. Zero retains the production constant.
@@ -300,13 +312,34 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		triggerChan:      make(chan struct{}, 1), // Buffered to prevent blocking
 		activeReviews:    make(map[string]ProcessInfo),
 		agentSpawner:     service.DefaultSpawner{},
+		lookPath:         osexec.LookPath,
 		holderID:         newHolderID(),
 	}
-	if cfg.AgentMaxConcurrent > 0 {
-		p.agentSlots = make(chan struct{}, cfg.AgentMaxConcurrent)
+	agentConcurrent := cfg.AgentMaxConcurrent
+	if agentConcurrent <= 0 {
+		log.Printf("[POLLER] AGENT_MAX_CONCURRENT<=0; capping agent concurrency at %d", fallbackAgentConcurrent)
+		agentConcurrent = fallbackAgentConcurrent
 	}
+	p.agentSlots = make(chan struct{}, agentConcurrent)
+	firstPassConcurrent := cfg.ReviewMaxFirstPassConcurrent
+	if firstPassConcurrent <= 0 {
+		firstPassConcurrent = fallbackReviewFirstPassConcurrent
+	}
+	p.firstPassSlots = make(chan struct{}, firstPassConcurrent)
+	p.dispatchSlots = make(chan struct{}, firstPassConcurrent)
 	p.loadBugMemory()
 	return p
+}
+
+func (p *Poller) executableAvailable(name string) bool {
+	lookPath := p.lookPath
+	if lookPath == nil {
+		// Production Pollers are constructed by New, which always installs the
+		// real PATH probe. Nil is reserved for lightweight test doubles.
+		return true
+	}
+	_, err := lookPath(name)
+	return err == nil
 }
 
 // loadBugMemory loads the optional pattern library at startup. Fail-open by
@@ -3026,37 +3059,33 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 		return errors.Join(append(validationErrors, reviewSvcInitErr)...)
 	}
 
-	// Batch tokens are held across the agent stage, so a batch limit below
-	// AgentMaxConcurrent would silently cap agent concurrency under the
-	// configured value. Agent slots are intentionally reserved for the full
-	// first-pass + agent pipeline below: a lease/deadline cannot safely pause
-	// during an agent-slot wait. This trades some first-pass pipelining for the
-	// invariant that queue time never consumes a caller's execution budget.
-	concurrencyLimit := 5
-	if p.cfg.AgentMaxConcurrent > concurrencyLimit {
-		concurrencyLimit = p.cfg.AgentMaxConcurrent
-	}
-	sem := make(chan struct{}, concurrencyLimit)
 	var wg sync.WaitGroup
 
 	// Process each PR concurrently
 	for _, job := range jobs {
-		queuedCtx := jobContexts[job.RunID]
-		select {
-		case sem <- struct{}{}: // Acquire token
-			wg.Add(1)
-		case <-queuedCtx.Done():
-			p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
-			p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
-			continue
-		}
-
+		wg.Add(1)
 		go func(job ReviewJob) {
 			defer wg.Done()
-			defer func() { <-sem }() // Release token
 			pr := job.PR
 			defer p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 			queuedCtx := jobContexts[job.RunID]
+			dispatchSlotReserved := false
+			if p.dispatchSlots != nil {
+				select {
+				case p.dispatchSlots <- struct{}{}:
+					dispatchSlotReserved = true
+				case <-queuedCtx.Done():
+					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+					return
+				}
+			}
+			releaseDispatchSlot := func() {
+				if dispatchSlotReserved {
+					<-p.dispatchSlots
+					dispatchSlotReserved = false
+				}
+			}
+			defer releaseDispatchSlot()
 
 			log.Printf("[REVIEWER] Processing PR: %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA[:7])
 
@@ -3122,6 +3151,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					log.Printf("[REVIEWER] PR %d cache metadata is untrusted; regenerating review", pr.Number)
 				}
 			}
+			releaseDispatchSlot()
 
 			agentSlotReserved := false
 			if job.Config.Effective.Agent.Enabled && p.agentSlots != nil {
@@ -3137,6 +3167,25 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					return
 				}
 			}
+			firstPassSlotReserved := false
+			if p.firstPassSlots != nil {
+				// Acquire only after scarce agent capacity so an agent job can never
+				// occupy a first-pass slot while waiting for the longer-lived slot.
+				select {
+				case p.firstPassSlots <- struct{}{}:
+					firstPassSlotReserved = true
+				case <-queuedCtx.Done():
+					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+					return
+				}
+			}
+			releaseFirstPassSlot := func() {
+				if firstPassSlotReserved {
+					<-p.firstPassSlots
+					firstPassSlotReserved = false
+				}
+			}
+			defer releaseFirstPassSlot()
 			prCtx, started := p.startTrackedReviewJob(job)
 			if !started {
 				log.Printf("[REVIEWER] PR %d lost queued ownership before execution; rejecting %s", pr.Number, job.RunID)
@@ -3220,6 +3269,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					NRequests:    nRequests,
 				}
 				reviewResult, err = p.reviewGenerator.GenerateReview(prCtx, genCfg)
+				releaseFirstPassSlot()
 			} else {
 				// Use real reviewer service
 				reviewCfg := service.PerformReviewConfig{
@@ -3235,6 +3285,9 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				}
 
 				result, svcErr := reviewSvc.PerformReviewWithContext(prCtx, reviewCfg)
+				// Provider capacity ends here. Non-agent publication may overlap because
+				// it holds no clone/CLI memory; agent jobs retain their separate slot.
+				releaseFirstPassSlot()
 				if svcErr != nil {
 					err = svcErr
 				} else if job.Config.Effective.Agent.Enabled {

@@ -29,8 +29,11 @@ var ErrReviewAlreadyTracked = errors.New("a review is already active for this PR
 
 const (
 	fallbackReviewMaxWallClockSec     = 360
-	fallbackReviewMaxTurns            = 40
+	fallbackClaudeMaxTurns            = 40
+	fallbackOpenRouterMaxTurns        = 200
 	fallbackReviewMaxFirstPassSamples = 3
+	fallbackReviewFirstPassConcurrent = 5
+	fallbackAgentConcurrent           = 5
 )
 
 // ReviewJob is the immutable execution handoff. Config must already be fully
@@ -226,24 +229,89 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 		FirstPass:      runconfig.FirstPass{Samples: nRequests},
 		RequiredChecks: p.cfg.RequiredChecks,
 	}
+	defaults.Agent.TurnBudgetUnit, defaults.Agent.TurnBudgetVersion = runconfig.TurnBudgetSemantics(backend)
+	gitAvailable := p.executableAvailable("git")
+	claudeDefaultMaxTurns := reviewBackendDefaultMaxTurns(service.AgentBackendClaude, backend, defaults.Agent.MaxTurns)
+	openRouterDefaultMaxTurns := reviewBackendDefaultMaxTurns(service.AgentBackendOpenRouter, backend, defaults.Agent.MaxTurns)
+	claudeMaxTurns := reviewBackendMaxTurns(service.AgentBackendClaude, backend, defaults.Agent.MaxTurns, claudeDefaultMaxTurns, p.cfg.ReviewMaxTurns, p.cfg.ReviewMaxTurnsConfigured)
+	openRouterMaxTurns := reviewBackendMaxTurns(service.AgentBackendOpenRouter, backend, defaults.Agent.MaxTurns, openRouterDefaultMaxTurns, p.cfg.ReviewMaxTurns, p.cfg.ReviewMaxTurnsConfigured)
+	// The legacy global field follows the active backend so existing clients
+	// remain conservative; per-backend capability fields are authoritative.
+	maxTurns := claudeMaxTurns
+	if backend == service.AgentBackendOpenRouter {
+		maxTurns = openRouterMaxTurns
+	}
 	policy := runconfig.Policy{
 		Backends: map[string]runconfig.BackendPolicy{
-			service.AgentBackendClaude: {
-				Available: p.cfg.AgenticReviews,
-				Models:    claudeModels,
-				Efforts:   claudeEfforts,
-			},
-			service.AgentBackendOpenRouter: {
-				Available: p.cfg.AgenticReviews && strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "",
-				Models:    openRouterModels,
-				Efforts:   openRouterEfforts,
-			},
+			// Claude credentials are advisory readiness metadata: the CLI may use
+			// its own OAuth session, and its native authentication flow is retained.
+			service.AgentBackendClaude: p.reviewBackendPolicy(
+				service.AgentBackendClaude, "claude", gitAvailable, strings.TrimSpace(p.cfg.AnthropicAPIKey) != "", false,
+				claudeDefaultMaxTurns, claudeMaxTurns, claudeModels, claudeEfforts,
+			),
+			service.AgentBackendOpenRouter: p.reviewBackendPolicy(
+				service.AgentBackendOpenRouter, "codex", gitAvailable, strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "", true,
+				openRouterDefaultMaxTurns, openRouterMaxTurns, openRouterModels, openRouterEfforts,
+			),
 		},
 		MaxWallClockSeconds: reviewPolicyMaximum(p.cfg.ReviewMaxWallClockSec, defaults.Agent.WallClockSeconds, fallbackReviewMaxWallClockSec),
-		MaxTurns:            reviewPolicyMaximum(p.cfg.ReviewMaxTurns, defaults.Agent.MaxTurns, fallbackReviewMaxTurns),
+		MaxTurns:            maxTurns,
 		MaxFirstPassSamples: reviewPolicyMaximum(p.cfg.ReviewMaxFirstPassSamples, defaults.FirstPass.Samples, fallbackReviewMaxFirstPassSamples),
 	}
 	return defaults, policy, nil
+}
+
+func (p *Poller) reviewBackendPolicy(backend, command string, gitAvailable, credentialConfigured, credentialRequired bool, defaultMaxTurns, maxTurns int, models, efforts []string) runconfig.BackendPolicy {
+	policyEnabled := p.cfg.AgenticReviews
+	cliAvailable := p.executableAvailable(command)
+	reasons := make([]string, 0, 4)
+	if !policyEnabled {
+		reasons = append(reasons, runconfig.BackendUnavailablePolicyDisabled)
+	}
+	if credentialRequired && !credentialConfigured {
+		reasons = append(reasons, runconfig.BackendUnavailableCredentialMissing)
+	}
+	if !gitAvailable {
+		reasons = append(reasons, runconfig.BackendUnavailableGitMissing)
+	}
+	if !cliAvailable {
+		reasons = append(reasons, runconfig.BackendUnavailableCLIMissing)
+	}
+	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(backend)
+	ready := policyEnabled && (!credentialRequired || credentialConfigured) && gitAvailable && cliAvailable
+	if maxTurns > 0 && defaultMaxTurns > maxTurns {
+		defaultMaxTurns = maxTurns
+	}
+	return runconfig.BackendPolicy{
+		Available:     ready,
+		Ready:         ready,
+		PolicyEnabled: policyEnabled, CredentialConfigured: credentialConfigured, CredentialRequired: credentialRequired,
+		ExecutableAvailable: gitAvailable && cliAvailable, UnavailableReasons: reasons,
+		TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
+		DefaultMaxTurns: defaultMaxTurns, MaxTurns: maxTurns,
+		Models: append([]string(nil), models...), Efforts: append([]string(nil), efforts...),
+	}
+}
+
+func reviewBackendDefaultMaxTurns(backend, activeBackend string, activeMaxTurns int) int {
+	if backend == activeBackend && activeMaxTurns > 0 {
+		return activeMaxTurns
+	}
+	if backend == service.AgentBackendOpenRouter {
+		return fallbackOpenRouterMaxTurns
+	}
+	return fallbackClaudeMaxTurns
+}
+
+func reviewBackendMaxTurns(backend, activeBackend string, activeMaxTurns, backendDefault, configured int, explicitlyConfigured bool) int {
+	maximum := backendDefault
+	if explicitlyConfigured && configured > 0 {
+		maximum = configured
+	}
+	if backend == activeBackend && activeMaxTurns > maximum {
+		maximum = activeMaxTurns
+	}
+	return maximum
 }
 
 func policyValues(configured []string, fallback string) []string {
@@ -408,6 +476,8 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 		CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
 		WallClock: time.Duration(agent.WallClockSeconds) * time.Second, MaxTurns: agent.MaxTurns,
 		GitHubToken: gitToken, Backend: agent.Backend, Model: agent.Model, Effort: agent.Effort,
+		AnthropicAPIKey:   p.cfg.AnthropicAPIKey,
+		OpenRouterAPIKey:  p.cfg.OpenRouterAPIKey,
 		OpenRouterBaseURL: p.cfg.OpenRouterBaseURL, BugMemory: p.bugMemory,
 		RequiredChecks: exec.Job.Config.Effective.RequiredChecks, FailureLogSink: p.persistAgentFailureLog,
 		AttemptObserver: p.providerAttemptObserver(exec),

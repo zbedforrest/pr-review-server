@@ -41,6 +41,8 @@ func TestLoadAgentBackendDefaultsToClaude(t *testing.T) {
 
 func TestLoadOpenRouterAgentConfig(t *testing.T) {
 	t.Setenv("AGENT_BACKEND", "openrouter")
+	t.Setenv("AGENT_MAX_TURNS", "")
+	t.Setenv("REVIEW_MAX_TURNS", "")
 	t.Setenv("AGENT_MODEL", "openai/gpt-5.6-sol")
 	t.Setenv("AGENT_EFFORT", "xhigh")
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-test")
@@ -54,6 +56,23 @@ func TestLoadOpenRouterAgentConfig(t *testing.T) {
 	}
 	if cfg.OpenRouterAPIKey != "sk-or-test" {
 		t.Error("OpenRouterAPIKey was not loaded")
+	}
+	if cfg.AgentMaxTurns != defaultOpenRouterAgentMaxTurns || cfg.ReviewMaxTurns != 0 {
+		t.Errorf("OpenRouter turn defaults: active=%d ceiling=%d", cfg.AgentMaxTurns, cfg.ReviewMaxTurns)
+	}
+	if cfg.ReviewMaxTurnsConfigured {
+		t.Error("unset REVIEW_MAX_TURNS was reported as operator-configured")
+	}
+}
+
+func TestLoadFreezesAgentCredentials(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+	t.Setenv("OPENROUTER_API_KEY", "sk-or-test")
+	cfg := Load()
+	t.Setenv("ANTHROPIC_API_KEY", "changed")
+	t.Setenv("OPENROUTER_API_KEY", "changed")
+	if cfg.AnthropicAPIKey != "sk-ant-test" || cfg.OpenRouterAPIKey != "sk-or-test" {
+		t.Fatalf("credentials were not frozen at load: anthropic=%q openrouter=%q", cfg.AnthropicAPIKey, cfg.OpenRouterAPIKey)
 	}
 }
 
@@ -71,6 +90,7 @@ func TestLoadReviewCustomizationPolicyDefaults(t *testing.T) {
 		"REVIEW_MAX_WALL_CLOCK_SEC",
 		"REVIEW_MAX_TURNS",
 		"REVIEW_MAX_FIRST_PASS_SAMPLES",
+		"REVIEW_MAX_FIRST_PASS_CONCURRENT",
 	} {
 		t.Setenv(key, "")
 	}
@@ -80,8 +100,14 @@ func TestLoadReviewCustomizationPolicyDefaults(t *testing.T) {
 	assertStringsEqual(t, cfg.ReviewAgentModelsOpenRouter, []string{"openai/gpt-5.6-sol"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsClaude, []string{"low", "medium", "high"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsOpenRouter, []string{"low", "medium", "high", "xhigh", "max"})
-	if cfg.ReviewMaxWallClockSec != defaultAgentWallClockSec || cfg.ReviewMaxTurns != defaultAgentMaxTurns || cfg.ReviewMaxFirstPassSamples != defaultReviewFirstPassSamples {
+	if cfg.ReviewMaxWallClockSec != defaultAgentWallClockSec || cfg.ReviewMaxTurns != 0 || cfg.ReviewMaxFirstPassSamples != defaultReviewFirstPassSamples {
 		t.Fatalf("review limits: wall=%d turns=%d samples=%d", cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns, cfg.ReviewMaxFirstPassSamples)
+	}
+	if cfg.ReviewMaxFirstPassConcurrent != defaultReviewFirstPassConcurrent {
+		t.Fatalf("first-pass concurrency=%d want %d", cfg.ReviewMaxFirstPassConcurrent, defaultReviewFirstPassConcurrent)
+	}
+	if cfg.ReviewMaxTurnsConfigured {
+		t.Error("default REVIEW_MAX_TURNS was reported as operator-configured")
 	}
 	// The policy is additive; it must not switch the active runtime defaults.
 	if cfg.AgentBackend != "claude" || cfg.AgentModel != "" || cfg.AgentEffort != "" {
@@ -124,10 +150,17 @@ func TestLoadReviewCustomizationPolicyLimits(t *testing.T) {
 	t.Setenv("REVIEW_MAX_WALL_CLOCK_SEC", " 1800 ")
 	t.Setenv("REVIEW_MAX_TURNS", "240")
 	t.Setenv("REVIEW_MAX_FIRST_PASS_SAMPLES", "5")
+	t.Setenv("REVIEW_MAX_FIRST_PASS_CONCURRENT", "7")
 
 	cfg := Load()
 	if cfg.ReviewMaxWallClockSec != 1800 || cfg.ReviewMaxTurns != 240 || cfg.ReviewMaxFirstPassSamples != 5 {
 		t.Fatalf("review limits: wall=%d turns=%d samples=%d", cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns, cfg.ReviewMaxFirstPassSamples)
+	}
+	if cfg.ReviewMaxFirstPassConcurrent != 7 {
+		t.Fatalf("first-pass concurrency=%d", cfg.ReviewMaxFirstPassConcurrent)
+	}
+	if !cfg.ReviewMaxTurnsConfigured {
+		t.Error("positive REVIEW_MAX_TURNS was not reported as operator-configured")
 	}
 }
 
@@ -140,10 +173,17 @@ func TestLoadReviewCustomizationPolicyRejectsNonPositiveOrMalformedLimits(t *tes
 			t.Setenv("REVIEW_MAX_WALL_CLOCK_SEC", value)
 			t.Setenv("REVIEW_MAX_TURNS", value)
 			t.Setenv("REVIEW_MAX_FIRST_PASS_SAMPLES", value)
+			t.Setenv("REVIEW_MAX_FIRST_PASS_CONCURRENT", value)
 
 			cfg := Load()
-			if cfg.ReviewMaxWallClockSec != 900 || cfg.ReviewMaxTurns != 120 || cfg.ReviewMaxFirstPassSamples != defaultReviewFirstPassSamples {
+			if cfg.ReviewMaxWallClockSec != 900 || cfg.ReviewMaxTurns != 0 || cfg.ReviewMaxFirstPassSamples != defaultReviewFirstPassSamples {
 				t.Fatalf("invalid %q yielded wall=%d turns=%d samples=%d", value, cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns, cfg.ReviewMaxFirstPassSamples)
+			}
+			if cfg.ReviewMaxFirstPassConcurrent != defaultReviewFirstPassConcurrent {
+				t.Fatalf("invalid %q yielded first-pass concurrency=%d", value, cfg.ReviewMaxFirstPassConcurrent)
+			}
+			if cfg.ReviewMaxTurnsConfigured {
+				t.Fatalf("invalid %q was reported as operator-configured", value)
 			}
 		})
 	}
@@ -156,7 +196,7 @@ func TestLoadReviewCustomizationPolicyUsesPositiveFallbackWhenActiveBudgetIsInva
 	t.Setenv("REVIEW_MAX_TURNS", "")
 
 	cfg := Load()
-	if cfg.ReviewMaxWallClockSec != defaultAgentWallClockSec || cfg.ReviewMaxTurns != defaultAgentMaxTurns {
+	if cfg.ReviewMaxWallClockSec != defaultAgentWallClockSec || cfg.ReviewMaxTurns != 0 {
 		t.Fatalf("review limit fallback: wall=%d turns=%d", cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns)
 	}
 	// Existing active-budget parsing remains unchanged for backwards compatibility.

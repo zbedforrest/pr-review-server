@@ -8,12 +8,14 @@ import (
 )
 
 const (
-	defaultAgentWallClockSec      = 360
-	defaultAgentMaxTurns          = 40
-	defaultReviewFirstPassSamples = 3
-	defaultClaudeAgentModel       = "claude-opus-4-8"
-	defaultOpenRouterAgentModel   = "openai/gpt-5.6-sol"
-	defaultAgentEffort            = "medium"
+	defaultAgentWallClockSec         = 360
+	defaultAgentMaxTurns             = 40
+	defaultOpenRouterAgentMaxTurns   = 200
+	defaultReviewFirstPassSamples    = 3
+	defaultReviewFirstPassConcurrent = 5
+	defaultClaudeAgentModel          = "claude-opus-4-8"
+	defaultOpenRouterAgentModel      = "openai/gpt-5.6-sol"
+	defaultAgentEffort               = "medium"
 )
 
 type Config struct {
@@ -53,10 +55,11 @@ type Config struct {
 	AgentLogsDir       string
 	AgentWallClockSec  int
 	AgentMaxTurns      int
-	AgentMaxConcurrent int    // <=0 disables the cap (unlimited concurrency)
+	AgentMaxConcurrent int    // <=0 uses the poller's safe five-process fallback
 	AgentBackend       string // claude (default) or openrouter
 	AgentModel         string // backend model id for agent reviews (empty = backend default)
 	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
+	AnthropicAPIKey    string // frozen optional runtime credential; Claude OAuth remains supported
 	OpenRouterAPIKey   string // OpenRouter credential; deployment-only, never exposed in capabilities
 	OpenRouterBaseURL  string // OpenRouter API root (empty = service default)
 	BugMemoryPath      string // local path to a bug-memory library JSON (dev/benchmark)
@@ -73,7 +76,9 @@ type Config struct {
 	ReviewAgentEffortsOpenRouter []string
 	ReviewMaxWallClockSec        int
 	ReviewMaxTurns               int
+	ReviewMaxTurnsConfigured     bool
 	ReviewMaxFirstPassSamples    int
+	ReviewMaxFirstPassConcurrent int
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -107,9 +112,13 @@ func Load() *Config {
 		}
 	}
 
-	agentWallClockSec := getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", defaultAgentWallClockSec)
-	agentMaxTurns := getEnvIntOrDefault("AGENT_MAX_TURNS", defaultAgentMaxTurns)
 	agentBackend := getEnvOrDefault("AGENT_BACKEND", "claude")
+	agentWallClockSec := getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", defaultAgentWallClockSec)
+	agentMaxTurnsDefault := defaultAgentMaxTurns
+	if strings.EqualFold(strings.TrimSpace(agentBackend), "openrouter") {
+		agentMaxTurnsDefault = defaultOpenRouterAgentMaxTurns
+	}
+	agentMaxTurns := getEnvIntOrDefault("AGENT_MAX_TURNS", agentMaxTurnsDefault)
 	agentModel := os.Getenv("AGENT_MODEL")
 	agentEffort := os.Getenv("AGENT_EFFORT")
 
@@ -148,7 +157,7 @@ func Load() *Config {
 	}
 
 	maxWallClockDefault := positiveOrDefault(agentWallClockSec, defaultAgentWallClockSec)
-	maxTurnsDefault := positiveOrDefault(agentMaxTurns, defaultAgentMaxTurns)
+	reviewMaxTurns, reviewMaxTurnsConfigured := getPositiveEnvInt("REVIEW_MAX_TURNS")
 
 	return &Config{
 		// Legacy single-user mode
@@ -190,6 +199,7 @@ func Load() *Config {
 		AgentBackend:       agentBackend,
 		AgentModel:         agentModel,
 		AgentEffort:        agentEffort,
+		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
 		BugMemoryPath:      os.Getenv("BUG_MEMORY_PATH"),
@@ -201,8 +211,10 @@ func Load() *Config {
 		ReviewAgentEffortsClaude:     claudeEfforts,
 		ReviewAgentEffortsOpenRouter: openRouterEfforts,
 		ReviewMaxWallClockSec:        getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
-		ReviewMaxTurns:               getPositiveEnvIntOrDefault("REVIEW_MAX_TURNS", maxTurnsDefault),
+		ReviewMaxTurns:               reviewMaxTurns,
+		ReviewMaxTurnsConfigured:     reviewMaxTurnsConfigured,
 		ReviewMaxFirstPassSamples:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
+		ReviewMaxFirstPassConcurrent: getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
 	}
 }
 
@@ -226,12 +238,22 @@ func getEnvOrDefault(key, defaultValue string) string {
 // zero, and negative values fall back to a positive default rather than
 // accidentally disabling a limit.
 func getPositiveEnvIntOrDefault(key string, defaultValue int) int {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		if n, err := strconv.Atoi(value); err == nil && n > 0 {
-			return n
-		}
+	if value, ok := getPositiveEnvInt(key); ok {
+		return value
 	}
 	return defaultValue
+}
+
+func getPositiveEnvInt(key string) (int, bool) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 func positiveOrDefault(value, defaultValue int) int {

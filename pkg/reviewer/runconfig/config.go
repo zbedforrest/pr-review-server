@@ -14,11 +14,21 @@ import (
 	"strings"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 const (
 	SourceRequest           = "request"
 	SourceDeploymentDefault = "deployment_default"
+	SourceDerived           = "derived"
+
+	TurnBudgetVersion                       = 1
+	TurnBudgetUnitAssistantEvent            = "assistant_event"
+	TurnBudgetUnitCompletedNonReasoningItem = "completed_non_reasoning_item"
+
+	BackendUnavailablePolicyDisabled    = "policy_disabled"
+	BackendUnavailableCredentialMissing = "credential_missing"
+	BackendUnavailableGitMissing        = "git_executable_missing"
+	BackendUnavailableCLIMissing        = "backend_executable_missing"
 )
 
 // Overrides is the public, optional configuration accepted from a caller.
@@ -53,12 +63,14 @@ type Effective struct {
 }
 
 type Agent struct {
-	Enabled          bool   `json:"enabled"`
-	Backend          string `json:"backend"`
-	Model            string `json:"model"`
-	Effort           string `json:"effort"`
-	WallClockSeconds int    `json:"wall_clock_seconds"`
-	MaxTurns         int    `json:"max_turns"`
+	Enabled           bool   `json:"enabled"`
+	Backend           string `json:"backend"`
+	Model             string `json:"model"`
+	Effort            string `json:"effort"`
+	WallClockSeconds  int    `json:"wall_clock_seconds"`
+	MaxTurns          int    `json:"max_turns"`
+	TurnBudgetUnit    string `json:"turn_budget_unit"`
+	TurnBudgetVersion int    `json:"turn_budget_version"`
 }
 
 type FirstPass struct {
@@ -68,9 +80,24 @@ type FirstPass struct {
 // BackendPolicy describes one deployment-enabled agent backend. Models and
 // Efforts are allowlists; an empty list permits no caller-visible values.
 type BackendPolicy struct {
-	Available bool
-	Models    []string
-	Efforts   []string
+	// Available retains the legacy runnable-readiness signal. Ready is an
+	// explicit alias for newer clients; producers intentionally keep them equal.
+	// PolicyEnabled separately exposes deployment policy admission.
+	// The readiness fields explain failures without exposing credential values
+	// or executable paths.
+	Available            bool
+	Ready                bool
+	PolicyEnabled        bool
+	CredentialConfigured bool
+	CredentialRequired   bool
+	ExecutableAvailable  bool
+	UnavailableReasons   []string
+	TurnBudgetUnit       string
+	TurnBudgetVersion    int
+	DefaultMaxTurns      int
+	MaxTurns             int
+	Models               []string
+	Efforts              []string
 }
 
 // Policy contains operator-owned safety limits. Callers can choose within
@@ -149,6 +176,23 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 	effective.Agent.Backend = strings.ToLower(strings.TrimSpace(effective.Agent.Backend))
 	effective.Agent.Model = strings.TrimSpace(effective.Agent.Model)
 	effective.Agent.Effort = strings.ToLower(strings.TrimSpace(effective.Agent.Effort))
+	effective.Agent.TurnBudgetUnit, effective.Agent.TurnBudgetVersion = TurnBudgetSemantics(effective.Agent.Backend)
+	// A backend switch changes the unit represented by max_turns. When the
+	// caller omitted max_turns, derive that backend's default instead of
+	// carrying a number expressed in the deployment backend's unit.
+	if sources["agent.max_turns"] != SourceRequest &&
+		effective.Agent.TurnBudgetUnit != defaults.Agent.TurnBudgetUnit {
+		if backendPolicy, ok := findBackendPolicy(policy, effective.Agent.Backend); ok {
+			if backendPolicy.DefaultMaxTurns <= 0 {
+				return Snapshot{}, invalid("agent.max_turns", "backend %q has no default turn budget; specify max_turns", effective.Agent.Backend)
+			}
+			effective.Agent.MaxTurns = backendPolicy.DefaultMaxTurns
+			if backendPolicy.MaxTurns > 0 && effective.Agent.MaxTurns > backendPolicy.MaxTurns {
+				effective.Agent.MaxTurns = backendPolicy.MaxTurns
+			}
+			sources["agent.max_turns"] = SourceDerived
+		}
+	}
 
 	if err := Validate(effective, policy); err != nil {
 		return Snapshot{}, err
@@ -180,21 +224,15 @@ func Validate(cfg Effective, policy Policy) error {
 	}
 
 	backend := strings.ToLower(strings.TrimSpace(cfg.Agent.Backend))
-	backendPolicy, ok := policy.Backends[backend]
-	if !ok {
-		for name, candidate := range policy.Backends {
-			if strings.EqualFold(strings.TrimSpace(name), backend) {
-				backendPolicy = candidate
-				ok = true
-				break
-			}
-		}
-	}
+	backendPolicy, ok := findBackendPolicy(policy, backend)
 	if !ok {
 		return invalid("agent.backend", "unsupported backend %q", cfg.Agent.Backend)
 	}
-	if !backendPolicy.Available {
-		return invalid("agent.backend", "backend %q is not available in this deployment", backend)
+	if !backendPolicy.Available || !backendPolicy.Ready {
+		return invalid("agent.backend", "backend %q is not ready in this deployment", backend)
+	}
+	if cfg.Agent.TurnBudgetUnit != backendPolicy.TurnBudgetUnit || cfg.Agent.TurnBudgetVersion != backendPolicy.TurnBudgetVersion {
+		return invalid("agent.turn_budget_unit", "turn-budget semantics do not match backend %q", backend)
 	}
 	// Provider model IDs are case-sensitive; unlike backend and effort, model
 	// matching is deliberately exact.
@@ -213,10 +251,41 @@ func Validate(cfg Effective, policy Policy) error {
 	if cfg.Agent.MaxTurns <= 0 {
 		return invalid("agent.max_turns", "must be greater than zero")
 	}
-	if policy.MaxTurns > 0 && cfg.Agent.MaxTurns > policy.MaxTurns {
-		return invalid("agent.max_turns", "must be at most %d", policy.MaxTurns)
+	maxTurns := backendPolicy.MaxTurns
+	if maxTurns <= 0 {
+		maxTurns = policy.MaxTurns
+	}
+	if maxTurns > 0 && cfg.Agent.MaxTurns > maxTurns {
+		return invalid("agent.max_turns", "must be at most %d", maxTurns)
 	}
 	return nil
+}
+
+func findBackendPolicy(policy Policy, backend string) (BackendPolicy, bool) {
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	if candidate, ok := policy.Backends[backend]; ok {
+		return candidate, true
+	}
+	for name, candidate := range policy.Backends {
+		if strings.EqualFold(strings.TrimSpace(name), backend) {
+			return candidate, true
+		}
+	}
+	return BackendPolicy{}, false
+}
+
+// TurnBudgetSemantics returns the immutable counter contract for a backend.
+// MaxTurns keeps its public name for compatibility, while these fields make
+// the unit precise in every durable effective-config snapshot.
+func TurnBudgetSemantics(backend string) (string, int) {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "claude":
+		return TurnBudgetUnitAssistantEvent, TurnBudgetVersion
+	case "openrouter":
+		return TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion
+	default:
+		return "", 0
+	}
 }
 
 // Hash returns a stable SHA-256 of the complete effective configuration.
@@ -233,7 +302,7 @@ func Hash(cfg Effective) (string, error) {
 func (p Policy) AvailableBackends() []string {
 	available := make(map[string]struct{}, len(p.Backends))
 	for name, backend := range p.Backends {
-		if backend.Available {
+		if backend.Available && backend.Ready {
 			available[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
 		}
 	}
@@ -247,14 +316,16 @@ func (p Policy) AvailableBackends() []string {
 
 func defaultSources() map[string]string {
 	return map[string]string{
-		"agent.enabled":            SourceDeploymentDefault,
-		"agent.backend":            SourceDeploymentDefault,
-		"agent.model":              SourceDeploymentDefault,
-		"agent.effort":             SourceDeploymentDefault,
-		"agent.wall_clock_seconds": SourceDeploymentDefault,
-		"agent.max_turns":          SourceDeploymentDefault,
-		"first_pass.samples":       SourceDeploymentDefault,
-		"required_checks":          SourceDeploymentDefault,
+		"agent.enabled":             SourceDeploymentDefault,
+		"agent.backend":             SourceDeploymentDefault,
+		"agent.model":               SourceDeploymentDefault,
+		"agent.effort":              SourceDeploymentDefault,
+		"agent.wall_clock_seconds":  SourceDeploymentDefault,
+		"agent.max_turns":           SourceDeploymentDefault,
+		"agent.turn_budget_unit":    SourceDerived,
+		"agent.turn_budget_version": SourceDerived,
+		"first_pass.samples":        SourceDeploymentDefault,
+		"required_checks":           SourceDeploymentDefault,
 	}
 }
 

@@ -38,6 +38,7 @@ func newReviewAPITestPoller(database db.Database) *reviewAPITestPoller {
 		Agent: runconfig.Agent{
 			Enabled: true, Backend: service.AgentBackendClaude, Model: "claude-fable-5",
 			Effort: "medium", WallClockSeconds: 360, MaxTurns: 40,
+			TurnBudgetUnit: runconfig.TurnBudgetUnitAssistantEvent, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 		},
 		FirstPass: runconfig.FirstPass{Samples: 3},
 	}
@@ -47,10 +48,16 @@ func newReviewAPITestPoller(database db.Database) *reviewAPITestPoller {
 		policy: runconfig.Policy{
 			Backends: map[string]runconfig.BackendPolicy{
 				service.AgentBackendClaude: {
-					Available: true, Models: []string{"claude-fable-5"}, Efforts: []string{"medium", "high"},
+					Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
+					TurnBudgetUnit: runconfig.TurnBudgetUnitAssistantEvent, TurnBudgetVersion: runconfig.TurnBudgetVersion,
+					DefaultMaxTurns: 40, MaxTurns: 120,
+					Models: []string{"claude-fable-5"}, Efforts: []string{"medium", "high"},
 				},
 				service.AgentBackendOpenRouter: {
-					Available: true, Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
+					Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, CredentialRequired: true, ExecutableAvailable: true,
+					TurnBudgetUnit: runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
+					DefaultMaxTurns: 120, MaxTurns: 120,
+					Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
 				},
 			},
 			MaxWallClockSeconds: 900, MaxTurns: 120, MaxFirstPassSamples: 5,
@@ -179,6 +186,9 @@ func TestCreateReviewRunPersistsResolvedConfigAndIdempotency(t *testing.T) {
 	assert.Equal(t, "Widgets", job.PR.Repo)
 	assert.Equal(t, 720, job.Config.Effective.Agent.WallClockSeconds)
 	assert.Equal(t, 100, job.Config.Effective.Agent.MaxTurns)
+	assert.Equal(t, runconfig.SchemaVersion, job.Config.Effective.SchemaVersion)
+	assert.Equal(t, runconfig.TurnBudgetUnitCompletedNonReasoningItem, job.Config.Effective.Agent.TurnBudgetUnit)
+	assert.Equal(t, runconfig.TurnBudgetVersion, job.Config.Effective.Agent.TurnBudgetVersion)
 	assert.Equal(t, 2, job.Config.Effective.FirstPass.Samples)
 	assert.NotEmpty(t, job.RequestHash)
 	assert.NotContains(t, job.IdempotencyKeyHash, "experiment-42")
@@ -189,6 +199,10 @@ func TestCreateReviewRunPersistsResolvedConfigAndIdempotency(t *testing.T) {
 	require.NotNil(t, persisted)
 	assert.Equal(t, job.IdempotencyKeyHash, persisted.IdempotencyKeyHash)
 	assert.Equal(t, job.Config.Hash, persisted.ConfigHash)
+	var persistedEffective runconfig.Effective
+	require.NoError(t, json.Unmarshal([]byte(persisted.EffectiveConfigJSON), &persistedEffective))
+	assert.Equal(t, runconfig.TurnBudgetUnitCompletedNonReasoningItem, persistedEffective.Agent.TurnBudgetUnit)
+	assert.Equal(t, runconfig.TurnBudgetVersion, persistedEffective.Agent.TurnBudgetVersion)
 	assert.Equal(t, 1, githubCalls)
 	assert.Equal(t, reviewRunsPathPrefix+job.RunID, recorder.Header().Get("Location"))
 	assert.NotContains(t, recorder.Body.String(), "experiment-42")
@@ -309,7 +323,11 @@ func TestWaitForIdempotentReviewRunBridgesAdmissionCommitWindow(t *testing.T) {
 func TestReviewCapabilitiesExposePolicyButNoSecrets(t *testing.T) {
 	s, _, apiPoller, userID := newReviewAPIServer(t, githubPRResponse("0123456789abcdef0123456789abcdef01234567"))
 	apiPoller.policy.Backends[service.AgentBackendOpenRouter] = runconfig.BackendPolicy{
-		Available: false, Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
+		Available: false, Ready: false, PolicyEnabled: true, CredentialConfigured: false, CredentialRequired: true, ExecutableAvailable: true,
+		UnavailableReasons: []string{runconfig.BackendUnavailableCredentialMissing},
+		TurnBudgetUnit:     runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
+		DefaultMaxTurns: 120, MaxTurns: 120,
+		Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
 	}
 
 	request := addReviewAPIUser(httptest.NewRequest(http.MethodGet, reviewCapabilitiesPath, nil), *userID)
@@ -317,9 +335,17 @@ func TestReviewCapabilitiesExposePolicyButNoSecrets(t *testing.T) {
 	s.handleReviewCapabilities(recorder, request)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.Contains(t, recorder.Body.String(), `"openrouter":{"available":false`)
+	assert.Contains(t, recorder.Body.String(), `"ready":false`)
+	assert.Contains(t, recorder.Body.String(), `"credential_configured":false`)
+	assert.Contains(t, recorder.Body.String(), `"credential_required":true`)
+	assert.Contains(t, recorder.Body.String(), `"unavailable_reasons":["credential_missing"]`)
+	assert.Contains(t, recorder.Body.String(), `"turn_budget_unit":"completed_non_reasoning_item"`)
+	assert.Contains(t, recorder.Body.String(), `"default_max_turns":120`)
+	assert.Contains(t, recorder.Body.String(), `"max_turns":120`)
 	assert.Contains(t, recorder.Body.String(), `"max_wall_clock_seconds":900`)
 	assert.NotContains(t, strings.ToLower(recorder.Body.String()), "api_key")
 	assert.NotContains(t, strings.ToLower(recorder.Body.String()), "base_url")
+	assert.NotContains(t, recorder.Body.String(), "/secret/bin")
 
 	apiPoller.prepareCalls = 0
 	s.cfg.ReviewerEnabled = false

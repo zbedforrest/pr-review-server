@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -70,7 +69,7 @@ func resolveAgentRuntime(cfg AgentConfig) (agentRuntime, error) {
 		}, nil
 
 	case AgentBackendOpenRouter:
-		if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) == "" {
+		if strings.TrimSpace(cfg.OpenRouterAPIKey) == "" {
 			return agentRuntime{}, errors.New("agent: OPENROUTER_API_KEY is required when AGENT_BACKEND=openrouter")
 		}
 		model := strings.TrimSpace(cfg.Model)
@@ -144,6 +143,8 @@ func (r agentRuntime) args(prompt string) []string {
 // serving model, so model verification is handled by the pinned runtime model.
 func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
 	result := &agentParseResult{}
+	consecutiveExemptItems := 0
+	exemptItemCeiling := 2*maxTurns + 16
 	scanner := bufio.NewScanner(proc.Stdout())
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 
@@ -165,21 +166,36 @@ func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		case "item.completed":
 			item, _ := ev["item"].(map[string]any)
 			itemType, _ := item["type"].(string)
-			if itemType != "agent_message" {
-				continue
+			if itemType == "" || itemType == "reasoning" || itemType == "agent_message" {
+				consecutiveExemptItems++
+				if consecutiveExemptItems > exemptItemCeiling {
+					_ = proc.Kill()
+					return result, fmt.Errorf("exceeded consecutive budget-exempt item ceiling (%d)", exemptItemCeiling)
+				}
+			} else {
+				consecutiveExemptItems = 0
 			}
-			result.assistantTurns++
-			if result.assistantTurns%5 == 0 || result.assistantTurns == 1 {
-				log.Printf("[AGENT] assistant turn %d/%d", result.assistantTurns, maxTurns)
+			// Preserve the completed terminal response. It represents the result of
+			// prior work, not another work item, so it does not consume budget.
+			if itemType == "agent_message" {
+				result.assistantTurns++
+				if text, ok := item["text"].(string); ok {
+					result.finalOutput = text
+				}
 			}
-			if result.assistantTurns > maxTurns {
-				_ = proc.Kill()
-				return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
+			// Count completed concrete work items so MaxTurns remains a meaningful
+			// work bound. Provider-internal reasoning and the terminal answer are
+			// excluded because neither represents another tool/file operation.
+			if itemType != "" && itemType != "reasoning" && itemType != "agent_message" {
+				result.budgetUnits++
+				if result.budgetUnits%5 == 0 || result.budgetUnits == 1 {
+					log.Printf("[AGENT] turn-budget unit %d/%d (completed non-reasoning items)", result.budgetUnits, maxTurns)
+				}
+				if result.budgetUnits > maxTurns {
+					_ = proc.Kill()
+					return result, fmt.Errorf("exceeded max-turns (%d) after %d budget units", maxTurns, result.budgetUnits)
+				}
 			}
-			if text, ok := item["text"].(string); ok {
-				result.finalOutput = text
-			}
-
 		case "turn.failed":
 			result.streamErr = codexErrorMessage(ev["error"], "turn failed")
 

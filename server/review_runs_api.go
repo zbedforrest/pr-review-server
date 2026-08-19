@@ -151,9 +151,21 @@ type reviewCapabilitiesResponse struct {
 }
 
 type reviewBackendCapability struct {
-	Available bool     `json:"available"`
-	Models    []string `json:"models"`
-	Efforts   []string `json:"efforts"`
+	// Available and Ready intentionally carry the same runnable-readiness value;
+	// Available is retained for clients of the original capability contract.
+	Available            bool     `json:"available"`
+	Ready                bool     `json:"ready"`
+	PolicyEnabled        bool     `json:"policy_enabled"`
+	CredentialConfigured bool     `json:"credential_configured"`
+	CredentialRequired   bool     `json:"credential_required"`
+	ExecutableAvailable  bool     `json:"executable_available"`
+	UnavailableReasons   []string `json:"unavailable_reasons"`
+	TurnBudgetUnit       string   `json:"turn_budget_unit"`
+	TurnBudgetVersion    int      `json:"turn_budget_version"`
+	DefaultMaxTurns      int      `json:"default_max_turns"`
+	MaxTurns             int      `json:"max_turns"`
+	Models               []string `json:"models"`
+	Efforts              []string `json:"efforts"`
 }
 
 type reviewCustomizationLimits struct {
@@ -620,9 +632,14 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 	backends := make(map[string]reviewBackendCapability, len(policy.Backends))
 	for name, backend := range policy.Backends {
 		backends[name] = reviewBackendCapability{
-			Available: backend.Available,
-			Models:    append([]string(nil), backend.Models...),
-			Efforts:   append([]string(nil), backend.Efforts...),
+			Available: backend.Available, Ready: backend.Ready,
+			PolicyEnabled: backend.PolicyEnabled, CredentialConfigured: backend.CredentialConfigured,
+			CredentialRequired:  backend.CredentialRequired,
+			ExecutableAvailable: backend.ExecutableAvailable,
+			UnavailableReasons:  append([]string{}, backend.UnavailableReasons...),
+			TurnBudgetUnit:      backend.TurnBudgetUnit, TurnBudgetVersion: backend.TurnBudgetVersion,
+			DefaultMaxTurns: backend.DefaultMaxTurns, MaxTurns: backend.MaxTurns,
+			Models: append([]string{}, backend.Models...), Efforts: append([]string{}, backend.Efforts...),
 		}
 	}
 	writeV1JSON(w, http.StatusOK, reviewCapabilitiesResponse{

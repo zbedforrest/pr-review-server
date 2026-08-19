@@ -32,11 +32,13 @@ type AgentConfig struct {
 	CloneRootDir      string        // parent dir for per-invocation clones
 	LogsDir           string        // parent dir for raw stream-json logs
 	WallClock         time.Duration // hard wall-clock timeout
-	MaxTurns          int           // abort after this many assistant turns
+	MaxTurns          int           // abort after this many backend-specific turn-budget units
 	GitHubToken       string        // optional; HTTPS clone auth
 	Backend           string        // claude (default) or openrouter
 	Model             string        // backend model id; defaults according to Backend
 	Effort            string        // backend reasoning effort; defaults to DefaultAgentEffort
+	AnthropicAPIKey   string        // frozen optional credential; OAuth via HOME remains supported
+	OpenRouterAPIKey  string        // frozen deployment credential; injected into the Codex child environment
 	OpenRouterBaseURL string        // optional OpenRouter API root; used only by the openrouter backend
 
 	// BugMemory is the optional pattern library (nil = feature off). The
@@ -92,6 +94,7 @@ type AgentReview struct {
 	Backend              string
 	Effort               string
 	AssistantTurns       int
+	BudgetUnitsUsed      int
 	DurationMS           int64
 	// ServingModelVerified is true only when the agent stream explicitly
 	// reported the model that served the request. Codex/OpenRouter currently
@@ -99,9 +102,11 @@ type AgentReview struct {
 	ServingModelVerified bool
 }
 
-// Spawner abstracts subprocess creation so tests can stub the agent CLI.
+// Spawner abstracts secure subprocess creation so tests can stub the agent
+// CLI. The environment slice is complete; implementations must not inherit
+// the server process environment.
 type Spawner interface {
-	Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error)
+	SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error)
 }
 
 // SpawnedProcess is what a Spawner returns.
@@ -243,7 +248,12 @@ func RunAgentReview(
 	if observerErr := observeProviderAttempt(agentCfg.AttemptObserver, startedEvent); errors.Is(observerErr, ErrProviderAttemptAborted) {
 		return nil, fmt.Errorf("agent: %w", observerErr)
 	}
-	proc, err := spawner.Spawn(runCtx, runtime.command, args, cloneDir)
+	credentialKey, credentialValue := "ANTHROPIC_API_KEY", agentCfg.AnthropicAPIKey
+	if runtime.backend == AgentBackendOpenRouter {
+		credentialKey, credentialValue = "OPENROUTER_API_KEY", agentCfg.OpenRouterAPIKey
+	}
+	proc, err := spawner.SpawnWithEnv(runCtx, runtime.command, args, cloneDir,
+		agentChildEnvironment(os.Environ(), credentialKey, credentialValue))
 	if err != nil {
 		log.Printf("%s spawn FAILED: %v", logPrefix, err)
 		completedAt := time.Now().UTC()
@@ -346,6 +356,7 @@ func RunAgentReview(
 	waitErr := proc.Wait()
 	agentCompletedAt = time.Now().UTC()
 	stderrWG.Wait()
+	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d", parseResult.assistantTurns, parseResult.budgetUnits)
 
 	persistFailureLog := func() {
 		if agentCfg.FailureLogSink == nil {
@@ -359,34 +370,34 @@ func RunAgentReview(
 	if parseErr != nil {
 		// Turn-cap hit or parse error — subprocess already killed inside parser.
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: %w (stderr: %s)", parseErr, truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: %w (%s; stderr: %s)", parseErr, usage, truncate(stderrBuf.String(), 1000))
 	}
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: wall-clock timeout (%s) after %d turns (stderr: %s)",
-			agentCfg.WallClock, parseResult.assistantTurns, truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: wall-clock timeout (%s; %s; stderr: %s)",
+			agentCfg.WallClock, usage, truncate(stderrBuf.String(), 1000))
 	}
 
 	if waitErr != nil {
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: %s exited with error: %w (stream: %s) (stderr: %s)",
-			runtime.command, waitErr, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: %s exited with error: %w (%s; stream: %s; stderr: %s)",
+			runtime.command, waitErr, usage, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	// The CLI can exit 0 after an error result event; ungated, the error text
 	// would publish as a "successful" SUMMARY review.
 	if parseResult.streamErr != "" {
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (stderr: %s)",
-			truncate(parseResult.streamErr, 1000), truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (%s; stderr: %s)",
+			truncate(parseResult.streamErr, 1000), usage, truncate(stderrBuf.String(), 1000))
 	}
 
 	if parseResult.finalOutput == "" {
-		log.Printf("%s %s finished with no final result after %d turn(s)", logPrefix, runtime.command, parseResult.assistantTurns)
+		log.Printf("%s %s finished with no final result (%s)", logPrefix, runtime.command, usage)
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: no final result emitted after %d turn(s) (stream: %s) (stderr: %s)",
-			parseResult.assistantTurns, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: no final result emitted (%s; stream: %s; stderr: %s)",
+			usage, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	comments, parseErr := parseAgentJSON(parseResult.finalOutput)
@@ -450,8 +461,8 @@ func RunAgentReview(
 	}
 
 	agentDuration := agentCompletedAt.Sub(agentStartedAt)
-	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
-		logPrefix, agentDuration, parseResult.assistantTurns, len(comments), servedModel)
+	log.Printf("%s complete in %s (%s, comments=%d, model=%s)",
+		logPrefix, agentDuration, usage, len(comments), servedModel)
 
 	logRemovable = true
 	return &AgentReview{
@@ -470,6 +481,7 @@ func RunAgentReview(
 		Backend:              runtime.backend,
 		Effort:               runtime.effort,
 		AssistantTurns:       parseResult.assistantTurns,
+		BudgetUnitsUsed:      parseResult.budgetUnits,
 		DurationMS:           agentDuration.Milliseconds(),
 		ServingModelVerified: runtime.reportsServingModel && len(parseResult.servedModels) > 0,
 	}, nil
@@ -853,9 +865,51 @@ func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 type agentParseResult struct {
 	finalOutput    string
 	assistantTurns int
+	budgetUnits    int      // equals assistantTurns for Claude; counts completed work items for Codex
 	streamErr      string   // error the CLI reported inside the stream (result event with error subtype)
 	lastEvent      string   // raw last stream line, fallback diagnostic when no structured error arrived
 	servedModels   []string // distinct models the stream reported, in first-seen order; empty if never reported
+}
+
+func agentChildEnvironment(base []string, credentialKey, credentialValue string) []string {
+	// Default-deny: model-executing children receive process basics and proxy/
+	// certificate settings, while future server secrets stay excluded by default.
+	allowed := map[string]struct{}{
+		"COLORTERM": {}, "HOME": {}, "HTTPS_PROXY": {}, "HTTP_PROXY": {},
+		"LANG": {}, "LC_ALL": {}, "LOGNAME": {}, "NO_PROXY": {}, "PATH": {},
+		"CURL_CA_BUNDLE": {}, "GIT_SSL_CAINFO": {}, "NODE_EXTRA_CA_CERTS": {},
+		"SHELL": {}, "SSL_CERT_DIR": {}, "SSL_CERT_FILE": {}, "TERM": {},
+		"TERM_PROGRAM": {}, "TMPDIR": {}, "TZ": {}, "USER": {},
+		"XDG_CACHE_HOME": {}, "XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {},
+		"http_proxy": {}, "https_proxy": {}, "no_proxy": {},
+	}
+	if credentialKey == "ANTHROPIC_API_KEY" {
+		// Preserve the Claude CLI's established token and gateway auth modes, but
+		// only for Claude children. OpenRouter/Codex must never receive them.
+		allowed["CLAUDE_CODE_OAUTH_TOKEN"] = struct{}{}
+		allowed["ANTHROPIC_AUTH_TOKEN"] = struct{}{}
+		allowed["ANTHROPIC_BASE_URL"] = struct{}{}
+	}
+	environment := make([]string, 0, len(base)+1)
+	seen := make(map[string]struct{}, len(allowed))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || key == credentialKey {
+			continue
+		}
+		if _, keep := allowed[key]; !keep {
+			continue
+		}
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		environment = append(environment, entry)
+	}
+	if credentialValue != "" {
+		environment = append(environment, credentialKey+"="+credentialValue)
+	}
+	return environment
 }
 
 // diagnostic returns the best available explanation of a failed run — under
@@ -929,10 +983,11 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 				result.noteServedModel(msg["model"])
 			}
 			result.assistantTurns++
-			if result.assistantTurns%5 == 0 || result.assistantTurns == 1 {
-				log.Printf("[AGENT] assistant turn %d/%d", result.assistantTurns, maxTurns)
+			result.budgetUnits++
+			if result.budgetUnits%5 == 0 || result.budgetUnits == 1 {
+				log.Printf("[AGENT] turn-budget unit %d/%d (assistant events)", result.budgetUnits, maxTurns)
 			}
-			if result.assistantTurns > maxTurns {
+			if result.budgetUnits > maxTurns {
 				_ = proc.Kill()
 				return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
 			}

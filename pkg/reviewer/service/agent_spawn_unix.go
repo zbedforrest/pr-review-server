@@ -15,12 +15,21 @@ import (
 // down as a group rather than orphaned when the parent exits.
 type DefaultSpawner struct{}
 
-func (DefaultSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
+var _ Spawner = DefaultSpawner{}
+
+func (DefaultSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
+	return spawnCommand(ctx, name, args, dir, environment)
+}
+
+func spawnCommand(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
 	// Use Command (not CommandContext) so we control kill behavior ourselves.
 	// CommandContext's auto-kill only signals the direct child, leaving any
 	// process-group children orphaned. We watch ctx.Done in a goroutine and
 	// group-kill instead.
 	cmd := exec.Command(name, args...)
+	// make preserves the distinction between an explicit empty environment
+	// and nil, which os/exec interprets as inheriting the parent environment.
+	cmd.Env = append(make([]string, 0, len(environment)), environment...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
