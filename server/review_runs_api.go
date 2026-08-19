@@ -194,6 +194,12 @@ func (w *v1AuthResponseWriter) WriteHeader(status int) {
 	}
 	w.wroteHeader = true
 	if status == http.StatusUnauthorized {
+		// Inner v1 handlers already speak the versioned JSON contract. Only
+		// replace the legacy auth middleware's plain-text response.
+		if strings.HasPrefix(strings.ToLower(w.Header().Get("Content-Type")), "application/json") {
+			w.ResponseWriter.WriteHeader(status)
+			return
+		}
 		w.denied = true
 		w.Header().Del("Content-Length")
 		w.Header().Set("Cache-Control", "no-store")
@@ -378,12 +384,25 @@ func (s *Server) handleCreateReviewRun(w http.ResponseWriter, r *http.Request) {
 	// Admission owns the ordering: never expose a new pending PR until its run
 	// is durable. Otherwise a rejected custom request could be picked up by the
 	// automatic poller and reviewed with deployment defaults instead.
-	if err := s.db.UpsertPR(&db.PR{
-		RepoOwner: pr.Owner, RepoName: pr.Repo, PRNumber: pr.Number, LastCommitSHA: pr.CommitSHA,
-		Status: "pending", Title: pr.Title, Author: pr.Author, CreatedAt: pr.CreatedAt, Draft: pr.Draft,
-	}); err != nil {
-		log.Printf("[API/v1] accepted run %s but failed to persist PR metadata: %v", job.RunID, err)
+	// UpsertPR intentionally refreshes poller-owned approval and CI columns.
+	// Preserve those fields by merging API metadata into the current projection
+	// rather than constructing a partial row that would clear them on conflict.
+	prRow, getPRErr := s.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+	if getPRErr != nil {
+		log.Printf("[API/v1] accepted run %s but failed to load PR metadata: %v", job.RunID, getPRErr)
 	} else {
+		if prRow == nil {
+			prRow = &db.PR{Status: "pending"}
+		}
+		prRow.RepoOwner, prRow.RepoName, prRow.PRNumber = pr.Owner, pr.Repo, pr.Number
+		prRow.LastCommitSHA = pr.CommitSHA
+		prRow.Title, prRow.Author, prRow.CreatedAt, prRow.Draft = pr.Title, pr.Author, pr.CreatedAt, pr.Draft
+		if err := s.db.UpsertPR(prRow); err != nil {
+			log.Printf("[API/v1] accepted run %s but failed to persist PR metadata: %v", job.RunID, err)
+			prRow = nil
+		}
+	}
+	if prRow != nil {
 		prState := strings.ToLower(ghPR.GetState())
 		if ghPR.GetMerged() {
 			prState = "merged"

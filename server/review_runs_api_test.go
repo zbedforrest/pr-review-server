@@ -153,9 +153,12 @@ func TestCreateReviewRunPersistsResolvedConfigAndIdempotency(t *testing.T) {
 		githubCalls++
 		githubPRResponse(headSHA)(w, r)
 	})
+	githubUpdatedAt := time.Date(2026, 8, 19, 11, 55, 0, 0, time.UTC)
 	require.NoError(t, database.UpsertPR(&db.PR{
 		RepoOwner: "Acme", RepoName: "Widgets", PRNumber: 42, LastCommitSHA: headSHA,
-		Status: "completed", Title: "Previously polled",
+		Status: "completed", Title: "Previously polled", ApprovalCount: 3,
+		MyReviewStatus: "APPROVED", CIState: "failure", CIFailedChecks: `["lint"]`,
+		GitHubUpdatedAt: &githubUpdatedAt,
 	}))
 	body := strings.ReplaceAll(configurableReviewRequest(headSHA), `"owner":"acme","repo":"widgets"`, `"owner":"Acme","repo":"WIDGETS"`)
 
@@ -192,6 +195,15 @@ func TestCreateReviewRunPersistsResolvedConfigAndIdempotency(t *testing.T) {
 	allPRs, err := database.GetAllPRs()
 	require.NoError(t, err)
 	assert.Len(t, allPRs, 1, "canonical GitHub casing must reuse the poll-created PR projection")
+	persistedPR, err := database.GetPR("Acme", "Widgets", 42)
+	require.NoError(t, err)
+	require.NotNil(t, persistedPR)
+	assert.Equal(t, 3, persistedPR.ApprovalCount)
+	assert.Equal(t, "APPROVED", persistedPR.MyReviewStatus)
+	assert.Equal(t, "failure", persistedPR.CIState)
+	assert.Equal(t, `["lint"]`, persistedPR.CIFailedChecks)
+	require.NotNil(t, persistedPR.GitHubUpdatedAt)
+	assert.Equal(t, githubUpdatedAt, *persistedPR.GitHubUpdatedAt)
 
 	// Identical retries replay the durable run before making another GitHub or
 	// admission call, even if the original run is still queued.
@@ -319,6 +331,16 @@ func TestV1AuthWrapperUsesJSONErrorContract(t *testing.T) {
 	assert.Equal(t, "unauthorized", envelope.Error.Code)
 	assert.Equal(t, "authentication is required", envelope.Error.Message)
 	assert.NotContains(t, recorder.Body.String(), "Unauthorized\n")
+
+	jsonProtected := withV1Auth(func(next http.Handler) http.Handler { return next }, func(w http.ResponseWriter, _ *http.Request) {
+		writeV1Error(w, http.StatusUnauthorized, "expired_token", "the access token expired")
+	})
+	jsonRecorder := httptest.NewRecorder()
+	jsonProtected.ServeHTTP(jsonRecorder, httptest.NewRequest(http.MethodGet, reviewCapabilitiesPath, nil))
+	require.Equal(t, http.StatusUnauthorized, jsonRecorder.Code)
+	require.NoError(t, json.Unmarshal(jsonRecorder.Body.Bytes(), &envelope))
+	assert.Equal(t, "expired_token", envelope.Error.Code)
+	assert.Equal(t, "the access token expired", envelope.Error.Message)
 }
 
 func TestReviewRunGetAndCursorListExposeSafeMetadata(t *testing.T) {

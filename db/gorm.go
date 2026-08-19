@@ -166,6 +166,13 @@ func (g *GormDB) ensureIdempotentColumns() error {
 		WHERE status IN ('queued', 'running')`).Error; err != nil {
 		return fmt.Errorf("index one live review run per case-insensitive PR: %w", err)
 	}
+	// History filters are also case-insensitive. The partial live-run index
+	// above cannot serve the append-only history query, so keep its keyset
+	// pagination on an expression index rather than degrading to table scans.
+	if err := g.db.Exec(`CREATE INDEX IF NOT EXISTS idx_review_runs_pr_history_ci
+		ON review_runs(LOWER(repo_owner), LOWER(repo_name), pr_number, accepted_at DESC, run_id DESC)`).Error; err != nil {
+		return fmt.Errorf("index case-insensitive review run history: %w", err)
+	}
 	if g.db.Dialector.Name() != "postgres" {
 		if !g.db.Migrator().HasTable(&PRModel{}) {
 			return nil
