@@ -32,11 +32,12 @@ type AgentConfig struct {
 	CloneRootDir      string        // parent dir for per-invocation clones
 	LogsDir           string        // parent dir for raw stream-json logs
 	WallClock         time.Duration // hard wall-clock timeout
-	MaxTurns          int           // abort after this many assistant turns
+	MaxTurns          int           // abort after this many backend-specific turn-budget units
 	GitHubToken       string        // optional; HTTPS clone auth
 	Backend           string        // claude (default) or openrouter
 	Model             string        // backend model id; defaults according to Backend
 	Effort            string        // backend reasoning effort; defaults to DefaultAgentEffort
+	OpenRouterAPIKey  string        // frozen deployment credential; Codex still reads its process environment
 	OpenRouterBaseURL string        // optional OpenRouter API root; used only by the openrouter backend
 
 	// BugMemory is the optional pattern library (nil = feature off). The
@@ -853,6 +854,7 @@ func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 type agentParseResult struct {
 	finalOutput    string
 	assistantTurns int
+	budgetUnits    int
 	streamErr      string   // error the CLI reported inside the stream (result event with error subtype)
 	lastEvent      string   // raw last stream line, fallback diagnostic when no structured error arrived
 	servedModels   []string // distinct models the stream reported, in first-seen order; empty if never reported
@@ -929,10 +931,11 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 				result.noteServedModel(msg["model"])
 			}
 			result.assistantTurns++
-			if result.assistantTurns%5 == 0 || result.assistantTurns == 1 {
-				log.Printf("[AGENT] assistant turn %d/%d", result.assistantTurns, maxTurns)
+			result.budgetUnits++
+			if result.budgetUnits%5 == 0 || result.budgetUnits == 1 {
+				log.Printf("[AGENT] turn-budget unit %d/%d (assistant events)", result.budgetUnits, maxTurns)
 			}
-			if result.assistantTurns > maxTurns {
+			if result.budgetUnits > maxTurns {
 				_ = proc.Kill()
 				return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
 			}

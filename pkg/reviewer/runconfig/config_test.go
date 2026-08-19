@@ -9,12 +9,14 @@ func testDefaults() Effective {
 	return Effective{
 		SchemaVersion: SchemaVersion,
 		Agent: Agent{
-			Enabled:          true,
-			Backend:          "claude",
-			Model:            "claude-fable-5",
-			Effort:           "medium",
-			WallClockSeconds: 900,
-			MaxTurns:         120,
+			Enabled:           true,
+			Backend:           "claude",
+			Model:             "claude-fable-5",
+			Effort:            "medium",
+			WallClockSeconds:  900,
+			MaxTurns:          120,
+			TurnBudgetUnit:    TurnBudgetUnitAssistantEvent,
+			TurnBudgetVersion: TurnBudgetVersion,
 		},
 		FirstPass:      FirstPass{Samples: 3},
 		RequiredChecks: true,
@@ -25,14 +27,16 @@ func testPolicy() Policy {
 	return Policy{
 		Backends: map[string]BackendPolicy{
 			"claude": {
-				Available: true,
-				Models:    []string{"claude-fable-5", "claude-opus-4-8"},
-				Efforts:   []string{"low", "medium", "high"},
+				Available: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
+				TurnBudgetUnit: TurnBudgetUnitAssistantEvent, TurnBudgetVersion: TurnBudgetVersion,
+				Models:  []string{"claude-fable-5", "claude-opus-4-8"},
+				Efforts: []string{"low", "medium", "high"},
 			},
 			"openrouter": {
-				Available: true,
-				Models:    []string{"openai/gpt-5.6-sol"},
-				Efforts:   []string{"medium", "high", "xhigh", "max"},
+				Available: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
+				TurnBudgetUnit: TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: TurnBudgetVersion,
+				Models:  []string{"openai/gpt-5.6-sol"},
+				Efforts: []string{"medium", "high", "xhigh", "max"},
 			},
 		},
 		MaxWallClockSeconds: 1800,
@@ -94,6 +98,12 @@ func TestResolveAppliesAndAttributesOverrides(t *testing.T) {
 	}
 	if got := snapshot.Effective.Agent; got.Backend != "openrouter" || got.Model != "openai/gpt-5.6-sol" || got.Effort != "xhigh" || got.WallClockSeconds != 600 || got.MaxTurns != 80 {
 		t.Fatalf("agent=%+v", got)
+	}
+	if snapshot.Effective.Agent.TurnBudgetUnit != TurnBudgetUnitCompletedNonReasoningItem || snapshot.Effective.Agent.TurnBudgetVersion != TurnBudgetVersion {
+		t.Fatalf("turn semantics=%q/v%d", snapshot.Effective.Agent.TurnBudgetUnit, snapshot.Effective.Agent.TurnBudgetVersion)
+	}
+	if snapshot.Sources["agent.turn_budget_unit"] != SourceDerived || snapshot.Sources["agent.turn_budget_version"] != SourceDerived {
+		t.Fatalf("turn semantic sources=%v", snapshot.Sources)
 	}
 	for _, field := range []string{"agent.backend", "agent.model", "agent.effort", "agent.wall_clock_seconds", "agent.max_turns"} {
 		if snapshot.Sources[field] != SourceRequest {

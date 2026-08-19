@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -70,7 +69,7 @@ func resolveAgentRuntime(cfg AgentConfig) (agentRuntime, error) {
 		}, nil
 
 	case AgentBackendOpenRouter:
-		if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) == "" {
+		if strings.TrimSpace(cfg.OpenRouterAPIKey) == "" {
 			return agentRuntime{}, errors.New("agent: OPENROUTER_API_KEY is required when AGENT_BACKEND=openrouter")
 		}
 		model := strings.TrimSpace(cfg.Model)
@@ -165,19 +164,25 @@ func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		case "item.completed":
 			item, _ := ev["item"].(map[string]any)
 			itemType, _ := item["type"].(string)
-			if itemType != "agent_message" {
-				continue
+			// Codex emits one assistant message for the final response even when it
+			// performs many tool/file operations. Count every completed concrete
+			// item so MaxTurns remains a meaningful work bound; reasoning items are
+			// excluded because they are provider-internal and schema-volume driven.
+			if itemType != "" && itemType != "reasoning" {
+				result.budgetUnits++
+				if result.budgetUnits%5 == 0 || result.budgetUnits == 1 {
+					log.Printf("[AGENT] turn-budget unit %d/%d (completed non-reasoning items)", result.budgetUnits, maxTurns)
+				}
+				if result.budgetUnits > maxTurns {
+					_ = proc.Kill()
+					return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
+				}
 			}
-			result.assistantTurns++
-			if result.assistantTurns%5 == 0 || result.assistantTurns == 1 {
-				log.Printf("[AGENT] assistant turn %d/%d", result.assistantTurns, maxTurns)
-			}
-			if result.assistantTurns > maxTurns {
-				_ = proc.Kill()
-				return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
-			}
-			if text, ok := item["text"].(string); ok {
-				result.finalOutput = text
+			if itemType == "agent_message" {
+				result.assistantTurns++
+				if text, ok := item["text"].(string); ok {
+					result.finalOutput = text
+				}
 			}
 
 		case "turn.failed":

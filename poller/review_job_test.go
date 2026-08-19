@@ -24,14 +24,33 @@ import (
 	"pr-review-server/pkg/reviewer/types"
 )
 
+type blockingReviewGenerator struct {
+	started chan int
+	release chan struct{}
+}
+
+func (g *blockingReviewGenerator) GenerateReview(ctx context.Context, cfg ReviewGeneratorConfig) (*ReviewResult, error) {
+	g.started <- cfg.PRNumber
+	select {
+	case <-g.release:
+		return &ReviewResult{HTMLContent: []byte("<html>review</html>")}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func reviewJobSnapshot(t *testing.T, effective runconfig.Effective) runconfig.Snapshot {
 	t.Helper()
+	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(effective.Agent.Backend)
+	effective.Agent.TurnBudgetUnit = turnBudgetUnit
+	effective.Agent.TurnBudgetVersion = turnBudgetVersion
 	snapshot, err := runconfig.Resolve(runconfig.Overrides{}, effective, runconfig.Policy{
 		Backends: map[string]runconfig.BackendPolicy{
 			effective.Agent.Backend: {
-				Available: true,
-				Models:    []string{effective.Agent.Model},
-				Efforts:   []string{effective.Agent.Effort},
+				Available: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
+				TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
+				Models:  []string{effective.Agent.Model},
+				Efforts: []string{effective.Agent.Effort},
 			},
 		},
 		MaxWallClockSeconds: effective.Agent.WallClockSeconds,
@@ -49,6 +68,7 @@ func customReviewJob(t *testing.T, runID string) ReviewJob {
 		Agent: runconfig.Agent{
 			Enabled: true, Backend: service.AgentBackendOpenRouter, Model: service.DefaultOpenRouterAgentModel,
 			Effort: "xhigh", WallClockSeconds: 73, MaxTurns: 19,
+			TurnBudgetUnit: runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 		},
 		FirstPass:      runconfig.FirstPass{Samples: 4},
 		RequiredChecks: true,
@@ -226,6 +246,48 @@ func TestReviewPolicyIsBoundedAndConsistentForZeroOrLowerCeilings(t *testing.T) 
 	require.Error(t, err, "AGENTIC_REVIEWS=false remains an operator feature gate")
 }
 
+func TestReviewBackendReadinessReportsStableReasonsAndTurnSemantics(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.AgenticReviews = true
+	p.cfg.AnthropicAPIKey = "configured"
+	p.cfg.OpenRouterAPIKey = ""
+	p.lookPath = func(name string) (string, error) {
+		if name == "git" || name == "claude" {
+			return "/secret/bin/" + name, nil
+		}
+		return "", fmt.Errorf("%s missing", name)
+	}
+
+	defaults, policy, err := p.ReviewConfigDefaultsAndPolicy()
+	require.NoError(t, err)
+	claude := policy.Backends[service.AgentBackendClaude]
+	assert.True(t, claude.Available)
+	assert.True(t, claude.PolicyEnabled)
+	assert.True(t, claude.CredentialConfigured)
+	assert.True(t, claude.ExecutableAvailable)
+	assert.Empty(t, claude.UnavailableReasons)
+	assert.Equal(t, runconfig.TurnBudgetUnitAssistantEvent, claude.TurnBudgetUnit)
+	assert.Equal(t, runconfig.TurnBudgetUnitAssistantEvent, defaults.Agent.TurnBudgetUnit)
+
+	openRouter := policy.Backends[service.AgentBackendOpenRouter]
+	assert.False(t, openRouter.Available)
+	assert.False(t, openRouter.CredentialConfigured)
+	assert.False(t, openRouter.ExecutableAvailable)
+	assert.ElementsMatch(t, []string{
+		runconfig.BackendUnavailableCredentialMissing,
+		runconfig.BackendUnavailableCLIMissing,
+	}, openRouter.UnavailableReasons)
+	assert.Equal(t, runconfig.TurnBudgetUnitCompletedNonReasoningItem, openRouter.TurnBudgetUnit)
+}
+
+func TestNewPollerCreatesProcessGlobalFirstPassCapacity(t *testing.T) {
+	cfg := testConfig()
+	cfg.ReviewMaxFirstPassConcurrent = 3
+	p := New(cfg, NewMockDatabase(), nil, nil)
+	require.NotNil(t, p.firstPassSlots)
+	assert.Equal(t, 3, cap(p.firstPassSlots))
+}
+
 func TestReviewJobValidateRequiresCompleteIdempotencyMetadata(t *testing.T) {
 	job := customReviewJob(t, "run-10000000000000000000000000000000")
 	job.IdempotencyScope = "user:17"
@@ -237,7 +299,6 @@ func TestReviewJobValidateRequiresCompleteIdempotencyMetadata(t *testing.T) {
 }
 
 func TestGenerateReviewsBatchSurfacesInvalidDefaultsForEveryPR(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "")
 	database := NewMockDatabase()
 	generator := NewMockReviewGenerator()
 	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
@@ -247,6 +308,7 @@ func TestGenerateReviewsBatchSurfacesInvalidDefaultsForEveryPR(t *testing.T) {
 	p.cfg.AgentEffort = "high"
 	p.cfg.AgentWallClockSec = 30
 	p.cfg.AgentMaxTurns = 5
+	p.cfg.OpenRouterAPIKey = ""
 	prs := []github.PullRequest{
 		{Owner: "acme", Repo: "widgets", Number: 7, CommitSHA: "0123456789abcdef0123456789abcdef01234567"},
 		{Owner: "acme", Repo: "widgets", Number: 8, CommitSHA: "1123456789abcdef0123456789abcdef01234567"},
@@ -1004,6 +1066,7 @@ func TestAgentSlotWaitDoesNotStartBudgetOrExecutionLease(t *testing.T) {
 	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
 	p.agentSlots = make(chan struct{}, 1)
 	p.agentSlots <- struct{}{} // occupy the only agent slot
+	p.firstPassSlots = make(chan struct{}, 1)
 	job := customReviewJob(t, "run-24500000000000000000000000000001")
 	require.NoError(t, database.UpsertPR(&db.PR{
 		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
@@ -1024,6 +1087,7 @@ func TestAgentSlotWaitDoesNotStartBudgetOrExecutionLease(t *testing.T) {
 	assert.True(t, queuedInfo.StartTime.IsZero())
 	_, hasDeadline := queuedInfo.Ctx.Deadline()
 	assert.False(t, hasDeadline)
+	assert.Empty(t, p.firstPassSlots, "agent capacity must be acquired before first-pass capacity")
 
 	<-p.agentSlots // allow execution to acquire the reserved slot
 	waitForReviewJob(t, p, job)
@@ -1031,6 +1095,90 @@ func TestAgentSlotWaitDoesNotStartBudgetOrExecutionLease(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, run)
 	assert.Equal(t, db.ReviewRunStatusCompleted, run.Status)
+}
+
+func TestSeparateAPIRunsShareProcessGlobalFirstPassCapacity(t *testing.T) {
+	database := NewMockDatabase()
+	generator := &blockingReviewGenerator{started: make(chan int, 2), release: make(chan struct{})}
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	p.firstPassSlots = make(chan struct{}, 1)
+	first := reviewJobWithoutAgent(t, "run-24510000000000000000000000000001")
+	second := reviewJobWithoutAgent(t, "run-24510000000000000000000000000002")
+	second.PR.Number = 8
+	second.PR.CommitSHA = "1123456789abcdef0123456789abcdef01234567"
+	for _, job := range []ReviewJob{first, second} {
+		require.NoError(t, database.UpsertPR(&db.PR{
+			RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+			LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+		}))
+		require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	}
+
+	var activePR int
+	select {
+	case activePR = <-generator.started:
+	case <-time.After(time.Second):
+		t.Fatal("first review did not enter the generator")
+	}
+	select {
+	case unexpected := <-generator.started:
+		t.Fatalf("PR %d entered while PR %d held the global first-pass slot", unexpected, activePR)
+	case <-time.After(50 * time.Millisecond):
+	}
+	assert.Len(t, p.firstPassSlots, 1)
+	queuedRuns := 0
+	for _, job := range []ReviewJob{first, second} {
+		run, err := database.GetReviewRun(job.RunID)
+		require.NoError(t, err)
+		require.NotNil(t, run)
+		if run.Status == db.ReviewRunStatusQueued && run.StartedAt == nil {
+			queuedRuns++
+		}
+	}
+	assert.Equal(t, 1, queuedRuns, "waiting capacity must not start the execution clock")
+
+	generator.release <- struct{}{}
+	select {
+	case <-generator.started:
+	case <-time.After(time.Second):
+		t.Fatal("second review did not acquire the released first-pass slot")
+	}
+	generator.release <- struct{}{}
+	waitForReviewJob(t, p, first)
+	waitForReviewJob(t, p, second)
+}
+
+func TestCapacityLifetimeReleasesFirstPassButRetainsAgentDuringPublication(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	generator := NewMockReviewGenerator()
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, generator)
+	p.agentSlots = make(chan struct{}, 1)
+	p.firstPassSlots = make(chan struct{}, 1)
+	observed := make(chan [2]int, 1)
+	storage.SaveSidecarFunc = func(context.Context, string, string, []byte) error {
+		select {
+		case observed <- [2]int{len(p.agentSlots), len(p.firstPassSlots)}:
+		default:
+		}
+		return nil
+	}
+	job := customReviewJob(t, "run-24520000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	select {
+	case capacities := <-observed:
+		assert.Equal(t, [2]int{1, 0}, capacities, "publication retains agent capacity but releases first-pass capacity")
+	case <-time.After(time.Second):
+		t.Fatal("publication did not reach storage")
+	}
+	waitForReviewJob(t, p, job)
+	assert.Empty(t, p.agentSlots)
+	assert.Empty(t, p.firstPassSlots)
 }
 
 func TestProcessReviewJobPersistsTerminalFailure(t *testing.T) {
@@ -1468,6 +1616,7 @@ func TestAgentConfigComesFromReviewJob(t *testing.T) {
 	assert.Equal(t, service.AgentBackendOpenRouter, cfg.Backend)
 	assert.Equal(t, service.DefaultOpenRouterAgentModel, cfg.Model)
 	assert.Equal(t, "xhigh", cfg.Effort)
+	assert.Equal(t, p.cfg.OpenRouterAPIKey, cfg.OpenRouterAPIKey)
 	assert.True(t, cfg.RequiredChecks)
 }
 

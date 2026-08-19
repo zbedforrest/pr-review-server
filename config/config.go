@@ -8,12 +8,13 @@ import (
 )
 
 const (
-	defaultAgentWallClockSec      = 360
-	defaultAgentMaxTurns          = 40
-	defaultReviewFirstPassSamples = 3
-	defaultClaudeAgentModel       = "claude-opus-4-8"
-	defaultOpenRouterAgentModel   = "openai/gpt-5.6-sol"
-	defaultAgentEffort            = "medium"
+	defaultAgentWallClockSec         = 360
+	defaultAgentMaxTurns             = 40
+	defaultReviewFirstPassSamples    = 3
+	defaultReviewFirstPassConcurrent = 5
+	defaultClaudeAgentModel          = "claude-opus-4-8"
+	defaultOpenRouterAgentModel      = "openai/gpt-5.6-sol"
+	defaultAgentEffort               = "medium"
 )
 
 type Config struct {
@@ -57,6 +58,7 @@ type Config struct {
 	AgentBackend       string // claude (default) or openrouter
 	AgentModel         string // backend model id for agent reviews (empty = backend default)
 	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
+	AnthropicAPIKey    string // Anthropic credential; deployment-only, never exposed in capabilities
 	OpenRouterAPIKey   string // OpenRouter credential; deployment-only, never exposed in capabilities
 	OpenRouterBaseURL  string // OpenRouter API root (empty = service default)
 	BugMemoryPath      string // local path to a bug-memory library JSON (dev/benchmark)
@@ -74,6 +76,7 @@ type Config struct {
 	ReviewMaxWallClockSec        int
 	ReviewMaxTurns               int
 	ReviewMaxFirstPassSamples    int
+	ReviewMaxFirstPassConcurrent int
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -190,6 +193,7 @@ func Load() *Config {
 		AgentBackend:       agentBackend,
 		AgentModel:         agentModel,
 		AgentEffort:        agentEffort,
+		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
 		BugMemoryPath:      os.Getenv("BUG_MEMORY_PATH"),
@@ -203,6 +207,7 @@ func Load() *Config {
 		ReviewMaxWallClockSec:        getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
 		ReviewMaxTurns:               getPositiveEnvIntOrDefault("REVIEW_MAX_TURNS", maxTurnsDefault),
 		ReviewMaxFirstPassSamples:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
+		ReviewMaxFirstPassConcurrent: getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
 	}
 }
 

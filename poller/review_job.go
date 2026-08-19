@@ -226,24 +226,48 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 		FirstPass:      runconfig.FirstPass{Samples: nRequests},
 		RequiredChecks: p.cfg.RequiredChecks,
 	}
+	defaults.Agent.TurnBudgetUnit, defaults.Agent.TurnBudgetVersion = runconfig.TurnBudgetSemantics(backend)
 	policy := runconfig.Policy{
 		Backends: map[string]runconfig.BackendPolicy{
-			service.AgentBackendClaude: {
-				Available: p.cfg.AgenticReviews,
-				Models:    claudeModels,
-				Efforts:   claudeEfforts,
-			},
-			service.AgentBackendOpenRouter: {
-				Available: p.cfg.AgenticReviews && strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "",
-				Models:    openRouterModels,
-				Efforts:   openRouterEfforts,
-			},
+			service.AgentBackendClaude: p.reviewBackendPolicy(
+				service.AgentBackendClaude, "claude", strings.TrimSpace(p.cfg.AnthropicAPIKey) != "", claudeModels, claudeEfforts,
+			),
+			service.AgentBackendOpenRouter: p.reviewBackendPolicy(
+				service.AgentBackendOpenRouter, "codex", strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "", openRouterModels, openRouterEfforts,
+			),
 		},
 		MaxWallClockSeconds: reviewPolicyMaximum(p.cfg.ReviewMaxWallClockSec, defaults.Agent.WallClockSeconds, fallbackReviewMaxWallClockSec),
 		MaxTurns:            reviewPolicyMaximum(p.cfg.ReviewMaxTurns, defaults.Agent.MaxTurns, fallbackReviewMaxTurns),
 		MaxFirstPassSamples: reviewPolicyMaximum(p.cfg.ReviewMaxFirstPassSamples, defaults.FirstPass.Samples, fallbackReviewMaxFirstPassSamples),
 	}
 	return defaults, policy, nil
+}
+
+func (p *Poller) reviewBackendPolicy(backend, command string, credentialConfigured bool, models, efforts []string) runconfig.BackendPolicy {
+	policyEnabled := p.cfg.AgenticReviews
+	gitAvailable := p.executableAvailable("git")
+	cliAvailable := p.executableAvailable(command)
+	reasons := make([]string, 0, 4)
+	if !policyEnabled {
+		reasons = append(reasons, runconfig.BackendUnavailablePolicyDisabled)
+	}
+	if !credentialConfigured {
+		reasons = append(reasons, runconfig.BackendUnavailableCredentialMissing)
+	}
+	if !gitAvailable {
+		reasons = append(reasons, runconfig.BackendUnavailableGitMissing)
+	}
+	if !cliAvailable {
+		reasons = append(reasons, runconfig.BackendUnavailableCLIMissing)
+	}
+	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(backend)
+	return runconfig.BackendPolicy{
+		Available:     policyEnabled && credentialConfigured && gitAvailable && cliAvailable,
+		PolicyEnabled: policyEnabled, CredentialConfigured: credentialConfigured,
+		ExecutableAvailable: gitAvailable && cliAvailable, UnavailableReasons: reasons,
+		TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
+		Models: append([]string(nil), models...), Efforts: append([]string(nil), efforts...),
+	}
 }
 
 func policyValues(configured []string, fallback string) []string {
@@ -408,6 +432,7 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 		CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
 		WallClock: time.Duration(agent.WallClockSeconds) * time.Second, MaxTurns: agent.MaxTurns,
 		GitHubToken: gitToken, Backend: agent.Backend, Model: agent.Model, Effort: agent.Effort,
+		OpenRouterAPIKey:  p.cfg.OpenRouterAPIKey,
 		OpenRouterBaseURL: p.cfg.OpenRouterBaseURL, BugMemory: p.bugMemory,
 		RequiredChecks: exec.Job.Config.Effective.RequiredChecks, FailureLogSink: p.persistAgentFailureLog,
 		AttemptObserver: p.providerAttemptObserver(exec),

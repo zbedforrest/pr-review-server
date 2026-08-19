@@ -151,9 +151,16 @@ type reviewCapabilitiesResponse struct {
 }
 
 type reviewBackendCapability struct {
-	Available bool     `json:"available"`
-	Models    []string `json:"models"`
-	Efforts   []string `json:"efforts"`
+	Available            bool     `json:"available"`
+	Ready                bool     `json:"ready"`
+	PolicyEnabled        bool     `json:"policy_enabled"`
+	CredentialConfigured bool     `json:"credential_configured"`
+	ExecutableAvailable  bool     `json:"executable_available"`
+	UnavailableReasons   []string `json:"unavailable_reasons"`
+	TurnBudgetUnit       string   `json:"turn_budget_unit"`
+	TurnBudgetVersion    int      `json:"turn_budget_version"`
+	Models               []string `json:"models"`
+	Efforts              []string `json:"efforts"`
 }
 
 type reviewCustomizationLimits struct {
@@ -620,9 +627,12 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 	backends := make(map[string]reviewBackendCapability, len(policy.Backends))
 	for name, backend := range policy.Backends {
 		backends[name] = reviewBackendCapability{
-			Available: backend.Available,
-			Models:    append([]string(nil), backend.Models...),
-			Efforts:   append([]string(nil), backend.Efforts...),
+			Available: backend.Available, Ready: backend.Available,
+			PolicyEnabled: backend.PolicyEnabled, CredentialConfigured: backend.CredentialConfigured,
+			ExecutableAvailable: backend.ExecutableAvailable,
+			UnavailableReasons:  append([]string{}, backend.UnavailableReasons...),
+			TurnBudgetUnit:      backend.TurnBudgetUnit, TurnBudgetVersion: backend.TurnBudgetVersion,
+			Models: append([]string(nil), backend.Models...), Efforts: append([]string(nil), backend.Efforts...),
 		}
 	}
 	writeV1JSON(w, http.StatusOK, reviewCapabilitiesResponse{

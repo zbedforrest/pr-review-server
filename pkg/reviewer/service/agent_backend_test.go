@@ -36,8 +36,8 @@ func TestResolveAgentRuntimeDefaultsToClaude(t *testing.T) {
 	}
 }
 
-func TestResolveAgentRuntimeOpenRouterRequiresKey(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "")
+func TestResolveAgentRuntimeOpenRouterRequiresFrozenKey(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "ambient-key-must-not-bypass-config")
 	_, err := resolveAgentRuntime(AgentConfig{Backend: AgentBackendOpenRouter})
 	if err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
 		t.Fatalf("expected missing-key error, got %v", err)
@@ -46,8 +46,7 @@ func TestResolveAgentRuntimeOpenRouterRequiresKey(t *testing.T) {
 
 func TestOpenRouterRuntimeBuildsIsolatedCodexInvocation(t *testing.T) {
 	const secret = "sk-or-test-secret-that-must-not-appear-in-argv"
-	t.Setenv("OPENROUTER_API_KEY", secret)
-	runtime, err := resolveAgentRuntime(AgentConfig{Backend: " OpenRouter ", Effort: "high"})
+	runtime, err := resolveAgentRuntime(AgentConfig{Backend: " OpenRouter ", Effort: "high", OpenRouterAPIKey: secret})
 	if err != nil {
 		t.Fatalf("resolveAgentRuntime: %v", err)
 	}
@@ -110,11 +109,35 @@ func TestParseCodexStreamHappyPath(t *testing.T) {
 	if res.assistantTurns != 1 {
 		t.Errorf("turns=%d want 1", res.assistantTurns)
 	}
+	if res.budgetUnits != 2 {
+		t.Errorf("budget units=%d want 2", res.budgetUnits)
+	}
 	if !strings.Contains(res.finalOutput, "Looks good") {
 		t.Errorf("final output missing: %q", res.finalOutput)
 	}
 	if !strings.Contains(logBuf.String(), "turn.completed") {
 		t.Error("raw log missing turn.completed event")
+	}
+}
+
+func TestParseCodexStreamTurnBudgetCountsCompletedNonReasoningItems(t *testing.T) {
+	stream := `{"type":"item.completed","item":{"type":"reasoning"}}
+{"type":"item.completed","item":{"type":"command_execution"}}
+{"type":"item.completed","item":{"type":"file_change"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{}),
+	}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, 2)
+	if err == nil || !strings.Contains(err.Error(), "max-turns") {
+		t.Fatalf("expected completed-item budget error, got %v", err)
+	}
+	if res.assistantTurns != 0 || res.budgetUnits != 3 {
+		t.Fatalf("assistant turns=%d budget units=%d", res.assistantTurns, res.budgetUnits)
+	}
+	if !proc.killed {
+		t.Fatal("expected process to be killed")
 	}
 }
 
@@ -153,7 +176,6 @@ func TestParseCodexStreamMaxTurnsKills(t *testing.T) {
 }
 
 func TestRunAgentReviewOpenRouter(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "sk-or-test-secret")
 	bare, sha := setupLocalBareRepo(t)
 	cloneRoot := t.TempDir()
 	seedAgentCache(t, cloneRoot, "acme", "example", bare)
@@ -169,11 +191,12 @@ func TestRunAgentReviewOpenRouter(t *testing.T) {
 		killCh: make(chan struct{}),
 	}}
 	cfg := AgentConfig{
-		CloneRootDir: cloneRoot,
-		LogsDir:      t.TempDir(),
-		WallClock:    time.Minute,
-		MaxTurns:     10,
-		Backend:      AgentBackendOpenRouter,
+		CloneRootDir:     cloneRoot,
+		LogsDir:          t.TempDir(),
+		WallClock:        time.Minute,
+		MaxTurns:         10,
+		Backend:          AgentBackendOpenRouter,
+		OpenRouterAPIKey: "sk-or-test-secret",
 	}
 
 	out, err := RunAgentReview(context.Background(), cfg, spawner,

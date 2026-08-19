@@ -14,11 +14,21 @@ import (
 	"strings"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 const (
 	SourceRequest           = "request"
 	SourceDeploymentDefault = "deployment_default"
+	SourceDerived           = "derived"
+
+	TurnBudgetVersion                       = 1
+	TurnBudgetUnitAssistantEvent            = "assistant_event"
+	TurnBudgetUnitCompletedNonReasoningItem = "completed_non_reasoning_item"
+
+	BackendUnavailablePolicyDisabled    = "policy_disabled"
+	BackendUnavailableCredentialMissing = "credential_missing"
+	BackendUnavailableGitMissing        = "git_executable_missing"
+	BackendUnavailableCLIMissing        = "backend_executable_missing"
 )
 
 // Overrides is the public, optional configuration accepted from a caller.
@@ -53,12 +63,14 @@ type Effective struct {
 }
 
 type Agent struct {
-	Enabled          bool   `json:"enabled"`
-	Backend          string `json:"backend"`
-	Model            string `json:"model"`
-	Effort           string `json:"effort"`
-	WallClockSeconds int    `json:"wall_clock_seconds"`
-	MaxTurns         int    `json:"max_turns"`
+	Enabled           bool   `json:"enabled"`
+	Backend           string `json:"backend"`
+	Model             string `json:"model"`
+	Effort            string `json:"effort"`
+	WallClockSeconds  int    `json:"wall_clock_seconds"`
+	MaxTurns          int    `json:"max_turns"`
+	TurnBudgetUnit    string `json:"turn_budget_unit"`
+	TurnBudgetVersion int    `json:"turn_budget_version"`
 }
 
 type FirstPass struct {
@@ -68,9 +80,18 @@ type FirstPass struct {
 // BackendPolicy describes one deployment-enabled agent backend. Models and
 // Efforts are allowlists; an empty list permits no caller-visible values.
 type BackendPolicy struct {
-	Available bool
-	Models    []string
-	Efforts   []string
+	// Available is the final admission decision retained for API compatibility.
+	// The readiness fields explain why a backend is or is not available without
+	// exposing credential values or executable paths.
+	Available            bool
+	PolicyEnabled        bool
+	CredentialConfigured bool
+	ExecutableAvailable  bool
+	UnavailableReasons   []string
+	TurnBudgetUnit       string
+	TurnBudgetVersion    int
+	Models               []string
+	Efforts              []string
 }
 
 // Policy contains operator-owned safety limits. Callers can choose within
@@ -149,6 +170,7 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 	effective.Agent.Backend = strings.ToLower(strings.TrimSpace(effective.Agent.Backend))
 	effective.Agent.Model = strings.TrimSpace(effective.Agent.Model)
 	effective.Agent.Effort = strings.ToLower(strings.TrimSpace(effective.Agent.Effort))
+	effective.Agent.TurnBudgetUnit, effective.Agent.TurnBudgetVersion = TurnBudgetSemantics(effective.Agent.Backend)
 
 	if err := Validate(effective, policy); err != nil {
 		return Snapshot{}, err
@@ -196,6 +218,9 @@ func Validate(cfg Effective, policy Policy) error {
 	if !backendPolicy.Available {
 		return invalid("agent.backend", "backend %q is not available in this deployment", backend)
 	}
+	if cfg.Agent.TurnBudgetUnit != backendPolicy.TurnBudgetUnit || cfg.Agent.TurnBudgetVersion != backendPolicy.TurnBudgetVersion {
+		return invalid("agent.turn_budget_unit", "turn-budget semantics do not match backend %q", backend)
+	}
 	// Provider model IDs are case-sensitive; unlike backend and effort, model
 	// matching is deliberately exact.
 	if !contains(backendPolicy.Models, cfg.Agent.Model) {
@@ -217,6 +242,20 @@ func Validate(cfg Effective, policy Policy) error {
 		return invalid("agent.max_turns", "must be at most %d", policy.MaxTurns)
 	}
 	return nil
+}
+
+// TurnBudgetSemantics returns the immutable counter contract for a backend.
+// MaxTurns keeps its public name for compatibility, while these fields make
+// the unit precise in every durable effective-config snapshot.
+func TurnBudgetSemantics(backend string) (string, int) {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "claude":
+		return TurnBudgetUnitAssistantEvent, TurnBudgetVersion
+	case "openrouter":
+		return TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion
+	default:
+		return "", 0
+	}
 }
 
 // Hash returns a stable SHA-256 of the complete effective configuration.
@@ -247,14 +286,16 @@ func (p Policy) AvailableBackends() []string {
 
 func defaultSources() map[string]string {
 	return map[string]string{
-		"agent.enabled":            SourceDeploymentDefault,
-		"agent.backend":            SourceDeploymentDefault,
-		"agent.model":              SourceDeploymentDefault,
-		"agent.effort":             SourceDeploymentDefault,
-		"agent.wall_clock_seconds": SourceDeploymentDefault,
-		"agent.max_turns":          SourceDeploymentDefault,
-		"first_pass.samples":       SourceDeploymentDefault,
-		"required_checks":          SourceDeploymentDefault,
+		"agent.enabled":             SourceDeploymentDefault,
+		"agent.backend":             SourceDeploymentDefault,
+		"agent.model":               SourceDeploymentDefault,
+		"agent.effort":              SourceDeploymentDefault,
+		"agent.wall_clock_seconds":  SourceDeploymentDefault,
+		"agent.max_turns":           SourceDeploymentDefault,
+		"agent.turn_budget_unit":    SourceDerived,
+		"agent.turn_budget_version": SourceDerived,
+		"first_pass.samples":        SourceDeploymentDefault,
+		"required_checks":           SourceDeploymentDefault,
 	}
 }
 
