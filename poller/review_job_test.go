@@ -224,6 +224,7 @@ func TestPrepareReviewJobDerivesTurnDefaultForSelectedBackend(t *testing.T) {
 	p.cfg.AgentMaxTurns = fallbackClaudeMaxTurns
 	p.cfg.ReviewMaxWallClockSec = fallbackReviewMaxWallClockSec
 	p.cfg.ReviewMaxTurns = fallbackOpenRouterMaxTurns
+	p.cfg.ReviewMaxTurnsConfigured = true
 	p.cfg.OpenRouterAPIKey = "configured"
 	p.cfg.ReviewAgentModelsOpenRouter = []string{service.DefaultOpenRouterAgentModel}
 	backend := service.AgentBackendOpenRouter
@@ -1754,7 +1755,8 @@ func TestProviderAttemptObserverUpsertsLifecycleWithRunExecutionAttempt(t *testi
 		Stage: "first_pass", InvocationNumber: 2, AttemptNumber: 1,
 		Provider: "google", Backend: "gemini_api", RequestedModel: "requested", ResolvedModel: "resolved",
 		ObservedServedModels: []string{"served"}, PrimaryServedModel: "served", ServedModelSource: "response",
-		ServingModelVerified: true, Status: "completed", InputTokens: 11, OutputTokens: 7, TotalTokens: 18,
+		ServingModelVerified: true, Status: "completed", AssistantTurns: 1, BudgetUnitsUsed: 9,
+		InputTokens: 11, OutputTokens: 7, TotalTokens: 18,
 		StartedAt: &started, CompletedAt: &completed, DurationMS: completed.Sub(started).Milliseconds(), StopReason: "completed",
 	}))
 
@@ -1767,6 +1769,8 @@ func TestProviderAttemptObserverUpsertsLifecycleWithRunExecutionAttempt(t *testi
 	assert.Equal(t, 2, attempt.InvocationNumber)
 	assert.Equal(t, "completed", attempt.Status)
 	assert.Equal(t, []string{"served"}, attempt.ObservedServedModels)
+	assert.Equal(t, 1, attempt.AssistantTurns)
+	assert.Equal(t, 9, attempt.BudgetUnitsUsed)
 	assert.Equal(t, int64(18), attempt.TotalTokens)
 	assert.Equal(t, completed.Sub(started).Milliseconds(), attempt.DurationMS)
 	assert.Equal(t, 2, database.UpsertStageAttemptAsHolderCalls)

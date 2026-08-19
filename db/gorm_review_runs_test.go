@@ -845,6 +845,7 @@ func TestGormDBUpsertReviewStageAttempt(t *testing.T) {
 		MatcherVersion:       "v1",
 		Status:               "completed",
 		AssistantTurns:       12,
+		BudgetUnitsUsed:      11,
 		StartedAt:            &now,
 	}
 	require.NoError(t, database.UpsertReviewStageAttempt(&attempt))
@@ -854,6 +855,7 @@ func TestGormDBUpsertReviewStageAttempt(t *testing.T) {
 	createdAt := attempt.CreatedAt
 
 	attempt.AssistantTurns = 13
+	attempt.BudgetUnitsUsed = 14
 	attempt.StopReason = "complete"
 	require.NoError(t, database.UpsertReviewStageAttempt(&attempt))
 	assert.Equal(t, createdID, attempt.ID)
@@ -863,6 +865,7 @@ func TestGormDBUpsertReviewStageAttempt(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, attempts, 1)
 	assert.Equal(t, 13, attempts[0].AssistantTurns)
+	assert.Equal(t, 14, attempts[0].BudgetUnitsUsed)
 	assert.Equal(t, []string{"claude-fable-5", "claude-opus-4-8"}, attempts[0].ObservedServedModels)
 	assert.True(t, attempts[0].ServingModelVerified)
 

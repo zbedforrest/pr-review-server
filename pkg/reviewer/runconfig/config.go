@@ -253,7 +253,14 @@ func Validate(cfg Effective, policy Policy) error {
 	}
 	maxTurns := backendPolicy.MaxTurns
 	if maxTurns <= 0 {
-		maxTurns = policy.MaxTurns
+		// Legacy/hand-built single-backend policies predate per-backend units;
+		// their one global ceiling is necessarily expressed in that backend's
+		// unit. A multi-backend policy cannot safely make that assumption.
+		if len(policy.Backends) == 1 {
+			maxTurns = policy.MaxTurns
+		} else {
+			return invalid("agent.max_turns", "backend %q has no configured turn ceiling", backend)
+		}
 	}
 	if maxTurns > 0 && cfg.Agent.MaxTurns > maxTurns {
 		return invalid("agent.max_turns", "must be at most %d", maxTurns)

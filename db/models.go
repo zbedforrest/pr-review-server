@@ -217,6 +217,7 @@ type ReviewStageAttemptModel struct {
 	Effort               string          `gorm:"size:32"`
 	Status               string          `gorm:"size:32;index"`
 	AssistantTurns       int             `gorm:"column:assistant_turns"`
+	BudgetUnitsUsed      int             `gorm:"column:budget_units_used"`
 	InputTokens          int64           `gorm:"column:input_tokens"`
 	OutputTokens         int64           `gorm:"column:output_tokens"`
 	TotalTokens          int64           `gorm:"column:total_tokens"`

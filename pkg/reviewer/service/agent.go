@@ -287,12 +287,14 @@ func RunAgentReview(
 		}
 		if parseResult != nil {
 			event.AssistantTurns = parseResult.assistantTurns
+			event.BudgetUnitsUsed = parseResult.budgetUnits
 			event.ObservedServedModels = append([]string(nil), parseResult.servedModels...)
 			event.PrimaryServedModel, event.ServedModelSource, event.ServingModelVerified,
 				event.Fallback, event.FallbackReason = agentServingMetadata(runtime, parseResult.servedModels)
 		}
 		if review != nil {
 			event.AssistantTurns = review.AssistantTurns
+			event.BudgetUnitsUsed = review.BudgetUnitsUsed
 			event.ObservedServedModels = append([]string(nil), review.ObservedServedModels...)
 			event.PrimaryServedModel = review.ServedModel
 			event.ServingModelVerified = review.ServingModelVerified

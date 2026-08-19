@@ -415,7 +415,8 @@ func TestReviewRunGetAndCursorListExposeSafeMetadata(t *testing.T) {
 	require.NoError(t, database.UpsertReviewStageAttempt(&db.ReviewStageAttempt{
 		RunID: runIDs[0], ExecutionAttempt: 1, Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
 		Provider: "openrouter", Backend: "openrouter", RequestedModel: "openai/gpt-5.6-sol",
-		ResolvedModel: "openai/gpt-5.6-sol", Status: "completed", ErrorSummary: "internal provider detail",
+		ResolvedModel: "openai/gpt-5.6-sol", Status: "completed", AssistantTurns: 1, BudgetUnitsUsed: 9,
+		ErrorSummary: "internal provider detail",
 	}))
 
 	getRequest := addReviewAPIUser(httptest.NewRequest(http.MethodGet, reviewRunsPathPrefix+runIDs[0], nil), *userID)
@@ -424,6 +425,8 @@ func TestReviewRunGetAndCursorListExposeSafeMetadata(t *testing.T) {
 	require.Equal(t, http.StatusOK, getRecorder.Code)
 	assert.Contains(t, getRecorder.Body.String(), `"attempts":[{`)
 	assert.Contains(t, getRecorder.Body.String(), `"requested_model":"openai/gpt-5.6-sol"`)
+	assert.Contains(t, getRecorder.Body.String(), `"assistant_turns":1`)
+	assert.Contains(t, getRecorder.Body.String(), `"budget_units_used":9`)
 	assert.NotContains(t, getRecorder.Body.String(), "internal provider detail")
 	assert.NotContains(t, getRecorder.Body.String(), "sensitive internal path")
 	assert.Contains(t, getRecorder.Body.String(), `"message":"the review did not complete successfully"`)
