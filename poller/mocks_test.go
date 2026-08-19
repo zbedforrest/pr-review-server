@@ -572,7 +572,10 @@ func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo strin
 	defer m.mu.Unlock()
 	key := prDBKey(owner, repo, prNumber)
 	pr := m.PRs[key]
-	if pr == nil || pr.Status == "generating" || pr.Status == "agent_reviewing" || pr.Status == "completed" {
+	if pr == nil || pr.Status == "completed" {
+		return false, nil
+	}
+	if (pr.Status == "generating" || pr.Status == "agent_reviewing") && m.ProjectionRunIDs[key] == "" {
 		return false, nil
 	}
 	if ownerRunID := m.ProjectionRunIDs[key]; ownerRunID != "" {
@@ -1297,7 +1300,7 @@ func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, que
 			failureStage = "execution"
 			errorSummary = "review worker lease expired before terminal completion"
 		case run.Status == db.ReviewRunStatusQueued &&
-			((run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(now)) ||
+			((run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(runningCutoff)) ||
 				(run.LeaseExpiresAt == nil && !run.QueuedAt.After(queuedCutoff))):
 			terminalCode = "queue_abandoned"
 			failureStage = "dispatch"

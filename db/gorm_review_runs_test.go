@@ -206,6 +206,35 @@ func TestGormDBCachedProjectionRestoresIdlePendingPR(t *testing.T) {
 	assert.Equal(t, "cached.html", model.ReviewPath)
 }
 
+func TestGormDBCachedProjectionRepairsGeneratingRowWithTerminalOwner(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	const (
+		owner       = "acme"
+		repo        = "crash-cache"
+		prNum       = 8
+		sha         = "2123456789abcdef0123456789abcdef01234567"
+		terminalRun = "run-000000000000000000000000000000d4"
+		cacheRun    = "run-000000000000000000000000000000d5"
+	)
+	run := reviewRunFixture(terminalRun, time.Now().UTC())
+	require.NoError(t, database.CreateReviewRun(&run))
+	require.NoError(t, database.SetPRGeneratingForReviewRun(owner, repo, prNum, sha, "Title", "alice", nil, false, terminalRun))
+	failed := ReviewRunStatusFailed
+	require.NoError(t, database.PatchReviewRun(terminalRun, ReviewRunPatch{Status: &failed}))
+
+	restored, err := database.RestorePRCompletedFromCacheForReviewRun(
+		owner, repo, prNum, cacheRun, terminalRun, sha, "cached.html", 1, 0, 0, "request_changes", false, `{}`,
+	)
+	require.NoError(t, err)
+	require.True(t, restored)
+	var model PRModel
+	require.NoError(t, database.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNum).First(&model).Error)
+	assert.Equal(t, "completed", model.Status)
+	assert.Equal(t, cacheRun, model.ProjectionRunID)
+}
+
 func TestGormDBAutomaticReviewAdmissionPreservesRetryCap(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()
@@ -561,7 +590,7 @@ func TestGormDBQueuedDispatcherLeaseControlsAbandonment(t *testing.T) {
 		run.IdempotencyKeyHash = ""
 		require.NoError(t, database.CreateReviewRun(run))
 	}
-	claimed, err := database.ClaimOrRenewQueuedReviewRunLease(expired.RunID, "dispatcher-a", now.Add(-time.Minute), now.Add(-time.Second))
+	claimed, err := database.ClaimOrRenewQueuedReviewRunLease(expired.RunID, "dispatcher-a", now.Add(-4*time.Minute), now.Add(-3*time.Minute))
 	require.NoError(t, err)
 	require.True(t, claimed)
 	claimed, err = database.ClaimOrRenewQueuedReviewRunLease(live.RunID, "dispatcher-b", now, now.Add(time.Minute))

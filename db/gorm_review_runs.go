@@ -101,9 +101,11 @@ func (g *GormDB) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, p
 }
 
 // RestorePRCompletedFromCacheForReviewRun projects an existing artifact only
-// while no active run owns the PR and the row is not already completed. The
-// status and review-run subquery are part of the same UPDATE, so a cache hit
-// cannot steal the projection from a concurrent forced regeneration.
+// while no active run owns the PR and the row is not already completed. An
+// in-flight-looking row is recoverable only when it has a run-aware projection;
+// the live-run subquery then distinguishes a terminal crashed owner from a real
+// concurrent regeneration. A legacy pre-claim generating row has no projection
+// ID and remains protected from cache takeover.
 func (g *GormDB) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
 	if owner == "" || repo == "" || prNumber <= 0 || projectionRunID == "" || commitSHA == "" || reviewPath == "" {
 		return false, fmt.Errorf("restore cached PR for review run: complete PR target, projection run, commit, and path are required")
@@ -111,7 +113,8 @@ func (g *GormDB) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prN
 	now := time.Now().UTC()
 	result := g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
-		Where("status NOT IN ?", []string{"generating", "agent_reviewing", "completed"}).
+		Where("status <> ?", "completed").
+		Where("status NOT IN ? OR projection_run_id <> ''", []string{"generating", "agent_reviewing"}).
 		Where(`NOT EXISTS (
 			SELECT 1 FROM review_runs
 			WHERE review_runs.run_id = prs.projection_run_id
@@ -446,7 +449,7 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMax
 	queuedCutoff := now.Add(-queuedMaxAge)
 	queued := g.db.Model(&ReviewRunModel{}).
 		Where("status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND queued_at <= ?))",
-			ReviewRunStatusQueued, now, queuedCutoff).
+			ReviewRunStatusQueued, runningCutoff, queuedCutoff).
 		Updates(map[string]any{
 			"status":           ReviewRunStatusTimedOut,
 			"completed_at":     now,

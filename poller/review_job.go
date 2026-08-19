@@ -461,6 +461,20 @@ func (p *Poller) finishCompletedReviewExecution(exec *reviewExecution, result *R
 }
 
 func (p *Poller) rejectQueuedReviewJob(job ReviewJob, status, terminalCode, failureStage string, cause error) bool {
+	if job.TriggerSource == "poller" {
+		// Automatic candidates are not durably accepted until execution begins.
+		// A dispatch/cache/cancellation rejection must not manufacture a fresh
+		// terminal row on every poll cycle. Future replay of an already-persisted
+		// poll-sourced run still reaches the normal queued patch below.
+		existing, err := p.db.GetReviewRun(job.RunID)
+		if err != nil {
+			log.Printf("[REVIEWER] WARN: inspect rejected poll-sourced run %s: %v", job.RunID, err)
+			return false
+		}
+		if existing == nil {
+			return false
+		}
+	}
 	if err := p.ensureReviewRun(job); err != nil {
 		log.Printf("[REVIEWER] WARN: persist rejected run %s: %v", job.RunID, err)
 		return false

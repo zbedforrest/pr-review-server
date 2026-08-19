@@ -462,7 +462,7 @@ func TestAcceptedQueuedRunLeaseIsRenewedAndCrashExpiresQuickly(t *testing.T) {
 	assert.WithinDuration(t, now.Add(time.Minute+ReviewQueueLeaseTTL), *run.LeaseExpiresAt, time.Second)
 
 	p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
-	abandoned, err := database.AbandonExpiredReviewRuns(now.Add(time.Minute+ReviewQueueLeaseTTL+time.Second), ReviewLeaseCompletionGrace, ReviewQueueAbandonAfter)
+	abandoned, err := database.AbandonExpiredReviewRuns(now.Add(time.Minute+ReviewQueueLeaseTTL+ReviewLeaseCompletionGrace+time.Second), ReviewLeaseCompletionGrace, ReviewQueueAbandonAfter)
 	require.NoError(t, err)
 	assert.Equal(t, 1, abandoned)
 	run, err = database.GetReviewRun(job.RunID)
@@ -470,6 +470,33 @@ func TestAcceptedQueuedRunLeaseIsRenewedAndCrashExpiresQuickly(t *testing.T) {
 	require.NotNil(t, run)
 	assert.Equal(t, db.ReviewRunStatusTimedOut, run.Status)
 	assert.Equal(t, "queue_abandoned", run.TerminalCode)
+}
+
+func TestAutomaticCacheRecoveryRepairsTerminalProjectionWithoutLedgerChurn(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	job := customReviewJob(t, "run-24300000000000000000000000000006")
+	job.TriggerSource = "poller"
+	job.Force = false
+	storage.ExistingReviews[fmt.Sprintf("%s/%s/%d/%s", job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA)] = true
+	terminalOwner := customReviewJob(t, "run-24300000000000000000000000000005")
+	require.NoError(t, p.ensureReviewRun(terminalOwner))
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA, job.PR.Title, job.PR.Author, job.PR.CreatedAt, job.PR.Draft, terminalOwner.RunID,
+	))
+	failed := db.ReviewRunStatusFailed
+	require.NoError(t, database.PatchReviewRun(terminalOwner.RunID, db.ReviewRunPatch{Status: &failed}))
+
+	require.NoError(t, p.generateReviewJobs(context.Background(), []ReviewJob{job}))
+
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "completed", pr.Status)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	assert.Nil(t, run, "an unaccepted automatic cache hit must not create a ledger row")
 }
 
 func TestUnclaimedTerminalRunReleasesGeneratingProjection(t *testing.T) {
