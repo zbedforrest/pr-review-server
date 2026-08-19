@@ -1505,6 +1505,10 @@ func TestProviderAttemptObserverUpsertsLifecycleWithRunExecutionAttempt(t *testi
 	assert.Equal(t, int64(18), attempt.TotalTokens)
 	assert.Equal(t, completed.Sub(started).Milliseconds(), attempt.DurationMS)
 	assert.Equal(t, 2, database.UpsertStageAttemptAsHolderCalls)
+	exec.recordProviderAttempt(service.ProviderAttemptEvent{
+		Stage: "first_pass", InvocationNumber: 3, AttemptNumber: 1,
+		Provider: "google", RequestedModel: "failed-model", Status: "failed",
+	})
 	models := exec.providerModelUses()
 	require.Len(t, models, 1)
 	assert.Equal(t, "first_pass", models[0].Stage)
@@ -1661,6 +1665,37 @@ func TestImmutableJSONFailurePreventsSuccessfulFinalization(t *testing.T) {
 	assert.Equal(t, "error", pr.Status)
 }
 
+func TestFinalizationRetryExhaustionTerminalizesRunAndProjectsError(t *testing.T) {
+	database := NewMockDatabase()
+	database.FinalizeReviewRunSuccessErrors = []error{
+		errors.New("database unavailable 1"), errors.New("database unavailable 2"), errors.New("database unavailable 3"),
+	}
+	storage := NewMockReviewStorage()
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	job := reviewJobWithoutAgent(t, "run-40000000000000000000000000000008")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+	require.Len(t, database.FinalizeReviewRunSuccessCalls, reviewLedgerRetryAttempts)
+	assert.Empty(t, storage.SaveReviewCalls, "failed finalization must not update canonical aliases")
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusFailed, run.Status)
+	assert.Equal(t, "finalization_failed", run.TerminalCode)
+	assert.Equal(t, "publication", run.FailureStage)
+	assert.Empty(t, run.LeaseHolder)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "error", pr.Status)
+	assert.Contains(t, pr.ErrorMessage, "database unavailable 3")
+}
+
 func TestStaleWorkerCannotFinalizeOrBroadcastAfterArtifactSave(t *testing.T) {
 	database := NewMockDatabase()
 	storage := NewMockReviewStorage()
@@ -1754,4 +1789,40 @@ func TestSupersededFinalizationCompletesWithoutBroadcast(t *testing.T) {
 	eventMu.Lock()
 	assert.Equal(t, 1, events, "a superseded success must not emit a completion update")
 	eventMu.Unlock()
+}
+
+func TestSupersededOlderCommitPreservesNonCollidingCanonicalAlias(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	job := reviewJobWithoutAgent(t, "run-40000000000000000000000000000009")
+	const successorRunID = "run-4000000000000000000000000000000a"
+	const successorSHA = "fedcba9876543210fedcba9876543210fedcba98"
+	storage.SaveSidecarFunc = func(_ context.Context, _ string, contentType string, _ []byte) error {
+		if contentType == "text/html; charset=utf-8" {
+			return database.SetPRGeneratingForReviewRun(
+				job.PR.Owner, job.PR.Repo, job.PR.Number, successorSHA,
+				job.PR.Title, job.PR.Author, nil, false, successorRunID,
+			)
+		}
+		return nil
+	}
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, "superseded", run.PublicationStatus)
+	require.Len(t, storage.SaveReviewCalls, 1, "an older commit may safely retain its sha-only alias")
+	assert.Equal(t, job.PR.CommitSHA, storage.SaveReviewCalls[0].CommitSHA)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, successorSHA, pr.LastCommitSHA)
+	assert.Equal(t, successorRunID, database.ProjectionRunIDs[prDBKey(job.PR.Owner, job.PR.Repo, job.PR.Number)])
 }

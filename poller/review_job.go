@@ -77,7 +77,7 @@ func (e *reviewExecution) providerModelUses() []payload.ModelUse {
 	e.attemptsMu.Lock()
 	events := make([]service.ProviderAttemptEvent, 0, len(e.providerAttempts))
 	for _, event := range e.providerAttempts {
-		if event.Status != "started" {
+		if event.Status == "completed" {
 			events = append(events, event)
 		}
 	}

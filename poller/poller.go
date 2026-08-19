@@ -3293,14 +3293,13 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			reviewResult.ReviewRun = artifactInfo
 			log.Printf("[REVIEWER] PR %d review run: %s", pr.Number, job.RunID)
 
-			failArtifact := func(cause error, terminalCode string) {
-				log.Printf("[REVIEWER] ERROR: Failed to persist review artifact for PR %d: %v", pr.Number, cause)
+			failExecution := func(cause error, terminalCode, failureStage string) {
+				log.Printf("[REVIEWER] ERROR: Review run %s failed during %s: %v", job.RunID, failureStage, cause)
 				if prCtx.Err() != nil {
-					log.Printf("[REVIEWER] PR %d artifact save was interrupted (ctx=%v)", pr.Number, prCtx.Err())
-					p.finishInterruptedReviewExecution(execution, prCtx, "artifact_save", cause)
+					log.Printf("[REVIEWER] PR %d %s was interrupted (ctx=%v)", pr.Number, failureStage, prCtx.Err())
+					p.finishInterruptedReviewExecution(execution, prCtx, failureStage, cause)
 				} else {
 					status := db.ReviewRunStatusFailed
-					failureStage := "artifact_save"
 					errorSummary := cause.Error()
 					finished := p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
 					if finished {
@@ -3308,13 +3307,13 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						if setErr != nil {
 							log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
 						} else if !projected {
-							log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping artifact-save error", job.RunID)
+							log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping %s error", job.RunID, failureStage)
 						}
 						if projected {
 							p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 						}
 					} else {
-						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact-save error projection", job.RunID)
+						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping %s error projection", job.RunID, failureStage)
 					}
 				}
 			}
@@ -3323,7 +3322,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			// Mutable compatibility aliases are written after publication wins, so
 			// a stale or superseded worker can never overwrite the visible result.
 			if err := p.saveImmutableReviewArtifact(prCtx, reviewResult.ReviewRun.HTMLPath, "text/html; charset=utf-8", reviewResult.HTMLContent); err != nil {
-				failArtifact(fmt.Errorf("save immutable review %s: %w", job.RunID, err), "artifact_save_failed")
+				failExecution(fmt.Errorf("save immutable review %s: %w", job.RunID, err), "artifact_save_failed", "artifact_save")
 				return
 			}
 
@@ -3337,18 +3336,18 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 
 			sidecarBody, sidecarErr := p.writeImmutableReviewSidecar(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult)
 			if sidecarErr != nil {
-				failArtifact(sidecarErr, "artifact_save_failed")
+				failExecution(sidecarErr, "artifact_save_failed", "artifact_save")
 				return
 			}
 
 			reviewRunJSON, marshalErr := json.Marshal(reviewResult.ReviewRun)
 			if marshalErr != nil {
-				failArtifact(marshalErr, "artifact_metadata_failed")
+				failExecution(marshalErr, "artifact_metadata_failed", "artifact_save")
 				return
 			}
 			outcome, finalizeErr := p.finalizeCompletedReviewExecution(execution, reviewResult, string(reviewRunJSON))
 			if finalizeErr != nil {
-				log.Printf("[REVIEWER] ERROR: Failed to finalize review run %s: %v", job.RunID, finalizeErr)
+				failExecution(finalizeErr, "finalization_failed", "publication")
 				return
 			}
 			if !outcome.Finalized {
@@ -3357,6 +3356,19 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			}
 			if !outcome.Published {
 				log.Printf("[REVIEWER] SUPERSEDED: run %s completed without replacing the newer PR projection; keeping immutable artifact only", job.RunID)
+				// A successor on a different commit cannot collide with this
+				// commit-scoped compatibility alias, so preserve sha-only history.
+				currentPR, currentErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+				if currentErr != nil {
+					log.Printf("[REVIEWER] WARN: inspect superseding projection for run %s: %v", job.RunID, currentErr)
+				} else if currentPR != nil && !isSameCommit(currentPR.LastCommitSHA, pr.CommitSHA) {
+					canonicalPath, aliasErr := p.saveCanonicalReview(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent)
+					if aliasErr != nil {
+						log.Printf("[REVIEWER] WARN: could not preserve superseded commit alias for run %s: %v", job.RunID, aliasErr)
+					} else {
+						p.writeCanonicalReviewSidecarBestEffort(prCtx, canonicalPath, sidecarBody)
+					}
+				}
 				return
 			}
 			canonicalPath, aliasErr := p.saveCanonicalReview(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent)
