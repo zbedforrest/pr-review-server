@@ -3,6 +3,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"io"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +66,34 @@ func TestAgentChildEnvironmentIsDefaultDenyWithFrozenCredential(t *testing.T) {
 		if strings.Contains(openRouterEnvironment, forbidden) {
 			t.Errorf("OpenRouter child retained Claude-only value %q: %q", forbidden, openRouterEnvironment)
 		}
+	}
+}
+
+func TestDefaultSpawnerPreservesExplicitEmptyEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("agent subprocesses are unsupported on Windows")
+	}
+	envExecutable, err := exec.LookPath("env")
+	if err != nil {
+		t.Fatalf("locate env executable: %v", err)
+	}
+	proc, err := (DefaultSpawner{}).SpawnWithEnv(context.Background(), envExecutable, nil, "", []string{})
+	if err != nil {
+		t.Fatalf("spawn env: %v", err)
+	}
+	stdout, err := io.ReadAll(proc.Stdout())
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	stderr, stderrErr := io.ReadAll(proc.Stderr())
+	if stderrErr != nil {
+		t.Fatalf("read stderr: %v", stderrErr)
+	}
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("wait: %v; stderr=%s", err, stderr)
+	}
+	if len(bytes.TrimSpace(stdout)) != 0 {
+		t.Fatalf("empty child environment inherited parent values: %s", stdout)
 	}
 }
 

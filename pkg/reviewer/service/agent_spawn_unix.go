@@ -17,10 +17,6 @@ type DefaultSpawner struct{}
 
 var _ Spawner = DefaultSpawner{}
 
-func (DefaultSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
-	return spawnCommand(ctx, name, args, dir, nil)
-}
-
 func (DefaultSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
 	return spawnCommand(ctx, name, args, dir, environment)
 }
@@ -31,9 +27,9 @@ func spawnCommand(ctx context.Context, name string, args []string, dir string, e
 	// process-group children orphaned. We watch ctx.Done in a goroutine and
 	// group-kill instead.
 	cmd := exec.Command(name, args...)
-	if environment != nil {
-		cmd.Env = append([]string(nil), environment...)
-	}
+	// make preserves the distinction between an explicit empty environment
+	// and nil, which os/exec interprets as inheriting the parent environment.
+	cmd.Env = append(make([]string, 0, len(environment)), environment...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
