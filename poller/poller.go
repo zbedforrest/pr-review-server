@@ -3035,7 +3035,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
 						p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "cache_restore_failed", "publication", err)
 					} else if projected {
-						if !p.completeQueuedReviewJobFromCache(job, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON) {
+						if !p.completeQueuedReviewJobFromCache(job, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON) && job.TriggerSource != "poller" {
 							log.Printf("[REVIEWER] WARN: cached review projected but run %s was not completed", job.RunID)
 						}
 						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)

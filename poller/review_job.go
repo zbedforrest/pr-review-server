@@ -423,7 +423,11 @@ func (p *Poller) finishInterruptedReviewExecution(exec *reviewExecution, ctx con
 		errorSummary = cause.Error()
 	}
 	if contextCause := context.Cause(ctx); budgetTimeout && contextCause != nil {
-		errorSummary = contextCause.Error()
+		if cause != nil && !errors.Is(cause, errReviewRunBudgetExceeded) && cause.Error() != contextCause.Error() {
+			errorSummary = fmt.Sprintf("%s: %s", contextCause.Error(), cause.Error())
+		} else {
+			errorSummary = contextCause.Error()
+		}
 	}
 	finished := p.finishReviewExecution(exec, db.ReviewRunPatch{
 		Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary,

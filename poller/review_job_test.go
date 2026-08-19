@@ -900,6 +900,32 @@ func TestOrganicGenerationTimeoutProjectsBoundedPRError(t *testing.T) {
 	assert.Equal(t, reviewBudgetExceededMessage, pr.ErrorMessage)
 }
 
+func TestOrganicTimeoutPreservesDetailedStageFailure(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := reviewJobWithoutAgent(t, "run-25600000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+	execution, err := p.beginReviewExecution(job)
+	require.NoError(t, err)
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA, job.PR.Title, job.PR.Author, nil, false, job.RunID,
+	))
+	timedOutCtx, cancel := context.WithCancelCause(context.Background())
+	cancel(errReviewRunBudgetExceeded)
+	stageErr := fmt.Errorf("agent failed after 57 turns: %w", context.DeadlineExceeded)
+
+	assert.True(t, p.finishInterruptedReviewExecution(execution, timedOutCtx, "agent", stageErr))
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusTimedOut, run.Status)
+	assert.Contains(t, run.ErrorSummary, errReviewRunBudgetExceeded.Error())
+	assert.Contains(t, run.ErrorSummary, "agent failed after 57 turns")
+}
+
 func TestOrganicArtifactTimeoutProjectsBoundedPRError(t *testing.T) {
 	database := NewMockDatabase()
 	storage := NewMockReviewStorage()
