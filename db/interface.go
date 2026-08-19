@@ -230,6 +230,7 @@ type Database interface {
 	SetPRGeneratingForReviewRun(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool, runID string) error
 	SetPRAgentReviewingForReviewRun(owner, repo string, prNumber int, runID string) (bool, error)
 	SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error)
+	SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error)
 	MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error)
 	RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error)
 	GetAllPRs() ([]PR, error)

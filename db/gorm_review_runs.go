@@ -22,12 +22,19 @@ func (g *GormDB) SetPRGeneratingForReviewRun(owner, repo string, prNumber int, c
 		Status: "generating", GeneratingSince: &now, Title: title, Author: author,
 		CreatedAt: createdAt, Draft: draft, ProjectionRunID: runID,
 	}
+	updateColumns := []string{
+		"last_commit_sha", "status", "generating_since", "title", "author", "draft",
+		"projection_run_id", "error_message",
+	}
+	// A missing GitHub created_at is represented as nil. Preserve an existing
+	// timestamp on conflict so temporary upstream omissions do not degrade PR
+	// ordering or trigger avoidable metadata backfills.
+	if createdAt != nil {
+		updateColumns = append(updateColumns, "created_at")
+	}
 	return g.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"last_commit_sha", "status", "generating_since", "title", "author", "created_at", "draft",
-			"projection_run_id", "error_message",
-		}),
+		Columns:   []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
+		DoUpdates: clause.AssignmentColumns(updateColumns),
 	}).Create(model).Error
 }
 
@@ -50,6 +57,28 @@ func (g *GormDB) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID,
 		})
 	if result.Error != nil {
 		return false, fmt.Errorf("set PR error for run %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// SetPRErrorIfNoLiveReview records an admission/dispatch failure only when the
+// current PR projection is not owned by a queued or live-leased run. It is the
+// safe fallback for errors that happen before a new run ID can claim ownership.
+func (g *GormDB) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error) {
+	now := time.Now().UTC()
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM review_runs
+			WHERE review_runs.run_id = prs.projection_run_id
+			  AND (review_runs.status = ? OR
+			       (review_runs.status = ? AND (review_runs.lease_expires_at IS NULL OR review_runs.lease_expires_at > ?)))
+		)`, ReviewRunStatusQueued, ReviewRunStatusRunning, now).
+		Updates(map[string]any{
+			"status": "error", "error_message": message, "last_reviewed_at": now, "generating_since": nil,
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("set PR error without live review: %w", result.Error)
 	}
 	return result.RowsAffected == 1, nil
 }

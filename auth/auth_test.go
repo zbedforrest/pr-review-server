@@ -163,6 +163,9 @@ func (m *MockDatabase) SetPRAgentReviewingForReviewRun(owner, repo string, prNum
 func (m *MockDatabase) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error) {
 	return true, nil
 }
+func (m *MockDatabase) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error) {
+	return true, nil
+}
 func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
 	return true, nil
 }

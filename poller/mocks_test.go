@@ -520,6 +520,26 @@ func (m *MockDatabase) SetPRErrorForReviewRun(owner, repo string, prNumber int, 
 	return true, nil
 }
 
+func (m *MockDatabase) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if ownerRunID := m.ProjectionRunIDs[key]; ownerRunID != "" {
+		if ownerRun := m.ReviewRuns[ownerRunID]; ownerRun != nil &&
+			(ownerRun.Status == db.ReviewRunStatusQueued ||
+				(ownerRun.Status == db.ReviewRunStatusRunning && (ownerRun.LeaseExpiresAt == nil || ownerRun.LeaseExpiresAt.After(time.Now())))) {
+			return false, nil
+		}
+	}
+	if pr := m.PRs[key]; pr != nil {
+		pr.Status = "error"
+		pr.ErrorMessage = message
+		pr.GeneratingSince = nil
+		return true, nil
+	}
+	return false, nil
+}
+
 func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

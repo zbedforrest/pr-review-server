@@ -120,6 +120,27 @@ func TestGormDBReviewProjectionFencesSupersededRuns(t *testing.T) {
 	assert.Equal(t, runB, pr.ReviewRunID)
 }
 
+func TestGormDBRunAdmissionPreservesExistingCreatedAtWhenMissing(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	createdAt := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Millisecond)
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		"acme", "created-at", 6, sha, "Title", "alice", &createdAt, false,
+		"run-000000000000000000000000000000c1",
+	))
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		"acme", "created-at", 6, sha, "Updated", "alice", nil, false,
+		"run-000000000000000000000000000000c2",
+	))
+	pr, err := database.GetPR("acme", "created-at", 6)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	require.NotNil(t, pr.CreatedAt)
+	assert.WithinDuration(t, createdAt, *pr.CreatedAt, time.Millisecond)
+}
+
 func TestGormDBCachedProjectionCannotSupersedeLiveRun(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()
@@ -141,6 +162,9 @@ func TestGormDBCachedProjectionCannotSupersedeLiveRun(t *testing.T) {
 	// Model the stale-generating reset racing the still-live worker. The run
 	// subquery, not just the visible status, must protect its projection.
 	require.NoError(t, database.UpdatePRStatus(owner, repo, prNum, "pending"))
+	projected, err := database.SetPRErrorIfNoLiveReview(owner, repo, prNum, "local dispatch failed")
+	require.NoError(t, err)
+	assert.False(t, projected)
 
 	restored, err := database.RestorePRCompletedFromCacheForReviewRun(
 		owner, repo, prNum, cacheRun, "old-success", sha, "cached.html", 1, 2, 3, "request_changes", false, `{}`,
@@ -167,6 +191,9 @@ func TestGormDBCachedProjectionRestoresIdlePendingPR(t *testing.T) {
 	require.NoError(t, database.UpsertPR(&PR{
 		RepoOwner: owner, RepoName: repo, PRNumber: prNum, LastCommitSHA: sha, Status: "pending",
 	}))
+	projected, err := database.SetPRErrorIfNoLiveReview(owner, repo, prNum, "invalid local configuration")
+	require.NoError(t, err)
+	require.True(t, projected)
 	restored, err := database.RestorePRCompletedFromCacheForReviewRun(
 		owner, repo, prNum, cacheRun, "old-success", sha, "cached.html", 0, 1, 0, "approve_suggestions", false, `{}`,
 	)

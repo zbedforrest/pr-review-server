@@ -408,8 +408,8 @@ func isReviewInFlight(status string) bool {
 // re-renders via the same HTML pipeline so the inline-comment UI is intact.
 //
 // If a concurrency cap is configured (AGENT_MAX_CONCURRENT), dispatch must
-// reserve a slot before the execution budget begins and release it after this
-// stage returns.
+// reserve a slot before the execution budget begins; the dispatching worker
+// releases it after the full review pipeline completes.
 func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, result *service.ReviewResult) (*ReviewResult, error) {
 	pr := execution.Job.PR
 	agentSettings := execution.Job.Config.Effective.Agent
@@ -476,6 +476,11 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	if agentOut.ModelFallback {
 		fallbackReason = "observed served model did not match requested model"
 	}
+	providerDurationMS := agentOut.DurationMS
+	if providerDurationMS < 0 {
+		providerDurationMS = 0
+	}
+	providerStartedAt := agentCompletedAt.Add(-time.Duration(providerDurationMS) * time.Millisecond)
 	p.recordStageAttempt(execution, db.ReviewStageAttempt{
 		Stage: "agent", InvocationNumber: 1, AttemptNumber: 1, Provider: provider,
 		Backend: agentOut.Backend, RequestedModel: agentSettings.Model, ResolvedModel: agentOut.RequestedModel,
@@ -483,8 +488,8 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		ServedModelSource: servedModelSource, ServingModelVerified: agentOut.ServingModelVerified,
 		Fallback: agentOut.ModelFallback, FallbackReason: fallbackReason, MatcherVersion: "v1",
 		Effort: agentOut.Effort, Status: "completed", AssistantTurns: agentOut.AssistantTurns,
-		StartedAt: &agentStartedAt, CompletedAt: &agentCompletedAt,
-		DurationMS: agentCompletedAt.Sub(agentStartedAt).Milliseconds(), StopReason: "completed",
+		StartedAt: &providerStartedAt, CompletedAt: &agentCompletedAt,
+		DurationMS: providerDurationMS, StopReason: "completed",
 	})
 
 	if agentOut.ModelFallback {
@@ -1273,10 +1278,14 @@ func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string,
 	if err != nil {
 		log.Printf("[IMMEDIATE] ERROR: Could not queue immediate review for %s/%s#%d: %v", owner, repo, number, err)
 		if !errors.Is(err, ErrReviewAlreadyTracked) {
-			if setErr := p.db.SetPRError(owner, repo, number, err.Error()); setErr != nil {
+			projected, setErr := p.db.SetPRErrorIfNoLiveReview(owner, repo, number, err.Error())
+			if setErr != nil {
 				log.Printf("[IMMEDIATE] WARNING: failed to persist error status: %v", setErr)
+			} else if projected {
+				p.broadcastPRUpdate(owner, repo, number)
+			} else {
+				log.Printf("[IMMEDIATE] Live review owns %s/%s#%d; skipping unfenced admission error", owner, repo, number)
 			}
-			p.broadcastPRUpdate(owner, repo, number)
 		}
 	}
 }
@@ -2742,12 +2751,15 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 		if err != nil {
 			configErr := fmt.Errorf("invalid deployment review defaults for %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, err)
 			log.Printf("[REVIEWER] ERROR: %v", configErr)
-			if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, configErr.Error()); setErr != nil {
+			projected, setErr := p.db.SetPRErrorIfNoLiveReview(pr.Owner, pr.Repo, pr.Number, configErr.Error())
+			if setErr != nil {
 				dispatchErrors = append(dispatchErrors, fmt.Errorf("%w (also failed to persist PR error: %v)", configErr, setErr))
 			} else {
 				dispatchErrors = append(dispatchErrors, configErr)
 			}
-			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+			if projected {
+				p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+			}
 			continue
 		}
 		jobs = append(jobs, job)
