@@ -691,6 +691,43 @@ func TestGormDBAbandonsOnlyStaleQueuedRuns(t *testing.T) {
 	assert.Equal(t, ReviewRunStatusQueued, active.Status)
 }
 
+func TestGormDBAbandonedQueuedRunPreservesCompletedProjection(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	run := reviewRunFixture("run-00000000000000000000000000000021", now.Add(-2*time.Hour))
+	run.IdempotencyScope = ""
+	run.IdempotencyKeyHash = ""
+	require.NoError(t, database.CreateReviewRun(&run))
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		run.RepoOwner, run.RepoName, run.PRNumber, run.CommitSHA,
+		"Cached review", "alice", nil, false, run.RunID,
+	))
+	projected, err := database.MarkPRCompletedForReviewRun(
+		run.RepoOwner, run.RepoName, run.PRNumber, run.RunID, run.RunID,
+		run.CommitSHA, "cached.html", 0, 0, 1, "approve", false, `{}`,
+	)
+	require.NoError(t, err)
+	require.True(t, projected)
+
+	count, err := database.AbandonExpiredReviewRuns(now, 2*time.Minute, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	abandoned, err := database.GetReviewRun(run.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, abandoned)
+	assert.Equal(t, ReviewRunStatusTimedOut, abandoned.Status)
+	assert.Equal(t, "queue_abandoned", abandoned.TerminalCode)
+
+	pr, err := database.GetPR(run.RepoOwner, run.RepoName, run.PRNumber)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "completed", pr.Status)
+	assert.Equal(t, "cached.html", pr.ReviewHTMLPath)
+	assert.Empty(t, pr.ErrorMessage)
+}
+
 func TestGormDBQueuedDispatcherLeaseControlsAbandonment(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()

@@ -511,6 +511,7 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMax
 		}
 		result := tx.Model(&PRModel{}).
 			Where("projection_run_id IN ?", runIDs).
+			Where("status <> ?", "completed").
 			Updates(map[string]any{
 				"status": "error", "error_message": "review run abandoned after lease expiry",
 				"last_reviewed_at": now, "generating_since": nil,

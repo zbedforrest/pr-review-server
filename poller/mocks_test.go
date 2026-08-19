@@ -1341,7 +1341,7 @@ func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, que
 		run.LeaseHolder = ""
 		run.LeaseExpiresAt = nil
 		key := prDBKey(run.RepoOwner, run.RepoName, run.PRNumber)
-		if pr := m.PRs[key]; pr != nil && m.ProjectionRunIDs[key] == run.RunID {
+		if pr := m.PRs[key]; pr != nil && pr.Status != "completed" && m.ProjectionRunIDs[key] == run.RunID {
 			completedAt := now
 			pr.Status = "error"
 			pr.ErrorMessage = "review run abandoned after lease expiry"
