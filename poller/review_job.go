@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -27,18 +26,27 @@ const reviewLedgerRetryBaseDelay = 100 * time.Millisecond
 var ErrReviewRunNotClaimed = errors.New("review run was not claimed")
 var ErrReviewAlreadyTracked = errors.New("a review is already active for this PR")
 
+const (
+	fallbackReviewMaxWallClockSec     = 360
+	fallbackReviewMaxTurns            = 40
+	fallbackReviewMaxFirstPassSamples = 3
+)
+
 // ReviewJob is the immutable execution handoff. Config must already be fully
 // resolved and policy-validated by the caller; Validate below enforces only
 // structural completeness and hash integrity. Workers never consult mutable
 // deployment defaults for caller-customizable review behavior.
 type ReviewJob struct {
-	PR                github.PullRequest
-	RunID             string
-	Config            runconfig.Snapshot
-	TriggerSource     string
-	RequestedByUserID *int
-	QueueLeaseHolder  string
-	Force             bool
+	PR                 github.PullRequest
+	RunID              string
+	Config             runconfig.Snapshot
+	TriggerSource      string
+	RequestedByUserID  *int
+	IdempotencyScope   string
+	IdempotencyKeyHash string
+	RequestHash        string
+	QueueLeaseHolder   string
+	Force              bool
 }
 
 type reviewExecution struct {
@@ -57,6 +65,12 @@ func (j ReviewJob) Validate() error {
 	}
 	if j.TriggerSource == "" {
 		return fmt.Errorf("review job %s: trigger source is required", j.RunID)
+	}
+	if (j.IdempotencyScope == "") != (j.IdempotencyKeyHash == "") {
+		return fmt.Errorf("review job %s: idempotency scope and key hash must be set together", j.RunID)
+	}
+	if j.IdempotencyScope != "" && j.RequestHash == "" {
+		return fmt.Errorf("review job %s: idempotent requests require a request hash", j.RunID)
 	}
 	if j.Config.Effective.SchemaVersion != runconfig.SchemaVersion || j.Config.Effective.FirstPass.Samples <= 0 {
 		return fmt.Errorf("review job %s: resolved config is incomplete", j.RunID)
@@ -79,17 +93,20 @@ func (p *Poller) validateReviewJob(job ReviewJob) error {
 	if err := job.Validate(); err != nil {
 		return err
 	}
-	// The stale-generating recovery window is deployment-wide. Until the API
-	// introduces a separate operator cap, no admitted run may outlive it.
-	if p.cfg != nil && p.cfg.AgentWallClockSec > 0 &&
-		job.Config.Effective.Agent.WallClockSeconds > p.cfg.AgentWallClockSec {
+	maxWallClock := 0
+	if p.cfg != nil {
+		maxWallClock = reviewPolicyMaximum(p.cfg.ReviewMaxWallClockSec, p.cfg.AgentWallClockSec, fallbackReviewMaxWallClockSec)
+	}
+	if maxWallClock > 0 && job.Config.Effective.Agent.WallClockSeconds > maxWallClock {
 		return fmt.Errorf("review job %s: agent wall clock %ds exceeds deployment maximum %ds",
-			job.RunID, job.Config.Effective.Agent.WallClockSeconds, p.cfg.AgentWallClockSec)
+			job.RunID, job.Config.Effective.Agent.WallClockSeconds, maxWallClock)
 	}
 	return nil
 }
 
-func (p *Poller) defaultReviewSnapshot() (runconfig.Snapshot, error) {
+// ReviewConfigDefaultsAndPolicy returns the caller-visible deployment defaults
+// and safety policy. Credentials and provider URLs are deliberately excluded.
+func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig.Policy, error) {
 	nRequests, err := p.db.GetReviewNRequests()
 	if err != nil || nRequests <= 0 {
 		nRequests = 1
@@ -110,6 +127,17 @@ func (p *Poller) defaultReviewSnapshot() (runconfig.Snapshot, error) {
 	if effort == "" {
 		effort = service.DefaultAgentEffort
 	}
+	claudeModels := policyValues(p.cfg.ReviewAgentModelsClaude, service.DefaultAgentModel)
+	openRouterModels := policyValues(p.cfg.ReviewAgentModelsOpenRouter, service.DefaultOpenRouterAgentModel)
+	claudeEfforts := policyValues(p.cfg.ReviewAgentEffortsClaude, service.DefaultAgentEffort)
+	openRouterEfforts := policyValues(p.cfg.ReviewAgentEffortsOpenRouter, service.DefaultAgentEffort)
+	if backend == service.AgentBackendClaude {
+		claudeModels = appendPolicyValue(claudeModels, model)
+		claudeEfforts = appendPolicyValue(claudeEfforts, effort)
+	} else if backend == service.AgentBackendOpenRouter {
+		openRouterModels = appendPolicyValue(openRouterModels, model)
+		openRouterEfforts = appendPolicyValue(openRouterEfforts, effort)
+	}
 	defaults := runconfig.Effective{
 		SchemaVersion: runconfig.SchemaVersion,
 		Agent: runconfig.Agent{
@@ -125,15 +153,65 @@ func (p *Poller) defaultReviewSnapshot() (runconfig.Snapshot, error) {
 	}
 	policy := runconfig.Policy{
 		Backends: map[string]runconfig.BackendPolicy{
-			backend: {
-				Available: backend != service.AgentBackendOpenRouter || strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "",
-				Models:    []string{model},
-				Efforts:   []string{effort},
+			service.AgentBackendClaude: {
+				Available: p.cfg.AgenticReviews,
+				Models:    claudeModels,
+				Efforts:   claudeEfforts,
+			},
+			service.AgentBackendOpenRouter: {
+				Available: p.cfg.AgenticReviews && strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "",
+				Models:    openRouterModels,
+				Efforts:   openRouterEfforts,
 			},
 		},
-		MaxWallClockSeconds: defaults.Agent.WallClockSeconds,
-		MaxTurns:            defaults.Agent.MaxTurns,
-		MaxFirstPassSamples: defaults.FirstPass.Samples,
+		MaxWallClockSeconds: reviewPolicyMaximum(p.cfg.ReviewMaxWallClockSec, defaults.Agent.WallClockSeconds, fallbackReviewMaxWallClockSec),
+		MaxTurns:            reviewPolicyMaximum(p.cfg.ReviewMaxTurns, defaults.Agent.MaxTurns, fallbackReviewMaxTurns),
+		MaxFirstPassSamples: reviewPolicyMaximum(p.cfg.ReviewMaxFirstPassSamples, defaults.FirstPass.Samples, fallbackReviewMaxFirstPassSamples),
+	}
+	return defaults, policy, nil
+}
+
+func policyValues(configured []string, fallback string) []string {
+	values := make([]string, 0, len(configured)+1)
+	for _, value := range configured {
+		values = appendPolicyValue(values, value)
+	}
+	if len(values) == 0 {
+		values = append(values, fallback)
+	}
+	return values
+}
+
+func appendPolicyValue(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func reviewPolicyMaximum(configured, active, fallback int) int {
+	if configured <= 0 {
+		if active > 0 {
+			return active
+		}
+		return fallback
+	}
+	if active > configured {
+		return active
+	}
+	return configured
+}
+
+func (p *Poller) defaultReviewSnapshot() (runconfig.Snapshot, error) {
+	defaults, policy, err := p.ReviewConfigDefaultsAndPolicy()
+	if err != nil {
+		return runconfig.Snapshot{}, err
 	}
 	snapshot, err := runconfig.Resolve(runconfig.Overrides{}, defaults, policy)
 	if err != nil {
@@ -142,18 +220,29 @@ func (p *Poller) defaultReviewSnapshot() (runconfig.Snapshot, error) {
 	return snapshot, nil
 }
 
-func (p *Poller) defaultReviewJob(pr github.PullRequest, force bool, triggerSource string) (ReviewJob, error) {
-	snapshot, err := p.defaultReviewSnapshot()
+// PrepareReviewJob resolves caller overrides exactly once, before durable
+// admission. The returned snapshot is immutable execution input.
+func (p *Poller) PrepareReviewJob(pr github.PullRequest, requested runconfig.Overrides, force bool, triggerSource string, requestedByUserID *int) (ReviewJob, error) {
+	defaults, policy, err := p.ReviewConfigDefaultsAndPolicy()
+	if err != nil {
+		return ReviewJob{}, err
+	}
+	if requested.Agent != nil && requested.Agent.Backend != nil && requested.Agent.Model == nil &&
+		!strings.EqualFold(strings.TrimSpace(*requested.Agent.Backend), defaults.Agent.Backend) {
+		return ReviewJob{}, &runconfig.ValidationError{Field: "agent.model", Message: "is required when changing agent.backend"}
+	}
+	snapshot, err := runconfig.Resolve(requested, defaults, policy)
 	if err != nil {
 		return ReviewJob{}, err
 	}
 	return ReviewJob{
-		PR:            pr,
-		RunID:         newReviewRunID(),
-		Config:        snapshot,
-		TriggerSource: triggerSource,
-		Force:         force,
+		PR: pr, RunID: newReviewRunID(), Config: snapshot, TriggerSource: triggerSource,
+		RequestedByUserID: requestedByUserID, Force: force,
 	}, nil
+}
+
+func (p *Poller) defaultReviewJob(pr github.PullRequest, force bool, triggerSource string) (ReviewJob, error) {
+	return p.PrepareReviewJob(pr, runconfig.Overrides{}, force, triggerSource, nil)
 }
 
 // ProcessReviewJob durably accepts one job and starts it asynchronously. The
@@ -165,21 +254,32 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 	}
 	queueHolder := newHolderID()
 	job.QueueLeaseHolder = queueHolder
-	// Acceptance is durable and execution is asynchronous, so an HTTP request
-	// ending must not cancel the accepted run. Preserve context values while
-	// replacing the caller's cancellation/deadline with the run's own timeout.
-	reviewCtx, tracked := p.tryTrackReviewJob(context.WithoutCancel(ctx), job)
-	if !tracked {
-		return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
-	}
 	now := time.Now().UTC()
 	queueLeaseExpiresAt := now.Add(ReviewQueueLeaseTTL)
-	if err := p.ensureReviewRunWithQueueLease(job, queueHolder, queueLeaseExpiresAt); err != nil {
-		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
-		if errors.Is(err, db.ErrReviewRunActiveConflict) {
+	var reviewCtx context.Context
+	admissionErr := func() error {
+		p.reviewAdmissionMutex.Lock()
+		defer p.reviewAdmissionMutex.Unlock()
+
+		// Acceptance is durable and execution is asynchronous, so an HTTP request
+		// ending must not cancel the accepted run. Preserve context values while
+		// replacing the caller's cancellation/deadline with the run's own timeout.
+		var tracked bool
+		reviewCtx, tracked = p.tryTrackReviewJob(context.WithoutCancel(ctx), job)
+		if !tracked {
 			return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
 		}
-		return err
+		if err := p.ensureReviewRunWithQueueLease(job, queueHolder, queueLeaseExpiresAt); err != nil {
+			p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
+			if errors.Is(err, db.ErrReviewRunActiveConflict) {
+				return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
+			}
+			return err
+		}
+		return nil
+	}()
+	if admissionErr != nil {
+		return admissionErr
 	}
 	leased, err := p.db.ClaimOrRenewQueuedReviewRunLease(job.RunID, queueHolder, now, queueLeaseExpiresAt)
 	if err != nil || !leased {
@@ -275,7 +375,9 @@ func (p *Poller) ensureReviewRunWithQueueLease(job ReviewJob, queueHolder string
 			existing.CommitSHA != job.PR.CommitSHA || existing.ConfigHash != job.Config.Hash ||
 			existing.RequestedConfigJSON != string(requestedJSON) || existing.EffectiveConfigJSON != string(effectiveJSON) ||
 			existing.ConfigSourcesJSON != string(sourcesJSON) || existing.TriggerSource != job.TriggerSource ||
-			!equalOptionalInt(existing.RequestedByUserID, job.RequestedByUserID) {
+			!equalOptionalInt(existing.RequestedByUserID, job.RequestedByUserID) ||
+			existing.IdempotencyScope != job.IdempotencyScope || existing.IdempotencyKeyHash != job.IdempotencyKeyHash ||
+			existing.RequestHash != job.RequestHash {
 			return fmt.Errorf("review run %s already exists with a different target or config", job.RunID)
 		}
 		return nil
@@ -297,6 +399,8 @@ func (p *Poller) ensureReviewRunWithQueueLease(job ReviewJob, queueHolder string
 		AgentEffort: job.Config.Effective.Agent.Effort, AgentWallClockSec: job.Config.Effective.Agent.WallClockSeconds,
 		AgentMaxTurns: job.Config.Effective.Agent.MaxTurns, AcceptedAt: now, QueuedAt: now,
 		ServiceRevision: revisionName(), LeaseHolder: queueHolder,
+		IdempotencyScope: job.IdempotencyScope, IdempotencyKeyHash: job.IdempotencyKeyHash,
+		RequestHash: job.RequestHash,
 	}
 	if !queueLeaseExpiresAt.IsZero() {
 		expiresAt := queueLeaseExpiresAt

@@ -3,7 +3,17 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
+)
+
+const (
+	defaultAgentWallClockSec      = 360
+	defaultAgentMaxTurns          = 40
+	defaultReviewFirstPassSamples = 3
+	defaultClaudeAgentModel       = "claude-opus-4-8"
+	defaultOpenRouterAgentModel   = "openai/gpt-5.6-sol"
+	defaultAgentEffort            = "medium"
 )
 
 type Config struct {
@@ -47,10 +57,23 @@ type Config struct {
 	AgentBackend       string // claude (default) or openrouter
 	AgentModel         string // backend model id for agent reviews (empty = backend default)
 	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
+	OpenRouterAPIKey   string // OpenRouter credential; deployment-only, never exposed in capabilities
 	OpenRouterBaseURL  string // OpenRouter API root (empty = service default)
 	BugMemoryPath      string // local path to a bug-memory library JSON (dev/benchmark)
 	BugMemoryObject    string // GCS object name of the library (prod); Path wins if both set
 	RequiredChecks     bool   // convert fired gates/memory entries into forced-choice agent checks (service/checks.go)
+
+	// Caller-customization policy. These allowlists and ceilings are owned by
+	// the deployment operator; per-review API overrides must remain within them.
+	// Credentials, provider endpoints, filesystem paths, and concurrency remain
+	// deployment-only settings.
+	ReviewAgentModelsClaude      []string
+	ReviewAgentModelsOpenRouter  []string
+	ReviewAgentEffortsClaude     []string
+	ReviewAgentEffortsOpenRouter []string
+	ReviewMaxWallClockSec        int
+	ReviewMaxTurns               int
+	ReviewMaxFirstPassSamples    int
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -83,6 +106,49 @@ func Load() *Config {
 			pollingInterval = d
 		}
 	}
+
+	agentWallClockSec := getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", defaultAgentWallClockSec)
+	agentMaxTurns := getEnvIntOrDefault("AGENT_MAX_TURNS", defaultAgentMaxTurns)
+	agentBackend := getEnvOrDefault("AGENT_BACKEND", "claude")
+	agentModel := os.Getenv("AGENT_MODEL")
+	agentEffort := os.Getenv("AGENT_EFFORT")
+
+	claudeModels := getEnvListOrDefault("REVIEW_AGENT_MODELS_CLAUDE",
+		[]string{defaultClaudeAgentModel, "claude-fable-5"}, normalizeModel)
+	openRouterModels := getEnvListOrDefault("REVIEW_AGENT_MODELS_OPENROUTER",
+		[]string{defaultOpenRouterAgentModel}, normalizeModel)
+	claudeEfforts := getEnvListOrDefault("REVIEW_AGENT_EFFORTS_CLAUDE",
+		[]string{"low", "medium", "high"}, normalizeEffort)
+	openRouterEfforts := getEnvListOrDefault("REVIEW_AGENT_EFFORTS_OPENROUTER",
+		[]string{"low", "medium", "high", "xhigh", "max"}, normalizeEffort)
+
+	// Operator allowlists must never invalidate the deployment's currently
+	// selected backend/model/effort. Keep Config's active values untouched and
+	// append only their resolved runtime values to the matching policy list.
+	activeBackend := strings.ToLower(strings.TrimSpace(agentBackend))
+	activeModel := strings.TrimSpace(agentModel)
+	if activeModel == "" {
+		if activeBackend == "openrouter" {
+			activeModel = defaultOpenRouterAgentModel
+		} else {
+			activeModel = defaultClaudeAgentModel
+		}
+	}
+	activeEffort := normalizeEffort(agentEffort)
+	if activeEffort == "" {
+		activeEffort = defaultAgentEffort
+	}
+	switch activeBackend {
+	case "claude":
+		claudeModels = appendUnique(claudeModels, activeModel)
+		claudeEfforts = appendUnique(claudeEfforts, activeEffort)
+	case "openrouter":
+		openRouterModels = appendUnique(openRouterModels, activeModel)
+		openRouterEfforts = appendUnique(openRouterEfforts, activeEffort)
+	}
+
+	maxWallClockDefault := positiveOrDefault(agentWallClockSec, defaultAgentWallClockSec)
+	maxTurnsDefault := positiveOrDefault(agentMaxTurns, defaultAgentMaxTurns)
 
 	return &Config{
 		// Legacy single-user mode
@@ -118,16 +184,25 @@ func Load() *Config {
 		AgenticReviews:     os.Getenv("AGENTIC_REVIEWS") == "true",
 		AgentCloneRootDir:  getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
 		AgentLogsDir:       getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
-		AgentWallClockSec:  getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 360),
-		AgentMaxTurns:      getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
+		AgentWallClockSec:  agentWallClockSec,
+		AgentMaxTurns:      agentMaxTurns,
 		AgentMaxConcurrent: getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
-		AgentBackend:       getEnvOrDefault("AGENT_BACKEND", "claude"),
-		AgentModel:         os.Getenv("AGENT_MODEL"),
-		AgentEffort:        os.Getenv("AGENT_EFFORT"),
+		AgentBackend:       agentBackend,
+		AgentModel:         agentModel,
+		AgentEffort:        agentEffort,
+		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
 		BugMemoryPath:      os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:    os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:     os.Getenv("REQUIRED_CHECKS") == "true",
+
+		ReviewAgentModelsClaude:      claudeModels,
+		ReviewAgentModelsOpenRouter:  openRouterModels,
+		ReviewAgentEffortsClaude:     claudeEfforts,
+		ReviewAgentEffortsOpenRouter: openRouterEfforts,
+		ReviewMaxWallClockSec:        getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
+		ReviewMaxTurns:               getPositiveEnvIntOrDefault("REVIEW_MAX_TURNS", maxTurnsDefault),
+		ReviewMaxFirstPassSamples:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
 	}
 }
 
@@ -145,4 +220,64 @@ func getEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// getPositiveEnvIntOrDefault is used for hard safety ceilings. Invalid,
+// zero, and negative values fall back to a positive default rather than
+// accidentally disabling a limit.
+func getPositiveEnvIntOrDefault(key string, defaultValue int) int {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		if n, err := strconv.Atoi(value); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultValue
+}
+
+func positiveOrDefault(value, defaultValue int) int {
+	if value > 0 {
+		return value
+	}
+	return defaultValue
+}
+
+// getEnvListOrDefault parses a comma-separated deployment setting in stable
+// first-seen order, dropping blank and duplicate entries after normalization.
+// An unset or blank setting uses the supplied defaults.
+func getEnvListOrDefault(key string, defaults []string, normalize func(string) string) []string {
+	raw := os.Getenv(key)
+	if strings.TrimSpace(raw) == "" {
+		raw = strings.Join(defaults, ",")
+	}
+
+	values := make([]string, 0, len(defaults))
+	for _, item := range strings.Split(raw, ",") {
+		value := normalize(item)
+		if value != "" {
+			values = appendUnique(values, value)
+		}
+	}
+	return values
+}
+
+func normalizeModel(value string) string {
+	// Provider model IDs are case-sensitive. Whitespace is formatting noise,
+	// but case must be preserved for exact policy matching.
+	return strings.TrimSpace(value)
+}
+
+func normalizeEffort(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func appendUnique(values []string, value string) []string {
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }

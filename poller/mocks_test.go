@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -1043,6 +1044,13 @@ func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error {
 			}
 		}
 	}
+	for _, existing := range m.ReviewRuns {
+		if strings.EqualFold(existing.RepoOwner, run.RepoOwner) && strings.EqualFold(existing.RepoName, run.RepoName) &&
+			existing.PRNumber == run.PRNumber &&
+			(existing.Status == db.ReviewRunStatusQueued || existing.Status == db.ReviewRunStatusRunning) {
+			return fmt.Errorf("%w: target=%s/%s#%d", db.ErrReviewRunActiveConflict, run.RepoOwner, run.RepoName, run.PRNumber)
+		}
+	}
 	copy := *run
 	m.ReviewRuns[run.RunID] = &copy
 	return nil
@@ -1082,10 +1090,10 @@ func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun
 	defer m.mu.RUnlock()
 	var runs []db.ReviewRun
 	for _, run := range m.ReviewRuns {
-		if filter.RepoOwner != "" && run.RepoOwner != filter.RepoOwner {
+		if filter.RepoOwner != "" && !strings.EqualFold(run.RepoOwner, filter.RepoOwner) {
 			continue
 		}
-		if filter.RepoName != "" && run.RepoName != filter.RepoName {
+		if filter.RepoName != "" && !strings.EqualFold(run.RepoName, filter.RepoName) {
 			continue
 		}
 		if filter.PRNumber > 0 && run.PRNumber != filter.PRNumber {
@@ -1095,6 +1103,11 @@ func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun
 			continue
 		}
 		if filter.Status != "" && run.Status != filter.Status {
+			continue
+		}
+		if !filter.BeforeAcceptedAt.IsZero() && filter.BeforeRunID != "" &&
+			(run.AcceptedAt.After(filter.BeforeAcceptedAt) ||
+				(run.AcceptedAt.Equal(filter.BeforeAcceptedAt) && run.RunID >= filter.BeforeRunID)) {
 			continue
 		}
 		runs = append(runs, *run)

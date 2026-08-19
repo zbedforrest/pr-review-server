@@ -80,12 +80,14 @@ type ReviewRun struct {
 }
 
 type ReviewRunFilter struct {
-	RepoOwner string
-	RepoName  string
-	PRNumber  int
-	CommitSHA string
-	Status    string
-	Limit     int
+	RepoOwner        string
+	RepoName         string
+	PRNumber         int
+	CommitSHA        string
+	Status           string
+	BeforeAcceptedAt time.Time
+	BeforeRunID      string
+	Limit            int
 }
 
 // ReviewRunPatch updates mutable lifecycle/result fields. Pointer fields

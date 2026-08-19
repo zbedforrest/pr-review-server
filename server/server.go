@@ -21,6 +21,8 @@ import (
 	"pr-review-server/gcs"
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/runconfig"
+	"pr-review-server/poller"
 
 	"github.com/gorilla/websocket"
 )
@@ -41,6 +43,9 @@ type PollerInterface interface {
 	GetPollingInterval() time.Duration
 	GetSecondsUntilNextPoll() int
 	ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool)
+	PrepareReviewJob(pr github.PullRequest, requested runconfig.Overrides, force bool, triggerSource string, requestedByUserID *int) (poller.ReviewJob, error)
+	ProcessReviewJob(ctx context.Context, job poller.ReviewJob) error
+	ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig.Policy, error)
 	IsReviewTracked(owner, repo string, number int) bool
 }
 
@@ -295,6 +300,9 @@ func (s *Server) Start() error {
 	http.Handle("/api/telemetry/track", withAuth(s.handleTrackTelemetry))
 	http.Handle("/api/telemetry/stats", withAuth(s.handleTelemetryStats))
 	http.Handle("/api/review/", withAuth(s.handleGetReview))
+	http.Handle("/api/v1/review-runs", withV1Auth(authMiddleware, s.handleReviewRuns))
+	http.Handle("/api/v1/review-runs/", withV1Auth(authMiddleware, s.handleReviewRunByID))
+	http.Handle("/api/v1/review-capabilities", withV1Auth(authMiddleware, s.handleReviewCapabilities))
 
 	// Static content (protected - reviews contain sensitive code)
 	http.Handle("/reviews/", withAuth(s.handleReviewFromGCS))
