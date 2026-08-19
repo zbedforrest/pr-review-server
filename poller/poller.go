@@ -422,6 +422,19 @@ func isReviewInFlight(status string) bool {
 	return status == "generating" || status == "agent_reviewing"
 }
 
+// localReviewAlias returns the mutable compatibility artifact that outdated
+// cleanup may remove. Run-scoped paths are immutable history and must survive
+// after the PR advances to a new commit.
+func localReviewAlias(pr db.PR) string {
+	if pr.ReviewHTMLPath == "" {
+		return ""
+	}
+	if strings.HasPrefix(filepath.ToSlash(pr.ReviewHTMLPath), "runs/") {
+		return gcs.ReviewFileName(pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA)
+	}
+	return pr.ReviewHTMLPath
+}
+
 // runAgentStage runs the configured agent pass on a Gemini ReviewResult: flips
 // the PR status to agent_reviewing, spawns the agent against a clone of the
 // PR head, replaces the comment set with the agent's refined output, and
@@ -432,24 +445,8 @@ func isReviewInFlight(status string) bool {
 // releases it after the full review pipeline completes.
 func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, result *service.ReviewResult) (*ReviewResult, error) {
 	pr := execution.Job.PR
-	agentSettings := execution.Job.Config.Effective.Agent
 	if p.agentSlots != nil && !execution.AgentSlotReserved {
 		return nil, fmt.Errorf("agent review: concurrency slot was not reserved before execution budget started")
-	}
-	agentStartedAt := time.Now().UTC()
-	provider := "anthropic"
-	if agentSettings.Backend == service.AgentBackendOpenRouter {
-		provider = "openrouter"
-	}
-	recordAgentFailure := func(cause error) {
-		completedAt := time.Now().UTC()
-		errorSummary := cause.Error()
-		p.recordStageAttempt(execution, db.ReviewStageAttempt{
-			Stage: "agent", InvocationNumber: 1, AttemptNumber: 1, Provider: provider,
-			Backend: agentSettings.Backend, RequestedModel: agentSettings.Model, ResolvedModel: agentSettings.Model,
-			Effort: agentSettings.Effort, Status: "failed", StartedAt: &agentStartedAt, CompletedAt: &completedAt,
-			DurationMS: completedAt.Sub(agentStartedAt).Milliseconds(), ErrorCode: "agent_failed", ErrorSummary: errorSummary,
-		})
 	}
 
 	log.Printf("[REVIEWER] PR %d: Gemini pass done (comments=%d), entering agent stage",
@@ -471,7 +468,6 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	gitToken, tokenErr := p.ghClientConcrete.CurrentToken(ctx)
 	if tokenErr != nil {
 		log.Printf("[REVIEWER] ERROR: PR %d failed to get GitHub token for clone: %v", pr.Number, tokenErr)
-		recordAgentFailure(tokenErr)
 		return nil, fmt.Errorf("agent review: get GitHub token: %w", tokenErr)
 	}
 	agentCfg := p.agentConfigForExecution(execution, gitToken)
@@ -484,29 +480,8 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		pr.Owner, pr.Repo, result.BaseRef, pr.Number, pr.CommitSHA, result.Comments)
 	if agentErr != nil {
 		log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
-		recordAgentFailure(agentErr)
 		return nil, fmt.Errorf("agent review: %w", agentErr)
 	}
-	agentCompletedAt := time.Now().UTC()
-	servedModelSource := "pinned_request"
-	if agentOut.ServingModelVerified {
-		servedModelSource = "stream"
-	}
-	fallbackReason := ""
-	if agentOut.ModelFallback {
-		fallbackReason = "observed served model did not match requested model"
-	}
-	stageDurationMS := agentCompletedAt.Sub(agentStartedAt).Milliseconds()
-	p.recordStageAttempt(execution, db.ReviewStageAttempt{
-		Stage: "agent", InvocationNumber: 1, AttemptNumber: 1, Provider: provider,
-		Backend: agentOut.Backend, RequestedModel: agentSettings.Model, ResolvedModel: agentOut.RequestedModel,
-		ObservedServedModels: append([]string(nil), agentOut.ObservedServedModels...), PrimaryServedModel: agentOut.ServedModel,
-		ServedModelSource: servedModelSource, ServingModelVerified: agentOut.ServingModelVerified,
-		Fallback: agentOut.ModelFallback, FallbackReason: fallbackReason, MatcherVersion: "v1",
-		Effort: agentOut.Effort, Status: "completed", AssistantTurns: agentOut.AssistantTurns,
-		StartedAt: &agentStartedAt, CompletedAt: &agentCompletedAt,
-		DurationMS: stageDurationMS, StopReason: "completed",
-	})
 
 	if agentOut.ModelFallback {
 		log.Printf("[REVIEWER] ERROR: MODEL FALLBACK for %s/%s#%d: requested=%s served=%s — review published with fallback badge",
@@ -1655,8 +1630,8 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 				key, oldSHA, newSHA)
 
 			// Delete old HTML file if it exists
-			if pr.ReviewHTMLPath != "" {
-				oldHTMLPath := filepath.Join(p.reviewDir, pr.ReviewHTMLPath)
+			if alias := localReviewAlias(pr); alias != "" {
+				oldHTMLPath := filepath.Join(p.reviewDir, alias)
 				if err := os.Remove(oldHTMLPath); err != nil && !os.IsNotExist(err) {
 					log.Printf("[OUTDATED] Warning: Failed to delete old HTML file %s: %v", oldHTMLPath, err)
 				}
@@ -1721,7 +1696,10 @@ func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber in
 	if err := p.saveImmutableReviewArtifact(ctx, reviewRun.HTMLPath, "text/html; charset=utf-8", content); err != nil {
 		return "", fmt.Errorf("save immutable review %s: %w", reviewRun.RunID, err)
 	}
+	return p.saveCanonicalReview(ctx, owner, repo, prNumber, commitSHA, content)
+}
 
+func (p *Poller) saveCanonicalReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	if p.storage != nil {
 		return p.storage.SaveReview(ctx, owner, repo, prNumber, commitSHA, content)
 	}
@@ -1741,7 +1719,7 @@ func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber in
 		return "", fmt.Errorf("failed to write review file: %w", err)
 	}
 
-	log.Printf("[LOCAL] Saved review to: %s", localPath)
+	log.Printf("[LOCAL] Saved canonical review alias to: %s", localPath)
 	return filename, nil
 }
 
@@ -1791,10 +1769,7 @@ func (p *Poller) saveReviewSidecar(ctx context.Context, filename, contentType st
 	return nil
 }
 
-// writeSidecarBestEffort builds the structured findings payload and uploads it
-// to the same backend the HTML lives in. Errors are logged but swallowed —
-// the HTML review is the canonical artifact.
-func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlFilename string, rr *ReviewResult) {
+func buildReviewSidecar(owner, repo string, prNumber int, commitSHA string, rr *ReviewResult) ([]byte, error) {
 	// GateAlerts arms Build's no-swallow assertion: a fired deterministic
 	// alert that is no longer traceable in the merged findings logs an ERROR
 	// naming the alert (nil/empty when no deterministic signal fired).
@@ -1825,7 +1800,45 @@ func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string,
 	pl.ReviewRun = rr.ReviewRun
 	body, err := json.Marshal(pl)
 	if err != nil {
-		log.Printf("[REVIEWER] WARN: marshal findings sidecar for %s/%s#%d: %v", owner, repo, prNumber, err)
+		return nil, fmt.Errorf("marshal findings sidecar for %s/%s#%d: %w", owner, repo, prNumber, err)
+	}
+	return body, nil
+}
+
+// writeImmutableReviewSidecar persists the run-scoped structured artifact that
+// the review-runs API advertises. Unlike the mutable compatibility alias, this
+// write is required before a run can finalize successfully.
+func (p *Poller) writeImmutableReviewSidecar(ctx context.Context, owner, repo string, prNumber int, commitSHA string, rr *ReviewResult) ([]byte, error) {
+	body, err := buildReviewSidecar(owner, repo, prNumber, commitSHA, rr)
+	if err != nil {
+		return nil, err
+	}
+	if rr.ReviewRun == nil || rr.ReviewRun.JSONPath == "" {
+		return nil, fmt.Errorf("save immutable findings sidecar: review-run JSON path is required")
+	}
+	if err := p.saveImmutableReviewArtifact(ctx, rr.ReviewRun.JSONPath, "application/json", body); err != nil {
+		return nil, fmt.Errorf("save immutable findings sidecar %s: %w", rr.ReviewRun.JSONPath, err)
+	}
+	log.Printf("[REVIEWER] Saved immutable findings sidecar: %s", rr.ReviewRun.JSONPath)
+	return body, nil
+}
+
+func (p *Poller) writeCanonicalReviewSidecarBestEffort(ctx context.Context, htmlFilename string, body []byte) {
+	sidecarName := gcs.ReviewJSONFileName(htmlFilename)
+	if err := p.saveReviewSidecar(ctx, sidecarName, "application/json", body); err != nil {
+		log.Printf("[REVIEWER] WARN: save canonical findings alias %s: %v", sidecarName, err)
+		return
+	}
+	log.Printf("[REVIEWER] Saved canonical findings alias: %s", sidecarName)
+}
+
+// writeSidecarBestEffort is retained for cache/carry-forward compatibility
+// helpers. Successful review execution uses writeImmutableReviewSidecar before
+// finalization and writes the mutable alias only after publication wins.
+func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlFilename string, rr *ReviewResult) {
+	body, err := buildReviewSidecar(owner, repo, prNumber, commitSHA, rr)
+	if err != nil {
+		log.Printf("[REVIEWER] WARN: %v", err)
 		return
 	}
 	if rr.ReviewRun != nil && rr.ReviewRun.JSONPath != "" {
@@ -1835,12 +1848,7 @@ func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string,
 			log.Printf("[REVIEWER] Saved immutable findings sidecar: %s", rr.ReviewRun.JSONPath)
 		}
 	}
-	sidecarName := gcs.ReviewJSONFileName(htmlFilename)
-	if err := p.saveReviewSidecar(ctx, sidecarName, "application/json", body); err != nil {
-		log.Printf("[REVIEWER] WARN: save findings sidecar %s: %v", sidecarName, err)
-		return
-	}
-	log.Printf("[REVIEWER] Saved findings sidecar: %s (%d findings)", sidecarName, len(pl.Findings))
+	p.writeCanonicalReviewSidecarBestEffort(ctx, htmlFilename, body)
 }
 
 // backfillPRMetadata fills in missing title/author for existing PRs by fetching from GitHub
@@ -1960,12 +1968,12 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, statusMsg, pr.LastCommitSHA[:7], currentSHA[:7])
 
 			// Delete old HTML file if it exists
-			if pr.ReviewHTMLPath != "" {
-				oldHTMLPath := filepath.Join(p.reviewDir, pr.ReviewHTMLPath)
+			if alias := localReviewAlias(pr); alias != "" {
+				oldHTMLPath := filepath.Join(p.reviewDir, alias)
 				if err := os.Remove(oldHTMLPath); err != nil && !os.IsNotExist(err) {
 					log.Printf("[OUTDATED] Warning: Failed to delete old HTML file %s: %v", oldHTMLPath, err)
 				} else if err == nil {
-					log.Printf("[OUTDATED] Deleted old HTML file: %s", pr.ReviewHTMLPath)
+					log.Printf("[OUTDATED] Deleted old canonical HTML alias: %s", alias)
 				}
 			}
 
@@ -3183,27 +3191,23 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			} else {
 				// Use real reviewer service
 				reviewCfg := service.PerformReviewConfig{
-					Token:        p.cfg.GitHubToken,
-					Owner:        pr.Owner,
-					RepoName:     pr.Repo,
-					PRNumber:     pr.Number,
-					WithComments: false,
-					Verbose:      false,
-					Fast:         false,
-					NRequests:    nRequests,
+					Token:           p.cfg.GitHubToken,
+					Owner:           pr.Owner,
+					RepoName:        pr.Repo,
+					PRNumber:        pr.Number,
+					WithComments:    false,
+					Verbose:         false,
+					Fast:            false,
+					NRequests:       nRequests,
+					AttemptObserver: p.providerAttemptObserver(execution),
 				}
 
-				firstPassStarted := time.Now().UTC()
 				result, svcErr := reviewSvc.PerformReviewWithContext(prCtx, reviewCfg)
-				firstPassCompleted := time.Now().UTC()
 				if svcErr != nil {
-					p.recordGeminiAttempts(execution, firstPassStarted, firstPassCompleted, "failed", svcErr.Error())
 					err = svcErr
 				} else if job.Config.Effective.Agent.Enabled {
-					p.recordGeminiAttempts(execution, firstPassStarted, firstPassCompleted, "completed", "")
 					reviewResult, err = p.runAgentStage(prCtx, execution, result)
 				} else {
-					p.recordGeminiAttempts(execution, firstPassStarted, firstPassCompleted, "completed", "")
 					// Legacy HTML report path.
 					htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
 					if htmlContent == nil {
@@ -3221,8 +3225,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					}
 				}
 			}
-			execCompleted := time.Now().UTC()
-			execDuration := execCompleted.Sub(execStart)
+			execDuration := time.Since(execStart)
 
 			if err != nil {
 				log.Printf("[REVIEWER] ERROR: Review failed for PR %d after %v: %v", pr.Number, execDuration, err)
@@ -3275,33 +3278,33 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if reviewResult.ReviewRun == nil {
 				reviewResult.ReviewRun = &payload.ReviewRunInfo{}
 			}
-			if p.reviewGenerator == nil && len(reviewResult.ReviewRun.Models) == 0 {
+			if observedModels := execution.providerModelUses(); len(observedModels) > 0 {
+				reviewResult.ReviewRun.Models = observedModels
+			} else if p.reviewGenerator == nil && len(reviewResult.ReviewRun.Models) == 0 {
 				reviewResult.ReviewRun.Models = geminiModelUses()
 			}
 			if !p.renewReviewExecutionForPublication(execution) {
 				log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact publication", job.RunID)
 				return
 			}
-			runInfo := p.reviewRunInfo(execution, execCompleted)
-			runInfo.Models = reviewResult.ReviewRun.Models
-			reviewResult.ReviewRun = runInfo
+			models := append([]payload.ModelUse(nil), reviewResult.ReviewRun.Models...)
+			artifactInfo := p.reviewRunArtifactInfo(execution)
+			artifactInfo.Models = models
+			reviewResult.ReviewRun = artifactInfo
 			log.Printf("[REVIEWER] PR %d review run: %s", pr.Number, job.RunID)
 
-			// Save review (to GCS if configured, otherwise locally)
-			filename, err := p.saveReview(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.ReviewRun, reviewResult.HTMLContent)
-			if err != nil {
-				log.Printf("[REVIEWER] ERROR: Failed to save review for PR %d: %v", pr.Number, err)
+			failArtifact := func(cause error, terminalCode string) {
+				log.Printf("[REVIEWER] ERROR: Failed to persist review artifact for PR %d: %v", pr.Number, cause)
 				if prCtx.Err() != nil {
 					log.Printf("[REVIEWER] PR %d artifact save was interrupted (ctx=%v)", pr.Number, prCtx.Err())
-					p.finishInterruptedReviewExecution(execution, prCtx, "artifact_save", err)
+					p.finishInterruptedReviewExecution(execution, prCtx, "artifact_save", cause)
 				} else {
 					status := db.ReviewRunStatusFailed
-					terminalCode := "artifact_save_failed"
 					failureStage := "artifact_save"
-					errorSummary := err.Error()
+					errorSummary := cause.Error()
 					finished := p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
 					if finished {
-						projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, err.Error())
+						projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, cause.Error())
 						if setErr != nil {
 							log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
 						} else if !projected {
@@ -3314,54 +3317,57 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact-save error projection", job.RunID)
 					}
 				}
+			}
+
+			// Persist only run-scoped artifacts before the ownership transaction.
+			// Mutable compatibility aliases are written after publication wins, so
+			// a stale or superseded worker can never overwrite the visible result.
+			if err := p.saveImmutableReviewArtifact(prCtx, reviewResult.ReviewRun.HTMLPath, "text/html; charset=utf-8", reviewResult.HTMLContent); err != nil {
+				failArtifact(fmt.Errorf("save immutable review %s: %w", job.RunID, err), "artifact_save_failed")
 				return
 			}
 
-			log.Printf("[REVIEWER] Saved review: %s", filename)
+			log.Printf("[REVIEWER] Saved immutable review: %s", reviewResult.ReviewRun.HTMLPath)
+			// PostgreSQL timestamps have microsecond precision. Freeze at that
+			// boundary so sidecar JSON, PR JSON, and the DB round-trip exactly.
+			completedAt := time.Now().UTC().Truncate(time.Microsecond)
+			runInfo := p.reviewRunInfo(execution, completedAt)
+			runInfo.Models = models
+			reviewResult.ReviewRun = runInfo
 
-			// Best-effort: write the structured findings sidecar so /api/review
-			// can serve a parseable payload without scraping HTML. Failure here
-			// is logged but does NOT abort the review — HTML remains the source
-			// of truth and the API endpoint falls back gracefully.
-			if len(reviewResult.Comments) > 0 || reviewResult.Diff != "" {
-				p.writeSidecarBestEffort(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult)
+			sidecarBody, sidecarErr := p.writeImmutableReviewSidecar(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult)
+			if sidecarErr != nil {
+				failArtifact(sidecarErr, "artifact_save_failed")
+				return
 			}
 
-			// Verify commit SHA matches (hasn't changed during generation)
-			currentPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-			if err != nil {
-				log.Printf("[REVIEWER] ERROR: Failed to fetch PR from DB: %v", err)
-				p.finishCompletedReviewExecution(execution, reviewResult, "artifact_saved")
-			} else if currentPR != nil && currentPR.LastCommitSHA != pr.CommitSHA {
-				log.Printf("[REVIEWER] STALE REVIEW: PR %d commit changed during generation, but keeping in GCS for history", pr.Number)
-				// Don't update DB - the next poll will generate a new review for the new commit
-				p.finishCompletedReviewExecution(execution, reviewResult, "superseded")
+			reviewRunJSON, marshalErr := json.Marshal(reviewResult.ReviewRun)
+			if marshalErr != nil {
+				failArtifact(marshalErr, "artifact_metadata_failed")
+				return
+			}
+			outcome, finalizeErr := p.finalizeCompletedReviewExecution(execution, reviewResult, string(reviewRunJSON))
+			if finalizeErr != nil {
+				log.Printf("[REVIEWER] ERROR: Failed to finalize review run %s: %v", job.RunID, finalizeErr)
+				return
+			}
+			if !outcome.Finalized {
+				log.Printf("[REVIEWER] STALE WORKER: run %s lost its lease before atomic finalization; skipping latest-review update", job.RunID)
+				return
+			}
+			if !outcome.Published {
+				log.Printf("[REVIEWER] SUPERSEDED: run %s completed without replacing the newer PR projection; keeping immutable artifact only", job.RunID)
+				return
+			}
+			canonicalPath, aliasErr := p.saveCanonicalReview(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent)
+			if aliasErr != nil {
+				log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical HTML alias: %v", job.RunID, aliasErr)
 			} else {
-				// Parse the overall verdict from the SUMMARY entry; ""
-				// (unknown) when the mock generator supplies no comments or
-				// the SUMMARY has no recognizable verdict phrasing.
-				verdict := service.VerdictFromComments(reviewResult.Comments)
-				reviewRunJSON, marshalErr := json.Marshal(reviewResult.ReviewRun)
-				if marshalErr != nil {
-					log.Printf("[REVIEWER] WARNING: failed to marshal review-run metadata for PR %d: %v", pr.Number, marshalErr)
-					reviewRunJSON = nil
-				}
-				if !p.finishCompletedReviewExecution(execution, reviewResult, "artifact_saved") {
-					log.Printf("[REVIEWER] STALE WORKER: run %s lost its lease before projection; skipping latest-review update", job.RunID)
-					return
-				}
-				projected, err := p.db.MarkPRCompletedForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, job.RunID, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback, string(reviewRunJSON))
-				if err != nil {
-					log.Printf("[REVIEWER] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
-				} else if !projected {
-					p.setReviewRunPublication(job.RunID, "superseded")
-					log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; keeping immutable artifact only", job.RunID)
-				} else {
-					p.setReviewRunPublication(job.RunID, "published")
-					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-					log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict)
-				}
+				p.writeCanonicalReviewSidecarBestEffort(prCtx, canonicalPath, sidecarBody)
 			}
+			verdict := service.VerdictFromComments(reviewResult.Comments)
+			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict)
 		}(job)
 	}
 

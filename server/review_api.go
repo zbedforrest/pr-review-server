@@ -165,7 +165,9 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 
 	// Defense-in-depth path-traversal guard, mirroring handleReviewFromGCS.
 	cleaned := filepath.Clean(filename)
-	if strings.Contains(cleaned, "..") || filepath.IsAbs(cleaned) || (runID == "" && strings.ContainsRune(cleaned, '/')) {
+	cleanedSlash := filepath.ToSlash(cleaned)
+	trustedRunPath := strings.HasPrefix(cleanedSlash, "runs/") && (runID != "" || (pinnedSHA == "" && filename == pr.ReviewHTMLPath))
+	if strings.Contains(cleanedSlash, "..") || filepath.IsAbs(cleaned) || (!trustedRunPath && strings.ContainsRune(cleanedSlash, '/')) {
 		http.Error(w, "Invalid review path", http.StatusBadRequest)
 		return
 	}
@@ -237,6 +239,11 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(sidecarBytes, &pl); err != nil {
 			log.Printf("[API/review] malformed sidecar %s: %v", sidecarName, err)
 		} else {
+			if reviewSHA == "" && pl.CommitSHA != "" {
+				reviewSHA = pl.CommitSHA
+				resp.CommitSHA = reviewSHA
+				resp.IsStale = !shaPrefixMatch(reviewSHA, pr.LastCommitSHA)
+			}
 			resp.Findings = pl.Findings
 			resp.SchemaVersion = pl.SchemaVersion
 			resp.ReviewRun = pl.ReviewRun

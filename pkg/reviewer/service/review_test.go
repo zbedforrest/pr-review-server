@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -29,6 +30,129 @@ type MockGithubClient struct {
 	GetUserReviewStateFunc func(token, owner, repo string, prNumber int, username string) (string, error)
 	GetPRCommentsFunc      func(token, owner, repo string, prNumber int) ([]github.PRComment, error)
 	GetCurrentUserFunc     func(token string) (github.User, error)
+}
+
+func TestRunPromptsEmitsStartedAndTerminalEventsForDrawsAndRetries(t *testing.T) {
+	var callsMu sync.Mutex
+	calls := map[string]int{}
+	mockSmartLLM := &MockLLMClient{
+		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
+			callsMu.Lock()
+			calls[prompt]++
+			call := calls[prompt]
+			callsMu.Unlock()
+			if prompt == "retry" && call == 1 {
+				return "not json", 11, 7, 18, nil
+			}
+			return `[{"file_path":"main.go","line_number":1,"comment_body":"ok"}]`, 11, 7, 18, nil
+		},
+	}
+
+	var eventsMu sync.Mutex
+	var events []ProviderAttemptEvent
+	observer := func(event ProviderAttemptEvent) error {
+		eventsMu.Lock()
+		events = append(events, event)
+		eventsMu.Unlock()
+		return errors.New("telemetry unavailable") // best-effort: review must continue
+	}
+	service := NewService(&MockGithubClient{}, mockSmartLLM, nil)
+	result := service.runPrompts(context.Background(), PerformReviewConfig{AttemptObserver: observer}, []Prompt{
+		{Name: "retry", Content: "retry"},
+		{Name: "clean", Content: "clean"},
+	}, service.parseAIResponse)
+
+	assert.Equal(t, int64(2), result.SuccessCount)
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	assert.Len(t, events, 6, "three actual provider calls must each emit started + terminal")
+	byKey := map[string][]ProviderAttemptEvent{}
+	for _, event := range events {
+		key := fmt.Sprintf("%d/%d", event.InvocationNumber, event.AttemptNumber)
+		byKey[key] = append(byKey[key], event)
+		assert.Equal(t, "first_pass", event.Stage)
+		assert.Equal(t, "google", event.Provider)
+		assert.Equal(t, "gemini_api", event.Backend)
+	}
+	assert.Len(t, byKey["1/1"], 2)
+	assert.Len(t, byKey["1/2"], 2)
+	assert.Len(t, byKey["2/1"], 2)
+	for key, lifecycle := range byKey {
+		assert.Equal(t, "started", lifecycle[0].Status, key)
+		assert.NotNil(t, lifecycle[0].StartedAt, key)
+		assert.Nil(t, lifecycle[0].CompletedAt, key)
+		assert.Equal(t, "completed", lifecycle[1].Status, key)
+		assert.NotNil(t, lifecycle[1].CompletedAt, key)
+		assert.Equal(t, int64(11), lifecycle[1].InputTokens, key)
+		assert.Equal(t, int64(7), lifecycle[1].OutputTokens, key)
+		assert.Equal(t, int64(18), lifecycle[1].TotalTokens, key)
+	}
+	assert.Equal(t, "parse_error", byKey["1/1"][1].StopReason)
+	assert.Equal(t, "response_parse_failed", byKey["1/1"][1].ErrorCode)
+	assert.Equal(t, "completed", byKey["1/2"][1].StopReason)
+}
+
+func TestRunPromptsAbortsBeforeProviderOnDefinitiveObserverFence(t *testing.T) {
+	var providerCalls int
+	mockSmartLLM := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			providerCalls++
+			return `[]`, 0, 0, 0, nil
+		},
+	}
+	service := NewService(&MockGithubClient{}, mockSmartLLM, nil)
+	result := service.runPrompts(context.Background(), PerformReviewConfig{
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Status == "started" {
+				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
+			}
+			return nil
+		},
+	}, []Prompt{{Name: "fenced", Content: "prompt"}}, service.parseAIResponse)
+
+	assert.Zero(t, providerCalls)
+	assert.Zero(t, result.SuccessCount)
+	assert.ErrorIs(t, result.FirstError, ErrProviderAttemptAborted)
+}
+
+func TestPostProcessingEmitsSeparateClassificationAndSummaryAttempts(t *testing.T) {
+	mockFastLLM := &MockLLMClient{
+		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
+			if strings.Contains(prompt, "comprehensive summary") || strings.Contains(prompt, "testing summary") {
+				return "## Summary", 4, 5, 9, nil
+			}
+			return `{"RC-1":"CRITICAL"}`, 1, 2, 3, nil
+		},
+	}
+	var events []ProviderAttemptEvent
+	cfg := PerformReviewConfig{
+		Testing: true,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	}
+	service := NewService(nil, nil, mockFastLLM)
+	data := &PRData{PR: github.PR{Body: "PR body"}, Diff: "diff", FileContext: "context"}
+	comments := []types.LineComment{{FilePath: "main.go", LineNumber: 1, CommentBody: "bug"}}
+
+	result, err := service.handlePostReviewProcessing(context.Background(), cfg, data, comments)
+	assert.NoError(t, err)
+	assert.Len(t, result, 2)
+	assert.Len(t, events, 4)
+	assert.Equal(t, []string{"classification", "classification", "summary", "summary"}, []string{
+		events[0].Stage, events[1].Stage, events[2].Stage, events[3].Stage,
+	})
+	assert.Equal(t, "started", events[0].Status)
+	assert.Equal(t, "completed", events[1].Status)
+	assert.Equal(t, int64(1), events[1].InputTokens)
+	assert.Equal(t, int64(2), events[1].OutputTokens)
+	assert.Equal(t, int64(3), events[1].TotalTokens)
+	assert.Equal(t, "started", events[2].Status)
+	assert.Equal(t, "completed", events[3].Status)
+	assert.Equal(t, int64(4), events[3].InputTokens)
+	assert.Equal(t, int64(5), events[3].OutputTokens)
+	assert.Equal(t, int64(9), events[3].TotalTokens)
 }
 
 func (m *MockGithubClient) PostPRComment(token, owner, repo string, prNumber int, body string) error {
@@ -900,7 +1024,7 @@ func TestGenerateComprehensiveSummary(t *testing.T) {
 		},
 	}
 
-	summary, err := service.generateComprehensiveSummary(comments, "PR body", "diff content")
+	summary, err := service.generateComprehensiveSummary(PerformReviewConfig{}, comments, "PR body", "diff content")
 
 	assert.NoError(t, err)
 	assert.Contains(t, summary, "Test Coverage Analysis")

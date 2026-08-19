@@ -21,6 +21,7 @@ import (
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
+	"pr-review-server/pkg/reviewer/types"
 )
 
 func reviewJobSnapshot(t *testing.T, effective runconfig.Effective) runconfig.Snapshot {
@@ -1116,9 +1117,12 @@ func TestOrganicTimeoutPreservesDetailedStageFailure(t *testing.T) {
 func TestOrganicArtifactTimeoutProjectsBoundedPRError(t *testing.T) {
 	database := NewMockDatabase()
 	storage := NewMockReviewStorage()
-	storage.SaveReviewFunc = func(ctx context.Context, _ string, _ string, _ int, _ string, _ []byte) (string, error) {
-		<-ctx.Done()
-		return "", ctx.Err()
+	storage.SaveSidecarFunc = func(ctx context.Context, _ string, contentType string, _ []byte) error {
+		if contentType == "text/html; charset=utf-8" {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
 	}
 	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
 	p.reviewPipelineMargin = 50 * time.Millisecond
@@ -1235,10 +1239,13 @@ func TestCancelledArtifactSavePreservesResetPRState(t *testing.T) {
 	database := NewMockDatabase()
 	storage := NewMockReviewStorage()
 	saveStarted := make(chan struct{})
-	storage.SaveReviewFunc = func(ctx context.Context, _ string, _ string, _ int, _ string, _ []byte) (string, error) {
-		close(saveStarted)
-		<-ctx.Done()
-		return "", ctx.Err()
+	storage.SaveSidecarFunc = func(ctx context.Context, _ string, contentType string, _ []byte) error {
+		if contentType == "text/html; charset=utf-8" {
+			close(saveStarted)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
 	}
 	job := customReviewJob(t, "run-26000000000000000000000000000001")
 	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
@@ -1347,10 +1354,13 @@ func TestProcessReviewJobStaleArtifactFailureCannotProjectPRError(t *testing.T) 
 	storage := NewMockReviewStorage()
 	saveStarted := make(chan struct{})
 	releaseSave := make(chan struct{})
-	storage.SaveReviewFunc = func(context.Context, string, string, int, string, []byte) (string, error) {
-		close(saveStarted)
-		<-releaseSave
-		return "", errors.New("storage unavailable")
+	storage.SaveSidecarFunc = func(_ context.Context, _ string, contentType string, _ []byte) error {
+		if contentType == "text/html; charset=utf-8" {
+			close(saveStarted)
+			<-releaseSave
+			return errors.New("storage unavailable")
+		}
+		return nil
 	}
 	job := customReviewJob(t, "run-27700000000000000000000000000001")
 	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
@@ -1461,7 +1471,7 @@ func TestAgentConfigComesFromReviewJob(t *testing.T) {
 	assert.True(t, cfg.RequiredChecks)
 }
 
-func TestRecordGeminiAttemptsUsesRunExecutionAttempt(t *testing.T) {
+func TestProviderAttemptObserverUpsertsLifecycleWithRunExecutionAttempt(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPoller(NewMockGitHubClient(), database)
 	job := customReviewJob(t, "run-40000000000000000000000000000001")
@@ -1469,17 +1479,279 @@ func TestRecordGeminiAttemptsUsesRunExecutionAttempt(t *testing.T) {
 	require.NoError(t, err)
 	started := time.Now().UTC().Add(-time.Second)
 	completed := time.Now().UTC()
-	p.recordGeminiAttempts(exec, started, completed, "completed", "")
+	observer := p.providerAttemptObserver(exec)
+	require.NoError(t, observer(service.ProviderAttemptEvent{
+		Stage: "first_pass", InvocationNumber: 2, AttemptNumber: 1,
+		Provider: "google", Backend: "gemini_api", RequestedModel: "requested", ResolvedModel: "resolved",
+		Status: "started", StartedAt: &started,
+	}))
+	require.NoError(t, observer(service.ProviderAttemptEvent{
+		Stage: "first_pass", InvocationNumber: 2, AttemptNumber: 1,
+		Provider: "google", Backend: "gemini_api", RequestedModel: "requested", ResolvedModel: "resolved",
+		ObservedServedModels: []string{"served"}, PrimaryServedModel: "served", ServedModelSource: "response",
+		ServingModelVerified: true, Status: "completed", InputTokens: 11, OutputTokens: 7, TotalTokens: 18,
+		StartedAt: &started, CompletedAt: &completed, DurationMS: completed.Sub(started).Milliseconds(), StopReason: "completed",
+	}))
 
 	attempts, err := database.ListReviewStageAttempts(job.RunID)
 	require.NoError(t, err)
-	require.Len(t, attempts, 2)
-	for _, attempt := range attempts {
-		assert.Equal(t, 1, attempt.ExecutionAttempt)
-		assert.Equal(t, "completed", attempt.Status)
+	require.Len(t, attempts, 1, "started and terminal events share one durable natural key")
+	attempt := attempts[0]
+	assert.Equal(t, exec.ExecutionAttempt, attempt.ExecutionAttempt)
+	assert.Equal(t, "first_pass", attempt.Stage)
+	assert.Equal(t, 2, attempt.InvocationNumber)
+	assert.Equal(t, "completed", attempt.Status)
+	assert.Equal(t, []string{"served"}, attempt.ObservedServedModels)
+	assert.Equal(t, int64(18), attempt.TotalTokens)
+	assert.Equal(t, completed.Sub(started).Milliseconds(), attempt.DurationMS)
+	assert.Equal(t, 2, database.UpsertStageAttemptAsHolderCalls)
+	models := exec.providerModelUses()
+	require.Len(t, models, 1)
+	assert.Equal(t, "first_pass", models[0].Stage)
+	assert.Equal(t, "requested", models[0].RequestedModel)
+	assert.Equal(t, "served", models[0].ServedModel)
+	assert.True(t, models[0].ServingModelVerified)
+}
+
+func TestProviderAttemptObserverRetriesAndRejectsStaleWorker(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-40000000000000000000000000000002")
+	exec, err := p.beginReviewExecution(job)
+	require.NoError(t, err)
+	database.UpsertStageAttemptAsHolderErrors = []error{errors.New("transient 1"), errors.New("transient 2")}
+
+	observer := p.providerAttemptObserver(exec)
+	require.NoError(t, observer(service.ProviderAttemptEvent{
+		Stage: "classification", InvocationNumber: 1, AttemptNumber: 1,
+		Provider: "google", Backend: "gemini_api", RequestedModel: "flash", ResolvedModel: "flash", Status: "started",
+	}))
+	assert.Equal(t, reviewLedgerRetryAttempts, database.UpsertStageAttemptAsHolderCalls)
+
+	successor := "successor-holder"
+	require.NoError(t, database.PatchReviewRun(job.RunID, db.ReviewRunPatch{LeaseHolder: &successor}))
+	err = observer(service.ProviderAttemptEvent{
+		Stage: "classification", InvocationNumber: 2, AttemptNumber: 1,
+		Provider: "google", Backend: "gemini_api", RequestedModel: "flash", ResolvedModel: "flash", Status: "started",
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, service.ErrProviderAttemptAborted)
+	assert.Contains(t, err.Error(), "lease is no longer owned")
+	assert.Equal(t, reviewLedgerRetryAttempts+1, database.UpsertStageAttemptAsHolderCalls, "a definitive fence rejection is not retried")
+	attempts, listErr := database.ListReviewStageAttempts(job.RunID)
+	require.NoError(t, listErr)
+	require.Len(t, attempts, 1)
+	assert.Equal(t, 1, attempts[0].InvocationNumber)
+}
+
+func TestSuccessfulFinalizationReusesFrozenArtifactTiming(t *testing.T) {
+	database := NewMockDatabase()
+	database.FinalizeReviewRunSuccessErrors = []error{errors.New("transient 1"), errors.New("transient 2")}
+	storage := NewMockReviewStorage()
+	generator := NewMockReviewGenerator()
+	generator.DefaultResult.Diff = "diff --git a/a.go b/a.go"
+	generator.DefaultResult.Comments = []types.LineComment{{FilePath: "SUMMARY", CommentBody: "**Verdict: approve.**"}}
+	var htmlDurableAt time.Time
+	storage.SaveSidecarFunc = func(_ context.Context, _ string, contentType string, _ []byte) error {
+		if contentType == "text/html; charset=utf-8" {
+			htmlDurableAt = time.Now().UTC()
+		}
+		return nil
 	}
-	assert.Equal(t, "classification_summary", attempts[0].Stage)
-	assert.Equal(t, "first_pass", attempts[1].Stage)
-	assert.Zero(t, attempts[0].DurationMS)
-	assert.Equal(t, "aggregate_window", attempts[1].StopReason)
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, generator)
+	job := reviewJobWithoutAgent(t, "run-40000000000000000000000000000003")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+	var eventMu sync.Mutex
+	events := 0
+	p.EventFunc = func(string, interface{}) {
+		eventMu.Lock()
+		events++
+		eventMu.Unlock()
+	}
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+	require.Len(t, database.FinalizeReviewRunSuccessCalls, reviewLedgerRetryAttempts)
+	first := database.FinalizeReviewRunSuccessCalls[0]
+	assert.False(t, first.CompletedAt.Before(htmlDurableAt), "completion is frozen only after durable HTML")
+	for i, call := range database.FinalizeReviewRunSuccessCalls {
+		assert.Equal(t, first.CompletedAt, call.CompletedAt)
+		assert.Equal(t, first.DurationMS, call.DurationMS)
+		if i > 0 {
+			assert.True(t, call.LeaseCheckedAt.After(database.FinalizeReviewRunSuccessCalls[i-1].LeaseCheckedAt))
+		}
+	}
+
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	require.NotNil(t, run.CompletedAt)
+	assert.Equal(t, first.CompletedAt, *run.CompletedAt)
+	assert.Equal(t, first.DurationMS, run.DurationMS)
+	assert.Equal(t, "published", run.PublicationStatus)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	require.NotNil(t, pr.LastReviewedAt)
+	assert.Equal(t, first.CompletedAt, *pr.LastReviewedAt)
+	assert.Equal(t, first.HTMLPath, pr.ReviewHTMLPath, "the immutable run artifact is authoritative")
+	assert.Equal(t, first.ReviewRunJSON, pr.ReviewRunJSON)
+	var projected payload.ReviewRunInfo
+	require.NoError(t, json.Unmarshal([]byte(pr.ReviewRunJSON), &projected))
+	assert.Equal(t, first.CompletedAt, projected.CompletedAt)
+	assert.Equal(t, first.DurationMS, projected.DurationMS)
+
+	storage.mu.Lock()
+	sidecars := append([]struct {
+		Filename    string
+		ContentType string
+		Content     []byte
+	}(nil), storage.SaveSidecarCalls...)
+	storage.mu.Unlock()
+	var immutable payload.Payload
+	found := false
+	for _, sidecar := range sidecars {
+		if sidecar.Filename == first.JSONPath && sidecar.ContentType == "application/json" {
+			require.NoError(t, json.Unmarshal(sidecar.Content, &immutable))
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "immutable structured sidecar must be written")
+	require.NotNil(t, immutable.ReviewRun)
+	assert.Equal(t, first.CompletedAt, immutable.ReviewRun.CompletedAt)
+	assert.Equal(t, first.DurationMS, immutable.ReviewRun.DurationMS)
+	eventMu.Lock()
+	assert.Equal(t, 2, events, "generating and published are the only updates")
+	eventMu.Unlock()
+}
+
+func TestImmutableJSONFailurePreventsSuccessfulFinalization(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	storage.SaveSidecarFunc = func(_ context.Context, _ string, contentType string, _ []byte) error {
+		if contentType == "application/json" {
+			return errors.New("immutable JSON unavailable")
+		}
+		return nil
+	}
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	job := reviewJobWithoutAgent(t, "run-40000000000000000000000000000007")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+	assert.Empty(t, database.FinalizeReviewRunSuccessCalls)
+	assert.Empty(t, storage.SaveReviewCalls, "failed immutable artifacts must not update canonical aliases")
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusFailed, run.Status)
+	assert.Equal(t, "artifact_save_failed", run.TerminalCode)
+	assert.Empty(t, run.JSONPath, "a missing immutable sidecar must never be advertised")
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "error", pr.Status)
+}
+
+func TestStaleWorkerCannotFinalizeOrBroadcastAfterArtifactSave(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	job := reviewJobWithoutAgent(t, "run-40000000000000000000000000000004")
+	storage.SaveSidecarFunc = func(_ context.Context, _ string, contentType string, _ []byte) error {
+		if contentType == "text/html; charset=utf-8" {
+			successor := "successor-holder"
+			if err := database.PatchReviewRun(job.RunID, db.ReviewRunPatch{LeaseHolder: &successor}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+	var eventMu sync.Mutex
+	events := 0
+	p.EventFunc = func(string, interface{}) {
+		eventMu.Lock()
+		events++
+		eventMu.Unlock()
+	}
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+	require.Len(t, database.FinalizeReviewRunSuccessCalls, 1)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusRunning, run.Status)
+	assert.Equal(t, "successor-holder", run.LeaseHolder)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "generating", pr.Status)
+	assert.Empty(t, pr.ReviewRunID)
+	assert.Empty(t, storage.SaveReviewCalls, "a fenced-out run must not overwrite the canonical alias")
+	eventMu.Lock()
+	assert.Equal(t, 1, events, "a fenced-out finalization must not emit a completion update")
+	eventMu.Unlock()
+}
+
+func TestSupersededFinalizationCompletesWithoutBroadcast(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	job := reviewJobWithoutAgent(t, "run-40000000000000000000000000000005")
+	successorRunID := "run-40000000000000000000000000000006"
+	storage.SaveSidecarFunc = func(_ context.Context, _ string, contentType string, _ []byte) error {
+		if contentType == "text/html; charset=utf-8" {
+			if err := database.SetPRGeneratingForReviewRun(
+				job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA,
+				job.PR.Title, job.PR.Author, nil, false, successorRunID,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+	var eventMu sync.Mutex
+	events := 0
+	p.EventFunc = func(string, interface{}) {
+		eventMu.Lock()
+		events++
+		eventMu.Unlock()
+	}
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCompleted, run.Status)
+	assert.Equal(t, "success", run.TerminalCode)
+	assert.Equal(t, "superseded", run.PublicationStatus)
+	assert.Empty(t, run.LeaseHolder)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "generating", pr.Status)
+	assert.Equal(t, successorRunID, database.ProjectionRunIDs[prDBKey(job.PR.Owner, job.PR.Repo, job.PR.Number)])
+	assert.Empty(t, pr.ReviewRunID)
+	assert.Empty(t, storage.SaveReviewCalls, "a superseded run must not overwrite the canonical alias")
+	eventMu.Lock()
+	assert.Equal(t, 1, events, "a superseded success must not emit a completion update")
+	eventMu.Unlock()
 }
