@@ -135,6 +135,7 @@ type ReviewRunSuccessFinalization struct {
 
 	HTMLPath                 string
 	JSONPath                 string
+	CanonicalPath            string
 	Critical                 int
 	Medium                   int
 	Low                      int

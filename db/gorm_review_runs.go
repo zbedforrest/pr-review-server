@@ -118,8 +118,8 @@ func (g *GormDB) FinalizeReviewRunSuccess(input ReviewRunSuccessFinalization) (R
 	if input.DurationMS < 0 || input.Critical < 0 || input.Medium < 0 || input.Low < 0 {
 		return ReviewRunFinalizationResult{}, fmt.Errorf("finalize successful review run %s: duration and finding counts cannot be negative", input.RunID)
 	}
-	if input.HTMLPath == "" || input.JSONPath == "" {
-		return ReviewRunFinalizationResult{}, fmt.Errorf("finalize successful review run %s: immutable artifact paths are required", input.RunID)
+	if input.HTMLPath == "" || input.JSONPath == "" || input.CanonicalPath == "" {
+		return ReviewRunFinalizationResult{}, fmt.Errorf("finalize successful review run %s: immutable and canonical artifact paths are required", input.RunID)
 	}
 
 	var outcome ReviewRunFinalizationResult
@@ -170,7 +170,7 @@ func (g *GormDB) FinalizeReviewRunSuccess(input ReviewRunSuccessFinalization) (R
 			Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ? AND last_commit_sha = ?",
 				run.RepoOwner, run.RepoName, run.PRNumber, run.RunID, run.CommitSHA).
 			Updates(map[string]any{
-				"status": "completed", "review_path": input.HTMLPath,
+				"status": "completed", "review_path": input.CanonicalPath,
 				"last_commit_sha": run.CommitSHA, "last_reviewed_at": input.CompletedAt,
 				"generating_since": nil, "critical_count": input.Critical,
 				"medium_count": input.Medium, "low_count": input.Low,

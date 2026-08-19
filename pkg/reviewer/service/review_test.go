@@ -208,6 +208,53 @@ func TestPostProcessingPropagatesSummaryObserverFence(t *testing.T) {
 	assert.Equal(t, 1, providerCalls, "classification runs, but the summary provider must be fenced")
 }
 
+func TestPerformReviewPropagatesPostProcessingObserverFence(t *testing.T) {
+	lineCommentCalls := 0
+	mockGithub := &MockGithubClient{
+		GetReviewPRFunc: func(string, string, string, int) (github.PR, error) {
+			return github.PR{Head: struct {
+				SHA string `json:"sha"`
+			}{SHA: "abc1234"}}, nil
+		},
+		GetPRDiffFunc: func(string, string, string, int) (string, error) {
+			return "diff", nil
+		},
+		PostLineCommentFunc: func(string, string, string, int, string, string, string, int) error {
+			lineCommentCalls++
+			return nil
+		},
+	}
+	mockSmartLLM := &MockLLMClient{
+		GetReviewStreamFunc: func(string, io.Writer) (string, int32, int32, int32, error) {
+			return `[{"file_path":"main.go","line_number":1,"comment_body":"bug"}]`, 0, 0, 0, nil
+		},
+	}
+	classificationCalls := 0
+	mockFastLLM := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			classificationCalls++
+			return `{"RC-1":"CRITICAL"}`, 0, 0, 0, nil
+		},
+	}
+	service := NewService(mockGithub, mockSmartLLM, mockFastLLM)
+	cfg := PerformReviewConfig{
+		WithComments: true,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Stage == "classification" && event.Status == "started" {
+				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
+			}
+			return nil
+		},
+	}
+
+	result, err := service.PerformReviewWithContext(context.Background(), cfg)
+
+	assert.Nil(t, result)
+	assert.ErrorIs(t, err, ErrProviderAttemptAborted)
+	assert.Zero(t, classificationCalls)
+	assert.Zero(t, lineCommentCalls, "a fenced review must not post comments")
+}
+
 func (m *MockGithubClient) PostPRComment(token, owner, repo string, prNumber int, body string) error {
 	if m.PostPRCommentFunc != nil {
 		return m.PostPRCommentFunc(token, owner, repo, prNumber, body)

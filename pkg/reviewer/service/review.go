@@ -224,6 +224,9 @@ func (s *Service) PerformReviewWithContext(ctx context.Context, cfg PerformRevie
 
 	// Phase 4: Post-process comments (classification, previous comments, summary)
 	finalComments, err := s.handlePostReviewProcessing(ctx, cfg, data, allComments)
+	if errors.Is(err, ErrProviderAttemptAborted) {
+		return nil, err
+	}
 	if err != nil {
 		color.Yellow("%s Warning during post-processing: %v", prefix, err)
 	}

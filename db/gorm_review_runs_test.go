@@ -61,6 +61,7 @@ func claimedProjectedReviewRunFixture(t *testing.T, database *GormDB, runID, hol
 		DurationMS:               2000,
 		HTMLPath:                 "reviews/runs/" + run.RunID + "/review.html",
 		JSONPath:                 "reviews/runs/" + run.RunID + "/review.json",
+		CanonicalPath:            "acme_widgets_42_0123456.html",
 		Critical:                 1,
 		Medium:                   2,
 		Low:                      3,
@@ -318,7 +319,7 @@ func TestGormDBFinalizeReviewRunSuccessPublishesAtomicallyAndIsIdempotent(t *tes
 	require.NoError(t, err)
 	require.NotNil(t, pr)
 	assert.Equal(t, "completed", pr.Status)
-	assert.Equal(t, input.HTMLPath, pr.ReviewHTMLPath)
+	assert.Equal(t, input.CanonicalPath, pr.ReviewHTMLPath)
 	assert.Equal(t, input.RunID, pr.ReviewRunID)
 	assert.Equal(t, input.ReviewRunJSON, pr.ReviewRunJSON)
 	assert.Equal(t, input.Critical, pr.CriticalCount)

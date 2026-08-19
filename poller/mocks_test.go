@@ -1429,7 +1429,7 @@ func (m *MockDatabase) FinalizeReviewRunSuccess(input db.ReviewRunSuccessFinaliz
 	if pr := m.PRs[key]; pr != nil && m.ProjectionRunIDs[key] == run.RunID && pr.LastCommitSHA == run.CommitSHA {
 		completedAt := input.CompletedAt
 		pr.Status = "completed"
-		pr.ReviewHTMLPath = input.HTMLPath
+		pr.ReviewHTMLPath = input.CanonicalPath
 		pr.LastCommitSHA = run.CommitSHA
 		pr.LastReviewedAt = &completedAt
 		pr.GeneratingSince = nil

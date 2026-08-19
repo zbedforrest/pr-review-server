@@ -680,7 +680,8 @@ func (p *Poller) finalizeCompletedReviewExecution(exec *reviewExecution, result 
 		RunID: exec.Job.RunID, Holder: exec.Holder, ExecutionAttempt: exec.ExecutionAttempt,
 		CompletedAt: result.ReviewRun.CompletedAt, DurationMS: result.ReviewRun.DurationMS,
 		HTMLPath: result.ReviewRun.HTMLPath, JSONPath: result.ReviewRun.JSONPath,
-		Critical: result.CriticalCount, Medium: result.MediumCount, Low: result.LowCount,
+		CanonicalPath: gcs.ReviewFileName(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.PR.CommitSHA),
+		Critical:      result.CriticalCount, Medium: result.MediumCount, Low: result.LowCount,
 		Verdict: verdict, ModelFallback: result.ModelFallback, ServingModelVerification: verification,
 		ActualModelsJSON: string(modelsJSON), ReviewRunJSON: reviewRunJSON,
 	}

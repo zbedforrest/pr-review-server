@@ -1601,7 +1601,7 @@ func TestSuccessfulFinalizationReusesFrozenArtifactTiming(t *testing.T) {
 	require.NotNil(t, pr)
 	require.NotNil(t, pr.LastReviewedAt)
 	assert.Equal(t, first.CompletedAt, *pr.LastReviewedAt)
-	assert.Equal(t, first.HTMLPath, pr.ReviewHTMLPath, "the immutable run artifact is authoritative")
+	assert.Equal(t, first.CanonicalPath, pr.ReviewHTMLPath, "the PR projection remains compatible with canonical readers")
 	assert.Equal(t, first.ReviewRunJSON, pr.ReviewRunJSON)
 	var projected payload.ReviewRunInfo
 	require.NoError(t, json.Unmarshal([]byte(pr.ReviewRunJSON), &projected))
@@ -1631,6 +1631,50 @@ func TestSuccessfulFinalizationReusesFrozenArtifactTiming(t *testing.T) {
 	eventMu.Lock()
 	assert.Equal(t, 2, events, "generating and published are the only updates")
 	eventMu.Unlock()
+}
+
+func TestPublishedReviewRetriesCanonicalAliases(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	aliasAttempts := 0
+	storage.SaveReviewFunc = func(_ context.Context, owner, repo string, prNumber int, commitSHA string, _ []byte) (string, error) {
+		aliasAttempts++
+		if aliasAttempts < reviewLedgerRetryAttempts {
+			return "", fmt.Errorf("transient canonical write %d", aliasAttempts)
+		}
+		return gcs.ReviewFileName(owner, repo, prNumber, commitSHA), nil
+	}
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	job := reviewJobWithoutAgent(t, "run-4000000000000000000000000000000b")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+
+	require.Len(t, storage.SaveReviewCalls, reviewLedgerRetryAttempts)
+	assert.Equal(t, reviewLedgerRetryAttempts, aliasAttempts)
+	require.Len(t, database.FinalizeReviewRunSuccessCalls, 1)
+	finalization := database.FinalizeReviewRunSuccessCalls[0]
+	assert.Equal(t, gcs.ReviewFileName(job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA), finalization.CanonicalPath)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, finalization.CanonicalPath, pr.ReviewHTMLPath)
+
+	canonicalJSON := gcs.ReviewJSONFileName(finalization.CanonicalPath)
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	foundCanonicalSidecar := false
+	for _, call := range storage.SaveSidecarCalls {
+		if call.Filename == canonicalJSON && call.ContentType == "application/json" {
+			foundCanonicalSidecar = true
+			break
+		}
+	}
+	assert.True(t, foundCanonicalSidecar, "the promised findings URL must be durable after retry")
 }
 
 func TestImmutableJSONFailurePreventsSuccessfulFinalization(t *testing.T) {

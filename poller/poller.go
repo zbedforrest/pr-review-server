@@ -1723,6 +1723,33 @@ func (p *Poller) saveCanonicalReview(ctx context.Context, owner, repo string, pr
 	return filename, nil
 }
 
+func (p *Poller) saveCanonicalReviewAliasesWithRetry(ctx context.Context, owner, repo string, prNumber int, commitSHA string, html, sidecar []byte) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= reviewLedgerRetryAttempts; attempt++ {
+		canonicalPath, err := p.saveCanonicalReview(ctx, owner, repo, prNumber, commitSHA, html)
+		if err == nil {
+			sidecarPath := gcs.ReviewJSONFileName(canonicalPath)
+			if sidecarErr := p.saveReviewSidecar(ctx, sidecarPath, "application/json", sidecar); sidecarErr == nil {
+				log.Printf("[REVIEWER] Saved canonical findings alias: %s", sidecarPath)
+				return canonicalPath, nil
+			} else {
+				err = fmt.Errorf("save canonical findings alias %s: %w", sidecarPath, sidecarErr)
+			}
+		} else {
+			err = fmt.Errorf("save canonical HTML alias: %w", err)
+		}
+		lastErr = err
+		if attempt < reviewLedgerRetryAttempts {
+			select {
+			case <-ctx.Done():
+				return "", fmt.Errorf("save canonical review aliases: %w", ctx.Err())
+			case <-time.After(reviewLedgerRetryBaseDelay << (attempt - 1)):
+			}
+		}
+	}
+	return "", fmt.Errorf("save canonical review aliases after %d attempts: %w", reviewLedgerRetryAttempts, lastErr)
+}
+
 // saveImmutableReviewArtifact persists an object that is uniquely keyed by a
 // run ID. Unlike canonical sidecars it never performs archive-on-overwrite.
 func (p *Poller) saveImmutableReviewArtifact(ctx context.Context, filename, contentType string, content []byte) error {
@@ -3362,20 +3389,16 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				if currentErr != nil {
 					log.Printf("[REVIEWER] WARN: inspect superseding projection for run %s: %v", job.RunID, currentErr)
 				} else if currentPR != nil && !isSameCommit(currentPR.LastCommitSHA, pr.CommitSHA) {
-					canonicalPath, aliasErr := p.saveCanonicalReview(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent)
+					_, aliasErr := p.saveCanonicalReviewAliasesWithRetry(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent, sidecarBody)
 					if aliasErr != nil {
 						log.Printf("[REVIEWER] WARN: could not preserve superseded commit alias for run %s: %v", job.RunID, aliasErr)
-					} else {
-						p.writeCanonicalReviewSidecarBestEffort(prCtx, canonicalPath, sidecarBody)
 					}
 				}
 				return
 			}
-			canonicalPath, aliasErr := p.saveCanonicalReview(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent)
+			_, aliasErr := p.saveCanonicalReviewAliasesWithRetry(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent, sidecarBody)
 			if aliasErr != nil {
-				log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical HTML alias: %v", job.RunID, aliasErr)
-			} else {
-				p.writeCanonicalReviewSidecarBestEffort(prCtx, canonicalPath, sidecarBody)
+				log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical aliases: %v", job.RunID, aliasErr)
 			}
 			verdict := service.VerdictFromComments(reviewResult.Comments)
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
