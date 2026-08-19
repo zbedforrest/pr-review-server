@@ -555,7 +555,7 @@ func TestPerformReview_FallbackComment_WithComments_False(t *testing.T) {
 	assert.False(t, postCommentCalled, "PostPRComment should not have been called")
 }
 
-func TestPerformReview_FallbackComment_WithComments_True(t *testing.T) {
+func TestPerformReview_DoesNotPostNoIssuesWhenAllRequestsFail(t *testing.T) {
 	// Arrange
 	mockGithub := &MockGithubClient{
 		GetReviewPRFunc: func(token, owner, repo string, prNumber int) (github.PR, error) {
@@ -565,9 +565,9 @@ func TestPerformReview_FallbackComment_WithComments_True(t *testing.T) {
 			return "diff", nil
 		},
 	}
-	postCommentCalled := false
+	var postedBodies []string
 	mockGithub.PostPRCommentFunc = func(token, owner, repo string, prNumber int, body string) error {
-		postCommentCalled = true
+		postedBodies = append(postedBodies, body)
 		return nil
 	}
 
@@ -585,7 +585,35 @@ func TestPerformReview_FallbackComment_WithComments_True(t *testing.T) {
 
 	// Assert
 	assert.Error(t, err)
-	assert.True(t, postCommentCalled, "PostPRComment should have been called")
+	assert.NotContains(t, postedBodies, "AI review completed without finding any specific issues to comment on.",
+		"a failed review must not claim that no issues were found")
+}
+
+func TestPerformReview_FallbackCommentAfterSuccessfulEmptyReview(t *testing.T) {
+	mockGithub := &MockGithubClient{
+		GetReviewPRFunc: func(token, owner, repo string, prNumber int) (github.PR, error) {
+			return github.PR{}, nil
+		},
+		GetPRDiffFunc: func(token, owner, repo string, prNumber int) (string, error) {
+			return "diff", nil
+		},
+	}
+	postCommentCalled := false
+	mockGithub.PostPRCommentFunc = func(token, owner, repo string, prNumber int, body string) error {
+		postCommentCalled = true
+		return nil
+	}
+	mockLLM := &MockLLMClient{
+		GetReviewStreamFunc: func(prompt string, w io.Writer) (string, int32, int32, int32, error) {
+			return `[]`, 0, 0, 0, nil
+		},
+	}
+
+	service := NewService(mockGithub, mockLLM, mockLLM)
+	_, err := service.PerformReview(PerformReviewConfig{WithComments: true})
+
+	assert.NoError(t, err)
+	assert.True(t, postCommentCalled, "a successful empty review should report that no issues were found")
 }
 
 func TestPerformReview_LineComments_WithComments_False(t *testing.T) {

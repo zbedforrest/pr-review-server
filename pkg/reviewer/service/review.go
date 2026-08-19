@@ -216,7 +216,7 @@ func (s *Service) PerformReviewWithContext(ctx context.Context, cfg PerformRevie
 		allComments = execResult.Comments
 
 		// Handle empty results
-		if len(allComments) == 0 && cfg.WithComments {
+		if len(allComments) == 0 && cfg.WithComments && execResult.SuccessCount > 0 {
 			color.Yellow("%s No comments were generated from the AI review, posting a general comment.", prefix)
 			_ = s.githubClient.PostPRComment(cfg.Token, cfg.Owner, cfg.RepoName, cfg.PRNumber, "AI review completed without finding any specific issues to comment on.")
 		}
