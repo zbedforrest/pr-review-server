@@ -3175,8 +3175,11 @@ func shouldReview(pr github.PullRequest, dbPR *db.PR, isTracked bool, autoReview
 	}
 
 	// Condition 2: Auto Candidate
-	// The PR is 'pending' AND auto-review is globally enabled.
-	isAutoCandidate := dbPR.Status == "pending" && autoReviewEnabled
+	// The PR is 'pending', auto-review is globally enabled, and no local job
+	// already owns it. Queued jobs deliberately remain pending until capacity
+	// is granted, so ignoring tracking here would mint one rejected ledger row
+	// for every poll cycle while they wait.
+	isAutoCandidate := dbPR.Status == "pending" && autoReviewEnabled && !isTracked
 
 	if isAutoCandidate {
 		// Additional check: Don't auto-generate if already completed for this commit

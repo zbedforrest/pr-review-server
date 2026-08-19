@@ -370,6 +370,13 @@ func TestStartedReviewKeysExcludeQueuedJobs(t *testing.T) {
 	p.untrackReviewRun("acme", "running", 8, "run-24100000000000000000000000000002")
 }
 
+func TestShouldReviewSkipsPendingQueuedJob(t *testing.T) {
+	pr := github.PullRequest{Number: 7, CommitSHA: "0123456789abcdef0123456789abcdef01234567"}
+	dbPR := &db.PR{Status: "pending", LastCommitSHA: pr.CommitSHA}
+	assert.False(t, shouldReview(pr, dbPR, true, true))
+	assert.True(t, shouldReview(pr, dbPR, false, true))
+}
+
 func TestProviderInitFailureRejectsRunWithoutConsumingPRRetry(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPoller(NewMockGitHubClient(), database)

@@ -105,7 +105,7 @@ type PRModel struct {
 	// ProjectionRunID fences mutable PR status/result writes across overlapping
 	// service instances. It records the most recent run allowed to project and
 	// intentionally remains set after that run becomes terminal.
-	ProjectionRunID string `gorm:"column:projection_run_id;size:36;index"`
+	ProjectionRunID string `gorm:"column:projection_run_id;size:36"`
 	// Review importance counts (populated after review generation)
 	CriticalCount int `gorm:"default:0"`
 	MediumCount   int `gorm:"default:0"`
@@ -122,8 +122,9 @@ type PRModel struct {
 	ErrorMessage string `gorm:"column:error_message;type:text"`
 	// How many times the auto-retry path has reset this PR back to pending
 	// after an error. Capped by ResetErrorPRs so deterministic failures
-	// (auth misconfig, model outage) don't burn quota indefinitely. Reset
-	// to 0 by SetPRGenerating (manual trigger or fresh poll-cycle attempt).
+	// (auth misconfig, model outage) don't burn quota indefinitely. Legacy
+	// manual admission and successful completion reset it; run-aware automatic
+	// admission intentionally preserves it so retries cannot re-arm themselves.
 	ErrorRetryCount int `gorm:"column:error_retry_count;default:0"`
 }
 
