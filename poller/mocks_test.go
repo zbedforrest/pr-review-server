@@ -244,6 +244,10 @@ type MockDatabase struct {
 	BeforeClaimOrRenewQueuedReviewRunLease func()
 	PatchReviewRunAsHolderErrors           []error
 	RenewReviewRunLeaseErrors              []error
+	FinalizeReviewRunSuccessErrors         []error
+	FinalizeReviewRunSuccessCalls          []db.ReviewRunSuccessFinalization
+	UpsertStageAttemptAsHolderErrors       []error
+	UpsertStageAttemptAsHolderCalls        int
 
 	// PRs stored in the mock database (keyed by "owner/repo/number")
 	PRs              map[string]*db.PR
@@ -1388,9 +1392,118 @@ func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, que
 	return len(abandonedRuns), nil
 }
 
+func (m *MockDatabase) FinalizeReviewRunSuccess(input db.ReviewRunSuccessFinalization) (db.ReviewRunFinalizationResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.FinalizeReviewRunSuccessCalls = append(m.FinalizeReviewRunSuccessCalls, input)
+	if len(m.FinalizeReviewRunSuccessErrors) > 0 {
+		err := m.FinalizeReviewRunSuccessErrors[0]
+		m.FinalizeReviewRunSuccessErrors = m.FinalizeReviewRunSuccessErrors[1:]
+		if err != nil {
+			return db.ReviewRunFinalizationResult{}, err
+		}
+	}
+	run := m.ReviewRuns[input.RunID]
+	if run == nil {
+		return db.ReviewRunFinalizationResult{}, nil
+	}
+	if run.Status == db.ReviewRunStatusCompleted && run.TerminalCode == "success" &&
+		run.ExecutionAttempt == input.ExecutionAttempt &&
+		(run.PublicationStatus == "published" || run.PublicationStatus == "superseded") {
+		return db.ReviewRunFinalizationResult{
+			Finalized: true, Published: run.PublicationStatus == "published",
+			PublicationStatus: run.PublicationStatus,
+		}, nil
+	}
+	leaseCheckedAt := time.Now().UTC()
+	if input.LeaseCheckedAt.After(leaseCheckedAt) {
+		leaseCheckedAt = input.LeaseCheckedAt
+	}
+	if run.Status != db.ReviewRunStatusRunning || run.ExecutionAttempt != input.ExecutionAttempt ||
+		run.LeaseHolder != input.Holder || run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(leaseCheckedAt) {
+		return db.ReviewRunFinalizationResult{}, nil
+	}
+
+	publicationStatus := "superseded"
+	key := prDBKey(run.RepoOwner, run.RepoName, run.PRNumber)
+	if pr := m.PRs[key]; pr != nil && m.ProjectionRunIDs[key] == run.RunID && pr.LastCommitSHA == run.CommitSHA {
+		completedAt := input.CompletedAt
+		pr.Status = "completed"
+		pr.ReviewHTMLPath = input.CanonicalPath
+		pr.LastCommitSHA = run.CommitSHA
+		pr.LastReviewedAt = &completedAt
+		pr.GeneratingSince = nil
+		pr.CriticalCount = input.Critical
+		pr.MediumCount = input.Medium
+		pr.LowCount = input.Low
+		pr.ReviewVerdict = input.Verdict
+		pr.ModelFallback = input.ModelFallback
+		pr.ReviewRunID = input.RunID
+		pr.ReviewRunJSON = input.ReviewRunJSON
+		pr.ErrorMessage = ""
+		publicationStatus = "published"
+	}
+
+	completedAt := input.CompletedAt
+	run.Status = db.ReviewRunStatusCompleted
+	run.CompletedAt = &completedAt
+	run.DurationMS = input.DurationMS
+	run.HTMLPath = input.HTMLPath
+	run.JSONPath = input.JSONPath
+	run.CriticalCount = input.Critical
+	run.MediumCount = input.Medium
+	run.LowCount = input.Low
+	run.Verdict = input.Verdict
+	run.ModelFallback = input.ModelFallback
+	run.ServingModelVerification = input.ServingModelVerification
+	run.ActualModelsJSON = input.ActualModelsJSON
+	run.PublicationStatus = publicationStatus
+	run.TerminalCode = "success"
+	run.FailureStage = ""
+	run.ErrorSummary = ""
+	run.LeaseHolder = ""
+	run.LeaseExpiresAt = nil
+	return db.ReviewRunFinalizationResult{
+		Finalized: true, Published: publicationStatus == "published", PublicationStatus: publicationStatus,
+	}, nil
+}
+
 func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.upsertReviewStageAttemptLocked(attempt)
+}
+
+func (m *MockDatabase) UpsertReviewStageAttemptAsHolder(attempt *db.ReviewStageAttempt, holder string, now time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.UpsertStageAttemptAsHolderCalls++
+	if len(m.UpsertStageAttemptAsHolderErrors) > 0 {
+		err := m.UpsertStageAttemptAsHolderErrors[0]
+		m.UpsertStageAttemptAsHolderErrors = m.UpsertStageAttemptAsHolderErrors[1:]
+		if err != nil {
+			return false, err
+		}
+	}
+	if attempt == nil {
+		return false, fmt.Errorf("upsert review stage attempt: attempt is nil")
+	}
+	run := m.ReviewRuns[attempt.RunID]
+	leaseCheckedAt := time.Now().UTC()
+	if now.After(leaseCheckedAt) {
+		leaseCheckedAt = now
+	}
+	if run == nil || run.Status != db.ReviewRunStatusRunning || run.ExecutionAttempt != attempt.ExecutionAttempt ||
+		run.LeaseHolder != holder || run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(leaseCheckedAt) {
+		return false, nil
+	}
+	if err := m.upsertReviewStageAttemptLocked(attempt); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (m *MockDatabase) upsertReviewStageAttemptLocked(attempt *db.ReviewStageAttempt) error {
 	if attempt == nil || attempt.RunID == "" || attempt.ExecutionAttempt <= 0 || attempt.Stage == "" || attempt.InvocationNumber <= 0 || attempt.AttemptNumber <= 0 {
 		return fmt.Errorf("upsert review stage attempt: required key fields are missing")
 	}
@@ -1442,6 +1555,8 @@ type MockReviewStorage struct {
 	ReviewExistsFunc  func(context.Context, string, string, int, string) (bool, error)
 	SaveReviewError   error
 	SaveReviewFunc    func(context.Context, string, string, int, string, []byte) (string, error)
+	SaveSidecarError  error
+	SaveSidecarFunc   func(context.Context, string, string, []byte) error
 
 	// Track calls
 	ReviewExistsCalls []struct {
@@ -1456,6 +1571,11 @@ type MockReviewStorage struct {
 		PRNumber  int
 		CommitSHA string
 		Content   []byte
+	}
+	SaveSidecarCalls []struct {
+		Filename    string
+		ContentType string
+		Content     []byte
 	}
 
 	// Mutex for thread safety
@@ -1519,11 +1639,20 @@ func (m *MockReviewStorage) SaveReview(ctx context.Context, owner, repo string, 
 	return fmt.Sprintf("review-%s-%s-%d-%s.html", owner, repo, prNumber, commitSHA[:7]), nil
 }
 
-// SaveReviewSidecar is a no-op for the mock — tests that need to inspect the
-// sidecar can extend this struct, but the default behavior is to swallow it
-// since the poller treats sidecar writes as best-effort.
 func (m *MockReviewStorage) SaveReviewSidecar(ctx context.Context, filename, contentType string, content []byte) error {
-	return nil
+	m.mu.Lock()
+	m.SaveSidecarCalls = append(m.SaveSidecarCalls, struct {
+		Filename    string
+		ContentType string
+		Content     []byte
+	}{Filename: filename, ContentType: contentType, Content: append([]byte(nil), content...)})
+	saveErr := m.SaveSidecarError
+	saveFunc := m.SaveSidecarFunc
+	m.mu.Unlock()
+	if saveFunc != nil {
+		return saveFunc(ctx, filename, contentType, content)
+	}
+	return saveErr
 }
 
 // MockReviewGenerator implements ReviewGenerator for testing

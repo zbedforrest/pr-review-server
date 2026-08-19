@@ -1688,6 +1688,7 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filename = cleaned
+	requestedFilename := filename
 
 	// Serve the JSON sidecar with the correct content type; everything else is
 	// the rendered HTML review.
@@ -1709,7 +1710,7 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 			// Reviews used to be immutable per commit, but the manual trigger now
 			// force-overwrites the same filename. Make the browser revalidate so
 			// the new content shows up after a regen.
-			if strings.HasPrefix(filename, "runs/") {
+			if strings.HasPrefix(requestedFilename, "runs/") {
 				w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 			} else {
 				w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
@@ -1728,23 +1729,65 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 	content, err = os.ReadFile(localPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			http.Error(w, "Review not found", http.StatusNotFound)
+			fallback, fallbackErr := s.immutableFallbackForCanonicalReview(filename)
+			if fallbackErr != nil {
+				log.Printf("[REVIEWS] Resolve immutable fallback for %s: %v", filename, fallbackErr)
+				http.Error(w, "Failed to fetch review", http.StatusInternalServerError)
+				return
+			}
+			if fallback == "" {
+				http.Error(w, "Review not found", http.StatusNotFound)
+				return
+			}
+			content, err = s.fetchReviewBytes(r.Context(), fallback)
+			if err != nil {
+				if errors.Is(err, errReviewNotFound) {
+					http.Error(w, "Review not found", http.StatusNotFound)
+				} else {
+					log.Printf("[REVIEWS] Error fetching immutable fallback %s: %v", fallback, err)
+					http.Error(w, "Failed to fetch review", http.StatusInternalServerError)
+				}
+				return
+			}
 		} else {
 			log.Printf("[LOCAL] Error reading review %s: %v", localPath, err)
 			http.Error(w, "Failed to fetch review", http.StatusInternalServerError)
+			return
 		}
-		return
 	}
 
 	// Set headers. Match the GCS branch above: reviews used to be immutable
 	// per commit, but the manual trigger now force-overwrites the same
 	// filename, so browsers must revalidate to pick up the new content.
 	w.Header().Set("Content-Type", contentType)
-	if strings.HasPrefix(filename, "runs/") {
+	if strings.HasPrefix(requestedFilename, "runs/") {
 		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	} else {
 		w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
 	}
 
 	_, _ = w.Write(content) // nolint:errcheck
+}
+
+func (s *Server) immutableFallbackForCanonicalReview(filename string) (string, error) {
+	if strings.ContainsRune(filepath.ToSlash(filename), '/') {
+		return "", nil
+	}
+	extension := filepath.Ext(filename)
+	if extension != ".html" && extension != ".json" {
+		return "", nil
+	}
+	canonicalHTML := strings.TrimSuffix(filename, extension) + ".html"
+	lookup, ok := s.db.(db.CompletedReviewPathLookup)
+	if !ok {
+		return "", nil
+	}
+	pr, err := lookup.GetCompletedPRByReviewPath(canonicalHTML)
+	if err != nil {
+		return "", err
+	}
+	if pr == nil {
+		return "", nil
+	}
+	return immutableReviewArtifactPath(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber, extension), nil
 }

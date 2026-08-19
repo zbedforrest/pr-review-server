@@ -119,6 +119,58 @@ type ReviewRunPatch struct {
 	ExecutionAttempt         *int
 }
 
+// ReviewRunSuccessFinalization is the complete, immutable input for publishing
+// one successful review. CompletedAt and DurationMS are supplied by the caller
+// so the database row, PR projection, and persisted sidecar can share one exact
+// timing boundary. LeaseCheckedAt is a caller-supplied lower bound refreshed on
+// each retry; the database also samples time after acquiring the run lock so a
+// transaction that waited past lease expiry can never publish.
+type ReviewRunSuccessFinalization struct {
+	RunID            string
+	Holder           string
+	ExecutionAttempt int
+	LeaseCheckedAt   time.Time
+	CompletedAt      time.Time
+	DurationMS       int64
+
+	HTMLPath                 string
+	JSONPath                 string
+	CanonicalPath            string
+	Critical                 int
+	Medium                   int
+	Low                      int
+	Verdict                  string
+	ModelFallback            bool
+	ServingModelVerification string
+	ActualModelsJSON         string
+	ReviewRunJSON            string
+}
+
+// ReviewRunFinalizationResult distinguishes a holder that lost ownership from
+// a successful immutable completion whose mutable PR projection was superseded.
+// PublicationStatus is "published" or "superseded" whenever Finalized is true.
+type ReviewRunFinalizationResult struct {
+	Finalized         bool
+	Published         bool
+	PublicationStatus string
+}
+
+// ReviewRunLedger is the worker-only extension for lease-fenced result and
+// provider-attempt writes. Keeping it separate from Database lets read-only
+// consumers and lightweight test doubles avoid implementing worker mutation
+// capabilities they never use.
+type ReviewRunLedger interface {
+	FinalizeReviewRunSuccess(input ReviewRunSuccessFinalization) (ReviewRunFinalizationResult, error)
+	UpsertReviewStageAttemptAsHolder(attempt *ReviewStageAttempt, holder string, now time.Time) (bool, error)
+}
+
+// CompletedReviewPathLookup is the read-only capability used to recover a
+// completed review from its immutable artifact when a canonical alias is
+// missing. Implementations that do not expose it simply skip that fallback.
+type CompletedReviewPathLookup interface {
+	GetCompletedPRByReviewPath(reviewPath string) (*PR, error)
+}
+
 // ReviewStageAttempt records one actual provider invocation. Parallel
 // first-pass draws use InvocationNumber; provider retries use AttemptNumber.
 type ReviewStageAttempt struct {

@@ -279,6 +279,144 @@ func TestReviewAPI_pin_by_run_id(t *testing.T) {
 		"historical counts must come from the immutable sidecar, not the latest PR row")
 }
 
+func TestReviewAPI_unpinned_immutable_projection(t *testing.T) {
+	server, database, user, dir := newReviewAPITestServer(t)
+
+	const (
+		owner = "my_org"
+		repo  = "review_server"
+		sha   = "abc1234deadbeef"
+		runID = "run-1123456789abcdef0123456789abcdef"
+	)
+	htmlPath := gcs.ReviewRunFileName(owner, repo, 29, sha, runID)
+	jsonPath := gcs.ReviewRunJSONFileName(owner, repo, 29, sha, runID)
+	reviewedAt := time.Now().UTC().Truncate(time.Microsecond)
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: owner, RepoName: repo, PRNumber: 29,
+		LastCommitSHA: sha, Status: "pending",
+	}))
+	require.NoError(t, database.MarkPRCompleted(owner, repo, 29, sha,
+		htmlPath, 1, 2, 3, "approve", false))
+	require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, htmlPath)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, htmlPath), []byte("<html>immutable</html>"), 0o644))
+	body, err := json.Marshal(payload.Payload{
+		SchemaVersion: "1", Owner: owner, Repo: repo, PRNumber: 29, CommitSHA: sha,
+		Counts:    payload.Counts{Critical: 1, Medium: 2, Low: 3},
+		ReviewRun: &payload.ReviewRunInfo{RunID: runID, HTMLPath: htmlPath, JSONPath: jsonPath, CompletedAt: reviewedAt},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, jsonPath), body, 0o644))
+
+	target := "/api/review/" + owner + "/" + repo + "/29"
+	w := doReviewAPIGet(t, server, user, target)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp reviewAPIResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, htmlPath, resp.ReviewPath)
+	assert.Equal(t, sha, resp.CommitSHA, "immutable sidecar supplies the reviewed commit")
+	assert.False(t, resp.IsStale)
+	require.NotNil(t, resp.ReviewRun)
+	assert.Equal(t, runID, resp.ReviewRun.RunID)
+
+	w = doReviewAPIGet(t, server, user, target+"?format=md")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, `attachment; filename="`+runID+`.md"`, w.Header().Get("Content-Disposition"))
+}
+
+func TestReviewAPI_unpinned_missing_canonical_falls_back_to_immutable_run(t *testing.T) {
+	server, database, user, dir := newReviewAPITestServer(t)
+
+	const (
+		owner = "owner"
+		repo  = "repo"
+		sha   = "def5678deadbeef"
+		runID = "run-2123456789abcdef0123456789abcdef"
+	)
+	htmlPath := gcs.ReviewRunFileName(owner, repo, 31, sha, runID)
+	jsonPath := gcs.ReviewRunJSONFileName(owner, repo, 31, sha, runID)
+	canonicalPath := gcs.ReviewFileName(owner, repo, 31, sha)
+	runInfo := &payload.ReviewRunInfo{
+		RunID: runID, HTMLPath: htmlPath, JSONPath: jsonPath,
+		CompletedAt: time.Now().UTC().Truncate(time.Microsecond),
+	}
+	runJSON, err := json.Marshal(runInfo)
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: owner, RepoName: repo, PRNumber: 31,
+		LastCommitSHA: sha, Status: "pending",
+	}))
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		owner, repo, 31, sha, "Review me", "alice", nil, false, runID,
+	))
+	projected, err := database.MarkPRCompletedForReviewRun(
+		owner, repo, 31, runID, runID, sha, canonicalPath,
+		1, 2, 3, "approve", false, string(runJSON),
+	)
+	require.NoError(t, err)
+	require.True(t, projected)
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, htmlPath)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, htmlPath), []byte("<html>immutable fallback</html>"), 0o644))
+	sidecar, err := json.Marshal(payload.Payload{
+		SchemaVersion: "1", Owner: owner, Repo: repo, PRNumber: 31, CommitSHA: sha,
+		Counts: payload.Counts{Critical: 1, Medium: 2, Low: 3}, ReviewRun: runInfo,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, jsonPath), sidecar, 0o644))
+
+	target := "/api/review/" + owner + "/" + repo + "/31"
+	w := doReviewAPIGet(t, server, user, target)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp reviewAPIResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, htmlPath, resp.ReviewPath)
+	assert.Equal(t, sha, resp.CommitSHA)
+	assert.False(t, resp.IsStale)
+	assert.True(t, resp.FindingsAvailable)
+
+	w = doReviewAPIGet(t, server, user, target+"?sha=def5678")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, htmlPath, resp.ReviewPath)
+	assert.Equal(t, "def5678", resp.CommitSHA)
+
+	w = doReviewAPIGet(t, server, user, target+"?sha=aaaaaaa")
+	assert.Equal(t, http.StatusNotFound, w.Code, "a different pinned commit must not use the latest run")
+
+	w = doReviewAPIGet(t, server, user, target+"?format=html")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, "<html>immutable fallback</html>", w.Body.String())
+
+	for _, direct := range []struct {
+		path        string
+		contentType string
+		body        string
+		cache       string
+	}{
+		{path: canonicalPath, contentType: "text/html; charset=utf-8", body: "<html>immutable fallback</html>", cache: "no-cache"},
+		{path: gcs.ReviewJSONFileName(canonicalPath), contentType: "application/json", body: string(sidecar), cache: "no-cache"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/reviews/"+direct.path, nil)
+		w = httptest.NewRecorder()
+		server.handleReviewFromGCS(w, req)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Equal(t, direct.contentType, w.Header().Get("Content-Type"))
+		assert.Equal(t, direct.body, w.Body.String())
+		assert.Contains(t, w.Header().Get("Cache-Control"), direct.cache)
+	}
+
+	// A partial alias write can leave canonical HTML present while canonical
+	// JSON is missing. The API must still use the durable immutable sidecar.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, canonicalPath), []byte("<html>canonical</html>"), 0o644))
+	w = doReviewAPIGet(t, server, user, target)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, canonicalPath, resp.ReviewPath)
+	assert.True(t, resp.FindingsAvailable)
+	require.NotNil(t, resp.ReviewRun)
+	assert.Equal(t, jsonPath, resp.ReviewRun.JSONPath)
+}
+
 func TestReviewAPI_run_id_requires_sha_and_valid_id(t *testing.T) {
 	server, database, user, _ := newReviewAPITestServer(t)
 	require.NoError(t, database.UpsertPR(&db.PR{

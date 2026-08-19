@@ -11,6 +11,27 @@ import (
 
 const reviewRunAbandonBatchSize = 500
 
+var _ CompletedReviewPathLookup = (*GormDB)(nil)
+var _ ReviewRunLedger = (*GormDB)(nil)
+
+// GetCompletedPRByReviewPath resolves the rare missing-alias fallback without
+// loading every PR into the server process. review_path is indexed because the
+// direct artifact route calls this only after both storage lookups miss.
+func (g *GormDB) GetCompletedPRByReviewPath(reviewPath string) (*PR, error) {
+	if reviewPath == "" {
+		return nil, nil
+	}
+	var model PRModel
+	err := g.db.Where("review_path = ? AND status = ?", reviewPath, "completed").First(&model).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get completed PR by review path %s: %w", reviewPath, err)
+	}
+	return prModelToPR(&model), nil
+}
+
 // SetPRGeneratingForReviewRun atomically claims the mutable PR projection for
 // runID while moving it into the generating state. A later run may replace the
 // claim; all subsequent projection writes below are conditional on ownership.
@@ -103,6 +124,117 @@ func (g *GormDB) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, p
 		return false, fmt.Errorf("mark PR completed for run %s: %w", projectionRunID, result.Error)
 	}
 	return result.RowsAffected == 1, nil
+}
+
+// FinalizeReviewRunSuccess atomically terminalizes a holder-owned run and, when
+// that run still owns the matching PR+commit projection, publishes its result
+// there. Losing the mutable projection is a successful immutable completion:
+// the run is finalized as superseded while the newer PR projection is left
+// untouched. The completed-success case is idempotent for retry after an
+// ambiguous transaction response from the same execution attempt.
+func (g *GormDB) FinalizeReviewRunSuccess(input ReviewRunSuccessFinalization) (ReviewRunFinalizationResult, error) {
+	if input.RunID == "" || input.Holder == "" || input.ExecutionAttempt <= 0 || input.LeaseCheckedAt.IsZero() || input.CompletedAt.IsZero() {
+		return ReviewRunFinalizationResult{}, fmt.Errorf("finalize successful review run: run ID, holder, execution attempt, lease-check time, and completion time are required")
+	}
+	if input.DurationMS < 0 || input.Critical < 0 || input.Medium < 0 || input.Low < 0 {
+		return ReviewRunFinalizationResult{}, fmt.Errorf("finalize successful review run %s: duration and finding counts cannot be negative", input.RunID)
+	}
+	if input.HTMLPath == "" || input.JSONPath == "" || input.CanonicalPath == "" {
+		return ReviewRunFinalizationResult{}, fmt.Errorf("finalize successful review run %s: immutable and canonical artifact paths are required", input.RunID)
+	}
+
+	var outcome ReviewRunFinalizationResult
+	err := g.db.Transaction(func(tx *gorm.DB) error {
+		// This no-op write is a portable row lock: PostgreSQL locks the selected
+		// row, while SQLite acquires its transaction write lock. Terminalization
+		// and attempt insertion use the same pattern, so exactly one side of the
+		// lease boundary can commit first.
+		locked := tx.Exec(`UPDATE review_runs SET updated_at = updated_at
+			WHERE run_id = ? AND status = ? AND execution_attempt = ?
+			  AND lease_holder = ?`,
+			input.RunID, ReviewRunStatusRunning, input.ExecutionAttempt, input.Holder)
+		if locked.Error != nil {
+			return fmt.Errorf("lock successful review run: %w", locked.Error)
+		}
+
+		var run ReviewRunModel
+		if locked.RowsAffected != 1 {
+			if err := tx.Where("run_id = ?", input.RunID).First(&run).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil
+				}
+				return fmt.Errorf("inspect unowned successful review run: %w", err)
+			}
+			if run.Status == ReviewRunStatusCompleted && run.TerminalCode == "success" &&
+				run.ExecutionAttempt == input.ExecutionAttempt &&
+				(run.PublicationStatus == "published" || run.PublicationStatus == "superseded") {
+				outcome = ReviewRunFinalizationResult{
+					Finalized: true, Published: run.PublicationStatus == "published",
+					PublicationStatus: run.PublicationStatus,
+				}
+			}
+			return nil
+		}
+
+		if err := tx.Where("run_id = ?", input.RunID).First(&run).Error; err != nil {
+			return fmt.Errorf("load locked successful review run: %w", err)
+		}
+		leaseCheckedAt := time.Now().UTC()
+		if input.LeaseCheckedAt.After(leaseCheckedAt) {
+			leaseCheckedAt = input.LeaseCheckedAt
+		}
+		if run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(leaseCheckedAt) {
+			return nil
+		}
+
+		projected := tx.Model(&PRModel{}).
+			Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ? AND last_commit_sha = ?",
+				run.RepoOwner, run.RepoName, run.PRNumber, run.RunID, run.CommitSHA).
+			Updates(map[string]any{
+				"status": "completed", "review_path": input.CanonicalPath,
+				"last_commit_sha": run.CommitSHA, "last_reviewed_at": input.CompletedAt,
+				"generating_since": nil, "critical_count": input.Critical,
+				"medium_count": input.Medium, "low_count": input.Low,
+				"review_verdict": input.Verdict, "model_fallback": input.ModelFallback,
+				"review_run_id": input.RunID, "review_run_json": input.ReviewRunJSON,
+				"error_message": "", "error_retry_count": 0,
+			})
+		if projected.Error != nil {
+			return fmt.Errorf("publish successful review run to PR: %w", projected.Error)
+		}
+
+		publicationStatus := "superseded"
+		if projected.RowsAffected == 1 {
+			publicationStatus = "published"
+		}
+		finished := tx.Model(&ReviewRunModel{}).
+			Where("run_id = ? AND status = ? AND execution_attempt = ? AND lease_holder = ?",
+				input.RunID, ReviewRunStatusRunning, input.ExecutionAttempt, input.Holder).
+			Updates(map[string]any{
+				"status": ReviewRunStatusCompleted, "completed_at": input.CompletedAt,
+				"duration_ms": input.DurationMS, "html_path": input.HTMLPath, "json_path": input.JSONPath,
+				"critical_count": input.Critical, "medium_count": input.Medium, "low_count": input.Low,
+				"verdict": input.Verdict, "model_fallback": input.ModelFallback,
+				"serving_model_verification": input.ServingModelVerification,
+				"actual_models_json":         input.ActualModelsJSON, "publication_status": publicationStatus,
+				"terminal_code": "success", "failure_stage": "", "error_summary": "",
+				"lease_holder": "", "lease_expires_at": nil,
+			})
+		if finished.Error != nil {
+			return fmt.Errorf("terminalize successful review run: %w", finished.Error)
+		}
+		if finished.RowsAffected != 1 {
+			return fmt.Errorf("terminalize successful review run %s: lease ownership changed during transaction", input.RunID)
+		}
+		outcome = ReviewRunFinalizationResult{
+			Finalized: true, Published: publicationStatus == "published", PublicationStatus: publicationStatus,
+		}
+		return nil
+	})
+	if err != nil {
+		return ReviewRunFinalizationResult{}, fmt.Errorf("finalize successful review run %s: %w", input.RunID, err)
+	}
+	return outcome, nil
 }
 
 // RestorePRCompletedFromCacheForReviewRun projects an existing artifact only
@@ -547,39 +679,106 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMax
 }
 
 func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
-	if attempt == nil {
-		return fmt.Errorf("upsert review stage attempt: attempt is nil")
+	if err := validateReviewStageAttempt(attempt); err != nil {
+		return err
 	}
-	if attempt.RunID == "" || attempt.ExecutionAttempt <= 0 || attempt.Stage == "" || attempt.InvocationNumber <= 0 || attempt.AttemptNumber <= 0 {
-		return fmt.Errorf("upsert review stage attempt: run ID, execution attempt, stage, invocation number, and attempt number are required")
-	}
-	model := reviewStageAttemptToModel(*attempt)
-	// The natural attempt key owns the upsert. Never send a previously
-	// round-tripped auto-increment ID, which could conflict independently on
-	// SQLite/Postgres before the natural-key conflict is resolved.
-	model.ID = 0
+	var model ReviewStageAttemptModel
 	err := g.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "run_id"}, {Name: "execution_attempt"}, {Name: "stage"}, {Name: "invocation_number"}, {Name: "attempt_number"}},
-			DoUpdates: clause.AssignmentColumns(reviewStageAttemptMutableColumns),
-		}).Create(&model).Error; err != nil {
-			return fmt.Errorf("upsert: %w", err)
-		}
-		var persisted ReviewStageAttemptModel
-		if err := tx.Where(
-			"run_id = ? AND execution_attempt = ? AND stage = ? AND invocation_number = ? AND attempt_number = ?",
-			attempt.RunID, attempt.ExecutionAttempt, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber,
-		).First(&persisted).Error; err != nil {
-			return fmt.Errorf("reload: %w", err)
-		}
-		model = persisted
-		return nil
+		var err error
+		model, err = upsertReviewStageAttempt(tx, attempt)
+		return err
 	})
 	if err != nil {
 		return fmt.Errorf("upsert review stage attempt %s/%d/%s/%d/%d: %w", attempt.RunID, attempt.ExecutionAttempt, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber, err)
 	}
 	*attempt = reviewStageAttemptFromModel(model)
 	return nil
+}
+
+// UpsertReviewStageAttemptAsHolder records provider telemetry only while the
+// originating execution attempt still owns a live lease. The parent-row lock
+// shares the same serialization point as successful terminalization, so a
+// stale worker cannot append or overwrite attempts after losing ownership.
+func (g *GormDB) UpsertReviewStageAttemptAsHolder(attempt *ReviewStageAttempt, holder string, now time.Time) (bool, error) {
+	if err := validateReviewStageAttempt(attempt); err != nil {
+		return false, err
+	}
+	if holder == "" || now.IsZero() {
+		return false, fmt.Errorf("upsert review stage attempt as holder: holder and current time are required")
+	}
+
+	accepted := false
+	var model ReviewStageAttemptModel
+	err := g.db.Transaction(func(tx *gorm.DB) error {
+		locked := tx.Exec(`UPDATE review_runs SET updated_at = updated_at
+			WHERE run_id = ? AND status = ? AND execution_attempt = ?
+			  AND lease_holder = ?`,
+			attempt.RunID, ReviewRunStatusRunning, attempt.ExecutionAttempt, holder)
+		if locked.Error != nil {
+			return fmt.Errorf("lock attempt parent run: %w", locked.Error)
+		}
+		if locked.RowsAffected != 1 {
+			return nil
+		}
+		var run ReviewRunModel
+		if err := tx.Where("run_id = ?", attempt.RunID).First(&run).Error; err != nil {
+			return fmt.Errorf("load locked attempt parent run: %w", err)
+		}
+		leaseCheckedAt := time.Now().UTC()
+		if now.After(leaseCheckedAt) {
+			leaseCheckedAt = now
+		}
+		if run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(leaseCheckedAt) {
+			return nil
+		}
+		var err error
+		model, err = upsertReviewStageAttempt(tx, attempt)
+		if err != nil {
+			return err
+		}
+		accepted = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("upsert review stage attempt as holder %s/%d/%s/%d/%d: %w",
+			attempt.RunID, attempt.ExecutionAttempt, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber, err)
+	}
+	if accepted {
+		*attempt = reviewStageAttemptFromModel(model)
+	}
+	return accepted, nil
+}
+
+func validateReviewStageAttempt(attempt *ReviewStageAttempt) error {
+	if attempt == nil {
+		return fmt.Errorf("upsert review stage attempt: attempt is nil")
+	}
+	if attempt.RunID == "" || attempt.ExecutionAttempt <= 0 || attempt.Stage == "" || attempt.InvocationNumber <= 0 || attempt.AttemptNumber <= 0 {
+		return fmt.Errorf("upsert review stage attempt: run ID, execution attempt, stage, invocation number, and attempt number are required")
+	}
+	return nil
+}
+
+func upsertReviewStageAttempt(tx *gorm.DB, attempt *ReviewStageAttempt) (ReviewStageAttemptModel, error) {
+	model := reviewStageAttemptToModel(*attempt)
+	// The natural attempt key owns the upsert. Never send a previously
+	// round-tripped auto-increment ID, which could conflict independently on
+	// SQLite/Postgres before the natural-key conflict is resolved.
+	model.ID = 0
+	if err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "run_id"}, {Name: "execution_attempt"}, {Name: "stage"}, {Name: "invocation_number"}, {Name: "attempt_number"}},
+		DoUpdates: clause.AssignmentColumns(reviewStageAttemptMutableColumns),
+	}).Create(&model).Error; err != nil {
+		return ReviewStageAttemptModel{}, fmt.Errorf("upsert: %w", err)
+	}
+	var persisted ReviewStageAttemptModel
+	if err := tx.Where(
+		"run_id = ? AND execution_attempt = ? AND stage = ? AND invocation_number = ? AND attempt_number = ?",
+		attempt.RunID, attempt.ExecutionAttempt, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber,
+	).First(&persisted).Error; err != nil {
+		return ReviewStageAttemptModel{}, fmt.Errorf("reload: %w", err)
+	}
+	return persisted, nil
 }
 
 var reviewStageAttemptMutableColumns = []string{
@@ -594,7 +793,18 @@ var reviewStageAttemptMutableColumns = []string{
 func (g *GormDB) ListReviewStageAttempts(runID string) ([]ReviewStageAttempt, error) {
 	var models []ReviewStageAttemptModel
 	err := g.db.Where("run_id = ?", runID).
-		Order("execution_attempt ASC, stage ASC, invocation_number ASC, attempt_number ASC").
+		Order(`execution_attempt ASC,
+			CASE stage
+				WHEN 'first_pass' THEN 10
+				WHEN 'classification' THEN 20
+				WHEN 'classification_summary' THEN 20
+				WHEN 'summary' THEN 30
+				WHEN 'agent' THEN 40
+				ELSE 90
+			END ASC,
+			invocation_number ASC, attempt_number ASC,
+			CASE WHEN started_at IS NULL THEN 1 ELSE 0 END ASC,
+			started_at ASC, id ASC`).
 		Find(&models).Error
 	if err != nil {
 		return nil, fmt.Errorf("list review stage attempts for %s: %w", runID, err)

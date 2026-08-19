@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"pr-review-server/github"
@@ -61,6 +64,69 @@ type PerformReviewConfig struct {
 	Testing         bool              // Use testing-focused review prompt
 	SelectedContext ContextDefinition // For review-tui command
 	TerminalDiff    bool              // Print diff with embedded comments to terminal
+	// AttemptObserver receives started and terminal lifecycle events for every
+	// actual provider invocation. Calls are synchronous so a caller can durably
+	// record the attempt before execution advances. Errors are logged and ignored
+	// except ErrProviderAttemptAborted, which stops work before provider startup.
+	AttemptObserver ProviderAttemptObserver
+}
+
+// ProviderAttemptObserver is the dependency-neutral seam between provider
+// execution and durable attempt telemetry. Implementations must return quickly:
+// the service invokes them synchronously before a provider call and again after
+// its outcome is known, using the same natural key for durable upserts.
+type ProviderAttemptObserver func(ProviderAttemptEvent) error
+
+// ErrProviderAttemptAborted lets a durable observer stop work before the
+// provider call when execution ownership is definitively lost. Other observer
+// errors remain telemetry-only and do not reduce review availability.
+var ErrProviderAttemptAborted = errors.New("provider attempt aborted")
+
+// ProviderAttemptEvent describes one actual provider invocation. It mirrors the
+// durable review-stage-attempt shape without depending on the database package
+// or carrying run/execution identifiers, which the caller already owns.
+type ProviderAttemptEvent struct {
+	Stage                string
+	InvocationNumber     int
+	AttemptNumber        int
+	Provider             string
+	Backend              string
+	RequestedModel       string
+	ResolvedModel        string
+	ObservedServedModels []string
+	PrimaryServedModel   string
+	ServedModelSource    string
+	ServingModelVerified bool
+	Fallback             bool
+	FallbackReason       string
+	MatcherVersion       string
+	Effort               string
+	Status               string
+	AssistantTurns       int
+	InputTokens          int64
+	OutputTokens         int64
+	TotalTokens          int64
+	StartedAt            *time.Time
+	CompletedAt          *time.Time
+	DurationMS           int64
+	StopReason           string
+	ErrorCode            string
+	ErrorSummary         string
+}
+
+func observeProviderAttempt(observer ProviderAttemptObserver, event ProviderAttemptEvent) error {
+	if observer == nil {
+		return nil
+	}
+	// The event owns its slice even when the parser continues to reuse its
+	// internal result after this synchronous callback returns.
+	event.ObservedServedModels = append([]string(nil), event.ObservedServedModels...)
+	if err := observer(event); err != nil {
+		log.Printf("[REVIEWER] WARN: provider attempt observer failed for %s/%d/%d: %v",
+			event.Stage, event.InvocationNumber, event.AttemptNumber, err)
+		return err
+	}
+	return nil
 }
 
 // ReviewResult holds the results of a review.
@@ -150,7 +216,7 @@ func (s *Service) PerformReviewWithContext(ctx context.Context, cfg PerformRevie
 		allComments = execResult.Comments
 
 		// Handle empty results
-		if len(allComments) == 0 && cfg.WithComments {
+		if len(allComments) == 0 && cfg.WithComments && execResult.SuccessCount > 0 {
 			color.Yellow("%s No comments were generated from the AI review, posting a general comment.", prefix)
 			_ = s.githubClient.PostPRComment(cfg.Token, cfg.Owner, cfg.RepoName, cfg.PRNumber, "AI review completed without finding any specific issues to comment on.")
 		}
@@ -158,6 +224,9 @@ func (s *Service) PerformReviewWithContext(ctx context.Context, cfg PerformRevie
 
 	// Phase 4: Post-process comments (classification, previous comments, summary)
 	finalComments, err := s.handlePostReviewProcessing(ctx, cfg, data, allComments)
+	if errors.Is(err, ErrProviderAttemptAborted) {
+		return nil, err
+	}
 	if err != nil {
 		color.Yellow("%s Warning during post-processing: %v", prefix, err)
 	}
@@ -413,7 +482,7 @@ func (s *Service) convertPreviousCommentsToLineComments(existingComments []githu
 }
 
 // generateComprehensiveSummary creates a comprehensive summary of all review comments
-func (s *Service) generateComprehensiveSummary(allComments []types.LineComment, prBody, diff string) (string, error) {
+func (s *Service) generateComprehensiveSummary(cfg PerformReviewConfig, allComments []types.LineComment, prBody, diff string) (string, error) {
 	description := github.ParsePullRequestDescription(prBody)
 
 	// Build a formatted list of all tool-generated comments (excludes human reviewer comments)
@@ -448,11 +517,33 @@ func (s *Service) generateComprehensiveSummary(allComments []types.LineComment, 
 	fullPrompt := fmt.Sprintf("%s\n\n--- ALL AI-GENERATED REVIEW COMMENTS ---\n%s\n\n--- DIFF ---\n%s",
 		promptBuilder.String(), commentsBuilder.String(), diff)
 
-	// Use the fast LLM for summary generation
-	summary, _, _, _, err := s.fastLlmClient.GetReview(fullPrompt)
+	// Use the fast LLM for summary generation. This is a distinct provider
+	// invocation from both the first-pass draws and importance classification.
+	startedAt := time.Now().UTC()
+	event := ProviderAttemptEvent{
+		Stage: "summary", InvocationNumber: 1, AttemptNumber: 1,
+		Provider: "google", Backend: "gemini_api",
+		RequestedModel: llm.FlashModelName(), ResolvedModel: llm.FlashModelName(),
+		StartedAt: &startedAt, Status: "started",
+	}
+	if observerErr := observeProviderAttempt(cfg.AttemptObserver, event); errors.Is(observerErr, ErrProviderAttemptAborted) {
+		return "", observerErr
+	}
+	summary, inputTokens, outputTokens, totalTokens, err := s.fastLlmClient.GetReview(fullPrompt)
+	completedAt := time.Now().UTC()
+	event.InputTokens, event.OutputTokens, event.TotalTokens = int64(inputTokens), int64(outputTokens), int64(totalTokens)
+	event.CompletedAt = &completedAt
+	event.DurationMS = completedAt.Sub(startedAt).Milliseconds()
+	event.Status, event.StopReason = "completed", "completed"
 	if err != nil {
+		event.Status = "failed"
+		event.StopReason = "provider_error"
+		event.ErrorCode = "provider_error"
+		event.ErrorSummary = err.Error()
+		_ = observeProviderAttempt(cfg.AttemptObserver, event)
 		return "", fmt.Errorf("error generating comprehensive summary: %w", err)
 	}
+	_ = observeProviderAttempt(cfg.AttemptObserver, event)
 
 	return summary, nil
 }
@@ -652,8 +743,28 @@ func (s *Service) classifyCommentImportance(cfg PerformReviewConfig, comments []
 		blue.Println("--- END CLASSIFICATION PROMPT ---")
 	}
 
-	response, _, _, _, err := s.fastLlmClient.GetReview(fullPrompt)
+	startedAt := time.Now().UTC()
+	event := ProviderAttemptEvent{
+		Stage: "classification", InvocationNumber: 1, AttemptNumber: 1,
+		Provider: "google", Backend: "gemini_api",
+		RequestedModel: llm.FlashModelName(), ResolvedModel: llm.FlashModelName(),
+		StartedAt: &startedAt, Status: "started",
+	}
+	if observerErr := observeProviderAttempt(cfg.AttemptObserver, event); errors.Is(observerErr, ErrProviderAttemptAborted) {
+		return nil, observerErr
+	}
+	response, inputTokens, outputTokens, totalTokens, err := s.fastLlmClient.GetReview(fullPrompt)
+	completedAt := time.Now().UTC()
+	event.InputTokens, event.OutputTokens, event.TotalTokens = int64(inputTokens), int64(outputTokens), int64(totalTokens)
+	event.CompletedAt = &completedAt
+	event.DurationMS = completedAt.Sub(startedAt).Milliseconds()
+	event.Status, event.StopReason = "completed", "completed"
 	if err != nil {
+		event.Status = "failed"
+		event.StopReason = "provider_error"
+		event.ErrorCode = "provider_error"
+		event.ErrorSummary = err.Error()
+		_ = observeProviderAttempt(cfg.AttemptObserver, event)
 		return nil, fmt.Errorf("error getting importance classification: %w", err)
 	}
 
@@ -661,6 +772,11 @@ func (s *Service) classifyCommentImportance(cfg PerformReviewConfig, comments []
 	trimmedResponse := strings.TrimPrefix(response, "```json\n")
 	trimmedResponse = strings.TrimSuffix(trimmedResponse, "\n```")
 	if err := json.Unmarshal([]byte(trimmedResponse), &classifications); err != nil {
+		event.Status = "completed"
+		event.StopReason = "parse_error"
+		event.ErrorCode = "response_parse_failed"
+		event.ErrorSummary = err.Error()
+		_ = observeProviderAttempt(cfg.AttemptObserver, event)
 		// Truncate response for log readability
 		responsePreview := response
 		if len(responsePreview) > 200 {
@@ -670,6 +786,7 @@ func (s *Service) classifyCommentImportance(cfg PerformReviewConfig, comments []
 		// Return original comments without importance
 		return comments, nil
 	}
+	_ = observeProviderAttempt(cfg.AttemptObserver, event)
 
 	for i := range comments {
 		commentID := fmt.Sprintf("RC-%d", i+1)

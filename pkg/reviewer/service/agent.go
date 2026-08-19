@@ -54,6 +54,12 @@ type AgentConfig struct {
 	// stream-json log path after a failed run, before the error returns —
 	// LogsDir is ephemeral, so this is the log's only path off the instance.
 	FailureLogSink func(logPath string)
+
+	// AttemptObserver receives a started event immediately before Spawn and one
+	// terminal event afterward under the same natural key. Clone and prompt-build
+	// failures emit nothing because execution never reached a provider attempt;
+	// ErrProviderAttemptAborted prevents the spawn entirely.
+	AttemptObserver ProviderAttemptObserver
 }
 
 // AgentReview is the result of a successful agent run.
@@ -122,7 +128,7 @@ func RunAgentReview(
 	prNumber int,
 	commitSHA string,
 	geminiComments []types.LineComment,
-) (*AgentReview, error) {
+) (review *AgentReview, returnErr error) {
 	if agentCfg.MaxTurns <= 0 {
 		return nil, errors.New("agent: MaxTurns must be > 0")
 	}
@@ -227,13 +233,84 @@ func RunAgentReview(
 	log.Printf("%s spawning %s (backend=%s, model=%s, effort=%s, prompt_chars=%d)",
 		logPrefix, runtime.command, runtime.backend, runtime.model, runtime.effort, len(prompt))
 
-	spawnStart := time.Now()
+	agentStartedAt := time.Now().UTC()
+	startedEvent := ProviderAttemptEvent{
+		Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
+		Provider: agentProviderName(runtime.backend), Backend: runtime.backend,
+		RequestedModel: runtime.model, ResolvedModel: runtime.model, Effort: runtime.effort,
+		StartedAt: &agentStartedAt, Status: "started", MatcherVersion: "v1",
+	}
+	if observerErr := observeProviderAttempt(agentCfg.AttemptObserver, startedEvent); errors.Is(observerErr, ErrProviderAttemptAborted) {
+		return nil, fmt.Errorf("agent: %w", observerErr)
+	}
 	proc, err := spawner.Spawn(runCtx, runtime.command, args, cloneDir)
 	if err != nil {
 		log.Printf("%s spawn FAILED: %v", logPrefix, err)
+		completedAt := time.Now().UTC()
+		startedEvent.CompletedAt = &completedAt
+		startedEvent.DurationMS = completedAt.Sub(agentStartedAt).Milliseconds()
+		startedEvent.Status = "failed"
+		startedEvent.StopReason, startedEvent.ErrorCode = agentAttemptFailure(err, runCtx)
+		if runCtx.Err() == nil {
+			startedEvent.StopReason = "spawn_error"
+			startedEvent.ErrorCode = "spawn_failed"
+		}
+		startedEvent.ErrorSummary = err.Error()
+		_ = observeProviderAttempt(agentCfg.AttemptObserver, startedEvent)
 		return nil, fmt.Errorf("agent: spawn %s: %w", runtime.command, err)
 	}
 	log.Printf("%s %s spawned, streaming output to %s", logPrefix, runtime.command, logPath)
+	var agentCompletedAt time.Time
+	var parseResult *agentParseResult
+	defer func() {
+		completedAt := agentCompletedAt
+		if completedAt.IsZero() {
+			completedAt = time.Now().UTC()
+		}
+		event := ProviderAttemptEvent{
+			Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
+			Provider: agentProviderName(runtime.backend), Backend: runtime.backend,
+			RequestedModel: runtime.model, ResolvedModel: runtime.model, Effort: runtime.effort,
+			StartedAt: &agentStartedAt, CompletedAt: &completedAt,
+			DurationMS: completedAt.Sub(agentStartedAt).Milliseconds(),
+			Status:     "completed", StopReason: "completed", MatcherVersion: "v1",
+		}
+		if parseResult != nil {
+			event.AssistantTurns = parseResult.assistantTurns
+			event.ObservedServedModels = append([]string(nil), parseResult.servedModels...)
+			event.PrimaryServedModel, event.ServedModelSource, event.ServingModelVerified,
+				event.Fallback, event.FallbackReason = agentServingMetadata(runtime, parseResult.servedModels)
+		}
+		if review != nil {
+			event.AssistantTurns = review.AssistantTurns
+			event.ObservedServedModels = append([]string(nil), review.ObservedServedModels...)
+			event.PrimaryServedModel = review.ServedModel
+			event.ServingModelVerified = review.ServingModelVerified
+			event.Fallback = review.ModelFallback
+			if review.ServingModelVerified {
+				event.ServedModelSource = "stream"
+			} else if review.ServedModel != "" {
+				event.ServedModelSource = "pinned_request"
+			}
+			if review.ModelFallback {
+				event.FallbackReason = "observed served model did not match requested model"
+			}
+		}
+		if returnErr != nil {
+			event.Status = "failed"
+			event.StopReason, event.ErrorCode = agentAttemptFailure(returnErr, runCtx)
+			event.ErrorSummary = returnErr.Error()
+		} else if review == nil {
+			// A panic after Spawn runs defers with both named returns still nil.
+			// Preserve the panic while ensuring durable telemetry cannot claim a
+			// provider invocation completed successfully without a result.
+			event.Status = "failed"
+			event.StopReason = "panic"
+			event.ErrorCode = "execution_panicked"
+			event.ErrorSummary = "agent execution panicked before producing a result"
+		}
+		_ = observeProviderAttempt(agentCfg.AttemptObserver, event)
+	}()
 
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -263,9 +340,11 @@ func RunAgentReview(
 	}()
 
 	// Stream stdout: tee to log file and parse turn-by-turn.
-	parseResult, parseErr := runtime.parseStream(proc, logFile, agentCfg.MaxTurns)
+	var parseErr error
+	parseResult, parseErr = runtime.parseStream(proc, logFile, agentCfg.MaxTurns)
 
 	waitErr := proc.Wait()
+	agentCompletedAt = time.Now().UTC()
 	stderrWG.Wait()
 
 	persistFailureLog := func() {
@@ -370,7 +449,7 @@ func RunAgentReview(
 			logPrefix, runtime.model, servedModel, parseResult.servedModels)
 	}
 
-	agentDuration := time.Since(spawnStart)
+	agentDuration := agentCompletedAt.Sub(agentStartedAt)
 	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
 		logPrefix, agentDuration, parseResult.assistantTurns, len(comments), servedModel)
 
@@ -394,6 +473,55 @@ func RunAgentReview(
 		DurationMS:           agentDuration.Milliseconds(),
 		ServingModelVerified: runtime.reportsServingModel && len(parseResult.servedModels) > 0,
 	}, nil
+}
+
+func agentProviderName(backend string) string {
+	if backend == AgentBackendOpenRouter {
+		return "openrouter"
+	}
+	return "anthropic"
+}
+
+func agentServingMetadata(runtime agentRuntime, servedModels []string) (primary, source string, verified, fallback bool, fallbackReason string) {
+	if len(servedModels) > 0 {
+		primary = servedModels[0]
+		source = "stream"
+		verified = runtime.reportsServingModel
+	} else if !runtime.reportsServingModel {
+		primary = runtime.model
+		source = "pinned_request"
+	}
+	for _, served := range servedModels {
+		if !modelMatches(runtime.model, served) {
+			primary = served
+			fallback = true
+			fallbackReason = "observed served model did not match requested model"
+			break
+		}
+	}
+	return
+}
+
+func agentAttemptFailure(err error, runCtx context.Context) (stopReason, errorCode string) {
+	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		return "wall_clock_timeout", "deadline_exceeded"
+	}
+	if errors.Is(runCtx.Err(), context.Canceled) {
+		return "cancelled", "context_canceled"
+	}
+	if strings.Contains(err.Error(), "max-turns") {
+		return "max_turns", "max_turns_exceeded"
+	}
+	if strings.Contains(err.Error(), "exited with error") {
+		return "process_error", "process_exit_error"
+	}
+	if strings.Contains(err.Error(), "no final result") {
+		return "missing_result", "missing_result"
+	}
+	if strings.Contains(err.Error(), "CLI reported error") {
+		return "provider_error", "provider_error"
+	}
+	return "error", "agent_failed"
 }
 
 // parseAgentJSON extracts a []LineComment from the agent's final output.

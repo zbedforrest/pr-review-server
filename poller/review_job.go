@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
-	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
@@ -57,6 +58,80 @@ type reviewExecution struct {
 	RunStartedAt      time.Time
 	Timeout           time.Duration
 	AgentSlotReserved bool
+	attemptsMu        sync.Mutex
+	providerAttempts  map[string]service.ProviderAttemptEvent
+}
+
+func (e *reviewExecution) recordProviderAttempt(event service.ProviderAttemptEvent) {
+	e.attemptsMu.Lock()
+	defer e.attemptsMu.Unlock()
+	if e.providerAttempts == nil {
+		e.providerAttempts = make(map[string]service.ProviderAttemptEvent)
+	}
+	event.ObservedServedModels = append([]string(nil), event.ObservedServedModels...)
+	key := fmt.Sprintf("%s/%09d/%09d", event.Stage, event.InvocationNumber, event.AttemptNumber)
+	e.providerAttempts[key] = event
+}
+
+func (e *reviewExecution) providerModelUses() []payload.ModelUse {
+	e.attemptsMu.Lock()
+	type invocationKey struct {
+		stage      string
+		invocation int
+	}
+	latest := make(map[invocationKey]service.ProviderAttemptEvent, len(e.providerAttempts))
+	for _, event := range e.providerAttempts {
+		if event.Status != "completed" {
+			continue
+		}
+		key := invocationKey{stage: event.Stage, invocation: event.InvocationNumber}
+		if previous, ok := latest[key]; !ok || event.AttemptNumber > previous.AttemptNumber {
+			latest[key] = event
+		}
+	}
+	e.attemptsMu.Unlock()
+	events := make([]service.ProviderAttemptEvent, 0, len(latest))
+	for _, event := range latest {
+		events = append(events, event)
+	}
+	sort.Slice(events, func(i, j int) bool {
+		left, right := providerStageOrder(events[i].Stage), providerStageOrder(events[j].Stage)
+		if left != right {
+			return left < right
+		}
+		if events[i].InvocationNumber != events[j].InvocationNumber {
+			return events[i].InvocationNumber < events[j].InvocationNumber
+		}
+		return events[i].AttemptNumber < events[j].AttemptNumber
+	})
+	uses := make([]payload.ModelUse, 0, len(events))
+	for _, event := range events {
+		requested := event.RequestedModel
+		if requested == "" {
+			requested = event.ResolvedModel
+		}
+		uses = append(uses, payload.ModelUse{
+			Stage: event.Stage, Provider: event.Provider, Backend: event.Backend,
+			RequestedModel: requested, ServedModel: event.PrimaryServedModel,
+			ServingModelVerified: event.ServingModelVerified, Effort: event.Effort, Fallback: event.Fallback,
+		})
+	}
+	return uses
+}
+
+func providerStageOrder(stage string) int {
+	switch stage {
+	case "first_pass":
+		return 10
+	case "classification", "classification_summary":
+		return 20
+	case "summary":
+		return 30
+	case "agent":
+		return 40
+	default:
+		return 90
+	}
 }
 
 func (j ReviewJob) Validate() error {
@@ -335,6 +410,7 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 		GitHubToken: gitToken, Backend: agent.Backend, Model: agent.Model, Effort: agent.Effort,
 		OpenRouterBaseURL: p.cfg.OpenRouterBaseURL, BugMemory: p.bugMemory,
 		RequiredChecks: exec.Job.Config.Effective.RequiredChecks, FailureLogSink: p.persistAgentFailureLog,
+		AttemptObserver: p.providerAttemptObserver(exec),
 	}
 }
 
@@ -471,14 +547,20 @@ func (p *Poller) beginReviewExecution(job ReviewJob) (*reviewExecution, error) {
 	}, nil
 }
 
-func (p *Poller) reviewRunInfo(exec *reviewExecution, completedAt time.Time) *payload.ReviewRunInfo {
+func (p *Poller) reviewRunArtifactInfo(exec *reviewExecution) *payload.ReviewRunInfo {
 	return &payload.ReviewRunInfo{
 		RunID: exec.Job.RunID, ExecutionAttempt: exec.ExecutionAttempt,
 		HTMLPath:  gcs.ReviewRunFileName(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.PR.CommitSHA, exec.Job.RunID),
 		JSONPath:  gcs.ReviewRunJSONFileName(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.PR.CommitSHA, exec.Job.RunID),
-		StartedAt: exec.RunStartedAt, CompletedAt: completedAt,
-		DurationMS: completedAt.Sub(exec.RunStartedAt).Milliseconds(), Config: &exec.Job.Config,
+		StartedAt: exec.RunStartedAt, Config: &exec.Job.Config,
 	}
+}
+
+func (p *Poller) reviewRunInfo(exec *reviewExecution, completedAt time.Time) *payload.ReviewRunInfo {
+	info := p.reviewRunArtifactInfo(exec)
+	info.CompletedAt = completedAt
+	info.DurationMS = completedAt.Sub(exec.RunStartedAt).Milliseconds()
+	return info
 }
 
 func (p *Poller) finishReviewExecution(exec *reviewExecution, patch db.ReviewRunPatch) bool {
@@ -583,15 +665,14 @@ func (p *Poller) renewReviewExecutionForPublication(exec *reviewExecution) bool 
 	return false
 }
 
-func (p *Poller) setReviewRunPublication(runID, publicationStatus string) {
-	if err := p.db.PatchReviewRun(runID, db.ReviewRunPatch{PublicationStatus: &publicationStatus}); err != nil {
-		log.Printf("[REVIEWER] WARN: update publication status for run %s: %v", runID, err)
+func (p *Poller) finalizeCompletedReviewExecution(exec *reviewExecution, result *ReviewResult, reviewRunJSON string) (db.ReviewRunFinalizationResult, error) {
+	if result == nil || result.ReviewRun == nil {
+		return db.ReviewRunFinalizationResult{}, fmt.Errorf("finalize review run %s: review-run metadata is required", exec.Job.RunID)
 	}
-}
-
-func (p *Poller) finishCompletedReviewExecution(exec *reviewExecution, result *ReviewResult, publicationStatus string) bool {
-	status := db.ReviewRunStatusCompleted
-	terminalCode := "success"
+	ledger, ok := p.db.(db.ReviewRunLedger)
+	if !ok {
+		return db.ReviewRunFinalizationResult{}, fmt.Errorf("finalize review run %s: database does not support worker ledger writes", exec.Job.RunID)
+	}
 	verdict := service.VerdictFromComments(result.Comments)
 	modelsJSON, err := json.Marshal(result.ReviewRun.Models)
 	if err != nil {
@@ -607,13 +688,28 @@ func (p *Poller) finishCompletedReviewExecution(exec *reviewExecution, result *R
 			verification = "unverified"
 		}
 	}
-	patch := db.ReviewRunPatch{
-		Status: &status, HTMLPath: &result.ReviewRun.HTMLPath, JSONPath: &result.ReviewRun.JSONPath,
-		CriticalCount: &result.CriticalCount, MediumCount: &result.MediumCount, LowCount: &result.LowCount,
-		Verdict: &verdict, ModelFallback: &result.ModelFallback, ServingModelVerification: &verification,
-		ActualModelsJSON: ptrString(string(modelsJSON)), PublicationStatus: &publicationStatus, TerminalCode: &terminalCode,
+	input := db.ReviewRunSuccessFinalization{
+		RunID: exec.Job.RunID, Holder: exec.Holder, ExecutionAttempt: exec.ExecutionAttempt,
+		CompletedAt: result.ReviewRun.CompletedAt, DurationMS: result.ReviewRun.DurationMS,
+		HTMLPath: result.ReviewRun.HTMLPath, JSONPath: result.ReviewRun.JSONPath,
+		CanonicalPath: gcs.ReviewFileName(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.PR.CommitSHA),
+		Critical:      result.CriticalCount, Medium: result.MediumCount, Low: result.LowCount,
+		Verdict: verdict, ModelFallback: result.ModelFallback, ServingModelVerification: verification,
+		ActualModelsJSON: string(modelsJSON), ReviewRunJSON: reviewRunJSON,
 	}
-	return p.finishReviewExecution(exec, patch)
+	var finalizationErr error
+	for attempt := 1; attempt <= reviewLedgerRetryAttempts; attempt++ {
+		input.LeaseCheckedAt = time.Now().UTC()
+		outcome, err := ledger.FinalizeReviewRunSuccess(input)
+		if err == nil {
+			return outcome, nil
+		}
+		finalizationErr = err
+		if attempt < reviewLedgerRetryAttempts {
+			time.Sleep(reviewLedgerRetryBaseDelay << (attempt - 1))
+		}
+	}
+	return db.ReviewRunFinalizationResult{}, fmt.Errorf("finalize review run %s after %d attempts: %w", exec.Job.RunID, reviewLedgerRetryAttempts, finalizationErr)
 }
 
 func (p *Poller) rejectQueuedReviewJob(job ReviewJob, status, terminalCode, failureStage string, cause error) bool {
@@ -765,33 +861,44 @@ func (p *Poller) rejectProviderInitJobs(jobs []ReviewJob, cause error) {
 	}
 }
 
-func ptrString(value string) *string { return &value }
-
-func (p *Poller) recordStageAttempt(exec *reviewExecution, attempt db.ReviewStageAttempt) {
-	attempt.RunID = exec.Job.RunID
-	attempt.ExecutionAttempt = exec.ExecutionAttempt
-	if err := p.db.UpsertReviewStageAttempt(&attempt); err != nil {
-		log.Printf("[REVIEWER] WARN: persist stage attempt for run %s: %v", exec.Job.RunID, err)
-	}
-}
-
-func (p *Poller) recordGeminiAttempts(exec *reviewExecution, startedAt, completedAt time.Time, status, errorSummary string) {
-	duration := completedAt.Sub(startedAt).Milliseconds()
-	// The reviewer service exposes only one aggregate window for all parallel
-	// first-pass draws, not per-draw timings. Record exactly one aggregate row
-	// so consumers cannot accidentally sum fabricated invocation durations.
-	p.recordStageAttempt(exec, db.ReviewStageAttempt{
-		Stage: "first_pass", InvocationNumber: 1, AttemptNumber: 1,
-		Provider: "google", Backend: "gemini_api", RequestedModel: llm.ProModelName(),
-		ResolvedModel: llm.ProModelName(), Status: status, StartedAt: &startedAt,
-		CompletedAt: &completedAt, DurationMS: duration, StopReason: "aggregate_window", ErrorSummary: errorSummary,
-	})
-	if status == "completed" {
-		p.recordStageAttempt(exec, db.ReviewStageAttempt{
-			Stage: "classification_summary", InvocationNumber: 1, AttemptNumber: 1,
-			Provider: "google", Backend: "gemini_api", RequestedModel: llm.FlashModelName(),
-			ResolvedModel: llm.FlashModelName(), Status: status, StartedAt: &startedAt,
-			CompletedAt: &completedAt, StopReason: "timing_included_in_first_pass_aggregate",
-		})
+func (p *Poller) providerAttemptObserver(exec *reviewExecution) service.ProviderAttemptObserver {
+	ledger, ledgerOK := p.db.(db.ReviewRunLedger)
+	return func(event service.ProviderAttemptEvent) error {
+		exec.recordProviderAttempt(event)
+		if !ledgerOK {
+			return fmt.Errorf("%w: persist provider attempt for run %s: database does not support worker ledger writes", service.ErrProviderAttemptAborted, exec.Job.RunID)
+		}
+		attempt := db.ReviewStageAttempt{
+			RunID: exec.Job.RunID, ExecutionAttempt: exec.ExecutionAttempt,
+			Stage: event.Stage, InvocationNumber: event.InvocationNumber, AttemptNumber: event.AttemptNumber,
+			Provider: event.Provider, Backend: event.Backend, RequestedModel: event.RequestedModel, ResolvedModel: event.ResolvedModel,
+			ObservedServedModels: append([]string(nil), event.ObservedServedModels...), PrimaryServedModel: event.PrimaryServedModel,
+			ServedModelSource: event.ServedModelSource, ServingModelVerified: event.ServingModelVerified,
+			Fallback: event.Fallback, FallbackReason: event.FallbackReason, MatcherVersion: event.MatcherVersion,
+			Effort: event.Effort, Status: event.Status, AssistantTurns: event.AssistantTurns,
+			InputTokens: event.InputTokens, OutputTokens: event.OutputTokens, TotalTokens: event.TotalTokens,
+			StartedAt: event.StartedAt, CompletedAt: event.CompletedAt, DurationMS: event.DurationMS,
+			StopReason: event.StopReason, ErrorCode: event.ErrorCode, ErrorSummary: event.ErrorSummary,
+		}
+		var persistErr error
+		for retry := 1; retry <= reviewLedgerRetryAttempts; retry++ {
+			accepted, err := ledger.UpsertReviewStageAttemptAsHolder(&attempt, exec.Holder, time.Now().UTC())
+			if err == nil {
+				if !accepted {
+					// A definitive fence rejection means this worker must stop doing
+					// provider work even though service-level telemetry observers are
+					// otherwise best-effort. Cancelling the tracked context makes an
+					// imminent HTTP call or spawned CLI abort at its own boundary.
+					p.untrackReviewRun(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.RunID)
+					return fmt.Errorf("%w: persist provider attempt for run %s: execution lease is no longer owned", service.ErrProviderAttemptAborted, exec.Job.RunID)
+				}
+				return nil
+			}
+			persistErr = err
+			if retry < reviewLedgerRetryAttempts {
+				time.Sleep(reviewLedgerRetryBaseDelay << (retry - 1))
+			}
+		}
+		return fmt.Errorf("persist provider attempt for run %s after %d attempts: %w", exec.Job.RunID, reviewLedgerRetryAttempts, persistErr)
 	}
 }

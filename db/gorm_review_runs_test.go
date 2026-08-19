@@ -40,6 +40,39 @@ func reviewRunFixture(runID string, acceptedAt time.Time) ReviewRun {
 	}
 }
 
+func claimedProjectedReviewRunFixture(t *testing.T, database *GormDB, runID, holder string, now time.Time) ReviewRunSuccessFinalization {
+	t.Helper()
+	run := reviewRunFixture(runID, now)
+	require.NoError(t, database.CreateReviewRun(&run))
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		run.RepoOwner, run.RepoName, run.PRNumber, run.CommitSHA,
+		"Review me", "alice", nil, false, run.RunID,
+	))
+	claimed, err := database.ClaimReviewRun(run.RunID, holder, now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	return ReviewRunSuccessFinalization{
+		RunID:                    run.RunID,
+		Holder:                   holder,
+		ExecutionAttempt:         1,
+		LeaseCheckedAt:           now.Add(time.Second),
+		CompletedAt:              now.Add(2 * time.Second),
+		DurationMS:               2000,
+		HTMLPath:                 "reviews/runs/" + run.RunID + "/review.html",
+		JSONPath:                 "reviews/runs/" + run.RunID + "/review.json",
+		CanonicalPath:            "acme_widgets_42_0123456.html",
+		Critical:                 1,
+		Medium:                   2,
+		Low:                      3,
+		Verdict:                  "request_changes",
+		ModelFallback:            true,
+		ServingModelVerification: "verified",
+		ActualModelsJSON:         `[{"stage":"agent","model":"claude-opus-4-8"}]`,
+		ReviewRunJSON:            `{"run_id":"` + run.RunID + `"}`,
+	}
+}
+
 func TestGormDBReviewRunLifecycleAndHistory(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()
@@ -245,6 +278,191 @@ func TestGormDBReviewProjectionFencesSupersededRuns(t *testing.T) {
 	assert.Equal(t, "completed", pr.Status)
 	assert.Equal(t, "winner.html", pr.ReviewHTMLPath)
 	assert.Equal(t, runB, pr.ReviewRunID)
+}
+
+func TestGormDBFinalizeReviewRunSuccessPublishesAtomicallyAndIsIdempotent(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	input := claimedProjectedReviewRunFixture(
+		t, database, "run-000000000000000000000000000000f1", "worker-a", now,
+	)
+	result, err := database.FinalizeReviewRunSuccess(input)
+	require.NoError(t, err)
+	assert.Equal(t, ReviewRunFinalizationResult{
+		Finalized: true, Published: true, PublicationStatus: "published",
+	}, result)
+
+	run, err := database.GetReviewRun(input.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, ReviewRunStatusCompleted, run.Status)
+	require.NotNil(t, run.CompletedAt)
+	assert.Equal(t, input.CompletedAt, *run.CompletedAt)
+	assert.Equal(t, input.DurationMS, run.DurationMS)
+	assert.Equal(t, input.HTMLPath, run.HTMLPath)
+	assert.Equal(t, input.JSONPath, run.JSONPath)
+	assert.Equal(t, input.Critical, run.CriticalCount)
+	assert.Equal(t, input.Medium, run.MediumCount)
+	assert.Equal(t, input.Low, run.LowCount)
+	assert.Equal(t, input.Verdict, run.Verdict)
+	assert.Equal(t, input.ModelFallback, run.ModelFallback)
+	assert.Equal(t, input.ServingModelVerification, run.ServingModelVerification)
+	assert.Equal(t, input.ActualModelsJSON, run.ActualModelsJSON)
+	assert.Equal(t, "published", run.PublicationStatus)
+	assert.Equal(t, "success", run.TerminalCode)
+	assert.Empty(t, run.LeaseHolder)
+	assert.Nil(t, run.LeaseExpiresAt)
+
+	pr, err := database.GetPR(run.RepoOwner, run.RepoName, run.PRNumber)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "completed", pr.Status)
+	assert.Equal(t, input.CanonicalPath, pr.ReviewHTMLPath)
+	assert.Equal(t, input.RunID, pr.ReviewRunID)
+	assert.Equal(t, input.ReviewRunJSON, pr.ReviewRunJSON)
+	assert.Equal(t, input.Critical, pr.CriticalCount)
+	assert.Equal(t, input.Medium, pr.MediumCount)
+	assert.Equal(t, input.Low, pr.LowCount)
+	assert.Equal(t, input.Verdict, pr.ReviewVerdict)
+	assert.Equal(t, input.ModelFallback, pr.ModelFallback)
+	require.NotNil(t, pr.LastReviewedAt)
+	assert.Equal(t, input.CompletedAt, *pr.LastReviewedAt)
+
+	// A retry after an ambiguous commit response cannot satisfy the live-lease
+	// predicate because finalization cleared the lease. It still returns the
+	// already-stored outcome for this same execution attempt.
+	input.LeaseCheckedAt = now.Add(3 * time.Second)
+	retry, err := database.FinalizeReviewRunSuccess(input)
+	require.NoError(t, err)
+	assert.Equal(t, result, retry)
+}
+
+func TestGormDBFinalizeReviewRunSuccessRecordsSupersededProjection(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	input := claimedProjectedReviewRunFixture(
+		t, database, "run-000000000000000000000000000000f2", "worker-a", now,
+	)
+	const replacementRunID = "run-000000000000000000000000000000f3"
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		"acme", "widgets", 42, "0123456789abcdef0123456789abcdef01234567",
+		"Newer review", "alice", nil, false, replacementRunID,
+	))
+
+	result, err := database.FinalizeReviewRunSuccess(input)
+	require.NoError(t, err)
+	assert.Equal(t, ReviewRunFinalizationResult{
+		Finalized: true, Published: false, PublicationStatus: "superseded",
+	}, result)
+
+	run, err := database.GetReviewRun(input.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, ReviewRunStatusCompleted, run.Status)
+	assert.Equal(t, "success", run.TerminalCode)
+	assert.Equal(t, "superseded", run.PublicationStatus)
+
+	var projected PRModel
+	require.NoError(t, database.db.Where(
+		"repo_owner = ? AND repo_name = ? AND pr_number = ?", "acme", "widgets", 42,
+	).First(&projected).Error)
+	assert.Equal(t, replacementRunID, projected.ProjectionRunID)
+	assert.Equal(t, "generating", projected.Status)
+	assert.Empty(t, projected.ReviewRunID)
+
+	input.LeaseCheckedAt = now.Add(3 * time.Second)
+	retry, err := database.FinalizeReviewRunSuccess(input)
+	require.NoError(t, err)
+	assert.Equal(t, result, retry)
+}
+
+func TestGormDBFinalizeReviewRunSuccessRejectsStaleExecution(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ReviewRunSuccessFinalization, time.Time)
+	}{
+		{
+			name: "wrong holder",
+			mutate: func(input *ReviewRunSuccessFinalization, _ time.Time) {
+				input.Holder = "worker-b"
+			},
+		},
+		{
+			name: "wrong execution attempt",
+			mutate: func(input *ReviewRunSuccessFinalization, _ time.Time) {
+				input.ExecutionAttempt++
+			},
+		},
+		{
+			name: "expired lease",
+			mutate: func(input *ReviewRunSuccessFinalization, now time.Time) {
+				input.LeaseCheckedAt = now.Add(time.Minute)
+			},
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			database := newTestDB(t)
+			defer database.Close()
+
+			now := time.Now().UTC().Truncate(time.Millisecond)
+			input := claimedProjectedReviewRunFixture(
+				t, database, fmt.Sprintf("run-000000000000000000000000000000e%d", index), "worker-a", now,
+			)
+			test.mutate(&input, now)
+			result, err := database.FinalizeReviewRunSuccess(input)
+			require.NoError(t, err)
+			assert.Equal(t, ReviewRunFinalizationResult{}, result)
+
+			run, err := database.GetReviewRun(input.RunID)
+			require.NoError(t, err)
+			require.NotNil(t, run)
+			assert.Equal(t, ReviewRunStatusRunning, run.Status)
+			assert.Equal(t, "worker-a", run.LeaseHolder)
+			pr, err := database.GetPR(run.RepoOwner, run.RepoName, run.PRNumber)
+			require.NoError(t, err)
+			require.NotNil(t, pr)
+			assert.Equal(t, "generating", pr.Status)
+			assert.Empty(t, pr.ReviewRunID)
+		})
+	}
+}
+
+func TestGormDBFinalizeReviewRunSuccessRollsBackPRPublication(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	input := claimedProjectedReviewRunFixture(
+		t, database, "run-000000000000000000000000000000f4", "worker-a", now,
+	)
+	require.NoError(t, database.db.Exec(`CREATE TRIGGER fail_review_run_completion
+		BEFORE UPDATE OF status ON review_runs
+		WHEN NEW.status = 'completed'
+		BEGIN
+			SELECT RAISE(ABORT, 'forced terminalization failure');
+		END`).Error)
+
+	_, err := database.FinalizeReviewRunSuccess(input)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced terminalization failure")
+
+	run, err := database.GetReviewRun(input.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, ReviewRunStatusRunning, run.Status)
+	assert.Equal(t, "worker-a", run.LeaseHolder)
+	assert.Empty(t, run.PublicationStatus)
+
+	pr, err := database.GetPR(run.RepoOwner, run.RepoName, run.PRNumber)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "generating", pr.Status)
+	assert.Empty(t, pr.ReviewRunID)
 }
 
 func TestGormDBOutdatedResetInvalidatesReviewProjection(t *testing.T) {
@@ -660,6 +878,156 @@ func TestGormDBUpsertReviewStageAttempt(t *testing.T) {
 	assert.Equal(t, 2, attempts[1].ExecutionAttempt)
 }
 
+func TestGormDBHolderWritesRejectLeaseExpiredByPostLockClock(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	input := claimedProjectedReviewRunFixture(
+		t, database, "run-000000000000000000000000000000f5", "worker-a", now,
+	)
+	expiredAt := time.Now().UTC().Add(-time.Second)
+	require.NoError(t, database.db.Model(&ReviewRunModel{}).
+		Where("run_id = ?", input.RunID).Update("lease_expires_at", expiredAt).Error)
+	input.LeaseCheckedAt = now.Add(-time.Minute)
+
+	result, err := database.FinalizeReviewRunSuccess(input)
+	require.NoError(t, err)
+	assert.Equal(t, ReviewRunFinalizationResult{}, result)
+	attempt := ReviewStageAttempt{
+		RunID: input.RunID, ExecutionAttempt: input.ExecutionAttempt,
+		Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
+		Provider: "anthropic", Status: "started",
+	}
+	accepted, err := database.UpsertReviewStageAttemptAsHolder(&attempt, input.Holder, now.Add(-time.Minute))
+	require.NoError(t, err)
+	assert.False(t, accepted)
+}
+
+func TestGormDBUpsertReviewStageAttemptAsHolderIsLeaseFenced(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	finalization := claimedProjectedReviewRunFixture(
+		t, database, "run-000000000000000000000000000000a1", "worker-a", now,
+	)
+	startedAt := now.Add(time.Second)
+	attempt := ReviewStageAttempt{
+		RunID:            finalization.RunID,
+		ExecutionAttempt: finalization.ExecutionAttempt,
+		Stage:            "agent",
+		InvocationNumber: 1,
+		AttemptNumber:    1,
+		Provider:         "anthropic",
+		RequestedModel:   "claude-fable-5",
+		Status:           "started",
+		StartedAt:        &startedAt,
+	}
+
+	accepted, err := database.UpsertReviewStageAttemptAsHolder(&attempt, "worker-b", now.Add(time.Second))
+	require.NoError(t, err)
+	assert.False(t, accepted)
+	assert.Zero(t, attempt.ID)
+
+	accepted, err = database.UpsertReviewStageAttemptAsHolder(&attempt, "worker-a", now.Add(time.Second))
+	require.NoError(t, err)
+	assert.True(t, accepted)
+	require.NotZero(t, attempt.ID)
+	createdID := attempt.ID
+	createdAt := attempt.CreatedAt
+
+	completedAt := now.Add(2 * time.Second)
+	attempt.Status = "completed"
+	attempt.CompletedAt = &completedAt
+	attempt.DurationMS = 1000
+	attempt.AssistantTurns = 8
+	accepted, err = database.UpsertReviewStageAttemptAsHolder(&attempt, "worker-a", now.Add(2*time.Second))
+	require.NoError(t, err)
+	assert.True(t, accepted)
+	assert.Equal(t, createdID, attempt.ID)
+	assert.Equal(t, createdAt, attempt.CreatedAt)
+
+	staleExecution := attempt
+	staleExecution.ID = 0
+	staleExecution.ExecutionAttempt++
+	staleExecution.AttemptNumber++
+	accepted, err = database.UpsertReviewStageAttemptAsHolder(&staleExecution, "worker-a", now.Add(2*time.Second))
+	require.NoError(t, err)
+	assert.False(t, accepted)
+	assert.Zero(t, staleExecution.ID)
+
+	expired := attempt
+	expired.ID = 0
+	expired.AttemptNumber += 2
+	accepted, err = database.UpsertReviewStageAttemptAsHolder(&expired, "worker-a", now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, accepted)
+	assert.Zero(t, expired.ID)
+
+	result, err := database.FinalizeReviewRunSuccess(finalization)
+	require.NoError(t, err)
+	require.True(t, result.Finalized)
+	afterTerminal := attempt
+	afterTerminal.ID = 0
+	afterTerminal.AttemptNumber += 3
+	accepted, err = database.UpsertReviewStageAttemptAsHolder(&afterTerminal, "worker-a", now.Add(3*time.Second))
+	require.NoError(t, err)
+	assert.False(t, accepted)
+	assert.Zero(t, afterTerminal.ID)
+
+	attempts, err := database.ListReviewStageAttempts(finalization.RunID)
+	require.NoError(t, err)
+	require.Len(t, attempts, 1)
+	assert.Equal(t, "completed", attempts[0].Status)
+	assert.Equal(t, 8, attempts[0].AssistantTurns)
+}
+
+func TestGormDBListReviewStageAttemptsUsesPipelineOrder(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	run := reviewRunFixture("run-000000000000000000000000000000a2", now)
+	require.NoError(t, database.CreateReviewRun(&run))
+
+	fixtures := []ReviewStageAttempt{
+		{RunID: run.RunID, ExecutionAttempt: 1, Stage: "agent", InvocationNumber: 1, AttemptNumber: 1},
+		{RunID: run.RunID, ExecutionAttempt: 1, Stage: "summary", InvocationNumber: 1, AttemptNumber: 1},
+		{RunID: run.RunID, ExecutionAttempt: 1, Stage: "custom", InvocationNumber: 1, AttemptNumber: 1},
+		{RunID: run.RunID, ExecutionAttempt: 1, Stage: "classification_summary", InvocationNumber: 2, AttemptNumber: 1},
+		{RunID: run.RunID, ExecutionAttempt: 1, Stage: "classification", InvocationNumber: 1, AttemptNumber: 1},
+		{RunID: run.RunID, ExecutionAttempt: 1, Stage: "first_pass", InvocationNumber: 2, AttemptNumber: 1},
+		{RunID: run.RunID, ExecutionAttempt: 1, Stage: "first_pass", InvocationNumber: 1, AttemptNumber: 2},
+		{RunID: run.RunID, ExecutionAttempt: 1, Stage: "first_pass", InvocationNumber: 1, AttemptNumber: 1},
+		{RunID: run.RunID, ExecutionAttempt: 2, Stage: "first_pass", InvocationNumber: 1, AttemptNumber: 1},
+	}
+	for index := range fixtures {
+		fixtures[index].Status = "completed"
+		fixtures[index].StartedAt = &now
+		require.NoError(t, database.UpsertReviewStageAttempt(&fixtures[index]))
+	}
+
+	attempts, err := database.ListReviewStageAttempts(run.RunID)
+	require.NoError(t, err)
+	require.Len(t, attempts, len(fixtures))
+	got := make([]string, 0, len(attempts))
+	for _, attempt := range attempts {
+		got = append(got, fmt.Sprintf("%d/%s/%d/%d", attempt.ExecutionAttempt, attempt.Stage, attempt.InvocationNumber, attempt.AttemptNumber))
+	}
+	assert.Equal(t, []string{
+		"1/first_pass/1/1",
+		"1/first_pass/1/2",
+		"1/first_pass/2/1",
+		"1/classification/1/1",
+		"1/classification_summary/2/1",
+		"1/summary/1/1",
+		"1/agent/1/1",
+		"1/custom/1/1",
+		"2/first_pass/1/1",
+	}, got)
+}
+
 func TestGormDBReviewRunLeaseIsAtomicAndClearable(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()
@@ -1049,12 +1417,14 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
 }
 
-func TestGormDBSkipMigrationsAddsMissingSQLiteProjectionColumn(t *testing.T) {
+func TestGormDBSkipMigrationsAppliesIdempotentSchemaUpdates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "skip-migrations.db")
 	database, err := NewGormSQLite(path)
 	require.NoError(t, err)
 	require.NoError(t, database.db.Migrator().DropColumn(&PRModel{}, "ProjectionRunID"))
+	require.NoError(t, database.db.Exec("DROP INDEX IF EXISTS idx_prs_review_path").Error)
 	assert.False(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
+	assert.False(t, database.db.Migrator().HasIndex(&PRModel{}, "idx_prs_review_path"))
 	require.NoError(t, database.Close())
 
 	t.Setenv("SKIP_DB_MIGRATIONS", "true")
@@ -1062,6 +1432,7 @@ func TestGormDBSkipMigrationsAddsMissingSQLiteProjectionColumn(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
+	assert.True(t, database.db.Migrator().HasIndex(&PRModel{}, "idx_prs_review_path"))
 }
 
 func TestGormDBOneLiveRunMigrationRepairsExistingRows(t *testing.T) {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -243,6 +244,18 @@ func (s *Service) runSinglePrompt(
 			color.Yellow("%s LLM Client type: %T", prefix, llmClient)
 		}
 
+		var attemptEvent ProviderAttemptEvent
+		startedAt := time.Now().UTC()
+		attemptEvent = firstPassAttemptEvent(cfg, requestNum, attempt, startedAt)
+		if observerErr := observeProviderAttempt(cfg.AttemptObserver, attemptEvent); errors.Is(observerErr, ErrProviderAttemptAborted) {
+			errorChan <- reviewErrorMsg{err: observerErr, reqNum: requestNum, name: prompt.Name}
+			firstErrorMu.Lock()
+			if result.FirstError == nil {
+				result.FirstError = observerErr
+			}
+			firstErrorMu.Unlock()
+			return
+		}
 		if totalRequests == 1 && attempt == 1 {
 			white.Printf("%s Streaming response:\n", prefix)
 			reviewContent, promptTokenCount, candidatesTokenCount, totalTokenCount, errReview = llmClient.GetReviewStream(prompt.Content, os.Stdout)
@@ -250,8 +263,21 @@ func (s *Service) runSinglePrompt(
 		} else {
 			reviewContent, promptTokenCount, candidatesTokenCount, totalTokenCount, errReview = llmClient.GetReview(prompt.Content)
 		}
+		completedAt := time.Now().UTC()
+		attemptEvent.CompletedAt = &completedAt
+		attemptEvent.DurationMS = completedAt.Sub(startedAt).Milliseconds()
+		attemptEvent.InputTokens = int64(promptTokenCount)
+		attemptEvent.OutputTokens = int64(candidatesTokenCount)
+		attemptEvent.TotalTokens = int64(totalTokenCount)
+		attemptEvent.Status = "completed"
+		attemptEvent.StopReason = "completed"
 
 		if errReview != nil {
+			attemptEvent.Status = "failed"
+			attemptEvent.StopReason = "provider_error"
+			attemptEvent.ErrorCode = "provider_error"
+			attemptEvent.ErrorSummary = errReview.Error()
+			_ = observeProviderAttempt(cfg.AttemptObserver, attemptEvent)
 			color.Red("%s Error getting review from LLM (attempt %d) on request %d (%s): %v", prefix, attempt, requestNum, prompt.Name, errReview)
 			if attempt < maxAttempts {
 				continue
@@ -268,6 +294,7 @@ func (s *Service) runSinglePrompt(
 
 		comments, err := parse(reviewContent)
 		if err == nil {
+			_ = observeProviderAttempt(cfg.AttemptObserver, attemptEvent)
 			color.Green("%s Successfully parsed AI review for request %d (%s).", prefix, requestNum, prompt.Name)
 			atomic.AddInt64(&result.SuccessCount, 1)
 			resultsChan <- reviewResultMsg{
@@ -279,6 +306,13 @@ func (s *Service) runSinglePrompt(
 			return
 		}
 
+		// The provider call itself completed successfully; parsing is a
+		// downstream response-quality outcome, not a transport/provider failure.
+		attemptEvent.Status = "completed"
+		attemptEvent.StopReason = "parse_error"
+		attemptEvent.ErrorCode = "response_parse_failed"
+		attemptEvent.ErrorSummary = err.Error()
+		_ = observeProviderAttempt(cfg.AttemptObserver, attemptEvent)
 		if attempt < maxAttempts {
 			color.Yellow("%s AI returned non-parseable response for request %d (%s). Will retry.", prefix, requestNum, prompt.Name)
 			continue
@@ -286,6 +320,18 @@ func (s *Service) runSinglePrompt(
 
 		color.Red("%s Error parsing AI review after %d attempts for request %d (%s): %v", prefix, maxAttempts, requestNum, prompt.Name, err)
 		rawResponseChan <- rawResponseMsg{content: reviewContent, reqNum: requestNum, name: prompt.Name}
+	}
+}
+
+func firstPassAttemptEvent(cfg PerformReviewConfig, invocationNumber, attemptNumber int, startedAt time.Time) ProviderAttemptEvent {
+	model := llm.ProModelName()
+	if cfg.Fast {
+		model = llm.FlashModelName()
+	}
+	return ProviderAttemptEvent{
+		Stage: "first_pass", InvocationNumber: invocationNumber, AttemptNumber: attemptNumber,
+		Provider: "google", Backend: "gemini_api", RequestedModel: model, ResolvedModel: model,
+		Status: "started", StartedAt: &startedAt,
 	}
 }
 
@@ -311,6 +357,9 @@ func (s *Service) handlePostReviewProcessing(
 	// Classify comment importance if we have comments and not a custom prompt
 	if len(allComments) > 0 && cfg.CustomPrompt == "" {
 		classifiedComments, err := s.classifyCommentImportance(cfg, allComments, data.PR.Body, data.FileContext, data.Diff)
+		if errors.Is(err, ErrProviderAttemptAborted) {
+			return nil, err
+		}
 		if err != nil {
 			color.Yellow("%s Could not classify comment importance: %v", prefix, err)
 		} else {
@@ -327,7 +376,10 @@ func (s *Service) handlePostReviewProcessing(
 	// Generate comprehensive summary in testing mode
 	if cfg.Testing && len(allToolComments) > 0 {
 		color.White("%s Generating comprehensive summary of tool-generated review comments...", prefix)
-		comprehensiveSummary, err := s.generateComprehensiveSummary(allToolComments, data.PR.Body, data.Diff)
+		comprehensiveSummary, err := s.generateComprehensiveSummary(cfg, allToolComments, data.PR.Body, data.Diff)
+		if errors.Is(err, ErrProviderAttemptAborted) {
+			return nil, err
+		}
 		if err != nil {
 			color.Yellow("%s Could not generate comprehensive summary: %v", prefix, err)
 		} else {
