@@ -165,6 +165,9 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 	queueLeaseExpiresAt := now.Add(ReviewQueueLeaseTTL)
 	if err := p.ensureReviewRunWithQueueLease(job, queueHolder, queueLeaseExpiresAt); err != nil {
 		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
+		if errors.Is(err, db.ErrReviewRunActiveConflict) {
+			return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
+		}
 		return err
 	}
 	leased, err := p.db.ClaimOrRenewQueuedReviewRunLease(job.RunID, queueHolder, now, queueLeaseExpiresAt)

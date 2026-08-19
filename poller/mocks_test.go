@@ -1570,10 +1570,10 @@ func newTestPollerWithStorage(mockGH *MockGitHubClient, mockDB *MockDatabase, mo
 }
 
 // newTestPollerFull creates a Poller with all mock dependencies
-func newTestPollerFull(mockGH *MockGitHubClient, mockDB *MockDatabase, mockStorage *MockReviewStorage, mockGenerator *MockReviewGenerator) *Poller {
+func newTestPollerFull(mockGH *MockGitHubClient, database db.Database, mockStorage *MockReviewStorage, mockGenerator *MockReviewGenerator) *Poller {
 	p := &Poller{
 		cfg:           testConfig(),
-		db:            mockDB,
+		db:            database,
 		ghClient:      mockGH,
 		reviewDir:     "/tmp/test-reviews",
 		activeReviews: make(map[string]ProcessInfo),

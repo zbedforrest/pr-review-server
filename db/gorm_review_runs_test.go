@@ -47,6 +47,8 @@ func TestGormDBReviewRunLifecycleAndHistory(t *testing.T) {
 	older := reviewRunFixture("run-00000000000000000000000000000001", now.Add(-time.Minute))
 	newer := reviewRunFixture("run-00000000000000000000000000000002", now)
 	require.NoError(t, database.CreateReviewRun(&older))
+	olderCompleted := ReviewRunStatusCompleted
+	require.NoError(t, database.PatchReviewRun(older.RunID, ReviewRunPatch{Status: &olderCompleted}))
 	require.NoError(t, database.CreateReviewRun(&newer))
 
 	fetched, err := database.GetReviewRun(newer.RunID)
@@ -380,19 +382,41 @@ func TestGormDBReviewRunIdempotencyLookup(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be set together")
 }
 
-func TestGormDBAllowsMultipleRunsWithoutIdempotencyKey(t *testing.T) {
+func TestGormDBAllowsMultipleSequentialRunsWithoutIdempotencyKey(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()
 
-	for _, id := range []string{
+	ids := []string{
 		"run-00000000000000000000000000000012",
 		"run-00000000000000000000000000000013",
-	} {
+	}
+	for index, id := range ids {
 		run := reviewRunFixture(id, time.Now().UTC())
 		run.IdempotencyScope = ""
 		run.IdempotencyKeyHash = ""
 		require.NoError(t, database.CreateReviewRun(&run))
+		if index < len(ids)-1 {
+			completed := ReviewRunStatusCompleted
+			require.NoError(t, database.PatchReviewRun(run.RunID, ReviewRunPatch{Status: &completed}))
+		}
 	}
+}
+
+func TestGormDBRejectsSecondLiveRunForSamePR(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	first := reviewRunFixture("run-00000000000000000000000000000014", time.Now().UTC())
+	first.IdempotencyScope, first.IdempotencyKeyHash = "", ""
+	require.NoError(t, database.CreateReviewRun(&first))
+	second := reviewRunFixture("run-00000000000000000000000000000015", time.Now().UTC())
+	second.IdempotencyScope, second.IdempotencyKeyHash = "", ""
+	err := database.CreateReviewRun(&second)
+	require.ErrorIs(t, err, ErrReviewRunActiveConflict)
+
+	completed := ReviewRunStatusCompleted
+	require.NoError(t, database.PatchReviewRun(first.RunID, ReviewRunPatch{Status: &completed}))
+	require.NoError(t, database.CreateReviewRun(&second), "terminal history must not block the next run")
 }
 
 func TestGormDBCreateReviewRunRejectsIncompleteLedgerEntry(t *testing.T) {
@@ -586,6 +610,8 @@ func TestGormDBAbandonsOnlyLeasesExpiredBeyondGrace(t *testing.T) {
 	expired := reviewRunFixture("run-00000000000000000000000000000014", now)
 	withinGrace := reviewRunFixture("run-00000000000000000000000000000015", now)
 	live := reviewRunFixture("run-00000000000000000000000000000016", now)
+	withinGrace.PRNumber = 43
+	live.PRNumber = 44
 	for _, run := range []*ReviewRun{&expired, &withinGrace, &live} {
 		run.IdempotencyScope = ""
 		run.IdempotencyKeyHash = ""
@@ -634,6 +660,7 @@ func TestGormDBAbandonsOnlyStaleQueuedRuns(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	stale := reviewRunFixture("run-00000000000000000000000000000017", now.Add(-2*time.Hour))
 	recent := reviewRunFixture("run-00000000000000000000000000000018", now.Add(-time.Minute))
+	recent.PRNumber = 43
 	for _, run := range []*ReviewRun{&stale, &recent} {
 		run.IdempotencyScope = ""
 		run.IdempotencyKeyHash = ""
@@ -661,6 +688,7 @@ func TestGormDBQueuedDispatcherLeaseControlsAbandonment(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	expired := reviewRunFixture("run-00000000000000000000000000000019", now)
 	live := reviewRunFixture("run-00000000000000000000000000000020", now.Add(-2*time.Hour))
+	live.PRNumber = 43
 	for _, run := range []*ReviewRun{&expired, &live} {
 		run.IdempotencyScope = ""
 		run.IdempotencyKeyHash = ""
@@ -738,6 +766,8 @@ func TestGormDBReviewRunHistoryUsesRunIDTieBreaker(t *testing.T) {
 	first := reviewRunFixture("run-00000000000000000000000000000008", now)
 	second := reviewRunFixture("run-00000000000000000000000000000009", now)
 	require.NoError(t, database.CreateReviewRun(&first))
+	completed := ReviewRunStatusCompleted
+	require.NoError(t, database.PatchReviewRun(first.RunID, ReviewRunPatch{Status: &completed}))
 	require.NoError(t, database.CreateReviewRun(&second))
 
 	runs, err := database.ListReviewRuns(ReviewRunFilter{RepoOwner: "acme", RepoName: "widgets", PRNumber: 42})
@@ -753,6 +783,7 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	assert.True(t, database.db.Migrator().HasTable(&ReviewStageAttemptModel{}))
 	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_status_lease"))
 	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_status_queue"))
+	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_one_live_per_pr"))
 	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
 }
 

@@ -3014,6 +3014,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					log.Printf("[REVIEWER] WARNING: cached review sidecar metadata unavailable for PR %d: %v", pr.Number, sidecarErr)
 				}
 				criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunID, reviewRunJSON := cachedProjectionMetadata(cachedPayload)
+				cacheMetadataTrusted := cachedPayload != nil
 				// Legacy HTML-only reviews have no sidecar. Preserve their DB
 				// metadata only when the row explicitly identifies this same commit;
 				// never mix a force-pushed commit's artifact with another commit's
@@ -3023,18 +3024,28 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						criticalCount, mediumCount, lowCount = existingPR.CriticalCount, existingPR.MediumCount, existingPR.LowCount
 						verdict, modelFallback = existingPR.ReviewVerdict, existingPR.ModelFallback
 						reviewRunID, reviewRunJSON = existingPR.ReviewRunID, existingPR.ReviewRunJSON
+						cacheMetadataTrusted = true
+					} else if getErr != nil {
+						log.Printf("[REVIEWER] WARNING: cached review DB metadata unavailable for PR %d: %v", pr.Number, getErr)
 					}
 				}
-				inFlightStaleBefore := time.Now().UTC().Add(-ReviewProjectionCrashStaleAfter)
-				if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON, inFlightStaleBefore); err != nil {
-					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
-				} else if projected {
-					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+				if cacheMetadataTrusted {
+					inFlightStaleBefore := time.Now().UTC().Add(-ReviewProjectionCrashStaleAfter)
+					if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON, inFlightStaleBefore); err != nil {
+						log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
+					} else if projected {
+						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+					} else {
+						log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
+					}
+					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "review_cached", "dispatch", fmt.Errorf("review artifact already exists"))
+					return
 				} else {
-					log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
+					// An HTML hit with neither a readable sidecar nor exact-commit DB
+					// metadata is not evidence of a clean review. Regenerate once so a
+					// transient read failure cannot publish false zero-finding metadata.
+					log.Printf("[REVIEWER] PR %d cache metadata is untrusted; regenerating review", pr.Number)
 				}
-				p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "review_cached", "dispatch", fmt.Errorf("review artifact already exists"))
-				return
 			}
 
 			agentSlotReserved := false
@@ -3059,6 +3070,20 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				} else {
 					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "pr_already_claimed", "dispatch", ErrReviewAlreadyTracked)
 				}
+				return
+			}
+
+			// Persist automatic candidates before claiming the mutable PR
+			// projection. The partial unique index on queued/running targets is
+			// the cross-instance admission fence; manual jobs already have this
+			// row from ProcessReviewJob, so this is idempotent for them.
+			if err := p.ensureReviewRun(job); err != nil {
+				if errors.Is(err, db.ErrReviewRunActiveConflict) {
+					log.Printf("[REVIEWER] PR %d already has a live run on another instance; skipping %s", pr.Number, job.RunID)
+					return
+				}
+				log.Printf("[REVIEWER] ERROR: Could not admit review run %s: %v", job.RunID, err)
+				p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "admission_failed", "dispatch", err)
 				return
 			}
 

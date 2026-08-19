@@ -10,6 +10,10 @@ import (
 // (e.g. as a 404) instead of reporting a no-op success.
 var ErrUserPRViewNotFound = errors.New("user PR view not found")
 
+// ErrReviewRunActiveConflict is returned when another queued/running run
+// already owns the same PR target. Terminal history remains unrestricted.
+var ErrReviewRunActiveConflict = errors.New("another review run is active for this PR")
+
 // PR represents a pull request in the database
 type PR struct {
 	ID              int

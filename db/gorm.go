@@ -127,6 +127,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 			return fmt.Errorf("create review_stage_attempts: %w", err)
 		}
 	}
+	if err := g.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_runs_one_live_per_pr
+		ON review_runs(repo_owner, repo_name, pr_number)
+		WHERE status IN ('queued', 'running')`).Error; err != nil {
+		return fmt.Errorf("index one live review run per PR: %w", err)
+	}
 
 	if g.db.Dialector.Name() != "postgres" {
 		return nil

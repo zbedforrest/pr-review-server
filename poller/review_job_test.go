@@ -209,6 +209,34 @@ func TestProcessReviewJobPersistsConfigAndCompletesLedger(t *testing.T) {
 	assert.Equal(t, job.Config.Hash, metadata.Config.Hash)
 }
 
+func TestProcessReviewJobRejectsLiveRunAcceptedByAnotherInstance(t *testing.T) {
+	database, err := db.NewGormSQLite("file:" + filepath.Join(t.TempDir(), "cross-instance.db") + "?_busy_timeout=5000&_journal_mode=WAL")
+	require.NoError(t, err)
+	defer database.Close()
+	generator := NewMockReviewGenerator()
+	generator.SimulateDelay = 100 * time.Millisecond
+	firstPoller := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	secondPoller := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+	first := reviewJobWithoutAgent(t, "run-11000000000000000000000000000001")
+	second := reviewJobWithoutAgent(t, "run-11000000000000000000000000000002")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: first.PR.Owner, RepoName: first.PR.Repo, PRNumber: first.PR.Number,
+		LastCommitSHA: first.PR.CommitSHA, Status: "pending",
+	}))
+
+	require.NoError(t, firstPoller.ProcessReviewJob(context.Background(), first))
+	err = secondPoller.ProcessReviewJob(context.Background(), second)
+	require.ErrorIs(t, err, ErrReviewAlreadyTracked)
+	assert.False(t, secondPoller.IsReviewTracked(second.PR.Owner, second.PR.Repo, second.PR.Number))
+	run, getErr := database.GetReviewRun(second.RunID)
+	require.NoError(t, getErr)
+	assert.Nil(t, run)
+
+	require.Eventually(t, func() bool {
+		return !firstPoller.IsReviewTracked(first.PR.Owner, first.PR.Repo, first.PR.Number)
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
 func TestProcessReviewJobRejectsBudgetBeyondStaleResetHorizon(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPoller(NewMockGitHubClient(), database)
@@ -609,6 +637,40 @@ func TestCacheRestoreUsesExactCommitSidecarMetadata(t *testing.T) {
 	require.NotNil(t, run)
 	assert.Equal(t, db.ReviewRunStatusCancelled, run.Status)
 	assert.Equal(t, "review_cached", run.TerminalCode)
+}
+
+func TestUnreadableCacheMetadataRegeneratesInsteadOfPublishingZeroCounts(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	generator := NewMockReviewGenerator()
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, generator)
+	p.reviewDir = t.TempDir()
+	job := reviewJobWithoutAgent(t, "run-24450000000000000000000000000001")
+	job.Force = false
+	storage.ExistingReviews[fmt.Sprintf("%s/%s/%d/%s", job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA)] = true
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: "different-commit", Status: "pending", CriticalCount: 99,
+		ReviewVerdict: "request_changes", ReviewRunID: "wrong-run",
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+
+	require.Len(t, generator.GenerateReviewCalls, 1)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "completed", pr.Status)
+	assert.Equal(t, job.PR.CommitSHA, pr.LastCommitSHA)
+	assert.Equal(t, generator.DefaultResult.CriticalCount, pr.CriticalCount)
+	assert.Equal(t, generator.DefaultResult.MediumCount, pr.MediumCount)
+	assert.Equal(t, generator.DefaultResult.LowCount, pr.LowCount)
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCompleted, run.Status)
+	assert.Equal(t, "success", run.TerminalCode)
 }
 
 func TestMonitorReapsAbandonedQueuedTracking(t *testing.T) {

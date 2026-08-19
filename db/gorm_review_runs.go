@@ -169,6 +169,22 @@ func (g *GormDB) CreateReviewRun(run *ReviewRun) error {
 	model := reviewRunToModel(*run)
 	if err := g.db.Create(&model).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			var identityConflict ReviewRunModel
+			if g.db.Where("run_id = ?", run.RunID).First(&identityConflict).Error == nil {
+				return fmt.Errorf("%w: run_id=%s scope=%s (run ID or idempotency key conflict)", ErrReviewRunConflict, run.RunID, run.IdempotencyScope)
+			}
+			if run.IdempotencyScope != "" && run.IdempotencyKeyHash != "" &&
+				g.db.Where("idempotency_scope = ? AND idempotency_key_hash = ?", run.IdempotencyScope, run.IdempotencyKeyHash).First(&identityConflict).Error == nil {
+				return fmt.Errorf("%w: run_id=%s scope=%s (run ID or idempotency key conflict)", ErrReviewRunConflict, run.RunID, run.IdempotencyScope)
+			}
+			var live ReviewRunModel
+			liveErr := g.db.Where(
+				"repo_owner = ? AND repo_name = ? AND pr_number = ? AND status IN ?",
+				run.RepoOwner, run.RepoName, run.PRNumber, []string{ReviewRunStatusQueued, ReviewRunStatusRunning},
+			).First(&live).Error
+			if liveErr == nil && live.RunID != run.RunID {
+				return fmt.Errorf("%w: target=%s/%s#%d active_run_id=%s", ErrReviewRunActiveConflict, run.RepoOwner, run.RepoName, run.PRNumber, live.RunID)
+			}
 			return fmt.Errorf("%w: run_id=%s scope=%s (run ID or idempotency key conflict)", ErrReviewRunConflict, run.RunID, run.IdempotencyScope)
 		}
 		return fmt.Errorf("create review run %s: %w", run.RunID, err)
