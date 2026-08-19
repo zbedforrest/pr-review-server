@@ -146,8 +146,8 @@ type Poller struct {
 	// agentSlots caps concurrent agent reviews per process. Each agent run
 	// holds ~1 GB of /tmp (clone) + agent memory; without a cap, two PRs
 	// triggered close together can exhaust the instance's memory budget.
-	// Buffered to AgentMaxConcurrent; nil if AgentMaxConcurrent <= 0
-	// (unlimited, used by tests).
+	// Buffered to AgentMaxConcurrent, with a safe fallback in New. Focused
+	// tests may still construct a Poller directly with a nil channel.
 	agentSlots chan struct{}
 	// firstPassSlots caps provider-heavy first-pass pipelines across every
 	// batch and immediate API request in this process. Jobs acquire agent
@@ -315,9 +315,11 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		lookPath:         osexec.LookPath,
 		holderID:         newHolderID(),
 	}
-	if cfg.AgentMaxConcurrent > 0 {
-		p.agentSlots = make(chan struct{}, cfg.AgentMaxConcurrent)
+	agentConcurrent := cfg.AgentMaxConcurrent
+	if agentConcurrent <= 0 {
+		agentConcurrent = fallbackAgentConcurrent
 	}
+	p.agentSlots = make(chan struct{}, agentConcurrent)
 	firstPassConcurrent := cfg.ReviewMaxFirstPassConcurrent
 	if firstPassConcurrent <= 0 {
 		firstPassConcurrent = fallbackReviewFirstPassConcurrent

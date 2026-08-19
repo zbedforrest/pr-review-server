@@ -13,6 +13,25 @@ type envCapturingSpawner struct {
 	environment []string
 }
 
+func TestAgentChildEnvironmentIsDefaultDenyWithFrozenCredential(t *testing.T) {
+	environment := agentChildEnvironment([]string{
+		"PATH=/usr/bin", "HOME=/home/reviewer", "DATABASE_URL=postgres://secret",
+		"ANTHROPIC_API_KEY=ambient", "CUSTOM_FUTURE_SECRET=must-not-pass",
+		"PATH=/duplicate",
+	}, "ANTHROPIC_API_KEY", "frozen")
+	joined := strings.Join(environment, "\n")
+	for _, want := range []string{"PATH=/usr/bin", "HOME=/home/reviewer", "ANTHROPIC_API_KEY=frozen"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("child environment missing %q: %q", want, environment)
+		}
+	}
+	for _, forbidden := range []string{"postgres://secret", "ambient", "must-not-pass", "PATH=/duplicate"} {
+		if strings.Contains(joined, forbidden) {
+			t.Errorf("child environment retained %q: %q", forbidden, environment)
+		}
+	}
+}
+
 func (s *envCapturingSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
 	s.environment = append([]string(nil), environment...)
 	return s.fakeSpawner.Spawn(ctx, name, args, dir)
@@ -208,6 +227,21 @@ func TestParseCodexStreamCapsBudgetExemptItems(t *testing.T) {
 	}
 }
 
+func TestParseCodexStreamCapsMalformedUntypedItems(t *testing.T) {
+	const maxTurns = 2
+	stream := strings.Repeat(`{"type":"item.completed","item":{}}`+"\n", 2*maxTurns+17)
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{}),
+	}
+	_, err := parseCodexStream(proc, &bytes.Buffer{}, maxTurns)
+	if err == nil || !strings.Contains(err.Error(), "budget-exempt item ceiling") {
+		t.Fatalf("expected malformed-item ceiling error, got %v", err)
+	}
+	if !proc.killed {
+		t.Error("expected malformed stream to be killed")
+	}
+}
+
 func TestParseCodexStreamProductiveWorkResetsExemptItemCeiling(t *testing.T) {
 	const maxTurns = 2
 	reasoningBlock := strings.Repeat(`{"type":"item.completed","item":{"type":"reasoning"}}`+"\n", 2*maxTurns+16)
@@ -294,5 +328,36 @@ func TestRunAgentReviewOpenRouter(t *testing.T) {
 	}
 	if out.Effort != DefaultAgentEffort {
 		t.Errorf("effort=%q want %q", out.Effort, DefaultAgentEffort)
+	}
+}
+
+func TestRunAgentReviewClaudeUsesFilteredFrozenEnvironment(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "ambient-anthropic-key")
+	t.Setenv("OPENROUTER_API_KEY", "unrelated-server-secret")
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-4-8"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"done"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &envCapturingSpawner{fakeSpawner: &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{}),
+	}}}
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		Backend: AgentBackendClaude, AnthropicAPIKey: "frozen-anthropic-key",
+	}
+	if _, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil); err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	joined := strings.Join(spawner.environment, "\n")
+	if !strings.Contains(joined, "ANTHROPIC_API_KEY=frozen-anthropic-key") {
+		t.Fatalf("Claude child did not receive frozen credential: %q", spawner.environment)
+	}
+	for _, forbidden := range []string{"ambient-anthropic-key", "unrelated-server-secret"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("Claude child inherited server secret %q", forbidden)
+		}
 	}
 }

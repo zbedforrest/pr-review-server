@@ -29,11 +29,11 @@ var ErrReviewAlreadyTracked = errors.New("a review is already active for this PR
 
 const (
 	fallbackReviewMaxWallClockSec     = 360
-	fallbackReviewMaxTurns            = 200
 	fallbackClaudeMaxTurns            = 40
 	fallbackOpenRouterMaxTurns        = 200
 	fallbackReviewMaxFirstPassSamples = 3
 	fallbackReviewFirstPassConcurrent = 5
+	fallbackAgentConcurrent           = 5
 )
 
 // ReviewJob is the immutable execution handoff. Config must already be fully
@@ -235,8 +235,10 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	openRouterDefaultMaxTurns := reviewBackendDefaultMaxTurns(service.AgentBackendOpenRouter, backend, defaults.Agent.MaxTurns)
 	claudeMaxTurns := reviewBackendMaxTurns(service.AgentBackendClaude, backend, defaults.Agent.MaxTurns, claudeDefaultMaxTurns, p.cfg.ReviewMaxTurns, p.cfg.ReviewMaxTurnsConfigured)
 	openRouterMaxTurns := reviewBackendMaxTurns(service.AgentBackendOpenRouter, backend, defaults.Agent.MaxTurns, openRouterDefaultMaxTurns, p.cfg.ReviewMaxTurns, p.cfg.ReviewMaxTurnsConfigured)
+	// The legacy global field follows the active backend so existing clients
+	// remain conservative; per-backend capability fields are authoritative.
 	maxTurns := claudeMaxTurns
-	if openRouterMaxTurns > maxTurns {
+	if backend == service.AgentBackendOpenRouter {
 		maxTurns = openRouterMaxTurns
 	}
 	policy := runconfig.Policy{
@@ -471,6 +473,7 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 		CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
 		WallClock: time.Duration(agent.WallClockSeconds) * time.Second, MaxTurns: agent.MaxTurns,
 		GitHubToken: gitToken, Backend: agent.Backend, Model: agent.Model, Effort: agent.Effort,
+		AnthropicAPIKey:   p.cfg.AnthropicAPIKey,
 		OpenRouterAPIKey:  p.cfg.OpenRouterAPIKey,
 		OpenRouterBaseURL: p.cfg.OpenRouterBaseURL, BugMemory: p.bugMemory,
 		RequiredChecks: exec.Job.Config.Effective.RequiredChecks, FailureLogSink: p.persistAgentFailureLog,

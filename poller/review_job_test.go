@@ -223,7 +223,7 @@ func TestPrepareReviewJobDerivesTurnDefaultForSelectedBackend(t *testing.T) {
 	p.cfg.AgentWallClockSec = fallbackReviewMaxWallClockSec
 	p.cfg.AgentMaxTurns = fallbackClaudeMaxTurns
 	p.cfg.ReviewMaxWallClockSec = fallbackReviewMaxWallClockSec
-	p.cfg.ReviewMaxTurns = fallbackReviewMaxTurns
+	p.cfg.ReviewMaxTurns = fallbackOpenRouterMaxTurns
 	p.cfg.OpenRouterAPIKey = "configured"
 	p.cfg.ReviewAgentModelsOpenRouter = []string{service.DefaultOpenRouterAgentModel}
 	backend := service.AgentBackendOpenRouter
@@ -269,11 +269,11 @@ func TestReviewPolicyIsBoundedAndConsistentForZeroOrLowerCeilings(t *testing.T) 
 	zeroDefaults, zeroPolicy, err := zero.ReviewConfigDefaultsAndPolicy()
 	require.NoError(t, err)
 	assert.Equal(t, fallbackReviewMaxWallClockSec, zeroPolicy.MaxWallClockSeconds)
-	assert.Equal(t, fallbackReviewMaxTurns, zeroPolicy.MaxTurns)
+	assert.Equal(t, fallbackClaudeMaxTurns, zeroPolicy.MaxTurns)
 	assert.Equal(t, fallbackReviewMaxFirstPassSamples, zeroPolicy.MaxFirstPassSamples)
 	assert.False(t, zeroPolicy.Backends[service.AgentBackendClaude].Available)
 	enabled := true
-	wallClock, turns := fallbackReviewMaxWallClockSec, fallbackReviewMaxTurns
+	wallClock, turns := fallbackReviewMaxWallClockSec, fallbackClaudeMaxTurns
 	_, err = runconfig.Resolve(runconfig.Overrides{Agent: &runconfig.AgentOverrides{
 		Enabled: &enabled, WallClockSeconds: &wallClock, MaxTurns: &turns,
 	}}, zeroDefaults, zeroPolicy)
@@ -319,22 +319,26 @@ func TestReviewBackendReadinessReportsStableReasonsAndTurnSemantics(t *testing.T
 	}, openRouter.UnavailableReasons)
 	assert.Equal(t, runconfig.TurnBudgetUnitCompletedNonReasoningItem, openRouter.TurnBudgetUnit)
 	assert.Equal(t, fallbackOpenRouterMaxTurns, openRouter.DefaultMaxTurns)
-	assert.Equal(t, fallbackReviewMaxTurns, openRouter.MaxTurns)
+	assert.Equal(t, fallbackOpenRouterMaxTurns, openRouter.MaxTurns)
 }
 
 func TestNewPollerCreatesProcessGlobalFirstPassCapacity(t *testing.T) {
 	cfg := testConfig()
 	cfg.ReviewMaxFirstPassConcurrent = 3
+	cfg.AgentMaxConcurrent = 3
 	p := New(cfg, NewMockDatabase(), nil, nil)
 	require.NotNil(t, p.firstPassSlots)
 	assert.Equal(t, 3, cap(p.firstPassSlots))
 	require.NotNil(t, p.dispatchSlots)
 	assert.Equal(t, 3, cap(p.dispatchSlots))
+	assert.Equal(t, 3, cap(p.agentSlots))
 
 	cfg.ReviewMaxFirstPassConcurrent = 0
+	cfg.AgentMaxConcurrent = 0
 	p = New(cfg, NewMockDatabase(), nil, nil)
 	assert.Equal(t, fallbackReviewFirstPassConcurrent, cap(p.firstPassSlots))
 	assert.Equal(t, fallbackReviewFirstPassConcurrent, cap(p.dispatchSlots))
+	assert.Equal(t, fallbackAgentConcurrent, cap(p.agentSlots))
 }
 
 func TestReviewJobValidateRequiresCompleteIdempotencyMetadata(t *testing.T) {
@@ -1727,6 +1731,7 @@ func TestAgentConfigComesFromReviewJob(t *testing.T) {
 	assert.Equal(t, service.DefaultOpenRouterAgentModel, cfg.Model)
 	assert.Equal(t, "xhigh", cfg.Effort)
 	assert.Equal(t, p.cfg.OpenRouterAPIKey, cfg.OpenRouterAPIKey)
+	assert.Equal(t, p.cfg.AnthropicAPIKey, cfg.AnthropicAPIKey)
 	assert.True(t, cfg.RequiredChecks)
 }
 

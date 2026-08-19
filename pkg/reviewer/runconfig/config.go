@@ -182,7 +182,10 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 	// carrying a number expressed in the deployment backend's unit.
 	if sources["agent.max_turns"] != SourceRequest &&
 		effective.Agent.TurnBudgetUnit != defaults.Agent.TurnBudgetUnit {
-		if backendPolicy, ok := findBackendPolicy(policy, effective.Agent.Backend); ok && backendPolicy.DefaultMaxTurns > 0 {
+		if backendPolicy, ok := findBackendPolicy(policy, effective.Agent.Backend); ok {
+			if backendPolicy.DefaultMaxTurns <= 0 {
+				return Snapshot{}, invalid("agent.max_turns", "backend %q has no default turn budget; specify max_turns", effective.Agent.Backend)
+			}
 			effective.Agent.MaxTurns = backendPolicy.DefaultMaxTurns
 			if backendPolicy.MaxTurns > 0 && effective.Agent.MaxTurns > backendPolicy.MaxTurns {
 				effective.Agent.MaxTurns = backendPolicy.MaxTurns

@@ -37,6 +37,7 @@ type AgentConfig struct {
 	Backend           string        // claude (default) or openrouter
 	Model             string        // backend model id; defaults according to Backend
 	Effort            string        // backend reasoning effort; defaults to DefaultAgentEffort
+	AnthropicAPIKey   string        // frozen optional credential; OAuth via HOME remains supported
 	OpenRouterAPIKey  string        // frozen deployment credential; injected into the Codex child environment
 	OpenRouterBaseURL string        // optional OpenRouter API root; used only by the openrouter backend
 
@@ -107,7 +108,7 @@ type Spawner interface {
 
 // EnvironmentSpawner is required by backends whose frozen credential must be
 // injected into the child without placing it in argv. The slice is the complete
-// child environment, already filtered and deduplicated by openRouterEnvironment.
+// child environment, already filtered and deduplicated by agentChildEnvironment.
 type EnvironmentSpawner interface {
 	SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error)
 }
@@ -252,15 +253,19 @@ func RunAgentReview(
 		return nil, fmt.Errorf("agent: %w", observerErr)
 	}
 	var proc SpawnedProcess
-	if runtime.backend == AgentBackendOpenRouter {
-		envSpawner, ok := spawner.(EnvironmentSpawner)
-		if !ok {
-			err = errors.New("agent: OpenRouter spawner does not support frozen credential injection")
-		} else {
-			proc, err = envSpawner.SpawnWithEnv(runCtx, runtime.command, args, cloneDir,
-				openRouterEnvironment(os.Environ(), agentCfg.OpenRouterAPIKey))
+	if envSpawner, ok := spawner.(EnvironmentSpawner); ok {
+		credentialKey, credentialValue := "ANTHROPIC_API_KEY", agentCfg.AnthropicAPIKey
+		if runtime.backend == AgentBackendOpenRouter {
+			credentialKey, credentialValue = "OPENROUTER_API_KEY", agentCfg.OpenRouterAPIKey
 		}
+		proc, err = envSpawner.SpawnWithEnv(runCtx, runtime.command, args, cloneDir,
+			agentChildEnvironment(os.Environ(), credentialKey, credentialValue))
+	} else if runtime.backend == AgentBackendOpenRouter {
+		// OpenRouter cannot safely fall back because the frozen key is mandatory.
+		err = errors.New("agent: OpenRouter spawner does not support frozen credential injection")
 	} else {
+		// Lightweight test spawners predate EnvironmentSpawner. Production uses
+		// DefaultSpawner, so Claude receives the filtered environment above.
 		proc, err = spawner.Spawn(runCtx, runtime.command, args, cloneDir)
 	}
 	if err != nil {
@@ -878,24 +883,36 @@ type agentParseResult struct {
 	servedModels   []string // distinct models the stream reported, in first-seen order; empty if never reported
 }
 
-func openRouterEnvironment(base []string, apiKey string) []string {
-	excluded := map[string]struct{}{
-		"ANTHROPIC_API_KEY": {}, "DATABASE_URL": {}, "GEMINI_API_KEY": {},
-		"GITHUB_APP_CLIENT_SECRET": {}, "GITHUB_APP_PRIVATE_KEY_PATH": {},
-		"GITHUB_TOKEN": {}, "GOOGLE_APPLICATION_CREDENTIALS": {},
-		"OPENROUTER_API_KEY": {}, "PRISM_TOKEN": {}, "SESSION_SECRET": {},
+func agentChildEnvironment(base []string, credentialKey, credentialValue string) []string {
+	// Default-deny: model-executing children receive process basics and proxy/
+	// certificate settings, while future server secrets stay excluded by default.
+	allowed := map[string]struct{}{
+		"COLORTERM": {}, "HOME": {}, "HTTPS_PROXY": {}, "HTTP_PROXY": {},
+		"LANG": {}, "LC_ALL": {}, "LOGNAME": {}, "NO_PROXY": {}, "PATH": {},
+		"SHELL": {}, "SSL_CERT_DIR": {}, "SSL_CERT_FILE": {}, "TERM": {},
+		"TERM_PROGRAM": {}, "TMPDIR": {}, "TZ": {}, "USER": {},
+		"XDG_CACHE_HOME": {}, "XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {},
 	}
 	environment := make([]string, 0, len(base)+1)
+	seen := make(map[string]struct{}, len(allowed))
 	for _, entry := range base {
 		key, _, ok := strings.Cut(entry, "=")
-		if ok {
-			if _, drop := excluded[key]; drop {
-				continue
-			}
+		if !ok || key == credentialKey {
+			continue
 		}
+		if _, keep := allowed[key]; !keep {
+			continue
+		}
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
 		environment = append(environment, entry)
 	}
-	return append(environment, "OPENROUTER_API_KEY="+apiKey)
+	if credentialValue != "" {
+		environment = append(environment, credentialKey+"="+credentialValue)
+	}
+	return environment
 }
 
 // diagnostic returns the best available explanation of a failed run — under

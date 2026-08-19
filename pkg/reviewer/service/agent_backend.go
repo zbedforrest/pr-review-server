@@ -166,13 +166,13 @@ func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		case "item.completed":
 			item, _ := ev["item"].(map[string]any)
 			itemType, _ := item["type"].(string)
-			if itemType == "reasoning" || itemType == "agent_message" {
+			if itemType == "" || itemType == "reasoning" || itemType == "agent_message" {
 				consecutiveExemptItems++
 				if consecutiveExemptItems > exemptItemCeiling {
 					_ = proc.Kill()
 					return result, fmt.Errorf("exceeded consecutive budget-exempt item ceiling (%d)", exemptItemCeiling)
 				}
-			} else if itemType != "" {
+			} else {
 				consecutiveExemptItems = 0
 			}
 			// Preserve the completed terminal response. It represents the result of

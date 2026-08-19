@@ -55,11 +55,11 @@ type Config struct {
 	AgentLogsDir       string
 	AgentWallClockSec  int
 	AgentMaxTurns      int
-	AgentMaxConcurrent int    // <=0 disables the cap (unlimited concurrency)
+	AgentMaxConcurrent int    // <=0 uses the poller's safe five-process fallback
 	AgentBackend       string // claude (default) or openrouter
 	AgentModel         string // backend model id for agent reviews (empty = backend default)
 	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
-	AnthropicAPIKey    string // frozen readiness signal; Claude retains its CLI-native auth flow
+	AnthropicAPIKey    string // frozen optional runtime credential; Claude OAuth remains supported
 	OpenRouterAPIKey   string // OpenRouter credential; deployment-only, never exposed in capabilities
 	OpenRouterBaseURL  string // OpenRouter API root (empty = service default)
 	BugMemoryPath      string // local path to a bug-memory library JSON (dev/benchmark)

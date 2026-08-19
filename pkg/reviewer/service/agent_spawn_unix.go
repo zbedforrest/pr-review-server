@@ -15,6 +15,8 @@ import (
 // down as a group rather than orphaned when the parent exits.
 type DefaultSpawner struct{}
 
+var _ EnvironmentSpawner = DefaultSpawner{}
+
 func (DefaultSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
 	return spawnCommand(ctx, name, args, dir, nil)
 }
