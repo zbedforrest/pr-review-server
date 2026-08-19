@@ -60,6 +60,9 @@ func TestLoadOpenRouterAgentConfig(t *testing.T) {
 	if cfg.AgentMaxTurns != defaultOpenRouterAgentMaxTurns || cfg.ReviewMaxTurns != defaultOpenRouterAgentMaxTurns {
 		t.Errorf("OpenRouter turn defaults: active=%d ceiling=%d want %d", cfg.AgentMaxTurns, cfg.ReviewMaxTurns, defaultOpenRouterAgentMaxTurns)
 	}
+	if cfg.ReviewMaxTurnsConfigured {
+		t.Error("unset REVIEW_MAX_TURNS was reported as operator-configured")
+	}
 }
 
 func TestLoadFreezesAgentCredentials(t *testing.T) {
@@ -102,6 +105,9 @@ func TestLoadReviewCustomizationPolicyDefaults(t *testing.T) {
 	}
 	if cfg.ReviewMaxFirstPassConcurrent != defaultReviewFirstPassConcurrent {
 		t.Fatalf("first-pass concurrency=%d want %d", cfg.ReviewMaxFirstPassConcurrent, defaultReviewFirstPassConcurrent)
+	}
+	if cfg.ReviewMaxTurnsConfigured {
+		t.Error("default REVIEW_MAX_TURNS was reported as operator-configured")
 	}
 	// The policy is additive; it must not switch the active runtime defaults.
 	if cfg.AgentBackend != "claude" || cfg.AgentModel != "" || cfg.AgentEffort != "" {
@@ -153,6 +159,9 @@ func TestLoadReviewCustomizationPolicyLimits(t *testing.T) {
 	if cfg.ReviewMaxFirstPassConcurrent != 7 {
 		t.Fatalf("first-pass concurrency=%d", cfg.ReviewMaxFirstPassConcurrent)
 	}
+	if !cfg.ReviewMaxTurnsConfigured {
+		t.Error("positive REVIEW_MAX_TURNS was not reported as operator-configured")
+	}
 }
 
 func TestLoadReviewCustomizationPolicyRejectsNonPositiveOrMalformedLimits(t *testing.T) {
@@ -172,6 +181,9 @@ func TestLoadReviewCustomizationPolicyRejectsNonPositiveOrMalformedLimits(t *tes
 			}
 			if cfg.ReviewMaxFirstPassConcurrent != defaultReviewFirstPassConcurrent {
 				t.Fatalf("invalid %q yielded first-pass concurrency=%d", value, cfg.ReviewMaxFirstPassConcurrent)
+			}
+			if cfg.ReviewMaxTurnsConfigured {
+				t.Fatalf("invalid %q was reported as operator-configured", value)
 			}
 		})
 	}

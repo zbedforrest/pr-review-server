@@ -143,8 +143,8 @@ func (r agentRuntime) args(prompt string) []string {
 // serving model, so model verification is handled by the pinned runtime model.
 func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
 	result := &agentParseResult{}
-	totalCompletedItems := 0
-	completedItemCeiling := 2*maxTurns + 16
+	consecutiveExemptItems := 0
+	exemptItemCeiling := 2*maxTurns + 16
 	scanner := bufio.NewScanner(proc.Stdout())
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 
@@ -166,12 +166,14 @@ func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		case "item.completed":
 			item, _ := ev["item"].(map[string]any)
 			itemType, _ := item["type"].(string)
-			if itemType != "" {
-				totalCompletedItems++
-				if totalCompletedItems > completedItemCeiling {
+			if itemType == "reasoning" || itemType == "agent_message" {
+				consecutiveExemptItems++
+				if consecutiveExemptItems > exemptItemCeiling {
 					_ = proc.Kill()
-					return result, fmt.Errorf("exceeded completed-item ceiling (%d)", completedItemCeiling)
+					return result, fmt.Errorf("exceeded consecutive budget-exempt item ceiling (%d)", exemptItemCeiling)
 				}
+			} else if itemType != "" {
+				consecutiveExemptItems = 0
 			}
 			// Preserve the completed terminal response. It represents the result of
 			// prior work, not another work item, so it does not consume budget.

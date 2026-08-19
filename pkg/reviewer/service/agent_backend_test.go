@@ -197,8 +197,8 @@ func TestParseCodexStreamCapsBudgetExemptItems(t *testing.T) {
 		killCh: make(chan struct{}),
 	}
 	res, err := parseCodexStream(proc, &bytes.Buffer{}, maxTurns)
-	if err == nil || !strings.Contains(err.Error(), "completed-item ceiling") {
-		t.Fatalf("expected completed-item ceiling error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "budget-exempt item ceiling") {
+		t.Fatalf("expected budget-exempt item ceiling error, got %v", err)
 	}
 	if res.budgetUnits != 0 {
 		t.Fatalf("message-only stream consumed work budget: %d", res.budgetUnits)
@@ -208,8 +208,32 @@ func TestParseCodexStreamCapsBudgetExemptItems(t *testing.T) {
 	}
 }
 
+func TestParseCodexStreamProductiveWorkResetsExemptItemCeiling(t *testing.T) {
+	const maxTurns = 2
+	reasoningBlock := strings.Repeat(`{"type":"item.completed","item":{"type":"reasoning"}}`+"\n", 2*maxTurns+16)
+	stream := reasoningBlock + `{"type":"item.completed","item":{"type":"command_execution"}}` + "\n" +
+		reasoningBlock + `{"type":"item.completed","item":{"type":"file_change"}}` + "\n" +
+		`{"type":"item.completed","item":{"type":"agent_message","text":"[]"}}` + "\n"
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, maxTurns)
+	if err != nil {
+		t.Fatalf("productive stream was capped: %v", err)
+	}
+	if res.budgetUnits != maxTurns || res.finalOutput != "[]" {
+		t.Fatalf("result=%+v", res)
+	}
+	if proc.killed {
+		t.Fatal("productive stream was killed")
+	}
+}
+
 func TestRunAgentReviewOpenRouter(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "ambient-key-must-not-reach-child")
+	t.Setenv("GITHUB_TOKEN", "server-secret-must-not-reach-child")
 	bare, sha := setupLocalBareRepo(t)
 	cloneRoot := t.TempDir()
 	seedAgentCache(t, cloneRoot, "acme", "example", bare)
@@ -252,6 +276,9 @@ func TestRunAgentReviewOpenRouter(t *testing.T) {
 	}
 	if len(openRouterEntries) != 1 || openRouterEntries[0] != "OPENROUTER_API_KEY=frozen-key" {
 		t.Fatalf("child OpenRouter credential=%q", openRouterEntries)
+	}
+	if strings.Contains(strings.Join(spawner.environment, "\n"), "server-secret-must-not-reach-child") {
+		t.Fatal("unrelated server credential leaked into Codex environment")
 	}
 	if strings.Contains(strings.Join(spawner.args, "\n"), "frozen-key") {
 		t.Fatal("frozen OpenRouter key leaked into argv")

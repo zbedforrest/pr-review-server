@@ -169,6 +169,7 @@ func TestPrepareReviewJobResolvesCallerOverridesWithinPolicy(t *testing.T) {
 	p.cfg.ReviewAgentEffortsOpenRouter = []string{"medium", "high"}
 	p.cfg.ReviewMaxWallClockSec = 900
 	p.cfg.ReviewMaxTurns = 120
+	p.cfg.ReviewMaxTurnsConfigured = true
 	p.cfg.ReviewMaxFirstPassSamples = 5
 
 	backend, model, effort := service.AgentBackendOpenRouter, "openai/gpt-5.6-sol", "high"
@@ -244,11 +245,14 @@ func TestReviewPolicyIsBoundedAndConsistentForZeroOrLowerCeilings(t *testing.T) 
 	p.cfg.AgentMaxTurns = 40
 	p.cfg.ReviewMaxWallClockSec = 300
 	p.cfg.ReviewMaxTurns = 20
+	p.cfg.ReviewMaxTurnsConfigured = true
 
 	defaults, policy, err := p.ReviewConfigDefaultsAndPolicy()
 	require.NoError(t, err)
 	assert.Equal(t, 360, policy.MaxWallClockSeconds)
 	assert.Equal(t, 40, policy.MaxTurns)
+	assert.Equal(t, 40, policy.Backends[service.AgentBackendClaude].MaxTurns)
+	assert.Equal(t, 20, policy.Backends[service.AgentBackendOpenRouter].MaxTurns)
 	snapshot, err := runconfig.Resolve(runconfig.Overrides{}, defaults, policy)
 	require.NoError(t, err)
 	job := ReviewJob{
@@ -300,7 +304,7 @@ func TestReviewBackendReadinessReportsStableReasonsAndTurnSemantics(t *testing.T
 	assert.Empty(t, claude.UnavailableReasons)
 	assert.Equal(t, runconfig.TurnBudgetUnitAssistantEvent, claude.TurnBudgetUnit)
 	assert.Equal(t, fallbackClaudeMaxTurns, claude.DefaultMaxTurns)
-	assert.Equal(t, fallbackReviewMaxTurns, claude.MaxTurns)
+	assert.Equal(t, fallbackClaudeMaxTurns, claude.MaxTurns)
 	assert.Equal(t, runconfig.TurnBudgetUnitAssistantEvent, defaults.Agent.TurnBudgetUnit)
 
 	openRouter := policy.Backends[service.AgentBackendOpenRouter]

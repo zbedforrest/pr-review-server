@@ -231,18 +231,25 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	}
 	defaults.Agent.TurnBudgetUnit, defaults.Agent.TurnBudgetVersion = runconfig.TurnBudgetSemantics(backend)
 	gitAvailable := p.executableAvailable("git")
-	maxTurns := reviewPolicyMaximum(p.cfg.ReviewMaxTurns, defaults.Agent.MaxTurns, fallbackReviewMaxTurns)
+	claudeDefaultMaxTurns := reviewBackendDefaultMaxTurns(service.AgentBackendClaude, backend, defaults.Agent.MaxTurns)
+	openRouterDefaultMaxTurns := reviewBackendDefaultMaxTurns(service.AgentBackendOpenRouter, backend, defaults.Agent.MaxTurns)
+	claudeMaxTurns := reviewBackendMaxTurns(service.AgentBackendClaude, backend, defaults.Agent.MaxTurns, claudeDefaultMaxTurns, p.cfg.ReviewMaxTurns, p.cfg.ReviewMaxTurnsConfigured)
+	openRouterMaxTurns := reviewBackendMaxTurns(service.AgentBackendOpenRouter, backend, defaults.Agent.MaxTurns, openRouterDefaultMaxTurns, p.cfg.ReviewMaxTurns, p.cfg.ReviewMaxTurnsConfigured)
+	maxTurns := claudeMaxTurns
+	if openRouterMaxTurns > maxTurns {
+		maxTurns = openRouterMaxTurns
+	}
 	policy := runconfig.Policy{
 		Backends: map[string]runconfig.BackendPolicy{
 			// Claude credentials are advisory readiness metadata: the CLI may use
 			// its own OAuth session, and its native authentication flow is retained.
 			service.AgentBackendClaude: p.reviewBackendPolicy(
 				service.AgentBackendClaude, "claude", gitAvailable, strings.TrimSpace(p.cfg.AnthropicAPIKey) != "", false,
-				reviewBackendDefaultMaxTurns(service.AgentBackendClaude, backend, defaults.Agent.MaxTurns), maxTurns, claudeModels, claudeEfforts,
+				claudeDefaultMaxTurns, claudeMaxTurns, claudeModels, claudeEfforts,
 			),
 			service.AgentBackendOpenRouter: p.reviewBackendPolicy(
 				service.AgentBackendOpenRouter, "codex", gitAvailable, strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "", true,
-				reviewBackendDefaultMaxTurns(service.AgentBackendOpenRouter, backend, defaults.Agent.MaxTurns), maxTurns, openRouterModels, openRouterEfforts,
+				openRouterDefaultMaxTurns, openRouterMaxTurns, openRouterModels, openRouterEfforts,
 			),
 		},
 		MaxWallClockSeconds: reviewPolicyMaximum(p.cfg.ReviewMaxWallClockSec, defaults.Agent.WallClockSeconds, fallbackReviewMaxWallClockSec),
@@ -289,6 +296,17 @@ func reviewBackendDefaultMaxTurns(backend, activeBackend string, activeMaxTurns 
 		return fallbackOpenRouterMaxTurns
 	}
 	return fallbackClaudeMaxTurns
+}
+
+func reviewBackendMaxTurns(backend, activeBackend string, activeMaxTurns, backendDefault, configured int, explicitlyConfigured bool) int {
+	maximum := backendDefault
+	if explicitlyConfigured && configured > 0 {
+		maximum = configured
+	}
+	if backend == activeBackend && activeMaxTurns > maximum {
+		maximum = activeMaxTurns
+	}
+	return maximum
 }
 
 func policyValues(configured []string, fallback string) []string {

@@ -639,7 +639,7 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 			UnavailableReasons:  append([]string{}, backend.UnavailableReasons...),
 			TurnBudgetUnit:      backend.TurnBudgetUnit, TurnBudgetVersion: backend.TurnBudgetVersion,
 			DefaultMaxTurns: backend.DefaultMaxTurns, MaxTurns: backend.MaxTurns,
-			Models: append([]string(nil), backend.Models...), Efforts: append([]string(nil), backend.Efforts...),
+			Models: append([]string{}, backend.Models...), Efforts: append([]string{}, backend.Efforts...),
 		}
 	}
 	writeV1JSON(w, http.StatusOK, reviewCapabilitiesResponse{

@@ -76,6 +76,7 @@ type Config struct {
 	ReviewAgentEffortsOpenRouter []string
 	ReviewMaxWallClockSec        int
 	ReviewMaxTurns               int
+	ReviewMaxTurnsConfigured     bool
 	ReviewMaxFirstPassSamples    int
 	ReviewMaxFirstPassConcurrent int
 }
@@ -163,6 +164,10 @@ func Load() *Config {
 		// ceiling must leave room for every selectable backend's default unit.
 		reviewMaxTurnsDefault = defaultOpenRouterAgentMaxTurns
 	}
+	reviewMaxTurns, reviewMaxTurnsConfigured := getPositiveEnvInt("REVIEW_MAX_TURNS")
+	if !reviewMaxTurnsConfigured {
+		reviewMaxTurns = reviewMaxTurnsDefault
+	}
 
 	return &Config{
 		// Legacy single-user mode
@@ -216,7 +221,8 @@ func Load() *Config {
 		ReviewAgentEffortsClaude:     claudeEfforts,
 		ReviewAgentEffortsOpenRouter: openRouterEfforts,
 		ReviewMaxWallClockSec:        getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
-		ReviewMaxTurns:               getPositiveEnvIntOrDefault("REVIEW_MAX_TURNS", reviewMaxTurnsDefault),
+		ReviewMaxTurns:               reviewMaxTurns,
+		ReviewMaxTurnsConfigured:     reviewMaxTurnsConfigured,
 		ReviewMaxFirstPassSamples:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
 		ReviewMaxFirstPassConcurrent: getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
 	}
@@ -242,12 +248,19 @@ func getEnvOrDefault(key, defaultValue string) string {
 // zero, and negative values fall back to a positive default rather than
 // accidentally disabling a limit.
 func getPositiveEnvIntOrDefault(key string, defaultValue int) int {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		if n, err := strconv.Atoi(value); err == nil && n > 0 {
-			return n
-		}
+	if value, ok := getPositiveEnvInt(key); ok {
+		return value
 	}
 	return defaultValue
+}
+
+func getPositiveEnvInt(key string) (int, bool) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(value)
+	return n, err == nil && n > 0
 }
 
 func positiveOrDefault(value, defaultValue int) int {

@@ -107,7 +107,7 @@ type Spawner interface {
 
 // EnvironmentSpawner is required by backends whose frozen credential must be
 // injected into the child without placing it in argv. The slice is the complete
-// child environment, already deduplicated by environmentWithOverride.
+// child environment, already filtered and deduplicated by openRouterEnvironment.
 type EnvironmentSpawner interface {
 	SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error)
 }
@@ -258,7 +258,7 @@ func RunAgentReview(
 			err = errors.New("agent: OpenRouter spawner does not support frozen credential injection")
 		} else {
 			proc, err = envSpawner.SpawnWithEnv(runCtx, runtime.command, args, cloneDir,
-				environmentWithOverride(os.Environ(), "OPENROUTER_API_KEY", agentCfg.OpenRouterAPIKey))
+				openRouterEnvironment(os.Environ(), agentCfg.OpenRouterAPIKey))
 		}
 	} else {
 		proc, err = spawner.Spawn(runCtx, runtime.command, args, cloneDir)
@@ -878,15 +878,24 @@ type agentParseResult struct {
 	servedModels   []string // distinct models the stream reported, in first-seen order; empty if never reported
 }
 
-func environmentWithOverride(base []string, key, value string) []string {
-	prefix := key + "="
+func openRouterEnvironment(base []string, apiKey string) []string {
+	excluded := map[string]struct{}{
+		"ANTHROPIC_API_KEY": {}, "DATABASE_URL": {}, "GEMINI_API_KEY": {},
+		"GITHUB_APP_CLIENT_SECRET": {}, "GITHUB_APP_PRIVATE_KEY_PATH": {},
+		"GITHUB_TOKEN": {}, "GOOGLE_APPLICATION_CREDENTIALS": {},
+		"OPENROUTER_API_KEY": {}, "PRISM_TOKEN": {}, "SESSION_SECRET": {},
+	}
 	environment := make([]string, 0, len(base)+1)
 	for _, entry := range base {
-		if !strings.HasPrefix(entry, prefix) {
-			environment = append(environment, entry)
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, drop := excluded[key]; drop {
+				continue
+			}
 		}
+		environment = append(environment, entry)
 	}
-	return append(environment, prefix+value)
+	return append(environment, "OPENROUTER_API_KEY="+apiKey)
 }
 
 // diagnostic returns the best available explanation of a failed run — under
