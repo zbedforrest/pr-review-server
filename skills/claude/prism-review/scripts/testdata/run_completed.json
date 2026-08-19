@@ -1,0 +1,95 @@
+{
+  "run_id": "run-0123456789abcdef0123456789abcdef",
+  "target": {
+    "owner": "acme",
+    "repo": "widgets",
+    "pull_request": 42,
+    "commit_sha": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "status": "completed",
+  "trigger_source": "api_v1",
+  "accepted_at": "2026-08-19T12:00:00Z",
+  "queued_at": "2026-08-19T12:00:00Z",
+  "started_at": "2026-08-19T12:00:01Z",
+  "completed_at": "2026-08-19T12:01:01Z",
+  "duration_ms": 60000,
+  "execution_attempt": 1,
+  "config": {
+    "requested": {
+      "agent": {
+        "backend": "openrouter",
+        "model": "openai/gpt-5.6-sol",
+        "effort": "high",
+        "wall_clock_seconds": 720,
+        "max_turns": 100
+      },
+      "first_pass": {"samples": 2},
+      "required_checks": true
+    },
+    "effective": {
+      "schema_version": 2,
+      "agent": {
+        "enabled": true,
+        "backend": "openrouter",
+        "model": "openai/gpt-5.6-sol",
+        "effort": "high",
+        "wall_clock_seconds": 720,
+        "max_turns": 100,
+        "turn_budget_unit": "completed_non_reasoning_item",
+        "turn_budget_version": 1
+      },
+      "first_pass": {"samples": 2},
+      "required_checks": true
+    },
+    "sources": {
+      "agent.backend": "request",
+      "agent.model": "request",
+      "agent.max_turns": "request"
+    },
+    "hash": "fixture-config-hash",
+    "schema_version": 2
+  },
+  "result": {
+    "critical": 0,
+    "medium": 1,
+    "low": 0,
+    "verdict": "changes_requested",
+    "model_fallback": false,
+    "serving_model_verification": "request_pinned",
+    "publication_status": "published"
+  },
+  "models": [
+    {
+      "stage": "agent",
+      "provider": "openrouter",
+      "backend": "openrouter",
+      "requested_model": "openai/gpt-5.6-sol",
+      "served_model": "openai/gpt-5.6-sol",
+      "serving_model_verified": false,
+      "effort": "high",
+      "fallback": false
+    }
+  ],
+  "attempts": [
+    {
+      "execution_attempt": 1,
+      "stage": "agent",
+      "invocation_number": 1,
+      "attempt_number": 1,
+      "provider": "openrouter",
+      "backend": "openrouter",
+      "requested_model": "openai/gpt-5.6-sol",
+      "resolved_model": "openai/gpt-5.6-sol",
+      "status": "completed",
+      "budget_units_used": 12,
+      "turn_budget_unit": "completed_non_reasoning_item",
+      "turn_budget_version": 1,
+      "duration_ms": 50000
+    }
+  ],
+  "links": {
+    "self": "/api/v1/review-runs/run-0123456789abcdef0123456789abcdef",
+    "review": "/reviews/runs/acme/widgets/42/0123456/run-0123456789abcdef0123456789abcdef.html",
+    "findings": "/reviews/runs/acme/widgets/42/0123456/run-0123456789abcdef0123456789abcdef.json"
+  }
+}

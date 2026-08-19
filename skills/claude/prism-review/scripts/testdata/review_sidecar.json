@@ -1,0 +1,60 @@
+{
+  "schema_version": "1",
+  "owner": "acme",
+  "repo": "widgets",
+  "pr_number": 42,
+  "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+  "counts": {"critical": 0, "medium": 1, "low": 0},
+  "findings": [
+    {
+      "severity": "medium",
+      "file": "server/review_runs_api.go",
+      "line": 448,
+      "comment": "Return a polling hint for accepted review runs.",
+      "diff_hunk": "@@ -447,1 +448,2 @@",
+      "source_before": ["w.Header().Set(\"Location\", response.Links.Self)"],
+      "source_after": ["writeV1JSON(w, http.StatusAccepted, response)"]
+    }
+  ],
+  "review_run": {
+    "run_id": "run-0123456789abcdef0123456789abcdef",
+    "execution_attempt": 1,
+    "html_path": "runs/acme/widgets/42/0123456/run-0123456789abcdef0123456789abcdef.html",
+    "json_path": "runs/acme/widgets/42/0123456/run-0123456789abcdef0123456789abcdef.json",
+    "started_at": "2026-08-19T12:00:01Z",
+    "completed_at": "2026-08-19T12:01:01Z",
+    "duration_ms": 60000,
+    "models": [
+      {
+        "stage": "agent",
+        "provider": "openrouter",
+        "backend": "openrouter",
+        "requested_model": "openai/gpt-5.6-sol",
+        "served_model": "openai/gpt-5.6-sol",
+        "serving_model_verified": false,
+        "effort": "high",
+        "fallback": false
+      }
+    ],
+    "config": {
+      "requested": {"agent": {"backend": "openrouter"}},
+      "effective": {
+        "schema_version": 2,
+        "agent": {
+          "enabled": true,
+          "backend": "openrouter",
+          "model": "openai/gpt-5.6-sol",
+          "effort": "high",
+          "wall_clock_seconds": 720,
+          "max_turns": 100,
+          "turn_budget_unit": "completed_non_reasoning_item",
+          "turn_budget_version": 1
+        },
+        "first_pass": {"samples": 2},
+        "required_checks": true
+      },
+      "sources": {"agent.backend": "request"},
+      "hash": "fixture-config-hash"
+    }
+  }
+}
