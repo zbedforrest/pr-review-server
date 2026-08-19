@@ -432,6 +432,22 @@ func TestRunScopedCleanupCannotCancelReplacement(t *testing.T) {
 	p.untrackReviewRun(second.PR.Owner, second.PR.Repo, second.PR.Number, second.RunID)
 }
 
+func TestKilledAcceptedJobCannotBeReadopted(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	job := customReviewJob(t, "run-23500000000000000000000000000001")
+	queuedCtx, tracked := p.tryTrackReviewJob(context.Background(), job)
+	require.True(t, tracked)
+	job.QueueLeaseHolder = "dispatcher-killed"
+	require.True(t, p.setTrackedQueueLease(job, job.QueueLeaseHolder))
+	require.True(t, p.killReview(job.PR.Owner, job.PR.Repo, job.PR.Number))
+	assert.ErrorIs(t, queuedCtx.Err(), context.Canceled)
+
+	adoptedCtx, adopted := p.trackOrAdoptReviewJob(queuedCtx, job)
+	assert.False(t, adopted)
+	assert.Nil(t, adoptedCtx)
+	assert.False(t, p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number))
+}
+
 func TestQueuedReviewBudgetStartsAtExecution(t *testing.T) {
 	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
 	job := customReviewJob(t, "run-24000000000000000000000000000001")

@@ -1273,6 +1273,13 @@ func (p *Poller) trackOrAdoptReviewJob(parent context.Context, job ReviewJob) (c
 		}
 		return nil, false
 	}
+	// ProcessReviewJob tracked durably accepted work before returning to its
+	// caller. If that entry is now absent, cancellation or lease-loss cleanup
+	// won the race; recreating it would resurrect killed work without the
+	// dispatcher holder needed for queue-lease renewal.
+	if job.QueueLeaseHolder != "" {
+		return nil, false
+	}
 	ctx, cancel := context.WithCancel(parent)
 	p.activeReviews[key] = ProcessInfo{
 		TrackedAt: time.Now(), Timeout: p.reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
@@ -2922,8 +2929,16 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 	for _, job := range jobs {
 		jobCtx, owned := p.trackOrAdoptReviewJob(ctx, job)
 		if !owned {
-			log.Printf("[REVIEWER] PR %d is tracked by another run; rejecting %s", job.PR.Number, job.RunID)
-			p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "pr_already_claimed", "dispatch", ErrReviewAlreadyTracked)
+			terminalCode := "pr_already_claimed"
+			cause := error(ErrReviewAlreadyTracked)
+			if ctx.Err() != nil {
+				terminalCode = "cancelled"
+				cause = context.Cause(ctx)
+				log.Printf("[REVIEWER] PR %d job %s was cancelled before worker ownership", job.PR.Number, job.RunID)
+			} else {
+				log.Printf("[REVIEWER] PR %d is tracked by another run; rejecting %s", job.PR.Number, job.RunID)
+			}
+			p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, terminalCode, "dispatch", cause)
 			continue
 		}
 		ownedJobs = append(ownedJobs, job)
