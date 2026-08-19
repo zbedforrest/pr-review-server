@@ -294,6 +294,10 @@ func (s *Server) handleCreateReviewRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// This authorization boundary intentionally matches the existing
+	// /api/prs/generate-review endpoint: authenticated Prism users may request
+	// any target readable by the deployment's GitHub credentials. Operators
+	// constrain that boundary by scoping the GitHub App installation/token.
 	target := request.Target
 	ghPR, ghResponse, err := s.ghClient.GetPR(r.Context(), target.Owner, target.Repo, target.PullRequest)
 	if err != nil {
@@ -396,7 +400,10 @@ func (s *Server) handleCreateReviewRun(w http.ResponseWriter, r *http.Request) {
 		}
 		prRow.RepoOwner, prRow.RepoName, prRow.PRNumber = pr.Owner, pr.Repo, pr.Number
 		prRow.LastCommitSHA = pr.CommitSHA
-		prRow.Title, prRow.Author, prRow.CreatedAt, prRow.Draft = pr.Title, pr.Author, pr.CreatedAt, pr.Draft
+		prRow.Title, prRow.Author, prRow.Draft = pr.Title, pr.Author, pr.Draft
+		if pr.CreatedAt != nil {
+			prRow.CreatedAt = pr.CreatedAt
+		}
 		if err := s.db.UpsertPR(prRow); err != nil {
 			log.Printf("[API/v1] accepted run %s but failed to persist PR metadata: %v", job.RunID, err)
 			prRow = nil

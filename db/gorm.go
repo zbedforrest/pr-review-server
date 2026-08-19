@@ -173,6 +173,10 @@ func (g *GormDB) ensureIdempotentColumns() error {
 		ON review_runs(LOWER(repo_owner), LOWER(repo_name), pr_number, accepted_at DESC, run_id DESC)`).Error; err != nil {
 		return fmt.Errorf("index case-insensitive review run history: %w", err)
 	}
+	if err := g.db.Exec(`CREATE INDEX IF NOT EXISTS idx_review_runs_global_history
+		ON review_runs(accepted_at DESC, run_id DESC)`).Error; err != nil {
+		return fmt.Errorf("index global review run history: %w", err)
+	}
 	if g.db.Dialector.Name() != "postgres" {
 		if !g.db.Migrator().HasTable(&PRModel{}) {
 			return nil

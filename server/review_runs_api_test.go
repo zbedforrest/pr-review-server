@@ -257,6 +257,32 @@ func TestCreateReviewRunStrictInputAndRejectedRequestsHaveNoPRSideEffects(t *tes
 	assert.Nil(t, pr, "rejected custom requests must not create an auto-review candidate")
 }
 
+func TestCreateReviewRunPreservesExistingCreatedAtWhenGitHubOmitsIt(t *testing.T) {
+	headSHA := "0123456789abcdef0123456789abcdef01234567"
+	s, database, _, userID := newReviewAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"number":42,"title":"Configurable review","state":"open","draft":false,"user":{"login":"alice"},"head":{"sha":"%s"},"base":{"repo":{"name":"Widgets","owner":{"login":"Acme"}}}}`, headSHA)
+	})
+	existingCreatedAt := time.Date(2025, 7, 18, 9, 30, 0, 0, time.UTC)
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: "Acme", RepoName: "Widgets", PRNumber: 42, LastCommitSHA: headSHA,
+		Status: "completed", Title: "Previously polled", CreatedAt: &existingCreatedAt,
+	}))
+
+	request := addReviewAPIUser(httptest.NewRequest(
+		http.MethodPost, reviewRunsPath, strings.NewReader(configurableReviewRequest(headSHA)),
+	), *userID)
+	recorder := httptest.NewRecorder()
+	s.handleReviewRuns(recorder, request)
+	require.Equal(t, http.StatusAccepted, recorder.Code, recorder.Body.String())
+
+	persistedPR, err := database.GetPR("Acme", "Widgets", 42)
+	require.NoError(t, err)
+	require.NotNil(t, persistedPR)
+	require.NotNil(t, persistedPR.CreatedAt)
+	assert.Equal(t, existingCreatedAt, *persistedPR.CreatedAt)
+}
+
 func TestWaitForIdempotentReviewRunBridgesAdmissionCommitWindow(t *testing.T) {
 	s, _, apiPoller, _ := newReviewAPIServer(t, githubPRResponse("0123456789abcdef0123456789abcdef01234567"))
 	job, err := apiPoller.PrepareReviewJob(github.PullRequest{

@@ -254,26 +254,33 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 	}
 	queueHolder := newHolderID()
 	job.QueueLeaseHolder = queueHolder
-	p.reviewAdmissionMutex.Lock()
-	// Acceptance is durable and execution is asynchronous, so an HTTP request
-	// ending must not cancel the accepted run. Preserve context values while
-	// replacing the caller's cancellation/deadline with the run's own timeout.
-	reviewCtx, tracked := p.tryTrackReviewJob(context.WithoutCancel(ctx), job)
-	if !tracked {
-		p.reviewAdmissionMutex.Unlock()
-		return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
-	}
 	now := time.Now().UTC()
 	queueLeaseExpiresAt := now.Add(ReviewQueueLeaseTTL)
-	if err := p.ensureReviewRunWithQueueLease(job, queueHolder, queueLeaseExpiresAt); err != nil {
-		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
-		p.reviewAdmissionMutex.Unlock()
-		if errors.Is(err, db.ErrReviewRunActiveConflict) {
+	var reviewCtx context.Context
+	admissionErr := func() error {
+		p.reviewAdmissionMutex.Lock()
+		defer p.reviewAdmissionMutex.Unlock()
+
+		// Acceptance is durable and execution is asynchronous, so an HTTP request
+		// ending must not cancel the accepted run. Preserve context values while
+		// replacing the caller's cancellation/deadline with the run's own timeout.
+		var tracked bool
+		reviewCtx, tracked = p.tryTrackReviewJob(context.WithoutCancel(ctx), job)
+		if !tracked {
 			return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
 		}
-		return err
+		if err := p.ensureReviewRunWithQueueLease(job, queueHolder, queueLeaseExpiresAt); err != nil {
+			p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
+			if errors.Is(err, db.ErrReviewRunActiveConflict) {
+				return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
+			}
+			return err
+		}
+		return nil
+	}()
+	if admissionErr != nil {
+		return admissionErr
 	}
-	p.reviewAdmissionMutex.Unlock()
 	leased, err := p.db.ClaimOrRenewQueuedReviewRunLease(job.RunID, queueHolder, now, queueLeaseExpiresAt)
 	if err != nil || !leased {
 		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
