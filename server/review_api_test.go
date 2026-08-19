@@ -404,6 +404,17 @@ func TestReviewAPI_unpinned_missing_canonical_falls_back_to_immutable_run(t *tes
 		assert.Equal(t, direct.body, w.Body.String())
 		assert.Contains(t, w.Header().Get("Cache-Control"), direct.cache)
 	}
+
+	// A partial alias write can leave canonical HTML present while canonical
+	// JSON is missing. The API must still use the durable immutable sidecar.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, canonicalPath), []byte("<html>canonical</html>"), 0o644))
+	w = doReviewAPIGet(t, server, user, target)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, canonicalPath, resp.ReviewPath)
+	assert.True(t, resp.FindingsAvailable)
+	require.NotNil(t, resp.ReviewRun)
+	assert.Equal(t, jsonPath, resp.ReviewRun.JSONPath)
 }
 
 func TestReviewAPI_run_id_requires_sha_and_valid_id(t *testing.T) {

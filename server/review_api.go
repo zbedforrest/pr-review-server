@@ -240,6 +240,21 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 	// view at review_url still works.
 	sidecarName := gcs.ReviewJSONFileName(filename)
 	sidecarBytes, sidecarErr := s.fetchReviewBytes(r.Context(), sidecarName)
+	if errors.Is(sidecarErr, errReviewNotFound) && runID == "" {
+		if fallback := immutableReviewArtifactPath(pr.ReviewRunJSON, owner, repo, prNumber, ".json"); fallback != "" && fallback != sidecarName {
+			fallbackHTML := strings.TrimSuffix(fallback, ".json") + ".html"
+			fallbackMatchesPin := pinnedSHA == "" || shaPrefixMatch(pinnedSHA, commitSHAFromFilename(fallbackHTML))
+			if fallbackMatchesPin {
+				if fallbackBytes, fallbackErr := s.fetchReviewBytes(r.Context(), fallback); fallbackErr == nil {
+					sidecarName = fallback
+					sidecarBytes = fallbackBytes
+					sidecarErr = nil
+				} else if !errors.Is(fallbackErr, errReviewNotFound) {
+					sidecarErr = fallbackErr
+				}
+			}
+		}
+	}
 	if sidecarErr == nil {
 		var pl payload.Payload
 		if err := json.Unmarshal(sidecarBytes, &pl); err != nil {
