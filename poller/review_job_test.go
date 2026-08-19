@@ -60,6 +60,7 @@ func reviewJobWithoutAgent(t *testing.T, runID string) ReviewJob {
 	job := customReviewJob(t, runID)
 	effective := job.Config.Effective
 	effective.Agent.Enabled = false
+	effective.Agent.WallClockSeconds = 0
 	job.Config = reviewJobSnapshot(t, effective)
 	return job
 }
@@ -285,6 +286,28 @@ func TestGenerateReviewJobRejectsRivalBeforeMutatingPRState(t *testing.T) {
 	p.untrackReviewRun(owner.PR.Owner, owner.PR.Repo, owner.PR.Number, owner.RunID)
 }
 
+func TestGenerateReviewJobsSkipsInvalidJobAndRunsValidSibling(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), NewMockReviewGenerator())
+	invalid := customReviewJob(t, "run-22700000000000000000000000000001")
+	invalid.PR.CommitSHA = ""
+	valid := customReviewJob(t, "run-22700000000000000000000000000002")
+	valid.PR.Number = 8
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: valid.PR.Owner, RepoName: valid.PR.Repo, PRNumber: valid.PR.Number,
+		LastCommitSHA: valid.PR.CommitSHA, Status: "pending",
+	}))
+
+	err := p.generateReviewJobs(context.Background(), []ReviewJob{invalid, valid})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "complete PR target")
+	waitForReviewJob(t, p, valid)
+	run, getErr := database.GetReviewRun(valid.RunID)
+	require.NoError(t, getErr)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCompleted, run.Status)
+}
+
 func TestRunScopedCleanupCannotCancelReplacement(t *testing.T) {
 	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
 	first := customReviewJob(t, "run-23000000000000000000000000000001")
@@ -486,7 +509,7 @@ func TestOrganicTimeoutCannotClobberSuccessorRun(t *testing.T) {
 		job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA, job.PR.Title, job.PR.Author, nil, false, successorRunID,
 	))
 	projected, err := database.MarkPRCompletedForReviewRun(
-		job.PR.Owner, job.PR.Repo, job.PR.Number, successorRunID, job.PR.CommitSHA, "successor.html", 0, 0, 0, "approve", false, `{}`,
+		job.PR.Owner, job.PR.Repo, job.PR.Number, successorRunID, successorRunID, job.PR.CommitSHA, "successor.html", 0, 0, 0, "approve", false, `{}`,
 	)
 	require.NoError(t, err)
 	require.True(t, projected)

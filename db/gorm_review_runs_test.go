@@ -105,10 +105,10 @@ func TestGormDBReviewProjectionFencesSupersededRuns(t *testing.T) {
 	updated, err = database.SetPRErrorForReviewRun(owner, repo, prNum, runA, "stale failure")
 	require.NoError(t, err)
 	assert.False(t, updated)
-	updated, err = database.MarkPRCompletedForReviewRun(owner, repo, prNum, runA, sha, "stale.html", 1, 2, 3, "request_changes", false, `{}`)
+	updated, err = database.MarkPRCompletedForReviewRun(owner, repo, prNum, runA, runA, sha, "stale.html", 1, 2, 3, "request_changes", false, `{}`)
 	require.NoError(t, err)
 	assert.False(t, updated)
-	updated, err = database.MarkPRCompletedForReviewRun(owner, repo, prNum, runB, sha, "winner.html", 0, 1, 0, "approve", false, `{"run_id":"`+runB+`"}`)
+	updated, err = database.MarkPRCompletedForReviewRun(owner, repo, prNum, runB, runB, sha, "winner.html", 0, 1, 0, "approve", false, `{"run_id":"`+runB+`"}`)
 	require.NoError(t, err)
 	assert.True(t, updated)
 
@@ -118,6 +118,45 @@ func TestGormDBReviewProjectionFencesSupersededRuns(t *testing.T) {
 	assert.Equal(t, "completed", pr.Status)
 	assert.Equal(t, "winner.html", pr.ReviewHTMLPath)
 	assert.Equal(t, runB, pr.ReviewRunID)
+}
+
+func TestGormDBAutomaticReviewAdmissionPreservesRetryCap(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	const (
+		owner = "acme"
+		repo  = "retry-cap"
+		prNum = 9
+		sha   = "0123456789abcdef0123456789abcdef01234567"
+		runA  = "run-000000000000000000000000000000ca"
+		runB  = "run-000000000000000000000000000000cb"
+	)
+	require.NoError(t, database.SetPRGeneratingForReviewRun(owner, repo, prNum, sha, "Title", "alice", nil, false, runA))
+	updated, err := database.SetPRErrorForReviewRun(owner, repo, prNum, runA, "timed out")
+	require.NoError(t, err)
+	require.True(t, updated)
+	old := time.Now().UTC().Add(-time.Hour)
+	require.NoError(t, database.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNum).
+		Update("last_reviewed_at", old).Error)
+	count, err := database.ResetErrorPRs(5, 1)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	require.NoError(t, database.SetPRGeneratingForReviewRun(owner, repo, prNum, sha, "Title", "alice", nil, false, runB))
+	var model PRModel
+	require.NoError(t, database.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNum).First(&model).Error)
+	assert.Equal(t, 1, model.ErrorRetryCount, "automatic admission must not re-arm the retry counter")
+	updated, err = database.SetPRErrorForReviewRun(owner, repo, prNum, runB, "timed out again")
+	require.NoError(t, err)
+	require.True(t, updated)
+	require.NoError(t, database.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNum).
+		Update("last_reviewed_at", old).Error)
+	count, err = database.ResetErrorPRs(5, 1)
+	require.NoError(t, err)
+	assert.Zero(t, count, "the second deterministic failure must remain capped")
 }
 
 func TestGormDBReviewRunIdempotencyLookup(t *testing.T) {

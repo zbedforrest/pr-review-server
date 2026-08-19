@@ -26,7 +26,7 @@ func (g *GormDB) SetPRGeneratingForReviewRun(owner, repo string, prNumber int, c
 		Columns: []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"last_commit_sha", "status", "generating_since", "title", "author", "created_at", "draft",
-			"projection_run_id", "error_message", "error_retry_count",
+			"projection_run_id", "error_message",
 		}),
 	}).Create(model).Error
 }
@@ -54,19 +54,19 @@ func (g *GormDB) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID,
 	return result.RowsAffected == 1, nil
 }
 
-func (g *GormDB) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, runID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+func (g *GormDB) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
 	now := time.Now().UTC()
 	result := g.db.Model(&PRModel{}).
-		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ?", owner, repo, prNumber, runID).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ?", owner, repo, prNumber, projectionRunID).
 		Updates(map[string]any{
 			"status": "completed", "review_path": reviewPath, "last_commit_sha": commitSHA,
 			"last_reviewed_at": now, "generating_since": nil, "critical_count": critical,
 			"medium_count": medium, "low_count": low, "review_verdict": verdict,
-			"model_fallback": modelFallback, "review_run_id": runID,
-			"review_run_json": reviewRunJSON, "error_message": "",
+			"model_fallback": modelFallback, "review_run_id": reviewRunID,
+			"review_run_json": reviewRunJSON, "error_message": "", "error_retry_count": 0,
 		})
 	if result.Error != nil {
-		return false, fmt.Errorf("mark PR completed for run %s: %w", runID, result.Error)
+		return false, fmt.Errorf("mark PR completed for run %s: %w", projectionRunID, result.Error)
 	}
 	return result.RowsAffected == 1, nil
 }

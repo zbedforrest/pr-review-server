@@ -437,9 +437,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	projected, setErr := p.db.SetPRAgentReviewingForReviewRun(pr.Owner, pr.Repo, pr.Number, execution.Job.RunID)
 	if setErr != nil {
 		log.Printf("[REVIEWER] WARNING: could not set agent_reviewing status for PR %d: %v", pr.Number, setErr)
-		return nil, fmt.Errorf("agent review: update PR projection: %w", setErr)
-	}
-	if !projected {
+	} else if !projected {
 		return nil, fmt.Errorf("agent review: run %s no longer owns the PR projection", execution.Job.RunID)
 	}
 	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
@@ -2750,11 +2748,20 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 	if len(jobs) == 0 {
 		return nil
 	}
+	validationErrors := make([]error, 0)
+	validJobs := make([]ReviewJob, 0, len(jobs))
 	for _, job := range jobs {
 		if err := p.validateReviewJob(job); err != nil {
-			return err
+			log.Printf("[REVIEWER] ERROR: rejecting invalid job %s for %s/%s#%d: %v", job.RunID, job.PR.Owner, job.PR.Repo, job.PR.Number, err)
+			validationErrors = append(validationErrors, err)
+			continue
 		}
+		validJobs = append(validJobs, job)
 	}
+	if len(validJobs) == 0 {
+		return errors.Join(validationErrors...)
+	}
+	jobs = validJobs
 
 	// Establish ownership before provider initialization, cache reads, or PR
 	// state writes. This closes the entire poll-vs-immediate race window, not
@@ -2772,12 +2779,13 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 		jobContexts[job.RunID] = jobCtx
 	}
 	if len(ownedJobs) == 0 {
-		return nil
+		return errors.Join(validationErrors...)
 	}
 	jobs = ownedJobs
 
 	// If using mock generator (for testing), skip LLM client initialization
 	var reviewSvc *service.Service
+	var reviewSvcInitErr error
 	if p.reviewGenerator == nil {
 		// Initialize reviewer clients
 		smartLlmClient := llm.NewClient(llm.ProviderGemini, p.cfg.GeminiAPIKey, false, false)
@@ -2785,21 +2793,10 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 
 		// Validate API Key once
 		if err := smartLlmClient.ValidateAPIKey(); err != nil {
-			wrappedErr := fmt.Errorf("Gemini API key validation failed: %w", err)
-			for _, job := range jobs {
-				p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "gemini_validation_failed", "first_pass", err)
-				if jobContexts[job.RunID].Err() == nil {
-					if setErr := p.db.SetPRError(job.PR.Owner, job.PR.Repo, job.PR.Number, wrappedErr.Error()); setErr != nil {
-						log.Printf("[REVIEWER] WARNING: failed to persist API validation error for PR %d: %v", job.PR.Number, setErr)
-					}
-					p.broadcastPRUpdate(job.PR.Owner, job.PR.Repo, job.PR.Number)
-				}
-				p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
-			}
-			return wrappedErr
+			reviewSvcInitErr = fmt.Errorf("Gemini API key validation failed: %w", err)
+		} else {
+			reviewSvc = service.NewService(p.ghClientConcrete, smartLlmClient, fastLlmClient)
 		}
-
-		reviewSvc = service.NewService(p.ghClientConcrete, smartLlmClient, fastLlmClient)
 	}
 
 	// Batch tokens are held across the agent stage, so a batch limit below
@@ -2864,9 +2861,11 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					reviewRunID = existingPR.ReviewRunID
 					reviewRunJSON = existingPR.ReviewRunJSON
 				}
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunID, reviewRunJSON); err != nil {
+				if err := p.db.SetPRGeneratingForReviewRun(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, job.RunID); err != nil {
+					log.Printf("[REVIEWER] ERROR: Failed to claim cached-review projection: %v", err)
+				} else if projected, err := p.db.MarkPRCompletedForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
-				} else {
+				} else if projected {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				}
 				p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "review_cached", "dispatch", fmt.Errorf("review artifact already exists"))
@@ -2875,7 +2874,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			}
 
 			agentSlotReserved := false
-			if job.Config.Effective.Agent.Enabled && p.agentSlots != nil {
+			if reviewSvcInitErr == nil && job.Config.Effective.Agent.Enabled && p.agentSlots != nil {
 				// Reserve scarce agent capacity while the job still has its
 				// un-deadlined queued context. Neither the configured execution
 				// budget nor the worker lease burns down waiting for this slot.
@@ -2931,7 +2930,9 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			// Generate review using mock interface (testing) or real service
 			var err error
 			var reviewResult *ReviewResult
-			if p.reviewGenerator != nil {
+			if reviewSvcInitErr != nil {
+				err = reviewSvcInitErr
+			} else if p.reviewGenerator != nil {
 				// Use mock generator for testing
 				genCfg := ReviewGeneratorConfig{
 					RunID:        job.RunID,
@@ -3118,7 +3119,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 					return
 				}
-				projected, err := p.db.MarkPRCompletedForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback, string(reviewRunJSON))
+				projected, err := p.db.MarkPRCompletedForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, job.RunID, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback, string(reviewRunJSON))
 				if err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
 				} else if !projected {
@@ -3136,7 +3137,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 	}
 
 	wg.Wait()
-	return nil
+	return errors.Join(validationErrors...)
 }
 
 // shouldReview determines if a PR should be processed for review generation

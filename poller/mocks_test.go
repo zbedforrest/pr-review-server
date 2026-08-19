@@ -520,11 +520,11 @@ func (m *MockDatabase) SetPRErrorForReviewRun(owner, repo string, prNumber int, 
 	return true, nil
 }
 
-func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, runID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := prDBKey(owner, repo, prNumber)
-	if m.ProjectionRunIDs[key] != runID {
+	if m.ProjectionRunIDs[key] != projectionRunID {
 		return false, nil
 	}
 	if pr := m.PRs[key]; pr != nil {
@@ -540,7 +540,7 @@ func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber 
 		pr.ReviewVerdict = verdict
 		pr.ModelFallback = modelFallback
 		pr.ErrorMessage = ""
-		pr.ReviewRunID = runID
+		pr.ReviewRunID = reviewRunID
 		pr.ReviewRunJSON = reviewRunJSON
 	}
 	return true, nil

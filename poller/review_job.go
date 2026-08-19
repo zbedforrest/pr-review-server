@@ -178,7 +178,9 @@ func reviewTimeout(cfg runconfig.Effective) time.Duration {
 
 func reviewTimeoutWithMargin(cfg runconfig.Effective, margin time.Duration) time.Duration {
 	timeout := margin
-	if cfg.Agent.Enabled && cfg.Agent.WallClockSeconds > 0 {
+	// Preserve the deployment's historical total-review allowance even when
+	// the agent stage is disabled; first-pass-only reviews can still be large.
+	if cfg.Agent.WallClockSeconds > 0 {
 		timeout += time.Duration(cfg.Agent.WallClockSeconds) * time.Second
 	}
 	return timeout
