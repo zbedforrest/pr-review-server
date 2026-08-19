@@ -20,6 +20,12 @@ assert_contains() {
   esac
 }
 
+assert_not_contains() {
+  case "$1" in
+    *"$2"*) fail "expected output not to contain: $2" ;;
+  esac
+}
+
 assert_eq() {
   [ "$1" = "$2" ] || fail "expected '$2', got '$1'"
 }
@@ -39,6 +45,7 @@ EOF
 cat >"$TEST_TMP/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >"${FAKE_LAST_ARGV:?}"
 method=GET
 output=""
 data=""
@@ -49,7 +56,13 @@ while [ "$#" -gt 0 ]; do
     -X) method="$2"; shift 2 ;;
     -o) output="$2"; shift 2 ;;
     -w) shift 2 ;;
-    -H) headers="$headers|$2"; shift 2 ;;
+    -H)
+      headers="$headers|$2"
+      case "$2" in
+        @*) cp "${2#@}" "${FAKE_LAST_AUTH:?}" ;;
+      esac
+      shift 2
+      ;;
     --data) data="$2"; shift 2 ;;
     -sS) shift ;;
     *) url="$1"; shift ;;
@@ -127,6 +140,8 @@ export FIXTURE_DIR
 export FAKE_TRACE="$TEST_TMP/trace"
 export FAKE_LAST_REQUEST="$TEST_TMP/last-request.json"
 export FAKE_LAST_HEADERS="$TEST_TMP/last-headers"
+export FAKE_LAST_ARGV="$TEST_TMP/last-argv"
+export FAKE_LAST_AUTH="$TEST_TMP/last-auth"
 : >"$FAKE_TRACE"
 
 help_output=$(env -u PRISM_BASE_URL -u PRISM_TOKEN "$CLIENT" --help)
@@ -135,6 +150,8 @@ assert_contains "$help_output" "prism.sh create"
 capabilities=$("$CLIENT" capabilities)
 assert_eq "$(printf '%s' "$capabilities" | jq -r '.schema_version')" "2"
 assert_contains "$capabilities" "openai/gpt-5.6-sol"
+assert_contains "$(cat "$FAKE_LAST_AUTH")" "Authorization: Bearer test-token"
+assert_not_contains "$(cat "$FAKE_LAST_ARGV")" "test-token"
 
 created=$("$CLIENT" create acme/widgets#42 \
   --backend openrouter \
