@@ -173,34 +173,37 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 	}
 	filename = cleaned
 
-	// ?format=html keeps the raw HTML escape hatch for humans / debugging.
-	// Everything else returns the structured payload.
-	if r.URL.Query().Get("format") == "html" {
-		html, fetchErr := s.fetchReviewBytes(r.Context(), filename)
-		if fetchErr != nil {
-			if errors.Is(fetchErr, errReviewNotFound) {
-				http.Error(w, "Review file not found", http.StatusNotFound)
-				return
-			}
-			log.Printf("[API/review] fetch error for %s: %v", filename, fetchErr)
-			http.Error(w, "Failed to fetch review", http.StatusBadGateway)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(html) // nolint:errcheck
-		return
-	}
-
 	// Confirm the HTML object still exists before claiming the review is
-	// available — otherwise a pinned ?sha= to a non-existent file would
-	// return a "success-looking" envelope.
-	if _, fetchErr := s.fetchReviewBytes(r.Context(), filename); fetchErr != nil {
+	// available. A published run projects a rolling-deploy-compatible canonical
+	// path before writing that mutable alias, so unpinned reads fall back to the
+	// already-durable immutable path recorded in review_run_json.
+	html, fetchErr := s.fetchReviewBytes(r.Context(), filename)
+	if errors.Is(fetchErr, errReviewNotFound) && pinnedSHA == "" && runID == "" {
+		if fallback := immutableReviewPath(pr.ReviewRunJSON, owner, repo, prNumber); fallback != "" && fallback != filename {
+			if fallbackHTML, fallbackErr := s.fetchReviewBytes(r.Context(), fallback); fallbackErr == nil {
+				filename = fallback
+				html = fallbackHTML
+				fetchErr = nil
+			} else if !errors.Is(fallbackErr, errReviewNotFound) {
+				fetchErr = fallbackErr
+			}
+		}
+	}
+	if fetchErr != nil {
 		if errors.Is(fetchErr, errReviewNotFound) {
 			http.Error(w, "Review file not found", http.StatusNotFound)
 			return
 		}
 		log.Printf("[API/review] fetch error for %s: %v", filename, fetchErr)
 		http.Error(w, "Failed to fetch review", http.StatusBadGateway)
+		return
+	}
+
+	// ?format=html keeps the raw HTML escape hatch for humans / debugging.
+	// Everything else returns the structured payload.
+	if r.URL.Query().Get("format") == "html" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(html) // nolint:errcheck
 		return
 	}
 
@@ -394,6 +397,23 @@ func commitSHAFromFilename(filename string) string {
 		return ""
 	}
 	return trimmed[idx+1:]
+}
+
+func immutableReviewPath(reviewRunJSON, owner, repo string, prNumber int) string {
+	if reviewRunJSON == "" {
+		return ""
+	}
+	var info payload.ReviewRunInfo
+	if err := json.Unmarshal([]byte(reviewRunJSON), &info); err != nil || !isSafeRunID(info.RunID) {
+		return ""
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(info.HTMLPath))
+	segments := strings.Split(cleaned, "/")
+	if len(segments) != 6 || segments[0] != "runs" || segments[1] != owner || segments[2] != repo ||
+		segments[3] != strconv.Itoa(prNumber) || !isSafeSHA(segments[4]) || segments[5] != info.RunID+".html" {
+		return ""
+	}
+	return cleaned
 }
 
 // shaPrefixMatch returns true if either SHA is a prefix of the other. Used to
