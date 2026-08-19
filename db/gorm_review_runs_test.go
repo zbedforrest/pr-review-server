@@ -728,6 +728,43 @@ func TestGormDBAbandonedQueuedRunPreservesCompletedProjection(t *testing.T) {
 	assert.Empty(t, pr.ErrorMessage)
 }
 
+func TestGormDBAbandonedRunDoesNotErrorProjectionWithLiveReplacement(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	require.NoError(t, database.db.Exec("DROP INDEX IF EXISTS idx_review_runs_one_live_per_pr").Error)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	abandoned := reviewRunFixture("run-00000000000000000000000000000022", now.Add(-2*time.Hour))
+	replacement := reviewRunFixture("run-00000000000000000000000000000023", now)
+	for _, run := range []*ReviewRun{&abandoned, &replacement} {
+		run.IdempotencyScope = ""
+		run.IdempotencyKeyHash = ""
+		require.NoError(t, database.CreateReviewRun(run))
+	}
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		abandoned.RepoOwner, abandoned.RepoName, abandoned.PRNumber, abandoned.CommitSHA,
+		"Superseded review", "alice", nil, false, abandoned.RunID,
+	))
+
+	count, err := database.AbandonExpiredReviewRuns(now, 2*time.Minute, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	stale, err := database.GetReviewRun(abandoned.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, stale)
+	assert.Equal(t, ReviewRunStatusTimedOut, stale.Status)
+	live, err := database.GetReviewRun(replacement.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, live)
+	assert.Equal(t, ReviewRunStatusQueued, live.Status)
+
+	pr, err := database.GetPR(abandoned.RepoOwner, abandoned.RepoName, abandoned.PRNumber)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "generating", pr.Status)
+	assert.Empty(t, pr.ErrorMessage)
+}
+
 func TestGormDBQueuedDispatcherLeaseControlsAbandonment(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()

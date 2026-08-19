@@ -1313,7 +1313,7 @@ func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, que
 	}
 	runningCutoff := now.Add(-runningGrace)
 	queuedCutoff := now.Add(-queuedMaxAge)
-	abandoned := 0
+	abandonedRuns := make([]*db.ReviewRun, 0)
 	for _, run := range m.ReviewRuns {
 		terminalCode := ""
 		failureStage := ""
@@ -1340,17 +1340,28 @@ func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, que
 		run.ErrorSummary = errorSummary
 		run.LeaseHolder = ""
 		run.LeaseExpiresAt = nil
+		abandonedRuns = append(abandonedRuns, run)
+	}
+	for _, run := range abandonedRuns {
 		key := prDBKey(run.RepoOwner, run.RepoName, run.PRNumber)
-		if pr := m.PRs[key]; pr != nil && pr.Status != "completed" && m.ProjectionRunIDs[key] == run.RunID {
+		hasLiveReplacement := false
+		for _, candidate := range m.ReviewRuns {
+			if candidate.RunID != run.RunID && candidate.RepoOwner == run.RepoOwner && candidate.RepoName == run.RepoName && candidate.PRNumber == run.PRNumber &&
+				(candidate.Status == db.ReviewRunStatusQueued ||
+					(candidate.Status == db.ReviewRunStatusRunning && (candidate.LeaseExpiresAt == nil || candidate.LeaseExpiresAt.After(now)))) {
+				hasLiveReplacement = true
+				break
+			}
+		}
+		if pr := m.PRs[key]; pr != nil && pr.Status != "completed" && !hasLiveReplacement && m.ProjectionRunIDs[key] == run.RunID {
 			completedAt := now
 			pr.Status = "error"
 			pr.ErrorMessage = "review run abandoned after lease expiry"
 			pr.LastReviewedAt = &completedAt
 			pr.GeneratingSince = nil
 		}
-		abandoned++
 	}
-	return abandoned, nil
+	return len(abandonedRuns), nil
 }
 
 func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error {
