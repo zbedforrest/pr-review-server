@@ -457,7 +457,22 @@ func (p *Poller) rejectQueuedReviewJob(job ReviewJob, status, terminalCode, fail
 
 func (p *Poller) rejectProviderInitJobs(jobs []ReviewJob, cause error) {
 	for _, job := range jobs {
-		p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "provider_init_failed", "dispatch", cause)
+		persistFailure := job.TriggerSource != "poller"
+		if !persistFailure {
+			// Automatic polling has not durably accepted a run yet. A deployment-
+			// wide provider outage must not mint one failed ledger row per pending
+			// PR on every poll cycle. If a future durable dispatcher replays a
+			// poll-sourced row, preserve that already-existing run instead.
+			existing, err := p.db.GetReviewRun(job.RunID)
+			if err != nil {
+				log.Printf("[REVIEWER] WARN: check poll-sourced run %s after provider init failure: %v", job.RunID, err)
+			} else {
+				persistFailure = existing != nil
+			}
+		}
+		if persistFailure {
+			p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "provider_init_failed", "dispatch", cause)
+		}
 		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 	}
 }

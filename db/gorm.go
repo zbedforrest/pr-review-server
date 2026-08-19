@@ -167,6 +167,12 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_prs_review_run_id ON prs(review_run_id)").Error; err != nil {
 		return fmt.Errorf("index review_run_id: %w", err)
 	}
+	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_review_runs_status_lease ON review_runs(status, lease_expires_at)").Error; err != nil {
+		return fmt.Errorf("index review_runs status/lease: %w", err)
+	}
+	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_review_runs_status_queue ON review_runs(status, queued_at)").Error; err != nil {
+		return fmt.Errorf("index review_runs status/queue: %w", err)
+	}
 	return nil
 }
 

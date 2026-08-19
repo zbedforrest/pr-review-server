@@ -2879,8 +2879,9 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 	}
 	if reviewSvcInitErr != nil {
 		// Provider initialization is deployment-wide and may be transient. Keep
-		// a terminal run ledger for each accepted request, but do not claim or
-		// error the PR projection (which would consume its bounded auto-retry).
+		// terminal ledgers for durably accepted requests, but do not mint a new
+		// failed run for every automatic candidate on every poll cycle. In both
+		// cases, leave the PR projection alone so its bounded retry is not spent.
 		p.rejectProviderInitJobs(jobs, reviewSvcInitErr)
 		return errors.Join(append(validationErrors, reviewSvcInitErr)...)
 	}
@@ -3005,9 +3006,20 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if beginErr != nil {
 				log.Printf("[REVIEWER] ERROR: Could not begin review run %s: %v", job.RunID, beginErr)
 				rejectedQueued := p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "claim_failed", "dispatch", beginErr)
-				// A not-claimed run may be executing on another instance; never
-				// overwrite its PR projection. Other failures belong to this worker.
-				if rejectedQueued || !errors.Is(beginErr, ErrReviewRunNotClaimed) {
+				projectBeginError := rejectedQueued || !errors.Is(beginErr, ErrReviewRunNotClaimed)
+				if !projectBeginError {
+					// A duplicate worker can lose the claim while another instance is
+					// legitimately executing this run ID. Preserve that projection. A
+					// terminal/nonexistent run has no live owner, so release its fenced
+					// generating projection immediately instead of waiting for stale reset.
+					run, getErr := p.db.GetReviewRun(job.RunID)
+					if getErr != nil {
+						log.Printf("[REVIEWER] WARNING: could not inspect unclaimed run %s: %v", job.RunID, getErr)
+					} else {
+						projectBeginError = run == nil || run.Status != db.ReviewRunStatusRunning
+					}
+				}
+				if projectBeginError {
 					if _, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, beginErr.Error()); setErr != nil {
 						log.Printf("[REVIEWER] WARNING: failed to persist begin error for PR %d: %v", pr.Number, setErr)
 					}

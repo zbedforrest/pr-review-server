@@ -408,6 +408,51 @@ func TestProviderInitFailureRejectsRunWithoutConsumingPRRetry(t *testing.T) {
 	assert.False(t, p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number))
 }
 
+func TestProviderInitFailureDoesNotCreateRunForAutomaticCandidate(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-24300000000000000000000000000002")
+	job.TriggerSource = "poller"
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "pending",
+	}))
+	_, tracked := p.tryTrackReviewJob(context.Background(), job)
+	require.True(t, tracked)
+
+	p.rejectProviderInitJobs([]ReviewJob{job}, errors.New("provider temporarily unavailable"))
+
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	assert.Nil(t, run)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "pending", pr.Status)
+	assert.False(t, p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number))
+}
+
+func TestUnclaimedTerminalRunReleasesGeneratingProjection(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), NewMockReviewGenerator())
+	job := reviewJobWithoutAgent(t, "run-24300000000000000000000000000003")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "pending",
+	}))
+	require.NoError(t, p.ensureReviewRun(job))
+	terminal := db.ReviewRunStatusTimedOut
+	require.NoError(t, database.PatchReviewRun(job.RunID, db.ReviewRunPatch{Status: &terminal}))
+
+	require.NoError(t, p.generateReviewJobs(context.Background(), []ReviewJob{job}))
+
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "error", pr.Status)
+	assert.Contains(t, pr.ErrorMessage, ErrReviewRunNotClaimed.Error())
+}
+
 func TestQueuedCacheLookupHasIndependentTimeout(t *testing.T) {
 	storage := NewMockReviewStorage()
 	storage.ReviewExistsFunc = func(ctx context.Context, _ string, _ string, _ int, _ string) (bool, error) {
