@@ -797,6 +797,44 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
 }
 
+func TestGormDBOneLiveRunMigrationRepairsExistingRows(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	require.NoError(t, database.db.Exec("DROP INDEX IF EXISTS idx_review_runs_one_live_per_pr").Error)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	older := reviewRunFixture("run-000000000000000000000000000000f1", now.Add(-time.Minute))
+	newer := reviewRunFixture("run-000000000000000000000000000000f2", now)
+	require.NoError(t, database.CreateReviewRun(&older))
+	require.NoError(t, database.CreateReviewRun(&newer))
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		newer.RepoOwner, newer.RepoName, newer.PRNumber, newer.CommitSHA,
+		"Migration target", "alice", nil, false, newer.RunID,
+	))
+	require.NoError(t, database.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", newer.RepoOwner, newer.RepoName, newer.PRNumber).
+		UpdateColumn("projection_run_id", nil).Error)
+
+	require.NoError(t, database.ensureIdempotentColumns())
+	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_one_live_per_pr"))
+	loser, err := database.GetReviewRun(older.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, loser)
+	assert.Equal(t, ReviewRunStatusTimedOut, loser.Status)
+	assert.Equal(t, "migration_deduped", loser.TerminalCode)
+	assert.Equal(t, "migration", loser.FailureStage)
+	require.NotNil(t, loser.CompletedAt)
+	winner, err := database.GetReviewRun(newer.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, winner)
+	assert.Equal(t, ReviewRunStatusQueued, winner.Status)
+	var pr PRModel
+	require.NoError(t, database.db.Where(
+		"repo_owner = ? AND repo_name = ? AND pr_number = ?", newer.RepoOwner, newer.RepoName, newer.PRNumber,
+	).First(&pr).Error)
+	assert.Empty(t, pr.ProjectionRunID)
+}
+
 func TestReviewStageAttemptUpsertCoversEveryMutableColumn(t *testing.T) {
 	modelSchema, err := schema.Parse(&ReviewStageAttemptModel{}, &sync.Map{}, schema.NamingStrategy{})
 	require.NoError(t, err)

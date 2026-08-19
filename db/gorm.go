@@ -127,13 +127,34 @@ func (g *GormDB) ensureIdempotentColumns() error {
 			return fmt.Errorf("create review_stage_attempts: %w", err)
 		}
 	}
+	// Older revisions did not enforce one live run per target. Keep the most
+	// recently accepted row so adding the invariant cannot boot-loop on an
+	// unexpectedly dirty database.
+	if err := g.db.Exec(`UPDATE review_runs
+		SET status = 'timed_out', terminal_code = 'migration_deduped', failure_stage = 'migration',
+			error_summary = 'terminalized by one-live-run-per-PR migration', completed_at = CURRENT_TIMESTAMP,
+			lease_holder = '', lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE status IN ('queued', 'running')
+		  AND EXISTS (
+			SELECT 1 FROM review_runs newer
+			WHERE newer.repo_owner = review_runs.repo_owner
+			  AND newer.repo_name = review_runs.repo_name
+			  AND newer.pr_number = review_runs.pr_number
+			  AND newer.status IN ('queued', 'running')
+			  AND (newer.accepted_at > review_runs.accepted_at
+			       OR (newer.accepted_at = review_runs.accepted_at AND newer.run_id > review_runs.run_id))
+		  )`).Error; err != nil {
+		return fmt.Errorf("dedupe live review runs: %w", err)
+	}
 	if err := g.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_runs_one_live_per_pr
 		ON review_runs(repo_owner, repo_name, pr_number)
 		WHERE status IN ('queued', 'running')`).Error; err != nil {
 		return fmt.Errorf("index one live review run per PR: %w", err)
 	}
-
 	if g.db.Dialector.Name() != "postgres" {
+		if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
+			return fmt.Errorf("backfill projection_run_id: %w", err)
+		}
 		return nil
 	}
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS github_updated_at timestamptz").Error; err != nil {
@@ -168,6 +189,9 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	}
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS projection_run_id varchar(36)").Error; err != nil {
 		return fmt.Errorf("add projection_run_id: %w", err)
+	}
+	if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
+		return fmt.Errorf("backfill projection_run_id: %w", err)
 	}
 	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_prs_review_run_id ON prs(review_run_id)").Error; err != nil {
 		return fmt.Errorf("index review_run_id: %w", err)

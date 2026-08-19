@@ -116,7 +116,7 @@ func (g *GormDB) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prN
 	result := g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
 		Where("status <> ?", "completed").
-		Where("status NOT IN ? OR (projection_run_id <> '' AND (generating_since IS NULL OR generating_since <= ?))",
+		Where("status NOT IN ? OR (COALESCE(projection_run_id, '') <> '' AND (generating_since IS NULL OR generating_since <= ?))",
 			[]string{"generating", "agent_reviewing"}, inFlightStaleBefore).
 		Where(`NOT EXISTS (
 			SELECT 1 FROM review_runs
@@ -457,8 +457,18 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMax
 	queuedCutoff := now.Add(-queuedMaxAge)
 	abandoned := 0
 	err := g.db.Transaction(func(tx *gorm.DB) error {
+		var candidateIDs []string
+		if err := tx.Model(&ReviewRunModel{}).
+			Where("(status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND queued_at <= ?)))",
+				ReviewRunStatusRunning, runningCutoff, ReviewRunStatusQueued, runningCutoff, queuedCutoff).
+			Pluck("run_id", &candidateIDs).Error; err != nil {
+			return fmt.Errorf("list candidate rows: %w", err)
+		}
+		if len(candidateIDs) == 0 {
+			return nil
+		}
 		running := tx.Model(&ReviewRunModel{}).
-			Where("status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", ReviewRunStatusRunning, runningCutoff).
+			Where("run_id IN ? AND status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", candidateIDs, ReviewRunStatusRunning, runningCutoff).
 			Updates(map[string]any{
 				"status":           ReviewRunStatusTimedOut,
 				"completed_at":     now,
@@ -472,8 +482,8 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMax
 			return fmt.Errorf("running rows: %w", running.Error)
 		}
 		queued := tx.Model(&ReviewRunModel{}).
-			Where("status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND queued_at <= ?))",
-				ReviewRunStatusQueued, runningCutoff, queuedCutoff).
+			Where("run_id IN ? AND status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND queued_at <= ?))",
+				candidateIDs, ReviewRunStatusQueued, runningCutoff, queuedCutoff).
 			Updates(map[string]any{
 				"status":           ReviewRunStatusTimedOut,
 				"completed_at":     now,
@@ -492,7 +502,7 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMax
 		}
 		var runIDs []string
 		if err := tx.Model(&ReviewRunModel{}).
-			Where("status = ? AND completed_at = ? AND terminal_code IN ?", ReviewRunStatusTimedOut, now, []string{"lease_abandoned", "queue_abandoned"}).
+			Where("run_id IN ? AND status = ? AND terminal_code IN ?", candidateIDs, ReviewRunStatusTimedOut, []string{"lease_abandoned", "queue_abandoned"}).
 			Pluck("run_id", &runIDs).Error; err != nil {
 			return fmt.Errorf("list abandoned rows: %w", err)
 		}
