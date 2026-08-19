@@ -27,13 +27,13 @@ func testPolicy() Policy {
 	return Policy{
 		Backends: map[string]BackendPolicy{
 			"claude": {
-				Available: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
+				Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
 				TurnBudgetUnit: TurnBudgetUnitAssistantEvent, TurnBudgetVersion: TurnBudgetVersion,
 				Models:  []string{"claude-fable-5", "claude-opus-4-8"},
 				Efforts: []string{"low", "medium", "high"},
 			},
 			"openrouter": {
-				Available: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
+				Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, CredentialRequired: true, ExecutableAvailable: true,
 				TurnBudgetUnit: TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: TurnBudgetVersion,
 				Models:  []string{"openai/gpt-5.6-sol"},
 				Efforts: []string{"medium", "high", "xhigh", "max"},
@@ -120,6 +120,22 @@ func TestResolveRejectsUnavailableBackend(t *testing.T) {
 	_, err := Resolve(Overrides{Agent: &AgentOverrides{
 		Backend: ptr("openrouter"),
 		Model:   ptr("openai/gpt-5.6-sol"),
+	}}, testDefaults(), policy)
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Field != "agent.backend" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestResolveRejectsPolicyAvailableButUnreadyBackend(t *testing.T) {
+	policy := testPolicy()
+	openRouter := policy.Backends["openrouter"]
+	openRouter.Ready = false
+	openRouter.CredentialConfigured = false
+	openRouter.UnavailableReasons = []string{BackendUnavailableCredentialMissing}
+	policy.Backends["openrouter"] = openRouter
+	_, err := Resolve(Overrides{Agent: &AgentOverrides{
+		Backend: ptr("openrouter"), Model: ptr("openai/gpt-5.6-sol"),
 	}}, testDefaults(), policy)
 	var validationErr *ValidationError
 	if !errors.As(err, &validationErr) || validationErr.Field != "agent.backend" {

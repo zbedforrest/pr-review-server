@@ -155,6 +155,7 @@ type reviewBackendCapability struct {
 	Ready                bool     `json:"ready"`
 	PolicyEnabled        bool     `json:"policy_enabled"`
 	CredentialConfigured bool     `json:"credential_configured"`
+	CredentialRequired   bool     `json:"credential_required"`
 	ExecutableAvailable  bool     `json:"executable_available"`
 	UnavailableReasons   []string `json:"unavailable_reasons"`
 	TurnBudgetUnit       string   `json:"turn_budget_unit"`
@@ -627,8 +628,9 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 	backends := make(map[string]reviewBackendCapability, len(policy.Backends))
 	for name, backend := range policy.Backends {
 		backends[name] = reviewBackendCapability{
-			Available: backend.Available, Ready: backend.Available,
+			Available: backend.Available, Ready: backend.Ready,
 			PolicyEnabled: backend.PolicyEnabled, CredentialConfigured: backend.CredentialConfigured,
+			CredentialRequired:  backend.CredentialRequired,
 			ExecutableAvailable: backend.ExecutableAvailable,
 			UnavailableReasons:  append([]string{}, backend.UnavailableReasons...),
 			TurnBudgetUnit:      backend.TurnBudgetUnit, TurnBudgetVersion: backend.TurnBudgetVersion,

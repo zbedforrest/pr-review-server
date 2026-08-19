@@ -133,8 +133,11 @@ func TestParseCodexStreamTurnBudgetCountsCompletedNonReasoningItems(t *testing.T
 	if err == nil || !strings.Contains(err.Error(), "max-turns") {
 		t.Fatalf("expected completed-item budget error, got %v", err)
 	}
-	if res.assistantTurns != 0 || res.budgetUnits != 3 {
+	if res.assistantTurns != 1 || res.budgetUnits != 3 {
 		t.Fatalf("assistant turns=%d budget units=%d", res.assistantTurns, res.budgetUnits)
+	}
+	if res.finalOutput != "[]" {
+		t.Fatalf("terminal output was discarded: %q", res.finalOutput)
 	}
 	if !proc.killed {
 		t.Fatal("expected process to be killed")

@@ -48,12 +48,12 @@ func newReviewAPITestPoller(database db.Database) *reviewAPITestPoller {
 		policy: runconfig.Policy{
 			Backends: map[string]runconfig.BackendPolicy{
 				service.AgentBackendClaude: {
-					Available: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
+					Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
 					TurnBudgetUnit: runconfig.TurnBudgetUnitAssistantEvent, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 					Models: []string{"claude-fable-5"}, Efforts: []string{"medium", "high"},
 				},
 				service.AgentBackendOpenRouter: {
-					Available: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
+					Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, CredentialRequired: true, ExecutableAvailable: true,
 					TurnBudgetUnit: runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 					Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
 				},
@@ -321,7 +321,7 @@ func TestWaitForIdempotentReviewRunBridgesAdmissionCommitWindow(t *testing.T) {
 func TestReviewCapabilitiesExposePolicyButNoSecrets(t *testing.T) {
 	s, _, apiPoller, userID := newReviewAPIServer(t, githubPRResponse("0123456789abcdef0123456789abcdef01234567"))
 	apiPoller.policy.Backends[service.AgentBackendOpenRouter] = runconfig.BackendPolicy{
-		Available: false, PolicyEnabled: true, CredentialConfigured: false, ExecutableAvailable: true,
+		Available: true, Ready: false, PolicyEnabled: true, CredentialConfigured: false, CredentialRequired: true, ExecutableAvailable: true,
 		UnavailableReasons: []string{runconfig.BackendUnavailableCredentialMissing},
 		TurnBudgetUnit:     runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 		Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
@@ -331,9 +331,10 @@ func TestReviewCapabilitiesExposePolicyButNoSecrets(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	s.handleReviewCapabilities(recorder, request)
 	require.Equal(t, http.StatusOK, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), `"openrouter":{"available":false`)
+	assert.Contains(t, recorder.Body.String(), `"openrouter":{"available":true`)
 	assert.Contains(t, recorder.Body.String(), `"ready":false`)
 	assert.Contains(t, recorder.Body.String(), `"credential_configured":false`)
+	assert.Contains(t, recorder.Body.String(), `"credential_required":true`)
 	assert.Contains(t, recorder.Body.String(), `"unavailable_reasons":["credential_missing"]`)
 	assert.Contains(t, recorder.Body.String(), `"turn_budget_unit":"completed_non_reasoning_item"`)
 	assert.Contains(t, recorder.Body.String(), `"max_wall_clock_seconds":900`)

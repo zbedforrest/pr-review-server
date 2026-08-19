@@ -47,7 +47,7 @@ func reviewJobSnapshot(t *testing.T, effective runconfig.Effective) runconfig.Sn
 	snapshot, err := runconfig.Resolve(runconfig.Overrides{}, effective, runconfig.Policy{
 		Backends: map[string]runconfig.BackendPolicy{
 			effective.Agent.Backend: {
-				Available: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
+				Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
 				TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
 				Models:  []string{effective.Agent.Model},
 				Efforts: []string{effective.Agent.Effort},
@@ -249,7 +249,7 @@ func TestReviewPolicyIsBoundedAndConsistentForZeroOrLowerCeilings(t *testing.T) 
 func TestReviewBackendReadinessReportsStableReasonsAndTurnSemantics(t *testing.T) {
 	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
 	p.cfg.AgenticReviews = true
-	p.cfg.AnthropicAPIKey = "configured"
+	p.cfg.AnthropicAPIKey = ""
 	p.cfg.OpenRouterAPIKey = ""
 	p.lookPath = func(name string) (string, error) {
 		if name == "git" || name == "claude" {
@@ -262,16 +262,20 @@ func TestReviewBackendReadinessReportsStableReasonsAndTurnSemantics(t *testing.T
 	require.NoError(t, err)
 	claude := policy.Backends[service.AgentBackendClaude]
 	assert.True(t, claude.Available)
+	assert.True(t, claude.Ready)
 	assert.True(t, claude.PolicyEnabled)
-	assert.True(t, claude.CredentialConfigured)
+	assert.False(t, claude.CredentialConfigured, "Claude CLI may use its own OAuth session")
+	assert.False(t, claude.CredentialRequired)
 	assert.True(t, claude.ExecutableAvailable)
 	assert.Empty(t, claude.UnavailableReasons)
 	assert.Equal(t, runconfig.TurnBudgetUnitAssistantEvent, claude.TurnBudgetUnit)
 	assert.Equal(t, runconfig.TurnBudgetUnitAssistantEvent, defaults.Agent.TurnBudgetUnit)
 
 	openRouter := policy.Backends[service.AgentBackendOpenRouter]
-	assert.False(t, openRouter.Available)
+	assert.True(t, openRouter.Available)
+	assert.False(t, openRouter.Ready)
 	assert.False(t, openRouter.CredentialConfigured)
+	assert.True(t, openRouter.CredentialRequired)
 	assert.False(t, openRouter.ExecutableAvailable)
 	assert.ElementsMatch(t, []string{
 		runconfig.BackendUnavailableCredentialMissing,
@@ -286,6 +290,8 @@ func TestNewPollerCreatesProcessGlobalFirstPassCapacity(t *testing.T) {
 	p := New(cfg, NewMockDatabase(), nil, nil)
 	require.NotNil(t, p.firstPassSlots)
 	assert.Equal(t, 3, cap(p.firstPassSlots))
+	require.NotNil(t, p.dispatchSlots)
+	assert.Equal(t, 3, cap(p.dispatchSlots))
 }
 
 func TestReviewJobValidateRequiresCompleteIdempotencyMetadata(t *testing.T) {
@@ -1144,6 +1150,67 @@ func TestSeparateAPIRunsShareProcessGlobalFirstPassCapacity(t *testing.T) {
 		t.Fatal("second review did not acquire the released first-pass slot")
 	}
 	generator.release <- struct{}{}
+	waitForReviewJob(t, p, first)
+	waitForReviewJob(t, p, second)
+}
+
+func TestSeparateAPIRunsShareProcessGlobalDispatchCapacity(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	started := make(chan int, 2)
+	release := make(chan struct{})
+	storage.ReviewExistsFunc = func(ctx context.Context, _ string, _ string, prNumber int, _ string) (bool, error) {
+		started <- prNumber
+		select {
+		case <-release:
+			return false, nil
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	p.dispatchSlots = make(chan struct{}, 1)
+	p.firstPassSlots = make(chan struct{}, 2)
+	first := reviewJobWithoutAgent(t, "run-24515000000000000000000000000001")
+	second := reviewJobWithoutAgent(t, "run-24515000000000000000000000000002")
+	first.Force = false
+	second.Force = false
+	second.PR.Number = 8
+	second.PR.CommitSHA = "1123456789abcdef0123456789abcdef01234567"
+	for _, job := range []ReviewJob{first, second} {
+		require.NoError(t, database.UpsertPR(&db.PR{
+			RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+			LastCommitSHA: job.PR.CommitSHA, Status: "generating",
+		}))
+		require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	}
+
+	var activePR int
+	select {
+	case activePR = <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first review did not enter dispatch preflight")
+	}
+	select {
+	case unexpected := <-started:
+		t.Fatalf("PR %d entered preflight while PR %d held the global dispatch slot", unexpected, activePR)
+	case <-time.After(50 * time.Millisecond):
+	}
+	for _, job := range []ReviewJob{first, second} {
+		run, err := database.GetReviewRun(job.RunID)
+		require.NoError(t, err)
+		require.NotNil(t, run)
+		assert.Equal(t, db.ReviewRunStatusQueued, run.Status)
+		assert.Nil(t, run.StartedAt)
+	}
+
+	release <- struct{}{}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("second review did not acquire the released dispatch slot")
+	}
+	release <- struct{}{}
 	waitForReviewJob(t, p, first)
 	waitForReviewJob(t, p, second)
 }

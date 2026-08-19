@@ -230,10 +230,10 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	policy := runconfig.Policy{
 		Backends: map[string]runconfig.BackendPolicy{
 			service.AgentBackendClaude: p.reviewBackendPolicy(
-				service.AgentBackendClaude, "claude", strings.TrimSpace(p.cfg.AnthropicAPIKey) != "", claudeModels, claudeEfforts,
+				service.AgentBackendClaude, "claude", strings.TrimSpace(p.cfg.AnthropicAPIKey) != "", false, claudeModels, claudeEfforts,
 			),
 			service.AgentBackendOpenRouter: p.reviewBackendPolicy(
-				service.AgentBackendOpenRouter, "codex", strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "", openRouterModels, openRouterEfforts,
+				service.AgentBackendOpenRouter, "codex", strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "", true, openRouterModels, openRouterEfforts,
 			),
 		},
 		MaxWallClockSeconds: reviewPolicyMaximum(p.cfg.ReviewMaxWallClockSec, defaults.Agent.WallClockSeconds, fallbackReviewMaxWallClockSec),
@@ -243,7 +243,7 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	return defaults, policy, nil
 }
 
-func (p *Poller) reviewBackendPolicy(backend, command string, credentialConfigured bool, models, efforts []string) runconfig.BackendPolicy {
+func (p *Poller) reviewBackendPolicy(backend, command string, credentialConfigured, credentialRequired bool, models, efforts []string) runconfig.BackendPolicy {
 	policyEnabled := p.cfg.AgenticReviews
 	gitAvailable := p.executableAvailable("git")
 	cliAvailable := p.executableAvailable(command)
@@ -251,7 +251,7 @@ func (p *Poller) reviewBackendPolicy(backend, command string, credentialConfigur
 	if !policyEnabled {
 		reasons = append(reasons, runconfig.BackendUnavailablePolicyDisabled)
 	}
-	if !credentialConfigured {
+	if credentialRequired && !credentialConfigured {
 		reasons = append(reasons, runconfig.BackendUnavailableCredentialMissing)
 	}
 	if !gitAvailable {
@@ -262,8 +262,9 @@ func (p *Poller) reviewBackendPolicy(backend, command string, credentialConfigur
 	}
 	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(backend)
 	return runconfig.BackendPolicy{
-		Available:     policyEnabled && credentialConfigured && gitAvailable && cliAvailable,
-		PolicyEnabled: policyEnabled, CredentialConfigured: credentialConfigured,
+		Available:     policyEnabled,
+		Ready:         policyEnabled && (!credentialRequired || credentialConfigured) && gitAvailable && cliAvailable,
+		PolicyEnabled: policyEnabled, CredentialConfigured: credentialConfigured, CredentialRequired: credentialRequired,
 		ExecutableAvailable: gitAvailable && cliAvailable, UnavailableReasons: reasons,
 		TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
 		Models: append([]string(nil), models...), Efforts: append([]string(nil), efforts...),

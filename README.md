@@ -89,6 +89,8 @@ OPENROUTER_API_KEY=sk-or-...
 
 The OpenRouter path runs `codex exec` in a read-only sandbox with ephemeral state and filters server credentials out of model-invoked shell commands. Its CLI JSONL currently does not report the serving model, so the review records the exact pinned request model; Claude fallback detection remains stream-verified.
 
+Review-config schema v2 makes the `max_turns` unit backend-specific and records it in every run. Claude counts assistant stream events; OpenRouter/Codex counts completed non-reasoning items (tool commands, file changes, and the terminal agent message). Existing OpenRouter deployments upgrading from schema v1 should review and, if needed, raise `AGENT_MAX_TURNS` and `REVIEW_MAX_TURNS`, because the new unit is intentionally more granular.
+
 ### Recommended configuration
 
 Gates and feature flags all default to off, and the defaults are deliberately conservative. For the strongest reviews, enable the deterministic layer and force the agent to answer it:

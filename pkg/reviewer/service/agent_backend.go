@@ -164,6 +164,15 @@ func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		case "item.completed":
 			item, _ := ev["item"].(map[string]any)
 			itemType, _ := item["type"].(string)
+			// Preserve a completed terminal response even when it is the item that
+			// crosses the configured budget. The run still fails closed below, but
+			// diagnostics and telemetry retain the provider's final message.
+			if itemType == "agent_message" {
+				result.assistantTurns++
+				if text, ok := item["text"].(string); ok {
+					result.finalOutput = text
+				}
+			}
 			// Codex emits one assistant message for the final response even when it
 			// performs many tool/file operations. Count every completed concrete
 			// item so MaxTurns remains a meaningful work bound; reasoning items are
@@ -178,13 +187,6 @@ func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 					return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
 				}
 			}
-			if itemType == "agent_message" {
-				result.assistantTurns++
-				if text, ok := item["text"].(string); ok {
-					result.finalOutput = text
-				}
-			}
-
 		case "turn.failed":
 			result.streamErr = codexErrorMessage(ev["error"], "turn failed")
 

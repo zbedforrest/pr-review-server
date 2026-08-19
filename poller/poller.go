@@ -154,6 +154,9 @@ type Poller struct {
 	// capacity first (when needed), then this slot, before starting their
 	// execution lease or wall clock.
 	firstPassSlots chan struct{}
+	// dispatchSlots bounds pre-provider cache/storage/DB work. It is released
+	// before agent/first-pass capacity waits, so it cannot cap agent throughput.
+	dispatchSlots chan struct{}
 	// lookPath is injectable so capability readiness can be tested without
 	// depending on the developer or CI machine's installed CLIs.
 	lookPath func(string) (string, error)
@@ -317,6 +320,7 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 	}
 	if cfg.ReviewMaxFirstPassConcurrent > 0 {
 		p.firstPassSlots = make(chan struct{}, cfg.ReviewMaxFirstPassConcurrent)
+		p.dispatchSlots = make(chan struct{}, cfg.ReviewMaxFirstPassConcurrent)
 	}
 	p.loadBugMemory()
 	return p
@@ -3058,6 +3062,23 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			pr := job.PR
 			defer p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 			queuedCtx := jobContexts[job.RunID]
+			dispatchSlotReserved := false
+			if p.dispatchSlots != nil {
+				select {
+				case p.dispatchSlots <- struct{}{}:
+					dispatchSlotReserved = true
+				case <-queuedCtx.Done():
+					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+					return
+				}
+			}
+			releaseDispatchSlot := func() {
+				if dispatchSlotReserved {
+					<-p.dispatchSlots
+					dispatchSlotReserved = false
+				}
+			}
+			defer releaseDispatchSlot()
 
 			log.Printf("[REVIEWER] Processing PR: %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA[:7])
 
@@ -3123,6 +3144,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					log.Printf("[REVIEWER] PR %d cache metadata is untrusted; regenerating review", pr.Number)
 				}
 			}
+			releaseDispatchSlot()
 
 			agentSlotReserved := false
 			if job.Config.Effective.Agent.Enabled && p.agentSlots != nil {
