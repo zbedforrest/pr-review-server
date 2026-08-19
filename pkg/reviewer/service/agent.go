@@ -300,6 +300,14 @@ func RunAgentReview(
 			event.Status = "failed"
 			event.StopReason, event.ErrorCode = agentAttemptFailure(returnErr, runCtx)
 			event.ErrorSummary = returnErr.Error()
+		} else if review == nil {
+			// A panic after Spawn runs defers with both named returns still nil.
+			// Preserve the panic while ensuring durable telemetry cannot claim a
+			// provider invocation completed successfully without a result.
+			event.Status = "failed"
+			event.StopReason = "panic"
+			event.ErrorCode = "execution_panicked"
+			event.ErrorSummary = "agent execution panicked before producing a result"
 		}
 		_ = observeProviderAttempt(agentCfg.AttemptObserver, event)
 	}()

@@ -24,6 +24,19 @@ type cancelAfterSpawnSpawner struct {
 	cancel context.CancelFunc
 }
 
+type staticProcessSpawner struct{ proc SpawnedProcess }
+
+func (s *staticProcessSpawner) Spawn(context.Context, string, []string, string) (SpawnedProcess, error) {
+	return s.proc, nil
+}
+
+type panicStdoutProcess struct{}
+
+func (*panicStdoutProcess) Stdout() io.Reader { panic("stdout unavailable") }
+func (*panicStdoutProcess) Stderr() io.Reader { return strings.NewReader("") }
+func (*panicStdoutProcess) Wait() error       { return nil }
+func (*panicStdoutProcess) Kill() error       { return nil }
+
 func (s *cancelAfterSpawnSpawner) Spawn(context.Context, string, []string, string) (SpawnedProcess, error) {
 	s.cancel()
 	return s.proc, nil
@@ -401,6 +414,31 @@ func TestRunAgentReviewEmitsNoAttemptBeforeProviderSetup(t *testing.T) {
 	_, err := RunAgentReview(context.Background(), cfg, &fakeSpawner{}, "acme", "example", "main", 1, "deadbeef", nil)
 	require.Error(t, err)
 	assert.Empty(t, events)
+}
+
+func TestRunAgentReviewPanicEmitsFailedAttemptTelemetry(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	var events []ProviderAttemptEvent
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	}
+
+	defer func() {
+		require.NotNil(t, recover(), "RunAgentReview should preserve the provider panic")
+		require.Len(t, events, 2)
+		terminal := events[1]
+		assert.Equal(t, "failed", terminal.Status)
+		assert.Equal(t, "panic", terminal.StopReason)
+		assert.Equal(t, "execution_panicked", terminal.ErrorCode)
+	}()
+	_, _ = RunAgentReview(context.Background(), cfg, &staticProcessSpawner{proc: &panicStdoutProcess{}}, "acme", "example", "main", 1, sha, nil)
+	t.Fatal("expected provider panic")
 }
 
 func (m *MockGithubClient) PostPRComment(token, owner, repo string, prNumber int, body string) error {

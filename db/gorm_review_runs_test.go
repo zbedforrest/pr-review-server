@@ -1417,12 +1417,14 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
 }
 
-func TestGormDBSkipMigrationsAddsMissingSQLiteProjectionColumn(t *testing.T) {
+func TestGormDBSkipMigrationsAppliesIdempotentSchemaUpdates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "skip-migrations.db")
 	database, err := NewGormSQLite(path)
 	require.NoError(t, err)
 	require.NoError(t, database.db.Migrator().DropColumn(&PRModel{}, "ProjectionRunID"))
+	require.NoError(t, database.db.Exec("DROP INDEX IF EXISTS idx_prs_review_path").Error)
 	assert.False(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
+	assert.False(t, database.db.Migrator().HasIndex(&PRModel{}, "idx_prs_review_path"))
 	require.NoError(t, database.Close())
 
 	t.Setenv("SKIP_DB_MIGRATIONS", "true")
@@ -1430,6 +1432,7 @@ func TestGormDBSkipMigrationsAddsMissingSQLiteProjectionColumn(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
+	assert.True(t, database.db.Migrator().HasIndex(&PRModel{}, "idx_prs_review_path"))
 }
 
 func TestGormDBOneLiveRunMigrationRepairsExistingRows(t *testing.T) {

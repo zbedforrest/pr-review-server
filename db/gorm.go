@@ -54,6 +54,12 @@ func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 			return nil, fmt.Errorf("failed to apply idempotent column adds: %w", err)
 		}
 	}
+	// The missing-canonical-artifact fallback queries by review_path in both
+	// normal and SKIP_DB_MIGRATIONS deployments. Keep this small idempotent
+	// index outside AutoMigrate so both startup modes have the same plan.
+	if err := gormDB.ensureReviewPathIndex(); err != nil {
+		return nil, fmt.Errorf("failed to ensure review_path index: %w", err)
+	}
 
 	// Initialize default settings
 	if err := gormDB.initDefaultSettings(); err != nil {
@@ -61,6 +67,13 @@ func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 	}
 
 	return gormDB, nil
+}
+
+func (g *GormDB) ensureReviewPathIndex() error {
+	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_prs_review_path ON prs(review_path)").Error; err != nil {
+		return fmt.Errorf("index review_path: %w", err)
+	}
+	return nil
 }
 
 // NewGormSQLite creates a new GormDB with SQLite
