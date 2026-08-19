@@ -164,6 +164,13 @@ type ReviewRunLedger interface {
 	UpsertReviewStageAttemptAsHolder(attempt *ReviewStageAttempt, holder string, now time.Time) (bool, error)
 }
 
+// CompletedReviewPathLookup is the read-only capability used to recover a
+// completed review from its immutable artifact when a canonical alias is
+// missing. Implementations that do not expose it simply skip that fallback.
+type CompletedReviewPathLookup interface {
+	GetCompletedPRByReviewPath(reviewPath string) (*PR, error)
+}
+
 // ReviewStageAttempt records one actual provider invocation. Parallel
 // first-pass draws use InvocationNumber; provider retries use AttemptNumber.
 type ReviewStageAttempt struct {

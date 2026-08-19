@@ -11,6 +11,8 @@ import (
 
 const reviewRunAbandonBatchSize = 500
 
+var _ CompletedReviewPathLookup = (*GormDB)(nil)
+
 // GetCompletedPRByReviewPath resolves the rare missing-alias fallback without
 // loading every PR into the server process. review_path is indexed because the
 // direct artifact route calls this only after both storage lookups miss.

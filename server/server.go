@@ -1778,11 +1778,9 @@ func (s *Server) immutableFallbackForCanonicalReview(filename string) (string, e
 		return "", nil
 	}
 	canonicalHTML := strings.TrimSuffix(filename, extension) + ".html"
-	lookup, ok := s.db.(interface {
-		GetCompletedPRByReviewPath(string) (*db.PR, error)
-	})
+	lookup, ok := s.db.(db.CompletedReviewPathLookup)
 	if !ok {
-		return "", fmt.Errorf("database does not support completed review-path lookup")
+		return "", nil
 	}
 	pr, err := lookup.GetCompletedPRByReviewPath(canonicalHTML)
 	if err != nil {
