@@ -551,6 +551,36 @@ func TestAcceptedQueuedRunLeaseIsRenewedAndCrashExpiresQuickly(t *testing.T) {
 	assert.Equal(t, "queue_abandoned", run.TerminalCode)
 }
 
+func TestAutomaticExecutionAdmissionHasCrashRecoveryLease(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-24350000000000000000000000000001")
+	job.TriggerSource = "poller"
+	before := time.Now().UTC()
+
+	require.NoError(t, p.admitReviewRunForExecution(job))
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusQueued, run.Status)
+	assert.NotEmpty(t, run.LeaseHolder)
+	require.NotNil(t, run.LeaseExpiresAt)
+	assert.WithinDuration(t, before.Add(ReviewQueueLeaseTTL), *run.LeaseExpiresAt, time.Second)
+
+	abandoned, err := database.AbandonExpiredReviewRuns(
+		before.Add(ReviewQueueLeaseTTL+ReviewLeaseCompletionGrace+time.Second),
+		ReviewLeaseCompletionGrace,
+		ReviewQueueAbandonAfter,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 1, abandoned)
+	run, err = database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusTimedOut, run.Status)
+	assert.Equal(t, "queue_abandoned", run.TerminalCode)
+}
+
 func TestLostQueuedDispatcherLeaseCancelsOnlyMatchingLocalOwner(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPoller(NewMockGitHubClient(), database)

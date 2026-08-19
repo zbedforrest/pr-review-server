@@ -231,6 +231,11 @@ func (p *Poller) ensureReviewRun(job ReviewJob) error {
 	return p.ensureReviewRunWithQueueLease(job, "", time.Time{})
 }
 
+func (p *Poller) admitReviewRunForExecution(job ReviewJob) error {
+	now := time.Now().UTC()
+	return p.ensureReviewRunWithQueueLease(job, newHolderID(), now.Add(ReviewQueueLeaseTTL))
+}
+
 func (p *Poller) ensureReviewRunWithQueueLease(job ReviewJob, queueHolder string, queueLeaseExpiresAt time.Time) error {
 	if err := p.validateReviewJob(job); err != nil {
 		return err

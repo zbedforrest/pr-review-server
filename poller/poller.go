@@ -3075,9 +3075,11 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 
 			// Persist automatic candidates before claiming the mutable PR
 			// projection. The partial unique index on queued/running targets is
-			// the cross-instance admission fence; manual jobs already have this
-			// row from ProcessReviewJob, so this is idempotent for them.
-			if err := p.ensureReviewRun(job); err != nil {
+			// the cross-instance admission fence. A short admission lease bounds
+			// recovery if this process dies before beginReviewExecution replaces it
+			// with the full worker lease. Manual jobs already have their row and
+			// dispatcher lease from ProcessReviewJob, so this is idempotent for them.
+			if err := p.admitReviewRunForExecution(job); err != nil {
 				if errors.Is(err, db.ErrReviewRunActiveConflict) {
 					log.Printf("[REVIEWER] PR %d already has a live run on another instance; skipping %s", pr.Number, job.RunID)
 					return
