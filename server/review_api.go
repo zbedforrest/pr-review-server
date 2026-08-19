@@ -239,7 +239,9 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(sidecarBytes, &pl); err != nil {
 			log.Printf("[API/review] malformed sidecar %s: %v", sidecarName, err)
 		} else {
-			if reviewSHA == "" && pl.CommitSHA != "" {
+			// For an unpinned request, prefer the sidecar's full commit SHA while
+			// retaining the path-derived short SHA when no sidecar is available.
+			if pinnedSHA == "" && pl.CommitSHA != "" {
 				reviewSHA = pl.CommitSHA
 				resp.CommitSHA = reviewSHA
 				resp.IsStale = !shaPrefixMatch(reviewSHA, pr.LastCommitSHA)
@@ -301,7 +303,7 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 			ReviewURL:         resp.ReviewURL,
 			FindingsAvailable: resp.FindingsAvailable,
 		})
-		downloadName := strings.TrimSuffix(filename, ".html") + ".md"
+		downloadName := strings.TrimSuffix(filepath.Base(filename), ".html") + ".md"
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", downloadName))
 		_, _ = w.Write([]byte(md)) // nolint:errcheck
@@ -374,14 +376,19 @@ func (s *Server) fetchReviewBytes(ctx context.Context, filename string) ([]byte,
 	return content, nil
 }
 
-// commitSHAFromFilename parses the SHA segment out of a review filename of the
-// form {owner}_{repo}_{pr}_{shortsha}.html. Mirrors the parsing in
-// gcs.ListReviewsForPR. Returns empty string if the filename is malformed.
+// commitSHAFromFilename parses the SHA segment out of either an immutable run
+// path or a canonical review filename. Returns empty string if the filename is
+// malformed.
 func commitSHAFromFilename(filename string) string {
 	if !strings.HasSuffix(filename, ".html") {
 		return ""
 	}
-	trimmed := strings.TrimSuffix(filename, ".html")
+	trimmed := strings.TrimSuffix(filepath.ToSlash(filename), ".html")
+	segments := strings.Split(trimmed, "/")
+	if len(segments) == 6 && segments[0] == "runs" {
+		return segments[4]
+	}
+	trimmed = filepath.Base(trimmed)
 	idx := strings.LastIndex(trimmed, "_")
 	if idx < 0 || idx == len(trimmed)-1 {
 		return ""

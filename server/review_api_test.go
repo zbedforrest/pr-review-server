@@ -283,29 +283,32 @@ func TestReviewAPI_unpinned_immutable_projection(t *testing.T) {
 	server, database, user, dir := newReviewAPITestServer(t)
 
 	const (
+		owner = "my_org"
+		repo  = "review_server"
 		sha   = "abc1234deadbeef"
 		runID = "run-1123456789abcdef0123456789abcdef"
 	)
-	htmlPath := gcs.ReviewRunFileName("owner", "repo", 29, sha, runID)
-	jsonPath := gcs.ReviewRunJSONFileName("owner", "repo", 29, sha, runID)
+	htmlPath := gcs.ReviewRunFileName(owner, repo, 29, sha, runID)
+	jsonPath := gcs.ReviewRunJSONFileName(owner, repo, 29, sha, runID)
 	reviewedAt := time.Now().UTC().Truncate(time.Microsecond)
 	require.NoError(t, database.UpsertPR(&db.PR{
-		RepoOwner: "owner", RepoName: "repo", PRNumber: 29,
+		RepoOwner: owner, RepoName: repo, PRNumber: 29,
 		LastCommitSHA: sha, Status: "pending",
 	}))
-	require.NoError(t, database.MarkPRCompleted("owner", "repo", 29, sha,
+	require.NoError(t, database.MarkPRCompleted(owner, repo, 29, sha,
 		htmlPath, 1, 2, 3, "approve", false))
 	require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, htmlPath)), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, htmlPath), []byte("<html>immutable</html>"), 0o644))
 	body, err := json.Marshal(payload.Payload{
-		SchemaVersion: "1", Owner: "owner", Repo: "repo", PRNumber: 29, CommitSHA: sha,
+		SchemaVersion: "1", Owner: owner, Repo: repo, PRNumber: 29, CommitSHA: sha,
 		Counts:    payload.Counts{Critical: 1, Medium: 2, Low: 3},
 		ReviewRun: &payload.ReviewRunInfo{RunID: runID, HTMLPath: htmlPath, JSONPath: jsonPath, CompletedAt: reviewedAt},
 	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, jsonPath), body, 0o644))
 
-	w := doReviewAPIGet(t, server, user, "/api/review/owner/repo/29")
+	target := "/api/review/" + owner + "/" + repo + "/29"
+	w := doReviewAPIGet(t, server, user, target)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var resp reviewAPIResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
@@ -314,6 +317,10 @@ func TestReviewAPI_unpinned_immutable_projection(t *testing.T) {
 	assert.False(t, resp.IsStale)
 	require.NotNil(t, resp.ReviewRun)
 	assert.Equal(t, runID, resp.ReviewRun.RunID)
+
+	w = doReviewAPIGet(t, server, user, target+"?format=md")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, `attachment; filename="`+runID+`.md"`, w.Header().Get("Content-Disposition"))
 }
 
 func TestReviewAPI_run_id_requires_sha_and_valid_id(t *testing.T) {
