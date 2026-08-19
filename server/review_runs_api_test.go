@@ -416,6 +416,7 @@ func TestReviewRunGetAndCursorListExposeSafeMetadata(t *testing.T) {
 		RunID: runIDs[0], ExecutionAttempt: 1, Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
 		Provider: "openrouter", Backend: "openrouter", RequestedModel: "openai/gpt-5.6-sol",
 		ResolvedModel: "openai/gpt-5.6-sol", Status: "completed", AssistantTurns: 1, BudgetUnitsUsed: 9,
+		TurnBudgetUnit: runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 		ErrorSummary: "internal provider detail",
 	}))
 

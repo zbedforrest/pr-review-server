@@ -217,7 +217,9 @@ type ReviewStageAttemptModel struct {
 	Effort               string          `gorm:"size:32"`
 	Status               string          `gorm:"size:32;index"`
 	AssistantTurns       int             `gorm:"column:assistant_turns"`
-	BudgetUnitsUsed      int             `gorm:"column:budget_units_used"`
+	BudgetUnitsUsed      int             `gorm:"column:budget_units_used;not null;default:0"`
+	TurnBudgetUnit       string          `gorm:"column:turn_budget_unit;size:64;not null;default:''"`
+	TurnBudgetVersion    int             `gorm:"column:turn_budget_version;not null;default:0"`
 	InputTokens          int64           `gorm:"column:input_tokens"`
 	OutputTokens         int64           `gorm:"column:output_tokens"`
 	TotalTokens          int64           `gorm:"column:total_tokens"`

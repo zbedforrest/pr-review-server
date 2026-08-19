@@ -947,7 +947,8 @@ func (p *Poller) providerAttemptObserver(exec *reviewExecution) service.Provider
 			Fallback: event.Fallback, FallbackReason: event.FallbackReason, MatcherVersion: event.MatcherVersion,
 			Effort: event.Effort, Status: event.Status, AssistantTurns: event.AssistantTurns,
 			BudgetUnitsUsed: event.BudgetUnitsUsed,
-			InputTokens:     event.InputTokens, OutputTokens: event.OutputTokens, TotalTokens: event.TotalTokens,
+			TurnBudgetUnit:  event.TurnBudgetUnit, TurnBudgetVersion: event.TurnBudgetVersion,
+			InputTokens: event.InputTokens, OutputTokens: event.OutputTokens, TotalTokens: event.TotalTokens,
 			StartedAt: event.StartedAt, CompletedAt: event.CompletedAt, DurationMS: event.DurationMS,
 			StopReason: event.StopReason, ErrorCode: event.ErrorCode, ErrorSummary: event.ErrorSummary,
 		}

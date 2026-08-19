@@ -406,7 +406,8 @@ func TestRunAgentReviewOpenRouter(t *testing.T) {
 	if out.BudgetUnitsUsed != 1 {
 		t.Errorf("budget units=%d want 1", out.BudgetUnitsUsed)
 	}
-	if len(attemptEvents) != 2 || attemptEvents[1].BudgetUnitsUsed != 1 || attemptEvents[1].AssistantTurns != 1 {
+	if len(attemptEvents) != 2 || attemptEvents[1].BudgetUnitsUsed != 1 || attemptEvents[1].AssistantTurns != 1 ||
+		attemptEvents[1].TurnBudgetUnit != "completed_non_reasoning_item" || attemptEvents[1].TurnBudgetVersion != 1 {
 		t.Errorf("attempt usage telemetry=%+v", attemptEvents)
 	}
 }

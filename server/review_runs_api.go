@@ -721,7 +721,6 @@ func (s *Server) buildReviewRunResponse(run *db.ReviewRun, includeAttempts bool)
 		}
 		response.Attempts = make([]reviewRunAttemptResponse, 0, len(attempts))
 		for _, attempt := range attempts {
-			turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(attempt.Backend)
 			response.Attempts = append(response.Attempts, reviewRunAttemptResponse{
 				ExecutionAttempt: attempt.ExecutionAttempt, Stage: attempt.Stage,
 				InvocationNumber: attempt.InvocationNumber, AttemptNumber: attempt.AttemptNumber,
@@ -732,7 +731,7 @@ func (s *Server) buildReviewRunResponse(run *db.ReviewRun, includeAttempts bool)
 				FallbackReason: attempt.FallbackReason, MatcherVersion: attempt.MatcherVersion,
 				Effort: attempt.Effort, Status: attempt.Status, AssistantTurns: attempt.AssistantTurns,
 				BudgetUnitsUsed: attempt.BudgetUnitsUsed,
-				TurnBudgetUnit:  turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
+				TurnBudgetUnit:  attempt.TurnBudgetUnit, TurnBudgetVersion: attempt.TurnBudgetVersion,
 				InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens, TotalTokens: attempt.TotalTokens,
 				StartedAt: attempt.StartedAt, CompletedAt: attempt.CompletedAt, DurationMS: attempt.DurationMS,
 				StopReason: attempt.StopReason, ErrorCode: attempt.ErrorCode,

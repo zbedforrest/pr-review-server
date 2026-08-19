@@ -195,6 +195,8 @@ type ReviewStageAttempt struct {
 	Status               string
 	AssistantTurns       int
 	BudgetUnitsUsed      int
+	TurnBudgetUnit       string
+	TurnBudgetVersion    int
 	InputTokens          int64
 	OutputTokens         int64
 	TotalTokens          int64
