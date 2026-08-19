@@ -93,7 +93,9 @@ TMP_BODY=$(mktemp)
 TMP_RUN=$(mktemp)
 TMP_AUTH=$(mktemp)
 chmod 600 "$TMP_AUTH"
-printf 'Authorization: Bearer %s\n' "$TOKEN" >"$TMP_AUTH"
+escaped_token=${TOKEN//\\/\\\\}
+escaped_token=${escaped_token//\"/\\\"}
+printf 'header = "Authorization: Bearer %s"\n' "$escaped_token" >"$TMP_AUTH"
 trap 'rm -f "$TMP_BODY" "$TMP_RUN" "$TMP_AUTH"' EXIT
 HTTP_CODE=""
 REQUEST_URL=""
@@ -115,7 +117,7 @@ http_request() {
   local curl_args
   REQUEST_URL=$(absolute_url "$2")
   curl_args=(-sS -X "$method" -w '%{http_code}' -o "$TMP_BODY"
-    -H "@$TMP_AUTH" -H 'Accept: application/json')
+    -K "$TMP_AUTH" -H 'Accept: application/json')
   if [ -n "$request_body" ]; then
     curl_args+=( -H 'Content-Type: application/json' --data "$request_body" )
   fi

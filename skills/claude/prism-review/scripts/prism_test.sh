@@ -59,11 +59,12 @@ while [ "$#" -gt 0 ]; do
     -X) method="$2"; shift 2 ;;
     -o) output="$2"; shift 2 ;;
     -w) shift 2 ;;
+    -K)
+      cp "$2" "${FAKE_LAST_AUTH:?}"
+      shift 2
+      ;;
     -H)
       headers="$headers|$2"
-      case "$2" in
-        @*) cp "${2#@}" "${FAKE_LAST_AUTH:?}" ;;
-      esac
       shift 2
       ;;
     --data) data="$2"; shift 2 ;;
