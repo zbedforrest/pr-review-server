@@ -3614,6 +3614,15 @@ func TestReviewProcessTimeout_ExceedsAgentBudget(t *testing.T) {
 	if got <= 6*time.Minute {
 		t.Errorf("timeout %v must exceed the agent wall-clock budget", got)
 	}
+
+	// Per-review overrides may exceed the active default. Recovery and monitor
+	// windows must honor the operator ceiling so they never reset healthy work.
+	p.cfg.ReviewMaxWallClockSec = 900
+	got = p.reviewProcessTimeout()
+	want = ReviewPipelineMargin + 15*time.Minute
+	if got != want {
+		t.Errorf("with 900s review ceiling: got %v, want %v", got, want)
+	}
 }
 
 func TestPoll_UpdatesStaleTitle_OrgMode(t *testing.T) {

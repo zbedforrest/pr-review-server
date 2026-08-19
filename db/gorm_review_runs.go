@@ -182,7 +182,7 @@ func (g *GormDB) CreateReviewRun(run *ReviewRun) error {
 			}
 			var live ReviewRunModel
 			liveErr := g.db.Where(
-				"repo_owner = ? AND repo_name = ? AND pr_number = ? AND status IN ?",
+				"LOWER(repo_owner) = LOWER(?) AND LOWER(repo_name) = LOWER(?) AND pr_number = ? AND status IN ?",
 				run.RepoOwner, run.RepoName, run.PRNumber, []string{ReviewRunStatusQueued, ReviewRunStatusRunning},
 			).First(&live).Error
 			if liveErr == nil && live.RunID != run.RunID {
@@ -226,10 +226,10 @@ func (g *GormDB) GetReviewRunByIdempotency(scope, keyHash string) (*ReviewRun, e
 func (g *GormDB) ListReviewRuns(filter ReviewRunFilter) ([]ReviewRun, error) {
 	query := g.db.Model(&ReviewRunModel{})
 	if filter.RepoOwner != "" {
-		query = query.Where("repo_owner = ?", filter.RepoOwner)
+		query = query.Where("LOWER(repo_owner) = LOWER(?)", filter.RepoOwner)
 	}
 	if filter.RepoName != "" {
-		query = query.Where("repo_name = ?", filter.RepoName)
+		query = query.Where("LOWER(repo_name) = LOWER(?)", filter.RepoName)
 	}
 	if filter.PRNumber > 0 {
 		query = query.Where("pr_number = ?", filter.PRNumber)
@@ -239,6 +239,12 @@ func (g *GormDB) ListReviewRuns(filter ReviewRunFilter) ([]ReviewRun, error) {
 	}
 	if filter.Status != "" {
 		query = query.Where("status = ?", filter.Status)
+	}
+	if !filter.BeforeAcceptedAt.IsZero() && filter.BeforeRunID != "" {
+		query = query.Where(
+			"(accepted_at < ?) OR (accepted_at = ? AND run_id < ?)",
+			filter.BeforeAcceptedAt, filter.BeforeAcceptedAt, filter.BeforeRunID,
+		)
 	}
 	limit := filter.Limit
 	if limit <= 0 {

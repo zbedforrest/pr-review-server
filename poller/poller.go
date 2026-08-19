@@ -117,6 +117,10 @@ type Poller struct {
 	// Track active review processes for cancellation and monitoring
 	activeReviews map[string]ProcessInfo // prKey (owner/repo/number) -> ProcessInfo
 	reviewsMutex  sync.Mutex
+	// Serializes the short track + durable-insert admission window. A second
+	// same-instance request cannot observe local ownership before the winning
+	// idempotency row is queryable.
+	reviewAdmissionMutex sync.Mutex
 	// Track last poll time for countdown display
 	lastPollTime  time.Time
 	pollTimeMutex sync.RWMutex
@@ -1006,8 +1010,14 @@ func (p *Poller) Start(ctx context.Context) {
 // reset both derive from it so they can never fire on a healthy review.
 func (p *Poller) reviewProcessTimeout() time.Duration {
 	t := ReviewPipelineMargin
-	if p.cfg != nil && p.cfg.AgentWallClockSec > 0 {
-		t += time.Duration(p.cfg.AgentWallClockSec) * time.Second
+	if p.cfg != nil {
+		wallClockSeconds := p.cfg.AgentWallClockSec
+		if p.cfg.ReviewMaxWallClockSec > wallClockSeconds {
+			wallClockSeconds = p.cfg.ReviewMaxWallClockSec
+		}
+		if wallClockSeconds > 0 {
+			t += time.Duration(wallClockSeconds) * time.Second
+		}
 	}
 	return t
 }
@@ -2036,7 +2046,10 @@ func (p *Poller) poll(ctx context.Context) {
 
 	// Reset any PRs stuck in "generating" for too long
 	log.Printf("[POLL] Checking for stale PRs...")
-	resetCount, err := p.db.ResetStaleGeneratingPRs(int(p.reviewProcessTimeout().Minutes()))
+	// The DB API is minute-granular; round up so a seconds-valued custom
+	// ceiling can never make recovery fire before the legitimate run budget.
+	staleTimeoutMinutes := int((p.reviewProcessTimeout() + time.Minute - 1) / time.Minute)
+	resetCount, err := p.db.ResetStaleGeneratingPRs(staleTimeoutMinutes)
 	if err != nil {
 		log.Printf("[POLL] ERROR: Failed to reset stale PRs: %v", err)
 	} else if resetCount > 0 {

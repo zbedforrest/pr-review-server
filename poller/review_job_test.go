@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
@@ -125,6 +126,115 @@ func TestDefaultReviewJobSnapshotsDeploymentConfig(t *testing.T) {
 	assert.Equal(t, ReviewPipelineMargin+91*time.Second, reviewTimeout(job.Config.Effective))
 }
 
+func TestPrepareReviewJobResolvesCallerOverridesWithinPolicy(t *testing.T) {
+	database := NewMockDatabase()
+	database.ReviewNRequests = 3
+	p := newTestPoller(NewMockGitHubClient(), database)
+	p.cfg.AgenticReviews = true
+	p.cfg.AgentBackend = service.AgentBackendClaude
+	p.cfg.AgentModel = "claude-fable-5"
+	p.cfg.AgentEffort = "medium"
+	p.cfg.AgentWallClockSec = 360
+	p.cfg.AgentMaxTurns = 40
+	p.cfg.OpenRouterAPIKey = "configured"
+	p.cfg.ReviewAgentModelsOpenRouter = []string{"openai/gpt-5.6-sol"}
+	p.cfg.ReviewAgentEffortsOpenRouter = []string{"medium", "high"}
+	p.cfg.ReviewMaxWallClockSec = 900
+	p.cfg.ReviewMaxTurns = 120
+	p.cfg.ReviewMaxFirstPassSamples = 5
+
+	backend, model, effort := service.AgentBackendOpenRouter, "openai/gpt-5.6-sol", "high"
+	wallClock, maxTurns, samples := 720, 100, 2
+	userID := 17
+	job, err := p.PrepareReviewJob(github.PullRequest{
+		Owner: "acme", Repo: "widgets", Number: 7, CommitSHA: "0123456789abcdef0123456789abcdef01234567",
+	}, runconfig.Overrides{
+		Agent: &runconfig.AgentOverrides{
+			Backend: &backend, Model: &model, Effort: &effort,
+			WallClockSeconds: &wallClock, MaxTurns: &maxTurns,
+		},
+		FirstPass: &runconfig.FirstPassOverrides{Samples: &samples},
+	}, true, "api_v1", &userID)
+	require.NoError(t, err)
+	assert.Equal(t, service.AgentBackendOpenRouter, job.Config.Effective.Agent.Backend)
+	assert.Equal(t, model, job.Config.Effective.Agent.Model)
+	assert.Equal(t, effort, job.Config.Effective.Agent.Effort)
+	assert.Equal(t, wallClock, job.Config.Effective.Agent.WallClockSeconds)
+	assert.Equal(t, maxTurns, job.Config.Effective.Agent.MaxTurns)
+	assert.Equal(t, samples, job.Config.Effective.FirstPass.Samples)
+	assert.Equal(t, runconfig.SourceRequest, job.Config.Sources["agent.model"])
+	assert.Equal(t, "api_v1", job.TriggerSource)
+	assert.Equal(t, &userID, job.RequestedByUserID)
+	assert.True(t, job.Force)
+	assert.NoError(t, p.validateReviewJob(job), "operator ceiling may exceed the active default budget")
+}
+
+func TestPrepareReviewJobRequiresModelWhenChangingBackend(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.AgenticReviews = true
+	p.cfg.AgentBackend = service.AgentBackendClaude
+	p.cfg.AgentModel = "claude-fable-5"
+	p.cfg.OpenRouterAPIKey = "configured"
+	p.cfg.ReviewAgentModelsOpenRouter = []string{"openai/gpt-5.6-sol"}
+	backend := service.AgentBackendOpenRouter
+
+	_, err := p.PrepareReviewJob(github.PullRequest{
+		Owner: "acme", Repo: "widgets", Number: 7, CommitSHA: "0123456789abcdef0123456789abcdef01234567",
+	}, runconfig.Overrides{Agent: &runconfig.AgentOverrides{Backend: &backend}}, true, "api_v1", nil)
+	var validationErr *runconfig.ValidationError
+	require.ErrorAs(t, err, &validationErr)
+	assert.Equal(t, "agent.model", validationErr.Field)
+}
+
+func TestReviewPolicyIsBoundedAndConsistentForZeroOrLowerCeilings(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.AgenticReviews = true
+	p.cfg.AgentWallClockSec = 360
+	p.cfg.AgentMaxTurns = 40
+	p.cfg.ReviewMaxWallClockSec = 300
+	p.cfg.ReviewMaxTurns = 20
+
+	defaults, policy, err := p.ReviewConfigDefaultsAndPolicy()
+	require.NoError(t, err)
+	assert.Equal(t, 360, policy.MaxWallClockSeconds)
+	assert.Equal(t, 40, policy.MaxTurns)
+	snapshot, err := runconfig.Resolve(runconfig.Overrides{}, defaults, policy)
+	require.NoError(t, err)
+	job := ReviewJob{
+		PR: github.PullRequest{
+			Owner: "acme", Repo: "widgets", Number: 7,
+			CommitSHA: "0123456789abcdef0123456789abcdef01234567",
+		},
+		RunID: "run-10000000000000000000000000000009", Config: snapshot, TriggerSource: "api_v1",
+	}
+	assert.NoError(t, p.validateReviewJob(job), "admission must use the same raised ceiling advertised by capabilities")
+
+	zero := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	zero.cfg = &config.Config{}
+	zeroDefaults, zeroPolicy, err := zero.ReviewConfigDefaultsAndPolicy()
+	require.NoError(t, err)
+	assert.Equal(t, fallbackReviewMaxWallClockSec, zeroPolicy.MaxWallClockSeconds)
+	assert.Equal(t, fallbackReviewMaxTurns, zeroPolicy.MaxTurns)
+	assert.Equal(t, fallbackReviewMaxFirstPassSamples, zeroPolicy.MaxFirstPassSamples)
+	assert.False(t, zeroPolicy.Backends[service.AgentBackendClaude].Available)
+	enabled := true
+	wallClock, turns := fallbackReviewMaxWallClockSec, fallbackReviewMaxTurns
+	_, err = runconfig.Resolve(runconfig.Overrides{Agent: &runconfig.AgentOverrides{
+		Enabled: &enabled, WallClockSeconds: &wallClock, MaxTurns: &turns,
+	}}, zeroDefaults, zeroPolicy)
+	require.Error(t, err, "AGENTIC_REVIEWS=false remains an operator feature gate")
+}
+
+func TestReviewJobValidateRequiresCompleteIdempotencyMetadata(t *testing.T) {
+	job := customReviewJob(t, "run-10000000000000000000000000000000")
+	job.IdempotencyScope = "user:17"
+	job.IdempotencyKeyHash = "key-hash"
+	require.ErrorContains(t, job.Validate(), "request hash")
+
+	job.RequestHash = "request-hash"
+	require.NoError(t, job.Validate())
+}
+
 func TestGenerateReviewsBatchSurfacesInvalidDefaultsForEveryPR(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "")
 	database := NewMockDatabase()
@@ -168,6 +278,9 @@ func TestProcessReviewJobPersistsConfigAndCompletesLedger(t *testing.T) {
 	generator.SimulateDelay = 50 * time.Millisecond
 	p := newTestPollerFull(NewMockGitHubClient(), database, storage, generator)
 	job := customReviewJob(t, "run-10000000000000000000000000000001")
+	job.IdempotencyScope = "user:9"
+	job.IdempotencyKeyHash = "key-hash"
+	job.RequestHash = "request-hash"
 	require.NoError(t, database.UpsertPR(&db.PR{
 		ID: 9, RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
 		LastCommitSHA: job.PR.CommitSHA, Status: "generating", Title: job.PR.Title, Author: job.PR.Author,
@@ -189,6 +302,9 @@ func TestProcessReviewJobPersistsConfigAndCompletesLedger(t *testing.T) {
 	assert.Equal(t, service.DefaultOpenRouterAgentModel, run.AgentModel)
 	assert.Equal(t, 73, run.AgentWallClockSec)
 	assert.Equal(t, 19, run.AgentMaxTurns)
+	assert.Equal(t, "user:9", run.IdempotencyScope)
+	assert.Equal(t, "key-hash", run.IdempotencyKeyHash)
+	assert.Equal(t, "request-hash", run.RequestHash)
 	assert.Equal(t, 1, run.ExecutionAttempt)
 	assert.Empty(t, run.LeaseHolder)
 	assert.Nil(t, run.LeaseExpiresAt)
@@ -237,6 +353,60 @@ func TestProcessReviewJobRejectsLiveRunAcceptedByAnotherInstance(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return !firstPoller.IsReviewTracked(first.PR.Owner, first.PR.Repo, first.PR.Number)
 	}, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestProcessReviewJobPublishesIdempotencyRowBeforeLocalConflict(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), NewMockReviewGenerator())
+	first := reviewJobWithoutAgent(t, "run-12000000000000000000000000000001")
+	second := reviewJobWithoutAgent(t, "run-12000000000000000000000000000002")
+	for _, job := range []*ReviewJob{&first, &second} {
+		job.IdempotencyScope = "user:17"
+		job.IdempotencyKeyHash = "shared-key-hash"
+		job.RequestHash = "shared-request-hash"
+	}
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: first.PR.Owner, RepoName: first.PR.Repo, PRNumber: first.PR.Number,
+		LastCommitSHA: first.PR.CommitSHA, Status: "pending",
+	}))
+
+	enteredInsertWindow := make(chan struct{})
+	releaseInsert := make(chan struct{})
+	var blockOnce sync.Once
+	database.GetReviewRunFunc = func(runID string) (*db.ReviewRun, error) {
+		blockOnce.Do(func() {
+			close(enteredInsertWindow)
+			<-releaseInsert
+		})
+		database.mu.RLock()
+		defer database.mu.RUnlock()
+		run := database.ReviewRuns[runID]
+		if run == nil {
+			return nil, nil
+		}
+		copy := *run
+		return &copy, nil
+	}
+
+	firstResult := make(chan error, 1)
+	go func() { firstResult <- p.ProcessReviewJob(context.Background(), first) }()
+	<-enteredInsertWindow
+	secondResult := make(chan error, 1)
+	go func() { secondResult <- p.ProcessReviewJob(context.Background(), second) }()
+	select {
+	case err := <-secondResult:
+		t.Fatalf("second admission returned before durable insert: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseInsert)
+	require.NoError(t, <-firstResult)
+	require.ErrorIs(t, <-secondResult, ErrReviewAlreadyTracked)
+
+	persisted, err := database.GetReviewRunByIdempotency(first.IdempotencyScope, first.IdempotencyKeyHash)
+	require.NoError(t, err)
+	require.NotNil(t, persisted, "the conflict path must only return after the winning row is queryable")
+	assert.Equal(t, first.RunID, persisted.RunID)
+	waitForReviewJob(t, p, first)
 }
 
 func TestProcessReviewJobRejectsBudgetBeyondStaleResetHorizon(t *testing.T) {

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // TestLoad_RequiredChecksFlag locks in the default-off contract: the
 // required-checks feature only activates on the exact string "true".
@@ -40,6 +43,7 @@ func TestLoadOpenRouterAgentConfig(t *testing.T) {
 	t.Setenv("AGENT_BACKEND", "openrouter")
 	t.Setenv("AGENT_MODEL", "openai/gpt-5.6-sol")
 	t.Setenv("AGENT_EFFORT", "xhigh")
+	t.Setenv("OPENROUTER_API_KEY", "sk-or-test")
 	t.Setenv("OPENROUTER_BASE_URL", "https://router.example/v1")
 	cfg := Load()
 	if cfg.AgentBackend != "openrouter" || cfg.AgentModel != "openai/gpt-5.6-sol" || cfg.AgentEffort != "xhigh" {
@@ -47,5 +51,123 @@ func TestLoadOpenRouterAgentConfig(t *testing.T) {
 	}
 	if cfg.OpenRouterBaseURL != "https://router.example/v1" {
 		t.Errorf("OpenRouterBaseURL=%q", cfg.OpenRouterBaseURL)
+	}
+	if cfg.OpenRouterAPIKey != "sk-or-test" {
+		t.Error("OpenRouterAPIKey was not loaded")
+	}
+}
+
+func TestLoadReviewCustomizationPolicyDefaults(t *testing.T) {
+	for _, key := range []string{
+		"AGENT_BACKEND",
+		"AGENT_MODEL",
+		"AGENT_EFFORT",
+		"AGENT_WALL_CLOCK_SEC",
+		"AGENT_MAX_TURNS",
+		"REVIEW_AGENT_MODELS_CLAUDE",
+		"REVIEW_AGENT_MODELS_OPENROUTER",
+		"REVIEW_AGENT_EFFORTS_CLAUDE",
+		"REVIEW_AGENT_EFFORTS_OPENROUTER",
+		"REVIEW_MAX_WALL_CLOCK_SEC",
+		"REVIEW_MAX_TURNS",
+		"REVIEW_MAX_FIRST_PASS_SAMPLES",
+	} {
+		t.Setenv(key, "")
+	}
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewAgentModelsClaude, []string{"claude-opus-4-8", "claude-fable-5"})
+	assertStringsEqual(t, cfg.ReviewAgentModelsOpenRouter, []string{"openai/gpt-5.6-sol"})
+	assertStringsEqual(t, cfg.ReviewAgentEffortsClaude, []string{"low", "medium", "high"})
+	assertStringsEqual(t, cfg.ReviewAgentEffortsOpenRouter, []string{"low", "medium", "high", "xhigh", "max"})
+	if cfg.ReviewMaxWallClockSec != defaultAgentWallClockSec || cfg.ReviewMaxTurns != defaultAgentMaxTurns || cfg.ReviewMaxFirstPassSamples != defaultReviewFirstPassSamples {
+		t.Fatalf("review limits: wall=%d turns=%d samples=%d", cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns, cfg.ReviewMaxFirstPassSamples)
+	}
+	// The policy is additive; it must not switch the active runtime defaults.
+	if cfg.AgentBackend != "claude" || cfg.AgentModel != "" || cfg.AgentEffort != "" {
+		t.Fatalf("active agent config changed: backend=%q model=%q effort=%q", cfg.AgentBackend, cfg.AgentModel, cfg.AgentEffort)
+	}
+}
+
+func TestLoadReviewCustomizationPolicyNormalizesAndDeduplicatesLists(t *testing.T) {
+	t.Setenv("AGENT_BACKEND", "claude")
+	t.Setenv("AGENT_MODEL", "")
+	t.Setenv("AGENT_EFFORT", "")
+	t.Setenv("REVIEW_AGENT_MODELS_CLAUDE", " claude-fable-5,claude-opus-4-8,claude-fable-5, ,Vendor/CaseSensitive,Vendor/CaseSensitive ")
+	t.Setenv("REVIEW_AGENT_MODELS_OPENROUTER", " openai/gpt-5.6-sol, anthropic/claude-opus-4.8 ,openai/gpt-5.6-sol")
+	t.Setenv("REVIEW_AGENT_EFFORTS_CLAUDE", " HIGH, medium,high, low, ")
+	t.Setenv("REVIEW_AGENT_EFFORTS_OPENROUTER", " XHIGH,max, Medium, xhigh ")
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewAgentModelsClaude, []string{"claude-fable-5", "claude-opus-4-8", "Vendor/CaseSensitive"})
+	assertStringsEqual(t, cfg.ReviewAgentModelsOpenRouter, []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-4.8"})
+	assertStringsEqual(t, cfg.ReviewAgentEffortsClaude, []string{"high", "medium", "low"})
+	assertStringsEqual(t, cfg.ReviewAgentEffortsOpenRouter, []string{"xhigh", "max", "medium"})
+}
+
+func TestLoadReviewCustomizationPolicyIncludesActiveRuntimeValues(t *testing.T) {
+	t.Setenv("AGENT_BACKEND", " OpenRouter ")
+	t.Setenv("AGENT_MODEL", "vendor/frontier-experimental")
+	t.Setenv("AGENT_EFFORT", "ULTRA")
+	t.Setenv("REVIEW_AGENT_MODELS_OPENROUTER", "openai/gpt-5.6-sol")
+	t.Setenv("REVIEW_AGENT_EFFORTS_OPENROUTER", "medium,high")
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewAgentModelsOpenRouter, []string{"openai/gpt-5.6-sol", "vendor/frontier-experimental"})
+	assertStringsEqual(t, cfg.ReviewAgentEffortsOpenRouter, []string{"medium", "high", "ultra"})
+	if cfg.AgentBackend != " OpenRouter " || cfg.AgentModel != "vendor/frontier-experimental" || cfg.AgentEffort != "ULTRA" {
+		t.Fatalf("active config was normalized or replaced: backend=%q model=%q effort=%q", cfg.AgentBackend, cfg.AgentModel, cfg.AgentEffort)
+	}
+}
+
+func TestLoadReviewCustomizationPolicyLimits(t *testing.T) {
+	t.Setenv("REVIEW_MAX_WALL_CLOCK_SEC", " 1800 ")
+	t.Setenv("REVIEW_MAX_TURNS", "240")
+	t.Setenv("REVIEW_MAX_FIRST_PASS_SAMPLES", "5")
+
+	cfg := Load()
+	if cfg.ReviewMaxWallClockSec != 1800 || cfg.ReviewMaxTurns != 240 || cfg.ReviewMaxFirstPassSamples != 5 {
+		t.Fatalf("review limits: wall=%d turns=%d samples=%d", cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns, cfg.ReviewMaxFirstPassSamples)
+	}
+}
+
+func TestLoadReviewCustomizationPolicyRejectsNonPositiveOrMalformedLimits(t *testing.T) {
+	invalidValues := []string{"0", "-1", "not-a-number", "1.5"}
+	for _, value := range invalidValues {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("AGENT_WALL_CLOCK_SEC", "900")
+			t.Setenv("AGENT_MAX_TURNS", "120")
+			t.Setenv("REVIEW_MAX_WALL_CLOCK_SEC", value)
+			t.Setenv("REVIEW_MAX_TURNS", value)
+			t.Setenv("REVIEW_MAX_FIRST_PASS_SAMPLES", value)
+
+			cfg := Load()
+			if cfg.ReviewMaxWallClockSec != 900 || cfg.ReviewMaxTurns != 120 || cfg.ReviewMaxFirstPassSamples != defaultReviewFirstPassSamples {
+				t.Fatalf("invalid %q yielded wall=%d turns=%d samples=%d", value, cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns, cfg.ReviewMaxFirstPassSamples)
+			}
+		})
+	}
+}
+
+func TestLoadReviewCustomizationPolicyUsesPositiveFallbackWhenActiveBudgetIsInvalid(t *testing.T) {
+	t.Setenv("AGENT_WALL_CLOCK_SEC", "-10")
+	t.Setenv("AGENT_MAX_TURNS", "0")
+	t.Setenv("REVIEW_MAX_WALL_CLOCK_SEC", "")
+	t.Setenv("REVIEW_MAX_TURNS", "")
+
+	cfg := Load()
+	if cfg.ReviewMaxWallClockSec != defaultAgentWallClockSec || cfg.ReviewMaxTurns != defaultAgentMaxTurns {
+		t.Fatalf("review limit fallback: wall=%d turns=%d", cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns)
+	}
+	// Existing active-budget parsing remains unchanged for backwards compatibility.
+	if cfg.AgentWallClockSec != -10 || cfg.AgentMaxTurns != 0 {
+		t.Fatalf("active budgets changed: wall=%d turns=%d", cfg.AgentWallClockSec, cfg.AgentMaxTurns)
+	}
+}
+
+func assertStringsEqual(t *testing.T, got, want []string) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q want %q", got, want)
 	}
 }

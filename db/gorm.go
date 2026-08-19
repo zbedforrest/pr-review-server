@@ -134,7 +134,7 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if err := g.db.Exec(`WITH ranked_live_runs AS (
 		SELECT run_id,
 			ROW_NUMBER() OVER (
-				PARTITION BY repo_owner, repo_name, pr_number
+				PARTITION BY LOWER(repo_owner), LOWER(repo_name), pr_number
 				ORDER BY CASE
 					WHEN status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at > CURRENT_TIMESTAMP) THEN 4
 					WHEN status = 'queued' AND COALESCE(lease_holder, '') <> '' AND lease_expires_at > CURRENT_TIMESTAMP THEN 3
@@ -157,6 +157,14 @@ func (g *GormDB) ensureIdempotentColumns() error {
 		ON review_runs(repo_owner, repo_name, pr_number)
 		WHERE status IN ('queued', 'running')`).Error; err != nil {
 		return fmt.Errorf("index one live review run per PR: %w", err)
+	}
+	// GitHub owner/repository identities are case-insensitive. Keep the original
+	// exact-case index for rollout compatibility and add the canonical invariant
+	// so casing variants cannot admit parallel work for the same PR.
+	if err := g.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_runs_one_live_per_pr_ci
+		ON review_runs(LOWER(repo_owner), LOWER(repo_name), pr_number)
+		WHERE status IN ('queued', 'running')`).Error; err != nil {
+		return fmt.Errorf("index one live review run per case-insensitive PR: %w", err)
 	}
 	if g.db.Dialector.Name() != "postgres" {
 		if !g.db.Migrator().HasTable(&PRModel{}) {
