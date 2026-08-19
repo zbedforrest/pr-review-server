@@ -381,13 +381,13 @@ func TestShouldReviewSkipsPendingQueuedJob(t *testing.T) {
 	assert.True(t, shouldReview(pr, dbPR, false, true))
 }
 
-func TestProviderInitFailureRejectsRunWithoutConsumingPRRetry(t *testing.T) {
+func TestProviderInitFailureRejectsAcceptedRunAndProjectsError(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPoller(NewMockGitHubClient(), database)
 	job := customReviewJob(t, "run-24300000000000000000000000000001")
 	require.NoError(t, database.UpsertPR(&db.PR{
 		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
-		LastCommitSHA: job.PR.CommitSHA, Status: "pending",
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating",
 	}))
 	_, tracked := p.tryTrackReviewJob(context.Background(), job)
 	require.True(t, tracked)
@@ -400,10 +400,13 @@ func TestProviderInitFailureRejectsRunWithoutConsumingPRRetry(t *testing.T) {
 	assert.Equal(t, db.ReviewRunStatusFailed, run.Status)
 	assert.Equal(t, "provider_init_failed", run.TerminalCode)
 	assert.Equal(t, "dispatch", run.FailureStage)
+	assert.Empty(t, run.LeaseHolder)
+	assert.Nil(t, run.LeaseExpiresAt)
 	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
 	require.NoError(t, err)
 	require.NotNil(t, pr)
-	assert.Equal(t, "pending", pr.Status)
+	assert.Equal(t, "error", pr.Status)
+	assert.Contains(t, pr.ErrorMessage, "provider temporarily unavailable")
 	assert.Empty(t, database.ProjectionRunIDs[prDBKey(job.PR.Owner, job.PR.Repo, job.PR.Number)])
 	assert.False(t, p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number))
 }
@@ -430,6 +433,43 @@ func TestProviderInitFailureDoesNotCreateRunForAutomaticCandidate(t *testing.T) 
 	require.NotNil(t, pr)
 	assert.Equal(t, "pending", pr.Status)
 	assert.False(t, p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number))
+}
+
+func TestAcceptedQueuedRunLeaseIsRenewedAndCrashExpiresQuickly(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-24300000000000000000000000000004")
+	_, tracked := p.tryTrackReviewJob(context.Background(), job)
+	require.True(t, tracked)
+	holder := newHolderID()
+	now := time.Now().UTC()
+	require.NoError(t, p.ensureReviewRunWithQueueLease(job, holder, now.Add(ReviewQueueLeaseTTL)))
+	created, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	assert.Equal(t, holder, created.LeaseHolder)
+	require.NotNil(t, created.LeaseExpiresAt)
+	leased, err := database.ClaimOrRenewQueuedReviewRunLease(job.RunID, holder, now, now.Add(ReviewQueueLeaseTTL))
+	require.NoError(t, err)
+	require.True(t, leased)
+	require.True(t, p.setTrackedQueueLease(job, holder))
+
+	p.renewTrackedQueueLeases(now.Add(time.Minute))
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	require.NotNil(t, run.LeaseExpiresAt)
+	assert.WithinDuration(t, now.Add(time.Minute+ReviewQueueLeaseTTL), *run.LeaseExpiresAt, time.Second)
+
+	p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
+	abandoned, err := database.AbandonExpiredReviewRuns(now.Add(time.Minute+ReviewQueueLeaseTTL+time.Second), ReviewLeaseCompletionGrace, ReviewQueueAbandonAfter)
+	require.NoError(t, err)
+	assert.Equal(t, 1, abandoned)
+	run, err = database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusTimedOut, run.Status)
+	assert.Equal(t, "queue_abandoned", run.TerminalCode)
 }
 
 func TestUnclaimedTerminalRunReleasesGeneratingProjection(t *testing.T) {
@@ -538,7 +578,7 @@ func TestMonitorReapsAbandonedQueuedTracking(t *testing.T) {
 	assert.ErrorIs(t, queuedCtx.Err(), context.Canceled)
 }
 
-func TestAgentSlotWaitDoesNotStartBudgetOrLease(t *testing.T) {
+func TestAgentSlotWaitDoesNotStartBudgetOrExecutionLease(t *testing.T) {
 	database := NewMockDatabase()
 	generator := NewMockReviewGenerator()
 	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
@@ -555,7 +595,9 @@ func TestAgentSlotWaitDoesNotStartBudgetOrLease(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, run)
 	assert.Equal(t, db.ReviewRunStatusQueued, run.Status)
-	assert.Nil(t, run.LeaseExpiresAt)
+	assert.NotEmpty(t, run.LeaseHolder)
+	require.NotNil(t, run.LeaseExpiresAt, "queued acceptance must have a renewable dispatcher lease")
+	assert.True(t, run.LeaseExpiresAt.After(time.Now()))
 	p.reviewsMutex.Lock()
 	queuedInfo := p.activeReviews[prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)]
 	p.reviewsMutex.Unlock()

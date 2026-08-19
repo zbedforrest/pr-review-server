@@ -158,9 +158,24 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 	if !tracked {
 		return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
 	}
-	if err := p.ensureReviewRun(job); err != nil {
+	queueHolder := newHolderID()
+	now := time.Now().UTC()
+	queueLeaseExpiresAt := now.Add(ReviewQueueLeaseTTL)
+	if err := p.ensureReviewRunWithQueueLease(job, queueHolder, queueLeaseExpiresAt); err != nil {
 		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 		return err
+	}
+	leased, err := p.db.ClaimOrRenewQueuedReviewRunLease(job.RunID, queueHolder, now, queueLeaseExpiresAt)
+	if err != nil || !leased {
+		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
+		if err != nil {
+			return fmt.Errorf("lease accepted review run %s: %w", job.RunID, err)
+		}
+		return fmt.Errorf("%w: queued run %s has another dispatcher", ErrReviewAlreadyTracked, job.RunID)
+	}
+	if !p.setTrackedQueueLease(job, queueHolder) {
+		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
+		return fmt.Errorf("track accepted review run %s queue lease", job.RunID)
 	}
 	go func() {
 		if err := p.generateReviewJobs(reviewCtx, []ReviewJob{job}); err != nil {
@@ -206,8 +221,15 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 }
 
 func (p *Poller) ensureReviewRun(job ReviewJob) error {
+	return p.ensureReviewRunWithQueueLease(job, "", time.Time{})
+}
+
+func (p *Poller) ensureReviewRunWithQueueLease(job ReviewJob, queueHolder string, queueLeaseExpiresAt time.Time) error {
 	if err := p.validateReviewJob(job); err != nil {
 		return err
+	}
+	if (queueHolder == "") != queueLeaseExpiresAt.IsZero() {
+		return fmt.Errorf("review run %s: queued lease holder and expiry must be provided together", job.RunID)
 	}
 	requestedJSON, err := json.Marshal(job.Config.Requested)
 	if err != nil {
@@ -251,7 +273,11 @@ func (p *Poller) ensureReviewRun(job ReviewJob) error {
 		AgentBackend:        job.Config.Effective.Agent.Backend, AgentModel: job.Config.Effective.Agent.Model,
 		AgentEffort: job.Config.Effective.Agent.Effort, AgentWallClockSec: job.Config.Effective.Agent.WallClockSeconds,
 		AgentMaxTurns: job.Config.Effective.Agent.MaxTurns, AcceptedAt: now, QueuedAt: now,
-		ServiceRevision: revisionName(),
+		ServiceRevision: revisionName(), LeaseHolder: queueHolder,
+	}
+	if !queueLeaseExpiresAt.IsZero() {
+		expiresAt := queueLeaseExpiresAt
+		run.LeaseExpiresAt = &expiresAt
 	}
 	if err := p.db.CreateReviewRun(run); err != nil {
 		return fmt.Errorf("create review run %s: %w", job.RunID, err)
@@ -444,9 +470,12 @@ func (p *Poller) rejectQueuedReviewJob(job ReviewJob, status, terminalCode, fail
 	if cause != nil {
 		errorSummary = cause.Error()
 	}
+	emptyHolder := ""
+	zeroLease := time.Time{}
 	updated, err := p.db.PatchQueuedReviewRun(job.RunID, db.ReviewRunPatch{
 		Status: &status, CompletedAt: &completedAt, TerminalCode: &terminalCode,
 		FailureStage: &failureStage, ErrorSummary: &errorSummary,
+		LeaseHolder: &emptyHolder, LeaseExpiresAt: &zeroLease,
 	})
 	if err != nil {
 		log.Printf("[REVIEWER] WARN: reject queued run %s: %v", job.RunID, err)
@@ -472,6 +501,11 @@ func (p *Poller) rejectProviderInitJobs(jobs []ReviewJob, cause error) {
 		}
 		if persistFailure {
 			p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "provider_init_failed", "dispatch", cause)
+			if projected, err := p.db.SetPRErrorIfNoLiveReview(job.PR.Owner, job.PR.Repo, job.PR.Number, cause.Error()); err != nil {
+				log.Printf("[REVIEWER] WARNING: failed to persist provider-init error for PR %d: %v", job.PR.Number, err)
+			} else if projected {
+				p.broadcastPRUpdate(job.PR.Owner, job.PR.Repo, job.PR.Number)
+			}
 		}
 		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
 	}

@@ -1248,6 +1248,23 @@ func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt 
 	return true, nil
 }
 
+func (m *MockDatabase) ClaimOrRenewQueuedReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if runID == "" || holder == "" || now.IsZero() || !leaseExpiresAt.After(now) {
+		return false, fmt.Errorf("claim queued review run lease: invalid arguments")
+	}
+	run := m.ReviewRuns[runID]
+	if run == nil || run.Status != db.ReviewRunStatusQueued ||
+		(run.LeaseHolder != "" && run.LeaseHolder != holder && run.LeaseExpiresAt != nil && run.LeaseExpiresAt.After(now)) {
+		return false, nil
+	}
+	run.LeaseHolder = holder
+	expires := leaseExpiresAt
+	run.LeaseExpiresAt = &expires
+	return true, nil
+}
+
 func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1279,7 +1296,9 @@ func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, que
 			terminalCode = "lease_abandoned"
 			failureStage = "execution"
 			errorSummary = "review worker lease expired before terminal completion"
-		case run.Status == db.ReviewRunStatusQueued && !run.QueuedAt.After(queuedCutoff):
+		case run.Status == db.ReviewRunStatusQueued &&
+			((run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(now)) ||
+				(run.LeaseExpiresAt == nil && !run.QueuedAt.After(queuedCutoff))):
 			terminalCode = "queue_abandoned"
 			failureStage = "dispatch"
 			errorSummary = "review run remained queued beyond the dispatch recovery window"

@@ -45,10 +45,14 @@ const (
 	// reviews were untracked mid-flight; under concurrency their results were
 	// then lost to stale-reset/retrigger races instead of being saved.
 	ReviewPipelineMargin = 8 * time.Minute
-	// ReviewQueueAbandonAfter bounds durable queued rows after a worker crash.
-	// It is deliberately much larger than normal concurrency waits so a live
-	// process is never mistaken for an abandoned dispatcher.
+	// ReviewQueueAbandonAfter is the compatibility cutoff for old queued rows
+	// that predate dispatcher leases. Newly accepted work uses the short,
+	// renewable lease below instead of this age heuristic.
 	ReviewQueueAbandonAfter = 24 * time.Hour
+	// ReviewQueueLeaseTTL is refreshed by each live dispatcher from the monitor
+	// loop. A deploy/crash therefore terminalizes accepted queued work quickly,
+	// while a healthy capacity wait may remain queued for as long as necessary.
+	ReviewQueueLeaseTTL = 2 * time.Minute
 	// ReviewCacheLookupTimeout bounds network storage checks while jobs are
 	// still queued and therefore have no execution deadline of their own.
 	ReviewCacheLookupTimeout = time.Minute
@@ -78,6 +82,9 @@ type ProcessInfo struct {
 	StartTime time.Time
 	Timeout   time.Duration
 	RunID     string
+	// QueueLeaseHolder is set only for durably accepted queued work. Automatic
+	// poll candidates do not exist in the ledger until execution begins.
+	QueueLeaseHolder string
 	// Ctx is the per-review cancellable context. The goroutine MUST use this
 	// for all downstream work (LLM calls, agent subprocess) so killReview
 	// can abort it mid-flight by calling Cancel.
@@ -479,11 +486,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	if agentOut.ModelFallback {
 		fallbackReason = "observed served model did not match requested model"
 	}
-	providerDurationMS := agentOut.DurationMS
-	if providerDurationMS < 0 {
-		providerDurationMS = 0
-	}
-	providerStartedAt := agentCompletedAt.Add(-time.Duration(providerDurationMS) * time.Millisecond)
+	stageDurationMS := agentCompletedAt.Sub(agentStartedAt).Milliseconds()
 	p.recordStageAttempt(execution, db.ReviewStageAttempt{
 		Stage: "agent", InvocationNumber: 1, AttemptNumber: 1, Provider: provider,
 		Backend: agentOut.Backend, RequestedModel: agentSettings.Model, ResolvedModel: agentOut.RequestedModel,
@@ -491,8 +494,8 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		ServedModelSource: servedModelSource, ServingModelVerified: agentOut.ServingModelVerified,
 		Fallback: agentOut.ModelFallback, FallbackReason: fallbackReason, MatcherVersion: "v1",
 		Effort: agentOut.Effort, Status: "completed", AssistantTurns: agentOut.AssistantTurns,
-		StartedAt: &providerStartedAt, CompletedAt: &agentCompletedAt,
-		DurationMS: providerDurationMS, StopReason: "completed",
+		StartedAt: &agentStartedAt, CompletedAt: &agentCompletedAt,
+		DurationMS: stageDurationMS, StopReason: "completed",
 	})
 
 	if agentOut.ModelFallback {
@@ -1009,8 +1012,10 @@ func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Tick
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			now := time.Now().UTC()
+			p.renewTrackedQueueLeases(now)
 			if p.isLeader() {
-				if abandoned, err := p.db.AbandonExpiredReviewRuns(time.Now().UTC(), ReviewLeaseCompletionGrace, ReviewQueueAbandonAfter); err != nil {
+				if abandoned, err := p.db.AbandonExpiredReviewRuns(now, ReviewLeaseCompletionGrace, ReviewQueueAbandonAfter); err != nil {
 					log.Printf("[MONITOR] WARNING: failed to abandon expired review runs: %v", err)
 				} else if abandoned > 0 {
 					log.Printf("[MONITOR] marked %d expired review runs timed out", abandoned)
@@ -1046,6 +1051,30 @@ func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Tick
 				}
 			}
 			p.reviewsMutex.Unlock()
+		}
+	}
+}
+
+func (p *Poller) renewTrackedQueueLeases(now time.Time) {
+	type queuedLease struct {
+		runID  string
+		holder string
+	}
+	p.reviewsMutex.Lock()
+	leases := make([]queuedLease, 0, len(p.activeReviews))
+	for _, info := range p.activeReviews {
+		if info.StartTime.IsZero() && info.RunID != "" && info.QueueLeaseHolder != "" {
+			leases = append(leases, queuedLease{runID: info.RunID, holder: info.QueueLeaseHolder})
+		}
+	}
+	p.reviewsMutex.Unlock()
+
+	for _, lease := range leases {
+		renewed, err := p.db.ClaimOrRenewQueuedReviewRunLease(lease.runID, lease.holder, now, now.Add(ReviewQueueLeaseTTL))
+		if err != nil {
+			log.Printf("[MONITOR] WARNING: failed to renew queued review run %s: %v", lease.runID, err)
+		} else if !renewed {
+			log.Printf("[MONITOR] queued review run %s no longer accepts dispatcher lease renewal", lease.runID)
 		}
 	}
 }
@@ -1193,6 +1222,19 @@ func (p *Poller) tryTrackReviewJob(parent context.Context, job ReviewJob) (conte
 	}
 	log.Printf("[TRACK] Tracking queued review job %s for %s", job.RunID, key)
 	return ctx, true
+}
+
+func (p *Poller) setTrackedQueueLease(job ReviewJob, holder string) bool {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	info, exists := p.activeReviews[key]
+	if !exists || info.RunID != job.RunID || !info.StartTime.IsZero() {
+		return false
+	}
+	info.QueueLeaseHolder = holder
+	p.activeReviews[key] = info
+	return true
 }
 
 // trackOrAdoptReviewJob creates the worker tracking entry or adopts the entry

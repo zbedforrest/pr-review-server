@@ -121,6 +121,9 @@ func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) err
 func (m *MockDatabase) PatchQueuedReviewRun(runID string, patch db.ReviewRunPatch) (bool, error) {
 	return false, nil
 }
+func (m *MockDatabase) ClaimOrRenewQueuedReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	return false, nil
+}
 func (m *MockDatabase) PatchReviewRunAsHolder(runID, holder string, now time.Time, patch db.ReviewRunPatch) (bool, error) {
 	return false, nil
 }

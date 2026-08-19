@@ -261,6 +261,23 @@ func (g *GormDB) PatchQueuedReviewRun(runID string, patch ReviewRunPatch) (bool,
 	return result.RowsAffected == 1, nil
 }
 
+// ClaimOrRenewQueuedReviewRunLease records that an in-process dispatcher is
+// still responsible for a durably accepted queued run. A different dispatcher
+// may take over only after the previous lease expires.
+func (g *GormDB) ClaimOrRenewQueuedReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	if runID == "" || holder == "" || now.IsZero() || !leaseExpiresAt.After(now) {
+		return false, fmt.Errorf("claim queued review run lease: run ID, holder, and a future expiry are required")
+	}
+	result := g.db.Model(&ReviewRunModel{}).
+		Where("run_id = ? AND status = ? AND (lease_holder = ? OR lease_holder = '' OR lease_expires_at IS NULL OR lease_expires_at <= ?)",
+			runID, ReviewRunStatusQueued, holder, now).
+		Updates(map[string]any{"lease_holder": holder, "lease_expires_at": leaseExpiresAt})
+	if result.Error != nil {
+		return false, fmt.Errorf("claim queued review run lease %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
 // PatchReviewRunAsHolder applies a worker lifecycle/result update only while
 // holder still owns a live lease. The predicate fences out a stale worker
 // after another worker has taken over the run.
@@ -428,7 +445,8 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMax
 	}
 	queuedCutoff := now.Add(-queuedMaxAge)
 	queued := g.db.Model(&ReviewRunModel{}).
-		Where("status = ? AND queued_at <= ?", ReviewRunStatusQueued, queuedCutoff).
+		Where("status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND queued_at <= ?))",
+			ReviewRunStatusQueued, now, queuedCutoff).
 		Updates(map[string]any{
 			"status":           ReviewRunStatusTimedOut,
 			"completed_at":     now,

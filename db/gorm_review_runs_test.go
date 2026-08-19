@@ -549,6 +549,41 @@ func TestGormDBAbandonsOnlyStaleQueuedRuns(t *testing.T) {
 	assert.Equal(t, ReviewRunStatusQueued, active.Status)
 }
 
+func TestGormDBQueuedDispatcherLeaseControlsAbandonment(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	expired := reviewRunFixture("run-00000000000000000000000000000019", now)
+	live := reviewRunFixture("run-00000000000000000000000000000020", now.Add(-2*time.Hour))
+	for _, run := range []*ReviewRun{&expired, &live} {
+		run.IdempotencyScope = ""
+		run.IdempotencyKeyHash = ""
+		require.NoError(t, database.CreateReviewRun(run))
+	}
+	claimed, err := database.ClaimOrRenewQueuedReviewRunLease(expired.RunID, "dispatcher-a", now.Add(-time.Minute), now.Add(-time.Second))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	claimed, err = database.ClaimOrRenewQueuedReviewRunLease(live.RunID, "dispatcher-b", now, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	claimed, err = database.ClaimOrRenewQueuedReviewRunLease(live.RunID, "dispatcher-c", now, now.Add(2*time.Minute))
+	require.NoError(t, err)
+	assert.False(t, claimed)
+
+	count, err := database.AbandonExpiredReviewRuns(now, 2*time.Minute, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	expiredRun, err := database.GetReviewRun(expired.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, expiredRun)
+	assert.Equal(t, ReviewRunStatusTimedOut, expiredRun.Status)
+	liveRun, err := database.GetReviewRun(live.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, liveRun)
+	assert.Equal(t, ReviewRunStatusQueued, liveRun.Status)
+}
+
 func TestGormDBReviewRunClaimHasSingleConcurrentWinner(t *testing.T) {
 	database, err := NewGormSQLite("file:" + filepath.Join(t.TempDir(), "claims.db") + "?_busy_timeout=5000&_journal_mode=WAL")
 	require.NoError(t, err)
