@@ -157,17 +157,7 @@ func Load() *Config {
 	}
 
 	maxWallClockDefault := positiveOrDefault(agentWallClockSec, defaultAgentWallClockSec)
-	maxTurnsDefault := positiveOrDefault(agentMaxTurns, agentMaxTurnsDefault)
-	reviewMaxTurnsDefault := maxTurnsDefault
-	if reviewMaxTurnsDefault < defaultOpenRouterAgentMaxTurns {
-		// The deployment default remains backend-specific, but an unset caller
-		// ceiling must leave room for every selectable backend's default unit.
-		reviewMaxTurnsDefault = defaultOpenRouterAgentMaxTurns
-	}
 	reviewMaxTurns, reviewMaxTurnsConfigured := getPositiveEnvInt("REVIEW_MAX_TURNS")
-	if !reviewMaxTurnsConfigured {
-		reviewMaxTurns = reviewMaxTurnsDefault
-	}
 
 	return &Config{
 		// Legacy single-user mode
@@ -260,7 +250,10 @@ func getPositiveEnvInt(key string) (int, bool) {
 		return 0, false
 	}
 	n, err := strconv.Atoi(value)
-	return n, err == nil && n > 0
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 func positiveOrDefault(value, defaultValue int) int {

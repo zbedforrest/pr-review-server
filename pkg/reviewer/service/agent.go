@@ -254,20 +254,18 @@ func RunAgentReview(
 		return nil, fmt.Errorf("agent: %w", observerErr)
 	}
 	var proc SpawnedProcess
-	if envSpawner, ok := spawner.(EnvironmentSpawner); ok {
+	envSpawner, supportsFilteredEnvironment := spawner.(EnvironmentSpawner)
+	if supportsFilteredEnvironment {
 		credentialKey, credentialValue := "ANTHROPIC_API_KEY", agentCfg.AnthropicAPIKey
 		if runtime.backend == AgentBackendOpenRouter {
 			credentialKey, credentialValue = "OPENROUTER_API_KEY", agentCfg.OpenRouterAPIKey
 		}
 		proc, err = envSpawner.SpawnWithEnv(runCtx, runtime.command, args, cloneDir,
 			agentChildEnvironment(os.Environ(), credentialKey, credentialValue))
-	} else if runtime.backend == AgentBackendOpenRouter {
-		// OpenRouter cannot safely fall back because the frozen key is mandatory.
-		err = errors.New("agent: OpenRouter spawner does not support frozen credential injection")
 	} else {
-		// Lightweight test spawners predate EnvironmentSpawner. Production uses
-		// DefaultSpawner, so Claude receives the filtered environment above.
-		proc, err = spawner.Spawn(runCtx, runtime.command, args, cloneDir)
+		// Never fall back to Spawn: that inherits the complete server process
+		// environment and can expose unrelated credentials to the model child.
+		err = fmt.Errorf("agent: spawner %T does not support filtered environment injection", spawner)
 	}
 	if err != nil {
 		log.Printf("%s spawn FAILED: %v", logPrefix, err)
@@ -896,6 +894,13 @@ func agentChildEnvironment(base []string, credentialKey, credentialValue string)
 		"TERM_PROGRAM": {}, "TMPDIR": {}, "TZ": {}, "USER": {},
 		"XDG_CACHE_HOME": {}, "XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {},
 		"http_proxy": {}, "https_proxy": {}, "no_proxy": {},
+	}
+	if credentialKey == "ANTHROPIC_API_KEY" {
+		// Preserve the Claude CLI's established token and gateway auth modes, but
+		// only for Claude children. OpenRouter/Codex must never receive them.
+		allowed["CLAUDE_CODE_OAUTH_TOKEN"] = struct{}{}
+		allowed["ANTHROPIC_AUTH_TOKEN"] = struct{}{}
+		allowed["ANTHROPIC_BASE_URL"] = struct{}{}
 	}
 	environment := make([]string, 0, len(base)+1)
 	seen := make(map[string]struct{}, len(allowed))

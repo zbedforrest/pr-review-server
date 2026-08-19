@@ -57,8 +57,8 @@ func TestLoadOpenRouterAgentConfig(t *testing.T) {
 	if cfg.OpenRouterAPIKey != "sk-or-test" {
 		t.Error("OpenRouterAPIKey was not loaded")
 	}
-	if cfg.AgentMaxTurns != defaultOpenRouterAgentMaxTurns || cfg.ReviewMaxTurns != defaultOpenRouterAgentMaxTurns {
-		t.Errorf("OpenRouter turn defaults: active=%d ceiling=%d want %d", cfg.AgentMaxTurns, cfg.ReviewMaxTurns, defaultOpenRouterAgentMaxTurns)
+	if cfg.AgentMaxTurns != defaultOpenRouterAgentMaxTurns || cfg.ReviewMaxTurns != 0 {
+		t.Errorf("OpenRouter turn defaults: active=%d ceiling=%d", cfg.AgentMaxTurns, cfg.ReviewMaxTurns)
 	}
 	if cfg.ReviewMaxTurnsConfigured {
 		t.Error("unset REVIEW_MAX_TURNS was reported as operator-configured")
@@ -100,7 +100,7 @@ func TestLoadReviewCustomizationPolicyDefaults(t *testing.T) {
 	assertStringsEqual(t, cfg.ReviewAgentModelsOpenRouter, []string{"openai/gpt-5.6-sol"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsClaude, []string{"low", "medium", "high"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsOpenRouter, []string{"low", "medium", "high", "xhigh", "max"})
-	if cfg.ReviewMaxWallClockSec != defaultAgentWallClockSec || cfg.ReviewMaxTurns != defaultOpenRouterAgentMaxTurns || cfg.ReviewMaxFirstPassSamples != defaultReviewFirstPassSamples {
+	if cfg.ReviewMaxWallClockSec != defaultAgentWallClockSec || cfg.ReviewMaxTurns != 0 || cfg.ReviewMaxFirstPassSamples != defaultReviewFirstPassSamples {
 		t.Fatalf("review limits: wall=%d turns=%d samples=%d", cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns, cfg.ReviewMaxFirstPassSamples)
 	}
 	if cfg.ReviewMaxFirstPassConcurrent != defaultReviewFirstPassConcurrent {
@@ -176,7 +176,7 @@ func TestLoadReviewCustomizationPolicyRejectsNonPositiveOrMalformedLimits(t *tes
 			t.Setenv("REVIEW_MAX_FIRST_PASS_CONCURRENT", value)
 
 			cfg := Load()
-			if cfg.ReviewMaxWallClockSec != 900 || cfg.ReviewMaxTurns != defaultOpenRouterAgentMaxTurns || cfg.ReviewMaxFirstPassSamples != defaultReviewFirstPassSamples {
+			if cfg.ReviewMaxWallClockSec != 900 || cfg.ReviewMaxTurns != 0 || cfg.ReviewMaxFirstPassSamples != defaultReviewFirstPassSamples {
 				t.Fatalf("invalid %q yielded wall=%d turns=%d samples=%d", value, cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns, cfg.ReviewMaxFirstPassSamples)
 			}
 			if cfg.ReviewMaxFirstPassConcurrent != defaultReviewFirstPassConcurrent {
@@ -196,7 +196,7 @@ func TestLoadReviewCustomizationPolicyUsesPositiveFallbackWhenActiveBudgetIsInva
 	t.Setenv("REVIEW_MAX_TURNS", "")
 
 	cfg := Load()
-	if cfg.ReviewMaxWallClockSec != defaultAgentWallClockSec || cfg.ReviewMaxTurns != defaultOpenRouterAgentMaxTurns {
+	if cfg.ReviewMaxWallClockSec != defaultAgentWallClockSec || cfg.ReviewMaxTurns != 0 {
 		t.Fatalf("review limit fallback: wall=%d turns=%d", cfg.ReviewMaxWallClockSec, cfg.ReviewMaxTurns)
 	}
 	// Existing active-budget parsing remains unchanged for backwards compatibility.
