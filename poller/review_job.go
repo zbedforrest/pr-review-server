@@ -78,7 +78,7 @@ func (p *Poller) validateReviewJob(job ReviewJob) error {
 	}
 	// The stale-generating recovery window is deployment-wide. Until the API
 	// introduces a separate operator cap, no admitted run may outlive it.
-	if p.cfg != nil && p.cfg.AgentWallClockSec > 0 && job.Config.Effective.Agent.Enabled &&
+	if p.cfg != nil && p.cfg.AgentWallClockSec > 0 &&
 		job.Config.Effective.Agent.WallClockSeconds > p.cfg.AgentWallClockSec {
 		return fmt.Errorf("review job %s: agent wall clock %ds exceeds deployment maximum %ds",
 			job.RunID, job.Config.Effective.Agent.WallClockSeconds, p.cfg.AgentWallClockSec)
@@ -179,8 +179,10 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 		return fmt.Errorf("%w: queued run %s has another dispatcher", ErrReviewAlreadyTracked, job.RunID)
 	}
 	if !p.setTrackedQueueLease(job, queueHolder) {
+		trackErr := fmt.Errorf("track accepted review run %s queue lease", job.RunID)
+		p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "dispatch_lost", "dispatch", trackErr)
 		p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
-		return fmt.Errorf("track accepted review run %s queue lease", job.RunID)
+		return trackErr
 	}
 	go func() {
 		if err := p.generateReviewJobs(reviewCtx, []ReviewJob{job}); err != nil {

@@ -3020,7 +3020,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				// never mix a force-pushed commit's artifact with another commit's
 				// counts or run identity.
 				if cachedPayload == nil {
-					if existingPR, getErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number); getErr == nil && existingPR != nil && isSameCommit(existingPR.LastCommitSHA, pr.CommitSHA) {
+					if existingPR, getErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number); getErr == nil && existingPR != nil && isSameCommit(existingPR.LastCommitSHA, pr.CommitSHA) && existingPR.ReviewHTMLPath != "" {
 						criticalCount, mediumCount, lowCount = existingPR.CriticalCount, existingPR.MediumCount, existingPR.LowCount
 						verdict, modelFallback = existingPR.ReviewVerdict, existingPR.ModelFallback
 						reviewRunID, reviewRunJSON = existingPR.ReviewRunID, existingPR.ReviewRunJSON

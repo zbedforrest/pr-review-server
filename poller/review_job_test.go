@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -251,6 +252,24 @@ func TestProcessReviewJobRejectsBudgetBeyondStaleResetHorizon(t *testing.T) {
 	assert.Nil(t, run)
 }
 
+func TestProcessReviewJobRejectsDisabledAgentBudgetBeyondStaleResetHorizon(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	p.cfg.AgentWallClockSec = 30
+	job := customReviewJob(t, "run-12500000000000000000000000000002")
+	job.Config.Effective.Agent.Enabled = false
+	var err error
+	job.Config.Hash, err = runconfig.Hash(job.Config.Effective)
+	require.NoError(t, err)
+
+	err = p.ProcessReviewJob(context.Background(), job)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds deployment maximum")
+	run, getErr := database.GetReviewRun(job.RunID)
+	require.NoError(t, getErr)
+	assert.Nil(t, run)
+}
+
 func TestProcessReviewJobOutlivesRequestContext(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), NewMockReviewGenerator())
@@ -289,6 +308,38 @@ func TestProcessReviewJobRejectsSecondActiveRun(t *testing.T) {
 	require.NoError(t, getErr)
 	assert.Nil(t, missing)
 	waitForReviewJob(t, p, first)
+}
+
+func TestProcessReviewJobTerminalizesQueueWhenTrackingIsLostBeforeLeaseAttachment(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), NewMockReviewGenerator())
+	job := reviewJobWithoutAgent(t, "run-21000000000000000000000000000001")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var blockFirstClaim sync.Once
+	database.BeforeClaimOrRenewQueuedReviewRunLease = func() {
+		blockFirstClaim.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+
+	result := make(chan error, 1)
+	go func() { result <- p.ProcessReviewJob(context.Background(), job) }()
+	<-entered
+	p.untrackReviewRun(job.PR.Owner, job.PR.Repo, job.PR.Number, job.RunID)
+	close(release)
+
+	err := <-result
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "track accepted review run")
+	run, getErr := database.GetReviewRun(job.RunID)
+	require.NoError(t, getErr)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCancelled, run.Status)
+	assert.Equal(t, "dispatch_lost", run.TerminalCode)
+	assert.Empty(t, run.LeaseHolder)
+	assert.Nil(t, run.LeaseExpiresAt)
 }
 
 func TestGenerateReviewJobRejectsRivalBeforeMutatingPRState(t *testing.T) {
@@ -540,7 +591,9 @@ func TestAutomaticCacheRecoveryRepairsTerminalProjectionWithoutLedgerChurn(t *te
 		job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA, job.PR.Title, job.PR.Author, job.PR.CreatedAt, job.PR.Draft, terminalOwner.RunID,
 	))
 	staleGeneratingSince := time.Now().Add(-ReviewQueueLeaseTTL - time.Second)
-	database.PRs[prDBKey(job.PR.Owner, job.PR.Repo, job.PR.Number)].GeneratingSince = &staleGeneratingSince
+	staleProjection := database.PRs[prDBKey(job.PR.Owner, job.PR.Repo, job.PR.Number)]
+	staleProjection.GeneratingSince = &staleGeneratingSince
+	staleProjection.ReviewHTMLPath = gcs.ReviewFileName(job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA)
 	failed := db.ReviewRunStatusFailed
 	require.NoError(t, database.PatchReviewRun(terminalOwner.RunID, db.ReviewRunPatch{Status: &failed}))
 
@@ -650,7 +703,9 @@ func TestUnreadableCacheMetadataRegeneratesInsteadOfPublishingZeroCounts(t *test
 	storage.ExistingReviews[fmt.Sprintf("%s/%s/%d/%s", job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA)] = true
 	require.NoError(t, database.UpsertPR(&db.PR{
 		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
-		LastCommitSHA: "different-commit", Status: "pending", CriticalCount: 99,
+		// ResetPRToOutdated updates the SHA while leaving old counts/run metadata,
+		// but clears ReviewHTMLPath. A same-SHA match alone is therefore untrusted.
+		LastCommitSHA: job.PR.CommitSHA, Status: "pending", CriticalCount: 99,
 		ReviewVerdict: "request_changes", ReviewRunID: "wrong-run",
 	}))
 

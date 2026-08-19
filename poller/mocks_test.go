@@ -236,10 +236,11 @@ func (m *MockGitHubClient) GetOrgTeamMembers(ctx context.Context, orgName, teamS
 
 // MockDatabase implements db.Database for testing
 type MockDatabase struct {
-	mu                  sync.RWMutex
-	ReviewRuns          map[string]*db.ReviewRun
-	ReviewStageAttempts map[string][]db.ReviewStageAttempt
-	GetReviewRunFunc    func(string) (*db.ReviewRun, error)
+	mu                                     sync.RWMutex
+	ReviewRuns                             map[string]*db.ReviewRun
+	ReviewStageAttempts                    map[string][]db.ReviewStageAttempt
+	GetReviewRunFunc                       func(string) (*db.ReviewRun, error)
+	BeforeClaimOrRenewQueuedReviewRunLease func()
 
 	// PRs stored in the mock database (keyed by "owner/repo/number")
 	PRs              map[string]*db.PR
@@ -1256,6 +1257,9 @@ func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt 
 }
 
 func (m *MockDatabase) ClaimOrRenewQueuedReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	if m.BeforeClaimOrRenewQueuedReviewRunLease != nil {
+		m.BeforeClaimOrRenewQueuedReviewRunLease()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if runID == "" || holder == "" || now.IsZero() || !leaseExpiresAt.After(now) {

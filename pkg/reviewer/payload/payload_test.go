@@ -13,13 +13,12 @@ import (
 func TestPayload_ReviewRunJSON(t *testing.T) {
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	p := Payload{ReviewRun: &ReviewRunInfo{
-		RunID:            "run-0123456789abcdef0123456789abcdef",
-		ExecutionAttempt: 2,
-		HTMLPath:         "runs/acme/widgets/7/abcdef0/run-0123456789abcdef0123456789abcdef.html",
-		JSONPath:         "runs/acme/widgets/7/abcdef0/run-0123456789abcdef0123456789abcdef.json",
-		StartedAt:        now,
-		CompletedAt:      now.Add(2 * time.Minute),
-		DurationMS:       120000,
+		RunID:       "run-0123456789abcdef0123456789abcdef",
+		HTMLPath:    "runs/acme/widgets/7/abcdef0/run-0123456789abcdef0123456789abcdef.html",
+		JSONPath:    "runs/acme/widgets/7/abcdef0/run-0123456789abcdef0123456789abcdef.json",
+		StartedAt:   now,
+		CompletedAt: now.Add(2 * time.Minute),
+		DurationMS:  120000,
 		Models: []ModelUse{{
 			Stage:                "agent",
 			Provider:             "openrouter",
@@ -49,7 +48,6 @@ func TestPayload_ReviewRunJSON(t *testing.T) {
 	}
 	for _, fragment := range []string{
 		`"review_run"`, `"run_id":"run-0123456789abcdef0123456789abcdef"`,
-		`"execution_attempt":2`,
 		`"html_path":"runs/acme/widgets/7/abcdef0/run-0123456789abcdef0123456789abcdef.html"`,
 		`"provider":"openrouter"`, `"serving_model_verified":false`,
 		`"wall_clock_seconds":900`, `"agent.model":"request"`, `"hash":"config-hash"`,
