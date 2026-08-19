@@ -386,6 +386,22 @@ func TestReviewAPI_unpinned_missing_canonical_falls_back_to_immutable_run(t *tes
 	w = doReviewAPIGet(t, server, user, target+"?format=html")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, "<html>immutable fallback</html>", w.Body.String())
+
+	for _, direct := range []struct {
+		path        string
+		contentType string
+		body        string
+	}{
+		{path: canonicalPath, contentType: "text/html; charset=utf-8", body: "<html>immutable fallback</html>"},
+		{path: gcs.ReviewJSONFileName(canonicalPath), contentType: "application/json", body: string(sidecar)},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/reviews/"+direct.path, nil)
+		w = httptest.NewRecorder()
+		server.handleReviewFromGCS(w, req)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Equal(t, direct.contentType, w.Header().Get("Content-Type"))
+		assert.Equal(t, direct.body, w.Body.String())
+	}
 }
 
 func TestReviewAPI_run_id_requires_sha_and_valid_id(t *testing.T) {

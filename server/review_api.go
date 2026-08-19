@@ -403,6 +403,10 @@ func commitSHAFromFilename(filename string) string {
 }
 
 func immutableReviewPath(reviewRunJSON, owner, repo string, prNumber int) string {
+	return immutableReviewArtifactPath(reviewRunJSON, owner, repo, prNumber, ".html")
+}
+
+func immutableReviewArtifactPath(reviewRunJSON, owner, repo string, prNumber int, extension string) string {
 	if reviewRunJSON == "" {
 		return ""
 	}
@@ -410,10 +414,16 @@ func immutableReviewPath(reviewRunJSON, owner, repo string, prNumber int) string
 	if err := json.Unmarshal([]byte(reviewRunJSON), &info); err != nil || !isSafeRunID(info.RunID) {
 		return ""
 	}
-	cleaned := filepath.ToSlash(filepath.Clean(info.HTMLPath))
+	artifactPath := info.HTMLPath
+	if extension == ".json" {
+		artifactPath = info.JSONPath
+	} else if extension != ".html" {
+		return ""
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(artifactPath))
 	segments := strings.Split(cleaned, "/")
 	if len(segments) != 6 || segments[0] != "runs" || segments[1] != owner || segments[2] != repo ||
-		segments[3] != strconv.Itoa(prNumber) || !isSafeSHA(segments[4]) || segments[5] != info.RunID+".html" {
+		segments[3] != strconv.Itoa(prNumber) || !isSafeSHA(segments[4]) || segments[5] != info.RunID+extension {
 		return ""
 	}
 	return cleaned

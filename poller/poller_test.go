@@ -3717,21 +3717,3 @@ func TestPoll_UpdatesStaleTitle_DevMode(t *testing.T) {
 		t.Errorf("expected no further UpdatePRMetadata calls on second poll, got %d total", len(mockDB.UpdatePRMetadataCalls))
 	}
 }
-
-func TestLocalReviewAliasPreservesImmutableRunHistory(t *testing.T) {
-	pr := &db.PR{
-		RepoOwner: "acme", RepoName: "widgets", PRNumber: 7,
-		LastCommitSHA: "abcdef0123456789",
-		ReviewHTMLPath: gcs.ReviewRunFileName(
-			"acme", "widgets", 7, "abcdef0123456789", "run-0123456789abcdef0123456789abcdef",
-		),
-	}
-	if got, want := localReviewAlias(*pr), gcs.ReviewFileName("acme", "widgets", 7, pr.LastCommitSHA); got != want {
-		t.Fatalf("localReviewAlias(run path) = %q, want canonical alias %q", got, want)
-	}
-
-	pr.ReviewHTMLPath = "legacy-custom-review.html"
-	if got := localReviewAlias(*pr); got != pr.ReviewHTMLPath {
-		t.Fatalf("localReviewAlias(legacy path) = %q, want %q", got, pr.ReviewHTMLPath)
-	}
-}

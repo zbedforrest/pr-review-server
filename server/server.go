@@ -1728,12 +1728,32 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 	content, err = os.ReadFile(localPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			http.Error(w, "Review not found", http.StatusNotFound)
+			fallback, fallbackErr := s.immutableFallbackForCanonicalReview(filename)
+			if fallbackErr != nil {
+				log.Printf("[REVIEWS] Resolve immutable fallback for %s: %v", filename, fallbackErr)
+				http.Error(w, "Failed to fetch review", http.StatusInternalServerError)
+				return
+			}
+			if fallback == "" {
+				http.Error(w, "Review not found", http.StatusNotFound)
+				return
+			}
+			content, err = s.fetchReviewBytes(r.Context(), fallback)
+			if err != nil {
+				if errors.Is(err, errReviewNotFound) {
+					http.Error(w, "Review not found", http.StatusNotFound)
+				} else {
+					log.Printf("[REVIEWS] Error fetching immutable fallback %s: %v", fallback, err)
+					http.Error(w, "Failed to fetch review", http.StatusInternalServerError)
+				}
+				return
+			}
+			filename = fallback
 		} else {
 			log.Printf("[LOCAL] Error reading review %s: %v", localPath, err)
 			http.Error(w, "Failed to fetch review", http.StatusInternalServerError)
+			return
 		}
-		return
 	}
 
 	// Set headers. Match the GCS branch above: reviews used to be immutable
@@ -1747,4 +1767,26 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, _ = w.Write(content) // nolint:errcheck
+}
+
+func (s *Server) immutableFallbackForCanonicalReview(filename string) (string, error) {
+	if strings.ContainsRune(filepath.ToSlash(filename), '/') {
+		return "", nil
+	}
+	extension := filepath.Ext(filename)
+	if extension != ".html" && extension != ".json" {
+		return "", nil
+	}
+	canonicalHTML := strings.TrimSuffix(filename, extension) + ".html"
+	prs, err := s.db.GetAllPRs()
+	if err != nil {
+		return "", err
+	}
+	for _, pr := range prs {
+		if pr.Status != "completed" || pr.ReviewHTMLPath != canonicalHTML {
+			continue
+		}
+		return immutableReviewArtifactPath(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber, extension), nil
+	}
+	return "", nil
 }
