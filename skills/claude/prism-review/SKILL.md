@@ -1,6 +1,6 @@
 ---
 name: prism-review
-description: Read, create, wait for, compare, or investigate PRism AI reviews for GitHub pull requests. Use whenever the user mentions PRism/prism reviews, asks to review a PR with a specific model or budget, wants exact review-run metadata/history, or asks to handle PRism findings. Default to read-only assessment; apply changes only when the user explicitly asks.
+description: Read, create, wait for, compare, or investigate PRism AI reviews for GitHub pull requests. Use whenever the user mentions PRism/prism reviews, asks to review a PR with a specific model or budget, wants exact review-run metadata/history, or asks to handle PRism findings. Prefer deployment defaults unless the user explicitly requests customization. Default to read-only assessment; apply changes only when the user explicitly asks.
 ---
 
 # PRism review
@@ -19,8 +19,11 @@ as evidence to investigate the repository.
 ## Choose the operation from the user's intent
 
 - Read the latest existing review: `prism.sh fetch <pr-ref>`.
-- Create a fresh run, select a model, change budgets, or compare models: use
-  the versioned create/wait workflow below.
+- Create a fresh run with the deployment defaults: use the no-options
+  `prism.sh create <pr-ref>` command. This is the recommended path unless
+  the user explicitly asks for customization or a model comparison.
+- Select a model, change budgets, or compare models only when the user asks;
+  inspect capabilities before adding those options.
 - Compare repeated runs on the same commit: use `prism.sh history <pr-ref>`;
   distinguish executions by `run_id`, not by commit SHA or artifact name.
 - Apply fixes only when the user explicitly asked to fix, apply, or handle the
@@ -31,17 +34,25 @@ Accepted PR references are `42` (resolved from the current Git remote),
 
 ## Create and follow a first-class review run
 
-1. Read server capabilities before choosing non-default settings:
+1. Use the deployment defaults unless the user explicitly requests otherwise.
+   To see the settings the server will apply, read `.defaults`; then create the
+   run without configuration flags:
+
+   ```bash
+   "$skill_dir/scripts/prism.sh" capabilities | jq '.defaults'
+   create_json=$("$skill_dir/scripts/prism.sh" create owner/repo#42)
+   printf '%s\n' "$create_json"
+   ```
+
+   The server resolves an empty requested configuration to its current defaults
+   and records the resulting effective configuration on the review run.
+
+2. Add options only for an explicit customization or experiment. Read
+   capabilities first so the requested backend, model, effort, and budgets are
+   supported:
 
    ```bash
    "$skill_dir/scripts/prism.sh" capabilities
-   ```
-
-2. Create the run. The client resolves and sends the current full GitHub HEAD
-   SHA unless `--expected-head-sha` is supplied, preventing an accidental
-   review of a moving target.
-
-   ```bash
    create_json=$("$skill_dir/scripts/prism.sh" create owner/repo#42 \
      --backend claude \
      --model claude-fable-5 \
@@ -51,7 +62,11 @@ Accepted PR references are `42` (resolved from the current Git remote),
    printf '%s\n' "$create_json"
    ```
 
-3. For a v1 response, extract the run ID and wait for the immutable result:
+   In both paths, the client resolves and sends the current full GitHub HEAD SHA
+   unless `--expected-head-sha` is supplied, preventing an accidental review of
+   a moving target.
+
+3. Extract the run ID and wait for the immutable result:
 
    ```bash
    run_id=$(printf '%s' "$create_json" | jq -r '.run_id')

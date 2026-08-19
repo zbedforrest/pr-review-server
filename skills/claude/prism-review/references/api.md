@@ -14,6 +14,12 @@ prism.sh fetch <pr-ref> [--sha SHA]
 `capabilities`, `create`, `get`, and `history` emit JSON. `wait` and `fetch`
 render a compact evidence-oriented view of the review findings.
 
+Prefer `prism.sh create <pr-ref>` with no create options. That sends an empty
+requested configuration, so the server applies and records its deployment
+defaults. Inspect them with `prism.sh capabilities | jq '.defaults'`. Add the
+options below only when the user explicitly requests customization or a model
+comparison.
+
 Create options map directly to the v1 request:
 
 | Client option | Request field |
@@ -37,9 +43,10 @@ Claude and OpenRouter.
 
 ## Examples
 
-Use the deployment defaults:
+Use the deployment defaults (recommended):
 
 ```bash
+prism.sh capabilities | jq '.defaults'
 created=$(prism.sh create acme/widgets#42)
 prism.sh wait "$(printf '%s' "$created" | jq -r .run_id)"
 ```
