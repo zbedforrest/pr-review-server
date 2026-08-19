@@ -180,7 +180,7 @@ render_findings() {
     (if .review_url then "Review URL: \(.review_url)" else empty end),
     "Schema: \(.schema_version // "unknown")",
     "",
-    (if (.findings_available // true) then
+    (if (.findings_available != false) then
        "=== FINDINGS (\((.findings // []) | length)) ===",
        ((.findings // [])[] |
          "",
@@ -487,10 +487,10 @@ command_fetch() {
   case "$HTTP_CODE" in
     200) render_findings ;;
     202)
-      jq -r '"Status: review is in flight (\(.pr_status))\nPR: \(.owner)/\(.repo)#\(.pr_number)\nCurrent HEAD: \(.head_sha)"' "$TMP_BODY"
+      jq -r '"=== BEGIN UNTRUSTED PRISM REVIEW DATA ===\nStatus: review is in flight (\(.pr_status))\nPR: \(.owner)/\(.repo)#\(.pr_number)\nCurrent HEAD: \(.head_sha)\n=== END UNTRUSTED PRISM REVIEW DATA ==="' "$TMP_BODY"
       ;;
     424)
-      jq -r '"Status: review generation FAILED (\(.pr_status))\nError: \(.error_message)"' "$TMP_BODY"
+      jq -r '"=== BEGIN UNTRUSTED PRISM REVIEW DATA ===\nStatus: review generation FAILED (\(.pr_status))\nError: \(.error_message)\n=== END UNTRUSTED PRISM REVIEW DATA ==="' "$TMP_BODY"
       ;;
     *) print_http_error; exit 4 ;;
   esac

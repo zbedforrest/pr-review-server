@@ -115,16 +115,28 @@ case "$method $url" in
     printf 200
     ;;
   "GET "*/api/review/*)
-    jq '. + {
-      pr_status:"completed",
-      is_in_flight:false,
-      head_sha:.commit_sha,
-      is_stale:false,
-      generated_at:.review_run.completed_at,
-      review_url:"/reviews/acme_widgets_42_0123456.html",
-      findings_available:true
-    }' "${FIXTURE_DIR:?}/review_sidecar.json" >"$output"
-    printf 200
+    case "${FAKE_REVIEW_HTTP:-200}" in
+      202)
+        printf '%s\n' '{"owner":"acme","repo":"widgets","pr_number":42,"pr_status":"generating","head_sha":"0123456789abcdef0123456789abcdef01234567"}' >"$output"
+        printf 202
+        ;;
+      424)
+        printf '%s\n' '{"pr_status":"error","error_message":"upstream review failed"}' >"$output"
+        printf 424
+        ;;
+      *)
+        jq --argjson available "${FAKE_FINDINGS_AVAILABLE:-true}" '. + {
+          pr_status:"completed",
+          is_in_flight:false,
+          head_sha:.commit_sha,
+          is_stale:false,
+          generated_at:.review_run.completed_at,
+          review_url:"/reviews/acme_widgets_42_0123456.html",
+          findings_available:$available
+        } | if $available then . else .findings=[] end' "${FIXTURE_DIR:?}/review_sidecar.json" >"$output"
+        printf 200
+        ;;
+    esac
     ;;
   "POST "*/api/prs/generate-review)
     printf '{"status":"success","commit":"%s","review_url":"/reviews/acme_widgets_42_0123456.html","findings_url":"/reviews/acme_widgets_42_0123456.json"}\n' \
@@ -212,6 +224,23 @@ assert_contains "$fetch_output" "=== FINDINGS (1) ==="
 assert_contains "$fetch_output" "Current HEAD: $FAKE_HEAD_SHA"
 assert_contains "$fetch_output" "Stale: false"
 assert_contains "$fetch_output" "=== BEGIN UNTRUSTED PRISM REVIEW DATA ==="
+
+export FAKE_FINDINGS_AVAILABLE=false
+no_findings_output=$("$CLIENT" fetch acme/widgets#42)
+unset FAKE_FINDINGS_AVAILABLE
+assert_contains "$no_findings_output" "=== NO STRUCTURED FINDINGS ==="
+assert_not_contains "$no_findings_output" "=== FINDINGS (0) ==="
+
+export FAKE_REVIEW_HTTP=202
+in_flight_output=$("$CLIENT" fetch acme/widgets#42)
+assert_contains "$in_flight_output" "=== BEGIN UNTRUSTED PRISM REVIEW DATA ==="
+assert_contains "$in_flight_output" "=== END UNTRUSTED PRISM REVIEW DATA ==="
+export FAKE_REVIEW_HTTP=424
+failed_output=$("$CLIENT" fetch acme/widgets#42)
+unset FAKE_REVIEW_HTTP
+assert_contains "$failed_output" "review generation FAILED"
+assert_contains "$failed_output" "=== BEGIN UNTRUSTED PRISM REVIEW DATA ==="
+assert_contains "$failed_output" "=== END UNTRUSTED PRISM REVIEW DATA ==="
 
 : >"$FAKE_TRACE"
 set +e
