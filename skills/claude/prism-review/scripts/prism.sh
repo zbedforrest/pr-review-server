@@ -38,10 +38,7 @@ need_command() {
 }
 
 is_positive_integer() {
-  case "$1" in
-    ''|*[!0-9]*|0) return 1 ;;
-    *) return 0 ;;
-  esac
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
 is_full_sha() {
@@ -265,9 +262,9 @@ command_create() {
       --backend) backend="$value"; has_customization=1 ;;
       --model) model="$value"; has_customization=1 ;;
       --effort) effort="$value"; has_customization=1 ;;
-      --wall-clock-seconds) is_positive_integer "$value" || die "$option must be positive"; wall_clock="$value"; has_customization=1 ;;
-      --max-turns) is_positive_integer "$value" || die "$option must be positive"; max_turns="$value"; has_customization=1 ;;
-      --first-pass-samples) is_positive_integer "$value" || die "$option must be positive"; first_pass_samples="$value"; has_customization=1 ;;
+      --wall-clock-seconds) is_positive_integer "$value" || die "$option must be a positive integer without leading zeros"; wall_clock="$value"; has_customization=1 ;;
+      --max-turns) is_positive_integer "$value" || die "$option must be a positive integer without leading zeros"; max_turns="$value"; has_customization=1 ;;
+      --first-pass-samples) is_positive_integer "$value" || die "$option must be a positive integer without leading zeros"; first_pass_samples="$value"; has_customization=1 ;;
       --agent-enabled) [ "$value" = true ] || [ "$value" = false ] || die "$option must be true or false"; agent_enabled="$value"; has_customization=1 ;;
       --required-checks) [ "$value" = true ] || [ "$value" = false ] || die "$option must be true or false"; required_checks="$value"; has_customization=1 ;;
       --expected-head-sha) expected_head="$value" ;;
@@ -278,6 +275,7 @@ command_create() {
   if [ -z "$expected_head" ]; then
     command -v gh >/dev/null 2>&1 || die "gh is required to resolve the exact PR HEAD; pass --expected-head-sha" 3
     expected_head=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER" --jq .head.sha 2>/dev/null || true)
+    [ -n "$expected_head" ] || die "failed to resolve the current GitHub PR HEAD; pass --expected-head-sha or check gh authentication" 3
   fi
   is_full_sha "$expected_head" || die "expected head SHA must be a full 40-character hexadecimal SHA"
   expected_head=$(printf '%s' "$expected_head" | tr '[:upper:]' '[:lower:]')
@@ -305,6 +303,10 @@ command_create() {
       if jq -e '.run_id | strings | test("^run-[0-9a-f]{32}$")' "$TMP_BODY" >/dev/null 2>&1; then
         jq . "$TMP_BODY"
         return
+      fi
+      if [ "$HTTP_CODE" = 202 ]; then
+        print_http_error
+        exit 4
       fi
       ;;
     404|405) ;;

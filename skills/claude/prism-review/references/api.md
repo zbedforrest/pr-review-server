@@ -112,7 +112,9 @@ abbreviates that commit, the client verifies the legacy status endpoint's full
 persisted `head_sha` before accepting the run. `fetch` continues to use the
 legacy read endpoint for backward compatibility. Pre-v1 deployments may return
 their HTML app shell with HTTP 200 for unknown versioned paths; the client
-recognizes that as unsupported only when the body lacks a valid v1 run ID.
+recognizes that as unsupported only when the body lacks a valid v1 run ID. A
+`202` without a valid run ID is a protocol error and never falls back, because
+the server may already have admitted the v1 run.
 
 ## Environment
 

@@ -37,7 +37,10 @@ cat >"$TEST_TMP/bin/gh" <<'EOF'
 set -euo pipefail
 case "${1:-}" in
   auth) printf '%s\n' 'fake-gh-token' ;;
-  api) printf '%s\n' "${FAKE_HEAD_SHA:?}" ;;
+  api)
+    [ "${FAKE_GH_API_FAIL:-}" != true ] || exit 1
+    printf '%s\n' "${FAKE_HEAD_SHA:?}"
+    ;;
   *) exit 2 ;;
 esac
 EOF
@@ -87,6 +90,10 @@ case "$method $url" in
       200_html)
         printf '%s\n' '<!doctype html><title>PR Review Server</title>' >"$output"
         printf 200
+        ;;
+      202_invalid)
+        printf '%s\n' '{"status":"queued"}' >"$output"
+        printf 202
         ;;
       *)
         cp "${FIXTURE_DIR:?}/run_completed.json" "$output"
@@ -170,6 +177,24 @@ assert_eq "$(jq -r '.config.agent.max_turns' "$FAKE_LAST_REQUEST")" "100"
 assert_eq "$(jq -r '.config.first_pass.samples' "$FAKE_LAST_REQUEST")" "2"
 assert_contains "$(cat "$FAKE_LAST_HEADERS")" "Idempotency-Key: client-test-key"
 
+: >"$FAKE_TRACE"
+set +e
+"$CLIENT" create acme/widgets#42 --max-turns 0600 >"$TEST_TMP/integer.out" 2>"$TEST_TMP/integer.err"
+integer_status=$?
+set -e
+assert_eq "$integer_status" "2"
+assert_contains "$(cat "$TEST_TMP/integer.err")" "without leading zeros"
+assert_eq "$(cat "$FAKE_TRACE")" ""
+
+export FAKE_GH_API_FAIL=true
+set +e
+"$CLIENT" create acme/widgets#42 >"$TEST_TMP/github.out" 2>"$TEST_TMP/github.err"
+github_status=$?
+set -e
+unset FAKE_GH_API_FAIL
+assert_eq "$github_status" "3"
+assert_contains "$(cat "$TEST_TMP/github.err")" "failed to resolve the current GitHub PR HEAD"
+
 run_json=$("$CLIENT" get run-0123456789abcdef0123456789abcdef)
 assert_eq "$(printf '%s' "$run_json" | jq -r '.attempts[0].budget_units_used')" "12"
 
@@ -197,6 +222,17 @@ assert_eq "$origin_status" "2"
 assert_contains "$(cat "$TEST_TMP/origin.err")" "run ID or review findings URL"
 assert_eq "$(cat "$FAKE_TRACE")" ""
 
+export FAKE_V1_CREATE_CODE=202_invalid
+: >"$FAKE_TRACE"
+set +e
+"$CLIENT" create acme/widgets#42 >"$TEST_TMP/invalid-202.out" 2>"$TEST_TMP/invalid-202.err"
+invalid_202_status=$?
+set -e
+assert_eq "$invalid_202_status" "4"
+case "$(cat "$FAKE_TRACE")" in
+  */api/prs/generate-review*) fail "malformed accepted v1 response reached the legacy creation API" ;;
+esac
+
 export FAKE_V1_CREATE_CODE=200_html
 export FAKE_LEGACY_COMMIT="0123456"
 : >"$FAKE_TRACE"
@@ -204,6 +240,14 @@ legacy=$("$CLIENT" create acme/widgets#42)
 assert_eq "$(printf '%s' "$legacy" | jq -r '.api_version')" "legacy"
 assert_contains "$(cat "$FAKE_TRACE")" "/api/prs/generate-review"
 assert_contains "$(cat "$FAKE_TRACE")" "/api/review/acme/widgets/42"
+
+export FAKE_LEGACY_COMMIT="deadbee"
+set +e
+"$CLIENT" create acme/widgets#42 >"$TEST_TMP/mismatch.out" 2>"$TEST_TMP/mismatch.err"
+mismatch_status=$?
+set -e
+assert_eq "$mismatch_status" "6"
+assert_contains "$(cat "$TEST_TMP/mismatch.err")" "targeted a different commit"
 
 export FAKE_V1_CREATE_CODE=404
 unset FAKE_LEGACY_COMMIT
