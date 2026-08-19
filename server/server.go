@@ -1688,6 +1688,7 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filename = cleaned
+	requestedFilename := filename
 
 	// Serve the JSON sidecar with the correct content type; everything else is
 	// the rendered HTML review.
@@ -1709,7 +1710,7 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 			// Reviews used to be immutable per commit, but the manual trigger now
 			// force-overwrites the same filename. Make the browser revalidate so
 			// the new content shows up after a regen.
-			if strings.HasPrefix(filename, "runs/") {
+			if strings.HasPrefix(requestedFilename, "runs/") {
 				w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 			} else {
 				w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
@@ -1760,7 +1761,7 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 	// per commit, but the manual trigger now force-overwrites the same
 	// filename, so browsers must revalidate to pick up the new content.
 	w.Header().Set("Content-Type", contentType)
-	if strings.HasPrefix(filename, "runs/") {
+	if strings.HasPrefix(requestedFilename, "runs/") {
 		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	} else {
 		w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
@@ -1778,15 +1779,18 @@ func (s *Server) immutableFallbackForCanonicalReview(filename string) (string, e
 		return "", nil
 	}
 	canonicalHTML := strings.TrimSuffix(filename, extension) + ".html"
-	prs, err := s.db.GetAllPRs()
+	lookup, ok := s.db.(interface {
+		GetCompletedPRByReviewPath(string) (*db.PR, error)
+	})
+	if !ok {
+		return "", fmt.Errorf("database does not support completed review-path lookup")
+	}
+	pr, err := lookup.GetCompletedPRByReviewPath(canonicalHTML)
 	if err != nil {
 		return "", err
 	}
-	for _, pr := range prs {
-		if pr.Status != "completed" || pr.ReviewHTMLPath != canonicalHTML {
-			continue
-		}
-		return immutableReviewArtifactPath(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber, extension), nil
+	if pr == nil {
+		return "", nil
 	}
-	return "", nil
+	return immutableReviewArtifactPath(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber, extension), nil
 }

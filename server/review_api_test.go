@@ -391,9 +391,10 @@ func TestReviewAPI_unpinned_missing_canonical_falls_back_to_immutable_run(t *tes
 		path        string
 		contentType string
 		body        string
+		cache       string
 	}{
-		{path: canonicalPath, contentType: "text/html; charset=utf-8", body: "<html>immutable fallback</html>"},
-		{path: gcs.ReviewJSONFileName(canonicalPath), contentType: "application/json", body: string(sidecar)},
+		{path: canonicalPath, contentType: "text/html; charset=utf-8", body: "<html>immutable fallback</html>", cache: "no-cache"},
+		{path: gcs.ReviewJSONFileName(canonicalPath), contentType: "application/json", body: string(sidecar), cache: "no-cache"},
 	} {
 		req := httptest.NewRequest(http.MethodGet, "/reviews/"+direct.path, nil)
 		w = httptest.NewRecorder()
@@ -401,6 +402,7 @@ func TestReviewAPI_unpinned_missing_canonical_falls_back_to_immutable_run(t *tes
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		assert.Equal(t, direct.contentType, w.Header().Get("Content-Type"))
 		assert.Equal(t, direct.body, w.Body.String())
+		assert.Contains(t, w.Header().Get("Cache-Control"), direct.cache)
 	}
 }
 

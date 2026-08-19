@@ -1,19 +1,33 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/types"
 )
+
+type cancelAfterSpawnSpawner struct {
+	proc   *fakeProcess
+	cancel context.CancelFunc
+}
+
+func (s *cancelAfterSpawnSpawner) Spawn(context.Context, string, []string, string) (SpawnedProcess, error) {
+	s.cancel()
+	return s.proc, nil
+}
 
 // MockGithubClient is a mock implementation of the github.Client interface.
 type MockGithubClient struct {
@@ -253,6 +267,140 @@ func TestPerformReviewPropagatesPostProcessingObserverFence(t *testing.T) {
 	assert.ErrorIs(t, err, ErrProviderAttemptAborted)
 	assert.Zero(t, classificationCalls)
 	assert.Zero(t, lineCommentCalls, "a fenced review must not post comments")
+}
+
+func TestRunAgentReviewEmitsStartedAndCompletedAttemptTelemetry(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-4-8"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"x"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{}),
+	}}
+	var events []ProviderAttemptEvent
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		Model: "claude-fable-5", Effort: "high",
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return errors.New("telemetry unavailable")
+		},
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.Len(t, events, 2)
+	started, completed := events[0], events[1]
+	assert.Equal(t, "started", started.Status)
+	assert.Equal(t, "agent", started.Stage)
+	assert.Nil(t, started.CompletedAt)
+	assert.Equal(t, "completed", completed.Status)
+	assert.Equal(t, "completed", completed.StopReason)
+	assert.Equal(t, "anthropic", completed.Provider)
+	assert.Equal(t, AgentBackendClaude, completed.Backend)
+	assert.Equal(t, "claude-fable-5", completed.RequestedModel)
+	assert.Equal(t, "claude-fable-5", completed.ResolvedModel)
+	assert.Equal(t, "high", completed.Effort)
+	assert.True(t, completed.Fallback)
+	assert.Equal(t, "claude-opus-4-8", completed.PrimaryServedModel)
+	assert.True(t, completed.ServingModelVerified)
+	assert.Equal(t, "stream", completed.ServedModelSource)
+	assert.Equal(t, 1, completed.AssistantTurns)
+	assert.Equal(t, "v1", completed.MatcherVersion)
+	assert.NotNil(t, completed.StartedAt)
+	assert.NotNil(t, completed.CompletedAt)
+}
+
+func TestRunAgentReviewEmitsTerminalSpawnFailure(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	spawner := &fakeSpawner{spawnErr: errors.New("exec unavailable")}
+	var events []ProviderAttemptEvent
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	}
+
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	require.Error(t, err)
+	require.Len(t, events, 2)
+	assert.Equal(t, "started", events[0].Status)
+	assert.Equal(t, "failed", events[1].Status)
+	assert.Equal(t, "spawn_failed", events[1].ErrorCode)
+	assert.NotNil(t, events[1].CompletedAt)
+	assert.Contains(t, events[1].ErrorSummary, "exec unavailable")
+}
+
+func TestRunAgentReviewAbortsBeforeSpawnOnDefinitiveObserverFence(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	spawner := &fakeSpawner{}
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Status == "started" {
+				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
+			}
+			return nil
+		},
+	}
+
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	assert.ErrorIs(t, err, ErrProviderAttemptAborted)
+	assert.Empty(t, spawner.name, "provider spawned despite ownership fence")
+}
+
+func TestRunAgentReviewClassifiesExternalCancellation(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	ctx, cancel := context.WithCancel(context.Background())
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(""), stderr: &bytes.Buffer{},
+		waitErr: errors.New("signal: killed"), killCh: make(chan struct{}),
+	}
+	spawner := &cancelAfterSpawnSpawner{proc: proc, cancel: cancel}
+	var events []ProviderAttemptEvent
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	}
+
+	_, err := RunAgentReview(ctx, cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	require.Error(t, err)
+	require.Len(t, events, 2)
+	terminal := events[1]
+	assert.Equal(t, "failed", terminal.Status)
+	assert.Equal(t, "cancelled", terminal.StopReason)
+	assert.Equal(t, "context_canceled", terminal.ErrorCode)
+}
+
+func TestRunAgentReviewEmitsNoAttemptBeforeProviderSetup(t *testing.T) {
+	notDirectory := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(notDirectory, []byte("x"), 0o600))
+	var events []ProviderAttemptEvent
+	cfg := AgentConfig{
+		CloneRootDir: notDirectory, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	}
+	_, err := RunAgentReview(context.Background(), cfg, &fakeSpawner{}, "acme", "example", "main", 1, "deadbeef", nil)
+	require.Error(t, err)
+	assert.Empty(t, events)
 }
 
 func (m *MockGithubClient) PostPRComment(token, owner, repo string, prNumber int, body string) error {

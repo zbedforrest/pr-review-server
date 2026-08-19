@@ -159,21 +159,17 @@ func TestParseAgentStream_MaxTurnsKills(t *testing.T) {
 
 // fakeSpawner returns a canned process regardless of the command.
 type fakeSpawner struct {
-	proc       *fakeProcess
-	name       string
-	args       []string
-	dir        string
-	spawnErr   error
-	afterSpawn func()
+	proc     *fakeProcess
+	name     string
+	args     []string
+	dir      string
+	spawnErr error
 }
 
 func (s *fakeSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
 	s.name = name
 	s.args = append([]string(nil), args...)
 	s.dir = dir
-	if s.afterSpawn != nil {
-		s.afterSpawn()
-	}
 	return s.proc, s.spawnErr
 }
 
@@ -374,168 +370,6 @@ func TestRunAgentReview_DetectsModelFallback(t *testing.T) {
 	}
 	if out.Backend != AgentBackendClaude || !out.ServingModelVerified {
 		t.Errorf("backend metadata: backend=%q verified=%t", out.Backend, out.ServingModelVerified)
-	}
-}
-
-func TestRunAgentReviewEmitsStartedAndCompletedAttemptTelemetry(t *testing.T) {
-	bare, sha := setupLocalBareRepo(t)
-	cloneRoot := t.TempDir()
-	seedAgentCache(t, cloneRoot, "acme", "example", bare)
-	stream := `{"type":"system","subtype":"init","model":"claude-opus-4-8"}
-{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"x"}]}}
-{"type":"result","result":"[]"}
-`
-	spawner := &fakeSpawner{proc: &fakeProcess{
-		stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{}),
-	}}
-	var events []ProviderAttemptEvent
-	cfg := AgentConfig{
-		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
-		Model: "claude-fable-5", Effort: "high",
-		AttemptObserver: func(event ProviderAttemptEvent) error {
-			events = append(events, event)
-			return errors.New("telemetry unavailable") // best-effort: agent must continue
-		},
-	}
-
-	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
-	if err != nil {
-		t.Fatalf("RunAgentReview: %v", err)
-	}
-	if out == nil {
-		t.Fatal("expected review")
-	}
-	if len(events) != 2 {
-		t.Fatalf("attempt events: got %d want 2", len(events))
-	}
-	started, completed := events[0], events[1]
-	if started.Status != "started" || started.Stage != "agent" || started.CompletedAt != nil {
-		t.Errorf("unexpected started event: %+v", started)
-	}
-	if completed.Status != "completed" || completed.StopReason != "completed" {
-		t.Errorf("unexpected terminal event: %+v", completed)
-	}
-	if completed.Provider != "anthropic" || completed.Backend != AgentBackendClaude {
-		t.Errorf("provider metadata: provider=%q backend=%q", completed.Provider, completed.Backend)
-	}
-	if completed.RequestedModel != "claude-fable-5" || completed.ResolvedModel != "claude-fable-5" || completed.Effort != "high" {
-		t.Errorf("requested metadata: %+v", completed)
-	}
-	if !completed.Fallback || completed.PrimaryServedModel != "claude-opus-4-8" || !completed.ServingModelVerified {
-		t.Errorf("serving metadata: %+v", completed)
-	}
-	if completed.ServedModelSource != "stream" || completed.AssistantTurns != 1 || completed.MatcherVersion != "v1" {
-		t.Errorf("lifecycle metadata: %+v", completed)
-	}
-	if completed.StartedAt == nil || completed.CompletedAt == nil {
-		t.Errorf("missing timing: %+v", completed)
-	}
-}
-
-func TestRunAgentReviewEmitsTerminalSpawnFailure(t *testing.T) {
-	bare, sha := setupLocalBareRepo(t)
-	cloneRoot := t.TempDir()
-	seedAgentCache(t, cloneRoot, "acme", "example", bare)
-	spawner := &fakeSpawner{spawnErr: errors.New("exec unavailable")}
-	var events []ProviderAttemptEvent
-	cfg := AgentConfig{
-		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
-		AttemptObserver: func(event ProviderAttemptEvent) error {
-			events = append(events, event)
-			return nil
-		},
-	}
-
-	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
-	if err == nil {
-		t.Fatal("expected spawn error")
-	}
-	if len(events) != 2 {
-		t.Fatalf("attempt events: got %d want 2", len(events))
-	}
-	if events[0].Status != "started" || events[1].Status != "failed" || events[1].ErrorCode != "spawn_failed" {
-		t.Errorf("unexpected lifecycle: %+v", events)
-	}
-	if events[1].CompletedAt == nil || !strings.Contains(events[1].ErrorSummary, "exec unavailable") {
-		t.Errorf("unexpected terminal failure: %+v", events[1])
-	}
-}
-
-func TestRunAgentReviewAbortsBeforeSpawnOnDefinitiveObserverFence(t *testing.T) {
-	bare, sha := setupLocalBareRepo(t)
-	cloneRoot := t.TempDir()
-	seedAgentCache(t, cloneRoot, "acme", "example", bare)
-	spawner := &fakeSpawner{}
-	cfg := AgentConfig{
-		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
-		AttemptObserver: func(event ProviderAttemptEvent) error {
-			if event.Status == "started" {
-				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
-			}
-			return nil
-		},
-	}
-
-	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
-	if !errors.Is(err, ErrProviderAttemptAborted) {
-		t.Fatalf("RunAgentReview error = %v, want ErrProviderAttemptAborted", err)
-	}
-	if spawner.name != "" {
-		t.Fatalf("provider spawned despite ownership fence: %s", spawner.name)
-	}
-}
-
-func TestRunAgentReviewClassifiesExternalCancellation(t *testing.T) {
-	bare, sha := setupLocalBareRepo(t)
-	cloneRoot := t.TempDir()
-	seedAgentCache(t, cloneRoot, "acme", "example", bare)
-	ctx, cancel := context.WithCancel(context.Background())
-	proc := &fakeProcess{
-		stdout: bytes.NewBufferString(""), stderr: &bytes.Buffer{},
-		waitErr: errors.New("signal: killed"), killCh: make(chan struct{}),
-	}
-	spawner := &fakeSpawner{proc: proc, afterSpawn: cancel}
-	var events []ProviderAttemptEvent
-	cfg := AgentConfig{
-		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
-		AttemptObserver: func(event ProviderAttemptEvent) error {
-			events = append(events, event)
-			return nil
-		},
-	}
-
-	_, err := RunAgentReview(ctx, cfg, spawner, "acme", "example", "main", 1, sha, nil)
-	if err == nil {
-		t.Fatal("expected cancellation error")
-	}
-	if len(events) != 2 {
-		t.Fatalf("attempt events: got %d want 2", len(events))
-	}
-	terminal := events[1]
-	if terminal.Status != "failed" || terminal.StopReason != "cancelled" || terminal.ErrorCode != "context_canceled" {
-		t.Fatalf("unexpected cancellation telemetry: %+v", terminal)
-	}
-}
-
-func TestRunAgentReviewEmitsNoAttemptBeforeProviderSetup(t *testing.T) {
-	notDirectory := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(notDirectory, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var events []ProviderAttemptEvent
-	cfg := AgentConfig{
-		CloneRootDir: notDirectory, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
-		AttemptObserver: func(event ProviderAttemptEvent) error {
-			events = append(events, event)
-			return nil
-		},
-	}
-	_, err := RunAgentReview(context.Background(), cfg, &fakeSpawner{}, "acme", "example", "main", 1, "deadbeef", nil)
-	if err == nil {
-		t.Fatal("expected setup error")
-	}
-	if len(events) != 0 {
-		t.Fatalf("setup failure emitted %d provider event(s): %+v", len(events), events)
 	}
 }
 

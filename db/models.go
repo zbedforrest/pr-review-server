@@ -82,7 +82,7 @@ type PRModel struct {
 	Author          string          `gorm:"size:255;index"`
 	LastCommitSHA   string          `gorm:"size:40;not null"`
 	Status          string          `gorm:"size:20;default:pending;index"`
-	ReviewPath      string          `gorm:"column:review_path;type:text"`
+	ReviewPath      string          `gorm:"column:review_path;type:text;index"`
 	LastReviewedAt  *time.Time      `gorm:"index"`
 	GeneratingSince *time.Time      `gorm:"index"`
 	CreatedAt       *time.Time      `gorm:"index"`

@@ -11,6 +11,24 @@ import (
 
 const reviewRunAbandonBatchSize = 500
 
+// GetCompletedPRByReviewPath resolves the rare missing-alias fallback without
+// loading every PR into the server process. review_path is indexed because the
+// direct artifact route calls this only after both storage lookups miss.
+func (g *GormDB) GetCompletedPRByReviewPath(reviewPath string) (*PR, error) {
+	if reviewPath == "" {
+		return nil, nil
+	}
+	var model PRModel
+	err := g.db.Where("review_path = ? AND status = ?", reviewPath, "completed").First(&model).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get completed PR by review path %s: %w", reviewPath, err)
+	}
+	return prModelToPR(&model), nil
+}
+
 // SetPRGeneratingForReviewRun atomically claims the mutable PR projection for
 // runID while moving it into the generating state. A later run may replace the
 // claim; all subsequent projection writes below are conditional on ownership.
