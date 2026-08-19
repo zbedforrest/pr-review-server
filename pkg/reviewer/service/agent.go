@@ -102,15 +102,10 @@ type AgentReview struct {
 	ServingModelVerified bool
 }
 
-// Spawner abstracts subprocess creation so tests can stub the agent CLI.
+// Spawner abstracts secure subprocess creation so tests can stub the agent
+// CLI. The environment slice is complete; implementations must not inherit
+// the server process environment.
 type Spawner interface {
-	Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error)
-}
-
-// EnvironmentSpawner is required by backends whose frozen credential must be
-// injected into the child without placing it in argv. The slice is the complete
-// child environment, already filtered and deduplicated by agentChildEnvironment.
-type EnvironmentSpawner interface {
 	SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error)
 }
 
@@ -253,20 +248,12 @@ func RunAgentReview(
 	if observerErr := observeProviderAttempt(agentCfg.AttemptObserver, startedEvent); errors.Is(observerErr, ErrProviderAttemptAborted) {
 		return nil, fmt.Errorf("agent: %w", observerErr)
 	}
-	var proc SpawnedProcess
-	envSpawner, supportsFilteredEnvironment := spawner.(EnvironmentSpawner)
-	if supportsFilteredEnvironment {
-		credentialKey, credentialValue := "ANTHROPIC_API_KEY", agentCfg.AnthropicAPIKey
-		if runtime.backend == AgentBackendOpenRouter {
-			credentialKey, credentialValue = "OPENROUTER_API_KEY", agentCfg.OpenRouterAPIKey
-		}
-		proc, err = envSpawner.SpawnWithEnv(runCtx, runtime.command, args, cloneDir,
-			agentChildEnvironment(os.Environ(), credentialKey, credentialValue))
-	} else {
-		// Never fall back to Spawn: that inherits the complete server process
-		// environment and can expose unrelated credentials to the model child.
-		err = fmt.Errorf("agent: spawner %T does not support filtered environment injection", spawner)
+	credentialKey, credentialValue := "ANTHROPIC_API_KEY", agentCfg.AnthropicAPIKey
+	if runtime.backend == AgentBackendOpenRouter {
+		credentialKey, credentialValue = "OPENROUTER_API_KEY", agentCfg.OpenRouterAPIKey
 	}
+	proc, err := spawner.SpawnWithEnv(runCtx, runtime.command, args, cloneDir,
+		agentChildEnvironment(os.Environ(), credentialKey, credentialValue))
 	if err != nil {
 		log.Printf("%s spawn FAILED: %v", logPrefix, err)
 		completedAt := time.Now().UTC()
@@ -890,6 +877,7 @@ func agentChildEnvironment(base []string, credentialKey, credentialValue string)
 	allowed := map[string]struct{}{
 		"COLORTERM": {}, "HOME": {}, "HTTPS_PROXY": {}, "HTTP_PROXY": {},
 		"LANG": {}, "LC_ALL": {}, "LOGNAME": {}, "NO_PROXY": {}, "PATH": {},
+		"CURL_CA_BUNDLE": {}, "GIT_SSL_CAINFO": {}, "NODE_EXTRA_CA_CERTS": {},
 		"SHELL": {}, "SSL_CERT_DIR": {}, "SSL_CERT_FILE": {}, "TERM": {},
 		"TERM_PROGRAM": {}, "TMPDIR": {}, "TZ": {}, "USER": {},
 		"XDG_CACHE_HOME": {}, "XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {},

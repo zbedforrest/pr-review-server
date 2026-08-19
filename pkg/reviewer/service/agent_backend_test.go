@@ -13,12 +13,6 @@ type envCapturingSpawner struct {
 	environment []string
 }
 
-type spawnOnlySpawner struct{ delegate *fakeSpawner }
-
-func (s *spawnOnlySpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
-	return s.delegate.Spawn(ctx, name, args, dir)
-}
-
 // Existing test doubles opt into the production environment contract while
 // retaining their canned Spawn behavior.
 func (s *fakeSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, _ []string) (SpawnedProcess, error) {
@@ -39,6 +33,8 @@ func TestAgentChildEnvironmentIsDefaultDenyWithFrozenCredential(t *testing.T) {
 		"ANTHROPIC_API_KEY=ambient", "CUSTOM_FUTURE_SECRET=must-not-pass",
 		"CLAUDE_CODE_OAUTH_TOKEN=oauth-token", "ANTHROPIC_AUTH_TOKEN=auth-token",
 		"ANTHROPIC_BASE_URL=https://anthropic-gateway.example",
+		"NODE_EXTRA_CA_CERTS=/certs/node.pem", "CURL_CA_BUNDLE=/certs/curl.pem",
+		"GIT_SSL_CAINFO=/certs/git.pem",
 		"PATH=/duplicate", "https_proxy=http://proxy.example",
 	}, "ANTHROPIC_API_KEY", "frozen")
 	joined := strings.Join(environment, "\n")
@@ -46,6 +42,8 @@ func TestAgentChildEnvironmentIsDefaultDenyWithFrozenCredential(t *testing.T) {
 		"PATH=/usr/bin", "HOME=/home/reviewer", "https_proxy=http://proxy.example",
 		"ANTHROPIC_API_KEY=frozen", "CLAUDE_CODE_OAUTH_TOKEN=oauth-token",
 		"ANTHROPIC_AUTH_TOKEN=auth-token", "ANTHROPIC_BASE_URL=https://anthropic-gateway.example",
+		"NODE_EXTRA_CA_CERTS=/certs/node.pem", "CURL_CA_BUNDLE=/certs/curl.pem",
+		"GIT_SSL_CAINFO=/certs/git.pem",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("child environment missing %q: %q", want, environment)
@@ -65,28 +63,6 @@ func TestAgentChildEnvironmentIsDefaultDenyWithFrozenCredential(t *testing.T) {
 		if strings.Contains(openRouterEnvironment, forbidden) {
 			t.Errorf("OpenRouter child retained Claude-only value %q: %q", forbidden, openRouterEnvironment)
 		}
-	}
-}
-
-func TestRunAgentReviewRejectsSpawnerWithoutFilteredEnvironment(t *testing.T) {
-	bare, sha := setupLocalBareRepo(t)
-	cloneRoot := t.TempDir()
-	seedAgentCache(t, cloneRoot, "acme", "example", bare)
-	delegate := &fakeSpawner{}
-	spawner := &spawnOnlySpawner{delegate: delegate}
-	cfg := AgentConfig{
-		CloneRootDir: cloneRoot,
-		LogsDir:      t.TempDir(),
-		WallClock:    time.Minute,
-		MaxTurns:     10,
-	}
-
-	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
-	if err == nil || !strings.Contains(err.Error(), "does not support filtered environment injection") {
-		t.Fatalf("expected fail-closed spawner error, got %v", err)
-	}
-	if delegate.name != "" {
-		t.Fatalf("unfiltered Spawn was called for %q", delegate.name)
 	}
 }
 
