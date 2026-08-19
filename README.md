@@ -6,7 +6,7 @@ A self-hostable code review dashboard for GitHub pull requests, with an optional
 
 **AI reviews** — a Gemini pass generates review comments; optionally a Claude Code or Codex/OpenRouter agent stage clones the PR, verifies and refines those comments against the real code, and produces the final report. Reports are rendered as HTML with per-comment deep links (`#comment-N`), J/K keyboard navigation, and a Markdown export optimized for coding agents. A deterministic layer (mechanical gates + a "bug memory" of past bug patterns) can inject forced checks into the agent's review.
 
-**Review API** — reviews are also exposed as structured JSON (findings with file/line, diff hunks, and source context) at `/api/review/{owner}/{repo}/{pr}`, and can be generated on demand for any PR — including merged and closed ones — via `POST /api/prs/generate-review`. A bundled Claude Code skill (`skills/claude/prism-review/`) consumes this API.
+**Review API** — authenticated callers can inspect deployment capabilities, create an exact-commit review with per-run model and budget choices, poll it by a unique run ID, and query history. Requested/effective configuration, model usage, fallback detection, and provider-attempt telemetry are durable metadata. The legacy structured findings endpoint remains available, and a bundled Claude Code skill (`skills/claude/prism-review/`) supports both contracts.
 
 ## Prerequisites
 
@@ -71,6 +71,8 @@ The most common ones:
 | `AGENT_BACKEND` | No | `claude` (default) or `openrouter` |
 | `AGENT_MODEL` | No | Backend model; OpenRouter defaults to `openai/gpt-5.6-sol` |
 | `OPENROUTER_API_KEY` | OpenRouter backend | Authenticates Codex requests routed through OpenRouter |
+| `REVIEW_AGENT_MODELS_*`, `REVIEW_AGENT_EFFORTS_*` | No | Per-backend allowlists for authenticated review API callers |
+| `REVIEW_MAX_WALL_CLOCK_SEC`, `REVIEW_MAX_TURNS`, `REVIEW_MAX_FIRST_PASS_SAMPLES` | No | Operator-owned ceilings for per-review overrides |
 | `DATABASE_URL` | No | PostgreSQL connection string; unset = SQLite at `DB_PATH` |
 | `SERVER_PORT` | No | Default `8080` (docker-compose publishes it on `7769`) |
 | `POLLING_INTERVAL` | No | GitHub poll cadence, default `1m` |
@@ -87,7 +89,11 @@ OPENROUTER_API_KEY=sk-or-...
 # AGENT_MODEL=openai/gpt-5.6-sol  # this is already the backend default
 ```
 
-The OpenRouter path runs `codex exec` in a read-only sandbox with ephemeral state and filters server credentials out of model-invoked shell commands. Its CLI JSONL currently does not report the serving model, so the review records the exact pinned request model; Claude fallback detection remains stream-verified.
+The OpenRouter path runs `codex exec` in a read-only sandbox with ephemeral state. Agent child environments are constructed from a backend-specific, default-deny allowlist: OpenRouter credentials never enter Claude children, and Anthropic credentials never enter OpenRouter children. OpenRouter's CLI JSONL currently does not report the serving model, so the review records the exact pinned request model as unverified; Claude fallback detection remains stream-verified.
+
+Changing a single review does not change these deployment defaults. If both runtimes are installed and their credentials and policy allowlists are configured, a caller can select OpenRouter for one run while automatic reviews continue using Claude. Query `GET /api/v1/review-capabilities` first; it reports whether each backend is actually ready without exposing credential values.
+
+Configuration snapshots use schema version 2. `max_turns` is explicitly backend-specific: Claude counts assistant stream events, while OpenRouter/Codex counts completed non-reasoning work items and excludes the terminal answer. Capabilities and every durable run expose `turn_budget_unit` and `turn_budget_version`, so clients must not compare raw turn counts across backends as though they represented the same event.
 
 ### Recommended configuration
 
@@ -110,9 +116,36 @@ The remaining feature flags (`SURFACE_ALERTS`, `CARRY_FORWARD_FINDINGS`, `FINDIN
 
 ## API
 
-- `GET /api/review/{owner}/{repo}/{pr}` — structured review JSON (`?format=html` / `?format=md` for rendered output, `?sha=` to pin a commit, or `?sha=<sha>&run_id=<id>` to fetch one immutable execution)
-- `POST /api/prs/generate-review` — trigger a review for any PR by reference, including merged/closed PRs
+- `GET /api/v1/review-capabilities` — defaults, backend readiness, model/effort allowlists, turn-budget semantics, and override ceilings
+- `POST /api/v1/review-runs` — create an exact-target run with optional model, effort, wall-clock, turn, sample, agent, and required-check overrides
+- `GET /api/v1/review-runs/{run_id}` — exact status, immutable configuration snapshot, result, models, and provider-stage attempts
+- `GET /api/v1/review-runs?owner=...&repo=...&pull_request=...` — cursor-paginated history; optional `commit_sha` and `status` filters
+- `GET /api/review/{owner}/{repo}/{pr}` — legacy/latest structured review JSON (`?format=html` / `?format=md`, `?sha=`, or `?sha=<sha>&run_id=<id>`)
+- `POST /api/prs/generate-review` — backward-compatible review creation for callers that do not need customization
 - `GET /api/status` — health check
+
+Create a customized exact-head run with the bundled client:
+
+```bash
+export PRISM_BASE_URL=https://prism.example.com
+
+skills/claude/prism-review/scripts/prism.sh capabilities
+created=$(skills/claude/prism-review/scripts/prism.sh create acme/widgets#42 \
+  --backend openrouter \
+  --model openai/gpt-5.6-sol \
+  --effort high \
+  --wall-clock-seconds 900 \
+  --max-turns 120)
+skills/claude/prism-review/scripts/prism.sh wait "$(printf '%s' "$created" | jq -r .run_id)"
+```
+
+The client resolves the full current GitHub HEAD and sends it as
+`expected_head_sha`; the API rejects a moved target with `409`. Creation
+accepts an `Idempotency-Key`, returns `202` with `Location` and `Retry-After`,
+and persists both requested and effective configuration before execution.
+Separate executions of the same PR commit are distinguished by opaque unique
+`run_id` values. Successful artifacts are immutable run-scoped objects, while
+the PR row remains only the latest published projection.
 
 ## Auxiliary tools
 

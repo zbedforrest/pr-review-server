@@ -31,6 +31,7 @@ const (
 	reviewCapabilitiesPath = "/api/v1/review-capabilities"
 	maxReviewRunBodyBytes  = 64 << 10
 	maxIdempotencyKeyBytes = 200
+	reviewRunRetryAfter    = "10"
 )
 
 type createReviewRunRequest struct {
@@ -445,6 +446,7 @@ func (s *Server) handleCreateReviewRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Location", response.Links.Self)
+	w.Header().Set("Retry-After", reviewRunRetryAfter)
 	writeV1JSON(w, http.StatusAccepted, response)
 }
 
@@ -461,6 +463,7 @@ func (s *Server) writeIdempotentReviewRun(w http.ResponseWriter, run *db.ReviewR
 	status := http.StatusOK
 	if isLiveReviewRunStatus(run.Status) {
 		status = http.StatusAccepted
+		w.Header().Set("Retry-After", reviewRunRetryAfter)
 	}
 	w.Header().Set("Location", response.Links.Self)
 	w.Header().Set("Idempotency-Replayed", "true")
@@ -527,6 +530,9 @@ func (s *Server) handleReviewRunByID(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeV1Error(w, http.StatusInternalServerError, "invalid_run_metadata", "stored review run metadata is invalid")
 		return
+	}
+	if isLiveReviewRunStatus(run.Status) {
+		w.Header().Set("Retry-After", reviewRunRetryAfter)
 	}
 	writeV1JSON(w, http.StatusOK, response)
 }
