@@ -9,6 +9,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const reviewRunAbandonBatchSize = 500
+
 // SetPRGeneratingForReviewRun atomically claims the mutable PR projection for
 // runID while moving it into the generating state. A later run may replace the
 // claim; all subsequent projection writes below are conditional on ownership.
@@ -68,6 +70,7 @@ func (g *GormDB) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, mess
 	now := time.Now().UTC()
 	result := g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Where("status <> ?", "completed").
 		Where(`NOT EXISTS (
 			SELECT 1 FROM review_runs
 			WHERE review_runs.repo_owner = prs.repo_owner
@@ -461,6 +464,8 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMax
 		if err := tx.Model(&ReviewRunModel{}).
 			Where("(status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND queued_at <= ?)))",
 				ReviewRunStatusRunning, runningCutoff, ReviewRunStatusQueued, runningCutoff, queuedCutoff).
+			Order("run_id ASC").
+			Limit(reviewRunAbandonBatchSize).
 			Pluck("run_id", &candidateIDs).Error; err != nil {
 			return fmt.Errorf("list candidate rows: %w", err)
 		}

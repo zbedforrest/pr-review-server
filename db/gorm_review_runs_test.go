@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -113,6 +114,9 @@ func TestGormDBReviewProjectionFencesSupersededRuns(t *testing.T) {
 	updated, err = database.MarkPRCompletedForReviewRun(owner, repo, prNum, runB, runB, sha, "winner.html", 0, 1, 0, "approve", false, `{"run_id":"`+runB+`"}`)
 	require.NoError(t, err)
 	assert.True(t, updated)
+	updated, err = database.SetPRErrorIfNoLiveReview(owner, repo, prNum, "delayed admission failure")
+	require.NoError(t, err)
+	assert.False(t, updated, "an unfenced admission error must not overwrite a completed projection")
 
 	pr, err := database.GetPR(owner, repo, prNum)
 	require.NoError(t, err)
@@ -689,6 +693,34 @@ func TestGormDBAbandonsOnlyStaleQueuedRuns(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, active)
 	assert.Equal(t, ReviewRunStatusQueued, active.Status)
+}
+
+func TestGormDBAbandonsExpiredRunsInBoundedBatches(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	models := make([]ReviewRunModel, reviewRunAbandonBatchSize+1)
+	for i := range models {
+		run := reviewRunFixture(fmt.Sprintf("run-%032x", i+100), now.Add(-2*time.Hour))
+		run.PRNumber = i + 1000
+		run.IdempotencyScope = ""
+		run.IdempotencyKeyHash = ""
+		models[i] = reviewRunToModel(run)
+	}
+	// Keep each INSERT below SQLite's older 999-bind-parameter ceiling too.
+	require.NoError(t, database.db.CreateInBatches(&models, 20).Error)
+
+	count, err := database.AbandonExpiredReviewRuns(now, 2*time.Minute, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, reviewRunAbandonBatchSize, count)
+	var timedOut int64
+	require.NoError(t, database.db.Model(&ReviewRunModel{}).Where("status = ?", ReviewRunStatusTimedOut).Count(&timedOut).Error)
+	assert.Equal(t, int64(reviewRunAbandonBatchSize), timedOut)
+
+	count, err = database.AbandonExpiredReviewRuns(now, 2*time.Minute, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
 }
 
 func TestGormDBAbandonedQueuedRunPreservesCompletedProjection(t *testing.T) {

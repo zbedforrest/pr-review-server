@@ -530,6 +530,9 @@ func (m *MockDatabase) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := prDBKey(owner, repo, prNumber)
+	if pr := m.PRs[key]; pr != nil && pr.Status == "completed" {
+		return false, nil
+	}
 	for _, ownerRun := range m.ReviewRuns {
 		if ownerRun.RepoOwner == owner && ownerRun.RepoName == repo && ownerRun.PRNumber == prNumber &&
 			(ownerRun.Status == db.ReviewRunStatusQueued ||
@@ -1306,6 +1309,7 @@ func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpir
 }
 
 func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error) {
+	const mockReviewRunAbandonBatchSize = 500
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if now.IsZero() || runningGrace < 0 || queuedMaxAge <= 0 {
@@ -1331,6 +1335,9 @@ func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, que
 			errorSummary = "review run remained queued beyond the dispatch recovery window"
 		default:
 			continue
+		}
+		if len(abandonedRuns) == mockReviewRunAbandonBatchSize {
+			break
 		}
 		completedAt := now
 		run.Status = db.ReviewRunStatusTimedOut
