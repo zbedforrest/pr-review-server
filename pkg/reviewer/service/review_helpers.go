@@ -357,6 +357,9 @@ func (s *Service) handlePostReviewProcessing(
 	// Classify comment importance if we have comments and not a custom prompt
 	if len(allComments) > 0 && cfg.CustomPrompt == "" {
 		classifiedComments, err := s.classifyCommentImportance(cfg, allComments, data.PR.Body, data.FileContext, data.Diff)
+		if errors.Is(err, ErrProviderAttemptAborted) {
+			return nil, err
+		}
 		if err != nil {
 			color.Yellow("%s Could not classify comment importance: %v", prefix, err)
 		} else {
@@ -374,6 +377,9 @@ func (s *Service) handlePostReviewProcessing(
 	if cfg.Testing && len(allToolComments) > 0 {
 		color.White("%s Generating comprehensive summary of tool-generated review comments...", prefix)
 		comprehensiveSummary, err := s.generateComprehensiveSummary(cfg, allToolComments, data.PR.Body, data.Diff)
+		if errors.Is(err, ErrProviderAttemptAborted) {
+			return nil, err
+		}
 		if err != nil {
 			color.Yellow("%s Could not generate comprehensive summary: %v", prefix, err)
 		} else {

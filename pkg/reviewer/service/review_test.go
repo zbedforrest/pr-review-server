@@ -155,6 +155,59 @@ func TestPostProcessingEmitsSeparateClassificationAndSummaryAttempts(t *testing.
 	assert.Equal(t, int64(9), events[3].TotalTokens)
 }
 
+func TestPostProcessingPropagatesClassificationObserverFence(t *testing.T) {
+	providerCalls := 0
+	service := NewService(nil, nil, &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			providerCalls++
+			return `{"RC-1":"CRITICAL"}`, 0, 0, 0, nil
+		},
+	})
+	cfg := PerformReviewConfig{
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Stage == "classification" && event.Status == "started" {
+				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
+			}
+			return nil
+		},
+	}
+	data := &PRData{PR: github.PR{Body: "PR body"}, Diff: "diff", FileContext: "context"}
+	comments := []types.LineComment{{FilePath: "main.go", LineNumber: 1, CommentBody: "bug"}}
+
+	result, err := service.handlePostReviewProcessing(context.Background(), cfg, data, comments)
+
+	assert.Nil(t, result)
+	assert.ErrorIs(t, err, ErrProviderAttemptAborted)
+	assert.Zero(t, providerCalls, "the classification provider must not run after the observer fence")
+}
+
+func TestPostProcessingPropagatesSummaryObserverFence(t *testing.T) {
+	providerCalls := 0
+	service := NewService(nil, nil, &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			providerCalls++
+			return `{"RC-1":"CRITICAL"}`, 0, 0, 0, nil
+		},
+	})
+	cfg := PerformReviewConfig{
+		Testing: true,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Stage == "summary" && event.Status == "started" {
+				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
+			}
+			return nil
+		},
+	}
+	data := &PRData{PR: github.PR{Body: "PR body"}, Diff: "diff", FileContext: "context"}
+	comments := []types.LineComment{{FilePath: "main.go", LineNumber: 1, CommentBody: "bug"}}
+
+	result, err := service.handlePostReviewProcessing(context.Background(), cfg, data, comments)
+
+	assert.Nil(t, result)
+	assert.ErrorIs(t, err, ErrProviderAttemptAborted)
+	assert.Equal(t, 1, providerCalls, "classification runs, but the summary provider must be fenced")
+}
+
 func (m *MockGithubClient) PostPRComment(token, owner, repo string, prNumber int, body string) error {
 	if m.PostPRCommentFunc != nil {
 		return m.PostPRCommentFunc(token, owner, repo, prNumber, body)
