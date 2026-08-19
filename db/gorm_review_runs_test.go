@@ -956,6 +956,34 @@ func TestGormDBOneLiveRunMigrationRepairsExistingRows(t *testing.T) {
 	assert.Empty(t, pr.ProjectionRunID)
 }
 
+func TestGormDBOneLiveRunMigrationPreservesActiveWorkerOverNewerOrphan(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	require.NoError(t, database.db.Exec("DROP INDEX IF EXISTS idx_review_runs_one_live_per_pr").Error)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	active := reviewRunFixture("run-000000000000000000000000000000f3", now.Add(-time.Minute))
+	orphan := reviewRunFixture("run-000000000000000000000000000000f4", now)
+	require.NoError(t, database.CreateReviewRun(&active))
+	claimed, err := database.ClaimReviewRun(active.RunID, "worker-active", now, now.Add(time.Hour))
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, database.CreateReviewRun(&orphan))
+
+	require.NoError(t, database.ensureIdempotentColumns())
+	survivor, err := database.GetReviewRun(active.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, survivor)
+	assert.Equal(t, ReviewRunStatusRunning, survivor.Status)
+	assert.Equal(t, "worker-active", survivor.LeaseHolder)
+	loser, err := database.GetReviewRun(orphan.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, loser)
+	assert.Equal(t, ReviewRunStatusTimedOut, loser.Status)
+	assert.Equal(t, "migration_deduped", loser.TerminalCode)
+	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_one_live_per_pr"))
+}
+
 func TestReviewStageAttemptUpsertCoversEveryMutableColumn(t *testing.T) {
 	modelSchema, err := schema.Parse(&ReviewStageAttemptModel{}, &sync.Map{}, schema.NamingStrategy{})
 	require.NoError(t, err)
