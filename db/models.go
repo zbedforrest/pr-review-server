@@ -198,7 +198,7 @@ func (ReviewRunModel) TableName() string { return "review_runs" }
 // forcing the evolving long-tail of model metadata into review_runs columns.
 type ReviewStageAttemptModel struct {
 	ID                   uint            `gorm:"primaryKey;autoIncrement"`
-	RunID                string          `gorm:"column:run_id;size:36;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:1"`
+	ReviewRunID          string          `gorm:"column:run_id;size:36;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:1"`
 	ExecutionAttempt     int             `gorm:"column:execution_attempt;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:2"`
 	Stage                string          `gorm:"size:64;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:3;index:idx_review_stage_attempt_model,priority:1"`
 	InvocationNumber     int             `gorm:"column:invocation_number;not null;uniqueIndex:idx_review_stage_attempt_unique,priority:4"`
@@ -231,7 +231,7 @@ type ReviewStageAttemptModel struct {
 	ErrorSummary         string          `gorm:"column:error_summary;type:text"`
 	CreatedAt            time.Time       `gorm:"autoCreateTime"`
 	UpdatedAt            time.Time       `gorm:"autoUpdateTime"`
-	ReviewRun            ReviewRunModel  `gorm:"foreignKey:RunID;references:RunID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	ReviewRun            ReviewRunModel  `gorm:"foreignKey:ReviewRunID;references:RunID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (ReviewStageAttemptModel) TableName() string { return "review_stage_attempts" }
