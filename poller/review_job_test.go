@@ -739,8 +739,17 @@ func TestCacheRestoreUsesExactCommitSidecarMetadata(t *testing.T) {
 	run, err := database.GetReviewRun(job.RunID)
 	require.NoError(t, err)
 	require.NotNil(t, run)
-	assert.Equal(t, db.ReviewRunStatusCancelled, run.Status)
-	assert.Equal(t, "review_cached", run.TerminalCode)
+	assert.Equal(t, db.ReviewRunStatusCompleted, run.Status)
+	assert.Equal(t, "cache_restored", run.TerminalCode)
+	assert.Equal(t, "restored_from_cache", run.PublicationStatus)
+	assert.Equal(t, sidecarName, run.JSONPath)
+	assert.Equal(t, 2, run.CriticalCount)
+	assert.Equal(t, 3, run.MediumCount)
+	assert.Equal(t, 4, run.LowCount)
+	assert.Equal(t, "approve_suggestions", run.Verdict)
+	assert.True(t, run.ModelFallback)
+	assert.Equal(t, "unverified", run.ServingModelVerification)
+	assert.Contains(t, run.ActualModelsJSON, `"served_model":"fallback"`)
 }
 
 func TestUnreadableCacheMetadataRegeneratesInsteadOfPublishingZeroCounts(t *testing.T) {

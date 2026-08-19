@@ -3033,12 +3033,16 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					inFlightStaleBefore := time.Now().UTC().Add(-ReviewProjectionCrashStaleAfter)
 					if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON, inFlightStaleBefore); err != nil {
 						log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
+						p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "cache_restore_failed", "publication", err)
 					} else if projected {
+						if !p.completeQueuedReviewJobFromCache(job, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON) {
+							log.Printf("[REVIEWER] WARN: cached review projected but run %s was not completed", job.RunID)
+						}
 						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 					} else {
 						log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
+						p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "review_cached", "dispatch", fmt.Errorf("review artifact already exists"))
 					}
-					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "review_cached", "dispatch", fmt.Errorf("review artifact already exists"))
 					return
 				} else {
 					// An HTML hit with neither a readable sidecar nor exact-commit DB

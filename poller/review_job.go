@@ -549,6 +549,79 @@ func (p *Poller) rejectQueuedReviewJob(job ReviewJob, status, terminalCode, fail
 	return updated
 }
 
+func (p *Poller) completeQueuedReviewJobFromCache(job ReviewJob, htmlPath string, criticalCount, mediumCount, lowCount int, verdict string, modelFallback bool, reviewRunJSON string) bool {
+	if job.TriggerSource == "poller" {
+		// Automatic cache hits repair the mutable PR projection without creating
+		// one durable no-op run on every poll cycle.
+		existing, err := p.db.GetReviewRun(job.RunID)
+		if err != nil {
+			log.Printf("[REVIEWER] WARN: inspect cached poll-sourced run %s: %v", job.RunID, err)
+			return false
+		}
+		if existing == nil {
+			return false
+		}
+	}
+	if job.QueueLeaseHolder != "" {
+		now := time.Now().UTC()
+		owned, err := p.db.ClaimOrRenewQueuedReviewRunLease(job.RunID, job.QueueLeaseHolder, now, now.Add(ReviewQueueLeaseTTL))
+		if err != nil {
+			log.Printf("[REVIEWER] WARN: verify queued ownership before completing cached run %s: %v", job.RunID, err)
+			return false
+		}
+		if !owned {
+			return false
+		}
+	}
+	if err := p.ensureReviewRun(job); err != nil {
+		log.Printf("[REVIEWER] WARN: persist cached run %s: %v", job.RunID, err)
+		return false
+	}
+
+	actualModelsJSON := "[]"
+	verification := "not_reported"
+	if reviewRunJSON != "" {
+		var cachedRun payload.ReviewRunInfo
+		if err := json.Unmarshal([]byte(reviewRunJSON), &cachedRun); err != nil {
+			log.Printf("[REVIEWER] WARN: parse cached model metadata for run %s: %v", job.RunID, err)
+		} else if encoded, err := json.Marshal(cachedRun.Models); err != nil {
+			log.Printf("[REVIEWER] WARN: encode cached model metadata for run %s: %v", job.RunID, err)
+		} else {
+			actualModelsJSON = string(encoded)
+			for _, model := range cachedRun.Models {
+				if model.ServingModelVerified {
+					verification = "verified"
+					break
+				}
+				if model.Stage == "agent" {
+					verification = "unverified"
+				}
+			}
+		}
+	}
+
+	status := db.ReviewRunStatusCompleted
+	terminalCode := "cache_restored"
+	publicationStatus := "restored_from_cache"
+	jsonPath := gcs.ReviewJSONFileName(htmlPath)
+	completedAt := time.Now().UTC()
+	emptyHolder := ""
+	zeroLease := time.Time{}
+	updated, err := p.db.PatchQueuedReviewRun(job.RunID, db.ReviewRunPatch{
+		Status: &status, CompletedAt: &completedAt, TerminalCode: &terminalCode,
+		HTMLPath: &htmlPath, JSONPath: &jsonPath,
+		CriticalCount: &criticalCount, MediumCount: &mediumCount, LowCount: &lowCount,
+		Verdict: &verdict, ModelFallback: &modelFallback,
+		ServingModelVerification: &verification, ActualModelsJSON: &actualModelsJSON,
+		PublicationStatus: &publicationStatus, LeaseHolder: &emptyHolder, LeaseExpiresAt: &zeroLease,
+	})
+	if err != nil {
+		log.Printf("[REVIEWER] WARN: complete cached run %s: %v", job.RunID, err)
+		return false
+	}
+	return updated
+}
+
 func (p *Poller) rejectProviderInitJobs(jobs []ReviewJob, cause error) {
 	for _, job := range jobs {
 		persistFailure := job.TriggerSource != "poller"
