@@ -1506,15 +1506,17 @@ func TestProviderAttemptObserverUpsertsLifecycleWithRunExecutionAttempt(t *testi
 	assert.Equal(t, completed.Sub(started).Milliseconds(), attempt.DurationMS)
 	assert.Equal(t, 2, database.UpsertStageAttemptAsHolderCalls)
 	exec.recordProviderAttempt(service.ProviderAttemptEvent{
+		Stage: "first_pass", InvocationNumber: 2, AttemptNumber: 2,
+		Provider: "google", RequestedModel: "retry-success", Status: "completed",
+	})
+	exec.recordProviderAttempt(service.ProviderAttemptEvent{
 		Stage: "first_pass", InvocationNumber: 3, AttemptNumber: 1,
 		Provider: "google", RequestedModel: "failed-model", Status: "failed",
 	})
 	models := exec.providerModelUses()
 	require.Len(t, models, 1)
 	assert.Equal(t, "first_pass", models[0].Stage)
-	assert.Equal(t, "requested", models[0].RequestedModel)
-	assert.Equal(t, "served", models[0].ServedModel)
-	assert.True(t, models[0].ServingModelVerified)
+	assert.Equal(t, "retry-success", models[0].RequestedModel)
 }
 
 func TestProviderAttemptObserverRetriesAndRejectsStaleWorker(t *testing.T) {

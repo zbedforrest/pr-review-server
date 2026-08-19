@@ -75,13 +75,25 @@ func (e *reviewExecution) recordProviderAttempt(event service.ProviderAttemptEve
 
 func (e *reviewExecution) providerModelUses() []payload.ModelUse {
 	e.attemptsMu.Lock()
-	events := make([]service.ProviderAttemptEvent, 0, len(e.providerAttempts))
+	type invocationKey struct {
+		stage      string
+		invocation int
+	}
+	latest := make(map[invocationKey]service.ProviderAttemptEvent, len(e.providerAttempts))
 	for _, event := range e.providerAttempts {
-		if event.Status == "completed" {
-			events = append(events, event)
+		if event.Status != "completed" {
+			continue
+		}
+		key := invocationKey{stage: event.Stage, invocation: event.InvocationNumber}
+		if previous, ok := latest[key]; !ok || event.AttemptNumber > previous.AttemptNumber {
+			latest[key] = event
 		}
 	}
 	e.attemptsMu.Unlock()
+	events := make([]service.ProviderAttemptEvent, 0, len(latest))
+	for _, event := range latest {
+		events = append(events, event)
+	}
 	sort.Slice(events, func(i, j int) bool {
 		left, right := providerStageOrder(events[i].Stage), providerStageOrder(events[j].Stage)
 		if left != right {

@@ -178,14 +178,17 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 	// path before writing that mutable alias, so unpinned reads fall back to the
 	// already-durable immutable path recorded in review_run_json.
 	html, fetchErr := s.fetchReviewBytes(r.Context(), filename)
-	if errors.Is(fetchErr, errReviewNotFound) && pinnedSHA == "" && runID == "" {
+	if errors.Is(fetchErr, errReviewNotFound) && runID == "" {
 		if fallback := immutableReviewPath(pr.ReviewRunJSON, owner, repo, prNumber); fallback != "" && fallback != filename {
-			if fallbackHTML, fallbackErr := s.fetchReviewBytes(r.Context(), fallback); fallbackErr == nil {
-				filename = fallback
-				html = fallbackHTML
-				fetchErr = nil
-			} else if !errors.Is(fallbackErr, errReviewNotFound) {
-				fetchErr = fallbackErr
+			fallbackMatchesPin := pinnedSHA == "" || shaPrefixMatch(pinnedSHA, commitSHAFromFilename(fallback))
+			if fallbackMatchesPin {
+				if fallbackHTML, fallbackErr := s.fetchReviewBytes(r.Context(), fallback); fallbackErr == nil {
+					filename = fallback
+					html = fallbackHTML
+					fetchErr = nil
+				} else if !errors.Is(fallbackErr, errReviewNotFound) {
+					fetchErr = fallbackErr
+				}
 			}
 		}
 	}

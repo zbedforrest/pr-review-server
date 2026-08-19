@@ -374,6 +374,15 @@ func TestReviewAPI_unpinned_missing_canonical_falls_back_to_immutable_run(t *tes
 	assert.False(t, resp.IsStale)
 	assert.True(t, resp.FindingsAvailable)
 
+	w = doReviewAPIGet(t, server, user, target+"?sha=def5678")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, htmlPath, resp.ReviewPath)
+	assert.Equal(t, "def5678", resp.CommitSHA)
+
+	w = doReviewAPIGet(t, server, user, target+"?sha=aaaaaaa")
+	assert.Equal(t, http.StatusNotFound, w.Code, "a different pinned commit must not use the latest run")
+
 	w = doReviewAPIGet(t, server, user, target+"?format=html")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, "<html>immutable fallback</html>", w.Body.String())
