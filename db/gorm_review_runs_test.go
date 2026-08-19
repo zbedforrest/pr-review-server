@@ -84,6 +84,42 @@ func TestGormDBReviewRunLifecycleAndHistory(t *testing.T) {
 	assert.Contains(t, err.Error(), "patch is empty")
 }
 
+func TestGormDBReviewProjectionFencesSupersededRuns(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	const (
+		owner = "acme"
+		repo  = "widgets"
+		prNum = 42
+		runA  = "run-000000000000000000000000000000aa"
+		runB  = "run-000000000000000000000000000000bb"
+		sha   = "0123456789abcdef0123456789abcdef01234567"
+	)
+	require.NoError(t, database.SetPRGeneratingForReviewRun(owner, repo, prNum, sha, "Title", "alice", nil, false, runA))
+	updated, err := database.SetPRAgentReviewingForReviewRun(owner, repo, prNum, runA)
+	require.NoError(t, err)
+	require.True(t, updated)
+	require.NoError(t, database.SetPRGeneratingForReviewRun(owner, repo, prNum, sha, "Title", "alice", nil, false, runB))
+
+	updated, err = database.SetPRErrorForReviewRun(owner, repo, prNum, runA, "stale failure")
+	require.NoError(t, err)
+	assert.False(t, updated)
+	updated, err = database.MarkPRCompletedForReviewRun(owner, repo, prNum, runA, sha, "stale.html", 1, 2, 3, "request_changes", false, `{}`)
+	require.NoError(t, err)
+	assert.False(t, updated)
+	updated, err = database.MarkPRCompletedForReviewRun(owner, repo, prNum, runB, sha, "winner.html", 0, 1, 0, "approve", false, `{"run_id":"`+runB+`"}`)
+	require.NoError(t, err)
+	assert.True(t, updated)
+
+	pr, err := database.GetPR(owner, repo, prNum)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "completed", pr.Status)
+	assert.Equal(t, "winner.html", pr.ReviewHTMLPath)
+	assert.Equal(t, runB, pr.ReviewRunID)
+}
+
 func TestGormDBReviewRunIdempotencyLookup(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()
@@ -452,6 +488,7 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	assert.True(t, database.db.Migrator().HasTable(&ReviewStageAttemptModel{}))
 	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_status_lease"))
 	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_status_queue"))
+	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
 }
 
 func TestReviewStageAttemptUpsertCoversEveryMutableColumn(t *testing.T) {

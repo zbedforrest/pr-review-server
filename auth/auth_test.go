@@ -154,6 +154,18 @@ func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message stri
 func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRun ...string) error {
 	return nil
 }
+func (m *MockDatabase) SetPRGeneratingForReviewRun(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool, runID string) error {
+	return nil
+}
+func (m *MockDatabase) SetPRAgentReviewingForReviewRun(owner, repo string, prNumber int, runID string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, runID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+	return true, nil
+}
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error)                             { return nil, nil }
 func (m *MockDatabase) DeletePR(owner, repo string, prNumber int) error         { return nil }
 func (m *MockDatabase) ResetStaleGeneratingPRs(timeoutMinutes int) (int, error) { return 0, nil }

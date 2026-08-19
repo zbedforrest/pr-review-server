@@ -9,6 +9,68 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// SetPRGeneratingForReviewRun atomically claims the mutable PR projection for
+// runID while moving it into the generating state. A later run may replace the
+// claim; all subsequent projection writes below are conditional on ownership.
+func (g *GormDB) SetPRGeneratingForReviewRun(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool, runID string) error {
+	if owner == "" || repo == "" || prNumber <= 0 || commitSHA == "" || runID == "" {
+		return fmt.Errorf("set PR generating for review run: complete PR target, commit, and run ID are required")
+	}
+	now := time.Now().UTC()
+	model := &PRModel{
+		RepoOwner: owner, RepoName: repo, PRNumber: prNumber, LastCommitSHA: commitSHA,
+		Status: "generating", GeneratingSince: &now, Title: title, Author: author,
+		CreatedAt: createdAt, Draft: draft, ProjectionRunID: runID,
+	}
+	return g.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"last_commit_sha", "status", "generating_since", "title", "author", "created_at", "draft",
+			"projection_run_id", "error_message", "error_retry_count",
+		}),
+	}).Create(model).Error
+}
+
+func (g *GormDB) SetPRAgentReviewingForReviewRun(owner, repo string, prNumber int, runID string) (bool, error) {
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ?", owner, repo, prNumber, runID).
+		Updates(map[string]any{"status": "agent_reviewing", "error_message": ""})
+	if result.Error != nil {
+		return false, fmt.Errorf("set PR agent reviewing for run %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func (g *GormDB) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error) {
+	now := time.Now().UTC()
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ?", owner, repo, prNumber, runID).
+		Updates(map[string]any{
+			"status": "error", "error_message": message, "last_reviewed_at": now, "generating_since": nil,
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("set PR error for run %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func (g *GormDB) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, runID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+	now := time.Now().UTC()
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ?", owner, repo, prNumber, runID).
+		Updates(map[string]any{
+			"status": "completed", "review_path": reviewPath, "last_commit_sha": commitSHA,
+			"last_reviewed_at": now, "generating_since": nil, "critical_count": critical,
+			"medium_count": medium, "low_count": low, "review_verdict": verdict,
+			"model_fallback": modelFallback, "review_run_id": runID,
+			"review_run_json": reviewRunJSON, "error_message": "",
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("mark PR completed for run %s: %w", runID, result.Error)
+	}
+	return result.RowsAffected == 1, nil
+}
+
 func (g *GormDB) CreateReviewRun(run *ReviewRun) error {
 	if run == nil {
 		return fmt.Errorf("create review run: run is nil")

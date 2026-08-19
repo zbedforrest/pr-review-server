@@ -204,6 +204,20 @@ func TestProcessReviewJobPersistsConfigAndCompletesLedger(t *testing.T) {
 	assert.Equal(t, job.Config.Hash, metadata.Config.Hash)
 }
 
+func TestProcessReviewJobRejectsBudgetBeyondStaleResetHorizon(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	p.cfg.AgentWallClockSec = 30
+	job := customReviewJob(t, "run-12500000000000000000000000000001")
+
+	err := p.ProcessReviewJob(context.Background(), job)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds deployment maximum")
+	run, getErr := database.GetReviewRun(job.RunID)
+	require.NoError(t, getErr)
+	assert.Nil(t, run)
+}
+
 func TestProcessReviewJobOutlivesRequestContext(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), NewMockReviewGenerator())
@@ -464,8 +478,18 @@ func TestOrganicTimeoutCannotClobberSuccessorRun(t *testing.T) {
 	}))
 	execution, err := p.beginReviewExecution(job)
 	require.NoError(t, err)
-	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
-	p.activeReviews[key] = ProcessInfo{RunID: "run-25800000000000000000000000000002"}
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA, job.PR.Title, job.PR.Author, nil, false, job.RunID,
+	))
+	successorRunID := "run-25800000000000000000000000000002"
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA, job.PR.Title, job.PR.Author, nil, false, successorRunID,
+	))
+	projected, err := database.MarkPRCompletedForReviewRun(
+		job.PR.Owner, job.PR.Repo, job.PR.Number, successorRunID, job.PR.CommitSHA, "successor.html", 0, 0, 0, "approve", false, `{}`,
+	)
+	require.NoError(t, err)
+	require.True(t, projected)
 	timedOutCtx, cancel := context.WithCancelCause(context.Background())
 	cancel(errReviewRunBudgetExceeded)
 
@@ -478,8 +502,9 @@ func TestOrganicTimeoutCannotClobberSuccessorRun(t *testing.T) {
 	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
 	require.NoError(t, err)
 	require.NotNil(t, pr)
-	assert.Equal(t, "agent_reviewing", pr.Status)
+	assert.Equal(t, "completed", pr.Status)
 	assert.Empty(t, pr.ErrorMessage)
+	assert.Equal(t, successorRunID, pr.ReviewRunID)
 }
 
 func TestRunAgentStageRequiresPreReservedSlot(t *testing.T) {

@@ -241,7 +241,8 @@ type MockDatabase struct {
 	ReviewStageAttempts map[string][]db.ReviewStageAttempt
 
 	// PRs stored in the mock database (keyed by "owner/repo/number")
-	PRs map[string]*db.PR
+	PRs              map[string]*db.PR
+	ProjectionRunIDs map[string]string
 
 	// Settings
 	AutoReviewEnabled bool
@@ -314,6 +315,7 @@ type MockDatabase struct {
 func NewMockDatabase() *MockDatabase {
 	return &MockDatabase{
 		PRs:                 make(map[string]*db.PR),
+		ProjectionRunIDs:    make(map[string]string),
 		ReviewRuns:          make(map[string]*db.ReviewRun),
 		ReviewStageAttempts: make(map[string][]db.ReviewStageAttempt),
 		UserPRViews:         make(map[string]*db.UserPRView),
@@ -465,6 +467,83 @@ func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitS
 		}
 	}
 	return nil
+}
+
+func (m *MockDatabase) SetPRGeneratingForReviewRun(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool, runID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	now := time.Now()
+	pr, exists := m.PRs[key]
+	if !exists {
+		pr = &db.PR{RepoOwner: owner, RepoName: repo, PRNumber: prNumber}
+		m.PRs[key] = pr
+	}
+	pr.Status = "generating"
+	pr.GeneratingSince = &now
+	pr.LastCommitSHA = commitSHA
+	pr.Title = title
+	pr.Author = author
+	pr.CreatedAt = createdAt
+	pr.Draft = draft
+	pr.ErrorMessage = ""
+	m.ProjectionRunIDs[key] = runID
+	return nil
+}
+
+func (m *MockDatabase) SetPRAgentReviewingForReviewRun(owner, repo string, prNumber int, runID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if m.ProjectionRunIDs[key] != runID {
+		return false, nil
+	}
+	if pr := m.PRs[key]; pr != nil {
+		pr.Status = "agent_reviewing"
+		pr.ErrorMessage = ""
+	}
+	return true, nil
+}
+
+func (m *MockDatabase) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if m.ProjectionRunIDs[key] != runID {
+		return false, nil
+	}
+	if pr := m.PRs[key]; pr != nil {
+		pr.Status = "error"
+		pr.ErrorMessage = message
+		pr.GeneratingSince = nil
+	}
+	return true, nil
+}
+
+func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, runID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := prDBKey(owner, repo, prNumber)
+	if m.ProjectionRunIDs[key] != runID {
+		return false, nil
+	}
+	if pr := m.PRs[key]; pr != nil {
+		now := time.Now()
+		pr.Status = "completed"
+		pr.LastCommitSHA = commitSHA
+		pr.ReviewHTMLPath = reviewPath
+		pr.LastReviewedAt = &now
+		pr.GeneratingSince = nil
+		pr.CriticalCount = critical
+		pr.MediumCount = medium
+		pr.LowCount = low
+		pr.ReviewVerdict = verdict
+		pr.ModelFallback = modelFallback
+		pr.ErrorMessage = ""
+		pr.ReviewRunID = runID
+		pr.ReviewRunJSON = reviewRunJSON
+	}
+	return true, nil
 }
 
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error) {

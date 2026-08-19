@@ -50,7 +50,6 @@ export interface PR {
 
 export interface ReviewRun {
   run_id: string;
-  execution_attempt?: number;
   html_path?: string;
   json_path?: string;
   started_at: string;

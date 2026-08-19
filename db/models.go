@@ -102,6 +102,10 @@ type PRModel struct {
 	// the full additive payload.ReviewRunInfo without coupling db to payload.
 	ReviewRunID   string `gorm:"column:review_run_id;size:36;index"`
 	ReviewRunJSON string `gorm:"column:review_run_json;type:text"`
+	// ProjectionRunID fences mutable PR status/result writes across overlapping
+	// service instances. It records the most recent run allowed to project and
+	// intentionally remains set after that run becomes terminal.
+	ProjectionRunID string `gorm:"column:projection_run_id;size:36;index"`
 	// Review importance counts (populated after review generation)
 	CriticalCount int `gorm:"default:0"`
 	MediumCount   int `gorm:"default:0"`

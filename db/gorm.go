@@ -161,8 +161,14 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS review_run_json text").Error; err != nil {
 		return fmt.Errorf("add review_run_json: %w", err)
 	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS projection_run_id varchar(36)").Error; err != nil {
+		return fmt.Errorf("add projection_run_id: %w", err)
+	}
 	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_prs_review_run_id ON prs(review_run_id)").Error; err != nil {
 		return fmt.Errorf("index review_run_id: %w", err)
+	}
+	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_prs_projection_run_id ON prs(projection_run_id)").Error; err != nil {
+		return fmt.Errorf("index projection_run_id: %w", err)
 	}
 	return nil
 }

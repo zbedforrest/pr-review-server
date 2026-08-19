@@ -434,8 +434,13 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 
 	log.Printf("[REVIEWER] PR %d: Gemini pass done (comments=%d), entering agent stage",
 		pr.Number, len(result.Comments))
-	if setErr := p.db.SetPRAgentReviewing(pr.Owner, pr.Repo, pr.Number); setErr != nil {
+	projected, setErr := p.db.SetPRAgentReviewingForReviewRun(pr.Owner, pr.Repo, pr.Number, execution.Job.RunID)
+	if setErr != nil {
 		log.Printf("[REVIEWER] WARNING: could not set agent_reviewing status for PR %d: %v", pr.Number, setErr)
+		return nil, fmt.Errorf("agent review: update PR projection: %w", setErr)
+	}
+	if !projected {
+		return nil, fmt.Errorf("agent review: run %s no longer owns the PR projection", execution.Job.RunID)
 	}
 	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 
@@ -1206,19 +1211,6 @@ func (p *Poller) isTracked(owner, repo string, number int) bool {
 	key := prKey(owner, repo, number)
 	_, exists := p.activeReviews[key]
 	return exists
-}
-
-// setPRErrorUnlessReplaced serializes the timeout projection with local run
-// admission. A missing entry means the monitor evicted this run and no
-// successor exists yet, so projecting is safe; a different run ID means a
-// successor already owns the PR and must not be clobbered.
-func (p *Poller) setPRErrorUnlessReplaced(job ReviewJob, message string) (bool, error) {
-	p.reviewsMutex.Lock()
-	defer p.reviewsMutex.Unlock()
-	if info, exists := p.activeReviews[prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)]; exists && info.RunID != job.RunID {
-		return false, nil
-	}
-	return true, p.db.SetPRError(job.PR.Owner, job.PR.Repo, job.PR.Number, message)
 }
 
 // killReview cancels an active review's context (which propagates to the
@@ -2759,7 +2751,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 		return nil
 	}
 	for _, job := range jobs {
-		if err := job.Validate(); err != nil {
+		if err := p.validateReviewJob(job); err != nil {
 			return err
 		}
 	}
@@ -2909,7 +2901,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			}
 
 			// Set status to generating
-			if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft); err != nil {
+			if err := p.db.SetPRGeneratingForReviewRun(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, job.RunID); err != nil {
 				log.Printf("[BATCH] ERROR: Failed to set generating status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 				p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "pr_state_failed", "dispatch", err)
 				p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
@@ -2924,7 +2916,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				// A not-claimed run may be executing on another instance; never
 				// overwrite its PR projection. Other failures belong to this worker.
 				if rejectedQueued || !errors.Is(beginErr, ErrReviewRunNotClaimed) {
-					if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, beginErr.Error()); setErr != nil {
+					if _, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, beginErr.Error()); setErr != nil {
 						log.Printf("[REVIEWER] WARNING: failed to persist begin error for PR %d: %v", pr.Number, setErr)
 					}
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
@@ -3027,10 +3019,15 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					failureStage := "generation"
 					errorSummary := err.Error()
 					if p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary}) {
-						if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
+						projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, err.Error())
+						if setErr != nil {
 							log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+						} else if !projected {
+							log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping generation error", job.RunID)
 						}
-						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+						if projected {
+							p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+						}
 					} else {
 						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping generation error projection", job.RunID)
 					}
@@ -3070,10 +3067,15 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					errorSummary := err.Error()
 					finished := p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
 					if finished {
-						if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
+						projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, err.Error())
+						if setErr != nil {
 							log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+						} else if !projected {
+							log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping artifact-save error", job.RunID)
 						}
-						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+						if projected {
+							p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+						}
 					} else {
 						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact-save error projection", job.RunID)
 					}
@@ -3116,8 +3118,12 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
 					return
 				}
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback, reviewResult.ReviewRun.RunID, string(reviewRunJSON)); err != nil {
+				projected, err := p.db.MarkPRCompletedForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback, string(reviewRunJSON))
+				if err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
+				} else if !projected {
+					p.setReviewRunPublication(job.RunID, "superseded")
+					log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; keeping immutable artifact only", job.RunID)
 				} else {
 					p.setReviewRunPublication(job.RunID, "published")
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)

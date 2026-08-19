@@ -71,6 +71,20 @@ func (j ReviewJob) Validate() error {
 	return nil
 }
 
+func (p *Poller) validateReviewJob(job ReviewJob) error {
+	if err := job.Validate(); err != nil {
+		return err
+	}
+	// The stale-generating recovery window is deployment-wide. Until the API
+	// introduces a separate operator cap, no admitted run may outlive it.
+	if p.cfg != nil && p.cfg.AgentWallClockSec > 0 && job.Config.Effective.Agent.Enabled &&
+		job.Config.Effective.Agent.WallClockSeconds > p.cfg.AgentWallClockSec {
+		return fmt.Errorf("review job %s: agent wall clock %ds exceeds deployment maximum %ds",
+			job.RunID, job.Config.Effective.Agent.WallClockSeconds, p.cfg.AgentWallClockSec)
+	}
+	return nil
+}
+
 func (p *Poller) defaultReviewJob(pr github.PullRequest, force bool, triggerSource string) (ReviewJob, error) {
 	nRequests, err := p.db.GetReviewNRequests()
 	if err != nil || nRequests <= 0 {
@@ -134,7 +148,7 @@ func (p *Poller) defaultReviewJob(pr github.PullRequest, force bool, triggerSour
 // review-run row and active-review entry exist before this method returns, so
 // callers can immediately poll by run ID without racing worker startup.
 func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
-	if err := job.Validate(); err != nil {
+	if err := p.validateReviewJob(job); err != nil {
 		return err
 	}
 	// Acceptance is durable and execution is asynchronous, so an HTTP request
@@ -190,7 +204,7 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 }
 
 func (p *Poller) ensureReviewRun(job ReviewJob) error {
-	if err := job.Validate(); err != nil {
+	if err := p.validateReviewJob(job); err != nil {
 		return err
 	}
 	requestedJSON, err := json.Marshal(job.Config.Requested)
@@ -341,7 +355,7 @@ func (p *Poller) finishInterruptedReviewExecution(exec *reviewExecution, ctx con
 		log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping timeout error projection", exec.Job.RunID)
 		return false
 	}
-	projected, err := p.setPRErrorUnlessReplaced(exec.Job, reviewBudgetExceededMessage)
+	projected, err := p.db.SetPRErrorForReviewRun(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.RunID, reviewBudgetExceededMessage)
 	if err != nil {
 		log.Printf("[REVIEWER] WARNING: failed to persist timeout status for PR %d: %v", exec.Job.PR.Number, err)
 	}
