@@ -1749,7 +1749,6 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			filename = fallback
 		} else {
 			log.Printf("[LOCAL] Error reading review %s: %v", localPath, err)
 			http.Error(w, "Failed to fetch review", http.StatusInternalServerError)
