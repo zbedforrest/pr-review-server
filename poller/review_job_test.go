@@ -472,6 +472,32 @@ func TestAcceptedQueuedRunLeaseIsRenewedAndCrashExpiresQuickly(t *testing.T) {
 	assert.Equal(t, "queue_abandoned", run.TerminalCode)
 }
 
+func TestLostQueuedDispatcherLeaseCancelsOnlyMatchingLocalOwner(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-24300000000000000000000000000007")
+	job.QueueLeaseHolder = "dispatcher-old"
+	queuedCtx, tracked := p.tryTrackReviewJob(context.Background(), job)
+	require.True(t, tracked)
+	require.True(t, p.setTrackedQueueLease(job, job.QueueLeaseHolder))
+	require.NoError(t, p.ensureReviewRunWithQueueLease(job, "dispatcher-new", time.Now().Add(ReviewQueueLeaseTTL)))
+
+	p.renewTrackedQueueLeases(time.Now().UTC())
+
+	assert.ErrorIs(t, queuedCtx.Err(), context.Canceled)
+	assert.False(t, p.IsReviewTracked(job.PR.Owner, job.PR.Repo, job.PR.Number))
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusQueued, run.Status)
+	assert.Equal(t, "dispatcher-new", run.LeaseHolder)
+	assert.False(t, p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", context.Canceled))
+	run, err = database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusQueued, run.Status, "stale dispatcher must not cancel its successor")
+}
+
 func TestAutomaticCacheRecoveryRepairsTerminalProjectionWithoutLedgerChurn(t *testing.T) {
 	database := NewMockDatabase()
 	storage := NewMockReviewStorage()

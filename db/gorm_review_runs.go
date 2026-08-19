@@ -62,15 +62,17 @@ func (g *GormDB) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID,
 }
 
 // SetPRErrorIfNoLiveReview records an admission/dispatch failure only when the
-// current PR projection is not owned by a queued or live-leased run. It is the
-// safe fallback for errors that happen before a new run ID can claim ownership.
+// target PR has no queued or live-leased run. The target-wide predicate covers
+// newly accepted work before its run ID claims the mutable PR projection.
 func (g *GormDB) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error) {
 	now := time.Now().UTC()
 	result := g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
 		Where(`NOT EXISTS (
 			SELECT 1 FROM review_runs
-			WHERE review_runs.run_id = prs.projection_run_id
+			WHERE review_runs.repo_owner = prs.repo_owner
+			  AND review_runs.repo_name = prs.repo_name
+			  AND review_runs.pr_number = prs.pr_number
 			  AND (review_runs.status = ? OR
 			       (review_runs.status = ? AND (review_runs.lease_expires_at IS NULL OR review_runs.lease_expires_at > ?)))
 		)`, ReviewRunStatusQueued, ReviewRunStatusRunning, now).

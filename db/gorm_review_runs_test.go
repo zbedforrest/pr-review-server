@@ -206,6 +206,30 @@ func TestGormDBCachedProjectionRestoresIdlePendingPR(t *testing.T) {
 	assert.Equal(t, "cached.html", model.ReviewPath)
 }
 
+func TestGormDBAdmissionErrorCannotClobberUnprojectedQueuedRun(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	now := time.Now().UTC()
+	terminal := reviewRunFixture("run-000000000000000000000000000000e1", now)
+	queued := reviewRunFixture("run-000000000000000000000000000000e2", now)
+	queued.RepoOwner, queued.RepoName, queued.PRNumber, queued.CommitSHA = terminal.RepoOwner, terminal.RepoName, terminal.PRNumber, terminal.CommitSHA
+	require.NoError(t, database.CreateReviewRun(&terminal))
+	require.NoError(t, database.SetPRGeneratingForReviewRun(terminal.RepoOwner, terminal.RepoName, terminal.PRNumber, terminal.CommitSHA, "Title", "alice", nil, false, terminal.RunID))
+	failed := ReviewRunStatusFailed
+	require.NoError(t, database.PatchReviewRun(terminal.RunID, ReviewRunPatch{Status: &failed}))
+	require.NoError(t, database.CreateReviewRun(&queued))
+
+	projected, err := database.SetPRErrorIfNoLiveReview(terminal.RepoOwner, terminal.RepoName, terminal.PRNumber, "dispatch failed")
+	require.NoError(t, err)
+	assert.False(t, projected)
+	cancelled := ReviewRunStatusCancelled
+	require.NoError(t, database.PatchReviewRun(queued.RunID, ReviewRunPatch{Status: &cancelled}))
+	projected, err = database.SetPRErrorIfNoLiveReview(terminal.RepoOwner, terminal.RepoName, terminal.PRNumber, "dispatch failed")
+	require.NoError(t, err)
+	assert.True(t, projected)
+}
+
 func TestGormDBCachedProjectionRepairsGeneratingRowWithTerminalOwner(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()

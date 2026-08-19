@@ -34,6 +34,7 @@ type ReviewJob struct {
 	Config            runconfig.Snapshot
 	TriggerSource     string
 	RequestedByUserID *int
+	QueueLeaseHolder  string
 	Force             bool
 }
 
@@ -151,6 +152,8 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 	if err := p.validateReviewJob(job); err != nil {
 		return err
 	}
+	queueHolder := newHolderID()
+	job.QueueLeaseHolder = queueHolder
 	// Acceptance is durable and execution is asynchronous, so an HTTP request
 	// ending must not cancel the accepted run. Preserve context values while
 	// replacing the caller's cancellation/deadline with the run's own timeout.
@@ -158,7 +161,6 @@ func (p *Poller) ProcessReviewJob(ctx context.Context, job ReviewJob) error {
 	if !tracked {
 		return fmt.Errorf("%w: %s/%s#%d", ErrReviewAlreadyTracked, job.PR.Owner, job.PR.Repo, job.PR.Number)
 	}
-	queueHolder := newHolderID()
 	now := time.Now().UTC()
 	queueLeaseExpiresAt := now.Add(ReviewQueueLeaseTTL)
 	if err := p.ensureReviewRunWithQueueLease(job, queueHolder, queueLeaseExpiresAt); err != nil {
@@ -472,6 +474,17 @@ func (p *Poller) rejectQueuedReviewJob(job ReviewJob, status, terminalCode, fail
 			return false
 		}
 		if existing == nil {
+			return false
+		}
+	}
+	if job.QueueLeaseHolder != "" {
+		now := time.Now().UTC()
+		owned, err := p.db.ClaimOrRenewQueuedReviewRunLease(job.RunID, job.QueueLeaseHolder, now, now.Add(ReviewQueueLeaseTTL))
+		if err != nil {
+			log.Printf("[REVIEWER] WARN: verify queued ownership before rejecting run %s: %v", job.RunID, err)
+			return false
+		}
+		if !owned {
 			return false
 		}
 	}

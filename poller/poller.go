@@ -1057,14 +1057,15 @@ func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Tick
 
 func (p *Poller) renewTrackedQueueLeases(now time.Time) {
 	type queuedLease struct {
+		key    string
 		runID  string
 		holder string
 	}
 	p.reviewsMutex.Lock()
 	leases := make([]queuedLease, 0, len(p.activeReviews))
-	for _, info := range p.activeReviews {
+	for key, info := range p.activeReviews {
 		if info.StartTime.IsZero() && info.RunID != "" && info.QueueLeaseHolder != "" {
-			leases = append(leases, queuedLease{runID: info.RunID, holder: info.QueueLeaseHolder})
+			leases = append(leases, queuedLease{key: key, runID: info.RunID, holder: info.QueueLeaseHolder})
 		}
 	}
 	p.reviewsMutex.Unlock()
@@ -1075,8 +1076,24 @@ func (p *Poller) renewTrackedQueueLeases(now time.Time) {
 			log.Printf("[MONITOR] WARNING: failed to renew queued review run %s: %v", lease.runID, err)
 		} else if !renewed {
 			log.Printf("[MONITOR] queued review run %s no longer accepts dispatcher lease renewal", lease.runID)
+			p.untrackQueuedReviewRunIfStillOwned(lease.key, lease.runID, lease.holder)
 		}
 	}
+}
+
+func (p *Poller) untrackQueuedReviewRunIfStillOwned(key, runID, holder string) bool {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	info, exists := p.activeReviews[key]
+	if !exists || info.RunID != runID || info.QueueLeaseHolder != holder || !info.StartTime.IsZero() {
+		return false
+	}
+	if info.Cancel != nil {
+		info.Cancel()
+	}
+	delete(p.activeReviews, key)
+	log.Printf("[TRACK] Cancelled queued review %s after dispatcher lease loss", key)
+	return true
 }
 
 func (p *Poller) GetReviewerStatus() (running bool, duration time.Duration) {

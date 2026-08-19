@@ -525,8 +525,8 @@ func (m *MockDatabase) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := prDBKey(owner, repo, prNumber)
-	if ownerRunID := m.ProjectionRunIDs[key]; ownerRunID != "" {
-		if ownerRun := m.ReviewRuns[ownerRunID]; ownerRun != nil &&
+	for _, ownerRun := range m.ReviewRuns {
+		if ownerRun.RepoOwner == owner && ownerRun.RepoName == repo && ownerRun.PRNumber == prNumber &&
 			(ownerRun.Status == db.ReviewRunStatusQueued ||
 				(ownerRun.Status == db.ReviewRunStatusRunning && (ownerRun.LeaseExpiresAt == nil || ownerRun.LeaseExpiresAt.After(time.Now())))) {
 			return false, nil
