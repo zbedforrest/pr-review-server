@@ -1418,6 +1418,7 @@ func TestGormDBMigratesReviewRunTables(t *testing.T) {
 	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_pr_history_ci"))
 	assert.True(t, database.db.Migrator().HasIndex(&ReviewRunModel{}, "idx_review_runs_global_history"))
 	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
+	assert.True(t, database.db.Migrator().HasColumn(&ReviewStageAttemptModel{}, "budget_units_used"))
 }
 
 func TestGormDBSkipMigrationsAppliesIdempotentSchemaUpdates(t *testing.T) {
@@ -1425,8 +1426,10 @@ func TestGormDBSkipMigrationsAppliesIdempotentSchemaUpdates(t *testing.T) {
 	database, err := NewGormSQLite(path)
 	require.NoError(t, err)
 	require.NoError(t, database.db.Migrator().DropColumn(&PRModel{}, "ProjectionRunID"))
+	require.NoError(t, database.db.Migrator().DropColumn(&ReviewStageAttemptModel{}, "BudgetUnitsUsed"))
 	require.NoError(t, database.db.Exec("DROP INDEX IF EXISTS idx_prs_review_path").Error)
 	assert.False(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
+	assert.False(t, database.db.Migrator().HasColumn(&ReviewStageAttemptModel{}, "budget_units_used"))
 	assert.False(t, database.db.Migrator().HasIndex(&PRModel{}, "idx_prs_review_path"))
 	require.NoError(t, database.Close())
 
@@ -1435,6 +1438,7 @@ func TestGormDBSkipMigrationsAppliesIdempotentSchemaUpdates(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 	assert.True(t, database.db.Migrator().HasColumn(&PRModel{}, "projection_run_id"))
+	assert.True(t, database.db.Migrator().HasColumn(&ReviewStageAttemptModel{}, "budget_units_used"))
 	assert.True(t, database.db.Migrator().HasIndex(&PRModel{}, "idx_prs_review_path"))
 }
 

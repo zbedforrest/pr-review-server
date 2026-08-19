@@ -259,7 +259,7 @@ func Validate(cfg Effective, policy Policy) error {
 		if len(policy.Backends) == 1 {
 			maxTurns = policy.MaxTurns
 		} else {
-			return invalid("agent.max_turns", "backend %q has no configured turn ceiling", backend)
+			return invalid("agent.max_turns", "backend %q has no configured turn ceiling in this deployment", backend)
 		}
 	}
 	if maxTurns > 0 && cfg.Agent.MaxTurns > maxTurns {

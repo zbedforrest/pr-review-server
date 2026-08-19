@@ -427,6 +427,8 @@ func TestReviewRunGetAndCursorListExposeSafeMetadata(t *testing.T) {
 	assert.Contains(t, getRecorder.Body.String(), `"requested_model":"openai/gpt-5.6-sol"`)
 	assert.Contains(t, getRecorder.Body.String(), `"assistant_turns":1`)
 	assert.Contains(t, getRecorder.Body.String(), `"budget_units_used":9`)
+	assert.Contains(t, getRecorder.Body.String(), `"turn_budget_unit":"completed_non_reasoning_item"`)
+	assert.Contains(t, getRecorder.Body.String(), `"turn_budget_version":1`)
 	assert.NotContains(t, getRecorder.Body.String(), "internal provider detail")
 	assert.NotContains(t, getRecorder.Body.String(), "sensitive internal path")
 	assert.Contains(t, getRecorder.Body.String(), `"message":"the review did not complete successfully"`)

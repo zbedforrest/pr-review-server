@@ -191,6 +191,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 		return fmt.Errorf("index global review run history: %w", err)
 	}
 	if g.db.Dialector.Name() != "postgres" {
+		if !g.db.Migrator().HasColumn(&ReviewStageAttemptModel{}, "budget_units_used") {
+			if err := g.db.Migrator().AddColumn(&ReviewStageAttemptModel{}, "BudgetUnitsUsed"); err != nil {
+				return fmt.Errorf("add budget_units_used: %w", err)
+			}
+		}
 		if !g.db.Migrator().HasTable(&PRModel{}) {
 			return nil
 		}
@@ -236,6 +241,9 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	}
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS projection_run_id varchar(36)").Error; err != nil {
 		return fmt.Errorf("add projection_run_id: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE review_stage_attempts ADD COLUMN IF NOT EXISTS budget_units_used integer NOT NULL DEFAULT 0").Error; err != nil {
+		return fmt.Errorf("add budget_units_used: %w", err)
 	}
 	if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
 		return fmt.Errorf("backfill projection_run_id: %w", err)
