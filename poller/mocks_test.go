@@ -567,7 +567,7 @@ func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber 
 	return true, nil
 }
 
-func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string, inFlightStaleBefore time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := prDBKey(owner, repo, prNumber)
@@ -575,11 +575,13 @@ func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo strin
 	if pr == nil || pr.Status == "completed" {
 		return false, nil
 	}
-	if (pr.Status == "generating" || pr.Status == "agent_reviewing") && m.ProjectionRunIDs[key] == "" {
-		return false, nil
+	if pr.Status == "generating" || pr.Status == "agent_reviewing" {
+		if m.ProjectionRunIDs[key] == "" || (pr.GeneratingSince != nil && pr.GeneratingSince.After(inFlightStaleBefore)) {
+			return false, nil
+		}
 	}
-	if ownerRunID := m.ProjectionRunIDs[key]; ownerRunID != "" {
-		if ownerRun := m.ReviewRuns[ownerRunID]; ownerRun != nil &&
+	for _, ownerRun := range m.ReviewRuns {
+		if ownerRun.RunID != projectionRunID && ownerRun.RepoOwner == owner && ownerRun.RepoName == repo && ownerRun.PRNumber == prNumber &&
 			(ownerRun.Status == db.ReviewRunStatusQueued ||
 				(ownerRun.Status == db.ReviewRunStatusRunning && (ownerRun.LeaseExpiresAt == nil || ownerRun.LeaseExpiresAt.After(time.Now())))) {
 			return false, nil

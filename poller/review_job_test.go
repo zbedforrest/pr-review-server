@@ -368,7 +368,7 @@ func TestStartedReviewKeysExcludeQueuedJobs(t *testing.T) {
 
 	started := p.startedReviewKeys()
 	assert.NotContains(t, started, prKey(queued.PR.Owner, queued.PR.Repo, queued.PR.Number))
-	assert.True(t, started[runningKey])
+	assert.Equal(t, "run-24100000000000000000000000000002", started[runningKey])
 
 	p.untrackReviewRun(queued.PR.Owner, queued.PR.Repo, queued.PR.Number, queued.RunID)
 	p.untrackReviewRun("acme", "running", 8, "run-24100000000000000000000000000002")
@@ -485,6 +485,8 @@ func TestAutomaticCacheRecoveryRepairsTerminalProjectionWithoutLedgerChurn(t *te
 	require.NoError(t, database.SetPRGeneratingForReviewRun(
 		job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA, job.PR.Title, job.PR.Author, job.PR.CreatedAt, job.PR.Draft, terminalOwner.RunID,
 	))
+	staleGeneratingSince := time.Now().Add(-ReviewQueueLeaseTTL - time.Second)
+	database.PRs[prDBKey(job.PR.Owner, job.PR.Repo, job.PR.Number)].GeneratingSince = &staleGeneratingSince
 	failed := db.ReviewRunStatusFailed
 	require.NoError(t, database.PatchReviewRun(terminalOwner.RunID, db.ReviewRunPatch{Status: &failed}))
 

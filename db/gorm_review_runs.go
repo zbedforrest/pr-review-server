@@ -102,25 +102,29 @@ func (g *GormDB) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, p
 
 // RestorePRCompletedFromCacheForReviewRun projects an existing artifact only
 // while no active run owns the PR and the row is not already completed. An
-// in-flight-looking row is recoverable only when it has a run-aware projection;
-// the live-run subquery then distinguishes a terminal crashed owner from a real
-// concurrent regeneration. A legacy pre-claim generating row has no projection
-// ID and remains protected from cache takeover.
-func (g *GormDB) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
-	if owner == "" || repo == "" || prNumber <= 0 || projectionRunID == "" || commitSHA == "" || reviewPath == "" {
-		return false, fmt.Errorf("restore cached PR for review run: complete PR target, projection run, commit, and path are required")
+// in-flight-looking row is recoverable only when it has aged beyond the caller's
+// admission window and no queued/live run exists for the PR. The target-wide
+// live-run check also protects a newly accepted run before it claims the mutable
+// projection, including when that projection still names an older terminal run.
+func (g *GormDB) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string, inFlightStaleBefore time.Time) (bool, error) {
+	if owner == "" || repo == "" || prNumber <= 0 || projectionRunID == "" || commitSHA == "" || reviewPath == "" || inFlightStaleBefore.IsZero() {
+		return false, fmt.Errorf("restore cached PR for review run: complete PR target, projection run, commit, path, and stale cutoff are required")
 	}
 	now := time.Now().UTC()
 	result := g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
 		Where("status <> ?", "completed").
-		Where("status NOT IN ? OR projection_run_id <> ''", []string{"generating", "agent_reviewing"}).
+		Where("status NOT IN ? OR (projection_run_id <> '' AND (generating_since IS NULL OR generating_since <= ?))",
+			[]string{"generating", "agent_reviewing"}, inFlightStaleBefore).
 		Where(`NOT EXISTS (
 			SELECT 1 FROM review_runs
-			WHERE review_runs.run_id = prs.projection_run_id
+			WHERE review_runs.repo_owner = prs.repo_owner
+			  AND review_runs.repo_name = prs.repo_name
+			  AND review_runs.pr_number = prs.pr_number
+			  AND review_runs.run_id <> ?
 			  AND (review_runs.status = ? OR
 			       (review_runs.status = ? AND (review_runs.lease_expires_at IS NULL OR review_runs.lease_expires_at > ?)))
-		)`, ReviewRunStatusQueued, ReviewRunStatusRunning, now).
+		)`, projectionRunID, ReviewRunStatusQueued, ReviewRunStatusRunning, now).
 		Updates(map[string]any{
 			"status": "completed", "projection_run_id": projectionRunID,
 			"review_path": reviewPath, "last_commit_sha": commitSHA, "last_reviewed_at": now,

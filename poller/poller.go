@@ -1159,13 +1159,13 @@ func (p *Poller) GetSecondsUntilNextPoll() int {
 // Queued entries also live in activeReviews for local ownership, but they have
 // not claimed the mutable PR projection and must not participate in stale-row
 // restoration.
-func (p *Poller) startedReviewKeys() map[string]bool {
+func (p *Poller) startedReviewKeys() map[string]string {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
-	started := make(map[string]bool, len(p.activeReviews))
+	started := make(map[string]string, len(p.activeReviews))
 	for key, info := range p.activeReviews {
 		if !info.StartTime.IsZero() {
-			started[key] = true
+			started[key] = info.RunID
 		}
 	}
 	return started
@@ -2023,9 +2023,13 @@ func (p *Poller) poll(ctx context.Context) {
 			if checkErr == nil {
 				for _, dbPR := range allPRsForCheck {
 					key := prKey(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber)
-					if trackedKeys[key] && dbPR.Status == "pending" {
+					if runID, tracked := trackedKeys[key]; tracked && dbPR.Status == "pending" {
 						log.Printf("[POLL] Restoring actively-tracked PR %s from 'pending' back to 'generating'", key)
-						_ = p.db.SetPRGenerating(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber, dbPR.LastCommitSHA, dbPR.Title, dbPR.Author, dbPR.CreatedAt, dbPR.Draft)
+						if runID != "" {
+							_ = p.db.SetPRGeneratingForReviewRun(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber, dbPR.LastCommitSHA, dbPR.Title, dbPR.Author, dbPR.CreatedAt, dbPR.Draft, runID)
+						} else {
+							_ = p.db.SetPRGenerating(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber, dbPR.LastCommitSHA, dbPR.Title, dbPR.Author, dbPR.CreatedAt, dbPR.Draft)
+						}
 					}
 				}
 			}
@@ -2997,7 +3001,8 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						reviewRunID, reviewRunJSON = existingPR.ReviewRunID, existingPR.ReviewRunJSON
 					}
 				}
-				if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON); err != nil {
+				inFlightStaleBefore := time.Now().UTC().Add(-ReviewQueueLeaseTTL)
+				if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON, inFlightStaleBefore); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
 				} else if projected {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)

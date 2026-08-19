@@ -167,7 +167,7 @@ func TestGormDBCachedProjectionCannotSupersedeLiveRun(t *testing.T) {
 	assert.False(t, projected)
 
 	restored, err := database.RestorePRCompletedFromCacheForReviewRun(
-		owner, repo, prNum, cacheRun, "old-success", sha, "cached.html", 1, 2, 3, "request_changes", false, `{}`,
+		owner, repo, prNum, cacheRun, "old-success", sha, "cached.html", 1, 2, 3, "request_changes", false, `{}`, time.Now().UTC(),
 	)
 	require.NoError(t, err)
 	assert.False(t, restored)
@@ -195,7 +195,7 @@ func TestGormDBCachedProjectionRestoresIdlePendingPR(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, projected)
 	restored, err := database.RestorePRCompletedFromCacheForReviewRun(
-		owner, repo, prNum, cacheRun, "old-success", sha, "cached.html", 0, 1, 0, "approve_suggestions", false, `{}`,
+		owner, repo, prNum, cacheRun, "old-success", sha, "cached.html", 0, 1, 0, "approve_suggestions", false, `{}`, time.Now().UTC(),
 	)
 	require.NoError(t, err)
 	require.True(t, restored)
@@ -223,9 +223,24 @@ func TestGormDBCachedProjectionRepairsGeneratingRowWithTerminalOwner(t *testing.
 	require.NoError(t, database.SetPRGeneratingForReviewRun(owner, repo, prNum, sha, "Title", "alice", nil, false, terminalRun))
 	failed := ReviewRunStatusFailed
 	require.NoError(t, database.PatchReviewRun(terminalRun, ReviewRunPatch{Status: &failed}))
-
 	restored, err := database.RestorePRCompletedFromCacheForReviewRun(
-		owner, repo, prNum, cacheRun, terminalRun, sha, "cached.html", 1, 0, 0, "request_changes", false, `{}`,
+		owner, repo, prNum, cacheRun, terminalRun, sha, "cached.html", 1, 0, 0, "request_changes", false, `{}`, time.Now().UTC().Add(-time.Minute),
+	)
+	require.NoError(t, err)
+	require.False(t, restored, "a fresh manual admission window must not be mistaken for a crashed owner")
+	queued := reviewRunFixture("run-000000000000000000000000000000d6", time.Now().UTC())
+	queued.RepoOwner, queued.RepoName, queued.PRNumber, queued.CommitSHA = owner, repo, prNum, sha
+	require.NoError(t, database.CreateReviewRun(&queued))
+
+	restored, err = database.RestorePRCompletedFromCacheForReviewRun(
+		owner, repo, prNum, cacheRun, terminalRun, sha, "cached.html", 1, 0, 0, "request_changes", false, `{}`, time.Now().UTC().Add(time.Second),
+	)
+	require.NoError(t, err)
+	require.False(t, restored, "a separately queued live run must protect the PR before it claims the projection")
+	cancelled := ReviewRunStatusCancelled
+	require.NoError(t, database.PatchReviewRun(queued.RunID, ReviewRunPatch{Status: &cancelled}))
+	restored, err = database.RestorePRCompletedFromCacheForReviewRun(
+		owner, repo, prNum, cacheRun, terminalRun, sha, "cached.html", 1, 0, 0, "request_changes", false, `{}`, time.Now().UTC().Add(time.Second),
 	)
 	require.NoError(t, err)
 	require.True(t, restored)
