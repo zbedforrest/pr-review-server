@@ -342,6 +342,27 @@ func TestProcessReviewJobTerminalizesQueueWhenTrackingIsLostBeforeLeaseAttachmen
 	assert.Nil(t, run.LeaseExpiresAt)
 }
 
+func TestReviewLedgerWritesRetryTransientDatabaseErrors(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	job := customReviewJob(t, "run-21500000000000000000000000000001")
+	execution, err := p.beginReviewExecution(job)
+	require.NoError(t, err)
+
+	database.RenewReviewRunLeaseErrors = []error{errors.New("transient renew 1"), errors.New("transient renew 2")}
+	assert.True(t, p.renewReviewExecutionForPublication(execution))
+	database.PatchReviewRunAsHolderErrors = []error{errors.New("transient finish 1"), errors.New("transient finish 2")}
+	completed := db.ReviewRunStatusCompleted
+	assert.True(t, p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &completed}))
+
+	run, getErr := database.GetReviewRun(job.RunID)
+	require.NoError(t, getErr)
+	require.NotNil(t, run)
+	assert.Equal(t, db.ReviewRunStatusCompleted, run.Status)
+	assert.Empty(t, run.LeaseHolder)
+	assert.Nil(t, run.LeaseExpiresAt)
+}
+
 func TestGenerateReviewJobRejectsRivalBeforeMutatingPRState(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), NewMockReviewGenerator())

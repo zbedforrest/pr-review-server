@@ -21,6 +21,9 @@ import (
 
 const ReviewLeaseCompletionGrace = 2 * time.Minute
 
+const reviewLedgerRetryAttempts = 3
+const reviewLedgerRetryBaseDelay = 100 * time.Millisecond
+
 var ErrReviewRunNotClaimed = errors.New("review run was not claimed")
 var ErrReviewAlreadyTracked = errors.New("a review is already active for this PR")
 
@@ -376,12 +379,18 @@ func (p *Poller) finishReviewExecution(exec *reviewExecution, patch db.ReviewRun
 	patch.DurationMS = &durationMS
 	patch.LeaseHolder = &emptyHolder
 	patch.LeaseExpiresAt = &zeroLease
-	updated, err := p.db.PatchReviewRunAsHolder(exec.Job.RunID, exec.Holder, now, patch)
-	if err != nil {
-		log.Printf("[REVIEWER] WARN: finalize review run %s: %v", exec.Job.RunID, err)
-		return false
+	for attempt := 1; attempt <= reviewLedgerRetryAttempts; attempt++ {
+		updated, err := p.db.PatchReviewRunAsHolder(exec.Job.RunID, exec.Holder, time.Now().UTC(), patch)
+		if err == nil {
+			return updated
+		}
+		if attempt == reviewLedgerRetryAttempts {
+			log.Printf("[REVIEWER] WARN: finalize review run %s failed after %d attempts: %v", exec.Job.RunID, attempt, err)
+			return false
+		}
+		time.Sleep(reviewLedgerRetryBaseDelay << (attempt - 1))
 	}
-	return updated
+	return false
 }
 
 func (p *Poller) finishSupersededReviewExecution(exec *reviewExecution, cause error) bool {
@@ -439,17 +448,23 @@ func (p *Poller) finishInterruptedReviewExecution(exec *reviewExecution, ctx con
 }
 
 func (p *Poller) renewReviewExecutionForPublication(exec *reviewExecution) bool {
-	now := time.Now().UTC()
-	leaseExpiresAt := now.Add(ReviewLeaseCompletionGrace)
-	if run, err := p.db.GetReviewRun(exec.Job.RunID); err == nil && run != nil && run.LeaseExpiresAt != nil && run.LeaseExpiresAt.After(leaseExpiresAt) {
-		leaseExpiresAt = *run.LeaseExpiresAt
+	for attempt := 1; attempt <= reviewLedgerRetryAttempts; attempt++ {
+		now := time.Now().UTC()
+		leaseExpiresAt := now.Add(ReviewLeaseCompletionGrace)
+		if run, err := p.db.GetReviewRun(exec.Job.RunID); err == nil && run != nil && run.LeaseExpiresAt != nil && run.LeaseExpiresAt.After(leaseExpiresAt) {
+			leaseExpiresAt = *run.LeaseExpiresAt
+		}
+		renewed, err := p.db.RenewReviewRunLease(exec.Job.RunID, exec.Holder, now, leaseExpiresAt)
+		if err == nil {
+			return renewed
+		}
+		if attempt == reviewLedgerRetryAttempts {
+			log.Printf("[REVIEWER] WARN: renew review run %s before publication failed after %d attempts: %v", exec.Job.RunID, attempt, err)
+			return false
+		}
+		time.Sleep(reviewLedgerRetryBaseDelay << (attempt - 1))
 	}
-	renewed, err := p.db.RenewReviewRunLease(exec.Job.RunID, exec.Holder, now, leaseExpiresAt)
-	if err != nil {
-		log.Printf("[REVIEWER] WARN: renew review run %s before publication: %v", exec.Job.RunID, err)
-		return false
-	}
-	return renewed
+	return false
 }
 
 func (p *Poller) setReviewRunPublication(runID, publicationStatus string) {

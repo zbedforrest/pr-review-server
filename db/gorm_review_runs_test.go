@@ -625,6 +625,10 @@ func TestGormDBAbandonsOnlyLeasesExpiredBeyondGrace(t *testing.T) {
 	requireClaim(expired.RunID, now.Add(-10*time.Minute))
 	requireClaim(withinGrace.RunID, now.Add(-time.Minute))
 	requireClaim(live.RunID, now.Add(time.Minute))
+	require.NoError(t, database.SetPRGeneratingForReviewRun(
+		expired.RepoOwner, expired.RepoName, expired.PRNumber, expired.CommitSHA,
+		"Expired run", "alice", nil, false, expired.RunID,
+	))
 
 	count, err := database.AbandonExpiredReviewRuns(now, 2*time.Minute, time.Hour)
 	require.NoError(t, err)
@@ -640,6 +644,12 @@ func TestGormDBAbandonsOnlyLeasesExpiredBeyondGrace(t *testing.T) {
 	assert.Nil(t, abandoned.LeaseExpiresAt)
 	require.NotNil(t, abandoned.CompletedAt)
 	assert.WithinDuration(t, now, *abandoned.CompletedAt, time.Millisecond)
+	pr, err := database.GetPR(expired.RepoOwner, expired.RepoName, expired.PRNumber)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "error", pr.Status)
+	assert.Equal(t, "review run abandoned after lease expiry", pr.ErrorMessage)
+	assert.Nil(t, pr.GeneratingSince)
 
 	for _, runID := range []string{withinGrace.RunID, live.RunID} {
 		run, getErr := database.GetReviewRun(runID)

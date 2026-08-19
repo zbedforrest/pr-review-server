@@ -241,6 +241,8 @@ type MockDatabase struct {
 	ReviewStageAttempts                    map[string][]db.ReviewStageAttempt
 	GetReviewRunFunc                       func(string) (*db.ReviewRun, error)
 	BeforeClaimOrRenewQueuedReviewRunLease func()
+	PatchReviewRunAsHolderErrors           []error
+	RenewReviewRunLeaseErrors              []error
 
 	// PRs stored in the mock database (keyed by "owner/repo/number")
 	PRs              map[string]*db.PR
@@ -1206,6 +1208,13 @@ func (m *MockDatabase) patchReviewRunLocked(run *db.ReviewRun, patch db.ReviewRu
 func (m *MockDatabase) PatchReviewRunAsHolder(runID, holder string, now time.Time, patch db.ReviewRunPatch) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.PatchReviewRunAsHolderErrors) > 0 {
+		err := m.PatchReviewRunAsHolderErrors[0]
+		m.PatchReviewRunAsHolderErrors = m.PatchReviewRunAsHolderErrors[1:]
+		if err != nil {
+			return false, err
+		}
+	}
 	run := m.ReviewRuns[runID]
 	if run == nil || run.Status != db.ReviewRunStatusRunning || run.LeaseHolder != holder ||
 		run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(now) {
@@ -1279,6 +1288,13 @@ func (m *MockDatabase) ClaimOrRenewQueuedReviewRunLease(runID, holder string, no
 func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.RenewReviewRunLeaseErrors) > 0 {
+		err := m.RenewReviewRunLeaseErrors[0]
+		m.RenewReviewRunLeaseErrors = m.RenewReviewRunLeaseErrors[1:]
+		if err != nil {
+			return false, err
+		}
+	}
 	run := m.ReviewRuns[runID]
 	if run == nil || run.Status != db.ReviewRunStatusRunning || run.LeaseHolder != holder ||
 		run.LeaseExpiresAt == nil || !run.LeaseExpiresAt.After(now) {
@@ -1324,6 +1340,14 @@ func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, que
 		run.ErrorSummary = errorSummary
 		run.LeaseHolder = ""
 		run.LeaseExpiresAt = nil
+		key := prDBKey(run.RepoOwner, run.RepoName, run.PRNumber)
+		if pr := m.PRs[key]; pr != nil && m.ProjectionRunIDs[key] == run.RunID {
+			completedAt := now
+			pr.Status = "error"
+			pr.ErrorMessage = "review run abandoned after lease expiry"
+			pr.LastReviewedAt = &completedAt
+			pr.GeneratingSince = nil
+		}
 		abandoned++
 	}
 	return abandoned, nil

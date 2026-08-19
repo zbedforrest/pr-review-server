@@ -454,37 +454,66 @@ func (g *GormDB) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMax
 		return 0, fmt.Errorf("abandon expired review runs: current time, non-negative running grace, and positive queue max age are required")
 	}
 	runningCutoff := now.Add(-runningGrace)
-	running := g.db.Model(&ReviewRunModel{}).
-		Where("status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", ReviewRunStatusRunning, runningCutoff).
-		Updates(map[string]any{
-			"status":           ReviewRunStatusTimedOut,
-			"completed_at":     now,
-			"terminal_code":    "lease_abandoned",
-			"failure_stage":    "execution",
-			"error_summary":    "review worker lease expired before terminal completion",
-			"lease_holder":     "",
-			"lease_expires_at": nil,
-		})
-	if running.Error != nil {
-		return 0, fmt.Errorf("abandon expired running review runs: %w", running.Error)
-	}
 	queuedCutoff := now.Add(-queuedMaxAge)
-	queued := g.db.Model(&ReviewRunModel{}).
-		Where("status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND queued_at <= ?))",
-			ReviewRunStatusQueued, runningCutoff, queuedCutoff).
-		Updates(map[string]any{
-			"status":           ReviewRunStatusTimedOut,
-			"completed_at":     now,
-			"terminal_code":    "queue_abandoned",
-			"failure_stage":    "dispatch",
-			"error_summary":    "review run remained queued beyond the dispatch recovery window",
-			"lease_holder":     "",
-			"lease_expires_at": nil,
-		})
-	if queued.Error != nil {
-		return int(running.RowsAffected), fmt.Errorf("abandon expired queued review runs: %w", queued.Error)
+	abandoned := 0
+	err := g.db.Transaction(func(tx *gorm.DB) error {
+		running := tx.Model(&ReviewRunModel{}).
+			Where("status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", ReviewRunStatusRunning, runningCutoff).
+			Updates(map[string]any{
+				"status":           ReviewRunStatusTimedOut,
+				"completed_at":     now,
+				"terminal_code":    "lease_abandoned",
+				"failure_stage":    "execution",
+				"error_summary":    "review worker lease expired before terminal completion",
+				"lease_holder":     "",
+				"lease_expires_at": nil,
+			})
+		if running.Error != nil {
+			return fmt.Errorf("running rows: %w", running.Error)
+		}
+		queued := tx.Model(&ReviewRunModel{}).
+			Where("status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND queued_at <= ?))",
+				ReviewRunStatusQueued, runningCutoff, queuedCutoff).
+			Updates(map[string]any{
+				"status":           ReviewRunStatusTimedOut,
+				"completed_at":     now,
+				"terminal_code":    "queue_abandoned",
+				"failure_stage":    "dispatch",
+				"error_summary":    "review run remained queued beyond the dispatch recovery window",
+				"lease_holder":     "",
+				"lease_expires_at": nil,
+			})
+		if queued.Error != nil {
+			return fmt.Errorf("queued rows: %w", queued.Error)
+		}
+		abandoned = int(running.RowsAffected + queued.RowsAffected)
+		if abandoned == 0 {
+			return nil
+		}
+		var runIDs []string
+		if err := tx.Model(&ReviewRunModel{}).
+			Where("status = ? AND completed_at = ? AND terminal_code IN ?", ReviewRunStatusTimedOut, now, []string{"lease_abandoned", "queue_abandoned"}).
+			Pluck("run_id", &runIDs).Error; err != nil {
+			return fmt.Errorf("list abandoned rows: %w", err)
+		}
+		if len(runIDs) == 0 {
+			return nil
+		}
+		result := tx.Model(&PRModel{}).
+			Where("projection_run_id IN ?", runIDs).
+			Updates(map[string]any{
+				"status": "error", "error_message": "review run abandoned after lease expiry",
+				"last_reviewed_at": now, "generating_since": nil,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("project abandoned rows: %w", result.Error)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("abandon expired review runs: %w", err)
 	}
-	return int(running.RowsAffected + queued.RowsAffected), nil
+	return abandoned, nil
 }
 
 func (g *GormDB) UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error {
