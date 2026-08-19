@@ -120,6 +120,43 @@ func TestGormDBReviewProjectionFencesSupersededRuns(t *testing.T) {
 	assert.Equal(t, runB, pr.ReviewRunID)
 }
 
+func TestGormDBOutdatedResetInvalidatesReviewProjection(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+
+	const (
+		owner  = "acme"
+		repo   = "widgets"
+		prNum  = 43
+		runID  = "run-000000000000000000000000000000bc"
+		oldSHA = "0123456789abcdef0123456789abcdef01234567"
+		newSHA = "89abcdef0123456789abcdef0123456789abcdef"
+	)
+	require.NoError(t, database.SetPRGeneratingForReviewRun(owner, repo, prNum, oldSHA, "Title", "alice", nil, false, runID))
+	require.NoError(t, database.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNum).
+		Updates(map[string]any{"status": "error", "error_message": "old failure", "error_retry_count": 1}).Error)
+	require.NoError(t, database.ResetPRToOutdated(owner, repo, prNum, newSHA))
+
+	projected, err := database.SetPRAgentReviewingForReviewRun(owner, repo, prNum, runID)
+	require.NoError(t, err)
+	assert.False(t, projected)
+	projected, err = database.SetPRErrorForReviewRun(owner, repo, prNum, runID, "stale failure")
+	require.NoError(t, err)
+	assert.False(t, projected)
+	projected, err = database.MarkPRCompletedForReviewRun(owner, repo, prNum, runID, runID, oldSHA, "stale.html", 1, 2, 3, "request_changes", false, `{}`)
+	require.NoError(t, err)
+	assert.False(t, projected)
+
+	var model PRModel
+	require.NoError(t, database.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNum).First(&model).Error)
+	assert.Equal(t, "pending", model.Status)
+	assert.Equal(t, newSHA, model.LastCommitSHA)
+	assert.Empty(t, model.ProjectionRunID)
+	assert.Empty(t, model.ErrorMessage)
+	assert.Zero(t, model.ErrorRetryCount)
+}
+
 func TestGormDBRunAdmissionPreservesExistingCreatedAtWhenMissing(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()

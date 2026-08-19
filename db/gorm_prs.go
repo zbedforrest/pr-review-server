@@ -271,11 +271,14 @@ func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSH
 	return g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
 		Updates(map[string]interface{}{
-			"status":           "pending",
-			"last_commit_sha":  newCommitSHA,
-			"review_path":      nil,
-			"last_reviewed_at": nil,
-			"generating_since": nil,
+			"status":            "pending",
+			"last_commit_sha":   newCommitSHA,
+			"review_path":       nil,
+			"last_reviewed_at":  nil,
+			"generating_since":  nil,
+			"projection_run_id": "",
+			"error_message":     "",
+			"error_retry_count": 0,
 		}).Error
 }
 

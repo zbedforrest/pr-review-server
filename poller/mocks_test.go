@@ -388,7 +388,9 @@ func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCo
 		pr.LastCommitSHA = newCommitSHA
 		pr.Status = "pending"
 		pr.ReviewHTMLPath = ""
+		pr.ErrorMessage = ""
 	}
+	delete(m.ProjectionRunIDs, key)
 	return nil
 }
 
