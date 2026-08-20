@@ -493,6 +493,42 @@ func TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog(t *testing.T) {
 	assertLogsDirEmpty(t, cfg.LogsDir)
 }
 
+// TestRunAgentReview_FailureRedactsCredentialFromError — failure messages feed
+// the run's error_summary, which the API exposes, so a credential echoed on
+// stderr must never survive into the returned error.
+func TestRunAgentReview_FailureRedactsCredentialFromError(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	const credential = "sk-test-secret-credential"
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout:  bytes.NewBufferString(""),
+		stderr:  bytes.NewBufferString("auth failed for key " + credential + "\n"),
+		waitErr: errors.New("exit status 1"),
+		killCh:  make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir:    cloneRoot,
+		LogsDir:         t.TempDir(),
+		WallClock:       time.Minute,
+		MaxTurns:        10,
+		AnthropicAPIKey: credential,
+	}
+
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), credential) {
+		t.Errorf("error must not contain the credential: %v", err)
+	}
+	if !strings.Contains(err.Error(), "auth failed for key ***") {
+		t.Errorf("error should carry the redacted stderr, got: %v", err)
+	}
+}
+
 func assertLogsDirEmpty(t *testing.T, logsDir string) {
 	t.Helper()
 	entries, err := os.ReadDir(logsDir)

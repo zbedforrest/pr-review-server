@@ -891,14 +891,17 @@ func decodeReviewRunCursor(value string) (reviewRunCursor, error) {
 
 // attemptErrorSummaryPathPattern matches multi-segment absolute filesystem
 // paths (clone dirs, log paths) so instance layout stays out of API responses
-// while the provider's own error text survives.
-var attemptErrorSummaryPathPattern = regexp.MustCompile(`(?:/[\w.-]+){2,}/?`)
+// while the provider's own error text survives. The boundary group stands in
+// for a lookbehind: a path may not follow a word character or `/`, which
+// keeps URLs (every inner segment follows `/` or a word character), dates
+// (`01/02/2023`), and slashed model ids intact.
+var attemptErrorSummaryPathPattern = regexp.MustCompile(`(^|[^\w/])(?:/[\w.-]+){2,}/?`)
 
 func sanitizeAttemptErrorSummary(summary string) string {
 	if summary == "" {
 		return ""
 	}
-	summary = attemptErrorSummaryPathPattern.ReplaceAllString(summary, "<path>")
+	summary = attemptErrorSummaryPathPattern.ReplaceAllString(summary, "${1}<path>")
 	return truncateString(summary, maxAttemptErrorSummaryChars)
 }
 

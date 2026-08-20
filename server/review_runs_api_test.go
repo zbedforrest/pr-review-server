@@ -406,7 +406,16 @@ func TestV1AuthWrapperUsesJSONErrorContract(t *testing.T) {
 func TestSanitizeAttemptErrorSummary(t *testing.T) {
 	assert.Equal(t, "requested openai/gpt-5.6-sol from provider", sanitizeAttemptErrorSummary("requested openai/gpt-5.6-sol from provider"),
 		"single-slash model ids must survive")
+	assert.Equal(t, "requested openrouter/openai/gpt-4 from provider", sanitizeAttemptErrorSummary("requested openrouter/openai/gpt-4 from provider"),
+		"multi-slash model ids must survive")
+	assert.Equal(t, "POST https://api.anthropic.com/v1/messages returned 500", sanitizeAttemptErrorSummary("POST https://api.anthropic.com/v1/messages returned 500"),
+		"URLs must survive")
+	assert.Equal(t, "access resets 09/01/2026 at 00:00", sanitizeAttemptErrorSummary("access resets 09/01/2026 at 00:00"),
+		"dates must survive")
 	assert.Equal(t, "worktree add failed at <path>", sanitizeAttemptErrorSummary("worktree add failed at /tmp/agent-clones/acme__example__pr1"))
+	assert.Equal(t, "<path> is not a directory", sanitizeAttemptErrorSummary("/tmp/agent-logs/run.jsonl is not a directory"),
+		"start-of-string paths must redact")
+	assert.Equal(t, "(log: <path>)", sanitizeAttemptErrorSummary("(log: /tmp/agent-logs/run.jsonl)"))
 	assert.Equal(t, "", sanitizeAttemptErrorSummary(""))
 	long := strings.Repeat("x", maxAttemptErrorSummaryChars+100)
 	assert.Len(t, sanitizeAttemptErrorSummary(long), maxAttemptErrorSummaryChars)

@@ -364,6 +364,11 @@ func RunAgentReview(
 	stderrWG.Wait()
 	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d", parseResult.assistantTurns, parseResult.budgetUnits)
 
+	// Failure messages below feed the run's error_summary, which the API now
+	// exposes; scrub the provider credential from quoted subprocess output in
+	// case the CLI ever echoes it.
+	redact := func(s string) string { return truncate(redactToken(s, credentialValue), 1000) }
+
 	persistFailureLog := func() {
 		if agentCfg.FailureLogSink == nil {
 			return
@@ -376,13 +381,13 @@ func RunAgentReview(
 	if parseErr != nil {
 		// Turn-cap hit or parse error — subprocess already killed inside parser.
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: %w (%s; stderr: %s)", parseErr, usage, truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: %w (%s; stderr: %s)", parseErr, usage, redact(stderrBuf.String()))
 	}
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: wall-clock timeout (%s; %s; stderr: %s)",
-			agentCfg.WallClock, usage, truncate(stderrBuf.String(), 1000))
+			agentCfg.WallClock, usage, redact(stderrBuf.String()))
 	}
 
 	// The stream error outranks the exit status: the CLI reports API failures
@@ -393,21 +398,21 @@ func RunAgentReview(
 	// "successful" SUMMARY review.
 	if parseResult.streamErr != "" {
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (%s; stderr: %s)",
-			truncate(parseResult.streamErr, 1000), usage, truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (%s; exit: %v; stderr: %s)",
+			redact(parseResult.streamErr), usage, waitErr, redact(stderrBuf.String()))
 	}
 
 	if waitErr != nil {
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: %s exited with error: %w (%s; stream: %s; stderr: %s)",
-			runtime.command, waitErr, usage, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+			runtime.command, waitErr, usage, redact(parseResult.diagnostic()), redact(stderrBuf.String()))
 	}
 
 	if parseResult.finalOutput == "" {
 		log.Printf("%s %s finished with no final result (%s)", logPrefix, runtime.command, usage)
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: no final result emitted (%s; stream: %s; stderr: %s)",
-			usage, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+			usage, redact(parseResult.diagnostic()), redact(stderrBuf.String()))
 	}
 
 	comments, parseErr := parseAgentJSON(parseResult.finalOutput)
