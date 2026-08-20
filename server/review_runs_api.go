@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,10 @@ const (
 	maxReviewRunBodyBytes  = 64 << 10
 	maxIdempotencyKeyBytes = 200
 	reviewRunRetryAfter    = "10"
+	// Attempt error summaries are diagnostic text assembled from the provider
+	// stream and subprocess stderr; the clamp keeps a pathological blob from
+	// bloating every include=attempts response.
+	maxAttemptErrorSummaryChars = 2000
 )
 
 type createReviewRunRequest struct {
@@ -134,6 +139,7 @@ type reviewRunAttemptResponse struct {
 	DurationMS           int64      `json:"duration_ms"`
 	StopReason           string     `json:"stop_reason,omitempty"`
 	ErrorCode            string     `json:"error_code,omitempty"`
+	ErrorSummary         string     `json:"error_summary,omitempty"`
 }
 
 type reviewRunCursor struct {
@@ -741,6 +747,7 @@ func (s *Server) buildReviewRunResponse(run *db.ReviewRun, includeAttempts bool)
 				InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens, TotalTokens: attempt.TotalTokens,
 				StartedAt: attempt.StartedAt, CompletedAt: attempt.CompletedAt, DurationMS: attempt.DurationMS,
 				StopReason: attempt.StopReason, ErrorCode: attempt.ErrorCode,
+				ErrorSummary: sanitizeAttemptErrorSummary(attempt.ErrorSummary),
 			})
 		}
 	}
@@ -880,6 +887,22 @@ func decodeReviewRunCursor(value string) (reviewRunCursor, error) {
 	}
 	cursor.AcceptedAt = cursor.AcceptedAt.UTC()
 	return cursor, nil
+}
+
+// attemptErrorSummaryPathPattern matches multi-segment absolute filesystem
+// paths (clone dirs, log paths) so instance layout stays out of API responses
+// while the provider's own error text survives. The boundary group stands in
+// for a lookbehind: a path may not follow a word character or `/`, which
+// keeps URLs (every inner segment follows `/` or a word character), dates
+// (`01/02/2023`), and slashed model ids intact.
+var attemptErrorSummaryPathPattern = regexp.MustCompile(`(^|[^\w/])(?:/[\w.-]+){2,}/?`)
+
+func sanitizeAttemptErrorSummary(summary string) string {
+	if summary == "" {
+		return ""
+	}
+	summary = attemptErrorSummaryPathPattern.ReplaceAllString(summary, "${1}<path>")
+	return truncateString(summary, maxAttemptErrorSummaryChars)
 }
 
 func publicFailureMessage(terminalCode string) string {
