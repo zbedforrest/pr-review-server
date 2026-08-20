@@ -400,6 +400,65 @@ func TestRunAgentReviewClassifiesExternalCancellation(t *testing.T) {
 	assert.Equal(t, "context_canceled", terminal.ErrorCode)
 }
 
+// TestRunAgentReviewClassifiesStreamErrorOverExitStatus — the CLI reports API
+// failures as a structured result event and then exits non-zero; the stream
+// error must win classification so provider-side failures don't collapse into
+// a generic process-exit error.
+func TestRunAgentReviewClassifiesStreamErrorOverExitStatus(t *testing.T) {
+	cases := []struct {
+		name           string
+		streamError    string
+		wantStopReason string
+		wantErrorCode  string
+	}{
+		{
+			name:           "quota exhausted",
+			streamError:    "API Error: 400 You have reached your specified API usage limits. You will regain access on 2026-09-01 at 00:00 UTC.",
+			wantStopReason: "provider_quota",
+			wantErrorCode:  "provider_quota_exhausted",
+		},
+		{
+			name:           "generic provider error",
+			streamError:    "API Error: 500 Internal server error.",
+			wantStopReason: "provider_error",
+			wantErrorCode:  "provider_error",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bare, sha := setupLocalBareRepo(t)
+			cloneRoot := t.TempDir()
+			seedAgentCache(t, cloneRoot, "acme", "example", bare)
+			stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
+{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"` + tc.streamError + `"}]}}
+{"type":"result","subtype":"success","is_error":true,"result":"` + tc.streamError + `"}
+`
+			spawner := &fakeSpawner{proc: &fakeProcess{
+				stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{},
+				waitErr: errors.New("exit status 1"), killCh: make(chan struct{}),
+			}}
+			var events []ProviderAttemptEvent
+			cfg := AgentConfig{
+				CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+				AttemptObserver: func(event ProviderAttemptEvent) error {
+					events = append(events, event)
+					return nil
+				},
+			}
+
+			_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "CLI reported error in stream")
+			require.Len(t, events, 2)
+			terminal := events[1]
+			assert.Equal(t, "failed", terminal.Status)
+			assert.Equal(t, tc.wantStopReason, terminal.StopReason)
+			assert.Equal(t, tc.wantErrorCode, terminal.ErrorCode)
+			assert.Contains(t, terminal.ErrorSummary, tc.streamError)
+		})
+	}
+}
+
 func TestRunAgentReviewEmitsNoAttemptBeforeProviderSetup(t *testing.T) {
 	notDirectory := filepath.Join(t.TempDir(), "file")
 	require.NoError(t, os.WriteFile(notDirectory, []byte("x"), 0o600))

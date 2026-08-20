@@ -385,18 +385,22 @@ func RunAgentReview(
 			agentCfg.WallClock, usage, truncate(stderrBuf.String(), 1000))
 	}
 
-	if waitErr != nil {
-		persistFailureLog()
-		return nil, fmt.Errorf("agent: %s exited with error: %w (%s; stream: %s; stderr: %s)",
-			runtime.command, waitErr, usage, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
-	}
-
-	// The CLI can exit 0 after an error result event; ungated, the error text
-	// would publish as a "successful" SUMMARY review.
+	// The stream error outranks the exit status: the CLI reports API failures
+	// (quota, auth, overload) as a structured result event and then exits
+	// non-zero, so checking waitErr first would collapse every provider-side
+	// failure into a generic process-exit error. The check also gates the
+	// exit-0 case, where the error text would otherwise publish as a
+	// "successful" SUMMARY review.
 	if parseResult.streamErr != "" {
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (%s; stderr: %s)",
 			truncate(parseResult.streamErr, 1000), usage, truncate(stderrBuf.String(), 1000))
+	}
+
+	if waitErr != nil {
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: %s exited with error: %w (%s; stream: %s; stderr: %s)",
+			runtime.command, waitErr, usage, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	if parseResult.finalOutput == "" {
@@ -529,6 +533,12 @@ func agentAttemptFailure(err error, runCtx context.Context) (stopReason, errorCo
 	}
 	if strings.Contains(err.Error(), "max-turns") {
 		return "max_turns", "max_turns_exceeded"
+	}
+	// Provider budget exhaustion is an ops signal (raise the limit, wait for
+	// reset), not a crash — classify it apart from generic provider errors.
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "usage limit") || strings.Contains(lower, "spend limit") {
+		return "provider_quota", "provider_quota_exhausted"
 	}
 	if strings.Contains(err.Error(), "exited with error") {
 		return "process_error", "process_exit_error"
