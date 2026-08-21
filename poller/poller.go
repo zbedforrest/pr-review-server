@@ -1475,6 +1475,39 @@ func (p *Poller) manualClaimPRIDs() (map[int]bool, bool) {
 	return claims, true
 }
 
+func reviewTargetKey(owner, repo string, number int) string {
+	return strings.ToLower(fmt.Sprintf("%s/%s/%d", owner, repo, number))
+}
+
+// activeReviewTargets returns every PR protected by a durable queued/running
+// review. API-triggered reviews deliberately do not create a persistent
+// dashboard claim, but closed-PR cleanup must still retain their mutable PR
+// projection until execution reaches a terminal state.
+func (p *Poller) activeReviewTargets() (map[string]bool, bool) {
+	const pageSize = 500
+	targets := make(map[string]bool)
+	for _, status := range []string{db.ReviewRunStatusQueued, db.ReviewRunStatusRunning} {
+		filter := db.ReviewRunFilter{Status: status, Limit: pageSize}
+		for {
+			runs, err := p.db.ListReviewRuns(filter)
+			if err != nil {
+				log.Printf("[CLEANUP] ERROR: could not load %s review runs, skipping closed-PR cleanup this cycle: %v", status, err)
+				return nil, false
+			}
+			for _, run := range runs {
+				targets[reviewTargetKey(run.RepoOwner, run.RepoName, run.PRNumber)] = true
+			}
+			if len(runs) < pageSize {
+				break
+			}
+			last := runs[len(runs)-1]
+			filter.BeforeAcceptedAt = last.AcceptedAt
+			filter.BeforeRunID = last.RunID
+		}
+	}
+	return targets, true
+}
+
 // retainForManualClaim handles a closed PR kept alive by a manual claim:
 // non-claimants' views are soft-hidden so their dashboards behave as if the
 // row had been cleaned up (they get no pr_deleted broadcast; the row drops
@@ -1508,6 +1541,10 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 	if !claimsOK {
 		return 0, fmt.Errorf("skipping closed-PR cleanup: manual claims unavailable")
 	}
+	activeReviews, activeOK := p.activeReviewTargets()
+	if !activeOK {
+		return 0, fmt.Errorf("skipping closed-PR cleanup: active reviews unavailable")
+	}
 
 	removed := 0
 	for _, pr := range allPRs {
@@ -1518,6 +1555,11 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 			// Log but continue - we'll handle it on next poll
 			log.Printf("[CLEANUP] Warning: Could not check status of PR %s/%s#%d: %v",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+			continue
+		}
+
+		if !isOpen && activeReviews[reviewTargetKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)] {
+			log.Printf("[CLEANUP] PR %s/%s#%d is closed but has an active review — retaining its projection", pr.RepoOwner, pr.RepoName, pr.PRNumber)
 			continue
 		}
 
@@ -1588,6 +1630,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 	}
 
 	manualClaims, claimsOK := p.manualClaimPRIDs()
+	activeReviews, activeOK := p.activeReviewTargets()
 
 	// Single pass: handle closed PRs and outdated reviews
 	for _, pr := range allPRs {
@@ -1600,6 +1643,12 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 
 		// --- Closed PR cleanup ---
 		if state.State != "OPEN" {
+			if !activeOK || activeReviews[reviewTargetKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)] {
+				if activeOK {
+					log.Printf("[CLEANUP] PR %s is %s but has an active review — retaining its projection", key, state.State)
+				}
+				continue
+			}
 			if !claimsOK || manualClaims[pr.ID] {
 				if claimsOK {
 					p.retainForManualClaim(pr, state.State)
