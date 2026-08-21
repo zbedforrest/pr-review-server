@@ -288,6 +288,59 @@ func TestCleanupClosedPRs_KeepsManuallyRequestedClosedPRs(t *testing.T) {
 	}
 }
 
+func TestCleanupClosedPRs_KeepsClosedPRWithActiveReview(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.PRs["Owner/Repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "Owner", RepoName: "Repo", PRNumber: 1, Status: "generating",
+	}
+	mockDB.ReviewRuns["run-active"] = &db.ReviewRun{
+		RunID: "run-active", RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: db.ReviewRunStatusRunning, AcceptedAt: time.Now().UTC(),
+	}
+	mockGH.IsPROpenResults["Owner/Repo/1"] = struct {
+		IsOpen bool
+		Err    error
+	}{false, nil}
+
+	poller := newTestPoller(mockGH, mockDB)
+	removed, err := poller.cleanupClosedPRs(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupClosedPRs returned error: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("expected no removal, got %d", removed)
+	}
+	if len(mockDB.DeletePRCalls) != 0 {
+		t.Fatalf("active review PR was deleted: %+v", mockDB.DeletePRCalls)
+	}
+}
+
+func TestCleanupClosedPRs_RemovesClosedPRWithOnlyTerminalReview(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1, Status: "completed",
+	}
+	mockDB.ReviewRuns["run-terminal"] = &db.ReviewRun{
+		RunID: "run-terminal", RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: db.ReviewRunStatusCompleted, AcceptedAt: time.Now().UTC(),
+	}
+	mockGH.IsPROpenResults["owner/repo/1"] = struct {
+		IsOpen bool
+		Err    error
+	}{false, nil}
+
+	poller := newTestPoller(mockGH, mockDB)
+	removed, err := poller.cleanupClosedPRs(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupClosedPRs returned error: %v", err)
+	}
+	if removed != 1 || len(mockDB.DeletePRCalls) != 1 {
+		t.Fatalf("terminal review unexpectedly retained closed PR: removed=%d deletes=%+v", removed, mockDB.DeletePRCalls)
+	}
+}
+
 func TestCleanupAndDetectOutdated_PersistsStateOfRetainedPR(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()
@@ -316,6 +369,37 @@ func TestCleanupAndDetectOutdated_PersistsStateOfRetainedPR(t *testing.T) {
 	}
 	if pr.PRState != "merged" {
 		t.Errorf("expected retained PR state to be persisted as merged, got %q", pr.PRState)
+	}
+}
+
+func TestCleanupAndDetectOutdated_KeepsMergedPRWithActiveReview(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.PRs["Owner/Repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "Owner", RepoName: "Repo", PRNumber: 1,
+		Status: "generating", LastCommitSHA: "abc", PRState: "open",
+	}
+	mockDB.ReviewRuns["run-active"] = &db.ReviewRun{
+		RunID: "run-active", RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: db.ReviewRunStatusQueued, AcceptedAt: time.Now().UTC(),
+	}
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"Owner/Repo/1": {Owner: "Owner", Repo: "Repo", Number: 1, State: "MERGED", HeadRefOid: "abc"},
+	}
+
+	poller := newTestPoller(mockGH, mockDB)
+	removed, _, err := poller.cleanupAndDetectOutdated(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupAndDetectOutdated returned error: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("expected no removal, got %d", removed)
+	}
+	if len(mockDB.DeletePRCalls) != 0 {
+		t.Fatalf("active review PR was deleted: %+v", mockDB.DeletePRCalls)
+	}
+	if got := mockDB.PRs["Owner/Repo/1"].PRState; got != "merged" {
+		t.Fatalf("expected retained PR state to be persisted as merged, got %q", got)
 	}
 }
 

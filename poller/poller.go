@@ -1475,6 +1475,65 @@ func (p *Poller) manualClaimPRIDs() (map[int]bool, bool) {
 	return claims, true
 }
 
+func reviewTargetKey(owner, repo string, number int) string {
+	return strings.ToLower(fmt.Sprintf("%s/%s/%d", owner, repo, number))
+}
+
+// activeReviewTargets returns every PR protected by a durable queued/running
+// review. API-triggered reviews deliberately do not create a persistent
+// dashboard claim, but closed-PR cleanup must still retain their mutable PR
+// projection until execution reaches a terminal state.
+func (p *Poller) activeReviewTargets() (map[string]bool, bool) {
+	targets := make(map[string]bool)
+	for _, status := range []string{db.ReviewRunStatusQueued, db.ReviewRunStatusRunning} {
+		filter := db.ReviewRunFilter{Status: status, Limit: db.MaxReviewRunListLimit}
+		for {
+			runs, err := p.db.ListReviewRuns(filter)
+			if err != nil {
+				log.Printf("[CLEANUP] ERROR: could not load %s review runs, skipping closed-PR cleanup this cycle: %v", status, err)
+				return nil, false
+			}
+			for _, run := range runs {
+				targets[reviewTargetKey(run.RepoOwner, run.RepoName, run.PRNumber)] = true
+			}
+			if len(runs) < db.MaxReviewRunListLimit {
+				break
+			}
+			last := runs[len(runs)-1]
+			if last.AcceptedAt.IsZero() || last.RunID == filter.BeforeRunID {
+				log.Printf("[CLEANUP] ERROR: %s review-run pagination did not advance, skipping closed-PR cleanup this cycle", status)
+				return nil, false
+			}
+			filter.BeforeAcceptedAt = last.AcceptedAt
+			filter.BeforeRunID = last.RunID
+		}
+	}
+	return targets, true
+}
+
+// hasActiveReviewTarget re-checks a single target immediately before cleanup
+// deletes its mutable projection. The cycle-wide snapshot can be stale after
+// GitHub status lookups, particularly in the sequential cleanup path.
+func (p *Poller) hasActiveReviewTarget(owner, repo string, number int) (bool, bool) {
+	for _, status := range []string{db.ReviewRunStatusQueued, db.ReviewRunStatusRunning} {
+		runs, err := p.db.ListReviewRuns(db.ReviewRunFilter{
+			RepoOwner: owner,
+			RepoName:  repo,
+			PRNumber:  number,
+			Status:    status,
+			Limit:     1,
+		})
+		if err != nil {
+			log.Printf("[CLEANUP] ERROR: could not re-check %s review runs for %s/%s#%d, retaining its projection: %v", status, owner, repo, number, err)
+			return false, false
+		}
+		if len(runs) > 0 {
+			return true, true
+		}
+	}
+	return false, true
+}
+
 // retainForManualClaim handles a closed PR kept alive by a manual claim:
 // non-claimants' views are soft-hidden so their dashboards behave as if the
 // row had been cleaned up (they get no pr_deleted broadcast; the row drops
@@ -1508,6 +1567,10 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 	if !claimsOK {
 		return 0, fmt.Errorf("skipping closed-PR cleanup: manual claims unavailable")
 	}
+	activeReviews, activeOK := p.activeReviewTargets()
+	if !activeOK {
+		return 0, fmt.Errorf("skipping closed-PR cleanup: active reviews unavailable")
+	}
 
 	removed := 0
 	for _, pr := range allPRs {
@@ -1521,6 +1584,11 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 			continue
 		}
 
+		if !isOpen && activeReviews[reviewTargetKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)] {
+			log.Printf("[CLEANUP] PR %s/%s#%d is closed but has an active review — retaining its projection", pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			continue
+		}
+
 		if !isOpen && manualClaims[pr.ID] {
 			// IsPROpen can't distinguish merged from closed — leave the state
 			// to the batched cleanup path (cleanupAndDetectOutdated).
@@ -1531,6 +1599,15 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 		// If PR is closed, remove it from the database
 		// Note: Reviews are kept in GCS permanently for historical reference
 		if !isOpen {
+			// A review may have been accepted while this cleanup cycle was
+			// waiting on GitHub. Re-check at the destructive boundary.
+			active, activeOK := p.hasActiveReviewTarget(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			if !activeOK || active {
+				if active {
+					log.Printf("[CLEANUP] PR %s/%s#%d gained an active review during cleanup — retaining its projection", pr.RepoOwner, pr.RepoName, pr.PRNumber)
+				}
+				continue
+			}
 			log.Printf("[CLEANUP] PR %s/%s#%d is closed, removing from tracking (reviews kept in GCS)",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber)
 
@@ -1588,6 +1665,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 	}
 
 	manualClaims, claimsOK := p.manualClaimPRIDs()
+	activeReviews, activeOK := p.activeReviewTargets()
 
 	// Single pass: handle closed PRs and outdated reviews
 	for _, pr := range allPRs {
@@ -1603,6 +1681,29 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			if !claimsOK || manualClaims[pr.ID] {
 				if claimsOK {
 					p.retainForManualClaim(pr, state.State)
+				}
+				continue
+			}
+			if !activeOK || activeReviews[reviewTargetKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)] {
+				if activeOK {
+					log.Printf("[CLEANUP] PR %s is %s but has an active review — retaining its projection", key, state.State)
+					prState := strings.ToLower(state.State)
+					if prState != "" && prState != pr.PRState {
+						if err := p.db.SetPRState(pr.RepoOwner, pr.RepoName, pr.PRNumber, prState); err != nil {
+							log.Printf("[CLEANUP] WARN: could not persist state %q for retained PR %s: %v", prState, key, err)
+						} else {
+							p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+						}
+					}
+				}
+				continue
+			}
+			// The batch-wide review snapshot can become stale between the
+			// GraphQL call and deletion. Re-check at the destructive boundary.
+			active, recheckOK := p.hasActiveReviewTarget(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			if !recheckOK || active {
+				if active {
+					log.Printf("[CLEANUP] PR %s gained an active review during cleanup — retaining its projection", key)
 				}
 				continue
 			}

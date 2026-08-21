@@ -1126,8 +1126,8 @@ func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun
 	if limit <= 0 {
 		limit = 100
 	}
-	if limit > 500 {
-		limit = 500
+	if limit > db.MaxReviewRunListLimit {
+		limit = db.MaxReviewRunListLimit
 	}
 	if len(runs) > limit {
 		runs = runs[:limit]
