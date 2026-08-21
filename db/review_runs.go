@@ -18,6 +18,7 @@ const (
 	ReviewRunStatusFailed    = "failed"
 	ReviewRunStatusTimedOut  = "timed_out"
 	ReviewRunStatusCancelled = "cancelled"
+	MaxReviewRunListLimit    = 500
 )
 
 // ReviewRun is the durable identity, immutable configuration, and lifecycle

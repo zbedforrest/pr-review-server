@@ -316,6 +316,31 @@ func TestCleanupClosedPRs_KeepsClosedPRWithActiveReview(t *testing.T) {
 	}
 }
 
+func TestCleanupClosedPRs_RemovesClosedPRWithOnlyTerminalReview(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1, Status: "completed",
+	}
+	mockDB.ReviewRuns["run-terminal"] = &db.ReviewRun{
+		RunID: "run-terminal", RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: db.ReviewRunStatusCompleted, AcceptedAt: time.Now().UTC(),
+	}
+	mockGH.IsPROpenResults["owner/repo/1"] = struct {
+		IsOpen bool
+		Err    error
+	}{false, nil}
+
+	poller := newTestPoller(mockGH, mockDB)
+	removed, err := poller.cleanupClosedPRs(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupClosedPRs returned error: %v", err)
+	}
+	if removed != 1 || len(mockDB.DeletePRCalls) != 1 {
+		t.Fatalf("terminal review unexpectedly retained closed PR: removed=%d deletes=%+v", removed, mockDB.DeletePRCalls)
+	}
+}
+
 func TestCleanupAndDetectOutdated_PersistsStateOfRetainedPR(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()

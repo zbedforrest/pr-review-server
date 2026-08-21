@@ -382,8 +382,8 @@ func (g *GormDB) ListReviewRuns(filter ReviewRunFilter) ([]ReviewRun, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	if limit > 500 {
-		limit = 500
+	if limit > MaxReviewRunListLimit {
+		limit = MaxReviewRunListLimit
 	}
 	var models []ReviewRunModel
 	if err := query.Order("accepted_at DESC, run_id DESC").Limit(limit).Find(&models).Error; err != nil {

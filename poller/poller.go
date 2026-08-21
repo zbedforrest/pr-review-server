@@ -1484,10 +1484,9 @@ func reviewTargetKey(owner, repo string, number int) string {
 // dashboard claim, but closed-PR cleanup must still retain their mutable PR
 // projection until execution reaches a terminal state.
 func (p *Poller) activeReviewTargets() (map[string]bool, bool) {
-	const pageSize = 500
 	targets := make(map[string]bool)
 	for _, status := range []string{db.ReviewRunStatusQueued, db.ReviewRunStatusRunning} {
-		filter := db.ReviewRunFilter{Status: status, Limit: pageSize}
+		filter := db.ReviewRunFilter{Status: status, Limit: db.MaxReviewRunListLimit}
 		for {
 			runs, err := p.db.ListReviewRuns(filter)
 			if err != nil {
@@ -1497,10 +1496,14 @@ func (p *Poller) activeReviewTargets() (map[string]bool, bool) {
 			for _, run := range runs {
 				targets[reviewTargetKey(run.RepoOwner, run.RepoName, run.PRNumber)] = true
 			}
-			if len(runs) < pageSize {
+			if len(runs) < db.MaxReviewRunListLimit {
 				break
 			}
 			last := runs[len(runs)-1]
+			if last.AcceptedAt.IsZero() || last.RunID == filter.BeforeRunID {
+				log.Printf("[CLEANUP] ERROR: %s review-run pagination did not advance, skipping closed-PR cleanup this cycle", status)
+				return nil, false
+			}
 			filter.BeforeAcceptedAt = last.AcceptedAt
 			filter.BeforeRunID = last.RunID
 		}
@@ -1643,15 +1646,23 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 
 		// --- Closed PR cleanup ---
 		if state.State != "OPEN" {
-			if !activeOK || activeReviews[reviewTargetKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)] {
-				if activeOK {
-					log.Printf("[CLEANUP] PR %s is %s but has an active review — retaining its projection", key, state.State)
-				}
-				continue
-			}
 			if !claimsOK || manualClaims[pr.ID] {
 				if claimsOK {
 					p.retainForManualClaim(pr, state.State)
+				}
+				continue
+			}
+			if !activeOK || activeReviews[reviewTargetKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)] {
+				if activeOK {
+					log.Printf("[CLEANUP] PR %s is %s but has an active review — retaining its projection", key, state.State)
+					prState := strings.ToLower(state.State)
+					if prState != "" && prState != pr.PRState {
+						if err := p.db.SetPRState(pr.RepoOwner, pr.RepoName, pr.PRNumber, prState); err != nil {
+							log.Printf("[CLEANUP] WARN: could not persist state %q for retained PR %s: %v", prState, key, err)
+						} else {
+							p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+						}
+					}
 				}
 				continue
 			}
