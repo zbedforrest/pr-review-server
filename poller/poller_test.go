@@ -398,6 +398,9 @@ func TestCleanupAndDetectOutdated_KeepsMergedPRWithActiveReview(t *testing.T) {
 	if len(mockDB.DeletePRCalls) != 0 {
 		t.Fatalf("active review PR was deleted: %+v", mockDB.DeletePRCalls)
 	}
+	if got := mockDB.PRs["Owner/Repo/1"].PRState; got != "merged" {
+		t.Fatalf("expected retained PR state to be persisted as merged, got %q", got)
+	}
 }
 
 func TestRecordModelFallback_CreatesSystemUserAndEvent(t *testing.T) {

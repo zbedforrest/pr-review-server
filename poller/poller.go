@@ -1511,6 +1511,29 @@ func (p *Poller) activeReviewTargets() (map[string]bool, bool) {
 	return targets, true
 }
 
+// hasActiveReviewTarget re-checks a single target immediately before cleanup
+// deletes its mutable projection. The cycle-wide snapshot can be stale after
+// GitHub status lookups, particularly in the sequential cleanup path.
+func (p *Poller) hasActiveReviewTarget(owner, repo string, number int) (bool, bool) {
+	for _, status := range []string{db.ReviewRunStatusQueued, db.ReviewRunStatusRunning} {
+		runs, err := p.db.ListReviewRuns(db.ReviewRunFilter{
+			RepoOwner: owner,
+			RepoName:  repo,
+			PRNumber:  number,
+			Status:    status,
+			Limit:     1,
+		})
+		if err != nil {
+			log.Printf("[CLEANUP] ERROR: could not re-check %s review runs for %s/%s#%d, retaining its projection: %v", status, owner, repo, number, err)
+			return false, false
+		}
+		if len(runs) > 0 {
+			return true, true
+		}
+	}
+	return false, true
+}
+
 // retainForManualClaim handles a closed PR kept alive by a manual claim:
 // non-claimants' views are soft-hidden so their dashboards behave as if the
 // row had been cleaned up (they get no pr_deleted broadcast; the row drops
@@ -1576,6 +1599,15 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 		// If PR is closed, remove it from the database
 		// Note: Reviews are kept in GCS permanently for historical reference
 		if !isOpen {
+			// A review may have been accepted while this cleanup cycle was
+			// waiting on GitHub. Re-check at the destructive boundary.
+			active, activeOK := p.hasActiveReviewTarget(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			if !activeOK || active {
+				if active {
+					log.Printf("[CLEANUP] PR %s/%s#%d gained an active review during cleanup — retaining its projection", pr.RepoOwner, pr.RepoName, pr.PRNumber)
+				}
+				continue
+			}
 			log.Printf("[CLEANUP] PR %s/%s#%d is closed, removing from tracking (reviews kept in GCS)",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber)
 
@@ -1663,6 +1695,15 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 							p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
 						}
 					}
+				}
+				continue
+			}
+			// The batch-wide review snapshot can become stale between the
+			// GraphQL call and deletion. Re-check at the destructive boundary.
+			active, recheckOK := p.hasActiveReviewTarget(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			if !recheckOK || active {
+				if active {
+					log.Printf("[CLEANUP] PR %s gained an active review during cleanup — retaining its projection", key)
 				}
 				continue
 			}
