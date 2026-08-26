@@ -104,6 +104,25 @@ func TestEnforceFindingContractPolicyCapsUnknownMaterialityAtMedium(t *testing.T
 	}
 }
 
+func TestEnforceFindingContractPolicyNormalizesContractsFromAnyProducer(t *testing.T) {
+	contract := validPolicyContract(" design_opinion ", " unknown ", " not_falsifiable ")
+	contract.Subjects[0].Kind = " file "
+	comments := []types.LineComment{{
+		FilePath:        "example.go",
+		Importance:      "CRITICAL",
+		FindingContract: contract,
+	}}
+
+	EnforceFindingContractPolicy(comments)
+
+	if comments[0].Importance != "LOW" {
+		t.Fatalf("importance = %q", comments[0].Importance)
+	}
+	if contract.FindingKind != "design_opinion" || contract.Materiality != "unknown" || contract.Falsifiability != "not_falsifiable" || contract.Subjects[0].Kind != "file" {
+		t.Fatalf("contract was not normalized: %#v", contract)
+	}
+}
+
 func validPolicyContract(kind, materiality, falsifiability string) *types.FindingContract {
 	condition := "The candidate fails."
 	observable := "Compare the response status."

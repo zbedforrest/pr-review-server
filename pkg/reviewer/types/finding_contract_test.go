@@ -112,14 +112,18 @@ func TestValidateFindingContractAcceptsFutureOnlySecurityRisk(t *testing.T) {
 
 func TestNormalizeFindingContractTrimsFreeTextAndSubjects(t *testing.T) {
 	value := validFindingContract()
+	value.FindingKind = " production_behavior "
+	value.Materiality = " current_impact "
+	value.Falsifiability = " falsifiable "
 	value.CurrentImpact = "\n  A request fails.\t"
+	value.Subjects[0].Kind = " symbol "
 	value.Subjects[0].Path = " app.go "
 	value.Subjects[0].Name = " handler\t"
 	*value.FalsifiableCondition = " The candidate fails. "
 
 	NormalizeFindingContract(value)
 
-	if value.CurrentImpact != "A request fails." || value.Subjects[0].Path != "app.go" || value.Subjects[0].Name != "handler" || *value.FalsifiableCondition != "The candidate fails." {
+	if value.FindingKind != "production_behavior" || value.Materiality != "current_impact" || value.Falsifiability != "falsifiable" || value.CurrentImpact != "A request fails." || value.Subjects[0].Kind != "symbol" || value.Subjects[0].Path != "app.go" || value.Subjects[0].Name != "handler" || *value.FalsifiableCondition != "The candidate fails." {
 		t.Fatalf("contract was not normalized: %#v", value)
 	}
 	if err := ValidateFindingContract(value); err != nil {

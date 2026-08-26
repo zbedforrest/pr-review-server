@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pr-review-server/pkg/reviewer/types"
 )
 
 // fakeProcess implements SpawnedProcess by replaying a canned stdout buffer.
@@ -811,6 +813,38 @@ func TestParseAgentJSONNormalizesContractBeforePolicy(t *testing.T) {
 	}
 }
 
+func TestParseAgentJSONKeepsValidCurrentImpactSeverityAfterNormalization(t *testing.T) {
+	raw := `[{
+        "file_path":"handler.go",
+        "line_number":12,
+        "comment_body":"Current requests fail.",
+        "importance":"CRITICAL",
+        "finding_contract":{
+            "schema_version":1,
+            "finding_kind":" production_behavior ",
+            "materiality":" current_impact ",
+            "current_impact":" Current requests fail. ",
+            "counterfactual_trigger":null,
+            "falsifiability":" falsifiable ",
+            "falsifiable_condition":" The candidate request fails. ",
+            "expected_observable":" Compare the response status. ",
+            "subjects":[{"kind":" symbol ","path":" handler.go ","name":" HandleRequest "}],
+            "uncertainty":" The report covers one request state. ",
+            "severity_rationale":" The changed path blocks current requests. "
+        }
+    }]`
+	comments, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].Importance != "CRITICAL" {
+		t.Fatalf("importance = %q", comments[0].Importance)
+	}
+	if err := types.ValidateFindingContract(comments[0].FindingContract); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestParseAgentJSONCapsMissingAndInvalidContractsAtMedium(t *testing.T) {
 	for name, raw := range map[string]string{
 		"missing": `[{
@@ -876,6 +910,19 @@ func TestParseAgentJSONRemovesContractsFromControlEntries(t *testing.T) {
 	}
 	if comments[0].FindingContract != nil {
 		t.Fatal("summary retained a finding contract")
+	}
+}
+
+func TestAgentPromptStatesFindingContractTextBounds(t *testing.T) {
+	for _, requirement := range []string{
+		"single-line strings of at most 500 Unicode characters",
+		"no leading or trailing whitespace, tabs, control characters, or format characters",
+		"300-character limit",
+		"200-character limit",
+	} {
+		if !strings.Contains(promptAgentReview, requirement) {
+			t.Fatalf("prompt is missing %q", requirement)
+		}
 	}
 }
 

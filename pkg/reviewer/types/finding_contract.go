@@ -161,6 +161,9 @@ func NormalizeFindingContract(contract *FindingContract) {
 	if contract == nil {
 		return
 	}
+	contract.FindingKind = strings.TrimSpace(contract.FindingKind)
+	contract.Materiality = strings.TrimSpace(contract.Materiality)
+	contract.Falsifiability = strings.TrimSpace(contract.Falsifiability)
 	contract.CurrentImpact = strings.TrimSpace(contract.CurrentImpact)
 	contract.Uncertainty = strings.TrimSpace(contract.Uncertainty)
 	contract.SeverityRationale = strings.TrimSpace(contract.SeverityRationale)
@@ -174,6 +177,7 @@ func NormalizeFindingContract(contract *FindingContract) {
 		}
 	}
 	for index := range contract.Subjects {
+		contract.Subjects[index].Kind = strings.TrimSpace(contract.Subjects[index].Kind)
 		contract.Subjects[index].Path = strings.TrimSpace(contract.Subjects[index].Path)
 		contract.Subjects[index].Name = strings.TrimSpace(contract.Subjects[index].Name)
 	}

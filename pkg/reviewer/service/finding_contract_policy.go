@@ -7,18 +7,17 @@ import (
 )
 
 func EnforceAgentFindingContractPolicy(comments []types.LineComment) {
+	EnforceFindingContractPolicy(comments)
 	for index := range comments {
 		comment := &comments[index]
 		if comment.FilePath == "SUMMARY" || comment.FilePath == "CHECK" {
 			continue
 		}
-		types.NormalizeFindingContract(comment.FindingContract)
 		if types.ValidateFindingContract(comment.FindingContract) != nil &&
 			strings.EqualFold(strings.TrimSpace(comment.Importance), "CRITICAL") {
 			comment.Importance = "MEDIUM"
 		}
 	}
-	EnforceFindingContractPolicy(comments)
 }
 
 func EnforceFindingContractPolicy(comments []types.LineComment) {
@@ -28,6 +27,7 @@ func EnforceFindingContractPolicy(comments []types.LineComment) {
 			comment.FindingContract = nil
 			continue
 		}
+		types.NormalizeFindingContract(comment.FindingContract)
 		contract := comment.FindingContract
 		if types.ValidateFindingContract(contract) != nil {
 			continue
