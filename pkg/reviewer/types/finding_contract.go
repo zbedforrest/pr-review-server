@@ -3,6 +3,7 @@ package types
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -77,14 +78,14 @@ func ValidateFindingContract(contract *FindingContract) error {
 	if !falsifiabilities[contract.Falsifiability] {
 		return fmt.Errorf("falsifiability is invalid")
 	}
-	for name, value := range map[string]string{
-		"current impact":     contract.CurrentImpact,
-		"uncertainty":        contract.Uncertainty,
-		"severity rationale": contract.SeverityRationale,
-	} {
-		if err := validateContractText(value, name, 500); err != nil {
-			return err
-		}
+	if err := validateContractText(contract.CurrentImpact, "current impact", 500); err != nil {
+		return err
+	}
+	if err := validateContractText(contract.Uncertainty, "uncertainty", 500); err != nil {
+		return err
+	}
+	if err := validateContractText(contract.SeverityRationale, "severity rationale", 500); err != nil {
+		return err
 	}
 	if contract.CounterfactualTrigger != nil {
 		if err := validateContractText(*contract.CounterfactualTrigger, "counterfactual trigger", 500); err != nil {
@@ -156,6 +157,28 @@ func ValidateFindingContract(contract *FindingContract) error {
 	return nil
 }
 
+func NormalizeFindingContract(contract *FindingContract) {
+	if contract == nil {
+		return
+	}
+	contract.CurrentImpact = strings.Trim(contract.CurrentImpact, " \t")
+	contract.Uncertainty = strings.Trim(contract.Uncertainty, " \t")
+	contract.SeverityRationale = strings.Trim(contract.SeverityRationale, " \t")
+	for _, value := range []*string{
+		contract.CounterfactualTrigger,
+		contract.FalsifiableCondition,
+		contract.ExpectedObservable,
+	} {
+		if value != nil {
+			*value = strings.Trim(*value, " \t")
+		}
+	}
+	for index := range contract.Subjects {
+		contract.Subjects[index].Path = strings.Trim(contract.Subjects[index].Path, " \t")
+		contract.Subjects[index].Name = strings.Trim(contract.Subjects[index].Name, " \t")
+	}
+}
+
 func ContractStatus(contract *FindingContract) string {
 	if contract == nil {
 		return "missing"
@@ -167,8 +190,13 @@ func ContractStatus(contract *FindingContract) string {
 }
 
 func validateContractText(value, name string, maximum int) error {
-	if value == "" || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n") || !utf8.ValidString(value) || utf8.RuneCountInString(value) > maximum {
+	if value == "" || strings.TrimSpace(value) != value || !utf8.ValidString(value) || utf8.RuneCountInString(value) > maximum {
 		return fmt.Errorf("%s is invalid", name)
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) {
+			return fmt.Errorf("%s is invalid", name)
+		}
 	}
 	return nil
 }

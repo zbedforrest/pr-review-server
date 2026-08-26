@@ -779,6 +779,66 @@ func TestParseAgentJSONCapsFutureOnlyNonSecuritySeverity(t *testing.T) {
 	}
 }
 
+func TestParseAgentJSONNormalizesContractBeforePolicy(t *testing.T) {
+	raw := `[{
+        "file_path":"config.go",
+        "line_number":12,
+        "comment_body":"A later caller could omit the setting.",
+        "importance":"CRITICAL",
+        "finding_contract":{
+            "schema_version":1,
+            "finding_kind":"latent_hazard",
+            "materiality":"future_condition_only",
+            "current_impact":" No current caller omits the setting. ",
+            "counterfactual_trigger":" A later caller omits the setting. ",
+            "falsifiability":"falsifiable",
+            "falsifiable_condition":" The setting is absent. ",
+            "expected_observable":" The request returns an error. ",
+            "subjects":[{"kind":"config_key","path":" config.go ","name":" required_setting "}],
+            "uncertainty":" Future callers are not known. ",
+            "severity_rationale":" The current PR creates no active failure. "
+        }
+    }]`
+	comments, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].Importance != "LOW" {
+		t.Fatalf("importance = %q", comments[0].Importance)
+	}
+	if comments[0].FindingContract.CurrentImpact != "No current caller omits the setting." {
+		t.Fatalf("impact = %q", comments[0].FindingContract.CurrentImpact)
+	}
+}
+
+func TestParseAgentJSONCapsMissingAndInvalidContractsAtMedium(t *testing.T) {
+	for name, raw := range map[string]string{
+		"missing": `[{
+            "file_path":"config.go",
+            "line_number":12,
+            "comment_body":"A claim without a contract.",
+            "importance":"CRITICAL"
+        }]`,
+		"invalid": `[{
+            "file_path":"config.go",
+            "line_number":12,
+            "comment_body":"A claim with an invalid contract.",
+            "importance":"CRITICAL",
+            "finding_contract":{"schema_version":1}
+        }]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			comments, err := parseAgentJSON(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if comments[0].Importance != "MEDIUM" {
+				t.Fatalf("importance = %q", comments[0].Importance)
+			}
+		})
+	}
+}
+
 func TestParseAgentJSONCapsFutureOnlySecurityRiskWithoutPolicy(t *testing.T) {
 	raw := `[{
         "file_path":"auth.go",

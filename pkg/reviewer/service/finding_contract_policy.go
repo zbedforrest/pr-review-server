@@ -1,6 +1,25 @@
 package service
 
-import "pr-review-server/pkg/reviewer/types"
+import (
+	"strings"
+
+	"pr-review-server/pkg/reviewer/types"
+)
+
+func EnforceAgentFindingContractPolicy(comments []types.LineComment) {
+	for index := range comments {
+		comment := &comments[index]
+		if comment.FilePath == "SUMMARY" || comment.FilePath == "CHECK" {
+			continue
+		}
+		types.NormalizeFindingContract(comment.FindingContract)
+		if types.ValidateFindingContract(comment.FindingContract) != nil &&
+			strings.EqualFold(strings.TrimSpace(comment.Importance), "CRITICAL") {
+			comment.Importance = "MEDIUM"
+		}
+	}
+	EnforceFindingContractPolicy(comments)
+}
 
 func EnforceFindingContractPolicy(comments []types.LineComment) {
 	for index := range comments {

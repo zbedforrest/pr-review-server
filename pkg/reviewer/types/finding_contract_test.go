@@ -73,6 +73,9 @@ func TestValidateFindingContractRejectsContradictions(t *testing.T) {
 		"multiline impact": func(value *FindingContract) {
 			value.CurrentImpact = "Line one.\nLine two."
 		},
+		"control character": func(value *FindingContract) {
+			value.CurrentImpact = "Line one.\tLine two."
+		},
 	}
 	for name, change := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -102,6 +105,23 @@ func TestValidateFindingContractAcceptsFutureOnlySecurityRisk(t *testing.T) {
 	value.Materiality = "future_condition_only"
 	value.CurrentImpact = "The current deployment does not expose credentials."
 	value.CounterfactualTrigger = contractText("A later deployment enables public diagnostics.")
+	if err := ValidateFindingContract(value); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNormalizeFindingContractTrimsFreeTextAndSubjects(t *testing.T) {
+	value := validFindingContract()
+	value.CurrentImpact = "  A request fails.\t"
+	value.Subjects[0].Path = " app.go "
+	value.Subjects[0].Name = " handler\t"
+	*value.FalsifiableCondition = " The candidate fails. "
+
+	NormalizeFindingContract(value)
+
+	if value.CurrentImpact != "A request fails." || value.Subjects[0].Path != "app.go" || value.Subjects[0].Name != "handler" || *value.FalsifiableCondition != "The candidate fails." {
+		t.Fatalf("contract was not normalized: %#v", value)
+	}
 	if err := ValidateFindingContract(value); err != nil {
 		t.Fatal(err)
 	}
