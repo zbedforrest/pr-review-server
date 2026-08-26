@@ -260,6 +260,7 @@ func CarryForwardFindings(prior []types.LineComment, touchedFiles []string) (car
 			continue
 		}
 		c.CommentBody = stripLeadingProvenanceNote(c.CommentBody)
+		c.FindingContract = nil
 		// Re-attribute: whatever pass produced the finding originally, in THIS
 		// review it is a carry-forward — the structured field must agree with
 		// the rendered note or payload.DeriveProvenance would report the stale

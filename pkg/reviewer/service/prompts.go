@@ -221,6 +221,19 @@ Each object must have these fields:
 - "line_number" (integer): the line to anchor the comment to. Use 0 for SUMMARY entries or whole-file notes.
 - "comment_body" (string): the comment text. Markdown is fine. For concrete code changes include a ` + "```suggestion" + ` block inside the body.
 - "importance" (string): "LOW", "MEDIUM", or "CRITICAL". Use CRITICAL for bugs/security, MEDIUM for things a reviewer should address, LOW for nits. SUMMARY entries can use any level.
+- "finding_contract" (object): required for every ordinary finding and omitted for SUMMARY and CHECK entries. It must contain:
+  - "schema_version": 1
+  - "finding_kind": one of "production_behavior", "security_risk", "latent_hazard", "design_opinion", "description_drift", "test_quality", or "operational_risk"
+  - "materiality": one of "current_impact", "future_condition_only", "no_user_impact", or "unknown"
+  - "current_impact": one bounded sentence stating the present user or system impact, including when none is demonstrated
+  - "counterfactual_trigger": the separate future condition required for harm, or null
+  - "falsifiability": one of "falsifiable", "not_falsifiable", or "unknown"
+  - "falsifiable_condition" and "expected_observable": bounded sentences when falsifiable, otherwise null
+  - "subjects": one to eight exact objects with "kind" ("file", "symbol", "selector", "config_key", "endpoint", "workflow", or "other"), "path", and "name" unless kind is "file"
+  - "uncertainty": one bounded sentence
+  - "severity_rationale": one bounded sentence
+
+If non-security harm requires another future change that this PR does not introduce, use "latent_hazard" with "future_condition_only" and LOW importance. Future-only security risks retain "security_risk" but stay LOW unless a separate policy layer escalates them. Design opinions and description drift are non-falsifiable and cannot claim current impact. A stale description is not evidence of author intent.
 
 Include exactly one "SUMMARY" entry summarizing your overall take + verdict (approve / approve with suggestions / request changes).
 

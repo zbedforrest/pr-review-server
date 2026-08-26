@@ -591,6 +591,7 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 	if err := json.Unmarshal([]byte(trimmed), &comments); err != nil {
 		return nil, err
 	}
+	EnforceFindingContractPolicy(comments)
 	return comments, nil
 }
 

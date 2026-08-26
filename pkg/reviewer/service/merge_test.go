@@ -248,6 +248,20 @@ func TestMergeFindings_CarriedDedupsIntoAgentFinding(t *testing.T) {
 	}
 }
 
+func TestCarryForwardFindingsDropsStaleFindingContract(t *testing.T) {
+	contract := &types.FindingContract{SchemaVersion: types.FindingContractSchemaVersion}
+	prior := lc("x.py", 100, "LOW", "prior phrasing")
+	prior.FindingContract = contract
+
+	carried, dropped := CarryForwardFindings([]types.LineComment{prior}, nil)
+	if dropped != 0 || len(carried) != 1 {
+		t.Fatalf("carried = %+v, dropped = %d", carried, dropped)
+	}
+	if carried[0].FindingContract != nil {
+		t.Fatal("carried finding retained a contract bound to an earlier head")
+	}
+}
+
 // A unique carried finding survives the merge capped at MEDIUM, with a note
 // deterministically naming the SHA it came from, and the SUMMARY
 // reconciliation note mentions the carried count.

@@ -151,13 +151,15 @@ type Finding struct {
 	// (unknown labels pass through verbatim). Derived from the merge layer's
 	// provenance markers (see DeriveProvenance); absent only in sidecars
 	// written before the field existed. Additive — schema stays "1".
-	Provenance   string   `json:"provenance,omitempty"`
-	File         string   `json:"file"`
-	Line         int      `json:"line"`
-	Comment      string   `json:"comment"`
-	DiffHunk     string   `json:"diff_hunk,omitempty"`
-	SourceBefore []string `json:"source_before,omitempty"`
-	SourceAfter  []string `json:"source_after,omitempty"`
+	Provenance            string                 `json:"provenance,omitempty"`
+	File                  string                 `json:"file"`
+	Line                  int                    `json:"line"`
+	Comment               string                 `json:"comment"`
+	FindingContract       *types.FindingContract `json:"finding_contract,omitempty"`
+	FindingContractStatus string                 `json:"finding_contract_status,omitempty"`
+	DiffHunk              string                 `json:"diff_hunk,omitempty"`
+	SourceBefore          []string               `json:"source_before,omitempty"`
+	SourceAfter           []string               `json:"source_after,omitempty"`
 }
 
 // normalizeSeverity lower-cases LineComment importance values into the four
@@ -205,12 +207,17 @@ func (p Payload) ToLineComments() []types.LineComment {
 	}
 	out := make([]types.LineComment, 0, len(p.Findings))
 	for _, f := range p.Findings {
+		var contract *types.FindingContract
+		if f.FindingContractStatus == "valid" && types.ValidateFindingContract(f.FindingContract) == nil {
+			contract = f.FindingContract
+		}
 		out = append(out, types.LineComment{
-			FilePath:    f.File,
-			LineNumber:  f.Line,
-			Importance:  severityToImportance(f.Severity),
-			CommentBody: f.Comment,
-			Provenance:  f.Provenance,
+			FilePath:        f.File,
+			LineNumber:      f.Line,
+			Importance:      severityToImportance(f.Severity),
+			CommentBody:     f.Comment,
+			FindingContract: contract,
+			Provenance:      f.Provenance,
 		})
 	}
 	return out
@@ -271,12 +278,20 @@ func Build(
 			counts.Low++
 		}
 
+		contractStatus := types.ContractStatus(c.FindingContract)
+		if c.FilePath == "SUMMARY" || c.FilePath == "CHECK" {
+			contractStatus = "not_applicable"
+		}
 		f := Finding{
-			Severity:   sev,
-			Provenance: DeriveProvenance(c),
-			File:       c.FilePath,
-			Line:       c.LineNumber,
-			Comment:    c.CommentBody,
+			Severity:              sev,
+			Provenance:            DeriveProvenance(c),
+			File:                  c.FilePath,
+			Line:                  c.LineNumber,
+			Comment:               c.CommentBody,
+			FindingContractStatus: contractStatus,
+		}
+		if f.FindingContractStatus == "valid" {
+			f.FindingContract = c.FindingContract
 		}
 		if diff != "" && c.FilePath != "" && c.LineNumber > 0 {
 			f.DiffHunk = HunkForLine(diff, c.FilePath, c.LineNumber)

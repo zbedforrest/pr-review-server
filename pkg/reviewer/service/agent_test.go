@@ -750,6 +750,75 @@ func TestParseAgentJSON(t *testing.T) {
 	}
 }
 
+func TestParseAgentJSONCapsFutureOnlyNonSecuritySeverity(t *testing.T) {
+	raw := `[{
+        "file_path":"config.go",
+        "line_number":12,
+        "comment_body":"A later caller could omit the setting.",
+        "importance":"CRITICAL",
+        "finding_contract":{
+            "schema_version":1,
+            "finding_kind":"latent_hazard",
+            "materiality":"future_condition_only",
+            "current_impact":"No current caller omits the setting.",
+            "counterfactual_trigger":"A later caller omits the setting.",
+            "falsifiability":"falsifiable",
+            "falsifiable_condition":"The setting is absent.",
+            "expected_observable":"The request returns an error.",
+            "subjects":[{"kind":"config_key","path":"config.go","name":"required_setting"}],
+            "uncertainty":"Future callers are not known.",
+            "severity_rationale":"The current PR creates no active failure."
+        }
+    }]`
+	comments, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].Importance != "LOW" {
+		t.Fatalf("importance = %q", comments[0].Importance)
+	}
+}
+
+func TestParseAgentJSONCapsFutureOnlySecurityRiskWithoutPolicy(t *testing.T) {
+	raw := `[{
+        "file_path":"auth.go",
+        "line_number":12,
+        "comment_body":"A later configuration could expose credentials.",
+        "importance":"CRITICAL",
+        "finding_contract":{
+            "schema_version":1,
+            "finding_kind":"security_risk",
+            "materiality":"future_condition_only",
+            "current_impact":"The current configuration does not expose credentials.",
+            "counterfactual_trigger":"A later deployment enables public diagnostics.",
+            "falsifiability":"falsifiable",
+            "falsifiable_condition":"Public diagnostics are enabled.",
+            "expected_observable":"Credential values appear in the response.",
+            "subjects":[{"kind":"symbol","path":"auth.go","name":"diagnostics"}],
+            "uncertainty":"Deployment configuration can change independently.",
+            "severity_rationale":"Credential exposure remains security-sensitive."
+        }
+    }]`
+	comments, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].Importance != "LOW" {
+		t.Fatalf("importance = %q", comments[0].Importance)
+	}
+}
+
+func TestParseAgentJSONRemovesContractsFromControlEntries(t *testing.T) {
+	raw := `[{"file_path":"SUMMARY","line_number":0,"comment_body":"Approve.","finding_contract":{"schema_version":1}}]`
+	comments, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].FindingContract != nil {
+		t.Fatal("summary retained a finding contract")
+	}
+}
+
 // Keep errors import alive.
 var _ = errors.New
 
