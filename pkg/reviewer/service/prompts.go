@@ -235,6 +235,14 @@ Each object must have these fields:
 
 The "current_impact", "counterfactual_trigger", "falsifiable_condition", "expected_observable", "uncertainty", and "severity_rationale" values, when non-null, must be non-empty single-line strings of at most 500 Unicode characters, with no leading or trailing whitespace, tabs, control characters, or format characters. Subject "path" values use the same rules with a 300-character limit; non-empty subject "name" values use a 200-character limit.
 
+Cross-field constraints are strict:
+- "counterfactual_trigger" is required when "materiality" is "future_condition_only" and must be null when materiality is "current_impact", "no_user_impact", or "unknown".
+- "future_condition_only" requires "finding_kind" to be "latent_hazard" or "security_risk", and "latent_hazard" requires "future_condition_only".
+- "design_opinion" requires "falsifiability" to be "not_falsifiable" and materiality to be "no_user_impact" or "unknown".
+- "description_drift" requires "falsifiability" to be "not_falsifiable" and materiality to be exactly "no_user_impact", never "unknown".
+- "test_quality" requires materiality to be "no_user_impact" or "unknown".
+- "falsifiable" requires both "falsifiable_condition" and "expected_observable"; "not_falsifiable" or "unknown" requires both fields to be null.
+
 If non-security harm requires another future change that this PR does not introduce, use "latent_hazard" with "future_condition_only" and LOW importance. Future-only security risks retain "security_risk" but stay LOW unless a separate policy layer escalates them. Design opinions, description drift, test-quality observations, and findings with no current user impact are LOW. They do not enter the defect-verification ladder. Design opinions and description drift are non-falsifiable and cannot claim current impact. A stale description is not evidence of author intent.
 
 Include exactly one "SUMMARY" entry summarizing your overall take + verdict (approve / approve with suggestions / request changes).

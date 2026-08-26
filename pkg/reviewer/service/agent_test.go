@@ -926,6 +926,21 @@ func TestAgentPromptStatesFindingContractTextBounds(t *testing.T) {
 	}
 }
 
+func TestAgentPromptStatesFindingContractCrossFieldRules(t *testing.T) {
+	for _, requirement := range []string{
+		`"counterfactual_trigger" is required when "materiality" is "future_condition_only" and must be null when materiality is "current_impact", "no_user_impact", or "unknown"`,
+		`"future_condition_only" requires "finding_kind" to be "latent_hazard" or "security_risk", and "latent_hazard" requires "future_condition_only"`,
+		`"design_opinion" requires "falsifiability" to be "not_falsifiable" and materiality to be "no_user_impact" or "unknown"`,
+		`"description_drift" requires "falsifiability" to be "not_falsifiable" and materiality to be exactly "no_user_impact", never "unknown"`,
+		`"test_quality" requires materiality to be "no_user_impact" or "unknown"`,
+		`"falsifiable" requires both "falsifiable_condition" and "expected_observable"; "not_falsifiable" or "unknown" requires both fields to be null`,
+	} {
+		if !strings.Contains(promptAgentReview, requirement) {
+			t.Fatalf("prompt is missing %q", requirement)
+		}
+	}
+}
+
 // Keep errors import alive.
 var _ = errors.New
 
