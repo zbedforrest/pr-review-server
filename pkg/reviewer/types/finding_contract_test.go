@@ -47,12 +47,22 @@ func TestValidateFindingContractRejectsContradictions(t *testing.T) {
 			value.Materiality = "future_condition_only"
 			value.CounterfactualTrigger = contractText("A later caller omits the setting.")
 		},
+		"current impact with future trigger": func(value *FindingContract) {
+			value.CounterfactualTrigger = contractText("A later caller omits the setting.")
+		},
 		"design experiment": func(value *FindingContract) {
 			value.FindingKind = "design_opinion"
 			value.Materiality = "no_user_impact"
 		},
 		"test quality current impact": func(value *FindingContract) {
 			value.FindingKind = "test_quality"
+		},
+		"description drift unknown impact": func(value *FindingContract) {
+			value.FindingKind = "description_drift"
+			value.Materiality = "unknown"
+			value.Falsifiability = "not_falsifiable"
+			value.FalsifiableCondition = nil
+			value.ExpectedObservable = nil
 		},
 		"non-falsifiable observable": func(value *FindingContract) {
 			value.Falsifiability = "not_falsifiable"

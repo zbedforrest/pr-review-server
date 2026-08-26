@@ -69,3 +69,42 @@ func TestEnforceFindingContractPolicyDoesNotTrustInvalidContracts(t *testing.T) 
 		t.Fatalf("importance = %q", comments[0].Importance)
 	}
 }
+
+func TestEnforceFindingContractPolicyCapsNonDefectClasses(t *testing.T) {
+	for _, contract := range []*types.FindingContract{
+		validPolicyContract("production_behavior", "no_user_impact", "falsifiable"),
+		validPolicyContract("design_opinion", "unknown", "not_falsifiable"),
+		validPolicyContract("description_drift", "no_user_impact", "not_falsifiable"),
+		validPolicyContract("test_quality", "unknown", "falsifiable"),
+	} {
+		comments := []types.LineComment{{
+			FilePath:        "example.go",
+			Importance:      "CRITICAL",
+			FindingContract: contract,
+		}}
+		EnforceFindingContractPolicy(comments)
+		if comments[0].Importance != "LOW" {
+			t.Fatalf("%s/%s importance = %q", contract.FindingKind, contract.Materiality, comments[0].Importance)
+		}
+	}
+}
+
+func validPolicyContract(kind, materiality, falsifiability string) *types.FindingContract {
+	condition := "The candidate fails."
+	observable := "Compare the response status."
+	contract := &types.FindingContract{
+		SchemaVersion:     types.FindingContractSchemaVersion,
+		FindingKind:       kind,
+		Materiality:       materiality,
+		CurrentImpact:     "No current user impact is demonstrated.",
+		Falsifiability:    falsifiability,
+		Subjects:          []types.FindingSubject{{Kind: "file", Path: "example.go"}},
+		Uncertainty:       "The report covers the changed file.",
+		SeverityRationale: "The observation does not establish a current defect.",
+	}
+	if falsifiability == "falsifiable" {
+		contract.FalsifiableCondition = &condition
+		contract.ExpectedObservable = &observable
+	}
+	return contract
+}

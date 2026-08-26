@@ -233,7 +233,7 @@ Each object must have these fields:
   - "uncertainty": one bounded sentence
   - "severity_rationale": one bounded sentence
 
-If non-security harm requires another future change that this PR does not introduce, use "latent_hazard" with "future_condition_only" and LOW importance. Future-only security risks retain "security_risk" but stay LOW unless a separate policy layer escalates them. Design opinions and description drift are non-falsifiable and cannot claim current impact. A stale description is not evidence of author intent.
+If non-security harm requires another future change that this PR does not introduce, use "latent_hazard" with "future_condition_only" and LOW importance. Future-only security risks retain "security_risk" but stay LOW unless a separate policy layer escalates them. Design opinions, description drift, test-quality observations, and findings with no current user impact are LOW. They do not enter the defect-verification ladder. Design opinions and description drift are non-falsifiable and cannot claim current impact. A stale description is not evidence of author intent.
 
 Include exactly one "SUMMARY" entry summarizing your overall take + verdict (approve / approve with suggestions / request changes).
 

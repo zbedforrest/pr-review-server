@@ -94,22 +94,33 @@ func ValidateFindingContract(contract *FindingContract) error {
 	if contract.Materiality == "future_condition_only" && contract.CounterfactualTrigger == nil {
 		return fmt.Errorf("future-only materiality requires a counterfactual trigger")
 	}
+	if contract.Materiality != "future_condition_only" && contract.CounterfactualTrigger != nil {
+		return fmt.Errorf("only future-only materiality can define a counterfactual trigger")
+	}
 	if contract.Materiality == "future_condition_only" && contract.FindingKind != "latent_hazard" && contract.FindingKind != "security_risk" {
 		return fmt.Errorf("future-only materiality requires a latent hazard or security risk")
 	}
 	if contract.FindingKind == "latent_hazard" && contract.Materiality != "future_condition_only" {
 		return fmt.Errorf("latent hazards require future-only materiality")
 	}
-	if contract.FindingKind == "design_opinion" || contract.FindingKind == "description_drift" {
+	if contract.FindingKind == "design_opinion" {
 		if contract.Falsifiability != "not_falsifiable" {
-			return fmt.Errorf("design context must be non-falsifiable")
+			return fmt.Errorf("design opinions must be non-falsifiable")
 		}
-		if contract.Materiality == "current_impact" {
-			return fmt.Errorf("design context cannot claim current impact")
+		if contract.Materiality != "no_user_impact" && contract.Materiality != "unknown" {
+			return fmt.Errorf("design opinions cannot claim production impact")
 		}
 	}
-	if contract.FindingKind == "test_quality" && contract.Materiality == "current_impact" {
-		return fmt.Errorf("test quality cannot claim demonstrated current impact")
+	if contract.FindingKind == "description_drift" {
+		if contract.Falsifiability != "not_falsifiable" {
+			return fmt.Errorf("description drift must be non-falsifiable")
+		}
+		if contract.Materiality != "no_user_impact" {
+			return fmt.Errorf("description drift cannot claim production impact")
+		}
+	}
+	if contract.FindingKind == "test_quality" && contract.Materiality != "no_user_impact" && contract.Materiality != "unknown" {
+		return fmt.Errorf("test quality cannot claim demonstrated production impact")
 	}
 	if contract.Falsifiability == "falsifiable" {
 		if contract.FalsifiableCondition == nil || contract.ExpectedObservable == nil {
