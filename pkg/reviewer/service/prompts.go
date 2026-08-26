@@ -221,6 +221,29 @@ Each object must have these fields:
 - "line_number" (integer): the line to anchor the comment to. Use 0 for SUMMARY entries or whole-file notes.
 - "comment_body" (string): the comment text. Markdown is fine. For concrete code changes include a ` + "```suggestion" + ` block inside the body.
 - "importance" (string): "LOW", "MEDIUM", or "CRITICAL". Use CRITICAL for bugs/security, MEDIUM for things a reviewer should address, LOW for nits. SUMMARY entries can use any level.
+- "finding_contract" (object): required for every ordinary finding and omitted for SUMMARY and CHECK entries. It must contain:
+  - "schema_version": 1
+  - "finding_kind": one of "production_behavior", "security_risk", "latent_hazard", "design_opinion", "description_drift", "test_quality", or "operational_risk"
+  - "materiality": one of "current_impact", "future_condition_only", "no_user_impact", or "unknown"
+  - "current_impact": one bounded sentence stating the present user or system impact, including when none is demonstrated
+  - "counterfactual_trigger": the separate future condition required for harm, or null
+  - "falsifiability": one of "falsifiable", "not_falsifiable", or "unknown"
+  - "falsifiable_condition" and "expected_observable": bounded sentences when falsifiable, otherwise null
+  - "subjects": one to eight exact objects with "kind" ("file", "symbol", "selector", "config_key", "endpoint", "workflow", or "other"), "path", and "name" unless kind is "file"
+  - "uncertainty": one bounded sentence
+  - "severity_rationale": one bounded sentence
+
+The "current_impact", "counterfactual_trigger", "falsifiable_condition", "expected_observable", "uncertainty", and "severity_rationale" values, when non-null, must be non-empty single-line strings of at most 500 Unicode characters, with no leading or trailing whitespace, tabs, control characters, or format characters. Subject "path" values use the same rules with a 300-character limit; non-empty subject "name" values use a 200-character limit.
+
+Cross-field constraints are strict:
+- "counterfactual_trigger" is required when "materiality" is "future_condition_only" and must be null when materiality is "current_impact", "no_user_impact", or "unknown".
+- "future_condition_only" requires "finding_kind" to be "latent_hazard" or "security_risk", and "latent_hazard" requires "future_condition_only".
+- "design_opinion" requires "falsifiability" to be "not_falsifiable" and materiality to be "no_user_impact" or "unknown".
+- "description_drift" requires "falsifiability" to be "not_falsifiable" and materiality to be exactly "no_user_impact", never "unknown".
+- "test_quality" requires materiality to be "no_user_impact" or "unknown".
+- "falsifiable" requires both "falsifiable_condition" and "expected_observable"; "not_falsifiable" or "unknown" requires both fields to be null.
+
+If non-security harm requires another future change that this PR does not introduce, use "latent_hazard" with "future_condition_only" and LOW importance. Future-only security risks retain "security_risk" but stay LOW unless a separate policy layer escalates them. Design opinions, description drift, test-quality observations, and findings with no current user impact are LOW. They do not enter the defect-verification ladder. Design opinions and description drift are non-falsifiable and cannot claim current impact. A stale description is not evidence of author intent.
 
 Include exactly one "SUMMARY" entry summarizing your overall take + verdict (approve / approve with suggestions / request changes).
 

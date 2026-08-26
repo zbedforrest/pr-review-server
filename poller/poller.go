@@ -566,6 +566,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 			pr.Number, carriedInfo.FromSHA, carriedInfo.CarriedIn, carriedInfo.CarriedDropped)
 	}
 	merged := service.MergeFindings(sets...)
+	service.EnforceFindingContractPolicy(merged)
 	readmitted := len(merged) - len(agentOut.Comments)
 	result.Comments = merged
 	result.ComputeImportanceCounts()

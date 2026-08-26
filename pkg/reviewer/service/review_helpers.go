@@ -366,6 +366,7 @@ func (s *Service) handlePostReviewProcessing(
 			allComments = classifiedComments
 		}
 	}
+	EnforceFindingContractPolicy(allComments)
 
 	// Convert tool's previous comments to LineComment format and include in final output
 	previousToolComments := s.convertPreviousCommentsToLineComments(data.ExistingComments, data.CurrentUser.Login)

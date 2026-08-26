@@ -240,6 +240,143 @@ func TestBuild_EmptyComments(t *testing.T) {
 	}
 }
 
+func TestBuildPublishesOnlyValidatedFindingContracts(t *testing.T) {
+	condition := "The candidate returns an error while the control succeeds."
+	observable := "Compare exact response statuses."
+	valid := &types.FindingContract{
+		SchemaVersion:        types.FindingContractSchemaVersion,
+		FindingKind:          "production_behavior",
+		Materiality:          "current_impact",
+		CurrentImpact:        "Affected requests return an error.",
+		Falsifiability:       "falsifiable",
+		FalsifiableCondition: &condition,
+		ExpectedObservable:   &observable,
+		Subjects: []types.FindingSubject{{
+			Kind: "symbol",
+			Path: "handler.go",
+			Name: "Handle",
+		}},
+		Uncertainty:       "One request state is covered.",
+		SeverityRationale: "The request cannot complete.",
+	}
+	invalid := *valid
+	invalid.FindingKind = "bug"
+	p := Build("o", "r", 1, "sha", []types.LineComment{
+		{FilePath: "valid.go", LineNumber: 1, CommentBody: "valid", FindingContract: valid},
+		{FilePath: "invalid.go", LineNumber: 2, CommentBody: "invalid", FindingContract: &invalid},
+		{FilePath: "missing.go", LineNumber: 3, CommentBody: "missing"},
+		{FilePath: "SUMMARY", LineNumber: 0, CommentBody: "summary"},
+	}, "", nil)
+	byComment := map[string]Finding{}
+	for _, finding := range p.Findings {
+		byComment[finding.Comment] = finding
+	}
+	if byComment["valid"].FindingContractStatus != "valid" || byComment["valid"].FindingContract == nil {
+		t.Fatalf("valid contract = %+v", byComment["valid"])
+	}
+	if byComment["invalid"].FindingContractStatus != "invalid" || byComment["invalid"].FindingContract != nil {
+		t.Fatalf("invalid contract = %+v", byComment["invalid"])
+	}
+	if byComment["missing"].FindingContractStatus != "missing" || byComment["missing"].FindingContract != nil {
+		t.Fatalf("missing contract = %+v", byComment["missing"])
+	}
+	if byComment["summary"].FindingContractStatus != "not_applicable" || byComment["summary"].FindingContract != nil {
+		t.Fatalf("summary contract = %+v", byComment["summary"])
+	}
+	roundTrip := p.ToLineComments()
+	for _, comment := range roundTrip {
+		if comment.CommentBody == "valid" && comment.FindingContract == nil {
+			t.Fatal("valid contract did not round trip")
+		}
+		if comment.CommentBody != "valid" && comment.FindingContract != nil {
+			t.Fatalf("unvalidated contract round tripped: %+v", comment)
+		}
+	}
+}
+
+func TestBuildNormalizesFindingContractsAtPublicationBoundary(t *testing.T) {
+	condition := " The candidate returns an error while the control succeeds. "
+	observable := " Compare exact response statuses. "
+	contract := &types.FindingContract{
+		SchemaVersion:        types.FindingContractSchemaVersion,
+		FindingKind:          " production_behavior ",
+		Materiality:          " current_impact ",
+		CurrentImpact:        " Affected requests return an error. ",
+		Falsifiability:       " falsifiable ",
+		FalsifiableCondition: &condition,
+		ExpectedObservable:   &observable,
+		Subjects: []types.FindingSubject{{
+			Kind: " symbol ",
+			Path: " handler.go ",
+			Name: " Handle ",
+		}},
+		Uncertainty:       " One request state is covered. ",
+		SeverityRationale: " The request cannot complete. ",
+	}
+
+	p := Build("o", "r", 1, "sha", []types.LineComment{{
+		FilePath:        "handler.go",
+		LineNumber:      1,
+		CommentBody:     "valid after normalization",
+		FindingContract: contract,
+	}}, "", nil)
+
+	finding := p.Findings[0]
+	if finding.FindingContractStatus != "valid" || finding.FindingContract == nil {
+		t.Fatalf("normalized contract = %+v", finding)
+	}
+	if finding.FindingContract.FindingKind != "production_behavior" || finding.FindingContract.Subjects[0].Kind != "symbol" || finding.FindingContract.CurrentImpact != "Affected requests return an error." {
+		t.Fatalf("contract was not normalized: %+v", finding.FindingContract)
+	}
+	if contract.FindingKind != " production_behavior " || contract.Subjects[0].Kind != " symbol " || contract.CurrentImpact != " Affected requests return an error. " {
+		t.Fatalf("build mutated its input: %+v", contract)
+	}
+	*contract.FalsifiableCondition = "mutated condition"
+	contract.Subjects[0].Kind = "file"
+	if *finding.FindingContract.FalsifiableCondition != "The candidate returns an error while the control succeeds." || finding.FindingContract.Subjects[0].Kind != "symbol" {
+		t.Fatalf("published contract aliases its input: %+v", finding.FindingContract)
+	}
+}
+
+func TestLegacyFindingOmitsEmptyContractStatus(t *testing.T) {
+	body, err := json.Marshal(Finding{File: "legacy.go", Comment: "legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "finding_contract_status") {
+		t.Fatalf("legacy finding published an empty contract status: %s", body)
+	}
+}
+
+func TestToLineCommentsRejectsContractWithoutValidStatus(t *testing.T) {
+	condition := "The candidate fails."
+	observable := "Compare the response status."
+	contract := &types.FindingContract{
+		SchemaVersion:        types.FindingContractSchemaVersion,
+		FindingKind:          "production_behavior",
+		Materiality:          "current_impact",
+		CurrentImpact:        "Affected requests fail.",
+		Falsifiability:       "falsifiable",
+		FalsifiableCondition: &condition,
+		ExpectedObservable:   &observable,
+		Subjects: []types.FindingSubject{{
+			Kind: "file",
+			Path: "handler.go",
+		}},
+		Uncertainty:       "One request state is covered.",
+		SeverityRationale: "The request cannot complete.",
+	}
+	p := Payload{Findings: []Finding{{
+		Severity:        "critical",
+		File:            "handler.go",
+		Comment:         "failure",
+		FindingContract: contract,
+	}}}
+	if comments := p.ToLineComments(); comments[0].FindingContract != nil {
+		t.Fatal("contract without a valid status crossed the sidecar trust boundary")
+	}
+}
+
 func TestToCompactMarkdown_FullFinding(t *testing.T) {
 	p := Payload{
 		SchemaVersion: "1",
