@@ -294,6 +294,42 @@ func TestBuildPublishesOnlyValidatedFindingContracts(t *testing.T) {
 	}
 }
 
+func TestBuildNormalizesFindingContractsAtPublicationBoundary(t *testing.T) {
+	condition := " The candidate returns an error while the control succeeds. "
+	observable := " Compare exact response statuses. "
+	contract := &types.FindingContract{
+		SchemaVersion:        types.FindingContractSchemaVersion,
+		FindingKind:          " production_behavior ",
+		Materiality:          " current_impact ",
+		CurrentImpact:        " Affected requests return an error. ",
+		Falsifiability:       " falsifiable ",
+		FalsifiableCondition: &condition,
+		ExpectedObservable:   &observable,
+		Subjects: []types.FindingSubject{{
+			Kind: " symbol ",
+			Path: " handler.go ",
+			Name: " Handle ",
+		}},
+		Uncertainty:       " One request state is covered. ",
+		SeverityRationale: " The request cannot complete. ",
+	}
+
+	p := Build("o", "r", 1, "sha", []types.LineComment{{
+		FilePath:        "handler.go",
+		LineNumber:      1,
+		CommentBody:     "valid after normalization",
+		FindingContract: contract,
+	}}, "", nil)
+
+	finding := p.Findings[0]
+	if finding.FindingContractStatus != "valid" || finding.FindingContract == nil {
+		t.Fatalf("normalized contract = %+v", finding)
+	}
+	if finding.FindingContract.FindingKind != "production_behavior" || finding.FindingContract.Subjects[0].Kind != "symbol" || finding.FindingContract.CurrentImpact != "Affected requests return an error." {
+		t.Fatalf("contract was not normalized: %+v", finding.FindingContract)
+	}
+}
+
 func TestLegacyFindingOmitsEmptyContractStatus(t *testing.T) {
 	body, err := json.Marshal(Finding{File: "legacy.go", Comment: "legacy"})
 	if err != nil {

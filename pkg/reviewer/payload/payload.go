@@ -278,6 +278,7 @@ func Build(
 			counts.Low++
 		}
 
+		types.NormalizeFindingContract(c.FindingContract)
 		contractStatus := types.ContractStatus(c.FindingContract)
 		if c.FilePath == "SUMMARY" || c.FilePath == "CHECK" {
 			contractStatus = "not_applicable"

@@ -198,7 +198,7 @@ func validateContractText(value, name string, maximum int) error {
 		return fmt.Errorf("%s is invalid", name)
 	}
 	for _, character := range value {
-		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) {
+		if unicode.IsControl(character) || unicode.In(character, unicode.Cf, unicode.Zl, unicode.Zp) {
 			return fmt.Errorf("%s is invalid", name)
 		}
 	}

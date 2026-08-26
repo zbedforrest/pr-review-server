@@ -76,6 +76,12 @@ func TestValidateFindingContractRejectsContradictions(t *testing.T) {
 		"control character": func(value *FindingContract) {
 			value.CurrentImpact = "Line one.\tLine two."
 		},
+		"line separator": func(value *FindingContract) {
+			value.CurrentImpact = "Line one.\u2028Line two."
+		},
+		"paragraph separator": func(value *FindingContract) {
+			value.CurrentImpact = "Line one.\u2029Line two."
+		},
 	}
 	for name, change := range tests {
 		t.Run(name, func(t *testing.T) {
