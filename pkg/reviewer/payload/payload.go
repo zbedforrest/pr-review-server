@@ -84,6 +84,26 @@ type ReviewRunInfo struct {
 	Config *runconfig.Snapshot `json:"config,omitempty"`
 }
 
+func cloneString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneFindingContract(contract *types.FindingContract) *types.FindingContract {
+	if contract == nil {
+		return nil
+	}
+	cloned := *contract
+	cloned.CounterfactualTrigger = cloneString(contract.CounterfactualTrigger)
+	cloned.FalsifiableCondition = cloneString(contract.FalsifiableCondition)
+	cloned.ExpectedObservable = cloneString(contract.ExpectedObservable)
+	cloned.Subjects = append([]types.FindingSubject(nil), contract.Subjects...)
+	return &cloned
+}
+
 // ModelUse describes one role in the review pipeline. RequestedModel is the
 // configured input; ServedModel is populated when the runtime reports it.
 // ServingModelVerified distinguishes a reported model from a pinned request
@@ -278,8 +298,9 @@ func Build(
 			counts.Low++
 		}
 
-		types.NormalizeFindingContract(c.FindingContract)
-		contractStatus := types.ContractStatus(c.FindingContract)
+		contract := cloneFindingContract(c.FindingContract)
+		types.NormalizeFindingContract(contract)
+		contractStatus := types.ContractStatus(contract)
 		if c.FilePath == "SUMMARY" || c.FilePath == "CHECK" {
 			contractStatus = "not_applicable"
 		}
@@ -292,7 +313,7 @@ func Build(
 			FindingContractStatus: contractStatus,
 		}
 		if f.FindingContractStatus == "valid" {
-			f.FindingContract = c.FindingContract
+			f.FindingContract = contract
 		}
 		if diff != "" && c.FilePath != "" && c.LineNumber > 0 {
 			f.DiffHunk = HunkForLine(diff, c.FilePath, c.LineNumber)

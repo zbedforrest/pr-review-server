@@ -328,6 +328,14 @@ func TestBuildNormalizesFindingContractsAtPublicationBoundary(t *testing.T) {
 	if finding.FindingContract.FindingKind != "production_behavior" || finding.FindingContract.Subjects[0].Kind != "symbol" || finding.FindingContract.CurrentImpact != "Affected requests return an error." {
 		t.Fatalf("contract was not normalized: %+v", finding.FindingContract)
 	}
+	if contract.FindingKind != " production_behavior " || contract.Subjects[0].Kind != " symbol " || contract.CurrentImpact != " Affected requests return an error. " {
+		t.Fatalf("build mutated its input: %+v", contract)
+	}
+	*contract.FalsifiableCondition = "mutated condition"
+	contract.Subjects[0].Kind = "file"
+	if *finding.FindingContract.FalsifiableCondition != "The candidate returns an error while the control succeeds." || finding.FindingContract.Subjects[0].Kind != "symbol" {
+		t.Fatalf("published contract aliases its input: %+v", finding.FindingContract)
+	}
 }
 
 func TestLegacyFindingOmitsEmptyContractStatus(t *testing.T) {
