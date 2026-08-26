@@ -161,21 +161,21 @@ func NormalizeFindingContract(contract *FindingContract) {
 	if contract == nil {
 		return
 	}
-	contract.CurrentImpact = strings.Trim(contract.CurrentImpact, " \t")
-	contract.Uncertainty = strings.Trim(contract.Uncertainty, " \t")
-	contract.SeverityRationale = strings.Trim(contract.SeverityRationale, " \t")
+	contract.CurrentImpact = strings.TrimSpace(contract.CurrentImpact)
+	contract.Uncertainty = strings.TrimSpace(contract.Uncertainty)
+	contract.SeverityRationale = strings.TrimSpace(contract.SeverityRationale)
 	for _, value := range []*string{
 		contract.CounterfactualTrigger,
 		contract.FalsifiableCondition,
 		contract.ExpectedObservable,
 	} {
 		if value != nil {
-			*value = strings.Trim(*value, " \t")
+			*value = strings.TrimSpace(*value)
 		}
 	}
 	for index := range contract.Subjects {
-		contract.Subjects[index].Path = strings.Trim(contract.Subjects[index].Path, " \t")
-		contract.Subjects[index].Name = strings.Trim(contract.Subjects[index].Name, " \t")
+		contract.Subjects[index].Path = strings.TrimSpace(contract.Subjects[index].Path)
+		contract.Subjects[index].Name = strings.TrimSpace(contract.Subjects[index].Name)
 	}
 }
 

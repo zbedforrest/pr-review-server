@@ -89,6 +89,21 @@ func TestEnforceFindingContractPolicyCapsNonDefectClasses(t *testing.T) {
 	}
 }
 
+func TestEnforceFindingContractPolicyCapsUnknownMaterialityAtMedium(t *testing.T) {
+	contract := validPolicyContract("production_behavior", "unknown", "falsifiable")
+	comments := []types.LineComment{{
+		FilePath:        "example.go",
+		Importance:      "CRITICAL",
+		FindingContract: contract,
+	}}
+
+	EnforceFindingContractPolicy(comments)
+
+	if comments[0].Importance != "MEDIUM" {
+		t.Fatalf("importance = %q", comments[0].Importance)
+	}
+}
+
 func validPolicyContract(kind, materiality, falsifiability string) *types.FindingContract {
 	condition := "The candidate fails."
 	observable := "Compare the response status."

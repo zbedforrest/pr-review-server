@@ -112,7 +112,7 @@ func TestValidateFindingContractAcceptsFutureOnlySecurityRisk(t *testing.T) {
 
 func TestNormalizeFindingContractTrimsFreeTextAndSubjects(t *testing.T) {
 	value := validFindingContract()
-	value.CurrentImpact = "  A request fails.\t"
+	value.CurrentImpact = "\n  A request fails.\t"
 	value.Subjects[0].Path = " app.go "
 	value.Subjects[0].Name = " handler\t"
 	*value.FalsifiableCondition = " The candidate fails. "
