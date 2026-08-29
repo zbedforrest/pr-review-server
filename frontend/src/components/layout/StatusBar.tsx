@@ -3,12 +3,24 @@ import { useStatus } from '@/hooks/useStatus';
 import { formatUptime } from '@/utils/formatUptime';
 import { formatTime } from '@/utils/formatDate';
 import { deriveStatusTimes } from '@/utils/statusTime';
+import type { StatusPanelFilter } from '@/types/status';
 
 interface StatusBarProps {
   connectionStatus?: 'connected' | 'disconnected' | 'connecting';
+  /**
+   * Called with the clicked status and the count shown for it. Without this the
+   * counts stay plain text, so the bar still renders anywhere it's reused.
+   */
+  onStatusCountClick?: (status: StatusPanelFilter, count: number) => void;
+  /** Status whose panel is currently open, if any. */
+  activeStatusCount?: StatusPanelFilter | null;
 }
 
-export function StatusBar({ connectionStatus = 'connecting' }: StatusBarProps) {
+export function StatusBar({
+  connectionStatus = 'connecting',
+  onStatusCountClick,
+  activeStatusCount = null,
+}: StatusBarProps) {
   const { data: status, isLoading, error } = useStatus();
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -37,6 +49,24 @@ export function StatusBar({ connectionStatus = 'connecting' }: StatusBarProps) {
       default:
         return <span className="status-bar__badge status-bar__badge--connecting">Connecting...</span>;
     }
+  };
+
+  const renderCount = (status: StatusPanelFilter, count: number) => {
+    const text = `${count} ${status}`;
+    if (!onStatusCountClick) return text;
+
+    const active = activeStatusCount === status;
+    return (
+      <button
+        type="button"
+        className={`status-bar__count-btn ${active ? 'status-bar__count-btn--active' : ''}`}
+        aria-pressed={active}
+        title={`${active ? 'Hide' : 'Show'} ${status} PRs`}
+        onClick={() => onStatusCountClick(status, count)}
+      >
+        {text}
+      </button>
+    );
   };
 
   if (isLoading) {
@@ -85,8 +115,9 @@ export function StatusBar({ connectionStatus = 'connecting' }: StatusBarProps) {
 
       <div className="status-bar__item">
         <span className="status-bar__label">PRs:</span>
-        <span className="status-bar__value">
-          {counts.completed} completed, {counts.generating} generating, {counts.pending} pending
+        <span className="status-bar__value status-bar__value--counts">
+          {renderCount('completed', counts.completed)}, {renderCount('generating', counts.generating)},{' '}
+          {counts.pending} pending
           {counts.error > 0 && <span className="status-bar__error">, {counts.error} errors</span>}
         </span>
       </div>

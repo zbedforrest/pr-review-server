@@ -30,6 +30,41 @@
     &--running {
       color: $color-success;
     }
+
+    // The PR counts read as a sentence with clickable numbers in it, so this
+    // value opts out of the flex layout its siblings use (which would put a
+    // gap around every comma).
+    &--counts {
+      display: block;
+    }
+  }
+
+  // A count in the status bar that opens the matching PR table.
+  &__count-btn {
+    padding: 0;
+    background: none;
+    border: none;
+    font: inherit;
+    color: $color-link;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+
+    &:hover {
+      color: $color-link-hover;
+      text-decoration-style: solid;
+    }
+
+    &:focus-visible {
+      outline: 1px solid $color-link;
+      outline-offset: 2px;
+      border-radius: $radius-sm;
+    }
+
+    &--active {
+      color: $color-link-hover;
+      text-decoration-style: solid;
+    }
   }
 
   &__error {

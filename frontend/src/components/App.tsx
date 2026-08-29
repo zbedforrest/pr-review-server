@@ -1,14 +1,14 @@
-import { Component, ErrorInfo, ReactNode, useState, useEffect } from 'react';
+import { Component, ErrorInfo, ReactNode, useCallback, useState, useEffect } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { Header, StatusBar } from '@/components/layout';
 import { FilterBar } from '@/components/filters';
-import { ReviewPRsSection } from '@/components/prs';
+import { ReviewPRsSection, StatusPRPanel } from '@/components/prs';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { useUrlFilters } from '@/hooks/useUrlFilters';
 import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
 import { PR } from '@/types/pr';
-import { ServerStatus } from '@/types/status';
+import { ServerStatus, StatusPanelFilter } from '@/types/status';
 import { ConnectionStatus, subscribeToWebSocketMessages, subscribeToWebSocketStatus } from '@/utils/websocket';
 import { applyPRWebSocketMessage, applyStatusWebSocketMessage } from '@/utils/websocketCacheUpdates';
 import '@/styles/main.scss';
@@ -60,10 +60,15 @@ class ErrorBoundary extends Component<
 
 function AppContent() {
   const queryClient = useQueryClient();
-  const { trackSearch } = useTelemetry();
+  const { track, trackSearch } = useTelemetry();
 
   // Connection status state
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
+
+  // Status-bar count the user drilled into, with the count they clicked (the
+  // status bar's counts are server-wide, the panel's table is user-scoped).
+  const [statusPanel, setStatusPanel] = useState<{ status: StatusPanelFilter; count: number } | null>(null);
+  const closeStatusPanel = useCallback(() => setStatusPanel(null), []);
 
   // Search + filter state, mirrored into URL query params for back/forward nav
   const {
@@ -100,7 +105,24 @@ function AppContent() {
   return (
     <div className="app-container">
       <Header />
-      <StatusBar connectionStatus={connectionStatus} />
+      <StatusBar
+        connectionStatus={connectionStatus}
+        activeStatusCount={statusPanel?.status ?? null}
+        onStatusCountClick={(status, count) => {
+          // Clicking the count that's already open closes the panel.
+          const closing = statusPanel?.status === status;
+          track('status_count_panel', { label: `${closing ? 'close' : 'open'}:${status}` });
+          setStatusPanel(closing ? null : { status, count });
+        }}
+      />
+
+      {statusPanel && (
+        <StatusPRPanel
+          status={statusPanel.status}
+          serverCount={statusPanel.count}
+          onClose={closeStatusPanel}
+        />
+      )}
 
       <div className="search-controls">
         <FilterBar

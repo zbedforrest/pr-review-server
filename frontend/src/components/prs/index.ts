@@ -3,6 +3,7 @@ export { PRTableRow } from './PRTableRow';
 export { RowActionsMenu } from './RowActionsMenu';
 export { ReviewPRsSection } from './ReviewPRsSection';
 export { PRSection } from './PRSection';
+export { StatusPRPanel } from './StatusPRPanel';
 export { SectionEditor } from './SectionEditor';
 export { AutoReviewToggle } from './AutoReviewToggle';
 export { TriageSummary } from './TriageSummary';
