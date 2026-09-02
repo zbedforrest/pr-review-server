@@ -249,6 +249,60 @@ func TestFirstPassAPIKeySelection(t *testing.T) {
 	}
 }
 
+func clearFirstPassAllowlistEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"FIRST_PASS_PROVIDER",
+		"FIRST_PASS_MODEL",
+		"GEMINI_PRO_MODEL",
+		"REVIEW_FIRST_PASS_MODELS_GEMINI",
+		"REVIEW_FIRST_PASS_MODELS_CLAUDE",
+		"REVIEW_FIRST_PASS_MODELS_OPENROUTER",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
+func TestLoadFirstPassModelAllowlistDefaults(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{defaultFirstPassGeminiModel})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaude, []string{defaultFirstPassClaudeModel})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsOpenRouter, []string{defaultFirstPassOpenRouterModel})
+}
+
+func TestLoadFirstPassGeminiAllowlistFollowsProModelEnv(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	t.Setenv("GEMINI_PRO_MODEL", "gemini-9-pro")
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{"gemini-9-pro"})
+}
+
+func TestLoadFirstPassModelAllowlistsParseAndAppendActiveModel(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	t.Setenv("FIRST_PASS_PROVIDER", "claude")
+	t.Setenv("FIRST_PASS_MODEL", "claude-fable-5")
+	t.Setenv("REVIEW_FIRST_PASS_MODELS_CLAUDE", " claude-opus-5 , claude-opus-5, claude-sonnet-5")
+	t.Setenv("REVIEW_FIRST_PASS_MODELS_GEMINI", "gemini-2.5-pro")
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaude, []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5"})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{"gemini-2.5-pro"})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsOpenRouter, []string{defaultFirstPassOpenRouterModel})
+}
+
+func TestLoadFirstPassAllowlistAppendsProviderDefaultWhenModelUnset(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	t.Setenv("FIRST_PASS_PROVIDER", "openrouter")
+	t.Setenv("REVIEW_FIRST_PASS_MODELS_OPENROUTER", "anthropic/claude-sonnet-5")
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsOpenRouter,
+		[]string{"anthropic/claude-sonnet-5", defaultFirstPassOpenRouterModel})
+}
+
 func assertStringsEqual(t *testing.T, got, want []string) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {

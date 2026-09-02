@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 const (
 	SourceRequest           = "request"
@@ -50,7 +50,9 @@ type AgentOverrides struct {
 }
 
 type FirstPassOverrides struct {
-	Samples *int `json:"samples,omitempty"`
+	Samples  *int    `json:"samples,omitempty"`
+	Provider *string `json:"provider,omitempty"`
+	Model    *string `json:"model,omitempty"`
 }
 
 // Effective is the complete execution configuration persisted before work
@@ -74,7 +76,9 @@ type Agent struct {
 }
 
 type FirstPass struct {
-	Samples int `json:"samples"`
+	Samples  int    `json:"samples"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // BackendPolicy describes one deployment-enabled agent backend. Models and
@@ -100,10 +104,20 @@ type BackendPolicy struct {
 	Efforts              []string
 }
 
+// FirstPassProviderPolicy describes one deployment-enabled first-pass
+// provider. Models is an allowlist; DefaultModel resolves a provider switch
+// whose caller omitted an explicit model.
+type FirstPassProviderPolicy struct {
+	CredentialConfigured bool
+	DefaultModel         string
+	Models               []string
+}
+
 // Policy contains operator-owned safety limits. Callers can choose within
 // these bounds but cannot increase process concurrency or supply credentials.
 type Policy struct {
 	Backends            map[string]BackendPolicy
+	FirstPassProviders  map[string]FirstPassProviderPolicy
 	MaxWallClockSeconds int
 	MaxTurns            int
 	MaxFirstPassSamples int
@@ -162,9 +176,20 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 			sources["agent.max_turns"] = SourceRequest
 		}
 	}
-	if requested.FirstPass != nil && requested.FirstPass.Samples != nil {
-		effective.FirstPass.Samples = *requested.FirstPass.Samples
-		sources["first_pass.samples"] = SourceRequest
+	if requested.FirstPass != nil {
+		f := requested.FirstPass
+		if f.Samples != nil {
+			effective.FirstPass.Samples = *f.Samples
+			sources["first_pass.samples"] = SourceRequest
+		}
+		if f.Provider != nil {
+			effective.FirstPass.Provider = *f.Provider
+			sources["first_pass.provider"] = SourceRequest
+		}
+		if f.Model != nil {
+			effective.FirstPass.Model = strings.TrimSpace(*f.Model)
+			sources["first_pass.model"] = SourceRequest
+		}
 	}
 	if requested.RequiredChecks != nil {
 		effective.RequiredChecks = *requested.RequiredChecks
@@ -176,7 +201,22 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 	effective.Agent.Backend = strings.ToLower(strings.TrimSpace(effective.Agent.Backend))
 	effective.Agent.Model = strings.TrimSpace(effective.Agent.Model)
 	effective.Agent.Effort = strings.ToLower(strings.TrimSpace(effective.Agent.Effort))
+	effective.FirstPass.Provider = strings.ToLower(strings.TrimSpace(effective.FirstPass.Provider))
+	effective.FirstPass.Model = strings.TrimSpace(effective.FirstPass.Model)
 	effective.Agent.TurnBudgetUnit, effective.Agent.TurnBudgetVersion = TurnBudgetSemantics(effective.Agent.Backend)
+	// A provider switch moves model ids into another provider's namespace. When
+	// the caller omitted model, derive that provider's default instead of
+	// carrying the deployment provider's model.
+	if sources["first_pass.model"] != SourceRequest &&
+		effective.FirstPass.Provider != strings.ToLower(strings.TrimSpace(defaults.FirstPass.Provider)) {
+		if providerPolicy, ok := policy.FirstPassProviders[effective.FirstPass.Provider]; ok {
+			if providerPolicy.DefaultModel == "" {
+				return Snapshot{}, invalid("first_pass.model", "provider %q has no default model; specify model", effective.FirstPass.Provider)
+			}
+			effective.FirstPass.Model = providerPolicy.DefaultModel
+			sources["first_pass.model"] = SourceDerived
+		}
+	}
 	// A backend switch changes the unit represented by max_turns. When the
 	// caller omitted max_turns, derive that backend's default instead of
 	// carrying a number expressed in the deployment backend's unit.
@@ -218,6 +258,9 @@ func Validate(cfg Effective, policy Policy) error {
 	}
 	if policy.MaxFirstPassSamples > 0 && cfg.FirstPass.Samples > policy.MaxFirstPassSamples {
 		return invalid("first_pass.samples", "must be at most %d", policy.MaxFirstPassSamples)
+	}
+	if err := validateFirstPassIdentity(cfg.FirstPass, policy); err != nil {
+		return err
 	}
 	if !cfg.Agent.Enabled {
 		return nil
@@ -264,6 +307,28 @@ func Validate(cfg Effective, policy Policy) error {
 	}
 	if maxTurns > 0 && cfg.Agent.MaxTurns > maxTurns {
 		return invalid("agent.max_turns", "must be at most %d", maxTurns)
+	}
+	return nil
+}
+
+// validateFirstPassIdentity checks a resolved first-pass provider/model pair
+// against the deployment's provider policies. A fully empty identity with no
+// declared providers is a pre-provider-selection legacy config and passes.
+func validateFirstPassIdentity(firstPass FirstPass, policy Policy) error {
+	if firstPass.Provider == "" && firstPass.Model == "" && len(policy.FirstPassProviders) == 0 {
+		return nil
+	}
+	provider := strings.ToLower(strings.TrimSpace(firstPass.Provider))
+	providerPolicy, ok := policy.FirstPassProviders[provider]
+	if !ok {
+		return invalid("first_pass.provider", "unsupported provider %q", firstPass.Provider)
+	}
+	if !providerPolicy.CredentialConfigured {
+		return invalid("first_pass.provider", "provider %q has no credential configured in this deployment", provider)
+	}
+	// Provider model IDs are case-sensitive; matching is deliberately exact.
+	if !contains(providerPolicy.Models, firstPass.Model) {
+		return invalid("first_pass.model", "model %q is not allowed for provider %q", firstPass.Model, provider)
 	}
 	return nil
 }
@@ -332,6 +397,8 @@ func defaultSources() map[string]string {
 		"agent.turn_budget_unit":    SourceDerived,
 		"agent.turn_budget_version": SourceDerived,
 		"first_pass.samples":        SourceDeploymentDefault,
+		"first_pass.provider":       SourceDeploymentDefault,
+		"first_pass.model":          SourceDeploymentDefault,
 		"required_checks":           SourceDeploymentDefault,
 	}
 }

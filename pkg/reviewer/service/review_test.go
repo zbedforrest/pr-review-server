@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,6 +118,52 @@ func TestRunPromptsEmitsStartedAndTerminalEventsForDrawsAndRetries(t *testing.T)
 	assert.Equal(t, "parse_error", byKey["1/1"][1].StopReason)
 	assert.Equal(t, "response_parse_failed", byKey["1/1"][1].ErrorCode)
 	assert.Equal(t, "completed", byKey["1/2"][1].StopReason)
+}
+
+func TestRunPromptsUsePerRunFirstPassClientAndIdentity(t *testing.T) {
+	response := `[{"file_path":"main.go","line_number":1,"comment_body":"ok"}]`
+	var defaultCalls, overrideCalls int64
+	defaultClient := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			atomic.AddInt64(&defaultCalls, 1)
+			return response, 0, 0, 0, nil
+		},
+	}
+	overrideClient := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			atomic.AddInt64(&overrideCalls, 1)
+			return response, 0, 0, 0, nil
+		},
+	}
+
+	var eventsMu sync.Mutex
+	var events []ProviderAttemptEvent
+	service := NewService(&MockGithubClient{}, defaultClient, nil)
+	result := service.runPrompts(context.Background(), PerformReviewConfig{
+		FirstPassClient: overrideClient,
+		FirstPass:       &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5"},
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			eventsMu.Lock()
+			events = append(events, event)
+			eventsMu.Unlock()
+			return nil
+		},
+	}, []Prompt{
+		{Name: "one", Content: "one"},
+		{Name: "two", Content: "two"},
+	}, service.parseAIResponse)
+
+	assert.Equal(t, int64(2), result.SuccessCount)
+	assert.Zero(t, atomic.LoadInt64(&defaultCalls))
+	assert.Equal(t, int64(2), atomic.LoadInt64(&overrideCalls))
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	require.NotEmpty(t, events)
+	for _, event := range events {
+		assert.Equal(t, "anthropic", event.Provider)
+		assert.Equal(t, "anthropic_api", event.Backend)
+		assert.Equal(t, "claude-sonnet-5", event.RequestedModel)
+	}
 }
 
 func TestRunPromptsAbortsBeforeProviderOnDefinitiveObserverFence(t *testing.T) {

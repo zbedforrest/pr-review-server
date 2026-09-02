@@ -40,7 +40,7 @@ func newReviewAPITestPoller(database db.Database) *reviewAPITestPoller {
 			Effort: "medium", WallClockSeconds: 360, MaxTurns: 40,
 			TurnBudgetUnit: runconfig.TurnBudgetUnitAssistantEvent, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 		},
-		FirstPass: runconfig.FirstPass{Samples: 3},
+		FirstPass: runconfig.FirstPass{Samples: 3, Provider: "gemini", Model: "gemini-3.1-pro-preview"},
 	}
 	return &reviewAPITestPoller{
 		database: database,
@@ -58,6 +58,20 @@ func newReviewAPITestPoller(database db.Database) *reviewAPITestPoller {
 					TurnBudgetUnit: runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 					DefaultMaxTurns: 120, MaxTurns: 120,
 					Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
+				},
+			},
+			FirstPassProviders: map[string]runconfig.FirstPassProviderPolicy{
+				"gemini": {
+					CredentialConfigured: true, DefaultModel: "gemini-3.1-pro-preview",
+					Models: []string{"gemini-3.1-pro-preview"},
+				},
+				"claude": {
+					CredentialConfigured: true, DefaultModel: "claude-sonnet-5",
+					Models: []string{"claude-sonnet-5"},
+				},
+				"openrouter": {
+					CredentialConfigured: false, DefaultModel: "openai/gpt-5.6-sol",
+					Models: []string{"openai/gpt-5.6-sol"},
 				},
 			},
 			MaxWallClockSeconds: 900, MaxTurns: 120, MaxFirstPassSamples: 5,
@@ -149,7 +163,7 @@ func githubPRResponse(headSHA string) http.HandlerFunc {
 func configurableReviewRequest(headSHA string) string {
 	return fmt.Sprintf(`{
 		"target":{"owner":"acme","repo":"widgets","pull_request":42,"expected_head_sha":"%s"},
-		"config":{"agent":{"backend":"openrouter","model":"openai/gpt-5.6-sol","effort":"high","wall_clock_seconds":720,"max_turns":100},"first_pass":{"samples":2},"required_checks":true}
+		"config":{"agent":{"backend":"openrouter","model":"openai/gpt-5.6-sol","effort":"high","wall_clock_seconds":720,"max_turns":100},"first_pass":{"samples":2,"provider":"claude","model":"claude-sonnet-5"},"required_checks":true}
 	}`, headSHA)
 }
 
@@ -190,6 +204,9 @@ func TestCreateReviewRunPersistsResolvedConfigAndIdempotency(t *testing.T) {
 	assert.Equal(t, runconfig.TurnBudgetUnitCompletedNonReasoningItem, job.Config.Effective.Agent.TurnBudgetUnit)
 	assert.Equal(t, runconfig.TurnBudgetVersion, job.Config.Effective.Agent.TurnBudgetVersion)
 	assert.Equal(t, 2, job.Config.Effective.FirstPass.Samples)
+	assert.Equal(t, "claude", job.Config.Effective.FirstPass.Provider)
+	assert.Equal(t, "claude-sonnet-5", job.Config.Effective.FirstPass.Model)
+	assert.Equal(t, runconfig.SourceRequest, job.Config.Sources["first_pass.provider"])
 	assert.NotEmpty(t, job.RequestHash)
 	assert.NotContains(t, job.IdempotencyKeyHash, "experiment-42")
 	assert.Equal(t, "user:"+strconv.Itoa(*userID), job.IdempotencyScope)
@@ -203,6 +220,8 @@ func TestCreateReviewRunPersistsResolvedConfigAndIdempotency(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(persisted.EffectiveConfigJSON), &persistedEffective))
 	assert.Equal(t, runconfig.TurnBudgetUnitCompletedNonReasoningItem, persistedEffective.Agent.TurnBudgetUnit)
 	assert.Equal(t, runconfig.TurnBudgetVersion, persistedEffective.Agent.TurnBudgetVersion)
+	assert.Equal(t, "claude", persistedEffective.FirstPass.Provider)
+	assert.Equal(t, "claude-sonnet-5", persistedEffective.FirstPass.Model)
 	assert.Equal(t, 1, githubCalls)
 	assert.Equal(t, reviewRunsPathPrefix+job.RunID, recorder.Header().Get("Location"))
 	assert.Equal(t, reviewRunRetryAfter, recorder.Header().Get("Retry-After"))
@@ -274,6 +293,14 @@ func TestCreateReviewRunStrictInputAndRejectedRequestsHaveNoPRSideEffects(t *tes
 	invalidRecorder := httptest.NewRecorder()
 	s.handleReviewRuns(invalidRecorder, invalidRequest)
 	assert.Equal(t, http.StatusUnprocessableEntity, invalidRecorder.Code)
+
+	invalidFirstPass := strings.Replace(configurableReviewRequest(headSHA),
+		`"provider":"claude","model":"claude-sonnet-5"`, `"provider":"openrouter","model":"openai/gpt-5.6-sol"`, 1)
+	invalidFirstPassRequest := addReviewAPIUser(httptest.NewRequest(http.MethodPost, reviewRunsPath, strings.NewReader(invalidFirstPass)), *userID)
+	invalidFirstPassRecorder := httptest.NewRecorder()
+	s.handleReviewRuns(invalidFirstPassRecorder, invalidFirstPassRequest)
+	assert.Equal(t, http.StatusUnprocessableEntity, invalidFirstPassRecorder.Code)
+	assert.Contains(t, invalidFirstPassRecorder.Body.String(), "first_pass.provider")
 	pr, err := database.GetPR("acme", "widgets", 42)
 	require.NoError(t, err)
 	assert.Nil(t, pr, "rejected custom requests must not create an auto-review candidate")
@@ -351,6 +378,10 @@ func TestReviewCapabilitiesExposePolicyButNoSecrets(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"default_max_turns":120`)
 	assert.Contains(t, recorder.Body.String(), `"max_turns":120`)
 	assert.Contains(t, recorder.Body.String(), `"max_wall_clock_seconds":900`)
+	assert.Contains(t, recorder.Body.String(), `"first_pass":{"default_provider":"gemini","default_model":"gemini-3.1-pro-preview"`)
+	assert.Contains(t, recorder.Body.String(), `"claude":{"credential_configured":true,"default_model":"claude-sonnet-5","models":["claude-sonnet-5"]}`)
+	assert.Contains(t, recorder.Body.String(), `"gemini":{"credential_configured":true,"default_model":"gemini-3.1-pro-preview","models":["gemini-3.1-pro-preview"]}`)
+	assert.Contains(t, recorder.Body.String(), `"openrouter":{"credential_configured":false,"default_model":"openai/gpt-5.6-sol","models":["openai/gpt-5.6-sol"]}`)
 	assert.NotContains(t, strings.ToLower(recorder.Body.String()), "api_key")
 	assert.NotContains(t, strings.ToLower(recorder.Body.String()), "base_url")
 	assert.NotContains(t, recorder.Body.String(), "/secret/bin")

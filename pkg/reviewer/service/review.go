@@ -84,6 +84,12 @@ type PerformReviewConfig struct {
 	Testing         bool              // Use testing-focused review prompt
 	SelectedContext ContextDefinition // For review-tui command
 	TerminalDiff    bool              // Print diff with embedded comments to terminal
+	// FirstPassClient, when set, runs this review's first-pass sampling on a
+	// per-run provider client instead of the service-wide smart client.
+	FirstPassClient llm.IClient
+	// FirstPass attributes this run's first-pass telemetry; nil uses the
+	// service-wide identity. Set together with FirstPassClient.
+	FirstPass *FirstPassInfo
 	// AttemptObserver receives started and terminal lifecycle events for every
 	// actual provider invocation. Calls are synchronous so a caller can durably
 	// record the attempt before execution advances. Errors are logged and ignored

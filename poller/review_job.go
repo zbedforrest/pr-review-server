@@ -14,6 +14,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
@@ -205,6 +206,11 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	if effort == "" {
 		effort = service.DefaultAgentEffort
 	}
+	firstPassProvider, err := llm.ParseProvider(p.cfg.FirstPassProvider)
+	if err != nil {
+		return runconfig.Effective{}, runconfig.Policy{}, fmt.Errorf("resolve first-pass provider: %w", err)
+	}
+	firstPassModel := llm.FirstPassModelName(firstPassProvider, p.cfg.FirstPassModel)
 	claudeModels := policyValues(p.cfg.ReviewAgentModelsClaude, service.DefaultAgentModel)
 	openRouterModels := policyValues(p.cfg.ReviewAgentModelsOpenRouter, service.DefaultOpenRouterAgentModel)
 	claudeEfforts := policyValues(p.cfg.ReviewAgentEffortsClaude, service.DefaultAgentEffort)
@@ -226,7 +232,7 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 			WallClockSeconds: p.cfg.AgentWallClockSec,
 			MaxTurns:         p.cfg.AgentMaxTurns,
 		},
-		FirstPass:      runconfig.FirstPass{Samples: nRequests},
+		FirstPass:      runconfig.FirstPass{Samples: nRequests, Provider: string(firstPassProvider), Model: firstPassModel},
 		RequiredChecks: p.cfg.RequiredChecks,
 	}
 	defaults.Agent.TurnBudgetUnit, defaults.Agent.TurnBudgetVersion = runconfig.TurnBudgetSemantics(backend)
@@ -241,6 +247,17 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	if backend == service.AgentBackendOpenRouter {
 		maxTurns = openRouterMaxTurns
 	}
+	firstPassModelsGemini := policyValues(p.cfg.ReviewFirstPassModelsGemini, llm.FirstPassModelName(llm.ProviderGemini, ""))
+	firstPassModelsClaude := policyValues(p.cfg.ReviewFirstPassModelsClaude, llm.DefaultClaudeModel)
+	firstPassModelsOpenRouter := policyValues(p.cfg.ReviewFirstPassModelsOpenRouter, llm.DefaultOpenRouterModel)
+	switch firstPassProvider {
+	case llm.ProviderClaude:
+		firstPassModelsClaude = appendPolicyValue(firstPassModelsClaude, firstPassModel)
+	case llm.ProviderOpenRouter:
+		firstPassModelsOpenRouter = appendPolicyValue(firstPassModelsOpenRouter, firstPassModel)
+	default:
+		firstPassModelsGemini = appendPolicyValue(firstPassModelsGemini, firstPassModel)
+	}
 	policy := runconfig.Policy{
 		Backends: map[string]runconfig.BackendPolicy{
 			// Claude credentials are advisory readiness metadata: the CLI may use
@@ -253,6 +270,26 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 				service.AgentBackendOpenRouter, "codex", gitAvailable, strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "", true,
 				openRouterDefaultMaxTurns, openRouterMaxTurns, openRouterModels, openRouterEfforts,
 			),
+		},
+		// The deployment's own first-pass provider is always admitted:
+		// startup fail-fast guarantees its credential, and an operator env
+		// gap must never invalidate the deployment's default config.
+		FirstPassProviders: map[string]runconfig.FirstPassProviderPolicy{
+			string(llm.ProviderGemini): {
+				CredentialConfigured: strings.TrimSpace(p.cfg.GeminiAPIKey) != "" || firstPassProvider == llm.ProviderGemini,
+				DefaultModel:         llm.FirstPassModelName(llm.ProviderGemini, ""),
+				Models:               firstPassModelsGemini,
+			},
+			string(llm.ProviderClaude): {
+				CredentialConfigured: strings.TrimSpace(p.cfg.AnthropicAPIKey) != "" || firstPassProvider == llm.ProviderClaude,
+				DefaultModel:         llm.DefaultClaudeModel,
+				Models:               firstPassModelsClaude,
+			},
+			string(llm.ProviderOpenRouter): {
+				CredentialConfigured: strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "" || firstPassProvider == llm.ProviderOpenRouter,
+				DefaultModel:         llm.DefaultOpenRouterModel,
+				Models:               firstPassModelsOpenRouter,
+			},
 		},
 		MaxWallClockSeconds: reviewPolicyMaximum(p.cfg.ReviewMaxWallClockSec, defaults.Agent.WallClockSeconds, fallbackReviewMaxWallClockSec),
 		MaxTurns:            maxTurns,

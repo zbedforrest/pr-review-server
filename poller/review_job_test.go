@@ -18,6 +18,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
@@ -322,6 +323,125 @@ func TestReviewBackendReadinessReportsStableReasonsAndTurnSemantics(t *testing.T
 	assert.Equal(t, runconfig.TurnBudgetUnitCompletedNonReasoningItem, openRouter.TurnBudgetUnit)
 	assert.Equal(t, fallbackOpenRouterMaxTurns, openRouter.DefaultMaxTurns)
 	assert.Equal(t, fallbackOpenRouterMaxTurns, openRouter.MaxTurns)
+}
+
+func TestReviewConfigDefaultsAndPolicyIncludeFirstPassProviders(t *testing.T) {
+	t.Setenv("GEMINI_PRO_MODEL", "")
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.AnthropicAPIKey = "sk-ant-test"
+
+	defaults, policy, err := p.ReviewConfigDefaultsAndPolicy()
+	require.NoError(t, err)
+	assert.Equal(t, "gemini", defaults.FirstPass.Provider)
+	assert.Equal(t, llm.ProModelName(), defaults.FirstPass.Model)
+
+	gemini := policy.FirstPassProviders["gemini"]
+	assert.True(t, gemini.CredentialConfigured, "the deployment default provider is always admitted")
+	assert.Contains(t, gemini.Models, llm.ProModelName())
+	assert.Equal(t, llm.ProModelName(), gemini.DefaultModel)
+
+	claude := policy.FirstPassProviders["claude"]
+	assert.True(t, claude.CredentialConfigured)
+	assert.Equal(t, llm.DefaultClaudeModel, claude.DefaultModel)
+	assert.Contains(t, claude.Models, llm.DefaultClaudeModel)
+
+	openRouter := policy.FirstPassProviders["openrouter"]
+	assert.False(t, openRouter.CredentialConfigured, "no OpenRouter key is configured")
+	assert.Equal(t, llm.DefaultOpenRouterModel, openRouter.DefaultModel)
+}
+
+func TestReviewConfigPolicyAdmitsActiveFirstPassProviderWithoutKey(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.FirstPassProvider = "claude"
+	p.cfg.FirstPassModel = "claude-fable-5"
+
+	defaults, policy, err := p.ReviewConfigDefaultsAndPolicy()
+	require.NoError(t, err)
+	assert.Equal(t, "claude", defaults.FirstPass.Provider)
+	assert.Equal(t, "claude-fable-5", defaults.FirstPass.Model)
+	assert.True(t, policy.FirstPassProviders["claude"].CredentialConfigured)
+	assert.Contains(t, policy.FirstPassProviders["claude"].Models, "claude-fable-5")
+
+	snapshot, err := runconfig.Resolve(runconfig.Overrides{}, defaults, policy)
+	require.NoError(t, err)
+	assert.Equal(t, "claude-fable-5", snapshot.Effective.FirstPass.Model)
+}
+
+func TestPrepareReviewJobResolvesAndGatesFirstPassOverrides(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.AnthropicAPIKey = "sk-ant-test"
+	pr := github.PullRequest{
+		Owner: "acme", Repo: "widgets", Number: 7, CommitSHA: "0123456789abcdef0123456789abcdef01234567",
+	}
+
+	provider := "claude"
+	job, err := p.PrepareReviewJob(pr, runconfig.Overrides{
+		FirstPass: &runconfig.FirstPassOverrides{Provider: &provider},
+	}, true, "api_v1", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "claude", job.Config.Effective.FirstPass.Provider)
+	assert.Equal(t, llm.DefaultClaudeModel, job.Config.Effective.FirstPass.Model)
+	assert.Equal(t, runconfig.SourceDerived, job.Config.Sources["first_pass.model"])
+
+	openRouter := "openrouter"
+	_, err = p.PrepareReviewJob(pr, runconfig.Overrides{
+		FirstPass: &runconfig.FirstPassOverrides{Provider: &openRouter},
+	}, true, "api_v1", nil)
+	var validationErr *runconfig.ValidationError
+	require.ErrorAs(t, err, &validationErr)
+	assert.Equal(t, "first_pass.provider", validationErr.Field)
+
+	offList := "claude-opus-9"
+	_, err = p.PrepareReviewJob(pr, runconfig.Overrides{
+		FirstPass: &runconfig.FirstPassOverrides{Provider: &provider, Model: &offList},
+	}, true, "api_v1", nil)
+	require.ErrorAs(t, err, &validationErr)
+	assert.Equal(t, "first_pass.model", validationErr.Field)
+}
+
+func TestFirstPassClientForRunCachesPerProviderAndModel(t *testing.T) {
+	t.Setenv("GEMINI_PRO_MODEL", "")
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.GeminiAPIKey = "gem-key"
+	p.cfg.AnthropicAPIKey = "ant-key"
+
+	defaultClient, defaultInfo, err := p.firstPassClientForRun(runconfig.FirstPass{})
+	require.NoError(t, err)
+	assert.Equal(t, service.FirstPassInfo{Provider: "google", Backend: "gemini_api", Model: llm.ProModelName()}, defaultInfo)
+
+	sameClient, _, err := p.firstPassClientForRun(runconfig.FirstPass{Provider: "gemini", Model: llm.ProModelName()})
+	require.NoError(t, err)
+	assert.True(t, defaultClient == sameClient, "identical provider+model must reuse the cached client")
+
+	claudeClient, claudeInfo, err := p.firstPassClientForRun(runconfig.FirstPass{Provider: "claude", Model: "claude-fable-5"})
+	require.NoError(t, err)
+	assert.False(t, defaultClient == claudeClient)
+	assert.Equal(t, service.FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-fable-5"}, claudeInfo)
+
+	otherClaude, _, err := p.firstPassClientForRun(runconfig.FirstPass{Provider: "claude", Model: llm.DefaultClaudeModel})
+	require.NoError(t, err)
+	assert.False(t, claudeClient == otherClaude, "different models must not share a client")
+
+	_, _, err = p.firstPassClientForRun(runconfig.FirstPass{Provider: "openrouter", Model: "openai/gpt-5.6-sol"})
+	require.ErrorContains(t, err, "OPENROUTER_API_KEY")
+
+	uses := p.pipelineModelUses(runconfig.FirstPass{Provider: "claude", Model: "claude-fable-5"})
+	require.Len(t, uses, 2)
+	assert.Equal(t, payload.ModelUse{
+		Stage: "first_pass", Provider: "anthropic", Backend: "anthropic_api", RequestedModel: "claude-fable-5",
+	}, uses[0])
+	assert.Equal(t, "classification_summary", uses[1].Stage)
+}
+
+func TestFirstPassClientForRunFallsBackToDeploymentConfigForLegacySnapshots(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.FirstPassProvider = "claude"
+	p.cfg.FirstPassModel = "claude-opus-5"
+	p.cfg.AnthropicAPIKey = "ant-key"
+
+	_, info, err := p.firstPassClientForRun(runconfig.FirstPass{})
+	require.NoError(t, err)
+	assert.Equal(t, service.FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-opus-5"}, info)
 }
 
 func TestNewPollerCreatesProcessGlobalFirstPassCapacity(t *testing.T) {

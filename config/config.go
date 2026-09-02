@@ -16,6 +16,12 @@ const (
 	defaultClaudeAgentModel          = "claude-opus-4-8"
 	defaultOpenRouterAgentModel      = "openai/gpt-5.6-sol"
 	defaultAgentEffort               = "medium"
+
+	// First-pass provider default models, mirroring the llm package defaults
+	// so this package stays dependency-light.
+	defaultFirstPassGeminiModel     = "gemini-3.1-pro-preview"
+	defaultFirstPassClaudeModel     = "claude-sonnet-5"
+	defaultFirstPassOpenRouterModel = "openai/gpt-5.6-sol"
 )
 
 type Config struct {
@@ -76,15 +82,18 @@ type Config struct {
 	// the deployment operator; per-review API overrides must remain within them.
 	// Credentials, provider endpoints, filesystem paths, and concurrency remain
 	// deployment-only settings.
-	ReviewAgentModelsClaude      []string
-	ReviewAgentModelsOpenRouter  []string
-	ReviewAgentEffortsClaude     []string
-	ReviewAgentEffortsOpenRouter []string
-	ReviewMaxWallClockSec        int
-	ReviewMaxTurns               int
-	ReviewMaxTurnsConfigured     bool
-	ReviewMaxFirstPassSamples    int
-	ReviewMaxFirstPassConcurrent int
+	ReviewAgentModelsClaude         []string
+	ReviewAgentModelsOpenRouter     []string
+	ReviewAgentEffortsClaude        []string
+	ReviewAgentEffortsOpenRouter    []string
+	ReviewFirstPassModelsGemini     []string
+	ReviewFirstPassModelsClaude     []string
+	ReviewFirstPassModelsOpenRouter []string
+	ReviewMaxWallClockSec           int
+	ReviewMaxTurns                  int
+	ReviewMaxTurnsConfigured        bool
+	ReviewMaxFirstPassSamples       int
+	ReviewMaxFirstPassConcurrent    int
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -108,7 +117,13 @@ func (c *Config) IsDevMode() bool {
 // FirstPassAPIKey returns the credential the configured first-pass provider
 // authenticates with.
 func (c *Config) FirstPassAPIKey() string {
-	switch c.FirstPassProvider {
+	return c.FirstPassProviderAPIKey(c.FirstPassProvider)
+}
+
+// FirstPassProviderAPIKey returns the credential a specific first-pass
+// provider authenticates with.
+func (c *Config) FirstPassProviderAPIKey(provider string) string {
+	switch provider {
 	case "claude":
 		return c.AnthropicAPIKey
 	case "openrouter":
@@ -175,6 +190,37 @@ func Load() *Config {
 		openRouterEfforts = appendUnique(openRouterEfforts, activeEffort)
 	}
 
+	firstPassProvider := strings.ToLower(strings.TrimSpace(getEnvOrDefault("FIRST_PASS_PROVIDER", "gemini")))
+	firstPassModel := strings.TrimSpace(os.Getenv("FIRST_PASS_MODEL"))
+	// The gemini first-pass default follows the same env override the llm
+	// package honors, so the allowlist always admits the model actually run.
+	firstPassGeminiDefault := getEnvOrDefault("GEMINI_PRO_MODEL", defaultFirstPassGeminiModel)
+	firstPassModelsGemini := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_GEMINI",
+		[]string{firstPassGeminiDefault}, normalizeModel)
+	firstPassModelsClaude := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_CLAUDE",
+		[]string{defaultFirstPassClaudeModel}, normalizeModel)
+	firstPassModelsOpenRouter := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_OPENROUTER",
+		[]string{defaultFirstPassOpenRouterModel}, normalizeModel)
+	activeFirstPassModel := firstPassModel
+	if activeFirstPassModel == "" {
+		switch firstPassProvider {
+		case "claude":
+			activeFirstPassModel = defaultFirstPassClaudeModel
+		case "openrouter":
+			activeFirstPassModel = defaultFirstPassOpenRouterModel
+		default:
+			activeFirstPassModel = firstPassGeminiDefault
+		}
+	}
+	switch firstPassProvider {
+	case "claude":
+		firstPassModelsClaude = appendUnique(firstPassModelsClaude, activeFirstPassModel)
+	case "openrouter":
+		firstPassModelsOpenRouter = appendUnique(firstPassModelsOpenRouter, activeFirstPassModel)
+	case "gemini":
+		firstPassModelsGemini = appendUnique(firstPassModelsGemini, activeFirstPassModel)
+	}
+
 	maxWallClockDefault := positiveOrDefault(agentWallClockSec, defaultAgentWallClockSec)
 	reviewMaxTurns, reviewMaxTurnsConfigured := getPositiveEnvInt("REVIEW_MAX_TURNS")
 
@@ -209,8 +255,8 @@ func Load() *Config {
 		ReviewerEnabled: false, // Will be set to true in main.go if API key is available
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
 
-		FirstPassProvider: strings.ToLower(strings.TrimSpace(getEnvOrDefault("FIRST_PASS_PROVIDER", "gemini"))),
-		FirstPassModel:    strings.TrimSpace(os.Getenv("FIRST_PASS_MODEL")),
+		FirstPassProvider: firstPassProvider,
+		FirstPassModel:    firstPassModel,
 
 		AgenticReviews:     os.Getenv("AGENTIC_REVIEWS") == "true",
 		AgentCloneRootDir:  getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
@@ -228,15 +274,18 @@ func Load() *Config {
 		BugMemoryObject:    os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:     os.Getenv("REQUIRED_CHECKS") == "true",
 
-		ReviewAgentModelsClaude:      claudeModels,
-		ReviewAgentModelsOpenRouter:  openRouterModels,
-		ReviewAgentEffortsClaude:     claudeEfforts,
-		ReviewAgentEffortsOpenRouter: openRouterEfforts,
-		ReviewMaxWallClockSec:        getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
-		ReviewMaxTurns:               reviewMaxTurns,
-		ReviewMaxTurnsConfigured:     reviewMaxTurnsConfigured,
-		ReviewMaxFirstPassSamples:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
-		ReviewMaxFirstPassConcurrent: getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
+		ReviewAgentModelsClaude:         claudeModels,
+		ReviewAgentModelsOpenRouter:     openRouterModels,
+		ReviewAgentEffortsClaude:        claudeEfforts,
+		ReviewAgentEffortsOpenRouter:    openRouterEfforts,
+		ReviewFirstPassModelsGemini:     firstPassModelsGemini,
+		ReviewFirstPassModelsClaude:     firstPassModelsClaude,
+		ReviewFirstPassModelsOpenRouter: firstPassModelsOpenRouter,
+		ReviewMaxWallClockSec:           getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
+		ReviewMaxTurns:                  reviewMaxTurns,
+		ReviewMaxTurnsConfigured:        reviewMaxTurnsConfigured,
+		ReviewMaxFirstPassSamples:       getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
+		ReviewMaxFirstPassConcurrent:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
 	}
 }
 

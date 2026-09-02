@@ -236,6 +236,9 @@ func (s *Service) runSinglePrompt(
 		}
 
 		var llmClient llm.IClient = s.smartLlmClient
+		if cfg.FirstPassClient != nil {
+			llmClient = cfg.FirstPassClient
+		}
 		if cfg.Fast {
 			llmClient = s.fastLlmClient
 		}
@@ -325,6 +328,9 @@ func (s *Service) runSinglePrompt(
 
 func (s *Service) firstPassAttemptEvent(cfg PerformReviewConfig, invocationNumber, attemptNumber int, startedAt time.Time) ProviderAttemptEvent {
 	provider, backend, model := s.firstPass.Provider, s.firstPass.Backend, s.firstPass.Model
+	if cfg.FirstPass != nil {
+		provider, backend, model = cfg.FirstPass.Provider, cfg.FirstPass.Backend, cfg.FirstPass.Model
+	}
 	if cfg.Fast {
 		// The fast path swaps in the classification client, which stays Gemini.
 		provider, backend, model = "google", "gemini_api", llm.FlashModelName()

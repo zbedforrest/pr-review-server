@@ -18,7 +18,7 @@ func testDefaults() Effective {
 			TurnBudgetUnit:    TurnBudgetUnitAssistantEvent,
 			TurnBudgetVersion: TurnBudgetVersion,
 		},
-		FirstPass:      FirstPass{Samples: 3},
+		FirstPass:      FirstPass{Samples: 3, Provider: "gemini", Model: "gemini-3.1-pro-preview"},
 		RequiredChecks: true,
 	}
 }
@@ -39,6 +39,23 @@ func testPolicy() Policy {
 				DefaultMaxTurns: 200, MaxTurns: 240,
 				Models:  []string{"openai/gpt-5.6-sol"},
 				Efforts: []string{"medium", "high", "xhigh", "max"},
+			},
+		},
+		FirstPassProviders: map[string]FirstPassProviderPolicy{
+			"gemini": {
+				CredentialConfigured: true,
+				DefaultModel:         "gemini-3.1-pro-preview",
+				Models:               []string{"gemini-3.1-pro-preview", "gemini-2.5-pro"},
+			},
+			"claude": {
+				CredentialConfigured: true,
+				DefaultModel:         "claude-sonnet-5",
+				Models:               []string{"claude-sonnet-5"},
+			},
+			"openrouter": {
+				CredentialConfigured: false,
+				DefaultModel:         "openai/gpt-5.6-sol",
+				Models:               []string{"openai/gpt-5.6-sol"},
 			},
 		},
 		MaxWallClockSeconds: 1800,
@@ -265,6 +282,101 @@ func TestResolveRejectsLimitsInsteadOfClamping(t *testing.T) {
 	var validationErr *ValidationError
 	if !errors.As(err, &validationErr) || validationErr.Field != "agent.wall_clock_seconds" {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestResolveAppliesFirstPassProviderAndModelOverrides(t *testing.T) {
+	snapshot, err := Resolve(Overrides{FirstPass: &FirstPassOverrides{
+		Provider: ptr(" Claude "),
+		Model:    ptr(" claude-sonnet-5 "),
+	}}, testDefaults(), testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.Effective.FirstPass; got.Provider != "claude" || got.Model != "claude-sonnet-5" || got.Samples != 3 {
+		t.Fatalf("first pass=%+v", got)
+	}
+	if snapshot.Sources["first_pass.provider"] != SourceRequest || snapshot.Sources["first_pass.model"] != SourceRequest {
+		t.Fatalf("sources=%v", snapshot.Sources)
+	}
+	if snapshot.Sources["first_pass.samples"] != SourceDeploymentDefault {
+		t.Fatalf("samples source=%q", snapshot.Sources["first_pass.samples"])
+	}
+}
+
+func TestResolveDerivesProviderDefaultModelOnProviderSwitch(t *testing.T) {
+	snapshot, err := Resolve(Overrides{FirstPass: &FirstPassOverrides{
+		Provider: ptr("claude"),
+	}}, testDefaults(), testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Effective.FirstPass.Model != "claude-sonnet-5" {
+		t.Fatalf("model=%q want claude default", snapshot.Effective.FirstPass.Model)
+	}
+	if snapshot.Sources["first_pass.model"] != SourceDerived {
+		t.Fatalf("model source=%q", snapshot.Sources["first_pass.model"])
+	}
+}
+
+func TestResolveAcceptsAllowlistedModelForDefaultProvider(t *testing.T) {
+	snapshot, err := Resolve(Overrides{FirstPass: &FirstPassOverrides{
+		Model: ptr("gemini-2.5-pro"),
+	}}, testDefaults(), testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.Effective.FirstPass; got.Provider != "gemini" || got.Model != "gemini-2.5-pro" {
+		t.Fatalf("first pass=%+v", got)
+	}
+}
+
+func TestResolveRejectsFirstPassModelOutsideProviderAllowlist(t *testing.T) {
+	cases := []Overrides{
+		{FirstPass: &FirstPassOverrides{Model: ptr("claude-sonnet-5")}},
+		{FirstPass: &FirstPassOverrides{Provider: ptr("claude"), Model: ptr("claude-opus-9")}},
+	}
+	for _, requested := range cases {
+		_, err := Resolve(requested, testDefaults(), testPolicy())
+		var validationErr *ValidationError
+		if !errors.As(err, &validationErr) || validationErr.Field != "first_pass.model" {
+			t.Fatalf("requested=%+v err=%v", requested.FirstPass, err)
+		}
+	}
+}
+
+func TestResolveRejectsUnknownFirstPassProvider(t *testing.T) {
+	_, err := Resolve(Overrides{FirstPass: &FirstPassOverrides{
+		Provider: ptr("gpt"),
+	}}, testDefaults(), testPolicy())
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Field != "first_pass.provider" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestResolveRejectsFirstPassProviderWithoutCredential(t *testing.T) {
+	_, err := Resolve(Overrides{FirstPass: &FirstPassOverrides{
+		Provider: ptr("openrouter"),
+		Model:    ptr("openai/gpt-5.6-sol"),
+	}}, testDefaults(), testPolicy())
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Field != "first_pass.provider" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestResolveAcceptsLegacyPolicyWithoutFirstPassProviders(t *testing.T) {
+	defaults := testDefaults()
+	defaults.FirstPass = FirstPass{Samples: 3}
+	policy := testPolicy()
+	policy.FirstPassProviders = nil
+	snapshot, err := Resolve(Overrides{}, defaults, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.Effective.FirstPass; got.Provider != "" || got.Model != "" {
+		t.Fatalf("first pass=%+v want empty legacy identity", got)
 	}
 }
 
