@@ -15,7 +15,7 @@ import (
 const (
 	DefaultClaudeModel = "claude-sonnet-5"
 	ClaudeHaikuModel   = "claude-3-5-haiku-latest"
-	ClaudeMaxTokens    = 8000
+	ClaudeMaxTokens    = 32000
 )
 
 // ClaudeClient is a wrapper for the Anthropic Claude API client.
