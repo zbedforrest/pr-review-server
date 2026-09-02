@@ -205,6 +205,50 @@ func TestLoadReviewCustomizationPolicyUsesPositiveFallbackWhenActiveBudgetIsInva
 	}
 }
 
+func TestLoadFirstPassDefaultsToGemini(t *testing.T) {
+	t.Setenv("FIRST_PASS_PROVIDER", "")
+	t.Setenv("FIRST_PASS_MODEL", "")
+
+	cfg := Load()
+	if cfg.FirstPassProvider != "gemini" || cfg.FirstPassModel != "" {
+		t.Fatalf("first-pass defaults: provider=%q model=%q", cfg.FirstPassProvider, cfg.FirstPassModel)
+	}
+}
+
+func TestLoadFirstPassNormalizesProvider(t *testing.T) {
+	t.Setenv("FIRST_PASS_PROVIDER", " Claude ")
+	t.Setenv("FIRST_PASS_MODEL", " claude-opus-5 ")
+
+	cfg := Load()
+	if cfg.FirstPassProvider != "claude" || cfg.FirstPassModel != "claude-opus-5" {
+		t.Fatalf("first-pass parsing: provider=%q model=%q", cfg.FirstPassProvider, cfg.FirstPassModel)
+	}
+}
+
+func TestFirstPassAPIKeySelection(t *testing.T) {
+	cfg := &Config{
+		GeminiAPIKey:     "gem",
+		AnthropicAPIKey:  "ant",
+		OpenRouterAPIKey: "opr",
+	}
+
+	cases := []struct {
+		provider string
+		want     string
+	}{
+		{"gemini", "gem"},
+		{"", "gem"},
+		{"claude", "ant"},
+		{"openrouter", "opr"},
+	}
+	for _, c := range cases {
+		cfg.FirstPassProvider = c.provider
+		if got := cfg.FirstPassAPIKey(); got != c.want {
+			t.Errorf("provider %q: got key %q want %q", c.provider, got, c.want)
+		}
+	}
+}
+
 func assertStringsEqual(t *testing.T, got, want []string) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {

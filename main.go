@@ -13,6 +13,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/poller"
 	"pr-review-server/server"
 )
@@ -82,6 +83,23 @@ func start(cfg *config.Config) {
 	} else {
 		log.Println("✅ GEMINI_API_KEY found. AI review generation is enabled.")
 		cfg.ReviewerEnabled = true
+	}
+
+	switch cfg.FirstPassProvider {
+	case "", "gemini":
+	case "claude":
+		if cfg.AnthropicAPIKey == "" {
+			log.Fatal("FIRST_PASS_PROVIDER=claude requires ANTHROPIC_API_KEY to be set")
+		}
+	case "openrouter":
+		if cfg.OpenRouterAPIKey == "" {
+			log.Fatal("FIRST_PASS_PROVIDER=openrouter requires OPENROUTER_API_KEY to be set")
+		}
+	default:
+		log.Fatalf("Invalid FIRST_PASS_PROVIDER %q (expected gemini, claude, or openrouter)", cfg.FirstPassProvider)
+	}
+	if cfg.FirstPassProvider != "" && cfg.FirstPassProvider != "gemini" {
+		log.Printf("First-pass provider: %s (model: %s)", cfg.FirstPassProvider, llm.FirstPassModelName(llm.LLMProvider(cfg.FirstPassProvider), cfg.FirstPassModel))
 	}
 
 	// Create reviews directory if using local storage

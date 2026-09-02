@@ -212,13 +212,15 @@ func reviewRunIDFromTime(t time.Time) string {
 	return fmt.Sprintf("run-%032x", t.UnixNano())
 }
 
-func geminiModelUses() []payload.ModelUse {
+func (p *Poller) pipelineModelUses() []payload.ModelUse {
+	firstPassProvider := llm.LLMProvider(p.cfg.FirstPassProvider)
+	provider, backend := llm.FirstPassTelemetry(firstPassProvider)
 	return []payload.ModelUse{
 		{
 			Stage:          "first_pass",
-			Provider:       "google",
-			Backend:        "gemini_api",
-			RequestedModel: llm.ProModelName(),
+			Provider:       provider,
+			Backend:        backend,
+			RequestedModel: llm.FirstPassModelName(firstPassProvider, p.cfg.FirstPassModel),
 		},
 		{
 			Stage:          "classification_summary",
@@ -595,7 +597,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		Checks:        agentOut.Checks,
 		ModelFallback: agentOut.ModelFallback,
 		ReviewRun: &payload.ReviewRunInfo{
-			Models: append(geminiModelUses(), agentModelUse(agentOut)),
+			Models: append(p.pipelineModelUses(), agentModelUse(agentOut)),
 		},
 		// Copied (not aliased) so the no-swallow check reads the pre-merge
 		// alert set even if a later stage mutates the agent output.
@@ -3141,15 +3143,35 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 	var reviewSvc *service.Service
 	var reviewSvcInitErr error
 	if p.reviewGenerator == nil {
-		// Initialize reviewer clients
-		smartLlmClient := llm.NewClient(llm.ProviderGemini, p.cfg.GeminiAPIKey, false, false)
-		fastLlmClient := llm.NewClient(llm.ProviderGemini, p.cfg.GeminiAPIKey, true, false)
-
-		// Validate API Key once
-		if err := smartLlmClient.ValidateAPIKey(); err != nil {
-			reviewSvcInitErr = fmt.Errorf("Gemini API key validation failed: %w", err)
+		// Initialize reviewer clients. The first pass follows the configured
+		// provider; classification always stays on Gemini flash.
+		firstPassProvider := llm.LLMProvider(p.cfg.FirstPassProvider)
+		smartLlmClient, smartErr := llm.NewFirstPassClient(firstPassProvider, p.cfg.FirstPassAPIKey(), p.cfg.FirstPassModel, p.cfg.OpenRouterBaseURL, false)
+		if smartErr != nil {
+			reviewSvcInitErr = smartErr
 		} else {
-			reviewSvc = service.NewService(p.ghClientConcrete, smartLlmClient, fastLlmClient)
+			fastLlmClient := llm.NewClient(llm.ProviderGemini, p.cfg.GeminiAPIKey, true, false)
+
+			// Validate API keys once
+			if err := smartLlmClient.ValidateAPIKey(); err != nil {
+				if firstPassProvider == llm.ProviderGemini || firstPassProvider == "" {
+					reviewSvcInitErr = fmt.Errorf("Gemini API key validation failed: %w", err)
+				} else {
+					reviewSvcInitErr = fmt.Errorf("first-pass (%s) API key validation failed: %w", p.cfg.FirstPassProvider, err)
+				}
+			} else if firstPassProvider != llm.ProviderGemini && firstPassProvider != "" {
+				if err := fastLlmClient.ValidateAPIKey(); err != nil {
+					reviewSvcInitErr = fmt.Errorf("Gemini API key validation failed: %w", err)
+				}
+			}
+			if reviewSvcInitErr == nil {
+				provider, backend := llm.FirstPassTelemetry(firstPassProvider)
+				reviewSvc = service.NewServiceWithFirstPass(p.ghClientConcrete, smartLlmClient, fastLlmClient, service.FirstPassInfo{
+					Provider: provider,
+					Backend:  backend,
+					Model:    llm.FirstPassModelName(firstPassProvider, p.cfg.FirstPassModel),
+				})
+			}
 		}
 	}
 	if reviewSvcInitErr != nil {
@@ -3468,7 +3490,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if observedModels := execution.providerModelUses(); len(observedModels) > 0 {
 				reviewResult.ReviewRun.Models = observedModels
 			} else if p.reviewGenerator == nil && len(reviewResult.ReviewRun.Models) == 0 {
-				reviewResult.ReviewRun.Models = geminiModelUses()
+				reviewResult.ReviewRun.Models = p.pipelineModelUses()
 			}
 			if !p.renewReviewExecutionForPublication(execution) {
 				log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact publication", job.RunID)
