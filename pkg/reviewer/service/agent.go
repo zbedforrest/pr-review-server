@@ -97,6 +97,10 @@ type AgentReview struct {
 	AssistantTurns       int
 	BudgetUnitsUsed      int
 	DurationMS           int64
+	// GatesStartedAt/GatesDurationMS time the mechanical-gates run inside the
+	// agent stage; GatesStartedAt is zero when gates were skipped (no diff).
+	GatesStartedAt  time.Time
+	GatesDurationMS int64
 	// ServingModelVerified is true only when the agent stream explicitly
 	// reported the model that served the request. Codex/OpenRouter currently
 	// pins the requested model but does not expose the routed model in JSONL.
@@ -196,8 +200,12 @@ func RunAgentReview(
 	// Their findings go into the prompt (the agent must address each) AND are
 	// returned for the reconciliation merge, so they survive dismissal.
 	var gates []types.LineComment
+	var gatesStartedAt time.Time
+	var gatesDurationMS int64
 	if diffFiles != nil {
+		gatesStartedAt = time.Now().UTC()
 		gates = RunMechanicalGates(runCtx, cloneDir, diffFiles)
+		gatesDurationMS = time.Since(gatesStartedAt).Milliseconds()
 	}
 	if len(gates) > 0 {
 		log.Printf("%s mechanical gates fired: %d", logPrefix, len(gates))
@@ -498,6 +506,8 @@ func RunAgentReview(
 		AssistantTurns:       parseResult.assistantTurns,
 		BudgetUnitsUsed:      parseResult.budgetUnits,
 		DurationMS:           agentDuration.Milliseconds(),
+		GatesStartedAt:       gatesStartedAt,
+		GatesDurationMS:      gatesDurationMS,
 		ServingModelVerified: runtime.reportsServingModel && len(parseResult.servedModels) > 0,
 	}, nil
 }

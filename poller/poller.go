@@ -563,6 +563,11 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
 		return nil, fmt.Errorf("agent review: %w", agentErr)
 	}
+	if !agentOut.GatesStartedAt.IsZero() {
+		execution.recordStageTiming(payload.StageTiming{
+			Stage: "gates", StartedAt: agentOut.GatesStartedAt, DurationMS: agentOut.GatesDurationMS,
+		})
+	}
 
 	if agentOut.ModelFallback {
 		log.Printf("[REVIEWER] ERROR: MODEL FALLBACK for %s/%s#%d: requested=%s served=%s — review published with fallback badge",
@@ -1357,19 +1362,21 @@ func (p *Poller) trackOrAdoptReviewJob(parent context.Context, job ReviewJob) (c
 
 // startTrackedReviewJob starts the configured execution budget only after the
 // batch semaphore grants a worker slot. Ownership is established earlier, but
-// time spent queued must not reduce a per-review wall-clock allowance.
-func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, bool) {
+// time spent queued must not reduce a per-review wall-clock allowance. The
+// returned duration is the time the job spent queued (tracked to started).
+func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, time.Duration, bool) {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
 	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
 	info, exists := p.activeReviews[key]
 	if !exists || info.RunID != job.RunID || info.Ctx == nil || !info.StartTime.IsZero() {
-		return nil, false
+		return nil, 0, false
 	}
 	timeout := p.reviewTimeout(job.Config.Effective)
 	runCtx, runCancel := context.WithTimeoutCause(info.Ctx, timeout, errReviewRunBudgetExceeded)
 	queuedCancel := info.Cancel
 	info.StartTime = time.Now()
+	queueWait := info.StartTime.Sub(info.TrackedAt)
 	info.Timeout = timeout
 	info.Ctx = runCtx
 	info.Cancel = func() {
@@ -1379,8 +1386,8 @@ func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, bool) {
 		}
 	}
 	p.activeReviews[key] = info
-	log.Printf("[TRACK] Started review job %s for %s (timeout=%s)", job.RunID, key, timeout)
-	return runCtx, true
+	log.Printf("[TRACK] Started review job %s for %s (timeout=%s, queue_wait=%s)", job.RunID, key, timeout, queueWait)
+	return runCtx, queueWait, true
 }
 
 // untrackReviewRun removes a PR's review process from the active reviews map
@@ -3353,7 +3360,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				}
 			}
 			defer releaseFirstPassSlot()
-			prCtx, started := p.startTrackedReviewJob(job)
+			prCtx, queueWait, started := p.startTrackedReviewJob(job)
 			if !started {
 				log.Printf("[REVIEWER] PR %d lost queued ownership before execution; rejecting %s", pr.Number, job.RunID)
 				if queuedCtx.Err() != nil {
@@ -3414,6 +3421,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				return
 			}
 			execution.AgentSlotReserved = agentSlotReserved
+			execution.QueueWait = queueWait
 			execStart := execution.AttemptStartedAt
 			nRequests := job.Config.Effective.FirstPass.Samples
 
@@ -3578,6 +3586,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			// Persist only run-scoped artifacts before the ownership transaction.
 			// Mutable compatibility aliases are written after publication wins, so
 			// a stale or superseded worker can never overwrite the visible result.
+			artifactSaveStartedAt := time.Now().UTC()
 			if err := p.saveImmutableReviewArtifact(prCtx, reviewResult.ReviewRun.HTMLPath, "text/html; charset=utf-8", reviewResult.HTMLContent); err != nil {
 				failExecution(fmt.Errorf("save immutable review %s: %w", job.RunID, err), "artifact_save_failed", "artifact_save")
 				return
@@ -3589,6 +3598,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			completedAt := time.Now().UTC().Truncate(time.Microsecond)
 			runInfo := p.reviewRunInfo(execution, completedAt)
 			runInfo.Models = models
+			runInfo.StageTimings = execution.stageTimings(artifactSaveStartedAt, completedAt)
 			reviewResult.ReviewRun = runInfo
 
 			sidecarBody, sidecarErr := p.writeImmutableReviewSidecar(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult)
