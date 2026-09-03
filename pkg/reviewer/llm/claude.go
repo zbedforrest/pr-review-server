@@ -83,6 +83,17 @@ func (c *ClaudeClient) GetReview(prompt string) (string, int32, int32, int32, er
 	return c.GetReviewStream(prompt, io.Discard)
 }
 
+// cachedPromptMessage marks the prompt block as an ephemeral cache breakpoint
+// so parallel identical-prompt samples read the first sample's cached prefix.
+func cachedPromptMessage(prompt string) anthropic.MessageParam {
+	return anthropic.NewUserMessage(anthropic.ContentBlockParamUnion{
+		OfText: &anthropic.TextBlockParam{
+			Text:         prompt,
+			CacheControl: anthropic.NewCacheControlEphemeralParam(),
+		},
+	})
+}
+
 // GetReviewStream sends the prompt to the Claude API and streams the response with token counts.
 func (c *ClaudeClient) GetReviewStream(prompt string, w io.Writer) (string, int32, int32, int32, error) {
 	ctx := context.Background()
@@ -96,9 +107,7 @@ func (c *ClaudeClient) GetReviewStream(prompt string, w io.Writer) (string, int3
 	stream := c.client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
 		Model:     c.model,
 		MaxTokens: ClaudeMaxTokens,
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
-		},
+		Messages:  []anthropic.MessageParam{cachedPromptMessage(prompt)},
 	})
 
 	var reviewContent string
