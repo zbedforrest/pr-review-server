@@ -78,67 +78,9 @@ func (c *ClaudeClient) ValidateAPIKey() error {
 
 // GetReview sends the prompt to the Claude API and returns the review with token counts.
 func (c *ClaudeClient) GetReview(prompt string) (string, int32, int32, int32, error) {
-	ctx := context.Background()
-
-	if c.verbose {
-		color.Yellow("Sending request to Claude API...")
-		color.Yellow("Model: %s", c.model)
-		color.Yellow("Prompt length: %d characters", len(prompt))
-		color.Yellow("Max tokens: %d", ClaudeMaxTokens)
-	}
-
-	message, err := c.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     c.model,
-		MaxTokens: ClaudeMaxTokens,
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
-		},
-	})
-	if err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "API key") || strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403") || strings.Contains(errMsg, "authentication") || strings.Contains(errMsg, "unauthorized") {
-			return "", 0, 0, 0, fmt.Errorf("Claude API authentication failed - your ANTHROPIC_API_KEY may be invalid or expired: %w", err)
-		}
-		return "", 0, 0, 0, fmt.Errorf("Claude API request failed: %w", err)
-	}
-
-	if c.verbose {
-		color.Yellow("Received response from Claude API")
-		color.Yellow("Response ID: %s", message.ID)
-		color.Yellow("Model used: %s", message.Model)
-		color.Yellow("Stop reason: %s", message.StopReason)
-	}
-
-	promptTokens := int32(message.Usage.InputTokens)
-	candidatesTokens := int32(message.Usage.OutputTokens)
-	totalTokens := promptTokens + candidatesTokens
-
-	if c.verbose {
-		color.Yellow("Token usage - Input: %d, Output: %d, Total: %d", promptTokens, candidatesTokens, totalTokens)
-		color.Yellow("Claude API response - content blocks: %d", len(message.Content))
-	}
-
-	if len(message.Content) == 0 {
-		return "", 0, 0, 0, fmt.Errorf("no response from Claude API")
-	}
-
-	var reviewContent string
-	for _, block := range message.Content {
-		switch contentBlock := block.AsAny().(type) {
-		case anthropic.TextBlock:
-			reviewContent += contentBlock.Text
-		default:
-			if c.verbose {
-				color.Yellow("Skipping non-text content block of type: %T", contentBlock)
-			}
-		}
-	}
-
-	if reviewContent == "" {
-		return "", 0, 0, 0, fmt.Errorf("unexpected response format from Claude API: no text content found in %d blocks", len(message.Content))
-	}
-
-	return reviewContent, promptTokens, candidatesTokens, totalTokens, nil
+	// The SDK rejects non-streaming requests at this max_tokens; delegate to
+	// the streaming path and discard incremental writes.
+	return c.GetReviewStream(prompt, io.Discard)
 }
 
 // GetReviewStream sends the prompt to the Claude API and streams the response with token counts.
