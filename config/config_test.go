@@ -215,6 +215,23 @@ func TestLoadFirstPassDefaultsToGemini(t *testing.T) {
 	}
 }
 
+func TestLoadFirstPassThinking(t *testing.T) {
+	t.Setenv("FIRST_PASS_THINKING", "")
+	if cfg := Load(); cfg.FirstPassThinking != "" {
+		t.Fatalf("thinking default: %q", cfg.FirstPassThinking)
+	}
+
+	t.Setenv("FIRST_PASS_THINKING", " High ")
+	if cfg := Load(); cfg.FirstPassThinking != "high" {
+		t.Fatalf("thinking normalization: %q", cfg.FirstPassThinking)
+	}
+
+	t.Setenv("FIRST_PASS_THINKING", "medium")
+	if cfg := Load(); cfg.FirstPassThinking != "medium" {
+		t.Fatalf("thinking passthrough: %q", cfg.FirstPassThinking)
+	}
+}
+
 func TestLoadFirstPassNormalizesProvider(t *testing.T) {
 	t.Setenv("FIRST_PASS_PROVIDER", " Claude ")
 	t.Setenv("FIRST_PASS_MODEL", " claude-opus-5 ")

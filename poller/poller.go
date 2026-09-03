@@ -247,7 +247,7 @@ func (p *Poller) firstPassClientForRun(firstPass runconfig.FirstPass) (llm.IClie
 	if client, ok := p.firstPassClients[key]; ok {
 		return client, info, nil
 	}
-	client, err := llm.NewFirstPassClient(provider, p.cfg.FirstPassProviderAPIKey(string(provider)), model, p.cfg.OpenRouterBaseURL, false)
+	client, err := llm.NewFirstPassClient(provider, p.cfg.FirstPassProviderAPIKey(string(provider)), model, p.cfg.OpenRouterBaseURL, p.cfg.FirstPassThinking, false)
 	if err != nil {
 		return nil, info, err
 	}
@@ -261,13 +261,17 @@ func (p *Poller) firstPassClientForRun(firstPass runconfig.FirstPass) (llm.IClie
 func (p *Poller) pipelineModelUses(firstPass runconfig.FirstPass) []payload.ModelUse {
 	firstPassProvider, firstPassModel := p.effectiveFirstPassIdentity(firstPass)
 	provider, backend := llm.FirstPassTelemetry(firstPassProvider)
+	firstPassUse := payload.ModelUse{
+		Stage:          "first_pass",
+		Provider:       provider,
+		Backend:        backend,
+		RequestedModel: firstPassModel,
+	}
+	if firstPassProvider == llm.ProviderGemini {
+		firstPassUse.Effort = p.cfg.FirstPassThinking
+	}
 	return []payload.ModelUse{
-		{
-			Stage:          "first_pass",
-			Provider:       provider,
-			Backend:        backend,
-			RequestedModel: firstPassModel,
-		},
+		firstPassUse,
 		{
 			Stage:          "classification_summary",
 			Provider:       "google",

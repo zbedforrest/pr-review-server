@@ -60,6 +60,7 @@ type Config struct {
 	// classification stage always stays on Gemini flash.
 	FirstPassProvider string // gemini (default), claude, or openrouter
 	FirstPassModel    string // empty = provider default
+	FirstPassThinking string // gemini thinking level: low, medium, high; empty = provider default
 
 	// Agent review (Claude Code or Codex/OpenRouter subprocess).
 	AgenticReviews     bool
@@ -257,6 +258,7 @@ func Load() *Config {
 
 		FirstPassProvider: firstPassProvider,
 		FirstPassModel:    firstPassModel,
+		FirstPassThinking: strings.ToLower(strings.TrimSpace(os.Getenv("FIRST_PASS_THINKING"))),
 
 		AgenticReviews:     os.Getenv("AGENTIC_REVIEWS") == "true",
 		AgentCloneRootDir:  getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),

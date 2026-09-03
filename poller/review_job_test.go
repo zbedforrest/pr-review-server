@@ -433,6 +433,26 @@ func TestFirstPassClientForRunCachesPerProviderAndModel(t *testing.T) {
 	assert.Equal(t, "classification_summary", uses[1].Stage)
 }
 
+func TestPipelineModelUsesRecordsGeminiThinkingAsEffort(t *testing.T) {
+	t.Setenv("GEMINI_PRO_MODEL", "")
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.GeminiAPIKey = "gem-key"
+	p.cfg.AnthropicAPIKey = "ant-key"
+	p.cfg.FirstPassThinking = "high"
+
+	uses := p.pipelineModelUses(runconfig.FirstPass{Provider: "gemini", Model: llm.ProModelName()})
+	require.Len(t, uses, 2)
+	assert.Equal(t, "first_pass", uses[0].Stage)
+	assert.Equal(t, "high", uses[0].Effort)
+
+	claudeUses := p.pipelineModelUses(runconfig.FirstPass{Provider: "claude", Model: "claude-fable-5"})
+	assert.Empty(t, claudeUses[0].Effort, "thinking level applies only to gemini first passes")
+
+	p.cfg.FirstPassThinking = ""
+	uses = p.pipelineModelUses(runconfig.FirstPass{Provider: "gemini", Model: llm.ProModelName()})
+	assert.Empty(t, uses[0].Effort)
+}
+
 func TestFirstPassClientForRunFallsBackToDeploymentConfigForLegacySnapshots(t *testing.T) {
 	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
 	p.cfg.FirstPassProvider = "claude"
