@@ -354,6 +354,7 @@ type PublishedFindingModel struct {
 	ReviewID     int64     `gorm:"not null;default:0"`
 	CheckRunID   int64     `gorm:"not null;default:0"`
 	State        string    `gorm:"size:16;not null"`
+	Rounds       int       `gorm:"not null;default:0"`
 	PublishedAt  time.Time `gorm:"not null;index"`
 }
 

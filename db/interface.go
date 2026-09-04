@@ -189,7 +189,9 @@ type PublishedFinding struct {
 	ReviewID     int64
 	CheckRunID   int64
 	State        string
-	PublishedAt  time.Time
+	// Rounds counts publication rounds; meaningful on the summary row only.
+	Rounds      int
+	PublishedAt time.Time
 }
 
 // TelemetryEvent represents a single telemetry event for creation

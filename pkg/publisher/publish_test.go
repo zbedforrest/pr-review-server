@@ -138,6 +138,9 @@ func TestPublishRoundOne(t *testing.T) {
 	if sum == nil || sum.CommentID != 501 || sum.State != db.PublishedStateOpen || sum.RepoOwner != "acme" || sum.PRNumber != 7 {
 		t.Fatalf("summary ledger row = %+v", sum)
 	}
+	if sum.Rounds != 1 {
+		t.Errorf("summary row Rounds = %d, want the round number 1", sum.Rounds)
+	}
 	c1 := ledger.get(db.PublishedKindFinding, "c1")
 	m1 := ledger.get(db.PublishedKindFinding, "m1")
 	if c1 == nil || m1 == nil {
@@ -163,7 +166,7 @@ func TestPublishRoundTwo(t *testing.T) {
 
 	r2 := roundOne()
 	r2.HeadSHA = "sha-round-2"
-	r2.RoundNumber = 2
+	r2.RoundNumber = 0 // derived from the ledger's summary row
 	r2.Findings = []payload.Finding{
 		f("sum", "unknown", "SUMMARY", 0, "Narrative."),
 		f("c1", "critical", "a.go", 10, "Critical thing."),
@@ -178,6 +181,12 @@ func TestPublishRoundTwo(t *testing.T) {
 	edited, ok := gh.issueEdits[501]
 	if !ok || !strings.Contains(edited, "**Since last review:** 1 new · 1 still open · 1 fixed") {
 		t.Fatalf("summary edit wrong: ok=%v body=%s", ok, edited)
+	}
+	if !strings.Contains(edited, "Reviews (2)") {
+		t.Errorf("round number must be derived from the ledger when the caller leaves it zero")
+	}
+	if sum := ledger.get(db.PublishedKindSummary, "summary"); sum == nil || sum.Rounds != 2 || sum.LastSeenSHA != "sha-round-2" {
+		t.Errorf("summary row after round 2 = %+v", sum)
 	}
 	if len(gh.reviews) != 2 {
 		t.Fatalf("reviews = %d, want 2", len(gh.reviews))

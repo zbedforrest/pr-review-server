@@ -102,3 +102,28 @@ func TestGormDB_PublishedFinding_ScopedToPR(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 }
+
+func TestGormDB_PublishedFinding_RoundsUpdatesOnlyWhenProvided(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	summary := func(rounds int) *PublishedFinding {
+		return testPublished(func(p *PublishedFinding) {
+			p.Kind = PublishedKindSummary
+			p.Fingerprint = PublishedKindSummary
+			p.Rounds = rounds
+		})
+	}
+	require.NoError(t, db.UpsertPublishedFinding(summary(2)))
+	got, err := db.GetPublishedFindingsForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.Equal(t, 2, got[0].Rounds)
+
+	require.NoError(t, db.UpsertPublishedFinding(summary(3)))
+	got, _ = db.GetPublishedFindingsForPR("owner", "repo", 7)
+	assert.Equal(t, 3, got[0].Rounds)
+
+	require.NoError(t, db.UpsertPublishedFinding(summary(0)))
+	got, _ = db.GetPublishedFindingsForPR("owner", "repo", 7)
+	assert.Equal(t, 3, got[0].Rounds, "a zero Rounds on upsert must not clobber the counter")
+}

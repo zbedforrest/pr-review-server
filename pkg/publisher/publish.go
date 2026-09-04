@@ -71,6 +71,12 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 			published[row.Fingerprint] = row
 		}
 	}
+	if r.RoundNumber == 0 {
+		r.RoundNumber = 1
+		if summaryRow != nil {
+			r.RoundNumber = summaryRow.Rounds + 1
+		}
+	}
 	alreadyPublished := make(map[string]bool, len(published))
 	for id := range published {
 		alreadyPublished[id] = true
@@ -82,25 +88,29 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	now := p.now()
 
 	summary := RenderSummary(r, sel)
+	summaryLedger := &db.PublishedFinding{
+		RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
+		Kind: db.PublishedKindSummary, Fingerprint: summaryFingerprint,
+		ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA, Rounds: r.RoundNumber,
+		State: db.PublishedStateOpen, PublishedAt: now,
+	}
 	if summaryRow != nil {
 		if err := p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryRow.CommentID, summary); err != nil {
 			return rep, fmt.Errorf("edit summary comment: %w", err)
 		}
 		rep.SummaryCommentID = summaryRow.CommentID
+		summaryLedger.CommentID = summaryRow.CommentID
+		summaryLedger.ReviewedSHA = summaryRow.ReviewedSHA
 	} else {
 		id, err := p.GH.CreateIssueComment(ctx, r.Owner, r.Repo, r.Number, summary)
 		if err != nil {
 			return rep, fmt.Errorf("create summary comment: %w", err)
 		}
 		rep.SummaryCommentID = id
-		if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
-			RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
-			Kind: db.PublishedKindSummary, Fingerprint: summaryFingerprint,
-			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA, CommentID: id,
-			State: db.PublishedStateOpen, PublishedAt: now,
-		}); err != nil {
-			return rep, fmt.Errorf("record summary comment: %w", err)
-		}
+		summaryLedger.CommentID = id
+	}
+	if err := p.Ledger.UpsertPublishedFinding(summaryLedger); err != nil {
+		return rep, fmt.Errorf("record summary comment: %w", err)
 	}
 
 	if len(sel.Inline) > 0 {

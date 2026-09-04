@@ -25,6 +25,7 @@ func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 		ReviewID:     m.ReviewID,
 		CheckRunID:   m.CheckRunID,
 		State:        m.State,
+		Rounds:       m.Rounds,
 		PublishedAt:  m.PublishedAt,
 	}
 }
@@ -50,6 +51,7 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		ReviewID:     p.ReviewID,
 		CheckRunID:   p.CheckRunID,
 		State:        p.State,
+		Rounds:       p.Rounds,
 		PublishedAt:  p.PublishedAt,
 	}
 	updates := map[string]interface{}{
@@ -70,6 +72,9 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 	}
 	if model.CheckRunID != 0 {
 		updates["check_run_id"] = model.CheckRunID
+	}
+	if model.Rounds != 0 {
+		updates["rounds"] = model.Rounds
 	}
 	return g.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{
