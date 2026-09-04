@@ -75,12 +75,6 @@ func TestTruncate_IsRuneSafe(t *testing.T) {
 	}
 }
 
-func TestRenderSummary_FooterRuleMatchesMergeConfidence(t *testing.T) {
-	out := RenderSummary(roundOne(), Select(roundOne().Findings, nil, roundOne().Commentable, DefaultPolicy()))
-	if !strings.Contains(out, "minus 2 if any critical") || strings.Contains(out, "minus 2 per critical") {
-		t.Fatalf("footer must describe the flat critical penalty:\n%s", out)
-	}
-}
 
 // If the ledger lost the summary row (or the comment was deleted on GitHub),
 // the marker in the comment body is the recovery path.

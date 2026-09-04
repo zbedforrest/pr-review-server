@@ -60,7 +60,7 @@ func (r Round) sourceTag(id string) string {
 func (r Round) currentFindings() []payload.Finding {
 	var out []payload.Finding
 	for _, f := range r.Findings {
-		if !isNarrative(f) {
+		if Publishable(f) {
 			out = append(out, f)
 		}
 	}
@@ -231,7 +231,7 @@ func RenderSummary(r Round, sel Selection) string {
 	if r.DashboardURL != "" {
 		fmt.Fprintf(&foot, ` · <a href="%s">dashboard</a>`, r.DashboardURL)
 	}
-	foot.WriteString(" · rule: 5 minus 2 if any critical, minus 1 at 3+ medium, minus 1 per violated check</sub>\n")
+	foot.WriteString("</sub>\n")
 
 	truncRow := "| ... | | %d more, see dashboard | |\n"
 	if r.DashboardURL != "" {

@@ -60,6 +60,22 @@ func isNarrative(f payload.Finding) bool {
 	return f.File == summaryFile || f.File == checkFile
 }
 
+// Publishable reports whether a finding may appear on GitHub at all. Only
+// findings the review agent produced or answered for (agent, required-check,
+// carried from an earlier agent round, or legacy sidecars without provenance)
+// qualify; first-pass re-admissions and raw gate alerts stay on the dashboard,
+// where their unconfirmed status is explained.
+func Publishable(f payload.Finding) bool {
+	if isNarrative(f) {
+		return false
+	}
+	switch f.Provenance {
+	case "first-pass", "mechanical":
+		return false
+	}
+	return true
+}
+
 func sortBySeverity(fs []payload.Finding) {
 	sort.SliceStable(fs, func(i, j int) bool {
 		a, b := fs[i], fs[j]
@@ -79,7 +95,7 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 
 	var candidates, rest []payload.Finding
 	for _, f := range findings {
-		if isNarrative(f) || alreadyPublished[f.ID] {
+		if !Publishable(f) || alreadyPublished[f.ID] {
 			continue
 		}
 		if severityRank(f.Severity) >= minRank && f.Line > 0 && commentable[f.File][f.Line] {
