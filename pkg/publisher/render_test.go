@@ -244,7 +244,6 @@ func TestRenderInline_TitleFromAlreadyBoldSentenceIsNotDoubleBold(t *testing.T) 
 	}
 }
 
-
 func TestRenderInline_HowToVerifyReadsWellWithConditionalObservable(t *testing.T) {
 	fd := f("x", "medium", "a.go", 3, "Legacy path now verifies TLS.")
 	fd.FindingContract = &types.FindingContract{
