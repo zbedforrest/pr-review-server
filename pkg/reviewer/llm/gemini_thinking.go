@@ -122,7 +122,9 @@ func (c *GeminiThinkingClient) GetReviewStream(prompt string, w io.Writer) (stri
 			candidateTokens = resp.UsageMetadata.CandidatesTokenCount
 			totalTokens = resp.UsageMetadata.TotalTokenCount
 		}
-		content.WriteString(resp.Text())
+		chunk := resp.Text()
+		content.WriteString(chunk)
+		fmt.Fprint(w, chunk)
 	}
 	return content.String(), promptTokens, candidateTokens, totalTokens, nil
 }
