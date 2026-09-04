@@ -172,7 +172,7 @@ func (r Round) summaryRows() []summaryRow {
 			severity: f.Severity,
 			file:     f.File,
 			line:     f.Line,
-			text:     tableCell(truncate(strings.Trim(firstLine(commentText(f)), "*_ "), 120)),
+			text:     tableCell(truncate(summaryText(f), 120)),
 			source:   sourceLabel(r.sourceTag(f.ID)),
 		})
 	}
@@ -270,25 +270,73 @@ func firstSentence(comment string) string {
 	return line
 }
 
+var kindLabels = map[string]string{
+	"production_behavior": "Behavior change",
+	"security_risk":       "Security",
+	"latent_hazard":       "Latent hazard",
+	"operational_risk":    "Operational risk",
+	"test_quality":        "Test quality",
+	"design_opinion":      "Design",
+	"description_drift":   "Description drift",
+}
+
+var suggestionFenceRe = regexp.MustCompile("(?s)```suggestion\n.*?\n```")
+
+// headline is the compact one-liner: kind and effect from the contract when
+// the agent supplied one, else the comment's first sentence.
+func headline(f payload.Finding) string {
+	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
+		impact := truncate(strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), "."), 160)
+		if label, ok := kindLabels[c.FindingKind]; ok {
+			return label + " · " + impact
+		}
+		return impact
+	}
+	return truncate(strings.Trim(firstSentence(commentText(f)), "*_ "), 100)
+}
+
+// RenderInline keeps the visible part Greptile-sized: headline, one
+// calibration sentence, and the suggestion if there is one. The agent's full
+// reasoning and the verification steps fold behind a details block.
 func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string) string {
 	comment := commentText(f)
-	sentence := firstSentence(comment)
-	title := truncate(strings.Trim(sentence, "*_ "), 100)
-
-	body := comment
-	if title == strings.Trim(sentence, "*_ ") {
-		if rest := strings.TrimSpace(strings.TrimPrefix(comment, sentence)); rest != "" {
-			body = rest
-		}
-	}
+	c := f.FindingContract
+	hasContract := c != nil && f.FindingContractStatus == "valid"
+	compact := hasContract && strings.TrimSpace(c.CurrentImpact) != ""
 
 	var b strings.Builder
 	b.WriteString(FindingMarker(f.ID) + "\n")
-	fmt.Fprintf(&b, "**[%s] %s**\n\n", strings.ToUpper(f.Severity), title)
-	b.WriteString(body + "\n")
+	fmt.Fprintf(&b, "**[%s] %s**\n", strings.ToUpper(f.Severity), headline(f))
 
-	if c := f.FindingContract; c != nil && c.Falsifiability == "falsifiable" && c.FalsifiableCondition != nil && c.ExpectedObservable != nil {
-		fmt.Fprintf(&b, "\n**How to verify:** %s; expect %s.\n", strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), "."), strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), "."))
+	if hasContract && strings.TrimSpace(c.Uncertainty) != "" {
+		b.WriteString("\n" + strings.TrimSpace(c.Uncertainty) + "\n")
+	}
+	if fence := suggestionFenceRe.FindString(comment); fence != "" {
+		b.WriteString("\n" + fence + "\n")
+	}
+
+	reasoning := strings.TrimSpace(suggestionFenceRe.ReplaceAllString(comment, ""))
+	if !compact {
+		// Without an impact sentence the headline came from the comment's first
+		// sentence; the rest of the comment is the only explanation, so show it.
+		sentence := firstSentence(comment)
+		if rest := strings.TrimSpace(strings.TrimPrefix(reasoning, sentence)); rest != "" {
+			b.WriteString("\n" + rest + "\n")
+		}
+		reasoning = ""
+	}
+
+	var details strings.Builder
+	if reasoning != "" {
+		details.WriteString(reasoning + "\n")
+	}
+	if hasContract && c.Falsifiability == "falsifiable" && c.FalsifiableCondition != nil && c.ExpectedObservable != nil {
+		condition := strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), ".")
+		observable := strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), ".")
+		fmt.Fprintf(&details, "\n**How to verify:** %s. Expected: %s.\n", condition, observable)
+	}
+	if details.Len() > 0 {
+		b.WriteString("\n<details><summary>Reasoning and how to verify</summary>\n\n" + details.String() + "</details>\n")
 	}
 
 	var subs []string
@@ -339,4 +387,13 @@ func (r Round) requestsChanges() bool {
 		}
 	}
 	return false
+}
+
+// summaryText is the table cell for a finding: the effect sentence from the
+// contract when present, else the comment's first line.
+func summaryText(f payload.Finding) string {
+	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
+		return strings.TrimSpace(c.CurrentImpact)
+	}
+	return strings.Trim(firstLine(commentText(f)), "*_ ")
 }

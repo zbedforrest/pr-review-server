@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/types"
 )
 
 func TestFindingMarkerRoundTrip(t *testing.T) {
@@ -81,8 +82,15 @@ func TestCommentableLines(t *testing.T) {
 	}
 }
 
+// f builds an inline-worthy finding: a valid contract asserting current
+// production impact, which is what the Greptile-style gate requires.
 func f(id, sev, file string, line int, comment string) payload.Finding {
-	return payload.Finding{ID: id, Severity: sev, File: file, Line: line, Comment: comment}
+	x := payload.Finding{ID: id, Severity: sev, File: file, Line: line, Comment: comment}
+	if file != "SUMMARY" && file != "CHECK" {
+		x.FindingContract = &types.FindingContract{SchemaVersion: 1, FindingKind: "production_behavior", Materiality: "current_impact", Falsifiability: "unknown"}
+		x.FindingContractStatus = "valid"
+	}
+	return x
 }
 
 func ids(fs []payload.Finding) []string {

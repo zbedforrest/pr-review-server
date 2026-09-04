@@ -83,7 +83,7 @@ func (p *reviewAPITestPoller) GetReviewerStatus() (bool, time.Duration) { return
 func (p *reviewAPITestPoller) GetLastPollTime() time.Time               { return time.Time{} }
 func (p *reviewAPITestPoller) GetPollingInterval() time.Duration        { return time.Minute }
 func (p *reviewAPITestPoller) GetSecondsUntilNextPoll() int             { return 60 }
-func (p *reviewAPITestPoller) ProcessReviewImmediate(context.Context, string, string, int, string, string, string, *time.Time, bool, bool) {
+func (p *reviewAPITestPoller) ProcessReviewImmediate(context.Context, string, string, int, string, string, string, *time.Time, bool, bool, bool) {
 }
 func (p *reviewAPITestPoller) IsReviewTracked(string, string, int) bool { return false }
 

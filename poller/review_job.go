@@ -52,6 +52,9 @@ type ReviewJob struct {
 	RequestHash        string
 	QueueLeaseHolder   string
 	Force              bool
+	// SkipPublish keeps a review off GitHub (dashboard only), for callers
+	// such as benchmark replays or a reviewer who wants a private second look.
+	SkipPublish bool
 }
 
 type reviewExecution struct {

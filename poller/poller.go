@@ -1457,13 +1457,14 @@ func (p *Poller) killReview(owner, repo string, number int) bool {
 // If force is true, the existing-review cache check is skipped — useful for
 // the manual "Review" button so a click always regenerates (overwriting the
 // previous review for the same commit).
-func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool) {
+func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool, publish bool) {
 	pr := github.PullRequest{
 		Owner: owner, Repo: repo, Number: number, CommitSHA: commitSHA,
 		Title: title, Author: author, CreatedAt: createdAt, Draft: draft,
 	}
 	job, err := p.defaultReviewJob(pr, force, "legacy_api")
 	if err == nil {
+		job.SkipPublish = !publish
 		err = p.ProcessReviewJob(ctx, job)
 	}
 	if err != nil {
@@ -3638,7 +3639,9 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if aliasErr != nil {
 				log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical aliases: %v", job.RunID, aliasErr)
 			}
-			p.publishGitHubReview(prCtx, pr, sidecarBody)
+			if !job.SkipPublish {
+				p.publishGitHubReview(prCtx, pr, sidecarBody)
+			}
 			verdict := service.VerdictFromComments(reviewResult.Comments)
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict)

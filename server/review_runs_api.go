@@ -42,6 +42,13 @@ const (
 type createReviewRunRequest struct {
 	Target createReviewRunTarget `json:"target"`
 	Config runconfig.Overrides   `json:"config"`
+	// Publish false keeps the review off GitHub (dashboard only); omitted
+	// means publish when the author is enabled.
+	Publish *bool `json:"publish"`
+}
+
+func (r createReviewRunRequest) publish() bool {
+	return r.Publish == nil || *r.Publish
 }
 
 type createReviewRunTarget struct {
@@ -383,6 +390,9 @@ func (s *Server) handleCreateReviewRun(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: createdAtPtr, Draft: ghPR.GetDraft(),
 	}
 	job, err := s.poller.PrepareReviewJob(pr, request.Config, true, "api_v1", &user.ID)
+	if err == nil {
+		job.SkipPublish = !request.publish()
+	}
 	if err != nil {
 		var validationErr *runconfig.ValidationError
 		if errors.As(err, &validationErr) {
