@@ -170,7 +170,10 @@ type Poller struct {
 	// by runLeaderElection and read by the poll loop. Empty holderID disables
 	// election (single-process tests that call poll() directly are unaffected,
 	// since election only gates Start()'s loop).
-	holderID     string
+	holderID string
+	// generation is this instance's boot time; leadership is fenced on it so a
+	// redeploy preempts the previous revision's still-running instance.
+	generation   int64
 	isLeaderFlag atomic.Bool
 }
 
@@ -318,7 +321,7 @@ func (p *Poller) updateLeadership(ctx context.Context) bool {
 	if p.holderID == "" {
 		return true
 	}
-	leader, err := p.db.TryAcquireOrRenewLeadership(p.holderID, leaderLeaseTTL)
+	leader, err := p.db.TryAcquireOrRenewLeadership(p.holderID, p.generation, leaderLeaseTTL)
 	if err != nil {
 		log.Printf("[LEADER] lease query failed, assuming leadership to avoid stalling polls: %v", err)
 		leader = true
@@ -361,6 +364,7 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		agentSpawner:     service.DefaultSpawner{},
 		lookPath:         osexec.LookPath,
 		holderID:         newHolderID(),
+		generation:       time.Now().UnixNano(),
 	}
 	agentConcurrent := cfg.AgentMaxConcurrent
 	if agentConcurrent <= 0 {
@@ -1022,9 +1026,13 @@ func (p *Poller) Start(ctx context.Context) {
 	}
 
 	// Acquire/renew leadership once synchronously so the initial poll reflects it,
-	// then keep the lease fresh in the background.
-	p.updateLeadership(ctx)
-	go p.runLeaderElection(ctx)
+	// then keep the lease fresh in the background. Instances that never poll
+	// stay out of the election entirely: a local benchmark server on the shared
+	// database must not hold the lease while doing no work.
+	if !p.cfg.DisablePolling {
+		p.updateLeadership(ctx)
+		go p.runLeaderElection(ctx)
+	}
 
 	// Run immediately on start (leader only) — unless polling is disabled
 	// outright. Benchmark and on-demand deployments set DISABLE_POLLING to

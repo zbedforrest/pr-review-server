@@ -1733,32 +1733,65 @@ func TestGormDB_Leadership_AcquireRenewExpireSteal(t *testing.T) {
 	defer db.Close()
 
 	ttl := 60 * time.Millisecond
+	gen := int64(100)
 
 	// A acquires an unheld lease.
-	ok, err := db.TryAcquireOrRenewLeadership("A", ttl)
+	ok, err := db.TryAcquireOrRenewLeadership("A", gen, ttl)
 	require.NoError(t, err)
 	assert.True(t, ok, "A should acquire an unheld lease")
 
-	// B cannot steal a valid lease.
-	ok, err = db.TryAcquireOrRenewLeadership("B", ttl)
+	// B (same generation) cannot steal a valid lease.
+	ok, err = db.TryAcquireOrRenewLeadership("B", gen, ttl)
 	require.NoError(t, err)
 	assert.False(t, ok, "B must not steal A's valid lease")
 
 	// A renews its own lease.
-	ok, err = db.TryAcquireOrRenewLeadership("A", ttl)
+	ok, err = db.TryAcquireOrRenewLeadership("A", gen, ttl)
 	require.NoError(t, err)
 	assert.True(t, ok, "A should renew its own lease")
 
 	// After expiry, B takes over.
 	time.Sleep(ttl + 80*time.Millisecond)
-	ok, err = db.TryAcquireOrRenewLeadership("B", ttl)
+	ok, err = db.TryAcquireOrRenewLeadership("B", gen, ttl)
 	require.NoError(t, err)
 	assert.True(t, ok, "B should acquire an expired lease")
 
 	// A can no longer steal B's now-valid lease.
-	ok, err = db.TryAcquireOrRenewLeadership("A", ttl)
+	ok, err = db.TryAcquireOrRenewLeadership("A", gen, ttl)
 	require.NoError(t, err)
 	assert.False(t, ok, "A must not steal B's valid lease")
+}
+
+// Deploys leave the previous revision's instance alive for up to the request
+// timeout. A newer boot generation must take the lease at once, and the older
+// instance must never get it back, even after the newer lease expires.
+func TestGormDB_Leadership_NewerGenerationPreemptsAndFencesOlder(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	ttl := 60 * time.Millisecond
+	oldGen, newGen := int64(100), int64(200)
+
+	ok, err := db.TryAcquireOrRenewLeadership("old", oldGen, ttl)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	ok, err = db.TryAcquireOrRenewLeadership("new", newGen, ttl)
+	require.NoError(t, err)
+	assert.True(t, ok, "a newer generation preempts a live older leader")
+
+	ok, err = db.TryAcquireOrRenewLeadership("old", oldGen, ttl)
+	require.NoError(t, err)
+	assert.False(t, ok, "the preempted older instance cannot renew")
+
+	time.Sleep(ttl + 80*time.Millisecond)
+	ok, err = db.TryAcquireOrRenewLeadership("old", oldGen, ttl)
+	require.NoError(t, err)
+	assert.False(t, ok, "an older generation never reacquires, even an expired lease")
+
+	ok, err = db.TryAcquireOrRenewLeadership("new", newGen, ttl)
+	require.NoError(t, err)
+	assert.True(t, ok, "the newest generation reacquires its expired lease")
 }
 
 func TestGormDB_SetUserHiddenForPR_SurvivesPollerWrites(t *testing.T) {

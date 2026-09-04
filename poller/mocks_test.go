@@ -313,7 +313,7 @@ type MockDatabase struct {
 	BatchPruneViaTeamsCalls [][]db.ViaTeamsPrune
 
 	// Leader election: nil func = always leader.
-	TryAcquireOrRenewLeadershipFunc func(holderID string, ttl time.Duration) (bool, error)
+	TryAcquireOrRenewLeadershipFunc func(holderID string, generation int64, ttl time.Duration) (bool, error)
 
 	// Error injection
 	DeletePRError          error
@@ -984,9 +984,9 @@ func (m *MockDatabase) GetUserPRViewsWithViaTeams(prIDs []int) ([]db.UserPRView,
 }
 
 // TryAcquireOrRenewLeadership: nil func = always leader (the default for tests).
-func (m *MockDatabase) TryAcquireOrRenewLeadership(holderID string, ttl time.Duration) (bool, error) {
+func (m *MockDatabase) TryAcquireOrRenewLeadership(holderID string, generation int64, ttl time.Duration) (bool, error) {
 	if m.TryAcquireOrRenewLeadershipFunc != nil {
-		return m.TryAcquireOrRenewLeadershipFunc(holderID, ttl)
+		return m.TryAcquireOrRenewLeadershipFunc(holderID, generation, ttl)
 	}
 	return true, nil
 }
