@@ -81,7 +81,7 @@ func (r Round) diff() roundDiff {
 	published := map[string]bool{}
 	var d roundDiff
 	for _, p := range r.Previous {
-		if p.Kind != db.PublishedKindFinding {
+		if p.Kind != db.PublishedKindFinding && p.Kind != db.PublishedKindAnnotation {
 			continue
 		}
 		published[p.Fingerprint] = true
@@ -132,13 +132,14 @@ func shortSHA(sha string) string {
 }
 
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
 	if max <= 3 {
-		return s[:max]
+		return string(r[:max])
 	}
-	return s[:max-3] + "..."
+	return string(r[:max-3]) + "..."
 }
 
 func firstLine(s string) string {
@@ -230,7 +231,7 @@ func RenderSummary(r Round, sel Selection) string {
 	if r.DashboardURL != "" {
 		fmt.Fprintf(&foot, ` · <a href="%s">dashboard</a>`, r.DashboardURL)
 	}
-	foot.WriteString(" · rule: 5 minus 2 per critical, minus 1 at 3+ medium, minus 1 per violated check</sub>\n")
+	foot.WriteString(" · rule: 5 minus 2 if any critical, minus 1 at 3+ medium, minus 1 per violated check</sub>\n")
 
 	truncRow := "| ... | | %d more, see dashboard | |\n"
 	if r.DashboardURL != "" {

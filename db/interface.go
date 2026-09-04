@@ -163,6 +163,10 @@ type FindingOutcome struct {
 const (
 	PublishedKindSummary = "summary" // the sticky summary comment; Fingerprint == kind
 	PublishedKindFinding = "finding" // an inline review comment for one finding
+	// PublishedKindAnnotation tracks a finding that was summarized but not
+	// posted inline (below the severity floor, over the cap, or outside a
+	// hunk), so round diffs stay stable.
+	PublishedKindAnnotation = "annotation"
 
 	PublishedStateOpen      = "open"
 	PublishedStateResolved  = "resolved"  // thread resolved after the finding disappeared

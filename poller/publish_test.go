@@ -72,3 +72,11 @@ func TestBuildPublishRound_NoBaseURLDisablesLinks(t *testing.T) {
 	assert.Empty(t, r.AgentLinkBase)
 	assert.Empty(t, r.DashboardURL)
 }
+
+func TestBuildPublishRound_CarriesRequiredCheckViolation(t *testing.T) {
+	pr := github.PullRequest{Owner: "a", Repo: "b", Number: 1}
+	quiet := buildPublishRound(pr, payload.Payload{RequiredChecks: &payload.RequiredChecksInfo{Issued: 2, Violated: 0}}, nil, nil, nil, "")
+	assert.False(t, quiet.RequiredCheckViolated)
+	loud := buildPublishRound(pr, payload.Payload{RequiredChecks: &payload.RequiredChecksInfo{Issued: 2, Violated: 1}}, nil, nil, nil, "")
+	assert.True(t, loud.RequiredCheckViolated)
+}

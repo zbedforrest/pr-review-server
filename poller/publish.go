@@ -75,6 +75,8 @@ func buildPublishRound(pr github.PullRequest, pl payload.Payload, comments []git
 		GreptileOnly: greptileOnly,
 		Previous:     previous,
 		Commentable:  commentable,
+
+		RequiredCheckViolated: pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0,
 	}
 	if base := strings.TrimRight(baseURL, "/"); base != "" {
 		r.AgentLinkBase = fmt.Sprintf("%s/go/agent?o=%s&r=%s&n=%d", base, pr.Owner, pr.Repo, pr.Number)
@@ -103,8 +105,20 @@ func (a ghPublishAdapter) EditIssueComment(ctx context.Context, owner, repo stri
 	return a.c.EditIssueComment(ctx, owner, repo, commentID, body)
 }
 
+func (a ghPublishAdapter) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]publisher.IssueComment, error) {
+	infos, err := a.c.ListIssueComments(ctx, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]publisher.IssueComment, len(infos))
+	for i, c := range infos {
+		out[i] = publisher.IssueComment{ID: c.ID, Body: c.Body}
+	}
+	return out, nil
+}
+
 func (p *Poller) publishPolicy() publisher.Policy {
-	pol := publisher.Policy{InlineCap: 5, InlineMinSeverity: "medium"}
+	pol := publisher.DefaultPolicy()
 	if v, err := p.db.GetSetting(settingPublishInlineCap); err == nil {
 		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
 			pol.InlineCap = n

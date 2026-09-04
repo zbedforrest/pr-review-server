@@ -19,8 +19,16 @@ type Policy struct {
 	InlineMinSeverity string
 }
 
+// DefaultPolicy is the shipped posting policy: five inline comments per
+// round, medium severity and above.
+func DefaultPolicy() Policy {
+	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity}
+}
+
+// withDefaults fills unset fields only. A zero cap is a real setting (post
+// nothing inline); negative means unset.
 func (p Policy) withDefaults() Policy {
-	if p.InlineCap <= 0 {
+	if p.InlineCap < 0 {
 		p.InlineCap = DefaultInlineCap
 	}
 	if p.InlineMinSeverity == "" {

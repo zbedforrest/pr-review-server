@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"pr-review-server/db"
@@ -15,10 +16,16 @@ type ReviewCommentInput struct {
 	Body      string
 }
 
+type IssueComment struct {
+	ID   int64
+	Body string
+}
+
 type GitHub interface {
 	CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []ReviewCommentInput) (int64, []int64, error)
 	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (int64, error)
 	EditIssueComment(ctx context.Context, owner, repo string, commentID int64, body string) error
+	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
 }
 
 type Ledger interface {
@@ -67,7 +74,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		switch row.Kind {
 		case db.PublishedKindSummary:
 			summaryRow = row
-		case db.PublishedKindFinding:
+		case db.PublishedKindFinding, db.PublishedKindAnnotation:
 			published[row.Fingerprint] = row
 		}
 	}
@@ -78,8 +85,10 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		}
 	}
 	alreadyPublished := make(map[string]bool, len(published))
-	for id := range published {
-		alreadyPublished[id] = true
+	for id, row := range published {
+		if row.Kind == db.PublishedKindFinding {
+			alreadyPublished[id] = true
+		}
 	}
 
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy)
@@ -94,21 +103,35 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA, Rounds: r.RoundNumber,
 		State: db.PublishedStateOpen, PublishedAt: now,
 	}
+	summaryCommentID := int64(0)
 	if summaryRow != nil {
-		if err := p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryRow.CommentID, summary); err != nil {
-			return rep, fmt.Errorf("edit summary comment: %w", err)
-		}
-		rep.SummaryCommentID = summaryRow.CommentID
-		summaryLedger.CommentID = summaryRow.CommentID
+		summaryCommentID = summaryRow.CommentID
 		summaryLedger.ReviewedSHA = summaryRow.ReviewedSHA
-	} else {
+	} else if existing, err := p.GH.ListIssueComments(ctx, r.Owner, r.Repo, r.Number); err == nil {
+		for _, c := range existing {
+			if strings.Contains(c.Body, SummaryMarker) {
+				summaryCommentID = c.ID
+				break
+			}
+		}
+	}
+	if summaryCommentID != 0 {
+		if err := p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryCommentID, summary); err != nil {
+			if !isNotFound(err) {
+				return rep, fmt.Errorf("edit summary comment: %w", err)
+			}
+			summaryCommentID = 0
+		}
+	}
+	if summaryCommentID == 0 {
 		id, err := p.GH.CreateIssueComment(ctx, r.Owner, r.Repo, r.Number, summary)
 		if err != nil {
 			return rep, fmt.Errorf("create summary comment: %w", err)
 		}
-		rep.SummaryCommentID = id
-		summaryLedger.CommentID = id
+		summaryCommentID = id
 	}
+	rep.SummaryCommentID = summaryCommentID
+	summaryLedger.CommentID = summaryCommentID
 	if err := p.Ledger.UpsertPublishedFinding(summaryLedger); err != nil {
 		return rep, fmt.Errorf("record summary comment: %w", err)
 	}
@@ -141,7 +164,24 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		}
 	}
 
+	for _, f := range sel.Annotations {
+		if row, ok := published[f.ID]; ok && row.Kind == db.PublishedKindFinding {
+			continue
+		}
+		if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
+			RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
+			Kind: db.PublishedKindAnnotation, Fingerprint: f.ID,
+			SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
+			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
+			State: db.PublishedStateOpen, PublishedAt: now,
+		}); err != nil {
+			return rep, fmt.Errorf("record annotation %s: %w", f.ID, err)
+		}
+	}
+
+	present := map[string]bool{}
 	for _, f := range r.currentFindings() {
+		present[f.ID] = true
 		row, ok := published[f.ID]
 		if !ok || row.LastSeenSHA == r.HeadSHA {
 			continue
@@ -149,8 +189,22 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		updated := *row
 		updated.LastSeenSHA = r.HeadSHA
 		if err := p.Ledger.UpsertPublishedFinding(&updated); err != nil {
-			return rep, fmt.Errorf("update last seen for %s: %w", f.ID, err)
+			return rep, fmt.Errorf("refresh finding %s: %w", f.ID, err)
+		}
+	}
+	for id, row := range published {
+		if present[id] || row.State != db.PublishedStateOpen {
+			continue
+		}
+		resolved := *row
+		resolved.State = db.PublishedStateResolved
+		if err := p.Ledger.UpsertPublishedFinding(&resolved); err != nil {
+			return rep, fmt.Errorf("resolve finding %s: %w", id, err)
 		}
 	}
 	return rep, nil
+}
+
+func isNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "404")
 }

@@ -101,7 +101,7 @@ func TestSelectExcludesSummaryCheckAndPublished(t *testing.T) {
 		f("pub", "critical", "a.go", 10, "already posted"),
 		f("new", "medium", "a.go", 20, "fresh"),
 	}
-	sel := Select(findings, map[string]bool{"pub": true}, commentable, Policy{})
+	sel := Select(findings, map[string]bool{"pub": true}, commentable, DefaultPolicy())
 	if got := ids(sel.Inline); len(got) != 1 || got[0] != "new" {
 		t.Fatalf("Inline = %v, want [new]", got)
 	}
@@ -119,7 +119,7 @@ func TestSelectSeverityFloorAndHunkGate(t *testing.T) {
 		f("noline", "critical", "a.go", 0, "no line"),
 		f("ok", "medium", "a.go", 10, "fine"),
 	}
-	sel := Select(findings, nil, commentable, Policy{})
+	sel := Select(findings, nil, commentable, DefaultPolicy())
 	if got := ids(sel.Inline); len(got) != 1 || got[0] != "ok" {
 		t.Fatalf("Inline = %v, want [ok]", got)
 	}
@@ -158,7 +158,7 @@ func TestSelectCapOrdering(t *testing.T) {
 
 func TestSelectMinSeverityLowAdmitsLow(t *testing.T) {
 	commentable := map[string]map[int]bool{"a.go": {10: true}}
-	sel := Select([]payload.Finding{f("low", "low", "a.go", 10, "x")}, nil, commentable, Policy{InlineMinSeverity: "low"})
+	sel := Select([]payload.Finding{f("low", "low", "a.go", 10, "x")}, nil, commentable, Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: "low"})
 	if len(sel.Inline) != 1 {
 		t.Fatalf("Inline = %v, want [low]", ids(sel.Inline))
 	}

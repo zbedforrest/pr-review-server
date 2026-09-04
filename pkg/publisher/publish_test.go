@@ -11,13 +11,15 @@ import (
 )
 
 type fakeGitHub struct {
-	reviews        []fakeReview
-	issueCreates   []string
-	issueEdits     map[int64]string
-	nextCommentID  int64
-	nextIssueID    int64
-	nextReviewID   int64
-	createReviewSH string
+	reviews               []fakeReview
+	issueCreates          []string
+	issueEdits            map[int64]string
+	existingIssueComments []IssueComment
+	editErr               error
+	nextCommentID         int64
+	nextIssueID           int64
+	nextReviewID          int64
+	createReviewSH        string
 }
 
 type fakeReview struct {
@@ -49,8 +51,15 @@ func (g *fakeGitHub) CreateIssueComment(_ context.Context, _, _ string, _ int, b
 }
 
 func (g *fakeGitHub) EditIssueComment(_ context.Context, _, _ string, id int64, body string) error {
+	if g.editErr != nil {
+		return g.editErr
+	}
 	g.issueEdits[id] = body
 	return nil
+}
+
+func (g *fakeGitHub) ListIssueComments(_ context.Context, _, _ string, _ int) ([]IssueComment, error) {
+	return g.existingIssueComments, nil
 }
 
 type fakeLedger struct {
@@ -77,7 +86,7 @@ func (l *fakeLedger) get(kind, fp string) *db.PublishedFinding { return l.rows[k
 
 func publishRound(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round) Report {
 	t.Helper()
-	p := &Publisher{GH: gh, Ledger: ledger, Now: func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }}
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: DefaultPolicy(), Now: func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }}
 	rep, err := p.Publish(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
@@ -179,7 +188,7 @@ func TestPublishRoundTwo(t *testing.T) {
 		t.Fatalf("round 2 must not create a new summary; creates=%d", len(gh.issueCreates))
 	}
 	edited, ok := gh.issueEdits[501]
-	if !ok || !strings.Contains(edited, "**Since last review:** 1 new · 1 still open · 1 fixed") {
+	if !ok || !strings.Contains(edited, "**Since last review:** 1 new · 1 still open · 3 fixed") {
 		t.Fatalf("summary edit wrong: ok=%v body=%s", ok, edited)
 	}
 	if !strings.Contains(edited, "Reviews (2)") {
@@ -195,7 +204,7 @@ func TestPublishRoundTwo(t *testing.T) {
 	if len(rv.comments) != 1 || !strings.Contains(rv.comments[0].Body, FindingMarker("m3")) {
 		t.Fatalf("round 2 review comments = %+v, want only m3", rv.comments)
 	}
-	if rep.SummaryCommentID != 501 || rep.ReviewID != 9002 || rep.InlinePosted != 1 || rep.Annotations != 0 || rep.StillOpen != 1 || rep.Fixed != 1 {
+	if rep.SummaryCommentID != 501 || rep.ReviewID != 9002 || rep.InlinePosted != 1 || rep.Annotations != 0 || rep.StillOpen != 1 || rep.Fixed != 3 {
 		t.Errorf("report = %+v", rep)
 	}
 
@@ -204,8 +213,8 @@ func TestPublishRoundTwo(t *testing.T) {
 		t.Errorf("still-open c1 row = %+v", c1)
 	}
 	m1 := ledger.get(db.PublishedKindFinding, "m1")
-	if m1.LastSeenSHA != "sha-round-1" || m1.State != db.PublishedStateOpen {
-		t.Errorf("fixed m1 row must be left untouched: %+v", m1)
+	if m1.LastSeenSHA != "sha-round-1" || m1.State != db.PublishedStateResolved || m1.CommentID != 1002 {
+		t.Errorf("fixed m1 row must be resolved with its comment id kept: %+v", m1)
 	}
 	m3 := ledger.get(db.PublishedKindFinding, "m3")
 	if m3 == nil || m3.CommentID != 1003 || m3.ReviewID != 9002 || m3.ReviewedSHA != "sha-round-2" {

@@ -28,7 +28,7 @@ func baseRound() Round {
 
 func TestRenderSummaryRoundOne(t *testing.T) {
 	r := baseRound()
-	sel := Select(r.Findings, nil, map[string]map[int]bool{"path/file.go": {12: true}}, Policy{})
+	sel := Select(r.Findings, nil, map[string]map[int]bool{"path/file.go": {12: true}}, DefaultPolicy())
 	out := RenderSummary(r, sel)
 
 	mustContain := []string{
@@ -70,7 +70,7 @@ func TestRenderSummaryRoundTwoCountsAndGreptile(t *testing.T) {
 		{Title: "Missing await", File: "y.ts", Line: 3, Severity: "medium", CommentID: 555},
 		{Title: "Unlinked note", File: "z.ts", Line: 9, Severity: "low"},
 	}
-	sel := Select(r.Findings, nil, nil, Policy{})
+	sel := Select(r.Findings, nil, nil, DefaultPolicy())
 	out := RenderSummary(r, sel)
 
 	mustContain := []string{
@@ -114,7 +114,7 @@ func TestRenderSummaryTruncates(t *testing.T) {
 	for i := 0; i < 2000; i++ {
 		r.Findings = append(r.Findings, f(fmt.Sprintf("id%d", i), "medium", fmt.Sprintf("dir/very/long/path/to/file%04d.go", i), i+1, strings.Repeat("x", 120)))
 	}
-	out := RenderSummary(r, Select(r.Findings, nil, nil, Policy{}))
+	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
 	if len(out) > SummaryMaxChars {
 		t.Fatalf("summary length %d exceeds cap %d", len(out), SummaryMaxChars)
 	}
@@ -204,7 +204,7 @@ func TestRenderInline_StripsProvenanceNoteFromTitleAndBody(t *testing.T) {
 func TestRenderSummary_TableUsesRealFirstLineNotProvenanceNote(t *testing.T) {
 	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 1,
 		Findings: []payload.Finding{f("x", "medium", "a.go", 3, provenanceNote+"Treating raw as context is wrong.")}}
-	out := RenderSummary(r, Select(r.Findings, nil, nil, Policy{}))
+	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
 	if strings.Contains(out, "retained by reconciliation") || !strings.Contains(out, "Treating raw as context is wrong.") {
 		t.Fatalf("summary table row wrong:\n%s", out)
 	}
@@ -216,7 +216,7 @@ func TestRenderSummary_RequestChangesVerdictCapsConfidence(t *testing.T) {
 			f("sum", "unknown", "SUMMARY", 0, "**Verdict: request changes.** Two mediums need attention."),
 			f("x", "medium", "a.go", 3, "Something."),
 		}}
-	out := RenderSummary(r, Select(r.Findings, nil, nil, Policy{}))
+	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
 	if !strings.Contains(out, "merge confidence 3/5") {
 		t.Fatalf("a request-changes verdict must cap confidence at 3:\n%s", out)
 	}
