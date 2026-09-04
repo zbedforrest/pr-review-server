@@ -288,7 +288,9 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string) str
 	b.WriteString(body + "\n")
 
 	if c := f.FindingContract; c != nil && c.Falsifiability == "falsifiable" && c.FalsifiableCondition != nil && c.ExpectedObservable != nil {
-		fmt.Fprintf(&b, "\n**How to verify:** %s; expect %s.\n", strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), "."), strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), "."))
+		condition := strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), ".")
+		observable := strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), ".")
+		fmt.Fprintf(&b, "\n**How to verify:** %s. Expected: %s.\n", condition, observable)
 	}
 
 	var subs []string

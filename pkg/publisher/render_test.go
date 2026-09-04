@@ -139,7 +139,7 @@ func TestRenderInlineFull(t *testing.T) {
 		FindingMarker("a.go:0:abc"),
 		"**[CRITICAL] Nil deref when cfg is missing.**",
 		"The config loader returns nil on a missing file and the caller dereferences it.",
-		"**How to verify:** Run the service with no config file; expect a panic in loadConfig.",
+		"**How to verify:** Run the service with no config file. Expected: a panic in loadConfig.",
 		"<sub>Source: PRism · Both</sub>",
 		`<sub><a href="https://prism.example/go/agent?o=acme&r=example&n=7&f=a.go%3A0%3Aabc&p=pkg%2Fa.go&l=3">Fix with agent</a></sub>`,
 	}
@@ -241,5 +241,23 @@ func TestRenderInline_TitleFromAlreadyBoldSentenceIsNotDoubleBold(t *testing.T) 
 	}
 	if strings.Count(out, "The refresh loop upserts a stale snapshot.") != 1 {
 		t.Fatalf("title sentence must not be repeated in the body:\n%s", out)
+	}
+}
+
+
+func TestRenderInline_HowToVerifyReadsWellWithConditionalObservable(t *testing.T) {
+	fd := f("x", "medium", "a.go", 3, "Legacy path now verifies TLS.")
+	fd.FindingContract = &types.FindingContract{
+		Falsifiability:       "falsifiable",
+		FalsifiableCondition: strp("Issue a POST to the arbiter endpoint with verify enabled."),
+		ExpectedObservable:   strp("If the finding is wrong the request completes with a 2xx; if it is right httpx raises ConnectError."),
+	}
+	out := RenderInline(fd, "prism-only", "")
+	want := "**How to verify:** Issue a POST to the arbiter endpoint with verify enabled. Expected: If the finding is wrong the request completes with a 2xx; if it is right httpx raises ConnectError."
+	if !strings.Contains(out, want) {
+		t.Fatalf("how-to-verify line:\n%s", out)
+	}
+	if strings.Contains(out, "expect If") {
+		t.Fatalf("must not glue 'expect' onto a conditional sentence:\n%s", out)
 	}
 }
