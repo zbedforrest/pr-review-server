@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1182,17 +1183,29 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"review_n_requests":         nRequests,
 			"generate_html":             generateHTML,
 		}
+		s.addPublishSettings(response)
 		_ = json.NewEncoder(w).Encode(response) // nolint:errcheck
 
 	case http.MethodPost, http.MethodPatch:
 		// Update settings
 		var req struct {
-			AutoReviewRequestedPRs *bool `json:"auto_review_requested_prs"`
-			ReviewNRequests        *int  `json:"review_n_requests"`
-			GenerateHTML           *bool `json:"generate_html"`
+			AutoReviewRequestedPRs   *bool   `json:"auto_review_requested_prs"`
+			ReviewNRequests          *int    `json:"review_n_requests"`
+			GenerateHTML             *bool   `json:"generate_html"`
+			PublishEnabledAuthors    *string `json:"publish_enabled_authors"`
+			PublishInlineCap         *int    `json:"publish_inline_cap"`
+			PublishInlineMinSeverity *string `json:"publish_inline_min_severity"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.PublishInlineMinSeverity != nil && !publishSeverities[strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))] {
+			http.Error(w, "publish_inline_min_severity must be critical, medium, or low", http.StatusBadRequest)
+			return
+		}
+		if req.PublishInlineCap != nil && *req.PublishInlineCap < 0 {
+			http.Error(w, "publish_inline_cap must be zero or greater", http.StatusBadRequest)
 			return
 		}
 
@@ -1219,6 +1232,26 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[SETTINGS] Updated generate_html to: %v", *req.GenerateHTML)
 		}
 
+		publishUpdates := map[string]*string{}
+		if req.PublishEnabledAuthors != nil {
+			publishUpdates[settingPublishEnabledAuthors] = req.PublishEnabledAuthors
+		}
+		if req.PublishInlineCap != nil {
+			v := strconv.Itoa(*req.PublishInlineCap)
+			publishUpdates[settingPublishInlineCap] = &v
+		}
+		if req.PublishInlineMinSeverity != nil {
+			v := strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))
+			publishUpdates[settingPublishInlineMinSeverity] = &v
+		}
+		for key, value := range publishUpdates {
+			if err := s.db.SetSetting(key, *value); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
+				return
+			}
+			log.Printf("[SETTINGS] Updated %s to: %q", key, *value)
+		}
+
 		// Return updated settings
 		autoReview, _ := s.db.GetAutoReviewRequestedPRs()
 		nRequests, _ := s.db.GetReviewNRequests()
@@ -1229,6 +1262,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"review_n_requests":         nRequests,
 			"generate_html":             generateHTML,
 		}
+		s.addPublishSettings(response)
 		_ = json.NewEncoder(w).Encode(response) // nolint:errcheck
 
 	default:
