@@ -172,7 +172,10 @@ func (s *Service) runPrompts(ctx context.Context, cfg PerformReviewConfig, promp
 			s.runSinglePrompt(ctx, cfg, prompt, requestNum, n, parse, resultsChan, errorChan, rawResponseChan, result, &firstErrorMu)
 		}(i+1, p)
 		if i < n-1 {
-			time.Sleep(stagger)
+			select {
+			case <-ctx.Done():
+			case <-time.After(stagger):
+			}
 		}
 	}
 

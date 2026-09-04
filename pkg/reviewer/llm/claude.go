@@ -120,8 +120,11 @@ func (c *ClaudeClient) GetReviewStream(prompt string, w io.Writer) (string, int3
 
 		switch eventVariant := event.AsAny().(type) {
 		case anthropic.MessageStartEvent:
-			promptTokens = int32(eventVariant.Message.Usage.InputTokens)
-			candidatesTokens = int32(eventVariant.Message.Usage.OutputTokens)
+			// input_tokens excludes cached tokens once cache_control is set;
+			// include cache writes and reads for an honest input count.
+			u := eventVariant.Message.Usage
+			promptTokens = int32(u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens)
+			candidatesTokens = int32(u.OutputTokens)
 		case anthropic.ContentBlockDeltaEvent:
 			switch deltaVariant := eventVariant.Delta.AsAny().(type) {
 			case anthropic.TextDelta:
