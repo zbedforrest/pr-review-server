@@ -334,3 +334,30 @@ type FindingOutcomeModel struct {
 func (FindingOutcomeModel) TableName() string {
 	return "finding_outcomes"
 }
+
+// PublishedFindingModel is the GitHub publication ledger: one row per
+// (owner, repo, pr, fingerprint) for the life of the PR, overwritten on each
+// round so it always reflects the current posted state. See db.PublishedFinding.
+type PublishedFindingModel struct {
+	ID           uint      `gorm:"primaryKey;autoIncrement"`
+	RepoOwner    string    `gorm:"size:255;not null;uniqueIndex:idx_published_findings_unique"`
+	RepoName     string    `gorm:"size:255;not null;uniqueIndex:idx_published_findings_unique"`
+	PRNumber     int       `gorm:"not null;uniqueIndex:idx_published_findings_unique"`
+	Fingerprint  string    `gorm:"size:512;not null;uniqueIndex:idx_published_findings_unique"`
+	Kind         string    `gorm:"size:16;not null"`
+	SourceTag    string    `gorm:"size:32"`
+	Severity     string    `gorm:"size:16"`
+	ReviewedSHA  string    `gorm:"size:40;not null"`
+	LastSeenSHA  string    `gorm:"size:40;not null"`
+	CommentID    int64     `gorm:"not null;default:0"`
+	ThreadNodeID string    `gorm:"size:64"`
+	ReviewID     int64     `gorm:"not null;default:0"`
+	CheckRunID   int64     `gorm:"not null;default:0"`
+	State        string    `gorm:"size:16;not null"`
+	PublishedAt  time.Time `gorm:"not null;index"`
+}
+
+// TableName specifies the table name for PublishedFindingModel
+func (PublishedFindingModel) TableName() string {
+	return "published_findings"
+}
