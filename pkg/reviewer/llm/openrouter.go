@@ -17,7 +17,9 @@ const (
 	DefaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
 	DefaultOpenRouterModel   = "openai/gpt-5.6-sol"
 
-	openRouterRequestTimeout  = 15 * time.Minute
+	openRouterRequestTimeout = 15 * time.Minute
+	// Explicit output cap; without it the routed provider's default applies.
+	openRouterMaxTokens       = 32000
 	openRouterValidateTimeout = 60 * time.Second
 )
 
@@ -107,8 +109,9 @@ func (c *OpenRouterClient) GetReview(prompt string) (string, int32, int32, int32
 	defer cancel()
 
 	return c.chatCompletion(ctx, openRouterChatRequest{
-		Model:    c.model,
-		Messages: []openRouterMessage{{Role: "user", Content: prompt}},
+		Model:     c.model,
+		Messages:  []openRouterMessage{{Role: "user", Content: prompt}},
+		MaxTokens: openRouterMaxTokens,
 	}, true)
 }
 
