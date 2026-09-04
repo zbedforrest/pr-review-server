@@ -166,8 +166,8 @@ func TestRenderInlineMinimal(t *testing.T) {
 	if strings.Contains(out, "Fix with agent") {
 		t.Errorf("empty agent link base must omit the agent link\n%s", out)
 	}
-	if strings.Count(out, "Single sentence only.") != 2 {
-		t.Errorf("single-sentence comment should appear as both title and body\n%s", out)
+	if strings.Count(out, "Single sentence only.") != 1 {
+		t.Errorf("a single-sentence comment is the headline and nothing else\n%s", out)
 	}
 }
 

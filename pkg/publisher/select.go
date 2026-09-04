@@ -6,8 +6,10 @@ import (
 	"pr-review-server/pkg/reviewer/payload"
 )
 
+// Greptile posts about half an inline comment per PR; the cap and the
+// current-impact gate below are what keep PRism in that range.
 const (
-	DefaultInlineCap         = 5
+	DefaultInlineCap         = 3
 	DefaultInlineMinSeverity = "medium"
 
 	summaryFile = "SUMMARY"
@@ -98,7 +100,7 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 		if !Publishable(f) || alreadyPublished[f.ID] {
 			continue
 		}
-		if severityRank(f.Severity) >= minRank && f.Line > 0 && commentable[f.File][f.Line] {
+		if severityRank(f.Severity) >= minRank && f.Line > 0 && commentable[f.File][f.Line] && worthInline(f) {
 			candidates = append(candidates, f)
 		} else {
 			rest = append(rest, f)
@@ -115,4 +117,16 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 	sortBySeverity(rest)
 	sel.Annotations = rest
 	return sel
+}
+
+// worthInline is the Greptile-style bar for occupying a reviewer's diff view:
+// the agent must assert an impact that exists today on a behavior or security
+// finding. Latent hazards, design and test notes, and anything with unknown
+// materiality stay in the folded summary table.
+func worthInline(f payload.Finding) bool {
+	c := f.FindingContract
+	if c == nil || f.FindingContractStatus != "valid" || c.Materiality != "current_impact" {
+		return false
+	}
+	return c.FindingKind == "production_behavior" || c.FindingKind == "security_risk"
 }
