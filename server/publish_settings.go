@@ -3,6 +3,8 @@ package server
 import (
 	"strconv"
 	"strings"
+
+	"pr-review-server/pkg/publisher"
 )
 
 // GitHub publication settings, shared with the poller by key name. Defaults
@@ -12,8 +14,6 @@ const (
 	settingPublishInlineCap         = "publish_inline_cap"
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"
 
-	defaultPublishInlineCap         = 5
-	defaultPublishInlineMinSeverity = "medium"
 )
 
 var publishSeverities = map[string]bool{"critical": true, "medium": true, "low": true}
@@ -22,7 +22,7 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 	authors, _ := s.db.GetSetting(settingPublishEnabledAuthors)
 	response[settingPublishEnabledAuthors] = authors
 
-	cap := defaultPublishInlineCap
+	cap := publisher.DefaultInlineCap
 	if v, err := s.db.GetSetting(settingPublishInlineCap); err == nil {
 		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
 			cap = n
@@ -30,7 +30,7 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 	}
 	response[settingPublishInlineCap] = cap
 
-	sev := defaultPublishInlineMinSeverity
+	sev := publisher.DefaultInlineMinSeverity
 	if v, err := s.db.GetSetting(settingPublishInlineMinSeverity); err == nil && publishSeverities[strings.TrimSpace(v)] {
 		sev = strings.TrimSpace(v)
 	}
