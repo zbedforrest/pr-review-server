@@ -39,7 +39,7 @@ func TestSettings_PublishKeysDefaultToDisabled(t *testing.T) {
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, "", got["publish_enabled_authors"])
-	assert.Equal(t, float64(5), got["publish_inline_cap"])
+	assert.Equal(t, float64(3), got["publish_inline_cap"])
 	assert.Equal(t, "medium", got["publish_inline_min_severity"])
 }
 
