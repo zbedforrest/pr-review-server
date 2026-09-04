@@ -100,7 +100,7 @@ type PRResponse struct {
 	ReviewHTMLPath  string   `json:"review_html_path"`
 	GitHubURL       string   `json:"github_url"`
 	ReviewURL       string   `json:"review_url"`
-	Status          string   `json:"status"` // "pending", "generating", "completed", "error"
+	Status          string   `json:"status"` // "pending", "generating", "agent_reviewing", "completed", "error"
 	Title           string   `json:"title"`
 	Author          string   `json:"author"`
 	GeneratingSince *string  `json:"generating_since"`
@@ -910,7 +910,7 @@ func (s *Server) buildStatusSnapshot(ctx context.Context) (*StatusSnapshot, erro
 		switch pr.Status {
 		case "completed":
 			counts.Completed++
-		case "generating":
+		case "generating", "agent_reviewing":
 			counts.Generating++
 		case "pending":
 			counts.Pending++
