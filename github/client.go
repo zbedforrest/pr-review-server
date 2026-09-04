@@ -635,7 +635,7 @@ func (c *Client) BatchGetPRReviewData(ctx context.Context, prs []PullRequest) (m
 		mu      sync.Mutex
 		results = make(map[string]*PRReviewData)
 		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 5) // limit to 10 concurrent GitHub API calls
+		sem     = make(chan struct{}, 5) // limit to 5 concurrent GitHub API calls
 	)
 
 	for repoKey, repoPRs := range prsByRepo {
@@ -1305,16 +1305,32 @@ func (c *Client) GetPRReviews(token, owner, repo string, prNumber int) ([]Review
 func (c *Client) GetPRComments(token, owner, repoName string, prNumber int) ([]PRComment, error) {
 	ctx := context.Background()
 
-	// Issue comments
-	issueComments, _, err := c.gh.Issues.ListComments(ctx, owner, repoName, prNumber, nil)
-	if err != nil {
-		return nil, err
+	var issueComments []*github.IssueComment
+	issueOpts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		page, resp, err := c.gh.Issues.ListComments(ctx, owner, repoName, prNumber, issueOpts)
+		if err != nil {
+			return nil, err
+		}
+		issueComments = append(issueComments, page...)
+		if resp.NextPage == 0 {
+			break
+		}
+		issueOpts.Page = resp.NextPage
 	}
 
-	// Review comments
-	reviewComments, _, err := c.gh.PullRequests.ListComments(ctx, owner, repoName, prNumber, nil)
-	if err != nil {
-		return nil, err
+	var reviewComments []*github.PullRequestComment
+	reviewOpts := &github.PullRequestListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		page, resp, err := c.gh.PullRequests.ListComments(ctx, owner, repoName, prNumber, reviewOpts)
+		if err != nil {
+			return nil, err
+		}
+		reviewComments = append(reviewComments, page...)
+		if resp.NextPage == 0 {
+			break
+		}
+		reviewOpts.Page = resp.NextPage
 	}
 
 	var allComments []PRComment

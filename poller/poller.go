@@ -3638,6 +3638,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if aliasErr != nil {
 				log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical aliases: %v", job.RunID, aliasErr)
 			}
+			p.publishGitHubReview(prCtx, pr, sidecarBody)
 			verdict := service.VerdictFromComments(reviewResult.Comments)
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict)

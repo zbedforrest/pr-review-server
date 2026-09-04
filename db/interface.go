@@ -23,7 +23,7 @@ type PR struct {
 	LastCommitSHA   string
 	LastReviewedAt  *time.Time
 	ReviewHTMLPath  string
-	Status          string // "pending", "generating", "completed", "error"
+	Status          string // "pending", "generating", "agent_reviewing", "completed", "error"
 	GeneratingSince *time.Time
 	Title           string     // PR title from GitHub
 	Author          string     // PR author from GitHub
@@ -157,6 +157,45 @@ type FindingOutcome struct {
 	Reason      string
 	DecidedBy   string
 	DecidedAt   time.Time
+}
+
+// Published-finding kinds and states (GitHub publication ledger).
+const (
+	PublishedKindSummary = "summary" // the sticky summary comment; Fingerprint == kind
+	PublishedKindFinding = "finding" // an inline review comment for one finding
+	// PublishedKindAnnotation tracks a finding that was summarized but not
+	// posted inline (below the severity floor, over the cap, or outside a
+	// hunk), so round diffs stay stable.
+	PublishedKindAnnotation = "annotation"
+
+	PublishedStateOpen      = "open"
+	PublishedStateResolved  = "resolved"  // the finding stopped appearing in reviews
+	PublishedStateDismissed = "dismissed" // conceded in conversation or by reaction
+)
+
+// PublishedFinding records what PRism has posted to a PR on GitHub, one row
+// per (owner, repo, pr, fingerprint) for the life of the PR. ReviewedSHA is the
+// head at first publication and LastSeenSHA the most recent review that still
+// produced the finding; the gap between them drives "still open" reporting.
+type PublishedFinding struct {
+	ID           int
+	RepoOwner    string
+	RepoName     string
+	PRNumber     int
+	Kind         string
+	Fingerprint  string
+	SourceTag    string // prism-only | greptile-only | both
+	Severity     string
+	ReviewedSHA  string
+	LastSeenSHA  string
+	CommentID    int64
+	ThreadNodeID string
+	ReviewID     int64
+	CheckRunID   int64
+	State        string
+	// Rounds counts publication rounds; meaningful on the summary row only.
+	Rounds      int
+	PublishedAt time.Time
 }
 
 // TelemetryEvent represents a single telemetry event for creation

@@ -1,8 +1,6 @@
 package server
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +12,7 @@ import (
 
 	"pr-review-server/auth"
 	"pr-review-server/db"
+	"pr-review-server/pkg/reviewer/payload"
 )
 
 // Outcome-triage endpoints: record and list per-finding human triage
@@ -45,34 +44,6 @@ func findingOutcomesEnabled() bool {
 type findingOutcomeStore interface {
 	UpsertFindingOutcome(o *db.FindingOutcome) error
 	GetFindingOutcomesForPR(owner, repo string, prNumber int) ([]db.FindingOutcome, error)
-}
-
-// Fingerprint shape: <file>:<line/10>:<hex(sha256(prefix))[:12]> where
-// prefix = the first 120 runes of the comment lower-cased with whitespace
-// runs collapsed to single spaces. Line numbers drift when a PR is repushed
-// and comment tails vary between runs, so the line is bucketed and only a
-// normalized prefix of the comment is hashed — robust to regeneration, per
-// the outcome-triage design. Mirrored in benchmark/harvest_outcomes.py; keep
-// the two implementations in sync.
-const (
-	fingerprintLineBucket    = 10
-	fingerprintCommentPrefix = 120
-	fingerprintHashHexLen    = 12
-)
-
-// findingFingerprint computes the stable identity of a finding from its raw
-// (file, line, comment) triple. See the constant block above for the shape.
-func findingFingerprint(file string, line int, comment string) string {
-	norm := strings.Join(strings.Fields(strings.ToLower(comment)), " ")
-	if r := []rune(norm); len(r) > fingerprintCommentPrefix {
-		norm = string(r[:fingerprintCommentPrefix])
-	}
-	sum := sha256.Sum256([]byte(norm))
-	bucket := 0
-	if line > 0 {
-		bucket = line / fingerprintLineBucket
-	}
-	return fmt.Sprintf("%s:%d:%s", file, bucket, hex.EncodeToString(sum[:])[:fingerprintHashHexLen])
 }
 
 // Outcome vocabulary. "dismissed" additionally requires a non-empty reason —
@@ -230,7 +201,7 @@ func (s *Server) handleRecordFindingOutcome(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "line must be non-negative", http.StatusBadRequest)
 		return
 	}
-	fingerprint := findingFingerprint(req.File, req.Line, req.Comment)
+	fingerprint := payload.Fingerprint(req.File, req.Line, req.Comment)
 	if len(fingerprint) > 512 {
 		http.Error(w, "file path too long for a finding fingerprint (512 bytes max)", http.StatusBadRequest)
 		return
