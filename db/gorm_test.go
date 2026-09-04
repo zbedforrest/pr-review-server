@@ -1840,3 +1840,15 @@ func TestGormDB_SetUserHiddenForPR_NoViewRow(t *testing.T) {
 	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
 	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
 }
+
+func TestGormDB_SetSetting_CanClearToEmpty(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	require.NoError(t, db.SetSetting("publish_enabled_authors", "alice"))
+	require.NoError(t, db.SetSetting("publish_enabled_authors", ""))
+
+	got, err := db.GetSetting("publish_enabled_authors")
+	require.NoError(t, err)
+	assert.Equal(t, "", got, "an empty value must overwrite the previous one")
+}

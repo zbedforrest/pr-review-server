@@ -25,8 +25,9 @@ func (g *GormDB) GetSetting(key string) (string, error) {
 func (g *GormDB) SetSetting(key, value string) error {
 	setting := SettingModel{Key: key, Value: value}
 
-	// Use FirstOrCreate with Assign to update if exists
-	return g.db.Where("key = ?", key).Assign(SettingModel{Value: value}).FirstOrCreate(&setting).Error
+	// Assign with a map, not a struct: GORM skips zero-value struct fields, which
+	// made clearing a setting to "" a silent no-op.
+	return g.db.Where("key = ?", key).Assign(map[string]interface{}{"value": value}).FirstOrCreate(&setting).Error
 }
 
 // GetAutoReviewRequestedPRs returns whether to automatically review requested PRs
