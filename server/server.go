@@ -43,7 +43,7 @@ type PollerInterface interface {
 	GetLastPollTime() time.Time
 	GetPollingInterval() time.Duration
 	GetSecondsUntilNextPoll() int
-	ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool)
+	ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool, publish bool)
 	PrepareReviewJob(pr github.PullRequest, requested runconfig.Overrides, force bool, triggerSource string, requestedByUserID *int) (poller.ReviewJob, error)
 	ProcessReviewJob(ctx context.Context, job poller.ReviewJob) error
 	ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig.Policy, error)
@@ -710,7 +710,7 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 	if s.poller != nil {
 		// force=true on manual trigger: bypass the per-commit cache so a button
 		// click always regenerates (overwrites the previous review for this commit).
-		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, true)
+		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, true, true)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -746,6 +746,9 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 		// API/skill callers omit it: their reviews run but stay off the
 		// requester's dashboard.
 		Source string `json:"source"`
+		// Publish false keeps the review off GitHub (dashboard only). Nil
+		// means the default, which is to publish when the author is enabled.
+		Publish *bool `json:"publish"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[API] generate-review: bad request body: %v", err)
@@ -861,7 +864,7 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 	// force=true so the per-commit cache never short-circuits an explicit
 	// on-demand request. Background context: the review outlives this request.
 	if s.poller != nil {
-		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, headSHA, title, author, createdAtPtr, draft, true)
+		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, headSHA, title, author, createdAtPtr, draft, true, req.Publish == nil || *req.Publish)
 	}
 
 	// Return the deterministic, DB-independent URLs the review will be saved

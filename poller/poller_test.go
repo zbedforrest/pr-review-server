@@ -3541,7 +3541,7 @@ func TestProcessReviewImmediate_StartsReviewWithoutPoll(t *testing.T) {
 	ctx := context.Background()
 
 	// Call ProcessReviewImmediate
-	poller.ProcessReviewImmediate(ctx, "owner", "repo", 1, "abc123def456789012345678901234567890abcd", "Test PR", "author", nil, false, false)
+	poller.ProcessReviewImmediate(ctx, "owner", "repo", 1, "abc123def456789012345678901234567890abcd", "Test PR", "author", nil, false, false, true)
 
 	// PR should be tracked immediately (synchronous)
 	if !poller.IsReviewTracked("owner", "repo", 1) {
