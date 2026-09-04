@@ -75,13 +75,31 @@ type ReviewRunInfo struct {
 	// StartedAt is the first execution-attempt start. DurationMS therefore
 	// measures the complete run across any lease takeovers; per-attempt timing
 	// is stored in review_stage_attempts.
-	StartedAt   time.Time  `json:"started_at"`
-	CompletedAt time.Time  `json:"completed_at"`
-	DurationMS  int64      `json:"duration_ms"`
-	Models      []ModelUse `json:"models"`
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at"`
+	DurationMS  int64     `json:"duration_ms"`
+	// QueueWaitMS is the time between the job being tracked/queued and its
+	// execution start (dispatch, cache checks, and concurrency-slot waits).
+	// Omitted for runs recorded before the field existed or waits under 1ms.
+	QueueWaitMS int64 `json:"queue_wait_ms,omitempty"`
+	// StageTimings has one entry per pipeline stage that actually ran,
+	// ordered by start time. Additive — schema stays "1".
+	StageTimings []StageTiming `json:"stage_timings,omitempty"`
+	Models       []ModelUse    `json:"models"`
 	// Config is the immutable requested/effective configuration snapshot.
 	// It is omitted on legacy runs created before first-class run metadata.
 	Config *runconfig.Snapshot `json:"config,omitempty"`
+}
+
+// StageTiming is one pipeline stage's wall-clock measurement. Stages:
+// "first_pass" (aggregate across parallel samples), "first_pass_sample"
+// (one per sample, Invocation set), "classification", "summary", "gates",
+// "agent", "artifact_save".
+type StageTiming struct {
+	Stage      string    `json:"stage"`
+	Invocation int       `json:"invocation,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
+	DurationMS int64     `json:"duration_ms"`
 }
 
 func cloneString(value *string) *string {

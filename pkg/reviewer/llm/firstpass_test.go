@@ -64,20 +64,20 @@ func TestFirstPassTelemetry(t *testing.T) {
 }
 
 func TestNewFirstPassClient_ProviderSelection(t *testing.T) {
-	geminiClient, err := NewFirstPassClient(ProviderGemini, "dummy-key", "", "", false)
+	geminiClient, err := NewFirstPassClient(ProviderGemini, "dummy-key", "", "", "", false)
 	require.NoError(t, err)
 	assert.IsType(t, &Client{}, geminiClient)
 
-	defaultClient, err := NewFirstPassClient("", "dummy-key", "", "", false)
+	defaultClient, err := NewFirstPassClient("", "dummy-key", "", "", "", false)
 	require.NoError(t, err)
 	assert.IsType(t, &Client{}, defaultClient)
 
-	claudeClient, err := NewFirstPassClient(ProviderClaude, "dummy-key", "", "", false)
+	claudeClient, err := NewFirstPassClient(ProviderClaude, "dummy-key", "", "", "", false)
 	require.NoError(t, err)
 	require.IsType(t, &ClaudeClient{}, claudeClient)
 	assert.EqualValues(t, DefaultClaudeModel, claudeClient.(*ClaudeClient).model)
 
-	openRouterClient, err := NewFirstPassClient(ProviderOpenRouter, "dummy-key", "", "", false)
+	openRouterClient, err := NewFirstPassClient(ProviderOpenRouter, "dummy-key", "", "", "", false)
 	require.NoError(t, err)
 	require.IsType(t, &OpenRouterClient{}, openRouterClient)
 	assert.Equal(t, DefaultOpenRouterModel, openRouterClient.(*OpenRouterClient).model)
@@ -85,26 +85,69 @@ func TestNewFirstPassClient_ProviderSelection(t *testing.T) {
 }
 
 func TestNewFirstPassClient_ModelAndBaseURLOverrides(t *testing.T) {
-	claudeClient, err := NewFirstPassClient(ProviderClaude, "dummy-key", "claude-opus-5", "", false)
+	claudeClient, err := NewFirstPassClient(ProviderClaude, "dummy-key", "claude-opus-5", "", "", false)
 	require.NoError(t, err)
 	assert.EqualValues(t, "claude-opus-5", claudeClient.(*ClaudeClient).model)
 
-	openRouterClient, err := NewFirstPassClient(ProviderOpenRouter, "dummy-key", "openai/gpt-5.6-sol", "https://example.test/api/v1/", false)
+	openRouterClient, err := NewFirstPassClient(ProviderOpenRouter, "dummy-key", "openai/gpt-5.6-sol", "https://example.test/api/v1/", "", false)
 	require.NoError(t, err)
 	assert.Equal(t, "openai/gpt-5.6-sol", openRouterClient.(*OpenRouterClient).model)
 	assert.Equal(t, "https://example.test/api/v1", openRouterClient.(*OpenRouterClient).baseURL)
 }
 
+func TestParseThinkingLevel(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"low", ThinkingLow},
+		{" LOW ", ThinkingLow},
+		{"medium", ThinkingMedium},
+		{"Medium", ThinkingMedium},
+		{"high", ThinkingHigh},
+		{"  high\t", ThinkingHigh},
+	}
+	for _, tc := range cases {
+		level, err := ParseThinkingLevel(tc.input)
+		require.NoError(t, err, "input %q", tc.input)
+		assert.Equal(t, tc.expected, level, "input %q", tc.input)
+	}
+
+	for _, invalid := range []string{"max", "xhigh", "none", "1024"} {
+		_, err := ParseThinkingLevel(invalid)
+		assert.ErrorContains(t, err, "unsupported first-pass thinking level", "input %q", invalid)
+	}
+}
+
+func TestNewFirstPassClient_ThinkingSelection(t *testing.T) {
+	legacyClient, err := NewFirstPassClient(ProviderGemini, "dummy-key", "", "", "", false)
+	require.NoError(t, err)
+	assert.IsType(t, &Client{}, legacyClient, "empty thinking level must keep the legacy client")
+
+	thinkingClient, err := NewFirstPassClient(ProviderGemini, "dummy-key", "", "", "High", false)
+	require.NoError(t, err)
+	require.IsType(t, &GeminiThinkingClient{}, thinkingClient)
+	assert.EqualValues(t, "HIGH", thinkingClient.(*GeminiThinkingClient).level)
+
+	_, err = NewFirstPassClient(ProviderGemini, "dummy-key", "", "", "bogus", false)
+	assert.ErrorContains(t, err, "unsupported first-pass thinking level")
+
+	claudeClient, err := NewFirstPassClient(ProviderClaude, "dummy-key", "", "", "high", false)
+	require.NoError(t, err)
+	assert.IsType(t, &ClaudeClient{}, claudeClient, "claude first pass ignores the thinking level")
+}
+
 func TestNewFirstPassClient_Errors(t *testing.T) {
-	_, err := NewFirstPassClient("gpt", "dummy-key", "", "", false)
+	_, err := NewFirstPassClient("gpt", "dummy-key", "", "", "", false)
 	assert.ErrorContains(t, err, "unsupported first-pass provider")
 
-	_, err = NewFirstPassClient(ProviderClaude, "", "", "", false)
+	_, err = NewFirstPassClient(ProviderClaude, "", "", "", "", false)
 	assert.ErrorContains(t, err, "ANTHROPIC_API_KEY")
 
-	_, err = NewFirstPassClient(ProviderOpenRouter, "", "", "", false)
+	_, err = NewFirstPassClient(ProviderOpenRouter, "", "", "", "", false)
 	assert.ErrorContains(t, err, "OPENROUTER_API_KEY")
 
-	_, err = NewFirstPassClient(ProviderGemini, "", "", "", false)
+	_, err = NewFirstPassClient(ProviderGemini, "", "", "", "", false)
 	assert.ErrorContains(t, err, "GEMINI_API_KEY")
 }

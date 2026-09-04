@@ -98,6 +98,9 @@ func start(cfg *config.Config) {
 	default:
 		log.Fatalf("Invalid FIRST_PASS_PROVIDER %q (expected gemini, claude, or openrouter)", cfg.FirstPassProvider)
 	}
+	if _, err := llm.ParseThinkingLevel(cfg.FirstPassThinking); err != nil {
+		log.Fatalf("Invalid FIRST_PASS_THINKING %q (expected low, medium, or high)", cfg.FirstPassThinking)
+	}
 	if cfg.FirstPassProvider != "" && cfg.FirstPassProvider != "gemini" {
 		log.Printf("First-pass provider: %s (model: %s)", cfg.FirstPassProvider, llm.FirstPassModelName(llm.LLMProvider(cfg.FirstPassProvider), cfg.FirstPassModel))
 	}

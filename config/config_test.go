@@ -96,7 +96,7 @@ func TestLoadReviewCustomizationPolicyDefaults(t *testing.T) {
 	}
 
 	cfg := Load()
-	assertStringsEqual(t, cfg.ReviewAgentModelsClaude, []string{"claude-opus-4-8", "claude-fable-5"})
+	assertStringsEqual(t, cfg.ReviewAgentModelsClaude, []string{"claude-fable-5-1", "claude-fable-5", "claude-opus-4-8"})
 	assertStringsEqual(t, cfg.ReviewAgentModelsOpenRouter, []string{"openai/gpt-5.6-sol"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsClaude, []string{"low", "medium", "high"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsOpenRouter, []string{"low", "medium", "high", "xhigh", "max"})
@@ -125,7 +125,7 @@ func TestLoadReviewCustomizationPolicyNormalizesAndDeduplicatesLists(t *testing.
 	t.Setenv("REVIEW_AGENT_EFFORTS_OPENROUTER", " XHIGH,max, Medium, xhigh ")
 
 	cfg := Load()
-	assertStringsEqual(t, cfg.ReviewAgentModelsClaude, []string{"claude-fable-5", "claude-opus-4-8", "Vendor/CaseSensitive"})
+	assertStringsEqual(t, cfg.ReviewAgentModelsClaude, []string{"claude-fable-5", "claude-opus-4-8", "Vendor/CaseSensitive", "claude-fable-5-1"})
 	assertStringsEqual(t, cfg.ReviewAgentModelsOpenRouter, []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-4.8"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsClaude, []string{"high", "medium", "low"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsOpenRouter, []string{"xhigh", "max", "medium"})
@@ -215,6 +215,50 @@ func TestLoadFirstPassDefaultsToGemini(t *testing.T) {
 	}
 }
 
+func TestLoadFirstPassThinking(t *testing.T) {
+	t.Setenv("FIRST_PASS_THINKING", "")
+	if cfg := Load(); cfg.FirstPassThinking != "" {
+		t.Fatalf("thinking default: %q", cfg.FirstPassThinking)
+	}
+
+	t.Setenv("FIRST_PASS_THINKING", " High ")
+	if cfg := Load(); cfg.FirstPassThinking != "high" {
+		t.Fatalf("thinking normalization: %q", cfg.FirstPassThinking)
+	}
+
+	t.Setenv("FIRST_PASS_THINKING", "medium")
+	if cfg := Load(); cfg.FirstPassThinking != "medium" {
+		t.Fatalf("thinking passthrough: %q", cfg.FirstPassThinking)
+	}
+}
+
+func TestLoadFirstPassCacheStagger(t *testing.T) {
+	t.Setenv("FIRST_PASS_CACHE_STAGGER_SEC", "")
+	if cfg := Load(); cfg.FirstPassCacheStaggerSec != 8 {
+		t.Fatalf("stagger default: %d", cfg.FirstPassCacheStaggerSec)
+	}
+
+	t.Setenv("FIRST_PASS_CACHE_STAGGER_SEC", "0")
+	if cfg := Load(); cfg.FirstPassCacheStaggerSec != 0 {
+		t.Fatalf("explicit zero must disable the stagger: %d", cfg.FirstPassCacheStaggerSec)
+	}
+
+	t.Setenv("FIRST_PASS_CACHE_STAGGER_SEC", " 12 ")
+	if cfg := Load(); cfg.FirstPassCacheStaggerSec != 12 {
+		t.Fatalf("stagger passthrough: %d", cfg.FirstPassCacheStaggerSec)
+	}
+
+	t.Setenv("FIRST_PASS_CACHE_STAGGER_SEC", "-3")
+	if cfg := Load(); cfg.FirstPassCacheStaggerSec != 8 {
+		t.Fatalf("negative must fall back to default: %d", cfg.FirstPassCacheStaggerSec)
+	}
+
+	t.Setenv("FIRST_PASS_CACHE_STAGGER_SEC", "soon")
+	if cfg := Load(); cfg.FirstPassCacheStaggerSec != 8 {
+		t.Fatalf("malformed must fall back to default: %d", cfg.FirstPassCacheStaggerSec)
+	}
+}
+
 func TestLoadFirstPassNormalizesProvider(t *testing.T) {
 	t.Setenv("FIRST_PASS_PROVIDER", " Claude ")
 	t.Setenv("FIRST_PASS_MODEL", " claude-opus-5 ")
@@ -247,6 +291,60 @@ func TestFirstPassAPIKeySelection(t *testing.T) {
 			t.Errorf("provider %q: got key %q want %q", c.provider, got, c.want)
 		}
 	}
+}
+
+func clearFirstPassAllowlistEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"FIRST_PASS_PROVIDER",
+		"FIRST_PASS_MODEL",
+		"GEMINI_PRO_MODEL",
+		"REVIEW_FIRST_PASS_MODELS_GEMINI",
+		"REVIEW_FIRST_PASS_MODELS_CLAUDE",
+		"REVIEW_FIRST_PASS_MODELS_OPENROUTER",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
+func TestLoadFirstPassModelAllowlistDefaults(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{defaultFirstPassGeminiModel})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaude, []string{defaultFirstPassClaudeModel})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsOpenRouter, []string{defaultFirstPassOpenRouterModel})
+}
+
+func TestLoadFirstPassGeminiAllowlistFollowsProModelEnv(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	t.Setenv("GEMINI_PRO_MODEL", "gemini-9-pro")
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{"gemini-9-pro"})
+}
+
+func TestLoadFirstPassModelAllowlistsParseAndAppendActiveModel(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	t.Setenv("FIRST_PASS_PROVIDER", "claude")
+	t.Setenv("FIRST_PASS_MODEL", "claude-fable-5")
+	t.Setenv("REVIEW_FIRST_PASS_MODELS_CLAUDE", " claude-opus-5 , claude-opus-5, claude-sonnet-5")
+	t.Setenv("REVIEW_FIRST_PASS_MODELS_GEMINI", "gemini-2.5-pro")
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaude, []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5"})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{"gemini-2.5-pro"})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsOpenRouter, []string{defaultFirstPassOpenRouterModel})
+}
+
+func TestLoadFirstPassAllowlistAppendsProviderDefaultWhenModelUnset(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	t.Setenv("FIRST_PASS_PROVIDER", "openrouter")
+	t.Setenv("REVIEW_FIRST_PASS_MODELS_OPENROUTER", "anthropic/claude-sonnet-5")
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsOpenRouter,
+		[]string{"anthropic/claude-sonnet-5", defaultFirstPassOpenRouterModel})
 }
 
 func assertStringsEqual(t *testing.T, got, want []string) {

@@ -148,7 +148,8 @@ type rawResponseMsg struct {
 }
 
 // runPrompts sends each Prompt to the LLM concurrently (staggered 250ms when
-// more than one), parses each response with parse, and aggregates the results.
+// more than one, or by the first-pass cache stagger on anthropic), parses each
+// response with parse, and aggregates the results.
 // For a single prompt the first attempt streams to stdout.
 func (s *Service) runPrompts(ctx context.Context, cfg PerformReviewConfig, prompts []Prompt, parse Parser) *ReviewExecutionResult {
 	result := &ReviewExecutionResult{}
@@ -163,14 +164,18 @@ func (s *Service) runPrompts(ctx context.Context, cfg PerformReviewConfig, promp
 	errorChan := make(chan reviewErrorMsg, n)
 	rawResponseChan := make(chan rawResponseMsg, n)
 
+	stagger := s.launchStagger(cfg)
 	for i, p := range prompts {
 		wg.Add(1)
 		go func(requestNum int, prompt Prompt) {
 			defer wg.Done()
 			s.runSinglePrompt(ctx, cfg, prompt, requestNum, n, parse, resultsChan, errorChan, rawResponseChan, result, &firstErrorMu)
 		}(i+1, p)
-		if n > 1 {
-			time.Sleep(250 * time.Millisecond) // Stagger requests
+		if i < n-1 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(stagger):
+			}
 		}
 	}
 
@@ -236,6 +241,9 @@ func (s *Service) runSinglePrompt(
 		}
 
 		var llmClient llm.IClient = s.smartLlmClient
+		if cfg.FirstPassClient != nil {
+			llmClient = cfg.FirstPassClient
+		}
 		if cfg.Fast {
 			llmClient = s.fastLlmClient
 		}
@@ -323,8 +331,25 @@ func (s *Service) runSinglePrompt(
 	}
 }
 
+// launchStagger returns the delay between sample launches. Anthropic first
+// passes stretch it to the configured cache stagger so sample 1's prompt-cache
+// prefill completes before the identical later samples are sent.
+func (s *Service) launchStagger(cfg PerformReviewConfig) time.Duration {
+	info := s.firstPass
+	if cfg.FirstPass != nil {
+		info = *cfg.FirstPass
+	}
+	if !cfg.Fast && info.Provider == "anthropic" && info.CacheStaggerSec > 0 {
+		return time.Duration(info.CacheStaggerSec) * time.Second
+	}
+	return 250 * time.Millisecond
+}
+
 func (s *Service) firstPassAttemptEvent(cfg PerformReviewConfig, invocationNumber, attemptNumber int, startedAt time.Time) ProviderAttemptEvent {
 	provider, backend, model := s.firstPass.Provider, s.firstPass.Backend, s.firstPass.Model
+	if cfg.FirstPass != nil {
+		provider, backend, model = cfg.FirstPass.Provider, cfg.FirstPass.Backend, cfg.FirstPass.Model
+	}
 	if cfg.Fast {
 		// The fast path swaps in the classification client, which stays Gemini.
 		provider, backend, model = "google", "gemini_api", llm.FlashModelName()

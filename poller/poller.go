@@ -25,6 +25,7 @@ import (
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/types"
 )
@@ -157,6 +158,10 @@ type Poller struct {
 	// dispatchSlots bounds pre-provider cache/storage/DB work. It is released
 	// before agent/first-pass capacity waits, so it cannot cap agent throughput.
 	dispatchSlots chan struct{}
+	// firstPassClients caches per-run smart clients keyed by provider and
+	// resolved model; clients hold no per-request state and are shared safely.
+	firstPassClientsMu sync.Mutex
+	firstPassClients   map[string]llm.IClient
 	// lookPath is injectable so capability readiness can be tested without
 	// depending on the developer or CI machine's installed CLIs.
 	lookPath func(string) (string, error)
@@ -212,16 +217,61 @@ func reviewRunIDFromTime(t time.Time) string {
 	return fmt.Sprintf("run-%032x", t.UnixNano())
 }
 
-func (p *Poller) pipelineModelUses() []payload.ModelUse {
-	firstPassProvider := llm.LLMProvider(p.cfg.FirstPassProvider)
+// effectiveFirstPassIdentity resolves a run's first-pass provider and model,
+// falling back to deployment configuration for legacy effective-config
+// snapshots that predate per-run first-pass fields.
+func (p *Poller) effectiveFirstPassIdentity(firstPass runconfig.FirstPass) (llm.LLMProvider, string) {
+	providerName, model := firstPass.Provider, firstPass.Model
+	if providerName == "" {
+		providerName = p.cfg.FirstPassProvider
+		if model == "" {
+			model = p.cfg.FirstPassModel
+		}
+	}
+	provider, err := llm.ParseProvider(providerName)
+	if err != nil {
+		provider = llm.ProviderGemini
+	}
+	return provider, llm.FirstPassModelName(provider, model)
+}
+
+// firstPassClientForRun returns the smart client and telemetry identity for a
+// run's effective first-pass configuration, caching clients per provider+model.
+func (p *Poller) firstPassClientForRun(firstPass runconfig.FirstPass) (llm.IClient, service.FirstPassInfo, error) {
+	provider, model := p.effectiveFirstPassIdentity(firstPass)
+	providerName, backend := llm.FirstPassTelemetry(provider)
+	info := service.FirstPassInfo{Provider: providerName, Backend: backend, Model: model, CacheStaggerSec: p.cfg.FirstPassCacheStaggerSec}
+	key := string(provider) + "\x00" + model
+	p.firstPassClientsMu.Lock()
+	defer p.firstPassClientsMu.Unlock()
+	if client, ok := p.firstPassClients[key]; ok {
+		return client, info, nil
+	}
+	client, err := llm.NewFirstPassClient(provider, p.cfg.FirstPassProviderAPIKey(string(provider)), model, p.cfg.OpenRouterBaseURL, p.cfg.FirstPassThinking, false)
+	if err != nil {
+		return nil, info, err
+	}
+	if p.firstPassClients == nil {
+		p.firstPassClients = make(map[string]llm.IClient)
+	}
+	p.firstPassClients[key] = client
+	return client, info, nil
+}
+
+func (p *Poller) pipelineModelUses(firstPass runconfig.FirstPass) []payload.ModelUse {
+	firstPassProvider, firstPassModel := p.effectiveFirstPassIdentity(firstPass)
 	provider, backend := llm.FirstPassTelemetry(firstPassProvider)
+	firstPassUse := payload.ModelUse{
+		Stage:          "first_pass",
+		Provider:       provider,
+		Backend:        backend,
+		RequestedModel: firstPassModel,
+	}
+	if firstPassProvider == llm.ProviderGemini {
+		firstPassUse.Effort = p.cfg.FirstPassThinking
+	}
 	return []payload.ModelUse{
-		{
-			Stage:          "first_pass",
-			Provider:       provider,
-			Backend:        backend,
-			RequestedModel: llm.FirstPassModelName(firstPassProvider, p.cfg.FirstPassModel),
-		},
+		firstPassUse,
 		{
 			Stage:          "classification_summary",
 			Provider:       "google",
@@ -517,6 +567,11 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
 		return nil, fmt.Errorf("agent review: %w", agentErr)
 	}
+	if !agentOut.GatesStartedAt.IsZero() {
+		execution.recordStageTiming(payload.StageTiming{
+			Stage: "gates", StartedAt: agentOut.GatesStartedAt, DurationMS: agentOut.GatesDurationMS,
+		})
+	}
 
 	if agentOut.ModelFallback {
 		log.Printf("[REVIEWER] ERROR: MODEL FALLBACK for %s/%s#%d: requested=%s served=%s — review published with fallback badge",
@@ -597,7 +652,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		Checks:        agentOut.Checks,
 		ModelFallback: agentOut.ModelFallback,
 		ReviewRun: &payload.ReviewRunInfo{
-			Models: append(p.pipelineModelUses(), agentModelUse(agentOut)),
+			Models: append(p.pipelineModelUses(execution.Job.Config.Effective.FirstPass), agentModelUse(agentOut)),
 		},
 		// Copied (not aliased) so the no-swallow check reads the pre-merge
 		// alert set even if a later stage mutates the agent output.
@@ -1311,19 +1366,21 @@ func (p *Poller) trackOrAdoptReviewJob(parent context.Context, job ReviewJob) (c
 
 // startTrackedReviewJob starts the configured execution budget only after the
 // batch semaphore grants a worker slot. Ownership is established earlier, but
-// time spent queued must not reduce a per-review wall-clock allowance.
-func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, bool) {
+// time spent queued must not reduce a per-review wall-clock allowance. The
+// returned duration is the time the job spent queued (tracked to started).
+func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, time.Duration, bool) {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
 	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
 	info, exists := p.activeReviews[key]
 	if !exists || info.RunID != job.RunID || info.Ctx == nil || !info.StartTime.IsZero() {
-		return nil, false
+		return nil, 0, false
 	}
 	timeout := p.reviewTimeout(job.Config.Effective)
 	runCtx, runCancel := context.WithTimeoutCause(info.Ctx, timeout, errReviewRunBudgetExceeded)
 	queuedCancel := info.Cancel
 	info.StartTime = time.Now()
+	queueWait := info.StartTime.Sub(info.TrackedAt)
 	info.Timeout = timeout
 	info.Ctx = runCtx
 	info.Cancel = func() {
@@ -1333,8 +1390,8 @@ func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, bool) {
 		}
 	}
 	p.activeReviews[key] = info
-	log.Printf("[TRACK] Started review job %s for %s (timeout=%s)", job.RunID, key, timeout)
-	return runCtx, true
+	log.Printf("[TRACK] Started review job %s for %s (timeout=%s, queue_wait=%s)", job.RunID, key, timeout, queueWait)
+	return runCtx, queueWait, true
 }
 
 // untrackReviewRun removes a PR's review process from the active reviews map
@@ -3143,10 +3200,12 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 	var reviewSvc *service.Service
 	var reviewSvcInitErr error
 	if p.reviewGenerator == nil {
-		// Initialize reviewer clients. The first pass follows the configured
-		// provider; classification always stays on Gemini flash.
+		// Initialize reviewer clients. The deployment-default first-pass client
+		// is built and key-validated up front (fail fast); per-run overrides
+		// resolve their own client later, once each job's effective config is
+		// in hand. Classification always stays on Gemini flash.
 		firstPassProvider := llm.LLMProvider(p.cfg.FirstPassProvider)
-		smartLlmClient, smartErr := llm.NewFirstPassClient(firstPassProvider, p.cfg.FirstPassAPIKey(), p.cfg.FirstPassModel, p.cfg.OpenRouterBaseURL, false)
+		smartLlmClient, defaultFirstPass, smartErr := p.firstPassClientForRun(runconfig.FirstPass{})
 		if smartErr != nil {
 			reviewSvcInitErr = smartErr
 		} else {
@@ -3165,12 +3224,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				}
 			}
 			if reviewSvcInitErr == nil {
-				provider, backend := llm.FirstPassTelemetry(firstPassProvider)
-				reviewSvc = service.NewServiceWithFirstPass(p.ghClientConcrete, smartLlmClient, fastLlmClient, service.FirstPassInfo{
-					Provider: provider,
-					Backend:  backend,
-					Model:    llm.FirstPassModelName(firstPassProvider, p.cfg.FirstPassModel),
-				})
+				reviewSvc = service.NewServiceWithFirstPass(p.ghClientConcrete, smartLlmClient, fastLlmClient, defaultFirstPass)
 			}
 		}
 	}
@@ -3310,7 +3364,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				}
 			}
 			defer releaseFirstPassSlot()
-			prCtx, started := p.startTrackedReviewJob(job)
+			prCtx, queueWait, started := p.startTrackedReviewJob(job)
 			if !started {
 				log.Printf("[REVIEWER] PR %d lost queued ownership before execution; rejecting %s", pr.Number, job.RunID)
 				if queuedCtx.Err() != nil {
@@ -3371,6 +3425,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				return
 			}
 			execution.AgentSlotReserved = agentSlotReserved
+			execution.QueueWait = queueWait
 			execStart := execution.AttemptStartedAt
 			nRequests := job.Config.Effective.FirstPass.Samples
 
@@ -3394,6 +3449,9 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				}
 				reviewResult, err = p.reviewGenerator.GenerateReview(prCtx, genCfg)
 				releaseFirstPassSlot()
+			} else if firstPassClient, firstPassInfo, firstPassErr := p.firstPassClientForRun(job.Config.Effective.FirstPass); firstPassErr != nil {
+				releaseFirstPassSlot()
+				err = fmt.Errorf("initialize first-pass provider for run %s: %w", job.RunID, firstPassErr)
 			} else {
 				// Use real reviewer service
 				reviewCfg := service.PerformReviewConfig{
@@ -3406,6 +3464,8 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 					Fast:            false,
 					NRequests:       nRequests,
 					AttemptObserver: p.providerAttemptObserver(execution),
+					FirstPassClient: firstPassClient,
+					FirstPass:       &firstPassInfo,
 				}
 
 				result, svcErr := reviewSvc.PerformReviewWithContext(prCtx, reviewCfg)
@@ -3490,7 +3550,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if observedModels := execution.providerModelUses(); len(observedModels) > 0 {
 				reviewResult.ReviewRun.Models = observedModels
 			} else if p.reviewGenerator == nil && len(reviewResult.ReviewRun.Models) == 0 {
-				reviewResult.ReviewRun.Models = p.pipelineModelUses()
+				reviewResult.ReviewRun.Models = p.pipelineModelUses(job.Config.Effective.FirstPass)
 			}
 			if !p.renewReviewExecutionForPublication(execution) {
 				log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact publication", job.RunID)
@@ -3530,6 +3590,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			// Persist only run-scoped artifacts before the ownership transaction.
 			// Mutable compatibility aliases are written after publication wins, so
 			// a stale or superseded worker can never overwrite the visible result.
+			artifactSaveStartedAt := time.Now().UTC()
 			if err := p.saveImmutableReviewArtifact(prCtx, reviewResult.ReviewRun.HTMLPath, "text/html; charset=utf-8", reviewResult.HTMLContent); err != nil {
 				failExecution(fmt.Errorf("save immutable review %s: %w", job.RunID, err), "artifact_save_failed", "artifact_save")
 				return
@@ -3541,6 +3602,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			completedAt := time.Now().UTC().Truncate(time.Microsecond)
 			runInfo := p.reviewRunInfo(execution, completedAt)
 			runInfo.Models = models
+			runInfo.StageTimings = execution.stageTimings(artifactSaveStartedAt, completedAt)
 			reviewResult.ReviewRun = runInfo
 
 			sidecarBody, sidecarErr := p.writeImmutableReviewSidecar(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult)

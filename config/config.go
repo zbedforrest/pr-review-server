@@ -13,9 +13,17 @@ const (
 	defaultOpenRouterAgentMaxTurns   = 200
 	defaultReviewFirstPassSamples    = 3
 	defaultReviewFirstPassConcurrent = 5
-	defaultClaudeAgentModel          = "claude-opus-4-8"
+	defaultClaudeAgentModel          = "claude-fable-5-1"
 	defaultOpenRouterAgentModel      = "openai/gpt-5.6-sol"
 	defaultAgentEffort               = "medium"
+
+	// First-pass provider default models, mirroring the llm package defaults
+	// so this package stays dependency-light.
+	defaultFirstPassGeminiModel     = "gemini-3.1-pro-preview"
+	defaultFirstPassClaudeModel     = "claude-sonnet-5"
+	defaultFirstPassOpenRouterModel = "openai/gpt-5.6-sol"
+
+	defaultFirstPassCacheStaggerSec = 8
 )
 
 type Config struct {
@@ -54,6 +62,10 @@ type Config struct {
 	// classification stage always stays on Gemini flash.
 	FirstPassProvider string // gemini (default), claude, or openrouter
 	FirstPassModel    string // empty = provider default
+	FirstPassThinking string // gemini thinking level: low, medium, high; empty = provider default
+	// FirstPassCacheStaggerSec delays each subsequent claude first-pass sample
+	// so sample 1's prompt-cache prefill completes first. 0 disables.
+	FirstPassCacheStaggerSec int
 
 	// Agent review (Claude Code or Codex/OpenRouter subprocess).
 	AgenticReviews     bool
@@ -76,15 +88,18 @@ type Config struct {
 	// the deployment operator; per-review API overrides must remain within them.
 	// Credentials, provider endpoints, filesystem paths, and concurrency remain
 	// deployment-only settings.
-	ReviewAgentModelsClaude      []string
-	ReviewAgentModelsOpenRouter  []string
-	ReviewAgentEffortsClaude     []string
-	ReviewAgentEffortsOpenRouter []string
-	ReviewMaxWallClockSec        int
-	ReviewMaxTurns               int
-	ReviewMaxTurnsConfigured     bool
-	ReviewMaxFirstPassSamples    int
-	ReviewMaxFirstPassConcurrent int
+	ReviewAgentModelsClaude         []string
+	ReviewAgentModelsOpenRouter     []string
+	ReviewAgentEffortsClaude        []string
+	ReviewAgentEffortsOpenRouter    []string
+	ReviewFirstPassModelsGemini     []string
+	ReviewFirstPassModelsClaude     []string
+	ReviewFirstPassModelsOpenRouter []string
+	ReviewMaxWallClockSec           int
+	ReviewMaxTurns                  int
+	ReviewMaxTurnsConfigured        bool
+	ReviewMaxFirstPassSamples       int
+	ReviewMaxFirstPassConcurrent    int
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -108,7 +123,13 @@ func (c *Config) IsDevMode() bool {
 // FirstPassAPIKey returns the credential the configured first-pass provider
 // authenticates with.
 func (c *Config) FirstPassAPIKey() string {
-	switch c.FirstPassProvider {
+	return c.FirstPassProviderAPIKey(c.FirstPassProvider)
+}
+
+// FirstPassProviderAPIKey returns the credential a specific first-pass
+// provider authenticates with.
+func (c *Config) FirstPassProviderAPIKey(provider string) string {
+	switch provider {
 	case "claude":
 		return c.AnthropicAPIKey
 	case "openrouter":
@@ -142,7 +163,7 @@ func Load() *Config {
 	agentEffort := os.Getenv("AGENT_EFFORT")
 
 	claudeModels := getEnvListOrDefault("REVIEW_AGENT_MODELS_CLAUDE",
-		[]string{defaultClaudeAgentModel, "claude-fable-5"}, normalizeModel)
+		[]string{defaultClaudeAgentModel, "claude-fable-5", "claude-opus-4-8"}, normalizeModel)
 	openRouterModels := getEnvListOrDefault("REVIEW_AGENT_MODELS_OPENROUTER",
 		[]string{defaultOpenRouterAgentModel}, normalizeModel)
 	claudeEfforts := getEnvListOrDefault("REVIEW_AGENT_EFFORTS_CLAUDE",
@@ -173,6 +194,37 @@ func Load() *Config {
 	case "openrouter":
 		openRouterModels = appendUnique(openRouterModels, activeModel)
 		openRouterEfforts = appendUnique(openRouterEfforts, activeEffort)
+	}
+
+	firstPassProvider := strings.ToLower(strings.TrimSpace(getEnvOrDefault("FIRST_PASS_PROVIDER", "gemini")))
+	firstPassModel := strings.TrimSpace(os.Getenv("FIRST_PASS_MODEL"))
+	// The gemini first-pass default follows the same env override the llm
+	// package honors, so the allowlist always admits the model actually run.
+	firstPassGeminiDefault := getEnvOrDefault("GEMINI_PRO_MODEL", defaultFirstPassGeminiModel)
+	firstPassModelsGemini := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_GEMINI",
+		[]string{firstPassGeminiDefault}, normalizeModel)
+	firstPassModelsClaude := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_CLAUDE",
+		[]string{defaultFirstPassClaudeModel}, normalizeModel)
+	firstPassModelsOpenRouter := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_OPENROUTER",
+		[]string{defaultFirstPassOpenRouterModel}, normalizeModel)
+	activeFirstPassModel := firstPassModel
+	if activeFirstPassModel == "" {
+		switch firstPassProvider {
+		case "claude":
+			activeFirstPassModel = defaultFirstPassClaudeModel
+		case "openrouter":
+			activeFirstPassModel = defaultFirstPassOpenRouterModel
+		default:
+			activeFirstPassModel = firstPassGeminiDefault
+		}
+	}
+	switch firstPassProvider {
+	case "claude":
+		firstPassModelsClaude = appendUnique(firstPassModelsClaude, activeFirstPassModel)
+	case "openrouter":
+		firstPassModelsOpenRouter = appendUnique(firstPassModelsOpenRouter, activeFirstPassModel)
+	case "gemini":
+		firstPassModelsGemini = appendUnique(firstPassModelsGemini, activeFirstPassModel)
 	}
 
 	maxWallClockDefault := positiveOrDefault(agentWallClockSec, defaultAgentWallClockSec)
@@ -209,8 +261,10 @@ func Load() *Config {
 		ReviewerEnabled: false, // Will be set to true in main.go if API key is available
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
 
-		FirstPassProvider: strings.ToLower(strings.TrimSpace(getEnvOrDefault("FIRST_PASS_PROVIDER", "gemini"))),
-		FirstPassModel:    strings.TrimSpace(os.Getenv("FIRST_PASS_MODEL")),
+		FirstPassProvider:        firstPassProvider,
+		FirstPassModel:           firstPassModel,
+		FirstPassThinking:        strings.ToLower(strings.TrimSpace(os.Getenv("FIRST_PASS_THINKING"))),
+		FirstPassCacheStaggerSec: getNonNegativeEnvIntOrDefault("FIRST_PASS_CACHE_STAGGER_SEC", defaultFirstPassCacheStaggerSec),
 
 		AgenticReviews:     os.Getenv("AGENTIC_REVIEWS") == "true",
 		AgentCloneRootDir:  getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
@@ -228,15 +282,18 @@ func Load() *Config {
 		BugMemoryObject:    os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:     os.Getenv("REQUIRED_CHECKS") == "true",
 
-		ReviewAgentModelsClaude:      claudeModels,
-		ReviewAgentModelsOpenRouter:  openRouterModels,
-		ReviewAgentEffortsClaude:     claudeEfforts,
-		ReviewAgentEffortsOpenRouter: openRouterEfforts,
-		ReviewMaxWallClockSec:        getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
-		ReviewMaxTurns:               reviewMaxTurns,
-		ReviewMaxTurnsConfigured:     reviewMaxTurnsConfigured,
-		ReviewMaxFirstPassSamples:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
-		ReviewMaxFirstPassConcurrent: getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
+		ReviewAgentModelsClaude:         claudeModels,
+		ReviewAgentModelsOpenRouter:     openRouterModels,
+		ReviewAgentEffortsClaude:        claudeEfforts,
+		ReviewAgentEffortsOpenRouter:    openRouterEfforts,
+		ReviewFirstPassModelsGemini:     firstPassModelsGemini,
+		ReviewFirstPassModelsClaude:     firstPassModelsClaude,
+		ReviewFirstPassModelsOpenRouter: firstPassModelsOpenRouter,
+		ReviewMaxWallClockSec:           getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
+		ReviewMaxTurns:                  reviewMaxTurns,
+		ReviewMaxTurnsConfigured:        reviewMaxTurnsConfigured,
+		ReviewMaxFirstPassSamples:       getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
+		ReviewMaxFirstPassConcurrent:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
 	}
 }
 
@@ -264,6 +321,20 @@ func getPositiveEnvIntOrDefault(key string, defaultValue int) int {
 		return value
 	}
 	return defaultValue
+}
+
+// getNonNegativeEnvIntOrDefault allows an explicit 0 (feature off) but falls
+// back to the default on unset, malformed, or negative values.
+func getNonNegativeEnvIntOrDefault(key string, defaultValue int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return defaultValue
+	}
+	return n
 }
 
 func getPositiveEnvInt(key string) (int, bool) {

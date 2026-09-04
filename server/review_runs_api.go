@@ -157,7 +157,20 @@ type reviewCapabilitiesResponse struct {
 	Available     bool                               `json:"available"`
 	Defaults      runconfig.Effective                `json:"defaults"`
 	Backends      map[string]reviewBackendCapability `json:"backends"`
+	FirstPass     reviewFirstPassCapability          `json:"first_pass"`
 	Limits        reviewCustomizationLimits          `json:"limits"`
+}
+
+type reviewFirstPassCapability struct {
+	DefaultProvider string                                       `json:"default_provider"`
+	DefaultModel    string                                       `json:"default_model"`
+	Providers       map[string]reviewFirstPassProviderCapability `json:"providers"`
+}
+
+type reviewFirstPassProviderCapability struct {
+	CredentialConfigured bool     `json:"credential_configured"`
+	DefaultModel         string   `json:"default_model"`
+	Models               []string `json:"models"`
 }
 
 type reviewBackendCapability struct {
@@ -657,11 +670,24 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 			Models: append([]string{}, backend.Models...), Efforts: append([]string{}, backend.Efforts...),
 		}
 	}
+	firstPassProviders := make(map[string]reviewFirstPassProviderCapability, len(policy.FirstPassProviders))
+	for name, provider := range policy.FirstPassProviders {
+		firstPassProviders[name] = reviewFirstPassProviderCapability{
+			CredentialConfigured: provider.CredentialConfigured,
+			DefaultModel:         provider.DefaultModel,
+			Models:               append([]string{}, provider.Models...),
+		}
+	}
 	writeV1JSON(w, http.StatusOK, reviewCapabilitiesResponse{
 		SchemaVersion: runconfig.SchemaVersion,
 		Available:     s.cfg != nil && s.cfg.ReviewerEnabled,
 		Defaults:      defaults,
 		Backends:      backends,
+		FirstPass: reviewFirstPassCapability{
+			DefaultProvider: defaults.FirstPass.Provider,
+			DefaultModel:    defaults.FirstPass.Model,
+			Providers:       firstPassProviders,
+		},
 		Limits: reviewCustomizationLimits{
 			MaxWallClockSeconds: policy.MaxWallClockSeconds,
 			MaxTurns:            policy.MaxTurns,
