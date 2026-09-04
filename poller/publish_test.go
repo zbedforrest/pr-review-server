@@ -1,8 +1,12 @@
 package poller
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/payload"
@@ -79,4 +83,67 @@ func TestBuildPublishRound_CarriesRequiredCheckViolation(t *testing.T) {
 	assert.False(t, quiet.RequiredCheckViolated)
 	loud := buildPublishRound(pr, payload.Payload{RequiredChecks: &payload.RequiredChecksInfo{Issued: 2, Violated: 1}}, nil, nil, nil, "")
 	assert.True(t, loud.RequiredCheckViolated)
+}
+
+func TestPublishTargetReady(t *testing.T) {
+	cases := []struct {
+		state          string
+		draft          bool
+		head, reviewed string
+		want           bool
+	}{
+		{"open", false, "abc", "abc", true},
+		{"open", false, "ABC", "abc", true},
+		{"open", true, "abc", "abc", false},
+		{"closed", false, "abc", "abc", false},
+		{"", false, "abc", "abc", false},
+		{"open", false, "def", "abc", false},
+		{"open", false, "", "abc", false},
+	}
+	for _, c := range cases {
+		ok, _ := publishTargetReady(c.state, c.draft, c.head, c.reviewed)
+		assert.Equal(t, c.want, ok, "state=%q draft=%v head=%q reviewed=%q", c.state, c.draft, c.head, c.reviewed)
+	}
+}
+
+// A closed, merged or draft PR must never receive bot comments, no matter what
+// the review found: the guard has to hold at the real publish entry point.
+func TestPublishGitHubReview_DoesNotWriteToClosedOrDraftPRs(t *testing.T) {
+	for _, tc := range []struct {
+		name, prJSON string
+	}{
+		{"merged", `{"state":"closed","merged":true,"draft":false,"head":{"sha":"abc"}}`},
+		{"draft", `{"state":"open","merged":false,"draft":true,"head":{"sha":"abc"}}`},
+		{"head moved", `{"state":"open","merged":false,"draft":false,"head":{"sha":"newer"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var writes []string
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					writes = append(writes, r.Method+" "+r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/example/pulls/1":
+					_, _ = w.Write([]byte(tc.prJSON))
+				default:
+					_, _ = w.Write([]byte(`[]`))
+				}
+			}))
+			defer ts.Close()
+
+			database, err := db.NewGormSQLite(":memory:")
+			require.NoError(t, err)
+			defer database.Close()
+			require.NoError(t, database.SetSetting("publish_enabled_authors", "alice"))
+
+			p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+			sidecar := []byte(`{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc",
+				"findings":[{"id":"f.go:0:abc123def456","severity":"critical","provenance":"agent","file":"f.go","line":3,"comment":"Real bug."}]}`)
+
+			p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}, sidecar)
+
+			assert.Empty(t, writes, "no GitHub writes may happen for a %s PR", tc.name)
+		})
+	}
 }

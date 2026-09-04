@@ -37,6 +37,24 @@ func publishEnabledFor(author, enabledCSV string) bool {
 	return false
 }
 
+// publishTargetReady decides whether a finished review may be posted: the PR
+// must be open and not a draft (benchmark replays review merged PRs, and a
+// bot comment on unfinished work is noise) and its head must still be the reviewed commit
+// (a newer push gets its own review; posting the old one would anchor
+// comments to lines that just changed).
+func publishTargetReady(state string, draft bool, headSHA, reviewedSHA string) (bool, string) {
+	if !strings.EqualFold(state, "open") {
+		return false, "pull request is not open"
+	}
+	if draft {
+		return false, "pull request is a draft"
+	}
+	if headSHA == "" || !strings.EqualFold(headSHA, reviewedSHA) {
+		return false, "pull request head moved past the reviewed commit"
+	}
+	return true, ""
+}
+
 // buildPublishRound assembles everything the publisher needs from the review
 // sidecar plus what is already on the PR: Greptile's inline comments are
 // reconciled against PRism's findings so nothing is posted twice, and the
@@ -146,6 +164,15 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	var pl payload.Payload
 	if err := json.Unmarshal(sidecar, &pl); err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: sidecar unreadable: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return
+	}
+	ghPR, _, err := p.ghClientConcrete.GetPR(ctx, pr.Owner, pr.Repo, pr.Number)
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: fetch pull request: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return
+	}
+	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), ghPR.GetHead().GetSHA(), pr.CommitSHA); !ok {
+		log.Printf("[PUBLISH] %s/%s#%d: skipped, %s", pr.Owner, pr.Repo, pr.Number, reason)
 		return
 	}
 	comments, err := p.ghClientConcrete.ListReviewComments(ctx, pr.Owner, pr.Repo, pr.Number)
