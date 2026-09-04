@@ -333,7 +333,7 @@ type Database interface {
 	// Leader election: only the lease holder runs the automatic poll cycle, so
 	// multiple instances never poll concurrently. Returns true iff holderID holds
 	// the lease after the call.
-	TryAcquireOrRenewLeadership(holderID string, ttl time.Duration) (bool, error)
+	TryAcquireOrRenewLeadership(holderID string, generation int64, ttl time.Duration) (bool, error)
 
 	// Batch operations (used by poller for efficiency)
 	BatchUpsertPRs(prs []*PR) error

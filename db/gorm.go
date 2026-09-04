@@ -213,6 +213,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 				}
 			}
 		}
+		if g.db.Migrator().HasTable(&PollerLeaseModel{}) && !g.db.Migrator().HasColumn(&PollerLeaseModel{}, "generation") {
+			if err := g.db.Migrator().AddColumn(&PollerLeaseModel{}, "Generation"); err != nil {
+				return fmt.Errorf("add poller_leases.generation: %w", err)
+			}
+		}
 		if !g.db.Migrator().HasTable(&PRModel{}) {
 			return nil
 		}
@@ -228,6 +233,9 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	}
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS github_updated_at timestamptz").Error; err != nil {
 		return fmt.Errorf("add github_updated_at: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE poller_leases ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 0").Error; err != nil {
+		return fmt.Errorf("add poller_leases.generation: %w", err)
 	}
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS error_message text").Error; err != nil {
 		return fmt.Errorf("add error_message: %w", err)
