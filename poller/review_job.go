@@ -62,8 +62,101 @@ type reviewExecution struct {
 	RunStartedAt      time.Time
 	Timeout           time.Duration
 	AgentSlotReserved bool
+	// QueueWait is the time between tracking the job and starting its
+	// execution budget (dispatch, cache checks, concurrency-slot waits).
+	QueueWait         time.Duration
 	attemptsMu        sync.Mutex
 	providerAttempts  map[string]service.ProviderAttemptEvent
+	extraStageTimings []payload.StageTiming
+}
+
+// recordStageTiming captures a non-provider stage measurement (e.g. the
+// mechanical gates run) for the sidecar's stage_timings block.
+func (e *reviewExecution) recordStageTiming(timing payload.StageTiming) {
+	e.attemptsMu.Lock()
+	defer e.attemptsMu.Unlock()
+	e.extraStageTimings = append(e.extraStageTimings, timing)
+}
+
+// stageTimings assembles per-stage telemetry for the sidecar: spans derived
+// from recorded provider attempts (first_pass aggregate plus per-sample
+// entries, classification, summary, agent), recorded non-provider stages
+// (gates), and the artifact-save span. Entries are ordered by start time.
+func (e *reviewExecution) stageTimings(artifactSaveStartedAt, completedAt time.Time) []payload.StageTiming {
+	type spanKey struct {
+		stage      string
+		invocation int
+	}
+	type span struct {
+		start time.Time
+		end   time.Time
+	}
+	e.attemptsMu.Lock()
+	spans := make(map[spanKey]span, len(e.providerAttempts))
+	for _, event := range e.providerAttempts {
+		if event.StartedAt == nil || event.CompletedAt == nil {
+			continue
+		}
+		key := spanKey{stage: event.Stage, invocation: event.InvocationNumber}
+		current, ok := spans[key]
+		if !ok {
+			spans[key] = span{start: *event.StartedAt, end: *event.CompletedAt}
+			continue
+		}
+		if event.StartedAt.Before(current.start) {
+			current.start = *event.StartedAt
+		}
+		if event.CompletedAt.After(current.end) {
+			current.end = *event.CompletedAt
+		}
+		spans[key] = current
+	}
+	extras := append([]payload.StageTiming(nil), e.extraStageTimings...)
+	e.attemptsMu.Unlock()
+
+	var firstPassStart, firstPassEnd time.Time
+	samples := make([]payload.StageTiming, 0, len(spans))
+	others := make([]payload.StageTiming, 0, len(spans))
+	for key, s := range spans {
+		duration := s.end.Sub(s.start).Milliseconds()
+		if key.stage == "first_pass" {
+			if firstPassStart.IsZero() || s.start.Before(firstPassStart) {
+				firstPassStart = s.start
+			}
+			if s.end.After(firstPassEnd) {
+				firstPassEnd = s.end
+			}
+			samples = append(samples, payload.StageTiming{
+				Stage: "first_pass_sample", Invocation: key.invocation,
+				StartedAt: s.start, DurationMS: duration,
+			})
+			continue
+		}
+		others = append(others, payload.StageTiming{Stage: key.stage, StartedAt: s.start, DurationMS: duration})
+	}
+	sort.Slice(samples, func(i, j int) bool { return samples[i].Invocation < samples[j].Invocation })
+
+	timings := make([]payload.StageTiming, 0, len(samples)+len(others)+len(extras)+2)
+	if !firstPassStart.IsZero() {
+		timings = append(timings, payload.StageTiming{
+			Stage: "first_pass", StartedAt: firstPassStart,
+			DurationMS: firstPassEnd.Sub(firstPassStart).Milliseconds(),
+		})
+	}
+	timings = append(timings, samples...)
+	timings = append(timings, others...)
+	timings = append(timings, extras...)
+	if !artifactSaveStartedAt.IsZero() {
+		duration := completedAt.Sub(artifactSaveStartedAt).Milliseconds()
+		if duration < 0 {
+			duration = 0
+		}
+		timings = append(timings, payload.StageTiming{
+			Stage: "artifact_save", StartedAt: artifactSaveStartedAt, DurationMS: duration,
+		})
+	}
+	sort.SliceStable(timings, func(i, j int) bool { return timings[i].StartedAt.Before(timings[j].StartedAt) })
+	return timings
 }
 
 func (e *reviewExecution) recordProviderAttempt(event service.ProviderAttemptEvent) {
@@ -655,11 +748,16 @@ func (p *Poller) beginReviewExecution(job ReviewJob) (*reviewExecution, error) {
 }
 
 func (p *Poller) reviewRunArtifactInfo(exec *reviewExecution) *payload.ReviewRunInfo {
+	queueWaitMS := exec.QueueWait.Milliseconds()
+	if queueWaitMS < 0 {
+		queueWaitMS = 0
+	}
 	return &payload.ReviewRunInfo{
 		RunID: exec.Job.RunID, ExecutionAttempt: exec.ExecutionAttempt,
 		HTMLPath:  gcs.ReviewRunFileName(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.PR.CommitSHA, exec.Job.RunID),
 		JSONPath:  gcs.ReviewRunJSONFileName(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.PR.CommitSHA, exec.Job.RunID),
 		StartedAt: exec.RunStartedAt, Config: &exec.Job.Config,
+		QueueWaitMS: queueWaitMS,
 	}
 }
 

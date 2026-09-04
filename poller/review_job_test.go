@@ -563,6 +563,13 @@ func TestProcessReviewJobPersistsConfigAndCompletesLedger(t *testing.T) {
 	assert.Equal(t, 1, metadata.ExecutionAttempt)
 	require.NotNil(t, metadata.Config)
 	assert.Equal(t, job.Config.Hash, metadata.Config.Hash)
+	assert.GreaterOrEqual(t, metadata.QueueWaitMS, int64(0))
+	require.NotEmpty(t, metadata.StageTimings)
+	artifactSave := metadata.StageTimings[len(metadata.StageTimings)-1]
+	assert.Equal(t, "artifact_save", artifactSave.Stage)
+	assert.False(t, artifactSave.StartedAt.IsZero())
+	assert.GreaterOrEqual(t, artifactSave.DurationMS, int64(0))
+	assert.False(t, artifactSave.StartedAt.Before(metadata.StartedAt))
 }
 
 func TestProcessReviewJobRejectsLiveRunAcceptedByAnotherInstance(t *testing.T) {
@@ -868,7 +875,8 @@ func TestQueuedReviewBudgetStartsAtExecution(t *testing.T) {
 	p.reviewsMutex.Unlock()
 	assert.True(t, queuedInfo.StartTime.IsZero())
 
-	runCtx, started := p.startTrackedReviewJob(job)
+	runCtx, queueWait, started := p.startTrackedReviewJob(job)
+	assert.GreaterOrEqual(t, queueWait, time.Duration(0))
 	require.True(t, started)
 	deadline, hasRunDeadline := runCtx.Deadline()
 	require.True(t, hasRunDeadline)
@@ -1782,7 +1790,7 @@ func TestGetReviewerStatusExcludesQueuedJobs(t *testing.T) {
 	assert.False(t, running)
 	assert.Zero(t, duration)
 
-	_, started := p.startTrackedReviewJob(job)
+	_, _, started := p.startTrackedReviewJob(job)
 	require.True(t, started)
 	running, duration = p.GetReviewerStatus()
 	assert.True(t, running)

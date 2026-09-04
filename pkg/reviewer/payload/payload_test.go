@@ -58,6 +58,59 @@ func TestPayload_ReviewRunJSON(t *testing.T) {
 	}
 }
 
+func TestReviewRunInfo_StageTimingsJSONShape(t *testing.T) {
+	started := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	info := ReviewRunInfo{
+		RunID:       "run-0123456789abcdef0123456789abcdef",
+		HTMLPath:    "runs/acme/example/7/abcdef0/run.html",
+		JSONPath:    "runs/acme/example/7/abcdef0/run.json",
+		StartedAt:   started,
+		CompletedAt: started.Add(90 * time.Second),
+		DurationMS:  90000,
+		QueueWaitMS: 1200,
+		StageTimings: []StageTiming{
+			{Stage: "first_pass", StartedAt: started, DurationMS: 42000},
+			{Stage: "first_pass_sample", Invocation: 1, StartedAt: started, DurationMS: 41000},
+			{Stage: "first_pass_sample", Invocation: 2, StartedAt: started.Add(250 * time.Millisecond), DurationMS: 41750},
+			{Stage: "classification", StartedAt: started.Add(42 * time.Second), DurationMS: 5000},
+			{Stage: "gates", StartedAt: started.Add(48 * time.Second), DurationMS: 40},
+			{Stage: "agent", StartedAt: started.Add(49 * time.Second), DurationMS: 39000},
+			{Stage: "artifact_save", StartedAt: started.Add(89 * time.Second), DurationMS: 800},
+		},
+	}
+
+	body, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{
+		`"duration_ms":90000`,
+		`"queue_wait_ms":1200`,
+		`"stage_timings":[`,
+		`{"stage":"first_pass","started_at":"2026-08-18T12:00:00Z","duration_ms":42000}`,
+		`{"stage":"first_pass_sample","invocation":1,"started_at":"2026-08-18T12:00:00Z","duration_ms":41000}`,
+		`{"stage":"first_pass_sample","invocation":2,"started_at":"2026-08-18T12:00:00.25Z","duration_ms":41750}`,
+		`{"stage":"classification","started_at":"2026-08-18T12:00:42Z","duration_ms":5000}`,
+		`{"stage":"gates","started_at":"2026-08-18T12:00:48Z","duration_ms":40}`,
+		`{"stage":"agent","started_at":"2026-08-18T12:00:49Z","duration_ms":39000}`,
+		`{"stage":"artifact_save","started_at":"2026-08-18T12:01:29Z","duration_ms":800}`,
+	} {
+		if !strings.Contains(string(body), fragment) {
+			t.Errorf("stage-timings JSON missing %s: %s", fragment, body)
+		}
+	}
+
+	legacy, err := json.Marshal(ReviewRunInfo{RunID: "run-legacy", StartedAt: started, CompletedAt: started, DurationMS: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{`"queue_wait_ms"`, `"stage_timings"`} {
+		if strings.Contains(string(legacy), fragment) {
+			t.Errorf("legacy review-run JSON must omit %s: %s", fragment, legacy)
+		}
+	}
+}
+
 func TestSourceWindow_BasicSlice(t *testing.T) {
 	src := joinLines("L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10")
 	before, after := SourceWindow(src, 5, 2)
