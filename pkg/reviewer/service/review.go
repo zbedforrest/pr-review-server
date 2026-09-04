@@ -40,11 +40,31 @@ type Service struct {
 	githubClient   GithubClient
 	smartLlmClient llm.IClient
 	fastLlmClient  llm.IClient
+	firstPass      FirstPassInfo
 }
 
-// NewService creates a new review service.
+// FirstPassInfo carries the telemetry identity of the first-pass provider so
+// sidecar metadata reports what actually ran instead of assuming Gemini.
+type FirstPassInfo struct {
+	Provider string
+	Backend  string
+	Model    string
+}
+
+// NewService creates a new review service with the historical Gemini
+// first-pass identity.
 func NewService(gc GithubClient, smartc llm.IClient, fastc llm.IClient) *Service {
-	return &Service{githubClient: gc, smartLlmClient: smartc, fastLlmClient: fastc}
+	return NewServiceWithFirstPass(gc, smartc, fastc, FirstPassInfo{
+		Provider: "google",
+		Backend:  "gemini_api",
+		Model:    llm.ProModelName(),
+	})
+}
+
+// NewServiceWithFirstPass creates a new review service whose first-pass
+// attempts are attributed to the given provider identity.
+func NewServiceWithFirstPass(gc GithubClient, smartc llm.IClient, fastc llm.IClient, firstPass FirstPassInfo) *Service {
+	return &Service{githubClient: gc, smartLlmClient: smartc, fastLlmClient: fastc, firstPass: firstPass}
 }
 
 // PerformReviewConfig holds the configuration for a review.

@@ -246,7 +246,7 @@ func (s *Service) runSinglePrompt(
 
 		var attemptEvent ProviderAttemptEvent
 		startedAt := time.Now().UTC()
-		attemptEvent = firstPassAttemptEvent(cfg, requestNum, attempt, startedAt)
+		attemptEvent = s.firstPassAttemptEvent(cfg, requestNum, attempt, startedAt)
 		if observerErr := observeProviderAttempt(cfg.AttemptObserver, attemptEvent); errors.Is(observerErr, ErrProviderAttemptAborted) {
 			errorChan <- reviewErrorMsg{err: observerErr, reqNum: requestNum, name: prompt.Name}
 			firstErrorMu.Lock()
@@ -323,14 +323,15 @@ func (s *Service) runSinglePrompt(
 	}
 }
 
-func firstPassAttemptEvent(cfg PerformReviewConfig, invocationNumber, attemptNumber int, startedAt time.Time) ProviderAttemptEvent {
-	model := llm.ProModelName()
+func (s *Service) firstPassAttemptEvent(cfg PerformReviewConfig, invocationNumber, attemptNumber int, startedAt time.Time) ProviderAttemptEvent {
+	provider, backend, model := s.firstPass.Provider, s.firstPass.Backend, s.firstPass.Model
 	if cfg.Fast {
-		model = llm.FlashModelName()
+		// The fast path swaps in the classification client, which stays Gemini.
+		provider, backend, model = "google", "gemini_api", llm.FlashModelName()
 	}
 	return ProviderAttemptEvent{
 		Stage: "first_pass", InvocationNumber: invocationNumber, AttemptNumber: attemptNumber,
-		Provider: "google", Backend: "gemini_api", RequestedModel: model, ResolvedModel: model,
+		Provider: provider, Backend: backend, RequestedModel: model, ResolvedModel: model,
 		Status: "started", StartedAt: &startedAt,
 	}
 }

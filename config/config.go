@@ -49,6 +49,12 @@ type Config struct {
 	ReviewerEnabled bool
 	GeminiAPIKey    string
 
+	// First-pass (sampled single-shot review) provider selection. Empty or
+	// "gemini" preserves the historical Gemini-only behavior; the
+	// classification stage always stays on Gemini flash.
+	FirstPassProvider string // gemini (default), claude, or openrouter
+	FirstPassModel    string // empty = provider default
+
 	// Agent review (Claude Code or Codex/OpenRouter subprocess).
 	AgenticReviews     bool
 	AgentCloneRootDir  string
@@ -97,6 +103,19 @@ func (c *Config) IsDevMode() bool {
 	}
 	// No OAuth configured means dev mode
 	return c.GitHubAppClientID == ""
+}
+
+// FirstPassAPIKey returns the credential the configured first-pass provider
+// authenticates with.
+func (c *Config) FirstPassAPIKey() string {
+	switch c.FirstPassProvider {
+	case "claude":
+		return c.AnthropicAPIKey
+	case "openrouter":
+		return c.OpenRouterAPIKey
+	default:
+		return c.GeminiAPIKey
+	}
 }
 
 // UsePostgreSQL returns true if the application should use PostgreSQL instead of SQLite
@@ -189,6 +208,9 @@ func Load() *Config {
 		ServerPort:      getEnvOrDefault("SERVER_PORT", "8080"),
 		ReviewerEnabled: false, // Will be set to true in main.go if API key is available
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
+
+		FirstPassProvider: strings.ToLower(strings.TrimSpace(getEnvOrDefault("FIRST_PASS_PROVIDER", "gemini"))),
+		FirstPassModel:    strings.TrimSpace(os.Getenv("FIRST_PASS_MODEL")),
 
 		AgenticReviews:     os.Getenv("AGENTIC_REVIEWS") == "true",
 		AgentCloneRootDir:  getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),

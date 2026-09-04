@@ -58,14 +58,14 @@ type IClient interface {
 type LLMProvider string
 
 const (
-	ProviderGemini LLMProvider = "gemini"
-	ProviderClaude LLMProvider = "claude"
+	ProviderGemini     LLMProvider = "gemini"
+	ProviderClaude     LLMProvider = "claude"
+	ProviderOpenRouter LLMProvider = "openrouter"
 )
 
 // Client is a wrapper for the Gemini API client.
 type Client struct {
 	genaiClient *genai.GenerativeModel
-	useFlash    bool
 	verbose     bool
 }
 
@@ -73,9 +73,11 @@ type Client struct {
 func NewClient(provider LLMProvider, apiKey string, useFlash bool, verbose bool) IClient {
 	switch provider {
 	case ProviderClaude:
-		return NewClaudeClient(apiKey, useFlash, verbose)
-	case ProviderGemini:
-		return NewGeminiClient(apiKey, useFlash, verbose)
+		model := DefaultClaudeModel
+		if useFlash {
+			model = ClaudeHaikuModel
+		}
+		return NewClaudeClient(apiKey, model, verbose)
 	default:
 		return NewGeminiClient(apiKey, useFlash, verbose)
 	}
@@ -85,20 +87,26 @@ func NewClient(provider LLMProvider, apiKey string, useFlash bool, verbose bool)
 // from the GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL environment variables when
 // set, falling back to the package defaults.
 func NewGeminiClient(apiKey string, useFlash bool, verbose bool) *Client {
+	modelName := ProModelName()
+	if useFlash {
+		modelName = FlashModelName()
+	}
+	return NewGeminiClientWithModel(apiKey, modelName, verbose)
+}
+
+// NewGeminiClientWithModel creates a new Gemini API client for an explicit
+// model name.
+func NewGeminiClientWithModel(apiKey, modelName string, verbose bool) *Client {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	modelName := ProModelName()
-	if useFlash {
-		modelName = FlashModelName()
-	}
 	color.White("Using %s model.", modelName)
 	model := client.GenerativeModel(modelName)
 
-	return &Client{genaiClient: model, useFlash: useFlash, verbose: verbose}
+	return &Client{genaiClient: model, verbose: verbose}
 }
 
 // ValidateAPIKey performs a minimal API call to verify the key is valid
