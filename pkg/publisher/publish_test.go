@@ -62,6 +62,8 @@ func (g *fakeGitHub) ListIssueComments(_ context.Context, _, _ string, _ int) ([
 	return g.existingIssueComments, nil
 }
 
+// fakeLedger mirrors the real table's uniqueness: one row per fingerprint,
+// with kind and state overwritten on upsert.
 type fakeLedger struct {
 	rows map[string]*db.PublishedFinding
 }
@@ -70,7 +72,19 @@ func newFakeLedger() *fakeLedger { return &fakeLedger{rows: map[string]*db.Publi
 
 func (l *fakeLedger) UpsertPublishedFinding(pf *db.PublishedFinding) error {
 	cp := *pf
-	l.rows[pf.Kind+":"+pf.Fingerprint] = &cp
+	if prev, ok := l.rows[pf.Fingerprint]; ok {
+		if cp.CommentID == 0 {
+			cp.CommentID = prev.CommentID
+		}
+		if cp.ReviewID == 0 {
+			cp.ReviewID = prev.ReviewID
+		}
+		if cp.Rounds == 0 {
+			cp.Rounds = prev.Rounds
+		}
+		cp.ReviewedSHA = prev.ReviewedSHA
+	}
+	l.rows[pf.Fingerprint] = &cp
 	return nil
 }
 
@@ -82,7 +96,13 @@ func (l *fakeLedger) GetPublishedFindingsForPR(_, _ string, _ int) ([]db.Publish
 	return out, nil
 }
 
-func (l *fakeLedger) get(kind, fp string) *db.PublishedFinding { return l.rows[kind+":"+fp] }
+func (l *fakeLedger) get(kind, fp string) *db.PublishedFinding {
+	r, ok := l.rows[fp]
+	if !ok || r.Kind != kind {
+		return nil
+	}
+	return r
+}
 
 func publishRound(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round) Report {
 	t.Helper()

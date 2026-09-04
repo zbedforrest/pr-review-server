@@ -81,14 +81,13 @@ func (r Round) diff() roundDiff {
 	published := map[string]bool{}
 	var d roundDiff
 	for _, p := range r.Previous {
-		if p.Kind != db.PublishedKindFinding && p.Kind != db.PublishedKindAnnotation {
+		if (p.Kind != db.PublishedKindFinding && p.Kind != db.PublishedKindAnnotation) || p.State != db.PublishedStateOpen {
 			continue
 		}
 		published[p.Fingerprint] = true
-		switch {
-		case present[p.Fingerprint]:
+		if present[p.Fingerprint] {
 			d.StillOpen++
-		case p.State == db.PublishedStateOpen:
+		} else {
 			d.Fixed++
 		}
 	}
@@ -173,7 +172,7 @@ func (r Round) summaryRows() []summaryRow {
 			severity: f.Severity,
 			file:     f.File,
 			line:     f.Line,
-			text:     tableCell(truncate(firstLine(commentText(f)), 120)),
+			text:     tableCell(truncate(strings.Trim(firstLine(commentText(f)), "*_ "), 120)),
 			source:   sourceLabel(r.sourceTag(f.ID)),
 		})
 	}
@@ -274,10 +273,10 @@ func firstSentence(comment string) string {
 func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string) string {
 	comment := commentText(f)
 	sentence := firstSentence(comment)
-	title := truncate(sentence, 100)
+	title := truncate(strings.Trim(sentence, "*_ "), 100)
 
 	body := comment
-	if title == sentence {
+	if title == strings.Trim(sentence, "*_ ") {
 		if rest := strings.TrimSpace(strings.TrimPrefix(comment, sentence)); rest != "" {
 			body = rest
 		}

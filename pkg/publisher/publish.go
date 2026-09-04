@@ -75,7 +75,9 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		case db.PublishedKindSummary:
 			summaryRow = row
 		case db.PublishedKindFinding, db.PublishedKindAnnotation:
-			published[row.Fingerprint] = row
+			if row.State == db.PublishedStateOpen {
+				published[row.Fingerprint] = row
+			}
 		}
 	}
 	if r.RoundNumber == 0 {
@@ -164,36 +166,48 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		}
 	}
 
+	written := map[string]bool{}
+	for _, f := range sel.Inline {
+		written[f.ID] = true
+	}
 	for _, f := range sel.Annotations {
-		if row, ok := published[f.ID]; ok && row.Kind == db.PublishedKindFinding {
+		if written[f.ID] {
 			continue
 		}
-		if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
+		row := &db.PublishedFinding{
 			RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
 			Kind: db.PublishedKindAnnotation, Fingerprint: f.ID,
 			SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
 			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
 			State: db.PublishedStateOpen, PublishedAt: now,
-		}); err != nil {
+		}
+		if prev, ok := published[f.ID]; ok {
+			// A finding already posted inline keeps its comment; an annotation
+			// row just advances its last-seen sha.
+			row.Kind, row.ReviewedSHA, row.PublishedAt = prev.Kind, prev.ReviewedSHA, prev.PublishedAt
+			row.CommentID, row.ReviewID, row.ThreadNodeID = prev.CommentID, prev.ReviewID, prev.ThreadNodeID
+		}
+		if err := p.Ledger.UpsertPublishedFinding(row); err != nil {
 			return rep, fmt.Errorf("record annotation %s: %w", f.ID, err)
 		}
+		written[f.ID] = true
 	}
 
 	present := map[string]bool{}
 	for _, f := range r.currentFindings() {
 		present[f.ID] = true
 		row, ok := published[f.ID]
-		if !ok || row.LastSeenSHA == r.HeadSHA {
+		if !ok || written[f.ID] || row.LastSeenSHA == r.HeadSHA {
 			continue
 		}
-		updated := *row
-		updated.LastSeenSHA = r.HeadSHA
-		if err := p.Ledger.UpsertPublishedFinding(&updated); err != nil {
+		refreshed := *row
+		refreshed.LastSeenSHA = r.HeadSHA
+		if err := p.Ledger.UpsertPublishedFinding(&refreshed); err != nil {
 			return rep, fmt.Errorf("refresh finding %s: %w", f.ID, err)
 		}
 	}
 	for id, row := range published {
-		if present[id] || row.State != db.PublishedStateOpen {
+		if written[id] || present[id] {
 			continue
 		}
 		resolved := *row

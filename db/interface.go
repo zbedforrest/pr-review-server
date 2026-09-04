@@ -169,7 +169,7 @@ const (
 	PublishedKindAnnotation = "annotation"
 
 	PublishedStateOpen      = "open"
-	PublishedStateResolved  = "resolved"  // thread resolved after the finding disappeared
+	PublishedStateResolved  = "resolved"  // the finding stopped appearing in reviews
 	PublishedStateDismissed = "dismissed" // conceded in conversation or by reaction
 )
 

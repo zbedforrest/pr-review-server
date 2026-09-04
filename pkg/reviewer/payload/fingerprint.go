@@ -4,8 +4,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// leadingProvenanceNoteRe matches the whole italic note the merge layer
+// prepends to re-admitted findings. It carries a source SHA for carried
+// findings and would otherwise dominate the hashed prefix, so identity is
+// computed from the text after it.
+var leadingProvenanceNoteRe = regexp.MustCompile(`^\s*_\[[^\]]*\]_\s*`)
 
 // Fingerprint shape: <file>:<line/10>:<hex(sha256(prefix))[:12]> where prefix
 // is the first 120 runes of the comment lower-cased with whitespace runs
@@ -21,6 +28,7 @@ const (
 // Fingerprint is the stable identity of a finding across re-reviews of the
 // same PR, shared by the sidecar, the publisher, and finding outcomes.
 func Fingerprint(file string, line int, comment string) string {
+	comment = leadingProvenanceNoteRe.ReplaceAllString(comment, "")
 	norm := strings.Join(strings.Fields(strings.ToLower(comment)), " ")
 	if r := []rune(norm); len(r) > fingerprintCommentPrefix {
 		norm = string(r[:fingerprintCommentPrefix])

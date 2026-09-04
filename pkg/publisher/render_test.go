@@ -232,3 +232,14 @@ func TestCommentableLines_TrailingNewlineDoesNotExtendHunk(t *testing.T) {
 		t.Fatalf("the line after the hunk must not be commentable when the patch ends in a newline: %v", got)
 	}
 }
+
+func TestRenderInline_TitleFromAlreadyBoldSentenceIsNotDoubleBold(t *testing.T) {
+	fd := f("x", "critical", "a.go", 3, "**The refresh loop upserts a stale snapshot.**\n\nDetails follow here.")
+	out := RenderInline(fd, "prism-only", "")
+	if !strings.Contains(out, "**[CRITICAL] The refresh loop upserts a stale snapshot.**") || strings.Contains(out, "****") {
+		t.Fatalf("title must not nest bold markers:\n%s", out)
+	}
+	if strings.Count(out, "The refresh loop upserts a stale snapshot.") != 1 {
+		t.Fatalf("title sentence must not be repeated in the body:\n%s", out)
+	}
+}

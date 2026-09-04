@@ -68,3 +68,20 @@ func TestBuild_AssignsFingerprintIDToEveryFinding(t *testing.T) {
 		}
 	}
 }
+
+func TestFingerprint_IgnoresLeadingProvenanceNote(t *testing.T) {
+	plain := Fingerprint("a.go", 12, "Nil map write on first session.")
+	carriedA := Fingerprint("a.go", 12, "_[carried from review of abc1234 finding — retained by reconciliation, not independently confirmed by the review agent]_\n\nNil map write on first session.")
+	carriedB := Fingerprint("a.go", 12, "_[carried from review of def5678 finding — retained by reconciliation, not independently confirmed by the review agent]_\n\nNil map write on first session.")
+	firstPass := Fingerprint("a.go", 12, "_[first-pass finding — retained by reconciliation, not independently confirmed by the review agent]_\n\nNil map write on first session.")
+	if carriedA != plain || carriedB != plain || firstPass != plain {
+		t.Fatalf("provenance notes must not change identity: plain=%s a=%s b=%s fp=%s", plain, carriedA, carriedB, firstPass)
+	}
+}
+
+func TestFingerprint_DistinctCarriedFindingsInSameBucketDiffer(t *testing.T) {
+	note := "_[carried from review of abc1234 finding — retained by reconciliation, not independently confirmed by the review agent]_\n\n"
+	if Fingerprint("a.go", 12, note+"Nil map write.") == Fingerprint("a.go", 15, note+"Unchecked error from Decode.") {
+		t.Fatal("two different carried findings in one bucket must not collide")
+	}
+}
