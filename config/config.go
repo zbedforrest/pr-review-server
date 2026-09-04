@@ -13,7 +13,7 @@ const (
 	defaultOpenRouterAgentMaxTurns   = 200
 	defaultReviewFirstPassSamples    = 3
 	defaultReviewFirstPassConcurrent = 5
-	defaultClaudeAgentModel          = "claude-opus-4-8"
+	defaultClaudeAgentModel          = "claude-fable-5-1"
 	defaultOpenRouterAgentModel      = "openai/gpt-5.6-sol"
 	defaultAgentEffort               = "medium"
 
@@ -163,7 +163,7 @@ func Load() *Config {
 	agentEffort := os.Getenv("AGENT_EFFORT")
 
 	claudeModels := getEnvListOrDefault("REVIEW_AGENT_MODELS_CLAUDE",
-		[]string{defaultClaudeAgentModel, "claude-fable-5"}, normalizeModel)
+		[]string{defaultClaudeAgentModel, "claude-fable-5", "claude-opus-4-8"}, normalizeModel)
 	openRouterModels := getEnvListOrDefault("REVIEW_AGENT_MODELS_OPENROUTER",
 		[]string{defaultOpenRouterAgentModel}, normalizeModel)
 	claudeEfforts := getEnvListOrDefault("REVIEW_AGENT_EFFORTS_CLAUDE",

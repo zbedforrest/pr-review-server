@@ -96,7 +96,7 @@ func TestLoadReviewCustomizationPolicyDefaults(t *testing.T) {
 	}
 
 	cfg := Load()
-	assertStringsEqual(t, cfg.ReviewAgentModelsClaude, []string{"claude-opus-4-8", "claude-fable-5"})
+	assertStringsEqual(t, cfg.ReviewAgentModelsClaude, []string{"claude-fable-5-1", "claude-fable-5", "claude-opus-4-8"})
 	assertStringsEqual(t, cfg.ReviewAgentModelsOpenRouter, []string{"openai/gpt-5.6-sol"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsClaude, []string{"low", "medium", "high"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsOpenRouter, []string{"low", "medium", "high", "xhigh", "max"})
@@ -125,7 +125,7 @@ func TestLoadReviewCustomizationPolicyNormalizesAndDeduplicatesLists(t *testing.
 	t.Setenv("REVIEW_AGENT_EFFORTS_OPENROUTER", " XHIGH,max, Medium, xhigh ")
 
 	cfg := Load()
-	assertStringsEqual(t, cfg.ReviewAgentModelsClaude, []string{"claude-fable-5", "claude-opus-4-8", "Vendor/CaseSensitive"})
+	assertStringsEqual(t, cfg.ReviewAgentModelsClaude, []string{"claude-fable-5", "claude-opus-4-8", "Vendor/CaseSensitive", "claude-fable-5-1"})
 	assertStringsEqual(t, cfg.ReviewAgentModelsOpenRouter, []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-4.8"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsClaude, []string{"high", "medium", "low"})
 	assertStringsEqual(t, cfg.ReviewAgentEffortsOpenRouter, []string{"xhigh", "max", "medium"})
