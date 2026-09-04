@@ -35,7 +35,7 @@ const (
 	reviewRunRetryAfter    = "10"
 	// Attempt error summaries are diagnostic text assembled from the provider
 	// stream and subprocess stderr; the clamp keeps a pathological blob from
-	// bloating every include=attempts response.
+	// bloating every stage-attempt entry in a review-run response.
 	maxAttemptErrorSummaryChars = 2000
 )
 

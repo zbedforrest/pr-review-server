@@ -116,10 +116,11 @@ func (g *GormDB) AutoMigrate() error {
 // were added after the initial schema. Runs even when SKIP_DB_MIGRATIONS=true
 // because these are trivial and safe to re-execute on every boot.
 //
-// Postgres-only: SQLite (used by the dev/test path) doesn't support
-// `ADD COLUMN IF NOT EXISTS` and doesn't have the `timestamptz` type. SQLite
-// goes through full AutoMigrate when migrations are enabled, so this no-op
-// is the correct behavior.
+// The ADD COLUMN statements are Postgres-only: SQLite (used by the dev/test
+// path) doesn't support `ADD COLUMN IF NOT EXISTS` and doesn't have the
+// `timestamptz` type. SQLite gets those columns from full AutoMigrate when
+// migrations are enabled, so skipping them here is correct; the table
+// creation below still runs on every dialect.
 func (g *GormDB) ensureIdempotentColumns() error {
 	// Whole-table creation for tables added after the initial schema. Unlike
 	// the column adds below this is dialect-agnostic: HasTable+CreateTable is

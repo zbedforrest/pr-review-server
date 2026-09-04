@@ -51,8 +51,8 @@ type Auth struct {
 
 	// bearerCache memoizes Authorization: Bearer <pat> → resolved username
 	// for 5 minutes so a CLI hammering the endpoint doesn't burn a GitHub
-	// API request per call. Keyed by sha256(token) so the raw PAT never
-	// sits in process memory.
+	// API request per call. Keyed by sha256(token) so the cache itself never
+	// stores the raw PAT.
 	bearerCacheMux sync.RWMutex
 	bearerCache    map[string]bearerCacheEntry
 }

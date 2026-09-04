@@ -364,9 +364,9 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 				openRouterDefaultMaxTurns, openRouterMaxTurns, openRouterModels, openRouterEfforts,
 			),
 		},
-		// The deployment's own first-pass provider is always admitted:
-		// startup fail-fast guarantees its credential, and an operator env
-		// gap must never invalidate the deployment's default config.
+		// The deployment's own first-pass provider is always admitted: an
+		// operator env gap must never invalidate the deployment's default
+		// config.
 		FirstPassProviders: map[string]runconfig.FirstPassProviderPolicy{
 			string(llm.ProviderGemini): {
 				CredentialConfigured: strings.TrimSpace(p.cfg.GeminiAPIKey) != "" || firstPassProvider == llm.ProviderGemini,

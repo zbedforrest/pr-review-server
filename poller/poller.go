@@ -41,11 +41,6 @@ const (
 	// subprocess: the first-pass LLM stage (~4 min on large PRs), clone/fetch,
 	// and artifact save. Added to the configured agent wall-clock budget by
 	// reviewProcessTimeout() to derive the monitor and stale-reset timeouts.
-	//
-	// The previous fixed 5-minute ReviewProcessTimeout was SHORTER than the
-	// agent wall-clock budget alone (6 min in prod), so healthy long-running
-	// reviews were untracked mid-flight; under concurrency their results were
-	// then lost to stale-reset/retrigger races instead of being saved.
 	ReviewPipelineMargin = 8 * time.Minute
 	// ReviewQueueAbandonAfter is the compatibility cutoff for old queued rows
 	// that predate dispatcher leases. Newly accepted work uses the short,
@@ -501,7 +496,7 @@ func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served st
 }
 
 // isReviewInFlight reports whether a PR's status indicates an in-progress
-// review (Gemini "generating" or Claude "agent_reviewing"). Used by the
+// review (first-pass "generating" or agent "agent_reviewing"). Used by the
 // outdated-detection paths to decide whether to cancel the active review.
 func isReviewInFlight(status string) bool {
 	return status == "generating" || status == "agent_reviewing"
@@ -520,9 +515,9 @@ func localReviewAlias(pr db.PR) string {
 	return pr.ReviewHTMLPath
 }
 
-// runAgentStage runs the configured agent pass on a Gemini ReviewResult: flips
-// the PR status to agent_reviewing, spawns the agent against a clone of the
-// PR head, replaces the comment set with the agent's refined output, and
+// runAgentStage runs the configured agent pass on a first-pass ReviewResult:
+// flips the PR status to agent_reviewing, spawns the agent against a clone of
+// the PR head, reconciles the agent's findings with the first-pass ones, and
 // re-renders via the same HTML pipeline so the inline-comment UI is intact.
 //
 // If a concurrency cap is configured (AGENT_MAX_CONCURRENT), dispatch must
@@ -1186,7 +1181,6 @@ func (p *Poller) GetReviewerStatus() (running bool, duration time.Duration) {
 		return false, 0
 	}
 
-	// Verify processes are actually still running and find the longest duration
 	count := 0
 	var maxDuration time.Duration
 
@@ -1831,7 +1825,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 				}
 			}
 
-			// If the PR had an active Gemini or agent review, kill the process.
+			// If the PR had an active first-pass or agent review, kill the process.
 			if wasInFlight {
 				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
 					log.Printf("[OUTDATED] Killed active review process for %s", key)
@@ -2203,7 +2197,7 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 				}
 			}
 
-			// If the PR had an active Gemini or agent review, kill the process.
+			// If the PR had an active first-pass or agent review, kill the process.
 			if wasInFlight {
 				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
 					log.Printf("[OUTDATED] Killed active review process for %s/%s#%d",
@@ -3110,7 +3104,7 @@ func (p *Poller) UpdatePRStatus(owner, repo string, prNumber int, status string)
 	return nil
 }
 
-// generateReviewsBatch runs Gemini (and optionally agent) review generation
+// generateReviewsBatch runs first-pass (and optionally agent) review generation
 // for one or more PRs. When force is true, the existing-review cache check
 // is skipped — the caller wants a fresh review even if one already exists
 // for the same commit. The auto-poll path uses force=false to avoid
@@ -3677,10 +3671,6 @@ func shouldReview(pr github.PullRequest, dbPR *db.PR, isTracked bool, autoReview
 	isAutoCandidate := dbPR.Status == "pending" && autoReviewEnabled && !isTracked
 
 	if isAutoCandidate {
-		// Additional check: Don't auto-generate if already completed for this commit
-		if dbPR.LastCommitSHA == pr.CommitSHA && dbPR.Status == "completed" {
-			return false
-		}
 		return true
 	}
 

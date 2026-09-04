@@ -77,12 +77,14 @@ type Config struct {
 	AgentBackend       string // claude (default) or openrouter
 	AgentModel         string // backend model id for agent reviews (empty = backend default)
 	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
-	AnthropicAPIKey    string // frozen optional runtime credential; Claude OAuth remains supported
-	OpenRouterAPIKey   string // OpenRouter credential; deployment-only, never exposed in capabilities
-	OpenRouterBaseURL  string // OpenRouter API root (empty = service default)
-	BugMemoryPath      string // local path to a bug-memory library JSON (dev/benchmark)
-	BugMemoryObject    string // GCS object name of the library (prod); Path wins if both set
-	RequiredChecks     bool   // convert fired gates/memory entries into forced-choice agent checks (service/checks.go)
+	// AnthropicAPIKey is optional for the agent pass (Claude OAuth remains
+	// supported) but required when FirstPassProvider is "claude".
+	AnthropicAPIKey   string
+	OpenRouterAPIKey  string // OpenRouter credential; deployment-only, never exposed in capabilities
+	OpenRouterBaseURL string // OpenRouter API root (empty = service default)
+	BugMemoryPath     string // local path to a bug-memory library JSON (dev/benchmark)
+	BugMemoryObject   string // GCS object name of the library (prod); Path wins if both set
+	RequiredChecks    bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
 
 	// Caller-customization policy. These allowlists and ceilings are owned by
 	// the deployment operator; per-review API overrides must remain within them.

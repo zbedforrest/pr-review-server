@@ -78,9 +78,10 @@ func (g *GormDB) GetUserPRAssignment(userID, prID int) (*UserPRAssignment, error
 }
 
 // UpsertUserPRAssignment inserts or updates a user's PR view.
-// NOTE: via_teams is intentionally excluded from DoUpdates. The ONLY code path
-// that should write via_teams is UpdateUserViaTeams, guarded by shouldUpdateViaTeams
-// in the poller. This prevents accidental overwrites with empty/null values.
+// NOTE: via_teams is intentionally excluded from DoUpdates, so this path can
+// never overwrite it with empty/null values. Production writes via_teams
+// through BatchUpsertUserPRViews and BatchPruneViaTeams, which the poller
+// guards with shouldUpdateViaTeams.
 func (g *GormDB) UpsertUserPRAssignment(assignment *UserPRAssignment) error {
 	model := userPRAssignmentToUserPRViewModel(assignment)
 
@@ -148,8 +149,10 @@ func (g *GormDB) UpdateUserReviewStatus(userID, prID int, reviewStatus string) e
 }
 
 // UpdateUserViaTeams updates the via_teams field for a user's PR view.
-// This is the ONLY function that should write via_teams. Callers MUST guard
-// with shouldUpdateViaTeams() to prevent empty/nil values from overwriting good data.
+// Single-row helper with no production callers: it survives for tests only,
+// since the poller writes via_teams through BatchUpsertUserPRViews and clears
+// it through BatchPruneViaTeams. An unguarded call with an empty slice would
+// erase good data.
 func (g *GormDB) UpdateUserViaTeams(userID, prID int, viaTeams []string) error {
 	return g.db.Model(&UserPRViewModel{}).
 		Where("user_id = ? AND pr_id = ?", userID, prID).
@@ -391,7 +394,7 @@ func (g *GormDB) SetUserHiddenForPR(userID, prID int, hidden bool) error {
 // or un-hides it if it was previously hidden.
 // NOTE: On conflict, ONLY updates "hidden". All other fields (including via_teams)
 // are preserved. New records start with via_teams=NULL, which is populated later
-// by UpdateUserViaTeams in the poller's reviewer-groups phase.
+// by BatchUpsertUserPRViews in the poller's reviewer-groups phase.
 func (g *GormDB) EnsureUserPRView(userID, prID int, isAuthor bool) error {
 	view := &UserPRViewModel{
 		UserID:   uint(userID),

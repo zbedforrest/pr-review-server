@@ -35,7 +35,8 @@ func (g *GormDB) GetAutoReviewRequestedPRs() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// Default to true if not set
+	// initDefaultSettings seeds this key to "false", so an empty value only
+	// happens when that seed row is missing.
 	if value == "" {
 		return true, nil
 	}
