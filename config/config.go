@@ -22,6 +22,8 @@ const (
 	defaultFirstPassGeminiModel     = "gemini-3.1-pro-preview"
 	defaultFirstPassClaudeModel     = "claude-sonnet-5"
 	defaultFirstPassOpenRouterModel = "openai/gpt-5.6-sol"
+
+	defaultFirstPassCacheStaggerSec = 8
 )
 
 type Config struct {
@@ -61,6 +63,9 @@ type Config struct {
 	FirstPassProvider string // gemini (default), claude, or openrouter
 	FirstPassModel    string // empty = provider default
 	FirstPassThinking string // gemini thinking level: low, medium, high; empty = provider default
+	// FirstPassCacheStaggerSec delays each subsequent claude first-pass sample
+	// so sample 1's prompt-cache prefill completes first. 0 disables.
+	FirstPassCacheStaggerSec int
 
 	// Agent review (Claude Code or Codex/OpenRouter subprocess).
 	AgenticReviews     bool
@@ -256,9 +261,10 @@ func Load() *Config {
 		ReviewerEnabled: false, // Will be set to true in main.go if API key is available
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
 
-		FirstPassProvider: firstPassProvider,
-		FirstPassModel:    firstPassModel,
-		FirstPassThinking: strings.ToLower(strings.TrimSpace(os.Getenv("FIRST_PASS_THINKING"))),
+		FirstPassProvider:        firstPassProvider,
+		FirstPassModel:           firstPassModel,
+		FirstPassThinking:        strings.ToLower(strings.TrimSpace(os.Getenv("FIRST_PASS_THINKING"))),
+		FirstPassCacheStaggerSec: getNonNegativeEnvIntOrDefault("FIRST_PASS_CACHE_STAGGER_SEC", defaultFirstPassCacheStaggerSec),
 
 		AgenticReviews:     os.Getenv("AGENTIC_REVIEWS") == "true",
 		AgentCloneRootDir:  getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
@@ -315,6 +321,20 @@ func getPositiveEnvIntOrDefault(key string, defaultValue int) int {
 		return value
 	}
 	return defaultValue
+}
+
+// getNonNegativeEnvIntOrDefault allows an explicit 0 (feature off) but falls
+// back to the default on unset, malformed, or negative values.
+func getNonNegativeEnvIntOrDefault(key string, defaultValue int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return defaultValue
+	}
+	return n
 }
 
 func getPositiveEnvInt(key string) (int, bool) {

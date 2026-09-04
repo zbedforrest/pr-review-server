@@ -49,6 +49,10 @@ type FirstPassInfo struct {
 	Provider string
 	Backend  string
 	Model    string
+	// CacheStaggerSec delays each subsequent sample launch so sample 1's
+	// prompt-cache prefill lands before samples 2..N send the same prompt.
+	// Honored only for the anthropic provider; 0 disables the stagger.
+	CacheStaggerSec int
 }
 
 // NewService creates a new review service with the historical Gemini

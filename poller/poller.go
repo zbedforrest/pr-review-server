@@ -240,7 +240,7 @@ func (p *Poller) effectiveFirstPassIdentity(firstPass runconfig.FirstPass) (llm.
 func (p *Poller) firstPassClientForRun(firstPass runconfig.FirstPass) (llm.IClient, service.FirstPassInfo, error) {
 	provider, model := p.effectiveFirstPassIdentity(firstPass)
 	providerName, backend := llm.FirstPassTelemetry(provider)
-	info := service.FirstPassInfo{Provider: providerName, Backend: backend, Model: model}
+	info := service.FirstPassInfo{Provider: providerName, Backend: backend, Model: model, CacheStaggerSec: p.cfg.FirstPassCacheStaggerSec}
 	key := string(provider) + "\x00" + model
 	p.firstPassClientsMu.Lock()
 	defer p.firstPassClientsMu.Unlock()

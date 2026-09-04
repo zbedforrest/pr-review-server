@@ -166,6 +166,98 @@ func TestRunPromptsUsePerRunFirstPassClientAndIdentity(t *testing.T) {
 	}
 }
 
+func TestLaunchStaggerGatesOnClaudeFirstPass(t *testing.T) {
+	svc := NewService(&MockGithubClient{}, &MockLLMClient{}, nil)
+	claudeInfo := &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5", CacheStaggerSec: 8}
+
+	assert.Equal(t, 8*time.Second, svc.launchStagger(PerformReviewConfig{FirstPass: claudeInfo}))
+	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{}),
+		"gemini service-wide identity keeps the historical stagger")
+	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{
+		FirstPass: &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5"},
+	}), "zero stagger disables the cache delay")
+	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{
+		FirstPass: &FirstPassInfo{Provider: "google", Backend: "gemini_api", Model: "gemini-3.1-pro-preview", CacheStaggerSec: 8},
+	}), "non-claude providers never cache-stagger")
+	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{FirstPass: claudeInfo, Fast: true}),
+		"the fast path swaps to the gemini flash client")
+
+	claudeSvc := NewServiceWithFirstPass(&MockGithubClient{}, &MockLLMClient{}, nil,
+		FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5", CacheStaggerSec: 5})
+	assert.Equal(t, 5*time.Second, claudeSvc.launchStagger(PerformReviewConfig{}),
+		"service-wide identity applies when no per-run override is set")
+}
+
+func TestRunPromptsStaggersClaudeSampleStartsForPromptCache(t *testing.T) {
+	response := `[{"file_path":"main.go","line_number":1,"comment_body":"ok"}]`
+	client := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			return response, 0, 0, 0, nil
+		},
+	}
+
+	var eventsMu sync.Mutex
+	startedAt := map[int]time.Time{}
+	svc := NewService(&MockGithubClient{}, client, nil)
+	result := svc.runPrompts(context.Background(), PerformReviewConfig{
+		FirstPassClient: client,
+		FirstPass:       &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5", CacheStaggerSec: 1},
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Status == "started" {
+				eventsMu.Lock()
+				startedAt[event.InvocationNumber] = *event.StartedAt
+				eventsMu.Unlock()
+			}
+			return nil
+		},
+	}, []Prompt{
+		{Name: "standard#1", Content: "same prompt"},
+		{Name: "standard#2", Content: "same prompt"},
+		{Name: "standard#3", Content: "same prompt"},
+	}, svc.parseAIResponse)
+
+	assert.Equal(t, int64(3), result.SuccessCount)
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	require.Len(t, startedAt, 3)
+	// Tolerant lower bounds: the launch loop sleeps a full stagger between
+	// samples, so each first_pass_sample started_at trails the previous one.
+	assert.GreaterOrEqual(t, startedAt[2].Sub(startedAt[1]), 900*time.Millisecond)
+	assert.GreaterOrEqual(t, startedAt[3].Sub(startedAt[2]), 900*time.Millisecond)
+}
+
+func TestRunPromptsKeepsShortStaggerForNonClaudeSamples(t *testing.T) {
+	response := `[{"file_path":"main.go","line_number":1,"comment_body":"ok"}]`
+	client := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			return response, 0, 0, 0, nil
+		},
+	}
+
+	var eventsMu sync.Mutex
+	startedAt := map[int]time.Time{}
+	svc := NewService(&MockGithubClient{}, client, nil)
+	result := svc.runPrompts(context.Background(), PerformReviewConfig{
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Status == "started" {
+				eventsMu.Lock()
+				startedAt[event.InvocationNumber] = *event.StartedAt
+				eventsMu.Unlock()
+			}
+			return nil
+		},
+	}, []Prompt{
+		{Name: "standard#1", Content: "same prompt"},
+		{Name: "standard#2", Content: "same prompt"},
+	}, svc.parseAIResponse)
+
+	assert.Equal(t, int64(2), result.SuccessCount)
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	require.Len(t, startedAt, 2)
+	assert.Less(t, startedAt[2].Sub(startedAt[1]), 900*time.Millisecond)
+}
+
 func TestRunPromptsAbortsBeforeProviderOnDefinitiveObserverFence(t *testing.T) {
 	var providerCalls int
 	mockSmartLLM := &MockLLMClient{

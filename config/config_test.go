@@ -232,6 +232,33 @@ func TestLoadFirstPassThinking(t *testing.T) {
 	}
 }
 
+func TestLoadFirstPassCacheStagger(t *testing.T) {
+	t.Setenv("FIRST_PASS_CACHE_STAGGER_SEC", "")
+	if cfg := Load(); cfg.FirstPassCacheStaggerSec != 8 {
+		t.Fatalf("stagger default: %d", cfg.FirstPassCacheStaggerSec)
+	}
+
+	t.Setenv("FIRST_PASS_CACHE_STAGGER_SEC", "0")
+	if cfg := Load(); cfg.FirstPassCacheStaggerSec != 0 {
+		t.Fatalf("explicit zero must disable the stagger: %d", cfg.FirstPassCacheStaggerSec)
+	}
+
+	t.Setenv("FIRST_PASS_CACHE_STAGGER_SEC", " 12 ")
+	if cfg := Load(); cfg.FirstPassCacheStaggerSec != 12 {
+		t.Fatalf("stagger passthrough: %d", cfg.FirstPassCacheStaggerSec)
+	}
+
+	t.Setenv("FIRST_PASS_CACHE_STAGGER_SEC", "-3")
+	if cfg := Load(); cfg.FirstPassCacheStaggerSec != 8 {
+		t.Fatalf("negative must fall back to default: %d", cfg.FirstPassCacheStaggerSec)
+	}
+
+	t.Setenv("FIRST_PASS_CACHE_STAGGER_SEC", "soon")
+	if cfg := Load(); cfg.FirstPassCacheStaggerSec != 8 {
+		t.Fatalf("malformed must fall back to default: %d", cfg.FirstPassCacheStaggerSec)
+	}
+}
+
 func TestLoadFirstPassNormalizesProvider(t *testing.T) {
 	t.Setenv("FIRST_PASS_PROVIDER", " Claude ")
 	t.Setenv("FIRST_PASS_MODEL", " claude-opus-5 ")
