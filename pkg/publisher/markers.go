@@ -49,7 +49,7 @@ func CommentableLines(patch string) map[int]bool {
 	lines := map[int]bool{}
 	right := 0
 	inHunk := false
-	for _, raw := range strings.Split(patch, "\n") {
+	for _, raw := range strings.Split(strings.TrimSuffix(patch, "\n"), "\n") {
 		if m := hunkHeaderRe.FindStringSubmatch(raw); m != nil {
 			right, _ = strconv.Atoi(m[1])
 			inHunk = true

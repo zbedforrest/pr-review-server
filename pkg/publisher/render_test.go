@@ -186,3 +186,49 @@ func TestRenderInlineTitleCapAndSuggestion(t *testing.T) {
 		t.Errorf("truncated title should end with ellipsis\n%s", titleLine)
 	}
 }
+
+const provenanceNote = "_[first-pass finding — retained by reconciliation, not independently confirmed by the review agent]_\n\n"
+
+func TestRenderInline_StripsProvenanceNoteFromTitleAndBody(t *testing.T) {
+	fd := f("x", "medium", "a.go", 3, provenanceNote+"Treating raw as context is wrong. It marks the next line commentable.")
+	out := RenderInline(fd, "prism-only", "")
+
+	if strings.Contains(out, "retained by reconciliation") {
+		t.Fatalf("provenance note must not be rendered:\n%s", out)
+	}
+	if !strings.Contains(out, "**[MEDIUM] Treating raw as context is wrong.**") {
+		t.Errorf("title must come from the real comment:\n%s", out)
+	}
+}
+
+func TestRenderSummary_TableUsesRealFirstLineNotProvenanceNote(t *testing.T) {
+	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 1,
+		Findings: []payload.Finding{f("x", "medium", "a.go", 3, provenanceNote+"Treating raw as context is wrong.")}}
+	out := RenderSummary(r, Select(r.Findings, nil, nil, Policy{}))
+	if strings.Contains(out, "retained by reconciliation") || !strings.Contains(out, "Treating raw as context is wrong.") {
+		t.Fatalf("summary table row wrong:\n%s", out)
+	}
+}
+
+func TestRenderSummary_RequestChangesVerdictCapsConfidence(t *testing.T) {
+	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 1,
+		Findings: []payload.Finding{
+			f("sum", "unknown", "SUMMARY", 0, "**Verdict: request changes.** Two mediums need attention."),
+			f("x", "medium", "a.go", 3, "Something."),
+		}}
+	out := RenderSummary(r, Select(r.Findings, nil, nil, Policy{}))
+	if !strings.Contains(out, "merge confidence 3/5") {
+		t.Fatalf("a request-changes verdict must cap confidence at 3:\n%s", out)
+	}
+}
+
+func TestCommentableLines_TrailingNewlineDoesNotExtendHunk(t *testing.T) {
+	patch := "@@ -1,2 +1,3 @@\n a\n+b\n c\n"
+	got := CommentableLines(patch)
+	if !got[1] || !got[2] || !got[3] {
+		t.Fatalf("hunk lines 1-3 must be commentable: %v", got)
+	}
+	if got[4] {
+		t.Fatalf("the line after the hunk must not be commentable when the patch ends in a newline: %v", got)
+	}
+}

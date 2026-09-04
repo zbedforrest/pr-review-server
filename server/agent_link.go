@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
-	"strings"
 )
 
 // agentLinkPath turns a published finding into a Claude Code deep link. GitHub
@@ -19,7 +18,13 @@ const agentLinkPath = "/go/agent"
 // claude-cli deep links accept at most 5000 characters of prompt.
 const agentLinkPromptMax = 5000
 
-var agentLinkSafeName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+var (
+	agentLinkSafeName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+	// A finding id is <path>:<line bucket>:<12 hex>; the path may not contain
+	// whitespace. Only that grammar and plain repository paths reach the prompt.
+	agentLinkFindingID = regexp.MustCompile(`^[^\s:]{1,300}:\d{1,7}:[0-9a-f]{12}$`)
+	agentLinkRepoPath  = regexp.MustCompile(`^[A-Za-z0-9._/@+-]{1,300}$`)
+)
 
 func (s *Server) handleAgentLink(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -32,8 +37,7 @@ func (s *Server) handleAgentLink(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case !agentLinkSafeName.MatchString(owner), !agentLinkSafeName.MatchString(repo),
 		errN != nil, number <= 0, errL != nil, line < 0,
-		fid == "", len(fid) > 512, path == "", len(path) > 300,
-		strings.ContainsAny(fid+path, "\n\r"):
+		!agentLinkFindingID.MatchString(fid), !agentLinkRepoPath.MatchString(path):
 		http.Error(w, "invalid agent link", http.StatusBadRequest)
 		return
 	}

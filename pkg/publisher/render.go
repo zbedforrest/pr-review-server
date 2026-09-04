@@ -3,6 +3,7 @@ package publisher
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -171,7 +172,7 @@ func (r Round) summaryRows() []summaryRow {
 			severity: f.Severity,
 			file:     f.File,
 			line:     f.Line,
-			text:     tableCell(truncate(firstLine(f.Comment), 120)),
+			text:     tableCell(truncate(firstLine(commentText(f)), 120)),
 			source:   sourceLabel(r.sourceTag(f.ID)),
 		})
 	}
@@ -206,6 +207,9 @@ func RenderSummary(r Round, sel Selection) string {
 		}
 	}
 	confidence := MergeConfidence(critical, medium, r.RequiredCheckViolated)
+	if r.requestsChanges() && confidence > requestChangesConfidenceCap {
+		confidence = requestChangesConfidenceCap
+	}
 
 	var head strings.Builder
 	head.WriteString(SummaryMarker + "\n")
@@ -267,7 +271,7 @@ func firstSentence(comment string) string {
 }
 
 func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string) string {
-	comment := strings.TrimSpace(f.Comment)
+	comment := commentText(f)
 	sentence := firstSentence(comment)
 	title := truncate(sentence, 100)
 
@@ -312,4 +316,27 @@ func agentLink(base string, f payload.Finding) string {
 		sep = "?"
 	}
 	return base + sep + "f=" + url.QueryEscape(f.ID) + "&p=" + url.QueryEscape(f.File) + "&l=" + strconv.Itoa(f.Line)
+}
+
+// The merge layer prefixes re-admitted findings with an italic provenance
+// note meant for the HTML report; on GitHub the source tag carries that
+// information, so the note is dropped before rendering.
+var provenanceNoteRe = regexp.MustCompile(`^_\[[^\]]*\]_\s*`)
+
+func commentText(f payload.Finding) string {
+	return strings.TrimSpace(provenanceNoteRe.ReplaceAllString(strings.TrimSpace(f.Comment), ""))
+}
+
+// A narrative that requests changes outranks the severity arithmetic: the
+// score can never read as "no blocking findings" while the verdict blocks.
+const requestChangesConfidenceCap = 3
+
+func (r Round) requestsChanges() bool {
+	for _, f := range r.Findings {
+		if f.File == "SUMMARY" {
+			body := strings.ToLower(f.Comment)
+			return strings.Contains(body, "request changes") || strings.Contains(body, "request-changes")
+		}
+	}
+	return false
 }
