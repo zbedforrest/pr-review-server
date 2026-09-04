@@ -182,6 +182,9 @@ type Counts struct {
 // consumer reconstruct "what changed at this line + what surrounds it" in
 // one trip.
 type Finding struct {
+	// ID is the Fingerprint of (file, line, comment): the identity a finding
+	// keeps across re-reviews of the same PR. Additive, schema stays "1".
+	ID       string `json:"id,omitempty"`
 	Severity string `json:"severity"` // critical | medium | low | unknown
 	// Provenance identifies which review pass produced the finding: "agent",
 	// "first-pass", "mechanical", "required-check", or "carried" — carried
@@ -323,6 +326,7 @@ func Build(
 			contractStatus = "not_applicable"
 		}
 		f := Finding{
+			ID:                    Fingerprint(c.FilePath, c.LineNumber, c.CommentBody),
 			Severity:              sev,
 			Provenance:            DeriveProvenance(c),
 			File:                  c.FilePath,
