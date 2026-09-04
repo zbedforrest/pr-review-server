@@ -13,7 +13,6 @@ const (
 	settingPublishEnabledAuthors    = "publish_enabled_authors"
 	settingPublishInlineCap         = "publish_inline_cap"
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"
-
 )
 
 var publishSeverities = map[string]bool{"critical": true, "medium": true, "low": true}
