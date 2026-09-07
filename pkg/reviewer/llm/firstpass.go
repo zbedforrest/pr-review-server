@@ -13,10 +13,12 @@ func ParseProvider(value string) (LLMProvider, error) {
 		return ProviderGemini, nil
 	case ProviderClaude:
 		return ProviderClaude, nil
+	case ProviderClaudeCode, "claude_code", "claudecode":
+		return ProviderClaudeCode, nil
 	case ProviderOpenRouter:
 		return ProviderOpenRouter, nil
 	default:
-		return "", fmt.Errorf("unsupported first-pass provider %q (expected gemini, claude, or openrouter)", value)
+		return "", fmt.Errorf("unsupported first-pass provider %q (expected gemini, claude, claude-code, or openrouter)", value)
 	}
 }
 
@@ -47,6 +49,8 @@ func FirstPassModelName(provider LLMProvider, model string) string {
 	switch provider {
 	case ProviderClaude:
 		return DefaultClaudeModel
+	case ProviderClaudeCode:
+		return DefaultClaudeCodeModel
 	case ProviderOpenRouter:
 		return DefaultOpenRouterModel
 	default:
@@ -60,6 +64,8 @@ func FirstPassTelemetry(provider LLMProvider) (providerName, backend string) {
 	switch provider {
 	case ProviderClaude:
 		return "anthropic", "anthropic_api"
+	case ProviderClaudeCode:
+		return "anthropic", "claude_code"
 	case ProviderOpenRouter:
 		return "openrouter", "openrouter_api"
 	default:
@@ -69,7 +75,7 @@ func FirstPassTelemetry(provider LLMProvider) (providerName, backend string) {
 
 // NewFirstPassClient builds the smart (first-pass) client for the configured
 // provider. openRouterBaseURL applies only to the openrouter provider;
-// thinking applies only to the gemini provider.
+// thinking applies to the gemini and claude-code providers.
 func NewFirstPassClient(provider LLMProvider, apiKey, model, openRouterBaseURL, thinking string, verbose bool) (IClient, error) {
 	resolved, err := ParseProvider(string(provider))
 	if err != nil {
@@ -86,6 +92,8 @@ func NewFirstPassClient(provider LLMProvider, apiKey, model, openRouterBaseURL, 
 			return nil, fmt.Errorf("first-pass provider claude requires ANTHROPIC_API_KEY")
 		}
 		return NewClaudeClient(apiKey, resolvedModel, verbose), nil
+	case ProviderClaudeCode:
+		return NewClaudeCodeClient(resolvedModel, thinkingLevel, verbose), nil
 	case ProviderOpenRouter:
 		if apiKey == "" {
 			return nil, fmt.Errorf("first-pass provider openrouter requires OPENROUTER_API_KEY")

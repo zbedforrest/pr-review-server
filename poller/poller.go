@@ -265,7 +265,7 @@ func (p *Poller) pipelineModelUses(firstPass runconfig.FirstPass) []payload.Mode
 		Backend:        backend,
 		RequestedModel: firstPassModel,
 	}
-	if firstPassProvider == llm.ProviderGemini {
+	if firstPassProvider == llm.ProviderGemini || firstPassProvider == llm.ProviderClaudeCode {
 		firstPassUse.Effort = p.cfg.FirstPassThinking
 	}
 	return []payload.ModelUse{

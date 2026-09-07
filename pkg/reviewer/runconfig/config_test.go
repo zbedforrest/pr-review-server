@@ -52,6 +52,11 @@ func testPolicy() Policy {
 				DefaultModel:         "claude-sonnet-5",
 				Models:               []string{"claude-sonnet-5"},
 			},
+			"claude-code": {
+				CredentialConfigured: true,
+				DefaultModel:         "claude-fable-5-1",
+				Models:               []string{"claude-fable-5-1"},
+			},
 			"openrouter": {
 				CredentialConfigured: false,
 				DefaultModel:         "openai/gpt-5.6-sol",

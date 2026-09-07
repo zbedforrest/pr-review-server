@@ -69,6 +69,10 @@ func newReviewAPITestPoller(database db.Database) *reviewAPITestPoller {
 					CredentialConfigured: true, DefaultModel: "claude-sonnet-5",
 					Models: []string{"claude-sonnet-5"},
 				},
+				"claude-code": {
+					CredentialConfigured: true, DefaultModel: "claude-fable-5-1",
+					Models: []string{"claude-fable-5-1"},
+				},
 				"openrouter": {
 					CredentialConfigured: false, DefaultModel: "openai/gpt-5.6-sol",
 					Models: []string{"openai/gpt-5.6-sol"},
@@ -380,6 +384,7 @@ func TestReviewCapabilitiesExposePolicyButNoSecrets(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"max_wall_clock_seconds":900`)
 	assert.Contains(t, recorder.Body.String(), `"first_pass":{"default_provider":"gemini","default_model":"gemini-3.1-pro-preview"`)
 	assert.Contains(t, recorder.Body.String(), `"claude":{"credential_configured":true,"default_model":"claude-sonnet-5","models":["claude-sonnet-5"]}`)
+	assert.Contains(t, recorder.Body.String(), `"claude-code":{"credential_configured":true,"default_model":"claude-fable-5-1","models":["claude-fable-5-1"]}`)
 	assert.Contains(t, recorder.Body.String(), `"gemini":{"credential_configured":true,"default_model":"gemini-3.1-pro-preview","models":["gemini-3.1-pro-preview"]}`)
 	assert.Contains(t, recorder.Body.String(), `"openrouter":{"credential_configured":false,"default_model":"openai/gpt-5.6-sol","models":["openai/gpt-5.6-sol"]}`)
 	assert.NotContains(t, strings.ToLower(recorder.Body.String()), "api_key")

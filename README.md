@@ -84,11 +84,15 @@ The first pass is provider-selectable, independent of the agent stage:
 
 | Variable | Purpose |
 |----------|---------|
-| `FIRST_PASS_PROVIDER` | `gemini` (default), `claude`, or `openrouter` |
+| `FIRST_PASS_PROVIDER` | `gemini` (default), `claude`, `claude-code`, or `openrouter` |
 | `FIRST_PASS_MODEL` | Model for that provider; defaults per provider |
-| `FIRST_PASS_THINKING` | `low`/`medium`/`high` thinking level (Gemini only; unset uses the provider default) |
+| `FIRST_PASS_THINKING` | `low`/`medium`/`high`; maps to Gemini thinking and Claude Code `--effort` (unset uses the provider default) |
+| `FIRST_PASS_CLAUDE_CODE_TIMEOUT_SEC` | Claude Code CLI timeout in seconds (default 900) |
 | `FIRST_PASS_CACHE_STAGGER_SEC` | Seconds between sampled requests so later samples read the first sample's prompt cache (Claude only, default 8) |
-| `REVIEW_FIRST_PASS_MODELS_{GEMINI,CLAUDE,OPENROUTER}` | Per-provider allowlists for callers selecting a model per run |
+| `REVIEW_FIRST_PASS_MODELS_{GEMINI,CLAUDE,CLAUDE_CODE,OPENROUTER}` | Per-provider allowlists for callers selecting a model per run |
+
+The `claude-code` provider runs the headless Claude Code CLI on the operator's
+Claude subscription, requires no API key, and defaults to `claude-fable-5-1`.
 
 Benchmarking across model combinations put the strongest pairing at a
 `gpt-5.6-sol` first pass with a `claude-fable-5-1` agent stage: different model
