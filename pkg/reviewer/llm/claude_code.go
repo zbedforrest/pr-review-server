@@ -129,7 +129,10 @@ func (c *ClaudeCodeClient) GetReview(prompt string) (string, int32, int32, int32
 
 	var response claudeCodeResponse
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		return "", 0, 0, 0, fmt.Errorf("decode Claude Code JSON output: %w; stdout=%q", err, diagnosticSnippet(stdout.String()))
+		// A crashed or misconfigured CLI usually reports on stderr with an
+		// empty or non-JSON stdout; surface both so the failure is diagnosable.
+		return "", 0, 0, 0, fmt.Errorf("decode Claude Code JSON output (exit_error=%v): %w; stdout=%q stderr=%q",
+			runErr, err, diagnosticSnippet(stdout.String()), diagnosticSnippet(stderr.String()))
 	}
 	if runErr != nil || response.Type != "result" || response.IsError || response.Subtype != "success" || strings.TrimSpace(response.Result) == "" {
 		return "", 0, 0, 0, fmt.Errorf(
