@@ -46,6 +46,10 @@ export interface PR {
   model_fallback?: boolean;
   // Structured execution identity and model provenance for the latest review.
   review_run?: ReviewRun;
+  // The latest review was posted to the GitHub PR as the bot, and how many
+  // review rounds have been posted so far. Optional for the older-payload reason.
+  published_to_github?: boolean;
+  published_rounds?: number;
 }
 
 export interface ReviewRun {

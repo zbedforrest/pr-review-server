@@ -116,22 +116,6 @@
     }
   }
 
-  &__generate-btn {
-    @include button-base;
-    color: $color-link;
-    border-color: $color-link;
-
-    &:hover:not(:disabled) {
-      background: $color-link;
-      color: white;
-    }
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-  }
-
   &__notes {
     width: 120px;
     padding: 0 !important;
