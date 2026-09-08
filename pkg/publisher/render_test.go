@@ -197,7 +197,7 @@ func TestRenderSummaryRoundTwoShowsDiffAndSkipsGreptileOnly(t *testing.T) {
 	r.GreptileOnly = []GreptileOnlyRef{{Title: "Missing await", File: "y.ts", Line: 3, Severity: "medium", CommentID: 555}}
 	r.InlineComments = map[string]int64{"c1": 77}
 	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
-	if !strings.Contains(out, "**Since last review:** 3 new · 1 still open · 1 fixed") {
+	if !strings.Contains(out, "**Since last review:** 2 new · 1 still open · 1 fixed") {
 		t.Errorf("diff line wrong:\n%s", out)
 	}
 	if !strings.Contains(out, "[`a.go:10`](https://github.com/acme/example/pull/7#discussion_r77)") {

@@ -83,12 +83,21 @@ func (c *Client) CreateReview(ctx context.Context, owner, repo string, number in
 		opts.Page = resp.NextPage
 	}
 
+	// Match by body first: the caller authored every body and the per-review
+	// listing may omit line numbers. Path and line is the fallback.
 	used := make([]bool, len(created))
 	ids := make([]int64, len(comments))
 	for i, in := range comments {
-		if i < len(created) && !used[i] && created[i].GetPath() == in.Path && created[i].GetLine() == in.Line {
-			ids[i] = created[i].GetID()
-			used[i] = true
+		for j, rc := range created {
+			if !used[j] && rc.GetBody() == in.Body {
+				ids[i] = rc.GetID()
+				used[j] = true
+				break
+			}
+		}
+	}
+	for i, in := range comments {
+		if ids[i] != 0 {
 			continue
 		}
 		for j, rc := range created {

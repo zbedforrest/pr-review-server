@@ -173,7 +173,7 @@ func (r Round) bullet(f payload.Finding) string {
 	if f.Line > 0 {
 		where = fmt.Sprintf("%s:%d", where, f.Line)
 	}
-	text := strings.TrimSuffix(truncate(summaryText(f), 200), ".")
+	text := truncateWords(strings.TrimSuffix(strings.TrimSpace(summaryText(f)), "."), 200)
 	return fmt.Sprintf("- **[%s]** %s — [`%s`](%s)\n", strings.ToUpper(f.Severity), text, where, r.findingLink(f))
 }
 
@@ -364,4 +364,18 @@ func summaryText(f payload.Finding) string {
 		return strings.TrimSpace(c.CurrentImpact)
 	}
 	return strings.Trim(firstLine(commentText(f)), "*_ ")
+}
+
+// truncateWords cuts at the last word boundary before max runes and appends
+// an ellipsis; short strings are returned unchanged.
+func truncateWords(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	cut := string(r[:max-3])
+	if i := strings.LastIndex(cut, " "); i > 0 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;:") + "..."
 }

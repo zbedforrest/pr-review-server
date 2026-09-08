@@ -131,8 +131,8 @@ func TestSelectSeverityFloorAndHunkGate(t *testing.T) {
 	if got := ids(sel.Inline); len(got) != 1 || got[0] != "ok" {
 		t.Fatalf("Inline = %v, want [ok]", got)
 	}
-	if got := ids(sel.Annotations); len(got) != 4 {
-		t.Fatalf("Annotations = %v, want 4 entries", got)
+	if got := ids(sel.Annotations); len(got) != 3 {
+		t.Fatalf("Annotations = %v, want 3 entries (lows never reach GitHub)", got)
 	}
 }
 
@@ -161,13 +161,5 @@ func TestSelectCapOrdering(t *testing.T) {
 	}
 	if got := ids(sel.Annotations); len(got) != 2 || got[0] != "m-a3" || got[1] != "m-b1" {
 		t.Fatalf("Annotations = %v, want [m-a3 m-b1]", got)
-	}
-}
-
-func TestSelectMinSeverityLowAdmitsLow(t *testing.T) {
-	commentable := map[string]map[int]bool{"a.go": {10: true}}
-	sel := Select([]payload.Finding{f("low", "low", "a.go", 10, "x")}, nil, commentable, Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: "low"})
-	if len(sel.Inline) != 1 {
-		t.Fatalf("Inline = %v, want [low]", ids(sel.Inline))
 	}
 }

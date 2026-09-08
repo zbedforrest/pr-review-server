@@ -78,3 +78,28 @@ func TestPublish_SummaryLinksInlineCommentsPostedThisRound(t *testing.T) {
 		t.Fatalf("summary must link the inline comment created in the same round:\n%s", gh.issueCreates[0])
 	}
 }
+
+func TestShown_LowSeverityNeverReachesGitHub(t *testing.T) {
+	low := withContract(f("l", "low", "a.go", 5, "Unlabeled close button."), "production_behavior", "current_impact", "AT users get an unlabeled button.", "")
+	if Shown(low) {
+		t.Fatal("a low finding must not be shown even with current impact")
+	}
+	med := withContract(f("m", "medium", "a.go", 5, "x"), "production_behavior", "current_impact", "Users see a 500.", "")
+	if !Shown(med) {
+		t.Fatal("a current-impact medium is shown")
+	}
+}
+
+func TestBullet_TruncatesOnWordBoundaryWithoutStrayPeriods(t *testing.T) {
+	long := strings.Repeat("alpha beta gamma ", 20) + "delta."
+	fd := withContract(f("x", "critical", "a.go", 1, "c"), "production_behavior", "current_impact", long, "")
+	out := RenderSummary(Round{Owner: "a", Repo: "b", Number: 1, HeadSHA: "abc1234", RoundNumber: 1, Findings: []payload.Finding{fd}}, Selection{})
+	line := out[strings.Index(out, "- **[CRITICAL]**"):]
+	line = line[:strings.Index(line, " — ")]
+	if !strings.HasSuffix(line, "gamma...") && !strings.HasSuffix(line, "beta...") && !strings.HasSuffix(line, "alpha...") {
+		t.Fatalf("bullet must end on a whole word plus an ellipsis: %q", line)
+	}
+	if strings.Contains(line, "..") && !strings.Contains(line, "...") {
+		t.Fatalf("no stray double periods: %q", line)
+	}
+}
