@@ -168,6 +168,16 @@ func TestRenderSummary_FoldedNotesCapOnlyWhenTheDashboardCanTakeTheRest(t *testi
 		t.Errorf("without a dashboard URL every note must be listed and no empty link emitted:\n%s", out)
 	}
 
+	huge := r
+	huge.Findings = []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "n")}
+	for i := 0; i < 400; i++ {
+		huge.Findings = append(huge.Findings, withContract(f(fmt.Sprintf("h%d", i), "low", "a.go", i+1, "Nit."), "test_quality", "no_user_impact", strings.Repeat("word ", 40), ""))
+	}
+	out = RenderSummary(huge, Select(huge.Findings, nil, nil, DefaultPolicy()))
+	if len(out) > SummaryMaxChars || !strings.Contains(out, "more omitted") {
+		t.Errorf("the byte cap must hold without a dashboard, with an unlinked omitted count: len=%d", len(out))
+	}
+
 	r.DashboardURL = "https://prism.example/r"
 	out = RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
 	if !strings.Contains(out, "- ... 2 more on the [dashboard](https://prism.example/r)") || strings.Contains(out, "Note number 8") {

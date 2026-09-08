@@ -245,10 +245,16 @@ func RenderSummary(r Round, sel Selection) string {
 	if notes := r.lowerSeverityNotes(); len(notes) > 0 {
 		fmt.Fprintf(&b, "<details><summary>%d lower-severity note%s</summary>\n\n", len(notes), plural(len(notes)))
 		for i, f := range notes {
-			// Cap only when the rest has somewhere to go; a hidden finding
-			// behind an empty link would be worse than a long list.
-			if r.DashboardURL != "" && (i == maxFoldedNotes || b.Len() > SummaryMaxChars-600) {
-				fmt.Fprintf(&b, "- ... %d more on the [dashboard](%s)\n", len(notes)-i, r.DashboardURL)
+			// The count cap applies only when the rest has somewhere to go; the
+			// byte cap always holds, since GitHub rejects oversized bodies.
+			overCount := r.DashboardURL != "" && i == maxFoldedNotes
+			overBytes := b.Len() > SummaryMaxChars-600
+			if overCount || overBytes {
+				if r.DashboardURL != "" {
+					fmt.Fprintf(&b, "- ... %d more on the [dashboard](%s)\n", len(notes)-i, r.DashboardURL)
+				} else {
+					fmt.Fprintf(&b, "- ... %d more omitted\n", len(notes)-i)
+				}
 				break
 			}
 			b.WriteString(r.bullet(f))
