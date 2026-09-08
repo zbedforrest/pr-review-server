@@ -315,6 +315,7 @@ func (s *Server) Start() error {
 	// Agent deep-link redirect (not protected: it carries no review content,
 	// only the PR coordinates already visible on GitHub)
 	http.HandleFunc(agentLinkPath, s.handleAgentLink)
+	http.HandleFunc(badgePath, s.handleBadge)
 
 	// WebSocket route (not protected - uses session-based auth internally if needed)
 	http.HandleFunc("/ws", s.handleWebSocket)

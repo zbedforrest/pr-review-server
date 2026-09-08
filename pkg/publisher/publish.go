@@ -102,7 +102,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	if len(sel.Inline) > 0 {
 		inputs := make([]ReviewCommentInput, 0, len(sel.Inline))
 		for _, f := range sel.Inline {
-			inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: RenderInline(f, r.sourceTag(f.ID), r.AgentLinkBase)})
+			inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: RenderInline(f, r.sourceTag(f.ID), r.AgentLinkBase, r.BadgeBaseURL)})
 		}
 		reviewID, commentIDs, err := p.GH.CreateReview(ctx, r.Owner, r.Repo, r.Number, r.HeadSHA, "", inputs)
 		if err != nil {

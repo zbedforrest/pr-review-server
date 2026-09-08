@@ -58,7 +58,7 @@ func TestRenderInline_CompactHeadlineFromContract(t *testing.T) {
 	fd.FindingContract.FalsifiableCondition = strp("POST to the arbiter endpoint with verify enabled")
 	fd.FindingContract.ExpectedObservable = strp("a 2xx if wrong, ConnectError if right")
 
-	out := RenderInline(fd, "prism-only", "https://prism.example/go/agent?o=a&r=b&n=1")
+	out := RenderInline(fd, "prism-only", "https://prism.example/go/agent?o=a&r=b&n=1", "")
 	visible := out
 	if i := strings.Index(out, "<details>"); i >= 0 {
 		visible = out[:i]
@@ -87,7 +87,7 @@ func TestRenderInline_CompactHeadlineFromContract(t *testing.T) {
 }
 
 func TestRenderInline_WithoutContractFallsBackToFirstSentence(t *testing.T) {
-	out := RenderInline(noContract("x", "critical", "a.go", 3, "Nil deref when cfg is missing. Details."), "prism-only", "")
+	out := RenderInline(noContract("x", "critical", "a.go", 3, "Nil deref when cfg is missing. Details."), "prism-only", "", "")
 	if !strings.Contains(out, "**[CRITICAL] Nil deref when cfg is missing.**") {
 		t.Fatalf("fallback headline wrong:\n%s", out)
 	}
@@ -106,7 +106,7 @@ func TestRenderInline_FoldedReasoningMarksWhereSuggestionWas(t *testing.T) {
 	fd := withContract(f("x", "medium", "a.go", 3,
 		"The wrapper should not claim a role. The simpler shape is to hang the tooltip on the button directly:\n\n```suggestion\n<span className=\"x\">\n```\n\nand guard the click handler."),
 		"production_behavior", "current_impact", "Two nested buttons are announced.", "")
-	out := RenderInline(fd, "prism-only", "")
+	out := RenderInline(fd, "prism-only", "", "")
 	if !strings.Contains(out, "directly:\n\n*(suggestion above)*\n\nand guard") {
 		t.Fatalf("folded reasoning must mark the lifted suggestion instead of leaving a gap:\n%s", out)
 	}
@@ -116,7 +116,7 @@ func TestRenderInline_UsesTheAgentHeadlineOverTheImpactSentence(t *testing.T) {
 	impact := "Users who override the site served (mobile UA with Desktop Site selected, or mobileRedirect=always) are reported with a platform flag that does not match the layout they see."
 	x := withContract(fp("h", "medium", "a.py", 3, "Body.", "agent"), "production_behavior", "current_impact", impact, "")
 	x.FindingContract.Headline = "Platform flag ignores the Desktop Site override"
-	out := RenderInline(x, "", "")
+	out := RenderInline(x, "", "", "")
 	lines := strings.Split(out, "\n")
 	if lines[1] != "**[MEDIUM] Behavior change · Platform flag ignores the Desktop Site override**" {
 		t.Errorf("title = %q", lines[1])

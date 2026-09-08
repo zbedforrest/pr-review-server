@@ -28,9 +28,18 @@ func TestRenderSummary_ListsOnlyConfirmedFindingsAsBullets(t *testing.T) {
 	r := shownRound()
 	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
 
-	for _, banned := range []string{"| Sev |", "<details>", "Source", "Greptile", "PRism |", "Stale state", "Maybe a flicker", "No user impact", "a.go", "b.go"} {
+	for _, banned := range []string{"| Sev |", "Source", "Greptile", "PRism |", "Stale state"} {
 		if strings.Contains(out, banned) {
 			t.Errorf("summary must not contain %q:\n%s", banned, out)
+		}
+	}
+	bullets, folded := out[:strings.Index(out, "<details>")], out[strings.Index(out, "<details>"):]
+	for _, belowBar := range []string{"Maybe a flicker", "No user impact", "a.go", "b.go"} {
+		if strings.Contains(bullets, belowBar) {
+			t.Errorf("below-bar finding %q must not be a top-level bullet:\n%s", belowBar, out)
+		}
+		if !strings.Contains(folded, belowBar) {
+			t.Errorf("below-bar finding %q belongs in the folded notes:\n%s", belowBar, out)
 		}
 	}
 	wantCrit := "- **[CRITICAL]** Viewers who start a fresh call are not unmuted when the broadcaster accepts — [`f2fViewerClient.ts:579`](https://github.com/acme/example/pull/7#discussion_r3937000001)"
@@ -50,8 +59,11 @@ func TestRenderSummary_NothingShownReadsClean(t *testing.T) {
 	r.Findings = r.Findings[:1] // narrative only
 	r.Findings = append(r.Findings, withContract(f("l1", "low", "b.go", 9, "Nit."), "test_quality", "no_user_impact", "No user impact.", ""))
 	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
-	if !strings.Contains(out, "merge confidence 5/5") || !strings.Contains(out, "No blocking findings.") || strings.Contains(out, "- **[") {
-		t.Fatalf("a round with nothing above the bar must read clean:\n%s", out)
+	if !strings.Contains(out, "merge confidence 5/5") || !strings.Contains(out, "No blocking findings.") || strings.Contains(out[:strings.Index(out, "<details>")], "- **[") {
+		t.Fatalf("a round with nothing above the bar must read clean above the fold:\n%s", out)
+	}
+	if !strings.Contains(out, "<details><summary>1 lower-severity note</summary>") {
+		t.Fatalf("the low still appears folded:\n%s", out)
 	}
 }
 
