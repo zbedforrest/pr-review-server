@@ -252,3 +252,47 @@ func TestInstallationHitsExpireSoRemovedReposReresolve(t *testing.T) {
 		t.Errorf("lookups = %d, want a fresh lookup after the TTL", lookups)
 	}
 }
+
+func TestCachedInstallationClientRefreshesAfterItsFirstRepoLeaves(t *testing.T) {
+	removed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/personal/a/installation":
+			if removed {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 200})
+		case "/repos/personal/b/installation":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 200})
+		case "/app/installations/200/access_tokens":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": "tok-200", "expires_at": time.Now().Add(time.Hour)})
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	c := &Client{}
+	c.SetAppClient(newTestAppClient(t, srv.URL))
+
+	ghA, err := c.clientFor(context.Background(), "personal", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghB, err := c.clientFor(context.Background(), "personal", "b")
+	if err != nil || ghA != ghB {
+		t.Fatalf("siblings must share the installation client: err=%v same=%v", err, ghA == ghB)
+	}
+
+	removed = true
+	c.appClient.extraLock.Lock()
+	c.appClient.repoInstallations = nil
+	c.appClient.extraTokens = nil
+	c.appClient.extraLock.Unlock()
+
+	tok, err := c.repoSources["200"].Token()
+	if err != nil || tok.AccessToken != "tok-200" {
+		t.Fatalf("the shared client's token source must refresh by installation id, not by the repo that created it: tok=%v err=%v", tok, err)
+	}
+}

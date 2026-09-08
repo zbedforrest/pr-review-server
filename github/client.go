@@ -26,6 +26,7 @@ type Client struct {
 	appClient  *AppClient
 
 	repoClients     map[string]*github.Client
+	repoSources     map[string]*installationTokenSource
 	repoClientsLock sync.Mutex
 }
 
@@ -49,7 +50,7 @@ func (c *Client) clientFor(ctx context.Context, owner, repo string) (*github.Cli
 	if gh, ok := c.repoClients[installationID]; ok {
 		return gh, nil
 	}
-	ts := &repoTokenSource{appClient: c.appClient, owner: owner, repo: repo}
+	ts := &installationTokenSource{appClient: c.appClient, installationID: installationID}
 	gh := github.NewClient(oauth2.NewClient(context.Background(), ts))
 	if base := c.appClient.baseURL(); base != githubAPIBase {
 		u, err := url.Parse(base + "/")
@@ -60,18 +61,20 @@ func (c *Client) clientFor(ctx context.Context, owner, repo string) (*github.Cli
 	}
 	if c.repoClients == nil {
 		c.repoClients = map[string]*github.Client{}
+		c.repoSources = map[string]*installationTokenSource{}
 	}
 	c.repoClients[installationID] = gh
+	c.repoSources[installationID] = ts
 	return gh, nil
 }
 
-type repoTokenSource struct {
-	appClient   *AppClient
-	owner, repo string
+type installationTokenSource struct {
+	appClient      *AppClient
+	installationID string
 }
 
-func (s *repoTokenSource) Token() (*oauth2.Token, error) {
-	token, expiry, err := s.appClient.TokenForRepo(context.Background(), s.owner, s.repo)
+func (s *installationTokenSource) Token() (*oauth2.Token, error) {
+	token, expiry, err := s.appClient.TokenForInstallation(context.Background(), s.installationID)
 	if err != nil {
 		return nil, err
 	}

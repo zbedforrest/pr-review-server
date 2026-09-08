@@ -220,6 +220,13 @@ func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (strin
 	if err != nil {
 		return "", time.Time{}, err
 	}
+	return c.TokenForInstallation(ctx, installationID)
+}
+
+// TokenForInstallation mints or reuses the token for one installation. It is
+// what a cached per-installation client refreshes with, so the client's
+// lifetime is not tied to whichever repo first resolved to it.
+func (c *AppClient) TokenForInstallation(ctx context.Context, installationID string) (string, time.Time, error) {
 	if installationID == c.installationID {
 		return c.GetTokenWithExpiry(ctx)
 	}
@@ -254,7 +261,7 @@ func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (strin
 	}
 	c.extraTokens[installationID] = tok
 	c.extraLock.Unlock()
-	log.Printf("[GITHUB APP] Installation token for %s (installation %s) refreshed, expires at %s", owner, installationID, tok.ExpiresAt.Format(time.RFC3339))
+	log.Printf("[GITHUB APP] Installation token for installation %s refreshed, expires at %s", installationID, tok.ExpiresAt.Format(time.RFC3339))
 	return tok.Token, tok.ExpiresAt, nil
 }
 
