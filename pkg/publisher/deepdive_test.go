@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -142,5 +143,34 @@ func TestRenderSummary_FullReportLinkIsFirstClassEvenWhenClean(t *testing.T) {
 	}
 	if strings.Contains(out, ">dashboard</a>") {
 		t.Fatalf("the old dashboard sub-link should be gone:\n%s", out)
+	}
+}
+
+func TestSeverityLabelFallsBackToTextWithoutABadge(t *testing.T) {
+	if got := severityLabel("unknown", "https://prism.example/badge"); got != "**[UNKNOWN]**" {
+		t.Errorf("unknown severity = %q, want the text label (no badge is served for it)", got)
+	}
+	if got := severityLabel("low", "https://prism.example/badge/"); got != `<img alt="LOW" src="https://prism.example/badge/low.svg">` {
+		t.Errorf("low = %q", got)
+	}
+}
+
+func TestRenderSummary_FoldedNotesCapOnlyWhenTheDashboardCanTakeTheRest(t *testing.T) {
+	var findings []payload.Finding
+	findings = append(findings, f("sum", "unknown", "SUMMARY", 0, "n"))
+	for i := 0; i < 10; i++ {
+		findings = append(findings, withContract(f(fmt.Sprintf("l%d", i), "low", "a.go", i+1, fmt.Sprintf("Nit %d.", i)), "test_quality", "no_user_impact", fmt.Sprintf("Note number %d.", i), ""))
+	}
+	r := Round{Owner: "a", Repo: "b", Number: 1, HeadSHA: "abc1234", RoundNumber: 1, Findings: findings}
+
+	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
+	if strings.Contains(out, "more on the [dashboard]()") || !strings.Contains(out, "Note number 9") {
+		t.Errorf("without a dashboard URL every note must be listed and no empty link emitted:\n%s", out)
+	}
+
+	r.DashboardURL = "https://prism.example/r"
+	out = RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
+	if !strings.Contains(out, "- ... 2 more on the [dashboard](https://prism.example/r)") || strings.Contains(out, "Note number 8") {
+		t.Errorf("with a dashboard the list caps at eight and points to the rest:\n%s", out)
 	}
 }

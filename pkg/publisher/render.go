@@ -177,6 +177,11 @@ func (r Round) bullet(f payload.Finding) string {
 // The image keeps the word as alt text so text-only surfaces still read it.
 func severityLabel(severity, badgeBase string) string {
 	sev := strings.ToUpper(severity)
+	switch strings.ToLower(severity) {
+	case "critical", "medium", "low":
+	default:
+		badgeBase = ""
+	}
 	if badgeBase == "" {
 		return "**[" + sev + "]**"
 	}
@@ -199,8 +204,9 @@ func (r Round) lowerSeverityNotes() []payload.Finding {
 const maxFoldedNotes = 8
 
 // RenderSummary is the sticky comment: a confidence line, the round diff, and
-// one bullet per finding above the bar (critical first). Nothing below the
-// bar appears on GitHub; the dashboard link carries the rest.
+// one bullet per finding above the bar (critical first). Confirmed findings
+// below the bar are listed folded under one line; unconfirmed items stay on
+// the dashboard.
 func RenderSummary(r Round, sel Selection) string {
 	shown := r.currentFindings()
 	sortBySeverity(shown)
@@ -239,7 +245,9 @@ func RenderSummary(r Round, sel Selection) string {
 	if notes := r.lowerSeverityNotes(); len(notes) > 0 {
 		fmt.Fprintf(&b, "<details><summary>%d lower-severity note%s</summary>\n\n", len(notes), plural(len(notes)))
 		for i, f := range notes {
-			if i == maxFoldedNotes || b.Len() > SummaryMaxChars-600 {
+			// Cap only when the rest has somewhere to go; a hidden finding
+			// behind an empty link would be worse than a long list.
+			if r.DashboardURL != "" && (i == maxFoldedNotes || b.Len() > SummaryMaxChars-600) {
 				fmt.Fprintf(&b, "- ... %d more on the [dashboard](%s)\n", len(notes)-i, r.DashboardURL)
 				break
 			}
@@ -486,5 +494,3 @@ func plural(n int) string {
 	}
 	return "s"
 }
-
-// dashboardNotes counts confirmed findings that stay below the GitHub bar.
