@@ -296,3 +296,29 @@ func TestCachedInstallationClientRefreshesAfterItsFirstRepoLeaves(t *testing.T) 
 		t.Fatalf("the shared client's token source must refresh by installation id, not by the repo that created it: tok=%v err=%v", tok, err)
 	}
 }
+
+func TestExpiredInstallationHitIsServedWhenTheLookupBlips(t *testing.T) {
+	var lookups int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&lookups, 1) == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 200})
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	c := newTestAppClient(t, srv.URL)
+	if _, err := c.installationFor(context.Background(), "personal", "tool"); err != nil {
+		t.Fatal(err)
+	}
+	c.extraLock.Lock()
+	entry := c.repoInstallations["personal/tool"]
+	entry.checkedAt = time.Now().Add(-2 * installationTTL)
+	c.repoInstallations["personal/tool"] = entry
+	c.extraLock.Unlock()
+
+	id, err := c.installationFor(context.Background(), "personal", "tool")
+	if err != nil || id != "200" {
+		t.Fatalf("a 5xx on re-lookup must serve the last known id: id=%q err=%v", id, err)
+	}
+}

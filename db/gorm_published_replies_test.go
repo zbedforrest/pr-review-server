@@ -37,6 +37,7 @@ func TestGormDB_ListPublishedReplyTargets_ReturnsOpenNonDraftPRsWithInlineCommen
 		9:  {RepoOwner: "owner", RepoName: "repo", PRNumber: 9, PRState: "open"},
 		10: {RepoOwner: "owner", RepoName: "repo", PRNumber: 10, PRState: "merged"},
 		11: {RepoOwner: "owner", RepoName: "repo", PRNumber: 11, PRState: "open", Draft: true},
+		13: {RepoOwner: "owner", RepoName: "repo", PRNumber: 13, PRState: ""},
 	} {
 		pr.LastCommitSHA = "abc"
 		pr.Title = "t"
@@ -54,10 +55,11 @@ func TestGormDB_ListPublishedReplyTargets_ReturnsOpenNonDraftPRsWithInlineCommen
 	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.PRNumber = 10 })))
 	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.PRNumber = 11 })))
 	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.PRNumber = 12 })))
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.PRNumber = 13 })))
 
 	targets, err := db.ListPublishedReplyTargets()
 	require.NoError(t, err)
-	require.Len(t, targets, 2, "no comment id (8), merged (10), draft (11) and no PR row (12) are all skipped")
+	require.Len(t, targets, 3, "no comment id (8), merged (10), draft (11) and no PR row (12) are skipped; a legacy empty state (13) counts as open")
 	assert.Equal(t, 7, targets[0].PRNumber)
 	assert.Equal(t, map[int64]string{9001: "pkg/api/handler.go:4:deadbeef0123"}, targets[0].Roots)
 	assert.Equal(t, 9, targets[1].PRNumber, "resolved findings still own their threads")

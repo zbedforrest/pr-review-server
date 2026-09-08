@@ -281,6 +281,11 @@ func (c *AppClient) installationFor(ctx context.Context, owner, repo string) (st
 		return "", ErrAppNotInstalled
 	}
 	id, err := c.lookupInstallation(ctx, owner, repo)
+	if err != nil && !errors.Is(err, ErrAppNotInstalled) && hit {
+		// A GitHub blip must not fail a write; the last known id is almost
+		// certainly still right and a real removal answers 404, not 5xx.
+		return cached.id, nil
+	}
 	c.extraLock.Lock()
 	defer c.extraLock.Unlock()
 	switch {
