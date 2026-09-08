@@ -127,3 +127,22 @@ func TestGormDB_PublishedFinding_RoundsUpdatesOnlyWhenProvided(t *testing.T) {
 	got, _ = db.GetPublishedFindingsForPR("owner", "repo", 7)
 	assert.Equal(t, 3, got[0].Rounds, "a zero Rounds on upsert must not clobber the counter")
 }
+
+func TestGormDB_GetPublishedSummaryForPR_ReturnsOnlyTheSummaryRow(t *testing.T) {
+	db := newTestDB(t)
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(nil)))
+	row, ok, err := db.GetPublishedSummaryForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.False(t, ok, "a finding row is not a summary")
+	assert.Zero(t, row.Rounds)
+
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Kind = PublishedKindSummary
+		p.Fingerprint = "SUMMARY"
+		p.Rounds = 3
+	})))
+	row, ok, err = db.GetPublishedSummaryForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, 3, row.Rounds)
+}

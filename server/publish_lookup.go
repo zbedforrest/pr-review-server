@@ -12,7 +12,7 @@ import (
 // *db.GormDB implements it, mocks need not.
 type publishedSummaryLister interface {
 	ListPublishedSummaries() ([]db.PublishedFinding, error)
-	GetPublishedFindingsForPR(owner, repo string, number int) ([]db.PublishedFinding, error)
+	GetPublishedSummaryForPR(owner, repo string, number int) (db.PublishedFinding, bool, error)
 }
 
 func publishedKey(owner, repo string, number int) string {
@@ -46,15 +46,10 @@ func (s *Server) publishedSummaryFor(owner, repo string, number int) (db.Publish
 	if !ok {
 		return db.PublishedFinding{}, false
 	}
-	rows, err := lister.GetPublishedFindingsForPR(owner, repo, number)
+	row, ok, err := lister.GetPublishedSummaryForPR(owner, repo, number)
 	if err != nil {
 		log.Printf("[API] published summary unavailable for %s/%s#%d: %v", owner, repo, number, err)
 		return db.PublishedFinding{}, false
 	}
-	for _, row := range rows {
-		if row.Kind == db.PublishedKindSummary {
-			return row, true
-		}
-	}
-	return db.PublishedFinding{}, false
+	return row, ok
 }

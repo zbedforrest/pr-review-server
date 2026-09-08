@@ -220,4 +220,13 @@ func TestInstallationMissForOneRepoDoesNotPoisonSiblings(t *testing.T) {
 	if lookups != 2 {
 		t.Errorf("lookups = %d, want one per repo", lookups)
 	}
+
+	// The other order: a hit for one repo must not be reused for an excluded sibling.
+	c2 := newTestAppClient(t, srv.URL)
+	if id, err := c2.installationFor(context.Background(), "personal", "tool"); err != nil || id != "200" {
+		t.Fatalf("tool: id=%q err=%v", id, err)
+	}
+	if _, err := c2.installationFor(context.Background(), "personal", "excluded"); !errors.Is(err, ErrAppNotInstalled) {
+		t.Fatalf("excluded repo after a sibling hit: err = %v, want not installed", err)
+	}
 }

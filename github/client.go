@@ -46,7 +46,7 @@ func (c *Client) clientFor(ctx context.Context, owner, repo string) (*github.Cli
 	}
 	c.repoClientsLock.Lock()
 	defer c.repoClientsLock.Unlock()
-	if gh, ok := c.repoClients[owner]; ok {
+	if gh, ok := c.repoClients[installationID]; ok {
 		return gh, nil
 	}
 	ts := &repoTokenSource{appClient: c.appClient, owner: owner, repo: repo}
@@ -61,7 +61,7 @@ func (c *Client) clientFor(ctx context.Context, owner, repo string) (*github.Cli
 	if c.repoClients == nil {
 		c.repoClients = map[string]*github.Client{}
 	}
-	c.repoClients[owner] = gh
+	c.repoClients[installationID] = gh
 	return gh, nil
 }
 

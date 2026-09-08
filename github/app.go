@@ -29,14 +29,15 @@ type AppClient struct {
 	httpClient     *http.Client
 	apiBase        string
 
-	// Installations for repos outside the primary installation's account,
-	// keyed by owner; tokens keyed by installation id. The lock guards the
-	// maps only; GitHub calls happen outside it so one slow owner cannot
-	// stall publishing for the others.
-	ownerInstallations map[string]string
-	notInstalled       map[string]time.Time // keyed by owner/repo: a 404 is repo-scoped
-	extraTokens        map[string]InstallationToken
-	extraLock          sync.Mutex
+	// Installations for repos outside the primary installation's account.
+	// Lookups are per repo (an installation may cover only selected repos of
+	// an account), tokens are per installation id and so shared by siblings.
+	// The lock guards the maps only; GitHub calls happen outside it so one
+	// slow owner cannot stall publishing for the others.
+	repoInstallations map[string]string    // owner/repo -> installation id
+	notInstalled      map[string]time.Time // owner/repo -> when the 404 was seen
+	extraTokens       map[string]InstallationToken
+	extraLock         sync.Mutex
 
 	// Installation token caching
 	installationToken     string
@@ -200,15 +201,14 @@ func (c *AppClient) baseURL() string {
 // ErrAppNotInstalled reports that the App has no installation covering a repo.
 var ErrAppNotInstalled = errors.New("github app is not installed")
 
-// A miss is cached per repo for notInstalledTTL: GitHub answers 404 both when
-// the owner has no installation and when an installation limited to selected
-// repositories excludes this one, so a miss must not speak for siblings.
+// A miss is cached for notInstalledTTL so an uninstalled repo does not cost a
+// lookup on every write, and re-checked after it so a fresh install is seen.
 const notInstalledTTL = 10 * time.Minute
 
 // TokenForRepo returns an installation token that can write to owner/repo.
-// Repos under the primary installation's account reuse its token; any other
-// owner is resolved through the App's installation on that account. A stale
-// installation id (mint returns 404) is forgotten so the next call re-resolves.
+// Repos under the primary installation reuse its token; any other repo is
+// resolved through the App's installation covering it. A stale installation
+// id (mint returns 404) is forgotten so the next call re-resolves.
 func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (string, time.Time, error) {
 	installationID, err := c.installationFor(ctx, owner, repo)
 	if err != nil {
@@ -232,7 +232,11 @@ func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (strin
 	if err != nil {
 		if errors.Is(err, errInstallationGone) {
 			c.extraLock.Lock()
-			delete(c.ownerInstallations, owner)
+			for key, id := range c.repoInstallations {
+				if id == installationID {
+					delete(c.repoInstallations, key)
+				}
+			}
 			delete(c.extraTokens, installationID)
 			c.extraLock.Unlock()
 		}
@@ -248,13 +252,13 @@ func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (strin
 	return tok.Token, tok.ExpiresAt, nil
 }
 
-// installationFor resolves the installation id for a repo's owner, caching
-// hits by owner and misses by repo. It returns ErrAppNotInstalled with an
-// empty id when no installation covers the repo.
+// installationFor resolves the installation covering owner/repo, caching hits
+// and misses per repo. It returns ErrAppNotInstalled with an empty id when no
+// installation covers the repo.
 func (c *AppClient) installationFor(ctx context.Context, owner, repo string) (string, error) {
 	repoKey := owner + "/" + repo
 	c.extraLock.Lock()
-	id, hit := c.ownerInstallations[owner]
+	id, hit := c.repoInstallations[repoKey]
 	missedAt, missed := c.notInstalled[repoKey]
 	c.extraLock.Unlock()
 	if hit {
@@ -268,10 +272,10 @@ func (c *AppClient) installationFor(ctx context.Context, owner, repo string) (st
 	defer c.extraLock.Unlock()
 	switch {
 	case err == nil:
-		if c.ownerInstallations == nil {
-			c.ownerInstallations = map[string]string{}
+		if c.repoInstallations == nil {
+			c.repoInstallations = map[string]string{}
 		}
-		c.ownerInstallations[owner] = id
+		c.repoInstallations[repoKey] = id
 		delete(c.notInstalled, repoKey)
 	case errors.Is(err, ErrAppNotInstalled):
 		if c.notInstalled == nil {
