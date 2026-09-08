@@ -106,15 +106,17 @@ func TestPublishTargetReady(t *testing.T) {
 	}
 }
 
-// A closed, merged or draft PR must never receive bot comments, no matter what
-// the review found: the guard has to hold at the real publish entry point.
-func TestPublishGitHubReview_DoesNotWriteToClosedOrDraftPRs(t *testing.T) {
+// A closed, merged or draft PR must never receive bot comments, and neither
+// may a PR whose author is not enabled, whoever requested the review. The
+// guard has to hold at the real publish entry point.
+func TestPublishGitHubReview_DoesNotWriteToClosedDraftOrUnlistedAuthorPRs(t *testing.T) {
 	for _, tc := range []struct {
-		name, prJSON string
+		name, prJSON, author string
 	}{
-		{"merged", `{"state":"closed","merged":true,"draft":false,"head":{"sha":"abc"}}`},
-		{"draft", `{"state":"open","merged":false,"draft":true,"head":{"sha":"abc"}}`},
-		{"head moved", `{"state":"open","merged":false,"draft":false,"head":{"sha":"newer"}}`},
+		{"merged", `{"state":"closed","merged":true,"draft":false,"head":{"sha":"abc"}}`, "alice"},
+		{"draft", `{"state":"open","merged":false,"draft":true,"head":{"sha":"abc"}}`, "alice"},
+		{"head moved", `{"state":"open","merged":false,"draft":false,"head":{"sha":"newer"}}`, "alice"},
+		{"author not enabled", `{"state":"open","merged":false,"draft":false,"head":{"sha":"abc"}}`, "mallory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var writes []string
@@ -141,7 +143,7 @@ func TestPublishGitHubReview_DoesNotWriteToClosedOrDraftPRs(t *testing.T) {
 			sidecar := []byte(`{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc",
 				"findings":[{"id":"f.go:0:abc123def456","severity":"critical","provenance":"agent","file":"f.go","line":3,"comment":"Real bug."}]}`)
 
-			p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}, sidecar)
+			p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: tc.author}, sidecar)
 
 			assert.Empty(t, writes, "no GitHub writes may happen for a %s PR", tc.name)
 		})
