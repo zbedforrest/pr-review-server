@@ -739,6 +739,11 @@ func TestParseAgentJSON(t *testing.T) {
 		{"suffix with fenced code", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n```suggestion\nvals[0] = y\n```", 1},
 		{"brackets inside string body", `[{"file_path":"a.go","line_number":1,"comment_body":"use arr[0] and \"quoted [x]\" here"}]`, 1},
 		{"nested arrays in body", `[{"file_path":"a.go","line_number":1,"comment_body":"matrix"},{"file_path":"b.go","line_number":2,"comment_body":"[[1,2],[3]]"}]`, 2},
+		// Seen in production: a Go suggestion block carried literal tabs
+		// inside a JSON string, json.Unmarshal rejected the control
+		// character, and the whole review collapsed into one SUMMARY blob.
+		{"raw tab inside string", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"```suggestion\\n\tif x {\\n\t\treturn\\n\t}\\n```\"}]", 1},
+		{"raw newline inside string", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"line one\nline two\"}]", 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -750,6 +755,16 @@ func TestParseAgentJSON(t *testing.T) {
 				t.Errorf("got %d comments, want %d", len(got), c.want)
 			}
 		})
+	}
+}
+
+func TestParseAgentJSONPreservesRawControlCharactersAsEscapes(t *testing.T) {
+	got, err := parseAgentJSON("[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"a\tb\nc\"}]")
+	if err != nil {
+		t.Fatalf("parseAgentJSON: %v", err)
+	}
+	if got[0].CommentBody != "a\tb\nc" {
+		t.Errorf("body = %q, want tab and newline preserved", got[0].CommentBody)
 	}
 }
 
