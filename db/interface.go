@@ -266,7 +266,7 @@ type Database interface {
 	GetPR(owner, repo string, prNumber int) (*PR, error)
 	UpsertPR(pr *PR) error
 	UpdatePRStatus(owner, repo string, prNumber int, status string) error
-	ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) error
+	ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) (bool, error)
 	SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error
 	SetPRAgentReviewing(owner, repo string, prNumber int) error
 	SetPRError(owner, repo string, prNumber int, message string) error

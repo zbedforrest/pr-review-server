@@ -335,8 +335,9 @@ func TestGormDB_ResetPRToOutdated(t *testing.T) {
 	require.NoError(t, err)
 
 	// Reset to outdated
-	err = db.ResetPRToOutdated("owner", "repo", 1, "newsha456")
+	reset, err := db.ResetPRToOutdated("owner", "repo", 1, "newsha456")
 	require.NoError(t, err)
+	assert.True(t, reset)
 
 	fetched, err := db.GetPR("owner", "repo", 1)
 	require.NoError(t, err)

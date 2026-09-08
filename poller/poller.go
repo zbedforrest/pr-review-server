@@ -1826,6 +1826,20 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			log.Printf("[OUTDATED] PR %s has new commits (old: %s, new: %s), resetting to pending",
 				key, oldSHA, newSHA)
 
+			// Reset first, fenced on the stored commit still being behind. The
+			// snapshot in pr predates the GitHub fetch above; a review run that
+			// claimed the PR on the new head since then already recorded it and
+			// must keep its projection, so nothing below may run for it.
+			applied, err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, state.HeadRefOid)
+			if err != nil {
+				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s: %v", key, err)
+				continue
+			}
+			if !applied {
+				log.Printf("[OUTDATED] PR %s already advanced to %s (claimed by a newer review run); skipping reset", key, newSHA)
+				continue
+			}
+
 			// Delete old HTML file if it exists
 			if alias := localReviewAlias(pr); alias != "" {
 				oldHTMLPath := filepath.Join(p.reviewDir, alias)
@@ -1839,12 +1853,6 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
 					log.Printf("[OUTDATED] Killed active review process for %s", key)
 				}
-			}
-
-			// Reset PR to pending with new commit SHA
-			if err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, state.HeadRefOid); err != nil {
-				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s: %v", key, err)
-				continue
 			}
 
 			p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
@@ -2196,6 +2204,22 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 			log.Printf("[OUTDATED] PR %s/%s#%d (%s) has new commits (old: %s, new: %s), resetting to pending",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, statusMsg, pr.LastCommitSHA[:7], currentSHA[:7])
 
+			// Reset first, fenced on the stored commit still being behind. The
+			// snapshot in pr predates the GitHub fetch above; a review run that
+			// claimed the PR on the new head since then already recorded it and
+			// must keep its projection, so nothing below may run for it.
+			applied, err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, currentSHA)
+			if err != nil {
+				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s/%s#%d: %v",
+					pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+				continue
+			}
+			if !applied {
+				log.Printf("[OUTDATED] PR %s/%s#%d already advanced to %s (claimed by a newer review run); skipping reset",
+					pr.RepoOwner, pr.RepoName, pr.PRNumber, currentSHA[:7])
+				continue
+			}
+
 			// Delete old HTML file if it exists
 			if alias := localReviewAlias(pr); alias != "" {
 				oldHTMLPath := filepath.Join(p.reviewDir, alias)
@@ -2212,13 +2236,6 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 					log.Printf("[OUTDATED] Killed active review process for %s/%s#%d",
 						pr.RepoOwner, pr.RepoName, pr.PRNumber)
 				}
-			}
-
-			// Reset PR to pending with new commit SHA and clear old review data
-			if err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, currentSHA); err != nil {
-				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s/%s#%d: %v",
-					pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
-				continue
 			}
 
 			p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)

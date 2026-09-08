@@ -144,8 +144,8 @@ func (m *MockDatabase) UpsertPR(pr *db.PR) error { return nil }
 func (m *MockDatabase) UpdatePRStatus(owner, repo string, prNumber int, status string) error {
 	return nil
 }
-func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) error {
-	return nil
+func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) (bool, error) {
+	return true, nil
 }
 func (m *MockDatabase) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error {
 	return nil

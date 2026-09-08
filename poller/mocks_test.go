@@ -319,7 +319,10 @@ type MockDatabase struct {
 	DeletePRError          error
 	UpdatePRStatusError    error
 	ResetPRToOutdatedError error
-	GetAllPRsError         error
+	// ResetPRToOutdatedNoop simulates the fenced UPDATE matching no row (the
+	// PR already carries the new head under a live run).
+	ResetPRToOutdatedNoop bool
+	GetAllPRsError        error
 }
 
 func NewMockDatabase() *MockDatabase {
@@ -378,7 +381,7 @@ func (m *MockDatabase) UpdatePRStatus(owner, repo string, prNumber int, status s
 	return nil
 }
 
-func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) error {
+func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ResetPRToOutdatedCalls = append(m.ResetPRToOutdatedCalls, struct {
@@ -389,18 +392,27 @@ func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCo
 	}{owner, repo, prNumber, newCommitSHA})
 
 	if m.ResetPRToOutdatedError != nil {
-		return m.ResetPRToOutdatedError
+		return false, m.ResetPRToOutdatedError
+	}
+	if m.ResetPRToOutdatedNoop {
+		return false, nil
 	}
 
 	key := prDBKey(owner, repo, prNumber)
-	if pr, exists := m.PRs[key]; exists {
+	pr, exists := m.PRs[key]
+	if !exists || pr.LastCommitSHA == newCommitSHA {
+		// Mirror the fenced UPDATE: nothing to reset when the row is absent or
+		// already carries the new head (claimed by a newer review run).
+		return false, nil
+	}
+	{
 		pr.LastCommitSHA = newCommitSHA
 		pr.Status = "pending"
 		pr.ReviewHTMLPath = ""
 		pr.ErrorMessage = ""
 	}
 	delete(m.ProjectionRunIDs, key)
-	return nil
+	return true, nil
 }
 
 func (m *MockDatabase) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error {
