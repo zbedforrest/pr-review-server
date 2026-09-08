@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"pr-review-server/db"
 )
 
 func TestSettings_PublishKeysRoundTrip(t *testing.T) {
@@ -85,4 +88,32 @@ func TestSettings_ReplyModeTransitionStampsAndClearsActivation(t *testing.T) {
 	assert.Equal(t, "", get()["publish_reply_enabled_at"], "off clears the stamp so re-enabling starts fresh")
 	v, _ := database.GetSetting("publish_reply_enabled_at")
 	assert.Equal(t, "", v)
+}
+
+type settingReadFails struct {
+	db.Database
+	key string
+}
+
+func (f settingReadFails) GetSetting(key string) (string, error) {
+	if key == f.key {
+		return "", errors.New("db down")
+	}
+	return f.Database.GetSetting(key)
+}
+
+func TestSettings_ReplyModeChangeRefusesToStampWhenTheCurrentModeIsUnreadable(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	require.NoError(t, database.SetSetting("publish_reply_mode", "observe"))
+	require.NoError(t, database.SetSetting("publish_reply_enabled_at", "2026-09-08T12:00:00Z"))
+	server.db = settingReadFails{Database: database, key: "publish_reply_mode"}
+
+	w := httptest.NewRecorder()
+	server.handleSettings(w, httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"publish_reply_mode":"react"}`)))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	stamp, _ := database.GetSetting("publish_reply_enabled_at")
+	assert.Equal(t, "2026-09-08T12:00:00Z", stamp, "a read error must never move the activation stamp")
+	mode, _ := database.GetSetting("publish_reply_mode")
+	assert.Equal(t, "observe", mode)
 }

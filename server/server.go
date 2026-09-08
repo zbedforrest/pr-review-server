@@ -1265,7 +1265,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.PublishReplyMode != nil {
 			v := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
 			publishUpdates[settingPublishReplyMode] = &v
-			if stamp, ok := s.replyActivationFor(v); ok {
+			stamp, change, err := s.replyActivationFor(v)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Failed to read settings: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if change {
 				publishUpdates[settingPublishReplyEnabledAt] = &stamp
 			}
 		}

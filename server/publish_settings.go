@@ -57,15 +57,18 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 // mode change: now when leaving off, empty when returning to off, and no
 // change otherwise. Replies older than the stamp are never acknowledged, so
 // re-enabling after a pause does not burst reactions for the gap.
-func (s *Server) replyActivationFor(newMode string) (string, bool) {
-	current, _ := s.db.GetSetting(settingPublishReplyMode)
+func (s *Server) replyActivationFor(newMode string) (stamp string, change bool, err error) {
+	current, err := s.db.GetSetting(settingPublishReplyMode)
+	if err != nil {
+		return "", false, err
+	}
 	current = strings.TrimSpace(current)
 	wasOff := current == "" || current == defaultPublishReplyMode
 	switch {
 	case newMode == defaultPublishReplyMode:
-		return "", true
+		return "", true, nil
 	case wasOff:
-		return time.Now().UTC().Truncate(time.Second).Format(time.RFC3339), true
+		return time.Now().UTC().Truncate(time.Second).Format(time.RFC3339), true, nil
 	}
-	return "", false
+	return "", false, nil
 }

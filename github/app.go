@@ -33,7 +33,8 @@ type AppClient struct {
 	// keyed by owner; tokens keyed by installation id. The lock guards the
 	// maps only; GitHub calls happen outside it so one slow owner cannot
 	// stall publishing for the others.
-	ownerInstallations map[string]ownerInstallation
+	ownerInstallations map[string]string
+	notInstalled       map[string]time.Time // keyed by owner/repo: a 404 is repo-scoped
 	extraTokens        map[string]InstallationToken
 	extraLock          sync.Mutex
 
@@ -199,13 +200,9 @@ func (c *AppClient) baseURL() string {
 // ErrAppNotInstalled reports that the App has no installation covering a repo.
 var ErrAppNotInstalled = errors.New("github app is not installed")
 
-// ownerInstallation caches the lookup result per owner; an empty id is a
-// cached "not installed" that is re-checked after notInstalledTTL.
-type ownerInstallation struct {
-	id        string
-	checkedAt time.Time
-}
-
+// A miss is cached per repo for notInstalledTTL: GitHub answers 404 both when
+// the owner has no installation and when an installation limited to selected
+// repositories excludes this one, so a miss must not speak for siblings.
 const notInstalledTTL = 10 * time.Minute
 
 // TokenForRepo returns an installation token that can write to owner/repo.
@@ -252,28 +249,36 @@ func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (strin
 }
 
 // installationFor resolves the installation id for a repo's owner, caching
-// both hits and misses. It returns ErrAppNotInstalled with an empty id when
-// no installation covers the repo.
+// hits by owner and misses by repo. It returns ErrAppNotInstalled with an
+// empty id when no installation covers the repo.
 func (c *AppClient) installationFor(ctx context.Context, owner, repo string) (string, error) {
+	repoKey := owner + "/" + repo
 	c.extraLock.Lock()
-	cached, ok := c.ownerInstallations[owner]
+	id, hit := c.ownerInstallations[owner]
+	missedAt, missed := c.notInstalled[repoKey]
 	c.extraLock.Unlock()
-	if ok && (cached.id != "" || time.Since(cached.checkedAt) < notInstalledTTL) {
-		if cached.id == "" {
-			return "", ErrAppNotInstalled
-		}
-		return cached.id, nil
+	if hit {
+		return id, nil
+	}
+	if missed && time.Since(missedAt) < notInstalledTTL {
+		return "", ErrAppNotInstalled
 	}
 	id, err := c.lookupInstallation(ctx, owner, repo)
-	if err != nil && !errors.Is(err, ErrAppNotInstalled) {
-		return "", err
-	}
 	c.extraLock.Lock()
-	if c.ownerInstallations == nil {
-		c.ownerInstallations = map[string]ownerInstallation{}
+	defer c.extraLock.Unlock()
+	switch {
+	case err == nil:
+		if c.ownerInstallations == nil {
+			c.ownerInstallations = map[string]string{}
+		}
+		c.ownerInstallations[owner] = id
+		delete(c.notInstalled, repoKey)
+	case errors.Is(err, ErrAppNotInstalled):
+		if c.notInstalled == nil {
+			c.notInstalled = map[string]time.Time{}
+		}
+		c.notInstalled[repoKey] = time.Now()
 	}
-	c.ownerInstallations[owner] = ownerInstallation{id: id, checkedAt: time.Now()}
-	c.extraLock.Unlock()
 	return id, err
 }
 

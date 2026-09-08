@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -190,5 +191,33 @@ func TestTokenForRepoReresolvesAfterAStaleInstallation(t *testing.T) {
 	}
 	if lookups != 2 {
 		t.Errorf("lookups = %d, want 2 (initial and after invalidation)", lookups)
+	}
+}
+
+func TestInstallationMissForOneRepoDoesNotPoisonSiblings(t *testing.T) {
+	var lookups int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&lookups, 1)
+		switch r.URL.Path {
+		case "/repos/personal/excluded/installation":
+			w.WriteHeader(http.StatusNotFound)
+		case "/repos/personal/tool/installation":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 200})
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	c := newTestAppClient(t, srv.URL)
+
+	if _, err := c.installationFor(context.Background(), "personal", "excluded"); !errors.Is(err, ErrAppNotInstalled) {
+		t.Fatalf("excluded repo: err = %v", err)
+	}
+	id, err := c.installationFor(context.Background(), "personal", "tool")
+	if err != nil || id != "200" {
+		t.Fatalf("a sibling repo under the same owner must resolve on its own: id=%q err=%v", id, err)
+	}
+	if lookups != 2 {
+		t.Errorf("lookups = %d, want one per repo", lookups)
 	}
 }
