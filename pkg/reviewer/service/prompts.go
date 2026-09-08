@@ -1,5 +1,7 @@
 package service
 
+import "pr-review-server/pkg/reviewer/tickets"
+
 // Static prompt templates. Context (PR body, diff, file contents, etc.) is
 // appended at call time by the corresponding builder in review.go.
 
@@ -289,3 +291,11 @@ Do not include any other text in your response.
 --- REVIEW COMMENTS ---
 %s
 `
+
+// prContextSection renders the PR's own title and body plus the linked
+// tickets' recorded intent (see pkg/reviewer/tickets). Empty inputs
+// contribute nothing, keeping the prompt byte-identical to a build without
+// PR context.
+func prContextSection(prTitle, prBody string, linked []tickets.Ticket) string {
+	return tickets.PromptSection(prTitle, prBody, linked)
+}

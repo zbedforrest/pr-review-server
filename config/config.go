@@ -86,6 +86,14 @@ type Config struct {
 	BugMemoryObject   string // GCS object name of the library (prod); Path wins if both set
 	RequiredChecks    bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
 
+	// Linked ticket context for the agent prompt (pkg/reviewer/tickets). The
+	// feature is on only when JiraEnabled(); JiraProjectKeys optionally
+	// restricts which project keys count as ticket references.
+	JiraBaseURL     string
+	JiraEmail       string
+	JiraAPIToken    string
+	JiraProjectKeys []string
+
 	// Caller-customization policy. These allowlists and ceilings are owned by
 	// the deployment operator; per-review API overrides must remain within them.
 	// Credentials, provider endpoints, filesystem paths, and concurrency remain
@@ -139,6 +147,11 @@ func (c *Config) FirstPassProviderAPIKey(provider string) string {
 	default:
 		return c.GeminiAPIKey
 	}
+}
+
+// JiraEnabled reports whether linked-ticket fetching is configured.
+func (c *Config) JiraEnabled() bool {
+	return c.JiraBaseURL != "" && c.JiraEmail != "" && c.JiraAPIToken != ""
 }
 
 // UsePostgreSQL returns true if the application should use PostgreSQL instead of SQLite
@@ -283,6 +296,10 @@ func Load() *Config {
 		BugMemoryPath:      os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:    os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:     os.Getenv("REQUIRED_CHECKS") == "true",
+		JiraBaseURL:        strings.TrimRight(strings.TrimSpace(os.Getenv("JIRA_BASE_URL")), "/"),
+		JiraEmail:          strings.TrimSpace(os.Getenv("JIRA_EMAIL")),
+		JiraAPIToken:       strings.TrimSpace(os.Getenv("JIRA_API_TOKEN")),
+		JiraProjectKeys:    getEnvListOrDefault("JIRA_PROJECT_KEYS", nil, normalizeProjectKey),
 
 		ReviewAgentModelsClaude:         claudeModels,
 		ReviewAgentModelsOpenRouter:     openRouterModels,
@@ -375,6 +392,10 @@ func getEnvListOrDefault(key string, defaults []string, normalize func(string) s
 		}
 	}
 	return values
+}
+
+func normalizeProjectKey(value string) string {
+	return strings.ToUpper(strings.TrimSpace(value))
 }
 
 func normalizeModel(value string) string {

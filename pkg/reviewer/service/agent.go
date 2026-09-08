@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"pr-review-server/pkg/reviewer/runconfig"
+	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -41,6 +42,13 @@ type AgentConfig struct {
 	AnthropicAPIKey   string        // frozen optional credential; OAuth via HOME remains supported
 	OpenRouterAPIKey  string        // frozen deployment credential; injected into the Codex child environment
 	OpenRouterBaseURL string        // optional OpenRouter API root; used only by the openrouter backend
+
+	// PRTitle, PRBody and LinkedTickets give the agent the author's stated
+	// intent (see pkg/reviewer/tickets). All optional; empty values add
+	// nothing to the prompt.
+	PRTitle       string
+	PRBody        string
+	LinkedTickets []tickets.Ticket
 
 	// BugMemory is the optional pattern library (nil = feature off). The
 	// matcher excludes entries sourced from the PR under review; see
@@ -235,7 +243,8 @@ func RunAgentReview(
 		log.Printf("%s required checks issued: %v", logPrefix, ids)
 	}
 
-	prompt, err := buildAgentPromptContent(defaultBranch, diffFiles, geminiComments, gates, memEntries, checks)
+	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets)
+	prompt, err := buildAgentPromptContent(defaultBranch, diffFiles, prContext, geminiComments, gates, memEntries, checks)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
@@ -670,13 +679,14 @@ func prScopeSection(baseBranch string, files []diffFile) string {
 }
 
 // buildAgentPromptContent assembles the agent prompt: the static template,
-// the PR-scope section (base branch + changed files, if known), the
-// mechanical-gate alerts (if any), the bug-history section (if any
-// memory entries matched), the required-checks block (if the feature issued
-// any), then a JSON block of Gemini comments. With no scope, no gates, no
-// matches and no checks the prompt is byte-identical to a memoryless,
-// checkless build.
-func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, geminiComments, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
+// the PR-scope section (base branch + changed files, if known), the PR
+// context section (title, body, linked tickets; prContext is pre-rendered by
+// prContextSection), the mechanical-gate alerts (if any), the bug-history
+// section (if any memory entries matched), the required-checks block (if the
+// feature issued any), then a JSON block of Gemini comments. With no scope,
+// no context, no gates, no matches and no checks the prompt is
+// byte-identical to a memoryless, checkless build.
+func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext string, geminiComments, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
 	commentsJSON, err := json.MarshalIndent(geminiComments, "", "  ")
 	if err != nil {
 		return "", err
@@ -684,6 +694,7 @@ func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, geminiComm
 	var b strings.Builder
 	b.WriteString(promptAgentReview)
 	b.WriteString(prScopeSection(baseBranch, diffFiles))
+	b.WriteString(prContext)
 	if len(gates) > 0 {
 		b.WriteString("\n--- MECHANICAL ALERTS (deterministic checks; explicitly address each in your review) ---\n")
 		for _, g := range gates {
