@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -948,7 +949,7 @@ func TestPRScopeSection_EmptyInputsContributeNothing(t *testing.T) {
 	if got := prScopeSection("", nil); got != "" {
 		t.Errorf("empty inputs must produce no section, got %q", got)
 	}
-	prompt, err := buildAgentPromptContent("", nil, nil, nil, nil, nil)
+	prompt, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -989,5 +990,45 @@ func TestPRScopeSection_FileListCapped(t *testing.T) {
 	}
 	if !strings.Contains(got, "...and 30 more") {
 		t.Errorf("missing truncation marker:\n%s", got)
+	}
+}
+
+func TestBuildAgentPromptContent_PRContextSitsBetweenScopeAndAlerts(t *testing.T) {
+	files := []diffFile{{Path: "a.go", Status: "modified", Added: []string{"x"}}}
+	gates := []types.LineComment{gateAlertFixture("settings-ref", "a.go")}
+	prContext := prContextSection("Tighten retries", "Fixes XO-370", []tickets.Ticket{{Key: "XO-370", Summary: "Retry policy", Type: "Story", Status: "Done", URL: "https://jira.acme.example/browse/XO-370"}})
+	if prContext == "" {
+		t.Fatal("prContextSection returned nothing")
+	}
+
+	got, err := buildAgentPromptContent("main", files, prContext, nil, gates, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := strings.Index(got, "--- PR SCOPE ---")
+	pr := strings.Index(got, "--- PULL REQUEST ---")
+	linked := strings.Index(got, "--- LINKED TICKETS")
+	alerts := strings.Index(got, "--- MECHANICAL ALERTS")
+	if scope < 0 || pr < 0 || linked < 0 || alerts < 0 {
+		t.Fatalf("prompt missing a section: scope=%d pr=%d linked=%d alerts=%d\n%s", scope, pr, linked, alerts, got)
+	}
+	if !(scope < pr && pr < linked && linked < alerts) {
+		t.Errorf("wrong order: scope=%d pr=%d linked=%d alerts=%d", scope, pr, linked, alerts)
+	}
+	if !strings.Contains(got, "[XO-370] Retry policy (Story, Done)") {
+		t.Errorf("ticket line missing:\n%s", got)
+	}
+}
+
+func TestBuildAgentPromptContent_NoPRContextIsByteIdentical(t *testing.T) {
+	without, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(without, "PULL REQUEST") || strings.Contains(without, "LINKED TICKETS") {
+		t.Error("empty PR context must add nothing")
+	}
+	if prContextSection("", "", nil) != "" {
+		t.Error("empty inputs must produce no section")
 	}
 }

@@ -1,7 +1,7 @@
 @use '../../styles/abstracts/variables' as *;
 
 // Keep $panel-width in sync with PANEL_WIDTH in RowActionsMenu.tsx.
-$panel-width: 200px;
+$panel-width: 220px;
 
 .row-actions__trigger {
   display: inline-flex;

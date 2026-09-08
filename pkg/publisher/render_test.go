@@ -12,20 +12,6 @@ import (
 
 func strp(s string) *string { return &s }
 
-func baseRound() Round {
-	return Round{
-		Owner: "acme", Repo: "example", Number: 7, HeadSHA: "abc1234def5678", RoundNumber: 1,
-		Findings: []payload.Finding{
-			f("sum", "unknown", "SUMMARY", 0, "The narrative."),
-			f("c1", "critical", "path/file.go", 12, "Nil deref when cfg is missing.\nMore detail here."),
-			f("m1", "medium", "other.py", 40, "Unbounded retry loop."),
-			f("l1", "low", "x.ts", 8, "Typo in log message."),
-		},
-		SourceTags:   map[string]string{"m1": "both"},
-		DashboardURL: "https://prism.example/pr/acme/example/7",
-	}
-}
-
 func TestRenderSummaryRecommendationLines(t *testing.T) {
 	cases := map[int]string{
 		5: "No blocking findings.",
@@ -63,8 +49,9 @@ func TestRenderInlineFull(t *testing.T) {
 			t.Errorf("inline missing %q\n%s", s, out)
 		}
 	}
-	if strings.Count(out, "Nil deref when cfg is missing.") != 1 {
-		t.Errorf("title sentence should be removed from the body\n%s", out)
+	visible := out[:strings.Index(out, "<details>")]
+	if strings.Count(visible, "Nil deref when cfg is missing.") != 1 {
+		t.Errorf("title sentence should be removed from the visible body\n%s", out)
 	}
 }
 
@@ -173,7 +160,7 @@ func TestRenderSummaryRoundOne(t *testing.T) {
 	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
 	for _, want := range []string{
 		SummaryMarker,
-		"### PRism review: merge confidence 3/5",
+		"### PRism review: merge confidence 2/5",
 		"- **[CRITICAL]** Critical thing — [`a.go:10`](https://github.com/acme/example/blob/sha-round-1/a.go#L10)",
 		"- **[MEDIUM]** Medium thing — [`b.go:20`]",
 		"<sub>Reviews (1) · reviewed sha-rou",

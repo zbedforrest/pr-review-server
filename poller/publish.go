@@ -67,6 +67,21 @@ func buildPublishRound(pr github.PullRequest, pl payload.Payload, comments []git
 			Line: c.Line, StartLine: c.StartLine, InReplyToID: c.InReplyToID,
 		})
 	}
+	// Re-reviews reword findings; restatements of comments PRism already posted
+	// keep their published identity so they are neither reposted nor counted
+	// as new and fixed.
+	own := reconcile.ParseOwnComments(external)
+	aliases := reconcile.AliasPrior(pl.Findings, own)
+	inlineComments := map[string]int64{}
+	for _, o := range own {
+		inlineComments[o.FindingID] = o.CommentID
+	}
+	for i := range pl.Findings {
+		if prior, ok := aliases[pl.Findings[i].ID]; ok {
+			pl.Findings[i].ID = prior
+		}
+	}
+
 	res := reconcile.Reconcile(pl.Findings, reconcile.ParseGreptileComments(external))
 
 	tags := make(map[string]string, len(res.Findings))
@@ -88,11 +103,12 @@ func buildPublishRound(pr github.PullRequest, pl payload.Payload, comments []git
 
 	r := publisher.Round{
 		Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number, HeadSHA: pr.CommitSHA,
-		Findings:     pl.Findings,
-		SourceTags:   tags,
-		GreptileOnly: greptileOnly,
-		Previous:     previous,
-		Commentable:  commentable,
+		Findings:       pl.Findings,
+		SourceTags:     tags,
+		GreptileOnly:   greptileOnly,
+		Previous:       previous,
+		Commentable:    commentable,
+		InlineComments: inlineComments,
 
 		RequiredCheckViolated: pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0,
 	}

@@ -80,6 +80,14 @@ func (r Round) diff() roundDiff {
 	for _, f := range r.currentFindings() {
 		present[f.ID] = true
 	}
+	// A finding still in the review but no longer above the bar was not
+	// fixed; it simply stops being reported.
+	stillReviewed := map[string]bool{}
+	for _, f := range r.Findings {
+		if Publishable(f) {
+			stillReviewed[f.ID] = true
+		}
+	}
 	published := map[string]bool{}
 	var d roundDiff
 	for _, p := range r.Previous {
@@ -87,9 +95,10 @@ func (r Round) diff() roundDiff {
 			continue
 		}
 		published[p.Fingerprint] = true
-		if present[p.Fingerprint] {
+		switch {
+		case present[p.Fingerprint]:
 			d.StillOpen++
-		} else {
+		case !stillReviewed[p.Fingerprint]:
 			d.Fixed++
 		}
 	}
@@ -111,17 +120,6 @@ func recommendation(confidence int) string {
 		return "Findings that should be addressed before merge."
 	default:
 		return "Significant findings; please address before merge."
-	}
-}
-
-func sourceLabel(tag string) string {
-	switch tag {
-	case SourceTagBoth:
-		return "Both"
-	case SourceTagGreptileOnly:
-		return "Greptile"
-	default:
-		return "PRism"
 	}
 }
 
@@ -149,10 +147,6 @@ func firstLine(s string) string {
 		s = s[:i]
 	}
 	return strings.TrimSpace(s)
-}
-
-func tableCell(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "|", "\\|"), "\n", " ")
 }
 
 func (r Round) findingLink(f payload.Finding) string {
@@ -215,9 +209,15 @@ func RenderSummary(r Round, sel Selection) string {
 	if len(shown) > 0 {
 		b.WriteString("\n")
 	}
-	fmt.Fprintf(&b, "<sub>Reviews (%d) · reviewed %s", r.RoundNumber, shortSHA(r.HeadSHA))
 	if r.DashboardURL != "" {
-		fmt.Fprintf(&b, ` · <a href="%s">dashboard</a>`, r.DashboardURL)
+		fmt.Fprintf(&b, "[Full report](%s)\n\n", r.DashboardURL)
+	}
+	fmt.Fprintf(&b, "<sub>Reviews (%d) · reviewed %s", r.RoundNumber, shortSHA(r.HeadSHA))
+	if n := len(r.Commentable); n > 0 {
+		fmt.Fprintf(&b, " · %d changed file%s", n, plural(n))
+	}
+	if n := r.dashboardNotes(); n > 0 {
+		fmt.Fprintf(&b, " · %d note%s on the dashboard", n, plural(n))
 	}
 	b.WriteString("</sub>\n")
 	return b.String()
@@ -254,13 +254,49 @@ var suggestionFenceRe = regexp.MustCompile("(?s)```suggestion\n.*?\n```")
 // the agent supplied one, else the comment's first sentence.
 func headline(f payload.Finding) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
-		impact := truncate(strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), "."), 160)
+		impact := clauseHeadline(strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), "."), headlineMaxRunes)
 		if label, ok := kindLabels[c.FindingKind]; ok {
 			return label + " · " + impact
 		}
 		return impact
 	}
-	return truncate(strings.Trim(firstSentence(commentText(f)), "*_ "), 100)
+	return truncateWords(strings.Trim(firstSentence(commentText(f)), "*_ "), 100)
+}
+
+const headlineMaxRunes = 110
+
+// clauseBoundaries are the joints an effect sentence is most often built
+// around; cutting at the last one before the limit keeps a headline readable.
+var clauseBoundaries = []string{", so ", "; ", " because ", ", which ", ", and ", ", causing ", ", leaving ", ", "}
+
+// clauseHeadline returns the whole sentence when it fits, else the longest
+// prefix ending at a clause boundary within the limit, else a word-boundary cut.
+func clauseHeadline(s string, max int) string {
+	if len([]rune(s)) <= max {
+		return s
+	}
+	window := string([]rune(s)[:max])
+	best := -1
+	for _, b := range clauseBoundaries {
+		if i := strings.LastIndex(window, b); i > best && i >= max/3 {
+			best = i
+		}
+	}
+	if best > 0 {
+		return strings.TrimRight(window[:best], " ,;")
+	}
+	return truncateWords(s, max)
+}
+
+// headlineIsCut reports whether the rendered headline dropped part of the
+// effect sentence, in which case the full sentence is shown in the body.
+func headlineIsCut(f payload.Finding) bool {
+	c := f.FindingContract
+	if c == nil || f.FindingContractStatus != "valid" {
+		return false
+	}
+	impact := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
+	return clauseHeadline(impact, headlineMaxRunes) != impact
 }
 
 // RenderInline keeps the visible part Greptile-sized: headline, one
@@ -276,6 +312,9 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string) str
 	b.WriteString(FindingMarker(f.ID) + "\n")
 	fmt.Fprintf(&b, "**[%s] %s**\n", strings.ToUpper(f.Severity), headline(f))
 
+	if compact && headlineIsCut(f) {
+		b.WriteString("\n" + strings.TrimSpace(c.CurrentImpact) + "\n")
+	}
 	if hasContract && strings.TrimSpace(c.Uncertainty) != "" {
 		b.WriteString("\n" + strings.TrimSpace(c.Uncertainty) + "\n")
 	}
@@ -302,6 +341,9 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string) str
 		condition := strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), ".")
 		observable := strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), ".")
 		fmt.Fprintf(&details, "\n**How to verify:** %s. Expected: %s.\n", condition, observable)
+	}
+	if agentLinkBase != "" {
+		fmt.Fprintf(&details, "\nAgent prompt:\n```text\n%s\n```\n", agentPrompt(agentLinkBase, f))
 	}
 	if details.Len() > 0 {
 		b.WriteString("\n<details><summary>Reasoning and how to verify</summary>\n\n" + details.String() + "</details>\n")
@@ -378,4 +420,35 @@ func truncateWords(s string, max int) string {
 		cut = cut[:i]
 	}
 	return strings.TrimRight(cut, " ,;:") + "..."
+}
+
+// agentPrompt is the copyable plain-text equivalent of the agent link, for
+// people not on Claude Code. The PR coordinates come from the link base.
+func agentPrompt(base string, f payload.Finding) string {
+	q, _ := url.ParseQuery(strings.TrimPrefix(base[strings.Index(base, "?")+1:], "?"))
+	repo := q.Get("o") + "/" + q.Get("r") + "#" + q.Get("n")
+	where := f.File
+	if f.Line > 0 {
+		where = fmt.Sprintf("%s:%d", f.File, f.Line)
+	}
+	effect := summaryText(f)
+	return fmt.Sprintf("PRism finding on %s in %s: %s Read the review comment marked %s on that PR, decide whether it is valid, and fix it if so; otherwise explain why not.", where, repo, strings.TrimSpace(effect), FindingMarker(f.ID))
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// dashboardNotes counts confirmed findings that stay below the GitHub bar.
+func (r Round) dashboardNotes() int {
+	n := 0
+	for _, f := range r.Findings {
+		if Publishable(f) && !Shown(f) {
+			n++
+		}
+	}
+	return n
 }

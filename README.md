@@ -133,6 +133,10 @@ The gates contribute mechanical findings from the diff with no LLM involved, and
 
 The remaining feature flags (`SURFACE_ALERTS`, `CARRY_FORWARD_FINDINGS`, `FINDING_OUTCOMES_ENABLED`, `REVIEW_HISTORY_ARCHIVE`) are dashboard and workflow conveniences. They are independent of review quality; enable them as needed.
 
+### Linked ticket context (optional)
+
+The agent otherwise reviews a PR without knowing the intent recorded in its Jira ticket, and will flag deliberate decisions the author documented there. Set `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` (a Jira API token for a service or personal account with read access) and the review fetches the tickets referenced directly in the PR title, body, or branch name (up to 3): summary, status, type, description, and the newest 10 comments. The prompt tells the agent to treat decisions recorded there as intentional, cite the ticket key when a finding touches one, and flag only when the change contradicts the ticket or its rationale no longer holds. `JIRA_PROJECT_KEYS` (comma-separated, optional) restricts which project keys count as references. The PR title and body always reach the agent, with or without Jira; the sidecar's `review_run.linked_tickets` lists the keys that informed a review.
+
 ## API
 
 - `GET /api/v1/review-capabilities` — defaults, backend readiness, model/effort allowlists, turn-budget semantics, and override ceilings

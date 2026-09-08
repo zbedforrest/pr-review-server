@@ -103,3 +103,17 @@ func (g *GormDB) GetPublishedFindingsForPR(owner, repo string, prNumber int) ([]
 	}
 	return out, nil
 }
+
+// ListPublishedSummaries returns the summary ledger row of every PR that has
+// been published to GitHub. Used by the dashboard list to badge those PRs.
+func (g *GormDB) ListPublishedSummaries() ([]PublishedFinding, error) {
+	var models []PublishedFindingModel
+	if err := g.db.Where("kind = ?", PublishedKindSummary).Find(&models).Error; err != nil {
+		return nil, err
+	}
+	out := make([]PublishedFinding, 0, len(models))
+	for i := range models {
+		out = append(out, publishedFindingModelToDomain(&models[i]))
+	}
+	return out, nil
+}

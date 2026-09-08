@@ -27,6 +27,7 @@ import (
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
+	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -133,6 +134,9 @@ type Poller struct {
 	pollCount int
 	// Agent-review subprocess spawner (nil-safe: defaults to the configured CLI).
 	agentSpawner service.Spawner
+	// Linked-ticket source for the agent prompt (nil-safe: defaults to Jira
+	// built from cfg when JiraEnabled; tests inject a fake).
+	ticketFetcher tickets.Fetcher
 	// compareFilesFn resolves the files changed between two commits of a repo
 	// for the carry-forward staleness filter (nil-safe: defaults to the GitHub
 	// compare API; tests inject a stub). ok=false means the comparison is
@@ -555,6 +559,8 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		return nil, fmt.Errorf("agent review: get GitHub token: %w", tokenErr)
 	}
 	agentCfg := p.agentConfigForExecution(execution, gitToken)
+	ticketCtx := p.linkedTicketContext(ctx, pr, result.PRBody)
+	ticketCtx.applyTo(&agentCfg)
 	// Pass the PR's true base branch so the clone and the deterministic-layer
 	// diff (gates, bug memory, required checks) are computed against it. With
 	// "" the diff falls back to origin/HEAD, which inflates the changed-line
@@ -655,9 +661,82 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		},
 		// Copied (not aliased) so the no-swallow check reads the pre-merge
 		// alert set even if a later stage mutates the agent output.
-		GateAlerts: append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
-		Carried:    carriedInfo,
+		GateAlerts:    append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
+		Carried:       carriedInfo,
+		LinkedTickets: ticketCtx.keys(),
 	}, nil
+}
+
+// ---- Linked ticket context ------------------------------------------------
+//
+// The agent reviews a PR without knowing the intent recorded in the tickets
+// it references, so it flags deliberate decisions the author documented
+// elsewhere. linkedTicketContext gathers the PR's own title and body plus the
+// Jira tickets referenced directly in the title, body, or branch name. It is
+// strictly best-effort: any failure degrades to a ticketless prompt.
+
+const ticketFetchTimeout = 20 * time.Second
+
+type linkedTicketContext struct {
+	Title   string
+	Body    string
+	Tickets []tickets.Ticket
+}
+
+func (c linkedTicketContext) keys() []string {
+	if len(c.Tickets) == 0 {
+		return nil
+	}
+	keys := make([]string, len(c.Tickets))
+	for i, t := range c.Tickets {
+		keys[i] = t.Key
+	}
+	return keys
+}
+
+func (c linkedTicketContext) applyTo(cfg *service.AgentConfig) {
+	cfg.PRTitle, cfg.PRBody, cfg.LinkedTickets = c.Title, c.Body, c.Tickets
+}
+
+func (p *Poller) ticketFetcherOrDefault() tickets.Fetcher {
+	if p.ticketFetcher != nil {
+		return p.ticketFetcher
+	}
+	return &tickets.JiraFetcher{BaseURL: p.cfg.JiraBaseURL, Email: p.cfg.JiraEmail, APIToken: p.cfg.JiraAPIToken}
+}
+
+// linkedTicketContext always carries the PR title and body; tickets are
+// fetched only when Jira is configured. The GitHub refetch exists for the
+// branch name (and the body when the first pass did not supply one) and
+// shares the fetch timeout so the agent stage is delayed by at most
+// ticketFetchTimeout.
+func (p *Poller) linkedTicketContext(ctx context.Context, pr github.PullRequest, prBody string) linkedTicketContext {
+	out := linkedTicketContext{Title: pr.Title, Body: prBody}
+	if !p.cfg.JiraEnabled() {
+		return out
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, ticketFetchTimeout)
+	defer cancel()
+
+	branch := ""
+	if ghPR, _, err := p.ghClient.GetPR(fetchCtx, pr.Owner, pr.Repo, pr.Number); err != nil {
+		log.Printf("[TICKETS] %s/%s#%d: GetPR failed, extracting keys from title/body only: %v", pr.Owner, pr.Repo, pr.Number, err)
+	} else if ghPR != nil {
+		branch = ghPR.GetHead().GetRef()
+		if out.Title == "" {
+			out.Title = ghPR.GetTitle()
+		}
+		if out.Body == "" {
+			out.Body = ghPR.GetBody()
+		}
+	}
+	keys := tickets.ExtractKeys(p.cfg.JiraProjectKeys, out.Title, out.Body, branch)
+	if len(keys) == 0 {
+		return out
+	}
+	out.Tickets = tickets.FetchAll(fetchCtx, p.ticketFetcherOrDefault(), keys, log.Printf)
+	log.Printf("[TICKETS] %s/%s#%d: keys=%v fetched=%d", pr.Owner, pr.Repo, pr.Number, keys, len(out.Tickets))
+	return out
 }
 
 // ---- Cross-review carry-forward (CARRY_FORWARD_FINDINGS) -------------------
@@ -3605,6 +3684,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			completedAt := time.Now().UTC().Truncate(time.Microsecond)
 			runInfo := p.reviewRunInfo(execution, completedAt)
 			runInfo.Models = models
+			runInfo.LinkedTickets = reviewResult.LinkedTickets
 			runInfo.StageTimings = execution.stageTimings(artifactSaveStartedAt, completedAt)
 			reviewResult.ReviewRun = runInfo
 
@@ -3680,11 +3760,5 @@ func shouldReview(pr github.PullRequest, dbPR *db.PR, isTracked bool, autoReview
 	// already owns it. Queued jobs deliberately remain pending until capacity
 	// is granted, so ignoring tracking here would mint one rejected ledger row
 	// for every poll cycle while they wait.
-	isAutoCandidate := dbPR.Status == "pending" && autoReviewEnabled && !isTracked
-
-	if isAutoCandidate {
-		return true
-	}
-
-	return false
+	return dbPR.Status == "pending" && autoReviewEnabled && !isTracked
 }

@@ -124,6 +124,10 @@ type ReviewResult struct {
 	// CARRY_FORWARD_FINDINGS is off or no usable prior review exists, so
 	// the sidecar stays byte-identical to a carry-less run.
 	Carried *payload.CarryForwardInfo
+
+	// LinkedTickets lists the Jira keys whose content reached the agent
+	// prompt; copied onto the sidecar's ReviewRunInfo. Nil when none did.
+	LinkedTickets []string
 }
 
 // ReviewGeneratorConfig contains configuration for generating a review

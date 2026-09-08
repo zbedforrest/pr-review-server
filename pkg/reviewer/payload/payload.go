@@ -86,6 +86,9 @@ type ReviewRunInfo struct {
 	// ordered by start time. Additive — schema stays "1".
 	StageTimings []StageTiming `json:"stage_timings,omitempty"`
 	Models       []ModelUse    `json:"models"`
+	// LinkedTickets lists the Jira keys whose content was injected into the
+	// agent prompt. Omitted when no ticket informed the review.
+	LinkedTickets []string `json:"linked_tickets,omitempty"`
 	// Config is the immutable requested/effective configuration snapshot.
 	// It is omitted on legacy runs created before first-class run metadata.
 	Config *runconfig.Snapshot `json:"config,omitempty"`

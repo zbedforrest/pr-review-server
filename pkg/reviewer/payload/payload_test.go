@@ -622,3 +622,20 @@ func assertLines(t *testing.T, label string, got, want []string) {
 		}
 	}
 }
+
+func TestReviewRunInfo_LinkedTicketsJSONShape(t *testing.T) {
+	with, err := json.Marshal(ReviewRunInfo{RunID: "run-x", LinkedTickets: []string{"XO-370", "XO-371"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(with), `"linked_tickets":["XO-370","XO-371"]`) {
+		t.Errorf("linked tickets missing: %s", with)
+	}
+	without, err := json.Marshal(ReviewRunInfo{RunID: "run-y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(without), `"linked_tickets"`) {
+		t.Errorf("ticketless run must omit linked_tickets: %s", without)
+	}
+}

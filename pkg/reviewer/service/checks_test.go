@@ -455,7 +455,7 @@ func TestBuildAgentPromptContent_ChecksOffByteIdentical(t *testing.T) {
 	gates := []types.LineComment{gateAlertFixture("settings-ref", "photo/tasks.py")}
 	mem := []BugMemoryEntry{mkEntry("e1", "c", "a prior", []string{"**"}, nil, 1)}
 
-	got, err := buildAgentPromptContent("", nil, gemini, gates, mem, nil)
+	got, err := buildAgentPromptContent("", nil, "", gemini, gates, mem, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +486,7 @@ func TestBuildAgentPromptContent_ChecksOffByteIdentical(t *testing.T) {
 func TestBuildAgentPromptContent_ChecksSection(t *testing.T) {
 	gates := []types.LineComment{gateAlertFixture("portal-layer", "app/Tooltip.tsx")}
 	checks := BuildRequiredChecks(gates, nil, []diffFile{{Path: "app/Tooltip.tsx"}})
-	got, err := buildAgentPromptContent("", nil, nil, gates, nil, checks)
+	got, err := buildAgentPromptContent("", nil, "", nil, gates, nil, checks)
 	if err != nil {
 		t.Fatal(err)
 	}

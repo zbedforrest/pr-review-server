@@ -35,7 +35,7 @@ func TestRenderSummary_ListsOnlyConfirmedFindingsAsBullets(t *testing.T) {
 	}
 	wantCrit := "- **[CRITICAL]** Viewers who start a fresh call are not unmuted when the broadcaster accepts — [`f2fViewerClient.ts:579`](https://github.com/acme/example/pull/7#discussion_r3937000001)"
 	wantMed := "- **[MEDIUM]** Broadcasters see the viewer's copy of the prompt — [`PremiumPrivateRequest.tsx:380`](https://github.com/acme/example/blob/96a9b9b1234567/frontend/react/src/components/room/PremiumPrivateRequest/PremiumPrivateRequest.tsx#L380)"
-	for _, want := range []string{wantCrit, wantMed, "merge confidence 3/5", "Reviews (1) · reviewed 96a9b9b"} {
+	for _, want := range []string{wantCrit, wantMed, "merge confidence 2/5", "Reviews (1) · reviewed 96a9b9b"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary missing %q:\n%s", want, out)
 		}

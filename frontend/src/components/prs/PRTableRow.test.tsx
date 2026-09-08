@@ -3,17 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PR } from '@/types/pr';
 import { PRTableRow } from './PRTableRow';
 
-const { triggerMutate, deleteMutate, setHiddenMutate, trackMock } = vi.hoisted(() => ({
+const { triggerMutate, deleteMutate, setHiddenMutate, trackMock, useSettingsMock } = vi.hoisted(() => ({
   triggerMutate: vi.fn(),
   deleteMutate: vi.fn(),
   setHiddenMutate: vi.fn(),
   trackMock: vi.fn(),
+  useSettingsMock: vi.fn(),
 }));
 
 vi.mock('@/hooks/usePRs', () => ({
   useDeletePR: () => ({ mutate: deleteMutate, isPending: false }),
   useSetPRHidden: () => ({ mutate: setHiddenMutate, isPending: false }),
   useTriggerReview: () => ({ mutate: triggerMutate, isPending: false }),
+}));
+vi.mock('@/hooks/useSettings', () => ({
+  useSettings: () => useSettingsMock(),
 }));
 vi.mock('@/hooks/useTelemetry', () => ({
   useTelemetry: () => ({ track: trackMock }),
@@ -23,9 +27,19 @@ vi.mock('@/components/common', () => ({
 }));
 vi.mock('./CIStatusIndicator', () => ({ CIStatusIndicator: () => <span>ci</span> }));
 vi.mock('./NotesCell', () => ({ NotesCell: () => <span>notes</span> }));
-vi.mock('./RowActionsMenu', () => ({ RowActionsMenu: () => <span data-testid="actions" /> }));
+vi.mock('./RowActionsMenu', () => ({
+  RowActionsMenu: (props: { publishAllowed: boolean; onTriggerReview: (publish: boolean) => void }) => (
+    <span data-testid="actions" data-publish-allowed={String(props.publishAllowed)}>
+      <button type="button" onClick={() => props.onTriggerReview(false)}>actions-dashboard-only</button>
+    </span>
+  ),
+}));
 vi.mock('./ReviewLinkMenu', () => ({
-  ReviewLinkMenu: () => <span data-testid="review-link-menu" />,
+  ReviewLinkMenu: (props: { publishAllowed: boolean; onTriggerReview: (publish: boolean) => void }) => (
+    <span data-testid="review-link-menu" data-publish-allowed={String(props.publishAllowed)}>
+      <button type="button" onClick={() => props.onTriggerReview(true)}>menu-post</button>
+    </span>
+  ),
 }));
 
 const makePR = (partial: Partial<PR> = {}): PR => ({
@@ -65,8 +79,14 @@ const renderRow = (pr: PR) =>
     </table>
   );
 
+const generateButton = () => screen.getByRole('button', { name: /^🔄 Generate$/ });
+const queryGenerateButton = () => screen.queryByRole('button', { name: /^🔄 Generate$/ });
+
 describe('PRTableRow review cell', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+  });
   afterEach(() => cleanup());
 
   it('shows "Generating…" in yellow (gemini) while a Gemini review runs', () => {
@@ -94,10 +114,10 @@ describe('PRTableRow review cell', () => {
     expect(screen.queryByText(/Generating/)).toBeNull();
   });
 
-  it('shows a Generate button when a PR has no review yet', () => {
+  it('shows a Generate split button when a PR has no review yet', () => {
     renderRow(makePR({ status: 'pending', review_url: '' }));
-    const btn = screen.getByRole('button', { name: /generate/i });
-    expect(btn).toBeTruthy();
+    expect(generateButton()).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'More generate options' })).toBeTruthy();
     expect(screen.queryByTestId('review-link-menu')).toBeNull();
     expect(screen.queryByText(/Generating/)).toBeNull();
   });
@@ -105,43 +125,103 @@ describe('PRTableRow review cell', () => {
   it('shows Generate (not the review menu) once a stale review has been cleared to pending', () => {
     // A new commit resets the PR to pending and clears review_url server-side.
     renderRow(makePR({ status: 'pending', review_url: '', last_reviewed_at: null }));
-    expect(screen.getByRole('button', { name: /generate/i })).toBeTruthy();
+    expect(generateButton()).toBeTruthy();
     expect(screen.queryByTestId('review-link-menu')).toBeNull();
   });
 
-  it('triggers a review when Generate is clicked', () => {
+  it('triggers a published review when Generate is clicked and the author is in the pilot', () => {
     const pr = makePR({ status: 'pending', review_url: '' });
     renderRow(pr);
-    fireEvent.click(screen.getByRole('button', { name: /generate/i }));
+    fireEvent.click(generateButton());
     expect(triggerMutate).toHaveBeenCalledTimes(1);
-    expect(triggerMutate).toHaveBeenCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number });
+    expect(triggerMutate).toHaveBeenCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: true });
+    expect(trackMock).toHaveBeenCalledWith('trigger_review', {
+      pr_owner: pr.owner,
+      pr_repo: pr.repo,
+      pr_number: pr.number,
+      publish: true,
+    });
+  });
+
+  it('sends publish=false when the dashboard-only option is chosen from the split menu', () => {
+    const pr = makePR({ status: 'pending', review_url: '' });
+    renderRow(pr);
+    fireEvent.click(screen.getByRole('button', { name: 'More generate options' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /generate for dashboard only/i }));
+    expect(triggerMutate).toHaveBeenCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: false });
+    expect(trackMock).toHaveBeenCalledWith('trigger_review', expect.objectContaining({ publish: false }));
+  });
+
+  it('defaults Generate to dashboard-only when the author is outside the pilot', () => {
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: 'bob,carol' } });
+    const pr = makePR({ status: 'pending', review_url: '', author: 'alice' });
+    renderRow(pr);
+    fireEvent.click(generateButton());
+    expect(triggerMutate).toHaveBeenCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: false });
+    fireEvent.click(screen.getByRole('button', { name: 'More generate options' }));
+    expect((screen.getByRole('menuitem', { name: /generate and post to pr/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('passes publishAllowed to the review menu and actions menu', () => {
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: 'Alice' } });
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', author: 'alice' }));
+    expect(screen.getByTestId('review-link-menu').getAttribute('data-publish-allowed')).toBe('true');
+    expect(screen.getByTestId('actions').getAttribute('data-publish-allowed')).toBe('true');
+    cleanup();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: 'bob' } });
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', author: 'alice' }));
+    expect(screen.getByTestId('review-link-menu').getAttribute('data-publish-allowed')).toBe('false');
+    expect(screen.getByTestId('actions').getAttribute('data-publish-allowed')).toBe('false');
+  });
+
+  it('treats settings that have not loaded yet as allowed so the control does not flicker', () => {
+    useSettingsMock.mockReturnValue({ data: undefined });
+    const pr = makePR({ status: 'pending', review_url: '' });
+    renderRow(pr);
+    fireEvent.click(generateButton());
+    expect(triggerMutate).toHaveBeenCalledWith(expect.objectContaining({ publish: true }));
+  });
+
+  it('treats a loaded settings payload without the field as nobody allowed', () => {
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true } });
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html' }));
+    expect(screen.getByTestId('review-link-menu').getAttribute('data-publish-allowed')).toBe('false');
+  });
+
+  it('forwards the publish flag chosen inside the review and actions menus', () => {
+    const pr = makePR({ status: 'completed', review_url: '/reviews/x.html' });
+    renderRow(pr);
+    fireEvent.click(screen.getByRole('button', { name: 'menu-post' }));
+    expect(triggerMutate).toHaveBeenLastCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: true });
+    fireEvent.click(screen.getByRole('button', { name: 'actions-dashboard-only' }));
+    expect(triggerMutate).toHaveBeenLastCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: false });
   });
 
   it('does not show Generate while a review is generating', () => {
     renderRow(makePR({ status: 'generating' }));
-    expect(screen.queryByRole('button', { name: /generate/i })).toBeNull();
+    expect(queryGenerateButton()).toBeNull();
   });
 
   it('does not show Generate while the agent pass is running', () => {
     renderRow(makePR({ status: 'agent_reviewing' }));
-    expect(screen.queryByRole('button', { name: /generate/i })).toBeNull();
+    expect(queryGenerateButton()).toBeNull();
   });
 
   it('does not show Generate when an up-to-date review exists', () => {
     renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html' }));
-    expect(screen.queryByRole('button', { name: /generate/i })).toBeNull();
+    expect(queryGenerateButton()).toBeNull();
     expect(screen.queryByTestId('review-link-menu')).toBeTruthy();
   });
 
   it('does not show Generate when the review errored (ERROR shown instead)', () => {
     renderRow(makePR({ status: 'error', error_message: 'boom' }));
-    expect(screen.queryByRole('button', { name: /generate/i })).toBeNull();
+    expect(queryGenerateButton()).toBeNull();
     expect(screen.getByText('ERROR')).toBeTruthy();
   });
 
   it('falls back to Generate when status is completed but no review_url is present', () => {
     renderRow(makePR({ status: 'completed', review_url: '' }));
-    expect(screen.getByRole('button', { name: /generate/i })).toBeTruthy();
+    expect(generateButton()).toBeTruthy();
   });
 });
 
@@ -152,6 +232,7 @@ describe('PRTableRow PR link click behavior', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
     assignSpy = vi.fn();
     // jsdom's window.location.assign is non-configurable, so replace the whole
     // location object for the duration of these tests.

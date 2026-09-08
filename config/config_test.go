@@ -353,3 +353,37 @@ func assertStringsEqual(t *testing.T, got, want []string) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
+
+func TestLoadJiraTicketContext(t *testing.T) {
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net/")
+	t.Setenv("JIRA_EMAIL", "bot@acme.example")
+	t.Setenv("JIRA_API_TOKEN", "tok")
+	t.Setenv("JIRA_PROJECT_KEYS", " XO, ab ,,XO ")
+	cfg := Load()
+	if cfg.JiraBaseURL != "https://acme.atlassian.net" {
+		t.Errorf("JiraBaseURL = %q, want trailing slash trimmed", cfg.JiraBaseURL)
+	}
+	if cfg.JiraEmail != "bot@acme.example" || cfg.JiraAPIToken != "tok" {
+		t.Errorf("credentials not loaded: %q %q", cfg.JiraEmail, cfg.JiraAPIToken)
+	}
+	if got := cfg.JiraProjectKeys; len(got) != 2 || got[0] != "XO" || got[1] != "AB" {
+		t.Errorf("JiraProjectKeys = %v, want [XO AB]", got)
+	}
+	if !cfg.JiraEnabled() {
+		t.Error("JiraEnabled must be true with url, email and token set")
+	}
+}
+
+func TestLoadJiraDisabledUnlessAllThreeSet(t *testing.T) {
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_EMAIL", "bot@acme.example")
+	t.Setenv("JIRA_API_TOKEN", "")
+	t.Setenv("JIRA_PROJECT_KEYS", "")
+	cfg := Load()
+	if cfg.JiraEnabled() {
+		t.Error("JiraEnabled must be false without a token")
+	}
+	if len(cfg.JiraProjectKeys) != 0 {
+		t.Errorf("JiraProjectKeys = %v, want empty", cfg.JiraProjectKeys)
+	}
+}

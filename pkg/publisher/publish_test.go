@@ -19,7 +19,6 @@ type fakeGitHub struct {
 	nextCommentID         int64
 	nextIssueID           int64
 	nextReviewID          int64
-	createReviewSH        string
 }
 
 type fakeReview struct {

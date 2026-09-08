@@ -149,3 +149,22 @@ func TestPublishGitHubReview_DoesNotWriteToClosedDraftOrUnlistedAuthorPRs(t *tes
 		})
 	}
 }
+
+func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) {
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 7, CommitSHA: "abc", Author: "alice"}
+	pl := payload.Payload{Findings: []payload.Finding{
+		{ID: "a.go:5:bbbbbbbbbbbb", Severity: "critical", Provenance: "agent", File: "a.go", Line: 52,
+			Comment: "Clicking Start in the C2C setup modal fires showMyCamDidNotStart/showMyCamBroadcastStopped immediately after starting, resetting the button to Ready."},
+	}}
+	comments := []github.ReviewCommentInfo{
+		{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54,
+			Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**"},
+	}
+	r := buildPublishRound(pr, pl, comments, nil, nil, "")
+	if r.Findings[0].ID != "a.go:5:aaaaaaaaaaaa" {
+		t.Fatalf("finding must take its published identity, got %q", r.Findings[0].ID)
+	}
+	if r.InlineComments["a.go:5:aaaaaaaaaaaa"] != 501 {
+		t.Fatalf("aliased finding must link to its existing comment: %v", r.InlineComments)
+	}
+}
