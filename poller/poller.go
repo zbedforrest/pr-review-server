@@ -110,6 +110,10 @@ type Poller struct {
 	EventFunc        func(eventType string, payload interface{})
 	StatusEventFunc  func()
 	triggerChan      chan struct{}
+
+	replyScanRunning atomic.Bool
+	replyScanCycle   atomic.Int64
+	replyLastScanned map[string]time.Time
 	polling          bool
 	pollMutex        sync.Mutex
 	// Track active review processes for cancellation and monitoring
@@ -1143,6 +1147,7 @@ func (p *Poller) Start(ctx context.Context) {
 			// below are deliberately exempt — they're explicit user actions.
 			if p.isLeader() {
 				p.startPoll(ctx, "scheduled")
+				go p.scanAuthorReplies(ctx)
 			} else {
 				log.Printf("[LEADER] not leader, skipping scheduled poll")
 			}

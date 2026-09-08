@@ -15,7 +15,7 @@ func TestSettings_PublishKeysRoundTrip(t *testing.T) {
 	server, _ := newTestServer(t, "tester")
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(
-		`{"publish_enabled_authors":"alice, bob","publish_inline_cap":3,"publish_inline_min_severity":"low"}`))
+		`{"publish_enabled_authors":"alice, bob","publish_inline_cap":3,"publish_inline_min_severity":"low","publish_reply_mode":"react"}`))
 	w := httptest.NewRecorder()
 	server.handleSettings(w, req)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -29,6 +29,7 @@ func TestSettings_PublishKeysRoundTrip(t *testing.T) {
 	assert.Equal(t, "alice, bob", got["publish_enabled_authors"])
 	assert.Equal(t, float64(3), got["publish_inline_cap"])
 	assert.Equal(t, "low", got["publish_inline_min_severity"])
+	assert.Equal(t, "react", got["publish_reply_mode"])
 }
 
 func TestSettings_PublishKeysDefaultToDisabled(t *testing.T) {
@@ -41,6 +42,14 @@ func TestSettings_PublishKeysDefaultToDisabled(t *testing.T) {
 	assert.Equal(t, "", got["publish_enabled_authors"])
 	assert.Equal(t, float64(5), got["publish_inline_cap"])
 	assert.Equal(t, "medium", got["publish_inline_min_severity"])
+	assert.Equal(t, "off", got["publish_reply_mode"])
+}
+
+func TestSettings_RejectsBadReplyMode(t *testing.T) {
+	server, _ := newTestServer(t, "tester")
+	w := httptest.NewRecorder()
+	server.handleSettings(w, httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"publish_reply_mode":"chatty"}`)))
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestSettings_RejectsBadPublishSeverity(t *testing.T) {

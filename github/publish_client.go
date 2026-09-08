@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/go-github/v57/github"
 )
@@ -25,11 +26,13 @@ type IssueCommentInfo struct {
 type ReviewCommentInfo struct {
 	ID          int64
 	Author      string
+	AuthorID    int64
 	Body        string
 	Path        string
 	Line        int
 	StartLine   int
 	InReplyToID int64
+	CreatedAt   time.Time
 }
 
 const listPageSize = 100
@@ -176,11 +179,13 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 			out = append(out, ReviewCommentInfo{
 				ID:          rc.GetID(),
 				Author:      rc.GetUser().GetLogin(),
+				AuthorID:    rc.GetUser().GetID(),
 				Body:        rc.GetBody(),
 				Path:        rc.GetPath(),
 				Line:        rc.GetLine(),
 				StartLine:   rc.GetStartLine(),
 				InReplyToID: rc.GetInReplyTo(),
+				CreatedAt:   rc.GetCreatedAt().Time,
 			})
 		}
 		if resp.NextPage == 0 {
@@ -188,6 +193,19 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 		}
 		opts.Page = resp.NextPage
 	}
+}
+
+// CreateCommentReaction adds a reaction (for example "+1") to a review
+// comment; GitHub treats an existing identical reaction as success.
+func (c *Client) CreateCommentReaction(ctx context.Context, owner, repo string, commentID int64, content string) error {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+	if _, _, err := gh.Reactions.CreatePullRequestCommentReaction(ctx, owner, repo, commentID, content); err != nil {
+		return fmt.Errorf("react to comment %d: %w", commentID, err)
+	}
+	return nil
 }
 
 // GetPRFilePatches returns filename -> unified diff patch. Files GitHub
