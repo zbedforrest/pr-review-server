@@ -1047,3 +1047,13 @@ func TestBuildAgentPromptContent_NoPRContextIsByteIdentical(t *testing.T) {
 		t.Error("empty inputs must produce no section")
 	}
 }
+
+func TestAgentPromptAsksForAHeadline(t *testing.T) {
+	prompt, err := buildAgentPromptContent("main", nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, `"headline"`) || !strings.Contains(prompt, "12 words") {
+		t.Fatalf("prompt must ask for a short headline in the finding contract")
+	}
+}
