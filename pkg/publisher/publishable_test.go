@@ -62,3 +62,18 @@ func TestRenderSummary_FooterHasNoRuleExplainer(t *testing.T) {
 		t.Fatalf("footer must keep the round and sha:\n%s", out)
 	}
 }
+
+// Unanswered memory-derived checks are re-admitted as raw "Bug-memory alert"
+// text under the required-check provenance; the agent never confirmed them.
+func TestPublishable_ExcludesUnansweredBugMemoryAlerts(t *testing.T) {
+	alert := fp("x", "medium", "a.ts", 0,
+		"_[required-check finding — retained by reconciliation, not independently confirmed by the review agent]_\n\n**Bug-memory alert — past failure pattern (mobile-entrypoint-unwired).** Moving mount code into a new method left the mobile entrypoint unwired.",
+		"required-check")
+	if Publishable(alert) {
+		t.Fatal("an unanswered bug-memory alert must not be published")
+	}
+	violated := fp("y", "medium", "a.ts", 12, "Required check CHK-mem-1 VIOLATED: the mobile entrypoint no longer mounts the viewer.", "required-check")
+	if !Publishable(violated) {
+		t.Fatal("a VIOLATED required-check finding is agent-confirmed and publishable")
+	}
+}

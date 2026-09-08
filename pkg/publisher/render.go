@@ -315,7 +315,7 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string) str
 		b.WriteString("\n" + fence + "\n")
 	}
 
-	reasoning := strings.TrimSpace(suggestionFenceRe.ReplaceAllString(comment, ""))
+	reasoning := strings.TrimSpace(suggestionFenceRe.ReplaceAllString(comment, "*(suggestion above)*"))
 	if !compact {
 		// Without an impact sentence the headline came from the comment's first
 		// sentence; the rest of the comment is the only explanation, so show it.
