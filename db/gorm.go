@@ -100,6 +100,7 @@ func (g *GormDB) AutoMigrate() error {
 		&PollerLeaseModel{},
 		&FindingOutcomeModel{},
 		&PublishedFindingModel{},
+		&PublishedReplyModel{},
 		&ReviewRunModel{},
 		&ReviewStageAttemptModel{},
 	); err != nil {
@@ -135,6 +136,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&PublishedFindingModel{}) {
 		if err := g.db.Migrator().CreateTable(&PublishedFindingModel{}); err != nil {
 			return fmt.Errorf("create published_findings: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&PublishedReplyModel{}) {
+		if err := g.db.Migrator().CreateTable(&PublishedReplyModel{}); err != nil {
+			return fmt.Errorf("create published_replies: %w", err)
 		}
 	}
 	if !g.db.Migrator().HasTable(&ReviewRunModel{}) {

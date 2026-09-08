@@ -348,3 +348,29 @@ type Database interface {
 	// Lifecycle
 	Close() error
 }
+
+// PublishedReply is a PR author's reply to one of PRism's inline comments and
+// the action PRism took (reacted, replied, skipped).
+type PublishedReply struct {
+	RepoOwner       string
+	RepoName        string
+	PRNumber        int
+	RootCommentID   int64
+	AuthorCommentID int64
+	Fingerprint     string
+	AuthorID        int64
+	Class           string
+	Action          string
+	Body            string
+	ReplyCommentID  int64
+	CreatedAt       time.Time
+}
+
+// PublishedReplyTarget is a PR with inline comments PRism owns, keyed by the
+// GitHub comment id of each root.
+type PublishedReplyTarget struct {
+	RepoOwner string
+	RepoName  string
+	PRNumber  int
+	Roots     map[int64]string
+}

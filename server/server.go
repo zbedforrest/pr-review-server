@@ -1208,6 +1208,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			PublishEnabledAuthors    *string `json:"publish_enabled_authors"`
 			PublishInlineCap         *int    `json:"publish_inline_cap"`
 			PublishInlineMinSeverity *string `json:"publish_inline_min_severity"`
+			PublishReplyMode         *string `json:"publish_reply_mode"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
@@ -1219,6 +1220,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.PublishInlineCap != nil && *req.PublishInlineCap < 0 {
 			http.Error(w, "publish_inline_cap must be zero or greater", http.StatusBadRequest)
+			return
+		}
+		if req.PublishReplyMode != nil && !publishReplyModes[strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))] {
+			http.Error(w, "publish_reply_mode must be off, observe, or react", http.StatusBadRequest)
 			return
 		}
 
@@ -1256,6 +1261,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.PublishInlineMinSeverity != nil {
 			v := strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))
 			publishUpdates[settingPublishInlineMinSeverity] = &v
+		}
+		if req.PublishReplyMode != nil {
+			v := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
+			publishUpdates[settingPublishReplyMode] = &v
 		}
 		for key, value := range publishUpdates {
 			if err := s.db.SetSetting(key, *value); err != nil {

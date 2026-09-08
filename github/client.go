@@ -544,7 +544,11 @@ func (c *Client) GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber 
 
 // GetPR fetches a full PR object from GitHub
 func (c *Client) GetPR(ctx context.Context, owner, repo string, prNumber int) (*github.PullRequest, *github.Response, error) {
-	return c.gh.PullRequests.Get(ctx, owner, repo, prNumber)
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	return gh.PullRequests.Get(ctx, owner, repo, prNumber)
 }
 
 // ListReviews fetches all reviews for a PR
