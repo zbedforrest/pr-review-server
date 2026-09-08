@@ -37,8 +37,8 @@ func TestSelect_InlineRequiresCurrentImpactOnBehaviorOrSecurity(t *testing.T) {
 	if got := ids(sel.Inline); len(got) != 2 || got[0] != "sec" || got[1] != "prod" {
 		t.Fatalf("inline = %v, want [sec prod] (critical first)", got)
 	}
-	if len(sel.Annotations) != 3 {
-		t.Fatalf("everything else must fold into the summary: %v", ids(sel.Annotations))
+	if got := ids(sel.Annotations); len(got) != 2 || got[0] != "latent" || got[1] != "nocontract" {
+		t.Fatalf("criticals that are not inline-worthy stay in the summary; sub-bar findings vanish: %v", got)
 	}
 }
 
@@ -96,8 +96,8 @@ func TestSummaryRows_UseImpactWhenAvailable(t *testing.T) {
 	r := Round{Owner: "a", Repo: "b", Number: 1, HeadSHA: "abc1234", RoundNumber: 1,
 		Findings: []payload.Finding{withContract(f("x", "medium", "a.go", 3, "Long narrative first sentence that rambles."), "production_behavior", "current_impact", "Users see a 500.", "")}}
 	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
-	if !strings.Contains(out, "| medium | `a.go:3` | Users see a 500. | PRism |") {
-		t.Fatalf("table row must use the impact sentence:\n%s", out)
+	if !strings.Contains(out, "- **[MEDIUM]** Users see a 500 — [`a.go:3`]") {
+		t.Fatalf("bullet must use the impact sentence:\n%s", out)
 	}
 }
 

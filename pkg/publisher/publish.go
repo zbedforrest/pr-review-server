@@ -98,6 +98,48 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), StillOpen: d.StillOpen, Fixed: d.Fixed}
 	now := p.now()
 
+	postedThisRound := map[string]int64{}
+	if len(sel.Inline) > 0 {
+		inputs := make([]ReviewCommentInput, 0, len(sel.Inline))
+		for _, f := range sel.Inline {
+			inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: RenderInline(f, r.sourceTag(f.ID), r.AgentLinkBase)})
+		}
+		reviewID, commentIDs, err := p.GH.CreateReview(ctx, r.Owner, r.Repo, r.Number, r.HeadSHA, "", inputs)
+		if err != nil {
+			return rep, fmt.Errorf("create review: %w", err)
+		}
+		rep.ReviewID = reviewID
+		for i, f := range sel.Inline {
+			var commentID int64
+			if i < len(commentIDs) {
+				commentID = commentIDs[i]
+			}
+			postedThisRound[f.ID] = commentID
+			if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
+				RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
+				Kind: db.PublishedKindFinding, Fingerprint: f.ID,
+				SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
+				ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
+				CommentID: commentID, ReviewID: reviewID,
+				State: db.PublishedStateOpen, PublishedAt: now,
+			}); err != nil {
+				return rep, fmt.Errorf("record finding %s: %w", f.ID, err)
+			}
+		}
+	}
+
+	if r.InlineComments == nil {
+		r.InlineComments = map[string]int64{}
+	}
+	for id, row := range published {
+		if row.Kind == db.PublishedKindFinding && row.CommentID != 0 {
+			r.InlineComments[id] = row.CommentID
+		}
+	}
+	for id, cid := range postedThisRound {
+		r.InlineComments[id] = cid
+	}
+
 	summary := RenderSummary(r, sel)
 	summaryLedger := &db.PublishedFinding{
 		RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
@@ -136,34 +178,6 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	summaryLedger.CommentID = summaryCommentID
 	if err := p.Ledger.UpsertPublishedFinding(summaryLedger); err != nil {
 		return rep, fmt.Errorf("record summary comment: %w", err)
-	}
-
-	if len(sel.Inline) > 0 {
-		inputs := make([]ReviewCommentInput, 0, len(sel.Inline))
-		for _, f := range sel.Inline {
-			inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: RenderInline(f, r.sourceTag(f.ID), r.AgentLinkBase)})
-		}
-		reviewID, commentIDs, err := p.GH.CreateReview(ctx, r.Owner, r.Repo, r.Number, r.HeadSHA, "", inputs)
-		if err != nil {
-			return rep, fmt.Errorf("create review: %w", err)
-		}
-		rep.ReviewID = reviewID
-		for i, f := range sel.Inline {
-			var commentID int64
-			if i < len(commentIDs) {
-				commentID = commentIDs[i]
-			}
-			if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
-				RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
-				Kind: db.PublishedKindFinding, Fingerprint: f.ID,
-				SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
-				ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
-				CommentID: commentID, ReviewID: reviewID,
-				State: db.PublishedStateOpen, PublishedAt: now,
-			}); err != nil {
-				return rep, fmt.Errorf("record finding %s: %w", f.ID, err)
-			}
-		}
 	}
 
 	written := map[string]bool{}

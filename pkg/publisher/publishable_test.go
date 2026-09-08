@@ -44,7 +44,7 @@ func TestRenderSummary_ExcludesUnconfirmedFindingsEverywhere(t *testing.T) {
 			fp("ag", "medium", "a.go", 11, "Agent finding.", "agent"),
 		}}
 	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
-	if strings.Contains(out, "First-pass claim") || !strings.Contains(out, "Findings (1)") {
+	if strings.Contains(out, "First-pass claim") || !strings.Contains(out, "- **[MEDIUM]** Agent finding") {
 		t.Fatalf("summary must not list unconfirmed findings:\n%s", out)
 	}
 	if !strings.Contains(out, "merge confidence 5/5") {
