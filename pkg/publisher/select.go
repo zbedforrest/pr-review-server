@@ -128,7 +128,10 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 // whose contract asserts current production impact (the inline bar). Lower
 // findings live only on the dashboard.
 func Shown(f payload.Finding) bool {
-	return Publishable(f) && (f.Severity == "critical" || worthInline(f))
+	if !Publishable(f) {
+		return false
+	}
+	return f.Severity == "critical" || (f.Severity == "medium" && worthInline(f))
 }
 
 // worthInline is the Greptile-style bar for occupying a reviewer's diff view:

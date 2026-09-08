@@ -141,3 +141,32 @@ func TestListReviewCommentsAndFilePatches(t *testing.T) {
 		t.Errorf("files without a patch must be omitted: %v", patches)
 	}
 }
+
+// The per-review comments endpoint may omit `line`; ids must still be matched
+// (by body, which the caller authored) instead of coming back as zero.
+func TestCreateReview_MatchesCommentIDsByBodyWhenLineIsMissing(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews"):
+			fmt.Fprint(w, `{"id": 9002, "state": "COMMENTED"}`)
+		case strings.Contains(r.URL.Path, "/reviews/9002/comments"):
+			fmt.Fprint(w, `[{"id": 41, "path": "a.go", "body": "second body"}, {"id": 42, "path": "a.go", "body": "first body"}]`)
+		default:
+			fmt.Fprint(w, `[]`)
+		}
+	}))
+	defer ts.Close()
+
+	c := NewTestClient(ts.URL, "bot")
+	_, ids, err := c.CreateReview(context.Background(), "o", "r", 1, "sha", "", []ReviewCommentInput{
+		{Path: "a.go", Line: 10, Body: "first body"},
+		{Path: "a.go", Line: 30, Body: "second body"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != 42 || ids[1] != 41 {
+		t.Fatalf("ids = %v, want [42 41] matched by body", ids)
+	}
+}

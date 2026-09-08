@@ -159,7 +159,7 @@ func TestPublishRoundOne(t *testing.T) {
 	if !strings.Contains(rv.comments[0].Body, FindingMarker("c1")) || !strings.Contains(rv.comments[1].Body, "Source: PRism · Both") {
 		t.Errorf("inline bodies wrong: %+v", rv.comments)
 	}
-	if rep.ReviewID != 9001 || rep.InlinePosted != 2 || rep.Annotations != 2 || rep.StillOpen != 0 || rep.Fixed != 0 {
+	if rep.ReviewID != 9001 || rep.InlinePosted != 2 || rep.Annotations != 1 || rep.StillOpen != 0 || rep.Fixed != 0 {
 		t.Errorf("report = %+v", rep)
 	}
 
@@ -208,7 +208,7 @@ func TestPublishRoundTwo(t *testing.T) {
 		t.Fatalf("round 2 must not create a new summary; creates=%d", len(gh.issueCreates))
 	}
 	edited, ok := gh.issueEdits[501]
-	if !ok || !strings.Contains(edited, "**Since last review:** 1 new · 1 still open · 3 fixed") {
+	if !ok || !strings.Contains(edited, "**Since last review:** 1 new · 1 still open · 2 fixed") {
 		t.Fatalf("summary edit wrong: ok=%v body=%s", ok, edited)
 	}
 	if !strings.Contains(edited, "Reviews (2)") {
@@ -224,7 +224,7 @@ func TestPublishRoundTwo(t *testing.T) {
 	if len(rv.comments) != 1 || !strings.Contains(rv.comments[0].Body, FindingMarker("m3")) {
 		t.Fatalf("round 2 review comments = %+v, want only m3", rv.comments)
 	}
-	if rep.SummaryCommentID != 501 || rep.ReviewID != 9002 || rep.InlinePosted != 1 || rep.Annotations != 0 || rep.StillOpen != 1 || rep.Fixed != 3 {
+	if rep.SummaryCommentID != 501 || rep.ReviewID != 9002 || rep.InlinePosted != 1 || rep.Annotations != 0 || rep.StillOpen != 1 || rep.Fixed != 2 {
 		t.Errorf("report = %+v", rep)
 	}
 
@@ -263,7 +263,7 @@ func TestPublishNoInlineSkipsReview(t *testing.T) {
 	if len(gh.reviews) != 0 {
 		t.Fatalf("no inline findings must post no review; got %d", len(gh.reviews))
 	}
-	if len(gh.issueCreates) != 1 || rep.InlinePosted != 0 || rep.Annotations != 4 || rep.ReviewID != 0 {
+	if len(gh.issueCreates) != 1 || rep.InlinePosted != 0 || rep.Annotations != 3 || rep.ReviewID != 0 {
 		t.Errorf("creates=%d rep=%+v", len(gh.issueCreates), rep)
 	}
 }
