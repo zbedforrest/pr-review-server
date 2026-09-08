@@ -230,3 +230,25 @@ func TestInstallationMissForOneRepoDoesNotPoisonSiblings(t *testing.T) {
 		t.Fatalf("excluded repo after a sibling hit: err = %v, want not installed", err)
 	}
 }
+
+func TestInstallationHitsExpireSoRemovedReposReresolve(t *testing.T) {
+	var lookups int32
+	srv := installationAPI(t, &lookups, new(int32))
+	defer srv.Close()
+	c := newTestAppClient(t, srv.URL)
+
+	if _, err := c.installationFor(context.Background(), "personal", "tool"); err != nil {
+		t.Fatal(err)
+	}
+	c.extraLock.Lock()
+	entry := c.repoInstallations["personal/tool"]
+	entry.checkedAt = time.Now().Add(-2 * installationTTL)
+	c.repoInstallations["personal/tool"] = entry
+	c.extraLock.Unlock()
+	if _, err := c.installationFor(context.Background(), "personal", "tool"); err != nil {
+		t.Fatal(err)
+	}
+	if lookups != 2 {
+		t.Errorf("lookups = %d, want a fresh lookup after the TTL", lookups)
+	}
+}

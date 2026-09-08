@@ -34,8 +34,8 @@ type AppClient struct {
 	// an account), tokens are per installation id and so shared by siblings.
 	// The lock guards the maps only; GitHub calls happen outside it so one
 	// slow owner cannot stall publishing for the others.
-	repoInstallations map[string]string    // owner/repo -> installation id
-	notInstalled      map[string]time.Time // owner/repo -> when the 404 was seen
+	repoInstallations map[string]repoInstallation // owner/repo -> installation id
+	notInstalled      map[string]time.Time        // owner/repo -> when the 404 was seen
 	extraTokens       map[string]InstallationToken
 	extraLock         sync.Mutex
 
@@ -201,9 +201,15 @@ func (c *AppClient) baseURL() string {
 // ErrAppNotInstalled reports that the App has no installation covering a repo.
 var ErrAppNotInstalled = errors.New("github app is not installed")
 
-// A miss is cached for notInstalledTTL so an uninstalled repo does not cost a
-// lookup on every write, and re-checked after it so a fresh install is seen.
-const notInstalledTTL = 10 * time.Minute
+// Lookups are cached for installationTTL either way: a miss so an uninstalled
+// repo does not cost a lookup per write, a hit so a repo removed from a
+// selected-repositories installation stops minting a token that cannot write.
+const installationTTL = 10 * time.Minute
+
+type repoInstallation struct {
+	id        string
+	checkedAt time.Time
+}
 
 // TokenForRepo returns an installation token that can write to owner/repo.
 // Repos under the primary installation reuse its token; any other repo is
@@ -232,8 +238,8 @@ func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (strin
 	if err != nil {
 		if errors.Is(err, errInstallationGone) {
 			c.extraLock.Lock()
-			for key, id := range c.repoInstallations {
-				if id == installationID {
+			for key, entry := range c.repoInstallations {
+				if entry.id == installationID {
 					delete(c.repoInstallations, key)
 				}
 			}
@@ -258,13 +264,13 @@ func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (strin
 func (c *AppClient) installationFor(ctx context.Context, owner, repo string) (string, error) {
 	repoKey := owner + "/" + repo
 	c.extraLock.Lock()
-	id, hit := c.repoInstallations[repoKey]
+	cached, hit := c.repoInstallations[repoKey]
 	missedAt, missed := c.notInstalled[repoKey]
 	c.extraLock.Unlock()
-	if hit {
-		return id, nil
+	if hit && time.Since(cached.checkedAt) < installationTTL {
+		return cached.id, nil
 	}
-	if missed && time.Since(missedAt) < notInstalledTTL {
+	if missed && time.Since(missedAt) < installationTTL {
 		return "", ErrAppNotInstalled
 	}
 	id, err := c.lookupInstallation(ctx, owner, repo)
@@ -273,9 +279,9 @@ func (c *AppClient) installationFor(ctx context.Context, owner, repo string) (st
 	switch {
 	case err == nil:
 		if c.repoInstallations == nil {
-			c.repoInstallations = map[string]string{}
+			c.repoInstallations = map[string]repoInstallation{}
 		}
-		c.repoInstallations[repoKey] = id
+		c.repoInstallations[repoKey] = repoInstallation{id: id, checkedAt: time.Now()}
 		delete(c.notInstalled, repoKey)
 	case errors.Is(err, ErrAppNotInstalled):
 		if c.notInstalled == nil {
