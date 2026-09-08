@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -48,6 +47,9 @@ type Round struct {
 	RequiredCheckViolated bool
 	DashboardURL          string
 	AgentLinkBase         string
+	// InlineComments maps finding id to the GitHub review-comment id it was
+	// posted as (this round or earlier), so the summary can link to it.
+	InlineComments map[string]int64
 }
 
 func (r Round) sourceTag(id string) string {
@@ -60,7 +62,7 @@ func (r Round) sourceTag(id string) string {
 func (r Round) currentFindings() []payload.Finding {
 	var out []payload.Finding
 	for _, f := range r.Findings {
-		if Publishable(f) {
+		if Shown(f) {
 			out = append(out, f)
 		}
 	}
@@ -153,52 +155,36 @@ func tableCell(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "|", "\\|"), "\n", " ")
 }
 
-type summaryRow struct {
-	severity string
-	file     string
-	line     int
-	text     string
-	source   string
-}
-
-func (row summaryRow) render() string {
-	return fmt.Sprintf("| %s | `%s:%d` | %s | %s |", row.severity, row.file, row.line, row.text, row.source)
-}
-
-func (r Round) summaryRows() []summaryRow {
-	var rows []summaryRow
-	for _, f := range r.currentFindings() {
-		rows = append(rows, summaryRow{
-			severity: f.Severity,
-			file:     f.File,
-			line:     f.Line,
-			text:     tableCell(truncate(summaryText(f), 120)),
-			source:   sourceLabel(r.sourceTag(f.ID)),
-		})
+func (r Round) findingLink(f payload.Finding) string {
+	if id, ok := r.InlineComments[f.ID]; ok && id != 0 {
+		return fmt.Sprintf("https://github.com/%s/%s/pull/%d#discussion_r%d", r.Owner, r.Repo, r.Number, id)
 	}
-	for _, g := range r.GreptileOnly {
-		text := tableCell(truncate(firstLine(g.Title), 120))
-		if g.CommentID != 0 {
-			text = fmt.Sprintf("[%s](https://github.com/%s/%s/pull/%d#discussion_r%d)", text, r.Owner, r.Repo, r.Number, g.CommentID)
-		}
-		rows = append(rows, summaryRow{severity: g.Severity, file: g.File, line: g.Line, text: text, source: "Greptile"})
+	link := fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s", r.Owner, r.Repo, r.HeadSHA, f.File)
+	if f.Line > 0 {
+		link += fmt.Sprintf("#L%d", f.Line)
 	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		a, b := rows[i], rows[j]
-		if ra, rb := severityRank(a.severity), severityRank(b.severity); ra != rb {
-			return ra > rb
-		}
-		if a.file != b.file {
-			return a.file < b.file
-		}
-		return a.line < b.line
-	})
-	return rows
+	return link
 }
 
+// bullet is one summary line: severity, the effect sentence, and a short
+// location linked to the inline comment or the file at the reviewed commit.
+func (r Round) bullet(f payload.Finding) string {
+	where := f.File[strings.LastIndex(f.File, "/")+1:]
+	if f.Line > 0 {
+		where = fmt.Sprintf("%s:%d", where, f.Line)
+	}
+	text := strings.TrimSuffix(truncate(summaryText(f), 200), ".")
+	return fmt.Sprintf("- **[%s]** %s — [`%s`](%s)\n", strings.ToUpper(f.Severity), text, where, r.findingLink(f))
+}
+
+// RenderSummary is the sticky comment: a confidence line, the round diff, and
+// one bullet per finding above the bar (critical first). Nothing below the
+// bar appears on GitHub; the dashboard link carries the rest.
 func RenderSummary(r Round, sel Selection) string {
+	shown := r.currentFindings()
+	sortBySeverity(shown)
 	critical, medium := 0, 0
-	for _, f := range r.currentFindings() {
+	for _, f := range shown {
 		switch f.Severity {
 		case "critical":
 			critical++
@@ -211,48 +197,30 @@ func RenderSummary(r Round, sel Selection) string {
 		confidence = requestChangesConfidenceCap
 	}
 
-	var head strings.Builder
-	head.WriteString(SummaryMarker + "\n")
-	fmt.Fprintf(&head, "### PRism review: merge confidence %d/5\n", confidence)
-	head.WriteString(recommendation(confidence) + "\n\n")
+	var b strings.Builder
+	b.WriteString(SummaryMarker + "\n")
+	fmt.Fprintf(&b, "### PRism review: merge confidence %d/5\n", confidence)
+	b.WriteString(recommendation(confidence) + "\n\n")
 	if r.RoundNumber > 1 {
 		d := r.diff()
-		fmt.Fprintf(&head, "**Since last review:** %d new · %d still open · %d fixed\n\n", d.New, d.StillOpen, d.Fixed)
+		fmt.Fprintf(&b, "**Since last review:** %d new · %d still open · %d fixed\n\n", d.New, d.StillOpen, d.Fixed)
 	}
-
-	rows := r.summaryRows()
-	fmt.Fprintf(&head, "<details><summary>Findings (%d)</summary>\n\n", len(rows))
-	head.WriteString("| Sev | Where | Finding | Source |\n|---|---|---|---|\n")
-
-	var foot strings.Builder
-	foot.WriteString("</details>\n\n<sub>")
-	fmt.Fprintf(&foot, "Reviews (%d) · reviewed %s", r.RoundNumber, shortSHA(r.HeadSHA))
-	if r.DashboardURL != "" {
-		fmt.Fprintf(&foot, ` · <a href="%s">dashboard</a>`, r.DashboardURL)
-	}
-	foot.WriteString("</sub>\n")
-
-	truncRow := "| ... | | %d more, see dashboard | |\n"
-	if r.DashboardURL != "" {
-		truncRow = fmt.Sprintf("| ... | | [%%d more, see dashboard](%s) | |\n", r.DashboardURL)
-	}
-
-	budget := SummaryMaxChars - head.Len() - foot.Len()
-	var body strings.Builder
-	for i, row := range rows {
-		line := row.render() + "\n"
-		remaining := len(rows) - i
-		reserve := 0
-		if remaining > 1 {
-			reserve = len(truncRow) + 10
-		}
-		if body.Len()+len(line)+reserve > budget {
-			fmt.Fprintf(&body, truncRow, remaining)
+	for _, f := range shown {
+		if b.Len() > SummaryMaxChars-600 {
+			fmt.Fprintf(&b, "- ... more on the [dashboard](%s)\n", r.DashboardURL)
 			break
 		}
-		body.WriteString(line)
+		b.WriteString(r.bullet(f))
 	}
-	return head.String() + body.String() + foot.String()
+	if len(shown) > 0 {
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(&b, "<sub>Reviews (%d) · reviewed %s", r.RoundNumber, shortSHA(r.HeadSHA))
+	if r.DashboardURL != "" {
+		fmt.Fprintf(&b, ` · <a href="%s">dashboard</a>`, r.DashboardURL)
+	}
+	b.WriteString("</sub>\n")
+	return b.String()
 }
 
 // firstSentence returns the leading sentence of the comment's first line, or

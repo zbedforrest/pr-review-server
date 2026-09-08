@@ -26,73 +26,6 @@ func baseRound() Round {
 	}
 }
 
-func TestRenderSummaryRoundOne(t *testing.T) {
-	r := baseRound()
-	sel := Select(r.Findings, nil, map[string]map[int]bool{"path/file.go": {12: true}}, DefaultPolicy())
-	out := RenderSummary(r, sel)
-
-	mustContain := []string{
-		SummaryMarker,
-		"### PRism review: merge confidence 3/5",
-		"Findings that should be addressed before merge.",
-		"<details><summary>Findings (3)</summary>",
-		"| critical | `path/file.go:12` | Nil deref when cfg is missing. | PRism |",
-		"| medium | `other.py:40` | Unbounded retry loop. | Both |",
-		"| low | `x.ts:8` | Typo in log message. | PRism |",
-		"reviewed abc1234 ",
-		`<a href="https://prism.example/pr/acme/example/7">dashboard</a>`,
-		"Reviews (1)",
-	}
-	for _, s := range mustContain {
-		if !strings.Contains(out, s) {
-			t.Errorf("summary missing %q\n%s", s, out)
-		}
-	}
-	if strings.Contains(out, "Since last review") {
-		t.Errorf("round 1 must not show since-last-review line\n%s", out)
-	}
-	if strings.Contains(out, "The narrative.") {
-		t.Errorf("SUMMARY finding must not appear as a table row\n%s", out)
-	}
-}
-
-func TestRenderSummaryRoundTwoCountsAndGreptile(t *testing.T) {
-	r := baseRound()
-	r.RoundNumber = 2
-	r.Previous = []db.PublishedFinding{
-		{Kind: db.PublishedKindSummary, Fingerprint: "summary", State: db.PublishedStateOpen},
-		{Kind: db.PublishedKindFinding, Fingerprint: "c1", State: db.PublishedStateOpen},
-		{Kind: db.PublishedKindFinding, Fingerprint: "gone1", State: db.PublishedStateOpen},
-		{Kind: db.PublishedKindFinding, Fingerprint: "gone2", State: db.PublishedStateOpen},
-		{Kind: db.PublishedKindFinding, Fingerprint: "gone3", State: db.PublishedStateResolved},
-	}
-	r.GreptileOnly = []GreptileOnlyRef{
-		{Title: "Missing await", File: "y.ts", Line: 3, Severity: "medium", CommentID: 555},
-		{Title: "Unlinked note", File: "z.ts", Line: 9, Severity: "low"},
-	}
-	sel := Select(r.Findings, nil, nil, DefaultPolicy())
-	out := RenderSummary(r, sel)
-
-	mustContain := []string{
-		"**Since last review:** 2 new · 1 still open · 2 fixed",
-		"<details><summary>Findings (5)</summary>",
-		"| medium | `y.ts:3` | [Missing await](https://github.com/acme/example/pull/7#discussion_r555) | Greptile |",
-		"| low | `z.ts:9` | Unlinked note | Greptile |",
-		"Reviews (2)",
-	}
-	for _, s := range mustContain {
-		if !strings.Contains(out, s) {
-			t.Errorf("summary missing %q\n%s", s, out)
-		}
-	}
-	critIdx := strings.Index(out, "| critical |")
-	medIdx := strings.Index(out, "| medium |")
-	lowIdx := strings.Index(out, "| low |")
-	if !(critIdx < medIdx && medIdx < lowIdx) {
-		t.Errorf("rows not sorted by severity\n%s", out)
-	}
-}
-
 func TestRenderSummaryRecommendationLines(t *testing.T) {
 	cases := map[int]string{
 		5: "No blocking findings.",
@@ -105,24 +38,6 @@ func TestRenderSummaryRecommendationLines(t *testing.T) {
 		if got := recommendation(score); got != want {
 			t.Errorf("recommendation(%d) = %q, want %q", score, got, want)
 		}
-	}
-}
-
-func TestRenderSummaryTruncates(t *testing.T) {
-	r := baseRound()
-	r.Findings = nil
-	for i := 0; i < 2000; i++ {
-		r.Findings = append(r.Findings, f(fmt.Sprintf("id%d", i), "medium", fmt.Sprintf("dir/very/long/path/to/file%04d.go", i), i+1, strings.Repeat("x", 120)))
-	}
-	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
-	if len(out) > SummaryMaxChars {
-		t.Fatalf("summary length %d exceeds cap %d", len(out), SummaryMaxChars)
-	}
-	if !strings.Contains(out, SummaryMarker) || !strings.Contains(out, "</details>") {
-		t.Fatalf("truncated summary lost structure\n%s", out[len(out)-400:])
-	}
-	if !strings.Contains(out, "see dashboard") {
-		t.Fatalf("truncated summary must point to the dashboard")
 	}
 }
 
@@ -201,15 +116,6 @@ func TestRenderInline_StripsProvenanceNoteFromTitleAndBody(t *testing.T) {
 	}
 }
 
-func TestRenderSummary_TableUsesRealFirstLineNotProvenanceNote(t *testing.T) {
-	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 1,
-		Findings: []payload.Finding{f("x", "medium", "a.go", 3, provenanceNote+"Treating raw as context is wrong.")}}
-	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
-	if strings.Contains(out, "retained by reconciliation") || !strings.Contains(out, "Treating raw as context is wrong.") {
-		t.Fatalf("summary table row wrong:\n%s", out)
-	}
-}
-
 func TestRenderSummary_RequestChangesVerdictCapsConfidence(t *testing.T) {
 	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 1,
 		Findings: []payload.Finding{
@@ -258,5 +164,61 @@ func TestRenderInline_HowToVerifyReadsWellWithConditionalObservable(t *testing.T
 	}
 	if strings.Contains(out, "expect If") {
 		t.Fatalf("must not glue 'expect' onto a conditional sentence:\n%s", out)
+	}
+}
+
+func TestRenderSummaryRoundOne(t *testing.T) {
+	r := roundOne()
+	r.RoundNumber = 1
+	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
+	for _, want := range []string{
+		SummaryMarker,
+		"### PRism review: merge confidence 3/5",
+		"- **[CRITICAL]** Critical thing — [`a.go:10`](https://github.com/acme/example/blob/sha-round-1/a.go#L10)",
+		"- **[MEDIUM]** Medium thing — [`b.go:20`]",
+		"<sub>Reviews (1) · reviewed sha-rou",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Since last review") || strings.Contains(out, "<details>") || strings.Contains(out, "| Sev |") {
+		t.Errorf("round 1 must have no diff line and no table:\n%s", out)
+	}
+}
+
+func TestRenderSummaryRoundTwoShowsDiffAndSkipsGreptileOnly(t *testing.T) {
+	r := roundOne()
+	r.RoundNumber = 2
+	r.Previous = []db.PublishedFinding{
+		{Kind: db.PublishedKindFinding, Fingerprint: "c1", State: db.PublishedStateOpen, CommentID: 77},
+		{Kind: db.PublishedKindFinding, Fingerprint: "gone", State: db.PublishedStateOpen},
+	}
+	r.GreptileOnly = []GreptileOnlyRef{{Title: "Missing await", File: "y.ts", Line: 3, Severity: "medium", CommentID: 555}}
+	r.InlineComments = map[string]int64{"c1": 77}
+	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
+	if !strings.Contains(out, "**Since last review:** 3 new · 1 still open · 1 fixed") {
+		t.Errorf("diff line wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "[`a.go:10`](https://github.com/acme/example/pull/7#discussion_r77)") {
+		t.Errorf("previously posted finding must link its inline comment:\n%s", out)
+	}
+	if strings.Contains(out, "Missing await") || strings.Contains(out, "Greptile") {
+		t.Errorf("Greptile-only findings are already on the PR and must not be repeated:\n%s", out)
+	}
+}
+
+func TestRenderSummaryStaysUnderCap(t *testing.T) {
+	r := roundOne()
+	r.Findings = r.Findings[:1]
+	for i := 0; i < 900; i++ {
+		r.Findings = append(r.Findings, f(fmt.Sprintf("c%d", i), "critical", fmt.Sprintf("dir/file%d.go", i), 10, strings.Repeat("word ", 30)))
+	}
+	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
+	if len(out) > SummaryMaxChars {
+		t.Fatalf("summary %d chars exceeds cap %d", len(out), SummaryMaxChars)
+	}
+	if !strings.Contains(out, "more on the [dashboard]") || !strings.HasSuffix(strings.TrimSpace(out), "</sub>") {
+		t.Fatalf("truncated summary lost structure\n%s", out[len(out)-300:])
 	}
 }

@@ -102,7 +102,7 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 
 	var candidates, rest []payload.Finding
 	for _, f := range findings {
-		if !Publishable(f) || alreadyPublished[f.ID] {
+		if !Shown(f) || alreadyPublished[f.ID] {
 			continue
 		}
 		if severityRank(f.Severity) >= minRank && f.Line > 0 && commentable[f.File][f.Line] && worthInline(f) {
@@ -122,6 +122,13 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 	sortBySeverity(rest)
 	sel.Annotations = rest
 	return sel
+}
+
+// Shown is the bar for appearing on GitHub at all: a critical finding, or one
+// whose contract asserts current production impact (the inline bar). Lower
+// findings live only on the dashboard.
+func Shown(f payload.Finding) bool {
+	return Publishable(f) && (f.Severity == "critical" || worthInline(f))
 }
 
 // worthInline is the Greptile-style bar for occupying a reviewer's diff view:
