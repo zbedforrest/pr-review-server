@@ -47,8 +47,8 @@ func TestRenderSummary_ExcludesUnconfirmedFindingsEverywhere(t *testing.T) {
 	if strings.Contains(out, "First-pass claim") || !strings.Contains(out, "- **[MEDIUM]** Agent finding") {
 		t.Fatalf("summary must not list unconfirmed findings:\n%s", out)
 	}
-	if !strings.Contains(out, "merge confidence 5/5") {
-		t.Fatalf("an unconfirmed critical must not lower confidence:\n%s", out)
+	if !strings.Contains(out, "merge confidence 4/5") {
+		t.Fatalf("an unconfirmed critical must not lower confidence (one shown medium = 4):\n%s", out)
 	}
 }
 

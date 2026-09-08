@@ -32,11 +32,11 @@ func TestMergeConfidence(t *testing.T) {
 		{"clean", 0, 0, false, 5},
 		{"one critical", 1, 0, false, 3},
 		{"two critical still minus two", 2, 0, false, 3},
-		{"two medium no penalty", 0, 2, false, 5},
-		{"three medium", 0, 3, false, 4},
+		{"any medium costs one", 0, 2, false, 4},
+		{"three medium cost two", 0, 3, false, 3},
 		{"check violated", 0, 0, true, 4},
-		{"everything", 1, 3, true, 1},
-		{"floor at zero", 3, 5, true, 1},
+		{"everything", 1, 3, true, 0},
+		{"floor at zero", 3, 5, true, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

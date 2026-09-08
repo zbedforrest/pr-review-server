@@ -63,8 +63,9 @@ func TestRenderInlineFull(t *testing.T) {
 			t.Errorf("inline missing %q\n%s", s, out)
 		}
 	}
-	if strings.Count(out, "Nil deref when cfg is missing.") != 1 {
-		t.Errorf("title sentence should be removed from the body\n%s", out)
+	visible := out[:strings.Index(out, "<details>")]
+	if strings.Count(visible, "Nil deref when cfg is missing.") != 1 {
+		t.Errorf("title sentence should be removed from the visible body\n%s", out)
 	}
 }
 
@@ -173,7 +174,7 @@ func TestRenderSummaryRoundOne(t *testing.T) {
 	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
 	for _, want := range []string{
 		SummaryMarker,
-		"### PRism review: merge confidence 3/5",
+		"### PRism review: merge confidence 2/5",
 		"- **[CRITICAL]** Critical thing — [`a.go:10`](https://github.com/acme/example/blob/sha-round-1/a.go#L10)",
 		"- **[MEDIUM]** Medium thing — [`b.go:20`]",
 		"<sub>Reviews (1) · reviewed sha-rou",

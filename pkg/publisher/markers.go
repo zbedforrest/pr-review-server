@@ -29,6 +29,9 @@ func MergeConfidence(critical, medium int, requiredCheckViolated bool) int {
 	if critical > 0 {
 		score -= 2
 	}
+	if medium > 0 {
+		score--
+	}
 	if medium >= 3 {
 		score--
 	}
