@@ -131,6 +131,10 @@ type PRResponse struct {
 	Hidden bool `json:"hidden"`
 	// User manually requested a review for this PR (Requested by Me section)
 	ViaManual bool `json:"via_manual"`
+	// PublishedToGitHub is true when PRism has posted its review to the PR;
+	// PublishedRounds counts the publication rounds so far.
+	PublishedToGitHub bool `json:"published_to_github"`
+	PublishedRounds   int  `json:"published_rounds"`
 	// Populated when Status=="error".
 	ErrorMessage string `json:"error_message,omitempty"`
 }
@@ -352,9 +356,11 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 		githubMap[key] = ghPR
 	}
 
+	published := s.publishedSummaries()
 	response := make([]PRResponse, 0, len(prsWithViews))
 	for _, prView := range prsWithViews {
 		dbPR := prView.PR
+		summaryRow, isPublished := published[publishedKey(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber)]
 		var reviewedAt *string
 		var generatingSince *string
 		var createdAt *string
@@ -413,37 +419,39 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		response = append(response, PRResponse{
-			Owner:           dbPR.RepoOwner,
-			Repo:            dbPR.RepoName,
-			Number:          dbPR.PRNumber,
-			CommitSHA:       dbPR.LastCommitSHA,
-			Title:           title,
-			Author:          author,
-			LastReviewedAt:  reviewedAt,
-			ReviewHTMLPath:  dbPR.ReviewHTMLPath,
-			GitHubURL:       githubURL,
-			ReviewURL:       reviewURL(dbPR.ReviewHTMLPath),
-			Status:          dbPR.Status,
-			GeneratingSince: generatingSince,
-			ApprovalCount:   dbPR.ApprovalCount,
-			MyReviewStatus:  prView.ReviewStatus, // Use user-specific review status
-			Draft:           dbPR.Draft,
-			PRState:         prStateOrOpen(dbPR.PRState),
-			CIState:         dbPR.CIState,
-			CIFailedChecks:  ciFailedChecks,
-			CreatedAt:       createdAt,
-			IsMine:          prView.IsAuthor, // Use IsAuthor from user_pr_views
-			ViaTeams:        viaTeams,
-			CriticalCount:   dbPR.CriticalCount,
-			MediumCount:     dbPR.MediumCount,
-			LowCount:        dbPR.LowCount,
-			ReviewVerdict:   dbPR.ReviewVerdict,
-			ModelFallback:   dbPR.ModelFallback,
-			ReviewRun:       decodeReviewRun(dbPR.ReviewRunJSON, dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber),
-			Notes:           notes,
-			Hidden:          prView.UserHidden,
-			ViaManual:       prView.ViaManual,
-			ErrorMessage:    dbPR.ErrorMessage,
+			Owner:             dbPR.RepoOwner,
+			Repo:              dbPR.RepoName,
+			Number:            dbPR.PRNumber,
+			CommitSHA:         dbPR.LastCommitSHA,
+			Title:             title,
+			Author:            author,
+			LastReviewedAt:    reviewedAt,
+			ReviewHTMLPath:    dbPR.ReviewHTMLPath,
+			GitHubURL:         githubURL,
+			ReviewURL:         reviewURL(dbPR.ReviewHTMLPath),
+			Status:            dbPR.Status,
+			GeneratingSince:   generatingSince,
+			ApprovalCount:     dbPR.ApprovalCount,
+			MyReviewStatus:    prView.ReviewStatus, // Use user-specific review status
+			Draft:             dbPR.Draft,
+			PRState:           prStateOrOpen(dbPR.PRState),
+			CIState:           dbPR.CIState,
+			CIFailedChecks:    ciFailedChecks,
+			CreatedAt:         createdAt,
+			IsMine:            prView.IsAuthor, // Use IsAuthor from user_pr_views
+			ViaTeams:          viaTeams,
+			CriticalCount:     dbPR.CriticalCount,
+			MediumCount:       dbPR.MediumCount,
+			LowCount:          dbPR.LowCount,
+			ReviewVerdict:     dbPR.ReviewVerdict,
+			PublishedToGitHub: isPublished,
+			PublishedRounds:   summaryRow.Rounds,
+			ModelFallback:     dbPR.ModelFallback,
+			ReviewRun:         decodeReviewRun(dbPR.ReviewRunJSON, dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber),
+			Notes:             notes,
+			Hidden:            prView.UserHidden,
+			ViaManual:         prView.ViaManual,
+			ErrorMessage:      dbPR.ErrorMessage,
 		})
 	}
 
@@ -642,6 +650,8 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 		Owner  string `json:"owner"`
 		Repo   string `json:"repo"`
 		Number int    `json:"number"`
+		// Publish false keeps the review off GitHub (dashboard only).
+		Publish *bool `json:"publish"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[API] trigger-review: bad request body: %v", err)
@@ -710,7 +720,7 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 	if s.poller != nil {
 		// force=true on manual trigger: bypass the per-commit cache so a button
 		// click always regenerates (overwrites the previous review for this commit).
-		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, true, true)
+		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, true, req.Publish == nil || *req.Publish)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
