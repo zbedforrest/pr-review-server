@@ -111,3 +111,17 @@ func TestRenderInline_FoldedReasoningMarksWhereSuggestionWas(t *testing.T) {
 		t.Fatalf("folded reasoning must mark the lifted suggestion instead of leaving a gap:\n%s", out)
 	}
 }
+
+func TestRenderInline_UsesTheAgentHeadlineOverTheImpactSentence(t *testing.T) {
+	impact := "Users who override the site served (mobile UA with Desktop Site selected, or mobileRedirect=always) are reported with a platform flag that does not match the layout they see."
+	x := withContract(fp("h", "medium", "a.py", 3, "Body.", "agent"), "production_behavior", "current_impact", impact, "")
+	x.FindingContract.Headline = "Platform flag ignores the Desktop Site override"
+	out := RenderInline(x, "", "")
+	lines := strings.Split(out, "\n")
+	if lines[1] != "**[MEDIUM] Behavior change · Platform flag ignores the Desktop Site override**" {
+		t.Errorf("title = %q", lines[1])
+	}
+	if !strings.Contains(out, "\n"+impact+"\n") {
+		t.Errorf("impact sentence must follow the headline:\n%s", out)
+	}
+}

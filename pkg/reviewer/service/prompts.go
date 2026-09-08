@@ -234,6 +234,7 @@ Each object must have these fields:
   - "subjects": one to eight exact objects with "kind" ("file", "symbol", "selector", "config_key", "endpoint", "workflow", or "other"), "path", and "name" unless kind is "file"
   - "uncertainty": one bounded sentence
   - "severity_rationale": one bounded sentence
+  - "headline": a title of at most 12 words naming the effect in plain language (no file paths, severity words, or trailing period); it is what a reviewer sees first
 
 The "current_impact", "counterfactual_trigger", "falsifiable_condition", "expected_observable", "uncertainty", and "severity_rationale" values, when non-null, must be non-empty single-line strings of at most 500 Unicode characters, with no leading or trailing whitespace, tabs, control characters, or format characters. Subject "path" values use the same rules with a 300-character limit; non-empty subject "name" values use a 200-character limit.
 

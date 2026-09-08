@@ -254,7 +254,10 @@ var suggestionFenceRe = regexp.MustCompile("(?s)```suggestion\n.*?\n```")
 // the agent supplied one, else the comment's first sentence.
 func headline(f payload.Finding) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
-		impact := clauseHeadline(strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), "."), headlineMaxRunes)
+		impact := strings.TrimSpace(c.Headline)
+		if impact == "" {
+			impact = clauseHeadline(strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), "."), headlineMaxRunes)
+		}
 		if label, ok := kindLabels[c.FindingKind]; ok {
 			return label + " · " + impact
 		}
@@ -290,10 +293,15 @@ func clauseHeadline(s string, max int) string {
 
 // headlineIsCut reports whether the rendered headline dropped part of the
 // effect sentence, in which case the full sentence is shown in the body.
+// headlineIsCut reports whether the impact sentence still needs to be shown
+// under the title: the title came from the agent's headline, or was cut.
 func headlineIsCut(f payload.Finding) bool {
 	c := f.FindingContract
 	if c == nil || f.FindingContractStatus != "valid" {
 		return false
+	}
+	if strings.TrimSpace(c.Headline) != "" {
+		return true
 	}
 	impact := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
 	return clauseHeadline(impact, headlineMaxRunes) != impact
