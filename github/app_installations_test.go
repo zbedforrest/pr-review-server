@@ -1,0 +1,136 @@
+package github
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func newTestAppClient(t *testing.T, apiBase string) *AppClient {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &AppClient{
+		appID:          "1",
+		installationID: "100",
+		privateKey:     key,
+		httpClient:     &http.Client{Timeout: 5 * time.Second},
+		apiBase:        apiBase,
+	}
+}
+
+func installationAPI(t *testing.T, lookups, mints *int32) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			t.Errorf("missing app JWT on %s", r.URL.Path)
+		}
+		switch {
+		case r.URL.Path == "/repos/personal/tool/installation":
+			atomic.AddInt32(lookups, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 200})
+		case r.URL.Path == "/repos/nobody/repo/installation":
+			atomic.AddInt32(lookups, 1)
+			w.WriteHeader(http.StatusNotFound)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			atomic.AddInt32(mints, 1)
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": "tok-" + id, "expires_at": time.Now().Add(time.Hour)})
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestTokenForRepoResolvesAndCachesTheOwnerInstallation(t *testing.T) {
+	var lookups, mints int32
+	srv := installationAPI(t, &lookups, &mints)
+	defer srv.Close()
+	c := newTestAppClient(t, srv.URL)
+
+	for i := 0; i < 3; i++ {
+		tok, _, err := c.TokenForRepo(context.Background(), "personal", "tool")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tok != "tok-200" {
+			t.Fatalf("token = %q, want the personal installation's token", tok)
+		}
+	}
+	if lookups != 1 || mints != 1 {
+		t.Errorf("lookups=%d mints=%d, want one of each across repeated calls", lookups, mints)
+	}
+}
+
+func TestTokenForRepoReportsUninstalledOwner(t *testing.T) {
+	var lookups, mints int32
+	srv := installationAPI(t, &lookups, &mints)
+	defer srv.Close()
+	c := newTestAppClient(t, srv.URL)
+
+	_, _, err := c.TokenForRepo(context.Background(), "nobody", "repo")
+	if err == nil || !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("err = %v, want an error naming the missing installation", err)
+	}
+}
+
+func TestClientForRepoIsDistinctPerInstallation(t *testing.T) {
+	var lookups, mints int32
+	srv := installationAPI(t, &lookups, &mints)
+	defer srv.Close()
+	ac := newTestAppClient(t, srv.URL)
+	c := &Client{}
+	c.SetAppClient(ac)
+
+	personal, err := c.clientFor(context.Background(), "personal", "tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := c.clientFor(context.Background(), "personal", "tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personal == c.gh {
+		t.Error("personal repo resolved to the primary installation's client")
+	}
+	if personal != again {
+		t.Error("per-installation client is not reused")
+	}
+}
+
+func TestCreateIssueCommentUsesTheOwnersInstallation(t *testing.T) {
+	var lookups, mints int32
+	var gotAuth string
+	inner := installationAPI(t, &lookups, &mints)
+	defer inner.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/personal/tool/issues/1/comments" {
+			gotAuth = r.Header.Get("Authorization")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 5})
+			return
+		}
+		inner.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	c := &Client{}
+	c.SetAppClient(newTestAppClient(t, srv.URL))
+
+	id, err := c.CreateIssueComment(context.Background(), "personal", "tool", 1, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 5 || gotAuth != "Bearer tok-200" {
+		t.Errorf("id=%d auth=%q, want the personal installation's token", id, gotAuth)
+	}
+}

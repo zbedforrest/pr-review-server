@@ -24,6 +24,56 @@ type Client struct {
 	token      string
 	username   string
 	appClient  *AppClient
+
+	repoClients     map[string]*github.Client
+	repoClientsLock sync.Mutex
+}
+
+// clientFor returns a REST client whose installation can write to owner/repo.
+// Without an App client (single-user PAT mode) it is the primary client.
+func (c *Client) clientFor(ctx context.Context, owner, repo string) (*github.Client, error) {
+	if c.appClient == nil {
+		return c.gh, nil
+	}
+	installationID, err := c.appClient.installationFor(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	if installationID == c.appClient.installationID {
+		return c.gh, nil
+	}
+	c.repoClientsLock.Lock()
+	defer c.repoClientsLock.Unlock()
+	if gh, ok := c.repoClients[owner]; ok {
+		return gh, nil
+	}
+	ts := &repoTokenSource{appClient: c.appClient, owner: owner, repo: repo}
+	gh := github.NewClient(oauth2.NewClient(context.Background(), ts))
+	if base := c.appClient.baseURL(); base != githubAPIBase {
+		u, err := url.Parse(base + "/")
+		if err != nil {
+			return nil, err
+		}
+		gh.BaseURL = u
+	}
+	if c.repoClients == nil {
+		c.repoClients = map[string]*github.Client{}
+	}
+	c.repoClients[owner] = gh
+	return gh, nil
+}
+
+type repoTokenSource struct {
+	appClient   *AppClient
+	owner, repo string
+}
+
+func (s *repoTokenSource) Token() (*oauth2.Token, error) {
+	token, expiry, err := s.appClient.TokenForRepo(context.Background(), s.owner, s.repo)
+	if err != nil {
+		return nil, err
+	}
+	return &oauth2.Token{AccessToken: token, Expiry: expiry}, nil
 }
 
 // CurrentToken returns the access token currently used by this Client for
