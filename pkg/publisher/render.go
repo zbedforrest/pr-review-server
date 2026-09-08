@@ -47,6 +47,8 @@ type Round struct {
 	RequiredCheckViolated bool
 	DashboardURL          string
 	AgentLinkBase         string
+	// BadgeBaseURL serves the severity badge SVGs; empty falls back to text.
+	BadgeBaseURL string
 	// InlineComments maps finding id to the GitHub review-comment id it was
 	// posted as (this round or earlier), so the summary can link to it.
 	InlineComments map[string]int64
@@ -168,12 +170,43 @@ func (r Round) bullet(f payload.Finding) string {
 		where = fmt.Sprintf("%s:%d", where, f.Line)
 	}
 	text := truncateWords(strings.TrimSuffix(strings.TrimSpace(summaryText(f)), "."), 200)
-	return fmt.Sprintf("- **[%s]** %s — [`%s`](%s)\n", strings.ToUpper(f.Severity), text, where, r.findingLink(f))
+	return fmt.Sprintf("- %s %s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), text, where, r.findingLink(f))
 }
 
+// severityLabel is a colored badge when PRism can serve one, else bold text.
+// The image keeps the word as alt text so text-only surfaces still read it.
+func severityLabel(severity, badgeBase string) string {
+	sev := strings.ToUpper(severity)
+	switch strings.ToLower(severity) {
+	case "critical", "medium", "low":
+	default:
+		badgeBase = ""
+	}
+	if badgeBase == "" {
+		return "**[" + sev + "]**"
+	}
+	return fmt.Sprintf(`<img alt="%s" src="%s/%s.svg">`, sev, strings.TrimSuffix(badgeBase, "/"), strings.ToLower(severity))
+}
+
+// lowerSeverityNotes are confirmed findings below the inline bar: shown
+// folded so the summary stays short but nothing confirmed is hidden.
+func (r Round) lowerSeverityNotes() []payload.Finding {
+	var notes []payload.Finding
+	for _, f := range r.Findings {
+		if Publishable(f) && !Shown(f) {
+			notes = append(notes, f)
+		}
+	}
+	sortBySeverity(notes)
+	return notes
+}
+
+const maxFoldedNotes = 8
+
 // RenderSummary is the sticky comment: a confidence line, the round diff, and
-// one bullet per finding above the bar (critical first). Nothing below the
-// bar appears on GitHub; the dashboard link carries the rest.
+// one bullet per finding above the bar (critical first). Confirmed findings
+// below the bar are listed folded under one line; unconfirmed items stay on
+// the dashboard.
 func RenderSummary(r Round, sel Selection) string {
 	shown := r.currentFindings()
 	sortBySeverity(shown)
@@ -209,15 +242,31 @@ func RenderSummary(r Round, sel Selection) string {
 	if len(shown) > 0 {
 		b.WriteString("\n")
 	}
+	if notes := r.lowerSeverityNotes(); len(notes) > 0 {
+		fmt.Fprintf(&b, "<details><summary>%d lower-severity note%s</summary>\n\n", len(notes), plural(len(notes)))
+		for i, f := range notes {
+			// The count cap applies only when the rest has somewhere to go; the
+			// byte cap always holds, since GitHub rejects oversized bodies.
+			overCount := r.DashboardURL != "" && i == maxFoldedNotes
+			overBytes := b.Len() > SummaryMaxChars-600
+			if overCount || overBytes {
+				if r.DashboardURL != "" {
+					fmt.Fprintf(&b, "- ... %d more on the [dashboard](%s)\n", len(notes)-i, r.DashboardURL)
+				} else {
+					fmt.Fprintf(&b, "- ... %d more omitted\n", len(notes)-i)
+				}
+				break
+			}
+			b.WriteString(r.bullet(f))
+		}
+		b.WriteString("</details>\n\n")
+	}
 	if r.DashboardURL != "" {
 		fmt.Fprintf(&b, "[Full report](%s)\n\n", r.DashboardURL)
 	}
 	fmt.Fprintf(&b, "<sub>Reviews (%d) · reviewed %s", r.RoundNumber, shortSHA(r.HeadSHA))
 	if n := len(r.Commentable); n > 0 {
 		fmt.Fprintf(&b, " · %d changed file%s", n, plural(n))
-	}
-	if n := r.dashboardNotes(); n > 0 {
-		fmt.Fprintf(&b, " · %d note%s on the dashboard", n, plural(n))
 	}
 	b.WriteString("</sub>\n")
 	return b.String()
@@ -308,7 +357,7 @@ func headlineIsCut(f payload.Finding) bool {
 // RenderInline keeps the visible part Greptile-sized: headline, one
 // calibration sentence, and the suggestion if there is one. The agent's full
 // reasoning and the verification steps fold behind a details block.
-func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string) string {
+func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string) string {
 	comment := commentText(f)
 	c := f.FindingContract
 	hasContract := c != nil && f.FindingContractStatus == "valid"
@@ -316,7 +365,11 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string) str
 
 	var b strings.Builder
 	b.WriteString(FindingMarker(f.ID) + "\n")
-	fmt.Fprintf(&b, "**[%s] %s**\n", strings.ToUpper(f.Severity), headline(f))
+	if badgeBase == "" {
+		fmt.Fprintf(&b, "**[%s] %s**\n", strings.ToUpper(f.Severity), headline(f))
+	} else {
+		fmt.Fprintf(&b, "%s **%s**\n", severityLabel(f.Severity, badgeBase), headline(f))
+	}
 
 	if compact && headlineIsCut(f) {
 		b.WriteString("\n" + strings.TrimSpace(c.CurrentImpact) + "\n")
@@ -446,15 +499,4 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
-}
-
-// dashboardNotes counts confirmed findings that stay below the GitHub bar.
-func (r Round) dashboardNotes() int {
-	n := 0
-	for _, f := range r.Findings {
-		if Publishable(f) && !Shown(f) {
-			n++
-		}
-	}
-	return n
 }
