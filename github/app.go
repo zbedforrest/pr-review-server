@@ -300,6 +300,7 @@ func (c *AppClient) installationFor(ctx context.Context, owner, repo string) (st
 			c.notInstalled = map[string]time.Time{}
 		}
 		c.notInstalled[repoKey] = time.Now()
+		delete(c.repoInstallations, repoKey)
 	}
 	return id, err
 }

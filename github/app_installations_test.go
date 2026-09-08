@@ -287,9 +287,20 @@ func TestCachedInstallationClientRefreshesAfterItsFirstRepoLeaves(t *testing.T) 
 
 	removed = true
 	c.appClient.extraLock.Lock()
-	c.appClient.repoInstallations = nil
+	entry := c.appClient.repoInstallations["personal/a"]
+	entry.checkedAt = time.Now().Add(-2 * installationTTL)
+	c.appClient.repoInstallations["personal/a"] = entry
 	c.appClient.extraTokens = nil
 	c.appClient.extraLock.Unlock()
+	if _, err := c.appClient.installationFor(context.Background(), "personal", "a"); !errors.Is(err, ErrAppNotInstalled) {
+		t.Fatalf("removed repo: err = %v", err)
+	}
+	c.appClient.extraLock.Lock()
+	_, stillCached := c.appClient.repoInstallations["personal/a"]
+	c.appClient.extraLock.Unlock()
+	if stillCached {
+		t.Fatal("a 404 must drop the stale hit so the blip fallback cannot resurrect it")
+	}
 
 	tok, err := c.repoSources["200"].Token()
 	if err != nil || tok.AccessToken != "tok-200" {
