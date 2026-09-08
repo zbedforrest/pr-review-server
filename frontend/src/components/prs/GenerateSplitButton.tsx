@@ -38,7 +38,7 @@ export function GenerateSplitButton({ onGenerate, pending, publishAllowed }: Gen
 
   const primaryTitle = publishAllowed
     ? 'Generate an AI review and post it to the PR'
-    : 'Generate an AI review (dashboard only; author is not in the comment pilot)';
+    : 'Generate an AI review (review HTML only; author is not in the comment pilot)';
 
   return (
     <span
@@ -90,7 +90,7 @@ export function GenerateSplitButton({ onGenerate, pending, publishAllowed }: Gen
             className="generate-split__item"
             onClick={() => choose(false)}
           >
-            <span className="generate-split__item-title">Generate review html only</span>
+            <span className="generate-split__item-title">Generate review HTML only</span>
             <span className="generate-split__item-desc">Dashboard report only, nothing posted to GitHub</span>
           </button>
         </div>,

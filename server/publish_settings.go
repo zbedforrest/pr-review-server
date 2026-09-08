@@ -3,6 +3,7 @@ package server
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 // GitHub publication settings, shared with the poller by key name. Defaults
@@ -12,6 +13,7 @@ const (
 	settingPublishInlineCap         = "publish_inline_cap"
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"
 	settingPublishReplyMode         = "publish_reply_mode"
+	settingPublishReplyEnabledAt    = "publish_reply_enabled_at"
 
 	defaultPublishInlineCap         = 5
 	defaultPublishInlineMinSeverity = "medium"
@@ -47,4 +49,26 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 		mode = strings.TrimSpace(v)
 	}
 	response[settingPublishReplyMode] = mode
+	enabledAt, _ := s.db.GetSetting(settingPublishReplyEnabledAt)
+	response[settingPublishReplyEnabledAt] = strings.TrimSpace(enabledAt)
+}
+
+// replyActivationFor returns the activation stamp to store alongside a reply
+// mode change: now when leaving off, empty when returning to off, and no
+// change otherwise. Replies older than the stamp are never acknowledged, so
+// re-enabling after a pause does not burst reactions for the gap.
+func (s *Server) replyActivationFor(newMode string) (stamp string, change bool, err error) {
+	current, err := s.db.GetSetting(settingPublishReplyMode)
+	if err != nil {
+		return "", false, err
+	}
+	current = strings.TrimSpace(current)
+	wasOff := current == "" || current == defaultPublishReplyMode
+	switch {
+	case newMode == defaultPublishReplyMode:
+		return "", true, nil
+	case wasOff:
+		return time.Now().UTC().Truncate(time.Second).Format(time.RFC3339), true, nil
+	}
+	return "", false, nil
 }

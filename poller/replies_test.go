@@ -25,16 +25,29 @@ func TestReplyTargetsToScanSkipsUnchangedPRsExceptOnFullScans(t *testing.T) {
 	lookup := func(owner, repo string, n int) *db.PR { return prs[replyKey(owner, repo, n)] }
 	last := map[string]time.Time{"acme/example#1": t1, "acme/example#2": t1}
 
-	got := replyTargetsToScan(targets, lookup, last, false)
+	got, marks := replyTargetsToScan(targets, lookup, last, false)
 	if len(got) != 1 || got[0].PRNumber != 1 {
 		t.Fatalf("incremental scan = %+v, want only PR 1 (updated since last scan, open, not draft)", got)
 	}
-	if !last["acme/example#1"].Equal(t2) {
-		t.Errorf("last-scanned marker must advance to the PR's updated_at")
+	if !marks["acme/example#1"].Equal(t2) || last["acme/example#1"].Equal(t2) {
+		t.Errorf("the candidate watermark is returned, not committed, until the scan succeeds")
 	}
 
-	got = replyTargetsToScan(targets, lookup, last, true)
+	got, _ = replyTargetsToScan(targets, lookup, last, true)
 	if len(got) != 2 || got[0].PRNumber != 1 || got[1].PRNumber != 2 {
 		t.Fatalf("full scan = %+v, want every open non-draft PR", got)
+	}
+}
+
+func TestCommitReplyWatermarksSkipsFailedTargets(t *testing.T) {
+	t2 := time.Date(2026, 9, 8, 12, 1, 0, 0, time.UTC)
+	last := map[string]time.Time{}
+	marks := map[string]time.Time{"acme/example#1": t2, "acme/example#2": t2}
+	commitReplyWatermarks(last, marks, []string{"acme/example#2: list review comments: boom"})
+	if _, ok := last["acme/example#1"]; !ok {
+		t.Errorf("successful target must advance")
+	}
+	if _, ok := last["acme/example#2"]; ok {
+		t.Errorf("failed target must be retried next cycle")
 	}
 }

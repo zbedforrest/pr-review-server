@@ -117,3 +117,17 @@ func (g *GormDB) ListPublishedSummaries() ([]PublishedFinding, error) {
 	}
 	return out, nil
 }
+
+// GetPublishedSummaryForPR returns the PR's summary ledger row, if any.
+func (g *GormDB) GetPublishedSummaryForPR(owner, repo string, prNumber int) (PublishedFinding, bool, error) {
+	var model PublishedFindingModel
+	err := g.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ?", owner, repo, prNumber, PublishedKindSummary).
+		Limit(1).Find(&model).Error
+	if err != nil {
+		return PublishedFinding{}, false, err
+	}
+	if model.ID == 0 {
+		return PublishedFinding{}, false, nil
+	}
+	return publishedFindingModelToDomain(&model), true, nil
+}

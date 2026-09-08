@@ -1250,28 +1250,41 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[SETTINGS] Updated generate_html to: %v", *req.GenerateHTML)
 		}
 
-		publishUpdates := map[string]*string{}
+		type settingWrite struct{ key, value string }
+		var publishUpdates []settingWrite
 		if req.PublishEnabledAuthors != nil {
-			publishUpdates[settingPublishEnabledAuthors] = req.PublishEnabledAuthors
+			publishUpdates = append(publishUpdates, settingWrite{settingPublishEnabledAuthors, *req.PublishEnabledAuthors})
 		}
 		if req.PublishInlineCap != nil {
-			v := strconv.Itoa(*req.PublishInlineCap)
-			publishUpdates[settingPublishInlineCap] = &v
+			publishUpdates = append(publishUpdates, settingWrite{settingPublishInlineCap, strconv.Itoa(*req.PublishInlineCap)})
 		}
 		if req.PublishInlineMinSeverity != nil {
-			v := strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))
-			publishUpdates[settingPublishInlineMinSeverity] = &v
+			publishUpdates = append(publishUpdates, settingWrite{settingPublishInlineMinSeverity, strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))})
 		}
 		if req.PublishReplyMode != nil {
-			v := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
-			publishUpdates[settingPublishReplyMode] = &v
+			mode := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
+			stamp, change, err := s.replyActivationFor(mode)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Failed to read settings: %v", err), http.StatusInternalServerError)
+				return
+			}
+			// The stamp must never be observed without its mode: when enabling,
+			// write the stamp first; when disabling, turn the mode off first.
+			switch {
+			case change && mode != defaultPublishReplyMode:
+				publishUpdates = append(publishUpdates, settingWrite{settingPublishReplyEnabledAt, stamp}, settingWrite{settingPublishReplyMode, mode})
+			case change:
+				publishUpdates = append(publishUpdates, settingWrite{settingPublishReplyMode, mode}, settingWrite{settingPublishReplyEnabledAt, stamp})
+			default:
+				publishUpdates = append(publishUpdates, settingWrite{settingPublishReplyMode, mode})
+			}
 		}
-		for key, value := range publishUpdates {
-			if err := s.db.SetSetting(key, *value); err != nil {
+		for _, u := range publishUpdates {
+			if err := s.db.SetSetting(u.key, u.value); err != nil {
 				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
 				return
 			}
-			log.Printf("[SETTINGS] Updated %s to: %q", key, *value)
+			log.Printf("[SETTINGS] Updated %s to: %q", u.key, u.value)
 		}
 
 		// Return updated settings
@@ -1695,39 +1708,42 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 	if viaTeams == nil {
 		viaTeams = []string{}
 	}
+	summaryRow, isPublished := s.publishedSummaryFor(pr.RepoOwner, pr.RepoName, pr.PRNumber)
 
 	return &PRResponse{
-		Owner:           pr.RepoOwner,
-		Repo:            pr.RepoName,
-		Number:          pr.PRNumber,
-		CommitSHA:       pr.LastCommitSHA,
-		Title:           pr.Title,
-		Author:          author,
-		LastReviewedAt:  reviewedAt,
-		ReviewHTMLPath:  pr.ReviewHTMLPath,
-		GitHubURL:       githubURL,
-		ReviewURL:       reviewURL(pr.ReviewHTMLPath),
-		Status:          pr.Status,
-		GeneratingSince: generatingSince,
-		ApprovalCount:   pr.ApprovalCount,
-		MyReviewStatus:  myReviewStatus,
-		Draft:           pr.Draft,
-		PRState:         prStateOrOpen(pr.PRState),
-		CIState:         pr.CIState,
-		CIFailedChecks:  ciFailedChecks,
-		CreatedAt:       createdAt,
-		IsMine:          isMine,
-		ViaTeams:        viaTeams,
-		CriticalCount:   pr.CriticalCount,
-		MediumCount:     pr.MediumCount,
-		LowCount:        pr.LowCount,
-		ReviewVerdict:   pr.ReviewVerdict,
-		ModelFallback:   pr.ModelFallback,
-		ReviewRun:       decodeReviewRun(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber),
-		Notes:           notes,
-		Hidden:          hidden,
-		ViaManual:       viaManual,
-		ErrorMessage:    pr.ErrorMessage,
+		Owner:             pr.RepoOwner,
+		Repo:              pr.RepoName,
+		Number:            pr.PRNumber,
+		CommitSHA:         pr.LastCommitSHA,
+		Title:             pr.Title,
+		Author:            author,
+		LastReviewedAt:    reviewedAt,
+		ReviewHTMLPath:    pr.ReviewHTMLPath,
+		GitHubURL:         githubURL,
+		ReviewURL:         reviewURL(pr.ReviewHTMLPath),
+		Status:            pr.Status,
+		GeneratingSince:   generatingSince,
+		ApprovalCount:     pr.ApprovalCount,
+		MyReviewStatus:    myReviewStatus,
+		Draft:             pr.Draft,
+		PRState:           prStateOrOpen(pr.PRState),
+		CIState:           pr.CIState,
+		CIFailedChecks:    ciFailedChecks,
+		CreatedAt:         createdAt,
+		IsMine:            isMine,
+		ViaTeams:          viaTeams,
+		CriticalCount:     pr.CriticalCount,
+		MediumCount:       pr.MediumCount,
+		LowCount:          pr.LowCount,
+		ReviewVerdict:     pr.ReviewVerdict,
+		PublishedToGitHub: isPublished,
+		PublishedRounds:   summaryRow.Rounds,
+		ModelFallback:     pr.ModelFallback,
+		ReviewRun:         decodeReviewRun(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber),
+		Notes:             notes,
+		Hidden:            hidden,
+		ViaManual:         viaManual,
+		ErrorMessage:      pr.ErrorMessage,
 	}
 }
 

@@ -70,7 +70,13 @@ func buildPublishRound(pr github.PullRequest, pl payload.Payload, comments []git
 	// Re-reviews reword findings; restatements of comments PRism already posted
 	// keep their published identity so they are neither reposted nor counted
 	// as new and fixed.
-	own := reconcile.ParseOwnComments(external)
+	ledgerCommentIDs := make(map[int64]bool, len(previous))
+	for _, row := range previous {
+		if row.CommentID != 0 {
+			ledgerCommentIDs[row.CommentID] = true
+		}
+	}
+	own := reconcile.ParseOwnComments(external, ledgerCommentIDs)
 	aliases := reconcile.AliasPrior(pl.Findings, own)
 	inlineComments := map[string]int64{}
 	for _, o := range own {

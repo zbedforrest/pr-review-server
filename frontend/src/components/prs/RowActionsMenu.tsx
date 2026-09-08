@@ -114,7 +114,7 @@ export function RowActionsMenu({
             onClick={() => handleReview(false)}
             disabled={reviewInFlight}
           >
-            🔄 {verb} review html only
+            🔄 {verb} review HTML only
           </button>
           <button
             type="button"

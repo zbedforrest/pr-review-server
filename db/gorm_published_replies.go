@@ -47,12 +47,24 @@ func (g *GormDB) GetPublishedReplyIDsForPR(owner, repo string, number int) (map[
 	return seen, nil
 }
 
-// ListPublishedReplyTargets returns every PR with inline comments PRism has
-// posted, in any finding state: authors reply under fixed findings too.
+// ListPublishedReplyTargets returns every open, non-draft PR with inline
+// comments PRism has posted, in any finding state: authors reply under fixed
+// findings too. Closed PRs and PRs cleanup already removed are excluded here
+// so the scan never grows with history.
 func (g *GormDB) ListPublishedReplyTargets() ([]PublishedReplyTarget, error) {
-	var rows []PublishedFindingModel
-	err := g.db.Where("kind = ? AND comment_id <> 0", PublishedKindFinding).
-		Order("repo_owner, repo_name, pr_number, comment_id").Find(&rows).Error
+	var rows []struct {
+		RepoOwner   string
+		RepoName    string
+		PRNumber    int
+		CommentID   int64
+		Fingerprint string
+	}
+	err := g.db.Table("published_findings AS pf").
+		Select("pf.repo_owner, pf.repo_name, pf.pr_number, pf.comment_id, pf.fingerprint").
+		Joins("JOIN prs ON prs.repo_owner = pf.repo_owner AND prs.repo_name = pf.repo_name AND prs.pr_number = pf.pr_number").
+		Where("pf.kind = ? AND pf.comment_id <> 0 AND LOWER(prs.pr_state) = 'open' AND NOT prs.draft", PublishedKindFinding).
+		Order("pf.repo_owner, pf.repo_name, pf.pr_number, pf.comment_id").
+		Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}

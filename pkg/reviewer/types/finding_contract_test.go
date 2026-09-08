@@ -154,6 +154,7 @@ func TestContractStatusDistinguishesMissingAndInvalid(t *testing.T) {
 func TestNormalizeFindingContractKeepsAShortHeadlineAndDropsABadOne(t *testing.T) {
 	cases := map[string]string{
 		"  Tooltip never shows long values. ": "Tooltip never shows long values",
+		"Tooltip never shows .":               "Tooltip never shows",
 		strings.Repeat("word ", 30):           "",
 		"line one\nline two":                  "",
 		"":                                    "",

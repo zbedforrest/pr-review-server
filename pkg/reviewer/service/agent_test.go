@@ -1057,3 +1057,16 @@ func TestAgentPromptAsksForAHeadline(t *testing.T) {
 		t.Fatalf("prompt must ask for a short headline in the finding contract")
 	}
 }
+
+func TestEscapeControlCharsInStrings(t *testing.T) {
+	cases := map[string]string{
+		"[\"say \\\"hi\\\"\tnow\"]": "[\"say \\\"hi\\\"\\tnow\"]",
+		"[\n  \"a\",\t\"b\"\n]":     "[\n  \"a\",\t\"b\"\n]",
+		"[\"a\rb\x01c\"]":           "[\"a\\rb\\u0001c\"]",
+	}
+	for in, want := range cases {
+		if got := escapeControlCharsInStrings(in); got != want {
+			t.Errorf("escapeControlCharsInStrings(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
