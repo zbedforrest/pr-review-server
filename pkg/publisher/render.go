@@ -291,8 +291,6 @@ func clauseHeadline(s string, max int) string {
 	return truncateWords(s, max)
 }
 
-// headlineIsCut reports whether the rendered headline dropped part of the
-// effect sentence, in which case the full sentence is shown in the body.
 // headlineIsCut reports whether the impact sentence still needs to be shown
 // under the title: the title came from the agent's headline, or was cut.
 func headlineIsCut(f payload.Finding) bool {

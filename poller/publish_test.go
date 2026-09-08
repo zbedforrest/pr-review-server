@@ -160,7 +160,8 @@ func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) 
 		{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54,
 			Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**"},
 	}
-	r := buildPublishRound(pr, pl, comments, nil, nil, "")
+	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateOpen}}
+	r := buildPublishRound(pr, pl, comments, nil, previous, "")
 	if r.Findings[0].ID != "a.go:5:aaaaaaaaaaaa" {
 		t.Fatalf("finding must take its published identity, got %q", r.Findings[0].ID)
 	}

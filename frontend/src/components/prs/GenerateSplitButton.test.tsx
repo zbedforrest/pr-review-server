@@ -17,7 +17,7 @@ const primary = () => screen.getByRole('button', { name: /^🔄 Generate$/ }) as
 const chevron = () => screen.getByRole('button', { name: 'More generate options' }) as HTMLButtonElement;
 const openMenu = () => fireEvent.click(chevron());
 const postItem = () => screen.getByRole('menuitem', { name: /generate and post pr comment/i }) as HTMLButtonElement;
-const dashboardItem = () => screen.getByRole('menuitem', { name: /generate review html only/i }) as HTMLButtonElement;
+const dashboardItem = () => screen.getByRole('menuitem', { name: /generate review HTML only/i }) as HTMLButtonElement;
 
 describe('GenerateSplitButton', () => {
   afterEach(() => cleanup());
@@ -55,7 +55,7 @@ describe('GenerateSplitButton', () => {
     openMenu();
     expect(postItem().textContent).toContain('Generate and post PR comment');
     expect(postItem().textContent).toContain('Summary and inline comments posted as the Prism bot');
-    expect(dashboardItem().textContent).toContain('Generate review html only');
+    expect(dashboardItem().textContent).toContain('Generate review HTML only');
     expect(dashboardItem().textContent).toContain('Dashboard report only, nothing posted to GitHub');
   });
 
@@ -90,7 +90,7 @@ describe('GenerateSplitButton', () => {
       const { onGenerate } = renderButton({ publishAllowed: false });
       expect(primary().textContent).toBe('🔄 Generate');
       expect(primary().getAttribute('title')).toBe(
-        'Generate an AI review (dashboard only; author is not in the comment pilot)'
+        'Generate an AI review (review HTML only; author is not in the comment pilot)'
       );
       fireEvent.click(primary());
       expect(onGenerate).toHaveBeenCalledWith(false);

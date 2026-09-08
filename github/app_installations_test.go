@@ -134,3 +134,61 @@ func TestCreateIssueCommentUsesTheOwnersInstallation(t *testing.T) {
 		t.Errorf("id=%d auth=%q, want the personal installation's token", id, gotAuth)
 	}
 }
+
+func TestClientForRepoFallsBackToPrimaryWhenNotInstalled(t *testing.T) {
+	var lookups, mints int32
+	srv := installationAPI(t, &lookups, &mints)
+	defer srv.Close()
+	c := &Client{}
+	c.SetAppClient(newTestAppClient(t, srv.URL))
+
+	for i := 0; i < 3; i++ {
+		gh, err := c.clientFor(context.Background(), "nobody", "repo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gh != c.gh {
+			t.Fatal("an uninstalled owner must use the primary client, as before")
+		}
+	}
+	if lookups != 1 {
+		t.Errorf("negative lookups must be cached, got %d", lookups)
+	}
+}
+
+func TestTokenForRepoReresolvesAfterAStaleInstallation(t *testing.T) {
+	var lookups int32
+	stale := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/personal/tool/installation":
+			atomic.AddInt32(&lookups, 1)
+			id := 200
+			if !stale {
+				id = 201
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
+		case r.URL.Path == "/app/installations/200/access_tokens":
+			w.WriteHeader(http.StatusNotFound)
+		case r.URL.Path == "/app/installations/201/access_tokens":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": "tok-201", "expires_at": time.Now().Add(time.Hour)})
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	c := newTestAppClient(t, srv.URL)
+
+	if _, _, err := c.TokenForRepo(context.Background(), "personal", "tool"); err == nil {
+		t.Fatal("minting against a stale installation must fail")
+	}
+	stale = false
+	tok, _, err := c.TokenForRepo(context.Background(), "personal", "tool")
+	if err != nil || tok != "tok-201" {
+		t.Fatalf("after a 404 the owner must be re-resolved: tok=%q err=%v", tok, err)
+	}
+	if lookups != 2 {
+		t.Errorf("lookups = %d, want 2 (initial and after invalidation)", lookups)
+	}
+}

@@ -171,7 +171,7 @@ func NormalizeFindingContract(contract *FindingContract) {
 	contract.CurrentImpact = strings.TrimSpace(contract.CurrentImpact)
 	contract.Uncertainty = strings.TrimSpace(contract.Uncertainty)
 	contract.SeverityRationale = strings.TrimSpace(contract.SeverityRationale)
-	contract.Headline = strings.TrimSuffix(strings.TrimSpace(contract.Headline), ".")
+	contract.Headline = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(contract.Headline), "."))
 	if validateContractText(contract.Headline, "headline", headlineMaxRunes) != nil {
 		contract.Headline = ""
 	}

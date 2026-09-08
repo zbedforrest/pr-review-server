@@ -613,6 +613,7 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 		if err2 := json.Unmarshal([]byte(escapeControlCharsInStrings(trimmed)), &comments); err2 != nil {
 			return nil, err
 		}
+		log.Printf("[AGENT] recovered findings JSON by escaping raw control characters (%v)", err)
 	}
 	EnforceAgentFindingContractPolicy(comments)
 	return comments, nil

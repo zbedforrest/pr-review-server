@@ -1265,6 +1265,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.PublishReplyMode != nil {
 			v := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
 			publishUpdates[settingPublishReplyMode] = &v
+			if stamp, ok := s.replyActivationFor(v); ok {
+				publishUpdates[settingPublishReplyEnabledAt] = &stamp
+			}
 		}
 		for key, value := range publishUpdates {
 			if err := s.db.SetSetting(key, *value); err != nil {
@@ -1695,39 +1698,42 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 	if viaTeams == nil {
 		viaTeams = []string{}
 	}
+	summaryRow, isPublished := s.publishedSummaryFor(pr.RepoOwner, pr.RepoName, pr.PRNumber)
 
 	return &PRResponse{
-		Owner:           pr.RepoOwner,
-		Repo:            pr.RepoName,
-		Number:          pr.PRNumber,
-		CommitSHA:       pr.LastCommitSHA,
-		Title:           pr.Title,
-		Author:          author,
-		LastReviewedAt:  reviewedAt,
-		ReviewHTMLPath:  pr.ReviewHTMLPath,
-		GitHubURL:       githubURL,
-		ReviewURL:       reviewURL(pr.ReviewHTMLPath),
-		Status:          pr.Status,
-		GeneratingSince: generatingSince,
-		ApprovalCount:   pr.ApprovalCount,
-		MyReviewStatus:  myReviewStatus,
-		Draft:           pr.Draft,
-		PRState:         prStateOrOpen(pr.PRState),
-		CIState:         pr.CIState,
-		CIFailedChecks:  ciFailedChecks,
-		CreatedAt:       createdAt,
-		IsMine:          isMine,
-		ViaTeams:        viaTeams,
-		CriticalCount:   pr.CriticalCount,
-		MediumCount:     pr.MediumCount,
-		LowCount:        pr.LowCount,
-		ReviewVerdict:   pr.ReviewVerdict,
-		ModelFallback:   pr.ModelFallback,
-		ReviewRun:       decodeReviewRun(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber),
-		Notes:           notes,
-		Hidden:          hidden,
-		ViaManual:       viaManual,
-		ErrorMessage:    pr.ErrorMessage,
+		Owner:             pr.RepoOwner,
+		Repo:              pr.RepoName,
+		Number:            pr.PRNumber,
+		CommitSHA:         pr.LastCommitSHA,
+		Title:             pr.Title,
+		Author:            author,
+		LastReviewedAt:    reviewedAt,
+		ReviewHTMLPath:    pr.ReviewHTMLPath,
+		GitHubURL:         githubURL,
+		ReviewURL:         reviewURL(pr.ReviewHTMLPath),
+		Status:            pr.Status,
+		GeneratingSince:   generatingSince,
+		ApprovalCount:     pr.ApprovalCount,
+		MyReviewStatus:    myReviewStatus,
+		Draft:             pr.Draft,
+		PRState:           prStateOrOpen(pr.PRState),
+		CIState:           pr.CIState,
+		CIFailedChecks:    ciFailedChecks,
+		CreatedAt:         createdAt,
+		IsMine:            isMine,
+		ViaTeams:          viaTeams,
+		CriticalCount:     pr.CriticalCount,
+		MediumCount:       pr.MediumCount,
+		LowCount:          pr.LowCount,
+		ReviewVerdict:     pr.ReviewVerdict,
+		PublishedToGitHub: isPublished,
+		PublishedRounds:   summaryRow.Rounds,
+		ModelFallback:     pr.ModelFallback,
+		ReviewRun:         decodeReviewRun(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber),
+		Notes:             notes,
+		Hidden:            hidden,
+		ViaManual:         viaManual,
+		ErrorMessage:      pr.ErrorMessage,
 	}
 }
 

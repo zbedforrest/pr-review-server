@@ -29,9 +29,11 @@ func replyKey(owner, repo string, number int) string {
 // replyTargetsToScan drops closed and draft PRs and, on incremental cycles,
 // PRs whose GitHub updated_at has not moved since we last scanned them. Review
 // comment replies bump updated_at, so this catches every reply within a cycle
-// and the periodic full scan is the safety net.
-func replyTargetsToScan(targets []db.PublishedReplyTarget, lookup func(owner, repo string, number int) *db.PR, lastScanned map[string]time.Time, full bool) []db.PublishedReplyTarget {
+// and the periodic full scan is the safety net. The candidate watermarks are
+// returned rather than committed so a failed scan retries next cycle.
+func replyTargetsToScan(targets []db.PublishedReplyTarget, lookup func(owner, repo string, number int) *db.PR, lastScanned map[string]time.Time, full bool) ([]db.PublishedReplyTarget, map[string]time.Time) {
 	var out []db.PublishedReplyTarget
+	marks := map[string]time.Time{}
 	for _, t := range targets {
 		pr := lookup(t.RepoOwner, t.RepoName, t.PRNumber)
 		if pr == nil || !strings.EqualFold(pr.PRState, "open") || pr.Draft {
@@ -42,11 +44,28 @@ func replyTargetsToScan(targets []db.PublishedReplyTarget, lookup func(owner, re
 			continue
 		}
 		if pr.GitHubUpdatedAt != nil {
-			lastScanned[key] = *pr.GitHubUpdatedAt
+			marks[key] = *pr.GitHubUpdatedAt
 		}
 		out = append(out, t)
 	}
-	return out
+	return out, marks
+}
+
+// commitReplyWatermarks advances the scan position for every target except
+// those the reactor reported an error for (errors are prefixed "owner/repo#n:").
+func commitReplyWatermarks(lastScanned, marks map[string]time.Time, errors []string) {
+	for key, ts := range marks {
+		failed := false
+		for _, e := range errors {
+			if strings.HasPrefix(e, key+":") {
+				failed = true
+				break
+			}
+		}
+		if !failed {
+			lastScanned[key] = ts
+		}
+	}
 }
 
 func (p *Poller) scanAuthorReplies(ctx context.Context) {
@@ -86,7 +105,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		}
 		return pr
 	}
-	subset := replyTargetsToScan(targets, lookup, p.replyLastScanned, cycle%replyFullScanEvery == 1)
+	subset, marks := replyTargetsToScan(targets, lookup, p.replyLastScanned, cycle%replyFullScanEvery == 1)
 	if len(subset) == 0 {
 		return
 	}
@@ -116,6 +135,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		log.Printf("[REPLIES] scan failed: %v", err)
 		return
 	}
+	commitReplyWatermarks(p.replyLastScanned, marks, rep.Errors)
 	for _, e := range rep.Errors {
 		log.Printf("[REPLIES] %s", e)
 	}
@@ -124,9 +144,15 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 	}
 }
 
+// replyActivation reads the stamp the settings API wrote when the mode left
+// off. A missing stamp (mode set outside the API) is stamped now, once; a
+// read error is an error, never a reason to overwrite it.
 func (p *Poller) replyActivation() (time.Time, error) {
 	raw, err := p.db.GetSetting(settingPublishReplyEnabledAt)
-	if err == nil && strings.TrimSpace(raw) != "" {
+	if err != nil {
+		return time.Time{}, err
+	}
+	if strings.TrimSpace(raw) != "" {
 		return time.Parse(time.RFC3339, strings.TrimSpace(raw))
 	}
 	now := time.Now().UTC().Truncate(time.Second)

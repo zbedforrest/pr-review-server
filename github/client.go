@@ -36,11 +36,13 @@ func (c *Client) clientFor(ctx context.Context, owner, repo string) (*github.Cli
 		return c.gh, nil
 	}
 	installationID, err := c.appClient.installationFor(ctx, owner, repo)
+	if errors.Is(err, ErrAppNotInstalled) || (err == nil && installationID == c.appClient.installationID) {
+		// Reads of public repos work with any token, and writes fail with the
+		// same 403 they always did; only installed owners get their own client.
+		return c.gh, nil
+	}
 	if err != nil {
 		return nil, err
-	}
-	if installationID == c.appClient.installationID {
-		return c.gh, nil
 	}
 	c.repoClientsLock.Lock()
 	defer c.repoClientsLock.Unlock()

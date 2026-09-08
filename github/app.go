@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,8 +30,10 @@ type AppClient struct {
 	apiBase        string
 
 	// Installations for repos outside the primary installation's account,
-	// keyed by owner; tokens keyed by installation id.
-	ownerInstallations map[string]string
+	// keyed by owner; tokens keyed by installation id. The lock guards the
+	// maps only; GitHub calls happen outside it so one slow owner cannot
+	// stall publishing for the others.
+	ownerInstallations map[string]ownerInstallation
 	extraTokens        map[string]InstallationToken
 	extraLock          sync.Mutex
 
@@ -157,6 +160,8 @@ func (c *AppClient) getInstallationToken(ctx context.Context) (string, error) {
 
 const githubAPIBase = "https://api.github.com"
 
+var errInstallationGone = errors.New("installation no longer exists")
+
 func (c *AppClient) mintInstallationToken(ctx context.Context, jwtToken, installationID string) (InstallationToken, error) {
 	url := fmt.Sprintf("%s/app/installations/%s/access_tokens", c.baseURL(), installationID)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
@@ -171,6 +176,9 @@ func (c *AppClient) mintInstallationToken(ctx context.Context, jwtToken, install
 		return InstallationToken{}, fmt.Errorf("failed to request installation token: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return InstallationToken{}, fmt.Errorf("%w: installation %s", errInstallationGone, installationID)
+	}
 	if resp.StatusCode != http.StatusCreated {
 		return InstallationToken{}, fmt.Errorf("failed to get installation token: status %d", resp.StatusCode)
 	}
@@ -188,9 +196,22 @@ func (c *AppClient) baseURL() string {
 	return c.apiBase
 }
 
+// ErrAppNotInstalled reports that the App has no installation covering a repo.
+var ErrAppNotInstalled = errors.New("github app is not installed")
+
+// ownerInstallation caches the lookup result per owner; an empty id is a
+// cached "not installed" that is re-checked after notInstalledTTL.
+type ownerInstallation struct {
+	id        string
+	checkedAt time.Time
+}
+
+const notInstalledTTL = 10 * time.Minute
+
 // TokenForRepo returns an installation token that can write to owner/repo.
 // Repos under the primary installation's account reuse its token; any other
-// owner is resolved through the App's installation on that account.
+// owner is resolved through the App's installation on that account. A stale
+// installation id (mint returns 404) is forgotten so the next call re-resolves.
 func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (string, time.Time, error) {
 	installationID, err := c.installationFor(ctx, owner, repo)
 	if err != nil {
@@ -201,41 +222,59 @@ func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (strin
 	}
 
 	c.extraLock.Lock()
-	defer c.extraLock.Unlock()
-	if tok, ok := c.extraTokens[installationID]; ok && time.Now().Add(5*time.Minute).Before(tok.ExpiresAt) {
+	tok, ok := c.extraTokens[installationID]
+	c.extraLock.Unlock()
+	if ok && time.Now().Add(5*time.Minute).Before(tok.ExpiresAt) {
 		return tok.Token, tok.ExpiresAt, nil
 	}
 	jwtToken, err := c.generateJWT()
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("failed to generate JWT: %w", err)
 	}
-	tok, err := c.mintInstallationToken(ctx, jwtToken, installationID)
+	tok, err = c.mintInstallationToken(ctx, jwtToken, installationID)
 	if err != nil {
+		if errors.Is(err, errInstallationGone) {
+			c.extraLock.Lock()
+			delete(c.ownerInstallations, owner)
+			delete(c.extraTokens, installationID)
+			c.extraLock.Unlock()
+		}
 		return "", time.Time{}, err
 	}
+	c.extraLock.Lock()
 	if c.extraTokens == nil {
 		c.extraTokens = map[string]InstallationToken{}
 	}
 	c.extraTokens[installationID] = tok
+	c.extraLock.Unlock()
 	log.Printf("[GITHUB APP] Installation token for %s (installation %s) refreshed, expires at %s", owner, installationID, tok.ExpiresAt.Format(time.RFC3339))
 	return tok.Token, tok.ExpiresAt, nil
 }
 
+// installationFor resolves the installation id for a repo's owner, caching
+// both hits and misses. It returns ErrAppNotInstalled with an empty id when
+// no installation covers the repo.
 func (c *AppClient) installationFor(ctx context.Context, owner, repo string) (string, error) {
 	c.extraLock.Lock()
-	defer c.extraLock.Unlock()
-	if id, ok := c.ownerInstallations[owner]; ok {
-		return id, nil
+	cached, ok := c.ownerInstallations[owner]
+	c.extraLock.Unlock()
+	if ok && (cached.id != "" || time.Since(cached.checkedAt) < notInstalledTTL) {
+		if cached.id == "" {
+			return "", ErrAppNotInstalled
+		}
+		return cached.id, nil
 	}
 	id, err := c.lookupInstallation(ctx, owner, repo)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrAppNotInstalled) {
 		return "", err
 	}
+	c.extraLock.Lock()
 	if c.ownerInstallations == nil {
-		c.ownerInstallations = map[string]string{}
+		c.ownerInstallations = map[string]ownerInstallation{}
 	}
-	c.ownerInstallations[owner] = id
-	return id, nil
+	c.ownerInstallations[owner] = ownerInstallation{id: id, checkedAt: time.Now()}
+	c.extraLock.Unlock()
+	return id, err
 }
 
 func (c *AppClient) lookupInstallation(ctx context.Context, owner, repo string) (string, error) {
@@ -257,7 +296,7 @@ func (c *AppClient) lookupInstallation(ctx context.Context, owner, repo string) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return "", fmt.Errorf("github app is not installed on %s/%s", owner, repo)
+		return "", fmt.Errorf("%w on %s/%s", ErrAppNotInstalled, owner, repo)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("failed to look up installation for %s/%s: status %d", owner, repo, resp.StatusCode)

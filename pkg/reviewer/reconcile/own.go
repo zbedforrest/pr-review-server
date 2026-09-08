@@ -19,12 +19,14 @@ type OwnComment struct {
 
 var ownMarkerRe = regexp.MustCompile(`<!-- prism:finding:([^\s>]+) -->`)
 
-// ParseOwnComments extracts PRism's own prior inline comments.
-func ParseOwnComments(cs []ExternalComment) []OwnComment {
+// ParseOwnComments extracts PRism's own prior inline comments. Ownership is
+// established by the ledger's comment ids, not by the marker: a quote-reply
+// copies the marker verbatim and anyone can type one.
+func ParseOwnComments(cs []ExternalComment, ledgerCommentIDs map[int64]bool) []OwnComment {
 	var out []OwnComment
 	for _, c := range cs {
 		m := ownMarkerRe.FindStringSubmatch(c.Body)
-		if m == nil || c.InReplyToID != 0 {
+		if m == nil || c.InReplyToID != 0 || !ledgerCommentIDs[c.ID] {
 			continue
 		}
 		out = append(out, OwnComment{
@@ -49,12 +51,17 @@ func AliasPrior(current []payload.Finding, own []OwnComment) map[string]string {
 		score      float64
 	}
 	var cands []cand
+	currentIDs := make(map[string]bool, len(current))
+	for _, f := range current {
+		currentIDs[f.ID] = true
+	}
 	for ci, f := range current {
 		if isPseudoFile(f.File) {
 			continue
 		}
 		for oi, o := range own {
-			if o.FindingID == f.ID || !sameFile(f.File, o.File) {
+			// A prior id still emitted verbatim belongs to that finding alone.
+			if currentIDs[o.FindingID] || !sameFile(f.File, o.File) {
 				continue
 			}
 			if o.Line > 0 && f.Line > 0 && abs(f.Line-o.Line) > lineTolerance {

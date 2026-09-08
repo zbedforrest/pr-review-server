@@ -58,3 +58,31 @@ func TestSettings_RejectsBadPublishSeverity(t *testing.T) {
 	server.handleSettings(w, httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"publish_inline_min_severity":"urgent"}`)))
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
+
+func TestSettings_ReplyModeTransitionStampsAndClearsActivation(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	patch := func(body string) {
+		w := httptest.NewRecorder()
+		server.handleSettings(w, httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(body)))
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	}
+	get := func() map[string]any {
+		w := httptest.NewRecorder()
+		server.handleSettings(w, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+		return got
+	}
+
+	patch(`{"publish_reply_mode":"observe"}`)
+	first, _ := get()["publish_reply_enabled_at"].(string)
+	require.NotEmpty(t, first, "leaving off must stamp the activation time")
+
+	patch(`{"publish_reply_mode":"react"}`)
+	assert.Equal(t, first, get()["publish_reply_enabled_at"], "observe to react keeps the original stamp")
+
+	patch(`{"publish_reply_mode":"off"}`)
+	assert.Equal(t, "", get()["publish_reply_enabled_at"], "off clears the stamp so re-enabling starts fresh")
+	v, _ := database.GetSetting("publish_reply_enabled_at")
+	assert.Equal(t, "", v)
+}

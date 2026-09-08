@@ -55,7 +55,7 @@ const renderMenu = (overrides: Partial<React.ComponentProps<typeof RowActionsMen
 const openMenu = () => fireEvent.click(screen.getByRole('button', { name: /actions/i }));
 const postItem = () => screen.getByRole('menuitem', { name: /generate and post pr comment/i }) as HTMLButtonElement;
 const dashboardItem = () =>
-  screen.getByRole('menuitem', { name: /generate review html only/i }) as HTMLButtonElement;
+  screen.getByRole('menuitem', { name: /generate review HTML only/i }) as HTMLButtonElement;
 
 describe('RowActionsMenu', () => {
   beforeEach(() => {
@@ -77,14 +77,14 @@ describe('RowActionsMenu', () => {
     renderMenu({ pr: makePR() });
     openMenu();
     expect(postItem().textContent).toBe('🔄 Generate and post PR comment');
-    expect(dashboardItem().textContent).toBe('🔄 Generate review html only');
+    expect(dashboardItem().textContent).toBe('🔄 Generate review HTML only');
   });
 
   it('labels the review items "Regenerate" once a review exists', () => {
     renderMenu({ pr: makePR({ review_url: '/reviews/x.html', status: 'completed' }) });
     openMenu();
     expect(postItem().textContent).toBe('🔄 Regenerate and post PR comment');
-    expect(dashboardItem().textContent).toBe('🔄 Regenerate review html only');
+    expect(dashboardItem().textContent).toBe('🔄 Regenerate review HTML only');
   });
 
   it('calls onTriggerReview(true) and closes the menu from the post item', () => {

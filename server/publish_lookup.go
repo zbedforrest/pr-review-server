@@ -12,6 +12,7 @@ import (
 // *db.GormDB implements it, mocks need not.
 type publishedSummaryLister interface {
 	ListPublishedSummaries() ([]db.PublishedFinding, error)
+	GetPublishedFindingsForPR(owner, repo string, number int) ([]db.PublishedFinding, error)
 }
 
 func publishedKey(owner, repo string, number int) string {
@@ -36,4 +37,24 @@ func (s *Server) publishedSummaries() map[string]db.PublishedFinding {
 		out[publishedKey(row.RepoOwner, row.RepoName, row.PRNumber)] = row
 	}
 	return out
+}
+
+// publishedSummaryFor returns the summary ledger row of one PR, for the
+// per-recipient WebSocket payloads that would otherwise clear the badge.
+func (s *Server) publishedSummaryFor(owner, repo string, number int) (db.PublishedFinding, bool) {
+	lister, ok := s.db.(publishedSummaryLister)
+	if !ok {
+		return db.PublishedFinding{}, false
+	}
+	rows, err := lister.GetPublishedFindingsForPR(owner, repo, number)
+	if err != nil {
+		log.Printf("[API] published summary unavailable for %s/%s#%d: %v", owner, repo, number, err)
+		return db.PublishedFinding{}, false
+	}
+	for _, row := range rows {
+		if row.Kind == db.PublishedKindSummary {
+			return row, true
+		}
+	}
+	return db.PublishedFinding{}, false
 }
