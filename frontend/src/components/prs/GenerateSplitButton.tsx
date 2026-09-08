@@ -81,8 +81,8 @@ export function GenerateSplitButton({ onGenerate, pending, publishAllowed }: Gen
             disabled={!publishAllowed}
             title={publishAllowed ? undefined : PILOT_BLOCKED_TITLE}
           >
-            <span className="generate-split__item-title">Generate and post to PR</span>
-            <span className="generate-split__item-desc">Summary and inline comments as the Prism bot</span>
+            <span className="generate-split__item-title">Generate and post PR comment</span>
+            <span className="generate-split__item-desc">Summary and inline comments posted as the Prism bot</span>
           </button>
           <button
             type="button"
@@ -90,8 +90,8 @@ export function GenerateSplitButton({ onGenerate, pending, publishAllowed }: Gen
             className="generate-split__item"
             onClick={() => choose(false)}
           >
-            <span className="generate-split__item-title">Generate for dashboard only</span>
-            <span className="generate-split__item-desc">Nothing is posted to GitHub</span>
+            <span className="generate-split__item-title">Generate review html only</span>
+            <span className="generate-split__item-desc">Dashboard report only, nothing posted to GitHub</span>
           </button>
         </div>,
         document.body

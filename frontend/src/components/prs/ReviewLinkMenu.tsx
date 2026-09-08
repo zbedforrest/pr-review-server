@@ -289,7 +289,7 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending, 
             disabled={reviewInFlight || !publishAllowed}
             title={publishAllowed ? undefined : PILOT_BLOCKED_TITLE}
           >
-            <span className="review-menu__icon">🔄</span> Regenerate and post to PR
+            <span className="review-menu__icon">🔄</span> Regenerate and post PR comment
           </button>
           <button
             type="button"
@@ -298,7 +298,7 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending, 
             onClick={() => handleRegenerate(false)}
             disabled={reviewInFlight}
           >
-            <span className="review-menu__icon">🔄</span> Regenerate for dashboard only
+            <span className="review-menu__icon">🔄</span> Regenerate review html only
           </button>
 
           {/* CRITICAL-only outcome triage (dismiss-with-reason / acknowledge).

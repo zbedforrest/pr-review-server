@@ -16,8 +16,8 @@ const renderButton = (overrides: Partial<React.ComponentProps<typeof GenerateSpl
 const primary = () => screen.getByRole('button', { name: /^🔄 Generate$/ }) as HTMLButtonElement;
 const chevron = () => screen.getByRole('button', { name: 'More generate options' }) as HTMLButtonElement;
 const openMenu = () => fireEvent.click(chevron());
-const postItem = () => screen.getByRole('menuitem', { name: /generate and post to pr/i }) as HTMLButtonElement;
-const dashboardItem = () => screen.getByRole('menuitem', { name: /generate for dashboard only/i }) as HTMLButtonElement;
+const postItem = () => screen.getByRole('menuitem', { name: /generate and post pr comment/i }) as HTMLButtonElement;
+const dashboardItem = () => screen.getByRole('menuitem', { name: /generate review html only/i }) as HTMLButtonElement;
 
 describe('GenerateSplitButton', () => {
   afterEach(() => cleanup());
@@ -53,10 +53,10 @@ describe('GenerateSplitButton', () => {
   it('lists both options with a title and a one-line description', () => {
     renderButton();
     openMenu();
-    expect(postItem().textContent).toContain('Generate and post to PR');
-    expect(postItem().textContent).toContain('Summary and inline comments as the Prism bot');
-    expect(dashboardItem().textContent).toContain('Generate for dashboard only');
-    expect(dashboardItem().textContent).toContain('Nothing is posted to GitHub');
+    expect(postItem().textContent).toContain('Generate and post PR comment');
+    expect(postItem().textContent).toContain('Summary and inline comments posted as the Prism bot');
+    expect(dashboardItem().textContent).toContain('Generate review html only');
+    expect(dashboardItem().textContent).toContain('Dashboard report only, nothing posted to GitHub');
   });
 
   it('calls onGenerate(true) from the post item and closes the menu', () => {
