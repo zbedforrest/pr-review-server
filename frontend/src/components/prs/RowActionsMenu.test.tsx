@@ -53,9 +53,9 @@ const renderMenu = (overrides: Partial<React.ComponentProps<typeof RowActionsMen
 };
 
 const openMenu = () => fireEvent.click(screen.getByRole('button', { name: /actions/i }));
-const postItem = () => screen.getByRole('menuitem', { name: /generate and post to pr/i }) as HTMLButtonElement;
+const postItem = () => screen.getByRole('menuitem', { name: /generate and post pr comment/i }) as HTMLButtonElement;
 const dashboardItem = () =>
-  screen.getByRole('menuitem', { name: /generate for dashboard only/i }) as HTMLButtonElement;
+  screen.getByRole('menuitem', { name: /generate review html only/i }) as HTMLButtonElement;
 
 describe('RowActionsMenu', () => {
   beforeEach(() => {
@@ -76,15 +76,15 @@ describe('RowActionsMenu', () => {
   it('labels the review items "Generate" when no review exists', () => {
     renderMenu({ pr: makePR() });
     openMenu();
-    expect(postItem().textContent).toBe('🔄 Generate and post to PR');
-    expect(dashboardItem().textContent).toBe('🔄 Generate for dashboard only');
+    expect(postItem().textContent).toBe('🔄 Generate and post PR comment');
+    expect(dashboardItem().textContent).toBe('🔄 Generate review html only');
   });
 
   it('labels the review items "Regenerate" once a review exists', () => {
     renderMenu({ pr: makePR({ review_url: '/reviews/x.html', status: 'completed' }) });
     openMenu();
-    expect(postItem().textContent).toBe('🔄 Regenerate and post to PR');
-    expect(dashboardItem().textContent).toBe('🔄 Regenerate for dashboard only');
+    expect(postItem().textContent).toBe('🔄 Regenerate and post PR comment');
+    expect(dashboardItem().textContent).toBe('🔄 Regenerate review html only');
   });
 
   it('calls onTriggerReview(true) and closes the menu from the post item', () => {

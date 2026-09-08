@@ -147,7 +147,7 @@ describe('PRTableRow review cell', () => {
     const pr = makePR({ status: 'pending', review_url: '' });
     renderRow(pr);
     fireEvent.click(screen.getByRole('button', { name: 'More generate options' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /generate for dashboard only/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /generate review html only/i }));
     expect(triggerMutate).toHaveBeenCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: false });
     expect(trackMock).toHaveBeenCalledWith('trigger_review', expect.objectContaining({ publish: false }));
   });
@@ -159,7 +159,7 @@ describe('PRTableRow review cell', () => {
     fireEvent.click(generateButton());
     expect(triggerMutate).toHaveBeenCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: false });
     fireEvent.click(screen.getByRole('button', { name: 'More generate options' }));
-    expect((screen.getByRole('menuitem', { name: /generate and post to pr/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('menuitem', { name: /generate and post pr comment/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('passes publishAllowed to the review menu and actions menu', () => {

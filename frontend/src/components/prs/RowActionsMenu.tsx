@@ -105,7 +105,7 @@ export function RowActionsMenu({
             disabled={reviewInFlight || !publishAllowed}
             title={publishAllowed ? undefined : PILOT_BLOCKED_TITLE}
           >
-            🔄 {verb} and post to PR
+            🔄 {verb} and post PR comment
           </button>
           <button
             type="button"
@@ -114,7 +114,7 @@ export function RowActionsMenu({
             onClick={() => handleReview(false)}
             disabled={reviewInFlight}
           >
-            🔄 {verb} for dashboard only
+            🔄 {verb} review html only
           </button>
           <button
             type="button"

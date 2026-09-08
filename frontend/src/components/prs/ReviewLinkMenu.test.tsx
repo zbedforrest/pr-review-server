@@ -202,9 +202,9 @@ describe('ReviewLinkMenu regenerate action', () => {
   };
 
   const postItem = () =>
-    screen.getByRole('menuitem', { name: /regenerate and post to pr/i }) as HTMLButtonElement;
+    screen.getByRole('menuitem', { name: /regenerate and post pr comment/i }) as HTMLButtonElement;
   const dashboardItem = () =>
-    screen.getByRole('menuitem', { name: /regenerate for dashboard only/i }) as HTMLButtonElement;
+    screen.getByRole('menuitem', { name: /regenerate review html only/i }) as HTMLButtonElement;
 
   it('exposes post-to-PR and dashboard-only regenerate items in the hover panel', () => {
     renderMenu();
