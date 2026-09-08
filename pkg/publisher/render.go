@@ -123,17 +123,6 @@ func recommendation(confidence int) string {
 	}
 }
 
-func sourceLabel(tag string) string {
-	switch tag {
-	case SourceTagBoth:
-		return "Both"
-	case SourceTagGreptileOnly:
-		return "Greptile"
-	default:
-		return "PRism"
-	}
-}
-
 func shortSHA(sha string) string {
 	if len(sha) > 7 {
 		return sha[:7]
@@ -158,10 +147,6 @@ func firstLine(s string) string {
 		s = s[:i]
 	}
 	return strings.TrimSpace(s)
-}
-
-func tableCell(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "|", "\\|"), "\n", " ")
 }
 
 func (r Round) findingLink(f payload.Finding) string {

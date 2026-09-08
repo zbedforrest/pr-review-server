@@ -12,20 +12,6 @@ import (
 
 func strp(s string) *string { return &s }
 
-func baseRound() Round {
-	return Round{
-		Owner: "acme", Repo: "example", Number: 7, HeadSHA: "abc1234def5678", RoundNumber: 1,
-		Findings: []payload.Finding{
-			f("sum", "unknown", "SUMMARY", 0, "The narrative."),
-			f("c1", "critical", "path/file.go", 12, "Nil deref when cfg is missing.\nMore detail here."),
-			f("m1", "medium", "other.py", 40, "Unbounded retry loop."),
-			f("l1", "low", "x.ts", 8, "Typo in log message."),
-		},
-		SourceTags:   map[string]string{"m1": "both"},
-		DashboardURL: "https://prism.example/pr/acme/example/7",
-	}
-}
-
 func TestRenderSummaryRecommendationLines(t *testing.T) {
 	cases := map[int]string{
 		5: "No blocking findings.",
