@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"sort"
+	"strings"
 
 	"pr-review-server/pkg/reviewer/payload"
 )
@@ -74,6 +75,10 @@ func Publishable(f payload.Finding) bool {
 	switch f.Provenance {
 	case "first-pass", "mechanical":
 		return false
+	case "required-check":
+		// An unanswered memory-derived check is re-admitted as its raw alert
+		// text; only checks the agent answered VIOLATED are confirmed.
+		return !strings.HasPrefix(commentText(f), "**Bug-memory alert")
 	}
 	return true
 }

@@ -100,3 +100,13 @@ func TestSummaryRows_UseImpactWhenAvailable(t *testing.T) {
 		t.Fatalf("table row must use the impact sentence:\n%s", out)
 	}
 }
+
+func TestRenderInline_FoldedReasoningMarksWhereSuggestionWas(t *testing.T) {
+	fd := withContract(f("x", "medium", "a.go", 3,
+		"The wrapper should not claim a role. The simpler shape is to hang the tooltip on the button directly:\n\n```suggestion\n<span className=\"x\">\n```\n\nand guard the click handler."),
+		"production_behavior", "current_impact", "Two nested buttons are announced.", "")
+	out := RenderInline(fd, "prism-only", "")
+	if !strings.Contains(out, "directly:\n\n*(suggestion above)*\n\nand guard") {
+		t.Fatalf("folded reasoning must mark the lifted suggestion instead of leaving a gap:\n%s", out)
+	}
+}
