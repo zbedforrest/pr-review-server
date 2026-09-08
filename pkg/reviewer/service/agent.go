@@ -608,10 +608,50 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 
 	var comments []types.LineComment
 	if err := json.Unmarshal([]byte(trimmed), &comments); err != nil {
-		return nil, err
+		// Code suggestions carry literal tabs and newlines into string
+		// literals, which strict JSON rejects; escape them and try once more.
+		if err2 := json.Unmarshal([]byte(escapeControlCharsInStrings(trimmed)), &comments); err2 != nil {
+			return nil, err
+		}
 	}
 	EnforceAgentFindingContractPolicy(comments)
 	return comments, nil
+}
+
+func escapeControlCharsInStrings(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			case c < 0x20:
+				switch c {
+				case '\t':
+					b.WriteString(`\t`)
+				case '\n':
+					b.WriteString(`\n`)
+				case '\r':
+					b.WriteString(`\r`)
+				default:
+					fmt.Fprintf(&b, `\u%04x`, c)
+				}
+				continue
+			}
+		} else if c == '"' {
+			inString = true
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // matchBracket returns the index of the `]` closing the `[` at start,
