@@ -1250,36 +1250,41 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[SETTINGS] Updated generate_html to: %v", *req.GenerateHTML)
 		}
 
-		publishUpdates := map[string]*string{}
+		type settingWrite struct{ key, value string }
+		var publishUpdates []settingWrite
 		if req.PublishEnabledAuthors != nil {
-			publishUpdates[settingPublishEnabledAuthors] = req.PublishEnabledAuthors
+			publishUpdates = append(publishUpdates, settingWrite{settingPublishEnabledAuthors, *req.PublishEnabledAuthors})
 		}
 		if req.PublishInlineCap != nil {
-			v := strconv.Itoa(*req.PublishInlineCap)
-			publishUpdates[settingPublishInlineCap] = &v
+			publishUpdates = append(publishUpdates, settingWrite{settingPublishInlineCap, strconv.Itoa(*req.PublishInlineCap)})
 		}
 		if req.PublishInlineMinSeverity != nil {
-			v := strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))
-			publishUpdates[settingPublishInlineMinSeverity] = &v
+			publishUpdates = append(publishUpdates, settingWrite{settingPublishInlineMinSeverity, strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))})
 		}
 		if req.PublishReplyMode != nil {
-			v := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
-			publishUpdates[settingPublishReplyMode] = &v
-			stamp, change, err := s.replyActivationFor(v)
+			mode := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
+			stamp, change, err := s.replyActivationFor(mode)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Failed to read settings: %v", err), http.StatusInternalServerError)
 				return
 			}
-			if change {
-				publishUpdates[settingPublishReplyEnabledAt] = &stamp
+			// The stamp must never be observed without its mode: when enabling,
+			// write the stamp first; when disabling, turn the mode off first.
+			switch {
+			case change && mode != defaultPublishReplyMode:
+				publishUpdates = append(publishUpdates, settingWrite{settingPublishReplyEnabledAt, stamp}, settingWrite{settingPublishReplyMode, mode})
+			case change:
+				publishUpdates = append(publishUpdates, settingWrite{settingPublishReplyMode, mode}, settingWrite{settingPublishReplyEnabledAt, stamp})
+			default:
+				publishUpdates = append(publishUpdates, settingWrite{settingPublishReplyMode, mode})
 			}
 		}
-		for key, value := range publishUpdates {
-			if err := s.db.SetSetting(key, *value); err != nil {
+		for _, u := range publishUpdates {
+			if err := s.db.SetSetting(u.key, u.value); err != nil {
 				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
 				return
 			}
-			log.Printf("[SETTINGS] Updated %s to: %q", key, *value)
+			log.Printf("[SETTINGS] Updated %s to: %q", u.key, u.value)
 		}
 
 		// Return updated settings

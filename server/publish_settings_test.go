@@ -117,3 +117,29 @@ func TestSettings_ReplyModeChangeRefusesToStampWhenTheCurrentModeIsUnreadable(t 
 	mode, _ := database.GetSetting("publish_reply_mode")
 	assert.Equal(t, "observe", mode)
 }
+
+type settingWriteFails struct {
+	db.Database
+	key string
+}
+
+func (f settingWriteFails) SetSetting(key, value string) error {
+	if key == f.key {
+		return errors.New("db down")
+	}
+	return f.Database.SetSetting(key, value)
+}
+
+func TestSettings_EnablingRepliesWritesTheStampBeforeTheMode(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	server.db = settingWriteFails{Database: database, key: "publish_reply_mode"}
+
+	w := httptest.NewRecorder()
+	server.handleSettings(w, httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"publish_reply_mode":"react"}`)))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	mode, _ := database.GetSetting("publish_reply_mode")
+	stamp, _ := database.GetSetting("publish_reply_enabled_at")
+	assert.Equal(t, "", mode, "a failed enable must leave the mode off")
+	assert.NotEmpty(t, stamp, "the stamp is written first so the mode is never on without it")
+}
