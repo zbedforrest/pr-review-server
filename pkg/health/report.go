@@ -54,6 +54,10 @@ type QueueMetrics struct {
 	Running          int           `json:"running"`
 	OldestQueuedAge  time.Duration `json:"oldest_queued_age_ns"`
 	OldestRunningAge time.Duration `json:"oldest_running_age_ns"`
+	// RunningOverBudget counts live runs older than their own budget (the
+	// run's wall clock plus the pipeline margin); OverTwice, twice that.
+	RunningOverBudget      int `json:"running_over_budget"`
+	RunningOverTwiceBudget int `json:"running_over_twice_budget"`
 }
 
 type PublishMetrics struct {
@@ -112,22 +116,29 @@ func Evaluate(m Metrics) Report {
 	for _, n := range m.Runs.ByStatus {
 		total += n
 	}
+	// Cancelled runs were superseded by a newer push or rejected on admission
+	// (cached, already claimed); they never ran and are not failures.
+	cancelled := m.Runs.ByStatus["cancelled"]
+	attempted := total - cancelled
 	completed := m.Runs.ByStatus["completed"]
 	// Only run_timeout is the agent wall clock; abandoned leases and queue
 	// dedupes also end as timed_out but point at other subsystems.
 	timedOut := m.Runs.ByTerminalCode["run_timeout"]
 	switch {
-	case total == 0:
+	case attempted == 0:
 		add("review volume", StatusWarn, "No reviews in the window")
 	default:
-		rate := float64(completed) / float64(total)
+		rate := float64(completed) / float64(attempted)
 		status := StatusOK
 		if rate < 0.8 {
 			status = StatusCritical
 		} else if rate < 0.95 {
 			status = StatusWarn
 		}
-		add("review success rate", status, fmt.Sprintf("%d of %d reviews completed (%.0f%%); %s", completed, total, rate*100, countList(m.Runs.ByStatus)))
+		add("review success rate", status, fmt.Sprintf("%d of %d attempted reviews completed (%.0f%%); %s", completed, attempted, rate*100, countList(m.Runs.ByStatus)))
+		if cancelled > 0 {
+			add("cancelled runs", StatusOK, fmt.Sprintf("%d runs superseded or rejected before running", cancelled))
+		}
 		if timedOut > 0 {
 			status := StatusWarn
 			if timedOut > 3 && float64(timedOut)/float64(total) > 0.2 {
@@ -156,11 +167,12 @@ func Evaluate(m Metrics) Report {
 	default:
 		add("queue age", StatusOK, fmt.Sprintf("%d queued", m.Queue.Queued))
 	}
-	if m.WallClock > 0 && m.Queue.OldestRunningAge > m.WallClock*2 {
-		add("running reviews", StatusCritical, fmt.Sprintf("%d running, oldest for %s, past twice the wall clock", m.Queue.Running, dur(m.Queue.OldestRunningAge.Milliseconds())))
-	} else if m.WallClock > 0 && m.Queue.OldestRunningAge > m.WallClock {
-		add("running reviews", StatusWarn, fmt.Sprintf("%d running, oldest for %s, past the wall clock", m.Queue.Running, dur(m.Queue.OldestRunningAge.Milliseconds())))
-	} else {
+	switch {
+	case m.Queue.RunningOverTwiceBudget > 0:
+		add("running reviews", StatusCritical, fmt.Sprintf("%d running, %d past twice their budget (oldest %s)", m.Queue.Running, m.Queue.RunningOverTwiceBudget, dur(m.Queue.OldestRunningAge.Milliseconds())))
+	case m.Queue.RunningOverBudget > 0:
+		add("running reviews", StatusWarn, fmt.Sprintf("%d running, %d past their budget (oldest %s)", m.Queue.Running, m.Queue.RunningOverBudget, dur(m.Queue.OldestRunningAge.Milliseconds())))
+	default:
 		add("running reviews", StatusOK, fmt.Sprintf("%d running", m.Queue.Running))
 	}
 
@@ -202,7 +214,7 @@ func Evaluate(m Metrics) Report {
 		add("PR error messages", StatusWarn, fmt.Sprintf("%d PRs currently show an error on the dashboard", m.PRErrors))
 	}
 
-	r.Headline = headline(r, total, completed)
+	r.Headline = headline(r, attempted, completed)
 	return r
 }
 

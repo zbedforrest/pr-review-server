@@ -49,6 +49,7 @@ func TestEvaluateFlagsTheThingsThatHaveBrokenBefore(t *testing.T) {
 	m.Runs.ModelFallbacks = 2
 	m.Queue.OldestQueuedAge = 45 * time.Minute
 	m.Queue.OldestRunningAge = 20 * time.Minute
+	m.Queue.RunningOverBudget = 1
 	m.Lease.ExpiresAt = m.Now.Add(-5 * time.Minute)
 	m.Replies.StuckPending = 2
 	m.Replies.Failed = 1
@@ -67,7 +68,7 @@ func TestEvaluateFlagsTheThingsThatHaveBrokenBefore(t *testing.T) {
 		"wall-clock timeouts": StatusWarn,     // 3 of 20 is 15%
 		"model fallbacks":     StatusWarn,
 		"queue age":           StatusCritical, // 45m queued
-		"running reviews":     StatusWarn,     // 20m is past the 15m wall clock but not twice it
+		"running reviews":     StatusWarn,     // one run past its budget, none past twice
 		"poller lease":        StatusCritical,
 		"reply text errors":   StatusWarn,
 		"stuck reply steps":   StatusWarn,
@@ -89,6 +90,18 @@ func TestEvaluateQuietDayWarnsButIsNotCritical(t *testing.T) {
 	}
 	if !strings.Contains(r.Markdown(), "No reviews") {
 		t.Errorf("markdown should say so:\n%s", r.Markdown())
+	}
+}
+
+func TestEvaluateCancelledRunsAreNotFailures(t *testing.T) {
+	m := healthyMetrics()
+	m.Runs.ByStatus = map[string]int{"completed": 10, "cancelled": 9, "failed": 0}
+	r := Evaluate(m)
+	if r.Overall != StatusOK {
+		t.Fatalf("superseded runs must not sink the success rate: %s %+v", r.Overall, r.Checks)
+	}
+	if !strings.Contains(r.Markdown(), "9 runs superseded") {
+		t.Errorf("cancellations stay visible:\n%s", r.Markdown())
 	}
 }
 

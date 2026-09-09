@@ -10,6 +10,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/health"
+	"pr-review-server/poller"
 )
 
 const (
@@ -20,7 +21,7 @@ const (
 
 // healthStore is the slice of the database the daily report needs.
 type healthStore interface {
-	HealthMetrics(start, end, now time.Time) (health.Metrics, error)
+	HealthMetrics(start, end, now time.Time, budget func(agentWallClockSec int) time.Duration) (health.Metrics, error)
 	SaveHealthReport(*db.HealthReport) error
 	ListHealthReports(limit int) ([]db.HealthReport, error)
 }
@@ -59,7 +60,15 @@ func (s *Server) handleDailyHealthJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runDailyHealth(store healthStore, now time.Time) (health.Report, error) {
-	metrics, err := store.HealthMetrics(now.Add(-24*time.Hour), now, now)
+	// A run's budget is its own agent wall clock (API callers may raise it)
+	// plus the pipeline margin for the first pass, clone and save.
+	budget := func(agentWallClockSec int) time.Duration {
+		if agentWallClockSec <= 0 {
+			agentWallClockSec = s.cfg.AgentWallClockSec
+		}
+		return time.Duration(agentWallClockSec)*time.Second + poller.ReviewPipelineMargin
+	}
+	metrics, err := store.HealthMetrics(now.Add(-24*time.Hour), now, now, budget)
 	if err != nil {
 		return health.Report{}, err
 	}

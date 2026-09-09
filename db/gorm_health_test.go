@@ -51,7 +51,7 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 11").Update("processed_at", now.Add(-3*time.Hour)).Error)
 
-	m, err := db.HealthMetrics(start, now, now)
+	m, err := db.HealthMetrics(start, now, now, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 3, m.Runs.Total)
 	assert.Equal(t, map[string]int{"completed": 2, "failed": 1}, m.Runs.ByStatus)

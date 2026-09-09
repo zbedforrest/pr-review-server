@@ -86,7 +86,9 @@ func toMap(rows []countRow) map[string]int {
 
 // HealthMetrics gathers the day's numbers for health.Evaluate. Every query is
 // plain SQL that runs on both dialects; percentiles are left to the evaluator.
-func (g *GormDB) HealthMetrics(start, end, now time.Time) (health.Metrics, error) {
+// budget returns how long a live run may take given its own configured agent
+// wall clock (zero when the row has none), including pipeline overhead.
+func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallClockSec int) time.Duration) (health.Metrics, error) {
 	m := health.Metrics{WindowStart: start, WindowEnd: end, Now: now}
 	var rows []countRow
 
@@ -140,7 +142,7 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time) (health.Metrics, error
 	// The live set is small; ages are computed in Go so both dialects agree.
 	var live []ReviewRunModel
 	if err := g.db.Where("status IN ?", []string{ReviewRunStatusQueued, ReviewRunStatusRunning}).
-		Select("status, queued_at, started_at").Find(&live).Error; err != nil {
+		Select("status, queued_at, started_at, agent_wall_clock_sec").Find(&live).Error; err != nil {
 		return m, err
 	}
 	for _, run := range live {
@@ -158,6 +160,14 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time) (health.Metrics, error
 			m.Queue.Running++
 			if age > m.Queue.OldestRunningAge {
 				m.Queue.OldestRunningAge = age
+			}
+			if budget != nil {
+				if allowed := budget(run.AgentWallClockSec); allowed > 0 && age > allowed {
+					m.Queue.RunningOverBudget++
+					if age > 2*allowed {
+						m.Queue.RunningOverTwiceBudget++
+					}
+				}
 			}
 		}
 	}
