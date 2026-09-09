@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"testing"
 
 	"pr-review-server/pkg/reviewer/types"
@@ -177,5 +178,25 @@ func TestApplyDispositions_KeepsOnlyResolvedEvidenceAndRecordsTheMergeBasis(t *t
 	}
 	if merged.MergeBasis != "sources" {
 		t.Errorf("a claim the agent linked is merged by sources: %+v", merged)
+	}
+}
+
+func TestEvidenceFileExists_RequiresARegularFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir+"/pkg/x", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/pkg/x/f.go", []byte("package x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	check := evidenceFileExists([]string{"pkg/x/f.go"}, dir)
+	if !check("pkg/x/f.go") {
+		t.Error("a regular file in the worktree resolves")
+	}
+	if check("pkg") || check("pkg/x") {
+		t.Error("a directory is not evidence")
+	}
+	if check("f.go") {
+		t.Error("a bare basename is not evidence")
 	}
 }

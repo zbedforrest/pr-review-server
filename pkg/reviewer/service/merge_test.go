@@ -378,3 +378,35 @@ func TestMergeFindingsWithRecords_ProximityFoldsRecordTheirBasis(t *testing.T) {
 		t.Fatalf("a heuristic fold must say so: %+v", records)
 	}
 }
+
+func TestMergeFindingsWithRecords_IntraAgentDuplicatesLeaveARecordAndRemapReferences(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		{FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "approve", PriorityIDs: []string{"A-2"}}},
+		{ID: "A-1", FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "first phrasing"},
+		{ID: "A-2", FilePath: "a.go", LineNumber: 12, Importance: "CRITICAL", CommentBody: "second phrasing of the same defect"},
+	}}
+	claim := lc("a.go", 12, "CRITICAL", "first-pass claim")
+	claim.State, claim.Inactive, claim.MergedInto, claim.MergeBasis = StateMerged, true, "A-2", "sources"
+	merged, records := MergeFindingsWithRecords(agent)
+	records = append(records, claim)
+	RemapMergeTargets(merged, records)
+
+	if len(merged) != 2 || merged[1].ID != "A-1" || merged[1].Importance != "CRITICAL" {
+		t.Fatalf("survivor keeps the higher severity: %+v", merged)
+	}
+	var dropped types.LineComment
+	for _, r := range records {
+		if r.CommentBody == "second phrasing of the same defect" {
+			dropped = r
+		}
+	}
+	if dropped.State != StateMerged || !dropped.Inactive || dropped.MergedInto != "A-1" || dropped.MergeBasis != "proximity" {
+		t.Fatalf("the dropped agent finding must survive as a merged record: %+v", records)
+	}
+	if merged[0].Summary.PriorityIDs[0] != "A-1" {
+		t.Errorf("a priority id naming the dropped finding must follow it to the survivor: %+v", merged[0].Summary.PriorityIDs)
+	}
+	if records[len(records)-1].MergedInto != "A-1" {
+		t.Errorf("a claim merged into the dropped finding must follow it too: %+v", records[len(records)-1])
+	}
+}

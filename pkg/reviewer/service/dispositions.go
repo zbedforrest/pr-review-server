@@ -2,6 +2,8 @@ package service
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"pr-review-server/pkg/reviewer/types"
@@ -193,6 +195,31 @@ func ApplyDispositionsWithEvidence(agentOut []types.LineComment, claims []firstP
 		}
 	}
 	return findings, active, records
+}
+
+// evidenceFileExists reports whether a cited path names a regular file: an
+// exact diff path, or a file under the worktree. Directories and bare
+// basenames do not count; rejection is the one disposition that retires a
+// claim, so its evidence has to point at real code.
+func evidenceFileExists(diffPaths []string, worktreeDir string) func(string) bool {
+	inDiff := make(map[string]bool, len(diffPaths))
+	for _, p := range diffPaths {
+		inDiff[p] = true
+	}
+	return func(path string) bool {
+		path = strings.TrimSpace(strings.TrimPrefix(path, "./"))
+		if path == "" || filepath.IsAbs(path) || strings.Contains(path, "..") {
+			return false
+		}
+		if inDiff[path] {
+			return true
+		}
+		if worktreeDir == "" {
+			return false
+		}
+		info, err := os.Stat(filepath.Join(worktreeDir, path))
+		return err == nil && info.Mode().IsRegular()
+	}
 }
 
 // resolvedEvidenceOnly copies a disposition keeping only the evidence that

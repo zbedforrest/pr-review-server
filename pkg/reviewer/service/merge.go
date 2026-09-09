@@ -100,11 +100,13 @@ func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineC
 				if importanceRank(incoming) > importanceRank(merged[di].Importance) {
 					merged[di].Importance = incoming
 				}
-				if si > 0 {
-					c.State, c.Inactive, c.Assessment = StateMerged, true, nil
-					c.MergedInto, c.MergeBasis = mergeTarget(merged[di]), "proximity"
-					records = append(records, c)
-				}
+				// The dropped duplicate survives as a record whichever set it came
+				// from; an agent finding dropped here may be referenced by id
+				// (priority list, merged claims), and RemapMergeTargets follows
+				// those references to the survivor.
+				c.State, c.Inactive, c.Assessment = StateMerged, true, nil
+				c.MergedInto, c.MergeBasis = mergeTarget(merged[di]), "proximity"
+				records = append(records, c)
 				continue
 			}
 			if si > 0 {
@@ -122,6 +124,44 @@ func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineC
 		}
 	}
 	return merged, records
+}
+
+// RemapMergeTargets follows references to findings that the merge folded away:
+// a summary priority id or a record's merged_into that names a dropped finding
+// is rewritten to the finding it was folded into.
+func RemapMergeTargets(merged, records []types.LineComment) {
+	alias := map[string]string{}
+	for _, r := range records {
+		if r.MergeBasis == "proximity" && r.ID != "" {
+			alias[r.ID] = r.MergedInto
+		}
+	}
+	if len(alias) == 0 {
+		return
+	}
+	resolve := func(id string) string {
+		for i := 0; i < len(alias); i++ {
+			next, ok := alias[id]
+			if !ok || next == id {
+				break
+			}
+			id = next
+		}
+		return id
+	}
+	for i := range records {
+		if records[i].MergedInto != "" {
+			records[i].MergedInto = resolve(records[i].MergedInto)
+		}
+	}
+	for i := range merged {
+		if merged[i].Summary == nil {
+			continue
+		}
+		for j, id := range merged[i].Summary.PriorityIDs {
+			merged[i].Summary.PriorityIDs[j] = resolve(id)
+		}
+	}
 }
 
 // mergeTarget names the finding a duplicate folded into: the agent's own id

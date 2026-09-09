@@ -253,6 +253,22 @@ func Decode(data []byte) (Payload, error) {
 	}
 	switch pl.SchemaVersion {
 	case CurrentSchemaVersion:
+		// A v2 finding without its lifecycle fields would decode as inactive
+		// and silently vanish from every consumer; refuse it instead.
+		var probe struct {
+			Findings []struct {
+				Active *bool  `json:"active"`
+				State  string `json:"state"`
+			} `json:"findings"`
+		}
+		if err := json.Unmarshal(data, &probe); err != nil {
+			return Payload{}, err
+		}
+		for i, f := range probe.Findings {
+			if f.Active == nil || f.State == "" {
+				return Payload{}, fmt.Errorf("payload: schema 2 finding %d is missing state or active", i)
+			}
+		}
 	case "", "1":
 		// v1 re-admissions were never confirmed by anyone; their provenance
 		// is the only record of that, so the upgraded state follows it.

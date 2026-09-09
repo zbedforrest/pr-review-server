@@ -245,3 +245,16 @@ func TestGenerateReport_StructuredSummaryWithoutPrioritiesHasNoActionsOrSuggesti
 	assert.NotContains(t, report, `class="verdict-upshot"`)
 	assert.Contains(t, report, "Nothing to add.")
 }
+
+func TestMergedRecordLinksByLocationWhenTheSurvivorHasNoID(t *testing.T) {
+	in := layoutFixtureInput()
+	in.Comments = []types.LineComment{
+		{FilePath: "a.go", LineNumber: 13, Importance: "CRITICAL", Provenance: "agent", CommentBody: "survivor without an id", State: "confirmed"},
+		{FilePath: "a.go", LineNumber: 14, Importance: "CRITICAL", Provenance: "first-pass", CommentBody: "folded claim", State: "merged", Inactive: true, MergedInto: "a.go:13", MergeBasis: "proximity"},
+		{FilePath: "SUMMARY", CommentBody: "Verdict: approve."},
+	}
+	report := renderLayoutFixture(t, in)
+	if !strings.Contains(report, `<a href="#finding-1">a.go:13</a>`) {
+		t.Errorf("a merged record must link to its survivor by location when no id is available:\n%s", report[strings.Index(report, "Merged claims"):][:600])
+	}
+}

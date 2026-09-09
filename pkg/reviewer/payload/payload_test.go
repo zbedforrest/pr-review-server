@@ -828,3 +828,15 @@ func TestToCompactMarkdown_MarksUnverifiedAndDisputedClaims(t *testing.T) {
 		t.Errorf("confirmed claims carry no state line:\n%s", first)
 	}
 }
+
+func TestDecode_RefusesASchema2SidecarMissingLifecycleFields(t *testing.T) {
+	if _, err := Decode([]byte(`{"schema_version":"2","findings":[{"file":"a.go","comment":"x","state":"confirmed"}]}`)); err == nil {
+		t.Fatal("a v2 finding without active must be refused, not read as inactive")
+	}
+	if _, err := Decode([]byte(`{"schema_version":"2","findings":[{"file":"a.go","comment":"x","active":true}]}`)); err == nil {
+		t.Fatal("a v2 finding without state must be refused")
+	}
+	if _, err := Decode([]byte(`{"schema_version":"2","findings":[]}`)); err != nil {
+		t.Fatalf("an empty v2 sidecar is fine: %v", err)
+	}
+}

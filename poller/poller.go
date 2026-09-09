@@ -628,8 +628,10 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	}
 	merged, mergedRecords := service.MergeFindingsWithRecords(sets...)
 	service.EnforceFindingContractPolicy(merged)
+	records := append(mergedRecords, agentOut.Records...)
+	service.RemapMergeTargets(merged, records)
 	readmitted := len(merged) - len(agentOut.Comments)
-	result.Comments = append(append(merged, mergedRecords...), agentOut.Records...)
+	result.Comments = append(merged, records...)
 	result.ComputeImportanceCounts()
 	log.Printf("[REVIEWER] PR %d: agent stage ok (clone=%s, log=%s, agent_comments=%d, readmitted_first_pass=%d, critical=%d, medium=%d, low=%d)",
 		pr.Number, agentOut.CloneDir, agentOut.LogPath, len(agentOut.Comments), readmitted,

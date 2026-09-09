@@ -629,6 +629,14 @@ func generateReport(in ReportInput) (string, error) {
 			byID[comment.ID] = view
 			anchors[comment.ID] = view.AnchorID
 		}
+		// Merge targets fall back to file:line when the survivor has no id.
+		loc := comment.FilePath
+		if comment.LineNumber > 0 {
+			loc = fmt.Sprintf("%s:%d", comment.FilePath, comment.LineNumber)
+		}
+		if _, taken := anchors[loc]; !taken {
+			anchors[loc] = view.AnchorID
+		}
 		row := FindingRow{
 			AnchorID: view.AnchorID, Severity: comment.Importance, StatusPill: pill, StatusClass: class,
 			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: findingTitle(comment),
