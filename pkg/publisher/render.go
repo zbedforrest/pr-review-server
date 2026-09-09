@@ -438,15 +438,27 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	hasContract := c != nil && f.FindingContractStatus == "valid"
 	compact := hasContract && strings.TrimSpace(c.CurrentImpact) != ""
 
+	// When the effect sentence does not fit the headline it is shown once,
+	// in full, under a kind-only headline rather than repeated after a cut copy.
+	title := headline(f)
+	sentenceBelow := compact && headlineIsCut(f)
+	if sentenceBelow && strings.TrimSpace(c.Headline) == "" {
+		title = kindLabels[c.FindingKind]
+	}
 	var b strings.Builder
 	b.WriteString(FindingMarker(f.ID) + "\n")
-	if badgeBase == "" {
-		fmt.Fprintf(&b, "**[%s] %s**\n", strings.ToUpper(f.Severity), headline(f))
-	} else {
-		fmt.Fprintf(&b, "%s **%s**\n", severityLabel(f.Severity, badgeBase), headline(f))
+	switch {
+	case badgeBase == "" && title != "":
+		fmt.Fprintf(&b, "**[%s] %s**\n", strings.ToUpper(f.Severity), title)
+	case badgeBase == "":
+		fmt.Fprintf(&b, "**[%s]**\n", strings.ToUpper(f.Severity))
+	case title != "":
+		fmt.Fprintf(&b, "%s **%s**\n", severityLabel(f.Severity, badgeBase), title)
+	default:
+		fmt.Fprintf(&b, "%s\n", severityLabel(f.Severity, badgeBase))
 	}
 
-	if compact && headlineIsCut(f) {
+	if sentenceBelow {
 		b.WriteString("\n" + strings.TrimSpace(c.CurrentImpact) + "\n")
 	}
 	if hasContract && strings.TrimSpace(c.Uncertainty) != "" {

@@ -65,8 +65,7 @@ func TestRenderInline_CompactHeadlineFromContract(t *testing.T) {
 	}
 
 	mustContain := []string{
-		"**[MEDIUM] Behavior change · Legacy audience-match now verifies TLS**",
-		"Legacy audience-match now verifies TLS; if the bundle lacks MMLLC ROOT every psychographic journey silently stops firing.",
+		"**[MEDIUM] Behavior change**\n\nLegacy audience-match now verifies TLS; if the bundle lacks MMLLC ROOT every psychographic journey silently stops firing.",
 		"Most likely a documentation gap rather than an outage.",
 		"```suggestion\nverify=get_ssl_verification(),\n```",
 	}
