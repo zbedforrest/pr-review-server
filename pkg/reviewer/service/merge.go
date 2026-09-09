@@ -88,7 +88,9 @@ func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineC
 			// A claim the agent explicitly rejected cannot be a duplicate of one
 			// of its positive findings; proximity dedup must not fold it and
 			// discard the counterargument.
-			if di, ok := findDuplicate(merged, c); ok && c.Assessment == nil {
+			// A mechanical alert is not a finding that can cover a claim: folding
+			// a claim into one would drop it from GitHub, where alerts never post.
+			if di, ok := findDuplicate(merged, c); ok && c.Assessment == nil && !isMechanical(merged[di]) {
 				// Duplicates upgrade severity to the max — but an upgrade
 				// sourced from a lower-priority set is capped at MEDIUM for
 				// the same reason re-admissions are (see below): unconfirmed
@@ -181,6 +183,10 @@ func RemapMergeTargets(merged, records []types.LineComment) {
 		}
 		merged[i].Summary.PriorityIDs = ids
 	}
+}
+
+func isMechanical(f types.LineComment) bool {
+	return f.Provenance == "mechanical"
 }
 
 // mergeTarget names the finding a duplicate folded into: the agent's own id

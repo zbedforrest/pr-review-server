@@ -436,3 +436,14 @@ func TestRemapMergeTargets_FollowsLocationKeyedReferences(t *testing.T) {
 		t.Fatalf("a claim that pointed at the dropped finding's location must follow it to the survivor: %q", records[1].MergedInto)
 	}
 }
+
+func TestMergeFindingsWithRecords_MechanicalAlertsDoNotAbsorbClaims(t *testing.T) {
+	mech := FindingSet{Provenance: "mechanical", Comments: []types.LineComment{lc("shared/base.py", 0, "MEDIUM", "**Mechanical alert — shared module edited.**")}}
+	carriedIn := lc("shared/base.py", 0, "MEDIUM", "carried whole-file claim")
+	carriedIn.State = StateUnverified
+	carried := FindingSet{Provenance: CarriedProvenance("0123456789abcdef0123"), Comments: []types.LineComment{carriedIn}}
+	merged, records := MergeFindingsWithRecords(mech, carried)
+	if len(merged) != 2 || len(records) != 0 {
+		t.Fatalf("a mechanical alert is not a finding that can cover a claim; the claim stays active: merged=%+v records=%+v", merged, records)
+	}
+}

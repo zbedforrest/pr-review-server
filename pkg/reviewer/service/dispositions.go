@@ -52,6 +52,9 @@ func NormalizeAgentLifecycleFields(out []types.LineComment) {
 		c := &out[i]
 		c.State, c.Inactive, c.MergedInto, c.MergeBasis = "", false, "", ""
 		c.Assessment, c.Original = nil, nil
+		if c.FilePath != "SUMMARY" {
+			c.Summary = nil
+		}
 		// Only ordinary findings carry ids; an id used twice among them
 		// identifies nothing. Unlabelled entries still merge by location, so
 		// nothing is lost, only the ambiguous reference.

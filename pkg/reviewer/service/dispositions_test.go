@@ -315,3 +315,16 @@ func TestEvidenceFileExists_RejectsSymlinksEvenWhenListedInTheDiff(t *testing.T)
 		t.Fatal("the real file still resolves")
 	}
 }
+
+func TestNormalizeAgentLifecycleFields_SummaryOnlyOnTheSummaryEntry(t *testing.T) {
+	out := []types.LineComment{{FilePath: "a.go", LineNumber: 1, Summary: &types.SummaryBlock{Verdict: "approve"}, Sources: []string{"FP-1"}}}
+	NormalizeAgentLifecycleFields(out)
+	if out[0].Summary != nil {
+		t.Fatal("a structured summary belongs to the SUMMARY entry only")
+	}
+	claims := firstPassClaims([]types.LineComment{lc("a.go", 3, "CRITICAL", "Nil deref.")})
+	findings, active, _ := ApplyDispositions(out, claims)
+	if len(findings) != 0 || len(active) != 1 {
+		t.Fatalf("stripped of its summary the entry is malformed and retires nothing: findings=%+v active=%+v", findings, active)
+	}
+}
