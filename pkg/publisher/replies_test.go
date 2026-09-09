@@ -104,6 +104,8 @@ type fakeReplyLedger struct {
 	linked   map[uint]int64
 	states   map[string]string
 	mu       sync.Mutex
+
+	failOutcomeOnce bool
 }
 
 func (f *fakeReplyLedger) ListUnlinkedPublishedFindings() ([]db.UnlinkedPublishedFinding, error) {
@@ -120,15 +122,6 @@ func (f *fakeReplyLedger) LinkPublishedFindingComment(id uint, commentID int64) 
 func (f *fakeReplyLedger) ListPublishedReplyTargets() ([]db.PublishedReplyTarget, error) {
 	return f.targets, nil
 }
-func (f *fakeReplyLedger) GetPublishedReplyIDsForPR(owner, repo string, number int) (map[int64]bool, error) {
-	seen := map[int64]bool{}
-	for _, r := range f.rows {
-		if r.RepoOwner == owner && r.RepoName == repo && r.PRNumber == number {
-			seen[r.AuthorCommentID] = true
-		}
-	}
-	return seen, nil
-}
 func (f *fakeReplyLedger) ListPublishedRepliesForPR(_, _ string, number int) ([]db.PublishedReply, error) {
 	var out []db.PublishedReply
 	for _, r := range f.rows {
@@ -139,6 +132,10 @@ func (f *fakeReplyLedger) ListPublishedRepliesForPR(_, _ string, number int) ([]
 	return out, nil
 }
 func (f *fakeReplyLedger) SetPublishedReplyOutcome(_, _ string, _ int, authorCommentID int64, outcome string) error {
+	if f.failOutcomeOnce {
+		f.failOutcomeOnce = false
+		return fmt.Errorf("db blip")
+	}
 	for i := range f.rows {
 		if f.rows[i].AuthorCommentID == authorCommentID {
 			f.rows[i].Outcome = outcome
@@ -817,5 +814,50 @@ func TestReplyReactor_ARowClaimedByAnotherInstanceIsLeftAlone(t *testing.T) {
 	rep, _ = r.Run(context.Background())
 	if runs != 1 || len(gh.posted) != 1 || ledger.rows[0].Outcome != "posted" {
 		t.Fatalf("a stale claim is taken over: runs=%d posted=%v rep=%+v row=%+v", runs, gh.posted, rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_AdoptionRunsEvenWhenTheReplyIsNoLongerEligible(t *testing.T) {
+	runs := 0
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{Decision: DecisionConcede, Reply: "Withdrawn."}, nil
+	})
+	old := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	gh.threads["acme/example#7"][1].CreatedAt = old
+	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 190, InReplyToID: 100, AuthorID: 1, Body: "Withdrawn.\n\n" + ReplyMarker(101), CreatedAt: old.Add(time.Minute)})
+	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", Class: "pushback", Action: "reacted", Decision: DecisionConcede, ReplyBody: "Withdrawn.", CreatedAt: old}}
+	r.Since = old.Add(-time.Hour)
+	r.Run(context.Background())
+	if runs != 0 || ledger.rows[0].ReplyCommentID != 190 || ledger.rows[0].Outcome != "posted" || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
+		t.Fatalf("a posted concession must be adopted and applied even after the reply aged out: row=%+v states=%v", ledger.rows[0], ledger.states)
+	}
+}
+
+func TestReplyReactor_FailedOutcomeWriteReleasesTheClaim(t *testing.T) {
+	r, _, ledger := respondFixture(ReplyModeShadow, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	ledger.failOutcomeOnce = true
+	rep, _ := r.Run(context.Background())
+	if len(rep.Errors) != 1 || ledger.rows[0].Outcome != "" || ledger.rows[0].ClaimedBy != "" {
+		t.Fatalf("rep=%+v row=%+v", rep, ledger.rows[0])
+	}
+	rep, _ = r.Run(context.Background())
+	if rep.Shadowed != 1 || ledger.rows[0].Outcome != "shadowed" {
+		t.Fatalf("resume must finish without a second model run: rep=%+v row=%+v", rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_CancelledRunIsNotCountedAsAnAttempt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r, _, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		cancel()
+		return ReplyDecision{}, context.Canceled
+	})
+	r.Run(ctx)
+	if ledger.rows[0].Attempts != 0 || ledger.rows[0].Outcome != "" {
+		t.Fatalf("row=%+v", ledger.rows[0])
 	}
 }

@@ -147,7 +147,6 @@ type ReplyGitHub interface {
 // ReplyLedger persists what we did about each author reply.
 type ReplyLedger interface {
 	ListPublishedReplyTargets() ([]db.PublishedReplyTarget, error)
-	GetPublishedReplyIDsForPR(owner, repo string, number int) (map[int64]bool, error)
 	RecordPublishedReply(*db.PublishedReply) (bool, error)
 	ListPublishedRepliesForPR(owner, repo string, number int) ([]db.PublishedReply, error)
 	ListUnlinkedPublishedFindings() ([]db.UnlinkedPublishedFinding, error)
@@ -221,7 +220,10 @@ func DefaultTextPolicy() TextPolicy {
 }
 
 // TextEligibility returns "" when a text reply may be attempted, otherwise the
-// reason it may not: class, stale, thread_cap, conceded, pr_cap.
+// reason it may not: class, stale, thread_cap, conceded, pr_cap. The caps are
+// exact within one process (text steps on a PR are serialized) and best-effort
+// across two instances that both believe they lead, where sibling replies
+// claimed separately can overshoot a cap by one.
 func TextEligibility(reply AuthorReply, prior []db.PublishedReply, prTextToday int, now time.Time, p TextPolicy) string {
 	if reply.Class != ReplyQuestion && reply.Class != ReplyPushback {
 		return "class"
@@ -564,22 +566,38 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 type ReplyInFlight struct {
 	mu    sync.Mutex
 	ids   map[int64]bool
-	locks map[string]*sync.Mutex
+	locks map[string]*prLock
 }
 
+type prLock struct {
+	sync.Mutex
+	waiters int
+}
+
+// lockPR serializes text steps on one PR; the entry is dropped when the last
+// waiter releases it so the map does not grow with every PR ever replied to.
 func (f *ReplyInFlight) lockPR(key string) func() {
 	f.mu.Lock()
 	if f.locks == nil {
-		f.locks = map[string]*sync.Mutex{}
+		f.locks = map[string]*prLock{}
 	}
 	l, ok := f.locks[key]
 	if !ok {
-		l = &sync.Mutex{}
+		l = &prLock{}
 		f.locks[key] = l
 	}
+	l.waiters++
 	f.mu.Unlock()
 	l.Lock()
-	return l.Unlock
+	return func() {
+		l.Unlock()
+		f.mu.Lock()
+		l.waiters--
+		if l.waiters == 0 {
+			delete(f.locks, key)
+		}
+		f.mu.Unlock()
+	}
 }
 
 func (f *ReplyInFlight) add(id int64) bool {
@@ -652,8 +670,11 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	outcome = ReplyOutcome{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, AuthorCommentID: reply.CommentID,
 		Decision: row.Decision, Model: row.Model, DurationMS: row.DurationMS}
 	finish := func(result string) (ReplyOutcome, error) {
+		if err := r.Ledger.SetPublishedReplyOutcome(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, result); err != nil {
+			return outcome, err
+		}
 		outcome.Outcome = result
-		return outcome, r.Ledger.SetPublishedReplyOutcome(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, result)
+		return outcome, nil
 	}
 	skip := func(reason string) (ReplyOutcome, error) {
 		if rep != nil {
@@ -679,16 +700,6 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		return TextEligibility(reply, others, today, now, r.textPolicy()), nil
 	}
-	reason, err := eligibility()
-	if err != nil {
-		return outcome, err
-	}
-	if reason != "" {
-		if rep != nil {
-			rep.skipText(reason)
-		}
-		return finish("ineligible:" + reason)
-	}
 	thread := threadUnder(comments, reply.RootCommentID)
 	var root ThreadComment
 	for _, c := range thread {
@@ -697,8 +708,9 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 	}
 	// A reply we posted but never recorded (crash between the two, or another
-	// instance) is adopted. Only the root's author, that is our own bot, can
-	// own such a marker.
+	// instance) is adopted before anything else: a posted reply exists whether
+	// or not the author comment would still be eligible today. Only the
+	// root's author, that is our own bot, can own such a marker.
 	adoptPosted := func(in []ThreadComment) (bool, error) {
 		for _, c := range in {
 			if id, ok := replyMarkerID(c.Body); ok && id == reply.CommentID && c.AuthorID == root.AuthorID && c.ID != reply.CommentID {
@@ -714,6 +726,16 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 			rep.skipText("already_posted")
 		}
 		return finish("posted")
+	}
+	reason, err := eligibility()
+	if err != nil {
+		return outcome, err
+	}
+	if reason != "" {
+		if rep != nil {
+			rep.skipText(reason)
+		}
+		return finish("ineligible:" + reason)
 	}
 	// From here on the step does work that must happen once across every
 	// instance: claim the row, release it on any error so the next scan
@@ -748,13 +770,17 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		if row.Attempts >= r.textPolicy().MaxAttempts {
 			return finish("failed")
 		}
-		if _, err := r.Ledger.IncrementPublishedReplyAttempts(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID); err != nil {
-			return outcome, err
-		}
 		decision, err := r.Responder(ctx, ReplyRequest{
 			Owner: t.RepoOwner, Repo: t.RepoName, Number: t.PRNumber, HeadSHA: state.HeadSHA, BaseRef: state.BaseRef,
 			Fingerprint: reply.Fingerprint, Root: root, Thread: thread, Reply: reply,
 		})
+		// A run that was cut off by shutdown is not the model failing; the
+		// claim lease keeps a crash loop to one run per lease anyway.
+		if ctx.Err() == nil {
+			if _, ierr := r.Ledger.IncrementPublishedReplyAttempts(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID); ierr != nil {
+				return outcome, ierr
+			}
+		}
 		if err != nil {
 			return outcome, err
 		}

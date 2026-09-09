@@ -381,7 +381,7 @@ type PublishedReplyModel struct {
 	Decision        string `gorm:"size:16;not null;default:''"`
 	ReplyBody       string `gorm:"type:text"`
 	Cited           string `gorm:"type:text"`
-	Model           string `gorm:"size:128;not null;default:''"`
+	Model           string `gorm:"size:255;not null;default:''"`
 	DurationMS      int64  `gorm:"not null;default:0"`
 	Outcome         string `gorm:"size:32;not null;default:''"`
 	Attempts        int    `gorm:"not null;default:0"`

@@ -28,6 +28,55 @@ func replyKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
 }
 
+// replyLiveWindow bounds the per-cycle GitHub cost of the live watermark: a
+// PR whose cached updated_at is older than this is only re-read when the cache
+// shows it moved or on a full scan, so the steady-state cost is one GetPR per
+// minute per recently active PR rather than per PR with findings.
+const replyLiveWindow = 2 * time.Hour
+
+func lookupCachedPR(store db.Database) func(owner, repo string, number int) *db.PR {
+	return func(owner, repo string, number int) *db.PR {
+		pr, err := store.GetPR(owner, repo, number)
+		if err != nil {
+			return nil
+		}
+		return pr
+	}
+}
+
+// replyLiveCandidates picks the targets worth a live GetPR this cycle: all of
+// them on a full scan; otherwise those recently active per the cached row,
+// those the cache says moved since we last settled them, and those with no
+// cached row (fail open, the reactor's live read decides).
+func replyLiveCandidates(targets []db.PublishedReplyTarget, lookup func(owner, repo string, number int) *db.PR, lastScanned map[string]time.Time, full bool, now time.Time, window time.Duration) []db.PublishedReplyTarget {
+	if full {
+		return targets
+	}
+	var out []db.PublishedReplyTarget
+	for _, t := range targets {
+		pr := lookup(t.RepoOwner, t.RepoName, t.PRNumber)
+		if pr == nil || pr.GitHubUpdatedAt == nil {
+			out = append(out, t)
+			continue
+		}
+		key := replyKey(t.RepoOwner, t.RepoName, t.PRNumber)
+		if now.Sub(*pr.GitHubUpdatedAt) <= window || pr.GitHubUpdatedAt.After(lastScanned[key]) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// replyClaimLease outlasts any legitimate text step: the model's wall clock,
+// the GitHub round trips around it, and a margin.
+func replyClaimLease(wallClock time.Duration) time.Duration {
+	lease := 2*wallClock + 5*time.Minute
+	if lease < 10*time.Minute {
+		lease = 10 * time.Minute
+	}
+	return lease
+}
+
 // replyLinkDue picks the unlinked ledger rows to try matching this cycle: every
 // PR not yet attempted, or all of them on a full scan. Attempts are stamped so
 // a comment that was deleted on GitHub does not cost a thread listing per
@@ -132,12 +181,6 @@ func replyInputFromRequest(req publisher.ReplyRequest, ourID int64) service.Repl
 // starve reviews.
 func (p *Poller) replyResponder() publisher.Responder {
 	return func(ctx context.Context, req publisher.ReplyRequest) (publisher.ReplyDecision, error) {
-		select {
-		case p.replySlots <- struct{}{}:
-			defer func() { <-p.replySlots }()
-		case <-ctx.Done():
-			return publisher.ReplyDecision{}, ctx.Err()
-		}
 		token, err := p.ghClientConcrete.CurrentToken(ctx)
 		if err != nil {
 			return publisher.ReplyDecision{}, fmt.Errorf("get GitHub token: %w", err)
@@ -220,8 +263,21 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		Full:        full,
 		Responder:   p.replyResponder(),
 		InFlight:    &p.replyInFlight,
-		Background:  func(task func()) { go task() },
-		Holder:      p.holderID,
+		// The execution slot is taken before the task claims its row, so time
+		// spent queued is never counted against the claim lease.
+		Background: func(task func()) {
+			go func() {
+				select {
+				case p.replySlots <- struct{}{}:
+					defer func() { <-p.replySlots }()
+				case <-ctx.Done():
+					return
+				}
+				task()
+			}()
+		},
+		ClaimLease: replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
+		Holder:     p.holderID,
 		Live: func() (string, func(string) bool, error) {
 			liveMode, err := p.db.GetSetting(settingPublishReplyMode)
 			if err != nil {
@@ -283,9 +339,10 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		}
 	}
 
+	candidates := replyLiveCandidates(targets, lookupCachedPR(p.db), p.replyLastScanned, full, time.Now(), replyLiveWindow)
 	var rep publisher.ReplyReport
-	if len(targets) > 0 {
-		reactor.Targets = targets
+	if len(candidates) > 0 {
+		reactor.Targets = candidates
 		rep, err = reactor.Run(ctx)
 		if err != nil {
 			log.Printf("[REPLIES] scan failed: %v", err)
@@ -295,8 +352,8 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			log.Printf("[REPLIES] %s", e)
 		}
 	}
-	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d text_dispatched=%d errors=%d",
-		cycle, full, mode, len(targets), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Dispatched, len(rep.Errors))
+	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d live_checked=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d text_dispatched=%d errors=%d",
+		cycle, full, mode, len(targets), len(candidates), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Dispatched, len(rep.Errors))
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
 		return

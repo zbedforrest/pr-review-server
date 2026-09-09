@@ -133,7 +133,7 @@ var replyDecisionColumns = []struct {
 	{"decision", "Decision", "varchar(16) NOT NULL DEFAULT ''"},
 	{"reply_body", "ReplyBody", "text"},
 	{"cited", "Cited", "text"},
-	{"model", "Model", "varchar(128) NOT NULL DEFAULT ''"},
+	{"model", "Model", "varchar(255) NOT NULL DEFAULT ''"},
 	{"duration_ms", "DurationMS", "bigint NOT NULL DEFAULT 0"},
 	{"outcome", "Outcome", "varchar(32) NOT NULL DEFAULT ''"},
 	{"attempts", "Attempts", "integer NOT NULL DEFAULT 0"},

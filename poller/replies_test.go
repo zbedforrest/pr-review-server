@@ -125,3 +125,41 @@ func TestReplyOutcomeEventDistinguishesFailuresFromDecisions(t *testing.T) {
 		}
 	}
 }
+
+func TestReplyLiveCandidatesLimitsLiveReadsToActiveOrMovedPRs(t *testing.T) {
+	now := time.Date(2026, 9, 9, 19, 0, 0, 0, time.UTC)
+	recent, old, moved := now.Add(-time.Hour), now.Add(-3*time.Hour), now.Add(-4*time.Hour)
+	targets := []db.PublishedReplyTarget{
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 1},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 2},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 3},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 4},
+	}
+	prs := map[string]*db.PR{
+		"acme/example#1": {GitHubUpdatedAt: &recent},
+		"acme/example#2": {GitHubUpdatedAt: &old},
+		"acme/example#3": {GitHubUpdatedAt: &moved},
+	}
+	lookup := func(owner, repo string, n int) *db.PR { return prs[replyKey(owner, repo, n)] }
+	last := map[string]time.Time{"acme/example#2": old, "acme/example#3": moved.Add(-time.Hour)}
+
+	got := replyLiveCandidates(targets, lookup, last, false, now, 2*time.Hour)
+	if len(got) != 3 || got[0].PRNumber != 1 || got[1].PRNumber != 3 || got[2].PRNumber != 4 {
+		t.Fatalf("incremental = %+v, want recent (1), moved-since-settled (3) and uncached (4)", got)
+	}
+	if got := replyLiveCandidates(targets, lookup, last, true, now, 2*time.Hour); len(got) != 4 {
+		t.Fatalf("full scan checks every target, got %d", len(got))
+	}
+}
+
+func TestReplyClaimLeaseOutlastsTheWallClock(t *testing.T) {
+	if got := replyClaimLease(180 * time.Second); got != 11*time.Minute {
+		t.Errorf("180s wall clock -> %s, want 11m", got)
+	}
+	if got := replyClaimLease(30 * time.Second); got != 10*time.Minute {
+		t.Errorf("short wall clock keeps the 10m floor, got %s", got)
+	}
+	if got := replyClaimLease(15 * time.Minute); got != 35*time.Minute {
+		t.Errorf("long wall clock -> %s, want 35m", got)
+	}
+}

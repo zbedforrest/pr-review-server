@@ -220,6 +220,10 @@ func looksLikeSecret(s string) bool {
 
 var replySpaceRe = regexp.MustCompile(`\s+`)
 
+// mentionRe finds @logins the model may have been steered into writing; they
+// are posted in backticks so the bot never notifies anyone on an author's say.
+var mentionRe = regexp.MustCompile(`(^|[^\w` + "`" + `])(@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))`)
+
 // parseReplyJSON finds the decision object in the agent's final text. The
 // reply is collapsed to one line: it is posted as a single paragraph.
 func parseReplyJSON(raw string) (replyJSON, bool) {
@@ -236,6 +240,7 @@ func parseReplyJSON(raw string) (replyJSON, bool) {
 	}
 	d.Decision = strings.ToLower(strings.TrimSpace(d.Decision))
 	d.Reply = strings.TrimSpace(replySpaceRe.ReplaceAllString(stripMarkers(d.Reply), " "))
+	d.Reply = mentionRe.ReplaceAllString(d.Reply, "${1}`${2}`")
 	return d, true
 }
 

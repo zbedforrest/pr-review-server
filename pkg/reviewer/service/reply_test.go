@@ -134,6 +134,13 @@ func TestParseReplyJSONStripsHTMLCommentsTheModelWasTalkedInto(t *testing.T) {
 	}
 }
 
+func TestParseReplyJSONNeutralisesMentions(t *testing.T) {
+	d, _ := parseReplyJSON(`{"decision":"answer","reply":"@octocat owns this; see the note by @dev-1 in mail@example.com."}`)
+	if d.Reply != "`@octocat` owns this; see the note by `@dev-1` in mail@example.com." {
+		t.Fatalf("reply = %q", d.Reply)
+	}
+}
+
 func TestParseReplyJSONNormalizesWhitespace(t *testing.T) {
 	d, ok := parseReplyJSON("prefix {\"decision\":\"answer\",\"reply\":\"line one\\n\\n  line   two\"} suffix")
 	if !ok || d.Decision != "answer" || d.Reply != "line one line two" {
