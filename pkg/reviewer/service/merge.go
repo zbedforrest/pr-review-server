@@ -158,9 +158,16 @@ func RemapMergeTargets(merged, records []types.LineComment) {
 		if merged[i].Summary == nil {
 			continue
 		}
-		for j, id := range merged[i].Summary.PriorityIDs {
-			merged[i].Summary.PriorityIDs[j] = resolve(id)
+		seen := map[string]bool{}
+		var ids []string
+		for _, id := range merged[i].Summary.PriorityIDs {
+			id = resolve(id)
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
 		}
+		merged[i].Summary.PriorityIDs = ids
 	}
 }
 

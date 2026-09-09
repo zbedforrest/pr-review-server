@@ -200,3 +200,11 @@ func TestEvidenceFileExists_RequiresARegularFile(t *testing.T) {
 		t.Error("a bare basename is not evidence")
 	}
 }
+
+func TestNormalizeAgentLifecycleFields_ClearsMergeBasis(t *testing.T) {
+	out := []types.LineComment{{FilePath: "a.go", LineNumber: 1, CommentBody: "x", MergeBasis: "sources"}}
+	NormalizeAgentLifecycleFields(out)
+	if out[0].MergeBasis != "" {
+		t.Fatal("merge basis is policy metadata, not the agent's to set")
+	}
+}

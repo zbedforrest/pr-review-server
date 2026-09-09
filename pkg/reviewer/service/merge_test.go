@@ -410,3 +410,12 @@ func TestMergeFindingsWithRecords_IntraAgentDuplicatesLeaveARecordAndRemapRefere
 		t.Errorf("a claim merged into the dropped finding must follow it too: %+v", records[len(records)-1])
 	}
 }
+
+func TestRemapMergeTargets_DeduplicatesPriorityIDs(t *testing.T) {
+	merged := []types.LineComment{{FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "approve", PriorityIDs: []string{"A-1", "A-2"}}}}
+	records := []types.LineComment{{ID: "A-2", MergedInto: "A-1", MergeBasis: "proximity", State: StateMerged, Inactive: true}}
+	RemapMergeTargets(merged, records)
+	if len(merged[0].Summary.PriorityIDs) != 1 || merged[0].Summary.PriorityIDs[0] != "A-1" {
+		t.Fatalf("two priorities collapsing onto one survivor list it once: %v", merged[0].Summary.PriorityIDs)
+	}
+}

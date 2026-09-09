@@ -47,7 +47,7 @@ func NormalizeAgentLifecycleFields(out []types.LineComment) {
 	}
 	for i := range out {
 		c := &out[i]
-		c.State, c.Inactive, c.MergedInto = "", false, ""
+		c.State, c.Inactive, c.MergedInto, c.MergeBasis = "", false, "", ""
 		c.Assessment, c.Original = nil, nil
 		// An id used twice identifies nothing; unlabelled entries still merge
 		// by location, so nothing is lost, only the ambiguous reference.

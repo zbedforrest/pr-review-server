@@ -630,6 +630,9 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	service.EnforceFindingContractPolicy(merged)
 	records := append(mergedRecords, agentOut.Records...)
 	service.RemapMergeTargets(merged, records)
+	// The summary prose is rendered once references are final, so its
+	// "Next actions" name the findings that survived the merge.
+	service.RenderStructuredSummaries(merged)
 	readmitted := len(merged) - len(agentOut.Comments)
 	result.Comments = append(merged, records...)
 	result.ComputeImportanceCounts()

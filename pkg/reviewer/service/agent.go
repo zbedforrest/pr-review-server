@@ -472,7 +472,6 @@ func RunAgentReview(
 		evidencePaths[i] = f.Path
 	}
 	comments, firstPassActive, records := ApplyDispositionsWithEvidence(comments, claims, evidenceFileExists(evidencePaths, cloneDir))
-	RenderStructuredSummaries(comments)
 
 	// Fallback if ANY served model fails to match — a transient fallback
 	// that recovers mid-run still ran turns on the wrong model. ServedModel

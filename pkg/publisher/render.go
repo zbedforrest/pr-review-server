@@ -210,13 +210,14 @@ func (r Round) unverifiedBullet(f payload.Finding) string {
 	return line
 }
 
-// activeClaims are the findings the review holds this round, whether asserted
-// as bullets or folded as unverified; presence tracking must count both so a
-// claim that moved between them is neither "fixed" nor resolved.
+// activeClaims are the findings the review holds this round: asserted as
+// bullets, folded as lower-severity notes, or folded as unverified. Presence
+// tracking counts all of them so a claim that moved between sections is
+// neither "fixed" nor resolved.
 func (r Round) activeClaims() []payload.Finding {
 	var out []payload.Finding
 	for _, f := range r.Findings {
-		if Shown(f) || UnverifiedNote(f) {
+		if Publishable(f) || UnverifiedNote(f) {
 			out = append(out, f)
 		}
 	}

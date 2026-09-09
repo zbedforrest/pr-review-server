@@ -299,3 +299,25 @@ func TestRenderSummary_UnverifiedFoldLabelCoversCarriedClaims(t *testing.T) {
 		t.Errorf("fold label must not call a carried claim first-pass:\n%s", out)
 	}
 }
+
+func TestPublish_ConfirmedLowInTheFoldStaysPresent(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	r1 := roundOne()
+	publishRound(t, gh, ledger, r1)
+	r2 := roundOne()
+	r2.HeadSHA, r2.RoundNumber = "sha-2", 2
+	for i := range r2.Findings {
+		if r2.Findings[i].ID == "m1" {
+			// The contract no longer clears the inline bar; the finding is still
+			// confirmed and rendered in the lower-severity fold.
+			r2.Findings[i].FindingContract.Materiality = "unknown"
+		}
+	}
+	rep := publishRound(t, gh, ledger, r2)
+	if rep.Fixed != 0 {
+		t.Fatalf("a confirmed finding that moved to the lower-severity fold is not fixed: %+v", rep)
+	}
+	if m1 := ledger.get(db.PublishedKindFinding, "m1"); m1 == nil || m1.State != db.PublishedStateOpen {
+		t.Fatalf("its ledger row must stay open: %+v", m1)
+	}
+}
