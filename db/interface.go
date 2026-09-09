@@ -366,11 +366,17 @@ type PublishedReply struct {
 	// Decision and the fields after it are set when the reply model ran:
 	// concede | hold | answer | abstain, the text it produced, the evidence
 	// it cited as JSON, and what served it. RepliedAt is set once posted.
-	Decision    string
-	ReplyBody   string
-	Cited       string
-	Model       string
-	DurationMS  int64
+	Decision   string
+	ReplyBody  string
+	Cited      string
+	Model      string
+	DurationMS int64
+	// Outcome is the terminal result of the text step (posted, shadowed,
+	// abstained, skipped:<reason>, ineligible:<reason>, failed); empty means
+	// the step has not finished and the next scan resumes it. Attempts counts
+	// model runs so a persistently failing reply is eventually given up on.
+	Outcome     string
+	Attempts    int
 	RepliedAt   *time.Time
 	CreatedAt   time.Time
 	ProcessedAt time.Time

@@ -23,6 +23,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
@@ -116,6 +117,7 @@ type Poller struct {
 	replyLastScanned map[string]time.Time
 	replyLinkTried   map[string]time.Time
 	replySlots       chan struct{}
+	replyInFlight    publisher.ReplyInFlight
 	polling          bool
 	pollMutex        sync.Mutex
 	// Track active review processes for cancellation and monitoring

@@ -119,6 +119,32 @@ func (f *fakeReplyLedger) GetPublishedReplyIDsForPR(owner, repo string, number i
 	}
 	return seen, nil
 }
+func (f *fakeReplyLedger) ListPublishedRepliesForPR(_, _ string, number int) ([]db.PublishedReply, error) {
+	var out []db.PublishedReply
+	for _, r := range f.rows {
+		if r.PRNumber == number {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+func (f *fakeReplyLedger) SetPublishedReplyOutcome(_, _ string, _ int, authorCommentID int64, outcome string) error {
+	for i := range f.rows {
+		if f.rows[i].AuthorCommentID == authorCommentID {
+			f.rows[i].Outcome = outcome
+		}
+	}
+	return nil
+}
+func (f *fakeReplyLedger) IncrementPublishedReplyAttempts(_, _ string, _ int, authorCommentID int64) (int, error) {
+	for i := range f.rows {
+		if f.rows[i].AuthorCommentID == authorCommentID {
+			f.rows[i].Attempts++
+			return f.rows[i].Attempts, nil
+		}
+	}
+	return 0, fmt.Errorf("no row")
+}
 func (f *fakeReplyLedger) SetPublishedReplyDecision(_, _ string, _ int, authorCommentID int64, d db.ReplyDecisionRecord) error {
 	for i := range f.rows {
 		if f.rows[i].AuthorCommentID == authorCommentID {
@@ -512,7 +538,134 @@ func TestReplyReactor_NeverPostsTwiceForTheSameAuthorComment(t *testing.T) {
 	})
 	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 150, InReplyToID: 100, AuthorID: 1, Body: "Still applies.\n\n" + ReplyMarker(101)})
 	rep, _ := r.Run(context.Background())
-	if len(gh.posted) != 0 || rep.TextSkipped["already_posted"] != 1 || ledger.rows[0].ReplyCommentID != 150 {
+	if len(gh.posted) != 0 || rep.TextSkipped["already_posted"] != 1 || ledger.rows[0].ReplyCommentID != 150 || ledger.rows[0].Outcome != "posted" {
 		t.Fatalf("a reply that survived a crash must be adopted, not duplicated: posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_ForgedMarkerByTheAuthorIsIgnored(t *testing.T) {
+	runs := 0
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	gh.threads["acme/example#7"][1].Body += "\n\n" + ReplyMarker(101)
+	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 160, InReplyToID: 100, AuthorID: 42, Body: "ok " + ReplyMarker(101), CreatedAt: time.Date(2026, 9, 9, 17, 59, 30, 0, time.UTC)})
+	rep, _ := r.Run(context.Background())
+	if runs != 1 || len(gh.posted) != 1 || rep.Responded != 1 {
+		t.Fatalf("author-authored markers must not be adopted: runs=%d posted=%v rep=%+v", runs, gh.posted, rep)
+	}
+}
+
+func TestReplyReactor_ResumesAFailedTextStepNextCycle(t *testing.T) {
+	calls := 0
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		calls++
+		if calls == 1 {
+			return ReplyDecision{}, fmt.Errorf("wall clock")
+		}
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	r.LastScanned = map[string]time.Time{}
+	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
+		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1", UpdatedAt: time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)}, nil
+	}
+	rep, _ := r.Run(context.Background())
+	if len(rep.Errors) != 1 || len(gh.posted) != 0 || ledger.rows[0].Outcome != "" || ledger.rows[0].Attempts != 1 {
+		t.Fatalf("first cycle: rep=%+v row=%+v", rep, ledger.rows[0])
+	}
+	if !r.LastScanned["acme/example#7"].IsZero() {
+		t.Fatalf("watermark must not advance while a text step is unfinished")
+	}
+	rep, _ = r.Run(context.Background())
+	if calls != 2 || len(gh.posted) != 1 || rep.Responded != 1 || rep.AlreadyHandled != 1 || len(gh.reactions) != 1 || ledger.rows[0].Outcome != "posted" {
+		t.Fatalf("second cycle must resume without reacting again: calls=%d posted=%v rep=%+v row=%+v", calls, gh.posted, rep, ledger.rows[0])
+	}
+	if r.LastScanned["acme/example#7"].IsZero() {
+		t.Fatalf("watermark advances once the PR is settled")
+	}
+}
+
+func TestReplyReactor_GivesUpAfterMaxAttempts(t *testing.T) {
+	r, _, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{}, fmt.Errorf("boom")
+	})
+	for i := 0; i < 4; i++ {
+		r.Run(context.Background())
+	}
+	if ledger.rows[0].Outcome != "failed" || ledger.rows[0].Attempts != 4 {
+		t.Fatalf("row=%+v", ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_CrashAfterPostIsRecoveredFromThePersistedDecision(t *testing.T) {
+	runs := 0
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{Decision: DecisionConcede, Reply: "Withdrawn."}, nil
+	})
+	t0 := time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)
+	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", Class: "pushback", Action: "reacted", Decision: DecisionConcede, ReplyBody: "Withdrawn.", CreatedAt: t0}}
+	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 170, InReplyToID: 100, AuthorID: 1, Body: "Withdrawn.\n\n" + ReplyMarker(101), CreatedAt: t0.Add(time.Minute)})
+	rep, _ := r.Run(context.Background())
+	if runs != 0 || len(gh.posted) != 0 || ledger.rows[0].ReplyCommentID != 170 || ledger.rows[0].Outcome != "posted" || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
+		t.Fatalf("runs=%d posted=%v rep=%+v row=%+v states=%v", runs, gh.posted, rep, ledger.rows[0], ledger.states)
+	}
+}
+
+func TestReplyReactor_AnswersTwoSiblingsInOneScan(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, req ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionAnswer, Reply: fmt.Sprintf("Answer to %d.", req.Reply.CommentID)}, nil
+	})
+	t0 := time.Date(2026, 9, 9, 17, 59, 30, 0, time.UTC)
+	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 102, InReplyToID: 100, AuthorID: 42, Body: "And is the retry path covered as well?", CreatedAt: t0})
+	rep, _ := r.Run(context.Background())
+	if rep.Responded != 2 || len(gh.posted) != 2 || ledger.rows[1].Outcome != "posted" {
+		t.Fatalf("both siblings must be answered: rep=%+v posted=%v rows=%+v", rep, gh.posted, ledger.rows)
+	}
+}
+
+func TestReplyReactor_AuthorEditDuringTheModelRunDropsTheReply(t *testing.T) {
+	var gh *fakeReplyGH
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		gh.threads["acme/example#7"][1].Body = "Never mind, I see it now."
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || rep.TextSkipped["thread_moved"] != 1 || ledger.rows[0].Outcome != "skipped:thread_moved" {
+		t.Fatalf("posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_BackgroundDispatchRunsOncePerReplyAndReportsOutcomes(t *testing.T) {
+	var tasks []func()
+	var outcomes []ReplyOutcome
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	r.Background = func(task func()) { tasks = append(tasks, task) }
+	r.InFlight = &ReplyInFlight{}
+	r.OnOutcome = func(o ReplyOutcome, err error) { outcomes = append(outcomes, o) }
+	r.LastScanned = map[string]time.Time{}
+	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
+		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1", UpdatedAt: time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)}, nil
+	}
+
+	rep, _ := r.Run(context.Background())
+	if rep.Dispatched != 1 || len(tasks) != 1 || len(gh.posted) != 0 || len(gh.reactions) != 1 {
+		t.Fatalf("first scan must react and dispatch: rep=%+v tasks=%d", rep, len(tasks))
+	}
+	rep, _ = r.Run(context.Background())
+	if rep.Dispatched != 0 || len(tasks) != 1 || !r.LastScanned["acme/example#7"].IsZero() {
+		t.Fatalf("an in-flight reply is not dispatched again and holds the watermark: rep=%+v tasks=%d", rep, len(tasks))
+	}
+	tasks[0]()
+	if len(gh.posted) != 1 || len(outcomes) != 1 || !outcomes[0].Posted || ledger.rows[0].Outcome != "posted" {
+		t.Fatalf("posted=%v outcomes=%+v row=%+v", gh.posted, outcomes, ledger.rows[0])
+	}
+	rep, _ = r.Run(context.Background())
+	if rep.Dispatched != 0 || r.LastScanned["acme/example#7"].IsZero() {
+		t.Fatalf("settled PR advances the watermark: rep=%+v", rep)
 	}
 }

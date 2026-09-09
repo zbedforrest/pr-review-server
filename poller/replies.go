@@ -74,13 +74,6 @@ func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, 
 			PROwner: h.RepoOwner, PRRepo: h.RepoName, PRNumber: h.PRNumber,
 		})
 	}
-	for _, d := range rep.Decisions {
-		events = append(events, db.TelemetryEvent{
-			UserID: userID, Action: "reply_decision",
-			Label:   truncateLabel(fmt.Sprintf("decision=%s posted=%t model=%s ms=%d comment=%d", d.Decision, d.Posted, d.Model, d.DurationMS, d.AuthorCommentID), 255),
-			PROwner: d.RepoOwner, PRRepo: d.RepoName, PRNumber: d.PRNumber,
-		})
-	}
 	for _, reason := range sortedKeys(rep.TextSkipped) {
 		events = append(events, db.TelemetryEvent{
 			UserID: userID, Action: "reply_text_skipped", Label: fmt.Sprintf("reason=%s n=%d", reason, rep.TextSkipped[reason]),
@@ -110,6 +103,17 @@ func replyErrorEvent(action, msg string, userID int) db.TelemetryEvent {
 		ev.PROwner, ev.PRRepo, ev.PRNumber = owner, repo, number
 	}
 	return ev
+}
+
+// replyOutcomeEvent records one finished or failed text step.
+func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.TelemetryEvent {
+	label := fmt.Sprintf("outcome=%s decision=%s posted=%t model=%s ms=%d comment=%d", o.Outcome, o.Decision, o.Posted, o.Model, o.DurationMS, o.AuthorCommentID)
+	action := "reply_decision"
+	if err != nil {
+		action = "reply_text_error"
+		label = fmt.Sprintf("comment=%d: %v", o.AuthorCommentID, err)
+	}
+	return db.TelemetryEvent{UserID: userID, Action: action, Label: truncateLabel(label, 255), PROwner: o.RepoOwner, PRRepo: o.RepoName, PRNumber: o.PRNumber}
 }
 
 func sortedKeys(m map[string]int) []string {
@@ -226,7 +230,21 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		LastScanned: p.replyLastScanned,
 		Full:        full,
 		Responder:   p.replyResponder(),
-		Allowed:     func(login string) bool { return publishEnabledFor(login, enabled) },
+		InFlight:    &p.replyInFlight,
+		Background:  func(task func()) { go task() },
+		OnOutcome: func(o publisher.ReplyOutcome, err error) {
+			if err != nil {
+				log.Printf("[REPLY %s/%s#%d] text step for comment %d failed, will resume: %v", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, err)
+			} else {
+				log.Printf("[REPLY %s/%s#%d] comment %d: outcome=%s decision=%s posted=%t", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, o.Outcome, o.Decision, o.Posted)
+			}
+			if userID := p.systemTelemetryUserID(); userID != 0 {
+				if terr := p.db.CreateTelemetryEvents([]db.TelemetryEvent{replyOutcomeEvent(o, err, userID)}); terr != nil {
+					log.Printf("[REPLIES] WARN: could not record reply outcome: %v", terr)
+				}
+			}
+		},
+		Allowed: func(login string) bool { return publishEnabledFor(login, enabled) },
 		PR: func(ctx context.Context, owner, repo string, number int) (publisher.PRState, error) {
 			ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)
 			if err != nil {
@@ -276,8 +294,8 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			log.Printf("[REPLIES] %s", e)
 		}
 	}
-	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d responded=%d shadowed=%d abstained=%d text_skipped=%v errors=%d",
-		cycle, full, mode, len(targets), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Responded, rep.Shadowed, rep.Abstained, rep.TextSkipped, len(rep.Errors))
+	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d text_dispatched=%d errors=%d",
+		cycle, full, mode, len(targets), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Dispatched, len(rep.Errors))
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
 		return

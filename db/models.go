@@ -383,6 +383,8 @@ type PublishedReplyModel struct {
 	Cited           string `gorm:"type:text"`
 	Model           string `gorm:"size:128;not null;default:''"`
 	DurationMS      int64  `gorm:"not null;default:0"`
+	Outcome         string `gorm:"size:32;not null;default:''"`
+	Attempts        int    `gorm:"not null;default:0"`
 	RepliedAt       *time.Time
 	CreatedAt       time.Time `gorm:"not null"`
 	ProcessedAt     time.Time `gorm:"not null;index"`

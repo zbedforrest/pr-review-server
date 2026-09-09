@@ -210,3 +210,24 @@ func TestGormDB_SetPublishedFindingState_DismissesOneRow(t *testing.T) {
 	}
 	assert.Equal(t, map[string]string{"pkg/api/handler.go:4:deadbeef0123": PublishedStateDismissed, "b.go:2:feedface0000": PublishedStateOpen}, states)
 }
+
+func TestGormDB_PublishedReply_OutcomeAndAttempts(t *testing.T) {
+	db := newTestDB(t)
+	_, err := db.RecordPublishedReply(&PublishedReply{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: 9001, AuthorCommentID: 9010,
+		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	n, err := db.IncrementPublishedReplyAttempts("owner", "repo", 7, 9010)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	n, err = db.IncrementPublishedReplyAttempts("owner", "repo", 7, 9010)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	require.NoError(t, db.SetPublishedReplyOutcome("owner", "repo", 7, 9010, "posted"))
+	rows, err := db.ListPublishedRepliesForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "posted", rows[0].Outcome)
+	assert.Equal(t, 2, rows[0].Attempts)
+}

@@ -1,6 +1,7 @@
 package poller
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -107,20 +108,28 @@ func TestReplyInputFromRequestMapsThreadRolesAndStripsNothingElse(t *testing.T) 
 	}
 }
 
-func TestReplyTelemetryEventsIncludeDecisionsAndTextSkips(t *testing.T) {
+func TestReplyTelemetryEventsIncludeTextSkips(t *testing.T) {
 	rep := publisher.ReplyReport{
 		Handled:     []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "a", Class: "pushback", Action: "reacted", AuthorCommentID: 101}},
-		Decisions:   []publisher.ReplyOutcome{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, AuthorCommentID: 101, Decision: "hold", Posted: true, Model: "m", DurationMS: 1200}},
 		TextSkipped: map[string]int{"thread_cap": 2},
 	}
 	events := replyTelemetryEvents(rep, publisher.LinkReport{}, 3)
-	if len(events) != 3 {
+	if len(events) != 2 {
 		t.Fatalf("got %d events: %+v", len(events), events)
 	}
-	if events[1].Action != "reply_decision" || events[1].Label != "decision=hold posted=true model=m ms=1200 comment=101" || events[1].PRNumber != 7 {
-		t.Errorf("decision event = %+v", events[1])
+	if events[1].Action != "reply_text_skipped" || events[1].Label != "reason=thread_cap n=2" {
+		t.Errorf("skip event = %+v", events[1])
 	}
-	if events[2].Action != "reply_text_skipped" || events[2].Label != "reason=thread_cap n=2" {
-		t.Errorf("skip event = %+v", events[2])
+}
+
+func TestReplyOutcomeEventDistinguishesFailuresFromDecisions(t *testing.T) {
+	o := publisher.ReplyOutcome{RepoOwner: "acme", RepoName: "example", PRNumber: 7, AuthorCommentID: 101, Decision: "hold", Outcome: "posted", Posted: true, Model: "m", DurationMS: 1200}
+	ev := replyOutcomeEvent(o, nil, 3)
+	if ev.Action != "reply_decision" || ev.Label != "outcome=posted decision=hold posted=true model=m ms=1200 comment=101" || ev.PRNumber != 7 || ev.UserID != 3 {
+		t.Errorf("event = %+v", ev)
+	}
+	ev = replyOutcomeEvent(o, fmt.Errorf("wall clock"), 3)
+	if ev.Action != "reply_text_error" || ev.Label != "comment=101: wall clock" {
+		t.Errorf("error event = %+v", ev)
 	}
 }

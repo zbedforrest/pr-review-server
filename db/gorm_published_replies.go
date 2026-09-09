@@ -124,7 +124,8 @@ func publishedRepliesFromModels(models []PublishedReplyModel) []PublishedReply {
 			RootCommentID: m.RootCommentID, AuthorCommentID: m.AuthorCommentID,
 			Fingerprint: m.Fingerprint, AuthorID: m.AuthorID, Class: m.Class, Action: m.Action,
 			Body: m.Body, ReplyCommentID: m.ReplyCommentID,
-			Decision: m.Decision, ReplyBody: m.ReplyBody, Cited: m.Cited, Model: m.Model, DurationMS: m.DurationMS, RepliedAt: m.RepliedAt,
+			Decision: m.Decision, ReplyBody: m.ReplyBody, Cited: m.Cited, Model: m.Model, DurationMS: m.DurationMS,
+			Outcome: m.Outcome, Attempts: m.Attempts, RepliedAt: m.RepliedAt,
 			CreatedAt: m.CreatedAt, ProcessedAt: m.ProcessedAt,
 		})
 	}
@@ -142,6 +143,32 @@ func (g *GormDB) SetPublishedReplyDecision(owner, repo string, number int, autho
 	return g.replyRow(owner, repo, number, authorCommentID).Updates(map[string]interface{}{
 		"decision": d.Decision, "reply_body": d.ReplyBody, "cited": d.Cited, "model": d.Model, "duration_ms": d.DurationMS,
 	}).Error
+}
+
+// SetPublishedReplyOutcome marks the text step finished.
+func (g *GormDB) SetPublishedReplyOutcome(owner, repo string, number int, authorCommentID int64, outcome string) error {
+	return g.replyRow(owner, repo, number, authorCommentID).Update("outcome", outcome).Error
+}
+
+// IncrementPublishedReplyAttempts counts one model run and returns the total.
+func (g *GormDB) IncrementPublishedReplyAttempts(owner, repo string, number int, authorCommentID int64) (int, error) {
+	if err := g.replyRow(owner, repo, number, authorCommentID).Update("attempts", gorm.Expr("attempts + 1")).Error; err != nil {
+		return 0, err
+	}
+	var n int
+	err := g.replyRow(owner, repo, number, authorCommentID).Pluck("attempts", &n).Error
+	return n, err
+}
+
+// ListPublishedRepliesForPR returns every handled author reply on a PR.
+func (g *GormDB) ListPublishedRepliesForPR(owner, repo string, number int) ([]PublishedReply, error) {
+	var models []PublishedReplyModel
+	err := g.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, number).
+		Order("created_at ASC, id ASC").Find(&models).Error
+	if err != nil {
+		return nil, err
+	}
+	return publishedRepliesFromModels(models), nil
 }
 
 // MarkPublishedReplyPosted records the GitHub id of the text reply we posted.
