@@ -394,6 +394,22 @@ type PublishedReplyModel struct {
 	ProcessedAt     time.Time `gorm:"not null;index"`
 }
 
+// MentionTriggerModel records one "@handle review" comment that queued a
+// review, so it is never acted on twice.
+type MentionTriggerModel struct {
+	CommentID   int64     `gorm:"primaryKey;autoIncrement:false"`
+	RepoOwner   string    `gorm:"size:255;not null"`
+	RepoName    string    `gorm:"size:255;not null"`
+	PRNumber    int       `gorm:"not null;index"`
+	Author      string    `gorm:"size:255;not null"`
+	CommitSHA   string    `gorm:"size:40;not null;default:''"`
+	Publish     bool      `gorm:"not null;default:false"`
+	CreatedAt   time.Time `gorm:"not null"`
+	TriggeredAt time.Time `gorm:"not null;index"`
+}
+
+func (MentionTriggerModel) TableName() string { return "mention_triggers" }
+
 // TableName pins the name GORM derived when the table first shipped; the raw
 // migration SQL in gorm.go targets it by this name.
 func (PublishedReplyModel) TableName() string { return "published_reply_models" }

@@ -118,8 +118,13 @@ type Poller struct {
 	replyLinkTried   map[string]time.Time
 	replySlots       chan struct{}
 	replyInFlight    publisher.ReplyInFlight
-	polling          bool
-	pollMutex        sync.Mutex
+
+	mentionScanRunning atomic.Bool
+	mentionScanCycle   atomic.Int64
+	mentionLastScanned map[string]time.Time
+	mentionActivatedAt time.Time
+	polling            bool
+	pollMutex          sync.Mutex
 	// Track active review processes for cancellation and monitoring
 	activeReviews map[string]ProcessInfo // prKey (owner/repo/number) -> ProcessInfo
 	reviewsMutex  sync.Mutex
@@ -1169,6 +1174,7 @@ func (p *Poller) Start(ctx context.Context) {
 			if p.isLeader() {
 				p.startPoll(ctx, "scheduled")
 				go p.scanAuthorReplies(ctx)
+				go p.scanMentions(ctx)
 			} else {
 				log.Printf("[LEADER] not leader, skipping scheduled poll")
 			}

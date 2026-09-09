@@ -409,6 +409,20 @@ type PublishedReplyTarget struct {
 	Roots     map[int64]string
 }
 
+// MentionTrigger is one review request made by mentioning the App in a PR
+// comment.
+type MentionTrigger struct {
+	CommentID   int64
+	RepoOwner   string
+	RepoName    string
+	PRNumber    int
+	Author      string
+	CommitSHA   string
+	Publish     bool
+	CreatedAt   time.Time
+	TriggeredAt time.Time
+}
+
 // UnlinkedPublishedFinding is an inline finding posted through a review whose
 // GitHub comment id was never recorded, so author replies under it cannot be
 // matched to the ledger until it is linked.

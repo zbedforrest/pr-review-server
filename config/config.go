@@ -83,6 +83,9 @@ type Config struct {
 	ReplyWallClockSec  int
 	ReplyMaxTurns      int
 	ReplyMaxConcurrent int
+	// MentionHandle is the App login authors mention to request a review
+	// ("@<handle> review"); empty disables mention triggers.
+	MentionHandle string
 	// AnthropicAPIKey is optional for the agent pass (Claude OAuth remains
 	// supported) but required when FirstPassProvider is "claude".
 	AnthropicAPIKey   string
@@ -300,6 +303,7 @@ func Load() *Config {
 		ReplyWallClockSec:  getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
 		ReplyMaxTurns:      getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
 		ReplyMaxConcurrent: getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
+		MentionHandle:      getEnvOrDefault("MENTION_HANDLE", "prism-pr-review-server"),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),

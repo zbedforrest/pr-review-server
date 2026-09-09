@@ -103,6 +103,7 @@ func (g *GormDB) AutoMigrate() error {
 		&PublishedReplyModel{},
 		&ReviewRunModel{},
 		&ReviewStageAttemptModel{},
+		&MentionTriggerModel{},
 	); err != nil {
 		return err
 	}
@@ -172,6 +173,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&ReviewStageAttemptModel{}) {
 		if err := g.db.Migrator().CreateTable(&ReviewStageAttemptModel{}); err != nil {
 			return fmt.Errorf("create review_stage_attempts: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&MentionTriggerModel{}) {
+		if err := g.db.Migrator().CreateTable(&MentionTriggerModel{}); err != nil {
+			return fmt.Errorf("create mention_triggers: %w", err)
 		}
 	}
 	// Older revisions did not enforce one live run per target. Prefer work that

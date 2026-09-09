@@ -18,9 +18,11 @@ type ReviewCommentInput struct {
 }
 
 type IssueCommentInfo struct {
-	ID     int64
-	Author string
-	Body   string
+	ID        int64
+	Author    string
+	IsBot     bool
+	Body      string
+	CreatedAt time.Time
 }
 
 type ReviewCommentInfo struct {
@@ -155,7 +157,7 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, numb
 			return nil, fmt.Errorf("list issue comments: %w", err)
 		}
 		for _, ic := range page {
-			out = append(out, IssueCommentInfo{ID: ic.GetID(), Author: ic.GetUser().GetLogin(), Body: ic.GetBody()})
+			out = append(out, IssueCommentInfo{ID: ic.GetID(), Author: ic.GetUser().GetLogin(), IsBot: ic.GetUser().GetType() == "Bot", Body: ic.GetBody(), CreatedAt: ic.GetCreatedAt().Time})
 		}
 		if resp.NextPage == 0 {
 			return out, nil
@@ -195,6 +197,19 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 		}
 		opts.Page = resp.NextPage
 	}
+}
+
+// CreateIssueCommentReaction adds a reaction (for example "eyes") to a PR
+// conversation comment.
+func (c *Client) CreateIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, content string) error {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+	if _, _, err := gh.Reactions.CreateIssueCommentReaction(ctx, owner, repo, commentID, content); err != nil {
+		return fmt.Errorf("react to issue comment %d: %w", commentID, err)
+	}
+	return nil
 }
 
 // CreateCommentReaction adds a reaction (for example "+1") to a review

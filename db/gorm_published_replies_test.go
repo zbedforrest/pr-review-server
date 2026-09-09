@@ -274,3 +274,17 @@ func TestGormDB_ClaimPublishedReply_IsExclusiveUntilReleasedOrStale(t *testing.T
 	require.NoError(t, err)
 	assert.False(t, ok, "a finished step cannot be claimed")
 }
+
+func TestGormDB_MentionTriggers_RecordOnce(t *testing.T) {
+	db := newTestDB(t)
+	handled, err := db.MentionHandled(500)
+	require.NoError(t, err)
+	assert.False(t, handled)
+	m := &MentionTrigger{CommentID: 500, RepoOwner: "owner", RepoName: "repo", PRNumber: 7, Author: "alice", CommitSHA: "abc", Publish: true,
+		CreatedAt: time.Now().UTC(), TriggeredAt: time.Now().UTC()}
+	require.NoError(t, db.RecordMention(m))
+	require.NoError(t, db.RecordMention(m))
+	handled, err = db.MentionHandled(500)
+	require.NoError(t, err)
+	assert.True(t, handled)
+}
