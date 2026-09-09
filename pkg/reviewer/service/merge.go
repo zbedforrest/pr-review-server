@@ -65,8 +65,11 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 			// The caller builds the sets, so the set label is the authoritative
 			// attribution for this review (a carried finding's own stamp is
 			// the bare word; the set label names the source review).
-			if set.Provenance != "" {
+			switch {
+			case set.Provenance != "":
 				c.Provenance = set.Provenance
+			case si > 0:
+				c.Provenance = "first-pass"
 			}
 			if c.FilePath == "SUMMARY" {
 				if si == 0 {

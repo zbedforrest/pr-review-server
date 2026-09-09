@@ -315,3 +315,12 @@ func TestMergeFindings_SetLabelOverridesTheCommentsOwnProvenance(t *testing.T) {
 		t.Fatalf("the set label names the source review and must win over the bare stamp: %q", got[1].Provenance)
 	}
 }
+
+func TestMergeFindings_BlankLowerPriorityLabelDefaultsToFirstPass(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{lc("SUMMARY", 0, "LOW", "Verdict: approve")}}
+	unlabeled := FindingSet{Comments: []types.LineComment{lc("b.ts", 40, "CRITICAL", "crash")}}
+	got := MergeFindings(agent, unlabeled)
+	if got[1].Provenance != "first-pass" {
+		t.Fatalf("a re-admitted finding must never read as the agent's own: %q", got[1].Provenance)
+	}
+}

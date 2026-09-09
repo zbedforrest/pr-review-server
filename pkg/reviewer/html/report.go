@@ -128,7 +128,7 @@ func findingGroup(provenance string) (group, pill, class string) {
 }
 
 var (
-	verdictLineRe    = regexp.MustCompile(`(?i)verdict:`)
+	verdictLineRe    = regexp.MustCompile(`(?i)^[\s*_#>-]*verdict:`)
 	suggestionsParRe = regexp.MustCompile(`(?i)^[\s*_#>-]*suggestions?:`)
 	// The label with its leading list/emphasis marks and any emphasis that
 	// closed right after it ("**Suggestions:** rest").

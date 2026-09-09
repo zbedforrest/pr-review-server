@@ -104,7 +104,12 @@ func buildDeterministicAlerts(comments []types.LineComment, checks []CheckRecord
 		}
 		if rec, ok := byID[v.CheckID]; ok && v.CheckID != "" {
 			v.Verdict = rec.Verdict
-			if rec.EvidenceResolved {
+			switch {
+			case rec.Unresolved && rec.Verdict != "UNANSWERED":
+				// Cleared without resolvable evidence: enforcement treats
+				// this as still open, so the badge must not read as clean.
+				v.Evidence = "unresolved"
+			case rec.EvidenceResolved:
 				v.Evidence = evidenceResolvedLabel
 			}
 		}

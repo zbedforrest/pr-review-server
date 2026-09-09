@@ -208,3 +208,15 @@ func TestBuildDeterministicAlerts_NoChecksNoVerdict(t *testing.T) {
 	assert.Equal(t, "", alerts[0].CheckID)
 	assert.Equal(t, "", alerts[0].Verdict)
 }
+
+func TestBuildDeterministicAlerts_UnresolvedClearanceStaysMarked(t *testing.T) {
+	comments := []types.LineComment{{
+		FilePath: "app/Tooltip.tsx", Provenance: "mechanical",
+		CommentBody: "**Mechanical alert: portal overlay without an explicit layer.** body\n\n_Required check CHK-portal-layer-1 was not answered with evidence, treat as unresolved risk._",
+	}}
+	checks := []CheckRecord{{ID: "CHK-portal-layer-1", Source: "gate", Verdict: "SAFE", Unresolved: true}}
+	alerts := buildDeterministicAlerts(comments, checks)
+	if len(alerts) != 1 || alerts[0].Verdict != "SAFE" || alerts[0].Evidence != "unresolved" {
+		t.Fatalf("a SAFE answer without resolvable evidence must show as unresolved: %+v", alerts)
+	}
+}

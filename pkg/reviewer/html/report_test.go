@@ -848,3 +848,13 @@ func TestDecomposeSummary_OnlyTheGeneratedReconciliationFooterIsStripped(t *test
 		t.Errorf("the generated footer must be stripped:\n%s", parts.Prose)
 	}
 }
+
+func TestDecomposeSummary_VerdictMustStartALine(t *testing.T) {
+	parts := decomposeSummary("The endpoint returns verdict: pending while the job runs.\n\n**Verdict: request changes.**\n\nMore prose.")
+	if parts.Verdict != "Verdict: request changes." {
+		t.Errorf("verdict = %q, want the line that starts with it", parts.Verdict)
+	}
+	if !strings.Contains(parts.Prose, "verdict: pending") {
+		t.Errorf("an inline mention must stay in the prose:\n%s", parts.Prose)
+	}
+}
