@@ -239,8 +239,8 @@ func TestEvidenceFileExists_LineMustBeWithinTheFile(t *testing.T) {
 	if !check(types.EvidenceRef{File: "f.go", Line: 3}) {
 		t.Error("a line inside the file resolves")
 	}
-	if check(types.EvidenceRef{File: "f.go", Line: 99999}) {
-		t.Error("a line past the end of the file is not evidence")
+	if check(types.EvidenceRef{File: "f.go", Line: 99999}) || check(types.EvidenceRef{File: "f.go", Line: 4}) {
+		t.Error("a line past the end of the file is not evidence, and a trailing newline is not a line")
 	}
 }
 

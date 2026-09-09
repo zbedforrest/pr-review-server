@@ -281,7 +281,11 @@ func evidenceRefResolves(diffPaths []string, worktreeDir string) func(types.Evid
 		if err != nil {
 			return false // in the diff but gone from disk (deleted): nothing to cite
 		}
-		return e.Line <= strings.Count(string(data), "\n")+1
+		lines := strings.Count(string(data), "\n")
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			lines++
+		}
+		return e.Line <= lines
 	}
 }
 

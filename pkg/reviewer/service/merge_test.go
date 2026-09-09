@@ -352,6 +352,12 @@ func TestCarryForwardFindings_SkipsInactiveRecords(t *testing.T) {
 	if carried[0].State != StateUnverified {
 		t.Errorf("a carried finding is a re-admitted claim and reads as unverified: %+v", carried[0])
 	}
+	stale := lc("c.go", 3, "LOW", "with prior-run references")
+	stale.Sources, stale.MergeBasis, stale.Summary = []string{"FP-2"}, "sources", &types.SummaryBlock{Verdict: "approve"}
+	carried, _ = CarryForwardFindings([]types.LineComment{stale}, nil)
+	if carried[0].Sources != nil || carried[0].MergeBasis != "" || carried[0].Summary != nil {
+		t.Errorf("prior-run references mean nothing in this run: %+v", carried[0])
+	}
 }
 
 func TestMergeFindingsWithRecords_DisputedClaimsAreNotFoldedByProximity(t *testing.T) {

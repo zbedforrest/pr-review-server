@@ -329,7 +329,8 @@ func CarryForwardFindings(prior []types.LineComment, touchedFiles []string) (car
 		// prior-run label.
 		c.Provenance = "carried"
 		c.State = StateUnverified
-		c.Assessment, c.MergedInto = nil, ""
+		c.Assessment, c.MergedInto, c.MergeBasis = nil, "", ""
+		c.Sources, c.Summary = nil, nil
 		carried = append(carried, c)
 	}
 	return carried, dropped
