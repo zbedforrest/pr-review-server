@@ -275,16 +275,43 @@ func TestGormDB_ClaimPublishedReply_IsExclusiveUntilReleasedOrStale(t *testing.T
 	assert.False(t, ok, "a finished step cannot be claimed")
 }
 
-func TestGormDB_MentionTriggers_RecordOnce(t *testing.T) {
+func TestGormDB_MentionTriggers_ReserveFinalizeRelease(t *testing.T) {
 	db := newTestDB(t)
-	handled, err := db.MentionHandled(500)
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	m := &MentionTrigger{CommentID: 500, RepoOwner: "owner", RepoName: "repo", PRNumber: 7, Author: "alice", CommitSHA: "abc", Publish: true, CreatedAt: now, TriggeredAt: now}
+	ok, err := db.ReserveMention(m)
 	require.NoError(t, err)
-	assert.False(t, handled)
-	m := &MentionTrigger{CommentID: 500, RepoOwner: "owner", RepoName: "repo", PRNumber: 7, Author: "alice", CommitSHA: "abc", Publish: true,
-		CreatedAt: time.Now().UTC(), TriggeredAt: time.Now().UTC()}
-	require.NoError(t, db.RecordMention(m))
-	require.NoError(t, db.RecordMention(m))
-	handled, err = db.MentionHandled(500)
+	assert.True(t, ok)
+	handled, err := db.MentionHandled(500, now.Add(time.Minute))
 	require.NoError(t, err)
-	assert.True(t, handled)
+	assert.True(t, handled, "a live reservation counts as handled")
+	ok, err = db.ReserveMention(m)
+	require.NoError(t, err)
+	assert.False(t, ok, "a live reservation cannot be taken twice")
+
+	require.NoError(t, db.ReleaseMention(500))
+	handled, err = db.MentionHandled(500, now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, handled, "a released request is retried")
+
+	ok, err = db.ReserveMention(m)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	require.NoError(t, db.FinalizeMention(500))
+	handled, err = db.MentionHandled(500, now.Add(48*time.Hour))
+	require.NoError(t, err)
+	assert.True(t, handled, "a finalised request stays handled")
+	require.NoError(t, db.ReleaseMention(500))
+	handled, _ = db.MentionHandled(500, now.Add(48*time.Hour))
+	assert.True(t, handled, "release never removes a finalised row")
+
+	stale := &MentionTrigger{CommentID: 600, RepoOwner: "owner", RepoName: "repo", PRNumber: 7, Author: "alice", CreatedAt: now, TriggeredAt: now.Add(-time.Hour)}
+	_, err = db.ReserveMention(stale)
+	require.NoError(t, err)
+	handled, err = db.MentionHandled(600, now)
+	require.NoError(t, err)
+	assert.False(t, handled, "a reservation older than the TTL is a dead pass")
+	ok, err = db.ReserveMention(&MentionTrigger{CommentID: 600, RepoOwner: "owner", RepoName: "repo", PRNumber: 7, Author: "alice", CreatedAt: now, TriggeredAt: now})
+	require.NoError(t, err)
+	assert.True(t, ok, "and can be taken over")
 }

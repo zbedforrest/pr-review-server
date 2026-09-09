@@ -18,11 +18,12 @@ type ReviewCommentInput struct {
 }
 
 type IssueCommentInfo struct {
-	ID        int64
-	Author    string
-	IsBot     bool
-	Body      string
-	CreatedAt time.Time
+	ID          int64
+	Author      string
+	IsBot       bool
+	Association string // GitHub's author_association: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...
+	Body        string
+	CreatedAt   time.Time
 }
 
 type ReviewCommentInfo struct {
@@ -157,7 +158,7 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, numb
 			return nil, fmt.Errorf("list issue comments: %w", err)
 		}
 		for _, ic := range page {
-			out = append(out, IssueCommentInfo{ID: ic.GetID(), Author: ic.GetUser().GetLogin(), IsBot: ic.GetUser().GetType() == "Bot", Body: ic.GetBody(), CreatedAt: ic.GetCreatedAt().Time})
+			out = append(out, IssueCommentInfo{ID: ic.GetID(), Author: ic.GetUser().GetLogin(), IsBot: ic.GetUser().GetType() == "Bot", Association: ic.GetAuthorAssociation(), Body: ic.GetBody(), CreatedAt: ic.GetCreatedAt().Time})
 		}
 		if resp.NextPage == 0 {
 			return out, nil

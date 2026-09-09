@@ -1151,6 +1151,13 @@ func (p *Poller) Start(ctx context.Context) {
 	if p.cfg.DisablePolling {
 		log.Println("DISABLE_POLLING set — skipping initial and scheduled polls (manual trigger + on-demand reviews still available)")
 	} else if p.isLeader() {
+		if p.cfg.MentionHandle != "" {
+			// Stamp the cutoff before the first tick so a request posted
+			// right after a deploy is not older than it.
+			if _, err := p.mentionActivation(); err != nil {
+				log.Printf("[MENTIONS] activation timestamp: %v", err)
+			}
+		}
 		p.startPoll(ctx, "initial")
 	} else {
 		log.Printf("[LEADER] not leader at startup, skipping initial poll")

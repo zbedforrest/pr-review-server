@@ -419,6 +419,7 @@ type MentionTrigger struct {
 	Author      string
 	CommitSHA   string
 	Publish     bool
+	Queued      bool
 	CreatedAt   time.Time
 	TriggeredAt time.Time
 }
