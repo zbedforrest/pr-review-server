@@ -235,6 +235,7 @@ type Finding struct {
 	Assessment *types.Disposition   `json:"assessment,omitempty"`
 	Original   *types.OriginalClaim `json:"original,omitempty"`
 	MergedInto string               `json:"merged_into,omitempty"`
+	MergeBasis string               `json:"merge_basis,omitempty"`
 	// Summary is the structured SUMMARY the agent emitted (SUMMARY entries only).
 	Summary      *types.SummaryBlock `json:"summary,omitempty"`
 	DiffHunk     string              `json:"diff_hunk,omitempty"`
@@ -363,6 +364,7 @@ func (p Payload) ToLineComments() []types.LineComment {
 			Assessment:      f.Assessment,
 			Original:        f.Original,
 			MergedInto:      f.MergedInto,
+			MergeBasis:      f.MergeBasis,
 			Summary:         f.Summary,
 		})
 	}
@@ -473,6 +475,7 @@ func Build(
 			Original:              c.Original,
 			Summary:               c.Summary,
 		}
+		f.MergeBasis = c.MergeBasis
 		if c.MergedInto != "" {
 			f.MergedInto = c.MergedInto
 			if fp, ok := agentIDs[c.MergedInto]; ok {
@@ -588,6 +591,19 @@ func (p Payload) ToCompactMarkdown(meta CompactMeta) string {
 	fmt.Fprintf(&b, "=== FINDINGS (%d) ===\n", len(claims))
 	for _, f := range claims {
 		fmt.Fprintf(&b, "\n--- [%s] %s:%d ---\n\n", strings.ToUpper(f.Severity), f.File, f.Line)
+		if f.State == "unverified" {
+			origin := "first-pass claim the agent did not verify"
+			if f.Assessment != nil {
+				origin = "first-pass claim the agent disputed"
+			} else if normalizeProvenance(f.Provenance) == ProvenanceCarried {
+				origin = "carried from an earlier review, not re-verified"
+			}
+			fmt.Fprintf(&b, "STATE: unverified (%s)\n", origin)
+			if f.Assessment != nil && strings.TrimSpace(f.Assessment.Reason) != "" {
+				fmt.Fprintf(&b, "AGENT REJECTED: %s\n", strings.TrimSpace(f.Assessment.Reason))
+			}
+			b.WriteString("\n")
+		}
 		b.WriteString("COMMENT:\n")
 		b.WriteString(strings.TrimRight(f.Comment, "\n"))
 		b.WriteString("\n")

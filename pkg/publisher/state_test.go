@@ -88,7 +88,7 @@ func TestRenderSummary_FoldsUnverifiedFirstPassNotes(t *testing.T) {
 	r := unverifiedRound()
 	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
 
-	foldIdx := strings.Index(out, "<details><summary>2 unverified first-pass notes</summary>")
+	foldIdx := strings.Index(out, "<details><summary>2 unverified notes</summary>")
 	if foldIdx < 0 {
 		t.Fatalf("summary must fold the unverified notes:\n%s", out)
 	}
@@ -118,7 +118,7 @@ func TestRenderSummary_UnverifiedFoldFollowsLowerSeverityNotes(t *testing.T) {
 	r := unverifiedRound()
 	r.Findings = append(r.Findings, withContract(f("l1", "low", "b.go", 9, "Nit."), "test_quality", "no_user_impact", "No user impact.", ""))
 	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
-	lower, unv := strings.Index(out, "1 lower-severity note</summary>"), strings.Index(out, "2 unverified first-pass notes</summary>")
+	lower, unv := strings.Index(out, "1 lower-severity note</summary>"), strings.Index(out, "2 unverified notes</summary>")
 	if lower < 0 || unv < 0 || unv < lower {
 		t.Fatalf("unverified fold must follow the lower-severity fold:\n%s", out)
 	}
@@ -166,7 +166,7 @@ func TestPublish_PolicyShowUnverifiedControlsTheFold(t *testing.T) {
 			if _, err := p.Publish(t.Context(), r); err != nil {
 				t.Fatal(err)
 			}
-			if got := strings.Contains(gh.issueCreates[0], "unverified first-pass notes"); got != tc.want {
+			if got := strings.Contains(gh.issueCreates[0], "unverified notes"); got != tc.want {
 				t.Fatalf("fold present = %v, want %v:\n%s", got, tc.want, gh.issueCreates[0])
 			}
 		})
@@ -272,5 +272,30 @@ func TestUnverifiedBullet_MarksCarriedClaimsAsCarriedAndBoundsTheReason(t *testi
 		if strings.Contains(line, "Agent:") && len(line) > 320 {
 			t.Errorf("the disputed reason must be bounded: %d chars", len(line))
 		}
+	}
+}
+
+func TestRoundDiff_NewCountsOnlyWhatTheReaderCanSee(t *testing.T) {
+	hidden := fp("u", "medium", "a.go", 4, "unverified claim", "first-pass")
+	hidden.State, hidden.Active = "unverified", true
+	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 2, ShowUnverified: false,
+		Findings: []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "n"), hidden}}
+	if d := r.diff(); d.New != 0 {
+		t.Fatalf("a claim the comment does not show cannot be announced as new: %+v", d)
+	}
+	r.ShowUnverified = true
+	if d := r.diff(); d.New != 1 {
+		t.Fatalf("once shown it counts: %+v", d)
+	}
+}
+
+func TestRenderSummary_UnverifiedFoldLabelCoversCarriedClaims(t *testing.T) {
+	carried := fp("c", "medium", "a.go", 4, "carried claim", "carried")
+	carried.State, carried.Active = "unverified", true
+	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 1, ShowUnverified: true,
+		Findings: []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "n"), carried}}
+	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
+	if !strings.Contains(out, "<summary>1 unverified note</summary>") || strings.Contains(out, "first-pass note") {
+		t.Errorf("fold label must not call a carried claim first-pass:\n%s", out)
 	}
 }

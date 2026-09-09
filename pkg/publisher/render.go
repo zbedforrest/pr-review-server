@@ -106,8 +106,10 @@ func (r Round) diff() roundDiff {
 			d.Fixed++
 		}
 	}
-	for id := range present {
-		if !published[id] {
+	// Presence covers every active claim, but "new" is what the reader can
+	// see: shown bullets plus the unverified fold when the policy shows it.
+	for _, f := range append(r.currentFindings(), r.unverifiedNotes()...) {
+		if !published[f.ID] {
 			d.New++
 		}
 	}
@@ -331,7 +333,7 @@ func RenderSummary(r Round, sel Selection) string {
 		b.WriteString("\n")
 	}
 	r.writeFolded(&b, "lower-severity note", r.lowerSeverityNotes(), r.bullet)
-	r.writeFolded(&b, "unverified first-pass note", r.unverifiedNotes(), r.unverifiedBullet)
+	r.writeFolded(&b, "unverified note", r.unverifiedNotes(), r.unverifiedBullet)
 	if r.DashboardURL != "" {
 		fmt.Fprintf(&b, "[Full report](%s)\n\n", r.DashboardURL)
 	}

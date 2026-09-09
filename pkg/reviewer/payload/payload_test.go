@@ -812,3 +812,19 @@ func TestBuild_MergedIntoResolvesLocationFallbacksToTheActiveFinding(t *testing.
 		t.Fatalf("merged_into must be the active finding's fingerprint, got %q (want %q)", record.MergedInto, active.ID)
 	}
 }
+
+func TestToCompactMarkdown_MarksUnverifiedAndDisputedClaims(t *testing.T) {
+	pl := Payload{SchemaVersion: "2", Findings: []Finding{
+		{File: "a.go", Line: 1, Severity: "medium", Comment: "confirmed claim", State: "confirmed", Active: true},
+		{File: "b.go", Line: 2, Severity: "medium", Comment: "disputed claim", State: "unverified", Active: true, Provenance: "first-pass",
+			Assessment: &types.Disposition{State: "rejected", Reason: "the guard returns first"}},
+	}}
+	md := pl.ToCompactMarkdown(CompactMeta{FindingsAvailable: true})
+	if !strings.Contains(md, "STATE: unverified (first-pass claim the agent disputed)") || !strings.Contains(md, "AGENT REJECTED: the guard returns first") {
+		t.Errorf("an agent reading the export must see the state and the counterargument:\n%s", md)
+	}
+	first := md[strings.Index(md, "--- [MEDIUM] a.go:1"):strings.Index(md, "--- [MEDIUM] b.go:2")]
+	if strings.Contains(first, "STATE:") {
+		t.Errorf("confirmed claims carry no state line:\n%s", first)
+	}
+}

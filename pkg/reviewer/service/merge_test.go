@@ -368,3 +368,13 @@ func TestMergeFindingsWithRecords_DisputedClaimsAreNotFoldedByProximity(t *testi
 		t.Fatalf("a claim the agent explicitly rejected cannot be the same defect as its nearby positive finding; it stays active and disputed: merged=%+v records=%+v", merged, records)
 	}
 }
+
+func TestMergeFindingsWithRecords_ProximityFoldsRecordTheirBasis(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{{ID: "A-1", FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "agent"}}}
+	fp := lc("a.go", 12, "CRITICAL", "first-pass")
+	fp.State = StateUnverified
+	_, records := MergeFindingsWithRecords(agent, FindingSet{Provenance: "first-pass", Comments: []types.LineComment{fp}})
+	if len(records) != 1 || records[0].MergeBasis != "proximity" {
+		t.Fatalf("a heuristic fold must say so: %+v", records)
+	}
+}

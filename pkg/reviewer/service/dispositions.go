@@ -153,7 +153,7 @@ func ApplyDispositionsWithEvidence(agentOut []types.LineComment, claims []firstP
 			// reference that resolves; unsupported prose falls through to
 			// unverified.
 			if c.Disposition.State == StateRejected && supportedRejection(c.Disposition, pathExists) {
-				rejected[c.Disposition.SourceID] = c.Disposition
+				rejected[c.Disposition.SourceID] = resolvedEvidenceOnly(c.Disposition, pathExists)
 			}
 			continue
 		}
@@ -176,7 +176,7 @@ func ApplyDispositionsWithEvidence(agentOut []types.LineComment, claims []firstP
 		critical := strings.EqualFold(strings.TrimSpace(claim.Importance), "CRITICAL")
 		switch {
 		case hasKey(confirmedBy, claim.SourceID):
-			record.State, record.Inactive, record.MergedInto = StateMerged, true, confirmedBy[claim.SourceID]
+			record.State, record.Inactive, record.MergedInto, record.MergeBasis = StateMerged, true, confirmedBy[claim.SourceID], "sources"
 			records = append(records, record)
 		case rejected[claim.SourceID] != nil && critical:
 			record.State, record.Assessment = StateUnverified, rejected[claim.SourceID]
@@ -193,6 +193,19 @@ func ApplyDispositionsWithEvidence(agentOut []types.LineComment, claims []firstP
 		}
 	}
 	return findings, active, records
+}
+
+// resolvedEvidenceOnly copies a disposition keeping only the evidence that
+// resolves, so unresolved references are never rendered as grounding.
+func resolvedEvidenceOnly(d *types.Disposition, pathExists func(string) bool) *types.Disposition {
+	out := *d
+	out.Evidence = nil
+	for _, e := range d.Evidence {
+		if file := strings.TrimSpace(e.File); file != "" && pathExists(file) {
+			out.Evidence = append(out.Evidence, e)
+		}
+	}
+	return &out
 }
 
 func supportedRejection(d *types.Disposition, pathExists func(string) bool) bool {

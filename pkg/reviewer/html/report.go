@@ -99,6 +99,7 @@ type RecordView struct {
 	Reason     string
 	Evidence   []string
 	MergedInto string
+	MergeBasis string
 	// MergedAnchor links to the absorbing finding when it is on the page.
 	MergedAnchor string
 }
@@ -545,7 +546,7 @@ func recordViews(records []types.LineComment, state string, anchors map[string]s
 			continue
 		}
 		v := RecordView{Severity: c.Importance, FilePath: c.FilePath, LineNumber: c.LineNumber,
-			Claim: payload.StripProvenanceNote(c.CommentBody), MergedInto: c.MergedInto, MergedAnchor: anchors[c.MergedInto]}
+			Claim: payload.StripProvenanceNote(c.CommentBody), MergedInto: c.MergedInto, MergeBasis: c.MergeBasis, MergedAnchor: anchors[c.MergedInto]}
 		if c.Original != nil && strings.TrimSpace(c.Original.Comment) != "" {
 			v.Claim = c.Original.Comment
 		}

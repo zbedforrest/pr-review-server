@@ -41,8 +41,11 @@ type LineComment struct {
 	Assessment *Disposition `json:"assessment,omitempty"`
 	// Original preserves a first-pass claim as it was handed to the agent.
 	Original *OriginalClaim `json:"original,omitempty"`
-	// MergedInto is the id of the finding a merged claim was folded into.
+	// MergedInto is the id of the finding a merged claim was folded into, and
+	// MergeBasis says why: "sources" when the agent listed the claim, or
+	// "proximity" when the same-file nearby-line heuristic folded it.
 	MergedInto string `json:"merged_into,omitempty"`
+	MergeBasis string `json:"merge_basis,omitempty"`
 }
 
 // Disposition is the agent's verdict on one first-pass claim.

@@ -102,7 +102,7 @@ func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineC
 				}
 				if si > 0 {
 					c.State, c.Inactive, c.Assessment = StateMerged, true, nil
-					c.MergedInto = mergeTarget(merged[di])
+					c.MergedInto, c.MergeBasis = mergeTarget(merged[di]), "proximity"
 					records = append(records, c)
 				}
 				continue

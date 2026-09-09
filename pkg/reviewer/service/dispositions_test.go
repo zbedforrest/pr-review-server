@@ -155,3 +155,27 @@ func TestApplyDispositions_RejectionEvidenceMustResolve(t *testing.T) {
 		t.Fatalf("resolving evidence supports the rejection: %+v", records[0])
 	}
 }
+
+func TestApplyDispositions_KeepsOnlyResolvedEvidenceAndRecordsTheMergeBasis(t *testing.T) {
+	claims := firstPassClaims([]types.LineComment{lc("d.go", 20, "MEDIUM", "Missing null check."), lc("a.go", 3, "CRITICAL", "Nil deref.")})
+	agentOut := []types.LineComment{
+		{FilePath: "d.go", LineNumber: 20, Disposition: &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "Never nil.", Evidence: []types.EvidenceRef{{File: "ghost.go", Line: 1}, {File: "client/http.go", Line: 88}}}},
+		{ID: "A-1", FilePath: "a.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "cfg nil", Sources: []string{"FP-2"}},
+	}
+	_, _, records := ApplyDispositionsWithEvidence(agentOut, claims, func(p string) bool { return p == "client/http.go" })
+	var rejected, merged types.LineComment
+	for _, r := range records {
+		switch r.State {
+		case StateRejected:
+			rejected = r
+		case StateMerged:
+			merged = r
+		}
+	}
+	if len(rejected.Assessment.Evidence) != 1 || rejected.Assessment.Evidence[0].File != "client/http.go" {
+		t.Errorf("unresolved evidence must not be stored as grounding: %+v", rejected.Assessment.Evidence)
+	}
+	if merged.MergeBasis != "sources" {
+		t.Errorf("a claim the agent linked is merged by sources: %+v", merged)
+	}
+}

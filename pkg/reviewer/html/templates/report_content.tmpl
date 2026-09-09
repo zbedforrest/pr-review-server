@@ -27,7 +27,7 @@
             <div class="record-claim">{{.Claim | markdownify}}</div>
             {{if .Reason}}<div class="record-reason">Rejected because: {{.Reason}}</div>{{end}}
             {{if .Evidence}}<div class="record-evidence">Evidence:{{range .Evidence}} <span class="evidence-ref">{{.}}</span>{{end}}</div>{{end}}
-            {{if .MergedInto}}<div class="record-merged">folded into {{if .MergedAnchor}}<a href="#{{.MergedAnchor}}">{{.MergedInto}}</a>{{else}}{{.MergedInto}}{{end}}</div>{{end}}
+            {{if .MergedInto}}<div class="record-merged">folded into {{if .MergedAnchor}}<a href="#{{.MergedAnchor}}">{{.MergedInto}}</a>{{else}}{{.MergedInto}}{{end}}{{if .MergeBasis}} ({{if eq .MergeBasis "proximity"}}same file, nearby line; the agent did not link them{{else}}linked by the agent{{end}}){{end}}</div>{{end}}
         </div>
         {{end}}
 {{end}}
