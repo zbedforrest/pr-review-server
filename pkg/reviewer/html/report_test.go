@@ -933,6 +933,7 @@ index 123..456 100644
 		pills["note"] += strings.Count(header, `<span class="sev-pill sev-note">NOTE</span>`)
 	}
 	assert.Equal(t, map[string]int{"critical": 1, "medium": 1, "low": 2, "note": 1}, pills, "severity is upper-cased whatever the sidecar stored; none reads NOTE like the index")
+	assert.NotContains(t, report, `>medium</span>`, "the index label matches the header's casing")
 }
 
 func TestCommentView_SeverityExclusionsAndClassWhitelist(t *testing.T) {

@@ -71,7 +71,13 @@ func (v CommentView) SeverityLabel() string {
 	if !v.ShowsSeverity() {
 		return ""
 	}
-	return strings.ToUpper(strings.TrimSpace(v.Importance))
+	return severityLabel(v.Importance)
+}
+
+// severityLabel normalizes a stored importance for display so the header,
+// index, next actions and records all read the same.
+func severityLabel(importance string) string {
+	return strings.ToUpper(strings.TrimSpace(importance))
 }
 
 // SeverityClass returns the CSS-class suffix for the header's severity pill.
@@ -580,7 +586,7 @@ func recordViews(records []types.LineComment, state string, anchors map[string]s
 		if c.State != state {
 			continue
 		}
-		v := RecordView{Severity: c.Importance, FilePath: c.FilePath, LineNumber: c.LineNumber,
+		v := RecordView{Severity: severityLabel(c.Importance), FilePath: c.FilePath, LineNumber: c.LineNumber,
 			Claim: payload.StripProvenanceNote(c.CommentBody), MergedInto: c.MergedInto, MergeBasis: c.MergeBasis, MergedAnchor: anchors[c.MergedInto]}
 		if c.Original != nil && strings.TrimSpace(c.Original.Comment) != "" {
 			v.Claim = c.Original.Comment
@@ -605,7 +611,7 @@ func nextActions(ids []string, byID map[string]CommentView) []NextAction {
 		if !ok {
 			continue
 		}
-		out = append(out, NextAction{AnchorID: v.AnchorID, Severity: v.Importance, FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment)})
+		out = append(out, NextAction{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment)})
 	}
 	return out
 }
@@ -674,7 +680,7 @@ func generateReport(in ReportInput) (string, error) {
 			byID[loc] = view
 		}
 		row := FindingRow{
-			AnchorID: view.AnchorID, Severity: comment.Importance, StatusPill: pill, StatusClass: class,
+			AnchorID: view.AnchorID, Severity: view.SeverityLabel(), StatusPill: pill, StatusClass: class,
 			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: findingTitle(comment),
 		}
 
