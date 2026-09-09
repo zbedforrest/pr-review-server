@@ -45,6 +45,7 @@ func TestEvaluateHealthyDayIsOK(t *testing.T) {
 func TestEvaluateFlagsTheThingsThatHaveBrokenBefore(t *testing.T) {
 	m := healthyMetrics()
 	m.Runs.ByStatus = map[string]int{"completed": 14, "failed": 3, "timed_out": 3}
+	m.Runs.ByTerminalCode = map[string]int{"run_timeout": 3, "agent_error": 3}
 	m.Runs.ModelFallbacks = 2
 	m.Queue.OldestQueuedAge = 45 * time.Minute
 	m.Queue.OldestRunningAge = 20 * time.Minute
@@ -88,6 +89,17 @@ func TestEvaluateQuietDayWarnsButIsNotCritical(t *testing.T) {
 	}
 	if !strings.Contains(r.Markdown(), "No reviews") {
 		t.Errorf("markdown should say so:\n%s", r.Markdown())
+	}
+}
+
+func TestEvaluateDoesNotBlameTheWallClockForAbandonedRuns(t *testing.T) {
+	m := healthyMetrics()
+	m.Runs.ByStatus = map[string]int{"completed": 19, "timed_out": 1}
+	m.Runs.ByTerminalCode = map[string]int{"lease_abandoned": 1}
+	for _, c := range Evaluate(m).Checks {
+		if c.Name == "wall-clock timeouts" {
+			t.Fatalf("an abandoned lease is not a wall-clock timeout: %+v", c)
+		}
 	}
 }
 

@@ -115,9 +115,14 @@ func (s *Server) handleDailyHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
+		// A malformed stored report must not blank the whole listing.
+		var report any = json.RawMessage(row.ReportJSON)
+		if !json.Valid([]byte(row.ReportJSON)) {
+			report = nil
+		}
 		items = append(items, map[string]any{
 			"id": row.ID, "window_start": row.WindowStart, "window_end": row.WindowEnd, "overall": row.Overall,
-			"headline": row.Headline, "report": json.RawMessage(row.ReportJSON), "markdown": row.Markdown, "created_at": row.CreatedAt,
+			"headline": row.Headline, "report": report, "markdown": row.Markdown, "created_at": row.CreatedAt,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")

@@ -32,8 +32,9 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 		RequestedConfigJSON: "{}", EffectiveConfigJSON: "{}", ConfigSourcesJSON: "{}", ConfigHash: "h", ConfigSchemaVersion: 3,
 		AcceptedAt: queuedAt, QueuedAt: queuedAt,
 	}).Error)
+	attemptStart, attemptEnd := start.Add(-10*time.Minute), start.Add(5*time.Minute)
 	require.NoError(t, db.db.Create(&ReviewStageAttemptModel{
-		ReviewRunID: "r3", ExecutionAttempt: 1, Stage: "agent", InvocationNumber: 1, AttemptNumber: 1, Status: "failed", ErrorCode: "wall_clock_timeout", StartedAt: &start,
+		ReviewRunID: "r3", ExecutionAttempt: 1, Stage: "agent", InvocationNumber: 1, AttemptNumber: 1, Status: "failed", ErrorCode: "wall_clock_timeout", StartedAt: &attemptStart, CompletedAt: &attemptEnd,
 	}).Error)
 	require.NoError(t, db.db.Create(&PollerLeaseModel{ID: "poller", Holder: "prism-00047", ExpiresAt: now.Add(time.Minute), Generation: 1}).Error)
 
@@ -44,7 +45,11 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 	_, err := db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 1, RootCommentID: 1, AuthorCommentID: 10,
 		Fingerprint: "f", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: now.Add(-3 * time.Hour)})
 	require.NoError(t, err)
-	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 10").Update("processed_at", now.Add(-3*time.Hour)).Error)
+	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 10").Updates(map[string]interface{}{"processed_at": now.Add(-3 * time.Hour), "attempts": 1}).Error)
+	_, err = db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 1, RootCommentID: 1, AuthorCommentID: 11,
+		Fingerprint: "f", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: now.Add(-3 * time.Hour)})
+	require.NoError(t, err)
+	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 11").Update("processed_at", now.Add(-3*time.Hour)).Error)
 
 	m, err := db.HealthMetrics(start, now, now)
 	require.NoError(t, err)
@@ -61,8 +66,8 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 	assert.Equal(t, "prism-00047", m.Lease.Holder)
 	assert.Equal(t, 1, m.Publish.Summaries)
 	assert.Equal(t, 1, m.Publish.Inline)
-	assert.Equal(t, 1, m.Replies.Handled)
-	assert.Equal(t, 1, m.Replies.StuckPending)
+	assert.Equal(t, 2, m.Replies.Handled)
+	assert.Equal(t, 1, m.Replies.StuckPending, "a reply the text step never touched is not stuck")
 }
 
 func TestGormDB_HealthReports_RoundTrip(t *testing.T) {

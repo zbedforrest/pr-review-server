@@ -131,7 +131,7 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time) (health.Metrics, error
 
 	rows = nil
 	if err := g.db.Model(&ReviewStageAttemptModel{}).
-		Where("status = 'failed' AND started_at >= ? AND started_at < ?", start, end).
+		Where("status = 'failed' AND COALESCE(completed_at, started_at) >= ? AND COALESCE(completed_at, started_at) < ?", start, end).
 		Select("stage || '/' || error_code AS key, count(*) AS count").Group("stage, error_code").Scan(&rows).Error; err != nil {
 		return m, err
 	}
@@ -196,9 +196,11 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time) (health.Metrics, error
 		return m, err
 	}
 	m.Replies.TextPosted = int(n)
-	// A text step that has neither finished nor been resumed within an hour
-	// of its reply being recorded is stuck, whatever its acknowledgement state.
-	if err := g.db.Model(&PublishedReplyModel{}).Where("outcome = '' AND class IN ('question','pushback') AND processed_at < ?", now.Add(-time.Hour)).Count(&n).Error; err != nil {
+	// A text step that was started (claimed, attempted or decided) but has not
+	// finished within an hour is stuck. Rows the step never touched, as under
+	// react mode, are not.
+	if err := g.db.Model(&PublishedReplyModel{}).
+		Where("outcome = '' AND (attempts > 0 OR decision <> '' OR claimed_at IS NOT NULL) AND processed_at < ?", now.Add(-time.Hour)).Count(&n).Error; err != nil {
 		return m, err
 	}
 	m.Replies.StuckPending = int(n)

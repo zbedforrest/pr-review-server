@@ -20,65 +20,65 @@ const (
 // Metrics is everything Evaluate looks at, gathered from the database by the
 // caller so the evaluation itself stays pure and testable.
 type Metrics struct {
-	WindowStart time.Time
-	WindowEnd   time.Time
-	Now         time.Time
+	WindowStart time.Time `json:"window_start"`
+	WindowEnd   time.Time `json:"window_end"`
+	Now         time.Time `json:"now"`
 
-	Runs      RunMetrics
-	Attempts  map[string]int // "<stage>/<error_code>" -> failed attempts
-	Queue     QueueMetrics
-	Publish   PublishMetrics
-	Replies   ReplyMetrics
-	Telemetry map[string]int // action -> events in the window
-	Lease     LeaseMetrics
-	PRErrors  int           // PRs currently carrying an error message
-	WallClock time.Duration // the configured agent wall clock
+	Runs      RunMetrics     `json:"runs"`
+	Attempts  map[string]int `json:"failed_attempts"` // "<stage>/<error_code>" -> failed attempts
+	Queue     QueueMetrics   `json:"queue"`
+	Publish   PublishMetrics `json:"publish"`
+	Replies   ReplyMetrics   `json:"replies"`
+	Telemetry map[string]int `json:"telemetry"` // action -> events in the window
+	Lease     LeaseMetrics   `json:"lease"`
+	PRErrors  int            `json:"pr_errors"`     // PRs currently carrying an error message
+	WallClock time.Duration  `json:"wall_clock_ns"` // the configured agent wall clock
 	// PollingDisabled marks an on-demand deployment, which holds no poller
 	// lease by design.
-	PollingDisabled bool
+	PollingDisabled bool `json:"polling_disabled"`
 }
 
 type RunMetrics struct {
-	Total          int
-	ByStatus       map[string]int
-	ByTrigger      map[string]int
-	ByTerminalCode map[string]int
-	DurationsMS    []int64 // completed runs
-	ModelFallbacks int
-	Verdicts       map[string]int
-	Criticals      int
+	Total          int            `json:"total"`
+	ByStatus       map[string]int `json:"by_status"`
+	ByTrigger      map[string]int `json:"by_trigger"`
+	ByTerminalCode map[string]int `json:"by_terminal_code"`
+	DurationsMS    []int64        `json:"durations_ms"` // completed runs
+	ModelFallbacks int            `json:"model_fallbacks"`
+	Verdicts       map[string]int `json:"verdicts"`
+	Criticals      int            `json:"criticals"`
 }
 
 type QueueMetrics struct {
-	Queued           int
-	Running          int
-	OldestQueuedAge  time.Duration
-	OldestRunningAge time.Duration
+	Queued           int           `json:"queued"`
+	Running          int           `json:"running"`
+	OldestQueuedAge  time.Duration `json:"oldest_queued_age_ns"`
+	OldestRunningAge time.Duration `json:"oldest_running_age_ns"`
 }
 
 type PublishMetrics struct {
-	Summaries   int
-	Inline      int
-	Annotations int
-	Dismissed   int // current total, not windowed: the ledger has no dismissal time
+	Summaries   int `json:"summaries"`
+	Inline      int `json:"inline"`
+	Annotations int `json:"annotations"`
+	Dismissed   int `json:"dismissed_total"` // current total, not windowed: the ledger has no dismissal time
 }
 
 type ReplyMetrics struct {
-	Handled       int
-	ByClass       map[string]int
-	ByAction      map[string]int
-	ByOutcome     map[string]int
-	ByDecision    map[string]int
-	TextPosted    int
-	StuckPending  int // pending action, no outcome, older than an hour
-	Failed        int
-	UnlinkedRoots int
+	Handled       int            `json:"handled"`
+	ByClass       map[string]int `json:"by_class"`
+	ByAction      map[string]int `json:"by_action"`
+	ByOutcome     map[string]int `json:"by_outcome"`
+	ByDecision    map[string]int `json:"by_decision"`
+	TextPosted    int            `json:"text_posted"`
+	StuckPending  int            `json:"stuck"` // pending action, no outcome, older than an hour
+	Failed        int            `json:"failed"`
+	UnlinkedRoots int            `json:"unlinked_roots"`
 }
 
 type LeaseMetrics struct {
-	Present   bool
-	Holder    string
-	ExpiresAt time.Time
+	Present   bool      `json:"present"`
+	Holder    string    `json:"holder"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // Check is one line of the report.
@@ -113,7 +113,9 @@ func Evaluate(m Metrics) Report {
 		total += n
 	}
 	completed := m.Runs.ByStatus["completed"]
-	timedOut := m.Runs.ByStatus["timed_out"]
+	// Only run_timeout is the agent wall clock; abandoned leases and queue
+	// dedupes also end as timed_out but point at other subsystems.
+	timedOut := m.Runs.ByTerminalCode["run_timeout"]
 	switch {
 	case total == 0:
 		add("review volume", StatusWarn, "No reviews in the window")
