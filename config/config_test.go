@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"reflect"
 	"testing"
 )
@@ -385,5 +386,16 @@ func TestLoadJiraDisabledUnlessAllThreeSet(t *testing.T) {
 	}
 	if len(cfg.JiraProjectKeys) != 0 {
 		t.Errorf("JiraProjectKeys = %v, want empty", cfg.JiraProjectKeys)
+	}
+}
+
+func TestMentionHandleCanBeDisabledWithAnEmptyValue(t *testing.T) {
+	t.Setenv("MENTION_HANDLE", "")
+	if got := getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server"); got != "" {
+		t.Fatalf("an explicitly empty handle must stay empty, got %q", got)
+	}
+	os.Unsetenv("MENTION_HANDLE")
+	if got := getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server"); got != "prism-pr-review-server" {
+		t.Fatalf("an unset handle takes the default, got %q", got)
 	}
 }

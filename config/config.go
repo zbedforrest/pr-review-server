@@ -303,7 +303,7 @@ func Load() *Config {
 		ReplyWallClockSec:  getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
 		ReplyMaxTurns:      getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
 		ReplyMaxConcurrent: getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
-		MentionHandle:      getEnvOrDefault("MENTION_HANDLE", "prism-pr-review-server"),
+		MentionHandle:      getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server"),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
@@ -335,6 +335,15 @@ func getEnvIntOrDefault(key string, defaultValue int) int {
 		if n, err := strconv.Atoi(value); err == nil {
 			return n
 		}
+	}
+	return defaultValue
+}
+
+// getEnvOrDefaultAllowEmpty returns defaultValue only when key is unset; an
+// explicitly empty value is returned as-is so it can disable a feature.
+func getEnvOrDefaultAllowEmpty(key, defaultValue string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
 	}
 	return defaultValue
 }

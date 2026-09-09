@@ -122,7 +122,6 @@ type Poller struct {
 	mentionScanRunning atomic.Bool
 	mentionScanCycle   atomic.Int64
 	mentionLastScanned map[string]time.Time
-	mentionActivatedAt time.Time
 	polling            bool
 	pollMutex          sync.Mutex
 	// Track active review processes for cancellation and monitoring

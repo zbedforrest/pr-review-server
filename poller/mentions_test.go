@@ -29,6 +29,9 @@ func TestMentionCommandRecognisesReviewRequestsAndNothingElse(t *testing.T) {
 		"the review from @prism-pr-review-serverbot was useful",
 		"email me at prism-pr-review-server@example.com to review",
 		"> @prism-pr-review-server review\n\nquoting what Zed said above",
+		"the review from @prism-pr-review-server was useful",
+		"@prism-pr-review-server don't review this yet",
+		"@prism-pr-review-server why did the review flag X?",
 	}
 	for _, body := range no {
 		if mentionCommand(body, handle) {
