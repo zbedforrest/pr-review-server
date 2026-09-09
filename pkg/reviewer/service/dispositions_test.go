@@ -17,7 +17,7 @@ func TestApplyDispositions_ReproducesTodaysActiveSetAndKeepsEverythingElseAsReco
 	agentOut := []types.LineComment{
 		{ID: "A-1", FilePath: "a.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "cfg is nil on the first request.", Sources: []string{"FP-1"}},
 		{FilePath: "b.go", LineNumber: 9, Disposition: &types.Disposition{SourceID: "FP-2", State: "rejected", Reason: "The logger redacts tokens.", Evidence: []types.EvidenceRef{{File: "log/redact.go", Line: 40}}}},
-		{FilePath: "d.go", LineNumber: 20, Disposition: &types.Disposition{SourceID: "FP-4", State: "rejected", Reason: "The client never returns nil here."}},
+		{FilePath: "d.go", LineNumber: 20, Disposition: &types.Disposition{SourceID: "FP-4", State: "rejected", Reason: "The client never returns nil here.", Evidence: []types.EvidenceRef{{File: "client/http.go", Line: 88}}}},
 		{FilePath: "SUMMARY", CommentBody: "Verdict: approve."},
 	}
 
@@ -111,5 +111,31 @@ func TestApplyDispositions_SourcesOnSummaryOrCheckDoNotConfirmClaims(t *testing.
 	_, active, records := ApplyDispositions(agentOut, claims)
 	if len(active) != 1 || len(records) != 0 || active[0].State != StateUnverified {
 		t.Fatalf("only an ordinary finding can cover a claim: active=%+v records=%+v", active, records)
+	}
+}
+
+func TestNormalizeAgentLifecycleFields_DuplicateIdsBecomeUnlabelled(t *testing.T) {
+	out := []types.LineComment{
+		{ID: "A-1", FilePath: "a.go", LineNumber: 1, CommentBody: "first"},
+		{ID: "A-1", FilePath: "b.go", LineNumber: 2, CommentBody: "second"},
+		{ID: "A-2", FilePath: "c.go", LineNumber: 3, CommentBody: "third"},
+	}
+	NormalizeAgentLifecycleFields(out)
+	if out[0].ID != "" || out[1].ID != "" || out[2].ID != "A-2" {
+		t.Fatalf("an id the agent used twice identifies nothing: %q %q %q", out[0].ID, out[1].ID, out[2].ID)
+	}
+}
+
+func TestApplyDispositions_RejectionNeedsEvidence(t *testing.T) {
+	claims := firstPassClaims([]types.LineComment{lc("d.go", 20, "MEDIUM", "Missing null check.")})
+	agentOut := []types.LineComment{{FilePath: "d.go", LineNumber: 20, Disposition: &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "Never nil here."}}}
+	_, _, records := ApplyDispositions(agentOut, claims)
+	if records[0].State != StateUnverified {
+		t.Fatalf("a rejection without evidence is unsupported prose and falls through to unverified: %+v", records[0])
+	}
+	agentOut[0].Disposition.Evidence = []types.EvidenceRef{{File: "d.go", Line: 18}}
+	_, _, records = ApplyDispositions(agentOut, claims)
+	if records[0].State != StateRejected {
+		t.Fatalf("with a reason and evidence the rejection stands: %+v", records[0])
 	}
 }

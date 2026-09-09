@@ -66,12 +66,11 @@ func isNarrative(f payload.Finding) bool {
 	return f.File == summaryFile || f.File == checkFile
 }
 
-// Publishable reports whether a finding may be asserted on GitHub. Only active
-// findings the review agent produced or answered for (agent, required-check,
-// carried from an earlier agent round, or legacy sidecars without provenance)
-// qualify; first-pass re-admissions and raw gate alerts stay on the dashboard,
-// where their unconfirmed status is explained, and inactive records (rejected,
-// merged, unexamined) are never posted.
+// Publishable reports whether a finding may be asserted on GitHub as a
+// bullet or inline comment. Only active confirmed findings from the agent or
+// a VIOLATED check qualify; unverified claims (first-pass re-admissions and
+// carried findings) have their own fold, first-pass and mechanical alerts
+// never post, and a raw bug-memory alert is not a finding.
 func Publishable(f payload.Finding) bool {
 	// Only confirmed claims are asserted as bullets; unverified ones have
 	// their own fold (UnverifiedNote) and must not appear twice.

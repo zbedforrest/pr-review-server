@@ -37,10 +37,21 @@ func firstPassClaims(comments []types.LineComment) []firstPassClaim {
 // inactive, rejected, merged or disputed record; the agent expresses itself
 // through findings, sources and disposition entries.
 func NormalizeAgentLifecycleFields(out []types.LineComment) {
+	seen := map[string]int{}
+	for _, c := range out {
+		if c.ID != "" {
+			seen[c.ID]++
+		}
+	}
 	for i := range out {
 		c := &out[i]
 		c.State, c.Inactive, c.MergedInto = "", false, ""
 		c.Assessment, c.Original = nil, nil
+		// An id used twice identifies nothing; unlabelled entries still merge
+		// by location, so nothing is lost, only the ambiguous reference.
+		if seen[c.ID] > 1 {
+			c.ID = ""
+		}
 	}
 }
 
@@ -132,9 +143,9 @@ func ApplyDispositions(agentOut []types.LineComment, claims []firstPassClaim) (f
 	rejected := map[string]*types.Disposition{}
 	for _, c := range agentOut {
 		if c.Disposition != nil {
-			// A rejection without a reason is not a rejection; the prompt says
-			// lack of evidence is not rejection, and the code enforces it.
-			if c.Disposition.State == StateRejected && strings.TrimSpace(c.Disposition.Reason) != "" {
+			// A rejection stands only with a reason and at least one code
+			// reference; unsupported prose falls through to unverified.
+			if c.Disposition.State == StateRejected && supportedRejection(c.Disposition) {
 				rejected[c.Disposition.SourceID] = c.Disposition
 			}
 			continue
@@ -175,6 +186,18 @@ func ApplyDispositions(agentOut []types.LineComment, claims []firstPassClaim) (f
 		}
 	}
 	return findings, active, records
+}
+
+func supportedRejection(d *types.Disposition) bool {
+	if strings.TrimSpace(d.Reason) == "" {
+		return false
+	}
+	for _, e := range d.Evidence {
+		if strings.TrimSpace(e.File) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasKey(m map[string]string, k string) bool {
