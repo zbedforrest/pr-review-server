@@ -249,6 +249,12 @@ func TestGenerateReport_FixFirstIsHiddenWhenItWouldNotShortenTheList(t *testing.
 	everything.Comments[5].Summary = all
 	report = renderLayoutFixture(t, everything)
 	assert.NotContains(t, report, `class="fix-first"`, "picking every finding is not a short list")
+
+	allButOne := everything
+	allButOne.Comments = append([]types.LineComment(nil), everything.Comments...)
+	allButOne.Comments[5].Summary = &types.SummaryBlock{Verdict: "request_changes", PriorityIDs: all.PriorityIDs[:len(all.PriorityIDs)-1]}
+	report = renderLayoutFixture(t, allButOne)
+	assert.Contains(t, report, `class="fix-first"`, "one fewer pick than findings is still a short list")
 }
 
 func TestGenerateReport_StructuredSummaryVerdictMapping(t *testing.T) {
