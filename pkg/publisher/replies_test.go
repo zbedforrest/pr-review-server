@@ -103,6 +103,7 @@ type fakeReplyLedger struct {
 	unlinked []db.UnlinkedPublishedFinding
 	linked   map[uint]int64
 	states   map[string]string
+	mu       sync.Mutex
 }
 
 func (f *fakeReplyLedger) ListUnlinkedPublishedFindings() ([]db.UnlinkedPublishedFinding, error) {
@@ -141,6 +142,33 @@ func (f *fakeReplyLedger) SetPublishedReplyOutcome(_, _ string, _ int, authorCom
 	for i := range f.rows {
 		if f.rows[i].AuthorCommentID == authorCommentID {
 			f.rows[i].Outcome = outcome
+		}
+	}
+	return nil
+}
+func (f *fakeReplyLedger) ClaimPublishedReply(_, _ string, _ int, authorCommentID int64, holder string, now time.Time, lease time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].AuthorCommentID != authorCommentID {
+			continue
+		}
+		r := &f.rows[i]
+		if r.Outcome != "" || (r.ClaimedAt != nil && !r.ClaimedAt.Before(now.Add(-lease))) {
+			return false, nil
+		}
+		at := now
+		r.ClaimedBy, r.ClaimedAt = holder, &at
+		return true, nil
+	}
+	return false, fmt.Errorf("no row")
+}
+func (f *fakeReplyLedger) ReleasePublishedReplyClaim(_, _ string, _ int, authorCommentID int64, holder string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].AuthorCommentID == authorCommentID && f.rows[i].ClaimedBy == holder {
+			f.rows[i].ClaimedBy, f.rows[i].ClaimedAt = "", nil
 		}
 	}
 	return nil
@@ -702,7 +730,7 @@ func TestReplyReactor_LiveModeIsReReadBeforePosting(t *testing.T) {
 		live = ReplyModeShadow
 		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
 	})
-	r.Live = func() (string, func(string) bool) { return live, nil }
+	r.Live = func() (string, func(string) bool, error) { return live, nil, nil }
 	rep, _ := r.Run(context.Background())
 	if len(gh.posted) != 0 || rep.Shadowed != 1 || ledger.rows[0].Outcome != "shadowed" {
 		t.Fatalf("a mode turned down mid-run must not post: posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
@@ -756,5 +784,38 @@ func TestReplyReactor_ConcurrentSiblingsRespectTheThreadCap(t *testing.T) {
 	}
 	if got["posted"] != 1 || got["ineligible:thread_cap"] != 1 {
 		t.Fatalf("outcomes=%v rows=%+v", got, ledger.rows)
+	}
+}
+
+func TestReplyReactor_LiveReadErrorLeavesTheStepUnfinished(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	r.Live = func() (string, func(string) bool, error) { return "", nil, fmt.Errorf("db down") }
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || len(rep.Errors) != 1 || ledger.rows[0].Outcome != "" || ledger.rows[0].Decision != DecisionHold || ledger.rows[0].ClaimedBy != "" {
+		t.Fatalf("a settings blip must not become a permanent skip: posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_ARowClaimedByAnotherInstanceIsLeftAlone(t *testing.T) {
+	runs := 0
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	t0 := time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)
+	claimed := t0.Add(-time.Minute)
+	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", Class: "pushback", Action: "reacted", CreatedAt: t0, ClaimedBy: "other", ClaimedAt: &claimed}}
+	r.Holder = "me"
+	rep, _ := r.Run(context.Background())
+	if runs != 0 || len(gh.posted) != 0 || rep.TextSkipped["claimed_elsewhere"] != 1 || ledger.rows[0].ClaimedBy != "other" {
+		t.Fatalf("runs=%d posted=%v rep=%+v row=%+v", runs, gh.posted, rep, ledger.rows[0])
+	}
+	r.Now = func() time.Time { return t0.Add(20 * time.Minute) }
+	rep, _ = r.Run(context.Background())
+	if runs != 1 || len(gh.posted) != 1 || ledger.rows[0].Outcome != "posted" {
+		t.Fatalf("a stale claim is taken over: runs=%d posted=%v rep=%+v row=%+v", runs, gh.posted, rep, ledger.rows[0])
 	}
 }

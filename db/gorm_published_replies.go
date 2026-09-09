@@ -125,7 +125,8 @@ func publishedRepliesFromModels(models []PublishedReplyModel) []PublishedReply {
 			Fingerprint: m.Fingerprint, AuthorID: m.AuthorID, Class: m.Class, Action: m.Action,
 			Body: m.Body, ReplyCommentID: m.ReplyCommentID,
 			Decision: m.Decision, ReplyBody: m.ReplyBody, Cited: m.Cited, Model: m.Model, DurationMS: m.DurationMS,
-			Outcome: m.Outcome, Attempts: m.Attempts, DecisionHead: m.DecisionHead, DecisionThread: m.DecisionThread, RepliedAt: m.RepliedAt,
+			Outcome: m.Outcome, Attempts: m.Attempts, DecisionHead: m.DecisionHead, DecisionThread: m.DecisionThread,
+			ClaimedBy: m.ClaimedBy, ClaimedAt: m.ClaimedAt, RepliedAt: m.RepliedAt,
 			CreatedAt: m.CreatedAt, ProcessedAt: m.ProcessedAt,
 		})
 	}
@@ -163,6 +164,22 @@ func (g *GormDB) IncrementPublishedReplyAttempts(owner, repo string, number int,
 		return row.Pluck("attempts", &n).Error
 	})
 	return n, err
+}
+
+// ClaimPublishedReply takes the text step for one author reply: it succeeds
+// only when the step is unfinished and no live claim exists, so two instances
+// cannot both run the model or both post. A claim older than lease is stale.
+func (g *GormDB) ClaimPublishedReply(owner, repo string, number int, authorCommentID int64, holder string, now time.Time, lease time.Duration) (bool, error) {
+	res := g.replyRow(owner, repo, number, authorCommentID).
+		Where("outcome = '' AND (claimed_at IS NULL OR claimed_at < ?)", now.Add(-lease)).
+		Updates(map[string]interface{}{"claimed_by": holder, "claimed_at": now})
+	return res.RowsAffected > 0, res.Error
+}
+
+// ReleasePublishedReplyClaim drops a claim so the next scan can resume.
+func (g *GormDB) ReleasePublishedReplyClaim(owner, repo string, number int, authorCommentID int64, holder string) error {
+	return g.replyRow(owner, repo, number, authorCommentID).Where("claimed_by = ?", holder).
+		Updates(map[string]interface{}{"claimed_by": "", "claimed_at": nil}).Error
 }
 
 // ListPublishedRepliesForPR returns every handled author reply on a PR.

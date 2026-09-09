@@ -387,7 +387,13 @@ type PublishedReplyModel struct {
 	Attempts        int    `gorm:"not null;default:0"`
 	DecisionHead    string `gorm:"size:64;not null;default:''"`
 	DecisionThread  string `gorm:"size:64;not null;default:''"`
+	ClaimedBy       string `gorm:"size:128;not null;default:''"`
+	ClaimedAt       *time.Time
 	RepliedAt       *time.Time
 	CreatedAt       time.Time `gorm:"not null"`
 	ProcessedAt     time.Time `gorm:"not null;index"`
 }
+
+// TableName pins the name GORM derived when the table first shipped; the raw
+// migration SQL in gorm.go targets it by this name.
+func (PublishedReplyModel) TableName() string { return "published_reply_models" }

@@ -140,6 +140,8 @@ var replyDecisionColumns = []struct {
 	{"decision_head", "DecisionHead", "varchar(64) NOT NULL DEFAULT ''"},
 	{"decision_thread", "DecisionThread", "varchar(64) NOT NULL DEFAULT ''"},
 	{"replied_at", "RepliedAt", "timestamptz"},
+	{"claimed_by", "ClaimedBy", "varchar(128) NOT NULL DEFAULT ''"},
+	{"claimed_at", "ClaimedAt", "timestamptz"},
 }
 
 func (g *GormDB) ensureIdempotentColumns() error {
@@ -159,7 +161,7 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	}
 	if !g.db.Migrator().HasTable(&PublishedReplyModel{}) {
 		if err := g.db.Migrator().CreateTable(&PublishedReplyModel{}); err != nil {
-			return fmt.Errorf("create published_replies: %w", err)
+			return fmt.Errorf("create published_reply_models: %w", err)
 		}
 	}
 	if !g.db.Migrator().HasTable(&ReviewRunModel{}) {
@@ -241,7 +243,7 @@ func (g *GormDB) ensureIdempotentColumns() error {
 		for _, addition := range replyDecisionColumns {
 			if !g.db.Migrator().HasColumn(&PublishedReplyModel{}, addition.column) {
 				if err := g.db.Migrator().AddColumn(&PublishedReplyModel{}, addition.field); err != nil {
-					return fmt.Errorf("add published_replies.%s: %w", addition.column, err)
+					return fmt.Errorf("add published_reply_models.%s: %w", addition.column, err)
 				}
 			}
 		}
@@ -310,7 +312,7 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	}
 	for _, addition := range replyDecisionColumns {
 		if err := g.db.Exec("ALTER TABLE published_reply_models ADD COLUMN IF NOT EXISTS " + addition.column + " " + addition.postgres).Error; err != nil {
-			return fmt.Errorf("add published_replies.%s: %w", addition.column, err)
+			return fmt.Errorf("add published_reply_models.%s: %w", addition.column, err)
 		}
 	}
 	if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {

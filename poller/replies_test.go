@@ -118,4 +118,10 @@ func TestReplyOutcomeEventDistinguishesFailuresFromDecisions(t *testing.T) {
 	if ev.Action != "reply_text_error" || ev.Label != "comment=101: wall clock" {
 		t.Errorf("error event = %+v", ev)
 	}
+	for _, outcome := range []string{"skipped:thread_moved", "ineligible:thread_cap"} {
+		o.Outcome = outcome
+		if ev := replyOutcomeEvent(o, nil, 3); ev.Action != "reply_text_skipped" {
+			t.Errorf("%s: action = %s", outcome, ev.Action)
+		}
+	}
 }

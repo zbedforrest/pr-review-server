@@ -234,7 +234,7 @@ func TestGormDB_PublishedReply_OutcomeAndAttempts(t *testing.T) {
 
 func TestGormDB_EnsureIdempotentColumns_AddsReplyDecisionColumnsToAnOldTable(t *testing.T) {
 	database := newTestDB(t)
-	for _, col := range []string{"decision", "reply_body", "cited", "model", "duration_ms", "outcome", "attempts", "decision_head", "decision_thread", "replied_at"} {
+	for _, col := range []string{"decision", "reply_body", "cited", "model", "duration_ms", "outcome", "attempts", "decision_head", "decision_thread", "replied_at", "claimed_by", "claimed_at"} {
 		require.NoError(t, database.db.Migrator().DropColumn(&PublishedReplyModel{}, col), col)
 	}
 	require.NoError(t, database.ensureIdempotentColumns())
@@ -246,4 +246,31 @@ func TestGormDB_EnsureIdempotentColumns_AddsReplyDecisionColumnsToAnOldTable(t *
 	rows, err := database.ListPublishedRepliesForPR("owner", "repo", 7)
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
+}
+
+func TestGormDB_ClaimPublishedReply_IsExclusiveUntilReleasedOrStale(t *testing.T) {
+	db := newTestDB(t)
+	_, err := db.RecordPublishedReply(&PublishedReply{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: 9001, AuthorCommentID: 9010,
+		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	now := time.Date(2026, 9, 9, 19, 0, 0, 0, time.UTC)
+	ok, err := db.ClaimPublishedReply("owner", "repo", 7, 9010, "a", now, 10*time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	ok, err = db.ClaimPublishedReply("owner", "repo", 7, 9010, "b", now.Add(time.Minute), 10*time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "a live claim by another holder must be refused")
+	ok, err = db.ClaimPublishedReply("owner", "repo", 7, 9010, "b", now.Add(11*time.Minute), 10*time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "a stale claim is taken over")
+	require.NoError(t, db.ReleasePublishedReplyClaim("owner", "repo", 7, 9010, "b"))
+	ok, err = db.ClaimPublishedReply("owner", "repo", 7, 9010, "a", now.Add(12*time.Minute), 10*time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	require.NoError(t, db.SetPublishedReplyOutcome("owner", "repo", 7, 9010, "posted"))
+	ok, err = db.ClaimPublishedReply("owner", "repo", 7, 9010, "c", now.Add(30*time.Minute), 10*time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "a finished step cannot be claimed")
 }

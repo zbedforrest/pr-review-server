@@ -153,6 +153,8 @@ type ReplyLedger interface {
 	ListUnlinkedPublishedFindings() ([]db.UnlinkedPublishedFinding, error)
 	LinkPublishedFindingComment(id uint, commentID int64) error
 	SetPublishedReplyOutcome(owner, repo string, number int, authorCommentID int64, outcome string) error
+	ClaimPublishedReply(owner, repo string, number int, authorCommentID int64, holder string, now time.Time, lease time.Duration) (bool, error)
+	ReleasePublishedReplyClaim(owner, repo string, number int, authorCommentID int64, holder string) error
 	IncrementPublishedReplyAttempts(owner, repo string, number int, authorCommentID int64) (int, error)
 	SetPublishedReplyDecision(owner, repo string, number int, authorCommentID int64, d db.ReplyDecisionRecord) error
 	MarkPublishedReplyPosted(owner, repo string, number int, authorCommentID, replyCommentID int64, at time.Time) error
@@ -281,8 +283,22 @@ type ReplyReactor struct {
 	OnOutcome  func(ReplyOutcome, error)
 
 	// Live, when set, re-reads the mode and allowlist right before a post so a
-	// switch flipped during a long model run is honoured.
-	Live func() (mode string, allowed func(authorLogin string) bool)
+	// switch flipped during a long model run is honoured. A read error leaves
+	// the step unfinished rather than recording a policy change.
+	Live func() (mode string, allowed func(authorLogin string) bool, err error)
+
+	// Holder names this instance in the ledger claim that makes the text
+	// step exclusive across processes; ClaimLease bounds how long a dead
+	// holder's claim blocks others (zero: 10 minutes).
+	Holder     string
+	ClaimLease time.Duration
+}
+
+func (r ReplyReactor) claimLease() time.Duration {
+	if r.ClaimLease > 0 {
+		return r.ClaimLease
+	}
+	return 10 * time.Minute
 }
 
 // ReplyReport is one scan's accounting. PRsSkipped is keyed by reason
@@ -632,8 +648,8 @@ func threadUnder(comments []ThreadComment, rootID int64) []ThreadComment {
 // exit records an Outcome; a returned error leaves Outcome empty so the next
 // scan resumes from the persisted state (decision, posted reply) rather than
 // redoing it. rep may be nil when running in the background.
-func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, reply AuthorReply, row db.PublishedReply, rep *ReplyReport) (ReplyOutcome, error) {
-	outcome := ReplyOutcome{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, AuthorCommentID: reply.CommentID,
+func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, reply AuthorReply, row db.PublishedReply, rep *ReplyReport) (outcome ReplyOutcome, err error) {
+	outcome = ReplyOutcome{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, AuthorCommentID: reply.CommentID,
 		Decision: row.Decision, Model: row.Model, DurationMS: row.DurationMS}
 	finish := func(result string) (ReplyOutcome, error) {
 		outcome.Outcome = result
@@ -699,6 +715,26 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		return finish("posted")
 	}
+	// From here on the step does work that must happen once across every
+	// instance: claim the row, release it on any error so the next scan
+	// resumes, and let finish() leave the terminal outcome in place.
+	claimed, err := r.Ledger.ClaimPublishedReply(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder, now, r.claimLease())
+	if err != nil {
+		return outcome, err
+	}
+	if !claimed {
+		if rep != nil {
+			rep.skipText("claimed_elsewhere")
+		}
+		return outcome, nil
+	}
+	defer func() {
+		if outcome.Outcome == "" {
+			if rerr := r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder); rerr != nil && err == nil {
+				err = rerr
+			}
+		}
+	}()
 	fingerprint := threadFingerprint(thread, root.AuthorID)
 	if row.Decision != "" && (row.DecisionHead != state.HeadSHA || row.DecisionThread != fingerprint) {
 		// The decision was made against a head or thread that has since moved;
@@ -752,7 +788,10 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	// minutes, another instance may have posted, or an operator may have
 	// turned the feature down.
 	if r.Live != nil {
-		mode, allowed := r.Live()
+		mode, allowed, err := r.Live()
+		if err != nil {
+			return outcome, err
+		}
 		switch {
 		case mode == ReplyModeShadow:
 			if rep != nil {

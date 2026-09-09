@@ -103,9 +103,12 @@ func replyErrorEvent(action, msg string, userID int) db.TelemetryEvent {
 func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.TelemetryEvent {
 	label := fmt.Sprintf("outcome=%s decision=%s posted=%t model=%s ms=%d comment=%d", o.Outcome, o.Decision, o.Posted, o.Model, o.DurationMS, o.AuthorCommentID)
 	action := "reply_decision"
-	if err != nil {
+	switch {
+	case err != nil:
 		action = "reply_text_error"
 		label = fmt.Sprintf("comment=%d: %v", o.AuthorCommentID, err)
+	case strings.HasPrefix(o.Outcome, "skipped:") || strings.HasPrefix(o.Outcome, "ineligible:"):
+		action = "reply_text_skipped"
 	}
 	return db.TelemetryEvent{UserID: userID, Action: action, Label: truncateLabel(label, 255), PROwner: o.RepoOwner, PRRepo: o.RepoName, PRNumber: o.PRNumber}
 }
@@ -218,10 +221,17 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		Responder:   p.replyResponder(),
 		InFlight:    &p.replyInFlight,
 		Background:  func(task func()) { go task() },
-		Live: func() (string, func(string) bool) {
-			liveMode, _ := p.db.GetSetting(settingPublishReplyMode)
-			liveEnabled, _ := p.db.GetSetting(settingPublishEnabledAuthors)
-			return strings.TrimSpace(strings.ToLower(liveMode)), func(login string) bool { return publishEnabledFor(login, liveEnabled) }
+		Holder:      p.holderID,
+		Live: func() (string, func(string) bool, error) {
+			liveMode, err := p.db.GetSetting(settingPublishReplyMode)
+			if err != nil {
+				return "", nil, fmt.Errorf("read reply mode: %w", err)
+			}
+			liveEnabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
+			if err != nil {
+				return "", nil, fmt.Errorf("read publish authors: %w", err)
+			}
+			return strings.TrimSpace(strings.ToLower(liveMode)), func(login string) bool { return publishEnabledFor(login, liveEnabled) }, nil
 		},
 		OnOutcome: func(o publisher.ReplyOutcome, err error) {
 			if err != nil {

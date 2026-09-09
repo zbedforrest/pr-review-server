@@ -379,6 +379,8 @@ type PublishedReply struct {
 	Attempts       int
 	DecisionHead   string
 	DecisionThread string
+	ClaimedBy      string
+	ClaimedAt      *time.Time
 	RepliedAt      *time.Time
 	CreatedAt      time.Time
 	ProcessedAt    time.Time

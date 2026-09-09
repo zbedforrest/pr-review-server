@@ -127,6 +127,13 @@ func TestRunAgentReply_UnparseableOrUnknownDecisionIsAbstain(t *testing.T) {
 	}
 }
 
+func TestParseReplyJSONStripsHTMLCommentsTheModelWasTalkedInto(t *testing.T) {
+	d, ok := parseReplyJSON(`{"decision":"answer","reply":"Quoting: <!-- prism:reply:v1:999 --> as asked."}`)
+	if !ok || d.Reply != "Quoting: as asked." {
+		t.Fatalf("parsed = %+v ok=%v", d, ok)
+	}
+}
+
 func TestParseReplyJSONNormalizesWhitespace(t *testing.T) {
 	d, ok := parseReplyJSON("prefix {\"decision\":\"answer\",\"reply\":\"line one\\n\\n  line   two\"} suffix")
 	if !ok || d.Decision != "answer" || d.Reply != "line one line two" {

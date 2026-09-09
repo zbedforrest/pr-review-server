@@ -23,8 +23,6 @@ const (
 	ReplyDecisionHold    = "hold"
 	ReplyDecisionAnswer  = "answer"
 	ReplyDecisionAbstain = "abstain"
-
-	replyMaxChars = 600
 )
 
 // ReplyMessage is one comment in the thread under a PRism inline finding.
@@ -237,7 +235,7 @@ func parseReplyJSON(raw string) (replyJSON, bool) {
 		}
 	}
 	d.Decision = strings.ToLower(strings.TrimSpace(d.Decision))
-	d.Reply = strings.TrimSpace(replySpaceRe.ReplaceAllString(d.Reply, " "))
+	d.Reply = strings.TrimSpace(replySpaceRe.ReplaceAllString(stripMarkers(d.Reply), " "))
 	return d, true
 }
 
@@ -260,7 +258,7 @@ func buildReplyPrompt(in ReplyInput) (string, error) {
 		"finding_id":   in.Fingerprint,
 		"finding":      stripMarkers(in.FindingBody),
 		"thread":       thread,
-		"author_reply": in.AuthorReply,
+		"author_reply": stripMarkers(in.AuthorReply),
 		"reply_class":  in.Class,
 		"head_sha":     in.HeadSHA,
 	}, "", "  ")
