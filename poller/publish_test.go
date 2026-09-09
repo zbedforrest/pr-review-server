@@ -191,3 +191,24 @@ func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) 
 		t.Fatalf("aliased finding must link to its existing comment: %v", r.InlineComments)
 	}
 }
+
+func TestBuildPublishRound_InactiveRecordsDoNotTakePartInReconciliation(t *testing.T) {
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 7, CommitSHA: "abc", Author: "alice"}
+	pl := payload.Payload{SchemaVersion: payload.CurrentSchemaVersion, Findings: []payload.Finding{
+		{ID: "a.go:5:bbbbbbbbbbbb", Severity: "critical", Provenance: "agent", File: "a.go", Line: 52, State: "confirmed", Active: true,
+			Comment: "Clicking Start in the C2C setup modal fires showMyCamDidNotStart immediately after starting, resetting the button to Ready."},
+		{ID: "a.go:5:dddddddddddd", Severity: "critical", Provenance: "first-pass", File: "a.go", Line: 54, State: "merged", Active: false,
+			Comment: "every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready"},
+	}}
+	comments := []github.ReviewCommentInfo{{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54,
+		Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**"}}
+	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateOpen}}
+	r := buildPublishRound(pr, pl, comments, nil, previous, "")
+	var active []string
+	for _, f := range r.Findings {
+		active = append(active, f.ID)
+	}
+	if len(r.Findings) != 1 || r.Findings[0].ID != "a.go:5:aaaaaaaaaaaa" {
+		t.Fatalf("the active agent finding must take the alias; the inactive merged record must not compete for it or reach the publisher: %v", active)
+	}
+}

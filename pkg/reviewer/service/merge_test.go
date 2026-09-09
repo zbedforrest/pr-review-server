@@ -353,3 +353,18 @@ func TestCarryForwardFindings_SkipsInactiveRecords(t *testing.T) {
 		t.Errorf("a carried finding is a re-admitted claim and reads as unverified: %+v", carried[0])
 	}
 }
+
+func TestMergeFindingsWithRecords_DisputedClaimsAreNotFoldedByProximity(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		lc("SUMMARY", 0, "LOW", "Verdict: approve"),
+		{ID: "A-1", FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "unrelated nearby finding"},
+	}}
+	disputed := lc("a.go", 12, "CRITICAL", "token leaks")
+	disputed.State = StateUnverified
+	disputed.Assessment = &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "redacted by the logger"}
+	firstPass := FindingSet{Provenance: "first-pass", Comments: []types.LineComment{disputed}}
+	merged, records := MergeFindingsWithRecords(agent, firstPass)
+	if len(records) != 0 || len(merged) != 3 || merged[2].Assessment == nil || merged[2].State != StateUnverified {
+		t.Fatalf("a claim the agent explicitly rejected cannot be the same defect as its nearby positive finding; it stays active and disputed: merged=%+v records=%+v", merged, records)
+	}
+}

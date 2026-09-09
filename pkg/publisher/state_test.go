@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/types"
 )
@@ -232,5 +233,44 @@ func TestPublishable_UnverifiedClaimsGoOnlyToTheUnverifiedFold(t *testing.T) {
 	}
 	if !UnverifiedNote(carried) {
 		t.Fatal("it belongs in the unverified fold instead")
+	}
+}
+
+func TestPublish_ClaimMovedToTheUnverifiedFoldIsNeitherFixedNorResolved(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, roundOne())
+
+	r2 := roundOne()
+	r2.HeadSHA, r2.RoundNumber = "sha-2", 2
+	for i := range r2.Findings {
+		if r2.Findings[i].ID == "c1" {
+			r2.Findings[i].Provenance, r2.Findings[i].State = "carried", "unverified"
+		}
+	}
+	rep := publishRound(t, gh, ledger, r2)
+	if rep.Fixed != 0 {
+		t.Fatalf("a claim carried into the unverified fold is still held by the review, not fixed: %+v", rep)
+	}
+	if c1 := ledger.get(db.PublishedKindFinding, "c1"); c1 == nil || c1.State != db.PublishedStateOpen || c1.LastSeenSHA != "sha-2" {
+		t.Fatalf("the ledger row must stay open and be refreshed: %+v", c1)
+	}
+}
+
+func TestUnverifiedBullet_MarksCarriedClaimsAsCarriedAndBoundsTheReason(t *testing.T) {
+	carried := fp("c", "medium", "a.go", 4, "carried claim", "carried")
+	carried.State, carried.Active = "unverified", true
+	disputed := fp("d", "medium", "b.go", 9, "disputed claim", "first-pass")
+	disputed.State, disputed.Active = "unverified", true
+	disputed.Assessment = &types.Disposition{State: "rejected", Reason: strings.Repeat("long reason ", 60)}
+	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 1, ShowUnverified: true,
+		Findings: []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "n"), carried, disputed}}
+	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
+	if !strings.Contains(out, "CARRIED · UNVERIFIED") || strings.Contains(out, "FIRST PASS · UNVERIFIED** carried") {
+		t.Errorf("carried claims must not be attributed to the first pass:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Agent:") && len(line) > 320 {
+			t.Errorf("the disputed reason must be bounded: %d chars", len(line))
+		}
 	}
 }

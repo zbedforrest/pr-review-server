@@ -60,6 +60,17 @@ func publishTargetReady(state string, draft bool, headSHA, reviewedSHA string) (
 // reconciled against PRism's findings so nothing is posted twice, and the
 // file patches bound which lines may take an inline comment.
 func buildPublishRound(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, baseURL string) publisher.Round {
+	// Only active claims reach GitHub, so only they take part in aliasing and
+	// reconciliation; an inactive record with first-pass wording must not
+	// steal a prior comment's identity from the agent finding it merged into.
+	active := make([]payload.Finding, 0, len(pl.Findings))
+	for _, f := range pl.Findings {
+		if f.Active || pl.SchemaVersion != payload.CurrentSchemaVersion {
+			active = append(active, f)
+		}
+	}
+	pl.Findings = active
+
 	external := make([]reconcile.ExternalComment, 0, len(comments))
 	for _, c := range comments {
 		external = append(external, reconcile.ExternalComment{

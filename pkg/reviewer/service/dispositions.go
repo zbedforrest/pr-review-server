@@ -132,7 +132,9 @@ func ApplyDispositions(agentOut []types.LineComment, claims []firstPassClaim) (f
 	rejected := map[string]*types.Disposition{}
 	for _, c := range agentOut {
 		if c.Disposition != nil {
-			if c.Disposition.State == StateRejected {
+			// A rejection without a reason is not a rejection; the prompt says
+			// lack of evidence is not rejection, and the code enforces it.
+			if c.Disposition.State == StateRejected && strings.TrimSpace(c.Disposition.Reason) != "" {
 				rejected[c.Disposition.SourceID] = c.Disposition
 			}
 			continue

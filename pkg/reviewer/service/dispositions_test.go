@@ -95,3 +95,12 @@ func TestNormalizeAgentLifecycleFields_OnlyThePolicyMayCreateRecords(t *testing.
 		t.Errorf("disposition entries are the agent's to make and must survive")
 	}
 }
+
+func TestApplyDispositions_RejectionWithoutAReasonIsNotARejection(t *testing.T) {
+	claims := firstPassClaims([]types.LineComment{lc("d.go", 20, "MEDIUM", "Missing null check.")})
+	agentOut := []types.LineComment{{FilePath: "d.go", LineNumber: 20, Disposition: &types.Disposition{SourceID: "FP-1", State: "rejected"}}}
+	_, active, records := ApplyDispositions(agentOut, claims)
+	if len(active) != 0 || len(records) != 1 || records[0].State != StateUnverified || records[0].Assessment != nil {
+		t.Fatalf("a reasonless rejection must fall through to unaccounted (unverified): active=%+v records=%+v", active, records)
+	}
+}

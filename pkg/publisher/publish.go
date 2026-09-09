@@ -209,7 +209,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	}
 
 	present := map[string]bool{}
-	for _, f := range r.currentFindings() {
+	for _, f := range r.activeClaims() {
 		present[f.ID] = true
 		row, ok := published[f.ID]
 		if !ok || written[f.ID] || row.LastSeenSHA == r.HeadSHA {

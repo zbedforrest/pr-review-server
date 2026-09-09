@@ -81,14 +81,14 @@ type roundDiff struct {
 
 func (r Round) diff() roundDiff {
 	present := map[string]bool{}
-	for _, f := range r.currentFindings() {
+	for _, f := range r.activeClaims() {
 		present[f.ID] = true
 	}
 	// A finding still in the review but no longer above the bar was not
 	// fixed; it simply stops being reported.
 	stillReviewed := map[string]bool{}
 	for _, f := range r.Findings {
-		if Publishable(f) {
+		if Publishable(f) || UnverifiedNote(f) {
 			stillReviewed[f.ID] = true
 		}
 	}
@@ -187,19 +187,38 @@ func (r Round) markedBullet(f payload.Finding, marker string) string {
 const (
 	markerUnverified = "FIRST PASS · UNVERIFIED"
 	markerDisputed   = "FIRST PASS · DISPUTED"
+	markerCarried    = "CARRIED · UNVERIFIED"
+	maxReasonRunes   = 200
 )
 
-// unverifiedBullet marks a first-pass claim as unverified, or disputed with
-// the agent's reason on a nested line when it argued against the claim.
+// unverifiedBullet marks an unverified claim by where it came from (the first
+// pass, or a prior round of this review), or as disputed with the agent's
+// bounded reason on a nested line when it argued against the claim.
 func (r Round) unverifiedBullet(f payload.Finding) string {
 	if f.Assessment == nil {
+		if f.Provenance == "carried" {
+			return r.markedBullet(f, markerCarried)
+		}
 		return r.markedBullet(f, markerUnverified)
 	}
 	line := r.markedBullet(f, markerDisputed)
 	if reason := strings.TrimSpace(f.Assessment.Reason); reason != "" {
-		line += "  - Agent: " + firstLine(reason) + "\n"
+		line += "  - Agent: " + truncateWords(firstLine(reason), maxReasonRunes) + "\n"
 	}
 	return line
+}
+
+// activeClaims are the findings the review holds this round, whether asserted
+// as bullets or folded as unverified; presence tracking must count both so a
+// claim that moved between them is neither "fixed" nor resolved.
+func (r Round) activeClaims() []payload.Finding {
+	var out []payload.Finding
+	for _, f := range r.Findings {
+		if Shown(f) || UnverifiedNote(f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // severityLabel is a colored badge when PRism can serve one, else bold text.

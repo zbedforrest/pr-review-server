@@ -85,7 +85,10 @@ func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineC
 				}
 				continue
 			}
-			if di, ok := findDuplicate(merged, c); ok {
+			// A claim the agent explicitly rejected cannot be a duplicate of one
+			// of its positive findings; proximity dedup must not fold it and
+			// discard the counterargument.
+			if di, ok := findDuplicate(merged, c); ok && c.Assessment == nil {
 				// Duplicates upgrade severity to the max — but an upgrade
 				// sourced from a lower-priority set is capped at MEDIUM for
 				// the same reason re-admissions are (see below): unconfirmed
