@@ -535,15 +535,9 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			// pending on purpose, so a later return to text mode still runs
 			// the model on it (writing observed would make the reaction final).
 			if handled && row.Action == replyActionPending && r.reacts() {
-				if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
+				if err := r.settlePendingReaction(ctx, t, reply, &row, rep); err != nil {
 					return err
 				}
-				if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, replyActionReacted); err != nil {
-					return err
-				}
-				rep.Reacted++
-				row.Action = replyActionReacted
-				rep.Handled = append(rep.Handled, row)
 			}
 			continue
 		}
@@ -594,6 +588,27 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 	if r.LastScanned != nil && settled {
 		r.LastScanned[key] = state.UpdatedAt
 	}
+	return nil
+}
+
+// settlePendingReaction acknowledges a reply whose text step will not run any
+// more (the mode was lowered). It takes the row's claim first so a worker
+// still finishing that step on another instance cannot write over it.
+func (r ReplyReactor) settlePendingReaction(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, row *db.PublishedReply, rep *ReplyReport) error {
+	claimed, err := r.Ledger.ClaimPublishedReply(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder, r.now(), r.claimLease())
+	if err != nil || !claimed {
+		return err
+	}
+	defer func() { _ = r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder) }()
+	if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
+		return err
+	}
+	if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, replyActionReacted); err != nil {
+		return err
+	}
+	rep.Reacted++
+	row.Action = replyActionReacted
+	rep.Handled = append(rep.Handled, *row)
 	return nil
 }
 
@@ -786,6 +801,27 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 			root = c
 		}
 	}
+	// Every write below, the reaction and action included, happens under a
+	// claim on the row so two instances cannot settle the same reply twice:
+	// claim first, release on any error so the next scan resumes, and let
+	// finish() leave the terminal outcome in place.
+	claimed, err := r.Ledger.ClaimPublishedReply(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder, now, r.claimLease())
+	if err != nil {
+		return outcome, err
+	}
+	if !claimed {
+		if rep != nil {
+			rep.skipText("claimed_elsewhere")
+		}
+		return outcome, errClaimedElsewhere
+	}
+	defer func() {
+		if outcome.Outcome == "" {
+			if rerr := r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder); rerr != nil && err == nil {
+				err = rerr
+			}
+		}
+	}()
 	// A reply we posted but never recorded (crash between the two, or another
 	// instance) is adopted before anything else: a posted reply exists whether
 	// or not the author comment would still be eligible today. Only the
@@ -816,26 +852,6 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		return finish("ineligible:" + reason)
 	}
-	// From here on the step does work that must happen once across every
-	// instance: claim the row, release it on any error so the next scan
-	// resumes, and let finish() leave the terminal outcome in place.
-	claimed, err := r.Ledger.ClaimPublishedReply(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder, now, r.claimLease())
-	if err != nil {
-		return outcome, err
-	}
-	if !claimed {
-		if rep != nil {
-			rep.skipText("claimed_elsewhere")
-		}
-		return outcome, errClaimedElsewhere
-	}
-	defer func() {
-		if outcome.Outcome == "" {
-			if rerr := r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder); rerr != nil && err == nil {
-				err = rerr
-			}
-		}
-	}()
 	fingerprint := threadFingerprint(thread, root.AuthorID)
 	if row.Decision != "" && (row.DecisionHead != state.HeadSHA || row.DecisionThread != fingerprint) {
 		// The decision was made against a head or thread that has since moved;

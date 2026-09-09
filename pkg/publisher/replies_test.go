@@ -67,6 +67,9 @@ type fakeReplyGH struct {
 	posted    []string
 	postGate  chan struct{}
 	mu        sync.Mutex
+
+	failReactOnce bool
+	failPostOnce  bool
 }
 
 func (f *fakeReplyGH) ListThread(_ context.Context, owner, repo string, number int) ([]ThreadComment, error) {
@@ -79,6 +82,10 @@ func (f *fakeReplyGH) ListThread(_ context.Context, owner, repo string, number i
 }
 
 func (f *fakeReplyGH) React(_ context.Context, _, _ string, commentID int64) error {
+	if f.failReactOnce {
+		f.failReactOnce = false
+		return fmt.Errorf("502")
+	}
 	f.reactions = append(f.reactions, commentID)
 	return nil
 }
@@ -88,6 +95,10 @@ func (f *fakeReplyGH) PostReply(_ context.Context, owner, repo string, number in
 	if f.postGate != nil {
 		f.postGate <- struct{}{}
 		<-f.postGate
+	}
+	if f.failPostOnce {
+		f.failPostOnce = false
+		return 0, fmt.Errorf("502")
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -193,7 +204,7 @@ func (f *fakeReplyLedger) SetPublishedReplyDecision(_, _ string, _ int, authorCo
 	for i := range f.rows {
 		if f.rows[i].AuthorCommentID == authorCommentID {
 			f.rows[i].Decision, f.rows[i].ReplyBody, f.rows[i].Cited, f.rows[i].Model = d.Decision, d.ReplyBody, d.Cited, d.Model
-			f.rows[i].DecisionHead, f.rows[i].DecisionThread = d.Head, d.Thread
+			f.rows[i].DecisionHead, f.rows[i].DecisionThread, f.rows[i].DecisionReact = d.Head, d.Thread, d.React
 		}
 	}
 	return nil
@@ -999,5 +1010,37 @@ func TestReplyReactor_SettledPendingRowIsReportedForTelemetry(t *testing.T) {
 	rep, _ := r.Run(context.Background())
 	if len(rep.Handled) != 1 || rep.Handled[0].Action != "reacted" {
 		t.Fatalf("handled=%+v", rep.Handled)
+	}
+}
+
+func TestReplyReactor_ReactionFailureAfterPostResumesWithoutASecondPost(t *testing.T) {
+	runs := 0
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right, a.go:8 guards it. Withdrawn.", Cited: []EvidenceRef{{File: "a.go", Line: 8}}, React: true}, nil
+	})
+	gh.failReactOnce = true
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 1 || len(rep.Errors) != 1 || ledger.rows[0].Outcome != "" || ledger.rows[0].ReplyCommentID == 0 {
+		t.Fatalf("the post is recorded and the step stays open: posted=%d rep=%+v row=%+v", len(gh.posted), rep, ledger.rows[0])
+	}
+	rep, _ = r.Run(context.Background())
+	if runs != 1 || len(gh.posted) != 1 || len(gh.reactions) != 1 || ledger.rows[0].Outcome != "posted" || ledger.rows[0].Action != "reacted" || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
+		t.Fatalf("the resume adopts the post, reacts once and applies the concession: runs=%d posted=%d reactions=%v rep=%+v row=%+v", runs, len(gh.posted), gh.reactions, rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_AdoptionAndIneligibilityRunUnderTheClaim(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies.", React: false}, nil
+	})
+	t0 := time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)
+	claimed := t0.Add(-time.Minute)
+	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", Class: "pushback", Action: "pending", CreatedAt: t0.Add(-30 * time.Hour), ClaimedBy: "other", ClaimedAt: &claimed}}
+	r.Holder = "me"
+	rep, _ := r.Run(context.Background())
+	if len(gh.reactions) != 0 || ledger.rows[0].Outcome != "" || ledger.rows[0].Action != "pending" || rep.TextSkipped["claimed_elsewhere"] != 1 {
+		t.Fatalf("a stale reply held by another instance is not settled here: reactions=%v rep=%+v row=%+v", gh.reactions, rep, ledger.rows[0])
 	}
 }
