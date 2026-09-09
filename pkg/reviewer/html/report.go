@@ -425,11 +425,14 @@ type SummaryView struct {
 
 // verdictClass colors the verdict block by decision.
 func verdictClass(verdict string) string {
-	lower := strings.ToLower(verdict)
+	decision := strings.ToLower(strings.TrimSpace(verdict))
+	if i := strings.Index(decision, "verdict:"); i >= 0 {
+		decision = strings.TrimSpace(decision[i+len("verdict:"):])
+	}
 	switch {
-	case strings.Contains(lower, "request changes"):
+	case strings.HasPrefix(decision, "request changes"):
 		return "changes"
-	case strings.Contains(lower, "approve"):
+	case strings.HasPrefix(decision, "approve"):
 		return "approve"
 	}
 	return "neutral"

@@ -881,3 +881,19 @@ func TestGenerateReport_OnlyTheFirstSummaryIsDecomposed(t *testing.T) {
 		t.Errorf("only the first summary feeds the hoisted blocks")
 	}
 }
+
+func TestVerdictClass_KeysOnTheDecisionWord(t *testing.T) {
+	cases := map[string]string{
+		"Verdict: approve with suggestions.": "approve",
+		"Verdict: Approve.":                  "approve",
+		"Verdict: request changes.":          "changes",
+		"Verdict: do not approve.":           "neutral",
+		"Verdict: not approved, see below.":  "neutral",
+		"Verdict: unavailable":               "neutral",
+	}
+	for in, want := range cases {
+		if got := verdictClass(in); got != want {
+			t.Errorf("verdictClass(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

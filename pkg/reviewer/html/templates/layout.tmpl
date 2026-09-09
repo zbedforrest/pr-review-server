@@ -80,6 +80,7 @@
         .report-meta a:hover { text-decoration: underline; }
         .report-meta .commit-sha { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; }
         .pr-description-preview { color: #c9d1d9; }
+        .pr-description:has(.pr-description-fold[open]) .pr-description-preview { display: none; }
         .pr-description-fold summary { cursor: pointer; color: #58a6ff; font-size: 13px; margin: 4px 0 8px; }
         .pr-description-fold summary:hover { text-decoration: underline; }
         .verdict-block { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #30363d; border-left: 5px solid #8b949e; border-radius: 6px; background-color: #161b22; padding: 12px 20px; margin-bottom: 20px; }
