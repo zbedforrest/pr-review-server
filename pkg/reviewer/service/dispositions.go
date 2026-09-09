@@ -1,0 +1,161 @@
+package service
+
+import (
+	"fmt"
+	"strings"
+
+	"pr-review-server/pkg/reviewer/types"
+)
+
+// firstPassClaim is one first-pass comment as handed to the agent, with the
+// server-assigned id the agent uses to account for it.
+type firstPassClaim struct {
+	SourceID    string `json:"source_id"`
+	FilePath    string `json:"file_path"`
+	LineNumber  int    `json:"line_number"`
+	CommentBody string `json:"comment_body"`
+	Importance  string `json:"importance,omitempty"`
+}
+
+func firstPassClaims(comments []types.LineComment) []firstPassClaim {
+	claims := make([]firstPassClaim, 0, len(comments))
+	for i, c := range comments {
+		claims = append(claims, firstPassClaim{
+			SourceID: fmt.Sprintf("FP-%d", i+1), FilePath: c.FilePath, LineNumber: c.LineNumber,
+			CommentBody: c.CommentBody, Importance: c.Importance,
+		})
+	}
+	return claims
+}
+
+var summaryVerdictText = map[string]string{
+	"approve":             "approve",
+	"approve_suggestions": "approve with suggestions",
+	"request_changes":     "request changes",
+}
+
+// RenderStructuredSummaries writes the SUMMARY prose from the agent's
+// structured summary so every review reads the same way: the verdict line
+// first, the upshot, the prioritized findings, then the notes. A SUMMARY
+// that arrived as prose is left alone.
+func RenderStructuredSummaries(comments []types.LineComment) {
+	byID := map[string]types.LineComment{}
+	for _, c := range comments {
+		if c.ID != "" && c.FilePath != "SUMMARY" {
+			byID[c.ID] = c
+		}
+	}
+	for i := range comments {
+		c := &comments[i]
+		if c.FilePath != "SUMMARY" || c.Summary == nil {
+			continue
+		}
+		var b strings.Builder
+		verdict, ok := summaryVerdictText[strings.ToLower(strings.TrimSpace(c.Summary.Verdict))]
+		if !ok {
+			verdict = "unavailable"
+		}
+		fmt.Fprintf(&b, "Verdict: %s.", verdict)
+		if u := strings.TrimSpace(c.Summary.Upshot); u != "" {
+			b.WriteString("\n\n" + u)
+		}
+		n := 0
+		for _, id := range c.Summary.PriorityIDs {
+			f, ok := byID[id]
+			if !ok {
+				continue
+			}
+			if n == 0 {
+				b.WriteString("\n\nNext actions:")
+			}
+			n++
+			fmt.Fprintf(&b, "\n%d. %s (%s)", n, findingLabel(f), findingLocation(f))
+		}
+		if notes := strings.TrimSpace(c.Summary.Notes); notes != "" {
+			b.WriteString("\n\n" + notes)
+		}
+		c.CommentBody = b.String()
+	}
+}
+
+func findingLabel(f types.LineComment) string {
+	if f.FindingContract != nil && strings.TrimSpace(f.FindingContract.Headline) != "" {
+		return strings.TrimSpace(f.FindingContract.Headline)
+	}
+	body := strings.TrimSpace(f.CommentBody)
+	if i := strings.IndexAny(body, ".\n"); i > 0 {
+		body = body[:i]
+	}
+	return body
+}
+
+func findingLocation(f types.LineComment) string {
+	if f.LineNumber > 0 {
+		return fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber)
+	}
+	return f.FilePath
+}
+
+const (
+	StateConfirmed  = "confirmed"
+	StateUnverified = "unverified"
+	StateRejected   = "rejected"
+	StateMerged     = "merged"
+)
+
+// ApplyDispositions reconciles the agent's output against the first-pass
+// claims it was handed. It returns the agent's own findings (disposition
+// entries removed), the first-pass claims that stay active under today's
+// retention policy (criticals the agent did not confirm, marked unverified
+// and, when the agent rejected them, disputed), and the inactive records that
+// preserve everything else: claims merged into an agent finding, rejected
+// non-critical claims with the agent's reason, and claims never examined.
+// A claim the agent does not account for is unverified, never dropped.
+func ApplyDispositions(agentOut []types.LineComment, claims []firstPassClaim) (findings, active, records []types.LineComment) {
+	confirmedBy := map[string]string{}
+	rejected := map[string]*types.Disposition{}
+	for _, c := range agentOut {
+		if c.Disposition != nil {
+			if c.Disposition.State == StateRejected {
+				rejected[c.Disposition.SourceID] = c.Disposition
+			}
+			continue
+		}
+		for _, src := range c.Sources {
+			confirmedBy[src] = c.ID
+		}
+		findings = append(findings, c)
+	}
+
+	for _, claim := range claims {
+		record := types.LineComment{
+			FilePath: claim.FilePath, LineNumber: claim.LineNumber, CommentBody: claim.CommentBody,
+			Importance: claim.Importance, Provenance: "first-pass",
+			Original: &types.OriginalClaim{SourceID: claim.SourceID, FilePath: claim.FilePath, LineNumber: claim.LineNumber, Importance: claim.Importance, Comment: claim.CommentBody},
+		}
+		critical := strings.EqualFold(strings.TrimSpace(claim.Importance), "CRITICAL")
+		switch {
+		case hasKey(confirmedBy, claim.SourceID):
+			record.State, record.Inactive, record.MergedInto = StateMerged, true, confirmedBy[claim.SourceID]
+			records = append(records, record)
+		case rejected[claim.SourceID] != nil && critical:
+			record.State, record.Assessment = StateUnverified, rejected[claim.SourceID]
+			active = append(active, record)
+		case rejected[claim.SourceID] != nil:
+			record.State, record.Inactive, record.Assessment = StateRejected, true, rejected[claim.SourceID]
+			records = append(records, record)
+		case critical:
+			record.State = StateUnverified
+			active = append(active, record)
+		default:
+			record.State, record.Inactive = StateUnverified, true
+			records = append(records, record)
+		}
+	}
+	return findings, active, records
+}
+
+func hasKey(m map[string]string, k string) bool {
+	_, ok := m[k]
+	return ok
+}
