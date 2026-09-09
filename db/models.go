@@ -366,18 +366,34 @@ func (PublishedFindingModel) TableName() string {
 // PublishedReplyModel records one PR-author reply under a PRism inline
 // comment and what PRism did about it. One row per author comment.
 type PublishedReplyModel struct {
-	ID              uint      `gorm:"primaryKey;autoIncrement"`
-	RepoOwner       string    `gorm:"size:255;not null;uniqueIndex:idx_published_replies_unique"`
-	RepoName        string    `gorm:"size:255;not null;uniqueIndex:idx_published_replies_unique"`
-	PRNumber        int       `gorm:"not null;uniqueIndex:idx_published_replies_unique"`
-	AuthorCommentID int64     `gorm:"not null;uniqueIndex:idx_published_replies_unique"`
-	RootCommentID   int64     `gorm:"not null"`
-	Fingerprint     string    `gorm:"size:512;not null"`
-	AuthorID        int64     `gorm:"not null"`
-	Class           string    `gorm:"size:16;not null"`
-	Action          string    `gorm:"size:16;not null"`
-	Body            string    `gorm:"type:text"`
-	ReplyCommentID  int64     `gorm:"not null;default:0"`
+	ID              uint   `gorm:"primaryKey;autoIncrement"`
+	RepoOwner       string `gorm:"size:255;not null;uniqueIndex:idx_published_replies_unique"`
+	RepoName        string `gorm:"size:255;not null;uniqueIndex:idx_published_replies_unique"`
+	PRNumber        int    `gorm:"not null;uniqueIndex:idx_published_replies_unique"`
+	AuthorCommentID int64  `gorm:"not null;uniqueIndex:idx_published_replies_unique"`
+	RootCommentID   int64  `gorm:"not null"`
+	Fingerprint     string `gorm:"size:512;not null"`
+	AuthorID        int64  `gorm:"not null"`
+	Class           string `gorm:"size:16;not null"`
+	Action          string `gorm:"size:16;not null"`
+	Body            string `gorm:"type:text"`
+	ReplyCommentID  int64  `gorm:"not null;default:0"`
+	Decision        string `gorm:"size:16;not null;default:''"`
+	ReplyBody       string `gorm:"type:text"`
+	Cited           string `gorm:"type:text"`
+	Model           string `gorm:"size:255;not null;default:''"`
+	DurationMS      int64  `gorm:"not null;default:0"`
+	Outcome         string `gorm:"size:32;not null;default:''"`
+	Attempts        int    `gorm:"not null;default:0"`
+	DecisionHead    string `gorm:"size:64;not null;default:''"`
+	DecisionThread  string `gorm:"size:64;not null;default:''"`
+	ClaimedBy       string `gorm:"size:128;not null;default:''"`
+	ClaimedAt       *time.Time
+	RepliedAt       *time.Time
 	CreatedAt       time.Time `gorm:"not null"`
 	ProcessedAt     time.Time `gorm:"not null;index"`
 }
+
+// TableName pins the name GORM derived when the table first shipped; the raw
+// migration SQL in gorm.go targets it by this name.
+func (PublishedReplyModel) TableName() string { return "published_reply_models" }

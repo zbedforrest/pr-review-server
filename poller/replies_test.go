@@ -1,6 +1,7 @@
 package poller
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -8,51 +9,6 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/pkg/publisher"
 )
-
-func TestReplyTargetsToScanSkipsUnchangedPRsExceptOnFullScans(t *testing.T) {
-	t1 := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
-	t2 := t1.Add(time.Minute)
-	targets := []db.PublishedReplyTarget{
-		{RepoOwner: "acme", RepoName: "example", PRNumber: 1},
-		{RepoOwner: "acme", RepoName: "example", PRNumber: 2},
-		{RepoOwner: "acme", RepoName: "example", PRNumber: 3},
-		{RepoOwner: "acme", RepoName: "example", PRNumber: 4},
-	}
-	prs := map[string]*db.PR{
-		"acme/example#1": {PRState: "open", GitHubUpdatedAt: &t2},
-		"acme/example#2": {PRState: "open", GitHubUpdatedAt: &t1},
-		"acme/example#3": {PRState: "closed", GitHubUpdatedAt: &t2},
-		"acme/example#4": {PRState: "open", Draft: true, GitHubUpdatedAt: &t2},
-	}
-	lookup := func(owner, repo string, n int) *db.PR { return prs[replyKey(owner, repo, n)] }
-	last := map[string]time.Time{"acme/example#1": t1, "acme/example#2": t1}
-
-	got, marks := replyTargetsToScan(targets, lookup, last, false)
-	if len(got) != 1 || got[0].PRNumber != 1 {
-		t.Fatalf("incremental scan = %+v, want only PR 1 (updated since last scan, open, not draft)", got)
-	}
-	if !marks["acme/example#1"].Equal(t2) || last["acme/example#1"].Equal(t2) {
-		t.Errorf("the candidate watermark is returned, not committed, until the scan succeeds")
-	}
-
-	got, _ = replyTargetsToScan(targets, lookup, last, true)
-	if len(got) != 2 || got[0].PRNumber != 1 || got[1].PRNumber != 2 {
-		t.Fatalf("full scan = %+v, want every open non-draft PR", got)
-	}
-}
-
-func TestCommitReplyWatermarksSkipsFailedTargets(t *testing.T) {
-	t2 := time.Date(2026, 9, 8, 12, 1, 0, 0, time.UTC)
-	last := map[string]time.Time{}
-	marks := map[string]time.Time{"acme/example#1": t2, "acme/example#2": t2}
-	commitReplyWatermarks(last, marks, []string{"acme/example#2: list review comments: boom"})
-	if _, ok := last["acme/example#1"]; !ok {
-		t.Errorf("successful target must advance")
-	}
-	if _, ok := last["acme/example#2"]; ok {
-		t.Errorf("failed target must be retried next cycle")
-	}
-}
 
 func TestReplyLinkDueTriesEachPROnceThenOnlyOnFullScans(t *testing.T) {
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
@@ -129,5 +85,85 @@ func TestReplyTelemetryEventsOnePerHandledReplyPlusLinksAndErrors(t *testing.T) 
 	}
 	if got := replyTelemetryEvents(publisher.ReplyReport{}, publisher.LinkReport{Unmatched: 3}, 3); len(got) != 0 {
 		t.Errorf("a pass that linked nothing is not link activity, got %+v", got)
+	}
+}
+
+func TestReplyInputFromRequestMapsThreadRolesAndStripsNothingElse(t *testing.T) {
+	t0 := time.Date(2026, 9, 9, 18, 0, 0, 0, time.UTC)
+	req := publisher.ReplyRequest{
+		Owner: "acme", Repo: "example", Number: 7, HeadSHA: "head1", BaseRef: "main", Fingerprint: "a.go:1:abc",
+		Root: publisher.ThreadComment{ID: 100, AuthorID: 1, Author: "prism[bot]", Body: "finding"},
+		Thread: []publisher.ThreadComment{
+			{ID: 100, AuthorID: 1, Author: "prism[bot]", Body: "finding", CreatedAt: t0},
+			{ID: 101, InReplyToID: 100, AuthorID: 42, Author: "pilot", Body: "pushback", CreatedAt: t0.Add(time.Minute)},
+		},
+		Reply: publisher.AuthorReply{CommentID: 101, Body: "pushback", Class: publisher.ReplyPushback},
+	}
+	in := replyInputFromRequest(req, 1)
+	if in.Owner != "acme" || in.PRNumber != 7 || in.HeadSHA != "head1" || in.DefaultBranch != "main" || in.Fingerprint != "a.go:1:abc" || in.FindingBody != "finding" || in.AuthorReply != "pushback" || in.Class != "pushback" {
+		t.Fatalf("input = %+v", in)
+	}
+	if len(in.Thread) != 2 || !in.Thread[0].Ours || in.Thread[1].Ours || in.Thread[1].Author != "pilot" {
+		t.Fatalf("thread = %+v", in.Thread)
+	}
+}
+
+func TestReplyOutcomeEventDistinguishesFailuresFromDecisions(t *testing.T) {
+	o := publisher.ReplyOutcome{RepoOwner: "acme", RepoName: "example", PRNumber: 7, AuthorCommentID: 101, Decision: "hold", Outcome: "posted", Posted: true, Model: "m", DurationMS: 1200}
+	ev := replyOutcomeEvent(o, nil, 3)
+	if ev.Action != "reply_decision" || ev.Label != "outcome=posted decision=hold posted=true model=m ms=1200 comment=101" || ev.PRNumber != 7 || ev.UserID != 3 {
+		t.Errorf("event = %+v", ev)
+	}
+	ev = replyOutcomeEvent(o, fmt.Errorf("wall clock"), 3)
+	if ev.Action != "reply_text_error" || ev.Label != "comment=101: wall clock" {
+		t.Errorf("error event = %+v", ev)
+	}
+	for _, outcome := range []string{"skipped:thread_moved", "ineligible:thread_cap"} {
+		o.Outcome = outcome
+		if ev := replyOutcomeEvent(o, nil, 3); ev.Action != "reply_text_skipped" {
+			t.Errorf("%s: action = %s", outcome, ev.Action)
+		}
+	}
+}
+
+func TestReplyLiveCandidatesLimitsLiveReadsToActiveOrMovedPRs(t *testing.T) {
+	now := time.Date(2026, 9, 9, 19, 0, 0, 0, time.UTC)
+	recent, old, moved := now.Add(-time.Hour), now.Add(-3*time.Hour), now.Add(-4*time.Hour)
+	targets := []db.PublishedReplyTarget{
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 1},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 2},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 3},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 4},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 5},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 6},
+	}
+	prs := map[string]*db.PR{
+		"acme/example#1": {PRState: "open", GitHubUpdatedAt: &recent},
+		"acme/example#2": {PRState: "open", GitHubUpdatedAt: &old},
+		"acme/example#3": {PRState: "open", GitHubUpdatedAt: &moved},
+		"acme/example#5": {PRState: "closed", GitHubUpdatedAt: &recent},
+		"acme/example#6": {PRState: "open", Draft: true, GitHubUpdatedAt: &recent},
+	}
+	lookup := func(owner, repo string, n int) *db.PR { return prs[replyKey(owner, repo, n)] }
+	last := map[string]time.Time{"acme/example#2": old, "acme/example#3": moved.Add(-time.Hour)}
+
+	got := replyLiveCandidates(targets, lookup, last, false, now, 2*time.Hour)
+	if len(got) != 3 || got[0].PRNumber != 1 || got[1].PRNumber != 3 || got[2].PRNumber != 4 {
+		t.Fatalf("incremental = %+v, want recent (1), moved-since-settled (3) and uncached (4); cached closed (5) and draft (6) cost no live read", got)
+	}
+	if got := replyLiveCandidates(targets, lookup, last, true, now, 2*time.Hour); len(got) != 6 {
+		t.Fatalf("full scan checks every target, got %d", len(got))
+	}
+}
+
+func TestReplyClaimLeaseOutlastsTheWallClock(t *testing.T) {
+	if got := replyClaimLease(180 * time.Second); got != 11*time.Minute {
+		t.Errorf("180s wall clock -> %s, want 11m", got)
+	}
+	if got := replyClaimLease(30 * time.Second); got != 10*time.Minute {
+		t.Errorf("short wall clock keeps the 10m floor, got %s", got)
+	}
+	if got := replyClaimLease(15 * time.Minute); got != 35*time.Minute {
+		t.Errorf("long wall clock -> %s, want 35m", got)
 	}
 }

@@ -2,10 +2,16 @@ package publisher
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"pr-review-server/db"
@@ -92,28 +98,73 @@ func FindAuthorReplies(comments []ThreadComment, roots map[int64]string, authorI
 	return out
 }
 
+// Reply modes, in increasing order of what PRism does with an author reply:
+// off ignores them, observe records them, react adds a 👍, shadow also runs
+// the reply model and records what it would have said, respond posts it.
 const (
 	ReplyModeOff     = "off"
 	ReplyModeObserve = "observe"
 	ReplyModeReact   = "react"
+	ReplyModeShadow  = "shadow"
+	ReplyModeRespond = "respond"
 
 	replyActionObserved = "observed"
 	replyActionReacted  = "reacted"
 )
 
+// Decisions the reply model can reach about an author's pushback or question.
+const (
+	DecisionConcede = "concede"
+	DecisionHold    = "hold"
+	DecisionAnswer  = "answer"
+	DecisionAbstain = "abstain"
+)
+
+// errClaimedElsewhere reports a text step another instance currently holds;
+// the scan neither settles the PR nor reports an outcome for it.
+var errClaimedElsewhere = errors.New("text step claimed by another instance")
+
+// ReplyMarker tags a text reply PRism posted with the author comment it
+// answers, so a crash between posting and recording cannot produce a second
+// reply for the same comment.
+func ReplyMarker(authorCommentID int64) string {
+	return fmt.Sprintf("<!-- prism:reply:v1:%d -->", authorCommentID)
+}
+
+var replyMarkerRe = regexp.MustCompile(`<!-- prism:reply:v1:(\d+) -->`)
+
+func replyMarkerID(body string) (int64, bool) {
+	m := replyMarkerRe.FindStringSubmatch(body)
+	if m == nil {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(m[1], 10, 64)
+	return id, err == nil
+}
+
 // ReplyGitHub is the slice of GitHub the reactor needs.
 type ReplyGitHub interface {
 	ListThread(ctx context.Context, owner, repo string, number int) ([]ThreadComment, error)
 	React(ctx context.Context, owner, repo string, commentID int64) error
+	PostReply(ctx context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error)
 }
 
 // ReplyLedger persists what we did about each author reply.
 type ReplyLedger interface {
 	ListPublishedReplyTargets() ([]db.PublishedReplyTarget, error)
-	GetPublishedReplyIDsForPR(owner, repo string, number int) (map[int64]bool, error)
 	RecordPublishedReply(*db.PublishedReply) (bool, error)
+	ListPublishedRepliesForPR(owner, repo string, number int) ([]db.PublishedReply, error)
 	ListUnlinkedPublishedFindings() ([]db.UnlinkedPublishedFinding, error)
 	LinkPublishedFindingComment(id uint, commentID int64) error
+	SetPublishedReplyOutcome(owner, repo string, number int, authorCommentID int64, outcome string) error
+	ClaimPublishedReply(owner, repo string, number int, authorCommentID int64, holder string, now time.Time, lease time.Duration) (bool, error)
+	ReleasePublishedReplyClaim(owner, repo string, number int, authorCommentID int64, holder string) error
+	IncrementPublishedReplyAttempts(owner, repo string, number int, authorCommentID int64) (int, error)
+	SetPublishedReplyDecision(owner, repo string, number int, authorCommentID int64, d db.ReplyDecisionRecord) error
+	MarkPublishedReplyPosted(owner, repo string, number int, authorCommentID, replyCommentID int64, at time.Time) error
+	ListPublishedRepliesForRoot(owner, repo string, number int, rootCommentID int64) ([]db.PublishedReply, error)
+	CountPublishedTextRepliesSince(owner, repo string, number int, since time.Time) (int, error)
+	SetPublishedFindingState(owner, repo string, number int, fingerprint, state string) error
 }
 
 // PRState is the live state of a PR that gates any reaction.
@@ -122,19 +173,139 @@ type PRState struct {
 	Draft       bool
 	AuthorID    int64
 	AuthorLogin string
+	UpdatedAt   time.Time
+	HeadSHA     string
+	BaseRef     string
+}
+
+// EvidenceRef is a file:line the reply model cites for a hold.
+type EvidenceRef struct {
+	File string `json:"file"`
+	Line int    `json:"line"`
+}
+
+// ReplyRequest is everything the reply model needs to answer one author reply.
+type ReplyRequest struct {
+	Owner       string
+	Repo        string
+	Number      int
+	HeadSHA     string
+	BaseRef     string
+	Fingerprint string
+	Root        ThreadComment   // our inline comment
+	Thread      []ThreadComment // root and every reply under it, oldest first
+	Reply       AuthorReply     // the author reply being answered
+}
+
+// ReplyDecision is the reply model's conclusion. Reply is empty for abstain.
+type ReplyDecision struct {
+	Decision   string
+	Reply      string
+	Cited      []EvidenceRef
+	Model      string
+	DurationMS int64
+}
+
+// Responder runs the reply model.
+type Responder func(ctx context.Context, req ReplyRequest) (ReplyDecision, error)
+
+// TextPolicy bounds text replies: questions and substantive pushback only,
+// while the thread is fresh, at most MaxPerThread per thread, MaxPerPRPerDay
+// per PR, and MaxChars per reply (a longer reply is dropped, not truncated).
+type TextPolicy struct {
+	MaxPerThread   int
+	MaxPerPRPerDay int
+	MaxAge         time.Duration
+	MaxChars       int
+	MaxAttempts    int // model runs per reply before the step is marked failed
+}
+
+func DefaultTextPolicy() TextPolicy {
+	return TextPolicy{MaxPerThread: 2, MaxPerPRPerDay: 10, MaxAge: 24 * time.Hour, MaxChars: 600, MaxAttempts: 3}
+}
+
+// TextEligibility returns "" when a text reply may be attempted, otherwise the
+// reason it may not: class, stale, thread_cap, conceded, pr_cap. The caps are
+// exact within one process (text steps on a PR are serialized) and best-effort
+// across two instances that both believe they lead, where sibling replies
+// claimed separately can overshoot a cap by one.
+func TextEligibility(reply AuthorReply, prior []db.PublishedReply, prTextToday int, now time.Time, p TextPolicy) string {
+	if reply.Class != ReplyQuestion && reply.Class != ReplyPushback {
+		return "class"
+	}
+	if now.Sub(reply.CreatedAt) > p.MaxAge {
+		return "stale"
+	}
+	posted := 0
+	for _, r := range prior {
+		if r.ReplyCommentID != 0 {
+			posted++
+			if r.Decision == DecisionConcede {
+				return "conceded"
+			}
+		}
+	}
+	if posted >= p.MaxPerThread {
+		return "thread_cap"
+	}
+	if prTextToday >= p.MaxPerPRPerDay {
+		return "pr_cap"
+	}
+	return ""
 }
 
 // ReplyReactor acknowledges PR authors' replies under our inline comments.
 // Mode observe records them; react also adds a 👍. Since is the activation
 // cutoff so enabling the feature never answers historical threads.
+//
+// LastScanned, when set, holds the live updated_at of each PR at its last
+// successful scan; a PR whose updated_at has not moved is skipped without
+// listing its thread (review comment replies bump updated_at). Full ignores
+// the watermarks. The live value comes from PR, never from a cached PR row,
+// because the poller's copy trails GitHub's search index by minutes.
 type ReplyReactor struct {
-	GH      ReplyGitHub
-	Ledger  ReplyLedger
-	PR      func(ctx context.Context, owner, repo string, number int) (PRState, error)
-	Allowed func(authorLogin string) bool
-	Mode    string
-	Since   time.Time
-	Targets []db.PublishedReplyTarget // optional pre-filtered subset; nil means all ledger targets
+	GH          ReplyGitHub
+	Ledger      ReplyLedger
+	PR          func(ctx context.Context, owner, repo string, number int) (PRState, error)
+	Allowed     func(authorLogin string) bool
+	Mode        string
+	Since       time.Time
+	Targets     []db.PublishedReplyTarget // optional pre-filtered subset; nil means all ledger targets
+	LastScanned map[string]time.Time
+	Full        bool
+
+	// Responder answers questions and pushback in shadow and respond modes;
+	// nil disables text even in those modes. Text is zero-valued to
+	// DefaultTextPolicy. Now is for tests.
+	Responder Responder
+	Text      TextPolicy
+	Now       func() time.Time
+
+	// Background, when set, runs each text step off the scan so a burst of
+	// replies cannot hold up reactions; InFlight then prevents a later scan
+	// from starting the same reply twice. OnOutcome receives every finished
+	// or failed text step in either mode.
+	Background func(task func())
+	InFlight   *ReplyInFlight
+	OnOutcome  func(ReplyOutcome, error)
+
+	// Live, when set, re-reads the mode and allowlist right before a post so a
+	// switch flipped during a long model run is honoured. A read error leaves
+	// the step unfinished rather than recording a policy change.
+	Live func() (mode string, allowed func(authorLogin string) bool, err error)
+
+	// Holder names this instance in the ledger claim that makes the text
+	// step exclusive across processes; ClaimLease bounds how long a dead
+	// holder's claim blocks others (zero: 10 minutes).
+	Holder     string
+	ClaimLease time.Duration
+}
+
+func (r ReplyReactor) claimLease() time.Duration {
+	if r.ClaimLease > 0 {
+		return r.ClaimLease
+	}
+	return 10 * time.Minute
 }
 
 // ReplyReport is one scan's accounting. PRsSkipped is keyed by reason
@@ -150,6 +321,36 @@ type ReplyReport struct {
 	Recorded       int
 	Handled        []db.PublishedReply
 	Errors         []string
+
+	// Text accounting: Responded posted a reply, Shadowed recorded one without
+	// posting, Abstained ran the model and it declined, TextSkipped is keyed by
+	// the eligibility or safety reason a reply was not attempted or posted.
+	Responded   int
+	Shadowed    int
+	Abstained   int
+	Dispatched  int
+	TextSkipped map[string]int
+}
+
+// ReplyOutcome is the result of one text step, for telemetry. Outcome is the
+// terminal state recorded on the row (empty when the step errored).
+type ReplyOutcome struct {
+	RepoOwner       string
+	RepoName        string
+	PRNumber        int
+	AuthorCommentID int64
+	Decision        string
+	Outcome         string
+	Posted          bool
+	Model           string
+	DurationMS      int64
+}
+
+func (r *ReplyReport) skipText(reason string) {
+	if r.TextSkipped == nil {
+		r.TextSkipped = map[string]int{}
+	}
+	r.TextSkipped[reason]++
 }
 
 func (r *ReplyReport) skip(reason string) {
@@ -267,43 +468,443 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		rep.skip("not_allowlisted")
 		return nil
 	}
+	key := fmt.Sprintf("%s/%s#%d", t.RepoOwner, t.RepoName, t.PRNumber)
+	if r.LastScanned != nil && !r.Full && !state.UpdatedAt.IsZero() && !state.UpdatedAt.After(r.LastScanned[key]) {
+		rep.skip("unchanged")
+		return nil
+	}
 	rep.PRsScanned++
 	comments, err := r.GH.ListThread(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
 	if err != nil {
 		return err
 	}
-	seen, err := r.Ledger.GetPublishedReplyIDsForPR(t.RepoOwner, t.RepoName, t.PRNumber)
+	rows, err := r.Ledger.ListPublishedRepliesForPR(t.RepoOwner, t.RepoName, t.PRNumber)
 	if err != nil {
 		return err
 	}
+	seen := make(map[int64]db.PublishedReply, len(rows))
+	for _, row := range rows {
+		seen[row.AuthorCommentID] = row
+	}
+	// The watermark only advances when nothing on this PR failed or is still
+	// mid-flight, so incomplete text steps are resumed next cycle instead of
+	// waiting for updated_at to move.
+	settled := true
 	for _, reply := range FindAuthorReplies(comments, t.Roots, state.AuthorID, r.Since) {
 		rep.RepliesSeen++
-		if seen[reply.CommentID] {
-			rep.AlreadyHandled++
-			continue
-		}
-		action := replyActionObserved
-		if r.Mode == ReplyModeReact {
-			if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
+		row, handled := seen[reply.CommentID]
+		if !handled {
+			action := replyActionObserved
+			if r.reacts() {
+				if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
+					return err
+				}
+				action = replyActionReacted
+				rep.Reacted++
+			}
+			row = db.PublishedReply{
+				RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber,
+				RootCommentID: reply.RootCommentID, AuthorCommentID: reply.CommentID,
+				Fingerprint: reply.Fingerprint, AuthorID: state.AuthorID,
+				Class: string(reply.Class), Action: action, Body: reply.Body, CreatedAt: reply.CreatedAt,
+			}
+			created, err := r.Ledger.RecordPublishedReply(&row)
+			if err != nil {
 				return err
 			}
-			action = replyActionReacted
-			rep.Reacted++
+			if created {
+				rep.Recorded++
+				rep.Handled = append(rep.Handled, row)
+			}
+		} else {
+			rep.AlreadyHandled++
 		}
-		row := db.PublishedReply{
-			RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber,
-			RootCommentID: reply.RootCommentID, AuthorCommentID: reply.CommentID,
-			Fingerprint: reply.Fingerprint, AuthorID: state.AuthorID,
-			Class: string(reply.Class), Action: action, Body: reply.Body, CreatedAt: reply.CreatedAt,
+		if !r.textMode() || row.Outcome != "" {
+			continue
 		}
-		created, err := r.Ledger.RecordPublishedReply(&row)
+		if r.Background != nil {
+			settled = false
+			if r.InFlight == nil || r.InFlight.add(reply.CommentID) {
+				rep.Dispatched++
+				r.Background(func() {
+					// Text steps on one PR run one at a time so the per-thread
+					// and per-PR caps are checked and acted on by a single
+					// goroutine; different PRs still run in parallel.
+					if r.InFlight != nil {
+						unlock := r.InFlight.lockPR(key)
+						defer unlock()
+						defer r.InFlight.remove(reply.CommentID)
+					}
+					outcome, err := r.text(ctx, t, state, comments, reply, row, nil)
+					if r.OnOutcome != nil && !errors.Is(err, errClaimedElsewhere) {
+						r.OnOutcome(outcome, err)
+					}
+				})
+			}
+			continue
+		}
+		outcome, err := r.text(ctx, t, state, comments, reply, row, rep)
+		if errors.Is(err, errClaimedElsewhere) {
+			settled = false
+			continue
+		}
+		if r.OnOutcome != nil {
+			r.OnOutcome(outcome, err)
+		}
 		if err != nil {
-			return err
+			settled = false
+			rep.Errors = append(rep.Errors, fmt.Sprintf("%s: reply to %d: %v", key, reply.CommentID, err))
+			continue
 		}
-		if created {
-			rep.Recorded++
-			rep.Handled = append(rep.Handled, row)
+		if outcome.Posted {
+			// The next reply in this scan must see what was just posted.
+			if comments, err = r.GH.ListThread(ctx, t.RepoOwner, t.RepoName, t.PRNumber); err != nil {
+				return err
+			}
 		}
 	}
+	if r.LastScanned != nil && settled {
+		r.LastScanned[key] = state.UpdatedAt
+	}
 	return nil
+}
+
+// ReplyInFlight tracks author comments whose text step is running in the
+// background so a later scan does not start a second model run for them, and
+// serializes text steps per PR.
+type ReplyInFlight struct {
+	mu    sync.Mutex
+	ids   map[int64]bool
+	locks map[string]*prLock
+}
+
+type prLock struct {
+	sync.Mutex
+	waiters int
+}
+
+// lockPR serializes text steps on one PR; the entry is dropped when the last
+// waiter releases it so the map does not grow with every PR ever replied to.
+func (f *ReplyInFlight) lockPR(key string) func() {
+	f.mu.Lock()
+	if f.locks == nil {
+		f.locks = map[string]*prLock{}
+	}
+	l, ok := f.locks[key]
+	if !ok {
+		l = &prLock{}
+		f.locks[key] = l
+	}
+	l.waiters++
+	f.mu.Unlock()
+	l.Lock()
+	return func() {
+		l.Unlock()
+		f.mu.Lock()
+		l.waiters--
+		if l.waiters == 0 {
+			delete(f.locks, key)
+		}
+		f.mu.Unlock()
+	}
+}
+
+func (f *ReplyInFlight) add(id int64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ids == nil {
+		f.ids = map[int64]bool{}
+	}
+	if f.ids[id] {
+		return false
+	}
+	f.ids[id] = true
+	return true
+}
+
+func (f *ReplyInFlight) remove(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.ids, id)
+}
+
+func (r ReplyReactor) reacts() bool {
+	return r.Mode == ReplyModeReact || r.Mode == ReplyModeShadow || r.Mode == ReplyModeRespond
+}
+
+func (r ReplyReactor) textMode() bool {
+	return r.Responder != nil && (r.Mode == ReplyModeShadow || r.Mode == ReplyModeRespond)
+}
+
+func (r ReplyReactor) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now().UTC()
+}
+
+func (r ReplyReactor) textPolicy() TextPolicy {
+	if r.Text == (TextPolicy{}) {
+		return DefaultTextPolicy()
+	}
+	return r.Text
+}
+
+// threadUnder returns our root comment and everything replying to it, oldest
+// first.
+func threadUnder(comments []ThreadComment, rootID int64) []ThreadComment {
+	var out []ThreadComment
+	for _, c := range comments {
+		if c.ID == rootID || c.InReplyToID == rootID {
+			out = append(out, c)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].ID == rootID {
+			return true
+		}
+		if out[j].ID == rootID {
+			return false
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out
+}
+
+// text runs the resumable text step for one author reply. Every terminal
+// exit records an Outcome; a returned error leaves Outcome empty so the next
+// scan resumes from the persisted state (decision, posted reply) rather than
+// redoing it. rep may be nil when running in the background.
+func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, reply AuthorReply, row db.PublishedReply, rep *ReplyReport) (outcome ReplyOutcome, err error) {
+	outcome = ReplyOutcome{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, AuthorCommentID: reply.CommentID,
+		Decision: row.Decision, Model: row.Model, DurationMS: row.DurationMS}
+	finish := func(result string) (ReplyOutcome, error) {
+		if err := r.Ledger.SetPublishedReplyOutcome(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, result); err != nil {
+			return outcome, err
+		}
+		outcome.Outcome = result
+		return outcome, nil
+	}
+	skip := func(reason string) (ReplyOutcome, error) {
+		if rep != nil {
+			rep.skipText(reason)
+		}
+		return finish("skipped:" + reason)
+	}
+	now := r.now()
+	eligibility := func() (string, error) {
+		prior, err := r.Ledger.ListPublishedRepliesForRoot(t.RepoOwner, t.RepoName, t.PRNumber, reply.RootCommentID)
+		if err != nil {
+			return "", err
+		}
+		var others []db.PublishedReply
+		for _, p := range prior {
+			if p.AuthorCommentID != reply.CommentID {
+				others = append(others, p)
+			}
+		}
+		today, err := r.Ledger.CountPublishedTextRepliesSince(t.RepoOwner, t.RepoName, t.PRNumber, now.Add(-24*time.Hour))
+		if err != nil {
+			return "", err
+		}
+		return TextEligibility(reply, others, today, now, r.textPolicy()), nil
+	}
+	thread := threadUnder(comments, reply.RootCommentID)
+	var root ThreadComment
+	for _, c := range thread {
+		if c.ID == reply.RootCommentID {
+			root = c
+		}
+	}
+	// A reply we posted but never recorded (crash between the two, or another
+	// instance) is adopted before anything else: a posted reply exists whether
+	// or not the author comment would still be eligible today. Only the
+	// root's author, that is our own bot, can own such a marker.
+	adoptPosted := func(in []ThreadComment) (bool, error) {
+		for _, c := range in {
+			if id, ok := replyMarkerID(c.Body); ok && id == reply.CommentID && c.InReplyToID == reply.RootCommentID && c.AuthorID == root.AuthorID && c.ID != reply.CommentID {
+				return true, r.adopt(t, reply, c, &outcome)
+			}
+		}
+		return false, nil
+	}
+	if adopted, err := adoptPosted(thread); err != nil {
+		return outcome, err
+	} else if adopted {
+		if rep != nil {
+			rep.skipText("already_posted")
+		}
+		return finish("posted")
+	}
+	reason, err := eligibility()
+	if err != nil {
+		return outcome, err
+	}
+	if reason != "" {
+		if rep != nil {
+			rep.skipText(reason)
+		}
+		return finish("ineligible:" + reason)
+	}
+	// From here on the step does work that must happen once across every
+	// instance: claim the row, release it on any error so the next scan
+	// resumes, and let finish() leave the terminal outcome in place.
+	claimed, err := r.Ledger.ClaimPublishedReply(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder, now, r.claimLease())
+	if err != nil {
+		return outcome, err
+	}
+	if !claimed {
+		if rep != nil {
+			rep.skipText("claimed_elsewhere")
+		}
+		return outcome, errClaimedElsewhere
+	}
+	defer func() {
+		if outcome.Outcome == "" {
+			if rerr := r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder); rerr != nil && err == nil {
+				err = rerr
+			}
+		}
+	}()
+	fingerprint := threadFingerprint(thread, root.AuthorID)
+	if row.Decision != "" && (row.DecisionHead != state.HeadSHA || row.DecisionThread != fingerprint) {
+		// The decision was made against a head or thread that has since moved;
+		// a resumed step must not post it.
+		if row.DecisionHead != state.HeadSHA {
+			return skip("head_moved")
+		}
+		return skip("thread_moved")
+	}
+	if row.Decision == "" {
+		if row.Attempts >= r.textPolicy().MaxAttempts {
+			return finish("failed")
+		}
+		decision, err := r.Responder(ctx, ReplyRequest{
+			Owner: t.RepoOwner, Repo: t.RepoName, Number: t.PRNumber, HeadSHA: state.HeadSHA, BaseRef: state.BaseRef,
+			Fingerprint: reply.Fingerprint, Root: root, Thread: thread, Reply: reply,
+		})
+		// A run that was cut off by shutdown is not the model failing; the
+		// claim lease keeps a crash loop to one run per lease anyway.
+		if ctx.Err() == nil {
+			if _, ierr := r.Ledger.IncrementPublishedReplyAttempts(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID); ierr != nil {
+				return outcome, ierr
+			}
+		}
+		if err != nil {
+			return outcome, err
+		}
+		cited, _ := json.Marshal(decision.Cited)
+		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
+			Decision: decision.Decision, ReplyBody: decision.Reply, Cited: string(cited), Model: decision.Model, DurationMS: decision.DurationMS,
+			Head: state.HeadSHA, Thread: fingerprint,
+		}); err != nil {
+			return outcome, err
+		}
+		row.Decision, row.ReplyBody = decision.Decision, decision.Reply
+		outcome.Decision, outcome.Model, outcome.DurationMS = decision.Decision, decision.Model, decision.DurationMS
+	}
+	text := strings.TrimSpace(row.ReplyBody)
+	switch {
+	case row.Decision == DecisionAbstain || text == "":
+		if rep != nil {
+			rep.Abstained++
+		}
+		return finish("abstained")
+	case len([]rune(text)) > r.textPolicy().MaxChars:
+		return skip("too_long")
+	case r.Mode != ReplyModeRespond:
+		if rep != nil {
+			rep.Shadowed++
+		}
+		return finish("shadowed")
+	}
+
+	// Everything below re-reads live state: the model may have run for
+	// minutes, another instance may have posted, or an operator may have
+	// turned the feature down.
+	if r.Live != nil {
+		mode, allowed, err := r.Live()
+		if err != nil {
+			return outcome, err
+		}
+		switch {
+		case mode == ReplyModeShadow:
+			if rep != nil {
+				rep.Shadowed++
+			}
+			return finish("shadowed")
+		case mode != ReplyModeRespond || (allowed != nil && !allowed(state.AuthorLogin)):
+			return skip("mode_changed")
+		}
+	}
+	if reason, err := eligibility(); err != nil {
+		return outcome, err
+	} else if reason != "" {
+		if rep != nil {
+			rep.skipText(reason)
+		}
+		return finish("ineligible:" + reason)
+	}
+	fresh, err := r.PR(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
+	if err != nil {
+		return outcome, err
+	}
+	switch {
+	case !fresh.Open:
+		return skip("closed")
+	case fresh.Draft:
+		return skip("draft")
+	case fresh.HeadSHA != state.HeadSHA:
+		return skip("head_moved")
+	}
+	latest, err := r.GH.ListThread(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
+	if err != nil {
+		return outcome, err
+	}
+	latestThread := threadUnder(latest, reply.RootCommentID)
+	if adopted, err := adoptPosted(latestThread); err != nil {
+		return outcome, err
+	} else if adopted {
+		return finish("posted")
+	}
+	if threadFingerprint(latestThread, root.AuthorID) != fingerprint {
+		return skip("thread_moved")
+	}
+	id, err := r.GH.PostReply(ctx, t.RepoOwner, t.RepoName, t.PRNumber, reply.RootCommentID, text+"\n\n"+ReplyMarker(reply.CommentID))
+	if err != nil {
+		return outcome, err
+	}
+	if err := r.adopt(t, reply, ThreadComment{ID: id, CreatedAt: r.now()}, &outcome); err != nil {
+		return outcome, err
+	}
+	if rep != nil {
+		rep.Responded++
+	}
+	return finish("posted")
+}
+
+// adopt records a posted reply and applies a concession's side effect.
+func (r ReplyReactor) adopt(t db.PublishedReplyTarget, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome) error {
+	if err := r.Ledger.MarkPublishedReplyPosted(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, posted.ID, posted.CreatedAt); err != nil {
+		return err
+	}
+	outcome.Posted = true
+	if outcome.Decision == DecisionConcede {
+		return r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed)
+	}
+	return nil
+}
+
+// threadFingerprint identifies the finding and everything written under it by
+// anyone but us: an edit to the root or an author edit or deletion changes
+// it, our own posted replies do not.
+func threadFingerprint(thread []ThreadComment, ourID int64) string {
+	h := sha256.New()
+	for _, c := range thread {
+		if c.AuthorID == ourID && c.InReplyToID != 0 {
+			continue
+		}
+		fmt.Fprintf(h, "%d:%d:%s\x00", c.ID, len(c.Body), c.Body)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

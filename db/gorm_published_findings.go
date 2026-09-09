@@ -1,6 +1,7 @@
 package db
 
 import (
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -59,7 +60,9 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		"source_tag":    model.SourceTag,
 		"severity":      model.Severity,
 		"last_seen_sha": model.LastSeenSHA,
-		"state":         model.State,
+		// A concession is sticky: a publication that loaded the row before the
+		// author conceded must not flip it back to open or resolved.
+		"state": gorm.Expr("CASE WHEN published_findings.state = ? THEN published_findings.state ELSE ? END", PublishedStateDismissed, model.State),
 	}
 	if model.CommentID != 0 {
 		updates["comment_id"] = model.CommentID
@@ -130,4 +133,12 @@ func (g *GormDB) GetPublishedSummaryForPR(owner, repo string, prNumber int) (Pub
 		return PublishedFinding{}, false, nil
 	}
 	return publishedFindingModelToDomain(&model), true, nil
+}
+
+// SetPublishedFindingState changes one ledger row's state, for conceding a
+// finding in conversation.
+func (g *GormDB) SetPublishedFindingState(owner, repo string, number int, fingerprint, state string) error {
+	return g.db.Model(&PublishedFindingModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ?", owner, repo, number, fingerprint).
+		Update("state", state).Error
 }

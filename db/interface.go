@@ -363,8 +363,41 @@ type PublishedReply struct {
 	Action          string
 	Body            string
 	ReplyCommentID  int64
-	CreatedAt       time.Time
-	ProcessedAt     time.Time
+	// Decision and the fields after it are set when the reply model ran:
+	// concede | hold | answer | abstain, the text it produced, the evidence
+	// it cited as JSON, and what served it. RepliedAt is set once posted.
+	Decision   string
+	ReplyBody  string
+	Cited      string
+	Model      string
+	DurationMS int64
+	// Outcome is the terminal result of the text step (posted, shadowed,
+	// abstained, skipped:<reason>, ineligible:<reason>, failed); empty means
+	// the step has not finished and the next scan resumes it. Attempts counts
+	// model runs so a persistently failing reply is eventually given up on.
+	Outcome        string
+	Attempts       int
+	DecisionHead   string
+	DecisionThread string
+	ClaimedBy      string
+	ClaimedAt      *time.Time
+	RepliedAt      *time.Time
+	CreatedAt      time.Time
+	ProcessedAt    time.Time
+}
+
+// ReplyDecisionRecord is what the reply model concluded about one author
+// reply, persisted before any text is posted.
+type ReplyDecisionRecord struct {
+	Decision   string
+	ReplyBody  string
+	Cited      string
+	Model      string
+	DurationMS int64
+	// Head and Thread identify what the model saw (PR head sha and a hash of
+	// the thread content); a resumed step posts only if both still match.
+	Head   string
+	Thread string
 }
 
 // PublishedReplyTarget is a PR with inline comments PRism owns, keyed by the

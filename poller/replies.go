@@ -11,6 +11,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/github"
 	"pr-review-server/pkg/publisher"
+	"pr-review-server/pkg/reviewer/service"
 )
 
 // Author replies under PRism's inline comments are acknowledged per poll
@@ -27,46 +28,58 @@ func replyKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
 }
 
-// replyTargetsToScan drops closed and draft PRs and, on incremental cycles,
-// PRs whose GitHub updated_at has not moved since we last scanned them. Review
-// comment replies bump updated_at, so this catches every reply within a cycle
-// and the periodic full scan is the safety net. The candidate watermarks are
-// returned rather than committed so a failed scan retries next cycle.
-func replyTargetsToScan(targets []db.PublishedReplyTarget, lookup func(owner, repo string, number int) *db.PR, lastScanned map[string]time.Time, full bool) ([]db.PublishedReplyTarget, map[string]time.Time) {
+// replyLiveWindow bounds the per-cycle GitHub cost of the live watermark: a
+// PR whose cached updated_at is older than this is only re-read when the cache
+// shows it moved or on a full scan, so the steady-state cost is one GetPR per
+// minute per recently active PR rather than per PR with findings.
+const replyLiveWindow = 2 * time.Hour
+
+func lookupCachedPR(store db.Database) func(owner, repo string, number int) *db.PR {
+	return func(owner, repo string, number int) *db.PR {
+		pr, err := store.GetPR(owner, repo, number)
+		if err != nil {
+			return nil
+		}
+		return pr
+	}
+}
+
+// replyLiveCandidates picks the targets worth a live GetPR this cycle: all of
+// them on a full scan; otherwise those recently active per the cached row,
+// those the cache says moved since we last settled them, and those with no
+// cached row (fail open, the reactor's live read decides).
+func replyLiveCandidates(targets []db.PublishedReplyTarget, lookup func(owner, repo string, number int) *db.PR, lastScanned map[string]time.Time, full bool, now time.Time, window time.Duration) []db.PublishedReplyTarget {
+	if full {
+		return targets
+	}
 	var out []db.PublishedReplyTarget
-	marks := map[string]time.Time{}
 	for _, t := range targets {
 		pr := lookup(t.RepoOwner, t.RepoName, t.PRNumber)
-		if pr == nil || !strings.EqualFold(pr.PRState, "open") || pr.Draft {
+		if pr == nil || pr.GitHubUpdatedAt == nil {
+			out = append(out, t)
+			continue
+		}
+		// A cached closed or draft row is skipped without a live read; the full
+		// scan corrects the cache if it is wrong.
+		if !strings.EqualFold(pr.PRState, "open") || pr.Draft {
 			continue
 		}
 		key := replyKey(t.RepoOwner, t.RepoName, t.PRNumber)
-		if !full && pr.GitHubUpdatedAt != nil && !pr.GitHubUpdatedAt.After(lastScanned[key]) {
-			continue
+		if now.Sub(*pr.GitHubUpdatedAt) <= window || pr.GitHubUpdatedAt.After(lastScanned[key]) {
+			out = append(out, t)
 		}
-		if pr.GitHubUpdatedAt != nil {
-			marks[key] = *pr.GitHubUpdatedAt
-		}
-		out = append(out, t)
 	}
-	return out, marks
+	return out
 }
 
-// commitReplyWatermarks advances the scan position for every target except
-// those the reactor reported an error for (errors are prefixed "owner/repo#n:").
-func commitReplyWatermarks(lastScanned, marks map[string]time.Time, errors []string) {
-	for key, ts := range marks {
-		failed := false
-		for _, e := range errors {
-			if strings.HasPrefix(e, key+":") {
-				failed = true
-				break
-			}
-		}
-		if !failed {
-			lastScanned[key] = ts
-		}
+// replyClaimLease outlasts any legitimate text step: the model's wall clock,
+// the GitHub round trips around it, and a margin.
+func replyClaimLease(wallClock time.Duration) time.Duration {
+	lease := 2*wallClock + 5*time.Minute
+	if lease < 10*time.Minute {
+		lease = 10 * time.Minute
 	}
+	return lease
 }
 
 // replyLinkDue picks the unlinked ledger rows to try matching this cycle: every
@@ -140,6 +153,69 @@ func replyErrorEvent(action, msg string, userID int) db.TelemetryEvent {
 	return ev
 }
 
+// replyOutcomeEvent records one finished or failed text step.
+func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.TelemetryEvent {
+	label := fmt.Sprintf("outcome=%s decision=%s posted=%t model=%s ms=%d comment=%d", o.Outcome, o.Decision, o.Posted, o.Model, o.DurationMS, o.AuthorCommentID)
+	action := "reply_decision"
+	switch {
+	case err != nil:
+		action = "reply_text_error"
+		label = fmt.Sprintf("comment=%d: %v", o.AuthorCommentID, err)
+	case strings.HasPrefix(o.Outcome, "skipped:") || strings.HasPrefix(o.Outcome, "ineligible:"):
+		action = "reply_text_skipped"
+	}
+	return db.TelemetryEvent{UserID: userID, Action: action, Label: truncateLabel(label, 255), PROwner: o.RepoOwner, PRRepo: o.RepoName, PRNumber: o.PRNumber}
+}
+
+// replyInputFromRequest shapes the reactor's request for the reply model.
+// ourID is the App's bot user id; comments it authored are marked Ours.
+func replyInputFromRequest(req publisher.ReplyRequest, ourID int64) service.ReplyInput {
+	thread := make([]service.ReplyMessage, 0, len(req.Thread))
+	for _, c := range req.Thread {
+		thread = append(thread, service.ReplyMessage{Author: c.Author, Ours: c.AuthorID == ourID, Body: c.Body, At: c.CreatedAt})
+	}
+	return service.ReplyInput{
+		Owner: req.Owner, Repo: req.Repo, DefaultBranch: req.BaseRef, PRNumber: req.Number, HeadSHA: req.HeadSHA,
+		Fingerprint: req.Fingerprint, FindingBody: req.Root.Body, Thread: thread,
+		AuthorReply: req.Reply.Body, Class: string(req.Reply.Class),
+	}
+}
+
+// replyResponder runs the reply model under its own concurrency cap so a busy
+// review pool cannot delay acknowledgements, and a burst of replies cannot
+// starve reviews.
+func (p *Poller) replyResponder() publisher.Responder {
+	return func(ctx context.Context, req publisher.ReplyRequest) (publisher.ReplyDecision, error) {
+		token, err := p.ghClientConcrete.CurrentToken(ctx)
+		if err != nil {
+			return publisher.ReplyDecision{}, fmt.Errorf("get GitHub token: %w", err)
+		}
+		model := p.cfg.ReplyModel
+		if model == "" {
+			model = p.cfg.AgentModel
+		}
+		cfg := service.AgentConfig{
+			CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
+			WallClock: time.Duration(p.cfg.ReplyWallClockSec) * time.Second, MaxTurns: p.cfg.ReplyMaxTurns,
+			GitHubToken: token, Backend: p.cfg.AgentBackend, Model: model, Effort: p.cfg.AgentEffort,
+			AnthropicAPIKey: p.cfg.AnthropicAPIKey, OpenRouterAPIKey: p.cfg.OpenRouterAPIKey, OpenRouterBaseURL: p.cfg.OpenRouterBaseURL,
+			FailureLogSink: p.persistAgentFailureLog,
+		}
+		ourID := req.Root.AuthorID
+		out, err := service.RunAgentReply(ctx, cfg, p.agentSpawner, replyInputFromRequest(req, ourID))
+		if err != nil {
+			return publisher.ReplyDecision{}, err
+		}
+		cited := make([]publisher.EvidenceRef, 0, len(out.Cited))
+		for _, e := range out.Cited {
+			cited = append(cited, publisher.EvidenceRef{File: e.File, Line: e.Line})
+		}
+		log.Printf("[REPLY %s/%s#%d] decision=%s cited=%d unresolved=%d turns=%d ms=%d model=%s",
+			req.Owner, req.Repo, req.Number, out.Decision, len(out.Cited), len(out.Unresolved), out.AssistantTurns, out.DurationMS, out.ServedModel)
+		return publisher.ReplyDecision{Decision: out.Decision, Reply: out.Reply, Cited: cited, Model: out.ServedModel, DurationMS: out.DurationMS}, nil
+	}
+}
+
 func truncateLabel(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
@@ -182,19 +258,54 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 	}
 	cycle := p.replyScanCycle.Add(1)
 	full := cycle%replyFullScanEvery == 1
-	lookup := func(owner, repo string, number int) *db.PR {
-		pr, err := p.db.GetPR(owner, repo, number)
-		if err != nil {
-			return nil
-		}
-		return pr
-	}
 	enabled, _ := p.db.GetSetting(settingPublishEnabledAuthors)
 	reactor := publisher.ReplyReactor{
-		GH:      ghReplyAdapter{p.ghClientConcrete},
-		Ledger:  ledger,
-		Mode:    mode,
-		Since:   since,
+		GH:          ghReplyAdapter{p.ghClientConcrete},
+		Ledger:      ledger,
+		Mode:        mode,
+		Since:       since,
+		LastScanned: p.replyLastScanned,
+		Full:        full,
+		Responder:   p.replyResponder(),
+		InFlight:    &p.replyInFlight,
+		// The execution slot is taken before the task claims its row, so time
+		// spent queued is never counted against the claim lease.
+		Background: func(task func()) {
+			go func() {
+				select {
+				case p.replySlots <- struct{}{}:
+					defer func() { <-p.replySlots }()
+				case <-ctx.Done():
+					return
+				}
+				task()
+			}()
+		},
+		ClaimLease: replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
+		Holder:     p.holderID,
+		Live: func() (string, func(string) bool, error) {
+			liveMode, err := p.db.GetSetting(settingPublishReplyMode)
+			if err != nil {
+				return "", nil, fmt.Errorf("read reply mode: %w", err)
+			}
+			liveEnabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
+			if err != nil {
+				return "", nil, fmt.Errorf("read publish authors: %w", err)
+			}
+			return strings.TrimSpace(strings.ToLower(liveMode)), func(login string) bool { return publishEnabledFor(login, liveEnabled) }, nil
+		},
+		OnOutcome: func(o publisher.ReplyOutcome, err error) {
+			if err != nil {
+				log.Printf("[REPLY %s/%s#%d] text step for comment %d failed, will resume: %v", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, err)
+			} else {
+				log.Printf("[REPLY %s/%s#%d] comment %d: outcome=%s decision=%s posted=%t", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, o.Outcome, o.Decision, o.Posted)
+			}
+			if userID := p.systemTelemetryUserID(); userID != 0 {
+				if terr := p.db.CreateTelemetryEvents([]db.TelemetryEvent{replyOutcomeEvent(o, err, userID)}); terr != nil {
+					log.Printf("[REPLIES] WARN: could not record reply outcome: %v", terr)
+				}
+			}
+		},
 		Allowed: func(login string) bool { return publishEnabledFor(login, enabled) },
 		PR: func(ctx context.Context, owner, repo string, number int) (publisher.PRState, error) {
 			ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)
@@ -206,6 +317,9 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				Draft:       ghPR.GetDraft(),
 				AuthorID:    ghPR.GetUser().GetID(),
 				AuthorLogin: ghPR.GetUser().GetLogin(),
+				UpdatedAt:   ghPR.GetUpdatedAt().Time,
+				HeadSHA:     ghPR.GetHead().GetSHA(),
+				BaseRef:     ghPR.GetBase().GetRef(),
 			}, nil
 		},
 	}
@@ -230,22 +344,21 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		}
 	}
 
-	subset, marks := replyTargetsToScan(targets, lookup, p.replyLastScanned, full)
+	candidates := replyLiveCandidates(targets, lookupCachedPR(p.db), p.replyLastScanned, full, time.Now(), replyLiveWindow)
 	var rep publisher.ReplyReport
-	if len(subset) > 0 {
-		reactor.Targets = subset
+	if len(candidates) > 0 {
+		reactor.Targets = candidates
 		rep, err = reactor.Run(ctx)
 		if err != nil {
 			log.Printf("[REPLIES] scan failed: %v", err)
 			return
 		}
-		commitReplyWatermarks(p.replyLastScanned, marks, rep.Errors)
 		for _, e := range rep.Errors {
 			log.Printf("[REPLIES] %s", e)
 		}
 	}
-	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d candidates=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d errors=%d",
-		cycle, full, mode, len(targets), len(subset), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, len(rep.Errors))
+	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d live_checked=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d text_dispatched=%d errors=%d",
+		cycle, full, mode, len(targets), len(candidates), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Dispatched, len(rep.Errors))
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
 		return
@@ -294,4 +407,8 @@ func (a ghReplyAdapter) ListThread(ctx context.Context, owner, repo string, numb
 
 func (a ghReplyAdapter) React(ctx context.Context, owner, repo string, commentID int64) error {
 	return a.c.CreateCommentReaction(ctx, owner, repo, commentID, "+1")
+}
+
+func (a ghReplyAdapter) PostReply(ctx context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error) {
+	return a.c.CreateReviewCommentReply(ctx, owner, repo, number, rootCommentID, body)
 }

@@ -158,3 +158,119 @@ func TestGormDB_CountPublishedReplies_GroupsByActionAndClass(t *testing.T) {
 	assert.Equal(t, map[string]int{"reacted": 2, "observed": 1}, counts.ByAction)
 	assert.Equal(t, map[string]int{"resolution": 2, "question": 1}, counts.ByClass)
 }
+
+func TestGormDB_PublishedReply_DecisionAndPostingRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	base := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	seed := func(id int64, root int64, class string) {
+		_, err := db.RecordPublishedReply(&PublishedReply{
+			RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: root, AuthorCommentID: id,
+			Fingerprint: "a.go:1:abc", AuthorID: 42, Class: class, Action: "reacted", Body: "b", CreatedAt: base,
+		})
+		require.NoError(t, err)
+	}
+	seed(9010, 9001, "pushback")
+	seed(9011, 9001, "question")
+	seed(9020, 9002, "pushback")
+
+	require.NoError(t, db.SetPublishedReplyDecision("owner", "repo", 7, 9010, ReplyDecisionRecord{
+		Decision: "hold", ReplyBody: "Still applies: see a.go:12.", Cited: `[{"file":"a.go","line":12}]`, Model: "claude-fable-5-1", DurationMS: 4200,
+	}))
+	require.NoError(t, db.MarkPublishedReplyPosted("owner", "repo", 7, 9010, 9500, base.Add(time.Minute)))
+	require.NoError(t, db.SetPublishedReplyDecision("owner", "repo", 7, 9011, ReplyDecisionRecord{Decision: "abstain"}))
+
+	rows, err := db.ListPublishedRepliesForRoot("owner", "repo", 7, 9001)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "hold", rows[0].Decision)
+	assert.Equal(t, int64(9500), rows[0].ReplyCommentID)
+	assert.Equal(t, "Still applies: see a.go:12.", rows[0].ReplyBody)
+	require.NotNil(t, rows[0].RepliedAt)
+	assert.Equal(t, "abstain", rows[1].Decision)
+	assert.Equal(t, int64(0), rows[1].ReplyCommentID)
+
+	n, err := db.CountPublishedTextRepliesSince("owner", "repo", 7, base)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "only posted text replies count against the per-PR budget")
+	n, err = db.CountPublishedTextRepliesSince("owner", "repo", 7, base.Add(2*time.Minute))
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestGormDB_SetPublishedFindingState_DismissesOneRow(t *testing.T) {
+	db := newTestDB(t)
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(nil)))
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.Fingerprint = "b.go:2:feedface0000" })))
+	require.NoError(t, db.SetPublishedFindingState("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123", PublishedStateDismissed))
+	rows, err := db.GetPublishedFindingsForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	states := map[string]string{}
+	for _, r := range rows {
+		states[r.Fingerprint] = r.State
+	}
+	assert.Equal(t, map[string]string{"pkg/api/handler.go:4:deadbeef0123": PublishedStateDismissed, "b.go:2:feedface0000": PublishedStateOpen}, states)
+}
+
+func TestGormDB_PublishedReply_OutcomeAndAttempts(t *testing.T) {
+	db := newTestDB(t)
+	_, err := db.RecordPublishedReply(&PublishedReply{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: 9001, AuthorCommentID: 9010,
+		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	n, err := db.IncrementPublishedReplyAttempts("owner", "repo", 7, 9010)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	n, err = db.IncrementPublishedReplyAttempts("owner", "repo", 7, 9010)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	require.NoError(t, db.SetPublishedReplyOutcome("owner", "repo", 7, 9010, "posted"))
+	rows, err := db.ListPublishedRepliesForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "posted", rows[0].Outcome)
+	assert.Equal(t, 2, rows[0].Attempts)
+}
+
+func TestGormDB_EnsureIdempotentColumns_AddsReplyDecisionColumnsToAnOldTable(t *testing.T) {
+	database := newTestDB(t)
+	for _, col := range []string{"decision", "reply_body", "cited", "model", "duration_ms", "outcome", "attempts", "decision_head", "decision_thread", "replied_at", "claimed_by", "claimed_at"} {
+		require.NoError(t, database.db.Migrator().DropColumn(&PublishedReplyModel{}, col), col)
+	}
+	require.NoError(t, database.ensureIdempotentColumns())
+	_, err := database.RecordPublishedReply(&PublishedReply{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: 9001, AuthorCommentID: 9010,
+		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	rows, err := database.ListPublishedRepliesForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+}
+
+func TestGormDB_ClaimPublishedReply_IsExclusiveUntilReleasedOrStale(t *testing.T) {
+	db := newTestDB(t)
+	_, err := db.RecordPublishedReply(&PublishedReply{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: 9001, AuthorCommentID: 9010,
+		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	now := time.Date(2026, 9, 9, 19, 0, 0, 0, time.UTC)
+	ok, err := db.ClaimPublishedReply("owner", "repo", 7, 9010, "a", now, 10*time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	ok, err = db.ClaimPublishedReply("owner", "repo", 7, 9010, "b", now.Add(time.Minute), 10*time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "a live claim by another holder must be refused")
+	ok, err = db.ClaimPublishedReply("owner", "repo", 7, 9010, "b", now.Add(11*time.Minute), 10*time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "a stale claim is taken over")
+	require.NoError(t, db.ReleasePublishedReplyClaim("owner", "repo", 7, 9010, "b"))
+	ok, err = db.ClaimPublishedReply("owner", "repo", 7, 9010, "a", now.Add(12*time.Minute), 10*time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	require.NoError(t, db.SetPublishedReplyOutcome("owner", "repo", 7, 9010, "posted"))
+	ok, err = db.ClaimPublishedReply("owner", "repo", 7, 9010, "c", now.Add(30*time.Minute), 10*time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "a finished step cannot be claimed")
+}
