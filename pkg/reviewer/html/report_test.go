@@ -827,3 +827,24 @@ func TestGenerateReport_UnplaceableFindingStillRendersAndIsIndexed(t *testing.T)
 	assert.Contains(t, report, "The runbook still names the old flag.", "a finding with no diff or file context must still render its body")
 	assert.Equal(t, 1, strings.Count(report, `href="#finding-`+fmt.Sprint(len(in.Comments))+`"`), "the index links to the rendered detail")
 }
+
+func TestFindingGroup_UnansweredMemoryCheckNeedsVerification(t *testing.T) {
+	answered := types.LineComment{Provenance: "required-check", CommentBody: "**Required check CHK-x answered VIOLATED without an accompanying finding.** details"}
+	unanswered := types.LineComment{Provenance: "required-check", CommentBody: "Bug-memory alert.\n\n_Required check CHK-mem-1 was not answered with evidence, treat as unresolved risk._"}
+	if g, _, _ := findingGroupFor(answered); g != groupConfirmed {
+		t.Errorf("violated synthesis = %q, want confirmed", g)
+	}
+	if g, pill, _ := findingGroupFor(unanswered); g != groupNeedsCheck || pill != "UNANSWERED CHECK" {
+		t.Errorf("unanswered memory check = %q/%q, want needs verification with an UNANSWERED CHECK pill", g, pill)
+	}
+}
+
+func TestDecomposeSummary_OnlyTheGeneratedReconciliationFooterIsStripped(t *testing.T) {
+	parts := decomposeSummary("Verdict: approve.\n\nReconciliation: the DB and API representations now agree.\n\n_Reconciliation: 1 earlier-pass finding(s) below were retained despite not being independently confirmed._")
+	if !strings.Contains(parts.Prose, "DB and API representations now agree") {
+		t.Errorf("ordinary prose starting with Reconciliation must survive:\n%s", parts.Prose)
+	}
+	if strings.Contains(parts.Prose, "earlier-pass finding") {
+		t.Errorf("the generated footer must be stripped:\n%s", parts.Prose)
+	}
+}

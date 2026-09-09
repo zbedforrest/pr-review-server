@@ -105,6 +105,17 @@ func (c CheckRecord) VerdictClass() string {
 // findingGroup buckets a provenance into an index group and its status pill.
 // Unknown labels are treated as unverified: truthful attribution beats
 // promoting them to confirmed.
+// findingGroupFor buckets a comment for the findings index. Required-check
+// provenance covers two different things: a VIOLATED answer synthesized into
+// a finding (confirmed) and a memory alert re-admitted because its check went
+// unanswered (not confirmed by anyone).
+func findingGroupFor(c types.LineComment) (group, pill, class string) {
+	if payload.DeriveProvenance(c) == payload.ProvenanceRequiredCheck && alertUnansweredRe.MatchString(c.CommentBody) {
+		return groupNeedsCheck, "UNANSWERED CHECK", "unverified"
+	}
+	return findingGroup(payload.DeriveProvenance(c))
+}
+
 func findingGroup(provenance string) (group, pill, class string) {
 	switch provenance {
 	case payload.ProvenanceAgent, payload.ProvenanceRequiredCheck:
@@ -123,7 +134,7 @@ var (
 	// closed right after it ("**Suggestions:** rest").
 	suggestionsLabelRe = regexp.MustCompile(`(?i)^[\s#>-]*([*_]*)suggestions?:\s*([*_]*)\s*`)
 	legacyLedgerRe     = regexp.MustCompile(`(?i)^[\s*_]*required checks \(id`)
-	legacyReconRe      = regexp.MustCompile(`(?i)^[\s*_]*reconciliation:`)
+	legacyReconRe      = regexp.MustCompile(`(?i)^[\s*_-]*reconciliation:\s*\d+ earlier-pass finding`)
 	markdownMarksRe    = regexp.MustCompile("\\*\\*|__|\\*|`|^#+\\s*|^[-*]\\s+|\\b_|_\\b|<[^>]*>")
 	sentenceEndRe      = regexp.MustCompile(`^(.*?[.!?])(\s|$)`)
 	paragraphBreakRe   = regexp.MustCompile(`\n[ \t]*\n`)
@@ -459,7 +470,7 @@ func generateReport(in ReportInput) (string, error) {
 			continue
 		}
 
-		group, pill, class := findingGroup(payload.DeriveProvenance(comment))
+		group, pill, class := findingGroupFor(comment)
 		counts[group]++
 		view.AnchorID = fmt.Sprintf("finding-%d", view.Counter)
 		view.StatusPill, view.StatusClass = pill, class

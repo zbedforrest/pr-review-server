@@ -304,3 +304,14 @@ func TestCarriedFromSHA_NonCarriedBodies(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeFindings_SetLabelOverridesTheCommentsOwnProvenance(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{lc("SUMMARY", 0, "LOW", "Verdict: approve")}}
+	carriedIn := lc("b.ts", 40, "MEDIUM", "stale")
+	carriedIn.Provenance = "carried"
+	carried := FindingSet{Provenance: CarriedProvenance("0123456789abcdef0123"), Comments: []types.LineComment{carriedIn}}
+	got := MergeFindings(agent, carried)
+	if sha, ok := CarriedFromSHA(got[1].Provenance); !ok || sha != "0123456" {
+		t.Fatalf("the set label names the source review and must win over the bare stamp: %q", got[1].Provenance)
+	}
+}

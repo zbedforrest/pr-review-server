@@ -62,7 +62,10 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 	var merged []types.LineComment
 	for si, set := range sets {
 		for _, c := range set.Comments {
-			if c.Provenance == "" {
+			// The caller builds the sets, so the set label is the authoritative
+			// attribution for this review (a carried finding's own stamp is
+			// the bare word; the set label names the source review).
+			if set.Provenance != "" {
 				c.Provenance = set.Provenance
 			}
 			if c.FilePath == "SUMMARY" {
