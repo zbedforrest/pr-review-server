@@ -163,6 +163,7 @@ type PRState struct {
 	AuthorLogin string
 	UpdatedAt   time.Time
 	HeadSHA     string
+	BaseRef     string
 }
 
 // EvidenceRef is a file:line the reply model cites for a hold.
@@ -177,6 +178,7 @@ type ReplyRequest struct {
 	Repo        string
 	Number      int
 	HeadSHA     string
+	BaseRef     string
 	Fingerprint string
 	Root        ThreadComment   // our inline comment
 	Thread      []ThreadComment // root and every reply under it, oldest first
@@ -285,6 +287,19 @@ type ReplyReport struct {
 	Shadowed    int
 	Abstained   int
 	TextSkipped map[string]int
+	Decisions   []ReplyOutcome
+}
+
+// ReplyOutcome is one reply-model run, for telemetry.
+type ReplyOutcome struct {
+	RepoOwner       string
+	RepoName        string
+	PRNumber        int
+	AuthorCommentID int64
+	Decision        string
+	Posted          bool
+	Model           string
+	DurationMS      int64
 }
 
 func (r *ReplyReport) skipText(reason string) {
@@ -539,12 +554,15 @@ func (r ReplyReactor) respond(ctx context.Context, t db.PublishedReplyTarget, st
 		}
 	}
 	decision, err := r.Responder(ctx, ReplyRequest{
-		Owner: t.RepoOwner, Repo: t.RepoName, Number: t.PRNumber, HeadSHA: state.HeadSHA,
+		Owner: t.RepoOwner, Repo: t.RepoName, Number: t.PRNumber, HeadSHA: state.HeadSHA, BaseRef: state.BaseRef,
 		Fingerprint: reply.Fingerprint, Root: root, Thread: thread, Reply: reply,
 	})
 	if err != nil {
 		return err
 	}
+	outcome := ReplyOutcome{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, AuthorCommentID: reply.CommentID,
+		Decision: decision.Decision, Model: decision.Model, DurationMS: decision.DurationMS}
+	defer func() { rep.Decisions = append(rep.Decisions, outcome) }()
 	cited, _ := json.Marshal(decision.Cited)
 	if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
 		Decision: decision.Decision, ReplyBody: decision.Reply, Cited: string(cited), Model: decision.Model, DurationMS: decision.DurationMS,
@@ -589,6 +607,7 @@ func (r ReplyReactor) respond(ctx context.Context, t db.PublishedReplyTarget, st
 		return err
 	}
 	rep.Responded++
+	outcome.Posted = true
 	if decision.Decision == DecisionConcede {
 		if err := r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed); err != nil {
 			return err

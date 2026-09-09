@@ -77,6 +77,12 @@ type Config struct {
 	AgentBackend       string // claude (default) or openrouter
 	AgentModel         string // backend model id for agent reviews (empty = backend default)
 	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
+	// Author-reply model (pkg/reviewer/service/reply.go). Same backend and
+	// credentials as the review agent; smaller budgets, own concurrency cap.
+	ReplyModel         string // empty = the review agent's model
+	ReplyWallClockSec  int
+	ReplyMaxTurns      int
+	ReplyMaxConcurrent int
 	// AnthropicAPIKey is optional for the agent pass (Claude OAuth remains
 	// supported) but required when FirstPassProvider is "claude".
 	AnthropicAPIKey   string
@@ -290,6 +296,10 @@ func Load() *Config {
 		AgentBackend:       agentBackend,
 		AgentModel:         agentModel,
 		AgentEffort:        agentEffort,
+		ReplyModel:         os.Getenv("REPLY_MODEL"),
+		ReplyWallClockSec:  getEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
+		ReplyMaxTurns:      getEnvIntOrDefault("REPLY_MAX_TURNS", 20),
+		ReplyMaxConcurrent: getEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),

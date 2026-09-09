@@ -86,3 +86,41 @@ func TestReplyTelemetryEventsOnePerHandledReplyPlusLinksAndErrors(t *testing.T) 
 		t.Errorf("a pass that linked nothing is not link activity, got %+v", got)
 	}
 }
+
+func TestReplyInputFromRequestMapsThreadRolesAndStripsNothingElse(t *testing.T) {
+	t0 := time.Date(2026, 9, 9, 18, 0, 0, 0, time.UTC)
+	req := publisher.ReplyRequest{
+		Owner: "acme", Repo: "example", Number: 7, HeadSHA: "head1", BaseRef: "main", Fingerprint: "a.go:1:abc",
+		Root: publisher.ThreadComment{ID: 100, AuthorID: 1, Author: "prism[bot]", Body: "finding"},
+		Thread: []publisher.ThreadComment{
+			{ID: 100, AuthorID: 1, Author: "prism[bot]", Body: "finding", CreatedAt: t0},
+			{ID: 101, InReplyToID: 100, AuthorID: 42, Author: "pilot", Body: "pushback", CreatedAt: t0.Add(time.Minute)},
+		},
+		Reply: publisher.AuthorReply{CommentID: 101, Body: "pushback", Class: publisher.ReplyPushback},
+	}
+	in := replyInputFromRequest(req, 1)
+	if in.Owner != "acme" || in.PRNumber != 7 || in.HeadSHA != "head1" || in.DefaultBranch != "main" || in.Fingerprint != "a.go:1:abc" || in.FindingBody != "finding" || in.AuthorReply != "pushback" || in.Class != "pushback" {
+		t.Fatalf("input = %+v", in)
+	}
+	if len(in.Thread) != 2 || !in.Thread[0].Ours || in.Thread[1].Ours || in.Thread[1].Author != "pilot" {
+		t.Fatalf("thread = %+v", in.Thread)
+	}
+}
+
+func TestReplyTelemetryEventsIncludeDecisionsAndTextSkips(t *testing.T) {
+	rep := publisher.ReplyReport{
+		Handled:     []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "a", Class: "pushback", Action: "reacted", AuthorCommentID: 101}},
+		Decisions:   []publisher.ReplyOutcome{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, AuthorCommentID: 101, Decision: "hold", Posted: true, Model: "m", DurationMS: 1200}},
+		TextSkipped: map[string]int{"thread_cap": 2},
+	}
+	events := replyTelemetryEvents(rep, publisher.LinkReport{}, 3)
+	if len(events) != 3 {
+		t.Fatalf("got %d events: %+v", len(events), events)
+	}
+	if events[1].Action != "reply_decision" || events[1].Label != "decision=hold posted=true model=m ms=1200 comment=101" || events[1].PRNumber != 7 {
+		t.Errorf("decision event = %+v", events[1])
+	}
+	if events[2].Action != "reply_text_skipped" || events[2].Label != "reason=thread_cap n=2" {
+		t.Errorf("skip event = %+v", events[2])
+	}
+}

@@ -26,8 +26,9 @@ const (
 var publishSeverities = map[string]bool{"critical": true, "medium": true, "low": true}
 
 // publishReplyModes: off does nothing, observe records author replies to our
-// inline comments, react also acknowledges each with a 👍.
-var publishReplyModes = map[string]bool{"off": true, "observe": true, "react": true}
+// inline comments, react also acknowledges each with a 👍, shadow also runs
+// the reply model and records what it would say, respond posts it.
+var publishReplyModes = map[string]bool{"off": true, "observe": true, "react": true, "shadow": true, "respond": true}
 
 func (s *Server) addPublishSettings(response map[string]interface{}) {
 	authors, _ := s.db.GetSetting(settingPublishEnabledAuthors)

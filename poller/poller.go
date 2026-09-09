@@ -115,6 +115,7 @@ type Poller struct {
 	replyScanCycle   atomic.Int64
 	replyLastScanned map[string]time.Time
 	replyLinkTried   map[string]time.Time
+	replySlots       chan struct{}
 	polling          bool
 	pollMutex        sync.Mutex
 	// Track active review processes for cancellation and monitoring
@@ -381,6 +382,11 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		agentConcurrent = fallbackAgentConcurrent
 	}
 	p.agentSlots = make(chan struct{}, agentConcurrent)
+	replyConcurrent := cfg.ReplyMaxConcurrent
+	if replyConcurrent <= 0 {
+		replyConcurrent = 1
+	}
+	p.replySlots = make(chan struct{}, replyConcurrent)
 	firstPassConcurrent := cfg.ReviewMaxFirstPassConcurrent
 	if firstPassConcurrent <= 0 {
 		firstPassConcurrent = fallbackReviewFirstPassConcurrent

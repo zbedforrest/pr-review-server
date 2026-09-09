@@ -210,6 +210,19 @@ func (c *Client) CreateCommentReaction(ctx context.Context, owner, repo string, 
 	return nil
 }
 
+// CreateReviewCommentReply posts a reply in the thread of a review comment.
+func (c *Client) CreateReviewCommentReply(ctx context.Context, owner, repo string, number int, commentID int64, body string) (int64, error) {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return 0, err
+	}
+	created, _, err := gh.PullRequests.CreateCommentInReplyTo(ctx, owner, repo, number, body, commentID)
+	if err != nil {
+		return 0, fmt.Errorf("reply to comment %d: %w", commentID, err)
+	}
+	return created.GetID(), nil
+}
+
 // GetPRFilePatches returns filename -> unified diff patch. Files GitHub
 // serves without a patch (binary, too large) are omitted.
 func (c *Client) GetPRFilePatches(ctx context.Context, owner, repo string, number int) (map[string]string, error) {

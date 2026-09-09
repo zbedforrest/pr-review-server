@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/github"
 	"pr-review-server/pkg/publisher"
+	"pr-review-server/pkg/reviewer/service"
 )
 
 // Author replies under PRism's inline comments are acknowledged per poll
@@ -72,6 +74,18 @@ func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, 
 			PROwner: h.RepoOwner, PRRepo: h.RepoName, PRNumber: h.PRNumber,
 		})
 	}
+	for _, d := range rep.Decisions {
+		events = append(events, db.TelemetryEvent{
+			UserID: userID, Action: "reply_decision",
+			Label:   truncateLabel(fmt.Sprintf("decision=%s posted=%t model=%s ms=%d comment=%d", d.Decision, d.Posted, d.Model, d.DurationMS, d.AuthorCommentID), 255),
+			PROwner: d.RepoOwner, PRRepo: d.RepoName, PRNumber: d.PRNumber,
+		})
+	}
+	for _, reason := range sortedKeys(rep.TextSkipped) {
+		events = append(events, db.TelemetryEvent{
+			UserID: userID, Action: "reply_text_skipped", Label: fmt.Sprintf("reason=%s n=%d", reason, rep.TextSkipped[reason]),
+		})
+	}
 	for _, e := range rep.Errors {
 		events = append(events, replyErrorEvent("reply_scan_error", e, userID))
 	}
@@ -96,6 +110,69 @@ func replyErrorEvent(action, msg string, userID int) db.TelemetryEvent {
 		ev.PROwner, ev.PRRepo, ev.PRNumber = owner, repo, number
 	}
 	return ev
+}
+
+func sortedKeys(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// replyInputFromRequest shapes the reactor's request for the reply model.
+// ourID is the App's bot user id; comments it authored are marked Ours.
+func replyInputFromRequest(req publisher.ReplyRequest, ourID int64) service.ReplyInput {
+	thread := make([]service.ReplyMessage, 0, len(req.Thread))
+	for _, c := range req.Thread {
+		thread = append(thread, service.ReplyMessage{Author: c.Author, Ours: c.AuthorID == ourID, Body: c.Body, At: c.CreatedAt})
+	}
+	return service.ReplyInput{
+		Owner: req.Owner, Repo: req.Repo, DefaultBranch: req.BaseRef, PRNumber: req.Number, HeadSHA: req.HeadSHA,
+		Fingerprint: req.Fingerprint, FindingBody: req.Root.Body, Thread: thread,
+		AuthorReply: req.Reply.Body, Class: string(req.Reply.Class),
+	}
+}
+
+// replyResponder runs the reply model under its own concurrency cap so a busy
+// review pool cannot delay acknowledgements, and a burst of replies cannot
+// starve reviews.
+func (p *Poller) replyResponder() publisher.Responder {
+	return func(ctx context.Context, req publisher.ReplyRequest) (publisher.ReplyDecision, error) {
+		select {
+		case p.replySlots <- struct{}{}:
+			defer func() { <-p.replySlots }()
+		case <-ctx.Done():
+			return publisher.ReplyDecision{}, ctx.Err()
+		}
+		token, err := p.ghClientConcrete.CurrentToken(ctx)
+		if err != nil {
+			return publisher.ReplyDecision{}, fmt.Errorf("get GitHub token: %w", err)
+		}
+		model := p.cfg.ReplyModel
+		if model == "" {
+			model = p.cfg.AgentModel
+		}
+		cfg := service.AgentConfig{
+			CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
+			WallClock: time.Duration(p.cfg.ReplyWallClockSec) * time.Second, MaxTurns: p.cfg.ReplyMaxTurns,
+			GitHubToken: token, Backend: p.cfg.AgentBackend, Model: model, Effort: p.cfg.AgentEffort,
+			AnthropicAPIKey: p.cfg.AnthropicAPIKey, OpenRouterAPIKey: p.cfg.OpenRouterAPIKey, OpenRouterBaseURL: p.cfg.OpenRouterBaseURL,
+		}
+		ourID := req.Root.AuthorID
+		out, err := service.RunAgentReply(ctx, cfg, p.agentSpawner, replyInputFromRequest(req, ourID))
+		if err != nil {
+			return publisher.ReplyDecision{}, err
+		}
+		cited := make([]publisher.EvidenceRef, 0, len(out.Cited))
+		for _, e := range out.Cited {
+			cited = append(cited, publisher.EvidenceRef{File: e.File, Line: e.Line})
+		}
+		log.Printf("[REPLY %s/%s#%d] decision=%s cited=%d unresolved=%d turns=%d ms=%d model=%s",
+			req.Owner, req.Repo, req.Number, out.Decision, len(out.Cited), len(out.Unresolved), out.AssistantTurns, out.DurationMS, out.ServedModel)
+		return publisher.ReplyDecision{Decision: out.Decision, Reply: out.Reply, Cited: cited, Model: out.ServedModel, DurationMS: out.DurationMS}, nil
+	}
 }
 
 func truncateLabel(s string, max int) string {
@@ -148,6 +225,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		Since:       since,
 		LastScanned: p.replyLastScanned,
 		Full:        full,
+		Responder:   p.replyResponder(),
 		Allowed:     func(login string) bool { return publishEnabledFor(login, enabled) },
 		PR: func(ctx context.Context, owner, repo string, number int) (publisher.PRState, error) {
 			ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)
@@ -160,6 +238,8 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				AuthorID:    ghPR.GetUser().GetID(),
 				AuthorLogin: ghPR.GetUser().GetLogin(),
 				UpdatedAt:   ghPR.GetUpdatedAt().Time,
+				HeadSHA:     ghPR.GetHead().GetSHA(),
+				BaseRef:     ghPR.GetBase().GetRef(),
 			}, nil
 		},
 	}
@@ -196,8 +276,8 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			log.Printf("[REPLIES] %s", e)
 		}
 	}
-	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d errors=%d",
-		cycle, full, mode, len(targets), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, len(rep.Errors))
+	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d responded=%d shadowed=%d abstained=%d text_skipped=%v errors=%d",
+		cycle, full, mode, len(targets), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Responded, rep.Shadowed, rep.Abstained, rep.TextSkipped, len(rep.Errors))
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
 		return
@@ -246,4 +326,8 @@ func (a ghReplyAdapter) ListThread(ctx context.Context, owner, repo string, numb
 
 func (a ghReplyAdapter) React(ctx context.Context, owner, repo string, commentID int64) error {
 	return a.c.CreateCommentReaction(ctx, owner, repo, commentID, "+1")
+}
+
+func (a ghReplyAdapter) PostReply(ctx context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error) {
+	return a.c.CreateReviewCommentReply(ctx, owner, repo, number, rootCommentID, body)
 }
