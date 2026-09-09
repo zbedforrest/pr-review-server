@@ -985,8 +985,26 @@ func TestReplyReactor_PendingRowIsAcknowledgedWhenTextModeIsTurnedOff(t *testing
 	}
 	r.Mode = ReplyModeReact
 	rep, _ := r.Run(context.Background())
-	if len(gh.reactions) != 1 || rep.Reacted != 1 || ledger.rows[0].Action != "reacted" {
+	if len(gh.reactions) != 1 || rep.Reacted != 1 || ledger.rows[0].Action != "reacted" || ledger.rows[0].Outcome != "skipped:mode_changed" {
 		t.Fatalf("reactions=%v rep=%+v row=%+v", gh.reactions, rep, ledger.rows[0])
+	}
+	r.Mode = ReplyModeRespond
+	r.Run(context.Background())
+	if len(gh.posted) != 0 {
+		t.Fatalf("an acknowledged reply must not be rebutted after the mode comes back: posted=%v", gh.posted)
+	}
+}
+
+func TestReplyReactor_AbstainReadsTheLiveModeBeforeReacting(t *testing.T) {
+	live := ReplyModeRespond
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		live = ReplyModeOff
+		return ReplyDecision{Decision: DecisionAbstain, React: true}, nil
+	})
+	r.Live = func() (string, func(string) bool, error) { return live, nil, nil }
+	r.Run(context.Background())
+	if len(gh.reactions) != 0 || ledger.rows[0].Action != "observed" || ledger.rows[0].Outcome != "abstained" {
+		t.Fatalf("a mode turned off during the model run stops the thumbs-up on abstain too: reactions=%v row=%+v", gh.reactions, ledger.rows[0])
 	}
 }
 

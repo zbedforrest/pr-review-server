@@ -615,7 +615,17 @@ func (r ReplyReactor) settlePendingReaction(ctx context.Context, t db.PublishedR
 	defer func() {
 		_ = r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder)
 	}()
-	return true, r.reactAndRecord(ctx, t, reply, row, rep)
+	if err := r.reactAndRecord(ctx, t, reply, row, rep); err != nil {
+		return true, err
+	}
+	// The text step will not run for this reply any more; leave the same
+	// terminal marker the step itself leaves when the mode changes under it,
+	// so a later return to text mode does not rebut an acknowledged comment.
+	if err := r.Ledger.SetPublishedReplyOutcome(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, "skipped:mode_changed"); err != nil {
+		return true, err
+	}
+	row.Outcome = "skipped:mode_changed"
+	return true, nil
 }
 
 func (r ReplyReactor) reactAndRecord(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, row *db.PublishedReply, rep *ReplyReport) error {
@@ -749,23 +759,32 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	// only when its reply is posted (a thumbs-up on a comment about to be
 	// rebutted reads as agreement); every other ending, including shadow and
 	// abstain, acknowledges the author so no reply goes unanswered.
-	// liveReacts follows the Live read (here and again before posting) so a
-	// mode or allowlist turned down mid-run stops the thumbs-up as well as the
-	// text, on every terminal path.
-	liveReacts := r.reacts()
-	if r.Live != nil {
+	// The reaction is decided against the live mode and allowlist at the
+	// moment it would be posted, so a switch flipped during a long model run
+	// is honoured on every terminal path.
+	liveReacts := func() (bool, error) {
+		if r.Live == nil {
+			return r.reacts(), nil
+		}
 		mode, allowed, err := r.Live()
 		if err != nil {
-			return outcome, err
+			return false, err
 		}
-		liveReacts = (mode == ReplyModeReact || mode == ReplyModeShadow || mode == ReplyModeRespond) && (allowed == nil || allowed(state.AuthorLogin))
+		return (mode == ReplyModeReact || mode == ReplyModeShadow || mode == ReplyModeRespond) && (allowed == nil || allowed(state.AuthorLogin)), nil
 	}
 	react := func(want bool) error {
 		if row.Action != replyActionPending {
 			return nil
 		}
+		if want {
+			live, err := liveReacts()
+			if err != nil {
+				return err
+			}
+			want = live
+		}
 		action := replyActionObserved
-		if want && liveReacts {
+		if want {
 			// GitHub returns the existing reaction on a repeat, so a ledger
 			// failure after this call retries safely next cycle.
 			if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
@@ -952,7 +971,6 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		if err != nil {
 			return outcome, err
 		}
-		liveReacts = (mode == ReplyModeReact || mode == ReplyModeShadow || mode == ReplyModeRespond) && (allowed == nil || allowed(state.AuthorLogin))
 		switch {
 		case mode == ReplyModeShadow:
 			if rep != nil {
