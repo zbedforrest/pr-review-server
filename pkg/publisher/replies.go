@@ -529,14 +529,26 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		} else {
 			rep.AlreadyHandled++
 		}
+		if handled && row.Action == replyActionPending && row.Outcome != "" && r.reacts() {
+			// A finished step that never settled its reaction (a rolling deploy
+			// mixing builds): nothing else will write this row, acknowledge it.
+			if err := r.reactAndRecord(ctx, t, reply, &row, rep); err != nil {
+				return err
+			}
+			continue
+		}
 		if !r.textMode() {
 			// The mode was turned down to react while this reply waited for the
 			// model: acknowledge it now. Under observe or off the row stays
 			// pending on purpose, so a later return to text mode still runs
 			// the model on it (writing observed would make the reaction final).
 			if handled && row.Action == replyActionPending && r.reacts() {
-				if err := r.settlePendingReaction(ctx, t, reply, &row, rep); err != nil {
+				claimed, err := r.settlePendingReaction(ctx, t, reply, &row, rep)
+				if err != nil {
 					return err
+				}
+				if !claimed {
+					settled = false
 				}
 			}
 			continue
@@ -593,15 +605,20 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 
 // settlePendingReaction acknowledges a reply whose text step will not run any
 // more (the mode was lowered). It takes the row's claim first so a worker
-// still finishing that step on another instance cannot write over it.
-func (r ReplyReactor) settlePendingReaction(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, row *db.PublishedReply, rep *ReplyReport) error {
+// still finishing that step on another instance cannot write over it; a
+// refused claim reports false so the caller keeps the PR unsettled.
+func (r ReplyReactor) settlePendingReaction(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, row *db.PublishedReply, rep *ReplyReport) (bool, error) {
 	claimed, err := r.Ledger.ClaimPublishedReply(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder, r.now(), r.claimLease())
 	if err != nil || !claimed {
-		return err
+		return false, err
 	}
 	defer func() {
 		_ = r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder)
 	}()
+	return true, r.reactAndRecord(ctx, t, reply, row, rep)
+}
+
+func (r ReplyReactor) reactAndRecord(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, row *db.PublishedReply, rep *ReplyReport) error {
 	if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
 		return err
 	}
@@ -732,9 +749,17 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	// only when its reply is posted (a thumbs-up on a comment about to be
 	// rebutted reads as agreement); every other ending, including shadow and
 	// abstain, acknowledges the author so no reply goes unanswered.
-	// liveReacts is refreshed from the Live read before posting so a mode or
-	// allowlist turned down mid-run stops the thumbs-up as well as the text.
+	// liveReacts follows the Live read (here and again before posting) so a
+	// mode or allowlist turned down mid-run stops the thumbs-up as well as the
+	// text, on every terminal path.
 	liveReacts := r.reacts()
+	if r.Live != nil {
+		mode, allowed, err := r.Live()
+		if err != nil {
+			return outcome, err
+		}
+		liveReacts = (mode == ReplyModeReact || mode == ReplyModeShadow || mode == ReplyModeRespond) && (allowed == nil || allowed(state.AuthorLogin))
+	}
 	react := func(want bool) error {
 		if row.Action != replyActionPending {
 			return nil
@@ -824,6 +849,18 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 			}
 		}
 	}()
+	// Another holder may have decided or posted since the scan read its rows;
+	// under the claim the ledger is the truth.
+	current, err := r.Ledger.ListPublishedRepliesForRoot(t.RepoOwner, t.RepoName, t.PRNumber, reply.RootCommentID)
+	if err != nil {
+		return outcome, err
+	}
+	for _, f := range current {
+		if f.AuthorCommentID == reply.CommentID {
+			row = f
+			outcome.Decision, outcome.Model, outcome.DurationMS = row.Decision, row.Model, row.DurationMS
+		}
+	}
 	// A reply we posted but never recorded (crash between the two, or another
 	// instance) is adopted before anything else: a posted reply exists whether
 	// or not the author comment would still be eligible today. Only the

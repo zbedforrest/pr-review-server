@@ -70,9 +70,14 @@ type replyJSON struct {
 	React    *bool               `json:"react"`
 }
 
-// reacts defaults to acknowledging the author unless the model said not to.
+// reacts follows the model's explicit choice; when it said nothing, a hold is
+// not acknowledged (a thumbs-up on a rebuttal reads as agreement) and every
+// other decision is.
 func (d replyJSON) reacts() bool {
-	return d.React == nil || *d.React
+	if d.React != nil {
+		return *d.React
+	}
+	return d.Decision != ReplyDecisionHold
 }
 
 var replyDecisions = map[string]bool{ReplyDecisionConcede: true, ReplyDecisionHold: true, ReplyDecisionAnswer: true, ReplyDecisionAbstain: true}

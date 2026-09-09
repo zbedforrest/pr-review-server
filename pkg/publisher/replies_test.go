@@ -812,7 +812,7 @@ func TestReplyReactor_LiveReadErrorLeavesTheStepUnfinished(t *testing.T) {
 	})
 	r.Live = func() (string, func(string) bool, error) { return "", nil, fmt.Errorf("db down") }
 	rep, _ := r.Run(context.Background())
-	if len(gh.posted) != 0 || len(rep.Errors) != 1 || ledger.rows[0].Outcome != "" || ledger.rows[0].Decision != DecisionHold || ledger.rows[0].ClaimedBy != "" {
+	if len(gh.posted) != 0 || len(gh.reactions) != 0 || len(rep.Errors) != 1 || ledger.rows[0].Outcome != "" || ledger.rows[0].ClaimedBy != "" {
 		t.Fatalf("a settings blip must not become a permanent skip: posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
 	}
 }
