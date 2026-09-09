@@ -85,6 +85,7 @@ func (s *Server) handlePublishReplies(w http.ResponseWriter, r *http.Request) {
 			"outcome":           row.Outcome,
 			"attempts":          row.Attempts,
 			"reply_body":        row.ReplyBody,
+			"cited":             row.Cited,
 			"reply_comment_id":  row.ReplyCommentID,
 			"replied_at":        row.RepliedAt,
 			"model":             row.Model,

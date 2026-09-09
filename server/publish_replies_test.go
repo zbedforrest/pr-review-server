@@ -31,6 +31,8 @@ func TestPublishReplies_ReportsRecentRepliesCountsAndUnlinkedRoots(t *testing.T)
 		require.NoError(t, err)
 	}
 
+	require.NoError(t, database.SetPublishedReplyDecision("acme", "example", 7, 103, db.ReplyDecisionRecord{Decision: "hold", Cited: `[{"file":"a.go","line":12}]`}))
+
 	w := httptest.NewRecorder()
 	server.handlePublishReplies(w, httptest.NewRequest(http.MethodGet, "/api/publish/replies?limit=2", nil))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -53,6 +55,8 @@ func TestPublishReplies_ReportsRecentRepliesCountsAndUnlinkedRoots(t *testing.T)
 	assert.Equal(t, "pushback", got.Recent[0]["class"])
 	assert.Equal(t, float64(103), got.Recent[0]["author_comment_id"])
 	assert.Equal(t, "https://github.com/acme/example/pull/7#discussion_r103", got.Recent[0]["url"])
+	assert.Equal(t, `[{"file":"a.go","line":12}]`, got.Recent[0]["cited"])
+	assert.Equal(t, "", got.Recent[1]["cited"], "rows the reply model never ran on carry no evidence")
 }
 
 func TestPublishReplies_RejectsWrites(t *testing.T) {

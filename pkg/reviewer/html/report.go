@@ -60,6 +60,47 @@ type CommentView struct {
 	StatusClass  string
 }
 
+// ShowsSeverity is false for the summary and check entries, whose headers
+// carry no severity pill.
+func (v CommentView) ShowsSeverity() bool {
+	return v.FilePath != "SUMMARY" && v.FilePath != "CHECK"
+}
+
+// SeverityLabel is the severity shown in a finding's comment header.
+func (v CommentView) SeverityLabel() string {
+	if !v.ShowsSeverity() {
+		return ""
+	}
+	return severityLabel(v.Importance)
+}
+
+// severityLabel normalizes a stored importance for display so the header,
+// index, next actions and records all read the same.
+func severityLabel(importance string) string {
+	return strings.ToUpper(strings.TrimSpace(importance))
+}
+
+// SeverityClass returns the CSS-class suffix for the header's severity pill.
+func (v CommentView) SeverityClass() string {
+	return severityClass(v.SeverityLabel())
+}
+
+// severityClass maps a severity to one of the fixed sev-* suffixes styled in
+// layout.tmpl. Severities come from provider JSON, so anything else (including
+// a value with a space, which html/template would pass into the attribute)
+// falls back to the neutral pill.
+func severityClass(severity string) string {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical", "high":
+		return "critical"
+	case "medium":
+		return "medium"
+	case "low":
+		return "low"
+	}
+	return "note"
+}
+
 // Findings-index groups, in reading order.
 const (
 	groupConfirmed  = "Confirmed"
@@ -80,7 +121,7 @@ type FindingRow struct {
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
 func (r FindingRow) SeverityClass() string {
-	return strings.ToLower(r.Severity)
+	return severityClass(r.Severity)
 }
 
 // FindingGroup is one state bucket of the findings index.
@@ -106,7 +147,7 @@ type RecordView struct {
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
 func (r RecordView) SeverityClass() string {
-	return strings.ToLower(r.Severity)
+	return severityClass(r.Severity)
 }
 
 // Location is "file:line", or the file alone for whole-file records.
@@ -133,7 +174,7 @@ type NextAction struct {
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
 func (a NextAction) SeverityClass() string {
-	return strings.ToLower(a.Severity)
+	return severityClass(a.Severity)
 }
 
 // Location is "file:line", or the file alone for whole-file findings.
@@ -545,7 +586,7 @@ func recordViews(records []types.LineComment, state string, anchors map[string]s
 		if c.State != state {
 			continue
 		}
-		v := RecordView{Severity: c.Importance, FilePath: c.FilePath, LineNumber: c.LineNumber,
+		v := RecordView{Severity: severityLabel(c.Importance), FilePath: c.FilePath, LineNumber: c.LineNumber,
 			Claim: payload.StripProvenanceNote(c.CommentBody), MergedInto: c.MergedInto, MergeBasis: c.MergeBasis, MergedAnchor: anchors[c.MergedInto]}
 		if c.Original != nil && strings.TrimSpace(c.Original.Comment) != "" {
 			v.Claim = c.Original.Comment
@@ -570,7 +611,7 @@ func nextActions(ids []string, byID map[string]CommentView) []NextAction {
 		if !ok {
 			continue
 		}
-		out = append(out, NextAction{AnchorID: v.AnchorID, Severity: v.Importance, FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment)})
+		out = append(out, NextAction{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment)})
 	}
 	return out
 }
@@ -639,7 +680,7 @@ func generateReport(in ReportInput) (string, error) {
 			byID[loc] = view
 		}
 		row := FindingRow{
-			AnchorID: view.AnchorID, Severity: comment.Importance, StatusPill: pill, StatusClass: class,
+			AnchorID: view.AnchorID, Severity: view.SeverityLabel(), StatusPill: pill, StatusClass: class,
 			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: findingTitle(comment),
 		}
 
