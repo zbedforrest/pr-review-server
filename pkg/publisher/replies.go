@@ -347,6 +347,7 @@ type ReplyOutcome struct {
 	Decision        string
 	Outcome         string
 	Posted          bool
+	Action          string // how the author's comment was acknowledged: reacted or observed
 	Model           string
 	DurationMS      int64
 }
@@ -528,7 +529,21 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		} else {
 			rep.AlreadyHandled++
 		}
-		if !r.textMode() || row.Outcome != "" {
+		if !r.textMode() {
+			// The mode was turned down while this reply waited for the model:
+			// acknowledge it now rather than leaving it pending forever.
+			if handled && row.Action == replyActionPending && r.reacts() {
+				if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
+					return err
+				}
+				if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, replyActionReacted); err != nil {
+					return err
+				}
+				rep.Reacted++
+			}
+			continue
+		}
+		if row.Outcome != "" {
 			continue
 		}
 		if r.Background != nil {
@@ -692,8 +707,10 @@ func threadUnder(comments []ThreadComment, rootID int64) []ThreadComment {
 func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, reply AuthorReply, row db.PublishedReply, rep *ReplyReport) (outcome ReplyOutcome, err error) {
 	outcome = ReplyOutcome{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, AuthorCommentID: reply.CommentID,
 		Decision: row.Decision, Model: row.Model, DurationMS: row.DurationMS}
-	// A deferred reaction is settled with the step: the model's choice when it
-	// ran, otherwise a plain acknowledgement so no author reply goes unanswered.
+	// A deferred reaction is settled with the step. The model's choice applies
+	// only when its reply is posted (a thumbs-up on a comment about to be
+	// rebutted reads as agreement); every other ending, including shadow and
+	// abstain, acknowledges the author so no reply goes unanswered.
 	react := func(want bool) error {
 		if row.Action != replyActionPending || !r.reacts() {
 			return nil
@@ -714,11 +731,15 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		row.Action = action
 		return nil
 	}
-	reactWanted := row.Action == replyActionPending
 	finish := func(result string) (ReplyOutcome, error) {
-		if err := react(reactWanted); err != nil {
+		want := true
+		if result == "posted" && row.Decision != "" {
+			want = row.DecisionReact
+		}
+		if err := react(want); err != nil {
 			return outcome, err
 		}
+		outcome.Action = row.Action
 		if err := r.Ledger.SetPublishedReplyOutcome(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, result); err != nil {
 			return outcome, err
 		}
@@ -836,18 +857,12 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		cited, _ := json.Marshal(decision.Cited)
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
 			Decision: decision.Decision, ReplyBody: decision.Reply, Cited: string(cited), Model: decision.Model, DurationMS: decision.DurationMS,
-			Head: state.HeadSHA, Thread: fingerprint,
+			Head: state.HeadSHA, Thread: fingerprint, React: decision.React,
 		}); err != nil {
 			return outcome, err
 		}
-		row.Decision, row.ReplyBody = decision.Decision, decision.Reply
+		row.Decision, row.ReplyBody, row.DecisionReact = decision.Decision, decision.Reply, decision.React
 		outcome.Decision, outcome.Model, outcome.DurationMS = decision.Decision, decision.Model, decision.DurationMS
-		reactWanted = decision.React
-		if reactWanted {
-			if err := react(true); err != nil {
-				return outcome, err
-			}
-		}
 	}
 	text := strings.TrimSpace(row.ReplyBody)
 	switch {

@@ -121,6 +121,9 @@ func unstampFailedLinks(tried map[string]time.Time, errors []string) {
 func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, userID int) []db.TelemetryEvent {
 	var events []db.TelemetryEvent
 	for _, h := range rep.Handled {
+		if h.Action == "pending" {
+			continue // settled later; the reply_decision event carries the reaction
+		}
 		events = append(events, db.TelemetryEvent{
 			UserID: userID, Action: "reply_" + h.Action,
 			Label:   truncateLabel(fmt.Sprintf("class=%s fp=%s comment=%d", h.Class, h.Fingerprint, h.AuthorCommentID), 255),
@@ -155,7 +158,7 @@ func replyErrorEvent(action, msg string, userID int) db.TelemetryEvent {
 
 // replyOutcomeEvent records one finished or failed text step.
 func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.TelemetryEvent {
-	label := fmt.Sprintf("outcome=%s decision=%s posted=%t model=%s ms=%d comment=%d", o.Outcome, o.Decision, o.Posted, o.Model, o.DurationMS, o.AuthorCommentID)
+	label := fmt.Sprintf("outcome=%s decision=%s posted=%t action=%s model=%s ms=%d comment=%d", o.Outcome, o.Decision, o.Posted, o.Action, o.Model, o.DurationMS, o.AuthorCommentID)
 	action := "reply_decision"
 	switch {
 	case err != nil:
@@ -298,7 +301,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			if err != nil {
 				log.Printf("[REPLY %s/%s#%d] text step for comment %d failed, will resume: %v", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, err)
 			} else {
-				log.Printf("[REPLY %s/%s#%d] comment %d: outcome=%s decision=%s posted=%t", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, o.Outcome, o.Decision, o.Posted)
+				log.Printf("[REPLY %s/%s#%d] comment %d: outcome=%s decision=%s posted=%t action=%s", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, o.Outcome, o.Decision, o.Posted, o.Action)
 			}
 			if userID := p.systemTelemetryUserID(); userID != 0 {
 				if terr := p.db.CreateTelemetryEvents([]db.TelemetryEvent{replyOutcomeEvent(o, err, userID)}); terr != nil {

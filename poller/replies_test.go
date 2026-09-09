@@ -109,9 +109,9 @@ func TestReplyInputFromRequestMapsThreadRolesAndStripsNothingElse(t *testing.T) 
 }
 
 func TestReplyOutcomeEventDistinguishesFailuresFromDecisions(t *testing.T) {
-	o := publisher.ReplyOutcome{RepoOwner: "acme", RepoName: "example", PRNumber: 7, AuthorCommentID: 101, Decision: "hold", Outcome: "posted", Posted: true, Model: "m", DurationMS: 1200}
+	o := publisher.ReplyOutcome{RepoOwner: "acme", RepoName: "example", PRNumber: 7, AuthorCommentID: 101, Decision: "hold", Outcome: "posted", Posted: true, Action: "observed", Model: "m", DurationMS: 1200}
 	ev := replyOutcomeEvent(o, nil, 3)
-	if ev.Action != "reply_decision" || ev.Label != "outcome=posted decision=hold posted=true model=m ms=1200 comment=101" || ev.PRNumber != 7 || ev.UserID != 3 {
+	if ev.Action != "reply_decision" || ev.Label != "outcome=posted decision=hold posted=true action=observed model=m ms=1200 comment=101" || ev.PRNumber != 7 || ev.UserID != 3 {
 		t.Errorf("event = %+v", ev)
 	}
 	ev = replyOutcomeEvent(o, fmt.Errorf("wall clock"), 3)
@@ -165,5 +165,16 @@ func TestReplyClaimLeaseOutlastsTheWallClock(t *testing.T) {
 	}
 	if got := replyClaimLease(15 * time.Minute); got != 35*time.Minute {
 		t.Errorf("long wall clock -> %s, want 35m", got)
+	}
+}
+
+func TestReplyTelemetryEventsSkipPendingRowsUntilSettled(t *testing.T) {
+	rep := publisher.ReplyReport{Handled: []db.PublishedReply{
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "a", Class: "pushback", Action: "pending", AuthorCommentID: 101},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "b", Class: "resolution", Action: "reacted", AuthorCommentID: 102},
+	}}
+	events := replyTelemetryEvents(rep, publisher.LinkReport{}, 3)
+	if len(events) != 1 || events[0].Action != "reply_reacted" {
+		t.Fatalf("events = %+v", events)
 	}
 }

@@ -147,6 +147,10 @@ func TestRunAgentReply_ReactDefaultsToTrueAndHonoursFalse(t *testing.T) {
 	if err != nil || !out.React || out.Decision != "abstain" {
 		t.Fatalf("an unparseable reply abstains but still acknowledges: err=%v out=%+v", err, out)
 	}
+	out, err, _ = runReply(t, `{"decision":"hold","reply":"Still unused.","cited":[{"file":"missing.go","line":3}],"react":false}`)
+	if err != nil || out.Decision != "abstain" || !out.React {
+		t.Fatalf("a hold degraded to abstain is no longer a rebuttal and keeps the thumbs-up: err=%v out=%+v", err, out)
+	}
 }
 
 func TestParseReplyJSONNeutralisesMentions(t *testing.T) {

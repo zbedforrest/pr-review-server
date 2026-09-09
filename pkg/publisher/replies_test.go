@@ -937,12 +937,44 @@ func TestReplyReactor_RepliesTheModelNeverReachesAreStillAcknowledged(t *testing
 	}
 }
 
-func TestReplyReactor_ShadowAppliesTheModelsReactionButNotItsText(t *testing.T) {
+func TestReplyReactor_ShadowRecordsTheReactionChoiceButStillAcknowledges(t *testing.T) {
 	r, gh, ledger := respondFixture(ReplyModeShadow, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
 		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies.", React: false}, nil
 	})
 	rep, _ := r.Run(context.Background())
-	if len(gh.reactions) != 0 || len(gh.posted) != 0 || rep.Shadowed != 1 || ledger.rows[0].Action != "observed" {
-		t.Fatalf("reactions=%v posted=%d rep=%+v row=%+v", gh.reactions, len(gh.posted), rep, ledger.rows[0])
+	if len(gh.reactions) != 1 || len(gh.posted) != 0 || rep.Shadowed != 1 || ledger.rows[0].Action != "reacted" || ledger.rows[0].DecisionReact {
+		t.Fatalf("no rebuttal was posted, so the author is acknowledged and the model's choice is kept for review: reactions=%v posted=%d rep=%+v row=%+v", gh.reactions, len(gh.posted), rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_ResumedHoldKeepsTheModelsNoThumbsUp(t *testing.T) {
+	runs := 0
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{}, nil
+	})
+	t0 := time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)
+	thread := threadUnder(gh.threads["acme/example#7"], 100)
+	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", Class: "pushback", Action: "pending", Decision: DecisionHold, ReplyBody: "Still applies.",
+		DecisionReact: false, DecisionHead: "head1", DecisionThread: threadFingerprint(thread, 1), CreatedAt: t0}}
+	r.Run(context.Background())
+	if runs != 0 || len(gh.posted) != 1 || len(gh.reactions) != 0 || ledger.rows[0].Action != "observed" || ledger.rows[0].Outcome != "posted" {
+		t.Fatalf("runs=%d posted=%d reactions=%v row=%+v", runs, len(gh.posted), gh.reactions, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_PendingRowIsAcknowledgedWhenTextModeIsTurnedOff(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{}, fmt.Errorf("boom")
+	})
+	r.Run(context.Background())
+	if ledger.rows[0].Action != "pending" {
+		t.Fatalf("row=%+v", ledger.rows[0])
+	}
+	r.Mode = ReplyModeReact
+	rep, _ := r.Run(context.Background())
+	if len(gh.reactions) != 1 || rep.Reacted != 1 || ledger.rows[0].Action != "reacted" {
+		t.Fatalf("reactions=%v rep=%+v row=%+v", gh.reactions, rep, ledger.rows[0])
 	}
 }

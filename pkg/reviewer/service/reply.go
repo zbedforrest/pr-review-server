@@ -183,7 +183,6 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		log.Printf("%s final output is not a reply decision; abstaining (%s)", logPrefix, truncate(parsed.finalOutput, 200))
 		return out, nil
 	}
-	out.React = decision.reacts()
 	resolves := evidenceRefResolves(nil, cloneDir)
 	for _, e := range decision.Cited {
 		if resolves(e) {
@@ -207,7 +206,10 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		log.Printf("%s reply text matches a credential pattern; abstaining", logPrefix)
 		return out, nil
 	}
+	// The reaction follows the decision that survived validation: a hold
+	// degraded to abstain is not a rebuttal, so it keeps the acknowledgement.
 	out.Decision = decision.Decision
+	out.React = decision.reacts()
 	if out.Decision != ReplyDecisionAbstain {
 		out.Reply = decision.Reply
 	}
