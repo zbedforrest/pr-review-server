@@ -289,3 +289,12 @@ func TestMergedRecordLinksByLocationWhenTheSurvivorHasNoID(t *testing.T) {
 		t.Errorf("a merged record must link to its survivor by location when no id is available:\n%s", report[strings.Index(report, "Merged claims"):][:600])
 	}
 }
+
+func TestGenerateReport_FixFirstListsAFindingOnceWhateverItIsCalled(t *testing.T) {
+	in := stateFixtureInput()
+	in.Comments[5].Summary = &types.SummaryBlock{Verdict: "request_changes", PriorityIDs: []string{"A-1", "app.go:13", "A-1"}}
+	report := renderLayoutFixture(t, in)
+	require.Contains(t, report, `class="fix-first"`, "one distinct pick out of seven is a short list")
+	card := report[strings.Index(report, `class="fix-first"`):strings.Index(report, "<h2>Review Summary</h2>")]
+	assert.Equal(t, 1, strings.Count(card, "<li"), "label and location aliases of one finding render once")
+}

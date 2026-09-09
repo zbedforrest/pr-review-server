@@ -113,6 +113,8 @@ func RenderStructuredSummaries(comments []types.LineComment) {
 				continue
 			}
 			if n == 0 {
+				// The prose lists every pick; only the report card hides the list
+				// when it would repeat the whole findings index.
 				b.WriteString("\n\nFix first:")
 			}
 			n++

@@ -616,11 +616,14 @@ func fixFirst(ids []string, byID map[string]CommentView, totalFindings int) []Ne
 
 func nextActions(ids []string, byID map[string]CommentView) []NextAction {
 	var out []NextAction
+	seen := map[string]bool{}
 	for _, id := range ids {
 		v, ok := byID[id]
-		if !ok {
+		// A label and a location can name the same finding; list it once.
+		if !ok || seen[v.AnchorID] {
 			continue
 		}
+		seen[v.AnchorID] = true
 		out = append(out, NextAction{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment)})
 	}
 	return out
