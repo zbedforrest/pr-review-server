@@ -253,10 +253,18 @@ func Decode(data []byte) (Payload, error) {
 	switch pl.SchemaVersion {
 	case CurrentSchemaVersion:
 	case "", "1":
+		// v1 re-admissions were never confirmed by anyone; their provenance
+		// is the only record of that, so the upgraded state follows it.
 		for i := range pl.Findings {
-			pl.Findings[i].Active = true
-			if pl.Findings[i].State == "" {
-				pl.Findings[i].State = "confirmed"
+			f := &pl.Findings[i]
+			f.Active = true
+			if f.State == "" {
+				switch normalizeProvenance(f.Provenance) {
+				case ProvenanceFirstPass, ProvenanceCarried:
+					f.State = "unverified"
+				default:
+					f.State = "confirmed"
+				}
 			}
 		}
 	default:
@@ -431,8 +439,14 @@ func Build(
 		if c.FilePath == "SUMMARY" || c.FilePath == "CHECK" {
 			contractStatus = "not_applicable"
 		}
+		id := Fingerprint(c.FilePath, c.LineNumber, c.CommentBody)
+		if c.Inactive {
+			// A record can carry the exact words of the claim it merged into;
+			// it must never share that claim's identity.
+			id = Fingerprint(c.FilePath, c.LineNumber, findingState(c)+"\n"+c.CommentBody)
+		}
 		f := Finding{
-			ID:                    Fingerprint(c.FilePath, c.LineNumber, c.CommentBody),
+			ID:                    id,
 			Severity:              sev,
 			Provenance:            DeriveProvenance(c),
 			File:                  c.FilePath,

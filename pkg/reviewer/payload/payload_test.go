@@ -764,3 +764,32 @@ func TestToCompactMarkdown_SkipsInactiveRecords(t *testing.T) {
 		t.Errorf("export must list active claims only:\n%s", md)
 	}
 }
+
+func TestDecode_V1StateFollowsProvenance(t *testing.T) {
+	pl, err := Decode([]byte(`{"schema_version":"1","findings":[{"file":"a.go","provenance":"agent","comment":"x"},{"file":"b.go","provenance":"first-pass","comment":"y"},{"file":"c.go","provenance":"carried","comment":"z"},{"file":"d.go","provenance":"mechanical","comment":"w"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"confirmed", "unverified", "unverified", "confirmed"}
+	for i, f := range pl.Findings {
+		if f.State != want[i] || !f.Active {
+			t.Errorf("finding %d state=%q active=%v, want %q active", i, f.State, f.Active, want[i])
+		}
+	}
+}
+
+func TestBuild_InactiveRecordsGetADistinctIdentity(t *testing.T) {
+	comments := []types.LineComment{
+		{ID: "A-1", FilePath: "a.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "same words"},
+		{FilePath: "a.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "same words", Provenance: "first-pass", State: "merged", Inactive: true, MergedInto: "A-1"},
+	}
+	pl := Build("acme", "example", 1, "abc", comments, "", nil)
+	if pl.Findings[0].ID == pl.Findings[1].ID {
+		t.Fatalf("an inactive record must not share the active claim's id: %+v", pl.Findings)
+	}
+	for _, f := range pl.Findings {
+		if f.State == "merged" && f.MergedInto == f.ID {
+			t.Fatalf("merged_into must name the active claim, not itself")
+		}
+	}
+}

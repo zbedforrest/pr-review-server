@@ -139,8 +139,12 @@ func ApplyDispositions(agentOut []types.LineComment, claims []firstPassClaim) (f
 			}
 			continue
 		}
-		for _, src := range c.Sources {
-			confirmedBy[src] = mergeTarget(c)
+		// Only an ordinary finding can cover a claim; a SUMMARY or CHECK entry
+		// tagging sources would otherwise retire the claim with nothing behind it.
+		if c.FilePath != "SUMMARY" && c.FilePath != checkFilePath {
+			for _, src := range c.Sources {
+				confirmedBy[src] = mergeTarget(c)
+			}
 		}
 		findings = append(findings, c)
 	}

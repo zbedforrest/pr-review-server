@@ -104,3 +104,12 @@ func TestApplyDispositions_RejectionWithoutAReasonIsNotARejection(t *testing.T) 
 		t.Fatalf("a reasonless rejection must fall through to unaccounted (unverified): active=%+v records=%+v", active, records)
 	}
 }
+
+func TestApplyDispositions_SourcesOnSummaryOrCheckDoNotConfirmClaims(t *testing.T) {
+	claims := firstPassClaims([]types.LineComment{lc("a.go", 3, "CRITICAL", "Nil deref.")})
+	agentOut := []types.LineComment{{FilePath: "SUMMARY", CommentBody: "Verdict: approve.", Sources: []string{"FP-1"}}}
+	_, active, records := ApplyDispositions(agentOut, claims)
+	if len(active) != 1 || len(records) != 0 || active[0].State != StateUnverified {
+		t.Fatalf("only an ordinary finding can cover a claim: active=%+v records=%+v", active, records)
+	}
+}
