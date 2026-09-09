@@ -162,9 +162,9 @@ func location(file string, line int) string {
 	return file
 }
 
-// NextAction is one entry of the structured SUMMARY's priority list,
+// FixFirstItem is one entry of the structured SUMMARY's priority list,
 // resolved to the finding it names.
-type NextAction struct {
+type FixFirstItem struct {
 	AnchorID   string
 	Severity   string
 	FilePath   string
@@ -173,12 +173,12 @@ type NextAction struct {
 }
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
-func (a NextAction) SeverityClass() string {
+func (a FixFirstItem) SeverityClass() string {
 	return severityClass(a.Severity)
 }
 
 // Location is "file:line", or the file alone for whole-file findings.
-func (a NextAction) Location() string {
+func (a FixFirstItem) Location() string {
 	return location(a.FilePath, a.LineNumber)
 }
 
@@ -606,16 +606,16 @@ func recordViews(records []types.LineComment, state string, anchors map[string]s
 // findings on the page; ids that name nothing rendered are skipped. The list
 // is the reviewer's short list, so it is dropped when it would repeat the full
 // findings index rather than shorten it.
-func fixFirst(ids []string, byID map[string]CommentView, totalFindings int) []NextAction {
-	actions := nextActions(ids, byID)
+func fixFirst(ids []string, byID map[string]CommentView, totalFindings int) []FixFirstItem {
+	actions := fixFirstItems(ids, byID)
 	if len(actions) >= totalFindings {
 		return nil
 	}
 	return actions
 }
 
-func nextActions(ids []string, byID map[string]CommentView) []NextAction {
-	var out []NextAction
+func fixFirstItems(ids []string, byID map[string]CommentView) []FixFirstItem {
+	var out []FixFirstItem
 	seen := map[string]bool{}
 	for _, id := range ids {
 		v, ok := byID[id]
@@ -624,7 +624,7 @@ func nextActions(ids []string, byID map[string]CommentView) []NextAction {
 			continue
 		}
 		seen[v.AnchorID] = true
-		out = append(out, NextAction{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment)})
+		out = append(out, FixFirstItem{AnchorID: v.AnchorID, Severity: v.SeverityLabel(), FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment)})
 	}
 	return out
 }
@@ -750,7 +750,7 @@ func generateReport(in ReportInput) (string, error) {
 	if verdict == "" {
 		verdict = "Verdict: unavailable"
 	}
-	var actions []NextAction
+	var actions []FixFirstItem
 	if structured != nil {
 		actions = fixFirst(structured.PriorityIDs, byID, counts[groupConfirmed]+counts[groupNeedsCheck]+counts[groupMechanical])
 	}
@@ -790,7 +790,7 @@ func generateReport(in ReportInput) (string, error) {
 		MechanicalCount      int
 		RejectedCount        int
 		Suggestions          string
-		FixFirst             []NextAction
+		FixFirst             []FixFirstItem
 		Rejected             []RecordView
 		Unexamined           []RecordView
 		Merged               []RecordView
