@@ -139,13 +139,20 @@ const (
 // non-critical claims with the agent's reason, and claims never examined.
 // A claim the agent does not account for is unverified, never dropped.
 func ApplyDispositions(agentOut []types.LineComment, claims []firstPassClaim) (findings, active, records []types.LineComment) {
+	return ApplyDispositionsWithEvidence(agentOut, claims, func(string) bool { return true })
+}
+
+// ApplyDispositionsWithEvidence is ApplyDispositions with a check that a
+// rejection's cited evidence paths exist (in the diff or the worktree).
+func ApplyDispositionsWithEvidence(agentOut []types.LineComment, claims []firstPassClaim, pathExists func(string) bool) (findings, active, records []types.LineComment) {
 	confirmedBy := map[string]string{}
 	rejected := map[string]*types.Disposition{}
 	for _, c := range agentOut {
 		if c.Disposition != nil {
 			// A rejection stands only with a reason and at least one code
-			// reference; unsupported prose falls through to unverified.
-			if c.Disposition.State == StateRejected && supportedRejection(c.Disposition) {
+			// reference that resolves; unsupported prose falls through to
+			// unverified.
+			if c.Disposition.State == StateRejected && supportedRejection(c.Disposition, pathExists) {
 				rejected[c.Disposition.SourceID] = c.Disposition
 			}
 			continue
@@ -188,12 +195,12 @@ func ApplyDispositions(agentOut []types.LineComment, claims []firstPassClaim) (f
 	return findings, active, records
 }
 
-func supportedRejection(d *types.Disposition) bool {
+func supportedRejection(d *types.Disposition, pathExists func(string) bool) bool {
 	if strings.TrimSpace(d.Reason) == "" {
 		return false
 	}
 	for _, e := range d.Evidence {
-		if strings.TrimSpace(e.File) != "" {
+		if file := strings.TrimSpace(e.File); file != "" && pathExists(file) {
 			return true
 		}
 	}

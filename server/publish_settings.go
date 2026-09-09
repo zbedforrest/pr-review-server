@@ -1,6 +1,7 @@
 package server
 
 import (
+	"pr-review-server/pkg/publisher"
 	"strconv"
 	"strings"
 	"time"
@@ -16,7 +17,7 @@ const (
 	settingPublishReplyEnabledAt    = "publish_reply_enabled_at"
 	settingPublishShowUnverified    = "publish_show_unverified"
 
-	defaultPublishInlineCap         = 5
+	defaultPublishInlineCap         = publisher.DefaultInlineCap
 	defaultPublishInlineMinSeverity = "medium"
 	defaultPublishReplyMode         = "off"
 	defaultPublishShowUnverified    = true

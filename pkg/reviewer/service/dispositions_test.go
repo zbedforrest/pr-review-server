@@ -139,3 +139,19 @@ func TestApplyDispositions_RejectionNeedsEvidence(t *testing.T) {
 		t.Fatalf("with a reason and evidence the rejection stands: %+v", records[0])
 	}
 }
+
+func TestApplyDispositions_RejectionEvidenceMustResolve(t *testing.T) {
+	claims := firstPassClaims([]types.LineComment{lc("d.go", 20, "MEDIUM", "Missing null check.")})
+	reject := func(file string) []types.LineComment {
+		return []types.LineComment{{FilePath: "d.go", LineNumber: 20, Disposition: &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "Never nil here.", Evidence: []types.EvidenceRef{{File: file, Line: 1}}}}}
+	}
+	exists := func(path string) bool { return path == "client/http.go" }
+	_, _, records := ApplyDispositionsWithEvidence(reject("does/not/exist.go"), claims, exists)
+	if records[0].State != StateUnverified {
+		t.Fatalf("evidence that does not resolve is no evidence: %+v", records[0])
+	}
+	_, _, records = ApplyDispositionsWithEvidence(reject("client/http.go"), claims, exists)
+	if records[0].State != StateRejected {
+		t.Fatalf("resolving evidence supports the rejection: %+v", records[0])
+	}
+}

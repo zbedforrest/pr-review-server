@@ -467,7 +467,13 @@ func RunAgentReview(
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
 	NormalizeAgentLifecycleFields(comments)
-	comments, firstPassActive, records := ApplyDispositions(comments, claims)
+	evidencePaths := make([]string, len(diffFiles))
+	for i, f := range diffFiles {
+		evidencePaths[i] = f.Path
+	}
+	comments, firstPassActive, records := ApplyDispositionsWithEvidence(comments, claims, func(path string) bool {
+		return evidenceCitedPath(path, evidencePaths, cloneDir) != ""
+	})
 	RenderStructuredSummaries(comments)
 
 	// Fallback if ANY served model fails to match — a transient fallback

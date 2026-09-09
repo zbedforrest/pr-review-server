@@ -413,10 +413,23 @@ func Build(
 	findings := make([]Finding, 0, len(comments))
 	var counts Counts
 
+	// Merge targets arrive as the agent's label or, when it gave none, as
+	// file:line; both resolve to the active finding's fingerprint.
 	agentIDs := map[string]string{}
 	for _, c := range comments {
-		if c.ID != "" && !c.Inactive {
-			agentIDs[c.ID] = Fingerprint(c.FilePath, c.LineNumber, c.CommentBody)
+		if c.Inactive || c.FilePath == "SUMMARY" || c.FilePath == "CHECK" {
+			continue
+		}
+		fp := Fingerprint(c.FilePath, c.LineNumber, c.CommentBody)
+		if c.ID != "" {
+			agentIDs[c.ID] = fp
+		}
+		loc := c.FilePath
+		if c.LineNumber > 0 {
+			loc = fmt.Sprintf("%s:%d", c.FilePath, c.LineNumber)
+		}
+		if _, taken := agentIDs[loc]; !taken {
+			agentIDs[loc] = fp
 		}
 	}
 

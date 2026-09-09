@@ -793,3 +793,22 @@ func TestBuild_InactiveRecordsGetADistinctIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestBuild_MergedIntoResolvesLocationFallbacksToTheActiveFinding(t *testing.T) {
+	comments := []types.LineComment{
+		{FilePath: "a.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "agent finding without an id"},
+		{FilePath: "a.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "first-pass words", Provenance: "first-pass", State: "merged", Inactive: true, MergedInto: "a.go:3"},
+	}
+	pl := Build("acme", "example", 1, "abc", comments, "", nil)
+	var active, record Finding
+	for _, f := range pl.Findings {
+		if f.Active {
+			active = f
+		} else {
+			record = f
+		}
+	}
+	if record.MergedInto != active.ID {
+		t.Fatalf("merged_into must be the active finding's fingerprint, got %q (want %q)", record.MergedInto, active.ID)
+	}
+}
