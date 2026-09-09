@@ -419,3 +419,14 @@ func TestRemapMergeTargets_DeduplicatesPriorityIDs(t *testing.T) {
 		t.Fatalf("two priorities collapsing onto one survivor list it once: %v", merged[0].Summary.PriorityIDs)
 	}
 }
+
+func TestRemapMergeTargets_FollowsLocationKeyedReferences(t *testing.T) {
+	merged := []types.LineComment{{ID: "A-1", FilePath: "a.go", LineNumber: 10, CommentBody: "survivor"}}
+	dropped := types.LineComment{FilePath: "a.go", LineNumber: 12, CommentBody: "unlabelled agent finding", State: StateMerged, Inactive: true, MergedInto: "A-1", MergeBasis: "proximity"}
+	claim := types.LineComment{FilePath: "a.go", LineNumber: 12, CommentBody: "first-pass", State: StateMerged, Inactive: true, MergedInto: "a.go:12", MergeBasis: "sources"}
+	records := []types.LineComment{dropped, claim}
+	RemapMergeTargets(merged, records)
+	if records[1].MergedInto != "A-1" {
+		t.Fatalf("a claim that pointed at the dropped finding's location must follow it to the survivor: %q", records[1].MergedInto)
+	}
+}

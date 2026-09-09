@@ -130,10 +130,22 @@ func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineC
 // a summary priority id or a record's merged_into that names a dropped finding
 // is rewritten to the finding it was folded into.
 func RemapMergeTargets(merged, records []types.LineComment) {
+	// A dropped finding is referenced by its label when it had one and by its
+	// location otherwise, so both keys alias to the survivor.
 	alias := map[string]string{}
 	for _, r := range records {
-		if r.MergeBasis == "proximity" && r.ID != "" {
+		if r.MergeBasis != "proximity" {
+			continue
+		}
+		if r.ID != "" {
 			alias[r.ID] = r.MergedInto
+		}
+		loc := r.FilePath
+		if r.LineNumber > 0 {
+			loc = r.FilePath + ":" + strconv.Itoa(r.LineNumber)
+		}
+		if _, taken := alias[loc]; !taken {
+			alias[loc] = r.MergedInto
 		}
 	}
 	if len(alias) == 0 {

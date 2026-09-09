@@ -217,3 +217,29 @@ func TestApplyDispositions_RejectionEvidenceNeedsALine(t *testing.T) {
 		t.Fatalf("a file without a line is the claim's own location, not evidence: %+v", records[0])
 	}
 }
+
+func TestNormalizeAgentLifecycleFields_DuplicateCensusIgnoresNonFindings(t *testing.T) {
+	out := []types.LineComment{
+		{ID: "A-1", FilePath: "a.go", LineNumber: 1, CommentBody: "real"},
+		{ID: "A-1", FilePath: "b.go", LineNumber: 2, Disposition: &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "r"}},
+		{ID: "A-1", FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "approve"}},
+	}
+	NormalizeAgentLifecycleFields(out)
+	if out[0].ID != "A-1" || out[1].ID != "" || out[2].ID != "" {
+		t.Fatalf("a mislabelled disposition or summary must not cost the real finding its id: %q %q %q", out[0].ID, out[1].ID, out[2].ID)
+	}
+}
+
+func TestEvidenceFileExists_LineMustBeWithinTheFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/f.go", []byte("l1\nl2\nl3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	check := evidenceRefResolves(nil, dir)
+	if !check(types.EvidenceRef{File: "f.go", Line: 3}) {
+		t.Error("a line inside the file resolves")
+	}
+	if check(types.EvidenceRef{File: "f.go", Line: 99999}) {
+		t.Error("a line past the end of the file is not evidence")
+	}
+}

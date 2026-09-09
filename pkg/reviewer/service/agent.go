@@ -471,7 +471,7 @@ func RunAgentReview(
 	for i, f := range diffFiles {
 		evidencePaths[i] = f.Path
 	}
-	comments, firstPassActive, records := ApplyDispositionsWithEvidence(comments, claims, evidenceFileExists(evidencePaths, cloneDir))
+	comments, firstPassActive, records := ApplyDispositionsWithEvidenceRefs(comments, claims, evidenceRefResolves(evidencePaths, cloneDir))
 
 	// Fallback if ANY served model fails to match — a transient fallback
 	// that recovers mid-run still ran turns on the wrong model. ServedModel

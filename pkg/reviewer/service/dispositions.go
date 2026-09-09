@@ -39,9 +39,12 @@ func firstPassClaims(comments []types.LineComment) []firstPassClaim {
 // inactive, rejected, merged or disputed record; the agent expresses itself
 // through findings, sources and disposition entries.
 func NormalizeAgentLifecycleFields(out []types.LineComment) {
+	isFinding := func(c types.LineComment) bool {
+		return c.Disposition == nil && c.FilePath != "SUMMARY" && c.FilePath != checkFilePath
+	}
 	seen := map[string]int{}
 	for _, c := range out {
-		if c.ID != "" {
+		if c.ID != "" && isFinding(c) {
 			seen[c.ID]++
 		}
 	}
@@ -49,9 +52,10 @@ func NormalizeAgentLifecycleFields(out []types.LineComment) {
 		c := &out[i]
 		c.State, c.Inactive, c.MergedInto, c.MergeBasis = "", false, "", ""
 		c.Assessment, c.Original = nil, nil
-		// An id used twice identifies nothing; unlabelled entries still merge
-		// by location, so nothing is lost, only the ambiguous reference.
-		if seen[c.ID] > 1 {
+		// Only ordinary findings carry ids; an id used twice among them
+		// identifies nothing. Unlabelled entries still merge by location, so
+		// nothing is lost, only the ambiguous reference.
+		if !isFinding(*c) || seen[c.ID] > 1 {
 			c.ID = ""
 		}
 	}
@@ -147,6 +151,18 @@ func ApplyDispositions(agentOut []types.LineComment, claims []firstPassClaim) (f
 // ApplyDispositionsWithEvidence is ApplyDispositions with a check that a
 // rejection's cited evidence paths exist (in the diff or the worktree).
 func ApplyDispositionsWithEvidence(agentOut []types.LineComment, claims []firstPassClaim, pathExists func(string) bool) (findings, active, records []types.LineComment) {
+	return applyDispositions(agentOut, claims, func(e types.EvidenceRef) bool {
+		return e.Line > 0 && pathExists(strings.TrimSpace(e.File))
+	})
+}
+
+// ApplyDispositionsWithEvidenceRefs is the form the agent stage uses: the
+// resolver sees the whole reference so it can check the line against the file.
+func ApplyDispositionsWithEvidenceRefs(agentOut []types.LineComment, claims []firstPassClaim, resolves func(types.EvidenceRef) bool) (findings, active, records []types.LineComment) {
+	return applyDispositions(agentOut, claims, resolves)
+}
+
+func applyDispositions(agentOut []types.LineComment, claims []firstPassClaim, resolves func(types.EvidenceRef) bool) (findings, active, records []types.LineComment) {
 	confirmedBy := map[string]string{}
 	rejected := map[string]*types.Disposition{}
 	for _, c := range agentOut {
@@ -154,8 +170,8 @@ func ApplyDispositionsWithEvidence(agentOut []types.LineComment, claims []firstP
 			// A rejection stands only with a reason and at least one code
 			// reference that resolves; unsupported prose falls through to
 			// unverified.
-			if c.Disposition.State == StateRejected && supportedRejection(c.Disposition, pathExists) {
-				rejected[c.Disposition.SourceID] = resolvedEvidenceOnly(c.Disposition, pathExists)
+			if c.Disposition.State == StateRejected && supportedRejection(c.Disposition, resolves) {
+				rejected[c.Disposition.SourceID] = resolvedEvidenceOnly(c.Disposition, resolves)
 			}
 			continue
 		}
@@ -224,27 +240,49 @@ func evidenceFileExists(diffPaths []string, worktreeDir string) func(string) boo
 
 // resolvedEvidenceOnly copies a disposition keeping only the evidence that
 // resolves, so unresolved references are never rendered as grounding.
-func resolvedEvidenceOnly(d *types.Disposition, pathExists func(string) bool) *types.Disposition {
+func resolvedEvidenceOnly(d *types.Disposition, resolves func(types.EvidenceRef) bool) *types.Disposition {
 	out := *d
 	out.Evidence = nil
 	for _, e := range d.Evidence {
-		if file := strings.TrimSpace(e.File); file != "" && pathExists(file) {
+		if strings.TrimSpace(e.File) != "" && resolves(e) {
 			out.Evidence = append(out.Evidence, e)
 		}
 	}
 	return &out
 }
 
-func supportedRejection(d *types.Disposition, pathExists func(string) bool) bool {
+func supportedRejection(d *types.Disposition, resolves func(types.EvidenceRef) bool) bool {
 	if strings.TrimSpace(d.Reason) == "" {
 		return false
 	}
 	for _, e := range d.Evidence {
-		if file := strings.TrimSpace(e.File); file != "" && e.Line > 0 && pathExists(file) {
+		if strings.TrimSpace(e.File) != "" && resolves(e) {
 			return true
 		}
 	}
 	return false
+}
+
+// evidenceRefResolves reports whether a cited file:line names a regular file
+// (an exact diff path or a worktree file) and a line the file actually has.
+// Rejection is the one disposition that retires a claim, so its evidence has
+// to point at real code.
+func evidenceRefResolves(diffPaths []string, worktreeDir string) func(types.EvidenceRef) bool {
+	fileExists := evidenceFileExists(diffPaths, worktreeDir)
+	return func(e types.EvidenceRef) bool {
+		path := strings.TrimSpace(strings.TrimPrefix(e.File, "./"))
+		if e.Line <= 0 || !fileExists(path) {
+			return false
+		}
+		if worktreeDir == "" {
+			return true
+		}
+		data, err := os.ReadFile(filepath.Join(worktreeDir, path))
+		if err != nil {
+			return true // in the diff but not on disk: cannot check the line
+		}
+		return e.Line <= strings.Count(string(data), "\n")+1
+	}
 }
 
 func hasKey(m map[string]string, k string) bool {
