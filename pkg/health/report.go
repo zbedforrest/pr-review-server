@@ -141,7 +141,7 @@ func Evaluate(m Metrics) Report {
 		}
 		if timedOut > 0 {
 			status := StatusWarn
-			if timedOut > 3 && float64(timedOut)/float64(total) > 0.2 {
+			if timedOut > 3 && float64(timedOut)/float64(attempted) > 0.2 {
 				status = StatusCritical
 			}
 			add("wall-clock timeouts", status, fmt.Sprintf("%d reviews hit the wall clock", timedOut))

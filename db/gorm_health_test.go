@@ -27,10 +27,11 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 	mk("r3", ReviewRunStatusFailed, 3*time.Hour, 100000, false, "agent_error")
 	mk("r4", ReviewRunStatusCompleted, 30*time.Hour, 200000, false, "") // outside the window
 	queuedAt := now.Add(-12 * time.Minute)
+	staleStart := now.Add(-3 * time.Hour)
 	require.NoError(t, db.db.Create(&ReviewRunModel{
 		RunID: "q1", RepoOwner: "acme", RepoName: "example", PRNumber: 2, CommitSHA: "def", TriggerSource: "api_v1", Status: ReviewRunStatusQueued,
 		RequestedConfigJSON: "{}", EffectiveConfigJSON: "{}", ConfigSourcesJSON: "{}", ConfigHash: "h", ConfigSchemaVersion: 3,
-		AcceptedAt: queuedAt, QueuedAt: queuedAt,
+		AcceptedAt: queuedAt, QueuedAt: queuedAt, StartedAt: &staleStart,
 	}).Error)
 	attemptStart, attemptEnd := start.Add(-10*time.Minute), start.Add(5*time.Minute)
 	require.NoError(t, db.db.Create(&ReviewStageAttemptModel{
@@ -45,11 +46,15 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 	_, err := db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 1, RootCommentID: 1, AuthorCommentID: 10,
 		Fingerprint: "f", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: now.Add(-3 * time.Hour)})
 	require.NoError(t, err)
-	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 10").Updates(map[string]interface{}{"processed_at": now.Add(-3 * time.Hour), "attempts": 1}).Error)
+	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 10").UpdateColumns(map[string]interface{}{"processed_at": now.Add(-3 * time.Hour), "attempts": 1, "updated_at": now.Add(-2 * time.Hour)}).Error)
 	_, err = db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 1, RootCommentID: 1, AuthorCommentID: 11,
 		Fingerprint: "f", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: now.Add(-3 * time.Hour)})
 	require.NoError(t, err)
-	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 11").Update("processed_at", now.Add(-3*time.Hour)).Error)
+	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 11").UpdateColumn("processed_at", now.Add(-3*time.Hour)).Error)
+	_, err = db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 1, RootCommentID: 1, AuthorCommentID: 12,
+		Fingerprint: "f", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: now.Add(-3 * time.Hour)})
+	require.NoError(t, err)
+	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 12").UpdateColumns(map[string]interface{}{"processed_at": now.Add(-3 * time.Hour), "attempts": 1, "updated_at": now.Add(-10 * time.Minute)}).Error)
 
 	m, err := db.HealthMetrics(start, now, now, nil)
 	require.NoError(t, err)
@@ -61,13 +66,13 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 	assert.Equal(t, 3, m.Runs.Criticals)
 	assert.Equal(t, 1, m.Attempts["agent/wall_clock_timeout"])
 	assert.Equal(t, 1, m.Queue.Queued)
-	assert.InDelta(t, (12 * time.Minute).Seconds(), m.Queue.OldestQueuedAge.Seconds(), 1)
+	assert.InDelta(t, (12 * time.Minute).Seconds(), m.Queue.OldestQueuedAge.Seconds(), 1, "a requeued run is aged from queued_at, not its old start")
 	assert.True(t, m.Lease.Present)
 	assert.Equal(t, "prism-00047", m.Lease.Holder)
 	assert.Equal(t, 1, m.Publish.Summaries)
 	assert.Equal(t, 1, m.Publish.Inline)
-	assert.Equal(t, 2, m.Replies.Handled)
-	assert.Equal(t, 1, m.Replies.StuckPending, "a reply the text step never touched is not stuck")
+	assert.Equal(t, 3, m.Replies.Handled)
+	assert.Equal(t, 1, m.Replies.StuckPending, "untouched rows and rows active in the last hour are not stuck")
 }
 
 func TestGormDB_HealthReports_RoundTrip(t *testing.T) {

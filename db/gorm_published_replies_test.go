@@ -235,7 +235,7 @@ func TestGormDB_PublishedReply_OutcomeAndAttempts(t *testing.T) {
 
 func TestGormDB_EnsureIdempotentColumns_AddsReplyDecisionColumnsToAnOldTable(t *testing.T) {
 	database := newTestDB(t)
-	for _, col := range []string{"decision", "reply_body", "cited", "model", "duration_ms", "outcome", "attempts", "decision_head", "decision_thread", "replied_at", "claimed_by", "claimed_at", "decision_react"} {
+	for _, col := range []string{"decision", "reply_body", "cited", "model", "duration_ms", "outcome", "attempts", "decision_head", "decision_thread", "replied_at", "claimed_by", "claimed_at", "decision_react", "updated_at"} {
 		require.NoError(t, database.db.Migrator().DropColumn(&PublishedReplyModel{}, col), col)
 	}
 	require.NoError(t, database.ensureIdempotentColumns())

@@ -40,7 +40,9 @@ type HealthReport struct {
 // day (a scheduler retry, a manual rerun) replaces the first.
 func (g *GormDB) SaveHealthReport(r *HealthReport) error {
 	if r.ReportDate == "" {
-		r.ReportDate = r.WindowEnd.UTC().Format("2006-01-02")
+		// The date of the window's midpoint, so a schedule near midnight UTC
+		// still yields one row per day whichever side of it the job lands.
+		r.ReportDate = r.WindowStart.Add(r.WindowEnd.Sub(r.WindowStart) / 2).UTC().Format("2006-01-02")
 	}
 	m := HealthReportModel{ReportDate: r.ReportDate, WindowStart: r.WindowStart, WindowEnd: r.WindowEnd, Overall: r.Overall, Headline: r.Headline,
 		ReportJSON: r.ReportJSON, Markdown: r.Markdown, CreatedAt: r.CreatedAt}
@@ -146,8 +148,10 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 		return m, err
 	}
 	for _, run := range live {
+		// A requeued run can keep an old started_at; a queued row is aged from
+		// when it was queued, a running one from when it started.
 		since := run.QueuedAt
-		if run.StartedAt != nil {
+		if run.Status == ReviewRunStatusRunning && run.StartedAt != nil {
 			since = *run.StartedAt
 		}
 		age := now.Sub(since)
@@ -206,11 +210,11 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 		return m, err
 	}
 	m.Replies.TextPosted = int(n)
-	// A text step that was started (claimed, attempted or decided) but has not
-	// finished within an hour is stuck. Rows the step never touched, as under
-	// react mode, are not.
+	// A text step that was started (claimed, attempted or decided) and has
+	// seen no activity for an hour is stuck. Rows the step never touched, as
+	// under react mode, are not.
 	if err := g.db.Model(&PublishedReplyModel{}).
-		Where("outcome = '' AND (attempts > 0 OR decision <> '' OR claimed_at IS NOT NULL) AND processed_at < ?", now.Add(-time.Hour)).Count(&n).Error; err != nil {
+		Where("outcome = '' AND (attempts > 0 OR decision <> '' OR claimed_at IS NOT NULL) AND COALESCE(updated_at, processed_at) < ?", now.Add(-time.Hour)).Count(&n).Error; err != nil {
 		return m, err
 	}
 	m.Replies.StuckPending = int(n)

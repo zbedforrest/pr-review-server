@@ -144,6 +144,7 @@ var replyDecisionColumns = []struct {
 	{"claimed_by", "ClaimedBy", "varchar(128) NOT NULL DEFAULT ''"},
 	{"claimed_at", "ClaimedAt", "timestamptz"},
 	{"decision_react", "DecisionReact", "boolean NOT NULL DEFAULT true"},
+	{"updated_at", "UpdatedAt", "timestamptz"},
 }
 
 func (g *GormDB) ensureIdempotentColumns() error {

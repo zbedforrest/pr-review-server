@@ -391,6 +391,7 @@ type PublishedReplyModel struct {
 	ClaimedBy       string `gorm:"size:128;not null;default:''"`
 	ClaimedAt       *time.Time
 	RepliedAt       *time.Time
+	UpdatedAt       time.Time // GORM maintains it on every update; the health report ages stuck steps from it
 	CreatedAt       time.Time `gorm:"not null"`
 	ProcessedAt     time.Time `gorm:"not null;index"`
 }
