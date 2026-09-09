@@ -2,6 +2,8 @@ package publisher
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -277,6 +279,10 @@ type ReplyReactor struct {
 	Background func(task func())
 	InFlight   *ReplyInFlight
 	OnOutcome  func(ReplyOutcome, error)
+
+	// Live, when set, re-reads the mode and allowlist right before a post so a
+	// switch flipped during a long model run is honoured.
+	Live func() (mode string, allowed func(authorLogin string) bool)
 }
 
 // ReplyReport is one scan's accounting. PRsSkipped is keyed by reason
@@ -498,11 +504,14 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			if r.InFlight == nil || r.InFlight.add(reply.CommentID) {
 				rep.Dispatched++
 				r.Background(func() {
-					defer func() {
-						if r.InFlight != nil {
-							r.InFlight.remove(reply.CommentID)
-						}
-					}()
+					// Text steps on one PR run one at a time so the per-thread
+					// and per-PR caps are checked and acted on by a single
+					// goroutine; different PRs still run in parallel.
+					if r.InFlight != nil {
+						unlock := r.InFlight.lockPR(key)
+						defer unlock()
+						defer r.InFlight.remove(reply.CommentID)
+					}
 					outcome, err := r.text(ctx, t, state, comments, reply, row, nil)
 					if r.OnOutcome != nil {
 						r.OnOutcome(outcome, err)
@@ -534,10 +543,27 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 }
 
 // ReplyInFlight tracks author comments whose text step is running in the
-// background so a later scan does not start a second model run for them.
+// background so a later scan does not start a second model run for them, and
+// serializes text steps per PR.
 type ReplyInFlight struct {
-	mu  sync.Mutex
-	ids map[int64]bool
+	mu    sync.Mutex
+	ids   map[int64]bool
+	locks map[string]*sync.Mutex
+}
+
+func (f *ReplyInFlight) lockPR(key string) func() {
+	f.mu.Lock()
+	if f.locks == nil {
+		f.locks = map[string]*sync.Mutex{}
+	}
+	l, ok := f.locks[key]
+	if !ok {
+		l = &sync.Mutex{}
+		f.locks[key] = l
+	}
+	f.mu.Unlock()
+	l.Lock()
+	return l.Unlock
 }
 
 func (f *ReplyInFlight) add(id int64) bool {
@@ -620,21 +646,28 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		return finish("skipped:" + reason)
 	}
 	now := r.now()
-	prior, err := r.Ledger.ListPublishedRepliesForRoot(t.RepoOwner, t.RepoName, t.PRNumber, reply.RootCommentID)
-	if err != nil {
-		return outcome, err
-	}
-	var others []db.PublishedReply
-	for _, p := range prior {
-		if p.AuthorCommentID != reply.CommentID {
-			others = append(others, p)
+	eligibility := func() (string, error) {
+		prior, err := r.Ledger.ListPublishedRepliesForRoot(t.RepoOwner, t.RepoName, t.PRNumber, reply.RootCommentID)
+		if err != nil {
+			return "", err
 		}
+		var others []db.PublishedReply
+		for _, p := range prior {
+			if p.AuthorCommentID != reply.CommentID {
+				others = append(others, p)
+			}
+		}
+		today, err := r.Ledger.CountPublishedTextRepliesSince(t.RepoOwner, t.RepoName, t.PRNumber, now.Add(-24*time.Hour))
+		if err != nil {
+			return "", err
+		}
+		return TextEligibility(reply, others, today, now, r.textPolicy()), nil
 	}
-	today, err := r.Ledger.CountPublishedTextRepliesSince(t.RepoOwner, t.RepoName, t.PRNumber, now.Add(-24*time.Hour))
+	reason, err := eligibility()
 	if err != nil {
 		return outcome, err
 	}
-	if reason := TextEligibility(reply, others, today, now, r.textPolicy()); reason != "" {
+	if reason != "" {
 		if rep != nil {
 			rep.skipText(reason)
 		}
@@ -647,18 +680,33 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 			root = c
 		}
 	}
-	// A reply we posted but never recorded (crash between the two) is adopted.
-	// Only the root's author, that is our own bot, can own such a marker.
-	for _, c := range thread {
-		if id, ok := replyMarkerID(c.Body); ok && id == reply.CommentID && c.AuthorID == root.AuthorID && c.ID != reply.CommentID {
-			if err := r.adopt(t, reply, c, &outcome); err != nil {
-				return outcome, err
+	// A reply we posted but never recorded (crash between the two, or another
+	// instance) is adopted. Only the root's author, that is our own bot, can
+	// own such a marker.
+	adoptPosted := func(in []ThreadComment) (bool, error) {
+		for _, c := range in {
+			if id, ok := replyMarkerID(c.Body); ok && id == reply.CommentID && c.AuthorID == root.AuthorID && c.ID != reply.CommentID {
+				return true, r.adopt(t, reply, c, &outcome)
 			}
-			if rep != nil {
-				rep.skipText("already_posted")
-			}
-			return finish("posted")
 		}
+		return false, nil
+	}
+	if adopted, err := adoptPosted(thread); err != nil {
+		return outcome, err
+	} else if adopted {
+		if rep != nil {
+			rep.skipText("already_posted")
+		}
+		return finish("posted")
+	}
+	fingerprint := threadFingerprint(thread, root.AuthorID)
+	if row.Decision != "" && (row.DecisionHead != state.HeadSHA || row.DecisionThread != fingerprint) {
+		// The decision was made against a head or thread that has since moved;
+		// a resumed step must not post it.
+		if row.DecisionHead != state.HeadSHA {
+			return skip("head_moved")
+		}
+		return skip("thread_moved")
 	}
 	if row.Decision == "" {
 		attempts, err := r.Ledger.IncrementPublishedReplyAttempts(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID)
@@ -678,6 +726,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		cited, _ := json.Marshal(decision.Cited)
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
 			Decision: decision.Decision, ReplyBody: decision.Reply, Cited: string(cited), Model: decision.Model, DurationMS: decision.DurationMS,
+			Head: state.HeadSHA, Thread: fingerprint,
 		}); err != nil {
 			return outcome, err
 		}
@@ -700,6 +749,29 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		return finish("shadowed")
 	}
 
+	// Everything below re-reads live state: the model may have run for
+	// minutes, another instance may have posted, or an operator may have
+	// turned the feature down.
+	if r.Live != nil {
+		mode, allowed := r.Live()
+		switch {
+		case mode == ReplyModeShadow:
+			if rep != nil {
+				rep.Shadowed++
+			}
+			return finish("shadowed")
+		case mode != ReplyModeRespond || (allowed != nil && !allowed(state.AuthorLogin)):
+			return skip("mode_changed")
+		}
+	}
+	if reason, err := eligibility(); err != nil {
+		return outcome, err
+	} else if reason != "" {
+		if rep != nil {
+			rep.skipText(reason)
+		}
+		return finish("ineligible:" + reason)
+	}
 	fresh, err := r.PR(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
 	if err != nil {
 		return outcome, err
@@ -711,7 +783,13 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	if err != nil {
 		return outcome, err
 	}
-	if threadFingerprint(threadUnder(latest, reply.RootCommentID), root.AuthorID) != threadFingerprint(thread, root.AuthorID) {
+	latestThread := threadUnder(latest, reply.RootCommentID)
+	if adopted, err := adoptPosted(latestThread); err != nil {
+		return outcome, err
+	} else if adopted {
+		return finish("posted")
+	}
+	if threadFingerprint(latestThread, root.AuthorID) != fingerprint {
 		return skip("thread_moved")
 	}
 	id, err := r.GH.PostReply(ctx, t.RepoOwner, t.RepoName, t.PRNumber, reply.RootCommentID, text+"\n\n"+ReplyMarker(reply.CommentID))
@@ -742,12 +820,12 @@ func (r ReplyReactor) adopt(t db.PublishedReplyTarget, reply AuthorReply, posted
 // threadFingerprint identifies the thread's content as written by everyone
 // but us: an author edit or deletion changes it, our own posted reply does not.
 func threadFingerprint(thread []ThreadComment, ourID int64) string {
-	var b strings.Builder
+	h := sha256.New()
 	for _, c := range thread {
 		if c.AuthorID == ourID {
 			continue
 		}
-		fmt.Fprintf(&b, "%d:%d:%s\x00", c.ID, len(c.Body), c.Body)
+		fmt.Fprintf(h, "%d:%d:%s\x00", c.ID, len(c.Body), c.Body)
 	}
-	return b.String()
+	return hex.EncodeToString(h.Sum(nil))
 }

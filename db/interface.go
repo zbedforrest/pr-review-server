@@ -375,11 +375,13 @@ type PublishedReply struct {
 	// abstained, skipped:<reason>, ineligible:<reason>, failed); empty means
 	// the step has not finished and the next scan resumes it. Attempts counts
 	// model runs so a persistently failing reply is eventually given up on.
-	Outcome     string
-	Attempts    int
-	RepliedAt   *time.Time
-	CreatedAt   time.Time
-	ProcessedAt time.Time
+	Outcome        string
+	Attempts       int
+	DecisionHead   string
+	DecisionThread string
+	RepliedAt      *time.Time
+	CreatedAt      time.Time
+	ProcessedAt    time.Time
 }
 
 // ReplyDecisionRecord is what the reply model concluded about one author
@@ -390,6 +392,10 @@ type ReplyDecisionRecord struct {
 	Cited      string
 	Model      string
 	DurationMS int64
+	// Head and Thread identify what the model saw (PR head sha and a hash of
+	// the thread content); a resumed step posts only if both still match.
+	Head   string
+	Thread string
 }
 
 // PublishedReplyTarget is a PR with inline comments PRism owns, keyed by the

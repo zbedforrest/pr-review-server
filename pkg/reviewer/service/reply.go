@@ -128,7 +128,20 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		return nil, fmt.Errorf("reply: create log: %w", err)
 	}
 	defer logFile.Close()
-	defer os.Remove(logPath)
+	// Keep the stream log on failure unless a sink captures it, like the
+	// review agent does; a successful run leaves nothing on /tmp.
+	succeeded := false
+	defer func() {
+		if succeeded {
+			_ = os.Remove(logPath)
+			return
+		}
+		if cfg.FailureLogSink != nil {
+			_ = logFile.Sync()
+			cfg.FailureLogSink(logPath)
+			_ = os.Remove(logPath)
+		}
+	}()
 
 	var stderrBuf strings.Builder
 	var wg sync.WaitGroup
@@ -154,6 +167,7 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		return nil, fmt.Errorf("reply: no final result emitted (stream: %s)", redact(parsed.diagnostic()))
 	}
 
+	succeeded = true
 	out := &ReplyResult{
 		Decision: ReplyDecisionAbstain, RequestedModel: runtime.model,
 		AssistantTurns: parsed.assistantTurns, DurationMS: time.Since(started).Milliseconds(),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,6 +65,8 @@ type fakeReplyGH struct {
 	listed    []string
 	failList  map[string]bool
 	posted    []string
+	postGate  chan struct{}
+	mu        sync.Mutex
 }
 
 func (f *fakeReplyGH) ListThread(_ context.Context, owner, repo string, number int) ([]ThreadComment, error) {
@@ -82,6 +85,12 @@ func (f *fakeReplyGH) React(_ context.Context, _, _ string, commentID int64) err
 
 func (f *fakeReplyGH) PostReply(_ context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error) {
 	key := fmt.Sprintf("%s/%s#%d", owner, repo, number)
+	if f.postGate != nil {
+		f.postGate <- struct{}{}
+		<-f.postGate
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.posted = append(f.posted, body)
 	id := int64(5000 + len(f.posted))
 	f.threads[key] = append(f.threads[key], ThreadComment{ID: id, InReplyToID: rootCommentID, AuthorID: 1, Body: body, CreatedAt: time.Now()})
@@ -149,6 +158,7 @@ func (f *fakeReplyLedger) SetPublishedReplyDecision(_, _ string, _ int, authorCo
 	for i := range f.rows {
 		if f.rows[i].AuthorCommentID == authorCommentID {
 			f.rows[i].Decision, f.rows[i].ReplyBody, f.rows[i].Cited, f.rows[i].Model = d.Decision, d.ReplyBody, d.Cited, d.Model
+			f.rows[i].DecisionHead, f.rows[i].DecisionThread = d.Head, d.Thread
 		}
 	}
 	return nil
@@ -667,5 +677,84 @@ func TestReplyReactor_BackgroundDispatchRunsOncePerReplyAndReportsOutcomes(t *te
 	rep, _ = r.Run(context.Background())
 	if rep.Dispatched != 0 || r.LastScanned["acme/example#7"].IsZero() {
 		t.Fatalf("settled PR advances the watermark: rep=%+v", rep)
+	}
+}
+
+func TestReplyReactor_ResumedDecisionIsDroppedWhenHeadOrThreadMoved(t *testing.T) {
+	runs := 0
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	t0 := time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)
+	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", Class: "pushback", Action: "reacted", Decision: DecisionHold, ReplyBody: "Still applies.",
+		DecisionHead: "head0", DecisionThread: "stale", CreatedAt: t0}}
+	rep, _ := r.Run(context.Background())
+	if runs != 0 || len(gh.posted) != 0 || rep.TextSkipped["head_moved"] != 1 || ledger.rows[0].Outcome != "skipped:head_moved" {
+		t.Fatalf("runs=%d posted=%v rep=%+v row=%+v", runs, gh.posted, rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_LiveModeIsReReadBeforePosting(t *testing.T) {
+	live := ReplyModeRespond
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		live = ReplyModeShadow
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	r.Live = func() (string, func(string) bool) { return live, nil }
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || rep.Shadowed != 1 || ledger.rows[0].Outcome != "shadowed" {
+		t.Fatalf("a mode turned down mid-run must not post: posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_AnotherInstancesPostIsAdoptedAtTheFinalReRead(t *testing.T) {
+	var gh *fakeReplyGH
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 180, InReplyToID: 100, AuthorID: 1, Body: "Still applies.\n\n" + ReplyMarker(101), CreatedAt: time.Now()})
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || rep.Responded != 0 || ledger.rows[0].ReplyCommentID != 180 || ledger.rows[0].Outcome != "posted" {
+		t.Fatalf("posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_ConcurrentSiblingsRespectTheThreadCap(t *testing.T) {
+	var tasks []func()
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, req ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionAnswer, Reply: fmt.Sprintf("Answer to %d.", req.Reply.CommentID)}, nil
+	})
+	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 102, InReplyToID: 100, AuthorID: 42, Body: "And is the retry path covered as well?", CreatedAt: time.Date(2026, 9, 9, 17, 59, 30, 0, time.UTC)})
+	r.Text = TextPolicy{MaxPerThread: 1, MaxPerPRPerDay: 10, MaxAge: 24 * time.Hour, MaxChars: 600, MaxAttempts: 3}
+	r.Background = func(task func()) { tasks = append(tasks, task) }
+	r.InFlight = &ReplyInFlight{}
+	var outcomes []ReplyOutcome
+	var mu sync.Mutex
+	r.OnOutcome = func(o ReplyOutcome, _ error) { mu.Lock(); outcomes = append(outcomes, o); mu.Unlock() }
+	gh.postGate = make(chan struct{})
+
+	rep, _ := r.Run(context.Background())
+	if rep.Dispatched != 2 || len(tasks) != 2 {
+		t.Fatalf("rep=%+v tasks=%d", rep, len(tasks))
+	}
+	var wg sync.WaitGroup
+	for _, task := range tasks {
+		wg.Add(1)
+		go func(task func()) { defer wg.Done(); task() }(task)
+	}
+	<-gh.postGate // the first task is about to post; the second must be waiting on the PR lock, not racing
+	gh.postGate <- struct{}{}
+	wg.Wait()
+	if len(gh.posted) != 1 {
+		t.Fatalf("thread cap of 1 must hold across concurrent siblings, posted=%v", gh.posted)
+	}
+	got := map[string]int{}
+	for _, o := range outcomes {
+		got[o.Outcome]++
+	}
+	if got["posted"] != 1 || got["ineligible:thread_cap"] != 1 {
+		t.Fatalf("outcomes=%v rows=%+v", got, ledger.rows)
 	}
 }

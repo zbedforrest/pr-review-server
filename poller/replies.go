@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -74,11 +73,6 @@ func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, 
 			PROwner: h.RepoOwner, PRRepo: h.RepoName, PRNumber: h.PRNumber,
 		})
 	}
-	for _, reason := range sortedKeys(rep.TextSkipped) {
-		events = append(events, db.TelemetryEvent{
-			UserID: userID, Action: "reply_text_skipped", Label: fmt.Sprintf("reason=%s n=%d", reason, rep.TextSkipped[reason]),
-		})
-	}
 	for _, e := range rep.Errors {
 		events = append(events, replyErrorEvent("reply_scan_error", e, userID))
 	}
@@ -114,15 +108,6 @@ func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.Telem
 		label = fmt.Sprintf("comment=%d: %v", o.AuthorCommentID, err)
 	}
 	return db.TelemetryEvent{UserID: userID, Action: action, Label: truncateLabel(label, 255), PROwner: o.RepoOwner, PRRepo: o.RepoName, PRNumber: o.PRNumber}
-}
-
-func sortedKeys(m map[string]int) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // replyInputFromRequest shapes the reactor's request for the reply model.
@@ -163,6 +148,7 @@ func (p *Poller) replyResponder() publisher.Responder {
 			WallClock: time.Duration(p.cfg.ReplyWallClockSec) * time.Second, MaxTurns: p.cfg.ReplyMaxTurns,
 			GitHubToken: token, Backend: p.cfg.AgentBackend, Model: model, Effort: p.cfg.AgentEffort,
 			AnthropicAPIKey: p.cfg.AnthropicAPIKey, OpenRouterAPIKey: p.cfg.OpenRouterAPIKey, OpenRouterBaseURL: p.cfg.OpenRouterBaseURL,
+			FailureLogSink: p.persistAgentFailureLog,
 		}
 		ourID := req.Root.AuthorID
 		out, err := service.RunAgentReply(ctx, cfg, p.agentSpawner, replyInputFromRequest(req, ourID))
@@ -232,6 +218,11 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		Responder:   p.replyResponder(),
 		InFlight:    &p.replyInFlight,
 		Background:  func(task func()) { go task() },
+		Live: func() (string, func(string) bool) {
+			liveMode, _ := p.db.GetSetting(settingPublishReplyMode)
+			liveEnabled, _ := p.db.GetSetting(settingPublishEnabledAuthors)
+			return strings.TrimSpace(strings.ToLower(liveMode)), func(login string) bool { return publishEnabledFor(login, liveEnabled) }
+		},
 		OnOutcome: func(o publisher.ReplyOutcome, err error) {
 			if err != nil {
 				log.Printf("[REPLY %s/%s#%d] text step for comment %d failed, will resume: %v", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, err)

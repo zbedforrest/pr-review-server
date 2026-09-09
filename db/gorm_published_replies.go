@@ -125,7 +125,7 @@ func publishedRepliesFromModels(models []PublishedReplyModel) []PublishedReply {
 			Fingerprint: m.Fingerprint, AuthorID: m.AuthorID, Class: m.Class, Action: m.Action,
 			Body: m.Body, ReplyCommentID: m.ReplyCommentID,
 			Decision: m.Decision, ReplyBody: m.ReplyBody, Cited: m.Cited, Model: m.Model, DurationMS: m.DurationMS,
-			Outcome: m.Outcome, Attempts: m.Attempts, RepliedAt: m.RepliedAt,
+			Outcome: m.Outcome, Attempts: m.Attempts, DecisionHead: m.DecisionHead, DecisionThread: m.DecisionThread, RepliedAt: m.RepliedAt,
 			CreatedAt: m.CreatedAt, ProcessedAt: m.ProcessedAt,
 		})
 	}
@@ -142,6 +142,7 @@ func (g *GormDB) replyRow(owner, repo string, number int, authorCommentID int64)
 func (g *GormDB) SetPublishedReplyDecision(owner, repo string, number int, authorCommentID int64, d ReplyDecisionRecord) error {
 	return g.replyRow(owner, repo, number, authorCommentID).Updates(map[string]interface{}{
 		"decision": d.Decision, "reply_body": d.ReplyBody, "cited": d.Cited, "model": d.Model, "duration_ms": d.DurationMS,
+		"decision_head": d.Head, "decision_thread": d.Thread,
 	}).Error
 }
 
@@ -152,11 +153,15 @@ func (g *GormDB) SetPublishedReplyOutcome(owner, repo string, number int, author
 
 // IncrementPublishedReplyAttempts counts one model run and returns the total.
 func (g *GormDB) IncrementPublishedReplyAttempts(owner, repo string, number int, authorCommentID int64) (int, error) {
-	if err := g.replyRow(owner, repo, number, authorCommentID).Update("attempts", gorm.Expr("attempts + 1")).Error; err != nil {
-		return 0, err
-	}
 	var n int
-	err := g.replyRow(owner, repo, number, authorCommentID).Pluck("attempts", &n).Error
+	err := g.db.Transaction(func(tx *gorm.DB) error {
+		row := tx.Model(&PublishedReplyModel{}).
+			Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND author_comment_id = ?", owner, repo, number, authorCommentID)
+		if err := row.Update("attempts", gorm.Expr("attempts + 1")).Error; err != nil {
+			return err
+		}
+		return row.Pluck("attempts", &n).Error
+	})
 	return n, err
 }
 

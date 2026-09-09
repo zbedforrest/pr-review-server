@@ -385,6 +385,8 @@ type PublishedReplyModel struct {
 	DurationMS      int64  `gorm:"not null;default:0"`
 	Outcome         string `gorm:"size:32;not null;default:''"`
 	Attempts        int    `gorm:"not null;default:0"`
+	DecisionHead    string `gorm:"size:64;not null;default:''"`
+	DecisionThread  string `gorm:"size:64;not null;default:''"`
 	RepliedAt       *time.Time
 	CreatedAt       time.Time `gorm:"not null"`
 	ProcessedAt     time.Time `gorm:"not null;index"`
