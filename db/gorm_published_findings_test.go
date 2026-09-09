@@ -146,3 +146,18 @@ func TestGormDB_GetPublishedSummaryForPR_ReturnsOnlyTheSummaryRow(t *testing.T) 
 	assert.True(t, ok)
 	assert.Equal(t, 3, row.Rounds)
 }
+
+func TestGormDB_UpsertPublishedFinding_KeepsADismissedRowDismissed(t *testing.T) {
+	db := newTestDB(t)
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(nil)))
+	require.NoError(t, db.SetPublishedFindingState("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123", PublishedStateDismissed))
+
+	stale := testPublished(func(p *PublishedFinding) { p.LastSeenSHA = "def5678"; p.State = PublishedStateOpen })
+	require.NoError(t, db.UpsertPublishedFinding(stale))
+
+	rows, err := db.GetPublishedFindingsForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, PublishedStateDismissed, rows[0].State, "a concession must survive a publication that loaded the row before it")
+	assert.Equal(t, "def5678", rows[0].LastSeenSHA, "other columns still update")
+}

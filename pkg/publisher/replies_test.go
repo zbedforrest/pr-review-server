@@ -603,7 +603,7 @@ func TestReplyReactor_GivesUpAfterMaxAttempts(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		r.Run(context.Background())
 	}
-	if ledger.rows[0].Outcome != "failed" || ledger.rows[0].Attempts != 4 {
+	if ledger.rows[0].Outcome != "failed" || ledger.rows[0].Attempts != 3 {
 		t.Fatalf("row=%+v", ledger.rows[0])
 	}
 }

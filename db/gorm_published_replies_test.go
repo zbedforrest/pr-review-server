@@ -231,3 +231,19 @@ func TestGormDB_PublishedReply_OutcomeAndAttempts(t *testing.T) {
 	assert.Equal(t, "posted", rows[0].Outcome)
 	assert.Equal(t, 2, rows[0].Attempts)
 }
+
+func TestGormDB_EnsureIdempotentColumns_AddsReplyDecisionColumnsToAnOldTable(t *testing.T) {
+	database := newTestDB(t)
+	for _, col := range []string{"decision", "reply_body", "cited", "model", "duration_ms", "outcome", "attempts", "decision_head", "decision_thread", "replied_at"} {
+		require.NoError(t, database.db.Migrator().DropColumn(&PublishedReplyModel{}, col), col)
+	}
+	require.NoError(t, database.ensureIdempotentColumns())
+	_, err := database.RecordPublishedReply(&PublishedReply{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: 9001, AuthorCommentID: 9010,
+		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	rows, err := database.ListPublishedRepliesForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+}

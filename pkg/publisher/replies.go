@@ -709,12 +709,11 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		return skip("thread_moved")
 	}
 	if row.Decision == "" {
-		attempts, err := r.Ledger.IncrementPublishedReplyAttempts(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID)
-		if err != nil {
-			return outcome, err
-		}
-		if attempts > r.textPolicy().MaxAttempts {
+		if row.Attempts >= r.textPolicy().MaxAttempts {
 			return finish("failed")
+		}
+		if _, err := r.Ledger.IncrementPublishedReplyAttempts(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID); err != nil {
+			return outcome, err
 		}
 		decision, err := r.Responder(ctx, ReplyRequest{
 			Owner: t.RepoOwner, Repo: t.RepoName, Number: t.PRNumber, HeadSHA: state.HeadSHA, BaseRef: state.BaseRef,
@@ -817,12 +816,13 @@ func (r ReplyReactor) adopt(t db.PublishedReplyTarget, reply AuthorReply, posted
 	return nil
 }
 
-// threadFingerprint identifies the thread's content as written by everyone
-// but us: an author edit or deletion changes it, our own posted reply does not.
+// threadFingerprint identifies the finding and everything written under it by
+// anyone but us: an edit to the root or an author edit or deletion changes
+// it, our own posted replies do not.
 func threadFingerprint(thread []ThreadComment, ourID int64) string {
 	h := sha256.New()
 	for _, c := range thread {
-		if c.AuthorID == ourID {
+		if c.AuthorID == ourID && c.InReplyToID != 0 {
 			continue
 		}
 		fmt.Fprintf(h, "%d:%d:%s\x00", c.ID, len(c.Body), c.Body)

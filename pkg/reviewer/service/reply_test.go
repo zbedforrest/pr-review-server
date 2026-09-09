@@ -67,14 +67,47 @@ func TestRunAgentReply_HoldWithoutResolvingEvidenceDegradesToAbstain(t *testing.
 	}
 }
 
-func TestRunAgentReply_ConcedeKeepsTextAndDropsBadCites(t *testing.T) {
+func TestRunAgentReply_ConcedeNeedsResolvingEvidenceLikeAHold(t *testing.T) {
 	out, err, _ := runReply(t, "```json\n{\"decision\":\"concede\",\"reply\":\"You're right, withdrawn.\",\"cited\":[{\"file\":\"nope.go\",\"line\":1}]}\n```")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Decision != "concede" || out.Reply != "You're right, withdrawn." || len(out.Cited) != 0 {
+	if out.Decision != "abstain" || out.Reply != "" {
+		t.Fatalf("an unsupported concession must not dismiss the finding: %+v", out)
+	}
+	out, err, _ = runReply(t, `{"decision":"concede","reply":"You're right, hello.txt is the only reader. Withdrawn.","cited":[{"file":"hello.txt","line":1}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Decision != "concede" || len(out.Cited) != 1 {
 		t.Fatalf("result = %+v", out)
 	}
+}
+
+func TestRunAgentReply_RefusesReplyTextThatLooksLikeACredential(t *testing.T) {
+	out, err, _ := runReply(t, `{"decision":"answer","reply":"The token in the env is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123 and it is used on line 3.","cited":[{"file":"hello.txt","line":1}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Decision != "abstain" || out.Reply != "" {
+		t.Fatalf("result = %+v", out)
+	}
+}
+
+func TestRunAgentReply_RunsWithoutTheBashTool(t *testing.T) {
+	_, err, spawner := runReply(t, `{"decision":"abstain","reply":""}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, a := range spawner.args {
+		if a == "--tools" {
+			if spawner.args[i+1] != "Read,Grep,Glob" {
+				t.Fatalf("tools = %q", spawner.args[i+1])
+			}
+			return
+		}
+	}
+	t.Fatal("no --tools flag")
 }
 
 func TestRunAgentReply_UnparseableOrUnknownDecisionIsAbstain(t *testing.T) {

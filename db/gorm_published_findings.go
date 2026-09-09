@@ -1,6 +1,7 @@
 package db
 
 import (
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -59,7 +60,9 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		"source_tag":    model.SourceTag,
 		"severity":      model.Severity,
 		"last_seen_sha": model.LastSeenSHA,
-		"state":         model.State,
+		// A concession is sticky: a publication that loaded the row before the
+		// author conceded must not flip it back to open or resolved.
+		"state": gorm.Expr("CASE WHEN published_findings.state = ? THEN published_findings.state ELSE ? END", PublishedStateDismissed, model.State),
 	}
 	if model.CommentID != 0 {
 		updates["comment_id"] = model.CommentID

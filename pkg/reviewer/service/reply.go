@@ -116,7 +116,7 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		credentialKey, credentialValue = "OPENROUTER_API_KEY", cfg.OpenRouterAPIKey
 	}
 	log.Printf("%s spawning %s (model=%s, effort=%s, class=%s, prompt_chars=%d)", logPrefix, runtime.command, runtime.model, runtime.effort, in.Class, len(prompt))
-	proc, err := spawner.SpawnWithEnv(runCtx, runtime.command, runtime.args(prompt), cloneDir,
+	proc, err := spawner.SpawnWithEnv(runCtx, runtime.command, runtime.argsWithTools(prompt, replyAgentTools), cloneDir,
 		agentChildEnvironment(os.Environ(), credentialKey, credentialValue))
 	if err != nil {
 		return nil, fmt.Errorf("reply: spawn %s: %w", runtime.command, err)
@@ -186,12 +186,19 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 			out.Unresolved = append(out.Unresolved, e)
 		}
 	}
-	if decision.Decision == ReplyDecisionHold && len(out.Cited) == 0 {
-		log.Printf("%s hold without resolving evidence (%d cited); abstaining", logPrefix, len(decision.Cited))
+	// A hold and a concession both assert something about the code (a
+	// concession dismisses the finding for good), so both need a file:line
+	// the reader can open.
+	if (decision.Decision == ReplyDecisionHold || decision.Decision == ReplyDecisionConcede) && len(out.Cited) == 0 {
+		log.Printf("%s %s without resolving evidence (%d cited); abstaining", logPrefix, decision.Decision, len(decision.Cited))
 		out.Cited = nil
 		return out, nil
 	}
 	if decision.Decision != ReplyDecisionAbstain && decision.Reply == "" {
+		return out, nil
+	}
+	if looksLikeSecret(decision.Reply) {
+		log.Printf("%s reply text matches a credential pattern; abstaining", logPrefix)
 		return out, nil
 	}
 	out.Decision = decision.Decision
@@ -199,6 +206,18 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		out.Reply = decision.Reply
 	}
 	return out, nil
+}
+
+// replyAgentTools omits Bash: the reply prompt carries author-written text
+// and the answer is posted automatically, so the agent only reads.
+const replyAgentTools = "Read,Grep,Glob"
+
+var secretPatterns = regexp.MustCompile(`(?i)(sk-ant-[a-z0-9_-]{8,}|sk-[a-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AIza[0-9A-Za-z_-]{30,}|api[_-]?key\s*[:=]\s*\S{12,})`)
+
+// looksLikeSecret rejects reply text that resembles a credential, whatever
+// prompted the model to include it.
+func looksLikeSecret(s string) bool {
+	return secretPatterns.MatchString(s)
 }
 
 var replySpaceRe = regexp.MustCompile(`\s+`)
