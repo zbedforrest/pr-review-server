@@ -54,6 +54,7 @@ type ReplyInput struct {
 type ReplyResult struct {
 	Decision       string
 	Reply          string
+	React          bool
 	Cited          []types.EvidenceRef
 	Unresolved     []types.EvidenceRef
 	RequestedModel string
@@ -66,6 +67,12 @@ type replyJSON struct {
 	Decision string              `json:"decision"`
 	Reply    string              `json:"reply"`
 	Cited    []types.EvidenceRef `json:"cited"`
+	React    *bool               `json:"react"`
+}
+
+// reacts defaults to acknowledging the author unless the model said not to.
+func (d replyJSON) reacts() bool {
+	return d.React == nil || *d.React
 }
 
 var replyDecisions = map[string]bool{ReplyDecisionConcede: true, ReplyDecisionHold: true, ReplyDecisionAnswer: true, ReplyDecisionAbstain: true}
@@ -167,7 +174,7 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 
 	succeeded = true
 	out := &ReplyResult{
-		Decision: ReplyDecisionAbstain, RequestedModel: runtime.model,
+		Decision: ReplyDecisionAbstain, React: true, RequestedModel: runtime.model,
 		AssistantTurns: parsed.assistantTurns, DurationMS: time.Since(started).Milliseconds(),
 	}
 	out.ServedModel, _, _, _, _ = agentServingMetadata(runtime, parsed.servedModels)
@@ -176,6 +183,7 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		log.Printf("%s final output is not a reply decision; abstaining (%s)", logPrefix, truncate(parsed.finalOutput, 200))
 		return out, nil
 	}
+	out.React = decision.reacts()
 	resolves := evidenceRefResolves(nil, cloneDir)
 	for _, e := range decision.Cited {
 		if resolves(e) {

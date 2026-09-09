@@ -134,6 +134,21 @@ func TestParseReplyJSONStripsHTMLCommentsTheModelWasTalkedInto(t *testing.T) {
 	}
 }
 
+func TestRunAgentReply_ReactDefaultsToTrueAndHonoursFalse(t *testing.T) {
+	out, err, _ := runReply(t, `{"decision":"answer","reply":"It is read on hello.txt:1.","cited":[{"file":"hello.txt","line":1}]}`)
+	if err != nil || !out.React {
+		t.Fatalf("react must default to true: err=%v out=%+v", err, out)
+	}
+	out, err, _ = runReply(t, `{"decision":"hold","reply":"hello.txt:1 still does not read it.","cited":[{"file":"hello.txt","line":1}],"react":false}`)
+	if err != nil || out.React {
+		t.Fatalf("react=false must be honoured: err=%v out=%+v", err, out)
+	}
+	out, err, _ = runReply(t, `not json`)
+	if err != nil || !out.React || out.Decision != "abstain" {
+		t.Fatalf("an unparseable reply abstains but still acknowledges: err=%v out=%+v", err, out)
+	}
+}
+
 func TestParseReplyJSONNeutralisesMentions(t *testing.T) {
 	d, _ := parseReplyJSON(`{"decision":"answer","reply":"@octocat owns this; see the note by @dev-1 in mail@example.com."}`)
 	if d.Reply != "`@octocat` owns this; see the note by `@dev-1` in mail@example.com." {

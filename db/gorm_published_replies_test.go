@@ -274,3 +274,16 @@ func TestGormDB_ClaimPublishedReply_IsExclusiveUntilReleasedOrStale(t *testing.T
 	require.NoError(t, err)
 	assert.False(t, ok, "a finished step cannot be claimed")
 }
+
+func TestGormDB_SetPublishedReplyAction(t *testing.T) {
+	db := newTestDB(t)
+	_, err := db.RecordPublishedReply(&PublishedReply{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: 9001, AuthorCommentID: 9010,
+		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: "pushback", Action: "pending", Body: "b", CreatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.SetPublishedReplyAction("owner", "repo", 7, 9010, "reacted"))
+	rows, err := db.ListPublishedRepliesForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.Equal(t, "reacted", rows[0].Action)
+}

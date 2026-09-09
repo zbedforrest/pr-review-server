@@ -147,6 +147,12 @@ func (g *GormDB) SetPublishedReplyDecision(owner, repo string, number int, autho
 	}).Error
 }
 
+// SetPublishedReplyAction records how the author's comment was acknowledged
+// once a deferred reaction is settled.
+func (g *GormDB) SetPublishedReplyAction(owner, repo string, number int, authorCommentID int64, action string) error {
+	return g.replyRow(owner, repo, number, authorCommentID).Update("action", action).Error
+}
+
 // SetPublishedReplyOutcome marks the text step finished.
 func (g *GormDB) SetPublishedReplyOutcome(owner, repo string, number int, authorCommentID int64, outcome string) error {
 	return g.replyRow(owner, repo, number, authorCommentID).Update("outcome", outcome).Error

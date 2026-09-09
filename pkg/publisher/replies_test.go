@@ -131,6 +131,16 @@ func (f *fakeReplyLedger) ListPublishedRepliesForPR(_, _ string, number int) ([]
 	}
 	return out, nil
 }
+func (f *fakeReplyLedger) SetPublishedReplyAction(_, _ string, _ int, authorCommentID int64, action string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].AuthorCommentID == authorCommentID {
+			f.rows[i].Action = action
+		}
+	}
+	return nil
+}
 func (f *fakeReplyLedger) SetPublishedReplyOutcome(_, _ string, _ int, authorCommentID int64, outcome string) error {
 	if f.failOutcomeOnce {
 		f.failOutcomeOnce = false
@@ -469,7 +479,7 @@ func TestReplyReactor_RespondPostsAHoldWithMarkerAndRecordsIt(t *testing.T) {
 	var got ReplyRequest
 	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, req ReplyRequest) (ReplyDecision, error) {
 		got = req
-		return ReplyDecision{Decision: DecisionHold, Reply: "The guard is on the other branch; line 12 reaches here with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}, Model: "m"}, nil
+		return ReplyDecision{Decision: DecisionHold, Reply: "The guard is on the other branch; line 12 reaches here with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}, Model: "m", React: true}, nil
 	})
 	rep, err := r.Run(context.Background())
 	if err != nil {
@@ -509,7 +519,7 @@ func TestReplyReactor_ConcedeDismissesTheFinding(t *testing.T) {
 
 func TestReplyReactor_ShadowRecordsTheDecisionWithoutPosting(t *testing.T) {
 	r, gh, ledger := respondFixture(ReplyModeShadow, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
-		return ReplyDecision{Decision: DecisionConcede, Reply: "Withdrawn."}, nil
+		return ReplyDecision{Decision: DecisionConcede, Reply: "Withdrawn.", React: true}, nil
 	})
 	rep, _ := r.Run(context.Background())
 	if len(gh.posted) != 0 || len(gh.reactions) != 1 || rep.Shadowed != 1 || ledger.rows[0].Decision != DecisionConcede || ledger.rows[0].ReplyBody != "Withdrawn." {
@@ -600,22 +610,22 @@ func TestReplyReactor_ResumesAFailedTextStepNextCycle(t *testing.T) {
 		if calls == 1 {
 			return ReplyDecision{}, fmt.Errorf("wall clock")
 		}
-		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies.", React: true}, nil
 	})
 	r.LastScanned = map[string]time.Time{}
 	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
 		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1", UpdatedAt: time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)}, nil
 	}
 	rep, _ := r.Run(context.Background())
-	if len(rep.Errors) != 1 || len(gh.posted) != 0 || ledger.rows[0].Outcome != "" || ledger.rows[0].Attempts != 1 {
+	if len(rep.Errors) != 1 || len(gh.posted) != 0 || len(gh.reactions) != 0 || ledger.rows[0].Outcome != "" || ledger.rows[0].Attempts != 1 {
 		t.Fatalf("first cycle: rep=%+v row=%+v", rep, ledger.rows[0])
 	}
 	if !r.LastScanned["acme/example#7"].IsZero() {
 		t.Fatalf("watermark must not advance while a text step is unfinished")
 	}
 	rep, _ = r.Run(context.Background())
-	if calls != 2 || len(gh.posted) != 1 || rep.Responded != 1 || rep.AlreadyHandled != 1 || len(gh.reactions) != 1 || ledger.rows[0].Outcome != "posted" {
-		t.Fatalf("second cycle must resume without reacting again: calls=%d posted=%v rep=%+v row=%+v", calls, gh.posted, rep, ledger.rows[0])
+	if calls != 2 || len(gh.posted) != 1 || rep.Responded != 1 || rep.AlreadyHandled != 1 || len(gh.reactions) != 1 || ledger.rows[0].Outcome != "posted" || ledger.rows[0].Action != "reacted" {
+		t.Fatalf("second cycle resumes, posts, and reacts once as the model asked: calls=%d posted=%v rep=%+v row=%+v", calls, gh.posted, rep, ledger.rows[0])
 	}
 	if r.LastScanned["acme/example#7"].IsZero() {
 		t.Fatalf("watermark advances once the PR is settled")
@@ -678,7 +688,7 @@ func TestReplyReactor_BackgroundDispatchRunsOncePerReplyAndReportsOutcomes(t *te
 	var tasks []func()
 	var outcomes []ReplyOutcome
 	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
-		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies.", React: true}, nil
 	})
 	r.Background = func(task func()) { tasks = append(tasks, task) }
 	r.InFlight = &ReplyInFlight{}
@@ -689,15 +699,15 @@ func TestReplyReactor_BackgroundDispatchRunsOncePerReplyAndReportsOutcomes(t *te
 	}
 
 	rep, _ := r.Run(context.Background())
-	if rep.Dispatched != 1 || len(tasks) != 1 || len(gh.posted) != 0 || len(gh.reactions) != 1 {
-		t.Fatalf("first scan must react and dispatch: rep=%+v tasks=%d", rep, len(tasks))
+	if rep.Dispatched != 1 || len(tasks) != 1 || len(gh.posted) != 0 || len(gh.reactions) != 0 {
+		t.Fatalf("first scan dispatches and leaves the reaction to the model: rep=%+v tasks=%d", rep, len(tasks))
 	}
 	rep, _ = r.Run(context.Background())
 	if rep.Dispatched != 0 || len(tasks) != 1 || !r.LastScanned["acme/example#7"].IsZero() {
 		t.Fatalf("an in-flight reply is not dispatched again and holds the watermark: rep=%+v tasks=%d", rep, len(tasks))
 	}
 	tasks[0]()
-	if len(gh.posted) != 1 || len(outcomes) != 1 || !outcomes[0].Posted || ledger.rows[0].Outcome != "posted" {
+	if len(gh.posted) != 1 || len(gh.reactions) != 1 || len(outcomes) != 1 || !outcomes[0].Posted || ledger.rows[0].Outcome != "posted" {
 		t.Fatalf("posted=%v outcomes=%+v row=%+v", gh.posted, outcomes, ledger.rows[0])
 	}
 	rep, _ = r.Run(context.Background())
@@ -869,5 +879,70 @@ func TestReplyReactor_CancelledRunIsNotCountedAsAnAttempt(t *testing.T) {
 	r.Run(ctx)
 	if ledger.rows[0].Attempts != 0 || ledger.rows[0].Outcome != "" {
 		t.Fatalf("row=%+v", ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_ModelDecidesTheReactionForPushbackAndQuestions(t *testing.T) {
+	var gh *fakeReplyGH
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		if len(gh.reactions) != 0 {
+			t.Fatalf("a pushback must not be acknowledged before the model has decided")
+		}
+		return ReplyDecision{Decision: DecisionHold, Reply: "The guard runs after the branch; a.go:12 still reaches here with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}, React: false}, nil
+	})
+	rep, _ := r.Run(context.Background())
+	if len(gh.reactions) != 0 || len(gh.posted) != 1 || rep.Reacted != 0 || ledger.rows[0].Action != "observed" {
+		t.Fatalf("a hold the model chose not to thumbs-up: reactions=%v posted=%d rep=%+v row=%+v", gh.reactions, len(gh.posted), rep, ledger.rows[0])
+	}
+
+	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right, the caller guards it (a.go:8). Withdrawn.", Cited: []EvidenceRef{{File: "a.go", Line: 8}}, React: true}, nil
+	})
+	rep, _ = r.Run(context.Background())
+	if len(gh.reactions) != 1 || len(gh.posted) != 1 || rep.Reacted != 1 || ledger.rows[0].Action != "reacted" {
+		t.Fatalf("a concession the model wants acknowledged: reactions=%v posted=%d rep=%+v row=%+v", gh.reactions, len(gh.posted), rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_ResolutionsStillGetTheInstantThumbsUp(t *testing.T) {
+	runs := 0
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Fixed in 9de3bed."
+	rep, _ := r.Run(context.Background())
+	if runs != 0 || len(gh.reactions) != 1 || rep.Reacted != 1 {
+		t.Fatalf("runs=%d reactions=%v rep=%+v", runs, gh.reactions, rep)
+	}
+}
+
+func TestReplyReactor_RepliesTheModelNeverReachesAreStillAcknowledged(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{}, fmt.Errorf("boom")
+	})
+	for i := 0; i < 4; i++ {
+		r.Run(context.Background())
+	}
+	if ledger.rows[0].Outcome != "failed" || len(gh.reactions) != 1 || ledger.rows[0].Action != "reacted" {
+		t.Fatalf("a failed text step falls back to a thumbs-up: reactions=%v row=%+v", gh.reactions, ledger.rows[0])
+	}
+
+	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionAbstain, React: true}, nil
+	})
+	r.Run(context.Background())
+	if len(gh.reactions) != 1 || ledger.rows[0].Outcome != "abstained" || ledger.rows[0].Action != "reacted" {
+		t.Fatalf("an abstain still acknowledges the author: reactions=%v row=%+v", gh.reactions, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_ShadowAppliesTheModelsReactionButNotItsText(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeShadow, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies.", React: false}, nil
+	})
+	rep, _ := r.Run(context.Background())
+	if len(gh.reactions) != 0 || len(gh.posted) != 0 || rep.Shadowed != 1 || ledger.rows[0].Action != "observed" {
+		t.Fatalf("reactions=%v posted=%d rep=%+v row=%+v", gh.reactions, len(gh.posted), rep, ledger.rows[0])
 	}
 }

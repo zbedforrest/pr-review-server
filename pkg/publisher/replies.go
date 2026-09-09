@@ -110,6 +110,7 @@ const (
 
 	replyActionObserved = "observed"
 	replyActionReacted  = "reacted"
+	replyActionPending  = "pending" // reaction deferred to the reply model's decision
 )
 
 // Decisions the reply model can reach about an author's pushback or question.
@@ -157,6 +158,7 @@ type ReplyLedger interface {
 	ListUnlinkedPublishedFindings() ([]db.UnlinkedPublishedFinding, error)
 	LinkPublishedFindingComment(id uint, commentID int64) error
 	SetPublishedReplyOutcome(owner, repo string, number int, authorCommentID int64, outcome string) error
+	SetPublishedReplyAction(owner, repo string, number int, authorCommentID int64, action string) error
 	ClaimPublishedReply(owner, repo string, number int, authorCommentID int64, holder string, now time.Time, lease time.Duration) (bool, error)
 	ReleasePublishedReplyClaim(owner, repo string, number int, authorCommentID int64, holder string) error
 	IncrementPublishedReplyAttempts(owner, repo string, number int, authorCommentID int64) (int, error)
@@ -198,10 +200,13 @@ type ReplyRequest struct {
 }
 
 // ReplyDecision is the reply model's conclusion. Reply is empty for abstain.
+// React says whether the author's comment gets a 👍 alongside (or instead of)
+// the text; the model chooses so a rebutted pushback is not thumbed up.
 type ReplyDecision struct {
 	Decision   string
 	Reply      string
 	Cited      []EvidenceRef
+	React      bool
 	Model      string
 	DurationMS int64
 }
@@ -495,7 +500,11 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		row, handled := seen[reply.CommentID]
 		if !handled {
 			action := replyActionObserved
-			if r.reacts() {
+			switch {
+			case r.reacts() && r.textMode() && textClass(reply.Class):
+				// The model decides whether this one gets a 👍; see text().
+				action = replyActionPending
+			case r.reacts():
 				if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
 					return err
 				}
@@ -628,6 +637,11 @@ func (f *ReplyInFlight) remove(id int64) {
 	delete(f.ids, id)
 }
 
+// textClass reports whether a reply class is one the reply model handles.
+func textClass(c ReplyClass) bool {
+	return c == ReplyQuestion || c == ReplyPushback
+}
+
 func (r ReplyReactor) reacts() bool {
 	return r.Mode == ReplyModeReact || r.Mode == ReplyModeShadow || r.Mode == ReplyModeRespond
 }
@@ -678,7 +692,33 @@ func threadUnder(comments []ThreadComment, rootID int64) []ThreadComment {
 func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, reply AuthorReply, row db.PublishedReply, rep *ReplyReport) (outcome ReplyOutcome, err error) {
 	outcome = ReplyOutcome{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, AuthorCommentID: reply.CommentID,
 		Decision: row.Decision, Model: row.Model, DurationMS: row.DurationMS}
+	// A deferred reaction is settled with the step: the model's choice when it
+	// ran, otherwise a plain acknowledgement so no author reply goes unanswered.
+	react := func(want bool) error {
+		if row.Action != replyActionPending || !r.reacts() {
+			return nil
+		}
+		action := replyActionObserved
+		if want {
+			if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
+				return err
+			}
+			action = replyActionReacted
+			if rep != nil {
+				rep.Reacted++
+			}
+		}
+		if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, action); err != nil {
+			return err
+		}
+		row.Action = action
+		return nil
+	}
+	reactWanted := row.Action == replyActionPending
 	finish := func(result string) (ReplyOutcome, error) {
+		if err := react(reactWanted); err != nil {
+			return outcome, err
+		}
 		if err := r.Ledger.SetPublishedReplyOutcome(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, result); err != nil {
 			return outcome, err
 		}
@@ -802,6 +842,12 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		row.Decision, row.ReplyBody = decision.Decision, decision.Reply
 		outcome.Decision, outcome.Model, outcome.DurationMS = decision.Decision, decision.Model, decision.DurationMS
+		reactWanted = decision.React
+		if reactWanted {
+			if err := react(true); err != nil {
+				return outcome, err
+			}
+		}
 	}
 	text := strings.TrimSpace(row.ReplyBody)
 	switch {

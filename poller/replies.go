@@ -210,9 +210,9 @@ func (p *Poller) replyResponder() publisher.Responder {
 		for _, e := range out.Cited {
 			cited = append(cited, publisher.EvidenceRef{File: e.File, Line: e.Line})
 		}
-		log.Printf("[REPLY %s/%s#%d] decision=%s cited=%d unresolved=%d turns=%d ms=%d model=%s",
-			req.Owner, req.Repo, req.Number, out.Decision, len(out.Cited), len(out.Unresolved), out.AssistantTurns, out.DurationMS, out.ServedModel)
-		return publisher.ReplyDecision{Decision: out.Decision, Reply: out.Reply, Cited: cited, Model: out.ServedModel, DurationMS: out.DurationMS}, nil
+		log.Printf("[REPLY %s/%s#%d] decision=%s react=%t cited=%d unresolved=%d turns=%d ms=%d model=%s",
+			req.Owner, req.Repo, req.Number, out.Decision, out.React, len(out.Cited), len(out.Unresolved), out.AssistantTurns, out.DurationMS, out.ServedModel)
+		return publisher.ReplyDecision{Decision: out.Decision, Reply: out.Reply, Cited: cited, React: out.React, Model: out.ServedModel, DurationMS: out.DurationMS}, nil
 	}
 }
 
