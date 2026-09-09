@@ -60,10 +60,15 @@ type CommentView struct {
 	StatusClass  string
 }
 
-// SeverityLabel is the severity shown in a finding's comment header; empty
-// for the summary, checks, and findings without one.
+// ShowsSeverity is false for the summary and check entries, whose headers
+// carry no severity pill.
+func (v CommentView) ShowsSeverity() bool {
+	return v.FilePath != "SUMMARY" && v.FilePath != "CHECK"
+}
+
+// SeverityLabel is the severity shown in a finding's comment header.
 func (v CommentView) SeverityLabel() string {
-	if v.FilePath == "SUMMARY" || v.FilePath == "CHECK" {
+	if !v.ShowsSeverity() {
 		return ""
 	}
 	return strings.ToUpper(strings.TrimSpace(v.Importance))
@@ -71,7 +76,23 @@ func (v CommentView) SeverityLabel() string {
 
 // SeverityClass returns the CSS-class suffix for the header's severity pill.
 func (v CommentView) SeverityClass() string {
-	return strings.ToLower(v.SeverityLabel())
+	return severityClass(v.SeverityLabel())
+}
+
+// severityClass maps a severity to one of the fixed sev-* suffixes styled in
+// layout.tmpl. Severities come from provider JSON, so anything else (including
+// a value with a space, which html/template would pass into the attribute)
+// falls back to the neutral pill.
+func severityClass(severity string) string {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical", "high":
+		return "critical"
+	case "medium":
+		return "medium"
+	case "low":
+		return "low"
+	}
+	return "note"
 }
 
 // Findings-index groups, in reading order.
@@ -94,7 +115,7 @@ type FindingRow struct {
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
 func (r FindingRow) SeverityClass() string {
-	return strings.ToLower(r.Severity)
+	return severityClass(r.Severity)
 }
 
 // FindingGroup is one state bucket of the findings index.
@@ -120,7 +141,7 @@ type RecordView struct {
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
 func (r RecordView) SeverityClass() string {
-	return strings.ToLower(r.Severity)
+	return severityClass(r.Severity)
 }
 
 // Location is "file:line", or the file alone for whole-file records.
@@ -147,7 +168,7 @@ type NextAction struct {
 
 // SeverityClass returns the CSS-class suffix for the severity pill.
 func (a NextAction) SeverityClass() string {
-	return strings.ToLower(a.Severity)
+	return severityClass(a.Severity)
 }
 
 // Location is "file:line", or the file alone for whole-file findings.
