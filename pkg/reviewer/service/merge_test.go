@@ -447,3 +447,23 @@ func TestMergeFindingsWithRecords_MechanicalAlertsDoNotAbsorbClaims(t *testing.T
 		t.Fatalf("a mechanical alert is not a finding that can cover a claim; the claim stays active: merged=%+v records=%+v", merged, records)
 	}
 }
+
+func TestMergeFindingsWithRecords_ClaimsDoNotAbsorbMechanicalAlertsEither(t *testing.T) {
+	claim := lc("shared/base.py", 0, "MEDIUM", "carried claim")
+	claim.State = StateUnverified
+	sets := []FindingSet{
+		{Provenance: "agent", Comments: nil},
+		{Provenance: CarriedProvenance("0123456789abcdef0123"), Comments: []types.LineComment{claim}},
+		{Provenance: "mechanical", Comments: []types.LineComment{lc("shared/base.py", 0, "MEDIUM", "**Mechanical alert — shared module edited.**")}},
+	}
+	merged, records := MergeFindingsWithRecords(sets...)
+	if len(merged) != 2 || len(records) != 0 {
+		t.Fatalf("an unverified claim does not clear a deterministic signal: merged=%+v records=%+v", merged, records)
+	}
+	synth := FindingSet{Provenance: "required-check", Comments: []types.LineComment{lc("app/Tooltip.tsx", 0, "MEDIUM", "escalated VIOLATED answer")}}
+	mech := FindingSet{Provenance: "mechanical", Comments: []types.LineComment{lc("app/Tooltip.tsx", 0, "MEDIUM", "generic advisory")}}
+	merged, records = MergeFindingsWithRecords(synth, mech)
+	if len(merged) != 1 || len(records) != 1 {
+		t.Fatalf("the VIOLATED synthesis still absorbs the gate alert that spawned it: merged=%+v records=%+v", merged, records)
+	}
+}

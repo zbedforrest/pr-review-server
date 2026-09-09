@@ -1,7 +1,6 @@
 package service
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -273,21 +272,15 @@ func evidenceFileExists(diffPaths []string, worktreeDir string) func(string) boo
 }
 
 // trackedInWorktree reports whether path is repository content at HEAD, so a
-// scratch file the agent wrote into the clone cannot serve as evidence. When
-// git is unavailable the check falls back to existence.
+// file the agent wrote (or even staged) in the clone cannot serve as evidence.
+// Outside a git checkout the check falls back to existence; inside one, any
+// git failure fails closed.
 func trackedInWorktree(worktreeDir, path string) bool {
-	cmd := exec.Command("git", "-C", worktreeDir, "ls-files", "--error-unmatch", "--", path)
-	if err := cmd.Run(); err != nil {
-		// Exit 1 is git's "not tracked"; anything else (no git, not a repo)
-		// leaves only existence to go on.
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() == 1 {
-			return false
-		}
+	if _, err := os.Stat(filepath.Join(worktreeDir, ".git")); err != nil {
 		_, statErr := os.Lstat(filepath.Join(worktreeDir, path))
 		return statErr == nil
 	}
-	return true
+	return exec.Command("git", "-C", worktreeDir, "cat-file", "-e", "HEAD:"+path).Run() == nil
 }
 
 // resolvedEvidenceOnly copies a disposition keeping only the evidence that

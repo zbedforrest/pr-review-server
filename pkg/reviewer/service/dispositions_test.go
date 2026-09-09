@@ -348,6 +348,7 @@ func TestEvidenceFileExists_RequiresTrackedRepositoryContent(t *testing.T) {
 	if err := os.WriteFile(dir+"/scratch.md", []byte("agent notes\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	run("add", "scratch.md") // staged but not committed: still not content at HEAD
 	check := evidenceFileExists(nil, dir)
 	if !check("tracked.go") {
 		t.Error("tracked code resolves")
