@@ -265,6 +265,18 @@ func TestRenderStructuredSummaries_ResolvesLocationKeyedPriorities(t *testing.T)
 	}
 }
 
+func TestRenderStructuredSummaries_ListsAFindingOnceAcrossItsAliases(t *testing.T) {
+	comments := []types.LineComment{
+		{ID: "A-1", FilePath: "a.go", LineNumber: 3, Importance: "MEDIUM", CommentBody: "Requests crash on missing config. More."},
+		{FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "approve", PriorityIDs: []string{"A-1", "a.go:3", "A-1"}}},
+	}
+	RenderStructuredSummaries(comments)
+	body := comments[1].CommentBody
+	if strings.Count(body, "Requests crash on missing config") != 1 || strings.Contains(body, "\n2. ") {
+		t.Fatalf("label and location aliases of one finding must render once:\n%s", body)
+	}
+}
+
 func TestEvidenceFileExists_RejectsSymlinks(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/real.go", []byte("x\n"), 0o644); err != nil {
