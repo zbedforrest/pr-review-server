@@ -1115,3 +1115,15 @@ func TestRenderStructuredSummaries_WritesDeterministicProse(t *testing.T) {
 		t.Errorf("a prose summary must pass through untouched")
 	}
 }
+
+func TestComputeImportanceCounts_SkipsInactiveRecords(t *testing.T) {
+	r := &ReviewResult{Comments: []types.LineComment{
+		{FilePath: "a.go", Importance: "CRITICAL"},
+		{FilePath: "b.go", Importance: "MEDIUM", Inactive: true, State: StateRejected},
+		{FilePath: "c.go", Importance: "LOW"},
+	}}
+	r.ComputeImportanceCounts()
+	if r.CriticalCount != 1 || r.MediumCount != 0 || r.LowCount != 1 {
+		t.Fatalf("counts = %d/%d/%d, inactive records must not count", r.CriticalCount, r.MediumCount, r.LowCount)
+	}
+}

@@ -456,9 +456,9 @@ func TestEnforceRequiredChecks_TelemetryMixed(t *testing.T) {
 }
 
 // With the feature off (no checks issued) the prompt must be byte-identical
-// to the pre-required-checks build — gates, memory and Gemini comments only.
+// to the pre-required-checks build — gates, memory and first-pass claims only.
 func TestBuildAgentPromptContent_ChecksOffByteIdentical(t *testing.T) {
-	gemini := []types.LineComment{lc("a.go", 3, "LOW", "x")}
+	gemini := firstPassClaims([]types.LineComment{lc("a.go", 3, "LOW", "x")})
 	gates := []types.LineComment{gateAlertFixture("settings-ref", "photo/tasks.py")}
 	mem := []BugMemoryEntry{mkEntry("e1", "c", "a prior", []string{"**"}, nil, 1)}
 
@@ -479,7 +479,7 @@ func TestBuildAgentPromptContent_ChecksOffByteIdentical(t *testing.T) {
 		b.WriteString("- [" + g.FilePath + "] " + g.CommentBody + "\n")
 	}
 	b.WriteString(bugMemorySection(mem))
-	b.WriteString("\n--- GEMINI COMMENTS (JSON) ---\n")
+	b.WriteString("\n--- FIRST-PASS CLAIMS (JSON; account for every source_id) ---\n")
 	b.Write(commentsJSON)
 
 	if got != b.String() {
@@ -508,8 +508,8 @@ func TestBuildAgentPromptContent_ChecksSection(t *testing.T) {
 		}
 	}
 	// The block sits with the other context sections, before the comments JSON.
-	if strings.Index(got, "REQUIRED CHECKS") > strings.Index(got, "GEMINI COMMENTS") {
-		t.Error("REQUIRED CHECKS block must precede the Gemini comments")
+	if strings.Index(got, "REQUIRED CHECKS") > strings.Index(got, "FIRST-PASS CLAIMS") {
+		t.Error("REQUIRED CHECKS block must precede the first-pass claims")
 	}
 }
 

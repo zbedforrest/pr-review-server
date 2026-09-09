@@ -2,6 +2,7 @@ package service
 
 import (
 	"path"
+	"strconv"
 	"strings"
 
 	"pr-review-server/pkg/reviewer/types"
@@ -59,7 +60,14 @@ func importanceRank(imp string) int {
 // The caller decides what belongs in each set (e.g. filtering Gemini style
 // nits before the merge); MergeFindings only unions what it is given.
 func MergeFindings(sets ...FindingSet) []types.LineComment {
-	var merged []types.LineComment
+	merged, _ := MergeFindingsWithRecords(sets...)
+	return merged
+}
+
+// MergeFindingsWithRecords is MergeFindings that also returns each dropped
+// duplicate as an inactive merged record pointing at the finding that kept
+// the line, so a first-pass claim folded into an agent finding is preserved.
+func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineComment) {
 	for si, set := range sets {
 		for _, c := range set.Comments {
 			// The caller builds the sets, so the set label is the authoritative
@@ -89,6 +97,11 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 				if importanceRank(incoming) > importanceRank(merged[di].Importance) {
 					merged[di].Importance = incoming
 				}
+				if si > 0 {
+					c.State, c.Inactive, c.Assessment = StateMerged, true, nil
+					c.MergedInto = mergeTarget(merged[di])
+					records = append(records, c)
+				}
 				continue
 			}
 			if si > 0 {
@@ -105,7 +118,19 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 			merged = append(merged, c)
 		}
 	}
-	return merged
+	return merged, records
+}
+
+// mergeTarget names the finding a duplicate folded into: the agent's own id
+// when it gave one, else the location.
+func mergeTarget(f types.LineComment) string {
+	if f.ID != "" {
+		return f.ID
+	}
+	if f.LineNumber > 0 {
+		return f.FilePath + ":" + strconv.Itoa(f.LineNumber)
+	}
+	return f.FilePath
 }
 
 // findDuplicate returns the index in merged of a finding duplicating c.

@@ -324,3 +324,20 @@ func TestMergeFindings_BlankLowerPriorityLabelDefaultsToFirstPass(t *testing.T) 
 		t.Fatalf("a re-admitted finding must never read as the agent's own: %q", got[1].Provenance)
 	}
 }
+
+func TestMergeFindingsWithRecords_DuplicateBecomesAMergedRecord(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		lc("SUMMARY", 0, "LOW", "Verdict: approve"),
+		{ID: "A-1", FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "agent phrasing"},
+	}}
+	fp := lc("a.go", 12, "CRITICAL", "first-pass phrasing")
+	fp.Original = &types.OriginalClaim{SourceID: "FP-1"}
+	firstPass := FindingSet{Provenance: "first-pass", Comments: []types.LineComment{fp}}
+	merged, records := MergeFindingsWithRecords(agent, firstPass)
+	if len(merged) != 2 || merged[1].Importance != "MEDIUM" {
+		t.Fatalf("merged = %+v", merged)
+	}
+	if len(records) != 1 || records[0].State != StateMerged || !records[0].Inactive || records[0].MergedInto != "A-1" || records[0].CommentBody != "first-pass phrasing" {
+		t.Fatalf("the dropped duplicate must survive as a merged record: %+v", records)
+	}
+}
