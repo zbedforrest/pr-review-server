@@ -1,9 +1,12 @@
 {{/* Shared counter row for every review comment. The text is a placeholder:
      layout.tmpl rewrites it at load time so the numbering follows document
      order (which is what the deep links and the J/K navigation both key off).
-     The button copies a #comment-N link to this comment. */}}
+     The button copies a #comment-N link to this comment. The finding anchor
+     lives here, not on the comment container, because the load-time script
+     overwrites the container's id. */}}
 {{define "comment-counter"}}
-<div class="comment-counter">
+<div class="comment-counter"{{if .AnchorID}} id="{{.AnchorID}}"{{end}}>
+    {{template "status-pill" .}}
     <span class="comment-counter-text">Comment {{.Counter}} of {{.Total}}</span>
     <button type="button" class="comment-link-btn" title="Copy link to this comment" aria-label="Copy link to this comment">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>

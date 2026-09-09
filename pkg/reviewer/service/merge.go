@@ -1,7 +1,6 @@
 package service
 
 import (
-	"fmt"
 	"path"
 	"strings"
 
@@ -53,17 +52,25 @@ func importanceRank(imp string) int {
 //     conventionally named files (models.py, index.ts) across directories.
 //   - Duplicates keep the higher-priority phrasing but upgrade Importance to
 //     the max across the pair — a later source never *lowers* severity.
-//   - Findings unique to a lower-priority set are appended with a provenance
-//     note so readers know they were not independently confirmed.
+//   - Findings unique to a lower-priority set are appended with their set's
+//     provenance in the structured field, so renderers can mark them as not
+//     independently confirmed without any prose preface.
 //
 // The caller decides what belongs in each set (e.g. filtering Gemini style
 // nits before the merge); MergeFindings only unions what it is given.
 func MergeFindings(sets ...FindingSet) []types.LineComment {
 	var merged []types.LineComment
-	readmitted := 0
-	carried := 0
 	for si, set := range sets {
 		for _, c := range set.Comments {
+			// The caller builds the sets, so the set label is the authoritative
+			// attribution for this review (a carried finding's own stamp is
+			// the bare word; the set label names the source review).
+			switch {
+			case set.Provenance != "":
+				c.Provenance = set.Provenance
+			case si > 0:
+				c.Provenance = "first-pass"
+			}
 			if c.FilePath == "SUMMARY" {
 				if si == 0 {
 					merged = append(merged, c)
@@ -85,7 +92,6 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 				continue
 			}
 			if si > 0 {
-				c.CommentBody = provenanceNote(set.Provenance) + c.CommentBody
 				// Cap re-admitted findings at MEDIUM: measured on a set of
 				// known-good merged PRs, the first pass emits CRITICALs on
 				// half of them — re-admitting those at full severity would
@@ -95,34 +101,8 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 				if importanceRank(c.Importance) > importanceRank("MEDIUM") {
 					c.Importance = "MEDIUM"
 				}
-				readmitted++
-				if strings.HasPrefix(set.Provenance, carriedProvenancePrefix) {
-					carried++
-				}
 			}
 			merged = append(merged, c)
-		}
-	}
-	// A re-admitted finding can sit under a SUMMARY whose prose argues against
-	// it (the agent may have dismissed the very concern reconciliation kept).
-	// Readers weigh the summary heavily, so surface the contradiction rather
-	// than letting the dismissal silently win.
-	if readmitted > 0 {
-		for i := range merged {
-			if merged[i].FilePath == "SUMMARY" {
-				merged[i].CommentBody += fmt.Sprintf(
-					"\n\n---\n_Reconciliation: %d earlier-pass finding(s) below were retained despite"+
-						" not being independently confirmed. If this summary argues against one of"+
-						" them, treat that as an open disagreement to resolve, not a settled dismissal._",
-					readmitted)
-				if carried > 0 {
-					merged[i].CommentBody += fmt.Sprintf(
-						" _%d of the retained finding(s) were carried forward from an earlier"+
-							" review of this PR (cited file untouched since)._",
-						carried)
-				}
-				break
-			}
 		}
 	}
 	return merged
@@ -208,21 +188,14 @@ func CarriedProvenance(fromSHA string) string {
 	return carriedProvenancePrefix + shortSHA(fromSHA)
 }
 
-// CarriedFromSHA reports whether a rendered finding body is a carried-forward
-// finding (starts with the carried provenance note) and returns the short SHA
-// of the review it was carried from.
-func CarriedFromSHA(body string) (string, bool) {
-	prefix := "_[" + carriedProvenancePrefix
-	if !strings.HasPrefix(body, prefix) {
+// CarriedFromSHA reports whether a provenance label names a carried-forward
+// finding and returns the short SHA of the review it was carried from.
+func CarriedFromSHA(provenance string) (string, bool) {
+	if !strings.HasPrefix(provenance, carriedProvenancePrefix) {
 		return "", false
 	}
-	rest := body[len(prefix):]
-	end := strings.Index(rest, provenanceNoteMarker)
-	if end <= 0 {
-		return "", false
-	}
-	sha := rest[:end]
-	if strings.ContainsAny(sha, " \t\n") {
+	sha := provenance[len(carriedProvenancePrefix):]
+	if sha == "" || strings.ContainsAny(sha, " \t\n") {
 		return "", false
 	}
 	return sha, true

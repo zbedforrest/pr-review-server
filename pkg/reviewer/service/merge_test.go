@@ -31,9 +31,9 @@ func TestMergeFindings_DroppedFirstPassFindingSurvives(t *testing.T) {
 	if readmitted.Importance != "MEDIUM" {
 		t.Errorf("re-admitted severity should cap at MEDIUM, got %q", readmitted.Importance)
 	}
-	if !strings.Contains(readmitted.CommentBody, "gemini finding") ||
-		!strings.Contains(readmitted.CommentBody, "route classification breaks") {
-		t.Errorf("provenance tag or body missing: %q", readmitted.CommentBody)
+	if readmitted.Provenance == "" || readmitted.Provenance == "agent" ||
+		readmitted.CommentBody != "route classification breaks" {
+		t.Errorf("re-admitted finding must carry its set's provenance with an untouched body: %+v", readmitted)
 	}
 }
 
@@ -138,30 +138,26 @@ func TestMergeFindings_EmptyAndSingleSet(t *testing.T) {
 	}
 }
 
-// TestMergeFindings_SummaryReconciliationNote — when findings are re-admitted,
-// the primary SUMMARY must disclose the potential contradiction; when nothing
-// is re-admitted the SUMMARY stays untouched.
-func TestMergeFindings_SummaryReconciliationNote(t *testing.T) {
+// Re-admitted findings are attributed structurally: the SUMMARY prose stays
+// exactly as the agent wrote it, and the finding carries its provenance in
+// the field the payload and renderers read, with no prose preface.
+func TestMergeFindings_ReadmissionIsStructuredNotProse(t *testing.T) {
 	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
 		lc("SUMMARY", 0, "LOW", "Verdict: approve"),
 		lc("a.ts", 5, "LOW", "nit"),
 	}}
-	gemini := FindingSet{Provenance: "first-pass", Comments: []types.LineComment{
+	firstPass := FindingSet{Provenance: "first-pass", Comments: []types.LineComment{
 		lc("b.ts", 40, "CRITICAL", "crash"),
 	}}
-	got := MergeFindings(agent, gemini)
-	if !strings.Contains(got[0].CommentBody, "Reconciliation: 1 earlier-pass finding") {
-		t.Errorf("SUMMARY missing reconciliation note: %q", got[0].CommentBody)
+	got := MergeFindings(agent, firstPass)
+	if got[0].CommentBody != "Verdict: approve" {
+		t.Errorf("SUMMARY must not be rewritten by the merge: %q", got[0].CommentBody)
 	}
-	// Re-admissions from non-carried sets must NOT trigger the carried
-	// mention — with carry-forward off the merge output is unchanged.
-	if strings.Contains(got[0].CommentBody, "carried forward") {
-		t.Errorf("SUMMARY should not mention carry-forward without a carried set: %q", got[0].CommentBody)
+	if got[1].Provenance != "agent" {
+		t.Errorf("agent finding provenance = %q", got[1].Provenance)
 	}
-	// No re-admissions -> untouched SUMMARY.
-	got = MergeFindings(agent, FindingSet{Provenance: "first-pass", Comments: nil})
-	if strings.Contains(got[0].CommentBody, "Reconciliation") {
-		t.Errorf("SUMMARY should be untouched with no re-admissions: %q", got[0].CommentBody)
+	if got[2].Provenance != "first-pass" || got[2].CommentBody != "crash" || got[2].Importance != "MEDIUM" {
+		t.Errorf("re-admitted finding = %+v, want provenance first-pass, untouched body, MEDIUM cap", got[2])
 	}
 }
 
@@ -281,15 +277,17 @@ func TestMergeFindings_CarriedUniqueCappedMediumWithSHANote(t *testing.T) {
 	if readmitted.Importance != "MEDIUM" {
 		t.Errorf("carried finding should cap at MEDIUM, got %q", readmitted.Importance)
 	}
-	if !strings.Contains(readmitted.CommentBody, "carried from review of 0123456") ||
-		!strings.Contains(readmitted.CommentBody, "crash on empty payload") {
-		t.Errorf("carried note or body missing: %q", readmitted.CommentBody)
+	if readmitted.CommentBody != "crash on empty payload" {
+		t.Errorf("carried body must stay untouched: %q", readmitted.CommentBody)
 	}
-	if sha, ok := CarriedFromSHA(readmitted.CommentBody); !ok || sha != "0123456" {
+	if readmitted.Provenance != CarriedProvenance("0123456789abcdef0123") {
+		t.Errorf("carried provenance = %q, want the source-sha label", readmitted.Provenance)
+	}
+	if sha, ok := CarriedFromSHA(readmitted.Provenance); !ok || sha != "0123456" {
 		t.Errorf("CarriedFromSHA = (%q, %t), want (%q, true)", sha, ok, "0123456")
 	}
-	if !strings.Contains(got[0].CommentBody, "1 of the retained finding(s) were carried forward") {
-		t.Errorf("SUMMARY missing carried mention: %q", got[0].CommentBody)
+	if got[0].CommentBody != "Verdict: approve" {
+		t.Errorf("SUMMARY must not be rewritten by the merge: %q", got[0].CommentBody)
 	}
 }
 
@@ -304,5 +302,25 @@ func TestCarriedFromSHA_NonCarriedBodies(t *testing.T) {
 		if sha, ok := CarriedFromSHA(body); ok {
 			t.Errorf("CarriedFromSHA(%q) = (%q, true), want ok=false", body, sha)
 		}
+	}
+}
+
+func TestMergeFindings_SetLabelOverridesTheCommentsOwnProvenance(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{lc("SUMMARY", 0, "LOW", "Verdict: approve")}}
+	carriedIn := lc("b.ts", 40, "MEDIUM", "stale")
+	carriedIn.Provenance = "carried"
+	carried := FindingSet{Provenance: CarriedProvenance("0123456789abcdef0123"), Comments: []types.LineComment{carriedIn}}
+	got := MergeFindings(agent, carried)
+	if sha, ok := CarriedFromSHA(got[1].Provenance); !ok || sha != "0123456" {
+		t.Fatalf("the set label names the source review and must win over the bare stamp: %q", got[1].Provenance)
+	}
+}
+
+func TestMergeFindings_BlankLowerPriorityLabelDefaultsToFirstPass(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{lc("SUMMARY", 0, "LOW", "Verdict: approve")}}
+	unlabeled := FindingSet{Comments: []types.LineComment{lc("b.ts", 40, "CRITICAL", "crash")}}
+	got := MergeFindings(agent, unlabeled)
+	if got[1].Provenance != "first-pass" {
+		t.Fatalf("a re-admitted finding must never read as the agent's own: %q", got[1].Provenance)
 	}
 }

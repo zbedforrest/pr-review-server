@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>#{{.PRNumber}} - AI Code Review</title>
+    <title>PRism review: {{.PageTitle}}</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; line-height: 1.5; background-color: #0d1117; color: #c9d1d9; margin: 0; }
         .container { max-width: 1200px; margin: 20px auto; }
@@ -45,10 +45,8 @@
         .comment-link-btn[data-flash]::after { content: attr(data-flash); position: absolute; top: 100%; right: 0; margin-top: 6px; padding: 3px 9px; border-radius: 10px; background-color: #1f6feb; color: #f0f6fc; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.4); z-index: 5; }
         /* Ring on the comment the current #comment-N fragment points at. */
         .comment-highlight { box-shadow: 0 0 0 2px #d29922; }
-        /* Pinned deterministic-alerts section (SURFACE_ALERTS): visually distinct from
-           agent prose — amber warning frame, always the first block of the report. */
         .deterministic-alerts { background-color: #2d1a05; border: 2px solid #d29922; border-radius: 6px; padding: 15px 20px; margin-bottom: 20px; }
-        .deterministic-alerts h2 { color: #e3b341; margin-top: 0; }
+        .deterministic-alerts h2, .deterministic-alerts h3 { color: #e3b341; margin-top: 0; }
         .deterministic-alerts-note { color: #c9d1d9; font-size: 13px; }
         .deterministic-alert { background-color: #161b22; border: 1px solid #d29922; border-radius: 6px; padding: 12px 15px; margin: 10px 0; }
         .deterministic-alert-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 12px; }
@@ -58,6 +56,7 @@
         .alert-verdict { border: 1px solid #8b949e; color: #c9d1d9; }
         .alert-verdict-violated { border-color: #f85149; color: #f85149; }
         .alert-verdict-unanswered { border-color: #d29922; color: #e3b341; }
+        .alert-verdict-unresolved { border-color: #d29922; color: #e3b341; }
         .alert-verdict-safe { border-color: #2ea043; color: #3fb950; }
         .alert-verdict-not-applicable { border-color: #8b949e; color: #8b949e; }
         .deterministic-alert-body { color: #c9d1d9; }
@@ -74,32 +73,57 @@
             padding: 10px 20px;
             margin-bottom: 20px;
         }
-        .header-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 16px;
-            margin-bottom: 10px;
-        }
-        .token-use-summary {
-            background-color: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 8px;
-            padding: 10px 14px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            color: #c9d1d9;
-            min-width: 220px;
-        }
-        .token-use-summary h2 {
-            margin: 0 0 6px 0;
-            font-size: 14px;
-            color: #58a6ff;
-        }
-        .token-use-summary p {
-            margin: 2px 0;
-            font-size: 12px;
-            color: #a3a3a3;
-        }
+        .report-header { margin-bottom: 16px; }
+        .report-header h1 { margin-bottom: 4px; }
+        .report-meta { text-align: center; color: #8b949e; font-size: 14px; margin: 0; }
+        .report-meta a { color: #58a6ff; text-decoration: none; }
+        .report-meta a:hover { text-decoration: underline; }
+        .report-meta .commit-sha { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; }
+        .pr-description-preview { color: #c9d1d9; }
+        .pr-description:has(.pr-description-fold[open]) .pr-description-preview { display: none; }
+        .pr-description-fold summary { cursor: pointer; color: #58a6ff; font-size: 13px; margin: 4px 0 8px; }
+        .pr-description-fold summary:hover { text-decoration: underline; }
+        .verdict-block { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #30363d; border-left: 5px solid #8b949e; border-radius: 6px; background-color: #161b22; padding: 12px 20px; margin-bottom: 20px; }
+        .verdict-block[data-verdict="approve"] { border-left-color: #2ea043; }
+        .verdict-block[data-verdict="changes"] { border-left-color: #f85149; }
+        .verdict-text { font-size: 18px; font-weight: 600; color: #f0f6fc; }
+        .verdict-counts { display: flex; gap: 8px; flex-wrap: wrap; }
+        .count-pill, .status-pill, .sev-pill { display: inline-block; border-radius: 10px; padding: 1px 9px; font-size: 11px; font-weight: 600; line-height: 1.6; white-space: nowrap; }
+        .count-pill { border: 1px solid #30363d; color: #c9d1d9; }
+        .count-confirmed { border-color: #2ea043; color: #3fb950; }
+        .count-unverified { border-color: #d29922; color: #e3b341; }
+        .count-mechanical { border-color: #8b949e; color: #8b949e; }
+        .status-pill { text-transform: uppercase; letter-spacing: 0.02em; }
+        .status-unverified { background-color: rgba(210, 153, 34, 0.18); border: 1px solid #d29922; color: #e3b341; }
+        .status-mechanical { background-color: rgba(139, 148, 158, 0.18); border: 1px solid #8b949e; color: #c9d1d9; }
+        .sev-pill { color: #0d1117; background-color: #8b949e; min-width: 58px; text-align: center; }
+        .sev-critical, .sev-high { background-color: #f85149; }
+        .sev-medium { background-color: #d29922; }
+        .sev-low { background-color: #3fb950; }
+        .suggestions-section { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px 20px; margin-bottom: 20px; }
+        .suggestions-section h2 { color: #c9d1d9; margin-top: 0; font-size: 18px; }
+        .findings-index { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px 20px; margin-bottom: 20px; }
+        .findings-index h2 { color: #c9d1d9; margin-top: 0; }
+        .findings-index h3 { color: #8b949e; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; margin: 12px 0 6px; }
+        .findings-list { list-style: none; margin: 0; padding: 0; }
+        .finding-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+        .finding-row:last-child { border-bottom: none; }
+        .finding-location { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; color: #58a6ff; text-decoration: none; }
+        .finding-location:hover { text-decoration: underline; }
+        .finding-title { color: #c9d1d9; }
+        .comment-counter:target { outline: 2px solid #d29922; outline-offset: 4px; border-radius: 4px; }
+        .review-details { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 20px; margin: 20px 0; color: #c9d1d9; }
+        .review-details > summary { cursor: pointer; font-weight: 600; color: #8b949e; }
+        .review-details h3 { color: #c9d1d9; font-size: 15px; margin: 16px 0 8px; }
+        .checks-table-wrap { overflow-x: auto; }
+        .checks-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .checks-table th, .checks-table td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid #21262d; }
+        .checks-table th { color: #8b949e; font-weight: 600; }
+        .check-id, .check-evidence-path, .check-target { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; }
+        .check-evidence-path, .check-target { color: #8b949e; }
+        .check-unresolved td { background-color: rgba(210, 153, 34, 0.08); }
+        .unresolved-marker { color: #e3b341; font-weight: 600; font-size: 11px; text-transform: uppercase; }
+        .generation-meta { font-size: 12px; color: #a3a3a3; margin: 2px 0; }
         .help-tooltip {
             position: fixed;
             bottom: 20px;
@@ -306,17 +330,9 @@
 </head>
 <body>
 <div class="container" id="report-container">
-    <div class="header-row">
-        <div>
-            <h1><a href="{{.PRURL}}" target="_blank">#{{.PRNumber}}</a> - AI Code Review</h1>
-            <p style="text-align: center; color: #8b949e; font-size: 14px; margin-top: -10px;">Generated on {{.GeneratedAt}} · Commit <a href="{{.PRURL}}/commits/{{.CommitSHA}}" target="_blank" style="color: #58a6ff; font-family: monospace;">{{.ShortCommitSHA}}</a></p>
-        </div>
-        <div class="token-use-summary">
-            <h2>Token Usage Summary</h2>
-            <p>Prompt Tokens: {{.PromptTokenCount}}</p>
-            <p>Candidates Tokens: {{.CandidatesTokenCount}}</p>
-            <p>Total Tokens (including all requests): {{.TotalTokenCount}}</p>
-        </div>
+    <div class="report-header">
+        <h1>{{.Heading}}</h1>
+        <p class="report-meta"><a href="{{.PRURL}}" target="_blank">#{{.PRNumber}}</a> · Commit <a href="{{.PRURL}}/commits/{{.CommitSHA}}" target="_blank" class="commit-sha">{{.ShortCommitSHA}}</a> · Generated on {{.GeneratedAt}}</p>
     </div>
 
     {{template "report-content" .}}

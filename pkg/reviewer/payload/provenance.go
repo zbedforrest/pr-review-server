@@ -57,6 +57,19 @@ func DeriveProvenanceFromBody(body string) string {
 	return ProvenanceAgent
 }
 
+// StripProvenanceNote removes one leading legacy provenance preface (and the
+// whitespace after it) so the marker never renders as finding text.
+func StripProvenanceNote(body string) string {
+	if !provenanceNoteRe.MatchString(body) {
+		return body
+	}
+	end := strings.Index(body, "]_")
+	if end < 0 {
+		return body
+	}
+	return strings.TrimLeft(body[end+2:], " \t\r\n")
+}
+
 // normalizeProvenance folds label variants onto the stable enum. Unknown
 // labels pass through verbatim — truthful attribution beats forcing a value.
 func normalizeProvenance(label string) string {

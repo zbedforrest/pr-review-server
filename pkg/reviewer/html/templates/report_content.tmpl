@@ -1,9 +1,5 @@
-{{define "report-content"}}
-    {{if .DeterministicAlerts}}
-    <div class="deterministic-alerts">
-        <h2>Deterministic alerts</h2>
-        <p class="deterministic-alerts-note">Zero-LLM signals from mechanical gates and required-check enforcement. Each fired on this PR's diff; verify each one manually — the review prose below cannot clear them.</p>
-        {{range .DeterministicAlerts}}
+{{define "alert-rows"}}
+        {{range .}}
         <div class="deterministic-alert">
             <div class="deterministic-alert-meta">
                 <span class="alert-badge alert-provenance">{{.Provenance}}</span>
@@ -13,24 +9,77 @@
             <div class="deterministic-alert-body">{{.Body | markdownify}}</div>
         </div>
         {{end}}
+{{end}}
+
+{{define "status-pill"}}{{if .StatusPill}}<span class="status-pill status-{{.StatusClass}}">{{.StatusPill}}</span>{{end}}{{end}}
+
+{{define "report-content"}}
+    {{if .PinnedAlerts}}
+    <div class="deterministic-alerts pinned">
+        <h2>Deterministic alerts</h2>
+        <p class="deterministic-alerts-note">Zero-LLM signals from mechanical gates and required-check enforcement. Each fired on this PR's diff; verify each one manually, the review prose below cannot clear them.</p>
+        {{template "alert-rows" .PinnedAlerts}}
     </div>
     {{end}}
 
     <div class="pr-description">
         <h2>PR Description</h2>
-        {{.PRBody}}
+        {{if .Description.Folded}}
+        <div class="pr-description-preview">{{.Description.Preview}}</div>
+        <details class="pr-description-fold">
+            <summary>Read full PR description</summary>
+            <div class="pr-description-full">{{.Description.Full}}</div>
+        </details>
+        {{else}}
+        {{.Description.Full}}
+        {{end}}
     </div>
 
-    {{if .SummaryComments}}
+    <div class="verdict-block" data-verdict="{{.VerdictClass}}">
+        <div class="verdict-text">{{.Verdict}}</div>
+        <div class="verdict-counts">
+            <span class="count-pill count-confirmed">{{.ConfirmedCount}} confirmed</span>
+            {{if .UnverifiedCount}}<span class="count-pill count-unverified">{{.UnverifiedCount}} unverified</span>{{end}}
+            {{if .MechanicalCount}}<span class="count-pill count-mechanical">{{.MechanicalCount}} mechanical</span>{{end}}
+        </div>
+    </div>
+
+    {{if .Suggestions}}
+    <div class="suggestions-section">
+        <h2>Suggestions</h2>
+        <div class="suggestions-body">{{.Suggestions | markdownify}}</div>
+    </div>
+    {{end}}
+
+    {{if .Summaries}}
     <div class="summary-section">
         <h2>Review Summary</h2>
-        {{range .SummaryComments}}
+        {{range .Summaries}}
         <div class="summary-comment">
-            {{template "comment-counter" .}}
+            {{template "comment-counter" .CommentView}}
             <div class="summary-body">
-                {{.CommentBody | markdownify}}
+                {{.Prose | markdownify}}
             </div>
         </div>
+        {{end}}
+    </div>
+    {{end}}
+
+    {{if .FindingGroups}}
+    <div class="findings-index">
+        <h2>Findings</h2>
+        {{range .FindingGroups}}
+        <h3>{{.Name}}</h3>
+        <ul class="findings-list">
+            {{range .Rows}}
+            <li class="finding-row">
+                <span class="sev-pill sev-{{.SeverityClass}}">{{if .Severity}}{{.Severity}}{{else}}NOTE{{end}}</span>
+                {{template "status-pill" .}}
+                <a class="finding-location" href="#{{.AnchorID}}">{{.FilePath}}{{if .LineNumber}}:{{.LineNumber}}{{end}}</a>
+                <span class="finding-title">{{.Title}}</span>
+            </li>
+            {{end}}
+        </ul>
         {{end}}
     </div>
     {{end}}
@@ -85,4 +134,39 @@
         {{end}}
     </div>
     {{end}}
+
+    <details class="review-details">
+        <summary>Review details</summary>
+        {{if .Checks}}
+        <h3>Required checks</h3>
+        <div class="checks-table-wrap">
+        <table class="checks-table">
+            <thead><tr><th>id</th><th>source</th><th>verdict</th><th>evidence</th><th>question</th><th>answer</th></tr></thead>
+            <tbody>
+            {{range .Checks}}
+            <tr class="{{if .Unresolved}}check-unresolved{{end}}">
+                <td class="check-id">{{.ID}}</td>
+                <td>{{.Source}}</td>
+                <td><span class="alert-badge alert-verdict alert-verdict-{{.VerdictClass}}">{{.Verdict}}</span>{{if .Unresolved}} <span class="unresolved-marker">unresolved</span>{{end}}</td>
+                <td>{{.EvidenceLabel}}{{if .EvidencePath}} <span class="check-evidence-path">{{.EvidencePath}}</span>{{end}}</td>
+                <td>{{.Question}}{{if .TargetFile}} <span class="check-target">({{.TargetFile}})</span>{{end}}</td>
+                <td>{{.Answer}}</td>
+            </tr>
+            {{end}}
+            </tbody>
+        </table>
+        </div>
+        {{end}}
+        {{if .DeterministicAlerts}}
+        <div class="deterministic-alerts">
+            <h3>Deterministic alerts</h3>
+            <p class="deterministic-alerts-note">Zero-LLM signals from mechanical gates and required-check enforcement. Each fired on this PR's diff; verify each one manually, the review prose cannot clear them.</p>
+            {{template "alert-rows" .DeterministicAlerts}}
+        </div>
+        {{end}}
+        <h3>Generation</h3>
+        <p class="generation-meta">Model: {{.ModelName}}</p>
+        <p class="generation-meta">Prompt tokens: {{.PromptTokenCount}} · Candidate tokens: {{.CandidatesTokenCount}} · Total tokens (all requests): {{.TotalTokenCount}}</p>
+        <p class="generation-meta">The full prompt is available from the Prompt handle on the right edge of the page.</p>
+    </details>
 {{end}}

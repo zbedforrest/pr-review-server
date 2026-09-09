@@ -645,6 +645,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 			agentOut.Checks.ChecksViolated, agentOut.Checks.ChecksEvidenceOK)
 	}
 
+	result.Checks = agentOut.Checks
 	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
 	if htmlContent == nil {
 		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
@@ -2104,6 +2105,12 @@ func buildReviewSidecar(owner, repo string, prNumber int, commitSHA string, rr *
 			Answered:   rr.Checks.ChecksAnswered,
 			Violated:   rr.Checks.ChecksViolated,
 			EvidenceOK: rr.Checks.ChecksEvidenceOK,
+		}
+		for _, r := range rr.Checks.Records {
+			pl.RequiredChecks.Records = append(pl.RequiredChecks.Records, payload.RequiredCheckRecord{
+				ID: r.ID, Source: r.Source, Question: r.Question, TargetFile: r.TargetFile, Verdict: r.Verdict,
+				Answer: r.Answer, EvidencePath: r.EvidencePath, EvidenceResolved: r.EvidenceResolved, Unresolved: r.Unresolved,
+			})
 		}
 	}
 	// Carry-forward telemetry (carried_in / carried_dropped): persisted for
