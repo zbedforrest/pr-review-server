@@ -374,8 +374,6 @@ var kindLabels = map[string]string{
 
 var suggestionFenceRe = regexp.MustCompile("(?s)```suggestion\n.*?\n```")
 
-// headline is the compact one-liner: kind and effect from the contract when
-// the agent supplied one, else the comment's first sentence.
 // headline is the bold line of an inline comment. With a contract it is the
 // kind label and the effect sentence; when the sentence does not fit and the
 // kind has a label, the label stands alone and RenderInline shows the sentence
