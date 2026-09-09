@@ -32,6 +32,7 @@ type ReviewCommentInfo struct {
 	Line        int
 	StartLine   int
 	InReplyToID int64
+	ReviewID    int64
 	CreatedAt   time.Time
 }
 
@@ -185,6 +186,7 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 				Line:        rc.GetLine(),
 				StartLine:   rc.GetStartLine(),
 				InReplyToID: rc.GetInReplyTo(),
+				ReviewID:    rc.GetPullRequestReviewID(),
 				CreatedAt:   rc.GetCreatedAt().Time,
 			})
 		}

@@ -64,3 +64,97 @@ func TestGormDB_ListPublishedReplyTargets_ReturnsOpenNonDraftPRsWithInlineCommen
 	assert.Equal(t, map[int64]string{9001: "pkg/api/handler.go:4:deadbeef0123"}, targets[0].Roots)
 	assert.Equal(t, 9, targets[1].PRNumber, "resolved findings still own their threads")
 }
+
+func TestGormDB_ListUnlinkedPublishedFindings_ReturnsReviewPostedRootsWithoutCommentIDsOnOpenPRs(t *testing.T) {
+	db := newTestDB(t)
+	for _, pr := range []*PR{
+		{RepoOwner: "owner", RepoName: "repo", PRNumber: 7, PRState: "open"},
+		{RepoOwner: "owner", RepoName: "repo", PRNumber: 8, PRState: "merged"},
+		{RepoOwner: "owner", RepoName: "repo", PRNumber: 9, PRState: "open", Draft: true},
+	} {
+		pr.LastCommitSHA, pr.Title, pr.Author, pr.Status = "abc", "t", "a", "completed"
+		require.NoError(t, db.UpsertPR(pr))
+	}
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.CommentID = 0 })))
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Fingerprint = "b.go:2:feedface0000"
+		p.CommentID = 0
+		p.ReviewID = 0
+	})))
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.Fingerprint = "c.go:3:cafe00000000" })))
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Fingerprint = "summary"
+		p.Kind = PublishedKindSummary
+		p.CommentID = 0
+	})))
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.PRNumber = 8; p.CommentID = 0 })))
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.PRNumber = 9; p.CommentID = 0 })))
+
+	rows, err := db.ListUnlinkedPublishedFindings()
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "only inline findings posted through a review, still without a comment id, on open non-draft PRs")
+	assert.Equal(t, "pkg/api/handler.go:4:deadbeef0123", rows[0].Fingerprint)
+	assert.Equal(t, int64(4242), rows[0].ReviewID)
+	assert.Equal(t, 7, rows[0].PRNumber)
+	assert.NotZero(t, rows[0].ID)
+
+	require.NoError(t, db.LinkPublishedFindingComment(rows[0].ID, 777))
+	rows, err = db.ListUnlinkedPublishedFindings()
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+	targets, err := db.ListPublishedReplyTargets()
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	assert.Equal(t, "pkg/api/handler.go:4:deadbeef0123", targets[0].Roots[777])
+}
+
+func TestGormDB_LinkPublishedFindingComment_NeverOverwritesAnExistingCommentID(t *testing.T) {
+	db := newTestDB(t)
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(nil)))
+	rows, err := db.GetPublishedFindingsForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	require.NoError(t, db.LinkPublishedFindingComment(uint(rows[0].ID), 777))
+	rows, err = db.GetPublishedFindingsForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.Equal(t, int64(9001), rows[0].CommentID)
+}
+
+func TestGormDB_ListRecentPublishedReplies_MostRecentlyHandledFirstWithinLimit(t *testing.T) {
+	db := newTestDB(t)
+	base := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	for i, age := range []time.Duration{0, time.Minute, -48 * time.Hour} {
+		_, err := db.RecordPublishedReply(&PublishedReply{
+			RepoOwner: "owner", RepoName: "repo", PRNumber: 7,
+			RootCommentID: 9001, AuthorCommentID: int64(9010 + i), Fingerprint: "a.go:1:abc",
+			AuthorID: 42, Class: "resolution", Action: "reacted", Body: "Fixed",
+			CreatedAt: base.Add(age),
+		})
+		require.NoError(t, err)
+		time.Sleep(2 * time.Millisecond)
+	}
+	rows, err := db.ListRecentPublishedReplies(2)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, int64(9012), rows[0].AuthorCommentID, "an old reply handled last is the newest news")
+	assert.Equal(t, int64(9011), rows[1].AuthorCommentID)
+	assert.False(t, rows[0].ProcessedAt.IsZero())
+}
+
+func TestGormDB_CountPublishedReplies_GroupsByActionAndClass(t *testing.T) {
+	db := newTestDB(t)
+	for i, class := range []string{"resolution", "resolution", "question"} {
+		_, err := db.RecordPublishedReply(&PublishedReply{
+			RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: 9001, AuthorCommentID: int64(9010 + i),
+			Fingerprint: "a.go:1:abc", AuthorID: 42, Class: class, Action: map[bool]string{true: "reacted", false: "observed"}[i < 2], Body: "x",
+			CreatedAt: time.Now().UTC(),
+		})
+		require.NoError(t, err)
+	}
+	counts, err := db.CountPublishedReplies()
+	require.NoError(t, err)
+	assert.Equal(t, 3, counts.Total)
+	assert.Equal(t, map[string]int{"reacted": 2, "observed": 1}, counts.ByAction)
+	assert.Equal(t, map[string]int{"resolution": 2, "question": 1}, counts.ByClass)
+}

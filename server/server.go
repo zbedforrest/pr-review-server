@@ -301,6 +301,7 @@ func (s *Server) Start() error {
 	http.Handle("/api/status", withAuth(s.handleStatus))
 	http.Handle("/api/reviewer-health", withAuth(s.handleReviewerHealth))
 	http.Handle("/api/settings", withAuth(s.handleSettings))
+	http.Handle(publishRepliesPath, withAuth(s.handlePublishReplies))
 	http.Handle("/api/user", withAuth(s.handleGetUser))
 	http.Handle("/api/telemetry/track", withAuth(s.handleTrackTelemetry))
 	http.Handle("/api/telemetry/stats", withAuth(s.handleTelemetryStats))

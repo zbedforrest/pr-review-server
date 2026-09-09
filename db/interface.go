@@ -364,6 +364,7 @@ type PublishedReply struct {
 	Body            string
 	ReplyCommentID  int64
 	CreatedAt       time.Time
+	ProcessedAt     time.Time
 }
 
 // PublishedReplyTarget is a PR with inline comments PRism owns, keyed by the
@@ -373,4 +374,16 @@ type PublishedReplyTarget struct {
 	RepoName  string
 	PRNumber  int
 	Roots     map[int64]string
+}
+
+// UnlinkedPublishedFinding is an inline finding posted through a review whose
+// GitHub comment id was never recorded, so author replies under it cannot be
+// matched to the ledger until it is linked.
+type UnlinkedPublishedFinding struct {
+	ID          uint
+	RepoOwner   string
+	RepoName    string
+	PRNumber    int
+	ReviewID    int64
+	Fingerprint string
 }

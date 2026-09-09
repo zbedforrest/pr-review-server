@@ -79,3 +79,76 @@ func (g *GormDB) ListPublishedReplyTargets() ([]PublishedReplyTarget, error) {
 	}
 	return out, nil
 }
+
+// ListUnlinkedPublishedFindings returns inline findings posted through a
+// review (so GitHub assigned the comment ids after the fact) whose ledger row
+// never got one, on PRs the reply scan would otherwise cover.
+func (g *GormDB) ListUnlinkedPublishedFindings() ([]UnlinkedPublishedFinding, error) {
+	var rows []UnlinkedPublishedFinding
+	err := g.db.Table("published_findings AS pf").
+		Select("pf.id, pf.repo_owner, pf.repo_name, pf.pr_number, pf.review_id, pf.fingerprint").
+		Joins("JOIN prs ON prs.repo_owner = pf.repo_owner AND prs.repo_name = pf.repo_name AND prs.pr_number = pf.pr_number").
+		Where("pf.kind = ? AND pf.comment_id = 0 AND pf.review_id <> 0 AND LOWER(prs.pr_state) = 'open' AND NOT prs.draft", PublishedKindFinding).
+		Order("pf.repo_owner, pf.repo_name, pf.pr_number, pf.id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// LinkPublishedFindingComment records the GitHub comment id of a finding that
+// was published without one. A row that already has an id is left alone.
+func (g *GormDB) LinkPublishedFindingComment(id uint, commentID int64) error {
+	return g.db.Model(&PublishedFindingModel{}).
+		Where("id = ? AND comment_id = 0", id).
+		Update("comment_id", commentID).Error
+}
+
+// ListRecentPublishedReplies returns the most recently handled author replies,
+// by processing time: a reply written days ago but only linked now is news.
+func (g *GormDB) ListRecentPublishedReplies(limit int) ([]PublishedReply, error) {
+	var models []PublishedReplyModel
+	if err := g.db.Order("processed_at DESC, id DESC").Limit(limit).Find(&models).Error; err != nil {
+		return nil, err
+	}
+	out := make([]PublishedReply, 0, len(models))
+	for _, m := range models {
+		out = append(out, PublishedReply{
+			RepoOwner: m.RepoOwner, RepoName: m.RepoName, PRNumber: m.PRNumber,
+			RootCommentID: m.RootCommentID, AuthorCommentID: m.AuthorCommentID,
+			Fingerprint: m.Fingerprint, AuthorID: m.AuthorID, Class: m.Class, Action: m.Action,
+			Body: m.Body, ReplyCommentID: m.ReplyCommentID, CreatedAt: m.CreatedAt, ProcessedAt: m.ProcessedAt,
+		})
+	}
+	return out, nil
+}
+
+// PublishedReplyCounts summarizes the reply ledger for the status API.
+type PublishedReplyCounts struct {
+	Total    int
+	ByAction map[string]int
+	ByClass  map[string]int
+}
+
+func (g *GormDB) CountPublishedReplies() (PublishedReplyCounts, error) {
+	counts := PublishedReplyCounts{ByAction: map[string]int{}, ByClass: map[string]int{}}
+	var rows []struct {
+		Action string
+		Class  string
+		Count  int
+	}
+	err := g.db.Model(&PublishedReplyModel{}).
+		Select("action, class, count(*) AS count").
+		Group("action, class").
+		Scan(&rows).Error
+	if err != nil {
+		return counts, err
+	}
+	for _, r := range rows {
+		counts.Total += r.Count
+		counts.ByAction[r.Action] += r.Count
+		counts.ByClass[r.Class] += r.Count
+	}
+	return counts, nil
+}

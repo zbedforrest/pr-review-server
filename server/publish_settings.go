@@ -47,11 +47,7 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 	}
 	response[settingPublishInlineMinSeverity] = sev
 
-	mode := defaultPublishReplyMode
-	if v, err := s.db.GetSetting(settingPublishReplyMode); err == nil && publishReplyModes[strings.TrimSpace(v)] {
-		mode = strings.TrimSpace(v)
-	}
-	response[settingPublishReplyMode] = mode
+	response[settingPublishReplyMode] = s.publishReplyMode()
 	enabledAt, _ := s.db.GetSetting(settingPublishReplyEnabledAt)
 	response[settingPublishReplyEnabledAt] = strings.TrimSpace(enabledAt)
 
@@ -62,6 +58,19 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 		}
 	}
 	response[settingPublishShowUnverified] = showUnverified
+}
+
+// publishReplyMode reads the stored mode the way the poller does: trimmed and
+// lowercased, falling back to off for anything unknown.
+func (s *Server) publishReplyMode() string {
+	v, err := s.db.GetSetting(settingPublishReplyMode)
+	if err != nil {
+		return defaultPublishReplyMode
+	}
+	if normalized := strings.ToLower(strings.TrimSpace(v)); publishReplyModes[normalized] {
+		return normalized
+	}
+	return defaultPublishReplyMode
 }
 
 // replyActivationFor returns the activation stamp to store alongside a reply

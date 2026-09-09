@@ -114,6 +114,7 @@ type Poller struct {
 	replyScanRunning atomic.Bool
 	replyScanCycle   atomic.Int64
 	replyLastScanned map[string]time.Time
+	replyLinkTried   map[string]time.Time
 	polling          bool
 	pollMutex        sync.Mutex
 	// Track active review processes for cancellation and monitoring
@@ -481,21 +482,12 @@ const systemTelemetryUser = "prism_system"
 // systemTelemetryUser (telemetry_events.user_id is NOT NULL with an FK).
 // Best-effort.
 func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served string) {
-	user, err := p.db.GetUserByUsername(systemTelemetryUser)
-	if err == nil && user == nil {
-		user = &db.User{GitHubID: -1, GitHubUsername: systemTelemetryUser}
-		if err = p.db.CreateUser(user); err != nil {
-			// Concurrent fallbacks can race the first create (github_id is
-			// unique); the loser re-fetches the row the winner made.
-			user, err = p.db.GetUserByUsername(systemTelemetryUser)
-		}
-	}
-	if err != nil || user == nil {
-		log.Printf("[REVIEWER] WARN: could not resolve %s user for fallback telemetry: %v", systemTelemetryUser, err)
+	userID := p.systemTelemetryUserID()
+	if userID == 0 {
 		return
 	}
 	event := db.TelemetryEvent{
-		UserID:   user.ID,
+		UserID:   userID,
 		Action:   "agent_model_fallback",
 		Label:    fmt.Sprintf("requested=%s served=%s", requested, served),
 		PROwner:  pr.Owner,
@@ -505,6 +497,26 @@ func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served st
 	if err := p.db.CreateTelemetryEvents([]db.TelemetryEvent{event}); err != nil {
 		log.Printf("[REVIEWER] WARN: could not record fallback telemetry: %v", err)
 	}
+}
+
+// systemTelemetryUserID resolves (creating on first use) the reserved user
+// that owns server-emitted telemetry. Returns 0, after logging, when the
+// user cannot be resolved; callers then skip the event.
+func (p *Poller) systemTelemetryUserID() int {
+	user, err := p.db.GetUserByUsername(systemTelemetryUser)
+	if err == nil && user == nil {
+		user = &db.User{GitHubID: -1, GitHubUsername: systemTelemetryUser}
+		if err = p.db.CreateUser(user); err != nil {
+			// Concurrent writers can race the first create (github_id is
+			// unique); the loser re-fetches the row the winner made.
+			user, err = p.db.GetUserByUsername(systemTelemetryUser)
+		}
+	}
+	if err != nil || user == nil {
+		log.Printf("[TELEMETRY] WARN: could not resolve %s user: %v", systemTelemetryUser, err)
+		return 0
+	}
+	return user.ID
 }
 
 // isReviewInFlight reports whether a PR's status indicates an in-progress
