@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/pkg/reviewer/payload"
 )
 
 type ReviewCommentInput struct {
@@ -69,16 +70,31 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 
 	var summaryRow *db.PublishedFinding
 	published := map[string]*db.PublishedFinding{}
+	dismissed := map[string]bool{}
 	for i := range r.Previous {
 		row := &r.Previous[i]
 		switch row.Kind {
 		case db.PublishedKindSummary:
 			summaryRow = row
 		case db.PublishedKindFinding, db.PublishedKindAnnotation:
-			if row.State == db.PublishedStateOpen {
+			switch row.State {
+			case db.PublishedStateOpen:
 				published[row.Fingerprint] = row
+			case db.PublishedStateDismissed:
+				dismissed[row.Fingerprint] = true
 			}
 		}
+	}
+	// A finding conceded in conversation stays conceded: it is neither posted,
+	// counted nor refreshed, even if a later review raises it again.
+	if len(dismissed) > 0 {
+		kept := make([]payload.Finding, 0, len(r.Findings))
+		for _, f := range r.Findings {
+			if !dismissed[f.ID] {
+				kept = append(kept, f)
+			}
+		}
+		r.Findings = kept
 	}
 	if r.RoundNumber == 0 {
 		r.RoundNumber = 1

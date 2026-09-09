@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +63,7 @@ type fakeReplyGH struct {
 	reactions []int64
 	listed    []string
 	failList  map[string]bool
+	posted    []string
 }
 
 func (f *fakeReplyGH) ListThread(_ context.Context, owner, repo string, number int) ([]ThreadComment, error) {
@@ -78,11 +80,20 @@ func (f *fakeReplyGH) React(_ context.Context, _, _ string, commentID int64) err
 	return nil
 }
 
+func (f *fakeReplyGH) PostReply(_ context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error) {
+	key := fmt.Sprintf("%s/%s#%d", owner, repo, number)
+	f.posted = append(f.posted, body)
+	id := int64(5000 + len(f.posted))
+	f.threads[key] = append(f.threads[key], ThreadComment{ID: id, InReplyToID: rootCommentID, AuthorID: 1, Body: body, CreatedAt: time.Now()})
+	return id, nil
+}
+
 type fakeReplyLedger struct {
 	targets  []db.PublishedReplyTarget
 	rows     []db.PublishedReply
 	unlinked []db.UnlinkedPublishedFinding
 	linked   map[uint]int64
+	states   map[string]string
 }
 
 func (f *fakeReplyLedger) ListUnlinkedPublishedFindings() ([]db.UnlinkedPublishedFinding, error) {
@@ -107,6 +118,48 @@ func (f *fakeReplyLedger) GetPublishedReplyIDsForPR(owner, repo string, number i
 		}
 	}
 	return seen, nil
+}
+func (f *fakeReplyLedger) SetPublishedReplyDecision(_, _ string, _ int, authorCommentID int64, d db.ReplyDecisionRecord) error {
+	for i := range f.rows {
+		if f.rows[i].AuthorCommentID == authorCommentID {
+			f.rows[i].Decision, f.rows[i].ReplyBody, f.rows[i].Cited, f.rows[i].Model = d.Decision, d.ReplyBody, d.Cited, d.Model
+		}
+	}
+	return nil
+}
+func (f *fakeReplyLedger) MarkPublishedReplyPosted(_, _ string, _ int, authorCommentID, replyCommentID int64, at time.Time) error {
+	for i := range f.rows {
+		if f.rows[i].AuthorCommentID == authorCommentID {
+			f.rows[i].ReplyCommentID = replyCommentID
+			f.rows[i].RepliedAt = &at
+		}
+	}
+	return nil
+}
+func (f *fakeReplyLedger) ListPublishedRepliesForRoot(_, _ string, _ int, rootCommentID int64) ([]db.PublishedReply, error) {
+	var out []db.PublishedReply
+	for _, r := range f.rows {
+		if r.RootCommentID == rootCommentID {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+func (f *fakeReplyLedger) CountPublishedTextRepliesSince(_, _ string, number int, since time.Time) (int, error) {
+	n := 0
+	for _, r := range f.rows {
+		if r.PRNumber == number && r.ReplyCommentID != 0 && r.RepliedAt != nil && !r.RepliedAt.Before(since) {
+			n++
+		}
+	}
+	return n, nil
+}
+func (f *fakeReplyLedger) SetPublishedFindingState(_, _ string, _ int, fingerprint, state string) error {
+	if f.states == nil {
+		f.states = map[string]string{}
+	}
+	f.states[fingerprint] = state
+	return nil
 }
 func (f *fakeReplyLedger) RecordPublishedReply(r *db.PublishedReply) (bool, error) {
 	for _, x := range f.rows {
@@ -298,5 +351,168 @@ func TestReplyReactor_FailedScanDoesNotAdvanceTheWatermark(t *testing.T) {
 	rep, _ = r.Run(context.Background())
 	if rep.PRsScanned != 1 || !r.LastScanned["acme/example#7"].Equal(t0) {
 		t.Fatalf("retry next cycle and then advance: report=%+v watermarks=%v", rep, r.LastScanned)
+	}
+}
+
+func TestTextEligibilityRules(t *testing.T) {
+	now := time.Date(2026, 9, 9, 18, 0, 0, 0, time.UTC)
+	posted := now.Add(-time.Hour)
+	fresh := AuthorReply{RootCommentID: 100, Class: ReplyPushback, CreatedAt: now.Add(-time.Minute)}
+	cases := []struct {
+		name   string
+		reply  AuthorReply
+		prior  []db.PublishedReply
+		prDay  int
+		reason string
+	}{
+		{"pushback gets text", fresh, nil, 0, ""},
+		{"question gets text", AuthorReply{Class: ReplyQuestion, CreatedAt: now}, nil, 0, ""},
+		{"resolution never", AuthorReply{Class: ReplyResolution, CreatedAt: now}, nil, 0, "class"},
+		{"other never", AuthorReply{Class: ReplyOther, CreatedAt: now}, nil, 0, "class"},
+		{"stale", AuthorReply{Class: ReplyPushback, CreatedAt: now.Add(-25 * time.Hour)}, nil, 0, "stale"},
+		{"thread cap", fresh, []db.PublishedReply{{ReplyCommentID: 1, RepliedAt: &posted}, {ReplyCommentID: 2, RepliedAt: &posted}}, 0, "thread_cap"},
+		{"one prior text is fine", fresh, []db.PublishedReply{{ReplyCommentID: 1, RepliedAt: &posted}, {Decision: "abstain"}}, 0, ""},
+		{"conceded ends it", fresh, []db.PublishedReply{{ReplyCommentID: 1, RepliedAt: &posted, Decision: DecisionConcede}}, 0, "conceded"},
+		{"pr daily cap", fresh, nil, 10, "pr_cap"},
+	}
+	for _, c := range cases {
+		if got := TextEligibility(c.reply, c.prior, c.prDay, now, DefaultTextPolicy()); got != c.reason {
+			t.Errorf("%s: reason=%q want %q", c.name, got, c.reason)
+		}
+	}
+}
+
+func respondFixture(mode string, decide Responder) (*ReplyReactor, *fakeReplyGH, *fakeReplyLedger) {
+	t0 := time.Date(2026, 9, 9, 18, 0, 0, 0, time.UTC)
+	gh := &fakeReplyGH{threads: map[string][]ThreadComment{
+		"acme/example#7": {
+			{ID: 100, AuthorID: 1, Body: FindingMarker("a.go:1:abc") + "\n**[MEDIUM] Nil deref.**", CreatedAt: t0.Add(-time.Hour)},
+			{ID: 101, InReplyToID: 100, AuthorID: 42, Body: "This can't be nil here, the caller guards it.", CreatedAt: t0.Add(-time.Minute)},
+		},
+	}}
+	ledger := &fakeReplyLedger{targets: []db.PublishedReplyTarget{
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Roots: map[int64]string{100: "a.go:1:abc"}},
+	}}
+	r := &ReplyReactor{
+		GH: gh, Ledger: ledger, Mode: mode, Since: t0.Add(-2 * time.Hour), Responder: decide,
+		Now: func() time.Time { return t0 },
+		PR: func(_ context.Context, _, _ string, _ int) (PRState, error) {
+			return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1"}, nil
+		},
+		Allowed: func(login string) bool { return login == "pilot" },
+	}
+	return r, gh, ledger
+}
+
+func TestReplyReactor_RespondPostsAHoldWithMarkerAndRecordsIt(t *testing.T) {
+	var got ReplyRequest
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, req ReplyRequest) (ReplyDecision, error) {
+		got = req
+		return ReplyDecision{Decision: DecisionHold, Reply: "The guard is on the other branch; line 12 reaches here with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}, Model: "m"}, nil
+	})
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fingerprint != "a.go:1:abc" || got.HeadSHA != "head1" || got.Reply.CommentID != 101 || len(got.Thread) != 2 || got.Thread[0].ID != 100 {
+		t.Fatalf("request = %+v", got)
+	}
+	if len(gh.reactions) != 1 || len(gh.posted) != 1 || !strings.HasSuffix(gh.posted[0], ReplyMarker(101)) || !strings.HasPrefix(gh.posted[0], "The guard") {
+		t.Fatalf("reactions=%v posted=%q", gh.reactions, gh.posted)
+	}
+	if rep.Responded != 1 || ledger.rows[0].Decision != DecisionHold || ledger.rows[0].ReplyCommentID != 5001 || ledger.rows[0].RepliedAt == nil {
+		t.Errorf("report=%+v row=%+v", rep, ledger.rows[0])
+	}
+	if ledger.states["a.go:1:abc"] != "" {
+		t.Errorf("a hold must not change the finding state")
+	}
+
+	gh.posted = nil
+	rep, _ = r.Run(context.Background())
+	if len(gh.posted) != 0 || rep.Responded != 0 {
+		t.Errorf("second cycle must not answer again: posted=%v rep=%+v", gh.posted, rep)
+	}
+}
+
+func TestReplyReactor_ConcedeDismissesTheFinding(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right, the caller guards it. Withdrawn."}, nil
+	})
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 1 || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
+		t.Fatalf("posted=%v states=%v", gh.posted, ledger.states)
+	}
+}
+
+func TestReplyReactor_ShadowRecordsTheDecisionWithoutPosting(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeShadow, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "Withdrawn."}, nil
+	})
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || len(gh.reactions) != 1 || rep.Shadowed != 1 || ledger.rows[0].Decision != DecisionConcede || ledger.rows[0].ReplyBody != "Withdrawn." {
+		t.Fatalf("posted=%v reactions=%v rep=%+v row=%+v", gh.posted, gh.reactions, rep, ledger.rows[0])
+	}
+	if ledger.states["a.go:1:abc"] != "" {
+		t.Errorf("shadow mode must not change finding state")
+	}
+}
+
+func TestReplyReactor_AbstainAndOverlongRepliesAreNotPosted(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: strings.Repeat("x", 601)}, nil
+	})
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || rep.TextSkipped["too_long"] != 1 || ledger.rows[0].Decision != DecisionHold {
+		t.Fatalf("posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
+	}
+
+	r, gh, _ = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionAbstain}, nil
+	})
+	rep, _ = r.Run(context.Background())
+	if len(gh.posted) != 0 || rep.Abstained != 1 {
+		t.Fatalf("posted=%v rep=%+v", gh.posted, rep)
+	}
+}
+
+func TestReplyReactor_DiscardsTheReplyWhenTheThreadOrHeadMovedMeanwhile(t *testing.T) {
+	var gh *fakeReplyGH
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 102, InReplyToID: 100, AuthorID: 42, Body: "Actually never mind, fixed.", CreatedAt: time.Now()})
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || rep.TextSkipped["thread_moved"] != 1 {
+		t.Fatalf("posted=%v rep=%+v", gh.posted, rep)
+	}
+
+	calls := 0
+	r, gh, _ = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
+		calls++
+		sha := "head1"
+		if calls > 1 {
+			sha = "head2"
+		}
+		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: sha}, nil
+	}
+	rep, _ = r.Run(context.Background())
+	if len(gh.posted) != 0 || rep.TextSkipped["head_moved"] != 1 {
+		t.Fatalf("posted=%v rep=%+v", gh.posted, rep)
+	}
+}
+
+func TestReplyReactor_NeverPostsTwiceForTheSameAuthorComment(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
+	})
+	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 150, InReplyToID: 100, AuthorID: 1, Body: "Still applies.\n\n" + ReplyMarker(101)})
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || rep.TextSkipped["already_posted"] != 1 || ledger.rows[0].ReplyCommentID != 150 {
+		t.Fatalf("a reply that survived a crash must be adopted, not duplicated: posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
 	}
 }

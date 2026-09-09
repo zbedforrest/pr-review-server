@@ -363,8 +363,27 @@ type PublishedReply struct {
 	Action          string
 	Body            string
 	ReplyCommentID  int64
-	CreatedAt       time.Time
-	ProcessedAt     time.Time
+	// Decision and the fields after it are set when the reply model ran:
+	// concede | hold | answer | abstain, the text it produced, the evidence
+	// it cited as JSON, and what served it. RepliedAt is set once posted.
+	Decision    string
+	ReplyBody   string
+	Cited       string
+	Model       string
+	DurationMS  int64
+	RepliedAt   *time.Time
+	CreatedAt   time.Time
+	ProcessedAt time.Time
+}
+
+// ReplyDecisionRecord is what the reply model concluded about one author
+// reply, persisted before any text is posted.
+type ReplyDecisionRecord struct {
+	Decision   string
+	ReplyBody  string
+	Cited      string
+	Model      string
+	DurationMS int64
 }
 
 // PublishedReplyTarget is a PR with inline comments PRism owns, keyed by the

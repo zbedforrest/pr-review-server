@@ -266,3 +266,28 @@ func TestPublishNoInlineSkipsReview(t *testing.T) {
 		t.Errorf("creates=%d rep=%+v", len(gh.issueCreates), rep)
 	}
 }
+
+func TestPublishNeverRepostsOrCountsADismissedFinding(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, roundOne())
+	ledger.rows["c1"].State = db.PublishedStateDismissed
+
+	r2 := roundOne()
+	r2.HeadSHA = "sha-round-2"
+	r2.RoundNumber = 0
+	rep := publishRound(t, gh, ledger, r2)
+
+	if len(gh.reviews) != 1 {
+		t.Fatalf("a conceded finding must not be posted inline again: reviews=%d", len(gh.reviews))
+	}
+	edited := gh.issueEdits[501]
+	if strings.Contains(edited, "Critical thing.") || strings.Contains(edited, "1 critical") {
+		t.Errorf("summary must not mention the conceded finding:\n%s", edited)
+	}
+	if rep.StillOpen != 2 {
+		t.Errorf("still open should count m1 and the m2 annotation, not c1, got %d", rep.StillOpen)
+	}
+	if ledger.rows["c1"].State != db.PublishedStateDismissed || ledger.rows["c1"].LastSeenSHA != "sha-round-1" {
+		t.Errorf("dismissed row must be left alone: %+v", ledger.rows["c1"])
+	}
+}

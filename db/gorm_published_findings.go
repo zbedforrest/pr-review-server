@@ -131,3 +131,11 @@ func (g *GormDB) GetPublishedSummaryForPR(owner, repo string, prNumber int) (Pub
 	}
 	return publishedFindingModelToDomain(&model), true, nil
 }
+
+// SetPublishedFindingState changes one ledger row's state, for conceding a
+// finding in conversation.
+func (g *GormDB) SetPublishedFindingState(owner, repo string, number int, fingerprint, state string) error {
+	return g.db.Model(&PublishedFindingModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ?", owner, repo, number, fingerprint).
+		Update("state", state).Error
+}

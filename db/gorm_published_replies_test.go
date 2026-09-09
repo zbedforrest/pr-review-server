@@ -158,3 +158,55 @@ func TestGormDB_CountPublishedReplies_GroupsByActionAndClass(t *testing.T) {
 	assert.Equal(t, map[string]int{"reacted": 2, "observed": 1}, counts.ByAction)
 	assert.Equal(t, map[string]int{"resolution": 2, "question": 1}, counts.ByClass)
 }
+
+func TestGormDB_PublishedReply_DecisionAndPostingRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	base := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	seed := func(id int64, root int64, class string) {
+		_, err := db.RecordPublishedReply(&PublishedReply{
+			RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: root, AuthorCommentID: id,
+			Fingerprint: "a.go:1:abc", AuthorID: 42, Class: class, Action: "reacted", Body: "b", CreatedAt: base,
+		})
+		require.NoError(t, err)
+	}
+	seed(9010, 9001, "pushback")
+	seed(9011, 9001, "question")
+	seed(9020, 9002, "pushback")
+
+	require.NoError(t, db.SetPublishedReplyDecision("owner", "repo", 7, 9010, ReplyDecisionRecord{
+		Decision: "hold", ReplyBody: "Still applies: see a.go:12.", Cited: `[{"file":"a.go","line":12}]`, Model: "claude-fable-5-1", DurationMS: 4200,
+	}))
+	require.NoError(t, db.MarkPublishedReplyPosted("owner", "repo", 7, 9010, 9500, base.Add(time.Minute)))
+	require.NoError(t, db.SetPublishedReplyDecision("owner", "repo", 7, 9011, ReplyDecisionRecord{Decision: "abstain"}))
+
+	rows, err := db.ListPublishedRepliesForRoot("owner", "repo", 7, 9001)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, "hold", rows[0].Decision)
+	assert.Equal(t, int64(9500), rows[0].ReplyCommentID)
+	assert.Equal(t, "Still applies: see a.go:12.", rows[0].ReplyBody)
+	require.NotNil(t, rows[0].RepliedAt)
+	assert.Equal(t, "abstain", rows[1].Decision)
+	assert.Equal(t, int64(0), rows[1].ReplyCommentID)
+
+	n, err := db.CountPublishedTextRepliesSince("owner", "repo", 7, base)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "only posted text replies count against the per-PR budget")
+	n, err = db.CountPublishedTextRepliesSince("owner", "repo", 7, base.Add(2*time.Minute))
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestGormDB_SetPublishedFindingState_DismissesOneRow(t *testing.T) {
+	db := newTestDB(t)
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(nil)))
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.Fingerprint = "b.go:2:feedface0000" })))
+	require.NoError(t, db.SetPublishedFindingState("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123", PublishedStateDismissed))
+	rows, err := db.GetPublishedFindingsForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	states := map[string]string{}
+	for _, r := range rows {
+		states[r.Fingerprint] = r.State
+	}
+	assert.Equal(t, map[string]string{"pkg/api/handler.go:4:deadbeef0123": PublishedStateDismissed, "b.go:2:feedface0000": PublishedStateOpen}, states)
+}

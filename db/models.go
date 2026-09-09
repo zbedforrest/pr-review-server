@@ -366,18 +366,24 @@ func (PublishedFindingModel) TableName() string {
 // PublishedReplyModel records one PR-author reply under a PRism inline
 // comment and what PRism did about it. One row per author comment.
 type PublishedReplyModel struct {
-	ID              uint      `gorm:"primaryKey;autoIncrement"`
-	RepoOwner       string    `gorm:"size:255;not null;uniqueIndex:idx_published_replies_unique"`
-	RepoName        string    `gorm:"size:255;not null;uniqueIndex:idx_published_replies_unique"`
-	PRNumber        int       `gorm:"not null;uniqueIndex:idx_published_replies_unique"`
-	AuthorCommentID int64     `gorm:"not null;uniqueIndex:idx_published_replies_unique"`
-	RootCommentID   int64     `gorm:"not null"`
-	Fingerprint     string    `gorm:"size:512;not null"`
-	AuthorID        int64     `gorm:"not null"`
-	Class           string    `gorm:"size:16;not null"`
-	Action          string    `gorm:"size:16;not null"`
-	Body            string    `gorm:"type:text"`
-	ReplyCommentID  int64     `gorm:"not null;default:0"`
+	ID              uint   `gorm:"primaryKey;autoIncrement"`
+	RepoOwner       string `gorm:"size:255;not null;uniqueIndex:idx_published_replies_unique"`
+	RepoName        string `gorm:"size:255;not null;uniqueIndex:idx_published_replies_unique"`
+	PRNumber        int    `gorm:"not null;uniqueIndex:idx_published_replies_unique"`
+	AuthorCommentID int64  `gorm:"not null;uniqueIndex:idx_published_replies_unique"`
+	RootCommentID   int64  `gorm:"not null"`
+	Fingerprint     string `gorm:"size:512;not null"`
+	AuthorID        int64  `gorm:"not null"`
+	Class           string `gorm:"size:16;not null"`
+	Action          string `gorm:"size:16;not null"`
+	Body            string `gorm:"type:text"`
+	ReplyCommentID  int64  `gorm:"not null;default:0"`
+	Decision        string `gorm:"size:16;not null;default:''"`
+	ReplyBody       string `gorm:"type:text"`
+	Cited           string `gorm:"type:text"`
+	Model           string `gorm:"size:128;not null;default:''"`
+	DurationMS      int64  `gorm:"not null;default:0"`
+	RepliedAt       *time.Time
 	CreatedAt       time.Time `gorm:"not null"`
 	ProcessedAt     time.Time `gorm:"not null;index"`
 }
