@@ -938,8 +938,8 @@ func cachedProjectionMetadata(pl *payload.Payload) (critical, medium, low int, v
 // assessment, and correctly yields a carry-less run rather than falling
 // through to an older, superseded review.
 func parseSidecarPayload(body []byte) (*payload.Payload, error) {
-	var pl payload.Payload
-	if err := json.Unmarshal(body, &pl); err != nil {
+	pl, err := payload.Decode(body)
+	if err != nil {
 		return nil, err
 	}
 	return &pl, nil

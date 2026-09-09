@@ -2,7 +2,6 @@ package poller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -184,8 +183,8 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: publication enabled but no ledger or GitHub client available", pr.Owner, pr.Repo, pr.Number)
 		return
 	}
-	var pl payload.Payload
-	if err := json.Unmarshal(sidecar, &pl); err != nil {
+	pl, err := payload.Decode(sidecar)
+	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: sidecar unreadable: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return
 	}

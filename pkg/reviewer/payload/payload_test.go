@@ -288,8 +288,8 @@ func TestBuild_EmptyComments(t *testing.T) {
 	if p.Counts.Critical+p.Counts.Medium+p.Counts.Low != 0 {
 		t.Errorf("expected zero counts, got %+v", p.Counts)
 	}
-	if p.SchemaVersion != "1" {
-		t.Errorf("expected schema_version=1, got %q", p.SchemaVersion)
+	if p.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("expected the current schema version, got %q", p.SchemaVersion)
 	}
 }
 
@@ -637,5 +637,73 @@ func TestReviewRunInfo_LinkedTicketsJSONShape(t *testing.T) {
 	}
 	if strings.Contains(string(without), `"linked_tickets"`) {
 		t.Errorf("ticketless run must omit linked_tickets: %s", without)
+	}
+}
+
+func TestBuild_CarriesDispositionStateAndKeepsInactiveRecordsOutOfCounts(t *testing.T) {
+	comments := []types.LineComment{
+		{ID: "A-1", FilePath: "a.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "cfg is nil.", Sources: []string{"FP-1"}},
+		{FilePath: "a.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "Nil deref when cfg is missing.", Provenance: "first-pass",
+			State: "merged", Inactive: true, MergedInto: "A-1", Original: &types.OriginalClaim{SourceID: "FP-1", FilePath: "a.go", LineNumber: 3, Importance: "CRITICAL", Comment: "Nil deref when cfg is missing."}},
+		{FilePath: "b.go", LineNumber: 9, Importance: "MEDIUM", CommentBody: "Leaks the token.", Provenance: "first-pass", State: "unverified",
+			Assessment: &types.Disposition{SourceID: "FP-2", State: "rejected", Reason: "The logger redacts tokens."}},
+		{FilePath: "d.go", LineNumber: 20, Importance: "MEDIUM", CommentBody: "Missing null check.", Provenance: "first-pass", State: "rejected", Inactive: true,
+			Assessment: &types.Disposition{SourceID: "FP-4", State: "rejected", Reason: "Never nil here."}},
+		{FilePath: "SUMMARY", CommentBody: "Verdict: request changes.", Summary: &types.SummaryBlock{Verdict: "request_changes", Upshot: "Crash.", PriorityIDs: []string{"A-1"}}},
+	}
+	pl := Build("acme", "example", 1, "abc", comments, "", nil)
+	if pl.SchemaVersion != "2" {
+		t.Errorf("schema = %q, want 2 (semantic change: inactive records are not claims)", pl.SchemaVersion)
+	}
+	if pl.Counts.Critical != 1 || pl.Counts.Medium != 1 {
+		t.Errorf("counts = %+v, want one critical (A-1) and one medium (the disputed claim); inactive records do not count", pl.Counts)
+	}
+	byFile := map[string]Finding{}
+	for _, f := range pl.Findings {
+		byFile[f.File+f.State] = f
+	}
+	agent := byFile["a.goconfirmed"]
+	if agent.State != "confirmed" || !agent.Active || len(agent.Sources) != 1 {
+		t.Errorf("agent finding = %+v", agent)
+	}
+	mergedRec := byFile["a.gomerged"]
+	if mergedRec.Active || mergedRec.MergedInto != agent.ID || mergedRec.Original == nil || mergedRec.Original.SourceID != "FP-1" {
+		t.Errorf("merged record must be inactive and point at the canonical fingerprint: %+v", mergedRec)
+	}
+	disputed := byFile["b.gounverified"]
+	if !disputed.Active || disputed.Assessment == nil || disputed.Assessment.Reason != "The logger redacts tokens." {
+		t.Errorf("disputed claim stays active with the counterargument: %+v", disputed)
+	}
+	rejected := byFile["d.gorejected"]
+	if rejected.Active || rejected.Assessment == nil {
+		t.Errorf("rejected record = %+v", rejected)
+	}
+	var summary *Finding
+	for i := range pl.Findings {
+		if pl.Findings[i].File == "SUMMARY" {
+			summary = &pl.Findings[i]
+		}
+	}
+	if summary == nil || summary.Summary == nil || summary.Summary.Verdict != "request_changes" {
+		t.Errorf("structured summary must round-trip: %+v", summary)
+	}
+}
+
+func TestDecode_UpgradesAV1SidecarToActiveConfirmedClaims(t *testing.T) {
+	v1 := []byte(`{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc","counts":{"critical":1,"medium":0,"low":0},
+	  "findings":[{"id":"a.go:0:abc","severity":"critical","file":"a.go","line":3,"comment":"Nil deref."},{"severity":"unknown","file":"SUMMARY","line":0,"comment":"Verdict: approve."}]}`)
+	pl, err := Decode(v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range pl.Findings {
+		if !f.Active || f.State != "confirmed" {
+			t.Errorf("v1 finding must read as an active confirmed claim: %+v", f)
+		}
+	}
+	v2 := []byte(`{"schema_version":"2","findings":[{"file":"d.go","line":1,"comment":"x","state":"rejected","active":false}]}`)
+	pl, err = Decode(v2)
+	if err != nil || pl.Findings[0].Active || pl.Findings[0].State != "rejected" {
+		t.Fatalf("v2 must be taken as written: %+v err=%v", pl.Findings, err)
 	}
 }

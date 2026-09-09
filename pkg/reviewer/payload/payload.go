@@ -9,6 +9,7 @@
 package payload
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -218,9 +219,56 @@ type Finding struct {
 	Comment               string                 `json:"comment"`
 	FindingContract       *types.FindingContract `json:"finding_contract,omitempty"`
 	FindingContractStatus string                 `json:"finding_contract_status,omitempty"`
-	DiffHunk              string                 `json:"diff_hunk,omitempty"`
-	SourceBefore          []string               `json:"source_before,omitempty"`
-	SourceAfter           []string               `json:"source_after,omitempty"`
+	// State is what the review concluded: "confirmed", "unverified",
+	// "rejected" or "merged". Active is whether the review asserts the
+	// finding as a claim; inactive records (rejected or unexamined first-pass
+	// claims, merged aliases) are kept for readers and agents but are not
+	// counted, published, or scored. Schema "2"; a v1 sidecar has neither
+	// field and every finding is an active confirmed claim.
+	State  string `json:"state"`
+	Active bool   `json:"active"`
+	// Sources are the first-pass claim ids a finding confirms or covers;
+	// Assessment is the agent's proposal for a first-pass claim (present on
+	// disputed and rejected ones); Original is the claim as first stated;
+	// MergedInto is the fingerprint of the finding a merged claim folded into.
+	Sources    []string             `json:"sources,omitempty"`
+	Assessment *types.Disposition   `json:"assessment,omitempty"`
+	Original   *types.OriginalClaim `json:"original,omitempty"`
+	MergedInto string               `json:"merged_into,omitempty"`
+	// Summary is the structured SUMMARY the agent emitted (SUMMARY entries only).
+	Summary      *types.SummaryBlock `json:"summary,omitempty"`
+	DiffHunk     string              `json:"diff_hunk,omitempty"`
+	SourceBefore []string            `json:"source_before,omitempty"`
+	SourceAfter  []string            `json:"source_after,omitempty"`
+}
+
+// Decode reads a sidecar of any schema version. A v1 sidecar predates
+// state/active, so every finding it holds is an active confirmed claim.
+func Decode(data []byte) (Payload, error) {
+	var pl Payload
+	if err := json.Unmarshal(data, &pl); err != nil {
+		return Payload{}, err
+	}
+	if pl.SchemaVersion != CurrentSchemaVersion {
+		for i := range pl.Findings {
+			pl.Findings[i].Active = true
+			if pl.Findings[i].State == "" {
+				pl.Findings[i].State = "confirmed"
+			}
+		}
+	}
+	return pl, nil
+}
+
+// CurrentSchemaVersion is what Build writes. "2" adds state/active on every
+// finding; v1 readers must treat every finding as an active confirmed claim.
+const CurrentSchemaVersion = "2"
+
+func findingState(c types.LineComment) string {
+	if c.State != "" {
+		return c.State
+	}
+	return "confirmed"
 }
 
 // normalizeSeverity lower-cases LineComment importance values into the four
@@ -328,15 +376,24 @@ func Build(
 	findings := make([]Finding, 0, len(comments))
 	var counts Counts
 
+	agentIDs := map[string]string{}
+	for _, c := range comments {
+		if c.ID != "" && !c.Inactive {
+			agentIDs[c.ID] = Fingerprint(c.FilePath, c.LineNumber, c.CommentBody)
+		}
+	}
+
 	for _, c := range comments {
 		sev := normalizeSeverity(c.Importance)
-		switch sev {
-		case "critical":
-			counts.Critical++
-		case "medium":
-			counts.Medium++
-		case "low":
-			counts.Low++
+		if !c.Inactive {
+			switch sev {
+			case "critical":
+				counts.Critical++
+			case "medium":
+				counts.Medium++
+			case "low":
+				counts.Low++
+			}
 		}
 
 		contract := cloneFindingContract(c.FindingContract)
@@ -353,6 +410,18 @@ func Build(
 			Line:                  c.LineNumber,
 			Comment:               c.CommentBody,
 			FindingContractStatus: contractStatus,
+			State:                 findingState(c),
+			Active:                !c.Inactive,
+			Sources:               c.Sources,
+			Assessment:            c.Assessment,
+			Original:              c.Original,
+			Summary:               c.Summary,
+		}
+		if c.MergedInto != "" {
+			f.MergedInto = c.MergedInto
+			if fp, ok := agentIDs[c.MergedInto]; ok {
+				f.MergedInto = fp
+			}
 		}
 		if f.FindingContractStatus == "valid" {
 			f.FindingContract = contract
@@ -388,7 +457,7 @@ func Build(
 	}
 
 	return Payload{
-		SchemaVersion: "1",
+		SchemaVersion: CurrentSchemaVersion,
 		Owner:         owner,
 		Repo:          repo,
 		PRNumber:      prNumber,
