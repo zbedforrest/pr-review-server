@@ -530,8 +530,10 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			rep.AlreadyHandled++
 		}
 		if !r.textMode() {
-			// The mode was turned down while this reply waited for the model:
-			// acknowledge it now rather than leaving it pending forever.
+			// The mode was turned down to react while this reply waited for the
+			// model: acknowledge it now. Under observe or off the row stays
+			// pending on purpose, so a later return to text mode still runs
+			// the model on it (writing observed would make the reaction final).
 			if handled && row.Action == replyActionPending && r.reacts() {
 				if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
 					return err
@@ -540,6 +542,8 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 					return err
 				}
 				rep.Reacted++
+				row.Action = replyActionReacted
+				rep.Handled = append(rep.Handled, row)
 			}
 			continue
 		}
@@ -711,12 +715,17 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	// only when its reply is posted (a thumbs-up on a comment about to be
 	// rebutted reads as agreement); every other ending, including shadow and
 	// abstain, acknowledges the author so no reply goes unanswered.
+	// liveReacts is refreshed from the Live read before posting so a mode or
+	// allowlist turned down mid-run stops the thumbs-up as well as the text.
+	liveReacts := r.reacts()
 	react := func(want bool) error {
-		if row.Action != replyActionPending || !r.reacts() {
+		if row.Action != replyActionPending {
 			return nil
 		}
 		action := replyActionObserved
-		if want {
+		if want && liveReacts {
+			// GitHub returns the existing reaction on a repeat, so a ledger
+			// failure after this call retries safely next cycle.
 			if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
 				return err
 			}
@@ -888,6 +897,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		if err != nil {
 			return outcome, err
 		}
+		liveReacts = (mode == ReplyModeReact || mode == ReplyModeShadow || mode == ReplyModeRespond) && (allowed == nil || allowed(state.AuthorLogin))
 		switch {
 		case mode == ReplyModeShadow:
 			if rep != nil {

@@ -978,3 +978,26 @@ func TestReplyReactor_PendingRowIsAcknowledgedWhenTextModeIsTurnedOff(t *testing
 		t.Fatalf("reactions=%v rep=%+v row=%+v", gh.reactions, rep, ledger.rows[0])
 	}
 }
+
+func TestReplyReactor_ReactionHonoursTheLiveModeReadBeforePosting(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies.", React: true}, nil
+	})
+	r.Live = func() (string, func(string) bool, error) { return ReplyModeOff, nil, nil }
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || len(gh.reactions) != 0 || rep.TextSkipped["mode_changed"] != 1 || ledger.rows[0].Action != "observed" {
+		t.Fatalf("a mode turned off mid-run stops the thumbs-up too: posted=%d reactions=%v rep=%+v row=%+v", len(gh.posted), gh.reactions, rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_SettledPendingRowIsReportedForTelemetry(t *testing.T) {
+	r, _, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{}, fmt.Errorf("boom")
+	})
+	r.Run(context.Background())
+	r.Mode = ReplyModeReact
+	rep, _ := r.Run(context.Background())
+	if len(rep.Handled) != 1 || rep.Handled[0].Action != "reacted" {
+		t.Fatalf("handled=%+v", rep.Handled)
+	}
+}
