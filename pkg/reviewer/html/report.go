@@ -135,7 +135,7 @@ var (
 	suggestionsLabelRe = regexp.MustCompile(`(?i)^[\s#>-]*([*_]*)suggestions?:\s*([*_]*)\s*`)
 	legacyLedgerRe     = regexp.MustCompile(`(?i)^[\s*_]*required checks \(id`)
 	legacyReconRe      = regexp.MustCompile(`(?i)^[\s*_-]*reconciliation:\s*\d+ earlier-pass finding`)
-	markdownMarksRe    = regexp.MustCompile("\\*\\*|__|\\*|`|^#+\\s*|^[-*]\\s+|\\b_|_\\b|<[^>]*>")
+	markdownMarksRe    = regexp.MustCompile("\\*\\*|__|\\*|`|^#+\\s*|^[-*]\\s+|\\b_|_\\b")
 	sentenceEndRe      = regexp.MustCompile(`^(.*?[.!?])(\s|$)`)
 	paragraphBreakRe   = regexp.MustCompile(`\n[ \t]*\n`)
 )
@@ -459,14 +459,15 @@ func generateReport(in ReportInput) (string, error) {
 		view.CommentBody = payload.StripProvenanceNote(comment.CommentBody)
 
 		if comment.FilePath == "SUMMARY" {
-			parts := decomposeSummary(view.CommentBody)
-			if verdict == "" {
-				verdict = parts.Verdict
+			// Only the first SUMMARY feeds the verdict and suggestions blocks;
+			// any later one keeps its text intact so nothing is lost.
+			if len(summaries) == 0 {
+				parts := decomposeSummary(view.CommentBody)
+				verdict, suggestions = parts.Verdict, parts.Suggestions
+				summaries = append(summaries, SummaryView{CommentView: view, Prose: parts.Prose})
+			} else {
+				summaries = append(summaries, SummaryView{CommentView: view, Prose: view.CommentBody})
 			}
-			if suggestions == "" {
-				suggestions = parts.Suggestions
-			}
-			summaries = append(summaries, SummaryView{CommentView: view, Prose: parts.Prose})
 			continue
 		}
 

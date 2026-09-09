@@ -220,3 +220,13 @@ func TestBuildDeterministicAlerts_UnresolvedClearanceStaysMarked(t *testing.T) {
 		t.Fatalf("a SAFE answer without resolvable evidence must show as unresolved: %+v", alerts)
 	}
 }
+
+func TestAlertView_UnresolvedClearanceIsNotStyledSafe(t *testing.T) {
+	a := AlertView{Verdict: "SAFE", Evidence: "unresolved"}
+	if a.VerdictClass() != "unresolved" {
+		t.Errorf("class = %q, want unresolved", a.VerdictClass())
+	}
+	if b := (AlertView{Verdict: "SAFE", Evidence: evidenceResolvedLabel}); b.VerdictClass() != "safe" {
+		t.Errorf("resolved SAFE class = %q", b.VerdictClass())
+	}
+}

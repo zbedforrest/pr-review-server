@@ -31,6 +31,9 @@ type AlertView struct {
 
 // VerdictClass returns the CSS-class suffix for the verdict badge.
 func (a AlertView) VerdictClass() string {
+	if a.Evidence == "unresolved" {
+		return "unresolved"
+	}
 	return strings.ToLower(a.Verdict)
 }
 

@@ -337,7 +337,7 @@ index 123..456 100644
 	assert.NotContains(t, report, "<script>BODY_XSS()", "PR body script must be sanitized")
 	assert.NotContains(t, report, "<script>CTX_XSS()", "context-line script must be escaped")
 	assert.NotContains(t, report, "<script type=\"text/javascript\">PROMPT_XSS()", "prompt script must be escaped")
-	assert.NotContains(t, report, "onerror=", "comment-body event handler must be sanitized")
+	assert.NotContains(t, report, "<img src=x onerror=", "comment-body event handler must be sanitized")
 
 	// The prompt and context code must survive as escaped, readable text.
 	assert.Contains(t, report, "&lt;script", "escaped markup should still be visible")
@@ -856,5 +856,28 @@ func TestDecomposeSummary_VerdictMustStartALine(t *testing.T) {
 	}
 	if !strings.Contains(parts.Prose, "verdict: pending") {
 		t.Errorf("an inline mention must stay in the prose:\n%s", parts.Prose)
+	}
+}
+
+func TestFindingTitle_KeepsAngleBracketText(t *testing.T) {
+	c := types.LineComment{FilePath: "a.ts", CommentBody: "`<Tooltip>` lacks a layer and Map<string, int> is fine."}
+	if got := findingTitle(c); !strings.Contains(got, "<Tooltip> lacks a layer") || !strings.Contains(got, "Map<string, int>") {
+		t.Errorf("title = %q, angle-bracket text must survive (the template escapes it)", got)
+	}
+}
+
+func TestGenerateReport_OnlyTheFirstSummaryIsDecomposed(t *testing.T) {
+	in := layoutFixtureInput()
+	in.Comments = append(in.Comments, types.LineComment{FilePath: "SUMMARY", LineNumber: 0, Importance: "LOW",
+		CommentBody: "Verdict: request changes.\n\nSuggestions: rename the flag.\n\nSecond summary prose."})
+	report := renderLayoutFixture(t, in)
+	summaryStart := strings.Index(report, "<h2>Review Summary</h2>")
+	summaryEnd := strings.Index(report, "<h2>Findings</h2>")
+	block := report[summaryStart:summaryEnd]
+	if !strings.Contains(block, "Verdict: request changes.") || !strings.Contains(block, "rename the flag") {
+		t.Errorf("a later SUMMARY keeps its verdict and suggestions in the prose:\n%s", block)
+	}
+	if strings.Count(report, "<h2>Suggestions</h2>") != 1 {
+		t.Errorf("only the first summary feeds the hoisted blocks")
 	}
 }
