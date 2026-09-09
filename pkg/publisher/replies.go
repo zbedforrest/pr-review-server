@@ -599,7 +599,9 @@ func (r ReplyReactor) settlePendingReaction(ctx context.Context, t db.PublishedR
 	if err != nil || !claimed {
 		return err
 	}
-	defer func() { _ = r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder) }()
+	defer func() {
+		_ = r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder)
+	}()
 	if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
 		return err
 	}
