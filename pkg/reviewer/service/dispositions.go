@@ -176,6 +176,11 @@ func applyDispositions(agentOut []types.LineComment, claims []firstPassClaim, re
 	confirmedBy := map[string]string{}
 	rejected := map[string]*types.Disposition{}
 	for _, c := range agentOut {
+		// A malformed entry (no location or no body, and neither a disposition
+		// nor a summary) cannot stand as a finding and cannot retire a claim.
+		if c.Disposition == nil && c.Summary == nil && (strings.TrimSpace(c.FilePath) == "" || strings.TrimSpace(c.CommentBody) == "") {
+			continue
+		}
 		if c.Disposition != nil {
 			// A rejection stands only with a reason and at least one code
 			// reference that resolves; unsupported prose falls through to
@@ -237,17 +242,31 @@ func evidenceFileExists(diffPaths []string, worktreeDir string) func(string) boo
 		if path == "" || filepath.IsAbs(path) || strings.Contains(path, "..") {
 			return false
 		}
-		if inDiff[path] {
-			return true
-		}
 		if worktreeDir == "" {
+			return inDiff[path]
+		}
+		if !inDiff[path] && !fileKnownToWorktree(worktreeDir, path) {
 			return false
 		}
-		// Lstat: a committed symlink must not ground a rejection on a file
-		// outside the checkout.
-		info, err := os.Lstat(filepath.Join(worktreeDir, path))
+		// The entry, and every directory above it, must be real: a symlink
+		// anywhere would let a rejection cite content outside the checkout.
+		full := filepath.Join(worktreeDir, path)
+		real, err := filepath.EvalSymlinks(full)
+		if err != nil {
+			return false
+		}
+		realRoot, err := filepath.EvalSymlinks(worktreeDir)
+		if err != nil || real != filepath.Join(realRoot, path) {
+			return false
+		}
+		info, err := os.Lstat(full)
 		return err == nil && info.Mode().IsRegular()
 	}
+}
+
+func fileKnownToWorktree(worktreeDir, path string) bool {
+	_, err := os.Lstat(filepath.Join(worktreeDir, path))
+	return err == nil
 }
 
 // resolvedEvidenceOnly copies a disposition keeping only the evidence that

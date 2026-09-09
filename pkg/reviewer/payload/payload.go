@@ -676,10 +676,13 @@ func (p Payload) ToCompactMarkdown(meta CompactMeta) string {
 		fmt.Fprintf(&b, "\n--- [%s] %s:%d ---\n\n", strings.ToUpper(f.Severity), f.File, f.Line)
 		if f.State == "unverified" {
 			origin := "first-pass claim the agent did not verify"
-			if f.Assessment != nil {
+			switch {
+			case f.Assessment != nil:
 				origin = "first-pass claim the agent disputed"
-			} else if normalizeProvenance(f.Provenance) == ProvenanceCarried {
+			case normalizeProvenance(f.Provenance) == ProvenanceCarried:
 				origin = "carried from an earlier review, not re-verified"
+			case normalizeProvenance(f.Provenance) == ProvenanceRequiredCheck:
+				origin = "required check left unanswered; the underlying alert is retained"
 			}
 			fmt.Fprintf(&b, "STATE: unverified (%s)\n", origin)
 			if f.Assessment != nil && strings.TrimSpace(f.Assessment.Reason) != "" {

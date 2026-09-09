@@ -898,3 +898,11 @@ func TestBuild_CoercesTheLifecycleInvariant(t *testing.T) {
 		t.Errorf("an unknown state falls back to confirmed for an active finding: %+v", byFile["c.go"])
 	}
 }
+
+func TestToCompactMarkdown_LabelsUnansweredChecks(t *testing.T) {
+	pl := Payload{SchemaVersion: "2", Findings: []Finding{{File: "a.go", Line: 1, Severity: "medium", Comment: "alert", State: "unverified", Active: true, Provenance: "required-check"}}}
+	md := pl.ToCompactMarkdown(CompactMeta{FindingsAvailable: true})
+	if !strings.Contains(md, "STATE: unverified (required check left unanswered") {
+		t.Errorf("an unanswered check is not a first-pass claim:\n%s", md)
+	}
+}

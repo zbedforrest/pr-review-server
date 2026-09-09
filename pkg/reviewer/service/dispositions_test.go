@@ -280,3 +280,38 @@ func TestEvidenceFileExists_RejectsSymlinks(t *testing.T) {
 		t.Fatal("the real file still resolves")
 	}
 }
+
+func TestApplyDispositions_MalformedEntriesCannotRetireClaims(t *testing.T) {
+	claims := firstPassClaims([]types.LineComment{lc("a.go", 3, "CRITICAL", "Nil deref.")})
+	agentOut := []types.LineComment{{Sources: []string{"FP-1"}}, {FilePath: "b.go", LineNumber: 1, Sources: []string{"FP-1"}}}
+	findings, active, records := ApplyDispositions(agentOut, claims)
+	if len(findings) != 0 {
+		t.Fatalf("an entry with no location or no body is not a finding: %+v", findings)
+	}
+	if len(active) != 1 || active[0].State != StateUnverified || len(records) != 0 {
+		t.Fatalf("the claim such an entry pointed at stays active and unverified: active=%+v records=%+v", active, records)
+	}
+}
+
+func TestEvidenceFileExists_RejectsSymlinksEvenWhenListedInTheDiff(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir+"/real", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/real/f.go", []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dir+"/real/f.go", dir+"/link.go"); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if err := os.Symlink(dir+"/real", dir+"/linked-dir"); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	check := evidenceFileExists([]string{"link.go", "linked-dir/f.go"}, dir)
+	if check("link.go") || check("linked-dir/f.go") {
+		t.Fatal("a symlink anywhere in the path is not code in the repository, even when the PR changed it")
+	}
+	if !check("real/f.go") {
+		t.Fatal("the real file still resolves")
+	}
+}
