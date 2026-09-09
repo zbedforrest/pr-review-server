@@ -374,6 +374,22 @@ func TestEnforceRequiredChecks_SafeRequiresRealEvidence(t *testing.T) {
 // Rule (c): an unanswered check re-admits the underlying alert. Gate alerts
 // (already merged with provenance "mechanical") carry the note; memory
 // checks emit a new alert since they have no merge presence otherwise.
+func TestEnforceRequiredChecks_StatesEscalationsAndReadmissions(t *testing.T) {
+	gates := []types.LineComment{gateAlertFixture("portal-layer", "app/Tooltip.tsx")}
+	files := []diffFile{{Path: "app/Tooltip.tsx"}, {Path: "src/menus/Item.tsx", Added: []string{"handler"}}}
+	mem := []BugMemoryEntry{mkCheckEntry("ctx-menu", "menu-id", "verify handler ids", []string{"src/menus/**"}, nil)}
+	checks := BuildRequiredChecks(gates, mem, files)
+	answers := []CheckAnswer{{ID: "CHK-portal-layer-1", Verdict: "VIOLATED", Evidence: "app/Tooltip.tsx:1", Body: "broken"}}
+	_, _, escalated, _ := EnforceRequiredChecks(checks, answers, nil, gates, []string{"app/Tooltip.tsx", "src/menus/Item.tsx"}, "")
+	states := map[string]int{}
+	for _, e := range escalated {
+		states[e.State]++
+	}
+	if states[StateConfirmed] != 1 || states[StateUnverified] != 1 {
+		t.Fatalf("a VIOLATED synthesis is confirmed and an unanswered memory alert is unverified: %+v", escalated)
+	}
+}
+
 func TestEnforceRequiredChecks_UnansweredReadmitsUnderlyingAlert(t *testing.T) {
 	gates := []types.LineComment{gateAlertFixture("portal-layer", "app/Tooltip.tsx")}
 	files := []diffFile{{Path: "src/menus/Item.tsx", Added: []string{"handler"}}}

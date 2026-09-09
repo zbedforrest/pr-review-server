@@ -83,10 +83,74 @@ func (r FindingRow) SeverityClass() string {
 	return strings.ToLower(r.Severity)
 }
 
-// FindingGroup is one provenance bucket of the findings index.
+// FindingGroup is one state bucket of the findings index.
 type FindingGroup struct {
 	Name string
 	Rows []FindingRow
+}
+
+// RecordView is one inactive record in review details: a first-pass claim
+// the agent rejected, never examined, or folded into one of its findings.
+type RecordView struct {
+	Severity   string
+	FilePath   string
+	LineNumber int
+	Claim      string
+	Reason     string
+	Evidence   []string
+	MergedInto string
+	// MergedAnchor links to the absorbing finding when it is on the page.
+	MergedAnchor string
+}
+
+// SeverityClass returns the CSS-class suffix for the severity pill.
+func (r RecordView) SeverityClass() string {
+	return strings.ToLower(r.Severity)
+}
+
+// Location is "file:line", or the file alone for whole-file records.
+func (r RecordView) Location() string {
+	return location(r.FilePath, r.LineNumber)
+}
+
+func location(file string, line int) string {
+	if line > 0 {
+		return fmt.Sprintf("%s:%d", file, line)
+	}
+	return file
+}
+
+// NextAction is one entry of the structured SUMMARY's priority list,
+// resolved to the finding it names.
+type NextAction struct {
+	AnchorID   string
+	Severity   string
+	FilePath   string
+	LineNumber int
+	Title      string
+}
+
+// SeverityClass returns the CSS-class suffix for the severity pill.
+func (a NextAction) SeverityClass() string {
+	return strings.ToLower(a.Severity)
+}
+
+// Location is "file:line", or the file alone for whole-file findings.
+func (a NextAction) Location() string {
+	return location(a.FilePath, a.LineNumber)
+}
+
+const (
+	stateConfirmed  = "confirmed"
+	stateUnverified = "unverified"
+	stateRejected   = "rejected"
+	stateMerged     = "merged"
+)
+
+var summaryVerdictText = map[string]string{
+	"approve":             "Verdict: approve.",
+	"approve_suggestions": "Verdict: approve with suggestions.",
+	"request_changes":     "Verdict: request changes.",
 }
 
 // EvidenceLabel is the human wording of the evidence column.
@@ -102,20 +166,42 @@ func (c CheckRecord) VerdictClass() string {
 	return strings.ToLower(c.Verdict)
 }
 
+// findingGroupFor buckets an active comment for the findings index by the
+// state the review recorded. Mechanical signals and unanswered memory checks
+// keep their own routing: a required-check VIOLATED synthesis is confirmed,
+// while a memory alert re-admitted because its check went unanswered was
+// confirmed by nobody. A comment with no recorded state (carried or legacy
+// input) falls back to its provenance.
+func findingGroupFor(c types.LineComment) (group, pill, class string) {
+	prov := payload.DeriveProvenance(c)
+	if prov == payload.ProvenanceRequiredCheck && alertUnansweredRe.MatchString(c.CommentBody) {
+		return groupNeedsCheck, "UNANSWERED CHECK", "unverified"
+	}
+	if prov == payload.ProvenanceMechanical {
+		return groupMechanical, "MECHANICAL", "mechanical"
+	}
+	switch c.State {
+	case stateConfirmed:
+		return groupConfirmed, "", ""
+	case stateUnverified:
+		return groupNeedsCheck, unverifiedPill(prov, c.Assessment != nil), "unverified"
+	}
+	return findingGroup(prov)
+}
+
+func unverifiedPill(provenance string, disputed bool) string {
+	switch {
+	case disputed:
+		return "FIRST PASS · DISPUTED"
+	case provenance == payload.ProvenanceCarried:
+		return "CARRIED · UNVERIFIED"
+	}
+	return "FIRST PASS · UNVERIFIED"
+}
+
 // findingGroup buckets a provenance into an index group and its status pill.
 // Unknown labels are treated as unverified: truthful attribution beats
 // promoting them to confirmed.
-// findingGroupFor buckets a comment for the findings index. Required-check
-// provenance covers two different things: a VIOLATED answer synthesized into
-// a finding (confirmed) and a memory alert re-admitted because its check went
-// unanswered (not confirmed by anyone).
-func findingGroupFor(c types.LineComment) (group, pill, class string) {
-	if payload.DeriveProvenance(c) == payload.ProvenanceRequiredCheck && alertUnansweredRe.MatchString(c.CommentBody) {
-		return groupNeedsCheck, "UNANSWERED CHECK", "unverified"
-	}
-	return findingGroup(payload.DeriveProvenance(c))
-}
-
 func findingGroup(provenance string) (group, pill, class string) {
 	switch provenance {
 	case payload.ProvenanceAgent, payload.ProvenanceRequiredCheck:
@@ -438,22 +524,76 @@ func verdictClass(verdict string) string {
 	return "neutral"
 }
 
+// splitRecords separates the comments the review asserts from the inactive
+// records it only preserves.
+func splitRecords(comments []types.LineComment) (active, records []types.LineComment) {
+	for _, c := range comments {
+		if c.Inactive {
+			records = append(records, c)
+		} else {
+			active = append(active, c)
+		}
+	}
+	return active, records
+}
+
+// recordViews turns the inactive records of one state into review-details rows.
+func recordViews(records []types.LineComment, state string, anchors map[string]string) []RecordView {
+	var out []RecordView
+	for _, c := range records {
+		if c.State != state {
+			continue
+		}
+		v := RecordView{Severity: c.Importance, FilePath: c.FilePath, LineNumber: c.LineNumber,
+			Claim: payload.StripProvenanceNote(c.CommentBody), MergedInto: c.MergedInto, MergedAnchor: anchors[c.MergedInto]}
+		if c.Original != nil && strings.TrimSpace(c.Original.Comment) != "" {
+			v.Claim = c.Original.Comment
+		}
+		if c.Assessment != nil {
+			v.Reason = strings.TrimSpace(c.Assessment.Reason)
+			for _, e := range c.Assessment.Evidence {
+				v.Evidence = append(v.Evidence, location(e.File, e.Line))
+			}
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// nextActions resolves the structured SUMMARY's priority ids against the
+// findings on the page; ids that name nothing rendered are skipped.
+func nextActions(ids []string, byID map[string]CommentView) []NextAction {
+	var out []NextAction
+	for _, id := range ids {
+		v, ok := byID[id]
+		if !ok {
+			continue
+		}
+		out = append(out, NextAction{AnchorID: v.AnchorID, Severity: v.Importance, FilePath: v.FilePath, LineNumber: v.LineNumber, Title: findingTitle(v.LineComment)})
+	}
+	return out
+}
+
 func generateReport(in ReportInput) (string, error) {
 	diffFiles := ParseDiff(in.Diff)
 	commentsByFile := make(map[string]map[int][]CommentView)
 	var summaries []SummaryView
 	var generalComments []CommentView
 	var adjacentComments []CommentView
-	totalComments := len(in.Comments)
+	activeComments, records := splitRecords(in.Comments)
+	totalComments := len(activeComments)
 
-	verdict, suggestions := "", ""
+	verdict, upshot, suggestions := "", "", ""
+	var structured *types.SummaryBlock
 	counts := map[string]int{}
 	groups := map[string]*FindingGroup{}
 	for _, name := range []string{groupConfirmed, groupNeedsCheck, groupMechanical} {
 		groups[name] = &FindingGroup{Name: name}
 	}
+	byID := map[string]CommentView{}
+	anchors := map[string]string{}
 
-	for i, comment := range in.Comments {
+	for i, comment := range activeComments {
 		view := CommentView{
 			LineComment: comment,
 			Counter:     i + 1,
@@ -464,12 +604,18 @@ func generateReport(in ReportInput) (string, error) {
 		if comment.FilePath == "SUMMARY" {
 			// Only the first SUMMARY feeds the verdict and suggestions blocks;
 			// any later one keeps its text intact so nothing is lost.
-			if len(summaries) == 0 {
+			switch {
+			case len(summaries) > 0:
+				summaries = append(summaries, SummaryView{CommentView: view, Prose: view.CommentBody})
+			case comment.Summary != nil:
+				structured = comment.Summary
+				verdict = summaryVerdictText[strings.ToLower(strings.TrimSpace(structured.Verdict))]
+				upshot = strings.TrimSpace(structured.Upshot)
+				summaries = append(summaries, SummaryView{CommentView: view, Prose: strings.TrimSpace(structured.Notes)})
+			default:
 				parts := decomposeSummary(view.CommentBody)
 				verdict, suggestions = parts.Verdict, parts.Suggestions
 				summaries = append(summaries, SummaryView{CommentView: view, Prose: parts.Prose})
-			} else {
-				summaries = append(summaries, SummaryView{CommentView: view, Prose: view.CommentBody})
 			}
 			continue
 		}
@@ -478,6 +624,10 @@ func generateReport(in ReportInput) (string, error) {
 		counts[group]++
 		view.AnchorID = fmt.Sprintf("finding-%d", view.Counter)
 		view.StatusPill, view.StatusClass = pill, class
+		if comment.ID != "" {
+			byID[comment.ID] = view
+			anchors[comment.ID] = view.AnchorID
+		}
 		row := FindingRow{
 			AnchorID: view.AnchorID, Severity: comment.Importance, StatusPill: pill, StatusClass: class,
 			FilePath: comment.FilePath, LineNumber: comment.LineNumber, Title: findingTitle(comment),
@@ -536,6 +686,11 @@ func generateReport(in ReportInput) (string, error) {
 	if verdict == "" {
 		verdict = "Verdict: unavailable"
 	}
+	var actions []NextAction
+	if structured != nil {
+		actions = nextActions(structured.PriorityIDs, byID)
+	}
+	rejected := recordViews(records, stateRejected, anchors)
 
 	shortCommitSHA := in.CommitSHA
 	if len(in.CommitSHA) > 7 {
@@ -565,10 +720,16 @@ func generateReport(in ReportInput) (string, error) {
 		Description          descriptionView
 		Verdict              string
 		VerdictClass         string
+		Upshot               string
 		ConfirmedCount       int
 		UnverifiedCount      int
 		MechanicalCount      int
+		RejectedCount        int
 		Suggestions          string
+		NextActions          []NextAction
+		Rejected             []RecordView
+		Unexamined           []RecordView
+		Merged               []RecordView
 		Prompt               template.HTML
 		Files                []*DiffFile
 		Comments             map[string]map[int][]CommentView
@@ -596,10 +757,16 @@ func generateReport(in ReportInput) (string, error) {
 		Description:     description,
 		Verdict:         verdict,
 		VerdictClass:    verdictClass(verdict),
+		Upshot:          upshot,
 		ConfirmedCount:  counts[groupConfirmed],
 		UnverifiedCount: counts[groupNeedsCheck],
 		MechanicalCount: counts[groupMechanical],
+		RejectedCount:   len(rejected),
 		Suggestions:     suggestions,
+		NextActions:     actions,
+		Rejected:        rejected,
+		Unexamined:      recordViews(records, stateUnverified, anchors),
+		Merged:          recordViews(records, stateMerged, anchors),
 		// The prompt embeds raw diff/code (e.g. template syntax, <script> tags,
 		// jQuery). It is NOT Markdown: escape it so it renders as literal text
 		// instead of being interpreted as HTML/math. CSS handles line wrapping.

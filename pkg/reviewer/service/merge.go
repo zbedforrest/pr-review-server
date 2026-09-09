@@ -243,7 +243,9 @@ func CarriedFromSHA(provenance string) (string, bool) {
 // count of candidates dropped by the filter.
 func CarryForwardFindings(prior []types.LineComment, touchedFiles []string) (carried []types.LineComment, dropped int) {
 	for _, c := range prior {
-		if c.FilePath == "SUMMARY" || strings.TrimSpace(c.FilePath) == "" {
+		// Inactive records (rejected, unexamined, merged) were never claims and
+		// must not become one by surviving a push.
+		if c.FilePath == "SUMMARY" || strings.TrimSpace(c.FilePath) == "" || c.Inactive {
 			continue
 		}
 		touched := false
@@ -264,6 +266,8 @@ func CarryForwardFindings(prior []types.LineComment, touchedFiles []string) (car
 		// the rendered note or payload.DeriveProvenance would report the stale
 		// prior-run label.
 		c.Provenance = "carried"
+		c.State = StateUnverified
+		c.Assessment, c.MergedInto = nil, ""
 		carried = append(carried, c)
 	}
 	return carried, dropped

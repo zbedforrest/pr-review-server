@@ -327,6 +327,12 @@ func (p Payload) ToLineComments() []types.LineComment {
 			CommentBody:     f.Comment,
 			FindingContract: contract,
 			Provenance:      f.Provenance,
+			State:           f.State,
+			Inactive:        !f.Active && p.SchemaVersion == CurrentSchemaVersion,
+			Assessment:      f.Assessment,
+			Original:        f.Original,
+			MergedInto:      f.MergedInto,
+			Summary:         f.Summary,
 		})
 	}
 	return out

@@ -707,3 +707,17 @@ func TestDecode_UpgradesAV1SidecarToActiveConfirmedClaims(t *testing.T) {
 		t.Fatalf("v2 must be taken as written: %+v err=%v", pl.Findings, err)
 	}
 }
+
+func TestToLineComments_RoundTripsStateAndActivity(t *testing.T) {
+	pl := Payload{SchemaVersion: "2", Findings: []Finding{
+		{File: "a.go", Line: 1, Severity: "medium", Comment: "claim", State: "unverified", Active: true, Assessment: &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "r"}},
+		{File: "b.go", Line: 2, Severity: "low", Comment: "rejected", State: "rejected", Active: false},
+	}}
+	got := pl.ToLineComments()
+	if got[0].State != "unverified" || got[0].Inactive || got[0].Assessment == nil {
+		t.Errorf("active disputed finding = %+v", got[0])
+	}
+	if got[1].State != "rejected" || !got[1].Inactive {
+		t.Errorf("inactive record = %+v", got[1])
+	}
+}

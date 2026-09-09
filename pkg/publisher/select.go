@@ -20,16 +20,19 @@ const (
 type Policy struct {
 	InlineCap         int
 	InlineMinSeverity string
+	// ShowUnverified folds the active first-pass claims the agent did not
+	// confirm into the summary comment; they are never inline.
+	ShowUnverified bool
 }
 
-// DefaultPolicy is the shipped posting policy: five inline comments per
-// round, medium severity and above.
+// DefaultPolicy is the shipped posting policy: three inline comments per
+// round, medium severity and above, unverified first-pass claims folded.
 func DefaultPolicy() Policy {
-	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity}
+	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true}
 }
 
 // withDefaults fills unset fields only. A zero cap is a real setting (post
-// nothing inline); negative means unset.
+// nothing inline); negative means unset. ShowUnverified is taken as given.
 func (p Policy) withDefaults() Policy {
 	if p.InlineCap < 0 {
 		p.InlineCap = DefaultInlineCap
@@ -63,24 +66,36 @@ func isNarrative(f payload.Finding) bool {
 	return f.File == summaryFile || f.File == checkFile
 }
 
-// Publishable reports whether a finding may appear on GitHub at all. Only
+// Publishable reports whether a finding may be asserted on GitHub. Only active
 // findings the review agent produced or answered for (agent, required-check,
 // carried from an earlier agent round, or legacy sidecars without provenance)
 // qualify; first-pass re-admissions and raw gate alerts stay on the dashboard,
-// where their unconfirmed status is explained.
+// where their unconfirmed status is explained, and inactive records (rejected,
+// merged, unexamined) are never posted.
 func Publishable(f payload.Finding) bool {
-	if isNarrative(f) {
+	if !f.Active || isNarrative(f) {
 		return false
 	}
 	switch f.Provenance {
 	case "first-pass", "mechanical":
 		return false
 	case "required-check":
-		// An unanswered memory-derived check is re-admitted as its raw alert
-		// text; only checks the agent answered VIOLATED are confirmed.
-		return !strings.HasPrefix(commentText(f), "**Bug-memory alert")
+		return !isBugMemoryAlert(f)
 	}
 	return true
+}
+
+// An unanswered memory-derived check is re-admitted as its raw alert text;
+// only checks the agent answered VIOLATED are confirmed.
+func isBugMemoryAlert(f payload.Finding) bool {
+	return strings.HasPrefix(commentText(f), "**Bug-memory alert")
+}
+
+// UnverifiedNote reports whether a finding belongs in the summary's folded
+// unverified section: an active first-pass claim the agent left unverified or
+// disputed. These are shown with a status marker, never asserted or inline.
+func UnverifiedNote(f payload.Finding) bool {
+	return f.Active && f.State == "unverified" && !isNarrative(f) && !isBugMemoryAlert(f)
 }
 
 func sortBySeverity(fs []payload.Finding) {

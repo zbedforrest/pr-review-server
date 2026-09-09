@@ -82,10 +82,11 @@ func TestCommentableLines(t *testing.T) {
 	}
 }
 
-// f builds an inline-worthy finding: a valid contract asserting current
-// production impact, which is what the Greptile-style gate requires.
+// f builds an active confirmed, inline-worthy finding: a valid contract
+// asserting current production impact, which is what the Greptile-style gate
+// requires.
 func f(id, sev, file string, line int, comment string) payload.Finding {
-	x := payload.Finding{ID: id, Severity: sev, File: file, Line: line, Comment: comment}
+	x := payload.Finding{ID: id, Severity: sev, File: file, Line: line, Comment: comment, State: "confirmed", Active: true}
 	if file != "SUMMARY" && file != "CHECK" {
 		x.FindingContract = &types.FindingContract{SchemaVersion: 1, FindingKind: "production_behavior", Materiality: "current_impact", Falsifiability: "unknown"}
 		x.FindingContractStatus = "valid"

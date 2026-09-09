@@ -9,6 +9,7 @@ import (
 	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/payload"
 
 	"github.com/stretchr/testify/assert"
@@ -69,6 +70,27 @@ func TestBuildPublishRound_TagsReconciledFindingsAndBuildsLinks(t *testing.T) {
 	assert.Equal(t, previous, r.Previous)
 	assert.Equal(t, "https://prism.example/go/agent?o=acme&r=example&n=7", r.AgentLinkBase)
 	assert.Equal(t, "https://prism.example/api/review/acme/example/7?format=html", r.DashboardURL)
+}
+
+func TestPublishPolicy_ReadsSettingsOverDefaults(t *testing.T) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	p := &Poller{cfg: &config.Config{}, db: database}
+
+	pol := p.publishPolicy()
+	assert.Equal(t, publisher.DefaultPolicy(), pol, "no settings means the shipped policy")
+
+	require.NoError(t, database.SetSetting("publish_inline_cap", "1"))
+	require.NoError(t, database.SetSetting("publish_inline_min_severity", "Critical"))
+	require.NoError(t, database.SetSetting("publish_show_unverified", "false"))
+	pol = p.publishPolicy()
+	assert.Equal(t, 1, pol.InlineCap)
+	assert.Equal(t, "critical", pol.InlineMinSeverity)
+	assert.False(t, pol.ShowUnverified)
+
+	require.NoError(t, database.SetSetting("publish_show_unverified", "not-a-bool"))
+	assert.True(t, p.publishPolicy().ShowUnverified, "an unreadable value keeps the default")
 }
 
 func TestBuildPublishRound_NoBaseURLDisablesLinks(t *testing.T) {

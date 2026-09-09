@@ -87,12 +87,14 @@
         .verdict-block[data-verdict="approve"] { border-left-color: #2ea043; }
         .verdict-block[data-verdict="changes"] { border-left-color: #f85149; }
         .verdict-text { font-size: 18px; font-weight: 600; color: #f0f6fc; }
+        .verdict-upshot { font-size: 14px; color: #c9d1d9; margin-top: 4px; }
         .verdict-counts { display: flex; gap: 8px; flex-wrap: wrap; }
         .count-pill, .status-pill, .sev-pill { display: inline-block; border-radius: 10px; padding: 1px 9px; font-size: 11px; font-weight: 600; line-height: 1.6; white-space: nowrap; }
         .count-pill { border: 1px solid #30363d; color: #c9d1d9; }
         .count-confirmed { border-color: #2ea043; color: #3fb950; }
         .count-unverified { border-color: #d29922; color: #e3b341; }
         .count-mechanical { border-color: #8b949e; color: #8b949e; }
+        .count-rejected { border-color: #6e7681; color: #8b949e; }
         .status-pill { text-transform: uppercase; letter-spacing: 0.02em; }
         .status-unverified { background-color: rgba(210, 153, 34, 0.18); border: 1px solid #d29922; color: #e3b341; }
         .status-mechanical { background-color: rgba(139, 148, 158, 0.18); border: 1px solid #8b949e; color: #c9d1d9; }
@@ -102,6 +104,20 @@
         .sev-low { background-color: #3fb950; }
         .suggestions-section { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px 20px; margin-bottom: 20px; }
         .suggestions-section h2 { color: #c9d1d9; margin-top: 0; font-size: 18px; }
+        .next-actions { margin: 0; padding-left: 22px; }
+        .next-action { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 13px; }
+        .next-action-title { color: #58a6ff; text-decoration: none; }
+        .next-action-title:hover { text-decoration: underline; }
+        .counterargument { margin-top: 10px; padding: 8px 12px; border-left: 3px solid #8b949e; background-color: rgba(139, 148, 158, 0.08); font-size: 13px; color: #c9d1d9; }
+        .counterargument-label { font-weight: 600; color: #f0f6fc; }
+        .evidence-ref { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; color: #8b949e; }
+        .record-row { padding: 8px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+        .record-row:last-child { border-bottom: none; }
+        .record-meta { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+        .record-location { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; color: #8b949e; }
+        .record-claim p { margin: 4px 0; }
+        .record-reason, .record-evidence, .record-merged { color: #a3a3a3; margin-top: 4px; }
+        .record-merged a { color: #58a6ff; text-decoration: none; }
         .findings-index { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px 20px; margin-bottom: 20px; }
         .findings-index h2 { color: #c9d1d9; margin-top: 0; }
         .findings-index h3 { color: #8b949e; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; margin: 12px 0 6px; }

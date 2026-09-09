@@ -52,6 +52,8 @@ type Round struct {
 	// InlineComments maps finding id to the GitHub review-comment id it was
 	// posted as (this round or earlier), so the summary can link to it.
 	InlineComments map[string]int64
+	// ShowUnverified is Policy.ShowUnverified as applied to this round.
+	ShowUnverified bool
 }
 
 func (r Round) sourceTag(id string) string {
@@ -165,12 +167,39 @@ func (r Round) findingLink(f payload.Finding) string {
 // bullet is one summary line: severity, the effect sentence, and a short
 // location linked to the inline comment or the file at the reviewed commit.
 func (r Round) bullet(f payload.Finding) string {
+	return r.markedBullet(f, "")
+}
+
+// markedBullet is a bullet with a bold status marker between the severity and
+// the text; an empty marker renders a plain bullet.
+func (r Round) markedBullet(f payload.Finding, marker string) string {
 	where := f.File[strings.LastIndex(f.File, "/")+1:]
 	if f.Line > 0 {
 		where = fmt.Sprintf("%s:%d", where, f.Line)
 	}
+	if marker != "" {
+		marker = "**" + marker + "** "
+	}
 	text := truncateWords(strings.TrimSuffix(strings.TrimSpace(summaryText(f)), "."), 200)
-	return fmt.Sprintf("- %s %s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), text, where, r.findingLink(f))
+	return fmt.Sprintf("- %s %s%s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, where, r.findingLink(f))
+}
+
+const (
+	markerUnverified = "FIRST PASS · UNVERIFIED"
+	markerDisputed   = "FIRST PASS · DISPUTED"
+)
+
+// unverifiedBullet marks a first-pass claim as unverified, or disputed with
+// the agent's reason on a nested line when it argued against the claim.
+func (r Round) unverifiedBullet(f payload.Finding) string {
+	if f.Assessment == nil {
+		return r.markedBullet(f, markerUnverified)
+	}
+	line := r.markedBullet(f, markerDisputed)
+	if reason := strings.TrimSpace(f.Assessment.Reason); reason != "" {
+		line += "  - Agent: " + firstLine(reason) + "\n"
+	}
+	return line
 }
 
 // severityLabel is a colored badge when PRism can serve one, else bold text.
@@ -201,12 +230,52 @@ func (r Round) lowerSeverityNotes() []payload.Finding {
 	return notes
 }
 
+// unverifiedNotes are the active first-pass claims the agent left unverified
+// or disputed, shown folded with a status marker when the policy allows.
+func (r Round) unverifiedNotes() []payload.Finding {
+	if !r.ShowUnverified {
+		return nil
+	}
+	var notes []payload.Finding
+	for _, f := range r.Findings {
+		if UnverifiedNote(f) {
+			notes = append(notes, f)
+		}
+	}
+	sortBySeverity(notes)
+	return notes
+}
+
 const maxFoldedNotes = 8
+
+// writeFolded renders one details block of bullets. The count cap applies
+// only when the rest has somewhere to go; the byte cap always holds, since
+// GitHub rejects oversized bodies.
+func (r Round) writeFolded(b *strings.Builder, label string, notes []payload.Finding, bullet func(payload.Finding) string) {
+	if len(notes) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "<details><summary>%d %s%s</summary>\n\n", len(notes), label, plural(len(notes)))
+	for i, f := range notes {
+		overCount := r.DashboardURL != "" && i == maxFoldedNotes
+		overBytes := b.Len() > SummaryMaxChars-600
+		if overCount || overBytes {
+			if r.DashboardURL != "" {
+				fmt.Fprintf(b, "- ... %d more on the [dashboard](%s)\n", len(notes)-i, r.DashboardURL)
+			} else {
+				fmt.Fprintf(b, "- ... %d more omitted\n", len(notes)-i)
+			}
+			break
+		}
+		b.WriteString(bullet(f))
+	}
+	b.WriteString("</details>\n\n")
+}
 
 // RenderSummary is the sticky comment: a confidence line, the round diff, and
 // one bullet per finding above the bar (critical first). Confirmed findings
-// below the bar are listed folded under one line; unconfirmed items stay on
-// the dashboard.
+// below the bar are listed folded under one line, unverified first-pass claims
+// under another; rejected and merged records never appear.
 func RenderSummary(r Round, sel Selection) string {
 	shown := r.currentFindings()
 	sortBySeverity(shown)
@@ -242,25 +311,8 @@ func RenderSummary(r Round, sel Selection) string {
 	if len(shown) > 0 {
 		b.WriteString("\n")
 	}
-	if notes := r.lowerSeverityNotes(); len(notes) > 0 {
-		fmt.Fprintf(&b, "<details><summary>%d lower-severity note%s</summary>\n\n", len(notes), plural(len(notes)))
-		for i, f := range notes {
-			// The count cap applies only when the rest has somewhere to go; the
-			// byte cap always holds, since GitHub rejects oversized bodies.
-			overCount := r.DashboardURL != "" && i == maxFoldedNotes
-			overBytes := b.Len() > SummaryMaxChars-600
-			if overCount || overBytes {
-				if r.DashboardURL != "" {
-					fmt.Fprintf(&b, "- ... %d more on the [dashboard](%s)\n", len(notes)-i, r.DashboardURL)
-				} else {
-					fmt.Fprintf(&b, "- ... %d more omitted\n", len(notes)-i)
-				}
-				break
-			}
-			b.WriteString(r.bullet(f))
-		}
-		b.WriteString("</details>\n\n")
-	}
+	r.writeFolded(&b, "lower-severity note", r.lowerSeverityNotes(), r.bullet)
+	r.writeFolded(&b, "unverified first-pass note", r.unverifiedNotes(), r.unverifiedBullet)
 	if r.DashboardURL != "" {
 		fmt.Fprintf(&b, "[Full report](%s)\n\n", r.DashboardURL)
 	}

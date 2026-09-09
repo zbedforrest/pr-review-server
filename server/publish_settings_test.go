@@ -18,7 +18,7 @@ func TestSettings_PublishKeysRoundTrip(t *testing.T) {
 	server, _ := newTestServer(t, "tester")
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(
-		`{"publish_enabled_authors":"alice, bob","publish_inline_cap":3,"publish_inline_min_severity":"low","publish_reply_mode":"react"}`))
+		`{"publish_enabled_authors":"alice, bob","publish_inline_cap":3,"publish_inline_min_severity":"low","publish_reply_mode":"react","publish_show_unverified":false}`))
 	w := httptest.NewRecorder()
 	server.handleSettings(w, req)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -33,6 +33,22 @@ func TestSettings_PublishKeysRoundTrip(t *testing.T) {
 	assert.Equal(t, float64(3), got["publish_inline_cap"])
 	assert.Equal(t, "low", got["publish_inline_min_severity"])
 	assert.Equal(t, "react", got["publish_reply_mode"])
+	assert.Equal(t, false, got["publish_show_unverified"])
+}
+
+func TestSettings_PublishShowUnverifiedRoundTripsBackOn(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	require.NoError(t, database.SetSetting("publish_show_unverified", "false"))
+
+	w := httptest.NewRecorder()
+	server.handleSettings(w, httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"publish_show_unverified":true}`)))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, true, got["publish_show_unverified"])
+	stored, _ := database.GetSetting("publish_show_unverified")
+	assert.Equal(t, "true", stored)
 }
 
 func TestSettings_PublishKeysDefaultToDisabled(t *testing.T) {
@@ -46,6 +62,7 @@ func TestSettings_PublishKeysDefaultToDisabled(t *testing.T) {
 	assert.Equal(t, float64(5), got["publish_inline_cap"])
 	assert.Equal(t, "medium", got["publish_inline_min_severity"])
 	assert.Equal(t, "off", got["publish_reply_mode"])
+	assert.Equal(t, true, got["publish_show_unverified"])
 }
 
 func TestSettings_RejectsBadReplyMode(t *testing.T) {

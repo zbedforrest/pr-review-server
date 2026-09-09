@@ -341,3 +341,15 @@ func TestMergeFindingsWithRecords_DuplicateBecomesAMergedRecord(t *testing.T) {
 		t.Fatalf("the dropped duplicate must survive as a merged record: %+v", records)
 	}
 }
+
+func TestCarryForwardFindings_SkipsInactiveRecords(t *testing.T) {
+	rejected := lc("a.go", 1, "MEDIUM", "rejected last time")
+	rejected.State, rejected.Inactive = StateRejected, true
+	carried, dropped := CarryForwardFindings([]types.LineComment{rejected, lc("b.go", 2, "LOW", "still valid")}, nil)
+	if len(carried) != 1 || carried[0].FilePath != "b.go" || dropped != 0 {
+		t.Fatalf("an inactive record must never be carried forward as a claim: carried=%+v dropped=%d", carried, dropped)
+	}
+	if carried[0].State != StateUnverified {
+		t.Errorf("a carried finding is a re-admitted claim and reads as unverified: %+v", carried[0])
+	}
+}

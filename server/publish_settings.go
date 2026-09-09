@@ -14,10 +14,12 @@ const (
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"
 	settingPublishReplyMode         = "publish_reply_mode"
 	settingPublishReplyEnabledAt    = "publish_reply_enabled_at"
+	settingPublishShowUnverified    = "publish_show_unverified"
 
 	defaultPublishInlineCap         = 5
 	defaultPublishInlineMinSeverity = "medium"
 	defaultPublishReplyMode         = "off"
+	defaultPublishShowUnverified    = true
 )
 
 var publishSeverities = map[string]bool{"critical": true, "medium": true, "low": true}
@@ -51,6 +53,14 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 	response[settingPublishReplyMode] = mode
 	enabledAt, _ := s.db.GetSetting(settingPublishReplyEnabledAt)
 	response[settingPublishReplyEnabledAt] = strings.TrimSpace(enabledAt)
+
+	showUnverified := defaultPublishShowUnverified
+	if v, err := s.db.GetSetting(settingPublishShowUnverified); err == nil {
+		if b, convErr := strconv.ParseBool(strings.TrimSpace(v)); convErr == nil {
+			showUnverified = b
+		}
+	}
+	response[settingPublishShowUnverified] = showUnverified
 }
 
 // replyActivationFor returns the activation stamp to store alongside a reply

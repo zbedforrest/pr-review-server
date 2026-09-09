@@ -94,6 +94,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	}
 
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy)
+	r.ShowUnverified = p.Policy.ShowUnverified
 	d := r.diff()
 	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), StillOpen: d.StillOpen, Fixed: d.Fixed}
 	now := p.now()

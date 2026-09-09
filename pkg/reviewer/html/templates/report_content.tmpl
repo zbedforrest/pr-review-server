@@ -13,6 +13,25 @@
 
 {{define "status-pill"}}{{if .StatusPill}}<span class="status-pill status-{{.StatusClass}}">{{.StatusPill}}</span>{{end}}{{end}}
 
+{{define "counterargument"}}{{if .Assessment}}
+<div class="counterargument"><span class="counterargument-label">Agent rejected:</span> {{.Assessment.Reason}}{{range .Assessment.Evidence}} <span class="evidence-ref">{{.File}}{{if .Line}}:{{.Line}}{{end}}</span>{{end}}</div>
+{{end}}{{end}}
+
+{{define "record-rows"}}
+        {{range .}}
+        <div class="record-row">
+            <div class="record-meta">
+                <span class="sev-pill sev-{{.SeverityClass}}">{{if .Severity}}{{.Severity}}{{else}}NOTE{{end}}</span>
+                <span class="record-location">{{.Location}}</span>
+            </div>
+            <div class="record-claim">{{.Claim | markdownify}}</div>
+            {{if .Reason}}<div class="record-reason">Rejected because: {{.Reason}}</div>{{end}}
+            {{if .Evidence}}<div class="record-evidence">Evidence:{{range .Evidence}} <span class="evidence-ref">{{.}}</span>{{end}}</div>{{end}}
+            {{if .MergedInto}}<div class="record-merged">folded into {{if .MergedAnchor}}<a href="#{{.MergedAnchor}}">{{.MergedInto}}</a>{{else}}{{.MergedInto}}{{end}}</div>{{end}}
+        </div>
+        {{end}}
+{{end}}
+
 {{define "report-content"}}
     {{if .PinnedAlerts}}
     <div class="deterministic-alerts pinned">
@@ -36,15 +55,32 @@
     </div>
 
     <div class="verdict-block" data-verdict="{{.VerdictClass}}">
-        <div class="verdict-text">{{.Verdict}}</div>
+        <div class="verdict-main">
+            <div class="verdict-text">{{.Verdict}}</div>
+            {{if .Upshot}}<div class="verdict-upshot">{{.Upshot}}</div>{{end}}
+        </div>
         <div class="verdict-counts">
             <span class="count-pill count-confirmed">{{.ConfirmedCount}} confirmed</span>
             {{if .UnverifiedCount}}<span class="count-pill count-unverified">{{.UnverifiedCount}} unverified</span>{{end}}
             {{if .MechanicalCount}}<span class="count-pill count-mechanical">{{.MechanicalCount}} mechanical</span>{{end}}
+            {{if .RejectedCount}}<span class="count-pill count-rejected">{{.RejectedCount}} rejected</span>{{end}}
         </div>
     </div>
 
-    {{if .Suggestions}}
+    {{if .NextActions}}
+    <div class="suggestions-section">
+        <h2>Next actions</h2>
+        <ol class="next-actions">
+            {{range .NextActions}}
+            <li class="next-action">
+                <span class="sev-pill sev-{{.SeverityClass}}">{{if .Severity}}{{.Severity}}{{else}}NOTE{{end}}</span>
+                <a class="next-action-title" href="#{{.AnchorID}}">{{.Title}}</a>
+                <span class="finding-location">{{.Location}}</span>
+            </li>
+            {{end}}
+        </ol>
+    </div>
+    {{else if .Suggestions}}
     <div class="suggestions-section">
         <h2>Suggestions</h2>
         <div class="suggestions-body">{{.Suggestions | markdownify}}</div>
@@ -92,6 +128,7 @@
             {{template "comment-counter" .}}
             <div class="general-body">
                 {{.CommentBody | markdownify}}
+                {{template "counterargument" .}}
             </div>
         </div>
         {{end}}
@@ -126,6 +163,7 @@
                         <div class="comment-body">
                             {{template "comment-counter" .}}
                             {{.CommentBody | markdownify}}
+                            {{template "counterargument" .}}
                         </div>
                     </div>
                 </div>
@@ -137,6 +175,18 @@
 
     <details class="review-details">
         <summary>Review details</summary>
+        {{if .Rejected}}
+        <h3>Rejected after investigation</h3>
+        {{template "record-rows" .Rejected}}
+        {{end}}
+        {{if .Unexamined}}
+        <h3>First-pass claims not examined</h3>
+        {{template "record-rows" .Unexamined}}
+        {{end}}
+        {{if .Merged}}
+        <h3>Merged claims</h3>
+        {{template "record-rows" .Merged}}
+        {{end}}
         {{if .Checks}}
         <h3>Required checks</h3>
         <div class="checks-table-wrap">

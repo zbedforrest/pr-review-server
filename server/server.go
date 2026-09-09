@@ -1210,6 +1210,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			PublishInlineCap         *int    `json:"publish_inline_cap"`
 			PublishInlineMinSeverity *string `json:"publish_inline_min_severity"`
 			PublishReplyMode         *string `json:"publish_reply_mode"`
+			PublishShowUnverified    *bool   `json:"publish_show_unverified"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
@@ -1261,6 +1262,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.PublishInlineMinSeverity != nil {
 			publishUpdates = append(publishUpdates, settingWrite{settingPublishInlineMinSeverity, strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))})
+		}
+		if req.PublishShowUnverified != nil {
+			publishUpdates = append(publishUpdates, settingWrite{settingPublishShowUnverified, strconv.FormatBool(*req.PublishShowUnverified)})
 		}
 		if req.PublishReplyMode != nil {
 			mode := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))

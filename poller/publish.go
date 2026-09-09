@@ -20,6 +20,7 @@ const (
 	settingPublishEnabledAuthors    = "publish_enabled_authors"
 	settingPublishInlineCap         = "publish_inline_cap"
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"
+	settingPublishShowUnverified    = "publish_show_unverified"
 )
 
 func publishEnabledFor(author, enabledCSV string) bool {
@@ -166,6 +167,11 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	}
 	if v, err := p.db.GetSetting(settingPublishInlineMinSeverity); err == nil && strings.TrimSpace(v) != "" {
 		pol.InlineMinSeverity = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, err := p.db.GetSetting(settingPublishShowUnverified); err == nil {
+		if b, convErr := strconv.ParseBool(strings.TrimSpace(v)); convErr == nil {
+			pol.ShowUnverified = b
+		}
 	}
 	return pol
 }
