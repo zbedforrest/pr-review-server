@@ -189,6 +189,9 @@ func (r *ReviewResult) ComputeImportanceCounts() {
 	r.MediumCount = 0
 	r.LowCount = 0
 	for _, c := range r.Comments {
+		if c.Inactive || c.FilePath == "SUMMARY" || c.FilePath == checkFilePath {
+			continue
+		}
 		switch strings.ToUpper(c.Importance) {
 		case "CRITICAL":
 			r.CriticalCount++

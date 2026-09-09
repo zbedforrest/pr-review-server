@@ -9,6 +9,7 @@ import (
 	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/payload"
 
 	"github.com/stretchr/testify/assert"
@@ -69,6 +70,27 @@ func TestBuildPublishRound_TagsReconciledFindingsAndBuildsLinks(t *testing.T) {
 	assert.Equal(t, previous, r.Previous)
 	assert.Equal(t, "https://prism.example/go/agent?o=acme&r=example&n=7", r.AgentLinkBase)
 	assert.Equal(t, "https://prism.example/api/review/acme/example/7?format=html", r.DashboardURL)
+}
+
+func TestPublishPolicy_ReadsSettingsOverDefaults(t *testing.T) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	p := &Poller{cfg: &config.Config{}, db: database}
+
+	pol := p.publishPolicy()
+	assert.Equal(t, publisher.DefaultPolicy(), pol, "no settings means the shipped policy")
+
+	require.NoError(t, database.SetSetting("publish_inline_cap", "1"))
+	require.NoError(t, database.SetSetting("publish_inline_min_severity", "Critical"))
+	require.NoError(t, database.SetSetting("publish_show_unverified", "false"))
+	pol = p.publishPolicy()
+	assert.Equal(t, 1, pol.InlineCap)
+	assert.Equal(t, "critical", pol.InlineMinSeverity)
+	assert.False(t, pol.ShowUnverified)
+
+	require.NoError(t, database.SetSetting("publish_show_unverified", "not-a-bool"))
+	assert.True(t, p.publishPolicy().ShowUnverified, "an unreadable value keeps the default")
 }
 
 func TestBuildPublishRound_NoBaseURLDisablesLinks(t *testing.T) {
@@ -167,5 +189,26 @@ func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) 
 	}
 	if r.InlineComments["a.go:5:aaaaaaaaaaaa"] != 501 {
 		t.Fatalf("aliased finding must link to its existing comment: %v", r.InlineComments)
+	}
+}
+
+func TestBuildPublishRound_InactiveRecordsDoNotTakePartInReconciliation(t *testing.T) {
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 7, CommitSHA: "abc", Author: "alice"}
+	pl := payload.Payload{SchemaVersion: payload.CurrentSchemaVersion, Findings: []payload.Finding{
+		{ID: "a.go:5:bbbbbbbbbbbb", Severity: "critical", Provenance: "agent", File: "a.go", Line: 52, State: "confirmed", Active: true,
+			Comment: "Clicking Start in the C2C setup modal fires showMyCamDidNotStart immediately after starting, resetting the button to Ready."},
+		{ID: "a.go:5:dddddddddddd", Severity: "critical", Provenance: "first-pass", File: "a.go", Line: 54, State: "merged", Active: false,
+			Comment: "every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready"},
+	}}
+	comments := []github.ReviewCommentInfo{{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54,
+		Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**"}}
+	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateOpen}}
+	r := buildPublishRound(pr, pl, comments, nil, previous, "")
+	var active []string
+	for _, f := range r.Findings {
+		active = append(active, f.ID)
+	}
+	if len(r.Findings) != 1 || r.Findings[0].ID != "a.go:5:aaaaaaaaaaaa" {
+		t.Fatalf("the active agent finding must take the alias; the inactive merged record must not compete for it or reach the publisher: %v", active)
 	}
 }

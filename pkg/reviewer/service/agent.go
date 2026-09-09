@@ -75,9 +75,14 @@ type AgentConfig struct {
 
 // AgentReview is the result of a successful agent run.
 type AgentReview struct {
-	Comments  []types.LineComment // parsed from the agent's final JSON response
-	Gates     []types.LineComment // mechanical gate findings (advisory, provenance "mechanical")
-	BugMemory BugMemoryMatch      // which memory entries were injected/excluded (telemetry)
+	Comments []types.LineComment // the agent's own findings (disposition entries removed)
+	Gates    []types.LineComment // mechanical gate findings (advisory, provenance "mechanical")
+	// FirstPassActive is the first-pass claims that stay active under the
+	// retention policy (see ApplyDispositions); the caller merges it as the
+	// first-pass set. Records is everything else the review keeps inactive.
+	FirstPassActive []types.LineComment
+	Records         []types.LineComment
+	BugMemory       BugMemoryMatch // which memory entries were injected/excluded (telemetry)
 
 	// Checks and CheckFindings carry the required-check enforcement output
 	// (see checks.go): funnel telemetry, and the deterministic escalations
@@ -244,7 +249,8 @@ func RunAgentReview(
 	}
 
 	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets)
-	prompt, err := buildAgentPromptContent(defaultBranch, diffFiles, prContext, geminiComments, gates, memEntries, checks)
+	claims := firstPassClaims(geminiComments)
+	prompt, err := buildAgentPromptContent(defaultBranch, diffFiles, prContext, claims, gates, memEntries, checks)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
@@ -460,6 +466,13 @@ func RunAgentReview(
 			logPrefix, checkTel.ChecksIssued, checkTel.ChecksAnswered, checkTel.ChecksViolated,
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
+	NormalizeAgentLifecycleFields(comments)
+	evidencePaths := make([]string, len(diffFiles))
+	for i, f := range diffFiles {
+		evidencePaths[i] = f.Path
+	}
+	comments, firstPassActive, records := ApplyDispositionsWithEvidenceRefs(comments, claims, evidenceRefResolves(evidencePaths, cloneDir))
+
 	// Fallback if ANY served model fails to match — a transient fallback
 	// that recovers mid-run still ran turns on the wrong model. ServedModel
 	// reports the offender (or the primary model on a clean run).
@@ -499,6 +512,8 @@ func RunAgentReview(
 	logRemovable = true
 	return &AgentReview{
 		Comments:             comments,
+		FirstPassActive:      firstPassActive,
+		Records:              records,
 		Gates:                gates,
 		BugMemory:            memMatch,
 		Checks:               checkTel,
@@ -727,8 +742,11 @@ func prScopeSection(baseBranch string, files []diffFile) string {
 // feature issued any), then a JSON block of Gemini comments. With no scope,
 // no context, no gates, no matches and no checks the prompt is
 // byte-identical to a memoryless, checkless build.
-func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext string, geminiComments, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
-	commentsJSON, err := json.MarshalIndent(geminiComments, "", "  ")
+func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext string, claims []firstPassClaim, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
+	if claims == nil {
+		claims = []firstPassClaim{}
+	}
+	commentsJSON, err := json.MarshalIndent(claims, "", "  ")
 	if err != nil {
 		return "", err
 	}
@@ -744,7 +762,7 @@ func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext 
 	}
 	b.WriteString(bugMemorySection(bugHistory))
 	b.WriteString(requiredChecksSection(checks))
-	b.WriteString("\n--- GEMINI COMMENTS (JSON) ---\n")
+	b.WriteString("\n--- FIRST-PASS CLAIMS (JSON; account for every source_id) ---\n")
 	b.Write(commentsJSON)
 	return b.String(), nil
 }

@@ -441,6 +441,7 @@ func EnforceRequiredChecks(
 					FilePath:   anchor,
 					LineNumber: 0,
 					Importance: "MEDIUM",
+					State:      StateConfirmed,
 					CommentBody: fmt.Sprintf(
 						"**Required check %s answered VIOLATED without an accompanying finding — escalated automatically.** %s",
 						c.ID, ans.Body),
@@ -462,6 +463,7 @@ func EnforceRequiredChecks(
 			} else {
 				alert := c.memAlert
 				alert.CommentBody += note
+				alert.State = StateUnverified
 				escalated = append(escalated, alert)
 			}
 		}
@@ -484,7 +486,7 @@ func EnforceRequiredChecks(
 // index.ts — exactly the names the gates target — suppress a synthesis.
 func hasFindingOnFile(comments []types.LineComment, file string) bool {
 	for _, f := range comments {
-		if f.FilePath != "SUMMARY" && sameFileStrict(f.FilePath, file) {
+		if f.FilePath != "SUMMARY" && f.Disposition == nil && sameFileStrict(f.FilePath, file) {
 			return true
 		}
 	}

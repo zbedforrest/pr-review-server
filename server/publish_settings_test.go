@@ -12,13 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"pr-review-server/db"
+	"pr-review-server/pkg/publisher"
 )
 
 func TestSettings_PublishKeysRoundTrip(t *testing.T) {
 	server, _ := newTestServer(t, "tester")
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(
-		`{"publish_enabled_authors":"alice, bob","publish_inline_cap":3,"publish_inline_min_severity":"low","publish_reply_mode":"react"}`))
+		`{"publish_enabled_authors":"alice, bob","publish_inline_cap":3,"publish_inline_min_severity":"low","publish_reply_mode":"react","publish_show_unverified":false}`))
 	w := httptest.NewRecorder()
 	server.handleSettings(w, req)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -33,6 +34,22 @@ func TestSettings_PublishKeysRoundTrip(t *testing.T) {
 	assert.Equal(t, float64(3), got["publish_inline_cap"])
 	assert.Equal(t, "low", got["publish_inline_min_severity"])
 	assert.Equal(t, "react", got["publish_reply_mode"])
+	assert.Equal(t, false, got["publish_show_unverified"])
+}
+
+func TestSettings_PublishShowUnverifiedRoundTripsBackOn(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	require.NoError(t, database.SetSetting("publish_show_unverified", "false"))
+
+	w := httptest.NewRecorder()
+	server.handleSettings(w, httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"publish_show_unverified":true}`)))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, true, got["publish_show_unverified"])
+	stored, _ := database.GetSetting("publish_show_unverified")
+	assert.Equal(t, "true", stored)
 }
 
 func TestSettings_PublishKeysDefaultToDisabled(t *testing.T) {
@@ -43,9 +60,10 @@ func TestSettings_PublishKeysDefaultToDisabled(t *testing.T) {
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, "", got["publish_enabled_authors"])
-	assert.Equal(t, float64(5), got["publish_inline_cap"])
+	assert.Equal(t, float64(publisher.DefaultInlineCap), got["publish_inline_cap"])
 	assert.Equal(t, "medium", got["publish_inline_min_severity"])
 	assert.Equal(t, "off", got["publish_reply_mode"])
+	assert.Equal(t, true, got["publish_show_unverified"])
 }
 
 func TestSettings_RejectsBadReplyMode(t *testing.T) {
@@ -142,4 +160,13 @@ func TestSettings_EnablingRepliesWritesTheStampBeforeTheMode(t *testing.T) {
 	stamp, _ := database.GetSetting("publish_reply_enabled_at")
 	assert.Equal(t, "", mode, "a failed enable must leave the mode off")
 	assert.NotEmpty(t, stamp, "the stamp is written first so the mode is never on without it")
+}
+
+func TestSettings_DefaultInlineCapMatchesThePublisher(t *testing.T) {
+	server, _ := newTestServer(t, "tester")
+	w := httptest.NewRecorder()
+	server.handleSettings(w, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, float64(publisher.DefaultInlineCap), got["publish_inline_cap"], "the dashboard must show the cap the poller applies")
 }

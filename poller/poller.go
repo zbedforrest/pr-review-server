@@ -592,18 +592,13 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	// the first-pass findings, and evaluation against real release blockers
 	// showed the agent deleting correct first-pass catches it had argued itself
 	// out of. The merge keeps the agent as the canonical voice (its phrasing
-	// and SUMMARY win, and duplicates collapse into it) but re-admits
-	// first-pass CRITICALs the agent dropped, provenance-tagged. CRITICAL-only
-	// is deliberate noise control — loosen only with benchmark evidence.
-	firstPassCriticals := make([]types.LineComment, 0, len(result.Comments))
-	for _, c := range result.Comments {
-		if strings.EqualFold(strings.TrimSpace(c.Importance), "CRITICAL") && c.FilePath != "SUMMARY" {
-			firstPassCriticals = append(firstPassCriticals, c)
-		}
-	}
+	// and SUMMARY win, and duplicates collapse into it) but re-admits the
+	// first-pass claims the retention policy keeps active (criticals the agent
+	// did not confirm; see service.ApplyDispositions). Everything else the
+	// first pass said survives as inactive records appended after the merge.
 	sets := []service.FindingSet{
 		{Provenance: "agent", Comments: agentOut.Comments},
-		{Provenance: "first-pass", Comments: firstPassCriticals},
+		{Provenance: "first-pass", Comments: agentOut.FirstPassActive},
 		// Required-check escalations (empty unless REQUIRED_CHECKS is on):
 		// synthesized VIOLATED findings and unanswered memory re-admissions.
 		// Merging as a lower-priority set reuses the provenance note and the
@@ -631,10 +626,15 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		log.Printf("[REVIEWER] PR %d: carry-forward: from=%s carried_in=%d carried_dropped=%d",
 			pr.Number, carriedInfo.FromSHA, carriedInfo.CarriedIn, carriedInfo.CarriedDropped)
 	}
-	merged := service.MergeFindings(sets...)
+	merged, mergedRecords := service.MergeFindingsWithRecords(sets...)
 	service.EnforceFindingContractPolicy(merged)
+	records := append(mergedRecords, agentOut.Records...)
+	service.RemapMergeTargets(merged, records)
+	// The summary prose is rendered once references are final, so its
+	// "Next actions" name the findings that survived the merge.
+	service.RenderStructuredSummaries(merged)
 	readmitted := len(merged) - len(agentOut.Comments)
-	result.Comments = merged
+	result.Comments = append(merged, records...)
 	result.ComputeImportanceCounts()
 	log.Printf("[REVIEWER] PR %d: agent stage ok (clone=%s, log=%s, agent_comments=%d, readmitted_first_pass=%d, critical=%d, medium=%d, low=%d)",
 		pr.Number, agentOut.CloneDir, agentOut.LogPath, len(agentOut.Comments), readmitted,
@@ -943,8 +943,8 @@ func cachedProjectionMetadata(pl *payload.Payload) (critical, medium, low int, v
 // assessment, and correctly yields a carry-less run rather than falling
 // through to an older, superseded review.
 func parseSidecarPayload(body []byte) (*payload.Payload, error) {
-	var pl payload.Payload
-	if err := json.Unmarshal(body, &pl); err != nil {
+	pl, err := payload.Decode(body)
+	if err != nil {
 		return nil, err
 	}
 	return &pl, nil

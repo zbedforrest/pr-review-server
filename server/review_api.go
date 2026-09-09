@@ -256,8 +256,8 @@ func (s *Server) handleGetReview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if sidecarErr == nil {
-		var pl payload.Payload
-		if err := json.Unmarshal(sidecarBytes, &pl); err != nil {
+		pl, err := payload.Decode(sidecarBytes)
+		if err != nil {
 			log.Printf("[API/review] malformed sidecar %s: %v", sidecarName, err)
 		} else {
 			// For an unpinned request, prefer the sidecar's full commit SHA while

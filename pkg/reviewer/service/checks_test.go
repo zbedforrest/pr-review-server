@@ -374,6 +374,22 @@ func TestEnforceRequiredChecks_SafeRequiresRealEvidence(t *testing.T) {
 // Rule (c): an unanswered check re-admits the underlying alert. Gate alerts
 // (already merged with provenance "mechanical") carry the note; memory
 // checks emit a new alert since they have no merge presence otherwise.
+func TestEnforceRequiredChecks_StatesEscalationsAndReadmissions(t *testing.T) {
+	gates := []types.LineComment{gateAlertFixture("portal-layer", "app/Tooltip.tsx")}
+	files := []diffFile{{Path: "app/Tooltip.tsx"}, {Path: "src/menus/Item.tsx", Added: []string{"handler"}}}
+	mem := []BugMemoryEntry{mkCheckEntry("ctx-menu", "menu-id", "verify handler ids", []string{"src/menus/**"}, nil)}
+	checks := BuildRequiredChecks(gates, mem, files)
+	answers := []CheckAnswer{{ID: "CHK-portal-layer-1", Verdict: "VIOLATED", Evidence: "app/Tooltip.tsx:1", Body: "broken"}}
+	_, _, escalated, _ := EnforceRequiredChecks(checks, answers, nil, gates, []string{"app/Tooltip.tsx", "src/menus/Item.tsx"}, "")
+	states := map[string]int{}
+	for _, e := range escalated {
+		states[e.State]++
+	}
+	if states[StateConfirmed] != 1 || states[StateUnverified] != 1 {
+		t.Fatalf("a VIOLATED synthesis is confirmed and an unanswered memory alert is unverified: %+v", escalated)
+	}
+}
+
 func TestEnforceRequiredChecks_UnansweredReadmitsUnderlyingAlert(t *testing.T) {
 	gates := []types.LineComment{gateAlertFixture("portal-layer", "app/Tooltip.tsx")}
 	files := []diffFile{{Path: "src/menus/Item.tsx", Added: []string{"handler"}}}
@@ -456,9 +472,9 @@ func TestEnforceRequiredChecks_TelemetryMixed(t *testing.T) {
 }
 
 // With the feature off (no checks issued) the prompt must be byte-identical
-// to the pre-required-checks build — gates, memory and Gemini comments only.
+// to the pre-required-checks build — gates, memory and first-pass claims only.
 func TestBuildAgentPromptContent_ChecksOffByteIdentical(t *testing.T) {
-	gemini := []types.LineComment{lc("a.go", 3, "LOW", "x")}
+	gemini := firstPassClaims([]types.LineComment{lc("a.go", 3, "LOW", "x")})
 	gates := []types.LineComment{gateAlertFixture("settings-ref", "photo/tasks.py")}
 	mem := []BugMemoryEntry{mkEntry("e1", "c", "a prior", []string{"**"}, nil, 1)}
 
@@ -479,7 +495,7 @@ func TestBuildAgentPromptContent_ChecksOffByteIdentical(t *testing.T) {
 		b.WriteString("- [" + g.FilePath + "] " + g.CommentBody + "\n")
 	}
 	b.WriteString(bugMemorySection(mem))
-	b.WriteString("\n--- GEMINI COMMENTS (JSON) ---\n")
+	b.WriteString("\n--- FIRST-PASS CLAIMS (JSON; account for every source_id) ---\n")
 	b.Write(commentsJSON)
 
 	if got != b.String() {
@@ -508,8 +524,8 @@ func TestBuildAgentPromptContent_ChecksSection(t *testing.T) {
 		}
 	}
 	// The block sits with the other context sections, before the comments JSON.
-	if strings.Index(got, "REQUIRED CHECKS") > strings.Index(got, "GEMINI COMMENTS") {
-		t.Error("REQUIRED CHECKS block must precede the Gemini comments")
+	if strings.Index(got, "REQUIRED CHECKS") > strings.Index(got, "FIRST-PASS CLAIMS") {
+		t.Error("REQUIRED CHECKS block must precede the first-pass claims")
 	}
 }
 
@@ -554,5 +570,16 @@ func TestBugMemoryEntry_CheckJSONRoundTrip(t *testing.T) {
 	}
 	if lib.Entries[1].Check != "" {
 		t.Errorf("entry without check should stay empty: %q", lib.Entries[1].Check)
+	}
+}
+
+func TestEnforceRequiredChecks_DispositionEntryIsNotAnAccompanyingFinding(t *testing.T) {
+	gates := []types.LineComment{gateAlertFixture("portal-layer", "app/Tooltip.tsx")}
+	checks := BuildRequiredChecks(gates, nil, []diffFile{{Path: "app/Tooltip.tsx"}})
+	answers := []CheckAnswer{{ID: "CHK-portal-layer-1", Verdict: "VIOLATED", Evidence: "app/Tooltip.tsx:9", Body: "broken"}}
+	comments := []types.LineComment{{FilePath: "app/Tooltip.tsx", LineNumber: 9, Disposition: &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "n/a"}}}
+	_, _, escalated, _ := EnforceRequiredChecks(checks, answers, comments, gates, []string{"app/Tooltip.tsx"}, "")
+	if len(escalated) != 1 {
+		t.Fatalf("a rejection entry on the file must not suppress the VIOLATED synthesis: %+v", escalated)
 	}
 }

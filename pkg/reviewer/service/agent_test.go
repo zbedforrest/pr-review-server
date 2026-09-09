@@ -1070,3 +1070,68 @@ func TestEscapeControlCharsInStrings(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAgentJSON_AcceptsDispositionFields(t *testing.T) {
+	raw := `[
+	 {"id":"A-1","file_path":"a.go","line_number":3,"importance":"MEDIUM","comment_body":"Nil deref.","sources":["FP-2"],
+	  "finding_contract":{"schema_version":1,"finding_kind":"production_behavior","materiality":"current_impact","current_impact":"Requests crash.","counterfactual_trigger":null,"falsifiability":"unknown","falsifiable_condition":null,"expected_observable":null,"subjects":[{"kind":"file","path":"a.go"}],"uncertainty":"None.","severity_rationale":"Crash."}},
+	 {"file_path":"b.go","line_number":9,"disposition":{"source_id":"FP-1","state":"rejected","reason":"The guard on line 7 returns before the lookup.","evidence":[{"file":"b.go","line":7}]}},
+	 {"file_path":"SUMMARY","line_number":0,"summary":{"verdict":"request_changes","upshot":"Requests can crash when the config is missing.","priority_ids":["A-1"],"notes":"The PR wires the new handler correctly otherwise."}}
+	]`
+	got, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries", len(got))
+	}
+	if got[0].ID != "A-1" || len(got[0].Sources) != 1 || got[0].Sources[0] != "FP-2" {
+		t.Errorf("finding id/sources not parsed: %+v", got[0])
+	}
+	d := got[1].Disposition
+	if d == nil || d.SourceID != "FP-1" || d.State != "rejected" || d.Reason == "" || len(d.Evidence) != 1 || d.Evidence[0].Line != 7 {
+		t.Errorf("disposition not parsed: %+v", got[1])
+	}
+	s := got[2].Summary
+	if s == nil || s.Verdict != "request_changes" || len(s.PriorityIDs) != 1 {
+		t.Errorf("summary not parsed: %+v", got[2])
+	}
+}
+
+func TestRenderStructuredSummaries_WritesDeterministicProse(t *testing.T) {
+	comments := []types.LineComment{
+		{ID: "A-1", FilePath: "a.go", LineNumber: 3, Importance: "MEDIUM", CommentBody: "Nil deref.",
+			FindingContract: &types.FindingContract{Headline: "Requests crash on missing config"}},
+		{FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "request_changes", Upshot: "Requests can crash when the config is missing.", PriorityIDs: []string{"A-1", "nope"}, Notes: "Otherwise the wiring is correct."}},
+	}
+	RenderStructuredSummaries(comments)
+	want := "Verdict: request changes.\n\nRequests can crash when the config is missing.\n\nNext actions:\n1. Requests crash on missing config (a.go:3)\n\nOtherwise the wiring is correct."
+	if comments[1].CommentBody != want {
+		t.Errorf("rendered summary:\n%q\nwant:\n%q", comments[1].CommentBody, want)
+	}
+	plain := []types.LineComment{{FilePath: "SUMMARY", CommentBody: "Verdict: approve. All good."}}
+	RenderStructuredSummaries(plain)
+	if plain[0].CommentBody != "Verdict: approve. All good." {
+		t.Errorf("a prose summary must pass through untouched")
+	}
+}
+
+func TestComputeImportanceCounts_SkipsInactiveRecords(t *testing.T) {
+	r := &ReviewResult{Comments: []types.LineComment{
+		{FilePath: "a.go", Importance: "CRITICAL"},
+		{FilePath: "b.go", Importance: "MEDIUM", Inactive: true, State: StateRejected},
+		{FilePath: "c.go", Importance: "LOW"},
+	}}
+	r.ComputeImportanceCounts()
+	if r.CriticalCount != 1 || r.MediumCount != 0 || r.LowCount != 1 {
+		t.Fatalf("counts = %d/%d/%d, inactive records must not count", r.CriticalCount, r.MediumCount, r.LowCount)
+	}
+}
+
+func TestComputeImportanceCounts_SkipsNarrativeEntries(t *testing.T) {
+	r := &ReviewResult{Comments: []types.LineComment{{FilePath: "SUMMARY", Importance: "CRITICAL"}, {FilePath: "CHECK", Importance: "MEDIUM"}, {FilePath: "a.go", Importance: "LOW"}}}
+	r.ComputeImportanceCounts()
+	if r.CriticalCount != 0 || r.MediumCount != 0 || r.LowCount != 1 {
+		t.Fatalf("counts = %d/%d/%d", r.CriticalCount, r.MediumCount, r.LowCount)
+	}
+}

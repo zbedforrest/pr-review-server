@@ -324,3 +324,146 @@ func TestMergeFindings_BlankLowerPriorityLabelDefaultsToFirstPass(t *testing.T) 
 		t.Fatalf("a re-admitted finding must never read as the agent's own: %q", got[1].Provenance)
 	}
 }
+
+func TestMergeFindingsWithRecords_DuplicateBecomesAMergedRecord(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		lc("SUMMARY", 0, "LOW", "Verdict: approve"),
+		{ID: "A-1", FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "agent phrasing"},
+	}}
+	fp := lc("a.go", 12, "CRITICAL", "first-pass phrasing")
+	fp.Original = &types.OriginalClaim{SourceID: "FP-1"}
+	firstPass := FindingSet{Provenance: "first-pass", Comments: []types.LineComment{fp}}
+	merged, records := MergeFindingsWithRecords(agent, firstPass)
+	if len(merged) != 2 || merged[1].Importance != "MEDIUM" {
+		t.Fatalf("merged = %+v", merged)
+	}
+	if len(records) != 1 || records[0].State != StateMerged || !records[0].Inactive || records[0].MergedInto != "A-1" || records[0].CommentBody != "first-pass phrasing" {
+		t.Fatalf("the dropped duplicate must survive as a merged record: %+v", records)
+	}
+}
+
+func TestCarryForwardFindings_SkipsInactiveRecords(t *testing.T) {
+	rejected := lc("a.go", 1, "MEDIUM", "rejected last time")
+	rejected.State, rejected.Inactive = StateRejected, true
+	carried, dropped := CarryForwardFindings([]types.LineComment{rejected, lc("b.go", 2, "LOW", "still valid")}, nil)
+	if len(carried) != 1 || carried[0].FilePath != "b.go" || dropped != 0 {
+		t.Fatalf("an inactive record must never be carried forward as a claim: carried=%+v dropped=%d", carried, dropped)
+	}
+	if carried[0].State != StateUnverified {
+		t.Errorf("a carried finding is a re-admitted claim and reads as unverified: %+v", carried[0])
+	}
+	stale := lc("c.go", 3, "LOW", "with prior-run references")
+	stale.Sources, stale.MergeBasis, stale.Summary = []string{"FP-2"}, "sources", &types.SummaryBlock{Verdict: "approve"}
+	carried, _ = CarryForwardFindings([]types.LineComment{stale}, nil)
+	if carried[0].Sources != nil || carried[0].MergeBasis != "" || carried[0].Summary != nil {
+		t.Errorf("prior-run references mean nothing in this run: %+v", carried[0])
+	}
+}
+
+func TestMergeFindingsWithRecords_DisputedClaimsAreNotFoldedByProximity(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		lc("SUMMARY", 0, "LOW", "Verdict: approve"),
+		{ID: "A-1", FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "unrelated nearby finding"},
+	}}
+	disputed := lc("a.go", 12, "CRITICAL", "token leaks")
+	disputed.State = StateUnverified
+	disputed.Assessment = &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "redacted by the logger"}
+	firstPass := FindingSet{Provenance: "first-pass", Comments: []types.LineComment{disputed}}
+	merged, records := MergeFindingsWithRecords(agent, firstPass)
+	if len(records) != 0 || len(merged) != 3 || merged[2].Assessment == nil || merged[2].State != StateUnverified {
+		t.Fatalf("a claim the agent explicitly rejected cannot be the same defect as its nearby positive finding; it stays active and disputed: merged=%+v records=%+v", merged, records)
+	}
+}
+
+func TestMergeFindingsWithRecords_ProximityFoldsRecordTheirBasis(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{{ID: "A-1", FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "agent"}}}
+	fp := lc("a.go", 12, "CRITICAL", "first-pass")
+	fp.State = StateUnverified
+	_, records := MergeFindingsWithRecords(agent, FindingSet{Provenance: "first-pass", Comments: []types.LineComment{fp}})
+	if len(records) != 1 || records[0].MergeBasis != "proximity" {
+		t.Fatalf("a heuristic fold must say so: %+v", records)
+	}
+}
+
+func TestMergeFindingsWithRecords_IntraAgentDuplicatesLeaveARecordAndRemapReferences(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		{FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "approve", PriorityIDs: []string{"A-2"}}},
+		{ID: "A-1", FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "first phrasing"},
+		{ID: "A-2", FilePath: "a.go", LineNumber: 12, Importance: "CRITICAL", CommentBody: "second phrasing of the same defect"},
+	}}
+	claim := lc("a.go", 12, "CRITICAL", "first-pass claim")
+	claim.State, claim.Inactive, claim.MergedInto, claim.MergeBasis = StateMerged, true, "A-2", "sources"
+	merged, records := MergeFindingsWithRecords(agent)
+	records = append(records, claim)
+	RemapMergeTargets(merged, records)
+
+	if len(merged) != 2 || merged[1].ID != "A-1" || merged[1].Importance != "CRITICAL" {
+		t.Fatalf("survivor keeps the higher severity: %+v", merged)
+	}
+	var dropped types.LineComment
+	for _, r := range records {
+		if r.CommentBody == "second phrasing of the same defect" {
+			dropped = r
+		}
+	}
+	if dropped.State != StateMerged || !dropped.Inactive || dropped.MergedInto != "A-1" || dropped.MergeBasis != "proximity" {
+		t.Fatalf("the dropped agent finding must survive as a merged record: %+v", records)
+	}
+	if merged[0].Summary.PriorityIDs[0] != "A-1" {
+		t.Errorf("a priority id naming the dropped finding must follow it to the survivor: %+v", merged[0].Summary.PriorityIDs)
+	}
+	if records[len(records)-1].MergedInto != "A-1" {
+		t.Errorf("a claim merged into the dropped finding must follow it too: %+v", records[len(records)-1])
+	}
+}
+
+func TestRemapMergeTargets_DeduplicatesPriorityIDs(t *testing.T) {
+	merged := []types.LineComment{{FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "approve", PriorityIDs: []string{"A-1", "A-2"}}}}
+	records := []types.LineComment{{ID: "A-2", MergedInto: "A-1", MergeBasis: "proximity", State: StateMerged, Inactive: true}}
+	RemapMergeTargets(merged, records)
+	if len(merged[0].Summary.PriorityIDs) != 1 || merged[0].Summary.PriorityIDs[0] != "A-1" {
+		t.Fatalf("two priorities collapsing onto one survivor list it once: %v", merged[0].Summary.PriorityIDs)
+	}
+}
+
+func TestRemapMergeTargets_FollowsLocationKeyedReferences(t *testing.T) {
+	merged := []types.LineComment{{ID: "A-1", FilePath: "a.go", LineNumber: 10, CommentBody: "survivor"}}
+	dropped := types.LineComment{FilePath: "a.go", LineNumber: 12, CommentBody: "unlabelled agent finding", State: StateMerged, Inactive: true, MergedInto: "A-1", MergeBasis: "proximity"}
+	claim := types.LineComment{FilePath: "a.go", LineNumber: 12, CommentBody: "first-pass", State: StateMerged, Inactive: true, MergedInto: "a.go:12", MergeBasis: "sources"}
+	records := []types.LineComment{dropped, claim}
+	RemapMergeTargets(merged, records)
+	if records[1].MergedInto != "A-1" {
+		t.Fatalf("a claim that pointed at the dropped finding's location must follow it to the survivor: %q", records[1].MergedInto)
+	}
+}
+
+func TestMergeFindingsWithRecords_MechanicalAlertsDoNotAbsorbClaims(t *testing.T) {
+	mech := FindingSet{Provenance: "mechanical", Comments: []types.LineComment{lc("shared/base.py", 0, "MEDIUM", "**Mechanical alert — shared module edited.**")}}
+	carriedIn := lc("shared/base.py", 0, "MEDIUM", "carried whole-file claim")
+	carriedIn.State = StateUnverified
+	carried := FindingSet{Provenance: CarriedProvenance("0123456789abcdef0123"), Comments: []types.LineComment{carriedIn}}
+	merged, records := MergeFindingsWithRecords(mech, carried)
+	if len(merged) != 2 || len(records) != 0 {
+		t.Fatalf("a mechanical alert is not a finding that can cover a claim; the claim stays active: merged=%+v records=%+v", merged, records)
+	}
+}
+
+func TestMergeFindingsWithRecords_ClaimsDoNotAbsorbMechanicalAlertsEither(t *testing.T) {
+	claim := lc("shared/base.py", 0, "MEDIUM", "carried claim")
+	claim.State = StateUnverified
+	sets := []FindingSet{
+		{Provenance: "agent", Comments: nil},
+		{Provenance: CarriedProvenance("0123456789abcdef0123"), Comments: []types.LineComment{claim}},
+		{Provenance: "mechanical", Comments: []types.LineComment{lc("shared/base.py", 0, "MEDIUM", "**Mechanical alert — shared module edited.**")}},
+	}
+	merged, records := MergeFindingsWithRecords(sets...)
+	if len(merged) != 2 || len(records) != 0 {
+		t.Fatalf("an unverified claim does not clear a deterministic signal: merged=%+v records=%+v", merged, records)
+	}
+	synth := FindingSet{Provenance: "required-check", Comments: []types.LineComment{lc("app/Tooltip.tsx", 0, "MEDIUM", "escalated VIOLATED answer")}}
+	mech := FindingSet{Provenance: "mechanical", Comments: []types.LineComment{lc("app/Tooltip.tsx", 0, "MEDIUM", "generic advisory")}}
+	merged, records = MergeFindingsWithRecords(synth, mech)
+	if len(merged) != 1 || len(records) != 1 {
+		t.Fatalf("the VIOLATED synthesis still absorbs the gate alert that spawned it: merged=%+v records=%+v", merged, records)
+	}
+}

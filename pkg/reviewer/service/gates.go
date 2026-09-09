@@ -166,7 +166,7 @@ func RunMechanicalGates(ctx context.Context, dir string, files []diffFile) []typ
 	if len(shared) > 0 {
 		out = append(out, types.LineComment{
 			FilePath: shared[0], LineNumber: 0, Importance: "MEDIUM",
-			CommentBody: fmt.Sprintf("**Mechanical alert — shared module edited.** This PR modifies %d shared/base module(s): %s. Incidental edits to shared code are a leading cause of regressions outside the PR's headline feature; the review must explicitly address the blast radius of each.",
+			CommentBody: fmt.Sprintf("**Mechanical alert — shared module edited.** This PR modifies %d shared/base module(s): %s. Incidental edits to shared code are a leading cause of regressions outside the PR's headline feature. Check each module's consumers; report any regression as a finding on the affected code and answer the module's required check, not a summary paragraph.",
 				len(shared), strings.Join(shared, ", ")),
 		})
 	}

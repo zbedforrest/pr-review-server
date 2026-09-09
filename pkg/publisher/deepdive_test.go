@@ -128,8 +128,8 @@ func TestDiff_PolicyDropIsNotCountedAsFixed(t *testing.T) {
 			{Kind: db.PublishedKindFinding, Fingerprint: "gone", State: db.PublishedStateOpen},
 		}}
 	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
-	if !strings.Contains(out, "**Since last review:** 0 new · 1 still open · 1 fixed") {
-		t.Fatalf("only 'gone' is fixed; 'softened' is merely below the bar now:\n%s", out)
+	if !strings.Contains(out, "**Since last review:** 0 new · 2 still open · 1 fixed") {
+		t.Fatalf("only 'gone' is fixed; 'softened' is still held, folded below the bar:\n%s", out)
 	}
 }
 

@@ -2,7 +2,6 @@ package poller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -21,6 +20,7 @@ const (
 	settingPublishEnabledAuthors    = "publish_enabled_authors"
 	settingPublishInlineCap         = "publish_inline_cap"
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"
+	settingPublishShowUnverified    = "publish_show_unverified"
 )
 
 func publishEnabledFor(author, enabledCSV string) bool {
@@ -60,6 +60,17 @@ func publishTargetReady(state string, draft bool, headSHA, reviewedSHA string) (
 // reconciled against PRism's findings so nothing is posted twice, and the
 // file patches bound which lines may take an inline comment.
 func buildPublishRound(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, baseURL string) publisher.Round {
+	// Only active claims reach GitHub, so only they take part in aliasing and
+	// reconciliation; an inactive record with first-pass wording must not
+	// steal a prior comment's identity from the agent finding it merged into.
+	active := make([]payload.Finding, 0, len(pl.Findings))
+	for _, f := range pl.Findings {
+		if f.Active || pl.SchemaVersion != payload.CurrentSchemaVersion {
+			active = append(active, f)
+		}
+	}
+	pl.Findings = active
+
 	external := make([]reconcile.ExternalComment, 0, len(comments))
 	for _, c := range comments {
 		external = append(external, reconcile.ExternalComment{
@@ -168,6 +179,11 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	if v, err := p.db.GetSetting(settingPublishInlineMinSeverity); err == nil && strings.TrimSpace(v) != "" {
 		pol.InlineMinSeverity = strings.ToLower(strings.TrimSpace(v))
 	}
+	if v, err := p.db.GetSetting(settingPublishShowUnverified); err == nil {
+		if b, convErr := strconv.ParseBool(strings.TrimSpace(v)); convErr == nil {
+			pol.ShowUnverified = b
+		}
+	}
 	return pol
 }
 
@@ -184,8 +200,8 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: publication enabled but no ledger or GitHub client available", pr.Owner, pr.Repo, pr.Number)
 		return
 	}
-	var pl payload.Payload
-	if err := json.Unmarshal(sidecar, &pl); err != nil {
+	pl, err := payload.Decode(sidecar)
+	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: sidecar unreadable: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return
 	}

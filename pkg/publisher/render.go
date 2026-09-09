@@ -52,6 +52,8 @@ type Round struct {
 	// InlineComments maps finding id to the GitHub review-comment id it was
 	// posted as (this round or earlier), so the summary can link to it.
 	InlineComments map[string]int64
+	// ShowUnverified is Policy.ShowUnverified as applied to this round.
+	ShowUnverified bool
 }
 
 func (r Round) sourceTag(id string) string {
@@ -79,16 +81,12 @@ type roundDiff struct {
 
 func (r Round) diff() roundDiff {
 	present := map[string]bool{}
-	for _, f := range r.currentFindings() {
+	for _, f := range r.activeClaims() {
 		present[f.ID] = true
 	}
-	// A finding still in the review but no longer above the bar was not
-	// fixed; it simply stops being reported.
-	stillReviewed := map[string]bool{}
-	for _, f := range r.Findings {
-		if Publishable(f) {
-			stillReviewed[f.ID] = true
-		}
+	shown := map[string]bool{}
+	for _, f := range append(append(r.currentFindings(), r.lowerSeverityNotes()...), r.unverifiedNotes()...) {
+		shown[f.ID] = true
 	}
 	published := map[string]bool{}
 	var d roundDiff
@@ -97,15 +95,22 @@ func (r Round) diff() roundDiff {
 			continue
 		}
 		published[p.Fingerprint] = true
+		// Presence keeps a hidden claim from reading as fixed; the visible
+		// "still open" count covers only what the comment shows.
 		switch {
-		case present[p.Fingerprint]:
+		case shown[p.Fingerprint]:
 			d.StillOpen++
-		case !stillReviewed[p.Fingerprint]:
+		case present[p.Fingerprint]:
+		default:
 			d.Fixed++
 		}
 	}
-	for id := range present {
-		if !published[id] {
+	// "New" counts findings the ledger tracks (the shown ones). Folded notes
+	// have no ledger rows, so counting them would announce them as new on
+	// every round; they still count as present so a finding that moved into a
+	// fold is not reported fixed.
+	for _, f := range r.currentFindings() {
+		if !published[f.ID] {
 			d.New++
 		}
 	}
@@ -165,12 +170,59 @@ func (r Round) findingLink(f payload.Finding) string {
 // bullet is one summary line: severity, the effect sentence, and a short
 // location linked to the inline comment or the file at the reviewed commit.
 func (r Round) bullet(f payload.Finding) string {
+	return r.markedBullet(f, "")
+}
+
+// markedBullet is a bullet with a bold status marker between the severity and
+// the text; an empty marker renders a plain bullet.
+func (r Round) markedBullet(f payload.Finding, marker string) string {
 	where := f.File[strings.LastIndex(f.File, "/")+1:]
 	if f.Line > 0 {
 		where = fmt.Sprintf("%s:%d", where, f.Line)
 	}
+	if marker != "" {
+		marker = "**" + marker + "** "
+	}
 	text := truncateWords(strings.TrimSuffix(strings.TrimSpace(summaryText(f)), "."), 200)
-	return fmt.Sprintf("- %s %s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), text, where, r.findingLink(f))
+	return fmt.Sprintf("- %s %s%s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, where, r.findingLink(f))
+}
+
+const (
+	markerUnverified = "FIRST PASS · UNVERIFIED"
+	markerDisputed   = "FIRST PASS · DISPUTED"
+	markerCarried    = "CARRIED · UNVERIFIED"
+	maxReasonRunes   = 200
+)
+
+// unverifiedBullet marks an unverified claim by where it came from (the first
+// pass, or a prior round of this review), or as disputed with the agent's
+// bounded reason on a nested line when it argued against the claim.
+func (r Round) unverifiedBullet(f payload.Finding) string {
+	if f.Assessment == nil {
+		if f.Provenance == "carried" {
+			return r.markedBullet(f, markerCarried)
+		}
+		return r.markedBullet(f, markerUnverified)
+	}
+	line := r.markedBullet(f, markerDisputed)
+	if reason := strings.TrimSpace(f.Assessment.Reason); reason != "" {
+		line += "  - Agent: " + truncateWords(firstLine(reason), maxReasonRunes) + "\n"
+	}
+	return line
+}
+
+// activeClaims are the findings the review holds this round: asserted as
+// bullets, folded as lower-severity notes, or folded as unverified. Presence
+// tracking counts all of them so a claim that moved between sections is
+// neither "fixed" nor resolved.
+func (r Round) activeClaims() []payload.Finding {
+	var out []payload.Finding
+	for _, f := range r.Findings {
+		if Publishable(f) || UnverifiedNote(f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // severityLabel is a colored badge when PRism can serve one, else bold text.
@@ -201,12 +253,52 @@ func (r Round) lowerSeverityNotes() []payload.Finding {
 	return notes
 }
 
+// unverifiedNotes are the active first-pass claims the agent left unverified
+// or disputed, shown folded with a status marker when the policy allows.
+func (r Round) unverifiedNotes() []payload.Finding {
+	if !r.ShowUnverified {
+		return nil
+	}
+	var notes []payload.Finding
+	for _, f := range r.Findings {
+		if UnverifiedNote(f) {
+			notes = append(notes, f)
+		}
+	}
+	sortBySeverity(notes)
+	return notes
+}
+
 const maxFoldedNotes = 8
+
+// writeFolded renders one details block of bullets. The count cap applies
+// only when the rest has somewhere to go; the byte cap always holds, since
+// GitHub rejects oversized bodies.
+func (r Round) writeFolded(b *strings.Builder, label string, notes []payload.Finding, bullet func(payload.Finding) string) {
+	if len(notes) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "<details><summary>%d %s%s</summary>\n\n", len(notes), label, plural(len(notes)))
+	for i, f := range notes {
+		overCount := r.DashboardURL != "" && i == maxFoldedNotes
+		overBytes := b.Len() > SummaryMaxChars-600
+		if overCount || overBytes {
+			if r.DashboardURL != "" {
+				fmt.Fprintf(b, "- ... %d more on the [dashboard](%s)\n", len(notes)-i, r.DashboardURL)
+			} else {
+				fmt.Fprintf(b, "- ... %d more omitted\n", len(notes)-i)
+			}
+			break
+		}
+		b.WriteString(bullet(f))
+	}
+	b.WriteString("</details>\n\n")
+}
 
 // RenderSummary is the sticky comment: a confidence line, the round diff, and
 // one bullet per finding above the bar (critical first). Confirmed findings
-// below the bar are listed folded under one line; unconfirmed items stay on
-// the dashboard.
+// below the bar are listed folded under one line, unverified first-pass claims
+// under another; rejected and merged records never appear.
 func RenderSummary(r Round, sel Selection) string {
 	shown := r.currentFindings()
 	sortBySeverity(shown)
@@ -242,25 +334,8 @@ func RenderSummary(r Round, sel Selection) string {
 	if len(shown) > 0 {
 		b.WriteString("\n")
 	}
-	if notes := r.lowerSeverityNotes(); len(notes) > 0 {
-		fmt.Fprintf(&b, "<details><summary>%d lower-severity note%s</summary>\n\n", len(notes), plural(len(notes)))
-		for i, f := range notes {
-			// The count cap applies only when the rest has somewhere to go; the
-			// byte cap always holds, since GitHub rejects oversized bodies.
-			overCount := r.DashboardURL != "" && i == maxFoldedNotes
-			overBytes := b.Len() > SummaryMaxChars-600
-			if overCount || overBytes {
-				if r.DashboardURL != "" {
-					fmt.Fprintf(&b, "- ... %d more on the [dashboard](%s)\n", len(notes)-i, r.DashboardURL)
-				} else {
-					fmt.Fprintf(&b, "- ... %d more omitted\n", len(notes)-i)
-				}
-				break
-			}
-			b.WriteString(r.bullet(f))
-		}
-		b.WriteString("</details>\n\n")
-	}
+	r.writeFolded(&b, "lower-severity note", r.lowerSeverityNotes(), r.bullet)
+	r.writeFolded(&b, "unverified note", r.unverifiedNotes(), r.unverifiedBullet)
 	if r.DashboardURL != "" {
 		fmt.Fprintf(&b, "[Full report](%s)\n\n", r.DashboardURL)
 	}
