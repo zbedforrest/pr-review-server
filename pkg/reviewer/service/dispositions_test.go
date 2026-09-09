@@ -243,3 +243,11 @@ func TestEvidenceFileExists_LineMustBeWithinTheFile(t *testing.T) {
 		t.Error("a line past the end of the file is not evidence")
 	}
 }
+
+func TestEvidenceRefResolves_FailsClosedForFilesNotOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	check := evidenceRefResolves([]string{"deleted.go"}, dir)
+	if check(types.EvidenceRef{File: "deleted.go", Line: 5}) {
+		t.Fatal("a file the PR deleted cannot ground a rejection; the agent can cite the surviving code")
+	}
+}

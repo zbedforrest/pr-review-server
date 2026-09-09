@@ -279,7 +279,7 @@ func evidenceRefResolves(diffPaths []string, worktreeDir string) func(types.Evid
 		}
 		data, err := os.ReadFile(filepath.Join(worktreeDir, path))
 		if err != nil {
-			return true // in the diff but not on disk: cannot check the line
+			return false // in the diff but gone from disk (deleted): nothing to cite
 		}
 		return e.Line <= strings.Count(string(data), "\n")+1
 	}

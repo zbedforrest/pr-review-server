@@ -324,3 +324,15 @@ func TestPublish_ConfirmedLowInTheFoldStaysPresent(t *testing.T) {
 		t.Fatalf("its ledger row must stay open: %+v", m1)
 	}
 }
+
+func TestRoundDiff_StillOpenCountsOnlyWhatIsShown(t *testing.T) {
+	hidden := fp("u", "medium", "a.go", 4, "unverified claim", "first-pass")
+	hidden.State, hidden.Active = "unverified", true
+	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 2, ShowUnverified: false,
+		Findings: []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "n"), hidden},
+		Previous: []db.PublishedFinding{{Kind: db.PublishedKindFinding, Fingerprint: "u", State: db.PublishedStateOpen}}}
+	d := r.diff()
+	if d.StillOpen != 0 || d.Fixed != 0 {
+		t.Fatalf("a claim hidden by policy is neither shown as open nor reported fixed: %+v", d)
+	}
+}

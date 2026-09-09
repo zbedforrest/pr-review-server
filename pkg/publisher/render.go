@@ -84,6 +84,10 @@ func (r Round) diff() roundDiff {
 	for _, f := range r.activeClaims() {
 		present[f.ID] = true
 	}
+	shown := map[string]bool{}
+	for _, f := range append(append(r.currentFindings(), r.lowerSeverityNotes()...), r.unverifiedNotes()...) {
+		shown[f.ID] = true
+	}
 	published := map[string]bool{}
 	var d roundDiff
 	for _, p := range r.Previous {
@@ -91,9 +95,13 @@ func (r Round) diff() roundDiff {
 			continue
 		}
 		published[p.Fingerprint] = true
-		if present[p.Fingerprint] {
+		// Presence keeps a hidden claim from reading as fixed; the visible
+		// "still open" count covers only what the comment shows.
+		switch {
+		case shown[p.Fingerprint]:
 			d.StillOpen++
-		} else {
+		case present[p.Fingerprint]:
+		default:
 			d.Fixed++
 		}
 	}
