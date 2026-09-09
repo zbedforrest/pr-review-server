@@ -64,6 +64,7 @@ func (s *Server) runDailyHealth(store healthStore, now time.Time) (health.Report
 		return health.Report{}, err
 	}
 	metrics.WallClock = time.Duration(s.cfg.AgentWallClockSec) * time.Second
+	metrics.PollingDisabled = s.cfg.DisablePolling
 	report := health.Evaluate(metrics)
 	body, err := json.Marshal(report)
 	if err != nil {

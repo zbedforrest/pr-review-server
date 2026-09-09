@@ -33,6 +33,9 @@ type Metrics struct {
 	Lease     LeaseMetrics
 	PRErrors  int           // PRs currently carrying an error message
 	WallClock time.Duration // the configured agent wall clock
+	// PollingDisabled marks an on-demand deployment, which holds no poller
+	// lease by design.
+	PollingDisabled bool
 }
 
 type RunMetrics struct {
@@ -57,7 +60,7 @@ type PublishMetrics struct {
 	Summaries   int
 	Inline      int
 	Annotations int
-	Dismissed   int
+	Dismissed   int // current total, not windowed: the ledger has no dismissal time
 }
 
 type ReplyMetrics struct {
@@ -160,6 +163,8 @@ func Evaluate(m Metrics) Report {
 	}
 
 	switch {
+	case m.PollingDisabled:
+		add("poller lease", StatusOK, "polling disabled on this deployment (on-demand reviews only)")
 	case !m.Lease.Present:
 		add("poller lease", StatusCritical, "no poller lease row; nothing is polling")
 	case m.Lease.ExpiresAt.Before(m.Now):
@@ -168,7 +173,7 @@ func Evaluate(m Metrics) Report {
 		add("poller lease", StatusOK, fmt.Sprintf("held by %s", m.Lease.Holder))
 	}
 
-	add("publications", StatusOK, fmt.Sprintf("%d summaries, %d inline comments, %d annotations; %d findings dismissed by concession", m.Publish.Summaries, m.Publish.Inline, m.Publish.Annotations, m.Publish.Dismissed))
+	add("publications", StatusOK, fmt.Sprintf("%d summaries, %d inline comments, %d annotations; %d findings currently dismissed by concession (all time)", m.Publish.Summaries, m.Publish.Inline, m.Publish.Annotations, m.Publish.Dismissed))
 
 	replyDetail := fmt.Sprintf("%d author replies handled", m.Replies.Handled)
 	if m.Replies.Handled > 0 {

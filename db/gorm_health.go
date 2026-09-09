@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"pr-review-server/pkg/health"
 )
@@ -11,6 +12,7 @@ import (
 // HealthReportModel stores one daily health report.
 type HealthReportModel struct {
 	ID          uint      `gorm:"primaryKey;autoIncrement"`
+	ReportDate  string    `gorm:"size:10;not null;uniqueIndex"` // UTC date of WindowEnd; a scheduler retry replaces the day's row
 	WindowStart time.Time `gorm:"not null"`
 	WindowEnd   time.Time `gorm:"not null;index"`
 	Overall     string    `gorm:"size:16;not null"`
@@ -24,6 +26,7 @@ func (HealthReportModel) TableName() string { return "health_reports" }
 
 type HealthReport struct {
 	ID          uint
+	ReportDate  string
 	WindowStart time.Time
 	WindowEnd   time.Time
 	Overall     string
@@ -33,13 +36,26 @@ type HealthReport struct {
 	CreatedAt   time.Time
 }
 
+// SaveHealthReport stores one report per UTC day; a second run for the same
+// day (a scheduler retry, a manual rerun) replaces the first.
 func (g *GormDB) SaveHealthReport(r *HealthReport) error {
-	m := HealthReportModel{WindowStart: r.WindowStart, WindowEnd: r.WindowEnd, Overall: r.Overall, Headline: r.Headline,
+	if r.ReportDate == "" {
+		r.ReportDate = r.WindowEnd.UTC().Format("2006-01-02")
+	}
+	m := HealthReportModel{ReportDate: r.ReportDate, WindowStart: r.WindowStart, WindowEnd: r.WindowEnd, Overall: r.Overall, Headline: r.Headline,
 		ReportJSON: r.ReportJSON, Markdown: r.Markdown, CreatedAt: r.CreatedAt}
-	if err := g.db.Create(&m).Error; err != nil {
+	err := g.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "report_date"}},
+		DoUpdates: clause.AssignmentColumns([]string{"window_start", "window_end", "overall", "headline", "report_json", "markdown", "created_at"}),
+	}).Create(&m).Error
+	if err != nil {
 		return err
 	}
-	r.ID = m.ID
+	var saved HealthReportModel
+	if err := g.db.Where("report_date = ?", r.ReportDate).First(&saved).Error; err != nil {
+		return err
+	}
+	r.ID = saved.ID
 	return nil
 }
 
@@ -50,8 +66,7 @@ func (g *GormDB) ListHealthReports(limit int) ([]HealthReport, error) {
 	}
 	out := make([]HealthReport, 0, len(models))
 	for _, m := range models {
-		out = append(out, HealthReport{ID: m.ID, WindowStart: m.WindowStart, WindowEnd: m.WindowEnd, Overall: m.Overall,
-			Headline: m.Headline, ReportJSON: m.ReportJSON, Markdown: m.Markdown, CreatedAt: m.CreatedAt})
+		out = append(out, HealthReport(m))
 	}
 	return out, nil
 }
@@ -181,7 +196,9 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time) (health.Metrics, error
 		return m, err
 	}
 	m.Replies.TextPosted = int(n)
-	if err := g.db.Model(&PublishedReplyModel{}).Where("action = 'pending' AND outcome = '' AND processed_at < ?", now.Add(-time.Hour)).Count(&n).Error; err != nil {
+	// A text step that has neither finished nor been resumed within an hour
+	// of its reply being recorded is stuck, whatever its acknowledgement state.
+	if err := g.db.Model(&PublishedReplyModel{}).Where("outcome = '' AND class IN ('question','pushback') AND processed_at < ?", now.Add(-time.Hour)).Count(&n).Error; err != nil {
 		return m, err
 	}
 	m.Replies.StuckPending = int(n)
@@ -196,7 +213,7 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time) (health.Metrics, error
 	m.Replies.UnlinkedRoots = len(unlinked)
 
 	rows = nil
-	if err := g.db.Model(&TelemetryEventModel{}).Where("created_at >= ? AND created_at < ? AND (action LIKE 'reply_%' OR action = 'agent_model_fallback')", start, end).
+	if err := g.db.Model(&TelemetryEventModel{}).Where("created_at >= ? AND created_at < ? AND (action LIKE 'reply\\_%' ESCAPE '\\' OR action = 'agent_model_fallback')", start, end).
 		Select("action AS key, count(*) AS count").Group("action").Scan(&rows).Error; err != nil {
 		return m, err
 	}

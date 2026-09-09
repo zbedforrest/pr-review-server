@@ -42,7 +42,7 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 		p.Fingerprint, p.Kind, p.CommentID, p.PublishedAt = "summary", PublishedKindSummary, 77, now.Add(-time.Hour)
 	})))
 	_, err := db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 1, RootCommentID: 1, AuthorCommentID: 10,
-		Fingerprint: "f", AuthorID: 42, Class: "pushback", Action: "pending", Body: "b", CreatedAt: now.Add(-3 * time.Hour)})
+		Fingerprint: "f", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: now.Add(-3 * time.Hour)})
 	require.NoError(t, err)
 	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 10").Update("processed_at", now.Add(-3*time.Hour)).Error)
 
@@ -75,4 +75,10 @@ func TestGormDB_HealthReports_RoundTrip(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, "warn", rows[0].Overall)
 	assert.Equal(t, "# warn", rows[0].Markdown)
+
+	require.NoError(t, db.SaveHealthReport(&HealthReport{WindowStart: now.Add(time.Hour), WindowEnd: now.Add(25 * time.Hour), Overall: "ok", Headline: "retry", ReportJSON: `{}`, Markdown: "# ok again", CreatedAt: now.Add(25 * time.Hour)}))
+	rows, err = db.ListHealthReports(10)
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "a rerun for the same UTC day replaces that day's report")
+	assert.Equal(t, "# ok again", rows[0].Markdown)
 }

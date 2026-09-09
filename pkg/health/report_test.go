@@ -91,6 +91,16 @@ func TestEvaluateQuietDayWarnsButIsNotCritical(t *testing.T) {
 	}
 }
 
+func TestEvaluateSkipsTheLeaseCheckWhenPollingIsDisabled(t *testing.T) {
+	m := healthyMetrics()
+	m.Lease = LeaseMetrics{}
+	m.PollingDisabled = true
+	r := Evaluate(m)
+	if r.Overall != StatusOK {
+		t.Fatalf("overall = %s, checks = %+v", r.Overall, r.Checks)
+	}
+}
+
 func TestPercentiles(t *testing.T) {
 	p50, p90, max := percentiles([]int64{100, 200, 300, 400, 500, 600, 700, 800, 900, 1000})
 	if p50 != 500 || p90 != 900 || max != 1000 {
