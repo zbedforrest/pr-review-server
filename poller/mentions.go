@@ -11,6 +11,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/runconfig"
 )
 
 // Authors ask for a review by mentioning the App in a PR comment, the way
@@ -194,17 +195,23 @@ func (p *Poller) handleMentionsOnPR(ctx context.Context, ledger mentionLedger, p
 			job.SkipPublish = !publish
 			err = p.ProcessReviewJob(ctx, job)
 		}
-		if errors.Is(err, ErrReviewAlreadyTracked) {
+		var invalid *runconfig.ValidationError
+		switch {
+		case errors.Is(err, ErrReviewAlreadyTracked):
 			res.deferred++
 			continue
-		}
-		if err != nil {
-			// Admission failed for a reason a retry will not fix; record it so
-			// the same comment is not retried every cycle, and say so.
-			log.Printf("[MENTIONS] %s: could not queue the review requested in comment %d: %v", key, c.ID, err)
+		case errors.As(err, &invalid):
+			// The request itself is bad and a retry cannot fix it; record it so
+			// the same comment is not retried every cycle.
+			log.Printf("[MENTIONS] %s: comment %d asked for an invalid review: %v", key, c.ID, err)
 			_ = ledger.RecordMention(&db.MentionTrigger{CommentID: c.ID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName, PRNumber: pr.PRNumber,
 				Author: c.Author, CommitSHA: ghPR.CommitSHA, Publish: false, CreatedAt: c.CreatedAt, TriggeredAt: time.Now().UTC()})
 			continue
+		case err != nil:
+			// Anything else (a database blip, a cancelled context) is retried
+			// next cycle; the PR stays a candidate.
+			res.deferred++
+			return res, err
 		}
 		res.triggered++
 		if err := ledger.RecordMention(&db.MentionTrigger{
