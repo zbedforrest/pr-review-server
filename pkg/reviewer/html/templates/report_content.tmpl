@@ -65,22 +65,26 @@
             {{if .MechanicalCount}}<span class="count-pill count-mechanical">{{.MechanicalCount}} mechanical</span>{{end}}
             {{if .RejectedCount}}<span class="count-pill count-rejected">{{.RejectedCount}} rejected</span>{{end}}
         </div>
+        {{if .FixFirst}}
+        <div class="fix-first">
+            <div class="fix-first-head">
+                <span class="fix-first-title">Fix first</span>
+                <span class="fix-first-sub">The reviewer's pick of the findings below; the full list follows.</span>
+            </div>
+            <ol class="next-actions">
+                {{range .FixFirst}}
+                <li class="next-action">
+                    <span class="sev-pill sev-{{.SeverityClass}}">{{if .Severity}}{{.Severity}}{{else}}NOTE{{end}}</span>
+                    <a class="next-action-title" href="#{{.AnchorID}}">{{.Title}}</a>
+                    <span class="finding-location">{{.Location}}</span>
+                </li>
+                {{end}}
+            </ol>
+        </div>
+        {{end}}
     </div>
 
-    {{if .NextActions}}
-    <div class="suggestions-section">
-        <h2>Next actions</h2>
-        <ol class="next-actions">
-            {{range .NextActions}}
-            <li class="next-action">
-                <span class="sev-pill sev-{{.SeverityClass}}">{{if .Severity}}{{.Severity}}{{else}}NOTE{{end}}</span>
-                <a class="next-action-title" href="#{{.AnchorID}}">{{.Title}}</a>
-                <span class="finding-location">{{.Location}}</span>
-            </li>
-            {{end}}
-        </ol>
-    </div>
-    {{else if .Suggestions}}
+    {{if .Suggestions}}
     <div class="suggestions-section">
         <h2>Suggestions</h2>
         <div class="suggestions-body">{{.Suggestions | markdownify}}</div>

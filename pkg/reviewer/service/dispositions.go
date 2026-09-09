@@ -113,7 +113,7 @@ func RenderStructuredSummaries(comments []types.LineComment) {
 				continue
 			}
 			if n == 0 {
-				b.WriteString("\n\nNext actions:")
+				b.WriteString("\n\nFix first:")
 			}
 			n++
 			fmt.Fprintf(&b, "\n%d. %s (%s)", n, findingLabel(f), findingLocation(f))

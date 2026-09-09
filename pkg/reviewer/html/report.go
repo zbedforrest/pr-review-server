@@ -602,8 +602,18 @@ func recordViews(records []types.LineComment, state string, anchors map[string]s
 	return out
 }
 
-// nextActions resolves the structured SUMMARY's priority ids against the
-// findings on the page; ids that name nothing rendered are skipped.
+// fixFirst resolves the structured SUMMARY's priority ids against the
+// findings on the page; ids that name nothing rendered are skipped. The list
+// is the reviewer's short list, so it is dropped when it would repeat the full
+// findings index rather than shorten it.
+func fixFirst(ids []string, byID map[string]CommentView, totalFindings int) []NextAction {
+	actions := nextActions(ids, byID)
+	if len(actions) >= totalFindings {
+		return nil
+	}
+	return actions
+}
+
 func nextActions(ids []string, byID map[string]CommentView) []NextAction {
 	var out []NextAction
 	for _, id := range ids {
@@ -739,7 +749,7 @@ func generateReport(in ReportInput) (string, error) {
 	}
 	var actions []NextAction
 	if structured != nil {
-		actions = nextActions(structured.PriorityIDs, byID)
+		actions = fixFirst(structured.PriorityIDs, byID, counts[groupConfirmed]+counts[groupNeedsCheck]+counts[groupMechanical])
 	}
 	rejected := recordViews(records, stateRejected, anchors)
 
@@ -777,7 +787,7 @@ func generateReport(in ReportInput) (string, error) {
 		MechanicalCount      int
 		RejectedCount        int
 		Suggestions          string
-		NextActions          []NextAction
+		FixFirst             []NextAction
 		Rejected             []RecordView
 		Unexamined           []RecordView
 		Merged               []RecordView
@@ -814,7 +824,7 @@ func generateReport(in ReportInput) (string, error) {
 		MechanicalCount: counts[groupMechanical],
 		RejectedCount:   len(rejected),
 		Suggestions:     suggestions,
-		NextActions:     actions,
+		FixFirst:        actions,
 		Rejected:        rejected,
 		Unexamined:      recordViews(records, stateUnverified, anchors),
 		Merged:          recordViews(records, stateMerged, anchors),
