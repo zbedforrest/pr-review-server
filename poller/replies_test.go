@@ -134,20 +134,24 @@ func TestReplyLiveCandidatesLimitsLiveReadsToActiveOrMovedPRs(t *testing.T) {
 		{RepoOwner: "acme", RepoName: "example", PRNumber: 2},
 		{RepoOwner: "acme", RepoName: "example", PRNumber: 3},
 		{RepoOwner: "acme", RepoName: "example", PRNumber: 4},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 5},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 6},
 	}
 	prs := map[string]*db.PR{
-		"acme/example#1": {GitHubUpdatedAt: &recent},
-		"acme/example#2": {GitHubUpdatedAt: &old},
-		"acme/example#3": {GitHubUpdatedAt: &moved},
+		"acme/example#1": {PRState: "open", GitHubUpdatedAt: &recent},
+		"acme/example#2": {PRState: "open", GitHubUpdatedAt: &old},
+		"acme/example#3": {PRState: "open", GitHubUpdatedAt: &moved},
+		"acme/example#5": {PRState: "closed", GitHubUpdatedAt: &recent},
+		"acme/example#6": {PRState: "open", Draft: true, GitHubUpdatedAt: &recent},
 	}
 	lookup := func(owner, repo string, n int) *db.PR { return prs[replyKey(owner, repo, n)] }
 	last := map[string]time.Time{"acme/example#2": old, "acme/example#3": moved.Add(-time.Hour)}
 
 	got := replyLiveCandidates(targets, lookup, last, false, now, 2*time.Hour)
 	if len(got) != 3 || got[0].PRNumber != 1 || got[1].PRNumber != 3 || got[2].PRNumber != 4 {
-		t.Fatalf("incremental = %+v, want recent (1), moved-since-settled (3) and uncached (4)", got)
+		t.Fatalf("incremental = %+v, want recent (1), moved-since-settled (3) and uncached (4); cached closed (5) and draft (6) cost no live read", got)
 	}
-	if got := replyLiveCandidates(targets, lookup, last, true, now, 2*time.Hour); len(got) != 4 {
+	if got := replyLiveCandidates(targets, lookup, last, true, now, 2*time.Hour); len(got) != 6 {
 		t.Fatalf("full scan checks every target, got %d", len(got))
 	}
 }

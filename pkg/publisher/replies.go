@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -118,6 +119,10 @@ const (
 	DecisionAnswer  = "answer"
 	DecisionAbstain = "abstain"
 )
+
+// errClaimedElsewhere reports a text step another instance currently holds;
+// the scan neither settles the PR nor reports an outcome for it.
+var errClaimedElsewhere = errors.New("text step claimed by another instance")
 
 // ReplyMarker tags a text reply PRism posted with the author comment it
 // answers, so a crash between posting and recording cannot produce a second
@@ -531,7 +536,7 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 						defer r.InFlight.remove(reply.CommentID)
 					}
 					outcome, err := r.text(ctx, t, state, comments, reply, row, nil)
-					if r.OnOutcome != nil {
+					if r.OnOutcome != nil && !errors.Is(err, errClaimedElsewhere) {
 						r.OnOutcome(outcome, err)
 					}
 				})
@@ -539,6 +544,10 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			continue
 		}
 		outcome, err := r.text(ctx, t, state, comments, reply, row, rep)
+		if errors.Is(err, errClaimedElsewhere) {
+			settled = false
+			continue
+		}
 		if r.OnOutcome != nil {
 			r.OnOutcome(outcome, err)
 		}
@@ -713,7 +722,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	// root's author, that is our own bot, can own such a marker.
 	adoptPosted := func(in []ThreadComment) (bool, error) {
 		for _, c := range in {
-			if id, ok := replyMarkerID(c.Body); ok && id == reply.CommentID && c.AuthorID == root.AuthorID && c.ID != reply.CommentID {
+			if id, ok := replyMarkerID(c.Body); ok && id == reply.CommentID && c.InReplyToID == reply.RootCommentID && c.AuthorID == root.AuthorID && c.ID != reply.CommentID {
 				return true, r.adopt(t, reply, c, &outcome)
 			}
 		}
@@ -748,7 +757,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		if rep != nil {
 			rep.skipText("claimed_elsewhere")
 		}
-		return outcome, nil
+		return outcome, errClaimedElsewhere
 	}
 	defer func() {
 		if outcome.Outcome == "" {
@@ -840,7 +849,12 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	if err != nil {
 		return outcome, err
 	}
-	if fresh.HeadSHA != state.HeadSHA || !fresh.Open || fresh.Draft {
+	switch {
+	case !fresh.Open:
+		return skip("closed")
+	case fresh.Draft:
+		return skip("draft")
+	case fresh.HeadSHA != state.HeadSHA:
 		return skip("head_moved")
 	}
 	latest, err := r.GH.ListThread(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
@@ -860,7 +874,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	if err != nil {
 		return outcome, err
 	}
-	if err := r.adopt(t, reply, ThreadComment{ID: id, CreatedAt: now}, &outcome); err != nil {
+	if err := r.adopt(t, reply, ThreadComment{ID: id, CreatedAt: r.now()}, &outcome); err != nil {
 		return outcome, err
 	}
 	if rep != nil {

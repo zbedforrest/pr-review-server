@@ -584,6 +584,7 @@ func TestReplyReactor_ForgedMarkerByTheAuthorIsIgnored(t *testing.T) {
 		runs++
 		return ReplyDecision{Decision: DecisionHold, Reply: "Still applies."}, nil
 	})
+	gh.threads["acme/example#7"][0].Body += "\n\n" + ReplyMarker(101)
 	gh.threads["acme/example#7"][1].Body += "\n\n" + ReplyMarker(101)
 	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 160, InReplyToID: 100, AuthorID: 42, Body: "ok " + ReplyMarker(101), CreatedAt: time.Date(2026, 9, 9, 17, 59, 30, 0, time.UTC)})
 	rep, _ := r.Run(context.Background())
@@ -806,9 +807,18 @@ func TestReplyReactor_ARowClaimedByAnotherInstanceIsLeftAlone(t *testing.T) {
 	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
 		Fingerprint: "a.go:1:abc", Class: "pushback", Action: "reacted", CreatedAt: t0, ClaimedBy: "other", ClaimedAt: &claimed}}
 	r.Holder = "me"
+	r.LastScanned = map[string]time.Time{}
+	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
+		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1", UpdatedAt: t0}, nil
+	}
+	outcomes := 0
+	r.OnOutcome = func(ReplyOutcome, error) { outcomes++ }
 	rep, _ := r.Run(context.Background())
-	if runs != 0 || len(gh.posted) != 0 || rep.TextSkipped["claimed_elsewhere"] != 1 || ledger.rows[0].ClaimedBy != "other" {
+	if runs != 0 || len(gh.posted) != 0 || rep.TextSkipped["claimed_elsewhere"] != 1 || ledger.rows[0].ClaimedBy != "other" || len(rep.Errors) != 0 {
 		t.Fatalf("runs=%d posted=%v rep=%+v row=%+v", runs, gh.posted, rep, ledger.rows[0])
+	}
+	if outcomes != 0 || !r.LastScanned["acme/example#7"].IsZero() {
+		t.Fatalf("a row held elsewhere reports no outcome and holds the watermark: outcomes=%d watermark=%v", outcomes, r.LastScanned)
 	}
 	r.Now = func() time.Time { return t0.Add(20 * time.Minute) }
 	rep, _ = r.Run(context.Background())

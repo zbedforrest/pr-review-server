@@ -59,6 +59,11 @@ func replyLiveCandidates(targets []db.PublishedReplyTarget, lookup func(owner, r
 			out = append(out, t)
 			continue
 		}
+		// A cached closed or draft row is skipped without a live read; the full
+		// scan corrects the cache if it is wrong.
+		if !strings.EqualFold(pr.PRState, "open") || pr.Draft {
+			continue
+		}
 		key := replyKey(t.RepoOwner, t.RepoName, t.PRNumber)
 		if now.Sub(*pr.GitHubUpdatedAt) <= window || pr.GitHubUpdatedAt.After(lastScanned[key]) {
 			out = append(out, t)
