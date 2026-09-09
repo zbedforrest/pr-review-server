@@ -12,9 +12,13 @@ import (
 func TestHeadline_CutsAtClauseBoundaryNotMidWord(t *testing.T) {
 	fd := withContract(f("x", "medium", "internal/journey/evaluator.go", 309, "c"), "production_behavior", "current_impact",
 		"When a selected component entry fails to render, the request returns 500 with no dispositions, so the entry_payload_error row and any earlier holdout/suppression rows for that request are never recorded.", "")
+	if h := headline(fd); h != "Behavior change" {
+		t.Fatalf("a labelled kind with a long sentence keeps only the label: %q", h)
+	}
+	fd.FindingContract.FindingKind = "unlabelled_kind"
 	h := headline(fd)
-	if !strings.HasPrefix(h, "Behavior change · When a selected component entry fails to render, the request returns 500 with no dispositions") {
-		t.Fatalf("headline should end at the clause boundary: %q", h)
+	if !strings.HasPrefix(h, "When a selected component entry fails to render, the request returns 500 with no dispositions") {
+		t.Fatalf("without a label the headline ends at the clause boundary: %q", h)
 	}
 	if strings.Contains(h, "suppres") || len([]rune(h)) > 140 {
 		t.Fatalf("headline must not run past the clause or cut a word: %q", h)

@@ -376,13 +376,22 @@ var suggestionFenceRe = regexp.MustCompile("(?s)```suggestion\n.*?\n```")
 
 // headline is the compact one-liner: kind and effect from the contract when
 // the agent supplied one, else the comment's first sentence.
+// headline is the bold line of an inline comment. With a contract it is the
+// kind label and the effect sentence; when the sentence does not fit and the
+// kind has a label, the label stands alone and RenderInline shows the sentence
+// below. Without a label the clause cut keeps the headline informative.
 func headline(f payload.Finding) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
+		label, hasLabel := kindLabels[c.FindingKind]
 		impact := strings.TrimSpace(c.Headline)
 		if impact == "" {
-			impact = clauseHeadline(strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), "."), headlineMaxRunes)
+			full := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
+			impact = clauseHeadline(full, headlineMaxRunes)
+			if impact != full && hasLabel {
+				return label
+			}
 		}
-		if label, ok := kindLabels[c.FindingKind]; ok {
+		if hasLabel {
 			return label + " · " + impact
 		}
 		return impact
@@ -439,26 +448,17 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	compact := hasContract && strings.TrimSpace(c.CurrentImpact) != ""
 
 	// When the effect sentence does not fit the headline it is shown once,
-	// in full, under a kind-only headline rather than repeated after a cut copy.
+	// in full, under the headline (kind label alone when the kind has one).
 	title := headline(f)
-	sentenceBelow := compact && headlineIsCut(f)
-	if sentenceBelow && strings.TrimSpace(c.Headline) == "" {
-		title = kindLabels[c.FindingKind]
-	}
 	var b strings.Builder
 	b.WriteString(FindingMarker(f.ID) + "\n")
-	switch {
-	case badgeBase == "" && title != "":
+	if badgeBase == "" {
 		fmt.Fprintf(&b, "**[%s] %s**\n", strings.ToUpper(f.Severity), title)
-	case badgeBase == "":
-		fmt.Fprintf(&b, "**[%s]**\n", strings.ToUpper(f.Severity))
-	case title != "":
+	} else {
 		fmt.Fprintf(&b, "%s **%s**\n", severityLabel(f.Severity, badgeBase), title)
-	default:
-		fmt.Fprintf(&b, "%s\n", severityLabel(f.Severity, badgeBase))
 	}
 
-	if sentenceBelow {
+	if compact && headlineIsCut(f) {
 		b.WriteString("\n" + strings.TrimSpace(c.CurrentImpact) + "\n")
 	}
 	if hasContract && strings.TrimSpace(c.Uncertainty) != "" {
