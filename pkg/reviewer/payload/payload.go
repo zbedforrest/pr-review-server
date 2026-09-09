@@ -359,11 +359,30 @@ func (p Payload) ActiveFindings() []Finding {
 // finding; v1 readers must treat every finding as an active confirmed claim.
 const CurrentSchemaVersion = "2"
 
-func findingState(c types.LineComment) string {
-	if c.State != "" {
-		return c.State
+// lifecycle returns the (state, active) pair Build writes, coerced to the
+// invariant Decode enforces so one careless producer cannot make a whole
+// sidecar unreadable: rejected and merged are always inactive, confirmed is
+// always active, unknown states read as confirmed, unverified follows the
+// producer.
+func lifecycle(c types.LineComment) (string, bool) {
+	switch c.State {
+	case "rejected", "merged":
+		return c.State, false
+	case "unverified":
+		return c.State, !c.Inactive
+	case "confirmed", "":
+		return "confirmed", true
+	default:
+		if c.Inactive {
+			return "unverified", false
+		}
+		return "confirmed", true
 	}
-	return "confirmed"
+}
+
+func findingState(c types.LineComment) string {
+	state, _ := lifecycle(c)
+	return state
 }
 
 // normalizeSeverity lower-cases LineComment importance values into the four
@@ -502,7 +521,7 @@ func Build(
 
 	for _, c := range comments {
 		sev := normalizeSeverity(c.Importance)
-		if !c.Inactive {
+		if _, active := lifecycle(c); active {
 			switch sev {
 			case "critical":
 				counts.Critical++
@@ -519,8 +538,9 @@ func Build(
 		if c.FilePath == "SUMMARY" || c.FilePath == "CHECK" {
 			contractStatus = "not_applicable"
 		}
+		state, active := lifecycle(c)
 		id := Fingerprint(c.FilePath, c.LineNumber, c.CommentBody)
-		if c.Inactive {
+		if !active {
 			// A record can carry the exact words of the claim it merged into;
 			// it must never share that claim's identity.
 			id = Fingerprint(c.FilePath, c.LineNumber, findingState(c)+"\n"+c.CommentBody)
@@ -533,8 +553,8 @@ func Build(
 			Line:                  c.LineNumber,
 			Comment:               c.CommentBody,
 			FindingContractStatus: contractStatus,
-			State:                 findingState(c),
-			Active:                !c.Inactive,
+			State:                 state,
+			Active:                active,
 			Sources:               append([]string(nil), c.Sources...),
 			Assessment:            cloneDisposition(c.Assessment),
 			Original:              cloneOriginal(c.Original),

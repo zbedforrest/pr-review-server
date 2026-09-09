@@ -872,3 +872,29 @@ func TestBuild_ClonesDispositionFieldsFromTheInput(t *testing.T) {
 		t.Fatalf("payload must not alias the caller's slices and structs: %+v", f)
 	}
 }
+
+func TestBuild_CoercesTheLifecycleInvariant(t *testing.T) {
+	comments := []types.LineComment{
+		{FilePath: "a.go", LineNumber: 1, Importance: "MEDIUM", CommentBody: "x", State: "rejected"},
+		{FilePath: "b.go", LineNumber: 2, Importance: "MEDIUM", CommentBody: "y", State: "confirmed", Inactive: true},
+		{FilePath: "c.go", LineNumber: 3, Importance: "MEDIUM", CommentBody: "z", State: "bogus"},
+	}
+	pl := Build("acme", "example", 1, "abc", comments, "", nil)
+	raw, _ := json.Marshal(pl)
+	if _, err := Decode(raw); err != nil {
+		t.Fatalf("Build must never write a sidecar Decode refuses: %v", err)
+	}
+	byFile := map[string]Finding{}
+	for _, f := range pl.Findings {
+		byFile[f.File] = f
+	}
+	if byFile["a.go"].Active || byFile["a.go"].State != "rejected" {
+		t.Errorf("a rejected record is inactive: %+v", byFile["a.go"])
+	}
+	if !byFile["b.go"].Active {
+		t.Errorf("a confirmed claim is active: %+v", byFile["b.go"])
+	}
+	if byFile["c.go"].State != "confirmed" {
+		t.Errorf("an unknown state falls back to confirmed for an active finding: %+v", byFile["c.go"])
+	}
+}

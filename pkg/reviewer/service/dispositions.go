@@ -240,7 +240,7 @@ func supportedRejection(d *types.Disposition, pathExists func(string) bool) bool
 		return false
 	}
 	for _, e := range d.Evidence {
-		if file := strings.TrimSpace(e.File); file != "" && pathExists(file) {
+		if file := strings.TrimSpace(e.File); file != "" && e.Line > 0 && pathExists(file) {
 			return true
 		}
 	}

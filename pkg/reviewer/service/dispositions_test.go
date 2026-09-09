@@ -208,3 +208,12 @@ func TestNormalizeAgentLifecycleFields_ClearsMergeBasis(t *testing.T) {
 		t.Fatal("merge basis is policy metadata, not the agent's to set")
 	}
 }
+
+func TestApplyDispositions_RejectionEvidenceNeedsALine(t *testing.T) {
+	claims := firstPassClaims([]types.LineComment{lc("d.go", 20, "MEDIUM", "Missing null check.")})
+	agentOut := []types.LineComment{{FilePath: "d.go", LineNumber: 20, Disposition: &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "Never nil.", Evidence: []types.EvidenceRef{{File: "d.go"}}}}}
+	_, _, records := ApplyDispositionsWithEvidence(agentOut, claims, func(string) bool { return true })
+	if records[0].State != StateUnverified {
+		t.Fatalf("a file without a line is the claim's own location, not evidence: %+v", records[0])
+	}
+}
