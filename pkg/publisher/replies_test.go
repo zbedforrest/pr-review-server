@@ -72,8 +72,21 @@ func (f *fakeReplyGH) React(_ context.Context, _, _ string, commentID int64) err
 }
 
 type fakeReplyLedger struct {
-	targets []db.PublishedReplyTarget
-	rows    []db.PublishedReply
+	targets  []db.PublishedReplyTarget
+	rows     []db.PublishedReply
+	unlinked []db.UnlinkedPublishedFinding
+	linked   map[uint]int64
+}
+
+func (f *fakeReplyLedger) ListUnlinkedPublishedFindings() ([]db.UnlinkedPublishedFinding, error) {
+	return f.unlinked, nil
+}
+func (f *fakeReplyLedger) LinkPublishedFindingComment(id uint, commentID int64) error {
+	if f.linked == nil {
+		f.linked = map[uint]int64{}
+	}
+	f.linked[id] = commentID
+	return nil
 }
 
 func (f *fakeReplyLedger) ListPublishedReplyTargets() ([]db.PublishedReplyTarget, error) {
@@ -164,5 +177,68 @@ func TestReplyReactor_ObserveRecordsWithoutReacting(t *testing.T) {
 	}
 	if len(gh.reactions) != 0 || len(ledger.rows) != 2 || ledger.rows[0].Action != "observed" {
 		t.Errorf("observe mode: reactions=%v rows=%+v", gh.reactions, ledger.rows)
+	}
+}
+
+func TestMatchUnlinkedRootsUsesReviewIDAndMarkerTogether(t *testing.T) {
+	rows := []db.UnlinkedPublishedFinding{
+		{ID: 1, ReviewID: 500, Fingerprint: "a.go:1:abc"},
+		{ID: 2, ReviewID: 500, Fingerprint: "b.go:2:def"},
+		{ID: 3, ReviewID: 501, Fingerprint: "c.go:3:ghi"},
+	}
+	comments := []ThreadComment{
+		{ID: 100, ReviewID: 500, Body: FindingMarker("a.go:1:abc") + "\nours"},
+		{ID: 101, ReviewID: 500, InReplyToID: 100, Body: FindingMarker("a.go:1:abc") + " quoted back by the author"},
+		{ID: 102, ReviewID: 999, Body: FindingMarker("b.go:2:def") + "\nsame marker, someone else's review"},
+		{ID: 103, ReviewID: 501, Body: "no marker"},
+	}
+	got := MatchUnlinkedRoots(rows, comments)
+	if len(got) != 1 || got[1] != 100 {
+		t.Fatalf("MatchUnlinkedRoots = %v, want only row 1 -> comment 100", got)
+	}
+}
+
+func TestReplyReactor_LinkRootsRecordsCommentIDsForReviewPostedFindings(t *testing.T) {
+	gh := &fakeReplyGH{threads: map[string][]ThreadComment{
+		"acme/example#7": {
+			{ID: 100, ReviewID: 500, AuthorID: 1, Body: FindingMarker("a.go:1:abc") + "\nours"},
+			{ID: 110, ReviewID: 500, AuthorID: 1, Body: FindingMarker("z.go:9:zzz") + "\nours, not in the ledger"},
+		},
+		"acme/example#8": {
+			{ID: 200, ReviewID: 600, AuthorID: 1, Body: "marker gone"},
+		},
+	}}
+	ledger := &fakeReplyLedger{unlinked: []db.UnlinkedPublishedFinding{
+		{ID: 1, RepoOwner: "acme", RepoName: "example", PRNumber: 7, ReviewID: 500, Fingerprint: "a.go:1:abc"},
+		{ID: 2, RepoOwner: "acme", RepoName: "example", PRNumber: 8, ReviewID: 600, Fingerprint: "b.go:2:def"},
+	}}
+	r := &ReplyReactor{GH: gh, Ledger: ledger}
+	rep := r.LinkRoots(context.Background(), ledger.unlinked)
+	if rep.Linked != 1 || rep.Unmatched != 1 || rep.PRsListed != 2 || len(rep.Errors) != 0 {
+		t.Fatalf("report = %+v", rep)
+	}
+	if ledger.linked[1] != 100 || len(ledger.linked) != 1 {
+		t.Errorf("linked = %v, want {1:100}", ledger.linked)
+	}
+}
+
+func TestReplyReactor_ReportCountsWhatWasSkippedAndWhy(t *testing.T) {
+	r, _, ledger := reactorFixture("react")
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.PRsSkipped["draft"] != 1 || rep.PRsSkipped["not_allowlisted"] != 1 || rep.PRsScanned != 1 {
+		t.Errorf("skip breakdown = %v scanned=%d", rep.PRsSkipped, rep.PRsScanned)
+	}
+	if rep.RepliesSeen != 2 || rep.AlreadyHandled != 0 || len(rep.Handled) != 2 || rep.Handled[1].Class != "question" {
+		t.Errorf("replies: seen=%d already=%d handled=%+v", rep.RepliesSeen, rep.AlreadyHandled, rep.Handled)
+	}
+	rep, err = r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.RepliesSeen != 2 || rep.AlreadyHandled != 2 || len(rep.Handled) != 0 || len(ledger.rows) != 2 {
+		t.Errorf("second cycle: seen=%d already=%d handled=%d", rep.RepliesSeen, rep.AlreadyHandled, len(rep.Handled))
 	}
 }
