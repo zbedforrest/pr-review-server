@@ -147,6 +147,10 @@ func TestRunAgentReply_ReactDefaultsToTrueAndHonoursFalse(t *testing.T) {
 	if err != nil || out.React {
 		t.Fatalf("a hold with no react field defaults to no thumbs-up: err=%v out=%+v", err, out)
 	}
+	out, err, _ = runReply(t, `{"decision":"hold","reply":"hello.txt:1 still does not read it.","cited":[{"file":"hello.txt","line":1}],"react":true}`)
+	if err != nil || out.React {
+		t.Fatalf("a hold is never acknowledged even if the model asks: err=%v out=%+v", err, out)
+	}
 	out, err, _ = runReply(t, `not json`)
 	if err != nil || !out.React || out.Decision != "abstain" {
 		t.Fatalf("an unparseable reply abstains but still acknowledges: err=%v out=%+v", err, out)

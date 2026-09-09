@@ -213,8 +213,10 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 	}
 	// The reaction follows the decision that survived validation: a hold
 	// degraded to abstain is not a rebuttal, so it keeps the acknowledgement.
+	// A hold is never acknowledged, whatever the model wrote: a thumbs-up on
+	// a comment about to be rebutted reads as agreement.
 	out.Decision = decision.Decision
-	out.React = decision.reacts()
+	out.React = decision.reacts() && decision.Decision != ReplyDecisionHold
 	if out.Decision != ReplyDecisionAbstain {
 		out.Reply = decision.Reply
 	}

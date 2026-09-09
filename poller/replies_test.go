@@ -168,6 +168,17 @@ func TestReplyClaimLeaseOutlastsTheWallClock(t *testing.T) {
 	}
 }
 
+func TestReplyOutcomeEventsAlsoEmitTheSettledReaction(t *testing.T) {
+	o := publisher.ReplyOutcome{RepoOwner: "acme", RepoName: "example", PRNumber: 7, AuthorCommentID: 101, Decision: "concede", Outcome: "posted", Posted: true, Action: "reacted"}
+	events := replyOutcomeEvents(o, nil, 3)
+	if len(events) != 2 || events[1].Action != "reply_reacted" || events[1].PRNumber != 7 {
+		t.Fatalf("events = %+v", events)
+	}
+	if events := replyOutcomeEvents(o, fmt.Errorf("boom"), 3); len(events) != 1 {
+		t.Fatalf("a failed step settles nothing: %+v", events)
+	}
+}
+
 func TestReplyTelemetryEventsSkipPendingRowsUntilSettled(t *testing.T) {
 	rep := publisher.ReplyReport{Handled: []db.PublishedReply{
 		{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "a", Class: "pushback", Action: "pending", AuthorCommentID: 101},

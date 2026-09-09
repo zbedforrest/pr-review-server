@@ -615,17 +615,16 @@ func (r ReplyReactor) settlePendingReaction(ctx context.Context, t db.PublishedR
 	defer func() {
 		_ = r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder)
 	}()
-	if err := r.reactAndRecord(ctx, t, reply, row, rep); err != nil {
-		return true, err
-	}
 	// The text step will not run for this reply any more; leave the same
 	// terminal marker the step itself leaves when the mode changes under it,
 	// so a later return to text mode does not rebut an acknowledged comment.
+	// The outcome goes first: if the reaction then fails, the row is a
+	// terminal pending one and the scan's recovery branch settles it.
 	if err := r.Ledger.SetPublishedReplyOutcome(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, "skipped:mode_changed"); err != nil {
 		return true, err
 	}
 	row.Outcome = "skipped:mode_changed"
-	return true, nil
+	return true, r.reactAndRecord(ctx, t, reply, row, rep)
 }
 
 func (r ReplyReactor) reactAndRecord(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, row *db.PublishedReply, rep *ReplyReport) error {

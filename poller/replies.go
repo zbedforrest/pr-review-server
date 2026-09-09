@@ -156,6 +156,19 @@ func replyErrorEvent(action, msg string, userID int) db.TelemetryEvent {
 	return ev
 }
 
+// replyOutcomeEvents records a finished or failed text step and, when the
+// step settled the deferred reaction, the same reply_reacted / reply_observed
+// event a scan-time reaction produces, so the counts stay comparable.
+func replyOutcomeEvents(o publisher.ReplyOutcome, err error, userID int) []db.TelemetryEvent {
+	events := []db.TelemetryEvent{replyOutcomeEvent(o, err, userID)}
+	if err == nil && (o.Action == "reacted" || o.Action == "observed") {
+		events = append(events, db.TelemetryEvent{UserID: userID, Action: "reply_" + o.Action,
+			Label:   truncateLabel(fmt.Sprintf("settled decision=%s comment=%d", o.Decision, o.AuthorCommentID), 255),
+			PROwner: o.RepoOwner, PRRepo: o.RepoName, PRNumber: o.PRNumber})
+	}
+	return events
+}
+
 // replyOutcomeEvent records one finished or failed text step.
 func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.TelemetryEvent {
 	label := fmt.Sprintf("outcome=%s decision=%s posted=%t action=%s model=%s ms=%d comment=%d", o.Outcome, o.Decision, o.Posted, o.Action, o.Model, o.DurationMS, o.AuthorCommentID)
@@ -304,7 +317,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				log.Printf("[REPLY %s/%s#%d] comment %d: outcome=%s decision=%s posted=%t action=%s", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, o.Outcome, o.Decision, o.Posted, o.Action)
 			}
 			if userID := p.systemTelemetryUserID(); userID != 0 {
-				if terr := p.db.CreateTelemetryEvents([]db.TelemetryEvent{replyOutcomeEvent(o, err, userID)}); terr != nil {
+				if terr := p.db.CreateTelemetryEvents(replyOutcomeEvents(o, err, userID)); terr != nil {
 					log.Printf("[REPLIES] WARN: could not record reply outcome: %v", terr)
 				}
 			}
