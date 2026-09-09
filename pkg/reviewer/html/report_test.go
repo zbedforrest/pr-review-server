@@ -897,3 +897,38 @@ func TestVerdictClass_KeysOnTheDecisionWord(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateReport_CommentHeadersShowSeverity(t *testing.T) {
+	comments := []types.LineComment{
+		{FilePath: "app.go", LineNumber: 13, CommentBody: "Inline finding", Importance: "CRITICAL"},
+		{FilePath: "app.go", LineNumber: 0, CommentBody: "Whole-file finding", Importance: "medium"},
+		{FilePath: "GENERAL", LineNumber: 0, CommentBody: "General finding", Importance: "LOW"},
+		{FilePath: "SUMMARY", LineNumber: 0, CommentBody: "Summary finding", Importance: ""},
+		{FilePath: "other.go", LineNumber: 2, CommentBody: "Adjacent finding", Importance: "LOW"},
+	}
+	diff := `diff --git a/app.go b/app.go
+index 123..456 100644
+--- a/app.go
++++ b/app.go
+@@ -12,6 +12,7 @@ func main() {
+ 	fmt.Println("Hello")
++	// New line
+ }`
+	fileContents := map[string]string{"other.go": "package other\n\nfunc f() {}\n"}
+	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "", "", "abc1234", "gemini-pro", 0, 0, 0, time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC), fileContents)
+	assert.NoError(t, err)
+
+	pills := map[string]int{}
+	for _, counter := range strings.Split(report, `class="comment-counter"`)[1:] {
+		header := counter[:strings.Index(counter, "comment-link-btn")]
+		if strings.Contains(header, "Comment 4 of 5") {
+			assert.NotContains(t, header, "sev-pill", "the summary carries no severity")
+			continue
+		}
+		assert.Contains(t, header, "sev-pill", "every finding header names its severity: %s", header)
+		for _, sev := range []string{"critical", "medium", "low"} {
+			pills[sev] += strings.Count(header, `<span class="sev-pill sev-`+sev+`">`+strings.ToUpper(sev)+`</span>`)
+		}
+	}
+	assert.Equal(t, map[string]int{"critical": 1, "medium": 1, "low": 2}, pills, "severity is upper-cased whatever the sidecar stored")
+}

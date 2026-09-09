@@ -60,6 +60,20 @@ type CommentView struct {
 	StatusClass  string
 }
 
+// SeverityLabel is the severity shown in a finding's comment header; empty
+// for the summary, checks, and findings without one.
+func (v CommentView) SeverityLabel() string {
+	if v.FilePath == "SUMMARY" || v.FilePath == "CHECK" {
+		return ""
+	}
+	return strings.ToUpper(strings.TrimSpace(v.Importance))
+}
+
+// SeverityClass returns the CSS-class suffix for the header's severity pill.
+func (v CommentView) SeverityClass() string {
+	return strings.ToLower(v.SeverityLabel())
+}
+
 // Findings-index groups, in reading order.
 const (
 	groupConfirmed  = "Confirmed"

@@ -6,6 +6,7 @@
      overwrites the container's id. */}}
 {{define "comment-counter"}}
 <div class="comment-counter"{{if .AnchorID}} id="{{.AnchorID}}"{{end}}>
+    {{if .SeverityLabel}}<span class="sev-pill sev-{{.SeverityClass}}">{{.SeverityLabel}}</span>{{end}}
     {{template "status-pill" .}}
     <span class="comment-counter-text">Comment {{.Counter}} of {{.Total}}</span>
     <button type="button" class="comment-link-btn" title="Copy link to this comment" aria-label="Copy link to this comment">
