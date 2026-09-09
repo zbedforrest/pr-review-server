@@ -72,10 +72,20 @@ var summaryVerdictText = map[string]string{
 // first, the upshot, the prioritized findings, then the notes. A SUMMARY
 // that arrived as prose is left alone.
 func RenderStructuredSummaries(comments []types.LineComment) {
+	// Priorities name a finding by label or, after the merge remapped a
+	// dropped label, by location.
 	byID := map[string]types.LineComment{}
 	for _, c := range comments {
-		if c.ID != "" && c.FilePath != "SUMMARY" {
+		if c.FilePath == "SUMMARY" || c.FilePath == checkFilePath || c.Disposition != nil {
+			continue
+		}
+		if c.ID != "" {
 			byID[c.ID] = c
+		}
+		if loc := findingLocation(c); loc != "" {
+			if _, taken := byID[loc]; !taken {
+				byID[loc] = c
+			}
 		}
 	}
 	for i := range comments {
@@ -233,7 +243,9 @@ func evidenceFileExists(diffPaths []string, worktreeDir string) func(string) boo
 		if worktreeDir == "" {
 			return false
 		}
-		info, err := os.Stat(filepath.Join(worktreeDir, path))
+		// Lstat: a committed symlink must not ground a rejection on a file
+		// outside the checkout.
+		info, err := os.Lstat(filepath.Join(worktreeDir, path))
 		return err == nil && info.Mode().IsRegular()
 	}
 }

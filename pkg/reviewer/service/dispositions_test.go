@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"pr-review-server/pkg/reviewer/types"
@@ -249,5 +250,33 @@ func TestEvidenceRefResolves_FailsClosedForFilesNotOnDisk(t *testing.T) {
 	check := evidenceRefResolves([]string{"deleted.go"}, dir)
 	if check(types.EvidenceRef{File: "deleted.go", Line: 5}) {
 		t.Fatal("a file the PR deleted cannot ground a rejection; the agent can cite the surviving code")
+	}
+}
+
+func TestRenderStructuredSummaries_ResolvesLocationKeyedPriorities(t *testing.T) {
+	comments := []types.LineComment{
+		{FilePath: "a.go", LineNumber: 3, Importance: "MEDIUM", CommentBody: "Unlabelled finding. More."},
+		{FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "approve", PriorityIDs: []string{"a.go:3"}}},
+	}
+	RenderStructuredSummaries(comments)
+	if !strings.Contains(comments[1].CommentBody, "1. Unlabelled finding (a.go:3)") {
+		t.Fatalf("a location-keyed priority must render:\n%s", comments[1].CommentBody)
+	}
+}
+
+func TestEvidenceFileExists_RejectsSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/real.go", []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dir+"/real.go", dir+"/link.go"); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	check := evidenceFileExists(nil, dir)
+	if check("link.go") {
+		t.Fatal("a symlink is not code in the repository")
+	}
+	if !check("real.go") {
+		t.Fatal("the real file still resolves")
 	}
 }
