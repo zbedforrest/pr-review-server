@@ -71,11 +71,11 @@
                 <span class="fix-first-title">Fix first</span>
                 <span class="fix-first-sub">The reviewer's pick of the findings below; the full list follows.</span>
             </div>
-            <ol class="next-actions">
+            <ol class="fix-first-list">
                 {{range .FixFirst}}
                 <li class="next-action">
                     <span class="sev-pill sev-{{.SeverityClass}}">{{if .Severity}}{{.Severity}}{{else}}NOTE{{end}}</span>
-                    <a class="next-action-title" href="#{{.AnchorID}}">{{.Title}}</a>
+                    <a class="fix-first-title-link" href="#{{.AnchorID}}">{{.Title}}</a>
                     <span class="finding-location">{{.Location}}</span>
                 </li>
                 {{end}}
