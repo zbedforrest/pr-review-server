@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -326,5 +327,35 @@ func TestNormalizeAgentLifecycleFields_SummaryOnlyOnTheSummaryEntry(t *testing.T
 	findings, active, _ := ApplyDispositions(out, claims)
 	if len(findings) != 0 || len(active) != 1 {
 		t.Fatalf("stripped of its summary the entry is malformed and retires nothing: findings=%+v active=%+v", findings, active)
+	}
+}
+
+func TestEvidenceFileExists_RequiresTrackedRepositoryContent(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v %s", err, out)
+		}
+	}
+	run("init", "-q")
+	if err := os.WriteFile(dir+"/tracked.go", []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "tracked.go")
+	run("commit", "-q", "-m", "init")
+	if err := os.WriteFile(dir+"/scratch.md", []byte("agent notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	check := evidenceFileExists(nil, dir)
+	if !check("tracked.go") {
+		t.Error("tracked code resolves")
+	}
+	if check("scratch.md") {
+		t.Error("a file the agent wrote into the clone is not repository content")
+	}
+	if check(".git/HEAD") {
+		t.Error("repository metadata is not code")
 	}
 }

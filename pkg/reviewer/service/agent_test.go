@@ -1127,3 +1127,11 @@ func TestComputeImportanceCounts_SkipsInactiveRecords(t *testing.T) {
 		t.Fatalf("counts = %d/%d/%d, inactive records must not count", r.CriticalCount, r.MediumCount, r.LowCount)
 	}
 }
+
+func TestComputeImportanceCounts_SkipsNarrativeEntries(t *testing.T) {
+	r := &ReviewResult{Comments: []types.LineComment{{FilePath: "SUMMARY", Importance: "CRITICAL"}, {FilePath: "CHECK", Importance: "MEDIUM"}, {FilePath: "a.go", Importance: "LOW"}}}
+	r.ComputeImportanceCounts()
+	if r.CriticalCount != 0 || r.MediumCount != 0 || r.LowCount != 1 {
+		t.Fatalf("counts = %d/%d/%d", r.CriticalCount, r.MediumCount, r.LowCount)
+	}
+}

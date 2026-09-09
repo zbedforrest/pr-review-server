@@ -906,3 +906,15 @@ func TestToCompactMarkdown_LabelsUnansweredChecks(t *testing.T) {
 		t.Errorf("an unanswered check is not a first-pass claim:\n%s", md)
 	}
 }
+
+func TestBuild_CountsExcludeNarrativeEntries(t *testing.T) {
+	comments := []types.LineComment{
+		{FilePath: "SUMMARY", Importance: "CRITICAL", CommentBody: "Verdict: approve."},
+		{FilePath: "CHECK", Importance: "MEDIUM", CommentBody: "CHK-1 | SAFE"},
+		{FilePath: "a.go", LineNumber: 1, Importance: "LOW", CommentBody: "nit"},
+	}
+	pl := Build("acme", "example", 1, "abc", comments, "", nil)
+	if pl.Counts.Critical != 0 || pl.Counts.Medium != 0 || pl.Counts.Low != 1 {
+		t.Fatalf("SUMMARY and CHECK entries are not claims: %+v", pl.Counts)
+	}
+}

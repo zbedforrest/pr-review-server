@@ -1,8 +1,10 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -248,7 +250,10 @@ func evidenceFileExists(diffPaths []string, worktreeDir string) func(string) boo
 		if worktreeDir == "" {
 			return inDiff[path]
 		}
-		if !inDiff[path] && !fileKnownToWorktree(worktreeDir, path) {
+		if strings.HasPrefix(path, ".git/") || path == ".git" {
+			return false
+		}
+		if !inDiff[path] && !trackedInWorktree(worktreeDir, path) {
 			return false
 		}
 		// The entry, and every directory above it, must be real: a symlink
@@ -267,9 +272,22 @@ func evidenceFileExists(diffPaths []string, worktreeDir string) func(string) boo
 	}
 }
 
-func fileKnownToWorktree(worktreeDir, path string) bool {
-	_, err := os.Lstat(filepath.Join(worktreeDir, path))
-	return err == nil
+// trackedInWorktree reports whether path is repository content at HEAD, so a
+// scratch file the agent wrote into the clone cannot serve as evidence. When
+// git is unavailable the check falls back to existence.
+func trackedInWorktree(worktreeDir, path string) bool {
+	cmd := exec.Command("git", "-C", worktreeDir, "ls-files", "--error-unmatch", "--", path)
+	if err := cmd.Run(); err != nil {
+		// Exit 1 is git's "not tracked"; anything else (no git, not a repo)
+		// leaves only existence to go on.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return false
+		}
+		_, statErr := os.Lstat(filepath.Join(worktreeDir, path))
+		return statErr == nil
+	}
+	return true
 }
 
 // resolvedEvidenceOnly copies a disposition keeping only the evidence that

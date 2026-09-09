@@ -521,7 +521,7 @@ func Build(
 
 	for _, c := range comments {
 		sev := normalizeSeverity(c.Importance)
-		if _, active := lifecycle(c); active {
+		if _, active := lifecycle(c); active && c.FilePath != "SUMMARY" && c.FilePath != "CHECK" {
 			switch sev {
 			case "critical":
 				counts.Critical++
