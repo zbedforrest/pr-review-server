@@ -71,7 +71,8 @@ func commitReplyWatermarks(lastScanned, marks map[string]time.Time, errors []str
 
 // replyLinkDue picks the unlinked ledger rows to try matching this cycle: every
 // PR not yet attempted, or all of them on a full scan. Attempts are stamped so
-// a comment that was deleted on GitHub does not cost a thread listing per cycle.
+// a comment that was deleted on GitHub does not cost a thread listing per
+// cycle; unstampFailedLinks clears the stamp for PRs whose attempt errored.
 func replyLinkDue(rows []db.UnlinkedPublishedFinding, tried map[string]time.Time, full bool, now time.Time) []db.UnlinkedPublishedFinding {
 	var due []db.UnlinkedPublishedFinding
 	stamp := map[string]bool{}
@@ -89,6 +90,17 @@ func replyLinkDue(rows []db.UnlinkedPublishedFinding, tried map[string]time.Time
 	return due
 }
 
+// unstampFailedLinks lets PRs whose link attempt hit a GitHub or ledger error
+// retry next cycle instead of waiting for a full scan. Errors are prefixed
+// "owner/repo#n:", the replyKey format.
+func unstampFailedLinks(tried map[string]time.Time, errors []string) {
+	for _, e := range errors {
+		if key, _, ok := strings.Cut(e, ":"); ok {
+			delete(tried, key)
+		}
+	}
+}
+
 // replyTelemetryEvents turns one scan into telemetry rows: one per reply
 // handled (reply_reacted / reply_observed), one per scan error, one per link
 // pass that changed anything, one per link error. PR coordinates are parsed
@@ -98,7 +110,7 @@ func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, 
 	for _, h := range rep.Handled {
 		events = append(events, db.TelemetryEvent{
 			UserID: userID, Action: "reply_" + h.Action,
-			Label:   fmt.Sprintf("class=%s fp=%s comment=%d", h.Class, h.Fingerprint, h.AuthorCommentID),
+			Label:   truncateLabel(fmt.Sprintf("class=%s fp=%s comment=%d", h.Class, h.Fingerprint, h.AuthorCommentID), 255),
 			PROwner: h.RepoOwner, PRRepo: h.RepoName, PRNumber: h.PRNumber,
 		})
 	}
@@ -205,6 +217,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		log.Printf("[REPLIES] list unlinked roots: %v", err)
 	} else if due := replyLinkDue(unlinked, p.replyLinkTried, full, time.Now()); len(due) > 0 {
 		link = reactor.LinkRoots(ctx, due)
+		unstampFailedLinks(p.replyLinkTried, link.Errors)
 		log.Printf("[REPLIES] link roots: candidates=%d prs=%d linked=%d unmatched=%d errors=%d", len(due), link.PRsListed, link.Linked, link.Unmatched, len(link.Errors))
 		for _, e := range link.Errors {
 			log.Printf("[REPLIES] link: %s", e)
@@ -233,7 +246,11 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d candidates=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d errors=%d",
 			cycle, full, mode, len(targets), len(subset), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, len(rep.Errors))
 	}
-	if events := replyTelemetryEvents(rep, link, p.systemTelemetryUserID()); len(events) > 0 {
+	userID := p.systemTelemetryUserID()
+	if userID == 0 {
+		return
+	}
+	if events := replyTelemetryEvents(rep, link, userID); len(events) > 0 {
 		if err := p.db.CreateTelemetryEvents(events); err != nil {
 			log.Printf("[REPLIES] WARN: could not record telemetry: %v", err)
 		}

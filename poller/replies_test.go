@@ -1,6 +1,7 @@
 package poller
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -74,6 +75,27 @@ func TestReplyLinkDueTriesEachPROnceThenOnlyOnFullScans(t *testing.T) {
 	}
 	if len(replyLinkDue(rows, tried, true, now.Add(time.Minute))) != 3 {
 		t.Errorf("a full scan retries every unlinked row")
+	}
+}
+
+func TestUnstampFailedLinksRetriesErroredPRsNextCycle(t *testing.T) {
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	tried := map[string]time.Time{"acme/example#1": now, "acme/example#2": now}
+	unstampFailedLinks(tried, []string{"acme/example#2: list thread: 502"})
+	if _, ok := tried["acme/example#1"]; !ok {
+		t.Errorf("an unmatched PR stays stamped until the next full scan")
+	}
+	if _, ok := tried["acme/example#2"]; ok {
+		t.Errorf("an errored PR must be retried next cycle")
+	}
+}
+
+func TestReplyTelemetryEventsTruncatesLabelsToTheColumnWidth(t *testing.T) {
+	long := strings.Repeat("d/", 200) + "f.go:1:abc"
+	rep := publisher.ReplyReport{Handled: []db.PublishedReply{{Fingerprint: long, Class: "question", Action: "reacted"}}}
+	events := replyTelemetryEvents(rep, publisher.LinkReport{}, 3)
+	if len(events) != 1 || len([]rune(events[0].Label)) != 255 {
+		t.Fatalf("label must be cut to 255 runes, got %d", len([]rune(events[0].Label)))
 	}
 }
 

@@ -89,6 +89,7 @@ func (s *Server) handlePublishReplies(w http.ResponseWriter, r *http.Request) {
 			"url":               fmt.Sprintf("https://github.com/%s/%s/pull/%d#discussion_r%d", row.RepoOwner, row.RepoName, row.PRNumber, row.AuthorCommentID),
 		})
 	}
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{ // nolint:errcheck
 		"mode":           mode,

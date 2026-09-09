@@ -105,10 +105,11 @@ func (g *GormDB) LinkPublishedFindingComment(id uint, commentID int64) error {
 		Update("comment_id", commentID).Error
 }
 
-// ListRecentPublishedReplies returns the newest handled author replies.
+// ListRecentPublishedReplies returns the most recently handled author replies,
+// by processing time: a reply written days ago but only linked now is news.
 func (g *GormDB) ListRecentPublishedReplies(limit int) ([]PublishedReply, error) {
 	var models []PublishedReplyModel
-	if err := g.db.Order("created_at DESC, id DESC").Limit(limit).Find(&models).Error; err != nil {
+	if err := g.db.Order("processed_at DESC, id DESC").Limit(limit).Find(&models).Error; err != nil {
 		return nil, err
 	}
 	out := make([]PublishedReply, 0, len(models))

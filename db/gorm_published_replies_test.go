@@ -121,22 +121,23 @@ func TestGormDB_LinkPublishedFindingComment_NeverOverwritesAnExistingCommentID(t
 	assert.Equal(t, int64(9001), rows[0].CommentID)
 }
 
-func TestGormDB_ListRecentPublishedReplies_NewestFirstWithinLimit(t *testing.T) {
+func TestGormDB_ListRecentPublishedReplies_MostRecentlyHandledFirstWithinLimit(t *testing.T) {
 	db := newTestDB(t)
 	base := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
-	for i := 0; i < 3; i++ {
+	for i, age := range []time.Duration{0, time.Minute, -48 * time.Hour} {
 		_, err := db.RecordPublishedReply(&PublishedReply{
 			RepoOwner: "owner", RepoName: "repo", PRNumber: 7,
 			RootCommentID: 9001, AuthorCommentID: int64(9010 + i), Fingerprint: "a.go:1:abc",
 			AuthorID: 42, Class: "resolution", Action: "reacted", Body: "Fixed",
-			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+			CreatedAt: base.Add(age),
 		})
 		require.NoError(t, err)
+		time.Sleep(2 * time.Millisecond)
 	}
 	rows, err := db.ListRecentPublishedReplies(2)
 	require.NoError(t, err)
 	require.Len(t, rows, 2)
-	assert.Equal(t, int64(9012), rows[0].AuthorCommentID)
+	assert.Equal(t, int64(9012), rows[0].AuthorCommentID, "an old reply handled last is the newest news")
 	assert.Equal(t, int64(9011), rows[1].AuthorCommentID)
 	assert.False(t, rows[0].ProcessedAt.IsZero())
 }
