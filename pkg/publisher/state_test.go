@@ -275,17 +275,20 @@ func TestUnverifiedBullet_MarksCarriedClaimsAsCarriedAndBoundsTheReason(t *testi
 	}
 }
 
-func TestRoundDiff_NewCountsOnlyWhatTheReaderCanSee(t *testing.T) {
-	hidden := fp("u", "medium", "a.go", 4, "unverified claim", "first-pass")
-	hidden.State, hidden.Active = "unverified", true
-	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 2, ShowUnverified: false,
-		Findings: []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "n"), hidden}}
-	if d := r.diff(); d.New != 0 {
-		t.Fatalf("a claim the comment does not show cannot be announced as new: %+v", d)
+func TestRoundDiff_FoldedClaimsArePresentButNeverNew(t *testing.T) {
+	unverified := fp("u", "medium", "a.go", 4, "unverified claim", "first-pass")
+	unverified.State, unverified.Active = "unverified", true
+	low := withContract(fp("l", "low", "b.go", 9, "Nit.", "agent"), "test_quality", "no_user_impact", "No impact.", "")
+	low.Active, low.State = true, "confirmed"
+	r := Round{Owner: "acme", Repo: "example", Number: 1, HeadSHA: "abc1234", RoundNumber: 2, ShowUnverified: true,
+		Findings: []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "n"), unverified, low},
+		Previous: []db.PublishedFinding{{Kind: db.PublishedKindFinding, Fingerprint: "u", State: db.PublishedStateOpen}}}
+	d := r.diff()
+	if d.New != 0 {
+		t.Fatalf("folded notes have no ledger rows and must not be announced as new every round: %+v", d)
 	}
-	r.ShowUnverified = true
-	if d := r.diff(); d.New != 1 {
-		t.Fatalf("once shown it counts: %+v", d)
+	if d.StillOpen != 1 || d.Fixed != 0 {
+		t.Fatalf("a previously posted finding now in a fold is still open, not fixed: %+v", d)
 	}
 }
 

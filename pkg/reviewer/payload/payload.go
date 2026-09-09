@@ -268,6 +268,9 @@ func Decode(data []byte) (Payload, error) {
 			if f.Active == nil || f.State == "" {
 				return Payload{}, fmt.Errorf("payload: schema 2 finding %d is missing state or active", i)
 			}
+			if err := validateLifecycle(f.State, *f.Active); err != nil {
+				return Payload{}, fmt.Errorf("payload: schema 2 finding %d: %w", i, err)
+			}
 		}
 	case "", "1":
 		// v1 re-admissions were never confirmed by anyone; their provenance
@@ -288,6 +291,52 @@ func Decode(data []byte) (Payload, error) {
 		return Payload{}, fmt.Errorf("payload: unsupported schema_version %q", pl.SchemaVersion)
 	}
 	return pl, nil
+}
+
+func cloneDisposition(d *types.Disposition) *types.Disposition {
+	if d == nil {
+		return nil
+	}
+	out := *d
+	out.Evidence = append([]types.EvidenceRef(nil), d.Evidence...)
+	return &out
+}
+
+func cloneOriginal(o *types.OriginalClaim) *types.OriginalClaim {
+	if o == nil {
+		return nil
+	}
+	out := *o
+	return &out
+}
+
+func cloneSummary(s *types.SummaryBlock) *types.SummaryBlock {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	out.PriorityIDs = append([]string(nil), s.PriorityIDs...)
+	return &out
+}
+
+// validateLifecycle enforces the state/active invariant every consumer keys
+// on: confirmed claims are active, rejected and merged records are not, and
+// unverified may be either (active when policy retained it).
+func validateLifecycle(state string, active bool) error {
+	switch state {
+	case "confirmed":
+		if !active {
+			return fmt.Errorf("confirmed finding marked inactive")
+		}
+	case "rejected", "merged":
+		if active {
+			return fmt.Errorf("%s record marked active", state)
+		}
+	case "unverified":
+	default:
+		return fmt.Errorf("unknown state %q", state)
+	}
+	return nil
 }
 
 // ActiveFindings returns the claims the review asserts (never SUMMARY or
@@ -486,10 +535,10 @@ func Build(
 			FindingContractStatus: contractStatus,
 			State:                 findingState(c),
 			Active:                !c.Inactive,
-			Sources:               c.Sources,
-			Assessment:            c.Assessment,
-			Original:              c.Original,
-			Summary:               c.Summary,
+			Sources:               append([]string(nil), c.Sources...),
+			Assessment:            cloneDisposition(c.Assessment),
+			Original:              cloneOriginal(c.Original),
+			Summary:               cloneSummary(c.Summary),
 		}
 		f.MergeBasis = c.MergeBasis
 		if c.MergedInto != "" {
@@ -506,9 +555,7 @@ func Build(
 					resolved = append(resolved, fp)
 				}
 			}
-			sum := *c.Summary
-			sum.PriorityIDs = resolved
-			f.Summary = &sum
+			f.Summary.PriorityIDs = resolved
 		}
 		if f.FindingContractStatus == "valid" {
 			f.FindingContract = contract

@@ -840,3 +840,35 @@ func TestDecode_RefusesASchema2SidecarMissingLifecycleFields(t *testing.T) {
 		t.Fatalf("an empty v2 sidecar is fine: %v", err)
 	}
 }
+
+func TestDecode_RefusesUnknownStatesAndContradictoryPairs(t *testing.T) {
+	bad := []string{
+		`{"schema_version":"2","findings":[{"file":"a.go","comment":"x","state":"disputed","active":true}]}`,
+		`{"schema_version":"2","findings":[{"file":"a.go","comment":"x","state":"confirmed","active":false}]}`,
+		`{"schema_version":"2","findings":[{"file":"a.go","comment":"x","state":"rejected","active":true}]}`,
+		`{"schema_version":"2","findings":[{"file":"a.go","comment":"x","state":"merged","active":true}]}`,
+	}
+	for _, b := range bad {
+		if _, err := Decode([]byte(b)); err == nil {
+			t.Errorf("must refuse: %s", b)
+		}
+	}
+	ok := `{"schema_version":"2","findings":[{"file":"a.go","comment":"x","state":"unverified","active":false},{"file":"b.go","comment":"y","state":"unverified","active":true},{"file":"SUMMARY","comment":"v","state":"confirmed","active":true}]}`
+	if _, err := Decode([]byte(ok)); err != nil {
+		t.Errorf("unverified may be active or inactive: %v", err)
+	}
+}
+
+func TestBuild_ClonesDispositionFieldsFromTheInput(t *testing.T) {
+	assessment := &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "r", Evidence: []types.EvidenceRef{{File: "a.go", Line: 1}}}
+	comments := []types.LineComment{{FilePath: "a.go", LineNumber: 3, Importance: "MEDIUM", CommentBody: "x", Sources: []string{"FP-1"}, Assessment: assessment,
+		Original: &types.OriginalClaim{SourceID: "FP-1", Comment: "orig"}, Summary: nil}}
+	pl := Build("acme", "example", 1, "abc", comments, "", nil)
+	comments[0].Sources[0] = "MUTATED"
+	assessment.Evidence[0].File = "MUTATED"
+	comments[0].Original.Comment = "MUTATED"
+	f := pl.Findings[0]
+	if f.Sources[0] != "FP-1" || f.Assessment.Evidence[0].File != "a.go" || f.Original.Comment != "orig" {
+		t.Fatalf("payload must not alias the caller's slices and structs: %+v", f)
+	}
+}

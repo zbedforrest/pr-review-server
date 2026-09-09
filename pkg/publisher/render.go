@@ -84,14 +84,6 @@ func (r Round) diff() roundDiff {
 	for _, f := range r.activeClaims() {
 		present[f.ID] = true
 	}
-	// A finding still in the review but no longer above the bar was not
-	// fixed; it simply stops being reported.
-	stillReviewed := map[string]bool{}
-	for _, f := range r.Findings {
-		if Publishable(f) || UnverifiedNote(f) {
-			stillReviewed[f.ID] = true
-		}
-	}
 	published := map[string]bool{}
 	var d roundDiff
 	for _, p := range r.Previous {
@@ -99,16 +91,17 @@ func (r Round) diff() roundDiff {
 			continue
 		}
 		published[p.Fingerprint] = true
-		switch {
-		case present[p.Fingerprint]:
+		if present[p.Fingerprint] {
 			d.StillOpen++
-		case !stillReviewed[p.Fingerprint]:
+		} else {
 			d.Fixed++
 		}
 	}
-	// Presence covers every active claim, but "new" is what the reader can
-	// see: shown bullets plus the unverified fold when the policy shows it.
-	for _, f := range append(r.currentFindings(), r.unverifiedNotes()...) {
+	// "New" counts findings the ledger tracks (the shown ones). Folded notes
+	// have no ledger rows, so counting them would announce them as new on
+	// every round; they still count as present so a finding that moved into a
+	// fold is not reported fixed.
+	for _, f := range r.currentFindings() {
 		if !published[f.ID] {
 			d.New++
 		}

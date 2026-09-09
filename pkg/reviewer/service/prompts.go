@@ -257,8 +257,11 @@ If non-security harm requires another future change that this PR does not introd
 Disposition entries (one per rejected first-pass claim) have "file_path" and "line_number" from the claim, no "comment_body", no "importance", no "finding_contract", and:
 - "disposition": {"source_id": "FP-n", "state": "rejected", "reason": "one specific sentence grounded in the code", "evidence": [{"file": "path", "line": N}, ...]}
 
-Include exactly one "SUMMARY" entry with "file_path": "SUMMARY", "line_number": 0, no "comment_body", and:
-- "summary": {"verdict": one of "approve", "approve_suggestions", "request_changes"; "upshot": one sentence stating the practical consequence for the author; "priority_ids": zero to three finding ids ordered by what the author should do first; "notes": two to four sentences on what the PR does, whether it does it, and what you verified and found holding}
+Include exactly one "SUMMARY" entry with "file_path": "SUMMARY", "line_number": 0, no "comment_body", and a "summary" object with these fields:
+- "verdict" (string): one of "approve", "approve_suggestions", "request_changes"
+- "upshot" (string): one sentence stating the practical consequence for the author
+- "priority_ids" (array of strings): zero to three finding ids ordered by what the author should do first
+- "notes" (string): two to four sentences on what the PR does, whether it does it, and what you verified and found holding
 The summary must not describe how you handled the first-pass claims, must not mention required checks or blast radius (answer those in CHECK entries and findings), and must not name any tool or model.
 
 If you find no issues worth flagging, return the SUMMARY entry only (with "approve").
