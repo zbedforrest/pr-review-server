@@ -572,3 +572,14 @@ func TestBugMemoryEntry_CheckJSONRoundTrip(t *testing.T) {
 		t.Errorf("entry without check should stay empty: %q", lib.Entries[1].Check)
 	}
 }
+
+func TestEnforceRequiredChecks_DispositionEntryIsNotAnAccompanyingFinding(t *testing.T) {
+	gates := []types.LineComment{gateAlertFixture("portal-layer", "app/Tooltip.tsx")}
+	checks := BuildRequiredChecks(gates, nil, []diffFile{{Path: "app/Tooltip.tsx"}})
+	answers := []CheckAnswer{{ID: "CHK-portal-layer-1", Verdict: "VIOLATED", Evidence: "app/Tooltip.tsx:9", Body: "broken"}}
+	comments := []types.LineComment{{FilePath: "app/Tooltip.tsx", LineNumber: 9, Disposition: &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "n/a"}}}
+	_, _, escalated, _ := EnforceRequiredChecks(checks, answers, comments, gates, []string{"app/Tooltip.tsx"}, "")
+	if len(escalated) != 1 {
+		t.Fatalf("a rejection entry on the file must not suppress the VIOLATED synthesis: %+v", escalated)
+	}
+}

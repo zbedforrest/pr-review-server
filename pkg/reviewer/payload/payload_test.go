@@ -721,3 +721,46 @@ func TestToLineComments_RoundTripsStateAndActivity(t *testing.T) {
 		t.Errorf("inactive record = %+v", got[1])
 	}
 }
+
+func TestDecode_RejectsUnknownSchemaVersions(t *testing.T) {
+	if _, err := Decode([]byte(`{"schema_version":"3","findings":[{"file":"a.go","state":"rejected","active":false}]}`)); err == nil {
+		t.Fatal("an unknown schema must not be upgraded as if it were v1")
+	}
+	if _, err := Decode([]byte(`{"findings":[{"file":"a.go"}]}`)); err != nil {
+		t.Fatalf("a pre-schema sidecar is v1: %v", err)
+	}
+}
+
+func TestBuild_RewritesPriorityIDsToFingerprintsAndRoundTripsSources(t *testing.T) {
+	comments := []types.LineComment{
+		{ID: "A-1", FilePath: "a.go", LineNumber: 3, Importance: "MEDIUM", CommentBody: "x", Sources: []string{"FP-1"}},
+		{FilePath: "SUMMARY", CommentBody: "Verdict: approve.", Summary: &types.SummaryBlock{Verdict: "approve", PriorityIDs: []string{"A-1", "A-9"}}},
+	}
+	pl := Build("acme", "example", 1, "abc", comments, "", nil)
+	var agent, summary Finding
+	for _, f := range pl.Findings {
+		if f.File == "SUMMARY" {
+			summary = f
+		} else {
+			agent = f
+		}
+	}
+	if len(summary.Summary.PriorityIDs) != 1 || summary.Summary.PriorityIDs[0] != agent.ID {
+		t.Fatalf("priority ids must name persisted finding ids and drop unresolvable ones: %+v", summary.Summary.PriorityIDs)
+	}
+	back := pl.ToLineComments()
+	if len(back[0].Sources) != 1 && len(back[1].Sources) != 1 {
+		t.Errorf("sources must round-trip: %+v", back)
+	}
+}
+
+func TestToCompactMarkdown_SkipsInactiveRecords(t *testing.T) {
+	pl := Payload{SchemaVersion: "2", Findings: []Finding{
+		{File: "a.go", Line: 1, Severity: "medium", Comment: "active claim", State: "confirmed", Active: true},
+		{File: "b.go", Line: 2, Severity: "low", Comment: "rejected record", State: "rejected", Active: false},
+	}}
+	md := pl.ToCompactMarkdown(CompactMeta{FindingsAvailable: true})
+	if !strings.Contains(md, "active claim") || strings.Contains(md, "rejected record") || !strings.Contains(md, "FINDINGS (1)") {
+		t.Errorf("export must list active claims only:\n%s", md)
+	}
+}

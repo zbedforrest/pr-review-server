@@ -19,13 +19,29 @@ type firstPassClaim struct {
 
 func firstPassClaims(comments []types.LineComment) []firstPassClaim {
 	claims := make([]firstPassClaim, 0, len(comments))
-	for i, c := range comments {
+	for _, c := range comments {
+		// The first pass's own SUMMARY is narrative, not a claim to account for.
+		if c.FilePath == "SUMMARY" || strings.TrimSpace(c.FilePath) == "" {
+			continue
+		}
 		claims = append(claims, firstPassClaim{
-			SourceID: fmt.Sprintf("FP-%d", i+1), FilePath: c.FilePath, LineNumber: c.LineNumber,
+			SourceID: fmt.Sprintf("FP-%d", len(claims)+1), FilePath: c.FilePath, LineNumber: c.LineNumber,
 			CommentBody: c.CommentBody, Importance: c.Importance,
 		})
 	}
 	return claims
+}
+
+// NormalizeAgentLifecycleFields clears the lifecycle fields the agent has no
+// business setting on its own findings. Only ApplyDispositions may create an
+// inactive, rejected, merged or disputed record; the agent expresses itself
+// through findings, sources and disposition entries.
+func NormalizeAgentLifecycleFields(out []types.LineComment) {
+	for i := range out {
+		c := &out[i]
+		c.State, c.Inactive, c.MergedInto = "", false, ""
+		c.Assessment, c.Original = nil, nil
+	}
 }
 
 var summaryVerdictText = map[string]string{
@@ -122,7 +138,7 @@ func ApplyDispositions(agentOut []types.LineComment, claims []firstPassClaim) (f
 			continue
 		}
 		for _, src := range c.Sources {
-			confirmedBy[src] = c.ID
+			confirmedBy[src] = mergeTarget(c)
 		}
 		findings = append(findings, c)
 	}

@@ -223,3 +223,14 @@ func TestPublish_RejectedAndMergedRecordsNeverReachGitHub(t *testing.T) {
 		}
 	}
 }
+
+func TestPublishable_UnverifiedClaimsGoOnlyToTheUnverifiedFold(t *testing.T) {
+	carried := fp("c", "medium", "a.go", 4, "carried from last round", "carried")
+	carried.State, carried.Active = "unverified", true
+	if Publishable(carried) {
+		t.Fatal("an unverified claim (carried or first-pass) must not be a top-level or lower-severity bullet")
+	}
+	if !UnverifiedNote(carried) {
+		t.Fatal("it belongs in the unverified fold instead")
+	}
+}

@@ -62,3 +62,36 @@ func TestApplyDispositions_UnknownSourceIdsAreIgnored(t *testing.T) {
 		t.Fatalf("findings=%d active=%d records=%+v", len(findings), len(active), records)
 	}
 }
+
+func TestFirstPassClaims_SkipsTheFirstPassSummary(t *testing.T) {
+	claims := firstPassClaims([]types.LineComment{
+		lc("SUMMARY", 0, "", "Overall the change looks fine."),
+		lc("a.go", 3, "LOW", "nit"),
+	})
+	if len(claims) != 1 || claims[0].SourceID != "FP-1" || claims[0].FilePath != "a.go" {
+		t.Fatalf("the first pass's narrative is not a claim: %+v", claims)
+	}
+}
+
+func TestApplyDispositions_ConfirmingFindingWithoutIDStillNamesTheMergeTarget(t *testing.T) {
+	claims := firstPassClaims([]types.LineComment{lc("a.go", 3, "CRITICAL", "Nil deref.")})
+	agentOut := []types.LineComment{{FilePath: "a.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "cfg is nil.", Sources: []string{"FP-1"}}}
+	_, active, records := ApplyDispositions(agentOut, claims)
+	if len(active) != 0 || len(records) != 1 || records[0].MergedInto != "a.go:3" {
+		t.Fatalf("a merged record must point somewhere: active=%+v records=%+v", active, records)
+	}
+}
+
+func TestNormalizeAgentLifecycleFields_OnlyThePolicyMayCreateRecords(t *testing.T) {
+	out := []types.LineComment{
+		{FilePath: "a.go", LineNumber: 1, Importance: "CRITICAL", CommentBody: "real", State: "rejected", Inactive: true, MergedInto: "x", Assessment: &types.Disposition{State: "rejected"}, Original: &types.OriginalClaim{SourceID: "FP-9"}},
+		{FilePath: "b.go", LineNumber: 2, Disposition: &types.Disposition{SourceID: "FP-1", State: "rejected", Reason: "r"}},
+	}
+	NormalizeAgentLifecycleFields(out)
+	if out[0].State != "" || out[0].Inactive || out[0].MergedInto != "" || out[0].Assessment != nil || out[0].Original != nil {
+		t.Errorf("agent-authored lifecycle fields must be cleared: %+v", out[0])
+	}
+	if out[1].Disposition == nil {
+		t.Errorf("disposition entries are the agent's to make and must survive")
+	}
+}

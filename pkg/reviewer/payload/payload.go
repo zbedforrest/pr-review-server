@@ -242,22 +242,43 @@ type Finding struct {
 	SourceAfter  []string            `json:"source_after,omitempty"`
 }
 
-// Decode reads a sidecar of any schema version. A v1 sidecar predates
-// state/active, so every finding it holds is an active confirmed claim.
+// Decode reads a sidecar of a known schema version. A v1 (or pre-schema)
+// sidecar predates state/active, so every finding it holds is an active
+// confirmed claim; an unknown version is refused rather than guessed at.
 func Decode(data []byte) (Payload, error) {
 	var pl Payload
 	if err := json.Unmarshal(data, &pl); err != nil {
 		return Payload{}, err
 	}
-	if pl.SchemaVersion != CurrentSchemaVersion {
+	switch pl.SchemaVersion {
+	case CurrentSchemaVersion:
+	case "", "1":
 		for i := range pl.Findings {
 			pl.Findings[i].Active = true
 			if pl.Findings[i].State == "" {
 				pl.Findings[i].State = "confirmed"
 			}
 		}
+	default:
+		return Payload{}, fmt.Errorf("payload: unsupported schema_version %q", pl.SchemaVersion)
 	}
 	return pl, nil
+}
+
+// ActiveFindings returns the claims the review asserts (never SUMMARY or
+// CHECK entries, never inactive records).
+func (p Payload) ActiveFindings() []Finding {
+	out := make([]Finding, 0, len(p.Findings))
+	for _, f := range p.Findings {
+		if f.File == "SUMMARY" || f.File == "CHECK" {
+			continue
+		}
+		if p.SchemaVersion == CurrentSchemaVersion && !f.Active {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // CurrentSchemaVersion is what Build writes. "2" adds state/active on every
@@ -327,6 +348,8 @@ func (p Payload) ToLineComments() []types.LineComment {
 			CommentBody:     f.Comment,
 			FindingContract: contract,
 			Provenance:      f.Provenance,
+			ID:              f.ID,
+			Sources:         f.Sources,
 			State:           f.State,
 			Inactive:        !f.Active && p.SchemaVersion == CurrentSchemaVersion,
 			Assessment:      f.Assessment,
@@ -429,6 +452,18 @@ func Build(
 				f.MergedInto = fp
 			}
 		}
+		if c.Summary != nil && len(c.Summary.PriorityIDs) > 0 {
+			// Persisted ids are fingerprints; the agent's labels die here.
+			resolved := make([]string, 0, len(c.Summary.PriorityIDs))
+			for _, id := range c.Summary.PriorityIDs {
+				if fp, ok := agentIDs[id]; ok {
+					resolved = append(resolved, fp)
+				}
+			}
+			sum := *c.Summary
+			sum.PriorityIDs = resolved
+			f.Summary = &sum
+		}
 		if f.FindingContractStatus == "valid" {
 			f.FindingContract = contract
 		}
@@ -522,8 +557,9 @@ func (p Payload) ToCompactMarkdown(meta CompactMeta) string {
 		return b.String()
 	}
 
-	fmt.Fprintf(&b, "=== FINDINGS (%d) ===\n", len(p.Findings))
-	for _, f := range p.Findings {
+	claims := p.ActiveFindings()
+	fmt.Fprintf(&b, "=== FINDINGS (%d) ===\n", len(claims))
+	for _, f := range claims {
 		fmt.Fprintf(&b, "\n--- [%s] %s:%d ---\n\n", strings.ToUpper(f.Severity), f.File, f.Line)
 		b.WriteString("COMMENT:\n")
 		b.WriteString(strings.TrimRight(f.Comment, "\n"))

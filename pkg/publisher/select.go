@@ -73,7 +73,9 @@ func isNarrative(f payload.Finding) bool {
 // where their unconfirmed status is explained, and inactive records (rejected,
 // merged, unexamined) are never posted.
 func Publishable(f payload.Finding) bool {
-	if !f.Active || isNarrative(f) {
+	// Only confirmed claims are asserted as bullets; unverified ones have
+	// their own fold (UnverifiedNote) and must not appear twice.
+	if !f.Active || isNarrative(f) || (f.State != "" && f.State != "confirmed") {
 		return false
 	}
 	switch f.Provenance {

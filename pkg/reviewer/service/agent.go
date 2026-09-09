@@ -466,6 +466,7 @@ func RunAgentReview(
 			logPrefix, checkTel.ChecksIssued, checkTel.ChecksAnswered, checkTel.ChecksViolated,
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
+	NormalizeAgentLifecycleFields(comments)
 	comments, firstPassActive, records := ApplyDispositions(comments, claims)
 	RenderStructuredSummaries(comments)
 
