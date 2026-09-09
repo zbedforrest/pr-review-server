@@ -27,48 +27,6 @@ func replyKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
 }
 
-// replyTargetsToScan drops closed and draft PRs and, on incremental cycles,
-// PRs whose GitHub updated_at has not moved since we last scanned them. Review
-// comment replies bump updated_at, so this catches every reply within a cycle
-// and the periodic full scan is the safety net. The candidate watermarks are
-// returned rather than committed so a failed scan retries next cycle.
-func replyTargetsToScan(targets []db.PublishedReplyTarget, lookup func(owner, repo string, number int) *db.PR, lastScanned map[string]time.Time, full bool) ([]db.PublishedReplyTarget, map[string]time.Time) {
-	var out []db.PublishedReplyTarget
-	marks := map[string]time.Time{}
-	for _, t := range targets {
-		pr := lookup(t.RepoOwner, t.RepoName, t.PRNumber)
-		if pr == nil || !strings.EqualFold(pr.PRState, "open") || pr.Draft {
-			continue
-		}
-		key := replyKey(t.RepoOwner, t.RepoName, t.PRNumber)
-		if !full && pr.GitHubUpdatedAt != nil && !pr.GitHubUpdatedAt.After(lastScanned[key]) {
-			continue
-		}
-		if pr.GitHubUpdatedAt != nil {
-			marks[key] = *pr.GitHubUpdatedAt
-		}
-		out = append(out, t)
-	}
-	return out, marks
-}
-
-// commitReplyWatermarks advances the scan position for every target except
-// those the reactor reported an error for (errors are prefixed "owner/repo#n:").
-func commitReplyWatermarks(lastScanned, marks map[string]time.Time, errors []string) {
-	for key, ts := range marks {
-		failed := false
-		for _, e := range errors {
-			if strings.HasPrefix(e, key+":") {
-				failed = true
-				break
-			}
-		}
-		if !failed {
-			lastScanned[key] = ts
-		}
-	}
-}
-
 // replyLinkDue picks the unlinked ledger rows to try matching this cycle: every
 // PR not yet attempted, or all of them on a full scan. Attempts are stamped so
 // a comment that was deleted on GitHub does not cost a thread listing per
@@ -182,20 +140,15 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 	}
 	cycle := p.replyScanCycle.Add(1)
 	full := cycle%replyFullScanEvery == 1
-	lookup := func(owner, repo string, number int) *db.PR {
-		pr, err := p.db.GetPR(owner, repo, number)
-		if err != nil {
-			return nil
-		}
-		return pr
-	}
 	enabled, _ := p.db.GetSetting(settingPublishEnabledAuthors)
 	reactor := publisher.ReplyReactor{
-		GH:      ghReplyAdapter{p.ghClientConcrete},
-		Ledger:  ledger,
-		Mode:    mode,
-		Since:   since,
-		Allowed: func(login string) bool { return publishEnabledFor(login, enabled) },
+		GH:          ghReplyAdapter{p.ghClientConcrete},
+		Ledger:      ledger,
+		Mode:        mode,
+		Since:       since,
+		LastScanned: p.replyLastScanned,
+		Full:        full,
+		Allowed:     func(login string) bool { return publishEnabledFor(login, enabled) },
 		PR: func(ctx context.Context, owner, repo string, number int) (publisher.PRState, error) {
 			ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)
 			if err != nil {
@@ -206,6 +159,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				Draft:       ghPR.GetDraft(),
 				AuthorID:    ghPR.GetUser().GetID(),
 				AuthorLogin: ghPR.GetUser().GetLogin(),
+				UpdatedAt:   ghPR.GetUpdatedAt().Time,
 			}, nil
 		},
 	}
@@ -230,22 +184,20 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		}
 	}
 
-	subset, marks := replyTargetsToScan(targets, lookup, p.replyLastScanned, full)
 	var rep publisher.ReplyReport
-	if len(subset) > 0 {
-		reactor.Targets = subset
+	if len(targets) > 0 {
+		reactor.Targets = targets
 		rep, err = reactor.Run(ctx)
 		if err != nil {
 			log.Printf("[REPLIES] scan failed: %v", err)
 			return
 		}
-		commitReplyWatermarks(p.replyLastScanned, marks, rep.Errors)
 		for _, e := range rep.Errors {
 			log.Printf("[REPLIES] %s", e)
 		}
 	}
-	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d candidates=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d errors=%d",
-		cycle, full, mode, len(targets), len(subset), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, len(rep.Errors))
+	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d errors=%d",
+		cycle, full, mode, len(targets), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, len(rep.Errors))
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
 		return

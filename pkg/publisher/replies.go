@@ -122,19 +122,28 @@ type PRState struct {
 	Draft       bool
 	AuthorID    int64
 	AuthorLogin string
+	UpdatedAt   time.Time
 }
 
 // ReplyReactor acknowledges PR authors' replies under our inline comments.
 // Mode observe records them; react also adds a 👍. Since is the activation
 // cutoff so enabling the feature never answers historical threads.
+//
+// LastScanned, when set, holds the live updated_at of each PR at its last
+// successful scan; a PR whose updated_at has not moved is skipped without
+// listing its thread (review comment replies bump updated_at). Full ignores
+// the watermarks. The live value comes from PR, never from a cached PR row,
+// because the poller's copy trails GitHub's search index by minutes.
 type ReplyReactor struct {
-	GH      ReplyGitHub
-	Ledger  ReplyLedger
-	PR      func(ctx context.Context, owner, repo string, number int) (PRState, error)
-	Allowed func(authorLogin string) bool
-	Mode    string
-	Since   time.Time
-	Targets []db.PublishedReplyTarget // optional pre-filtered subset; nil means all ledger targets
+	GH          ReplyGitHub
+	Ledger      ReplyLedger
+	PR          func(ctx context.Context, owner, repo string, number int) (PRState, error)
+	Allowed     func(authorLogin string) bool
+	Mode        string
+	Since       time.Time
+	Targets     []db.PublishedReplyTarget // optional pre-filtered subset; nil means all ledger targets
+	LastScanned map[string]time.Time
+	Full        bool
 }
 
 // ReplyReport is one scan's accounting. PRsSkipped is keyed by reason
@@ -267,6 +276,11 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		rep.skip("not_allowlisted")
 		return nil
 	}
+	key := fmt.Sprintf("%s/%s#%d", t.RepoOwner, t.RepoName, t.PRNumber)
+	if r.LastScanned != nil && !r.Full && !state.UpdatedAt.IsZero() && !state.UpdatedAt.After(r.LastScanned[key]) {
+		rep.skip("unchanged")
+		return nil
+	}
 	rep.PRsScanned++
 	comments, err := r.GH.ListThread(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
 	if err != nil {
@@ -304,6 +318,9 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			rep.Recorded++
 			rep.Handled = append(rep.Handled, row)
 		}
+	}
+	if r.LastScanned != nil {
+		r.LastScanned[key] = state.UpdatedAt
 	}
 	return nil
 }

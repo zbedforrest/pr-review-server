@@ -60,10 +60,17 @@ func TestFindAuthorRepliesKeepsOnlyTheAuthorsRepliesToOurRoots(t *testing.T) {
 type fakeReplyGH struct {
 	threads   map[string][]ThreadComment
 	reactions []int64
+	listed    []string
+	failList  map[string]bool
 }
 
 func (f *fakeReplyGH) ListThread(_ context.Context, owner, repo string, number int) ([]ThreadComment, error) {
-	return f.threads[fmt.Sprintf("%s/%s#%d", owner, repo, number)], nil
+	key := fmt.Sprintf("%s/%s#%d", owner, repo, number)
+	f.listed = append(f.listed, key)
+	if f.failList[key] {
+		return nil, fmt.Errorf("boom")
+	}
+	return f.threads[key], nil
 }
 
 func (f *fakeReplyGH) React(_ context.Context, _, _ string, commentID int64) error {
@@ -240,5 +247,56 @@ func TestReplyReactor_ReportCountsWhatWasSkippedAndWhy(t *testing.T) {
 	}
 	if rep.RepliesSeen != 2 || rep.AlreadyHandled != 2 || len(rep.Handled) != 0 || len(ledger.rows) != 2 {
 		t.Errorf("second cycle: seen=%d already=%d handled=%d", rep.RepliesSeen, rep.AlreadyHandled, len(rep.Handled))
+	}
+}
+
+func TestReplyReactor_SkipsUnchangedPRsByLiveUpdatedAtUntilFullScan(t *testing.T) {
+	t0 := time.Date(2026, 9, 9, 17, 0, 0, 0, time.UTC)
+	r, gh, _ := reactorFixture("react")
+	updated := t0
+	r.PR = func(_ context.Context, _, _ string, number int) (PRState, error) {
+		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", UpdatedAt: updated}, nil
+	}
+	r.Ledger.(*fakeReplyLedger).targets = r.Ledger.(*fakeReplyLedger).targets[:1]
+	r.LastScanned = map[string]time.Time{}
+
+	rep, _ := r.Run(context.Background())
+	if len(gh.listed) != 1 || rep.PRsScanned != 1 {
+		t.Fatalf("first cycle must list the thread: listed=%v report=%+v", gh.listed, rep)
+	}
+	rep, _ = r.Run(context.Background())
+	if len(gh.listed) != 1 || rep.PRsSkipped["unchanged"] != 1 {
+		t.Fatalf("unchanged updated_at must skip the listing: listed=%v report=%+v", gh.listed, rep)
+	}
+	updated = t0.Add(time.Minute)
+	rep, _ = r.Run(context.Background())
+	if len(gh.listed) != 2 || rep.PRsScanned != 1 {
+		t.Fatalf("a moved updated_at must rescan: listed=%v report=%+v", gh.listed, rep)
+	}
+	r.Full = true
+	rep, _ = r.Run(context.Background())
+	if len(gh.listed) != 3 {
+		t.Fatalf("a full scan ignores the watermark: listed=%v", gh.listed)
+	}
+}
+
+func TestReplyReactor_FailedScanDoesNotAdvanceTheWatermark(t *testing.T) {
+	t0 := time.Date(2026, 9, 9, 17, 0, 0, 0, time.UTC)
+	r, gh, ledger := reactorFixture("react")
+	ledger.targets = ledger.targets[:1]
+	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
+		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", UpdatedAt: t0}, nil
+	}
+	r.LastScanned = map[string]time.Time{}
+	gh.failList = map[string]bool{"acme/example#7": true}
+
+	rep, _ := r.Run(context.Background())
+	if len(rep.Errors) != 1 || !r.LastScanned["acme/example#7"].IsZero() {
+		t.Fatalf("errored target must stay unscanned: report=%+v watermarks=%v", rep, r.LastScanned)
+	}
+	gh.failList = nil
+	rep, _ = r.Run(context.Background())
+	if rep.PRsScanned != 1 || !r.LastScanned["acme/example#7"].Equal(t0) {
+		t.Fatalf("retry next cycle and then advance: report=%+v watermarks=%v", rep, r.LastScanned)
 	}
 }
