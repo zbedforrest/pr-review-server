@@ -117,7 +117,7 @@ func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, 
 	for _, e := range rep.Errors {
 		events = append(events, replyErrorEvent("reply_scan_error", e, userID))
 	}
-	if link.Linked > 0 || link.Unmatched > 0 {
+	if link.Linked > 0 {
 		events = append(events, db.TelemetryEvent{
 			UserID: userID, Action: "reply_roots_linked",
 			Label: fmt.Sprintf("linked=%d unmatched=%d", link.Linked, link.Unmatched),
@@ -243,9 +243,9 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		for _, e := range rep.Errors {
 			log.Printf("[REPLIES] %s", e)
 		}
-		log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d candidates=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d errors=%d",
-			cycle, full, mode, len(targets), len(subset), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, len(rep.Errors))
 	}
+	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d candidates=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d errors=%d",
+		cycle, full, mode, len(targets), len(subset), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, len(rep.Errors))
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
 		return

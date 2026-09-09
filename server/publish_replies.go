@@ -66,10 +66,7 @@ func (s *Server) handlePublishReplies(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "reply ledger unavailable", http.StatusInternalServerError)
 		return
 	}
-	mode := defaultPublishReplyMode
-	if v, err := s.db.GetSetting(settingPublishReplyMode); err == nil && publishReplyModes[strings.TrimSpace(v)] {
-		mode = strings.TrimSpace(v)
-	}
+	mode := s.publishReplyMode()
 	enabledAt, _ := s.db.GetSetting(settingPublishReplyEnabledAt)
 
 	items := make([]map[string]any, 0, len(recent))

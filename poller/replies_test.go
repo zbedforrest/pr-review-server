@@ -127,4 +127,7 @@ func TestReplyTelemetryEventsOnePerHandledReplyPlusLinksAndErrors(t *testing.T) 
 	if events[4].Action != "reply_link_error" || events[4].PRNumber != 8 {
 		t.Errorf("link error event = %+v", events[4])
 	}
+	if got := replyTelemetryEvents(publisher.ReplyReport{}, publisher.LinkReport{Unmatched: 3}, 3); len(got) != 0 {
+		t.Errorf("a pass that linked nothing is not link activity, got %+v", got)
+	}
 }

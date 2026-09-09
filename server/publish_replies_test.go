@@ -15,7 +15,7 @@ import (
 
 func TestPublishReplies_ReportsRecentRepliesCountsAndUnlinkedRoots(t *testing.T) {
 	server, database := newTestServer(t, "tester")
-	require.NoError(t, database.SetSetting("publish_reply_mode", "react"))
+	require.NoError(t, database.SetSetting("publish_reply_mode", " React "))
 	pr := &db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: 7, PRState: "open", LastCommitSHA: "abc", Title: "t", Author: "a", Status: "completed"}
 	require.NoError(t, database.UpsertPR(pr))
 	require.NoError(t, database.UpsertPublishedFinding(&db.PublishedFinding{
