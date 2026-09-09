@@ -166,6 +166,23 @@ type RequiredChecksInfo struct {
 	Answered   int `json:"checks_answered"`
 	Violated   int `json:"checks_violated"`
 	EvidenceOK int `json:"checks_evidence_ok"`
+	// Records is the per-check ledger (additive; absent in older sidecars,
+	// whose SUMMARY prose carried a table instead).
+	Records []RequiredCheckRecord `json:"records,omitempty"`
+}
+
+// RequiredCheckRecord is one issued check and its answer. EvidenceResolved
+// means the cited path exists, not that the evidence proves the answer.
+type RequiredCheckRecord struct {
+	ID               string `json:"id"`
+	Source           string `json:"source"`
+	Question         string `json:"question"`
+	TargetFile       string `json:"target_file,omitempty"`
+	Verdict          string `json:"verdict"`
+	Answer           string `json:"answer,omitempty"`
+	EvidencePath     string `json:"evidence_path,omitempty"`
+	EvidenceResolved bool   `json:"evidence_resolved"`
+	Unresolved       bool   `json:"unresolved"`
 }
 
 // Counts is the per-severity tally. Mirrors the columns on the PR row.

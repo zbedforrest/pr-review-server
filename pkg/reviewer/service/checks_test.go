@@ -403,29 +403,36 @@ func TestEnforceRequiredChecks_UnansweredReadmitsUnderlyingAlert(t *testing.T) {
 	}
 }
 
-// Rule (d): the ledger lands on the SUMMARY entry, created if absent.
-func TestEnforceRequiredChecks_LedgerOnSummary(t *testing.T) {
+// Rule (d): the ledger is structured telemetry, one record per check; the
+// SUMMARY prose is never touched and never created for it.
+func TestEnforceRequiredChecks_LedgerIsStructured(t *testing.T) {
 	gates := []types.LineComment{gateAlertFixture("portal-layer", "app/Tooltip.tsx")}
 	checks := BuildRequiredChecks(gates, nil, []diffFile{{Path: "app/Tooltip.tsx"}})
-	answers := []CheckAnswer{{ID: "CHK-portal-layer-1", Verdict: "SAFE", Evidence: "app/Tooltip.tsx:9 sets layer", Body: "..."}}
+	answers := []CheckAnswer{{ID: "CHK-portal-layer-1", Verdict: "SAFE", Evidence: "app/Tooltip.tsx:9 sets layer", Body: "SAFE because the layer is explicit"}}
 
 	comments := []types.LineComment{
 		{FilePath: "SUMMARY", LineNumber: 0, CommentBody: "Verdict: approve"},
 		{FilePath: "a.go", LineNumber: 1, CommentBody: "nit"},
 	}
-	out, _, _, _ := EnforceRequiredChecks(checks, answers, comments, gates, []string{"app/Tooltip.tsx"}, "")
-	if !strings.Contains(out[0].CommentBody, "Required checks (id | verdict | evidence)") ||
-		!strings.Contains(out[0].CommentBody, "- CHK-portal-layer-1 | SAFE | evidence-ok") {
-		t.Errorf("ledger missing from SUMMARY: %q", out[0].CommentBody)
+	out, _, _, tel := EnforceRequiredChecks(checks, answers, comments, gates, []string{"app/Tooltip.tsx"}, "")
+	if out[0].CommentBody != "Verdict: approve" {
+		t.Errorf("SUMMARY must stay as written: %q", out[0].CommentBody)
+	}
+	if len(tel.Records) != 1 {
+		t.Fatalf("want one record per check, got %+v", tel.Records)
+	}
+	r := tel.Records[0]
+	if r.ID != "CHK-portal-layer-1" || r.Source != "gate" || r.Verdict != "SAFE" || !r.EvidenceResolved || r.Unresolved ||
+		r.TargetFile != "app/Tooltip.tsx" || r.Answer != "SAFE because the layer is explicit" || r.Question == "" {
+		t.Errorf("record = %+v", r)
 	}
 
-	// No SUMMARY in the agent output -> one is created to carry the ledger.
-	out, _, _, _ = EnforceRequiredChecks(checks, nil, nil, gates, nil, "")
-	if len(out) != 1 || out[0].FilePath != "SUMMARY" {
-		t.Fatalf("want a created SUMMARY, got %+v", out)
+	out, _, _, tel = EnforceRequiredChecks(checks, nil, nil, gates, nil, "")
+	if len(out) != 0 {
+		t.Fatalf("no SUMMARY may be created for the ledger, got %+v", out)
 	}
-	if !strings.Contains(out[0].CommentBody, "- CHK-portal-layer-1 | UNANSWERED | -") {
-		t.Errorf("unanswered ledger row wrong: %q", out[0].CommentBody)
+	if len(tel.Records) != 1 || tel.Records[0].Verdict != "UNANSWERED" || !tel.Records[0].Unresolved || tel.Records[0].EvidenceResolved {
+		t.Errorf("unanswered record = %+v", tel.Records)
 	}
 }
 
@@ -442,9 +449,9 @@ func TestEnforceRequiredChecks_TelemetryMixed(t *testing.T) {
 		// CHK-shared-file-1 unanswered.
 	}
 	_, _, _, tel := EnforceRequiredChecks(checks, answers, nil, gates, []string{"a.tsx"}, "")
-	want := RequiredCheckTelemetry{ChecksIssued: 3, ChecksAnswered: 2, ChecksViolated: 1, ChecksEvidenceOK: 1}
-	if tel != want {
-		t.Errorf("telemetry: got %+v want %+v", tel, want)
+	counts := [4]int{tel.ChecksIssued, tel.ChecksAnswered, tel.ChecksViolated, tel.ChecksEvidenceOK}
+	if counts != [4]int{3, 2, 1, 1} || len(tel.Records) != 3 {
+		t.Errorf("telemetry: got %+v", tel)
 	}
 }
 

@@ -65,6 +65,25 @@ type RequiredCheckTelemetry struct {
 	ChecksAnswered   int `json:"checks_answered"`
 	ChecksViolated   int `json:"checks_violated"`
 	ChecksEvidenceOK int `json:"checks_evidence_ok"`
+	// Records is the per-check ledger the report renders in its review
+	// details; it replaces the table that used to be appended to the SUMMARY.
+	Records []RequiredCheckRecord `json:"records,omitempty"`
+}
+
+// RequiredCheckRecord is what one issued check asked and what came back.
+// EvidenceResolved means the cited path exists in the diff or worktree, not
+// that the evidence proves the answer. Unresolved marks checks that stay
+// open risk: unanswered, or cleared without resolvable evidence.
+type RequiredCheckRecord struct {
+	ID               string `json:"id"`
+	Source           string `json:"source"`
+	Question         string `json:"question"`
+	TargetFile       string `json:"target_file,omitempty"`
+	Verdict          string `json:"verdict"`
+	Answer           string `json:"answer,omitempty"`
+	EvidencePath     string `json:"evidence_path,omitempty"`
+	EvidenceResolved bool   `json:"evidence_resolved"`
+	Unresolved       bool   `json:"unresolved"`
 }
 
 // gateCheckKinds maps a stable phrase from each gate's alert body to that
@@ -395,9 +414,6 @@ func EnforceRequiredChecks(
 		}
 	}
 
-	var ledger strings.Builder
-	ledger.WriteString("\n\n---\n_Required checks (id | verdict | evidence)_\n")
-
 	for _, c := range checks {
 		ans := byID[c.ID]
 		evPath := ""
@@ -409,13 +425,13 @@ func EnforceRequiredChecks(
 			}
 		}
 
-		verdict, evLabel := "UNANSWERED", "-"
+		verdict := "UNANSWERED"
 		unresolved := ans == nil
 		switch {
 		case ans == nil:
 		case ans.Verdict == "VIOLATED":
 			tel.ChecksViolated++
-			verdict, evLabel = ans.Verdict, evidenceLabel(evPath)
+			verdict = ans.Verdict
 			anchor := c.TargetFile
 			if anchor == "" {
 				anchor = evPath
@@ -431,7 +447,7 @@ func EnforceRequiredChecks(
 				})
 			}
 		default: // SAFE / NOT-APPLICABLE
-			verdict, evLabel = ans.Verdict, evidenceLabel(evPath)
+			verdict = ans.Verdict
 			if evPath == "" {
 				unresolved = true // rule (b): evidence-free clearance is no clearance
 			}
@@ -450,18 +466,16 @@ func EnforceRequiredChecks(
 			}
 		}
 
-		fmt.Fprintf(&ledger, "- %s | %s | %s\n", c.ID, verdict, evLabel)
+		record := RequiredCheckRecord{
+			ID: c.ID, Source: c.Source, Question: c.Question, TargetFile: c.TargetFile,
+			Verdict: verdict, EvidencePath: evPath, EvidenceResolved: evPath != "", Unresolved: unresolved,
+		}
+		if ans != nil {
+			record.Answer = strings.TrimSpace(ans.Body)
+		}
+		tel.Records = append(tel.Records, record)
 	}
-
-	outComments = appendToSummary(outComments, ledger.String())
 	return outComments, outGates, escalated, tel
-}
-
-func evidenceLabel(evPath string) string {
-	if evPath != "" {
-		return "evidence-ok"
-	}
-	return "evidence-missing"
 }
 
 // hasFindingOnFile reports whether any non-SUMMARY finding targets file.
@@ -475,21 +489,4 @@ func hasFindingOnFile(comments []types.LineComment, file string) bool {
 		}
 	}
 	return false
-}
-
-// appendToSummary appends text to the review's SUMMARY entry, creating one
-// when the agent didn't emit it — the check ledger must survive even a
-// summaryless output.
-func appendToSummary(comments []types.LineComment, text string) []types.LineComment {
-	for i := range comments {
-		if comments[i].FilePath == "SUMMARY" {
-			comments[i].CommentBody += text
-			return comments
-		}
-	}
-	return append(comments, types.LineComment{
-		FilePath:    "SUMMARY",
-		LineNumber:  0,
-		CommentBody: strings.TrimPrefix(text, "\n\n"),
-	})
 }

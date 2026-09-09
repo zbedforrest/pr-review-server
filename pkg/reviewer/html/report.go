@@ -134,8 +134,58 @@ func GenerateReport(comments []types.LineComment, diff string, prNumber int, prU
 	return GenerateReportWithContext(comments, diff, prNumber, prURL, prBody, prompt, commitSHA, modelName, promptTokenCount, candidatesTokenCount, totalTokenCount, generatedAt, nil)
 }
 
+// CheckRecord is one required check as the report shows it in review
+// details (mirrors the service layer's record without importing it).
+type CheckRecord struct {
+	ID               string
+	Source           string
+	Question         string
+	TargetFile       string
+	Verdict          string
+	Answer           string
+	EvidencePath     string
+	EvidenceResolved bool
+	Unresolved       bool
+}
+
+// ReportInput is everything the report renders. Structured fields (title,
+// check records, per-finding provenance) replace what used to be scraped out
+// of the SUMMARY prose.
+type ReportInput struct {
+	Comments        []types.LineComment
+	Diff            string
+	PRNumber        int
+	PRURL           string
+	PRTitle         string
+	PRBody          string
+	Prompt          string
+	CommitSHA       string
+	ModelName       string
+	PromptTokens    int32
+	CandidateTokens int32
+	TotalTokens     int32
+	GeneratedAt     time.Time
+	FileContents    map[string]string
+	Checks          []CheckRecord
+}
+
+// GenerateReportFrom renders the review report from a ReportInput.
+func GenerateReportFrom(in ReportInput) (string, error) {
+	return generateReport(in)
+}
+
 // GenerateReportWithContext creates an HTML report with additional file context for adjacent comments and token counting.
 func GenerateReportWithContext(comments []types.LineComment, diff string, prNumber int, prURL string, prBody string, prompt string, commitSHA string, modelName string, promptTokenCount int32, candidatesTokenCount int32, totalTokenCount int32, generatedAt time.Time, fileContents map[string]string) (string, error) {
+	return generateReport(ReportInput{
+		Comments: comments, Diff: diff, PRNumber: prNumber, PRURL: prURL, PRBody: prBody, Prompt: prompt,
+		CommitSHA: commitSHA, ModelName: modelName, PromptTokens: promptTokenCount, CandidateTokens: candidatesTokenCount,
+		TotalTokens: totalTokenCount, GeneratedAt: generatedAt, FileContents: fileContents,
+	})
+}
+
+func generateReport(in ReportInput) (string, error) {
+	comments, diff, prNumber, prURL, prBody, prompt, commitSHA, modelName := in.Comments, in.Diff, in.PRNumber, in.PRURL, in.PRBody, in.Prompt, in.CommitSHA, in.ModelName
+	promptTokenCount, candidatesTokenCount, totalTokenCount, generatedAt, fileContents := in.PromptTokens, in.CandidateTokens, in.TotalTokens, in.GeneratedAt, in.FileContents
 	diffFiles := ParseDiff(diff)
 	commentsByFile := make(map[string]map[int][]CommentView)
 	var summaryComments []CommentView
