@@ -12,22 +12,38 @@ import (
 func TestHeadline_CutsAtClauseBoundaryNotMidWord(t *testing.T) {
 	fd := withContract(f("x", "medium", "internal/journey/evaluator.go", 309, "c"), "production_behavior", "current_impact",
 		"When a selected component entry fails to render, the request returns 500 with no dispositions, so the entry_payload_error row and any earlier holdout/suppression rows for that request are never recorded.", "")
+	if h := headline(fd); h != "Behavior change" {
+		t.Fatalf("a labelled kind with a long sentence keeps only the label: %q", h)
+	}
+	fd.FindingContract.FindingKind = "unlabelled_kind"
 	h := headline(fd)
-	if !strings.HasPrefix(h, "Behavior change · When a selected component entry fails to render, the request returns 500 with no dispositions") {
-		t.Fatalf("headline should end at the clause boundary: %q", h)
+	if !strings.HasPrefix(h, "When a selected component entry fails to render, the request returns 500 with no dispositions") {
+		t.Fatalf("without a label the headline ends at the clause boundary: %q", h)
 	}
 	if strings.Contains(h, "suppres") || len([]rune(h)) > 140 {
 		t.Fatalf("headline must not run past the clause or cut a word: %q", h)
 	}
 }
 
-func TestRenderInline_FullEffectSentenceAppearsInBodyWhenHeadlineWasCut(t *testing.T) {
+func TestRenderInline_LongEffectSentenceAppearsOnceUnderAKindOnlyHeadline(t *testing.T) {
 	impact := "When a selected component entry fails to render, the request returns 500 with no dispositions, so the entry_payload_error row and any earlier holdout/suppression rows for that request are never recorded."
 	fd := withContract(f("x", "medium", "a.go", 3, "reasoning"), "production_behavior", "current_impact", impact, "")
 	out := RenderInline(fd, "prism-only", "", "")
 	visible := out[:strings.Index(out, "<details>")]
-	if !strings.Contains(visible, impact) {
-		t.Fatalf("the full effect sentence must be visible when the headline is a clause of it:\n%s", out)
+	if !strings.Contains(visible, "**[MEDIUM] Behavior change**\n\n"+impact) {
+		t.Fatalf("a sentence too long for the headline is shown once, under the kind label alone:\n%s", out)
+	}
+	if strings.Count(visible, "When a selected component entry fails to render") != 1 {
+		t.Fatalf("the sentence must not be repeated as a cut headline:\n%s", out)
+	}
+}
+
+func TestRenderInline_ShortEffectSentenceIsTheHeadlineAndNotRepeated(t *testing.T) {
+	fd := withContract(f("x", "medium", "a.go", 3, "reasoning"), "production_behavior", "current_impact", "Users see a 500 on every retry.", "")
+	out := RenderInline(fd, "prism-only", "", "")
+	visible := out[:strings.Index(out, "<details>")]
+	if !strings.Contains(visible, "**[MEDIUM] Behavior change · Users see a 500 on every retry**") || strings.Count(visible, "Users see a 500") != 1 {
+		t.Fatalf("a sentence that fits is the headline and appears once:\n%s", out)
 	}
 }
 
