@@ -11,7 +11,10 @@ import (
 
 const settingAdminLogins = "admin_logins"
 
-var validLogin = regexp.MustCompile(`^[a-z0-9](?:-?[a-z0-9]){0,38}$`)
+var (
+	validLogin     = regexp.MustCompile(`^[a-z0-9](?:-?[a-z0-9]){0,38}$`)
+	validBotAuthor = regexp.MustCompile(`^[a-z0-9](?:-?[a-z0-9]){0,38}\[bot\]$`)
+)
 
 // Bootstrap admins are checked before the settings row so they never depend
 // on the database. "*" widens the publish allowlist but never the admin list.
@@ -53,10 +56,12 @@ func splitLogins(csv string) []string {
 	return out
 }
 
-func normalizeLoginCSV(raw string, allowStar bool) (string, error) {
+// normalizeLoginCSV validates a login list. A PR author list also accepts
+// "*" and GitHub App authors such as "dependabot[bot]"; admins are people.
+func normalizeLoginCSV(raw string, authors bool) (string, error) {
 	logins := splitLogins(raw)
 	for _, login := range logins {
-		if login == "*" && allowStar {
+		if authors && (login == "*" || validBotAuthor.MatchString(login)) {
 			continue
 		}
 		if !validLogin.MatchString(login) {

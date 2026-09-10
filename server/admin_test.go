@@ -107,11 +107,11 @@ func TestSplitLogins(t *testing.T) {
 func TestNormalizeLoginCSV(t *testing.T) {
 	long39 := strings.Repeat("a", 39)
 	cases := []struct {
-		name      string
-		in        string
-		allowStar bool
-		want      string
-		wantErr   string
+		name    string
+		in      string
+		authors bool
+		want    string
+		wantErr string
 	}{
 		{"empty", "", false, "", ""},
 		{"dedupes and lowercases", "Alice, bob,,alice", false, "alice,bob", ""},
@@ -124,11 +124,14 @@ func TestNormalizeLoginCSV(t *testing.T) {
 		{"40 chars", long39 + "a", false, "", `"` + long39 + `a" is not a valid login`},
 		{"star allowed", "Alice, *", true, "alice,*", ""},
 		{"star refused", "alice,*", false, "", `"*" is not a valid login`},
+		{"bot author allowed", "Dependabot[BOT], alice", true, "dependabot[bot],alice", ""},
+		{"bot admin refused", "dependabot[bot]", false, "", `"dependabot[bot]" is not a valid login`},
+		{"bare bot suffix refused", "[bot]", true, "", `"[bot]" is not a valid login`},
 		{"first bad entry named", "alice,al ice,-b", false, "", `"al ice" is not a valid login`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := normalizeLoginCSV(tc.in, tc.allowStar)
+			got, err := normalizeLoginCSV(tc.in, tc.authors)
 			if tc.wantErr != "" {
 				require.EqualError(t, err, tc.wantErr)
 				return
