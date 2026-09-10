@@ -529,11 +529,21 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		} else {
 			rep.AlreadyHandled++
 		}
-		if handled && row.Action == ReplyActionPending && row.Outcome != "" && r.reacts() {
+		if handled && row.Action == ReplyActionPending && row.Outcome != "" {
 			// A finished step that never settled its reaction (a rolling deploy
-			// mixing builds): nothing else will write this row, acknowledge it.
-			if err := r.reactAndRecord(ctx, t, reply, &row, rep); err != nil {
-				return err
+			// mixing builds): nothing else will write this row. A posted reply
+			// follows the recorded decision (a rebuttal is not thumbed up);
+			// anything else is acknowledged.
+			if row.Outcome == "posted" && row.Decision != "" && !row.DecisionReact {
+				if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, ReplyActionObserved); err != nil {
+					return err
+				}
+				continue
+			}
+			if r.reacts() {
+				if err := r.reactAndRecord(ctx, t, reply, &row, rep); err != nil {
+					return err
+				}
 			}
 			continue
 		}

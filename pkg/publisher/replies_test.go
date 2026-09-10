@@ -1107,3 +1107,17 @@ func TestReplyReactor_AdoptionAndIneligibilityRunUnderTheClaim(t *testing.T) {
 		t.Fatalf("a stale reply held by another instance is not settled here: reactions=%v rep=%+v row=%+v", gh.reactions, rep, ledger.rows[0])
 	}
 }
+
+func TestReplyReactor_TerminalPendingPostedRebuttalIsNotThumbedUp(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		t.Fatal("a finished row never reaches the model")
+		return ReplyDecision{}, nil
+	})
+	t0 := time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)
+	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", Class: "pushback", Action: "pending", Decision: DecisionHold, DecisionReact: false, Outcome: "posted", ReplyCommentID: 900, CreatedAt: t0}}
+	r.Run(context.Background())
+	if len(gh.reactions) != 0 || ledger.rows[0].Action != "observed" {
+		t.Fatalf("reactions=%v row=%+v", gh.reactions, ledger.rows[0])
+	}
+}
