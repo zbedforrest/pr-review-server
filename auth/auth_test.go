@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +29,9 @@ type MockDatabase struct {
 	CreateSessionErr     error
 	GetSessionErr        error
 	DeleteSessionErr     error
+
+	UpdateUserGitHubUsernameErr error
+	usernameUpdates             int
 }
 
 func newMockDatabase() *MockDatabase {
@@ -81,6 +85,17 @@ func (m *MockDatabase) CreateUser(user *db.User) error {
 }
 
 func (m *MockDatabase) UpdateUserLastLogin(userID int) error {
+	return nil
+}
+
+func (m *MockDatabase) UpdateUserGitHubUsername(userID int, username string) error {
+	m.usernameUpdates++
+	if m.UpdateUserGitHubUsernameErr != nil {
+		return m.UpdateUserGitHubUsernameErr
+	}
+	if u := m.userByID[userID]; u != nil {
+		u.GitHubUsername = username
+	}
 	return nil
 }
 
@@ -1156,6 +1171,37 @@ func TestMiddleware_BearerPAT_RenamedUser_ResolvesByGitHubID(t *testing.T) {
 	}
 	if seen == nil || seen.GitHubID != 42 {
 		t.Fatalf("expected user with GitHub ID 42 in context, got %+v", seen)
+	}
+	if seen.GitHubUsername != "alice-new" {
+		t.Fatalf("expected context user to carry the current login, got %q", seen.GitHubUsername)
+	}
+	if got := mockDB.users[42].GitHubUsername; got != "alice-new" {
+		t.Fatalf("expected stored login refreshed to alice-new, got %q", got)
+	}
+}
+
+func TestRefreshLogin_UnchangedLoginWritesNothing(t *testing.T) {
+	mockDB := newMockDatabase()
+	user := &db.User{GitHubID: 7, GitHubUsername: "alice"}
+	_ = mockDB.CreateUser(user)
+
+	newTestAuth(mockDB).refreshLogin(user, "alice")
+
+	if mockDB.usernameUpdates != 0 {
+		t.Fatalf("expected no username write, got %d", mockDB.usernameUpdates)
+	}
+}
+
+func TestRefreshLogin_DBErrorStillUsesCurrentLogin(t *testing.T) {
+	mockDB := newMockDatabase()
+	mockDB.UpdateUserGitHubUsernameErr = errors.New("db down")
+	user := &db.User{GitHubID: 7, GitHubUsername: "alice-old"}
+	_ = mockDB.CreateUser(user)
+
+	newTestAuth(mockDB).refreshLogin(user, "alice-new")
+
+	if user.GitHubUsername != "alice-new" {
+		t.Fatalf("expected in-memory login to follow GitHub, got %q", user.GitHubUsername)
 	}
 }
 

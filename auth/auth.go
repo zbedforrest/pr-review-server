@@ -212,6 +212,7 @@ func (a *Auth) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("[AUTH] Created new user: %s (ID: %d)", ghUser.Login, user.ID)
 	} else {
+		a.refreshLogin(user, ghUser.Login)
 		// Update last login
 		if err := a.db.UpdateUserLastLogin(user.ID); err != nil {
 			log.Printf("[AUTH] Failed to update last login: %v", err)
@@ -532,7 +533,21 @@ func (a *Auth) tryBearerAuth(r *http.Request) (*db.User, bool) {
 		log.Printf("[AUTH-BEARER] no prism user matches GitHub login %q", identity.Login)
 		return nil, false
 	}
+	a.refreshLogin(user, identity.Login)
 	return user, true
+}
+
+// refreshLogin follows a GitHub rename so login-keyed authorization (the
+// admin lists) sees the current handle. GitHub's answer wins even when the
+// write fails; the request continues either way.
+func (a *Auth) refreshLogin(user *db.User, login string) {
+	if user.GitHubUsername == login {
+		return
+	}
+	if err := a.db.UpdateUserGitHubUsername(user.ID, login); err != nil {
+		log.Printf("[AUTH] failed to record login rename %s -> %s: %v", user.GitHubUsername, login, err)
+	}
+	user.GitHubUsername = login
 }
 
 // extractBearerToken pulls the token out of an `Authorization: Bearer <tok>`
