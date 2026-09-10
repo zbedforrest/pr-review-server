@@ -1,0 +1,98 @@
+@use '../../styles/abstracts/variables' as *;
+@use '../../styles/abstracts/mixins' as *;
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+
+  &__label {
+    font-size: $font-size-base;
+    font-weight: 500;
+    color: $color-text-primary;
+  }
+
+  &__chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: $spacing-sm;
+    padding: $spacing-sm;
+    background: $color-bg-primary;
+    border: 1px solid $color-border;
+    border-radius: $radius-md;
+
+    &:focus-within {
+      border-color: $color-link;
+      box-shadow: 0 0 0 2px rgba($color-link, 0.3);
+    }
+  }
+
+  &__chip {
+    display: inline-flex;
+    align-items: center;
+    gap: $spacing-xs;
+    padding: 2px $spacing-sm 2px $spacing-md;
+    border-radius: $radius-lg;
+    background: $color-bg-tertiary;
+    border: 1px solid $color-border;
+    color: $color-text-primary;
+    font-family: $font-mono;
+    font-size: $font-size-md;
+    line-height: 18px;
+
+    &--fixed {
+      padding-right: $spacing-md;
+      border-style: dashed;
+      color: $color-text-secondary;
+    }
+
+    &--unknown {
+      border-color: rgba($color-warning, 0.6);
+    }
+  }
+
+  &__chip-hint {
+    font-family: $font-system;
+    font-size: $font-size-sm;
+    color: $color-text-muted;
+  }
+
+  &__chip-remove {
+    @include button-base;
+    padding: 0 $spacing-xs;
+    border: none;
+    border-radius: $radius-sm;
+    font-size: $font-size-base;
+    line-height: 1;
+
+    &:hover {
+      background: transparent;
+      color: $color-error-text;
+    }
+  }
+
+  &__input {
+    flex: 1;
+    min-width: 140px;
+    padding: 2px $spacing-xs;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: $color-text-primary;
+    font-size: $font-size-base;
+
+    &::placeholder {
+      color: $color-text-muted;
+    }
+
+    &:disabled {
+      cursor: not-allowed;
+    }
+  }
+
+  &__error {
+    font-size: $font-size-md;
+    color: $color-error-text;
+  }
+}
