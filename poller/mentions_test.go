@@ -54,11 +54,19 @@ func TestMentionCandidatesUseTheCachedRowsThatMoved(t *testing.T) {
 		{RepoOwner: "acme", RepoName: "example", PRNumber: 5, PRState: "", GitHubUpdatedAt: &t2},
 	}
 	last := map[string]time.Time{"acme/example#1": t1, "acme/example#2": t1}
-	got := mentionCandidates(prs, last, false)
+	got := mentionCandidates(prs, last, false, now)
 	if len(got) != 3 || got[0].PRNumber != 1 || got[1].PRNumber != 4 || got[2].PRNumber != 5 {
 		t.Fatalf("incremental = %+v, want the moved open PR, the one without a cached time, and the legacy empty-state row", got)
 	}
-	if got := mentionCandidates(prs, last, true); len(got) != 4 {
+	last["acme/example#4"] = now.Add(-time.Minute)
+	if got := mentionCandidates(prs, last, false, now); len(got) != 2 {
+		t.Fatalf("a PR without a cached time just scanned waits for the rescan timer, got %+v", got)
+	}
+	last["acme/example#4"] = now.Add(-11 * time.Minute)
+	if got := mentionCandidates(prs, last, false, now); len(got) != 3 {
+		t.Fatalf("and is re-read once the timer lapses, got %+v", got)
+	}
+	if got := mentionCandidates(prs, last, true, now); len(got) != 4 {
 		t.Fatalf("full scan = %d open PRs, want 4", len(got))
 	}
 }

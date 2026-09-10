@@ -48,17 +48,30 @@ func mentionCommandWith(re *regexp.Regexp, body string) bool {
 	return re.MatchString(strings.ToLower(mentionQuoteRe.ReplaceAllString(body, "")))
 }
 
+// mentionUncachedRescan is how often a PR with no cached updated_at (the
+// poll never saw it in the org search) is re-read for requests.
+const mentionUncachedRescan = 10 * time.Minute
+
 // mentionCandidates picks the open PRs whose cached updated_at moved since the
-// last scan (every open PR on a full scan). An empty cached state predates
-// the column and is treated as open, as the rest of the poller does.
-func mentionCandidates(prs []*db.PR, lastScanned map[string]time.Time, full bool) []*db.PR {
+// last scan (every open PR on a full scan). A PR without a cached time is
+// re-read on a timer since nothing will ever move its timestamp. An empty
+// cached state predates the column and is treated as open, as the rest of
+// the poller does.
+func mentionCandidates(prs []*db.PR, lastScanned map[string]time.Time, full bool, now time.Time) []*db.PR {
 	var out []*db.PR
 	for _, pr := range prs {
 		if pr.PRState != "" && !strings.EqualFold(pr.PRState, "open") {
 			continue
 		}
 		key := mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)
-		if full || (pr.GitHubUpdatedAt == nil && lastScanned[key].IsZero()) || (pr.GitHubUpdatedAt != nil && pr.GitHubUpdatedAt.After(lastScanned[key])) {
+		switch {
+		case full:
+			out = append(out, pr)
+		case pr.GitHubUpdatedAt == nil:
+			if now.Sub(lastScanned[key]) >= mentionUncachedRescan {
+				out = append(out, pr)
+			}
+		case pr.GitHubUpdatedAt.After(lastScanned[key]):
 			out = append(out, pr)
 		}
 	}
@@ -311,9 +324,11 @@ const (
 // mentionActivation is the durable cutoff: commands older than it are never
 // acted on, so enabling the feature does not answer every old mention, and a
 // restart does not lose a command posted while the service was down. The
-// cutoff is re-stamped when the handle changes, so mentions of a previous
-// handle or of a period the feature was off are not replayed.
-func (p *Poller) mentionActivation() (time.Time, error) {
+// leader re-stamps it when the handle changes, so mentions of a previous
+// handle or of a period the feature was off are not replayed; at boot
+// (restamp false) an instance only creates a missing cutoff, so a rolling
+// deployment cannot ping-pong the stamp between two handles.
+func (p *Poller) mentionActivation(restamp bool) (time.Time, error) {
 	raw, err := p.db.GetSetting(settingMentionEnabledAt)
 	if err != nil {
 		return time.Time{}, err
@@ -322,7 +337,7 @@ func (p *Poller) mentionActivation() (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
-	if strings.TrimSpace(raw) != "" && strings.TrimSpace(seen) == p.cfg.MentionHandle {
+	if strings.TrimSpace(raw) != "" && (strings.TrimSpace(seen) == p.cfg.MentionHandle || !restamp) {
 		return time.Parse(time.RFC3339, strings.TrimSpace(raw))
 	}
 	now := time.Now().UTC().Truncate(time.Second)
@@ -349,7 +364,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 	if p.mentionLastScanned == nil {
 		p.mentionLastScanned = map[string]time.Time{}
 	}
-	since, err := p.mentionActivation()
+	since, err := p.mentionActivation(true)
 	if err != nil {
 		log.Printf("[MENTIONS] activation timestamp: %v", err)
 		return
@@ -365,7 +380,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 	for i := range all {
 		prs = append(prs, &all[i])
 	}
-	candidates := mentionCandidates(prs, p.mentionLastScanned, full)
+	candidates := mentionCandidates(prs, p.mentionLastScanned, full, time.Now().UTC())
 	enabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
 	if err != nil {
 		// Without the allowlist every admission would be dashboard-only with

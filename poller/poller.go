@@ -1152,7 +1152,7 @@ func (p *Poller) Start(ctx context.Context) {
 		if p.cfg.MentionHandle != "" {
 			// Stamp the cutoff at boot, leader or not, so a request posted right
 			// after a deploy is not older than it once this instance starts scanning.
-			if _, err := p.mentionActivation(); err != nil {
+			if _, err := p.mentionActivation(false); err != nil {
 				log.Printf("[MENTIONS] activation timestamp: %v", err)
 			}
 		} else if err := p.db.SetSetting(settingMentionHandle, ""); err != nil {
