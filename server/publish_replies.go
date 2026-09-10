@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"pr-review-server/auth"
 	"pr-review-server/db"
 )
 
@@ -31,6 +32,15 @@ type replyLedgerReader interface {
 func (s *Server) handlePublishReplies(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user := auth.GetCurrentUser(r)
+	if user == nil {
+		http.Error(w, "Not authenticated", http.StatusUnauthorized)
+		return
+	}
+	if !s.isAdmin(user) {
+		http.Error(w, "admin required", http.StatusForbidden)
 		return
 	}
 	ledger, ok := s.db.(replyLedgerReader)

@@ -61,6 +61,12 @@ func normalizeLoginCSV(raw string, allowStar bool) (string, error) {
 	return strings.Join(logins, ","), nil
 }
 
+func (s *Server) addAdminSettings(response map[string]interface{}) {
+	row, _ := s.db.GetSetting(settingAdminLogins)
+	response[settingAdminLogins] = strings.Join(splitLogins(row), ",")
+	response["admin_logins_fixed"] = append([]string{}, s.cfg.AdminLogins...)
+}
+
 func (s *Server) writeSetting(actor, key, value string) error {
 	old, err := s.db.GetSetting(key)
 	if err != nil {
