@@ -108,8 +108,9 @@ const (
 	ReplyModeShadow  = "shadow"
 	ReplyModeRespond = "respond"
 
-	replyActionObserved = "observed"
-	replyActionReacted  = "reacted"
+	ReplyActionObserved = "observed"
+	ReplyActionReacted  = "reacted"
+	ReplyActionPending  = "pending" // reaction deferred to the reply model's decision
 )
 
 // Decisions the reply model can reach about an author's pushback or question.
@@ -157,6 +158,7 @@ type ReplyLedger interface {
 	ListUnlinkedPublishedFindings() ([]db.UnlinkedPublishedFinding, error)
 	LinkPublishedFindingComment(id uint, commentID int64) error
 	SetPublishedReplyOutcome(owner, repo string, number int, authorCommentID int64, outcome string) error
+	SetPublishedReplyAction(owner, repo string, number int, authorCommentID int64, action string) error
 	ClaimPublishedReply(owner, repo string, number int, authorCommentID int64, holder string, now time.Time, lease time.Duration) (bool, error)
 	ReleasePublishedReplyClaim(owner, repo string, number int, authorCommentID int64, holder string) error
 	IncrementPublishedReplyAttempts(owner, repo string, number int, authorCommentID int64) (int, error)
@@ -198,10 +200,13 @@ type ReplyRequest struct {
 }
 
 // ReplyDecision is the reply model's conclusion. Reply is empty for abstain.
+// React says whether the author's comment gets a 👍 alongside (or instead of)
+// the text; the model chooses so a rebutted pushback is not thumbed up.
 type ReplyDecision struct {
 	Decision   string
 	Reply      string
 	Cited      []EvidenceRef
+	React      bool
 	Model      string
 	DurationMS int64
 }
@@ -342,6 +347,7 @@ type ReplyOutcome struct {
 	Decision        string
 	Outcome         string
 	Posted          bool
+	Action          string // how the author's comment was acknowledged: reacted or observed
 	Model           string
 	DurationMS      int64
 }
@@ -494,12 +500,16 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		rep.RepliesSeen++
 		row, handled := seen[reply.CommentID]
 		if !handled {
-			action := replyActionObserved
-			if r.reacts() {
+			action := ReplyActionObserved
+			switch {
+			case r.reacts() && r.textMode() && textClass(reply.Class):
+				// The model decides whether this one gets a 👍; see text().
+				action = ReplyActionPending
+			case r.reacts():
 				if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
 					return err
 				}
-				action = replyActionReacted
+				action = ReplyActionReacted
 				rep.Reacted++
 			}
 			row = db.PublishedReply{
@@ -519,7 +529,46 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		} else {
 			rep.AlreadyHandled++
 		}
-		if !r.textMode() || row.Outcome != "" {
+		if handled && row.Action == ReplyActionPending && row.Outcome != "" {
+			// A finished step that never settled its reaction (a rolling deploy
+			// mixing builds): nothing else will write this row. A posted reply
+			// follows the recorded decision (a rebuttal is not thumbed up);
+			// anything else is acknowledged.
+			if row.Outcome == "posted" && row.Decision != "" && !row.DecisionReact {
+				if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, ReplyActionObserved); err != nil {
+					return err
+				}
+				continue
+			}
+			if r.reacts() {
+				if err := r.reactAndRecord(ctx, t, reply, &row, rep); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if !r.textMode() {
+			// The mode was turned down to react while this reply waited for the
+			// model: acknowledge it now. Under observe or off the row stays
+			// pending on purpose, so a later return to text mode still runs
+			// the model on it; the PR stays unsettled so that happens on the
+			// first cycle after the switch rather than the next full scan.
+			if handled && row.Action == ReplyActionPending {
+				if !r.reacts() {
+					settled = false
+					continue
+				}
+				claimed, err := r.settlePendingReaction(ctx, t, reply, &row, rep)
+				if err != nil {
+					return err
+				}
+				if !claimed {
+					settled = false
+				}
+			}
+			continue
+		}
+		if row.Outcome != "" {
 			continue
 		}
 		if r.Background != nil {
@@ -566,6 +615,43 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 	if r.LastScanned != nil && settled {
 		r.LastScanned[key] = state.UpdatedAt
 	}
+	return nil
+}
+
+// settlePendingReaction acknowledges a reply whose text step will not run any
+// more (the mode was lowered). It takes the row's claim first so a worker
+// still finishing that step on another instance cannot write over it; a
+// refused claim reports false so the caller keeps the PR unsettled.
+func (r ReplyReactor) settlePendingReaction(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, row *db.PublishedReply, rep *ReplyReport) (bool, error) {
+	claimed, err := r.Ledger.ClaimPublishedReply(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder, r.now(), r.claimLease())
+	if err != nil || !claimed {
+		return false, err
+	}
+	defer func() {
+		_ = r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder)
+	}()
+	// The text step will not run for this reply any more; leave the same
+	// terminal marker the step itself leaves when the mode changes under it,
+	// so a later return to text mode does not rebut an acknowledged comment.
+	// The outcome goes first: if the reaction then fails, the row is a
+	// terminal pending one and the scan's recovery branch settles it.
+	if err := r.Ledger.SetPublishedReplyOutcome(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, "skipped:mode_changed"); err != nil {
+		return true, err
+	}
+	row.Outcome = "skipped:mode_changed"
+	return true, r.reactAndRecord(ctx, t, reply, row, rep)
+}
+
+func (r ReplyReactor) reactAndRecord(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, row *db.PublishedReply, rep *ReplyReport) error {
+	if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
+		return err
+	}
+	if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, ReplyActionReacted); err != nil {
+		return err
+	}
+	rep.Reacted++
+	row.Action = ReplyActionReacted
+	rep.Handled = append(rep.Handled, *row)
 	return nil
 }
 
@@ -628,6 +714,11 @@ func (f *ReplyInFlight) remove(id int64) {
 	delete(f.ids, id)
 }
 
+// textClass reports whether a reply class is one the reply model handles.
+func textClass(c ReplyClass) bool {
+	return c == ReplyQuestion || c == ReplyPushback
+}
+
 func (r ReplyReactor) reacts() bool {
 	return r.Mode == ReplyModeReact || r.Mode == ReplyModeShadow || r.Mode == ReplyModeRespond
 }
@@ -678,7 +769,67 @@ func threadUnder(comments []ThreadComment, rootID int64) []ThreadComment {
 func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, reply AuthorReply, row db.PublishedReply, rep *ReplyReport) (outcome ReplyOutcome, err error) {
 	outcome = ReplyOutcome{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, AuthorCommentID: reply.CommentID,
 		Decision: row.Decision, Model: row.Model, DurationMS: row.DurationMS}
+	// A deferred reaction is settled with the step. The model's choice applies
+	// only when its reply is posted (a thumbs-up on a comment about to be
+	// rebutted reads as agreement); every other ending, including shadow and
+	// abstain, acknowledges the author so no reply goes unanswered.
+	// The reaction is decided against the live mode and allowlist at the
+	// moment it would be posted, so a switch flipped during a long model run
+	// is honoured on every terminal path.
+	liveReacts := func() (bool, error) {
+		if r.Live == nil {
+			return r.reacts(), nil
+		}
+		mode, allowed, err := r.Live()
+		if err != nil {
+			return false, err
+		}
+		return (mode == ReplyModeReact || mode == ReplyModeShadow || mode == ReplyModeRespond) && (allowed == nil || allowed(state.AuthorLogin)), nil
+	}
+	// Only a reaction settled by this step is reported on the outcome;
+	// rows already acknowledged at scan time produced their event then.
+	settledHere := false
+	react := func(want bool) error {
+		if row.Action != ReplyActionPending {
+			return nil
+		}
+		settledHere = true
+		if want {
+			live, err := liveReacts()
+			if err != nil {
+				return err
+			}
+			want = live
+		}
+		action := ReplyActionObserved
+		if want {
+			// GitHub returns the existing reaction on a repeat, so a ledger
+			// failure after this call retries safely next cycle.
+			if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
+				return err
+			}
+			action = ReplyActionReacted
+			if rep != nil {
+				rep.Reacted++
+			}
+		}
+		if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, action); err != nil {
+			return err
+		}
+		row.Action = action
+		return nil
+	}
 	finish := func(result string) (ReplyOutcome, error) {
+		want := true
+		if result == "posted" && row.Decision != "" {
+			want = row.DecisionReact
+		}
+		if err := react(want); err != nil {
+			return outcome, err
+		}
+		if settledHere {
+			outcome.Action = row.Action
+		}
 		if err := r.Ledger.SetPublishedReplyOutcome(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, result); err != nil {
 			return outcome, err
 		}
@@ -716,6 +867,39 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 			root = c
 		}
 	}
+	// Every write below, the reaction and action included, happens under a
+	// claim on the row so two instances cannot settle the same reply twice:
+	// claim first, release on any error so the next scan resumes, and let
+	// finish() leave the terminal outcome in place.
+	claimed, err := r.Ledger.ClaimPublishedReply(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder, now, r.claimLease())
+	if err != nil {
+		return outcome, err
+	}
+	if !claimed {
+		if rep != nil {
+			rep.skipText("claimed_elsewhere")
+		}
+		return outcome, errClaimedElsewhere
+	}
+	defer func() {
+		if outcome.Outcome == "" {
+			if rerr := r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder); rerr != nil && err == nil {
+				err = rerr
+			}
+		}
+	}()
+	// Another holder may have decided or posted since the scan read its rows;
+	// under the claim the ledger is the truth.
+	current, err := r.Ledger.ListPublishedRepliesForRoot(t.RepoOwner, t.RepoName, t.PRNumber, reply.RootCommentID)
+	if err != nil {
+		return outcome, err
+	}
+	for _, f := range current {
+		if f.AuthorCommentID == reply.CommentID {
+			row = f
+			outcome.Decision, outcome.Model, outcome.DurationMS = row.Decision, row.Model, row.DurationMS
+		}
+	}
 	// A reply we posted but never recorded (crash between the two, or another
 	// instance) is adopted before anything else: a posted reply exists whether
 	// or not the author comment would still be eligible today. Only the
@@ -746,26 +930,6 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		return finish("ineligible:" + reason)
 	}
-	// From here on the step does work that must happen once across every
-	// instance: claim the row, release it on any error so the next scan
-	// resumes, and let finish() leave the terminal outcome in place.
-	claimed, err := r.Ledger.ClaimPublishedReply(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder, now, r.claimLease())
-	if err != nil {
-		return outcome, err
-	}
-	if !claimed {
-		if rep != nil {
-			rep.skipText("claimed_elsewhere")
-		}
-		return outcome, errClaimedElsewhere
-	}
-	defer func() {
-		if outcome.Outcome == "" {
-			if rerr := r.Ledger.ReleasePublishedReplyClaim(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, r.Holder); rerr != nil && err == nil {
-				err = rerr
-			}
-		}
-	}()
 	fingerprint := threadFingerprint(thread, root.AuthorID)
 	if row.Decision != "" && (row.DecisionHead != state.HeadSHA || row.DecisionThread != fingerprint) {
 		// The decision was made against a head or thread that has since moved;
@@ -796,11 +960,11 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		cited, _ := json.Marshal(decision.Cited)
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
 			Decision: decision.Decision, ReplyBody: decision.Reply, Cited: string(cited), Model: decision.Model, DurationMS: decision.DurationMS,
-			Head: state.HeadSHA, Thread: fingerprint,
+			Head: state.HeadSHA, Thread: fingerprint, React: decision.React,
 		}); err != nil {
 			return outcome, err
 		}
-		row.Decision, row.ReplyBody = decision.Decision, decision.Reply
+		row.Decision, row.ReplyBody, row.DecisionReact = decision.Decision, decision.Reply, decision.React
 		outcome.Decision, outcome.Model, outcome.DurationMS = decision.Decision, decision.Model, decision.DurationMS
 	}
 	text := strings.TrimSpace(row.ReplyBody)

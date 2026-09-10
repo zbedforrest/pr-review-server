@@ -1,6 +1,7 @@
 package html
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -28,7 +29,7 @@ func stateFixtureInput() ReportInput {
 		{FilePath: "SUMMARY", LineNumber: 0,
 			Summary: &types.SummaryBlock{Verdict: "request_changes", Upshot: "The nil dereference is a real crash path.",
 				PriorityIDs: []string{"A-1", "FP-9", "A-2"}, Notes: "Coverage is otherwise adequate."},
-			CommentBody: "Verdict: request changes.\n\nThe nil dereference is a real crash path.\n\nNext actions:\n1. Nil dereference when the config is missing (app.go:13)\n\nCoverage is otherwise adequate."},
+			CommentBody: "Verdict: request changes.\n\nThe nil dereference is a real crash path.\n\nFix first:\n1. Nil dereference when the config is missing (app.go:13)\n\nCoverage is otherwise adequate."},
 		{FilePath: "lib.go", LineNumber: 7, Importance: "CRITICAL", Provenance: "first-pass", State: "unverified",
 			CommentBody: "Cache key ignores the tenant. Two tenants share one cache entry.",
 			Assessment: &types.Disposition{SourceID: "FP-2", State: "rejected", Reason: "The cache key includes the tenant id.",
@@ -118,7 +119,7 @@ func TestGenerateReport_DisputedFindingShowsCounterargument(t *testing.T) {
 func TestGenerateReport_InactiveRecordsExcludedFromCountsAndDetail(t *testing.T) {
 	report := renderLayoutFixture(t, stateFixtureInput())
 	start := strings.Index(report, `class="verdict-block"`)
-	end := strings.Index(report, "<h2>Next actions</h2>")
+	end := strings.Index(report, "<h2>Review Summary</h2>")
 	require.Greater(t, end, start)
 	block := report[start:end]
 	assert.Contains(t, block, "3 confirmed")
@@ -189,20 +190,24 @@ func TestGenerateReport_ReviewDetailsOmitsEmptyRecordSections(t *testing.T) {
 	assert.NotContains(t, details, "Merged claims")
 }
 
-func TestGenerateReport_StructuredSummaryDrivesVerdictUpshotAndNextActions(t *testing.T) {
+func TestGenerateReport_StructuredSummaryDrivesVerdictUpshotAndFixFirst(t *testing.T) {
 	report := renderLayoutFixture(t, stateFixtureInput())
 	start := strings.Index(report, `class="verdict-block"`)
-	end := strings.Index(report, "<h2>Next actions</h2>")
+	end := strings.Index(report, `class="fix-first"`)
 	require.Greater(t, start, -1)
-	require.Greater(t, end, start)
+	require.Greater(t, end, start, "Fix first lives inside the verdict card")
 	block := report[start:end]
 	assert.Contains(t, block, `data-verdict="changes"`)
 	assert.Contains(t, block, "Verdict: request changes.")
 	assert.Contains(t, block, "The nil dereference is a real crash path.")
 
 	assert.NotContains(t, report, "<h2>Suggestions</h2>")
+	assert.NotContains(t, report, "Next actions")
 	actionsEnd := strings.Index(report, "<h2>Review Summary</h2>")
 	actions := report[end:actionsEnd]
+	assert.Contains(t, actions, "Fix first")
+	assert.Contains(t, actions, "The reviewer's pick of the findings below; the full list follows.")
+
 	first := strings.Index(actions, `href="#finding-1"`)
 	second := strings.Index(actions, `href="#finding-8"`)
 	assert.Greater(t, first, -1, "A-1 resolves to the first finding")
@@ -216,8 +221,40 @@ func TestGenerateReport_StructuredSummaryDrivesVerdictUpshotAndNextActions(t *te
 	summary := report[actionsEnd:strings.Index(report, "<h2>Findings</h2>")]
 	assert.Contains(t, summary, "Coverage is otherwise adequate.")
 	assert.NotContains(t, summary, "Verdict:")
-	assert.NotContains(t, summary, "Next actions:")
+	assert.NotContains(t, summary, "Fix first:")
 	assert.NotContains(t, summary, "real crash path")
+}
+
+func TestGenerateReport_FixFirstIsHiddenWhenItWouldNotShortenTheList(t *testing.T) {
+	in := stateFixtureInput()
+	report := renderLayoutFixture(t, in)
+	require.Contains(t, report, `class="fix-first"`, "two picks out of seven findings is a short list")
+
+	everything := in
+	everything.Comments = append([]types.LineComment(nil), in.Comments...)
+	all := &types.SummaryBlock{Verdict: "request_changes", Upshot: "Everything matters."}
+	for _, c := range in.Comments {
+		if c.Inactive || c.FilePath == "SUMMARY" {
+			continue
+		}
+		ref := c.ID
+		if ref == "" {
+			ref = c.FilePath
+			if c.LineNumber > 0 {
+				ref = fmt.Sprintf("%s:%d", c.FilePath, c.LineNumber)
+			}
+		}
+		all.PriorityIDs = append(all.PriorityIDs, ref)
+	}
+	everything.Comments[5].Summary = all
+	report = renderLayoutFixture(t, everything)
+	assert.NotContains(t, report, `class="fix-first"`, "picking every finding is not a short list")
+
+	allButOne := everything
+	allButOne.Comments = append([]types.LineComment(nil), everything.Comments...)
+	allButOne.Comments[5].Summary = &types.SummaryBlock{Verdict: "request_changes", PriorityIDs: all.PriorityIDs[:len(all.PriorityIDs)-1]}
+	report = renderLayoutFixture(t, allButOne)
+	assert.Contains(t, report, `class="fix-first"`, "one fewer pick than findings is still a short list")
 }
 
 func TestGenerateReport_StructuredSummaryVerdictMapping(t *testing.T) {
@@ -240,7 +277,7 @@ func TestGenerateReport_StructuredSummaryWithoutPrioritiesHasNoActionsOrSuggesti
 	in := stateFixtureInput()
 	in.Comments[5].Summary = &types.SummaryBlock{Verdict: "approve", Notes: "Nothing to add."}
 	report := renderLayoutFixture(t, in)
-	assert.NotContains(t, report, "<h2>Next actions</h2>")
+	assert.NotContains(t, report, `class="fix-first"`)
 	assert.NotContains(t, report, "<h2>Suggestions</h2>")
 	assert.NotContains(t, report, `class="verdict-upshot"`)
 	assert.Contains(t, report, "Nothing to add.")
@@ -257,4 +294,13 @@ func TestMergedRecordLinksByLocationWhenTheSurvivorHasNoID(t *testing.T) {
 	if !strings.Contains(report, `<a href="#finding-1">a.go:13</a>`) {
 		t.Errorf("a merged record must link to its survivor by location when no id is available:\n%s", report[strings.Index(report, "Merged claims"):][:600])
 	}
+}
+
+func TestGenerateReport_FixFirstListsAFindingOnceWhateverItIsCalled(t *testing.T) {
+	in := stateFixtureInput()
+	in.Comments[5].Summary = &types.SummaryBlock{Verdict: "request_changes", PriorityIDs: []string{"A-1", "app.go:13", "A-1"}}
+	report := renderLayoutFixture(t, in)
+	require.Contains(t, report, `class="fix-first"`, "one distinct pick out of seven is a short list")
+	card := report[strings.Index(report, `class="fix-first"`):strings.Index(report, "<h2>Review Summary</h2>")]
+	assert.Equal(t, 1, strings.Count(card, "<li"), "label and location aliases of one finding render once")
 }

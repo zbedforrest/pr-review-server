@@ -78,6 +78,7 @@ The most common ones:
 | `POLLING_INTERVAL` | No | GitHub poll cadence, default `1m` |
 | `DISABLE_POLLING` | No | Run purely as an on-demand review API |
 | `MENTION_HANDLE` | No | App login mentioned to request a review (`@<handle> review`) by the PR author or a repository owner, member or collaborator; default `prism-pr-review-server`, empty disables |
+| `HEALTH_JOB_TOKEN` | No | Enables `POST /api/health/daily` for a scheduler (header `X-Prism-Job-Token`); the report is stored and readable at `GET /api/health/daily` (`?format=md`) |
 
 ### First-pass provider
 

@@ -384,12 +384,14 @@ type PublishedReplyModel struct {
 	Model           string `gorm:"size:255;not null;default:''"`
 	DurationMS      int64  `gorm:"not null;default:0"`
 	Outcome         string `gorm:"size:32;not null;default:''"`
+	DecisionReact   bool   `gorm:"not null;default:true"`
 	Attempts        int    `gorm:"not null;default:0"`
 	DecisionHead    string `gorm:"size:64;not null;default:''"`
 	DecisionThread  string `gorm:"size:64;not null;default:''"`
 	ClaimedBy       string `gorm:"size:128;not null;default:''"`
 	ClaimedAt       *time.Time
 	RepliedAt       *time.Time
+	UpdatedAt       time.Time // GORM maintains it on every update; the health report ages stuck steps from it
 	CreatedAt       time.Time `gorm:"not null"`
 	ProcessedAt     time.Time `gorm:"not null;index"`
 }

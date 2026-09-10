@@ -78,17 +78,18 @@ var summaryVerdictText = map[string]string{
 func RenderStructuredSummaries(comments []types.LineComment) {
 	// Priorities name a finding by label or, after the merge remapped a
 	// dropped label, by location.
-	byID := map[string]types.LineComment{}
-	for _, c := range comments {
+	// Both aliases of one finding resolve to the same index so it is listed once.
+	byID := map[string]int{}
+	for i, c := range comments {
 		if c.FilePath == "SUMMARY" || c.FilePath == checkFilePath || c.Disposition != nil {
 			continue
 		}
 		if c.ID != "" {
-			byID[c.ID] = c
+			byID[c.ID] = i
 		}
 		if loc := findingLocation(c); loc != "" {
 			if _, taken := byID[loc]; !taken {
-				byID[loc] = c
+				byID[loc] = i
 			}
 		}
 	}
@@ -107,13 +108,18 @@ func RenderStructuredSummaries(comments []types.LineComment) {
 			b.WriteString("\n\n" + u)
 		}
 		n := 0
+		listed := map[int]bool{}
 		for _, id := range c.Summary.PriorityIDs {
-			f, ok := byID[id]
-			if !ok {
+			idx, ok := byID[id]
+			if !ok || listed[idx] {
 				continue
 			}
+			listed[idx] = true
+			f := comments[idx]
 			if n == 0 {
-				b.WriteString("\n\nNext actions:")
+				// The prose lists every pick; only the report card hides the list
+				// when it would repeat the whole findings index.
+				b.WriteString("\n\nFix first:")
 			}
 			n++
 			fmt.Fprintf(&b, "\n%d. %s (%s)", n, findingLabel(f), findingLocation(f))

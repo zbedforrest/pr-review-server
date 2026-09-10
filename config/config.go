@@ -86,6 +86,9 @@ type Config struct {
 	// MentionHandle is the App login authors mention to request a review
 	// ("@<handle> review"); empty disables mention triggers.
 	MentionHandle string
+	// HealthJobToken authenticates the scheduled daily health report
+	// (POST /api/health/daily); empty disables the job endpoint.
+	HealthJobToken string
 	// AnthropicAPIKey is optional for the agent pass (Claude OAuth remains
 	// supported) but required when FirstPassProvider is "claude".
 	AnthropicAPIKey   string
@@ -304,6 +307,7 @@ func Load() *Config {
 		ReplyMaxTurns:      getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
 		ReplyMaxConcurrent: getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
 		MentionHandle:      strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
+		HealthJobToken:     os.Getenv("HEALTH_JOB_TOKEN"),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),

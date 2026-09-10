@@ -104,6 +104,7 @@ func (g *GormDB) AutoMigrate() error {
 		&ReviewRunModel{},
 		&ReviewStageAttemptModel{},
 		&MentionTriggerModel{},
+		&HealthReportModel{},
 	); err != nil {
 		return err
 	}
@@ -143,6 +144,8 @@ var replyDecisionColumns = []struct {
 	{"replied_at", "RepliedAt", "timestamptz"},
 	{"claimed_by", "ClaimedBy", "varchar(128) NOT NULL DEFAULT ''"},
 	{"claimed_at", "ClaimedAt", "timestamptz"},
+	{"decision_react", "DecisionReact", "boolean NOT NULL DEFAULT true"},
+	{"updated_at", "UpdatedAt", "timestamptz"},
 }
 
 func (g *GormDB) ensureIdempotentColumns() error {
@@ -178,6 +181,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&MentionTriggerModel{}) {
 		if err := g.db.Migrator().CreateTable(&MentionTriggerModel{}); err != nil {
 			return fmt.Errorf("create mention_triggers: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&HealthReportModel{}) {
+		if err := g.db.Migrator().CreateTable(&HealthReportModel{}); err != nil {
+			return fmt.Errorf("create health_reports: %w", err)
 		}
 	}
 	// Older revisions did not enforce one live run per target. Prefer work that

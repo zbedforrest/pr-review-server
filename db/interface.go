@@ -377,6 +377,7 @@ type PublishedReply struct {
 	// model runs so a persistently failing reply is eventually given up on.
 	Outcome        string
 	Attempts       int
+	DecisionReact  bool
 	DecisionHead   string
 	DecisionThread string
 	ClaimedBy      string
@@ -398,6 +399,9 @@ type ReplyDecisionRecord struct {
 	// the thread content); a resumed step posts only if both still match.
 	Head   string
 	Thread string
+	// React is the model's choice about acknowledging the author's comment
+	// with a thumbs-up; it applies only when the reply is actually posted.
+	React bool
 }
 
 // PublishedReplyTarget is a PR with inline comments PRism owns, keyed by the

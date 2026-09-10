@@ -1105,7 +1105,7 @@ func TestRenderStructuredSummaries_WritesDeterministicProse(t *testing.T) {
 		{FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "request_changes", Upshot: "Requests can crash when the config is missing.", PriorityIDs: []string{"A-1", "nope"}, Notes: "Otherwise the wiring is correct."}},
 	}
 	RenderStructuredSummaries(comments)
-	want := "Verdict: request changes.\n\nRequests can crash when the config is missing.\n\nNext actions:\n1. Requests crash on missing config (a.go:3)\n\nOtherwise the wiring is correct."
+	want := "Verdict: request changes.\n\nRequests can crash when the config is missing.\n\nFix first:\n1. Requests crash on missing config (a.go:3)\n\nOtherwise the wiring is correct."
 	if comments[1].CommentBody != want {
 		t.Errorf("rendered summary:\n%q\nwant:\n%q", comments[1].CommentBody, want)
 	}

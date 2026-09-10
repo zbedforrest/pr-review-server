@@ -54,6 +54,7 @@ type ReplyInput struct {
 type ReplyResult struct {
 	Decision       string
 	Reply          string
+	React          bool
 	Cited          []types.EvidenceRef
 	Unresolved     []types.EvidenceRef
 	RequestedModel string
@@ -66,6 +67,17 @@ type replyJSON struct {
 	Decision string              `json:"decision"`
 	Reply    string              `json:"reply"`
 	Cited    []types.EvidenceRef `json:"cited"`
+	React    *bool               `json:"react"`
+}
+
+// reacts follows the model's explicit choice; when it said nothing, a hold is
+// not acknowledged (a thumbs-up on a rebuttal reads as agreement) and every
+// other decision is.
+func (d replyJSON) reacts() bool {
+	if d.React != nil {
+		return *d.React
+	}
+	return d.Decision != ReplyDecisionHold
 }
 
 var replyDecisions = map[string]bool{ReplyDecisionConcede: true, ReplyDecisionHold: true, ReplyDecisionAnswer: true, ReplyDecisionAbstain: true}
@@ -167,7 +179,7 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 
 	succeeded = true
 	out := &ReplyResult{
-		Decision: ReplyDecisionAbstain, RequestedModel: runtime.model,
+		Decision: ReplyDecisionAbstain, React: true, RequestedModel: runtime.model,
 		AssistantTurns: parsed.assistantTurns, DurationMS: time.Since(started).Milliseconds(),
 	}
 	out.ServedModel, _, _, _, _ = agentServingMetadata(runtime, parsed.servedModels)
@@ -199,7 +211,12 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		log.Printf("%s reply text matches a credential pattern; abstaining", logPrefix)
 		return out, nil
 	}
+	// The reaction follows the decision that survived validation: a hold
+	// degraded to abstain is not a rebuttal, so it keeps the acknowledgement.
+	// A hold is never acknowledged, whatever the model wrote: a thumbs-up on
+	// a comment about to be rebutted reads as agreement.
 	out.Decision = decision.Decision
+	out.React = decision.reacts() && decision.Decision != ReplyDecisionHold
 	if out.Decision != ReplyDecisionAbstain {
 		out.Reply = decision.Reply
 	}
