@@ -211,10 +211,13 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 	}
 	m.Replies.TextPosted = int(n)
 	// A text step that was started (claimed, attempted or decided) and has
-	// seen no activity for an hour is stuck. Rows the step never touched, as
-	// under react mode, are not.
-	if err := g.db.Model(&PublishedReplyModel{}).
-		Where("outcome = '' AND (attempts > 0 OR decision <> '' OR claimed_at IS NOT NULL) AND COALESCE(updated_at, processed_at) < ?", now.Add(-time.Hour)).Count(&n).Error; err != nil {
+	// seen no activity for an hour is stuck, on a PR the reply scan still
+	// visits: open and not draft. Rows the step never touched, as under react
+	// mode, are not, and neither are rows on PRs the scan can no longer reach.
+	if err := g.db.Table("published_reply_models AS r").
+		Joins("JOIN prs ON prs.repo_owner = r.repo_owner AND prs.repo_name = r.repo_name AND prs.pr_number = r.pr_number").
+		Where("r.outcome = '' AND (r.attempts > 0 OR r.decision <> '' OR r.claimed_at IS NOT NULL) AND COALESCE(r.updated_at, r.processed_at) < ? AND LOWER(prs.pr_state) = 'open' AND NOT prs.draft", now.Add(-time.Hour)).
+		Count(&n).Error; err != nil {
 		return m, err
 	}
 	m.Replies.StuckPending = int(n)

@@ -35,7 +35,7 @@ func TestEvaluateHealthyDayIsOK(t *testing.T) {
 		t.Fatalf("overall = %s, checks = %+v", r.Overall, r.Checks)
 	}
 	md := r.Markdown()
-	for _, want := range []string{"# PRism daily health", "OK", "20 reviews", "95%", "p50", "p90", "6 summaries", "9 inline", "prism-00047-nsr-abc"} {
+	for _, want := range []string{"# PRism daily health", "OK", "20 reviews", "95%", "p50", "p90", "6 PRs got their first summary", "9 inline", "prism-00047-nsr-abc"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("markdown missing %q:\n%s", want, md)
 		}
@@ -102,6 +102,16 @@ func TestEvaluateCancelledRunsAreNotFailures(t *testing.T) {
 	}
 	if !strings.Contains(r.Markdown(), "9 runs superseded") {
 		t.Errorf("cancellations stay visible:\n%s", r.Markdown())
+	}
+}
+
+func TestEvaluateAllCancelledDayIsNotAQuietDay(t *testing.T) {
+	m := healthyMetrics()
+	m.Runs.ByStatus = map[string]int{"cancelled": 6}
+	r := Evaluate(m)
+	md := r.Markdown()
+	if !strings.Contains(md, "No reviews attempted in the window (6 cancelled)") || !strings.Contains(md, "6 runs superseded") {
+		t.Fatalf("cancellations must stay visible on a day with no attempts:\n%s", md)
 	}
 }
 

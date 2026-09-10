@@ -60,8 +60,12 @@ type QueueMetrics struct {
 	RunningOverTwiceBudget int `json:"running_over_twice_budget"`
 }
 
+// PublishMetrics counts ledger rows first created in the window: PRs that got
+// their first summary comment, inline comments posted (one row each), and
+// annotation-only findings recorded. Later rounds edit the summary in place
+// and are not counted; the ledger keeps no per-round history.
 type PublishMetrics struct {
-	Summaries   int `json:"summaries"`
+	Summaries   int `json:"first_summaries"`
 	Inline      int `json:"inline"`
 	Annotations int `json:"annotations"`
 	Dismissed   int `json:"dismissed_total"` // current total, not windowed: the ledger has no dismissal time
@@ -124,7 +128,12 @@ func Evaluate(m Metrics) Report {
 	// Only run_timeout is the agent wall clock; abandoned leases and queue
 	// dedupes also end as timed_out but point at other subsystems.
 	timedOut := m.Runs.ByTerminalCode["run_timeout"]
+	if cancelled > 0 {
+		add("cancelled runs", StatusOK, fmt.Sprintf("%d runs superseded or rejected before running", cancelled))
+	}
 	switch {
+	case attempted == 0 && cancelled > 0:
+		add("review volume", StatusWarn, fmt.Sprintf("No reviews attempted in the window (%d cancelled)", cancelled))
 	case attempted == 0:
 		add("review volume", StatusWarn, "No reviews in the window")
 	default:
@@ -136,9 +145,6 @@ func Evaluate(m Metrics) Report {
 			status = StatusWarn
 		}
 		add("review success rate", status, fmt.Sprintf("%d of %d attempted reviews completed (%.0f%%); %s", completed, attempted, rate*100, countList(m.Runs.ByStatus)))
-		if cancelled > 0 {
-			add("cancelled runs", StatusOK, fmt.Sprintf("%d runs superseded or rejected before running", cancelled))
-		}
 		if timedOut > 0 {
 			status := StatusWarn
 			if timedOut > 3 && float64(timedOut)/float64(attempted) > 0.2 {
@@ -187,7 +193,7 @@ func Evaluate(m Metrics) Report {
 		add("poller lease", StatusOK, fmt.Sprintf("held by %s", m.Lease.Holder))
 	}
 
-	add("publications", StatusOK, fmt.Sprintf("%d summaries, %d inline comments, %d annotations; %d findings currently dismissed by concession (all time)", m.Publish.Summaries, m.Publish.Inline, m.Publish.Annotations, m.Publish.Dismissed))
+	add("publications", StatusOK, fmt.Sprintf("%d PRs got their first summary comment, %d inline comments posted, %d annotation-only findings; %d findings currently dismissed by concession (all time)", m.Publish.Summaries, m.Publish.Inline, m.Publish.Annotations, m.Publish.Dismissed))
 
 	replyDetail := fmt.Sprintf("%d author replies handled", m.Replies.Handled)
 	if m.Replies.Handled > 0 {

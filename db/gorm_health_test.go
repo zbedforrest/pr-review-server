@@ -38,6 +38,13 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 		ReviewRunID: "r3", ExecutionAttempt: 1, Stage: "agent", InvocationNumber: 1, AttemptNumber: 1, Status: "failed", ErrorCode: "wall_clock_timeout", StartedAt: &attemptStart, CompletedAt: &attemptEnd,
 	}).Error)
 	require.NoError(t, db.db.Create(&PollerLeaseModel{ID: "poller", Holder: "prism-00047", ExpiresAt: now.Add(time.Minute), Generation: 1}).Error)
+	for _, pr := range []*PR{
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 1, PRState: "open"},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 3, PRState: "closed"},
+	} {
+		pr.LastCommitSHA, pr.Title, pr.Author, pr.Status = "abc", "t", "a", "completed"
+		require.NoError(t, db.UpsertPR(pr))
+	}
 
 	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.PublishedAt = now.Add(-time.Hour) })))
 	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
@@ -55,6 +62,10 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 		Fingerprint: "f", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: now.Add(-3 * time.Hour)})
 	require.NoError(t, err)
 	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 12").UpdateColumns(map[string]interface{}{"processed_at": now.Add(-3 * time.Hour), "attempts": 1, "updated_at": now.Add(-10 * time.Minute)}).Error)
+	_, err = db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 3, RootCommentID: 1, AuthorCommentID: 13,
+		Fingerprint: "f", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: now.Add(-3 * time.Hour)})
+	require.NoError(t, err)
+	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 13").UpdateColumns(map[string]interface{}{"processed_at": now.Add(-3 * time.Hour), "attempts": 1, "updated_at": now.Add(-3 * time.Hour)}).Error)
 
 	m, err := db.HealthMetrics(start, now, now, nil)
 	require.NoError(t, err)
@@ -71,8 +82,8 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 	assert.Equal(t, "prism-00047", m.Lease.Holder)
 	assert.Equal(t, 1, m.Publish.Summaries)
 	assert.Equal(t, 1, m.Publish.Inline)
-	assert.Equal(t, 3, m.Replies.Handled)
-	assert.Equal(t, 1, m.Replies.StuckPending, "untouched rows and rows active in the last hour are not stuck")
+	assert.Equal(t, 4, m.Replies.Handled)
+	assert.Equal(t, 1, m.Replies.StuckPending, "untouched rows, rows active in the last hour, and rows on PRs the scan no longer visits are not stuck")
 }
 
 func TestGormDB_HealthReports_RoundTrip(t *testing.T) {
