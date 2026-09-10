@@ -12,7 +12,7 @@ export interface Settings {
   publish_inline_min_severity: string;
   publish_show_unverified: boolean;
   publish_reply_mode: ReplyMode;
-  // RFC3339, or "" while replies have never been enabled.
+  // RFC3339 stamp of when replies were last switched on; "" whenever the mode is off.
   publish_reply_enabled_at: string;
   admin_logins: string;
   admin_logins_fixed: string[];

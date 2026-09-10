@@ -93,7 +93,7 @@ describe('useSettingsEditor', () => {
   });
 
   it('refetches on mount even when the cached settings are fresh', async () => {
-    const client = makeClient();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     client.setQueryData<Settings>(['settings'], serverSettings);
     const fromServer = { ...serverSettings, review_n_requests: 9 };
     fetchMock.mockResolvedValue(jsonResponse(fromServer));
