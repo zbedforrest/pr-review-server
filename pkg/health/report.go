@@ -220,11 +220,11 @@ func Evaluate(m Metrics) Report {
 		add("PR error messages", StatusWarn, fmt.Sprintf("%d PRs currently show an error on the dashboard", m.PRErrors))
 	}
 
-	r.Headline = headline(r, attempted, completed)
+	r.Headline = headline(r, attempted, completed, cancelled)
 	return r
 }
 
-func headline(r Report, total, completed int) string {
+func headline(r Report, total, completed, cancelled int) string {
 	var bad []string
 	for _, c := range r.Checks {
 		if c.Status != StatusOK {
@@ -234,6 +234,8 @@ func headline(r Report, total, completed int) string {
 	switch {
 	case r.Overall == StatusOK:
 		return fmt.Sprintf("OK: %d reviews, all systems normal", total)
+	case total == 0 && len(bad) == 1 && cancelled > 0:
+		return fmt.Sprintf("Quiet day: no reviews attempted (%d cancelled)", cancelled)
 	case total == 0 && len(bad) == 1:
 		return "Quiet day: no reviews ran"
 	default:

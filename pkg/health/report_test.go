@@ -110,7 +110,7 @@ func TestEvaluateAllCancelledDayIsNotAQuietDay(t *testing.T) {
 	m.Runs.ByStatus = map[string]int{"cancelled": 6}
 	r := Evaluate(m)
 	md := r.Markdown()
-	if !strings.Contains(md, "No reviews attempted in the window (6 cancelled)") || !strings.Contains(md, "6 runs superseded") {
+	if !strings.Contains(md, "No reviews attempted in the window (6 cancelled)") || !strings.Contains(md, "6 runs superseded") || !strings.Contains(r.Headline, "6 cancelled") {
 		t.Fatalf("cancellations must stay visible on a day with no attempts:\n%s", md)
 	}
 }

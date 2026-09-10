@@ -206,7 +206,9 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 		}
 		*target = toMap(rows)
 	}
-	if err := replies.Where("reply_comment_id <> 0").Count(&n).Error; err != nil {
+	// Posting and giving up happen on later scans than ingestion; count them
+	// when they happened.
+	if err := g.db.Model(&PublishedReplyModel{}).Where("reply_comment_id <> 0 AND replied_at >= ? AND replied_at < ?", start, end).Count(&n).Error; err != nil {
 		return m, err
 	}
 	m.Replies.TextPosted = int(n)
@@ -221,7 +223,7 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 		return m, err
 	}
 	m.Replies.StuckPending = int(n)
-	if err := replies.Where("outcome = 'failed'").Count(&n).Error; err != nil {
+	if err := g.db.Model(&PublishedReplyModel{}).Where("outcome = 'failed' AND COALESCE(updated_at, processed_at) >= ? AND COALESCE(updated_at, processed_at) < ?", start, end).Count(&n).Error; err != nil {
 		return m, err
 	}
 	m.Replies.Failed = int(n)
