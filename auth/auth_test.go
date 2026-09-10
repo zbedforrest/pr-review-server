@@ -1180,6 +1180,34 @@ func TestMiddleware_BearerPAT_RenamedUser_ResolvesByGitHubID(t *testing.T) {
 	}
 }
 
+func TestMiddleware_BearerPAT_CachedLoginDoesNotOverwriteNewerRename(t *testing.T) {
+	mockDB := newMockDatabase()
+	user := &db.User{GitHubID: 42, GitHubUsername: "alice-old"}
+	_ = mockDB.CreateUser(user)
+
+	srv, _ := fakeGitHubUserAPI(t, "tok-a", GitHubUser{ID: 42, Login: "alice-old"}, http.StatusOK)
+	defer srv.Close()
+
+	authInst := newTestAuth(mockDB)
+	authInst.githubAPIBase = srv.URL
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	send := func() {
+		req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+		req.Header.Set("Authorization", "Bearer tok-a")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	send()
+	user.GitHubUsername = "alice-new"
+	send()
+
+	if got := mockDB.users[42].GitHubUsername; got != "alice-new" {
+		t.Fatalf("expected cached login to leave the newer rename alone, got %q", got)
+	}
+}
+
 func TestRefreshLogin_UnchangedLoginWritesNothing(t *testing.T) {
 	mockDB := newMockDatabase()
 	user := &db.User{GitHubID: 7, GitHubUsername: "alice"}
@@ -1240,7 +1268,7 @@ func TestBearerLookup_CachesIDAndLogin(t *testing.T) {
 	authInst := newTestAuth(newMockDatabase())
 	authInst.githubAPIBase = srv.URL
 
-	identity, ok := authInst.bearerLookup(context.Background(), "tok-identity")
+	identity, _, ok := authInst.bearerLookup(context.Background(), "tok-identity")
 	if !ok {
 		t.Fatal("expected lookup to succeed")
 	}
@@ -1265,7 +1293,7 @@ func TestBearerLookup_FailedUserLookupNotCached(t *testing.T) {
 	authInst.githubAPIBase = srv.URL
 
 	for i := 0; i < 2; i++ {
-		if _, ok := authInst.bearerLookup(context.Background(), "tok-flaky"); ok {
+		if _, _, ok := authInst.bearerLookup(context.Background(), "tok-flaky"); ok {
 			t.Fatalf("call %d: expected lookup to fail", i)
 		}
 	}

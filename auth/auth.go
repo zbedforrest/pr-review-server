@@ -519,7 +519,7 @@ func (a *Auth) tryBearerAuth(r *http.Request) (*db.User, bool) {
 		return nil, false
 	}
 
-	identity, ok := a.bearerLookup(r.Context(), token)
+	identity, fresh, ok := a.bearerLookup(r.Context(), token)
 	if !ok {
 		return nil, false
 	}
@@ -533,7 +533,9 @@ func (a *Auth) tryBearerAuth(r *http.Request) (*db.User, bool) {
 		log.Printf("[AUTH-BEARER] no prism user matches GitHub login %q", identity.Login)
 		return nil, false
 	}
-	a.refreshLogin(user, identity.Login)
+	if fresh {
+		a.refreshLogin(user, identity.Login)
+	}
 	return user, true
 }
 
@@ -565,22 +567,23 @@ func extractBearerToken(r *http.Request) string {
 }
 
 // bearerLookup resolves a GitHub PAT to a GitHub identity, using a 5-minute
-// cache to keep CLI traffic from burning api.github.com rate limit. Returns
-// (identity, true) on a successful identification.
-func (a *Auth) bearerLookup(ctx context.Context, token string) (gitHubIdentity, bool) {
+// cache to keep CLI traffic from burning api.github.com rate limit. fresh is
+// true when the identity came from GitHub just now rather than the cache: a
+// cached login may be older than a rename recorded through another path.
+func (a *Auth) bearerLookup(ctx context.Context, token string) (identity gitHubIdentity, fresh, ok bool) {
 	key := hashBearerToken(token)
 
 	a.bearerCacheMux.RLock()
-	entry, ok := a.bearerCache[key]
+	entry, cached := a.bearerCache[key]
 	a.bearerCacheMux.RUnlock()
-	if ok && time.Now().Before(entry.expiresAt) {
-		return entry.identity, true
+	if cached && time.Now().Before(entry.expiresAt) {
+		return entry.identity, false, true
 	}
 
 	identity, err := a.fetchGitHubIdentity(ctx, token)
 	if err != nil {
 		log.Printf("[AUTH-BEARER] github /user lookup failed: %v", err)
-		return gitHubIdentity{}, false
+		return gitHubIdentity{}, false, false
 	}
 
 	a.bearerCacheMux.Lock()
@@ -590,7 +593,7 @@ func (a *Auth) bearerLookup(ctx context.Context, token string) (gitHubIdentity, 
 	}
 	a.bearerCacheMux.Unlock()
 
-	return identity, true
+	return identity, true, true
 }
 
 // hashBearerToken returns a stable cache key for a token without keeping the
