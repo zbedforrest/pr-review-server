@@ -49,20 +49,28 @@ type Auth struct {
 	// Production leaves it empty; bearerLookup falls back to the real API.
 	githubAPIBase string
 
-	// bearerCache memoizes Authorization: Bearer <pat> → resolved username
-	// for 5 minutes so a CLI hammering the endpoint doesn't burn a GitHub
-	// API request per call. Keyed by sha256(token) so the cache itself never
-	// stores the raw PAT.
+	// bearerCache memoizes Authorization: Bearer <pat> → resolved GitHub
+	// identity for 5 minutes so a CLI hammering the endpoint doesn't burn a
+	// GitHub API request per call. Keyed by sha256(token) so the cache itself
+	// never stores the raw PAT.
 	bearerCacheMux sync.RWMutex
 	bearerCache    map[string]bearerCacheEntry
 }
 
 type bearerCacheEntry struct {
-	login     string
+	identity  gitHubIdentity
 	expiresAt time.Time
 }
 
-// bearerCacheTTL is how long a successful Bearer-token → login mapping is
+// gitHubIdentity is the stable (ID) and display (Login) halves of a GitHub
+// account as returned by /user. Users are keyed by ID because logins can be
+// renamed and later taken by a different account.
+type gitHubIdentity struct {
+	ID    int64
+	Login string
+}
+
+// bearerCacheTTL is how long a successful Bearer-token → identity mapping is
 // trusted before we re-validate against api.github.com/user.
 const bearerCacheTTL = 5 * time.Minute
 
@@ -343,7 +351,7 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Bearer-token branch (for CLI consumers like the prism-review skill).
 		// We accept a GitHub PAT, validate it against api.github.com/user, and
-		// look up the matching prism user by login. Falls through to the
+		// look up the matching prism user by GitHub ID. Falls through to the
 		// cookie path if no Authorization header is set.
 		if user, ok := a.tryBearerAuth(r); ok {
 			ctx := context.WithValue(r.Context(), UserContextKey, user)
@@ -510,18 +518,18 @@ func (a *Auth) tryBearerAuth(r *http.Request) (*db.User, bool) {
 		return nil, false
 	}
 
-	login, ok := a.bearerLookup(r.Context(), token)
+	identity, ok := a.bearerLookup(r.Context(), token)
 	if !ok {
 		return nil, false
 	}
 
-	user, err := a.db.GetUserByUsername(login)
+	user, err := a.db.GetUserByGitHubID(identity.ID)
 	if err != nil {
-		log.Printf("[AUTH-BEARER] db lookup error for login=%s: %v", login, err)
+		log.Printf("[AUTH-BEARER] db lookup error for login=%s: %v", identity.Login, err)
 		return nil, false
 	}
 	if user == nil {
-		log.Printf("[AUTH-BEARER] no prism user matches GitHub login %q", login)
+		log.Printf("[AUTH-BEARER] no prism user matches GitHub login %q", identity.Login)
 		return nil, false
 	}
 	return user, true
@@ -541,33 +549,33 @@ func extractBearerToken(r *http.Request) string {
 	return strings.TrimSpace(parts[1])
 }
 
-// bearerLookup resolves a GitHub PAT to a login, using a 5-minute cache to
-// keep CLI traffic from burning api.github.com rate limit. Returns
-// (login, true) on a successful identification.
-func (a *Auth) bearerLookup(ctx context.Context, token string) (string, bool) {
+// bearerLookup resolves a GitHub PAT to a GitHub identity, using a 5-minute
+// cache to keep CLI traffic from burning api.github.com rate limit. Returns
+// (identity, true) on a successful identification.
+func (a *Auth) bearerLookup(ctx context.Context, token string) (gitHubIdentity, bool) {
 	key := hashBearerToken(token)
 
 	a.bearerCacheMux.RLock()
 	entry, ok := a.bearerCache[key]
 	a.bearerCacheMux.RUnlock()
 	if ok && time.Now().Before(entry.expiresAt) {
-		return entry.login, true
+		return entry.identity, true
 	}
 
-	login, err := a.fetchGitHubLogin(ctx, token)
+	identity, err := a.fetchGitHubIdentity(ctx, token)
 	if err != nil {
 		log.Printf("[AUTH-BEARER] github /user lookup failed: %v", err)
-		return "", false
+		return gitHubIdentity{}, false
 	}
 
 	a.bearerCacheMux.Lock()
 	a.bearerCache[key] = bearerCacheEntry{
-		login:     login,
+		identity:  identity,
 		expiresAt: time.Now().Add(bearerCacheTTL),
 	}
 	a.bearerCacheMux.Unlock()
 
-	return login, true
+	return identity, true
 }
 
 // hashBearerToken returns a stable cache key for a token without keeping the
@@ -577,36 +585,37 @@ func hashBearerToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// fetchGitHubLogin calls api.github.com/user with the given PAT and returns
-// the login on success. Test code overrides githubAPIBase to point at a fake.
-func (a *Auth) fetchGitHubLogin(ctx context.Context, token string) (string, error) {
+// fetchGitHubIdentity calls api.github.com/user with the given PAT and returns
+// the account's ID and login on success. Test code overrides githubAPIBase to
+// point at a fake.
+func (a *Auth) fetchGitHubIdentity(ctx context.Context, token string) (gitHubIdentity, error) {
 	base := a.githubAPIBase
 	if base == "" {
 		base = "https://api.github.com"
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/user", nil)
 	if err != nil {
-		return "", err
+		return gitHubIdentity{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return gitHubIdentity{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("github /user returned %d", resp.StatusCode)
+		return gitHubIdentity{}, fmt.Errorf("github /user returned %d", resp.StatusCode)
 	}
 
 	var u GitHubUser
 	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
-		return "", fmt.Errorf("decode /user: %w", err)
+		return gitHubIdentity{}, fmt.Errorf("decode /user: %w", err)
 	}
-	if u.Login == "" {
-		return "", fmt.Errorf("github /user returned empty login")
+	if u.ID == 0 || u.Login == "" {
+		return gitHubIdentity{}, fmt.Errorf("github /user returned incomplete identity (id=%d login=%q)", u.ID, u.Login)
 	}
-	return u.Login, nil
+	return gitHubIdentity{ID: u.ID, Login: u.Login}, nil
 }
