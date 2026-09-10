@@ -533,23 +533,34 @@ func (a *Auth) tryBearerAuth(r *http.Request) (*db.User, bool) {
 		log.Printf("[AUTH-BEARER] no prism user matches GitHub login %q", identity.Login)
 		return nil, false
 	}
-	if fresh {
-		a.refreshLogin(user, identity.Login)
+	if fresh && !a.refreshLogin(user, identity.Login) {
+		a.forgetBearer(token)
 	}
 	return user, true
 }
 
 // refreshLogin follows a GitHub rename so login-keyed authorization (the
-// admin lists) sees the current handle. GitHub's answer wins even when the
-// write fails; the request continues either way.
-func (a *Auth) refreshLogin(user *db.User, login string) {
+// admin lists) sees the current handle. GitHub's answer wins in memory even
+// when the write fails; the request continues and the caller decides whether
+// to retry later.
+func (a *Auth) refreshLogin(user *db.User, login string) bool {
 	if user.GitHubUsername == login {
-		return
+		return true
 	}
-	if err := a.db.UpdateUserGitHubUsername(user.ID, login); err != nil {
+	err := a.db.UpdateUserGitHubUsername(user.ID, login)
+	if err != nil {
 		log.Printf("[AUTH] failed to record login rename %s -> %s: %v", user.GitHubUsername, login, err)
 	}
 	user.GitHubUsername = login
+	return err == nil
+}
+
+// forgetBearer drops a cached identity so the next request refetches it and
+// gets another chance to persist a rename.
+func (a *Auth) forgetBearer(token string) {
+	a.bearerCacheMux.Lock()
+	delete(a.bearerCache, hashBearerToken(token))
+	a.bearerCacheMux.Unlock()
 }
 
 // extractBearerToken pulls the token out of an `Authorization: Bearer <tok>`

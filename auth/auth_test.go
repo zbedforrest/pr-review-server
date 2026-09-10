@@ -1208,6 +1208,37 @@ func TestMiddleware_BearerPAT_CachedLoginDoesNotOverwriteNewerRename(t *testing.
 	}
 }
 
+func TestMiddleware_BearerPAT_FailedRenameWriteIsRetriedNextRequest(t *testing.T) {
+	mockDB := newMockDatabase()
+	_ = mockDB.CreateUser(&db.User{GitHubID: 42, GitHubUsername: "alice-old"})
+	mockDB.UpdateUserGitHubUsernameErr = errors.New("db down")
+
+	srv, calls := fakeGitHubUserAPI(t, "tok-a", GitHubUser{ID: 42, Login: "alice-new"}, http.StatusOK)
+	defer srv.Close()
+
+	authInst := newTestAuth(mockDB)
+	authInst.githubAPIBase = srv.URL
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	send := func() {
+		req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+		req.Header.Set("Authorization", "Bearer tok-a")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	send()
+	mockDB.UpdateUserGitHubUsernameErr = nil
+	send()
+
+	if *calls != 2 {
+		t.Fatalf("expected the failed rename to evict the cache and refetch, got %d GitHub calls", *calls)
+	}
+	if got := mockDB.users[42].GitHubUsername; got != "alice-new" {
+		t.Fatalf("expected rename applied on retry, got %q", got)
+	}
+}
+
 func TestRefreshLogin_UnchangedLoginWritesNothing(t *testing.T) {
 	mockDB := newMockDatabase()
 	user := &db.User{GitHubID: 7, GitHubUsername: "alice"}
