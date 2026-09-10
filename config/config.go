@@ -83,6 +83,9 @@ type Config struct {
 	ReplyWallClockSec  int
 	ReplyMaxTurns      int
 	ReplyMaxConcurrent int
+	// MentionHandle is the App login authors mention to request a review
+	// ("@<handle> review"); empty disables mention triggers.
+	MentionHandle string
 	// HealthJobToken authenticates the scheduled daily health report
 	// (POST /api/health/daily); empty disables the job endpoint.
 	HealthJobToken string
@@ -303,6 +306,7 @@ func Load() *Config {
 		ReplyWallClockSec:  getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
 		ReplyMaxTurns:      getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
 		ReplyMaxConcurrent: getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
+		MentionHandle:      strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
 		HealthJobToken:     os.Getenv("HEALTH_JOB_TOKEN"),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
@@ -335,6 +339,15 @@ func getEnvIntOrDefault(key string, defaultValue int) int {
 		if n, err := strconv.Atoi(value); err == nil {
 			return n
 		}
+	}
+	return defaultValue
+}
+
+// getEnvOrDefaultAllowEmpty returns defaultValue only when key is unset; an
+// explicitly empty value is returned as-is so it can disable a feature.
+func getEnvOrDefaultAllowEmpty(key, defaultValue string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
 	}
 	return defaultValue
 }

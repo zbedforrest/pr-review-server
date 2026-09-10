@@ -118,8 +118,12 @@ type Poller struct {
 	replyLinkTried   map[string]time.Time
 	replySlots       chan struct{}
 	replyInFlight    publisher.ReplyInFlight
-	polling          bool
-	pollMutex        sync.Mutex
+
+	mentionScanRunning atomic.Bool
+	mentionScanCycle   atomic.Int64
+	mentionLastScanned map[string]time.Time
+	polling            bool
+	pollMutex          sync.Mutex
 	// Track active review processes for cancellation and monitoring
 	activeReviews map[string]ProcessInfo // prKey (owner/repo/number) -> ProcessInfo
 	reviewsMutex  sync.Mutex
@@ -1144,6 +1148,19 @@ func (p *Poller) Start(ctx context.Context) {
 	// (burning tokens and writing review artifacts that shadow the primary
 	// deployment's for the same commits). DISABLE_POLLING takes precedence
 	// over leadership; manual triggers and on-demand reviews still work.
+	if !p.cfg.DisablePolling {
+		if p.cfg.MentionHandle != "" {
+			// Stamp the cutoff at boot, leader or not, so a request posted right
+			// after a deploy is not older than it once this instance starts scanning.
+			if _, err := p.mentionActivation(false); err != nil {
+				log.Printf("[MENTIONS] activation timestamp: %v", err)
+			}
+		} else if err := p.db.SetSetting(settingMentionHandle, ""); err != nil {
+			// Remember that the feature was off, so re-enabling re-stamps the
+			// cutoff instead of replaying mentions from the disabled period.
+			log.Printf("[MENTIONS] could not record the disabled handle: %v", err)
+		}
+	}
 	if p.cfg.DisablePolling {
 		log.Println("DISABLE_POLLING set — skipping initial and scheduled polls (manual trigger + on-demand reviews still available)")
 	} else if p.isLeader() {
@@ -1169,6 +1186,7 @@ func (p *Poller) Start(ctx context.Context) {
 			if p.isLeader() {
 				p.startPoll(ctx, "scheduled")
 				go p.scanAuthorReplies(ctx)
+				go p.scanMentions(ctx)
 			} else {
 				log.Printf("[LEADER] not leader, skipping scheduled poll")
 			}
