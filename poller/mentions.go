@@ -20,10 +20,9 @@ import (
 // Authors ask for a review by mentioning the App in a PR comment, the way
 // they would with any review bot: "@<handle> review". The poller already
 // tracks every open PR's updated_at, and a new comment bumps it, so each cycle
-// lists issue comments only on PRs that moved and looks for the command.
-// Handled comment ids are recorded so a restart or a re-scan never triggers
-// twice.
-const mentionFullScanEvery = 10
+// lists issue comments only on PRs that moved and looks for the command; the
+// first cycle after boot sweeps every open PR. Handled comment ids are
+// recorded so a restart or a re-scan never triggers twice.
 
 func mentionKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
@@ -230,7 +229,10 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 			}
 			if done {
 				owned, err := m.ledger.FinalizeMention(c.ID, m.holder)
-				if err != nil || !owned {
+				if err != nil {
+					return res, err
+				}
+				if !owned {
 					continue
 				}
 				m.acknowledge(ctx, pr, c.ID, fmt.Sprintf("A review of %s finished in the last %d minutes; its result is current. Push a new commit for another.", short, int(mentionCoalesceWindow.Minutes())))
@@ -353,7 +355,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 		return
 	}
 	cycle := p.mentionScanCycle.Add(1)
-	full := cycle%mentionFullScanEvery == 1
+	full := cycle == 1
 	all, err := p.db.GetAllPRs()
 	if err != nil {
 		log.Printf("[MENTIONS] list PRs: %v", err)
@@ -364,7 +366,13 @@ func (p *Poller) scanMentions(ctx context.Context) {
 		prs = append(prs, &all[i])
 	}
 	candidates := mentionCandidates(prs, p.mentionLastScanned, full)
-	enabled, _ := p.db.GetSetting(settingPublishEnabledAuthors)
+	enabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
+	if err != nil {
+		// Without the allowlist every admission would be dashboard-only with
+		// a false note; wait for the next cycle instead.
+		log.Printf("[MENTIONS] read publish allowlist: %v", err)
+		return
+	}
 	scanner := mentionScanner{
 		gh: mentionGitHubAdapter{p.ghClientConcrete}, ledger: ledger, handle: p.cfg.MentionHandle, holder: p.holderID, since: since,
 		allowed: func(author string) bool { return publishEnabledFor(author, enabled) },
