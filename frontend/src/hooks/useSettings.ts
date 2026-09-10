@@ -9,36 +9,24 @@ export function useSettings() {
   });
 }
 
+export function useSettingsEditor() {
+  return useQuery({
+    queryKey: ['settings'],
+    queryFn: fetchSettings,
+    refetchOnMount: 'always',
+  });
+}
+
 export function useUpdateSettings() {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (settings: Partial<Settings>) => updateSettings(settings),
-    onMutate: async (newSettings) => {
-      // Cancel outgoing refetches
-      await queryClient.cancelQueries({ queryKey: ['settings'] });
-
-      // Snapshot previous value
-      const previousSettings = queryClient.getQueryData<Settings>(['settings']);
-
-      // Optimistically update
-      queryClient.setQueryData<Settings>(['settings'], (old) => ({
-        ...old!,
-        ...newSettings,
-      }));
-
-      return { previousSettings };
+    onSuccess: (saved) => {
+      queryClient.setQueryData<Settings>(['settings'], saved);
     },
-    onError: (err, _variables, context) => {
-      // Rollback on error
-      if (context?.previousSettings) {
-        queryClient.setQueryData(['settings'], context.previousSettings);
-      }
+    onError: (err) => {
       console.error('Error updating settings:', err);
-    },
-    onSettled: () => {
-      // Refetch to ensure consistency
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
   });
 }

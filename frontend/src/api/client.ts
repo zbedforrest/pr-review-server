@@ -18,6 +18,11 @@ function handleUnauthorized(response: Response): void {
   }
 }
 
+async function errorFromResponse(response: Response): Promise<APIError> {
+  const body = (await response.text().catch(() => '')).trim();
+  return new APIError(body || `API error: ${response.statusText}`, response.status, response.statusText);
+}
+
 export async function apiGet<T>(endpoint: string): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     headers: {
@@ -30,11 +35,7 @@ export async function apiGet<T>(endpoint: string): Promise<T> {
   handleUnauthorized(response);
 
   if (!response.ok) {
-    throw new APIError(
-      `API error: ${response.statusText}`,
-      response.status,
-      response.statusText
-    );
+    throw await errorFromResponse(response);
   }
 
   return response.json();
@@ -52,11 +53,7 @@ export async function apiPost<T>(endpoint: string, body: unknown): Promise<T> {
   handleUnauthorized(response);
 
   if (!response.ok) {
-    throw new APIError(
-      `API error: ${response.statusText}`,
-      response.status,
-      response.statusText
-    );
+    throw await errorFromResponse(response);
   }
 
   return response.json();
@@ -74,11 +71,7 @@ export async function apiDelete<T>(endpoint: string, body: unknown): Promise<T> 
   handleUnauthorized(response);
 
   if (!response.ok) {
-    throw new APIError(
-      `API error: ${response.statusText}`,
-      response.status,
-      response.statusText
-    );
+    throw await errorFromResponse(response);
   }
 
   return response.json();
