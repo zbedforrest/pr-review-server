@@ -46,11 +46,23 @@ func TestIsAdmin_SettingsRowLoginGrants(t *testing.T) {
 	assert.False(t, server.isAdmin(&db.User{GitHubUsername: "erin"}))
 }
 
+func TestIsAdmin_EnvAndSettingsRowAreUnioned(t *testing.T) {
+	server, database := newNonDevTestServer(t)
+	server.cfg.AdminLogins = []string{"alice"}
+	require.NoError(t, database.SetSetting(settingAdminLogins, "carol"))
+
+	assert.True(t, server.isAdmin(&db.User{GitHubUsername: "alice"}))
+	assert.True(t, server.isAdmin(&db.User{GitHubUsername: "carol"}))
+	assert.False(t, server.isAdmin(&db.User{GitHubUsername: "bob"}))
+}
+
 func TestIsAdmin_StarInSettingsRowGrantsNobody(t *testing.T) {
 	server, database := newNonDevTestServer(t)
+	server.cfg.AdminLogins = []string{"alice"}
 	require.NoError(t, database.SetSetting(settingAdminLogins, "*"))
 
-	assert.False(t, server.isAdmin(&db.User{GitHubUsername: "alice"}))
+	assert.True(t, server.isAdmin(&db.User{GitHubUsername: "alice"}))
+	assert.False(t, server.isAdmin(&db.User{GitHubUsername: "bob"}))
 	assert.False(t, server.isAdmin(&db.User{GitHubUsername: "*"}))
 }
 
@@ -151,10 +163,12 @@ func TestWriteSetting_ReturnsWriteError(t *testing.T) {
 	server, database := newTestServer(t, "tester")
 	server.db = settingWriteFails{Database: database, key: "publish_reply_mode"}
 
-	log.SetOutput(&bytes.Buffer{})
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
 
 	assert.Error(t, server.writeSetting("alice", "publish_reply_mode", "react"))
 	stored, _ := database.GetSetting("publish_reply_mode")
 	assert.Equal(t, "", stored)
+	assert.Empty(t, buf.String())
 }
