@@ -12,7 +12,7 @@ import (
 // HealthReportModel stores one daily health report.
 type HealthReportModel struct {
 	ID          uint      `gorm:"primaryKey;autoIncrement"`
-	ReportDate  string    `gorm:"size:10;not null;uniqueIndex"` // UTC date of WindowEnd; a scheduler retry replaces the day's row
+	ReportDate  string    `gorm:"size:10;not null;uniqueIndex"` // UTC date the report was produced; a same-day rerun replaces the row
 	WindowStart time.Time `gorm:"not null"`
 	WindowEnd   time.Time `gorm:"not null;index"`
 	Overall     string    `gorm:"size:16;not null"`
@@ -40,9 +40,10 @@ type HealthReport struct {
 // day (a scheduler retry, a manual rerun) replaces the first.
 func (g *GormDB) SaveHealthReport(r *HealthReport) error {
 	if r.ReportDate == "" {
-		// The date of the window's midpoint, so a schedule near midnight UTC
-		// still yields one row per day whichever side of it the job lands.
-		r.ReportDate = r.WindowStart.Add(r.WindowEnd.Sub(r.WindowStart) / 2).UTC().Format("2006-01-02")
+		// The UTC date the report was produced. One row per day holds as long
+		// as the schedule is not within its own jitter of midnight UTC; the
+		// production job runs at 14:00 UTC.
+		r.ReportDate = r.WindowEnd.UTC().Format("2006-01-02")
 	}
 	m := HealthReportModel{ReportDate: r.ReportDate, WindowStart: r.WindowStart, WindowEnd: r.WindowEnd, Overall: r.Overall, Headline: r.Headline,
 		ReportJSON: r.ReportJSON, Markdown: r.Markdown, CreatedAt: r.CreatedAt}
