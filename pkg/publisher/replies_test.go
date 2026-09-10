@@ -915,6 +915,51 @@ func TestReplyReactor_ModelDecidesTheReactionForPushbackAndQuestions(t *testing.
 	}
 }
 
+func TestReplyReactor_ObserveModeHoldsTheWatermarkForPendingRows(t *testing.T) {
+	r, _, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{}, fmt.Errorf("boom")
+	})
+	r.LastScanned = map[string]time.Time{}
+	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
+		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1", UpdatedAt: time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)}, nil
+	}
+	r.Run(context.Background())
+	if ledger.rows[0].Action != "pending" {
+		t.Fatalf("row=%+v", ledger.rows[0])
+	}
+	r.Mode = ReplyModeObserve
+	r.Run(context.Background())
+	if !r.LastScanned["acme/example#7"].IsZero() {
+		t.Fatalf("a pending row under observe keeps the PR unsettled so text mode resumes it at once")
+	}
+}
+
+func TestReplyReactor_OutcomeReportsTheActionOnlyWhenTheStepSettledIt(t *testing.T) {
+	var outcomes []ReplyOutcome
+	r, _, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionAnswer, Reply: "Yes, a.go:8 covers it.", Cited: []EvidenceRef{{File: "a.go", Line: 8}}, React: true}, nil
+	})
+	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
+	r.Run(context.Background())
+	if len(outcomes) != 1 || outcomes[0].Action != "reacted" {
+		t.Fatalf("a reaction settled by the step is reported: %+v", outcomes)
+	}
+
+	outcomes = nil
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		t.Fatal("a resolution never reaches the model")
+		return ReplyDecision{}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Fixed in 9de3bed."
+	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
+	r.Run(context.Background())
+	for _, o := range outcomes {
+		if o.Action != "" {
+			t.Fatalf("a reply acknowledged at scan time must not report its action again: %+v", outcomes)
+		}
+	}
+}
+
 func TestReplyReactor_ResolutionsStillGetTheInstantThumbsUp(t *testing.T) {
 	runs := 0
 	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {

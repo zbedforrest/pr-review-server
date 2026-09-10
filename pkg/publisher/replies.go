@@ -541,8 +541,13 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			// The mode was turned down to react while this reply waited for the
 			// model: acknowledge it now. Under observe or off the row stays
 			// pending on purpose, so a later return to text mode still runs
-			// the model on it (writing observed would make the reaction final).
-			if handled && row.Action == replyActionPending && r.reacts() {
+			// the model on it; the PR stays unsettled so that happens on the
+			// first cycle after the switch rather than the next full scan.
+			if handled && row.Action == replyActionPending {
+				if !r.reacts() {
+					settled = false
+					continue
+				}
 				claimed, err := r.settlePendingReaction(ctx, t, reply, &row, rep)
 				if err != nil {
 					return err
@@ -771,10 +776,14 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		return (mode == ReplyModeReact || mode == ReplyModeShadow || mode == ReplyModeRespond) && (allowed == nil || allowed(state.AuthorLogin)), nil
 	}
+	// Only a reaction settled by this step is reported on the outcome;
+	// rows already acknowledged at scan time produced their event then.
+	settledHere := false
 	react := func(want bool) error {
 		if row.Action != replyActionPending {
 			return nil
 		}
+		settledHere = true
 		if want {
 			live, err := liveReacts()
 			if err != nil {
@@ -808,7 +817,9 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		if err := react(want); err != nil {
 			return outcome, err
 		}
-		outcome.Action = row.Action
+		if settledHere {
+			outcome.Action = row.Action
+		}
 		if err := r.Ledger.SetPublishedReplyOutcome(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, result); err != nil {
 			return outcome, err
 		}
