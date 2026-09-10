@@ -39,9 +39,13 @@ func (g *GormDB) ReserveMention(m *MentionTrigger) (bool, error) {
 	return res.RowsAffected > 0, nil
 }
 
-// FinalizeMention marks the holder's reservation as admitted.
-func (g *GormDB) FinalizeMention(commentID int64, holder string) error {
-	return g.db.Model(&MentionTriggerModel{}).Where("comment_id = ? AND holder = ?", commentID, holder).Update("queued", true).Error
+// FinalizeMention marks the holder's reservation as admitted. It reports
+// false when the reservation is no longer the holder's (expired and taken
+// over, or released), so the caller does not acknowledge a request it does
+// not own.
+func (g *GormDB) FinalizeMention(commentID int64, holder string) (bool, error) {
+	res := g.db.Model(&MentionTriggerModel{}).Where("comment_id = ? AND holder = ?", commentID, holder).Update("queued", true)
+	return res.RowsAffected > 0, res.Error
 }
 
 // ReleaseMention drops the holder's reservation whose review could not be

@@ -13,6 +13,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/runconfig"
 )
 
@@ -57,7 +58,8 @@ func mentionCandidates(prs []*db.PR, lastScanned map[string]time.Time, full bool
 		if pr.PRState != "" && !strings.EqualFold(pr.PRState, "open") {
 			continue
 		}
-		if full || pr.GitHubUpdatedAt == nil || pr.GitHubUpdatedAt.After(lastScanned[mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)]) {
+		key := mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+		if full || (pr.GitHubUpdatedAt == nil && lastScanned[key].IsZero()) || (pr.GitHubUpdatedAt != nil && pr.GitHubUpdatedAt.After(lastScanned[key])) {
 			out = append(out, pr)
 		}
 	}
@@ -119,7 +121,7 @@ type mentionPR struct {
 type mentionLedger interface {
 	MentionHandled(commentID int64, now time.Time) (bool, error)
 	ReserveMention(*db.MentionTrigger) (bool, error)
-	FinalizeMention(commentID int64, holder string) error
+	FinalizeMention(commentID int64, holder string) (bool, error)
 	ReleaseMention(commentID int64, holder string) error
 }
 
@@ -130,10 +132,12 @@ type mentionLedger interface {
 // *runconfig.ValidationError for a request that can never be admitted.
 type mentionAdmit func(ctx context.Context, pr github.PullRequest, commentID int64, publish bool) error
 
-// mentionRecentlyReviewed reports whether a completed review of this head
-// finished within the coalescing window, so repeated requests on an
-// unchanged PR do not queue repeated reviews.
-type mentionRecentlyReviewed func(owner, repo string, number int, headSHA string, since time.Time) (bool, error)
+// mentionRecentlyReviewed reports whether a review of this head that
+// satisfies the request finished within the coalescing window: any completed
+// run when the result is dashboard-only, a run whose findings were posted to
+// the PR when publication is wanted. Repeated requests on an unchanged PR then
+// do not queue repeated reviews.
+type mentionRecentlyReviewed func(owner, repo string, number int, headSHA string, publish bool, since time.Time) (bool, error)
 
 // mentionCoalesceWindow is how long a completed review of a head answers
 // further requests for the same head.
@@ -219,14 +223,15 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 		}
 		short := ghPR.CommitSHA[:min(7, len(ghPR.CommitSHA))]
 		if m.reviewed != nil {
-			done, err := m.reviewed(pr.RepoOwner, pr.RepoName, pr.PRNumber, ghPR.CommitSHA, now.Add(-mentionCoalesceWindow))
+			done, err := m.reviewed(pr.RepoOwner, pr.RepoName, pr.PRNumber, ghPR.CommitSHA, publish, now.Add(-mentionCoalesceWindow))
 			if err != nil {
 				_ = m.ledger.ReleaseMention(c.ID, m.holder)
 				return res, err
 			}
 			if done {
-				if err := m.ledger.FinalizeMention(c.ID, m.holder); err != nil {
-					return res, err
+				owned, err := m.ledger.FinalizeMention(c.ID, m.holder)
+				if err != nil || !owned {
+					continue
 				}
 				m.acknowledge(ctx, pr, c.ID, fmt.Sprintf("A review of %s finished in the last %d minutes; its result is current. Push a new commit for another.", short, int(mentionCoalesceWindow.Minutes())))
 				m.log("[MENTIONS] %s: comment %d asked for a review of %s, which completed recently", key, c.ID, short)
@@ -242,11 +247,13 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 			// nothing more to queue.
 			m.log("[MENTIONS] %s: comment %d was already admitted", key, c.ID)
 		case errors.As(err, &invalid):
-			// The request itself is bad and a retry cannot fix it; keep the
-			// row so the same comment is not retried every cycle.
-			m.log("[MENTIONS] %s: comment %d asked for an invalid review: %v", key, c.ID, err)
-			if err := m.ledger.FinalizeMention(c.ID, m.holder); err != nil {
-				return res, err
+			// A mention carries no overrides, so this is the deployment's own
+			// defaults failing validation: an operator problem, fixed by
+			// configuration, after which the request should still be served.
+			m.log("[MENTIONS] %s: comment %d cannot be admitted until the review configuration is fixed: %v", key, c.ID, err)
+			res.deferred++
+			if rerr := m.ledger.ReleaseMention(c.ID, m.holder); rerr != nil {
+				return res, rerr
 			}
 			continue
 		default:
@@ -261,8 +268,14 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 			}
 			continue
 		}
-		if err := m.ledger.FinalizeMention(c.ID, m.holder); err != nil {
+		owned, err := m.ledger.FinalizeMention(c.ID, m.holder)
+		if err != nil {
 			return res, err
+		}
+		if !owned {
+			// The reservation expired and another holder took it; the run is
+			// idempotent on the comment id, so they will acknowledge it.
+			continue
 		}
 		res.triggered++
 		m.acknowledge(ctx, pr, c.ID, mentionPublishNote(publish, ghPR.Draft, ghPR.CommitSHA))
@@ -357,12 +370,34 @@ func (p *Poller) scanMentions(ctx context.Context) {
 		allowed: func(author string) bool { return publishEnabledFor(author, enabled) },
 		now:     func() time.Time { return time.Now().UTC() },
 		log:     log.Printf,
-		reviewed: func(owner, repo string, number int, headSHA string, since time.Time) (bool, error) {
+		reviewed: func(owner, repo string, number int, headSHA string, publish bool, since time.Time) (bool, error) {
 			runs, err := p.db.ListReviewRuns(db.ReviewRunFilter{RepoOwner: owner, RepoName: repo, PRNumber: number, CommitSHA: headSHA, Status: db.ReviewRunStatusCompleted, Limit: 1})
 			if err != nil {
 				return false, err
 			}
-			return len(runs) > 0 && runs[0].CompletedAt != nil && runs[0].CompletedAt.After(since), nil
+			if len(runs) == 0 || runs[0].CompletedAt == nil || !runs[0].CompletedAt.After(since) {
+				return false, nil
+			}
+			if !publish {
+				return true, nil
+			}
+			// A dashboard-only run does not satisfy a request whose result
+			// should be on the PR; the summary ledger row records the head
+			// that was actually posted.
+			ledger, ok := p.db.(publisher.Ledger)
+			if !ok {
+				return false, nil
+			}
+			rows, err := ledger.GetPublishedFindingsForPR(owner, repo, number)
+			if err != nil {
+				return false, err
+			}
+			for _, row := range rows {
+				if row.Kind == db.PublishedKindSummary && strings.EqualFold(row.LastSeenSHA, headSHA) {
+					return true, nil
+				}
+			}
+			return false, nil
 		},
 		admit: func(ctx context.Context, pr github.PullRequest, commentID int64, publish bool) error {
 			job, err := p.defaultReviewJob(pr, true, "mention")
@@ -385,24 +420,30 @@ func (p *Poller) scanMentions(ctx context.Context) {
 			}
 		},
 	}
-	triggered, deferred, errors := 0, 0, 0
+	triggered, deferred, failed := 0, 0, 0
 	for _, pr := range candidates {
 		key := mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)
 		res, err := scanner.handlePR(ctx, pr)
 		if err != nil {
-			errors++
+			failed++
 			log.Printf("[MENTIONS] %s: %v", key, err)
 			continue
 		}
 		triggered += res.triggered
 		deferred += res.deferred
 		// A deferred request is retried next cycle, so the PR stays a candidate.
-		if res.deferred == 0 && pr.GitHubUpdatedAt != nil {
-			p.mentionLastScanned[key] = *pr.GitHubUpdatedAt
+		// A row without a cached time is stamped with now so it is not listed
+		// every cycle until the poll backfills the column.
+		if res.deferred == 0 {
+			if pr.GitHubUpdatedAt != nil {
+				p.mentionLastScanned[key] = *pr.GitHubUpdatedAt
+			} else {
+				p.mentionLastScanned[key] = time.Now().UTC()
+			}
 		}
 	}
 	if len(candidates) > 0 {
-		log.Printf("[MENTIONS] cycle=%d full=%t handle=%s checked=%d triggered=%d deferred=%d errors=%d", cycle, full, p.cfg.MentionHandle, len(candidates), triggered, deferred, errors)
+		log.Printf("[MENTIONS] cycle=%d full=%t handle=%s checked=%d triggered=%d deferred=%d errors=%d", cycle, full, p.cfg.MentionHandle, len(candidates), triggered, deferred, failed)
 	}
 }
 

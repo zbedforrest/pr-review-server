@@ -303,7 +303,7 @@ func Load() *Config {
 		ReplyWallClockSec:  getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
 		ReplyMaxTurns:      getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
 		ReplyMaxConcurrent: getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
-		MentionHandle:      getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server"),
+		MentionHandle:      strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),

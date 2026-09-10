@@ -1148,11 +1148,17 @@ func (p *Poller) Start(ctx context.Context) {
 	// (burning tokens and writing review artifacts that shadow the primary
 	// deployment's for the same commits). DISABLE_POLLING takes precedence
 	// over leadership; manual triggers and on-demand reviews still work.
-	if p.cfg.MentionHandle != "" && !p.cfg.DisablePolling {
-		// Stamp the cutoff at boot, leader or not, so a request posted right
-		// after a deploy is not older than it once this instance starts scanning.
-		if _, err := p.mentionActivation(); err != nil {
-			log.Printf("[MENTIONS] activation timestamp: %v", err)
+	if !p.cfg.DisablePolling {
+		if p.cfg.MentionHandle != "" {
+			// Stamp the cutoff at boot, leader or not, so a request posted right
+			// after a deploy is not older than it once this instance starts scanning.
+			if _, err := p.mentionActivation(); err != nil {
+				log.Printf("[MENTIONS] activation timestamp: %v", err)
+			}
+		} else if err := p.db.SetSetting(settingMentionHandle, ""); err != nil {
+			// Remember that the feature was off, so re-enabling re-stamps the
+			// cutoff instead of replaying mentions from the disabled period.
+			log.Printf("[MENTIONS] could not record the disabled handle: %v", err)
 		}
 	}
 	if p.cfg.DisablePolling {

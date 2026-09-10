@@ -136,11 +136,12 @@ func (f *fakeMentionLedger) ReserveMention(m *db.MentionTrigger) (bool, error) {
 	f.rows[m.CommentID] = &cp
 	return true, nil
 }
-func (f *fakeMentionLedger) FinalizeMention(id int64, holder string) error {
+func (f *fakeMentionLedger) FinalizeMention(id int64, holder string) (bool, error) {
 	if r, ok := f.rows[id]; ok && r.Holder == holder {
 		r.Queued = true
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 func (f *fakeMentionLedger) ReleaseMention(id int64, holder string) error {
 	if r, ok := f.rows[id]; ok && !r.Queued && r.Holder == holder {
@@ -223,7 +224,7 @@ func TestMentionScanner_DefersBehindAnActiveReviewWithoutRecordingIt(t *testing.
 	}
 }
 
-func TestMentionScanner_TransientAdmissionErrorIsRetriedAndInvalidRequestIsNot(t *testing.T) {
+func TestMentionScanner_TransientAndConfigurationErrorsAreRetried(t *testing.T) {
 	m, _, ledger, pr := mentionFixture(func(context.Context, github.PullRequest, bool) error { return fmt.Errorf("db down") })
 	res, err := m.handlePR(context.Background(), pr)
 	if err == nil || res.deferred != 1 || len(ledger.rows) != 0 {
@@ -233,8 +234,8 @@ func TestMentionScanner_TransientAdmissionErrorIsRetriedAndInvalidRequestIsNot(t
 		return &runconfig.ValidationError{Field: "config.agent.model", Message: "not allowed"}
 	})
 	res, err = m.handlePR(context.Background(), pr)
-	if err != nil || res.triggered != 0 || len(gh.reacted) != 0 || !ledger.rows[1].Queued {
-		t.Fatalf("an invalid request is recorded so it is not retried: err=%v res=%+v row=%+v", err, res, ledger.rows[1])
+	if err != nil || res.deferred != 1 || len(gh.reacted) != 0 || len(ledger.rows) != 0 {
+		t.Fatalf("a deployment whose defaults fail validation retries the request once fixed: err=%v res=%+v rows=%d", err, res, len(ledger.rows))
 	}
 }
 
@@ -285,7 +286,9 @@ func TestMentionScanner_ChecksTheCachedAuthorBeforeAnyLiveRead(t *testing.T) {
 func TestMentionScanner_CoalescesRequestsOnARecentlyReviewedHead(t *testing.T) {
 	admitted := 0
 	m, gh, ledger, pr := mentionFixture(func(context.Context, github.PullRequest, bool) error { admitted++; return nil })
-	m.reviewed = func(_, _ string, _ int, head string, _ time.Time) (bool, error) { return head == "abc1234def", nil }
+	m.reviewed = func(_, _ string, _ int, head string, _ bool, _ time.Time) (bool, error) {
+		return head == "abc1234def", nil
+	}
 	res, err := m.handlePR(context.Background(), pr)
 	if err != nil || admitted != 0 || res.triggered != 0 || len(gh.reacted) != 1 || len(gh.notes) != 1 || !strings.Contains(gh.notes[0], "abc1234") || !ledger.rows[1].Queued {
 		t.Fatalf("a fresh review of the same head answers the request without a new run: err=%v admitted=%d res=%+v reacted=%v notes=%v row=%+v", err, admitted, res, gh.reacted, gh.notes, ledger.rows[1])
