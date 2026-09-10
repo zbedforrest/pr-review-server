@@ -420,6 +420,7 @@ type MentionTrigger struct {
 	CommitSHA   string
 	Publish     bool
 	Queued      bool
+	Holder      string
 	CreatedAt   time.Time
 	TriggeredAt time.Time
 }

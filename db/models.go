@@ -405,6 +405,7 @@ type MentionTriggerModel struct {
 	CommitSHA   string    `gorm:"size:40;not null;default:''"`
 	Publish     bool      `gorm:"not null;default:false"`
 	Queued      bool      `gorm:"not null;default:false"` // false while reserved, true once the review was admitted
+	Holder      string    `gorm:"size:128;not null;default:''"`
 	CreatedAt   time.Time `gorm:"not null"`
 	TriggeredAt time.Time `gorm:"not null;index"`
 }

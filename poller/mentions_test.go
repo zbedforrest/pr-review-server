@@ -91,16 +91,18 @@ func TestMentionTelemetryEvent(t *testing.T) {
 }
 
 type fakeMentionGH struct {
-	comments []github.IssueCommentInfo
-	live     mentionPR
-	reacted  []int64
-	notes    []string
+	comments  []github.IssueCommentInfo
+	live      mentionPR
+	liveCalls int
+	reacted   []int64
+	notes     []string
 }
 
 func (f *fakeMentionGH) ListIssueComments(context.Context, string, string, int) ([]github.IssueCommentInfo, error) {
 	return f.comments, nil
 }
 func (f *fakeMentionGH) LivePR(context.Context, string, string, int) (mentionPR, error) {
+	f.liveCalls++
 	return f.live, nil
 }
 func (f *fakeMentionGH) ReactToIssueComment(_ context.Context, _, _ string, id int64) error {
@@ -134,15 +136,20 @@ func (f *fakeMentionLedger) ReserveMention(m *db.MentionTrigger) (bool, error) {
 	f.rows[m.CommentID] = &cp
 	return true, nil
 }
-func (f *fakeMentionLedger) FinalizeMention(id int64) error { f.rows[id].Queued = true; return nil }
-func (f *fakeMentionLedger) ReleaseMention(id int64) error {
-	if r, ok := f.rows[id]; ok && !r.Queued {
+func (f *fakeMentionLedger) FinalizeMention(id int64, holder string) error {
+	if r, ok := f.rows[id]; ok && r.Holder == holder {
+		r.Queued = true
+	}
+	return nil
+}
+func (f *fakeMentionLedger) ReleaseMention(id int64, holder string) error {
+	if r, ok := f.rows[id]; ok && !r.Queued && r.Holder == holder {
 		delete(f.rows, id)
 	}
 	return nil
 }
 
-func mentionFixture(admit mentionAdmit) (*mentionScanner, *fakeMentionGH, *fakeMentionLedger, *db.PR) {
+func mentionFixture(admit func(context.Context, github.PullRequest, bool) error) (*mentionScanner, *fakeMentionGH, *fakeMentionLedger, *db.PR) {
 	t0 := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	gh := &fakeMentionGH{
 		live: mentionPR{Open: true, HeadSHA: "abc1234def", Title: "t", Author: "alice"},
@@ -157,7 +164,10 @@ func mentionFixture(admit mentionAdmit) (*mentionScanner, *fakeMentionGH, *fakeM
 	ledger := &fakeMentionLedger{}
 	var logs []string
 	m := &mentionScanner{
-		gh: gh, ledger: ledger, admit: admit, handle: "prism-pr-review-server", since: t0,
+		gh: gh, ledger: ledger, handle: "prism-pr-review-server", holder: "me", since: t0,
+		admit: func(ctx context.Context, pr github.PullRequest, _ int64, publish bool) error {
+			return admit(ctx, pr, publish)
+		},
 		allowed: func(a string) bool { return a == "alice" },
 		now:     func() time.Time { return t0.Add(2 * time.Minute) },
 		log:     func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
@@ -252,5 +262,42 @@ func TestMentionScanner_IgnoresRequestsOnAPRThatClosedMeanwhile(t *testing.T) {
 	res, err := m.handlePR(context.Background(), pr)
 	if err != nil || res.triggered != 0 || len(ledger.rows) != 0 {
 		t.Fatalf("err=%v res=%+v rows=%d", err, res, len(ledger.rows))
+	}
+}
+
+func TestMentionScanner_ChecksTheCachedAuthorBeforeAnyLiveRead(t *testing.T) {
+	m, gh, _, pr := mentionFixture(func(context.Context, github.PullRequest, bool) error { return nil })
+	gh.comments = gh.comments[1:2] // only the stranger
+	if _, err := m.handlePR(context.Background(), pr); err != nil {
+		t.Fatal(err)
+	}
+	if gh.liveCalls != 0 {
+		t.Fatalf("an unauthorised request must not cost a GitHub read, got %d", gh.liveCalls)
+	}
+	m, gh, _, pr = mentionFixture(func(context.Context, github.PullRequest, bool) error { return nil })
+	gh.comments = append(gh.comments, github.IssueCommentInfo{ID: 6, Author: "alice", Association: "MEMBER", Body: "@prism-pr-review-server review", CreatedAt: gh.comments[0].CreatedAt})
+	m.handlePR(context.Background(), pr)
+	if gh.liveCalls != 1 {
+		t.Fatalf("the live PR is read once per PR, got %d", gh.liveCalls)
+	}
+}
+
+func TestMentionScanner_CoalescesRequestsOnARecentlyReviewedHead(t *testing.T) {
+	admitted := 0
+	m, gh, ledger, pr := mentionFixture(func(context.Context, github.PullRequest, bool) error { admitted++; return nil })
+	m.reviewed = func(_, _ string, _ int, head string, _ time.Time) (bool, error) { return head == "abc1234def", nil }
+	res, err := m.handlePR(context.Background(), pr)
+	if err != nil || admitted != 0 || res.triggered != 0 || len(gh.reacted) != 1 || len(gh.notes) != 1 || !strings.Contains(gh.notes[0], "abc1234") || !ledger.rows[1].Queued {
+		t.Fatalf("a fresh review of the same head answers the request without a new run: err=%v admitted=%d res=%+v reacted=%v notes=%v row=%+v", err, admitted, res, gh.reacted, gh.notes, ledger.rows[1])
+	}
+}
+
+func TestMentionScanner_AnAlreadyAdmittedRequestIsFinalisedWithoutASecondRun(t *testing.T) {
+	m, gh, ledger, pr := mentionFixture(func(context.Context, github.PullRequest, bool) error {
+		return fmt.Errorf("%w: run_id=x", db.ErrReviewRunConflict)
+	})
+	res, err := m.handlePR(context.Background(), pr)
+	if err != nil || res.triggered != 1 || !ledger.rows[1].Queued || len(gh.reacted) != 1 {
+		t.Fatalf("err=%v res=%+v row=%+v reacted=%v", err, res, ledger.rows[1], gh.reacted)
 	}
 }

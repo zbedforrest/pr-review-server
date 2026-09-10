@@ -21,32 +21,31 @@ func (g *GormDB) MentionHandled(commentID int64, now time.Time) (bool, error) {
 	return m.Queued || m.TriggeredAt.After(now.Add(-mentionReservationTTL)), nil
 }
 
-// ReserveMention claims a request before its review is admitted so a crash
-// in between cannot admit it twice. It reports false when a live or
-// finalised row already exists.
+// ReserveMention claims a request for one holder before its review is
+// admitted, in a single statement: the insert takes a new comment, and the
+// conflict update takes over only a reservation that is neither finalised
+// nor live. Two scanners cannot both win.
 func (g *GormDB) ReserveMention(m *MentionTrigger) (bool, error) {
-	var existing MentionTriggerModel
-	res := g.db.Where("comment_id = ?", m.CommentID).Limit(1).Find(&existing)
+	row := MentionTriggerModel{CommentID: m.CommentID, RepoOwner: m.RepoOwner, RepoName: m.RepoName, PRNumber: m.PRNumber,
+		Author: m.Author, CommitSHA: m.CommitSHA, Publish: m.Publish, Queued: false, Holder: m.Holder, CreatedAt: m.CreatedAt, TriggeredAt: m.TriggeredAt}
+	res := g.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "comment_id"}},
+		Where:     clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "NOT mention_triggers.queued AND mention_triggers.triggered_at < ?", Vars: []interface{}{m.TriggeredAt.Add(-mentionReservationTTL)}}}},
+		DoUpdates: clause.AssignmentColumns([]string{"commit_sha", "publish", "holder", "triggered_at"}),
+	}).Create(&row)
 	if res.Error != nil {
 		return false, res.Error
 	}
-	if res.RowsAffected > 0 && (existing.Queued || existing.TriggeredAt.After(m.TriggeredAt.Add(-mentionReservationTTL))) {
-		return false, nil
-	}
-	row := MentionTriggerModel{CommentID: m.CommentID, RepoOwner: m.RepoOwner, RepoName: m.RepoName, PRNumber: m.PRNumber,
-		Author: m.Author, CommitSHA: m.CommitSHA, Publish: m.Publish, Queued: false, CreatedAt: m.CreatedAt, TriggeredAt: m.TriggeredAt}
-	return true, g.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "comment_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"commit_sha", "publish", "queued", "triggered_at"}),
-	}).Create(&row).Error
+	return res.RowsAffected > 0, nil
 }
 
-// FinalizeMention marks a reserved request as admitted.
-func (g *GormDB) FinalizeMention(commentID int64) error {
-	return g.db.Model(&MentionTriggerModel{}).Where("comment_id = ?", commentID).Update("queued", true).Error
+// FinalizeMention marks the holder's reservation as admitted.
+func (g *GormDB) FinalizeMention(commentID int64, holder string) error {
+	return g.db.Model(&MentionTriggerModel{}).Where("comment_id = ? AND holder = ?", commentID, holder).Update("queued", true).Error
 }
 
-// ReleaseMention drops a reservation whose review could not be admitted yet.
-func (g *GormDB) ReleaseMention(commentID int64) error {
-	return g.db.Where("comment_id = ? AND NOT queued", commentID).Delete(&MentionTriggerModel{}).Error
+// ReleaseMention drops the holder's reservation whose review could not be
+// admitted yet.
+func (g *GormDB) ReleaseMention(commentID int64, holder string) error {
+	return g.db.Where("comment_id = ? AND holder = ? AND NOT queued", commentID, holder).Delete(&MentionTriggerModel{}).Error
 }

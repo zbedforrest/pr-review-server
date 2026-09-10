@@ -1148,16 +1148,16 @@ func (p *Poller) Start(ctx context.Context) {
 	// (burning tokens and writing review artifacts that shadow the primary
 	// deployment's for the same commits). DISABLE_POLLING takes precedence
 	// over leadership; manual triggers and on-demand reviews still work.
+	if p.cfg.MentionHandle != "" && !p.cfg.DisablePolling {
+		// Stamp the cutoff at boot, leader or not, so a request posted right
+		// after a deploy is not older than it once this instance starts scanning.
+		if _, err := p.mentionActivation(); err != nil {
+			log.Printf("[MENTIONS] activation timestamp: %v", err)
+		}
+	}
 	if p.cfg.DisablePolling {
 		log.Println("DISABLE_POLLING set — skipping initial and scheduled polls (manual trigger + on-demand reviews still available)")
 	} else if p.isLeader() {
-		if p.cfg.MentionHandle != "" {
-			// Stamp the cutoff before the first tick so a request posted
-			// right after a deploy is not older than it.
-			if _, err := p.mentionActivation(); err != nil {
-				log.Printf("[MENTIONS] activation timestamp: %v", err)
-			}
-		}
 		p.startPoll(ctx, "initial")
 	} else {
 		log.Printf("[LEADER] not leader at startup, skipping initial poll")
