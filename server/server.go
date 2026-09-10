@@ -302,6 +302,15 @@ func (s *Server) Start() error {
 	http.Handle("/api/reviewer-health", withAuth(s.handleReviewerHealth))
 	http.Handle("/api/settings", withAuth(s.handleSettings))
 	http.Handle(publishRepliesPath, withAuth(s.handlePublishReplies))
+	// The daily health report: the scheduler posts with a job token, people
+	// read with their session.
+	http.Handle(dailyHealthPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			s.handleDailyHealthJob(w, r)
+			return
+		}
+		withAuth(s.handleDailyHealth).ServeHTTP(w, r)
+	}))
 	http.Handle("/api/user", withAuth(s.handleGetUser))
 	http.Handle("/api/telemetry/track", withAuth(s.handleTrackTelemetry))
 	http.Handle("/api/telemetry/stats", withAuth(s.handleTelemetryStats))
