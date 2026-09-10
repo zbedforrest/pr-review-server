@@ -132,6 +132,21 @@ func TestWriteSetting_LogsActorKeyOldNew(t *testing.T) {
 	assert.Contains(t, buf.String(), `[SETTINGS] actor=alice key=publish_reply_mode old="observe" new="react"`)
 }
 
+func TestWriteSetting_RefusesToWriteWhenOldValueIsUnreadable(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	require.NoError(t, database.SetSetting("publish_reply_mode", "observe"))
+	server.db = settingReadFails{Database: database, key: "publish_reply_mode"}
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	assert.Error(t, server.writeSetting("alice", "publish_reply_mode", "react"))
+	stored, _ := database.GetSetting("publish_reply_mode")
+	assert.Equal(t, "observe", stored)
+	assert.Empty(t, buf.String())
+}
+
 func TestWriteSetting_ReturnsWriteError(t *testing.T) {
 	server, database := newTestServer(t, "tester")
 	server.db = settingWriteFails{Database: database, key: "publish_reply_mode"}

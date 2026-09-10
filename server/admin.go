@@ -62,7 +62,10 @@ func normalizeLoginCSV(raw string, allowStar bool) (string, error) {
 }
 
 func (s *Server) writeSetting(actor, key, value string) error {
-	old, _ := s.db.GetSetting(key)
+	old, err := s.db.GetSetting(key)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", key, err)
+	}
 	if err := s.db.SetSetting(key, value); err != nil {
 		return err
 	}
