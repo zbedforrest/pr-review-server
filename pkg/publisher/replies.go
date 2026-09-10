@@ -108,9 +108,9 @@ const (
 	ReplyModeShadow  = "shadow"
 	ReplyModeRespond = "respond"
 
-	replyActionObserved = "observed"
-	replyActionReacted  = "reacted"
-	replyActionPending  = "pending" // reaction deferred to the reply model's decision
+	ReplyActionObserved = "observed"
+	ReplyActionReacted  = "reacted"
+	ReplyActionPending  = "pending" // reaction deferred to the reply model's decision
 )
 
 // Decisions the reply model can reach about an author's pushback or question.
@@ -500,16 +500,16 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		rep.RepliesSeen++
 		row, handled := seen[reply.CommentID]
 		if !handled {
-			action := replyActionObserved
+			action := ReplyActionObserved
 			switch {
 			case r.reacts() && r.textMode() && textClass(reply.Class):
 				// The model decides whether this one gets a 👍; see text().
-				action = replyActionPending
+				action = ReplyActionPending
 			case r.reacts():
 				if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
 					return err
 				}
-				action = replyActionReacted
+				action = ReplyActionReacted
 				rep.Reacted++
 			}
 			row = db.PublishedReply{
@@ -529,7 +529,7 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		} else {
 			rep.AlreadyHandled++
 		}
-		if handled && row.Action == replyActionPending && row.Outcome != "" && r.reacts() {
+		if handled && row.Action == ReplyActionPending && row.Outcome != "" && r.reacts() {
 			// A finished step that never settled its reaction (a rolling deploy
 			// mixing builds): nothing else will write this row, acknowledge it.
 			if err := r.reactAndRecord(ctx, t, reply, &row, rep); err != nil {
@@ -543,7 +543,7 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			// pending on purpose, so a later return to text mode still runs
 			// the model on it; the PR stays unsettled so that happens on the
 			// first cycle after the switch rather than the next full scan.
-			if handled && row.Action == replyActionPending {
+			if handled && row.Action == ReplyActionPending {
 				if !r.reacts() {
 					settled = false
 					continue
@@ -636,11 +636,11 @@ func (r ReplyReactor) reactAndRecord(ctx context.Context, t db.PublishedReplyTar
 	if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
 		return err
 	}
-	if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, replyActionReacted); err != nil {
+	if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, ReplyActionReacted); err != nil {
 		return err
 	}
 	rep.Reacted++
-	row.Action = replyActionReacted
+	row.Action = ReplyActionReacted
 	rep.Handled = append(rep.Handled, *row)
 	return nil
 }
@@ -780,7 +780,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	// rows already acknowledged at scan time produced their event then.
 	settledHere := false
 	react := func(want bool) error {
-		if row.Action != replyActionPending {
+		if row.Action != ReplyActionPending {
 			return nil
 		}
 		settledHere = true
@@ -791,14 +791,14 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 			}
 			want = live
 		}
-		action := replyActionObserved
+		action := ReplyActionObserved
 		if want {
 			// GitHub returns the existing reaction on a repeat, so a ledger
 			// failure after this call retries safely next cycle.
 			if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
 				return err
 			}
-			action = replyActionReacted
+			action = ReplyActionReacted
 			if rep != nil {
 				rep.Reacted++
 			}

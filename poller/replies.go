@@ -121,7 +121,7 @@ func unstampFailedLinks(tried map[string]time.Time, errors []string) {
 func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, userID int) []db.TelemetryEvent {
 	var events []db.TelemetryEvent
 	for _, h := range rep.Handled {
-		if h.Action == "pending" {
+		if h.Action == publisher.ReplyActionPending {
 			continue // settled later; the reply_decision event carries the reaction
 		}
 		events = append(events, db.TelemetryEvent{
@@ -160,8 +160,9 @@ func replyErrorEvent(action, msg string, userID int) db.TelemetryEvent {
 // step settled the deferred reaction, the same reply_reacted / reply_observed
 // event a scan-time reaction produces, so the counts stay comparable.
 func replyOutcomeEvents(o publisher.ReplyOutcome, err error, userID int) []db.TelemetryEvent {
+	// A reaction settled before a later write failed still happened.
 	events := []db.TelemetryEvent{replyOutcomeEvent(o, err, userID)}
-	if err == nil && (o.Action == "reacted" || o.Action == "observed") {
+	if o.Action == publisher.ReplyActionReacted || o.Action == publisher.ReplyActionObserved {
 		events = append(events, db.TelemetryEvent{UserID: userID, Action: "reply_" + o.Action,
 			Label:   truncateLabel(fmt.Sprintf("settled decision=%s comment=%d", o.Decision, o.AuthorCommentID), 255),
 			PROwner: o.RepoOwner, PRRepo: o.RepoName, PRNumber: o.PRNumber})

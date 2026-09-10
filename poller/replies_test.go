@@ -174,8 +174,12 @@ func TestReplyOutcomeEventsAlsoEmitTheSettledReaction(t *testing.T) {
 	if len(events) != 2 || events[1].Action != "reply_reacted" || events[1].PRNumber != 7 {
 		t.Fatalf("events = %+v", events)
 	}
+	if events := replyOutcomeEvents(o, fmt.Errorf("boom"), 3); len(events) != 2 {
+		t.Fatalf("a reaction settled before the failure is still recorded: %+v", events)
+	}
+	o.Action = ""
 	if events := replyOutcomeEvents(o, fmt.Errorf("boom"), 3); len(events) != 1 {
-		t.Fatalf("a failed step settles nothing: %+v", events)
+		t.Fatalf("no settled reaction, no reaction event: %+v", events)
 	}
 }
 

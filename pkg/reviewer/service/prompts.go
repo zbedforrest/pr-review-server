@@ -331,7 +331,7 @@ The reply, written as a colleague would in a review thread:
 - When conceding, start with "You're right" and say what settles it. Do not hedge or bargain. When holding, lead with the evidence, not with your disagreement.
 - Talk about the code, never about your process. Never write "the checkout", "I verified", "I checked", "backs this up", "confirms", or anything about models, first passes, agents, or how you work. Say what is true of the code and where.
 
-The thumbs-up ("react"): true when you agree with or accept what the author said, when you answered their question, or when you are abstaining and want them to know the comment was seen; false when you hold, since a thumbs-up on a comment you are about to rebut reads as agreement.
+The thumbs-up ("react"): true when you agree with or accept what the author said or when you answered their question; false when you hold, since a thumbs-up on a comment you are about to rebut reads as agreement. An abstain always gets the thumbs-up so the author knows the comment was seen; the field is ignored for it.
 
 Output exactly one JSON object and nothing else:
 {"decision":"concede|hold|answer|abstain","reply":"the paragraph, empty when abstaining","cited":[{"file":"path/from/repo/root","line":N}],"react":true|false}
