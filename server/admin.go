@@ -11,10 +11,9 @@ import (
 
 const settingAdminLogins = "admin_logins"
 
-var (
-	validLogin     = regexp.MustCompile(`^[a-z0-9](?:-?[a-z0-9]){0,38}$`)
-	validBotAuthor = regexp.MustCompile(`^[a-z0-9](?:-?[a-z0-9]){0,38}\[bot\]$`)
-)
+const maxLoginLen = 39
+
+var validLogin = regexp.MustCompile(`^[a-z0-9](?:-?[a-z0-9]){0,38}$`)
 
 // Bootstrap admins are checked before the settings row so they never depend
 // on the database. "*" widens the publish allowlist but never the admin list.
@@ -61,10 +60,12 @@ func splitLogins(csv string) []string {
 func normalizeLoginCSV(raw string, authors bool) (string, error) {
 	logins := splitLogins(raw)
 	for _, login := range logins {
-		if authors && (login == "*" || validBotAuthor.MatchString(login)) {
+		if authors && login == "*" {
 			continue
 		}
-		if !validLogin.MatchString(login) {
+		name := strings.TrimSuffix(login, "[bot]")
+		bot := name != login
+		if (bot && !authors) || len(name) > maxLoginLen || !validLogin.MatchString(name) {
 			return "", fmt.Errorf("%q is not a valid login", login)
 		}
 	}

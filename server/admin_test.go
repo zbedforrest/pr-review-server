@@ -106,6 +106,7 @@ func TestSplitLogins(t *testing.T) {
 
 func TestNormalizeLoginCSV(t *testing.T) {
 	long39 := strings.Repeat("a", 39)
+	hyphenated40 := strings.Repeat("a-", 19) + "aa"
 	cases := []struct {
 		name    string
 		in      string
@@ -122,6 +123,7 @@ func TestNormalizeLoginCSV(t *testing.T) {
 		{"embedded space", "a b", false, "", `"a b" is not a valid login`},
 		{"39 chars", long39, false, long39, ""},
 		{"40 chars", long39 + "a", false, "", `"` + long39 + `a" is not a valid login`},
+		{"40 chars with hyphens", hyphenated40, false, "", `"` + hyphenated40 + `" is not a valid login`},
 		{"star allowed", "Alice, *", true, "alice,*", ""},
 		{"star refused", "alice,*", false, "", `"*" is not a valid login`},
 		{"bot author allowed", "Dependabot[BOT], alice", true, "dependabot[bot],alice", ""},
