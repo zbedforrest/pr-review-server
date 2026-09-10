@@ -174,7 +174,7 @@ func TestGormDB_PublishedReply_DecisionAndPostingRoundTrip(t *testing.T) {
 	seed(9020, 9002, "pushback")
 
 	require.NoError(t, db.SetPublishedReplyDecision("owner", "repo", 7, 9010, ReplyDecisionRecord{
-		Decision: "hold", ReplyBody: "Still applies: see a.go:12.", Cited: `[{"file":"a.go","line":12}]`, Model: "claude-fable-5-1", DurationMS: 4200,
+		Decision: "hold", ReplyBody: "Still applies: see a.go:12.", Cited: `[{"file":"a.go","line":12}]`, Model: "claude-fable-5-1", DurationMS: 4200, React: false,
 	}))
 	require.NoError(t, db.MarkPublishedReplyPosted("owner", "repo", 7, 9010, 9500, base.Add(time.Minute)))
 	require.NoError(t, db.SetPublishedReplyDecision("owner", "repo", 7, 9011, ReplyDecisionRecord{Decision: "abstain"}))
@@ -183,6 +183,7 @@ func TestGormDB_PublishedReply_DecisionAndPostingRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 2)
 	assert.Equal(t, "hold", rows[0].Decision)
+	assert.False(t, rows[0].DecisionReact, "the model's no-thumbs-up survives a resume")
 	assert.Equal(t, int64(9500), rows[0].ReplyCommentID)
 	assert.Equal(t, "Still applies: see a.go:12.", rows[0].ReplyBody)
 	require.NotNil(t, rows[0].RepliedAt)
@@ -234,7 +235,7 @@ func TestGormDB_PublishedReply_OutcomeAndAttempts(t *testing.T) {
 
 func TestGormDB_EnsureIdempotentColumns_AddsReplyDecisionColumnsToAnOldTable(t *testing.T) {
 	database := newTestDB(t)
-	for _, col := range []string{"decision", "reply_body", "cited", "model", "duration_ms", "outcome", "attempts", "decision_head", "decision_thread", "replied_at", "claimed_by", "claimed_at"} {
+	for _, col := range []string{"decision", "reply_body", "cited", "model", "duration_ms", "outcome", "attempts", "decision_head", "decision_thread", "replied_at", "claimed_by", "claimed_at", "decision_react"} {
 		require.NoError(t, database.db.Migrator().DropColumn(&PublishedReplyModel{}, col), col)
 	}
 	require.NoError(t, database.ensureIdempotentColumns())
@@ -273,4 +274,17 @@ func TestGormDB_ClaimPublishedReply_IsExclusiveUntilReleasedOrStale(t *testing.T
 	ok, err = db.ClaimPublishedReply("owner", "repo", 7, 9010, "c", now.Add(30*time.Minute), 10*time.Minute)
 	require.NoError(t, err)
 	assert.False(t, ok, "a finished step cannot be claimed")
+}
+
+func TestGormDB_SetPublishedReplyAction(t *testing.T) {
+	db := newTestDB(t)
+	_, err := db.RecordPublishedReply(&PublishedReply{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: 9001, AuthorCommentID: 9010,
+		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: "pushback", Action: "pending", Body: "b", CreatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.SetPublishedReplyAction("owner", "repo", 7, 9010, "reacted"))
+	rows, err := db.ListPublishedRepliesForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.Equal(t, "reacted", rows[0].Action)
 }

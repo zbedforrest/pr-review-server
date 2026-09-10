@@ -384,6 +384,7 @@ type PublishedReplyModel struct {
 	Model           string `gorm:"size:255;not null;default:''"`
 	DurationMS      int64  `gorm:"not null;default:0"`
 	Outcome         string `gorm:"size:32;not null;default:''"`
+	DecisionReact   bool   `gorm:"not null;default:true"`
 	Attempts        int    `gorm:"not null;default:0"`
 	DecisionHead    string `gorm:"size:64;not null;default:''"`
 	DecisionThread  string `gorm:"size:64;not null;default:''"`
