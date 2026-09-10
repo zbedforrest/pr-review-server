@@ -80,6 +80,14 @@ func TestIsAdmin_SettingReadErrorDenies(t *testing.T) {
 	assert.Contains(t, buf.String(), settingAdminLogins)
 }
 
+func TestIsAdmin_EnvLoginGrantsWhenSettingIsUnreadable(t *testing.T) {
+	server, database := newNonDevTestServer(t)
+	server.cfg.AdminLogins = []string{"alice"}
+	server.db = settingReadFails{Database: database, key: settingAdminLogins}
+
+	assert.True(t, server.isAdmin(&db.User{GitHubUsername: "alice"}))
+}
+
 func TestSplitLogins(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -108,6 +116,9 @@ func TestNormalizeLoginCSV(t *testing.T) {
 		{"empty", "", false, "", ""},
 		{"dedupes and lowercases", "Alice, bob,,alice", false, "alice,bob", ""},
 		{"leading hyphen", "-a", false, "", `"-a" is not a valid login`},
+		{"trailing hyphen", "alice-", false, "", `"alice-" is not a valid login`},
+		{"consecutive hyphens", "a--b", false, "", `"a--b" is not a valid login`},
+		{"single hyphens", "a-b-c", false, "a-b-c", ""},
 		{"embedded space", "a b", false, "", `"a b" is not a valid login`},
 		{"39 chars", long39, false, long39, ""},
 		{"40 chars", long39 + "a", false, "", `"` + long39 + `a" is not a valid login`},

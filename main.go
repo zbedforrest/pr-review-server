@@ -77,7 +77,7 @@ func start(cfg *config.Config) {
 			log.Printf("GitHub Org: %s", cfg.GitHubOrgName)
 		}
 		if len(cfg.AdminLogins) == 0 {
-			log.Println("WARNING: ADMIN_LOGINS is not set; settings are read-only until ADMIN_LOGINS or admin_logins is set")
+			log.Println("WARNING: ADMIN_LOGINS is not set; settings writes are refused unless an admin was already granted in the admin_logins setting")
 		}
 	}
 	if len(cfg.AdminLogins) > 0 {

@@ -11,14 +11,15 @@ import (
 
 const settingAdminLogins = "admin_logins"
 
-var validLogin = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}$`)
+var validLogin = regexp.MustCompile(`^[a-z0-9](?:-?[a-z0-9]){0,38}$`)
 
-// "*" widens the publish allowlist but never the admin list.
+// Bootstrap admins are checked before the settings row so they never depend
+// on the database. "*" widens the publish allowlist but never the admin list.
 func (s *Server) isAdmin(u *db.User) bool {
 	if u == nil {
 		return false
 	}
-	if s.cfg.IsDevMode() {
+	if s.cfg.IsDevMode() || containsLogin(s.cfg.AdminLogins, u.GitHubUsername) {
 		return true
 	}
 	row, err := s.db.GetSetting(settingAdminLogins)
@@ -26,8 +27,12 @@ func (s *Server) isAdmin(u *db.User) bool {
 		log.Printf("[SETTINGS] %s unreadable, denying admin to %s: %v", settingAdminLogins, u.GitHubUsername, err)
 		return false
 	}
-	for _, login := range append(splitLogins(row), s.cfg.AdminLogins...) {
-		if login != "*" && strings.EqualFold(login, u.GitHubUsername) {
+	return containsLogin(splitLogins(row), u.GitHubUsername)
+}
+
+func containsLogin(logins []string, login string) bool {
+	for _, l := range logins {
+		if l != "*" && strings.EqualFold(l, login) {
 			return true
 		}
 	}
