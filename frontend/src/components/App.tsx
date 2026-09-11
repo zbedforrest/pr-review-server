@@ -4,6 +4,7 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { Header, StatusBar } from '@/components/layout';
 import { FilterBar } from '@/components/filters';
 import { NeedsReReviewSection, ReviewPRsSection } from '@/components/prs';
+import { useAttentionTitle } from '@/hooks/useAttentionTitle';
 import { useNeedsReReview } from '@/hooks/useNeedsReReview';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { useUrlFilters } from '@/hooks/useUrlFilters';
@@ -62,7 +63,8 @@ class ErrorBoundary extends Component<
 function AppContent() {
   const queryClient = useQueryClient();
   const { trackSearch } = useTelemetry();
-  const { keys: reReviewKeys } = useNeedsReReview();
+  const { keys: reReviewKeys, count: reReviewCount } = useNeedsReReview();
+  useAttentionTitle(reReviewCount);
 
   // Connection status state
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
