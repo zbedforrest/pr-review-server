@@ -18,9 +18,14 @@ function handleUnauthorized(response: Response): void {
   }
 }
 
+// Go handlers answer with one short line; anything else (a proxy's HTML
+// error page) is not worth showing.
+const MAX_ERROR_BODY = 500;
+
 async function errorFromResponse(response: Response): Promise<APIError> {
   const body = (await response.text().catch(() => '')).trim();
-  return new APIError(body || `API error: ${response.statusText}`, response.status, response.statusText);
+  const readable = body !== '' && body.length <= MAX_ERROR_BODY && !body.startsWith('<');
+  return new APIError(readable ? body : `API error: ${response.statusText}`, response.status, response.statusText);
 }
 
 export async function apiGet<T>(endpoint: string): Promise<T> {

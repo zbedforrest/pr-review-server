@@ -25,6 +25,18 @@ describe('api client', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/settings', expect.objectContaining({ method: 'POST', body: '{"a":1}' }));
   });
 
+  it('falls back to the status text when the error body is an HTML page', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('<!doctype html><html><body>Bad Gateway</body></html>', { status: 502, statusText: 'Bad Gateway' })
+    );
+    await expect(apiGet('/api/settings')).rejects.toMatchObject({ message: 'API error: Bad Gateway', status: 502 });
+  });
+
+  it('falls back to the status text when the error body is too long to be a message', async () => {
+    fetchMock.mockResolvedValue(new Response('x'.repeat(600), { status: 500, statusText: 'Internal Server Error' }));
+    await expect(apiGet('/api/settings')).rejects.toMatchObject({ message: 'API error: Internal Server Error' });
+  });
+
   it('puts the trimmed response body text and the status on the thrown error', async () => {
     fetchMock.mockResolvedValue(
       new Response('publish_enabled_authors: "al ice" is not a valid login\n', { status: 400, statusText: 'Bad Request' })
