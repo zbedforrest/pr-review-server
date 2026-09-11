@@ -201,8 +201,8 @@ func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myR
 
 // attentionByUser reports, per reviewer, whether their standing decision is CHANGES_REQUESTED
 // and no review of theirs targets the current head. Unknown users (no head, a review with
-// no commit that could have targeted the head, or no decision inside a truncated review
-// window) are absent rather than false.
+// no commit that could have targeted the head, or neither a decision nor a review of the
+// current head inside a truncated review window) are absent rather than false.
 func attentionByUser(reviews ReviewsData, headOID string) map[string]bool {
 	result := make(map[string]bool)
 	if headOID == "" {
@@ -237,7 +237,7 @@ func attentionByUser(reviews ReviewsData, headOID string) map[string]bool {
 
 	if reviews.PageInfo.HasPreviousPage {
 		for username := range result {
-			if !decided[username] {
+			if !decided[username] && !reviewedHead[username] {
 				delete(result, username)
 			}
 		}

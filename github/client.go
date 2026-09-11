@@ -761,7 +761,7 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 		approvalCount, myReviewStatus, userReviews := c.countUserApprovals(repoData.PullRequest.Reviews)
 		headOID := repoData.PullRequest.HeadRefOid
 		if repoData.PullRequest.Reviews.PageInfo.HasPreviousPage {
-			log.Printf("[GRAPHQL] PR %s/%s#%d: review history truncated at 100, attention unknown for reviewers without a decision in the window", owner, repo, prNumber)
+			log.Printf("[GRAPHQL] PR %s/%s#%d: review history truncated at 100, attention unknown for reviewers with neither a decision nor a head review in the window", owner, repo, prNumber)
 		}
 
 		key := prKey(owner, repo, prNumber)
