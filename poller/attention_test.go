@@ -160,6 +160,35 @@ func TestPoll_Attention_DraftComesFromFetchedReviewDataNotStaleRow(t *testing.T)
 	})
 }
 
+func TestPoll_Attention_FetchedStateWinsOverStaleRow(t *testing.T) {
+	cases := []struct {
+		name         string
+		fetchedState string
+		dbState      string
+		seeded       bool
+		want         bool
+	}{
+		{"closed this cycle while the row still says open", "CLOSED", "open", true, false},
+		{"merged this cycle while the row still says open", "MERGED", "open", true, false},
+		{"reopened this cycle while the row still says closed", "OPEN", "closed", false, true},
+		{"empty fetched state falls back to the row", "", "closed", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAttentionFixture(changesRequestedBy("alice"))
+			f.mockGH.BatchGetPRReviewDataResults["acme/example/7"].State = tc.fetchedState
+			f.mockDB.PRs["acme/example/7"].PRState = tc.dbState
+			f.seedView(1, tc.seeded, "CHANGES_REQUESTED")
+
+			f.pollCapturingLog()
+
+			if view := f.view(1); view == nil || view.NeedsAttention != tc.want {
+				t.Fatalf("expected needs_attention=%v, got %+v", tc.want, view)
+			}
+		})
+	}
+}
+
 func TestPoll_Attention_AbsentFromReducerLeavesExistingValue(t *testing.T) {
 	f := newAttentionFixture(&github.PRReviewData{
 		UserReviews: map[string]string{"alice": "APPROVED"},

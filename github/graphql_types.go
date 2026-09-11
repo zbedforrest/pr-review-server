@@ -34,6 +34,7 @@ type ReviewsData struct {
 
 // PRReviewGraphQL represents PR review data in GraphQL response
 type PRReviewGraphQL struct {
+	State      string      `json:"state"`
 	HeadRefOid string      `json:"headRefOid"`
 	IsDraft    bool        `json:"isDraft"`
 	Reviews    ReviewsData `json:"reviews"`

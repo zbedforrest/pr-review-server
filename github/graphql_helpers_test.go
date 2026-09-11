@@ -78,6 +78,10 @@ func TestBuildReviewDataQueryIncludesCommitAndHead(t *testing.T) {
 			t.Errorf("Expected review data query to contain %q:\n%s", want, query)
 		}
 	}
+	prLevel := query[:strings.Index(query, "reviews(last: 100)")]
+	if !strings.Contains(prLevel, "state") {
+		t.Errorf("Expected the pull request itself (not just its reviews) to select state:\n%s", query)
+	}
 }
 
 func TestAttentionByUser(t *testing.T) {
@@ -241,7 +245,7 @@ func TestAttentionByUser(t *testing.T) {
 }
 
 func TestFetchReviewDataForRepo_PopulatesAttentionAndHead(t *testing.T) {
-	body := `{"data":{"pr0":{"pullRequest":{"number":7,"headRefOid":"B","isDraft":true,"reviews":{"nodes":[
+	body := `{"data":{"pr0":{"pullRequest":{"number":7,"state":"MERGED","headRefOid":"B","isDraft":true,"reviews":{"nodes":[
 		{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","commit":{"oid":"A"}},
 		{"author":{"login":"bob"},"state":"APPROVED","commit":{"oid":"B"}},
 		{"author":{"login":"carol"},"state":"CHANGES_REQUESTED","commit":{"oid":"B"}}
@@ -268,6 +272,9 @@ func TestFetchReviewDataForRepo_PopulatesAttentionAndHead(t *testing.T) {
 	}
 	if !data.IsDraft {
 		t.Errorf("IsDraft = false, want true from the same response as the head")
+	}
+	if data.State != "MERGED" {
+		t.Errorf("State = %q, want MERGED from the same response as the head", data.State)
 	}
 	if data.ApprovalCount != 1 || data.UserReviews["alice"] != "CHANGES_REQUESTED" {
 		t.Errorf("existing review reduction changed: approvals=%d userReviews=%v", data.ApprovalCount, data.UserReviews)
