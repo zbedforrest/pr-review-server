@@ -29,14 +29,14 @@ export function LoginListField({
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const focusAfterRemove = useRef(false);
+  const focusAfterRemove = useRef<string | null>(null);
   const logins = normalizeLogins(value, authors).logins;
 
   useEffect(() => {
-    if (!focusAfterRemove.current) return;
-    focusAfterRemove.current = false;
-    inputRef.current?.focus();
-  }, [logins.length]);
+    const removed = focusAfterRemove.current;
+    focusAfterRemove.current = null;
+    if (removed !== null && !logins.includes(removed)) inputRef.current?.focus();
+  }, [logins]);
 
   const commit = (raw: string) => {
     const entry = normalizeLogins(raw, authors);
@@ -89,7 +89,7 @@ export function LoginListField({
   };
 
   const remove = (login: string) => {
-    focusAfterRemove.current = true;
+    focusAfterRemove.current = login;
     onChange(joinLogins(logins.filter((l) => l !== login)));
   };
 

@@ -201,6 +201,18 @@ describe('LoginListField', () => {
     expect(document.activeElement).toBe(button);
   });
 
+  it('does not steal focus later when a refused removal is followed by a server-side list change', () => {
+    const field = (value: string) => (
+      <LoginListField id="publish-authors" label={LABEL} value={value} onChange={vi.fn()} authors disabled={false} />
+    );
+    const { rerender } = render(field('alice,bob'));
+    const button = screen.getByRole('button', { name: 'Remove alice' });
+    button.focus();
+    fireEvent.click(button);
+    rerender(field('alice,bob,carol'));
+    expect(document.activeElement).not.toBe(input());
+  });
+
   it('asks before adding "*" and leaves the value intact when cancelled', () => {
     vi.mocked(window.confirm).mockReturnValue(false);
     const { onChange } = renderField();
