@@ -71,10 +71,6 @@ func TestMentionCandidatesUseTheCachedRowsThatMoved(t *testing.T) {
 	}
 }
 
-func containsFold(s, sub string) bool {
-	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
-}
-
 func TestMentionTelemetryEvent(t *testing.T) {
 	ev := mentionTelemetryEvent(github.PullRequest{Owner: "acme", Repo: "example", Number: 7}, "alice", true, 3)
 	if ev.Action != "mention_trigger" || ev.Label != "by=alice publish=true" || ev.PRNumber != 7 || ev.UserID != 3 {
