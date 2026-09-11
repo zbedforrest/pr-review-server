@@ -1,3 +1,4 @@
+import { ThemeSelector } from '@/components/layout/ThemeSelector';
 import { TelemetryDashboard } from './TelemetryDashboard';
 import '@/styles/main.scss';
 
@@ -12,6 +13,7 @@ export function UsageStatsPage() {
           <a href="/" className="app-header__action-link">
             Back to Dashboard
           </a>
+          <ThemeSelector />
         </div>
       </header>
       <TelemetryDashboard />

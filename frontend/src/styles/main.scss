@@ -1,3 +1,8 @@
+// Themes — must be emitted first: the palettes and `:root` share a specificity,
+// so anything that overrides a token has to come after it in the output.
+@use './themes/palettes';
+@use './themes/derived';
+
 // Abstracts
 @use './abstracts/variables';
 @use './abstracts/mixins';

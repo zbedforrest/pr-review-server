@@ -1,3 +1,5 @@
+@use '../../styles/abstracts/variables' as *;
+
 .reviewer-health-banner {
   padding: 12px 20px;
   margin: 0 20px 20px;
@@ -5,21 +7,21 @@
   border: 1px solid;
 
   &.healthy {
-    background-color: rgba(139, 148, 158, 0.05);
-    border-color: rgba(139, 148, 158, 0.2);
-    color: #8b949e;
+    background-color: $color-bg-tertiary;
+    border-color: $color-border;
+    color: $color-text-secondary;
   }
 
   &.error {
-    background-color: rgba(248, 81, 73, 0.1);
-    border-color: #f85149;
-    color: #f85149;
+    background-color: $color-bg-error-dim;
+    border-color: $color-error-text;
+    color: $color-error-text;
   }
 
   &.warning {
-    background-color: rgba(187, 128, 9, 0.1);
-    border-color: #bb8009;
-    color: #bb8009;
+    background-color: $color-bg-warning-dim;
+    border-color: $color-warning-text;
+    color: $color-warning-text;
   }
 
   .banner-content {
@@ -52,7 +54,9 @@
 
   .toggle-columns-btn {
     padding: 6px 12px;
-    background-color: rgba(255, 255, 255, 0.1);
+    // Tinted from the banner's own text color, so the button stays legible in
+    // all three severities without hard-coding a fill per theme.
+    background-color: transparent;
     border: 1px solid currentColor;
     border-radius: 4px;
     color: inherit;
@@ -63,7 +67,7 @@
     transition: all 0.2s ease;
 
     &:hover {
-      background-color: rgba(255, 255, 255, 0.2);
+      background-color: $color-bg-hover;
     }
 
     &:active {
@@ -74,8 +78,9 @@
   .banner-details {
     margin-top: 8px;
     padding-top: 8px;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
-    color: rgba(255, 255, 255, 0.7);
+    border-top: 1px solid currentColor;
+    color: inherit;
+    opacity: 0.8;
     font-size: 12px;
   }
 }

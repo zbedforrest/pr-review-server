@@ -30,7 +30,7 @@ $panel-width: 260px;
 
     &:hover:not(:disabled) {
       background: $color-link;
-      color: white;
+      color: $color-bg-primary;
     }
 
     &:disabled {
@@ -41,7 +41,7 @@ $panel-width: 260px;
   &__chevron {
     padding-left: $spacing-sm;
     padding-right: $spacing-sm;
-    border-left: 1px solid rgba($color-link, 0.5);
+    border-left: 1px solid $color-border-info-dim;
     font-size: $font-size-md;
   }
 
@@ -52,7 +52,7 @@ $panel-width: 260px;
     background: $color-bg-secondary;
     border: 1px solid $color-border;
     border-radius: $radius-md;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    box-shadow: $shadow-lg;
     padding: $spacing-xs;
     font-size: $font-size-sm;
     color: $color-text-primary;

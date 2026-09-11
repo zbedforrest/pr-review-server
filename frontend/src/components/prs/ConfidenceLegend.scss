@@ -12,7 +12,7 @@ $panel-width: 320px;
   background: $color-bg-secondary;
   border: 1px solid $color-border;
   border-radius: $radius-md;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: $shadow-lg;
   padding: $spacing-sm;
   font-size: $font-size-sm;
   color: $color-text-primary;
@@ -22,7 +22,7 @@ $panel-width: 320px;
 
   &:focus {
     border-color: $color-link-hover;
-    box-shadow: 0 0 0 2px rgba($color-link, 0.2), 0 8px 24px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 0 0 2px $color-border-info-dim, $shadow-lg;
   }
 
   &__trigger {

@@ -181,11 +181,11 @@
 
   &--active {
     border-color: $color-link;
-    background: rgba(56, 139, 253, 0.1);
+    background: $color-bg-info-dim;
     color: $color-link;
 
     &:hover {
-      background: rgba(56, 139, 253, 0.15);
+      background: $color-bg-info-dim-strong;
     }
   }
 }
