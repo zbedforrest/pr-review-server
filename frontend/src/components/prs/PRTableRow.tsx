@@ -5,6 +5,7 @@ import { useDeletePR, useSetPRHidden, useTriggerReview } from '@/hooks/usePRs';
 import { useSettings } from '@/hooks/useSettings';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { CIStatusIndicator } from './CIStatusIndicator';
+import { ConfidenceBadge } from './ConfidenceBadge';
 import { GenerateSplitButton } from './GenerateSplitButton';
 import { NotesCell } from './NotesCell';
 import { publishAllowedForAuthor } from './publishPolicy';
@@ -155,6 +156,9 @@ export const PRTableRow = memo(function PRTableRow({
           number={pr.number}
           notes={pr.notes || ''}
         />
+      </td>
+      <td className="pr-table__confidence">
+        <ConfidenceBadge score={pr.merge_confidence} size="row" />
       </td>
       <td className="pr-table__review-cell">
         {pr.status === 'error' ? (

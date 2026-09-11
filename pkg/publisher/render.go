@@ -302,19 +302,7 @@ func (r Round) writeFolded(b *strings.Builder, label string, notes []payload.Fin
 func RenderSummary(r Round, sel Selection) string {
 	shown := r.currentFindings()
 	sortBySeverity(shown)
-	critical, medium := 0, 0
-	for _, f := range shown {
-		switch f.Severity {
-		case "critical":
-			critical++
-		case "medium":
-			medium++
-		}
-	}
-	confidence := MergeConfidence(critical, medium, r.RequiredCheckViolated)
-	if r.requestsChanges() && confidence > requestChangesConfidenceCap {
-		confidence = requestChangesConfidenceCap
-	}
+	confidence := Confidence(r.Findings, r.RequiredCheckViolated)
 
 	var b strings.Builder
 	b.WriteString(SummaryMarker + "\n")
@@ -527,20 +515,6 @@ var provenanceNoteRe = regexp.MustCompile(`^_\[[^\]]*\]_\s*`)
 
 func commentText(f payload.Finding) string {
 	return strings.TrimSpace(provenanceNoteRe.ReplaceAllString(strings.TrimSpace(f.Comment), ""))
-}
-
-// A narrative that requests changes outranks the severity arithmetic: the
-// score can never read as "no blocking findings" while the verdict blocks.
-const requestChangesConfidenceCap = 3
-
-func (r Round) requestsChanges() bool {
-	for _, f := range r.Findings {
-		if f.File == "SUMMARY" {
-			body := strings.ToLower(f.Comment)
-			return strings.Contains(body, "request changes") || strings.Contains(body, "request-changes")
-		}
-	}
-	return false
 }
 
 // summaryText is the table cell for a finding: the effect sentence from the

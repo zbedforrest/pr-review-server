@@ -3482,6 +3482,10 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						if !p.completeQueuedReviewJobFromCache(job, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON) && job.TriggerSource != "poller" {
 							log.Printf("[REVIEWER] WARN: cached review projected but run %s was not completed", job.RunID)
 						}
+						if cachedPayload != nil {
+							confidence, confidenceErr := p.sidecarConfidence(pr, cachedPayload)
+							p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+						}
 						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 					} else {
 						log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
@@ -3811,12 +3815,19 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if aliasErr != nil {
 				log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical aliases: %v", job.RunID, aliasErr)
 			}
+			var published *publisher.Report
 			if !job.SkipPublish {
-				p.publishGitHubReview(prCtx, pr, sidecarBody)
+				published = p.publishGitHubReview(prCtx, pr, sidecarBody)
+			}
+			confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
+			p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+			confidenceField := ""
+			if confidenceErr == nil {
+				confidenceField = fmt.Sprintf(", confidence=%d", confidence)
 			}
 			verdict := service.VerdictFromComments(reviewResult.Comments)
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict)
+			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q%s)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, confidenceField)
 		}(job)
 	}
 

@@ -114,6 +114,9 @@ type PRModel struct {
 	// "request_changes", "approve_suggestions", "approve", or "" (unknown).
 	// Written alongside the counts by MarkPRCompleted.
 	ReviewVerdict string `gorm:"column:review_verdict;size:32"`
+	// Merge confidence 0..5 for the review of LastCommitSHA; nil until the
+	// poller stores it after completion, and cleared whenever the head moves.
+	MergeConfidence *int16 `gorm:"column:merge_confidence"`
 	// User notes (single-user mode)
 	Notes string `gorm:"size:15"`
 	// Poll economy: last seen updated_at from GitHub search API

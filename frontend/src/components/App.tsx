@@ -9,6 +9,7 @@ import { useNeedsReReview } from '@/hooks/useNeedsReReview';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { useUrlFilters } from '@/hooks/useUrlFilters';
 import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
+import { SettingsPage } from '@/components/settings/SettingsPage';
 import { PR } from '@/types/pr';
 import { ServerStatus } from '@/types/status';
 import { ConnectionStatus, subscribeToWebSocketMessages, subscribeToWebSocketStatus } from '@/utils/websocket';
@@ -147,6 +148,10 @@ function AppRouter() {
 
   if (path === '/usage-stats') {
     return <UsageStatsPage />;
+  }
+
+  if (path === '/settings') {
+    return <SettingsPage />;
   }
 
   return <AppContent />;

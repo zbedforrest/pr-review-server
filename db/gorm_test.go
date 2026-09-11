@@ -367,6 +367,205 @@ func TestGormDB_SetPRGenerating(t *testing.T) {
 	assert.NotNil(t, fetched.GeneratingSince)
 }
 
+const confidenceRunID = "run-000000000000000000000000000000a1"
+
+// completedPRWithConfidence completes prNumber under confidenceRunID and scores it.
+func completedPRWithConfidence(t *testing.T, db *GormDB, prNumber int, sha string, score int) {
+	require.NoError(t, db.SetPRGeneratingForReviewRun("owner", "repo", prNumber, sha, "Title", "alice", nil, false, confidenceRunID))
+	completed, err := db.MarkPRCompletedForReviewRun("owner", "repo", prNumber, confidenceRunID, confidenceRunID, sha, "review.html", 0, 0, 0, "", false, "")
+	require.NoError(t, err)
+	require.True(t, completed)
+	ok, err := db.SetPRMergeConfidence("owner", "repo", prNumber, confidenceRunID, score)
+	require.NoError(t, err)
+	require.True(t, ok)
+}
+
+func mergeConfidenceOf(t *testing.T, db *GormDB, prNumber int) *int {
+	fetched, err := db.GetPR("owner", "repo", prNumber)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	return fetched.MergeConfidence
+}
+
+func TestGormDB_SetPRMergeConfidence_WritesForTheOwningCompletedRun(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+
+	score := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, score)
+	assert.Equal(t, 4, *score)
+}
+
+func TestGormDB_SetPRMergeConfidence_IgnoresARunThatDoesNotOwnTheProjection(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+
+	ok, err := db.SetPRMergeConfidence("owner", "repo", 1, "run-000000000000000000000000000000a2", 1)
+	require.NoError(t, err)
+	assert.False(t, ok, "an older run re-reviewing the same commit must not match")
+
+	score := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, score)
+	assert.Equal(t, 4, *score, "a stale write must leave the row untouched")
+}
+
+func TestGormDB_SetPRMergeConfidence_IgnoresARowThatIsNoLongerCompleted(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+	require.NoError(t, db.UpdatePRStatus("owner", "repo", 1, "generating"))
+
+	ok, err := db.SetPRMergeConfidence("owner", "repo", 1, confidenceRunID, 2)
+	require.NoError(t, err)
+	assert.False(t, ok, "a medal must only ever be written against a completed row")
+}
+
+func TestGormDB_SetPRMergeConfidence_RejectsScoresOutsideTheMedalRange(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+
+	for _, score := range []int{6, -1} {
+		ok, err := db.SetPRMergeConfidence("owner", "repo", 1, confidenceRunID, score)
+		assert.Error(t, err, "score %d", score)
+		assert.False(t, ok)
+	}
+	stored := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, stored)
+	assert.Equal(t, 4, *stored, "a rejected score must write nothing")
+}
+
+func TestGormDB_SetPRMergeConfidence_RejectsAnEmptyRunID(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+	require.NoError(t, db.db.Model(&PRModel{}).Where("pr_number = ?", 1).Update("projection_run_id", "").Error)
+
+	stored, err := db.SetPRMergeConfidence("owner", "repo", 1, "", 1)
+	require.Error(t, err)
+	assert.False(t, stored)
+	score := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, score)
+	assert.Equal(t, 4, *score)
+}
+
+func TestGormDB_UpdatePRStatus_ClearsMergeConfidenceWhenLeavingCompleted(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.UpdatePRStatus("owner", "repo", 1, "pending"))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence)
+}
+
+func TestGormDB_SetPRError_ClearsMergeConfidence(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.SetPRError("owner", "repo", 1, "boom"))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence)
+}
+
+func TestGormDB_SetPRMergeConfidence_MissingRow(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	ok, err := db.SetPRMergeConfidence("owner", "repo", 404, confidenceRunID, 5)
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestGormDB_ResetPRToOutdated_ClearsMergeConfidence(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.ResetPRToOutdated("owner", "repo", 1, "def456"))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence, "a medal must never describe a previous head")
+}
+
+func TestGormDB_SetPRGenerating_ClearsMergeConfidence(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.SetPRGenerating("owner", "repo", 1, "def456", "Title", "alice", nil, false))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence)
+}
+
+func TestGormDB_SetPRGeneratingForReviewRun_ClearsMergeConfidence(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.SetPRGeneratingForReviewRun("owner", "repo", 1, "def456", "Title", "alice", nil, false, "run-000000000000000000000000000000c1"))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence)
+}
+
+func TestGormDB_GetPR_MergeConfidenceRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	zero := 0
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "completed", MergeConfidence: &zero,
+	}))
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 2,
+		LastCommitSHA: "abc123", Status: "pending",
+	}))
+
+	scored, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	require.NotNil(t, scored.MergeConfidence)
+	assert.Equal(t, 0, *scored.MergeConfidence, "zero is a real score, not absence")
+
+	unscored, err := db.GetPR("owner", "repo", 2)
+	require.NoError(t, err)
+	assert.Nil(t, unscored.MergeConfidence)
+}
+
+func TestGormDB_MergeConfidenceMigrationIsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	require.NoError(t, db.db.Migrator().DropColumn(&PRModel{}, "MergeConfidence"))
+	require.False(t, db.db.Migrator().HasColumn(&PRModel{}, "merge_confidence"))
+
+	require.NoError(t, db.ensureIdempotentColumns())
+	require.NoError(t, db.ensureIdempotentColumns())
+	assert.True(t, db.db.Migrator().HasColumn(&PRModel{}, "merge_confidence"))
+}
+
 func TestGormDB_GetAllPRs(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()
@@ -852,6 +1051,20 @@ func TestGormDB_UpdateUserLastLogin(t *testing.T) {
 	fetched, err := db.GetUserByID(user.ID)
 	require.NoError(t, err)
 	assert.NotNil(t, fetched.LastLoginAt)
+}
+
+func TestGormDB_UpdateUserGitHubUsername(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "old-name"}
+	require.NoError(t, db.CreateUser(user))
+
+	require.NoError(t, db.UpdateUserGitHubUsername(user.ID, "new-name"))
+
+	fetched, err := db.GetUserByGitHubID(12345)
+	require.NoError(t, err)
+	assert.Equal(t, "new-name", fetched.GitHubUsername)
 }
 
 // =============================================================================

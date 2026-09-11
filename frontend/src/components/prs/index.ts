@@ -5,7 +5,6 @@ export { ReviewPRsSection } from './ReviewPRsSection';
 export { NeedsReReviewSection } from './NeedsReReviewSection';
 export { PRSection } from './PRSection';
 export { SectionEditor } from './SectionEditor';
-export { AutoReviewToggle } from './AutoReviewToggle';
 export { TriageSummary } from './TriageSummary';
 export { categorizePR } from './triageUtils';
 export type { TriageFilter } from './triageUtils';

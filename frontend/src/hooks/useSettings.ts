@@ -9,36 +9,31 @@ export function useSettings() {
   });
 }
 
+export function useSettingsEditor() {
+  return useQuery({
+    queryKey: ['settings'],
+    queryFn: fetchSettings,
+    refetchOnMount: 'always',
+  });
+}
+
 export function useUpdateSettings() {
   const queryClient = useQueryClient();
 
+  // One scope serializes the per-section saves; the cancel keeps an older
+  // GET from landing on top of the saved response.
   return useMutation({
+    scope: { id: 'settings' },
     mutationFn: (settings: Partial<Settings>) => updateSettings(settings),
-    onMutate: async (newSettings) => {
-      // Cancel outgoing refetches
+    onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ['settings'] });
-
-      // Snapshot previous value
-      const previousSettings = queryClient.getQueryData<Settings>(['settings']);
-
-      // Optimistically update
-      queryClient.setQueryData<Settings>(['settings'], (old) => ({
-        ...old!,
-        ...newSettings,
-      }));
-
-      return { previousSettings };
     },
-    onError: (err, _variables, context) => {
-      // Rollback on error
-      if (context?.previousSettings) {
-        queryClient.setQueryData(['settings'], context.previousSettings);
-      }
+    onSuccess: (saved, sent) => {
+      queryClient.setQueryData<Settings>(['settings'], saved);
+      if ('admin_logins' in sent) queryClient.invalidateQueries({ queryKey: ['currentUser'] });
+    },
+    onError: (err) => {
       console.error('Error updating settings:', err);
-    },
-    onSettled: () => {
-      // Refetch to ensure consistency
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
   });
 }

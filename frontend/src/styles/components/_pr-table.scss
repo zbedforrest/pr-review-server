@@ -125,6 +125,12 @@
     text-align: center;
     width: 40px;
   }
+
+  &__confidence {
+    text-align: center;
+    width: 64px;
+    white-space: nowrap;
+  }
 }
 
 .ci-status {

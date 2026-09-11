@@ -89,6 +89,9 @@ type Config struct {
 	// HealthJobToken authenticates the scheduled daily health report
 	// (POST /api/health/daily); empty disables the job endpoint.
 	HealthJobToken string
+	// AdminLogins are bootstrap settings admins (lowercased GitHub logins), kept
+	// outside the writable settings API so admins can never lock themselves out.
+	AdminLogins []string
 	// AnthropicAPIKey is optional for the agent pass (Claude OAuth remains
 	// supported) but required when FirstPassProvider is "claude".
 	AnthropicAPIKey   string
@@ -308,6 +311,7 @@ func Load() *Config {
 		ReplyMaxConcurrent: getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
 		MentionHandle:      strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
 		HealthJobToken:     os.Getenv("HEALTH_JOB_TOKEN"),
+		AdminLogins:        getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
@@ -432,6 +436,10 @@ func normalizeModel(value string) string {
 }
 
 func normalizeEffort(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeLogin(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 

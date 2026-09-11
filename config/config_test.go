@@ -389,6 +389,22 @@ func TestLoadJiraDisabledUnlessAllThreeSet(t *testing.T) {
 	}
 }
 
+func TestLoadAdminLoginsNormalizesAndLowercases(t *testing.T) {
+	t.Setenv("ADMIN_LOGINS", "Alice, bob")
+	assertStringsEqual(t, Load().AdminLogins, []string{"alice", "bob"})
+}
+
+func TestLoadAdminLoginsEmptyWhenUnsetOrBlank(t *testing.T) {
+	os.Unsetenv("ADMIN_LOGINS")
+	if got := Load().AdminLogins; len(got) != 0 {
+		t.Errorf("unset ADMIN_LOGINS = %v, want empty", got)
+	}
+	t.Setenv("ADMIN_LOGINS", " , ")
+	if got := Load().AdminLogins; len(got) != 0 {
+		t.Errorf("blank ADMIN_LOGINS = %v, want empty", got)
+	}
+}
+
 func TestMentionHandleCanBeDisabledWithAnEmptyValue(t *testing.T) {
 	t.Setenv("MENTION_HANDLE", "")
 	if got := getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server"); got != "" {
