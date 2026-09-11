@@ -39,10 +39,6 @@ vi.mock('@/components/common', () => ({
   ErrorMessage: ({ message }: { message: string }) => <div>{message}</div>,
 }));
 
-vi.mock('./AutoReviewToggle', () => ({
-  AutoReviewToggle: () => <button>Auto Review</button>,
-}));
-
 vi.mock('../filters', () => ({
   FilterBar: () => <div>Filter Bar</div>,
 }));
