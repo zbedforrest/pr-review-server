@@ -11,16 +11,25 @@ import (
 )
 
 // DefaultSpawner runs commands as the leader of a fresh process group so any
-// subprocesses they fork (e.g. bash via `claude --tools Bash`) can be torn
+// subprocesses they fork (e.g. bash via an agent shell tool) can be torn
 // down as a group rather than orphaned when the parent exits.
 type DefaultSpawner struct{}
 
-func (DefaultSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
+var _ Spawner = DefaultSpawner{}
+
+func (DefaultSpawner) SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
+	return spawnCommand(ctx, name, args, dir, environment)
+}
+
+func spawnCommand(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
 	// Use Command (not CommandContext) so we control kill behavior ourselves.
 	// CommandContext's auto-kill only signals the direct child, leaving any
 	// process-group children orphaned. We watch ctx.Done in a goroutine and
 	// group-kill instead.
 	cmd := exec.Command(name, args...)
+	// make preserves the distinction between an explicit empty environment
+	// and nil, which os/exec interprets as inheriting the parent environment.
+	cmd.Env = append(make([]string, 0, len(environment)), environment...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -40,7 +49,7 @@ func (DefaultSpawner) Spawn(ctx context.Context, name string, args []string, dir
 
 	p := &execProcess{cmd: cmd, stdout: stdout, stderr: stderr, done: make(chan struct{})}
 
-	// When ctx expires, group-kill so child shells go down with claude.
+	// When ctx expires, group-kill so child shells go down with the agent.
 	// Idempotent with explicit Kill().
 	go func() {
 		select {
@@ -69,7 +78,7 @@ func (e *execProcess) Wait() error {
 }
 
 // Kill sends SIGKILL to the entire process group so any subprocesses
-// (e.g. bash spawned by claude --tools Bash) go down with the parent.
+// (e.g. bash spawned by an agent shell tool) go down with the parent.
 // Also closes stdout/stderr explicitly so any reader still blocked on
 // the pipes unblocks immediately — defense against a future caller that
 // returns from the parser without first draining stdout, which would

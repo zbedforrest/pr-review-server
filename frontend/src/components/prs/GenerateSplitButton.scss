@@ -1,0 +1,105 @@
+@use '../../styles/abstracts/variables' as *;
+@use '../../styles/abstracts/mixins' as *;
+
+// Keep $panel-width in sync with PANEL_WIDTH in GenerateSplitButton.tsx.
+$panel-width: 260px;
+
+// Two buttons styled as one control: the outer span carries the shared
+// border and radius, so the segments themselves are borderless apart from the
+// hairline between them.
+.generate-split {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid $color-link;
+  border-radius: $radius-md;
+  overflow: hidden;
+  vertical-align: middle;
+
+  // Dimming lives on the wrapper so the border fades with the segments.
+  &--pending {
+    opacity: 0.5;
+  }
+
+  &__primary,
+  &__chevron {
+    @include button-base;
+    border: none;
+    border-radius: 0;
+    color: $color-link;
+    line-height: inherit;
+
+    &:hover:not(:disabled) {
+      background: $color-link;
+      color: white;
+    }
+
+    &:disabled {
+      opacity: 1;
+    }
+  }
+
+  &__chevron {
+    padding-left: $spacing-sm;
+    padding-right: $spacing-sm;
+    border-left: 1px solid rgba($color-link, 0.5);
+    font-size: $font-size-md;
+  }
+
+  &__menu {
+    position: fixed;
+    z-index: 1000;
+    width: $panel-width;
+    background: $color-bg-secondary;
+    border: 1px solid $color-border;
+    border-radius: $radius-md;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    padding: $spacing-xs;
+    font-size: $font-size-sm;
+    color: $color-text-primary;
+    animation: generate-split-fade $transition-fast;
+  }
+
+  &__item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    padding: $spacing-sm;
+    border: none;
+    border-radius: $radius-sm;
+    background: transparent;
+    color: $color-text-primary;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color $transition-fast;
+
+    &:hover:not(:disabled) {
+      background: $color-bg-hover;
+
+      .generate-split__item-title {
+        color: $color-link-hover;
+      }
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+  }
+
+  &__item-title {
+    font-weight: 600;
+  }
+
+  &__item-desc {
+    color: $color-text-secondary;
+    font-size: $font-size-xs;
+  }
+}
+
+@keyframes generate-split-fade {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}

@@ -53,6 +53,22 @@ func ReviewJSONFileName(htmlFilename string) string {
 	return htmlFilename + ".json"
 }
 
+// ReviewRunFileName returns the immutable HTML object path for one execution.
+// The canonical ReviewFileName remains the latest alias for a PR+commit.
+func ReviewRunFileName(owner, repo string, prNumber int, commitSHA, runID string) string {
+	shortSHA := commitSHA
+	if len(shortSHA) > 7 {
+		shortSHA = shortSHA[:7]
+	}
+	return fmt.Sprintf("runs/%s/%s/%d/%s/%s.html", owner, repo, prNumber, shortSHA, runID)
+}
+
+// ReviewRunJSONFileName is the immutable structured sidecar paired with a
+// ReviewRunFileName object.
+func ReviewRunJSONFileName(owner, repo string, prNumber int, commitSHA, runID string) string {
+	return ReviewJSONFileName(ReviewRunFileName(owner, repo, prNumber, commitSHA, runID))
+}
+
 // archiveOnOverwrite reports whether overwritten review artifacts should be
 // preserved under archive/ first (REVIEW_HISTORY_ARCHIVE=true). Read per call
 // so tests can toggle it; unset keeps today's overwrite-in-place behavior.
@@ -125,22 +141,38 @@ func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber 
 // policy as UploadReview so a regenerated review's sidecar is picked up by
 // callers on next fetch.
 func (c *Client) UploadReviewSidecar(ctx context.Context, filename, contentType string, content []byte) error {
-	c.archiveExisting(ctx, filename)
+	return c.uploadReviewArtifact(ctx, filename, contentType, content, true)
+}
+
+// UploadImmutableReviewArtifact writes a run-scoped artifact without archive
+// lookup: run IDs are unique, so the object never intentionally overwrites.
+func (c *Client) UploadImmutableReviewArtifact(ctx context.Context, filename, contentType string, content []byte) error {
+	return c.uploadReviewArtifact(ctx, filename, contentType, content, false)
+}
+
+func (c *Client) uploadReviewArtifact(ctx context.Context, filename, contentType string, content []byte, archive bool) error {
+	if archive {
+		c.archiveExisting(ctx, filename)
+	}
 
 	obj := c.bucket.Object(filename)
 	writer := obj.NewWriter(ctx)
 	writer.ContentType = contentType
-	writer.CacheControl = "public, no-cache, must-revalidate"
+	if archive {
+		writer.CacheControl = "public, no-cache, must-revalidate"
+	} else {
+		writer.CacheControl = "public, max-age=31536000, immutable"
+	}
 
 	if _, err := writer.Write(content); err != nil {
 		writer.Close()
-		return fmt.Errorf("failed to write sidecar to GCS: %w", err)
+		return fmt.Errorf("failed to write review artifact to GCS: %w", err)
 	}
 	if err := writer.Close(); err != nil {
-		return fmt.Errorf("failed to close GCS sidecar writer: %w", err)
+		return fmt.Errorf("failed to close GCS review artifact writer: %w", err)
 	}
 
-	log.Printf("[GCS] Uploaded sidecar: gs://%s/%s", c.bucketName, filename)
+	log.Printf("[GCS] Uploaded review artifact: gs://%s/%s", c.bucketName, filename)
 	return nil
 }
 

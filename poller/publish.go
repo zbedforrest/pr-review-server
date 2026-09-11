@@ -1,0 +1,289 @@
+package poller
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"pr-review-server/db"
+	"pr-review-server/github"
+	"pr-review-server/pkg/publisher"
+	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/reconcile"
+)
+
+// GitHub publication is gated per PR author so the pilot can widen team by
+// team from the settings API without a deploy. "*" enables everyone.
+const (
+	settingPublishEnabledAuthors    = "publish_enabled_authors"
+	settingPublishInlineCap         = "publish_inline_cap"
+	settingPublishInlineMinSeverity = "publish_inline_min_severity"
+	settingPublishShowUnverified    = "publish_show_unverified"
+)
+
+func publishEnabledFor(author, enabledCSV string) bool {
+	author = strings.TrimSpace(author)
+	if author == "" {
+		return false
+	}
+	for _, entry := range strings.Split(enabledCSV, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "*" || strings.EqualFold(entry, author) {
+			return true
+		}
+	}
+	return false
+}
+
+// publishTargetReady decides whether a finished review may be posted: the PR
+// must be open and not a draft (benchmark replays review merged PRs, and a
+// bot comment on unfinished work is noise) and its head must still be the reviewed commit
+// (a newer push gets its own review; posting the old one would anchor
+// comments to lines that just changed).
+func publishTargetReady(state string, draft bool, headSHA, reviewedSHA string) (bool, string) {
+	if !strings.EqualFold(state, "open") {
+		return false, "pull request is not open"
+	}
+	if draft {
+		return false, "pull request is a draft"
+	}
+	if headSHA == "" || !strings.EqualFold(headSHA, reviewedSHA) {
+		return false, "pull request head moved past the reviewed commit"
+	}
+	return true, ""
+}
+
+// buildPublishRound assembles everything the publisher needs from the review
+// sidecar plus what is already on the PR: Greptile's inline comments are
+// reconciled against PRism's findings so nothing is posted twice, and the
+// file patches bound which lines may take an inline comment.
+func buildPublishRound(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, baseURL string) publisher.Round {
+	// Only active claims reach GitHub, so only they take part in aliasing and
+	// reconciliation; an inactive record with first-pass wording must not
+	// steal a prior comment's identity from the agent finding it merged into.
+	active := make([]payload.Finding, 0, len(pl.Findings))
+	for _, f := range pl.Findings {
+		if f.Active || pl.SchemaVersion != payload.CurrentSchemaVersion {
+			active = append(active, f)
+		}
+	}
+	pl.Findings = active
+
+	external := make([]reconcile.ExternalComment, 0, len(comments))
+	for _, c := range comments {
+		external = append(external, reconcile.ExternalComment{
+			ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path,
+			Line: c.Line, StartLine: c.StartLine, InReplyToID: c.InReplyToID,
+		})
+	}
+	// Re-reviews reword findings; restatements of comments PRism already posted
+	// keep their published identity so they are neither reposted nor counted
+	// as new and fixed.
+	ledgerCommentIDs := make(map[int64]bool, len(previous))
+	for _, row := range previous {
+		if row.CommentID != 0 {
+			ledgerCommentIDs[row.CommentID] = true
+		}
+	}
+	own := reconcile.ParseOwnComments(external, ledgerCommentIDs)
+	aliases := reconcile.AliasPrior(pl.Findings, own)
+	inlineComments := map[string]int64{}
+	for _, o := range own {
+		inlineComments[o.FindingID] = o.CommentID
+	}
+	for i := range pl.Findings {
+		if prior, ok := aliases[pl.Findings[i].ID]; ok {
+			pl.Findings[i].ID = prior
+		}
+	}
+
+	res := reconcile.Reconcile(pl.Findings, reconcile.ParseGreptileComments(external))
+
+	tags := make(map[string]string, len(res.Findings))
+	for _, t := range res.Findings {
+		if t.SourceTag != reconcile.SourceTagPrismOnly {
+			tags[t.Finding.ID] = t.SourceTag
+		}
+	}
+	greptileOnly := make([]publisher.GreptileOnlyRef, 0, len(res.GreptileOnly))
+	for _, g := range res.GreptileOnly {
+		greptileOnly = append(greptileOnly, publisher.GreptileOnlyRef{
+			Title: g.Title, File: g.File, Line: g.StartLine, Severity: g.Severity, CommentID: g.CommentID,
+		})
+	}
+	commentable := make(map[string]map[int]bool, len(patches))
+	for file, patch := range patches {
+		commentable[file] = publisher.CommentableLines(patch)
+	}
+
+	r := publisher.Round{
+		Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number, HeadSHA: pr.CommitSHA,
+		Findings:       pl.Findings,
+		SourceTags:     tags,
+		GreptileOnly:   greptileOnly,
+		Previous:       previous,
+		Commentable:    commentable,
+		InlineComments: inlineComments,
+
+		RequiredCheckViolated: pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0,
+	}
+	if base := strings.TrimRight(baseURL, "/"); base != "" {
+		r.AgentLinkBase = fmt.Sprintf("%s/go/agent?o=%s&r=%s&n=%d", base, pr.Owner, pr.Repo, pr.Number)
+		r.BadgeBaseURL = base + "/badge"
+		r.DashboardURL = fmt.Sprintf("%s/api/review/%s/%s/%d?format=html", base, pr.Owner, pr.Repo, pr.Number)
+	}
+	return r
+}
+
+// ghPublishAdapter bridges the concrete GitHub client to the publisher's
+// interface; the two packages keep separate input structs to avoid a cycle.
+type ghPublishAdapter struct{ c *github.Client }
+
+func (a ghPublishAdapter) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []publisher.ReviewCommentInput) (int64, []int64, error) {
+	inputs := make([]github.ReviewCommentInput, len(comments))
+	for i, c := range comments {
+		inputs[i] = github.ReviewCommentInput{Path: c.Path, Line: c.Line, StartLine: c.StartLine, Body: c.Body}
+	}
+	return a.c.CreateReview(ctx, owner, repo, number, commitSHA, body, inputs)
+}
+
+func (a ghPublishAdapter) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (int64, error) {
+	return a.c.CreateIssueComment(ctx, owner, repo, number, body)
+}
+
+func (a ghPublishAdapter) EditIssueComment(ctx context.Context, owner, repo string, commentID int64, body string) error {
+	return a.c.EditIssueComment(ctx, owner, repo, commentID, body)
+}
+
+func (a ghPublishAdapter) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]publisher.IssueComment, error) {
+	infos, err := a.c.ListIssueComments(ctx, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]publisher.IssueComment, len(infos))
+	for i, c := range infos {
+		out[i] = publisher.IssueComment{ID: c.ID, Body: c.Body}
+	}
+	return out, nil
+}
+
+func (p *Poller) publishPolicy() publisher.Policy {
+	pol := publisher.DefaultPolicy()
+	if v, err := p.db.GetSetting(settingPublishInlineCap); err == nil {
+		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
+			pol.InlineCap = n
+		}
+	}
+	if v, err := p.db.GetSetting(settingPublishInlineMinSeverity); err == nil && strings.TrimSpace(v) != "" {
+		pol.InlineMinSeverity = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, err := p.db.GetSetting(settingPublishShowUnverified); err == nil {
+		if b, convErr := strconv.ParseBool(strings.TrimSpace(v)); convErr == nil {
+			pol.ShowUnverified = b
+		}
+	}
+	return pol
+}
+
+// publishGitHubReview posts a completed review to the PR and reports what it
+// posted; the report is nil when no round was attempted. Best-effort by
+// design: the review is already saved and visible on the dashboard, so any
+// failure here is logged and never fails the run.
+func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) *publisher.Report {
+	enabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
+	if err != nil || !publishEnabledFor(pr.Author, enabled) {
+		return nil
+	}
+	ledger, ok := p.db.(publisher.Ledger)
+	if !ok || p.ghClientConcrete == nil {
+		log.Printf("[PUBLISH] %s/%s#%d: publication enabled but no ledger or GitHub client available", pr.Owner, pr.Repo, pr.Number)
+		return nil
+	}
+	pl, err := payload.Decode(sidecar)
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: sidecar unreadable: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return nil
+	}
+	ghPR, _, err := p.ghClientConcrete.GetPR(ctx, pr.Owner, pr.Repo, pr.Number)
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: fetch pull request: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return nil
+	}
+	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), ghPR.GetHead().GetSHA(), pr.CommitSHA); !ok {
+		log.Printf("[PUBLISH] %s/%s#%d: skipped, %s", pr.Owner, pr.Repo, pr.Number, reason)
+		return nil
+	}
+	comments, err := p.ghClientConcrete.ListReviewComments(ctx, pr.Owner, pr.Repo, pr.Number)
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: list review comments: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return nil
+	}
+	patches, err := p.ghClientConcrete.GetPRFilePatches(ctx, pr.Owner, pr.Repo, pr.Number)
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: list file patches: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return nil
+	}
+	previous, err := ledger.GetPublishedFindingsForPR(pr.Owner, pr.Repo, pr.Number)
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: load ledger: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return nil
+	}
+
+	round := buildPublishRound(pr, pl, comments, patches, previous, p.cfg.BaseURL)
+	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: p.publishPolicy()}
+	report, err := pub.Publish(ctx, round)
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+		// Confidence is scored before the first write, so a failed round still
+		// reports the number the sticky comment may already show.
+		return &report
+	}
+	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d confidence=%d",
+		pr.Owner, pr.Repo, pr.Number, report.SummaryCommentID, report.ReviewID, report.InlinePosted, report.Annotations, report.StillOpen, report.Fixed, report.Confidence)
+	return &report
+}
+
+// mergeConfidence is the score the dashboard stores for a completed review.
+// The published report wins because Publish scores the dismissal-filtered,
+// alias-rewritten round the sticky comment shows; it only counts once that
+// comment exists, since Publish scores before its first GitHub write. A review
+// that skipped or failed the publish is scored from the sidecar minus the
+// ledger's concessions; aliases need GitHub's comments, so a reworded conceded
+// finding can still count here.
+func (p *Poller) mergeConfidence(pr github.PullRequest, published *publisher.Report, sidecar []byte) (int, error) {
+	if published != nil && published.SummaryCommentID != 0 {
+		return published.Confidence, nil
+	}
+	pl, err := payload.Decode(sidecar)
+	if err != nil {
+		return 0, fmt.Errorf("decode sidecar: %w", err)
+	}
+	return p.sidecarConfidence(pr, &pl)
+}
+
+func (p *Poller) sidecarConfidence(pr github.PullRequest, pl *payload.Payload) (int, error) {
+	findings := pl.Findings
+	if ledger, ok := p.db.(publisher.Ledger); ok {
+		previous, err := ledger.GetPublishedFindingsForPR(pr.Owner, pr.Repo, pr.Number)
+		if err != nil {
+			return 0, fmt.Errorf("load ledger: %w", err)
+		}
+		findings = publisher.WithoutDismissed(findings, previous)
+	}
+	return publisher.Confidence(findings, pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0), nil
+}
+
+// storeMergeConfidence writes the score for the completed projection runID
+// owns. A failure here is benign (the review itself is already saved) so it
+// only warns.
+func (p *Poller) storeMergeConfidence(runID string, pr github.PullRequest, confidence int, scoreErr error) {
+	if scoreErr != nil {
+		log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped: %v", runID, scoreErr)
+	} else if stored, setErr := p.db.SetPRMergeConfidence(pr.Owner, pr.Repo, pr.Number, runID, confidence); setErr != nil {
+		log.Printf("[REVIEWER] WARN: merge confidence for run %s not stored: %v", runID, setErr)
+	} else if !stored {
+		log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped, PR %d projection is owned by a newer run", runID, pr.Number)
+	}
+}

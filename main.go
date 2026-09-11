@@ -4,8 +4,10 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"pr-review-server/auth"
@@ -13,6 +15,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/poller"
 	"pr-review-server/server"
 )
@@ -35,6 +38,9 @@ func main() {
 // In prod mode, users authenticate via OAuth.
 func start(cfg *config.Config) {
 	// Validate required config
+	if refuseImplicitDevMode(os.Getenv("K_SERVICE"), os.Getenv("DEV_MODE"), cfg.IsDevMode()) {
+		log.Fatal("Refusing to start: GITHUB_APP_CLIENT_ID is missing on Cloud Run, which would run production in dev mode with every request as the admin dev user. Set GITHUB_APP_CLIENT_ID, or DEV_MODE=true if this instance is meant to run in dev mode.")
+	}
 	if cfg.IsDevMode() {
 		// Dev mode requires GitHub token and username
 		if cfg.GitHubToken == "" {
@@ -71,6 +77,12 @@ func start(cfg *config.Config) {
 		if cfg.GitHubOrgName != "" {
 			log.Printf("GitHub Org: %s", cfg.GitHubOrgName)
 		}
+		if len(cfg.AdminLogins) == 0 {
+			log.Println("WARNING: ADMIN_LOGINS is not set; settings writes are refused unless an admin was already granted in the admin_logins setting")
+		}
+	}
+	if len(cfg.AdminLogins) > 0 {
+		log.Printf("Bootstrap admins: %s", strings.Join(cfg.AdminLogins, ", "))
 	}
 
 	log.Printf("Polling Interval: %s", cfg.PollingInterval)
@@ -82,6 +94,34 @@ func start(cfg *config.Config) {
 	} else {
 		log.Println("✅ GEMINI_API_KEY found. AI review generation is enabled.")
 		cfg.ReviewerEnabled = true
+	}
+
+	switch cfg.FirstPassProvider {
+	case "", "gemini":
+	case "claude":
+		if cfg.AnthropicAPIKey == "" {
+			log.Fatal("FIRST_PASS_PROVIDER=claude requires ANTHROPIC_API_KEY to be set")
+		}
+	case "claude-code":
+		command := llm.ClaudeCodeCommand()
+		if _, err := exec.LookPath(command); err != nil {
+			log.Fatalf("FIRST_PASS_PROVIDER=claude-code requires Claude Code command %q on PATH: %v", command, err)
+		}
+		if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") == "" {
+			log.Println("WARNING: CLAUDE_CODE_OAUTH_TOKEN is empty; Claude Code must have its own authenticated OAuth session")
+		}
+	case "openrouter":
+		if cfg.OpenRouterAPIKey == "" {
+			log.Fatal("FIRST_PASS_PROVIDER=openrouter requires OPENROUTER_API_KEY to be set")
+		}
+	default:
+		log.Fatalf("Invalid FIRST_PASS_PROVIDER %q (expected gemini, claude, claude-code, or openrouter)", cfg.FirstPassProvider)
+	}
+	if _, err := llm.ParseThinkingLevel(cfg.FirstPassThinking); err != nil {
+		log.Fatalf("Invalid FIRST_PASS_THINKING %q (expected low, medium, or high)", cfg.FirstPassThinking)
+	}
+	if cfg.FirstPassProvider != "" && cfg.FirstPassProvider != "gemini" {
+		log.Printf("First-pass provider: %s (model: %s)", cfg.FirstPassProvider, llm.FirstPassModelName(llm.LLMProvider(cfg.FirstPassProvider), cfg.FirstPassModel))
 	}
 
 	// Create reviews directory if using local storage
@@ -173,6 +213,7 @@ func start(cfg *config.Config) {
 	srv.SetPollTrigger(p.Trigger)
 	srv.SetPoller(p)
 	p.EventFunc = srv.BroadcastEvent
+	p.UserEventFunc = srv.BroadcastEventToUser
 	p.StatusEventFunc = func() {
 		srv.BroadcastStatusSnapshot(context.Background())
 	}

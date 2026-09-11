@@ -9,20 +9,35 @@ type ReviewAuthor struct {
 	Login string `json:"login"`
 }
 
+// ReviewCommit is the commit a review was submitted against
+type ReviewCommit struct {
+	OID string `json:"oid"`
+}
+
 // ReviewNode represents a single review in the GraphQL response
 type ReviewNode struct {
 	Author *ReviewAuthor `json:"author"`
 	State  string        `json:"state"`
+	Commit *ReviewCommit `json:"commit"`
+}
+
+// ReviewsPageInfo reports whether older reviews exist beyond the fetched window
+type ReviewsPageInfo struct {
+	HasPreviousPage bool `json:"hasPreviousPage"`
 }
 
 // ReviewsData holds the collection of review nodes
 type ReviewsData struct {
-	Nodes []ReviewNode `json:"nodes"`
+	Nodes    []ReviewNode    `json:"nodes"`
+	PageInfo ReviewsPageInfo `json:"pageInfo"`
 }
 
 // PRReviewGraphQL represents PR review data in GraphQL response
 type PRReviewGraphQL struct {
-	Reviews ReviewsData `json:"reviews"`
+	State      string      `json:"state"`
+	HeadRefOid string      `json:"headRefOid"`
+	IsDraft    bool        `json:"isDraft"`
+	Reviews    ReviewsData `json:"reviews"`
 }
 
 // RepoReviewData represents repository data containing PR review info

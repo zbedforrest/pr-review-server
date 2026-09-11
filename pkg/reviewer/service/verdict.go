@@ -29,6 +29,18 @@ func VerdictFromComments(comments []types.LineComment) string {
 	var body string
 	for _, c := range comments {
 		if c.FilePath == "SUMMARY" {
+			// A structured summary states its verdict outright; the prose
+			// beneath it may mention other verdicts in passing.
+			if c.Summary != nil {
+				switch strings.ToLower(strings.TrimSpace(c.Summary.Verdict)) {
+				case "request_changes":
+					return VerdictRequestChanges
+				case "approve_suggestions":
+					return VerdictApproveSuggestions
+				case "approve":
+					return VerdictApprove
+				}
+			}
 			body = c.CommentBody
 			break
 		}

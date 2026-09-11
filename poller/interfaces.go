@@ -7,6 +7,7 @@ import (
 
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/types"
 )
@@ -107,6 +108,10 @@ type ReviewResult struct {
 	// the dashboard can badge it.
 	ModelFallback bool
 
+	// ReviewRun is the durable execution identity and model provenance written
+	// to the sidecar and mirrored onto the latest PR database row.
+	ReviewRun *payload.ReviewRunInfo
+
 	// GateAlerts is every deterministic alert that fed the review (mechanical
 	// gate firings + required-check escalations), pre-merge. It exists solely
 	// for payload.Build's no-swallow assertion: each alert must still be
@@ -119,10 +124,16 @@ type ReviewResult struct {
 	// CARRY_FORWARD_FINDINGS is off or no usable prior review exists, so
 	// the sidecar stays byte-identical to a carry-less run.
 	Carried *payload.CarryForwardInfo
+
+	// LinkedTickets lists the Jira keys whose content reached the agent
+	// prompt; copied onto the sidecar's ReviewRunInfo. Nil when none did.
+	LinkedTickets []string
 }
 
 // ReviewGeneratorConfig contains configuration for generating a review
 type ReviewGeneratorConfig struct {
+	RunID        string
+	Config       runconfig.Snapshot
 	Token        string
 	Owner        string
 	RepoName     string

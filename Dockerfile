@@ -36,12 +36,14 @@ COPY --from=frontend-builder /app/server/dist ./server/dist
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o pr-review-server .
 
 # Stage 3: Final runtime image
-FROM alpine:3.20
+# Alpine >= 3.21 ships Node 22+, required by current @anthropic-ai/claude-code
+# (npm silently resolves an old CLI on Node 20, which rejects newer models).
+FROM alpine:3.22
 
 # Install required packages
 # - git: cloning PR branches for the agent reviewer
-# - nodejs/npm: hosting the claude CLI
-# - @anthropic-ai/claude-code: the CLI the agent reviewer shells out to
+# - nodejs/npm: hosting the agent CLIs
+# - Claude Code and Codex: selectable agent-review backends
 RUN apk --no-cache add \
     ca-certificates \
     sqlite-libs \
@@ -50,7 +52,7 @@ RUN apk --no-cache add \
     git \
     nodejs \
     npm \
- && npm install -g @anthropic-ai/claude-code \
+ && npm install -g @anthropic-ai/claude-code @openai/codex \
  && npm cache clean --force
 
 WORKDIR /app

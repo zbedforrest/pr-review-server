@@ -1,8 +1,8 @@
 package service
 
 import (
-	"fmt"
 	"path"
+	"strconv"
 	"strings"
 
 	"pr-review-server/pkg/reviewer/types"
@@ -53,24 +53,46 @@ func importanceRank(imp string) int {
 //     conventionally named files (models.py, index.ts) across directories.
 //   - Duplicates keep the higher-priority phrasing but upgrade Importance to
 //     the max across the pair — a later source never *lowers* severity.
-//   - Findings unique to a lower-priority set are appended with a provenance
-//     note so readers know they were not independently confirmed.
+//   - Findings unique to a lower-priority set are appended with their set's
+//     provenance in the structured field, so renderers can mark them as not
+//     independently confirmed without any prose preface.
 //
 // The caller decides what belongs in each set (e.g. filtering Gemini style
 // nits before the merge); MergeFindings only unions what it is given.
 func MergeFindings(sets ...FindingSet) []types.LineComment {
-	var merged []types.LineComment
-	readmitted := 0
-	carried := 0
+	merged, _ := MergeFindingsWithRecords(sets...)
+	return merged
+}
+
+// MergeFindingsWithRecords is MergeFindings that also returns each dropped
+// duplicate as an inactive merged record pointing at the finding that kept
+// the line, so a first-pass claim folded into an agent finding is preserved.
+func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineComment) {
 	for si, set := range sets {
 		for _, c := range set.Comments {
+			// The caller builds the sets, so the set label is the authoritative
+			// attribution for this review (a carried finding's own stamp is
+			// the bare word; the set label names the source review).
+			switch {
+			case set.Provenance != "":
+				c.Provenance = set.Provenance
+			case si > 0:
+				c.Provenance = "first-pass"
+			}
 			if c.FilePath == "SUMMARY" {
 				if si == 0 {
 					merged = append(merged, c)
 				}
 				continue
 			}
-			if di, ok := findDuplicate(merged, c); ok {
+			// A claim the agent explicitly rejected cannot be a duplicate of one
+			// of its positive findings; proximity dedup must not fold it and
+			// discard the counterargument.
+			// Mechanical alerts and claims never fold into each other: an alert
+			// cannot cover a claim (alerts never post), and an unverified claim
+			// does not clear a deterministic signal. The one exception is a
+			// VIOLATED check synthesis absorbing the gate alert that spawned it.
+			if di, ok := findDuplicate(merged, c); ok && c.Assessment == nil && dedupAllowed(merged[di], c) {
 				// Duplicates upgrade severity to the max — but an upgrade
 				// sourced from a lower-priority set is capped at MEDIUM for
 				// the same reason re-admissions are (see below): unconfirmed
@@ -82,10 +104,16 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 				if importanceRank(incoming) > importanceRank(merged[di].Importance) {
 					merged[di].Importance = incoming
 				}
+				// The dropped duplicate survives as a record whichever set it came
+				// from; an agent finding dropped here may be referenced by id
+				// (priority list, merged claims), and RemapMergeTargets follows
+				// those references to the survivor.
+				c.State, c.Inactive, c.Assessment = StateMerged, true, nil
+				c.MergedInto, c.MergeBasis = mergeTarget(merged[di]), "proximity"
+				records = append(records, c)
 				continue
 			}
 			if si > 0 {
-				c.CommentBody = provenanceNote(set.Provenance) + c.CommentBody
 				// Cap re-admitted findings at MEDIUM: measured on a set of
 				// known-good merged PRs, the first pass emits CRITICALs on
 				// half of them — re-admitting those at full severity would
@@ -95,37 +123,94 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 				if importanceRank(c.Importance) > importanceRank("MEDIUM") {
 					c.Importance = "MEDIUM"
 				}
-				readmitted++
-				if strings.HasPrefix(set.Provenance, carriedProvenancePrefix) {
-					carried++
-				}
 			}
 			merged = append(merged, c)
 		}
 	}
-	// A re-admitted finding can sit under a SUMMARY whose prose argues against
-	// it (the agent may have dismissed the very concern reconciliation kept).
-	// Readers weigh the summary heavily, so surface the contradiction rather
-	// than letting the dismissal silently win.
-	if readmitted > 0 {
-		for i := range merged {
-			if merged[i].FilePath == "SUMMARY" {
-				merged[i].CommentBody += fmt.Sprintf(
-					"\n\n---\n_Reconciliation: %d earlier-pass finding(s) below were retained despite"+
-						" not being independently confirmed. If this summary argues against one of"+
-						" them, treat that as an open disagreement to resolve, not a settled dismissal._",
-					readmitted)
-				if carried > 0 {
-					merged[i].CommentBody += fmt.Sprintf(
-						" _%d of the retained finding(s) were carried forward from an earlier"+
-							" review of this PR (cited file untouched since)._",
-						carried)
-				}
-				break
-			}
+	return merged, records
+}
+
+// RemapMergeTargets follows references to findings that the merge folded away:
+// a summary priority id or a record's merged_into that names a dropped finding
+// is rewritten to the finding it was folded into.
+func RemapMergeTargets(merged, records []types.LineComment) {
+	// A dropped finding is referenced by its label when it had one and by its
+	// location otherwise, so both keys alias to the survivor.
+	alias := map[string]string{}
+	for _, r := range records {
+		if r.MergeBasis != "proximity" {
+			continue
+		}
+		if r.ID != "" {
+			alias[r.ID] = r.MergedInto
+		}
+		loc := r.FilePath
+		if r.LineNumber > 0 {
+			loc = r.FilePath + ":" + strconv.Itoa(r.LineNumber)
+		}
+		if _, taken := alias[loc]; !taken {
+			alias[loc] = r.MergedInto
 		}
 	}
-	return merged
+	if len(alias) == 0 {
+		return
+	}
+	resolve := func(id string) string {
+		for i := 0; i < len(alias); i++ {
+			next, ok := alias[id]
+			if !ok || next == id {
+				break
+			}
+			id = next
+		}
+		return id
+	}
+	for i := range records {
+		if records[i].MergedInto != "" {
+			records[i].MergedInto = resolve(records[i].MergedInto)
+		}
+	}
+	for i := range merged {
+		if merged[i].Summary == nil {
+			continue
+		}
+		seen := map[string]bool{}
+		var ids []string
+		for _, id := range merged[i].Summary.PriorityIDs {
+			id = resolve(id)
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+		merged[i].Summary.PriorityIDs = ids
+	}
+}
+
+func isMechanical(f types.LineComment) bool {
+	return f.Provenance == "mechanical"
+}
+
+func dedupAllowed(survivor, incoming types.LineComment) bool {
+	switch {
+	case isMechanical(survivor):
+		return false
+	case isMechanical(incoming):
+		return survivor.Provenance == "required-check"
+	}
+	return true
+}
+
+// mergeTarget names the finding a duplicate folded into: the agent's own id
+// when it gave one, else the location.
+func mergeTarget(f types.LineComment) string {
+	if f.ID != "" {
+		return f.ID
+	}
+	if f.LineNumber > 0 {
+		return f.FilePath + ":" + strconv.Itoa(f.LineNumber)
+	}
+	return f.FilePath
 }
 
 // findDuplicate returns the index in merged of a finding duplicating c.
@@ -208,21 +293,14 @@ func CarriedProvenance(fromSHA string) string {
 	return carriedProvenancePrefix + shortSHA(fromSHA)
 }
 
-// CarriedFromSHA reports whether a rendered finding body is a carried-forward
-// finding (starts with the carried provenance note) and returns the short SHA
-// of the review it was carried from.
-func CarriedFromSHA(body string) (string, bool) {
-	prefix := "_[" + carriedProvenancePrefix
-	if !strings.HasPrefix(body, prefix) {
+// CarriedFromSHA reports whether a provenance label names a carried-forward
+// finding and returns the short SHA of the review it was carried from.
+func CarriedFromSHA(provenance string) (string, bool) {
+	if !strings.HasPrefix(provenance, carriedProvenancePrefix) {
 		return "", false
 	}
-	rest := body[len(prefix):]
-	end := strings.Index(rest, provenanceNoteMarker)
-	if end <= 0 {
-		return "", false
-	}
-	sha := rest[:end]
-	if strings.ContainsAny(sha, " \t\n") {
+	sha := provenance[len(carriedProvenancePrefix):]
+	if sha == "" || strings.ContainsAny(sha, " \t\n") {
 		return "", false
 	}
 	return sha, true
@@ -245,7 +323,9 @@ func CarriedFromSHA(body string) (string, bool) {
 // count of candidates dropped by the filter.
 func CarryForwardFindings(prior []types.LineComment, touchedFiles []string) (carried []types.LineComment, dropped int) {
 	for _, c := range prior {
-		if c.FilePath == "SUMMARY" || strings.TrimSpace(c.FilePath) == "" {
+		// Inactive records (rejected, unexamined, merged) were never claims and
+		// must not become one by surviving a push.
+		if c.FilePath == "SUMMARY" || strings.TrimSpace(c.FilePath) == "" || c.Inactive {
 			continue
 		}
 		touched := false
@@ -260,11 +340,15 @@ func CarryForwardFindings(prior []types.LineComment, touchedFiles []string) (car
 			continue
 		}
 		c.CommentBody = stripLeadingProvenanceNote(c.CommentBody)
+		c.FindingContract = nil
 		// Re-attribute: whatever pass produced the finding originally, in THIS
 		// review it is a carry-forward — the structured field must agree with
 		// the rendered note or payload.DeriveProvenance would report the stale
 		// prior-run label.
 		c.Provenance = "carried"
+		c.State = StateUnverified
+		c.Assessment, c.MergedInto, c.MergeBasis = nil, "", ""
+		c.Sources, c.Summary = nil, nil
 		carried = append(carried, c)
 	}
 	return carried, dropped

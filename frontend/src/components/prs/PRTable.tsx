@@ -1,12 +1,14 @@
 import type { PR } from '@/types/pr';
-import { PRTableRow } from './PRTableRow';
+import { ConfidenceLegend } from './ConfidenceLegend';
+import { PRTableRow, type PRRowVariant } from './PRTableRow';
 
 interface PRTableProps {
   prs: PR[];
   showViaTeams?: boolean;
+  variant?: PRRowVariant;
 }
 
-export function PRTable({ prs, showViaTeams = true }: PRTableProps) {
+export function PRTable({ prs, showViaTeams = true, variant = 'default' }: PRTableProps) {
   if (prs.length === 0) {
     return <p>No PRs found.</p>;
   }
@@ -24,6 +26,9 @@ export function PRTable({ prs, showViaTeams = true }: PRTableProps) {
             <th>My Review</th>
             {showViaTeams && <th>Via Teams</th>}
             <th>Notes</th>
+            <th className="pr-table__confidence">
+              <ConfidenceLegend />
+            </th>
             <th>AI Review</th>
             <th>Actions</th>
           </tr>
@@ -34,6 +39,7 @@ export function PRTable({ prs, showViaTeams = true }: PRTableProps) {
               key={`${pr.owner}/${pr.repo}/${pr.number}`}
               pr={pr}
               showViaTeams={showViaTeams}
+              variant={variant}
             />
           ))}
         </tbody>

@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"log"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -32,6 +33,7 @@ func userPRViewModelToUserPRAssignment(m *UserPRViewModel) *UserPRAssignment {
 		Notes:          m.Notes,
 		UserHidden:     m.UserHidden,
 		ViaManual:      m.ViaManual,
+		NeedsAttention: m.NeedsAttention,
 	}
 }
 
@@ -78,9 +80,10 @@ func (g *GormDB) GetUserPRAssignment(userID, prID int) (*UserPRAssignment, error
 }
 
 // UpsertUserPRAssignment inserts or updates a user's PR view.
-// NOTE: via_teams is intentionally excluded from DoUpdates. The ONLY code path
-// that should write via_teams is UpdateUserViaTeams, guarded by shouldUpdateViaTeams
-// in the poller. This prevents accidental overwrites with empty/null values.
+// NOTE: via_teams is intentionally excluded from DoUpdates, so this path can
+// never overwrite it with empty/null values. Production writes via_teams
+// through BatchUpsertUserPRViews and BatchPruneViaTeams, which the poller
+// guards with shouldUpdateViaTeams.
 func (g *GormDB) UpsertUserPRAssignment(assignment *UserPRAssignment) error {
 	model := userPRAssignmentToUserPRViewModel(assignment)
 
@@ -148,8 +151,10 @@ func (g *GormDB) UpdateUserReviewStatus(userID, prID int, reviewStatus string) e
 }
 
 // UpdateUserViaTeams updates the via_teams field for a user's PR view.
-// This is the ONLY function that should write via_teams. Callers MUST guard
-// with shouldUpdateViaTeams() to prevent empty/nil values from overwriting good data.
+// Single-row helper with no production callers: it survives for tests only,
+// since the poller writes via_teams through BatchUpsertUserPRViews and clears
+// it through BatchPruneViaTeams. An unguarded call with an empty slice would
+// erase good data.
 func (g *GormDB) UpdateUserViaTeams(userID, prID int, viaTeams []string) error {
 	return g.db.Model(&UserPRViewModel{}).
 		Where("user_id = ? AND pr_id = ?", userID, prID).
@@ -226,18 +231,13 @@ func (g *GormDB) BatchUpsertUserPRViews(items []UserPRViewBatchItem) error {
 		return nil
 	}
 
-	// Group items by which optional fields are set
+	// Group items by which optional fields are set; the key doubles as the
+	// ON CONFLICT update column list.
 	type group struct {
 		models    []UserPRViewModel
 		doUpdates []string
 	}
-
-	groups := map[string]*group{
-		"ensure":       {doUpdates: []string{"hidden", "is_author"}},
-		"review":       {doUpdates: []string{"hidden", "is_author", "review_status"}},
-		"teams":        {doUpdates: []string{"hidden", "is_author", "via_teams"}},
-		"review+teams": {doUpdates: []string{"hidden", "is_author", "review_status", "via_teams"}},
-	}
+	groups := map[string]*group{}
 
 	for _, item := range items {
 		model := UserPRViewModel{
@@ -247,25 +247,27 @@ func (g *GormDB) BatchUpsertUserPRViews(items []UserPRViewBatchItem) error {
 			Hidden:   false,
 		}
 
-		var groupKey string
-		hasReview := item.ReviewStatus != nil
-		hasTeams := item.ViaTeams != nil
-
-		if hasReview && hasTeams {
-			groupKey = "review+teams"
+		doUpdates := []string{"hidden", "is_author"}
+		if item.ReviewStatus != nil {
 			model.ReviewStatus = *item.ReviewStatus
+			doUpdates = append(doUpdates, "review_status")
+		}
+		if item.ViaTeams != nil {
 			model.ViaTeams = JSONStringArray(*item.ViaTeams)
-		} else if hasReview {
-			groupKey = "review"
-			model.ReviewStatus = *item.ReviewStatus
-		} else if hasTeams {
-			groupKey = "teams"
-			model.ViaTeams = JSONStringArray(*item.ViaTeams)
-		} else {
-			groupKey = "ensure"
+			doUpdates = append(doUpdates, "via_teams")
+		}
+		if item.NeedsAttention != nil {
+			model.NeedsAttention = *item.NeedsAttention
+			doUpdates = append(doUpdates, "needs_attention")
 		}
 
-		groups[groupKey].models = append(groups[groupKey].models, model)
+		groupKey := strings.Join(doUpdates, ",")
+		grp, ok := groups[groupKey]
+		if !ok {
+			grp = &group{doUpdates: doUpdates}
+			groups[groupKey] = grp
+		}
+		grp.models = append(grp.models, model)
 	}
 
 	// Flush each group
@@ -301,7 +303,25 @@ func (g *GormDB) GetUserPRViewsWithViaTeams(prIDs []int) ([]UserPRView, error) {
 	if err != nil {
 		return nil, err
 	}
+	return userPRViewModelsToViews(models), nil
+}
 
+// GetUserPRViewsForPRs returns every user_pr_views row whose pr_id is in prIDs.
+// The poller reads current per-user flags with one query before a batch write
+// so it can report transitions.
+func (g *GormDB) GetUserPRViewsForPRs(prIDs []int) ([]UserPRView, error) {
+	if len(prIDs) == 0 {
+		return nil, nil
+	}
+
+	var models []UserPRViewModel
+	if err := g.db.Where("pr_id IN ?", prIDs).Find(&models).Error; err != nil {
+		return nil, err
+	}
+	return userPRViewModelsToViews(models), nil
+}
+
+func userPRViewModelsToViews(models []UserPRViewModel) []UserPRView {
 	views := make([]UserPRView, len(models))
 	for i, m := range models {
 		viaTeams := "[]"
@@ -311,20 +331,21 @@ func (g *GormDB) GetUserPRViewsWithViaTeams(prIDs []int) ([]UserPRView, error) {
 			}
 		}
 		views[i] = UserPRView{
-			ID:           int(m.ID),
-			UserID:       int(m.UserID),
-			PRID:         int(m.PRID),
-			IsAuthor:     m.IsAuthor,
-			IsReviewer:   m.IsReviewer,
-			ViaTeams:     viaTeams,
-			ReviewStatus: m.ReviewStatus,
-			Notes:        m.Notes,
-			Hidden:       m.Hidden,
-			UserHidden:   m.UserHidden,
-			ViaManual:    m.ViaManual,
+			ID:             int(m.ID),
+			UserID:         int(m.UserID),
+			PRID:           int(m.PRID),
+			IsAuthor:       m.IsAuthor,
+			IsReviewer:     m.IsReviewer,
+			ViaTeams:       viaTeams,
+			ReviewStatus:   m.ReviewStatus,
+			Notes:          m.Notes,
+			Hidden:         m.Hidden,
+			UserHidden:     m.UserHidden,
+			ViaManual:      m.ViaManual,
+			NeedsAttention: m.NeedsAttention,
 		}
 	}
-	return views, nil
+	return views
 }
 
 // BatchPruneViaTeams clears via_teams on the given rows, additionally hiding
@@ -391,7 +412,7 @@ func (g *GormDB) SetUserHiddenForPR(userID, prID int, hidden bool) error {
 // or un-hides it if it was previously hidden.
 // NOTE: On conflict, ONLY updates "hidden". All other fields (including via_teams)
 // are preserved. New records start with via_teams=NULL, which is populated later
-// by UpdateUserViaTeams in the poller's reviewer-groups phase.
+// by BatchUpsertUserPRViews in the poller's reviewer-groups phase.
 func (g *GormDB) EnsureUserPRView(userID, prID int, isAuthor bool) error {
 	view := &UserPRViewModel{
 		UserID:   uint(userID),
@@ -457,13 +478,14 @@ func (g *GormDB) GetPRIDsWithManualClaims() (map[int]bool, error) {
 func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 	var results []struct {
 		PRModel
-		IsAuthor     bool            `gorm:"column:is_author"`
-		IsReviewer   bool            `gorm:"column:is_reviewer"`
-		UserNotes    string          `gorm:"column:user_notes"`
-		ReviewStatus string          `gorm:"column:review_status"`
-		ViaTeams     JSONStringArray `gorm:"column:via_teams"`
-		UserHidden   bool            `gorm:"column:user_hidden"`
-		ViaManual    bool            `gorm:"column:via_manual"`
+		IsAuthor       bool            `gorm:"column:is_author"`
+		IsReviewer     bool            `gorm:"column:is_reviewer"`
+		UserNotes      string          `gorm:"column:user_notes"`
+		ReviewStatus   string          `gorm:"column:review_status"`
+		ViaTeams       JSONStringArray `gorm:"column:via_teams"`
+		UserHidden     bool            `gorm:"column:user_hidden"`
+		ViaManual      bool            `gorm:"column:via_manual"`
+		NeedsAttention bool            `gorm:"column:needs_attention"`
 	}
 
 	err := g.db.Table("prs").
@@ -474,7 +496,8 @@ func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 			user_pr_views.review_status,
 			user_pr_views.via_teams,
 			user_pr_views.user_hidden,
-			user_pr_views.via_manual`).
+			user_pr_views.via_manual,
+			user_pr_views.needs_attention`).
 		Joins("INNER JOIN user_pr_views ON prs.id = user_pr_views.pr_id").
 		Where("user_pr_views.user_id = ?", userID).
 		Where("user_pr_views.hidden = ?", false).
@@ -498,14 +521,15 @@ func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 	for i, r := range results {
 		pr := prModelToPR(&r.PRModel)
 		prsWithViews[i] = PRWithUserView{
-			PR:           *pr,
-			IsAuthor:     r.IsAuthor,
-			IsReviewer:   r.IsReviewer,
-			UserNotes:    r.UserNotes,
-			ReviewStatus: r.ReviewStatus,
-			ViaTeams:     r.ViaTeams,
-			UserHidden:   r.UserHidden,
-			ViaManual:    r.ViaManual,
+			PR:             *pr,
+			IsAuthor:       r.IsAuthor,
+			IsReviewer:     r.IsReviewer,
+			UserNotes:      r.UserNotes,
+			ReviewStatus:   r.ReviewStatus,
+			ViaTeams:       r.ViaTeams,
+			UserHidden:     r.UserHidden,
+			ViaManual:      r.ViaManual,
+			NeedsAttention: r.NeedsAttention,
 		}
 	}
 

@@ -4,6 +4,8 @@ export interface DropdownPosition {
   top: number;
   left: number;
   placement: 'top' | 'bottom';
+  /** Room between the panel and the viewport edge it grows toward, in px. */
+  maxHeight: number;
 }
 
 export interface DropdownPositionOptions {
@@ -50,8 +52,12 @@ export function computeDropdownPosition(
   const top = placement === 'bottom'
     ? anchor.bottom + gap
     : anchor.top - gap - (panelHeight ?? 0);
+  const room = placement === 'bottom'
+    ? viewport.height - top - viewportMargin
+    : anchor.top - gap - viewportMargin;
+  const maxHeight = Math.max(0, room);
 
-  return { top, left, placement };
+  return { top, left, placement, maxHeight };
 }
 
 export interface UseDropdownOptions extends DropdownPositionOptions {
@@ -91,7 +97,12 @@ export function useDropdown(options: UseDropdownOptions): UseDropdownResult {
   const anchorRef = useRef<HTMLElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [isOpen, setIsOpen] = useState(false);
-  const [position, setPosition] = useState<DropdownPosition>({ top: 0, left: 0, placement: 'bottom' });
+  const [position, setPosition] = useState<DropdownPosition>({
+    top: 0,
+    left: 0,
+    placement: 'bottom',
+    maxHeight: window.innerHeight,
+  });
 
   const open = useCallback(() => setIsOpen(true), []);
   const close = useCallback(() => setIsOpen(false), []);
@@ -102,7 +113,12 @@ export function useDropdown(options: UseDropdownOptions): UseDropdownResult {
     if (!el) return;
     const anchor = el.getBoundingClientRect();
     // Prefer the live panel height (for flip-up) but fall back to the caller's.
-    const measured = panelRef.current?.getBoundingClientRect().height;
+    // Adding back the overflow hidden by a max-height clamp keeps the flip
+    // decision on the natural height, so a clamped panel does not stay put.
+    const panel = panelRef.current;
+    const measured = panel
+      ? panel.getBoundingClientRect().height + panel.scrollHeight - panel.clientHeight
+      : undefined;
     setPosition(
       computeDropdownPosition(
         anchor,

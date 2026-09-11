@@ -9,12 +9,15 @@
 package payload
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -40,6 +43,11 @@ type Payload struct {
 	Counts   Counts    `json:"counts"`
 	Findings []Finding `json:"findings"`
 
+	// ReviewRun identifies this execution and records every model role in the
+	// pipeline. The artifact filename remains stable by PR + commit; RunID is
+	// the opaque identifier consumers should use when correlating telemetry.
+	ReviewRun *ReviewRunInfo `json:"review_run,omitempty"`
+
 	// BugMemory is present when the bug-memory feature injected (or excluded)
 	// pattern-library entries for this review; consumers use it to attribute
 	// findings to injected priors.
@@ -56,6 +64,81 @@ type Payload struct {
 	// staleness filter. Absent when the feature is off or no prior review
 	// exists, so legacy sidecars are byte-identical.
 	CarriedFindings *CarryForwardInfo `json:"carried_findings,omitempty"`
+}
+
+// ReviewRunInfo is the durable execution metadata attached to a review.
+// It is additive to schema v1 so older sidecar consumers can ignore it.
+type ReviewRunInfo struct {
+	RunID            string `json:"run_id"`
+	ExecutionAttempt int    `json:"execution_attempt,omitempty"`
+	HTMLPath         string `json:"html_path"`
+	JSONPath         string `json:"json_path"`
+	// StartedAt is the first execution-attempt start. DurationMS therefore
+	// measures the complete run across any lease takeovers; per-attempt timing
+	// is stored in review_stage_attempts.
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at"`
+	DurationMS  int64     `json:"duration_ms"`
+	// QueueWaitMS is the time between the job being tracked/queued and its
+	// execution start (dispatch, cache checks, and concurrency-slot waits).
+	// Omitted for runs recorded before the field existed or waits under 1ms.
+	QueueWaitMS int64 `json:"queue_wait_ms,omitempty"`
+	// StageTimings has one entry per pipeline stage that actually ran,
+	// ordered by start time. Additive — schema stays "1".
+	StageTimings []StageTiming `json:"stage_timings,omitempty"`
+	Models       []ModelUse    `json:"models"`
+	// LinkedTickets lists the Jira keys whose content was injected into the
+	// agent prompt. Omitted when no ticket informed the review.
+	LinkedTickets []string `json:"linked_tickets,omitempty"`
+	// Config is the immutable requested/effective configuration snapshot.
+	// It is omitted on legacy runs created before first-class run metadata.
+	Config *runconfig.Snapshot `json:"config,omitempty"`
+}
+
+// StageTiming is one pipeline stage's wall-clock measurement. Stages:
+// "first_pass" (aggregate across parallel samples), "first_pass_sample"
+// (one per sample, Invocation set), "classification", "summary", "gates",
+// "agent", "artifact_save".
+type StageTiming struct {
+	Stage      string    `json:"stage"`
+	Invocation int       `json:"invocation,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
+	DurationMS int64     `json:"duration_ms"`
+}
+
+func cloneString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneFindingContract(contract *types.FindingContract) *types.FindingContract {
+	if contract == nil {
+		return nil
+	}
+	cloned := *contract
+	cloned.CounterfactualTrigger = cloneString(contract.CounterfactualTrigger)
+	cloned.FalsifiableCondition = cloneString(contract.FalsifiableCondition)
+	cloned.ExpectedObservable = cloneString(contract.ExpectedObservable)
+	cloned.Subjects = append([]types.FindingSubject(nil), contract.Subjects...)
+	return &cloned
+}
+
+// ModelUse describes one role in the review pipeline. RequestedModel is the
+// configured input; ServedModel is populated when the runtime reports it.
+// ServingModelVerified distinguishes a reported model from a pinned request
+// copied into telemetry by a client whose event stream omits routing details.
+type ModelUse struct {
+	Stage                string `json:"stage"`
+	Provider             string `json:"provider"`
+	Backend              string `json:"backend,omitempty"`
+	RequestedModel       string `json:"requested_model"`
+	ServedModel          string `json:"served_model,omitempty"`
+	ServingModelVerified bool   `json:"serving_model_verified"`
+	Effort               string `json:"effort,omitempty"`
+	Fallback             bool   `json:"fallback"`
 }
 
 // CarryForwardInfo is the cross-review carry-forward telemetry.
@@ -84,6 +167,23 @@ type RequiredChecksInfo struct {
 	Answered   int `json:"checks_answered"`
 	Violated   int `json:"checks_violated"`
 	EvidenceOK int `json:"checks_evidence_ok"`
+	// Records is the per-check ledger (additive; absent in older sidecars,
+	// whose SUMMARY prose carried a table instead).
+	Records []RequiredCheckRecord `json:"records,omitempty"`
+}
+
+// RequiredCheckRecord is one issued check and its answer. EvidenceResolved
+// means the cited path exists, not that the evidence proves the answer.
+type RequiredCheckRecord struct {
+	ID               string `json:"id"`
+	Source           string `json:"source"`
+	Question         string `json:"question"`
+	TargetFile       string `json:"target_file,omitempty"`
+	Verdict          string `json:"verdict"`
+	Answer           string `json:"answer,omitempty"`
+	EvidencePath     string `json:"evidence_path,omitempty"`
+	EvidenceResolved bool   `json:"evidence_resolved"`
+	Unresolved       bool   `json:"unresolved"`
 }
 
 // Counts is the per-severity tally. Mirrors the columns on the PR row.
@@ -103,6 +203,9 @@ type Counts struct {
 // consumer reconstruct "what changed at this line + what surrounds it" in
 // one trip.
 type Finding struct {
+	// ID is the Fingerprint of (file, line, comment): the identity a finding
+	// keeps across re-reviews of the same PR. Additive, schema stays "1".
+	ID       string `json:"id,omitempty"`
 	Severity string `json:"severity"` // critical | medium | low | unknown
 	// Provenance identifies which review pass produced the finding: "agent",
 	// "first-pass", "mechanical", "required-check", or "carried" — carried
@@ -110,13 +213,176 @@ type Finding struct {
 	// (unknown labels pass through verbatim). Derived from the merge layer's
 	// provenance markers (see DeriveProvenance); absent only in sidecars
 	// written before the field existed. Additive — schema stays "1".
-	Provenance   string   `json:"provenance,omitempty"`
-	File         string   `json:"file"`
-	Line         int      `json:"line"`
-	Comment      string   `json:"comment"`
-	DiffHunk     string   `json:"diff_hunk,omitempty"`
-	SourceBefore []string `json:"source_before,omitempty"`
-	SourceAfter  []string `json:"source_after,omitempty"`
+	Provenance            string                 `json:"provenance,omitempty"`
+	File                  string                 `json:"file"`
+	Line                  int                    `json:"line"`
+	Comment               string                 `json:"comment"`
+	FindingContract       *types.FindingContract `json:"finding_contract,omitempty"`
+	FindingContractStatus string                 `json:"finding_contract_status,omitempty"`
+	// State is what the review concluded: "confirmed", "unverified",
+	// "rejected" or "merged". Active is whether the review asserts the
+	// finding as a claim; inactive records (rejected or unexamined first-pass
+	// claims, merged aliases) are kept for readers and agents but are not
+	// counted, published, or scored. Schema "2"; a v1 sidecar has neither
+	// field and every finding is an active confirmed claim.
+	State  string `json:"state"`
+	Active bool   `json:"active"`
+	// Sources are the first-pass claim ids a finding confirms or covers;
+	// Assessment is the agent's proposal for a first-pass claim (present on
+	// disputed and rejected ones); Original is the claim as first stated;
+	// MergedInto is the fingerprint of the finding a merged claim folded into.
+	Sources    []string             `json:"sources,omitempty"`
+	Assessment *types.Disposition   `json:"assessment,omitempty"`
+	Original   *types.OriginalClaim `json:"original,omitempty"`
+	MergedInto string               `json:"merged_into,omitempty"`
+	MergeBasis string               `json:"merge_basis,omitempty"`
+	// Summary is the structured SUMMARY the agent emitted (SUMMARY entries only).
+	Summary      *types.SummaryBlock `json:"summary,omitempty"`
+	DiffHunk     string              `json:"diff_hunk,omitempty"`
+	SourceBefore []string            `json:"source_before,omitempty"`
+	SourceAfter  []string            `json:"source_after,omitempty"`
+}
+
+// Decode reads a sidecar of a known schema version. A v1 (or pre-schema)
+// sidecar predates state/active, so every finding it holds is an active
+// confirmed claim; an unknown version is refused rather than guessed at.
+func Decode(data []byte) (Payload, error) {
+	var pl Payload
+	if err := json.Unmarshal(data, &pl); err != nil {
+		return Payload{}, err
+	}
+	switch pl.SchemaVersion {
+	case CurrentSchemaVersion:
+		// A v2 finding without its lifecycle fields would decode as inactive
+		// and silently vanish from every consumer; refuse it instead.
+		var probe struct {
+			Findings []struct {
+				Active *bool  `json:"active"`
+				State  string `json:"state"`
+			} `json:"findings"`
+		}
+		if err := json.Unmarshal(data, &probe); err != nil {
+			return Payload{}, err
+		}
+		for i, f := range probe.Findings {
+			if f.Active == nil || f.State == "" {
+				return Payload{}, fmt.Errorf("payload: schema 2 finding %d is missing state or active", i)
+			}
+			if err := validateLifecycle(f.State, *f.Active); err != nil {
+				return Payload{}, fmt.Errorf("payload: schema 2 finding %d: %w", i, err)
+			}
+		}
+	case "", "1":
+		// v1 re-admissions were never confirmed by anyone; their provenance
+		// is the only record of that, so the upgraded state follows it.
+		for i := range pl.Findings {
+			f := &pl.Findings[i]
+			f.Active = true
+			if f.State == "" {
+				switch normalizeProvenance(f.Provenance) {
+				case ProvenanceFirstPass, ProvenanceCarried:
+					f.State = "unverified"
+				default:
+					f.State = "confirmed"
+				}
+			}
+		}
+	default:
+		return Payload{}, fmt.Errorf("payload: unsupported schema_version %q", pl.SchemaVersion)
+	}
+	return pl, nil
+}
+
+func cloneDisposition(d *types.Disposition) *types.Disposition {
+	if d == nil {
+		return nil
+	}
+	out := *d
+	out.Evidence = append([]types.EvidenceRef(nil), d.Evidence...)
+	return &out
+}
+
+func cloneOriginal(o *types.OriginalClaim) *types.OriginalClaim {
+	if o == nil {
+		return nil
+	}
+	out := *o
+	return &out
+}
+
+func cloneSummary(s *types.SummaryBlock) *types.SummaryBlock {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	out.PriorityIDs = append([]string(nil), s.PriorityIDs...)
+	return &out
+}
+
+// validateLifecycle enforces the state/active invariant every consumer keys
+// on: confirmed claims are active, rejected and merged records are not, and
+// unverified may be either (active when policy retained it).
+func validateLifecycle(state string, active bool) error {
+	switch state {
+	case "confirmed":
+		if !active {
+			return fmt.Errorf("confirmed finding marked inactive")
+		}
+	case "rejected", "merged":
+		if active {
+			return fmt.Errorf("%s record marked active", state)
+		}
+	case "unverified":
+	default:
+		return fmt.Errorf("unknown state %q", state)
+	}
+	return nil
+}
+
+// ActiveFindings returns the claims the review asserts (never SUMMARY or
+// CHECK entries, never inactive records).
+func (p Payload) ActiveFindings() []Finding {
+	out := make([]Finding, 0, len(p.Findings))
+	for _, f := range p.Findings {
+		if f.File == "SUMMARY" || f.File == "CHECK" {
+			continue
+		}
+		if p.SchemaVersion == CurrentSchemaVersion && !f.Active {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// CurrentSchemaVersion is what Build writes. "2" adds state/active on every
+// finding; v1 readers must treat every finding as an active confirmed claim.
+const CurrentSchemaVersion = "2"
+
+// lifecycle returns the (state, active) pair Build writes, coerced to the
+// invariant Decode enforces so one careless producer cannot make a whole
+// sidecar unreadable: rejected and merged are always inactive, confirmed is
+// always active, unknown states read as confirmed, unverified follows the
+// producer.
+func lifecycle(c types.LineComment) (string, bool) {
+	switch c.State {
+	case "rejected", "merged":
+		return c.State, false
+	case "unverified":
+		return c.State, !c.Inactive
+	case "confirmed", "":
+		return "confirmed", true
+	default:
+		if c.Inactive {
+			return "unverified", false
+		}
+		return "confirmed", true
+	}
+}
+
+func findingState(c types.LineComment) string {
+	state, _ := lifecycle(c)
+	return state
 }
 
 // normalizeSeverity lower-cases LineComment importance values into the four
@@ -164,12 +430,26 @@ func (p Payload) ToLineComments() []types.LineComment {
 	}
 	out := make([]types.LineComment, 0, len(p.Findings))
 	for _, f := range p.Findings {
+		var contract *types.FindingContract
+		if f.FindingContractStatus == "valid" && types.ValidateFindingContract(f.FindingContract) == nil {
+			contract = f.FindingContract
+		}
 		out = append(out, types.LineComment{
-			FilePath:    f.File,
-			LineNumber:  f.Line,
-			Importance:  severityToImportance(f.Severity),
-			CommentBody: f.Comment,
-			Provenance:  f.Provenance,
+			FilePath:        f.File,
+			LineNumber:      f.Line,
+			Importance:      severityToImportance(f.Severity),
+			CommentBody:     f.Comment,
+			FindingContract: contract,
+			Provenance:      f.Provenance,
+			ID:              f.ID,
+			Sources:         f.Sources,
+			State:           f.State,
+			Inactive:        !f.Active && p.SchemaVersion == CurrentSchemaVersion,
+			Assessment:      f.Assessment,
+			Original:        f.Original,
+			MergedInto:      f.MergedInto,
+			MergeBasis:      f.MergeBasis,
+			Summary:         f.Summary,
 		})
 	}
 	return out
@@ -219,23 +499,86 @@ func Build(
 	findings := make([]Finding, 0, len(comments))
 	var counts Counts
 
+	// Merge targets arrive as the agent's label or, when it gave none, as
+	// file:line; both resolve to the active finding's fingerprint.
+	agentIDs := map[string]string{}
+	for _, c := range comments {
+		if c.Inactive || c.FilePath == "SUMMARY" || c.FilePath == "CHECK" {
+			continue
+		}
+		fp := Fingerprint(c.FilePath, c.LineNumber, c.CommentBody)
+		if c.ID != "" {
+			agentIDs[c.ID] = fp
+		}
+		loc := c.FilePath
+		if c.LineNumber > 0 {
+			loc = fmt.Sprintf("%s:%d", c.FilePath, c.LineNumber)
+		}
+		if _, taken := agentIDs[loc]; !taken {
+			agentIDs[loc] = fp
+		}
+	}
+
 	for _, c := range comments {
 		sev := normalizeSeverity(c.Importance)
-		switch sev {
-		case "critical":
-			counts.Critical++
-		case "medium":
-			counts.Medium++
-		case "low":
-			counts.Low++
+		if _, active := lifecycle(c); active && c.FilePath != "SUMMARY" && c.FilePath != "CHECK" {
+			switch sev {
+			case "critical":
+				counts.Critical++
+			case "medium":
+				counts.Medium++
+			case "low":
+				counts.Low++
+			}
 		}
 
+		contract := cloneFindingContract(c.FindingContract)
+		types.NormalizeFindingContract(contract)
+		contractStatus := types.ContractStatus(contract)
+		if c.FilePath == "SUMMARY" || c.FilePath == "CHECK" {
+			contractStatus = "not_applicable"
+		}
+		state, active := lifecycle(c)
+		id := Fingerprint(c.FilePath, c.LineNumber, c.CommentBody)
+		if !active {
+			// A record can carry the exact words of the claim it merged into;
+			// it must never share that claim's identity.
+			id = Fingerprint(c.FilePath, c.LineNumber, findingState(c)+"\n"+c.CommentBody)
+		}
 		f := Finding{
-			Severity:   sev,
-			Provenance: DeriveProvenance(c),
-			File:       c.FilePath,
-			Line:       c.LineNumber,
-			Comment:    c.CommentBody,
+			ID:                    id,
+			Severity:              sev,
+			Provenance:            DeriveProvenance(c),
+			File:                  c.FilePath,
+			Line:                  c.LineNumber,
+			Comment:               c.CommentBody,
+			FindingContractStatus: contractStatus,
+			State:                 state,
+			Active:                active,
+			Sources:               append([]string(nil), c.Sources...),
+			Assessment:            cloneDisposition(c.Assessment),
+			Original:              cloneOriginal(c.Original),
+			Summary:               cloneSummary(c.Summary),
+		}
+		f.MergeBasis = c.MergeBasis
+		if c.MergedInto != "" {
+			f.MergedInto = c.MergedInto
+			if fp, ok := agentIDs[c.MergedInto]; ok {
+				f.MergedInto = fp
+			}
+		}
+		if c.Summary != nil && len(c.Summary.PriorityIDs) > 0 {
+			// Persisted ids are fingerprints; the agent's labels die here.
+			resolved := make([]string, 0, len(c.Summary.PriorityIDs))
+			for _, id := range c.Summary.PriorityIDs {
+				if fp, ok := agentIDs[id]; ok {
+					resolved = append(resolved, fp)
+				}
+			}
+			f.Summary.PriorityIDs = resolved
+		}
+		if f.FindingContractStatus == "valid" {
+			f.FindingContract = contract
 		}
 		if diff != "" && c.FilePath != "" && c.LineNumber > 0 {
 			f.DiffHunk = HunkForLine(diff, c.FilePath, c.LineNumber)
@@ -268,7 +611,7 @@ func Build(
 	}
 
 	return Payload{
-		SchemaVersion: "1",
+		SchemaVersion: CurrentSchemaVersion,
 		Owner:         owner,
 		Repo:          repo,
 		PRNumber:      prNumber,
@@ -327,9 +670,26 @@ func (p Payload) ToCompactMarkdown(meta CompactMeta) string {
 		return b.String()
 	}
 
-	fmt.Fprintf(&b, "=== FINDINGS (%d) ===\n", len(p.Findings))
-	for _, f := range p.Findings {
+	claims := p.ActiveFindings()
+	fmt.Fprintf(&b, "=== FINDINGS (%d) ===\n", len(claims))
+	for _, f := range claims {
 		fmt.Fprintf(&b, "\n--- [%s] %s:%d ---\n\n", strings.ToUpper(f.Severity), f.File, f.Line)
+		if f.State == "unverified" {
+			origin := "first-pass claim the agent did not verify"
+			switch {
+			case f.Assessment != nil:
+				origin = "first-pass claim the agent disputed"
+			case normalizeProvenance(f.Provenance) == ProvenanceCarried:
+				origin = "carried from an earlier review, not re-verified"
+			case normalizeProvenance(f.Provenance) == ProvenanceRequiredCheck:
+				origin = "required check left unanswered; the underlying alert is retained"
+			}
+			fmt.Fprintf(&b, "STATE: unverified (%s)\n", origin)
+			if f.Assessment != nil && strings.TrimSpace(f.Assessment.Reason) != "" {
+				fmt.Fprintf(&b, "AGENT REJECTED: %s\n", strings.TrimSpace(f.Assessment.Reason))
+			}
+			b.WriteString("\n")
+		}
 		b.WriteString("COMMENT:\n")
 		b.WriteString(strings.TrimRight(f.Comment, "\n"))
 		b.WriteString("\n")

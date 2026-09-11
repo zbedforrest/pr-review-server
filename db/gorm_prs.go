@@ -2,6 +2,8 @@ package db
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -20,6 +22,12 @@ func prModelToPR(m *PRModel) *PR {
 		if bytes, err := json.Marshal(m.CIFailedChecks); err == nil {
 			ciFailedChecks = string(bytes)
 		}
+	}
+
+	var mergeConfidence *int
+	if m.MergeConfidence != nil {
+		score := int(*m.MergeConfidence)
+		mergeConfidence = &score
 	}
 
 	return &PR{
@@ -42,10 +50,13 @@ func prModelToPR(m *PRModel) *PR {
 		CIFailedChecks:  ciFailedChecks,
 		PRState:         m.PRState,
 		ModelFallback:   m.ModelFallback,
+		ReviewRunID:     m.ReviewRunID,
+		ReviewRunJSON:   m.ReviewRunJSON,
 		CriticalCount:   m.CriticalCount,
 		MediumCount:     m.MediumCount,
 		LowCount:        m.LowCount,
 		ReviewVerdict:   m.ReviewVerdict,
+		MergeConfidence: mergeConfidence,
 		Notes:           m.Notes,
 		GitHubUpdatedAt: m.GitHubUpdatedAt,
 		ErrorMessage:    m.ErrorMessage,
@@ -61,6 +72,12 @@ func prToPRModel(p *PR) *PRModel {
 	var ciFailedChecks JSONStringArray
 	if p.CIFailedChecks != "" {
 		_ = json.Unmarshal([]byte(p.CIFailedChecks), &ciFailedChecks)
+	}
+
+	var mergeConfidence *int16
+	if p.MergeConfidence != nil {
+		score := int16(*p.MergeConfidence)
+		mergeConfidence = &score
 	}
 
 	return &PRModel{
@@ -83,10 +100,13 @@ func prToPRModel(p *PR) *PRModel {
 		CIFailedChecks:  ciFailedChecks,
 		PRState:         p.PRState,
 		ModelFallback:   p.ModelFallback,
+		ReviewRunID:     p.ReviewRunID,
+		ReviewRunJSON:   p.ReviewRunJSON,
 		CriticalCount:   p.CriticalCount,
 		MediumCount:     p.MediumCount,
 		LowCount:        p.LowCount,
 		ReviewVerdict:   p.ReviewVerdict,
+		MergeConfidence: mergeConfidence,
 		Notes:           p.Notes,
 		GitHubUpdatedAt: p.GitHubUpdatedAt,
 		ErrorMessage:    p.ErrorMessage,
@@ -190,8 +210,15 @@ func (g *GormDB) BatchUpsertPRs(prs []*PR) error {
 // review's persisted location + importance counts + parsed verdict. Uses an
 // explicit UPDATE (not an upsert) so it can't be defeated by a concurrent
 // stale-read from the polling cycle.
-func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool) error {
+func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRun ...string) error {
 	now := time.Now().UTC()
+	reviewRunID, reviewRunJSON := "", ""
+	if len(reviewRun) > 0 {
+		reviewRunID = reviewRun[0]
+	}
+	if len(reviewRun) > 1 {
+		reviewRunJSON = reviewRun[1]
+	}
 
 	// Diagnostic: read status before the UPDATE so we know what we were
 	// transitioning from.
@@ -210,6 +237,8 @@ func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, re
 			"low_count":        low,
 			"review_verdict":   verdict,
 			"model_fallback":   modelFallback,
+			"review_run_id":    reviewRunID,
+			"review_run_json":  reviewRunJSON,
 			"error_message":    "",
 		})
 	if res.Error != nil {
@@ -232,9 +261,34 @@ func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, re
 	return nil
 }
 
+// SetPRMergeConfidence stores the score for the completed review projected by
+// projectionRunID. Fenced by run rather than commit so an older run re-reviewing
+// the same head cannot overwrite its successor's score; returns whether the
+// row matched.
+func (g *GormDB) SetPRMergeConfidence(owner, repo string, prNumber int, projectionRunID string, score int) (bool, error) {
+	if score < 0 || score > 5 {
+		return false, fmt.Errorf("set PR merge confidence for run %s: score %d is outside 0..5", projectionRunID, score)
+	}
+	// Legacy rows carry an empty projection_run_id, so an empty id would match
+	// them all instead of fencing to one run.
+	if projectionRunID == "" {
+		return false, errors.New("set PR merge confidence: projection run id is required")
+	}
+	res := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ? AND status = ?", owner, repo, prNumber, projectionRunID, "completed").
+		Update("merge_confidence", score)
+	if res.Error != nil {
+		return false, fmt.Errorf("set PR merge confidence for run %s: %w", projectionRunID, res.Error)
+	}
+	return res.RowsAffected > 0, nil
+}
+
 // UpdatePRStatus updates the status of a PR
 func (g *GormDB) UpdatePRStatus(owner, repo string, prNumber int, status string) error {
 	updates := map[string]interface{}{"status": status}
+	if status != "completed" {
+		updates["merge_confidence"] = nil
+	}
 
 	// When marking as error, set last_reviewed_at to track when the error occurred
 	if status == "error" {
@@ -253,17 +307,34 @@ func (g *GormDB) UpdatePRStatus(owner, repo string, prNumber int, status string)
 		Updates(updates).Error
 }
 
-// ResetPRToOutdated resets a PR to pending status with new commit SHA and clears old review data
-func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) error {
-	return g.db.Model(&PRModel{}).
-		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+// ResetPRToOutdated resets a PR to pending status with the new commit SHA and
+// clears old review data. It reports whether a row was reset.
+//
+// The update is fenced on the stored commit still differing from
+// newCommitSHA. Outdated detection compares a PR snapshot taken before a
+// multi-second GitHub fetch against the current head; a review run that
+// claims the PR on a newer head in the meantime already records it (see
+// SetPRGeneratingForReviewRun). The reset is a compare-and-swap on the head
+// the poller's snapshot saw, so any concurrent claim, on the fetched head or a
+// later one, leaves the row alone instead of blanking that run's projection.
+func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, fromCommitSHA, newCommitSHA string) (bool, error) {
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND last_commit_sha = ?", owner, repo, prNumber, fromCommitSHA).
 		Updates(map[string]interface{}{
-			"status":           "pending",
-			"last_commit_sha":  newCommitSHA,
-			"review_path":      nil,
-			"last_reviewed_at": nil,
-			"generating_since": nil,
-		}).Error
+			"status":            "pending",
+			"last_commit_sha":   newCommitSHA,
+			"review_path":       nil,
+			"last_reviewed_at":  nil,
+			"generating_since":  nil,
+			"merge_confidence":  nil,
+			"projection_run_id": "",
+			"error_message":     "",
+			"error_retry_count": 0,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
 }
 
 // SetPRAgentReviewing moves an existing PR to the agent_reviewing status.
@@ -295,6 +366,7 @@ func (g *GormDB) SetPRError(owner, repo string, prNumber int, message string) er
 			"status":           "error",
 			"error_message":    message,
 			"last_reviewed_at": now,
+			"merge_confidence": nil,
 		}).Error
 }
 
@@ -321,6 +393,7 @@ func (g *GormDB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, ti
 			"last_commit_sha",
 			"status",
 			"generating_since",
+			"merge_confidence",
 			"title",
 			"author",
 			"created_at",

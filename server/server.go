@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,9 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/runconfig"
+	"pr-review-server/poller"
 
 	"github.com/gorilla/websocket"
 )
@@ -39,7 +43,10 @@ type PollerInterface interface {
 	GetLastPollTime() time.Time
 	GetPollingInterval() time.Duration
 	GetSecondsUntilNextPoll() int
-	ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool)
+	ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool, publish bool)
+	PrepareReviewJob(pr github.PullRequest, requested runconfig.Overrides, force bool, triggerSource string, requestedByUserID *int) (poller.ReviewJob, error)
+	ProcessReviewJob(ctx context.Context, job poller.ReviewJob) error
+	ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig.Policy, error)
 	IsReviewTracked(owner, repo string, number int) bool
 }
 
@@ -71,10 +78,13 @@ type Server struct {
 	devUserID  int
 	devUserMux sync.RWMutex
 	// WebSocket connections
-	upgrader    websocket.Upgrader
-	clients     map[*websocket.Conn]*wsClient
-	clientsMux  sync.RWMutex
-	broadcastCh chan wsOutboundMessage
+	upgrader websocket.Upgrader
+	clients  map[*websocket.Conn]*wsClient
+	// wsWriteTimeout bounds one websocket write so a peer that stops reading
+	// is dropped instead of stalling every broadcast behind it.
+	wsWriteTimeout time.Duration
+	clientsMux     sync.RWMutex
+	broadcastCh    chan wsOutboundMessage
 }
 
 // reviewURL returns the review URL path if htmlPath is set, otherwise empty string
@@ -94,7 +104,7 @@ type PRResponse struct {
 	ReviewHTMLPath  string   `json:"review_html_path"`
 	GitHubURL       string   `json:"github_url"`
 	ReviewURL       string   `json:"review_url"`
-	Status          string   `json:"status"` // "pending", "generating", "completed", "error"
+	Status          string   `json:"status"` // "pending", "generating", "agent_reviewing", "completed", "error"
 	Title           string   `json:"title"`
 	Author          string   `json:"author"`
 	GeneratingSince *string  `json:"generating_since"`
@@ -114,16 +124,38 @@ type PRResponse struct {
 	// Overall AI review verdict parsed from the SUMMARY entry:
 	// "request_changes", "approve_suggestions", "approve", or "" (unknown)
 	ReviewVerdict string `json:"review_verdict"`
+	// Merge confidence 0..5 for the latest review; null until it is scored
+	MergeConfidence *int `json:"merge_confidence"`
 	// Latest review ran on a fallback model, not the requested one
 	ModelFallback bool `json:"model_fallback"`
+	// Structured execution and model provenance for the latest review.
+	ReviewRun *payload.ReviewRunInfo `json:"review_run,omitempty"`
 	// User notes
 	Notes string `json:"notes"`
 	// User moved this PR to the collapsed Hidden section
 	Hidden bool `json:"hidden"`
 	// User manually requested a review for this PR (Requested by Me section)
 	ViaManual bool `json:"via_manual"`
+	// User requested changes and the PR head has moved since their last review
+	NeedsAttention bool `json:"needs_attention"`
+	// PublishedToGitHub is true when PRism has posted its review to the PR;
+	// PublishedRounds counts the publication rounds so far.
+	PublishedToGitHub bool `json:"published_to_github"`
+	PublishedRounds   int  `json:"published_rounds"`
 	// Populated when Status=="error".
 	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+func decodeReviewRun(raw, owner, repo string, number int) *payload.ReviewRunInfo {
+	if raw == "" {
+		return nil
+	}
+	var decoded payload.ReviewRunInfo
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		log.Printf("[API] malformed review-run metadata for %s/%s#%d: %v", owner, repo, number, err)
+		return nil
+	}
+	return &decoded
 }
 
 type StatusCounts struct {
@@ -187,6 +219,13 @@ type wsClient struct {
 	GitHubUsername string
 }
 
+const (
+	defaultWSWriteTimeout = 10 * time.Second
+	// broadcastQueueSize lets the poller hand off a burst of pr_updated events
+	// without waiting on the websocket writer.
+	broadcastQueueSize = 1024
+)
+
 type wsOutboundMessage struct {
 	Type         string
 	Payload      interface{}
@@ -208,8 +247,9 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 				return true
 			},
 		},
-		clients:     make(map[*websocket.Conn]*wsClient),
-		broadcastCh: make(chan wsOutboundMessage),
+		clients:        make(map[*websocket.Conn]*wsClient),
+		broadcastCh:    make(chan wsOutboundMessage, broadcastQueueSize),
+		wsWriteTimeout: defaultWSWriteTimeout,
 	}
 }
 
@@ -276,13 +316,31 @@ func (s *Server) Start() error {
 	http.Handle("/api/status", withAuth(s.handleStatus))
 	http.Handle("/api/reviewer-health", withAuth(s.handleReviewerHealth))
 	http.Handle("/api/settings", withAuth(s.handleSettings))
+	http.Handle(publishRepliesPath, withAuth(s.handlePublishReplies))
+	// The daily health report: the scheduler posts with a job token, people
+	// read with their session.
+	http.Handle(dailyHealthPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			s.handleDailyHealthJob(w, r)
+			return
+		}
+		withAuth(s.handleDailyHealth).ServeHTTP(w, r)
+	}))
 	http.Handle("/api/user", withAuth(s.handleGetUser))
 	http.Handle("/api/telemetry/track", withAuth(s.handleTrackTelemetry))
 	http.Handle("/api/telemetry/stats", withAuth(s.handleTelemetryStats))
 	http.Handle("/api/review/", withAuth(s.handleGetReview))
+	http.Handle("/api/v1/review-runs", withV1Auth(authMiddleware, s.handleReviewRuns))
+	http.Handle("/api/v1/review-runs/", withV1Auth(authMiddleware, s.handleReviewRunByID))
+	http.Handle("/api/v1/review-capabilities", withV1Auth(authMiddleware, s.handleReviewCapabilities))
 
 	// Static content (protected - reviews contain sensitive code)
 	http.Handle("/reviews/", withAuth(s.handleReviewFromGCS))
+
+	// Agent deep-link redirect (not protected: it carries no review content,
+	// only the PR coordinates already visible on GitHub)
+	http.HandleFunc(agentLinkPath, s.handleAgentLink)
+	http.HandleFunc(badgePath, s.handleBadge)
 
 	// WebSocket route (not protected - uses session-based auth internally if needed)
 	http.HandleFunc("/ws", s.handleWebSocket)
@@ -324,9 +382,11 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 		githubMap[key] = ghPR
 	}
 
+	published := s.publishedSummaries()
 	response := make([]PRResponse, 0, len(prsWithViews))
 	for _, prView := range prsWithViews {
 		dbPR := prView.PR
+		summaryRow, isPublished := published[publishedKey(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber)]
 		var reviewedAt *string
 		var generatingSince *string
 		var createdAt *string
@@ -385,36 +445,41 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		response = append(response, PRResponse{
-			Owner:           dbPR.RepoOwner,
-			Repo:            dbPR.RepoName,
-			Number:          dbPR.PRNumber,
-			CommitSHA:       dbPR.LastCommitSHA,
-			Title:           title,
-			Author:          author,
-			LastReviewedAt:  reviewedAt,
-			ReviewHTMLPath:  dbPR.ReviewHTMLPath,
-			GitHubURL:       githubURL,
-			ReviewURL:       reviewURL(dbPR.ReviewHTMLPath),
-			Status:          dbPR.Status,
-			GeneratingSince: generatingSince,
-			ApprovalCount:   dbPR.ApprovalCount,
-			MyReviewStatus:  prView.ReviewStatus, // Use user-specific review status
-			Draft:           dbPR.Draft,
-			PRState:         prStateOrOpen(dbPR.PRState),
-			CIState:         dbPR.CIState,
-			CIFailedChecks:  ciFailedChecks,
-			CreatedAt:       createdAt,
-			IsMine:          prView.IsAuthor, // Use IsAuthor from user_pr_views
-			ViaTeams:        viaTeams,
-			CriticalCount:   dbPR.CriticalCount,
-			MediumCount:     dbPR.MediumCount,
-			LowCount:        dbPR.LowCount,
-			ReviewVerdict:   dbPR.ReviewVerdict,
-			ModelFallback:   dbPR.ModelFallback,
-			Notes:           notes,
-			Hidden:          prView.UserHidden,
-			ViaManual:       prView.ViaManual,
-			ErrorMessage:    dbPR.ErrorMessage,
+			Owner:             dbPR.RepoOwner,
+			Repo:              dbPR.RepoName,
+			Number:            dbPR.PRNumber,
+			CommitSHA:         dbPR.LastCommitSHA,
+			Title:             title,
+			Author:            author,
+			LastReviewedAt:    reviewedAt,
+			ReviewHTMLPath:    dbPR.ReviewHTMLPath,
+			GitHubURL:         githubURL,
+			ReviewURL:         reviewURL(dbPR.ReviewHTMLPath),
+			Status:            dbPR.Status,
+			GeneratingSince:   generatingSince,
+			ApprovalCount:     dbPR.ApprovalCount,
+			MyReviewStatus:    prView.ReviewStatus, // Use user-specific review status
+			Draft:             dbPR.Draft,
+			PRState:           prStateOrOpen(dbPR.PRState),
+			CIState:           dbPR.CIState,
+			CIFailedChecks:    ciFailedChecks,
+			CreatedAt:         createdAt,
+			IsMine:            prView.IsAuthor, // Use IsAuthor from user_pr_views
+			ViaTeams:          viaTeams,
+			CriticalCount:     dbPR.CriticalCount,
+			MediumCount:       dbPR.MediumCount,
+			LowCount:          dbPR.LowCount,
+			ReviewVerdict:     dbPR.ReviewVerdict,
+			MergeConfidence:   completedMergeConfidence(dbPR),
+			PublishedToGitHub: isPublished,
+			PublishedRounds:   summaryRow.Rounds,
+			ModelFallback:     dbPR.ModelFallback,
+			ReviewRun:         decodeReviewRun(dbPR.ReviewRunJSON, dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber),
+			Notes:             notes,
+			Hidden:            prView.UserHidden,
+			ViaManual:         prView.ViaManual,
+			NeedsAttention:    prView.NeedsAttention,
+			ErrorMessage:      dbPR.ErrorMessage,
 		})
 	}
 
@@ -613,6 +678,8 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 		Owner  string `json:"owner"`
 		Repo   string `json:"repo"`
 		Number int    `json:"number"`
+		// Publish false keeps the review off GitHub (dashboard only).
+		Publish *bool `json:"publish"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[API] trigger-review: bad request body: %v", err)
@@ -681,7 +748,7 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 	if s.poller != nil {
 		// force=true on manual trigger: bypass the per-commit cache so a button
 		// click always regenerates (overwrites the previous review for this commit).
-		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, true)
+		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, latestSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, true, req.Publish == nil || *req.Publish)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -717,6 +784,9 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 		// API/skill callers omit it: their reviews run but stay off the
 		// requester's dashboard.
 		Source string `json:"source"`
+		// Publish false keeps the review off GitHub (dashboard only). Nil
+		// means the default, which is to publish when the author is enabled.
+		Publish *bool `json:"publish"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[API] generate-review: bad request body: %v", err)
@@ -832,7 +902,7 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 	// force=true so the per-commit cache never short-circuits an explicit
 	// on-demand request. Background context: the review outlives this request.
 	if s.poller != nil {
-		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, headSHA, title, author, createdAtPtr, draft, true)
+		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, headSHA, title, author, createdAtPtr, draft, true, req.Publish == nil || *req.Publish)
 	}
 
 	// Return the deterministic, DB-independent URLs the review will be saved
@@ -886,7 +956,7 @@ func (s *Server) buildStatusSnapshot(ctx context.Context) (*StatusSnapshot, erro
 		switch pr.Status {
 		case "completed":
 			counts.Completed++
-		case "generating":
+		case "generating", "agent_reviewing":
 			counts.Generating++
 		case "pending":
 			counts.Pending++
@@ -1154,41 +1224,120 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"review_n_requests":         nRequests,
 			"generate_html":             generateHTML,
 		}
+		s.addPublishSettings(response)
+		s.addAdminSettings(response)
 		_ = json.NewEncoder(w).Encode(response) // nolint:errcheck
 
 	case http.MethodPost, http.MethodPatch:
-		// Update settings
+		user := auth.GetCurrentUser(r)
+		if user == nil {
+			http.Error(w, "Not authenticated", http.StatusUnauthorized)
+			return
+		}
+		if !s.isAdmin(user) {
+			log.Printf("[SETTINGS] denied actor=%s method=%s", user.GitHubUsername, r.Method)
+			http.Error(w, "admin required", http.StatusForbidden)
+			return
+		}
+
 		var req struct {
-			AutoReviewRequestedPRs *bool `json:"auto_review_requested_prs"`
-			ReviewNRequests        *int  `json:"review_n_requests"`
-			GenerateHTML           *bool `json:"generate_html"`
+			AutoReviewRequestedPRs   *bool   `json:"auto_review_requested_prs"`
+			ReviewNRequests          *int    `json:"review_n_requests"`
+			GenerateHTML             *bool   `json:"generate_html"`
+			PublishEnabledAuthors    *string `json:"publish_enabled_authors"`
+			PublishInlineCap         *int    `json:"publish_inline_cap"`
+			PublishInlineMinSeverity *string `json:"publish_inline_min_severity"`
+			PublishReplyMode         *string `json:"publish_reply_mode"`
+			PublishShowUnverified    *bool   `json:"publish_show_unverified"`
+			AdminLogins              *string `json:"admin_logins"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
 			return
 		}
-
-		// Update the setting if provided
-		if req.AutoReviewRequestedPRs != nil {
-			if err := s.db.SetAutoReviewRequestedPRs(*req.AutoReviewRequestedPRs); err != nil {
-				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
+		if req.ReviewNRequests != nil && *req.ReviewNRequests < 1 {
+			http.Error(w, "review_n_requests must be 1 or greater", http.StatusBadRequest)
+			return
+		}
+		if req.PublishInlineMinSeverity != nil && !publishSeverities[strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))] {
+			http.Error(w, "publish_inline_min_severity must be critical, medium, or low", http.StatusBadRequest)
+			return
+		}
+		if req.PublishInlineCap != nil && *req.PublishInlineCap < 0 {
+			http.Error(w, "publish_inline_cap must be zero or greater", http.StatusBadRequest)
+			return
+		}
+		if req.PublishReplyMode != nil && !publishReplyModes[strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))] {
+			http.Error(w, "publish_reply_mode must be off, observe, react, shadow, or respond", http.StatusBadRequest)
+			return
+		}
+		var publishAuthors, adminLogins string
+		if req.PublishEnabledAuthors != nil {
+			normalized, err := normalizeLoginCSV(*req.PublishEnabledAuthors, true)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("publish_enabled_authors: %v", err), http.StatusBadRequest)
 				return
 			}
-			log.Printf("[SETTINGS] Updated auto_review_requested_prs to: %v", *req.AutoReviewRequestedPRs)
+			publishAuthors = normalized
+		}
+		if req.AdminLogins != nil {
+			normalized, err := normalizeLoginCSV(*req.AdminLogins, false)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("admin_logins: %v", err), http.StatusBadRequest)
+				return
+			}
+			adminLogins = normalized
+		}
+
+		type settingWrite struct{ key, value string }
+		var updates []settingWrite
+		if req.AutoReviewRequestedPRs != nil {
+			updates = append(updates, settingWrite{"auto_review_requested_prs", strconv.FormatBool(*req.AutoReviewRequestedPRs)})
 		}
 		if req.ReviewNRequests != nil {
-			if err := s.db.SetReviewNRequests(*req.ReviewNRequests); err != nil {
-				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
-				return
-			}
-			log.Printf("[SETTINGS] Updated review_n_requests to: %v", *req.ReviewNRequests)
+			updates = append(updates, settingWrite{"review_n_requests", strconv.Itoa(*req.ReviewNRequests)})
 		}
 		if req.GenerateHTML != nil {
-			if err := s.db.SetGenerateHTML(*req.GenerateHTML); err != nil {
+			updates = append(updates, settingWrite{"generate_html", strconv.FormatBool(*req.GenerateHTML)})
+		}
+		if req.PublishEnabledAuthors != nil {
+			updates = append(updates, settingWrite{settingPublishEnabledAuthors, publishAuthors})
+		}
+		if req.PublishInlineCap != nil {
+			updates = append(updates, settingWrite{settingPublishInlineCap, strconv.Itoa(*req.PublishInlineCap)})
+		}
+		if req.PublishInlineMinSeverity != nil {
+			updates = append(updates, settingWrite{settingPublishInlineMinSeverity, strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))})
+		}
+		if req.PublishShowUnverified != nil {
+			updates = append(updates, settingWrite{settingPublishShowUnverified, strconv.FormatBool(*req.PublishShowUnverified)})
+		}
+		if req.PublishReplyMode != nil {
+			mode := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
+			stamp, change, err := s.replyActivationFor(mode)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Failed to read settings: %v", err), http.StatusInternalServerError)
+				return
+			}
+			// The stamp must never be observed without its mode: when enabling,
+			// write the stamp first; when disabling, turn the mode off first.
+			switch {
+			case change && mode != defaultPublishReplyMode:
+				updates = append(updates, settingWrite{settingPublishReplyEnabledAt, stamp}, settingWrite{settingPublishReplyMode, mode})
+			case change:
+				updates = append(updates, settingWrite{settingPublishReplyMode, mode}, settingWrite{settingPublishReplyEnabledAt, stamp})
+			default:
+				updates = append(updates, settingWrite{settingPublishReplyMode, mode})
+			}
+		}
+		if req.AdminLogins != nil {
+			updates = append(updates, settingWrite{settingAdminLogins, adminLogins})
+		}
+		for _, u := range updates {
+			if err := s.writeSetting(user.GitHubUsername, u.key, u.value); err != nil {
 				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
 				return
 			}
-			log.Printf("[SETTINGS] Updated generate_html to: %v", *req.GenerateHTML)
 		}
 
 		// Return updated settings
@@ -1201,6 +1350,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"review_n_requests":         nRequests,
 			"generate_html":             generateHTML,
 		}
+		s.addPublishSettings(response)
+		s.addAdminSettings(response)
 		_ = json.NewEncoder(w).Encode(response) // nolint:errcheck
 
 	default:
@@ -1472,12 +1623,13 @@ func (s *Server) broadcaster() {
 				continue
 			}
 
+			_ = conn.SetWriteDeadline(time.Now().Add(s.wsWriteTimeout))
 			err := conn.WriteJSON(WebSocketMessage{
 				Type:    message.Type,
 				Payload: payload,
 			})
 			if err != nil {
-				log.Printf("[WS] Error writing to client: %v", err)
+				log.Printf("[WS] Error writing to client %s: %v", client.GitHubUsername, err)
 				_ = conn.Close() // nolint:errcheck
 				s.clientsMux.RUnlock()
 				s.clientsMux.Lock()
@@ -1513,6 +1665,15 @@ func prStateOrOpen(state string) string {
 		return "open"
 	}
 	return state
+}
+
+// completedMergeConfidence hides a stored score once the row leaves completed,
+// so a medal never describes a review that is regenerating or errored.
+func completedMergeConfidence(pr db.PR) *int {
+	if pr.Status != "completed" {
+		return nil
+	}
+	return pr.MergeConfidence
 }
 
 // getPRResponse constructs a PR response using the default dev-mode user context.
@@ -1592,6 +1753,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 	isMine := strings.EqualFold(author, s.cfg.GitHubUsername)
 	hidden := false
 	viaManual := false
+	needsAttention := false
 
 	if userID > 0 {
 		if assignment, err := s.db.GetUserPRAssignment(userID, pr.ID); err == nil && assignment != nil {
@@ -1605,44 +1767,51 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 			isMine = assignment.IsAuthor
 			hidden = assignment.UserHidden
 			viaManual = assignment.ViaManual
+			needsAttention = assignment.NeedsAttention
 		}
 	}
 
 	if viaTeams == nil {
 		viaTeams = []string{}
 	}
+	summaryRow, isPublished := s.publishedSummaryFor(pr.RepoOwner, pr.RepoName, pr.PRNumber)
 
 	return &PRResponse{
-		Owner:           pr.RepoOwner,
-		Repo:            pr.RepoName,
-		Number:          pr.PRNumber,
-		CommitSHA:       pr.LastCommitSHA,
-		Title:           pr.Title,
-		Author:          author,
-		LastReviewedAt:  reviewedAt,
-		ReviewHTMLPath:  pr.ReviewHTMLPath,
-		GitHubURL:       githubURL,
-		ReviewURL:       reviewURL(pr.ReviewHTMLPath),
-		Status:          pr.Status,
-		GeneratingSince: generatingSince,
-		ApprovalCount:   pr.ApprovalCount,
-		MyReviewStatus:  myReviewStatus,
-		Draft:           pr.Draft,
-		PRState:         prStateOrOpen(pr.PRState),
-		CIState:         pr.CIState,
-		CIFailedChecks:  ciFailedChecks,
-		CreatedAt:       createdAt,
-		IsMine:          isMine,
-		ViaTeams:        viaTeams,
-		CriticalCount:   pr.CriticalCount,
-		MediumCount:     pr.MediumCount,
-		LowCount:        pr.LowCount,
-		ReviewVerdict:   pr.ReviewVerdict,
-		ModelFallback:   pr.ModelFallback,
-		Notes:           notes,
-		Hidden:          hidden,
-		ViaManual:       viaManual,
-		ErrorMessage:    pr.ErrorMessage,
+		Owner:             pr.RepoOwner,
+		Repo:              pr.RepoName,
+		Number:            pr.PRNumber,
+		CommitSHA:         pr.LastCommitSHA,
+		Title:             pr.Title,
+		Author:            author,
+		LastReviewedAt:    reviewedAt,
+		ReviewHTMLPath:    pr.ReviewHTMLPath,
+		GitHubURL:         githubURL,
+		ReviewURL:         reviewURL(pr.ReviewHTMLPath),
+		Status:            pr.Status,
+		GeneratingSince:   generatingSince,
+		ApprovalCount:     pr.ApprovalCount,
+		MyReviewStatus:    myReviewStatus,
+		Draft:             pr.Draft,
+		PRState:           prStateOrOpen(pr.PRState),
+		CIState:           pr.CIState,
+		CIFailedChecks:    ciFailedChecks,
+		CreatedAt:         createdAt,
+		IsMine:            isMine,
+		ViaTeams:          viaTeams,
+		CriticalCount:     pr.CriticalCount,
+		MediumCount:       pr.MediumCount,
+		LowCount:          pr.LowCount,
+		ReviewVerdict:     pr.ReviewVerdict,
+		MergeConfidence:   completedMergeConfidence(*pr),
+		PublishedToGitHub: isPublished,
+		PublishedRounds:   summaryRow.Rounds,
+		ModelFallback:     pr.ModelFallback,
+		ReviewRun:         decodeReviewRun(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber),
+		Notes:             notes,
+		Hidden:            hidden,
+		ViaManual:         viaManual,
+		NeedsAttention:    needsAttention,
+		ErrorMessage:      pr.ErrorMessage,
 	}
 }
 
@@ -1663,6 +1832,7 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filename = cleaned
+	requestedFilename := filename
 
 	// Serve the JSON sidecar with the correct content type; everything else is
 	// the rendered HTML review.
@@ -1684,7 +1854,11 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 			// Reviews used to be immutable per commit, but the manual trigger now
 			// force-overwrites the same filename. Make the browser revalidate so
 			// the new content shows up after a regen.
-			w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+			if strings.HasPrefix(requestedFilename, "runs/") {
+				w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+			} else {
+				w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+			}
 			_, _ = w.Write(content) // nolint:errcheck
 			return
 		}
@@ -1699,19 +1873,65 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 	content, err = os.ReadFile(localPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			http.Error(w, "Review not found", http.StatusNotFound)
+			fallback, fallbackErr := s.immutableFallbackForCanonicalReview(filename)
+			if fallbackErr != nil {
+				log.Printf("[REVIEWS] Resolve immutable fallback for %s: %v", filename, fallbackErr)
+				http.Error(w, "Failed to fetch review", http.StatusInternalServerError)
+				return
+			}
+			if fallback == "" {
+				http.Error(w, "Review not found", http.StatusNotFound)
+				return
+			}
+			content, err = s.fetchReviewBytes(r.Context(), fallback)
+			if err != nil {
+				if errors.Is(err, errReviewNotFound) {
+					http.Error(w, "Review not found", http.StatusNotFound)
+				} else {
+					log.Printf("[REVIEWS] Error fetching immutable fallback %s: %v", fallback, err)
+					http.Error(w, "Failed to fetch review", http.StatusInternalServerError)
+				}
+				return
+			}
 		} else {
 			log.Printf("[LOCAL] Error reading review %s: %v", localPath, err)
 			http.Error(w, "Failed to fetch review", http.StatusInternalServerError)
+			return
 		}
-		return
 	}
 
 	// Set headers. Match the GCS branch above: reviews used to be immutable
 	// per commit, but the manual trigger now force-overwrites the same
 	// filename, so browsers must revalidate to pick up the new content.
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+	if strings.HasPrefix(requestedFilename, "runs/") {
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+	}
 
 	_, _ = w.Write(content) // nolint:errcheck
+}
+
+func (s *Server) immutableFallbackForCanonicalReview(filename string) (string, error) {
+	if strings.ContainsRune(filepath.ToSlash(filename), '/') {
+		return "", nil
+	}
+	extension := filepath.Ext(filename)
+	if extension != ".html" && extension != ".json" {
+		return "", nil
+	}
+	canonicalHTML := strings.TrimSuffix(filename, extension) + ".html"
+	lookup, ok := s.db.(db.CompletedReviewPathLookup)
+	if !ok {
+		return "", nil
+	}
+	pr, err := lookup.GetCompletedPRByReviewPath(canonicalHTML)
+	if err != nil {
+		return "", err
+	}
+	if pr == nil {
+		return "", nil
+	}
+	return immutableReviewArtifactPath(pr.ReviewRunJSON, pr.RepoOwner, pr.RepoName, pr.PRNumber, extension), nil
 }

@@ -13,6 +13,11 @@ type PollerLeaseModel struct {
 	ID        string    `gorm:"primaryKey;column:id"`
 	Holder    string    `gorm:"column:holder;not null"`
 	ExpiresAt time.Time `gorm:"column:expires_at;not null"`
+	// Generation is the holder's boot time. A Cloud Run deploy leaves the
+	// previous revision's instance alive for up to the request timeout, so
+	// leadership is fenced: a newer generation preempts at once and an older
+	// one can never take the lease back.
+	Generation int64 `gorm:"column:generation;not null;default:0"`
 }
 
 func (PollerLeaseModel) TableName() string { return "poller_leases" }
@@ -24,25 +29,29 @@ const pollerLeaseID = "poller"
 // or renew it if holderID already holds it. Returns true iff holderID holds a
 // valid lease after the call.
 //
-// One atomic statement does it: insert the lease if absent, otherwise update it
-// only when WE already hold it OR the existing lease has expired. The WHERE on
-// the conflict path means a live lease held by someone else yields zero affected
-// rows (we are not the leader); any successful insert/update yields one (we are).
-// expires_at is always rewritten on a successful renew, so RowsAffected==0 can
-// only mean "another holder's lease is still valid" — no follow-up read needed.
+// One atomic statement: insert the lease if absent, otherwise update it when
+// we already hold it, when our boot generation is newer than the row's (a fresh
+// deploy preempts the zombie it replaced), or when the lease expired and we are
+// at least as new as whoever held it last. A live lease held by a peer of the
+// same generation, or any lease ever touched by a newer generation, yields zero
+// affected rows.
 //
 // Times are computed in Go and passed as parameters so the comparison is
 // dialect-agnostic (no Postgres now() vs SQLite datetime() divergence).
-func (g *GormDB) TryAcquireOrRenewLeadership(holderID string, ttl time.Duration) (bool, error) {
+func (g *GormDB) TryAcquireOrRenewLeadership(holderID string, generation int64, ttl time.Duration) (bool, error) {
 	now := time.Now().UTC()
 	expiry := now.Add(ttl)
 	res := g.db.Exec(`
-		INSERT INTO poller_leases (id, holder, expires_at) VALUES (?, ?, ?)
-		ON CONFLICT (id) DO UPDATE SET holder = ?, expires_at = ?
-		WHERE poller_leases.holder = ? OR poller_leases.expires_at < ?`,
-		pollerLeaseID, holderID, expiry,
-		holderID, expiry,
-		holderID, now,
+		INSERT INTO poller_leases (id, holder, expires_at, generation) VALUES (?, ?, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET holder = ?, expires_at = ?, generation = ?
+		WHERE poller_leases.holder = ?
+		   OR poller_leases.generation < ?
+		   OR (poller_leases.expires_at < ? AND poller_leases.generation <= ?)`,
+		pollerLeaseID, holderID, expiry, generation,
+		holderID, expiry, generation,
+		holderID,
+		generation,
+		now, generation,
 	)
 	if res.Error != nil {
 		return false, res.Error

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -26,6 +27,17 @@ type AppClient struct {
 	installationID string
 	privateKey     *rsa.PrivateKey
 	httpClient     *http.Client
+	apiBase        string
+
+	// Installations for repos outside the primary installation's account.
+	// Lookups are per repo (an installation may cover only selected repos of
+	// an account), tokens are per installation id and so shared by siblings.
+	// The lock guards the maps only; GitHub calls happen outside it so one
+	// slow owner cannot stall publishing for the others.
+	repoInstallations map[string]repoInstallation // owner/repo -> installation id
+	notInstalled      map[string]time.Time        // owner/repo -> when the 404 was seen
+	extraTokens       map[string]InstallationToken
+	extraLock         sync.Mutex
 
 	// Installation token caching
 	installationToken     string
@@ -78,6 +90,7 @@ func NewAppClient(appID, privateKeyPath, installationID string) (*AppClient, err
 		installationID: installationID,
 		privateKey:     key,
 		httpClient:     &http.Client{Timeout: 30 * time.Second},
+		apiBase:        githubAPIBase,
 	}
 
 	// Get initial installation token and create GitHub clients
@@ -130,33 +143,9 @@ func (c *AppClient) getInstallationToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to generate JWT: %w", err)
 	}
 
-	// Request installation token
-	url := fmt.Sprintf("https://api.github.com/app/installations/%s/access_tokens", c.installationID)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	tokenResp, err := c.mintInstallationToken(ctx, jwtToken, c.installationID)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+jwtToken)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to request installation token: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("failed to get installation token: status %d", resp.StatusCode)
-	}
-
-	var tokenResp struct {
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expires_at"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", fmt.Errorf("failed to decode token response: %w", err)
+		return "", err
 	}
 
 	// Cache the token
@@ -169,6 +158,184 @@ func (c *AppClient) getInstallationToken(ctx context.Context) (string, error) {
 	log.Printf("[GITHUB APP] Installation token refreshed, expires at %s", tokenResp.ExpiresAt.Format(time.RFC3339))
 
 	return tokenResp.Token, nil
+}
+
+const githubAPIBase = "https://api.github.com"
+
+var errInstallationGone = errors.New("installation no longer exists")
+
+func (c *AppClient) mintInstallationToken(ctx context.Context, jwtToken, installationID string) (InstallationToken, error) {
+	url := fmt.Sprintf("%s/app/installations/%s/access_tokens", c.baseURL(), installationID)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return InstallationToken{}, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return InstallationToken{}, fmt.Errorf("failed to request installation token: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return InstallationToken{}, fmt.Errorf("%w: installation %s", errInstallationGone, installationID)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		return InstallationToken{}, fmt.Errorf("failed to get installation token: status %d", resp.StatusCode)
+	}
+	var tok InstallationToken
+	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+		return InstallationToken{}, fmt.Errorf("failed to decode token response: %w", err)
+	}
+	return tok, nil
+}
+
+func (c *AppClient) baseURL() string {
+	if c.apiBase == "" {
+		return githubAPIBase
+	}
+	return c.apiBase
+}
+
+// ErrAppNotInstalled reports that the App has no installation covering a repo.
+var ErrAppNotInstalled = errors.New("github app is not installed")
+
+// Lookups are cached for installationTTL either way: a miss so an uninstalled
+// repo does not cost a lookup per write, a hit so a repo removed from a
+// selected-repositories installation stops minting a token that cannot write.
+const installationTTL = 10 * time.Minute
+
+type repoInstallation struct {
+	id        string
+	checkedAt time.Time
+}
+
+// TokenForRepo returns an installation token that can write to owner/repo.
+// Repos under the primary installation reuse its token; any other repo is
+// resolved through the App's installation covering it. A stale installation
+// id (mint returns 404) is forgotten so the next call re-resolves.
+func (c *AppClient) TokenForRepo(ctx context.Context, owner, repo string) (string, time.Time, error) {
+	installationID, err := c.installationFor(ctx, owner, repo)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return c.TokenForInstallation(ctx, installationID)
+}
+
+// TokenForInstallation mints or reuses the token for one installation. It is
+// what a cached per-installation client refreshes with, so the client's
+// lifetime is not tied to whichever repo first resolved to it.
+func (c *AppClient) TokenForInstallation(ctx context.Context, installationID string) (string, time.Time, error) {
+	if installationID == c.installationID {
+		return c.GetTokenWithExpiry(ctx)
+	}
+
+	c.extraLock.Lock()
+	tok, ok := c.extraTokens[installationID]
+	c.extraLock.Unlock()
+	if ok && time.Now().Add(5*time.Minute).Before(tok.ExpiresAt) {
+		return tok.Token, tok.ExpiresAt, nil
+	}
+	jwtToken, err := c.generateJWT()
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("failed to generate JWT: %w", err)
+	}
+	tok, err = c.mintInstallationToken(ctx, jwtToken, installationID)
+	if err != nil {
+		if errors.Is(err, errInstallationGone) {
+			c.extraLock.Lock()
+			for key, entry := range c.repoInstallations {
+				if entry.id == installationID {
+					delete(c.repoInstallations, key)
+				}
+			}
+			delete(c.extraTokens, installationID)
+			c.extraLock.Unlock()
+		}
+		return "", time.Time{}, err
+	}
+	c.extraLock.Lock()
+	if c.extraTokens == nil {
+		c.extraTokens = map[string]InstallationToken{}
+	}
+	c.extraTokens[installationID] = tok
+	c.extraLock.Unlock()
+	log.Printf("[GITHUB APP] Installation token for installation %s refreshed, expires at %s", installationID, tok.ExpiresAt.Format(time.RFC3339))
+	return tok.Token, tok.ExpiresAt, nil
+}
+
+// installationFor resolves the installation covering owner/repo, caching hits
+// and misses per repo. It returns ErrAppNotInstalled with an empty id when no
+// installation covers the repo.
+func (c *AppClient) installationFor(ctx context.Context, owner, repo string) (string, error) {
+	repoKey := owner + "/" + repo
+	c.extraLock.Lock()
+	cached, hit := c.repoInstallations[repoKey]
+	missedAt, missed := c.notInstalled[repoKey]
+	c.extraLock.Unlock()
+	if hit && time.Since(cached.checkedAt) < installationTTL {
+		return cached.id, nil
+	}
+	if missed && time.Since(missedAt) < installationTTL {
+		return "", ErrAppNotInstalled
+	}
+	id, err := c.lookupInstallation(ctx, owner, repo)
+	if err != nil && !errors.Is(err, ErrAppNotInstalled) && hit {
+		// A GitHub blip must not fail a write; the last known id is almost
+		// certainly still right and a real removal answers 404, not 5xx.
+		return cached.id, nil
+	}
+	c.extraLock.Lock()
+	defer c.extraLock.Unlock()
+	switch {
+	case err == nil:
+		if c.repoInstallations == nil {
+			c.repoInstallations = map[string]repoInstallation{}
+		}
+		c.repoInstallations[repoKey] = repoInstallation{id: id, checkedAt: time.Now()}
+		delete(c.notInstalled, repoKey)
+	case errors.Is(err, ErrAppNotInstalled):
+		if c.notInstalled == nil {
+			c.notInstalled = map[string]time.Time{}
+		}
+		c.notInstalled[repoKey] = time.Now()
+		delete(c.repoInstallations, repoKey)
+	}
+	return id, err
+}
+
+func (c *AppClient) lookupInstallation(ctx context.Context, owner, repo string) (string, error) {
+	jwtToken, err := c.generateJWT()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate JWT: %w", err)
+	}
+	url := fmt.Sprintf("%s/repos/%s/%s/installation", c.baseURL(), owner, repo)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to look up installation for %s/%s: %w", owner, repo, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("%w on %s/%s", ErrAppNotInstalled, owner, repo)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to look up installation for %s/%s: status %d", owner, repo, resp.StatusCode)
+	}
+	var inst struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
+		return "", fmt.Errorf("failed to decode installation response: %w", err)
+	}
+	return fmt.Sprintf("%d", inst.ID), nil
 }
 
 // updateGitHubClients creates new GitHub clients with the given token

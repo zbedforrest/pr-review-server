@@ -108,6 +108,22 @@
     }
   }
 
+  &__publish {
+    display: inline-flex;
+    align-items: center;
+    gap: $spacing-xs;
+    font-size: 13px;
+    color: $color-text-secondary;
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+
+    input {
+      cursor: pointer;
+      margin: 0;
+    }
+  }
+
   &__status {
     font-size: 13px;
 

@@ -16,6 +16,8 @@ import (
 // tries to run an agent review there.
 type DefaultSpawner struct{}
 
-func (DefaultSpawner) Spawn(_ context.Context, _ string, _ []string, _ string) (SpawnedProcess, error) {
+var _ Spawner = DefaultSpawner{}
+
+func (DefaultSpawner) SpawnWithEnv(_ context.Context, _ string, _ []string, _ string, _ []string) (SpawnedProcess, error) {
 	return nil, errors.New("agent reviewer is not supported on Windows: build for linux/darwin")
 }

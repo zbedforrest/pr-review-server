@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pr-review-server/pkg/reviewer/tickets"
+	"pr-review-server/pkg/reviewer/types"
 )
 
 // fakeProcess implements SpawnedProcess by replaying a canned stdout buffer.
@@ -159,11 +162,18 @@ func TestParseAgentStream_MaxTurnsKills(t *testing.T) {
 
 // fakeSpawner returns a canned process regardless of the command.
 type fakeSpawner struct {
-	proc *fakeProcess
+	proc     *fakeProcess
+	name     string
+	args     []string
+	dir      string
+	spawnErr error
 }
 
 func (s *fakeSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
-	return s.proc, nil
+	s.name = name
+	s.args = append([]string(nil), args...)
+	s.dir = dir
+	return s.proc, s.spawnErr
 }
 
 // seedAgentCache pre-populates the clone cache for owner/repo with a clone of
@@ -361,6 +371,9 @@ func TestRunAgentReview_DetectsModelFallback(t *testing.T) {
 	if out.ServedModel != "claude-opus-4-8" || out.RequestedModel != "claude-fable-5" {
 		t.Errorf("model fields: served=%q requested=%q", out.ServedModel, out.RequestedModel)
 	}
+	if out.Backend != AgentBackendClaude || !out.ServingModelVerified {
+		t.Errorf("backend metadata: backend=%q verified=%t", out.Backend, out.ServingModelVerified)
+	}
 }
 
 func TestRunAgentReview_DetectsMidRunFallback(t *testing.T) {
@@ -481,6 +494,42 @@ func TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog(t *testing.T) {
 		t.Errorf("persisted log missing error event: %s", sinkContent)
 	}
 	assertLogsDirEmpty(t, cfg.LogsDir)
+}
+
+// TestRunAgentReview_FailureRedactsCredentialFromError — failure messages feed
+// the run's error_summary, which the API exposes, so a credential echoed on
+// stderr must never survive into the returned error.
+func TestRunAgentReview_FailureRedactsCredentialFromError(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	const credential = "sk-test-secret-credential"
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout:  bytes.NewBufferString(""),
+		stderr:  bytes.NewBufferString("auth failed for key " + credential + "\n"),
+		waitErr: errors.New("exit status 1"),
+		killCh:  make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir:    cloneRoot,
+		LogsDir:         t.TempDir(),
+		WallClock:       time.Minute,
+		MaxTurns:        10,
+		AnthropicAPIKey: credential,
+	}
+
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), credential) {
+		t.Errorf("error must not contain the credential: %v", err)
+	}
+	if !strings.Contains(err.Error(), "auth failed for key ***") {
+		t.Errorf("error should carry the redacted stderr, got: %v", err)
+	}
 }
 
 func assertLogsDirEmpty(t *testing.T, logsDir string) {
@@ -690,6 +739,11 @@ func TestParseAgentJSON(t *testing.T) {
 		{"suffix with fenced code", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n```suggestion\nvals[0] = y\n```", 1},
 		{"brackets inside string body", `[{"file_path":"a.go","line_number":1,"comment_body":"use arr[0] and \"quoted [x]\" here"}]`, 1},
 		{"nested arrays in body", `[{"file_path":"a.go","line_number":1,"comment_body":"matrix"},{"file_path":"b.go","line_number":2,"comment_body":"[[1,2],[3]]"}]`, 2},
+		// Seen in production: a Go suggestion block carried literal tabs
+		// inside a JSON string, json.Unmarshal rejected the control
+		// character, and the whole review collapsed into one SUMMARY blob.
+		{"raw tab inside string", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"```suggestion\\n\tif x {\\n\t\treturn\\n\t}\\n```\"}]", 1},
+		{"raw newline inside string", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"line one\nline two\"}]", 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -704,6 +758,205 @@ func TestParseAgentJSON(t *testing.T) {
 	}
 }
 
+func TestParseAgentJSONPreservesRawControlCharactersAsEscapes(t *testing.T) {
+	got, err := parseAgentJSON("[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"a\tb\nc\"}]")
+	if err != nil {
+		t.Fatalf("parseAgentJSON: %v", err)
+	}
+	if got[0].CommentBody != "a\tb\nc" {
+		t.Errorf("body = %q, want tab and newline preserved", got[0].CommentBody)
+	}
+}
+
+func TestParseAgentJSONCapsFutureOnlyNonSecuritySeverity(t *testing.T) {
+	raw := `[{
+        "file_path":"config.go",
+        "line_number":12,
+        "comment_body":"A later caller could omit the setting.",
+        "importance":"CRITICAL",
+        "finding_contract":{
+            "schema_version":1,
+            "finding_kind":"latent_hazard",
+            "materiality":"future_condition_only",
+            "current_impact":"No current caller omits the setting.",
+            "counterfactual_trigger":"A later caller omits the setting.",
+            "falsifiability":"falsifiable",
+            "falsifiable_condition":"The setting is absent.",
+            "expected_observable":"The request returns an error.",
+            "subjects":[{"kind":"config_key","path":"config.go","name":"required_setting"}],
+            "uncertainty":"Future callers are not known.",
+            "severity_rationale":"The current PR creates no active failure."
+        }
+    }]`
+	comments, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].Importance != "LOW" {
+		t.Fatalf("importance = %q", comments[0].Importance)
+	}
+}
+
+func TestParseAgentJSONNormalizesContractBeforePolicy(t *testing.T) {
+	raw := `[{
+        "file_path":"config.go",
+        "line_number":12,
+        "comment_body":"A later caller could omit the setting.",
+        "importance":"CRITICAL",
+        "finding_contract":{
+            "schema_version":1,
+            "finding_kind":"latent_hazard",
+            "materiality":"future_condition_only",
+            "current_impact":" No current caller omits the setting. ",
+            "counterfactual_trigger":" A later caller omits the setting. ",
+            "falsifiability":"falsifiable",
+            "falsifiable_condition":" The setting is absent. ",
+            "expected_observable":" The request returns an error. ",
+            "subjects":[{"kind":"config_key","path":" config.go ","name":" required_setting "}],
+            "uncertainty":" Future callers are not known. ",
+            "severity_rationale":" The current PR creates no active failure. "
+        }
+    }]`
+	comments, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].Importance != "LOW" {
+		t.Fatalf("importance = %q", comments[0].Importance)
+	}
+	if comments[0].FindingContract.CurrentImpact != "No current caller omits the setting." {
+		t.Fatalf("impact = %q", comments[0].FindingContract.CurrentImpact)
+	}
+}
+
+func TestParseAgentJSONKeepsValidCurrentImpactSeverityAfterNormalization(t *testing.T) {
+	raw := `[{
+        "file_path":"handler.go",
+        "line_number":12,
+        "comment_body":"Current requests fail.",
+        "importance":"CRITICAL",
+        "finding_contract":{
+            "schema_version":1,
+            "finding_kind":" production_behavior ",
+            "materiality":" current_impact ",
+            "current_impact":" Current requests fail. ",
+            "counterfactual_trigger":null,
+            "falsifiability":" falsifiable ",
+            "falsifiable_condition":" The candidate request fails. ",
+            "expected_observable":" Compare the response status. ",
+            "subjects":[{"kind":" symbol ","path":" handler.go ","name":" HandleRequest "}],
+            "uncertainty":" The report covers one request state. ",
+            "severity_rationale":" The changed path blocks current requests. "
+        }
+    }]`
+	comments, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].Importance != "CRITICAL" {
+		t.Fatalf("importance = %q", comments[0].Importance)
+	}
+	if err := types.ValidateFindingContract(comments[0].FindingContract); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParseAgentJSONCapsMissingAndInvalidContractsAtMedium(t *testing.T) {
+	for name, raw := range map[string]string{
+		"missing": `[{
+            "file_path":"config.go",
+            "line_number":12,
+            "comment_body":"A claim without a contract.",
+            "importance":"CRITICAL"
+        }]`,
+		"invalid": `[{
+            "file_path":"config.go",
+            "line_number":12,
+            "comment_body":"A claim with an invalid contract.",
+            "importance":"CRITICAL",
+            "finding_contract":{"schema_version":1}
+        }]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			comments, err := parseAgentJSON(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if comments[0].Importance != "MEDIUM" {
+				t.Fatalf("importance = %q", comments[0].Importance)
+			}
+		})
+	}
+}
+
+func TestParseAgentJSONCapsFutureOnlySecurityRiskWithoutPolicy(t *testing.T) {
+	raw := `[{
+        "file_path":"auth.go",
+        "line_number":12,
+        "comment_body":"A later configuration could expose credentials.",
+        "importance":"CRITICAL",
+        "finding_contract":{
+            "schema_version":1,
+            "finding_kind":"security_risk",
+            "materiality":"future_condition_only",
+            "current_impact":"The current configuration does not expose credentials.",
+            "counterfactual_trigger":"A later deployment enables public diagnostics.",
+            "falsifiability":"falsifiable",
+            "falsifiable_condition":"Public diagnostics are enabled.",
+            "expected_observable":"Credential values appear in the response.",
+            "subjects":[{"kind":"symbol","path":"auth.go","name":"diagnostics"}],
+            "uncertainty":"Deployment configuration can change independently.",
+            "severity_rationale":"Credential exposure remains security-sensitive."
+        }
+    }]`
+	comments, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].Importance != "LOW" {
+		t.Fatalf("importance = %q", comments[0].Importance)
+	}
+}
+
+func TestParseAgentJSONRemovesContractsFromControlEntries(t *testing.T) {
+	raw := `[{"file_path":"SUMMARY","line_number":0,"comment_body":"Approve.","finding_contract":{"schema_version":1}}]`
+	comments, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].FindingContract != nil {
+		t.Fatal("summary retained a finding contract")
+	}
+}
+
+func TestAgentPromptStatesFindingContractTextBounds(t *testing.T) {
+	for _, requirement := range []string{
+		"single-line strings of at most 500 Unicode characters",
+		"no leading or trailing whitespace, tabs, control characters, or format characters",
+		"300-character limit",
+		"200-character limit",
+	} {
+		if !strings.Contains(promptAgentReview, requirement) {
+			t.Fatalf("prompt is missing %q", requirement)
+		}
+	}
+}
+
+func TestAgentPromptStatesFindingContractCrossFieldRules(t *testing.T) {
+	for _, requirement := range []string{
+		`"counterfactual_trigger" is required when "materiality" is "future_condition_only" and must be null when materiality is "current_impact", "no_user_impact", or "unknown"`,
+		`"future_condition_only" requires "finding_kind" to be "latent_hazard" or "security_risk", and "latent_hazard" requires "future_condition_only"`,
+		`"design_opinion" requires "falsifiability" to be "not_falsifiable" and materiality to be "no_user_impact" or "unknown"`,
+		`"description_drift" requires "falsifiability" to be "not_falsifiable" and materiality to be exactly "no_user_impact", never "unknown"`,
+		`"test_quality" requires materiality to be "no_user_impact" or "unknown"`,
+		`"falsifiable" requires both "falsifiable_condition" and "expected_observable"; "not_falsifiable" or "unknown" requires both fields to be null`,
+	} {
+		if !strings.Contains(promptAgentReview, requirement) {
+			t.Fatalf("prompt is missing %q", requirement)
+		}
+	}
+}
+
 // Keep errors import alive.
 var _ = errors.New
 
@@ -711,7 +964,7 @@ func TestPRScopeSection_EmptyInputsContributeNothing(t *testing.T) {
 	if got := prScopeSection("", nil); got != "" {
 		t.Errorf("empty inputs must produce no section, got %q", got)
 	}
-	prompt, err := buildAgentPromptContent("", nil, nil, nil, nil, nil)
+	prompt, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -752,5 +1005,133 @@ func TestPRScopeSection_FileListCapped(t *testing.T) {
 	}
 	if !strings.Contains(got, "...and 30 more") {
 		t.Errorf("missing truncation marker:\n%s", got)
+	}
+}
+
+func TestBuildAgentPromptContent_PRContextSitsBetweenScopeAndAlerts(t *testing.T) {
+	files := []diffFile{{Path: "a.go", Status: "modified", Added: []string{"x"}}}
+	gates := []types.LineComment{gateAlertFixture("settings-ref", "a.go")}
+	prContext := prContextSection("Tighten retries", "Fixes XO-370", []tickets.Ticket{{Key: "XO-370", Summary: "Retry policy", Type: "Story", Status: "Done", URL: "https://jira.acme.example/browse/XO-370"}})
+	if prContext == "" {
+		t.Fatal("prContextSection returned nothing")
+	}
+
+	got, err := buildAgentPromptContent("main", files, prContext, nil, gates, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := strings.Index(got, "--- PR SCOPE ---")
+	pr := strings.Index(got, "--- PULL REQUEST ---")
+	linked := strings.Index(got, "--- LINKED TICKETS")
+	alerts := strings.Index(got, "--- MECHANICAL ALERTS")
+	if scope < 0 || pr < 0 || linked < 0 || alerts < 0 {
+		t.Fatalf("prompt missing a section: scope=%d pr=%d linked=%d alerts=%d\n%s", scope, pr, linked, alerts, got)
+	}
+	if !(scope < pr && pr < linked && linked < alerts) {
+		t.Errorf("wrong order: scope=%d pr=%d linked=%d alerts=%d", scope, pr, linked, alerts)
+	}
+	if !strings.Contains(got, "[XO-370] Retry policy (Story, Done)") {
+		t.Errorf("ticket line missing:\n%s", got)
+	}
+}
+
+func TestBuildAgentPromptContent_NoPRContextIsByteIdentical(t *testing.T) {
+	without, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(without, "PULL REQUEST") || strings.Contains(without, "LINKED TICKETS") {
+		t.Error("empty PR context must add nothing")
+	}
+	if prContextSection("", "", nil) != "" {
+		t.Error("empty inputs must produce no section")
+	}
+}
+
+func TestAgentPromptAsksForAHeadline(t *testing.T) {
+	prompt, err := buildAgentPromptContent("main", nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, `"headline"`) || !strings.Contains(prompt, "12 words") {
+		t.Fatalf("prompt must ask for a short headline in the finding contract")
+	}
+}
+
+func TestEscapeControlCharsInStrings(t *testing.T) {
+	cases := map[string]string{
+		"[\"say \\\"hi\\\"\tnow\"]": "[\"say \\\"hi\\\"\\tnow\"]",
+		"[\n  \"a\",\t\"b\"\n]":     "[\n  \"a\",\t\"b\"\n]",
+		"[\"a\rb\x01c\"]":           "[\"a\\rb\\u0001c\"]",
+	}
+	for in, want := range cases {
+		if got := escapeControlCharsInStrings(in); got != want {
+			t.Errorf("escapeControlCharsInStrings(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseAgentJSON_AcceptsDispositionFields(t *testing.T) {
+	raw := `[
+	 {"id":"A-1","file_path":"a.go","line_number":3,"importance":"MEDIUM","comment_body":"Nil deref.","sources":["FP-2"],
+	  "finding_contract":{"schema_version":1,"finding_kind":"production_behavior","materiality":"current_impact","current_impact":"Requests crash.","counterfactual_trigger":null,"falsifiability":"unknown","falsifiable_condition":null,"expected_observable":null,"subjects":[{"kind":"file","path":"a.go"}],"uncertainty":"None.","severity_rationale":"Crash."}},
+	 {"file_path":"b.go","line_number":9,"disposition":{"source_id":"FP-1","state":"rejected","reason":"The guard on line 7 returns before the lookup.","evidence":[{"file":"b.go","line":7}]}},
+	 {"file_path":"SUMMARY","line_number":0,"summary":{"verdict":"request_changes","upshot":"Requests can crash when the config is missing.","priority_ids":["A-1"],"notes":"The PR wires the new handler correctly otherwise."}}
+	]`
+	got, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries", len(got))
+	}
+	if got[0].ID != "A-1" || len(got[0].Sources) != 1 || got[0].Sources[0] != "FP-2" {
+		t.Errorf("finding id/sources not parsed: %+v", got[0])
+	}
+	d := got[1].Disposition
+	if d == nil || d.SourceID != "FP-1" || d.State != "rejected" || d.Reason == "" || len(d.Evidence) != 1 || d.Evidence[0].Line != 7 {
+		t.Errorf("disposition not parsed: %+v", got[1])
+	}
+	s := got[2].Summary
+	if s == nil || s.Verdict != "request_changes" || len(s.PriorityIDs) != 1 {
+		t.Errorf("summary not parsed: %+v", got[2])
+	}
+}
+
+func TestRenderStructuredSummaries_WritesDeterministicProse(t *testing.T) {
+	comments := []types.LineComment{
+		{ID: "A-1", FilePath: "a.go", LineNumber: 3, Importance: "MEDIUM", CommentBody: "Nil deref.",
+			FindingContract: &types.FindingContract{Headline: "Requests crash on missing config"}},
+		{FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "request_changes", Upshot: "Requests can crash when the config is missing.", PriorityIDs: []string{"A-1", "nope"}, Notes: "Otherwise the wiring is correct."}},
+	}
+	RenderStructuredSummaries(comments)
+	want := "Verdict: request changes.\n\nRequests can crash when the config is missing.\n\nFix first:\n1. Requests crash on missing config (a.go:3)\n\nOtherwise the wiring is correct."
+	if comments[1].CommentBody != want {
+		t.Errorf("rendered summary:\n%q\nwant:\n%q", comments[1].CommentBody, want)
+	}
+	plain := []types.LineComment{{FilePath: "SUMMARY", CommentBody: "Verdict: approve. All good."}}
+	RenderStructuredSummaries(plain)
+	if plain[0].CommentBody != "Verdict: approve. All good." {
+		t.Errorf("a prose summary must pass through untouched")
+	}
+}
+
+func TestComputeImportanceCounts_SkipsInactiveRecords(t *testing.T) {
+	r := &ReviewResult{Comments: []types.LineComment{
+		{FilePath: "a.go", Importance: "CRITICAL"},
+		{FilePath: "b.go", Importance: "MEDIUM", Inactive: true, State: StateRejected},
+		{FilePath: "c.go", Importance: "LOW"},
+	}}
+	r.ComputeImportanceCounts()
+	if r.CriticalCount != 1 || r.MediumCount != 0 || r.LowCount != 1 {
+		t.Fatalf("counts = %d/%d/%d, inactive records must not count", r.CriticalCount, r.MediumCount, r.LowCount)
+	}
+}
+
+func TestComputeImportanceCounts_SkipsNarrativeEntries(t *testing.T) {
+	r := &ReviewResult{Comments: []types.LineComment{{FilePath: "SUMMARY", Importance: "CRITICAL"}, {FilePath: "CHECK", Importance: "MEDIUM"}, {FilePath: "a.go", Importance: "LOW"}}}
+	r.ComputeImportanceCounts()
+	if r.CriticalCount != 0 || r.MediumCount != 0 || r.LowCount != 1 {
+		t.Fatalf("counts = %d/%d/%d", r.CriticalCount, r.MediumCount, r.LowCount)
 	}
 }

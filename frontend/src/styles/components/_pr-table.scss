@@ -116,24 +116,6 @@
     }
   }
 
-  &__generate-btn {
-    @include button-base;
-    color: $color-link;
-    border-color: $color-link;
-
-    &:hover:not(:disabled) {
-      background: $color-link;
-      // The page background, not literal white: on a light theme the accent is
-      // dark and needs light text, on a dark theme the reverse.
-      color: $color-bg-primary;
-    }
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-  }
-
   &__notes {
     width: 120px;
     padding: 0 !important;
@@ -142,6 +124,12 @@
   &__ci-status {
     text-align: center;
     width: 40px;
+  }
+
+  &__confidence {
+    text-align: center;
+    width: 64px;
+    white-space: nowrap;
   }
 }
 

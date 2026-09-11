@@ -34,6 +34,12 @@ export function Header() {
         >
           Stats
         </a>
+        <a
+          href="/settings"
+          className="app-header__action-link"
+        >
+          Settings
+        </a>
         <button
           onClick={handleTriggerPoll}
           disabled={isPolling}
