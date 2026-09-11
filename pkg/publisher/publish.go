@@ -48,6 +48,7 @@ type Report struct {
 	Annotations      int
 	StillOpen        int
 	Fixed            int
+	Confidence       int
 }
 
 const summaryFingerprint = "summary"
@@ -112,7 +113,8 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy)
 	r.ShowUnverified = p.Policy.ShowUnverified
 	d := r.diff()
-	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), StillOpen: d.StillOpen, Fixed: d.Fixed}
+	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), StillOpen: d.StillOpen, Fixed: d.Fixed,
+		Confidence: Confidence(r.Findings, r.RequiredCheckViolated)}
 	now := p.now()
 
 	postedThisRound := map[string]int64{}
