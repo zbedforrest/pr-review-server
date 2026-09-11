@@ -1,7 +1,18 @@
 // Node 22+ defines an experimental `localStorage` global that reads as
 // undefined unless --localstorage-file is set, and the jsdom environment does
 // not replace globals that already exist. Give tests a working Storage.
-if (typeof window !== 'undefined' && !window.localStorage) {
+function storageUsable(): boolean {
+  try {
+    const storage = window.localStorage;
+    if (!storage) return false;
+    storage.getItem('__probe__');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (typeof window !== 'undefined' && !storageUsable()) {
   const store = new Map<string, string>();
   const storage: Storage = {
     get length() {
