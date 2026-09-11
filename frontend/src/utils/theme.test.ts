@@ -216,6 +216,57 @@ describe('theme catalog', () => {
   });
 });
 
+describe('pre-paint script', () => {
+  const script = /<script>([\s\S]*?)<\/script>/.exec(indexHtml)?.[1] ?? '';
+
+  function paintWith({ stored, storageBlocked = false, prefersLight = false }: {
+    stored?: string;
+    storageBlocked?: boolean;
+    prefersLight?: boolean;
+  }): string | null {
+    if (storageBlocked) {
+      vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new Error('SecurityError');
+      });
+    } else if (stored !== undefined) {
+      window.localStorage.setItem(THEME_STORAGE_KEY, stored);
+    }
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: prefersLight }) as unknown as MediaQueryList)
+    );
+    new Function(script)();
+    return document.documentElement.getAttribute('data-theme');
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    document.documentElement.removeAttribute('data-theme');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('is non-empty', () => {
+    expect(script).toContain('data-theme');
+  });
+
+  it('applies the stored theme', () => {
+    expect(paintWith({ stored: 'nord', prefersLight: true })).toBe('nord');
+  });
+
+  it('follows the OS preference when nothing is stored', () => {
+    expect(paintWith({ prefersLight: true })).toBe('light');
+    expect(paintWith({ prefersLight: false })).toBe('dark');
+  });
+
+  it('still follows the OS preference when storage is blocked', () => {
+    expect(paintWith({ storageBlocked: true, prefersLight: true })).toBe('light');
+  });
+});
+
 describe('stylesheets', () => {
   const stylesheets = import.meta.glob('/src/**/*.scss', {
     query: '?raw',
