@@ -3,7 +3,8 @@ import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/reac
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { Header, StatusBar } from '@/components/layout';
 import { FilterBar } from '@/components/filters';
-import { ReviewPRsSection } from '@/components/prs';
+import { NeedsReReviewSection, ReviewPRsSection } from '@/components/prs';
+import { useNeedsReReview } from '@/hooks/useNeedsReReview';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { useUrlFilters } from '@/hooks/useUrlFilters';
 import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
@@ -61,6 +62,7 @@ class ErrorBoundary extends Component<
 function AppContent() {
   const queryClient = useQueryClient();
   const { trackSearch } = useTelemetry();
+  const { keys: reReviewKeys } = useNeedsReReview();
 
   // Connection status state
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
@@ -102,6 +104,8 @@ function AppContent() {
       <Header />
       <StatusBar connectionStatus={connectionStatus} />
 
+      <NeedsReReviewSection />
+
       <div className="search-controls">
         <FilterBar
           className="search-controls__filter"
@@ -130,6 +134,7 @@ function AppContent() {
         selectedTeams={selectedTeams}
         selectedRepos={selectedRepos}
         selectedStates={selectedStates}
+        excludeKeys={reReviewKeys}
       />
     </div>
   );

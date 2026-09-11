@@ -20,6 +20,8 @@ interface ReviewPRsSectionProps {
   selectedTeams?: string[];
   selectedRepos?: string[];
   selectedStates?: PRStateFilter[];
+  /** prKey()s already shown elsewhere on the page (the re-review pin above the filters). */
+  excludeKeys?: ReadonlySet<string>;
 }
 
 export function ReviewPRsSection({
@@ -28,6 +30,7 @@ export function ReviewPRsSection({
   selectedTeams = [],
   selectedRepos = [],
   selectedStates = [],
+  excludeKeys,
 }: ReviewPRsSectionProps) {
   const { data: prs, isLoading, error } = usePRs();
   const { data: currentUser } = useCurrentUser();
@@ -85,8 +88,9 @@ export function ReviewPRsSection({
   // The two built-in sections keep their fixed membership: hidden > via_manual
   // wins over anything the user configures, so a manually requested PR still
   // lands in exactly one place and hidden rows stay out of the way.
-  const visiblePRs = allPRs.filter((pr) => !pr.hidden);
-  const hasHiddenPRs = allPRs.length > visiblePRs.length;
+  const sectionPool = excludeKeys ? allPRs.filter((pr) => !excludeKeys.has(prKey(pr))) : allPRs;
+  const visiblePRs = sectionPool.filter((pr) => !pr.hidden);
+  const hasHiddenPRs = sectionPool.length > visiblePRs.length;
   const hasRequestedPRs = visiblePRs.some((pr) => pr.via_manual);
 
   // The filter bar's criteria apply on top of every section's own filters.
@@ -107,7 +111,7 @@ export function ReviewPRsSection({
     username
   );
   const hiddenPRs = filterAndSortPRs(
-    allPRs.filter((pr) => pr.hidden),
+    sectionPool.filter((pr) => pr.hidden),
     globalCriteria,
     username
   );

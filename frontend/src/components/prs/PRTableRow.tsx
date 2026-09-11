@@ -12,14 +12,18 @@ import { ReviewLinkMenu } from './ReviewLinkMenu';
 import { RowActionsMenu } from './RowActionsMenu';
 import { buildViaTeamParts } from '@/utils/teamFilters';
 
+export type PRRowVariant = 'default' | 'attention';
+
 interface PRTableRowProps {
   pr: PR;
   showViaTeams?: boolean;
+  variant?: PRRowVariant;
 }
 
 export const PRTableRow = memo(function PRTableRow({
   pr,
-  showViaTeams = true
+  showViaTeams = true,
+  variant = 'default'
 }: PRTableRowProps) {
   const deleteMutation = useDeletePR();
   const setHiddenMutation = useSetPRHidden();
@@ -79,13 +83,26 @@ export const PRTableRow = memo(function PRTableRow({
   }, [pr.owner, pr.repo, pr.number, prUrl, track]);
 
   return (
-    <tr>
+    <tr className={variant === 'attention' ? 'pr-table__row--attention' : undefined}>
       <td>
         <a href={prUrl} target="_blank" rel="noopener noreferrer" title="Alt/Option-click to open in this tab" onClick={handleOpenPr}>
           {pr.owner}/{pr.repo} #{pr.number}
         </a>
         {pr.draft && <span className="pr-table__draft-indicator"> (Draft)</span>}
         <div className="pr-table__title">{pr.title}</div>
+        {variant === 'attention' && (
+          <div className="pr-table__attention">
+            <span
+              className="pr-table__attention-badge"
+              title="The current head differs from the commit you reviewed when requesting changes"
+            >
+              Updated since your review
+            </span>
+            <a className="pr-table__attention-link" href={`${prUrl}/files`} target="_blank" rel="noopener noreferrer">
+              Review on GitHub
+            </a>
+          </div>
+        )}
       </td>
       <td>{pr.author}</td>
       <td>

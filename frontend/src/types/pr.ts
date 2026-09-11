@@ -50,6 +50,9 @@ export interface PR {
   // review rounds have been posted so far. Optional for the older-payload reason.
   published_to_github?: boolean;
   published_rounds?: number;
+  // The author pushed after the user requested changes and the user has not
+  // reviewed the new head. Optional for the older-payload reason.
+  needs_attention?: boolean;
 }
 
 export interface ReviewRun {

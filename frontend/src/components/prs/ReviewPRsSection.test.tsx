@@ -341,6 +341,33 @@ describe('ReviewPRsSection', () => {
     expect(getByRole('button', { name: /hidden \(1\)/i })).toBeTruthy();
   });
 
+  it('leaves excluded keys out of every section but still lists hidden ones under Hidden', () => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    usePRsMock.mockReturnValue({
+      data: [
+        makePR({ number: 101, title: 'Pinned re-review PR', needs_attention: true }),
+        makePR({ number: 102, title: 'Pinned requested PR', needs_attention: true, via_manual: true }),
+        makePR({ number: 103, title: 'Ordinary review PR' }),
+        makePR({ number: 104, title: 'Hidden flagged PR', needs_attention: true, hidden: true }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    const { getByRole, getByText, queryByText, getAllByTestId } = render(
+      <ReviewPRsSection
+        excludeKeys={new Set(['test-org/test-repo/101', 'test-org/test-repo/102'])}
+      />
+    );
+
+    expect(queryByText(/^Requested by Me \(/)).toBeNull();
+    expect(getByText('PRs to Review (1)')).toBeTruthy();
+    expect(getByRole('button', { name: /hidden \(1\)/i })).toBeTruthy();
+    for (const table of getAllByTestId('pr-table-rows')) {
+      expect(table.textContent).not.toContain('Pinned');
+    }
+  });
+
   it('applies the search term to the Hidden section with the same semantics', () => {
     useTelemetryMock.mockReturnValue({ track: vi.fn() });
     usePRsMock.mockReturnValue({

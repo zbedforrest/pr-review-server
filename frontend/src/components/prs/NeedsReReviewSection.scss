@@ -1,0 +1,40 @@
+@use '../../styles/abstracts/variables' as *;
+
+.needs-re-review {
+  margin-bottom: $spacing-3xl;
+
+  &__explanation {
+    margin: -8px 0 $spacing-lg;
+    color: $color-text-tertiary;
+    font-size: $font-size-sm;
+  }
+}
+
+.pr-table__row--attention {
+  border-left: 3px solid $color-warning;
+  background: rgba($color-warning, 0.06);
+}
+
+.pr-table__attention {
+  display: flex;
+  align-items: center;
+  gap: $spacing-md;
+  margin-top: $spacing-xs;
+  font-size: $font-size-sm;
+}
+
+.pr-table__attention-badge {
+  color: $color-warning-text;
+  font-weight: 600;
+  cursor: help;
+}
+
+.pr-table__attention-link {
+  color: $color-link;
+  text-decoration: none;
+
+  &:hover {
+    color: $color-link-hover;
+    text-decoration: underline;
+  }
+}
