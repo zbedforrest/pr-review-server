@@ -258,6 +258,10 @@ func (p *Poller) mergeConfidence(pr github.PullRequest, published *publisher.Rep
 	if err != nil {
 		return 0, fmt.Errorf("decode sidecar: %w", err)
 	}
+	return p.sidecarConfidence(pr, &pl)
+}
+
+func (p *Poller) sidecarConfidence(pr github.PullRequest, pl *payload.Payload) (int, error) {
 	findings := pl.Findings
 	if ledger, ok := p.db.(publisher.Ledger); ok {
 		previous, err := ledger.GetPublishedFindingsForPR(pr.Owner, pr.Repo, pr.Number)
@@ -267,4 +271,16 @@ func (p *Poller) mergeConfidence(pr github.PullRequest, published *publisher.Rep
 		findings = publisher.WithoutDismissed(findings, previous)
 	}
 	return publisher.Confidence(findings, pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0), nil
+}
+
+// storeMergeConfidence writes the score for the head this run reviewed. A
+// failure here is benign (the review itself is already saved) so it only warns.
+func (p *Poller) storeMergeConfidence(runID string, pr github.PullRequest, confidence int, scoreErr error) {
+	if scoreErr != nil {
+		log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped: %v", runID, scoreErr)
+	} else if stored, setErr := p.db.SetPRMergeConfidence(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, confidence); setErr != nil {
+		log.Printf("[REVIEWER] WARN: merge confidence for run %s not stored: %v", runID, setErr)
+	} else if !stored {
+		log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped, PR %d head moved past %s", runID, pr.Number, pr.CommitSHA)
+	}
 }

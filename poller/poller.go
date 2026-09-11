@@ -3448,6 +3448,10 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						if !p.completeQueuedReviewJobFromCache(job, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON) && job.TriggerSource != "poller" {
 							log.Printf("[REVIEWER] WARN: cached review projected but run %s was not completed", job.RunID)
 						}
+						if cachedPayload != nil {
+							confidence, confidenceErr := p.sidecarConfidence(pr, cachedPayload)
+							p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+						}
 						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 					} else {
 						log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
@@ -3782,13 +3786,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 				published = p.publishGitHubReview(prCtx, pr, sidecarBody)
 			}
 			confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
-			if confidenceErr != nil {
-				log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped: %v", job.RunID, confidenceErr)
-			} else if stored, setErr := p.db.SetPRMergeConfidence(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, confidence); setErr != nil {
-				log.Printf("[REVIEWER] WARN: merge confidence for run %s not stored: %v", job.RunID, setErr)
-			} else if !stored {
-				log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped, PR %d head moved past %s", job.RunID, pr.Number, pr.CommitSHA)
-			}
+			p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
 			verdict := service.VerdictFromComments(reviewResult.Comments)
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q, confidence=%d)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, confidence)

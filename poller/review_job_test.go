@@ -1207,6 +1207,50 @@ func TestCacheRestoreUsesExactCommitSidecarMetadata(t *testing.T) {
 	assert.Contains(t, run.ActualModelsJSON, `"served_model":"fallback"`)
 }
 
+func TestCacheRestoreScoresMergeConfidenceFromSidecar(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, NewMockReviewGenerator())
+	p.reviewDir = t.TempDir()
+	job := customReviewJob(t, "run-24400000000000000000000000000002")
+	job.Force = false
+	storage.ExistingReviews[fmt.Sprintf("%s/%s/%d/%s", job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA)] = true
+	sidecar := payload.Payload{
+		SchemaVersion: "1", Owner: job.PR.Owner, Repo: job.PR.Repo,
+		PRNumber: job.PR.Number, CommitSHA: job.PR.CommitSHA,
+		Counts:         payload.Counts{Critical: 1},
+		RequiredChecks: &payload.RequiredChecksInfo{Issued: 1, Answered: 1, Violated: 1},
+		Findings: []payload.Finding{{
+			ID: "f.go:0:abc123def456", Severity: "critical", Provenance: "agent", State: "confirmed", Active: true,
+			File: "f.go", Line: 3, Comment: "Real bug.",
+		}},
+		ReviewRun: &payload.ReviewRunInfo{RunID: "run-24400000000000000000000000000001"},
+	}
+	body, err := json.Marshal(sidecar)
+	require.NoError(t, err)
+	sidecarName := gcs.ReviewJSONFileName(gcs.ReviewFileName(job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA))
+	require.NoError(t, os.WriteFile(filepath.Join(p.reviewDir, sidecarName), body, 0600))
+	previous := 5
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "completed", MergeConfidence: &previous,
+	}))
+	require.NoError(t, database.ResetPRToOutdated(job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA))
+	cleared, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.Nil(t, cleared.MergeConfidence)
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "completed", pr.Status)
+	require.NotNil(t, pr.MergeConfidence, "a review restored from cache is still a completed review and gets its score")
+	assert.Equal(t, 2, *pr.MergeConfidence, "one critical costs 2 and the violated check costs 1")
+}
+
 func TestUnreadableCacheMetadataRegeneratesInsteadOfPublishingZeroCounts(t *testing.T) {
 	database := NewMockDatabase()
 	storage := NewMockReviewStorage()
