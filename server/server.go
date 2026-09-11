@@ -124,6 +124,8 @@ type PRResponse struct {
 	// Overall AI review verdict parsed from the SUMMARY entry:
 	// "request_changes", "approve_suggestions", "approve", or "" (unknown)
 	ReviewVerdict string `json:"review_verdict"`
+	// Merge confidence 0..5 for the latest review; null until it is scored
+	MergeConfidence *int `json:"merge_confidence"`
 	// Latest review ran on a fallback model, not the requested one
 	ModelFallback bool `json:"model_fallback"`
 	// Structured execution and model provenance for the latest review.
@@ -466,6 +468,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			MediumCount:       dbPR.MediumCount,
 			LowCount:          dbPR.LowCount,
 			ReviewVerdict:     dbPR.ReviewVerdict,
+			MergeConfidence:   completedMergeConfidence(dbPR),
 			PublishedToGitHub: isPublished,
 			PublishedRounds:   summaryRow.Rounds,
 			ModelFallback:     dbPR.ModelFallback,
@@ -1661,6 +1664,15 @@ func prStateOrOpen(state string) string {
 	return state
 }
 
+// completedMergeConfidence hides a stored score once the row leaves completed,
+// so a medal never describes a review that is regenerating or errored.
+func completedMergeConfidence(pr db.PR) *int {
+	if pr.Status != "completed" {
+		return nil
+	}
+	return pr.MergeConfidence
+}
+
 // getPRResponse constructs a PR response using the default dev-mode user context.
 func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 	return s.getPRResponseForUser(s.getDevUserID(), owner, repo, number)
@@ -1785,6 +1797,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		MediumCount:       pr.MediumCount,
 		LowCount:          pr.LowCount,
 		ReviewVerdict:     pr.ReviewVerdict,
+		MergeConfidence:   completedMergeConfidence(*pr),
 		PublishedToGitHub: isPublished,
 		PublishedRounds:   summaryRow.Rounds,
 		ModelFallback:     pr.ModelFallback,

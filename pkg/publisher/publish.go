@@ -48,6 +48,7 @@ type Report struct {
 	Annotations      int
 	StillOpen        int
 	Fixed            int
+	Confidence       int
 }
 
 const summaryFingerprint = "summary"
@@ -70,32 +71,18 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 
 	var summaryRow *db.PublishedFinding
 	published := map[string]*db.PublishedFinding{}
-	dismissed := map[string]bool{}
 	for i := range r.Previous {
 		row := &r.Previous[i]
 		switch row.Kind {
 		case db.PublishedKindSummary:
 			summaryRow = row
 		case db.PublishedKindFinding, db.PublishedKindAnnotation:
-			switch row.State {
-			case db.PublishedStateOpen:
+			if row.State == db.PublishedStateOpen {
 				published[row.Fingerprint] = row
-			case db.PublishedStateDismissed:
-				dismissed[row.Fingerprint] = true
 			}
 		}
 	}
-	// A finding conceded in conversation stays conceded: it is neither posted,
-	// counted nor refreshed, even if a later review raises it again.
-	if len(dismissed) > 0 {
-		kept := make([]payload.Finding, 0, len(r.Findings))
-		for _, f := range r.Findings {
-			if !dismissed[f.ID] {
-				kept = append(kept, f)
-			}
-		}
-		r.Findings = kept
-	}
+	r.Findings = WithoutDismissed(r.Findings, r.Previous)
 	if r.RoundNumber == 0 {
 		r.RoundNumber = 1
 		if summaryRow != nil {
@@ -112,7 +99,8 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy)
 	r.ShowUnverified = p.Policy.ShowUnverified
 	d := r.diff()
-	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), StillOpen: d.StillOpen, Fixed: d.Fixed}
+	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), StillOpen: d.StillOpen, Fixed: d.Fixed,
+		Confidence: Confidence(r.Findings, r.RequiredCheckViolated)}
 	now := p.now()
 
 	postedThisRound := map[string]int64{}
@@ -248,6 +236,28 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		}
 	}
 	return rep, nil
+}
+
+// WithoutDismissed drops findings the ledger records as conceded. A finding
+// conceded in conversation stays conceded: it is neither posted, counted nor
+// refreshed, even if a later review raises it again.
+func WithoutDismissed(findings []payload.Finding, previous []db.PublishedFinding) []payload.Finding {
+	dismissed := map[string]bool{}
+	for _, row := range previous {
+		if row.State == db.PublishedStateDismissed && (row.Kind == db.PublishedKindFinding || row.Kind == db.PublishedKindAnnotation) {
+			dismissed[row.Fingerprint] = true
+		}
+	}
+	if len(dismissed) == 0 {
+		return findings
+	}
+	kept := make([]payload.Finding, 0, len(findings))
+	for _, f := range findings {
+		if !dismissed[f.ID] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
 }
 
 func isNotFound(err error) bool {

@@ -277,6 +277,13 @@ type MockDatabase struct {
 		PRNumber     int
 		NewCommitSHA string
 	}
+	SetPRMergeConfidenceCalls []struct {
+		Owner           string
+		Repo            string
+		PRNumber        int
+		ProjectionRunID string
+		Score           int
+	}
 	UpdateUserReviewStatusCalls []struct {
 		UserID int
 		PRID   int
@@ -398,6 +405,7 @@ func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCo
 		pr.Status = "pending"
 		pr.ReviewHTMLPath = ""
 		pr.ErrorMessage = ""
+		pr.MergeConfidence = nil
 	}
 	delete(m.ProjectionRunIDs, key)
 	return nil
@@ -416,6 +424,7 @@ func (m *MockDatabase) SetPRGenerating(owner, repo string, prNumber int, commitS
 		pr.Author = author
 		pr.CreatedAt = createdAt
 		pr.Draft = draft
+		pr.MergeConfidence = nil
 	} else {
 		m.PRs[key] = &db.PR{
 			RepoOwner:       owner,
@@ -499,6 +508,7 @@ func (m *MockDatabase) SetPRGeneratingForReviewRun(owner, repo string, prNumber 
 	pr.CreatedAt = createdAt
 	pr.Draft = draft
 	pr.ErrorMessage = ""
+	pr.MergeConfidence = nil
 	m.ProjectionRunIDs[key] = runID
 	return nil
 }
@@ -616,6 +626,28 @@ func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo strin
 	pr.ReviewRunID = reviewRunID
 	pr.ReviewRunJSON = reviewRunJSON
 	m.ProjectionRunIDs[key] = projectionRunID
+	return true, nil
+}
+
+func (m *MockDatabase) SetPRMergeConfidence(owner, repo string, prNumber int, projectionRunID string, score int) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.SetPRMergeConfidenceCalls = append(m.SetPRMergeConfidenceCalls, struct {
+		Owner           string
+		Repo            string
+		PRNumber        int
+		ProjectionRunID string
+		Score           int
+	}{owner, repo, prNumber, projectionRunID, score})
+	if score < 0 || score > 5 {
+		return false, fmt.Errorf("set PR merge confidence for run %s: score %d is outside 0..5", projectionRunID, score)
+	}
+	key := prDBKey(owner, repo, prNumber)
+	pr := m.PRs[key]
+	if pr == nil || pr.Status != "completed" || m.ProjectionRunIDs[key] != projectionRunID {
+		return false, nil
+	}
+	pr.MergeConfidence = &score
 	return true, nil
 }
 

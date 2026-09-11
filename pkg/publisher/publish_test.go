@@ -291,3 +291,24 @@ func TestPublishNeverRepostsOrCountsADismissedFinding(t *testing.T) {
 		t.Errorf("dismissed row must be left alone: %+v", ledger.rows["c1"])
 	}
 }
+
+func TestPublishReportsTheConfidenceItRendered(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	first := publishRound(t, gh, ledger, roundOne())
+	if first.Confidence != 2 {
+		t.Errorf("round one Confidence = %d, want 2", first.Confidence)
+	}
+	ledger.rows["c1"].State = db.PublishedStateDismissed
+
+	r2 := roundOne()
+	r2.HeadSHA = "sha-round-2"
+	r2.RoundNumber = 0
+	rep := publishRound(t, gh, ledger, r2)
+
+	if rep.Confidence != 4 {
+		t.Errorf("Confidence after conceding c1 = %d, want 4 (the sidecar alone would say %d)", rep.Confidence, Confidence(r2.Findings, false))
+	}
+	if edited := gh.issueEdits[501]; !strings.Contains(edited, "merge confidence 4/5") {
+		t.Errorf("summary must render the same number the report carries:\n%s", edited)
+	}
+}
