@@ -6,7 +6,8 @@ $panel-width: 320px;
 .confidence-legend {
   position: fixed;
   z-index: 1000;
-  width: $panel-width;
+  width: min($panel-width, calc(100vw - 16px));
+  box-sizing: border-box;
   overflow-y: auto;
   background: $color-bg-secondary;
   border: 1px solid $color-border;

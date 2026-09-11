@@ -65,7 +65,7 @@ export function ConfidenceLegend() {
           role="dialog"
           aria-label="Merge confidence legend"
           tabIndex={-1}
-          style={{ top: position.top, left: position.left, width: PANEL_WIDTH, maxHeight: position.maxHeight }}
+          style={{ top: position.top, left: position.left, maxHeight: position.maxHeight }}
           onBlur={closeWhenFocusLeaves}
         >
           <ul className="confidence-legend__list">
