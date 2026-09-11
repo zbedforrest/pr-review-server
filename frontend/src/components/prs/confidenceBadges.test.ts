@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { CONFIDENCE_BADGES } from './confidenceBadges';
+import trophyCase from '../../../badges/trophy-case.json';
 
 describe('CONFIDENCE_BADGES', () => {
+  it('matches what scripts/gen-badges.mjs produces from badges/trophy-case.json', () => {
+    const generated = [...trophyCase.badges]
+      .sort((a, b) => a.score - b.score)
+      .map((b) => ({ score: b.score, name: b.name, rankWord: b.rank_word, tagline: b.tagline, svg: b.svg }));
+    expect(CONFIDENCE_BADGES).toStrictEqual(generated);
+  });
+
   it('has one medal per score, ascending from 0 to 5', () => {
     expect(CONFIDENCE_BADGES.map((b) => b.score)).toEqual([0, 1, 2, 3, 4, 5]);
   });
