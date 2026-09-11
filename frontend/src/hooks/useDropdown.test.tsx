@@ -97,6 +97,16 @@ describe('computeDropdownPosition', () => {
     expect(pos.placement).toBe('top');
     expect(pos.maxHeight).toBe(670 - 6 - 8); // 656
   });
+
+  it('never reports a negative maxHeight when the anchor sits below the viewport', () => {
+    const pos = computeDropdownPosition(
+      rect({ top: 800, bottom: 820 }),
+      VIEWPORT,
+      { panelWidth: 240, gap: 6, viewportMargin: 8 }
+    );
+    expect(pos.placement).toBe('bottom');
+    expect(pos.maxHeight).toBe(0);
+  });
 });
 
 // A tiny harness that wires the hook's refs to real DOM nodes so we can

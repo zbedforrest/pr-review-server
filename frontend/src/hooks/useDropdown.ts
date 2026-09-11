@@ -52,9 +52,10 @@ export function computeDropdownPosition(
   const top = placement === 'bottom'
     ? anchor.bottom + gap
     : anchor.top - gap - (panelHeight ?? 0);
-  const maxHeight = placement === 'bottom'
+  const room = placement === 'bottom'
     ? viewport.height - top - viewportMargin
     : anchor.top - gap - viewportMargin;
+  const maxHeight = Math.max(0, room);
 
   return { top, left, placement, maxHeight };
 }
