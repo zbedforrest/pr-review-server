@@ -390,3 +390,65 @@ func TestHandleTriggerReview_EmitsStatusSnapshotAfterPRUpdate(t *testing.T) {
 	statusUpdate := readWebSocketMessage(t, conn)
 	assert.Equal(t, "status_snapshot", statusUpdate.Type)
 }
+
+func TestBroadcaster_StalledClientIsDroppedAndOthersStillReceive(t *testing.T) {
+	server, database := newWebSocketTestServerApp(t, "")
+	defer database.Close()
+	server.cfg.GitHubAppClientID = "client-id"
+	server.wsWriteTimeout = 200 * time.Millisecond
+
+	stalledUser := createTestUser(t, database, "stalled-user")
+	stalledSession := createTestSession(t, database, stalledUser.ID, time.Now().Add(time.Hour))
+	healthyUser := &db.User{GitHubID: 67890, GitHubUsername: "healthy-user"}
+	require.NoError(t, database.CreateUser(healthyUser))
+	healthySession := createTestSession(t, database, healthyUser.ID, time.Now().Add(2*time.Hour))
+
+	go server.broadcaster()
+	ts := startWebSocketTestServer(t, server)
+	defer ts.Close()
+
+	stalled, _, err := dialWebSocket(t, wsURLFromHTTP(ts.URL)+"/ws", stalledSession.ID)
+	require.NoError(t, err)
+	defer stalled.Close()
+	healthy, _, err := dialWebSocket(t, wsURLFromHTTP(ts.URL)+"/ws", healthySession.ID)
+	require.NoError(t, err)
+	defer healthy.Close()
+	assert.Equal(t, "status_snapshot", readWebSocketMessage(t, healthy).Type)
+	waitForCondition(t, "two clients registered", func() bool {
+		server.clientsMux.RLock()
+		defer server.clientsMux.RUnlock()
+		return len(server.clients) == 2
+	})
+
+	// The stalled peer never reads, so a few multi-megabyte frames fill its
+	// socket buffers and the server's next write to it cannot complete.
+	filler := map[string]interface{}{"blob": strings.Repeat("x", 4<<20)}
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 4; i++ {
+			server.BroadcastEvent("filler", filler)
+		}
+		server.BroadcastEvent("ping", map[string]interface{}{"n": 1})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("BroadcastEvent blocked behind a stalled websocket client")
+	}
+
+	waitForCondition(t, "stalled client dropped", func() bool {
+		server.clientsMux.RLock()
+		defer server.clientsMux.RUnlock()
+		return len(server.clients) == 1
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		require.NoError(t, healthy.SetReadDeadline(deadline))
+		msg := readWebSocketMessage(t, healthy)
+		if msg.Type == "ping" {
+			break
+		}
+	}
+}
