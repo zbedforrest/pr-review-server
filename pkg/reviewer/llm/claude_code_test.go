@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,7 +31,22 @@ func TestMain(m *testing.M) {
 
 func runClaudeCodeHelperProcess() {
 	scenario := os.Getenv(claudeCodeHelperScenario)
-	if scenario == "timeout" {
+	switch scenario {
+	case "timeout":
+		time.Sleep(10 * time.Second)
+		os.Exit(0)
+	case "grandchild_holds_stdout", "detached_grandchild_holds_stdout":
+		grandchild := exec.Command(os.Args[0])
+		grandchild.Env = append(os.Environ(), claudeCodeHelperScenario+"=timeout")
+		grandchild.Stdout = os.Stdout
+		grandchild.Stderr = os.Stderr
+		if scenario == "detached_grandchild_holds_stdout" {
+			detachFromProcessGroup(grandchild)
+		}
+		if err := grandchild.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
 		time.Sleep(10 * time.Second)
 		os.Exit(0)
 	}
@@ -204,7 +220,9 @@ func TestClaudeCodeClientValidateAPIKeyChecksCommandOnly(t *testing.T) {
 
 func TestNewClaudeCodeClientTimeoutConfiguration(t *testing.T) {
 	t.Setenv("FIRST_PASS_CLAUDE_CODE_TIMEOUT_SEC", "17")
-	assert.Equal(t, 17*time.Second, NewClaudeCodeClient("model", "", false).timeout)
+	client := NewClaudeCodeClient("model", "", false)
+	assert.Equal(t, 17*time.Second, client.timeout)
+	assert.Equal(t, 5*time.Second, client.waitDelay)
 
 	for _, invalid := range []string{"", "0", "-1", "soon"} {
 		t.Run(invalid, func(t *testing.T) {

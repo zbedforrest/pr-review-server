@@ -18,6 +18,7 @@ const (
 	DefaultClaudeCodeModel          = "claude-fable-5-1"
 	defaultClaudeCodeCommand        = "claude"
 	defaultClaudeCodeTimeoutSeconds = 900
+	defaultClaudeCodeWaitDelay      = 5 * time.Second
 	claudeCodeSystemPrompt          = "You are an expert code reviewer. Follow the instructions in the user message exactly and reply with the review only."
 	claudeCodeDiagnosticLimit       = 500
 )
@@ -36,7 +37,10 @@ type ClaudeCodeClient struct {
 	model   string
 	effort  string
 	timeout time.Duration
-	verbose bool
+	// waitDelay bounds how long Wait blocks on output pipes held open by
+	// processes that survived the kill (see exec.Cmd.WaitDelay).
+	waitDelay time.Duration
+	verbose   bool
 
 	// environment is a test seam for re-executing the Go test binary. A nil
 	// value uses the production default-deny environment.
@@ -64,11 +68,12 @@ func NewClaudeCodeClient(model, thinking string, verbose bool) *ClaudeCodeClient
 		}
 	}
 	return &ClaudeCodeClient{
-		command: ClaudeCodeCommand(),
-		model:   model,
-		effort:  strings.ToLower(strings.TrimSpace(thinking)),
-		timeout: time.Duration(timeoutSeconds) * time.Second,
-		verbose: verbose,
+		command:   ClaudeCodeCommand(),
+		model:     model,
+		effort:    strings.ToLower(strings.TrimSpace(thinking)),
+		timeout:   time.Duration(timeoutSeconds) * time.Second,
+		waitDelay: defaultClaudeCodeWaitDelay,
+		verbose:   verbose,
 	}
 }
 
@@ -98,6 +103,8 @@ func (c *ClaudeCodeClient) GetReview(prompt string) (string, int32, int32, int32
 	defer os.RemoveAll(workDir)
 
 	cmd := exec.CommandContext(ctx, c.command, args...)
+	configureProcessGroup(cmd)
+	cmd.WaitDelay = c.waitDelay
 	cmd.Dir = workDir
 	cmd.Env = c.environment
 	if cmd.Env == nil {
