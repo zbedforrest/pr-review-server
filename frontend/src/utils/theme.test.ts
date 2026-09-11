@@ -211,6 +211,20 @@ describe('theme catalog', () => {
     }
   });
 
+  it('declares a color-scheme on every palette that matches its background', () => {
+    const blocks = [...palettesScss.matchAll(/\{([^}]*)\}/g)].map((match) => match[1]);
+    const schemeFor = (hex: string): 'light' | 'dark' => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? 'light' : 'dark';
+    };
+    expect(blocks.length).toBe(VALID_THEMES.length);
+    for (const block of blocks) {
+      const background = /--bg-primary:\s*(#[0-9a-f]{6})/i.exec(block)?.[1];
+      expect(background).toBeDefined();
+      expect(/color-scheme:\s*(\w+)/.exec(block)?.[1]).toBe(schemeFor(background!));
+    }
+  });
+
   it('keeps the pre-paint script in index.html on the same storage key', () => {
     expect(indexHtml).toContain(THEME_STORAGE_KEY);
   });

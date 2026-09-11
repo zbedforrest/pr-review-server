@@ -16,6 +16,7 @@
 /* Default Theme (Dark) */
 :root,
 [data-theme='dark'] {
+  color-scheme: dark;
   --bg-primary: #0f1115;
   --bg-secondary: #161b22;
   --bg-tertiary: #21262d;
@@ -60,6 +61,7 @@
 
 /* Light Theme */
 [data-theme='light'] {
+  color-scheme: light;
   --bg-primary: #ffffff;
   --bg-secondary: #f6f8fa;
   --bg-tertiary: #f0f3f6;
@@ -105,6 +107,7 @@
 /* GitHub Dark Theme — Primer's own palette, so the diff reads the way the
    same PR does on github.com (stronger line fills than the default dark). */
 [data-theme='github-dark'] {
+  color-scheme: dark;
   --bg-primary: #0d1117;
   --bg-secondary: #161b22;
   --bg-tertiary: #21262d;
@@ -145,6 +148,7 @@
 
 /* GitHub Light Theme */
 [data-theme='github-light'] {
+  color-scheme: light;
   --bg-primary: #ffffff;
   --bg-secondary: #f6f8fa;
   --bg-tertiary: #eaeef2;
@@ -187,6 +191,7 @@
 
 /* Gruvbox Dark Theme */
 [data-theme='gruvbox-dark'] {
+  color-scheme: dark;
   --bg-primary: #282828;
   --bg-secondary: #3c3836;
   --bg-tertiary: #504945;
@@ -231,6 +236,7 @@
 
 /* Gruvbox Light Theme */
 [data-theme='gruvbox-light'] {
+  color-scheme: light;
   --bg-primary: #fbf1c7;
   --bg-secondary: #f2e5bc;
   --bg-tertiary: #ebdbb2;
@@ -277,6 +283,7 @@
 // --bg-secondary left cards with no visible edge. Both now continue the
 // surface ladder up from base02 instead.
 [data-theme='solarized-dark'] {
+  color-scheme: dark;
   --bg-primary: #002b36;
   --bg-secondary: #073642;
   --bg-tertiary: #0a3f4d;
@@ -320,6 +327,7 @@
 // upstream flagged it as suspect in a comment. --bg-tertiary now steps down
 // from base2 instead, and --border no longer matches --bg-secondary.
 [data-theme='solarized-light'] {
+  color-scheme: light;
   --bg-primary: #fdf6e3;
   --bg-secondary: #eee8d5;
   --bg-tertiary: #e6dfc8;
@@ -360,6 +368,7 @@
 
 /* Monokai Theme */
 [data-theme='monokai'] {
+  color-scheme: dark;
   --bg-primary: #272822;
   --bg-secondary: #1e1f1c;
   --bg-tertiary: #3e3d32;
@@ -406,6 +415,7 @@
 // current-line #44475a, and the comment color drops to --text-tertiary where
 // it belongs, with a lightened tint carrying --text-secondary.
 [data-theme='dracula'] {
+  color-scheme: dark;
   --bg-primary: #282a36;
   --bg-secondary: #21222c;
   --bg-tertiary: #44475a;
@@ -446,6 +456,7 @@
 
 /* Nord Theme */
 [data-theme='nord'] {
+  color-scheme: dark;
   --bg-primary: #2e3440;
   --bg-secondary: #3b4252;
   --bg-tertiary: #434c5e;
@@ -486,6 +497,7 @@
 
 /* Night Owl Theme */
 [data-theme='night-owl'] {
+  color-scheme: dark;
   --bg-primary: #011627;
   --bg-secondary: #0b2942;
   --bg-tertiary: #1d3b53;
@@ -526,6 +538,7 @@
 
 /* Tokyo Night Theme */
 [data-theme='tokyo-night'] {
+  color-scheme: dark;
   --bg-primary: #24283b;
   --bg-secondary: #1a1b26;
   --bg-tertiary: #414868;
@@ -566,6 +579,7 @@
 
 /* Catppuccin Latte Theme (light flavor) */
 [data-theme='catppuccin-latte'] {
+  color-scheme: light;
   --bg-primary: #eff1f5;
   --bg-secondary: #e6e9ef;
   --bg-tertiary: #dce0e8;
@@ -606,6 +620,7 @@
 
 /* Catppuccin Frappé Theme */
 [data-theme='catppuccin-frappe'] {
+  color-scheme: dark;
   --bg-primary: #303446;
   --bg-secondary: #292c3c;
   --bg-tertiary: #414559;
@@ -646,6 +661,7 @@
 
 /* Catppuccin Macchiato Theme */
 [data-theme='catppuccin-macchiato'] {
+  color-scheme: dark;
   --bg-primary: #24273a;
   --bg-secondary: #1e2030;
   --bg-tertiary: #363a4f;
@@ -686,6 +702,7 @@
 
 /* Catppuccin Mocha Theme */
 [data-theme='catppuccin-mocha'] {
+  color-scheme: dark;
   --bg-primary: #1e1e2e;
   --bg-secondary: #181825;
   --bg-tertiary: #313244;
@@ -726,6 +743,7 @@
 
 /* Everforest Dark Theme */
 [data-theme='everforest'] {
+  color-scheme: dark;
   --bg-primary: #2d353b;
   --bg-secondary: #232a2e;
   --bg-tertiary: #3d484d;
@@ -766,6 +784,7 @@
 
 /* Rose Pine Moon Theme */
 [data-theme='rose-pine'] {
+  color-scheme: dark;
   --bg-primary: #232136;
   --bg-secondary: #2a273f;
   --bg-tertiary: #393552;
@@ -806,6 +825,7 @@
 
 /* SynthWave '84 Theme */
 [data-theme='synthwave-84'] {
+  color-scheme: dark;
   --bg-primary: #262335;
   --bg-secondary: #242231;
   --bg-tertiary: #34294f;
