@@ -33,14 +33,32 @@ describe('GenerateReviewForm', () => {
     await waitFor(() =>
       expect(screen.getByRole('status').textContent).toContain('Review started for acme/example#123')
     );
-    expect(generateReviewMock).toHaveBeenCalledWith({ owner: 'acme', repo: 'example', number: 123 });
+    expect(generateReviewMock).toHaveBeenCalledWith({ owner: 'acme', repo: 'example', number: 123, publish: true });
     expect(trackMock).toHaveBeenCalledWith('generate_review_by_url', {
       pr_owner: 'acme',
       pr_repo: 'example',
       pr_number: 123,
+      publish: true,
     });
     // Input clears on success so the next paste starts fresh.
     expect((screen.getByLabelText('PR URL to review') as HTMLInputElement).value).toBe('');
+  });
+
+  it('offers a "post to PR" checkbox that is checked by default', () => {
+    render(<GenerateReviewForm />);
+    const box = screen.getByRole('checkbox', { name: 'Post to PR as the Prism bot' }) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+  });
+
+  it('sends publish=false when the checkbox is unchecked', async () => {
+    generateReviewMock.mockResolvedValue({ status: 'success' });
+    render(<GenerateReviewForm />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Post to PR as the Prism bot' }));
+    submit('https://github.com/acme/example/pull/123');
+
+    await waitFor(() => expect(generateReviewMock).toHaveBeenCalledTimes(1));
+    expect(generateReviewMock).toHaveBeenCalledWith({ owner: 'acme', repo: 'example', number: 123, publish: false });
+    expect(trackMock).toHaveBeenCalledWith('generate_review_by_url', expect.objectContaining({ publish: false }));
   });
 
   it('rejects unparseable input without calling the API', async () => {

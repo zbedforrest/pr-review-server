@@ -5,16 +5,19 @@ import { useTelemetry } from '@/hooks/useTelemetry';
 import { useDropdown } from '@/hooks/useDropdown';
 import { formatRelativeTime } from '@/utils/formatDate';
 import { CriticalFindingsTriage } from './CriticalFindingsTriage';
+import { PILOT_BLOCKED_TITLE } from './publishPolicy';
 import './ReviewLinkMenu.scss';
 
 interface ReviewLinkMenuProps {
   pr: PR;
   /** URL to the rendered AI review (only passed when a review exists). */
   reviewUrl: string;
-  /** Starts a fresh review for this PR (same flow as the row actions menu). */
-  onTriggerReview: () => void;
+  /** Starts a fresh review; publish=true also posts it to the GitHub PR. */
+  onTriggerReview: (publish: boolean) => void;
   /** True while the trigger-review mutation is in flight. */
   reviewPending: boolean;
+  /** False when the PR author is outside the publish pilot, so posting is not offered. */
+  publishAllowed: boolean;
 }
 
 // Keep in sync with $panel-width in ReviewLinkMenu.scss.
@@ -24,7 +27,7 @@ const CLOSE_DELAY_MS = 200;
 
 const compactModelName = (model: string) => model.split('/').pop() || model;
 
-export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending }: ReviewLinkMenuProps) {
+export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending, publishAllowed }: ReviewLinkMenuProps) {
   const { track } = useTelemetry();
   // Positioning + reflow live in the shared hook; this menu drives open/close
   // off hover timers rather than clicks, so it wraps open()/close().
@@ -110,8 +113,8 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending }
   const reviewInFlight =
     reviewPending || pr.status === 'generating' || pr.status === 'agent_reviewing';
 
-  const handleRegenerate = useCallback(() => {
-    onTriggerReview();
+  const handleRegenerate = useCallback((publish: boolean) => {
+    onTriggerReview(publish);
     close();
   }, [onTriggerReview, close]);
 
@@ -129,6 +132,8 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending }
   // a different model than requested.
   const showFallbackBadge = !!reviewUrl && !!pr.model_fallback;
   const modelUses = pr.review_run?.models ?? [];
+  const publishedRounds = pr.published_rounds ?? 0;
+  const showPublished = !!pr.published_to_github;
 
   return (
     <span
@@ -145,6 +150,16 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending }
         onClick={() => track('view_review', trackOpts)}
       >
         View&nbsp;▾
+        {showPublished && (
+          <span
+            className="review-menu__published-glyph"
+            role="img"
+            aria-label={`Posted to PR · Reviews (${publishedRounds})`}
+            title={`Posted to PR · Reviews (${publishedRounds})`}
+          >
+            💬
+          </span>
+        )}
       </a>
       {showVerdictBadge && (
         <span
@@ -193,6 +208,11 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending }
               Reviewed {formatRelativeTime(pr.last_reviewed_at)}
               {shortSha && <> · <span className="review-menu__sha">{shortSha}</span></>}
             </div>
+            {showPublished && (
+              <div className="review-menu__meta">
+                Posted to PR · {publishedRounds} {publishedRounds === 1 ? 'round' : 'rounds'}
+              </div>
+            )}
             {modelUses.length > 0 && (
               <div className="review-menu__models" aria-label="Models used">
                 <span className="review-menu__models-label">Models</span>
@@ -265,11 +285,20 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending }
             type="button"
             className="review-menu__item review-menu__item--button"
             role="menuitem"
-            onClick={handleRegenerate}
+            onClick={() => handleRegenerate(true)}
+            disabled={reviewInFlight || !publishAllowed}
+            title={publishAllowed ? undefined : PILOT_BLOCKED_TITLE}
+          >
+            <span className="review-menu__icon">🔄</span> Regenerate and post PR comment
+          </button>
+          <button
+            type="button"
+            className="review-menu__item review-menu__item--button"
+            role="menuitem"
+            onClick={() => handleRegenerate(false)}
             disabled={reviewInFlight}
           >
-            <span className="review-menu__icon">🔄</span>{' '}
-            {reviewInFlight ? 'Reviewing…' : 'Regenerate review'}
+            <span className="review-menu__icon">🔄</span> Regenerate review HTML only
           </button>
 
           {/* CRITICAL-only outcome triage (dismiss-with-reason / acknowledge).

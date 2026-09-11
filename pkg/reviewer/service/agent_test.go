@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -738,6 +739,11 @@ func TestParseAgentJSON(t *testing.T) {
 		{"suffix with fenced code", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n```suggestion\nvals[0] = y\n```", 1},
 		{"brackets inside string body", `[{"file_path":"a.go","line_number":1,"comment_body":"use arr[0] and \"quoted [x]\" here"}]`, 1},
 		{"nested arrays in body", `[{"file_path":"a.go","line_number":1,"comment_body":"matrix"},{"file_path":"b.go","line_number":2,"comment_body":"[[1,2],[3]]"}]`, 2},
+		// Seen in production: a Go suggestion block carried literal tabs
+		// inside a JSON string, json.Unmarshal rejected the control
+		// character, and the whole review collapsed into one SUMMARY blob.
+		{"raw tab inside string", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"```suggestion\\n\tif x {\\n\t\treturn\\n\t}\\n```\"}]", 1},
+		{"raw newline inside string", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"line one\nline two\"}]", 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -749,6 +755,16 @@ func TestParseAgentJSON(t *testing.T) {
 				t.Errorf("got %d comments, want %d", len(got), c.want)
 			}
 		})
+	}
+}
+
+func TestParseAgentJSONPreservesRawControlCharactersAsEscapes(t *testing.T) {
+	got, err := parseAgentJSON("[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"a\tb\nc\"}]")
+	if err != nil {
+		t.Fatalf("parseAgentJSON: %v", err)
+	}
+	if got[0].CommentBody != "a\tb\nc" {
+		t.Errorf("body = %q, want tab and newline preserved", got[0].CommentBody)
 	}
 }
 
@@ -948,7 +964,7 @@ func TestPRScopeSection_EmptyInputsContributeNothing(t *testing.T) {
 	if got := prScopeSection("", nil); got != "" {
 		t.Errorf("empty inputs must produce no section, got %q", got)
 	}
-	prompt, err := buildAgentPromptContent("", nil, nil, nil, nil, nil)
+	prompt, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -989,5 +1005,133 @@ func TestPRScopeSection_FileListCapped(t *testing.T) {
 	}
 	if !strings.Contains(got, "...and 30 more") {
 		t.Errorf("missing truncation marker:\n%s", got)
+	}
+}
+
+func TestBuildAgentPromptContent_PRContextSitsBetweenScopeAndAlerts(t *testing.T) {
+	files := []diffFile{{Path: "a.go", Status: "modified", Added: []string{"x"}}}
+	gates := []types.LineComment{gateAlertFixture("settings-ref", "a.go")}
+	prContext := prContextSection("Tighten retries", "Fixes XO-370", []tickets.Ticket{{Key: "XO-370", Summary: "Retry policy", Type: "Story", Status: "Done", URL: "https://jira.acme.example/browse/XO-370"}})
+	if prContext == "" {
+		t.Fatal("prContextSection returned nothing")
+	}
+
+	got, err := buildAgentPromptContent("main", files, prContext, nil, gates, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := strings.Index(got, "--- PR SCOPE ---")
+	pr := strings.Index(got, "--- PULL REQUEST ---")
+	linked := strings.Index(got, "--- LINKED TICKETS")
+	alerts := strings.Index(got, "--- MECHANICAL ALERTS")
+	if scope < 0 || pr < 0 || linked < 0 || alerts < 0 {
+		t.Fatalf("prompt missing a section: scope=%d pr=%d linked=%d alerts=%d\n%s", scope, pr, linked, alerts, got)
+	}
+	if !(scope < pr && pr < linked && linked < alerts) {
+		t.Errorf("wrong order: scope=%d pr=%d linked=%d alerts=%d", scope, pr, linked, alerts)
+	}
+	if !strings.Contains(got, "[XO-370] Retry policy (Story, Done)") {
+		t.Errorf("ticket line missing:\n%s", got)
+	}
+}
+
+func TestBuildAgentPromptContent_NoPRContextIsByteIdentical(t *testing.T) {
+	without, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(without, "PULL REQUEST") || strings.Contains(without, "LINKED TICKETS") {
+		t.Error("empty PR context must add nothing")
+	}
+	if prContextSection("", "", nil) != "" {
+		t.Error("empty inputs must produce no section")
+	}
+}
+
+func TestAgentPromptAsksForAHeadline(t *testing.T) {
+	prompt, err := buildAgentPromptContent("main", nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, `"headline"`) || !strings.Contains(prompt, "12 words") {
+		t.Fatalf("prompt must ask for a short headline in the finding contract")
+	}
+}
+
+func TestEscapeControlCharsInStrings(t *testing.T) {
+	cases := map[string]string{
+		"[\"say \\\"hi\\\"\tnow\"]": "[\"say \\\"hi\\\"\\tnow\"]",
+		"[\n  \"a\",\t\"b\"\n]":     "[\n  \"a\",\t\"b\"\n]",
+		"[\"a\rb\x01c\"]":           "[\"a\\rb\\u0001c\"]",
+	}
+	for in, want := range cases {
+		if got := escapeControlCharsInStrings(in); got != want {
+			t.Errorf("escapeControlCharsInStrings(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseAgentJSON_AcceptsDispositionFields(t *testing.T) {
+	raw := `[
+	 {"id":"A-1","file_path":"a.go","line_number":3,"importance":"MEDIUM","comment_body":"Nil deref.","sources":["FP-2"],
+	  "finding_contract":{"schema_version":1,"finding_kind":"production_behavior","materiality":"current_impact","current_impact":"Requests crash.","counterfactual_trigger":null,"falsifiability":"unknown","falsifiable_condition":null,"expected_observable":null,"subjects":[{"kind":"file","path":"a.go"}],"uncertainty":"None.","severity_rationale":"Crash."}},
+	 {"file_path":"b.go","line_number":9,"disposition":{"source_id":"FP-1","state":"rejected","reason":"The guard on line 7 returns before the lookup.","evidence":[{"file":"b.go","line":7}]}},
+	 {"file_path":"SUMMARY","line_number":0,"summary":{"verdict":"request_changes","upshot":"Requests can crash when the config is missing.","priority_ids":["A-1"],"notes":"The PR wires the new handler correctly otherwise."}}
+	]`
+	got, err := parseAgentJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries", len(got))
+	}
+	if got[0].ID != "A-1" || len(got[0].Sources) != 1 || got[0].Sources[0] != "FP-2" {
+		t.Errorf("finding id/sources not parsed: %+v", got[0])
+	}
+	d := got[1].Disposition
+	if d == nil || d.SourceID != "FP-1" || d.State != "rejected" || d.Reason == "" || len(d.Evidence) != 1 || d.Evidence[0].Line != 7 {
+		t.Errorf("disposition not parsed: %+v", got[1])
+	}
+	s := got[2].Summary
+	if s == nil || s.Verdict != "request_changes" || len(s.PriorityIDs) != 1 {
+		t.Errorf("summary not parsed: %+v", got[2])
+	}
+}
+
+func TestRenderStructuredSummaries_WritesDeterministicProse(t *testing.T) {
+	comments := []types.LineComment{
+		{ID: "A-1", FilePath: "a.go", LineNumber: 3, Importance: "MEDIUM", CommentBody: "Nil deref.",
+			FindingContract: &types.FindingContract{Headline: "Requests crash on missing config"}},
+		{FilePath: "SUMMARY", Summary: &types.SummaryBlock{Verdict: "request_changes", Upshot: "Requests can crash when the config is missing.", PriorityIDs: []string{"A-1", "nope"}, Notes: "Otherwise the wiring is correct."}},
+	}
+	RenderStructuredSummaries(comments)
+	want := "Verdict: request changes.\n\nRequests can crash when the config is missing.\n\nFix first:\n1. Requests crash on missing config (a.go:3)\n\nOtherwise the wiring is correct."
+	if comments[1].CommentBody != want {
+		t.Errorf("rendered summary:\n%q\nwant:\n%q", comments[1].CommentBody, want)
+	}
+	plain := []types.LineComment{{FilePath: "SUMMARY", CommentBody: "Verdict: approve. All good."}}
+	RenderStructuredSummaries(plain)
+	if plain[0].CommentBody != "Verdict: approve. All good." {
+		t.Errorf("a prose summary must pass through untouched")
+	}
+}
+
+func TestComputeImportanceCounts_SkipsInactiveRecords(t *testing.T) {
+	r := &ReviewResult{Comments: []types.LineComment{
+		{FilePath: "a.go", Importance: "CRITICAL"},
+		{FilePath: "b.go", Importance: "MEDIUM", Inactive: true, State: StateRejected},
+		{FilePath: "c.go", Importance: "LOW"},
+	}}
+	r.ComputeImportanceCounts()
+	if r.CriticalCount != 1 || r.MediumCount != 0 || r.LowCount != 1 {
+		t.Fatalf("counts = %d/%d/%d, inactive records must not count", r.CriticalCount, r.MediumCount, r.LowCount)
+	}
+}
+
+func TestComputeImportanceCounts_SkipsNarrativeEntries(t *testing.T) {
+	r := &ReviewResult{Comments: []types.LineComment{{FilePath: "SUMMARY", Importance: "CRITICAL"}, {FilePath: "CHECK", Importance: "MEDIUM"}, {FilePath: "a.go", Importance: "LOW"}}}
+	r.ComputeImportanceCounts()
+	if r.CriticalCount != 0 || r.MediumCount != 0 || r.LowCount != 1 {
+		t.Fatalf("counts = %d/%d/%d", r.CriticalCount, r.MediumCount, r.LowCount)
 	}
 }

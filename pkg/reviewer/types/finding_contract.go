@@ -60,7 +60,11 @@ type FindingContract struct {
 	Subjects              []FindingSubject `json:"subjects"`
 	Uncertainty           string           `json:"uncertainty"`
 	SeverityRationale     string           `json:"severity_rationale"`
+	Headline              string           `json:"headline,omitempty"`
 }
+
+// Headlines are cosmetic, so a bad one is dropped rather than failing the contract.
+const headlineMaxRunes = 90
 
 func ValidateFindingContract(contract *FindingContract) error {
 	if contract == nil {
@@ -167,6 +171,10 @@ func NormalizeFindingContract(contract *FindingContract) {
 	contract.CurrentImpact = strings.TrimSpace(contract.CurrentImpact)
 	contract.Uncertainty = strings.TrimSpace(contract.Uncertainty)
 	contract.SeverityRationale = strings.TrimSpace(contract.SeverityRationale)
+	contract.Headline = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(contract.Headline), "."))
+	if validateContractText(contract.Headline, "headline", headlineMaxRunes) != nil {
+		contract.Headline = ""
+	}
 	for _, value := range []*string{
 		contract.CounterfactualTrigger,
 		contract.FalsifiableCondition,

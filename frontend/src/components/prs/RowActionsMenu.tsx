@@ -3,14 +3,16 @@ import { createPortal } from 'react-dom';
 import type { PR } from '@/types/pr';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { useDropdown } from '@/hooks/useDropdown';
+import { PILOT_BLOCKED_TITLE } from './publishPolicy';
 import './RowActionsMenu.scss';
 
 // Keep in sync with $panel-width in RowActionsMenu.scss.
-const PANEL_WIDTH = 200;
+const PANEL_WIDTH = 220;
 
 interface RowActionsMenuProps {
   pr: PR;
-  onTriggerReview: () => void;
+  /** Starts a review; publish=true also posts it to the GitHub PR. */
+  onTriggerReview: (publish: boolean) => void;
   onToggleHidden: () => void;
   onDelete: () => void;
   /** True while the trigger-review mutation is in flight. */
@@ -19,15 +21,24 @@ interface RowActionsMenuProps {
   hiddenPending: boolean;
   /** True while the delete mutation is in flight. */
   deletePending: boolean;
+  /** False when the PR author is outside the publish pilot, so posting is not offered. */
+  publishAllowed: boolean;
 }
 
 /**
- * Kebab menu for the Actions column. Collapses the per-row "Generate review"
- * and "Delete" controls into a single click-to-open dropdown. The trigger
- * itself surfaces review-in-flight state so status stays visible without
- * opening the menu.
+ * Kebab menu for the Actions column. Collapses the per-row review, hide, and
+ * delete controls into a single click-to-open dropdown.
  */
-export function RowActionsMenu({ pr, onTriggerReview, onToggleHidden, onDelete, reviewPending, hiddenPending, deletePending }: RowActionsMenuProps) {
+export function RowActionsMenu({
+  pr,
+  onTriggerReview,
+  onToggleHidden,
+  onDelete,
+  reviewPending,
+  hiddenPending,
+  deletePending,
+  publishAllowed,
+}: RowActionsMenuProps) {
   const { track } = useTelemetry();
   const { isOpen, toggle, close, anchorRef, panelRef, position } = useDropdown({
     panelWidth: PANEL_WIDTH,
@@ -47,8 +58,8 @@ export function RowActionsMenu({ pr, onTriggerReview, onToggleHidden, onDelete, 
     toggle();
   }, [isOpen, toggle, track, pr.owner, pr.repo, pr.number]);
 
-  const handleReview = useCallback(() => {
-    onTriggerReview();
+  const handleReview = useCallback((publish: boolean) => {
+    onTriggerReview(publish);
     close();
   }, [onTriggerReview, close]);
 
@@ -62,11 +73,7 @@ export function RowActionsMenu({ pr, onTriggerReview, onToggleHidden, onDelete, 
     close();
   }, [onDelete, close]);
 
-  const reviewLabel = reviewInFlight
-    ? 'Reviewing…'
-    : hasReview
-      ? '🔄 Regenerate review'
-      : '🔄 Generate review';
+  const verb = hasReview ? 'Regenerate' : 'Generate';
 
   return (
     <>
@@ -94,10 +101,20 @@ export function RowActionsMenu({ pr, onTriggerReview, onToggleHidden, onDelete, 
             type="button"
             role="menuitem"
             className="row-actions__item"
-            onClick={handleReview}
+            onClick={() => handleReview(true)}
+            disabled={reviewInFlight || !publishAllowed}
+            title={publishAllowed ? undefined : PILOT_BLOCKED_TITLE}
+          >
+            🔄 {verb} and post PR comment
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="row-actions__item"
+            onClick={() => handleReview(false)}
             disabled={reviewInFlight}
           >
-            {reviewLabel}
+            🔄 {verb} review HTML only
           </button>
           <button
             type="button"

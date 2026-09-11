@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"sort"
+	"strings"
 
 	"pr-review-server/pkg/reviewer/payload"
 )
@@ -19,16 +20,19 @@ const (
 type Policy struct {
 	InlineCap         int
 	InlineMinSeverity string
+	// ShowUnverified folds the active first-pass claims the agent did not
+	// confirm into the summary comment; they are never inline.
+	ShowUnverified bool
 }
 
-// DefaultPolicy is the shipped posting policy: five inline comments per
-// round, medium severity and above.
+// DefaultPolicy is the shipped posting policy: three inline comments per
+// round, medium severity and above, unverified first-pass claims folded.
 func DefaultPolicy() Policy {
-	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity}
+	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true}
 }
 
 // withDefaults fills unset fields only. A zero cap is a real setting (post
-// nothing inline); negative means unset.
+// nothing inline); negative means unset. ShowUnverified is taken as given.
 func (p Policy) withDefaults() Policy {
 	if p.InlineCap < 0 {
 		p.InlineCap = DefaultInlineCap
@@ -62,20 +66,37 @@ func isNarrative(f payload.Finding) bool {
 	return f.File == summaryFile || f.File == checkFile
 }
 
-// Publishable reports whether a finding may appear on GitHub at all. Only
-// findings the review agent produced or answered for (agent, required-check,
-// carried from an earlier agent round, or legacy sidecars without provenance)
-// qualify; first-pass re-admissions and raw gate alerts stay on the dashboard,
-// where their unconfirmed status is explained.
+// Publishable reports whether a finding may be asserted on GitHub as a
+// bullet or inline comment. Only active confirmed findings from the agent or
+// a VIOLATED check qualify; unverified claims (first-pass re-admissions and
+// carried findings) have their own fold, first-pass and mechanical alerts
+// never post, and a raw bug-memory alert is not a finding.
 func Publishable(f payload.Finding) bool {
-	if isNarrative(f) {
+	// Only confirmed claims are asserted as bullets; unverified ones have
+	// their own fold (UnverifiedNote) and must not appear twice.
+	if !f.Active || isNarrative(f) || (f.State != "" && f.State != "confirmed") {
 		return false
 	}
 	switch f.Provenance {
 	case "first-pass", "mechanical":
 		return false
+	case "required-check":
+		return !isBugMemoryAlert(f)
 	}
 	return true
+}
+
+// An unanswered memory-derived check is re-admitted as its raw alert text;
+// only checks the agent answered VIOLATED are confirmed.
+func isBugMemoryAlert(f payload.Finding) bool {
+	return strings.HasPrefix(commentText(f), "**Bug-memory alert")
+}
+
+// UnverifiedNote reports whether a finding belongs in the summary's folded
+// unverified section: an active first-pass claim the agent left unverified or
+// disputed. These are shown with a status marker, never asserted or inline.
+func UnverifiedNote(f payload.Finding) bool {
+	return f.Active && f.State == "unverified" && !isNarrative(f) && !isBugMemoryAlert(f)
 }
 
 func sortBySeverity(fs []payload.Finding) {
@@ -97,7 +118,7 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 
 	var candidates, rest []payload.Finding
 	for _, f := range findings {
-		if !Publishable(f) || alreadyPublished[f.ID] {
+		if !Shown(f) || alreadyPublished[f.ID] {
 			continue
 		}
 		if severityRank(f.Severity) >= minRank && f.Line > 0 && commentable[f.File][f.Line] && worthInline(f) {
@@ -117,6 +138,16 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 	sortBySeverity(rest)
 	sel.Annotations = rest
 	return sel
+}
+
+// Shown is the bar for appearing on GitHub at all: a critical finding, or one
+// whose contract asserts current production impact (the inline bar). Lower
+// findings live only on the dashboard.
+func Shown(f payload.Finding) bool {
+	if !Publishable(f) {
+		return false
+	}
+	return f.Severity == "critical" || (f.Severity == "medium" && worthInline(f))
 }
 
 // worthInline is the Greptile-style bar for occupying a reviewer's diff view:

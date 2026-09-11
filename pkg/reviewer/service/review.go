@@ -164,9 +164,13 @@ func observeProviderAttempt(observer ProviderAttemptObserver, event ProviderAtte
 
 // ReviewResult holds the results of a review.
 type ReviewResult struct {
-	Comments             []types.LineComment
-	Diff                 string
-	PRBody               string
+	Comments []types.LineComment
+	Diff     string
+	PRBody   string
+	PRTitle  string
+	// Checks is the required-check ledger from the agent stage, rendered in
+	// the report's review details; zero when the feature is off.
+	Checks               RequiredCheckTelemetry
 	BaseRef              string // the PR's base branch; "" when unknown
 	Prompt               string
 	PromptTokenCount     int32
@@ -185,6 +189,9 @@ func (r *ReviewResult) ComputeImportanceCounts() {
 	r.MediumCount = 0
 	r.LowCount = 0
 	for _, c := range r.Comments {
+		if c.Inactive || c.FilePath == "SUMMARY" || c.FilePath == checkFilePath {
+			continue
+		}
 		switch strings.ToUpper(c.Importance) {
 		case "CRITICAL":
 			r.CriticalCount++
@@ -296,6 +303,7 @@ func (s *Service) PerformReviewWithContext(ctx context.Context, cfg PerformRevie
 		Comments:             finalComments,
 		Diff:                 data.Diff,
 		PRBody:               data.PR.Body,
+		PRTitle:              data.PR.Title,
 		BaseRef:              data.PR.Base.Ref,
 		Prompt:               fullPrompt,
 		PromptTokenCount:     execResult.PromptTokenCount,

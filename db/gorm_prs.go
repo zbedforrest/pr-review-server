@@ -2,6 +2,8 @@ package db
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -20,6 +22,12 @@ func prModelToPR(m *PRModel) *PR {
 		if bytes, err := json.Marshal(m.CIFailedChecks); err == nil {
 			ciFailedChecks = string(bytes)
 		}
+	}
+
+	var mergeConfidence *int
+	if m.MergeConfidence != nil {
+		score := int(*m.MergeConfidence)
+		mergeConfidence = &score
 	}
 
 	return &PR{
@@ -48,6 +56,7 @@ func prModelToPR(m *PRModel) *PR {
 		MediumCount:     m.MediumCount,
 		LowCount:        m.LowCount,
 		ReviewVerdict:   m.ReviewVerdict,
+		MergeConfidence: mergeConfidence,
 		Notes:           m.Notes,
 		GitHubUpdatedAt: m.GitHubUpdatedAt,
 		ErrorMessage:    m.ErrorMessage,
@@ -63,6 +72,12 @@ func prToPRModel(p *PR) *PRModel {
 	var ciFailedChecks JSONStringArray
 	if p.CIFailedChecks != "" {
 		_ = json.Unmarshal([]byte(p.CIFailedChecks), &ciFailedChecks)
+	}
+
+	var mergeConfidence *int16
+	if p.MergeConfidence != nil {
+		score := int16(*p.MergeConfidence)
+		mergeConfidence = &score
 	}
 
 	return &PRModel{
@@ -91,6 +106,7 @@ func prToPRModel(p *PR) *PRModel {
 		MediumCount:     p.MediumCount,
 		LowCount:        p.LowCount,
 		ReviewVerdict:   p.ReviewVerdict,
+		MergeConfidence: mergeConfidence,
 		Notes:           p.Notes,
 		GitHubUpdatedAt: p.GitHubUpdatedAt,
 		ErrorMessage:    p.ErrorMessage,
@@ -245,9 +261,34 @@ func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, re
 	return nil
 }
 
+// SetPRMergeConfidence stores the score for the completed review projected by
+// projectionRunID. Fenced by run rather than commit so an older run re-reviewing
+// the same head cannot overwrite its successor's score; returns whether the
+// row matched.
+func (g *GormDB) SetPRMergeConfidence(owner, repo string, prNumber int, projectionRunID string, score int) (bool, error) {
+	if score < 0 || score > 5 {
+		return false, fmt.Errorf("set PR merge confidence for run %s: score %d is outside 0..5", projectionRunID, score)
+	}
+	// Legacy rows carry an empty projection_run_id, so an empty id would match
+	// them all instead of fencing to one run.
+	if projectionRunID == "" {
+		return false, errors.New("set PR merge confidence: projection run id is required")
+	}
+	res := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ? AND status = ?", owner, repo, prNumber, projectionRunID, "completed").
+		Update("merge_confidence", score)
+	if res.Error != nil {
+		return false, fmt.Errorf("set PR merge confidence for run %s: %w", projectionRunID, res.Error)
+	}
+	return res.RowsAffected > 0, nil
+}
+
 // UpdatePRStatus updates the status of a PR
 func (g *GormDB) UpdatePRStatus(owner, repo string, prNumber int, status string) error {
 	updates := map[string]interface{}{"status": status}
+	if status != "completed" {
+		updates["merge_confidence"] = nil
+	}
 
 	// When marking as error, set last_reviewed_at to track when the error occurred
 	if status == "error" {
@@ -285,6 +326,7 @@ func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSH
 			"review_path":       nil,
 			"last_reviewed_at":  nil,
 			"generating_since":  nil,
+			"merge_confidence":  nil,
 			"projection_run_id": "",
 			"error_message":     "",
 			"error_retry_count": 0,
@@ -324,6 +366,7 @@ func (g *GormDB) SetPRError(owner, repo string, prNumber int, message string) er
 			"status":           "error",
 			"error_message":    message,
 			"last_reviewed_at": now,
+			"merge_confidence": nil,
 		}).Error
 }
 
@@ -350,6 +393,7 @@ func (g *GormDB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, ti
 			"last_commit_sha",
 			"status",
 			"generating_since",
+			"merge_confidence",
 			"title",
 			"author",
 			"created_at",

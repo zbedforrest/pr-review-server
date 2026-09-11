@@ -77,6 +77,21 @@ type Config struct {
 	AgentBackend       string // claude (default) or openrouter
 	AgentModel         string // backend model id for agent reviews (empty = backend default)
 	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
+	// Author-reply model (pkg/reviewer/service/reply.go). Same backend and
+	// credentials as the review agent; smaller budgets, own concurrency cap.
+	ReplyModel         string // empty = the review agent's model
+	ReplyWallClockSec  int
+	ReplyMaxTurns      int
+	ReplyMaxConcurrent int
+	// MentionHandle is the App login authors mention to request a review
+	// ("@<handle> review"); empty disables mention triggers.
+	MentionHandle string
+	// HealthJobToken authenticates the scheduled daily health report
+	// (POST /api/health/daily); empty disables the job endpoint.
+	HealthJobToken string
+	// AdminLogins are bootstrap settings admins (lowercased GitHub logins), kept
+	// outside the writable settings API so admins can never lock themselves out.
+	AdminLogins []string
 	// AnthropicAPIKey is optional for the agent pass (Claude OAuth remains
 	// supported) but required when FirstPassProvider is "claude".
 	AnthropicAPIKey   string
@@ -85,6 +100,14 @@ type Config struct {
 	BugMemoryPath     string // local path to a bug-memory library JSON (dev/benchmark)
 	BugMemoryObject   string // GCS object name of the library (prod); Path wins if both set
 	RequiredChecks    bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
+
+	// Linked ticket context for the agent prompt (pkg/reviewer/tickets). The
+	// feature is on only when JiraEnabled(); JiraProjectKeys optionally
+	// restricts which project keys count as ticket references.
+	JiraBaseURL     string
+	JiraEmail       string
+	JiraAPIToken    string
+	JiraProjectKeys []string
 
 	// Caller-customization policy. These allowlists and ceilings are owned by
 	// the deployment operator; per-review API overrides must remain within them.
@@ -139,6 +162,11 @@ func (c *Config) FirstPassProviderAPIKey(provider string) string {
 	default:
 		return c.GeminiAPIKey
 	}
+}
+
+// JiraEnabled reports whether linked-ticket fetching is configured.
+func (c *Config) JiraEnabled() bool {
+	return c.JiraBaseURL != "" && c.JiraEmail != "" && c.JiraAPIToken != ""
 }
 
 // UsePostgreSQL returns true if the application should use PostgreSQL instead of SQLite
@@ -277,12 +305,23 @@ func Load() *Config {
 		AgentBackend:       agentBackend,
 		AgentModel:         agentModel,
 		AgentEffort:        agentEffort,
+		ReplyModel:         os.Getenv("REPLY_MODEL"),
+		ReplyWallClockSec:  getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
+		ReplyMaxTurns:      getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
+		ReplyMaxConcurrent: getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
+		MentionHandle:      strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
+		HealthJobToken:     os.Getenv("HEALTH_JOB_TOKEN"),
+		AdminLogins:        getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
 		BugMemoryPath:      os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:    os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:     os.Getenv("REQUIRED_CHECKS") == "true",
+		JiraBaseURL:        strings.TrimRight(strings.TrimSpace(os.Getenv("JIRA_BASE_URL")), "/"),
+		JiraEmail:          strings.TrimSpace(os.Getenv("JIRA_EMAIL")),
+		JiraAPIToken:       strings.TrimSpace(os.Getenv("JIRA_API_TOKEN")),
+		JiraProjectKeys:    getEnvListOrDefault("JIRA_PROJECT_KEYS", nil, normalizeProjectKey),
 
 		ReviewAgentModelsClaude:         claudeModels,
 		ReviewAgentModelsOpenRouter:     openRouterModels,
@@ -304,6 +343,15 @@ func getEnvIntOrDefault(key string, defaultValue int) int {
 		if n, err := strconv.Atoi(value); err == nil {
 			return n
 		}
+	}
+	return defaultValue
+}
+
+// getEnvOrDefaultAllowEmpty returns defaultValue only when key is unset; an
+// explicitly empty value is returned as-is so it can disable a feature.
+func getEnvOrDefaultAllowEmpty(key, defaultValue string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
 	}
 	return defaultValue
 }
@@ -377,6 +425,10 @@ func getEnvListOrDefault(key string, defaults []string, normalize func(string) s
 	return values
 }
 
+func normalizeProjectKey(value string) string {
+	return strings.ToUpper(strings.TrimSpace(value))
+}
+
 func normalizeModel(value string) string {
 	// Provider model IDs are case-sensitive. Whitespace is formatting noise,
 	// but case must be preserved for exact policy matching.
@@ -384,6 +436,10 @@ func normalizeModel(value string) string {
 }
 
 func normalizeEffort(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeLogin(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 

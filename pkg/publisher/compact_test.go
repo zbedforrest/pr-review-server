@@ -37,8 +37,8 @@ func TestSelect_InlineRequiresCurrentImpactOnBehaviorOrSecurity(t *testing.T) {
 	if got := ids(sel.Inline); len(got) != 2 || got[0] != "sec" || got[1] != "prod" {
 		t.Fatalf("inline = %v, want [sec prod] (critical first)", got)
 	}
-	if len(sel.Annotations) != 3 {
-		t.Fatalf("everything else must fold into the summary: %v", ids(sel.Annotations))
+	if got := ids(sel.Annotations); len(got) != 2 || got[0] != "latent" || got[1] != "nocontract" {
+		t.Fatalf("criticals that are not inline-worthy stay in the summary; sub-bar findings vanish: %v", got)
 	}
 }
 
@@ -58,14 +58,14 @@ func TestRenderInline_CompactHeadlineFromContract(t *testing.T) {
 	fd.FindingContract.FalsifiableCondition = strp("POST to the arbiter endpoint with verify enabled")
 	fd.FindingContract.ExpectedObservable = strp("a 2xx if wrong, ConnectError if right")
 
-	out := RenderInline(fd, "prism-only", "https://prism.example/go/agent?o=a&r=b&n=1")
+	out := RenderInline(fd, "prism-only", "https://prism.example/go/agent?o=a&r=b&n=1", "")
 	visible := out
 	if i := strings.Index(out, "<details>"); i >= 0 {
 		visible = out[:i]
 	}
 
 	mustContain := []string{
-		"**[MEDIUM] Behavior change · Legacy audience-match now verifies TLS; if the bundle lacks MMLLC ROOT every psychographic journey silently stops firing**",
+		"**[MEDIUM] Behavior change**\n\nLegacy audience-match now verifies TLS; if the bundle lacks MMLLC ROOT every psychographic journey silently stops firing.",
 		"Most likely a documentation gap rather than an outage.",
 		"```suggestion\nverify=get_ssl_verification(),\n```",
 	}
@@ -86,7 +86,7 @@ func TestRenderInline_CompactHeadlineFromContract(t *testing.T) {
 }
 
 func TestRenderInline_WithoutContractFallsBackToFirstSentence(t *testing.T) {
-	out := RenderInline(noContract("x", "critical", "a.go", 3, "Nil deref when cfg is missing. Details."), "prism-only", "")
+	out := RenderInline(noContract("x", "critical", "a.go", 3, "Nil deref when cfg is missing. Details."), "prism-only", "", "")
 	if !strings.Contains(out, "**[CRITICAL] Nil deref when cfg is missing.**") {
 		t.Fatalf("fallback headline wrong:\n%s", out)
 	}
@@ -96,7 +96,31 @@ func TestSummaryRows_UseImpactWhenAvailable(t *testing.T) {
 	r := Round{Owner: "a", Repo: "b", Number: 1, HeadSHA: "abc1234", RoundNumber: 1,
 		Findings: []payload.Finding{withContract(f("x", "medium", "a.go", 3, "Long narrative first sentence that rambles."), "production_behavior", "current_impact", "Users see a 500.", "")}}
 	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
-	if !strings.Contains(out, "| medium | `a.go:3` | Users see a 500. | PRism |") {
-		t.Fatalf("table row must use the impact sentence:\n%s", out)
+	if !strings.Contains(out, "- **[MEDIUM]** Users see a 500 — [`a.go:3`]") {
+		t.Fatalf("bullet must use the impact sentence:\n%s", out)
+	}
+}
+
+func TestRenderInline_FoldedReasoningMarksWhereSuggestionWas(t *testing.T) {
+	fd := withContract(f("x", "medium", "a.go", 3,
+		"The wrapper should not claim a role. The simpler shape is to hang the tooltip on the button directly:\n\n```suggestion\n<span className=\"x\">\n```\n\nand guard the click handler."),
+		"production_behavior", "current_impact", "Two nested buttons are announced.", "")
+	out := RenderInline(fd, "prism-only", "", "")
+	if !strings.Contains(out, "directly:\n\n*(suggestion above)*\n\nand guard") {
+		t.Fatalf("folded reasoning must mark the lifted suggestion instead of leaving a gap:\n%s", out)
+	}
+}
+
+func TestRenderInline_UsesTheAgentHeadlineOverTheImpactSentence(t *testing.T) {
+	impact := "Users who override the site served (mobile UA with Desktop Site selected, or mobileRedirect=always) are reported with a platform flag that does not match the layout they see."
+	x := withContract(fp("h", "medium", "a.py", 3, "Body.", "agent"), "production_behavior", "current_impact", impact, "")
+	x.FindingContract.Headline = "Platform flag ignores the Desktop Site override"
+	out := RenderInline(x, "", "", "")
+	lines := strings.Split(out, "\n")
+	if lines[1] != "**[MEDIUM] Behavior change · Platform flag ignores the Desktop Site override**" {
+		t.Errorf("title = %q", lines[1])
+	}
+	if !strings.Contains(out, "\n"+impact+"\n") {
+		t.Errorf("impact sentence must follow the headline:\n%s", out)
 	}
 }

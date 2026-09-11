@@ -100,8 +100,11 @@ func (g *GormDB) AutoMigrate() error {
 		&PollerLeaseModel{},
 		&FindingOutcomeModel{},
 		&PublishedFindingModel{},
+		&PublishedReplyModel{},
 		&ReviewRunModel{},
 		&ReviewStageAttemptModel{},
+		&MentionTriggerModel{},
+		&HealthReportModel{},
 	); err != nil {
 		return err
 	}
@@ -122,6 +125,29 @@ func (g *GormDB) AutoMigrate() error {
 // `timestamptz` type. SQLite gets those columns from full AutoMigrate when
 // migrations are enabled, so skipping them here is correct; the table
 // creation below still runs on every dialect.
+// replyDecisionColumns were added to the reply ledger after the table shipped;
+// deployments that skip AutoMigrate get them here.
+var replyDecisionColumns = []struct {
+	column   string
+	field    string
+	postgres string
+}{
+	{"decision", "Decision", "varchar(16) NOT NULL DEFAULT ''"},
+	{"reply_body", "ReplyBody", "text"},
+	{"cited", "Cited", "text"},
+	{"model", "Model", "varchar(255) NOT NULL DEFAULT ''"},
+	{"duration_ms", "DurationMS", "bigint NOT NULL DEFAULT 0"},
+	{"outcome", "Outcome", "varchar(32) NOT NULL DEFAULT ''"},
+	{"attempts", "Attempts", "integer NOT NULL DEFAULT 0"},
+	{"decision_head", "DecisionHead", "varchar(64) NOT NULL DEFAULT ''"},
+	{"decision_thread", "DecisionThread", "varchar(64) NOT NULL DEFAULT ''"},
+	{"replied_at", "RepliedAt", "timestamptz"},
+	{"claimed_by", "ClaimedBy", "varchar(128) NOT NULL DEFAULT ''"},
+	{"claimed_at", "ClaimedAt", "timestamptz"},
+	{"decision_react", "DecisionReact", "boolean NOT NULL DEFAULT true"},
+	{"updated_at", "UpdatedAt", "timestamptz"},
+}
+
 func (g *GormDB) ensureIdempotentColumns() error {
 	// Whole-table creation for tables added after the initial schema. Unlike
 	// the column adds below this is dialect-agnostic: HasTable+CreateTable is
@@ -137,6 +163,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 			return fmt.Errorf("create published_findings: %w", err)
 		}
 	}
+	if !g.db.Migrator().HasTable(&PublishedReplyModel{}) {
+		if err := g.db.Migrator().CreateTable(&PublishedReplyModel{}); err != nil {
+			return fmt.Errorf("create published_reply_models: %w", err)
+		}
+	}
 	if !g.db.Migrator().HasTable(&ReviewRunModel{}) {
 		if err := g.db.Migrator().CreateTable(&ReviewRunModel{}); err != nil {
 			return fmt.Errorf("create review_runs: %w", err)
@@ -145,6 +176,16 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&ReviewStageAttemptModel{}) {
 		if err := g.db.Migrator().CreateTable(&ReviewStageAttemptModel{}); err != nil {
 			return fmt.Errorf("create review_stage_attempts: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&MentionTriggerModel{}) {
+		if err := g.db.Migrator().CreateTable(&MentionTriggerModel{}); err != nil {
+			return fmt.Errorf("create mention_triggers: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&HealthReportModel{}) {
+		if err := g.db.Migrator().CreateTable(&HealthReportModel{}); err != nil {
+			return fmt.Errorf("create health_reports: %w", err)
 		}
 	}
 	// Older revisions did not enforce one live run per target. Prefer work that
@@ -213,9 +254,21 @@ func (g *GormDB) ensureIdempotentColumns() error {
 				}
 			}
 		}
+		for _, addition := range replyDecisionColumns {
+			if !g.db.Migrator().HasColumn(&PublishedReplyModel{}, addition.column) {
+				if err := g.db.Migrator().AddColumn(&PublishedReplyModel{}, addition.field); err != nil {
+					return fmt.Errorf("add published_reply_models.%s: %w", addition.column, err)
+				}
+			}
+		}
 		if g.db.Migrator().HasTable(&PollerLeaseModel{}) && !g.db.Migrator().HasColumn(&PollerLeaseModel{}, "generation") {
 			if err := g.db.Migrator().AddColumn(&PollerLeaseModel{}, "Generation"); err != nil {
 				return fmt.Errorf("add poller_leases.generation: %w", err)
+			}
+		}
+		if g.db.Migrator().HasTable(&UserPRViewModel{}) && !g.db.Migrator().HasColumn(&UserPRViewModel{}, "needs_attention") {
+			if err := g.db.Migrator().AddColumn(&UserPRViewModel{}, "NeedsAttention"); err != nil {
+				return fmt.Errorf("add user_pr_views.needs_attention: %w", err)
 			}
 		}
 		if !g.db.Migrator().HasTable(&PRModel{}) {
@@ -224,6 +277,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 		if !g.db.Migrator().HasColumn(&PRModel{}, "projection_run_id") {
 			if err := g.db.Migrator().AddColumn(&PRModel{}, "ProjectionRunID"); err != nil {
 				return fmt.Errorf("add projection_run_id: %w", err)
+			}
+		}
+		if !g.db.Migrator().HasColumn(&PRModel{}, "merge_confidence") {
+			if err := g.db.Migrator().AddColumn(&PRModel{}, "MergeConfidence"); err != nil {
+				return fmt.Errorf("add merge_confidence: %w", err)
 			}
 		}
 		if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
@@ -252,6 +310,9 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if err := g.db.Exec("ALTER TABLE user_pr_views ADD COLUMN IF NOT EXISTS via_manual boolean NOT NULL DEFAULT false").Error; err != nil {
 		return fmt.Errorf("add via_manual: %w", err)
 	}
+	if err := g.db.Exec("ALTER TABLE user_pr_views ADD COLUMN IF NOT EXISTS needs_attention boolean NOT NULL DEFAULT false").Error; err != nil {
+		return fmt.Errorf("add needs_attention: %w", err)
+	}
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS pr_state varchar(16) NOT NULL DEFAULT 'open'").Error; err != nil {
 		return fmt.Errorf("add pr_state: %w", err)
 	}
@@ -267,6 +328,9 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS projection_run_id varchar(36)").Error; err != nil {
 		return fmt.Errorf("add projection_run_id: %w", err)
 	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS merge_confidence smallint").Error; err != nil {
+		return fmt.Errorf("add merge_confidence: %w", err)
+	}
 	if err := g.db.Exec("ALTER TABLE review_stage_attempts ADD COLUMN IF NOT EXISTS budget_units_used integer NOT NULL DEFAULT 0").Error; err != nil {
 		return fmt.Errorf("add budget_units_used: %w", err)
 	}
@@ -275,6 +339,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	}
 	if err := g.db.Exec("ALTER TABLE review_stage_attempts ADD COLUMN IF NOT EXISTS turn_budget_version integer NOT NULL DEFAULT 0").Error; err != nil {
 		return fmt.Errorf("add turn_budget_version: %w", err)
+	}
+	for _, addition := range replyDecisionColumns {
+		if err := g.db.Exec("ALTER TABLE published_reply_models ADD COLUMN IF NOT EXISTS " + addition.column + " " + addition.postgres).Error; err != nil {
+			return fmt.Errorf("add published_reply_models.%s: %w", addition.column, err)
+		}
 	}
 	if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
 		return fmt.Errorf("backfill projection_run_id: %w", err)

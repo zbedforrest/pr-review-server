@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/pkg/reviewer/payload"
 )
 
 type ReviewCommentInput struct {
@@ -47,6 +48,7 @@ type Report struct {
 	Annotations      int
 	StillOpen        int
 	Fixed            int
+	Confidence       int
 }
 
 const summaryFingerprint = "summary"
@@ -80,6 +82,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 			}
 		}
 	}
+	r.Findings = WithoutDismissed(r.Findings, r.Previous)
 	if r.RoundNumber == 0 {
 		r.RoundNumber = 1
 		if summaryRow != nil {
@@ -94,9 +97,53 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	}
 
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy)
+	r.ShowUnverified = p.Policy.ShowUnverified
 	d := r.diff()
-	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), StillOpen: d.StillOpen, Fixed: d.Fixed}
+	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), StillOpen: d.StillOpen, Fixed: d.Fixed,
+		Confidence: Confidence(r.Findings, r.RequiredCheckViolated)}
 	now := p.now()
+
+	postedThisRound := map[string]int64{}
+	if len(sel.Inline) > 0 {
+		inputs := make([]ReviewCommentInput, 0, len(sel.Inline))
+		for _, f := range sel.Inline {
+			inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: RenderInline(f, r.sourceTag(f.ID), r.AgentLinkBase, r.BadgeBaseURL)})
+		}
+		reviewID, commentIDs, err := p.GH.CreateReview(ctx, r.Owner, r.Repo, r.Number, r.HeadSHA, "", inputs)
+		if err != nil {
+			return rep, fmt.Errorf("create review: %w", err)
+		}
+		rep.ReviewID = reviewID
+		for i, f := range sel.Inline {
+			var commentID int64
+			if i < len(commentIDs) {
+				commentID = commentIDs[i]
+			}
+			postedThisRound[f.ID] = commentID
+			if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
+				RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
+				Kind: db.PublishedKindFinding, Fingerprint: f.ID,
+				SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
+				ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
+				CommentID: commentID, ReviewID: reviewID,
+				State: db.PublishedStateOpen, PublishedAt: now,
+			}); err != nil {
+				return rep, fmt.Errorf("record finding %s: %w", f.ID, err)
+			}
+		}
+	}
+
+	if r.InlineComments == nil {
+		r.InlineComments = map[string]int64{}
+	}
+	for id, row := range published {
+		if row.Kind == db.PublishedKindFinding && row.CommentID != 0 {
+			r.InlineComments[id] = row.CommentID
+		}
+	}
+	for id, cid := range postedThisRound {
+		r.InlineComments[id] = cid
+	}
 
 	summary := RenderSummary(r, sel)
 	summaryLedger := &db.PublishedFinding{
@@ -138,34 +185,6 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		return rep, fmt.Errorf("record summary comment: %w", err)
 	}
 
-	if len(sel.Inline) > 0 {
-		inputs := make([]ReviewCommentInput, 0, len(sel.Inline))
-		for _, f := range sel.Inline {
-			inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: RenderInline(f, r.sourceTag(f.ID), r.AgentLinkBase)})
-		}
-		reviewID, commentIDs, err := p.GH.CreateReview(ctx, r.Owner, r.Repo, r.Number, r.HeadSHA, "", inputs)
-		if err != nil {
-			return rep, fmt.Errorf("create review: %w", err)
-		}
-		rep.ReviewID = reviewID
-		for i, f := range sel.Inline {
-			var commentID int64
-			if i < len(commentIDs) {
-				commentID = commentIDs[i]
-			}
-			if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
-				RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
-				Kind: db.PublishedKindFinding, Fingerprint: f.ID,
-				SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
-				ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
-				CommentID: commentID, ReviewID: reviewID,
-				State: db.PublishedStateOpen, PublishedAt: now,
-			}); err != nil {
-				return rep, fmt.Errorf("record finding %s: %w", f.ID, err)
-			}
-		}
-	}
-
 	written := map[string]bool{}
 	for _, f := range sel.Inline {
 		written[f.ID] = true
@@ -194,7 +213,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	}
 
 	present := map[string]bool{}
-	for _, f := range r.currentFindings() {
+	for _, f := range r.activeClaims() {
 		present[f.ID] = true
 		row, ok := published[f.ID]
 		if !ok || written[f.ID] || row.LastSeenSHA == r.HeadSHA {
@@ -217,6 +236,28 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		}
 	}
 	return rep, nil
+}
+
+// WithoutDismissed drops findings the ledger records as conceded. A finding
+// conceded in conversation stays conceded: it is neither posted, counted nor
+// refreshed, even if a later review raises it again.
+func WithoutDismissed(findings []payload.Finding, previous []db.PublishedFinding) []payload.Finding {
+	dismissed := map[string]bool{}
+	for _, row := range previous {
+		if row.State == db.PublishedStateDismissed && (row.Kind == db.PublishedKindFinding || row.Kind == db.PublishedKindAnnotation) {
+			dismissed[row.Fingerprint] = true
+		}
+	}
+	if len(dismissed) == 0 {
+		return findings
+	}
+	kept := make([]payload.Finding, 0, len(findings))
+	for _, f := range findings {
+		if !dismissed[f.ID] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
 }
 
 func isNotFound(err error) bool {

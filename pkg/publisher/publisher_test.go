@@ -32,11 +32,11 @@ func TestMergeConfidence(t *testing.T) {
 		{"clean", 0, 0, false, 5},
 		{"one critical", 1, 0, false, 3},
 		{"two critical still minus two", 2, 0, false, 3},
-		{"two medium no penalty", 0, 2, false, 5},
-		{"three medium", 0, 3, false, 4},
+		{"any medium costs one", 0, 2, false, 4},
+		{"three medium cost two", 0, 3, false, 3},
 		{"check violated", 0, 0, true, 4},
-		{"everything", 1, 3, true, 1},
-		{"floor at zero", 3, 5, true, 1},
+		{"everything", 1, 3, true, 0},
+		{"floor at zero", 3, 5, true, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -82,10 +82,11 @@ func TestCommentableLines(t *testing.T) {
 	}
 }
 
-// f builds an inline-worthy finding: a valid contract asserting current
-// production impact, which is what the Greptile-style gate requires.
+// f builds an active confirmed, inline-worthy finding: a valid contract
+// asserting current production impact, which is what the Greptile-style gate
+// requires.
 func f(id, sev, file string, line int, comment string) payload.Finding {
-	x := payload.Finding{ID: id, Severity: sev, File: file, Line: line, Comment: comment}
+	x := payload.Finding{ID: id, Severity: sev, File: file, Line: line, Comment: comment, State: "confirmed", Active: true}
 	if file != "SUMMARY" && file != "CHECK" {
 		x.FindingContract = &types.FindingContract{SchemaVersion: 1, FindingKind: "production_behavior", Materiality: "current_impact", Falsifiability: "unknown"}
 		x.FindingContractStatus = "valid"
@@ -131,8 +132,8 @@ func TestSelectSeverityFloorAndHunkGate(t *testing.T) {
 	if got := ids(sel.Inline); len(got) != 1 || got[0] != "ok" {
 		t.Fatalf("Inline = %v, want [ok]", got)
 	}
-	if got := ids(sel.Annotations); len(got) != 4 {
-		t.Fatalf("Annotations = %v, want 4 entries", got)
+	if got := ids(sel.Annotations); len(got) != 3 {
+		t.Fatalf("Annotations = %v, want 3 entries (lows never reach GitHub)", got)
 	}
 }
 
@@ -161,13 +162,5 @@ func TestSelectCapOrdering(t *testing.T) {
 	}
 	if got := ids(sel.Annotations); len(got) != 2 || got[0] != "m-a3" || got[1] != "m-b1" {
 		t.Fatalf("Annotations = %v, want [m-a3 m-b1]", got)
-	}
-}
-
-func TestSelectMinSeverityLowAdmitsLow(t *testing.T) {
-	commentable := map[string]map[int]bool{"a.go": {10: true}}
-	sel := Select([]payload.Finding{f("low", "low", "a.go", 10, "x")}, nil, commentable, Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: "low"})
-	if len(sel.Inline) != 1 {
-		t.Fatalf("Inline = %v, want [low]", ids(sel.Inline))
 	}
 }

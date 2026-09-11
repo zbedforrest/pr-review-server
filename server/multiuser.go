@@ -12,6 +12,7 @@ type UserResponse struct {
 	ID              int    `json:"id"`
 	GitHubUsername  string `json:"github_username"`
 	GitHubAvatarURL string `json:"github_avatar_url"`
+	IsAdmin         bool   `json:"is_admin"`
 }
 
 // handleGetUser returns information about the currently logged-in user
@@ -26,6 +27,7 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		ID:              user.ID,
 		GitHubUsername:  user.GitHubUsername,
 		GitHubAvatarURL: user.GitHubAvatarURL,
+		IsAdmin:         s.isAdmin(user),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

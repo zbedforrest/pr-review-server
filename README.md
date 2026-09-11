@@ -77,6 +77,8 @@ The most common ones:
 | `SERVER_PORT` | No | Default `8080` (docker-compose publishes it on `7769`) |
 | `POLLING_INTERVAL` | No | GitHub poll cadence, default `1m` |
 | `DISABLE_POLLING` | No | Run purely as an on-demand review API |
+| `MENTION_HANDLE` | No | App login mentioned to request a review (`@<handle> review`) by the PR author or a repository owner, member or collaborator; default `prism-pr-review-server`, empty disables |
+| `HEALTH_JOB_TOKEN` | No | Enables `POST /api/health/daily` for a scheduler (header `X-Prism-Job-Token`); the report is stored and readable at `GET /api/health/daily` (`?format=md`) |
 
 ### First-pass provider
 
@@ -132,6 +134,10 @@ BUG_MEMORY_OBJECT=bug-memory/bug-memory.json
 The gates contribute mechanical findings from the diff with no LLM involved, and `REQUIRED_CHECKS=true` is what gives them teeth: each fired gate and bug-memory hit becomes a check the agent must explicitly answer with a VIOLATED / SAFE / NOT-APPLICABLE verdict instead of silently ignoring. The task gate needs only the producer glob; `GATE_TASK_CONSUMER_GLOB` is an optional narrowing. Bug memory pays off once you have a distilled library of past bugs to point it at; start one early.
 
 The remaining feature flags (`SURFACE_ALERTS`, `CARRY_FORWARD_FINDINGS`, `FINDING_OUTCOMES_ENABLED`, `REVIEW_HISTORY_ARCHIVE`) are dashboard and workflow conveniences. They are independent of review quality; enable them as needed.
+
+### Linked ticket context (optional)
+
+The agent otherwise reviews a PR without knowing the intent recorded in its Jira ticket, and will flag deliberate decisions the author documented there. Set `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` (a Jira API token for a service or personal account with read access) and the review fetches the tickets referenced directly in the PR title, body, or branch name (up to 3): summary, status, type, description, and the newest 10 comments. The prompt tells the agent to treat decisions recorded there as intentional, cite the ticket key when a finding touches one, and flag only when the change contradicts the ticket or its rationale no longer holds. `JIRA_PROJECT_KEYS` (comma-separated, optional) restricts which project keys count as references. The PR title and body always reach the agent, with or without Jira; the sidecar's `review_run.linked_tickets` lists the keys that informed a review.
 
 ## API
 

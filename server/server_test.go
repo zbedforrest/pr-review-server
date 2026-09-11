@@ -333,6 +333,53 @@ func TestHandleGetPRs_AllFieldsPresent(t *testing.T) {
 	assert.NotNil(t, pr1.CreatedAt)
 }
 
+func TestHandleGetPRs_NeedsAttention_PerViewer(t *testing.T) {
+	server, database := newTestServer(t, "")
+	defer database.Close()
+
+	alice := &db.User{GitHubID: 1, GitHubUsername: "alice"}
+	bob := &db.User{GitHubID: 2, GitHubUsername: "bob"}
+	require.NoError(t, database.CreateUser(alice))
+	require.NoError(t, database.CreateUser(bob))
+
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 7, LastCommitSHA: "sha7", Status: "completed", Author: "carol",
+	}))
+	pr, err := database.GetPR("acme", "example", 7)
+	require.NoError(t, err)
+
+	changesRequested := "CHANGES_REQUESTED"
+	flagged := true
+	require.NoError(t, database.BatchUpsertUserPRViews([]db.UserPRViewBatchItem{
+		{UserID: alice.ID, PRID: pr.ID, ReviewStatus: &changesRequested, NeedsAttention: &flagged},
+		{UserID: bob.ID, PRID: pr.ID},
+	}))
+
+	getPRs := func(user *db.User) map[string]interface{} {
+		req := addUserToRequest(httptest.NewRequest(http.MethodGet, "/api/prs", nil), user)
+		w := httptest.NewRecorder()
+		server.handleGetPRs(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		var response []map[string]interface{}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+		require.Len(t, response, 1)
+		return response[0]
+	}
+
+	assert.Equal(t, true, getPRs(alice)["needs_attention"])
+	assert.Equal(t, false, getPRs(bob)["needs_attention"])
+
+	aliceWS := server.getPRResponseForUser(alice.ID, "acme", "example", 7)
+	require.NotNil(t, aliceWS)
+	assert.True(t, aliceWS.NeedsAttention)
+	bobWS := server.getPRResponseForUser(bob.ID, "acme", "example", 7)
+	require.NotNil(t, bobWS)
+	assert.False(t, bobWS.NeedsAttention)
+	noRow := server.getPRResponseForUser(0, "acme", "example", 7)
+	require.NotNil(t, noRow)
+	assert.False(t, noRow.NeedsAttention)
+}
+
 // =============================================================================
 // PRResponse JSON Serialization Tests
 // =============================================================================

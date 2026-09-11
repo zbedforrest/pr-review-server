@@ -113,3 +113,16 @@ func TestVerdictFromComments(t *testing.T) {
 		})
 	}
 }
+
+func TestVerdictFromComments_PrefersTheStructuredVerdict(t *testing.T) {
+	comments := []types.LineComment{{FilePath: "SUMMARY",
+		CommentBody: "Verdict: approve.\n\nNothing here would make me request changes.",
+		Summary:     &types.SummaryBlock{Verdict: "approve"}}}
+	if got := VerdictFromComments(comments); got != VerdictApprove {
+		t.Fatalf("structured verdict must win over prose that happens to contain another verdict's words: %q", got)
+	}
+	prose := []types.LineComment{{FilePath: "SUMMARY", CommentBody: "Verdict: request changes. The retry is unbounded."}}
+	if got := VerdictFromComments(prose); got != VerdictRequestChanges {
+		t.Fatalf("prose summaries still parse: %q", got)
+	}
+}

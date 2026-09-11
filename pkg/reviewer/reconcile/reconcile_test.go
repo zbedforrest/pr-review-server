@@ -238,3 +238,50 @@ func TestReconcilePreservesPrismOrder(t *testing.T) {
 		}
 	}
 }
+
+// A re-review of unchanged code usually rewords a finding; matching against
+// the comments PRism itself posted keeps one identity per defect.
+func TestAliasPrior_RewordedFindingKeepsItsPublishedIdentity(t *testing.T) {
+	own := ParseOwnComments([]ExternalComment{
+		{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54,
+			Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · On desktop, every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**\n\nreasoning"},
+		{ID: 502, Author: "human", Path: "a.go", Line: 54, Body: "no marker here"},
+	}, map[int64]bool{501: true, 502: true})
+	if len(own) != 1 || own[0].FindingID != "a.go:5:aaaaaaaaaaaa" || own[0].CommentID != 501 {
+		t.Fatalf("own comments = %+v", own)
+	}
+	current := []payload.Finding{
+		{ID: "a.go:5:bbbbbbbbbbbb", File: "a.go", Line: 52, Comment: "Clicking Start in the C2C setup modal fires showMyCamDidNotStart/showMyCamBroadcastStopped immediately after starting, resetting the button to Ready and clearing the pending state."},
+		{ID: "a.go:9:cccccccccccc", File: "a.go", Line: 98, Comment: "Pressing Escape cancels the whole cam-to-cam start instead of returning to the setup modal."},
+	}
+	aliases := AliasPrior(current, own)
+	if aliases["a.go:5:bbbbbbbbbbbb"] != "a.go:5:aaaaaaaaaaaa" {
+		t.Fatalf("reworded finding must alias its published id, got %v", aliases)
+	}
+	if _, ok := aliases["a.go:9:cccccccccccc"]; ok {
+		t.Fatalf("an unrelated finding must not alias")
+	}
+}
+
+func TestParseOwnComments_TrustsOnlyLedgerCommentIDs(t *testing.T) {
+	own := ParseOwnComments([]ExternalComment{
+		{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 5, Body: "<!-- prism:finding:a.go:0:aaaaaaaaaaaa -->\nours"},
+		{ID: 777, Author: "human", Path: "a.go", Line: 5, Body: "> <!-- prism:finding:a.go:0:aaaaaaaaaaaa -->\nquoting PRism in a new thread"},
+	}, map[int64]bool{501: true})
+	if len(own) != 1 || own[0].CommentID != 501 {
+		t.Fatalf("a marker outside a ledger comment must not count as ours: %+v", own)
+	}
+}
+
+func TestAliasPrior_DoesNotAliasASiblingOntoAnIdStillPresent(t *testing.T) {
+	own := ParseOwnComments([]ExternalComment{
+		{ID: 501, Path: "a.go", Line: 54, Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\nClicking Start fires showMyCamDidNotStart and resets the button to Ready"},
+	}, map[int64]bool{501: true})
+	current := []payload.Finding{
+		{ID: "a.go:5:aaaaaaaaaaaa", File: "a.go", Line: 54, Comment: "Clicking Start fires showMyCamDidNotStart and resets the button to Ready"},
+		{ID: "a.go:5:bbbbbbbbbbbb", File: "a.go", Line: 56, Comment: "Clicking Start also fires showMyCamBroadcastStopped which resets the button to Ready"},
+	}
+	if aliases := AliasPrior(current, own); len(aliases) != 0 {
+		t.Fatalf("the published id is still emitted verbatim, so its sibling must keep its own id; got %v", aliases)
+	}
+}

@@ -50,6 +50,13 @@ $panel-width: 240px;
   box-shadow: 0 0 0 1px $color-bg-primary;
 }
 
+// Inline 💬 inside the View button when the review was posted to the PR.
+.review-menu__published-glyph {
+  margin-left: $spacing-xs;
+  font-size: $font-size-sm;
+  line-height: 1;
+}
+
 .review-menu {
   position: fixed;
   z-index: 1000;
