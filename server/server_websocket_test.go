@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -395,7 +396,7 @@ func TestBroadcaster_StalledClientIsDroppedAndOthersStillReceive(t *testing.T) {
 	server, database := newWebSocketTestServerApp(t, "")
 	defer database.Close()
 	server.cfg.GitHubAppClientID = "client-id"
-	server.wsWriteTimeout = 200 * time.Millisecond
+	server.wsWriteTimeout = time.Second
 
 	stalledUser := createTestUser(t, database, "stalled-user")
 	stalledSession := createTestSession(t, database, stalledUser.ID, time.Now().Add(time.Hour))
@@ -418,17 +419,26 @@ func TestBroadcaster_StalledClientIsDroppedAndOthersStillReceive(t *testing.T) {
 		defer server.clientsMux.RUnlock()
 		return len(server.clients) == 2
 	})
-	// The healthy peer keeps reading, as a browser would, so only the stalled
-	// one can exhaust its socket buffers.
+	// The healthy peer keeps draining its socket, as a browser would, so only
+	// the stalled one can exhaust its buffers. Large frames are discarded
+	// unparsed so a slow CI runner cannot make this peer look stalled too.
 	healthyTypes := make(chan string, 16)
 	go func() {
+		defer close(healthyTypes)
 		for {
-			var msg WebSocketMessage
-			if err := healthy.ReadJSON(&msg); err != nil {
-				close(healthyTypes)
+			_, r, err := healthy.NextReader()
+			if err != nil {
 				return
 			}
-			healthyTypes <- msg.Type
+			body, err := io.ReadAll(io.LimitReader(r, 4096))
+			if err != nil {
+				return
+			}
+			_, _ = io.Copy(io.Discard, r)
+			var msg WebSocketMessage
+			if len(body) < 4096 && json.Unmarshal(body, &msg) == nil {
+				healthyTypes <- msg.Type
+			}
 		}
 	}()
 
