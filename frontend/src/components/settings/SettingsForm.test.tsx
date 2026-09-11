@@ -289,12 +289,29 @@ describe('SettingsForm', () => {
   it('disables the publishing policy and the Replies section while no author is enabled', () => {
     renderForm({}, { ...serverSettings, publish_enabled_authors: '', publish_reply_mode: 'off', publish_reply_enabled_at: '' });
     const notice = 'Nothing is posted, and no replies are processed, until at least one author is enabled';
-    expect(screen.getAllByText(notice)).toHaveLength(2);
+    expect(within(section('Publishing')).getByText(notice)).toBeTruthy();
+    expect(
+      within(section('Replies')).getByText('Reply modes are available once at least one author is saved in Publishing.')
+    ).toBeTruthy();
+    expect(screen.queryAllByText(notice)).toHaveLength(1);
     expect((screen.getByLabelText('Inline comment cap') as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText('Minimum inline severity') as HTMLSelectElement).disabled).toBe(true);
     expect((screen.getByLabelText('Show unverified findings') as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText('Publish for authors') as HTMLInputElement).disabled).toBe(false);
     for (const radio of screen.getAllByRole('radio') as HTMLInputElement[]) expect(radio.disabled).toBe(true);
+  });
+
+  it('tells the admin to save Publishing once an author is added but not yet saved', () => {
+    renderForm({}, { ...serverSettings, publish_enabled_authors: '', publish_reply_mode: 'off', publish_reply_enabled_at: '' });
+    const input = screen.getByLabelText('Publish for authors') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'carol' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.queryByText(/until at least one author is enabled/)).toBeNull();
+    expect(
+      within(section('Replies')).getByText('Save the Publishing section above to enable reply modes.')
+    ).toBeTruthy();
+    for (const radio of screen.getAllByRole('radio') as HTMLInputElement[]) expect(radio.disabled).toBe(true);
+    expect(saveIn('Publishing').disabled).toBe(false);
   });
 
   it('renders the reply totals strip when provided', () => {

@@ -283,7 +283,13 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         onSave={replies.save}
         onReset={replies.reset}
       >
-        {noAuthorsSaved && <p className="settings-section__notice">{EMPTY_AUTHORS_NOTICE}</p>}
+        {noAuthorsSaved && (
+          <p className="settings-section__notice">
+            {noAuthorsDraft
+              ? 'Reply modes are available once at least one author is saved in Publishing.'
+              : 'Save the Publishing section above to enable reply modes.'}
+          </p>
+        )}
         <fieldset className="settings-field settings-field__modes" disabled={repliesDisabled}>
           <legend className="settings-field__label">Reply mode</legend>
           {REPLY_MODES.map(({ value, description }) => (
