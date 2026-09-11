@@ -24,6 +24,81 @@ type Client struct {
 	token      string
 	username   string
 	appClient  *AppClient
+
+	repoClients     map[string]*github.Client
+	repoSources     map[string]*installationTokenSource
+	repoClientsLock sync.Mutex
+
+	truncatedReviewsWarned     map[string]string
+	truncatedReviewsWarnedLock sync.Mutex
+}
+
+// warnReviewsTruncatedOnce logs the truncated-history warning the first time a
+// given PR head is seen; the poller refetches changed PRs every cycle, so
+// without this the warning repeats every poll until the head moves.
+func (c *Client) warnReviewsTruncatedOnce(owner, repo string, prNumber int, headOID string) {
+	key := prKey(owner, repo, prNumber)
+	c.truncatedReviewsWarnedLock.Lock()
+	defer c.truncatedReviewsWarnedLock.Unlock()
+	if c.truncatedReviewsWarned == nil {
+		c.truncatedReviewsWarned = make(map[string]string)
+	}
+	if c.truncatedReviewsWarned[key] == headOID {
+		return
+	}
+	c.truncatedReviewsWarned[key] = headOID
+	log.Printf("[GRAPHQL] PR %s/%s#%d: review history truncated at 100, attention unknown for reviewers with neither a decision nor a head review in the window", owner, repo, prNumber)
+}
+
+// clientFor returns a REST client whose installation can write to owner/repo.
+// Without an App client (single-user PAT mode) it is the primary client.
+func (c *Client) clientFor(ctx context.Context, owner, repo string) (*github.Client, error) {
+	if c.appClient == nil {
+		return c.gh, nil
+	}
+	installationID, err := c.appClient.installationFor(ctx, owner, repo)
+	if errors.Is(err, ErrAppNotInstalled) || (err == nil && installationID == c.appClient.installationID) {
+		// Reads of public repos work with any token, and writes fail with the
+		// same 403 they always did; only installed owners get their own client.
+		return c.gh, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.repoClientsLock.Lock()
+	defer c.repoClientsLock.Unlock()
+	if gh, ok := c.repoClients[installationID]; ok {
+		return gh, nil
+	}
+	ts := &installationTokenSource{appClient: c.appClient, installationID: installationID}
+	gh := github.NewClient(oauth2.NewClient(context.Background(), ts))
+	if base := c.appClient.baseURL(); base != githubAPIBase {
+		u, err := url.Parse(base + "/")
+		if err != nil {
+			return nil, err
+		}
+		gh.BaseURL = u
+	}
+	if c.repoClients == nil {
+		c.repoClients = map[string]*github.Client{}
+		c.repoSources = map[string]*installationTokenSource{}
+	}
+	c.repoClients[installationID] = gh
+	c.repoSources[installationID] = ts
+	return gh, nil
+}
+
+type installationTokenSource struct {
+	appClient      *AppClient
+	installationID string
+}
+
+func (s *installationTokenSource) Token() (*oauth2.Token, error) {
+	token, expiry, err := s.appClient.TokenForInstallation(context.Background(), s.installationID)
+	if err != nil {
+		return nil, err
+	}
+	return &oauth2.Token{AccessToken: token, Expiry: expiry}, nil
 }
 
 // CurrentToken returns the access token currently used by this Client for
@@ -329,12 +404,16 @@ type Review struct {
 
 // PRReviewData holds review information for a single PR
 type PRReviewData struct {
-	Owner          string
-	Repo           string
-	Number         int
-	ApprovalCount  int
-	MyReviewStatus string            // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
-	UserReviews    map[string]string // Username -> latest review state (e.g. "APPROVED", "CHANGES_REQUESTED")
+	Owner           string
+	Repo            string
+	Number          int
+	ApprovalCount   int
+	MyReviewStatus  string            // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	UserReviews     map[string]string // Username -> latest review state (e.g. "APPROVED", "CHANGES_REQUESTED")
+	HeadOID         string
+	IsDraft         bool
+	State           string          // "OPEN", "CLOSED", "MERGED"; "" when the response omitted it
+	AttentionByUser map[string]bool // Username -> requested changes and has not reviewed the current head; absent when unknown
 }
 
 // ReviewerGroupData holds information about requested reviewer groups
@@ -494,7 +573,11 @@ func (c *Client) GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber 
 
 // GetPR fetches a full PR object from GitHub
 func (c *Client) GetPR(ctx context.Context, owner, repo string, prNumber int) (*github.PullRequest, *github.Response, error) {
-	return c.gh.PullRequests.Get(ctx, owner, repo, prNumber)
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	return gh.PullRequests.Get(ctx, owner, repo, prNumber)
 }
 
 // ListReviews fetches all reviews for a PR
@@ -635,7 +718,7 @@ func (c *Client) BatchGetPRReviewData(ctx context.Context, prs []PullRequest) (m
 		mu      sync.Mutex
 		results = make(map[string]*PRReviewData)
 		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 5) // limit to 10 concurrent GitHub API calls
+		sem     = make(chan struct{}, 5) // limit to 5 concurrent GitHub API calls
 	)
 
 	for repoKey, repoPRs := range prsByRepo {
@@ -697,15 +780,23 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 
 		// Process reviews using helper
 		approvalCount, myReviewStatus, userReviews := c.countUserApprovals(repoData.PullRequest.Reviews)
+		headOID := repoData.PullRequest.HeadRefOid
+		if repoData.PullRequest.Reviews.PageInfo.HasPreviousPage {
+			c.warnReviewsTruncatedOnce(owner, repo, prNumber, headOID)
+		}
 
 		key := prKey(owner, repo, prNumber)
 		results[key] = &PRReviewData{
-			Owner:          owner,
-			Repo:           repo,
-			Number:         prNumber,
-			ApprovalCount:  approvalCount,
-			MyReviewStatus: myReviewStatus,
-			UserReviews:    userReviews,
+			Owner:           owner,
+			Repo:            repo,
+			Number:          prNumber,
+			ApprovalCount:   approvalCount,
+			MyReviewStatus:  myReviewStatus,
+			UserReviews:     userReviews,
+			HeadOID:         headOID,
+			IsDraft:         repoData.PullRequest.IsDraft,
+			State:           repoData.PullRequest.State,
+			AttentionByUser: attentionByUser(repoData.PullRequest.Reviews, headOID),
 		}
 
 		log.Printf("[GRAPHQL] PR %s/%s#%d: %d approvals, my status: %s", owner, repo, prNumber, approvalCount, myReviewStatus)
@@ -721,19 +812,21 @@ func (c *Client) buildReviewDataQuery(owner, repo string, prs []PullRequest) str
 
 	for i, pr := range prs {
 		alias := fmt.Sprintf("pr%d", i)
-		// NOTE: reviews(last: 100) fetches the most recent 100 reviews.
-		// For PRs with >100 review events, we might miss older review states.
-		// This is acceptable since we only care about the most recent state per reviewer.
 		queryBuilder.WriteString(fmt.Sprintf(`
 			%s: repository(owner: "%s", name: "%s") {
 				pullRequest(number: %d) {
 					number
+					state
+					headRefOid
+					isDraft
 					reviews(last: 100) {
+						pageInfo { hasPreviousPage }
 						nodes {
 							author {
 								login
 							}
 							state
+							commit { oid }
 						}
 					}
 				}
@@ -1305,16 +1398,32 @@ func (c *Client) GetPRReviews(token, owner, repo string, prNumber int) ([]Review
 func (c *Client) GetPRComments(token, owner, repoName string, prNumber int) ([]PRComment, error) {
 	ctx := context.Background()
 
-	// Issue comments
-	issueComments, _, err := c.gh.Issues.ListComments(ctx, owner, repoName, prNumber, nil)
-	if err != nil {
-		return nil, err
+	var issueComments []*github.IssueComment
+	issueOpts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		page, resp, err := c.gh.Issues.ListComments(ctx, owner, repoName, prNumber, issueOpts)
+		if err != nil {
+			return nil, err
+		}
+		issueComments = append(issueComments, page...)
+		if resp.NextPage == 0 {
+			break
+		}
+		issueOpts.Page = resp.NextPage
 	}
 
-	// Review comments
-	reviewComments, _, err := c.gh.PullRequests.ListComments(ctx, owner, repoName, prNumber, nil)
-	if err != nil {
-		return nil, err
+	var reviewComments []*github.PullRequestComment
+	reviewOpts := &github.PullRequestListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		page, resp, err := c.gh.PullRequests.ListComments(ctx, owner, repoName, prNumber, reviewOpts)
+		if err != nil {
+			return nil, err
+		}
+		reviewComments = append(reviewComments, page...)
+		if resp.NextPage == 0 {
+			break
+		}
+		reviewOpts.Page = resp.NextPage
 	}
 
 	var allComments []PRComment

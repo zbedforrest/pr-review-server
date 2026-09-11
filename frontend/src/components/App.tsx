@@ -3,10 +3,13 @@ import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/reac
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { Header, StatusBar } from '@/components/layout';
 import { FilterBar } from '@/components/filters';
-import { ReviewPRsSection, StatusPRPanel } from '@/components/prs';
+import { NeedsReReviewSection, ReviewPRsSection, StatusPRPanel } from '@/components/prs';
+import { useAttentionTitle } from '@/hooks/useAttentionTitle';
+import { useNeedsReReview } from '@/hooks/useNeedsReReview';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { useUrlFilters } from '@/hooks/useUrlFilters';
 import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
+import { SettingsPage } from '@/components/settings/SettingsPage';
 import { PR } from '@/types/pr';
 import { ServerStatus, StatusPanelFilter } from '@/types/status';
 import { ConnectionStatus, subscribeToWebSocketMessages, subscribeToWebSocketStatus } from '@/utils/websocket';
@@ -61,6 +64,8 @@ class ErrorBoundary extends Component<
 function AppContent() {
   const queryClient = useQueryClient();
   const { track, trackSearch } = useTelemetry();
+  const { keys: reReviewKeys, count: reReviewCount } = useNeedsReReview();
+  useAttentionTitle(reReviewCount);
 
   // Connection status state
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
@@ -124,6 +129,8 @@ function AppContent() {
         />
       )}
 
+      <NeedsReReviewSection />
+
       <div className="search-controls">
         <FilterBar
           className="search-controls__filter"
@@ -152,6 +159,7 @@ function AppContent() {
         selectedTeams={selectedTeams}
         selectedRepos={selectedRepos}
         selectedStates={selectedStates}
+        excludeKeys={reReviewKeys}
       />
     </div>
   );
@@ -162,6 +170,10 @@ function AppRouter() {
 
   if (path === '/usage-stats') {
     return <UsageStatsPage />;
+  }
+
+  if (path === '/settings') {
+    return <SettingsPage />;
   }
 
   return <AppContent />;

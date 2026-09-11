@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +29,9 @@ type MockDatabase struct {
 	CreateSessionErr     error
 	GetSessionErr        error
 	DeleteSessionErr     error
+
+	UpdateUserGitHubUsernameErr error
+	usernameUpdates             int
 }
 
 func newMockDatabase() *MockDatabase {
@@ -84,6 +88,17 @@ func (m *MockDatabase) UpdateUserLastLogin(userID int) error {
 	return nil
 }
 
+func (m *MockDatabase) UpdateUserGitHubUsername(userID int, username string) error {
+	m.usernameUpdates++
+	if m.UpdateUserGitHubUsernameErr != nil {
+		return m.UpdateUserGitHubUsernameErr
+	}
+	if u := m.userByID[userID]; u != nil {
+		u.GitHubUsername = username
+	}
+	return nil
+}
+
 func (m *MockDatabase) CreateSession(session *db.Session) error {
 	if m.CreateSessionErr != nil {
 		return m.CreateSessionErr
@@ -109,12 +124,43 @@ func (m *MockDatabase) DeleteSession(id string) error {
 
 // Stub implementations for unused methods
 func (m *MockDatabase) GetPR(owner, repo string, prNumber int) (*db.PR, error) { return nil, nil }
-func (m *MockDatabase) UpsertPR(pr *db.PR) error                               { return nil }
+func (m *MockDatabase) CreateReviewRun(run *db.ReviewRun) error                { return nil }
+func (m *MockDatabase) GetReviewRun(runID string) (*db.ReviewRun, error)       { return nil, nil }
+func (m *MockDatabase) GetReviewRunByIdempotency(scope, keyHash string) (*db.ReviewRun, error) {
+	return nil, nil
+}
+func (m *MockDatabase) ListReviewRuns(filter db.ReviewRunFilter) ([]db.ReviewRun, error) {
+	return nil, nil
+}
+func (m *MockDatabase) PatchReviewRun(runID string, patch db.ReviewRunPatch) error { return nil }
+func (m *MockDatabase) PatchQueuedReviewRun(runID string, patch db.ReviewRunPatch) (bool, error) {
+	return false, nil
+}
+func (m *MockDatabase) ClaimOrRenewQueuedReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	return false, nil
+}
+func (m *MockDatabase) PatchReviewRunAsHolder(runID, holder string, now time.Time, patch db.ReviewRunPatch) (bool, error) {
+	return false, nil
+}
+func (m *MockDatabase) ClaimReviewRun(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	return false, nil
+}
+func (m *MockDatabase) RenewReviewRunLease(runID, holder string, now, leaseExpiresAt time.Time) (bool, error) {
+	return false, nil
+}
+func (m *MockDatabase) AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error) {
+	return 0, nil
+}
+func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) error { return nil }
+func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAttempt, error) {
+	return nil, nil
+}
+func (m *MockDatabase) UpsertPR(pr *db.PR) error { return nil }
 func (m *MockDatabase) UpdatePRStatus(owner, repo string, prNumber int, status string) error {
 	return nil
 }
-func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) error {
-	return nil
+func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, fromCommitSHA, newCommitSHA string) (bool, error) {
+	return true, nil
 }
 func (m *MockDatabase) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error {
 	return nil
@@ -123,8 +169,29 @@ func (m *MockDatabase) SetPRAgentReviewing(owner, repo string, prNumber int) err
 func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message string) error {
 	return nil
 }
-func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool) error {
+func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRun ...string) error {
 	return nil
+}
+func (m *MockDatabase) SetPRGeneratingForReviewRun(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool, runID string) error {
+	return nil
+}
+func (m *MockDatabase) SetPRAgentReviewingForReviewRun(owner, repo string, prNumber int, runID string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) SetPRErrorForReviewRun(owner, repo string, prNumber int, runID, message string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string, inFlightStaleBefore time.Time) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) SetPRMergeConfidence(owner, repo string, prNumber int, projectionRunID string, score int) (bool, error) {
+	return true, nil
 }
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error)                             { return nil, nil }
 func (m *MockDatabase) DeletePR(owner, repo string, prNumber int) error         { return nil }
@@ -183,8 +250,11 @@ func (m *MockDatabase) BatchUpsertUserPRViews(views []db.UserPRViewBatchItem) er
 func (m *MockDatabase) GetUserPRViewsWithViaTeams(prIDs []int) ([]db.UserPRView, error) {
 	return nil, nil
 }
+func (m *MockDatabase) GetUserPRViewsForPRs(prIDs []int) ([]db.UserPRView, error) {
+	return nil, nil
+}
 func (m *MockDatabase) BatchPruneViaTeams(prunes []db.ViaTeamsPrune) error { return nil }
-func (m *MockDatabase) TryAcquireOrRenewLeadership(holderID string, ttl time.Duration) (bool, error) {
+func (m *MockDatabase) TryAcquireOrRenewLeadership(holderID string, generation int64, ttl time.Duration) (bool, error) {
 	return true, nil
 }
 func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error)             { return 0, nil }
@@ -945,7 +1015,7 @@ func TestGetDevUser_ReturnsUser(t *testing.T) {
 // fakeGitHubUserAPI returns an httptest server that emulates GET /user. It
 // records how many times it was called so cache tests can assert the second
 // call hits the cache instead.
-func fakeGitHubUserAPI(t *testing.T, expectedToken, returnLogin string, returnStatus int) (*httptest.Server, *int) {
+func fakeGitHubUserAPI(t *testing.T, expectedToken string, returnUser GitHubUser, returnStatus int) (*httptest.Server, *int) {
 	t.Helper()
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -963,7 +1033,7 @@ func fakeGitHubUserAPI(t *testing.T, expectedToken, returnLogin string, returnSt
 			w.WriteHeader(returnStatus)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(GitHubUser{ID: 1, Login: returnLogin})
+		_ = json.NewEncoder(w).Encode(returnUser)
 	}))
 	return srv, &calls
 }
@@ -973,7 +1043,7 @@ func TestMiddleware_BearerPAT_KnownUser_AddsUserToContext(t *testing.T) {
 	user := &db.User{GitHubID: 42, GitHubUsername: "alice"}
 	_ = mockDB.CreateUser(user)
 
-	srv, _ := fakeGitHubUserAPI(t, "tok-good", "alice", http.StatusOK)
+	srv, _ := fakeGitHubUserAPI(t, "tok-good", GitHubUser{ID: 42, Login: "alice"}, http.StatusOK)
 	defer srv.Close()
 
 	authInst := newTestAuth(mockDB)
@@ -1004,7 +1074,7 @@ func TestMiddleware_BearerPAT_KnownUser_AddsUserToContext(t *testing.T) {
 func TestMiddleware_BearerPAT_UnknownLogin_Returns401(t *testing.T) {
 	mockDB := newMockDatabase() // no users registered
 
-	srv, _ := fakeGitHubUserAPI(t, "tok-anon", "stranger", http.StatusOK)
+	srv, _ := fakeGitHubUserAPI(t, "tok-anon", GitHubUser{ID: 7, Login: "stranger"}, http.StatusOK)
 	defer srv.Close()
 
 	authInst := newTestAuth(mockDB)
@@ -1031,7 +1101,7 @@ func TestMiddleware_BearerPAT_UnknownLogin_Returns401(t *testing.T) {
 func TestMiddleware_BearerPAT_GitHubRejects_Returns401(t *testing.T) {
 	mockDB := newMockDatabase()
 
-	srv, _ := fakeGitHubUserAPI(t, "tok-bad", "", http.StatusUnauthorized)
+	srv, _ := fakeGitHubUserAPI(t, "tok-bad", GitHubUser{}, http.StatusUnauthorized)
 	defer srv.Close()
 
 	authInst := newTestAuth(mockDB)
@@ -1056,7 +1126,7 @@ func TestMiddleware_BearerPAT_CachesLookup(t *testing.T) {
 	user := &db.User{GitHubID: 99, GitHubUsername: "bob"}
 	_ = mockDB.CreateUser(user)
 
-	srv, calls := fakeGitHubUserAPI(t, "tok-cache", "bob", http.StatusOK)
+	srv, calls := fakeGitHubUserAPI(t, "tok-cache", GitHubUser{ID: 99, Login: "bob"}, http.StatusOK)
 	defer srv.Close()
 
 	authInst := newTestAuth(mockDB)
@@ -1078,6 +1148,198 @@ func TestMiddleware_BearerPAT_CachesLookup(t *testing.T) {
 
 	if *calls != 1 {
 		t.Errorf("expected exactly 1 GitHub /user call across 3 requests, got %d", *calls)
+	}
+}
+
+func TestMiddleware_BearerPAT_RenamedUser_ResolvesByGitHubID(t *testing.T) {
+	mockDB := newMockDatabase()
+	_ = mockDB.CreateUser(&db.User{GitHubID: 42, GitHubUsername: "alice-old"})
+
+	srv, _ := fakeGitHubUserAPI(t, "tok-renamed", GitHubUser{ID: 42, Login: "alice-new"}, http.StatusOK)
+	defer srv.Close()
+
+	authInst := newTestAuth(mockDB)
+	authInst.githubAPIBase = srv.URL
+
+	var seen *db.User
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = GetCurrentUser(r)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+	req.Header.Set("Authorization", "Bearer tok-renamed")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for renamed user, got %d (body=%q)", w.Code, w.Body.String())
+	}
+	if seen == nil || seen.GitHubID != 42 {
+		t.Fatalf("expected user with GitHub ID 42 in context, got %+v", seen)
+	}
+	if seen.GitHubUsername != "alice-new" {
+		t.Fatalf("expected context user to carry the current login, got %q", seen.GitHubUsername)
+	}
+	if got := mockDB.users[42].GitHubUsername; got != "alice-new" {
+		t.Fatalf("expected stored login refreshed to alice-new, got %q", got)
+	}
+}
+
+func TestMiddleware_BearerPAT_CachedLoginDoesNotOverwriteNewerRename(t *testing.T) {
+	mockDB := newMockDatabase()
+	user := &db.User{GitHubID: 42, GitHubUsername: "alice-old"}
+	_ = mockDB.CreateUser(user)
+
+	srv, _ := fakeGitHubUserAPI(t, "tok-a", GitHubUser{ID: 42, Login: "alice-old"}, http.StatusOK)
+	defer srv.Close()
+
+	authInst := newTestAuth(mockDB)
+	authInst.githubAPIBase = srv.URL
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	send := func() {
+		req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+		req.Header.Set("Authorization", "Bearer tok-a")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	send()
+	user.GitHubUsername = "alice-new"
+	send()
+
+	if got := mockDB.users[42].GitHubUsername; got != "alice-new" {
+		t.Fatalf("expected cached login to leave the newer rename alone, got %q", got)
+	}
+}
+
+func TestMiddleware_BearerPAT_FailedRenameWriteIsRetriedNextRequest(t *testing.T) {
+	mockDB := newMockDatabase()
+	_ = mockDB.CreateUser(&db.User{GitHubID: 42, GitHubUsername: "alice-old"})
+	mockDB.UpdateUserGitHubUsernameErr = errors.New("db down")
+
+	srv, calls := fakeGitHubUserAPI(t, "tok-a", GitHubUser{ID: 42, Login: "alice-new"}, http.StatusOK)
+	defer srv.Close()
+
+	authInst := newTestAuth(mockDB)
+	authInst.githubAPIBase = srv.URL
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	send := func() {
+		req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+		req.Header.Set("Authorization", "Bearer tok-a")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	send()
+	mockDB.UpdateUserGitHubUsernameErr = nil
+	send()
+
+	if *calls != 2 {
+		t.Fatalf("expected the failed rename to evict the cache and refetch, got %d GitHub calls", *calls)
+	}
+	if got := mockDB.users[42].GitHubUsername; got != "alice-new" {
+		t.Fatalf("expected rename applied on retry, got %q", got)
+	}
+}
+
+func TestRefreshLogin_UnchangedLoginWritesNothing(t *testing.T) {
+	mockDB := newMockDatabase()
+	user := &db.User{GitHubID: 7, GitHubUsername: "alice"}
+	_ = mockDB.CreateUser(user)
+
+	newTestAuth(mockDB).refreshLogin(user, "alice")
+
+	if mockDB.usernameUpdates != 0 {
+		t.Fatalf("expected no username write, got %d", mockDB.usernameUpdates)
+	}
+}
+
+func TestRefreshLogin_DBErrorStillUsesCurrentLogin(t *testing.T) {
+	mockDB := newMockDatabase()
+	mockDB.UpdateUserGitHubUsernameErr = errors.New("db down")
+	user := &db.User{GitHubID: 7, GitHubUsername: "alice-old"}
+	_ = mockDB.CreateUser(user)
+
+	newTestAuth(mockDB).refreshLogin(user, "alice-new")
+
+	if user.GitHubUsername != "alice-new" {
+		t.Fatalf("expected in-memory login to follow GitHub, got %q", user.GitHubUsername)
+	}
+}
+
+func TestMiddleware_BearerPAT_DifferentAccountWithOldLogin_Returns401(t *testing.T) {
+	mockDB := newMockDatabase()
+	_ = mockDB.CreateUser(&db.User{GitHubID: 42, GitHubUsername: "alice"})
+
+	srv, _ := fakeGitHubUserAPI(t, "tok-squatter", GitHubUser{ID: 777, Login: "alice"}, http.StatusOK)
+	defer srv.Close()
+
+	authInst := newTestAuth(mockDB)
+	authInst.githubAPIBase = srv.URL
+
+	called := false
+	handler := authInst.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	req := httptest.NewRequest("GET", "/api/review/o/r/1", nil)
+	req.Header.Set("Authorization", "Bearer tok-squatter")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 when GitHub ID differs from the row holding that login, got %d", w.Code)
+	}
+	if called {
+		t.Error("downstream handler must not run for a different GitHub account")
+	}
+}
+
+func TestBearerLookup_CachesIDAndLogin(t *testing.T) {
+	srv, _ := fakeGitHubUserAPI(t, "tok-identity", GitHubUser{ID: 42, Login: "alice"}, http.StatusOK)
+	defer srv.Close()
+
+	authInst := newTestAuth(newMockDatabase())
+	authInst.githubAPIBase = srv.URL
+
+	identity, _, ok := authInst.bearerLookup(context.Background(), "tok-identity")
+	if !ok {
+		t.Fatal("expected lookup to succeed")
+	}
+	if identity.ID != 42 || identity.Login != "alice" {
+		t.Errorf("expected identity {42 alice}, got %+v", identity)
+	}
+
+	entry, cached := authInst.bearerCache[hashBearerToken("tok-identity")]
+	if !cached {
+		t.Fatal("expected cache entry for token")
+	}
+	if entry.identity.ID != 42 || entry.identity.Login != "alice" {
+		t.Errorf("expected cached identity {42 alice}, got %+v", entry.identity)
+	}
+}
+
+func TestBearerLookup_FailedUserLookupNotCached(t *testing.T) {
+	srv, calls := fakeGitHubUserAPI(t, "tok-flaky", GitHubUser{}, http.StatusInternalServerError)
+	defer srv.Close()
+
+	authInst := newTestAuth(newMockDatabase())
+	authInst.githubAPIBase = srv.URL
+
+	for i := 0; i < 2; i++ {
+		if _, _, ok := authInst.bearerLookup(context.Background(), "tok-flaky"); ok {
+			t.Fatalf("call %d: expected lookup to fail", i)
+		}
+	}
+
+	if _, cached := authInst.bearerCache[hashBearerToken("tok-flaky")]; cached {
+		t.Error("failed lookup must not be cached")
+	}
+	if *calls != 2 {
+		t.Errorf("expected GitHub /user to be called on every failed lookup, got %d calls", *calls)
 	}
 }
 

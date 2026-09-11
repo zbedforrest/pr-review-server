@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -147,7 +148,8 @@ type rawResponseMsg struct {
 }
 
 // runPrompts sends each Prompt to the LLM concurrently (staggered 250ms when
-// more than one), parses each response with parse, and aggregates the results.
+// more than one, or by the first-pass cache stagger on anthropic), parses each
+// response with parse, and aggregates the results.
 // For a single prompt the first attempt streams to stdout.
 func (s *Service) runPrompts(ctx context.Context, cfg PerformReviewConfig, prompts []Prompt, parse Parser) *ReviewExecutionResult {
 	result := &ReviewExecutionResult{}
@@ -162,14 +164,18 @@ func (s *Service) runPrompts(ctx context.Context, cfg PerformReviewConfig, promp
 	errorChan := make(chan reviewErrorMsg, n)
 	rawResponseChan := make(chan rawResponseMsg, n)
 
+	stagger := s.launchStagger(cfg)
 	for i, p := range prompts {
 		wg.Add(1)
 		go func(requestNum int, prompt Prompt) {
 			defer wg.Done()
 			s.runSinglePrompt(ctx, cfg, prompt, requestNum, n, parse, resultsChan, errorChan, rawResponseChan, result, &firstErrorMu)
 		}(i+1, p)
-		if n > 1 {
-			time.Sleep(250 * time.Millisecond) // Stagger requests
+		if i < n-1 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(stagger):
+			}
 		}
 	}
 
@@ -235,6 +241,9 @@ func (s *Service) runSinglePrompt(
 		}
 
 		var llmClient llm.IClient = s.smartLlmClient
+		if cfg.FirstPassClient != nil {
+			llmClient = cfg.FirstPassClient
+		}
 		if cfg.Fast {
 			llmClient = s.fastLlmClient
 		}
@@ -243,6 +252,18 @@ func (s *Service) runSinglePrompt(
 			color.Yellow("%s LLM Client type: %T", prefix, llmClient)
 		}
 
+		var attemptEvent ProviderAttemptEvent
+		startedAt := time.Now().UTC()
+		attemptEvent = s.firstPassAttemptEvent(cfg, requestNum, attempt, startedAt)
+		if observerErr := observeProviderAttempt(cfg.AttemptObserver, attemptEvent); errors.Is(observerErr, ErrProviderAttemptAborted) {
+			errorChan <- reviewErrorMsg{err: observerErr, reqNum: requestNum, name: prompt.Name}
+			firstErrorMu.Lock()
+			if result.FirstError == nil {
+				result.FirstError = observerErr
+			}
+			firstErrorMu.Unlock()
+			return
+		}
 		if totalRequests == 1 && attempt == 1 {
 			white.Printf("%s Streaming response:\n", prefix)
 			reviewContent, promptTokenCount, candidatesTokenCount, totalTokenCount, errReview = llmClient.GetReviewStream(prompt.Content, os.Stdout)
@@ -250,8 +271,21 @@ func (s *Service) runSinglePrompt(
 		} else {
 			reviewContent, promptTokenCount, candidatesTokenCount, totalTokenCount, errReview = llmClient.GetReview(prompt.Content)
 		}
+		completedAt := time.Now().UTC()
+		attemptEvent.CompletedAt = &completedAt
+		attemptEvent.DurationMS = completedAt.Sub(startedAt).Milliseconds()
+		attemptEvent.InputTokens = int64(promptTokenCount)
+		attemptEvent.OutputTokens = int64(candidatesTokenCount)
+		attemptEvent.TotalTokens = int64(totalTokenCount)
+		attemptEvent.Status = "completed"
+		attemptEvent.StopReason = "completed"
 
 		if errReview != nil {
+			attemptEvent.Status = "failed"
+			attemptEvent.StopReason = "provider_error"
+			attemptEvent.ErrorCode = "provider_error"
+			attemptEvent.ErrorSummary = errReview.Error()
+			_ = observeProviderAttempt(cfg.AttemptObserver, attemptEvent)
 			color.Red("%s Error getting review from LLM (attempt %d) on request %d (%s): %v", prefix, attempt, requestNum, prompt.Name, errReview)
 			if attempt < maxAttempts {
 				continue
@@ -268,6 +302,7 @@ func (s *Service) runSinglePrompt(
 
 		comments, err := parse(reviewContent)
 		if err == nil {
+			_ = observeProviderAttempt(cfg.AttemptObserver, attemptEvent)
 			color.Green("%s Successfully parsed AI review for request %d (%s).", prefix, requestNum, prompt.Name)
 			atomic.AddInt64(&result.SuccessCount, 1)
 			resultsChan <- reviewResultMsg{
@@ -279,6 +314,13 @@ func (s *Service) runSinglePrompt(
 			return
 		}
 
+		// The provider call itself completed successfully; parsing is a
+		// downstream response-quality outcome, not a transport/provider failure.
+		attemptEvent.Status = "completed"
+		attemptEvent.StopReason = "parse_error"
+		attemptEvent.ErrorCode = "response_parse_failed"
+		attemptEvent.ErrorSummary = err.Error()
+		_ = observeProviderAttempt(cfg.AttemptObserver, attemptEvent)
 		if attempt < maxAttempts {
 			color.Yellow("%s AI returned non-parseable response for request %d (%s). Will retry.", prefix, requestNum, prompt.Name)
 			continue
@@ -286,6 +328,36 @@ func (s *Service) runSinglePrompt(
 
 		color.Red("%s Error parsing AI review after %d attempts for request %d (%s): %v", prefix, maxAttempts, requestNum, prompt.Name, err)
 		rawResponseChan <- rawResponseMsg{content: reviewContent, reqNum: requestNum, name: prompt.Name}
+	}
+}
+
+// launchStagger returns the delay between sample launches. Anthropic first
+// passes stretch it to the configured cache stagger so sample 1's prompt-cache
+// prefill completes before the identical later samples are sent.
+func (s *Service) launchStagger(cfg PerformReviewConfig) time.Duration {
+	info := s.firstPass
+	if cfg.FirstPass != nil {
+		info = *cfg.FirstPass
+	}
+	if !cfg.Fast && info.Provider == "anthropic" && info.CacheStaggerSec > 0 {
+		return time.Duration(info.CacheStaggerSec) * time.Second
+	}
+	return 250 * time.Millisecond
+}
+
+func (s *Service) firstPassAttemptEvent(cfg PerformReviewConfig, invocationNumber, attemptNumber int, startedAt time.Time) ProviderAttemptEvent {
+	provider, backend, model := s.firstPass.Provider, s.firstPass.Backend, s.firstPass.Model
+	if cfg.FirstPass != nil {
+		provider, backend, model = cfg.FirstPass.Provider, cfg.FirstPass.Backend, cfg.FirstPass.Model
+	}
+	if cfg.Fast {
+		// The fast path swaps in the classification client, which stays Gemini.
+		provider, backend, model = "google", "gemini_api", llm.FlashModelName()
+	}
+	return ProviderAttemptEvent{
+		Stage: "first_pass", InvocationNumber: invocationNumber, AttemptNumber: attemptNumber,
+		Provider: provider, Backend: backend, RequestedModel: model, ResolvedModel: model,
+		Status: "started", StartedAt: &startedAt,
 	}
 }
 
@@ -311,12 +383,16 @@ func (s *Service) handlePostReviewProcessing(
 	// Classify comment importance if we have comments and not a custom prompt
 	if len(allComments) > 0 && cfg.CustomPrompt == "" {
 		classifiedComments, err := s.classifyCommentImportance(cfg, allComments, data.PR.Body, data.FileContext, data.Diff)
+		if errors.Is(err, ErrProviderAttemptAborted) {
+			return nil, err
+		}
 		if err != nil {
 			color.Yellow("%s Could not classify comment importance: %v", prefix, err)
 		} else {
 			allComments = classifiedComments
 		}
 	}
+	EnforceFindingContractPolicy(allComments)
 
 	// Convert tool's previous comments to LineComment format and include in final output
 	previousToolComments := s.convertPreviousCommentsToLineComments(data.ExistingComments, data.CurrentUser.Login)
@@ -327,7 +403,10 @@ func (s *Service) handlePostReviewProcessing(
 	// Generate comprehensive summary in testing mode
 	if cfg.Testing && len(allToolComments) > 0 {
 		color.White("%s Generating comprehensive summary of tool-generated review comments...", prefix)
-		comprehensiveSummary, err := s.generateComprehensiveSummary(allToolComments, data.PR.Body, data.Diff)
+		comprehensiveSummary, err := s.generateComprehensiveSummary(cfg, allToolComments, data.PR.Body, data.Diff)
+		if errors.Is(err, ErrProviderAttemptAborted) {
+			return nil, err
+		}
 		if err != nil {
 			color.Yellow("%s Could not generate comprehensive summary: %v", prefix, err)
 		} else {

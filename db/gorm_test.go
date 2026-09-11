@@ -1,6 +1,7 @@
 package db
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -219,7 +220,8 @@ func TestGormDB_UpsertPR_DoesNotClobberReviewState(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mark it completed via the dedicated setter.
-	err = db.MarkPRCompleted("owner", "repo", 1, "abc123", "review.html", 1, 2, 3, "request_changes", false)
+	err = db.MarkPRCompleted("owner", "repo", 1, "abc123", "review.html", 1, 2, 3, "request_changes", false,
+		"run-0123456789abcdef0123456789abcdef", `{"run_id":"run-0123456789abcdef0123456789abcdef"}`)
 	require.NoError(t, err)
 
 	// The poller does a metadata refresh with a stale read still showing pending.
@@ -236,6 +238,8 @@ func TestGormDB_UpsertPR_DoesNotClobberReviewState(t *testing.T) {
 	assert.Equal(t, "review.html", fetched.ReviewHTMLPath, "review_path must not be cleared")
 	assert.Equal(t, 1, fetched.CriticalCount, "critical_count must not be reset")
 	assert.Equal(t, "request_changes", fetched.ReviewVerdict, "review_verdict must not be cleared")
+	assert.Equal(t, "run-0123456789abcdef0123456789abcdef", fetched.ReviewRunID)
+	assert.Contains(t, fetched.ReviewRunJSON, `"run_id"`)
 	assert.Equal(t, "Updated Title", fetched.Title, "title (whitelisted) should still update")
 }
 
@@ -332,8 +336,9 @@ func TestGormDB_ResetPRToOutdated(t *testing.T) {
 	require.NoError(t, err)
 
 	// Reset to outdated
-	err = db.ResetPRToOutdated("owner", "repo", 1, "newsha456")
+	reset, err := db.ResetPRToOutdated("owner", "repo", 1, "abc123", "newsha456")
 	require.NoError(t, err)
+	assert.True(t, reset)
 
 	fetched, err := db.GetPR("owner", "repo", 1)
 	require.NoError(t, err)
@@ -361,6 +366,207 @@ func TestGormDB_SetPRGenerating(t *testing.T) {
 	assert.Equal(t, "author", fetched.Author)
 	assert.True(t, fetched.Draft)
 	assert.NotNil(t, fetched.GeneratingSince)
+}
+
+const confidenceRunID = "run-000000000000000000000000000000a1"
+
+// completedPRWithConfidence completes prNumber under confidenceRunID and scores it.
+func completedPRWithConfidence(t *testing.T, db *GormDB, prNumber int, sha string, score int) {
+	require.NoError(t, db.SetPRGeneratingForReviewRun("owner", "repo", prNumber, sha, "Title", "alice", nil, false, confidenceRunID))
+	completed, err := db.MarkPRCompletedForReviewRun("owner", "repo", prNumber, confidenceRunID, confidenceRunID, sha, "review.html", 0, 0, 0, "", false, "")
+	require.NoError(t, err)
+	require.True(t, completed)
+	ok, err := db.SetPRMergeConfidence("owner", "repo", prNumber, confidenceRunID, score)
+	require.NoError(t, err)
+	require.True(t, ok)
+}
+
+func mergeConfidenceOf(t *testing.T, db *GormDB, prNumber int) *int {
+	fetched, err := db.GetPR("owner", "repo", prNumber)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	return fetched.MergeConfidence
+}
+
+func TestGormDB_SetPRMergeConfidence_WritesForTheOwningCompletedRun(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+
+	score := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, score)
+	assert.Equal(t, 4, *score)
+}
+
+func TestGormDB_SetPRMergeConfidence_IgnoresARunThatDoesNotOwnTheProjection(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+
+	ok, err := db.SetPRMergeConfidence("owner", "repo", 1, "run-000000000000000000000000000000a2", 1)
+	require.NoError(t, err)
+	assert.False(t, ok, "an older run re-reviewing the same commit must not match")
+
+	score := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, score)
+	assert.Equal(t, 4, *score, "a stale write must leave the row untouched")
+}
+
+func TestGormDB_SetPRMergeConfidence_IgnoresARowThatIsNoLongerCompleted(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+	require.NoError(t, db.UpdatePRStatus("owner", "repo", 1, "generating"))
+
+	ok, err := db.SetPRMergeConfidence("owner", "repo", 1, confidenceRunID, 2)
+	require.NoError(t, err)
+	assert.False(t, ok, "a medal must only ever be written against a completed row")
+}
+
+func TestGormDB_SetPRMergeConfidence_RejectsScoresOutsideTheMedalRange(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+
+	for _, score := range []int{6, -1} {
+		ok, err := db.SetPRMergeConfidence("owner", "repo", 1, confidenceRunID, score)
+		assert.Error(t, err, "score %d", score)
+		assert.False(t, ok)
+	}
+	stored := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, stored)
+	assert.Equal(t, 4, *stored, "a rejected score must write nothing")
+}
+
+func TestGormDB_SetPRMergeConfidence_RejectsAnEmptyRunID(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+	require.NoError(t, db.db.Model(&PRModel{}).Where("pr_number = ?", 1).Update("projection_run_id", "").Error)
+
+	stored, err := db.SetPRMergeConfidence("owner", "repo", 1, "", 1)
+	require.Error(t, err)
+	assert.False(t, stored)
+	score := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, score)
+	assert.Equal(t, 4, *score)
+}
+
+func TestGormDB_UpdatePRStatus_ClearsMergeConfidenceWhenLeavingCompleted(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.UpdatePRStatus("owner", "repo", 1, "pending"))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence)
+}
+
+func TestGormDB_SetPRError_ClearsMergeConfidence(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.SetPRError("owner", "repo", 1, "boom"))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence)
+}
+
+func TestGormDB_SetPRMergeConfidence_MissingRow(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	ok, err := db.SetPRMergeConfidence("owner", "repo", 404, confidenceRunID, 5)
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestGormDB_ResetPRToOutdated_ClearsMergeConfidence(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	reset, err := db.ResetPRToOutdated("owner", "repo", 1, "abc123", "def456")
+	require.NoError(t, err)
+	require.True(t, reset)
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence, "a medal must never describe a previous head")
+}
+
+func TestGormDB_SetPRGenerating_ClearsMergeConfidence(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.SetPRGenerating("owner", "repo", 1, "def456", "Title", "alice", nil, false))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence)
+}
+
+func TestGormDB_SetPRGeneratingForReviewRun_ClearsMergeConfidence(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.SetPRGeneratingForReviewRun("owner", "repo", 1, "def456", "Title", "alice", nil, false, "run-000000000000000000000000000000c1"))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence)
+}
+
+func TestGormDB_GetPR_MergeConfidenceRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	zero := 0
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "completed", MergeConfidence: &zero,
+	}))
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 2,
+		LastCommitSHA: "abc123", Status: "pending",
+	}))
+
+	scored, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	require.NotNil(t, scored.MergeConfidence)
+	assert.Equal(t, 0, *scored.MergeConfidence, "zero is a real score, not absence")
+
+	unscored, err := db.GetPR("owner", "repo", 2)
+	require.NoError(t, err)
+	assert.Nil(t, unscored.MergeConfidence)
+}
+
+func TestGormDB_MergeConfidenceMigrationIsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	require.NoError(t, db.db.Migrator().DropColumn(&PRModel{}, "MergeConfidence"))
+	require.False(t, db.db.Migrator().HasColumn(&PRModel{}, "merge_confidence"))
+
+	require.NoError(t, db.ensureIdempotentColumns())
+	require.NoError(t, db.ensureIdempotentColumns())
+	assert.True(t, db.db.Migrator().HasColumn(&PRModel{}, "merge_confidence"))
 }
 
 func TestGormDB_GetAllPRs(t *testing.T) {
@@ -848,6 +1054,20 @@ func TestGormDB_UpdateUserLastLogin(t *testing.T) {
 	fetched, err := db.GetUserByID(user.ID)
 	require.NoError(t, err)
 	assert.NotNil(t, fetched.LastLoginAt)
+}
+
+func TestGormDB_UpdateUserGitHubUsername(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "old-name"}
+	require.NoError(t, db.CreateUser(user))
+
+	require.NoError(t, db.UpdateUserGitHubUsername(user.ID, "new-name"))
+
+	fetched, err := db.GetUserByGitHubID(12345)
+	require.NoError(t, err)
+	assert.Equal(t, "new-name", fetched.GitHubUsername)
 }
 
 // =============================================================================
@@ -1730,32 +1950,65 @@ func TestGormDB_Leadership_AcquireRenewExpireSteal(t *testing.T) {
 	defer db.Close()
 
 	ttl := 60 * time.Millisecond
+	gen := int64(100)
 
 	// A acquires an unheld lease.
-	ok, err := db.TryAcquireOrRenewLeadership("A", ttl)
+	ok, err := db.TryAcquireOrRenewLeadership("A", gen, ttl)
 	require.NoError(t, err)
 	assert.True(t, ok, "A should acquire an unheld lease")
 
-	// B cannot steal a valid lease.
-	ok, err = db.TryAcquireOrRenewLeadership("B", ttl)
+	// B (same generation) cannot steal a valid lease.
+	ok, err = db.TryAcquireOrRenewLeadership("B", gen, ttl)
 	require.NoError(t, err)
 	assert.False(t, ok, "B must not steal A's valid lease")
 
 	// A renews its own lease.
-	ok, err = db.TryAcquireOrRenewLeadership("A", ttl)
+	ok, err = db.TryAcquireOrRenewLeadership("A", gen, ttl)
 	require.NoError(t, err)
 	assert.True(t, ok, "A should renew its own lease")
 
 	// After expiry, B takes over.
 	time.Sleep(ttl + 80*time.Millisecond)
-	ok, err = db.TryAcquireOrRenewLeadership("B", ttl)
+	ok, err = db.TryAcquireOrRenewLeadership("B", gen, ttl)
 	require.NoError(t, err)
 	assert.True(t, ok, "B should acquire an expired lease")
 
 	// A can no longer steal B's now-valid lease.
-	ok, err = db.TryAcquireOrRenewLeadership("A", ttl)
+	ok, err = db.TryAcquireOrRenewLeadership("A", gen, ttl)
 	require.NoError(t, err)
 	assert.False(t, ok, "A must not steal B's valid lease")
+}
+
+// Deploys leave the previous revision's instance alive for up to the request
+// timeout. A newer boot generation must take the lease at once, and the older
+// instance must never get it back, even after the newer lease expires.
+func TestGormDB_Leadership_NewerGenerationPreemptsAndFencesOlder(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	ttl := 60 * time.Millisecond
+	oldGen, newGen := int64(100), int64(200)
+
+	ok, err := db.TryAcquireOrRenewLeadership("old", oldGen, ttl)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	ok, err = db.TryAcquireOrRenewLeadership("new", newGen, ttl)
+	require.NoError(t, err)
+	assert.True(t, ok, "a newer generation preempts a live older leader")
+
+	ok, err = db.TryAcquireOrRenewLeadership("old", oldGen, ttl)
+	require.NoError(t, err)
+	assert.False(t, ok, "the preempted older instance cannot renew")
+
+	time.Sleep(ttl + 80*time.Millisecond)
+	ok, err = db.TryAcquireOrRenewLeadership("old", oldGen, ttl)
+	require.NoError(t, err)
+	assert.False(t, ok, "an older generation never reacquires, even an expired lease")
+
+	ok, err = db.TryAcquireOrRenewLeadership("new", newGen, ttl)
+	require.NoError(t, err)
+	assert.True(t, ok, "the newest generation reacquires its expired lease")
 }
 
 func TestGormDB_SetUserHiddenForPR_SurvivesPollerWrites(t *testing.T) {
@@ -1836,4 +2089,117 @@ func TestGormDB_SetUserHiddenForPR_NoViewRow(t *testing.T) {
 	require.NoError(t, db.EnsureUserPRView(user.ID, fetchedPR.ID, false))
 	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
 	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
+}
+
+func TestGormDB_BatchUpsertUserPRViews_NeedsAttentionRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 1, GitHubUsername: "alice"}
+	require.NoError(t, db.CreateUser(user))
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, Status: "completed"}))
+	pr, err := db.GetPR("acme", "example", 1)
+	require.NoError(t, err)
+
+	changesRequested := "CHANGES_REQUESTED"
+	flagged := true
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr.ID, ReviewStatus: &changesRequested, NeedsAttention: &flagged},
+	}))
+
+	assignment, err := db.GetUserPRAssignment(user.ID, pr.ID)
+	require.NoError(t, err)
+	require.NotNil(t, assignment)
+	assert.True(t, assignment.NeedsAttention)
+
+	views, err := db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, views, 1)
+	assert.True(t, views[0].NeedsAttention)
+	assert.Equal(t, "CHANGES_REQUESTED", views[0].ReviewStatus)
+
+	rows, err := db.GetUserPRViewsForPRs([]int{pr.ID})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].NeedsAttention)
+	assert.Equal(t, user.ID, rows[0].UserID)
+}
+
+func TestGormDB_BatchUpsertUserPRViews_NilNeedsAttentionPreservesExisting(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 1, GitHubUsername: "alice"}
+	require.NoError(t, db.CreateUser(user))
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, Status: "completed"}))
+	pr, err := db.GetPR("acme", "example", 1)
+	require.NoError(t, err)
+
+	flagged := true
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr.ID, NeedsAttention: &flagged},
+	}))
+
+	approved := "APPROVED"
+	teams := []string{"Platform:my_pending"}
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr.ID, ReviewStatus: &approved, ViaTeams: &teams},
+	}))
+
+	assignment, err := db.GetUserPRAssignment(user.ID, pr.ID)
+	require.NoError(t, err)
+	assert.True(t, assignment.NeedsAttention, "nil pointer must not clear the stored flag")
+	assert.Equal(t, "APPROVED", assignment.MyReviewStatus)
+}
+
+func TestGormDB_BatchUpsertUserPRViews_FalseNeedsAttentionClears(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 1, GitHubUsername: "alice"}
+	require.NoError(t, db.CreateUser(user))
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, Status: "completed"}))
+	pr, err := db.GetPR("acme", "example", 1)
+	require.NoError(t, err)
+
+	flagged := true
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr.ID, NeedsAttention: &flagged},
+	}))
+	cleared := false
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr.ID, NeedsAttention: &cleared},
+	}))
+
+	assignment, err := db.GetUserPRAssignment(user.ID, pr.ID)
+	require.NoError(t, err)
+	assert.False(t, assignment.NeedsAttention)
+}
+
+func TestGormDB_NeedsAttentionColumn_SkipMigrationsAddsIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skip-migrations.db")
+	database, err := NewGormSQLite(path)
+	require.NoError(t, err)
+	require.NoError(t, database.db.Migrator().DropColumn(&UserPRViewModel{}, "NeedsAttention"))
+	assert.False(t, database.db.Migrator().HasColumn(&UserPRViewModel{}, "needs_attention"))
+	require.NoError(t, database.Close())
+
+	t.Setenv("SKIP_DB_MIGRATIONS", "true")
+	database, err = NewGormSQLite(path)
+	require.NoError(t, err)
+	defer database.Close()
+	assert.True(t, database.db.Migrator().HasColumn(&UserPRViewModel{}, "needs_attention"))
+	require.NoError(t, database.ensureIdempotentColumns(), "re-running the column add must be a no-op")
+}
+
+func TestGormDB_SetSetting_CanClearToEmpty(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	require.NoError(t, db.SetSetting("publish_enabled_authors", "alice"))
+	require.NoError(t, db.SetSetting("publish_enabled_authors", ""))
+
+	got, err := db.GetSetting("publish_enabled_authors")
+	require.NoError(t, err)
+	assert.Equal(t, "", got, "an empty value must overwrite the previous one")
 }

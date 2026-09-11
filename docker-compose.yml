@@ -9,6 +9,13 @@ services:
       - POLLING_INTERVAL=${POLLING_INTERVAL:-1m}
       - SERVER_PORT=8080
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - AGENTIC_REVIEWS=${AGENTIC_REVIEWS:-false}
+      - AGENT_BACKEND=${AGENT_BACKEND:-claude}
+      - AGENT_MODEL=${AGENT_MODEL:-}
+      - AGENT_EFFORT=${AGENT_EFFORT:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-}
       # Audio configuration for PulseAudio (see AUDIO_SETUP.md)
       - PULSE_SERVER=host.docker.internal
       - PULSE_COOKIE=/tmp/pulse-cookie

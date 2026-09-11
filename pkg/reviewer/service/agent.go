@@ -17,25 +17,39 @@ import (
 	"sync"
 	"time"
 
+	"pr-review-server/pkg/reviewer/llm"
+	"pr-review-server/pkg/reviewer/runconfig"
+	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
 )
 
-// DefaultAgentModel is the `claude` model used when AgentConfig.Model is empty.
+// DefaultAgentModel is the Claude model used when AgentConfig.Model is empty.
 const DefaultAgentModel = "claude-opus-4-8"
 
-// DefaultAgentEffort is the `claude` reasoning effort used when
-// AgentConfig.Effort is empty. Kept at the historical hardcoded value.
+// DefaultAgentEffort is the reasoning effort used when AgentConfig.Effort is
+// empty. Kept at the historical hardcoded value for both backends.
 const DefaultAgentEffort = "medium"
 
 // AgentConfig holds runtime knobs for a single agent-review invocation.
 type AgentConfig struct {
-	CloneRootDir string        // parent dir for per-invocation clones
-	LogsDir      string        // parent dir for raw stream-json logs
-	WallClock    time.Duration // hard wall-clock timeout
-	MaxTurns     int           // abort after this many assistant turns
-	GitHubToken  string        // optional; HTTPS clone auth
-	Model        string        // `claude` model id; defaults to DefaultAgentModel if empty
-	Effort       string        // `claude` reasoning effort; defaults to DefaultAgentEffort if empty
+	CloneRootDir      string        // parent dir for per-invocation clones
+	LogsDir           string        // parent dir for raw stream-json logs
+	WallClock         time.Duration // hard wall-clock timeout
+	MaxTurns          int           // abort after this many backend-specific turn-budget units
+	GitHubToken       string        // optional; HTTPS clone auth
+	Backend           string        // claude (default) or openrouter
+	Model             string        // backend model id; defaults according to Backend
+	Effort            string        // backend reasoning effort; defaults to DefaultAgentEffort
+	AnthropicAPIKey   string        // frozen optional credential; OAuth via HOME remains supported
+	OpenRouterAPIKey  string        // frozen deployment credential; injected into the Codex child environment
+	OpenRouterBaseURL string        // optional OpenRouter API root; used only by the openrouter backend
+
+	// PRTitle, PRBody and LinkedTickets give the agent the author's stated
+	// intent (see pkg/reviewer/tickets). All optional; empty values add
+	// nothing to the prompt.
+	PRTitle       string
+	PRBody        string
+	LinkedTickets []tickets.Ticket
 
 	// BugMemory is the optional pattern library (nil = feature off). The
 	// matcher excludes entries sourced from the PR under review; see
@@ -52,13 +66,24 @@ type AgentConfig struct {
 	// stream-json log path after a failed run, before the error returns —
 	// LogsDir is ephemeral, so this is the log's only path off the instance.
 	FailureLogSink func(logPath string)
+
+	// AttemptObserver receives a started event immediately before Spawn and one
+	// terminal event afterward under the same natural key. Clone and prompt-build
+	// failures emit nothing because execution never reached a provider attempt;
+	// ErrProviderAttemptAborted prevents the spawn entirely.
+	AttemptObserver ProviderAttemptObserver
 }
 
 // AgentReview is the result of a successful agent run.
 type AgentReview struct {
-	Comments  []types.LineComment // parsed from the agent's final JSON response
-	Gates     []types.LineComment // mechanical gate findings (advisory, provenance "mechanical")
-	BugMemory BugMemoryMatch      // which memory entries were injected/excluded (telemetry)
+	Comments []types.LineComment // the agent's own findings (disposition entries removed)
+	Gates    []types.LineComment // mechanical gate findings (advisory, provenance "mechanical")
+	// FirstPassActive is the first-pass claims that stay active under the
+	// retention policy (see ApplyDispositions); the caller merges it as the
+	// first-pass set. Records is everything else the review keeps inactive.
+	FirstPassActive []types.LineComment
+	Records         []types.LineComment
+	BugMemory       BugMemoryMatch // which memory entries were injected/excluded (telemetry)
 
 	// Checks and CheckFindings carry the required-check enforcement output
 	// (see checks.go): funnel telemetry, and the deterministic escalations
@@ -71,18 +96,36 @@ type AgentReview struct {
 	CloneDir string // path to the per-invocation clone (kept for inspection)
 	LogPath  string // where the raw stream-json was written (removed by then — /tmp hygiene)
 
-	// Model verification: the CLI reports the serving model in the stream
-	// (init + assistant events). ModelFallback means it did not satisfy the
-	// requested model — the review still publishes, but callers must surface
-	// it loudly (log, telemetry, dashboard badge).
+	// Model verification: Claude reports the serving model in init + assistant
+	// events. Codex JSONL does not, so OpenRouter reports its exact pinned
+	// request model. ModelFallback means a reported model did not satisfy the
+	// request — the review still publishes, but callers surface it loudly.
 	RequestedModel string
 	ServedModel    string
-	ModelFallback  bool
+	// ObservedServedModels preserves every model identity reported by the
+	// provider stream, including mid-run switches.
+	ObservedServedModels []string
+	ModelFallback        bool
+	Backend              string
+	Effort               string
+	AssistantTurns       int
+	BudgetUnitsUsed      int
+	DurationMS           int64
+	// GatesStartedAt/GatesDurationMS time the mechanical-gates run inside the
+	// agent stage; GatesStartedAt is zero when gates were skipped (no diff).
+	GatesStartedAt  time.Time
+	GatesDurationMS int64
+	// ServingModelVerified is true only when the agent stream explicitly
+	// reported the model that served the request. Codex/OpenRouter currently
+	// pins the requested model but does not expose the routed model in JSONL.
+	ServingModelVerified bool
 }
 
-// Spawner abstracts subprocess creation so tests can stub the `claude` CLI.
+// Spawner abstracts secure subprocess creation so tests can stub the agent
+// CLI. The environment slice is complete; implementations must not inherit
+// the server process environment.
 type Spawner interface {
-	Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error)
+	SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error)
 }
 
 // SpawnedProcess is what a Spawner returns.
@@ -93,8 +136,8 @@ type SpawnedProcess interface {
 	Kill() error
 }
 
-// RunAgentReview clones the PR branch, spawns `claude -p`, parses its
-// stream-json output, and returns the assembled markdown. On any failure
+// RunAgentReview clones the PR branch, spawns the configured agent CLI, parses
+// its JSONL output, and returns the assembled markdown. On any failure
 // (clone error, timeout, turn-cap hit, non-zero exit) it returns a descriptive
 // error — caller is expected to surface it loud.
 //
@@ -109,12 +152,16 @@ func RunAgentReview(
 	prNumber int,
 	commitSHA string,
 	geminiComments []types.LineComment,
-) (*AgentReview, error) {
+) (review *AgentReview, returnErr error) {
 	if agentCfg.MaxTurns <= 0 {
 		return nil, errors.New("agent: MaxTurns must be > 0")
 	}
 	if agentCfg.WallClock <= 0 {
 		return nil, errors.New("agent: WallClock must be > 0")
+	}
+	runtime, err := resolveAgentRuntime(agentCfg)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := os.MkdirAll(agentCfg.CloneRootDir, 0o755); err != nil {
@@ -132,7 +179,7 @@ func RunAgentReview(
 	log.Printf("%s starting (clone=%s, log=%s, wall_clock=%s, max_turns=%d, gemini_comments=%d)",
 		logPrefix, cloneDir, logPath, agentCfg.WallClock, agentCfg.MaxTurns, len(geminiComments))
 
-	// Single wall-clock budget covers BOTH the clone and the claude subprocess.
+	// Single wall-clock budget covers BOTH the clone and the agent subprocess.
 	// That way a slow clone can't burn the budget and leave nothing for thinking
 	// (or worse, run unbounded under the outer context).
 	runCtx, cancel := context.WithTimeout(ctx, agentCfg.WallClock)
@@ -167,8 +214,12 @@ func RunAgentReview(
 	// Their findings go into the prompt (the agent must address each) AND are
 	// returned for the reconciliation merge, so they survive dismissal.
 	var gates []types.LineComment
+	var gatesStartedAt time.Time
+	var gatesDurationMS int64
 	if diffFiles != nil {
+		gatesStartedAt = time.Now().UTC()
 		gates = RunMechanicalGates(runCtx, cloneDir, diffFiles)
+		gatesDurationMS = time.Since(gatesStartedAt).Milliseconds()
 	}
 	if len(gates) > 0 {
 		log.Printf("%s mechanical gates fired: %d", logPrefix, len(gates))
@@ -198,42 +249,108 @@ func RunAgentReview(
 		log.Printf("%s required checks issued: %v", logPrefix, ids)
 	}
 
-	prompt, err := buildAgentPromptContent(geminiComments, gates, memEntries, checks)
+	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets)
+	claims := firstPassClaims(geminiComments)
+	prompt, err := buildAgentPromptContent(defaultBranch, diffFiles, prContext, claims, gates, memEntries, checks)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
 
-	model := agentCfg.Model
-	if model == "" {
-		model = DefaultAgentModel
-	}
-	effort := agentCfg.Effort
-	if effort == "" {
-		effort = DefaultAgentEffort
-	}
-
-	args := []string{
-		"-p", prompt,
-		"--model", model,
-		"--effort", effort,
-		"--tools", "Read,Grep,Glob,Bash",
-		"--permission-mode", "bypassPermissions",
-		"--output-format", "stream-json",
-		"--verbose", // required by `claude` when combining --print + stream-json
-	}
+	args := runtime.args(prompt)
 
 	// Log the argv without the full prompt (too big; promptAgentReview is static
 	// and the comment list is in geminiComments count above).
-	log.Printf("%s spawning claude (model=%s, effort=%s, tools=Read,Grep,Glob,Bash, prompt_chars=%d)",
-		logPrefix, model, effort, len(prompt))
+	log.Printf("%s spawning %s (backend=%s, model=%s, effort=%s, prompt_chars=%d)",
+		logPrefix, runtime.command, runtime.backend, runtime.model, runtime.effort, len(prompt))
 
-	spawnStart := time.Now()
-	proc, err := spawner.Spawn(runCtx, "claude", args, cloneDir)
+	agentStartedAt := time.Now().UTC()
+	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(runtime.backend)
+	startedEvent := ProviderAttemptEvent{
+		Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
+		Provider: agentProviderName(runtime.backend), Backend: runtime.backend,
+		RequestedModel: runtime.model, ResolvedModel: runtime.model, Effort: runtime.effort,
+		TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
+		StartedAt: &agentStartedAt, Status: "started", MatcherVersion: "v1",
+	}
+	if observerErr := observeProviderAttempt(agentCfg.AttemptObserver, startedEvent); errors.Is(observerErr, ErrProviderAttemptAborted) {
+		return nil, fmt.Errorf("agent: %w", observerErr)
+	}
+	credentialKey, credentialValue := "ANTHROPIC_API_KEY", agentCfg.AnthropicAPIKey
+	if runtime.backend == AgentBackendOpenRouter {
+		credentialKey, credentialValue = "OPENROUTER_API_KEY", agentCfg.OpenRouterAPIKey
+	}
+	proc, err := spawner.SpawnWithEnv(runCtx, runtime.command, args, cloneDir,
+		agentChildEnvironment(os.Environ(), credentialKey, credentialValue))
 	if err != nil {
 		log.Printf("%s spawn FAILED: %v", logPrefix, err)
-		return nil, fmt.Errorf("agent: spawn claude: %w", err)
+		completedAt := time.Now().UTC()
+		startedEvent.CompletedAt = &completedAt
+		startedEvent.DurationMS = completedAt.Sub(agentStartedAt).Milliseconds()
+		startedEvent.Status = "failed"
+		startedEvent.StopReason, startedEvent.ErrorCode = agentAttemptFailure(err, runCtx)
+		if runCtx.Err() == nil {
+			startedEvent.StopReason = "spawn_error"
+			startedEvent.ErrorCode = "spawn_failed"
+		}
+		startedEvent.ErrorSummary = err.Error()
+		_ = observeProviderAttempt(agentCfg.AttemptObserver, startedEvent)
+		return nil, fmt.Errorf("agent: spawn %s: %w", runtime.command, err)
 	}
-	log.Printf("%s claude spawned, streaming output to %s", logPrefix, logPath)
+	log.Printf("%s %s spawned, streaming output to %s", logPrefix, runtime.command, logPath)
+	var agentCompletedAt time.Time
+	var parseResult *agentParseResult
+	defer func() {
+		completedAt := agentCompletedAt
+		if completedAt.IsZero() {
+			completedAt = time.Now().UTC()
+		}
+		event := ProviderAttemptEvent{
+			Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
+			Provider: agentProviderName(runtime.backend), Backend: runtime.backend,
+			RequestedModel: runtime.model, ResolvedModel: runtime.model, Effort: runtime.effort,
+			TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
+			StartedAt: &agentStartedAt, CompletedAt: &completedAt,
+			DurationMS: completedAt.Sub(agentStartedAt).Milliseconds(),
+			Status:     "completed", StopReason: "completed", MatcherVersion: "v1",
+		}
+		if parseResult != nil {
+			event.AssistantTurns = parseResult.assistantTurns
+			event.BudgetUnitsUsed = parseResult.budgetUnits
+			event.ObservedServedModels = append([]string(nil), parseResult.servedModels...)
+			event.PrimaryServedModel, event.ServedModelSource, event.ServingModelVerified,
+				event.Fallback, event.FallbackReason = agentServingMetadata(runtime, parseResult.servedModels)
+		}
+		if review != nil {
+			event.AssistantTurns = review.AssistantTurns
+			event.BudgetUnitsUsed = review.BudgetUnitsUsed
+			event.ObservedServedModels = append([]string(nil), review.ObservedServedModels...)
+			event.PrimaryServedModel = review.ServedModel
+			event.ServingModelVerified = review.ServingModelVerified
+			event.Fallback = review.ModelFallback
+			if review.ServingModelVerified {
+				event.ServedModelSource = "stream"
+			} else if review.ServedModel != "" {
+				event.ServedModelSource = "pinned_request"
+			}
+			if review.ModelFallback {
+				event.FallbackReason = "observed served model did not match requested model"
+			}
+		}
+		if returnErr != nil {
+			event.Status = "failed"
+			event.StopReason, event.ErrorCode = agentAttemptFailure(returnErr, runCtx)
+			event.ErrorSummary = returnErr.Error()
+		} else if review == nil {
+			// A panic after Spawn runs defers with both named returns still nil.
+			// Preserve the panic while ensuring durable telemetry cannot claim a
+			// provider invocation completed successfully without a result.
+			event.Status = "failed"
+			event.StopReason = "panic"
+			event.ErrorCode = "execution_panicked"
+			event.ErrorSummary = "agent execution panicked before producing a result"
+		}
+		_ = observeProviderAttempt(agentCfg.AttemptObserver, event)
+	}()
 
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -253,7 +370,7 @@ func RunAgentReview(
 	}()
 
 	// Drain stderr to a buffer so we can include it on failure. Safe to be
-	// unbounded for now — dev use, sensible claude outputs.
+	// unbounded for now — dev use, sensible agent outputs.
 	var stderrBuf strings.Builder
 	var stderrWG sync.WaitGroup
 	stderrWG.Add(1)
@@ -263,10 +380,18 @@ func RunAgentReview(
 	}()
 
 	// Stream stdout: tee to log file and parse turn-by-turn.
-	parseResult, parseErr := parseAgentStream(proc, logFile, agentCfg.MaxTurns)
+	var parseErr error
+	parseResult, parseErr = runtime.parseStream(proc, logFile, agentCfg.MaxTurns)
 
 	waitErr := proc.Wait()
+	agentCompletedAt = time.Now().UTC()
 	stderrWG.Wait()
+	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d", parseResult.assistantTurns, parseResult.budgetUnits)
+
+	// Failure messages below feed the run's error_summary, which the API now
+	// exposes; scrub the provider credential from quoted subprocess output in
+	// case the CLI ever echoes it.
+	redact := func(s string) string { return truncate(redactToken(s, credentialValue), 1000) }
 
 	persistFailureLog := func() {
 		if agentCfg.FailureLogSink == nil {
@@ -280,34 +405,38 @@ func RunAgentReview(
 	if parseErr != nil {
 		// Turn-cap hit or parse error — subprocess already killed inside parser.
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: %w (stderr: %s)", parseErr, truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: %w (%s; stderr: %s)", parseErr, usage, redact(stderrBuf.String()))
 	}
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: wall-clock timeout (%s) after %d turns (stderr: %s)",
-			agentCfg.WallClock, parseResult.assistantTurns, truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: wall-clock timeout (%s; %s; stderr: %s)",
+			agentCfg.WallClock, usage, redact(stderrBuf.String()))
+	}
+
+	// The stream error outranks the exit status: the CLI reports API failures
+	// (quota, auth, overload) as a structured result event and then exits
+	// non-zero, so checking waitErr first would collapse every provider-side
+	// failure into a generic process-exit error. The check also gates the
+	// exit-0 case, where the error text would otherwise publish as a
+	// "successful" SUMMARY review.
+	if parseResult.streamErr != "" {
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (%s; exit: %v; stderr: %s)",
+			redact(parseResult.streamErr), usage, waitErr, redact(stderrBuf.String()))
 	}
 
 	if waitErr != nil {
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: claude exited with error: %w (stream: %s) (stderr: %s)",
-			waitErr, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
-	}
-
-	// The CLI can exit 0 after an error result event; ungated, the error text
-	// would publish as a "successful" SUMMARY review.
-	if parseResult.streamErr != "" {
-		persistFailureLog()
-		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (stderr: %s)",
-			truncate(parseResult.streamErr, 1000), truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: %s exited with error: %w (%s; stream: %s; stderr: %s)",
+			runtime.command, waitErr, usage, redact(parseResult.diagnostic()), redact(stderrBuf.String()))
 	}
 
 	if parseResult.finalOutput == "" {
-		log.Printf("%s claude finished with no final result after %d turn(s)", logPrefix, parseResult.assistantTurns)
+		log.Printf("%s %s finished with no final result (%s)", logPrefix, runtime.command, usage)
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: no final result emitted after %d turn(s) (stream: %s) (stderr: %s)",
-			parseResult.assistantTurns, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+		return nil, fmt.Errorf("agent: no final result emitted (%s; stream: %s; stderr: %s)",
+			usage, redact(parseResult.diagnostic()), redact(stderrBuf.String()))
 	}
 
 	comments, parseErr := parseAgentJSON(parseResult.finalOutput)
@@ -338,6 +467,13 @@ func RunAgentReview(
 			logPrefix, checkTel.ChecksIssued, checkTel.ChecksAnswered, checkTel.ChecksViolated,
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
+	NormalizeAgentLifecycleFields(comments)
+	evidencePaths := make([]string, len(diffFiles))
+	for i, f := range diffFiles {
+		evidencePaths[i] = f.Path
+	}
+	comments, firstPassActive, records := ApplyDispositionsWithEvidenceRefs(comments, claims, evidenceRefResolves(evidencePaths, cloneDir))
+
 	// Fallback if ANY served model fails to match — a transient fallback
 	// that recovers mid-run still ran turns on the wrong model. ServedModel
 	// reports the offender (or the primary model on a clean run).
@@ -345,13 +481,21 @@ func RunAgentReview(
 	modelFallback := false
 	if len(parseResult.servedModels) > 0 {
 		servedModel = parseResult.servedModels[0]
+	} else if !runtime.reportsServingModel {
+		// Codex's stable JSONL schema does not expose the response model. The
+		// OpenRouter backend pins one exact model slug and does not configure a
+		// model fallback list, so report that request while keeping the
+		// telemetry limitation explicit in logs.
+		servedModel = runtime.model
+		log.Printf("%s serving model not present in %s stream; using pinned request model %s",
+			logPrefix, runtime.command, runtime.model)
 	} else {
 		// Fail-open for a monitoring feature: make a silent regression in
 		// the CLI's model reporting visible in logs.
 		log.Printf("%s WARNING: stream reported no serving model — fallback detection skipped", logPrefix)
 	}
 	for _, m := range parseResult.servedModels {
-		if !modelMatches(model, m) {
+		if !modelMatches(runtime.model, m) {
 			servedModel = m
 			modelFallback = true
 			break
@@ -359,26 +503,93 @@ func RunAgentReview(
 	}
 	if modelFallback {
 		log.Printf("%s WARNING: MODEL FALLBACK: requested=%s served=%s (all seen: %v) — review ran on the wrong model",
-			logPrefix, model, servedModel, parseResult.servedModels)
+			logPrefix, runtime.model, servedModel, parseResult.servedModels)
 	}
 
-	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
-		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments), servedModel)
+	agentDuration := agentCompletedAt.Sub(agentStartedAt)
+	log.Printf("%s complete in %s (%s, comments=%d, model=%s)",
+		logPrefix, agentDuration, usage, len(comments), servedModel)
 
 	logRemovable = true
 	return &AgentReview{
-		Comments:       comments,
-		Gates:          gates,
-		BugMemory:      memMatch,
-		Checks:         checkTel,
-		CheckFindings:  checkFindings,
-		RawFinal:       parseResult.finalOutput,
-		CloneDir:       cloneDir,
-		LogPath:        logPath,
-		RequestedModel: model,
-		ServedModel:    servedModel,
-		ModelFallback:  modelFallback,
+		Comments:             comments,
+		FirstPassActive:      firstPassActive,
+		Records:              records,
+		Gates:                gates,
+		BugMemory:            memMatch,
+		Checks:               checkTel,
+		CheckFindings:        checkFindings,
+		RawFinal:             parseResult.finalOutput,
+		CloneDir:             cloneDir,
+		LogPath:              logPath,
+		RequestedModel:       runtime.model,
+		ServedModel:          servedModel,
+		ObservedServedModels: append([]string(nil), parseResult.servedModels...),
+		ModelFallback:        modelFallback,
+		Backend:              runtime.backend,
+		Effort:               runtime.effort,
+		AssistantTurns:       parseResult.assistantTurns,
+		BudgetUnitsUsed:      parseResult.budgetUnits,
+		DurationMS:           agentDuration.Milliseconds(),
+		GatesStartedAt:       gatesStartedAt,
+		GatesDurationMS:      gatesDurationMS,
+		ServingModelVerified: runtime.reportsServingModel && len(parseResult.servedModels) > 0,
 	}, nil
+}
+
+func agentProviderName(backend string) string {
+	if backend == AgentBackendOpenRouter {
+		return "openrouter"
+	}
+	return "anthropic"
+}
+
+func agentServingMetadata(runtime agentRuntime, servedModels []string) (primary, source string, verified, fallback bool, fallbackReason string) {
+	if len(servedModels) > 0 {
+		primary = servedModels[0]
+		source = "stream"
+		verified = runtime.reportsServingModel
+	} else if !runtime.reportsServingModel {
+		primary = runtime.model
+		source = "pinned_request"
+	}
+	for _, served := range servedModels {
+		if !modelMatches(runtime.model, served) {
+			primary = served
+			fallback = true
+			fallbackReason = "observed served model did not match requested model"
+			break
+		}
+	}
+	return
+}
+
+func agentAttemptFailure(err error, runCtx context.Context) (stopReason, errorCode string) {
+	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		return "wall_clock_timeout", "deadline_exceeded"
+	}
+	if errors.Is(runCtx.Err(), context.Canceled) {
+		return "cancelled", "context_canceled"
+	}
+	if strings.Contains(err.Error(), "max-turns") {
+		return "max_turns", "max_turns_exceeded"
+	}
+	// Provider budget exhaustion is an ops signal (raise the limit, wait for
+	// reset), not a crash — classify it apart from generic provider errors.
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "usage limit") || strings.Contains(lower, "spend limit") {
+		return "provider_quota", "provider_quota_exhausted"
+	}
+	if strings.Contains(err.Error(), "exited with error") {
+		return "process_error", "process_exit_error"
+	}
+	if strings.Contains(err.Error(), "no final result") {
+		return "missing_result", "missing_result"
+	}
+	if strings.Contains(err.Error(), "CLI reported error") {
+		return "provider_error", "provider_error"
+	}
+	return "error", "agent_failed"
 }
 
 // parseAgentJSON extracts a []LineComment from the agent's final output.
@@ -413,9 +624,51 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 
 	var comments []types.LineComment
 	if err := json.Unmarshal([]byte(trimmed), &comments); err != nil {
-		return nil, err
+		// Code suggestions carry literal tabs and newlines into string
+		// literals, which strict JSON rejects; escape them and try once more.
+		if err2 := json.Unmarshal([]byte(escapeControlCharsInStrings(trimmed)), &comments); err2 != nil {
+			return nil, err
+		}
+		log.Printf("[AGENT] recovered findings JSON by escaping raw control characters (%v)", err)
 	}
+	EnforceAgentFindingContractPolicy(comments)
 	return comments, nil
+}
+
+func escapeControlCharsInStrings(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			case c < 0x20:
+				switch c {
+				case '\t':
+					b.WriteString(`\t`)
+				case '\n':
+					b.WriteString(`\n`)
+				case '\r':
+					b.WriteString(`\r`)
+				default:
+					fmt.Fprintf(&b, `\u%04x`, c)
+				}
+				continue
+			}
+		} else if c == '"' {
+			inString = true
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // matchBracket returns the index of the `]` closing the `[` at start,
@@ -453,18 +706,55 @@ func matchBracket(s string, start int) int {
 	return -1
 }
 
+// prScopeSection names the PR's base branch and lists the changed files so
+// the agent's own review pass diffs against the right base. Without it the
+// agent has to guess (origin/HEAD, "master"), which on a stacked PR pulls
+// parent-branch changes into scope. Empty inputs contribute nothing.
+func prScopeSection(baseBranch string, files []diffFile) string {
+	if baseBranch == "" && len(files) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n--- PR SCOPE ---\n")
+	if baseBranch != "" {
+		fmt.Fprintf(&b, "The PR's base branch is `origin/%s`. The change under review is exactly `git diff origin/%s...HEAD`. Do not diff against origin/HEAD or any other branch — on a stacked PR that drags in parent-branch changes that are out of scope, and code the PR does not touch must not be flagged.\n", baseBranch, baseBranch)
+	}
+	if len(files) > 0 {
+		b.WriteString("Changed files (+added/-removed lines):\n")
+		// Cap the listing so a sprawling refactor can't crowd out the rest of
+		// the prompt; the agent can still enumerate the tail via git.
+		const maxListed = 100
+		for i, f := range files {
+			if i == maxListed {
+				fmt.Fprintf(&b, "- ...and %d more (see the diff for the full list)\n", len(files)-maxListed)
+				break
+			}
+			fmt.Fprintf(&b, "- %s (%s, +%d/-%d)\n", f.Path, f.Status, len(f.Added), len(f.Removed))
+		}
+	}
+	return b.String()
+}
+
 // buildAgentPromptContent assembles the agent prompt: the static template,
-// the mechanical-gate alerts (if any), the bug-history section (if any
-// memory entries matched), the required-checks block (if the feature issued
-// any), then a JSON block of Gemini comments. With no gates, no matches and
-// no checks the prompt is byte-identical to a memoryless, checkless build.
-func buildAgentPromptContent(geminiComments, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
-	commentsJSON, err := json.MarshalIndent(geminiComments, "", "  ")
+// the PR-scope section (base branch + changed files, if known), the PR
+// context section (title, body, linked tickets; prContext is pre-rendered by
+// prContextSection), the mechanical-gate alerts (if any), the bug-history
+// section (if any memory entries matched), the required-checks block (if the
+// feature issued any), then a JSON block of Gemini comments. With no scope,
+// no context, no gates, no matches and no checks the prompt is
+// byte-identical to a memoryless, checkless build.
+func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext string, claims []firstPassClaim, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
+	if claims == nil {
+		claims = []firstPassClaim{}
+	}
+	commentsJSON, err := json.MarshalIndent(claims, "", "  ")
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	b.WriteString(promptAgentReview)
+	b.WriteString(prScopeSection(baseBranch, diffFiles))
+	b.WriteString(prContext)
 	if len(gates) > 0 {
 		b.WriteString("\n--- MECHANICAL ALERTS (deterministic checks; explicitly address each in your review) ---\n")
 		for _, g := range gates {
@@ -473,7 +763,7 @@ func buildAgentPromptContent(geminiComments, gates []types.LineComment, bugHisto
 	}
 	b.WriteString(bugMemorySection(bugHistory))
 	b.WriteString(requiredChecksSection(checks))
-	b.WriteString("\n--- GEMINI COMMENTS (JSON) ---\n")
+	b.WriteString("\n--- FIRST-PASS CLAIMS (JSON; account for every source_id) ---\n")
 	b.Write(commentsJSON)
 	return b.String(), nil
 }
@@ -644,7 +934,7 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 // The token still appears briefly in argv during the git invocation, so
 // `ps aux` from a sibling process during that window would see it. For our
 // single-tenant Cloud Run container this is tolerable; the only sibling is
-// the claude subprocess which we spawn ourselves.
+// the agent subprocess which we spawn ourselves.
 func authHeaderArgs(token string) []string {
 	if token == "" {
 		return nil
@@ -678,9 +968,14 @@ func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 type agentParseResult struct {
 	finalOutput    string
 	assistantTurns int
+	budgetUnits    int      // equals assistantTurns for Claude; counts completed work items for Codex
 	streamErr      string   // error the CLI reported inside the stream (result event with error subtype)
 	lastEvent      string   // raw last stream line, fallback diagnostic when no structured error arrived
 	servedModels   []string // distinct models the stream reported, in first-seen order; empty if never reported
+}
+
+func agentChildEnvironment(base []string, credentialKey, credentialValue string) []string {
+	return llm.ChildEnvironment(base, credentialKey, credentialValue)
 }
 
 // diagnostic returns the best available explanation of a failed run — under
@@ -754,10 +1049,11 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 				result.noteServedModel(msg["model"])
 			}
 			result.assistantTurns++
-			if result.assistantTurns%5 == 0 || result.assistantTurns == 1 {
-				log.Printf("[AGENT] assistant turn %d/%d", result.assistantTurns, maxTurns)
+			result.budgetUnits++
+			if result.budgetUnits%5 == 0 || result.budgetUnits == 1 {
+				log.Printf("[AGENT] turn-budget unit %d/%d (assistant events)", result.budgetUnits, maxTurns)
 			}
-			if result.assistantTurns > maxTurns {
+			if result.budgetUnits > maxTurns {
 				_ = proc.Kill()
 				return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
 			}
@@ -804,7 +1100,7 @@ func truncate(s string, max int) string {
 
 // DefaultSpawner is implemented per-platform; see agent_spawn_unix.go and
 // agent_spawn_windows.go. The unix implementation uses Setpgid + group-kill
-// so subprocesses spawned by claude --tools Bash are torn down with the
+// so subprocesses spawned by an agent's shell tool are torn down with the
 // parent rather than orphaned. The Windows stub exists only so the package
 // compiles; agent reviews are not supported on Windows (no test, no deploy
 // target).

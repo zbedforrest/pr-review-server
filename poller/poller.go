@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -21,9 +23,12 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
+	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -38,12 +43,23 @@ const (
 	// subprocess: the first-pass LLM stage (~4 min on large PRs), clone/fetch,
 	// and artifact save. Added to the configured agent wall-clock budget by
 	// reviewProcessTimeout() to derive the monitor and stale-reset timeouts.
-	//
-	// The previous fixed 5-minute ReviewProcessTimeout was SHORTER than the
-	// agent wall-clock budget alone (6 min in prod), so healthy long-running
-	// reviews were untracked mid-flight; under concurrency their results were
-	// then lost to stale-reset/retrigger races instead of being saved.
 	ReviewPipelineMargin = 8 * time.Minute
+	// ReviewQueueAbandonAfter is the compatibility cutoff for old queued rows
+	// that predate dispatcher leases. Newly accepted work uses the short,
+	// renewable lease below instead of this age heuristic.
+	ReviewQueueAbandonAfter = 24 * time.Hour
+	// ReviewQueueLeaseTTL is refreshed by each live dispatcher from the monitor
+	// loop. A deploy/crash therefore terminalizes accepted queued work quickly,
+	// while a healthy capacity wait may remain queued for as long as necessary.
+	ReviewQueueLeaseTTL = 2 * time.Minute
+	// ReviewProjectionCrashStaleAfter is the minimum age at which an orphaned
+	// generating projection may be repaired from cache. The DB restore also
+	// requires that no queued/live run exists for the target; projection writers
+	// must create their ledger row before, or within this window after, claiming.
+	ReviewProjectionCrashStaleAfter = ReviewQueueLeaseTTL
+	// ReviewCacheLookupTimeout bounds network storage checks while jobs are
+	// still queued and therefore have no execution deadline of their own.
+	ReviewCacheLookupTimeout = time.Minute
 
 	// ReviewProcessWarningThreshold is when to start warning about long-running reviews.
 	ReviewProcessWarningThreshold = 2 * time.Minute
@@ -60,9 +76,20 @@ const (
 	ErrorPRMaxAutoRetries = 1
 )
 
+var errReviewRunBudgetExceeded = errors.New("review run wall-clock budget exceeded")
+var errReviewRunSuperseded = errors.New("review run no longer owns the PR projection")
+
+const reviewBudgetExceededMessage = "review exceeded its execution budget"
+
 type ProcessInfo struct {
 	PID       int
+	TrackedAt time.Time
 	StartTime time.Time
+	Timeout   time.Duration
+	RunID     string
+	// QueueLeaseHolder is set only for durably accepted queued work. Automatic
+	// poll candidates do not exist in the ledger until execution begins.
+	QueueLeaseHolder string
 	// Ctx is the per-review cancellable context. The goroutine MUST use this
 	// for all downstream work (LLM calls, agent subprocess) so killReview
 	// can abort it mid-flight by calling Cancel.
@@ -82,13 +109,29 @@ type Poller struct {
 	reviewDir        string                    // Local storage path (used when GCS is not configured)
 	cacheUpdateFunc  func([]github.PullRequest)
 	EventFunc        func(eventType string, payload interface{})
+	UserEventFunc    func(userID int, eventType string, payload interface{})
 	StatusEventFunc  func()
 	triggerChan      chan struct{}
-	polling          bool
-	pollMutex        sync.Mutex
+
+	replyScanRunning atomic.Bool
+	replyScanCycle   atomic.Int64
+	replyLastScanned map[string]time.Time
+	replyLinkTried   map[string]time.Time
+	replySlots       chan struct{}
+	replyInFlight    publisher.ReplyInFlight
+
+	mentionScanRunning atomic.Bool
+	mentionScanCycle   atomic.Int64
+	mentionLastScanned map[string]time.Time
+	polling            bool
+	pollMutex          sync.Mutex
 	// Track active review processes for cancellation and monitoring
 	activeReviews map[string]ProcessInfo // prKey (owner/repo/number) -> ProcessInfo
 	reviewsMutex  sync.Mutex
+	// Serializes the short track + durable-insert admission window. A second
+	// same-instance request cannot observe local ownership before the winning
+	// idempotency row is queryable.
+	reviewAdmissionMutex sync.Mutex
 	// Track last poll time for countdown display
 	lastPollTime  time.Time
 	pollTimeMutex sync.RWMutex
@@ -102,8 +145,11 @@ type Poller struct {
 	teamCacheExpiry time.Time
 	// Poll economy: track cycles for periodic full refresh
 	pollCount int
-	// Agent-review subprocess spawner (nil-safe: defaults to the real claude CLI).
+	// Agent-review subprocess spawner (nil-safe: defaults to the configured CLI).
 	agentSpawner service.Spawner
+	// Linked-ticket source for the agent prompt (nil-safe: defaults to Jira
+	// built from cfg when JiraEnabled; tests inject a fake).
+	ticketFetcher tickets.Fetcher
 	// compareFilesFn resolves the files changed between two commits of a repo
 	// for the carry-forward staleness filter (nil-safe: defaults to the GitHub
 	// compare API; tests inject a stub). ok=false means the comparison is
@@ -111,18 +157,40 @@ type Poller struct {
 	// caller must not carry anything forward.
 	compareFilesFn func(ctx context.Context, owner, repo, base, head, token string) (files []string, ok bool)
 	// agentSlots caps concurrent agent reviews per process. Each agent run
-	// holds ~1 GB of /tmp (clone) + claude memory; without a cap, two PRs
+	// holds ~1 GB of /tmp (clone) + agent memory; without a cap, two PRs
 	// triggered close together can exhaust the instance's memory budget.
-	// Buffered to AgentMaxConcurrent; nil if AgentMaxConcurrent <= 0
-	// (unlimited, used by tests).
+	// Buffered to AgentMaxConcurrent, with a safe fallback in New. Focused
+	// tests may still construct a Poller directly with a nil channel.
 	agentSlots chan struct{}
+	// firstPassSlots caps provider-heavy first-pass pipelines across every
+	// batch and immediate API request in this process. Jobs acquire agent
+	// capacity first (when needed), then this slot, before starting their
+	// execution lease or wall clock.
+	firstPassSlots chan struct{}
+	// dispatchSlots bounds pre-provider cache/storage/DB work. It is released
+	// before agent/first-pass capacity waits, so it cannot cap agent throughput.
+	dispatchSlots chan struct{}
+	// firstPassClients caches per-run smart clients keyed by provider and
+	// resolved model; clients hold no per-request state and are shared safely.
+	firstPassClientsMu sync.Mutex
+	firstPassClients   map[string]llm.IClient
+	// lookPath is injectable so capability readiness can be tested without
+	// depending on the developer or CI machine's installed CLIs.
+	lookPath func(string) (string, error)
+	// reviewPipelineMargin overrides ReviewPipelineMargin in focused tests so
+	// the organic run-timeout path can be exercised without an eight-minute
+	// test. Zero retains the production constant.
+	reviewPipelineMargin time.Duration
 	// Leader election: only the instance holding the DB lease runs the automatic
 	// poll cycle, so multiple instances (e.g. a deploy overlap) never poll
 	// concurrently. holderID is unique per instance; isLeaderFlag is kept fresh
 	// by runLeaderElection and read by the poll loop. Empty holderID disables
 	// election (single-process tests that call poll() directly are unaffected,
 	// since election only gates Start()'s loop).
-	holderID     string
+	holderID string
+	// generation is this instance's boot time; leadership is fenced on it so a
+	// redeploy preempts the previous revision's still-running instance.
+	generation   int64
 	isLeaderFlag atomic.Bool
 }
 
@@ -145,6 +213,104 @@ func newHolderID() string {
 		return fmt.Sprintf("%s-%d", revisionName(), time.Now().UnixNano())
 	}
 	return fmt.Sprintf("%s-%s", revisionName(), hex.EncodeToString(buf))
+}
+
+// newReviewRunID returns an opaque, globally unique execution identifier.
+// It intentionally does not contain model names: those are mutable metadata,
+// while this value is safe to index and use for telemetry correlation.
+func newReviewRunID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return reviewRunIDFromTime(time.Now())
+	}
+	return "run-" + hex.EncodeToString(buf)
+}
+
+// reviewRunIDFromTime preserves the run-{32 lowercase hex} contract even in
+// the effectively impossible event that the system random source fails.
+func reviewRunIDFromTime(t time.Time) string {
+	return fmt.Sprintf("run-%032x", t.UnixNano())
+}
+
+// effectiveFirstPassIdentity resolves a run's first-pass provider and model,
+// falling back to deployment configuration for legacy effective-config
+// snapshots that predate per-run first-pass fields.
+func (p *Poller) effectiveFirstPassIdentity(firstPass runconfig.FirstPass) (llm.LLMProvider, string) {
+	providerName, model := firstPass.Provider, firstPass.Model
+	if providerName == "" {
+		providerName = p.cfg.FirstPassProvider
+		if model == "" {
+			model = p.cfg.FirstPassModel
+		}
+	}
+	provider, err := llm.ParseProvider(providerName)
+	if err != nil {
+		provider = llm.ProviderGemini
+	}
+	return provider, llm.FirstPassModelName(provider, model)
+}
+
+// firstPassClientForRun returns the smart client and telemetry identity for a
+// run's effective first-pass configuration, caching clients per provider+model.
+func (p *Poller) firstPassClientForRun(firstPass runconfig.FirstPass) (llm.IClient, service.FirstPassInfo, error) {
+	provider, model := p.effectiveFirstPassIdentity(firstPass)
+	providerName, backend := llm.FirstPassTelemetry(provider)
+	info := service.FirstPassInfo{Provider: providerName, Backend: backend, Model: model, CacheStaggerSec: p.cfg.FirstPassCacheStaggerSec}
+	key := string(provider) + "\x00" + model
+	p.firstPassClientsMu.Lock()
+	defer p.firstPassClientsMu.Unlock()
+	if client, ok := p.firstPassClients[key]; ok {
+		return client, info, nil
+	}
+	client, err := llm.NewFirstPassClient(provider, p.cfg.FirstPassProviderAPIKey(string(provider)), model, p.cfg.OpenRouterBaseURL, p.cfg.FirstPassThinking, false)
+	if err != nil {
+		return nil, info, err
+	}
+	if p.firstPassClients == nil {
+		p.firstPassClients = make(map[string]llm.IClient)
+	}
+	p.firstPassClients[key] = client
+	return client, info, nil
+}
+
+func (p *Poller) pipelineModelUses(firstPass runconfig.FirstPass) []payload.ModelUse {
+	firstPassProvider, firstPassModel := p.effectiveFirstPassIdentity(firstPass)
+	provider, backend := llm.FirstPassTelemetry(firstPassProvider)
+	firstPassUse := payload.ModelUse{
+		Stage:          "first_pass",
+		Provider:       provider,
+		Backend:        backend,
+		RequestedModel: firstPassModel,
+	}
+	if firstPassProvider == llm.ProviderGemini || firstPassProvider == llm.ProviderClaudeCode {
+		firstPassUse.Effort = p.cfg.FirstPassThinking
+	}
+	return []payload.ModelUse{
+		firstPassUse,
+		{
+			Stage:          "classification_summary",
+			Provider:       "google",
+			Backend:        "gemini_api",
+			RequestedModel: llm.FlashModelName(),
+		},
+	}
+}
+
+func agentModelUse(review *service.AgentReview) payload.ModelUse {
+	provider := "anthropic"
+	if review.Backend == service.AgentBackendOpenRouter {
+		provider = "openrouter"
+	}
+	return payload.ModelUse{
+		Stage:                "agent",
+		Provider:             provider,
+		Backend:              review.Backend,
+		RequestedModel:       review.RequestedModel,
+		ServedModel:          review.ServedModel,
+		ServingModelVerified: review.ServingModelVerified,
+		Effort:               review.Effort,
+		Fallback:             review.ModelFallback,
+	}
 }
 
 func revisionName() string {
@@ -172,7 +338,7 @@ func (p *Poller) updateLeadership(ctx context.Context) bool {
 	if p.holderID == "" {
 		return true
 	}
-	leader, err := p.db.TryAcquireOrRenewLeadership(p.holderID, leaderLeaseTTL)
+	leader, err := p.db.TryAcquireOrRenewLeadership(p.holderID, p.generation, leaderLeaseTTL)
 	if err != nil {
 		log.Printf("[LEADER] lease query failed, assuming leadership to avoid stalling polls: %v", err)
 		leader = true
@@ -213,13 +379,40 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		triggerChan:      make(chan struct{}, 1), // Buffered to prevent blocking
 		activeReviews:    make(map[string]ProcessInfo),
 		agentSpawner:     service.DefaultSpawner{},
+		lookPath:         osexec.LookPath,
 		holderID:         newHolderID(),
+		generation:       time.Now().UnixNano(),
 	}
-	if cfg.AgentMaxConcurrent > 0 {
-		p.agentSlots = make(chan struct{}, cfg.AgentMaxConcurrent)
+	agentConcurrent := cfg.AgentMaxConcurrent
+	if agentConcurrent <= 0 {
+		log.Printf("[POLLER] AGENT_MAX_CONCURRENT<=0; capping agent concurrency at %d", fallbackAgentConcurrent)
+		agentConcurrent = fallbackAgentConcurrent
 	}
+	p.agentSlots = make(chan struct{}, agentConcurrent)
+	replyConcurrent := cfg.ReplyMaxConcurrent
+	if replyConcurrent <= 0 {
+		replyConcurrent = 1
+	}
+	p.replySlots = make(chan struct{}, replyConcurrent)
+	firstPassConcurrent := cfg.ReviewMaxFirstPassConcurrent
+	if firstPassConcurrent <= 0 {
+		firstPassConcurrent = fallbackReviewFirstPassConcurrent
+	}
+	p.firstPassSlots = make(chan struct{}, firstPassConcurrent)
+	p.dispatchSlots = make(chan struct{}, firstPassConcurrent)
 	p.loadBugMemory()
 	return p
+}
+
+func (p *Poller) executableAvailable(name string) bool {
+	lookPath := p.lookPath
+	if lookPath == nil {
+		// Production Pollers are constructed by New, which always installs the
+		// real PATH probe. Nil is reserved for lightweight test doubles.
+		return true
+	}
+	_, err := lookPath(name)
+	return err == nil
 }
 
 // loadBugMemory loads the optional pattern library at startup. Fail-open by
@@ -264,11 +457,11 @@ func (p *Poller) loadBugMemory() {
 }
 
 // SetAgentSpawner overrides the subprocess spawner used for agent reviews.
-// Tests inject a stub to avoid actually invoking the claude CLI.
+// Tests inject a stub to avoid actually invoking an agent CLI.
 func (p *Poller) SetAgentSpawner(s service.Spawner) { p.agentSpawner = s }
 
 // persistAgentFailureLog uploads a failed agent run's raw stream-json log to
-// GCS under agent-logs/ — the only durable record of what the claude CLI
+// GCS under agent-logs/ — the only durable record of what the agent CLI
 // reported. Best-effort: an upload failure must never mask the review error.
 func (p *Poller) persistAgentFailureLog(logPath string) {
 	if p.gcsClient == nil {
@@ -302,21 +495,12 @@ const systemTelemetryUser = "prism_system"
 // systemTelemetryUser (telemetry_events.user_id is NOT NULL with an FK).
 // Best-effort.
 func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served string) {
-	user, err := p.db.GetUserByUsername(systemTelemetryUser)
-	if err == nil && user == nil {
-		user = &db.User{GitHubID: -1, GitHubUsername: systemTelemetryUser}
-		if err = p.db.CreateUser(user); err != nil {
-			// Concurrent fallbacks can race the first create (github_id is
-			// unique); the loser re-fetches the row the winner made.
-			user, err = p.db.GetUserByUsername(systemTelemetryUser)
-		}
-	}
-	if err != nil || user == nil {
-		log.Printf("[REVIEWER] WARN: could not resolve %s user for fallback telemetry: %v", systemTelemetryUser, err)
+	userID := p.systemTelemetryUserID()
+	if userID == 0 {
 		return
 	}
 	event := db.TelemetryEvent{
-		UserID:   user.ID,
+		UserID:   userID,
 		Action:   "agent_model_fallback",
 		Label:    fmt.Sprintf("requested=%s served=%s", requested, served),
 		PROwner:  pr.Owner,
@@ -328,36 +512,67 @@ func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served st
 	}
 }
 
+// systemTelemetryUserID resolves (creating on first use) the reserved user
+// that owns server-emitted telemetry. Returns 0, after logging, when the
+// user cannot be resolved; callers then skip the event.
+func (p *Poller) systemTelemetryUserID() int {
+	user, err := p.db.GetUserByUsername(systemTelemetryUser)
+	if err == nil && user == nil {
+		user = &db.User{GitHubID: -1, GitHubUsername: systemTelemetryUser}
+		if err = p.db.CreateUser(user); err != nil {
+			// Concurrent writers can race the first create (github_id is
+			// unique); the loser re-fetches the row the winner made.
+			user, err = p.db.GetUserByUsername(systemTelemetryUser)
+		}
+	}
+	if err != nil || user == nil {
+		log.Printf("[TELEMETRY] WARN: could not resolve %s user: %v", systemTelemetryUser, err)
+		return 0
+	}
+	return user.ID
+}
+
 // isReviewInFlight reports whether a PR's status indicates an in-progress
-// review (Gemini "generating" or Claude "agent_reviewing"). Used by the
+// review (first-pass "generating" or agent "agent_reviewing"). Used by the
 // outdated-detection paths to decide whether to cancel the active review.
 func isReviewInFlight(status string) bool {
 	return status == "generating" || status == "agent_reviewing"
 }
 
-// runAgentStage runs the claude-agent pass on a Gemini ReviewResult: flips
-// the PR status to agent_reviewing, spawns the agent against a clone of the
-// PR head, replaces the comment set with the agent's refined output, and
+// localReviewAlias returns the mutable compatibility artifact that outdated
+// cleanup may remove. Run-scoped paths are immutable history and must survive
+// after the PR advances to a new commit.
+func localReviewAlias(pr db.PR) string {
+	if pr.ReviewHTMLPath == "" {
+		return ""
+	}
+	if strings.HasPrefix(filepath.ToSlash(pr.ReviewHTMLPath), "runs/") {
+		return gcs.ReviewFileName(pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA)
+	}
+	return pr.ReviewHTMLPath
+}
+
+// runAgentStage runs the configured agent pass on a first-pass ReviewResult:
+// flips the PR status to agent_reviewing, spawns the agent against a clone of
+// the PR head, reconciles the agent's findings with the first-pass ones, and
 // re-renders via the same HTML pipeline so the inline-comment UI is intact.
 //
-// If a concurrency cap is configured (AGENT_MAX_CONCURRENT), this acquires
-// a slot before the clone and releases it when done. When the cap is
-// saturated the goroutine blocks here — caller is queued behind in-flight
-// reviews rather than competing for memory.
-func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, result *service.ReviewResult) (*ReviewResult, error) {
-	if p.agentSlots != nil {
-		select {
-		case p.agentSlots <- struct{}{}:
-			defer func() { <-p.agentSlots }()
-		case <-ctx.Done():
-			return nil, fmt.Errorf("agent review: cancelled while waiting for concurrency slot: %w", ctx.Err())
-		}
+// If a concurrency cap is configured (AGENT_MAX_CONCURRENT), dispatch must
+// reserve a slot before the execution budget begins; the dispatching worker
+// releases it after the full review pipeline completes.
+func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, result *service.ReviewResult) (*ReviewResult, error) {
+	pr := execution.Job.PR
+	if p.agentSlots != nil && !execution.AgentSlotReserved {
+		return nil, fmt.Errorf("agent review: concurrency slot was not reserved before execution budget started")
 	}
 
 	log.Printf("[REVIEWER] PR %d: Gemini pass done (comments=%d), entering agent stage",
 		pr.Number, len(result.Comments))
-	if setErr := p.db.SetPRAgentReviewing(pr.Owner, pr.Repo, pr.Number); setErr != nil {
+	projected, setErr := p.db.SetPRAgentReviewingForReviewRun(pr.Owner, pr.Repo, pr.Number, execution.Job.RunID)
+	if setErr != nil {
 		log.Printf("[REVIEWER] WARNING: could not set agent_reviewing status for PR %d: %v", pr.Number, setErr)
+	} else if !projected {
+		return nil, fmt.Errorf("agent review: %w: run %s", errReviewRunSuperseded, execution.Job.RunID)
 	}
 	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 
@@ -372,18 +587,9 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		log.Printf("[REVIEWER] ERROR: PR %d failed to get GitHub token for clone: %v", pr.Number, tokenErr)
 		return nil, fmt.Errorf("agent review: get GitHub token: %w", tokenErr)
 	}
-	agentCfg := service.AgentConfig{
-		CloneRootDir:   p.cfg.AgentCloneRootDir,
-		LogsDir:        p.cfg.AgentLogsDir,
-		WallClock:      time.Duration(p.cfg.AgentWallClockSec) * time.Second,
-		MaxTurns:       p.cfg.AgentMaxTurns,
-		GitHubToken:    gitToken,
-		Model:          p.cfg.AgentModel,
-		Effort:         p.cfg.AgentEffort,
-		BugMemory:      p.bugMemory,
-		RequiredChecks: p.cfg.RequiredChecks,
-		FailureLogSink: p.persistAgentFailureLog,
-	}
+	agentCfg := p.agentConfigForExecution(execution, gitToken)
+	ticketCtx := p.linkedTicketContext(ctx, pr, result.PRBody)
+	ticketCtx.applyTo(&agentCfg)
 	// Pass the PR's true base branch so the clone and the deterministic-layer
 	// diff (gates, bug memory, required checks) are computed against it. With
 	// "" the diff falls back to origin/HEAD, which inflates the changed-line
@@ -394,6 +600,11 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 	if agentErr != nil {
 		log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
 		return nil, fmt.Errorf("agent review: %w", agentErr)
+	}
+	if !agentOut.GatesStartedAt.IsZero() {
+		execution.recordStageTiming(payload.StageTiming{
+			Stage: "gates", StartedAt: agentOut.GatesStartedAt, DurationMS: agentOut.GatesDurationMS,
+		})
 	}
 
 	if agentOut.ModelFallback {
@@ -406,18 +617,13 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 	// the first-pass findings, and evaluation against real release blockers
 	// showed the agent deleting correct first-pass catches it had argued itself
 	// out of. The merge keeps the agent as the canonical voice (its phrasing
-	// and SUMMARY win, and duplicates collapse into it) but re-admits
-	// first-pass CRITICALs the agent dropped, provenance-tagged. CRITICAL-only
-	// is deliberate noise control — loosen only with benchmark evidence.
-	firstPassCriticals := make([]types.LineComment, 0, len(result.Comments))
-	for _, c := range result.Comments {
-		if strings.EqualFold(strings.TrimSpace(c.Importance), "CRITICAL") && c.FilePath != "SUMMARY" {
-			firstPassCriticals = append(firstPassCriticals, c)
-		}
-	}
+	// and SUMMARY win, and duplicates collapse into it) but re-admits the
+	// first-pass claims the retention policy keeps active (criticals the agent
+	// did not confirm; see service.ApplyDispositions). Everything else the
+	// first pass said survives as inactive records appended after the merge.
 	sets := []service.FindingSet{
 		{Provenance: "agent", Comments: agentOut.Comments},
-		{Provenance: "first-pass", Comments: firstPassCriticals},
+		{Provenance: "first-pass", Comments: agentOut.FirstPassActive},
 		// Required-check escalations (empty unless REQUIRED_CHECKS is on):
 		// synthesized VIOLATED findings and unanswered memory re-admissions.
 		// Merging as a lower-priority set reuses the provenance note and the
@@ -445,9 +651,15 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		log.Printf("[REVIEWER] PR %d: carry-forward: from=%s carried_in=%d carried_dropped=%d",
 			pr.Number, carriedInfo.FromSHA, carriedInfo.CarriedIn, carriedInfo.CarriedDropped)
 	}
-	merged := service.MergeFindings(sets...)
+	merged, mergedRecords := service.MergeFindingsWithRecords(sets...)
+	service.EnforceFindingContractPolicy(merged)
+	records := append(mergedRecords, agentOut.Records...)
+	service.RemapMergeTargets(merged, records)
+	// The summary prose is rendered once references are final, so its
+	// "Fix first" names the findings that survived the merge.
+	service.RenderStructuredSummaries(merged)
 	readmitted := len(merged) - len(agentOut.Comments)
-	result.Comments = merged
+	result.Comments = append(merged, records...)
 	result.ComputeImportanceCounts()
 	log.Printf("[REVIEWER] PR %d: agent stage ok (clone=%s, log=%s, agent_comments=%d, readmitted_first_pass=%d, critical=%d, medium=%d, low=%d)",
 		pr.Number, agentOut.CloneDir, agentOut.LogPath, len(agentOut.Comments), readmitted,
@@ -458,6 +670,7 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 			agentOut.Checks.ChecksViolated, agentOut.Checks.ChecksEvidenceOK)
 	}
 
+	result.Checks = agentOut.Checks
 	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
 	if htmlContent == nil {
 		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
@@ -473,11 +686,87 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		BugMemory:     agentOut.BugMemory,
 		Checks:        agentOut.Checks,
 		ModelFallback: agentOut.ModelFallback,
+		ReviewRun: &payload.ReviewRunInfo{
+			Models: append(p.pipelineModelUses(execution.Job.Config.Effective.FirstPass), agentModelUse(agentOut)),
+		},
 		// Copied (not aliased) so the no-swallow check reads the pre-merge
 		// alert set even if a later stage mutates the agent output.
-		GateAlerts: append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
-		Carried:    carriedInfo,
+		GateAlerts:    append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
+		Carried:       carriedInfo,
+		LinkedTickets: ticketCtx.keys(),
 	}, nil
+}
+
+// ---- Linked ticket context ------------------------------------------------
+//
+// The agent reviews a PR without knowing the intent recorded in the tickets
+// it references, so it flags deliberate decisions the author documented
+// elsewhere. linkedTicketContext gathers the PR's own title and body plus the
+// Jira tickets referenced directly in the title, body, or branch name. It is
+// strictly best-effort: any failure degrades to a ticketless prompt.
+
+const ticketFetchTimeout = 20 * time.Second
+
+type linkedTicketContext struct {
+	Title   string
+	Body    string
+	Tickets []tickets.Ticket
+}
+
+func (c linkedTicketContext) keys() []string {
+	if len(c.Tickets) == 0 {
+		return nil
+	}
+	keys := make([]string, len(c.Tickets))
+	for i, t := range c.Tickets {
+		keys[i] = t.Key
+	}
+	return keys
+}
+
+func (c linkedTicketContext) applyTo(cfg *service.AgentConfig) {
+	cfg.PRTitle, cfg.PRBody, cfg.LinkedTickets = c.Title, c.Body, c.Tickets
+}
+
+func (p *Poller) ticketFetcherOrDefault() tickets.Fetcher {
+	if p.ticketFetcher != nil {
+		return p.ticketFetcher
+	}
+	return &tickets.JiraFetcher{BaseURL: p.cfg.JiraBaseURL, Email: p.cfg.JiraEmail, APIToken: p.cfg.JiraAPIToken}
+}
+
+// linkedTicketContext always carries the PR title and body; tickets are
+// fetched only when Jira is configured. The GitHub refetch exists for the
+// branch name (and the body when the first pass did not supply one) and
+// shares the fetch timeout so the agent stage is delayed by at most
+// ticketFetchTimeout.
+func (p *Poller) linkedTicketContext(ctx context.Context, pr github.PullRequest, prBody string) linkedTicketContext {
+	out := linkedTicketContext{Title: pr.Title, Body: prBody}
+	if !p.cfg.JiraEnabled() {
+		return out
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, ticketFetchTimeout)
+	defer cancel()
+
+	branch := ""
+	if ghPR, _, err := p.ghClient.GetPR(fetchCtx, pr.Owner, pr.Repo, pr.Number); err != nil {
+		log.Printf("[TICKETS] %s/%s#%d: GetPR failed, extracting keys from title/body only: %v", pr.Owner, pr.Repo, pr.Number, err)
+	} else if ghPR != nil {
+		branch = ghPR.GetHead().GetRef()
+		if out.Title == "" {
+			out.Title = ghPR.GetTitle()
+		}
+		if out.Body == "" {
+			out.Body = ghPR.GetBody()
+		}
+	}
+	keys := tickets.ExtractKeys(p.cfg.JiraProjectKeys, out.Title, out.Body, branch)
+	if len(keys) == 0 {
+		return out
+	}
+	out.Tickets = tickets.FetchAll(fetchCtx, p.ticketFetcherOrDefault(), keys, log.Printf)
+	log.Printf("[TICKETS] %s/%s#%d: keys=%v fetched=%d", pr.Owner, pr.Repo, pr.Number, keys, len(out.Tickets))
+	return out
 }
 
 // ---- Cross-review carry-forward (CARRY_FORWARD_FINDINGS) -------------------
@@ -630,13 +919,57 @@ func (p *Poller) loadPriorReviewPayload(ctx context.Context, owner, repo string,
 	return parseSidecarPayload(body)
 }
 
+// loadReviewPayload loads the structured sidecar for one exact commit. Cache
+// restoration must use this artifact's metadata rather than whatever review
+// happens to be projected on the mutable PR row after later force-pushes.
+func (p *Poller) loadReviewPayload(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (*payload.Payload, error) {
+	name := gcs.ReviewJSONFileName(gcs.ReviewFileName(owner, repo, prNumber, commitSHA))
+	var body []byte
+	var err error
+	if p.gcsClient != nil && p.gcsClient.BucketName() != "" {
+		body, err = p.gcsClient.GetReviewContent(ctx, name)
+	} else {
+		body, err = os.ReadFile(filepath.Join(p.reviewDir, name))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load review sidecar %s: %w", name, err)
+	}
+	pl, err := parseSidecarPayload(body)
+	if err != nil {
+		return nil, fmt.Errorf("parse review sidecar %s: %w", name, err)
+	}
+	if !isSameCommit(commitSHA, pl.CommitSHA) {
+		return nil, fmt.Errorf("review sidecar %s contains commit %q, expected %q", name, pl.CommitSHA, commitSHA)
+	}
+	return pl, nil
+}
+
+func cachedProjectionMetadata(pl *payload.Payload) (critical, medium, low int, verdict string, modelFallback bool, reviewRunID, reviewRunJSON string) {
+	if pl == nil {
+		return
+	}
+	critical, medium, low = pl.Counts.Critical, pl.Counts.Medium, pl.Counts.Low
+	verdict = service.VerdictFromComments(pl.ToLineComments())
+	if pl.ReviewRun == nil {
+		return
+	}
+	reviewRunID = pl.ReviewRun.RunID
+	for _, model := range pl.ReviewRun.Models {
+		modelFallback = modelFallback || model.Fallback
+	}
+	if encoded, err := json.Marshal(pl.ReviewRun); err == nil {
+		reviewRunJSON = string(encoded)
+	}
+	return
+}
+
 // parseSidecarPayload unmarshals a findings sidecar. A payload with zero
 // findings is valid — a clean prior review is still the PR's most recent
 // assessment, and correctly yields a carry-less run rather than falling
 // through to an older, superseded review.
 func parseSidecarPayload(body []byte) (*payload.Payload, error) {
-	var pl payload.Payload
-	if err := json.Unmarshal(body, &pl); err != nil {
+	pl, err := payload.Decode(body)
+	if err != nil {
 		return nil, err
 	}
 	return &pl, nil
@@ -730,6 +1063,17 @@ func (p *Poller) broadcastPRUpdate(owner, repo string, number int) {
 	}
 }
 
+// broadcastPRUpdateToUser sends a pr_updated event only to one user's clients.
+func (p *Poller) broadcastPRUpdateToUser(userID int, owner, repo string, number int) {
+	if p.UserEventFunc != nil {
+		p.UserEventFunc(userID, "pr_updated", map[string]interface{}{
+			"owner":  owner,
+			"repo":   repo,
+			"number": number,
+		})
+	}
+}
+
 func (p *Poller) SetCacheUpdateFunc(f func([]github.PullRequest)) {
 	p.cacheUpdateFunc = f
 }
@@ -802,9 +1146,13 @@ func (p *Poller) Start(ctx context.Context) {
 	}
 
 	// Acquire/renew leadership once synchronously so the initial poll reflects it,
-	// then keep the lease fresh in the background.
-	p.updateLeadership(ctx)
-	go p.runLeaderElection(ctx)
+	// then keep the lease fresh in the background. Instances that never poll
+	// stay out of the election entirely: a local benchmark server on the shared
+	// database must not hold the lease while doing no work.
+	if !p.cfg.DisablePolling {
+		p.updateLeadership(ctx)
+		go p.runLeaderElection(ctx)
+	}
 
 	// Run immediately on start (leader only) — unless polling is disabled
 	// outright. Benchmark and on-demand deployments set DISABLE_POLLING to
@@ -812,6 +1160,19 @@ func (p *Poller) Start(ctx context.Context) {
 	// (burning tokens and writing review artifacts that shadow the primary
 	// deployment's for the same commits). DISABLE_POLLING takes precedence
 	// over leadership; manual triggers and on-demand reviews still work.
+	if !p.cfg.DisablePolling {
+		if p.cfg.MentionHandle != "" {
+			// Stamp the cutoff at boot, leader or not, so a request posted right
+			// after a deploy is not older than it once this instance starts scanning.
+			if _, err := p.mentionActivation(false); err != nil {
+				log.Printf("[MENTIONS] activation timestamp: %v", err)
+			}
+		} else if err := p.db.SetSetting(settingMentionHandle, ""); err != nil {
+			// Remember that the feature was off, so re-enabling re-stamps the
+			// cutoff instead of replaying mentions from the disabled period.
+			log.Printf("[MENTIONS] could not record the disabled handle: %v", err)
+		}
+	}
 	if p.cfg.DisablePolling {
 		log.Println("DISABLE_POLLING set — skipping initial and scheduled polls (manual trigger + on-demand reviews still available)")
 	} else if p.isLeader() {
@@ -836,6 +1197,8 @@ func (p *Poller) Start(ctx context.Context) {
 			// below are deliberately exempt — they're explicit user actions.
 			if p.isLeader() {
 				p.startPoll(ctx, "scheduled")
+				go p.scanAuthorReplies(ctx)
+				go p.scanMentions(ctx)
 			} else {
 				log.Printf("[LEADER] not leader, skipping scheduled poll")
 			}
@@ -851,8 +1214,14 @@ func (p *Poller) Start(ctx context.Context) {
 // reset both derive from it so they can never fire on a healthy review.
 func (p *Poller) reviewProcessTimeout() time.Duration {
 	t := ReviewPipelineMargin
-	if p.cfg != nil && p.cfg.AgentWallClockSec > 0 {
-		t += time.Duration(p.cfg.AgentWallClockSec) * time.Second
+	if p.cfg != nil {
+		wallClockSeconds := p.cfg.AgentWallClockSec
+		if p.cfg.ReviewMaxWallClockSec > wallClockSeconds {
+			wallClockSeconds = p.cfg.ReviewMaxWallClockSec
+		}
+		if wallClockSeconds > 0 {
+			t += time.Duration(wallClockSeconds) * time.Second
+		}
 	}
 	return t
 }
@@ -863,13 +1232,37 @@ func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Tick
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			timeout := p.reviewProcessTimeout()
+			now := time.Now().UTC()
+			p.renewTrackedQueueLeases(now)
+			if p.isLeader() {
+				if abandoned, err := p.db.AbandonExpiredReviewRuns(now, ReviewLeaseCompletionGrace, ReviewQueueAbandonAfter); err != nil {
+					log.Printf("[MONITOR] WARNING: failed to abandon expired review runs: %v", err)
+				} else if abandoned > 0 {
+					log.Printf("[MONITOR] marked %d expired review runs timed out", abandoned)
+				}
+			}
 			p.reviewsMutex.Lock()
 			for key, info := range p.activeReviews {
+				if info.StartTime.IsZero() {
+					if !info.TrackedAt.IsZero() && time.Since(info.TrackedAt) > ReviewQueueAbandonAfter {
+						log.Printf("[MONITOR] WARNING: queued review for %s exceeded %v, removing from tracking", key, ReviewQueueAbandonAfter)
+						if info.Cancel != nil {
+							info.Cancel()
+						}
+						delete(p.activeReviews, key)
+					}
+					continue
+				}
+				timeout := info.Timeout
+				if timeout <= 0 {
+					timeout = p.reviewProcessTimeout()
+				}
 				elapsed := time.Since(info.StartTime)
 				if elapsed > timeout {
 					log.Printf("[MONITOR] WARNING: review for %s has been running for %v (timeout), removing from tracking", key, elapsed)
-					// Remove from tracking (goroutine will finish on its own)
+					if info.Cancel != nil {
+						info.Cancel()
+					}
 					delete(p.activeReviews, key)
 				} else if elapsed > ReviewProcessWarningThreshold {
 					log.Printf("[MONITOR] WARNING: review for %s has been running for %v (threshold: 2m)", key, elapsed)
@@ -882,6 +1275,47 @@ func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Tick
 	}
 }
 
+func (p *Poller) renewTrackedQueueLeases(now time.Time) {
+	type queuedLease struct {
+		key    string
+		runID  string
+		holder string
+	}
+	p.reviewsMutex.Lock()
+	leases := make([]queuedLease, 0, len(p.activeReviews))
+	for key, info := range p.activeReviews {
+		if info.StartTime.IsZero() && info.RunID != "" && info.QueueLeaseHolder != "" {
+			leases = append(leases, queuedLease{key: key, runID: info.RunID, holder: info.QueueLeaseHolder})
+		}
+	}
+	p.reviewsMutex.Unlock()
+
+	for _, lease := range leases {
+		renewed, err := p.db.ClaimOrRenewQueuedReviewRunLease(lease.runID, lease.holder, now, now.Add(ReviewQueueLeaseTTL))
+		if err != nil {
+			log.Printf("[MONITOR] WARNING: failed to renew queued review run %s: %v", lease.runID, err)
+		} else if !renewed {
+			log.Printf("[MONITOR] queued review run %s no longer accepts dispatcher lease renewal", lease.runID)
+			p.untrackQueuedReviewRunIfStillOwned(lease.key, lease.runID, lease.holder)
+		}
+	}
+}
+
+func (p *Poller) untrackQueuedReviewRunIfStillOwned(key, runID, holder string) bool {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	info, exists := p.activeReviews[key]
+	if !exists || info.RunID != runID || info.QueueLeaseHolder != holder || !info.StartTime.IsZero() {
+		return false
+	}
+	if info.Cancel != nil {
+		info.Cancel()
+	}
+	delete(p.activeReviews, key)
+	log.Printf("[TRACK] Cancelled queued review %s after dispatcher lease loss", key)
+	return true
+}
+
 func (p *Poller) GetReviewerStatus() (running bool, duration time.Duration) {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
@@ -890,7 +1324,6 @@ func (p *Poller) GetReviewerStatus() (running bool, duration time.Duration) {
 		return false, 0
 	}
 
-	// Verify processes are actually still running and find the longest duration
 	count := 0
 	var maxDuration time.Duration
 
@@ -898,7 +1331,11 @@ func (p *Poller) GetReviewerStatus() (running bool, duration time.Duration) {
 	// Since we might delete, it's safer to just check existence here, or rely on monitor to clean up
 	// For status check, we'll just read.
 	for _, info := range p.activeReviews {
-		// Reviews run as in-process goroutines, just count active ones
+		// Queued jobs are owned but are not yet consuming execution capacity.
+		if info.StartTime.IsZero() {
+			continue
+		}
+		// Reviews run as in-process goroutines, just count executing ones.
 		count++
 		d := time.Since(info.StartTime)
 		if d > maxDuration {
@@ -954,22 +1391,35 @@ func (p *Poller) GetSecondsUntilNextPoll() int {
 	return seconds
 }
 
+// startedReviewKeys snapshots only reviews whose execution budget has begun.
+// Queued entries also live in activeReviews for local ownership, but they have
+// not claimed the mutable PR projection and must not participate in stale-row
+// restoration.
+func (p *Poller) startedReviewKeys() map[string]string {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	started := make(map[string]string, len(p.activeReviews))
+	for key, info := range p.activeReviews {
+		if !info.StartTime.IsZero() {
+			started[key] = info.RunID
+		}
+	}
+	return started
+}
+
 // prKey creates a unique key for tracking a PR
 func prKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
 }
 
-// trackReview adds a PR's review to the active reviews map and returns a
-// per-review cancellable context derived from parent. Callers MUST use the
-// returned context for the rest of the review work; killReview cancels it
-// to abort the in-flight goroutine.
-//
-// If an entry already exists for this PR (e.g. ProcessReviewImmediate's
-// outer trackReview followed by generateReviewsBatch's inner trackReview),
-// returns the existing context unchanged so the running goroutine isn't
-// disrupted. The caller's parent ctx is therefore ignored in that case —
-// the outer caller is the canonical owner of the lifecycle.
+// trackReview is retained as a test/compatibility helper for callers that do
+// not yet have a durable ReviewJob. Production dispatch uses the run-aware
+// tracking methods below.
 func (p *Poller) trackReview(parent context.Context, owner, repo string, number, pid int) context.Context {
+	return p.trackReviewWithTimeout(parent, owner, repo, number, pid, "", p.reviewProcessTimeout())
+}
+
+func (p *Poller) trackReviewWithTimeout(parent context.Context, owner, repo string, number, pid int, runID string, timeout time.Duration) context.Context {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
 	key := prKey(owner, repo, number)
@@ -977,31 +1427,128 @@ func (p *Poller) trackReview(parent context.Context, owner, repo string, number,
 		log.Printf("[TRACK] Re-tracking %s (re-using existing ctx)", key)
 		return existing.Ctx
 	}
-	ctx, cancel := context.WithCancel(parent)
+	if timeout <= 0 {
+		timeout = p.reviewProcessTimeout()
+	}
+	now := time.Now()
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	p.activeReviews[key] = ProcessInfo{
 		PID:       pid,
-		StartTime: time.Now(),
+		TrackedAt: now,
+		StartTime: now,
+		Timeout:   timeout,
+		RunID:     runID,
 		Ctx:       ctx,
 		Cancel:    cancel,
 	}
-	log.Printf("[TRACK] Tracking review for %s", key)
+	log.Printf("[TRACK] Tracking compatibility review for %s", key)
 	return ctx
 }
 
-// untrackReview removes a PR's review process from the active reviews map
-// AND invokes its stored Cancel func. Both happen under the same mutex hold
-// so no concurrent caller observes the entry as still-tracked-but-cancelled.
+func (p *Poller) tryTrackReviewJob(parent context.Context, job ReviewJob) (context.Context, bool) {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	if _, exists := p.activeReviews[key]; exists {
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(parent)
+	p.activeReviews[key] = ProcessInfo{
+		TrackedAt: time.Now(), Timeout: p.reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
+	}
+	log.Printf("[TRACK] Tracking queued review job %s for %s", job.RunID, key)
+	return ctx, true
+}
+
+func (p *Poller) setTrackedQueueLease(job ReviewJob, holder string) bool {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	info, exists := p.activeReviews[key]
+	if !exists || info.RunID != job.RunID || !info.StartTime.IsZero() {
+		return false
+	}
+	info.QueueLeaseHolder = holder
+	p.activeReviews[key] = info
+	return true
+}
+
+// trackOrAdoptReviewJob creates the worker tracking entry or adopts the entry
+// synchronously created by ProcessReviewJob. It never shares a context across
+// different run IDs for the same PR.
+func (p *Poller) trackOrAdoptReviewJob(parent context.Context, job ReviewJob) (context.Context, bool) {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	if existing, exists := p.activeReviews[key]; exists {
+		if existing.RunID == job.RunID && existing.Ctx != nil {
+			return existing.Ctx, true
+		}
+		return nil, false
+	}
+	// ProcessReviewJob tracked durably accepted work before returning to its
+	// caller. If that entry is now absent, cancellation or lease-loss cleanup
+	// won the race; recreating it would resurrect killed work without the
+	// dispatcher holder needed for queue-lease renewal.
+	if job.QueueLeaseHolder != "" {
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(parent)
+	p.activeReviews[key] = ProcessInfo{
+		TrackedAt: time.Now(), Timeout: p.reviewTimeout(job.Config.Effective), RunID: job.RunID, Ctx: ctx, Cancel: cancel,
+	}
+	log.Printf("[TRACK] Tracking queued review job %s for %s", job.RunID, key)
+	return ctx, true
+}
+
+// startTrackedReviewJob starts the configured execution budget only after the
+// batch semaphore grants a worker slot. Ownership is established earlier, but
+// time spent queued must not reduce a per-review wall-clock allowance. The
+// returned duration is the time the job spent queued (tracked to started).
+func (p *Poller) startTrackedReviewJob(job ReviewJob) (context.Context, time.Duration, bool) {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	key := prKey(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	info, exists := p.activeReviews[key]
+	if !exists || info.RunID != job.RunID || info.Ctx == nil || !info.StartTime.IsZero() {
+		return nil, 0, false
+	}
+	timeout := p.reviewTimeout(job.Config.Effective)
+	runCtx, runCancel := context.WithTimeoutCause(info.Ctx, timeout, errReviewRunBudgetExceeded)
+	queuedCancel := info.Cancel
+	info.StartTime = time.Now()
+	queueWait := info.StartTime.Sub(info.TrackedAt)
+	info.Timeout = timeout
+	info.Ctx = runCtx
+	info.Cancel = func() {
+		runCancel()
+		if queuedCancel != nil {
+			queuedCancel()
+		}
+	}
+	p.activeReviews[key] = info
+	log.Printf("[TRACK] Started review job %s for %s (timeout=%s, queue_wait=%s)", job.RunID, key, timeout, queueWait)
+	return runCtx, queueWait, true
+}
+
+// untrackReviewRun removes a PR's review process from the active reviews map
+// only when runID still owns it, and invokes its stored Cancel func. Both
+// happen under one mutex hold so stale workers cannot cancel a replacement.
 //
 // Calling Cancel on the happy path (review completed normally) is required:
-// trackReview made a context.WithCancel, and `go vet`'s lostcancel rule
+// the tracking entry owns a context.WithCancel, and `go vet`'s lostcancel rule
 // (rightly) complains if we drop the cancel func without calling it. After
 // successful completion the cancel is a no-op for the work, but it releases
 // the bookkeeping the WithCancel goroutine holds.
-func (p *Poller) untrackReview(owner, repo string, number int) {
+func (p *Poller) untrackReviewRun(owner, repo string, number int, runID string) {
 	p.reviewsMutex.Lock()
 	defer p.reviewsMutex.Unlock()
 	key := prKey(owner, repo, number)
 	if info, ok := p.activeReviews[key]; ok {
+		if runID == "" || info.RunID != runID {
+			log.Printf("[TRACK] Refusing to untrack %s: owner run=%s, stale run=%s", key, info.RunID, runID)
+			return
+		}
 		if info.Cancel != nil {
 			info.Cancel()
 		}
@@ -1023,7 +1570,7 @@ func (p *Poller) isTracked(owner, repo string, number int) bool {
 // agent subprocess via DefaultSpawner's ctx-watcher) and removes the entry
 // from tracking, atomically. Returns false if no review was tracked. The
 // goroutine detects the cancel via ctx.Err() in its current LLM call or
-// claude subprocess, exits, and skips the SetPRError write so a concurrent
+// agent subprocess, exits, and skips the SetPRError write so a concurrent
 // ResetPRToOutdated isn't clobbered.
 func (p *Poller) killReview(owner, repo string, number int) bool {
 	p.reviewsMutex.Lock()
@@ -1046,52 +1593,36 @@ func (p *Poller) killReview(owner, repo string, number int) bool {
 	return true
 }
 
-// ProcessReviewImmediate starts review generation for a single PR immediately,
-// bypassing the full poll cycle. The PR must already be in "generating" status
-// in the database. trackReview is called synchronously before the goroutine
-// launches so the poll cycle's shouldReview/isTracked guard sees it immediately.
+// ProcessReviewImmediate adapts the legacy immediate-review entry point into an
+// immutable ReviewJob. ProcessReviewJob durably creates and synchronously tracks
+// the queued run before launching its worker, so poll-cycle guards see it.
 //
 // If force is true, the existing-review cache check is skipped — useful for
 // the manual "Review" button so a click always regenerates (overwriting the
 // previous review for the same commit).
-func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool) {
-	// Track synchronously BEFORE spawning goroutine so that any concurrent
-	// poll cycle will see this PR as tracked and skip it. The returned ctx
-	// is what killReview cancels — we MUST use it for the actual work.
-	reviewCtx := p.trackReview(ctx, owner, repo, number, 0)
-
-	go func() {
-		pr := github.PullRequest{
-			Owner:     owner,
-			Repo:      repo,
-			Number:    number,
-			CommitSHA: commitSHA,
-			Title:     title,
-			Author:    author,
-			CreatedAt: createdAt,
-			Draft:     draft,
-		}
-		// Run the single-PR review through generateReviewsBatch (reuses all
-		// existing logic: existence check, LLM call, save, DB update, untrack).
-		// generateReviewsBatch calls trackReview again internally; the second
-		// call sees the existing entry and returns the same ctx so we don't
-		// disrupt this run.
-		if err := p.generateReviewsBatch(reviewCtx, []github.PullRequest{pr}, force); err != nil {
-			log.Printf("[IMMEDIATE] ERROR: Immediate review failed for %s/%s#%d: %v", owner, repo, number, err)
-			// generateReviewsBatch handles per-PR error/untrack internally,
-			// but if the batch-level error fires (e.g. API key validation),
-			// we need to clean up. Skip the error write if we were cancelled —
-			// killReview's caller (outdated detection) has already reset the row.
-			if p.isTracked(owner, repo, number) {
-				if reviewCtx.Err() == nil {
-					if setErr := p.db.SetPRError(owner, repo, number, err.Error()); setErr != nil {
-						log.Printf("[IMMEDIATE] WARNING: failed to persist error status: %v", setErr)
-					}
-				}
-				p.untrackReview(owner, repo, number)
+func (p *Poller) ProcessReviewImmediate(ctx context.Context, owner, repo string, number int, commitSHA, title, author string, createdAt *time.Time, draft bool, force bool, publish bool) {
+	pr := github.PullRequest{
+		Owner: owner, Repo: repo, Number: number, CommitSHA: commitSHA,
+		Title: title, Author: author, CreatedAt: createdAt, Draft: draft,
+	}
+	job, err := p.defaultReviewJob(pr, force, "legacy_api")
+	if err == nil {
+		job.SkipPublish = !publish
+		err = p.ProcessReviewJob(ctx, job)
+	}
+	if err != nil {
+		log.Printf("[IMMEDIATE] ERROR: Could not queue immediate review for %s/%s#%d: %v", owner, repo, number, err)
+		if !errors.Is(err, ErrReviewAlreadyTracked) {
+			projected, setErr := p.db.SetPRErrorIfNoLiveReview(owner, repo, number, err.Error())
+			if setErr != nil {
+				log.Printf("[IMMEDIATE] WARNING: failed to persist error status: %v", setErr)
+			} else if projected {
+				p.broadcastPRUpdate(owner, repo, number)
+			} else {
+				log.Printf("[IMMEDIATE] Live review owns %s/%s#%d; skipping unfenced admission error", owner, repo, number)
 			}
 		}
-	}()
+	}
 }
 
 // IsReviewTracked returns whether a PR is currently being actively reviewed.
@@ -1142,6 +1673,65 @@ func (p *Poller) manualClaimPRIDs() (map[int]bool, bool) {
 	return claims, true
 }
 
+func reviewTargetKey(owner, repo string, number int) string {
+	return strings.ToLower(fmt.Sprintf("%s/%s/%d", owner, repo, number))
+}
+
+// activeReviewTargets returns every PR protected by a durable queued/running
+// review. API-triggered reviews deliberately do not create a persistent
+// dashboard claim, but closed-PR cleanup must still retain their mutable PR
+// projection until execution reaches a terminal state.
+func (p *Poller) activeReviewTargets() (map[string]bool, bool) {
+	targets := make(map[string]bool)
+	for _, status := range []string{db.ReviewRunStatusQueued, db.ReviewRunStatusRunning} {
+		filter := db.ReviewRunFilter{Status: status, Limit: db.MaxReviewRunListLimit}
+		for {
+			runs, err := p.db.ListReviewRuns(filter)
+			if err != nil {
+				log.Printf("[CLEANUP] ERROR: could not load %s review runs, skipping closed-PR cleanup this cycle: %v", status, err)
+				return nil, false
+			}
+			for _, run := range runs {
+				targets[reviewTargetKey(run.RepoOwner, run.RepoName, run.PRNumber)] = true
+			}
+			if len(runs) < db.MaxReviewRunListLimit {
+				break
+			}
+			last := runs[len(runs)-1]
+			if last.AcceptedAt.IsZero() || last.RunID == filter.BeforeRunID {
+				log.Printf("[CLEANUP] ERROR: %s review-run pagination did not advance, skipping closed-PR cleanup this cycle", status)
+				return nil, false
+			}
+			filter.BeforeAcceptedAt = last.AcceptedAt
+			filter.BeforeRunID = last.RunID
+		}
+	}
+	return targets, true
+}
+
+// hasActiveReviewTarget re-checks a single target immediately before cleanup
+// deletes its mutable projection. The cycle-wide snapshot can be stale after
+// GitHub status lookups, particularly in the sequential cleanup path.
+func (p *Poller) hasActiveReviewTarget(owner, repo string, number int) (bool, bool) {
+	for _, status := range []string{db.ReviewRunStatusQueued, db.ReviewRunStatusRunning} {
+		runs, err := p.db.ListReviewRuns(db.ReviewRunFilter{
+			RepoOwner: owner,
+			RepoName:  repo,
+			PRNumber:  number,
+			Status:    status,
+			Limit:     1,
+		})
+		if err != nil {
+			log.Printf("[CLEANUP] ERROR: could not re-check %s review runs for %s/%s#%d, retaining its projection: %v", status, owner, repo, number, err)
+			return false, false
+		}
+		if len(runs) > 0 {
+			return true, true
+		}
+	}
+	return false, true
+}
+
 // retainForManualClaim handles a closed PR kept alive by a manual claim:
 // non-claimants' views are soft-hidden so their dashboards behave as if the
 // row had been cleaned up (they get no pr_deleted broadcast; the row drops
@@ -1175,6 +1765,10 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 	if !claimsOK {
 		return 0, fmt.Errorf("skipping closed-PR cleanup: manual claims unavailable")
 	}
+	activeReviews, activeOK := p.activeReviewTargets()
+	if !activeOK {
+		return 0, fmt.Errorf("skipping closed-PR cleanup: active reviews unavailable")
+	}
 
 	removed := 0
 	for _, pr := range allPRs {
@@ -1188,6 +1782,11 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 			continue
 		}
 
+		if !isOpen && activeReviews[reviewTargetKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)] {
+			log.Printf("[CLEANUP] PR %s/%s#%d is closed but has an active review — retaining its projection", pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			continue
+		}
+
 		if !isOpen && manualClaims[pr.ID] {
 			// IsPROpen can't distinguish merged from closed — leave the state
 			// to the batched cleanup path (cleanupAndDetectOutdated).
@@ -1198,6 +1797,15 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 		// If PR is closed, remove it from the database
 		// Note: Reviews are kept in GCS permanently for historical reference
 		if !isOpen {
+			// A review may have been accepted while this cleanup cycle was
+			// waiting on GitHub. Re-check at the destructive boundary.
+			active, activeOK := p.hasActiveReviewTarget(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			if !activeOK || active {
+				if active {
+					log.Printf("[CLEANUP] PR %s/%s#%d gained an active review during cleanup — retaining its projection", pr.RepoOwner, pr.RepoName, pr.PRNumber)
+				}
+				continue
+			}
 			log.Printf("[CLEANUP] PR %s/%s#%d is closed, removing from tracking (reviews kept in GCS)",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber)
 
@@ -1255,6 +1863,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 	}
 
 	manualClaims, claimsOK := p.manualClaimPRIDs()
+	activeReviews, activeOK := p.activeReviewTargets()
 
 	// Single pass: handle closed PRs and outdated reviews
 	for _, pr := range allPRs {
@@ -1270,6 +1879,29 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			if !claimsOK || manualClaims[pr.ID] {
 				if claimsOK {
 					p.retainForManualClaim(pr, state.State)
+				}
+				continue
+			}
+			if !activeOK || activeReviews[reviewTargetKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)] {
+				if activeOK {
+					log.Printf("[CLEANUP] PR %s is %s but has an active review — retaining its projection", key, state.State)
+					prState := strings.ToLower(state.State)
+					if prState != "" && prState != pr.PRState {
+						if err := p.db.SetPRState(pr.RepoOwner, pr.RepoName, pr.PRNumber, prState); err != nil {
+							log.Printf("[CLEANUP] WARN: could not persist state %q for retained PR %s: %v", prState, key, err)
+						} else {
+							p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+						}
+					}
+				}
+				continue
+			}
+			// The batch-wide review snapshot can become stale between the
+			// GraphQL call and deletion. Re-check at the destructive boundary.
+			active, recheckOK := p.hasActiveReviewTarget(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			if !recheckOK || active {
+				if active {
+					log.Printf("[CLEANUP] PR %s gained an active review during cleanup — retaining its projection", key)
 				}
 				continue
 			}
@@ -1329,25 +1961,33 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			log.Printf("[OUTDATED] PR %s has new commits (old: %s, new: %s), resetting to pending",
 				key, oldSHA, newSHA)
 
+			// Reset first, as a compare-and-swap on the head this cycle read. The
+			// snapshot in pr predates the GitHub fetch above; a review run that
+			// claimed the PR on any newer head since then already recorded it and
+			// must keep its projection, so nothing below may run for it.
+			applied, err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA, state.HeadRefOid)
+			if err != nil {
+				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s: %v", key, err)
+				continue
+			}
+			if !applied {
+				log.Printf("[OUTDATED] PR %s no longer carries %s (moved or removed since this cycle read it); skipping reset", key, oldSHA)
+				continue
+			}
+
 			// Delete old HTML file if it exists
-			if pr.ReviewHTMLPath != "" {
-				oldHTMLPath := filepath.Join(p.reviewDir, pr.ReviewHTMLPath)
+			if alias := localReviewAlias(pr); alias != "" {
+				oldHTMLPath := filepath.Join(p.reviewDir, alias)
 				if err := os.Remove(oldHTMLPath); err != nil && !os.IsNotExist(err) {
 					log.Printf("[OUTDATED] Warning: Failed to delete old HTML file %s: %v", oldHTMLPath, err)
 				}
 			}
 
-			// If the PR had an active Gemini or agent review, kill the process.
+			// If the PR had an active first-pass or agent review, kill the process.
 			if wasInFlight {
 				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
 					log.Printf("[OUTDATED] Killed active review process for %s", key)
 				}
-			}
-
-			// Reset PR to pending with new commit SHA
-			if err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, state.HeadRefOid); err != nil {
-				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s: %v", key, err)
-				continue
 			}
 
 			p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
@@ -1382,8 +2022,29 @@ func (p *Poller) reviewExists(ctx context.Context, owner, repo string, prNumber 
 	return false, err
 }
 
-// saveReview persists review content to storage (GCS or local disk).
-func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
+func (p *Poller) reviewExistsWithTimeout(ctx context.Context, timeout time.Duration, owner, repo string, prNumber int, commitSHA string) (bool, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return p.reviewExists(lookupCtx, owner, repo, prNumber, commitSHA)
+}
+
+// saveReview is retained only for legacy storage tests.
+//
+// Deprecated: review execution must save immutable artifacts before atomic
+// finalization and may refresh canonical aliases only after publication wins.
+// Calling this unfenced convenience helper from a worker would reintroduce the
+// stale-alias overwrite hazard that FinalizeReviewRunSuccess prevents.
+func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, reviewRun *payload.ReviewRunInfo, content []byte) (string, error) {
+	if reviewRun == nil || reviewRun.HTMLPath == "" {
+		return "", fmt.Errorf("save review: immutable review-run path is required")
+	}
+	if err := p.saveImmutableReviewArtifact(ctx, reviewRun.HTMLPath, "text/html; charset=utf-8", content); err != nil {
+		return "", fmt.Errorf("save immutable review %s: %w", reviewRun.RunID, err)
+	}
+	return p.saveCanonicalReview(ctx, owner, repo, prNumber, commitSHA, content)
+}
+
+func (p *Poller) saveCanonicalReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	if p.storage != nil {
 		return p.storage.SaveReview(ctx, owner, repo, prNumber, commitSHA, content)
 	}
@@ -1403,8 +2064,58 @@ func (p *Poller) saveReview(ctx context.Context, owner, repo string, prNumber in
 		return "", fmt.Errorf("failed to write review file: %w", err)
 	}
 
-	log.Printf("[LOCAL] Saved review to: %s", localPath)
+	log.Printf("[LOCAL] Saved canonical review alias to: %s", localPath)
 	return filename, nil
+}
+
+func (p *Poller) saveCanonicalReviewAliasesWithRetry(ctx context.Context, owner, repo string, prNumber int, commitSHA string, html, sidecar []byte) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= reviewLedgerRetryAttempts; attempt++ {
+		canonicalPath, err := p.saveCanonicalReview(ctx, owner, repo, prNumber, commitSHA, html)
+		if err == nil {
+			sidecarPath := gcs.ReviewJSONFileName(canonicalPath)
+			if sidecarErr := p.saveReviewSidecar(ctx, sidecarPath, "application/json", sidecar); sidecarErr == nil {
+				log.Printf("[REVIEWER] Saved canonical findings alias: %s", sidecarPath)
+				return canonicalPath, nil
+			} else {
+				err = fmt.Errorf("save canonical findings alias %s: %w", sidecarPath, sidecarErr)
+			}
+		} else {
+			err = fmt.Errorf("save canonical HTML alias: %w", err)
+		}
+		lastErr = err
+		if attempt < reviewLedgerRetryAttempts {
+			select {
+			case <-ctx.Done():
+				return "", fmt.Errorf("save canonical review aliases: %w", ctx.Err())
+			case <-time.After(reviewLedgerRetryBaseDelay << (attempt - 1)):
+			}
+		}
+	}
+	return "", fmt.Errorf("save canonical review aliases after %d attempts: %w", reviewLedgerRetryAttempts, lastErr)
+}
+
+// saveImmutableReviewArtifact persists an object that is uniquely keyed by a
+// run ID. Unlike canonical sidecars it never performs archive-on-overwrite.
+func (p *Poller) saveImmutableReviewArtifact(ctx context.Context, filename, contentType string, content []byte) error {
+	if p.storage != nil {
+		// ReviewStorage's auxiliary-artifact method accepts arbitrary names and
+		// content types, which keeps existing test/custom backends compatible.
+		return p.storage.SaveReviewSidecar(ctx, filename, contentType, content)
+	}
+	if p.gcsClient != nil && p.gcsClient.BucketName() != "" {
+		return p.gcsClient.UploadImmutableReviewArtifact(ctx, filename, contentType, content)
+	}
+
+	localPath := filepath.Join(p.reviewDir, filename)
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		return fmt.Errorf("create immutable review directory: %w", err)
+	}
+	if err := os.WriteFile(localPath, content, 0644); err != nil {
+		return fmt.Errorf("write immutable review artifact: %w", err)
+	}
+	log.Printf("[LOCAL] Saved immutable review artifact to: %s", localPath)
+	return nil
 }
 
 // saveReviewSidecar persists an auxiliary review artifact (currently the
@@ -1420,7 +2131,7 @@ func (p *Poller) saveReviewSidecar(ctx context.Context, filename, contentType st
 	}
 
 	localPath := filepath.Join(p.reviewDir, filename)
-	if err := os.MkdirAll(p.reviewDir, 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 		return fmt.Errorf("failed to create reviews directory: %w", err)
 	}
 	if err := os.WriteFile(localPath, content, 0644); err != nil {
@@ -1430,10 +2141,7 @@ func (p *Poller) saveReviewSidecar(ctx context.Context, filename, contentType st
 	return nil
 }
 
-// writeSidecarBestEffort builds the structured findings payload and uploads it
-// to the same backend the HTML lives in. Errors are logged but swallowed —
-// the HTML review is the canonical artifact.
-func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlFilename string, rr *ReviewResult) {
+func buildReviewSidecar(owner, repo string, prNumber int, commitSHA string, rr *ReviewResult) ([]byte, error) {
 	// GateAlerts arms Build's no-swallow assertion: a fired deterministic
 	// alert that is no longer traceable in the merged findings logs an ERROR
 	// naming the alert (nil/empty when no deterministic signal fired).
@@ -1456,22 +2164,69 @@ func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string,
 			Violated:   rr.Checks.ChecksViolated,
 			EvidenceOK: rr.Checks.ChecksEvidenceOK,
 		}
+		for _, r := range rr.Checks.Records {
+			pl.RequiredChecks.Records = append(pl.RequiredChecks.Records, payload.RequiredCheckRecord{
+				ID: r.ID, Source: r.Source, Question: r.Question, TargetFile: r.TargetFile, Verdict: r.Verdict,
+				Answer: r.Answer, EvidencePath: r.EvidencePath, EvidenceResolved: r.EvidenceResolved, Unresolved: r.Unresolved,
+			})
+		}
 	}
 	// Carry-forward telemetry (carried_in / carried_dropped): persisted for
 	// the same reason as the funnels above. Nil (field omitted) when the
 	// feature is off, keeping legacy sidecars byte-identical.
 	pl.CarriedFindings = rr.Carried
+	pl.ReviewRun = rr.ReviewRun
 	body, err := json.Marshal(pl)
 	if err != nil {
-		log.Printf("[REVIEWER] WARN: marshal findings sidecar for %s/%s#%d: %v", owner, repo, prNumber, err)
-		return
+		return nil, fmt.Errorf("marshal findings sidecar for %s/%s#%d: %w", owner, repo, prNumber, err)
 	}
+	return body, nil
+}
+
+// writeImmutableReviewSidecar persists the run-scoped structured artifact that
+// the review-runs API advertises. Unlike the mutable compatibility alias, this
+// write is required before a run can finalize successfully.
+func (p *Poller) writeImmutableReviewSidecar(ctx context.Context, owner, repo string, prNumber int, commitSHA string, rr *ReviewResult) ([]byte, error) {
+	body, err := buildReviewSidecar(owner, repo, prNumber, commitSHA, rr)
+	if err != nil {
+		return nil, err
+	}
+	if rr.ReviewRun == nil || rr.ReviewRun.JSONPath == "" {
+		return nil, fmt.Errorf("save immutable findings sidecar: review-run JSON path is required")
+	}
+	if err := p.saveImmutableReviewArtifact(ctx, rr.ReviewRun.JSONPath, "application/json", body); err != nil {
+		return nil, fmt.Errorf("save immutable findings sidecar %s: %w", rr.ReviewRun.JSONPath, err)
+	}
+	log.Printf("[REVIEWER] Saved immutable findings sidecar: %s", rr.ReviewRun.JSONPath)
+	return body, nil
+}
+
+func (p *Poller) writeCanonicalReviewSidecarBestEffort(ctx context.Context, htmlFilename string, body []byte) {
 	sidecarName := gcs.ReviewJSONFileName(htmlFilename)
 	if err := p.saveReviewSidecar(ctx, sidecarName, "application/json", body); err != nil {
-		log.Printf("[REVIEWER] WARN: save findings sidecar %s: %v", sidecarName, err)
+		log.Printf("[REVIEWER] WARN: save canonical findings alias %s: %v", sidecarName, err)
 		return
 	}
-	log.Printf("[REVIEWER] Saved findings sidecar: %s (%d findings)", sidecarName, len(pl.Findings))
+	log.Printf("[REVIEWER] Saved canonical findings alias: %s", sidecarName)
+}
+
+// writeSidecarBestEffort is retained for cache/carry-forward compatibility
+// helpers. Successful review execution uses writeImmutableReviewSidecar before
+// finalization and writes the mutable alias only after publication wins.
+func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlFilename string, rr *ReviewResult) {
+	body, err := buildReviewSidecar(owner, repo, prNumber, commitSHA, rr)
+	if err != nil {
+		log.Printf("[REVIEWER] WARN: %v", err)
+		return
+	}
+	if rr.ReviewRun != nil && rr.ReviewRun.JSONPath != "" {
+		if err := p.saveImmutableReviewArtifact(ctx, rr.ReviewRun.JSONPath, "application/json", body); err != nil {
+			log.Printf("[REVIEWER] WARN: save immutable findings sidecar %s: %v", rr.ReviewRun.JSONPath, err)
+		} else {
+			log.Printf("[REVIEWER] Saved immutable findings sidecar: %s", rr.ReviewRun.JSONPath)
+		}
+	}
+	p.writeCanonicalReviewSidecarBestEffort(ctx, htmlFilename, body)
 }
 
 // backfillPRMetadata fills in missing title/author for existing PRs by fetching from GitHub
@@ -1590,29 +2345,38 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 			log.Printf("[OUTDATED] PR %s/%s#%d (%s) has new commits (old: %s, new: %s), resetting to pending",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, statusMsg, pr.LastCommitSHA[:7], currentSHA[:7])
 
+			// Reset first, as a compare-and-swap on the head this cycle read. The
+			// snapshot in pr predates the GitHub fetch above; a review run that
+			// claimed the PR on any newer head since then already recorded it and
+			// must keep its projection, so nothing below may run for it.
+			applied, err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA, currentSHA)
+			if err != nil {
+				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s/%s#%d: %v",
+					pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+				continue
+			}
+			if !applied {
+				log.Printf("[OUTDATED] PR %s/%s#%d no longer carries %s (moved or removed since this cycle read it); skipping reset",
+					pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA[:7])
+				continue
+			}
+
 			// Delete old HTML file if it exists
-			if pr.ReviewHTMLPath != "" {
-				oldHTMLPath := filepath.Join(p.reviewDir, pr.ReviewHTMLPath)
+			if alias := localReviewAlias(pr); alias != "" {
+				oldHTMLPath := filepath.Join(p.reviewDir, alias)
 				if err := os.Remove(oldHTMLPath); err != nil && !os.IsNotExist(err) {
 					log.Printf("[OUTDATED] Warning: Failed to delete old HTML file %s: %v", oldHTMLPath, err)
 				} else if err == nil {
-					log.Printf("[OUTDATED] Deleted old HTML file: %s", pr.ReviewHTMLPath)
+					log.Printf("[OUTDATED] Deleted old canonical HTML alias: %s", alias)
 				}
 			}
 
-			// If the PR had an active Gemini or agent review, kill the process.
+			// If the PR had an active first-pass or agent review, kill the process.
 			if wasInFlight {
 				if p.killReview(pr.RepoOwner, pr.RepoName, pr.PRNumber) {
 					log.Printf("[OUTDATED] Killed active review process for %s/%s#%d",
 						pr.RepoOwner, pr.RepoName, pr.PRNumber)
 				}
-			}
-
-			// Reset PR to pending with new commit SHA and clear old review data
-			if err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, currentSHA); err != nil {
-				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s/%s#%d: %v",
-					pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
-				continue
 			}
 
 			p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
@@ -1677,7 +2441,10 @@ func (p *Poller) poll(ctx context.Context) {
 
 	// Reset any PRs stuck in "generating" for too long
 	log.Printf("[POLL] Checking for stale PRs...")
-	resetCount, err := p.db.ResetStaleGeneratingPRs(int(p.reviewProcessTimeout().Minutes()))
+	// The DB API is minute-granular; round up so a seconds-valued custom
+	// ceiling can never make recovery fire before the legitimate run budget.
+	staleTimeoutMinutes := int((p.reviewProcessTimeout() + time.Minute - 1) / time.Minute)
+	resetCount, err := p.db.ResetStaleGeneratingPRs(staleTimeoutMinutes)
 	if err != nil {
 		log.Printf("[POLL] ERROR: Failed to reset stale PRs: %v", err)
 	} else if resetCount > 0 {
@@ -1685,20 +2452,22 @@ func (p *Poller) poll(ctx context.Context) {
 		// Guard: if any actively-tracked reviews were reset (e.g. a long-running
 		// immediate review), restore them to "generating" so the goroutine's
 		// eventual DB write doesn't collide with a re-queued pending review.
-		p.reviewsMutex.Lock()
-		trackedKeys := make(map[string]bool, len(p.activeReviews))
-		for k := range p.activeReviews {
-			trackedKeys[k] = true
-		}
-		p.reviewsMutex.Unlock()
+		// Queued jobs have ownership in activeReviews but have not started an
+		// execution budget or claimed the PR projection, so they must remain
+		// pending while waiting for capacity.
+		trackedKeys := p.startedReviewKeys()
 		if len(trackedKeys) > 0 {
 			allPRsForCheck, checkErr := p.db.GetAllPRs()
 			if checkErr == nil {
 				for _, dbPR := range allPRsForCheck {
 					key := prKey(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber)
-					if trackedKeys[key] && dbPR.Status == "pending" {
+					if runID, tracked := trackedKeys[key]; tracked && dbPR.Status == "pending" {
 						log.Printf("[POLL] Restoring actively-tracked PR %s from 'pending' back to 'generating'", key)
-						_ = p.db.SetPRGenerating(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber, dbPR.LastCommitSHA, dbPR.Title, dbPR.Author, dbPR.CreatedAt, dbPR.Draft)
+						if runID != "" {
+							_ = p.db.SetPRGeneratingForReviewRun(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber, dbPR.LastCommitSHA, dbPR.Title, dbPR.Author, dbPR.CreatedAt, dbPR.Draft, runID)
+						} else {
+							_ = p.db.SetPRGenerating(dbPR.RepoOwner, dbPR.RepoName, dbPR.PRNumber, dbPR.LastCommitSHA, dbPR.Title, dbPR.Author, dbPR.CreatedAt, dbPR.Draft)
+						}
 					}
 				}
 			}
@@ -2028,6 +2797,8 @@ func (p *Poller) poll(ctx context.Context) {
 		reviewViewBatch := newViewBatch()
 		reviewPRBatch := newPRBatch()
 		updateCount := 0
+		storedAttention, snapshotOK := p.storedAttentionFlags(reviewDataMap, dbPRMap)
+		var transitions []attentionTransition
 		for _, pr := range allPRs {
 			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
 			if reviewData, exists := reviewDataMap[key]; exists {
@@ -2044,10 +2815,35 @@ func (p *Poller) poll(ctx context.Context) {
 							break
 						}
 					}
+					isAuthor := strings.EqualFold(existingPR.Author, user.GitHubUsername)
 					if userStatus != "" {
-						isAuthor := strings.EqualFold(existingPR.Author, user.GitHubUsername)
 						reviewViewBatch.EnsureView(user.ID, existingPR.ID, isAuthor)
 						reviewViewBatch.SetReviewStatus(user.ID, existingPR.ID, userStatus)
+					}
+
+					attention := attentionForUser(reviewData, user.GitHubUsername, existingPR.PRState, isAuthor)
+					if attention == nil {
+						continue
+					}
+					if !snapshotOK {
+						// Without a trustworthy snapshot only rows the status sync already touches are written.
+						if userStatus != "" {
+							reviewViewBatch.SetNeedsAttention(user.ID, existingPR.ID, *attention)
+						}
+						continue
+					}
+					stored, hasRow := storedAttention[userPRViewKey{UserID: user.ID, PRID: existingPR.ID}]
+					changed := stored != *attention
+					// A verdict alone never creates a row; an existing row is touched only when its flag flips.
+					if userStatus == "" && !(hasRow && changed) {
+						continue
+					}
+					reviewViewBatch.EnsureView(user.ID, existingPR.ID, isAuthor)
+					reviewViewBatch.SetNeedsAttention(user.ID, existingPR.ID, *attention)
+					if changed {
+						transitions = append(transitions, attentionTransition{
+							userID: user.ID, login: user.GitHubUsername, pr: pr, flagged: *attention, head: reviewData.HeadOID,
+						})
 					}
 				}
 
@@ -2073,6 +2869,8 @@ func (p *Poller) poll(ctx context.Context) {
 		}
 		if err := reviewViewBatch.Flush(p.db); err != nil {
 			log.Printf("[POLL] ERROR: Failed to batch-upsert review user views: %v", err)
+		} else {
+			p.reportAttentionTransitions(transitions)
 		}
 		if err := reviewPRBatch.Flush(p.db); err != nil {
 			log.Printf("[POLL] ERROR: Failed to batch-upsert review PR data: %v", err)
@@ -2502,7 +3300,7 @@ func (p *Poller) UpdatePRStatus(owner, repo string, prNumber int, status string)
 	return nil
 }
 
-// generateReviewsBatch runs Gemini (and optionally agent) review generation
+// generateReviewsBatch runs first-pass (and optionally agent) review generation
 // for one or more PRs. When force is true, the existing-review cache check
 // is skipped — the caller wants a fresh review even if one already exists
 // for the same commit. The auto-poll path uses force=false to avoid
@@ -2512,35 +3310,150 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 	if len(prs) == 0 {
 		return nil
 	}
+	jobs := make([]ReviewJob, 0, len(prs))
+	var dispatchErrors []error
+	snapshot, snapshotErr := p.defaultReviewSnapshot()
+	for _, pr := range prs {
+		if snapshotErr != nil {
+			configErr := fmt.Errorf("invalid deployment review defaults for %s/%s#%d: %w", pr.Owner, pr.Repo, pr.Number, snapshotErr)
+			log.Printf("[REVIEWER] ERROR: %v", configErr)
+			projected, setErr := p.db.SetPRErrorIfNoLiveReview(pr.Owner, pr.Repo, pr.Number, configErr.Error())
+			if setErr != nil {
+				dispatchErrors = append(dispatchErrors, fmt.Errorf("%w (also failed to persist PR error: %v)", configErr, setErr))
+			} else {
+				dispatchErrors = append(dispatchErrors, configErr)
+			}
+			if projected {
+				p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+			}
+			continue
+		}
+		jobs = append(jobs, ReviewJob{
+			PR: pr, RunID: newReviewRunID(), Config: snapshot,
+			TriggerSource: "poller", Force: force,
+		})
+	}
+	if err := p.generateReviewJobs(ctx, jobs); err != nil {
+		dispatchErrors = append(dispatchErrors, err)
+	}
+	return errors.Join(dispatchErrors...)
+}
+
+func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+	validationErrors := make([]error, 0)
+	validJobs := make([]ReviewJob, 0, len(jobs))
+	for _, job := range jobs {
+		if err := p.validateReviewJob(job); err != nil {
+			log.Printf("[REVIEWER] ERROR: rejecting invalid job %s for %s/%s#%d: %v", job.RunID, job.PR.Owner, job.PR.Repo, job.PR.Number, err)
+			validationErrors = append(validationErrors, err)
+			continue
+		}
+		validJobs = append(validJobs, job)
+	}
+	if len(validJobs) == 0 {
+		return errors.Join(validationErrors...)
+	}
+	jobs = validJobs
+
+	// Establish ownership before provider initialization, cache reads, or PR
+	// state writes. This closes the entire poll-vs-immediate race window, not
+	// just the portion inside each worker goroutine.
+	ownedJobs := make([]ReviewJob, 0, len(jobs))
+	jobContexts := make(map[string]context.Context, len(jobs))
+	for _, job := range jobs {
+		jobCtx, owned := p.trackOrAdoptReviewJob(ctx, job)
+		if !owned {
+			terminalCode := "pr_already_claimed"
+			cause := error(ErrReviewAlreadyTracked)
+			if ctx.Err() != nil {
+				terminalCode = "cancelled"
+				cause = context.Cause(ctx)
+				log.Printf("[REVIEWER] PR %d job %s was cancelled before worker ownership", job.PR.Number, job.RunID)
+			} else {
+				log.Printf("[REVIEWER] PR %d is tracked by another run; rejecting %s", job.PR.Number, job.RunID)
+			}
+			p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, terminalCode, "dispatch", cause)
+			continue
+		}
+		ownedJobs = append(ownedJobs, job)
+		jobContexts[job.RunID] = jobCtx
+	}
+	if len(ownedJobs) == 0 {
+		return errors.Join(validationErrors...)
+	}
+	jobs = ownedJobs
 
 	// If using mock generator (for testing), skip LLM client initialization
 	var reviewSvc *service.Service
+	var reviewSvcInitErr error
 	if p.reviewGenerator == nil {
-		// Initialize reviewer clients
-		smartLlmClient := llm.NewClient(llm.ProviderGemini, p.cfg.GeminiAPIKey, false, false)
-		fastLlmClient := llm.NewClient(llm.ProviderGemini, p.cfg.GeminiAPIKey, true, false)
+		// Initialize reviewer clients. The deployment-default first-pass client
+		// is built and key-validated up front (fail fast); per-run overrides
+		// resolve their own client later, once each job's effective config is
+		// in hand. Classification always stays on Gemini flash.
+		firstPassProvider := llm.LLMProvider(p.cfg.FirstPassProvider)
+		smartLlmClient, defaultFirstPass, smartErr := p.firstPassClientForRun(runconfig.FirstPass{})
+		if smartErr != nil {
+			reviewSvcInitErr = smartErr
+		} else {
+			fastLlmClient := llm.NewClient(llm.ProviderGemini, p.cfg.GeminiAPIKey, true, false)
 
-		// Validate API Key once
-		if err := smartLlmClient.ValidateAPIKey(); err != nil {
-			return fmt.Errorf("Gemini API key validation failed: %w", err)
+			// Validate API keys once
+			if err := smartLlmClient.ValidateAPIKey(); err != nil {
+				if firstPassProvider == llm.ProviderGemini || firstPassProvider == "" {
+					reviewSvcInitErr = fmt.Errorf("Gemini API key validation failed: %w", err)
+				} else {
+					reviewSvcInitErr = fmt.Errorf("first-pass (%s) API key validation failed: %w", p.cfg.FirstPassProvider, err)
+				}
+			} else if firstPassProvider != llm.ProviderGemini && firstPassProvider != "" {
+				if err := fastLlmClient.ValidateAPIKey(); err != nil {
+					reviewSvcInitErr = fmt.Errorf("Gemini API key validation failed: %w", err)
+				}
+			}
+			if reviewSvcInitErr == nil {
+				reviewSvc = service.NewServiceWithFirstPass(p.ghClientConcrete, smartLlmClient, fastLlmClient, defaultFirstPass)
+			}
 		}
-
-		reviewSvc = service.NewService(p.ghClientConcrete, smartLlmClient, fastLlmClient)
+	}
+	if reviewSvcInitErr != nil {
+		// Provider initialization is deployment-wide and may be transient. Keep
+		// terminal ledgers for durably accepted requests, but do not mint a new
+		// failed run for every automatic candidate on every poll cycle. In both
+		// cases, leave the PR projection alone so its bounded retry is not spent.
+		p.rejectProviderInitJobs(jobs, reviewSvcInitErr)
+		return errors.Join(append(validationErrors, reviewSvcInitErr)...)
 	}
 
-	// Concurrency limit: 5 parallel reviews
-	concurrencyLimit := 5
-	sem := make(chan struct{}, concurrencyLimit)
 	var wg sync.WaitGroup
 
 	// Process each PR concurrently
-	for _, pr := range prs {
+	for _, job := range jobs {
 		wg.Add(1)
-		sem <- struct{}{} // Acquire token
-
-		go func(pr github.PullRequest) {
+		go func(job ReviewJob) {
 			defer wg.Done()
-			defer func() { <-sem }() // Release token
+			pr := job.PR
+			defer p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
+			queuedCtx := jobContexts[job.RunID]
+			dispatchSlotReserved := false
+			if p.dispatchSlots != nil {
+				select {
+				case p.dispatchSlots <- struct{}{}:
+					dispatchSlotReserved = true
+				case <-queuedCtx.Done():
+					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+					return
+				}
+			}
+			releaseDispatchSlot := func() {
+				if dispatchSlotReserved {
+					<-p.dispatchSlots
+					dispatchSlotReserved = false
+				}
+			}
+			defer releaseDispatchSlot()
 
 			log.Printf("[REVIEWER] Processing PR: %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA[:7])
 
@@ -2548,8 +3461,8 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			// Skipped when force=true so the manual trigger always regenerates.
 			exists := false
 			var existsErr error
-			if !force {
-				exists, existsErr = p.reviewExists(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+			if !job.Force {
+				exists, existsErr = p.reviewExistsWithTimeout(queuedCtx, ReviewCacheLookupTimeout, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 			} else {
 				log.Printf("[REVIEWER] PR %d: force=true, skipping existing-review cache check", pr.Number)
 			}
@@ -2558,42 +3471,157 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				// Continue anyway - will regenerate if needed
 			} else if exists {
 				log.Printf("[REVIEWER] Review already exists for PR %d commit %s, skipping generation", pr.Number, pr.CommitSHA[:7])
-				// Update database to point to existing review, preserving importance counts
+				// Update the database from the exact per-commit sidecar. The mutable
+				// PR row may describe a different commit after a force-push.
 				filename := gcs.ReviewFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
-				// Get existing importance counts + verdict from database
-				existingPR, _ := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-				criticalCount, mediumCount, lowCount, verdict, modelFallback := 0, 0, 0, "", false
-				if existingPR != nil {
-					criticalCount = existingPR.CriticalCount
-					mediumCount = existingPR.MediumCount
-					lowCount = existingPR.LowCount
-					verdict = existingPR.ReviewVerdict
-					modelFallback = existingPR.ModelFallback
+				var cachedPayload *payload.Payload
+				sidecarCtx, sidecarCancel := context.WithTimeout(queuedCtx, ReviewCacheLookupTimeout)
+				cachedPayload, sidecarErr := p.loadReviewPayload(sidecarCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+				sidecarCancel()
+				if sidecarErr != nil {
+					log.Printf("[REVIEWER] WARNING: cached review sidecar metadata unavailable for PR %d: %v", pr.Number, sidecarErr)
 				}
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback); err != nil {
-					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
+				criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunID, reviewRunJSON := cachedProjectionMetadata(cachedPayload)
+				cacheMetadataTrusted := cachedPayload != nil
+				// Legacy HTML-only reviews have no sidecar. Preserve their DB
+				// metadata only when the row explicitly identifies this same commit;
+				// never mix a force-pushed commit's artifact with another commit's
+				// counts or run identity.
+				if cachedPayload == nil {
+					if existingPR, getErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number); getErr == nil && existingPR != nil && isSameCommit(existingPR.LastCommitSHA, pr.CommitSHA) && existingPR.ReviewHTMLPath != "" {
+						criticalCount, mediumCount, lowCount = existingPR.CriticalCount, existingPR.MediumCount, existingPR.LowCount
+						verdict, modelFallback = existingPR.ReviewVerdict, existingPR.ModelFallback
+						reviewRunID, reviewRunJSON = existingPR.ReviewRunID, existingPR.ReviewRunJSON
+						cacheMetadataTrusted = true
+					} else if getErr != nil {
+						log.Printf("[REVIEWER] WARNING: cached review DB metadata unavailable for PR %d: %v", pr.Number, getErr)
+					}
+				}
+				if cacheMetadataTrusted {
+					inFlightStaleBefore := time.Now().UTC().Add(-ReviewProjectionCrashStaleAfter)
+					if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON, inFlightStaleBefore); err != nil {
+						log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
+						p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "cache_restore_failed", "publication", err)
+					} else if projected {
+						if !p.completeQueuedReviewJobFromCache(job, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON) && job.TriggerSource != "poller" {
+							log.Printf("[REVIEWER] WARN: cached review projected but run %s was not completed", job.RunID)
+						}
+						if cachedPayload != nil {
+							confidence, confidenceErr := p.sidecarConfidence(pr, cachedPayload)
+							p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+						}
+						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+					} else {
+						log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
+						p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "review_cached", "dispatch", fmt.Errorf("review artifact already exists"))
+					}
+					return
 				} else {
-					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+					// An HTML hit with neither a readable sidecar nor exact-commit DB
+					// metadata is not evidence of a clean review. Regenerate once so a
+					// transient read failure cannot publish false zero-finding metadata.
+					log.Printf("[REVIEWER] PR %d cache metadata is untrusted; regenerating review", pr.Number)
 				}
+			}
+			releaseDispatchSlot()
+
+			agentSlotReserved := false
+			if job.Config.Effective.Agent.Enabled && p.agentSlots != nil {
+				// Reserve scarce agent capacity while the job still has its
+				// un-deadlined queued context. Neither the configured execution
+				// budget nor the worker lease burns down waiting for this slot.
+				select {
+				case p.agentSlots <- struct{}{}:
+					agentSlotReserved = true
+					defer func() { <-p.agentSlots }()
+				case <-queuedCtx.Done():
+					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+					return
+				}
+			}
+			firstPassSlotReserved := false
+			if p.firstPassSlots != nil {
+				// Acquire only after scarce agent capacity so an agent job can never
+				// occupy a first-pass slot while waiting for the longer-lived slot.
+				select {
+				case p.firstPassSlots <- struct{}{}:
+					firstPassSlotReserved = true
+				case <-queuedCtx.Done():
+					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+					return
+				}
+			}
+			releaseFirstPassSlot := func() {
+				if firstPassSlotReserved {
+					<-p.firstPassSlots
+					firstPassSlotReserved = false
+				}
+			}
+			defer releaseFirstPassSlot()
+			prCtx, queueWait, started := p.startTrackedReviewJob(job)
+			if !started {
+				log.Printf("[REVIEWER] PR %d lost queued ownership before execution; rejecting %s", pr.Number, job.RunID)
+				if queuedCtx.Err() != nil {
+					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+				} else {
+					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "pr_already_claimed", "dispatch", ErrReviewAlreadyTracked)
+				}
+				return
+			}
+
+			// Persist automatic candidates before claiming the mutable PR
+			// projection. The partial unique index on queued/running targets is
+			// the cross-instance admission fence. A short admission lease bounds
+			// recovery if this process dies before beginReviewExecution replaces it
+			// with the full worker lease. Manual jobs already have their row and
+			// dispatcher lease from ProcessReviewJob, so this is idempotent for them.
+			if err := p.admitReviewRunForExecution(job); err != nil {
+				if errors.Is(err, db.ErrReviewRunActiveConflict) {
+					log.Printf("[REVIEWER] PR %d already has a live run on another instance; skipping %s", pr.Number, job.RunID)
+					return
+				}
+				log.Printf("[REVIEWER] ERROR: Could not admit review run %s: %v", job.RunID, err)
+				p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "admission_failed", "dispatch", err)
 				return
 			}
 
 			// Set status to generating
-			if err := p.db.SetPRGenerating(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft); err != nil {
+			if err := p.db.SetPRGeneratingForReviewRun(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, job.RunID); err != nil {
 				log.Printf("[BATCH] ERROR: Failed to set generating status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+				p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "pr_state_failed", "dispatch", err)
 				return
 			}
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 
-			// Track this review (using dummy PID since we're running in-process).
-			// The returned ctx is what killReview cancels — use it for the rest
-			// of the review work so cancellation actually aborts the LLM call /
-			// agent subprocess rather than only flipping the tracking map.
-			prCtx := p.trackReview(ctx, pr.Owner, pr.Repo, pr.Number, 0)
-
-			execStart := time.Now()
-
-			nRequests, _ := p.db.GetReviewNRequests()
+			execution, beginErr := p.beginReviewExecution(job)
+			if beginErr != nil {
+				log.Printf("[REVIEWER] ERROR: Could not begin review run %s: %v", job.RunID, beginErr)
+				rejectedQueued := p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "claim_failed", "dispatch", beginErr)
+				projectBeginError := rejectedQueued || !errors.Is(beginErr, ErrReviewRunNotClaimed)
+				if !projectBeginError {
+					// A duplicate worker can lose the claim while another instance is
+					// legitimately executing this run ID. Preserve that projection. A
+					// terminal/nonexistent run has no live owner, so release its fenced
+					// generating projection immediately instead of waiting for stale reset.
+					run, getErr := p.db.GetReviewRun(job.RunID)
+					if getErr != nil {
+						log.Printf("[REVIEWER] WARNING: could not inspect unclaimed run %s: %v", job.RunID, getErr)
+					} else {
+						projectBeginError = run == nil || run.Status != db.ReviewRunStatusRunning
+					}
+				}
+				if projectBeginError {
+					if _, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, beginErr.Error()); setErr != nil {
+						log.Printf("[REVIEWER] WARNING: failed to persist begin error for PR %d: %v", pr.Number, setErr)
+					}
+					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+				}
+				return
+			}
+			execution.AgentSlotReserved = agentSlotReserved
+			execution.QueueWait = queueWait
+			execStart := execution.AttemptStartedAt
+			nRequests := job.Config.Effective.FirstPass.Samples
 
 			// Generate review using mock interface (testing) or real service
 			var err error
@@ -2601,6 +3629,8 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			if p.reviewGenerator != nil {
 				// Use mock generator for testing
 				genCfg := ReviewGeneratorConfig{
+					RunID:        job.RunID,
+					Config:       job.Config,
 					Token:        "",
 					Owner:        pr.Owner,
 					RepoName:     pr.Repo,
@@ -2612,24 +3642,34 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 					NRequests:    nRequests,
 				}
 				reviewResult, err = p.reviewGenerator.GenerateReview(prCtx, genCfg)
+				releaseFirstPassSlot()
+			} else if firstPassClient, firstPassInfo, firstPassErr := p.firstPassClientForRun(job.Config.Effective.FirstPass); firstPassErr != nil {
+				releaseFirstPassSlot()
+				err = fmt.Errorf("initialize first-pass provider for run %s: %w", job.RunID, firstPassErr)
 			} else {
 				// Use real reviewer service
 				reviewCfg := service.PerformReviewConfig{
-					Token:        p.cfg.GitHubToken,
-					Owner:        pr.Owner,
-					RepoName:     pr.Repo,
-					PRNumber:     pr.Number,
-					WithComments: false,
-					Verbose:      false,
-					Fast:         false,
-					NRequests:    nRequests,
+					Token:           p.cfg.GitHubToken,
+					Owner:           pr.Owner,
+					RepoName:        pr.Repo,
+					PRNumber:        pr.Number,
+					WithComments:    false,
+					Verbose:         false,
+					Fast:            false,
+					NRequests:       nRequests,
+					AttemptObserver: p.providerAttemptObserver(execution),
+					FirstPassClient: firstPassClient,
+					FirstPass:       &firstPassInfo,
 				}
 
 				result, svcErr := reviewSvc.PerformReviewWithContext(prCtx, reviewCfg)
+				// Provider capacity ends here. Non-agent publication may overlap because
+				// it holds no clone/CLI memory; agent jobs retain their separate slot.
+				releaseFirstPassSlot()
 				if svcErr != nil {
 					err = svcErr
-				} else if p.cfg.AgenticReviews {
-					reviewResult, err = p.runAgentStage(prCtx, pr, result)
+				} else if job.Config.Effective.Agent.Enabled {
+					reviewResult, err = p.runAgentStage(prCtx, execution, result)
 				} else {
 					// Legacy HTML report path.
 					htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
@@ -2653,80 +3693,170 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			if err != nil {
 				log.Printf("[REVIEWER] ERROR: Review failed for PR %d after %v: %v", pr.Number, execDuration, err)
 
-				// Skip the error write if the review was cancelled (killReview
-				// fired because of a new commit or external trigger). The caller
-				// has already reset the row to a sane state and we'd just clobber
-				// it with status=error.
+				// External cancellation leaves the PR projection to its caller;
+				// an organic execution-budget timeout is projected as an error by
+				// finishInterruptedReviewExecution so retries remain bounded.
 				if prCtx.Err() != nil {
-					log.Printf("[REVIEWER] PR %d review was cancelled (ctx=%v); skipping error write", pr.Number, prCtx.Err())
-					p.untrackReview(pr.Owner, pr.Repo, pr.Number)
+					log.Printf("[REVIEWER] PR %d review was interrupted (ctx=%v)", pr.Number, prCtx.Err())
+					p.finishInterruptedReviewExecution(execution, prCtx, "execution", err)
 					return
 				}
 
-				// Check if outdated
-				currentPR, dbErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-				if dbErr == nil && currentPR != nil && currentPR.Status == "pending" && currentPR.LastCommitSHA != pr.CommitSHA {
-					log.Printf("[REVIEWER] Review for PR %d was cancelled because it became outdated.", pr.Number)
+				if errors.Is(err, errReviewRunSuperseded) {
+					p.finishSupersededReviewExecution(execution, err)
 				} else {
-					if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
-						log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+					// Check if outdated
+					currentPR, dbErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+					if dbErr == nil && currentPR != nil && currentPR.Status == "pending" && currentPR.LastCommitSHA != pr.CommitSHA {
+						log.Printf("[REVIEWER] Review for PR %d was cancelled because it became outdated.", pr.Number)
+						status := db.ReviewRunStatusCancelled
+						terminalCode := "commit_outdated"
+						failureStage := "publication"
+						errorSummary := "PR head changed while the review was running"
+						p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
+					} else {
+						status := db.ReviewRunStatusFailed
+						terminalCode := "review_failed"
+						failureStage := "generation"
+						errorSummary := err.Error()
+						if p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary}) {
+							projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, err.Error())
+							if setErr != nil {
+								log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+							} else if !projected {
+								log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping generation error", job.RunID)
+							}
+							if projected {
+								p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+							}
+						} else {
+							log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping generation error projection", job.RunID)
+						}
 					}
-					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				}
-				p.untrackReview(pr.Owner, pr.Repo, pr.Number)
 				return
 			}
 
 			log.Printf("[REVIEWER] Review completed successfully for PR %d in %v", pr.Number, execDuration)
+			if reviewResult.ReviewRun == nil {
+				reviewResult.ReviewRun = &payload.ReviewRunInfo{}
+			}
+			if observedModels := execution.providerModelUses(); len(observedModels) > 0 {
+				reviewResult.ReviewRun.Models = observedModels
+			} else if p.reviewGenerator == nil && len(reviewResult.ReviewRun.Models) == 0 {
+				reviewResult.ReviewRun.Models = p.pipelineModelUses(job.Config.Effective.FirstPass)
+			}
+			if !p.renewReviewExecutionForPublication(execution) {
+				log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact publication", job.RunID)
+				return
+			}
+			models := append([]payload.ModelUse(nil), reviewResult.ReviewRun.Models...)
+			artifactInfo := p.reviewRunArtifactInfo(execution)
+			artifactInfo.Models = models
+			reviewResult.ReviewRun = artifactInfo
+			log.Printf("[REVIEWER] PR %d review run: %s", pr.Number, job.RunID)
 
-			// Save review (to GCS if configured, otherwise locally)
-			filename, err := p.saveReview(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent)
-			if err != nil {
-				log.Printf("[REVIEWER] ERROR: Failed to save review for PR %d: %v", pr.Number, err)
-				if setErr := p.db.SetPRError(pr.Owner, pr.Repo, pr.Number, err.Error()); setErr != nil {
-					log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+			failExecution := func(cause error, terminalCode, failureStage string) {
+				log.Printf("[REVIEWER] ERROR: Review run %s failed during %s: %v", job.RunID, failureStage, cause)
+				if prCtx.Err() != nil {
+					log.Printf("[REVIEWER] PR %d %s was interrupted (ctx=%v)", pr.Number, failureStage, prCtx.Err())
+					p.finishInterruptedReviewExecution(execution, prCtx, failureStage, cause)
+				} else {
+					status := db.ReviewRunStatusFailed
+					errorSummary := cause.Error()
+					finished := p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
+					if finished {
+						projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, cause.Error())
+						if setErr != nil {
+							log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+						} else if !projected {
+							log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping %s error", job.RunID, failureStage)
+						}
+						if projected {
+							p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+						}
+					} else {
+						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping %s error projection", job.RunID, failureStage)
+					}
 				}
-				p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-				p.untrackReview(pr.Owner, pr.Repo, pr.Number)
+			}
+
+			// Persist only run-scoped artifacts before the ownership transaction.
+			// Mutable compatibility aliases are written after publication wins, so
+			// a stale or superseded worker can never overwrite the visible result.
+			artifactSaveStartedAt := time.Now().UTC()
+			if err := p.saveImmutableReviewArtifact(prCtx, reviewResult.ReviewRun.HTMLPath, "text/html; charset=utf-8", reviewResult.HTMLContent); err != nil {
+				failExecution(fmt.Errorf("save immutable review %s: %w", job.RunID, err), "artifact_save_failed", "artifact_save")
 				return
 			}
 
-			log.Printf("[REVIEWER] Saved review: %s", filename)
+			log.Printf("[REVIEWER] Saved immutable review: %s", reviewResult.ReviewRun.HTMLPath)
+			// PostgreSQL timestamps have microsecond precision. Freeze at that
+			// boundary so sidecar JSON, PR JSON, and the DB round-trip exactly.
+			completedAt := time.Now().UTC().Truncate(time.Microsecond)
+			runInfo := p.reviewRunInfo(execution, completedAt)
+			runInfo.Models = models
+			runInfo.LinkedTickets = reviewResult.LinkedTickets
+			runInfo.StageTimings = execution.stageTimings(artifactSaveStartedAt, completedAt)
+			reviewResult.ReviewRun = runInfo
 
-			// Best-effort: write the structured findings sidecar so /api/review
-			// can serve a parseable payload without scraping HTML. Failure here
-			// is logged but does NOT abort the review — HTML remains the source
-			// of truth and the API endpoint falls back gracefully.
-			if len(reviewResult.Comments) > 0 || reviewResult.Diff != "" {
-				p.writeSidecarBestEffort(ctx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult)
+			sidecarBody, sidecarErr := p.writeImmutableReviewSidecar(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult)
+			if sidecarErr != nil {
+				failExecution(sidecarErr, "artifact_save_failed", "artifact_save")
+				return
 			}
 
-			// Verify commit SHA matches (hasn't changed during generation)
-			currentPR, err := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-			if err != nil {
-				log.Printf("[REVIEWER] ERROR: Failed to fetch PR from DB: %v", err)
-			} else if currentPR != nil && currentPR.LastCommitSHA != pr.CommitSHA {
-				log.Printf("[REVIEWER] STALE REVIEW: PR %d commit changed during generation, but keeping in GCS for history", pr.Number)
-				// Don't update DB - the next poll will generate a new review for the new commit
-			} else {
-				// Parse the overall verdict from the SUMMARY entry; ""
-				// (unknown) when the mock generator supplies no comments or
-				// the SUMMARY has no recognizable verdict phrasing.
-				verdict := service.VerdictFromComments(reviewResult.Comments)
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback); err != nil {
-					log.Printf("[REVIEWER] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
-				} else {
-					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-					log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict)
+			reviewRunJSON, marshalErr := json.Marshal(reviewResult.ReviewRun)
+			if marshalErr != nil {
+				failExecution(marshalErr, "artifact_metadata_failed", "artifact_save")
+				return
+			}
+			outcome, finalizeErr := p.finalizeCompletedReviewExecution(execution, reviewResult, string(reviewRunJSON))
+			if finalizeErr != nil {
+				failExecution(finalizeErr, "finalization_failed", "publication")
+				return
+			}
+			if !outcome.Finalized {
+				log.Printf("[REVIEWER] STALE WORKER: run %s lost its lease before atomic finalization; skipping latest-review update", job.RunID)
+				return
+			}
+			if !outcome.Published {
+				log.Printf("[REVIEWER] SUPERSEDED: run %s completed without replacing the newer PR projection; keeping immutable artifact only", job.RunID)
+				// A successor on a different commit cannot collide with this
+				// commit-scoped compatibility alias, so preserve sha-only history.
+				currentPR, currentErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+				if currentErr != nil {
+					log.Printf("[REVIEWER] WARN: inspect superseding projection for run %s: %v", job.RunID, currentErr)
+				} else if currentPR != nil && !isSameCommit(currentPR.LastCommitSHA, pr.CommitSHA) {
+					_, aliasErr := p.saveCanonicalReviewAliasesWithRetry(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent, sidecarBody)
+					if aliasErr != nil {
+						log.Printf("[REVIEWER] WARN: could not preserve superseded commit alias for run %s: %v", job.RunID, aliasErr)
+					}
 				}
+				return
 			}
-
-			p.untrackReview(pr.Owner, pr.Repo, pr.Number)
-		}(pr)
+			_, aliasErr := p.saveCanonicalReviewAliasesWithRetry(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent, sidecarBody)
+			if aliasErr != nil {
+				log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical aliases: %v", job.RunID, aliasErr)
+			}
+			var published *publisher.Report
+			if !job.SkipPublish {
+				published = p.publishGitHubReview(prCtx, pr, sidecarBody)
+			}
+			confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
+			p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+			confidenceField := ""
+			if confidenceErr == nil {
+				confidenceField = fmt.Sprintf(", confidence=%d", confidence)
+			}
+			verdict := service.VerdictFromComments(reviewResult.Comments)
+			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q%s)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, confidenceField)
+		}(job)
 	}
 
 	wg.Wait()
-	return nil
+	return errors.Join(validationErrors...)
 }
 
 // shouldReview determines if a PR should be processed for review generation
@@ -2745,16 +3875,9 @@ func shouldReview(pr github.PullRequest, dbPR *db.PR, isTracked bool, autoReview
 	}
 
 	// Condition 2: Auto Candidate
-	// The PR is 'pending' AND auto-review is globally enabled.
-	isAutoCandidate := dbPR.Status == "pending" && autoReviewEnabled
-
-	if isAutoCandidate {
-		// Additional check: Don't auto-generate if already completed for this commit
-		if dbPR.LastCommitSHA == pr.CommitSHA && dbPR.Status == "completed" {
-			return false
-		}
-		return true
-	}
-
-	return false
+	// The PR is 'pending', auto-review is globally enabled, and no local job
+	// already owns it. Queued jobs deliberately remain pending until capacity
+	// is granted, so ignoring tracking here would mint one rejected ledger row
+	// for every poll cycle while they wait.
+	return dbPR.Status == "pending" && autoReviewEnabled && !isTracked
 }

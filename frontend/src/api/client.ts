@@ -18,6 +18,17 @@ function handleUnauthorized(response: Response): void {
   }
 }
 
+// Go handlers answer with one short line; anything else (a proxy's HTML
+// error page) is not worth showing.
+const MAX_ERROR_BODY = 500;
+
+async function errorFromResponse(response: Response): Promise<APIError> {
+  const body = (await response.text().catch(() => '')).trim();
+  const readable = body !== '' && body.length <= MAX_ERROR_BODY && !body.startsWith('<');
+  const fallback = `API error: ${response.statusText || response.status}`;
+  return new APIError(readable ? body : fallback, response.status, response.statusText);
+}
+
 export async function apiGet<T>(endpoint: string): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     headers: {
@@ -30,11 +41,7 @@ export async function apiGet<T>(endpoint: string): Promise<T> {
   handleUnauthorized(response);
 
   if (!response.ok) {
-    throw new APIError(
-      `API error: ${response.statusText}`,
-      response.status,
-      response.statusText
-    );
+    throw await errorFromResponse(response);
   }
 
   return response.json();
@@ -52,11 +59,7 @@ export async function apiPost<T>(endpoint: string, body: unknown): Promise<T> {
   handleUnauthorized(response);
 
   if (!response.ok) {
-    throw new APIError(
-      `API error: ${response.statusText}`,
-      response.status,
-      response.statusText
-    );
+    throw await errorFromResponse(response);
   }
 
   return response.json();
@@ -74,11 +77,7 @@ export async function apiDelete<T>(endpoint: string, body: unknown): Promise<T> 
   handleUnauthorized(response);
 
   if (!response.ok) {
-    throw new APIError(
-      `API error: ${response.statusText}`,
-      response.status,
-      response.statusText
-    );
+    throw await errorFromResponse(response);
   }
 
   return response.json();

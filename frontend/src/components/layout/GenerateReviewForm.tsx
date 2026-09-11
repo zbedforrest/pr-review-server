@@ -20,6 +20,7 @@ const STATUS_RESET_MS = 6000;
  */
 export function GenerateReviewForm() {
   const [value, setValue] = useState('');
+  const [publish, setPublish] = useState(true);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { track } = useTelemetry();
@@ -43,10 +44,10 @@ export function GenerateReviewForm() {
       showStatus({ kind: 'error', message: 'Not a PR URL — expected github.com/owner/repo/pull/N' });
       return;
     }
-    track('generate_review_by_url', { pr_owner: ref.owner, pr_repo: ref.repo, pr_number: ref.number });
+    track('generate_review_by_url', { pr_owner: ref.owner, pr_repo: ref.repo, pr_number: ref.number, publish });
     showStatus({ kind: 'submitting' });
     try {
-      await generateReview(ref);
+      await generateReview({ ...ref, publish });
       setValue('');
       showStatus({ kind: 'ok', message: `Review started for ${ref.owner}/${ref.repo}#${ref.number}` });
     } catch (err) {
@@ -72,6 +73,15 @@ export function GenerateReviewForm() {
         disabled={status.kind === 'submitting'}
         spellCheck={false}
       />
+      <label className="generate-review__publish">
+        <input
+          type="checkbox"
+          checked={publish}
+          onChange={(e) => setPublish(e.target.checked)}
+          disabled={status.kind === 'submitting'}
+        />
+        Post to PR as the Prism bot
+      </label>
       <button
         type="submit"
         className="app-header__action-btn"

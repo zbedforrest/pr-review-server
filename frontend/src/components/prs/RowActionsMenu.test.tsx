@@ -45,6 +45,7 @@ const renderMenu = (overrides: Partial<React.ComponentProps<typeof RowActionsMen
     reviewPending: false,
     hiddenPending: false,
     deletePending: false,
+    publishAllowed: true,
     ...overrides,
   };
   render(<RowActionsMenu {...props} />);
@@ -52,6 +53,9 @@ const renderMenu = (overrides: Partial<React.ComponentProps<typeof RowActionsMen
 };
 
 const openMenu = () => fireEvent.click(screen.getByRole('button', { name: /actions/i }));
+const postItem = () => screen.getByRole('menuitem', { name: /generate and post pr comment/i }) as HTMLButtonElement;
+const dashboardItem = () =>
+  screen.getByRole('menuitem', { name: /generate review HTML only/i }) as HTMLButtonElement;
 
 describe('RowActionsMenu', () => {
   beforeEach(() => {
@@ -64,29 +68,50 @@ describe('RowActionsMenu', () => {
     expect(screen.queryByRole('menu')).toBeNull();
     openMenu();
     expect(screen.queryByRole('menu')).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: /generate review/i })).toBeTruthy();
+    expect(postItem()).toBeTruthy();
+    expect(dashboardItem()).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: /delete/i })).toBeTruthy();
   });
 
-  it('labels the review item "Generate" when no review exists', () => {
+  it('labels the review items "Generate" when no review exists', () => {
     renderMenu({ pr: makePR() });
     openMenu();
-    expect(screen.getByRole('menuitem', { name: /generate review/i })).toBeTruthy();
-    expect(screen.queryByRole('menuitem', { name: /regenerate/i })).toBeNull();
+    expect(postItem().textContent).toBe('🔄 Generate and post PR comment');
+    expect(dashboardItem().textContent).toBe('🔄 Generate review HTML only');
   });
 
-  it('labels the review item "Regenerate" once a review exists', () => {
+  it('labels the review items "Regenerate" once a review exists', () => {
     renderMenu({ pr: makePR({ review_url: '/reviews/x.html', status: 'completed' }) });
     openMenu();
-    expect(screen.getByRole('menuitem', { name: /regenerate review/i })).toBeTruthy();
+    expect(postItem().textContent).toBe('🔄 Regenerate and post PR comment');
+    expect(dashboardItem().textContent).toBe('🔄 Regenerate review HTML only');
   });
 
-  it('calls onTriggerReview and closes the menu when Review is clicked', () => {
+  it('calls onTriggerReview(true) and closes the menu from the post item', () => {
     const { onTriggerReview } = renderMenu();
     openMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: /generate review/i }));
+    fireEvent.click(postItem());
     expect(onTriggerReview).toHaveBeenCalledTimes(1);
+    expect(onTriggerReview).toHaveBeenCalledWith(true);
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('calls onTriggerReview(false) and closes the menu from the dashboard-only item', () => {
+    const { onTriggerReview } = renderMenu();
+    openMenu();
+    fireEvent.click(dashboardItem());
+    expect(onTriggerReview).toHaveBeenCalledWith(false);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('disables only the post item, with the pilot title, when the author is not in the pilot', () => {
+    const { onTriggerReview } = renderMenu({ publishAllowed: false });
+    openMenu();
+    expect(postItem().disabled).toBe(true);
+    expect(postItem().getAttribute('title')).toBe('Author is not in the comment pilot');
+    expect(dashboardItem().disabled).toBe(false);
+    fireEvent.click(postItem());
+    expect(onTriggerReview).not.toHaveBeenCalled();
   });
 
   it('calls onDelete when Delete is clicked', () => {
@@ -96,11 +121,18 @@ describe('RowActionsMenu', () => {
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
 
-  it('disables the review item and shows "Reviewing…" while a review is generating', () => {
+  it('disables both review items while a review is generating', () => {
     renderMenu({ pr: makePR({ status: 'generating' }) });
     openMenu();
-    const item = screen.getByRole('menuitem', { name: /reviewing/i }) as HTMLButtonElement;
-    expect(item.disabled).toBe(true);
+    expect(postItem().disabled).toBe(true);
+    expect(dashboardItem().disabled).toBe(true);
+  });
+
+  it('disables both review items while the trigger is pending', () => {
+    renderMenu({ reviewPending: true });
+    openMenu();
+    expect(postItem().disabled).toBe(true);
+    expect(dashboardItem().disabled).toBe(true);
   });
 
   it('never colors the kebab trigger by review status', () => {
@@ -113,8 +145,8 @@ describe('RowActionsMenu', () => {
   it('treats agent_reviewing as in-flight too', () => {
     renderMenu({ pr: makePR({ status: 'agent_reviewing' }) });
     openMenu();
-    const item = screen.getByRole('menuitem', { name: /reviewing/i }) as HTMLButtonElement;
-    expect(item.disabled).toBe(true);
+    expect(postItem().disabled).toBe(true);
+    expect(dashboardItem().disabled).toBe(true);
   });
 
   it('shows a Hide item for a visible PR', () => {

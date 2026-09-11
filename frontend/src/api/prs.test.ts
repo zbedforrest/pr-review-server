@@ -28,4 +28,43 @@ describe('generateReview', () => {
       number: 7,
     });
   });
+
+  it('omits the publish key entirely when it is undefined', async () => {
+    apiPostMock.mockResolvedValue({ status: 'success' });
+    await triggerReview({ owner: 'acme', repo: 'example', number: 7, publish: undefined });
+    await generateReview({ owner: 'acme', repo: 'example', number: 7, publish: undefined });
+    for (const [, body] of apiPostMock.mock.calls) {
+      expect(Object.keys(body as object)).not.toContain('publish');
+    }
+  });
+
+  it('forwards publish=false to both endpoints', async () => {
+    apiPostMock.mockResolvedValue({ status: 'success' });
+    await triggerReview({ owner: 'acme', repo: 'example', number: 7, publish: false });
+    expect(apiPostMock).toHaveBeenCalledWith('/api/prs/trigger-review', {
+      owner: 'acme',
+      repo: 'example',
+      number: 7,
+      publish: false,
+    });
+    await generateReview({ owner: 'acme', repo: 'example', number: 7, publish: false });
+    expect(apiPostMock).toHaveBeenCalledWith('/api/prs/generate-review', {
+      owner: 'acme',
+      repo: 'example',
+      number: 7,
+      source: 'form',
+      publish: false,
+    });
+  });
+
+  it('forwards publish=true explicitly when requested', async () => {
+    apiPostMock.mockResolvedValue({ status: 'success' });
+    await triggerReview({ owner: 'acme', repo: 'example', number: 7, publish: true });
+    expect(apiPostMock).toHaveBeenCalledWith('/api/prs/trigger-review', {
+      owner: 'acme',
+      repo: 'example',
+      number: 7,
+      publish: true,
+    });
+  });
 });

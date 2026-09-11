@@ -4,13 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/payload"
 )
+
+func TestReviewRunIDFromTimeMatchesAPIContract(t *testing.T) {
+	got := reviewRunIDFromTime(time.Unix(1, 2))
+	if len(got) != 36 || !strings.HasPrefix(got, "run-") {
+		t.Fatalf("reviewRunIDFromTime() = %q; want run- plus 32 hex characters", got)
+	}
+	for _, r := range strings.TrimPrefix(got, "run-") {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			t.Fatalf("reviewRunIDFromTime() = %q; contains non-hex character %q", got, r)
+		}
+	}
+}
 
 func TestShouldReview(t *testing.T) {
 	now := time.Now()
@@ -272,6 +288,59 @@ func TestCleanupClosedPRs_KeepsManuallyRequestedClosedPRs(t *testing.T) {
 	}
 }
 
+func TestCleanupClosedPRs_KeepsClosedPRWithActiveReview(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.PRs["Owner/Repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "Owner", RepoName: "Repo", PRNumber: 1, Status: "generating",
+	}
+	mockDB.ReviewRuns["run-active"] = &db.ReviewRun{
+		RunID: "run-active", RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: db.ReviewRunStatusRunning, AcceptedAt: time.Now().UTC(),
+	}
+	mockGH.IsPROpenResults["Owner/Repo/1"] = struct {
+		IsOpen bool
+		Err    error
+	}{false, nil}
+
+	poller := newTestPoller(mockGH, mockDB)
+	removed, err := poller.cleanupClosedPRs(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupClosedPRs returned error: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("expected no removal, got %d", removed)
+	}
+	if len(mockDB.DeletePRCalls) != 0 {
+		t.Fatalf("active review PR was deleted: %+v", mockDB.DeletePRCalls)
+	}
+}
+
+func TestCleanupClosedPRs_RemovesClosedPRWithOnlyTerminalReview(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1, Status: "completed",
+	}
+	mockDB.ReviewRuns["run-terminal"] = &db.ReviewRun{
+		RunID: "run-terminal", RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: db.ReviewRunStatusCompleted, AcceptedAt: time.Now().UTC(),
+	}
+	mockGH.IsPROpenResults["owner/repo/1"] = struct {
+		IsOpen bool
+		Err    error
+	}{false, nil}
+
+	poller := newTestPoller(mockGH, mockDB)
+	removed, err := poller.cleanupClosedPRs(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupClosedPRs returned error: %v", err)
+	}
+	if removed != 1 || len(mockDB.DeletePRCalls) != 1 {
+		t.Fatalf("terminal review unexpectedly retained closed PR: removed=%d deletes=%+v", removed, mockDB.DeletePRCalls)
+	}
+}
+
 func TestCleanupAndDetectOutdated_PersistsStateOfRetainedPR(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()
@@ -300,6 +369,37 @@ func TestCleanupAndDetectOutdated_PersistsStateOfRetainedPR(t *testing.T) {
 	}
 	if pr.PRState != "merged" {
 		t.Errorf("expected retained PR state to be persisted as merged, got %q", pr.PRState)
+	}
+}
+
+func TestCleanupAndDetectOutdated_KeepsMergedPRWithActiveReview(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.PRs["Owner/Repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "Owner", RepoName: "Repo", PRNumber: 1,
+		Status: "generating", LastCommitSHA: "abc", PRState: "open",
+	}
+	mockDB.ReviewRuns["run-active"] = &db.ReviewRun{
+		RunID: "run-active", RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: db.ReviewRunStatusQueued, AcceptedAt: time.Now().UTC(),
+	}
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"Owner/Repo/1": {Owner: "Owner", Repo: "Repo", Number: 1, State: "MERGED", HeadRefOid: "abc"},
+	}
+
+	poller := newTestPoller(mockGH, mockDB)
+	removed, _, err := poller.cleanupAndDetectOutdated(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupAndDetectOutdated returned error: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("expected no removal, got %d", removed)
+	}
+	if len(mockDB.DeletePRCalls) != 0 {
+		t.Fatalf("active review PR was deleted: %+v", mockDB.DeletePRCalls)
+	}
+	if got := mockDB.PRs["Owner/Repo/1"].PRState; got != "merged" {
+		t.Fatalf("expected retained PR state to be persisted as merged, got %q", got)
 	}
 }
 
@@ -543,16 +643,18 @@ func TestGenerateReviewsBatch_SkipsExistingReviews(t *testing.T) {
 	mockStorage := NewMockReviewStorage()
 	mockGenerator := NewMockReviewGenerator()
 
-	// Add PR to database
+	// Add a completed legacy PR projection whose exact-commit HTML artifact is
+	// still present but predates sidecar metadata.
 	mockDB.PRs["owner/repo/1"] = &db.PR{
-		RepoOwner:     "owner",
-		RepoName:      "repo",
-		PRNumber:      1,
-		LastCommitSHA: "abc123def456789012345678901234567890abcd",
-		Status:        "pending",
-		CriticalCount: 5,
-		MediumCount:   10,
-		LowCount:      15,
+		RepoOwner:      "owner",
+		RepoName:       "repo",
+		PRNumber:       1,
+		LastCommitSHA:  "abc123def456789012345678901234567890abcd",
+		Status:         "completed",
+		ReviewHTMLPath: "review-owner-repo-1-abc123d.html",
+		CriticalCount:  5,
+		MediumCount:    10,
+		LowCount:       15,
 	}
 
 	// Mark review as already existing
@@ -1110,7 +1212,11 @@ func TestSaveReview_UsesStorageInterface(t *testing.T) {
 	ctx := context.Background()
 
 	htmlContent := []byte("<html><body>Review content</body></html>")
-	filename, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123def456", htmlContent)
+	run := &payload.ReviewRunInfo{
+		RunID:    "run-0123456789abcdef0123456789abcdef",
+		HTMLPath: "runs/owner/repo/1/abc123d/run-0123456789abcdef0123456789abcdef.html",
+	}
+	filename, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123def456", run, htmlContent)
 
 	if err != nil {
 		t.Fatalf("saveReview returned error: %v", err)
@@ -1143,12 +1249,44 @@ func TestSaveReview_PropagatesError(t *testing.T) {
 	poller := newTestPollerWithStorage(mockGH, mockDB, mockStorage)
 	ctx := context.Background()
 
-	_, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123", []byte("content"))
+	run := &payload.ReviewRunInfo{
+		RunID:    "run-0123456789abcdef0123456789abcdef",
+		HTMLPath: "runs/owner/repo/1/abc123/run-0123456789abcdef0123456789abcdef.html",
+	}
+	_, err := poller.saveReview(ctx, "owner", "repo", 1, "abc123", run, []byte("content"))
 	if err == nil {
 		t.Error("expected error to be propagated")
 	}
 	if err.Error() != "save error" {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSaveReview_LocalWritesImmutableRunAndLatestAlias(t *testing.T) {
+	reviewDir := t.TempDir()
+	poller := &Poller{reviewDir: reviewDir}
+	const (
+		sha   = "abc123def456"
+		runID = "run-0123456789abcdef0123456789abcdef"
+	)
+	run := &payload.ReviewRunInfo{
+		RunID:    runID,
+		HTMLPath: gcs.ReviewRunFileName("owner", "repo", 1, sha, runID),
+	}
+	content := []byte("<html>immutable run</html>")
+
+	latest, err := poller.saveReview(context.Background(), "owner", "repo", 1, sha, run, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{latest, run.HTMLPath} {
+		got, err := os.ReadFile(filepath.Join(reviewDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(got) != string(content) {
+			t.Errorf("%s content = %q, want %q", name, got, content)
+		}
 	}
 }
 
@@ -3403,7 +3541,7 @@ func TestProcessReviewImmediate_StartsReviewWithoutPoll(t *testing.T) {
 	ctx := context.Background()
 
 	// Call ProcessReviewImmediate
-	poller.ProcessReviewImmediate(ctx, "owner", "repo", 1, "abc123def456789012345678901234567890abcd", "Test PR", "author", nil, false, false)
+	poller.ProcessReviewImmediate(ctx, "owner", "repo", 1, "abc123def456789012345678901234567890abcd", "Test PR", "author", nil, false, false, true)
 
 	// PR should be tracked immediately (synchronous)
 	if !poller.IsReviewTracked("owner", "repo", 1) {
@@ -3559,6 +3697,15 @@ func TestReviewProcessTimeout_ExceedsAgentBudget(t *testing.T) {
 	}
 	if got <= 6*time.Minute {
 		t.Errorf("timeout %v must exceed the agent wall-clock budget", got)
+	}
+
+	// Per-review overrides may exceed the active default. Recovery and monitor
+	// windows must honor the operator ceiling so they never reset healthy work.
+	p.cfg.ReviewMaxWallClockSec = 900
+	got = p.reviewProcessTimeout()
+	want = ReviewPipelineMargin + 15*time.Minute
+	if got != want {
+		t.Errorf("with 900s review ceiling: got %v, want %v", got, want)
 	}
 }
 

@@ -1,0 +1,258 @@
+package db
+
+import (
+	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+// RecordPublishedReply stores an author reply once; a second call for the
+// same author comment is a no-op and reports created=false.
+func (g *GormDB) RecordPublishedReply(r *PublishedReply) (bool, error) {
+	model := PublishedReplyModel{
+		RepoOwner:       r.RepoOwner,
+		RepoName:        r.RepoName,
+		PRNumber:        r.PRNumber,
+		AuthorCommentID: r.AuthorCommentID,
+		RootCommentID:   r.RootCommentID,
+		Fingerprint:     r.Fingerprint,
+		AuthorID:        r.AuthorID,
+		Class:           r.Class,
+		Action:          r.Action,
+		Body:            r.Body,
+		ReplyCommentID:  r.ReplyCommentID,
+		CreatedAt:       r.CreatedAt,
+		ProcessedAt:     time.Now().UTC(),
+	}
+	res := g.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&model)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
+// GetPublishedReplyIDsForPR returns the author comment ids already handled.
+func (g *GormDB) GetPublishedReplyIDsForPR(owner, repo string, number int) (map[int64]bool, error) {
+	var ids []int64
+	err := g.db.Model(&PublishedReplyModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, number).
+		Pluck("author_comment_id", &ids).Error
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		seen[id] = true
+	}
+	return seen, nil
+}
+
+// ListPublishedReplyTargets returns every open, non-draft PR with inline
+// comments PRism has posted, in any finding state: authors reply under fixed
+// findings too. Closed PRs and PRs cleanup already removed are excluded here
+// so the scan never grows with history.
+func (g *GormDB) ListPublishedReplyTargets() ([]PublishedReplyTarget, error) {
+	var rows []struct {
+		RepoOwner   string
+		RepoName    string
+		PRNumber    int
+		CommentID   int64
+		Fingerprint string
+	}
+	err := g.db.Table("published_findings AS pf").
+		Select("pf.repo_owner, pf.repo_name, pf.pr_number, pf.comment_id, pf.fingerprint").
+		Joins("JOIN prs ON prs.repo_owner = pf.repo_owner AND prs.repo_name = pf.repo_name AND prs.pr_number = pf.pr_number").
+		Where("pf.kind = ? AND pf.comment_id <> 0 AND LOWER(prs.pr_state) = 'open' AND NOT prs.draft", PublishedKindFinding).
+		Order("pf.repo_owner, pf.repo_name, pf.pr_number, pf.comment_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	var out []PublishedReplyTarget
+	for _, row := range rows {
+		n := len(out)
+		if n == 0 || out[n-1].RepoOwner != row.RepoOwner || out[n-1].RepoName != row.RepoName || out[n-1].PRNumber != row.PRNumber {
+			out = append(out, PublishedReplyTarget{RepoOwner: row.RepoOwner, RepoName: row.RepoName, PRNumber: row.PRNumber, Roots: map[int64]string{}})
+			n++
+		}
+		out[n-1].Roots[row.CommentID] = row.Fingerprint
+	}
+	return out, nil
+}
+
+// ListUnlinkedPublishedFindings returns inline findings posted through a
+// review (so GitHub assigned the comment ids after the fact) whose ledger row
+// never got one, on PRs the reply scan would otherwise cover.
+func (g *GormDB) ListUnlinkedPublishedFindings() ([]UnlinkedPublishedFinding, error) {
+	var rows []UnlinkedPublishedFinding
+	err := g.db.Table("published_findings AS pf").
+		Select("pf.id, pf.repo_owner, pf.repo_name, pf.pr_number, pf.review_id, pf.fingerprint").
+		Joins("JOIN prs ON prs.repo_owner = pf.repo_owner AND prs.repo_name = pf.repo_name AND prs.pr_number = pf.pr_number").
+		Where("pf.kind = ? AND pf.comment_id = 0 AND pf.review_id <> 0 AND LOWER(prs.pr_state) = 'open' AND NOT prs.draft", PublishedKindFinding).
+		Order("pf.repo_owner, pf.repo_name, pf.pr_number, pf.id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// LinkPublishedFindingComment records the GitHub comment id of a finding that
+// was published without one. A row that already has an id is left alone.
+func (g *GormDB) LinkPublishedFindingComment(id uint, commentID int64) error {
+	return g.db.Model(&PublishedFindingModel{}).
+		Where("id = ? AND comment_id = 0", id).
+		Update("comment_id", commentID).Error
+}
+
+// ListRecentPublishedReplies returns the most recently handled author replies,
+// by processing time: a reply written days ago but only linked now is news.
+func (g *GormDB) ListRecentPublishedReplies(limit int) ([]PublishedReply, error) {
+	var models []PublishedReplyModel
+	if err := g.db.Order("processed_at DESC, id DESC").Limit(limit).Find(&models).Error; err != nil {
+		return nil, err
+	}
+	return publishedRepliesFromModels(models), nil
+}
+
+func publishedRepliesFromModels(models []PublishedReplyModel) []PublishedReply {
+	out := make([]PublishedReply, 0, len(models))
+	for _, m := range models {
+		out = append(out, PublishedReply{
+			RepoOwner: m.RepoOwner, RepoName: m.RepoName, PRNumber: m.PRNumber,
+			RootCommentID: m.RootCommentID, AuthorCommentID: m.AuthorCommentID,
+			Fingerprint: m.Fingerprint, AuthorID: m.AuthorID, Class: m.Class, Action: m.Action,
+			Body: m.Body, ReplyCommentID: m.ReplyCommentID,
+			Decision: m.Decision, ReplyBody: m.ReplyBody, Cited: m.Cited, Model: m.Model, DurationMS: m.DurationMS,
+			Outcome: m.Outcome, Attempts: m.Attempts, DecisionReact: m.DecisionReact, DecisionHead: m.DecisionHead, DecisionThread: m.DecisionThread,
+			ClaimedBy: m.ClaimedBy, ClaimedAt: m.ClaimedAt, RepliedAt: m.RepliedAt,
+			CreatedAt: m.CreatedAt, ProcessedAt: m.ProcessedAt,
+		})
+	}
+	return out
+}
+
+func (g *GormDB) replyRow(owner, repo string, number int, authorCommentID int64) *gorm.DB {
+	return g.db.Model(&PublishedReplyModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND author_comment_id = ?", owner, repo, number, authorCommentID)
+}
+
+// SetPublishedReplyDecision stores the model's conclusion before anything is
+// posted, so a crash between deciding and posting leaves an auditable row.
+func (g *GormDB) SetPublishedReplyDecision(owner, repo string, number int, authorCommentID int64, d ReplyDecisionRecord) error {
+	return g.replyRow(owner, repo, number, authorCommentID).Updates(map[string]interface{}{
+		"decision": d.Decision, "reply_body": d.ReplyBody, "cited": d.Cited, "model": d.Model, "duration_ms": d.DurationMS,
+		"decision_head": d.Head, "decision_thread": d.Thread, "decision_react": d.React,
+	}).Error
+}
+
+// SetPublishedReplyAction records how the author's comment was acknowledged
+// once a deferred reaction is settled.
+func (g *GormDB) SetPublishedReplyAction(owner, repo string, number int, authorCommentID int64, action string) error {
+	return g.replyRow(owner, repo, number, authorCommentID).Update("action", action).Error
+}
+
+// SetPublishedReplyOutcome marks the text step finished.
+func (g *GormDB) SetPublishedReplyOutcome(owner, repo string, number int, authorCommentID int64, outcome string) error {
+	return g.replyRow(owner, repo, number, authorCommentID).Update("outcome", outcome).Error
+}
+
+// IncrementPublishedReplyAttempts counts one model run and returns the total.
+func (g *GormDB) IncrementPublishedReplyAttempts(owner, repo string, number int, authorCommentID int64) (int, error) {
+	var n int
+	err := g.db.Transaction(func(tx *gorm.DB) error {
+		row := tx.Model(&PublishedReplyModel{}).
+			Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND author_comment_id = ?", owner, repo, number, authorCommentID)
+		if err := row.Update("attempts", gorm.Expr("attempts + 1")).Error; err != nil {
+			return err
+		}
+		return row.Pluck("attempts", &n).Error
+	})
+	return n, err
+}
+
+// ClaimPublishedReply takes the text step for one author reply: it succeeds
+// only when the step is unfinished and no live claim exists, so two instances
+// cannot both run the model or both post. A claim older than lease is stale.
+func (g *GormDB) ClaimPublishedReply(owner, repo string, number int, authorCommentID int64, holder string, now time.Time, lease time.Duration) (bool, error) {
+	res := g.replyRow(owner, repo, number, authorCommentID).
+		Where("outcome = '' AND (claimed_at IS NULL OR claimed_at < ?)", now.Add(-lease)).
+		Updates(map[string]interface{}{"claimed_by": holder, "claimed_at": now})
+	return res.RowsAffected > 0, res.Error
+}
+
+// ReleasePublishedReplyClaim drops a claim so the next scan can resume.
+func (g *GormDB) ReleasePublishedReplyClaim(owner, repo string, number int, authorCommentID int64, holder string) error {
+	return g.replyRow(owner, repo, number, authorCommentID).Where("claimed_by = ?", holder).
+		Updates(map[string]interface{}{"claimed_by": "", "claimed_at": nil}).Error
+}
+
+// ListPublishedRepliesForPR returns every handled author reply on a PR.
+func (g *GormDB) ListPublishedRepliesForPR(owner, repo string, number int) ([]PublishedReply, error) {
+	var models []PublishedReplyModel
+	err := g.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, number).
+		Order("created_at ASC, id ASC").Find(&models).Error
+	if err != nil {
+		return nil, err
+	}
+	return publishedRepliesFromModels(models), nil
+}
+
+// MarkPublishedReplyPosted records the GitHub id of the text reply we posted.
+func (g *GormDB) MarkPublishedReplyPosted(owner, repo string, number int, authorCommentID, replyCommentID int64, at time.Time) error {
+	return g.replyRow(owner, repo, number, authorCommentID).Updates(map[string]interface{}{
+		"reply_comment_id": replyCommentID, "replied_at": at,
+	}).Error
+}
+
+// ListPublishedRepliesForRoot returns every handled author reply under one of
+// our inline comments, oldest first.
+func (g *GormDB) ListPublishedRepliesForRoot(owner, repo string, number int, rootCommentID int64) ([]PublishedReply, error) {
+	var models []PublishedReplyModel
+	err := g.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND root_comment_id = ?", owner, repo, number, rootCommentID).
+		Order("created_at ASC, id ASC").Find(&models).Error
+	if err != nil {
+		return nil, err
+	}
+	return publishedRepliesFromModels(models), nil
+}
+
+// CountPublishedTextRepliesSince counts text replies posted on a PR at or
+// after since, for the per-PR daily budget.
+func (g *GormDB) CountPublishedTextRepliesSince(owner, repo string, number int, since time.Time) (int, error) {
+	var n int64
+	err := g.db.Model(&PublishedReplyModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND reply_comment_id <> 0 AND replied_at >= ?", owner, repo, number, since).
+		Count(&n).Error
+	return int(n), err
+}
+
+// PublishedReplyCounts summarizes the reply ledger for the status API.
+type PublishedReplyCounts struct {
+	Total    int
+	ByAction map[string]int
+	ByClass  map[string]int
+}
+
+func (g *GormDB) CountPublishedReplies() (PublishedReplyCounts, error) {
+	counts := PublishedReplyCounts{ByAction: map[string]int{}, ByClass: map[string]int{}}
+	var rows []struct {
+		Action string
+		Class  string
+		Count  int
+	}
+	err := g.db.Model(&PublishedReplyModel{}).
+		Select("action, class, count(*) AS count").
+		Group("action, class").
+		Scan(&rows).Error
+	if err != nil {
+		return counts, err
+	}
+	for _, r := range rows {
+		counts.Total += r.Count
+		counts.ByAction[r.Action] += r.Count
+		counts.ByClass[r.Class] += r.Count
+	}
+	return counts, nil
+}

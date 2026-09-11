@@ -67,6 +67,9 @@ export interface ReviewFinding {
   file: string;
   line: number;
   comment: string;
+  /** Schema 2: what the review concluded and whether it asserts the finding as a claim. */
+  state?: string;
+  active?: boolean;
 }
 
 interface ReviewFindingsResponse {
@@ -86,6 +89,6 @@ export async function fetchCriticalFindings(
   number: number
 ): Promise<{ sha: string; findings: ReviewFinding[] }> {
   const resp = await apiGet<ReviewFindingsResponse>(`/api/review/${owner}/${repo}/${number}`);
-  const findings = (resp.findings ?? []).filter(f => f.severity === 'critical');
+  const findings = (resp.findings ?? []).filter(f => f.severity === 'critical' && f.active !== false);
   return { sha: resp.commit_sha ?? '', findings };
 }

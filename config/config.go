@@ -3,7 +3,28 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
+)
+
+const (
+	defaultAgentWallClockSec         = 360
+	defaultAgentMaxTurns             = 40
+	defaultOpenRouterAgentMaxTurns   = 200
+	defaultReviewFirstPassSamples    = 3
+	defaultReviewFirstPassConcurrent = 5
+	defaultClaudeAgentModel          = "claude-fable-5-1"
+	defaultOpenRouterAgentModel      = "openai/gpt-5.6-sol"
+	defaultAgentEffort               = "medium"
+
+	// First-pass provider default models, mirroring the llm package defaults
+	// so this package stays dependency-light.
+	defaultFirstPassGeminiModel     = "gemini-3.1-pro-preview"
+	defaultFirstPassClaudeModel     = "claude-sonnet-5"
+	defaultFirstPassClaudeCodeModel = "claude-fable-5-1"
+	defaultFirstPassOpenRouterModel = "openai/gpt-5.6-sol"
+
+	defaultFirstPassCacheStaggerSec = 8
 )
 
 type Config struct {
@@ -37,18 +58,75 @@ type Config struct {
 	ReviewerEnabled bool
 	GeminiAPIKey    string
 
-	// Agent review (Claude Code subprocess) — dev-only for now.
+	// First-pass (sampled single-shot review) provider selection. Empty or
+	// "gemini" preserves the historical Gemini-only behavior; the
+	// classification stage always stays on Gemini flash.
+	FirstPassProvider string // gemini (default), claude, claude-code, or openrouter
+	FirstPassModel    string // empty = provider default
+	FirstPassThinking string // gemini/claude-code thinking level: low, medium, high; empty = provider default
+	// FirstPassCacheStaggerSec delays each subsequent claude first-pass sample
+	// so sample 1's prompt-cache prefill completes first. 0 disables.
+	FirstPassCacheStaggerSec int
+
+	// Agent review (Claude Code or Codex/OpenRouter subprocess).
 	AgenticReviews     bool
 	AgentCloneRootDir  string
 	AgentLogsDir       string
 	AgentWallClockSec  int
 	AgentMaxTurns      int
-	AgentMaxConcurrent int    // <=0 disables the cap (unlimited concurrency)
-	AgentModel         string // `claude` model id for agent reviews (empty = service default)
-	AgentEffort        string // `claude` reasoning effort for agent reviews (empty = service default)
-	BugMemoryPath      string // local path to a bug-memory library JSON (dev/benchmark)
-	BugMemoryObject    string // GCS object name of the library (prod); Path wins if both set
-	RequiredChecks     bool   // convert fired gates/memory entries into forced-choice agent checks (service/checks.go)
+	AgentMaxConcurrent int    // <=0 uses the poller's safe five-process fallback
+	AgentBackend       string // claude (default) or openrouter
+	AgentModel         string // backend model id for agent reviews (empty = backend default)
+	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
+	// Author-reply model (pkg/reviewer/service/reply.go). Same backend and
+	// credentials as the review agent; smaller budgets, own concurrency cap.
+	ReplyModel         string // empty = the review agent's model
+	ReplyWallClockSec  int
+	ReplyMaxTurns      int
+	ReplyMaxConcurrent int
+	// MentionHandle is the App login authors mention to request a review
+	// ("@<handle> review"); empty disables mention triggers.
+	MentionHandle string
+	// HealthJobToken authenticates the scheduled daily health report
+	// (POST /api/health/daily); empty disables the job endpoint.
+	HealthJobToken string
+	// AdminLogins are bootstrap settings admins (lowercased GitHub logins), kept
+	// outside the writable settings API so admins can never lock themselves out.
+	AdminLogins []string
+	// AnthropicAPIKey is optional for the agent pass (Claude OAuth remains
+	// supported) but required when FirstPassProvider is "claude".
+	AnthropicAPIKey   string
+	OpenRouterAPIKey  string // OpenRouter credential; deployment-only, never exposed in capabilities
+	OpenRouterBaseURL string // OpenRouter API root (empty = service default)
+	BugMemoryPath     string // local path to a bug-memory library JSON (dev/benchmark)
+	BugMemoryObject   string // GCS object name of the library (prod); Path wins if both set
+	RequiredChecks    bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
+
+	// Linked ticket context for the agent prompt (pkg/reviewer/tickets). The
+	// feature is on only when JiraEnabled(); JiraProjectKeys optionally
+	// restricts which project keys count as ticket references.
+	JiraBaseURL     string
+	JiraEmail       string
+	JiraAPIToken    string
+	JiraProjectKeys []string
+
+	// Caller-customization policy. These allowlists and ceilings are owned by
+	// the deployment operator; per-review API overrides must remain within them.
+	// Credentials, provider endpoints, filesystem paths, and concurrency remain
+	// deployment-only settings.
+	ReviewAgentModelsClaude         []string
+	ReviewAgentModelsOpenRouter     []string
+	ReviewAgentEffortsClaude        []string
+	ReviewAgentEffortsOpenRouter    []string
+	ReviewFirstPassModelsGemini     []string
+	ReviewFirstPassModelsClaude     []string
+	ReviewFirstPassModelsClaudeCode []string
+	ReviewFirstPassModelsOpenRouter []string
+	ReviewMaxWallClockSec           int
+	ReviewMaxTurns                  int
+	ReviewMaxTurnsConfigured        bool
+	ReviewMaxFirstPassSamples       int
+	ReviewMaxFirstPassConcurrent    int
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -69,6 +147,32 @@ func (c *Config) IsDevMode() bool {
 	return c.GitHubAppClientID == ""
 }
 
+// FirstPassAPIKey returns the credential the configured first-pass provider
+// authenticates with.
+func (c *Config) FirstPassAPIKey() string {
+	return c.FirstPassProviderAPIKey(c.FirstPassProvider)
+}
+
+// FirstPassProviderAPIKey returns the credential a specific first-pass
+// provider authenticates with.
+func (c *Config) FirstPassProviderAPIKey(provider string) string {
+	switch provider {
+	case "claude":
+		return c.AnthropicAPIKey
+	case "claude-code":
+		return ""
+	case "openrouter":
+		return c.OpenRouterAPIKey
+	default:
+		return c.GeminiAPIKey
+	}
+}
+
+// JiraEnabled reports whether linked-ticket fetching is configured.
+func (c *Config) JiraEnabled() bool {
+	return c.JiraBaseURL != "" && c.JiraEmail != "" && c.JiraAPIToken != ""
+}
+
 // UsePostgreSQL returns true if the application should use PostgreSQL instead of SQLite
 func (c *Config) UsePostgreSQL() bool {
 	return c.DatabaseURL != ""
@@ -81,6 +185,90 @@ func Load() *Config {
 			pollingInterval = d
 		}
 	}
+
+	agentBackend := getEnvOrDefault("AGENT_BACKEND", "claude")
+	agentWallClockSec := getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", defaultAgentWallClockSec)
+	agentMaxTurnsDefault := defaultAgentMaxTurns
+	if strings.EqualFold(strings.TrimSpace(agentBackend), "openrouter") {
+		agentMaxTurnsDefault = defaultOpenRouterAgentMaxTurns
+	}
+	agentMaxTurns := getEnvIntOrDefault("AGENT_MAX_TURNS", agentMaxTurnsDefault)
+	agentModel := os.Getenv("AGENT_MODEL")
+	agentEffort := os.Getenv("AGENT_EFFORT")
+
+	claudeModels := getEnvListOrDefault("REVIEW_AGENT_MODELS_CLAUDE",
+		[]string{defaultClaudeAgentModel, "claude-fable-5", "claude-opus-4-8"}, normalizeModel)
+	openRouterModels := getEnvListOrDefault("REVIEW_AGENT_MODELS_OPENROUTER",
+		[]string{defaultOpenRouterAgentModel}, normalizeModel)
+	claudeEfforts := getEnvListOrDefault("REVIEW_AGENT_EFFORTS_CLAUDE",
+		[]string{"low", "medium", "high"}, normalizeEffort)
+	openRouterEfforts := getEnvListOrDefault("REVIEW_AGENT_EFFORTS_OPENROUTER",
+		[]string{"low", "medium", "high", "xhigh", "max"}, normalizeEffort)
+
+	// Operator allowlists must never invalidate the deployment's currently
+	// selected backend/model/effort. Keep Config's active values untouched and
+	// append only their resolved runtime values to the matching policy list.
+	activeBackend := strings.ToLower(strings.TrimSpace(agentBackend))
+	activeModel := strings.TrimSpace(agentModel)
+	if activeModel == "" {
+		if activeBackend == "openrouter" {
+			activeModel = defaultOpenRouterAgentModel
+		} else {
+			activeModel = defaultClaudeAgentModel
+		}
+	}
+	activeEffort := normalizeEffort(agentEffort)
+	if activeEffort == "" {
+		activeEffort = defaultAgentEffort
+	}
+	switch activeBackend {
+	case "claude":
+		claudeModels = appendUnique(claudeModels, activeModel)
+		claudeEfforts = appendUnique(claudeEfforts, activeEffort)
+	case "openrouter":
+		openRouterModels = appendUnique(openRouterModels, activeModel)
+		openRouterEfforts = appendUnique(openRouterEfforts, activeEffort)
+	}
+
+	firstPassProvider := normalizeFirstPassProvider(getEnvOrDefault("FIRST_PASS_PROVIDER", "gemini"))
+	firstPassModel := strings.TrimSpace(os.Getenv("FIRST_PASS_MODEL"))
+	// The gemini first-pass default follows the same env override the llm
+	// package honors, so the allowlist always admits the model actually run.
+	firstPassGeminiDefault := getEnvOrDefault("GEMINI_PRO_MODEL", defaultFirstPassGeminiModel)
+	firstPassModelsGemini := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_GEMINI",
+		[]string{firstPassGeminiDefault}, normalizeModel)
+	firstPassModelsClaude := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_CLAUDE",
+		[]string{defaultFirstPassClaudeModel}, normalizeModel)
+	firstPassModelsClaudeCode := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_CLAUDE_CODE",
+		[]string{defaultFirstPassClaudeCodeModel}, normalizeModel)
+	firstPassModelsOpenRouter := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_OPENROUTER",
+		[]string{defaultFirstPassOpenRouterModel}, normalizeModel)
+	activeFirstPassModel := firstPassModel
+	if activeFirstPassModel == "" {
+		switch firstPassProvider {
+		case "claude":
+			activeFirstPassModel = defaultFirstPassClaudeModel
+		case "claude-code":
+			activeFirstPassModel = defaultFirstPassClaudeCodeModel
+		case "openrouter":
+			activeFirstPassModel = defaultFirstPassOpenRouterModel
+		default:
+			activeFirstPassModel = firstPassGeminiDefault
+		}
+	}
+	switch firstPassProvider {
+	case "claude":
+		firstPassModelsClaude = appendUnique(firstPassModelsClaude, activeFirstPassModel)
+	case "claude-code":
+		firstPassModelsClaudeCode = appendUnique(firstPassModelsClaudeCode, activeFirstPassModel)
+	case "openrouter":
+		firstPassModelsOpenRouter = appendUnique(firstPassModelsOpenRouter, activeFirstPassModel)
+	case "gemini":
+		firstPassModelsGemini = appendUnique(firstPassModelsGemini, activeFirstPassModel)
+	}
+
+	maxWallClockDefault := positiveOrDefault(agentWallClockSec, defaultAgentWallClockSec)
+	reviewMaxTurns, reviewMaxTurnsConfigured := getPositiveEnvInt("REVIEW_MAX_TURNS")
 
 	return &Config{
 		// Legacy single-user mode
@@ -113,17 +301,51 @@ func Load() *Config {
 		ReviewerEnabled: false, // Will be set to true in main.go if API key is available
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
 
+		FirstPassProvider:        firstPassProvider,
+		FirstPassModel:           firstPassModel,
+		FirstPassThinking:        strings.ToLower(strings.TrimSpace(os.Getenv("FIRST_PASS_THINKING"))),
+		FirstPassCacheStaggerSec: getNonNegativeEnvIntOrDefault("FIRST_PASS_CACHE_STAGGER_SEC", defaultFirstPassCacheStaggerSec),
+
 		AgenticReviews:     os.Getenv("AGENTIC_REVIEWS") == "true",
 		AgentCloneRootDir:  getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
 		AgentLogsDir:       getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
-		AgentWallClockSec:  getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 360),
-		AgentMaxTurns:      getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
+		AgentWallClockSec:  agentWallClockSec,
+		AgentMaxTurns:      agentMaxTurns,
 		AgentMaxConcurrent: getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
-		AgentModel:         os.Getenv("AGENT_MODEL"),
-		AgentEffort:        os.Getenv("AGENT_EFFORT"),
+		AgentBackend:       agentBackend,
+		AgentModel:         agentModel,
+		AgentEffort:        agentEffort,
+		ReplyModel:         os.Getenv("REPLY_MODEL"),
+		ReplyWallClockSec:  getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
+		ReplyMaxTurns:      getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
+		ReplyMaxConcurrent: getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
+		MentionHandle:      strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
+		HealthJobToken:     os.Getenv("HEALTH_JOB_TOKEN"),
+		AdminLogins:        getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),
+		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
+		OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
+		OpenRouterBaseURL:  os.Getenv("OPENROUTER_BASE_URL"),
 		BugMemoryPath:      os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:    os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:     os.Getenv("REQUIRED_CHECKS") == "true",
+		JiraBaseURL:        strings.TrimRight(strings.TrimSpace(os.Getenv("JIRA_BASE_URL")), "/"),
+		JiraEmail:          strings.TrimSpace(os.Getenv("JIRA_EMAIL")),
+		JiraAPIToken:       strings.TrimSpace(os.Getenv("JIRA_API_TOKEN")),
+		JiraProjectKeys:    getEnvListOrDefault("JIRA_PROJECT_KEYS", nil, normalizeProjectKey),
+
+		ReviewAgentModelsClaude:         claudeModels,
+		ReviewAgentModelsOpenRouter:     openRouterModels,
+		ReviewAgentEffortsClaude:        claudeEfforts,
+		ReviewAgentEffortsOpenRouter:    openRouterEfforts,
+		ReviewFirstPassModelsGemini:     firstPassModelsGemini,
+		ReviewFirstPassModelsClaude:     firstPassModelsClaude,
+		ReviewFirstPassModelsClaudeCode: firstPassModelsClaudeCode,
+		ReviewFirstPassModelsOpenRouter: firstPassModelsOpenRouter,
+		ReviewMaxWallClockSec:           getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
+		ReviewMaxTurns:                  reviewMaxTurns,
+		ReviewMaxTurnsConfigured:        reviewMaxTurnsConfigured,
+		ReviewMaxFirstPassSamples:       getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
+		ReviewMaxFirstPassConcurrent:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
 	}
 }
 
@@ -136,9 +358,122 @@ func getEnvIntOrDefault(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// getEnvOrDefaultAllowEmpty returns defaultValue only when key is unset; an
+// explicitly empty value is returned as-is so it can disable a feature.
+func getEnvOrDefaultAllowEmpty(key, defaultValue string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return defaultValue
+}
+
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return defaultValue
+}
+
+// getPositiveEnvIntOrDefault is used for hard safety ceilings. Invalid,
+// zero, and negative values fall back to a positive default rather than
+// accidentally disabling a limit.
+func getPositiveEnvIntOrDefault(key string, defaultValue int) int {
+	if value, ok := getPositiveEnvInt(key); ok {
+		return value
+	}
+	return defaultValue
+}
+
+// getNonNegativeEnvIntOrDefault allows an explicit 0 (feature off) but falls
+// back to the default on unset, malformed, or negative values.
+func getNonNegativeEnvIntOrDefault(key string, defaultValue int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return defaultValue
+	}
+	return n
+}
+
+func getPositiveEnvInt(key string) (int, bool) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+func positiveOrDefault(value, defaultValue int) int {
+	if value > 0 {
+		return value
+	}
+	return defaultValue
+}
+
+// getEnvListOrDefault parses a comma-separated deployment setting in stable
+// first-seen order, dropping blank and duplicate entries after normalization.
+// An unset or blank setting uses the supplied defaults.
+func getEnvListOrDefault(key string, defaults []string, normalize func(string) string) []string {
+	raw := os.Getenv(key)
+	if strings.TrimSpace(raw) == "" {
+		raw = strings.Join(defaults, ",")
+	}
+
+	values := make([]string, 0, len(defaults))
+	for _, item := range strings.Split(raw, ",") {
+		value := normalize(item)
+		if value != "" {
+			values = appendUnique(values, value)
+		}
+	}
+	return values
+}
+
+func normalizeProjectKey(value string) string {
+	return strings.ToUpper(strings.TrimSpace(value))
+}
+
+func normalizeModel(value string) string {
+	// Provider model IDs are case-sensitive. Whitespace is formatting noise,
+	// but case must be preserved for exact policy matching.
+	return strings.TrimSpace(value)
+}
+
+// normalizeFirstPassProvider mirrors the alias handling of llm.ParseProvider
+// so every provider switch in this package and main sees the canonical name.
+func normalizeFirstPassProvider(value string) string {
+	provider := strings.ToLower(strings.TrimSpace(value))
+	switch provider {
+	case "claude_code", "claudecode":
+		return "claude-code"
+	default:
+		return provider
+	}
+}
+
+func normalizeEffort(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeLogin(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func appendUnique(values []string, value string) []string {
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }

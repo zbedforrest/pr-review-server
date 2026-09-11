@@ -126,14 +126,14 @@ func TestBugMemorySection_EmptyAndBudget(t *testing.T) {
 
 func TestBuildAgentPromptContent_MemorySection(t *testing.T) {
 	// No gates, no memory -> byte-identical to a memoryless build.
-	base, err := buildAgentPromptContent(nil, nil, nil, nil)
+	base, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(base, "BUG HISTORY") {
 		t.Error("empty memory must not add the section")
 	}
-	withMem, err := buildAgentPromptContent(nil, nil, []BugMemoryEntry{
+	withMem, err := buildAgentPromptContent("", nil, "", nil, nil, []BugMemoryEntry{
 		mkEntry("e1", "c", "watch for dropped ids in context menus", []string{"**"}, nil, 1),
 	}, nil)
 	if err != nil {

@@ -167,37 +167,6 @@ func TestFindingOutcomes_GET_requires_pr_params(t *testing.T) {
 	}
 }
 
-// The fingerprint must be stable across the drift regeneration causes
-// (whitespace/case jitter in the comment, small line movement) and distinct
-// across genuinely different findings.
-func TestFindingFingerprint(t *testing.T) {
-	base := findingFingerprint("a/b.go", 42, "Nil map write: sessions[id] assigned before init")
-
-	assert.Equal(t, base,
-		findingFingerprint("a/b.go", 42, "  nil MAP write:   sessions[id] assigned before init  "),
-		"case + whitespace normalization")
-	assert.Equal(t, base,
-		findingFingerprint("a/b.go", 45, "Nil map write: sessions[id] assigned before init"),
-		"line drift within the same 10-line bucket")
-	assert.NotEqual(t, base,
-		findingFingerprint("a/b.go", 52, "Nil map write: sessions[id] assigned before init"),
-		"different line bucket")
-	assert.NotEqual(t, base,
-		findingFingerprint("a/other.go", 42, "Nil map write: sessions[id] assigned before init"),
-		"different file")
-	assert.NotEqual(t, base,
-		findingFingerprint("a/b.go", 42, "Unrelated comment about a different defect"),
-		"different comment")
-
-	// Only the first 120 normalized runes participate — tail variance
-	// between regenerated reviews must not change the identity.
-	long := strings.Repeat("word ", 40) // 200 chars normalized
-	assert.Equal(t,
-		findingFingerprint("a/b.go", 1, long+"tail one"),
-		findingFingerprint("a/b.go", 1, long+"completely different tail"),
-		"tail beyond the 120-rune prefix is ignored")
-}
-
 // truncateString backs varchar columns Postgres measures in characters: it
 // must clamp by runes and never cut a multibyte rune mid-encoding (which
 // Postgres would reject as invalid UTF-8, turning the POST into a 500).

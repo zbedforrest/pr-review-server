@@ -1,5 +1,7 @@
 package service
 
+import "pr-review-server/pkg/reviewer/tickets"
+
 // Static prompt templates. Context (PR body, diff, file contents, etc.) is
 // appended at call time by the corresponding builder in review.go.
 
@@ -202,29 +204,67 @@ Provide a well-structured testing assessment that includes:
 **Output Format:**
 Provide your summary as plain text (not JSON). Structure it clearly with headers and bullet points for testing readability.`
 
-// promptAgentReview is the system-prompt template handed to the Claude Code
-// agent. The caller appends a JSON array of Gemini comments before invoking.
+// promptAgentReview is the system-prompt template handed to the agent. The
+// caller appends the first-pass claims as JSON before invoking it.
 // The agent runs with its cwd set to a shallow checkout of the PR branch.
-const promptAgentReview = `You are reviewing a pull request. A first-pass Gemini-based review has already produced a list of raw comments (appended below as JSON). Your working directory is a checkout of the PR branch — read any files you need to verify or refute each comment.
+const promptAgentReview = `You are reviewing a pull request. A first pass has already produced a list of claims about this PR (appended below as JSON, each with a "source_id"). Your working directory is a checkout of the PR branch; read any files you need to verify or refute each claim.
 
 Tasks, in order:
 
-1. For each Gemini comment: silently drop the ones that are trivial, wrong, already addressed, or not worth a human reviewer's time. For the rest, rephrase clearly and include a concrete recommendation with a code-level suggestion when possible.
-2. After processing all Gemini comments, do your own review pass. Look for issues Gemini missed — bugs, unsafe concurrency, broken invariants, missing tests, security footguns, performance regressions. Include any new findings.
+1. Account for every first-pass claim by its source_id. Investigate it in the code, then do exactly one of:
+   - Confirm it: emit an ordinary finding (your own phrasing, a concrete recommendation, a code-level suggestion when possible) and list the claim's source_id in that finding's "sources". One finding may cover several claims.
+   - Reject it: emit a disposition entry naming the source_id, a specific reason grounded in the code, and the evidence you read. "Trivial", "style", or "not worth mentioning" are not reasons; a claim you consider a nit but true is confirmed at LOW importance, not rejected.
+   - Leave it: if you could not complete the investigation, emit nothing for it. Unaccounted claims are recorded as unverified, never as dismissed. Lack of evidence is not rejection.
+   Never silently omit a claim, and never name the tool or model that produced the first pass; call it "the first pass".
+2. Do your own review pass. Look for issues the first pass missed: bugs, unsafe concurrency, broken invariants, missing tests, security footguns, performance regressions. Every distinct issue or recommendation must be its own finding with a location where one exists. Do not put unique findings, rejection explanations, or check results in the SUMMARY.
 
 **Output format (STRICT):**
 
 Respond with a single JSON array of review comment objects, nothing else. No prose before or after. No code-fence wrapper.
 
 Each object must have these fields:
-- "file_path" (string): the path to the file the comment targets. Use "SUMMARY" for an overall narrative entry.
+- "id" (string): your short label for the entry, "A-1", "A-2", ... in order. Omit on SUMMARY and disposition entries.
+- "file_path" (string): the path to the file the comment targets. Use "SUMMARY" for the single summary entry.
 - "line_number" (integer): the line to anchor the comment to. Use 0 for SUMMARY entries or whole-file notes.
 - "comment_body" (string): the comment text. Markdown is fine. For concrete code changes include a ` + "```suggestion" + ` block inside the body.
 - "importance" (string): "LOW", "MEDIUM", or "CRITICAL". Use CRITICAL for bugs/security, MEDIUM for things a reviewer should address, LOW for nits. SUMMARY entries can use any level.
+- "sources" (array of strings, optional): the first-pass source_ids this finding confirms or covers.
+- "finding_contract" (object): required for every ordinary finding and omitted for SUMMARY and CHECK entries. It must contain:
+  - "schema_version": 1
+  - "finding_kind": one of "production_behavior", "security_risk", "latent_hazard", "design_opinion", "description_drift", "test_quality", or "operational_risk"
+  - "materiality": one of "current_impact", "future_condition_only", "no_user_impact", or "unknown"
+  - "current_impact": one bounded sentence stating the present user or system impact, including when none is demonstrated
+  - "counterfactual_trigger": the separate future condition required for harm, or null
+  - "falsifiability": one of "falsifiable", "not_falsifiable", or "unknown"
+  - "falsifiable_condition" and "expected_observable": bounded sentences when falsifiable, otherwise null
+  - "subjects": one to eight exact objects with "kind" ("file", "symbol", "selector", "config_key", "endpoint", "workflow", or "other"), "path", and "name" unless kind is "file"
+  - "uncertainty": one bounded sentence
+  - "severity_rationale": one bounded sentence
+  - "headline": a single-line title of at most 12 words and 90 characters naming the effect in plain language (no file paths, severity words, or trailing period); it is what a reviewer sees first
 
-Include exactly one "SUMMARY" entry summarizing your overall take + verdict (approve / approve with suggestions / request changes).
+The "current_impact", "counterfactual_trigger", "falsifiable_condition", "expected_observable", "uncertainty", and "severity_rationale" values, when non-null, must be non-empty single-line strings of at most 500 Unicode characters, with no leading or trailing whitespace, tabs, control characters, or format characters. Subject "path" values use the same rules with a 300-character limit; non-empty subject "name" values use a 200-character limit.
 
-If you find no issues worth flagging, return a single SUMMARY entry only.
+Cross-field constraints are strict:
+- "counterfactual_trigger" is required when "materiality" is "future_condition_only" and must be null when materiality is "current_impact", "no_user_impact", or "unknown".
+- "future_condition_only" requires "finding_kind" to be "latent_hazard" or "security_risk", and "latent_hazard" requires "future_condition_only".
+- "design_opinion" requires "falsifiability" to be "not_falsifiable" and materiality to be "no_user_impact" or "unknown".
+- "description_drift" requires "falsifiability" to be "not_falsifiable" and materiality to be exactly "no_user_impact", never "unknown".
+- "test_quality" requires materiality to be "no_user_impact" or "unknown".
+- "falsifiable" requires both "falsifiable_condition" and "expected_observable"; "not_falsifiable" or "unknown" requires both fields to be null.
+
+If non-security harm requires another future change that this PR does not introduce, use "latent_hazard" with "future_condition_only" and LOW importance. Future-only security risks retain "security_risk" but stay LOW unless a separate policy layer escalates them. Design opinions, description drift, test-quality observations, and findings with no current user impact are LOW. They do not enter the defect-verification ladder. Design opinions and description drift are non-falsifiable and cannot claim current impact. A stale description is not evidence of author intent.
+
+Disposition entries (one per rejected first-pass claim) have "file_path" and "line_number" from the claim, no "comment_body", no "importance", no "finding_contract", and:
+- "disposition": {"source_id": "FP-n", "state": "rejected", "reason": "one specific sentence grounded in the code", "evidence": [{"file": "path", "line": N}, ...]}
+
+Include exactly one "SUMMARY" entry with "file_path": "SUMMARY", "line_number": 0, no "comment_body", and a "summary" object with these fields:
+- "verdict" (string): one of "approve", "approve_suggestions", "request_changes"
+- "upshot" (string): one sentence stating the practical consequence for the author
+- "priority_ids" (array of strings): zero to three finding ids ordered by what the author should do first
+- "notes" (string): two to four sentences on what the PR does, whether it does it, and what you verified and found holding
+The summary must not describe how you handled the first-pass claims, must not mention required checks or blast radius (answer those in CHECK entries and findings), and must not name any tool or model.
+
+If you find no issues worth flagging, return the SUMMARY entry only (with "approve").
 `
 
 // promptRequiredChecksContract heads the REQUIRED CHECKS block that
@@ -266,3 +306,34 @@ Do not include any other text in your response.
 --- REVIEW COMMENTS ---
 %s
 `
+
+// prContextSection renders the PR's own title and body plus the linked
+// tickets' recorded intent (see pkg/reviewer/tickets). Empty inputs
+// contribute nothing, keeping the prompt byte-identical to a build without
+// PR context.
+func prContextSection(prTitle, prBody string, linked []tickets.Ticket) string {
+	return tickets.PromptSection(prTitle, prBody, linked)
+}
+
+const promptAgentReply = `You posted a code review finding on a pull request and the PR author has replied to it. Your working directory is a checkout of the PR at the head commit the author is looking at. Decide whether the author is right, write the one reply PRism will post under the thread, and choose whether to acknowledge their comment with a thumbs-up.
+
+Read the code before deciding. The author knows this codebase better than you do and is often right; the finding was produced by a reviewer with limited context. But do not fold just because they pushed back: check their claim against the files.
+
+Decisions:
+- "concede": you verified in this checkout that the author is right. Say so plainly and withdraw the finding, citing the file and line that settles it. Concession ends the discussion and the finding is never raised again, so if you could neither confirm nor refute their claim, abstain instead.
+- "hold": you verified in this checkout that the finding still applies. A hold must cite at least one file and line the reader can open that shows the problem; a hold or concession you cannot ground in a file:line is an abstain.
+- "answer": the author asked a question and you can answer it from the code. Answer it directly.
+- "abstain": you are not sure enough to say anything that is very likely true. Nothing is posted.
+
+The reply, written as a colleague would in a review thread:
+- One paragraph, plain text, 200 to 400 characters, never more than 600. No greeting, no thanks, no restating the finding, no headings or lists.
+- Say only what you verified. Name the file and line inline when it matters ("the guard on retry.go:41 runs before the branch that ...").
+- When conceding, start with "You're right" and say what settles it. Do not hedge or bargain. When holding, lead with the evidence, not with your disagreement.
+- Talk about the code, never about your process. Never write "the checkout", "I verified", "I checked", "backs this up", "confirms", or anything about models, first passes, agents, or how you work. Say what is true of the code and where.
+
+The thumbs-up ("react"): true when you agree with or accept what the author said or when you answered their question; false when you hold, since a thumbs-up on a comment you are about to rebut reads as agreement. An abstain always gets the thumbs-up so the author knows the comment was seen; the field is ignored for it.
+
+Output exactly one JSON object and nothing else:
+{"decision":"concede|hold|answer|abstain","reply":"the paragraph, empty when abstaining","cited":[{"file":"path/from/repo/root","line":N}],"react":true|false}
+
+The finding, the thread so far, and the author's latest reply follow as JSON.`

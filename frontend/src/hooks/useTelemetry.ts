@@ -11,6 +11,22 @@ let queue: TelemetryEventPayload[] = [];
 let flushTimer: ReturnType<typeof setInterval> | null = null;
 let instanceCount = 0;
 
+interface TrackOptions {
+  label?: string;
+  pr_owner?: string;
+  pr_repo?: string;
+  pr_number?: number;
+  /** Whether the review was requested with posting to GitHub. Rides in `label`. */
+  publish?: boolean;
+}
+
+// The telemetry payload has no free-form field, so the publish choice travels
+// in `label` like the other on/off style events.
+function publishLabel(publish: boolean | undefined): string | undefined {
+  if (publish === undefined) return undefined;
+  return publish ? 'publish' : 'dashboard_only';
+}
+
 function flush() {
   if (queue.length === 0) return;
   const batch = queue.splice(0);
@@ -55,10 +71,10 @@ export function useTelemetry() {
   }, []);
 
   const track = useCallback(
-    (action: string, opts?: { label?: string; pr_owner?: string; pr_repo?: string; pr_number?: number }) => {
+    (action: string, opts?: TrackOptions) => {
       enqueue({
         action,
-        label: opts?.label,
+        label: opts?.label ?? publishLabel(opts?.publish),
         pr_owner: opts?.pr_owner,
         pr_repo: opts?.pr_repo,
         pr_number: opts?.pr_number,

@@ -2,26 +2,40 @@ import { memo, useCallback, type MouseEvent } from 'react';
 import type { PR } from '@/types/pr';
 import { CommitSha } from '@/components/common';
 import { useDeletePR, useSetPRHidden, useTriggerReview } from '@/hooks/usePRs';
+import { useSettings } from '@/hooks/useSettings';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { CIStatusIndicator } from './CIStatusIndicator';
+import { ConfidenceBadge } from './ConfidenceBadge';
+import { GenerateSplitButton } from './GenerateSplitButton';
 import { NotesCell } from './NotesCell';
+import { publishAllowedForAuthor } from './publishPolicy';
 import { ReviewLinkMenu } from './ReviewLinkMenu';
 import { RowActionsMenu } from './RowActionsMenu';
 import { buildViaTeamParts } from '@/utils/teamFilters';
 
+export type PRRowVariant = 'default' | 'attention';
+
 interface PRTableRowProps {
   pr: PR;
   showViaTeams?: boolean;
+  variant?: PRRowVariant;
 }
 
 export const PRTableRow = memo(function PRTableRow({
   pr,
-  showViaTeams = true
+  showViaTeams = true,
+  variant = 'default'
 }: PRTableRowProps) {
   const deleteMutation = useDeletePR();
   const setHiddenMutation = useSetPRHidden();
   const triggerReviewMutation = useTriggerReview();
+  const { data: settings } = useSettings();
   const { track } = useTelemetry();
+  // Until settings load we cannot know the pilot list; assume allowed so the
+  // control does not flash to its disabled form on first paint.
+  const publishAllowed = settings === undefined
+    ? true
+    : publishAllowedForAuthor(pr.author, settings.publish_enabled_authors);
   const prUrl = `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
   const reviewUrl = pr.status === 'completed' && pr.review_url
     ? pr.review_url
@@ -47,35 +61,56 @@ export const PRTableRow = memo(function PRTableRow({
     });
   }, [pr.owner, pr.repo, pr.number, pr.hidden, setHiddenMutation, track]);
 
-  const handleTriggerReview = useCallback(() => {
-    track('trigger_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
+  const handleTriggerReview = useCallback((publish: boolean) => {
+    track('trigger_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number, publish });
     triggerReviewMutation.mutate({
       owner: pr.owner,
       repo: pr.repo,
       number: pr.number,
+      publish,
     });
   }, [pr.owner, pr.repo, pr.number, triggerReviewMutation, track]);
 
-  const handleOpenPr = useCallback((e: MouseEvent<HTMLAnchorElement>) => {
-    track('open_pr_github', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
+  const openOnGitHub = useCallback((url: string, label?: string) => (e: MouseEvent<HTMLAnchorElement>) => {
+    track('open_pr_github', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number, label });
     // Opt-in same-tab: Alt/Option+click (and only Alt) navigates the current
     // tab instead of opening a new one. Plain click, Ctrl/Cmd/Shift/middle-click,
     // and any Alt+other-modifier combo keep the browser's default new-tab
     // behavior via target="_blank".
     if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
       e.preventDefault();
-      window.location.assign(prUrl);
+      window.location.assign(url);
     }
-  }, [pr.owner, pr.repo, pr.number, prUrl, track]);
+  }, [pr.owner, pr.repo, pr.number, track]);
 
   return (
-    <tr>
+    <tr className={variant === 'attention' ? 'pr-table__row--attention' : undefined}>
       <td>
-        <a href={prUrl} target="_blank" rel="noopener noreferrer" title="Alt/Option-click to open in this tab" onClick={handleOpenPr}>
+        <a href={prUrl} target="_blank" rel="noopener noreferrer" title="Alt/Option-click to open in this tab" onClick={openOnGitHub(prUrl)}>
           {pr.owner}/{pr.repo} #{pr.number}
         </a>
         {pr.draft && <span className="pr-table__draft-indicator"> (Draft)</span>}
         <div className="pr-table__title">{pr.title}</div>
+        {variant === 'attention' && (
+          <div className="pr-table__attention">
+            <span
+              className="pr-table__attention-badge"
+              title="The current head differs from the commit you reviewed when requesting changes"
+            >
+              Updated since your review
+            </span>
+            <a
+              className="pr-table__attention-link"
+              href={`${prUrl}/files`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Alt/Option-click to open in this tab"
+              onClick={openOnGitHub(`${prUrl}/files`, 'needs_re_review')}
+            >
+              Review on GitHub
+            </a>
+          </div>
+        )}
       </td>
       <td>{pr.author}</td>
       <td>
@@ -122,6 +157,9 @@ export const PRTableRow = memo(function PRTableRow({
           notes={pr.notes || ''}
         />
       </td>
+      <td className="pr-table__confidence">
+        <ConfidenceBadge score={pr.merge_confidence} size="row" />
+      </td>
       <td className="pr-table__review-cell">
         {pr.status === 'error' ? (
           <span className="pr-table__review-error" title={pr.error_message || 'Review failed'}>
@@ -142,19 +180,16 @@ export const PRTableRow = memo(function PRTableRow({
             reviewUrl={reviewUrl}
             onTriggerReview={handleTriggerReview}
             reviewPending={triggerReviewMutation.isPending}
+            publishAllowed={publishAllowed}
           />
         ) : (
           // No up-to-date review: brand-new PR, or one whose prior review was
           // cleared server-side after a new commit made it stale.
-          <button
-            type="button"
-            className="pr-table__generate-btn"
-            onClick={handleTriggerReview}
-            disabled={triggerReviewMutation.isPending}
-            title="Generate an AI review for this PR"
-          >
-            {triggerReviewMutation.isPending ? 'Starting…' : '🔄 Generate'}
-          </button>
+          <GenerateSplitButton
+            onGenerate={handleTriggerReview}
+            pending={triggerReviewMutation.isPending}
+            publishAllowed={publishAllowed}
+          />
         )}
       </td>
       <td>
@@ -166,6 +201,7 @@ export const PRTableRow = memo(function PRTableRow({
           reviewPending={triggerReviewMutation.isPending}
           hiddenPending={setHiddenMutation.isPending}
           deletePending={deleteMutation.isPending}
+          publishAllowed={publishAllowed}
         />
       </td>
     </tr>

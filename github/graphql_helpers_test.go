@@ -1,10 +1,13 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -67,6 +70,297 @@ func TestBuildPRStateQueryIncludesDraft(t *testing.T) {
 		if !strings.Contains(query, want) {
 			t.Errorf("Expected PR state query to contain %q:\n%s", want, query)
 		}
+	}
+}
+
+func TestBuildReviewDataQueryIncludesCommitAndHead(t *testing.T) {
+	client := NewClient("token", "current-user")
+	query := client.buildReviewDataQuery("owner1", "repo1", []PullRequest{{Owner: "owner1", Repo: "repo1", Number: 7}})
+	for _, want := range []string{"reviews(last: 100)", "commit { oid }", "headRefOid", "isDraft", "pageInfo { hasPreviousPage }"} {
+		if !strings.Contains(query, want) {
+			t.Errorf("Expected review data query to contain %q:\n%s", want, query)
+		}
+	}
+	prLevel := query[:strings.Index(query, "reviews(last: 100)")]
+	if !strings.Contains(prLevel, "state") {
+		t.Errorf("Expected the pull request itself (not just its reviews) to select state:\n%s", query)
+	}
+}
+
+func TestAttentionByUser(t *testing.T) {
+	review := func(login, state, oid string) ReviewNode {
+		node := ReviewNode{Author: &ReviewAuthor{Login: login}, State: state}
+		if oid != "" {
+			node.Commit = &ReviewCommit{OID: oid}
+		}
+		return node
+	}
+
+	tests := []struct {
+		name      string
+		reviews   []ReviewNode
+		head      string
+		truncated bool
+		want      map[string]bool
+	}{
+		{
+			name:    "changes requested at A, head moved to B",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A")},
+			head:    "B",
+			want:    map[string]bool{"alice": true},
+		},
+		{
+			name:    "commented on the new head after requesting changes",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A"), review("alice", "COMMENTED", "B")},
+			head:    "B",
+			want:    map[string]bool{"alice": false},
+		},
+		{
+			name:    "requested changes again on the new head",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A"), review("alice", "CHANGES_REQUESTED", "B")},
+			head:    "B",
+			want:    map[string]bool{"alice": false},
+		},
+		{
+			name:    "approved at A, head moved to B",
+			reviews: []ReviewNode{review("alice", "APPROVED", "A")},
+			head:    "B",
+			want:    map[string]bool{"alice": false},
+		},
+		{
+			name:    "changes requested then dismissed",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A"), review("alice", "DISMISSED", "A")},
+			head:    "B",
+			want:    map[string]bool{"alice": false},
+		},
+		{
+			name:    "another user's approval on the head does not clear",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A"), review("bob", "APPROVED", "B")},
+			head:    "B",
+			want:    map[string]bool{"alice": true, "bob": false},
+		},
+		{
+			name:    "pending review on the head is ignored",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A"), review("alice", "PENDING", "B")},
+			head:    "B",
+			want:    map[string]bool{"alice": true},
+		},
+		{
+			name:    "head equals the reviewed commit",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A")},
+			head:    "A",
+			want:    map[string]bool{"alice": false},
+		},
+		{
+			name:    "empty head leaves the user absent",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A")},
+			head:    "",
+			want:    map[string]bool{},
+		},
+		{
+			name:    "nil commit on the deciding review leaves the user absent",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "")},
+			head:    "B",
+			want:    map[string]bool{},
+		},
+		{
+			name:    "nil commit on a later review leaves the user absent",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A"), review("alice", "COMMENTED", "")},
+			head:    "B",
+			want:    map[string]bool{},
+		},
+		{
+			name:    "nil commit on the deciding review but a comment on the head",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", ""), review("alice", "COMMENTED", "B")},
+			head:    "B",
+			want:    map[string]bool{"alice": false},
+		},
+		{
+			name:    "nil author is skipped",
+			reviews: []ReviewNode{{Author: nil, State: "CHANGES_REQUESTED", Commit: &ReviewCommit{OID: "A"}}},
+			head:    "B",
+			want:    map[string]bool{},
+		},
+		{
+			name:      "truncated history with only a comment in the window leaves the user absent",
+			reviews:   []ReviewNode{review("alice", "COMMENTED", "A")},
+			head:      "B",
+			truncated: true,
+			want:      map[string]bool{},
+		},
+		{
+			name:      "truncated history with a decision in the window still decides",
+			reviews:   []ReviewNode{review("alice", "CHANGES_REQUESTED", "A"), review("bob", "APPROVED", "A"), review("carol", "COMMENTED", "B")},
+			head:      "B",
+			truncated: true,
+			want:      map[string]bool{"alice": true, "bob": false, "carol": false},
+		},
+		{
+			name:      "truncated history with only a comment on the head clears",
+			reviews:   []ReviewNode{review("alice", "COMMENTED", "B")},
+			head:      "B",
+			truncated: true,
+			want:      map[string]bool{"alice": false},
+		},
+		{
+			name:      "truncated history with only a comment on an old head leaves the user absent",
+			reviews:   []ReviewNode{review("alice", "COMMENTED", "A")},
+			head:      "B",
+			truncated: true,
+			want:      map[string]bool{},
+		},
+		{
+			name:      "truncated history with only a nil-commit comment leaves the user absent",
+			reviews:   []ReviewNode{review("alice", "COMMENTED", "")},
+			head:      "B",
+			truncated: true,
+			want:      map[string]bool{},
+		},
+		{
+			name:    "untruncated history with only a comment on an old head is false",
+			reviews: []ReviewNode{review("alice", "COMMENTED", "A")},
+			head:    "B",
+			want:    map[string]bool{"alice": false},
+		},
+		{
+			name:      "truncated history with a dismissal in the window clears",
+			reviews:   []ReviewNode{review("alice", "DISMISSED", "A")},
+			head:      "B",
+			truncated: true,
+			want:      map[string]bool{"alice": false},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reviews := ReviewsData{Nodes: tt.reviews, PageInfo: ReviewsPageInfo{HasPreviousPage: tt.truncated}}
+			got := attentionByUser(reviews, tt.head)
+			if len(got) != len(tt.want) {
+				t.Fatalf("attentionByUser() = %v, want %v", got, tt.want)
+			}
+			for login, want := range tt.want {
+				if actual, ok := got[login]; !ok || actual != want {
+					t.Errorf("attentionByUser()[%q] = %v (present=%v), want %v", login, actual, ok, want)
+				}
+			}
+		})
+	}
+}
+
+func TestFetchReviewDataForRepo_PopulatesAttentionAndHead(t *testing.T) {
+	body := `{"data":{"pr0":{"pullRequest":{"number":7,"state":"MERGED","headRefOid":"B","isDraft":true,"reviews":{"nodes":[
+		{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","commit":{"oid":"A"}},
+		{"author":{"login":"bob"},"state":"APPROVED","commit":{"oid":"B"}},
+		{"author":{"login":"carol"},"state":"CHANGES_REQUESTED","commit":{"oid":"B"}}
+	]}}}}}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	results, err := client.fetchReviewDataForRepo(context.Background(), []PullRequest{{Owner: "acme", Repo: "example", Number: 7}})
+	if err != nil {
+		t.Fatalf("fetchReviewDataForRepo failed: %v", err)
+	}
+	data := results["acme/example/7"]
+	if data == nil {
+		t.Fatalf("expected result for acme/example/7, got %v", results)
+	}
+	if data.HeadOID != "B" {
+		t.Errorf("HeadOID = %q, want B", data.HeadOID)
+	}
+	if !data.IsDraft {
+		t.Errorf("IsDraft = false, want true from the same response as the head")
+	}
+	if data.State != "MERGED" {
+		t.Errorf("State = %q, want MERGED from the same response as the head", data.State)
+	}
+	if data.ApprovalCount != 1 || data.UserReviews["alice"] != "CHANGES_REQUESTED" {
+		t.Errorf("existing review reduction changed: approvals=%d userReviews=%v", data.ApprovalCount, data.UserReviews)
+	}
+	if !data.AttentionByUser["alice"] {
+		t.Errorf("expected alice to need attention, got %v", data.AttentionByUser)
+	}
+	if v, ok := data.AttentionByUser["bob"]; !ok || v {
+		t.Errorf("expected bob present and false, got %v (present=%v)", v, ok)
+	}
+	if v, ok := data.AttentionByUser["carol"]; !ok || v {
+		t.Errorf("expected carol (requested changes on the head) present and false, got %v (present=%v)", v, ok)
+	}
+}
+
+func TestFetchReviewDataForRepo_TruncatedHistoryLeavesUndecidedUsersUnknown(t *testing.T) {
+	body := `{"data":{"pr0":{"pullRequest":{"number":7,"headRefOid":"B","isDraft":false,"reviews":{
+		"pageInfo":{"hasPreviousPage":true},
+		"nodes":[
+			{"author":{"login":"alice"},"state":"COMMENTED","commit":{"oid":"A"}},
+			{"author":{"login":"bob"},"state":"APPROVED","commit":{"oid":"A"}}
+		]}}}}}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	results, err := client.fetchReviewDataForRepo(context.Background(), []PullRequest{{Owner: "acme", Repo: "example", Number: 7}})
+	if err != nil {
+		t.Fatalf("fetchReviewDataForRepo failed: %v", err)
+	}
+	data := results["acme/example/7"]
+	if data == nil {
+		t.Fatalf("expected result for acme/example/7, got %v", results)
+	}
+	if _, ok := data.AttentionByUser["alice"]; ok {
+		t.Errorf("expected alice absent when her decision may be outside the window, got %v", data.AttentionByUser)
+	}
+	if v, ok := data.AttentionByUser["bob"]; !ok || v {
+		t.Errorf("expected bob present and false, got %v (present=%v)", v, ok)
+	}
+	if data.UserReviews["alice"] != "COMMENTED" {
+		t.Errorf("existing review reduction changed: userReviews=%v", data.UserReviews)
+	}
+}
+
+func TestFetchReviewDataForRepo_TruncationWarnsOncePerHead(t *testing.T) {
+	head := "B"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"pr0":{"pullRequest":{"number":7,"headRefOid":"` + head + `","reviews":{
+			"pageInfo":{"hasPreviousPage":true},
+			"nodes":[{"author":{"login":"alice"},"state":"COMMENTED","commit":{"oid":"A"}}]}}}}}`))
+	}))
+	defer ts.Close()
+
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+	prs := []PullRequest{{Owner: "acme", Repo: "example", Number: 7}}
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	for i := 0; i < 3; i++ {
+		if _, err := client.fetchReviewDataForRepo(context.Background(), prs); err != nil {
+			t.Fatalf("fetchReviewDataForRepo failed: %v", err)
+		}
+	}
+	if n := strings.Count(buf.String(), "review history truncated"); n != 1 {
+		t.Fatalf("expected one truncation warning for an unchanged head, got %d:\n%s", n, buf.String())
+	}
+
+	head = "C"
+	if _, err := client.fetchReviewDataForRepo(context.Background(), prs); err != nil {
+		t.Fatalf("fetchReviewDataForRepo failed: %v", err)
+	}
+	if n := strings.Count(buf.String(), "review history truncated"); n != 2 {
+		t.Fatalf("expected a second truncation warning after the head moved, got %d:\n%s", n, buf.String())
 	}
 }
 

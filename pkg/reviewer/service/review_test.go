@@ -1,18 +1,47 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/types"
 )
+
+type cancelAfterSpawnSpawner struct {
+	proc   *fakeProcess
+	cancel context.CancelFunc
+}
+
+type staticProcessSpawner struct{ proc SpawnedProcess }
+
+func (s *staticProcessSpawner) Spawn(context.Context, string, []string, string) (SpawnedProcess, error) {
+	return s.proc, nil
+}
+
+type panicStdoutProcess struct{}
+
+func (*panicStdoutProcess) Stdout() io.Reader { panic("stdout unavailable") }
+func (*panicStdoutProcess) Stderr() io.Reader { return strings.NewReader("") }
+func (*panicStdoutProcess) Wait() error       { return nil }
+func (*panicStdoutProcess) Kill() error       { return nil }
+
+func (s *cancelAfterSpawnSpawner) Spawn(context.Context, string, []string, string) (SpawnedProcess, error) {
+	s.cancel()
+	return s.proc, nil
+}
 
 // MockGithubClient is a mock implementation of the github.Client interface.
 type MockGithubClient struct {
@@ -29,6 +58,585 @@ type MockGithubClient struct {
 	GetUserReviewStateFunc func(token, owner, repo string, prNumber int, username string) (string, error)
 	GetPRCommentsFunc      func(token, owner, repo string, prNumber int) ([]github.PRComment, error)
 	GetCurrentUserFunc     func(token string) (github.User, error)
+}
+
+func TestRunPromptsEmitsStartedAndTerminalEventsForDrawsAndRetries(t *testing.T) {
+	var callsMu sync.Mutex
+	calls := map[string]int{}
+	mockSmartLLM := &MockLLMClient{
+		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
+			callsMu.Lock()
+			calls[prompt]++
+			call := calls[prompt]
+			callsMu.Unlock()
+			if prompt == "retry" && call == 1 {
+				return "not json", 11, 7, 18, nil
+			}
+			return `[{"file_path":"main.go","line_number":1,"comment_body":"ok"}]`, 11, 7, 18, nil
+		},
+	}
+
+	var eventsMu sync.Mutex
+	var events []ProviderAttemptEvent
+	observer := func(event ProviderAttemptEvent) error {
+		eventsMu.Lock()
+		events = append(events, event)
+		eventsMu.Unlock()
+		return errors.New("telemetry unavailable") // best-effort: review must continue
+	}
+	service := NewService(&MockGithubClient{}, mockSmartLLM, nil)
+	result := service.runPrompts(context.Background(), PerformReviewConfig{AttemptObserver: observer}, []Prompt{
+		{Name: "retry", Content: "retry"},
+		{Name: "clean", Content: "clean"},
+	}, service.parseAIResponse)
+
+	assert.Equal(t, int64(2), result.SuccessCount)
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	assert.Len(t, events, 6, "three actual provider calls must each emit started + terminal")
+	byKey := map[string][]ProviderAttemptEvent{}
+	for _, event := range events {
+		key := fmt.Sprintf("%d/%d", event.InvocationNumber, event.AttemptNumber)
+		byKey[key] = append(byKey[key], event)
+		assert.Equal(t, "first_pass", event.Stage)
+		assert.Equal(t, "google", event.Provider)
+		assert.Equal(t, "gemini_api", event.Backend)
+	}
+	assert.Len(t, byKey["1/1"], 2)
+	assert.Len(t, byKey["1/2"], 2)
+	assert.Len(t, byKey["2/1"], 2)
+	for key, lifecycle := range byKey {
+		assert.Equal(t, "started", lifecycle[0].Status, key)
+		assert.NotNil(t, lifecycle[0].StartedAt, key)
+		assert.Nil(t, lifecycle[0].CompletedAt, key)
+		assert.Equal(t, "completed", lifecycle[1].Status, key)
+		assert.NotNil(t, lifecycle[1].CompletedAt, key)
+		assert.Equal(t, int64(11), lifecycle[1].InputTokens, key)
+		assert.Equal(t, int64(7), lifecycle[1].OutputTokens, key)
+		assert.Equal(t, int64(18), lifecycle[1].TotalTokens, key)
+	}
+	assert.Equal(t, "parse_error", byKey["1/1"][1].StopReason)
+	assert.Equal(t, "response_parse_failed", byKey["1/1"][1].ErrorCode)
+	assert.Equal(t, "completed", byKey["1/2"][1].StopReason)
+}
+
+func TestRunPromptsUsePerRunFirstPassClientAndIdentity(t *testing.T) {
+	response := `[{"file_path":"main.go","line_number":1,"comment_body":"ok"}]`
+	var defaultCalls, overrideCalls int64
+	defaultClient := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			atomic.AddInt64(&defaultCalls, 1)
+			return response, 0, 0, 0, nil
+		},
+	}
+	overrideClient := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			atomic.AddInt64(&overrideCalls, 1)
+			return response, 0, 0, 0, nil
+		},
+	}
+
+	var eventsMu sync.Mutex
+	var events []ProviderAttemptEvent
+	service := NewService(&MockGithubClient{}, defaultClient, nil)
+	result := service.runPrompts(context.Background(), PerformReviewConfig{
+		FirstPassClient: overrideClient,
+		FirstPass:       &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5"},
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			eventsMu.Lock()
+			events = append(events, event)
+			eventsMu.Unlock()
+			return nil
+		},
+	}, []Prompt{
+		{Name: "one", Content: "one"},
+		{Name: "two", Content: "two"},
+	}, service.parseAIResponse)
+
+	assert.Equal(t, int64(2), result.SuccessCount)
+	assert.Zero(t, atomic.LoadInt64(&defaultCalls))
+	assert.Equal(t, int64(2), atomic.LoadInt64(&overrideCalls))
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	require.NotEmpty(t, events)
+	for _, event := range events {
+		assert.Equal(t, "anthropic", event.Provider)
+		assert.Equal(t, "anthropic_api", event.Backend)
+		assert.Equal(t, "claude-sonnet-5", event.RequestedModel)
+	}
+}
+
+func TestLaunchStaggerGatesOnClaudeFirstPass(t *testing.T) {
+	svc := NewService(&MockGithubClient{}, &MockLLMClient{}, nil)
+	claudeInfo := &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5", CacheStaggerSec: 8}
+
+	assert.Equal(t, 8*time.Second, svc.launchStagger(PerformReviewConfig{FirstPass: claudeInfo}))
+	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{}),
+		"gemini service-wide identity keeps the historical stagger")
+	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{
+		FirstPass: &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5"},
+	}), "zero stagger disables the cache delay")
+	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{
+		FirstPass: &FirstPassInfo{Provider: "google", Backend: "gemini_api", Model: "gemini-3.1-pro-preview", CacheStaggerSec: 8},
+	}), "non-claude providers never cache-stagger")
+	assert.Equal(t, 250*time.Millisecond, svc.launchStagger(PerformReviewConfig{FirstPass: claudeInfo, Fast: true}),
+		"the fast path swaps to the gemini flash client")
+
+	claudeSvc := NewServiceWithFirstPass(&MockGithubClient{}, &MockLLMClient{}, nil,
+		FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5", CacheStaggerSec: 5})
+	assert.Equal(t, 5*time.Second, claudeSvc.launchStagger(PerformReviewConfig{}),
+		"service-wide identity applies when no per-run override is set")
+}
+
+func TestRunPromptsStaggersClaudeSampleStartsForPromptCache(t *testing.T) {
+	response := `[{"file_path":"main.go","line_number":1,"comment_body":"ok"}]`
+	client := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			return response, 0, 0, 0, nil
+		},
+	}
+
+	var eventsMu sync.Mutex
+	startedAt := map[int]time.Time{}
+	svc := NewService(&MockGithubClient{}, client, nil)
+	result := svc.runPrompts(context.Background(), PerformReviewConfig{
+		FirstPassClient: client,
+		FirstPass:       &FirstPassInfo{Provider: "anthropic", Backend: "anthropic_api", Model: "claude-sonnet-5", CacheStaggerSec: 1},
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Status == "started" {
+				eventsMu.Lock()
+				startedAt[event.InvocationNumber] = *event.StartedAt
+				eventsMu.Unlock()
+			}
+			return nil
+		},
+	}, []Prompt{
+		{Name: "standard#1", Content: "same prompt"},
+		{Name: "standard#2", Content: "same prompt"},
+		{Name: "standard#3", Content: "same prompt"},
+	}, svc.parseAIResponse)
+
+	assert.Equal(t, int64(3), result.SuccessCount)
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	require.Len(t, startedAt, 3)
+	// Tolerant lower bounds: the launch loop sleeps a full stagger between
+	// samples, so each first_pass_sample started_at trails the previous one.
+	assert.GreaterOrEqual(t, startedAt[2].Sub(startedAt[1]), 900*time.Millisecond)
+	assert.GreaterOrEqual(t, startedAt[3].Sub(startedAt[2]), 900*time.Millisecond)
+}
+
+func TestRunPromptsKeepsShortStaggerForNonClaudeSamples(t *testing.T) {
+	response := `[{"file_path":"main.go","line_number":1,"comment_body":"ok"}]`
+	client := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			return response, 0, 0, 0, nil
+		},
+	}
+
+	var eventsMu sync.Mutex
+	startedAt := map[int]time.Time{}
+	svc := NewService(&MockGithubClient{}, client, nil)
+	result := svc.runPrompts(context.Background(), PerformReviewConfig{
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Status == "started" {
+				eventsMu.Lock()
+				startedAt[event.InvocationNumber] = *event.StartedAt
+				eventsMu.Unlock()
+			}
+			return nil
+		},
+	}, []Prompt{
+		{Name: "standard#1", Content: "same prompt"},
+		{Name: "standard#2", Content: "same prompt"},
+	}, svc.parseAIResponse)
+
+	assert.Equal(t, int64(2), result.SuccessCount)
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	require.Len(t, startedAt, 2)
+	assert.Less(t, startedAt[2].Sub(startedAt[1]), 900*time.Millisecond)
+}
+
+func TestRunPromptsAbortsBeforeProviderOnDefinitiveObserverFence(t *testing.T) {
+	var providerCalls int
+	mockSmartLLM := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			providerCalls++
+			return `[]`, 0, 0, 0, nil
+		},
+	}
+	service := NewService(&MockGithubClient{}, mockSmartLLM, nil)
+	result := service.runPrompts(context.Background(), PerformReviewConfig{
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Status == "started" {
+				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
+			}
+			return nil
+		},
+	}, []Prompt{{Name: "fenced", Content: "prompt"}}, service.parseAIResponse)
+
+	assert.Zero(t, providerCalls)
+	assert.Zero(t, result.SuccessCount)
+	assert.ErrorIs(t, result.FirstError, ErrProviderAttemptAborted)
+}
+
+func TestPostProcessingEmitsSeparateClassificationAndSummaryAttempts(t *testing.T) {
+	mockFastLLM := &MockLLMClient{
+		GetReviewFunc: func(prompt string) (string, int32, int32, int32, error) {
+			if strings.Contains(prompt, "comprehensive summary") || strings.Contains(prompt, "testing summary") {
+				return "## Summary", 4, 5, 9, nil
+			}
+			return `{"RC-1":"CRITICAL"}`, 1, 2, 3, nil
+		},
+	}
+	var events []ProviderAttemptEvent
+	cfg := PerformReviewConfig{
+		Testing: true,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	}
+	service := NewService(nil, nil, mockFastLLM)
+	data := &PRData{PR: github.PR{Body: "PR body"}, Diff: "diff", FileContext: "context"}
+	comments := []types.LineComment{{FilePath: "main.go", LineNumber: 1, CommentBody: "bug"}}
+
+	result, err := service.handlePostReviewProcessing(context.Background(), cfg, data, comments)
+	assert.NoError(t, err)
+	assert.Len(t, result, 2)
+	assert.Len(t, events, 4)
+	assert.Equal(t, []string{"classification", "classification", "summary", "summary"}, []string{
+		events[0].Stage, events[1].Stage, events[2].Stage, events[3].Stage,
+	})
+	assert.Equal(t, "started", events[0].Status)
+	assert.Equal(t, "completed", events[1].Status)
+	assert.Equal(t, int64(1), events[1].InputTokens)
+	assert.Equal(t, int64(2), events[1].OutputTokens)
+	assert.Equal(t, int64(3), events[1].TotalTokens)
+	assert.Equal(t, "started", events[2].Status)
+	assert.Equal(t, "completed", events[3].Status)
+	assert.Equal(t, int64(4), events[3].InputTokens)
+	assert.Equal(t, int64(5), events[3].OutputTokens)
+	assert.Equal(t, int64(9), events[3].TotalTokens)
+}
+
+func TestPostProcessingPropagatesClassificationObserverFence(t *testing.T) {
+	providerCalls := 0
+	service := NewService(nil, nil, &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			providerCalls++
+			return `{"RC-1":"CRITICAL"}`, 0, 0, 0, nil
+		},
+	})
+	cfg := PerformReviewConfig{
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Stage == "classification" && event.Status == "started" {
+				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
+			}
+			return nil
+		},
+	}
+	data := &PRData{PR: github.PR{Body: "PR body"}, Diff: "diff", FileContext: "context"}
+	comments := []types.LineComment{{FilePath: "main.go", LineNumber: 1, CommentBody: "bug"}}
+
+	result, err := service.handlePostReviewProcessing(context.Background(), cfg, data, comments)
+
+	assert.Nil(t, result)
+	assert.ErrorIs(t, err, ErrProviderAttemptAborted)
+	assert.Zero(t, providerCalls, "the classification provider must not run after the observer fence")
+}
+
+func TestPostProcessingPropagatesSummaryObserverFence(t *testing.T) {
+	providerCalls := 0
+	service := NewService(nil, nil, &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			providerCalls++
+			return `{"RC-1":"CRITICAL"}`, 0, 0, 0, nil
+		},
+	})
+	cfg := PerformReviewConfig{
+		Testing: true,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Stage == "summary" && event.Status == "started" {
+				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
+			}
+			return nil
+		},
+	}
+	data := &PRData{PR: github.PR{Body: "PR body"}, Diff: "diff", FileContext: "context"}
+	comments := []types.LineComment{{FilePath: "main.go", LineNumber: 1, CommentBody: "bug"}}
+
+	result, err := service.handlePostReviewProcessing(context.Background(), cfg, data, comments)
+
+	assert.Nil(t, result)
+	assert.ErrorIs(t, err, ErrProviderAttemptAborted)
+	assert.Equal(t, 1, providerCalls, "classification runs, but the summary provider must be fenced")
+}
+
+func TestPerformReviewPropagatesPostProcessingObserverFence(t *testing.T) {
+	lineCommentCalls := 0
+	mockGithub := &MockGithubClient{
+		GetReviewPRFunc: func(string, string, string, int) (github.PR, error) {
+			return github.PR{Head: struct {
+				SHA string `json:"sha"`
+			}{SHA: "abc1234"}}, nil
+		},
+		GetPRDiffFunc: func(string, string, string, int) (string, error) {
+			return "diff", nil
+		},
+		PostLineCommentFunc: func(string, string, string, int, string, string, string, int) error {
+			lineCommentCalls++
+			return nil
+		},
+	}
+	mockSmartLLM := &MockLLMClient{
+		GetReviewStreamFunc: func(string, io.Writer) (string, int32, int32, int32, error) {
+			return `[{"file_path":"main.go","line_number":1,"comment_body":"bug"}]`, 0, 0, 0, nil
+		},
+	}
+	classificationCalls := 0
+	mockFastLLM := &MockLLMClient{
+		GetReviewFunc: func(string) (string, int32, int32, int32, error) {
+			classificationCalls++
+			return `{"RC-1":"CRITICAL"}`, 0, 0, 0, nil
+		},
+	}
+	service := NewService(mockGithub, mockSmartLLM, mockFastLLM)
+	cfg := PerformReviewConfig{
+		WithComments: true,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Stage == "classification" && event.Status == "started" {
+				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
+			}
+			return nil
+		},
+	}
+
+	result, err := service.PerformReviewWithContext(context.Background(), cfg)
+
+	assert.Nil(t, result)
+	assert.ErrorIs(t, err, ErrProviderAttemptAborted)
+	assert.Zero(t, classificationCalls)
+	assert.Zero(t, lineCommentCalls, "a fenced review must not post comments")
+}
+
+func TestRunAgentReviewEmitsStartedAndCompletedAttemptTelemetry(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-4-8"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"x"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{}),
+	}}
+	var events []ProviderAttemptEvent
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		Model: "claude-fable-5", Effort: "high",
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return errors.New("telemetry unavailable")
+		},
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.Len(t, events, 2)
+	started, completed := events[0], events[1]
+	assert.Equal(t, "started", started.Status)
+	assert.Equal(t, "agent", started.Stage)
+	assert.Nil(t, started.CompletedAt)
+	assert.Equal(t, "completed", completed.Status)
+	assert.Equal(t, "completed", completed.StopReason)
+	assert.Equal(t, "anthropic", completed.Provider)
+	assert.Equal(t, AgentBackendClaude, completed.Backend)
+	assert.Equal(t, "claude-fable-5", completed.RequestedModel)
+	assert.Equal(t, "claude-fable-5", completed.ResolvedModel)
+	assert.Equal(t, "high", completed.Effort)
+	assert.True(t, completed.Fallback)
+	assert.Equal(t, "claude-opus-4-8", completed.PrimaryServedModel)
+	assert.True(t, completed.ServingModelVerified)
+	assert.Equal(t, "stream", completed.ServedModelSource)
+	assert.Equal(t, 1, completed.AssistantTurns)
+	assert.Equal(t, "v1", completed.MatcherVersion)
+	assert.NotNil(t, completed.StartedAt)
+	assert.NotNil(t, completed.CompletedAt)
+}
+
+func TestRunAgentReviewEmitsTerminalSpawnFailure(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	spawner := &fakeSpawner{spawnErr: errors.New("exec unavailable")}
+	var events []ProviderAttemptEvent
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	}
+
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	require.Error(t, err)
+	require.Len(t, events, 2)
+	assert.Equal(t, "started", events[0].Status)
+	assert.Equal(t, "failed", events[1].Status)
+	assert.Equal(t, "spawn_failed", events[1].ErrorCode)
+	assert.NotNil(t, events[1].CompletedAt)
+	assert.Contains(t, events[1].ErrorSummary, "exec unavailable")
+}
+
+func TestRunAgentReviewAbortsBeforeSpawnOnDefinitiveObserverFence(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	spawner := &fakeSpawner{}
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			if event.Status == "started" {
+				return fmt.Errorf("%w: lease lost", ErrProviderAttemptAborted)
+			}
+			return nil
+		},
+	}
+
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	assert.ErrorIs(t, err, ErrProviderAttemptAborted)
+	assert.Empty(t, spawner.name, "provider spawned despite ownership fence")
+}
+
+func TestRunAgentReviewClassifiesExternalCancellation(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	ctx, cancel := context.WithCancel(context.Background())
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(""), stderr: &bytes.Buffer{},
+		waitErr: errors.New("signal: killed"), killCh: make(chan struct{}),
+	}
+	spawner := &cancelAfterSpawnSpawner{proc: proc, cancel: cancel}
+	var events []ProviderAttemptEvent
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	}
+
+	_, err := RunAgentReview(ctx, cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	require.Error(t, err)
+	require.Len(t, events, 2)
+	terminal := events[1]
+	assert.Equal(t, "failed", terminal.Status)
+	assert.Equal(t, "cancelled", terminal.StopReason)
+	assert.Equal(t, "context_canceled", terminal.ErrorCode)
+}
+
+// TestRunAgentReviewClassifiesStreamErrorOverExitStatus — the CLI reports API
+// failures as a structured result event and then exits non-zero; the stream
+// error must win classification so provider-side failures don't collapse into
+// a generic process-exit error.
+func TestRunAgentReviewClassifiesStreamErrorOverExitStatus(t *testing.T) {
+	cases := []struct {
+		name           string
+		streamError    string
+		wantStopReason string
+		wantErrorCode  string
+	}{
+		{
+			name:           "quota exhausted",
+			streamError:    "API Error: 400 You have reached your specified API usage limits. You will regain access on 2026-09-01 at 00:00 UTC.",
+			wantStopReason: "provider_quota",
+			wantErrorCode:  "provider_quota_exhausted",
+		},
+		{
+			name:           "generic provider error",
+			streamError:    "API Error: 500 Internal server error.",
+			wantStopReason: "provider_error",
+			wantErrorCode:  "provider_error",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bare, sha := setupLocalBareRepo(t)
+			cloneRoot := t.TempDir()
+			seedAgentCache(t, cloneRoot, "acme", "example", bare)
+			stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
+{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"` + tc.streamError + `"}]}}
+{"type":"result","subtype":"success","is_error":true,"result":"` + tc.streamError + `"}
+`
+			spawner := &fakeSpawner{proc: &fakeProcess{
+				stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{},
+				waitErr: errors.New("exit status 1"), killCh: make(chan struct{}),
+			}}
+			var events []ProviderAttemptEvent
+			cfg := AgentConfig{
+				CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+				AttemptObserver: func(event ProviderAttemptEvent) error {
+					events = append(events, event)
+					return nil
+				},
+			}
+
+			_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "CLI reported error in stream")
+			require.Len(t, events, 2)
+			terminal := events[1]
+			assert.Equal(t, "failed", terminal.Status)
+			assert.Equal(t, tc.wantStopReason, terminal.StopReason)
+			assert.Equal(t, tc.wantErrorCode, terminal.ErrorCode)
+			assert.Contains(t, terminal.ErrorSummary, tc.streamError)
+		})
+	}
+}
+
+func TestRunAgentReviewEmitsNoAttemptBeforeProviderSetup(t *testing.T) {
+	notDirectory := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(notDirectory, []byte("x"), 0o600))
+	var events []ProviderAttemptEvent
+	cfg := AgentConfig{
+		CloneRootDir: notDirectory, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	}
+	_, err := RunAgentReview(context.Background(), cfg, &fakeSpawner{}, "acme", "example", "main", 1, "deadbeef", nil)
+	require.Error(t, err)
+	assert.Empty(t, events)
+}
+
+func TestRunAgentReviewPanicEmitsFailedAttemptTelemetry(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	var events []ProviderAttemptEvent
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		AttemptObserver: func(event ProviderAttemptEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	}
+
+	defer func() {
+		require.NotNil(t, recover(), "RunAgentReview should preserve the provider panic")
+		require.Len(t, events, 2)
+		terminal := events[1]
+		assert.Equal(t, "failed", terminal.Status)
+		assert.Equal(t, "panic", terminal.StopReason)
+		assert.Equal(t, "execution_panicked", terminal.ErrorCode)
+	}()
+	_, _ = RunAgentReview(context.Background(), cfg, &staticProcessSpawner{proc: &panicStdoutProcess{}}, "acme", "example", "main", 1, sha, nil)
+	t.Fatal("expected provider panic")
 }
 
 func (m *MockGithubClient) PostPRComment(token, owner, repo string, prNumber int, body string) error {
@@ -183,7 +791,7 @@ func TestPerformReview_FallbackComment_WithComments_False(t *testing.T) {
 	assert.False(t, postCommentCalled, "PostPRComment should not have been called")
 }
 
-func TestPerformReview_FallbackComment_WithComments_True(t *testing.T) {
+func TestPerformReview_DoesNotPostNoIssuesWhenAllRequestsFail(t *testing.T) {
 	// Arrange
 	mockGithub := &MockGithubClient{
 		GetReviewPRFunc: func(token, owner, repo string, prNumber int) (github.PR, error) {
@@ -193,9 +801,9 @@ func TestPerformReview_FallbackComment_WithComments_True(t *testing.T) {
 			return "diff", nil
 		},
 	}
-	postCommentCalled := false
+	var postedBodies []string
 	mockGithub.PostPRCommentFunc = func(token, owner, repo string, prNumber int, body string) error {
-		postCommentCalled = true
+		postedBodies = append(postedBodies, body)
 		return nil
 	}
 
@@ -213,7 +821,35 @@ func TestPerformReview_FallbackComment_WithComments_True(t *testing.T) {
 
 	// Assert
 	assert.Error(t, err)
-	assert.True(t, postCommentCalled, "PostPRComment should have been called")
+	assert.NotContains(t, postedBodies, "AI review completed without finding any specific issues to comment on.",
+		"a failed review must not claim that no issues were found")
+}
+
+func TestPerformReview_FallbackCommentAfterSuccessfulEmptyReview(t *testing.T) {
+	mockGithub := &MockGithubClient{
+		GetReviewPRFunc: func(token, owner, repo string, prNumber int) (github.PR, error) {
+			return github.PR{}, nil
+		},
+		GetPRDiffFunc: func(token, owner, repo string, prNumber int) (string, error) {
+			return "diff", nil
+		},
+	}
+	postCommentCalled := false
+	mockGithub.PostPRCommentFunc = func(token, owner, repo string, prNumber int, body string) error {
+		postCommentCalled = true
+		return nil
+	}
+	mockLLM := &MockLLMClient{
+		GetReviewStreamFunc: func(prompt string, w io.Writer) (string, int32, int32, int32, error) {
+			return `[]`, 0, 0, 0, nil
+		},
+	}
+
+	service := NewService(mockGithub, mockLLM, mockLLM)
+	_, err := service.PerformReview(PerformReviewConfig{WithComments: true})
+
+	assert.NoError(t, err)
+	assert.True(t, postCommentCalled, "a successful empty review should report that no issues were found")
 }
 
 func TestPerformReview_LineComments_WithComments_False(t *testing.T) {
@@ -900,7 +1536,7 @@ func TestGenerateComprehensiveSummary(t *testing.T) {
 		},
 	}
 
-	summary, err := service.generateComprehensiveSummary(comments, "PR body", "diff content")
+	summary, err := service.generateComprehensiveSummary(PerformReviewConfig{}, comments, "PR body", "diff content")
 
 	assert.NoError(t, err)
 	assert.Contains(t, summary, "Test Coverage Analysis")

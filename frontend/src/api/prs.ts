@@ -41,10 +41,18 @@ export interface TriggerReviewParams {
   owner: string;
   repo: string;
   number: number;
+  /** Post the review to the GitHub PR. Omitted or true = post; false = dashboard only. */
+  publish?: boolean;
+}
+
+// The server treats a missing key as "publish"; sending publish: undefined
+// would serialize to nothing anyway, but dropping it keeps the body explicit.
+function reviewRequestBody({ publish, ...rest }: TriggerReviewParams): Record<string, unknown> {
+  return publish === undefined ? rest : { ...rest, publish };
 }
 
 export async function triggerReview(params: TriggerReviewParams): Promise<{ status: string }> {
-  return apiPost<{ status: string }>('/api/prs/trigger-review', params);
+  return apiPost<{ status: string }>('/api/prs/trigger-review', reviewRequestBody(params));
 }
 
 export interface GenerateReviewResponse {
@@ -64,5 +72,5 @@ export interface GenerateReviewResponse {
 // the only origin that claims the PR into the Requested by Me section.
 // API/skill callers omit it and stay off the requester's dashboard.
 export async function generateReview(params: TriggerReviewParams): Promise<GenerateReviewResponse> {
-  return apiPost<GenerateReviewResponse>('/api/prs/generate-review', { ...params, source: 'form' });
+  return apiPost<GenerateReviewResponse>('/api/prs/generate-review', { ...reviewRequestBody(params), source: 'form' });
 }
