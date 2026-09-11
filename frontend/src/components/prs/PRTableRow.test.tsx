@@ -1,19 +1,23 @@
 import { cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PR } from '@/types/pr';
-import { PRTableRow } from './PRTableRow';
+import { PRTableRow, type PRRowVariant } from './PRTableRow';
 
-const { triggerMutate, deleteMutate, setHiddenMutate, trackMock } = vi.hoisted(() => ({
+const { triggerMutate, deleteMutate, setHiddenMutate, trackMock, useSettingsMock } = vi.hoisted(() => ({
   triggerMutate: vi.fn(),
   deleteMutate: vi.fn(),
   setHiddenMutate: vi.fn(),
   trackMock: vi.fn(),
+  useSettingsMock: vi.fn(),
 }));
 
 vi.mock('@/hooks/usePRs', () => ({
   useDeletePR: () => ({ mutate: deleteMutate, isPending: false }),
   useSetPRHidden: () => ({ mutate: setHiddenMutate, isPending: false }),
   useTriggerReview: () => ({ mutate: triggerMutate, isPending: false }),
+}));
+vi.mock('@/hooks/useSettings', () => ({
+  useSettings: () => useSettingsMock(),
 }));
 vi.mock('@/hooks/useTelemetry', () => ({
   useTelemetry: () => ({ track: trackMock }),
@@ -23,9 +27,19 @@ vi.mock('@/components/common', () => ({
 }));
 vi.mock('./CIStatusIndicator', () => ({ CIStatusIndicator: () => <span>ci</span> }));
 vi.mock('./NotesCell', () => ({ NotesCell: () => <span>notes</span> }));
-vi.mock('./RowActionsMenu', () => ({ RowActionsMenu: () => <span data-testid="actions" /> }));
+vi.mock('./RowActionsMenu', () => ({
+  RowActionsMenu: (props: { publishAllowed: boolean; onTriggerReview: (publish: boolean) => void }) => (
+    <span data-testid="actions" data-publish-allowed={String(props.publishAllowed)}>
+      <button type="button" onClick={() => props.onTriggerReview(false)}>actions-dashboard-only</button>
+    </span>
+  ),
+}));
 vi.mock('./ReviewLinkMenu', () => ({
-  ReviewLinkMenu: () => <span data-testid="review-link-menu" />,
+  ReviewLinkMenu: (props: { publishAllowed: boolean; onTriggerReview: (publish: boolean) => void }) => (
+    <span data-testid="review-link-menu" data-publish-allowed={String(props.publishAllowed)}>
+      <button type="button" onClick={() => props.onTriggerReview(true)}>menu-post</button>
+    </span>
+  ),
 }));
 
 const makePR = (partial: Partial<PR> = {}): PR => ({
@@ -56,17 +70,23 @@ const makePR = (partial: Partial<PR> = {}): PR => ({
   ...partial,
 });
 
-const renderRow = (pr: PR) =>
+const renderRow = (pr: PR, variant: PRRowVariant = 'default') =>
   render(
     <table>
       <tbody>
-        <PRTableRow pr={pr} />
+        <PRTableRow pr={pr} variant={variant} />
       </tbody>
     </table>
   );
 
+const generateButton = () => screen.getByRole('button', { name: /^🔄 Generate$/ });
+const queryGenerateButton = () => screen.queryByRole('button', { name: /^🔄 Generate$/ });
+
 describe('PRTableRow review cell', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+  });
   afterEach(() => cleanup());
 
   it('shows "Generating…" in yellow (gemini) while a Gemini review runs', () => {
@@ -94,10 +114,10 @@ describe('PRTableRow review cell', () => {
     expect(screen.queryByText(/Generating/)).toBeNull();
   });
 
-  it('shows a Generate button when a PR has no review yet', () => {
+  it('shows a Generate split button when a PR has no review yet', () => {
     renderRow(makePR({ status: 'pending', review_url: '' }));
-    const btn = screen.getByRole('button', { name: /generate/i });
-    expect(btn).toBeTruthy();
+    expect(generateButton()).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'More generate options' })).toBeTruthy();
     expect(screen.queryByTestId('review-link-menu')).toBeNull();
     expect(screen.queryByText(/Generating/)).toBeNull();
   });
@@ -105,43 +125,148 @@ describe('PRTableRow review cell', () => {
   it('shows Generate (not the review menu) once a stale review has been cleared to pending', () => {
     // A new commit resets the PR to pending and clears review_url server-side.
     renderRow(makePR({ status: 'pending', review_url: '', last_reviewed_at: null }));
-    expect(screen.getByRole('button', { name: /generate/i })).toBeTruthy();
+    expect(generateButton()).toBeTruthy();
     expect(screen.queryByTestId('review-link-menu')).toBeNull();
   });
 
-  it('triggers a review when Generate is clicked', () => {
+  it('triggers a published review when Generate is clicked and the author is in the pilot', () => {
     const pr = makePR({ status: 'pending', review_url: '' });
     renderRow(pr);
-    fireEvent.click(screen.getByRole('button', { name: /generate/i }));
+    fireEvent.click(generateButton());
     expect(triggerMutate).toHaveBeenCalledTimes(1);
-    expect(triggerMutate).toHaveBeenCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number });
+    expect(triggerMutate).toHaveBeenCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: true });
+    expect(trackMock).toHaveBeenCalledWith('trigger_review', {
+      pr_owner: pr.owner,
+      pr_repo: pr.repo,
+      pr_number: pr.number,
+      publish: true,
+    });
+  });
+
+  it('sends publish=false when the dashboard-only option is chosen from the split menu', () => {
+    const pr = makePR({ status: 'pending', review_url: '' });
+    renderRow(pr);
+    fireEvent.click(screen.getByRole('button', { name: 'More generate options' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /generate review HTML only/i }));
+    expect(triggerMutate).toHaveBeenCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: false });
+    expect(trackMock).toHaveBeenCalledWith('trigger_review', expect.objectContaining({ publish: false }));
+  });
+
+  it('defaults Generate to dashboard-only when the author is outside the pilot', () => {
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: 'bob,carol' } });
+    const pr = makePR({ status: 'pending', review_url: '', author: 'alice' });
+    renderRow(pr);
+    fireEvent.click(generateButton());
+    expect(triggerMutate).toHaveBeenCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: false });
+    fireEvent.click(screen.getByRole('button', { name: 'More generate options' }));
+    expect((screen.getByRole('menuitem', { name: /generate and post pr comment/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('passes publishAllowed to the review menu and actions menu', () => {
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: 'Alice' } });
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', author: 'alice' }));
+    expect(screen.getByTestId('review-link-menu').getAttribute('data-publish-allowed')).toBe('true');
+    expect(screen.getByTestId('actions').getAttribute('data-publish-allowed')).toBe('true');
+    cleanup();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: 'bob' } });
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', author: 'alice' }));
+    expect(screen.getByTestId('review-link-menu').getAttribute('data-publish-allowed')).toBe('false');
+    expect(screen.getByTestId('actions').getAttribute('data-publish-allowed')).toBe('false');
+  });
+
+  it('treats settings that have not loaded yet as allowed so the control does not flicker', () => {
+    useSettingsMock.mockReturnValue({ data: undefined });
+    const pr = makePR({ status: 'pending', review_url: '' });
+    renderRow(pr);
+    fireEvent.click(generateButton());
+    expect(triggerMutate).toHaveBeenCalledWith(expect.objectContaining({ publish: true }));
+  });
+
+  it('treats a loaded settings payload without the field as nobody allowed', () => {
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true } });
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html' }));
+    expect(screen.getByTestId('review-link-menu').getAttribute('data-publish-allowed')).toBe('false');
+  });
+
+  it('forwards the publish flag chosen inside the review and actions menus', () => {
+    const pr = makePR({ status: 'completed', review_url: '/reviews/x.html' });
+    renderRow(pr);
+    fireEvent.click(screen.getByRole('button', { name: 'menu-post' }));
+    expect(triggerMutate).toHaveBeenLastCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: true });
+    fireEvent.click(screen.getByRole('button', { name: 'actions-dashboard-only' }));
+    expect(triggerMutate).toHaveBeenLastCalledWith({ owner: pr.owner, repo: pr.repo, number: pr.number, publish: false });
   });
 
   it('does not show Generate while a review is generating', () => {
     renderRow(makePR({ status: 'generating' }));
-    expect(screen.queryByRole('button', { name: /generate/i })).toBeNull();
+    expect(queryGenerateButton()).toBeNull();
   });
 
   it('does not show Generate while the agent pass is running', () => {
     renderRow(makePR({ status: 'agent_reviewing' }));
-    expect(screen.queryByRole('button', { name: /generate/i })).toBeNull();
+    expect(queryGenerateButton()).toBeNull();
   });
 
   it('does not show Generate when an up-to-date review exists', () => {
     renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html' }));
-    expect(screen.queryByRole('button', { name: /generate/i })).toBeNull();
+    expect(queryGenerateButton()).toBeNull();
     expect(screen.queryByTestId('review-link-menu')).toBeTruthy();
   });
 
   it('does not show Generate when the review errored (ERROR shown instead)', () => {
     renderRow(makePR({ status: 'error', error_message: 'boom' }));
-    expect(screen.queryByRole('button', { name: /generate/i })).toBeNull();
+    expect(queryGenerateButton()).toBeNull();
     expect(screen.getByText('ERROR')).toBeTruthy();
   });
 
   it('falls back to Generate when status is completed but no review_url is present', () => {
     renderRow(makePR({ status: 'completed', review_url: '' }));
-    expect(screen.getByRole('button', { name: /generate/i })).toBeTruthy();
+    expect(generateButton()).toBeTruthy();
+  });
+});
+
+describe('PRTableRow default variant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+  });
+  afterEach(() => cleanup());
+
+  it('does not render the re-review badge, GitHub review link, or attention row class', () => {
+    renderRow(makePR({ needs_attention: true }));
+    expect(screen.queryByText('Updated since your review')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Review on GitHub' })).toBeNull();
+    expect(screen.getByRole('row').className).not.toContain('pr-table__row--attention');
+  });
+});
+
+describe('PRTableRow confidence cell', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+  });
+  afterEach(() => cleanup());
+
+  const confidenceCell = () => document.querySelector('td.pr-table__confidence') as HTMLElement;
+
+  it('renders the medal for a completed PR with a score', () => {
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', merge_confidence: 4 }));
+    const medal = screen.getByRole('img', { name: 'Merge confidence 4/5: Merge Ascendant' });
+    expect(confidenceCell().contains(medal)).toBe(true);
+    expect(medal.querySelector('svg')).toBeTruthy();
+  });
+
+  it('renders the dash for a pending PR with a null score', () => {
+    renderRow(makePR({ status: 'pending', merge_confidence: null }));
+    const dash = screen.getByRole('img', { name: 'No merge confidence yet' });
+    expect(confidenceCell().contains(dash)).toBe(true);
+    expect(dash.textContent).toBe('-');
+  });
+
+  it('renders the dash when the payload omits the field', () => {
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html' }));
+    expect(screen.getByRole('img', { name: 'No merge confidence yet' }).textContent).toBe('-');
+    expect(screen.queryByRole('img', { name: /^Merge confidence/ })).toBeNull();
   });
 });
 
@@ -152,6 +277,7 @@ describe('PRTableRow PR link click behavior', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
     assignSpy = vi.fn();
     // jsdom's window.location.assign is non-configurable, so replace the whole
     // location object for the duration of these tests.
@@ -226,5 +352,76 @@ describe('PRTableRow PR link click behavior', () => {
     const opens = trackMock.mock.calls.filter((c) => c[0] === 'open_pr_github');
     expect(opens).toHaveLength(2);
     expect(opens[0][1]).toMatchObject({ pr_owner: 'test-org', pr_repo: 'test-repo', pr_number: 1 });
+  });
+});
+
+describe('PRTableRow "Review on GitHub" link click behavior', () => {
+  const FILES_URL = 'https://github.com/test-org/test-repo/pull/1/files';
+  const originalLocation = window.location;
+  let assignSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+    assignSpy = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { href: originalLocation.href, origin: originalLocation.origin, assign: assignSpy },
+    });
+  });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+  });
+
+  const getLink = () => screen.getByRole('link', { name: 'Review on GitHub' });
+
+  it('advertises the same Alt/Option-click convention as the PR link', () => {
+    renderRow(makePR({ needs_attention: true }), 'attention');
+    expect(getLink().getAttribute('title')).toBe('Alt/Option-click to open in this tab');
+  });
+
+  it('on a plain click, does not intercept and lets the browser open a new tab', () => {
+    renderRow(makePR({ needs_attention: true }), 'attention');
+    const ev = createEvent.click(getLink());
+    fireEvent(getLink(), ev);
+    expect(ev.defaultPrevented).toBe(false);
+    expect(assignSpy).not.toHaveBeenCalled();
+  });
+
+  it('on Alt/Option+click, opens the files tab in the SAME tab', () => {
+    renderRow(makePR({ needs_attention: true }), 'attention');
+    const ev = createEvent.click(getLink(), { altKey: true });
+    fireEvent(getLink(), ev);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(assignSpy).toHaveBeenCalledTimes(1);
+    expect(assignSpy).toHaveBeenCalledWith(FILES_URL);
+  });
+
+  it('does not intercept Alt combined with another modifier', () => {
+    renderRow(makePR({ needs_attention: true }), 'attention');
+    const link = getLink();
+    for (const mods of [
+      { altKey: true, metaKey: true },
+      { altKey: true, ctrlKey: true },
+      { altKey: true, shiftKey: true },
+    ]) {
+      const ev = createEvent.click(link, mods);
+      fireEvent(link, ev);
+      expect(ev.defaultPrevented).toBe(false);
+    }
+    expect(assignSpy).not.toHaveBeenCalled();
+  });
+
+  it('tracks the click as open_pr_github labelled needs_re_review', () => {
+    renderRow(makePR({ needs_attention: true }), 'attention');
+    fireEvent.click(getLink());
+    expect(trackMock).toHaveBeenCalledWith('open_pr_github', {
+      pr_owner: 'test-org',
+      pr_repo: 'test-repo',
+      pr_number: 1,
+      label: 'needs_re_review',
+    });
   });
 });

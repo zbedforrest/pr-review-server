@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/go-github/v57/github"
 )
@@ -17,19 +18,25 @@ type ReviewCommentInput struct {
 }
 
 type IssueCommentInfo struct {
-	ID     int64
-	Author string
-	Body   string
+	ID          int64
+	Author      string
+	IsBot       bool
+	Association string // GitHub's author_association: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...
+	Body        string
+	CreatedAt   time.Time
 }
 
 type ReviewCommentInfo struct {
 	ID          int64
 	Author      string
+	AuthorID    int64
 	Body        string
 	Path        string
 	Line        int
 	StartLine   int
 	InReplyToID int64
+	ReviewID    int64
+	CreatedAt   time.Time
 }
 
 const listPageSize = 100
@@ -38,6 +45,10 @@ const listPageSize = 100
 // create response omits the comment ids, so they are read back from the
 // review and matched to the inputs by position, falling back to path+line.
 func (c *Client) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []ReviewCommentInput) (int64, []int64, error) {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return 0, nil, err
+	}
 	drafts := make([]*github.DraftReviewComment, 0, len(comments))
 	for _, in := range comments {
 		d := &github.DraftReviewComment{
@@ -60,7 +71,7 @@ func (c *Client) CreateReview(ctx context.Context, owner, repo string, number in
 	if body != "" {
 		req.Body = github.String(body)
 	}
-	review, _, err := c.gh.PullRequests.CreateReview(ctx, owner, repo, number, req)
+	review, _, err := gh.PullRequests.CreateReview(ctx, owner, repo, number, req)
 	if err != nil {
 		return 0, nil, fmt.Errorf("create review: %w", err)
 	}
@@ -72,7 +83,7 @@ func (c *Client) CreateReview(ctx context.Context, owner, repo string, number in
 	var created []*github.PullRequestComment
 	opts := &github.ListOptions{PerPage: listPageSize}
 	for {
-		page, resp, err := c.gh.PullRequests.ListReviewComments(ctx, owner, repo, number, reviewID, opts)
+		page, resp, err := gh.PullRequests.ListReviewComments(ctx, owner, repo, number, reviewID, opts)
 		if err != nil {
 			return reviewID, nil, fmt.Errorf("list review %d comments: %w", reviewID, err)
 		}
@@ -83,12 +94,21 @@ func (c *Client) CreateReview(ctx context.Context, owner, repo string, number in
 		opts.Page = resp.NextPage
 	}
 
+	// Match by body first: the caller authored every body and the per-review
+	// listing may omit line numbers. Path and line is the fallback.
 	used := make([]bool, len(created))
 	ids := make([]int64, len(comments))
 	for i, in := range comments {
-		if i < len(created) && !used[i] && created[i].GetPath() == in.Path && created[i].GetLine() == in.Line {
-			ids[i] = created[i].GetID()
-			used[i] = true
+		for j, rc := range created {
+			if !used[j] && rc.GetBody() == in.Body {
+				ids[i] = rc.GetID()
+				used[j] = true
+				break
+			}
+		}
+	}
+	for i, in := range comments {
+		if ids[i] != 0 {
 			continue
 		}
 		for j, rc := range created {
@@ -103,7 +123,11 @@ func (c *Client) CreateReview(ctx context.Context, owner, repo string, number in
 }
 
 func (c *Client) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (int64, error) {
-	created, _, err := c.gh.Issues.CreateComment(ctx, owner, repo, number, &github.IssueComment{Body: github.String(body)})
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return 0, err
+	}
+	created, _, err := gh.Issues.CreateComment(ctx, owner, repo, number, &github.IssueComment{Body: github.String(body)})
 	if err != nil {
 		return 0, fmt.Errorf("create issue comment: %w", err)
 	}
@@ -111,22 +135,30 @@ func (c *Client) CreateIssueComment(ctx context.Context, owner, repo string, num
 }
 
 func (c *Client) EditIssueComment(ctx context.Context, owner, repo string, commentID int64, body string) error {
-	if _, _, err := c.gh.Issues.EditComment(ctx, owner, repo, commentID, &github.IssueComment{Body: github.String(body)}); err != nil {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+	if _, _, err := gh.Issues.EditComment(ctx, owner, repo, commentID, &github.IssueComment{Body: github.String(body)}); err != nil {
 		return fmt.Errorf("edit issue comment %d: %w", commentID, err)
 	}
 	return nil
 }
 
 func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueCommentInfo, error) {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
 	var out []IssueCommentInfo
 	opts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: listPageSize}}
 	for {
-		page, resp, err := c.gh.Issues.ListComments(ctx, owner, repo, number, opts)
+		page, resp, err := gh.Issues.ListComments(ctx, owner, repo, number, opts)
 		if err != nil {
 			return nil, fmt.Errorf("list issue comments: %w", err)
 		}
 		for _, ic := range page {
-			out = append(out, IssueCommentInfo{ID: ic.GetID(), Author: ic.GetUser().GetLogin(), Body: ic.GetBody()})
+			out = append(out, IssueCommentInfo{ID: ic.GetID(), Author: ic.GetUser().GetLogin(), IsBot: ic.GetUser().GetType() == "Bot", Association: ic.GetAuthorAssociation(), Body: ic.GetBody(), CreatedAt: ic.GetCreatedAt().Time})
 		}
 		if resp.NextPage == 0 {
 			return out, nil
@@ -136,10 +168,14 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, numb
 }
 
 func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, number int) ([]ReviewCommentInfo, error) {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
 	var out []ReviewCommentInfo
 	opts := &github.PullRequestListCommentsOptions{ListOptions: github.ListOptions{PerPage: listPageSize}}
 	for {
-		page, resp, err := c.gh.PullRequests.ListComments(ctx, owner, repo, number, opts)
+		page, resp, err := gh.PullRequests.ListComments(ctx, owner, repo, number, opts)
 		if err != nil {
 			return nil, fmt.Errorf("list review comments: %w", err)
 		}
@@ -147,11 +183,14 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 			out = append(out, ReviewCommentInfo{
 				ID:          rc.GetID(),
 				Author:      rc.GetUser().GetLogin(),
+				AuthorID:    rc.GetUser().GetID(),
 				Body:        rc.GetBody(),
 				Path:        rc.GetPath(),
 				Line:        rc.GetLine(),
 				StartLine:   rc.GetStartLine(),
 				InReplyToID: rc.GetInReplyTo(),
+				ReviewID:    rc.GetPullRequestReviewID(),
+				CreatedAt:   rc.GetCreatedAt().Time,
 			})
 		}
 		if resp.NextPage == 0 {
@@ -161,13 +200,56 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 	}
 }
 
+// CreateIssueCommentReaction adds a reaction (for example "eyes") to a PR
+// conversation comment.
+func (c *Client) CreateIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, content string) error {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+	if _, _, err := gh.Reactions.CreateIssueCommentReaction(ctx, owner, repo, commentID, content); err != nil {
+		return fmt.Errorf("react to issue comment %d: %w", commentID, err)
+	}
+	return nil
+}
+
+// CreateCommentReaction adds a reaction (for example "+1") to a review
+// comment; GitHub treats an existing identical reaction as success.
+func (c *Client) CreateCommentReaction(ctx context.Context, owner, repo string, commentID int64, content string) error {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+	if _, _, err := gh.Reactions.CreatePullRequestCommentReaction(ctx, owner, repo, commentID, content); err != nil {
+		return fmt.Errorf("react to comment %d: %w", commentID, err)
+	}
+	return nil
+}
+
+// CreateReviewCommentReply posts a reply in the thread of a review comment.
+func (c *Client) CreateReviewCommentReply(ctx context.Context, owner, repo string, number int, commentID int64, body string) (int64, error) {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return 0, err
+	}
+	created, _, err := gh.PullRequests.CreateCommentInReplyTo(ctx, owner, repo, number, body, commentID)
+	if err != nil {
+		return 0, fmt.Errorf("reply to comment %d: %w", commentID, err)
+	}
+	return created.GetID(), nil
+}
+
 // GetPRFilePatches returns filename -> unified diff patch. Files GitHub
 // serves without a patch (binary, too large) are omitted.
 func (c *Client) GetPRFilePatches(ctx context.Context, owner, repo string, number int) (map[string]string, error) {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
 	out := map[string]string{}
 	opts := &github.ListOptions{PerPage: listPageSize}
 	for {
-		page, resp, err := c.gh.PullRequests.ListFiles(ctx, owner, repo, number, opts)
+		page, resp, err := gh.PullRequests.ListFiles(ctx, owner, repo, number, opts)
 		if err != nil {
 			return nil, fmt.Errorf("list pull request files: %w", err)
 		}

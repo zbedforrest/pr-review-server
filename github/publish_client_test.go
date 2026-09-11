@@ -141,3 +141,71 @@ func TestListReviewCommentsAndFilePatches(t *testing.T) {
 		t.Errorf("files without a patch must be omitted: %v", patches)
 	}
 }
+
+// The per-review comments endpoint may omit `line`; ids must still be matched
+// (by body, which the caller authored) instead of coming back as zero.
+func TestCreateReview_MatchesCommentIDsByBodyWhenLineIsMissing(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews"):
+			fmt.Fprint(w, `{"id": 9002, "state": "COMMENTED"}`)
+		case strings.Contains(r.URL.Path, "/reviews/9002/comments"):
+			fmt.Fprint(w, `[{"id": 41, "path": "a.go", "body": "second body"}, {"id": 42, "path": "a.go", "body": "first body"}]`)
+		default:
+			fmt.Fprint(w, `[]`)
+		}
+	}))
+	defer ts.Close()
+
+	c := NewTestClient(ts.URL, "bot")
+	_, ids, err := c.CreateReview(context.Background(), "o", "r", 1, "sha", "", []ReviewCommentInput{
+		{Path: "a.go", Line: 10, Body: "first body"},
+		{Path: "a.go", Line: 30, Body: "second body"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != 42 || ids[1] != 41 {
+		t.Fatalf("ids = %v, want [42 41] matched by body", ids)
+	}
+}
+
+func TestListReviewCommentsCarriesAuthorIDAndCreatedAt(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/example/pulls/7/comments" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		fmt.Fprint(w, `[{"id": 31, "in_reply_to_id": 30, "body": "Fixed", "user": {"id": 42, "login": "author"}, "created_at": "2026-09-08T12:01:00Z"}]`)
+	}))
+	defer ts.Close()
+
+	got, err := NewTestClient(ts.URL, "tester").ListReviewComments(context.Background(), "acme", "example", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].AuthorID != 42 || got[0].Author != "author" || got[0].CreatedAt.IsZero() || got[0].InReplyToID != 30 {
+		t.Fatalf("comments = %+v", got)
+	}
+}
+
+func TestCreateCommentReactionPostsThumbsUp(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/repos/acme/example/pulls/comments/31/reactions" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id": 77, "content": "+1"}`)
+	}))
+	defer ts.Close()
+
+	if err := NewTestClient(ts.URL, "tester").CreateCommentReaction(context.Background(), "acme", "example", 31, "+1"); err != nil {
+		t.Fatal(err)
+	}
+	if gotBody["content"] != "+1" {
+		t.Errorf("reaction body = %v", gotBody)
+	}
+}

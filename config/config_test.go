@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"reflect"
 	"testing"
 )
@@ -368,5 +369,66 @@ func assertStringsEqual(t *testing.T, got, want []string) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestLoadJiraTicketContext(t *testing.T) {
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net/")
+	t.Setenv("JIRA_EMAIL", "bot@acme.example")
+	t.Setenv("JIRA_API_TOKEN", "tok")
+	t.Setenv("JIRA_PROJECT_KEYS", " XO, ab ,,XO ")
+	cfg := Load()
+	if cfg.JiraBaseURL != "https://acme.atlassian.net" {
+		t.Errorf("JiraBaseURL = %q, want trailing slash trimmed", cfg.JiraBaseURL)
+	}
+	if cfg.JiraEmail != "bot@acme.example" || cfg.JiraAPIToken != "tok" {
+		t.Errorf("credentials not loaded: %q %q", cfg.JiraEmail, cfg.JiraAPIToken)
+	}
+	if got := cfg.JiraProjectKeys; len(got) != 2 || got[0] != "XO" || got[1] != "AB" {
+		t.Errorf("JiraProjectKeys = %v, want [XO AB]", got)
+	}
+	if !cfg.JiraEnabled() {
+		t.Error("JiraEnabled must be true with url, email and token set")
+	}
+}
+
+func TestLoadJiraDisabledUnlessAllThreeSet(t *testing.T) {
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("JIRA_EMAIL", "bot@acme.example")
+	t.Setenv("JIRA_API_TOKEN", "")
+	t.Setenv("JIRA_PROJECT_KEYS", "")
+	cfg := Load()
+	if cfg.JiraEnabled() {
+		t.Error("JiraEnabled must be false without a token")
+	}
+	if len(cfg.JiraProjectKeys) != 0 {
+		t.Errorf("JiraProjectKeys = %v, want empty", cfg.JiraProjectKeys)
+	}
+}
+
+func TestLoadAdminLoginsNormalizesAndLowercases(t *testing.T) {
+	t.Setenv("ADMIN_LOGINS", "Alice, bob")
+	assertStringsEqual(t, Load().AdminLogins, []string{"alice", "bob"})
+}
+
+func TestLoadAdminLoginsEmptyWhenUnsetOrBlank(t *testing.T) {
+	os.Unsetenv("ADMIN_LOGINS")
+	if got := Load().AdminLogins; len(got) != 0 {
+		t.Errorf("unset ADMIN_LOGINS = %v, want empty", got)
+	}
+	t.Setenv("ADMIN_LOGINS", " , ")
+	if got := Load().AdminLogins; len(got) != 0 {
+		t.Errorf("blank ADMIN_LOGINS = %v, want empty", got)
+	}
+}
+
+func TestMentionHandleCanBeDisabledWithAnEmptyValue(t *testing.T) {
+	t.Setenv("MENTION_HANDLE", "")
+	if got := getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server"); got != "" {
+		t.Fatalf("an explicitly empty handle must stay empty, got %q", got)
+	}
+	os.Unsetenv("MENTION_HANDLE")
+	if got := getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server"); got != "prism-pr-review-server" {
+		t.Fatalf("an unset handle takes the default, got %q", got)
 	}
 }

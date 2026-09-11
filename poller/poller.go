@@ -23,10 +23,12 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
+	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -107,10 +109,22 @@ type Poller struct {
 	reviewDir        string                    // Local storage path (used when GCS is not configured)
 	cacheUpdateFunc  func([]github.PullRequest)
 	EventFunc        func(eventType string, payload interface{})
+	UserEventFunc    func(userID int, eventType string, payload interface{})
 	StatusEventFunc  func()
 	triggerChan      chan struct{}
-	polling          bool
-	pollMutex        sync.Mutex
+
+	replyScanRunning atomic.Bool
+	replyScanCycle   atomic.Int64
+	replyLastScanned map[string]time.Time
+	replyLinkTried   map[string]time.Time
+	replySlots       chan struct{}
+	replyInFlight    publisher.ReplyInFlight
+
+	mentionScanRunning atomic.Bool
+	mentionScanCycle   atomic.Int64
+	mentionLastScanned map[string]time.Time
+	polling            bool
+	pollMutex          sync.Mutex
 	// Track active review processes for cancellation and monitoring
 	activeReviews map[string]ProcessInfo // prKey (owner/repo/number) -> ProcessInfo
 	reviewsMutex  sync.Mutex
@@ -133,6 +147,9 @@ type Poller struct {
 	pollCount int
 	// Agent-review subprocess spawner (nil-safe: defaults to the configured CLI).
 	agentSpawner service.Spawner
+	// Linked-ticket source for the agent prompt (nil-safe: defaults to Jira
+	// built from cfg when JiraEnabled; tests inject a fake).
+	ticketFetcher tickets.Fetcher
 	// compareFilesFn resolves the files changed between two commits of a repo
 	// for the carry-forward staleness filter (nil-safe: defaults to the GitHub
 	// compare API; tests inject a stub). ok=false means the comparison is
@@ -372,6 +389,11 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		agentConcurrent = fallbackAgentConcurrent
 	}
 	p.agentSlots = make(chan struct{}, agentConcurrent)
+	replyConcurrent := cfg.ReplyMaxConcurrent
+	if replyConcurrent <= 0 {
+		replyConcurrent = 1
+	}
+	p.replySlots = make(chan struct{}, replyConcurrent)
 	firstPassConcurrent := cfg.ReviewMaxFirstPassConcurrent
 	if firstPassConcurrent <= 0 {
 		firstPassConcurrent = fallbackReviewFirstPassConcurrent
@@ -473,21 +495,12 @@ const systemTelemetryUser = "prism_system"
 // systemTelemetryUser (telemetry_events.user_id is NOT NULL with an FK).
 // Best-effort.
 func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served string) {
-	user, err := p.db.GetUserByUsername(systemTelemetryUser)
-	if err == nil && user == nil {
-		user = &db.User{GitHubID: -1, GitHubUsername: systemTelemetryUser}
-		if err = p.db.CreateUser(user); err != nil {
-			// Concurrent fallbacks can race the first create (github_id is
-			// unique); the loser re-fetches the row the winner made.
-			user, err = p.db.GetUserByUsername(systemTelemetryUser)
-		}
-	}
-	if err != nil || user == nil {
-		log.Printf("[REVIEWER] WARN: could not resolve %s user for fallback telemetry: %v", systemTelemetryUser, err)
+	userID := p.systemTelemetryUserID()
+	if userID == 0 {
 		return
 	}
 	event := db.TelemetryEvent{
-		UserID:   user.ID,
+		UserID:   userID,
 		Action:   "agent_model_fallback",
 		Label:    fmt.Sprintf("requested=%s served=%s", requested, served),
 		PROwner:  pr.Owner,
@@ -497,6 +510,26 @@ func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served st
 	if err := p.db.CreateTelemetryEvents([]db.TelemetryEvent{event}); err != nil {
 		log.Printf("[REVIEWER] WARN: could not record fallback telemetry: %v", err)
 	}
+}
+
+// systemTelemetryUserID resolves (creating on first use) the reserved user
+// that owns server-emitted telemetry. Returns 0, after logging, when the
+// user cannot be resolved; callers then skip the event.
+func (p *Poller) systemTelemetryUserID() int {
+	user, err := p.db.GetUserByUsername(systemTelemetryUser)
+	if err == nil && user == nil {
+		user = &db.User{GitHubID: -1, GitHubUsername: systemTelemetryUser}
+		if err = p.db.CreateUser(user); err != nil {
+			// Concurrent writers can race the first create (github_id is
+			// unique); the loser re-fetches the row the winner made.
+			user, err = p.db.GetUserByUsername(systemTelemetryUser)
+		}
+	}
+	if err != nil || user == nil {
+		log.Printf("[TELEMETRY] WARN: could not resolve %s user: %v", systemTelemetryUser, err)
+		return 0
+	}
+	return user.ID
 }
 
 // isReviewInFlight reports whether a PR's status indicates an in-progress
@@ -555,6 +588,8 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		return nil, fmt.Errorf("agent review: get GitHub token: %w", tokenErr)
 	}
 	agentCfg := p.agentConfigForExecution(execution, gitToken)
+	ticketCtx := p.linkedTicketContext(ctx, pr, result.PRBody)
+	ticketCtx.applyTo(&agentCfg)
 	// Pass the PR's true base branch so the clone and the deterministic-layer
 	// diff (gates, bug memory, required checks) are computed against it. With
 	// "" the diff falls back to origin/HEAD, which inflates the changed-line
@@ -582,18 +617,13 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	// the first-pass findings, and evaluation against real release blockers
 	// showed the agent deleting correct first-pass catches it had argued itself
 	// out of. The merge keeps the agent as the canonical voice (its phrasing
-	// and SUMMARY win, and duplicates collapse into it) but re-admits
-	// first-pass CRITICALs the agent dropped, provenance-tagged. CRITICAL-only
-	// is deliberate noise control — loosen only with benchmark evidence.
-	firstPassCriticals := make([]types.LineComment, 0, len(result.Comments))
-	for _, c := range result.Comments {
-		if strings.EqualFold(strings.TrimSpace(c.Importance), "CRITICAL") && c.FilePath != "SUMMARY" {
-			firstPassCriticals = append(firstPassCriticals, c)
-		}
-	}
+	// and SUMMARY win, and duplicates collapse into it) but re-admits the
+	// first-pass claims the retention policy keeps active (criticals the agent
+	// did not confirm; see service.ApplyDispositions). Everything else the
+	// first pass said survives as inactive records appended after the merge.
 	sets := []service.FindingSet{
 		{Provenance: "agent", Comments: agentOut.Comments},
-		{Provenance: "first-pass", Comments: firstPassCriticals},
+		{Provenance: "first-pass", Comments: agentOut.FirstPassActive},
 		// Required-check escalations (empty unless REQUIRED_CHECKS is on):
 		// synthesized VIOLATED findings and unanswered memory re-admissions.
 		// Merging as a lower-priority set reuses the provenance note and the
@@ -621,10 +651,15 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		log.Printf("[REVIEWER] PR %d: carry-forward: from=%s carried_in=%d carried_dropped=%d",
 			pr.Number, carriedInfo.FromSHA, carriedInfo.CarriedIn, carriedInfo.CarriedDropped)
 	}
-	merged := service.MergeFindings(sets...)
+	merged, mergedRecords := service.MergeFindingsWithRecords(sets...)
 	service.EnforceFindingContractPolicy(merged)
+	records := append(mergedRecords, agentOut.Records...)
+	service.RemapMergeTargets(merged, records)
+	// The summary prose is rendered once references are final, so its
+	// "Fix first" names the findings that survived the merge.
+	service.RenderStructuredSummaries(merged)
 	readmitted := len(merged) - len(agentOut.Comments)
-	result.Comments = merged
+	result.Comments = append(merged, records...)
 	result.ComputeImportanceCounts()
 	log.Printf("[REVIEWER] PR %d: agent stage ok (clone=%s, log=%s, agent_comments=%d, readmitted_first_pass=%d, critical=%d, medium=%d, low=%d)",
 		pr.Number, agentOut.CloneDir, agentOut.LogPath, len(agentOut.Comments), readmitted,
@@ -635,6 +670,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 			agentOut.Checks.ChecksViolated, agentOut.Checks.ChecksEvidenceOK)
 	}
 
+	result.Checks = agentOut.Checks
 	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
 	if htmlContent == nil {
 		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
@@ -655,9 +691,82 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		},
 		// Copied (not aliased) so the no-swallow check reads the pre-merge
 		// alert set even if a later stage mutates the agent output.
-		GateAlerts: append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
-		Carried:    carriedInfo,
+		GateAlerts:    append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
+		Carried:       carriedInfo,
+		LinkedTickets: ticketCtx.keys(),
 	}, nil
+}
+
+// ---- Linked ticket context ------------------------------------------------
+//
+// The agent reviews a PR without knowing the intent recorded in the tickets
+// it references, so it flags deliberate decisions the author documented
+// elsewhere. linkedTicketContext gathers the PR's own title and body plus the
+// Jira tickets referenced directly in the title, body, or branch name. It is
+// strictly best-effort: any failure degrades to a ticketless prompt.
+
+const ticketFetchTimeout = 20 * time.Second
+
+type linkedTicketContext struct {
+	Title   string
+	Body    string
+	Tickets []tickets.Ticket
+}
+
+func (c linkedTicketContext) keys() []string {
+	if len(c.Tickets) == 0 {
+		return nil
+	}
+	keys := make([]string, len(c.Tickets))
+	for i, t := range c.Tickets {
+		keys[i] = t.Key
+	}
+	return keys
+}
+
+func (c linkedTicketContext) applyTo(cfg *service.AgentConfig) {
+	cfg.PRTitle, cfg.PRBody, cfg.LinkedTickets = c.Title, c.Body, c.Tickets
+}
+
+func (p *Poller) ticketFetcherOrDefault() tickets.Fetcher {
+	if p.ticketFetcher != nil {
+		return p.ticketFetcher
+	}
+	return &tickets.JiraFetcher{BaseURL: p.cfg.JiraBaseURL, Email: p.cfg.JiraEmail, APIToken: p.cfg.JiraAPIToken}
+}
+
+// linkedTicketContext always carries the PR title and body; tickets are
+// fetched only when Jira is configured. The GitHub refetch exists for the
+// branch name (and the body when the first pass did not supply one) and
+// shares the fetch timeout so the agent stage is delayed by at most
+// ticketFetchTimeout.
+func (p *Poller) linkedTicketContext(ctx context.Context, pr github.PullRequest, prBody string) linkedTicketContext {
+	out := linkedTicketContext{Title: pr.Title, Body: prBody}
+	if !p.cfg.JiraEnabled() {
+		return out
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, ticketFetchTimeout)
+	defer cancel()
+
+	branch := ""
+	if ghPR, _, err := p.ghClient.GetPR(fetchCtx, pr.Owner, pr.Repo, pr.Number); err != nil {
+		log.Printf("[TICKETS] %s/%s#%d: GetPR failed, extracting keys from title/body only: %v", pr.Owner, pr.Repo, pr.Number, err)
+	} else if ghPR != nil {
+		branch = ghPR.GetHead().GetRef()
+		if out.Title == "" {
+			out.Title = ghPR.GetTitle()
+		}
+		if out.Body == "" {
+			out.Body = ghPR.GetBody()
+		}
+	}
+	keys := tickets.ExtractKeys(p.cfg.JiraProjectKeys, out.Title, out.Body, branch)
+	if len(keys) == 0 {
+		return out
+	}
+	out.Tickets = tickets.FetchAll(fetchCtx, p.ticketFetcherOrDefault(), keys, log.Printf)
+	log.Printf("[TICKETS] %s/%s#%d: keys=%v fetched=%d", pr.Owner, pr.Repo, pr.Number, keys, len(out.Tickets))
+	return out
 }
 
 // ---- Cross-review carry-forward (CARRY_FORWARD_FINDINGS) -------------------
@@ -859,8 +968,8 @@ func cachedProjectionMetadata(pl *payload.Payload) (critical, medium, low int, v
 // assessment, and correctly yields a carry-less run rather than falling
 // through to an older, superseded review.
 func parseSidecarPayload(body []byte) (*payload.Payload, error) {
-	var pl payload.Payload
-	if err := json.Unmarshal(body, &pl); err != nil {
+	pl, err := payload.Decode(body)
+	if err != nil {
 		return nil, err
 	}
 	return &pl, nil
@@ -954,6 +1063,17 @@ func (p *Poller) broadcastPRUpdate(owner, repo string, number int) {
 	}
 }
 
+// broadcastPRUpdateToUser sends a pr_updated event only to one user's clients.
+func (p *Poller) broadcastPRUpdateToUser(userID int, owner, repo string, number int) {
+	if p.UserEventFunc != nil {
+		p.UserEventFunc(userID, "pr_updated", map[string]interface{}{
+			"owner":  owner,
+			"repo":   repo,
+			"number": number,
+		})
+	}
+}
+
 func (p *Poller) SetCacheUpdateFunc(f func([]github.PullRequest)) {
 	p.cacheUpdateFunc = f
 }
@@ -1040,6 +1160,19 @@ func (p *Poller) Start(ctx context.Context) {
 	// (burning tokens and writing review artifacts that shadow the primary
 	// deployment's for the same commits). DISABLE_POLLING takes precedence
 	// over leadership; manual triggers and on-demand reviews still work.
+	if !p.cfg.DisablePolling {
+		if p.cfg.MentionHandle != "" {
+			// Stamp the cutoff at boot, leader or not, so a request posted right
+			// after a deploy is not older than it once this instance starts scanning.
+			if _, err := p.mentionActivation(false); err != nil {
+				log.Printf("[MENTIONS] activation timestamp: %v", err)
+			}
+		} else if err := p.db.SetSetting(settingMentionHandle, ""); err != nil {
+			// Remember that the feature was off, so re-enabling re-stamps the
+			// cutoff instead of replaying mentions from the disabled period.
+			log.Printf("[MENTIONS] could not record the disabled handle: %v", err)
+		}
+	}
 	if p.cfg.DisablePolling {
 		log.Println("DISABLE_POLLING set — skipping initial and scheduled polls (manual trigger + on-demand reviews still available)")
 	} else if p.isLeader() {
@@ -1064,6 +1197,8 @@ func (p *Poller) Start(ctx context.Context) {
 			// below are deliberately exempt — they're explicit user actions.
 			if p.isLeader() {
 				p.startPoll(ctx, "scheduled")
+				go p.scanAuthorReplies(ctx)
+				go p.scanMentions(ctx)
 			} else {
 				log.Printf("[LEADER] not leader, skipping scheduled poll")
 			}
@@ -2021,6 +2156,12 @@ func buildReviewSidecar(owner, repo string, prNumber int, commitSHA string, rr *
 			Violated:   rr.Checks.ChecksViolated,
 			EvidenceOK: rr.Checks.ChecksEvidenceOK,
 		}
+		for _, r := range rr.Checks.Records {
+			pl.RequiredChecks.Records = append(pl.RequiredChecks.Records, payload.RequiredCheckRecord{
+				ID: r.ID, Source: r.Source, Question: r.Question, TargetFile: r.TargetFile, Verdict: r.Verdict,
+				Answer: r.Answer, EvidencePath: r.EvidencePath, EvidenceResolved: r.EvidenceResolved, Unresolved: r.Unresolved,
+			})
+		}
 	}
 	// Carry-forward telemetry (carried_in / carried_dropped): persisted for
 	// the same reason as the funnels above. Nil (field omitted) when the
@@ -2639,6 +2780,8 @@ func (p *Poller) poll(ctx context.Context) {
 		reviewViewBatch := newViewBatch()
 		reviewPRBatch := newPRBatch()
 		updateCount := 0
+		storedAttention, snapshotOK := p.storedAttentionFlags(reviewDataMap, dbPRMap)
+		var transitions []attentionTransition
 		for _, pr := range allPRs {
 			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
 			if reviewData, exists := reviewDataMap[key]; exists {
@@ -2655,10 +2798,35 @@ func (p *Poller) poll(ctx context.Context) {
 							break
 						}
 					}
+					isAuthor := strings.EqualFold(existingPR.Author, user.GitHubUsername)
 					if userStatus != "" {
-						isAuthor := strings.EqualFold(existingPR.Author, user.GitHubUsername)
 						reviewViewBatch.EnsureView(user.ID, existingPR.ID, isAuthor)
 						reviewViewBatch.SetReviewStatus(user.ID, existingPR.ID, userStatus)
+					}
+
+					attention := attentionForUser(reviewData, user.GitHubUsername, existingPR.PRState, isAuthor)
+					if attention == nil {
+						continue
+					}
+					if !snapshotOK {
+						// Without a trustworthy snapshot only rows the status sync already touches are written.
+						if userStatus != "" {
+							reviewViewBatch.SetNeedsAttention(user.ID, existingPR.ID, *attention)
+						}
+						continue
+					}
+					stored, hasRow := storedAttention[userPRViewKey{UserID: user.ID, PRID: existingPR.ID}]
+					changed := stored != *attention
+					// A verdict alone never creates a row; an existing row is touched only when its flag flips.
+					if userStatus == "" && !(hasRow && changed) {
+						continue
+					}
+					reviewViewBatch.EnsureView(user.ID, existingPR.ID, isAuthor)
+					reviewViewBatch.SetNeedsAttention(user.ID, existingPR.ID, *attention)
+					if changed {
+						transitions = append(transitions, attentionTransition{
+							userID: user.ID, login: user.GitHubUsername, pr: pr, flagged: *attention, head: reviewData.HeadOID,
+						})
 					}
 				}
 
@@ -2684,6 +2852,8 @@ func (p *Poller) poll(ctx context.Context) {
 		}
 		if err := reviewViewBatch.Flush(p.db); err != nil {
 			log.Printf("[POLL] ERROR: Failed to batch-upsert review user views: %v", err)
+		} else {
+			p.reportAttentionTransitions(transitions)
 		}
 		if err := reviewPRBatch.Flush(p.db); err != nil {
 			log.Printf("[POLL] ERROR: Failed to batch-upsert review PR data: %v", err)
@@ -3319,6 +3489,10 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 						if !p.completeQueuedReviewJobFromCache(job, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON) && job.TriggerSource != "poller" {
 							log.Printf("[REVIEWER] WARN: cached review projected but run %s was not completed", job.RunID)
 						}
+						if cachedPayload != nil {
+							confidence, confidenceErr := p.sidecarConfidence(pr, cachedPayload)
+							p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+						}
 						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 					} else {
 						log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
@@ -3605,6 +3779,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			completedAt := time.Now().UTC().Truncate(time.Microsecond)
 			runInfo := p.reviewRunInfo(execution, completedAt)
 			runInfo.Models = models
+			runInfo.LinkedTickets = reviewResult.LinkedTickets
 			runInfo.StageTimings = execution.stageTimings(artifactSaveStartedAt, completedAt)
 			reviewResult.ReviewRun = runInfo
 
@@ -3647,12 +3822,19 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if aliasErr != nil {
 				log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical aliases: %v", job.RunID, aliasErr)
 			}
+			var published *publisher.Report
 			if !job.SkipPublish {
-				p.publishGitHubReview(prCtx, pr, sidecarBody)
+				published = p.publishGitHubReview(prCtx, pr, sidecarBody)
+			}
+			confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
+			p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+			confidenceField := ""
+			if confidenceErr == nil {
+				confidenceField = fmt.Sprintf(", confidence=%d", confidence)
 			}
 			verdict := service.VerdictFromComments(reviewResult.Comments)
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict)
+			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q%s)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, confidenceField)
 		}(job)
 	}
 
@@ -3680,11 +3862,5 @@ func shouldReview(pr github.PullRequest, dbPR *db.PR, isTracked bool, autoReview
 	// already owns it. Queued jobs deliberately remain pending until capacity
 	// is granted, so ignoring tracking here would mint one rejected ledger row
 	// for every poll cycle while they wait.
-	isAutoCandidate := dbPR.Status == "pending" && autoReviewEnabled && !isTracked
-
-	if isAutoCandidate {
-		return true
-	}
-
-	return false
+	return dbPR.Status == "pending" && autoReviewEnabled && !isTracked
 }

@@ -114,6 +114,9 @@ type PRModel struct {
 	// "request_changes", "approve_suggestions", "approve", or "" (unknown).
 	// Written alongside the counts by MarkPRCompleted.
 	ReviewVerdict string `gorm:"column:review_verdict;size:32"`
+	// Merge confidence 0..5 for the review of LastCommitSHA; nil until the
+	// poller stores it after completion, and cleared whenever the head moves.
+	MergeConfidence *int16 `gorm:"column:merge_confidence"`
 	// User notes (single-user mode)
 	Notes string `gorm:"size:15"`
 	// Poll economy: last seen updated_at from GitHub search API
@@ -259,6 +262,8 @@ type UserPRViewModel struct {
 	// writes it, never any poller DoUpdates or prune set. While true (and
 	// not Hidden) it also exempts a closed PR from cleanup deletion.
 	ViaManual bool `gorm:"column:via_manual;default:false"`
+	// The user requested changes and has not reviewed the PR's current head.
+	NeedsAttention bool `gorm:"column:needs_attention;not null;default:false"`
 }
 
 // TableName specifies the table name for UserPRViewModel
@@ -362,3 +367,58 @@ type PublishedFindingModel struct {
 func (PublishedFindingModel) TableName() string {
 	return "published_findings"
 }
+
+// PublishedReplyModel records one PR-author reply under a PRism inline
+// comment and what PRism did about it. One row per author comment.
+type PublishedReplyModel struct {
+	ID              uint   `gorm:"primaryKey;autoIncrement"`
+	RepoOwner       string `gorm:"size:255;not null;uniqueIndex:idx_published_replies_unique"`
+	RepoName        string `gorm:"size:255;not null;uniqueIndex:idx_published_replies_unique"`
+	PRNumber        int    `gorm:"not null;uniqueIndex:idx_published_replies_unique"`
+	AuthorCommentID int64  `gorm:"not null;uniqueIndex:idx_published_replies_unique"`
+	RootCommentID   int64  `gorm:"not null"`
+	Fingerprint     string `gorm:"size:512;not null"`
+	AuthorID        int64  `gorm:"not null"`
+	Class           string `gorm:"size:16;not null"`
+	Action          string `gorm:"size:16;not null"`
+	Body            string `gorm:"type:text"`
+	ReplyCommentID  int64  `gorm:"not null;default:0"`
+	Decision        string `gorm:"size:16;not null;default:''"`
+	ReplyBody       string `gorm:"type:text"`
+	Cited           string `gorm:"type:text"`
+	Model           string `gorm:"size:255;not null;default:''"`
+	DurationMS      int64  `gorm:"not null;default:0"`
+	Outcome         string `gorm:"size:32;not null;default:''"`
+	DecisionReact   bool   `gorm:"not null;default:true"`
+	Attempts        int    `gorm:"not null;default:0"`
+	DecisionHead    string `gorm:"size:64;not null;default:''"`
+	DecisionThread  string `gorm:"size:64;not null;default:''"`
+	ClaimedBy       string `gorm:"size:128;not null;default:''"`
+	ClaimedAt       *time.Time
+	RepliedAt       *time.Time
+	UpdatedAt       time.Time // GORM maintains it on every update; the health report ages stuck steps from it
+	CreatedAt       time.Time `gorm:"not null"`
+	ProcessedAt     time.Time `gorm:"not null;index"`
+}
+
+// MentionTriggerModel records one "@handle review" comment that queued a
+// review, so it is never acted on twice.
+type MentionTriggerModel struct {
+	CommentID   int64     `gorm:"primaryKey;autoIncrement:false"`
+	RepoOwner   string    `gorm:"size:255;not null"`
+	RepoName    string    `gorm:"size:255;not null"`
+	PRNumber    int       `gorm:"not null;index"`
+	Author      string    `gorm:"size:255;not null"`
+	CommitSHA   string    `gorm:"size:40;not null;default:''"`
+	Publish     bool      `gorm:"not null;default:false"`
+	Queued      bool      `gorm:"not null;default:false"` // false while reserved, true once the review was admitted
+	Holder      string    `gorm:"size:128;not null;default:''"`
+	CreatedAt   time.Time `gorm:"not null"`
+	TriggeredAt time.Time `gorm:"not null;index"`
+}
+
+func (MentionTriggerModel) TableName() string { return "mention_triggers" }
+
+// TableName pins the name GORM derived when the table first shipped; the raw
+// migration SQL in gorm.go targets it by this name.
+func (PublishedReplyModel) TableName() string { return "published_reply_models" }

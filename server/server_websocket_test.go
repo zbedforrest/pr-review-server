@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -389,4 +390,91 @@ func TestHandleTriggerReview_EmitsStatusSnapshotAfterPRUpdate(t *testing.T) {
 
 	statusUpdate := readWebSocketMessage(t, conn)
 	assert.Equal(t, "status_snapshot", statusUpdate.Type)
+}
+
+func TestBroadcaster_StalledClientIsDroppedAndOthersStillReceive(t *testing.T) {
+	server, database := newWebSocketTestServerApp(t, "")
+	defer database.Close()
+	server.cfg.GitHubAppClientID = "client-id"
+	server.wsWriteTimeout = time.Second
+
+	stalledUser := createTestUser(t, database, "stalled-user")
+	stalledSession := createTestSession(t, database, stalledUser.ID, time.Now().Add(time.Hour))
+	healthyUser := &db.User{GitHubID: 67890, GitHubUsername: "healthy-user"}
+	require.NoError(t, database.CreateUser(healthyUser))
+	healthySession := createTestSession(t, database, healthyUser.ID, time.Now().Add(2*time.Hour))
+
+	go server.broadcaster()
+	ts := startWebSocketTestServer(t, server)
+	defer ts.Close()
+
+	stalled, _, err := dialWebSocket(t, wsURLFromHTTP(ts.URL)+"/ws", stalledSession.ID)
+	require.NoError(t, err)
+	defer stalled.Close()
+	healthy, _, err := dialWebSocket(t, wsURLFromHTTP(ts.URL)+"/ws", healthySession.ID)
+	require.NoError(t, err)
+	defer healthy.Close()
+	waitForCondition(t, "two clients registered", func() bool {
+		server.clientsMux.RLock()
+		defer server.clientsMux.RUnlock()
+		return len(server.clients) == 2
+	})
+	// The healthy peer keeps draining its socket, as a browser would, so only
+	// the stalled one can exhaust its buffers. Large frames are discarded
+	// unparsed so a slow CI runner cannot make this peer look stalled too.
+	healthyTypes := make(chan string, 16)
+	go func() {
+		defer close(healthyTypes)
+		for {
+			_, r, err := healthy.NextReader()
+			if err != nil {
+				return
+			}
+			body, err := io.ReadAll(io.LimitReader(r, 4096))
+			if err != nil {
+				return
+			}
+			_, _ = io.Copy(io.Discard, r)
+			var msg WebSocketMessage
+			if len(body) < 4096 && json.Unmarshal(body, &msg) == nil {
+				healthyTypes <- msg.Type
+			}
+		}
+	}()
+
+	// The stalled peer never reads, so a few multi-megabyte frames fill its
+	// socket buffers and the server's next write to it cannot complete.
+	filler := map[string]interface{}{"blob": strings.Repeat("x", 4<<20)}
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 4; i++ {
+			server.BroadcastEvent("filler", filler)
+		}
+		server.BroadcastEvent("ping", map[string]interface{}{"n": 1})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("BroadcastEvent blocked behind a stalled websocket client")
+	}
+
+	waitForCondition(t, "stalled client dropped", func() bool {
+		server.clientsMux.RLock()
+		defer server.clientsMux.RUnlock()
+		return len(server.clients) == 1
+	})
+
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case typ, ok := <-healthyTypes:
+			require.True(t, ok, "healthy client was disconnected")
+			if typ == "ping" {
+				return
+			}
+		case <-timeout:
+			t.Fatal("healthy client never received the event sent after the stalled one was dropped")
+		}
+	}
 }

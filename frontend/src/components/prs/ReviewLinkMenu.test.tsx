@@ -44,6 +44,7 @@ const renderMenu = (overrides: Partial<React.ComponentProps<typeof ReviewLinkMen
     reviewUrl: '/reviews/review.html',
     onTriggerReview: vi.fn(),
     reviewPending: false,
+    publishAllowed: true,
     ...overrides,
   };
   render(<ReviewLinkMenu {...props} />);
@@ -200,25 +201,97 @@ describe('ReviewLinkMenu regenerate action', () => {
     });
   };
 
-  it('exposes a Regenerate review item in the hover panel', () => {
+  const postItem = () =>
+    screen.getByRole('menuitem', { name: /regenerate and post pr comment/i }) as HTMLButtonElement;
+  const dashboardItem = () =>
+    screen.getByRole('menuitem', { name: /regenerate review HTML only/i }) as HTMLButtonElement;
+
+  it('exposes post-to-PR and dashboard-only regenerate items in the hover panel', () => {
     renderMenu();
     openPanel();
-    expect(screen.getByRole('menuitem', { name: /regenerate review/i })).toBeTruthy();
+    expect(postItem()).toBeTruthy();
+    expect(dashboardItem()).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: /^🔄 regenerate review$/i })).toBeNull();
   });
 
-  it('calls onTriggerReview and closes the panel when clicked', () => {
+  it('calls onTriggerReview(true) and closes the panel from the post item', () => {
     const { onTriggerReview } = renderMenu();
     openPanel();
-    fireEvent.click(screen.getByRole('menuitem', { name: /regenerate review/i }));
+    fireEvent.click(postItem());
     expect(onTriggerReview).toHaveBeenCalledTimes(1);
+    expect(onTriggerReview).toHaveBeenCalledWith(true);
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
-  it('disables the item and shows "Reviewing…" while the trigger is pending', () => {
+  it('calls onTriggerReview(false) and closes the panel from the dashboard-only item', () => {
+    const { onTriggerReview } = renderMenu();
+    openPanel();
+    fireEvent.click(dashboardItem());
+    expect(onTriggerReview).toHaveBeenCalledWith(false);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('disables both items while the trigger is pending', () => {
     renderMenu({ reviewPending: true });
     openPanel();
-    const item = screen.getByRole('menuitem', { name: /reviewing/i }) as HTMLButtonElement;
-    expect(item.disabled).toBe(true);
-    expect(screen.queryByRole('menuitem', { name: /regenerate review/i })).toBeNull();
+    expect(postItem().disabled).toBe(true);
+    expect(dashboardItem().disabled).toBe(true);
+  });
+
+  it('disables both items while the PR is already generating', () => {
+    renderMenu({ pr: makePR({ status: 'agent_reviewing' }) });
+    openPanel();
+    expect(postItem().disabled).toBe(true);
+    expect(dashboardItem().disabled).toBe(true);
+  });
+
+  it('disables only the post item, with the pilot title, when the author is not in the pilot', () => {
+    const { onTriggerReview } = renderMenu({ publishAllowed: false });
+    openPanel();
+    expect(postItem().disabled).toBe(true);
+    expect(postItem().getAttribute('title')).toBe('Author is not in the comment pilot');
+    expect(dashboardItem().disabled).toBe(false);
+    fireEvent.click(dashboardItem());
+    expect(onTriggerReview).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('ReviewLinkMenu published indicator', () => {
+  beforeEach(() => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  const glyph = () => screen.queryByRole('img', { name: /posted to pr/i });
+
+  it('shows a 💬 glyph in the View button with the round count when the review was posted', () => {
+    renderMenu({ pr: makePR({ published_to_github: true, published_rounds: 3 }) });
+    const el = glyph();
+    expect(el).toBeTruthy();
+    expect(el?.textContent).toBe('💬');
+    expect(el?.getAttribute('aria-label')).toBe('Posted to PR · Reviews (3)');
+    expect(screen.getByRole('link', { name: /view/i }).contains(el!)).toBe(true);
+  });
+
+  it('shows a matching meta line in the hover panel', () => {
+    renderMenu({ pr: makePR({ published_to_github: true, published_rounds: 3 }) });
+    fireEvent.mouseEnter(screen.getByRole('link', { name: /view/i }).parentElement!);
+    act(() => vi.advanceTimersByTime(300));
+    expect(screen.getByText('Posted to PR · 3 rounds')).toBeTruthy();
+  });
+
+  it('renders no glyph or meta line when the review was not posted or the field is absent', () => {
+    renderMenu({ pr: makePR({ published_to_github: false, published_rounds: 0 }) });
+    expect(glyph()).toBeNull();
+    cleanup();
+    renderMenu({ pr: makePR() });
+    expect(glyph()).toBeNull();
+    fireEvent.mouseEnter(screen.getByRole('link', { name: /view/i }).parentElement!);
+    act(() => vi.advanceTimersByTime(300));
+    expect(screen.queryByText(/posted to pr/i)).toBeNull();
   });
 });

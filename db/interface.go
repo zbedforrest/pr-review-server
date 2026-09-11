@@ -44,6 +44,8 @@ type PR struct {
 	// Overall review verdict parsed from the SUMMARY entry:
 	// "request_changes", "approve_suggestions", "approve", or "" (unknown)
 	ReviewVerdict string
+	// Merge confidence 0..5 for the latest review; nil when not yet scored
+	MergeConfidence *int
 	// User notes (single-user mode)
 	Notes string
 	// Poll economy: last seen updated_at from GitHub search API
@@ -83,32 +85,35 @@ type UserPRAssignment struct {
 	Notes          string // User's notes for this PR
 	UserHidden     bool   // User moved this PR to the Hidden section
 	ViaManual      bool   // User manually requested a review for this PR
+	NeedsAttention bool   // User requested changes and has not reviewed the current head
 }
 
 // UserPRView represents the relationship between users and PRs (new name for UserPRAssignment)
 // This is the preferred type for new code.
 type UserPRView struct {
-	ID           int
-	UserID       int
-	PRID         int
-	IsAuthor     bool
-	IsReviewer   bool
-	ViaTeams     string // JSON array of team names (was ReviewerGroups)
-	ReviewStatus string // User's review status for this PR (was MyReviewStatus)
-	Notes        string // User's notes for this PR
-	Hidden       bool   // Whether this PR is hidden from the user's view (poller soft delete)
-	UserHidden   bool   // User moved this PR to the Hidden section
-	ViaManual    bool   // User manually requested a review for this PR
+	ID             int
+	UserID         int
+	PRID           int
+	IsAuthor       bool
+	IsReviewer     bool
+	ViaTeams       string // JSON array of team names (was ReviewerGroups)
+	ReviewStatus   string // User's review status for this PR (was MyReviewStatus)
+	Notes          string // User's notes for this PR
+	Hidden         bool   // Whether this PR is hidden from the user's view (poller soft delete)
+	UserHidden     bool   // User moved this PR to the Hidden section
+	ViaManual      bool   // User manually requested a review for this PR
+	NeedsAttention bool   // User requested changes and has not reviewed the current head
 }
 
 // UserPRViewBatchItem represents a single row for batch upsert into user_pr_views.
 // Pointer fields mean "update this column on conflict"; nil means "preserve existing value".
 type UserPRViewBatchItem struct {
-	UserID       int
-	PRID         int
-	IsAuthor     bool
-	ReviewStatus *string   // nil = don't update
-	ViaTeams     *[]string // nil = don't update
+	UserID         int
+	PRID           int
+	IsAuthor       bool
+	ReviewStatus   *string   // nil = don't update
+	ViaTeams       *[]string // nil = don't update
+	NeedsAttention *bool     // nil = don't update
 }
 
 // ViaTeamsPrune identifies a stale user_pr_views row whose via_teams should be
@@ -125,13 +130,14 @@ type ViaTeamsPrune struct {
 // PRWithUserView combines PR data with user-specific view data
 type PRWithUserView struct {
 	PR
-	IsAuthor     bool     // From user_pr_views
-	IsReviewer   bool     // From user_pr_views
-	UserNotes    string   // Notes from user_pr_views (overrides PR.Notes)
-	ReviewStatus string   // User's review status from user_pr_views
-	ViaTeams     []string // Team names from user_pr_views
-	UserHidden   bool     // User moved this PR to the Hidden section
-	ViaManual    bool     // User manually requested a review for this PR
+	IsAuthor       bool     // From user_pr_views
+	IsReviewer     bool     // From user_pr_views
+	UserNotes      string   // Notes from user_pr_views (overrides PR.Notes)
+	ReviewStatus   string   // User's review status from user_pr_views
+	ViaTeams       []string // Team names from user_pr_views
+	UserHidden     bool     // User moved this PR to the Hidden section
+	ViaManual      bool     // User manually requested a review for this PR
+	NeedsAttention bool     // User requested changes and has not reviewed the current head
 }
 
 // FindingOutcome is a recorded human triage decision on a single review
@@ -277,6 +283,7 @@ type Database interface {
 	SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error)
 	MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error)
 	RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string, inFlightStaleBefore time.Time) (bool, error)
+	SetPRMergeConfidence(owner, repo string, prNumber int, projectionRunID string, score int) (bool, error)
 	GetAllPRs() ([]PR, error)
 	DeletePR(owner, repo string, prNumber int) error
 	ResetStaleGeneratingPRs(timeoutMinutes int) (int, error)
@@ -306,6 +313,7 @@ type Database interface {
 	GetAllUsers() ([]User, error)
 	CreateUser(user *User) error
 	UpdateUserLastLogin(userID int) error
+	UpdateUserGitHubUsername(userID int, username string) error
 
 	// Session operations (multi-user mode only)
 	CreateSession(session *Session) error
@@ -339,6 +347,7 @@ type Database interface {
 	BatchUpsertPRs(prs []*PR) error
 	BatchUpsertUserPRViews(views []UserPRViewBatchItem) error
 	GetUserPRViewsWithViaTeams(prIDs []int) ([]UserPRView, error)
+	GetUserPRViewsForPRs(prIDs []int) ([]UserPRView, error)
 	BatchPruneViaTeams(prunes []ViaTeamsPrune) error
 
 	// Telemetry operations
@@ -347,4 +356,96 @@ type Database interface {
 
 	// Lifecycle
 	Close() error
+}
+
+// PublishedReply is a PR author's reply to one of PRism's inline comments and
+// the action PRism took (reacted, replied, skipped).
+type PublishedReply struct {
+	RepoOwner       string
+	RepoName        string
+	PRNumber        int
+	RootCommentID   int64
+	AuthorCommentID int64
+	Fingerprint     string
+	AuthorID        int64
+	Class           string
+	Action          string
+	Body            string
+	ReplyCommentID  int64
+	// Decision and the fields after it are set when the reply model ran:
+	// concede | hold | answer | abstain, the text it produced, the evidence
+	// it cited as JSON, and what served it. RepliedAt is set once posted.
+	Decision   string
+	ReplyBody  string
+	Cited      string
+	Model      string
+	DurationMS int64
+	// Outcome is the terminal result of the text step (posted, shadowed,
+	// abstained, skipped:<reason>, ineligible:<reason>, failed); empty means
+	// the step has not finished and the next scan resumes it. Attempts counts
+	// model runs so a persistently failing reply is eventually given up on.
+	Outcome        string
+	Attempts       int
+	DecisionReact  bool
+	DecisionHead   string
+	DecisionThread string
+	ClaimedBy      string
+	ClaimedAt      *time.Time
+	RepliedAt      *time.Time
+	CreatedAt      time.Time
+	ProcessedAt    time.Time
+}
+
+// ReplyDecisionRecord is what the reply model concluded about one author
+// reply, persisted before any text is posted.
+type ReplyDecisionRecord struct {
+	Decision   string
+	ReplyBody  string
+	Cited      string
+	Model      string
+	DurationMS int64
+	// Head and Thread identify what the model saw (PR head sha and a hash of
+	// the thread content); a resumed step posts only if both still match.
+	Head   string
+	Thread string
+	// React is the model's choice about acknowledging the author's comment
+	// with a thumbs-up; it applies only when the reply is actually posted.
+	React bool
+}
+
+// PublishedReplyTarget is a PR with inline comments PRism owns, keyed by the
+// GitHub comment id of each root.
+type PublishedReplyTarget struct {
+	RepoOwner string
+	RepoName  string
+	PRNumber  int
+	Roots     map[int64]string
+}
+
+// MentionTrigger is one review request made by mentioning the App in a PR
+// comment.
+type MentionTrigger struct {
+	CommentID   int64
+	RepoOwner   string
+	RepoName    string
+	PRNumber    int
+	Author      string
+	CommitSHA   string
+	Publish     bool
+	Queued      bool
+	Holder      string
+	CreatedAt   time.Time
+	TriggeredAt time.Time
+}
+
+// UnlinkedPublishedFinding is an inline finding posted through a review whose
+// GitHub comment id was never recorded, so author replies under it cannot be
+// matched to the ledger until it is linked.
+type UnlinkedPublishedFinding struct {
+	ID          uint
+	RepoOwner   string
+	RepoName    string
+	PRNumber    int
+	ReviewID    int64
+	Fingerprint string
 }

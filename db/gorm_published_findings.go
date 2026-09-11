@@ -1,6 +1,7 @@
 package db
 
 import (
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -59,7 +60,9 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		"source_tag":    model.SourceTag,
 		"severity":      model.Severity,
 		"last_seen_sha": model.LastSeenSHA,
-		"state":         model.State,
+		// A concession is sticky: a publication that loaded the row before the
+		// author conceded must not flip it back to open or resolved.
+		"state": gorm.Expr("CASE WHEN published_findings.state = ? THEN published_findings.state ELSE ? END", PublishedStateDismissed, model.State),
 	}
 	if model.CommentID != 0 {
 		updates["comment_id"] = model.CommentID
@@ -102,4 +105,40 @@ func (g *GormDB) GetPublishedFindingsForPR(owner, repo string, prNumber int) ([]
 		out = append(out, publishedFindingModelToDomain(&models[i]))
 	}
 	return out, nil
+}
+
+// ListPublishedSummaries returns the summary ledger row of every PR that has
+// been published to GitHub. Used by the dashboard list to badge those PRs.
+func (g *GormDB) ListPublishedSummaries() ([]PublishedFinding, error) {
+	var models []PublishedFindingModel
+	if err := g.db.Where("kind = ?", PublishedKindSummary).Find(&models).Error; err != nil {
+		return nil, err
+	}
+	out := make([]PublishedFinding, 0, len(models))
+	for i := range models {
+		out = append(out, publishedFindingModelToDomain(&models[i]))
+	}
+	return out, nil
+}
+
+// GetPublishedSummaryForPR returns the PR's summary ledger row, if any.
+func (g *GormDB) GetPublishedSummaryForPR(owner, repo string, prNumber int) (PublishedFinding, bool, error) {
+	var model PublishedFindingModel
+	err := g.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ?", owner, repo, prNumber, PublishedKindSummary).
+		Limit(1).Find(&model).Error
+	if err != nil {
+		return PublishedFinding{}, false, err
+	}
+	if model.ID == 0 {
+		return PublishedFinding{}, false, nil
+	}
+	return publishedFindingModelToDomain(&model), true, nil
+}
+
+// SetPublishedFindingState changes one ledger row's state, for conceding a
+// finding in conversation.
+func (g *GormDB) SetPublishedFindingState(owner, repo string, number int, fingerprint, state string) error {
+	return g.db.Model(&PublishedFindingModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ?", owner, repo, number, fingerprint).
+		Update("state", state).Error
 }

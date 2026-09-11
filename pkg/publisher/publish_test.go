@@ -19,7 +19,6 @@ type fakeGitHub struct {
 	nextCommentID         int64
 	nextIssueID           int64
 	nextReviewID          int64
-	createReviewSH        string
 }
 
 type fakeReview struct {
@@ -159,7 +158,7 @@ func TestPublishRoundOne(t *testing.T) {
 	if !strings.Contains(rv.comments[0].Body, FindingMarker("c1")) || !strings.Contains(rv.comments[1].Body, "Source: PRism · Both") {
 		t.Errorf("inline bodies wrong: %+v", rv.comments)
 	}
-	if rep.ReviewID != 9001 || rep.InlinePosted != 2 || rep.Annotations != 2 || rep.StillOpen != 0 || rep.Fixed != 0 {
+	if rep.ReviewID != 9001 || rep.InlinePosted != 2 || rep.Annotations != 1 || rep.StillOpen != 0 || rep.Fixed != 0 {
 		t.Errorf("report = %+v", rep)
 	}
 
@@ -208,7 +207,7 @@ func TestPublishRoundTwo(t *testing.T) {
 		t.Fatalf("round 2 must not create a new summary; creates=%d", len(gh.issueCreates))
 	}
 	edited, ok := gh.issueEdits[501]
-	if !ok || !strings.Contains(edited, "**Since last review:** 1 new · 1 still open · 3 fixed") {
+	if !ok || !strings.Contains(edited, "**Since last review:** 1 new · 1 still open · 2 fixed") {
 		t.Fatalf("summary edit wrong: ok=%v body=%s", ok, edited)
 	}
 	if !strings.Contains(edited, "Reviews (2)") {
@@ -224,7 +223,7 @@ func TestPublishRoundTwo(t *testing.T) {
 	if len(rv.comments) != 1 || !strings.Contains(rv.comments[0].Body, FindingMarker("m3")) {
 		t.Fatalf("round 2 review comments = %+v, want only m3", rv.comments)
 	}
-	if rep.SummaryCommentID != 501 || rep.ReviewID != 9002 || rep.InlinePosted != 1 || rep.Annotations != 0 || rep.StillOpen != 1 || rep.Fixed != 3 {
+	if rep.SummaryCommentID != 501 || rep.ReviewID != 9002 || rep.InlinePosted != 1 || rep.Annotations != 0 || rep.StillOpen != 1 || rep.Fixed != 2 {
 		t.Errorf("report = %+v", rep)
 	}
 
@@ -263,7 +262,53 @@ func TestPublishNoInlineSkipsReview(t *testing.T) {
 	if len(gh.reviews) != 0 {
 		t.Fatalf("no inline findings must post no review; got %d", len(gh.reviews))
 	}
-	if len(gh.issueCreates) != 1 || rep.InlinePosted != 0 || rep.Annotations != 4 || rep.ReviewID != 0 {
+	if len(gh.issueCreates) != 1 || rep.InlinePosted != 0 || rep.Annotations != 3 || rep.ReviewID != 0 {
 		t.Errorf("creates=%d rep=%+v", len(gh.issueCreates), rep)
+	}
+}
+
+func TestPublishNeverRepostsOrCountsADismissedFinding(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, roundOne())
+	ledger.rows["c1"].State = db.PublishedStateDismissed
+
+	r2 := roundOne()
+	r2.HeadSHA = "sha-round-2"
+	r2.RoundNumber = 0
+	rep := publishRound(t, gh, ledger, r2)
+
+	if len(gh.reviews) != 1 {
+		t.Fatalf("a conceded finding must not be posted inline again: reviews=%d", len(gh.reviews))
+	}
+	edited := gh.issueEdits[501]
+	if strings.Contains(edited, "Critical thing.") || strings.Contains(edited, "1 critical") {
+		t.Errorf("summary must not mention the conceded finding:\n%s", edited)
+	}
+	if rep.StillOpen != 2 {
+		t.Errorf("still open should count m1 and the m2 annotation, not c1, got %d", rep.StillOpen)
+	}
+	if ledger.rows["c1"].State != db.PublishedStateDismissed || ledger.rows["c1"].LastSeenSHA != "sha-round-1" {
+		t.Errorf("dismissed row must be left alone: %+v", ledger.rows["c1"])
+	}
+}
+
+func TestPublishReportsTheConfidenceItRendered(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	first := publishRound(t, gh, ledger, roundOne())
+	if first.Confidence != 2 {
+		t.Errorf("round one Confidence = %d, want 2", first.Confidence)
+	}
+	ledger.rows["c1"].State = db.PublishedStateDismissed
+
+	r2 := roundOne()
+	r2.HeadSHA = "sha-round-2"
+	r2.RoundNumber = 0
+	rep := publishRound(t, gh, ledger, r2)
+
+	if rep.Confidence != 4 {
+		t.Errorf("Confidence after conceding c1 = %d, want 4 (the sidecar alone would say %d)", rep.Confidence, Confidence(r2.Findings, false))
+	}
+	if edited := gh.issueEdits[501]; !strings.Contains(edited, "merge confidence 4/5") {
+		t.Errorf("summary must render the same number the report carries:\n%s", edited)
 	}
 }

@@ -277,6 +277,13 @@ type MockDatabase struct {
 		PRNumber     int
 		NewCommitSHA string
 	}
+	SetPRMergeConfidenceCalls []struct {
+		Owner           string
+		Repo            string
+		PRNumber        int
+		ProjectionRunID string
+		Score           int
+	}
 	UpdateUserReviewStatusCalls []struct {
 		UserID int
 		PRID   int
@@ -316,10 +323,11 @@ type MockDatabase struct {
 	TryAcquireOrRenewLeadershipFunc func(holderID string, generation int64, ttl time.Duration) (bool, error)
 
 	// Error injection
-	DeletePRError          error
-	UpdatePRStatusError    error
-	ResetPRToOutdatedError error
-	GetAllPRsError         error
+	DeletePRError             error
+	UpdatePRStatusError       error
+	ResetPRToOutdatedError    error
+	GetAllPRsError            error
+	GetUserPRViewsForPRsError error
 }
 
 func NewMockDatabase() *MockDatabase {
@@ -398,6 +406,7 @@ func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCo
 		pr.Status = "pending"
 		pr.ReviewHTMLPath = ""
 		pr.ErrorMessage = ""
+		pr.MergeConfidence = nil
 	}
 	delete(m.ProjectionRunIDs, key)
 	return nil
@@ -416,6 +425,7 @@ func (m *MockDatabase) SetPRGenerating(owner, repo string, prNumber int, commitS
 		pr.Author = author
 		pr.CreatedAt = createdAt
 		pr.Draft = draft
+		pr.MergeConfidence = nil
 	} else {
 		m.PRs[key] = &db.PR{
 			RepoOwner:       owner,
@@ -499,6 +509,7 @@ func (m *MockDatabase) SetPRGeneratingForReviewRun(owner, repo string, prNumber 
 	pr.CreatedAt = createdAt
 	pr.Draft = draft
 	pr.ErrorMessage = ""
+	pr.MergeConfidence = nil
 	m.ProjectionRunIDs[key] = runID
 	return nil
 }
@@ -616,6 +627,28 @@ func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo strin
 	pr.ReviewRunID = reviewRunID
 	pr.ReviewRunJSON = reviewRunJSON
 	m.ProjectionRunIDs[key] = projectionRunID
+	return true, nil
+}
+
+func (m *MockDatabase) SetPRMergeConfidence(owner, repo string, prNumber int, projectionRunID string, score int) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.SetPRMergeConfidenceCalls = append(m.SetPRMergeConfidenceCalls, struct {
+		Owner           string
+		Repo            string
+		PRNumber        int
+		ProjectionRunID string
+		Score           int
+	}{owner, repo, prNumber, projectionRunID, score})
+	if score < 0 || score > 5 {
+		return false, fmt.Errorf("set PR merge confidence for run %s: score %d is outside 0..5", projectionRunID, score)
+	}
+	key := prDBKey(owner, repo, prNumber)
+	pr := m.PRs[key]
+	if pr == nil || pr.Status != "completed" || m.ProjectionRunIDs[key] != projectionRunID {
+		return false, nil
+	}
+	pr.MergeConfidence = &score
 	return true, nil
 }
 
@@ -787,6 +820,10 @@ func (m *MockDatabase) UpdateUserLastLogin(userID int) error {
 	return nil
 }
 
+func (m *MockDatabase) UpdateUserGitHubUsername(userID int, username string) error {
+	return nil
+}
+
 // Session operations (not needed for poller tests, stub implementations)
 func (m *MockDatabase) CreateSession(session *db.Session) error {
 	return nil
@@ -955,12 +992,34 @@ func (m *MockDatabase) BatchUpsertUserPRViews(items []db.UserPRViewBatchItem) er
 				view.ViaTeams = string(bytes)
 			}
 		}
+		if item.NeedsAttention != nil {
+			view.NeedsAttention = *item.NeedsAttention
+		}
 	}
 	return nil
 }
 
 func viewMockKey(userID, prID int) string {
 	return fmt.Sprintf("%d/%d", userID, prID)
+}
+
+func (m *MockDatabase) GetUserPRViewsForPRs(prIDs []int) ([]db.UserPRView, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.GetUserPRViewsForPRsError != nil {
+		return nil, m.GetUserPRViewsForPRsError
+	}
+	idSet := make(map[int]bool, len(prIDs))
+	for _, id := range prIDs {
+		idSet[id] = true
+	}
+	var views []db.UserPRView
+	for _, view := range m.UserPRViews {
+		if idSet[view.PRID] {
+			views = append(views, *view)
+		}
+	}
+	return views, nil
 }
 
 func (m *MockDatabase) GetUserPRViewsWithViaTeams(prIDs []int) ([]db.UserPRView, error) {

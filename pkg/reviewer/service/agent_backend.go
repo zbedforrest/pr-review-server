@@ -97,12 +97,18 @@ func resolveAgentRuntime(cfg AgentConfig) (agentRuntime, error) {
 }
 
 func (r agentRuntime) args(prompt string) []string {
+	return r.argsWithTools(prompt, "Read,Grep,Glob,Bash")
+}
+
+// argsWithTools is args with the Claude tool allowlist chosen by the caller;
+// the Codex backend's sandbox is fixed by its own flags.
+func (r agentRuntime) argsWithTools(prompt, tools string) []string {
 	if r.backend == AgentBackendClaude {
 		return []string{
 			"-p", prompt,
 			"--model", r.model,
 			"--effort", r.effort,
-			"--tools", "Read,Grep,Glob,Bash",
+			"--tools", tools,
 			"--permission-mode", "bypassPermissions",
 			"--output-format", "stream-json",
 			"--verbose", // required by `claude` when combining --print + stream-json

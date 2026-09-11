@@ -19,6 +19,7 @@ import (
 
 	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/runconfig"
+	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -42,6 +43,13 @@ type AgentConfig struct {
 	AnthropicAPIKey   string        // frozen optional credential; OAuth via HOME remains supported
 	OpenRouterAPIKey  string        // frozen deployment credential; injected into the Codex child environment
 	OpenRouterBaseURL string        // optional OpenRouter API root; used only by the openrouter backend
+
+	// PRTitle, PRBody and LinkedTickets give the agent the author's stated
+	// intent (see pkg/reviewer/tickets). All optional; empty values add
+	// nothing to the prompt.
+	PRTitle       string
+	PRBody        string
+	LinkedTickets []tickets.Ticket
 
 	// BugMemory is the optional pattern library (nil = feature off). The
 	// matcher excludes entries sourced from the PR under review; see
@@ -68,9 +76,14 @@ type AgentConfig struct {
 
 // AgentReview is the result of a successful agent run.
 type AgentReview struct {
-	Comments  []types.LineComment // parsed from the agent's final JSON response
-	Gates     []types.LineComment // mechanical gate findings (advisory, provenance "mechanical")
-	BugMemory BugMemoryMatch      // which memory entries were injected/excluded (telemetry)
+	Comments []types.LineComment // the agent's own findings (disposition entries removed)
+	Gates    []types.LineComment // mechanical gate findings (advisory, provenance "mechanical")
+	// FirstPassActive is the first-pass claims that stay active under the
+	// retention policy (see ApplyDispositions); the caller merges it as the
+	// first-pass set. Records is everything else the review keeps inactive.
+	FirstPassActive []types.LineComment
+	Records         []types.LineComment
+	BugMemory       BugMemoryMatch // which memory entries were injected/excluded (telemetry)
 
 	// Checks and CheckFindings carry the required-check enforcement output
 	// (see checks.go): funnel telemetry, and the deterministic escalations
@@ -236,7 +249,9 @@ func RunAgentReview(
 		log.Printf("%s required checks issued: %v", logPrefix, ids)
 	}
 
-	prompt, err := buildAgentPromptContent(defaultBranch, diffFiles, geminiComments, gates, memEntries, checks)
+	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets)
+	claims := firstPassClaims(geminiComments)
+	prompt, err := buildAgentPromptContent(defaultBranch, diffFiles, prContext, claims, gates, memEntries, checks)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
@@ -452,6 +467,13 @@ func RunAgentReview(
 			logPrefix, checkTel.ChecksIssued, checkTel.ChecksAnswered, checkTel.ChecksViolated,
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
+	NormalizeAgentLifecycleFields(comments)
+	evidencePaths := make([]string, len(diffFiles))
+	for i, f := range diffFiles {
+		evidencePaths[i] = f.Path
+	}
+	comments, firstPassActive, records := ApplyDispositionsWithEvidenceRefs(comments, claims, evidenceRefResolves(evidencePaths, cloneDir))
+
 	// Fallback if ANY served model fails to match — a transient fallback
 	// that recovers mid-run still ran turns on the wrong model. ServedModel
 	// reports the offender (or the primary model on a clean run).
@@ -491,6 +513,8 @@ func RunAgentReview(
 	logRemovable = true
 	return &AgentReview{
 		Comments:             comments,
+		FirstPassActive:      firstPassActive,
+		Records:              records,
 		Gates:                gates,
 		BugMemory:            memMatch,
 		Checks:               checkTel,
@@ -600,10 +624,51 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 
 	var comments []types.LineComment
 	if err := json.Unmarshal([]byte(trimmed), &comments); err != nil {
-		return nil, err
+		// Code suggestions carry literal tabs and newlines into string
+		// literals, which strict JSON rejects; escape them and try once more.
+		if err2 := json.Unmarshal([]byte(escapeControlCharsInStrings(trimmed)), &comments); err2 != nil {
+			return nil, err
+		}
+		log.Printf("[AGENT] recovered findings JSON by escaping raw control characters (%v)", err)
 	}
 	EnforceAgentFindingContractPolicy(comments)
 	return comments, nil
+}
+
+func escapeControlCharsInStrings(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			case c < 0x20:
+				switch c {
+				case '\t':
+					b.WriteString(`\t`)
+				case '\n':
+					b.WriteString(`\n`)
+				case '\r':
+					b.WriteString(`\r`)
+				default:
+					fmt.Fprintf(&b, `\u%04x`, c)
+				}
+				continue
+			}
+		} else if c == '"' {
+			inString = true
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // matchBracket returns the index of the `]` closing the `[` at start,
@@ -671,20 +736,25 @@ func prScopeSection(baseBranch string, files []diffFile) string {
 }
 
 // buildAgentPromptContent assembles the agent prompt: the static template,
-// the PR-scope section (base branch + changed files, if known), the
-// mechanical-gate alerts (if any), the bug-history section (if any
-// memory entries matched), the required-checks block (if the feature issued
-// any), then a JSON block of Gemini comments. With no scope, no gates, no
-// matches and no checks the prompt is byte-identical to a memoryless,
-// checkless build.
-func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, geminiComments, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
-	commentsJSON, err := json.MarshalIndent(geminiComments, "", "  ")
+// the PR-scope section (base branch + changed files, if known), the PR
+// context section (title, body, linked tickets; prContext is pre-rendered by
+// prContextSection), the mechanical-gate alerts (if any), the bug-history
+// section (if any memory entries matched), the required-checks block (if the
+// feature issued any), then a JSON block of Gemini comments. With no scope,
+// no context, no gates, no matches and no checks the prompt is
+// byte-identical to a memoryless, checkless build.
+func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext string, claims []firstPassClaim, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
+	if claims == nil {
+		claims = []firstPassClaim{}
+	}
+	commentsJSON, err := json.MarshalIndent(claims, "", "  ")
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	b.WriteString(promptAgentReview)
 	b.WriteString(prScopeSection(baseBranch, diffFiles))
+	b.WriteString(prContext)
 	if len(gates) > 0 {
 		b.WriteString("\n--- MECHANICAL ALERTS (deterministic checks; explicitly address each in your review) ---\n")
 		for _, g := range gates {
@@ -693,7 +763,7 @@ func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, geminiComm
 	}
 	b.WriteString(bugMemorySection(bugHistory))
 	b.WriteString(requiredChecksSection(checks))
-	b.WriteString("\n--- GEMINI COMMENTS (JSON) ---\n")
+	b.WriteString("\n--- FIRST-PASS CLAIMS (JSON; account for every source_id) ---\n")
 	b.Write(commentsJSON)
 	return b.String(), nil
 }

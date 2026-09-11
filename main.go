@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"pr-review-server/auth"
@@ -37,6 +38,9 @@ func main() {
 // In prod mode, users authenticate via OAuth.
 func start(cfg *config.Config) {
 	// Validate required config
+	if refuseImplicitDevMode(os.Getenv("K_SERVICE"), os.Getenv("DEV_MODE"), cfg.IsDevMode()) {
+		log.Fatal("Refusing to start: GITHUB_APP_CLIENT_ID is missing on Cloud Run, which would run production in dev mode with every request as the admin dev user. Set GITHUB_APP_CLIENT_ID, or DEV_MODE=true if this instance is meant to run in dev mode.")
+	}
 	if cfg.IsDevMode() {
 		// Dev mode requires GitHub token and username
 		if cfg.GitHubToken == "" {
@@ -73,6 +77,12 @@ func start(cfg *config.Config) {
 		if cfg.GitHubOrgName != "" {
 			log.Printf("GitHub Org: %s", cfg.GitHubOrgName)
 		}
+		if len(cfg.AdminLogins) == 0 {
+			log.Println("WARNING: ADMIN_LOGINS is not set; settings writes are refused unless an admin was already granted in the admin_logins setting")
+		}
+	}
+	if len(cfg.AdminLogins) > 0 {
+		log.Printf("Bootstrap admins: %s", strings.Join(cfg.AdminLogins, ", "))
 	}
 
 	log.Printf("Polling Interval: %s", cfg.PollingInterval)
@@ -203,6 +213,7 @@ func start(cfg *config.Config) {
 	srv.SetPollTrigger(p.Trigger)
 	srv.SetPoller(p)
 	p.EventFunc = srv.BroadcastEvent
+	p.UserEventFunc = srv.BroadcastEventToUser
 	p.StatusEventFunc = func() {
 		srv.BroadcastStatusSnapshot(context.Background())
 	}

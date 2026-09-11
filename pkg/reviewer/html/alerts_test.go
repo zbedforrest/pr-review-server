@@ -9,15 +9,14 @@ import (
 	"pr-review-server/pkg/reviewer/types"
 )
 
-// mergeNote mirrors service/merge.go provenanceNote so fixtures track the
-// production phrasing the renderer classifies on.
+// mergeNote mirrors the legacy service/merge.go provenanceNote so fixtures
+// track the production phrasing the renderer classifies on.
 func mergeNote(provenance string) string {
 	return "_[" + provenance + " finding — retained by reconciliation, not independently confirmed by the review agent]_\n\n"
 }
 
 // alertFixtureComments is a merged finding set with one agent finding, one
-// mechanical gate alert, one required-check VIOLATED synthesis, and a SUMMARY
-// carrying the check ledger.
+// mechanical gate alert, and one required-check VIOLATED synthesis.
 func alertFixtureComments() []types.LineComment {
 	return []types.LineComment{
 		{
@@ -39,12 +38,17 @@ func alertFixtureComments() []types.LineComment {
 			CommentBody: mergeNote("required-check") + "**Required check CHK-settings-ref-1 answered VIOLATED without an accompanying finding — escalated automatically.** CHK-settings-ref-1 | VIOLATED | EVIDENCE: handlers.py:42",
 		},
 		{
-			FilePath:   "SUMMARY",
-			LineNumber: 0,
-			CommentBody: "Overall summary.\n\n---\n_Required checks (id | verdict | evidence)_\n" +
-				"- CHK-portal-layer-1 | SAFE | evidence-ok\n" +
-				"- CHK-settings-ref-1 | VIOLATED | evidence-ok\n",
+			FilePath:    "SUMMARY",
+			LineNumber:  0,
+			CommentBody: "Verdict: request changes.\n\nOverall summary.",
 		},
+	}
+}
+
+func alertFixtureChecks() []CheckRecord {
+	return []CheckRecord{
+		{ID: "CHK-portal-layer-1", Source: "gate", Verdict: "SAFE", EvidencePath: "web/components/OverlayHost.tsx", EvidenceResolved: true},
+		{ID: "CHK-settings-ref-1", Source: "gate", Verdict: "VIOLATED", EvidencePath: "app/config/handlers.py", EvidenceResolved: true},
 	}
 }
 
@@ -59,58 +63,51 @@ index 123..456 100644
 
 func renderAlertFixture(t *testing.T) string {
 	t.Helper()
-	report, err := GenerateReport(alertFixtureComments(), alertFixtureDiff, 42,
-		"https://github.com/acme/example/pull/42", "Test PR body", "", "abc1234",
-		"gemini-pro", 0, 0, 0, time.Date(2026, 1, 15, 14, 30, 0, 0, time.UTC))
+	report, err := GenerateReportFrom(ReportInput{
+		Comments: alertFixtureComments(), Diff: alertFixtureDiff, PRNumber: 42,
+		PRURL: "https://github.com/acme/example/pull/42", PRBody: "Test PR body", CommitSHA: "abc1234",
+		ModelName: "model-x", GeneratedAt: time.Date(2026, 1, 15, 14, 30, 0, 0, time.UTC),
+		Checks: alertFixtureChecks(),
+	})
 	assert.NoError(t, err)
 	return report
 }
 
-func TestGenerateReport_DeterministicAlerts_DefaultOff(t *testing.T) {
+func TestGenerateReport_DeterministicAlerts_DefaultInsideReviewDetails(t *testing.T) {
 	t.Setenv("SURFACE_ALERTS", "")
 
 	report := renderAlertFixture(t)
 
-	// No pinned section markup (the stylesheet always carries the class
-	// names, so assert on the rendered elements).
-	assert.NotContains(t, report, "<h2>Deterministic alerts</h2>")
-	assert.NotContains(t, report, `class="deterministic-alert"`)
-	// The rest of the report is untouched.
+	assert.NotContains(t, report, `class="deterministic-alerts pinned"`)
+	detailsIdx := strings.Index(report, "<summary>Review details</summary>")
+	assert.Greater(t, detailsIdx, -1)
+	assert.NotContains(t, report[:detailsIdx], `class="deterministic-alert"`)
+	assert.Equal(t, 2, strings.Count(report[detailsIdx:], `class="deterministic-alert"`))
 	assert.Contains(t, report, "Add error handling here")
 }
 
-func TestGenerateReport_DeterministicAlerts_On(t *testing.T) {
+func TestGenerateReport_DeterministicAlerts_SurfaceAlertsAlsoPinsAtTop(t *testing.T) {
 	t.Setenv("SURFACE_ALERTS", "true")
 
 	report := renderAlertFixture(t)
 
-	// Pinned section present, exactly one row per deterministic finding
-	// (the outer container's class is "deterministic-alerts", so counting the
-	// singular class matches rows only).
-	assert.Contains(t, report, "Deterministic alerts")
-	assert.Equal(t, 2, strings.Count(report, `class="deterministic-alert"`))
+	pinnedIdx := strings.Index(report, `class="deterministic-alerts pinned"`)
+	descIdx := strings.Index(report, "<h2>PR Description</h2>")
+	assert.Greater(t, pinnedIdx, -1)
+	assert.Greater(t, descIdx, pinnedIdx)
+	assert.Equal(t, 4, strings.Count(report, `class="deterministic-alert"`), "two rows pinned plus two in review details")
 
-	// Pinned at the TOP: before the PR description and all agent prose.
-	alertsIdx := strings.Index(report, "Deterministic alerts")
-	descIdx := strings.Index(report, "PR Description")
-	assert.Greater(t, alertsIdx, -1)
-	assert.Greater(t, descIdx, alertsIdx)
-
-	// Verdicts resolved: the gate alert positionally via the SUMMARY ledger,
-	// the synthesis via its body-embedded check id.
 	assert.Contains(t, report, "CHK-portal-layer-1")
 	assert.Contains(t, report, "alert-verdict-safe")
 	assert.Contains(t, report, "CHK-settings-ref-1")
 	assert.Contains(t, report, "alert-verdict-violated")
 
-	// Provenance badges rendered; the agent finding stays out of the section.
 	assert.Contains(t, report, `class="alert-badge alert-provenance"`)
-	sectionEnd := strings.Index(report, "PR Description")
-	assert.NotContains(t, report[:sectionEnd], "Add error handling here")
+	assert.NotContains(t, report[:descIdx], "Add error handling here")
 }
 
 func TestBuildDeterministicAlerts_VerdictResolution(t *testing.T) {
-	alerts := buildDeterministicAlerts(alertFixtureComments())
+	alerts := buildDeterministicAlerts(alertFixtureComments(), alertFixtureChecks())
 	if len(alerts) != 2 {
 		t.Fatalf("got %d alerts, want 2: %+v", len(alerts), alerts)
 	}
@@ -120,45 +117,45 @@ func TestBuildDeterministicAlerts_VerdictResolution(t *testing.T) {
 	assert.Equal(t, "web/components/OverlayHost.tsx", gate.FilePath)
 	assert.Equal(t, "CHK-portal-layer-1", gate.CheckID)
 	assert.Equal(t, "SAFE", gate.Verdict)
-	assert.Equal(t, "evidence-ok", gate.Evidence)
+	assert.Equal(t, "reference resolved", gate.Evidence)
+	assert.NotContains(t, gate.Body, "retained by reconciliation")
 
 	synth := alerts[1]
 	assert.Equal(t, "required-check", synth.Provenance)
 	assert.Equal(t, "CHK-settings-ref-1", synth.CheckID)
 	assert.Equal(t, "VIOLATED", synth.Verdict)
-	assert.Equal(t, "evidence-ok", synth.Evidence)
+	assert.Equal(t, "reference resolved", synth.Evidence)
 }
 
 func TestBuildDeterministicAlerts_UnansweredNoteAndPositionalNumbering(t *testing.T) {
 	comments := []types.LineComment{
-		// First portal alert: unresolved — carries its check id in the
-		// enforcement note appended by EnforceRequiredChecks.
 		{
 			FilePath:   "web/components/PanelA.tsx",
 			LineNumber: 0,
 			Importance: "MEDIUM",
-			CommentBody: mergeNote("mechanical") +
-				"**Mechanical alert — portal overlay without an explicit layer.** Body A." +
-				"\n\n_Required check CHK-portal-layer-1 was not answered with evidence — treat as unresolved risk, not a cleared concern._",
+			Provenance: "mechanical",
+			CommentBody: "**Mechanical alert: portal overlay without an explicit layer.** Body A." +
+				"\n\n_Required check CHK-portal-layer-1 was not answered with evidence, treat as unresolved risk, not a cleared concern._",
 		},
-		// Second portal alert: answered, no embedded id — must number past
-		// the first alert's embedded id to CHK-portal-layer-2.
 		{
 			FilePath:    "web/components/PanelB.tsx",
 			LineNumber:  0,
 			Importance:  "MEDIUM",
-			CommentBody: mergeNote("mechanical") + "**Mechanical alert — portal overlay without an explicit layer.** Body B.",
+			Provenance:  "mechanical",
+			CommentBody: "**Mechanical alert: portal overlay without an explicit layer.** Body B.",
 		},
 		{
-			FilePath:   "SUMMARY",
-			LineNumber: 0,
-			CommentBody: "_Required checks (id | verdict | evidence)_\n" +
-				"- CHK-portal-layer-1 | UNANSWERED | -\n" +
-				"- CHK-portal-layer-2 | SAFE | evidence-ok\n",
+			FilePath:    "SUMMARY",
+			LineNumber:  0,
+			CommentBody: "Verdict: approve.",
 		},
 	}
+	checks := []CheckRecord{
+		{ID: "CHK-portal-layer-1", Source: "gate", Verdict: "UNANSWERED", Unresolved: true},
+		{ID: "CHK-portal-layer-2", Source: "gate", Verdict: "SAFE", EvidencePath: "web/components/PanelB.tsx", EvidenceResolved: true},
+	}
 
-	alerts := buildDeterministicAlerts(comments)
+	alerts := buildDeterministicAlerts(comments, checks)
 	if len(alerts) != 2 {
 		t.Fatalf("got %d alerts, want 2: %+v", len(alerts), alerts)
 	}
@@ -167,23 +164,69 @@ func TestBuildDeterministicAlerts_UnansweredNoteAndPositionalNumbering(t *testin
 	assert.Equal(t, "", alerts[0].Evidence)
 	assert.Equal(t, "CHK-portal-layer-2", alerts[1].CheckID)
 	assert.Equal(t, "SAFE", alerts[1].Verdict)
-	assert.Equal(t, "evidence-ok", alerts[1].Evidence)
+	assert.Equal(t, "reference resolved", alerts[1].Evidence)
 }
 
-func TestBuildDeterministicAlerts_NoLedgerNoVerdict(t *testing.T) {
-	// Gates fire without REQUIRED_CHECKS: alerts still surface, verdict-less.
+func TestBuildDeterministicAlerts_LegacySummaryLedgerIsIgnored(t *testing.T) {
 	comments := []types.LineComment{
 		{
-			FilePath:    "app/models.py",
+			FilePath:    "web/components/PanelA.tsx",
 			LineNumber:  0,
 			Importance:  "MEDIUM",
-			CommentBody: mergeNote("mechanical") + "**Mechanical alert — new model property.** Body.",
+			Provenance:  "mechanical",
+			CommentBody: "**Mechanical alert: portal overlay without an explicit layer.** Body A.",
+		},
+		{
+			FilePath:   "SUMMARY",
+			LineNumber: 0,
+			CommentBody: "Overall.\n\n---\n_Required checks (id | verdict | evidence)_\n" +
+				"- CHK-portal-layer-1 | SAFE | evidence-ok\n",
 		},
 	}
-	alerts := buildDeterministicAlerts(comments)
+	alerts := buildDeterministicAlerts(comments, nil)
 	if len(alerts) != 1 {
 		t.Fatalf("got %d alerts, want 1", len(alerts))
 	}
 	assert.Equal(t, "", alerts[0].CheckID)
 	assert.Equal(t, "", alerts[0].Verdict)
+}
+
+func TestBuildDeterministicAlerts_NoChecksNoVerdict(t *testing.T) {
+	comments := []types.LineComment{
+		{
+			FilePath:    "app/models.py",
+			LineNumber:  0,
+			Importance:  "MEDIUM",
+			Provenance:  "mechanical",
+			CommentBody: "**Mechanical alert: new model property.** Body.",
+		},
+	}
+	alerts := buildDeterministicAlerts(comments, nil)
+	if len(alerts) != 1 {
+		t.Fatalf("got %d alerts, want 1", len(alerts))
+	}
+	assert.Equal(t, "", alerts[0].CheckID)
+	assert.Equal(t, "", alerts[0].Verdict)
+}
+
+func TestBuildDeterministicAlerts_UnresolvedClearanceStaysMarked(t *testing.T) {
+	comments := []types.LineComment{{
+		FilePath: "app/Tooltip.tsx", Provenance: "mechanical",
+		CommentBody: "**Mechanical alert: portal overlay without an explicit layer.** body\n\n_Required check CHK-portal-layer-1 was not answered with evidence, treat as unresolved risk._",
+	}}
+	checks := []CheckRecord{{ID: "CHK-portal-layer-1", Source: "gate", Verdict: "SAFE", Unresolved: true}}
+	alerts := buildDeterministicAlerts(comments, checks)
+	if len(alerts) != 1 || alerts[0].Verdict != "SAFE" || alerts[0].Evidence != "unresolved" {
+		t.Fatalf("a SAFE answer without resolvable evidence must show as unresolved: %+v", alerts)
+	}
+}
+
+func TestAlertView_UnresolvedClearanceIsNotStyledSafe(t *testing.T) {
+	a := AlertView{Verdict: "SAFE", Evidence: "unresolved"}
+	if a.VerdictClass() != "unresolved" {
+		t.Errorf("class = %q, want unresolved", a.VerdictClass())
+	}
+	if b := (AlertView{Verdict: "SAFE", Evidence: evidenceResolvedLabel}); b.VerdictClass() != "safe" {
+		t.Errorf("resolved SAFE class = %q", b.VerdictClass())
+	}
 }

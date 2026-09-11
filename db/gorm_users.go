@@ -86,6 +86,11 @@ func (g *GormDB) UpdateUserLastLogin(userID int) error {
 	return g.db.Model(&UserModel{}).Where("id = ?", userID).Update("last_login_at", now).Error
 }
 
+// UpdateUserGitHubUsername records a login rename reported by GitHub
+func (g *GormDB) UpdateUserGitHubUsername(userID int, username string) error {
+	return g.db.Model(&UserModel{}).Where("id = ?", userID).Update("github_username", username).Error
+}
+
 // GetAllUsers returns all users in the database
 func (g *GormDB) GetAllUsers() ([]User, error) {
 	var models []UserModel

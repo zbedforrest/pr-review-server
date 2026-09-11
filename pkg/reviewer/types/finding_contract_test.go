@@ -1,6 +1,9 @@
 package types
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func contractText(value string) *string {
 	return &value
@@ -145,5 +148,26 @@ func TestContractStatusDistinguishesMissingAndInvalid(t *testing.T) {
 	value.FindingKind = "bug"
 	if got := ContractStatus(value); got != "invalid" {
 		t.Fatalf("invalid status = %q", got)
+	}
+}
+
+func TestNormalizeFindingContractKeepsAShortHeadlineAndDropsABadOne(t *testing.T) {
+	cases := map[string]string{
+		"  Tooltip never shows long values. ": "Tooltip never shows long values",
+		"Tooltip never shows .":               "Tooltip never shows",
+		strings.Repeat("word ", 30):           "",
+		"line one\nline two":                  "",
+		"":                                    "",
+	}
+	for in, want := range cases {
+		value := validFindingContract()
+		value.Headline = in
+		NormalizeFindingContract(value)
+		if value.Headline != want {
+			t.Errorf("headline %q normalized to %q, want %q", in, value.Headline, want)
+		}
+		if err := ValidateFindingContract(value); err != nil {
+			t.Errorf("headline %q must never invalidate the contract: %v", in, err)
+		}
 	}
 }

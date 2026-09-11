@@ -199,6 +199,63 @@ func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myR
 	return approvalCount, myReviewStatus, userLatestReview
 }
 
+// attentionByUser reports, per reviewer, whether their standing decision is CHANGES_REQUESTED
+// and no review of theirs targets the current head. Unknown users (no head, a review with
+// no commit that could have targeted the head, or neither a decision nor a review of the
+// current head inside a truncated review window) are absent rather than false.
+func attentionByUser(reviews ReviewsData, headOID string) map[string]bool {
+	result := make(map[string]bool)
+	if headOID == "" {
+		return result
+	}
+
+	decisions := make(map[string]string)
+	decided := make(map[string]bool)
+	reviewedHead := make(map[string]bool)
+	unknownHead := make(map[string]bool)
+	for _, node := range reviews.Nodes {
+		if node.Author == nil || node.State == "PENDING" {
+			continue
+		}
+		username := node.Author.Login
+		result[username] = false
+		switch {
+		case node.Commit == nil:
+			unknownHead[username] = true
+		case node.Commit.OID == headOID:
+			reviewedHead[username] = true
+		}
+		switch node.State {
+		case "DISMISSED":
+			delete(decisions, username)
+			decided[username] = true
+		case "APPROVED", "CHANGES_REQUESTED":
+			decisions[username] = node.State
+			decided[username] = true
+		}
+	}
+
+	if reviews.PageInfo.HasPreviousPage {
+		for username := range result {
+			if !decided[username] && !reviewedHead[username] {
+				delete(result, username)
+			}
+		}
+	}
+
+	for username, decision := range decisions {
+		if decision != "CHANGES_REQUESTED" || reviewedHead[username] {
+			continue
+		}
+		if unknownHead[username] {
+			delete(result, username)
+			continue
+		}
+		result[username] = true
+	}
+	return result
+}
+
 // prKey generates a unique key for a PR in the format "owner/repo/number".
 func prKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s/%d", owner, repo, number)
