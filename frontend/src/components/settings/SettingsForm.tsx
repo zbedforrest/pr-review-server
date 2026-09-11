@@ -52,24 +52,28 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
   const [error, setError] = useState<string>();
   const update = useUpdateSettings();
 
-  if (settings !== base) {
-    setBase(settings);
+  const follow = (from: Draft, to: Settings) =>
     setDraft((current) => {
       const next = { ...current };
       for (const key of keys) {
-        if (current[key] === base[key]) next[key] = settings[key];
+        if (current[key] === from[key]) next[key] = to[key];
       }
       return next;
     });
+
+  if (settings !== base) {
+    setBase(settings);
+    follow(base, settings);
   }
 
   const changed = keys.filter((key) => draft[key] !== settings[key]);
 
   const save = async () => {
+    const sent = draft;
     try {
-      const saved = await update.mutateAsync(pick({ ...settings, ...draft }, changed));
+      const saved = await update.mutateAsync(pick({ ...settings, ...sent }, changed));
       setBase(saved);
-      setDraft(pick(saved, keys));
+      follow(sent, saved);
       setError(undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

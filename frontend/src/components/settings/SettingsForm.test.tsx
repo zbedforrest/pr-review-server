@@ -145,6 +145,24 @@ describe('SettingsForm', () => {
     expect(saveIn('Publishing').disabled).toBe(false);
   });
 
+  it('keeps an edit made in the same section while its save is in flight', async () => {
+    let resolveSave!: (response: Response) => void;
+    fetchMock.mockReturnValue(new Promise<Response>((resolve) => (resolveSave = resolve)));
+    renderForm();
+    fireEvent.change(samples(), { target: { value: '7' } });
+    fireEvent.click(saveIn('Review'));
+    await waitFor(() => expect(postedBodies()).toEqual([{ review_n_requests: 7 }]));
+
+    const autoReview = () => screen.getByLabelText(/Automatically review PRs/) as HTMLInputElement;
+    fireEvent.click(autoReview());
+    expect(autoReview().checked).toBe(false);
+
+    resolveSave(jsonResponse({ ...serverSettings, review_n_requests: 7 }));
+    await waitFor(() => expect(samples().value).toBe('7'));
+    await waitFor(() => expect(saveIn('Review').disabled).toBe(false));
+    expect(autoReview().checked).toBe(false);
+  });
+
   it('follows the server response after a save even when the server normalized the value', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ ...serverSettings, admin_logins: 'alice,carol,dave' }));
     renderForm();
