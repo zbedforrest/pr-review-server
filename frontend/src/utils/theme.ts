@@ -107,8 +107,14 @@ export function systemTheme(): Theme {
 
 export function loadTheme(): Theme {
   try {
-    const stored = resolveTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
-    if (stored) return stored;
+    const raw = window.localStorage.getItem(THEME_STORAGE_KEY);
+    const stored = resolveTheme(raw);
+    if (stored) {
+      // Rewrite a legacy alias so the pre-paint script, which only knows
+      // current names, finds the right palette next time.
+      if (stored !== raw) saveTheme(stored);
+      return stored;
+    }
   } catch {
     // Storage blocked entirely (private mode, cookies disabled). The OS
     // preference still gives a sensible starting point.

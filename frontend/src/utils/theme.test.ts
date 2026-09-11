@@ -71,9 +71,23 @@ describe('theme storage', () => {
     expect(loadTheme()).toBe('dracula');
   });
 
-  it('upgrades a stored legacy name on read', () => {
+  it('upgrades a stored legacy name on read and persists the current name', () => {
     window.localStorage.setItem(THEME_STORAGE_KEY, 'catppuccin');
     expect(loadTheme()).toBe('catppuccin-mocha');
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('catppuccin-mocha');
+  });
+
+  it('does not rewrite storage when the stored name is already current', () => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, 'nord');
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    expect(loadTheme()).toBe('nord');
+    expect(setItem).not.toHaveBeenCalled();
+  });
+
+  it('leaves an unusable stored value alone', () => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, 'deleted-theme');
+    loadTheme();
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('deleted-theme');
   });
 
   it('falls back to the default when the stored value is unusable', () => {
