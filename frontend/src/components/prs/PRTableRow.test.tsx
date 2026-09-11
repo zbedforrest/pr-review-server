@@ -225,6 +225,21 @@ describe('PRTableRow review cell', () => {
   });
 });
 
+describe('PRTableRow default variant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+  });
+  afterEach(() => cleanup());
+
+  it('does not render the re-review badge, GitHub review link, or attention row class', () => {
+    renderRow(makePR({ needs_attention: true }));
+    expect(screen.queryByText('Updated since your review')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Review on GitHub' })).toBeNull();
+    expect(screen.getByRole('row').className).not.toContain('pr-table__row--attention');
+  });
+});
+
 describe('PRTableRow PR link click behavior', () => {
   const PR_URL = 'https://github.com/test-org/test-repo/pull/1';
   const originalLocation = window.location;
