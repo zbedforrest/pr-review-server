@@ -40,7 +40,7 @@ export const ConfidenceBadge = memo(function ConfidenceBadge({ score, size = 'ro
       className={`confidence-badge confidence-badge--${size}`}
       role="img"
       aria-label={`Merge confidence ${badge.score}/${MAX_SCORE}: ${badge.name}`}
-      title={`${badge.name}: ${badge.tagline}`}
+      title={`Merge confidence ${badge.score}/${MAX_SCORE}, ${badge.name}: ${badge.tagline}`}
       dangerouslySetInnerHTML={{ __html: badge.svg }}
     />
   );

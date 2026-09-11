@@ -13,9 +13,9 @@ describe('ConfidenceBadge', () => {
   });
 
   it.each([
-    [0, 'Merge confidence 0/5: Merge Meltdown', 'Merge Meltdown: This diff needs a cleanup crew, not a rubber stamp.'],
-    [3, 'Merge confidence 3/5: Diff Defender', 'Diff Defender: Holding the line. Still checking the exits.'],
-    [5, 'Merge confidence 5/5: Merge Majesty', 'Merge Majesty: No blockers. Let the merge button wear the crown.'],
+    [0, 'Merge confidence 0/5: Merge Meltdown', 'Merge confidence 0/5, Merge Meltdown: This diff needs a cleanup crew, not a rubber stamp.'],
+    [3, 'Merge confidence 3/5: Diff Defender', 'Merge confidence 3/5, Diff Defender: Holding the line. Still checking the exits.'],
+    [5, 'Merge confidence 5/5: Merge Majesty', 'Merge confidence 5/5, Merge Majesty: No blockers. Let the merge button wear the crown.'],
   ])('labels score %i with its medal name and tagline', (score, ariaLabel, title) => {
     const el = renderBadge(score);
     expect(el.getAttribute('role')).toBe('img');
