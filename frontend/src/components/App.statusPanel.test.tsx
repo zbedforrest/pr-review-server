@@ -24,6 +24,7 @@ vi.mock('@/components/layout', () => ({
   StatusBar: ({ onStatusCountClick }: { onStatusCountClick: (status: StatusPanelFilter) => void }) => (
     <div className="status-bar">
       <button onClick={() => onStatusCountClick('completed')}>13 completed</button>
+      <button onClick={() => onStatusCountClick('generating')}>2 generating</button>
     </div>
   ),
 }));
@@ -52,6 +53,16 @@ describe('App status panel', () => {
     expect(trackMock).toHaveBeenCalledWith('status_count_panel', { label: 'open:completed' });
     trackMock.mockClear();
   };
+
+  it('tracks the close of the previous status when switching to the other count', () => {
+    render(<App />);
+    openPanel();
+
+    fireEvent.click(screen.getByText('2 generating'));
+
+    expect(trackMock).toHaveBeenCalledWith('status_count_panel', { label: 'close:completed' });
+    expect(trackMock).toHaveBeenCalledWith('status_count_panel', { label: 'open:generating' });
+  });
 
   it('tracks the close when the X button closes the panel', () => {
     render(<App />);

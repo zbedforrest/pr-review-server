@@ -151,6 +151,33 @@ describe('StatusPRPanel', () => {
     expect(queryByText(/server-wide/)).toBeNull();
   });
 
+  it('omits the server-wide note when the server count is momentarily below the visible rows', () => {
+    usePRsMock.mockReturnValue({
+      data: [makePR({ number: 1, title: 'A', status: 'generating' }), makePR({ number: 2, title: 'B', status: 'generating' })],
+      isLoading: false,
+      error: null,
+    });
+    setServerCounts({ generating: 1 });
+
+    const { queryByText } = render(<StatusPRPanel status="generating" onClose={vi.fn()} />);
+    expect(queryByText(/server-wide/)).toBeNull();
+  });
+
+  it('leaves Escape to an open dialog such as the confidence legend', () => {
+    const onClose = vi.fn();
+    render(<StatusPRPanel status="completed" onClose={onClose} />);
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    document.body.appendChild(dialog);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+
+    dialog.remove();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('closes on the X button', () => {
     const onClose = vi.fn();
     const { getByLabelText } = render(<StatusPRPanel status="completed" onClose={onClose} />);

@@ -59,14 +59,14 @@ export function StatusPRPanel({ status, onClose }: StatusPRPanelProps) {
   }, [onClose]);
 
   // Escape closes the panel from anywhere on the page, except while a row menu
-  // is open: that menu also listens on document, and since it opened after the
-  // panel it runs second, so bailing here lets Escape dismiss just the menu.
-  // Editors (a row's note input) own Escape too, as cancel, so leave it there.
+  // or a dialog (the confidence legend) is open: those also listen on document
+  // and, having opened after the panel, run second, so bailing here lets Escape
+  // dismiss just them. Editors (a row's note input) own Escape too, as cancel.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (isEditableElement(e.target)) return;
-      if (document.querySelector('[role="menu"]')) return;
+      if (document.querySelector('[role="menu"], [role="dialog"]')) return;
       onCloseRef.current();
     };
     document.addEventListener('keydown', onKeyDown);
@@ -79,7 +79,7 @@ export function StatusPRPanel({ status, onClose }: StatusPRPanelProps) {
   );
 
   const label = STATUS_LABELS[status];
-  const showServerCount = serverCount !== undefined && serverCount !== matching.length;
+  const showServerCount = serverCount !== undefined && serverCount > matching.length;
 
   return (
     <section

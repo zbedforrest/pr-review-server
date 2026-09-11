@@ -121,6 +121,7 @@ function AppContent() {
             closeStatusPanel();
             return;
           }
+          if (statusPanel) track('status_count_panel', { label: `close:${statusPanel}` });
           track('status_count_panel', { label: `open:${status}` });
           setStatusPanel(status);
         }}
