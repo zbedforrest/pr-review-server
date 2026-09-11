@@ -7,6 +7,7 @@ $panel-width: 320px;
   position: fixed;
   z-index: 1000;
   width: $panel-width;
+  overflow-y: auto;
   background: $color-bg-secondary;
   border: 1px solid $color-border;
   border-radius: $radius-md;

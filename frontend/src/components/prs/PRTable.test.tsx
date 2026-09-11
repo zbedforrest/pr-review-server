@@ -92,6 +92,13 @@ describe('PRTable header', () => {
     expect(dialog.textContent).toContain('a request-changes verdict caps at 3');
   });
 
+  it('caps the legend height at the viewport room below the header so it scrolls instead of clipping', () => {
+    render(<PRTable prs={[makePR()]} />);
+    fireEvent.click(legendButton());
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.style.maxHeight).toBe(`${window.innerHeight - 6 - 8}px`);
+  });
+
   it('toggles the legend closed on a second click and on Escape', () => {
     render(<PRTable prs={[makePR()]} />);
     fireEvent.click(legendButton());

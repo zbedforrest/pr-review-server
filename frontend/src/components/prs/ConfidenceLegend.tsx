@@ -44,7 +44,7 @@ export function ConfidenceLegend() {
           className="confidence-legend"
           role="dialog"
           aria-label="Merge confidence legend"
-          style={{ top: position.top, left: position.left, width: PANEL_WIDTH }}
+          style={{ top: position.top, left: position.left, width: PANEL_WIDTH, maxHeight: position.maxHeight }}
         >
           <ul className="confidence-legend__list">
             {BADGES_HIGH_TO_LOW.map((badge) => (
