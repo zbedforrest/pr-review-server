@@ -156,6 +156,18 @@ func TestAttentionByUser(t *testing.T) {
 			want:    map[string]bool{},
 		},
 		{
+			name:    "nil commit on a later review leaves the user absent",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", "A"), review("alice", "COMMENTED", "")},
+			head:    "B",
+			want:    map[string]bool{},
+		},
+		{
+			name:    "nil commit on the deciding review but a comment on the head",
+			reviews: []ReviewNode{review("alice", "CHANGES_REQUESTED", ""), review("alice", "COMMENTED", "B")},
+			head:    "B",
+			want:    map[string]bool{"alice": false},
+		},
+		{
 			name:    "nil author is skipped",
 			reviews: []ReviewNode{{Author: nil, State: "CHANGES_REQUESTED", Commit: &ReviewCommit{OID: "A"}}},
 			head:    "B",
@@ -181,7 +193,8 @@ func TestAttentionByUser(t *testing.T) {
 func TestFetchReviewDataForRepo_PopulatesAttentionAndHead(t *testing.T) {
 	body := `{"data":{"pr0":{"pullRequest":{"number":7,"headRefOid":"B","reviews":{"nodes":[
 		{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","commit":{"oid":"A"}},
-		{"author":{"login":"bob"},"state":"APPROVED","commit":{"oid":"B"}}
+		{"author":{"login":"bob"},"state":"APPROVED","commit":{"oid":"B"}},
+		{"author":{"login":"carol"},"state":"CHANGES_REQUESTED","commit":{"oid":"B"}}
 	]}}}}}`
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -211,6 +224,9 @@ func TestFetchReviewDataForRepo_PopulatesAttentionAndHead(t *testing.T) {
 	}
 	if v, ok := data.AttentionByUser["bob"]; !ok || v {
 		t.Errorf("expected bob present and false, got %v (present=%v)", v, ok)
+	}
+	if v, ok := data.AttentionByUser["carol"]; !ok || v {
+		t.Errorf("expected carol (requested changes on the head) present and false, got %v (present=%v)", v, ok)
 	}
 }
 

@@ -200,43 +200,46 @@ func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myR
 }
 
 // attentionByUser reports, per reviewer, whether their standing decision is CHANGES_REQUESTED
-// and no review of theirs targets the current head. Unknown users (no head, or no commit on
-// the deciding review) are absent rather than false.
+// and no review of theirs targets the current head. Unknown users (no head, or a review with
+// no commit that could have targeted the head) are absent rather than false.
 func attentionByUser(reviews ReviewsData, headOID string) map[string]bool {
 	result := make(map[string]bool)
 	if headOID == "" {
 		return result
 	}
 
-	decisions := make(map[string]*ReviewNode)
+	decisions := make(map[string]string)
 	reviewedHead := make(map[string]bool)
-	for i := range reviews.Nodes {
-		node := &reviews.Nodes[i]
+	unknownHead := make(map[string]bool)
+	for _, node := range reviews.Nodes {
 		if node.Author == nil || node.State == "PENDING" {
 			continue
 		}
 		username := node.Author.Login
 		result[username] = false
-		if node.Commit != nil && node.Commit.OID == headOID {
+		switch {
+		case node.Commit == nil:
+			unknownHead[username] = true
+		case node.Commit.OID == headOID:
 			reviewedHead[username] = true
 		}
 		switch node.State {
 		case "DISMISSED":
 			delete(decisions, username)
 		case "APPROVED", "CHANGES_REQUESTED":
-			decisions[username] = node
+			decisions[username] = node.State
 		}
 	}
 
 	for username, decision := range decisions {
-		if decision.State != "CHANGES_REQUESTED" {
+		if decision != "CHANGES_REQUESTED" || reviewedHead[username] {
 			continue
 		}
-		if decision.Commit == nil {
+		if unknownHead[username] {
 			delete(result, username)
 			continue
 		}
-		result[username] = !reviewedHead[username]
+		result[username] = true
 	}
 	return result
 }
