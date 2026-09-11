@@ -90,6 +90,7 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
   const patch = (changes: Partial<Draft>) => {
     setDraft((current) => ({ ...current, ...changes }));
     setSaved(false);
+    setError(undefined);
   };
 
   return {
@@ -293,7 +294,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         title="Replies"
         description="What happens when an author answers an inline comment"
         dirty={replies.dirty}
-        canSave={isAdmin}
+        canSave={!repliesDisabled}
         saving={replies.saving}
         saved={replies.saved}
         error={replies.error}

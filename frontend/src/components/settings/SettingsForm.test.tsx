@@ -339,6 +339,37 @@ describe('SettingsForm', () => {
     for (const radio of screen.getAllByRole('radio') as HTMLInputElement[]) expect(radio.disabled).toBe(true);
   });
 
+  it('will not save a dirty reply mode once the saved author list is empty', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...serverSettings, publish_enabled_authors: '' }));
+    renderForm({}, { ...serverSettings, publish_enabled_authors: 'alice' });
+    fireEvent.click(mode('observe'));
+    expect(saveIn('Replies').disabled).toBe(false);
+
+    fireEvent.click(within(section('Publishing')).getByRole('button', { name: 'Remove alice' }));
+    fireEvent.click(saveIn('Publishing'));
+    await waitFor(() => expect(saveIn('Publishing').disabled).toBe(true));
+    expect(saveIn('Replies').disabled).toBe(true);
+  });
+
+  it('refreshes the current user after the admin list is saved', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...serverSettings, admin_logins: 'carol' }));
+    const { client } = renderForm();
+    client.setQueryData(['currentUser'], { id: 1, github_username: 'alice', github_avatar_url: '', is_admin: true });
+    fireEvent.click(within(section('Admins')).getByRole('button', { name: 'Remove alice' }));
+    fireEvent.click(saveIn('Admins'));
+    await waitFor(() => expect(client.getQueryState(['currentUser'])?.isInvalidated).toBe(true));
+  });
+
+  it('clears the server error once the draft is edited again', async () => {
+    fetchMock.mockResolvedValue(new Response('review_n_requests must be at least 1\n', { status: 400 }));
+    renderForm();
+    fireEvent.change(samples(), { target: { value: '7' } });
+    fireEvent.click(saveIn('Review'));
+    await waitFor(() => expect(within(section('Review')).getByRole('alert')).toBeTruthy());
+    fireEvent.change(samples(), { target: { value: '8' } });
+    expect(within(section('Review')).queryByRole('alert')).toBeNull();
+  });
+
   it('tells the admin to save Publishing once an author is added but not yet saved', () => {
     renderForm({}, { ...serverSettings, publish_enabled_authors: '', publish_reply_mode: 'off', publish_reply_enabled_at: '' });
     const input = screen.getByLabelText('Publish for authors') as HTMLInputElement;
