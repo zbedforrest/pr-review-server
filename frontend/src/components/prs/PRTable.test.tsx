@@ -89,7 +89,15 @@ describe('PRTable header', () => {
     expect(dialog.querySelectorAll('.confidence-badge--large')).toHaveLength(6);
     expect(dialog.textContent).toContain('Crowned');
     expect(dialog.textContent).toContain('Wreck');
-    expect(dialog.textContent).toContain('a request-changes verdict caps at 3');
+  });
+
+  it('describes the presence-based scoring rule', () => {
+    render(<PRTable prs={[makePR()]} />);
+    fireEvent.click(legendButton());
+    const rule = screen.getByRole('dialog').querySelector('.confidence-legend__rule')?.textContent;
+    expect(rule).toBe(
+      'Starts at 5 with no blocking findings. Any critical finding costs 2; any medium costs 1, and three or more mediums cost 1 more; a violated required check costs 1; a request-changes verdict caps the score at 3.'
+    );
   });
 
   it('caps the legend height at the viewport room below the header so it scrolls instead of clipping', () => {
