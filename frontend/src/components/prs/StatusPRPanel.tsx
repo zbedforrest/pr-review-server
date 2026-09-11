@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { usePRs } from '@/hooks/usePRs';
 import { useStatus } from '@/hooks/useStatus';
+import { ErrorMessage, LoadingSpinner } from '@/components/common';
 import { sortPRsByNewest } from '@/utils/sectionFilters';
 import type { PR } from '@/types/pr';
 import type { StatusPanelFilter } from '@/types/status';
@@ -46,7 +47,7 @@ interface StatusPRPanelProps {
  * enough to be worth spelling out, read live so it tracks the bar.
  */
 export function StatusPRPanel({ status, onClose }: StatusPRPanelProps) {
-  const { data: prs } = usePRs();
+  const { data: prs, isLoading, error } = usePRs();
   const serverCount = useStatus().data?.counts[status];
 
   // Read through a ref so the listener below can register once per mount. A
@@ -113,11 +114,12 @@ export function StatusPRPanel({ status, onClose }: StatusPRPanelProps) {
         </div>
       </div>
 
-      {matching.length === 0 ? (
+      {isLoading && <LoadingSpinner />}
+      {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
+      {!isLoading && !error && matching.length === 0 && (
         <p className="review-prs__empty-state">No {label.toLowerCase()} PRs in your list</p>
-      ) : (
-        <PRTable prs={matching} />
       )}
+      {matching.length > 0 && <PRTable prs={matching} />}
     </section>
   );
 }

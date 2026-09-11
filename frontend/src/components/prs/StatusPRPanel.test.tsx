@@ -243,6 +243,24 @@ describe('StatusPRPanel', () => {
     expect(fresh).toHaveBeenCalledTimes(1);
   });
 
+  it('shows a loading state instead of the empty message while PRs load', () => {
+    usePRsMock.mockReturnValue({ data: undefined, isLoading: true, error: null });
+
+    const { getByText, queryByText } = render(<StatusPRPanel status="completed" onClose={vi.fn()} />);
+
+    expect(getByText('Loading...')).toBeTruthy();
+    expect(queryByText(/No completed PRs/)).toBeNull();
+  });
+
+  it('shows the load error instead of the empty message when PRs failed to load', () => {
+    usePRsMock.mockReturnValue({ data: undefined, isLoading: false, error: new Error('boom') });
+
+    const { getByText, queryByText } = render(<StatusPRPanel status="completed" onClose={vi.fn()} />);
+
+    expect(getByText('Error loading PRs: boom')).toBeTruthy();
+    expect(queryByText(/No completed PRs/)).toBeNull();
+  });
+
   it('shows an empty state when nothing in the user list has that status', () => {
     const { getByText, queryByTestId } = render(
       <StatusPRPanel status="generating" onClose={vi.fn()} />
