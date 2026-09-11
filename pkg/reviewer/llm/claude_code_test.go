@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -83,7 +84,9 @@ func TestClaudeCodeClientSuccessUsesStdinAndCountsTokens(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, review, "stdin="+strconv.Itoa(len(prompt)))
 	assert.NotContains(t, review, prompt)
-	assert.Contains(t, review, "cwd="+os.TempDir())
+	wantCwd, err := filepath.EvalSymlinks(os.TempDir())
+	require.NoError(t, err)
+	assert.Contains(t, review, "cwd="+wantCwd)
 	assert.Contains(t, review, "api_key= argv=")
 	assert.Contains(t, review, "argv=-p|")
 	assert.Contains(t, review, "--model|claude-test-model")
