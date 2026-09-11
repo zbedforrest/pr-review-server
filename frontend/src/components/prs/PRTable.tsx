@@ -1,13 +1,14 @@
 import type { PR } from '@/types/pr';
 import { ConfidenceLegend } from './ConfidenceLegend';
-import { PRTableRow } from './PRTableRow';
+import { PRTableRow, type PRRowVariant } from './PRTableRow';
 
 interface PRTableProps {
   prs: PR[];
   showViaTeams?: boolean;
+  variant?: PRRowVariant;
 }
 
-export function PRTable({ prs, showViaTeams = true }: PRTableProps) {
+export function PRTable({ prs, showViaTeams = true, variant = 'default' }: PRTableProps) {
   if (prs.length === 0) {
     return <p>No PRs found.</p>;
   }
@@ -38,6 +39,7 @@ export function PRTable({ prs, showViaTeams = true }: PRTableProps) {
               key={`${pr.owner}/${pr.repo}/${pr.number}`}
               pr={pr}
               showViaTeams={showViaTeams}
+              variant={variant}
             />
           ))}
         </tbody>

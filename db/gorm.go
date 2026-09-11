@@ -266,6 +266,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 				return fmt.Errorf("add poller_leases.generation: %w", err)
 			}
 		}
+		if g.db.Migrator().HasTable(&UserPRViewModel{}) && !g.db.Migrator().HasColumn(&UserPRViewModel{}, "needs_attention") {
+			if err := g.db.Migrator().AddColumn(&UserPRViewModel{}, "NeedsAttention"); err != nil {
+				return fmt.Errorf("add user_pr_views.needs_attention: %w", err)
+			}
+		}
 		if !g.db.Migrator().HasTable(&PRModel{}) {
 			return nil
 		}
@@ -304,6 +309,9 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	}
 	if err := g.db.Exec("ALTER TABLE user_pr_views ADD COLUMN IF NOT EXISTS via_manual boolean NOT NULL DEFAULT false").Error; err != nil {
 		return fmt.Errorf("add via_manual: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE user_pr_views ADD COLUMN IF NOT EXISTS needs_attention boolean NOT NULL DEFAULT false").Error; err != nil {
+		return fmt.Errorf("add needs_attention: %w", err)
 	}
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS pr_state varchar(16) NOT NULL DEFAULT 'open'").Error; err != nil {
 		return fmt.Errorf("add pr_state: %w", err)

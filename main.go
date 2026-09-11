@@ -204,6 +204,7 @@ func start(cfg *config.Config) {
 	srv.SetPollTrigger(p.Trigger)
 	srv.SetPoller(p)
 	p.EventFunc = srv.BroadcastEvent
+	p.UserEventFunc = srv.BroadcastEventToUser
 	p.StatusEventFunc = func() {
 		srv.BroadcastStatusSnapshot(context.Background())
 	}

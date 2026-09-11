@@ -50,6 +50,9 @@ export interface PR {
   // review rounds have been posted so far. Optional for the older-payload reason.
   published_to_github?: boolean;
   published_rounds?: number;
+  // The user requested changes and has not reviewed the PR's current head.
+  // Optional for the older-payload reason.
+  needs_attention?: boolean;
   // Merge confidence 0..5 recorded when the latest review completed. Null for
   // rows with no scored review; optional for the older-payload reason.
   merge_confidence?: number | null;

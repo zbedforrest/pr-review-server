@@ -136,6 +136,8 @@ type PRResponse struct {
 	Hidden bool `json:"hidden"`
 	// User manually requested a review for this PR (Requested by Me section)
 	ViaManual bool `json:"via_manual"`
+	// User requested changes and the PR head has moved since their last review
+	NeedsAttention bool `json:"needs_attention"`
 	// PublishedToGitHub is true when PRism has posted its review to the PR;
 	// PublishedRounds counts the publication rounds so far.
 	PublishedToGitHub bool `json:"published_to_github"`
@@ -476,6 +478,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			Notes:             notes,
 			Hidden:            prView.UserHidden,
 			ViaManual:         prView.ViaManual,
+			NeedsAttention:    prView.NeedsAttention,
 			ErrorMessage:      dbPR.ErrorMessage,
 		})
 	}
@@ -1750,6 +1753,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 	isMine := strings.EqualFold(author, s.cfg.GitHubUsername)
 	hidden := false
 	viaManual := false
+	needsAttention := false
 
 	if userID > 0 {
 		if assignment, err := s.db.GetUserPRAssignment(userID, pr.ID); err == nil && assignment != nil {
@@ -1763,6 +1767,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 			isMine = assignment.IsAuthor
 			hidden = assignment.UserHidden
 			viaManual = assignment.ViaManual
+			needsAttention = assignment.NeedsAttention
 		}
 	}
 
@@ -1805,6 +1810,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		Notes:             notes,
 		Hidden:            hidden,
 		ViaManual:         viaManual,
+		NeedsAttention:    needsAttention,
 		ErrorMessage:      pr.ErrorMessage,
 	}
 }

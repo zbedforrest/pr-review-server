@@ -1,7 +1,7 @@
 import { cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PR } from '@/types/pr';
-import { PRTableRow } from './PRTableRow';
+import { PRTableRow, type PRRowVariant } from './PRTableRow';
 
 const { triggerMutate, deleteMutate, setHiddenMutate, trackMock, useSettingsMock } = vi.hoisted(() => ({
   triggerMutate: vi.fn(),
@@ -70,11 +70,11 @@ const makePR = (partial: Partial<PR> = {}): PR => ({
   ...partial,
 });
 
-const renderRow = (pr: PR) =>
+const renderRow = (pr: PR, variant: PRRowVariant = 'default') =>
   render(
     <table>
       <tbody>
-        <PRTableRow pr={pr} />
+        <PRTableRow pr={pr} variant={variant} />
       </tbody>
     </table>
   );
@@ -225,6 +225,21 @@ describe('PRTableRow review cell', () => {
   });
 });
 
+describe('PRTableRow default variant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+  });
+  afterEach(() => cleanup());
+
+  it('does not render the re-review badge, GitHub review link, or attention row class', () => {
+    renderRow(makePR({ needs_attention: true }));
+    expect(screen.queryByText('Updated since your review')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Review on GitHub' })).toBeNull();
+    expect(screen.getByRole('row').className).not.toContain('pr-table__row--attention');
+  });
+});
+
 describe('PRTableRow confidence cell', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -337,5 +352,76 @@ describe('PRTableRow PR link click behavior', () => {
     const opens = trackMock.mock.calls.filter((c) => c[0] === 'open_pr_github');
     expect(opens).toHaveLength(2);
     expect(opens[0][1]).toMatchObject({ pr_owner: 'test-org', pr_repo: 'test-repo', pr_number: 1 });
+  });
+});
+
+describe('PRTableRow "Review on GitHub" link click behavior', () => {
+  const FILES_URL = 'https://github.com/test-org/test-repo/pull/1/files';
+  const originalLocation = window.location;
+  let assignSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+    assignSpy = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { href: originalLocation.href, origin: originalLocation.origin, assign: assignSpy },
+    });
+  });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+  });
+
+  const getLink = () => screen.getByRole('link', { name: 'Review on GitHub' });
+
+  it('advertises the same Alt/Option-click convention as the PR link', () => {
+    renderRow(makePR({ needs_attention: true }), 'attention');
+    expect(getLink().getAttribute('title')).toBe('Alt/Option-click to open in this tab');
+  });
+
+  it('on a plain click, does not intercept and lets the browser open a new tab', () => {
+    renderRow(makePR({ needs_attention: true }), 'attention');
+    const ev = createEvent.click(getLink());
+    fireEvent(getLink(), ev);
+    expect(ev.defaultPrevented).toBe(false);
+    expect(assignSpy).not.toHaveBeenCalled();
+  });
+
+  it('on Alt/Option+click, opens the files tab in the SAME tab', () => {
+    renderRow(makePR({ needs_attention: true }), 'attention');
+    const ev = createEvent.click(getLink(), { altKey: true });
+    fireEvent(getLink(), ev);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(assignSpy).toHaveBeenCalledTimes(1);
+    expect(assignSpy).toHaveBeenCalledWith(FILES_URL);
+  });
+
+  it('does not intercept Alt combined with another modifier', () => {
+    renderRow(makePR({ needs_attention: true }), 'attention');
+    const link = getLink();
+    for (const mods of [
+      { altKey: true, metaKey: true },
+      { altKey: true, ctrlKey: true },
+      { altKey: true, shiftKey: true },
+    ]) {
+      const ev = createEvent.click(link, mods);
+      fireEvent(link, ev);
+      expect(ev.defaultPrevented).toBe(false);
+    }
+    expect(assignSpy).not.toHaveBeenCalled();
+  });
+
+  it('tracks the click as open_pr_github labelled needs_re_review', () => {
+    renderRow(makePR({ needs_attention: true }), 'attention');
+    fireEvent.click(getLink());
+    expect(trackMock).toHaveBeenCalledWith('open_pr_github', {
+      pr_owner: 'test-org',
+      pr_repo: 'test-repo',
+      pr_number: 1,
+      label: 'needs_re_review',
+    });
   });
 });

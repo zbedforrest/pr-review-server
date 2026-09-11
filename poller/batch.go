@@ -15,9 +15,10 @@ type userPRViewKey struct {
 // userPRViewUpdate accumulates all changes to a single user_pr_view row.
 // Pointer fields mean "update this column"; nil means "preserve existing value".
 type userPRViewUpdate struct {
-	IsAuthor     bool
-	ReviewStatus *string
-	ViaTeams     *[]string
+	IsAuthor       bool
+	ReviewStatus   *string
+	ViaTeams       *[]string
+	NeedsAttention *bool
 }
 
 // viewBatch accumulates user_pr_view changes across a phase.
@@ -61,6 +62,16 @@ func (b *viewBatch) SetViaTeams(userID, prID int, viaTeams []string) {
 	}
 }
 
+// SetNeedsAttention sets needs_attention for a (user, PR) pair.
+func (b *viewBatch) SetNeedsAttention(userID, prID int, needsAttention bool) {
+	key := userPRViewKey{UserID: userID, PRID: prID}
+	if existing, ok := b.views[key]; ok {
+		existing.NeedsAttention = &needsAttention
+	} else {
+		b.views[key] = &userPRViewUpdate{NeedsAttention: &needsAttention}
+	}
+}
+
 // Len returns the number of accumulated entries.
 func (b *viewBatch) Len() int {
 	return len(b.views)
@@ -80,6 +91,9 @@ func (b *viewBatch) Items() []db.UserPRViewBatchItem {
 		}
 		if update.ViaTeams != nil {
 			item.ViaTeams = update.ViaTeams
+		}
+		if update.NeedsAttention != nil {
+			item.NeedsAttention = update.NeedsAttention
 		}
 		items = append(items, item)
 	}
