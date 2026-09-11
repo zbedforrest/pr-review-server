@@ -25,7 +25,8 @@ const MAX_ERROR_BODY = 500;
 async function errorFromResponse(response: Response): Promise<APIError> {
   const body = (await response.text().catch(() => '')).trim();
   const readable = body !== '' && body.length <= MAX_ERROR_BODY && !body.startsWith('<');
-  return new APIError(readable ? body : `API error: ${response.statusText}`, response.status, response.statusText);
+  const fallback = `API error: ${response.statusText || response.status}`;
+  return new APIError(readable ? body : fallback, response.status, response.statusText);
 }
 
 export async function apiGet<T>(endpoint: string): Promise<T> {

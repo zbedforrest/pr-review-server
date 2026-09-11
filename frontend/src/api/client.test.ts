@@ -32,6 +32,11 @@ describe('api client', () => {
     await expect(apiGet('/api/settings')).rejects.toMatchObject({ message: 'API error: Bad Gateway', status: 502 });
   });
 
+  it('names the numeric status when the body is unusable and the status text is empty', async () => {
+    fetchMock.mockResolvedValue(new Response('<html>oops</html>', { status: 502, statusText: '' }));
+    await expect(apiGet('/api/settings')).rejects.toMatchObject({ message: 'API error: 502', status: 502 });
+  });
+
   it('falls back to the status text when the error body is too long to be a message', async () => {
     fetchMock.mockResolvedValue(new Response('x'.repeat(600), { status: 500, statusText: 'Internal Server Error' }));
     await expect(apiGet('/api/settings')).rejects.toMatchObject({ message: 'API error: Internal Server Error' });
