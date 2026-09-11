@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { usePRs } from '@/hooks/usePRs';
 import { sortPRsByNewest } from '@/utils/sectionFilters';
+import type { PR } from '@/types/pr';
 import type { StatusPanelFilter } from '@/types/status';
 import { PRTable } from './PRTable';
 import './SectionHeader.scss';
@@ -10,6 +11,12 @@ import './StatusPRPanel.scss';
 const STATUS_LABELS: Record<StatusPanelFilter, string> = {
   completed: 'Completed',
   generating: 'Generating',
+};
+
+// Mirrors how the server rolls PR statuses into the status bar counts.
+const STATUS_MEMBERS: Record<StatusPanelFilter, ReadonlyArray<PR['status']>> = {
+  completed: ['completed'],
+  generating: ['generating', 'agent_reviewing'],
 };
 
 function isEditableElement(target: EventTarget | null): boolean {
@@ -66,7 +73,7 @@ export function StatusPRPanel({ status, onClose, serverCount }: StatusPRPanelPro
   }, []);
 
   const matching = useMemo(
-    () => sortPRsByNewest((prs || []).filter((pr) => pr.status === status)),
+    () => sortPRsByNewest((prs || []).filter((pr) => STATUS_MEMBERS[status].includes(pr.status))),
     [prs, status]
   );
 

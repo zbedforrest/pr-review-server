@@ -72,6 +72,25 @@ describe('StatusPRPanel', () => {
     expect(getByTestId('pr-table-rows').textContent).toBe('Newer done|Older done');
   });
 
+  it('counts agent_reviewing PRs as generating, matching the status bar count', () => {
+    usePRsMock.mockReturnValue({
+      data: [
+        makePR({ number: 1, title: 'Cloning', status: 'generating' }),
+        makePR({ number: 2, title: 'Agent at work', status: 'agent_reviewing' }),
+        makePR({ number: 3, title: 'Done', status: 'completed' }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    const { getByText, getByTestId } = render(
+      <StatusPRPanel status="generating" onClose={vi.fn()} />
+    );
+
+    expect(getByText('Generating (2)')).toBeTruthy();
+    expect(getByTestId('pr-table-rows').textContent).toContain('Agent at work');
+  });
+
   it('ignores the Hidden section so the status is the only filter', () => {
     usePRsMock.mockReturnValue({
       data: [
