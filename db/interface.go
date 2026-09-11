@@ -306,6 +306,7 @@ type Database interface {
 	GetAllUsers() ([]User, error)
 	CreateUser(user *User) error
 	UpdateUserLastLogin(userID int) error
+	UpdateUserGitHubUsername(userID int, username string) error
 
 	// Session operations (multi-user mode only)
 	CreateSession(session *Session) error

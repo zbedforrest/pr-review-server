@@ -853,6 +853,20 @@ func TestGormDB_UpdateUserLastLogin(t *testing.T) {
 	assert.NotNil(t, fetched.LastLoginAt)
 }
 
+func TestGormDB_UpdateUserGitHubUsername(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "old-name"}
+	require.NoError(t, db.CreateUser(user))
+
+	require.NoError(t, db.UpdateUserGitHubUsername(user.ID, "new-name"))
+
+	fetched, err := db.GetUserByGitHubID(12345)
+	require.NoError(t, err)
+	assert.Equal(t, "new-name", fetched.GitHubUsername)
+}
+
 // =============================================================================
 // Session Operations Tests
 // =============================================================================

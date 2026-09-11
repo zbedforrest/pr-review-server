@@ -787,6 +787,10 @@ func (m *MockDatabase) UpdateUserLastLogin(userID int) error {
 	return nil
 }
 
+func (m *MockDatabase) UpdateUserGitHubUsername(userID int, username string) error {
+	return nil
+}
+
 // Session operations (not needed for poller tests, stub implementations)
 func (m *MockDatabase) CreateSession(session *db.Session) error {
 	return nil

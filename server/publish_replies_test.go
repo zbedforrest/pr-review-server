@@ -34,7 +34,7 @@ func TestPublishReplies_ReportsRecentRepliesCountsAndUnlinkedRoots(t *testing.T)
 	require.NoError(t, database.SetPublishedReplyDecision("acme", "example", 7, 103, db.ReplyDecisionRecord{Decision: "hold", Cited: `[{"file":"a.go","line":12}]`}))
 
 	w := httptest.NewRecorder()
-	server.handlePublishReplies(w, httptest.NewRequest(http.MethodGet, "/api/publish/replies?limit=2", nil))
+	server.handlePublishReplies(w, addUserToRequest(httptest.NewRequest(http.MethodGet, "/api/publish/replies?limit=2", nil), &db.User{GitHubUsername: "tester"}))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	var got struct {
@@ -62,6 +62,27 @@ func TestPublishReplies_ReportsRecentRepliesCountsAndUnlinkedRoots(t *testing.T)
 func TestPublishReplies_RejectsWrites(t *testing.T) {
 	server, _ := newTestServer(t, "tester")
 	w := httptest.NewRecorder()
-	server.handlePublishReplies(w, httptest.NewRequest(http.MethodPost, "/api/publish/replies", nil))
+	server.handlePublishReplies(w, addUserToRequest(httptest.NewRequest(http.MethodPost, "/api/publish/replies", nil), &db.User{GitHubUsername: "tester"}))
 	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+}
+
+func TestPublishReplies_WithoutUserIsUnauthorized(t *testing.T) {
+	server, _ := newNonDevTestServer(t)
+	w := httptest.NewRecorder()
+	server.handlePublishReplies(w, httptest.NewRequest(http.MethodGet, "/api/publish/replies", nil))
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestPublishReplies_MemberIsForbiddenAdminIsAllowed(t *testing.T) {
+	server, _ := newNonDevTestServer(t)
+	server.cfg.AdminLogins = []string{"alice"}
+
+	w := httptest.NewRecorder()
+	server.handlePublishReplies(w, addUserToRequest(httptest.NewRequest(http.MethodGet, "/api/publish/replies", nil), &db.User{GitHubUsername: "bob"}))
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Equal(t, "admin required\n", w.Body.String())
+
+	w = httptest.NewRecorder()
+	server.handlePublishReplies(w, addUserToRequest(httptest.NewRequest(http.MethodGet, "/api/publish/replies", nil), &db.User{GitHubUsername: "Alice"}))
+	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }

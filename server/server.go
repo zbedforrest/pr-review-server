@@ -1208,10 +1208,21 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"generate_html":             generateHTML,
 		}
 		s.addPublishSettings(response)
+		s.addAdminSettings(response)
 		_ = json.NewEncoder(w).Encode(response) // nolint:errcheck
 
 	case http.MethodPost, http.MethodPatch:
-		// Update settings
+		user := auth.GetCurrentUser(r)
+		if user == nil {
+			http.Error(w, "Not authenticated", http.StatusUnauthorized)
+			return
+		}
+		if !s.isAdmin(user) {
+			log.Printf("[SETTINGS] denied actor=%s method=%s", user.GitHubUsername, r.Method)
+			http.Error(w, "admin required", http.StatusForbidden)
+			return
+		}
+
 		var req struct {
 			AutoReviewRequestedPRs   *bool   `json:"auto_review_requested_prs"`
 			ReviewNRequests          *int    `json:"review_n_requests"`
@@ -1221,9 +1232,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			PublishInlineMinSeverity *string `json:"publish_inline_min_severity"`
 			PublishReplyMode         *string `json:"publish_reply_mode"`
 			PublishShowUnverified    *bool   `json:"publish_show_unverified"`
+			AdminLogins              *string `json:"admin_logins"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.ReviewNRequests != nil && *req.ReviewNRequests < 1 {
+			http.Error(w, "review_n_requests must be 1 or greater", http.StatusBadRequest)
 			return
 		}
 		if req.PublishInlineMinSeverity != nil && !publishSeverities[strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))] {
@@ -1235,46 +1251,49 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.PublishReplyMode != nil && !publishReplyModes[strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))] {
-			http.Error(w, "publish_reply_mode must be off, observe, or react", http.StatusBadRequest)
+			http.Error(w, "publish_reply_mode must be off, observe, react, shadow, or respond", http.StatusBadRequest)
 			return
 		}
-
-		// Update the setting if provided
-		if req.AutoReviewRequestedPRs != nil {
-			if err := s.db.SetAutoReviewRequestedPRs(*req.AutoReviewRequestedPRs); err != nil {
-				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
+		var publishAuthors, adminLogins string
+		if req.PublishEnabledAuthors != nil {
+			normalized, err := normalizeLoginCSV(*req.PublishEnabledAuthors, true)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("publish_enabled_authors: %v", err), http.StatusBadRequest)
 				return
 			}
-			log.Printf("[SETTINGS] Updated auto_review_requested_prs to: %v", *req.AutoReviewRequestedPRs)
+			publishAuthors = normalized
 		}
-		if req.ReviewNRequests != nil {
-			if err := s.db.SetReviewNRequests(*req.ReviewNRequests); err != nil {
-				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
+		if req.AdminLogins != nil {
+			normalized, err := normalizeLoginCSV(*req.AdminLogins, false)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("admin_logins: %v", err), http.StatusBadRequest)
 				return
 			}
-			log.Printf("[SETTINGS] Updated review_n_requests to: %v", *req.ReviewNRequests)
-		}
-		if req.GenerateHTML != nil {
-			if err := s.db.SetGenerateHTML(*req.GenerateHTML); err != nil {
-				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
-				return
-			}
-			log.Printf("[SETTINGS] Updated generate_html to: %v", *req.GenerateHTML)
+			adminLogins = normalized
 		}
 
 		type settingWrite struct{ key, value string }
-		var publishUpdates []settingWrite
+		var updates []settingWrite
+		if req.AutoReviewRequestedPRs != nil {
+			updates = append(updates, settingWrite{"auto_review_requested_prs", strconv.FormatBool(*req.AutoReviewRequestedPRs)})
+		}
+		if req.ReviewNRequests != nil {
+			updates = append(updates, settingWrite{"review_n_requests", strconv.Itoa(*req.ReviewNRequests)})
+		}
+		if req.GenerateHTML != nil {
+			updates = append(updates, settingWrite{"generate_html", strconv.FormatBool(*req.GenerateHTML)})
+		}
 		if req.PublishEnabledAuthors != nil {
-			publishUpdates = append(publishUpdates, settingWrite{settingPublishEnabledAuthors, *req.PublishEnabledAuthors})
+			updates = append(updates, settingWrite{settingPublishEnabledAuthors, publishAuthors})
 		}
 		if req.PublishInlineCap != nil {
-			publishUpdates = append(publishUpdates, settingWrite{settingPublishInlineCap, strconv.Itoa(*req.PublishInlineCap)})
+			updates = append(updates, settingWrite{settingPublishInlineCap, strconv.Itoa(*req.PublishInlineCap)})
 		}
 		if req.PublishInlineMinSeverity != nil {
-			publishUpdates = append(publishUpdates, settingWrite{settingPublishInlineMinSeverity, strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))})
+			updates = append(updates, settingWrite{settingPublishInlineMinSeverity, strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))})
 		}
 		if req.PublishShowUnverified != nil {
-			publishUpdates = append(publishUpdates, settingWrite{settingPublishShowUnverified, strconv.FormatBool(*req.PublishShowUnverified)})
+			updates = append(updates, settingWrite{settingPublishShowUnverified, strconv.FormatBool(*req.PublishShowUnverified)})
 		}
 		if req.PublishReplyMode != nil {
 			mode := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
@@ -1287,19 +1306,21 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			// write the stamp first; when disabling, turn the mode off first.
 			switch {
 			case change && mode != defaultPublishReplyMode:
-				publishUpdates = append(publishUpdates, settingWrite{settingPublishReplyEnabledAt, stamp}, settingWrite{settingPublishReplyMode, mode})
+				updates = append(updates, settingWrite{settingPublishReplyEnabledAt, stamp}, settingWrite{settingPublishReplyMode, mode})
 			case change:
-				publishUpdates = append(publishUpdates, settingWrite{settingPublishReplyMode, mode}, settingWrite{settingPublishReplyEnabledAt, stamp})
+				updates = append(updates, settingWrite{settingPublishReplyMode, mode}, settingWrite{settingPublishReplyEnabledAt, stamp})
 			default:
-				publishUpdates = append(publishUpdates, settingWrite{settingPublishReplyMode, mode})
+				updates = append(updates, settingWrite{settingPublishReplyMode, mode})
 			}
 		}
-		for _, u := range publishUpdates {
-			if err := s.db.SetSetting(u.key, u.value); err != nil {
+		if req.AdminLogins != nil {
+			updates = append(updates, settingWrite{settingAdminLogins, adminLogins})
+		}
+		for _, u := range updates {
+			if err := s.writeSetting(user.GitHubUsername, u.key, u.value); err != nil {
 				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
 				return
 			}
-			log.Printf("[SETTINGS] Updated %s to: %q", u.key, u.value)
 		}
 
 		// Return updated settings
@@ -1313,6 +1334,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"generate_html":             generateHTML,
 		}
 		s.addPublishSettings(response)
+		s.addAdminSettings(response)
 		_ = json.NewEncoder(w).Encode(response) // nolint:errcheck
 
 	default:
