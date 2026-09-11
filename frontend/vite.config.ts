@@ -43,5 +43,6 @@ export default defineConfig({
     // theme list that way), and a stylesheet that no longer compiles fails
     // the suite instead of only the build.
     css: true,
+    setupFiles: ['./src/test/setup.ts'],
   },
 });
