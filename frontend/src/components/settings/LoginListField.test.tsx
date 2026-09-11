@@ -75,6 +75,30 @@ describe('LoginListField', () => {
     expect(onChange).toHaveBeenCalledWith('alice,bob,carol,dave');
   });
 
+  it('pastes over the selected text instead of appending to it', () => {
+    const { onChange } = renderField();
+    type('car');
+    input().setSelectionRange(0, 3);
+    fireEvent.paste(input(), { clipboardData: { getData: () => 'dave,erin' } });
+    expect(onChange).toHaveBeenCalledWith('alice,bob,dave,erin');
+  });
+
+  it('pastes at the caret when the caret is inside the typed text', () => {
+    const { onChange } = renderField();
+    type('cl');
+    input().setSelectionRange(1, 1);
+    fireEvent.paste(input(), { clipboardData: { getData: () => 'aro,' } });
+    expect(onChange).toHaveBeenCalledWith('alice,bob,caro,l');
+  });
+
+  it('keeps a rejected multi-line paste in the input as a comma list', () => {
+    const { onChange } = renderField();
+    fireEvent.paste(input(), { clipboardData: { getData: () => 'carol\nal_ice\ndave' } });
+    expect(screen.getByRole('alert').textContent).toBe('"al_ice" is not a valid login');
+    expect(input().value).toBe('carol,al_ice,dave');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('rejects an invalid pasted entry inline and keeps the paste in the input', () => {
     const { onChange } = renderField();
     fireEvent.paste(input(), { clipboardData: { getData: () => 'carol,al ice' } });
@@ -142,6 +166,21 @@ describe('LoginListField', () => {
     expect(window.confirm).toHaveBeenCalledWith('Publish for every author?');
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.queryByRole('alert')).toBeNull();
+    expect(input().value).toBe('');
+    fireEvent.blur(input());
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask again on later keystrokes after a cancelled "*" typed with a comma', () => {
+    vi.mocked(window.confirm).mockReturnValue(false);
+    const { onChange } = renderField();
+    type('*,');
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(input().value).toBe('');
+    type('c');
+    type('ca');
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('adds "*" when the confirm is accepted', () => {

@@ -42,7 +42,10 @@ export function LoginListField({
       setDraft('');
       return;
     }
-    if (added.includes('*') && !window.confirm('Publish for every author?')) return;
+    if (added.includes('*') && !window.confirm('Publish for every author?')) {
+      setDraft('');
+      return;
+    }
     onChange(joinLogins([...logins, ...added]));
     setDraft('');
   };
@@ -53,13 +56,17 @@ export function LoginListField({
     if (next.includes(',')) commit(next);
   };
 
-  // A text input drops newlines from its value, so a multi-line paste has to be split before it lands.
+  // A text input drops newlines from its value, so a multi-line paste is turned into a comma list before it lands.
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
     const pasted = e.clipboardData.getData('text');
     if (!/[,\n]/.test(pasted)) return;
     e.preventDefault();
-    setDraft(draft + pasted);
-    commit(draft + pasted);
+    const { selectionStart, selectionEnd } = e.currentTarget;
+    const start = selectionStart ?? draft.length;
+    const end = selectionEnd ?? draft.length;
+    const next = (draft.slice(0, start) + pasted + draft.slice(end)).replace(/\r?\n/g, ',');
+    setDraft(next);
+    commit(next);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
