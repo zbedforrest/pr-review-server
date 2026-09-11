@@ -50,6 +50,9 @@ export interface PR {
   // review rounds have been posted so far. Optional for the older-payload reason.
   published_to_github?: boolean;
   published_rounds?: number;
+  // Merge confidence 0..5 recorded when the latest review completed. Null for
+  // rows with no scored review; optional for the older-payload reason.
+  merge_confidence?: number | null;
 }
 
 export interface ReviewRun {

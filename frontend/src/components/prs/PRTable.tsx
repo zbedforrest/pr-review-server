@@ -1,4 +1,5 @@
 import type { PR } from '@/types/pr';
+import { ConfidenceLegend } from './ConfidenceLegend';
 import { PRTableRow } from './PRTableRow';
 
 interface PRTableProps {
@@ -24,6 +25,9 @@ export function PRTable({ prs, showViaTeams = true }: PRTableProps) {
             <th>My Review</th>
             {showViaTeams && <th>Via Teams</th>}
             <th>Notes</th>
+            <th className="pr-table__confidence">
+              <ConfidenceLegend />
+            </th>
             <th>AI Review</th>
             <th>Actions</th>
           </tr>

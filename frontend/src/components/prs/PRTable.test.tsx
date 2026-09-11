@@ -1,0 +1,112 @@
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { PR } from '@/types/pr';
+import { PRTable } from './PRTable';
+
+vi.mock('./PRTableRow', () => ({
+  PRTableRow: ({ pr }: { pr: PR }) => (
+    <tr data-testid="row">
+      <td>{pr.number}</td>
+    </tr>
+  ),
+}));
+
+const makePR = (partial: Partial<PR> = {}): PR => ({
+  owner: 'test-org',
+  repo: 'test-repo',
+  number: 1,
+  commit_sha: 'abc123',
+  last_reviewed_at: null,
+  review_html_path: '',
+  github_url: 'https://github.com/test-org/test-repo/pull/1',
+  review_url: '',
+  status: 'pending',
+  title: 'Example PR',
+  author: 'alice',
+  generating_since: null,
+  approval_count: 0,
+  my_review_status: '',
+  draft: false,
+  ci_state: 'unknown',
+  ci_failed_checks: [],
+  created_at: '2026-04-15T12:00:00Z',
+  is_mine: false,
+  via_teams: [],
+  critical_count: 0,
+  medium_count: 0,
+  low_count: 0,
+  notes: '',
+  ...partial,
+});
+
+const MEDAL_NAMES = [
+  'Merge Majesty',
+  'Merge Ascendant',
+  'Diff Defender',
+  'Patch Gauntlet',
+  'Rollback Reckoning',
+  'Merge Meltdown',
+];
+
+const headerTexts = () => screen.getAllByRole('columnheader').map((th) => th.textContent?.trim());
+const legendButton = () => screen.getByRole('button', { name: 'Confidence' });
+
+describe('PRTable header', () => {
+  afterEach(() => cleanup());
+
+  it('places the Confidence column immediately before AI Review', () => {
+    render(<PRTable prs={[makePR()]} />);
+    const headers = headerTexts();
+    const idx = headers.indexOf('Confidence');
+    expect(idx).toBeGreaterThan(0);
+    expect(headers[idx + 1]).toBe('AI Review');
+    expect(headers).toContain('Via Teams');
+  });
+
+  it('keeps the Confidence column before AI Review when Via Teams is hidden', () => {
+    render(<PRTable prs={[makePR()]} showViaTeams={false} />);
+    const headers = headerTexts();
+    expect(headers).not.toContain('Via Teams');
+    expect(headers[headers.indexOf('Confidence') + 1]).toBe('AI Review');
+  });
+
+  it('renders the Confidence header as a closed legend trigger', () => {
+    render(<PRTable prs={[makePR()]} />);
+    const button = legendButton();
+    expect(button.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('opens a legend listing all six medals with their rank words and the scoring rule', () => {
+    render(<PRTable prs={[makePR()]} />);
+    fireEvent.click(legendButton());
+    expect(legendButton().getAttribute('aria-expanded')).toBe('true');
+    const dialog = screen.getByRole('dialog');
+    for (const name of MEDAL_NAMES) {
+      expect(dialog.textContent).toContain(name);
+    }
+    expect(dialog.querySelectorAll('.confidence-badge--large')).toHaveLength(6);
+    expect(dialog.textContent).toContain('Crowned');
+    expect(dialog.textContent).toContain('Wreck');
+    expect(dialog.textContent).toContain('a request-changes verdict caps at 3');
+  });
+
+  it('toggles the legend closed on a second click and on Escape', () => {
+    render(<PRTable prs={[makePR()]} />);
+    fireEvent.click(legendButton());
+    fireEvent.click(legendButton());
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(legendButton());
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(legendButton().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('renders the empty state without a table', () => {
+    render(<PRTable prs={[]} />);
+    expect(screen.getByText('No PRs found.')).toBeTruthy();
+    expect(screen.queryByRole('table')).toBeNull();
+  });
+});

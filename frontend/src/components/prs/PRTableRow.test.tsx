@@ -225,6 +225,36 @@ describe('PRTableRow review cell', () => {
   });
 });
 
+describe('PRTableRow confidence cell', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+  });
+  afterEach(() => cleanup());
+
+  const confidenceCell = () => document.querySelector('td.pr-table__confidence') as HTMLElement;
+
+  it('renders the medal for a completed PR with a score', () => {
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', merge_confidence: 4 }));
+    const medal = screen.getByRole('img', { name: 'Merge confidence 4/5: Merge Ascendant' });
+    expect(confidenceCell().contains(medal)).toBe(true);
+    expect(medal.querySelector('svg')).toBeTruthy();
+  });
+
+  it('renders the dash for a pending PR with a null score', () => {
+    renderRow(makePR({ status: 'pending', merge_confidence: null }));
+    const dash = screen.getByRole('img', { name: 'No merge confidence yet' });
+    expect(confidenceCell().contains(dash)).toBe(true);
+    expect(dash.textContent).toBe('-');
+  });
+
+  it('renders the dash when the payload omits the field', () => {
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html' }));
+    expect(screen.getByRole('img', { name: 'No merge confidence yet' }).textContent).toBe('-');
+    expect(screen.queryByRole('img', { name: /^Merge confidence/ })).toBeNull();
+  });
+});
+
 describe('PRTableRow PR link click behavior', () => {
   const PR_URL = 'https://github.com/test-org/test-repo/pull/1';
   const originalLocation = window.location;

@@ -1,0 +1,78 @@
+@use '../../styles/abstracts/variables' as *;
+
+// Keep $panel-width in sync with PANEL_WIDTH in ConfidenceLegend.tsx.
+$panel-width: 320px;
+
+.confidence-legend {
+  position: fixed;
+  z-index: 1000;
+  width: $panel-width;
+  background: $color-bg-secondary;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: $spacing-sm;
+  font-size: $font-size-sm;
+  color: $color-text-primary;
+  text-transform: none;
+  letter-spacing: normal;
+
+  &__trigger {
+    background: transparent;
+    border: none;
+    padding: 0;
+    font: inherit;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    cursor: help;
+
+    &:hover,
+    &[aria-expanded='true'] {
+      color: $color-link-hover;
+    }
+  }
+
+  &__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  &__item {
+    display: grid;
+    grid-template-columns: 64px auto 1fr;
+    grid-template-rows: auto auto;
+    column-gap: $spacing-sm;
+    align-items: center;
+    padding: $spacing-xs 0;
+
+    .confidence-badge {
+      grid-row: 1 / span 2;
+    }
+  }
+
+  &__score {
+    grid-row: 1 / span 2;
+    font-weight: 700;
+    color: $color-text-secondary;
+  }
+
+  &__name {
+    font-weight: 600;
+  }
+
+  &__rank {
+    color: $color-text-secondary;
+    font-size: $font-size-xs;
+  }
+
+  &__rule {
+    margin: $spacing-sm 0 0;
+    padding-top: $spacing-sm;
+    border-top: 1px solid $color-border;
+    color: $color-text-secondary;
+    font-size: $font-size-xs;
+    line-height: 1.4;
+  }
+}
