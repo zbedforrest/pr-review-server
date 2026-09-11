@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -268,6 +269,11 @@ func (g *GormDB) SetPRMergeConfidence(owner, repo string, prNumber int, projecti
 	if score < 0 || score > 5 {
 		return false, fmt.Errorf("set PR merge confidence for run %s: score %d is outside 0..5", projectionRunID, score)
 	}
+	// Legacy rows carry an empty projection_run_id, so an empty id would match
+	// them all instead of fencing to one run.
+	if projectionRunID == "" {
+		return false, errors.New("set PR merge confidence: projection run id is required")
+	}
 	res := g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ? AND status = ?", owner, repo, prNumber, projectionRunID, "completed").
 		Update("merge_confidence", score)
@@ -280,6 +286,9 @@ func (g *GormDB) SetPRMergeConfidence(owner, repo string, prNumber int, projecti
 // UpdatePRStatus updates the status of a PR
 func (g *GormDB) UpdatePRStatus(owner, repo string, prNumber int, status string) error {
 	updates := map[string]interface{}{"status": status}
+	if status != "completed" {
+		updates["merge_confidence"] = nil
+	}
 
 	// When marking as error, set last_reviewed_at to track when the error occurred
 	if status == "error" {
@@ -344,6 +353,7 @@ func (g *GormDB) SetPRError(owner, repo string, prNumber int, message string) er
 			"status":           "error",
 			"error_message":    message,
 			"last_reviewed_at": now,
+			"merge_confidence": nil,
 		}).Error
 }
 

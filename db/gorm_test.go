@@ -440,6 +440,47 @@ func TestGormDB_SetPRMergeConfidence_RejectsScoresOutsideTheMedalRange(t *testin
 	assert.Equal(t, 4, *stored, "a rejected score must write nothing")
 }
 
+func TestGormDB_SetPRMergeConfidence_RejectsAnEmptyRunID(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+	require.NoError(t, db.db.Model(&PRModel{}).Where("pr_number = ?", 1).Update("projection_run_id", "").Error)
+
+	stored, err := db.SetPRMergeConfidence("owner", "repo", 1, "", 1)
+	require.Error(t, err)
+	assert.False(t, stored)
+	score := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, score)
+	assert.Equal(t, 4, *score)
+}
+
+func TestGormDB_UpdatePRStatus_ClearsMergeConfidenceWhenLeavingCompleted(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.UpdatePRStatus("owner", "repo", 1, "pending"))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence)
+}
+
+func TestGormDB_SetPRError_ClearsMergeConfidence(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 5)
+
+	require.NoError(t, db.SetPRError("owner", "repo", 1, "boom"))
+
+	fetched, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Nil(t, fetched.MergeConfidence)
+}
+
 func TestGormDB_SetPRMergeConfidence_MissingRow(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()
