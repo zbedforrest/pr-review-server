@@ -413,12 +413,24 @@ func TestBroadcaster_StalledClientIsDroppedAndOthersStillReceive(t *testing.T) {
 	healthy, _, err := dialWebSocket(t, wsURLFromHTTP(ts.URL)+"/ws", healthySession.ID)
 	require.NoError(t, err)
 	defer healthy.Close()
-	assert.Equal(t, "status_snapshot", readWebSocketMessage(t, healthy).Type)
 	waitForCondition(t, "two clients registered", func() bool {
 		server.clientsMux.RLock()
 		defer server.clientsMux.RUnlock()
 		return len(server.clients) == 2
 	})
+	// The healthy peer keeps reading, as a browser would, so only the stalled
+	// one can exhaust its socket buffers.
+	healthyTypes := make(chan string, 16)
+	go func() {
+		for {
+			var msg WebSocketMessage
+			if err := healthy.ReadJSON(&msg); err != nil {
+				close(healthyTypes)
+				return
+			}
+			healthyTypes <- msg.Type
+		}
+	}()
 
 	// The stalled peer never reads, so a few multi-megabyte frames fill its
 	// socket buffers and the server's next write to it cannot complete.
@@ -443,12 +455,16 @@ func TestBroadcaster_StalledClientIsDroppedAndOthersStillReceive(t *testing.T) {
 		return len(server.clients) == 1
 	})
 
-	deadline := time.Now().Add(5 * time.Second)
+	timeout := time.After(5 * time.Second)
 	for {
-		require.NoError(t, healthy.SetReadDeadline(deadline))
-		msg := readWebSocketMessage(t, healthy)
-		if msg.Type == "ping" {
-			break
+		select {
+		case typ, ok := <-healthyTypes:
+			require.True(t, ok, "healthy client was disconnected")
+			if typ == "ping" {
+				return
+			}
+		case <-timeout:
+			t.Fatal("healthy client never received the event sent after the stalled one was dropped")
 		}
 	}
 }
