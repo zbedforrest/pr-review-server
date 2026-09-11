@@ -72,6 +72,9 @@ jobs:
       - name: Lint (ESLint)
         run: npm run lint
 
+      - name: Test (Vitest)
+        run: npm test
+
       - name: Type Check & Build
         run: npm run build
 
