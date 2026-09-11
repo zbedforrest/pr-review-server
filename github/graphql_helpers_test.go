@@ -73,7 +73,7 @@ func TestBuildPRStateQueryIncludesDraft(t *testing.T) {
 func TestBuildReviewDataQueryIncludesCommitAndHead(t *testing.T) {
 	client := NewClient("token", "current-user")
 	query := client.buildReviewDataQuery("owner1", "repo1", []PullRequest{{Owner: "owner1", Repo: "repo1", Number: 7}})
-	for _, want := range []string{"reviews(last: 100)", "commit { oid }", "headRefOid"} {
+	for _, want := range []string{"reviews(last: 100)", "commit { oid }", "headRefOid", "isDraft"} {
 		if !strings.Contains(query, want) {
 			t.Errorf("Expected review data query to contain %q:\n%s", want, query)
 		}
@@ -191,7 +191,7 @@ func TestAttentionByUser(t *testing.T) {
 }
 
 func TestFetchReviewDataForRepo_PopulatesAttentionAndHead(t *testing.T) {
-	body := `{"data":{"pr0":{"pullRequest":{"number":7,"headRefOid":"B","reviews":{"nodes":[
+	body := `{"data":{"pr0":{"pullRequest":{"number":7,"headRefOid":"B","isDraft":true,"reviews":{"nodes":[
 		{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","commit":{"oid":"A"}},
 		{"author":{"login":"bob"},"state":"APPROVED","commit":{"oid":"B"}},
 		{"author":{"login":"carol"},"state":"CHANGES_REQUESTED","commit":{"oid":"B"}}
@@ -215,6 +215,9 @@ func TestFetchReviewDataForRepo_PopulatesAttentionAndHead(t *testing.T) {
 	}
 	if data.HeadOID != "B" {
 		t.Errorf("HeadOID = %q, want B", data.HeadOID)
+	}
+	if !data.IsDraft {
+		t.Errorf("IsDraft = false, want true from the same response as the head")
 	}
 	if data.ApprovalCount != 1 || data.UserReviews["alice"] != "CHANGES_REQUESTED" {
 		t.Errorf("existing review reduction changed: approvals=%d userReviews=%v", data.ApprovalCount, data.UserReviews)

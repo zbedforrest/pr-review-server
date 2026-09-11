@@ -391,6 +391,7 @@ type PRReviewData struct {
 	MyReviewStatus  string            // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
 	UserReviews     map[string]string // Username -> latest review state (e.g. "APPROVED", "CHANGES_REQUESTED")
 	HeadOID         string
+	IsDraft         bool
 	AttentionByUser map[string]bool // Username -> requested changes and has not reviewed the current head; absent when unknown
 }
 
@@ -769,6 +770,7 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 			MyReviewStatus:  myReviewStatus,
 			UserReviews:     userReviews,
 			HeadOID:         headOID,
+			IsDraft:         repoData.PullRequest.IsDraft,
 			AttentionByUser: attentionByUser(repoData.PullRequest.Reviews, headOID),
 		}
 
@@ -793,6 +795,7 @@ func (c *Client) buildReviewDataQuery(owner, repo string, prs []PullRequest) str
 				pullRequest(number: %d) {
 					number
 					headRefOid
+					isDraft
 					reviews(last: 100) {
 						nodes {
 							author {

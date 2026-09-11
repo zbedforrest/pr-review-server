@@ -2804,7 +2804,7 @@ func (p *Poller) poll(ctx context.Context) {
 						reviewViewBatch.SetReviewStatus(user.ID, existingPR.ID, userStatus)
 					}
 
-					attention := attentionForUser(reviewData, user.GitHubUsername, pr.Draft, existingPR.PRState, isAuthor)
+					attention := attentionForUser(reviewData, user.GitHubUsername, existingPR.PRState, isAuthor)
 					if attention == nil {
 						continue
 					}

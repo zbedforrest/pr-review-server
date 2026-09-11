@@ -111,16 +111,16 @@ func TestPoll_Attention_AuthorNeverFlagged(t *testing.T) {
 func TestPoll_Attention_DraftAndClosedForceFalse(t *testing.T) {
 	cases := []struct {
 		name  string
-		setup func(pr *db.PR)
+		setup func(f *attentionFixture)
 	}{
-		{"draft", func(pr *db.PR) { pr.Draft = true }},
-		{"closed", func(pr *db.PR) { pr.PRState = "closed" }},
-		{"merged", func(pr *db.PR) { pr.PRState = "merged" }},
+		{"draft", func(f *attentionFixture) { f.mockGH.BatchGetPRReviewDataResults["acme/example/7"].IsDraft = true }},
+		{"closed", func(f *attentionFixture) { f.mockDB.PRs["acme/example/7"].PRState = "closed" }},
+		{"merged", func(f *attentionFixture) { f.mockDB.PRs["acme/example/7"].PRState = "merged" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newAttentionFixture(changesRequestedBy("alice"))
-			tc.setup(f.mockDB.PRs["acme/example/7"])
+			tc.setup(f)
 			f.seedView(1, true, "CHANGES_REQUESTED")
 
 			f.pollCapturingLog()
@@ -130,6 +130,33 @@ func TestPoll_Attention_DraftAndClosedForceFalse(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPoll_Attention_DraftComesFromFetchedReviewDataNotStaleRow(t *testing.T) {
+	t.Run("converted to draft", func(t *testing.T) {
+		f := newAttentionFixture(changesRequestedBy("alice"))
+		f.mockDB.PRs["acme/example/7"].Draft = false
+		f.mockGH.BatchGetPRReviewDataResults["acme/example/7"].IsDraft = true
+		f.seedView(1, true, "CHANGES_REQUESTED")
+
+		f.pollCapturingLog()
+
+		if view := f.view(1); view == nil || view.NeedsAttention {
+			t.Fatalf("draft flip fetched this cycle must clear the flag, got %+v", view)
+		}
+	})
+	t.Run("marked ready", func(t *testing.T) {
+		f := newAttentionFixture(changesRequestedBy("alice"))
+		f.mockDB.PRs["acme/example/7"].Draft = true
+		f.mockGH.BatchGetPRReviewDataResults["acme/example/7"].IsDraft = false
+		f.seedView(1, false, "CHANGES_REQUESTED")
+
+		f.pollCapturingLog()
+
+		if view := f.view(1); view == nil || !view.NeedsAttention {
+			t.Fatalf("ready flip fetched this cycle must honour the reducer, got %+v", view)
+		}
+	})
 }
 
 func TestPoll_Attention_AbsentFromReducerLeavesExistingValue(t *testing.T) {

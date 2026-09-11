@@ -21,9 +21,10 @@ type attentionTransition struct {
 // attentionForUser resolves the needs_attention write for one viewer. A PR that
 // cannot need re-review (draft, closed or merged, or the viewer's own) forces
 // false regardless of the reducer; otherwise the reducer's verdict is used and
-// nil means it had none, so the stored value is preserved.
-func attentionForUser(reviewData *github.PRReviewData, login string, draft bool, prState string, isAuthor bool) *bool {
-	if draft || isAuthor || (prState != "" && prState != "open") {
+// nil means it had none, so the stored value is preserved. Draft comes from the
+// fetched review data: the DB row lags one cycle behind a draft/ready flip.
+func attentionForUser(reviewData *github.PRReviewData, login string, prState string, isAuthor bool) *bool {
+	if reviewData.IsDraft || isAuthor || (prState != "" && prState != "open") {
 		return boolPtr(false)
 	}
 	for reviewer, flagged := range reviewData.AttentionByUser {
