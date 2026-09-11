@@ -7,6 +7,7 @@ interface SettingsSectionProps {
   dirty: boolean;
   canSave: boolean;
   saving: boolean;
+  saved?: boolean;
   error?: string;
   onSave: () => void;
   onReset: () => void;
@@ -19,19 +20,23 @@ export function SettingsSection({
   dirty,
   canSave,
   saving,
+  saved = false,
   error,
   onSave,
   onReset,
   children,
 }: SettingsSectionProps) {
   return (
-    <section className="settings-section">
+    <section className="settings-section" aria-busy={saving}>
       <div className="settings-section__header">
         <h2 className="settings-section__title">{title}</h2>
         {description && <p className="settings-section__description">{description}</p>}
       </div>
       <div className="settings-section__body">{children}</div>
       <div className="settings-section__actions">
+        <span role="status" className="settings-section__status">
+          {saving ? 'Saving' : saved ? 'Saved' : ''}
+        </span>
         <button
           type="button"
           className="settings-section__button"

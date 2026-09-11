@@ -60,6 +60,7 @@ const section = (title: string) =>
   screen.getByRole('heading', { name: title }).closest('.settings-section') as HTMLElement;
 const saveIn = (title: string) => within(section(title)).getByRole('button', { name: 'Save' }) as HTMLButtonElement;
 const resetIn = (title: string) => within(section(title)).getByRole('button', { name: 'Reset' }) as HTMLButtonElement;
+const statusIn = (title: string) => within(section(title)).getByRole('status');
 const samples = () => screen.getByLabelText('First-pass samples') as HTMLInputElement;
 const mode = (name: string) => screen.getByRole('radio', { name }) as HTMLInputElement;
 const allControls = () =>
@@ -151,6 +152,35 @@ describe('SettingsForm', () => {
     expect(samples().value).toBe('7');
     expect((screen.getByLabelText('Show unverified findings') as HTMLInputElement).checked).toBe(true);
     expect(saveIn('Publishing').disabled).toBe(false);
+  });
+
+  it('announces Saving then Saved in the saved section and clears it on the next edit', async () => {
+    let resolveSave!: (response: Response) => void;
+    fetchMock.mockReturnValue(new Promise<Response>((resolve) => (resolveSave = resolve)));
+    renderForm();
+    expect(statusIn('Review').textContent).toBe('');
+    fireEvent.change(samples(), { target: { value: '7' } });
+    fireEvent.click(saveIn('Review'));
+    await waitFor(() => expect(statusIn('Review').textContent).toBe('Saving'));
+    expect(section('Review').getAttribute('aria-busy')).toBe('true');
+    expect(statusIn('Publishing').textContent).toBe('');
+
+    resolveSave(jsonResponse({ ...serverSettings, review_n_requests: 7 }));
+    await waitFor(() => expect(statusIn('Review').textContent).toBe('Saved'));
+    expect(section('Review').getAttribute('aria-busy')).toBe('false');
+    expect(statusIn('Publishing').textContent).toBe('');
+
+    fireEvent.change(samples(), { target: { value: '8' } });
+    expect(statusIn('Review').textContent).toBe('');
+  });
+
+  it('does not announce Saved when the save fails', async () => {
+    fetchMock.mockResolvedValue(new Response('review_n_requests must be at least 1\n', { status: 400 }));
+    renderForm();
+    fireEvent.change(samples(), { target: { value: '7' } });
+    fireEvent.click(saveIn('Review'));
+    await waitFor(() => expect(within(section('Review')).getByRole('alert')).toBeTruthy());
+    expect(statusIn('Review').textContent).toBe('');
   });
 
   it('keeps an edit made in the same section while its save is in flight', async () => {

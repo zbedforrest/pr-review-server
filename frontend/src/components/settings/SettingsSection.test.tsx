@@ -22,6 +22,7 @@ const renderSection = (overrides: Partial<React.ComponentProps<typeof SettingsSe
 
 const save = () => screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement;
 const reset = () => screen.getByRole('button', { name: 'Reset' }) as HTMLButtonElement;
+const sectionElement = () => screen.getByRole('heading').closest('section') as HTMLElement;
 
 describe('SettingsSection', () => {
   afterEach(cleanup);
@@ -61,6 +62,20 @@ describe('SettingsSection', () => {
     fireEvent.click(reset());
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onReset).toHaveBeenCalledTimes(1);
+  });
+
+  it('announces Saving while pending and Saved afterwards in a status region', () => {
+    renderSection();
+    expect(screen.getByRole('status').textContent).toBe('');
+    expect(sectionElement().getAttribute('aria-busy')).toBe('false');
+    cleanup();
+    renderSection({ saving: true });
+    expect(screen.getByRole('status').textContent).toBe('Saving');
+    expect(sectionElement().getAttribute('aria-busy')).toBe('true');
+    cleanup();
+    renderSection({ dirty: false, saved: true });
+    expect(screen.getByRole('status').textContent).toBe('Saved');
+    expect(sectionElement().getAttribute('aria-busy')).toBe('false');
   });
 
   it('shows the error in an alert only when one is given', () => {

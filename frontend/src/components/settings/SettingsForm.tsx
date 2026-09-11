@@ -50,6 +50,7 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
   const [base, setBase] = useState(settings);
   const [draft, setDraft] = useState<Draft>(() => pick(settings, keys));
   const [error, setError] = useState<string>();
+  const [saved, setSaved] = useState(false);
   const update = useUpdateSettings();
 
   const follow = (from: Draft, to: Settings) =>
@@ -71,10 +72,11 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
   const save = async () => {
     const sent = draft;
     try {
-      const saved = await update.mutateAsync(pick({ ...settings, ...sent }, changed));
-      setBase(saved);
-      follow(sent, saved);
+      const response = await update.mutateAsync(pick({ ...settings, ...sent }, changed));
+      setBase(response);
+      follow(sent, response);
       setError(undefined);
+      setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -85,11 +87,17 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
     setError(undefined);
   };
 
+  const patch = (changes: Partial<Draft>) => {
+    setDraft((current) => ({ ...current, ...changes }));
+    setSaved(false);
+  };
+
   return {
     draft,
-    patch: (changes: Partial<Draft>) => setDraft((current) => ({ ...current, ...changes })),
+    patch,
     dirty: changed.length > 0,
     saving: update.isPending,
+    saved,
     error,
     save,
     reset,
@@ -155,6 +163,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         dirty={review.dirty}
         canSave={isAdmin && !samplesInvalid}
         saving={review.saving}
+        saved={review.saved}
         error={review.error}
         onSave={review.save}
         onReset={review.reset}
@@ -204,6 +213,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         dirty={publishing.dirty}
         canSave={isAdmin && !capInvalid}
         saving={publishing.saving}
+        saved={publishing.saved}
         error={publishing.error}
         onSave={publishing.save}
         onReset={publishing.reset}
@@ -285,6 +295,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         dirty={replies.dirty}
         canSave={isAdmin}
         saving={replies.saving}
+        saved={replies.saved}
         error={replies.error}
         onSave={replies.save}
         onReset={replies.reset}
@@ -340,6 +351,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         dirty={admins.dirty}
         canSave={isAdmin}
         saving={admins.saving}
+        saved={admins.saved}
         error={admins.error}
         onSave={admins.save}
         onReset={admins.reset}
