@@ -481,7 +481,7 @@ func TestGormDBOutdatedResetInvalidatesReviewProjection(t *testing.T) {
 	require.NoError(t, database.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNum).
 		Updates(map[string]any{"status": "error", "error_message": "old failure", "error_retry_count": 1}).Error)
-	reset, err := database.ResetPRToOutdated(owner, repo, prNum, newSHA)
+	reset, err := database.ResetPRToOutdated(owner, repo, prNum, oldSHA, newSHA)
 	require.NoError(t, err)
 	assert.True(t, reset)
 

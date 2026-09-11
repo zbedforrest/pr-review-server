@@ -272,10 +272,11 @@ type MockDatabase struct {
 		Status   string
 	}
 	ResetPRToOutdatedCalls []struct {
-		Owner        string
-		Repo         string
-		PRNumber     int
-		NewCommitSHA string
+		Owner         string
+		Repo          string
+		PRNumber      int
+		FromCommitSHA string
+		NewCommitSHA  string
 	}
 	SetPRMergeConfidenceCalls []struct {
 		Owner           string
@@ -389,15 +390,16 @@ func (m *MockDatabase) UpdatePRStatus(owner, repo string, prNumber int, status s
 	return nil
 }
 
-func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) (bool, error) {
+func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, fromCommitSHA, newCommitSHA string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ResetPRToOutdatedCalls = append(m.ResetPRToOutdatedCalls, struct {
-		Owner        string
-		Repo         string
-		PRNumber     int
-		NewCommitSHA string
-	}{owner, repo, prNumber, newCommitSHA})
+		Owner         string
+		Repo          string
+		PRNumber      int
+		FromCommitSHA string
+		NewCommitSHA  string
+	}{owner, repo, prNumber, fromCommitSHA, newCommitSHA})
 
 	if m.ResetPRToOutdatedError != nil {
 		return false, m.ResetPRToOutdatedError
@@ -408,18 +410,16 @@ func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCo
 
 	key := prDBKey(owner, repo, prNumber)
 	pr, exists := m.PRs[key]
-	if !exists || pr.LastCommitSHA == newCommitSHA {
-		// Mirror the fenced UPDATE: nothing to reset when the row is absent or
-		// already carries the new head (claimed by a newer review run).
+	if !exists || pr.LastCommitSHA != fromCommitSHA {
+		// Mirror the compare-and-swap: nothing to reset when the row is absent
+		// or no longer carries the head the caller's snapshot saw.
 		return false, nil
 	}
-	{
-		pr.LastCommitSHA = newCommitSHA
-		pr.Status = "pending"
-		pr.ReviewHTMLPath = ""
-		pr.ErrorMessage = ""
-		pr.MergeConfidence = nil
-	}
+	pr.LastCommitSHA = newCommitSHA
+	pr.Status = "pending"
+	pr.ReviewHTMLPath = ""
+	pr.ErrorMessage = ""
+	pr.MergeConfidence = nil
 	delete(m.ProjectionRunIDs, key)
 	return true, nil
 }

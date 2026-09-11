@@ -336,7 +336,7 @@ func TestGormDB_ResetPRToOutdated(t *testing.T) {
 	require.NoError(t, err)
 
 	// Reset to outdated
-	reset, err := db.ResetPRToOutdated("owner", "repo", 1, "newsha456")
+	reset, err := db.ResetPRToOutdated("owner", "repo", 1, "abc123", "newsha456")
 	require.NoError(t, err)
 	assert.True(t, reset)
 
@@ -498,7 +498,7 @@ func TestGormDB_ResetPRToOutdated_ClearsMergeConfidence(t *testing.T) {
 
 	completedPRWithConfidence(t, db, 1, "abc123", 5)
 
-	reset, err := db.ResetPRToOutdated("owner", "repo", 1, "def456")
+	reset, err := db.ResetPRToOutdated("owner", "repo", 1, "abc123", "def456")
 	require.NoError(t, err)
 	require.True(t, reset)
 

@@ -1961,17 +1961,17 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			log.Printf("[OUTDATED] PR %s has new commits (old: %s, new: %s), resetting to pending",
 				key, oldSHA, newSHA)
 
-			// Reset first, fenced on the stored commit still being behind. The
+			// Reset first, as a compare-and-swap on the head this cycle read. The
 			// snapshot in pr predates the GitHub fetch above; a review run that
-			// claimed the PR on the new head since then already recorded it and
+			// claimed the PR on any newer head since then already recorded it and
 			// must keep its projection, so nothing below may run for it.
-			applied, err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, state.HeadRefOid)
+			applied, err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA, state.HeadRefOid)
 			if err != nil {
 				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s: %v", key, err)
 				continue
 			}
 			if !applied {
-				log.Printf("[OUTDATED] PR %s already advanced to %s (claimed by a newer review run); skipping reset", key, newSHA)
+				log.Printf("[OUTDATED] PR %s no longer carries %s (moved or removed since this cycle read it); skipping reset", key, oldSHA)
 				continue
 			}
 
@@ -2345,19 +2345,19 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 			log.Printf("[OUTDATED] PR %s/%s#%d (%s) has new commits (old: %s, new: %s), resetting to pending",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, statusMsg, pr.LastCommitSHA[:7], currentSHA[:7])
 
-			// Reset first, fenced on the stored commit still being behind. The
+			// Reset first, as a compare-and-swap on the head this cycle read. The
 			// snapshot in pr predates the GitHub fetch above; a review run that
-			// claimed the PR on the new head since then already recorded it and
+			// claimed the PR on any newer head since then already recorded it and
 			// must keep its projection, so nothing below may run for it.
-			applied, err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, currentSHA)
+			applied, err := p.db.ResetPRToOutdated(pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA, currentSHA)
 			if err != nil {
 				log.Printf("[OUTDATED] ERROR: Failed to reset PR %s/%s#%d: %v",
 					pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
 				continue
 			}
 			if !applied {
-				log.Printf("[OUTDATED] PR %s/%s#%d already advanced to %s (claimed by a newer review run); skipping reset",
-					pr.RepoOwner, pr.RepoName, pr.PRNumber, currentSHA[:7])
+				log.Printf("[OUTDATED] PR %s/%s#%d no longer carries %s (moved or removed since this cycle read it); skipping reset",
+					pr.RepoOwner, pr.RepoName, pr.PRNumber, pr.LastCommitSHA[:7])
 				continue
 			}
 

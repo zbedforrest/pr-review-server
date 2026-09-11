@@ -313,13 +313,13 @@ func (g *GormDB) UpdatePRStatus(owner, repo string, prNumber int, status string)
 // The update is fenced on the stored commit still differing from
 // newCommitSHA. Outdated detection compares a PR snapshot taken before a
 // multi-second GitHub fetch against the current head; a review run that
-// claims the PR on that head in the meantime already records it (see
-// SetPRGeneratingForReviewRun). Resetting unconditionally would blank that
-// run's projection_run_id and cancel it as superseded at the next fenced
-// write, even though no newer commit or run exists.
-func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) (bool, error) {
+// claims the PR on a newer head in the meantime already records it (see
+// SetPRGeneratingForReviewRun). The reset is a compare-and-swap on the head
+// the poller's snapshot saw, so any concurrent claim, on the fetched head or a
+// later one, leaves the row alone instead of blanking that run's projection.
+func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, fromCommitSHA, newCommitSHA string) (bool, error) {
 	result := g.db.Model(&PRModel{}).
-		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND last_commit_sha <> ?", owner, repo, prNumber, newCommitSHA).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND last_commit_sha = ?", owner, repo, prNumber, fromCommitSHA).
 		Updates(map[string]interface{}{
 			"status":            "pending",
 			"last_commit_sha":   newCommitSHA,
