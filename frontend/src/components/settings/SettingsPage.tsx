@@ -16,7 +16,8 @@ export function SettingsPage() {
 
   const knownLogins = useMemo(() => prs.data && new Set(prs.data.map((pr) => pr.author.toLowerCase())), [prs.data]);
 
-  const error = user.error ?? settings.error;
+  // A failed refetch keeps cached data; only an error with nothing to show is fatal
+  const error = (user.data ? null : user.error) ?? (settings.data ? null : settings.error);
 
   return (
     <div className="app-container">

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Settings } from '@/api/settings';
@@ -43,11 +43,12 @@ const renderPage = () => {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
+  render(
     <QueryClientProvider client={client}>
       <SettingsPage />
     </QueryClientProvider>
   );
+  return client;
 };
 
 const enabledControls = () =>
@@ -153,5 +154,28 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(screen.getByText('settings unavailable')).toBeTruthy());
     expect(screen.queryByText('Loading...')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+  });
+
+  it('keeps the form and its unsaved draft when a settings refetch fails', async () => {
+    let settingsFailing = false;
+    route({
+      '/api/settings': () =>
+        settingsFailing ? new Response('upstream connect error', { status: 503 }) : jsonResponse(serverSettings),
+      '/api/user': () => jsonResponse(admin),
+      '/api/prs': () => jsonResponse([]),
+      '/api/publish/replies': () => jsonResponse(replies),
+    });
+    const client = renderPage();
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(4));
+    fireEvent.change(screen.getByLabelText('First-pass samples'), { target: { value: '7' } });
+
+    settingsFailing = true;
+    await client.refetchQueries({ queryKey: ['settings'] });
+
+    await waitFor(() => expect(client.getQueryState(['settings'])?.error).toBeTruthy());
+    expect((screen.getByLabelText('First-pass samples') as HTMLInputElement).value).toBe('7');
+    expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(4);
+    expect(screen.queryByText('upstream connect error')).toBeNull();
   });
 });
