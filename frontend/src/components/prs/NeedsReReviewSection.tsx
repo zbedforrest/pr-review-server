@@ -14,7 +14,7 @@ export function NeedsReReviewSection() {
         <h2>Needs your re-review ({count})</h2>
       </div>
       <p className="needs-re-review__explanation">
-        PRs where the author pushed after you requested changes.
+        You requested changes. These PRs now have a different head commit.
       </p>
       <PRTable prs={rows} variant="attention" />
     </section>
