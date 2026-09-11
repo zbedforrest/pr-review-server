@@ -955,12 +955,31 @@ func (m *MockDatabase) BatchUpsertUserPRViews(items []db.UserPRViewBatchItem) er
 				view.ViaTeams = string(bytes)
 			}
 		}
+		if item.NeedsAttention != nil {
+			view.NeedsAttention = *item.NeedsAttention
+		}
 	}
 	return nil
 }
 
 func viewMockKey(userID, prID int) string {
 	return fmt.Sprintf("%d/%d", userID, prID)
+}
+
+func (m *MockDatabase) GetUserPRViewsForPRs(prIDs []int) ([]db.UserPRView, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	idSet := make(map[int]bool, len(prIDs))
+	for _, id := range prIDs {
+		idSet[id] = true
+	}
+	var views []db.UserPRView
+	for _, view := range m.UserPRViews {
+		if idSet[view.PRID] {
+			views = append(views, *view)
+		}
+	}
+	return views, nil
 }
 
 func (m *MockDatabase) GetUserPRViewsWithViaTeams(prIDs []int) ([]db.UserPRView, error) {

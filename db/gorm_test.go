@@ -1,6 +1,7 @@
 package db
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1872,6 +1873,107 @@ func TestGormDB_SetUserHiddenForPR_NoViewRow(t *testing.T) {
 	require.NoError(t, db.EnsureUserPRView(user.ID, fetchedPR.ID, false))
 	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
 	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
+}
+
+func TestGormDB_BatchUpsertUserPRViews_NeedsAttentionRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 1, GitHubUsername: "alice"}
+	require.NoError(t, db.CreateUser(user))
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, Status: "completed"}))
+	pr, err := db.GetPR("acme", "example", 1)
+	require.NoError(t, err)
+
+	changesRequested := "CHANGES_REQUESTED"
+	flagged := true
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr.ID, ReviewStatus: &changesRequested, NeedsAttention: &flagged},
+	}))
+
+	assignment, err := db.GetUserPRAssignment(user.ID, pr.ID)
+	require.NoError(t, err)
+	require.NotNil(t, assignment)
+	assert.True(t, assignment.NeedsAttention)
+
+	views, err := db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, views, 1)
+	assert.True(t, views[0].NeedsAttention)
+	assert.Equal(t, "CHANGES_REQUESTED", views[0].ReviewStatus)
+
+	rows, err := db.GetUserPRViewsForPRs([]int{pr.ID})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].NeedsAttention)
+	assert.Equal(t, user.ID, rows[0].UserID)
+}
+
+func TestGormDB_BatchUpsertUserPRViews_NilNeedsAttentionPreservesExisting(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 1, GitHubUsername: "alice"}
+	require.NoError(t, db.CreateUser(user))
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, Status: "completed"}))
+	pr, err := db.GetPR("acme", "example", 1)
+	require.NoError(t, err)
+
+	flagged := true
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr.ID, NeedsAttention: &flagged},
+	}))
+
+	approved := "APPROVED"
+	teams := []string{"Platform:my_pending"}
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr.ID, ReviewStatus: &approved, ViaTeams: &teams},
+	}))
+
+	assignment, err := db.GetUserPRAssignment(user.ID, pr.ID)
+	require.NoError(t, err)
+	assert.True(t, assignment.NeedsAttention, "nil pointer must not clear the stored flag")
+	assert.Equal(t, "APPROVED", assignment.MyReviewStatus)
+}
+
+func TestGormDB_BatchUpsertUserPRViews_FalseNeedsAttentionClears(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 1, GitHubUsername: "alice"}
+	require.NoError(t, db.CreateUser(user))
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, Status: "completed"}))
+	pr, err := db.GetPR("acme", "example", 1)
+	require.NoError(t, err)
+
+	flagged := true
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr.ID, NeedsAttention: &flagged},
+	}))
+	cleared := false
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: pr.ID, NeedsAttention: &cleared},
+	}))
+
+	assignment, err := db.GetUserPRAssignment(user.ID, pr.ID)
+	require.NoError(t, err)
+	assert.False(t, assignment.NeedsAttention)
+}
+
+func TestGormDB_NeedsAttentionColumn_SkipMigrationsAddsIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skip-migrations.db")
+	database, err := NewGormSQLite(path)
+	require.NoError(t, err)
+	require.NoError(t, database.db.Migrator().DropColumn(&UserPRViewModel{}, "NeedsAttention"))
+	assert.False(t, database.db.Migrator().HasColumn(&UserPRViewModel{}, "needs_attention"))
+	require.NoError(t, database.Close())
+
+	t.Setenv("SKIP_DB_MIGRATIONS", "true")
+	database, err = NewGormSQLite(path)
+	require.NoError(t, err)
+	defer database.Close()
+	assert.True(t, database.db.Migrator().HasColumn(&UserPRViewModel{}, "needs_attention"))
+	require.NoError(t, database.ensureIdempotentColumns(), "re-running the column add must be a no-op")
 }
 
 func TestGormDB_SetSetting_CanClearToEmpty(t *testing.T) {

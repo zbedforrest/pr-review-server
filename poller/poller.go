@@ -109,6 +109,7 @@ type Poller struct {
 	reviewDir        string                    // Local storage path (used when GCS is not configured)
 	cacheUpdateFunc  func([]github.PullRequest)
 	EventFunc        func(eventType string, payload interface{})
+	UserEventFunc    func(userID int, eventType string, payload interface{})
 	StatusEventFunc  func()
 	triggerChan      chan struct{}
 
@@ -1055,6 +1056,17 @@ func githubCompareChangedFiles(ctx context.Context, owner, repo, base, head, tok
 func (p *Poller) broadcastPRUpdate(owner, repo string, number int) {
 	if p.EventFunc != nil {
 		p.EventFunc("pr_updated", map[string]interface{}{
+			"owner":  owner,
+			"repo":   repo,
+			"number": number,
+		})
+	}
+}
+
+// broadcastPRUpdateToUser sends a pr_updated event only to one user's clients.
+func (p *Poller) broadcastPRUpdateToUser(userID int, owner, repo string, number int) {
+	if p.UserEventFunc != nil {
+		p.UserEventFunc(userID, "pr_updated", map[string]interface{}{
 			"owner":  owner,
 			"repo":   repo,
 			"number": number,
@@ -2768,6 +2780,8 @@ func (p *Poller) poll(ctx context.Context) {
 		reviewViewBatch := newViewBatch()
 		reviewPRBatch := newPRBatch()
 		updateCount := 0
+		storedAttention := p.storedAttentionFlags(reviewDataMap, dbPRMap)
+		var transitions []attentionTransition
 		for _, pr := range allPRs {
 			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
 			if reviewData, exists := reviewDataMap[key]; exists {
@@ -2784,10 +2798,28 @@ func (p *Poller) poll(ctx context.Context) {
 							break
 						}
 					}
+					isAuthor := strings.EqualFold(existingPR.Author, user.GitHubUsername)
 					if userStatus != "" {
-						isAuthor := strings.EqualFold(existingPR.Author, user.GitHubUsername)
 						reviewViewBatch.EnsureView(user.ID, existingPR.ID, isAuthor)
 						reviewViewBatch.SetReviewStatus(user.ID, existingPR.ID, userStatus)
+					}
+
+					attention := attentionForUser(reviewData, user.GitHubUsername, pr.Draft, existingPR.PRState, isAuthor)
+					if attention == nil {
+						continue
+					}
+					stored, hasRow := storedAttention[userPRViewKey{UserID: user.ID, PRID: existingPR.ID}]
+					changed := stored != *attention
+					// A verdict alone never creates a row; an existing row is touched only when its flag flips.
+					if userStatus == "" && !(hasRow && changed) {
+						continue
+					}
+					reviewViewBatch.EnsureView(user.ID, existingPR.ID, isAuthor)
+					reviewViewBatch.SetNeedsAttention(user.ID, existingPR.ID, *attention)
+					if changed {
+						transitions = append(transitions, attentionTransition{
+							userID: user.ID, login: user.GitHubUsername, pr: pr, flagged: *attention, head: reviewData.HeadOID,
+						})
 					}
 				}
 
@@ -2813,6 +2845,8 @@ func (p *Poller) poll(ctx context.Context) {
 		}
 		if err := reviewViewBatch.Flush(p.db); err != nil {
 			log.Printf("[POLL] ERROR: Failed to batch-upsert review user views: %v", err)
+		} else {
+			p.reportAttentionTransitions(transitions)
 		}
 		if err := reviewPRBatch.Flush(p.db); err != nil {
 			log.Printf("[POLL] ERROR: Failed to batch-upsert review PR data: %v", err)

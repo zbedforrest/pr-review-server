@@ -259,6 +259,8 @@ type UserPRViewModel struct {
 	// writes it, never any poller DoUpdates or prune set. While true (and
 	// not Hidden) it also exempts a closed PR from cleanup deletion.
 	ViaManual bool `gorm:"column:via_manual;default:false"`
+	// The user requested changes and has not reviewed the PR's current head.
+	NeedsAttention bool `gorm:"column:needs_attention;not null;default:false"`
 }
 
 // TableName specifies the table name for UserPRViewModel

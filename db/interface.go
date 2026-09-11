@@ -83,32 +83,35 @@ type UserPRAssignment struct {
 	Notes          string // User's notes for this PR
 	UserHidden     bool   // User moved this PR to the Hidden section
 	ViaManual      bool   // User manually requested a review for this PR
+	NeedsAttention bool   // User requested changes and has not reviewed the current head
 }
 
 // UserPRView represents the relationship between users and PRs (new name for UserPRAssignment)
 // This is the preferred type for new code.
 type UserPRView struct {
-	ID           int
-	UserID       int
-	PRID         int
-	IsAuthor     bool
-	IsReviewer   bool
-	ViaTeams     string // JSON array of team names (was ReviewerGroups)
-	ReviewStatus string // User's review status for this PR (was MyReviewStatus)
-	Notes        string // User's notes for this PR
-	Hidden       bool   // Whether this PR is hidden from the user's view (poller soft delete)
-	UserHidden   bool   // User moved this PR to the Hidden section
-	ViaManual    bool   // User manually requested a review for this PR
+	ID             int
+	UserID         int
+	PRID           int
+	IsAuthor       bool
+	IsReviewer     bool
+	ViaTeams       string // JSON array of team names (was ReviewerGroups)
+	ReviewStatus   string // User's review status for this PR (was MyReviewStatus)
+	Notes          string // User's notes for this PR
+	Hidden         bool   // Whether this PR is hidden from the user's view (poller soft delete)
+	UserHidden     bool   // User moved this PR to the Hidden section
+	ViaManual      bool   // User manually requested a review for this PR
+	NeedsAttention bool   // User requested changes and has not reviewed the current head
 }
 
 // UserPRViewBatchItem represents a single row for batch upsert into user_pr_views.
 // Pointer fields mean "update this column on conflict"; nil means "preserve existing value".
 type UserPRViewBatchItem struct {
-	UserID       int
-	PRID         int
-	IsAuthor     bool
-	ReviewStatus *string   // nil = don't update
-	ViaTeams     *[]string // nil = don't update
+	UserID         int
+	PRID           int
+	IsAuthor       bool
+	ReviewStatus   *string   // nil = don't update
+	ViaTeams       *[]string // nil = don't update
+	NeedsAttention *bool     // nil = don't update
 }
 
 // ViaTeamsPrune identifies a stale user_pr_views row whose via_teams should be
@@ -125,13 +128,14 @@ type ViaTeamsPrune struct {
 // PRWithUserView combines PR data with user-specific view data
 type PRWithUserView struct {
 	PR
-	IsAuthor     bool     // From user_pr_views
-	IsReviewer   bool     // From user_pr_views
-	UserNotes    string   // Notes from user_pr_views (overrides PR.Notes)
-	ReviewStatus string   // User's review status from user_pr_views
-	ViaTeams     []string // Team names from user_pr_views
-	UserHidden   bool     // User moved this PR to the Hidden section
-	ViaManual    bool     // User manually requested a review for this PR
+	IsAuthor       bool     // From user_pr_views
+	IsReviewer     bool     // From user_pr_views
+	UserNotes      string   // Notes from user_pr_views (overrides PR.Notes)
+	ReviewStatus   string   // User's review status from user_pr_views
+	ViaTeams       []string // Team names from user_pr_views
+	UserHidden     bool     // User moved this PR to the Hidden section
+	ViaManual      bool     // User manually requested a review for this PR
+	NeedsAttention bool     // User requested changes and has not reviewed the current head
 }
 
 // FindingOutcome is a recorded human triage decision on a single review
@@ -339,6 +343,7 @@ type Database interface {
 	BatchUpsertPRs(prs []*PR) error
 	BatchUpsertUserPRViews(views []UserPRViewBatchItem) error
 	GetUserPRViewsWithViaTeams(prIDs []int) ([]UserPRView, error)
+	GetUserPRViewsForPRs(prIDs []int) ([]UserPRView, error)
 	BatchPruneViaTeams(prunes []ViaTeamsPrune) error
 
 	// Telemetry operations
