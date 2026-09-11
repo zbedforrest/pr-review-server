@@ -188,7 +188,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 }
 
 // publishGitHubReview posts a completed review to the PR and reports what it
-// posted; the report is nil whenever nothing reached GitHub. Best-effort by
+// posted; the report is nil when no round was attempted. Best-effort by
 // design: the review is already saved and visible on the dashboard, so any
 // failure here is logged and never fails the run.
 func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) *publisher.Report {
@@ -236,7 +236,9 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	report, err := pub.Publish(ctx, round)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return nil
+		// Confidence is scored before the first write, so a failed round still
+		// reports the number the sticky comment may already show.
+		return &report
 	}
 	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d confidence=%d",
 		pr.Owner, pr.Repo, pr.Number, report.SummaryCommentID, report.ReviewID, report.InlinePosted, report.Annotations, report.StillOpen, report.Fixed, report.Confidence)
@@ -245,15 +247,24 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 
 // mergeConfidence is the score the dashboard stores for a completed review.
 // The published report wins because Publish scores the dismissal-filtered,
-// alias-rewritten round the sticky comment shows; a review that never reached
-// GitHub has no ledger, so recomputing from the raw sidecar is exact.
-func mergeConfidence(published *publisher.Report, sidecar []byte) (int, error) {
+// alias-rewritten round the sticky comment shows. A review that skipped the
+// publish is scored from the sidecar minus the ledger's concessions; aliases
+// need GitHub's comments, so a reworded conceded finding can still count here.
+func (p *Poller) mergeConfidence(pr github.PullRequest, published *publisher.Report, sidecar []byte) (int, error) {
 	if published != nil {
 		return published.Confidence, nil
 	}
 	pl, err := payload.Decode(sidecar)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("decode sidecar: %w", err)
 	}
-	return publisher.Confidence(pl.Findings, pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0), nil
+	findings := pl.Findings
+	if ledger, ok := p.db.(publisher.Ledger); ok {
+		previous, err := ledger.GetPublishedFindingsForPR(pr.Owner, pr.Repo, pr.Number)
+		if err != nil {
+			return 0, fmt.Errorf("load ledger: %w", err)
+		}
+		findings = publisher.WithoutDismissed(findings, previous)
+	}
+	return publisher.Confidence(findings, pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0), nil
 }

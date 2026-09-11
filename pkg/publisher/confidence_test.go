@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
 )
 
@@ -65,5 +66,21 @@ func TestRenderSummary_ConfidenceLineMatchesConfidence(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("%s: summary missing %q:\n%s", name, want, out)
 		}
+	}
+}
+
+func TestWithoutDismissed(t *testing.T) {
+	findings := []payload.Finding{f("c1", "critical", "a.go", 1, "Critical."), f("m1", "medium", "b.go", 2, "Medium.")}
+	previous := []db.PublishedFinding{
+		{Kind: db.PublishedKindFinding, Fingerprint: "c1", State: db.PublishedStateDismissed},
+		{Kind: db.PublishedKindAnnotation, Fingerprint: "m1", State: db.PublishedStateOpen},
+		{Kind: db.PublishedKindSummary, Fingerprint: "summary", State: db.PublishedStateDismissed},
+	}
+	kept := WithoutDismissed(findings, previous)
+	if len(kept) != 1 || kept[0].ID != "m1" {
+		t.Fatalf("only the dismissed finding is dropped, got %+v", kept)
+	}
+	if got := WithoutDismissed(findings, nil); len(got) != 2 {
+		t.Fatalf("no ledger keeps every finding, got %d", len(got))
 	}
 }

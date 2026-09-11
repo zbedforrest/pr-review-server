@@ -3781,9 +3781,9 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if !job.SkipPublish {
 				published = p.publishGitHubReview(prCtx, pr, sidecarBody)
 			}
-			confidence, confidenceErr := mergeConfidence(published, sidecarBody)
+			confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
 			if confidenceErr != nil {
-				log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped, sidecar unreadable: %v", job.RunID, confidenceErr)
+				log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped: %v", job.RunID, confidenceErr)
 			} else if stored, setErr := p.db.SetPRMergeConfidence(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, confidence); setErr != nil {
 				log.Printf("[REVIEWER] WARN: merge confidence for run %s not stored: %v", job.RunID, setErr)
 			} else if !stored {

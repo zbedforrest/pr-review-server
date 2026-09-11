@@ -2,8 +2,11 @@ package poller
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"pr-review-server/config"
@@ -173,21 +176,183 @@ func TestPublishGitHubReview_DoesNotWriteToClosedDraftOrUnlistedAuthorPRs(t *tes
 	}
 }
 
-func TestMergeConfidence_PublishedReportWinsOverSidecar(t *testing.T) {
-	sidecar := []byte(`{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc",
-		"required_checks":{"checks_issued":1,"checks_answered":1,"checks_violated":1},
-		"findings":[{"id":"f.go:3:abc123def456","severity":"critical","provenance":"agent","state":"confirmed","active":true,"file":"f.go","line":3,"comment":"Real bug."}]}`)
+// gitHubStub answers every GitHub call a publish makes: the PR itself as
+// prJSON, empty lists elsewhere, and an id for each write. When failWrites
+// is set, POSTs answer 500 so the publish fails after the round is scored.
+func gitHubStub(t *testing.T, prJSON string, failWrites bool) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var writes []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			mu.Lock()
+			writes = append(writes, r.Method+" "+r.URL.Path)
+			mu.Unlock()
+			if failWrites {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"boom"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":11}`))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/repos/") && strings.Contains(r.URL.Path, "/pulls/") && strings.Count(r.URL.Path, "/") == 5 {
+			_, _ = w.Write([]byte(prJSON))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(ts.Close)
+	return ts, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), writes...)
+	}
+}
 
-	fromSidecar, err := mergeConfidence(nil, sidecar)
+const openPRJSON = `{"state":"open","merged":false,"draft":false,"head":{"sha":"abc"}}`
+
+// One critical finding and a violated required check: the raw sidecar scores
+// 5 - 2 - 1 = 2; with the critical conceded in the ledger the publisher says 4.
+const scoredSidecar = `{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc",
+	"required_checks":{"checks_issued":1,"checks_answered":1,"checks_violated":1},
+	"findings":[{"id":"f.go:0:abc123def456","severity":"critical","provenance":"agent","state":"confirmed","active":true,"file":"f.go","line":3,"comment":"Real bug."}]}`
+
+func dismissedRow(owner, repo string, number int, fingerprint string) *db.PublishedFinding {
+	return &db.PublishedFinding{
+		RepoOwner: owner, RepoName: repo, PRNumber: number,
+		Kind: db.PublishedKindFinding, Fingerprint: fingerprint, Severity: "critical",
+		ReviewedSHA: "old", LastSeenSHA: "old", CommentID: 77, State: db.PublishedStateDismissed,
+	}
+}
+
+func TestPublishGitHubReview_ReportsTheConfidenceItRendered(t *testing.T) {
+	ts, writes := gitHubStub(t, openPRJSON, false)
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting("publish_enabled_authors", "alice"))
+	require.NoError(t, database.UpsertPublishedFinding(dismissedRow("acme", "example", 1, "f.go:0:abc123def456")))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+
+	report := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}, []byte(scoredSidecar))
+
+	require.NotNil(t, report, "an open PR by an enabled author is published")
+	assert.Equal(t, 4, report.Confidence, "the conceded finding is not counted")
+	assert.Equal(t, []string{"POST /repos/acme/example/issues/1/comments"}, writes())
+}
+
+func TestPublishGitHubReview_KeepsTheScoreWhenAWriteFails(t *testing.T) {
+	ts, writes := gitHubStub(t, openPRJSON, true)
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting("publish_enabled_authors", "alice"))
+	require.NoError(t, database.UpsertPublishedFinding(dismissedRow("acme", "example", 1, "f.go:0:abc123def456")))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+
+	report := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}, []byte(scoredSidecar))
+
+	require.NotEmpty(t, writes(), "the publish must have reached GitHub")
+	require.NotNil(t, report, "the round was scored before the write, so the score survives the failure")
+	assert.Equal(t, 4, report.Confidence)
+}
+
+func TestMergeConfidence_PublishedReportWinsOverSidecar(t *testing.T) {
+	sidecar := []byte(scoredSidecar)
+	p := &Poller{cfg: &config.Config{}, db: NewMockDatabase()}
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}
+
+	fromSidecar, err := p.mergeConfidence(pr, nil, sidecar)
 	require.NoError(t, err)
 	assert.Equal(t, 2, fromSidecar)
 
-	fromReport, err := mergeConfidence(&publisher.Report{Confidence: 4}, sidecar)
+	fromReport, err := p.mergeConfidence(pr, &publisher.Report{Confidence: 4}, sidecar)
 	require.NoError(t, err)
 	assert.Equal(t, 4, fromReport, "a conceded finding dropped at publish time must not be re-counted")
 
-	_, err = mergeConfidence(nil, []byte("not json"))
+	_, err = p.mergeConfidence(pr, nil, []byte("not json"))
 	assert.Error(t, err)
+}
+
+func TestMergeConfidence_UnpublishedFallbackHonoursLedgerDismissals(t *testing.T) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.UpsertPublishedFinding(dismissedRow("acme", "example", 1, "f.go:0:abc123def456")))
+	p := &Poller{cfg: &config.Config{}, db: database}
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}
+
+	score, err := p.mergeConfidence(pr, nil, []byte(scoredSidecar))
+	require.NoError(t, err)
+	assert.Equal(t, 4, score, "a draft or moved head skips the publish but the concession still stands")
+
+	other := github.PullRequest{Owner: "acme", Repo: "example", Number: 2, CommitSHA: "abc", Author: "alice"}
+	score, err = p.mergeConfidence(other, nil, []byte(scoredSidecar))
+	require.NoError(t, err)
+	assert.Equal(t, 2, score, "another PR's ledger does not apply")
+}
+
+// ledgerFailsAfterSummary lets the GitHub writes succeed and then refuses the
+// first ledger row, the failure that leaves GitHub showing a score the poller
+// must not contradict.
+type ledgerFailsAfterSummary struct {
+	*db.GormDB
+	failures int
+}
+
+func (l *ledgerFailsAfterSummary) UpsertPublishedFinding(row *db.PublishedFinding) error {
+	if row.Kind == db.PublishedKindSummary && l.failures == 0 {
+		l.failures++
+		return errors.New("ledger unavailable")
+	}
+	return l.GormDB.UpsertPublishedFinding(row)
+}
+
+func completionWithLedger(t *testing.T, database *db.GormDB, pollerDB db.Database, prJSON string) (*Poller, ReviewJob) {
+	t.Helper()
+	job := reviewJobWithoutAgent(t, "run-50000000000000000000000000000010")
+	ts, _ := gitHubStub(t, strings.Replace(prJSON, `"abc"`, `"`+job.PR.CommitSHA+`"`, 1), false)
+	require.NoError(t, database.SetSetting("publish_enabled_authors", job.PR.Author))
+	fingerprint := payload.Fingerprint("src/app.go", 3, "Nil dereference on the error path.")
+	require.NoError(t, database.UpsertPublishedFinding(dismissedRow(job.PR.Owner, job.PR.Repo, job.PR.Number, fingerprint)))
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating", Author: job.PR.Author,
+	}))
+	p := newTestPollerFull(NewMockGitHubClient(), pollerDB, NewMockReviewStorage(), scoredReviewGenerator())
+	p.ghClientConcrete = github.NewTestClient(ts.URL, "bot")
+	return p, job
+}
+
+func TestCompletedReviewStoresThePublishedConfidence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prJSON string
+		wrap   func(*db.GormDB) db.Database
+	}{
+		{"published", openPRJSON, func(d *db.GormDB) db.Database { return d }},
+		{"ledger fails after the summary is written", openPRJSON, func(d *db.GormDB) db.Database { return &ledgerFailsAfterSummary{GormDB: d} }},
+		{"draft skips the publish", `{"state":"open","merged":false,"draft":true,"head":{"sha":"abc"}}`, func(d *db.GormDB) db.Database { return d }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, err := db.NewGormSQLite(":memory:")
+			require.NoError(t, err)
+			defer database.Close()
+			p, job := completionWithLedger(t, database, tc.wrap(database), tc.prJSON)
+
+			require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+			waitForReviewJob(t, p, job)
+
+			pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+			require.NoError(t, err)
+			require.NotNil(t, pr)
+			assert.Equal(t, "completed", pr.Status)
+			require.NotNil(t, pr.MergeConfidence)
+			assert.Equal(t, 4, *pr.MergeConfidence, "the conceded critical is not counted; the raw sidecar would say 2")
+		})
+	}
 }
 
 func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) {
