@@ -69,6 +69,51 @@ describe('useUpdateSettings', () => {
     );
   });
 
+  it('cancels an in-flight settings fetch so its older payload cannot overwrite the saved response', async () => {
+    const client = makeClient();
+    const pendingGet = deferred<Response>();
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) =>
+      init?.method === 'POST'
+        ? Promise.resolve(jsonResponse({ ...serverSettings, review_n_requests: 7 }))
+        : pendingGet.promise
+    );
+
+    const { result } = renderHook(
+      () => ({ editor: useSettingsEditor(), update: useUpdateSettings() }),
+      { wrapper: wrapperFor(client) }
+    );
+    await waitFor(() => expect(result.current.editor.isFetching).toBe(true));
+    act(() => result.current.update.mutate({ review_n_requests: 7 }));
+    await waitFor(() => expect(client.getQueryData<Settings>(['settings'])?.review_n_requests).toBe(7));
+
+    pendingGet.resolve(jsonResponse(serverSettings));
+    await act(async () => {});
+    expect(client.getQueryData<Settings>(['settings'])?.review_n_requests).toBe(7);
+  });
+
+  it('runs saves from different sections one at a time', async () => {
+    const client = makeClient();
+    client.setQueryData<Settings>(['settings'], serverSettings);
+    const first = deferred<Response>();
+    fetchMock
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(jsonResponse({ ...serverSettings, review_n_requests: 7, publish_inline_cap: 9 }));
+
+    const { result } = renderHook(
+      () => ({ review: useUpdateSettings(), publishing: useUpdateSettings() }),
+      { wrapper: wrapperFor(client) }
+    );
+    act(() => result.current.review.mutate({ review_n_requests: 7 }));
+    act(() => result.current.publishing.mutate({ publish_inline_cap: 9 }));
+    await act(async () => {});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    first.resolve(jsonResponse({ ...serverSettings, review_n_requests: 7 }));
+    await waitFor(() => expect(result.current.publishing.isSuccess).toBe(true));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(client.getQueryData<Settings>(['settings'])?.publish_inline_cap).toBe(9);
+  });
+
   it('leaves the cache untouched and exposes the server text when the write fails', async () => {
     const client = makeClient();
     client.setQueryData<Settings>(['settings'], serverSettings);
