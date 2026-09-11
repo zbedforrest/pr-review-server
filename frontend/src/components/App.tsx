@@ -1,9 +1,9 @@
-import { Component, ErrorInfo, ReactNode, useState, useEffect } from 'react';
+import { Component, ErrorInfo, ReactNode, useCallback, useState, useEffect } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { Header, StatusBar } from '@/components/layout';
 import { FilterBar } from '@/components/filters';
-import { NeedsReReviewSection, ReviewPRsSection } from '@/components/prs';
+import { NeedsReReviewSection, ReviewPRsSection, StatusPRPanel } from '@/components/prs';
 import { useAttentionTitle } from '@/hooks/useAttentionTitle';
 import { useNeedsReReview } from '@/hooks/useNeedsReReview';
 import { useTelemetry } from '@/hooks/useTelemetry';
@@ -11,7 +11,7 @@ import { useUrlFilters } from '@/hooks/useUrlFilters';
 import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
 import { SettingsPage } from '@/components/settings/SettingsPage';
 import { PR } from '@/types/pr';
-import { ServerStatus } from '@/types/status';
+import { ServerStatus, StatusPanelFilter } from '@/types/status';
 import { ConnectionStatus, subscribeToWebSocketMessages, subscribeToWebSocketStatus } from '@/utils/websocket';
 import { applyPRWebSocketMessage, applyStatusWebSocketMessage } from '@/utils/websocketCacheUpdates';
 import '@/styles/main.scss';
@@ -63,12 +63,19 @@ class ErrorBoundary extends Component<
 
 function AppContent() {
   const queryClient = useQueryClient();
-  const { trackSearch } = useTelemetry();
+  const { track, trackSearch } = useTelemetry();
   const { keys: reReviewKeys, count: reReviewCount } = useNeedsReReview();
   useAttentionTitle(reReviewCount);
 
   // Connection status state
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
+
+  const [statusPanel, setStatusPanel] = useState<StatusPanelFilter | null>(null);
+  const closeStatusPanel = useCallback(() => {
+    if (!statusPanel) return;
+    track('status_count_panel', { label: `close:${statusPanel}` });
+    setStatusPanel(null);
+  }, [statusPanel, track]);
 
   // Search + filter state, mirrored into URL query params for back/forward nav
   const {
@@ -105,7 +112,22 @@ function AppContent() {
   return (
     <div className="app-container">
       <Header />
-      <StatusBar connectionStatus={connectionStatus} />
+      <StatusBar
+        connectionStatus={connectionStatus}
+        activeStatusCount={statusPanel}
+        onStatusCountClick={(status) => {
+          // Clicking the count that's already open closes the panel.
+          if (statusPanel === status) {
+            closeStatusPanel();
+            return;
+          }
+          if (statusPanel) track('status_count_panel', { label: `close:${statusPanel}` });
+          track('status_count_panel', { label: `open:${status}` });
+          setStatusPanel(status);
+        }}
+      />
+
+      {statusPanel && <StatusPRPanel status={statusPanel} onClose={closeStatusPanel} />}
 
       <NeedsReReviewSection />
 

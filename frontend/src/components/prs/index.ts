@@ -4,6 +4,7 @@ export { RowActionsMenu } from './RowActionsMenu';
 export { ReviewPRsSection } from './ReviewPRsSection';
 export { NeedsReReviewSection } from './NeedsReReviewSection';
 export { PRSection } from './PRSection';
+export { StatusPRPanel } from './StatusPRPanel';
 export { SectionEditor } from './SectionEditor';
 export { TriageSummary } from './TriageSummary';
 export { categorizePR } from './triageUtils';

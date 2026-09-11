@@ -1,0 +1,30 @@
+@use '../../styles/abstracts/variables' as *;
+
+.status-pr-panel {
+  margin-bottom: $spacing-2xl;
+  padding: $spacing-xl;
+  background: $color-bg-secondary;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+
+  .section-header {
+    margin-bottom: $spacing-lg;
+    flex-wrap: wrap;
+    gap: $spacing-sm;
+  }
+
+  &__note,
+  &__hint {
+    color: $color-text-muted;
+    font-size: $font-size-sm;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 600px) {
+  // No Escape key to speak of on touch, and the header row is tight enough
+  // there that the ✕ should get the space.
+  .status-pr-panel__hint {
+    display: none;
+  }
+}

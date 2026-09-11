@@ -31,6 +31,7 @@ var allowedActions = map[string]bool{
 	"filter_repo":                 true,
 	"toggle_repo_filter_dropdown": true,
 	"clear_filters":               true,
+	"status_count_panel":          true,
 }
 
 type telemetryEventInput struct {

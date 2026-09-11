@@ -5,6 +5,13 @@ export interface StatusCounts {
   error: number;
 }
 
+/**
+ * The status-bar counts that are clickable, opening a PR table filtered to
+ * that status. Pending is deliberately left out: it routinely runs to
+ * thousands of PRs, which is a queue depth rather than a list worth reading.
+ */
+export type StatusPanelFilter = 'completed' | 'generating';
+
 export interface RecentCompletion {
   number: number;
   repo: string;
