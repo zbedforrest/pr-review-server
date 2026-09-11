@@ -3,7 +3,6 @@ package poller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
