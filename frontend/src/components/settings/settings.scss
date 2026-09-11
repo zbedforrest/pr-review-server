@@ -1,15 +1,156 @@
 @use '../../styles/abstracts/variables' as *;
 @use '../../styles/abstracts/mixins' as *;
 
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xl;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: $spacing-xl;
+}
+
+.settings-section {
+  @include card;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-lg;
+
+  &__header {
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-xs;
+  }
+
+  &__title {
+    margin: 0;
+    font-size: $font-size-lg;
+    font-weight: 600;
+    color: $color-text-primary;
+  }
+
+  &__description {
+    margin: 0;
+    font-size: $font-size-md;
+    color: $color-text-secondary;
+  }
+
+  &__body {
+    display: flex;
+    flex-direction: column;
+    gap: $spacing-lg;
+  }
+
+  &__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: $spacing-md;
+    padding-top: $spacing-sm;
+    border-top: 1px solid $color-border;
+  }
+
+  &__button {
+    @include button-base;
+    font-size: $font-size-md;
+
+    &--primary {
+      border-color: $color-link;
+      color: $color-link;
+    }
+  }
+
+  &__error {
+    padding: $spacing-sm $spacing-md;
+    border: 1px solid rgba($color-error, 0.5);
+    border-radius: $radius-md;
+    background: rgba($color-error, 0.1);
+    color: $color-error-text;
+    font-size: $font-size-md;
+  }
+
+  &__notice {
+    margin: 0;
+    padding: $spacing-sm $spacing-md;
+    border: 1px solid rgba($color-warning, 0.5);
+    border-radius: $radius-md;
+    background: rgba($color-warning, 0.1);
+    color: $color-warning-text;
+    font-size: $font-size-md;
+  }
+}
+
 .settings-field {
   display: flex;
   flex-direction: column;
   gap: $spacing-sm;
 
+  &--inline {
+    flex-direction: row;
+    align-items: center;
+    gap: $spacing-md;
+  }
+
   &__label {
     font-size: $font-size-base;
     font-weight: 500;
     color: $color-text-primary;
+  }
+
+  &__help {
+    font-size: $font-size-md;
+    color: $color-text-muted;
+  }
+
+  &__number,
+  &__select {
+    width: 160px;
+    padding: $spacing-xs $spacing-md;
+    background: $color-bg-primary;
+    border: 1px solid $color-border;
+    border-radius: $radius-md;
+    color: $color-text-primary;
+    font-size: $font-size-base;
+    font-family: $font-system;
+
+    &:focus {
+      outline: none;
+      border-color: $color-link;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  &__modes {
+    margin: 0;
+    padding: 0;
+    border: none;
+
+    &:disabled {
+      opacity: 0.5;
+    }
+  }
+
+  &__mode {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    align-items: baseline;
+    gap: $spacing-md;
+    padding: $spacing-xs 0;
+  }
+
+  &__mode-name {
+    font-family: $font-mono;
+    font-size: $font-size-md;
+    color: $color-text-primary;
+  }
+
+  &__totals {
+    margin: 0;
+    font-size: $font-size-md;
+    color: $color-text-secondary;
   }
 
   &__chips {
