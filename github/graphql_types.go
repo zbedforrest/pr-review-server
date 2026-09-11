@@ -9,10 +9,16 @@ type ReviewAuthor struct {
 	Login string `json:"login"`
 }
 
+// ReviewCommit is the commit a review was submitted against
+type ReviewCommit struct {
+	OID string `json:"oid"`
+}
+
 // ReviewNode represents a single review in the GraphQL response
 type ReviewNode struct {
 	Author *ReviewAuthor `json:"author"`
 	State  string        `json:"state"`
+	Commit *ReviewCommit `json:"commit"`
 }
 
 // ReviewsData holds the collection of review nodes
@@ -22,7 +28,8 @@ type ReviewsData struct {
 
 // PRReviewGraphQL represents PR review data in GraphQL response
 type PRReviewGraphQL struct {
-	Reviews ReviewsData `json:"reviews"`
+	HeadRefOid string      `json:"headRefOid"`
+	Reviews    ReviewsData `json:"reviews"`
 }
 
 // RepoReviewData represents repository data containing PR review info

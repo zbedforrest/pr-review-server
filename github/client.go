@@ -384,12 +384,14 @@ type Review struct {
 
 // PRReviewData holds review information for a single PR
 type PRReviewData struct {
-	Owner          string
-	Repo           string
-	Number         int
-	ApprovalCount  int
-	MyReviewStatus string            // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
-	UserReviews    map[string]string // Username -> latest review state (e.g. "APPROVED", "CHANGES_REQUESTED")
+	Owner           string
+	Repo            string
+	Number          int
+	ApprovalCount   int
+	MyReviewStatus  string            // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	UserReviews     map[string]string // Username -> latest review state (e.g. "APPROVED", "CHANGES_REQUESTED")
+	HeadOID         string
+	AttentionByUser map[string]bool // Username -> requested changes and has not reviewed the current head; absent when unknown
 }
 
 // ReviewerGroupData holds information about requested reviewer groups
@@ -756,15 +758,18 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 
 		// Process reviews using helper
 		approvalCount, myReviewStatus, userReviews := c.countUserApprovals(repoData.PullRequest.Reviews)
+		headOID := repoData.PullRequest.HeadRefOid
 
 		key := prKey(owner, repo, prNumber)
 		results[key] = &PRReviewData{
-			Owner:          owner,
-			Repo:           repo,
-			Number:         prNumber,
-			ApprovalCount:  approvalCount,
-			MyReviewStatus: myReviewStatus,
-			UserReviews:    userReviews,
+			Owner:           owner,
+			Repo:            repo,
+			Number:          prNumber,
+			ApprovalCount:   approvalCount,
+			MyReviewStatus:  myReviewStatus,
+			UserReviews:     userReviews,
+			HeadOID:         headOID,
+			AttentionByUser: attentionByUser(repoData.PullRequest.Reviews, headOID),
 		}
 
 		log.Printf("[GRAPHQL] PR %s/%s#%d: %d approvals, my status: %s", owner, repo, prNumber, approvalCount, myReviewStatus)
@@ -787,12 +792,14 @@ func (c *Client) buildReviewDataQuery(owner, repo string, prs []PullRequest) str
 			%s: repository(owner: "%s", name: "%s") {
 				pullRequest(number: %d) {
 					number
+					headRefOid
 					reviews(last: 100) {
 						nodes {
 							author {
 								login
 							}
 							state
+							commit { oid }
 						}
 					}
 				}
