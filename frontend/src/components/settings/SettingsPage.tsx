@@ -14,7 +14,7 @@ export function SettingsPage() {
   const isAdmin = user.data?.is_admin ?? false;
   const replies = usePublishReplies(isAdmin);
 
-  const knownLogins = useMemo(() => new Set((prs.data ?? []).map((pr) => pr.author.toLowerCase())), [prs.data]);
+  const knownLogins = useMemo(() => prs.data && new Set(prs.data.map((pr) => pr.author.toLowerCase())), [prs.data]);
 
   const error = user.error ?? settings.error;
 

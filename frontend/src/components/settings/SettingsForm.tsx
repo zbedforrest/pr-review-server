@@ -16,7 +16,7 @@ interface SettingsFormProps {
   settings: Settings;
   isAdmin: boolean;
   currentLogin: string;
-  knownLogins: Set<string>;
+  knownLogins?: Set<string>;
   replyTotals?: ReplyTotals | null;
 }
 

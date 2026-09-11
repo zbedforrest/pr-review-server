@@ -125,6 +125,23 @@ describe('SettingsPage', () => {
     expect(screen.queryByText(/replies,/)).toBeNull();
   });
 
+  it('does not flag logins as unseen until the PR list has loaded', async () => {
+    let resolvePRs: (response: Response) => void = () => {};
+    route({
+      '/api/settings': () => jsonResponse(serverSettings),
+      '/api/user': () => jsonResponse(admin),
+      '/api/prs': () => new Promise<Response>((resolve) => (resolvePRs = resolve)),
+      '/api/publish/replies': () => jsonResponse(replies),
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(4));
+    expect(screen.queryAllByText('not seen on any PR')).toEqual([]);
+
+    resolvePRs(jsonResponse([{ author: 'alice' }]));
+    await waitFor(() => expect(screen.getAllByText('not seen on any PR').length).toBe(1));
+  });
+
   it('renders the error message when settings fail to load', async () => {
     route({
       '/api/settings': () => new Response('settings unavailable', { status: 500 }),
