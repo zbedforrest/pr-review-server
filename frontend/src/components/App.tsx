@@ -71,7 +71,11 @@ function AppContent() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
 
   const [statusPanel, setStatusPanel] = useState<StatusPanelFilter | null>(null);
-  const closeStatusPanel = useCallback(() => setStatusPanel(null), []);
+  const closeStatusPanel = useCallback(() => {
+    if (!statusPanel) return;
+    track('status_count_panel', { label: `close:${statusPanel}` });
+    setStatusPanel(null);
+  }, [statusPanel, track]);
 
   // Search + filter state, mirrored into URL query params for back/forward nav
   const {
@@ -113,9 +117,12 @@ function AppContent() {
         activeStatusCount={statusPanel}
         onStatusCountClick={(status) => {
           // Clicking the count that's already open closes the panel.
-          const closing = statusPanel === status;
-          track('status_count_panel', { label: `${closing ? 'close' : 'open'}:${status}` });
-          setStatusPanel(closing ? null : status);
+          if (statusPanel === status) {
+            closeStatusPanel();
+            return;
+          }
+          track('status_count_panel', { label: `open:${status}` });
+          setStatusPanel(status);
         }}
       />
 
