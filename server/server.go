@@ -78,10 +78,13 @@ type Server struct {
 	devUserID  int
 	devUserMux sync.RWMutex
 	// WebSocket connections
-	upgrader    websocket.Upgrader
-	clients     map[*websocket.Conn]*wsClient
-	clientsMux  sync.RWMutex
-	broadcastCh chan wsOutboundMessage
+	upgrader websocket.Upgrader
+	clients  map[*websocket.Conn]*wsClient
+	// wsWriteTimeout bounds one websocket write so a peer that stops reading
+	// is dropped instead of stalling every broadcast behind it.
+	wsWriteTimeout time.Duration
+	clientsMux     sync.RWMutex
+	broadcastCh    chan wsOutboundMessage
 }
 
 // reviewURL returns the review URL path if htmlPath is set, otherwise empty string
@@ -212,6 +215,13 @@ type wsClient struct {
 	GitHubUsername string
 }
 
+const (
+	defaultWSWriteTimeout = 10 * time.Second
+	// broadcastQueueSize lets the poller hand off a burst of pr_updated events
+	// without waiting on the websocket writer.
+	broadcastQueueSize = 1024
+)
+
 type wsOutboundMessage struct {
 	Type         string
 	Payload      interface{}
@@ -233,8 +243,9 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 				return true
 			},
 		},
-		clients:     make(map[*websocket.Conn]*wsClient),
-		broadcastCh: make(chan wsOutboundMessage),
+		clients:        make(map[*websocket.Conn]*wsClient),
+		broadcastCh:    make(chan wsOutboundMessage, broadcastQueueSize),
+		wsWriteTimeout: defaultWSWriteTimeout,
 	}
 }
 
@@ -1606,12 +1617,13 @@ func (s *Server) broadcaster() {
 				continue
 			}
 
+			_ = conn.SetWriteDeadline(time.Now().Add(s.wsWriteTimeout))
 			err := conn.WriteJSON(WebSocketMessage{
 				Type:    message.Type,
 				Payload: payload,
 			})
 			if err != nil {
-				log.Printf("[WS] Error writing to client: %v", err)
+				log.Printf("[WS] Error writing to client %s: %v", client.GitHubUsername, err)
 				_ = conn.Close() // nolint:errcheck
 				s.clientsMux.RUnlock()
 				s.clientsMux.Lock()
