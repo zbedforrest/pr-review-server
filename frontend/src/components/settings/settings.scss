@@ -68,9 +68,9 @@
 
   &__error {
     padding: $spacing-sm $spacing-md;
-    border: 1px solid rgba($color-error, 0.5);
+    border: 1px solid $color-border-error-dim;
     border-radius: $radius-md;
-    background: rgba($color-error, 0.1);
+    background: $color-bg-error-dim;
     color: $color-error-text;
     font-size: $font-size-md;
   }
@@ -78,9 +78,9 @@
   &__notice {
     margin: 0;
     padding: $spacing-sm $spacing-md;
-    border: 1px solid rgba($color-warning, 0.5);
+    border: 1px solid $color-border-warning-dim;
     border-radius: $radius-md;
-    background: rgba($color-warning, 0.1);
+    background: $color-bg-warning-dim;
     color: $color-warning-text;
     font-size: $font-size-md;
   }
@@ -172,7 +172,7 @@
 
     &:focus-within {
       border-color: $color-link;
-      box-shadow: 0 0 0 2px rgba($color-link, 0.3);
+      box-shadow: 0 0 0 2px $color-border-info-dim;
     }
   }
 
@@ -196,7 +196,7 @@
     }
 
     &--unknown {
-      border-color: rgba($color-warning, 0.6);
+      border-color: $color-border-warning-dim;
     }
   }
 

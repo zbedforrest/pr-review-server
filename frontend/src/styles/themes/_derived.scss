@@ -25,6 +25,10 @@
   // "generating" stage — orange, i.e. warning pulled toward danger.
   --agent-reviewing: var(--warning);
   --agent-reviewing-text: var(--text-warning);
+
+  // Row-wide attention wash. The dim fill is tuned for badges and reads too
+  // heavy across a full table row.
+  --bg-warning-faint: var(--bg-warning-dim);
 }
 
 @supports (color: color-mix(in srgb, red 50%, blue)) {
@@ -35,5 +39,6 @@
     --accent-hover: color-mix(in srgb, var(--accent) 78%, var(--text-primary));
     --agent-reviewing: color-mix(in srgb, var(--warning) 65%, var(--danger));
     --agent-reviewing-text: color-mix(in srgb, var(--text-warning) 60%, var(--text-danger));
+    --bg-warning-faint: color-mix(in srgb, var(--warning) 6%, transparent);
   }
 }

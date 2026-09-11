@@ -201,3 +201,23 @@ describe('theme catalog', () => {
     expect(indexHtml).toContain(THEME_STORAGE_KEY);
   });
 });
+
+describe('stylesheets', () => {
+  const stylesheets = import.meta.glob('/src/**/*.scss', {
+    query: '?raw',
+    import: 'default',
+    eager: true,
+  }) as Record<string, string>;
+
+  // The $color-* variables are var() references, which Sass color functions
+  // cannot evaluate: they pass through and the browser drops the declaration.
+  it('never applies a Sass color function to a theme color', () => {
+    const offenders = Object.entries(stylesheets).flatMap(([file, source]) =>
+      [...source.matchAll(/\b(?:rgba?|hsla?|darken|lighten|mix|transparentize|fade-out|opacify|color\.\w+)\(\$color-[^)]*\)/g)].map(
+        (match) => `${file}: ${match[0]}`
+      )
+    );
+    expect(Object.keys(stylesheets).length).toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
+  });
+});
