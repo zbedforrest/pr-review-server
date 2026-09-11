@@ -71,22 +71,6 @@ func TestMentionCandidatesUseTheCachedRowsThatMoved(t *testing.T) {
 	}
 }
 
-func TestMentionPublishNoteExplainsWhyAReviewStaysOffGitHub(t *testing.T) {
-	if note := mentionPublishNote(true, false, "abc1234567"); note != "" {
-		t.Fatalf("an eligible PR needs no note, got %q", note)
-	}
-	note := mentionPublishNote(false, true, "abc1234567")
-	for _, want := range []string{"abc1234", "draft", "dashboard"} {
-		if !containsFold(note, want) {
-			t.Errorf("note %q should mention %q", note, want)
-		}
-	}
-	note = mentionPublishNote(false, false, "abc1234567")
-	if !containsFold(note, "comment pilot") {
-		t.Errorf("note %q should explain the allowlist", note)
-	}
-}
-
 func containsFold(s, sub string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
 }
@@ -103,7 +87,7 @@ type fakeMentionGH struct {
 	live      mentionPR
 	liveCalls int
 	reacted   []int64
-	notes     []string
+	reactions []string
 }
 
 func (f *fakeMentionGH) ListIssueComments(context.Context, string, string, int) ([]github.IssueCommentInfo, error) {
@@ -113,12 +97,9 @@ func (f *fakeMentionGH) LivePR(context.Context, string, string, int) (mentionPR,
 	f.liveCalls++
 	return f.live, nil
 }
-func (f *fakeMentionGH) ReactToIssueComment(_ context.Context, _, _ string, id int64) error {
+func (f *fakeMentionGH) ReactToIssueComment(_ context.Context, _, _ string, id int64, reaction string) error {
 	f.reacted = append(f.reacted, id)
-	return nil
-}
-func (f *fakeMentionGH) CommentOnPR(_ context.Context, _, _ string, _ int, body string) error {
-	f.notes = append(f.notes, body)
+	f.reactions = append(f.reactions, reaction)
 	return nil
 }
 
@@ -201,8 +182,8 @@ func TestMentionScanner_AdmitsOnceAndAcknowledgesOnlyAllowedRequests(t *testing.
 	if res.triggered != 1 || len(admitted) != 1 || admitted[0].CommitSHA != "abc1234def" {
 		t.Fatalf("only the member's request is admitted, at the live head: res=%+v admitted=%+v", res, admitted)
 	}
-	if len(gh.reacted) != 1 || gh.reacted[0] != 1 || len(gh.notes) != 0 {
-		t.Fatalf("the admitted request is acknowledged and nothing else: reacted=%v notes=%v", gh.reacted, gh.notes)
+	if len(gh.reacted) != 1 || gh.reacted[0] != 1 || gh.reactions[0] != "eyes" {
+		t.Fatalf("the admitted request gets an eyes reaction and nothing else: reacted=%v reactions=%v", gh.reacted, gh.reactions)
 	}
 	if !ledger.rows[1].Queued {
 		t.Fatalf("the ledger row is finalised: %+v", ledger.rows[1])
@@ -247,7 +228,7 @@ func TestMentionScanner_TransientAndConfigurationErrorsAreRetried(t *testing.T) 
 	}
 }
 
-func TestMentionScanner_DraftOrOutsidePilotGetsADashboardOnlyNote(t *testing.T) {
+func TestMentionScanner_DraftOrOutsidePilotIsAcknowledgedWithoutANote(t *testing.T) {
 	var publishSeen []bool
 	m, gh, _, pr := mentionFixture(func(_ context.Context, _ github.PullRequest, publish bool) error {
 		publishSeen = append(publishSeen, publish)
@@ -257,8 +238,8 @@ func TestMentionScanner_DraftOrOutsidePilotGetsADashboardOnlyNote(t *testing.T) 
 	if _, err := m.handlePR(context.Background(), pr); err != nil {
 		t.Fatal(err)
 	}
-	if len(publishSeen) != 1 || publishSeen[0] || len(gh.notes) != 1 || !strings.Contains(gh.notes[0], "draft") || !strings.Contains(gh.notes[0], "abc1234") {
-		t.Fatalf("publish=%v notes=%v", publishSeen, gh.notes)
+	if len(publishSeen) != 1 || publishSeen[0] || len(gh.reactions) != 1 || gh.reactions[0] != "eyes" {
+		t.Fatalf("publish=%v reactions=%v", publishSeen, gh.reactions)
 	}
 }
 
@@ -298,8 +279,8 @@ func TestMentionScanner_CoalescesRequestsOnARecentlyReviewedHead(t *testing.T) {
 		return head == "abc1234def", nil
 	}
 	res, err := m.handlePR(context.Background(), pr)
-	if err != nil || admitted != 0 || res.triggered != 0 || len(gh.reacted) != 1 || len(gh.notes) != 1 || !strings.Contains(gh.notes[0], "abc1234") || !ledger.rows[1].Queued {
-		t.Fatalf("a fresh review of the same head answers the request without a new run: err=%v admitted=%d res=%+v reacted=%v notes=%v row=%+v", err, admitted, res, gh.reacted, gh.notes, ledger.rows[1])
+	if err != nil || admitted != 0 || res.triggered != 0 || len(gh.reactions) != 1 || gh.reactions[0] != "+1" || !ledger.rows[1].Queued {
+		t.Fatalf("a fresh review of the same head is answered with a thumbs-up and no new run: err=%v admitted=%d res=%+v reactions=%v row=%+v", err, admitted, res, gh.reactions, ledger.rows[1])
 	}
 }
 

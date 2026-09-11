@@ -94,19 +94,6 @@ func mentionAllowed(c github.IssueCommentInfo, prAuthor string) bool {
 
 // mentionPublishNote is the short reply left when a requested review cannot
 // be posted to the PR, so the requester knows where to look and why.
-func mentionPublishNote(publishable, draft bool, headSHA string) string {
-	if publishable {
-		return ""
-	}
-	if len(headSHA) > 7 {
-		headSHA = headSHA[:7]
-	}
-	reason := "the author is not in the comment pilot"
-	if draft {
-		reason = "the pull request is a draft"
-	}
-	return fmt.Sprintf("Reviewing %s. The result will be on the PRism dashboard only, because %s.", headSHA, reason)
-}
 
 func mentionTelemetryEvent(pr github.PullRequest, by string, publish bool, userID int) db.TelemetryEvent {
 	return db.TelemetryEvent{UserID: userID, Action: "mention_trigger", Label: fmt.Sprintf("by=%s publish=%t", by, publish),
@@ -117,8 +104,7 @@ func mentionTelemetryEvent(pr github.PullRequest, by string, publish bool, userI
 type mentionGitHub interface {
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]github.IssueCommentInfo, error)
 	LivePR(ctx context.Context, owner, repo string, number int) (mentionPR, error)
-	ReactToIssueComment(ctx context.Context, owner, repo string, commentID int64) error
-	CommentOnPR(ctx context.Context, owner, repo string, number int, body string) error
+	ReactToIssueComment(ctx context.Context, owner, repo string, commentID int64, reaction string) error
 }
 
 // mentionPR is the live state a request is admitted against.
@@ -248,7 +234,7 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 				if !owned {
 					continue
 				}
-				m.acknowledge(ctx, pr, c.ID, fmt.Sprintf("A review of %s finished in the last %d minutes; its result is current. Push a new commit for another.", short, int(mentionCoalesceWindow.Minutes())))
+				m.acknowledge(ctx, pr, c.ID, reactionCurrent)
 				m.log("[MENTIONS] %s: comment %d asked for a review of %s, which completed recently", key, c.ID, short)
 				continue
 			}
@@ -293,7 +279,7 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 			continue
 		}
 		res.triggered++
-		m.acknowledge(ctx, pr, c.ID, mentionPublishNote(publish, ghPR.Draft, ghPR.CommitSHA))
+		m.acknowledge(ctx, pr, c.ID, reactionTriggered)
 		m.log("[MENTIONS] %s: review of %s requested by %s in comment %d (publish=%t)", key, short, c.Author, c.ID, publish)
 		if m.onEvent != nil {
 			m.onEvent(ghPR, c.Author, publish)
@@ -302,17 +288,16 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 	return res, nil
 }
 
-// acknowledge reacts to the request and, when there is something the
-// requester should know, says it in one line.
-func (m mentionScanner) acknowledge(ctx context.Context, pr *db.PR, commentID int64, note string) {
-	key := mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)
-	if err := m.gh.ReactToIssueComment(ctx, pr.RepoOwner, pr.RepoName, commentID); err != nil {
-		m.log("[MENTIONS] %s: could not acknowledge comment %d: %v", key, commentID, err)
-	}
-	if note != "" {
-		if err := m.gh.CommentOnPR(ctx, pr.RepoOwner, pr.RepoName, pr.PRNumber, note); err != nil {
-			m.log("[MENTIONS] %s: could not leave a note: %v", key, err)
-		}
+// The request is answered with a reaction only; anything PRism has to say
+// belongs in its sticky summary, never in a loose comment.
+const (
+	reactionTriggered = "eyes"
+	reactionCurrent   = "+1"
+)
+
+func (m mentionScanner) acknowledge(ctx context.Context, pr *db.PR, commentID int64, reaction string) {
+	if err := m.gh.ReactToIssueComment(ctx, pr.RepoOwner, pr.RepoName, commentID, reaction); err != nil {
+		m.log("[MENTIONS] %s: could not acknowledge comment %d: %v", mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber), commentID, err)
 	}
 }
 
@@ -485,13 +470,8 @@ func (a mentionGitHubAdapter) LivePR(ctx context.Context, owner, repo string, nu
 		Title: pr.GetTitle(), Author: pr.GetUser().GetLogin()}, nil
 }
 
-func (a mentionGitHubAdapter) ReactToIssueComment(ctx context.Context, owner, repo string, commentID int64) error {
-	return a.c.CreateIssueCommentReaction(ctx, owner, repo, commentID, "eyes")
-}
-
-func (a mentionGitHubAdapter) CommentOnPR(ctx context.Context, owner, repo string, number int, body string) error {
-	_, err := a.c.CreateIssueComment(ctx, owner, repo, number, body)
-	return err
+func (a mentionGitHubAdapter) ReactToIssueComment(ctx context.Context, owner, repo string, commentID int64, reaction string) error {
+	return a.c.CreateIssueCommentReaction(ctx, owner, repo, commentID, reaction)
 }
 
 func sha256Hex(s string) string {
