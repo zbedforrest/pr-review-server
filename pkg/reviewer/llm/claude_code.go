@@ -89,8 +89,16 @@ func (c *ClaudeCodeClient) GetReview(prompt string) (string, int32, int32, int32
 		args = append(args, "--effort", c.effort)
 	}
 
+	// A private project directory keeps any .claude/ settings, hooks or
+	// CLAUDE.md left in the shared temp dir out of the first pass.
+	workDir, err := os.MkdirTemp("", "claude-code-first-pass-")
+	if err != nil {
+		return "", 0, 0, 0, fmt.Errorf("create Claude Code working directory: %w", err)
+	}
+	defer os.RemoveAll(workDir)
+
 	cmd := exec.CommandContext(ctx, c.command, args...)
-	cmd.Dir = os.TempDir()
+	cmd.Dir = workDir
 	cmd.Env = c.environment
 	if cmd.Env == nil {
 		cmd.Env = ChildEnvironment(os.Environ(), "ANTHROPIC_API_KEY", "")

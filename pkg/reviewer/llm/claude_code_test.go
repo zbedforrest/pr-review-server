@@ -75,6 +75,15 @@ func newClaudeCodeHelperClient(t *testing.T, scenario, thinking string) *ClaudeC
 	return client
 }
 
+func helperReportedCwd(t *testing.T, review string) string {
+	t.Helper()
+	_, after, found := strings.Cut(review, "cwd=")
+	require.True(t, found, "helper output missing cwd: %q", review)
+	cwd, _, _ := strings.Cut(after, " api_key=")
+	require.NotEmpty(t, cwd)
+	return cwd
+}
+
 func TestClaudeCodeClientSuccessUsesStdinAndCountsTokens(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "metered-key-must-not-pass")
 	client := newClaudeCodeHelperClient(t, "success", "high")
@@ -84,9 +93,13 @@ func TestClaudeCodeClientSuccessUsesStdinAndCountsTokens(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, review, "stdin="+strconv.Itoa(len(prompt)))
 	assert.NotContains(t, review, prompt)
-	wantCwd, err := filepath.EvalSymlinks(os.TempDir())
+	tempRoot, err := filepath.EvalSymlinks(os.TempDir())
 	require.NoError(t, err)
-	assert.Contains(t, review, "cwd="+wantCwd)
+	cwd := helperReportedCwd(t, review)
+	assert.NotEqual(t, tempRoot, cwd, "the shared temp dir must not be the Claude Code project directory")
+	assert.Equal(t, tempRoot, filepath.Dir(cwd), "the private working directory lives directly under the temp root")
+	_, statErr := os.Stat(cwd)
+	assert.True(t, os.IsNotExist(statErr), "the private working directory must be removed after the run, stat err: %v", statErr)
 	assert.Contains(t, review, "api_key= argv=")
 	assert.Contains(t, review, "argv=-p|")
 	assert.Contains(t, review, "--model|claude-test-model")
