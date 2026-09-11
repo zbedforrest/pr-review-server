@@ -128,8 +128,9 @@ func (c *ClaudeCodeClient) GetReview(prompt string) (string, int32, int32, int32
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", 0, 0, 0, fmt.Errorf("Claude Code first pass timed out after %s", c.timeout)
 	}
+	snippet := diagnosticSnippetFunc(cmd.Env)
 	if c.verbose {
-		log.Printf("Claude Code first-pass stdout: %s", diagnosticSnippet(stdout.String()))
+		log.Printf("Claude Code first-pass stdout: %s", snippet(stdout.String()))
 	}
 	if writeErr != nil && runErr == nil {
 		return "", 0, 0, 0, fmt.Errorf("write Claude Code prompt to stdin: %w", writeErr)
@@ -140,13 +141,13 @@ func (c *ClaudeCodeClient) GetReview(prompt string) (string, int32, int32, int32
 		// A crashed or misconfigured CLI usually reports on stderr with an
 		// empty or non-JSON stdout; surface both so the failure is diagnosable.
 		return "", 0, 0, 0, fmt.Errorf("decode Claude Code JSON output (exit_error=%v): %w; stdout=%q stderr=%q",
-			runErr, err, diagnosticSnippet(stdout.String()), diagnosticSnippet(stderr.String()))
+			runErr, err, snippet(stdout.String()), snippet(stderr.String()))
 	}
 	if runErr != nil || response.Type != "result" || response.IsError || response.Subtype != "success" || strings.TrimSpace(response.Result) == "" {
 		return "", 0, 0, 0, fmt.Errorf(
 			"Claude Code first pass failed (type=%q subtype=%q is_error=%t exit_error=%v): result=%q stderr=%q",
 			response.Type, response.Subtype, response.IsError, runErr,
-			diagnosticSnippet(response.Result), diagnosticSnippet(stderr.String()),
+			snippet(response.Result), snippet(stderr.String()),
 		)
 	}
 
@@ -175,6 +176,29 @@ func (c *ClaudeCodeClient) ValidateAPIKey() error {
 		return fmt.Errorf("Claude Code command %q is not available on PATH: %w", c.command, err)
 	}
 	return nil
+}
+
+// diagnosticSnippetFunc returns a formatter for CLI output that is embedded in
+// errors: credential values from the child environment are replaced with
+// "***" and the text is truncated so error state and telemetry stay bounded.
+func diagnosticSnippetFunc(environment []string) func(string) string {
+	var secrets []string
+	for _, entry := range environment {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || value == "" {
+			continue
+		}
+		switch key {
+		case "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY":
+			secrets = append(secrets, value)
+		}
+	}
+	return func(value string) string {
+		for _, secret := range secrets {
+			value = strings.ReplaceAll(value, secret, "***")
+		}
+		return diagnosticSnippet(value)
+	}
 }
 
 func diagnosticSnippet(value string) string {

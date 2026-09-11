@@ -58,6 +58,16 @@ func runClaudeCodeHelperProcess() {
 		fmt.Fprint(os.Stderr, "fake stderr details")
 		_ = json.NewEncoder(os.Stdout).Encode(response)
 		os.Exit(9)
+	case "leak_token":
+		leak := strings.Repeat("token="+os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")+" ", 200)
+		response.Result = "auth failed " + leak
+		fmt.Fprint(os.Stderr, "stderr "+leak)
+		_ = json.NewEncoder(os.Stdout).Encode(response)
+		os.Exit(9)
+	case "leak_token_invalid_json":
+		fmt.Fprint(os.Stdout, "fatal: bad token "+os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"))
+		fmt.Fprint(os.Stderr, "stderr bad token "+os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"))
+		os.Exit(1)
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(response)
 	os.Exit(0)
@@ -145,6 +155,23 @@ func TestClaudeCodeClientReportsNonZeroExit(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "subtype=\"success\"")
 	assert.Contains(t, err.Error(), "fake stderr details")
+}
+
+func TestClaudeCodeClientRedactsCredentialsFromFailureErrors(t *testing.T) {
+	const token = "sk-ant-oat01-super-secret-oauth-token-value"
+	for _, scenario := range []string{"leak_token", "leak_token_invalid_json"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", token)
+			client := newClaudeCodeHelperClient(t, scenario, "")
+			require.Contains(t, strings.Join(client.environment, "\n"), "CLAUDE_CODE_OAUTH_TOKEN="+token)
+
+			_, _, _, _, err := client.GetReview("review me")
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), token)
+			assert.Contains(t, err.Error(), "***")
+			assert.Less(t, len(err.Error()), 2*claudeCodeDiagnosticLimit+500, "error must stay bounded: %d bytes", len(err.Error()))
+		})
+	}
 }
 
 func TestClaudeCodeClientTimeout(t *testing.T) {
