@@ -60,6 +60,7 @@ type LLMProvider string
 const (
 	ProviderGemini     LLMProvider = "gemini"
 	ProviderClaude     LLMProvider = "claude"
+	ProviderClaudeCode LLMProvider = "claude-code"
 	ProviderOpenRouter LLMProvider = "openrouter"
 )
 

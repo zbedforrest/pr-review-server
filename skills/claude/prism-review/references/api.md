@@ -30,6 +30,8 @@ Create options map directly to the v1 request:
 | `--wall-clock-seconds` | `config.agent.wall_clock_seconds` |
 | `--max-turns` | `config.agent.max_turns` |
 | `--first-pass-samples` | `config.first_pass.samples` |
+| `--first-pass-provider` | `config.first_pass.provider` (`gemini`, `claude`, `claude-code`, or `openrouter`) |
+| `--first-pass-model` | `config.first_pass.model` |
 | `--agent-enabled` | `config.agent.enabled` |
 | `--required-checks` | `config.required_checks` |
 | `--expected-head-sha` | `target.expected_head_sha` |

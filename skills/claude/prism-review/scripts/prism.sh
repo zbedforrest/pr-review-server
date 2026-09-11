@@ -24,6 +24,8 @@ Create options:
   --wall-clock-seconds N
   --max-turns N
   --first-pass-samples N
+  --first-pass-provider NAME     gemini | claude | claude-code | openrouter
+  --first-pass-model MODEL_ID
   --agent-enabled true|false
   --required-checks true|false
   --expected-head-sha FULL_SHA   defaults to the current GitHub PR HEAD
@@ -244,6 +246,8 @@ command_create() {
   wall_clock=""
   max_turns=""
   first_pass_samples=""
+  first_pass_provider=""
+  first_pass_model=""
   agent_enabled=""
   required_checks=""
   expected_head=""
@@ -253,7 +257,7 @@ command_create() {
   while [ "$#" -gt 0 ]; do
     option="$1"
     case "$option" in
-      --backend|--model|--effort|--wall-clock-seconds|--max-turns|--first-pass-samples|--agent-enabled|--required-checks|--expected-head-sha|--idempotency-key)
+      --backend|--model|--effort|--wall-clock-seconds|--max-turns|--first-pass-samples|--first-pass-provider|--first-pass-model|--agent-enabled|--required-checks|--expected-head-sha|--idempotency-key)
         [ "$#" -ge 2 ] || die "$option requires a value"
         value="$2"
         shift 2
@@ -267,6 +271,14 @@ command_create() {
       --wall-clock-seconds) is_positive_integer "$value" || die "$option must be a positive integer without leading zeros"; wall_clock="$value"; has_customization=1 ;;
       --max-turns) is_positive_integer "$value" || die "$option must be a positive integer without leading zeros"; max_turns="$value"; has_customization=1 ;;
       --first-pass-samples) is_positive_integer "$value" || die "$option must be a positive integer without leading zeros"; first_pass_samples="$value"; has_customization=1 ;;
+      --first-pass-provider)
+        case "$value" in
+          gemini|claude|claude-code|openrouter) ;;
+          *) die "$option must be gemini, claude, claude-code, or openrouter" ;;
+        esac
+        first_pass_provider="$value"; has_customization=1
+        ;;
+      --first-pass-model) [ -n "$value" ] || die "$option must not be empty"; first_pass_model="$value"; has_customization=1 ;;
       --agent-enabled) [ "$value" = true ] || [ "$value" = false ] || die "$option must be true or false"; agent_enabled="$value"; has_customization=1 ;;
       --required-checks) [ "$value" = true ] || [ "$value" = false ] || die "$option must be true or false"; required_checks="$value"; has_customization=1 ;;
       --expected-head-sha) expected_head="$value" ;;
@@ -296,7 +308,12 @@ command_create() {
   [ -z "$wall_clock" ] || request=$(printf '%s' "$request" | jq -c --argjson value "$wall_clock" '.config.agent.wall_clock_seconds=$value')
   [ -z "$max_turns" ] || request=$(printf '%s' "$request" | jq -c --argjson value "$max_turns" '.config.agent.max_turns=$value')
   [ -z "$agent_enabled" ] || request=$(printf '%s' "$request" | jq -c --argjson value "$agent_enabled" '.config.agent.enabled=$value')
-  [ -z "$first_pass_samples" ] || request=$(printf '%s' "$request" | jq -c --argjson value "$first_pass_samples" '.config.first_pass={samples:$value}')
+  if [ -n "$first_pass_samples$first_pass_provider$first_pass_model" ]; then
+    request=$(printf '%s' "$request" | jq -c '.config.first_pass = {}')
+  fi
+  [ -z "$first_pass_samples" ] || request=$(printf '%s' "$request" | jq -c --argjson value "$first_pass_samples" '.config.first_pass.samples=$value')
+  [ -z "$first_pass_provider" ] || request=$(printf '%s' "$request" | jq -c --arg value "$first_pass_provider" '.config.first_pass.provider=$value')
+  [ -z "$first_pass_model" ] || request=$(printf '%s' "$request" | jq -c --arg value "$first_pass_model" '.config.first_pass.model=$value')
   [ -z "$required_checks" ] || request=$(printf '%s' "$request" | jq -c --argjson value "$required_checks" '.config.required_checks=$value')
 
   http_request POST '/api/v1/review-runs' "$request" "$idempotency_key"

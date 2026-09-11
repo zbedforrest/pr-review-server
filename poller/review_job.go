@@ -345,10 +345,13 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	}
 	firstPassModelsGemini := policyValues(p.cfg.ReviewFirstPassModelsGemini, llm.FirstPassModelName(llm.ProviderGemini, ""))
 	firstPassModelsClaude := policyValues(p.cfg.ReviewFirstPassModelsClaude, llm.DefaultClaudeModel)
+	firstPassModelsClaudeCode := policyValues(p.cfg.ReviewFirstPassModelsClaudeCode, llm.DefaultClaudeCodeModel)
 	firstPassModelsOpenRouter := policyValues(p.cfg.ReviewFirstPassModelsOpenRouter, llm.DefaultOpenRouterModel)
 	switch firstPassProvider {
 	case llm.ProviderClaude:
 		firstPassModelsClaude = appendPolicyValue(firstPassModelsClaude, firstPassModel)
+	case llm.ProviderClaudeCode:
+		firstPassModelsClaudeCode = appendPolicyValue(firstPassModelsClaudeCode, firstPassModel)
 	case llm.ProviderOpenRouter:
 		firstPassModelsOpenRouter = appendPolicyValue(firstPassModelsOpenRouter, firstPassModel)
 	default:
@@ -380,6 +383,11 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 				CredentialConfigured: strings.TrimSpace(p.cfg.AnthropicAPIKey) != "" || firstPassProvider == llm.ProviderClaude,
 				DefaultModel:         llm.DefaultClaudeModel,
 				Models:               firstPassModelsClaude,
+			},
+			string(llm.ProviderClaudeCode): {
+				CredentialConfigured: p.executableAvailable(llm.ClaudeCodeCommand()) || firstPassProvider == llm.ProviderClaudeCode,
+				DefaultModel:         llm.DefaultClaudeCodeModel,
+				Models:               firstPassModelsClaudeCode,
 			},
 			string(llm.ProviderOpenRouter): {
 				CredentialConfigured: strings.TrimSpace(p.cfg.OpenRouterAPIKey) != "" || firstPassProvider == llm.ProviderOpenRouter,

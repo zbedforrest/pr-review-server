@@ -180,6 +180,8 @@ created=$("$CLIENT" create acme/widgets#42 \
   --wall-clock-seconds 720 \
   --max-turns 100 \
   --first-pass-samples 2 \
+  --first-pass-provider claude-code \
+  --first-pass-model claude-fable-5-1 \
   --agent-enabled true \
   --required-checks true \
   --idempotency-key client-test-key)
@@ -188,6 +190,8 @@ assert_eq "$(jq -r '.target.expected_head_sha' "$FAKE_LAST_REQUEST")" "$FAKE_HEA
 assert_eq "$(jq -r '.config.agent.backend' "$FAKE_LAST_REQUEST")" "openrouter"
 assert_eq "$(jq -r '.config.agent.max_turns' "$FAKE_LAST_REQUEST")" "100"
 assert_eq "$(jq -r '.config.first_pass.samples' "$FAKE_LAST_REQUEST")" "2"
+assert_eq "$(jq -r '.config.first_pass.provider' "$FAKE_LAST_REQUEST")" "claude-code"
+assert_eq "$(jq -r '.config.first_pass.model' "$FAKE_LAST_REQUEST")" "claude-fable-5-1"
 assert_contains "$(cat "$FAKE_LAST_HEADERS")" "Idempotency-Key: client-test-key"
 
 : >"$FAKE_TRACE"
@@ -198,6 +202,13 @@ set -e
 assert_eq "$integer_status" "2"
 assert_contains "$(cat "$TEST_TMP/integer.err")" "without leading zeros"
 assert_eq "$(cat "$FAKE_TRACE")" ""
+
+set +e
+"$CLIENT" create acme/widgets#42 --first-pass-provider claudecode >"$TEST_TMP/provider.out" 2>"$TEST_TMP/provider.err"
+provider_status=$?
+set -e
+assert_eq "$provider_status" "2"
+assert_contains "$(cat "$TEST_TMP/provider.err")" "gemini, claude, claude-code, or openrouter"
 
 export FAKE_GH_API_FAIL=true
 set +e

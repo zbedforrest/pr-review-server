@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -101,12 +102,20 @@ func start(cfg *config.Config) {
 		if cfg.AnthropicAPIKey == "" {
 			log.Fatal("FIRST_PASS_PROVIDER=claude requires ANTHROPIC_API_KEY to be set")
 		}
+	case "claude-code":
+		command := llm.ClaudeCodeCommand()
+		if _, err := exec.LookPath(command); err != nil {
+			log.Fatalf("FIRST_PASS_PROVIDER=claude-code requires Claude Code command %q on PATH: %v", command, err)
+		}
+		if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") == "" {
+			log.Println("WARNING: CLAUDE_CODE_OAUTH_TOKEN is empty; Claude Code must have its own authenticated OAuth session")
+		}
 	case "openrouter":
 		if cfg.OpenRouterAPIKey == "" {
 			log.Fatal("FIRST_PASS_PROVIDER=openrouter requires OPENROUTER_API_KEY to be set")
 		}
 	default:
-		log.Fatalf("Invalid FIRST_PASS_PROVIDER %q (expected gemini, claude, or openrouter)", cfg.FirstPassProvider)
+		log.Fatalf("Invalid FIRST_PASS_PROVIDER %q (expected gemini, claude, claude-code, or openrouter)", cfg.FirstPassProvider)
 	}
 	if _, err := llm.ParseThinkingLevel(cfg.FirstPassThinking); err != nil {
 		log.Fatalf("Invalid FIRST_PASS_THINKING %q (expected low, medium, or high)", cfg.FirstPassThinking)

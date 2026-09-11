@@ -348,6 +348,11 @@ func TestReviewConfigDefaultsAndPolicyIncludeFirstPassProviders(t *testing.T) {
 	assert.Equal(t, llm.DefaultClaudeModel, claude.DefaultModel)
 	assert.Contains(t, claude.Models, llm.DefaultClaudeModel)
 
+	claudeCode := policy.FirstPassProviders["claude-code"]
+	assert.True(t, claudeCode.CredentialConfigured)
+	assert.Equal(t, llm.DefaultClaudeCodeModel, claudeCode.DefaultModel)
+	assert.Contains(t, claudeCode.Models, llm.DefaultClaudeCodeModel)
+
 	openRouter := policy.FirstPassProviders["openrouter"]
 	assert.False(t, openRouter.CredentialConfigured, "no OpenRouter key is configured")
 	assert.Equal(t, llm.DefaultOpenRouterModel, openRouter.DefaultModel)
@@ -368,6 +373,26 @@ func TestReviewConfigPolicyAdmitsActiveFirstPassProviderWithoutKey(t *testing.T)
 	snapshot, err := runconfig.Resolve(runconfig.Overrides{}, defaults, policy)
 	require.NoError(t, err)
 	assert.Equal(t, "claude-fable-5", snapshot.Effective.FirstPass.Model)
+}
+
+func TestReviewConfigPolicyUsesClaudeCodeExecutableReadiness(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.lookPath = func(name string) (string, error) {
+		if name == llm.ClaudeCodeCommand() {
+			return "", fmt.Errorf("%s missing", name)
+		}
+		return "/secret/bin/" + name, nil
+	}
+
+	_, policy, err := p.ReviewConfigDefaultsAndPolicy()
+	require.NoError(t, err)
+	assert.False(t, policy.FirstPassProviders["claude-code"].CredentialConfigured)
+
+	p.cfg.FirstPassProvider = "claude-code"
+	_, policy, err = p.ReviewConfigDefaultsAndPolicy()
+	require.NoError(t, err)
+	assert.True(t, policy.FirstPassProviders["claude-code"].CredentialConfigured,
+		"the active deployment provider is always admitted")
 }
 
 func TestPrepareReviewJobResolvesAndGatesFirstPassOverrides(t *testing.T) {
@@ -425,6 +450,11 @@ func TestFirstPassClientForRunCachesPerProviderAndModel(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, claudeClient == otherClaude, "different models must not share a client")
 
+	claudeCodeClient, claudeCodeInfo, err := p.firstPassClientForRun(runconfig.FirstPass{Provider: "claude-code", Model: llm.DefaultClaudeCodeModel})
+	require.NoError(t, err)
+	assert.IsType(t, &llm.ClaudeCodeClient{}, claudeCodeClient)
+	assert.Equal(t, service.FirstPassInfo{Provider: "anthropic", Backend: "claude_code", Model: llm.DefaultClaudeCodeModel}, claudeCodeInfo)
+
 	_, _, err = p.firstPassClientForRun(runconfig.FirstPass{Provider: "openrouter", Model: "openai/gpt-5.6-sol"})
 	require.ErrorContains(t, err, "OPENROUTER_API_KEY")
 
@@ -450,6 +480,10 @@ func TestPipelineModelUsesRecordsGeminiThinkingAsEffort(t *testing.T) {
 
 	claudeUses := p.pipelineModelUses(runconfig.FirstPass{Provider: "claude", Model: "claude-fable-5"})
 	assert.Empty(t, claudeUses[0].Effort, "thinking level applies only to gemini first passes")
+
+	claudeCodeUses := p.pipelineModelUses(runconfig.FirstPass{Provider: "claude-code", Model: llm.DefaultClaudeCodeModel})
+	assert.Equal(t, "high", claudeCodeUses[0].Effort)
+	assert.Equal(t, "claude_code", claudeCodeUses[0].Backend)
 
 	p.cfg.FirstPassThinking = ""
 	uses = p.pipelineModelUses(runconfig.FirstPass{Provider: "gemini", Model: llm.ProModelName()})

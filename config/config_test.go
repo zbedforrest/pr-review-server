@@ -4,6 +4,8 @@ import (
 	"os"
 	"reflect"
 	"testing"
+
+	"pr-review-server/pkg/reviewer/llm"
 )
 
 // TestLoad_RequiredChecksFlag locks in the default-off contract: the
@@ -270,6 +272,41 @@ func TestLoadFirstPassNormalizesProvider(t *testing.T) {
 	}
 }
 
+func TestLoadFirstPassCanonicalizesClaudeCodeAliases(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	for _, alias := range []string{"claude_code", "claudecode", " Claude_Code "} {
+		t.Run(alias, func(t *testing.T) {
+			t.Setenv("FIRST_PASS_PROVIDER", alias)
+
+			cfg := Load()
+			if cfg.FirstPassProvider != "claude-code" {
+				t.Fatalf("FirstPassProvider=%q want claude-code", cfg.FirstPassProvider)
+			}
+			assertStringsEqual(t, cfg.ReviewFirstPassModelsClaudeCode, []string{defaultFirstPassClaudeCodeModel})
+			assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{defaultFirstPassGeminiModel})
+			if got := cfg.FirstPassAPIKey(); got != "" {
+				t.Fatalf("claude-code alias resolved API key %q", got)
+			}
+		})
+	}
+}
+
+func TestLoadFirstPassProviderAgreesWithLLMParseProvider(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	for _, input := range []string{"", "gemini", "claude", "claude-code", "claude_code", "claudecode", "openrouter", " OpenRouter "} {
+		t.Run(input, func(t *testing.T) {
+			t.Setenv("FIRST_PASS_PROVIDER", input)
+			want, err := llm.ParseProvider(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Load().FirstPassProvider; got != string(want) {
+				t.Fatalf("Load()=%q but llm.ParseProvider=%q", got, want)
+			}
+		})
+	}
+}
+
 func TestFirstPassAPIKeySelection(t *testing.T) {
 	cfg := &Config{
 		GeminiAPIKey:     "gem",
@@ -284,6 +321,7 @@ func TestFirstPassAPIKeySelection(t *testing.T) {
 		{"gemini", "gem"},
 		{"", "gem"},
 		{"claude", "ant"},
+		{"claude-code", ""},
 		{"openrouter", "opr"},
 	}
 	for _, c := range cases {
@@ -302,6 +340,7 @@ func clearFirstPassAllowlistEnv(t *testing.T) {
 		"GEMINI_PRO_MODEL",
 		"REVIEW_FIRST_PASS_MODELS_GEMINI",
 		"REVIEW_FIRST_PASS_MODELS_CLAUDE",
+		"REVIEW_FIRST_PASS_MODELS_CLAUDE_CODE",
 		"REVIEW_FIRST_PASS_MODELS_OPENROUTER",
 	} {
 		t.Setenv(key, "")
@@ -314,7 +353,21 @@ func TestLoadFirstPassModelAllowlistDefaults(t *testing.T) {
 	cfg := Load()
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{defaultFirstPassGeminiModel})
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaude, []string{defaultFirstPassClaudeModel})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaudeCode, []string{defaultFirstPassClaudeCodeModel})
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsOpenRouter, []string{defaultFirstPassOpenRouterModel})
+}
+
+func TestLoadClaudeCodeFirstPassAllowlistAndDefault(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	t.Setenv("FIRST_PASS_PROVIDER", "claude-code")
+	t.Setenv("REVIEW_FIRST_PASS_MODELS_CLAUDE_CODE", " claude-sonnet-5 , claude-sonnet-5 ")
+
+	cfg := Load()
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaudeCode,
+		[]string{"claude-sonnet-5", defaultFirstPassClaudeCodeModel})
+	if got := cfg.FirstPassProviderAPIKey("claude-code"); got != "" {
+		t.Fatalf("claude-code first pass returned API key %q", got)
+	}
 }
 
 func TestLoadFirstPassGeminiAllowlistFollowsProModelEnv(t *testing.T) {
@@ -335,6 +388,7 @@ func TestLoadFirstPassModelAllowlistsParseAndAppendActiveModel(t *testing.T) {
 	cfg := Load()
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaude, []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5"})
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{"gemini-2.5-pro"})
+	assertStringsEqual(t, cfg.ReviewFirstPassModelsClaudeCode, []string{defaultFirstPassClaudeCodeModel})
 	assertStringsEqual(t, cfg.ReviewFirstPassModelsOpenRouter, []string{defaultFirstPassOpenRouterModel})
 }
 

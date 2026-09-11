@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
@@ -974,44 +975,7 @@ type agentParseResult struct {
 }
 
 func agentChildEnvironment(base []string, credentialKey, credentialValue string) []string {
-	// Default-deny: model-executing children receive process basics and proxy/
-	// certificate settings, while future server secrets stay excluded by default.
-	allowed := map[string]struct{}{
-		"COLORTERM": {}, "HOME": {}, "HTTPS_PROXY": {}, "HTTP_PROXY": {},
-		"LANG": {}, "LC_ALL": {}, "LOGNAME": {}, "NO_PROXY": {}, "PATH": {},
-		"CURL_CA_BUNDLE": {}, "GIT_SSL_CAINFO": {}, "NODE_EXTRA_CA_CERTS": {},
-		"SHELL": {}, "SSL_CERT_DIR": {}, "SSL_CERT_FILE": {}, "TERM": {},
-		"TERM_PROGRAM": {}, "TMPDIR": {}, "TZ": {}, "USER": {},
-		"XDG_CACHE_HOME": {}, "XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {},
-		"http_proxy": {}, "https_proxy": {}, "no_proxy": {},
-	}
-	if credentialKey == "ANTHROPIC_API_KEY" {
-		// Preserve the Claude CLI's established token and gateway auth modes, but
-		// only for Claude children. OpenRouter/Codex must never receive them.
-		allowed["CLAUDE_CODE_OAUTH_TOKEN"] = struct{}{}
-		allowed["ANTHROPIC_AUTH_TOKEN"] = struct{}{}
-		allowed["ANTHROPIC_BASE_URL"] = struct{}{}
-	}
-	environment := make([]string, 0, len(base)+1)
-	seen := make(map[string]struct{}, len(allowed))
-	for _, entry := range base {
-		key, _, ok := strings.Cut(entry, "=")
-		if !ok || key == credentialKey {
-			continue
-		}
-		if _, keep := allowed[key]; !keep {
-			continue
-		}
-		if _, duplicate := seen[key]; duplicate {
-			continue
-		}
-		seen[key] = struct{}{}
-		environment = append(environment, entry)
-	}
-	if credentialValue != "" {
-		environment = append(environment, credentialKey+"="+credentialValue)
-	}
-	return environment
+	return llm.ChildEnvironment(base, credentialKey, credentialValue)
 }
 
 // diagnostic returns the best available explanation of a failed run — under

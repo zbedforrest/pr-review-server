@@ -18,6 +18,9 @@ func TestParseProvider(t *testing.T) {
 		{" Gemini ", ProviderGemini},
 		{"claude", ProviderClaude},
 		{"CLAUDE", ProviderClaude},
+		{"claude-code", ProviderClaudeCode},
+		{" CLAUDE_CODE ", ProviderClaudeCode},
+		{"claudecode", ProviderClaudeCode},
 		{"openrouter", ProviderOpenRouter},
 	}
 	for _, tc := range cases {
@@ -36,7 +39,7 @@ func TestFirstPassModelName(t *testing.T) {
 
 	assert.Equal(t, DefaultProModel, FirstPassModelName(ProviderGemini, ""))
 	assert.Equal(t, DefaultClaudeModel, FirstPassModelName(ProviderClaude, ""))
-	assert.Equal(t, "claude-sonnet-5", FirstPassModelName(ProviderClaude, ""))
+	assert.Equal(t, DefaultClaudeCodeModel, FirstPassModelName(ProviderClaudeCode, ""))
 	assert.Equal(t, DefaultOpenRouterModel, FirstPassModelName(ProviderOpenRouter, ""))
 
 	assert.Equal(t, "claude-opus-5", FirstPassModelName(ProviderClaude, "claude-opus-5"))
@@ -58,6 +61,10 @@ func TestFirstPassTelemetry(t *testing.T) {
 	assert.Equal(t, "anthropic", provider)
 	assert.Equal(t, "anthropic_api", backend)
 
+	provider, backend = FirstPassTelemetry(ProviderClaudeCode)
+	assert.Equal(t, "anthropic", provider)
+	assert.Equal(t, "claude_code", backend)
+
 	provider, backend = FirstPassTelemetry(ProviderOpenRouter)
 	assert.Equal(t, "openrouter", provider)
 	assert.Equal(t, "openrouter_api", backend)
@@ -76,6 +83,12 @@ func TestNewFirstPassClient_ProviderSelection(t *testing.T) {
 	require.NoError(t, err)
 	require.IsType(t, &ClaudeClient{}, claudeClient)
 	assert.EqualValues(t, DefaultClaudeModel, claudeClient.(*ClaudeClient).model)
+
+	claudeCodeClient, err := NewFirstPassClient(ProviderClaudeCode, "", "", "", "medium", false)
+	require.NoError(t, err)
+	require.IsType(t, &ClaudeCodeClient{}, claudeCodeClient)
+	assert.Equal(t, DefaultClaudeCodeModel, claudeCodeClient.(*ClaudeCodeClient).model)
+	assert.Equal(t, "medium", claudeCodeClient.(*ClaudeCodeClient).effort)
 
 	openRouterClient, err := NewFirstPassClient(ProviderOpenRouter, "dummy-key", "", "", "", false)
 	require.NoError(t, err)
@@ -136,6 +149,10 @@ func TestNewFirstPassClient_ThinkingSelection(t *testing.T) {
 	claudeClient, err := NewFirstPassClient(ProviderClaude, "dummy-key", "", "", "high", false)
 	require.NoError(t, err)
 	assert.IsType(t, &ClaudeClient{}, claudeClient, "claude first pass ignores the thinking level")
+
+	claudeCodeClient, err := NewFirstPassClient(ProviderClaudeCode, "", "", "", "high", false)
+	require.NoError(t, err)
+	assert.Equal(t, "high", claudeCodeClient.(*ClaudeCodeClient).effort)
 }
 
 func TestNewFirstPassClient_Errors(t *testing.T) {

@@ -48,8 +48,8 @@ Accepted PR references are `42` (resolved from the current Git remote),
    and records the resulting effective configuration on the review run.
 
 2. Add options only for an explicit customization or experiment. Read
-   capabilities first so the requested backend, model, effort, and budgets are
-   supported:
+   capabilities first so the requested backend, agent model, first-pass
+   provider/model, effort, and budgets are supported:
 
    ```bash
    "$skill_dir/scripts/prism.sh" capabilities

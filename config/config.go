@@ -21,6 +21,7 @@ const (
 	// so this package stays dependency-light.
 	defaultFirstPassGeminiModel     = "gemini-3.1-pro-preview"
 	defaultFirstPassClaudeModel     = "claude-sonnet-5"
+	defaultFirstPassClaudeCodeModel = "claude-fable-5-1"
 	defaultFirstPassOpenRouterModel = "openai/gpt-5.6-sol"
 
 	defaultFirstPassCacheStaggerSec = 8
@@ -60,9 +61,9 @@ type Config struct {
 	// First-pass (sampled single-shot review) provider selection. Empty or
 	// "gemini" preserves the historical Gemini-only behavior; the
 	// classification stage always stays on Gemini flash.
-	FirstPassProvider string // gemini (default), claude, or openrouter
+	FirstPassProvider string // gemini (default), claude, claude-code, or openrouter
 	FirstPassModel    string // empty = provider default
-	FirstPassThinking string // gemini thinking level: low, medium, high; empty = provider default
+	FirstPassThinking string // gemini/claude-code thinking level: low, medium, high; empty = provider default
 	// FirstPassCacheStaggerSec delays each subsequent claude first-pass sample
 	// so sample 1's prompt-cache prefill completes first. 0 disables.
 	FirstPassCacheStaggerSec int
@@ -119,6 +120,7 @@ type Config struct {
 	ReviewAgentEffortsOpenRouter    []string
 	ReviewFirstPassModelsGemini     []string
 	ReviewFirstPassModelsClaude     []string
+	ReviewFirstPassModelsClaudeCode []string
 	ReviewFirstPassModelsOpenRouter []string
 	ReviewMaxWallClockSec           int
 	ReviewMaxTurns                  int
@@ -157,6 +159,8 @@ func (c *Config) FirstPassProviderAPIKey(provider string) string {
 	switch provider {
 	case "claude":
 		return c.AnthropicAPIKey
+	case "claude-code":
+		return ""
 	case "openrouter":
 		return c.OpenRouterAPIKey
 	default:
@@ -226,7 +230,7 @@ func Load() *Config {
 		openRouterEfforts = appendUnique(openRouterEfforts, activeEffort)
 	}
 
-	firstPassProvider := strings.ToLower(strings.TrimSpace(getEnvOrDefault("FIRST_PASS_PROVIDER", "gemini")))
+	firstPassProvider := normalizeFirstPassProvider(getEnvOrDefault("FIRST_PASS_PROVIDER", "gemini"))
 	firstPassModel := strings.TrimSpace(os.Getenv("FIRST_PASS_MODEL"))
 	// The gemini first-pass default follows the same env override the llm
 	// package honors, so the allowlist always admits the model actually run.
@@ -235,6 +239,8 @@ func Load() *Config {
 		[]string{firstPassGeminiDefault}, normalizeModel)
 	firstPassModelsClaude := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_CLAUDE",
 		[]string{defaultFirstPassClaudeModel}, normalizeModel)
+	firstPassModelsClaudeCode := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_CLAUDE_CODE",
+		[]string{defaultFirstPassClaudeCodeModel}, normalizeModel)
 	firstPassModelsOpenRouter := getEnvListOrDefault("REVIEW_FIRST_PASS_MODELS_OPENROUTER",
 		[]string{defaultFirstPassOpenRouterModel}, normalizeModel)
 	activeFirstPassModel := firstPassModel
@@ -242,6 +248,8 @@ func Load() *Config {
 		switch firstPassProvider {
 		case "claude":
 			activeFirstPassModel = defaultFirstPassClaudeModel
+		case "claude-code":
+			activeFirstPassModel = defaultFirstPassClaudeCodeModel
 		case "openrouter":
 			activeFirstPassModel = defaultFirstPassOpenRouterModel
 		default:
@@ -251,6 +259,8 @@ func Load() *Config {
 	switch firstPassProvider {
 	case "claude":
 		firstPassModelsClaude = appendUnique(firstPassModelsClaude, activeFirstPassModel)
+	case "claude-code":
+		firstPassModelsClaudeCode = appendUnique(firstPassModelsClaudeCode, activeFirstPassModel)
 	case "openrouter":
 		firstPassModelsOpenRouter = appendUnique(firstPassModelsOpenRouter, activeFirstPassModel)
 	case "gemini":
@@ -329,6 +339,7 @@ func Load() *Config {
 		ReviewAgentEffortsOpenRouter:    openRouterEfforts,
 		ReviewFirstPassModelsGemini:     firstPassModelsGemini,
 		ReviewFirstPassModelsClaude:     firstPassModelsClaude,
+		ReviewFirstPassModelsClaudeCode: firstPassModelsClaudeCode,
 		ReviewFirstPassModelsOpenRouter: firstPassModelsOpenRouter,
 		ReviewMaxWallClockSec:           getPositiveEnvIntOrDefault("REVIEW_MAX_WALL_CLOCK_SEC", maxWallClockDefault),
 		ReviewMaxTurns:                  reviewMaxTurns,
@@ -433,6 +444,18 @@ func normalizeModel(value string) string {
 	// Provider model IDs are case-sensitive. Whitespace is formatting noise,
 	// but case must be preserved for exact policy matching.
 	return strings.TrimSpace(value)
+}
+
+// normalizeFirstPassProvider mirrors the alias handling of llm.ParseProvider
+// so every provider switch in this package and main sees the canonical name.
+func normalizeFirstPassProvider(value string) string {
+	provider := strings.ToLower(strings.TrimSpace(value))
+	switch provider {
+	case "claude_code", "claudecode":
+		return "claude-code"
+	default:
+		return provider
+	}
 }
 
 func normalizeEffort(value string) string {
