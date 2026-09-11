@@ -23,7 +23,12 @@ function clampScore(score: number): number {
 export const ConfidenceBadge = memo(function ConfidenceBadge({ score, size = 'row' }: ConfidenceBadgeProps) {
   if (score === null || score === undefined) {
     return (
-      <span className="confidence-badge confidence-badge--empty" aria-label="No merge confidence yet">
+      <span
+        className="confidence-badge confidence-badge--empty"
+        role="img"
+        aria-label="No merge confidence yet"
+        title="No merge confidence yet"
+      >
         -
       </span>
     );

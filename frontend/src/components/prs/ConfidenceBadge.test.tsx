@@ -28,8 +28,9 @@ describe('ConfidenceBadge', () => {
     const el = renderBadge(score);
     expect(el.classList.contains('confidence-badge--empty')).toBe(true);
     expect(el.textContent).toBe('-');
+    expect(el.getAttribute('role')).toBe('img');
     expect(el.getAttribute('aria-label')).toBe('No merge confidence yet');
-    expect(el.getAttribute('role')).toBeNull();
+    expect(el.getAttribute('title')).toBe('No merge confidence yet');
     expect(el.querySelector('svg')).toBeNull();
   });
 
