@@ -141,7 +141,13 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
 
   return (
     <div className="settings-form">
-      {disabled && <p className="settings-section__notice">Read only. Admins: {adminList.join(', ')}</p>}
+      {disabled && (
+        <p className="settings-section__notice">
+          {adminList.length === 0
+            ? 'Read only. No admins are configured; the deployer must set ADMIN_LOGINS on the server.'
+            : `Read only. Admins: ${adminList.join(', ')}`}
+        </p>
+      )}
 
       <SettingsSection
         title="Review"

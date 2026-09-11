@@ -129,6 +129,14 @@ describe('SettingsForm', () => {
     }
   });
 
+  it('tells a non-admin how to recover when no admin is configured', () => {
+    renderForm({ isAdmin: false, currentLogin: 'dave' }, { ...serverSettings, admin_logins: '', admin_logins_fixed: [] });
+    expect(
+      screen.getByText('Read only. No admins are configured; the deployer must set ADMIN_LOGINS on the server.')
+    ).toBeTruthy();
+    expect(screen.queryByText(/Admins: /)).toBeNull();
+  });
+
   it('posts only the changed keys of the saved section', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ ...serverSettings, review_n_requests: 7 }));
     renderForm();
