@@ -1,10 +1,12 @@
 package poller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -2291,6 +2293,122 @@ func TestSupersededOlderCommitPreservesNonCollidingCanonicalAlias(t *testing.T) 
 	require.NotNil(t, pr)
 	assert.Equal(t, successorSHA, pr.LastCommitSHA)
 	assert.Equal(t, successorRunID, database.ProjectionRunIDs[prDBKey(job.PR.Owner, job.PR.Repo, job.PR.Number)])
+}
+
+func captureLog(t *testing.T) func() string {
+	t.Helper()
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	}))
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (w writerFunc) Write(p []byte) (int, error) { return w(p) }
+
+// One shown critical and a violated required check score 5 - 2 - 1 = 2.
+func scoredReviewGenerator() *MockReviewGenerator {
+	generator := NewMockReviewGenerator()
+	generator.DefaultResult.Comments = []types.LineComment{
+		{FilePath: "src/app.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "Nil dereference on the error path."},
+	}
+	generator.DefaultResult.CriticalCount = 1
+	generator.DefaultResult.Checks = service.RequiredCheckTelemetry{ChecksIssued: 1, ChecksAnswered: 1, ChecksViolated: 1}
+	return generator
+}
+
+func TestCompletedReviewStoresSidecarMergeConfidenceForUnlistedAuthor(t *testing.T) {
+	database := NewMockDatabase()
+	logs := captureLog(t)
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), scoredReviewGenerator())
+	job := reviewJobWithoutAgent(t, "run-50000000000000000000000000000001")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating", Author: job.PR.Author,
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "completed", pr.Status)
+	require.NotNil(t, pr.MergeConfidence)
+	assert.Equal(t, 2, *pr.MergeConfidence)
+	require.Len(t, database.SetPRMergeConfidenceCalls, 1)
+	assert.Equal(t, job.PR.CommitSHA, database.SetPRMergeConfidenceCalls[0].CommitSHA)
+	assert.Equal(t, 2, database.SetPRMergeConfidenceCalls[0].Score)
+	assert.Regexp(t, `Marked PR 7 as 'completed' \(.*confidence=2\)`, logs())
+}
+
+func TestCompletedReviewStoresMergeConfidenceWhenPublishSkipped(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), scoredReviewGenerator())
+	job := reviewJobWithoutAgent(t, "run-50000000000000000000000000000002")
+	job.SkipPublish = true
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating", Author: job.PR.Author,
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	require.NotNil(t, pr.MergeConfidence)
+	assert.Equal(t, 2, *pr.MergeConfidence)
+}
+
+func TestCompletedReviewOnMovedHeadOnlyLogsMergeConfidence(t *testing.T) {
+	database := NewMockDatabase()
+	storage := NewMockReviewStorage()
+	logs := captureLog(t)
+	job := reviewJobWithoutAgent(t, "run-50000000000000000000000000000003")
+	const successorRunID = "run-50000000000000000000000000000004"
+	const successorSHA = "fedcba9876543210fedcba9876543210fedcba98"
+	storage.SaveReviewFunc = func(_ context.Context, owner, repo string, prNumber int, commitSHA string, _ []byte) (string, error) {
+		if err := database.SetPRGeneratingForReviewRun(
+			job.PR.Owner, job.PR.Repo, job.PR.Number, successorSHA,
+			job.PR.Title, job.PR.Author, nil, false, successorRunID,
+		); err != nil {
+			return "", err
+		}
+		return gcs.ReviewFileName(owner, repo, prNumber, commitSHA), nil
+	}
+	p := newTestPollerFull(NewMockGitHubClient(), database, storage, scoredReviewGenerator())
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating", Author: job.PR.Author,
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+
+	run, err := database.GetReviewRun(job.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, "published", run.PublicationStatus)
+	require.Len(t, database.SetPRMergeConfidenceCalls, 1)
+	assert.Equal(t, job.PR.CommitSHA, database.SetPRMergeConfidenceCalls[0].CommitSHA)
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, successorSHA, pr.LastCommitSHA)
+	assert.Nil(t, pr.MergeConfidence, "a score must never describe a newer head")
+	assert.Contains(t, logs(), "WARN: merge confidence for run run-50000000000000000000000000000003 skipped, PR 7 head moved past")
 }
 
 func TestLocalReviewAliasPreservesImmutableRunHistory(t *testing.T) {

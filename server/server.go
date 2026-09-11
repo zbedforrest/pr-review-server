@@ -121,6 +121,8 @@ type PRResponse struct {
 	// Overall AI review verdict parsed from the SUMMARY entry:
 	// "request_changes", "approve_suggestions", "approve", or "" (unknown)
 	ReviewVerdict string `json:"review_verdict"`
+	// Merge confidence 0..5 for the latest review; null until it is scored
+	MergeConfidence *int `json:"merge_confidence"`
 	// Latest review ran on a fallback model, not the requested one
 	ModelFallback bool `json:"model_fallback"`
 	// Structured execution and model provenance for the latest review.
@@ -455,6 +457,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			MediumCount:       dbPR.MediumCount,
 			LowCount:          dbPR.LowCount,
 			ReviewVerdict:     dbPR.ReviewVerdict,
+			MergeConfidence:   dbPR.MergeConfidence,
 			PublishedToGitHub: isPublished,
 			PublishedRounds:   summaryRow.Rounds,
 			ModelFallback:     dbPR.ModelFallback,
@@ -1751,6 +1754,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		MediumCount:       pr.MediumCount,
 		LowCount:          pr.LowCount,
 		ReviewVerdict:     pr.ReviewVerdict,
+		MergeConfidence:   pr.MergeConfidence,
 		PublishedToGitHub: isPublished,
 		PublishedRounds:   summaryRow.Rounds,
 		ModelFallback:     pr.ModelFallback,

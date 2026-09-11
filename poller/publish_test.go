@@ -165,11 +165,29 @@ func TestPublishGitHubReview_DoesNotWriteToClosedDraftOrUnlistedAuthorPRs(t *tes
 			sidecar := []byte(`{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc",
 				"findings":[{"id":"f.go:0:abc123def456","severity":"critical","provenance":"agent","file":"f.go","line":3,"comment":"Real bug."}]}`)
 
-			p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: tc.author}, sidecar)
+			report := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: tc.author}, sidecar)
 
 			assert.Empty(t, writes, "no GitHub writes may happen for a %s PR", tc.name)
+			assert.Nil(t, report, "nothing was published, so there is no published score")
 		})
 	}
+}
+
+func TestMergeConfidence_PublishedReportWinsOverSidecar(t *testing.T) {
+	sidecar := []byte(`{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc",
+		"required_checks":{"checks_issued":1,"checks_answered":1,"checks_violated":1},
+		"findings":[{"id":"f.go:3:abc123def456","severity":"critical","provenance":"agent","state":"confirmed","active":true,"file":"f.go","line":3,"comment":"Real bug."}]}`)
+
+	fromSidecar, err := mergeConfidence(nil, sidecar)
+	require.NoError(t, err)
+	assert.Equal(t, 2, fromSidecar)
+
+	fromReport, err := mergeConfidence(&publisher.Report{Confidence: 4}, sidecar)
+	require.NoError(t, err)
+	assert.Equal(t, 4, fromReport, "a conceded finding dropped at publish time must not be re-counted")
+
+	_, err = mergeConfidence(nil, []byte("not json"))
+	assert.Error(t, err)
 }
 
 func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) {

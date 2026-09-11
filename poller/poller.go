@@ -3777,12 +3777,21 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			if aliasErr != nil {
 				log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical aliases: %v", job.RunID, aliasErr)
 			}
+			var published *publisher.Report
 			if !job.SkipPublish {
-				p.publishGitHubReview(prCtx, pr, sidecarBody)
+				published = p.publishGitHubReview(prCtx, pr, sidecarBody)
+			}
+			confidence, confidenceErr := mergeConfidence(published, sidecarBody)
+			if confidenceErr != nil {
+				log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped, sidecar unreadable: %v", job.RunID, confidenceErr)
+			} else if stored, setErr := p.db.SetPRMergeConfidence(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, confidence); setErr != nil {
+				log.Printf("[REVIEWER] WARN: merge confidence for run %s not stored: %v", job.RunID, setErr)
+			} else if !stored {
+				log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped, PR %d head moved past %s", job.RunID, pr.Number, pr.CommitSHA)
 			}
 			verdict := service.VerdictFromComments(reviewResult.Comments)
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict)
+			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q, confidence=%d)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, confidence)
 		}(job)
 	}
 

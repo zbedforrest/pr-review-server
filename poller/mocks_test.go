@@ -277,6 +277,13 @@ type MockDatabase struct {
 		PRNumber     int
 		NewCommitSHA string
 	}
+	SetPRMergeConfidenceCalls []struct {
+		Owner     string
+		Repo      string
+		PRNumber  int
+		CommitSHA string
+		Score     int
+	}
 	UpdateUserReviewStatusCalls []struct {
 		UserID int
 		PRID   int
@@ -625,6 +632,13 @@ func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo strin
 func (m *MockDatabase) SetPRMergeConfidence(owner, repo string, prNumber int, commitSHA string, score int) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.SetPRMergeConfidenceCalls = append(m.SetPRMergeConfidenceCalls, struct {
+		Owner     string
+		Repo      string
+		PRNumber  int
+		CommitSHA string
+		Score     int
+	}{owner, repo, prNumber, commitSHA, score})
 	pr := m.PRs[prDBKey(owner, repo, prNumber)]
 	if pr == nil || pr.LastCommitSHA != commitSHA {
 		return false, nil

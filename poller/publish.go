@@ -187,47 +187,48 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	return pol
 }
 
-// publishGitHubReview posts a completed review to the PR. Best-effort by
+// publishGitHubReview posts a completed review to the PR and reports what it
+// posted; the report is nil whenever nothing reached GitHub. Best-effort by
 // design: the review is already saved and visible on the dashboard, so any
 // failure here is logged and never fails the run.
-func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) {
+func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) *publisher.Report {
 	enabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
 	if err != nil || !publishEnabledFor(pr.Author, enabled) {
-		return
+		return nil
 	}
 	ledger, ok := p.db.(publisher.Ledger)
 	if !ok || p.ghClientConcrete == nil {
 		log.Printf("[PUBLISH] %s/%s#%d: publication enabled but no ledger or GitHub client available", pr.Owner, pr.Repo, pr.Number)
-		return
+		return nil
 	}
 	pl, err := payload.Decode(sidecar)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: sidecar unreadable: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return
+		return nil
 	}
 	ghPR, _, err := p.ghClientConcrete.GetPR(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: fetch pull request: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return
+		return nil
 	}
 	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), ghPR.GetHead().GetSHA(), pr.CommitSHA); !ok {
 		log.Printf("[PUBLISH] %s/%s#%d: skipped, %s", pr.Owner, pr.Repo, pr.Number, reason)
-		return
+		return nil
 	}
 	comments, err := p.ghClientConcrete.ListReviewComments(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: list review comments: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return
+		return nil
 	}
 	patches, err := p.ghClientConcrete.GetPRFilePatches(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: list file patches: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return
+		return nil
 	}
 	previous, err := ledger.GetPublishedFindingsForPR(pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: load ledger: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return
+		return nil
 	}
 
 	round := buildPublishRound(pr, pl, comments, patches, previous, p.cfg.BaseURL)
@@ -235,8 +236,24 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	report, err := pub.Publish(ctx, round)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return
+		return nil
 	}
-	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d",
-		pr.Owner, pr.Repo, pr.Number, report.SummaryCommentID, report.ReviewID, report.InlinePosted, report.Annotations, report.StillOpen, report.Fixed)
+	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d confidence=%d",
+		pr.Owner, pr.Repo, pr.Number, report.SummaryCommentID, report.ReviewID, report.InlinePosted, report.Annotations, report.StillOpen, report.Fixed, report.Confidence)
+	return &report
+}
+
+// mergeConfidence is the score the dashboard stores for a completed review.
+// The published report wins because Publish scores the dismissal-filtered,
+// alias-rewritten round the sticky comment shows; a review that never reached
+// GitHub has no ledger, so recomputing from the raw sidecar is exact.
+func mergeConfidence(published *publisher.Report, sidecar []byte) (int, error) {
+	if published != nil {
+		return published.Confidence, nil
+	}
+	pl, err := payload.Decode(sidecar)
+	if err != nil {
+		return 0, err
+	}
+	return publisher.Confidence(pl.Findings, pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0), nil
 }
