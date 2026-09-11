@@ -17,6 +17,12 @@ $panel-width: 320px;
   color: $color-text-primary;
   text-transform: none;
   letter-spacing: normal;
+  outline: none;
+
+  &:focus {
+    border-color: $color-link-hover;
+    box-shadow: 0 0 0 2px rgba($color-link, 0.2), 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
 
   &__trigger {
     background: transparent;

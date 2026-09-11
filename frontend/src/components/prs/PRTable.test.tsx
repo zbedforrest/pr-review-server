@@ -119,6 +119,38 @@ describe('PRTable header', () => {
     expect(legendButton().getAttribute('aria-expanded')).toBe('false');
   });
 
+  it('moves focus into the legend on open and back to the trigger on Escape', () => {
+    render(<PRTable prs={[makePR()]} />);
+    fireEvent.click(legendButton());
+    expect(document.activeElement).toBe(screen.getByRole('dialog'));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(document.activeElement).toBe(legendButton());
+  });
+
+  it('does not steal focus on mount', () => {
+    render(<PRTable prs={[makePR()]} />);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('closes when focus leaves the legend and its trigger, and leaves focus where it went', () => {
+    render(
+      <>
+        <PRTable prs={[makePR()]} />
+        <a href="#next">next</a>
+      </>
+    );
+    const next = screen.getByRole('link', { name: 'next' });
+    fireEvent.click(legendButton());
+    fireEvent.blur(screen.getByRole('dialog'), { relatedTarget: legendButton() });
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    fireEvent.blur(legendButton(), { relatedTarget: screen.getByRole('dialog') });
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    next.focus();
+    fireEvent.blur(screen.getByRole('dialog'), { relatedTarget: next });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(next);
+  });
+
   it('renders the empty state without a table', () => {
     render(<PRTable prs={[]} />);
     expect(screen.getByText('No PRs found.')).toBeTruthy();

@@ -1,3 +1,4 @@
+import { useCallback, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useDropdown } from '@/hooks/useDropdown';
 import { ConfidenceBadge } from './ConfidenceBadge';
@@ -17,12 +18,30 @@ const BADGES_HIGH_TO_LOW = [...CONFIDENCE_BADGES].reverse();
  * size with its name and rank word, plus the scoring rule.
  */
 export function ConfidenceLegend() {
-  const { isOpen, toggle, anchorRef, panelRef, position } = useDropdown({
+  const { isOpen, toggle, close, anchorRef, panelRef, position } = useDropdown({
     panelWidth: PANEL_WIDTH,
     align: 'left',
     closeOnOutsideClick: true,
     closeOnEscape: true,
   });
+  const wasOpen = useRef(false);
+
+  // The panel unmounts on close, which drops focus to body; only then does it
+  // belong back on the trigger (a Tab out already landed focus somewhere).
+  useLayoutEffect(() => {
+    if (isOpen) {
+      panelRef.current?.focus();
+    } else if (wasOpen.current && document.activeElement === document.body) {
+      anchorRef.current?.focus();
+    }
+    wasOpen.current = isOpen;
+  }, [isOpen, anchorRef, panelRef]);
+
+  const closeWhenFocusLeaves = useCallback((e: React.FocusEvent) => {
+    const next = e.relatedTarget;
+    if (!next || anchorRef.current?.contains(next) || panelRef.current?.contains(next)) return;
+    close();
+  }, [close, anchorRef, panelRef]);
 
   return (
     <>
@@ -34,6 +53,7 @@ export function ConfidenceLegend() {
         aria-expanded={isOpen}
         title="How merge confidence is scored"
         onClick={toggle}
+        onBlur={isOpen ? closeWhenFocusLeaves : undefined}
       >
         Confidence
       </button>
@@ -44,7 +64,9 @@ export function ConfidenceLegend() {
           className="confidence-legend"
           role="dialog"
           aria-label="Merge confidence legend"
+          tabIndex={-1}
           style={{ top: position.top, left: position.left, width: PANEL_WIDTH, maxHeight: position.maxHeight }}
+          onBlur={closeWhenFocusLeaves}
         >
           <ul className="confidence-legend__list">
             {BADGES_HIGH_TO_LOW.map((badge) => (
