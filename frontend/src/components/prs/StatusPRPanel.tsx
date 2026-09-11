@@ -1,0 +1,125 @@
+import { useEffect, useMemo, useRef } from 'react';
+import { usePRs } from '@/hooks/usePRs';
+import { useStatus } from '@/hooks/useStatus';
+import { ErrorMessage, LoadingSpinner } from '@/components/common';
+import { sortPRsByNewest } from '@/utils/sectionFilters';
+import type { PR } from '@/types/pr';
+import type { StatusPanelFilter } from '@/types/status';
+import { PRTable } from './PRTable';
+import './SectionHeader.scss';
+import './PRSections.scss';
+import './StatusPRPanel.scss';
+
+const STATUS_LABELS: Record<StatusPanelFilter, string> = {
+  completed: 'Completed',
+  generating: 'Generating',
+};
+
+// Mirrors how the server rolls PR statuses into the status bar counts.
+const STATUS_MEMBERS: Record<StatusPanelFilter, ReadonlyArray<PR['status']>> = {
+  completed: ['completed'],
+  generating: ['generating', 'agent_reviewing'],
+};
+
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  );
+}
+
+interface StatusPRPanelProps {
+  status: StatusPanelFilter;
+  onClose: () => void;
+}
+
+/**
+ * A peek at every PR sitting in one review status, opened by clicking that
+ * count in the status bar. Uses the same table as the configured sections but
+ * is hard-filtered on status alone: the page's search/team/repo filters and
+ * the Hidden section deliberately don't narrow it.
+ *
+ * The status bar's count is server-wide (every PR the poller tracks) while the
+ * table can only show PRs in this user's own list, so the two disagree often
+ * enough to be worth spelling out, read live so it tracks the bar.
+ */
+export function StatusPRPanel({ status, onClose }: StatusPRPanelProps) {
+  const { data: prs, isLoading, error } = usePRs();
+  const serverCount = useStatus().data?.counts[status];
+
+  // Read through a ref so the listener below can register once per mount. A
+  // fresh onClose identity would otherwise re-register it on every parent
+  // render, moving it behind the row menus' own Escape listeners.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  // Escape closes the panel from anywhere on the page, except while a row menu
+  // or a dialog (the confidence legend) is open: those also listen on document
+  // and, having opened after the panel, run second, so bailing here lets Escape
+  // dismiss just them. Editors (a row's note input) own Escape too, as cancel.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (isEditableElement(e.target)) return;
+      if (document.querySelector('[role="menu"], [role="dialog"]')) return;
+      onCloseRef.current();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const matching = useMemo(
+    () => sortPRsByNewest((prs || []).filter((pr) => STATUS_MEMBERS[status].includes(pr.status))),
+    [prs, status]
+  );
+
+  const label = STATUS_LABELS[status];
+  const showServerCount = serverCount !== undefined && serverCount > matching.length;
+
+  return (
+    <section
+      className="status-pr-panel"
+      aria-label={`${label} PRs`}
+      data-testid="status-pr-panel"
+    >
+      <div className="section-header">
+        <h2 className="pr-section__heading">
+          <span className="pr-section__title" data-testid="section-title">
+            {label} ({matching.length})
+          </span>
+        </h2>
+
+        <div className="section-header__actions">
+          {showServerCount && (
+            <span className="status-pr-panel__note">
+              {matching.length} of {serverCount} server-wide
+            </span>
+          )}
+          <span className="status-pr-panel__hint" aria-hidden="true">
+            Esc to close
+          </span>
+          <button
+            type="button"
+            className="column-toggle-btn"
+            aria-label={`Close ${label} PRs`}
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      {isLoading && <LoadingSpinner />}
+      {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
+      {!isLoading && !error && matching.length === 0 && (
+        <p className="review-prs__empty-state">No {label.toLowerCase()} PRs in your list</p>
+      )}
+      {matching.length > 0 && <PRTable prs={matching} />}
+    </section>
+  );
+}
