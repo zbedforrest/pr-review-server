@@ -279,7 +279,7 @@ type Database interface {
 	SetPRErrorIfNoLiveReview(owner, repo string, prNumber int, message string) (bool, error)
 	MarkPRCompletedForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string) (bool, error)
 	RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string, inFlightStaleBefore time.Time) (bool, error)
-	SetPRMergeConfidence(owner, repo string, prNumber int, commitSHA string, score int) (bool, error)
+	SetPRMergeConfidence(owner, repo string, prNumber int, projectionRunID string, score int) (bool, error)
 	GetAllPRs() ([]PR, error)
 	DeletePR(owner, repo string, prNumber int) error
 	ResetStaleGeneratingPRs(timeoutMinutes int) (int, error)

@@ -273,14 +273,15 @@ func (p *Poller) sidecarConfidence(pr github.PullRequest, pl *payload.Payload) (
 	return publisher.Confidence(findings, pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0), nil
 }
 
-// storeMergeConfidence writes the score for the head this run reviewed. A
-// failure here is benign (the review itself is already saved) so it only warns.
+// storeMergeConfidence writes the score for the completed projection runID
+// owns. A failure here is benign (the review itself is already saved) so it
+// only warns.
 func (p *Poller) storeMergeConfidence(runID string, pr github.PullRequest, confidence int, scoreErr error) {
 	if scoreErr != nil {
 		log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped: %v", runID, scoreErr)
-	} else if stored, setErr := p.db.SetPRMergeConfidence(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, confidence); setErr != nil {
+	} else if stored, setErr := p.db.SetPRMergeConfidence(pr.Owner, pr.Repo, pr.Number, runID, confidence); setErr != nil {
 		log.Printf("[REVIEWER] WARN: merge confidence for run %s not stored: %v", runID, setErr)
 	} else if !stored {
-		log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped, PR %d head moved past %s", runID, pr.Number, pr.CommitSHA)
+		log.Printf("[REVIEWER] WARN: merge confidence for run %s skipped, PR %d projection is owned by a newer run", runID, pr.Number)
 	}
 }

@@ -2391,7 +2391,7 @@ func TestCompletedReviewStoresSidecarMergeConfidenceForUnlistedAuthor(t *testing
 	require.NotNil(t, pr.MergeConfidence)
 	assert.Equal(t, 2, *pr.MergeConfidence)
 	require.Len(t, database.SetPRMergeConfidenceCalls, 1)
-	assert.Equal(t, job.PR.CommitSHA, database.SetPRMergeConfidenceCalls[0].CommitSHA)
+	assert.Equal(t, job.RunID, database.SetPRMergeConfidenceCalls[0].ProjectionRunID)
 	assert.Equal(t, 2, database.SetPRMergeConfidenceCalls[0].Score)
 	assert.Regexp(t, `Marked PR 7 as 'completed' \(.*confidence=2\)`, logs())
 }
@@ -2446,13 +2446,13 @@ func TestCompletedReviewOnMovedHeadOnlyLogsMergeConfidence(t *testing.T) {
 	require.NotNil(t, run)
 	assert.Equal(t, "published", run.PublicationStatus)
 	require.Len(t, database.SetPRMergeConfidenceCalls, 1)
-	assert.Equal(t, job.PR.CommitSHA, database.SetPRMergeConfidenceCalls[0].CommitSHA)
+	assert.Equal(t, job.RunID, database.SetPRMergeConfidenceCalls[0].ProjectionRunID)
 	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
 	require.NoError(t, err)
 	require.NotNil(t, pr)
 	assert.Equal(t, successorSHA, pr.LastCommitSHA)
 	assert.Nil(t, pr.MergeConfidence, "a score must never describe a newer head")
-	assert.Contains(t, logs(), "WARN: merge confidence for run run-50000000000000000000000000000003 skipped, PR 7 head moved past")
+	assert.Contains(t, logs(), "WARN: merge confidence for run run-50000000000000000000000000000003 skipped, PR 7 projection is owned by a newer run")
 }
 
 func TestLocalReviewAliasPreservesImmutableRunHistory(t *testing.T) {

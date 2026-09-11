@@ -175,7 +175,7 @@ func (m *MockDatabase) MarkPRCompletedForReviewRun(owner, repo string, prNumber 
 func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo string, prNumber int, projectionRunID, reviewRunID, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool, reviewRunJSON string, inFlightStaleBefore time.Time) (bool, error) {
 	return true, nil
 }
-func (m *MockDatabase) SetPRMergeConfidence(owner, repo string, prNumber int, commitSHA string, score int) (bool, error) {
+func (m *MockDatabase) SetPRMergeConfidence(owner, repo string, prNumber int, projectionRunID string, score int) (bool, error) {
 	return true, nil
 }
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error)                             { return nil, nil }

@@ -75,6 +75,20 @@ func TestHandleGetPRs_PublishedToGitHubFlag(t *testing.T) {
 	assert.False(t, byNumber[2].PublishedToGitHub)
 }
 
+// scoreCompletedPR completes Owner/Repo#n under a run of its own and stores
+// score against that run, the only path the fenced setter accepts.
+func scoreCompletedPR(t *testing.T, database *db.GormDB, n int, score int) {
+	t.Helper()
+	runID := fmt.Sprintf("run-000000000000000000000000000000%02d", n)
+	require.NoError(t, database.SetPRGeneratingForReviewRun("Owner", "Repo", n, "sha", "t", "me", nil, false, runID))
+	completed, err := database.MarkPRCompletedForReviewRun("Owner", "Repo", n, runID, runID, "sha", "review.html", 0, 0, 0, "", false, "")
+	require.NoError(t, err)
+	require.True(t, completed)
+	stored, err := database.SetPRMergeConfidence("Owner", "Repo", n, runID, score)
+	require.NoError(t, err)
+	require.True(t, stored)
+}
+
 // The medal column reads merge_confidence as a number or null, never a
 // missing key, so the row can tell "not scored" from "unknown field".
 func TestHandleGetPRs_MergeConfidenceIsNumberOrNull(t *testing.T) {
@@ -87,9 +101,7 @@ func TestHandleGetPRs_MergeConfidenceIsNumberOrNull(t *testing.T) {
 		require.NoError(t, err)
 		ensureUserPRView(t, database, user.ID, pr.ID, true)
 	}
-	stored, err := database.SetPRMergeConfidence("Owner", "Repo", 1, "sha", 4)
-	require.NoError(t, err)
-	require.True(t, stored)
+	scoreCompletedPR(t, database, 1, 4)
 
 	req := addUserToRequest(httptest.NewRequest(http.MethodGet, "/api/prs", nil), user)
 	w := httptest.NewRecorder()

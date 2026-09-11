@@ -366,42 +366,85 @@ func TestGormDB_SetPRGenerating(t *testing.T) {
 	assert.NotNil(t, fetched.GeneratingSince)
 }
 
+const confidenceRunID = "run-000000000000000000000000000000a1"
+
+// completedPRWithConfidence completes prNumber under confidenceRunID and scores it.
 func completedPRWithConfidence(t *testing.T, db *GormDB, prNumber int, sha string, score int) {
-	require.NoError(t, db.UpsertPR(&PR{
-		RepoOwner: "owner", RepoName: "repo", PRNumber: prNumber,
-		LastCommitSHA: sha, Status: "completed", ReviewHTMLPath: "review.html",
-	}))
-	ok, err := db.SetPRMergeConfidence("owner", "repo", prNumber, sha, score)
+	require.NoError(t, db.SetPRGeneratingForReviewRun("owner", "repo", prNumber, sha, "Title", "alice", nil, false, confidenceRunID))
+	completed, err := db.MarkPRCompletedForReviewRun("owner", "repo", prNumber, confidenceRunID, confidenceRunID, sha, "review.html", 0, 0, 0, "", false, "")
+	require.NoError(t, err)
+	require.True(t, completed)
+	ok, err := db.SetPRMergeConfidence("owner", "repo", prNumber, confidenceRunID, score)
 	require.NoError(t, err)
 	require.True(t, ok)
 }
 
-func TestGormDB_SetPRMergeConfidence_MatchesOnlyCurrentCommit(t *testing.T) {
+func mergeConfidenceOf(t *testing.T, db *GormDB, prNumber int) *int {
+	fetched, err := db.GetPR("owner", "repo", prNumber)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	return fetched.MergeConfidence
+}
+
+func TestGormDB_SetPRMergeConfidence_WritesForTheOwningCompletedRun(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()
 
 	completedPRWithConfidence(t, db, 1, "abc123", 4)
 
-	fetched, err := db.GetPR("owner", "repo", 1)
-	require.NoError(t, err)
-	require.NotNil(t, fetched.MergeConfidence)
-	assert.Equal(t, 4, *fetched.MergeConfidence)
+	score := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, score)
+	assert.Equal(t, 4, *score)
+}
 
-	ok, err := db.SetPRMergeConfidence("owner", "repo", 1, "stale999", 1)
-	require.NoError(t, err)
-	assert.False(t, ok, "a stale worker on an old head must not match")
+func TestGormDB_SetPRMergeConfidence_IgnoresARunThatDoesNotOwnTheProjection(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
 
-	fetched, err = db.GetPR("owner", "repo", 1)
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+
+	ok, err := db.SetPRMergeConfidence("owner", "repo", 1, "run-000000000000000000000000000000a2", 1)
 	require.NoError(t, err)
-	require.NotNil(t, fetched.MergeConfidence)
-	assert.Equal(t, 4, *fetched.MergeConfidence, "a stale write must leave the row untouched")
+	assert.False(t, ok, "an older run re-reviewing the same commit must not match")
+
+	score := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, score)
+	assert.Equal(t, 4, *score, "a stale write must leave the row untouched")
+}
+
+func TestGormDB_SetPRMergeConfidence_IgnoresARowThatIsNoLongerCompleted(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+	require.NoError(t, db.UpdatePRStatus("owner", "repo", 1, "generating"))
+
+	ok, err := db.SetPRMergeConfidence("owner", "repo", 1, confidenceRunID, 2)
+	require.NoError(t, err)
+	assert.False(t, ok, "a medal must only ever be written against a completed row")
+}
+
+func TestGormDB_SetPRMergeConfidence_RejectsScoresOutsideTheMedalRange(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	completedPRWithConfidence(t, db, 1, "abc123", 4)
+
+	for _, score := range []int{6, -1} {
+		ok, err := db.SetPRMergeConfidence("owner", "repo", 1, confidenceRunID, score)
+		assert.Error(t, err, "score %d", score)
+		assert.False(t, ok)
+	}
+	stored := mergeConfidenceOf(t, db, 1)
+	require.NotNil(t, stored)
+	assert.Equal(t, 4, *stored, "a rejected score must write nothing")
 }
 
 func TestGormDB_SetPRMergeConfidence_MissingRow(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()
 
-	ok, err := db.SetPRMergeConfidence("owner", "repo", 404, "abc123", 5)
+	ok, err := db.SetPRMergeConfidence("owner", "repo", 404, confidenceRunID, 5)
 	require.NoError(t, err)
 	assert.False(t, ok)
 }

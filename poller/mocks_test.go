@@ -278,11 +278,11 @@ type MockDatabase struct {
 		NewCommitSHA string
 	}
 	SetPRMergeConfidenceCalls []struct {
-		Owner     string
-		Repo      string
-		PRNumber  int
-		CommitSHA string
-		Score     int
+		Owner           string
+		Repo            string
+		PRNumber        int
+		ProjectionRunID string
+		Score           int
 	}
 	UpdateUserReviewStatusCalls []struct {
 		UserID int
@@ -629,18 +629,22 @@ func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo strin
 	return true, nil
 }
 
-func (m *MockDatabase) SetPRMergeConfidence(owner, repo string, prNumber int, commitSHA string, score int) (bool, error) {
+func (m *MockDatabase) SetPRMergeConfidence(owner, repo string, prNumber int, projectionRunID string, score int) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.SetPRMergeConfidenceCalls = append(m.SetPRMergeConfidenceCalls, struct {
-		Owner     string
-		Repo      string
-		PRNumber  int
-		CommitSHA string
-		Score     int
-	}{owner, repo, prNumber, commitSHA, score})
-	pr := m.PRs[prDBKey(owner, repo, prNumber)]
-	if pr == nil || pr.LastCommitSHA != commitSHA {
+		Owner           string
+		Repo            string
+		PRNumber        int
+		ProjectionRunID string
+		Score           int
+	}{owner, repo, prNumber, projectionRunID, score})
+	if score < 0 || score > 5 {
+		return false, fmt.Errorf("set PR merge confidence for run %s: score %d is outside 0..5", projectionRunID, score)
+	}
+	key := prDBKey(owner, repo, prNumber)
+	pr := m.PRs[key]
+	if pr == nil || pr.Status != "completed" || m.ProjectionRunIDs[key] != projectionRunID {
 		return false, nil
 	}
 	pr.MergeConfidence = &score

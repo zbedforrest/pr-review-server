@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -259,15 +260,19 @@ func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, re
 	return nil
 }
 
-// SetPRMergeConfidence stores the score for the review of commitSHA. Scoped to
-// the current head so a stale worker cannot overwrite a newer review's score;
-// returns whether the row matched.
-func (g *GormDB) SetPRMergeConfidence(owner, repo string, prNumber int, commitSHA string, score int) (bool, error) {
+// SetPRMergeConfidence stores the score for the completed review projected by
+// projectionRunID. Fenced by run rather than commit so an older run re-reviewing
+// the same head cannot overwrite its successor's score; returns whether the
+// row matched.
+func (g *GormDB) SetPRMergeConfidence(owner, repo string, prNumber int, projectionRunID string, score int) (bool, error) {
+	if score < 0 || score > 5 {
+		return false, fmt.Errorf("set PR merge confidence for run %s: score %d is outside 0..5", projectionRunID, score)
+	}
 	res := g.db.Model(&PRModel{}).
-		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND last_commit_sha = ?", owner, repo, prNumber, commitSHA).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND projection_run_id = ? AND status = ?", owner, repo, prNumber, projectionRunID, "completed").
 		Update("merge_confidence", score)
 	if res.Error != nil {
-		return false, res.Error
+		return false, fmt.Errorf("set PR merge confidence for run %s: %w", projectionRunID, res.Error)
 	}
 	return res.RowsAffected > 0, nil
 }
