@@ -457,7 +457,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			MediumCount:       dbPR.MediumCount,
 			LowCount:          dbPR.LowCount,
 			ReviewVerdict:     dbPR.ReviewVerdict,
-			MergeConfidence:   dbPR.MergeConfidence,
+			MergeConfidence:   completedMergeConfidence(dbPR),
 			PublishedToGitHub: isPublished,
 			PublishedRounds:   summaryRow.Rounds,
 			ModelFallback:     dbPR.ModelFallback,
@@ -1630,6 +1630,15 @@ func prStateOrOpen(state string) string {
 	return state
 }
 
+// completedMergeConfidence hides a stored score once the row leaves completed,
+// so a medal never describes a review that is regenerating or errored.
+func completedMergeConfidence(pr db.PR) *int {
+	if pr.Status != "completed" {
+		return nil
+	}
+	return pr.MergeConfidence
+}
+
 // getPRResponse constructs a PR response using the default dev-mode user context.
 func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 	return s.getPRResponseForUser(s.getDevUserID(), owner, repo, number)
@@ -1754,7 +1763,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		MediumCount:       pr.MediumCount,
 		LowCount:          pr.LowCount,
 		ReviewVerdict:     pr.ReviewVerdict,
-		MergeConfidence:   pr.MergeConfidence,
+		MergeConfidence:   completedMergeConfidence(*pr),
 		PublishedToGitHub: isPublished,
 		PublishedRounds:   summaryRow.Rounds,
 		ModelFallback:     pr.ModelFallback,

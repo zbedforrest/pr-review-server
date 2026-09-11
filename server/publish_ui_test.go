@@ -95,13 +95,15 @@ func TestHandleGetPRs_MergeConfidenceIsNumberOrNull(t *testing.T) {
 	server, database := newTestServer(t, "me")
 	defer database.Close()
 	user := createTestUser(t, database, "me")
-	for n, status := range map[int]string{1: "completed", 2: "pending"} {
+	for n, status := range map[int]string{1: "completed", 2: "pending", 3: "completed"} {
 		require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "Owner", RepoName: "Repo", PRNumber: n, LastCommitSHA: "sha", Status: status, Title: "t", Author: "me"}))
 		pr, err := database.GetPR("Owner", "Repo", n)
 		require.NoError(t, err)
 		ensureUserPRView(t, database, user.ID, pr.ID, true)
 	}
 	scoreCompletedPR(t, database, 1, 4)
+	scoreCompletedPR(t, database, 3, 5)
+	require.NoError(t, database.SetPRError("Owner", "Repo", 3, "agent crashed"))
 
 	req := addUserToRequest(httptest.NewRequest(http.MethodGet, "/api/prs", nil), user)
 	w := httptest.NewRecorder()
@@ -118,9 +120,13 @@ func TestHandleGetPRs_MergeConfidenceIsNumberOrNull(t *testing.T) {
 	pending, present := byNumber["2"]["merge_confidence"]
 	require.True(t, present, "merge_confidence must be emitted even when unscored")
 	assert.JSONEq(t, `null`, string(pending))
+	assert.JSONEq(t, `null`, string(byNumber["3"]["merge_confidence"]), "a stored score must not surface on a row that is no longer completed")
 
 	ws := server.getPRResponseForUser(user.ID, "Owner", "Repo", 1)
 	require.NotNil(t, ws)
 	require.NotNil(t, ws.MergeConfidence)
 	assert.Equal(t, 4, *ws.MergeConfidence)
+	errored := server.getPRResponseForUser(user.ID, "Owner", "Repo", 3)
+	require.NotNil(t, errored)
+	assert.Nil(t, errored.MergeConfidence)
 }
