@@ -3,6 +3,7 @@ package poller
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"os"
 	"strings"
@@ -239,6 +240,45 @@ func TestPoll_Attention_DismissedReviewerRowIsCleared(t *testing.T) {
 	}
 	if bobView := f.view(2); bobView != nil {
 		t.Errorf("a user without a row must not gain one from a false verdict, got %+v", bobView)
+	}
+}
+
+func TestPoll_Attention_SnapshotReadFailureWritesButSuppressesTransitions(t *testing.T) {
+	f := newAttentionFixture(changesRequestedBy("alice"))
+	f.seedView(1, false, "CHANGES_REQUESTED")
+	f.mockDB.GetUserPRViewsForPRsError = errors.New("connection reset")
+
+	logs := f.pollCapturingLog()
+
+	if view := f.view(1); view == nil || !view.NeedsAttention {
+		t.Fatalf("verdict must still be written when the snapshot read fails, got %+v", view)
+	}
+	if strings.Contains(logs, "[ATTENTION]") {
+		t.Errorf("no transition may be reported without a trustworthy snapshot:\n%s", logs)
+	}
+	if len(f.userEvents) != 0 {
+		t.Errorf("no per-user broadcast without a trustworthy snapshot, got %v", f.userEvents)
+	}
+	if strings.Count(logs, "WARNING: Failed to read current attention flags") != 1 {
+		t.Errorf("expected exactly one snapshot warning in:\n%s", logs)
+	}
+}
+
+func TestPoll_Attention_SnapshotReadFailureDoesNotCreateRowsFromVerdicts(t *testing.T) {
+	f := newAttentionFixture(&github.PRReviewData{
+		UserReviews:     map[string]string{},
+		AttentionByUser: map[string]bool{"alice": false, "bob": false},
+	})
+	f.seedView(1, true, "CHANGES_REQUESTED")
+	f.mockDB.GetUserPRViewsForPRsError = errors.New("connection reset")
+
+	f.pollCapturingLog()
+
+	if view := f.view(1); view == nil || !view.NeedsAttention {
+		t.Fatalf("a row whose existence is unknown this cycle must be left alone, got %+v", view)
+	}
+	if bobView := f.view(2); bobView != nil {
+		t.Errorf("a verdict alone must not create a row, got %+v", bobView)
 	}
 }
 

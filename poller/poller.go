@@ -2780,7 +2780,7 @@ func (p *Poller) poll(ctx context.Context) {
 		reviewViewBatch := newViewBatch()
 		reviewPRBatch := newPRBatch()
 		updateCount := 0
-		storedAttention := p.storedAttentionFlags(reviewDataMap, dbPRMap)
+		storedAttention, snapshotOK := p.storedAttentionFlags(reviewDataMap, dbPRMap)
 		var transitions []attentionTransition
 		for _, pr := range allPRs {
 			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
@@ -2806,6 +2806,13 @@ func (p *Poller) poll(ctx context.Context) {
 
 					attention := attentionForUser(reviewData, user.GitHubUsername, existingPR.PRState, isAuthor)
 					if attention == nil {
+						continue
+					}
+					if !snapshotOK {
+						// Without a trustworthy snapshot only rows the status sync already touches are written.
+						if userStatus != "" {
+							reviewViewBatch.SetNeedsAttention(user.ID, existingPR.ID, *attention)
+						}
 						continue
 					}
 					stored, hasRow := storedAttention[userPRViewKey{UserID: user.ID, PRID: existingPR.ID}]

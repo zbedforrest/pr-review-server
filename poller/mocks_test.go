@@ -323,10 +323,11 @@ type MockDatabase struct {
 	TryAcquireOrRenewLeadershipFunc func(holderID string, generation int64, ttl time.Duration) (bool, error)
 
 	// Error injection
-	DeletePRError          error
-	UpdatePRStatusError    error
-	ResetPRToOutdatedError error
-	GetAllPRsError         error
+	DeletePRError             error
+	UpdatePRStatusError       error
+	ResetPRToOutdatedError    error
+	GetAllPRsError            error
+	GetUserPRViewsForPRsError error
 }
 
 func NewMockDatabase() *MockDatabase {
@@ -1005,6 +1006,9 @@ func viewMockKey(userID, prID int) string {
 func (m *MockDatabase) GetUserPRViewsForPRs(prIDs []int) ([]db.UserPRView, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.GetUserPRViewsForPRsError != nil {
+		return nil, m.GetUserPRViewsForPRsError
+	}
 	idSet := make(map[int]bool, len(prIDs))
 	for _, id := range prIDs {
 		idSet[id] = true

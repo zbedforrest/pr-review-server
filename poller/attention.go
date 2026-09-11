@@ -41,24 +41,26 @@ func boolPtr(v bool) *bool {
 
 // storedAttentionFlags reads the current needs_attention value of every view
 // row on the PRs with fresh review data, keyed by (user, PR). Only rows present
-// in the result exist; a read failure degrades to "no rows known".
-func (p *Poller) storedAttentionFlags(reviewDataMap map[string]*github.PRReviewData, dbPRMap map[string]*db.PR) map[userPRViewKey]bool {
+// in the result exist. ok is false when the read failed, in which case the
+// snapshot says nothing about which rows exist and callers must not derive
+// transitions from it.
+func (p *Poller) storedAttentionFlags(reviewDataMap map[string]*github.PRReviewData, dbPRMap map[string]*db.PR) (flags map[userPRViewKey]bool, ok bool) {
 	prIDs := make([]int, 0, len(reviewDataMap))
 	for key := range reviewDataMap {
 		if dbPR, ok := dbPRMap[key]; ok {
 			prIDs = append(prIDs, dbPR.ID)
 		}
 	}
-	flags := make(map[userPRViewKey]bool)
+	flags = make(map[userPRViewKey]bool)
 	views, err := p.db.GetUserPRViewsForPRs(prIDs)
 	if err != nil {
-		log.Printf("[POLL] WARNING: Failed to read current attention flags: %v", err)
-		return flags
+		log.Printf("[POLL] WARNING: Failed to read current attention flags, writing verdicts without transition detection this cycle: %v", err)
+		return flags, false
 	}
 	for _, view := range views {
 		flags[userPRViewKey{UserID: view.UserID, PRID: view.PRID}] = view.NeedsAttention
 	}
-	return flags
+	return flags, true
 }
 
 func (p *Poller) reportAttentionTransitions(transitions []attentionTransition) {
