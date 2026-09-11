@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
 import { LoginListField } from './LoginListField';
 
 const LABEL = 'Publish for authors';
@@ -156,6 +157,27 @@ describe('LoginListField', () => {
     const { onChange } = renderField();
     fireEvent.click(screen.getByRole('button', { name: 'Remove alice' }));
     expect(onChange).toHaveBeenCalledWith('bob');
+  });
+
+  it('moves focus to the input after a chip is removed', () => {
+    function Stateful() {
+      const [value, setValue] = useState('alice,bob');
+      return <LoginListField id="publish-authors" label={LABEL} value={value} onChange={setValue} authors disabled={false} />;
+    }
+    render(<Stateful />);
+    const button = screen.getByRole('button', { name: 'Remove alice' });
+    button.focus();
+    fireEvent.click(button);
+    expect(screen.queryByText('alice')).toBeNull();
+    expect(document.activeElement).toBe(input());
+  });
+
+  it('leaves focus where it was when the parent keeps the login', () => {
+    renderField({ onChange: vi.fn() });
+    const button = screen.getByRole('button', { name: 'Remove alice' });
+    button.focus();
+    fireEvent.click(button);
+    expect(document.activeElement).toBe(button);
   });
 
   it('asks before adding "*" and leaves the value intact when cancelled', () => {

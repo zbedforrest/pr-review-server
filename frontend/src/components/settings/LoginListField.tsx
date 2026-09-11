@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { joinLogins, normalizeLogins } from './loginList';
 import './settings.scss';
 
@@ -28,7 +28,15 @@ export function LoginListField({
 }: LoginListFieldProps) {
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const focusAfterRemove = useRef(false);
   const logins = normalizeLogins(value, authors).logins;
+
+  useEffect(() => {
+    if (!focusAfterRemove.current) return;
+    focusAfterRemove.current = false;
+    inputRef.current?.focus();
+  }, [logins.length]);
 
   const commit = (raw: string) => {
     const entry = normalizeLogins(raw, authors);
@@ -81,6 +89,7 @@ export function LoginListField({
   };
 
   const remove = (login: string) => {
+    focusAfterRemove.current = true;
     onChange(joinLogins(logins.filter((l) => l !== login)));
   };
 
@@ -131,6 +140,7 @@ export function LoginListField({
           </span>
         ))}
         <input
+          ref={inputRef}
           id={id}
           type="text"
           className="settings-field__input"
