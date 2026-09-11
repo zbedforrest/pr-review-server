@@ -1231,15 +1231,10 @@ func TestCacheRestoreScoresMergeConfidenceFromSidecar(t *testing.T) {
 	require.NoError(t, err)
 	sidecarName := gcs.ReviewJSONFileName(gcs.ReviewFileName(job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA))
 	require.NoError(t, os.WriteFile(filepath.Join(p.reviewDir, sidecarName), body, 0600))
-	previous := 5
 	require.NoError(t, database.UpsertPR(&db.PR{
 		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
-		LastCommitSHA: job.PR.CommitSHA, Status: "completed", MergeConfidence: &previous,
+		LastCommitSHA: job.PR.CommitSHA, Status: "pending",
 	}))
-	require.NoError(t, database.ResetPRToOutdated(job.PR.Owner, job.PR.Repo, job.PR.Number, job.PR.CommitSHA))
-	cleared, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
-	require.NoError(t, err)
-	require.Nil(t, cleared.MergeConfidence)
 
 	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
 	waitForReviewJob(t, p, job)

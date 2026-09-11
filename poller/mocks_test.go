@@ -272,10 +272,11 @@ type MockDatabase struct {
 		Status   string
 	}
 	ResetPRToOutdatedCalls []struct {
-		Owner        string
-		Repo         string
-		PRNumber     int
-		NewCommitSHA string
+		Owner         string
+		Repo          string
+		PRNumber      int
+		FromCommitSHA string
+		NewCommitSHA  string
 	}
 	SetPRMergeConfidenceCalls []struct {
 		Owner           string
@@ -323,9 +324,12 @@ type MockDatabase struct {
 	TryAcquireOrRenewLeadershipFunc func(holderID string, generation int64, ttl time.Duration) (bool, error)
 
 	// Error injection
-	DeletePRError             error
-	UpdatePRStatusError       error
-	ResetPRToOutdatedError    error
+	DeletePRError          error
+	UpdatePRStatusError    error
+	ResetPRToOutdatedError error
+	// ResetPRToOutdatedNoop simulates the fenced UPDATE matching no row (the
+	// PR already carries the new head under a live run).
+	ResetPRToOutdatedNoop     bool
 	GetAllPRsError            error
 	GetUserPRViewsForPRsError error
 }
@@ -386,30 +390,38 @@ func (m *MockDatabase) UpdatePRStatus(owner, repo string, prNumber int, status s
 	return nil
 }
 
-func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) error {
+func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, fromCommitSHA, newCommitSHA string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ResetPRToOutdatedCalls = append(m.ResetPRToOutdatedCalls, struct {
-		Owner        string
-		Repo         string
-		PRNumber     int
-		NewCommitSHA string
-	}{owner, repo, prNumber, newCommitSHA})
+		Owner         string
+		Repo          string
+		PRNumber      int
+		FromCommitSHA string
+		NewCommitSHA  string
+	}{owner, repo, prNumber, fromCommitSHA, newCommitSHA})
 
 	if m.ResetPRToOutdatedError != nil {
-		return m.ResetPRToOutdatedError
+		return false, m.ResetPRToOutdatedError
+	}
+	if m.ResetPRToOutdatedNoop {
+		return false, nil
 	}
 
 	key := prDBKey(owner, repo, prNumber)
-	if pr, exists := m.PRs[key]; exists {
-		pr.LastCommitSHA = newCommitSHA
-		pr.Status = "pending"
-		pr.ReviewHTMLPath = ""
-		pr.ErrorMessage = ""
-		pr.MergeConfidence = nil
+	pr, exists := m.PRs[key]
+	if !exists || pr.LastCommitSHA != fromCommitSHA {
+		// Mirror the compare-and-swap: nothing to reset when the row is absent
+		// or no longer carries the head the caller's snapshot saw.
+		return false, nil
 	}
+	pr.LastCommitSHA = newCommitSHA
+	pr.Status = "pending"
+	pr.ReviewHTMLPath = ""
+	pr.ErrorMessage = ""
+	pr.MergeConfidence = nil
 	delete(m.ProjectionRunIDs, key)
-	return nil
+	return true, nil
 }
 
 func (m *MockDatabase) SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error {

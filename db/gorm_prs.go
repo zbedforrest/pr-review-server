@@ -307,10 +307,19 @@ func (g *GormDB) UpdatePRStatus(owner, repo string, prNumber int, status string)
 		Updates(updates).Error
 }
 
-// ResetPRToOutdated resets a PR to pending status with new commit SHA and clears old review data
-func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSHA string) error {
-	return g.db.Model(&PRModel{}).
-		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+// ResetPRToOutdated resets a PR to pending status with the new commit SHA and
+// clears old review data. It reports whether a row was reset.
+//
+// The update is fenced on the stored commit still differing from
+// newCommitSHA. Outdated detection compares a PR snapshot taken before a
+// multi-second GitHub fetch against the current head; a review run that
+// claims the PR on a newer head in the meantime already records it (see
+// SetPRGeneratingForReviewRun). The reset is a compare-and-swap on the head
+// the poller's snapshot saw, so any concurrent claim, on the fetched head or a
+// later one, leaves the row alone instead of blanking that run's projection.
+func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, fromCommitSHA, newCommitSHA string) (bool, error) {
+	result := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND last_commit_sha = ?", owner, repo, prNumber, fromCommitSHA).
 		Updates(map[string]interface{}{
 			"status":            "pending",
 			"last_commit_sha":   newCommitSHA,
@@ -321,7 +330,11 @@ func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSH
 			"projection_run_id": "",
 			"error_message":     "",
 			"error_retry_count": 0,
-		}).Error
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
 }
 
 // SetPRAgentReviewing moves an existing PR to the agent_reviewing status.
