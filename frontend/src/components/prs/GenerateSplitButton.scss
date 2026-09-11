@@ -30,7 +30,7 @@ $panel-width: 260px;
 
     &:hover:not(:disabled) {
       background: $color-link;
-      color: white;
+      color: $color-bg-primary;
     }
 
     &:disabled {
