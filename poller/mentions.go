@@ -92,9 +92,6 @@ func mentionAllowed(c github.IssueCommentInfo, prAuthor string) bool {
 	return false
 }
 
-// mentionPublishNote is the short reply left when a requested review cannot
-// be posted to the PR, so the requester knows where to look and why.
-
 func mentionTelemetryEvent(pr github.PullRequest, by string, publish bool, userID int) db.TelemetryEvent {
 	return db.TelemetryEvent{UserID: userID, Action: "mention_trigger", Label: fmt.Sprintf("by=%s publish=%t", by, publish),
 		PROwner: pr.Owner, PRRepo: pr.Repo, PRNumber: pr.Number}

@@ -224,17 +224,25 @@ func TestMentionScanner_TransientAndConfigurationErrorsAreRetried(t *testing.T) 
 }
 
 func TestMentionScanner_DraftOrOutsidePilotIsAcknowledgedWithoutANote(t *testing.T) {
-	var publishSeen []bool
-	m, gh, _, pr := mentionFixture(func(_ context.Context, _ github.PullRequest, publish bool) error {
-		publishSeen = append(publishSeen, publish)
-		return nil
-	})
-	gh.live.Draft = true
-	if _, err := m.handlePR(context.Background(), pr); err != nil {
-		t.Fatal(err)
+	cases := map[string]func(gh *fakeMentionGH){
+		"draft":         func(gh *fakeMentionGH) { gh.live.Draft = true },
+		"outside pilot": func(gh *fakeMentionGH) { gh.live.Author = "bob" },
 	}
-	if len(publishSeen) != 1 || publishSeen[0] || len(gh.reactions) != 1 || gh.reactions[0] != "eyes" {
-		t.Fatalf("publish=%v reactions=%v", publishSeen, gh.reactions)
+	for name, arrange := range cases {
+		t.Run(name, func(t *testing.T) {
+			var publishSeen []bool
+			m, gh, _, pr := mentionFixture(func(_ context.Context, _ github.PullRequest, publish bool) error {
+				publishSeen = append(publishSeen, publish)
+				return nil
+			})
+			arrange(gh)
+			if _, err := m.handlePR(context.Background(), pr); err != nil {
+				t.Fatal(err)
+			}
+			if len(publishSeen) != 1 || publishSeen[0] || len(gh.reactions) != 1 || gh.reactions[0] != "eyes" {
+				t.Fatalf("publish=%v reactions=%v", publishSeen, gh.reactions)
+			}
+		})
 	}
 }
 
