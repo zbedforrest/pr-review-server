@@ -230,7 +230,7 @@ func Load() *Config {
 		openRouterEfforts = appendUnique(openRouterEfforts, activeEffort)
 	}
 
-	firstPassProvider := strings.ToLower(strings.TrimSpace(getEnvOrDefault("FIRST_PASS_PROVIDER", "gemini")))
+	firstPassProvider := normalizeFirstPassProvider(getEnvOrDefault("FIRST_PASS_PROVIDER", "gemini"))
 	firstPassModel := strings.TrimSpace(os.Getenv("FIRST_PASS_MODEL"))
 	// The gemini first-pass default follows the same env override the llm
 	// package honors, so the allowlist always admits the model actually run.
@@ -444,6 +444,18 @@ func normalizeModel(value string) string {
 	// Provider model IDs are case-sensitive. Whitespace is formatting noise,
 	// but case must be preserved for exact policy matching.
 	return strings.TrimSpace(value)
+}
+
+// normalizeFirstPassProvider mirrors the alias handling of llm.ParseProvider
+// so every provider switch in this package and main sees the canonical name.
+func normalizeFirstPassProvider(value string) string {
+	provider := strings.ToLower(strings.TrimSpace(value))
+	switch provider {
+	case "claude_code", "claudecode":
+		return "claude-code"
+	default:
+		return provider
+	}
 }
 
 func normalizeEffort(value string) string {

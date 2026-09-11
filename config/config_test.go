@@ -4,6 +4,8 @@ import (
 	"os"
 	"reflect"
 	"testing"
+
+	"pr-review-server/pkg/reviewer/llm"
 )
 
 // TestLoad_RequiredChecksFlag locks in the default-off contract: the
@@ -267,6 +269,41 @@ func TestLoadFirstPassNormalizesProvider(t *testing.T) {
 	cfg := Load()
 	if cfg.FirstPassProvider != "claude" || cfg.FirstPassModel != "claude-opus-5" {
 		t.Fatalf("first-pass parsing: provider=%q model=%q", cfg.FirstPassProvider, cfg.FirstPassModel)
+	}
+}
+
+func TestLoadFirstPassCanonicalizesClaudeCodeAliases(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	for _, alias := range []string{"claude_code", "claudecode", " Claude_Code "} {
+		t.Run(alias, func(t *testing.T) {
+			t.Setenv("FIRST_PASS_PROVIDER", alias)
+
+			cfg := Load()
+			if cfg.FirstPassProvider != "claude-code" {
+				t.Fatalf("FirstPassProvider=%q want claude-code", cfg.FirstPassProvider)
+			}
+			assertStringsEqual(t, cfg.ReviewFirstPassModelsClaudeCode, []string{defaultFirstPassClaudeCodeModel})
+			assertStringsEqual(t, cfg.ReviewFirstPassModelsGemini, []string{defaultFirstPassGeminiModel})
+			if got := cfg.FirstPassAPIKey(); got != "" {
+				t.Fatalf("claude-code alias resolved API key %q", got)
+			}
+		})
+	}
+}
+
+func TestLoadFirstPassProviderAgreesWithLLMParseProvider(t *testing.T) {
+	clearFirstPassAllowlistEnv(t)
+	for _, input := range []string{"", "gemini", "claude", "claude-code", "claude_code", "claudecode", "openrouter", " OpenRouter "} {
+		t.Run(input, func(t *testing.T) {
+			t.Setenv("FIRST_PASS_PROVIDER", input)
+			want, err := llm.ParseProvider(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Load().FirstPassProvider; got != string(want) {
+				t.Fatalf("Load()=%q but llm.ParseProvider=%q", got, want)
+			}
+		})
 	}
 }
 
