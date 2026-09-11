@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -2414,6 +2415,43 @@ func TestCompletedReviewStoresMergeConfidenceWhenPublishSkipped(t *testing.T) {
 	require.NotNil(t, pr)
 	require.NotNil(t, pr.MergeConfidence)
 	assert.Equal(t, 2, *pr.MergeConfidence)
+}
+
+// ledgerUnavailable makes the sidecar scoring path fail so the completion
+// log has no real score to print.
+type ledgerUnavailable struct{ *MockDatabase }
+
+func (l *ledgerUnavailable) UpsertPublishedFinding(*db.PublishedFinding) error {
+	return errors.New("ledger unavailable")
+}
+
+func (l *ledgerUnavailable) GetPublishedFindingsForPR(_, _ string, _ int) ([]db.PublishedFinding, error) {
+	return nil, errors.New("ledger unavailable")
+}
+
+func TestCompletedReviewLogLineOmitsConfidenceWhenScoringFailed(t *testing.T) {
+	database := NewMockDatabase()
+	logs := captureLog(t)
+	p := newTestPollerFull(NewMockGitHubClient(), &ledgerUnavailable{database}, NewMockReviewStorage(), scoredReviewGenerator())
+	job := reviewJobWithoutAgent(t, "run-50000000000000000000000000000005")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: job.PR.Owner, RepoName: job.PR.Repo, PRNumber: job.PR.Number,
+		LastCommitSHA: job.PR.CommitSHA, Status: "generating", Author: job.PR.Author,
+	}))
+
+	require.NoError(t, p.ProcessReviewJob(context.Background(), job))
+	waitForReviewJob(t, p, job)
+
+	pr, err := database.GetPR(job.PR.Owner, job.PR.Repo, job.PR.Number)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "completed", pr.Status)
+	assert.Nil(t, pr.MergeConfidence)
+	assert.Empty(t, database.SetPRMergeConfidenceCalls)
+	assert.Contains(t, logs(), "WARN: merge confidence for run run-50000000000000000000000000000005 skipped: load ledger")
+	completed := regexp.MustCompile(`Marked PR 7 as 'completed' \([^)]*\)`).FindString(logs())
+	require.NotEmpty(t, completed)
+	assert.NotContains(t, completed, "confidence=", "an unscored review must not read as a 0/5 medal")
 }
 
 func TestCompletedReviewOnMovedHeadOnlyLogsMergeConfidence(t *testing.T) {

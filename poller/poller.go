@@ -3787,9 +3787,13 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 			}
 			confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
 			p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+			confidenceField := ""
+			if confidenceErr == nil {
+				confidenceField = fmt.Sprintf(", confidence=%d", confidence)
+			}
 			verdict := service.VerdictFromComments(reviewResult.Comments)
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q, confidence=%d)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, confidence)
+			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q%s)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, confidenceField)
 		}(job)
 	}
 
