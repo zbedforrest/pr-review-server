@@ -21,9 +21,15 @@ type ReviewNode struct {
 	Commit *ReviewCommit `json:"commit"`
 }
 
+// ReviewsPageInfo reports whether older reviews exist beyond the fetched window
+type ReviewsPageInfo struct {
+	HasPreviousPage bool `json:"hasPreviousPage"`
+}
+
 // ReviewsData holds the collection of review nodes
 type ReviewsData struct {
-	Nodes []ReviewNode `json:"nodes"`
+	Nodes    []ReviewNode    `json:"nodes"`
+	PageInfo ReviewsPageInfo `json:"pageInfo"`
 }
 
 // PRReviewGraphQL represents PR review data in GraphQL response

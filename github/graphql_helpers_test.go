@@ -73,7 +73,7 @@ func TestBuildPRStateQueryIncludesDraft(t *testing.T) {
 func TestBuildReviewDataQueryIncludesCommitAndHead(t *testing.T) {
 	client := NewClient("token", "current-user")
 	query := client.buildReviewDataQuery("owner1", "repo1", []PullRequest{{Owner: "owner1", Repo: "repo1", Number: 7}})
-	for _, want := range []string{"reviews(last: 100)", "commit { oid }", "headRefOid", "isDraft"} {
+	for _, want := range []string{"reviews(last: 100)", "commit { oid }", "headRefOid", "isDraft", "pageInfo { hasPreviousPage }"} {
 		if !strings.Contains(query, want) {
 			t.Errorf("Expected review data query to contain %q:\n%s", want, query)
 		}
@@ -90,10 +90,11 @@ func TestAttentionByUser(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		reviews []ReviewNode
-		head    string
-		want    map[string]bool
+		name      string
+		reviews   []ReviewNode
+		head      string
+		truncated bool
+		want      map[string]bool
 	}{
 		{
 			name:    "changes requested at A, head moved to B",
@@ -173,11 +174,33 @@ func TestAttentionByUser(t *testing.T) {
 			head:    "B",
 			want:    map[string]bool{},
 		},
+		{
+			name:      "truncated history with only a comment in the window leaves the user absent",
+			reviews:   []ReviewNode{review("alice", "COMMENTED", "A")},
+			head:      "B",
+			truncated: true,
+			want:      map[string]bool{},
+		},
+		{
+			name:      "truncated history with a decision in the window still decides",
+			reviews:   []ReviewNode{review("alice", "CHANGES_REQUESTED", "A"), review("bob", "APPROVED", "A"), review("carol", "COMMENTED", "B")},
+			head:      "B",
+			truncated: true,
+			want:      map[string]bool{"alice": true, "bob": false},
+		},
+		{
+			name:      "truncated history with a dismissal in the window clears",
+			reviews:   []ReviewNode{review("alice", "DISMISSED", "A")},
+			head:      "B",
+			truncated: true,
+			want:      map[string]bool{"alice": false},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := attentionByUser(ReviewsData{Nodes: tt.reviews}, tt.head)
+			reviews := ReviewsData{Nodes: tt.reviews, PageInfo: ReviewsPageInfo{HasPreviousPage: tt.truncated}}
+			got := attentionByUser(reviews, tt.head)
 			if len(got) != len(tt.want) {
 				t.Fatalf("attentionByUser() = %v, want %v", got, tt.want)
 			}
@@ -230,6 +253,41 @@ func TestFetchReviewDataForRepo_PopulatesAttentionAndHead(t *testing.T) {
 	}
 	if v, ok := data.AttentionByUser["carol"]; !ok || v {
 		t.Errorf("expected carol (requested changes on the head) present and false, got %v (present=%v)", v, ok)
+	}
+}
+
+func TestFetchReviewDataForRepo_TruncatedHistoryLeavesUndecidedUsersUnknown(t *testing.T) {
+	body := `{"data":{"pr0":{"pullRequest":{"number":7,"headRefOid":"B","isDraft":false,"reviews":{
+		"pageInfo":{"hasPreviousPage":true},
+		"nodes":[
+			{"author":{"login":"alice"},"state":"COMMENTED","commit":{"oid":"A"}},
+			{"author":{"login":"bob"},"state":"APPROVED","commit":{"oid":"A"}}
+		]}}}}}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	results, err := client.fetchReviewDataForRepo(context.Background(), []PullRequest{{Owner: "acme", Repo: "example", Number: 7}})
+	if err != nil {
+		t.Fatalf("fetchReviewDataForRepo failed: %v", err)
+	}
+	data := results["acme/example/7"]
+	if data == nil {
+		t.Fatalf("expected result for acme/example/7, got %v", results)
+	}
+	if _, ok := data.AttentionByUser["alice"]; ok {
+		t.Errorf("expected alice absent when her decision may be outside the window, got %v", data.AttentionByUser)
+	}
+	if v, ok := data.AttentionByUser["bob"]; !ok || v {
+		t.Errorf("expected bob present and false, got %v (present=%v)", v, ok)
+	}
+	if data.UserReviews["alice"] != "COMMENTED" {
+		t.Errorf("existing review reduction changed: userReviews=%v", data.UserReviews)
 	}
 }
 

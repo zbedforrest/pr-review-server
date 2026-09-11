@@ -760,6 +760,9 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 		// Process reviews using helper
 		approvalCount, myReviewStatus, userReviews := c.countUserApprovals(repoData.PullRequest.Reviews)
 		headOID := repoData.PullRequest.HeadRefOid
+		if repoData.PullRequest.Reviews.PageInfo.HasPreviousPage {
+			log.Printf("[GRAPHQL] PR %s/%s#%d: review history truncated at 100, attention unknown for reviewers without a decision in the window", owner, repo, prNumber)
+		}
 
 		key := prKey(owner, repo, prNumber)
 		results[key] = &PRReviewData{
@@ -787,9 +790,6 @@ func (c *Client) buildReviewDataQuery(owner, repo string, prs []PullRequest) str
 
 	for i, pr := range prs {
 		alias := fmt.Sprintf("pr%d", i)
-		// NOTE: reviews(last: 100) fetches the most recent 100 reviews.
-		// For PRs with >100 review events, we might miss older review states.
-		// This is acceptable since we only care about the most recent state per reviewer.
 		queryBuilder.WriteString(fmt.Sprintf(`
 			%s: repository(owner: "%s", name: "%s") {
 				pullRequest(number: %d) {
@@ -797,6 +797,7 @@ func (c *Client) buildReviewDataQuery(owner, repo string, prs []PullRequest) str
 					headRefOid
 					isDraft
 					reviews(last: 100) {
+						pageInfo { hasPreviousPage }
 						nodes {
 							author {
 								login
