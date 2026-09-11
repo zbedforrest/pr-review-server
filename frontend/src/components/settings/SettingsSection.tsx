@@ -41,7 +41,7 @@ export function SettingsSection({
           type="button"
           className="settings-section__button"
           onClick={onReset}
-          disabled={!dirty}
+          disabled={!dirty || saving}
         >
           Reset
         </button>

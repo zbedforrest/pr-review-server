@@ -98,7 +98,7 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
     patch,
     dirty: changed.length > 0,
     saving: update.isPending,
-    saved,
+    saved: saved && changed.length === 0,
     error,
     save,
     reset,

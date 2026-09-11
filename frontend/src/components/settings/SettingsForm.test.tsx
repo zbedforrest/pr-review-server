@@ -199,6 +199,22 @@ describe('SettingsForm', () => {
     await waitFor(() => expect(samples().value).toBe('7'));
     await waitFor(() => expect(saveIn('Review').disabled).toBe(false));
     expect(autoReview().checked).toBe(false);
+    expect(statusIn('Review').textContent).toBe('');
+  });
+
+  it('disables Reset while a save is in flight', async () => {
+    let resolveSave!: (response: Response) => void;
+    fetchMock.mockReturnValue(new Promise<Response>((resolve) => (resolveSave = resolve)));
+    renderForm();
+    fireEvent.change(samples(), { target: { value: '7' } });
+    expect(resetIn('Review').disabled).toBe(false);
+    fireEvent.click(saveIn('Review'));
+    await waitFor(() => expect(statusIn('Review').textContent).toBe('Saving'));
+    expect(resetIn('Review').disabled).toBe(true);
+
+    resolveSave(jsonResponse({ ...serverSettings, review_n_requests: 7 }));
+    await waitFor(() => expect(statusIn('Review').textContent).toBe('Saved'));
+    expect(samples().value).toBe('7');
   });
 
   it('follows the server response after a save even when the server normalized the value', async () => {
