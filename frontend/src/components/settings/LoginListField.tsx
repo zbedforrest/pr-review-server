@@ -31,6 +31,8 @@ export function LoginListField({
   const inputRef = useRef<HTMLInputElement>(null);
   const focusAfterRemove = useRef<string | null>(null);
   const logins = normalizeLogins(value, authors).logins;
+  const fixedSet = new Set(fixed.map((login) => login.trim().toLowerCase()));
+  const editable = logins.filter((login) => !fixedSet.has(login));
 
   useEffect(() => {
     const removed = focusAfterRemove.current;
@@ -126,7 +128,7 @@ export function LoginListField({
             {isUnknown(login) && <span className="settings-field__chip-hint">{UNKNOWN_HINT}</span>}
           </span>
         ))}
-        {logins.map((login) => (
+        {editable.map((login) => (
           <span key={login} className={chipClass(login, false)}>
             {login}
             {isUnknown(login) && <span className="settings-field__chip-hint">{UNKNOWN_HINT}</span>}

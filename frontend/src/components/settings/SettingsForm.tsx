@@ -143,7 +143,9 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
   const samplesInvalid = !isCount(review.draft.review_n_requests, 1);
   const capInvalid = !isCount(publishing.draft.publish_inline_cap, 0);
 
-  const adminList = [...settings.admin_logins_fixed, ...normalizeLogins(settings.admin_logins, false).logins];
+  const adminList = [
+    ...new Set([...settings.admin_logins_fixed, ...normalizeLogins(settings.admin_logins, false).logins]),
+  ];
   const activeSince = settings.publish_reply_enabled_at
     ? `Active since ${new Date(settings.publish_reply_enabled_at).toLocaleString()}`
     : 'Not active';

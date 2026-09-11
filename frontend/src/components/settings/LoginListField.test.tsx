@@ -246,6 +246,13 @@ describe('LoginListField', () => {
     expect(onChange).toHaveBeenCalledWith('alice,bob,*');
   });
 
+  it('shows a login that is both fixed and saved once, as the locked chip', () => {
+    renderField({ value: 'owner,alice', fixed: ['owner'] });
+    expect(screen.getAllByText('owner')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Remove owner' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Remove alice' })).toBeTruthy();
+  });
+
   it('renders fixed logins as locked chips without a remove button', () => {
     renderField({ value: '', fixed: ['owner'] });
     const chip = screen.getByText('owner').closest('.settings-field__chip') as HTMLElement;

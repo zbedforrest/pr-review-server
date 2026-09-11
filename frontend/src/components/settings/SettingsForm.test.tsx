@@ -130,6 +130,11 @@ describe('SettingsForm', () => {
     }
   });
 
+  it('names each admin once in the notice when a login is both fixed and saved', () => {
+    renderForm({ isAdmin: false }, { ...serverSettings, admin_logins: 'owner,carol' });
+    expect(screen.getByText('Read only. Admins: owner, carol')).toBeTruthy();
+  });
+
   it('tells a non-admin how to recover when no admin is configured', () => {
     renderForm({ isAdmin: false, currentLogin: 'dave' }, { ...serverSettings, admin_logins: '', admin_logins_fixed: [] });
     expect(
