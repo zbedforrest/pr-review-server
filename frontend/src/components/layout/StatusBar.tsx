@@ -8,10 +8,10 @@ import type { StatusPanelFilter } from '@/types/status';
 interface StatusBarProps {
   connectionStatus?: 'connected' | 'disconnected' | 'connecting';
   /**
-   * Called with the clicked status and the count shown for it. Without this the
-   * counts stay plain text, so the bar still renders anywhere it's reused.
+   * Called with the clicked status. Without this the counts stay plain text,
+   * so the bar still renders anywhere it's reused.
    */
-  onStatusCountClick?: (status: StatusPanelFilter, count: number) => void;
+  onStatusCountClick?: (status: StatusPanelFilter) => void;
   /** Status whose panel is currently open, if any. */
   activeStatusCount?: StatusPanelFilter | null;
 }
@@ -62,7 +62,7 @@ export function StatusBar({
         className={`status-bar__count-btn ${active ? 'status-bar__count-btn--active' : ''}`}
         aria-pressed={active}
         title={`${active ? 'Hide' : 'Show'} ${status} PRs`}
-        onClick={() => onStatusCountClick(status, count)}
+        onClick={() => onStatusCountClick(status)}
       >
         {text}
       </button>

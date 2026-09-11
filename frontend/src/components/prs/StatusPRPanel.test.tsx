@@ -4,9 +4,14 @@ import { StatusPRPanel } from './StatusPRPanel';
 import type { PR } from '@/types/pr';
 
 const usePRsMock = vi.fn();
+const useStatusMock = vi.fn();
 
 vi.mock('@/hooks/usePRs', () => ({
   usePRs: () => usePRsMock(),
+}));
+
+vi.mock('@/hooks/useStatus', () => ({
+  useStatus: () => useStatusMock(),
 }));
 
 vi.mock('./PRTable', () => ({
@@ -44,8 +49,14 @@ describe('StatusPRPanel', () => {
     ...partial,
   });
 
+  const setServerCounts = (counts: { completed?: number; generating?: number }) =>
+    useStatusMock.mockReturnValue({
+      data: { counts: { completed: 0, generating: 0, pending: 0, error: 0, ...counts } },
+    });
+
   beforeEach(() => {
     usePRsMock.mockReturnValue({ data: [], isLoading: false, error: null });
+    useStatusMock.mockReturnValue({ data: undefined });
   });
 
   afterEach(() => {
@@ -109,31 +120,34 @@ describe('StatusPRPanel', () => {
     expect(getByTestId('pr-table-rows').textContent).toContain('Hidden done');
   });
 
-  it('spells out the server-wide count when it exceeds the visible rows', () => {
+  it('spells out the live server-wide count when it exceeds the visible rows', () => {
     usePRsMock.mockReturnValue({
       data: [makePR({ number: 1, title: 'Mine', status: 'generating' })],
       isLoading: false,
       error: null,
     });
+    setServerCounts({ generating: 7 });
 
-    const { getByText } = render(
-      <StatusPRPanel status="generating" serverCount={7} onClose={vi.fn()} />
-    );
-
+    const { getByText, rerender } = render(<StatusPRPanel status="generating" onClose={vi.fn()} />);
     expect(getByText('1 of 7 server-wide')).toBeTruthy();
+
+    setServerCounts({ generating: 9 });
+    rerender(<StatusPRPanel status="generating" onClose={vi.fn()} />);
+    expect(getByText('1 of 9 server-wide')).toBeTruthy();
   });
 
-  it('omits the server-wide note when the counts agree', () => {
+  it('omits the server-wide note when the counts agree or the status is not loaded', () => {
     usePRsMock.mockReturnValue({
       data: [makePR({ number: 1, title: 'Mine', status: 'generating' })],
       isLoading: false,
       error: null,
     });
 
-    const { queryByText } = render(
-      <StatusPRPanel status="generating" serverCount={1} onClose={vi.fn()} />
-    );
+    const { queryByText, rerender } = render(<StatusPRPanel status="generating" onClose={vi.fn()} />);
+    expect(queryByText(/server-wide/)).toBeNull();
 
+    setServerCounts({ generating: 1 });
+    rerender(<StatusPRPanel status="generating" onClose={vi.fn()} />);
     expect(queryByText(/server-wide/)).toBeNull();
   });
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { usePRs } from '@/hooks/usePRs';
+import { useStatus } from '@/hooks/useStatus';
 import { sortPRsByNewest } from '@/utils/sectionFilters';
 import type { PR } from '@/types/pr';
 import type { StatusPanelFilter } from '@/types/status';
@@ -32,22 +33,21 @@ function isEditableElement(target: EventTarget | null): boolean {
 interface StatusPRPanelProps {
   status: StatusPanelFilter;
   onClose: () => void;
-  /**
-   * The count the user clicked in the status bar. It's server-wide (every PR
-   * the poller tracks) while the table can only show PRs in this user's own
-   * list, so the two disagree often enough to be worth spelling out.
-   */
-  serverCount?: number;
 }
 
 /**
  * A peek at every PR sitting in one review status, opened by clicking that
  * count in the status bar. Uses the same table as the configured sections but
- * is hard-filtered on status alone — the page's search/team/repo filters and
+ * is hard-filtered on status alone: the page's search/team/repo filters and
  * the Hidden section deliberately don't narrow it.
+ *
+ * The status bar's count is server-wide (every PR the poller tracks) while the
+ * table can only show PRs in this user's own list, so the two disagree often
+ * enough to be worth spelling out, read live so it tracks the bar.
  */
-export function StatusPRPanel({ status, onClose, serverCount }: StatusPRPanelProps) {
+export function StatusPRPanel({ status, onClose }: StatusPRPanelProps) {
   const { data: prs } = usePRs();
+  const serverCount = useStatus().data?.counts[status];
 
   // Read through a ref so the listener below can register once per mount. A
   // fresh onClose identity would otherwise re-register it on every parent

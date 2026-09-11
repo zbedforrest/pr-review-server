@@ -70,9 +70,7 @@ function AppContent() {
   // Connection status state
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
 
-  // Status-bar count the user drilled into, with the count they clicked (the
-  // status bar's counts are server-wide, the panel's table is user-scoped).
-  const [statusPanel, setStatusPanel] = useState<{ status: StatusPanelFilter; count: number } | null>(null);
+  const [statusPanel, setStatusPanel] = useState<StatusPanelFilter | null>(null);
   const closeStatusPanel = useCallback(() => setStatusPanel(null), []);
 
   // Search + filter state, mirrored into URL query params for back/forward nav
@@ -112,22 +110,16 @@ function AppContent() {
       <Header />
       <StatusBar
         connectionStatus={connectionStatus}
-        activeStatusCount={statusPanel?.status ?? null}
-        onStatusCountClick={(status, count) => {
+        activeStatusCount={statusPanel}
+        onStatusCountClick={(status) => {
           // Clicking the count that's already open closes the panel.
-          const closing = statusPanel?.status === status;
+          const closing = statusPanel === status;
           track('status_count_panel', { label: `${closing ? 'close' : 'open'}:${status}` });
-          setStatusPanel(closing ? null : { status, count });
+          setStatusPanel(closing ? null : status);
         }}
       />
 
-      {statusPanel && (
-        <StatusPRPanel
-          status={statusPanel.status}
-          serverCount={statusPanel.count}
-          onClose={closeStatusPanel}
-        />
-      )}
+      {statusPanel && <StatusPRPanel status={statusPanel} onClose={closeStatusPanel} />}
 
       <NeedsReReviewSection />
 

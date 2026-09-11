@@ -44,15 +44,15 @@ describe('StatusBar', () => {
     cleanup();
   });
 
-  it('reports the clicked status and its count', () => {
+  it('reports the clicked status', () => {
     const onStatusCountClick = vi.fn();
     const { getByText } = render(<StatusBar onStatusCountClick={onStatusCountClick} />);
 
     fireEvent.click(getByText('13 completed'));
-    expect(onStatusCountClick).toHaveBeenCalledWith('completed', 13);
+    expect(onStatusCountClick).toHaveBeenCalledWith('completed');
 
     fireEvent.click(getByText('1 generating'));
-    expect(onStatusCountClick).toHaveBeenCalledWith('generating', 1);
+    expect(onStatusCountClick).toHaveBeenCalledWith('generating');
   });
 
   it('marks the open status as pressed', () => {
