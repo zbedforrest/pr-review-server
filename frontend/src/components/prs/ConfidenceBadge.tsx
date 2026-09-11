@@ -21,7 +21,7 @@ function clampScore(score: number): number {
 }
 
 export const ConfidenceBadge = memo(function ConfidenceBadge({ score, size = 'row' }: ConfidenceBadgeProps) {
-  if (score === null || score === undefined) {
+  if (score === null || score === undefined || Number.isNaN(score)) {
     return (
       <span
         className="confidence-badge confidence-badge--empty"

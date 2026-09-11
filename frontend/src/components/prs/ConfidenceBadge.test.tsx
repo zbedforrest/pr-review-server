@@ -24,7 +24,7 @@ describe('ConfidenceBadge', () => {
     expect(el.querySelector('svg')).toBeTruthy();
   });
 
-  it.each([null, undefined])('renders the empty dash when the score is %s', (score) => {
+  it.each([null, undefined, NaN])('renders the empty dash when the score is %s', (score) => {
     const el = renderBadge(score);
     expect(el.classList.contains('confidence-badge--empty')).toBe(true);
     expect(el.textContent).toBe('-');
