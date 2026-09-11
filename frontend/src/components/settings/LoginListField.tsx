@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { joinLogins, normalizeLogins } from './loginList';
 import './settings.scss';
 
@@ -53,6 +53,15 @@ export function LoginListField({
     if (next.includes(',')) commit(next);
   };
 
+  // A text input drops newlines from its value, so a multi-line paste has to be split before it lands.
+  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const pasted = e.clipboardData.getData('text');
+    if (!/[,\n]/.test(pasted)) return;
+    e.preventDefault();
+    setDraft(draft + pasted);
+    commit(draft + pasted);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -68,7 +77,11 @@ export function LoginListField({
     onChange(joinLogins(logins.filter((l) => l !== login)));
   };
 
-  const isUnknown = (login: string) => knownLogins !== undefined && login !== '*' && !knownLogins.has(login);
+  const known = useMemo(
+    () => knownLogins && new Set([...knownLogins].map((login) => login.trim().toLowerCase())),
+    [knownLogins],
+  );
+  const isUnknown = (login: string) => known !== undefined && login !== '*' && !known.has(login);
 
   const chipClass = (login: string, isFixed: boolean) =>
     [
@@ -117,6 +130,7 @@ export function LoginListField({
           value={draft}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           onBlur={handleBlur}
           disabled={disabled}
           placeholder={disabled ? '' : 'Add a login'}

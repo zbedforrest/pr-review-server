@@ -60,6 +60,36 @@ describe('LoginListField', () => {
     expect(onChange).toHaveBeenCalledWith('alice,bob,carol,dave');
   });
 
+  it('adds every login from a pasted newline list', () => {
+    const { onChange } = renderField();
+    const paste = fireEvent.paste(input(), { clipboardData: { getData: () => 'carol\ndave\n' } });
+    expect(paste).toBe(false);
+    expect(onChange).toHaveBeenCalledWith('alice,bob,carol,dave');
+    expect(input().value).toBe('');
+  });
+
+  it('appends a pasted list to what was already typed', () => {
+    const { onChange } = renderField();
+    type('car');
+    fireEvent.paste(input(), { clipboardData: { getData: () => 'ol\ndave' } });
+    expect(onChange).toHaveBeenCalledWith('alice,bob,carol,dave');
+  });
+
+  it('rejects an invalid pasted entry inline and keeps the paste in the input', () => {
+    const { onChange } = renderField();
+    fireEvent.paste(input(), { clipboardData: { getData: () => 'carol,al ice' } });
+    expect(screen.getByRole('alert').textContent).toBe('"al ice" is not a valid login');
+    expect(input().value).toBe('carol,al ice');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('lets a pasted single login go through the normal input flow', () => {
+    const { onChange } = renderField();
+    const paste = fireEvent.paste(input(), { clipboardData: { getData: () => 'carol' } });
+    expect(paste).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('adds the typed login on blur', () => {
     const { onChange } = renderField();
     type('carol');
@@ -145,6 +175,11 @@ describe('LoginListField', () => {
     expect(chipFor('bob').textContent).toContain('not seen on any PR');
     expect(chipFor('*').classList.contains('settings-field__chip--unknown')).toBe(false);
     expect(screen.getAllByText('not seen on any PR')).toHaveLength(1);
+  });
+
+  it('matches known logins regardless of their casing', () => {
+    renderField({ value: 'alice,bob', knownLogins: new Set(['Alice', ' BOB ']) });
+    expect(screen.queryByText('not seen on any PR')).toBeNull();
   });
 
   it('shows no hint when knownLogins is not provided', () => {
