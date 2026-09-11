@@ -126,6 +126,23 @@ describe('SettingsPage', () => {
     expect(screen.queryByText(/replies,/)).toBeNull();
   });
 
+  it('hides the reply totals once the current user is no longer an admin', async () => {
+    let userResponse = admin;
+    route({
+      '/api/settings': () => jsonResponse(serverSettings),
+      '/api/user': () => jsonResponse(userResponse),
+      '/api/prs': () => jsonResponse([]),
+      '/api/publish/replies': () => jsonResponse({ mode: 'respond', total: 4, by_action: { reacted: 4 } }),
+    });
+    const client = renderPage();
+    await waitFor(() => expect(screen.getByText(/4 replies,/)).toBeTruthy());
+
+    userResponse = member;
+    await client.invalidateQueries({ queryKey: ['currentUser'] });
+    await waitFor(() => expect(screen.getByText(/Read only\./)).toBeTruthy());
+    expect(screen.queryByText(/4 replies,/)).toBeNull();
+  });
+
   it('does not flag logins as unseen until the PR list has loaded', async () => {
     let resolvePRs: (response: Response) => void = () => {};
     route({

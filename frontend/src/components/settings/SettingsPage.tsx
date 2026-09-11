@@ -41,7 +41,7 @@ export function SettingsPage() {
           isAdmin={user.data.is_admin}
           currentLogin={user.data.github_username}
           knownLogins={knownLogins}
-          replyTotals={replies.data}
+          replyTotals={isAdmin ? replies.data : undefined}
         />
       )}
     </div>
