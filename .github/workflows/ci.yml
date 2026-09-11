@@ -62,7 +62,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
@@ -71,6 +71,9 @@ jobs:
 
       - name: Lint (ESLint)
         run: npm run lint
+
+      - name: Test (Vitest)
+        run: npm test
 
       - name: Type Check & Build
         run: npm run build
