@@ -184,12 +184,37 @@ describe('SettingsForm', () => {
     expect(saveIn('Review').disabled).toBe(true);
   });
 
-  it('will not save a sample count below one', () => {
+  it('will not save a sample count below one and says why', () => {
     renderForm();
+    expect(samples().getAttribute('aria-invalid')).toBe('false');
+    expect(within(section('Review')).queryByRole('alert')).toBeNull();
     fireEvent.change(samples(), { target: { value: '0' } });
     expect(saveIn('Review').disabled).toBe(true);
+    expect(samples().getAttribute('aria-invalid')).toBe('true');
+    const error = within(section('Review')).getByRole('alert');
+    expect(error.textContent).toBe('Enter a whole number of 1 or more');
+    expect(samples().getAttribute('aria-describedby')).toContain(error.id);
     fireEvent.change(samples(), { target: { value: '' } });
     expect(saveIn('Review').disabled).toBe(true);
+    expect(within(section('Review')).getByRole('alert')).toBeTruthy();
+    fireEvent.change(samples(), { target: { value: '2' } });
+    expect(saveIn('Review').disabled).toBe(false);
+    expect(samples().getAttribute('aria-invalid')).toBe('false');
+    expect(within(section('Review')).queryByRole('alert')).toBeNull();
+  });
+
+  it('will not save a negative inline cap and says why', () => {
+    renderForm();
+    const cap = () => screen.getByLabelText('Inline comment cap') as HTMLInputElement;
+    fireEvent.change(cap(), { target: { value: '-1' } });
+    expect(saveIn('Publishing').disabled).toBe(true);
+    expect(cap().getAttribute('aria-invalid')).toBe('true');
+    const error = within(section('Publishing')).getByRole('alert');
+    expect(error.textContent).toBe('Enter a whole number of 0 or more');
+    expect(cap().getAttribute('aria-describedby')).toContain(error.id);
+    fireEvent.change(cap(), { target: { value: '0' } });
+    expect(saveIn('Publishing').disabled).toBe(false);
+    expect(within(section('Publishing')).queryByRole('alert')).toBeNull();
   });
 
   it('asks before choosing respond and keeps the radio and the server untouched when cancelled', () => {

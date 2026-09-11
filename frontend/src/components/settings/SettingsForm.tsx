@@ -98,6 +98,7 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
 
 const numberValue = (n: number) => (Number.isNaN(n) ? '' : n);
 const isCount = (n: number, min: number) => Number.isInteger(n) && n >= min;
+const describedBy = (id: string, invalid: boolean) => (invalid ? `${id}-help ${id}-error` : `${id}-help`);
 
 export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, replyTotals }: SettingsFormProps) {
   const disabled = !isAdmin;
@@ -130,6 +131,9 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
     admins.patch({ admin_logins: next });
   };
 
+  const samplesInvalid = !isCount(review.draft.review_n_requests, 1);
+  const capInvalid = !isCount(publishing.draft.publish_inline_cap, 0);
+
   const adminList = [...settings.admin_logins_fixed, ...normalizeLogins(settings.admin_logins, false).logins];
   const activeSince = settings.publish_reply_enabled_at
     ? `Active since ${new Date(settings.publish_reply_enabled_at).toLocaleString()}`
@@ -143,7 +147,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         title="Review"
         description="Which PRs get reviewed and how hard the first pass works"
         dirty={review.dirty}
-        canSave={isAdmin && isCount(review.draft.review_n_requests, 1)}
+        canSave={isAdmin && !samplesInvalid}
         saving={review.saving}
         error={review.error}
         onSave={review.save}
@@ -174,11 +178,17 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
             value={numberValue(review.draft.review_n_requests)}
             onChange={(e) => review.patch({ review_n_requests: e.target.valueAsNumber })}
             disabled={disabled}
-            aria-describedby="settings-review-n-help"
+            aria-invalid={samplesInvalid}
+            aria-describedby={describedBy('settings-review-n', samplesInvalid)}
           />
           <span id="settings-review-n-help" className="settings-field__help">
             First-pass samples per review; multiplies LLM cost
           </span>
+          {samplesInvalid && (
+            <span id="settings-review-n-error" role="alert" className="settings-field__error">
+              Enter a whole number of 1 or more
+            </span>
+          )}
         </div>
       </SettingsSection>
 
@@ -186,7 +196,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         title="Publishing"
         description="Whose PRs receive posted reviews, and what gets posted"
         dirty={publishing.dirty}
-        canSave={isAdmin && isCount(publishing.draft.publish_inline_cap, 0)}
+        canSave={isAdmin && !capInvalid}
         saving={publishing.saving}
         error={publishing.error}
         onSave={publishing.save}
@@ -215,11 +225,17 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
             value={numberValue(publishing.draft.publish_inline_cap)}
             onChange={(e) => publishing.patch({ publish_inline_cap: e.target.valueAsNumber })}
             disabled={policyDisabled}
-            aria-describedby="settings-inline-cap-help"
+            aria-invalid={capInvalid}
+            aria-describedby={describedBy('settings-inline-cap', capInvalid)}
           />
           <span id="settings-inline-cap-help" className="settings-field__help">
             0 posts the summary comment only
           </span>
+          {capInvalid && (
+            <span id="settings-inline-cap-error" role="alert" className="settings-field__error">
+              Enter a whole number of 0 or more
+            </span>
+          )}
         </div>
         <div className="settings-field">
           <label className="settings-field__label" htmlFor="settings-min-severity">
