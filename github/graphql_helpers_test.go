@@ -1,10 +1,13 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -322,6 +325,42 @@ func TestFetchReviewDataForRepo_TruncatedHistoryLeavesUndecidedUsersUnknown(t *t
 	}
 	if data.UserReviews["alice"] != "COMMENTED" {
 		t.Errorf("existing review reduction changed: userReviews=%v", data.UserReviews)
+	}
+}
+
+func TestFetchReviewDataForRepo_TruncationWarnsOncePerHead(t *testing.T) {
+	head := "B"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"pr0":{"pullRequest":{"number":7,"headRefOid":"` + head + `","reviews":{
+			"pageInfo":{"hasPreviousPage":true},
+			"nodes":[{"author":{"login":"alice"},"state":"COMMENTED","commit":{"oid":"A"}}]}}}}}`))
+	}))
+	defer ts.Close()
+
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+	prs := []PullRequest{{Owner: "acme", Repo: "example", Number: 7}}
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	for i := 0; i < 3; i++ {
+		if _, err := client.fetchReviewDataForRepo(context.Background(), prs); err != nil {
+			t.Fatalf("fetchReviewDataForRepo failed: %v", err)
+		}
+	}
+	if n := strings.Count(buf.String(), "review history truncated"); n != 1 {
+		t.Fatalf("expected one truncation warning for an unchanged head, got %d:\n%s", n, buf.String())
+	}
+
+	head = "C"
+	if _, err := client.fetchReviewDataForRepo(context.Background(), prs); err != nil {
+		t.Fatalf("fetchReviewDataForRepo failed: %v", err)
+	}
+	if n := strings.Count(buf.String(), "review history truncated"); n != 2 {
+		t.Fatalf("expected a second truncation warning after the head moved, got %d:\n%s", n, buf.String())
 	}
 }
 

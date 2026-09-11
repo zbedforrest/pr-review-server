@@ -28,6 +28,26 @@ type Client struct {
 	repoClients     map[string]*github.Client
 	repoSources     map[string]*installationTokenSource
 	repoClientsLock sync.Mutex
+
+	truncatedReviewsWarned     map[string]string
+	truncatedReviewsWarnedLock sync.Mutex
+}
+
+// warnReviewsTruncatedOnce logs the truncated-history warning the first time a
+// given PR head is seen; the poller refetches changed PRs every cycle, so
+// without this the warning repeats every poll until the head moves.
+func (c *Client) warnReviewsTruncatedOnce(owner, repo string, prNumber int, headOID string) {
+	key := prKey(owner, repo, prNumber)
+	c.truncatedReviewsWarnedLock.Lock()
+	defer c.truncatedReviewsWarnedLock.Unlock()
+	if c.truncatedReviewsWarned == nil {
+		c.truncatedReviewsWarned = make(map[string]string)
+	}
+	if c.truncatedReviewsWarned[key] == headOID {
+		return
+	}
+	c.truncatedReviewsWarned[key] = headOID
+	log.Printf("[GRAPHQL] PR %s/%s#%d: review history truncated at 100, attention unknown for reviewers with neither a decision nor a head review in the window", owner, repo, prNumber)
 }
 
 // clientFor returns a REST client whose installation can write to owner/repo.
@@ -762,7 +782,7 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 		approvalCount, myReviewStatus, userReviews := c.countUserApprovals(repoData.PullRequest.Reviews)
 		headOID := repoData.PullRequest.HeadRefOid
 		if repoData.PullRequest.Reviews.PageInfo.HasPreviousPage {
-			log.Printf("[GRAPHQL] PR %s/%s#%d: review history truncated at 100, attention unknown for reviewers with neither a decision nor a head review in the window", owner, repo, prNumber)
+			c.warnReviewsTruncatedOnce(owner, repo, prNumber, headOID)
 		}
 
 		key := prKey(owner, repo, prNumber)
