@@ -22,6 +22,12 @@ func prModelToPR(m *PRModel) *PR {
 		}
 	}
 
+	var mergeConfidence *int
+	if m.MergeConfidence != nil {
+		score := int(*m.MergeConfidence)
+		mergeConfidence = &score
+	}
+
 	return &PR{
 		ID:              int(m.ID),
 		RepoOwner:       m.RepoOwner,
@@ -48,6 +54,7 @@ func prModelToPR(m *PRModel) *PR {
 		MediumCount:     m.MediumCount,
 		LowCount:        m.LowCount,
 		ReviewVerdict:   m.ReviewVerdict,
+		MergeConfidence: mergeConfidence,
 		Notes:           m.Notes,
 		GitHubUpdatedAt: m.GitHubUpdatedAt,
 		ErrorMessage:    m.ErrorMessage,
@@ -63,6 +70,12 @@ func prToPRModel(p *PR) *PRModel {
 	var ciFailedChecks JSONStringArray
 	if p.CIFailedChecks != "" {
 		_ = json.Unmarshal([]byte(p.CIFailedChecks), &ciFailedChecks)
+	}
+
+	var mergeConfidence *int16
+	if p.MergeConfidence != nil {
+		score := int16(*p.MergeConfidence)
+		mergeConfidence = &score
 	}
 
 	return &PRModel{
@@ -91,6 +104,7 @@ func prToPRModel(p *PR) *PRModel {
 		MediumCount:     p.MediumCount,
 		LowCount:        p.LowCount,
 		ReviewVerdict:   p.ReviewVerdict,
+		MergeConfidence: mergeConfidence,
 		Notes:           p.Notes,
 		GitHubUpdatedAt: p.GitHubUpdatedAt,
 		ErrorMessage:    p.ErrorMessage,
@@ -245,6 +259,19 @@ func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, re
 	return nil
 }
 
+// SetPRMergeConfidence stores the score for the review of commitSHA. Scoped to
+// the current head so a stale worker cannot overwrite a newer review's score;
+// returns whether the row matched.
+func (g *GormDB) SetPRMergeConfidence(owner, repo string, prNumber int, commitSHA string, score int) (bool, error) {
+	res := g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND last_commit_sha = ?", owner, repo, prNumber, commitSHA).
+		Update("merge_confidence", score)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
 // UpdatePRStatus updates the status of a PR
 func (g *GormDB) UpdatePRStatus(owner, repo string, prNumber int, status string) error {
 	updates := map[string]interface{}{"status": status}
@@ -276,6 +303,7 @@ func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, newCommitSH
 			"review_path":       nil,
 			"last_reviewed_at":  nil,
 			"generating_since":  nil,
+			"merge_confidence":  nil,
 			"projection_run_id": "",
 			"error_message":     "",
 			"error_retry_count": 0,
@@ -337,6 +365,7 @@ func (g *GormDB) SetPRGenerating(owner, repo string, prNumber int, commitSHA, ti
 			"last_commit_sha",
 			"status",
 			"generating_since",
+			"merge_confidence",
 			"title",
 			"author",
 			"created_at",

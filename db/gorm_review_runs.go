@@ -46,7 +46,7 @@ func (g *GormDB) SetPRGeneratingForReviewRun(owner, repo string, prNumber int, c
 		CreatedAt: createdAt, Draft: draft, ProjectionRunID: runID,
 	}
 	updateColumns := []string{
-		"last_commit_sha", "status", "generating_since", "title", "author", "draft",
+		"last_commit_sha", "status", "generating_since", "merge_confidence", "title", "author", "draft",
 		"projection_run_id", "error_message",
 	}
 	// A missing GitHub created_at is represented as nil. Preserve an existing

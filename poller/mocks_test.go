@@ -398,6 +398,7 @@ func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, newCo
 		pr.Status = "pending"
 		pr.ReviewHTMLPath = ""
 		pr.ErrorMessage = ""
+		pr.MergeConfidence = nil
 	}
 	delete(m.ProjectionRunIDs, key)
 	return nil
@@ -416,6 +417,7 @@ func (m *MockDatabase) SetPRGenerating(owner, repo string, prNumber int, commitS
 		pr.Author = author
 		pr.CreatedAt = createdAt
 		pr.Draft = draft
+		pr.MergeConfidence = nil
 	} else {
 		m.PRs[key] = &db.PR{
 			RepoOwner:       owner,
@@ -499,6 +501,7 @@ func (m *MockDatabase) SetPRGeneratingForReviewRun(owner, repo string, prNumber 
 	pr.CreatedAt = createdAt
 	pr.Draft = draft
 	pr.ErrorMessage = ""
+	pr.MergeConfidence = nil
 	m.ProjectionRunIDs[key] = runID
 	return nil
 }
@@ -616,6 +619,17 @@ func (m *MockDatabase) RestorePRCompletedFromCacheForReviewRun(owner, repo strin
 	pr.ReviewRunID = reviewRunID
 	pr.ReviewRunJSON = reviewRunJSON
 	m.ProjectionRunIDs[key] = projectionRunID
+	return true, nil
+}
+
+func (m *MockDatabase) SetPRMergeConfidence(owner, repo string, prNumber int, commitSHA string, score int) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pr := m.PRs[prDBKey(owner, repo, prNumber)]
+	if pr == nil || pr.LastCommitSHA != commitSHA {
+		return false, nil
+	}
+	pr.MergeConfidence = &score
 	return true, nil
 }
 
