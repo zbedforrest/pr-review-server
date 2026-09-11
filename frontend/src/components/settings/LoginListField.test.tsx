@@ -115,6 +115,27 @@ describe('LoginListField', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('tells the user to press Enter while a login is typed but not added', () => {
+    renderField();
+    expect(input().placeholder).toBe('Type a login and press Enter');
+    expect(screen.queryByText('Press Enter to add')).toBeNull();
+    type('carol');
+    const hint = screen.getByText('Press Enter to add');
+    expect(input().getAttribute('aria-describedby')).toBe(hint.id);
+    fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(screen.queryByText('Press Enter to add')).toBeNull();
+    expect(input().getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('describes the input by both the hint and the error when an entry was rejected', () => {
+    renderField();
+    type('al ice');
+    fireEvent.keyDown(input(), { key: 'Enter' });
+    const ids = input().getAttribute('aria-describedby')!.split(' ');
+    expect(ids).toContain(screen.getByRole('alert').id);
+    expect(ids).toContain(screen.getByText('Press Enter to add').id);
+  });
+
   it('adds the typed login on blur', () => {
     const { onChange } = renderField();
     type('carol');

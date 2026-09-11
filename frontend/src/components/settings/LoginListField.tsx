@@ -109,6 +109,9 @@ export function LoginListField({
       .join(' ');
 
   const errorId = `${id}-error`;
+  const hintId = `${id}-hint`;
+  const pending = draft.trim() !== '';
+  const describedBy = [error && errorId, pending && hintId].filter(Boolean).join(' ') || undefined;
 
   return (
     <div className="settings-field">
@@ -150,13 +153,18 @@ export function LoginListField({
           onPaste={handlePaste}
           onBlur={handleBlur}
           disabled={disabled}
-          placeholder={disabled ? '' : 'Add a login'}
+          placeholder={disabled ? '' : 'Type a login and press Enter'}
           aria-invalid={error !== null}
-          aria-describedby={error ? errorId : undefined}
+          aria-describedby={describedBy}
           autoComplete="off"
           spellCheck={false}
         />
       </div>
+      {pending && (
+        <span id={hintId} className="settings-field__help">
+          Press Enter to add
+        </span>
+      )}
       {error && (
         <span id={errorId} role="alert" className="settings-field__error">
           {error}
