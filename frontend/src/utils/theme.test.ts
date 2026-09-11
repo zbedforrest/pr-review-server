@@ -8,6 +8,7 @@ import {
   DEFAULT_THEME,
   getTheme,
   isTheme,
+  LEGACY_THEME_ALIASES,
   loadTheme,
   resetThemeStore,
   resolveTheme,
@@ -278,6 +279,25 @@ describe('pre-paint script', () => {
 
   it('still follows the OS preference when storage is blocked', () => {
     expect(paintWith({ storageBlocked: true, prefersLight: true })).toBe('light');
+  });
+
+  it('resolves a stored legacy alias to its current name', () => {
+    expect(paintWith({ stored: 'catppuccin', prefersLight: true })).toBe('catppuccin-mocha');
+  });
+
+  it('falls back to the OS preference for a value that names no theme', () => {
+    expect(paintWith({ stored: 'deleted-theme', prefersLight: true })).toBe('light');
+    expect(paintWith({ stored: 'constructor', prefersLight: true })).toBe('light');
+  });
+
+  it('knows exactly the theme names and aliases that theme.ts does', () => {
+    const literal = (name: string): unknown => {
+      const source = new RegExp(`var ${name} = ([^;]*);`).exec(script)?.[1];
+      expect(source, `var ${name} in index.html`).toBeDefined();
+      return new Function(`return ${source}`)();
+    };
+    expect([...(literal('themes') as string[])].sort()).toEqual([...VALID_THEMES].sort());
+    expect(literal('aliases')).toEqual(LEGACY_THEME_ALIASES);
   });
 });
 

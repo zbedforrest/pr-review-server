@@ -7,21 +7,30 @@
     <title>PRism</title>
     <script>
       // Apply the stored theme before the first paint, so a non-default theme
-      // doesn't flash the default one while React boots. Deliberately dumb: an
-      // unrecognized value simply matches no palette and leaves the `:root`
-      // default in place, which useTheme() then corrects on mount. Renamed
-      // themes are rewritten to their current name by loadTheme(), so this
-      // only needs to know the current names.
-      // The key must match THEME_STORAGE_KEY in src/utils/theme.ts.
+      // doesn't flash the default one while React boots. The key, the theme
+      // list and the alias map mirror THEME_STORAGE_KEY, VALID_THEMES and
+      // LEGACY_THEME_ALIASES in src/utils/theme.ts; theme.test.ts keeps them
+      // in step.
       (function () {
+        var themes = [
+          'light', 'dark', 'github-light', 'github-dark', 'gruvbox-dark', 'gruvbox-light',
+          'solarized-light', 'solarized-dark', 'monokai', 'dracula', 'nord', 'night-owl',
+          'tokyo-night', 'catppuccin-latte', 'catppuccin-frappe', 'catppuccin-macchiato',
+          'catppuccin-mocha', 'everforest', 'rose-pine', 'synthwave-84'
+        ];
+        var aliases = { catppuccin: 'catppuccin-mocha' };
         var stored = null;
         try {
           stored = window.localStorage.getItem('prism.theme.v1');
         } catch (e) {
           // Storage blocked: fall through to the OS preference.
         }
-        var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
-        document.documentElement.setAttribute('data-theme', stored || (light ? 'light' : 'dark'));
+        if (Object.prototype.hasOwnProperty.call(aliases, stored)) stored = aliases[stored];
+        if (themes.indexOf(stored) === -1) {
+          var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+          stored = light ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', stored);
       })();
     </script>
   </head>

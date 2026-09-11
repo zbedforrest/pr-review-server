@@ -76,8 +76,11 @@ export const DEFAULT_THEME: Theme = 'dark';
 /**
  * Themes that have been renamed. A value persisted by an older client maps to
  * its current equivalent instead of silently falling back to the default.
+ *
+ * Mirrored by hand in the pre-paint script in `index.html`, along with
+ * VALID_THEMES; `theme.test.ts` asserts the copies still match.
  */
-const LEGACY_THEME_ALIASES: Record<string, Theme> = {
+export const LEGACY_THEME_ALIASES: Record<string, Theme> = {
   // 'catppuccin' shipped as Catppuccin's Mocha flavor before the other three
   // flavors were added.
   catppuccin: 'catppuccin-mocha',
