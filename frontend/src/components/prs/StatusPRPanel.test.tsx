@@ -136,6 +136,24 @@ describe('StatusPRPanel', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('leaves Escape to an editor inside the panel but still closes from the panel itself', () => {
+    const onClose = vi.fn();
+    const { getByTestId } = render(<StatusPRPanel status="completed" onClose={onClose} />);
+    const panel = getByTestId('status-pr-panel');
+
+    const textarea = document.createElement('textarea');
+    panel.appendChild(textarea);
+    const input = document.createElement('input');
+    panel.appendChild(input);
+
+    fireEvent.keyDown(textarea, { key: 'Escape' });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(panel, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('leaves Escape to an open row menu', () => {
     const onClose = vi.fn();
     render(<StatusPRPanel status="completed" onClose={onClose} />);

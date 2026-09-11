@@ -12,6 +12,16 @@ const STATUS_LABELS: Record<StatusPanelFilter, string> = {
   generating: 'Generating',
 };
 
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  );
+}
+
 interface StatusPRPanelProps {
   status: StatusPanelFilter;
   onClose: () => void;
@@ -43,9 +53,11 @@ export function StatusPRPanel({ status, onClose, serverCount }: StatusPRPanelPro
   // Escape closes the panel from anywhere on the page, except while a row menu
   // is open: that menu also listens on document, and since it opened after the
   // panel it runs second, so bailing here lets Escape dismiss just the menu.
+  // Editors (a row's note input) own Escape too, as cancel, so leave it there.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      if (isEditableElement(e.target)) return;
       if (document.querySelector('[role="menu"]')) return;
       onCloseRef.current();
     };
