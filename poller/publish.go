@@ -247,11 +247,13 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 
 // mergeConfidence is the score the dashboard stores for a completed review.
 // The published report wins because Publish scores the dismissal-filtered,
-// alias-rewritten round the sticky comment shows. A review that skipped the
-// publish is scored from the sidecar minus the ledger's concessions; aliases
-// need GitHub's comments, so a reworded conceded finding can still count here.
+// alias-rewritten round the sticky comment shows; it only counts once that
+// comment exists, since Publish scores before its first GitHub write. A review
+// that skipped or failed the publish is scored from the sidecar minus the
+// ledger's concessions; aliases need GitHub's comments, so a reworded conceded
+// finding can still count here.
 func (p *Poller) mergeConfidence(pr github.PullRequest, published *publisher.Report, sidecar []byte) (int, error) {
-	if published != nil {
+	if published != nil && published.SummaryCommentID != 0 {
 		return published.Confidence, nil
 	}
 	pl, err := payload.Decode(sidecar)

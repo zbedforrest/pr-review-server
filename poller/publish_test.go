@@ -268,12 +268,27 @@ func TestMergeConfidence_PublishedReportWinsOverSidecar(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, fromSidecar)
 
-	fromReport, err := p.mergeConfidence(pr, &publisher.Report{Confidence: 4}, sidecar)
+	fromReport, err := p.mergeConfidence(pr, &publisher.Report{Confidence: 4, SummaryCommentID: 11}, sidecar)
 	require.NoError(t, err)
 	assert.Equal(t, 4, fromReport, "a conceded finding dropped at publish time must not be re-counted")
 
 	_, err = p.mergeConfidence(pr, nil, []byte("not json"))
 	assert.Error(t, err)
+}
+
+// A report whose summary never reached GitHub carries the score Publish
+// computed before its first write; the sidecar path decides instead.
+func TestMergeConfidence_ReportWithoutASummaryCommentFallsBackToSidecar(t *testing.T) {
+	p := &Poller{cfg: &config.Config{}, db: NewMockDatabase()}
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}
+
+	score, err := p.mergeConfidence(pr, &publisher.Report{Confidence: 4}, []byte(scoredSidecar))
+	require.NoError(t, err)
+	assert.Equal(t, 2, score, "a score GitHub never showed must not be trusted over the sidecar")
+
+	score, err = p.mergeConfidence(pr, &publisher.Report{Confidence: 4, SummaryCommentID: 11}, []byte(scoredSidecar))
+	require.NoError(t, err)
+	assert.Equal(t, 4, score)
 }
 
 func TestMergeConfidence_UnpublishedFallbackHonoursLedgerDismissals(t *testing.T) {
