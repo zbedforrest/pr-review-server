@@ -98,7 +98,7 @@
 
   &__help {
     font-size: $font-size-md;
-    color: $color-text-muted;
+    color: $color-text-secondary;
   }
 
   &__number,
@@ -196,7 +196,7 @@
   &__chip-hint {
     font-family: $font-system;
     font-size: $font-size-sm;
-    color: $color-text-muted;
+    color: $color-text-secondary;
   }
 
   &__chip-remove {
