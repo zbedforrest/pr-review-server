@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { CONFIDENCE_BADGES } from './confidenceBadges';
+import { SCORING_RULE, confidenceRecommendation } from './confidenceCopy';
 import './ConfidenceBadge.scss';
 
 interface ConfidenceBadgeProps {
@@ -27,7 +28,7 @@ export const ConfidenceBadge = memo(function ConfidenceBadge({ score, size = 'ro
         className="confidence-badge confidence-badge--empty"
         role="img"
         aria-label="No merge confidence yet"
-        title="No merge confidence yet"
+        title="No merge confidence yet. The score appears when the next review of this PR completes."
       >
         -
       </span>
@@ -35,12 +36,14 @@ export const ConfidenceBadge = memo(function ConfidenceBadge({ score, size = 'ro
   }
 
   const badge = CONFIDENCE_BADGES[clampScore(score)];
+  const heading = `Merge confidence ${badge.score}/${MAX_SCORE}`;
+  const recommendation = confidenceRecommendation(badge.score);
   return (
     <span
       className={`confidence-badge confidence-badge--${size}`}
       role="img"
-      aria-label={`Merge confidence ${badge.score}/${MAX_SCORE}: ${badge.name}`}
-      title={`Merge confidence ${badge.score}/${MAX_SCORE}, ${badge.name}: ${badge.tagline}`}
+      aria-label={`${heading}, ${badge.name}. ${recommendation}`}
+      title={`${heading}: ${badge.name}\n${recommendation}\n${badge.tagline}\n\n${SCORING_RULE}`}
       dangerouslySetInnerHTML={{ __html: badge.svg }}
     />
   );

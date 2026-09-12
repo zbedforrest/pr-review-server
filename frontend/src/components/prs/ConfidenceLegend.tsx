@@ -3,13 +3,12 @@ import { createPortal } from 'react-dom';
 import { useDropdown } from '@/hooks/useDropdown';
 import { ConfidenceBadge } from './ConfidenceBadge';
 import { CONFIDENCE_BADGES } from './confidenceBadges';
+import { SCORING_RULE } from './confidenceCopy';
 import './ConfidenceLegend.scss';
 
 // Keep in sync with $panel-width in ConfidenceLegend.scss.
 const PANEL_WIDTH = 320;
 const MAX_SCORE = CONFIDENCE_BADGES.length - 1;
-const SCORING_RULE =
-  'Starts at 5 with no blocking findings. Any critical finding costs 2; any medium costs 1, and three or more mediums cost 1 more; a violated required check costs 1; a request-changes verdict caps the score at 3.';
 
 const BADGES_HIGH_TO_LOW = [...CONFIDENCE_BADGES].reverse();
 
