@@ -251,7 +251,7 @@ describe('PRTableRow confidence cell', () => {
 
   it('renders the medal for a completed PR with a score', () => {
     renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', merge_confidence: 4 }));
-    const medal = screen.getByRole('img', { name: 'Merge confidence 4/5: Merge Ascendant' });
+    const medal = screen.getByRole('img', { name: /^Merge confidence 4\/5, Merge Ascendant\./ });
     expect(confidenceCell().contains(medal)).toBe(true);
     expect(medal.querySelector('svg')).toBeTruthy();
   });

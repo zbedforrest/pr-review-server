@@ -1,6 +1,7 @@
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConfidenceBadge } from './ConfidenceBadge';
+import { SCORING_RULE } from './confidenceCopy';
 
 function renderBadge(score: number | null | undefined, size?: 'row' | 'large') {
   const { container } = render(<ConfidenceBadge score={score} size={size} />);
@@ -13,10 +14,15 @@ describe('ConfidenceBadge', () => {
   });
 
   it.each([
-    [0, 'Merge confidence 0/5: Merge Meltdown', 'Merge confidence 0/5, Merge Meltdown: This diff needs a cleanup crew, not a rubber stamp.'],
-    [3, 'Merge confidence 3/5: Diff Defender', 'Merge confidence 3/5, Diff Defender: Holding the line. Still checking the exits.'],
-    [5, 'Merge confidence 5/5: Merge Majesty', 'Merge confidence 5/5, Merge Majesty: No blockers. Let the merge button wear the crown.'],
-  ])('labels score %i with its medal name and tagline', (score, ariaLabel, title) => {
+    [0, 'Merge confidence 0/5, Merge Meltdown. Significant findings; please address before merge.',
+      'Merge confidence 0/5: Merge Meltdown\nSignificant findings; please address before merge.\nThis diff needs a cleanup crew, not a rubber stamp.\n\n' + SCORING_RULE],
+    [3, 'Merge confidence 3/5, Diff Defender. Findings that should be addressed before merge.',
+      'Merge confidence 3/5: Diff Defender\nFindings that should be addressed before merge.\nHolding the line. Still checking the exits.\n\n' + SCORING_RULE],
+    [4, 'Merge confidence 4/5, Merge Ascendant. Minor findings worth a look before merge.',
+      'Merge confidence 4/5: Merge Ascendant\nMinor findings worth a look before merge.\nOne last patrol before the victory lap.\n\n' + SCORING_RULE],
+    [5, 'Merge confidence 5/5, Merge Majesty. No blocking findings.',
+      'Merge confidence 5/5: Merge Majesty\nNo blocking findings.\nNo blockers. Let the merge button wear the crown.\n\n' + SCORING_RULE],
+  ])('explains score %i in its alt text and tooltip', (score, ariaLabel, title) => {
     const el = renderBadge(score);
     expect(el.getAttribute('role')).toBe('img');
     expect(el.getAttribute('aria-label')).toBe(ariaLabel);
@@ -30,14 +36,14 @@ describe('ConfidenceBadge', () => {
     expect(el.textContent).toBe('-');
     expect(el.getAttribute('role')).toBe('img');
     expect(el.getAttribute('aria-label')).toBe('No merge confidence yet');
-    expect(el.getAttribute('title')).toBe('No merge confidence yet');
+    expect(el.getAttribute('title')).toBe('No merge confidence yet. The score appears when the next review of this PR completes.');
     expect(el.querySelector('svg')).toBeNull();
   });
 
   it('clamps out-of-range scores to the nearest medal', () => {
-    expect(renderBadge(7).getAttribute('aria-label')).toBe('Merge confidence 5/5: Merge Majesty');
+    expect(renderBadge(7).getAttribute('aria-label')).toContain('Merge confidence 5/5, Merge Majesty');
     cleanup();
-    expect(renderBadge(-1).getAttribute('aria-label')).toBe('Merge confidence 0/5: Merge Meltdown');
+    expect(renderBadge(-1).getAttribute('aria-label')).toContain('Merge confidence 0/5, Merge Meltdown');
   });
 
   it('warns once per out-of-range value', () => {
@@ -53,7 +59,7 @@ describe('ConfidenceBadge', () => {
   });
 
   it('rounds fractional scores', () => {
-    expect(renderBadge(3.6).getAttribute('aria-label')).toBe('Merge confidence 4/5: Merge Ascendant');
+    expect(renderBadge(3.6).getAttribute('aria-label')).toContain('Merge confidence 4/5, Merge Ascendant');
   });
 
   it('defaults to the row size and accepts large', () => {
