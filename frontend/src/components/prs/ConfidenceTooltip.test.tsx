@@ -19,9 +19,7 @@ describe('ConfidenceBadge hover tooltip', () => {
     expect(tooltip()).toBeNull();
     act(() => vi.advanceTimersByTime(400));
     expect(tooltip()).toBeTruthy();
-    expect(tooltip()!.textContent).toContain('Merge confidence 4/5: Merge Ascendant');
-    expect(tooltip()!.textContent).toContain('Minor findings worth a look before merge.');
-    expect(tooltip()!.textContent).toContain('a request-changes verdict caps the score at 3');
+    expect(tooltip()!.textContent).toBe('4/5');
   });
 
   it('never opens when the pointer leaves before the delay', () => {
@@ -92,7 +90,7 @@ describe('ConfidenceBadge hover tooltip', () => {
     fireEvent.mouseEnter(badge());
     act(() => vi.advanceTimersByTime(600));
     expect(tooltip()).toBeNull();
-    expect(badge().getAttribute('aria-label')).toContain('Merge Ascendant');
+    expect(badge().getAttribute('aria-label')).toBe('Merge confidence 4/5');
   });
 
   it('does not use the browser title tooltip', () => {
@@ -100,10 +98,10 @@ describe('ConfidenceBadge hover tooltip', () => {
     expect(badge().hasAttribute('title')).toBe(false);
   });
 
-  it('explains the dash the same way', () => {
+  it('shows the dash over the denominator when there is no score', () => {
     render(<ConfidenceBadge score={null} />);
     fireEvent.mouseEnter(badge());
     act(() => vi.advanceTimersByTime(600));
-    expect(tooltip()!.textContent).toContain('The score appears when the next review of this PR completes.');
+    expect(tooltip()!.textContent).toBe('-/5');
   });
 });

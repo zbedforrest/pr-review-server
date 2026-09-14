@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDropdown } from '@/hooks/useDropdown';
 import { CONFIDENCE_BADGES } from './confidenceBadges';
-import { SCORING_RULE, confidenceRecommendation } from './confidenceCopy';
 import './ConfidenceBadge.scss';
 
 interface ConfidenceBadgeProps {
@@ -16,8 +15,8 @@ const MAX_SCORE = CONFIDENCE_BADGES.length - 1;
 // Shorter than the browser's own title delay, long enough that sweeping the
 // pointer across the column does not flash a tooltip per row.
 const HOVER_DELAY_MS = 500;
-// Keep in sync with max-width in ConfidenceBadge.scss.
-const TOOLTIP_WIDTH = 320;
+// Keep in sync with min-width in ConfidenceBadge.scss.
+const TOOLTIP_WIDTH = 56;
 const VIEWPORT_MARGIN = 8;
 const warnedScores = new Set<number>();
 
@@ -35,25 +34,8 @@ function isEmpty(score: number | null | undefined): score is null | undefined {
   return score === null || score === undefined || Number.isNaN(score);
 }
 
-interface TooltipCopy {
-  heading: string;
-  lines: string[];
-  rule?: string;
-}
-
-function tooltipCopy(score: number | null | undefined): TooltipCopy {
-  if (isEmpty(score)) {
-    return {
-      heading: 'No merge confidence yet',
-      lines: ['The score appears when the next review of this PR completes.'],
-    };
-  }
-  const badge = CONFIDENCE_BADGES[clampScore(score)];
-  return {
-    heading: `Merge confidence ${badge.score}/${MAX_SCORE}: ${badge.name}`,
-    lines: [confidenceRecommendation(badge.score), badge.tagline],
-    rule: SCORING_RULE,
-  };
+function tooltipScore(score: number | null | undefined): string {
+  return isEmpty(score) ? `-/${MAX_SCORE}` : `${clampScore(score)}/${MAX_SCORE}`;
 }
 
 /**
@@ -128,11 +110,8 @@ export const ConfidenceBadge = memo(function ConfidenceBadge({ score, size = 'ro
     [intent]
   );
 
-  const copy = tooltipCopy(score);
   const badge = isEmpty(score) ? null : CONFIDENCE_BADGES[clampScore(score)];
-  const ariaLabel = badge
-    ? `Merge confidence ${badge.score}/${MAX_SCORE}, ${badge.name}. ${confidenceRecommendation(badge.score)}`
-    : 'No merge confidence yet';
+  const ariaLabel = badge ? `Merge confidence ${badge.score}/${MAX_SCORE}` : 'No merge confidence yet';
 
   const interactive = describe
     ? {
@@ -155,13 +134,7 @@ export const ConfidenceBadge = memo(function ConfidenceBadge({ score, size = 'ro
           className="confidence-tooltip"
           style={{ top: position.top, left: position.left, maxHeight: position.maxHeight }}
         >
-          <p className="confidence-tooltip__heading">{copy.heading}</p>
-          {copy.lines.map((line) => (
-            <p key={line} className="confidence-tooltip__line">
-              {line}
-            </p>
-          ))}
-          {copy.rule && <p className="confidence-tooltip__rule">{copy.rule}</p>}
+          {tooltipScore(score)}
         </div>,
         document.body
       )
