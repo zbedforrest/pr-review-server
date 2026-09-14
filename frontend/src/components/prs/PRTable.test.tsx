@@ -87,6 +87,7 @@ describe('PRTable header', () => {
       expect(dialog.textContent).toContain(name);
     }
     expect(dialog.querySelectorAll('.confidence-badge--large')).toHaveLength(6);
+    expect(dialog.querySelectorAll('.confidence-badge[tabindex]')).toHaveLength(0);
     expect(dialog.textContent).toContain('Crowned');
     expect(dialog.textContent).toContain('Wreck');
   });
