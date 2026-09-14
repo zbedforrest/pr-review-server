@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConfidenceBadge } from './ConfidenceBadge';
 import { SCORING_RULE } from './confidenceCopy';
@@ -15,19 +15,21 @@ describe('ConfidenceBadge', () => {
 
   it.each([
     [0, 'Merge confidence 0/5, Merge Meltdown. Significant findings; please address before merge.',
-      'Merge confidence 0/5: Merge Meltdown\nSignificant findings; please address before merge.\nThis diff needs a cleanup crew, not a rubber stamp.\n\n' + SCORING_RULE],
+      ['Merge confidence 0/5: Merge Meltdown', 'Significant findings; please address before merge.', 'This diff needs a cleanup crew, not a rubber stamp.', SCORING_RULE]],
     [3, 'Merge confidence 3/5, Diff Defender. Findings that should be addressed before merge.',
-      'Merge confidence 3/5: Diff Defender\nFindings that should be addressed before merge.\nHolding the line. Still checking the exits.\n\n' + SCORING_RULE],
+      ['Merge confidence 3/5: Diff Defender', 'Findings that should be addressed before merge.', 'Holding the line. Still checking the exits.', SCORING_RULE]],
     [4, 'Merge confidence 4/5, Merge Ascendant. Minor findings worth a look before merge.',
-      'Merge confidence 4/5: Merge Ascendant\nMinor findings worth a look before merge.\nOne last patrol before the victory lap.\n\n' + SCORING_RULE],
+      ['Merge confidence 4/5: Merge Ascendant', 'Minor findings worth a look before merge.', 'One last patrol before the victory lap.', SCORING_RULE]],
     [5, 'Merge confidence 5/5, Merge Majesty. No blocking findings.',
-      'Merge confidence 5/5: Merge Majesty\nNo blocking findings.\nNo blockers. Let the merge button wear the crown.\n\n' + SCORING_RULE],
-  ])('explains score %i in its alt text and tooltip', (score, ariaLabel, title) => {
+      ['Merge confidence 5/5: Merge Majesty', 'No blocking findings.', 'No blockers. Let the merge button wear the crown.', SCORING_RULE]],
+  ])('explains score %i in its alt text and tooltip', (score, ariaLabel, tooltipLines) => {
     const el = renderBadge(score);
     expect(el.getAttribute('role')).toBe('img');
     expect(el.getAttribute('aria-label')).toBe(ariaLabel);
-    expect(el.getAttribute('title')).toBe(title);
     expect(el.querySelector('svg')).toBeTruthy();
+    fireEvent.focus(el);
+    const lines = [...screen.getByRole('tooltip').querySelectorAll('p')].map((p) => p.textContent);
+    expect(lines).toEqual(tooltipLines);
   });
 
   it.each([null, undefined, NaN])('renders the empty dash when the score is %s', (score) => {
@@ -36,8 +38,9 @@ describe('ConfidenceBadge', () => {
     expect(el.textContent).toBe('-');
     expect(el.getAttribute('role')).toBe('img');
     expect(el.getAttribute('aria-label')).toBe('No merge confidence yet');
-    expect(el.getAttribute('title')).toBe('No merge confidence yet. The score appears when the next review of this PR completes.');
     expect(el.querySelector('svg')).toBeNull();
+    fireEvent.focus(el);
+    expect(screen.getByRole('tooltip').textContent).toContain('The score appears when the next review of this PR completes.');
   });
 
   it('clamps out-of-range scores to the nearest medal', () => {

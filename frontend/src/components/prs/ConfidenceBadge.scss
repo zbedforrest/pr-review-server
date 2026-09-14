@@ -27,3 +27,41 @@
     opacity: 0.5;
   }
 }
+
+.confidence-tooltip {
+  position: fixed;
+  z-index: 1100;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  box-sizing: border-box;
+  padding: $spacing-sm $spacing-md;
+  background: $color-bg-secondary;
+  color: $color-text-primary;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+  box-shadow: $shadow-lg;
+  font-size: $font-size-md;
+  line-height: 1.4;
+  pointer-events: none;
+
+  p {
+    margin: 0;
+  }
+
+  &__heading {
+    font-weight: 600;
+  }
+
+  &__line + &__line,
+  &__rule {
+    margin-top: $spacing-xs;
+  }
+
+  &__rule {
+    color: $color-text-secondary;
+    font-size: $font-size-sm;
+    border-top: 1px solid $color-border;
+    padding-top: $spacing-xs;
+  }
+}
