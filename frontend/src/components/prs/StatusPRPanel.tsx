@@ -66,7 +66,7 @@ export function StatusPRPanel({ status, onClose }: StatusPRPanelProps) {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (isEditableElement(e.target)) return;
-      if (document.querySelector('[role="menu"], [role="dialog"], [role="tooltip"]')) return;
+      if (document.querySelector('[role="menu"], [role="dialog"], .confidence-tooltip[role="tooltip"]')) return;
       onCloseRef.current();
     };
     document.addEventListener('keydown', onKeyDown);

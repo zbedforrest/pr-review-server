@@ -168,6 +168,7 @@ describe('StatusPRPanel', () => {
     render(<StatusPRPanel status="completed" onClose={onClose} />);
     const tip = document.createElement('div');
     tip.setAttribute('role', 'tooltip');
+    tip.className = 'confidence-tooltip';
     document.body.appendChild(tip);
 
     fireEvent.keyDown(document, { key: 'Escape' });
