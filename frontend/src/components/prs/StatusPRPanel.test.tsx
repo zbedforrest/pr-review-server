@@ -163,6 +163,18 @@ describe('StatusPRPanel', () => {
     expect(queryByText(/server-wide/)).toBeNull();
   });
 
+  it('leaves Escape to an open badge tooltip', () => {
+    const onClose = vi.fn();
+    render(<StatusPRPanel status="completed" onClose={onClose} />);
+    const tip = document.createElement('div');
+    tip.setAttribute('role', 'tooltip');
+    document.body.appendChild(tip);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+    tip.remove();
+  });
+
   it('leaves Escape to an open dialog such as the confidence legend', () => {
     const onClose = vi.fn();
     render(<StatusPRPanel status="completed" onClose={onClose} />);

@@ -56,6 +56,45 @@ describe('ConfidenceBadge hover tooltip', () => {
     expect(tooltip()).toBeNull();
   });
 
+  it('stays open while focused even if the pointer leaves, and while hovered even if focus leaves', () => {
+    render(<ConfidenceBadge score={4} />);
+    fireEvent.focus(badge());
+    fireEvent.mouseEnter(badge());
+    fireEvent.mouseLeave(badge());
+    expect(tooltip()).toBeTruthy();
+    fireEvent.blur(badge());
+    expect(tooltip()).toBeNull();
+
+    fireEvent.mouseEnter(badge());
+    act(() => vi.advanceTimersByTime(600));
+    fireEvent.focus(badge());
+    fireEvent.blur(badge());
+    expect(tooltip()).toBeTruthy();
+    fireEvent.mouseLeave(badge());
+    expect(tooltip()).toBeNull();
+  });
+
+  it('keeps Escape to itself so an enclosing panel does not close too', () => {
+    const outer = vi.fn();
+    document.addEventListener('keydown', outer);
+    render(<ConfidenceBadge score={4} />);
+    fireEvent.focus(badge());
+    expect(tooltip()).toBeTruthy();
+    fireEvent.keyDown(badge(), { key: 'Escape' });
+    expect(tooltip()).toBeNull();
+    expect(outer).not.toHaveBeenCalled();
+    document.removeEventListener('keydown', outer);
+  });
+
+  it('can render as a plain picture without a tooltip or tab stop', () => {
+    render(<ConfidenceBadge score={4} describe={false} />);
+    expect(badge().hasAttribute('tabindex')).toBe(false);
+    fireEvent.mouseEnter(badge());
+    act(() => vi.advanceTimersByTime(600));
+    expect(tooltip()).toBeNull();
+    expect(badge().getAttribute('aria-label')).toContain('Merge Ascendant');
+  });
+
   it('does not use the browser title tooltip', () => {
     render(<ConfidenceBadge score={1} />);
     expect(badge().hasAttribute('title')).toBe(false);

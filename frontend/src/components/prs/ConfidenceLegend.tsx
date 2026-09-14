@@ -70,7 +70,7 @@ export function ConfidenceLegend() {
           <ul className="confidence-legend__list">
             {BADGES_HIGH_TO_LOW.map((badge) => (
               <li key={badge.score} className="confidence-legend__item">
-                <ConfidenceBadge score={badge.score} size="large" />
+                <ConfidenceBadge score={badge.score} size="large" describe={false} />
                 <span className="confidence-legend__score">{badge.score}/{MAX_SCORE}</span>
                 <span className="confidence-legend__name">{badge.name}</span>
                 <span className="confidence-legend__rank">{badge.rankWord}</span>

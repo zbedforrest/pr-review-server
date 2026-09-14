@@ -31,8 +31,8 @@
 .confidence-tooltip {
   position: fixed;
   z-index: 1100;
-  transform: translateX(-50%);
   width: max-content;
+  overflow-y: auto;
   max-width: min(320px, calc(100vw - 16px));
   box-sizing: border-box;
   padding: $spacing-sm $spacing-md;
