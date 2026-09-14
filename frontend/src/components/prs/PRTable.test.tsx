@@ -41,8 +41,8 @@ const makePR = (partial: Partial<PR> = {}): PR => ({
 
 const MEDAL_NAMES = [
   'Merge Majesty',
-  'Merge Ascendant',
-  'Diff Defender',
+  'Merge Merit',
+  'Rework Rumble',
   'Patch Gauntlet',
   'Rollback Reckoning',
   'Merge Meltdown',
