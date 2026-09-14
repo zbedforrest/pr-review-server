@@ -49,30 +49,17 @@ $panel-width: 320px;
 
   &__item {
     display: grid;
-    grid-template-columns: 64px auto 1fr;
-    grid-template-rows: auto auto;
-    column-gap: $spacing-sm;
+    grid-template-columns: 64px 1fr;
+    column-gap: $spacing-md;
     align-items: center;
     padding: $spacing-xs 0;
-
-    .confidence-badge {
-      grid-row: 1 / span 2;
-    }
   }
 
   &__score {
-    grid-row: 1 / span 2;
     font-weight: 700;
-    color: $color-text-secondary;
-  }
-
-  &__name {
-    font-weight: 600;
-  }
-
-  &__rank {
-    color: $color-text-secondary;
-    font-size: $font-size-xs;
+    font-size: $font-size-xl;
+    font-variant-numeric: tabular-nums;
+    color: $color-text-primary;
   }
 
   &__rule {

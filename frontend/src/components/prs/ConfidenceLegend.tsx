@@ -14,7 +14,7 @@ const BADGES_HIGH_TO_LOW = [...CONFIDENCE_BADGES].reverse();
 
 /**
  * Column-header trigger for the merge-confidence legend: every medal at large
- * size with its name and rank word, plus the scoring rule.
+ * size with its score, plus the scoring rule.
  */
 export function ConfidenceLegend() {
   const { isOpen, toggle, close, anchorRef, panelRef, position } = useDropdown({
@@ -72,8 +72,6 @@ export function ConfidenceLegend() {
               <li key={badge.score} className="confidence-legend__item">
                 <ConfidenceBadge score={badge.score} size="large" describe={false} />
                 <span className="confidence-legend__score">{badge.score}/{MAX_SCORE}</span>
-                <span className="confidence-legend__name">{badge.name}</span>
-                <span className="confidence-legend__rank">{badge.rankWord}</span>
               </li>
             ))}
           </ul>

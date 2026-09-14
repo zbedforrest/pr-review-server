@@ -6,20 +6,12 @@ describe('CONFIDENCE_BADGES', () => {
   it('matches what scripts/gen-badges.mjs produces from badges/trophy-case.json', () => {
     const generated = [...trophyCase.badges]
       .sort((a, b) => a.score - b.score)
-      .map((b) => ({ score: b.score, name: b.name, rankWord: b.rank_word, tagline: b.tagline, svg: b.svg }));
+      .map((b) => ({ score: b.score, svg: b.svg }));
     expect(CONFIDENCE_BADGES).toStrictEqual(generated);
   });
 
   it('has one medal per score, ascending from 0 to 5', () => {
     expect(CONFIDENCE_BADGES.map((b) => b.score)).toEqual([0, 1, 2, 3, 4, 5]);
-  });
-
-  it('gives every medal a distinct name, rank word and tagline', () => {
-    for (const key of ['name', 'rankWord', 'tagline'] as const) {
-      const values = CONFIDENCE_BADGES.map((b) => b[key]);
-      expect(new Set(values).size).toBe(values.length);
-      expect(values.every((v) => v.trim().length > 0)).toBe(true);
-    }
   });
 
   it('ships inline SVGs on the shared 64x64 canvas', () => {

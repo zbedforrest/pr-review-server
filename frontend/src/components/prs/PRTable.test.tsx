@@ -39,15 +39,6 @@ const makePR = (partial: Partial<PR> = {}): PR => ({
   ...partial,
 });
 
-const MEDAL_NAMES = [
-  'Merge Majesty',
-  'Merge Merit',
-  'Rework Rumble',
-  'Patch Gauntlet',
-  'Rollback Reckoning',
-  'Merge Meltdown',
-];
-
 const headerTexts = () => screen.getAllByRole('columnheader').map((th) => th.textContent?.trim());
 const legendButton = () => screen.getByRole('button', { name: 'Confidence' });
 
@@ -78,18 +69,15 @@ describe('PRTable header', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('opens a legend listing all six medals with their rank words and the scoring rule', () => {
+  it('opens a legend listing all six medals with their scores and the scoring rule', () => {
     render(<PRTable prs={[makePR()]} />);
     fireEvent.click(legendButton());
     expect(legendButton().getAttribute('aria-expanded')).toBe('true');
     const dialog = screen.getByRole('dialog');
-    for (const name of MEDAL_NAMES) {
-      expect(dialog.textContent).toContain(name);
-    }
+    const scores = [...dialog.querySelectorAll('.confidence-legend__score')].map((el) => el.textContent);
+    expect(scores).toEqual(['5/5', '4/5', '3/5', '2/5', '1/5', '0/5']);
     expect(dialog.querySelectorAll('.confidence-badge--large')).toHaveLength(6);
     expect(dialog.querySelectorAll('.confidence-badge[tabindex]')).toHaveLength(0);
-    expect(dialog.textContent).toContain('Crowned');
-    expect(dialog.textContent).toContain('Wreck');
   });
 
   it('describes the presence-based scoring rule', () => {
