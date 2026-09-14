@@ -15,7 +15,7 @@ const MAX_SCORE = CONFIDENCE_BADGES.length - 1;
 // Shorter than the browser's own title delay, long enough that sweeping the
 // pointer across the column does not flash a tooltip per row.
 const HOVER_DELAY_MS = 500;
-// Keep in sync with min-width in ConfidenceBadge.scss.
+// Keep in sync with width in ConfidenceBadge.scss.
 const TOOLTIP_WIDTH = 56;
 const VIEWPORT_MARGIN = 8;
 const warnedScores = new Set<number>();
@@ -116,7 +116,6 @@ export const ConfidenceBadge = memo(function ConfidenceBadge({ score, size = 'ro
   const interactive = describe
     ? {
         tabIndex: 0,
-        'aria-describedby': isOpen ? tooltipId : undefined,
         onMouseEnter: intent.onMouseEnter,
         onMouseLeave: intent.onMouseLeave,
         onFocus: intent.onFocus,

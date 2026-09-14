@@ -45,11 +45,11 @@ describe('ConfidenceBadge hover tooltip', () => {
     expect(tooltip()).toBeNull();
   });
 
-  it('opens on keyboard focus without a delay and describes the badge', () => {
+  it('opens on keyboard focus without a delay and leaves the label as the only description', () => {
     render(<ConfidenceBadge score={5} />);
     fireEvent.focus(badge());
     expect(tooltip()).toBeTruthy();
-    expect(badge().getAttribute('aria-describedby')).toBe(tooltip()!.id);
+    expect(badge().hasAttribute('aria-describedby')).toBe(false);
     fireEvent.blur(badge());
     expect(tooltip()).toBeNull();
   });

@@ -31,7 +31,7 @@
 .confidence-tooltip {
   position: fixed;
   z-index: 1100;
-  min-width: 56px;
+  width: 56px;
   box-sizing: border-box;
   padding: $spacing-xs $spacing-sm;
   background: $color-bg-secondary;
