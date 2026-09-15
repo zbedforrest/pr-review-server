@@ -52,11 +52,7 @@ type AutoReviewIntentModel struct {
 func (AutoReviewIntentModel) TableName() string { return "auto_review_intents" }
 
 func autoReviewIntentFromModel(m AutoReviewIntentModel) AutoReviewIntent {
-	return AutoReviewIntent{
-		ID: m.ID, RepoOwner: m.RepoOwner, RepoName: m.RepoName, PRNumber: m.PRNumber, HeadSHA: m.HeadSHA,
-		Trigger: m.Trigger, DeliveryID: m.DeliveryID, Status: m.Status, RunID: m.RunID, Publication: m.Publication,
-		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
-	}
+	return AutoReviewIntent(m)
 }
 
 func intentTarget(owner, repo string) (string, string) {
