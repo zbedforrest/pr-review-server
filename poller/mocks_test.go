@@ -820,7 +820,7 @@ func (m *MockDatabase) DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (
 	var kept []*db.AutoReviewIntent
 	var n int64
 	for _, intent := range m.AutoReviewIntents {
-		terminal := intent.Status == db.AutoReviewIntentDone || intent.Status == db.AutoReviewIntentSuperseded || intent.Status == db.AutoReviewIntentFailed
+		terminal := intent.Status == db.AutoReviewIntentDone || intent.Status == db.AutoReviewIntentSuperseded
 		if terminal && intent.UpdatedAt.Before(cutoff) {
 			n++
 			continue
