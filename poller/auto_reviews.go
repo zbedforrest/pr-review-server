@@ -26,8 +26,11 @@ const (
 	// the intent against the publication ledger instead.
 	autoReviewPublicationGrace = 10 * time.Minute
 	// webhookDeliveryRetention keeps the dedup key well past GitHub's
-	// redelivery window.
+	// redelivery window; terminal intents share it.
 	webhookDeliveryRetention = 30 * 24 * time.Hour
+	// autoReviewClaimGrace is how long a running intent may exist without its
+	// run row: admission claims the intent first, then creates the run.
+	autoReviewClaimGrace = 5 * time.Minute
 )
 
 // publishAllowedFor reports whether the author is on the publication
@@ -88,11 +91,18 @@ func (p *Poller) autoReviewIntentIndex() (map[string][]db.AutoReviewIntent, erro
 }
 
 func (p *Poller) pruneWebhookDeliveries() {
-	n, err := p.db.DeleteWebhookDeliveriesBefore(time.Now().Add(-webhookDeliveryRetention))
+	cutoff := time.Now().Add(-webhookDeliveryRetention)
+	n, err := p.db.DeleteWebhookDeliveriesBefore(cutoff)
 	if err != nil {
 		log.Printf("[WEBHOOK] prune deliveries: %v", err)
 	} else if n > 0 {
 		log.Printf("[WEBHOOK] pruned %d deliveries older than %s", n, webhookDeliveryRetention)
+	}
+	n, err = p.db.DeleteTerminalAutoReviewIntentsBefore(cutoff)
+	if err != nil {
+		log.Printf("[AUTO-REVIEW] prune terminal intents: %v", err)
+	} else if n > 0 {
+		log.Printf("[AUTO-REVIEW] pruned %d terminal intents older than %s", n, webhookDeliveryRetention)
 	}
 }
 
@@ -163,6 +173,12 @@ func (p *Poller) HandleWebhookDelivery(ctx context.Context, d db.WebhookDelivery
 			pr.Title = existing.Title
 		}
 	}
+	// The intent is durable; when the resident queue is already at the
+	// poll's budget the dispatcher admits it on the next tick instead.
+	if p.trackedReviewCount() >= p.pollAdmissionLimit() {
+		log.Printf("[AUTO-REVIEW] delivery=%s %s: intent=%d left queued, the resident review queue is full", d.DeliveryID, key, intent.ID)
+		return nil
+	}
 	p.admitAutoReviewIntent(ctx, intent, pr)
 	return nil
 }
@@ -208,8 +224,11 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 }
 
 func (p *Poller) moveAutoReviewIntent(intent db.AutoReviewIntent, from, to, runID string) {
-	if _, err := p.db.UpdateAutoReviewIntentStatus(intent.ID, []string{from}, to, runID); err != nil {
+	moved, err := p.db.UpdateAutoReviewIntentStatus(intent.ID, []string{from}, to, runID)
+	if err != nil {
 		log.Printf("[AUTO-REVIEW] intent=%d: could not move %s -> %s: %v", intent.ID, from, to, err)
+	} else if !moved {
+		log.Printf("[AUTO-REVIEW] intent=%d: not moved %s -> %s, the intent was no longer %s", intent.ID, from, to, from)
 	}
 }
 
@@ -375,7 +394,12 @@ func (p *Poller) settleAutoReviewIntents() {
 		outcome := ""
 		switch {
 		case run == nil:
-			outcome = db.AutoReviewIntentFailed
+			// Admission claims the intent before ProcessReviewJob writes the run
+			// row. Past the grace nothing executed, so the head is owed again.
+			if time.Since(intent.UpdatedAt) < autoReviewClaimGrace {
+				continue
+			}
+			outcome = db.AutoReviewIntentQueued
 		case run.Status == db.ReviewRunStatusCompleted:
 			switch {
 			case intent.Publication == publicationPosted:
@@ -408,7 +432,11 @@ func (p *Poller) settleAutoReviewIntents() {
 		if outcome == "" {
 			continue
 		}
-		if _, err := p.db.UpdateAutoReviewIntentStatus(intent.ID, []string{db.AutoReviewIntentRunning}, outcome, intent.RunID); err != nil {
+		runID := intent.RunID
+		if outcome == db.AutoReviewIntentQueued {
+			runID = ""
+		}
+		if _, err := p.db.UpdateAutoReviewIntentStatus(intent.ID, []string{db.AutoReviewIntentRunning}, outcome, runID); err != nil {
 			log.Printf("[AUTO-REVIEW] %s intent=%d run=%s: could not settle: %v", key, intent.ID, intent.RunID, err)
 			continue
 		}

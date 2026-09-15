@@ -137,6 +137,33 @@ func TestEnsureAutoReviewIntentLowercasesTargetsAndSeedsStatus(t *testing.T) {
 	assert.Equal(t, "run-9", listed[0].RunID)
 }
 
+func TestEnsureAutoReviewIntentHonorsTheSeededStatusOverASupersededRow(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	stale := AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: "aaa", Trigger: "ready_for_review"}
+	_, err := database.EnsureAutoReviewIntent(&stale, nil)
+	require.NoError(t, err)
+	_, err = database.UpdateAutoReviewIntentStatus(stale.ID, nil, AutoReviewIntentSuperseded, "")
+	require.NoError(t, err)
+
+	seeded := AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: "aaa", Trigger: "poll_fallback", Status: AutoReviewIntentDone, Publication: "posted"}
+	created, err := database.EnsureAutoReviewIntent(&seeded, []string{AutoReviewIntentSuperseded})
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, stale.ID, seeded.ID)
+	assert.Equal(t, AutoReviewIntentDone, seeded.Status, "a published head must not be re-queued over a superseded row")
+	assert.Equal(t, "posted", seeded.Publication)
+
+	old := time.Now().Add(-48 * time.Hour)
+	require.NoError(t, database.db.Model(&AutoReviewIntentModel{}).Where("id = ?", seeded.ID).Update("updated_at", old).Error)
+	n, err := database.DeleteTerminalAutoReviewIntentsBefore(time.Now().Add(-24 * time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+	left, err := database.ListAutoReviewIntents(AutoReviewIntentFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, left)
+}
+
 func TestSupersedeQueuedAutoReviewIntentsKeepsCurrentHeadAndRunningWork(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()

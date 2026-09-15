@@ -306,6 +306,7 @@ type Database interface {
 	UpdateAutoReviewIntentStatus(id uint, from []string, to, runID string) (bool, error)
 	SetAutoReviewIntentPublicationByRun(runID, outcome string) error
 	SupersedeQueuedAutoReviewIntents(owner, repo string, number int, keepHeadSHA string) (int, error)
+	DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (int64, error)
 
 	// Settings operations
 	GetSetting(key string) (string, error)

@@ -242,7 +242,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
               type="checkbox"
               checked={publishing.draft.auto_review_ready_prs}
               onChange={(e) => publishing.patch({ auto_review_ready_prs: e.target.checked })}
-              disabled={policyDisabled}
+              disabled={disabled}
               aria-describedby="settings-auto-review-ready-help"
             />
             <label className="settings-field__label" htmlFor="settings-auto-review-ready">

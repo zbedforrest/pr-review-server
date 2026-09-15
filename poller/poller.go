@@ -3210,10 +3210,19 @@ func (p *Poller) poll(ctx context.Context) {
 	allPRsToProcess := append(reviewPRs, myPRs...)
 
 	// Workers run detached from the poll, so admission is what bounds the
-	// resident queue. The rest stays pending for the next tick.
-	if limit := p.pollAdmissionLimit(); len(allPRsToProcess) > limit {
-		log.Printf("[POLL] Admitting %d of %d review candidates this cycle; the rest stay pending", limit, len(allPRsToProcess))
-		allPRsToProcess = allPRsToProcess[:limit]
+	// resident queue: candidates already tracked are dropped and the rest is
+	// capped at the budget the tracked jobs leave. Anything cut stays pending
+	// for the next tick.
+	untracked := allPRsToProcess[:0]
+	for _, pr := range allPRsToProcess {
+		if !p.isTracked(pr.Owner, pr.Repo, pr.Number) {
+			untracked = append(untracked, pr)
+		}
+	}
+	allPRsToProcess = untracked
+	if limit := p.pollAdmissionLimit() - p.trackedReviewCount(); len(allPRsToProcess) > max(limit, 0) {
+		log.Printf("[POLL] Admitting %d of %d review candidates this cycle; the rest stay pending", max(limit, 0), len(allPRsToProcess))
+		allPRsToProcess = allPRsToProcess[:max(limit, 0)]
 	}
 
 	// Group all PRs by repository for batch processing

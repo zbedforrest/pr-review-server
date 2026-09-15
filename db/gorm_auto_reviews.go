@@ -93,6 +93,19 @@ func (g *GormDB) DeleteWebhookDelivery(deliveryID string) error {
 	return nil
 }
 
+// DeleteTerminalAutoReviewIntentsBefore prunes done, superseded and failed
+// intents not touched since cutoff. A still-open head that loses its done row
+// is re-seeded from the publication ledger, so nothing is reviewed twice.
+func (g *GormDB) DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (int64, error) {
+	res := g.db.Where("status IN ? AND updated_at < ?",
+		[]string{AutoReviewIntentDone, AutoReviewIntentSuperseded, AutoReviewIntentFailed}, cutoff.UTC()).
+		Delete(&AutoReviewIntentModel{})
+	if res.Error != nil {
+		return 0, fmt.Errorf("prune terminal auto review intents: %w", res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
 // DeleteWebhookDeliveriesBefore prunes deliveries older than cutoff; the
 // dedup key only needs to outlive GitHub's redelivery window.
 func (g *GormDB) DeleteWebhookDeliveriesBefore(cutoff time.Time) (int64, error) {
@@ -132,9 +145,9 @@ func (g *GormDB) GetWebhookStatus(since time.Time) (WebhookStatus, error) {
 }
 
 // EnsureAutoReviewIntent inserts an intent for the target head (queued unless
-// intent.Status seeds another status), or re-queues the existing row when
-// its status is one of requeueFrom. The intent is filled from the stored row
-// on return; created reports whether this call produced the intent.
+// intent.Status seeds another status), or moves an existing row whose status
+// is one of requeueFrom to the seeded status. The intent is filled from the
+// stored row on return; created reports whether this call produced the intent.
 func (g *GormDB) EnsureAutoReviewIntent(intent *AutoReviewIntent, requeueFrom []string) (bool, error) {
 	if intent.RepoOwner == "" || intent.RepoName == "" || intent.PRNumber <= 0 || intent.HeadSHA == "" {
 		return false, fmt.Errorf("ensure auto review intent: complete PR target and head are required")
@@ -157,8 +170,8 @@ func (g *GormDB) EnsureAutoReviewIntent(intent *AutoReviewIntent, requeueFrom []
 	} else {
 		onConflict.Where = clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "auto_review_intents.status IN ?", Vars: []interface{}{requeueFrom}}}}
 		onConflict.DoUpdates = clause.Assignments(map[string]interface{}{
-			"status": AutoReviewIntentQueued, "trigger": intent.Trigger, "delivery_id": intent.DeliveryID,
-			"run_id": "", "publication": "", "updated_at": now,
+			"status": intent.Status, "trigger": intent.Trigger, "delivery_id": intent.DeliveryID,
+			"run_id": intent.RunID, "publication": intent.Publication, "updated_at": now,
 		})
 	}
 	res := g.db.Clauses(onConflict).Create(&row)

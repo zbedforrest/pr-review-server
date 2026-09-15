@@ -188,9 +188,11 @@ func (s *Server) acceptPullRequestWebhook(w http.ResponseWriter, deliveryID stri
 	log.Printf("[WEBHOOK] delivery=%s %s: pull_request.%s head=%s author=%s draft=%t state=%s",
 		deliveryID, target, delivery.Action, delivery.HeadSHA[:min(7, len(delivery.HeadSHA))], delivery.Author, delivery.Draft, delivery.State)
 	if s.webhookDeliveryFunc != nil {
-		// The intent is durable before the 200, so a crash after the response
-		// loses nothing; the request context is not used because the work
-		// must not be cancelled by the client going away.
+		// The intent is recorded before the 200 so a redelivery is never needed
+		// to process a delivery the handler saw; a crash between the delivery
+		// row and the intent is covered by the poll fallback on the next tick.
+		// The request context is not used because the work must not be
+		// cancelled by the client going away.
 		if err := s.webhookDeliveryFunc(context.Background(), delivery); err != nil {
 			log.Printf("[WEBHOOK] delivery=%s %s: processing failed, forgetting the delivery so it can be redelivered: %v", deliveryID, target, err)
 			if delErr := s.db.DeleteWebhookDelivery(deliveryID); delErr != nil {

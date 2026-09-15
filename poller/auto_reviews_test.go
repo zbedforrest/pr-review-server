@@ -201,6 +201,40 @@ func TestDispatchAdmitsWithinThePollBudgetAndLeavesTheRestQueued(t *testing.T) {
 	waitForDetachedReviews(t, f.p)
 }
 
+func TestSettlementGivesAClaimedIntentTimeForItsRunRowThenRequeuesIt(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	claimed := db.AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: autoReviewOldHead, Trigger: "opened"}
+	_, err := f.db.EnsureAutoReviewIntent(&claimed, nil)
+	require.NoError(t, err)
+	_, err = f.db.UpdateAutoReviewIntentStatus(claimed.ID, nil, db.AutoReviewIntentRunning, "run-not-yet-written")
+	require.NoError(t, err)
+
+	f.p.settleAutoReviewIntents()
+	assert.Equal(t, db.AutoReviewIntentRunning, f.intents(t)[0].Status, "the run row may still be on its way")
+
+	f.db.mu.Lock()
+	f.db.AutoReviewIntents[0].UpdatedAt = time.Now().Add(-autoReviewClaimGrace - time.Minute)
+	f.db.mu.Unlock()
+	f.p.settleAutoReviewIntents()
+	requeued := f.intents(t)[0]
+	assert.Equal(t, db.AutoReviewIntentQueued, requeued.Status, "nothing executed, so the head is owed again")
+	assert.Equal(t, "", requeued.RunID)
+}
+
+func TestWebhookLeavesTheIntentQueuedWhenTheResidentQueueIsFull(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	f.p.firstPassSlots = make(chan struct{}, 1)
+	for n := 1; n <= f.p.pollAdmissionLimit(); n++ {
+		f.p.activeReviews[prKey("acme", "busy", n)] = ProcessInfo{RunID: fmt.Sprintf("run-busy-%d", n)}
+	}
+
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
+	intents := f.intents(t)
+	require.Len(t, intents, 1)
+	assert.Equal(t, db.AutoReviewIntentQueued, intents[0].Status)
+	assert.Empty(t, f.runs(), "the dispatcher admits it once capacity frees up")
+}
+
 func TestIntentIsClaimedBeforeTheRunLaunches(t *testing.T) {
 	f := newAutoReviewFixture(t, true, "*")
 	intent := db.AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: autoReviewOldHead, Trigger: "opened"}

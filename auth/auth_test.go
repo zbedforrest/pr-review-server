@@ -221,6 +221,9 @@ func (m *MockDatabase) DeleteWebhookDelivery(deliveryID string) error           
 func (m *MockDatabase) DeleteWebhookDeliveriesBefore(cutoff time.Time) (int64, error) {
 	return 0, nil
 }
+func (m *MockDatabase) DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (int64, error) {
+	return 0, nil
+}
 func (m *MockDatabase) SetAutoReviewIntentPublicationByRun(runID, outcome string) error {
 	return nil
 }

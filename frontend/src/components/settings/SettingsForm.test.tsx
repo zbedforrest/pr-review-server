@@ -347,9 +347,13 @@ describe('SettingsForm', () => {
     expect((screen.getByLabelText('Review ready PRs automatically') as HTMLInputElement).checked).toBe(true);
   });
 
-  it('disables the automatic review switch while no author is enabled', () => {
-    renderForm({}, { ...serverSettings, publish_enabled_authors: '', publish_reply_mode: 'off', publish_reply_enabled_at: '' });
-    expect((screen.getByLabelText('Review ready PRs automatically') as HTMLInputElement).disabled).toBe(true);
+  it('keeps the automatic review switch editable while no author is enabled so it can be turned off', () => {
+    renderForm({}, { ...serverSettings, publish_enabled_authors: '', auto_review_ready_prs: true, publish_reply_mode: 'off', publish_reply_enabled_at: '' });
+    const toggle = screen.getByLabelText('Review ready PRs automatically') as HTMLInputElement;
+    expect(toggle.disabled).toBe(false);
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
+    expect(saveIn('Publishing').disabled).toBe(false);
   });
 
   it('never renders generate_html', () => {

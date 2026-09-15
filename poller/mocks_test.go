@@ -814,6 +814,23 @@ func (m *MockDatabase) DeleteWebhookDeliveriesBefore(cutoff time.Time) (int64, e
 	return n, nil
 }
 
+func (m *MockDatabase) DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var kept []*db.AutoReviewIntent
+	var n int64
+	for _, intent := range m.AutoReviewIntents {
+		terminal := intent.Status == db.AutoReviewIntentDone || intent.Status == db.AutoReviewIntentSuperseded || intent.Status == db.AutoReviewIntentFailed
+		if terminal && intent.UpdatedAt.Before(cutoff) {
+			n++
+			continue
+		}
+		kept = append(kept, intent)
+	}
+	m.AutoReviewIntents = kept
+	return n, nil
+}
+
 func (m *MockDatabase) GetWebhookStatus(since time.Time) (db.WebhookStatus, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -855,11 +872,11 @@ func (m *MockDatabase) EnsureAutoReviewIntent(intent *db.AutoReviewIntent, reque
 			}
 		}
 		if requeued {
-			existing.Status = db.AutoReviewIntentQueued
+			existing.Status = intent.Status
 			existing.Trigger = intent.Trigger
 			existing.DeliveryID = intent.DeliveryID
-			existing.RunID = ""
-			existing.Publication = ""
+			existing.RunID = intent.RunID
+			existing.Publication = intent.Publication
 			existing.UpdatedAt = now
 		}
 		*intent = *existing
