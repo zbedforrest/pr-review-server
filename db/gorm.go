@@ -105,6 +105,8 @@ func (g *GormDB) AutoMigrate() error {
 		&ReviewStageAttemptModel{},
 		&MentionTriggerModel{},
 		&HealthReportModel{},
+		&WebhookDeliveryModel{},
+		&AutoReviewIntentModel{},
 	); err != nil {
 		return err
 	}
@@ -186,6 +188,16 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&HealthReportModel{}) {
 		if err := g.db.Migrator().CreateTable(&HealthReportModel{}); err != nil {
 			return fmt.Errorf("create health_reports: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&WebhookDeliveryModel{}) {
+		if err := g.db.Migrator().CreateTable(&WebhookDeliveryModel{}); err != nil {
+			return fmt.Errorf("create webhook_deliveries: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&AutoReviewIntentModel{}) {
+		if err := g.db.Migrator().CreateTable(&AutoReviewIntentModel{}); err != nil {
+			return fmt.Errorf("create auto_review_intents: %w", err)
 		}
 	}
 	// Older revisions did not enforce one live run per target. Prefer work that
@@ -373,6 +385,7 @@ func (g *GormDB) Close() error {
 func (g *GormDB) initDefaultSettings() error {
 	defaults := map[string]string{
 		"auto_review_requested_prs": "false",
+		"auto_review_ready_prs":     "false",
 		"review_n_requests":         "3",
 		"generate_html":             "true",
 	}

@@ -168,10 +168,11 @@ func TestPublishGitHubReview_DoesNotWriteToClosedDraftOrUnlistedAuthorPRs(t *tes
 			sidecar := []byte(`{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc",
 				"findings":[{"id":"f.go:0:abc123def456","severity":"critical","provenance":"agent","file":"f.go","line":3,"comment":"Real bug."}]}`)
 
-			report := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: tc.author}, sidecar)
+			report, outcome := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: tc.author}, sidecar)
 
 			assert.Empty(t, writes, "no GitHub writes may happen for a %s PR", tc.name)
 			assert.Nil(t, report, "nothing was published, so there is no published score")
+			assert.NotEqual(t, publicationPosted, outcome)
 		})
 	}
 }
@@ -236,9 +237,10 @@ func TestPublishGitHubReview_ReportsTheConfidenceItRendered(t *testing.T) {
 	require.NoError(t, database.UpsertPublishedFinding(dismissedRow("acme", "example", 1, "f.go:0:abc123def456")))
 	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
 
-	report := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}, []byte(scoredSidecar))
+	report, outcome := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}, []byte(scoredSidecar))
 
 	require.NotNil(t, report, "an open PR by an enabled author is published")
+	assert.Equal(t, publicationPosted, outcome)
 	assert.Equal(t, 4, report.Confidence, "the conceded finding is not counted")
 	assert.Equal(t, []string{"POST /repos/acme/example/issues/1/comments"}, writes())
 }
@@ -252,7 +254,7 @@ func TestPublishGitHubReview_KeepsTheScoreWhenAWriteFails(t *testing.T) {
 	require.NoError(t, database.UpsertPublishedFinding(dismissedRow("acme", "example", 1, "f.go:0:abc123def456")))
 	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
 
-	report := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}, []byte(scoredSidecar))
+	report, _ := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}, []byte(scoredSidecar))
 
 	require.NotEmpty(t, writes(), "the publish must have reached GitHub")
 	require.NotNil(t, report, "the round was scored before the write, so the score survives the failure")

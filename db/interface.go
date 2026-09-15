@@ -296,6 +296,18 @@ type Database interface {
 	UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updatedAt time.Time) error
 	UpdatePRDraft(owner, repo string, prNumber int, draft bool) error
 
+	// Webhook deliveries and automatic review intents
+	CreateWebhookDelivery(d *WebhookDelivery) (bool, error)
+	DeleteWebhookDelivery(deliveryID string) error
+	DeleteWebhookDeliveriesBefore(cutoff time.Time) (int64, error)
+	GetWebhookStatus(since time.Time) (WebhookStatus, error)
+	EnsureAutoReviewIntent(intent *AutoReviewIntent, requeueFrom []string) (bool, error)
+	ListAutoReviewIntents(filter AutoReviewIntentFilter) ([]AutoReviewIntent, error)
+	UpdateAutoReviewIntentStatus(id uint, from []string, to, runID string) (bool, error)
+	SetAutoReviewIntentPublicationByRun(runID, outcome string) error
+	SupersedeQueuedAutoReviewIntents(owner, repo string, number int, keepHeadSHA string) (int, error)
+	DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (int64, error)
+
 	// Settings operations
 	GetSetting(key string) (string, error)
 	SetSetting(key, value string) error
@@ -436,6 +448,72 @@ type MentionTrigger struct {
 	Holder      string
 	CreatedAt   time.Time
 	TriggeredAt time.Time
+}
+
+// WebhookDelivery is the compact record of one GitHub webhook delivery that
+// concerns a pull request.
+type WebhookDelivery struct {
+	DeliveryID     string
+	Event          string
+	Action         string
+	InstallationID int64
+	RepoOwner      string
+	RepoName       string
+	PRNumber       int
+	HeadSHA        string
+	BaseSHA        string
+	Author         string
+	Title          string
+	Draft          bool
+	State          string
+	ReceivedAt     time.Time
+}
+
+// WebhookStatus is the operator view of webhook ingress and the automatic
+// review backlog.
+type WebhookStatus struct {
+	Deliveries     int
+	LastDeliveryAt *time.Time
+	IntentsQueued  int
+}
+
+// Automatic review intent statuses and triggers.
+const (
+	AutoReviewIntentQueued     = "queued"
+	AutoReviewIntentRunning    = "running"
+	AutoReviewIntentDone       = "done"
+	AutoReviewIntentSuperseded = "superseded"
+	AutoReviewIntentFailed     = "failed"
+
+	AutoReviewTriggerPollFallback = "poll_fallback"
+)
+
+// AutoReviewIntent is one automatic review owed to a PR head, unique per
+// (owner, repo, number, head) with owner and repo lowercased. RunID links the
+// review run that served it; Publication records how that run's GitHub
+// publication ended (see poller publication outcomes).
+type AutoReviewIntent struct {
+	ID          uint
+	RepoOwner   string
+	RepoName    string
+	PRNumber    int
+	HeadSHA     string
+	Trigger     string
+	DeliveryID  string
+	Status      string
+	RunID       string
+	Publication string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// AutoReviewIntentFilter narrows ListAutoReviewIntents; zero fields match all.
+type AutoReviewIntentFilter struct {
+	RepoOwner string
+	RepoName  string
+	PRNumber  int
+	HeadSHA   string
+	Statuses  []string
 }
 
 // UnlinkedPublishedFinding is an inline finding posted through a review whose

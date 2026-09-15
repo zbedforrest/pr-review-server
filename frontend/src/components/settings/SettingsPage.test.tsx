@@ -14,6 +14,7 @@ const serverSettings: Settings = {
   publish_inline_cap: 5,
   publish_inline_min_severity: 'medium',
   publish_show_unverified: false,
+  auto_review_ready_prs: false,
   publish_reply_mode: 'react',
   publish_reply_enabled_at: '',
   admin_logins: 'alice',

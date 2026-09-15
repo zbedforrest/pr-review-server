@@ -257,6 +257,11 @@ type MockDatabase struct {
 	AutoReviewEnabled       bool
 	ReviewNRequests         int
 	GetReviewNRequestsCalls int
+	Settings                map[string]string
+
+	// Webhook deliveries (keyed by delivery id) and automatic review intents.
+	WebhookDeliveries map[string]*db.WebhookDelivery
+	AutoReviewIntents []*db.AutoReviewIntent
 
 	// Track calls for verification
 	UpdatePRMetadataCalls []string // "owner/repo/number" keys, in call order
@@ -757,11 +762,222 @@ func (m *MockDatabase) UpdatePRDraft(owner, repo string, prNumber int, draft boo
 }
 
 func (m *MockDatabase) GetSetting(key string) (string, error) {
-	return "", nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.Settings[key], nil
 }
 
 func (m *MockDatabase) SetSetting(key, value string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Settings == nil {
+		m.Settings = make(map[string]string)
+	}
+	m.Settings[key] = value
 	return nil
+}
+
+func (m *MockDatabase) CreateWebhookDelivery(d *db.WebhookDelivery) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.WebhookDeliveries == nil {
+		m.WebhookDeliveries = make(map[string]*db.WebhookDelivery)
+	}
+	if _, exists := m.WebhookDeliveries[d.DeliveryID]; exists {
+		return false, nil
+	}
+	if d.ReceivedAt.IsZero() {
+		d.ReceivedAt = time.Now().UTC()
+	}
+	stored := *d
+	m.WebhookDeliveries[d.DeliveryID] = &stored
+	return true, nil
+}
+
+func (m *MockDatabase) DeleteWebhookDelivery(deliveryID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.WebhookDeliveries, deliveryID)
+	return nil
+}
+
+func (m *MockDatabase) DeleteWebhookDeliveriesBefore(cutoff time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, d := range m.WebhookDeliveries {
+		if d.ReceivedAt.Before(cutoff) {
+			delete(m.WebhookDeliveries, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *MockDatabase) DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var kept []*db.AutoReviewIntent
+	var n int64
+	for _, intent := range m.AutoReviewIntents {
+		terminal := intent.Status == db.AutoReviewIntentDone || intent.Status == db.AutoReviewIntentSuperseded
+		if terminal && intent.UpdatedAt.Before(cutoff) {
+			n++
+			continue
+		}
+		kept = append(kept, intent)
+	}
+	m.AutoReviewIntents = kept
+	return n, nil
+}
+
+func (m *MockDatabase) GetWebhookStatus(since time.Time) (db.WebhookStatus, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var status db.WebhookStatus
+	for _, d := range m.WebhookDeliveries {
+		if !d.ReceivedAt.Before(since) {
+			status.Deliveries++
+		}
+		if status.LastDeliveryAt == nil || d.ReceivedAt.After(*status.LastDeliveryAt) {
+			at := d.ReceivedAt
+			status.LastDeliveryAt = &at
+		}
+	}
+	for _, intent := range m.AutoReviewIntents {
+		if intent.Status == db.AutoReviewIntentQueued {
+			status.IntentsQueued++
+		}
+	}
+	return status, nil
+}
+
+func (m *MockDatabase) EnsureAutoReviewIntent(intent *db.AutoReviewIntent, requeueFrom []string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	intent.RepoOwner, intent.RepoName = strings.ToLower(intent.RepoOwner), strings.ToLower(intent.RepoName)
+	if intent.Status == "" {
+		intent.Status = db.AutoReviewIntentQueued
+	}
+	for _, existing := range m.AutoReviewIntents {
+		if existing.RepoOwner != intent.RepoOwner || existing.RepoName != intent.RepoName ||
+			existing.PRNumber != intent.PRNumber || existing.HeadSHA != intent.HeadSHA {
+			continue
+		}
+		requeued := false
+		for _, status := range requeueFrom {
+			if existing.Status == status {
+				requeued = true
+			}
+		}
+		if requeued {
+			existing.Status = intent.Status
+			existing.Trigger = intent.Trigger
+			existing.DeliveryID = intent.DeliveryID
+			existing.RunID = intent.RunID
+			existing.Publication = intent.Publication
+			existing.UpdatedAt = now
+		}
+		*intent = *existing
+		return requeued, nil
+	}
+	stored := *intent
+	stored.ID = uint(len(m.AutoReviewIntents) + 1)
+	stored.CreatedAt = now
+	stored.UpdatedAt = now
+	m.AutoReviewIntents = append(m.AutoReviewIntents, &stored)
+	*intent = stored
+	return true, nil
+}
+
+func (m *MockDatabase) SetAutoReviewIntentPublicationByRun(runID, outcome string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, intent := range m.AutoReviewIntents {
+		if runID != "" && intent.RunID == runID {
+			intent.Publication = outcome
+			intent.UpdatedAt = time.Now().UTC()
+		}
+	}
+	return nil
+}
+
+func (m *MockDatabase) ListAutoReviewIntents(filter db.AutoReviewIntentFilter) ([]db.AutoReviewIntent, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []db.AutoReviewIntent
+	for _, intent := range m.AutoReviewIntents {
+		if filter.RepoOwner != "" && !strings.EqualFold(intent.RepoOwner, filter.RepoOwner) {
+			continue
+		}
+		if filter.RepoName != "" && !strings.EqualFold(intent.RepoName, filter.RepoName) {
+			continue
+		}
+		if filter.PRNumber > 0 && intent.PRNumber != filter.PRNumber {
+			continue
+		}
+		if filter.HeadSHA != "" && intent.HeadSHA != filter.HeadSHA {
+			continue
+		}
+		if len(filter.Statuses) > 0 {
+			matched := false
+			for _, status := range filter.Statuses {
+				if intent.Status == status {
+					matched = true
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		out = append(out, *intent)
+	}
+	return out, nil
+}
+
+func (m *MockDatabase) UpdateAutoReviewIntentStatus(id uint, from []string, to, runID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, intent := range m.AutoReviewIntents {
+		if intent.ID != id {
+			continue
+		}
+		if len(from) > 0 {
+			allowed := false
+			for _, status := range from {
+				if intent.Status == status {
+					allowed = true
+				}
+			}
+			if !allowed {
+				return false, nil
+			}
+		}
+		intent.Status = to
+		intent.RunID = runID
+		intent.UpdatedAt = time.Now().UTC()
+		return true, nil
+	}
+	return false, nil
+}
+
+func (m *MockDatabase) SupersedeQueuedAutoReviewIntents(owner, repo string, number int, keepHeadSHA string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, intent := range m.AutoReviewIntents {
+		if !strings.EqualFold(intent.RepoOwner, owner) || !strings.EqualFold(intent.RepoName, repo) || intent.PRNumber != number || intent.Status != db.AutoReviewIntentQueued {
+			continue
+		}
+		if keepHeadSHA != "" && intent.HeadSHA == keepHeadSHA {
+			continue
+		}
+		intent.Status = db.AutoReviewIntentSuperseded
+		intent.UpdatedAt = time.Now().UTC()
+		count++
+	}
+	return count, nil
 }
 
 func (m *MockDatabase) GetAutoReviewRequestedPRs() (bool, error) {

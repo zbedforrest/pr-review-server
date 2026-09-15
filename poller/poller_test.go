@@ -633,6 +633,25 @@ func TestCleanupClosedPRs_SendsDeleteEvent(t *testing.T) {
 	}
 }
 
+// waitForDetachedReviews blocks until every worker the poll admitted has
+// finished; the poll itself returns right after admission.
+func waitForDetachedReviews(t *testing.T, p *Poller) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		p.reviewsMutex.Lock()
+		active := len(p.activeReviews)
+		p.reviewsMutex.Unlock()
+		if active == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for detached review workers")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // =============================================================================
 // generateReviewsBatch Tests
 // =============================================================================
@@ -961,6 +980,7 @@ func TestProcessPRBatch_NewPR_InsertsToDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processPRBatch returned error: %v", err)
 	}
+	waitForDetachedReviews(t, poller)
 
 	// Verify PR was inserted
 	pr := mockDB.PRs["owner/repo/1"]
@@ -1008,6 +1028,7 @@ func TestProcessPRBatch_ExistingPR_UpdatesMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processPRBatch returned error: %v", err)
 	}
+	waitForDetachedReviews(t, poller)
 
 	// Verify metadata was updated
 	pr := mockDB.PRs["owner/repo/1"]
@@ -1045,6 +1066,7 @@ func TestProcessPRBatch_ManualTrigger_QueuesForReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processPRBatch returned error: %v", err)
 	}
+	waitForDetachedReviews(t, poller)
 
 	// Generator should have been called (manual trigger)
 	if len(mockGenerator.GenerateReviewCalls) != 1 {
@@ -1085,6 +1107,7 @@ func TestProcessPRBatch_AutoReviewDisabled_SkipsPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processPRBatch returned error: %v", err)
 	}
+	waitForDetachedReviews(t, poller)
 
 	// Generator should NOT have been called (auto-review disabled)
 	if len(mockGenerator.GenerateReviewCalls) != 0 {
@@ -1127,6 +1150,7 @@ func TestProcessPRBatch_BroadcastsEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processPRBatch returned error: %v", err)
 	}
+	waitForDetachedReviews(t, poller)
 
 	// Should have broadcast events (pr_created for new PR, pr_updated during processing)
 	if len(events) == 0 {
@@ -1576,6 +1600,7 @@ func TestPoll_FullCycle_Success(t *testing.T) {
 
 	// Execute poll
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify: PR was created in database
 	pr := mockDB.PRs["owner/repo/1"]
@@ -1623,6 +1648,7 @@ func TestPoll_CleansUpClosedPRs(t *testing.T) {
 
 	// Execute poll
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify: PR was removed from database
 	if _, exists := mockDB.PRs["owner/repo/1"]; exists {
@@ -1741,6 +1767,7 @@ func TestPoll_ProcessesDatabasePendingPRs(t *testing.T) {
 
 	// Execute poll
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify: Review was generated for the pending PR
 	if len(mockGenerator.GenerateReviewCalls) != 1 {
@@ -1785,6 +1812,7 @@ func TestPoll_DetectsOutdatedReviews(t *testing.T) {
 
 	// Execute poll
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify: PR was reset to pending with new commit
 	pr := mockDB.PRs["owner/repo/1"]
@@ -1838,6 +1866,7 @@ func TestPoll_SkipsPendingWhenAutoReviewDisabled(t *testing.T) {
 
 	// Execute poll
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify: Review was NOT generated (auto-review disabled)
 	if len(mockGenerator.GenerateReviewCalls) != 0 {
@@ -1891,6 +1920,7 @@ func TestPoll_ProcessesManualTriggerEvenWhenAutoReviewDisabled(t *testing.T) {
 
 	// Execute poll
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify: Review WAS generated (manual trigger overrides auto-review setting)
 	if len(mockGenerator.GenerateReviewCalls) != 1 {
@@ -1978,6 +2008,7 @@ func TestPoll_ReviewDataUpdate_NoBroadcastWhenUnchanged(t *testing.T) {
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Count pr_updated events (should be minimal since nothing changed)
 	prUpdatedCount := 0
@@ -2062,6 +2093,7 @@ func TestPoll_ReviewDataUpdate_BroadcastsWhenApprovalChanges(t *testing.T) {
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify the database was updated with new values
 	pr := mockDB.PRs["owner/repo/1"]
@@ -2149,6 +2181,7 @@ func TestPoll_CIStatusUpdate_BroadcastsWhenStateChanges(t *testing.T) {
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify the database was updated with new CI values
 	pr := mockDB.PRs["owner/repo/1"]
@@ -2236,6 +2269,7 @@ func TestPoll_CIStatusUpdate_NoBroadcastWhenUnchanged(t *testing.T) {
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Count pr_updated events - should be minimal
 	prUpdatedCount := 0
@@ -2316,6 +2350,7 @@ func TestPoll_DraftStatusChange_BroadcastsUpdate(t *testing.T) {
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify the database was updated
 	pr := mockDB.PRs["owner/repo/1"]
@@ -2382,6 +2417,7 @@ func TestPoller_SyncsReviewStatusToUserPRViews(t *testing.T) {
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify that UpdateUserReviewStatus was called
 	// The mock will store the call, but for simplicity we verify the prs table was updated
@@ -2432,6 +2468,7 @@ func TestPoller_SyncsViaTeamsToUserPRViews(t *testing.T) {
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// This test passes if poll() doesn't panic when calling BatchGetReviewerGroups
 	// A more complete test would verify the mock's UpdateUserViaTeams was called
@@ -2509,6 +2546,7 @@ func TestPoller_ResolvesTeamReviewStatuses(t *testing.T) {
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify UpdateUserViaTeams was called
 	if len(mockDB.UpdateUserViaTeamsCalls) == 0 {
@@ -2942,6 +2980,7 @@ func TestPoll_ApprovalAndReviewStatusUpdateWhenAutoReviewDisabled(t *testing.T) 
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Assert: DB updated to 3 approvals and "APPROVED"
 	pr := mockDB.PRs["owner/repo/1"]
@@ -3156,6 +3195,7 @@ func TestPoll_CIStatusUpdatesWhenAutoReviewDisabled(t *testing.T) {
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Assert: DB updated to "failure" CI state
 	pr := mockDB.PRs["owner/repo/1"]
@@ -3229,6 +3269,7 @@ func TestPoll_MetadataUpdatesRunBeforeCleanup(t *testing.T) {
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify call ordering: BatchGetPRReviewData must come before BatchGetPRState
 	reviewDataIdx := -1
@@ -3324,6 +3365,7 @@ func TestPoll_NoReviewGenerationForPendingPRsWhenAutoReviewDisabled(t *testing.T
 
 	ctx := context.Background()
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Assert: PR was included in BatchGetPRReviewData (metadata updated)
 	if len(mockGH.BatchGetPRReviewDataCalls) == 0 {

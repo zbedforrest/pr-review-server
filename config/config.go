@@ -39,6 +39,9 @@ type Config struct {
 	GitHubAppClientSecret   string
 	GitHubAppInstallationID string
 	GitHubOrgName           string // Organization name for membership verification and PR polling
+	// GitHubWebhookSecret verifies X-Hub-Signature-256 on POST /webhooks/github;
+	// empty leaves the endpoint disabled.
+	GitHubWebhookSecret string
 
 	// OAuth configuration
 	OAuthCallbackURL string
@@ -282,6 +285,7 @@ func Load() *Config {
 		GitHubAppClientSecret:   os.Getenv("GITHUB_APP_CLIENT_SECRET"),
 		GitHubAppInstallationID: os.Getenv("GITHUB_APP_INSTALLATION_ID"),
 		GitHubOrgName:           os.Getenv("GITHUB_ORG_NAME"),
+		GitHubWebhookSecret:     os.Getenv("GITHUB_WEBHOOK_SECRET"),
 
 		// OAuth
 		OAuthCallbackURL: os.Getenv("OAUTH_CALLBACK_URL"),

@@ -311,3 +311,17 @@ func TestSettings_PatchLogsActorKeyOldNewPerChangedKey(t *testing.T) {
 	assert.Contains(t, lines[1], `[SETTINGS] actor=alice key=review_n_requests old="3" new="2"`)
 	assert.Contains(t, lines[2], `[SETTINGS] actor=alice key=publish_inline_cap old="" new="4"`)
 }
+
+func TestSettingsAutoReviewReadyPRsRoundTripsAndDefaultsOff(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	w := httptest.NewRecorder()
+	server.handleSettings(w, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"auto_review_ready_prs":false`)
+
+	w = settingsPatchAs(server, &db.User{GitHubUsername: "tester"}, `{"auto_review_ready_prs":true}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), `"auto_review_ready_prs":true`)
+	stored, _ := database.GetSetting("auto_review_ready_prs")
+	assert.Equal(t, "true", stored)
+}

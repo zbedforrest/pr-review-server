@@ -70,6 +70,8 @@ type Server struct {
 	pollTriggerFunc func()
 	poller          PollerInterface
 	startTime       time.Time
+	// webhookDeliveryFunc consumes stored GitHub webhook deliveries.
+	webhookDeliveryFunc WebhookDeliveryHandler
 	// Cache for rate limit info to avoid calling GitHub API on every status request
 	rateLimitCache     *github.RateLimitInfo
 	rateLimitCacheMux  sync.RWMutex
@@ -199,6 +201,15 @@ type StatusSnapshot struct {
 	SecondsUntilNextPoll    int                `json:"seconds_until_next_poll"`
 	NextPollAtUnix          *int64             `json:"next_poll_at_unix"`
 	RateLimit               StatusRateLimit    `json:"rate_limit"`
+	Webhook                 StatusWebhook      `json:"webhook"`
+}
+
+// StatusWebhook is the operator view of GitHub webhook ingress and the
+// automatic review backlog.
+type StatusWebhook struct {
+	Deliveries24h  int     `json:"deliveries_24h"`
+	LastDeliveryAt *string `json:"last_delivery_at"`
+	IntentsQueued  int     `json:"intents_queued"`
 }
 
 // WebSocket message types
@@ -341,6 +352,9 @@ func (s *Server) Start() error {
 	// only the PR coordinates already visible on GitHub)
 	http.HandleFunc(agentLinkPath, s.handleAgentLink)
 	http.HandleFunc(badgePath, s.handleBadge)
+	// GitHub webhook (not protected by session auth: authenticated by the
+	// X-Hub-Signature-256 HMAC over the body)
+	http.HandleFunc(githubWebhookPath, s.handleGitHubWebhook)
 
 	// WebSocket route (not protected - uses session-based auth internally if needed)
 	http.HandleFunc("/ws", s.handleWebSocket)
@@ -1055,6 +1069,18 @@ func (s *Server) buildStatusSnapshot(ctx context.Context) (*StatusSnapshot, erro
 		}
 	}
 
+	webhook := StatusWebhook{}
+	if status, err := s.db.GetWebhookStatus(now.Add(-24 * time.Hour)); err != nil {
+		log.Printf("[STATUS] webhook status query failed: %v", err)
+	} else {
+		webhook.Deliveries24h = status.Deliveries
+		webhook.IntentsQueued = status.IntentsQueued
+		if status.LastDeliveryAt != nil {
+			at := status.LastDeliveryAt.UTC().Format(time.RFC3339)
+			webhook.LastDeliveryAt = &at
+		}
+	}
+
 	return &StatusSnapshot{
 		UptimeSeconds:           int(time.Since(s.startTime).Seconds()),
 		ServerTimeUnix:          now.Unix(),
@@ -1069,6 +1095,7 @@ func (s *Server) buildStatusSnapshot(ctx context.Context) (*StatusSnapshot, erro
 		SecondsUntilNextPoll:    secondsUntilNextPoll,
 		NextPollAtUnix:          nextPollAtUnix,
 		RateLimit:               rateLimit,
+		Webhook:                 webhook,
 	}, nil
 }
 
@@ -1249,6 +1276,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			PublishInlineMinSeverity *string `json:"publish_inline_min_severity"`
 			PublishReplyMode         *string `json:"publish_reply_mode"`
 			PublishShowUnverified    *bool   `json:"publish_show_unverified"`
+			AutoReviewReadyPRs       *bool   `json:"auto_review_ready_prs"`
 			AdminLogins              *string `json:"admin_logins"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1311,6 +1339,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.PublishShowUnverified != nil {
 			updates = append(updates, settingWrite{settingPublishShowUnverified, strconv.FormatBool(*req.PublishShowUnverified)})
+		}
+		if req.AutoReviewReadyPRs != nil {
+			updates = append(updates, settingWrite{settingAutoReviewReadyPRs, strconv.FormatBool(*req.AutoReviewReadyPRs)})
 		}
 		if req.PublishReplyMode != nil {
 			mode := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
