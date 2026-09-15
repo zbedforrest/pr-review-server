@@ -633,6 +633,25 @@ func TestCleanupClosedPRs_SendsDeleteEvent(t *testing.T) {
 	}
 }
 
+// waitForDetachedReviews blocks until every worker the poll admitted has
+// finished; the poll itself returns right after admission.
+func waitForDetachedReviews(t *testing.T, p *Poller) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		p.reviewsMutex.Lock()
+		active := len(p.activeReviews)
+		p.reviewsMutex.Unlock()
+		if active == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for detached review workers")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // =============================================================================
 // generateReviewsBatch Tests
 // =============================================================================
@@ -1045,6 +1064,7 @@ func TestProcessPRBatch_ManualTrigger_QueuesForReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processPRBatch returned error: %v", err)
 	}
+	waitForDetachedReviews(t, poller)
 
 	// Generator should have been called (manual trigger)
 	if len(mockGenerator.GenerateReviewCalls) != 1 {
@@ -1127,6 +1147,7 @@ func TestProcessPRBatch_BroadcastsEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processPRBatch returned error: %v", err)
 	}
+	waitForDetachedReviews(t, poller)
 
 	// Should have broadcast events (pr_created for new PR, pr_updated during processing)
 	if len(events) == 0 {
@@ -1576,6 +1597,7 @@ func TestPoll_FullCycle_Success(t *testing.T) {
 
 	// Execute poll
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify: PR was created in database
 	pr := mockDB.PRs["owner/repo/1"]
@@ -1741,6 +1763,7 @@ func TestPoll_ProcessesDatabasePendingPRs(t *testing.T) {
 
 	// Execute poll
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify: Review was generated for the pending PR
 	if len(mockGenerator.GenerateReviewCalls) != 1 {
@@ -1785,6 +1808,7 @@ func TestPoll_DetectsOutdatedReviews(t *testing.T) {
 
 	// Execute poll
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify: PR was reset to pending with new commit
 	pr := mockDB.PRs["owner/repo/1"]
@@ -1891,6 +1915,7 @@ func TestPoll_ProcessesManualTriggerEvenWhenAutoReviewDisabled(t *testing.T) {
 
 	// Execute poll
 	poller.poll(ctx)
+	waitForDetachedReviews(t, poller)
 
 	// Verify: Review WAS generated (manual trigger overrides auto-review setting)
 	if len(mockGenerator.GenerateReviewCalls) != 1 {

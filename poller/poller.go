@@ -3289,17 +3289,18 @@ func (p *Poller) processPRBatch(ctx context.Context, prs []github.PullRequest, a
 	log.Printf("[BATCH] Starting reviewer batch for %s/%s PRs: %v", owner, repo, prNumbers)
 
 	startTime := time.Now()
-	// Generate reviews using native reviewer (batch). force=false on the
-	// auto-poll path: respect the per-commit cache so we don't burn cycles
-	// regenerating reviews for already-reviewed commits.
-	batchErr := p.generateReviewsBatch(ctx, prsToReview, false)
+	// force=false on the auto-poll path: respect the per-commit cache so we
+	// don't burn cycles regenerating reviews for already-reviewed commits.
+	// Admission is synchronous; the workers run detached so the poll returns
+	// and the next tick is not skipped behind a long review.
+	jobs, jobErrs := p.batchReviewJobs(prsToReview, false)
+	admitted, dispatchErr := p.dispatchReviewJobs(ctx, jobs)
 	duration := time.Since(startTime)
 
-	if batchErr != nil {
-		log.Printf("[BATCH] ERROR: reviewer batch failed after %v: %v", duration, batchErr)
-	} else {
-		log.Printf("[BATCH] reviewer batch completed in %v", duration)
+	if batchErr := errors.Join(append(jobErrs, dispatchErr)...); batchErr != nil {
+		log.Printf("[BATCH] ERROR: reviewer batch admission failed after %v: %v", duration, batchErr)
 	}
+	log.Printf("[BATCH] reviewer batch admitted %d of %d jobs in %v; workers run detached", admitted, len(prsToReview), duration)
 
 	return nil
 }
@@ -3330,6 +3331,17 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 	if len(prs) == 0 {
 		return nil
 	}
+	jobs, dispatchErrors := p.batchReviewJobs(prs, force)
+	if err := p.generateReviewJobs(ctx, jobs); err != nil {
+		dispatchErrors = append(dispatchErrors, err)
+	}
+	return errors.Join(dispatchErrors...)
+}
+
+// batchReviewJobs freezes one deployment-default snapshot for the batch and
+// builds a poller job per PR; PRs whose defaults cannot resolve are projected
+// as errors and reported instead of queued.
+func (p *Poller) batchReviewJobs(prs []github.PullRequest, force bool) ([]ReviewJob, []error) {
 	jobs := make([]ReviewJob, 0, len(prs))
 	var dispatchErrors []error
 	snapshot, snapshotErr := p.defaultReviewSnapshot()
@@ -3353,15 +3365,59 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 			TriggerSource: "poller", Force: force,
 		})
 	}
-	if err := p.generateReviewJobs(ctx, jobs); err != nil {
-		dispatchErrors = append(dispatchErrors, err)
-	}
-	return errors.Join(dispatchErrors...)
+	return jobs, dispatchErrors
 }
 
+// admittedReviewJobs is what admission hands to the workers: the jobs this
+// process owns, their queued contexts, and the batch's review service.
+type admittedReviewJobs struct {
+	jobs     []ReviewJob
+	contexts map[string]context.Context
+	svc      *service.Service
+}
+
+// generateReviewJobs admits the jobs and runs their workers to completion.
 func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error {
+	admitted, err := p.admitReviewJobs(ctx, jobs)
+	if len(admitted.jobs) > 0 {
+		p.runReviewJobs(admitted)
+	}
+	return err
+}
+
+// dispatchReviewJobs admits the jobs synchronously, so ownership and queue
+// state exist when it returns, and runs the workers detached. The scheduled
+// poll uses it so a long review never holds the poll guard.
+func (p *Poller) dispatchReviewJobs(ctx context.Context, jobs []ReviewJob) (int, error) {
+	admitted, err := p.admitReviewJobs(ctx, jobs)
+	if len(admitted.jobs) == 0 {
+		return 0, err
+	}
+	go func() {
+		start := time.Now()
+		p.runReviewJobs(admitted)
+		log.Printf("[BATCH] detached reviewer batch of %d jobs completed in %v", len(admitted.jobs), time.Since(start))
+	}()
+	return len(admitted.jobs), err
+}
+
+func (p *Poller) runReviewJobs(admitted admittedReviewJobs) {
+	var wg sync.WaitGroup
+	for _, job := range admitted.jobs {
+		wg.Add(1)
+		go func(job ReviewJob) {
+			defer wg.Done()
+			p.runReviewJob(job, admitted.contexts[job.RunID], admitted.svc)
+		}(job)
+	}
+	wg.Wait()
+}
+
+// admitReviewJobs validates the jobs, establishes worker ownership and builds
+// the review service. It returns only the jobs this process now owns.
+func (p *Poller) admitReviewJobs(ctx context.Context, jobs []ReviewJob) (admittedReviewJobs, error) {
 	if len(jobs) == 0 {
-		return nil
+		return admittedReviewJobs{}, nil
 	}
 	validationErrors := make([]error, 0)
 	validJobs := make([]ReviewJob, 0, len(jobs))
@@ -3374,7 +3430,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 		validJobs = append(validJobs, job)
 	}
 	if len(validJobs) == 0 {
-		return errors.Join(validationErrors...)
+		return admittedReviewJobs{}, errors.Join(validationErrors...)
 	}
 	jobs = validJobs
 
@@ -3402,7 +3458,7 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 		jobContexts[job.RunID] = jobCtx
 	}
 	if len(ownedJobs) == 0 {
-		return errors.Join(validationErrors...)
+		return admittedReviewJobs{}, errors.Join(validationErrors...)
 	}
 	jobs = ownedJobs
 
@@ -3444,439 +3500,431 @@ func (p *Poller) generateReviewJobs(ctx context.Context, jobs []ReviewJob) error
 		// failed run for every automatic candidate on every poll cycle. In both
 		// cases, leave the PR projection alone so its bounded retry is not spent.
 		p.rejectProviderInitJobs(jobs, reviewSvcInitErr)
-		return errors.Join(append(validationErrors, reviewSvcInitErr)...)
+		return admittedReviewJobs{}, errors.Join(append(validationErrors, reviewSvcInitErr)...)
+	}
+	return admittedReviewJobs{jobs: jobs, contexts: jobContexts, svc: reviewSvc}, errors.Join(validationErrors...)
+}
+
+// runReviewJob is one review worker: capacity waits, cache check, execution,
+// artifact save, finalization and GitHub publication for a single owned job.
+func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSvc *service.Service) {
+	pr := job.PR
+	defer p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
+	dispatchSlotReserved := false
+	if p.dispatchSlots != nil {
+		select {
+		case p.dispatchSlots <- struct{}{}:
+			dispatchSlotReserved = true
+		case <-queuedCtx.Done():
+			p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+			return
+		}
+	}
+	releaseDispatchSlot := func() {
+		if dispatchSlotReserved {
+			<-p.dispatchSlots
+			dispatchSlotReserved = false
+		}
+	}
+	defer releaseDispatchSlot()
+
+	log.Printf("[REVIEWER] Processing PR: %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA[:7])
+
+	// Check if review already exists (in GCS if configured, otherwise locally).
+	// Skipped when force=true so the manual trigger always regenerates.
+	exists := false
+	var existsErr error
+	if !job.Force {
+		exists, existsErr = p.reviewExistsWithTimeout(queuedCtx, ReviewCacheLookupTimeout, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+	} else {
+		log.Printf("[REVIEWER] PR %d: force=true, skipping existing-review cache check", pr.Number)
+	}
+	if existsErr != nil {
+		log.Printf("[REVIEWER] Warning: Failed to check for existing review: %v", existsErr)
+		// Continue anyway - will regenerate if needed
+	} else if exists {
+		log.Printf("[REVIEWER] Review already exists for PR %d commit %s, skipping generation", pr.Number, pr.CommitSHA[:7])
+		// Update the database from the exact per-commit sidecar. The mutable
+		// PR row may describe a different commit after a force-push.
+		filename := gcs.ReviewFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+		var cachedPayload *payload.Payload
+		sidecarCtx, sidecarCancel := context.WithTimeout(queuedCtx, ReviewCacheLookupTimeout)
+		cachedPayload, sidecarErr := p.loadReviewPayload(sidecarCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+		sidecarCancel()
+		if sidecarErr != nil {
+			log.Printf("[REVIEWER] WARNING: cached review sidecar metadata unavailable for PR %d: %v", pr.Number, sidecarErr)
+		}
+		criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunID, reviewRunJSON := cachedProjectionMetadata(cachedPayload)
+		cacheMetadataTrusted := cachedPayload != nil
+		// Legacy HTML-only reviews have no sidecar. Preserve their DB
+		// metadata only when the row explicitly identifies this same commit;
+		// never mix a force-pushed commit's artifact with another commit's
+		// counts or run identity.
+		if cachedPayload == nil {
+			if existingPR, getErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number); getErr == nil && existingPR != nil && isSameCommit(existingPR.LastCommitSHA, pr.CommitSHA) && existingPR.ReviewHTMLPath != "" {
+				criticalCount, mediumCount, lowCount = existingPR.CriticalCount, existingPR.MediumCount, existingPR.LowCount
+				verdict, modelFallback = existingPR.ReviewVerdict, existingPR.ModelFallback
+				reviewRunID, reviewRunJSON = existingPR.ReviewRunID, existingPR.ReviewRunJSON
+				cacheMetadataTrusted = true
+			} else if getErr != nil {
+				log.Printf("[REVIEWER] WARNING: cached review DB metadata unavailable for PR %d: %v", pr.Number, getErr)
+			}
+		}
+		if cacheMetadataTrusted {
+			inFlightStaleBefore := time.Now().UTC().Add(-ReviewProjectionCrashStaleAfter)
+			if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON, inFlightStaleBefore); err != nil {
+				log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
+				p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "cache_restore_failed", "publication", err)
+			} else if projected {
+				if !p.completeQueuedReviewJobFromCache(job, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON) && job.TriggerSource != "poller" {
+					log.Printf("[REVIEWER] WARN: cached review projected but run %s was not completed", job.RunID)
+				}
+				if cachedPayload != nil {
+					confidence, confidenceErr := p.sidecarConfidence(pr, cachedPayload)
+					p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+				}
+				p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+			} else {
+				log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
+				p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "review_cached", "dispatch", fmt.Errorf("review artifact already exists"))
+			}
+			return
+		} else {
+			// An HTML hit with neither a readable sidecar nor exact-commit DB
+			// metadata is not evidence of a clean review. Regenerate once so a
+			// transient read failure cannot publish false zero-finding metadata.
+			log.Printf("[REVIEWER] PR %d cache metadata is untrusted; regenerating review", pr.Number)
+		}
+	}
+	releaseDispatchSlot()
+
+	agentSlotReserved := false
+	if job.Config.Effective.Agent.Enabled && p.agentSlots != nil {
+		// Reserve scarce agent capacity while the job still has its
+		// un-deadlined queued context. Neither the configured execution
+		// budget nor the worker lease burns down waiting for this slot.
+		select {
+		case p.agentSlots <- struct{}{}:
+			agentSlotReserved = true
+			defer func() { <-p.agentSlots }()
+		case <-queuedCtx.Done():
+			p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+			return
+		}
+	}
+	firstPassSlotReserved := false
+	if p.firstPassSlots != nil {
+		// Acquire only after scarce agent capacity so an agent job can never
+		// occupy a first-pass slot while waiting for the longer-lived slot.
+		select {
+		case p.firstPassSlots <- struct{}{}:
+			firstPassSlotReserved = true
+		case <-queuedCtx.Done():
+			p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+			return
+		}
+	}
+	releaseFirstPassSlot := func() {
+		if firstPassSlotReserved {
+			<-p.firstPassSlots
+			firstPassSlotReserved = false
+		}
+	}
+	defer releaseFirstPassSlot()
+	prCtx, queueWait, started := p.startTrackedReviewJob(job)
+	if !started {
+		log.Printf("[REVIEWER] PR %d lost queued ownership before execution; rejecting %s", pr.Number, job.RunID)
+		if queuedCtx.Err() != nil {
+			p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
+		} else {
+			p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "pr_already_claimed", "dispatch", ErrReviewAlreadyTracked)
+		}
+		return
 	}
 
-	var wg sync.WaitGroup
+	// Persist automatic candidates before claiming the mutable PR
+	// projection. The partial unique index on queued/running targets is
+	// the cross-instance admission fence. A short admission lease bounds
+	// recovery if this process dies before beginReviewExecution replaces it
+	// with the full worker lease. Manual jobs already have their row and
+	// dispatcher lease from ProcessReviewJob, so this is idempotent for them.
+	if err := p.admitReviewRunForExecution(job); err != nil {
+		if errors.Is(err, db.ErrReviewRunActiveConflict) {
+			log.Printf("[REVIEWER] PR %d already has a live run on another instance; skipping %s", pr.Number, job.RunID)
+			return
+		}
+		log.Printf("[REVIEWER] ERROR: Could not admit review run %s: %v", job.RunID, err)
+		p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "admission_failed", "dispatch", err)
+		return
+	}
 
-	// Process each PR concurrently
-	for _, job := range jobs {
-		wg.Add(1)
-		go func(job ReviewJob) {
-			defer wg.Done()
-			pr := job.PR
-			defer p.untrackReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID)
-			queuedCtx := jobContexts[job.RunID]
-			dispatchSlotReserved := false
-			if p.dispatchSlots != nil {
-				select {
-				case p.dispatchSlots <- struct{}{}:
-					dispatchSlotReserved = true
-				case <-queuedCtx.Done():
-					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
-					return
-				}
-			}
-			releaseDispatchSlot := func() {
-				if dispatchSlotReserved {
-					<-p.dispatchSlots
-					dispatchSlotReserved = false
-				}
-			}
-			defer releaseDispatchSlot()
+	// Set status to generating
+	if err := p.db.SetPRGeneratingForReviewRun(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, job.RunID); err != nil {
+		log.Printf("[BATCH] ERROR: Failed to set generating status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
+		p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "pr_state_failed", "dispatch", err)
+		return
+	}
+	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 
-			log.Printf("[REVIEWER] Processing PR: %s/%s#%d (commit: %s)", pr.Owner, pr.Repo, pr.Number, pr.CommitSHA[:7])
-
-			// Check if review already exists (in GCS if configured, otherwise locally).
-			// Skipped when force=true so the manual trigger always regenerates.
-			exists := false
-			var existsErr error
-			if !job.Force {
-				exists, existsErr = p.reviewExistsWithTimeout(queuedCtx, ReviewCacheLookupTimeout, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+	execution, beginErr := p.beginReviewExecution(job)
+	if beginErr != nil {
+		log.Printf("[REVIEWER] ERROR: Could not begin review run %s: %v", job.RunID, beginErr)
+		rejectedQueued := p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "claim_failed", "dispatch", beginErr)
+		projectBeginError := rejectedQueued || !errors.Is(beginErr, ErrReviewRunNotClaimed)
+		if !projectBeginError {
+			// A duplicate worker can lose the claim while another instance is
+			// legitimately executing this run ID. Preserve that projection. A
+			// terminal/nonexistent run has no live owner, so release its fenced
+			// generating projection immediately instead of waiting for stale reset.
+			run, getErr := p.db.GetReviewRun(job.RunID)
+			if getErr != nil {
+				log.Printf("[REVIEWER] WARNING: could not inspect unclaimed run %s: %v", job.RunID, getErr)
 			} else {
-				log.Printf("[REVIEWER] PR %d: force=true, skipping existing-review cache check", pr.Number)
+				projectBeginError = run == nil || run.Status != db.ReviewRunStatusRunning
 			}
-			if existsErr != nil {
-				log.Printf("[REVIEWER] Warning: Failed to check for existing review: %v", existsErr)
-				// Continue anyway - will regenerate if needed
-			} else if exists {
-				log.Printf("[REVIEWER] Review already exists for PR %d commit %s, skipping generation", pr.Number, pr.CommitSHA[:7])
-				// Update the database from the exact per-commit sidecar. The mutable
-				// PR row may describe a different commit after a force-push.
-				filename := gcs.ReviewFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
-				var cachedPayload *payload.Payload
-				sidecarCtx, sidecarCancel := context.WithTimeout(queuedCtx, ReviewCacheLookupTimeout)
-				cachedPayload, sidecarErr := p.loadReviewPayload(sidecarCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
-				sidecarCancel()
-				if sidecarErr != nil {
-					log.Printf("[REVIEWER] WARNING: cached review sidecar metadata unavailable for PR %d: %v", pr.Number, sidecarErr)
-				}
-				criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunID, reviewRunJSON := cachedProjectionMetadata(cachedPayload)
-				cacheMetadataTrusted := cachedPayload != nil
-				// Legacy HTML-only reviews have no sidecar. Preserve their DB
-				// metadata only when the row explicitly identifies this same commit;
-				// never mix a force-pushed commit's artifact with another commit's
-				// counts or run identity.
-				if cachedPayload == nil {
-					if existingPR, getErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number); getErr == nil && existingPR != nil && isSameCommit(existingPR.LastCommitSHA, pr.CommitSHA) && existingPR.ReviewHTMLPath != "" {
-						criticalCount, mediumCount, lowCount = existingPR.CriticalCount, existingPR.MediumCount, existingPR.LowCount
-						verdict, modelFallback = existingPR.ReviewVerdict, existingPR.ModelFallback
-						reviewRunID, reviewRunJSON = existingPR.ReviewRunID, existingPR.ReviewRunJSON
-						cacheMetadataTrusted = true
-					} else if getErr != nil {
-						log.Printf("[REVIEWER] WARNING: cached review DB metadata unavailable for PR %d: %v", pr.Number, getErr)
-					}
-				}
-				if cacheMetadataTrusted {
-					inFlightStaleBefore := time.Now().UTC().Add(-ReviewProjectionCrashStaleAfter)
-					if projected, err := p.db.RestorePRCompletedFromCacheForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, reviewRunID, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON, inFlightStaleBefore); err != nil {
-						log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
-						p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "cache_restore_failed", "publication", err)
-					} else if projected {
-						if !p.completeQueuedReviewJobFromCache(job, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback, reviewRunJSON) && job.TriggerSource != "poller" {
-							log.Printf("[REVIEWER] WARN: cached review projected but run %s was not completed", job.RunID)
-						}
-						if cachedPayload != nil {
-							confidence, confidenceErr := p.sidecarConfidence(pr, cachedPayload)
-							p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
-						}
-						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-					} else {
-						log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
-						p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "review_cached", "dispatch", fmt.Errorf("review artifact already exists"))
-					}
-					return
-				} else {
-					// An HTML hit with neither a readable sidecar nor exact-commit DB
-					// metadata is not evidence of a clean review. Regenerate once so a
-					// transient read failure cannot publish false zero-finding metadata.
-					log.Printf("[REVIEWER] PR %d cache metadata is untrusted; regenerating review", pr.Number)
-				}
-			}
-			releaseDispatchSlot()
-
-			agentSlotReserved := false
-			if job.Config.Effective.Agent.Enabled && p.agentSlots != nil {
-				// Reserve scarce agent capacity while the job still has its
-				// un-deadlined queued context. Neither the configured execution
-				// budget nor the worker lease burns down waiting for this slot.
-				select {
-				case p.agentSlots <- struct{}{}:
-					agentSlotReserved = true
-					defer func() { <-p.agentSlots }()
-				case <-queuedCtx.Done():
-					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
-					return
-				}
-			}
-			firstPassSlotReserved := false
-			if p.firstPassSlots != nil {
-				// Acquire only after scarce agent capacity so an agent job can never
-				// occupy a first-pass slot while waiting for the longer-lived slot.
-				select {
-				case p.firstPassSlots <- struct{}{}:
-					firstPassSlotReserved = true
-				case <-queuedCtx.Done():
-					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
-					return
-				}
-			}
-			releaseFirstPassSlot := func() {
-				if firstPassSlotReserved {
-					<-p.firstPassSlots
-					firstPassSlotReserved = false
-				}
-			}
-			defer releaseFirstPassSlot()
-			prCtx, queueWait, started := p.startTrackedReviewJob(job)
-			if !started {
-				log.Printf("[REVIEWER] PR %d lost queued ownership before execution; rejecting %s", pr.Number, job.RunID)
-				if queuedCtx.Err() != nil {
-					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "cancelled", "dispatch", queuedCtx.Err())
-				} else {
-					p.rejectQueuedReviewJob(job, db.ReviewRunStatusCancelled, "pr_already_claimed", "dispatch", ErrReviewAlreadyTracked)
-				}
-				return
-			}
-
-			// Persist automatic candidates before claiming the mutable PR
-			// projection. The partial unique index on queued/running targets is
-			// the cross-instance admission fence. A short admission lease bounds
-			// recovery if this process dies before beginReviewExecution replaces it
-			// with the full worker lease. Manual jobs already have their row and
-			// dispatcher lease from ProcessReviewJob, so this is idempotent for them.
-			if err := p.admitReviewRunForExecution(job); err != nil {
-				if errors.Is(err, db.ErrReviewRunActiveConflict) {
-					log.Printf("[REVIEWER] PR %d already has a live run on another instance; skipping %s", pr.Number, job.RunID)
-					return
-				}
-				log.Printf("[REVIEWER] ERROR: Could not admit review run %s: %v", job.RunID, err)
-				p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "admission_failed", "dispatch", err)
-				return
-			}
-
-			// Set status to generating
-			if err := p.db.SetPRGeneratingForReviewRun(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, pr.Title, pr.Author, pr.CreatedAt, pr.Draft, job.RunID); err != nil {
-				log.Printf("[BATCH] ERROR: Failed to set generating status for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
-				p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "pr_state_failed", "dispatch", err)
-				return
+		}
+		if projectBeginError {
+			if _, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, beginErr.Error()); setErr != nil {
+				log.Printf("[REVIEWER] WARNING: failed to persist begin error for PR %d: %v", pr.Number, setErr)
 			}
 			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+		}
+		return
+	}
+	execution.AgentSlotReserved = agentSlotReserved
+	execution.QueueWait = queueWait
+	execStart := execution.AttemptStartedAt
+	nRequests := job.Config.Effective.FirstPass.Samples
 
-			execution, beginErr := p.beginReviewExecution(job)
-			if beginErr != nil {
-				log.Printf("[REVIEWER] ERROR: Could not begin review run %s: %v", job.RunID, beginErr)
-				rejectedQueued := p.rejectQueuedReviewJob(job, db.ReviewRunStatusFailed, "claim_failed", "dispatch", beginErr)
-				projectBeginError := rejectedQueued || !errors.Is(beginErr, ErrReviewRunNotClaimed)
-				if !projectBeginError {
-					// A duplicate worker can lose the claim while another instance is
-					// legitimately executing this run ID. Preserve that projection. A
-					// terminal/nonexistent run has no live owner, so release its fenced
-					// generating projection immediately instead of waiting for stale reset.
-					run, getErr := p.db.GetReviewRun(job.RunID)
-					if getErr != nil {
-						log.Printf("[REVIEWER] WARNING: could not inspect unclaimed run %s: %v", job.RunID, getErr)
-					} else {
-						projectBeginError = run == nil || run.Status != db.ReviewRunStatusRunning
-					}
+	// Generate review using mock interface (testing) or real service
+	var err error
+	var reviewResult *ReviewResult
+	if p.reviewGenerator != nil {
+		// Use mock generator for testing
+		genCfg := ReviewGeneratorConfig{
+			RunID:        job.RunID,
+			Config:       job.Config,
+			Token:        "",
+			Owner:        pr.Owner,
+			RepoName:     pr.Repo,
+			PRNumber:     pr.Number,
+			CommitSHA:    pr.CommitSHA,
+			WithComments: false,
+			Verbose:      false,
+			Fast:         false,
+			NRequests:    nRequests,
+		}
+		reviewResult, err = p.reviewGenerator.GenerateReview(prCtx, genCfg)
+		releaseFirstPassSlot()
+	} else if firstPassClient, firstPassInfo, firstPassErr := p.firstPassClientForRun(job.Config.Effective.FirstPass); firstPassErr != nil {
+		releaseFirstPassSlot()
+		err = fmt.Errorf("initialize first-pass provider for run %s: %w", job.RunID, firstPassErr)
+	} else {
+		// Use real reviewer service
+		reviewCfg := service.PerformReviewConfig{
+			Token:           p.cfg.GitHubToken,
+			Owner:           pr.Owner,
+			RepoName:        pr.Repo,
+			PRNumber:        pr.Number,
+			WithComments:    false,
+			Verbose:         false,
+			Fast:            false,
+			NRequests:       nRequests,
+			AttemptObserver: p.providerAttemptObserver(execution),
+			FirstPassClient: firstPassClient,
+			FirstPass:       &firstPassInfo,
+		}
+
+		result, svcErr := reviewSvc.PerformReviewWithContext(prCtx, reviewCfg)
+		// Provider capacity ends here. Non-agent publication may overlap because
+		// it holds no clone/CLI memory; agent jobs retain their separate slot.
+		releaseFirstPassSlot()
+		if svcErr != nil {
+			err = svcErr
+		} else if job.Config.Effective.Agent.Enabled {
+			reviewResult, err = p.runAgentStage(prCtx, execution, result)
+		} else {
+			// Legacy HTML report path.
+			htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
+			if htmlContent == nil {
+				err = fmt.Errorf("failed to generate HTML content")
+			} else {
+				reviewResult = &ReviewResult{
+					HTMLContent:   htmlContent,
+					CriticalCount: result.CriticalCount,
+					MediumCount:   result.MediumCount,
+					LowCount:      result.LowCount,
+					Comments:      result.Comments,
+					Diff:          result.Diff,
+					FileContents:  result.FileContents,
 				}
-				if projectBeginError {
-					if _, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, beginErr.Error()); setErr != nil {
-						log.Printf("[REVIEWER] WARNING: failed to persist begin error for PR %d: %v", pr.Number, setErr)
+			}
+		}
+	}
+	execDuration := time.Since(execStart)
+
+	if err != nil {
+		log.Printf("[REVIEWER] ERROR: Review failed for PR %d after %v: %v", pr.Number, execDuration, err)
+
+		// External cancellation leaves the PR projection to its caller;
+		// an organic execution-budget timeout is projected as an error by
+		// finishInterruptedReviewExecution so retries remain bounded.
+		if prCtx.Err() != nil {
+			log.Printf("[REVIEWER] PR %d review was interrupted (ctx=%v)", pr.Number, prCtx.Err())
+			p.finishInterruptedReviewExecution(execution, prCtx, "execution", err)
+			return
+		}
+
+		if errors.Is(err, errReviewRunSuperseded) {
+			p.finishSupersededReviewExecution(execution, err)
+		} else {
+			// Check if outdated
+			currentPR, dbErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+			if dbErr == nil && currentPR != nil && currentPR.Status == "pending" && currentPR.LastCommitSHA != pr.CommitSHA {
+				log.Printf("[REVIEWER] Review for PR %d was cancelled because it became outdated.", pr.Number)
+				status := db.ReviewRunStatusCancelled
+				terminalCode := "commit_outdated"
+				failureStage := "publication"
+				errorSummary := "PR head changed while the review was running"
+				p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
+			} else {
+				status := db.ReviewRunStatusFailed
+				terminalCode := "review_failed"
+				failureStage := "generation"
+				errorSummary := err.Error()
+				if p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary}) {
+					projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, err.Error())
+					if setErr != nil {
+						log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+					} else if !projected {
+						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping generation error", job.RunID)
 					}
+					if projected {
+						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+					}
+				} else {
+					log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping generation error projection", job.RunID)
+				}
+			}
+		}
+		return
+	}
+
+	log.Printf("[REVIEWER] Review completed successfully for PR %d in %v", pr.Number, execDuration)
+	if reviewResult.ReviewRun == nil {
+		reviewResult.ReviewRun = &payload.ReviewRunInfo{}
+	}
+	if observedModels := execution.providerModelUses(); len(observedModels) > 0 {
+		reviewResult.ReviewRun.Models = observedModels
+	} else if p.reviewGenerator == nil && len(reviewResult.ReviewRun.Models) == 0 {
+		reviewResult.ReviewRun.Models = p.pipelineModelUses(job.Config.Effective.FirstPass)
+	}
+	if !p.renewReviewExecutionForPublication(execution) {
+		log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact publication", job.RunID)
+		return
+	}
+	models := append([]payload.ModelUse(nil), reviewResult.ReviewRun.Models...)
+	artifactInfo := p.reviewRunArtifactInfo(execution)
+	artifactInfo.Models = models
+	reviewResult.ReviewRun = artifactInfo
+	log.Printf("[REVIEWER] PR %d review run: %s", pr.Number, job.RunID)
+
+	failExecution := func(cause error, terminalCode, failureStage string) {
+		log.Printf("[REVIEWER] ERROR: Review run %s failed during %s: %v", job.RunID, failureStage, cause)
+		if prCtx.Err() != nil {
+			log.Printf("[REVIEWER] PR %d %s was interrupted (ctx=%v)", pr.Number, failureStage, prCtx.Err())
+			p.finishInterruptedReviewExecution(execution, prCtx, failureStage, cause)
+		} else {
+			status := db.ReviewRunStatusFailed
+			errorSummary := cause.Error()
+			finished := p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
+			if finished {
+				projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, cause.Error())
+				if setErr != nil {
+					log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
+				} else if !projected {
+					log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping %s error", job.RunID, failureStage)
+				}
+				if projected {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 				}
-				return
-			}
-			execution.AgentSlotReserved = agentSlotReserved
-			execution.QueueWait = queueWait
-			execStart := execution.AttemptStartedAt
-			nRequests := job.Config.Effective.FirstPass.Samples
-
-			// Generate review using mock interface (testing) or real service
-			var err error
-			var reviewResult *ReviewResult
-			if p.reviewGenerator != nil {
-				// Use mock generator for testing
-				genCfg := ReviewGeneratorConfig{
-					RunID:        job.RunID,
-					Config:       job.Config,
-					Token:        "",
-					Owner:        pr.Owner,
-					RepoName:     pr.Repo,
-					PRNumber:     pr.Number,
-					CommitSHA:    pr.CommitSHA,
-					WithComments: false,
-					Verbose:      false,
-					Fast:         false,
-					NRequests:    nRequests,
-				}
-				reviewResult, err = p.reviewGenerator.GenerateReview(prCtx, genCfg)
-				releaseFirstPassSlot()
-			} else if firstPassClient, firstPassInfo, firstPassErr := p.firstPassClientForRun(job.Config.Effective.FirstPass); firstPassErr != nil {
-				releaseFirstPassSlot()
-				err = fmt.Errorf("initialize first-pass provider for run %s: %w", job.RunID, firstPassErr)
 			} else {
-				// Use real reviewer service
-				reviewCfg := service.PerformReviewConfig{
-					Token:           p.cfg.GitHubToken,
-					Owner:           pr.Owner,
-					RepoName:        pr.Repo,
-					PRNumber:        pr.Number,
-					WithComments:    false,
-					Verbose:         false,
-					Fast:            false,
-					NRequests:       nRequests,
-					AttemptObserver: p.providerAttemptObserver(execution),
-					FirstPassClient: firstPassClient,
-					FirstPass:       &firstPassInfo,
-				}
-
-				result, svcErr := reviewSvc.PerformReviewWithContext(prCtx, reviewCfg)
-				// Provider capacity ends here. Non-agent publication may overlap because
-				// it holds no clone/CLI memory; agent jobs retain their separate slot.
-				releaseFirstPassSlot()
-				if svcErr != nil {
-					err = svcErr
-				} else if job.Config.Effective.Agent.Enabled {
-					reviewResult, err = p.runAgentStage(prCtx, execution, result)
-				} else {
-					// Legacy HTML report path.
-					htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
-					if htmlContent == nil {
-						err = fmt.Errorf("failed to generate HTML content")
-					} else {
-						reviewResult = &ReviewResult{
-							HTMLContent:   htmlContent,
-							CriticalCount: result.CriticalCount,
-							MediumCount:   result.MediumCount,
-							LowCount:      result.LowCount,
-							Comments:      result.Comments,
-							Diff:          result.Diff,
-							FileContents:  result.FileContents,
-						}
-					}
-				}
+				log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping %s error projection", job.RunID, failureStage)
 			}
-			execDuration := time.Since(execStart)
-
-			if err != nil {
-				log.Printf("[REVIEWER] ERROR: Review failed for PR %d after %v: %v", pr.Number, execDuration, err)
-
-				// External cancellation leaves the PR projection to its caller;
-				// an organic execution-budget timeout is projected as an error by
-				// finishInterruptedReviewExecution so retries remain bounded.
-				if prCtx.Err() != nil {
-					log.Printf("[REVIEWER] PR %d review was interrupted (ctx=%v)", pr.Number, prCtx.Err())
-					p.finishInterruptedReviewExecution(execution, prCtx, "execution", err)
-					return
-				}
-
-				if errors.Is(err, errReviewRunSuperseded) {
-					p.finishSupersededReviewExecution(execution, err)
-				} else {
-					// Check if outdated
-					currentPR, dbErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-					if dbErr == nil && currentPR != nil && currentPR.Status == "pending" && currentPR.LastCommitSHA != pr.CommitSHA {
-						log.Printf("[REVIEWER] Review for PR %d was cancelled because it became outdated.", pr.Number)
-						status := db.ReviewRunStatusCancelled
-						terminalCode := "commit_outdated"
-						failureStage := "publication"
-						errorSummary := "PR head changed while the review was running"
-						p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
-					} else {
-						status := db.ReviewRunStatusFailed
-						terminalCode := "review_failed"
-						failureStage := "generation"
-						errorSummary := err.Error()
-						if p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary}) {
-							projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, err.Error())
-							if setErr != nil {
-								log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
-							} else if !projected {
-								log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping generation error", job.RunID)
-							}
-							if projected {
-								p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-							}
-						} else {
-							log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping generation error projection", job.RunID)
-						}
-					}
-				}
-				return
-			}
-
-			log.Printf("[REVIEWER] Review completed successfully for PR %d in %v", pr.Number, execDuration)
-			if reviewResult.ReviewRun == nil {
-				reviewResult.ReviewRun = &payload.ReviewRunInfo{}
-			}
-			if observedModels := execution.providerModelUses(); len(observedModels) > 0 {
-				reviewResult.ReviewRun.Models = observedModels
-			} else if p.reviewGenerator == nil && len(reviewResult.ReviewRun.Models) == 0 {
-				reviewResult.ReviewRun.Models = p.pipelineModelUses(job.Config.Effective.FirstPass)
-			}
-			if !p.renewReviewExecutionForPublication(execution) {
-				log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping artifact publication", job.RunID)
-				return
-			}
-			models := append([]payload.ModelUse(nil), reviewResult.ReviewRun.Models...)
-			artifactInfo := p.reviewRunArtifactInfo(execution)
-			artifactInfo.Models = models
-			reviewResult.ReviewRun = artifactInfo
-			log.Printf("[REVIEWER] PR %d review run: %s", pr.Number, job.RunID)
-
-			failExecution := func(cause error, terminalCode, failureStage string) {
-				log.Printf("[REVIEWER] ERROR: Review run %s failed during %s: %v", job.RunID, failureStage, cause)
-				if prCtx.Err() != nil {
-					log.Printf("[REVIEWER] PR %d %s was interrupted (ctx=%v)", pr.Number, failureStage, prCtx.Err())
-					p.finishInterruptedReviewExecution(execution, prCtx, failureStage, cause)
-				} else {
-					status := db.ReviewRunStatusFailed
-					errorSummary := cause.Error()
-					finished := p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary})
-					if finished {
-						projected, setErr := p.db.SetPRErrorForReviewRun(pr.Owner, pr.Repo, pr.Number, job.RunID, cause.Error())
-						if setErr != nil {
-							log.Printf("[REVIEWER] WARNING: failed to persist error status for PR %d: %v", pr.Number, setErr)
-						} else if !projected {
-							log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns the PR projection; skipping %s error", job.RunID, failureStage)
-						}
-						if projected {
-							p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-						}
-					} else {
-						log.Printf("[REVIEWER] STALE WORKER: run %s no longer owns its lease; skipping %s error projection", job.RunID, failureStage)
-					}
-				}
-			}
-
-			// Persist only run-scoped artifacts before the ownership transaction.
-			// Mutable compatibility aliases are written after publication wins, so
-			// a stale or superseded worker can never overwrite the visible result.
-			artifactSaveStartedAt := time.Now().UTC()
-			if err := p.saveImmutableReviewArtifact(prCtx, reviewResult.ReviewRun.HTMLPath, "text/html; charset=utf-8", reviewResult.HTMLContent); err != nil {
-				failExecution(fmt.Errorf("save immutable review %s: %w", job.RunID, err), "artifact_save_failed", "artifact_save")
-				return
-			}
-
-			log.Printf("[REVIEWER] Saved immutable review: %s", reviewResult.ReviewRun.HTMLPath)
-			// PostgreSQL timestamps have microsecond precision. Freeze at that
-			// boundary so sidecar JSON, PR JSON, and the DB round-trip exactly.
-			completedAt := time.Now().UTC().Truncate(time.Microsecond)
-			runInfo := p.reviewRunInfo(execution, completedAt)
-			runInfo.Models = models
-			runInfo.LinkedTickets = reviewResult.LinkedTickets
-			runInfo.StageTimings = execution.stageTimings(artifactSaveStartedAt, completedAt)
-			reviewResult.ReviewRun = runInfo
-
-			sidecarBody, sidecarErr := p.writeImmutableReviewSidecar(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult)
-			if sidecarErr != nil {
-				failExecution(sidecarErr, "artifact_save_failed", "artifact_save")
-				return
-			}
-
-			reviewRunJSON, marshalErr := json.Marshal(reviewResult.ReviewRun)
-			if marshalErr != nil {
-				failExecution(marshalErr, "artifact_metadata_failed", "artifact_save")
-				return
-			}
-			outcome, finalizeErr := p.finalizeCompletedReviewExecution(execution, reviewResult, string(reviewRunJSON))
-			if finalizeErr != nil {
-				failExecution(finalizeErr, "finalization_failed", "publication")
-				return
-			}
-			if !outcome.Finalized {
-				log.Printf("[REVIEWER] STALE WORKER: run %s lost its lease before atomic finalization; skipping latest-review update", job.RunID)
-				return
-			}
-			if !outcome.Published {
-				log.Printf("[REVIEWER] SUPERSEDED: run %s completed without replacing the newer PR projection; keeping immutable artifact only", job.RunID)
-				// A successor on a different commit cannot collide with this
-				// commit-scoped compatibility alias, so preserve sha-only history.
-				currentPR, currentErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-				if currentErr != nil {
-					log.Printf("[REVIEWER] WARN: inspect superseding projection for run %s: %v", job.RunID, currentErr)
-				} else if currentPR != nil && !isSameCommit(currentPR.LastCommitSHA, pr.CommitSHA) {
-					_, aliasErr := p.saveCanonicalReviewAliasesWithRetry(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent, sidecarBody)
-					if aliasErr != nil {
-						log.Printf("[REVIEWER] WARN: could not preserve superseded commit alias for run %s: %v", job.RunID, aliasErr)
-					}
-				}
-				return
-			}
-			_, aliasErr := p.saveCanonicalReviewAliasesWithRetry(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent, sidecarBody)
-			if aliasErr != nil {
-				log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical aliases: %v", job.RunID, aliasErr)
-			}
-			var published *publisher.Report
-			if !job.SkipPublish {
-				published = p.publishGitHubReview(prCtx, pr, sidecarBody)
-			}
-			confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
-			p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
-			confidenceField := ""
-			if confidenceErr == nil {
-				confidenceField = fmt.Sprintf(", confidence=%d", confidence)
-			}
-			verdict := service.VerdictFromComments(reviewResult.Comments)
-			p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-			log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q%s)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, confidenceField)
-		}(job)
+		}
 	}
 
-	wg.Wait()
-	return errors.Join(validationErrors...)
+	// Persist only run-scoped artifacts before the ownership transaction.
+	// Mutable compatibility aliases are written after publication wins, so
+	// a stale or superseded worker can never overwrite the visible result.
+	artifactSaveStartedAt := time.Now().UTC()
+	if err := p.saveImmutableReviewArtifact(prCtx, reviewResult.ReviewRun.HTMLPath, "text/html; charset=utf-8", reviewResult.HTMLContent); err != nil {
+		failExecution(fmt.Errorf("save immutable review %s: %w", job.RunID, err), "artifact_save_failed", "artifact_save")
+		return
+	}
+
+	log.Printf("[REVIEWER] Saved immutable review: %s", reviewResult.ReviewRun.HTMLPath)
+	// PostgreSQL timestamps have microsecond precision. Freeze at that
+	// boundary so sidecar JSON, PR JSON, and the DB round-trip exactly.
+	completedAt := time.Now().UTC().Truncate(time.Microsecond)
+	runInfo := p.reviewRunInfo(execution, completedAt)
+	runInfo.Models = models
+	runInfo.LinkedTickets = reviewResult.LinkedTickets
+	runInfo.StageTimings = execution.stageTimings(artifactSaveStartedAt, completedAt)
+	reviewResult.ReviewRun = runInfo
+
+	sidecarBody, sidecarErr := p.writeImmutableReviewSidecar(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult)
+	if sidecarErr != nil {
+		failExecution(sidecarErr, "artifact_save_failed", "artifact_save")
+		return
+	}
+
+	reviewRunJSON, marshalErr := json.Marshal(reviewResult.ReviewRun)
+	if marshalErr != nil {
+		failExecution(marshalErr, "artifact_metadata_failed", "artifact_save")
+		return
+	}
+	outcome, finalizeErr := p.finalizeCompletedReviewExecution(execution, reviewResult, string(reviewRunJSON))
+	if finalizeErr != nil {
+		failExecution(finalizeErr, "finalization_failed", "publication")
+		return
+	}
+	if !outcome.Finalized {
+		log.Printf("[REVIEWER] STALE WORKER: run %s lost its lease before atomic finalization; skipping latest-review update", job.RunID)
+		return
+	}
+	if !outcome.Published {
+		log.Printf("[REVIEWER] SUPERSEDED: run %s completed without replacing the newer PR projection; keeping immutable artifact only", job.RunID)
+		// A successor on a different commit cannot collide with this
+		// commit-scoped compatibility alias, so preserve sha-only history.
+		currentPR, currentErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
+		if currentErr != nil {
+			log.Printf("[REVIEWER] WARN: inspect superseding projection for run %s: %v", job.RunID, currentErr)
+		} else if currentPR != nil && !isSameCommit(currentPR.LastCommitSHA, pr.CommitSHA) {
+			_, aliasErr := p.saveCanonicalReviewAliasesWithRetry(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent, sidecarBody)
+			if aliasErr != nil {
+				log.Printf("[REVIEWER] WARN: could not preserve superseded commit alias for run %s: %v", job.RunID, aliasErr)
+			}
+		}
+		return
+	}
+	_, aliasErr := p.saveCanonicalReviewAliasesWithRetry(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, reviewResult.HTMLContent, sidecarBody)
+	if aliasErr != nil {
+		log.Printf("[REVIEWER] WARN: published run %s but could not refresh canonical aliases: %v", job.RunID, aliasErr)
+	}
+	var published *publisher.Report
+	if !job.SkipPublish {
+		published = p.publishGitHubReview(prCtx, pr, sidecarBody)
+	}
+	confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
+	p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+	confidenceField := ""
+	if confidenceErr == nil {
+		confidenceField = fmt.Sprintf(", confidence=%d", confidence)
+	}
+	verdict := service.VerdictFromComments(reviewResult.Comments)
+	p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+	log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q%s)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, confidenceField)
 }
 
 // shouldReview determines if a PR should be processed for review generation
