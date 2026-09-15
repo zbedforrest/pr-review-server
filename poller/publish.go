@@ -192,8 +192,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 // design: the review is already saved and visible on the dashboard, so any
 // failure here is logged and never fails the run.
 func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) *publisher.Report {
-	enabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
-	if err != nil || !publishEnabledFor(pr.Author, enabled) {
+	if allowed, err := p.publishAllowedFor(pr.Author); err != nil || !allowed {
 		return nil
 	}
 	ledger, ok := p.db.(publisher.Ledger)

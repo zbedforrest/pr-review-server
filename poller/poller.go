@@ -132,6 +132,9 @@ type Poller struct {
 	// same-instance request cannot observe local ownership before the winning
 	// idempotency row is queryable.
 	reviewAdmissionMutex sync.Mutex
+	// Serializes automatic-review admissions so a webhook goroutine and the
+	// poll fallback cannot both act on the same intent at once.
+	autoReviewAdmitMutex sync.Mutex
 	// Track last poll time for countdown display
 	lastPollTime  time.Time
 	pollTimeMutex sync.RWMutex
@@ -1864,6 +1867,10 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 
 	manualClaims, claimsOK := p.manualClaimPRIDs()
 	activeReviews, activeOK := p.activeReviewTargets()
+	autoReviewReady, autoReviewErr := p.autoReviewReadyEnabled()
+	if autoReviewErr != nil {
+		log.Printf("[AUTO-REVIEW] read %s: %v", settingAutoReviewReadyPRs, autoReviewErr)
+	}
 
 	// Single pass: handle closed PRs and outdated reviews
 	for _, pr := range allPRs {
@@ -1948,6 +1955,17 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			}
 		}
 
+		// --- Automatic review fallback ---
+		// The webhook normally records the intent first; this catches a
+		// missed or failed delivery for a ready, allowlisted PR.
+		if autoReviewReady && !state.IsDraft && state.HeadRefOid != "" {
+			if eligible, err := p.publishAllowedFor(pr.Author); err != nil {
+				log.Printf("[AUTO-REVIEW] PR %s: allowlist read failed: %v", key, err)
+			} else if eligible {
+				p.ensureFallbackAutoReviewIntent(pr.RepoOwner, pr.RepoName, pr.PRNumber, state.HeadRefOid)
+			}
+		}
+
 		// --- Outdated review detection ---
 		if state.HeadRefOid != pr.LastCommitSHA {
 			wasInFlight := isReviewInFlight(pr.Status)
@@ -1993,6 +2011,10 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
 			outdated++
 		}
+	}
+
+	if autoReviewReady {
+		p.dispatchAutoReviewIntents(ctx, stateMap)
 	}
 
 	return removed, outdated, nil
