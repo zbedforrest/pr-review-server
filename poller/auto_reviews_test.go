@@ -157,7 +157,7 @@ func TestSettlementWaitsForThePublicationOutcomeThenConsultsTheLedger(t *testing
 	require.NoError(t, f.db.PatchReviewRun(intent.RunID, db.ReviewRunPatch{CompletedAt: &stale}))
 	f.p.settleAutoReviewIntents()
 	settled := f.intents(t)[0]
-	assert.Equal(t, db.AutoReviewIntentSuperseded, settled.Status, "without a ledger record of the head the review is owed again")
+	assert.Equal(t, db.AutoReviewIntentFailed, settled.Status, "the comments may have reached GitHub before the ledger, so the head is not reviewed again automatically")
 	assert.Equal(t, intent.RunID, settled.RunID)
 }
 
@@ -428,6 +428,38 @@ func TestPollFallbackMarksAQueuedIntentDoneOnceAnotherRunPublishedTheHead(t *tes
 	require.Len(t, intents, 1)
 	assert.Equal(t, db.AutoReviewIntentDone, intents[0].Status)
 	assert.Empty(t, generator.GenerateReviewCalls, "a head another run already commented on is not reviewed again")
+}
+
+func TestWebhookRecordsAnAlreadyPublishedHeadAsDone(t *testing.T) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	require.NoError(t, database.SetSetting(settingAutoReviewReadyPRs, "true"))
+	waiting := db.AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: autoReviewOldHead, Trigger: db.AutoReviewTriggerPollFallback}
+	_, err = database.EnsureAutoReviewIntent(&waiting, nil)
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertPublishedFinding(&db.PublishedFinding{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindSummary, Fingerprint: db.PublishedKindSummary,
+		ReviewedSHA: autoReviewOldHead, LastSeenSHA: autoReviewOldHead, State: db.PublishedStateOpen, Rounds: 1,
+	}))
+	generator := NewMockReviewGenerator()
+	p := newTestPollerFull(NewMockGitHubClient(), database, NewMockReviewStorage(), generator)
+
+	require.NoError(t, p.HandleWebhookDelivery(context.Background(), readyDelivery("opened", autoReviewOldHead, false)))
+	intents, err := database.ListAutoReviewIntents(db.AutoReviewIntentFilter{})
+	require.NoError(t, err)
+	require.Len(t, intents, 1)
+	assert.Equal(t, db.AutoReviewIntentDone, intents[0].Status)
+	assert.Equal(t, publicationPosted, intents[0].Publication)
+	assert.Empty(t, generator.GenerateReviewCalls, "a delivery that arrives after another run commented on the head starts nothing")
+
+	require.NoError(t, p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+	intents, err = database.ListAutoReviewIntents(db.AutoReviewIntentFilter{HeadSHA: autoReviewNewHead})
+	require.NoError(t, err)
+	require.Len(t, intents, 1)
+	assert.NotEqual(t, db.AutoReviewIntentDone, intents[0].Status, "a new head is still owed a review")
+	waitForDetachedReviews(t, p)
 }
 
 func TestPollFallbackRecordsAnAlreadyPublishedHeadAsDone(t *testing.T) {
