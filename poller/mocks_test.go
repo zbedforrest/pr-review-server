@@ -929,6 +929,11 @@ func (m *MockDatabase) HideNonManualViewsForPR(prID int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.HideNonManualViewsCalls = append(m.HideNonManualViewsCalls, prID)
+	for _, view := range m.UserPRViews {
+		if view.PRID == prID && !view.ViaManual {
+			view.Hidden = true
+		}
+	}
 	return nil
 }
 
