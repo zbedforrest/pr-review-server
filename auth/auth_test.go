@@ -216,6 +216,22 @@ func (m *MockDatabase) UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int,
 func (m *MockDatabase) UpdatePRDraft(owner, repo string, prNumber int, draft bool) error {
 	return nil
 }
+func (m *MockDatabase) CreateWebhookDelivery(d *db.WebhookDelivery) (bool, error) { return true, nil }
+func (m *MockDatabase) GetWebhookStatus(since time.Time) (db.WebhookStatus, error) {
+	return db.WebhookStatus{}, nil
+}
+func (m *MockDatabase) EnsureAutoReviewIntent(intent *db.AutoReviewIntent, requeueFrom []string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) ListAutoReviewIntents(filter db.AutoReviewIntentFilter) ([]db.AutoReviewIntent, error) {
+	return nil, nil
+}
+func (m *MockDatabase) UpdateAutoReviewIntentStatus(id uint, from []string, to, runID string) (bool, error) {
+	return true, nil
+}
+func (m *MockDatabase) SupersedeQueuedAutoReviewIntents(owner, repo string, number int, keepHeadSHA string) (int, error) {
+	return 0, nil
+}
 func (m *MockDatabase) GetSetting(key string) (string, error)        { return "", nil }
 func (m *MockDatabase) SetSetting(key, value string) error           { return nil }
 func (m *MockDatabase) GetAutoReviewRequestedPRs() (bool, error)     { return false, nil }
