@@ -2816,6 +2816,7 @@ func (p *Poller) poll(ctx context.Context) {
 				if !existsInDB {
 					continue
 				}
+				isOpen := isOpenPRState(existingPR.PRState)
 
 				for _, user := range allUsers {
 					userStatus := ""
@@ -2827,7 +2828,7 @@ func (p *Poller) poll(ctx context.Context) {
 					}
 					isAuthor := strings.EqualFold(existingPR.Author, user.GitHubUsername)
 					// Re-asserting status on a retained closed PR would un-hide rows cleanup hid.
-					syncStatus := userStatus != "" && isOpenPRState(existingPR.PRState)
+					syncStatus := userStatus != "" && isOpen
 					if syncStatus {
 						reviewViewBatch.EnsureView(user.ID, existingPR.ID, isAuthor)
 						reviewViewBatch.SetReviewStatus(user.ID, existingPR.ID, userStatus)
@@ -2845,9 +2846,11 @@ func (p *Poller) poll(ctx context.Context) {
 						continue
 					}
 					stored, hasRow := storedAttention[userPRViewKey{UserID: user.ID, PRID: existingPR.ID}]
-					changed := stored != *attention
-					// A verdict alone never creates a row; an existing row is touched only when its flag flips.
-					if !syncStatus && !(hasRow && changed) {
+					changed := stored.needsAttention != *attention
+					// A verdict alone never creates a row; an existing row is touched only when its
+					// flag flips, and a hidden row on a retained closed PR is never resurfaced for it.
+					flipsExisting := hasRow && changed && (isOpen || !stored.hidden)
+					if !syncStatus && !flipsExisting {
 						continue
 					}
 					reviewViewBatch.EnsureView(user.ID, existingPR.ID, isAuthor)
@@ -3062,6 +3065,11 @@ func (p *Poller) poll(ctx context.Context) {
 				continue
 			}
 			dbPR, exists := dbPRMap[key]
+			if exists && !isOpenPRState(dbPR.PRState) {
+				// The syncs ignored this PR's metadata this cycle (re-opened PR, state
+				// restored only by end-of-cycle cleanup); a stale timestamp refetches it next cycle.
+				continue
+			}
 			if !exists || dbPR.GitHubUpdatedAt == nil || !ts.Equal(*dbPR.GitHubUpdatedAt) {
 				parts := strings.SplitN(key, "/", 3)
 				if len(parts) == 3 {

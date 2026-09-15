@@ -3955,13 +3955,20 @@ func TestPoll_RetainedMergedPRStaysHiddenAcrossCycles(t *testing.T) {
 		t.Errorf("cycle 2 pruned via_teams on the retained PR's hidden teammate row")
 	}
 
+	// A fixed search timestamp makes the poll-economy path treat the PR as
+	// unchanged once it is persisted, which is what cycle 4 must survive.
+	reopenedAt := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 	mockGH.BatchGetPRStateResults["owner/repo/1"].State = "OPEN"
-	mockGH.SearchOpenPRsResults = []github.PRInfo{{Owner: "owner", Repo: "repo", Number: 1}}
+	mockGH.SearchOpenPRsResults = []github.PRInfo{{Owner: "owner", Repo: "repo", Number: 1, UpdatedAt: &reopenedAt}}
 	poller.poll(ctx)
 	if got := mockDB.PRs["owner/repo/1"].PRState; got != "open" {
 		t.Fatalf("cycle 3: expected pr_state restored to open, got %q", got)
 	}
+	assertVisibility("cycle 3 (re-open detected, syncs still saw merged)", true, false, false)
 
 	poller.poll(ctx)
 	assertVisibility("cycle 4 (re-opened, entitlements re-asserted)", true, true, true)
+	if got := mockDB.PRs["owner/repo/1"].GitHubUpdatedAt; got == nil || !got.Equal(reopenedAt) {
+		t.Errorf("cycle 4 should persist the search timestamp once the syncs ran, got %v", got)
+	}
 }
