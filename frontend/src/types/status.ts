@@ -29,6 +29,12 @@ export interface RateLimitInfo {
   graphql_reset_at: string;
 }
 
+export interface WebhookStatus {
+  deliveries_24h: number;
+  last_delivery_at: string | null;
+  intents_queued: number;
+}
+
 export interface ServerStatus {
   uptime_seconds: number;
   server_time_unix: number;
@@ -43,5 +49,6 @@ export interface ServerStatus {
   seconds_until_next_poll: number;
   next_poll_at_unix: number | null;
   rate_limit: RateLimitInfo;
+  webhook?: WebhookStatus;
   snapshot_received_at_ms?: number;
 }

@@ -385,6 +385,7 @@ func (g *GormDB) Close() error {
 func (g *GormDB) initDefaultSettings() error {
 	defaults := map[string]string{
 		"auto_review_requested_prs": "false",
+		"auto_review_ready_prs":     "false",
 		"review_n_requests":         "3",
 		"generate_html":             "true",
 	}

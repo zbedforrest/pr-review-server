@@ -79,6 +79,7 @@ The most common ones:
 | `DISABLE_POLLING` | No | Run purely as an on-demand review API |
 | `MENTION_HANDLE` | No | App login mentioned to request a review (`@<handle> review`) by the PR author or a repository owner, member or collaborator; default `prism-pr-review-server`, empty disables |
 | `HEALTH_JOB_TOKEN` | No | Enables `POST /api/health/daily` for a scheduler (header `X-Prism-Job-Token`); the report is stored and readable at `GET /api/health/daily` (`?format=md`) |
+| `GITHUB_WEBHOOK_SECRET` | No | Secret for the GitHub App webhook at `POST /webhooks/github` (`X-Hub-Signature-256`); empty leaves the endpoint disabled. See [Automatic reviews](#automatic-reviews-for-allowlisted-authors) |
 
 ### First-pass provider
 
@@ -139,6 +140,32 @@ The gates contribute mechanical findings from the diff with no LLM involved, and
 
 The remaining feature flags (`SURFACE_ALERTS`, `CARRY_FORWARD_FINDINGS`, `FINDING_OUTCOMES_ENABLED`, `REVIEW_HISTORY_ARCHIVE`) are dashboard and workflow conveniences. They are independent of review quality; enable them as needed.
 
+### Automatic reviews for allowlisted authors
+
+With the `auto_review_ready_prs` setting on (admin settings page, Publishing
+section; seeded off), PRism reviews and comments automatically when a PR by an
+author in `publish_enabled_authors` becomes ready for review, opens ready, or
+gets a new push. Converting to draft or closing retires queued work. Each PR
+head is reviewed at most once; the review is forced past the per-commit cache
+so a review generated while the PR was a draft does not stand in for it.
+
+Deliveries arrive through the GitHub App webhook; the scheduled poll is the
+fallback for a missed delivery. To enable it:
+
+1. Set `GITHUB_WEBHOOK_SECRET` on the server (mount it from your secret store).
+2. In the GitHub App settings (`https://github.com/organizations/<your-org>/settings/apps/<your-app>`),
+   activate the webhook with URL `https://<your-host>/webhooks/github` and the same
+   secret, then subscribe to **Pull request** events. The endpoint acknowledges
+   any other event type without storing it, so extra subscriptions are harmless.
+3. Send the ping from the app's Advanced tab: a `200` in Recent Deliveries
+   confirms the signature setup.
+4. Turn on `auto_review_ready_prs` once `publish_enabled_authors` lists the
+   authors you want reviewed.
+
+`GET /api/status` reports `webhook.deliveries_24h`, `webhook.last_delivery_at`
+and `webhook.intents_queued`. Clearing `publish_enabled_authors` stops all
+publishing, automatic reviews included.
+
 ### Linked ticket context (optional)
 
 The agent otherwise reviews a PR without knowing the intent recorded in its Jira ticket, and will flag deliberate decisions the author documented there. Set `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` (a Jira API token for a service or personal account with read access) and the review fetches the tickets referenced directly in the PR title, body, or branch name (up to 3): summary, status, type, description, and the newest 10 comments. The prompt tells the agent to treat decisions recorded there as intentional, cite the ticket key when a finding touches one, and flag only when the change contradicts the ticket or its rationale no longer holds. `JIRA_PROJECT_KEYS` (comma-separated, optional) restricts which project keys count as references. The PR title and body always reach the agent, with or without Jira; the sidecar's `review_run.linked_tickets` lists the keys that informed a review.
@@ -151,7 +178,8 @@ The agent otherwise reviews a PR without knowing the intent recorded in its Jira
 - `GET /api/v1/review-runs?owner=...&repo=...&pull_request=...` — cursor-paginated history; optional `commit_sha` and `status` filters
 - `GET /api/review/{owner}/{repo}/{pr}` — legacy/latest structured review JSON (`?format=html` / `?format=md`, `?sha=`, or `?sha=<sha>&run_id=<id>`)
 - `POST /api/prs/generate-review` — backward-compatible review creation for callers that do not need customization
-- `GET /api/status` — health check
+- `GET /api/status` — health check, including webhook ingress counters
+- `POST /webhooks/github` — GitHub App webhook (HMAC-authenticated; `pull_request` events feed automatic reviews, other events are acknowledged)
 
 Create a customized exact-head run with the bundled client:
 

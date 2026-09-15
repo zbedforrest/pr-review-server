@@ -8,6 +8,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAutoReviewReadySettingSeededOff(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	value, err := database.GetSetting("auto_review_ready_prs")
+	require.NoError(t, err)
+	assert.Equal(t, "false", value)
+}
+
 func TestCreateWebhookDeliveryIsIdempotentPerDeliveryID(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()

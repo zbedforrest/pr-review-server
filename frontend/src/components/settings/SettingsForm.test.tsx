@@ -14,6 +14,7 @@ const serverSettings: Settings = {
   publish_inline_cap: 5,
   publish_inline_min_severity: 'medium',
   publish_show_unverified: false,
+  auto_review_ready_prs: false,
   publish_reply_mode: 'react',
   publish_reply_enabled_at: '2026-09-10T12:00:00Z',
   admin_logins: 'alice,carol',
@@ -320,6 +321,35 @@ describe('SettingsForm', () => {
     expect(samples().value).toBe('7');
     expect(saveIn('Review').disabled).toBe(false);
     expect(within(section('Publishing')).queryByRole('alert')).toBeNull();
+  });
+
+  it('renders the automatic review switch in Publishing with its explanation', () => {
+    renderForm();
+    const toggle = screen.getByLabelText('Review ready PRs automatically') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(section('Publishing').contains(toggle)).toBe(true);
+    expect(
+      within(section('Publishing')).getByText(
+        "Review and comment automatically when an allowlisted author's PR becomes ready for review, opens ready, or gets a new push"
+      )
+    ).toBeTruthy();
+    expect(toggle.getAttribute('aria-describedby')).toBe('settings-auto-review-ready-help');
+  });
+
+  it('posts only auto_review_ready_prs when the switch is saved', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...serverSettings, auto_review_ready_prs: true }));
+    renderForm();
+    fireEvent.click(screen.getByLabelText('Review ready PRs automatically'));
+    expect(saveIn('Publishing').disabled).toBe(false);
+    fireEvent.click(saveIn('Publishing'));
+    await waitFor(() => expect(postedBodies()).toEqual([{ auto_review_ready_prs: true }]));
+    await waitFor(() => expect(saveIn('Publishing').disabled).toBe(true));
+    expect((screen.getByLabelText('Review ready PRs automatically') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('disables the automatic review switch while no author is enabled', () => {
+    renderForm({}, { ...serverSettings, publish_enabled_authors: '', publish_reply_mode: 'off', publish_reply_enabled_at: '' });
+    expect((screen.getByLabelText('Review ready PRs automatically') as HTMLInputElement).disabled).toBe(true);
   });
 
   it('never renders generate_html', () => {

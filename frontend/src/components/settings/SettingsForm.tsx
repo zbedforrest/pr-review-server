@@ -36,6 +36,9 @@ const REPLY_MODES: { value: ReplyMode; description: string }[] = [
 const EMPTY_AUTHORS_NOTICE =
   'Nothing is posted, and no replies are processed, until at least one author is enabled';
 
+const AUTO_REVIEW_READY_HELP =
+  "Review and comment automatically when an allowlisted author's PR becomes ready for review, opens ready, or gets a new push";
+
 function pick<K extends keyof Settings>(settings: Settings, keys: readonly K[]): Pick<Settings, K> {
   return Object.fromEntries(keys.map((key) => [key, settings[key]])) as Pick<Settings, K>;
 }
@@ -117,6 +120,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
     'publish_inline_cap',
     'publish_inline_min_severity',
     'publish_show_unverified',
+    'auto_review_ready_prs',
   ]);
   const replies = useSectionDraft(settings, ['publish_reply_mode']);
   const admins = useSectionDraft(settings, ['admin_logins']);
@@ -231,6 +235,24 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
           knownLogins={knownLogins}
         />
         {noAuthorsDraft && <p className="settings-section__notice">{EMPTY_AUTHORS_NOTICE}</p>}
+        <div className="settings-field">
+          <div className="settings-field settings-field--inline">
+            <input
+              id="settings-auto-review-ready"
+              type="checkbox"
+              checked={publishing.draft.auto_review_ready_prs}
+              onChange={(e) => publishing.patch({ auto_review_ready_prs: e.target.checked })}
+              disabled={policyDisabled}
+              aria-describedby="settings-auto-review-ready-help"
+            />
+            <label className="settings-field__label" htmlFor="settings-auto-review-ready">
+              Review ready PRs automatically
+            </label>
+          </div>
+          <span id="settings-auto-review-ready-help" className="settings-field__help">
+            {AUTO_REVIEW_READY_HELP}
+          </span>
+        </div>
         <div className="settings-field">
           <label className="settings-field__label" htmlFor="settings-inline-cap">
             Inline comment cap

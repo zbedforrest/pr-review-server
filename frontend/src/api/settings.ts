@@ -11,6 +11,9 @@ export interface Settings {
   publish_inline_cap: number;
   publish_inline_min_severity: string;
   publish_show_unverified: boolean;
+  // Review and comment automatically when an allowlisted author's PR becomes
+  // ready for review, opens ready, or gets a new push.
+  auto_review_ready_prs: boolean;
   publish_reply_mode: ReplyMode;
   // RFC3339 stamp of when replies were last switched on; "" whenever the mode is off.
   publish_reply_enabled_at: string;

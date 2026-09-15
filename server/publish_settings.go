@@ -16,6 +16,9 @@ const (
 	settingPublishReplyMode         = "publish_reply_mode"
 	settingPublishReplyEnabledAt    = "publish_reply_enabled_at"
 	settingPublishShowUnverified    = "publish_show_unverified"
+	// settingAutoReviewReadyPRs turns on automatic, published reviews for
+	// allowlisted authors' PRs when they become ready, open ready, or get a push.
+	settingAutoReviewReadyPRs = "auto_review_ready_prs"
 
 	defaultPublishInlineCap         = publisher.DefaultInlineCap
 	defaultPublishInlineMinSeverity = "medium"
@@ -59,6 +62,14 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 		}
 	}
 	response[settingPublishShowUnverified] = showUnverified
+
+	autoReviewReady := false
+	if v, err := s.db.GetSetting(settingAutoReviewReadyPRs); err == nil {
+		if b, convErr := strconv.ParseBool(strings.TrimSpace(v)); convErr == nil {
+			autoReviewReady = b
+		}
+	}
+	response[settingAutoReviewReadyPRs] = autoReviewReady
 }
 
 // publishReplyMode reads the stored mode the way the poller does: trimmed and

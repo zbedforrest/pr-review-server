@@ -1276,6 +1276,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			PublishInlineMinSeverity *string `json:"publish_inline_min_severity"`
 			PublishReplyMode         *string `json:"publish_reply_mode"`
 			PublishShowUnverified    *bool   `json:"publish_show_unverified"`
+			AutoReviewReadyPRs       *bool   `json:"auto_review_ready_prs"`
 			AdminLogins              *string `json:"admin_logins"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1338,6 +1339,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.PublishShowUnverified != nil {
 			updates = append(updates, settingWrite{settingPublishShowUnverified, strconv.FormatBool(*req.PublishShowUnverified)})
+		}
+		if req.AutoReviewReadyPRs != nil {
+			updates = append(updates, settingWrite{settingAutoReviewReadyPRs, strconv.FormatBool(*req.AutoReviewReadyPRs)})
 		}
 		if req.PublishReplyMode != nil {
 			mode := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))
