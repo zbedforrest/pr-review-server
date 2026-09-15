@@ -1871,6 +1871,15 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 	if autoReviewErr != nil {
 		log.Printf("[AUTO-REVIEW] read %s: %v", settingAutoReviewReadyPRs, autoReviewErr)
 	}
+	var intentIndex map[string][]db.AutoReviewIntent
+	if autoReviewReady {
+		intentIndex, autoReviewErr = p.autoReviewIntentIndex()
+		if autoReviewErr != nil {
+			log.Printf("[AUTO-REVIEW] load intents, skipping the fallback this cycle: %v", autoReviewErr)
+			autoReviewReady = false
+		}
+	}
+	p.pruneWebhookDeliveries()
 
 	// Single pass: handle closed PRs and outdated reviews
 	for _, pr := range allPRs {
@@ -1962,7 +1971,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			if eligible, err := p.publishAllowedFor(pr.Author); err != nil {
 				log.Printf("[AUTO-REVIEW] PR %s: allowlist read failed: %v", key, err)
 			} else if eligible {
-				p.ensureFallbackAutoReviewIntent(pr, state.HeadRefOid)
+				p.ensureFallbackAutoReviewIntent(pr, state.HeadRefOid, intentIndex[autoReviewTargetKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)])
 			}
 		}
 
@@ -3937,6 +3946,11 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 	}
 	if !outcome.Published {
 		log.Printf("[REVIEWER] SUPERSEDED: run %s completed without replacing the newer PR projection; keeping immutable artifact only", job.RunID)
+		if job.TriggerSource == autoReviewTriggerSource {
+			if err := p.db.SetAutoReviewIntentPublicationByRun(job.RunID, publicationSkippedPrefix+"projection superseded"); err != nil {
+				log.Printf("[AUTO-REVIEW] run %s: could not record superseded publication: %v", job.RunID, err)
+			}
+		}
 		// A successor on a different commit cannot collide with this
 		// commit-scoped compatibility alias, so preserve sha-only history.
 		currentPR, currentErr := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)

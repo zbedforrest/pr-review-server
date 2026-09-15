@@ -801,6 +801,19 @@ func (m *MockDatabase) DeleteWebhookDelivery(deliveryID string) error {
 	return nil
 }
 
+func (m *MockDatabase) DeleteWebhookDeliveriesBefore(cutoff time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, d := range m.WebhookDeliveries {
+		if d.ReceivedAt.Before(cutoff) {
+			delete(m.WebhookDeliveries, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *MockDatabase) GetWebhookStatus(since time.Time) (db.WebhookStatus, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

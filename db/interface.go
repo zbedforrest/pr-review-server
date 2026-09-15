@@ -299,6 +299,7 @@ type Database interface {
 	// Webhook deliveries and automatic review intents
 	CreateWebhookDelivery(d *WebhookDelivery) (bool, error)
 	DeleteWebhookDelivery(deliveryID string) error
+	DeleteWebhookDeliveriesBefore(cutoff time.Time) (int64, error)
 	GetWebhookStatus(since time.Time) (WebhookStatus, error)
 	EnsureAutoReviewIntent(intent *AutoReviewIntent, requeueFrom []string) (bool, error)
 	ListAutoReviewIntents(filter AutoReviewIntentFilter) ([]AutoReviewIntent, error)

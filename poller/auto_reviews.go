@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"pr-review-server/db"
 	"pr-review-server/github"
@@ -20,6 +21,13 @@ import (
 const (
 	settingAutoReviewReadyPRs = "auto_review_ready_prs"
 	autoReviewTriggerSource   = "auto_ready"
+	// autoReviewPublicationGrace is how long after a run completes its
+	// publication outcome may still be unrecorded before settlement reconciles
+	// the intent against the publication ledger instead.
+	autoReviewPublicationGrace = 10 * time.Minute
+	// webhookDeliveryRetention keeps the dedup key well past GitHub's
+	// redelivery window.
+	webhookDeliveryRetention = 30 * 24 * time.Hour
 )
 
 // publishAllowedFor reports whether the author is on the publication
@@ -54,6 +62,38 @@ func (p *Poller) autoReviewEligible(author string) (bool, error) {
 
 func autoReviewKey(owner, repo string, number int, head string) string {
 	return fmt.Sprintf("%s/%s#%d@%s", owner, repo, number, head[:min(7, len(head))])
+}
+
+// autoReviewTargetKey is the lowercased PR identity intents are indexed by.
+func autoReviewTargetKey(owner, repo string, number int) string {
+	return strings.ToLower(fmt.Sprintf("%s/%s/%d", owner, repo, number))
+}
+
+// autoReviewIntentIndex loads every intent that still says something about
+// a head (all but superseded), keyed by PR, so the poll fallback can decide
+// per PR without a query.
+func (p *Poller) autoReviewIntentIndex() (map[string][]db.AutoReviewIntent, error) {
+	intents, err := p.db.ListAutoReviewIntents(db.AutoReviewIntentFilter{Statuses: []string{
+		db.AutoReviewIntentQueued, db.AutoReviewIntentRunning, db.AutoReviewIntentDone, db.AutoReviewIntentFailed,
+	}})
+	if err != nil {
+		return nil, err
+	}
+	index := make(map[string][]db.AutoReviewIntent, len(intents))
+	for _, intent := range intents {
+		key := autoReviewTargetKey(intent.RepoOwner, intent.RepoName, intent.PRNumber)
+		index[key] = append(index[key], intent)
+	}
+	return index, nil
+}
+
+func (p *Poller) pruneWebhookDeliveries() {
+	n, err := p.db.DeleteWebhookDeliveriesBefore(time.Now().Add(-webhookDeliveryRetention))
+	if err != nil {
+		log.Printf("[WEBHOOK] prune deliveries: %v", err)
+	} else if n > 0 {
+		log.Printf("[WEBHOOK] pruned %d deliveries older than %s", n, webhookDeliveryRetention)
+	}
 }
 
 // HandleWebhookDelivery turns one accepted pull_request delivery into intent
@@ -131,39 +171,40 @@ func (p *Poller) HandleWebhookDelivery(ctx context.Context, d db.WebhookDelivery
 // force=true so a review cached while the PR was a draft cannot satisfy it,
 // SkipPublish=false so the result reaches GitHub. The intent is linked to
 // the run before the run is launched, so a crash or a failed write can never
-// leave a live review without an owner. A PR already under review returns
-// the intent to queued for the next poll to retry.
-func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReviewIntent, pr github.PullRequest) {
+// leave a live review without an owner. Nothing has run yet when admission
+// fails, so every failure leaves the intent queued for the next poll: an
+// active review on the PR, a transient database error, or deployment review
+// defaults an operator still has to fix. It reports whether a run started.
+func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReviewIntent, pr github.PullRequest) bool {
 	key := autoReviewKey(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 	p.autoReviewAdmitMutex.Lock()
 	defer p.autoReviewAdmitMutex.Unlock()
 	job, err := p.PrepareReviewJob(pr, runconfig.Overrides{}, true, autoReviewTriggerSource, nil)
 	if err != nil {
-		log.Printf("[AUTO-REVIEW] %s intent=%d: cannot prepare review: %v", key, intent.ID, err)
-		p.moveAutoReviewIntent(intent, db.AutoReviewIntentQueued, db.AutoReviewIntentFailed, "")
-		return
+		log.Printf("[AUTO-REVIEW] %s intent=%d: cannot prepare review, left queued for the next poll: %v", key, intent.ID, err)
+		return false
 	}
 	job.SkipPublish = false
 	claimed, err := p.db.UpdateAutoReviewIntentStatus(intent.ID, []string{db.AutoReviewIntentQueued}, db.AutoReviewIntentRunning, job.RunID)
 	if err != nil {
 		log.Printf("[AUTO-REVIEW] %s intent=%d run=%s: could not claim: %v", key, intent.ID, job.RunID, err)
-		return
+		return false
 	}
 	if !claimed {
 		log.Printf("[AUTO-REVIEW] %s intent=%d: no longer queued, not admitting", key, intent.ID)
-		return
+		return false
 	}
 	if err := p.ProcessReviewJob(ctx, job); err != nil {
 		if errors.Is(err, ErrReviewAlreadyTracked) {
 			log.Printf("[AUTO-REVIEW] %s intent=%d: a review is already active, left queued for the next poll", key, intent.ID)
-			p.moveAutoReviewIntent(intent, db.AutoReviewIntentRunning, db.AutoReviewIntentQueued, "")
-			return
+		} else {
+			log.Printf("[AUTO-REVIEW] %s intent=%d run=%s: admission failed, left queued for the next poll: %v", key, intent.ID, job.RunID, err)
 		}
-		log.Printf("[AUTO-REVIEW] %s intent=%d run=%s: admission failed: %v", key, intent.ID, job.RunID, err)
-		p.moveAutoReviewIntent(intent, db.AutoReviewIntentRunning, db.AutoReviewIntentFailed, job.RunID)
-		return
+		p.moveAutoReviewIntent(intent, db.AutoReviewIntentRunning, db.AutoReviewIntentQueued, "")
+		return false
 	}
 	log.Printf("[AUTO-REVIEW] %s intent=%d run=%s: review admitted (trigger=%s delivery=%s)", key, intent.ID, job.RunID, intent.Trigger, intent.DeliveryID)
+	return true
 }
 
 func (p *Poller) moveAutoReviewIntent(intent db.AutoReviewIntent, from, to, runID string) {
@@ -175,24 +216,49 @@ func (p *Poller) moveAutoReviewIntent(intent db.AutoReviewIntent, from, to, runI
 // ensureFallbackAutoReviewIntent is the poll's safety net for a ready,
 // allowlisted PR: queued intents for older heads are superseded and the
 // current head gets a poll_fallback intent unless one already covers it. A
-// head whose review already reached GitHub is recorded as done, so switching
-// the feature on does not re-review every open PR; a head whose intent was
-// superseded (a draft round trip the webhook missed) is queued again; a
-// failed head is not retried until a new push.
-func (p *Poller) ensureFallbackAutoReviewIntent(pr db.PR, head string) {
+// head whose review already reached GitHub (by any run) is recorded as done,
+// so switching the feature on does not re-review every open PR; a head whose
+// intent was superseded (a draft round trip the webhook missed) is queued
+// again; a failed head is not retried until a new push. existing is the PR's
+// non-superseded intents from this cycle's index.
+func (p *Poller) ensureFallbackAutoReviewIntent(pr db.PR, head string, existing []db.AutoReviewIntent) {
 	key := autoReviewKey(pr.RepoOwner, pr.RepoName, pr.PRNumber, head)
-	if n, err := p.db.SupersedeQueuedAutoReviewIntents(pr.RepoOwner, pr.RepoName, pr.PRNumber, head); err != nil {
-		log.Printf("[AUTO-REVIEW] %s: supersede older heads failed: %v", key, err)
-		return
-	} else if n > 0 {
-		log.Printf("[AUTO-REVIEW] %s: poll superseded %d queued intent(s) for older heads", key, n)
+	var current *db.AutoReviewIntent
+	olderQueued := false
+	for i := range existing {
+		switch {
+		case strings.EqualFold(existing[i].HeadSHA, head):
+			current = &existing[i]
+		case existing[i].Status == db.AutoReviewIntentQueued:
+			olderQueued = true
+		}
 	}
-	intent := db.AutoReviewIntent{RepoOwner: pr.RepoOwner, RepoName: pr.RepoName, PRNumber: pr.PRNumber, HeadSHA: head, Trigger: db.AutoReviewTriggerPollFallback}
+	if olderQueued {
+		if n, err := p.db.SupersedeQueuedAutoReviewIntents(pr.RepoOwner, pr.RepoName, pr.PRNumber, head); err != nil {
+			log.Printf("[AUTO-REVIEW] %s: supersede older heads failed: %v", key, err)
+			return
+		} else if n > 0 {
+			log.Printf("[AUTO-REVIEW] %s: poll superseded %d queued intent(s) for older heads", key, n)
+		}
+	}
+	if current != nil && current.Status != db.AutoReviewIntentQueued {
+		return
+	}
 	published, err := p.headPublished(pr.RepoOwner, pr.RepoName, pr.PRNumber, head)
 	if err != nil {
 		log.Printf("[AUTO-REVIEW] %s: read publication ledger failed: %v", key, err)
 		return
 	}
+	if current != nil {
+		// Another run (manual, or the legacy poll path) published this head
+		// while the intent waited; nothing is owed any more.
+		if published {
+			p.moveAutoReviewIntent(*current, db.AutoReviewIntentQueued, db.AutoReviewIntentDone, "")
+			log.Printf("[AUTO-REVIEW] %s: intent=%d done, the head was published by another run", key, current.ID)
+		}
+		return
+	}
+	intent := db.AutoReviewIntent{RepoOwner: pr.RepoOwner, RepoName: pr.RepoName, PRNumber: pr.PRNumber, HeadSHA: head, Trigger: db.AutoReviewTriggerPollFallback}
 	if published {
 		intent.Status = db.AutoReviewIntentDone
 		intent.Publication = publicationPosted
@@ -209,8 +275,9 @@ func (p *Poller) ensureFallbackAutoReviewIntent(pr db.PR, head string) {
 
 // dispatchAutoReviewIntents runs after the poll refreshed PR state: running
 // intents are settled against their runs, and queued intents whose PR is
-// still open, ready, allowlisted and on the same head are admitted. Anything
-// else queued is superseded so the backlog reflects real work.
+// still open, ready, allowlisted and on the same head are admitted within
+// the poll's admission budget; the rest stay queued for the next cycle.
+// Anything else queued is superseded so the backlog reflects real work.
 func (p *Poller) dispatchAutoReviewIntents(ctx context.Context, prs []db.PR, states map[string]*github.PRState) {
 	p.settleAutoReviewIntents()
 	queued, err := p.db.ListAutoReviewIntents(db.AutoReviewIntentFilter{Statuses: []string{db.AutoReviewIntentQueued}})
@@ -221,6 +288,8 @@ func (p *Poller) dispatchAutoReviewIntents(ctx context.Context, prs []db.PR, sta
 	if len(queued) == 0 {
 		return
 	}
+	budget := p.pollAdmissionLimit() - p.trackedReviewCount()
+	admitted := 0
 	// Intents store lowercased targets; PR rows and state keys keep GitHub's
 	// casing, so index both by the lowercased key.
 	prByKey := make(map[string]*db.PR, len(prs))
@@ -264,17 +333,32 @@ func (p *Poller) dispatchAutoReviewIntents(ctx context.Context, prs []db.PR, sta
 			}
 			continue
 		}
+		if admitted >= budget {
+			log.Printf("[AUTO-REVIEW] %s intent=%d: admission budget spent (%d this cycle), left queued", key, intent.ID, admitted)
+			continue
+		}
 		target := buildPRFromDB(*pr)
 		target.CommitSHA = intent.HeadSHA
 		target.Draft = false
-		p.admitAutoReviewIntent(ctx, intent, target)
+		if p.admitAutoReviewIntent(ctx, intent, target) {
+			admitted++
+		}
 	}
+}
+
+func (p *Poller) trackedReviewCount() int {
+	p.reviewsMutex.Lock()
+	defer p.reviewsMutex.Unlock()
+	return len(p.activeReviews)
 }
 
 // settleAutoReviewIntents moves running intents to their run's outcome. A
 // completed run counts as done only when its review reached GitHub; a run
 // that finished while the PR was a draft, closed or on another head is
-// superseded so a later ready or push event can review the head again.
+// superseded so a later ready or push event can review the head again. The
+// run row completes before the worker publishes and records the outcome, so
+// a completed run with no outcome yet is left alone for a grace period; past
+// it (the process died mid-publication) the publication ledger decides.
 func (p *Poller) settleAutoReviewIntents() {
 	running, err := p.db.ListAutoReviewIntents(db.AutoReviewIntentFilter{Statuses: []string{db.AutoReviewIntentRunning}})
 	if err != nil {
@@ -298,6 +382,21 @@ func (p *Poller) settleAutoReviewIntents() {
 				outcome = db.AutoReviewIntentDone
 			case strings.HasPrefix(intent.Publication, publicationSkippedPrefix):
 				outcome = db.AutoReviewIntentSuperseded
+			case intent.Publication == "":
+				if run.CompletedAt == nil || time.Since(*run.CompletedAt) < autoReviewPublicationGrace {
+					continue
+				}
+				published, err := p.headPublished(intent.RepoOwner, intent.RepoName, intent.PRNumber, intent.HeadSHA)
+				if err != nil {
+					log.Printf("[AUTO-REVIEW] %s intent=%d run=%s: read publication ledger: %v", key, intent.ID, intent.RunID, err)
+					continue
+				}
+				if published {
+					outcome = db.AutoReviewIntentDone
+				} else {
+					outcome = db.AutoReviewIntentSuperseded
+				}
+				log.Printf("[AUTO-REVIEW] %s intent=%d run=%s: no publication outcome %s after completion, ledger says published=%t", key, intent.ID, intent.RunID, autoReviewPublicationGrace, published)
 			default:
 				outcome = db.AutoReviewIntentFailed
 			}

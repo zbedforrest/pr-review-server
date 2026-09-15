@@ -93,6 +93,16 @@ func (g *GormDB) DeleteWebhookDelivery(deliveryID string) error {
 	return nil
 }
 
+// DeleteWebhookDeliveriesBefore prunes deliveries older than cutoff; the
+// dedup key only needs to outlive GitHub's redelivery window.
+func (g *GormDB) DeleteWebhookDeliveriesBefore(cutoff time.Time) (int64, error) {
+	res := g.db.Where("received_at < ?", cutoff.UTC()).Delete(&WebhookDeliveryModel{})
+	if res.Error != nil {
+		return 0, fmt.Errorf("prune webhook deliveries: %w", res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
 // GetWebhookStatus summarizes deliveries received since the given time and
 // the automatic review backlog.
 func (g *GormDB) GetWebhookStatus(since time.Time) (WebhookStatus, error) {

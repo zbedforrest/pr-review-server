@@ -2,13 +2,16 @@ package poller
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/service"
 )
 
 const (
@@ -137,6 +140,65 @@ func TestHeadFinishedWhileDraftIsReviewedAgainWhenReady(t *testing.T) {
 	require.Len(t, intents, 1, "the same head reuses its intent row")
 	assert.NotEqual(t, first.RunID, intents[0].RunID, "the ready transition gets a fresh run")
 	assert.Len(t, f.generator.GenerateReviewCalls, 2)
+}
+
+func TestSettlementWaitsForThePublicationOutcomeThenConsultsTheLedger(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
+	waitForDetachedReviews(t, f.p)
+	intent := f.intents(t)[0]
+	waitForReviewRunStatus(t, f.db, intent.RunID, db.ReviewRunStatusCompleted)
+	require.NoError(t, f.db.SetAutoReviewIntentPublicationByRun(intent.RunID, ""))
+
+	f.p.settleAutoReviewIntents()
+	assert.Equal(t, db.AutoReviewIntentRunning, f.intents(t)[0].Status, "a just-completed run may still be publishing")
+
+	stale := time.Now().Add(-autoReviewPublicationGrace - time.Minute)
+	require.NoError(t, f.db.PatchReviewRun(intent.RunID, db.ReviewRunPatch{CompletedAt: &stale}))
+	f.p.settleAutoReviewIntents()
+	settled := f.intents(t)[0]
+	assert.Equal(t, db.AutoReviewIntentSuperseded, settled.Status, "without a ledger record of the head the review is owed again")
+	assert.Equal(t, intent.RunID, settled.RunID)
+}
+
+func TestAdmissionFailureLeavesTheIntentQueued(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	f.p.cfg.AgenticReviews = true
+	f.p.cfg.AgentBackend = service.AgentBackendOpenRouter
+	f.p.cfg.AgentModel = service.DefaultOpenRouterAgentModel
+	f.p.cfg.AgentEffort = "high"
+	f.p.cfg.AgentWallClockSec = 30
+	f.p.cfg.AgentMaxTurns = 5
+	f.p.cfg.OpenRouterAPIKey = ""
+
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
+	intents := f.intents(t)
+	require.Len(t, intents, 1)
+	assert.Equal(t, db.AutoReviewIntentQueued, intents[0].Status, "an operator-fixable admission failure keeps the head owed")
+	assert.Equal(t, "", intents[0].RunID)
+	assert.Empty(t, f.runs())
+}
+
+func TestDispatchAdmitsWithinThePollBudgetAndLeavesTheRestQueued(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	f.p.firstPassSlots = make(chan struct{}, 1)
+	f.gh.BatchGetPRStateResults = map[string]*github.PRState{}
+	var prs []db.PR
+	for n := 1; n <= 6; n++ {
+		pr := db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: n, LastCommitSHA: autoReviewOldHead, Status: "completed", Author: "alice", PRState: "open"}
+		f.db.PRs[fmt.Sprintf("acme/example/%d", n)] = &pr
+		prs = append(prs, pr)
+		f.gh.BatchGetPRStateResults[fmt.Sprintf("acme/example/%d", n)] = &github.PRState{Owner: "acme", Repo: "example", Number: n, State: "OPEN", HeadRefOid: autoReviewOldHead}
+		intent := db.AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: n, HeadSHA: autoReviewOldHead, Trigger: "opened"}
+		_, err := f.db.EnsureAutoReviewIntent(&intent, nil)
+		require.NoError(t, err)
+	}
+
+	f.p.dispatchAutoReviewIntents(context.Background(), prs, f.gh.BatchGetPRStateResults)
+	queued, err := f.db.ListAutoReviewIntents(db.AutoReviewIntentFilter{Statuses: []string{db.AutoReviewIntentQueued}})
+	require.NoError(t, err)
+	assert.Len(t, queued, 6-f.p.pollAdmissionLimit(), "intents beyond the budget wait for the next cycle")
+	waitForDetachedReviews(t, f.p)
 }
 
 func TestIntentIsClaimedBeforeTheRunLaunches(t *testing.T) {
@@ -299,6 +361,39 @@ func TestPollFallbackQueuesAndRunsMissingIntent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, db.AutoReviewIntentDone, f.intents(t)[0].Status, "the next poll settles the finished run")
 	assert.Len(t, f.generator.GenerateReviewCalls, 1)
+}
+
+func TestPollFallbackMarksAQueuedIntentDoneOnceAnotherRunPublishedTheHead(t *testing.T) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	require.NoError(t, database.SetSetting(settingAutoReviewReadyPRs, "true"))
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 7, LastCommitSHA: autoReviewOldHead,
+		Status: "completed", Title: "Ready PR", Author: "alice", PRState: "open",
+	}))
+	waiting := db.AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: autoReviewOldHead, Trigger: "ready_for_review"}
+	_, err = database.EnsureAutoReviewIntent(&waiting, nil)
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertPublishedFinding(&db.PublishedFinding{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindSummary, Fingerprint: db.PublishedKindSummary,
+		ReviewedSHA: autoReviewOldHead, LastSeenSHA: autoReviewOldHead, State: db.PublishedStateOpen, Rounds: 1,
+	}))
+	mockGH := NewMockGitHubClient()
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"acme/example/7": {Owner: "acme", Repo: "example", Number: 7, State: "OPEN", HeadRefOid: autoReviewOldHead},
+	}
+	generator := NewMockReviewGenerator()
+	p := newTestPollerFull(mockGH, database, NewMockReviewStorage(), generator)
+
+	_, _, err = p.cleanupAndDetectOutdated(context.Background())
+	require.NoError(t, err)
+	intents, err := database.ListAutoReviewIntents(db.AutoReviewIntentFilter{})
+	require.NoError(t, err)
+	require.Len(t, intents, 1)
+	assert.Equal(t, db.AutoReviewIntentDone, intents[0].Status)
+	assert.Empty(t, generator.GenerateReviewCalls, "a head another run already commented on is not reviewed again")
 }
 
 func TestPollFallbackRecordsAnAlreadyPublishedHeadAsDone(t *testing.T) {

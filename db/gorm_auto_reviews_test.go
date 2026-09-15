@@ -39,6 +39,26 @@ func TestCreateWebhookDeliveryIsIdempotentPerDeliveryID(t *testing.T) {
 	assert.Equal(t, 0, old.Deliveries)
 }
 
+func TestDeleteWebhookDeliveriesBeforePrunesOnlyOldRows(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	old := &WebhookDelivery{DeliveryID: "old", Event: "pull_request", Action: "opened", RepoOwner: "acme", RepoName: "example", PRNumber: 1, ReceivedAt: time.Now().Add(-48 * time.Hour)}
+	fresh := &WebhookDelivery{DeliveryID: "fresh", Event: "pull_request", Action: "opened", RepoOwner: "acme", RepoName: "example", PRNumber: 2}
+	for _, d := range []*WebhookDelivery{old, fresh} {
+		_, err := database.CreateWebhookDelivery(d)
+		require.NoError(t, err)
+	}
+	n, err := database.DeleteWebhookDeliveriesBefore(time.Now().Add(-24 * time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+	inserted, err := database.CreateWebhookDelivery(old)
+	require.NoError(t, err)
+	assert.True(t, inserted, "a pruned delivery id is accepted again")
+	inserted, err = database.CreateWebhookDelivery(fresh)
+	require.NoError(t, err)
+	assert.False(t, inserted)
+}
+
 func TestEnsureAutoReviewIntentDedupsPerHeadAndRequeuesOnlyListedStatuses(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()
