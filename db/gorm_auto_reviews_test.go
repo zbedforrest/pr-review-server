@@ -59,6 +59,29 @@ func TestDeleteWebhookDeliveriesBeforePrunesOnlyOldRows(t *testing.T) {
 	assert.False(t, inserted)
 }
 
+func TestDeleteTerminalAutoReviewIntentsBeforeKeepsFailedRows(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	for head, status := range map[string]string{"aaaa": AutoReviewIntentDone, "bbbb": AutoReviewIntentSuperseded, "cccc": AutoReviewIntentFailed, "dddd": AutoReviewIntentQueued} {
+		intent := &AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: head, Trigger: "opened", Status: status}
+		_, err := database.EnsureAutoReviewIntent(intent, nil)
+		require.NoError(t, err)
+	}
+	stale := time.Now().UTC().Add(-48 * time.Hour)
+	require.NoError(t, database.db.Model(&AutoReviewIntentModel{}).Where("1 = 1").Update("updated_at", stale).Error)
+
+	n, err := database.DeleteTerminalAutoReviewIntentsBefore(time.Now().Add(-24 * time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
+	remaining, err := database.ListAutoReviewIntents(AutoReviewIntentFilter{})
+	require.NoError(t, err)
+	statuses := map[string]string{}
+	for _, intent := range remaining {
+		statuses[intent.HeadSHA] = intent.Status
+	}
+	assert.Equal(t, map[string]string{"cccc": AutoReviewIntentFailed, "dddd": AutoReviewIntentQueued}, statuses)
+}
+
 func TestEnsureAutoReviewIntentDedupsPerHeadAndRequeuesOnlyListedStatuses(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()

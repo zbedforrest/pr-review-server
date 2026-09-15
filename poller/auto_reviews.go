@@ -26,7 +26,7 @@ const (
 	// the intent against the publication ledger instead.
 	autoReviewPublicationGrace = 10 * time.Minute
 	// webhookDeliveryRetention keeps the dedup key well past GitHub's
-	// redelivery window; terminal intents share it.
+	// redelivery window; done and superseded intents share it.
 	webhookDeliveryRetention = 30 * 24 * time.Hour
 	// autoReviewClaimGrace is how long a running intent may exist without its
 	// run row: admission claims the intent first, then creates the run.

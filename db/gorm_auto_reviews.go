@@ -93,12 +93,14 @@ func (g *GormDB) DeleteWebhookDelivery(deliveryID string) error {
 	return nil
 }
 
-// DeleteTerminalAutoReviewIntentsBefore prunes done, superseded and failed
-// intents not touched since cutoff. A still-open head that loses its done row
-// is re-seeded from the publication ledger, so nothing is reviewed twice.
+// DeleteTerminalAutoReviewIntentsBefore prunes done and superseded intents
+// not touched since cutoff. A still-open head that loses its done row is
+// re-seeded from the publication ledger, so nothing is reviewed twice. Failed
+// rows are kept: a failed head may carry comments the ledger never recorded,
+// and the row is what stops the poll fallback from reviewing it again.
 func (g *GormDB) DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (int64, error) {
 	res := g.db.Where("status IN ? AND updated_at < ?",
-		[]string{AutoReviewIntentDone, AutoReviewIntentSuperseded, AutoReviewIntentFailed}, cutoff.UTC()).
+		[]string{AutoReviewIntentDone, AutoReviewIntentSuperseded}, cutoff.UTC()).
 		Delete(&AutoReviewIntentModel{})
 	if res.Error != nil {
 		return 0, fmt.Errorf("prune terminal auto review intents: %w", res.Error)

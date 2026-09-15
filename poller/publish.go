@@ -256,8 +256,10 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 }
 
 // headPublished reports whether a publication round for this head already
-// reached GitHub: the sticky summary row records the last head it was
-// posted for. Without a ledger nothing is known, so nothing is assumed.
+// reached GitHub: every ledger row records the last head it was posted or
+// refreshed for, and finding rows are written before the summary, so any
+// match is evidence even when the round died before its summary. Without a
+// ledger nothing is known, so nothing is assumed.
 func (p *Poller) headPublished(owner, repo string, number int, head string) (bool, error) {
 	ledger, ok := p.db.(publisher.Ledger)
 	if !ok {
@@ -268,7 +270,7 @@ func (p *Poller) headPublished(owner, repo string, number int, head string) (boo
 		return false, err
 	}
 	for _, row := range rows {
-		if row.Kind == db.PublishedKindSummary && strings.EqualFold(row.LastSeenSHA, head) {
+		if strings.EqualFold(row.LastSeenSHA, head) {
 			return true, nil
 		}
 	}
