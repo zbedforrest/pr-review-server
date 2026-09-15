@@ -133,6 +133,27 @@ func TestPoll_Attention_DraftAndClosedForceFalse(t *testing.T) {
 	}
 }
 
+func TestPoll_Attention_FlipNeverResurfacesHiddenRowOnRetainedClosedPR(t *testing.T) {
+	f := newAttentionFixture(changesRequestedBy("alice"))
+	f.mockDB.PRs["acme/example/7"].PRState = "merged"
+	f.seedView(1, true, "CHANGES_REQUESTED")
+	f.view(1).Hidden = true
+
+	f.pollCapturingLog()
+
+	if view := f.view(1); view == nil || !view.Hidden {
+		t.Fatalf("hidden row on a merged PR must stay hidden, got %+v", view)
+	}
+	for _, call := range f.mockDB.EnsureUserPRViewCalls {
+		if call.PRID == 10 {
+			t.Errorf("merged PR must not get a view upsert, got one for user %d", call.UserID)
+		}
+	}
+	if len(f.userEvents) != 0 {
+		t.Errorf("no attention transition should be broadcast, got %v", f.userEvents)
+	}
+}
+
 func TestPoll_Attention_DraftComesFromFetchedReviewDataNotStaleRow(t *testing.T) {
 	t.Run("converted to draft", func(t *testing.T) {
 		f := newAttentionFixture(changesRequestedBy("alice"))

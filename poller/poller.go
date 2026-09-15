@@ -1926,7 +1926,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 		// A PR retained past close (manual claim) had pr_state persisted as
 		// closed/merged; if it's re-opened on GitHub, restore it or the UI
 		// keeps showing the merged/closed dot instead of live CI.
-		if pr.PRState != "" && pr.PRState != "open" {
+		if !isOpenPRState(pr.PRState) {
 			log.Printf("[STATE-SYNC] PR %s re-opened on GitHub, restoring pr_state to open", key)
 			if err := p.db.SetPRState(pr.RepoOwner, pr.RepoName, pr.PRNumber, "open"); err != nil {
 				log.Printf("[STATE-SYNC] ERROR: failed to restore state for PR %s: %v", key, err)
@@ -2400,9 +2400,19 @@ func (p *Poller) checkForOutdatedReviews(ctx context.Context) (int, error) {
 	return outdated, nil
 }
 
+// isOpenPRState treats an empty stored pr_state (rows predating the column) as open.
+func isOpenPRState(state string) bool {
+	return state == "" || strings.EqualFold(state, "open")
+}
+
 // syncUserPRViews creates user_pr_view records for PRs the user authored.
 // Reviewer views are created separately in the reviewer groups phase.
 // Uses the pre-built dbPRMap to avoid N+1 GetPR queries.
+//
+// Every view upsert un-hides the row, so PRs retained past close (manual
+// claim, active review) are skipped here and in the other view syncs;
+// otherwise the next cycle would undo the hide that closed-PR cleanup
+// applied for non-claimants.
 func (p *Poller) syncUserPRViews(allPRs []github.PullRequest, dbPRMap map[string]*db.PR, users []db.User) {
 	batch := newViewBatch()
 	for _, user := range users {
@@ -2413,7 +2423,7 @@ func (p *Poller) syncUserPRViews(allPRs []github.PullRequest, dbPRMap map[string
 
 			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
 			dbPR, exists := dbPRMap[key]
-			if !exists {
+			if !exists || !isOpenPRState(dbPR.PRState) {
 				continue
 			}
 
@@ -2806,6 +2816,7 @@ func (p *Poller) poll(ctx context.Context) {
 				if !existsInDB {
 					continue
 				}
+				isOpen := isOpenPRState(existingPR.PRState)
 
 				for _, user := range allUsers {
 					userStatus := ""
@@ -2816,7 +2827,9 @@ func (p *Poller) poll(ctx context.Context) {
 						}
 					}
 					isAuthor := strings.EqualFold(existingPR.Author, user.GitHubUsername)
-					if userStatus != "" {
+					// Re-asserting status on a retained closed PR would un-hide rows cleanup hid.
+					syncStatus := userStatus != "" && isOpen
+					if syncStatus {
 						reviewViewBatch.EnsureView(user.ID, existingPR.ID, isAuthor)
 						reviewViewBatch.SetReviewStatus(user.ID, existingPR.ID, userStatus)
 					}
@@ -2827,15 +2840,17 @@ func (p *Poller) poll(ctx context.Context) {
 					}
 					if !snapshotOK {
 						// Without a trustworthy snapshot only rows the status sync already touches are written.
-						if userStatus != "" {
+						if syncStatus {
 							reviewViewBatch.SetNeedsAttention(user.ID, existingPR.ID, *attention)
 						}
 						continue
 					}
 					stored, hasRow := storedAttention[userPRViewKey{UserID: user.ID, PRID: existingPR.ID}]
-					changed := stored != *attention
-					// A verdict alone never creates a row; an existing row is touched only when its flag flips.
-					if userStatus == "" && !(hasRow && changed) {
+					changed := stored.needsAttention != *attention
+					// A verdict alone never creates a row; an existing row is touched only when its
+					// flag flips, and a hidden row on a retained closed PR is never resurfaced for it.
+					flipsExisting := hasRow && changed && (isOpen || !stored.hidden)
+					if !syncStatus && !flipsExisting {
 						continue
 					}
 					reviewViewBatch.EnsureView(user.ID, existingPR.ID, isAuthor)
@@ -2918,7 +2933,7 @@ func (p *Poller) poll(ctx context.Context) {
 				continue
 			}
 			existingPR, existsInDB := dbPRMap[key]
-			if !existsInDB {
+			if !existsInDB || !isOpenPRState(existingPR.PRState) {
 				continue
 			}
 
@@ -3050,6 +3065,11 @@ func (p *Poller) poll(ctx context.Context) {
 				continue
 			}
 			dbPR, exists := dbPRMap[key]
+			if exists && !isOpenPRState(dbPR.PRState) {
+				// The syncs ignored this PR's metadata this cycle (re-opened PR, state
+				// restored only by end-of-cycle cleanup); a stale timestamp refetches it next cycle.
+				continue
+			}
 			if !exists || dbPR.GitHubUpdatedAt == nil || !ts.Equal(*dbPR.GitHubUpdatedAt) {
 				parts := strings.SplitN(key, "/", 3)
 				if len(parts) == 3 {

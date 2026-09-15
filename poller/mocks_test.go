@@ -739,6 +739,11 @@ func (m *MockDatabase) UpdatePRCreatedAt(owner, repo string, prNumber int, creat
 }
 
 func (m *MockDatabase) UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updatedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pr, exists := m.PRs[prDBKey(owner, repo, prNumber)]; exists {
+		pr.GitHubUpdatedAt = &updatedAt
+	}
 	return nil
 }
 
@@ -929,6 +934,11 @@ func (m *MockDatabase) HideNonManualViewsForPR(prID int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.HideNonManualViewsCalls = append(m.HideNonManualViewsCalls, prID)
+	for _, view := range m.UserPRViews {
+		if view.PRID == prID && !view.ViaManual {
+			view.Hidden = true
+		}
+	}
 	return nil
 }
 

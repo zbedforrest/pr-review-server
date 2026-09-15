@@ -3801,3 +3801,174 @@ func TestPoll_UpdatesStaleTitle_DevMode(t *testing.T) {
 		t.Errorf("expected no further UpdatePRMetadata calls on second poll, got %d total", len(mockDB.UpdatePRMetadataCalls))
 	}
 }
+
+func newRetainedPRTestPoller(mockGH *MockGitHubClient, mockDB *MockDatabase) *Poller {
+	cfg := testConfig()
+	cfg.GitHubOrgName = "myorg"
+	poller := &Poller{
+		cfg:           cfg,
+		db:            mockDB,
+		ghClient:      mockGH,
+		activeReviews: make(map[string]ProcessInfo),
+	}
+	poller.EventFunc = func(eventType string, payload interface{}) {}
+	return poller
+}
+
+func TestPoll_ViewSyncsSkipRetainedMergedPR(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.Users = []db.User{
+		{ID: 1, GitHubUsername: "author"},
+		{ID: 2, GitHubUsername: "teammate"},
+		{ID: 3, GitHubUsername: "reviewer"},
+	}
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1, Author: "author",
+		Status: "completed", LastCommitSHA: "sha1", PRState: "merged",
+	}
+	mockDB.PRs["owner/repo/2"] = &db.PR{
+		ID: 12, RepoOwner: "owner", RepoName: "repo", PRNumber: 2, Author: "author",
+		Status: "completed", LastCommitSHA: "sha2", PRState: "open",
+	}
+	mockDB.ManualClaimPRIDs = []int{11}
+
+	mockGH.SearchOpenPRsResults = []github.PRInfo{{Owner: "owner", Repo: "repo", Number: 2}}
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "MERGED", HeadRefOid: "sha1"},
+		"owner/repo/2": {Owner: "owner", Repo: "repo", Number: 2, State: "OPEN", HeadRefOid: "sha2"},
+	}
+	groupData := func(number int) *github.ReviewerGroupData {
+		return &github.ReviewerGroupData{
+			Owner: "owner", Repo: "repo", Number: number,
+			ReviewerGroups: []string{"Platform"},
+			TeamSlugs:      map[string]string{"Platform": "platform"},
+		}
+	}
+	mockGH.BatchGetReviewerGroupsResults = map[string]*github.ReviewerGroupData{
+		"owner/repo/1": groupData(1),
+		"owner/repo/2": groupData(2),
+	}
+	mockGH.GetOrgTeamMembersFunc = func(ctx context.Context, orgName, teamSlug string) ([]string, error) {
+		return []string{"teammate"}, nil
+	}
+	mockGH.BatchGetPRReviewDataResults = map[string]*github.PRReviewData{
+		"owner/repo/1": {UserReviews: map[string]string{"reviewer": "APPROVED"}},
+		"owner/repo/2": {UserReviews: map[string]string{"reviewer": "APPROVED"}},
+	}
+
+	poller := newRetainedPRTestPoller(mockGH, mockDB)
+	poller.poll(context.Background())
+
+	for _, call := range mockDB.EnsureUserPRViewCalls {
+		if call.PRID == 11 {
+			t.Errorf("merged PR 11 must not get a view upsert, got one for user %d", call.UserID)
+		}
+	}
+	for _, call := range mockDB.UpdateUserViaTeamsCalls {
+		if call.PRID == 11 {
+			t.Errorf("merged PR 11 must not get via_teams written, got %v for user %d", call.ViaTeams, call.UserID)
+		}
+	}
+	for _, key := range []string{viewMockKey(1, 11), viewMockKey(2, 11), viewMockKey(3, 11)} {
+		if _, exists := mockDB.UserPRViews[key]; exists {
+			t.Errorf("merged PR 11 must not gain a view row, found %s", key)
+		}
+	}
+	for _, key := range []string{viewMockKey(1, 12), viewMockKey(2, 12), viewMockKey(3, 12)} {
+		view, exists := mockDB.UserPRViews[key]
+		if !exists || view.Hidden {
+			t.Errorf("open PR 12 should have a visible view row %s, got %+v", key, view)
+		}
+	}
+}
+
+func TestPoll_RetainedMergedPRStaysHiddenAcrossCycles(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.Users = []db.User{
+		{ID: 1, GitHubUsername: "claimant"},
+		{ID: 2, GitHubUsername: "teammate"},
+		{ID: 3, GitHubUsername: "author"},
+	}
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1, Author: "author",
+		Status: "completed", LastCommitSHA: "sha1", PRState: "open",
+	}
+	mockDB.UserPRViews[viewMockKey(1, 11)] = &db.UserPRView{UserID: 1, PRID: 11, ViaManual: true, ViaTeams: "[]"}
+	mockDB.UserPRViews[viewMockKey(2, 11)] = &db.UserPRView{UserID: 2, PRID: 11, ViaTeams: `["Platform:my_pending"]`}
+	mockDB.UserPRViews[viewMockKey(3, 11)] = &db.UserPRView{UserID: 3, PRID: 11, IsAuthor: true, ViaTeams: "[]"}
+	mockDB.ManualClaimPRIDs = []int{11}
+
+	mockGH.SearchOpenPRsResults = nil
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "MERGED", HeadRefOid: "sha1"},
+	}
+	mockGH.BatchGetReviewerGroupsResults = map[string]*github.ReviewerGroupData{
+		"owner/repo/1": {
+			Owner: "owner", Repo: "repo", Number: 1,
+			ReviewerGroups: []string{"Platform"},
+			TeamSlugs:      map[string]string{"Platform": "platform"},
+		},
+	}
+	mockGH.GetOrgTeamMembersFunc = func(ctx context.Context, orgName, teamSlug string) ([]string, error) {
+		return []string{"teammate"}, nil
+	}
+	mockGH.BatchGetPRReviewDataResults = map[string]*github.PRReviewData{
+		"owner/repo/1": {UserReviews: map[string]string{"teammate": "APPROVED"}},
+	}
+
+	poller := newRetainedPRTestPoller(mockGH, mockDB)
+	ctx := context.Background()
+
+	assertVisibility := func(step string, claimant, teammate, author bool) {
+		t.Helper()
+		want := map[string]bool{viewMockKey(1, 11): claimant, viewMockKey(2, 11): teammate, viewMockKey(3, 11): author}
+		for key, visible := range want {
+			view, exists := mockDB.UserPRViews[key]
+			if !exists {
+				t.Fatalf("%s: view row %s disappeared", step, key)
+			}
+			if view.Hidden == visible {
+				t.Errorf("%s: view %s hidden=%t, want hidden=%t", step, key, view.Hidden, !visible)
+			}
+		}
+	}
+
+	poller.poll(ctx)
+	if got := mockDB.PRs["owner/repo/1"].PRState; got != "merged" {
+		t.Fatalf("cycle 1: expected pr_state merged after cleanup, got %q", got)
+	}
+	assertVisibility("cycle 1 (merge detected)", true, false, false)
+	viewUpserts := len(mockDB.EnsureUserPRViewCalls)
+	viaTeamsWrites := len(mockDB.UpdateUserViaTeamsCalls)
+
+	poller.poll(ctx)
+	assertVisibility("cycle 2 (retained, no re-assert)", true, false, false)
+	if len(mockDB.EnsureUserPRViewCalls) != viewUpserts {
+		t.Errorf("cycle 2 upserted views for the retained PR: %+v", mockDB.EnsureUserPRViewCalls[viewUpserts:])
+	}
+	if len(mockDB.UpdateUserViaTeamsCalls) != viaTeamsWrites {
+		t.Errorf("cycle 2 wrote via_teams for the retained PR: %+v", mockDB.UpdateUserViaTeamsCalls[viaTeamsWrites:])
+	}
+	if got := mockDB.UserPRViews[viewMockKey(2, 11)].ViaTeams; got == "[]" || got == "" {
+		t.Errorf("cycle 2 pruned via_teams on the retained PR's hidden teammate row")
+	}
+
+	// A fixed search timestamp makes the poll-economy path treat the PR as
+	// unchanged once it is persisted, which is what cycle 4 must survive.
+	reopenedAt := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	mockGH.BatchGetPRStateResults["owner/repo/1"].State = "OPEN"
+	mockGH.SearchOpenPRsResults = []github.PRInfo{{Owner: "owner", Repo: "repo", Number: 1, UpdatedAt: &reopenedAt}}
+	poller.poll(ctx)
+	if got := mockDB.PRs["owner/repo/1"].PRState; got != "open" {
+		t.Fatalf("cycle 3: expected pr_state restored to open, got %q", got)
+	}
+	assertVisibility("cycle 3 (re-open detected, syncs still saw merged)", true, false, false)
+
+	poller.poll(ctx)
+	assertVisibility("cycle 4 (re-opened, entitlements re-asserted)", true, true, true)
+	if got := mockDB.PRs["owner/repo/1"].GitHubUpdatedAt; got == nil || !got.Equal(reopenedAt) {
+		t.Errorf("cycle 4 should persist the search timestamp once the syncs ran, got %v", got)
+	}
+}

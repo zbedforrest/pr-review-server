@@ -57,7 +57,7 @@ func (p *Poller) pruneStaleViaTeams(
 	prIDs := make([]int, 0, len(allPRs))
 	for _, pr := range allPRs {
 		key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
-		if existingPR, ok := dbPRMap[key]; ok {
+		if existingPR, ok := dbPRMap[key]; ok && isOpenPRState(existingPR.PRState) {
 			prIDToKey[existingPR.ID] = key
 			prIDs = append(prIDs, existingPR.ID)
 		}
