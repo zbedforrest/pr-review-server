@@ -217,6 +217,10 @@ func (m *MockDatabase) UpdatePRDraft(owner, repo string, prNumber int, draft boo
 	return nil
 }
 func (m *MockDatabase) CreateWebhookDelivery(d *db.WebhookDelivery) (bool, error) { return true, nil }
+func (m *MockDatabase) DeleteWebhookDelivery(deliveryID string) error             { return nil }
+func (m *MockDatabase) SetAutoReviewIntentPublicationByRun(runID, outcome string) error {
+	return nil
+}
 func (m *MockDatabase) GetWebhookStatus(since time.Time) (db.WebhookStatus, error) {
 	return db.WebhookStatus{}, nil
 }

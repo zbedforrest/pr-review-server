@@ -146,8 +146,11 @@ With the `auto_review_ready_prs` setting on (admin settings page, Publishing
 section; seeded off), PRism reviews and comments automatically when a PR by an
 author in `publish_enabled_authors` becomes ready for review, opens ready, or
 gets a new push. Converting to draft or closing retires queued work. Each PR
-head is reviewed at most once; the review is forced past the per-commit cache
-so a review generated while the PR was a draft does not stand in for it.
+head is reviewed once per ready state: the review is forced past the
+per-commit cache so a review generated while the PR was a draft does not
+stand in for it, a head PRism already commented on is not reviewed again when
+the switch is turned on, and a review that finished after the PR went back to
+draft is redone when it is ready again.
 
 Deliveries arrive through the GitHub App webhook; the scheduled poll is the
 fallback for a missed delivery. To enable it:

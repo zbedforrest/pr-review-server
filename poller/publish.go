@@ -187,47 +187,58 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	return pol
 }
 
+// Publication outcomes, recorded on the automatic-review intent a run served.
+// A skipped outcome means the PR was not in a publishable state (draft,
+// closed, head moved) and the head may be reviewed again when it is.
+const (
+	publicationPosted        = "posted"
+	publicationNotAllowed    = "not_allowed"
+	publicationUnavailable   = "unavailable"
+	publicationSkippedPrefix = "skipped: "
+	publicationFailedPrefix  = "failed: "
+)
+
 // publishGitHubReview posts a completed review to the PR and reports what it
-// posted; the report is nil when no round was attempted. Best-effort by
-// design: the review is already saved and visible on the dashboard, so any
-// failure here is logged and never fails the run.
-func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) *publisher.Report {
+// posted; the report is nil when no round was attempted, and the outcome
+// says why. Best-effort by design: the review is already saved and visible
+// on the dashboard, so any failure here is logged and never fails the run.
+func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) (*publisher.Report, string) {
 	if allowed, err := p.publishAllowedFor(pr.Author); err != nil || !allowed {
-		return nil
+		return nil, publicationNotAllowed
 	}
 	ledger, ok := p.db.(publisher.Ledger)
 	if !ok || p.ghClientConcrete == nil {
 		log.Printf("[PUBLISH] %s/%s#%d: publication enabled but no ledger or GitHub client available", pr.Owner, pr.Repo, pr.Number)
-		return nil
+		return nil, publicationUnavailable
 	}
 	pl, err := payload.Decode(sidecar)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: sidecar unreadable: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return nil
+		return nil, publicationFailedPrefix + "sidecar unreadable"
 	}
 	ghPR, _, err := p.ghClientConcrete.GetPR(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: fetch pull request: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return nil
+		return nil, publicationFailedPrefix + "fetch pull request"
 	}
 	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), ghPR.GetHead().GetSHA(), pr.CommitSHA); !ok {
 		log.Printf("[PUBLISH] %s/%s#%d: skipped, %s", pr.Owner, pr.Repo, pr.Number, reason)
-		return nil
+		return nil, publicationSkippedPrefix + reason
 	}
 	comments, err := p.ghClientConcrete.ListReviewComments(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: list review comments: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return nil
+		return nil, publicationFailedPrefix + "list review comments"
 	}
 	patches, err := p.ghClientConcrete.GetPRFilePatches(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: list file patches: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return nil
+		return nil, publicationFailedPrefix + "list file patches"
 	}
 	previous, err := ledger.GetPublishedFindingsForPR(pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: load ledger: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return nil
+		return nil, publicationFailedPrefix + "load ledger"
 	}
 
 	round := buildPublishRound(pr, pl, comments, patches, previous, p.cfg.BaseURL)
@@ -237,11 +248,31 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 		// Confidence is scored before the first write, so a failed round still
 		// reports the number the sticky comment may already show.
-		return &report
+		return &report, publicationFailedPrefix + "publish"
 	}
 	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d confidence=%d",
 		pr.Owner, pr.Repo, pr.Number, report.SummaryCommentID, report.ReviewID, report.InlinePosted, report.Annotations, report.StillOpen, report.Fixed, report.Confidence)
-	return &report
+	return &report, publicationPosted
+}
+
+// headPublished reports whether a publication round for this head already
+// reached GitHub: the sticky summary row records the last head it was
+// posted for. Without a ledger nothing is known, so nothing is assumed.
+func (p *Poller) headPublished(owner, repo string, number int, head string) (bool, error) {
+	ledger, ok := p.db.(publisher.Ledger)
+	if !ok {
+		return false, nil
+	}
+	rows, err := ledger.GetPublishedFindingsForPR(owner, repo, number)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if row.Kind == db.PublishedKindSummary && strings.EqualFold(row.LastSeenSHA, head) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // mergeConfidence is the score the dashboard stores for a completed review.

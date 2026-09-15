@@ -81,6 +81,42 @@ func TestEnsureAutoReviewIntentDedupsPerHeadAndRequeuesOnlyListedStatuses(t *tes
 	assert.Len(t, all, 1)
 }
 
+func TestEnsureAutoReviewIntentLowercasesTargetsAndSeedsStatus(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	seeded := AutoReviewIntent{RepoOwner: "ACME", RepoName: "Example", PRNumber: 7, HeadSHA: "aaa", Trigger: "poll_fallback", Status: AutoReviewIntentDone, Publication: "posted"}
+	created, err := database.EnsureAutoReviewIntent(&seeded, nil)
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, "acme", seeded.RepoOwner)
+	assert.Equal(t, "example", seeded.RepoName)
+	assert.Equal(t, AutoReviewIntentDone, seeded.Status)
+	assert.Equal(t, "posted", seeded.Publication)
+
+	variant := AutoReviewIntent{RepoOwner: "acme", RepoName: "EXAMPLE", PRNumber: 7, HeadSHA: "aaa", Trigger: "ready_for_review"}
+	created, err = database.EnsureAutoReviewIntent(&variant, []string{AutoReviewIntentSuperseded})
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, seeded.ID, variant.ID)
+
+	n, err := database.SupersedeQueuedAutoReviewIntents("Acme", "example", 7, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "a done intent is left alone")
+	listed, err := database.ListAutoReviewIntents(AutoReviewIntentFilter{RepoOwner: "ACME", RepoName: "example"})
+	require.NoError(t, err)
+	assert.Len(t, listed, 1)
+
+	require.NoError(t, database.SetAutoReviewIntentPublicationByRun("run-none", "posted"))
+	moved, err := database.UpdateAutoReviewIntentStatus(seeded.ID, nil, AutoReviewIntentRunning, "run-9")
+	require.NoError(t, err)
+	assert.True(t, moved)
+	require.NoError(t, database.SetAutoReviewIntentPublicationByRun("run-9", "skipped: pull request is a draft"))
+	listed, err = database.ListAutoReviewIntents(AutoReviewIntentFilter{PRNumber: 7})
+	require.NoError(t, err)
+	assert.Equal(t, "skipped: pull request is a draft", listed[0].Publication)
+	assert.Equal(t, "run-9", listed[0].RunID)
+}
+
 func TestSupersedeQueuedAutoReviewIntentsKeepsCurrentHeadAndRunningWork(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()

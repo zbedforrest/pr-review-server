@@ -298,10 +298,12 @@ type Database interface {
 
 	// Webhook deliveries and automatic review intents
 	CreateWebhookDelivery(d *WebhookDelivery) (bool, error)
+	DeleteWebhookDelivery(deliveryID string) error
 	GetWebhookStatus(since time.Time) (WebhookStatus, error)
 	EnsureAutoReviewIntent(intent *AutoReviewIntent, requeueFrom []string) (bool, error)
 	ListAutoReviewIntents(filter AutoReviewIntentFilter) ([]AutoReviewIntent, error)
 	UpdateAutoReviewIntentStatus(id uint, from []string, to, runID string) (bool, error)
+	SetAutoReviewIntentPublicationByRun(runID, outcome string) error
 	SupersedeQueuedAutoReviewIntents(owner, repo string, number int, keepHeadSHA string) (int, error)
 
 	// Settings operations
@@ -485,19 +487,22 @@ const (
 )
 
 // AutoReviewIntent is one automatic review owed to a PR head, unique per
-// (owner, repo, number, head). RunID links the review run that served it.
+// (owner, repo, number, head) with owner and repo lowercased. RunID links the
+// review run that served it; Publication records how that run's GitHub
+// publication ended (see poller publication outcomes).
 type AutoReviewIntent struct {
-	ID         uint
-	RepoOwner  string
-	RepoName   string
-	PRNumber   int
-	HeadSHA    string
-	Trigger    string
-	DeliveryID string
-	Status     string
-	RunID      string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID          uint
+	RepoOwner   string
+	RepoName    string
+	PRNumber    int
+	HeadSHA     string
+	Trigger     string
+	DeliveryID  string
+	Status      string
+	RunID       string
+	Publication string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // AutoReviewIntentFilter narrows ListAutoReviewIntents; zero fields match all.

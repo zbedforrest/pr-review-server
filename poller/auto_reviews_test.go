@@ -68,7 +68,7 @@ func (f autoReviewFixture) runs() []*db.ReviewRun {
 
 func TestWebhookReadyForReviewQueuesOneForcedPublishedReview(t *testing.T) {
 	f := newAutoReviewFixture(t, true, "alice,bob")
-	f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false))
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
 	waitForDetachedReviews(t, f.p)
 
 	intents := f.intents(t)
@@ -82,18 +82,90 @@ func TestWebhookReadyForReviewQueuesOneForcedPublishedReview(t *testing.T) {
 	assert.Equal(t, autoReviewOldHead, runs[0].CommitSHA)
 	waitForReviewRunStatus(t, f.db, runs[0].RunID, db.ReviewRunStatusCompleted)
 	require.Len(t, f.generator.GenerateReviewCalls, 1)
+	assert.Equal(t, publicationUnavailable, f.intents(t)[0].Publication, "the worker records how publication ended on the intent")
 
+	require.NoError(t, f.db.SetAutoReviewIntentPublicationByRun(runs[0].RunID, publicationPosted))
 	f.p.settleAutoReviewIntents()
 	assert.Equal(t, db.AutoReviewIntentDone, f.intents(t)[0].Status)
 
-	f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false))
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
 	assert.Len(t, f.intents(t), 1, "the same head is not reviewed twice")
+	assert.Len(t, f.runs(), 1)
+}
+
+func TestSettlementFollowsThePublicationOutcome(t *testing.T) {
+	cases := []struct {
+		publication string
+		want        string
+	}{
+		{publicationPosted, db.AutoReviewIntentDone},
+		{publicationSkippedPrefix + "pull request is a draft", db.AutoReviewIntentSuperseded},
+		{publicationSkippedPrefix + "pull request head moved past the reviewed commit", db.AutoReviewIntentSuperseded},
+		{publicationFailedPrefix + "publish", db.AutoReviewIntentFailed},
+		{publicationUnavailable, db.AutoReviewIntentFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.publication, func(t *testing.T) {
+			f := newAutoReviewFixture(t, true, "*")
+			require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
+			waitForDetachedReviews(t, f.p)
+			intent := f.intents(t)[0]
+			waitForReviewRunStatus(t, f.db, intent.RunID, db.ReviewRunStatusCompleted)
+			require.NoError(t, f.db.SetAutoReviewIntentPublicationByRun(intent.RunID, tc.publication))
+
+			f.p.settleAutoReviewIntents()
+			settled := f.intents(t)[0]
+			assert.Equal(t, tc.want, settled.Status)
+			assert.Equal(t, intent.RunID, settled.RunID, "settling keeps the run link")
+		})
+	}
+}
+
+func TestHeadFinishedWhileDraftIsReviewedAgainWhenReady(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("opened", autoReviewOldHead, false)))
+	waitForDetachedReviews(t, f.p)
+	first := f.intents(t)[0]
+	waitForReviewRunStatus(t, f.db, first.RunID, db.ReviewRunStatusCompleted)
+	require.NoError(t, f.db.SetAutoReviewIntentPublicationByRun(first.RunID, publicationSkippedPrefix+"pull request is a draft"))
+	f.p.settleAutoReviewIntents()
+	require.Equal(t, db.AutoReviewIntentSuperseded, f.intents(t)[0].Status)
+
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
+	waitForDetachedReviews(t, f.p)
+	intents := f.intents(t)
+	require.Len(t, intents, 1, "the same head reuses its intent row")
+	assert.NotEqual(t, first.RunID, intents[0].RunID, "the ready transition gets a fresh run")
+	assert.Len(t, f.generator.GenerateReviewCalls, 2)
+}
+
+func TestIntentIsClaimedBeforeTheRunLaunches(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	intent := db.AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: autoReviewOldHead, Trigger: "opened"}
+	_, err := f.db.EnsureAutoReviewIntent(&intent, nil)
+	require.NoError(t, err)
+	_, err = f.db.UpdateAutoReviewIntentStatus(intent.ID, nil, db.AutoReviewIntentSuperseded, "")
+	require.NoError(t, err)
+
+	f.p.admitAutoReviewIntent(context.Background(), intent, github.PullRequest{Owner: "acme", Repo: "example", Number: 7, CommitSHA: autoReviewOldHead, Author: "alice"})
+	assert.Empty(t, f.runs(), "an intent that is no longer queued must not launch a review")
+	assert.Equal(t, db.AutoReviewIntentSuperseded, f.intents(t)[0].Status)
+}
+
+func TestIntentTargetsAreCaseInsensitive(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	upper := readyDelivery("ready_for_review", autoReviewOldHead, false)
+	upper.RepoOwner, upper.RepoName = "ACME", "Example"
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), upper))
+	waitForDetachedReviews(t, f.p)
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
+	assert.Len(t, f.intents(t), 1, "casing variants of the same PR share one intent")
 	assert.Len(t, f.runs(), 1)
 }
 
 func TestWebhookIgnoresAuthorsOutsideTheAllowlist(t *testing.T) {
 	f := newAutoReviewFixture(t, true, "bob")
-	f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false))
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
 	assert.Empty(t, f.intents(t))
 	assert.Empty(t, f.runs())
 	assert.Empty(t, f.generator.GenerateReviewCalls)
@@ -101,18 +173,18 @@ func TestWebhookIgnoresAuthorsOutsideTheAllowlist(t *testing.T) {
 
 func TestWebhookDoesNothingWhileTheSwitchIsOff(t *testing.T) {
 	f := newAutoReviewFixture(t, false, "*")
-	f.p.HandleWebhookDelivery(context.Background(), readyDelivery("opened", autoReviewOldHead, false))
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("opened", autoReviewOldHead, false)))
 	assert.Empty(t, f.intents(t))
 	assert.Empty(t, f.runs())
 }
 
 func TestWebhookOpenedDraftIsIgnoredAndOpenedReadyIsReviewed(t *testing.T) {
 	f := newAutoReviewFixture(t, true, "*")
-	f.p.HandleWebhookDelivery(context.Background(), readyDelivery("opened", autoReviewOldHead, true))
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("opened", autoReviewOldHead, true)))
 	assert.Empty(t, f.intents(t))
 	assert.Empty(t, f.runs())
 
-	f.p.HandleWebhookDelivery(context.Background(), readyDelivery("opened", autoReviewNewHead, false))
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("opened", autoReviewNewHead, false)))
 	waitForDetachedReviews(t, f.p)
 	intents := f.intents(t)
 	require.Len(t, intents, 1)
@@ -128,7 +200,7 @@ func TestWebhookSynchronizeSupersedesQueuedOlderHead(t *testing.T) {
 	_, err := f.db.EnsureAutoReviewIntent(&older, nil)
 	require.NoError(t, err)
 
-	f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false))
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
 	waitForDetachedReviews(t, f.p)
 
 	byHead := map[string]db.AutoReviewIntent{}
@@ -151,7 +223,7 @@ func TestWebhookConvertedToDraftAndClosedSupersedeQueuedIntents(t *testing.T) {
 			require.NoError(t, err)
 
 			d := readyDelivery(action, autoReviewOldHead, action == "converted_to_draft")
-			f.p.HandleWebhookDelivery(context.Background(), d)
+			require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), d))
 
 			intents := f.intents(t)
 			require.Len(t, intents, 1)
@@ -169,7 +241,7 @@ func TestWebhookLeavesIntentQueuedWhileAnotherReviewIsActive(t *testing.T) {
 	require.True(t, tracked)
 	defer f.p.untrackReviewRun("acme", "example", 7, rival.RunID)
 
-	f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewNewHead, false))
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewNewHead, false)))
 	intents := f.intents(t)
 	require.Len(t, intents, 1)
 	assert.Equal(t, db.AutoReviewIntentQueued, intents[0].Status)
@@ -186,7 +258,7 @@ func TestReadyReviewIsForcedPastAReviewCachedWhileDraft(t *testing.T) {
 	}
 	f.storage.ExistingReviews["acme/example/7/"+autoReviewOldHead] = true
 
-	f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false))
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
 	waitForDetachedReviews(t, f.p)
 
 	require.Len(t, f.generator.GenerateReviewCalls, 1, "the cached draft-time review must not satisfy the ready review")
@@ -221,10 +293,43 @@ func TestPollFallbackQueuesAndRunsMissingIntent(t *testing.T) {
 	assert.NotEmpty(t, intents[0].RunID)
 	require.Len(t, f.generator.GenerateReviewCalls, 1)
 
+	waitForReviewRunStatus(t, f.db, intents[0].RunID, db.ReviewRunStatusCompleted)
+	require.NoError(t, f.db.SetAutoReviewIntentPublicationByRun(intents[0].RunID, publicationPosted))
 	_, _, err = f.p.cleanupAndDetectOutdated(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, db.AutoReviewIntentDone, f.intents(t)[0].Status, "the next poll settles the finished run")
 	assert.Len(t, f.generator.GenerateReviewCalls, 1)
+}
+
+func TestPollFallbackRecordsAnAlreadyPublishedHeadAsDone(t *testing.T) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	require.NoError(t, database.SetSetting(settingAutoReviewReadyPRs, "true"))
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 7, LastCommitSHA: autoReviewOldHead,
+		Status: "completed", Title: "Ready PR", Author: "alice", PRState: "open",
+	}))
+	require.NoError(t, database.UpsertPublishedFinding(&db.PublishedFinding{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindSummary, Fingerprint: db.PublishedKindSummary,
+		ReviewedSHA: autoReviewOldHead, LastSeenSHA: autoReviewOldHead, State: db.PublishedStateOpen, Rounds: 1,
+	}))
+	mockGH := NewMockGitHubClient()
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"acme/example/7": {Owner: "acme", Repo: "example", Number: 7, State: "OPEN", HeadRefOid: autoReviewOldHead},
+	}
+	generator := NewMockReviewGenerator()
+	p := newTestPollerFull(mockGH, database, NewMockReviewStorage(), generator)
+
+	_, _, err = p.cleanupAndDetectOutdated(context.Background())
+	require.NoError(t, err)
+	intents, err := database.ListAutoReviewIntents(db.AutoReviewIntentFilter{})
+	require.NoError(t, err)
+	require.Len(t, intents, 1)
+	assert.Equal(t, db.AutoReviewIntentDone, intents[0].Status)
+	assert.Equal(t, publicationPosted, intents[0].Publication)
+	assert.Empty(t, generator.GenerateReviewCalls, "a head PRism already commented on is not reviewed again on enablement")
 }
 
 func TestPollFallbackSkipsHeadsWithADoneIntentDraftsAndOtherAuthors(t *testing.T) {

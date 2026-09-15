@@ -1962,7 +1962,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			if eligible, err := p.publishAllowedFor(pr.Author); err != nil {
 				log.Printf("[AUTO-REVIEW] PR %s: allowlist read failed: %v", key, err)
 			} else if eligible {
-				p.ensureFallbackAutoReviewIntent(pr.RepoOwner, pr.RepoName, pr.PRNumber, state.HeadRefOid)
+				p.ensureFallbackAutoReviewIntent(pr, state.HeadRefOid)
 			}
 		}
 
@@ -2014,7 +2014,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 	}
 
 	if autoReviewReady {
-		p.dispatchAutoReviewIntents(ctx, stateMap)
+		p.dispatchAutoReviewIntents(ctx, allPRs, stateMap)
 	}
 
 	return removed, outdated, nil
@@ -3200,6 +3200,13 @@ func (p *Poller) poll(ctx context.Context) {
 	// Combine myPRs and reviewPRs for processing - both get AI reviews
 	allPRsToProcess := append(reviewPRs, myPRs...)
 
+	// Workers run detached from the poll, so admission is what bounds the
+	// resident queue. The rest stays pending for the next tick.
+	if limit := p.pollAdmissionLimit(); len(allPRsToProcess) > limit {
+		log.Printf("[POLL] Admitting %d of %d review candidates this cycle; the rest stay pending", limit, len(allPRsToProcess))
+		allPRsToProcess = allPRsToProcess[:limit]
+	}
+
 	// Group all PRs by repository for batch processing
 	prsByRepo := make(map[string][]github.PullRequest)
 	for _, pr := range allPRsToProcess {
@@ -3217,6 +3224,19 @@ func (p *Poller) poll(ctx context.Context) {
 
 	duration := time.Since(startTime)
 	log.Printf("[POLL] Poll completed in %v", duration)
+}
+
+// pollAdmissionsPerSlot is how many queued review jobs one scheduled poll may
+// leave resident per first-pass slot. Execution is bounded by the slots
+// themselves; this bounds goroutines and tracking entries waiting on them.
+const pollAdmissionsPerSlot = 4
+
+func (p *Poller) pollAdmissionLimit() int {
+	slots := cap(p.firstPassSlots)
+	if slots <= 0 {
+		slots = fallbackReviewFirstPassConcurrent
+	}
+	return slots * pollAdmissionsPerSlot
 }
 
 func (p *Poller) processInBatches(ctx context.Context, prs []github.PullRequest, batchSize int, autoReviewEnabled bool) {
@@ -3936,7 +3956,13 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 	}
 	var published *publisher.Report
 	if !job.SkipPublish {
-		published = p.publishGitHubReview(prCtx, pr, sidecarBody)
+		var outcome string
+		published, outcome = p.publishGitHubReview(prCtx, pr, sidecarBody)
+		if job.TriggerSource == autoReviewTriggerSource {
+			if err := p.db.SetAutoReviewIntentPublicationByRun(job.RunID, outcome); err != nil {
+				log.Printf("[AUTO-REVIEW] run %s: could not record publication outcome %q: %v", job.RunID, outcome, err)
+			}
+		}
 	}
 	confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
 	p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)

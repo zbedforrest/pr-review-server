@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,7 +58,10 @@ func newWebhookServer(t *testing.T) (*Server, *db.GormDB, chan db.WebhookDeliver
 	server, database := newTestServer(t, "tester")
 	server.cfg.GitHubWebhookSecret = webhookTestSecret
 	received := make(chan db.WebhookDelivery, 4)
-	server.SetWebhookDeliveryHandler(func(_ context.Context, d db.WebhookDelivery) { received <- d })
+	server.SetWebhookDeliveryHandler(func(_ context.Context, d db.WebhookDelivery) error {
+		received <- d
+		return nil
+	})
 	return server, database, received
 }
 
@@ -184,6 +188,54 @@ func TestGitHubWebhookRejectsOtherInstallationsAndMalformedPayloads(t *testing.T
 
 	assert.Equal(t, 0, deliveriesStored(t, database))
 	assert.Empty(t, received)
+}
+
+func TestGitHubWebhookIgnoresUnhandledPullRequestActionsWithoutStoringThem(t *testing.T) {
+	server, database, received := newWebhookServer(t)
+	for _, action := range []string{"labeled", "edited", "review_requested", "assigned"} {
+		body := []byte(strings.Replace(pullRequestPayload, "%s", action, 1))
+		w := httptest.NewRecorder()
+		server.handleGitHubWebhook(w, webhookRequest("pull_request", "delivery-"+action, signWebhook(webhookTestSecret, body), body))
+		assert.Equal(t, http.StatusOK, w.Code, action)
+		assert.Contains(t, w.Body.String(), `"ignored"`, action)
+	}
+	assert.Equal(t, 0, deliveriesStored(t, database))
+	assert.Empty(t, received)
+}
+
+func TestGitHubWebhookFailsClosedOnANonNumericInstallationID(t *testing.T) {
+	server, database, _ := newWebhookServer(t)
+	server.cfg.GitHubAppInstallationID = "not-a-number"
+	body := []byte(strings.Replace(pullRequestPayload, "%s", "opened", 1))
+	w := httptest.NewRecorder()
+	server.handleGitHubWebhook(w, webhookRequest("pull_request", "delivery-cfg", signWebhook(webhookTestSecret, body), body))
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Equal(t, 0, deliveriesStored(t, database))
+}
+
+func TestGitHubWebhookForgetsTheDeliveryWhenProcessingFails(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	server.cfg.GitHubWebhookSecret = webhookTestSecret
+	calls := 0
+	server.SetWebhookDeliveryHandler(func(_ context.Context, d db.WebhookDelivery) error {
+		calls++
+		if calls == 1 {
+			return errors.New("database unavailable")
+		}
+		return nil
+	})
+	body := []byte(strings.Replace(pullRequestPayload, "%s", "opened", 1))
+	w := httptest.NewRecorder()
+	server.handleGitHubWebhook(w, webhookRequest("pull_request", "delivery-retry", signWebhook(webhookTestSecret, body), body))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, 0, deliveriesStored(t, database), "a failed delivery is forgotten so a redelivery is not a duplicate")
+
+	w = httptest.NewRecorder()
+	server.handleGitHubWebhook(w, webhookRequest("pull_request", "delivery-retry", signWebhook(webhookTestSecret, body), body))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"accepted"`)
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, 1, deliveriesStored(t, database))
 }
 
 func TestGitHubWebhookRejectsNonPost(t *testing.T) {
