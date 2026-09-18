@@ -937,9 +937,9 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 }
 
 // unifiedDiffLines splits a unified diff into per-path added and removed
-// lines plus the added lines grouped by hunk. Context lines (any line that is
-// not a '+' line) end the pending hunk, so with --unified=0 a hunk is one
-// contiguous '+' run and with context the grouping is the same.
+// lines plus the added lines grouped by "@@" hunk. With --unified=0 every
+// hunk holds one contiguous '+' run; with context (the API diff) the added
+// lines of one hunk stay together across its unchanged lines.
 func unifiedDiffLines(full string) (added, removed map[string][]string, addedHunks map[string][][]string) {
 	added = map[string][]string{}
 	removed = map[string][]string{}
@@ -956,6 +956,10 @@ func unifiedDiffLines(full string) (added, removed map[string][]string, addedHun
 		if strings.HasPrefix(line, "diff --git ") {
 			flushHunk(cur)
 			cur = "" // reset so one file's hunks don't attach to the previous file
+			continue
+		}
+		if strings.HasPrefix(line, "@@") {
+			flushHunk(cur)
 			continue
 		}
 		// A deleted file has `--- a/<path>` / `+++ /dev/null`, so the old-side
@@ -978,11 +982,8 @@ func unifiedDiffLines(full string) (added, removed map[string][]string, addedHun
 		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
 			added[cur] = append(added[cur], line[1:])
 			pendingHunk = append(pendingHunk, line[1:])
-		} else {
-			flushHunk(cur)
-			if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
-				removed[cur] = append(removed[cur], line[1:])
-			}
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			removed[cur] = append(removed[cur], line[1:])
 		}
 	}
 	flushHunk(cur)
@@ -996,7 +997,7 @@ func unifiedDiffLines(full string) (added, removed map[string][]string, addedHun
 // consumers (gates, bug memory) treat as "no signal", never as a review
 // failure. It never deepens or unshallows the shared cache: that could cost
 // minutes inside a review, serialized across every review of the repo.
-func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLockKey string, prNumber int, apiDiff string) []diffFile {
+func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLockKey, apiDiff string) []diffFile {
 	if dir == "" {
 		return nil
 	}
@@ -1096,7 +1097,7 @@ type OfflineWorktreeReport struct {
 // worktree exactly as production would (same diff parse, same matchers).
 func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *BugMemoryLibrary, owner, repo string, prNumber int) OfflineWorktreeReport {
 	rep := OfflineWorktreeReport{}
-	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", prNumber, "")
+	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", "")
 	if files == nil {
 		return rep
 	}
@@ -1111,7 +1112,7 @@ func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *B
 // any error it returns nil findings (gates are advisory; they must never
 // fail a review).
 func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
-	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", 0, "")
+	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", "")
 	if files == nil {
 		return nil
 	}

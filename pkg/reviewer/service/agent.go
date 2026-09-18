@@ -240,6 +240,14 @@ func RunAgentReview(
 
 	// Prep (clone, diff, gates, bug memory) and the agent subprocess run on
 	// separate budgets, so WallClock means agent time as the evals measure it.
+	// The one-time cache init (a complete clone) runs under the caller's
+	// context instead: under the prep budget, a clone that cannot finish in
+	// time would be deleted and retried from scratch on every review.
+	prepStart := time.Now()
+	if _, err := ensureAgentCache(ctx, agentCfg.CloneRootDir, owner, repo, defaultBranch, agentCfg.GitHubToken, logPrefix); err != nil {
+		log.Printf("%s cache init FAILED after %s: %v", logPrefix, time.Since(prepStart), err)
+		return nil, fmt.Errorf("agent: clone: %w", err)
+	}
 	prepBudget := agentCfg.PrepBudget
 	if prepBudget <= 0 {
 		prepBudget = DefaultAgentPrepBudget
@@ -247,7 +255,6 @@ func RunAgentReview(
 	prepCtx, cancelPrep := context.WithTimeout(ctx, prepBudget)
 	defer cancelPrep()
 
-	prepStart := time.Now()
 	cleanupClone, err := cloneForAgent(prepCtx, agentCfg.CloneRootDir, cloneDir, owner, repo, defaultBranch, prNumber, commitSHA, agentCfg.GitHubToken)
 	if err != nil {
 		log.Printf("%s clone FAILED after %s: %v", logPrefix, time.Since(prepStart), err)
@@ -270,7 +277,7 @@ func RunAgentReview(
 	// Parse the PR diff once; the same []diffFile feeds both the mechanical
 	// gates and the bug-memory matcher, so offline dry-runs of either are
 	// predictive of production behavior.
-	diffFiles := diffFilesForWorktree(prepCtx, cloneDir, defaultBranch, agentCfg.GitHubToken, owner+"/"+repo, prNumber, agentCfg.APIDiff)
+	diffFiles := diffFilesForWorktree(prepCtx, cloneDir, defaultBranch, agentCfg.GitHubToken, owner+"/"+repo, agentCfg.APIDiff)
 
 	// Mechanical gates: cheap deterministic checks over the diff + worktree.
 	// Their findings go into the prompt (the agent must address each) AND are
@@ -344,10 +351,6 @@ func RunAgentReview(
 	log.Printf("%s spawning %s after %s of prep (backend=%s, model=%s, effort=%s, prompt_chars=%d)",
 		logPrefix, runtime.command, prepDuration, runtime.backend, runtime.model, runtime.effort, len(prompt))
 
-	// The agent wall clock starts here, at the spawn.
-	runCtx, cancel := context.WithTimeout(ctx, agentCfg.WallClock)
-	defer cancel()
-
 	agentStartedAt := time.Now().UTC()
 	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(runtime.backend)
 	startedEvent := ProviderAttemptEvent{
@@ -360,6 +363,12 @@ func RunAgentReview(
 	if observerErr := observeProviderAttempt(agentCfg.AttemptObserver, startedEvent); errors.Is(observerErr, ErrProviderAttemptAborted) {
 		return nil, fmt.Errorf("agent: %w", observerErr)
 	}
+	// The agent wall clock starts here, at the spawn, after the observer's
+	// synchronous ledger write; the completion event reads agentStartedAt by
+	// reference, so re-stamping it keeps DurationMS spawn-to-exit as well.
+	runCtx, cancel := context.WithTimeout(ctx, agentCfg.WallClock)
+	defer cancel()
+	agentStartedAt = time.Now().UTC()
 	credentialKey, credentialValue := "ANTHROPIC_API_KEY", agentCfg.AnthropicAPIKey
 	if runtime.backend == AgentBackendOpenRouter {
 		credentialKey, credentialValue = "OPENROUTER_API_KEY", agentCfg.OpenRouterAPIKey
@@ -1064,9 +1073,7 @@ func cacheLock(key string) *sync.Mutex {
 
 // cloneForAgent prepares a working directory for the agent by:
 //
-//  1. Ensuring a per-repo cache clone exists at <cloneRoot>/.cache/<owner>__<repo>.
-//     First time: a complete single-branch clone (the slow step). A cache
-//     left shallow by an older build is completed once with --unshallow.
+//  1. Ensuring a complete per-repo cache clone exists (ensureAgentCache).
 //  2. Fetching the PR's head ref and its base branch into the cache (cheap
 //     incremental fetches).
 //  3. Creating a `git worktree` at the requested commit in <dir>. Worktrees
@@ -1088,24 +1095,20 @@ func cacheLock(key string) *sync.Mutex {
 func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBranch string, prNumber int, commitSHA, token string) (cleanup func() error, err error) {
 	noopCleanup := func() error { return nil }
 
-	// Absolute paths everywhere — git's `worktree add <relative-path>` resolves
+	// Absolute paths everywhere: git's `worktree add <relative-path>` resolves
 	// the path against the cmd's cwd, which would land worktrees inside the
 	// cache dir. Make the cwd-binding moot.
-	absCloneRoot, err := filepath.Abs(cloneRoot)
-	if err != nil {
-		return noopCleanup, fmt.Errorf("abs cloneRoot: %w", err)
-	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return noopCleanup, fmt.Errorf("abs worktree dir: %w", err)
 	}
-
-	cacheKey := fmt.Sprintf("%s/%s", owner, repo)
-	cacheDir := filepath.Join(absCloneRoot, ".cache", fmt.Sprintf("%s__%s", owner, repo))
-	sanitizedURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
 	logPrefix := fmt.Sprintf("[AGENT %s/%s#%d]", owner, repo, prNumber)
 
-	if err := prepareAgentCache(ctx, cacheKey, cacheDir, sanitizedURL, defaultBranch, prNumber, token, logPrefix); err != nil {
+	cacheDir, err := ensureAgentCache(ctx, cloneRoot, owner, repo, defaultBranch, token, logPrefix)
+	if err != nil {
+		return noopCleanup, err
+	}
+	if err := fetchAgentRefs(ctx, owner+"/"+repo, cacheDir, defaultBranch, prNumber, token, logPrefix); err != nil {
 		return noopCleanup, err
 	}
 
@@ -1140,19 +1143,28 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	return cleanup, nil
 }
 
-// prepareAgentCache runs the mutating cache steps (initial clone, one-time
-// unshallow, PR and base-branch fetches) under the per-repo mutex. No fetch
-// here passes --depth: that would re-shallow the shared cache.
-func prepareAgentCache(ctx context.Context, cacheKey, cacheDir, cloneURL, defaultBranch string, prNumber int, token, logPrefix string) error {
-	mu := cacheLock(cacheKey)
+// ensureAgentCache makes sure a complete cache clone of owner/repo exists at
+// <cloneRoot>/.cache/<owner>__<repo> and returns its path. A cache miss costs
+// a full single-branch clone; a cache an older build left shallow is completed
+// once with --unshallow. Both are one-time costs, so callers pass a context
+// bounded by the run rather than the per-review prep budget. Holds the
+// per-repo mutex.
+func ensureAgentCache(ctx context.Context, cloneRoot, owner, repo, defaultBranch, token, logPrefix string) (string, error) {
+	absCloneRoot, err := filepath.Abs(cloneRoot)
+	if err != nil {
+		return "", fmt.Errorf("abs cloneRoot: %w", err)
+	}
+	cacheDir := filepath.Join(absCloneRoot, ".cache", fmt.Sprintf("%s__%s", owner, repo))
+	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+
+	mu := cacheLock(owner + "/" + repo)
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Step 1: ensure cache repo exists.
 	cacheGitDir := filepath.Join(cacheDir, ".git")
 	if _, err := os.Stat(cacheGitDir); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
-			return fmt.Errorf("create cache parent: %w", err)
+			return "", fmt.Errorf("create cache parent: %w", err)
 		}
 		log.Printf("%s cache MISS: initial clone of %s -> %s START", logPrefix, cloneURL, cacheDir)
 		t0 := time.Now()
@@ -1164,7 +1176,7 @@ func prepareAgentCache(ctx context.Context, cacheKey, cacheDir, cloneURL, defaul
 		// --quiet suppresses progress/banner output that CombinedOutput()
 		// would otherwise buffer in memory for the duration of the clone.
 		// --single-branch keeps the ref set small; other bases are fetched
-		// on demand in step 2b.
+		// on demand by fetchAgentRefs.
 		cloneArgs = append(cloneArgs, "clone", "--quiet", "--single-branch")
 		if defaultBranch != "" {
 			cloneArgs = append(cloneArgs, "--branch", defaultBranch)
@@ -1177,18 +1189,16 @@ func prepareAgentCache(ctx context.Context, cacheKey, cacheDir, cloneURL, defaul
 			if rmErr := os.RemoveAll(cacheDir); rmErr != nil {
 				log.Printf("%s WARN: failed to clean partial cache dir %s: %v", logPrefix, cacheDir, rmErr)
 			}
-			return fmt.Errorf("git clone (cache init): %w (%s)", err, redactToken(out, token))
+			return "", fmt.Errorf("git clone (cache init) after %s: %w (%s)", time.Since(t0), err, redactToken(out, token))
 		}
 		log.Printf("%s cache initial clone DONE in %s", logPrefix, time.Since(t0))
 	} else if err != nil {
-		return fmt.Errorf("stat cache .git: %w", err)
-	} else {
-		log.Printf("%s cache HIT at %s", logPrefix, cacheDir)
+		return "", fmt.Errorf("stat cache .git: %w", err)
 	}
 
-	// Step 1b: complete a cache that an older build (or a manual clone) left
-	// shallow. Best-effort: a failure leaves it shallow, and PRs forked past
-	// the shallow boundary then degrade to the API diff instead of stalling.
+	// Best-effort completion of a shallow cache: a failure leaves it shallow,
+	// and PRs forked past the shallow boundary then degrade to the API diff
+	// instead of stalling.
 	if _, err := os.Stat(filepath.Join(cacheGitDir, "shallow")); err == nil {
 		log.Printf("%s cache is shallow: git fetch --unshallow START", logPrefix)
 		t := time.Now()
@@ -1200,9 +1210,19 @@ func prepareAgentCache(ctx context.Context, cacheKey, cacheDir, cloneURL, defaul
 			log.Printf("%s cache unshallow DONE in %s", logPrefix, time.Since(t))
 		}
 	}
+	return cacheDir, nil
+}
 
-	// Step 2: fetch the PR head ref into the cache. Use a `+` refspec to force
-	// update if the PR was rebased/force-pushed since last fetch.
+// fetchAgentRefs fetches the PR head ref and its base branch into the cache
+// under the per-repo mutex. Neither fetch passes --depth: that would
+// re-shallow the shared cache.
+func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch string, prNumber int, token, logPrefix string) error {
+	mu := cacheLock(cacheKey)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Fetch the PR head ref into the cache. Use a `+` refspec to force update
+	// if the PR was rebased/force-pushed since last fetch.
 	fetchSpec := fmt.Sprintf("+pull/%d/head:refs/agent-pr/%d", prNumber, prNumber)
 	log.Printf("%s git fetch origin %s (in cache) START", logPrefix, fetchSpec)
 	t1 := time.Now()
@@ -1213,15 +1233,14 @@ func prepareAgentCache(ctx context.Context, cacheKey, cacheDir, cloneURL, defaul
 	}
 	log.Printf("%s git fetch DONE in %s", logPrefix, time.Since(t1))
 
-	// Step 2b: fetch the PR's base branch into the cache. The cache is
-	// single-branch, so without this origin/<base> never exists for a PR
-	// based on any other branch (stacked PRs, or every default-base PR when
-	// the cache was initialized by a stacked one), and the deterministic
-	// layer's diff (gates, bug memory, required checks) silently degrades to
-	// "no signal". Also keeps origin/<base> fresh as the base moves. A
-	// separate best-effort fetch: the review itself only needs the PR head,
-	// and diffFilesForWorktree has its own fallback if this fails (e.g. a
-	// deleted base branch).
+	// Fetch the PR's base branch into the cache. The cache is single-branch,
+	// so without this origin/<base> never exists for a PR based on any other
+	// branch (stacked PRs, or every default-base PR when the cache was
+	// initialized by a stacked one), and the deterministic layer's diff
+	// (gates, bug memory, required checks) silently degrades to "no signal".
+	// Also keeps origin/<base> fresh as the base moves. Best-effort: the
+	// review itself only needs the PR head, and diffFilesForWorktree has its
+	// own fallback if this fails (e.g. a deleted base branch).
 	if defaultBranch != "" {
 		baseArgs := authHeaderArgs(token)
 		baseArgs = append(baseArgs, "fetch", "--quiet", "origin",

@@ -109,7 +109,7 @@ func TestCloneForAgent_CompletesShallowCacheOnceThenKeepsItComplete(t *testing.T
 			t.Fatalf("review %d cloneForAgent: %v", n, err)
 		}
 		defer func() { _ = cleanup() }()
-		files := diffFilesForWorktree(context.Background(), dir, "main", "", "acme/example", 1, "")
+		files := diffFilesForWorktree(context.Background(), dir, "main", "", "acme/example", "")
 		prepDuration = time.Since(start)
 		if len(files) != 1 || files[0].Path != "feature.txt" || files[0].Status != "added" {
 			t.Fatalf("review %d: git diff must resolve the old fork's merge-base, got %+v", n, files)
@@ -145,7 +145,7 @@ func TestDiffFilesForWorktree_ShallowCacheFallsBackToAPIDiffWithoutUnshallow(t *
 	readTrace := traceGit(t)
 
 	const apiDiff = "diff --git a/feature.txt b/feature.txt\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/feature.txt\n@@ -0,0 +1 @@\n+feature\n"
-	files := diffFilesForWorktree(context.Background(), cacheDir, "main", "", "acme/example", 1, apiDiff)
+	files := diffFilesForWorktree(context.Background(), cacheDir, "main", "", "acme/example", apiDiff)
 	trace := readTrace()
 	if strings.Contains(trace, "--unshallow") || strings.Contains(trace, "--deepen") {
 		t.Fatalf("fallback must not deepen the cache; trace:\n%s", trace)
@@ -157,7 +157,7 @@ func TestDiffFilesForWorktree_ShallowCacheFallsBackToAPIDiffWithoutUnshallow(t *
 		t.Fatalf("expected the API diff's file list, got %+v", files)
 	}
 
-	if got := diffFilesForWorktree(context.Background(), cacheDir, "main", "", "acme/example", 1, ""); got != nil {
+	if got := diffFilesForWorktree(context.Background(), cacheDir, "main", "", "acme/example", ""); got != nil {
 		t.Fatalf("without an API diff the fallback is no signal, got %+v", got)
 	}
 }
@@ -202,8 +202,8 @@ func TestDiffFilesFromAPIDiff(t *testing.T) {
 		strings.Join(mod.Added, ",") != "new = 1,extra = 2,tail = 4" || strings.Join(mod.Removed, ",") != "old = 1" {
 		t.Fatalf("modified file: %+v", mod)
 	}
-	if len(mod.AddedHunks) != 2 || len(mod.AddedHunks[0]) != 2 || len(mod.AddedHunks[1]) != 1 {
-		t.Fatalf("context lines must split hunks: %+v", mod.AddedHunks)
+	if len(mod.AddedHunks) != 1 || len(mod.AddedHunks[0]) != 3 {
+		t.Fatalf("one @@ hunk stays one hunk across context lines: %+v", mod.AddedHunks)
 	}
 	if files[1].Path != "app/new.py" || files[1].Status != "added" || files[1].Added[0] != "fresh = True" {
 		t.Fatalf("added file: %+v", files[1])
