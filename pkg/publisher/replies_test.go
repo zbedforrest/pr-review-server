@@ -1195,3 +1195,60 @@ func TestReplyReactor_DeferralAsksForTheTicketKey(t *testing.T) {
 		t.Fatalf("posted=%q", gh.posted)
 	}
 }
+
+func TestReplyReactor_PersistedPreConventionDecisionIsRenderedOnResume(t *testing.T) {
+	runs := 0
+	var outcomes []ReplyOutcome
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{}, fmt.Errorf("must not run: the decision is persisted")
+	})
+	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
+	gh.threads["acme/example#7"][1].Body = "This is intentional, callers are trusted here. Not a bug, keeping as is."
+	seed := func(body string) {
+		thread := threadUnder(gh.threads["acme/example#7"], 100)
+		ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+			Fingerprint: "a.go:1:abc", Class: "pushback", Action: ReplyActionPending, Decision: DecisionConcede, ReplyBody: body,
+			DecisionHead: "head1", DecisionThread: threadFingerprint(thread, 1), CreatedAt: time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)}}
+	}
+	seed("You're right. Trusted callers are your call. A nil body reaches parse on a.go:12 and the handler returns 500. Withdrawing this.")
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "Trusted callers are your call. A nil body reaches parse on a.go:12 and the handler returns 500. Should this be noted in the PR description as accepted risk?"
+	if runs != 0 || len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], want+"\n\n") {
+		t.Fatalf("runs=%d posted=%q", runs, gh.posted)
+	}
+	if len(outcomes) != 1 || outcomes[0].Note != replytext.NoteIntentAcknowledged || outcomes[0].Outcome != "posted" {
+		t.Errorf("outcomes=%+v", outcomes)
+	}
+
+	gh.posted, outcomes, ledger.states = nil, nil, nil
+	gh.threads["acme/example#7"] = gh.threads["acme/example#7"][:2]
+	seed("You're right. Withdrawing this.")
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 0 || rep.Abstained != 1 || ledger.rows[0].Outcome != "abstained" || ledger.states["a.go:1:abc"] != "" {
+		t.Errorf("posted=%v rep=%+v row=%+v states=%v", gh.posted, rep, ledger.rows[0], ledger.states)
+	}
+}
+
+func TestReplyReactor_RendererAppendixDoesNotTripTheLengthCap(t *testing.T) {
+	paragraph := strings.TrimSpace(strings.Repeat("The over-count is introduced on purrBridge.ts:353 before the drop on PurrMediaExperiences.tsx:68. ", 6))
+	if n := len([]rune(paragraph)); n < 560 || n > 600 {
+		t.Fatalf("fixture paragraph is %d chars", n)
+	}
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: paragraph, Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Out of scope for this PR, will handle it in a follow-up."
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 1 || !strings.Contains(gh.posted[0], replytext.TicketAsk) || rep.TextSkipped["too_long"] != 0 {
+		t.Fatalf("posted=%d rep=%+v", len(gh.posted), rep)
+	}
+}

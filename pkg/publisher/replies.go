@@ -237,7 +237,8 @@ type Responder func(ctx context.Context, req ReplyRequest) (ReplyDecision, error
 
 // TextPolicy bounds text replies: questions and substantive pushback only,
 // while the thread is fresh, at most MaxPerThread per thread, MaxPerPRPerDay
-// per PR, and MaxChars per reply (a longer reply is dropped, not truncated).
+// per PR, and MaxChars per reply paragraph (a longer reply is dropped, not
+// truncated; the sentences the renderer appends are allowed on top).
 type TextPolicy struct {
 	MaxPerThread   int
 	MaxPerPRPerDay int
@@ -980,7 +981,6 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 			return outcome, err
 		}
 		decision = renderDecision(decision, reply, root)
-		outcome.Note = decision.Note
 		cited, _ := json.Marshal(decision.Cited)
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
 			Decision: decision.Decision, ReplyBody: decision.Reply, Cited: string(cited), Model: decision.Model, DurationMS: decision.DurationMS,
@@ -992,15 +992,18 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		outcome.Decision, outcome.Model, outcome.DurationMS = decision.Decision, decision.Model, decision.DurationMS
 	}
 	// A row decided before this convention took effect is rendered again here;
-	// rendering is a no-op on an already rendered body.
-	text, renderable := replytext.Render(row.ReplyBody, replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, Decision: row.Decision})
+	// rendering is a no-op on an already rendered body. The note is derived
+	// here too so a resumed step reports it.
+	rctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, Decision: row.Decision}
+	text, renderable := replytext.Render(row.ReplyBody, rctx)
+	outcome.Note = replytext.Note(rctx)
 	switch {
 	case row.Decision == DecisionAbstain || !renderable:
 		if rep != nil {
 			rep.Abstained++
 		}
 		return finish("abstained")
-	case len([]rune(text)) > r.textPolicy().MaxChars:
+	case len([]rune(text))-replytext.AppendixLen(text) > r.textPolicy().MaxChars:
 		return skip("too_long")
 	case r.Mode != ReplyModeRespond:
 		if rep != nil {

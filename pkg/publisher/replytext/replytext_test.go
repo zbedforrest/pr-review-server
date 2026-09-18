@@ -20,6 +20,8 @@ func TestStripAgreementOpener(t *testing.T) {
 		{"Right now the guard on retry.go:41 runs first.", "Right now the guard on retry.go:41 runs first.", true},
 		{"Yesterday's change to retry.go:41 covers it.", "Yesterday's change to retry.go:41 covers it.", true},
 		{"You're right about the guard, it runs first.", "You're right about the guard, it runs first.", true},
+		{"You're right, retry.go:41 guards this.", "retry.go:41 guards this.", true},
+		{"Correct, onRoomLoaded on X.tsx:82 only drops the toast.", "onRoomLoaded on X.tsx:82 only drops the toast.", true},
 		{"You're right.", "", false},
 		{"Agreed, good point.", "", false},
 		{"   ", "", false},
@@ -38,12 +40,17 @@ func TestAssertsIntent(t *testing.T) {
 		"This is intentional, the banner is a product decision.",
 		"Working as designed.",
 		"By design, we leave the toast as-is.",
+		"This is intentional; nothing changed, keeping it as-is.",
+		"This was added intentionally and is staying as-is.",
+		"Defaced input is rejected on purpose; the commit message explains why.",
 	}
 	no := []string{
 		"Fixed in 519f006, the guard is now on line 77.",
 		"It was intentional at first but I changed it to clear the banner too.",
 		"It is read by the deploy script, see hello.txt.",
 		"Out of scope for this ticket, not touching it here.",
+		"The intended caller is on a.go:1, so the guard runs first.",
+		"Intentional originally, but the latest commit clears the banner too.",
 	}
 	for _, s := range yes {
 		if !AssertsIntent(s) {
@@ -122,6 +129,10 @@ func TestRenderIntentPushbackAcknowledgesAndRecordsWithoutWithdrawing(t *testing
 	if _, ok := Render("You're right. Withdrawing this.", ctx); ok {
 		t.Errorf("a withdrawal with nothing else must be rejected")
 	}
+	domain := "payments.go:12 withdraws funds before the authorization check. Keeping it means a double charge is possible."
+	if got, _ := Render(domain, ctx); !strings.HasPrefix(got, domain) {
+		t.Errorf("domain language is not a withdrawal: %q", got)
+	}
 }
 
 func TestRenderIntentPushbackBelowMediumDoesNotAskAboutAcceptedRisk(t *testing.T) {
@@ -137,6 +148,22 @@ func TestRenderIntentPushbackBelowMediumDoesNotAskAboutAcceptedRisk(t *testing.T
 	got, _ = Render("Withdrawing this.", Context{AuthorComment: ctx.AuthorComment, FindingBody: ctx.FindingBody, Decision: "hold"})
 	if got != "Withdrawing this." {
 		t.Errorf("only a concession takes the intent path: %q", got)
+	}
+}
+
+func TestAppendixLenCountsOnlyWhatRenderAppended(t *testing.T) {
+	body := "The guard on a.go:12 is gone."
+	ctx := Context{AuthorComment: "Intentional, out of scope here, keeping as is.", FindingBody: "**[HIGH] x**", Decision: "concede"}
+	got, _ := Render(body, ctx)
+	if got == body || AppendixLen(got) != len([]rune(got))-len([]rune(body)) {
+		t.Errorf("got %q appendix=%d", got, AppendixLen(got))
+	}
+	if AppendixLen(body) != 0 || AppendixLen("Tracked against PROJ-1 already.") != 0 {
+		t.Errorf("a body with nothing appended has no appendix")
+	}
+	withKey, _ := Render(body, Context{AuthorComment: "Out of scope, see PROJ-42.", Decision: "hold"})
+	if AppendixLen(withKey) != len([]rune(" Tracking this against PROJ-42.")) {
+		t.Errorf("got %q appendix=%d", withKey, AppendixLen(withKey))
 	}
 }
 
@@ -161,5 +188,13 @@ func TestRenderDeferralAsksForOrRepeatsTheTicketKey(t *testing.T) {
 	got, _ = Render(body, Context{AuthorComment: "Fixed in 519f006.", Decision: "concede"})
 	if got != body {
 		t.Errorf("a non-deferral must be left alone: %q", got)
+	}
+	got, _ = Render("The cache key on cache.go:12 remains shared between tenants.", Context{AuthorComment: "Out of scope, follow-up.", Decision: "hold"})
+	if !strings.HasSuffix(got, TicketAsk) {
+		t.Errorf("an unrelated key must not count as the ask: %q", got)
+	}
+	got, _ = Render("The cache key on cache.go:12 remains shared; if there is a ticket for this, its key would close the thread.", Context{AuthorComment: "Out of scope, follow-up.", Decision: "hold"})
+	if strings.Contains(got, TicketAsk) {
+		t.Errorf("an ask in the model's own words must not be doubled: %q", got)
 	}
 }
