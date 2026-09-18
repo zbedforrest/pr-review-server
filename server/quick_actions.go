@@ -353,7 +353,13 @@ func withUserToken(ctx context.Context, src auth.GitHubTokenSource, call func(to
 	}
 	refreshed, refreshErr := src.Refresh(ctx)
 	if refreshErr != nil {
-		return err
+		// A fixed PAT that GitHub rejected really does need re-authorizing.
+		// A session token only does when the refresh was refused; an outage
+		// at the token endpoint is retryable.
+		if errors.Is(refreshErr, auth.ErrTokenNotRefreshable) {
+			return err
+		}
+		return tokenError(refreshErr)
 	}
 	return call(refreshed)
 }

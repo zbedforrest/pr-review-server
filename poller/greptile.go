@@ -87,20 +87,18 @@ func greptileHeadReviews(data *github.PRReviewData) int {
 
 // needsGreptileRefresh is the poll-cycle catch-up: Greptile usually posts
 // after PRism finishes, so completion stored "absent" for this very head, and
-// it may review the same head again later. Recompute whenever the stored
-// verdict covers fewer Greptile reviews of the head than GitHub now shows.
+// reviews of the head can be added or dismissed later. Once a verdict for
+// the head exists it is recomputed on any change in the live review count,
+// so a dismissed sole review turns a stale green back into absent.
 func needsGreptileRefresh(pr *db.PR, data *github.PRReviewData) bool {
 	reviews := greptileHeadReviews(data)
-	if reviews == 0 {
-		return false
-	}
 	if !isSameCommit(pr.GreptileStatusSHA, data.HeadOID) {
-		return true
+		return reviews > 0
 	}
 	if pr.GreptileStatus != GreptileStatusGreen && pr.GreptileStatus != GreptileStatusRed {
-		return true
+		return reviews > 0
 	}
-	return reviews > pr.GreptileReviewCount
+	return reviews != pr.GreptileReviewCount
 }
 
 // refreshGreptileStatus reads Greptile's reviews of head with the App client

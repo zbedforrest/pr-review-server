@@ -504,6 +504,55 @@ func TestQuickAction_RefreshesTokenAfter401(t *testing.T) {
 	assert.Equal(t, "Bearer gho_live", env.gh.lastAuth)
 }
 
+// rejectedThenSource always hands out a dead token; Refresh fails with err.
+type rejectedThenSource struct{ err error }
+
+func (s *rejectedThenSource) Token(context.Context) (string, error)   { return "gho_dead", nil }
+func (s *rejectedThenSource) Refresh(context.Context) (string, error) { return "", s.err }
+func (s *rejectedThenSource) Source() string                          { return "session" }
+
+func TestQuickAction_401ThenRefreshOutcomeDecidesTheCode(t *testing.T) {
+	newEnvRejectingDeadToken := func(t *testing.T) *quickActionEnv {
+		env := newQuickActionEnv(t)
+		inner := env.gh.srv.Config.Handler
+		env.gh.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") == "Bearer gho_dead" {
+				w.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(w, `{"message":"Bad credentials"}`)
+				return
+			}
+			inner.ServeHTTP(w, r)
+		})
+		return env
+	}
+
+	t.Run("transient refresh failure is retryable", func(t *testing.T) {
+		env := newEnvRejectingDeadToken(t)
+		w, got := env.do(t, http.MethodPost, quickActionBody(nil), &rejectedThenSource{err: errors.New("token endpoint 503")}, nil)
+		assert.Equal(t, http.StatusBadGateway, w.Code, w.Body.String())
+		assert.Equal(t, "github_error", got["code"])
+	})
+	t.Run("refused refresh needs sign in", func(t *testing.T) {
+		env := newEnvRejectingDeadToken(t)
+		w, got := env.do(t, http.MethodPost, quickActionBody(nil), &rejectedThenSource{err: auth.ErrNoGitHubToken}, nil)
+		assert.Equal(t, http.StatusPreconditionRequired, w.Code, w.Body.String())
+		assert.Equal(t, "reauth_required", got["code"])
+	})
+	t.Run("rejected bearer PAT needs sign in", func(t *testing.T) {
+		env := newEnvRejectingDeadToken(t)
+		w, got := env.do(t, http.MethodPost, quickActionBody(nil), auth.StaticGitHubTokenSource("gho_dead", "bearer"), nil)
+		assert.Equal(t, http.StatusPreconditionRequired, w.Code, w.Body.String())
+		assert.Equal(t, "reauth_required", got["code"])
+	})
+	t.Run("successful refresh completes the action", func(t *testing.T) {
+		env := newEnvRejectingDeadToken(t)
+		src := &refreshingSource{tokens: []string{"gho_dead", "gho_live"}}
+		w, got := env.do(t, http.MethodPost, quickActionBody(nil), src, nil)
+		assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Equal(t, "success", got["status"])
+	})
+}
+
 func TestQuickAction_NeverLogsBodyOrToken(t *testing.T) {
 	env := newQuickActionEnv(t)
 	var buf bytes.Buffer

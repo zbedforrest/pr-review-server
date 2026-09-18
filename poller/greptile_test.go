@@ -118,6 +118,46 @@ func TestNeedsGreptileRefresh(t *testing.T) {
 
 	reviewedAgain := &github.PRReviewData{HeadOID: "abc", HeadReviewCounts: map[string]int{"greptile-apps[bot]": 2}}
 	assert.True(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusGreen, GreptileStatusSHA: "abc", GreptileReviewCount: 1}, reviewedAgain), "a second Greptile review of the same head is regraded")
+
+	allDismissed := &github.PRReviewData{HeadOID: "abc", HeadReviewCounts: map[string]int{"alice": 1}}
+	assert.True(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusGreen, GreptileStatusSHA: "abc", GreptileReviewCount: 1}, allDismissed), "the sole review was dismissed, the green must go")
+	assert.True(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusRed, GreptileStatusSHA: "abc", GreptileReviewCount: 2}, greptileOnHead), "a decrease is regraded too")
+	assert.False(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusAbsent, GreptileStatusSHA: "abc"}, allDismissed), "nothing stored and nothing live costs no REST calls")
+}
+
+func TestRefreshGreptileStatus_DismissedSoleReviewClearsGreen(t *testing.T) {
+	reviewState := "APPROVED"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/acme/example/pulls/1/reviews":
+			fmt.Fprintf(w, `[{"id": 5, "commit_id": "abc", "state": %q, "user": {"login": "greptile-apps[bot]"}}]`, reviewState)
+		case "/repos/acme/example/pulls/1/comments":
+			fmt.Fprint(w, `[]`)
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, LastCommitSHA: "abc"}))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+
+	require.True(t, p.refreshGreptileStatus(context.Background(), "acme", "example", 1, "abc"))
+	pr, _ := database.GetPR("acme", "example", 1)
+	require.Equal(t, GreptileStatusGreen, pr.GreptileStatus)
+	require.Equal(t, 1, pr.GreptileReviewCount)
+
+	reviewState = "DISMISSED"
+	live := &github.PRReviewData{HeadOID: "abc", HeadReviewCounts: map[string]int{}}
+	require.True(t, needsGreptileRefresh(pr, live))
+	require.True(t, p.refreshGreptileStatus(context.Background(), "acme", "example", 1, "abc"))
+	pr, _ = database.GetPR("acme", "example", 1)
+	assert.Equal(t, GreptileStatusAbsent, pr.GreptileStatus)
+	assert.Equal(t, 0, pr.GreptileReviewCount)
 }
 
 func TestRefreshGreptileStatus_FollowsReviewPagination(t *testing.T) {
