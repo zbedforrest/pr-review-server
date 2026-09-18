@@ -1094,13 +1094,14 @@ const (
 
 // ciBatchStats counts one BatchGetCIStatus call for its summary line.
 type ciBatchStats struct {
-	mu        sync.Mutex
-	batches   int
-	ok        int
-	failed    int
-	skipped   int
-	byStatus  map[int]int
-	otherErrs int
+	mu          sync.Mutex
+	batches     int
+	ok          int
+	failed      int
+	skipped     int
+	rateLimited int
+	byStatus    map[int]int
+	otherErrs   int
 }
 
 func (s *ciBatchStats) record(err error) {
@@ -1111,6 +1112,10 @@ func (s *ciBatchStats) record(err error) {
 		return
 	}
 	s.failed++
+	if errors.Is(err, ErrGraphQLRateLimited) {
+		s.rateLimited++
+		return
+	}
 	var httpErr *GraphQLHTTPError
 	if errors.As(err, &httpErr) {
 		if s.byStatus == nil {
@@ -1128,9 +1133,12 @@ func (s *ciBatchStats) failuresByStatus() string {
 		statuses = append(statuses, st)
 	}
 	sort.Ints(statuses)
-	parts := make([]string, 0, len(statuses)+1)
+	parts := make([]string, 0, len(statuses)+2)
 	for _, st := range statuses {
 		parts = append(parts, fmt.Sprintf("%d=%d", st, s.byStatus[st]))
+	}
+	if s.rateLimited > 0 {
+		parts = append(parts, fmt.Sprintf("rate_limited=%d", s.rateLimited))
 	}
 	if s.otherErrs > 0 {
 		parts = append(parts, fmt.Sprintf("other=%d", s.otherErrs))
@@ -1141,8 +1149,9 @@ func (s *ciBatchStats) failuresByStatus() string {
 // BatchGetCIStatus fetches CI check status for multiple PRs using batched
 // GraphQL. PRs with IncludeMergeState also get mergeStateStatus and
 // reviewDecision, in batches of 25; the rest go in batches of 50. The first
-// 403 (secondary rate limit) skips every batch not yet sent, since retrying
-// into the limit only extends it. One summary line is logged per call.
+// rate-limit signal, an HTTP 403 (secondary limit) or a 200 carrying a
+// RATE_LIMITED error, skips every batch not yet sent, since retrying into the
+// limit only extends it. One summary line is logged per call.
 func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string]*CIStatus, error) {
 	if len(prs) == 0 {
 		return make(map[string]*CIStatus), nil
@@ -1183,7 +1192,7 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 		stats.record(err)
 		if err != nil {
 			var httpErr *GraphQLHTTPError
-			if errors.As(err, &httpErr) && httpErr.Status == http.StatusForbidden {
+			if errors.Is(err, ErrGraphQLRateLimited) || (errors.As(err, &httpErr) && httpErr.Status == http.StatusForbidden) {
 				rateLimited.Store(true)
 			}
 			log.Printf("[GRAPHQL] Warning: Failed to fetch CI status batch: %v", err)

@@ -1135,3 +1135,63 @@ func TestComputeImportanceCounts_SkipsNarrativeEntries(t *testing.T) {
 		t.Fatalf("counts = %d/%d/%d", r.CriticalCount, r.MediumCount, r.LowCount)
 	}
 }
+
+// pipeStderrProcess hands back a live, unbuffered stderr pipe: its Wait
+// cannot return until someone reads what the "child" writes there.
+type pipeStderrProcess struct {
+	stdout *bytes.Buffer
+	pr     *io.PipeReader
+	pw     *io.PipeWriter
+}
+
+func (p *pipeStderrProcess) Stdout() io.Reader { return p.stdout }
+func (p *pipeStderrProcess) Stderr() io.Reader { return p.pr }
+func (p *pipeStderrProcess) Wait() error {
+	_, _ = p.pw.Write([]byte("warning: written while the caller waits"))
+	_ = p.pw.Close()
+	return nil
+}
+func (p *pipeStderrProcess) Kill() error { return p.pw.Close() }
+
+type staticSpawner struct{ proc SpawnedProcess }
+
+func (s *staticSpawner) SpawnWithEnv(context.Context, string, []string, string, []string) (SpawnedProcess, error) {
+	return s.proc, nil
+}
+
+func TestRunAgentReview_DrainsLivePipeStderrSoWaitCannotDeadlock(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	pr, pw := io.Pipe()
+	spawner := &staticSpawner{proc: &pipeStderrProcess{
+		stdout: bytes.NewBufferString(`{"type":"result","result":"[]"}` + "\n"),
+		pr:     pr,
+		pw:     pw,
+	}}
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+	}
+
+	type outcome struct {
+		out *AgentReview
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+		done <- outcome{out, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("RunAgentReview: %v", got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunAgentReview deadlocked on an undrained stderr pipe")
+	}
+}

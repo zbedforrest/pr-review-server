@@ -5,11 +5,11 @@ package service
 import (
 	"bytes"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -31,14 +31,28 @@ type agentRunOutcome struct {
 	stderr   bytes.Buffer
 }
 
-// runStreamLikeAgent mirrors RunAgentReview's stream handling: parse stdout
-// to EOF, Wait, then collect stderr.
+// runStreamLikeAgent mirrors RunAgentReview's stream handling: drain stderr
+// in the background, parse stdout to EOF, Wait, then collect stderr.
 func runStreamLikeAgent(proc SpawnedProcess, maxTurns int) *agentRunOutcome {
 	out := &agentRunOutcome{}
+	stderrOutput := collectStderr(proc)
 	out.parsed, out.parseErr = parseAgentStream(proc, &out.stdout, maxTurns)
 	out.waitErr = proc.Wait()
-	_, _ = io.Copy(&out.stderr, proc.Stderr())
+	out.stderr.WriteString(stderrOutput())
 	return out
+}
+
+func waitForProcessGroupGone(t *testing.T, proc SpawnedProcess) {
+	t.Helper()
+	pgid := proc.(*execProcess).cmd.Process.Pid
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(-pgid, 0) == syscall.ESRCH {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("process group %d still has live members a second after Wait returned", pgid)
 }
 
 func waitForGoroutineBaseline(t *testing.T, baseline int) {
@@ -153,4 +167,49 @@ while :; do echo '{"type":"assistant"}'; done
 		t.Fatalf("grandchild survived the process-group kill (marker stat err=%v)", err)
 	}
 	waitForGoroutineBaseline(t, baseline)
+}
+
+func TestDefaultSpawnerWaitKillsDescendantThatClosedEveryPipe(t *testing.T) {
+	dir := t.TempDir()
+	started := filepath.Join(dir, "grandchild-started")
+	marker := filepath.Join(dir, "grandchild-survived")
+	script := writeChildScript(t, `
+( touch "`+started+`"; sleep 1; touch "`+marker+`" ) >/dev/null 2>&1 &
+while [ ! -f "`+started+`" ]; do sleep 0.05; done
+echo '{"type":"result","subtype":"success","result":"done"}'
+exit 0
+`)
+	proc, err := (DefaultSpawner{}).SpawnWithEnv(context.Background(), script, nil, "", []string{})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	out := runStreamLikeAgent(proc, 10)
+	if out.parseErr != nil || out.waitErr != nil {
+		t.Fatalf("parseErr=%v waitErr=%v, want a clean exit", out.parseErr, out.waitErr)
+	}
+	waitForProcessGroupGone(t, proc)
+
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("grandchild survived the parent's exit (marker stat err=%v)", err)
+	}
+}
+
+func TestDefaultSpawnerNonZeroExitStillKillsDescendantHoldingStderr(t *testing.T) {
+	dir := t.TempDir()
+	started := filepath.Join(dir, "grandchild-started")
+	script := writeChildScript(t, `
+( touch "`+started+`"; sleep 30 ) >/dev/null &
+while [ ! -f "`+started+`" ]; do sleep 0.05; done
+echo '{"type":"result","subtype":"error","result":"failed"}'
+exit 3
+`)
+	proc, err := (DefaultSpawner{}).SpawnWithEnv(context.Background(), script, nil, "", []string{})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	out := runStreamLikeAgent(proc, 10)
+	if out.waitErr == nil || !strings.Contains(out.waitErr.Error(), "exit status 3") {
+		t.Fatalf("waitErr = %v, want the child's exit status 3", out.waitErr)
+	}
+	waitForProcessGroupGone(t, proc)
 }

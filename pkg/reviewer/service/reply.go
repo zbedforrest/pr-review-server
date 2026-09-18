@@ -134,6 +134,7 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 	if err != nil {
 		return nil, fmt.Errorf("reply: spawn %s: %w", runtime.command, err)
 	}
+	stderrOutput := collectStderr(proc)
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		_ = proc.Kill()
@@ -158,7 +159,7 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 
 	parsed, parseErr := runtime.parseStream(proc, logFile, cfg.MaxTurns)
 	waitErr := proc.Wait()
-	stderrBuf := readAllString(proc.Stderr())
+	stderrBuf := stderrOutput()
 	redact := func(s string) string { return truncate(redactToken(s, credentialValue), 600) }
 	// The budget cases come first: a killed process can also fail the stream
 	// read, and only this function's own deadline (not one inherited from the

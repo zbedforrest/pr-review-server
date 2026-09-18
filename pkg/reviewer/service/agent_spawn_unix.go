@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -84,25 +85,57 @@ type execProcess struct {
 	stderr *boundedBuffer
 	done   chan struct{}
 	once   sync.Once
+	killed atomic.Bool
 }
 
 func (e *execProcess) Stdout() io.Reader { return e.stdout }
 
-// Stderr returns what the child wrote so far; complete once Wait has returned.
-func (e *execProcess) Stderr() io.Reader { return strings.NewReader(e.stderr.String()) }
+// Stderr blocks until Wait has reaped the child, then serves everything it
+// wrote: exec's copy goroutine owns the pipe, so there is nothing to read
+// concurrently and a snapshot before exit would be incomplete.
+func (e *execProcess) Stderr() io.Reader { return &stderrAfterExit{p: e} }
+
+type stderrAfterExit struct {
+	p *execProcess
+	r io.Reader
+}
+
+func (s *stderrAfterExit) Read(b []byte) (int, error) {
+	<-s.p.done
+	if s.r == nil {
+		s.r = strings.NewReader(s.p.stderr.String())
+	}
+	return s.r.Read(b)
+}
 
 func (e *execProcess) Wait() error {
 	err := e.cmd.Wait()
 	e.once.Do(func() { close(e.done) })
+	e.killStragglers()
 	if errors.Is(err, exec.ErrWaitDelay) {
-		// The child exited successfully but a descendant kept stderr open past
-		// WaitDelay; take the stragglers down with the group.
-		log.Printf("[AGENT] %s exited but a descendant kept stderr open for %s; killing its process group",
-			e.cmd.Path, stderrWaitDelay)
-		_ = e.killGroup()
+		// The child itself exited 0; only a descendant held stderr past WaitDelay.
 		return nil
 	}
 	return err
+}
+
+// killStragglers group-kills whatever the exited leader left behind. This
+// runs on every Wait because ErrWaitDelay alone misses two cases: a
+// descendant that redirected all of its output holds no tracked pipe, so
+// Wait returns nil immediately, and a non-zero exit reports the ExitError
+// instead of ErrWaitDelay. It cannot help a descendant that still holds
+// stdout: callers only reach Wait after stdout EOF, so that case stalls
+// until the wall-clock watcher kills the group.
+func (e *execProcess) killStragglers() {
+	// After an explicit Kill the group already got SIGKILL; what the probe
+	// would find is zombies init has not reaped yet.
+	if e.killed.Load() || syscall.Kill(-e.cmd.Process.Pid, 0) != nil {
+		return
+	}
+	log.Printf("[AGENT] %s exited but left descendants alive in its process group; killing them", e.cmd.Path)
+	if err := e.killGroup(); err != nil {
+		log.Printf("[AGENT] failed to kill process group %d left by %s: %v", e.cmd.Process.Pid, e.cmd.Path, err)
+	}
 }
 
 // Kill sends SIGKILL to the entire process group so any subprocesses
@@ -115,6 +148,7 @@ func (e *execProcess) Kill() error {
 	if e.cmd.Process == nil {
 		return nil
 	}
+	e.killed.Store(true)
 	killErr := e.killGroup()
 	if e.stdout != nil {
 		_ = e.stdout.Close()
