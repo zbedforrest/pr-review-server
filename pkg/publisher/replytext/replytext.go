@@ -25,25 +25,43 @@ const (
 )
 
 // agreementOpenerRe matches an agreement formula at the head of the body when
-// it stands alone: followed by punctuation, by "that", or by nothing. "Right
-// now the guard..." is not a formula and is left alone, and so is "You're
-// right about the guard": dropping the formula there leaves a fragment no
-// rule can turn back into a sentence, so the prompt alone covers that form.
-var agreementOpenerRe = regexp.MustCompile(`(?i)^(?:i (?:think |believe |guess )?(?:you(?:'|’)?re right|you are right|agree)|you(?:'|’)?re right|you are right|that(?:'|’)?s (?:right|correct|fair)|correct|agreed|agree|good point|fair point|good catch|nice catch|fair enough|fair|right|yes|yep|indeed|exactly|true)(?:\s*[,.:;!]+\s*|\s+that\s+|\s*$)(?:(?:and|but|so)\s+)?`)
+// it stands alone: followed by punctuation and a space, by a dash, by "that",
+// or by nothing. "Right now the guard..." is not a formula and is left alone,
+// nor is "right.go:41 rejects nil" (the period is a filename's), and neither
+// is "You're right about the guard": dropping the formula there leaves a
+// fragment no rule can turn back into a sentence, so the prompt alone covers
+// that form.
+var agreementOpenerRe = regexp.MustCompile(`(?i)^(?:i (?:think |believe |guess )?(?:you(?:'|’)?re right|you are right|agree)|you(?:'|’)?re right|you are right|that(?:'|’)?s (?:right|correct|fair)|correct|agreed|agree|good point|fair point|good catch|nice catch|fair enough|fair|right|yes|yep|indeed|exactly|true)(?:\s*[,.:;!]+(?:\s+|$)|\s+[—–-]+\s+|\s+that\s+|\s*$)`)
+
+// A conjunction left behind by the formula ("Correct, and the fix is in")
+// goes too, unless it heads a phrase of its own: "so long as", "so far",
+// "and yet", "so that".
+var (
+	leadConjunctionRe = regexp.MustCompile(`(?i)^(?:and|but|so)\s+(\w+)`)
+	conjunctionPhrase = map[string]bool{"long": true, "far": true, "yet": true, "then": true, "that": true, "if": true, "as": true, "forth": true, "much": true, "too": true, "on": true}
+)
 
 // StripAgreementOpener drops agreement formulas from the head of the body and
 // capitalizes what remains. ok is false when nothing but formulas was there.
+// A body with no formula is returned as written.
 func StripAgreementOpener(body string) (out string, ok bool) {
 	out = strings.TrimSpace(body)
+	stripped := false
 	for i := 0; i < 4; i++ {
 		m := agreementOpenerRe.FindStringIndex(out)
 		if m == nil {
 			break
 		}
-		out = strings.TrimSpace(out[m[1]:])
+		out, stripped = strings.TrimSpace(out[m[1]:]), true
+		if c := leadConjunctionRe.FindStringSubmatch(out); c != nil && !conjunctionPhrase[strings.ToLower(c[1])] {
+			out = strings.TrimSpace(out[len(c[0])-len(c[1]):])
+		}
 	}
 	if out == "" {
 		return "", false
+	}
+	if !stripped {
+		return out, true
 	}
 	return capitalize(out), true
 }
@@ -69,29 +87,39 @@ var (
 	// "intended" counts only as a predicate ("this is intended", "as
 	// intended"); "the intended caller" describes code, not a decision.
 	intentRe = regexp.MustCompile(`(?i)\b(?:intentional(?:ly)?|(?:is|was|are|were|(?:it|this|that)(?:'|’)s) intended|intended behaviou?r|as intended|by design|on purpose|deliberate(?:ly)?|product (?:decision|call)|design (?:decision|choice)|not a bug|working as (?:intended|designed|expected)|(?:keep(?:ing)?|leav(?:e|ing)) (?:it|this|that|them|these)?\s*as[- ]is)\b`)
-	// A negated intent phrase ("not intentional", "wasn't by design") is a
-	// concession, and a promised fix is a change even before it lands.
-	negatedIntentRe = regexp.MustCompile(`(?i)\b(?:not|no|never|isn(?:'|’)?t|wasn(?:'|’)?t|aren(?:'|’)?t|weren(?:'|’)?t)\b(?:\s+\w+){0,2}\s+(?:intentional|intended|by design|on purpose|deliberate|working as)`)
+	// A negated intent phrase ("not intentional", "wasn't by design", "I
+	// don't think this is on purpose") is a concession, and a promised fix
+	// is a change even before it lands.
+	negatedIntentRe = regexp.MustCompile(`(?i)\b(?:not|no|never|isn(?:'|’)?t|wasn(?:'|’)?t|aren(?:'|’)?t|weren(?:'|’)?t|don(?:'|’)?t|didn(?:'|’)?t|doesn(?:'|’)?t|unsure)\b(?:\s+\w+){0,3}\s+(?:intentional|intended|by design|on purpose|deliberate|working as|a (?:product|design) (?:decision|call|choice))`)
 	// A change claim is affirmative fix language, not any change word:
-	// "nothing changed" and "was added intentionally" are intent, not fixes.
-	changeRe = regexp.MustCompile(`(?i)(?:\bfixed\b|\b(?:i|we)(?:'ve| have|'ll| will)? (?:fix|fixed|change|changed|moved|updated|removed|replaced|added|patched|pushed|split|lifted)\b|\bwill fix\b|\b(?:latest|new|this|that) commit\b|\bpushed\b|(?:\bin |\bat |\(|\bcommit )[0-9a-f]{7,40}\b)`)
-	deferRe  = regexp.MustCompile(`(?i)\b(?:out of scope|follow[- ]?up|later (?:pr|change|commit)|(?:separate|another|different|future|new|its own) (?:pr|ticket|change|issue)|not (?:touching|addressing|fixing|changing|doing) (?:it|this|that) here|(?:in|as) a ticket|track(?:ed|ing)? (?:it |this |that )?(?:separately|elsewhere))\b`)
-	// "not a separate issue" and "no follow-up needed" are the opposite.
-	negatedDeferRe = regexp.MustCompile(`(?i)\b(?:not|no|never|isn(?:'|’)?t|doesn(?:'|’)?t|without)\b(?:\s+\w+){0,2}\s+(?:out of scope|follow[- ]?up|(?:separate|another|different|future|new) (?:pr|ticket|change|issue))`)
-	// A key counts when the author talks about it as a ticket (or links it);
-	// a bare GPT-4 or COVID-19 in passing is not one.
-	ticketRe = regexp.MustCompile(`(?i)(?:\b(?:ticket|issue|jira|story|epic|track(?:ed|ing)?|filed|under|against|see|per|closes?|fixes|browse/|follow[- ]?up|scope|separate)\b:?[^.!?\n]{0,40}?)\b([A-Z][A-Z0-9]{1,9}-\d{1,6})\b`)
+	// "nothing changed" and "was added intentionally" are intent, not fixes,
+	// and "this commit" only counts when it is said to change something.
+	changeRe = regexp.MustCompile(`(?i)(?:\bfixed\b|\b(?:i|we)(?:(?:'|’)ve| have|(?:'|’)ll| will)? (?:fix|fixed|change|changed|moved|updated|removed|replaced|added|patched|pushed|split|lifted)\b|\bwill fix\b|\b(?:latest|new|this|that) commit (?:fixes|changes|moves|removes|adds|clears|drops|updates|replaces|addresses|handles|covers|guards)\b|\b(?:fixed|changed|addressed|handled) in (?:the )?(?:latest|new|this|that) commit\b|\bpushed\b|\bno longer\b|\bnow (?:works|returns|checks|guards|handles|rejects|clears|drops|skips|uses)\b|(?:\bin |\bat |\(|\bcommit )[0-9a-f]{7,40}\b)`)
+	// "will not be fixed" and "we changed nothing" are the opposite of a fix.
+	negatedChangeRe = regexp.MustCompile(`(?i)\b(?:(?:not|never|won(?:'|’)?t)\s+(?:be\s+|going\s+to\s+(?:be\s+)?)?(?:fix(?:ed|ing)?|chang(?:ed|ing)|updated?|moved?|removed?)\b|(?:fixed|changed|moved|updated|removed) nothing\b)`)
+	deferRe         = regexp.MustCompile(`(?i)\b(?:out of scope|follow[- ]?up|later (?:pr|change|commit)|(?:separate|another|different|future|new|its own) (?:pr|ticket|change|issue)|not (?:touching|addressing|fixing|changing|doing) (?:it|this|that) here|(?:in|as) a ticket|track(?:s|ed|ing)? (?:it |this |that )?(?:separately|elsewhere))\b`)
+	// "not a separate issue" and "no follow-up needed" are the opposite; so
+	// are the verb "follow up with", a "follow-up commit" already pushed, and
+	// a deferral that ends in "fixed it here".
+	negatedDeferRe = regexp.MustCompile(`(?i)\b(?:(?:not|no|never|isn(?:'|’)?t|doesn(?:'|’)?t|don(?:'|’)?t|without)\b(?:\s+\w+){0,2}\s+(?:out of scope|follow[- ]?up|(?:separate|another|different|future|new) (?:pr|ticket|change|issue)|track(?:s|ed|ing)? (?:it |this |that )?(?:separately|elsewhere))|follow up (?:with|on|about)\b|follow[- ]?up (?:commit|push)\b|(?:fixed|done|addressed|handled|changed) (?:it |this |that )?(?:here|in this (?:pr|commit|branch))\b)`)
+	// A key counts when the author talks about it as a ticket (or links it),
+	// or leads a sentence with it ("PROJ-42 is the follow-up."); a bare GPT-4
+	// or COVID-19 in passing is not one.
+	ticketRe = regexp.MustCompile(`(?i)(?:\b(?:ticket|issue|jira|story|epic|track(?:s|ed|ing)?|filed|under|against|see|per|closes?|fixes|browse/|follow[- ]?up|scope|separate)\b:?[^.!?\n]{0,40}?|^\W*|[.!?;:]\s+)\b([A-Z][A-Z0-9]{1,9}-\d{1,6})\b`)
 	// Uppercase-dash-digits that are not issue keys.
-	notTicket  = map[string]bool{"SHA": true, "UTF": true, "ISO": true, "RFC": true, "MD": true, "AES": true, "HTTP": true, "TLS": true, "CVE": true, "PR": true, "UTC": true, "RSA": true, "ES": true, "HTML": true}
+	notTicket  = map[string]bool{"SHA": true, "UTF": true, "ISO": true, "RFC": true, "MD": true, "AES": true, "HTTP": true, "TLS": true, "CVE": true, "CWE": true, "PR": true, "UTC": true, "RSA": true, "ES": true, "HTML": true, "GPT": true, "COVID": true, "SOC": true, "WCAG": true, "ARM": true, "OWASP": true, "PCI": true, "OAUTH": true, "X": true, "IPV": true}
 	severityRe = regexp.MustCompile(`(?i)(?:\[(critical|high|medium|low)\]|alt="(critical|high|medium|low)")`)
-	// The finding-withdrawal clause only: the verb needs the finding as its
-	// object ("so withdrawing this", "I'll withdraw the finding"), or the
-	// sentence is nothing but "Withdrawn." A domain "withdraw funds" stays.
-	withdrawRe = regexp.MustCompile(`(?i)[,;]?\s*(?:(?:so|and|hence|therefore)\s+)?(?:(?:i|we)(?:'|’)?(?:ll| will|d| would)?\s+)?withdraw(?:ing)?\s+(?:this|it|the finding|the comment)\b(?:\s+as\s+[^.!?]*)?|[,;]?\s*(?:so\s+)?(?:the\s+)?finding\s+(?:is\s+|stands\s+)?withdrawn\b|^\W*withdraw(?:n|ing)\W*$`)
+	// The finding-withdrawal clause only. A bare "withdraw this/it" counts
+	// when it opens the sentence or a clause ("Withdrawing this, since",
+	// "..., so withdrawing this") or has a first-person subject ("I'll
+	// withdraw it"); "the finding"/"this comment" as the object counts
+	// anywhere. A domain "customers can withdraw it" stays. The "as ..." tail
+	// is a closed list so it cannot eat the sentence that follows.
+	withdrawRe = regexp.MustCompile(`(?i)(?:(?:^\W*|[,;]\s*)(?:(?:so|and|hence|therefore)\s+)?(?:` + firstPerson + `\s+)?|\b` + firstPerson + `\s+)withdraw(?:ing|n)?\s+(?:(?:the|this|my)\s+(?:finding|comment)|this|it)\b` + withdrawTail + `|\bwithdraw(?:ing|n)?\s+(?:the|this|my)\s+(?:finding|comment)\b` + withdrawTail + `|[,;]?\s*(?:so\s+)?(?:the\s+)?finding\s+(?:is\s+|stands\s+)?withdrawn\b|^\W*withdraw(?:n|ing)\W*$`)
 	evidenceRe = regexp.MustCompile(`[\w./-]+:\d+|\bline \d+`)
 	// A sentence ends at terminal punctuation followed by whitespace, so the
-	// dots in retry.go:41 do not split it.
-	sentenceRe = regexp.MustCompile(`.*?[.!?]+["')\]]*(?:\s+|$)|.+$`)
+	// dots in retry.go:41 do not split it; a wrapped line is one sentence.
+	sentenceRe = regexp.MustCompile(`(?s).*?[.!?]+["')\]]*(?:\s+|$)|.+$`)
 	trackingRe = regexp.MustCompile(`\sTracking this against [A-Z][A-Z0-9]{1,9}-\d{1,6}\.$`)
 	// The idempotency guards match an actual ask, not the words in passing:
 	// "the issue key on cache.go:12" and "the description column" are evidence.
@@ -99,10 +127,16 @@ var (
 	descAskRe   = regexp.MustCompile(`(?i)\baccepted risk\b|\bpr description\b`)
 )
 
+const (
+	firstPerson  = `(?:i|we)(?:(?:'|’)(?:ll|d|m|re|ve)|\s+(?:will|would|am|are|have|can|should))?`
+	withdrawTail = `(?:\s+as\s+(?:intended(?:\s+behaviou?r)?|(?:a\s+)?(?:product|design)\s+(?:decision|call|choice)|by\s+design|your\s+call|not\s+a\s+bug))?`
+)
+
 // AssertsIntent reports an author reply that defends the behavior as
 // deliberate without describing a code change.
 func AssertsIntent(comment string) bool {
-	return intentRe.MatchString(comment) && !negatedIntentRe.MatchString(comment) && !changeRe.MatchString(comment)
+	changed := changeRe.MatchString(comment) && !negatedChangeRe.MatchString(comment)
+	return intentRe.MatchString(comment) && !negatedIntentRe.MatchString(comment) && !changed
 }
 
 // Defers reports an author reply that sends the fix elsewhere: out of scope,
@@ -158,68 +192,99 @@ func Note(ctx Context) string {
 // Render applies the posting conventions to a reply body: no agreement
 // formula opener; no withdrawal when the author asserted intent (and, at
 // medium severity or above, the accepted-risk question); the ticket key
-// repeated or asked for when the author deferred the fix. ok is false when
-// nothing postable remains. Rendering an already rendered body is a no-op.
+// repeated or asked for when the author deferred the fix. An answer to the
+// author's question is left as written: a leading "Yes" is the answer there.
+// ok is false when nothing postable remains. Rendering an already rendered
+// body is a no-op.
 func Render(body string, ctx Context) (out string, ok bool) {
-	out, ok = StripAgreementOpener(body)
+	paragraph, appendix, ok := RenderParts(body, ctx)
+	return paragraph + appendix, ok
+}
+
+// RenderParts is Render with the model's paragraph and the sentences the
+// renderer appended returned separately, so a length cap can apply to the
+// paragraph alone.
+func RenderParts(body string, ctx Context) (paragraph, appendix string, ok bool) {
+	if ctx.Decision == "answer" {
+		paragraph = strings.TrimSpace(body)
+		return paragraph, "", paragraph != ""
+	}
+	paragraph, ok = StripAgreementOpener(body)
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 	if Note(ctx) == NoteIntentAcknowledged {
-		out, ok = dropWithdrawal(out)
+		paragraph, ok = dropWithdrawal(paragraph)
 		if !ok {
-			return "", false
+			return "", "", false
 		}
-		if SeverityAtLeastMedium(FindingSeverity(ctx.FindingBody)) && !descAskRe.MatchString(out) {
-			out = out + " " + riskAskBare
+		// Removing a leading withdrawal sentence can expose an opener.
+		if paragraph, ok = StripAgreementOpener(paragraph); !ok {
+			return "", "", false
+		}
+		if SeverityAtLeastMedium(FindingSeverity(ctx.FindingBody)) && !descAskRe.MatchString(paragraph) {
+			appendix += " " + riskAskBare
 		}
 	}
 	if Defers(ctx.AuthorComment) {
 		keys := TicketKeys(ctx.AuthorComment)
 		switch {
-		case len(keys) > 0 && !strings.Contains(out, keys[0]):
-			out = out + " Tracking this against " + keys[0] + "."
-		case len(keys) == 0 && len(TicketKeys(out)) == 0 && !ticketAskRe.MatchString(out):
-			out = out + " " + TicketAsk
+		case len(keys) > 0 && !containsAny(paragraph, keys):
+			appendix += " Tracking this against " + keys[0] + "."
+		case len(keys) == 0 && len(TicketKeys(paragraph)) == 0 && !ticketAskRe.MatchString(paragraph):
+			appendix += " " + TicketAsk
 		}
 	}
-	return out, true
+	return paragraph, appendix, true
 }
 
-// AppendixLen is the rune count of the sentences Render appended to the end
-// of body, so a length cap can apply to the model's paragraph alone.
-func AppendixLen(body string) int {
-	n := 0
-	for {
-		switch {
-		case strings.HasSuffix(body, " "+TicketAsk):
-			body = strings.TrimSuffix(body, " "+TicketAsk)
-			n += len([]rune(" " + TicketAsk))
-		case trackingRe.MatchString(body):
-			m := trackingRe.FindString(body)
-			body = strings.TrimSuffix(body, m)
-			n += len([]rune(m))
-		case strings.HasSuffix(body, " "+riskAskBare):
-			body = strings.TrimSuffix(body, " "+riskAskBare)
-			n += len([]rune(" " + riskAskBare))
-		default:
-			return n
+func containsAny(s string, subs []string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
 		}
 	}
+	return false
+}
+
+// AppendixLen is the rune count of the renderer's sentences at the end of a
+// body rendered by an earlier step, when the step that appended them is not
+// around to say. It reads the text, so a model that wrote the exact ticket
+// ask itself is credited for it too; each sentence counts at most once.
+func AppendixLen(body string) int {
+	n := 0
+	if m := trackingRe.FindString(body); m != "" {
+		body = strings.TrimSuffix(body, m)
+		n += len([]rune(m))
+	} else if strings.HasSuffix(body, " "+TicketAsk) {
+		body = strings.TrimSuffix(body, " "+TicketAsk)
+		n += len([]rune(" " + TicketAsk))
+	}
+	if strings.HasSuffix(body, " "+riskAskBare) {
+		n += len([]rune(" " + riskAskBare))
+	}
+	return n
 }
 
 // dropWithdrawal removes the withdrawal clause and any sentence that was
 // nothing else. What remains must still put a consequence on the record: a
-// body with no file:line left is not postable on the intent path.
+// body with no file:line left is not postable on the intent path. Sentences
+// the clause removal did not touch are kept as written.
 func dropWithdrawal(body string) (string, bool) {
 	var kept []string
 	for _, s := range sentenceRe.FindAllString(body, -1) {
-		s = strings.TrimSpace(withdrawRe.ReplaceAllString(s, ""))
-		if strings.Trim(s, ".,;:!? ") == "" {
+		s = strings.TrimSpace(s)
+		cut := strings.TrimSpace(withdrawRe.ReplaceAllString(s, ""))
+		if cut == s {
+			kept = append(kept, s)
 			continue
 		}
-		s = strings.TrimSpace(strings.TrimRight(s, ",;: ")) + strings.TrimLeft(lastPunct(s), " ")
-		kept = append(kept, capitalize(s))
+		cut = strings.TrimSpace(strings.TrimLeft(cut, ",;: "))
+		if strings.Trim(cut, ".,;:!? ") == "" {
+			continue
+		}
+		cut = strings.TrimSpace(strings.TrimRight(cut, ",;: ")) + lastPunct(cut)
+		kept = append(kept, capitalize(cut))
 	}
 	out := strings.Join(kept, " ")
 	if len(kept) == 0 || !evidenceRe.MatchString(out) {
@@ -228,9 +293,11 @@ func dropWithdrawal(body string) (string, bool) {
 	return out, true
 }
 
-// lastPunct is the sentence's terminal punctuation, or a period when the
+// lastPunct is empty when the sentence still ends in terminal punctuation
+// (a closing quote or bracket after it included), or a period when the
 // clause removal took it away.
 func lastPunct(s string) string {
+	s = strings.TrimRight(s, `"')]`)
 	if strings.HasSuffix(s, ".") || strings.HasSuffix(s, "!") || strings.HasSuffix(s, "?") {
 		return ""
 	}

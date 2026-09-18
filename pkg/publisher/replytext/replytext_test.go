@@ -25,6 +25,13 @@ func TestStripAgreementOpener(t *testing.T) {
 		{"I agree. The guard on a.go:1 runs first.", "The guard on a.go:1 runs first.", true},
 		{"I think you're right, the guard on a.go:1 runs first.", "The guard on a.go:1 runs first.", true},
 		{"I agreed to the design in a.go:1 last week.", "I agreed to the design in a.go:1 last week.", true},
+		{"right.go:41 rejects nil before parsing.", "right.go:41 rejects nil before parsing.", true},
+		{"nil is rejected by parse.go:12.", "nil is rejected by parse.go:12.", true},
+		{"You're right.The guard on a.go:1 runs.", "You're right.The guard on a.go:1 runs.", true},
+		{"Correct — retry.go:41 now returns before the call.", "retry.go:41 now returns before the call.", true},
+		{"Correct, so long as the caller on a.go:12 holds the lock, this is safe.", "So long as the caller on a.go:12 holds the lock, this is safe.", true},
+		{"Right, so far the only caller is on b.go:7.", "So far the only caller is on b.go:7.", true},
+		{"Yes, and yet a.go:12 still dereferences first.", "And yet a.go:12 still dereferences first.", true},
 		{"You're right.", "", false},
 		{"Agreed, good point.", "", false},
 		{"   ", "", false},
@@ -46,8 +53,17 @@ func TestAssertsIntent(t *testing.T) {
 		"This is intentional; nothing changed, keeping it as-is.",
 		"This was added intentionally and is staying as-is.",
 		"Defaced input is rejected on purpose; the commit message explains why.",
+		"This commit intentionally keeps the behavior as-is.",
+		"This is intentional; we changed nothing.",
+		"This is intentional and will not be fixed.",
 	}
 	no := []string{
+		"I don't think this is by design.",
+		"I didn't do this on purpose.",
+		"Not sure this was intentional.",
+		"That is not a design choice; it is a bug.",
+		"This was intentional, but I’ll fix it.",
+		"Guard added on a.go:12, this now works as intended.",
 		"This was not intentional; I will fix it.",
 		"This is not intended behavior, it is a bug.",
 		"It wasn't by design, fixing now.",
@@ -77,6 +93,8 @@ func TestDefersAndTicketKeys(t *testing.T) {
 		"Will do this in a follow-up.",
 		"Belongs in a separate PR.",
 		"Tracking it separately in PROJ-42.",
+		"PROJ-42 is the follow-up.",
+		"I'll fix it in a follow-up PR.",
 	}
 	for _, s := range yes {
 		if !Defers(s) {
@@ -87,6 +105,11 @@ func TestDefersAndTicketKeys(t *testing.T) {
 		"Fixed in 519f006, the guard is now on line 77.",
 		"This is not a separate issue; it is fixed here.",
 		"No follow-up is needed, the guard covers it.",
+		"I'll follow up with the team on naming.",
+		"Fixed in a follow-up commit, see 519f006.",
+		"We are not tracking this separately; the fix is here.",
+		"This was previously out of scope, but I fixed it in this PR.",
+		"I don't think this needs a follow-up; it should be fixed here.",
 	} {
 		if Defers(s) {
 			t.Errorf("should not defer: %q", s)
@@ -99,9 +122,14 @@ func TestDefersAndTicketKeys(t *testing.T) {
 	if got := TicketKeys("Out of scope: ticket XO-291 owns the bridge, see https://example.test/browse/XO-291."); len(got) != 1 || got[0] != "XO-291" {
 		t.Errorf("keys = %v", got)
 	}
-	for _, s := range []string{"no keys here, just retry.go:41", "GPT-4 handles it in a follow-up.", "The COVID-19 banner is out of scope."} {
+	for _, s := range []string{"no keys here, just retry.go:41", "GPT-4 handles it in a follow-up.", "The COVID-19 banner is out of scope.", "Out of scope; see ARM-64 requirements.", "Out of scope, see CWE-79."} {
 		if got := TicketKeys(s); got != nil {
 			t.Errorf("%q: keys = %v", s, got)
+		}
+	}
+	for _, s := range []string{"PROJ-42 is the follow-up.", "PROJ-42 tracks this separately.", "This belongs in a separate PR. PROJ-42."} {
+		if got := TicketKeys(s); len(got) != 1 || got[0] != "PROJ-42" {
+			t.Errorf("a key that leads the sentence counts: %q keys = %v", s, got)
 		}
 	}
 }
@@ -175,6 +203,72 @@ func TestRenderIntentPushbackAcknowledgesAndRecordsWithoutWithdrawing(t *testing
 	}
 }
 
+func TestRenderIntentPushbackRemovesTheWholeWithdrawalClause(t *testing.T) {
+	ctx := Context{AuthorComment: "This is intentional, keeping as is.", FindingBody: "**[MEDIUM] x**", Decision: "concede"}
+	cases := map[string]string{
+		"That is your call. a.go:12 returns 500 on a nil body. I'm withdrawing this.":                                      "That is your call. a.go:12 returns 500 on a nil body.",
+		"Your call, I am withdrawing this. a.go:12 returns 500.":                                                           "Your call. a.go:12 returns 500.",
+		"a.go:12 returns 500; we’re withdrawing this.":                                                                     "a.go:12 returns 500.",
+		"Your call. a.go:12 returns 500. We have withdrawn this.":                                                          "Your call. a.go:12 returns 500.",
+		"Your call. a.go:12 returns 500. I'll withdraw this finding.":                                                      "Your call. a.go:12 returns 500.",
+		"Your call. a.go:12 returns 500 on a nil body; hence I withdraw the comment.":                                      "Your call. a.go:12 returns 500 on a nil body.",
+		"Withdrawing this, since a.go:12 already returns 400.":                                                             "Since a.go:12 already returns 400.",
+		"Your call; withdrawing this as intended, though auth.go:12 still returns 500.":                                    "Your call, though auth.go:12 still returns 500.",
+		"a.go:12 returns 500 on a nil body, so withdrawing this as intended behavior, though the toast on x.tsx:82 stays.": "a.go:12 returns 500 on a nil body, though the toast on x.tsx:82 stays.",
+		"Withdrawing this. You're right, a.go:12 still accepts nil.":                                                       "a.go:12 still accepts nil.",
+	}
+	for in, want := range cases {
+		got, ok := Render(in, ctx)
+		if !ok || got != want+" "+riskAskBare {
+			t.Errorf("%q:\n got  %q ok=%t\n want %q", in, got, ok, want+" "+riskAskBare)
+		}
+		if again, _ := Render(got, ctx); again != got {
+			t.Errorf("render is not idempotent for %q: %q", in, again)
+		}
+	}
+	for _, domain := range []string{
+		"At payments.go:12, customers can withdraw it before authorization, leaving the balance negative.",
+		"Keeping it means the balance can go negative when a user is withdrawing it on payments.go:12 before the check.",
+		"Keeping it lets a user withdraw this amount twice on payments.go:12.",
+	} {
+		if got, _ := Render(domain, ctx); got != domain+" "+riskAskBare {
+			t.Errorf("a pronoun object in domain prose is not a withdrawal: %q", got)
+		}
+	}
+}
+
+func TestRenderIntentPushbackKeepsUntouchedSentencesAsWritten(t *testing.T) {
+	ctx := Context{AuthorComment: "This is intentional, keeping as is.", FindingBody: "**[MEDIUM] x**", Decision: "concede"}
+	for _, body := range []string{
+		"Your call. Requests without a body\nreach parse.go:12 and return 500.",
+		"That is the product call. U.S. users still receive a 500 from api.go:12.",
+		"The handler on a.go:12 returns 500, i.e. the client sees a server error.",
+		"Your call. parse.go:12 rejects invalid inputs, e.g. nil.",
+		`The message at api.go:12 is "retry."`,
+	} {
+		if got, _ := Render(body, ctx); got != body+" "+riskAskBare {
+			t.Errorf("got  %q\nwant %q", got, body+" "+riskAskBare)
+		}
+	}
+	got, _ := Render("The handler on a.go:12 returns 500, i.e. the client sees a server error. Withdrawing this.", ctx)
+	if !strings.HasPrefix(got, "The handler on a.go:12 returns 500, i.e. the client sees a server error. Should this") {
+		t.Errorf("an abbreviation is not a sentence boundary: %q", got)
+	}
+}
+
+func TestRenderLeavesAnAnswerAsWritten(t *testing.T) {
+	for _, author := range []string{"Does the guard run first?", "Would a follow-up change the behavior?"} {
+		ctx := Context{AuthorComment: author, Decision: "answer"}
+		body := "Yes, the guard on retry.go:41 runs before the branch."
+		if got, ok := Render(body, ctx); !ok || got != body {
+			t.Errorf("%q: got %q ok=%t", author, got, ok)
+		}
+	}
+	if _, ok := Render("  ", Context{Decision: "answer"}); ok {
+		t.Errorf("an empty answer is not postable")
+	}
+}
+
 func TestRenderIntentPushbackBelowMediumDoesNotAskAboutAcceptedRisk(t *testing.T) {
 	ctx := Context{AuthorComment: "Intentional, keeping as is.", FindingBody: "**[LOW] Log line is noisy.**", Decision: "concede"}
 	got, _ := Render("Your call. The line at log.go:12 prints once per request at info level.", ctx)
@@ -205,6 +299,17 @@ func TestAppendixLenCountsOnlyWhatRenderAppended(t *testing.T) {
 	if AppendixLen(withKey) != len([]rune(" Tracking this against PROJ-42.")) {
 		t.Errorf("got %q appendix=%d", withKey, AppendixLen(withKey))
 	}
+	paragraph, appendix, ok := RenderParts(body, ctx)
+	if !ok || paragraph != body || appendix != " "+riskAskBare+" "+TicketAsk {
+		t.Errorf("paragraph=%q appendix=%q ok=%t", paragraph, appendix, ok)
+	}
+	if _, appendix, _ := RenderParts(body+" "+TicketAsk, Context{AuthorComment: "Out of scope, follow-up.", Decision: "hold"}); appendix != "" {
+		t.Errorf("an ask the model wrote is part of its paragraph: appendix=%q", appendix)
+	}
+	repeated := body + strings.Repeat(" "+TicketAsk, 8)
+	if AppendixLen(repeated) != len([]rune(" "+TicketAsk)) {
+		t.Errorf("each appended sentence counts once: %d", AppendixLen(repeated))
+	}
 }
 
 func TestRenderDeferralAsksForOrRepeatsTheTicketKey(t *testing.T) {
@@ -224,6 +329,10 @@ func TestRenderDeferralAsksForOrRepeatsTheTicketKey(t *testing.T) {
 	got, _ = Render(body+" PROJ-42 can carry it.", Context{AuthorComment: "Out of scope here, tracked in PROJ-42.", Decision: "hold"})
 	if strings.Count(got, "PROJ-42") != 1 {
 		t.Errorf("key must not be repeated twice: %q", got)
+	}
+	got, _ = Render(body+" Tracked in API-20.", Context{AuthorComment: "Out of scope for ticket API-10; follow-up is API-20.", Decision: "hold"})
+	if strings.Contains(got, "API-10") || strings.Count(got, "API-20") != 1 {
+		t.Errorf("a key the reply already names is the tracking key: %q", got)
 	}
 	got, _ = Render(body, Context{AuthorComment: "Fixed in 519f006.", Decision: "concede"})
 	if got != body {
