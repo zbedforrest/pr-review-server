@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PR } from '@/types/pr';
 import { ReviewLinkMenu } from './ReviewLinkMenu';
@@ -209,6 +209,10 @@ describe('ReviewLinkMenu profile and cost', () => {
           profile_label: 'Lite',
           models: [
             {
+              stage: 'first_pass', provider: 'openrouter', requested_model: 'openai/gpt-5.6-sol',
+              serving_model_verified: false, fallback: false, cost_usd: 0.1,
+            },
+            {
               stage: 'agent', provider: 'anthropic', backend: 'claude', requested_model: 'claude-fable-5-1',
               served_model: 'claude-fable-5-1', serving_model_verified: true, fallback: false, cost_usd: 0.4321,
             },
@@ -218,7 +222,8 @@ describe('ReviewLinkMenu profile and cost', () => {
     });
     openMenu();
     const meta = screen.getByLabelText('Review profile');
-    expect(meta.textContent).toBe('Profile Lite · $0.43');
+    expect(meta.textContent).toBe('Profile Lite · $0.53');
+    expect(within(meta).getByText('$0.53').getAttribute('title')).toContain('all stages');
     expect(screen.getByLabelText('Models used').textContent).toContain('claude-fable-5-1');
   });
 

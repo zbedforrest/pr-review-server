@@ -107,7 +107,9 @@ export function GenerateSplitButton({ onGenerate, pending, publishAllowed }: Gen
               onClick={() => choose(publishAllowed, choice.profile)}
             >
               <span className="generate-split__item-title">{choice.title}</span>
-              <span className="generate-split__item-desc">{choice.description}</span>
+              <span className="generate-split__item-desc">
+                {choice.description}; {publishAllowed ? 'posted to the PR' : 'dashboard only'}
+              </span>
             </button>
           ))}
         </div>,

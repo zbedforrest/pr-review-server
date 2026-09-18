@@ -103,6 +103,6 @@ export interface GenerateReviewResponse {
 // source: "form" marks a deliberate paste into the dashboard's URL input —
 // the only origin that claims the PR into the Requested by Me section.
 // API/skill callers omit it and stay off the requester's dashboard.
-export async function generateReview(params: TriggerReviewParams): Promise<GenerateReviewResponse> {
+export async function generateReview(params: Omit<TriggerReviewParams, 'profile'>): Promise<GenerateReviewResponse> {
   return apiPost<GenerateReviewResponse>('/api/prs/generate-review', { ...reviewRequestBody(params), source: 'form' });
 }

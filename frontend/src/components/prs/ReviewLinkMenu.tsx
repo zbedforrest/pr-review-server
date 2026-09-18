@@ -221,7 +221,7 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending, 
               <div className="review-menu__meta review-menu__profile" aria-label="Review profile">
                 {profileLabel && <span title={profileLabel}>Profile {profileLabel}</span>}
                 {profileLabel && totalCost > 0 && ' · '}
-                {totalCost > 0 && <span title="Provider-reported cost of the agent stage">{formatCost(totalCost)}</span>}
+                {totalCost > 0 && <span title="Provider-reported cost of this review run, all stages">{formatCost(totalCost)}</span>}
               </div>
             )}
             {modelUses.length > 0 && (
