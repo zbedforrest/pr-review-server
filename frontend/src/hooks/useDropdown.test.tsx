@@ -235,6 +235,32 @@ describe('useDropdown', () => {
     }
   });
 
+  it('recomputes when the open panel is resized', () => {
+    let callback: ResizeObserverCallback | null = null;
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: ResizeObserverCallback) { callback = cb; }
+      observe = observe;
+      disconnect = disconnect;
+      unobserve = vi.fn();
+    });
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect');
+    try {
+      const { getByTestId, unmount } = render(<Harness options={{ panelWidth: 200 }} />);
+      fireEvent.click(getByTestId('trigger'));
+      expect(observe).toHaveBeenCalledWith(getByTestId('panel'));
+      const before = rectSpy.mock.calls.length;
+      act(() => callback!([], {} as ResizeObserver));
+      expect(rectSpy.mock.calls.length).toBeGreaterThan(before);
+      unmount();
+      expect(disconnect).toHaveBeenCalled();
+    } finally {
+      rectSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('unmounts cleanly with listeners attached', () => {
     const { getByTestId, unmount } = render(
       <Harness options={{ panelWidth: 200, closeOnEscape: true, closeOnOutsideClick: true }} />

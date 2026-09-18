@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import type { APIError } from '@/api/client';
+import { APIError } from '@/api/client';
 import type { QuickAction } from '@/api/prActions';
 import type { PR } from '@/types/pr';
 import { QUICK_ACTION_BODY_MAX, QUICK_ACTION_COUNTER_THRESHOLD, QUICK_ACTION_COPY, quickActionErrorMessage, shortSha } from './quickActionCopy';
@@ -12,7 +12,7 @@ interface QuickActionDialogProps {
   login: string | undefined;
   onSubmit: (body: string, expectedHeadSha: string) => void;
   pending: boolean;
-  error: APIError | null;
+  error: Error | null;
   /** New head sha reported by a 409 head_moved; switches the dialog to confirm-and-resubmit. */
   headMovedTo?: string;
   onClose: () => void;
@@ -42,11 +42,15 @@ export function QuickActionDialog({
   // The head the user saw when the dialog opened; a row refresh must not
   // retarget the review, only an explicit head-moved confirmation may.
   const [openedSha] = useState(pr.commit_sha);
+  // pending only flips after the mutation rerenders, so a double click or a
+  // repeated Ctrl+Enter could post twice with fresh request ids.
+  const submitLock = useRef(false);
 
   const movedTo = headMovedTo && headMovedTo !== openedSha ? headMovedTo : undefined;
   const expectedHeadSha = movedTo ?? openedSha;
   const canSubmit = !pending && (!copy.requiresBody || body.trim() !== '');
-  const showError = error !== null && !(error.code === 'head_moved' && movedTo);
+  const errorCode = error instanceof APIError ? error.code : undefined;
+  const showError = error !== null && !(errorCode === 'head_moved' && movedTo);
   const prLabel = `${pr.owner}/${pr.repo} #${pr.number}`;
   const prUrl = `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
 
@@ -60,8 +64,13 @@ export function QuickActionDialog({
     return () => ref?.current?.focus();
   }, [returnFocusRef]);
 
+  useEffect(() => {
+    if (!pending) submitLock.current = false;
+  });
+
   const submit = useCallback(() => {
-    if (!canSubmit) return;
+    if (!canSubmit || submitLock.current) return;
+    submitLock.current = true;
     onSubmit(body, expectedHeadSha);
   }, [canSubmit, onSubmit, body, expectedHeadSha]);
 
@@ -159,7 +168,7 @@ export function QuickActionDialog({
         {showError && (
           <div className="error-message quick-action-dialog__error" role="alert">
             {quickActionErrorMessage(action, error)}{' '}
-            {error.code === 'reauth_required' ? (
+            {errorCode === 'reauth_required' ? (
               <a className="quick-action-dialog__error-link" href="/login">Sign in ↗</a>
             ) : (
               <a className="quick-action-dialog__error-link" href={prUrl} target="_blank" rel="noopener noreferrer">

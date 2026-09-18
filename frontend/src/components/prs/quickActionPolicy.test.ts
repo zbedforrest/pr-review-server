@@ -53,7 +53,7 @@ describe('quickActionAvailability', () => {
   it('disables approve on a draft but allows request changes and comment', () => {
     const a = quickActionAvailability(makePR({ draft: true }), enabledUser, true);
     expect(a.approve.enabled).toBe(false);
-    expect(a.approve.reason).toBe('Draft PR: approve needs PRism and Greptile green on this head (PRism and Greptile are not green)');
+    expect(a.approve.reason).toBe('Draft PR: approve needs PRism and Greptile green on this head (PRism and Greptile not green)');
     expect(a.request_changes.enabled).toBe(true);
     expect(a.comment.enabled).toBe(true);
   });
@@ -73,13 +73,19 @@ describe('quickActionAvailability', () => {
       enabledUser,
       true
     );
-    expect(a.approve.reason).toContain('(PRism is not green)');
+    expect(a.approve.reason).toContain('(PRism not green)');
+    const stale = quickActionAvailability(
+      makePR({ draft: true, status: 'pending', review_verdict: 'approve', greptile_status: 'green' }),
+      enabledUser,
+      true
+    );
+    expect(stale.approve.reason).toContain('(PRism not green)');
     const critical = quickActionAvailability(
       makePR({ draft: true, review_verdict: 'approve', critical_count: 1, greptile_status: 'green' }),
       enabledUser,
       true
     );
-    expect(critical.approve.reason).toContain('(PRism is not green)');
+    expect(critical.approve.reason).toContain('(PRism not green)');
   });
 
   it('names Greptile when only PRism is green on a draft', () => {
@@ -89,7 +95,7 @@ describe('quickActionAvailability', () => {
         enabledUser,
         true
       );
-      expect(a.approve.reason).toContain('(Greptile is not green)');
+      expect(a.approve.reason).toContain('(Greptile not green)');
     }
   });
 

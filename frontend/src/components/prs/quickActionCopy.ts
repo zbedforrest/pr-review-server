@@ -35,7 +35,7 @@ export function quickActionErrorMessage(action: QuickAction, error: APIError | E
         ? 'GitHub does not allow requesting changes on your own PR.'
         : 'GitHub does not allow approving your own PR.';
     case 'no_permission':
-      return 'Your GitHub account cannot review this repository.';
+      return error.message || 'Your GitHub account cannot review this repository.';
     case 'reauth_required':
       return 'Your GitHub authorization expired. Sign in again.';
     case 'pr_closed':
@@ -45,7 +45,7 @@ export function quickActionErrorMessage(action: QuickAction, error: APIError | E
     case 'pr_unknown':
       return 'PRism no longer tracks this PR.';
     case 'draft_not_green':
-      return 'Draft PR: approve needs PRism and Greptile green on this head.';
+      return error.message || 'Draft PR: approve needs PRism and Greptile green on this head.';
     case 'duplicate':
       return 'This action was just submitted; check the PR on GitHub before retrying.';
     case 'rate_limited': {

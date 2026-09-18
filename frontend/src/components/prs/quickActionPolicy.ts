@@ -21,16 +21,20 @@ export const CLIPBOARD_UNAVAILABLE_REASON = 'Clipboard unavailable';
 const ok: QuickActionAvailability = { enabled: true };
 const off = (reason: string): QuickActionAvailability => ({ enabled: false, reason });
 
+// Mirrors the server's draft gate, which answers 422 draft_not_green with the
+// same wording when a stale row disagrees.
 export function isGreenForDraftApprove(pr: PR): { prism: boolean; greptile: boolean } {
   const prism =
-    (pr.review_verdict === 'approve' || pr.review_verdict === 'approve_suggestions') && pr.critical_count === 0;
+    pr.status === 'completed' &&
+    (pr.review_verdict === 'approve' || pr.review_verdict === 'approve_suggestions') &&
+    pr.critical_count === 0;
   return { prism, greptile: pr.greptile_status === 'green' };
 }
 
 function draftApproveReason(pr: PR): string | null {
   const { prism, greptile } = isGreenForDraftApprove(pr);
   if (prism && greptile) return null;
-  const notGreen = !prism && !greptile ? 'PRism and Greptile are' : !prism ? 'PRism is' : 'Greptile is';
+  const notGreen = !prism && !greptile ? 'PRism and Greptile' : !prism ? 'PRism' : 'Greptile';
   return `Draft PR: approve needs PRism and Greptile green on this head (${notGreen} not green)`;
 }
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
-import type { APIError } from '@/api/client';
+import { APIError } from '@/api/client';
 import type { QuickAction } from '@/api/prActions';
 import type { CurrentUser } from '@/api/user';
 import type { PR } from '@/types/pr';
@@ -29,7 +29,8 @@ export interface QuickActionsWiring {
   /** Called whenever the dialog closes so the owner can reset mutation state. */
   onDialogClose: () => void;
   pending: boolean;
-  error: APIError | null;
+  /** Last failure, including plain fetch errors (offline, aborted). */
+  error: Error | null;
 }
 
 interface RowActionsMenuProps {
@@ -248,7 +249,9 @@ export function RowActionsMenu({
   }, [dialogAction, quickActions, closeDialog]);
 
   const verb = hasReview ? 'Regenerate' : 'Generate';
-  const headMovedTo = quickActions?.error?.code === 'head_moved' ? quickActions.error.details?.head_sha : undefined;
+  const quickError = quickActions?.error;
+  const headMovedTo =
+    quickError instanceof APIError && quickError.code === 'head_moved' ? quickError.details?.head_sha : undefined;
 
   return (
     <>
@@ -321,7 +324,7 @@ export function RowActionsMenu({
                   onCopyLink={quickActions.onCopyLink}
                   onClose={handleLeafClose}
                   inline={leafInline}
-                  style={{ top: leafPosition.top, left: leafPosition.left }}
+                  style={{ top: leafPosition.top, left: leafPosition.left, maxHeight: leafPosition.maxHeight }}
                   onMouseEnter={cancelLeafClose}
                   onMouseLeave={scheduleLeafClose}
                 />

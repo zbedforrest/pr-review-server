@@ -165,15 +165,20 @@ export function useDropdown(options: UseDropdownOptions): UseDropdownResult {
     if (isOpen) recompute();
   }, [isOpen, recompute]);
 
-  // Keep the panel glued to the anchor while open.
+  // Keep the panel glued to the anchor while open, and re-clamp when the
+  // panel itself grows (an inline submenu expanding inside it).
   useEffect(() => {
     if (!isOpen) return;
     const onReflow = () => recompute();
     window.addEventListener('scroll', onReflow, true);
     window.addEventListener('resize', onReflow);
+    const observer =
+      typeof ResizeObserver !== 'undefined' && panelRef.current ? new ResizeObserver(onReflow) : null;
+    if (observer && panelRef.current) observer.observe(panelRef.current);
     return () => {
       window.removeEventListener('scroll', onReflow, true);
       window.removeEventListener('resize', onReflow);
+      observer?.disconnect();
     };
   }, [isOpen, recompute]);
 

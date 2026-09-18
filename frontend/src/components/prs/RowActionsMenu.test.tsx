@@ -387,6 +387,15 @@ describe('RowActionsMenu quick actions', () => {
     expect(screen.getByRole('button', { name: 'Approve def5678' })).toBeTruthy();
   });
 
+  it('shows a plain fetch failure in the dialog', () => {
+    const error = new TypeError('Failed to fetch');
+    renderMenu({ quickActions: makeWiring({ onSubmit: vi.fn(() => Promise.reject(error)), error }) });
+    openMenu();
+    fireEvent.click(quickItem());
+    fireEvent.click(approveItem());
+    expect(screen.getByRole('alert').textContent).toContain('GitHub returned an error: Failed to fetch');
+  });
+
   it('disabled Approve carries the own-PR title', () => {
     renderMenu({ pr: makePR({ is_mine: true }), quickActions: makeWiring() });
     openMenu();

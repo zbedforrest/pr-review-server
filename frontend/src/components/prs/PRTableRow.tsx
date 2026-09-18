@@ -133,7 +133,7 @@ export const PRTableRow = memo(function PRTableRow({
       onCopyLink: trackCopyLink,
       onDialogClose: quickActionMutation.reset,
       pending: quickActionMutation.isPending,
-      error: quickActionMutation.error instanceof APIError ? quickActionMutation.error : null,
+      error: quickActionMutation.error ?? null,
     };
   }, [currentUser, submitQuickAction, openOnGitHub, prUrl, trackCopyLink, quickActionMutation.reset, quickActionMutation.isPending, quickActionMutation.error]);
 

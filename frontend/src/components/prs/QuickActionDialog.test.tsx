@@ -88,14 +88,28 @@ describe('QuickActionDialog', () => {
     expect(primary(/^Comment$/).disabled).toBe(true);
   });
 
-  it('Ctrl+Enter and Cmd+Enter submit', () => {
-    const { props } = renderDialog({ action: 'comment' });
+  it('Ctrl+Enter and Cmd+Enter submit, plain Enter does not', () => {
+    const { props, view } = renderDialog({ action: 'comment' });
     fireEvent.change(textarea(), { target: { value: 'nit' } });
     fireEvent.keyDown(textarea(), { key: 'Enter', ctrlKey: true });
     expect(props.onSubmit).toHaveBeenCalledTimes(1);
+    view.rerender(<QuickActionDialog {...props} pending={true} />);
+    view.rerender(<QuickActionDialog {...props} pending={false} />);
     fireEvent.keyDown(textarea(), { key: 'Enter', metaKey: true });
     expect(props.onSubmit).toHaveBeenCalledTimes(2);
     fireEvent.keyDown(textarea(), { key: 'Enter' });
+    expect(props.onSubmit).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a second submit before the pending state has rendered', () => {
+    const { props, view } = renderDialog();
+    fireEvent.click(primary(/^Approve$/));
+    fireEvent.click(primary(/^Approve$/));
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Enter', ctrlKey: true });
+    expect(props.onSubmit).toHaveBeenCalledTimes(1);
+    view.rerender(<QuickActionDialog {...props} pending={true} />);
+    view.rerender(<QuickActionDialog {...props} pending={false} error={new APIError('no', 403, 'Forbidden', 'no_permission')} />);
+    fireEvent.click(primary(/^Approve$/));
     expect(props.onSubmit).toHaveBeenCalledTimes(2);
   });
 
@@ -174,10 +188,10 @@ describe('QuickActionDialog', () => {
 
   it('maps every error code to its copy and links sign-in for reauth', () => {
     const cases: [string, RegExp][] = [
-      ['no_permission', /cannot review this repository/],
+      ['no_permission', /^boom/],
       ['reauth_required', /authorization expired/],
       ['pr_closed', /closed on GitHub/],
-      ['draft_not_green', /PRism and Greptile green/],
+      ['draft_not_green', /^boom/],
       ['github_error', /GitHub returned an error: boom/],
     ];
     for (const [code, re] of cases) {
@@ -185,14 +199,20 @@ describe('QuickActionDialog', () => {
       expect(screen.getByRole('alert').textContent).toMatch(re);
       cleanup();
     }
+    renderDialog({ error: new APIError('', 403, 'Forbidden', 'no_permission') });
+    expect(screen.getByRole('alert').textContent).toContain('cannot review this repository');
+    cleanup();
+    renderDialog({ error: new APIError('', 422, 'x', 'draft_not_green', { prism: 'green', greptile: 'red' }) });
+    expect(screen.getByRole('alert').textContent).toContain('PRism and Greptile green');
+    cleanup();
     renderDialog({ error: new APIError('expired', 428, 'x', 'reauth_required') });
     expect(screen.getByRole('link', { name: /Sign in/ }).getAttribute('href')).toBe('/login');
     cleanup();
     renderDialog({ error: new APIError('slow down', 429, 'x', 'rate_limited', { retry_after_seconds: '90' }) });
     expect(screen.getByRole('alert').textContent).toContain('try again in 2 minutes');
     cleanup();
-    renderDialog({ error: new APIError('network down') as APIError });
-    expect(screen.getByRole('alert').textContent).toContain('GitHub returned an error: network down');
+    renderDialog({ error: new TypeError('Failed to fetch') });
+    expect(screen.getByRole('alert').textContent).toContain('GitHub returned an error: Failed to fetch');
   });
 
   it('disables everything and relabels the button while pending', () => {
