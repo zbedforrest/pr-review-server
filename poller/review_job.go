@@ -412,8 +412,8 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 		MaxWallClockSeconds: reviewPolicyMaximum(p.cfg.ReviewMaxWallClockSec, defaults.Agent.WallClockSeconds, fallbackReviewMaxWallClockSec),
 		MaxTurns:            maxTurns,
 		MaxFirstPassSamples: reviewPolicyMaximum(p.cfg.ReviewMaxFirstPassSamples, defaults.FirstPass.Samples, fallbackReviewMaxFirstPassSamples),
-		DefaultProfile:      p.defaultReviewProfile(),
 	}
+	policy.DefaultProfile = p.admittedDefaultProfile(defaults, policy)
 	return defaults, policy, nil
 }
 
@@ -635,6 +635,23 @@ func (p *Poller) defaultReviewProfile() string {
 	profile := runconfig.NormalizeProfile(p.cfg.ReviewDefaultProfile)
 	if !runconfig.KnownProfile(profile) {
 		log.Printf("[REVIEWER] WARN: REVIEW_DEFAULT_PROFILE=%q is not a profile; using full", p.cfg.ReviewDefaultProfile)
+		return runconfig.ProfileFull
+	}
+	return profile
+}
+
+// admittedDefaultProfile is the configured default profile when the policy
+// can run it, otherwise full: a default nobody can resolve would fail every
+// profile-less request. The downgrade is logged once per process.
+func (p *Poller) admittedDefaultProfile(defaults runconfig.Effective, policy runconfig.Policy) string {
+	profile := p.defaultReviewProfile()
+	if profile == runconfig.ProfileFull {
+		return profile
+	}
+	if _, err := runconfig.Resolve(runconfig.Overrides{Profile: &profile}, defaults, policy); err != nil {
+		if p.defaultProfileWarned.CompareAndSwap(false, true) {
+			log.Printf("[REVIEWER] WARN: REVIEW_DEFAULT_PROFILE=%s is rejected by this deployment's policy (%v); using full", profile, err)
+		}
 		return runconfig.ProfileFull
 	}
 	return profile

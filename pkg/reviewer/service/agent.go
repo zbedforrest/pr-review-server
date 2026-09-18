@@ -298,12 +298,15 @@ func RunAgentReview(
 	claims := firstPassClaims(geminiComments)
 	var prompt, diffSource string
 	if isLitePrompt(agentCfg.Prompt) {
-		var diff string
-		diff, diffSource = renderedDiff(runCtx, cloneDir, defaultBranch, agentCfg.APIDiff)
+		rendered := renderedDiff(runCtx, cloneDir, defaultBranch, agentCfg.APIDiff)
+		diffSource = rendered.Source
 		if diffSource == diffSourceAPI {
 			log.Printf("%s worktree diff unavailable; inlining the API diff instead", logPrefix)
 		}
-		prompt = buildLitePromptContent(defaultBranch, diff, prContext, memEntries, agentCfg.Prompt == runconfig.PromptLiteArmASub)
+		if rendered.Truncated {
+			log.Printf("%s inlined diff truncated at %d chars (source=%s)", logPrefix, diffInlineLimit, diffSource)
+		}
+		prompt = buildLitePromptContent(defaultBranch, rendered, prContext, memEntries, agentCfg.Prompt == runconfig.PromptLiteArmASub)
 	} else {
 		prompt, err = buildAgentPromptContent(defaultBranch, diffFiles, prContext, claims, gates, memEntries, checks)
 		if err != nil {
@@ -837,16 +840,28 @@ func isLitePrompt(prompt string) bool {
 	return prompt == runconfig.PromptLiteArmA || prompt == runconfig.PromptLiteArmASub
 }
 
+// liteDiff is the diff text inlined into the lite prompt and how it was made.
+type liteDiff struct {
+	Text      string
+	Source    string // diffSourceGit or diffSourceAPI
+	Truncated bool
+}
+
 // buildLitePromptContent assembles the single-agent (Arm A) prompt: the
-// review instruction naming the worktree refs, the PR context, the matched
-// bug-history section, the sub-agent sentence for lite_plus, the pipeline's
-// output contract without its first-pass text, and the diff last.
-func buildLitePromptContent(baseBranch, diff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
+// review instruction naming the worktree refs (a partial-diff variant when
+// the diff was cut), the PR context, the matched bug-history section, the
+// sub-agent sentence for lite_plus, the pipeline's output contract without
+// its first-pass text, and the diff last.
+func buildLitePromptContent(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
 	if baseBranch == "" {
 		baseBranch = "HEAD"
 	}
+	opening := promptLiteReview
+	if diff.Truncated {
+		opening = promptLiteReviewTruncated
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, promptLiteReview, baseBranch, baseBranch)
+	fmt.Fprintf(&b, opening, baseBranch, baseBranch)
 	b.WriteString(prContext)
 	b.WriteString(bugMemorySection(bugHistory))
 	if subAgents {
@@ -854,8 +869,8 @@ func buildLitePromptContent(baseBranch, diff, prContext string, bugHistory []Bug
 	}
 	b.WriteString(promptLiteOutputFormat)
 	b.WriteString("\n<diff>\n")
-	b.WriteString(diff)
-	if !strings.HasSuffix(diff, "\n") {
+	b.WriteString(diff.Text)
+	if !strings.HasSuffix(diff.Text, "\n") {
 		b.WriteString("\n")
 	}
 	b.WriteString("</diff>\n")
@@ -864,10 +879,12 @@ func buildLitePromptContent(baseBranch, diff, prContext string, bugHistory []Bug
 
 // renderedDiff is the diff inlined into the lite prompt: the worktree's
 // origin/<base>...HEAD diff, or past diffInlineLimit its --stat plus the first
-// chunk and a pointer to the rest, so a huge PR does not blow the prompt but
-// nothing is hidden. When git cannot produce it (severed shallow history, a
-// missing base ref) the GitHub API diff stands in and the source says so.
-func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string) (string, string) {
+// chunk and a per-path git command for the rest, so a huge PR does not blow
+// the prompt but nothing is hidden. When git cannot produce it (severed
+// shallow history, a missing base ref) the GitHub API diff stands in; past the
+// cap that variant lists the changed paths and tells the model to read them at
+// HEAD, since the failed git command cannot recover them.
+func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string) liteDiff {
 	base := "origin/HEAD"
 	if baseBranch != "" {
 		base = "origin/" + baseBranch
@@ -875,16 +892,29 @@ func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string) (st
 	full, err := gitOutput(ctx, cloneDir, "diff", "--find-renames", "-U12", base+"...HEAD")
 	if err != nil {
 		log.Printf("[AGENT] lite diff via git failed (%v); using the API diff", err)
-		return capDiff(apiDiff, "", base), diffSourceAPI
+		if len(apiDiff) <= diffInlineLimit {
+			return liteDiff{Text: apiDiff, Source: diffSourceAPI}
+		}
+		paths := diffHeaderPaths(apiDiff)
+		return liteDiff{
+			Text: capDiff(apiDiff, "Changed paths:\n"+paths,
+				"the worktree diff is unavailable, so Read each changed path above at HEAD and review in full every file not shown here"),
+			Source: diffSourceAPI, Truncated: true,
+		}
 	}
 	if len(full) <= diffInlineLimit {
-		return full, diffSourceGit
+		return liteDiff{Text: full, Source: diffSourceGit}
 	}
 	stat, _ := gitOutput(ctx, cloneDir, "diff", "--stat", base+"...HEAD")
-	return capDiff(full, stat, base), diffSourceGit
+	return liteDiff{
+		Text:   capDiff(full, stat, fmt.Sprintf("fetch the remaining files with `git diff %s...HEAD -- <path>`", base)),
+		Source: diffSourceGit, Truncated: true,
+	}
 }
 
-func capDiff(full, stat, base string) string {
+// capDiff returns stat, the first diffInlineLimit characters of full cut at a
+// line boundary, and a truncation note carrying the caller's recovery hint.
+func capDiff(full, stat, hint string) string {
 	if len(full) <= diffInlineLimit {
 		return full
 	}
@@ -892,8 +922,24 @@ func capDiff(full, stat, base string) string {
 	if cut := strings.LastIndex(head, "\n"); cut >= 0 {
 		head = head[:cut+1]
 	}
-	return fmt.Sprintf("%s\n%s\n[diff truncated after %d characters of %d; fetch the remaining files with `git diff %s...HEAD -- <path>`]\n",
-		stat, head, diffInlineLimit, len(full), base)
+	return fmt.Sprintf("%s\n%s\n[diff truncated after %d characters of %d; %s]\n",
+		stat, head, diffInlineLimit, len(full), hint)
+}
+
+// diffHeaderPaths lists the post-image path of every "diff --git" header, one
+// "- path" line each, for API diffs whose --stat git cannot produce.
+func diffHeaderPaths(diff string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(diff, "\n") {
+		if !strings.HasPrefix(line, "diff --git ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		path := fields[len(fields)-1]
+		path = strings.TrimPrefix(path, "b/")
+		b.WriteString("- " + path + "\n")
+	}
+	return b.String()
 }
 
 // gitOutput runs git and returns stdout only; stderr goes into the error so a
@@ -912,9 +958,14 @@ func gitOutput(ctx context.Context, cwd string, args ...string) (string, error) 
 const citedFileMaxBytes = 1 << 20
 
 // readCitedFiles returns the worktree content of each regular file the
-// findings cite, skipping control entries, paths that escape the worktree, and
-// files over citedFileMaxBytes.
+// findings cite, skipping control entries, anything that is or sits under a
+// symlink (a committed link could point outside the checkout), paths that
+// resolve outside the worktree, and files over citedFileMaxBytes.
 func readCitedFiles(cloneDir string, comments []types.LineComment) map[string]string {
+	root, err := filepath.EvalSymlinks(cloneDir)
+	if err != nil {
+		return nil
+	}
 	out := map[string]string{}
 	for _, c := range comments {
 		path := strings.TrimSpace(c.FilePath)
@@ -928,20 +979,37 @@ func readCitedFiles(cloneDir string, comments []types.LineComment) map[string]st
 		if _, seen := out[path]; seen {
 			continue
 		}
-		info, err := os.Stat(filepath.Join(cloneDir, clean))
-		if err != nil || !info.Mode().IsRegular() || info.Size() > citedFileMaxBytes {
-			continue
+		body, ok := readWorktreeFile(root, clean)
+		if ok {
+			out[path] = body
 		}
-		body, err := os.ReadFile(filepath.Join(cloneDir, clean))
-		if err != nil {
-			continue
-		}
-		out[path] = string(body)
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// readWorktreeFile reads root/rel only when every path component is a real
+// directory or file inside root and the file is a regular file under the cap.
+func readWorktreeFile(root, rel string) (string, bool) {
+	full := filepath.Join(root, rel)
+	real, err := filepath.EvalSymlinks(full)
+	if err != nil || (real != full) {
+		return "", false
+	}
+	info, err := os.Lstat(full)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > citedFileMaxBytes {
+		return "", false
+	}
+	if real != root && !strings.HasPrefix(real, root+string(filepath.Separator)) {
+		return "", false
+	}
+	body, err := os.ReadFile(full)
+	if err != nil {
+		return "", false
+	}
+	return string(body), true
 }
 
 // cacheMutexes serializes cache-repo work per (owner, repo). Each repo gets

@@ -307,7 +307,15 @@ If you find no issues worth flagging, return the SUMMARY entry only (with "appro
 // worktree's; %s is the PR's base branch, twice.
 const promptLiteReview = `Review this PR.
 
-The working directory is a checkout of the PR head (` + "`HEAD`" + `); the base is ` + "`origin/%s`" + `. The complete diff (` + "`git diff --find-renames -U12 origin/%s...HEAD`" + `) is below. Do not fetch it again; use shell commands only to read surrounding code. No dependencies are installed in this checkout and CI already passed on this PR: do not run tests, linters, type checkers, builds or package managers. Review by reading.
+The working directory is a checkout of the PR head (` + "`HEAD`" + `); the base is ` + "`origin/%s`" + `. The complete diff (` + "`git diff --find-renames -U12 origin/%s...HEAD`" + `) is below. Do not fetch it again; use shell commands only to read surrounding code. No dependencies are installed in this checkout, so do not run tests, linters, type checkers, builds or package managers; CI is the authority on whether the code builds. Review by reading.
+`
+
+// promptLiteReviewTruncated replaces promptLiteReview when the inlined diff
+// was cut at diffInlineLimit: the model must not treat what it sees as the
+// whole change.
+const promptLiteReviewTruncated = `Review this PR.
+
+The working directory is a checkout of the PR head (` + "`HEAD`" + `); the base is ` + "`origin/%s`" + `. The diff (` + "`git diff --find-renames -U12 origin/%s...HEAD`" + `) is too large to inline in full: below you get the list of every changed path, then the first part of the diff, then a note on how to reach the rest. Read every changed file that is not shown in full before you judge the change; a file you did not read is not reviewed. Use shell commands only to read code. No dependencies are installed in this checkout, so do not run tests, linters, type checkers, builds or package managers; CI is the authority on whether the code builds. Review by reading.
 `
 
 // promptLiteSubAgents is added for lite_plus, which may spawn sub-agents.

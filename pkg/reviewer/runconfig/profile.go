@@ -234,16 +234,3 @@ func validPrompt(prompt string) bool {
 	}
 	return false
 }
-
-// ProfileExpansions returns every profile's canonical config over base,
-// keyed by name, for capability listings.
-func ProfileExpansions(base Effective) map[string]Effective {
-	out := make(map[string]Effective, len(profileOrder))
-	for _, profile := range profileOrder {
-		expanded, err := Expand(profile, base)
-		if err == nil {
-			out[profile] = expanded
-		}
-	}
-	return out
-}

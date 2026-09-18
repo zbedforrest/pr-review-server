@@ -166,12 +166,14 @@ type reviewCapabilitiesResponse struct {
 	Available     bool                `json:"available"`
 	Defaults      runconfig.Effective `json:"defaults"`
 	// DefaultProfile is the profile a request without config.profile gets;
-	// Profiles lists every selectable profile's effective config.
-	DefaultProfile string                             `json:"default_profile"`
-	Profiles       map[string]runconfig.Effective     `json:"profiles"`
-	Backends       map[string]reviewBackendCapability `json:"backends"`
-	FirstPass      reviewFirstPassCapability          `json:"first_pass"`
-	Limits         reviewCustomizationLimits          `json:"limits"`
+	// Profiles lists the effective config of every profile this deployment's
+	// policy admits, and UnavailableProfiles the rejection reason for the rest.
+	DefaultProfile      string                             `json:"default_profile"`
+	Profiles            map[string]runconfig.Effective     `json:"profiles"`
+	UnavailableProfiles map[string]string                  `json:"unavailable_profiles"`
+	Backends            map[string]reviewBackendCapability `json:"backends"`
+	FirstPass           reviewFirstPassCapability          `json:"first_pass"`
+	Limits              reviewCustomizationLimits          `json:"limits"`
 }
 
 type reviewFirstPassCapability struct {
@@ -694,13 +696,25 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 			Models:               append([]string{}, provider.Models...),
 		}
 	}
+	profiles := make(map[string]runconfig.Effective, 3)
+	unavailable := map[string]string{}
+	for _, name := range runconfig.Profiles() {
+		profile := name
+		snapshot, resolveErr := runconfig.Resolve(runconfig.Overrides{Profile: &profile}, defaults, policy)
+		if resolveErr != nil {
+			unavailable[name] = resolveErr.Error()
+			continue
+		}
+		profiles[name] = snapshot.Effective
+	}
 	writeV1JSON(w, http.StatusOK, reviewCapabilitiesResponse{
-		SchemaVersion:  runconfig.SchemaVersion,
-		Available:      s.cfg != nil && s.cfg.ReviewerEnabled,
-		Defaults:       defaults,
-		DefaultProfile: runconfig.NormalizeProfile(policy.DefaultProfile),
-		Profiles:       runconfig.ProfileExpansions(defaults),
-		Backends:       backends,
+		SchemaVersion:       runconfig.SchemaVersion,
+		Available:           s.cfg != nil && s.cfg.ReviewerEnabled,
+		Defaults:            defaults,
+		DefaultProfile:      runconfig.NormalizeProfile(policy.DefaultProfile),
+		Profiles:            profiles,
+		UnavailableProfiles: unavailable,
+		Backends:            backends,
 		FirstPass: reviewFirstPassCapability{
 			DefaultProvider: defaults.FirstPass.Provider,
 			DefaultModel:    defaults.FirstPass.Model,

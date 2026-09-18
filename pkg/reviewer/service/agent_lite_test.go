@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ import (
 )
 
 func TestBuildLitePromptContent_ArmATextThenContextThenOutputFormatThenDiff(t *testing.T) {
-	prompt := buildLitePromptContent("main", "diff --git a/x b/x\n+1\n", prContextSection("Title", "Body", nil), nil, false)
+	prompt := buildLitePromptContent("main", liteDiff{Text: "diff --git a/x b/x\n+1\n", Source: diffSourceGit}, prContextSection("Title", "Body", nil), nil, false)
 	arm := strings.Index(prompt, "Review this PR.")
 	base := strings.Index(prompt, "the base is `origin/main`")
 	fetch := strings.Index(prompt, "`git diff --find-renames -U12 origin/main...HEAD`")
@@ -37,10 +38,25 @@ func TestBuildLitePromptContent_ArmATextThenContextThenOutputFormatThenDiff(t *t
 	if !strings.Contains(prompt, "do not run tests, linters, type checkers, builds or package managers") {
 		t.Fatal("no-tooling instruction missing")
 	}
+	if strings.Contains(prompt, "CI already passed") {
+		t.Fatal("the prompt must not assert a CI outcome it cannot know")
+	}
+}
+
+func TestBuildLitePromptContent_TruncatedDiffChangesTheOpening(t *testing.T) {
+	complete := buildLitePromptContent("main", liteDiff{Text: "d", Source: diffSourceGit}, "", nil, false)
+	if !strings.Contains(complete, "The complete diff") || strings.Contains(complete, "too large to inline") {
+		t.Fatalf("complete opening wrong:\n%s", complete[:400])
+	}
+	partial := buildLitePromptContent("main", liteDiff{Text: "d", Source: diffSourceGit, Truncated: true}, "", nil, false)
+	if strings.Contains(partial, "The complete diff") || strings.Contains(partial, "Do not fetch it again") ||
+		!strings.Contains(partial, "too large to inline in full") || !strings.Contains(partial, "Read every changed file that is not shown in full") {
+		t.Fatalf("truncated opening wrong:\n%s", partial[:600])
+	}
 }
 
 func TestBuildLitePromptContent_NoFirstPassClaimsOrDispositionText(t *testing.T) {
-	prompt := buildLitePromptContent("main", "", "", nil, false)
+	prompt := buildLitePromptContent("main", liteDiff{}, "", nil, false)
 	for _, banned := range []string{"first-pass", "first pass", "FIRST-PASS", "source_id", "disposition", "Disposition", "PR SCOPE", "MECHANICAL ALERTS", "REQUIRED CHECKS (answer"} {
 		if strings.Contains(prompt, banned) {
 			t.Errorf("lite prompt must not mention %q", banned)
@@ -57,11 +73,11 @@ func TestBuildLitePromptContent_NoFirstPassClaimsOrDispositionText(t *testing.T)
 }
 
 func TestBuildLitePromptContent_BugMemorySectionOnlyWhenMatched(t *testing.T) {
-	without := buildLitePromptContent("main", "d", "", nil, false)
+	without := buildLitePromptContent("main", liteDiff{Text: "d"}, "", nil, false)
 	if strings.Contains(without, "BUG HISTORY") {
 		t.Fatal("no bug memory section without matches")
 	}
-	with := buildLitePromptContent("main", "d", "", []BugMemoryEntry{{ID: "bm-1", Pattern: "Forgot to wire the new setting."}}, false)
+	with := buildLitePromptContent("main", liteDiff{Text: "d"}, "", []BugMemoryEntry{{ID: "bm-1", Pattern: "Forgot to wire the new setting."}}, false)
 	section := strings.Index(with, "THIS REPO'S BUG HISTORY")
 	format := strings.Index(with, "**Output format (STRICT):**")
 	if section < 0 || !strings.Contains(with, "Forgot to wire the new setting.") || section > format {
@@ -71,10 +87,10 @@ func TestBuildLitePromptContent_BugMemorySectionOnlyWhenMatched(t *testing.T) {
 
 func TestBuildLitePromptContent_SubAgentSentenceOnlyForLitePlus(t *testing.T) {
 	const sentence = "Spawn sub-agents to investigate independent parts of the change in parallel"
-	if strings.Contains(buildLitePromptContent("main", "d", "", nil, false), sentence) {
+	if strings.Contains(buildLitePromptContent("main", liteDiff{Text: "d"}, "", nil, false), sentence) {
 		t.Fatal("lite must not ask for sub-agents")
 	}
-	plus := buildLitePromptContent("main", "d", "", nil, true)
+	plus := buildLitePromptContent("main", liteDiff{Text: "d"}, "", nil, true)
 	at := strings.Index(plus, sentence)
 	format := strings.Index(plus, "**Output format (STRICT):**")
 	if at < 0 || at > format {
@@ -98,18 +114,18 @@ func liteWorktree(t *testing.T) (dir, sha string) {
 
 func TestRenderedDiff_UnderCapIsVerbatim(t *testing.T) {
 	dir, _ := liteWorktree(t)
-	diff, source := renderedDiff(context.Background(), dir, "main", "api diff")
-	if source != diffSourceGit {
-		t.Fatalf("source=%q", source)
+	got := renderedDiff(context.Background(), dir, "main", "api diff")
+	if got.Source != diffSourceGit || got.Truncated {
+		t.Fatalf("source=%q truncated=%t", got.Source, got.Truncated)
 	}
-	if !strings.Contains(diff, "diff --git a/change.txt b/change.txt") || !strings.Contains(diff, "+new") || strings.Contains(diff, "truncated") {
-		t.Fatalf("diff=%q", diff)
+	if !strings.Contains(got.Text, "diff --git a/change.txt b/change.txt") || !strings.Contains(got.Text, "+new") || strings.Contains(got.Text, "truncated") {
+		t.Fatalf("diff=%q", got.Text)
 	}
 }
 
 func TestRenderedDiff_OverCapEmitsStatHeadAndPerPathHint(t *testing.T) {
 	full := strings.Repeat("+"+strings.Repeat("x", 99)+"\n", 700)
-	out := capDiff(full, " change.txt | 700 +\n", "origin/main")
+	out := capDiff(full, " change.txt | 700 +\n", "fetch the remaining files with `git diff origin/main...HEAD -- <path>`")
 	if !strings.HasPrefix(out, " change.txt | 700 +\n") {
 		t.Fatalf("stat must lead: %q", out[:60])
 	}
@@ -125,9 +141,40 @@ func TestRenderedDiff_OverCapEmitsStatHeadAndPerPathHint(t *testing.T) {
 
 func TestRenderedDiff_FallsBackToAPIDiffWhenGitFails(t *testing.T) {
 	skipIfNoGit(t)
-	diff, source := renderedDiff(context.Background(), t.TempDir(), "main", "diff --git a/api b/api\n+from api\n")
-	if source != diffSourceAPI || diff != "diff --git a/api b/api\n+from api\n" {
-		t.Fatalf("source=%q diff=%q", source, diff)
+	got := renderedDiff(context.Background(), t.TempDir(), "main", "diff --git a/api b/api\n+from api\n")
+	if got.Source != diffSourceAPI || got.Truncated || got.Text != "diff --git a/api b/api\n+from api\n" {
+		t.Fatalf("got=%+v", got)
+	}
+}
+
+func TestRenderedDiff_OverCapAPIFallbackListsPathsAndReadHint(t *testing.T) {
+	skipIfNoGit(t)
+	var api strings.Builder
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&api, "diff --git a/pkg/f%d.go b/pkg/f%d.go\n", i, i)
+		api.WriteString(strings.Repeat("+"+strings.Repeat("y", 99)+"\n", 100))
+	}
+	got := renderedDiff(context.Background(), t.TempDir(), "main", api.String())
+	if got.Source != diffSourceAPI || !got.Truncated {
+		t.Fatalf("source=%q truncated=%t", got.Source, got.Truncated)
+	}
+	for i := 0; i < 8; i++ {
+		if !strings.Contains(got.Text, fmt.Sprintf("- pkg/f%d.go\n", i)) {
+			t.Fatalf("path list missing pkg/f%d.go:\n%s", i, got.Text[:400])
+		}
+	}
+	if !strings.HasPrefix(got.Text, "Changed paths:\n- pkg/f0.go\n") {
+		t.Fatalf("path list must lead: %q", got.Text[:80])
+	}
+	if strings.Contains(got.Text, "git diff") || !strings.Contains(got.Text, "Read each changed path above at HEAD") {
+		t.Fatalf("API fallback must not point at the failed git command:\n%s", got.Text[len(got.Text)-300:])
+	}
+}
+
+func TestDiffHeaderPaths(t *testing.T) {
+	got := diffHeaderPaths("diff --git a/x.go b/x.go\n+1\ndiff --git a/dir/old.go b/dir/new.go\n+2\n")
+	if got != "- x.go\n- dir/new.go\n" {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -217,6 +264,33 @@ func TestReadCitedFiles_SkipsControlEntriesAndEscapes(t *testing.T) {
 	})
 	if len(got) != 1 || got["a.go"] != "package a\n" {
 		t.Fatalf("got=%v", got)
+	}
+}
+
+func TestReadCitedFiles_RefusesSymlinksOutOfTheWorktree(t *testing.T) {
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ok.go"), []byte("fine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(dir, "leak")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "linked-dir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("ok.go", filepath.Join(dir, "inside-link")); err != nil {
+		t.Fatal(err)
+	}
+	got := readCitedFiles(dir, []types.LineComment{
+		{FilePath: "leak"}, {FilePath: "linked-dir/secret.txt"}, {FilePath: "inside-link"}, {FilePath: "ok.go"},
+	})
+	if len(got) != 1 || got["ok.go"] != "fine" {
+		t.Fatalf("symlinked paths must be skipped: got=%v", got)
 	}
 }
 

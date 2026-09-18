@@ -161,7 +161,10 @@ func (p AutoReviewProfilePolicy) Map() map[string]any {
 // lite_plus require the author to be on the lite allowlist; anything
 // unparseable in the settings falls back to the deployment default.
 func (p *Poller) autoReviewProfileFor(trigger, owner, repo, author string) string {
-	defaultProfile := p.defaultReviewProfile()
+	defaultProfile := runconfig.ProfileFull
+	if _, policy, err := p.ReviewConfigDefaultsAndPolicy(); err == nil {
+		defaultProfile = runconfig.NormalizeProfile(policy.DefaultProfile)
+	}
 	profile := defaultProfile
 	raw, err := p.db.GetSetting(SettingAutoReviewProfileByTrigger)
 	if err != nil {

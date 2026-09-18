@@ -212,6 +212,14 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 	}
 	profile := p.autoReviewProfileFor(intent.Trigger, pr.Owner, pr.Repo, pr.Author)
 	job, err := p.PrepareReviewJob(pr, runconfig.Overrides{Profile: &profile}, true, autoReviewTriggerSource, nil)
+	var validationErr *runconfig.ValidationError
+	if errors.As(err, &validationErr) && profile != runconfig.ProfileFull {
+		// A lite profile the deployment policy rejects would otherwise leave the
+		// intent queued and retried forever; the full pipeline still reviews it.
+		log.Printf("[AUTO-REVIEW] %s intent=%d: %s profile rejected by policy (%v); reviewing with full", key, intent.ID, profile, err)
+		profile = runconfig.ProfileFull
+		job, err = p.PrepareReviewJob(pr, runconfig.Overrides{Profile: &profile}, true, autoReviewTriggerSource, nil)
+	}
 	if err != nil {
 		log.Printf("[AUTO-REVIEW] %s intent=%d: cannot prepare %s review, left queued for the next poll: %v", key, intent.ID, profile, err)
 		return false

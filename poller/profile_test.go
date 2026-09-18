@@ -181,6 +181,7 @@ func TestParseAutoReviewProfilePolicy(t *testing.T) {
 func TestAutoReviewProfileFor_DefaultsRepoOverrideAndAuthorGate(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPoller(NewMockGitHubClient(), database)
+	p.cfg.AgenticReviews, p.cfg.AgentModel, p.cfg.AgentWallClockSec, p.cfg.AgentMaxTurns = true, "claude-fable-5", 900, 120
 	assert.Equal(t, "full", p.autoReviewProfileFor("synchronize", "acme", "example", "alice"), "compiled default is full")
 
 	p.cfg.ReviewDefaultProfile = "lite"
@@ -261,6 +262,56 @@ func TestWebhookSynchronizeAdmitsLiteAndSupersedesQueuedOlderHead(t *testing.T) 
 	assert.Equal(t, db.AutoReviewIntentRunning, byHead[autoReviewNewHead].Status)
 	assert.Equal(t, runconfig.ProfileLite, autoReviewRunProfile(t, f))
 	assert.Equal(t, autoReviewNewHead, f.runs()[0].CommitSHA)
+}
+
+func TestAdmitAutoReviewIntentFallsBackToFullWhenPolicyRejectsLite(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	require.NoError(t, f.db.SetSetting(SettingAutoReviewProfileByTrigger, `{"synchronize":"lite"}`))
+	require.NoError(t, f.db.SetSetting(SettingAutoReviewLiteAuthors, "*"))
+
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+	waitForDetachedReviews(t, f.p)
+
+	assert.Equal(t, runconfig.ProfileFull, autoReviewRunProfile(t, f), "the agent is disabled here, so lite cannot resolve and full must run instead of retrying forever")
+	for _, intent := range f.intents(t) {
+		assert.Equal(t, db.AutoReviewIntentRunning, intent.Status)
+	}
+}
+
+func TestDefaultReviewProfileFallsBackToFullWhenPolicyRejectsIt(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.AgenticReviews = true
+	p.cfg.AgentModel = "claude-fable-5"
+	p.cfg.ReviewDefaultProfile = "lite"
+	_, policy, err := p.ReviewConfigDefaultsAndPolicy()
+	require.NoError(t, err)
+	assert.Equal(t, runconfig.ProfileFull, policy.DefaultProfile, "the default 40-turn ceiling rejects lite")
+	assert.Equal(t, "full", p.autoReviewProfileFor("synchronize", "acme", "example", "alice"))
+
+	p.cfg.AgentMaxTurns = 120
+	_, policy, err = p.ReviewConfigDefaultsAndPolicy()
+	require.NoError(t, err)
+	assert.Equal(t, runconfig.ProfileLite, policy.DefaultProfile)
+}
+
+func TestAdmitReviewJobsSkipsFirstPassInitForLiteOnlyBatch(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPollerWithGenerator(NewMockGitHubClient(), database, NewMockReviewStorage(), nil)
+	p.cfg.FirstPassProvider = "no-such-provider"
+	p.cfg.AgentWallClockSec = 900
+	lite := liteReviewJob(t, "run-51000000000000000000000000000010", runconfig.ProfileLite)
+	full := customReviewJob(t, "run-51000000000000000000000000000011")
+	full.PR.Number = 8
+	full.PR.CommitSHA = "1123456789abcdef0123456789abcdef01234567"
+
+	admitted, err := p.admitReviewJobs(context.Background(), []ReviewJob{lite})
+	require.NoError(t, err)
+	require.Len(t, admitted.jobs, 1)
+	require.NotNil(t, admitted.svc)
+	p.untrackReviewRun(lite.PR.Owner, lite.PR.Repo, lite.PR.Number, lite.RunID)
+
+	_, err = p.admitReviewJobs(context.Background(), []ReviewJob{full})
+	require.Error(t, err, "a batch that needs the first pass still fails on a broken provider")
 }
 
 func TestBuildPublishRound_CarriesProfile(t *testing.T) {

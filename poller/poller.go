@@ -173,6 +173,9 @@ type Poller struct {
 	// capacity first (when needed), then this slot, before starting their
 	// execution lease or wall clock.
 	firstPassSlots chan struct{}
+	// defaultProfileWarned makes the policy-rejected default profile a
+	// one-line warning instead of one per resolution.
+	defaultProfileWarned atomic.Bool
 	// dispatchSlots bounds pre-provider cache/storage/DB work. It is released
 	// before agent/first-pass capacity waits, so it cannot cap agent throughput.
 	dispatchSlots chan struct{}
@@ -3613,7 +3616,19 @@ func (p *Poller) admitReviewJobs(ctx context.Context, jobs []ReviewJob) (admitte
 	// If using mock generator (for testing), skip LLM client initialization
 	var reviewSvc *service.Service
 	var reviewSvcInitErr error
-	if p.reviewGenerator == nil {
+	needsFirstPass := false
+	for _, job := range jobs {
+		if job.Config.Effective.FirstPass.Enabled {
+			needsFirstPass = true
+			break
+		}
+	}
+	if p.reviewGenerator == nil && !needsFirstPass {
+		// Lite-only batches fetch PR inputs over GitHub and never call a
+		// first-pass provider, so a missing or failing first-pass credential
+		// must not reject them.
+		reviewSvc = service.NewServiceWithFirstPass(p.ghClientConcrete, nil, nil, service.FirstPassInfo{})
+	} else if p.reviewGenerator == nil {
 		// Initialize reviewer clients. The deployment-default first-pass client
 		// is built and key-validated up front (fail fast); per-run overrides
 		// resolve their own client later, once each job's effective config is

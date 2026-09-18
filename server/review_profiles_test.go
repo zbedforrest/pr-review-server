@@ -136,14 +136,16 @@ func TestReviewCapabilitiesListProfiles(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 
 	var got struct {
-		SchemaVersion  int                            `json:"schema_version"`
-		DefaultProfile string                         `json:"default_profile"`
-		Profiles       map[string]runconfig.Effective `json:"profiles"`
+		SchemaVersion       int                            `json:"schema_version"`
+		DefaultProfile      string                         `json:"default_profile"`
+		Profiles            map[string]runconfig.Effective `json:"profiles"`
+		UnavailableProfiles map[string]string              `json:"unavailable_profiles"`
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &got))
 	assert.Equal(t, 4, got.SchemaVersion)
 	assert.Equal(t, "lite", got.DefaultProfile)
 	require.Len(t, got.Profiles, 3)
+	assert.Empty(t, got.UnavailableProfiles)
 	lite := got.Profiles["lite"]
 	assert.Equal(t, runconfig.Agent{
 		Enabled: true, Backend: "claude", Model: "claude-fable-5-1", Effort: "medium", WallClockSeconds: 300, MaxTurns: 60,
@@ -157,6 +159,18 @@ func TestReviewCapabilitiesListProfiles(t *testing.T) {
 	assert.Equal(t, 600, got.Profiles["lite_plus"].Agent.WallClockSeconds)
 	assert.Equal(t, "claude-fable-5", got.Profiles["full"].Agent.Model)
 	assert.True(t, got.Profiles["full"].FirstPass.Enabled)
+
+	apiPoller.policy.MaxWallClockSeconds = 360
+	recorder = httptest.NewRecorder()
+	s.handleReviewCapabilities(recorder, addReviewAPIUser(httptest.NewRequest(http.MethodGet, reviewCapabilitiesPath, nil), *userID))
+	var capped struct {
+		Profiles            map[string]runconfig.Effective `json:"profiles"`
+		UnavailableProfiles map[string]string              `json:"unavailable_profiles"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &capped))
+	assert.Len(t, capped.Profiles, 2)
+	assert.NotContains(t, capped.Profiles, "lite_plus")
+	assert.Contains(t, capped.UnavailableProfiles["lite_plus"], "agent.wall_clock_seconds")
 }
 
 func TestReviewRunResponseIncludesProfileAndAttemptCost(t *testing.T) {
