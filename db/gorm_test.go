@@ -542,6 +542,30 @@ func TestGormDB_ResetPRToOutdated_ClearsMergeConfidence(t *testing.T) {
 	assert.Nil(t, fetched.MergeConfidence, "a medal must never describe a previous head")
 }
 
+func TestGormDB_ResetPRToOutdated_ClearsMergeState(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner:        "acme",
+		RepoName:         "example",
+		PRNumber:         1,
+		LastCommitSHA:    "abc123",
+		Status:           "completed",
+		MergeStateStatus: "CLEAN",
+		ReviewDecision:   "APPROVED",
+	}))
+
+	reset, err := db.ResetPRToOutdated("acme", "example", 1, "abc123", "def456")
+	require.NoError(t, err)
+	require.True(t, reset)
+
+	fetched, err := db.GetPR("acme", "example", 1)
+	require.NoError(t, err)
+	assert.Empty(t, fetched.MergeStateStatus, "a previous head's merge state must not survive a push")
+	assert.Empty(t, fetched.ReviewDecision)
+}
+
 func TestGormDB_SetPRGenerating_ClearsMergeConfidence(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()

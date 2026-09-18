@@ -122,7 +122,7 @@ type PRResponse struct {
 	// APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or "" (no required reviews
 	// configured, or not yet fetched).
 	ReviewDecision string `json:"review_decision"`
-	// Derived: GitHub would let a user press Merge right now. See readyToMerge.
+	// Derived: all merge requirements are satisfied right now. See readyToMerge.
 	ReadyToMerge bool     `json:"ready_to_merge"`
 	CreatedAt    *string  `json:"created_at"` // PR creation timestamp from GitHub
 	IsMine       bool     `json:"is_mine"`    // true if current user is the PR author
@@ -1720,14 +1720,18 @@ func completedMergeConfidence(pr db.PR) *int {
 
 // readyToMerge reports whether GitHub's merge box would be enabled. CLEAN
 // already encodes the repo's protection rules (required checks, required
-// reviews, conflicts, up-to-date); the reviewDecision guard adds the social
-// rule that a standing changes-requested review is never "ready" even on
-// repos whose protection does not enforce it.
+// reviews, conflicts, up-to-date); UNSTABLE and HAS_HOOKS are deliberately
+// excluded even though GitHub may still enable the button for them. The
+// reviewDecision guard adds the social rule that a standing changes-requested
+// or still-required review is never "ready" even on repos whose protection
+// does not enforce it, so the tooltip's "no required reviews outstanding"
+// stays truthful.
 func readyToMerge(pr db.PR) bool {
 	return prStateOrOpen(pr.PRState) == "open" &&
 		!pr.Draft &&
 		pr.MergeStateStatus == "CLEAN" &&
-		pr.ReviewDecision != "CHANGES_REQUESTED"
+		pr.ReviewDecision != "CHANGES_REQUESTED" &&
+		pr.ReviewDecision != "REVIEW_REQUIRED"
 }
 
 // getPRResponse constructs a PR response using the default dev-mode user context.

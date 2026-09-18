@@ -24,7 +24,7 @@ func TestReadyToMerge(t *testing.T) {
 		{"unknown", db.PR{PRState: "open", MergeStateStatus: "UNKNOWN"}, false},
 		{"not yet fetched", db.PR{PRState: "open", MergeStateStatus: ""}, false},
 		{"clean but changes requested", db.PR{PRState: "open", MergeStateStatus: "CLEAN", ReviewDecision: "CHANGES_REQUESTED"}, false},
-		{"clean but review required", db.PR{PRState: "open", MergeStateStatus: "CLEAN", ReviewDecision: "REVIEW_REQUIRED"}, true},
+		{"clean but review required", db.PR{PRState: "open", MergeStateStatus: "CLEAN", ReviewDecision: "REVIEW_REQUIRED"}, false},
 		{"clean but draft flag", db.PR{PRState: "open", MergeStateStatus: "CLEAN", Draft: true}, false},
 		{"clean but merged", db.PR{PRState: "merged", MergeStateStatus: "CLEAN"}, false},
 		{"clean but closed", db.PR{PRState: "closed", MergeStateStatus: "CLEAN"}, false},

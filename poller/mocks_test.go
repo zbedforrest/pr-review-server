@@ -425,6 +425,8 @@ func (m *MockDatabase) ResetPRToOutdated(owner, repo string, prNumber int, fromC
 	pr.ReviewHTMLPath = ""
 	pr.ErrorMessage = ""
 	pr.MergeConfidence = nil
+	pr.MergeStateStatus = ""
+	pr.ReviewDecision = ""
 	delete(m.ProjectionRunIDs, key)
 	return true, nil
 }
