@@ -438,7 +438,7 @@ func RunAgentReview(
 	waitErr := proc.Wait()
 	agentCompletedAt = time.Now().UTC()
 	stderrBuf := stderrOutput()
-	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d", parseResult.assistantTurns, parseResult.budgetUnits)
+	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d sub_agent_turns=%d", parseResult.assistantTurns, parseResult.budgetUnits, parseResult.subAgentTurns)
 
 	// Failure messages below feed the run's error_summary, which the API now
 	// exposes; scrub the provider credential from quoted subprocess output in
@@ -1219,6 +1219,7 @@ type agentParseResult struct {
 	costUSD        float64  // total_cost_usd from the Claude result event
 	inputTokens    int64    // usage.input_tokens plus cache reads and cache creation
 	outputTokens   int64
+	subAgentTurns  int // assistant events from Agent-tool sub-agents, outside the turn budget
 }
 
 // noteUsage records the result event's spend and token usage. Cache reads and
@@ -1313,10 +1314,15 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 				result.noteServedModel(ev["model"])
 			}
 		case "assistant":
-			// Sub-agents spawned through the Agent tool report their own model
-			// under a parent_tool_use_id; only the top-level agent's model says
-			// what served the review.
-			if msg, ok := ev["message"].(map[string]any); ok && ev["parent_tool_use_id"] == nil {
+			// Sub-agents spawned through the Agent tool stream their own
+			// assistant events under a parent_tool_use_id. They neither name the
+			// serving model nor spend the turn budget, which bounds the top-level
+			// agent's loop; the wall clock bounds their work.
+			if ev["parent_tool_use_id"] != nil {
+				result.subAgentTurns++
+				continue
+			}
+			if msg, ok := ev["message"].(map[string]any); ok {
 				result.noteServedModel(msg["model"])
 			}
 			result.assistantTurns++

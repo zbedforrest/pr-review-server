@@ -305,7 +305,7 @@ func TestParseAgentStream_CapturesCostAndUsageFromResultEvent(t *testing.T) {
 	}
 }
 
-func TestParseAgentStream_IgnoresSubAgentModelsForFallbackDetection(t *testing.T) {
+func TestParseAgentStream_SubAgentEventsStayOutsideTheTurnBudget(t *testing.T) {
 	stream := `{"type":"system","subtype":"init","model":"claude-fable-5-1"}
 {"type":"assistant","parent_tool_use_id":null,"message":{"model":"claude-fable-5-1","content":[{"type":"tool_use","name":"Agent","input":{}}]}}
 {"type":"assistant","parent_tool_use_id":"toolu_01","message":{"model":"claude-opus-5","content":[{"type":"text","text":"sub-agent"}]}}
@@ -321,8 +321,17 @@ func TestParseAgentStream_IgnoresSubAgentModelsForFallbackDetection(t *testing.T
 	if len(result.servedModels) != 1 || result.servedModels[0] != "claude-fable-5-1" {
 		t.Fatalf("served models=%v; sub-agent models must not count", result.servedModels)
 	}
-	if result.assistantTurns != 4 {
-		t.Fatalf("sub-agent events still consume the turn budget: turns=%d", result.assistantTurns)
+	if result.assistantTurns != 2 || result.budgetUnits != 2 || result.subAgentTurns != 2 {
+		t.Fatalf("turns=%d budget=%d sub_agent=%d; sub-agent events must not spend the budget", result.assistantTurns, result.budgetUnits, result.subAgentTurns)
+	}
+	sub := `{"type":"assistant","parent_tool_use_id":"toolu_01","message":{"model":"claude-opus-5","content":[{"type":"text","text":"x"}]}}
+`
+	busy := `{"type":"assistant","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"go"}]}}
+` + strings.Repeat(sub, 20) + `{"type":"result","subtype":"success","result":"[]"}
+`
+	proc = &fakeProcess{stdout: bytes.NewBufferString(busy), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}
+	if _, err := parseAgentStream(proc, &bytes.Buffer{}, 3); err != nil {
+		t.Fatalf("twenty sub-agent events under a budget of three must not kill the run: %v", err)
 	}
 }
 
