@@ -59,6 +59,8 @@ type fakeTokenEndpoint struct {
 	grants []string
 	status int
 	body   map[string]any
+	// errorBody, when set, is the JSON returned for a non-200 status.
+	errorBody map[string]any
 }
 
 func newFakeTokenEndpoint(t *testing.T, mux *http.ServeMux) *fakeTokenEndpoint {
@@ -75,7 +77,11 @@ func newFakeTokenEndpoint(t *testing.T, mux *http.ServeMux) *fakeTokenEndpoint {
 		w.Header().Set("Content-Type", "application/json")
 		if f.status != http.StatusOK {
 			w.WriteHeader(f.status)
-			_ = json.NewEncoder(w).Encode(map[string]string{"message": "unavailable"})
+			body := f.errorBody
+			if body == nil {
+				body = map[string]any{"message": "unavailable"}
+			}
+			_ = json.NewEncoder(w).Encode(body)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(f.body)
@@ -327,13 +333,26 @@ func TestTokenSource_RefreshRefusedClearsStoredToken(t *testing.T) {
 }
 
 func TestTokenSource_TransientEndpointStatusKeepsStoredToken(t *testing.T) {
-	for name, status := range map[string]int{"429": http.StatusTooManyRequests, "500": http.StatusInternalServerError, "502": http.StatusBadGateway} {
+	for name, setup := range map[string]func(*fakeTokenEndpoint){
+		"429": func(f *fakeTokenEndpoint) { f.status = http.StatusTooManyRequests },
+		"500": func(f *fakeTokenEndpoint) { f.status = http.StatusInternalServerError },
+		"502": func(f *fakeTokenEndpoint) { f.status = http.StatusBadGateway },
+		"503 with oauth error code": func(f *fakeTokenEndpoint) {
+			f.status = http.StatusServiceUnavailable
+			f.errorBody = map[string]any{"error": "temporarily_unavailable"}
+		},
+		"200 with transient code": func(f *fakeTokenEndpoint) { f.body = map[string]any{"error": "server_error"} },
+		"400 with server_error code": func(f *fakeTokenEndpoint) {
+			f.status = http.StatusBadRequest
+			f.errorBody = map[string]any{"error": "temporarily_unavailable"}
+		},
+	} {
 		t.Run(name, func(t *testing.T) {
 			mockDB := newMockDatabase()
 			user := &db.User{GitHubID: 42, GitHubUsername: "alice"}
 			_ = mockDB.CreateUser(user)
 			authInst, tokens := newTokenTestAuth(t, mockDB, http.NewServeMux())
-			tokens.status = status
+			setup(tokens)
 			soon := time.Now().Add(5 * time.Minute)
 			mockDB.sessions["s1"] = sealedSession(t, "s1", user.ID, "gho_old", "ghr_old", &soon)
 
@@ -345,7 +364,8 @@ func TestTokenSource_TransientEndpointStatusKeepsStoredToken(t *testing.T) {
 				t.Fatalf("a %s must not clear the stored token (updates=%d)", name, mockDB.tokenUpdates)
 			}
 
-			tokens.status = http.StatusOK
+			tokens.status, tokens.errorBody = http.StatusOK, nil
+			tokens.body = map[string]any{"access_token": "gho_new", "refresh_token": "ghr_new", "token_type": "bearer", "expires_in": 28800}
 			token, _, ok, _ := runMiddlewareWithSession(t, authInst, "s1")
 			if !ok || token != "gho_new" {
 				t.Fatalf("expected the refresh to succeed once GitHub recovers, got token=%q ok=%v", token, ok)

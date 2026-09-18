@@ -165,21 +165,29 @@ func (s *sessionTokenSource) refresh(ctx context.Context) (string, error) {
 }
 
 // refreshRefused tells a dead refresh token apart from a token endpoint that
-// is merely unavailable. GitHub answers a bad or expired refresh token with
-// an OAuth error code (often inside a 200 body); 429 and 5xx are transient.
+// is merely unavailable. 429 and 5xx are transient whatever the body says;
+// otherwise GitHub reports a bad or expired refresh token with an OAuth error
+// code (often inside a 200 body) or a bare 400/401.
 func refreshRefused(err error) bool {
 	var re *oauth2.RetrieveError
 	if !errors.As(err, &re) {
 		return false
 	}
-	if re.ErrorCode != "" {
-		return true
-	}
 	status := 0
 	if re.Response != nil {
 		status = re.Response.StatusCode
 	}
-	return status == http.StatusBadRequest || status == http.StatusUnauthorized
+	if status == http.StatusTooManyRequests || status >= 500 {
+		return false
+	}
+	switch re.ErrorCode {
+	case "temporarily_unavailable", "server_error":
+		return false
+	case "":
+		return status == http.StatusBadRequest || status == http.StatusUnauthorized
+	default:
+		return true
+	}
 }
 
 // adoptStoredToken re-reads the session row and, when another request has
