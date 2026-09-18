@@ -749,11 +749,11 @@ func TestExtractReviewerGroups_OrgNameEmpty_WhenNoTeams(t *testing.T) {
 
 func TestParseCIStatusFromRollup(t *testing.T) {
 	tests := []struct {
-		name           string
-		rollup         *StatusCheckRollup
-		expectedState  string
-		expectedFailed []string
-		expectedHidden int
+		name              string
+		rollup            *StatusCheckRollup
+		expectedState     string
+		expectedFailed    []string
+		expectedNullNodes int
 	}{
 		{
 			name: "All success",
@@ -820,9 +820,9 @@ func TestParseCIStatusFromRollup(t *testing.T) {
 					},
 				},
 			},
-			expectedState:  "failure",
-			expectedFailed: nil,
-			expectedHidden: 1,
+			expectedState:     "failure",
+			expectedFailed:    nil,
+			expectedNullNodes: 1,
 		},
 		{
 			name: "Hidden failure with a visible pending status keeps the failing rollup",
@@ -835,17 +835,17 @@ func TestParseCIStatusFromRollup(t *testing.T) {
 					},
 				},
 			},
-			expectedState:  "failure",
-			expectedFailed: nil,
-			expectedHidden: 1,
+			expectedState:     "failure",
+			expectedFailed:    nil,
+			expectedNullNodes: 1,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state, failed, hidden := parseCIStatusFromRollup(tt.rollup)
-			if hidden != tt.expectedHidden {
-				t.Errorf("Expected %d hidden contexts, got %d", tt.expectedHidden, hidden)
+			state, failed, nullNodes := parseCIStatusFromRollup(tt.rollup)
+			if nullNodes != tt.expectedNullNodes {
+				t.Errorf("Expected %d null contexts, got %d", tt.expectedNullNodes, nullNodes)
 			}
 			if state != tt.expectedState {
 				t.Errorf("Expected state %q, got %q", tt.expectedState, state)

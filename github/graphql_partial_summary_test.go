@@ -36,21 +36,22 @@ func TestParseCIStatusFromRollup_HiddenContextsKeepRollupState(t *testing.T) {
 			{},
 		}},
 	}
-	state, failed, hidden := parseCIStatusFromRollup(rollup)
+	state, failed, nullNodes := parseCIStatusFromRollup(rollup)
 	if state != "failure" {
 		t.Errorf("state = %q, want failure (GitHub's rollup over the hidden contexts)", state)
 	}
 	if len(failed) != 0 {
 		t.Errorf("failed = %v, want none: the failing contexts are not readable", failed)
 	}
-	if hidden != 2 {
-		t.Errorf("hidden = %d, want 2", hidden)
+	if nullNodes != 2 {
+		t.Errorf("nullNodes = %d, want 2", nullNodes)
 	}
 }
 
-func TestBatchGetCIStatus_ForbiddenContextsLogOneSummaryLine(t *testing.T) {
+func batchGetCIStatusWithLogs(t *testing.T, body string) (*CIStatus, string) {
+	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(forbiddenContextsBody))
+		_, _ = w.Write([]byte(body))
 	}))
 	defer ts.Close()
 	client := NewClient("test-token", "")
@@ -68,15 +69,36 @@ func TestBatchGetCIStatus_ForbiddenContextsLogOneSummaryLine(t *testing.T) {
 	if status == nil {
 		t.Fatalf("no result: %v", results)
 	}
-	if status.State != "failure" || status.HiddenContexts != 2 || len(status.FailedChecks) != 0 {
-		t.Errorf("got State=%q HiddenContexts=%d FailedChecks=%v, want failure/2/none",
-			status.State, status.HiddenContexts, status.FailedChecks)
+	return status, buf.String()
+}
+
+func TestBatchGetCIStatus_NonForbiddenNullNodesCountAsUnreadable(t *testing.T) {
+	body := strings.Replace(forbiddenContextsBody, `"type":"FORBIDDEN","message":"Resource not accessible by integration",
+		 "path":["pr0","pullRequest","commits","nodes",0,"commit","statusCheckRollup","contexts","nodes",1]`,
+		`"type":"INTERNAL","message":"Something went wrong",
+		 "path":["pr0","pullRequest","commits","nodes",0,"commit","statusCheckRollup","contexts","nodes",1]`, 1)
+	status, logs := batchGetCIStatusWithLogs(t, body)
+	if status.State != "failure" || status.HiddenContexts != 1 || status.UnreadableContexts != 1 {
+		t.Errorf("got State=%q Hidden=%d Unreadable=%d, want failure/1/1",
+			status.State, status.HiddenContexts, status.UnreadableContexts)
+	}
+	for _, want := range []string{"CI status: 2 partial errors on 1/1 PRs", "INTERNAL at " + ciContextsPath + " x1", "FORBIDDEN at " + ciContextsPath + " x1"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("summary missing %q:\n%s", want, logs)
+		}
+	}
+}
+
+func TestBatchGetCIStatus_ForbiddenContextsLogOneSummaryLine(t *testing.T) {
+	status, logs := batchGetCIStatusWithLogs(t, forbiddenContextsBody)
+	if status.State != "failure" || status.HiddenContexts != 2 || status.UnreadableContexts != 0 || len(status.FailedChecks) != 0 {
+		t.Errorf("got State=%q Hidden=%d Unreadable=%d FailedChecks=%v, want failure/2/0/none",
+			status.State, status.HiddenContexts, status.UnreadableContexts, status.FailedChecks)
 	}
 	if status.MergeStateStatus != "UNSTABLE" {
 		t.Errorf("MergeStateStatus = %q, want UNSTABLE", status.MergeStateStatus)
 	}
 
-	logs := buf.String()
 	if strings.Contains(logs, "client partial error") {
 		t.Errorf("per-node partial error lines still logged:\n%s", logs)
 	}

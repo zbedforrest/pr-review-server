@@ -131,9 +131,15 @@ type Spawner interface {
 // SpawnedProcess is what a Spawner returns.
 type SpawnedProcess interface {
 	Stdout() io.Reader
+	// Stderr is what the process wrote to stderr; complete once Wait returned.
 	Stderr() io.Reader
 	Wait() error
 	Kill() error
+}
+
+func readAllString(r io.Reader) string {
+	b, _ := io.ReadAll(r)
+	return string(b)
 }
 
 // RunAgentReview clones the PR branch, spawns the configured agent CLI, parses
@@ -369,26 +375,13 @@ func RunAgentReview(
 		}
 	}()
 
-	// Drain stderr to a buffer so we can include it on failure. Safe to be
-	// unbounded for now — dev use, sensible agent outputs.
-	var stderrBuf strings.Builder
-	var stderrWG sync.WaitGroup
-	stderrWG.Add(1)
-	go func() {
-		defer stderrWG.Done()
-		_, _ = io.Copy(&stderrBuf, proc.Stderr())
-	}()
-
 	// Stream stdout: tee to log file and parse turn-by-turn.
 	var parseErr error
 	parseResult, parseErr = runtime.parseStream(proc, logFile, agentCfg.MaxTurns)
 
-	// os/exec's Wait closes the pipes once the child exits, so stderr must be
-	// fully read before it; the kill paths already closed the pipe, so this
-	// returns at once there.
-	stderrWG.Wait()
 	waitErr := proc.Wait()
 	agentCompletedAt = time.Now().UTC()
+	stderrBuf := readAllString(proc.Stderr())
 	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d", parseResult.assistantTurns, parseResult.budgetUnits)
 
 	// Failure messages below feed the run's error_summary, which the API now
@@ -408,13 +401,13 @@ func RunAgentReview(
 	if parseErr != nil {
 		// Turn-cap hit or parse error — subprocess already killed inside parser.
 		persistFailureLog()
-		return nil, fmt.Errorf("agent: %w (%s; stderr: %s)", parseErr, usage, redact(stderrBuf.String()))
+		return nil, fmt.Errorf("agent: %w (%s; stderr: %s)", parseErr, usage, redact(stderrBuf))
 	}
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: wall-clock timeout (%s; %s; stderr: %s)",
-			agentCfg.WallClock, usage, redact(stderrBuf.String()))
+			agentCfg.WallClock, usage, redact(stderrBuf))
 	}
 
 	// The stream error outranks the exit status: the CLI reports API failures
@@ -426,20 +419,20 @@ func RunAgentReview(
 	if parseResult.streamErr != "" {
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (%s; exit: %v; stderr: %s)",
-			redact(parseResult.streamErr), usage, waitErr, redact(stderrBuf.String()))
+			redact(parseResult.streamErr), usage, waitErr, redact(stderrBuf))
 	}
 
 	if waitErr != nil {
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: %s exited with error: %w (%s; stream: %s; stderr: %s)",
-			runtime.command, waitErr, usage, redact(parseResult.diagnostic()), redact(stderrBuf.String()))
+			runtime.command, waitErr, usage, redact(parseResult.diagnostic()), redact(stderrBuf))
 	}
 
 	if parseResult.finalOutput == "" {
 		log.Printf("%s %s finished with no final result (%s)", logPrefix, runtime.command, usage)
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: no final result emitted (%s; stream: %s; stderr: %s)",
-			usage, redact(parseResult.diagnostic()), redact(stderrBuf.String()))
+			usage, redact(parseResult.diagnostic()), redact(stderrBuf))
 	}
 
 	comments, parseErr := parseAgentJSON(parseResult.finalOutput)

@@ -444,11 +444,14 @@ type CIStatus struct {
 	Number       int
 	State        string   // "success", "failure", "pending", "unknown"
 	FailedChecks []string // Names of failed checks
-	// Check contexts GitHub declined to return (FORBIDDEN, the App lacks a read
-	// permission for that context type). State is still GitHub's rollup over
-	// every context; a non-zero count means FailedChecks is missing names
+	// Check contexts GitHub returned as null. State is still GitHub's rollup
+	// over every context; a non-zero count means FailedChecks is missing names
 	// (zero does not prove completeness: the query reads the first 100 contexts).
-	HiddenContexts int
+	// HiddenContexts were refused with FORBIDDEN (the App lacks a read
+	// permission for that context type); UnreadableContexts failed for any
+	// other reason (transient errors, a union member the query does not select).
+	HiddenContexts     int
+	UnreadableContexts int
 	// GitHub merge-box summary for the current head: CLEAN, BLOCKED, BEHIND,
 	// DIRTY, UNSTABLE, HAS_HOOKS, DRAFT, UNKNOWN, or "" when unavailable.
 	MergeStateStatus string
@@ -1116,6 +1119,7 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 				return
 			}
 
+			forbiddenContexts := forbiddenContextsByAlias(partialErrs)
 			mu.Lock()
 			for j, prInfo := range batch {
 				alias := fmt.Sprintf("pr%d", j)
@@ -1146,16 +1150,18 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 					continue
 				}
 
-				state, failedChecks, hidden := parseCIStatusFromRollup(rollup)
+				state, failedChecks, nullNodes := parseCIStatusFromRollup(rollup)
+				hidden := min(nullNodes, forbiddenContexts[alias])
 				results[key] = &CIStatus{
-					Owner:            prInfo.Owner,
-					Repo:             prInfo.Repo,
-					Number:           prInfo.Number,
-					State:            state,
-					FailedChecks:     failedChecks,
-					HiddenContexts:   hidden,
-					MergeStateStatus: mergeState,
-					ReviewDecision:   reviewDecision,
+					Owner:              prInfo.Owner,
+					Repo:               prInfo.Repo,
+					Number:             prInfo.Number,
+					State:              state,
+					FailedChecks:       failedChecks,
+					HiddenContexts:     hidden,
+					UnreadableContexts: nullNodes - hidden,
+					MergeStateStatus:   mergeState,
+					ReviewDecision:     reviewDecision,
 				}
 			}
 			mu.Unlock()
@@ -1227,13 +1233,32 @@ func mergeFieldsFrom(pr *CIPullRequestData) (mergeState, reviewDecision string) 
 	return pr.MergeStateStatus, reviewDecision
 }
 
+// ciContextsPath is the normalized error path of a context node in the CI
+// status query.
+const ciContextsPath = "pullRequest.commits.nodes.commit.statusCheckRollup.contexts.nodes"
+
+// forbiddenContextsByAlias counts, per prN alias, the context nodes GitHub
+// refused with FORBIDDEN.
+func forbiddenContextsByAlias(errs []GraphQLPartialError) map[string]int {
+	counts := map[string]int{}
+	for _, e := range errs {
+		if e.Type != "FORBIDDEN" || len(e.Path) == 0 || normalizeGraphQLPath(e.Path) != ciContextsPath {
+			continue
+		}
+		if alias, ok := e.Path[0].(string); ok {
+			counts[alias]++
+		}
+	}
+	return counts
+}
+
 // parseCIStatusFromRollup extracts CI state and failed checks from a status
-// check rollup. A context the App may not read arrives as a null node (its
-// FORBIDDEN error is reported separately); the rollup state GitHub computed
-// over all contexts is kept and the node is counted as hidden. A visible
-// in-progress context therefore never downgrades a failing rollup: the
-// failure may live in a hidden node that cannot be named in failedChecks.
-func parseCIStatusFromRollup(rollup *StatusCheckRollup) (state string, failedChecks []string, hidden int) {
+// check rollup. A context GitHub could not return arrives as a null node
+// (its partial error is reported separately); the rollup state GitHub
+// computed over all contexts is kept and the node is counted in nullNodes.
+// A visible in-progress context therefore never downgrades a failing rollup:
+// the failure may live in a null node that cannot be named in failedChecks.
+func parseCIStatusFromRollup(rollup *StatusCheckRollup) (state string, failedChecks []string, nullNodes int) {
 	state = strings.ToLower(rollup.State)
 	markPending := func() {
 		if state != "failure" && state != "error" {
@@ -1243,7 +1268,7 @@ func parseCIStatusFromRollup(rollup *StatusCheckRollup) (state string, failedChe
 
 	for _, node := range rollup.Contexts.Nodes {
 		if node.TypeName == "" {
-			hidden++
+			nullNodes++
 		} else if node.TypeName == "CheckRun" {
 			// CheckRun conclusion: SUCCESS, FAILURE, NEUTRAL, CANCELLED, SKIPPED, TIMED_OUT, ACTION_REQUIRED
 			// Status: QUEUED, IN_PROGRESS, COMPLETED
@@ -1267,7 +1292,7 @@ func parseCIStatusFromRollup(rollup *StatusCheckRollup) (state string, failedChe
 		state = "failure"
 	}
 
-	return state, failedChecks, hidden
+	return state, failedChecks, nullNodes
 }
 
 // GetOrgTeamMembers fetches the members of a GitHub team by organization and team slug.

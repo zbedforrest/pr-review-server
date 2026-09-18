@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -32,19 +31,13 @@ type agentRunOutcome struct {
 	stderr   bytes.Buffer
 }
 
-// runStreamLikeAgent mirrors RunAgentReview's stream handling: drain stderr in
-// the background, parse stdout to EOF, then Wait.
+// runStreamLikeAgent mirrors RunAgentReview's stream handling: parse stdout
+// to EOF, Wait, then collect stderr.
 func runStreamLikeAgent(proc SpawnedProcess, maxTurns int) *agentRunOutcome {
 	out := &agentRunOutcome{}
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&out.stderr, proc.Stderr())
-	}()
 	out.parsed, out.parseErr = parseAgentStream(proc, &out.stdout, maxTurns)
-	wg.Wait()
 	out.waitErr = proc.Wait()
+	_, _ = io.Copy(&out.stderr, proc.Stderr())
 	return out
 }
 
@@ -97,11 +90,13 @@ exit 0
 	waitForGoroutineBaseline(t, baseline)
 }
 
-func TestDefaultSpawnerMaxTurnsKillTearsDownProcessGroup(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "grandchild-survived")
+func TestDefaultSpawnerWaitReturnsWhenGrandchildHoldsStderr(t *testing.T) {
 	script := writeChildScript(t, `
-( sleep 1; touch "`+marker+`" ) &
-while :; do echo '{"type":"assistant"}'; done
+echo '{"type":"result","subtype":"success","result":"done"}'
+sleep 30 >/dev/null &
+i=0
+while [ $i -lt 50 ]; do echo "stderr $i" >&2; i=$((i+1)); done
+exit 0
 `)
 	baseline := runtime.NumGoroutine()
 	proc, err := (DefaultSpawner{}).SpawnWithEnv(context.Background(), script, nil, "", []string{})
@@ -109,6 +104,35 @@ while :; do echo '{"type":"assistant"}'; done
 		t.Fatalf("spawn: %v", err)
 	}
 	started := time.Now()
+	out := runStreamLikeAgent(proc, 10)
+
+	if out.parseErr != nil || out.waitErr != nil {
+		t.Fatalf("parseErr=%v waitErr=%v, want a clean exit despite the lingering grandchild", out.parseErr, out.waitErr)
+	}
+	if elapsed := time.Since(started); elapsed > stderrWaitDelay+2*time.Second {
+		t.Fatalf("Wait took %s; WaitDelay is %s", elapsed, stderrWaitDelay)
+	}
+	if n := strings.Count(out.stderr.String(), "\n"); n != 50 {
+		t.Errorf("stderr lines captured = %d, want everything the child itself wrote (50)", n)
+	}
+	waitForGoroutineBaseline(t, baseline)
+}
+
+func TestDefaultSpawnerMaxTurnsKillTearsDownProcessGroup(t *testing.T) {
+	dir := t.TempDir()
+	started := filepath.Join(dir, "grandchild-started")
+	marker := filepath.Join(dir, "grandchild-survived")
+	script := writeChildScript(t, `
+( touch "`+started+`"; sleep 1; touch "`+marker+`" ) &
+while [ ! -f "`+started+`" ]; do sleep 0.05; done
+while :; do echo '{"type":"assistant"}'; done
+`)
+	baseline := runtime.NumGoroutine()
+	proc, err := (DefaultSpawner{}).SpawnWithEnv(context.Background(), script, nil, "", []string{})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	killedAt := time.Now()
 	out := runStreamLikeAgent(proc, 3)
 
 	if out.parseErr == nil || !strings.Contains(out.parseErr.Error(), "max-turns") {
@@ -117,8 +141,11 @@ while :; do echo '{"type":"assistant"}'; done
 	if out.waitErr == nil {
 		t.Fatal("Wait returned nil for a killed child")
 	}
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
+	if elapsed := time.Since(killedAt); elapsed > 5*time.Second {
 		t.Fatalf("Wait took %s after the kill", elapsed)
+	}
+	if _, err := os.Stat(started); err != nil {
+		t.Fatalf("grandchild never started, so the kill was not exercised: %v", err)
 	}
 
 	time.Sleep(2 * time.Second)
