@@ -107,6 +107,8 @@ func (g *GormDB) AutoMigrate() error {
 		&HealthReportModel{},
 		&WebhookDeliveryModel{},
 		&AutoReviewIntentModel{},
+		&BlogPostModel{},
+		&BlogAssetModel{},
 	); err != nil {
 		return err
 	}
@@ -200,6 +202,16 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&AutoReviewIntentModel{}) {
 		if err := g.db.Migrator().CreateTable(&AutoReviewIntentModel{}); err != nil {
 			return fmt.Errorf("create auto_review_intents: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&BlogPostModel{}) {
+		if err := g.db.Migrator().CreateTable(&BlogPostModel{}); err != nil {
+			return fmt.Errorf("create blog_posts: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&BlogAssetModel{}) {
+		if err := g.db.Migrator().CreateTable(&BlogAssetModel{}); err != nil {
+			return fmt.Errorf("create blog_assets: %w", err)
 		}
 	}
 	// Older revisions did not enforce one live run per target. Prefer work that

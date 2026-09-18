@@ -65,6 +65,24 @@ export async function apiPost<T>(endpoint: string, body: unknown): Promise<T> {
   return response.json();
 }
 
+export async function apiPut<T>(endpoint: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  handleUnauthorized(response);
+
+  if (!response.ok) {
+    throw await errorFromResponse(response);
+  }
+
+  return response.json();
+}
+
 export async function apiDelete<T>(endpoint: string, body: unknown): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: 'DELETE',

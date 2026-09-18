@@ -57,6 +57,7 @@ type Config struct {
 	DisablePolling  bool   // skip initial+scheduled polls (benchmark/on-demand deployments)
 	ReviewsDir      string // Deprecated: use GCSBucket instead
 	GCSBucket       string
+	BlogLocalDir    string // Blog files when no GCS bucket is configured
 	ServerPort      string
 	ReviewerEnabled bool
 	GeminiAPIKey    string
@@ -301,6 +302,7 @@ func Load() *Config {
 		DisablePolling:  os.Getenv("DISABLE_POLLING") == "true",
 		ReviewsDir:      getEnvOrDefault("REVIEWS_DIR", "./reviews"), // Deprecated
 		GCSBucket:       os.Getenv("GCS_BUCKET"),                     // Required for cloud storage
+		BlogLocalDir:    getEnvOrDefault("BLOG_LOCAL_DIR", "./data/blog"),
 		ServerPort:      getEnvOrDefault("SERVER_PORT", "8080"),
 		ReviewerEnabled: false, // Will be set to true in main.go if API key is available
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),

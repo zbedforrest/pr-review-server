@@ -64,6 +64,7 @@ type Server struct {
 	db              db.Database
 	ghClient        *github.Client
 	gcsClient       *gcs.Client
+	blogObjects     blogObjectStore
 	auth            AuthHandler
 	prCache         []github.PullRequest
 	prCacheMux      sync.RWMutex
@@ -253,11 +254,12 @@ type wsOutboundMessage struct {
 
 func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsClient *gcs.Client) *Server {
 	return &Server{
-		cfg:       cfg,
-		db:        database,
-		ghClient:  ghClient,
-		gcsClient: gcsClient,
-		startTime: time.Now(),
+		cfg:         cfg,
+		db:          database,
+		ghClient:    ghClient,
+		gcsClient:   gcsClient,
+		blogObjects: newBlogObjectStore(cfg, gcsClient),
+		startTime:   time.Now(),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -355,6 +357,13 @@ func (s *Server) Start() error {
 
 	// Static content (protected - reviews contain sensitive code)
 	http.Handle("/reviews/", withAuth(s.handleReviewFromGCS))
+
+	// Blog: pages for every member, management for admins. Registered ahead
+	// of the SPA fallback so the mux routes /blog/... here.
+	http.Handle(blogPath, withAuth(s.handleBlog))
+	http.Handle(blogPath+"/", withAuth(s.handleBlog))
+	http.Handle(blogAPIPath, withAuth(s.handleBlogAPI))
+	http.Handle(blogAPIPath+"/", withAuth(s.handleBlogAPI))
 
 	// Agent deep-link redirect (not protected: it carries no review content,
 	// only the PR coordinates already visible on GitHub)

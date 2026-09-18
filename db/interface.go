@@ -169,6 +169,33 @@ type FindingOutcome struct {
 	DecidedAt   time.Time
 }
 
+// BlogPost is one post of the built-in blog. The persistence methods live on
+// *GormDB only (see server.blogStore); the Database interface stays unchanged.
+type BlogPost struct {
+	Slug        string
+	Title       string
+	Dek         string
+	AuthorLogin string
+	Published   bool
+	PublishedAt *time.Time
+	IndexObject string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// BlogAsset is one uploaded file of a post, addressed by its path relative to
+// the post directory (for example "img/hero.png" or "index.html").
+type BlogAsset struct {
+	ID            int
+	Slug          string
+	Path          string
+	ContentType   string
+	SizeBytes     int64
+	StorageObject string
+	ETag          string
+	UploadedAt    time.Time
+}
+
 // Published-finding kinds and states (GitHub publication ledger).
 const (
 	PublishedKindSummary = "summary" // the sticky summary comment; Fingerprint == kind

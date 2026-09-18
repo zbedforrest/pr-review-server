@@ -4,6 +4,7 @@ import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { usePRs } from '@/hooks/usePRs';
 import { usePublishReplies } from '@/hooks/usePublishReplies';
 import { useSettingsEditor } from '@/hooks/useSettings';
+import { BlogSection } from './BlogSection';
 import { SettingsForm } from './SettingsForm';
 import '@/styles/main.scss';
 
@@ -42,7 +43,9 @@ export function SettingsPage() {
           currentLogin={user.data.github_username}
           knownLogins={knownLogins}
           replyTotals={isAdmin ? replies.data : undefined}
-        />
+        >
+          {isAdmin && <BlogSection />}
+        </SettingsForm>
       )}
     </div>
   );

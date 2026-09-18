@@ -40,6 +40,12 @@ export function Header() {
         >
           Settings
         </a>
+        <a
+          href="/blog"
+          className="app-header__action-link"
+        >
+          Blog
+        </a>
         <button
           onClick={handleTriggerPoll}
           disabled={isPolling}
