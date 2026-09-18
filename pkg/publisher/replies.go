@@ -204,9 +204,11 @@ func defersFinding(sentence string) bool {
 	return false
 }
 
-// TicketKeys returns the tracker keys ([A-Z][A-Z0-9]{1,9}-\d+) in body outside
-// code spans, deduplicated in order of appearance.
-func TicketKeys(body string) []string {
+// ticketKeys returns every tracker key ([A-Z][A-Z0-9]{1,9}-\d+) in body
+// outside code spans, deduplicated in order of appearance. It feeds the
+// deferral scan below, which supplies the context; a key the author talks
+// about as a ticket in the reply text is replytext.TicketKeys' job.
+func ticketKeys(body string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, m := range ticketKeyRe.FindAllStringSubmatch(codeSpanRe.ReplaceAllString(body, " "), -1) {
@@ -238,7 +240,7 @@ func DeferredTickets(body string) []string {
 			if fixClaimRe.MatchString(clause) || !(deferralPhraseRe.MatchString(clause) || deferralVerbRe.MatchString(clause)) {
 				continue
 			}
-			for _, k := range TicketKeys(clause) {
+			for _, k := range ticketKeys(clause) {
 				if !seen[k] {
 					seen[k] = true
 					out = append(out, k)
@@ -269,7 +271,7 @@ func outOfScopeSentences(ourReply string) []string {
 func outOfScopeTickets(recorded, authorBody string, ourSentences []string) string {
 	var ours []string
 	for _, s := range ourSentences {
-		ours = append(ours, TicketKeys(s)...)
+		ours = append(ours, ticketKeys(s)...)
 	}
 	return mergeTicketKeys(recorded, strings.Join(DeferredTickets(authorBody), ","), strings.Join(ours, ","))
 }

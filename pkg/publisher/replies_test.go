@@ -1139,6 +1139,49 @@ func TestReplyReactor_BudgetExhaustionOnAQuestionIsRetriedNotNoticed(t *testing.
 	}
 }
 
+func TestReplyReactor_BudgetNoticeIsRenderedAndKeepsNoteAndDeferral(t *testing.T) {
+	runs := 0
+	var outcomes []ReplyOutcome
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{Model: "m"}, fmt.Errorf("%w: exceeded max-turns (20)", ErrBudgetExhausted)
+	})
+	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
+	gh.threads["acme/example#7"][1].Body = "Fixed the race in abc1234 by taking the lock first; the cleanup is a follow-up in AUTH-42."
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := budgetExhaustedReply + " Tracking this against AUTH-42."
+	if runs != 1 || len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], want+"\n\n") {
+		t.Fatalf("runs=%d posted=%q", runs, gh.posted)
+	}
+	row := ledger.rows[0]
+	if row.ReplyBody != want || row.Note != NoteBudgetExhausted || row.DeferredTo != "AUTH-42" || row.Decision != DecisionHold || row.Outcome != "posted" {
+		t.Fatalf("row=%+v", row)
+	}
+	if len(outcomes) != 1 || outcomes[0].Note != NoteBudgetExhausted {
+		t.Fatalf("the budget note is not replaced by the renderer's: %+v", outcomes)
+	}
+
+	gh.posted, outcomes = nil, nil
+	gh.threads["acme/example#7"] = gh.threads["acme/example#7"][:2]
+	thread := threadUnder(gh.threads["acme/example#7"], 100)
+	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", Class: "resolution", Action: ReplyActionPending, Decision: DecisionHold, ReplyBody: budgetExhaustedReply,
+		Note: NoteBudgetExhausted, DeferredTo: "AUTH-42", DecisionHead: "head1", DecisionThread: threadFingerprint(thread, 1),
+		CreatedAt: time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)}}
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	row = ledger.rows[0]
+	if runs != 1 || len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], want+"\n\n") || row.ReplyBody != want {
+		t.Fatalf("a persisted notice is rendered on resume without rerunning the model: runs=%d posted=%q row=%+v", runs, gh.posted, row)
+	}
+	if row.Note != NoteBudgetExhausted || row.DeferredTo != "AUTH-42" || outcomes[0].Note != NoteBudgetExhausted {
+		t.Fatalf("the write-back must keep the note and the deferral: row=%+v outcomes=%+v", row, outcomes)
+	}
+}
+
 func TestReplyReactor_BudgetNoticeResumesAfterAGitHubErrorWithoutRerunningTheModel(t *testing.T) {
 	runs := 0
 	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
@@ -1217,8 +1260,8 @@ func TestTicketKeysAndDeferredTickets(t *testing.T) {
 		{"Follow-up in AUTH-42 and AUTH-43, the rest lands here.", []string{"AUTH-42", "AUTH-43"}, []string{"AUTH-42", "AUTH-43"}},
 	}
 	for _, c := range cases {
-		if got := TicketKeys(c.body); fmt.Sprint(got) != fmt.Sprint(c.keys) {
-			t.Errorf("TicketKeys(%q) = %v, want %v", c.body, got, c.keys)
+		if got := ticketKeys(c.body); fmt.Sprint(got) != fmt.Sprint(c.keys) {
+			t.Errorf("ticketKeys(%q) = %v, want %v", c.body, got, c.keys)
 		}
 		if got := DeferredTickets(c.body); fmt.Sprint(got) != fmt.Sprint(c.deferred) {
 			t.Errorf("DeferredTickets(%q) = %v, want %v", c.body, got, c.deferred)
