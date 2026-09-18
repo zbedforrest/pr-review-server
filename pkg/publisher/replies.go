@@ -213,20 +213,21 @@ type ReplyDecision struct {
 }
 
 // renderDecision applies the posting conventions to the model's reply before
-// it is recorded, so the ledger holds what will be posted. A body with
-// nothing postable left turns the decision into an abstain.
-func renderDecision(d ReplyDecision, reply AuthorReply, root ThreadComment) ReplyDecision {
+// it is recorded, so the ledger holds what will be posted, and returns the
+// rune count of the sentences it appended. A body with nothing postable left
+// turns the decision into an abstain.
+func renderDecision(d ReplyDecision, reply AuthorReply, root ThreadComment) (ReplyDecision, int) {
 	if d.Decision == DecisionAbstain {
 		d.Reply = ""
-		return d
+		return d, 0
 	}
 	ctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, Decision: d.Decision}
-	body, ok := replytext.Render(d.Reply, ctx)
+	paragraph, appendix, ok := replytext.RenderParts(d.Reply, ctx)
 	if !ok {
-		return ReplyDecision{Decision: DecisionAbstain, Cited: d.Cited, React: true, Model: d.Model, DurationMS: d.DurationMS}
+		return ReplyDecision{Decision: DecisionAbstain, Cited: d.Cited, React: true, Model: d.Model, DurationMS: d.DurationMS}, 0
 	}
-	d.Reply = body
-	return d
+	d.Reply = paragraph + appendix
+	return d, len([]rune(appendix))
 }
 
 // Responder runs the reply model.
@@ -235,7 +236,7 @@ type Responder func(ctx context.Context, req ReplyRequest) (ReplyDecision, error
 // TextPolicy bounds text replies: questions and substantive pushback only,
 // while the thread is fresh, at most MaxPerThread per thread, MaxPerPRPerDay
 // per PR, and MaxChars per reply paragraph (a longer reply is dropped, not
-// truncated; the sentences the renderer appends are allowed on top).
+// truncated; the sentences the renderer itself appends are allowed on top).
 type TextPolicy struct {
 	MaxPerThread   int
 	MaxPerPRPerDay int
@@ -959,6 +960,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		return skip("thread_moved")
 	}
+	decidedNow, appendixRunes := false, 0
 	if row.Decision == "" {
 		if row.Attempts >= r.textPolicy().MaxAttempts {
 			return finish("failed")
@@ -977,28 +979,43 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		if err != nil {
 			return outcome, err
 		}
-		decision = renderDecision(decision, reply, root)
+		decision, appendixRunes = renderDecision(decision, reply, root)
 		cited, _ := json.Marshal(decision.Cited)
-		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
+		record := db.ReplyDecisionRecord{
 			Decision: decision.Decision, ReplyBody: decision.Reply, Cited: string(cited), Model: decision.Model, DurationMS: decision.DurationMS,
 			Head: state.HeadSHA, Thread: fingerprint, React: decision.React,
-		}); err != nil {
+		}
+		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, record); err != nil {
 			return outcome, err
 		}
-		row.Decision, row.ReplyBody, row.DecisionReact = decision.Decision, decision.Reply, decision.React
+		// The in-memory row mirrors the record in full, so a later write-back
+		// of this row cannot blank the head, thread or citations just stored.
+		row.Decision, row.ReplyBody, row.Cited, row.Model, row.DurationMS = record.Decision, record.ReplyBody, record.Cited, record.Model, record.DurationMS
+		row.DecisionHead, row.DecisionThread, row.DecisionReact = record.Head, record.Thread, record.React
 		outcome.Decision, outcome.Model, outcome.DurationMS = decision.Decision, decision.Model, decision.DurationMS
+		decidedNow = true
 	}
 	// A row decided before this convention took effect is rendered here and
 	// written back so the ledger holds what is posted; rendering is a no-op
 	// on an already rendered body. The note is derived here so a resumed step
 	// reports it too.
 	rctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, Decision: row.Decision}
-	text, renderable := replytext.Render(row.ReplyBody, rctx)
+	paragraph, appendix, renderable := replytext.RenderParts(row.ReplyBody, rctx)
+	text := paragraph + appendix
 	decided := row.Decision
 	if !renderable && row.Decision != DecisionAbstain {
 		row.Decision, row.DecisionReact, text = DecisionAbstain, true, ""
 	}
 	rctx.Decision = row.Decision
+	switch {
+	case decidedNow:
+	case text != row.ReplyBody:
+		appendixRunes = len([]rune(appendix))
+	default:
+		// Rendered by an earlier step that is not around to say what it
+		// appended; the text itself is the best record.
+		appendixRunes = replytext.AppendixLen(text)
+	}
 	if text != row.ReplyBody || row.Decision != decided {
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
 			Decision: row.Decision, ReplyBody: text, Cited: row.Cited, Model: row.Model, DurationMS: row.DurationMS,
@@ -1015,7 +1032,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 			rep.Abstained++
 		}
 		return finish("abstained")
-	case len([]rune(text))-replytext.AppendixLen(text) > r.textPolicy().MaxChars:
+	case len([]rune(text))-appendixRunes > r.textPolicy().MaxChars:
 		return skip("too_long")
 	case r.Mode != ReplyModeRespond:
 		if rep != nil {

@@ -1268,3 +1268,49 @@ func TestReplyReactor_RendererAppendixDoesNotTripTheLengthCap(t *testing.T) {
 		t.Fatalf("posted=%d rep=%+v", len(gh.posted), rep)
 	}
 }
+
+func TestReplyReactor_AnswerKeepsItsLeadingYes(t *testing.T) {
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionAnswer, Reply: "Yes, the guard on a.go:12 runs before the branch.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}, React: true}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Does the guard run first, or should this be a follow-up?"
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], "Yes, the guard on a.go:12 runs before the branch.\n\n") {
+		t.Fatalf("posted=%q", gh.posted)
+	}
+}
+
+func TestReplyReactor_FreshDecisionKeepsItsHeadAndCitationsInTheLedger(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Cited: []EvidenceRef{{File: "a.go", Line: 12}}, Model: "m", DurationMS: 7,
+			Reply: "Withdrawing this. You're right, keeping it means a nil body reaches parse on a.go:12 and returns 500."}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "This is intentional, callers are trusted here. Not a bug, keeping as is."
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	row := ledger.rows[0]
+	if len(gh.posted) != 1 || row.ReplyCommentID == 0 || row.DecisionHead != "head1" || row.DecisionThread == "" || !strings.Contains(row.Cited, "a.go") || row.Model != "m" {
+		t.Fatalf("the ledger must keep what the decision recorded: posted=%d row=%+v", len(gh.posted), row)
+	}
+	if !strings.HasPrefix(gh.posted[0], "Keeping it means a nil body reaches parse on a.go:12 and returns 500. Should this") || row.ReplyBody+"\n\n"+ReplyMarker(101) != gh.posted[0] {
+		t.Errorf("posted=%q row=%q", gh.posted[0], row.ReplyBody)
+	}
+}
+
+func TestReplyReactor_TicketAskWrittenByTheModelCountsTowardTheCap(t *testing.T) {
+	paragraph := strings.TrimSpace(strings.Repeat("The over-count is introduced on purrBridge.ts:353 before the drop on PurrMediaExperiences.tsx:68. ", 6))
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: paragraph + " " + replytext.TicketAsk, Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Out of scope for this PR, will handle it in a follow-up."
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 0 || rep.TextSkipped["too_long"] != 1 {
+		t.Fatalf("posted=%d rep=%+v", len(gh.posted), rep)
+	}
+}
