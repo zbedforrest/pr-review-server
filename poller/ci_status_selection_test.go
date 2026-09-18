@@ -392,3 +392,51 @@ func TestPoll_CIStatusWithoutMergeStateKeepsStoredMergeFields(t *testing.T) {
 		t.Errorf("expected one pr_updated for the CI change, got %d", countEvents(*events, "pr_updated"))
 	}
 }
+
+func TestPoll_CIStatusMissingNodeKeepsStoredValues(t *testing.T) {
+	mockDB, poller, events := mergeStatePollFixture(t, "CLEAN", "")
+	mockGH := poller.ghClient.(*MockGitHubClient)
+	mockGH.BatchGetCIStatusResults["owner/repo/1"] = &github.CIStatus{
+		State: "unknown", FailedChecks: []string{}, MergeStateRequested: true, Missing: true,
+	}
+
+	poller.poll(context.Background())
+	waitForDetachedReviews(t, poller)
+
+	pr := mockDB.PRs["owner/repo/1"]
+	if pr.CIState != "success" || pr.MergeStateStatus != "CLEAN" || pr.ReviewDecision != "APPROVED" {
+		t.Errorf("stored CI/merge fields overwritten by a missing node: ci=%q merge=%q decision=%q", pr.CIState, pr.MergeStateStatus, pr.ReviewDecision)
+	}
+	if n := countEvents(*events, "pr_updated"); n != 0 {
+		t.Errorf("a missing node must not broadcast an update, got %d", n)
+	}
+	if _, marked := poller.ciMergeMarks["owner/repo/1"]; marked {
+		t.Errorf("a missing node must leave the PR due next cycle")
+	}
+}
+
+func TestPoll_CIStatusDevModeTreatsEveryOpenPRAsVisible(t *testing.T) {
+	stale := time.Now().Add(-60 * 24 * time.Hour)
+	for _, devMode := range []bool{false, true} {
+		mockDB, poller, _ := mergeStatePollFixture(t, "CLEAN", "CLEAN")
+		mockGH := poller.ghClient.(*MockGitHubClient)
+		mockDB.Users = []db.User{{ID: 1, GitHubUsername: "dev", LastLoginAt: &stale}}
+		if devMode {
+			poller.SetDevUser(&mockDB.Users[0])
+		}
+
+		poller.poll(context.Background())
+		waitForDetachedReviews(t, poller)
+
+		if len(mockGH.BatchGetCIStatusCalls) != 1 {
+			t.Fatalf("devMode=%v: BatchGetCIStatus calls = %d, want 1", devMode, len(mockGH.BatchGetCIStatusCalls))
+		}
+		got := mergeStateByNumber(mockGH.BatchGetCIStatusCalls[0])
+		if devMode && !got[1] {
+			t.Errorf("dev mode: the dev user never logs in, so its PR must still get merge state; got %v", got)
+		}
+		if !devMode && len(got) != 0 {
+			t.Errorf("prod mode: a user inactive for 60 days must not keep PRs watched; got %v", got)
+		}
+	}
+}
