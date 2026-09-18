@@ -152,6 +152,27 @@ var replyDecisionColumns = []struct {
 	{"deferred_to", "DeferredTo", "text"},
 }
 
+// sessionTokenColumns hold the sealed GitHub OAuth tokens behind quick
+// actions; greptileStatusColumns hold Greptile's verdict per head.
+var sessionTokenColumns = []struct {
+	column   string
+	field    string
+	postgres string
+}{
+	{"github_token_enc", "GitHubTokenEnc", "text"},
+	{"github_refresh_token_enc", "GitHubRefreshTokenEnc", "text"},
+	{"github_token_expires_at", "GitHubTokenExpiresAt", "timestamptz"},
+}
+
+var greptileStatusColumns = []struct {
+	column   string
+	field    string
+	postgres string
+}{
+	{"greptile_status", "GreptileStatus", "varchar(8) NOT NULL DEFAULT ''"},
+	{"greptile_status_sha", "GreptileStatusSHA", "varchar(40) NOT NULL DEFAULT ''"},
+}
+
 func (g *GormDB) ensureIdempotentColumns() error {
 	// Whole-table creation for tables added after the initial schema. Unlike
 	// the column adds below this is dialect-agnostic: HasTable+CreateTable is
@@ -308,6 +329,22 @@ func (g *GormDB) ensureIdempotentColumns() error {
 				return fmt.Errorf("add review_decision: %w", err)
 			}
 		}
+		for _, addition := range greptileStatusColumns {
+			if !g.db.Migrator().HasColumn(&PRModel{}, addition.column) {
+				if err := g.db.Migrator().AddColumn(&PRModel{}, addition.field); err != nil {
+					return fmt.Errorf("add prs.%s: %w", addition.column, err)
+				}
+			}
+		}
+		if g.db.Migrator().HasTable(&SessionModel{}) {
+			for _, addition := range sessionTokenColumns {
+				if !g.db.Migrator().HasColumn(&SessionModel{}, addition.column) {
+					if err := g.db.Migrator().AddColumn(&SessionModel{}, addition.field); err != nil {
+						return fmt.Errorf("add sessions.%s: %w", addition.column, err)
+					}
+				}
+			}
+		}
 		if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
 			return fmt.Errorf("backfill projection_run_id: %w", err)
 		}
@@ -373,6 +410,16 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	for _, addition := range replyDecisionColumns {
 		if err := g.db.Exec("ALTER TABLE published_reply_models ADD COLUMN IF NOT EXISTS " + addition.column + " " + addition.postgres).Error; err != nil {
 			return fmt.Errorf("add published_reply_models.%s: %w", addition.column, err)
+		}
+	}
+	for _, addition := range greptileStatusColumns {
+		if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS " + addition.column + " " + addition.postgres).Error; err != nil {
+			return fmt.Errorf("add prs.%s: %w", addition.column, err)
+		}
+	}
+	for _, addition := range sessionTokenColumns {
+		if err := g.db.Exec("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS " + addition.column + " " + addition.postgres).Error; err != nil {
+			return fmt.Errorf("add sessions.%s: %w", addition.column, err)
 		}
 	}
 	if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
