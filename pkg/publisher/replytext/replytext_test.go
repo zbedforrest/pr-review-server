@@ -22,6 +22,9 @@ func TestStripAgreementOpener(t *testing.T) {
 		{"You're right about the guard, it runs first.", "You're right about the guard, it runs first.", true},
 		{"You're right, retry.go:41 guards this.", "retry.go:41 guards this.", true},
 		{"Correct, onRoomLoaded on X.tsx:82 only drops the toast.", "onRoomLoaded on X.tsx:82 only drops the toast.", true},
+		{"I agree. The guard on a.go:1 runs first.", "The guard on a.go:1 runs first.", true},
+		{"I think you're right, the guard on a.go:1 runs first.", "The guard on a.go:1 runs first.", true},
+		{"I agreed to the design in a.go:1 last week.", "I agreed to the design in a.go:1 last week.", true},
 		{"You're right.", "", false},
 		{"Agreed, good point.", "", false},
 		{"   ", "", false},
@@ -144,9 +147,23 @@ func TestRenderIntentPushbackAcknowledgesAndRecordsWithoutWithdrawing(t *testing
 	if _, ok := Render("You're right. Withdrawing this.", ctx); ok {
 		t.Errorf("a withdrawal with nothing else must be rejected")
 	}
-	domain := "payments.go:12 withdraws funds before the authorization check. Keeping it means a double charge is possible."
-	if got, _ := Render(domain, ctx); !strings.HasPrefix(got, domain) {
-		t.Errorf("domain language is not a withdrawal: %q", got)
+	for _, domain := range []string{
+		"payments.go:12 withdraws funds before the authorization check. Keeping it means a double charge is possible.",
+		"Users withdraw funds on payments.go:12 before authorization. Keeping it means a double charge is possible.",
+		"Funds are withdrawn on payments.go:12 before the check. Keeping it means a double charge is possible.",
+		"payments.go:12 calls withdraw() before authorization. Keeping it means a double charge is possible.",
+	} {
+		if got, _ := Render(domain, ctx); got != domain+" "+riskAskBare {
+			t.Errorf("domain language is not a withdrawal: %q", got)
+		}
+	}
+	got, ok = Render("payments.go:12 calls withdraw before authorization, so withdrawing this. The finding is withdrawn.", ctx)
+	if !ok || got != "payments.go:12 calls withdraw before authorization. "+riskAskBare {
+		t.Errorf("got %q", got)
+	}
+	got, ok = Render("Your call. Dockerfile:12 copies the whole context, so the image carries the .git directory. Withdrawn.", ctx)
+	if !ok || strings.Contains(got, "Withdrawn") || !strings.Contains(got, "Dockerfile:12") {
+		t.Errorf("extensionless paths are evidence: %q ok=%t", got, ok)
 	}
 	got, ok = Render("That is your call. a.go:12 returns 500 on a nil body, so withdrawing this.", ctx)
 	if !ok || !strings.HasPrefix(got, "That is your call. a.go:12 returns 500 on a nil body. Should this") {

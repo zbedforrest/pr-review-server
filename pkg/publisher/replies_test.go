@@ -1236,8 +1236,18 @@ func TestReplyReactor_PersistedPreConventionDecisionIsRenderedOnResume(t *testin
 	if len(gh.posted) != 0 || rep.Abstained != 1 || ledger.rows[0].Outcome != "abstained" || ledger.rows[0].Decision != DecisionAbstain || ledger.rows[0].ReplyBody != "" || ledger.states["a.go:1:abc"] != "" {
 		t.Errorf("posted=%v rep=%+v row=%+v states=%v", gh.posted, rep, ledger.rows[0], ledger.states)
 	}
-	if len(outcomes) != 1 || outcomes[0].Decision != DecisionAbstain {
-		t.Errorf("outcomes=%+v", outcomes)
+	if len(outcomes) != 1 || outcomes[0].Decision != DecisionAbstain || outcomes[0].Note != "" {
+		t.Errorf("an abstain carries no intent note: %+v", outcomes)
+	}
+
+	gh.posted, outcomes, ledger.states = nil, nil, nil
+	seed("")
+	rep, err = r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 0 || rep.Abstained != 1 || ledger.rows[0].Decision != DecisionAbstain || ledger.rows[0].Outcome != "abstained" || outcomes[0].Decision != DecisionAbstain {
+		t.Errorf("an empty persisted body must be written back as an abstain: rep=%+v row=%+v outcomes=%+v", rep, ledger.rows[0], outcomes)
 	}
 }
 

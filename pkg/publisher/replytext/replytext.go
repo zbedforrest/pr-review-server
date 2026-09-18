@@ -29,7 +29,7 @@ const (
 // now the guard..." is not a formula and is left alone, and so is "You're
 // right about the guard": dropping the formula there leaves a fragment no
 // rule can turn back into a sentence, so the prompt alone covers that form.
-var agreementOpenerRe = regexp.MustCompile(`(?i)^(?:you(?:'|’)?re right|you are right|that(?:'|’)?s (?:right|correct|fair)|correct|agreed|agree|good point|fair point|good catch|nice catch|fair enough|fair|right|yes|yep|indeed|exactly|true)(?:\s*[,.:;!]+\s*|\s+that\s+|\s*$)(?:(?:and|but|so)\s+)?`)
+var agreementOpenerRe = regexp.MustCompile(`(?i)^(?:i (?:think |believe |guess )?(?:you(?:'|’)?re right|you are right|agree)|you(?:'|’)?re right|you are right|that(?:'|’)?s (?:right|correct|fair)|correct|agreed|agree|good point|fair point|good catch|nice catch|fair enough|fair|right|yes|yep|indeed|exactly|true)(?:\s*[,.:;!]+\s*|\s+that\s+|\s*$)(?:(?:and|but|so)\s+)?`)
 
 // StripAgreementOpener drops agreement formulas from the head of the body and
 // capitalizes what remains. ok is false when nothing but formulas was there.
@@ -84,10 +84,11 @@ var (
 	// Uppercase-dash-digits that are not issue keys.
 	notTicket  = map[string]bool{"SHA": true, "UTF": true, "ISO": true, "RFC": true, "MD": true, "AES": true, "HTTP": true, "TLS": true, "CVE": true, "PR": true, "UTC": true, "RSA": true, "ES": true, "HTML": true}
 	severityRe = regexp.MustCompile(`(?i)(?:\[(critical|high|medium|low)\]|alt="(critical|high|medium|low)")`)
-	// The finding-withdrawal clause only ("so withdrawing this", "I'll
-	// withdraw the finding"); "withdraws funds" is evidence.
-	withdrawRe = regexp.MustCompile(`(?i)[,;]?\s*(?:(?:so|and|hence|therefore)\s+)?(?:(?:i|we)(?:'|’)?(?:ll| will|'d| would| am| are)?\s+)?(?:am |are )?withdraw(?:ing|n)?\b(?:\s+(?:this|it|the finding|the comment))?(?:\s+as\s+[^.!?]*)?`)
-	evidenceRe = regexp.MustCompile(`\S+\.\w+:\d+|\bline \d+`)
+	// The finding-withdrawal clause only: the verb needs the finding as its
+	// object ("so withdrawing this", "I'll withdraw the finding"), or the
+	// sentence is nothing but "Withdrawn." A domain "withdraw funds" stays.
+	withdrawRe = regexp.MustCompile(`(?i)[,;]?\s*(?:(?:so|and|hence|therefore)\s+)?(?:(?:i|we)(?:'|’)?(?:ll| will|d| would)?\s+)?withdraw(?:ing)?\s+(?:this|it|the finding|the comment)\b(?:\s+as\s+[^.!?]*)?|[,;]?\s*(?:so\s+)?(?:the\s+)?finding\s+(?:is\s+|stands\s+)?withdrawn\b|^\W*withdraw(?:n|ing)\W*$`)
+	evidenceRe = regexp.MustCompile(`[\w./-]+:\d+|\bline \d+`)
 	// A sentence ends at terminal punctuation followed by whitespace, so the
 	// dots in retry.go:41 do not split it.
 	sentenceRe = regexp.MustCompile(`.*?[.!?]+["')\]]*(?:\s+|$)|.+$`)

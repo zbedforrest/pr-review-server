@@ -994,10 +994,12 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	// reports it too.
 	rctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, Decision: row.Decision}
 	text, renderable := replytext.Render(row.ReplyBody, rctx)
+	decided := row.Decision
 	if !renderable && row.Decision != DecisionAbstain {
 		row.Decision, row.DecisionReact, text = DecisionAbstain, true, ""
 	}
-	if text != row.ReplyBody {
+	rctx.Decision = row.Decision
+	if text != row.ReplyBody || row.Decision != decided {
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
 			Decision: row.Decision, ReplyBody: text, Cited: row.Cited, Model: row.Model, DurationMS: row.DurationMS,
 			Head: row.DecisionHead, Thread: row.DecisionThread, React: row.DecisionReact,
