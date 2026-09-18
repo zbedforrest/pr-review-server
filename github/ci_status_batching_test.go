@@ -177,3 +177,46 @@ func TestBatchGetCIStatus_MergeStateRequestedFollowsTheFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestBatchGetCIStatus_RateLimitedIn200BodySkipsRemainingBatches(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded"}]}`))
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	results, err := client.BatchGetCIStatus(context.Background(), ciPRs(200, true))
+	if err != nil {
+		t.Fatalf("BatchGetCIStatus: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("results = %d, want none from throttled responses", len(results))
+	}
+	mu.Lock()
+	sent := requests
+	mu.Unlock()
+	const batches = 8
+	if sent >= batches || sent > 5 {
+		t.Fatalf("requests sent = %d, want fewer than the %d batches (at most the 5 in flight when RATE_LIMITED landed)", sent, batches)
+	}
+	logs := buf.String()
+	for _, want := range []string{
+		"batches=8", "failures(rate_limited=" + strconv.Itoa(sent) + ")", "skipped=" + strconv.Itoa(batches-sent),
+		"rate-limited: remaining batches skipped this cycle",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("summary missing %q:\n%s", want, logs)
+		}
+	}
+}

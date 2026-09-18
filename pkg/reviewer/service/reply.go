@@ -156,9 +156,10 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		}
 	}()
 
+	stderrOutput := collectStderr(proc)
 	parsed, parseErr := runtime.parseStream(proc, logFile, cfg.MaxTurns)
 	waitErr := proc.Wait()
-	stderrBuf := readAllString(proc.Stderr())
+	stderrBuf := stderrOutput()
 	redact := func(s string) string { return truncate(redactToken(s, credentialValue), 600) }
 	// The budget cases come first: a killed process can also fail the stream
 	// read, and only this function's own deadline (not one inherited from the

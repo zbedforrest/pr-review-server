@@ -123,7 +123,8 @@ type AgentReview struct {
 
 // Spawner abstracts secure subprocess creation so tests can stub the agent
 // CLI. The environment slice is complete; implementations must not inherit
-// the server process environment.
+// the server process environment. Processes must honor the SpawnedProcess
+// stderr contract; callers read stderr via collectStderr.
 type Spawner interface {
 	SpawnWithEnv(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error)
 }
@@ -131,7 +132,10 @@ type Spawner interface {
 // SpawnedProcess is what a Spawner returns.
 type SpawnedProcess interface {
 	Stdout() io.Reader
-	// Stderr is what the process wrote to stderr; complete once Wait returned.
+	// Stderr is everything the process writes to stderr. Reads may block while
+	// the process runs, but once Wait has returned the reader must hold the
+	// complete output and reach EOF without blocking. A live pipe satisfies
+	// this only when drained concurrently, which collectStderr does.
 	Stderr() io.Reader
 	Wait() error
 	Kill() error
@@ -140,6 +144,15 @@ type SpawnedProcess interface {
 func readAllString(r io.Reader) string {
 	b, _ := io.ReadAll(r)
 	return string(b)
+}
+
+// collectStderr drains proc's stderr in the background so a Spawner that
+// hands back a live pipe cannot stall the child, or Wait, on a full pipe
+// buffer. Call the returned function after Wait for the complete output.
+func collectStderr(proc SpawnedProcess) func() string {
+	ch := make(chan string, 1)
+	go func() { ch <- readAllString(proc.Stderr()) }()
+	return func() string { return <-ch }
 }
 
 // RunAgentReview clones the PR branch, spawns the configured agent CLI, parses
@@ -376,12 +389,13 @@ func RunAgentReview(
 	}()
 
 	// Stream stdout: tee to log file and parse turn-by-turn.
+	stderrOutput := collectStderr(proc)
 	var parseErr error
 	parseResult, parseErr = runtime.parseStream(proc, logFile, agentCfg.MaxTurns)
 
 	waitErr := proc.Wait()
 	agentCompletedAt = time.Now().UTC()
-	stderrBuf := readAllString(proc.Stderr())
+	stderrBuf := stderrOutput()
 	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d", parseResult.assistantTurns, parseResult.budgetUnits)
 
 	// Failure messages below feed the run's error_summary, which the API now

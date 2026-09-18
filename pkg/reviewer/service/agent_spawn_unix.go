@@ -88,21 +88,46 @@ type execProcess struct {
 
 func (e *execProcess) Stdout() io.Reader { return e.stdout }
 
-// Stderr returns what the child wrote so far; complete once Wait has returned.
-func (e *execProcess) Stderr() io.Reader { return strings.NewReader(e.stderr.String()) }
+// Stderr blocks until Wait has reaped the child, then serves everything it
+// wrote: exec's copy goroutine owns the pipe, so there is nothing to read
+// concurrently and a snapshot before exit would be incomplete.
+func (e *execProcess) Stderr() io.Reader { return &stderrAfterExit{p: e} }
+
+type stderrAfterExit struct {
+	p *execProcess
+	r io.Reader
+}
+
+func (s *stderrAfterExit) Read(b []byte) (int, error) {
+	<-s.p.done
+	if s.r == nil {
+		s.r = strings.NewReader(s.p.stderr.String())
+	}
+	return s.r.Read(b)
+}
 
 func (e *execProcess) Wait() error {
 	err := e.cmd.Wait()
 	e.once.Do(func() { close(e.done) })
+	e.killStragglers()
 	if errors.Is(err, exec.ErrWaitDelay) {
-		// The child exited successfully but a descendant kept stderr open past
-		// WaitDelay; take the stragglers down with the group.
-		log.Printf("[AGENT] %s exited but a descendant kept stderr open for %s; killing its process group",
-			e.cmd.Path, stderrWaitDelay)
-		_ = e.killGroup()
+		// The child itself exited 0; only a descendant held stderr past WaitDelay.
 		return nil
 	}
 	return err
+}
+
+// killStragglers group-kills whatever the exited leader left behind. This
+// runs on every exit path because ErrWaitDelay alone misses two cases: a
+// descendant that redirected all of its output holds no tracked pipe, so
+// Wait returns nil immediately, and a non-zero exit reports the ExitError
+// instead of ErrWaitDelay.
+func (e *execProcess) killStragglers() {
+	if syscall.Kill(-e.cmd.Process.Pid, 0) != nil {
+		return
+	}
+	log.Printf("[AGENT] %s exited but left descendants alive in its process group; killing them", e.cmd.Path)
+	_ = e.killGroup()
 }
 
 // Kill sends SIGKILL to the entire process group so any subprocesses
