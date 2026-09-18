@@ -45,6 +45,10 @@ func TestAssertsIntent(t *testing.T) {
 		"Defaced input is rejected on purpose; the commit message explains why.",
 	}
 	no := []string{
+		"This was not intentional; I will fix it.",
+		"This is not intended behavior, it is a bug.",
+		"It wasn't by design, fixing now.",
+		"Was intentional, but I'll fix it anyway.",
 		"Fixed in 519f006, the guard is now on line 77.",
 		"It was intentional at first but I changed it to clear the banner too.",
 		"It is read by the deploy script, see hello.txt.",
@@ -76,15 +80,26 @@ func TestDefersAndTicketKeys(t *testing.T) {
 			t.Errorf("should defer: %q", s)
 		}
 	}
-	if Defers("Fixed in 519f006, the guard is now on line 77.") {
-		t.Errorf("a fix is not a deferral")
+	for _, s := range []string{
+		"Fixed in 519f006, the guard is now on line 77.",
+		"This is not a separate issue; it is fixed here.",
+		"No follow-up is needed, the guard covers it.",
+	} {
+		if Defers(s) {
+			t.Errorf("should not defer: %q", s)
+		}
 	}
-	keys := TicketKeys("Tracked in PROJ-42 and PROJ-42 again; uses SHA-256 and UTF-8, see CVE-2024-1234 and RFC-7231.")
+	keys := TicketKeys("Tracked in PROJ-42 and under PROJ-42 again; uses SHA-256 and UTF-8, see CVE-2024-1234 and RFC-7231.")
 	if len(keys) != 1 || keys[0] != "PROJ-42" {
 		t.Errorf("keys = %v", keys)
 	}
-	if got := TicketKeys("no keys here, just retry.go:41"); got != nil {
+	if got := TicketKeys("Out of scope: ticket XO-291 owns the bridge, see https://example.test/browse/XO-291."); len(got) != 1 || got[0] != "XO-291" {
 		t.Errorf("keys = %v", got)
+	}
+	for _, s := range []string{"no keys here, just retry.go:41", "GPT-4 handles it in a follow-up.", "The COVID-19 banner is out of scope."} {
+		if got := TicketKeys(s); got != nil {
+			t.Errorf("%q: keys = %v", s, got)
+		}
 	}
 }
 
@@ -132,6 +147,14 @@ func TestRenderIntentPushbackAcknowledgesAndRecordsWithoutWithdrawing(t *testing
 	domain := "payments.go:12 withdraws funds before the authorization check. Keeping it means a double charge is possible."
 	if got, _ := Render(domain, ctx); !strings.HasPrefix(got, domain) {
 		t.Errorf("domain language is not a withdrawal: %q", got)
+	}
+	got, ok = Render("That is your call. a.go:12 returns 500 on a nil body, so withdrawing this.", ctx)
+	if !ok || !strings.HasPrefix(got, "That is your call. a.go:12 returns 500 on a nil body. Should this") {
+		t.Errorf("the clause goes, the evidence stays: %q", got)
+	}
+	got, ok = Render("Fair enough, that is your call, so I'll withdraw the finding as intended behavior.", ctx)
+	if ok {
+		t.Errorf("no consequence on the record must not post: %q", got)
 	}
 }
 
@@ -196,5 +219,13 @@ func TestRenderDeferralAsksForOrRepeatsTheTicketKey(t *testing.T) {
 	got, _ = Render("The cache key on cache.go:12 remains shared; if there is a ticket for this, its key would close the thread.", Context{AuthorComment: "Out of scope, follow-up.", Decision: "hold"})
 	if strings.Contains(got, TicketAsk) {
 		t.Errorf("an ask in the model's own words must not be doubled: %q", got)
+	}
+	got, _ = Render("The issue key on cache.go:12 remains shared between tenants.", Context{AuthorComment: "Out of scope, follow-up.", Decision: "hold"})
+	if !strings.HasSuffix(got, TicketAsk) {
+		t.Errorf("issue key in passing is not an ask: %q", got)
+	}
+	got, _ = Render("Your call. The description column on schema.sql:12 stays nullable, so imports skip it.", Context{AuthorComment: "Intentional, keeping as is.", FindingBody: "**[HIGH] x**", Decision: "concede"})
+	if !strings.HasSuffix(got, "accepted risk?") {
+		t.Errorf("description in passing is not the ask: %q", got)
 	}
 }

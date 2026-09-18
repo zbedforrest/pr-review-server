@@ -1222,6 +1222,9 @@ func TestReplyReactor_PersistedPreConventionDecisionIsRenderedOnResume(t *testin
 	if len(outcomes) != 1 || outcomes[0].Note != replytext.NoteIntentAcknowledged || outcomes[0].Outcome != "posted" {
 		t.Errorf("outcomes=%+v", outcomes)
 	}
+	if ledger.rows[0].ReplyBody != want || ledger.rows[0].DecisionHead != "head1" {
+		t.Errorf("the ledger must hold what was posted: %+v", ledger.rows[0])
+	}
 
 	gh.posted, outcomes, ledger.states = nil, nil, nil
 	gh.threads["acme/example#7"] = gh.threads["acme/example#7"][:2]
@@ -1230,8 +1233,11 @@ func TestReplyReactor_PersistedPreConventionDecisionIsRenderedOnResume(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(gh.posted) != 0 || rep.Abstained != 1 || ledger.rows[0].Outcome != "abstained" || ledger.states["a.go:1:abc"] != "" {
+	if len(gh.posted) != 0 || rep.Abstained != 1 || ledger.rows[0].Outcome != "abstained" || ledger.rows[0].Decision != DecisionAbstain || ledger.rows[0].ReplyBody != "" || ledger.states["a.go:1:abc"] != "" {
 		t.Errorf("posted=%v rep=%+v row=%+v states=%v", gh.posted, rep, ledger.rows[0], ledger.states)
+	}
+	if len(outcomes) != 1 || outcomes[0].Decision != DecisionAbstain {
+		t.Errorf("outcomes=%+v", outcomes)
 	}
 }
 

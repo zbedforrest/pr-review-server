@@ -202,9 +202,7 @@ type ReplyRequest struct {
 
 // ReplyDecision is the reply model's conclusion. Reply is empty for abstain.
 // React says whether the author's comment gets a 👍 alongside (or instead of)
-// the text; the model chooses so a rebutted pushback is not thumbed up. Note
-// names the sub-path a concession took (replytext.NoteIntentAcknowledged);
-// it is derived from the author's words and reported, not persisted.
+// the text; the model chooses so a rebutted pushback is not thumbed up.
 type ReplyDecision struct {
 	Decision   string
 	Reply      string
@@ -212,7 +210,6 @@ type ReplyDecision struct {
 	React      bool
 	Model      string
 	DurationMS int64
-	Note       string
 }
 
 // renderDecision applies the posting conventions to the model's reply before
@@ -228,7 +225,7 @@ func renderDecision(d ReplyDecision, reply AuthorReply, root ThreadComment) Repl
 	if !ok {
 		return ReplyDecision{Decision: DecisionAbstain, Cited: d.Cited, React: true, Model: d.Model, DurationMS: d.DurationMS}
 	}
-	d.Reply, d.Note = body, replytext.Note(ctx)
+	d.Reply = body
 	return d
 }
 
@@ -991,11 +988,24 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		row.Decision, row.ReplyBody, row.DecisionReact = decision.Decision, decision.Reply, decision.React
 		outcome.Decision, outcome.Model, outcome.DurationMS = decision.Decision, decision.Model, decision.DurationMS
 	}
-	// A row decided before this convention took effect is rendered again here;
-	// rendering is a no-op on an already rendered body. The note is derived
-	// here too so a resumed step reports it.
+	// A row decided before this convention took effect is rendered here and
+	// written back so the ledger holds what is posted; rendering is a no-op
+	// on an already rendered body. The note is derived here so a resumed step
+	// reports it too.
 	rctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, Decision: row.Decision}
 	text, renderable := replytext.Render(row.ReplyBody, rctx)
+	if !renderable && row.Decision != DecisionAbstain {
+		row.Decision, row.DecisionReact, text = DecisionAbstain, true, ""
+	}
+	if text != row.ReplyBody {
+		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
+			Decision: row.Decision, ReplyBody: text, Cited: row.Cited, Model: row.Model, DurationMS: row.DurationMS,
+			Head: row.DecisionHead, Thread: row.DecisionThread, React: row.DecisionReact,
+		}); err != nil {
+			return outcome, err
+		}
+		row.ReplyBody, outcome.Decision = text, row.Decision
+	}
 	outcome.Note = replytext.Note(rctx)
 	switch {
 	case row.Decision == DecisionAbstain || !renderable:
