@@ -428,3 +428,34 @@ func (MentionTriggerModel) TableName() string { return "mention_triggers" }
 // TableName pins the name GORM derived when the table first shipped; the raw
 // migration SQL in gorm.go targets it by this name.
 func (PublishedReplyModel) TableName() string { return "published_reply_models" }
+
+// BlogPostModel is one blog post: a directory of uploaded files whose
+// index.html is the page. Slug is the URL segment and primary key.
+type BlogPostModel struct {
+	Slug        string `gorm:"primaryKey;size:81"`
+	Title       string `gorm:"size:255;not null"`
+	Dek         string `gorm:"type:text"`
+	AuthorLogin string `gorm:"size:255;not null;default:''"`
+	Published   bool   `gorm:"not null;default:false;index"`
+	PublishedAt *time.Time
+	IndexObject string    `gorm:"size:512;not null;default:''"`
+	CreatedAt   time.Time `gorm:"not null"`
+	UpdatedAt   time.Time `gorm:"not null"`
+}
+
+func (BlogPostModel) TableName() string { return "blog_posts" }
+
+// BlogAssetModel is one uploaded file of a post, keyed by the path the post's
+// HTML references it under (index.html included).
+type BlogAssetModel struct {
+	ID            uint      `gorm:"primaryKey;autoIncrement"`
+	Slug          string    `gorm:"size:81;not null;uniqueIndex:idx_blog_assets_slug_path"`
+	Path          string    `gorm:"size:512;not null;uniqueIndex:idx_blog_assets_slug_path"`
+	ContentType   string    `gorm:"size:128;not null"`
+	SizeBytes     int64     `gorm:"not null;default:0"`
+	StorageObject string    `gorm:"size:1024;not null"`
+	ETag          string    `gorm:"column:etag;size:80;not null;default:''"`
+	UploadedAt    time.Time `gorm:"not null"`
+}
+
+func (BlogAssetModel) TableName() string { return "blog_assets" }

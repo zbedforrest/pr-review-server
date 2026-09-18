@@ -209,6 +209,25 @@ Separate executions of the same PR commit are distinguished by opaque unique
 `run_id` values. Successful artifacts are immutable run-scoped objects, while
 the PR row remains only the latest published projection.
 
+## Blog
+
+Signed-in members can read posts at `/blog`; admins manage them from the Settings page or the API. A post is a directory: `index.html` is the page and every other file is an asset it references by relative path, so a self-contained static page publishes unchanged. Pages are served with a CSP that allows inline styles and same-origin images and media only, so uploaded HTML cannot run scripts. Files live under `blog/<slug>/` in `GCS_BUCKET`, or under `BLOG_LOCAL_DIR` (default `./data/blog`) when no bucket is configured. The bucket must stay private, as it already must for review artifacts: access control is enforced by the server, not by object ACLs.
+
+Publish from a terminal with the GitHub CLI token of an admin:
+
+```bash
+PRISM_BASE_URL=https://prism.example.com \
+  scripts/blog_publish.sh ./site my-post "Post title" "One-line summary" --publish
+```
+
+Without `--publish` the post stays a draft that only admins can open. Re-running the script with the same slug uploads the current files, removes stored files that are no longer in the directory, and keeps the publish state.
+
+- `GET /api/blog/posts` lists posts (drafts for admins only)
+- `PUT /api/blog/posts/{slug}` creates or updates `{title, dek, published}`; publishing requires an uploaded `index.html`
+- `PUT /api/blog/posts/{slug}/files/{path}` uploads one file as the raw body with its `Content-Type`; 15 MiB per file, 64 MiB and 200 files per post; `index.html` must be `text/html`, assets may be PNG, JPEG, GIF, WebP, SVG, WebM, MP4, CSS, WOFF2, JSON or plain text
+- `DELETE /api/blog/posts/{slug}/files/{path}` removes one file; removing `index.html` unpublishes the post
+- `DELETE /api/blog/posts/{slug}` removes the post and its files
+
 ## Themes
 
 The dashboard ships twenty themes — One Dark/Light, GitHub, Gruvbox, Solarized, Monokai, Dracula, Nord, Night Owl, Tokyo Night, the four Catppuccin flavors, Everforest, Rose Pine and SynthWave '84. Pick one from the **Theme** control in the header; the choice is a per-browser preference stored in `localStorage` under `prism.theme.v1` and re-applied before the first paint, so it survives reloads without flashing the default. With nothing stored, the OS light/dark preference decides.

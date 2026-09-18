@@ -12,7 +12,7 @@ export class APIError extends Error {
   }
 }
 
-function handleUnauthorized(response: Response): void {
+export function handleUnauthorized(response: Response): void {
   if (response.status === 401) {
     window.location.href = '/login';
   }
@@ -50,6 +50,24 @@ export async function apiGet<T>(endpoint: string): Promise<T> {
 export async function apiPost<T>(endpoint: string, body: unknown): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  handleUnauthorized(response);
+
+  if (!response.ok) {
+    throw await errorFromResponse(response);
+  }
+
+  return response.json();
+}
+
+export async function apiPut<T>(endpoint: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
     },

@@ -18,4 +18,9 @@ describe('Header', () => {
     expect(screen.getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('/settings');
     expect(screen.getByRole('link', { name: 'Stats' }).getAttribute('href')).toBe('/usage-stats');
   });
+
+  it('links to the blog as a full-page navigation', () => {
+    render(<Header />);
+    expect(screen.getByRole('link', { name: 'Blog' }).getAttribute('href')).toBe('/blog');
+  });
 });

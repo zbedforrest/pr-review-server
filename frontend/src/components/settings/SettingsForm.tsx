@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { ReplyMode, Settings } from '@/api/settings';
 import { useUpdateSettings } from '@/hooks/useSettings';
 import { LoginListField } from './LoginListField';
@@ -18,6 +18,7 @@ interface SettingsFormProps {
   currentLogin: string;
   knownLogins?: Set<string>;
   replyTotals?: ReplyTotals | null;
+  children?: ReactNode;
 }
 
 const SEVERITIES = ['critical', 'medium', 'low'];
@@ -112,7 +113,7 @@ const numberValue = (n: number) => (Number.isNaN(n) ? '' : n);
 const isCount = (n: number, min: number) => Number.isInteger(n) && n >= min;
 const describedBy = (id: string, invalid: boolean) => (invalid ? `${id}-help ${id}-error` : `${id}-help`);
 
-export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, replyTotals }: SettingsFormProps) {
+export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, replyTotals, children }: SettingsFormProps) {
   const disabled = !isAdmin;
   const review = useSectionDraft(settings, ['auto_review_requested_prs', 'review_n_requests']);
   const publishing = useSectionDraft(settings, [
@@ -392,6 +393,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
           knownLogins={knownLogins}
         />
       </SettingsSection>
+      {children}
     </div>
   );
 }

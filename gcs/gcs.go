@@ -2,6 +2,7 @@ package gcs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -292,4 +293,48 @@ func (c *Client) GetReviewContent(ctx context.Context, filename string) ([]byte,
 // BucketName returns the bucket name
 func (c *Client) BucketName() string {
 	return c.bucketName
+}
+
+// ErrObjectNotFound is returned by ReadObject for a missing object.
+var ErrObjectNotFound = errors.New("object not found")
+
+// UploadObject writes an arbitrary object, overwriting any existing one.
+func (c *Client) UploadObject(ctx context.Context, name, contentType string, content []byte) error {
+	writer := c.bucket.Object(name).NewWriter(ctx)
+	writer.ContentType = contentType
+	writer.CacheControl = "private, no-cache"
+	if _, err := writer.Write(content); err != nil {
+		writer.Close()
+		return fmt.Errorf("failed to write object %s: %w", name, err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("failed to close writer for %s: %w", name, err)
+	}
+	return nil
+}
+
+// ReadObject returns the content of an object, or ErrObjectNotFound.
+func (c *Client) ReadObject(ctx context.Context, name string) ([]byte, error) {
+	reader, err := c.bucket.Object(name).NewReader(ctx)
+	if errors.Is(err, storage.ErrObjectNotExist) {
+		return nil, ErrObjectNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to open object %s: %w", name, err)
+	}
+	defer reader.Close()
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read object %s: %w", name, err)
+	}
+	return content, nil
+}
+
+// DeleteObject removes an object; a missing object is not an error.
+func (c *Client) DeleteObject(ctx context.Context, name string) error {
+	err := c.bucket.Object(name).Delete(ctx)
+	if err == nil || errors.Is(err, storage.ErrObjectNotExist) {
+		return nil
+	}
+	return fmt.Errorf("failed to delete object %s: %w", name, err)
 }
