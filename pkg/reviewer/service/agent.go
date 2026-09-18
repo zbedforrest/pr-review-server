@@ -383,9 +383,12 @@ func RunAgentReview(
 	var parseErr error
 	parseResult, parseErr = runtime.parseStream(proc, logFile, agentCfg.MaxTurns)
 
+	// os/exec's Wait closes the pipes once the child exits, so stderr must be
+	// fully read before it; the kill paths already closed the pipe, so this
+	// returns at once there.
+	stderrWG.Wait()
 	waitErr := proc.Wait()
 	agentCompletedAt = time.Now().UTC()
-	stderrWG.Wait()
 	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d", parseResult.assistantTurns, parseResult.budgetUnits)
 
 	// Failure messages below feed the run's error_summary, which the API now

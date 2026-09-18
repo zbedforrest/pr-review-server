@@ -43,8 +43,8 @@ func runStreamLikeAgent(proc SpawnedProcess, maxTurns int) *agentRunOutcome {
 		_, _ = io.Copy(&out.stderr, proc.Stderr())
 	}()
 	out.parsed, out.parseErr = parseAgentStream(proc, &out.stdout, maxTurns)
-	out.waitErr = proc.Wait()
 	wg.Wait()
+	out.waitErr = proc.Wait()
 	return out
 }
 
