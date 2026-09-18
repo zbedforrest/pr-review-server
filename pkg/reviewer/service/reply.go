@@ -134,6 +134,7 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 	if err != nil {
 		return nil, fmt.Errorf("reply: spawn %s: %w", runtime.command, err)
 	}
+	stderrOutput := collectStderr(proc)
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		_ = proc.Kill()
@@ -156,7 +157,6 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		}
 	}()
 
-	stderrOutput := collectStderr(proc)
 	parsed, parseErr := runtime.parseStream(proc, logFile, cfg.MaxTurns)
 	waitErr := proc.Wait()
 	stderrBuf := stderrOutput()

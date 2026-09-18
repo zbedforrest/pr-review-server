@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -84,6 +85,7 @@ type execProcess struct {
 	stderr *boundedBuffer
 	done   chan struct{}
 	once   sync.Once
+	killed atomic.Bool
 }
 
 func (e *execProcess) Stdout() io.Reader { return e.stdout }
@@ -118,16 +120,22 @@ func (e *execProcess) Wait() error {
 }
 
 // killStragglers group-kills whatever the exited leader left behind. This
-// runs on every exit path because ErrWaitDelay alone misses two cases: a
+// runs on every Wait because ErrWaitDelay alone misses two cases: a
 // descendant that redirected all of its output holds no tracked pipe, so
 // Wait returns nil immediately, and a non-zero exit reports the ExitError
-// instead of ErrWaitDelay.
+// instead of ErrWaitDelay. It cannot help a descendant that still holds
+// stdout: callers only reach Wait after stdout EOF, so that case stalls
+// until the wall-clock watcher kills the group.
 func (e *execProcess) killStragglers() {
-	if syscall.Kill(-e.cmd.Process.Pid, 0) != nil {
+	// After an explicit Kill the group already got SIGKILL; what the probe
+	// would find is zombies init has not reaped yet.
+	if e.killed.Load() || syscall.Kill(-e.cmd.Process.Pid, 0) != nil {
 		return
 	}
 	log.Printf("[AGENT] %s exited but left descendants alive in its process group; killing them", e.cmd.Path)
-	_ = e.killGroup()
+	if err := e.killGroup(); err != nil {
+		log.Printf("[AGENT] failed to kill process group %d left by %s: %v", e.cmd.Process.Pid, e.cmd.Path, err)
+	}
 }
 
 // Kill sends SIGKILL to the entire process group so any subprocesses
@@ -140,6 +148,7 @@ func (e *execProcess) Kill() error {
 	if e.cmd.Process == nil {
 		return nil
 	}
+	e.killed.Store(true)
 	killErr := e.killGroup()
 	if e.stdout != nil {
 		_ = e.stdout.Close()

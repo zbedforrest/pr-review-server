@@ -371,6 +371,7 @@ func RunAgentReview(
 		_ = observeProviderAttempt(agentCfg.AttemptObserver, event)
 	}()
 
+	stderrOutput := collectStderr(proc)
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		_ = proc.Kill()
@@ -389,7 +390,6 @@ func RunAgentReview(
 	}()
 
 	// Stream stdout: tee to log file and parse turn-by-turn.
-	stderrOutput := collectStderr(proc)
 	var parseErr error
 	parseResult, parseErr = runtime.parseStream(proc, logFile, agentCfg.MaxTurns)
 

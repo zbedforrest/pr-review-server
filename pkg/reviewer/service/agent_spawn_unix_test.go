@@ -189,7 +189,6 @@ exit 0
 	}
 	waitForProcessGroupGone(t, proc)
 
-	time.Sleep(1500 * time.Millisecond)
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("grandchild survived the parent's exit (marker stat err=%v)", err)
 	}
