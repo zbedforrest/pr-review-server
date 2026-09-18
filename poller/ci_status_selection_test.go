@@ -217,16 +217,16 @@ func TestPoll_CIStatusGitHubActivityMakesMergeStateDue(t *testing.T) {
 	first := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	mockGH.SearchOpenPRsResults = []github.PRInfo{{Owner: "owner", Repo: "repo", Number: 1, UpdatedAt: &first}}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 	if got := mockDB.PRs["owner/repo/1"].GitHubUpdatedAt; got == nil || !got.Equal(first) {
 		t.Fatalf("search timestamp not persisted after cycle 1, got %v", got)
 	}
 	reviewed := first.Add(time.Hour)
 	mockGH.SearchOpenPRsResults[0].UpdatedAt = &reviewed
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 
 	calls := mockGH.BatchGetCIStatusCalls
@@ -260,7 +260,7 @@ func TestPoll_CIStatusSelectionSkipsClosedAndUnwatchedRows(t *testing.T) {
 	log.SetOutput(&logs)
 	defer log.SetOutput(os.Stderr)
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 
 	if len(mockGH.BatchGetCIStatusCalls) != 1 {
@@ -290,7 +290,7 @@ func TestPoll_CIStatusHiddenViewAndBotAuthorAreNotWatched(t *testing.T) {
 	log.SetOutput(&logs)
 	defer log.SetOutput(os.Stderr)
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 
 	if len(mockGH.BatchGetCIStatusCalls) != 1 {
@@ -310,7 +310,7 @@ func TestPoll_CIStatusMergeStateFollowsCadenceAcrossCycles(t *testing.T) {
 	mockGH := poller.ghClient.(*MockGitHubClient)
 
 	for cycle := 1; cycle <= 6; cycle++ {
-		poller.poll(context.Background())
+		poller.poll(context.Background(), false)
 		waitForDetachedReviews(t, poller)
 	}
 
@@ -333,7 +333,7 @@ func TestPoll_CIStatusHeadChangeMakesMergeStateDue(t *testing.T) {
 	mockDB, poller, _ := mergeStatePollFixture(t, "CLEAN", "CLEAN")
 	mockGH := poller.ghClient.(*MockGitHubClient)
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 	const newSHA = "fedcba9876543210fedcba9876543210fedcba98"
 	mockGH.PRsRequestingReview[0].CommitSHA = newSHA
@@ -342,7 +342,7 @@ func TestPoll_CIStatusHeadChangeMakesMergeStateDue(t *testing.T) {
 		Err error
 	}{newSHA, nil}
 	mockDB.PRs["owner/repo/1"].LastCommitSHA = newSHA
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 
 	calls := mockGH.BatchGetCIStatusCalls
@@ -358,7 +358,7 @@ func TestPoll_CIStatusQueryRequestsMergeStateForOpenPRs(t *testing.T) {
 	_, poller, _ := mergeStatePollFixture(t, "CLEAN", "CLEAN")
 	mockGH := poller.ghClient.(*MockGitHubClient)
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 
 	if len(mockGH.BatchGetCIStatusCalls) != 1 {
@@ -378,7 +378,7 @@ func TestPoll_CIStatusWithoutMergeStateKeepsStoredMergeFields(t *testing.T) {
 		FailedChecks: []string{"build"},
 	}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 
 	pr := mockDB.PRs["owner/repo/1"]
@@ -400,7 +400,7 @@ func TestPoll_CIStatusMissingNodeKeepsStoredValues(t *testing.T) {
 		State: "unknown", FailedChecks: []string{}, MergeStateRequested: true, Missing: true,
 	}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 
 	pr := mockDB.PRs["owner/repo/1"]
@@ -425,7 +425,7 @@ func TestPoll_CIStatusDevModeTreatsEveryOpenPRAsVisible(t *testing.T) {
 			poller.SetDevUser(&mockDB.Users[0])
 		}
 
-		poller.poll(context.Background())
+		poller.poll(context.Background(), false)
 		waitForDetachedReviews(t, poller)
 
 		if len(mockGH.BatchGetCIStatusCalls) != 1 {

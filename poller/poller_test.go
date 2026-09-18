@@ -1599,7 +1599,7 @@ func TestPoll_FullCycle_Success(t *testing.T) {
 	ctx := context.Background()
 
 	// Execute poll
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify: PR was created in database
@@ -1647,7 +1647,7 @@ func TestPoll_CleansUpClosedPRs(t *testing.T) {
 	ctx := context.Background()
 
 	// Execute poll
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify: PR was removed from database
@@ -1686,7 +1686,7 @@ func TestPoll_SyncsDraftStateFromGitHub(t *testing.T) {
 	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
 
 	// Execute poll
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	// Verify: PR 1's draft flag was synced to GitHub's value
 	if mockDB.PRs["owner/repo/1"].Draft {
@@ -1722,7 +1722,7 @@ func TestPoll_SyncsDraftStateReadyToDraft(t *testing.T) {
 	mockGH.MyOpenPRs = []github.PullRequest{}
 
 	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	if !mockDB.PRs["owner/repo/1"].Draft {
 		t.Error("expected PR draft flag to be synced to true (converted to draft on GitHub)")
@@ -1766,7 +1766,7 @@ func TestPoll_ProcessesDatabasePendingPRs(t *testing.T) {
 	ctx := context.Background()
 
 	// Execute poll
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify: Review was generated for the pending PR
@@ -1811,7 +1811,7 @@ func TestPoll_DetectsOutdatedReviews(t *testing.T) {
 	ctx := context.Background()
 
 	// Execute poll
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify: PR was reset to pending with new commit
@@ -1865,7 +1865,7 @@ func TestPoll_SkipsPendingWhenAutoReviewDisabled(t *testing.T) {
 	ctx := context.Background()
 
 	// Execute poll
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify: Review was NOT generated (auto-review disabled)
@@ -1919,7 +1919,7 @@ func TestPoll_ProcessesManualTriggerEvenWhenAutoReviewDisabled(t *testing.T) {
 	ctx := context.Background()
 
 	// Execute poll
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify: Review WAS generated (manual trigger overrides auto-review setting)
@@ -2007,7 +2007,7 @@ func TestPoll_ReviewDataUpdate_NoBroadcastWhenUnchanged(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Count pr_updated events (should be minimal since nothing changed)
@@ -2092,7 +2092,7 @@ func TestPoll_ReviewDataUpdate_BroadcastsWhenApprovalChanges(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify the database was updated with new values
@@ -2180,7 +2180,7 @@ func TestPoll_CIStatusUpdate_BroadcastsWhenStateChanges(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify the database was updated with new CI values
@@ -2274,7 +2274,7 @@ func countEvents(events []string, eventType string) int {
 func TestPoll_CIStatusUpdate_BroadcastsWhenMergeStateChanges(t *testing.T) {
 	mockDB, poller, events := mergeStatePollFixture(t, "BLOCKED", "CLEAN")
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 
 	pr := mockDB.PRs["owner/repo/1"]
@@ -2292,7 +2292,7 @@ func TestPoll_CIStatusUpdate_BroadcastsWhenMergeStateChanges(t *testing.T) {
 func TestPoll_CIStatusUpdate_NoBroadcastWhenMergeStateUnchanged(t *testing.T) {
 	mockDB, poller, events := mergeStatePollFixture(t, "CLEAN", "CLEAN")
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	waitForDetachedReviews(t, poller)
 
 	if pr := mockDB.PRs["owner/repo/1"]; pr.MergeStateStatus != "CLEAN" {
@@ -2367,7 +2367,7 @@ func TestPoll_CIStatusUpdate_NoBroadcastWhenUnchanged(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Count pr_updated events - should be minimal
@@ -2448,7 +2448,7 @@ func TestPoll_DraftStatusChange_BroadcastsUpdate(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify the database was updated
@@ -2515,7 +2515,7 @@ func TestPoller_SyncsReviewStatusToUserPRViews(t *testing.T) {
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify that UpdateUserReviewStatus was called
@@ -2566,7 +2566,7 @@ func TestPoller_SyncsViaTeamsToUserPRViews(t *testing.T) {
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// This test passes if poll() doesn't panic when calling BatchGetReviewerGroups
@@ -2644,7 +2644,7 @@ func TestPoller_ResolvesTeamReviewStatuses(t *testing.T) {
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify UpdateUserViaTeams was called
@@ -2734,7 +2734,7 @@ func TestPoller_ResolvesTeamStatuses_OrgNameFromData(t *testing.T) {
 	}
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	if len(mockDB.UpdateUserViaTeamsCalls) == 0 {
 		t.Fatal("expected UpdateUserViaTeams to be called")
@@ -2800,7 +2800,7 @@ func TestPoller_DoesNotOverwriteViaTeamsWithEmpty(t *testing.T) {
 	}
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	if len(mockDB.UpdateUserViaTeamsCalls) != 0 {
 		t.Errorf("expected UpdateUserViaTeams NOT to be called with empty data, but got %d calls: %v",
@@ -2854,7 +2854,7 @@ func TestPoller_UpdatesViaTeamsWhenDataIsNonEmpty(t *testing.T) {
 	}
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	if len(mockDB.UpdateUserViaTeamsCalls) == 0 {
 		t.Fatal("expected UpdateUserViaTeams to be called with non-empty team data, but it wasn't")
@@ -2923,7 +2923,7 @@ func TestPoller_NoViewCreatedForNonReviewer(t *testing.T) {
 	}
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	// testuser is NOT the author, NOT on backend-team, NOT personally requested,
 	// and has no review status — EnsureUserPRView should NOT be called
@@ -2979,7 +2979,7 @@ func TestPoller_PersonalOnlyUpdatesViaTeams(t *testing.T) {
 	}
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	if len(mockDB.UpdateUserViaTeamsCalls) == 0 {
 		t.Fatal("expected UpdateUserViaTeams to be called for __PERSONAL__ marker, but it wasn't")
@@ -3078,7 +3078,7 @@ func TestPoll_ApprovalAndReviewStatusUpdateWhenAutoReviewDisabled(t *testing.T) 
 	}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Assert: DB updated to 3 approvals and "APPROVED"
@@ -3193,7 +3193,7 @@ func TestPoll_DevModeWithOrgConfigured_IncludesTeamRequestedPRs(t *testing.T) {
 	poller.devUser = &db.User{ID: 1, GitHubUsername: "testuser"}
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	searchCalled := false
 	for _, call := range mockGH.CallLog {
@@ -3293,7 +3293,7 @@ func TestPoll_CIStatusUpdatesWhenAutoReviewDisabled(t *testing.T) {
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Assert: DB updated to "failure" CI state
@@ -3367,7 +3367,7 @@ func TestPoll_MetadataUpdatesRunBeforeCleanup(t *testing.T) {
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Verify call ordering: BatchGetPRReviewData must come before BatchGetPRState
@@ -3463,7 +3463,7 @@ func TestPoll_NoReviewGenerationForPendingPRsWhenAutoReviewDisabled(t *testing.T
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
 	ctx := context.Background()
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	waitForDetachedReviews(t, poller)
 
 	// Assert: PR was included in BatchGetPRReviewData (metadata updated)
@@ -3535,7 +3535,7 @@ func TestPoll_NewPR_PreInsertedAndUserViewCreated(t *testing.T) {
 	poller.devUser = &db.User{ID: 1, GitHubUsername: "testuser"}
 	poller.EventFunc = func(eventType string, payload interface{}) {}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	// Verify 1: PR was inserted into the database
 	pr, err := mockDB.GetPR("owner", "repo", 99)
@@ -3884,7 +3884,7 @@ func TestPoll_UpdatesStaleTitle_OrgMode(t *testing.T) {
 		}
 	}
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	if got := mockDB.PRs["owner/repo/1"].Title; got != newTitle {
 		t.Errorf("expected DB title updated to %q, got %q", newTitle, got)
@@ -3897,7 +3897,7 @@ func TestPoll_UpdatesStaleTitle_OrgMode(t *testing.T) {
 	}
 
 	// Second poll with matching titles must not update again.
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	if len(mockDB.UpdatePRMetadataCalls) != 1 {
 		t.Errorf("expected no further UpdatePRMetadata calls on second poll, got %d total", len(mockDB.UpdatePRMetadataCalls))
 	}
@@ -3927,7 +3927,7 @@ func TestPoll_UpdatesStaleTitle_DevMode(t *testing.T) {
 
 	poller := newTestPollerFull(mockGH, mockDB, NewMockReviewStorage(), NewMockReviewGenerator())
 
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	if got := mockDB.PRs["owner/repo/1"].Title; got != newTitle {
 		t.Errorf("expected DB title updated to %q, got %q", newTitle, got)
@@ -3937,7 +3937,7 @@ func TestPoll_UpdatesStaleTitle_DevMode(t *testing.T) {
 	}
 
 	// Second poll with matching titles must not update again.
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 	if len(mockDB.UpdatePRMetadataCalls) != 1 {
 		t.Errorf("expected no further UpdatePRMetadata calls on second poll, got %d total", len(mockDB.UpdatePRMetadataCalls))
 	}
@@ -3999,7 +3999,7 @@ func TestPoll_ViewSyncsSkipRetainedMergedPR(t *testing.T) {
 	}
 
 	poller := newRetainedPRTestPoller(mockGH, mockDB)
-	poller.poll(context.Background())
+	poller.poll(context.Background(), false)
 
 	for _, call := range mockDB.EnsureUserPRViewCalls {
 		if call.PRID == 11 {
@@ -4076,7 +4076,7 @@ func TestPoll_RetainedMergedPRStaysHiddenAcrossCycles(t *testing.T) {
 		}
 	}
 
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	if got := mockDB.PRs["owner/repo/1"].PRState; got != "merged" {
 		t.Fatalf("cycle 1: expected pr_state merged after cleanup, got %q", got)
 	}
@@ -4084,7 +4084,7 @@ func TestPoll_RetainedMergedPRStaysHiddenAcrossCycles(t *testing.T) {
 	viewUpserts := len(mockDB.EnsureUserPRViewCalls)
 	viaTeamsWrites := len(mockDB.UpdateUserViaTeamsCalls)
 
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	assertVisibility("cycle 2 (retained, no re-assert)", true, false, false)
 	if len(mockDB.EnsureUserPRViewCalls) != viewUpserts {
 		t.Errorf("cycle 2 upserted views for the retained PR: %+v", mockDB.EnsureUserPRViewCalls[viewUpserts:])
@@ -4101,13 +4101,13 @@ func TestPoll_RetainedMergedPRStaysHiddenAcrossCycles(t *testing.T) {
 	reopenedAt := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 	mockGH.BatchGetPRStateResults["owner/repo/1"].State = "OPEN"
 	mockGH.SearchOpenPRsResults = []github.PRInfo{{Owner: "owner", Repo: "repo", Number: 1, UpdatedAt: &reopenedAt}}
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	if got := mockDB.PRs["owner/repo/1"].PRState; got != "open" {
 		t.Fatalf("cycle 3: expected pr_state restored to open, got %q", got)
 	}
 	assertVisibility("cycle 3 (re-open detected, syncs still saw merged)", true, false, false)
 
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	assertVisibility("cycle 4 (re-opened, entitlements re-asserted)", true, true, true)
 	if got := mockDB.PRs["owner/repo/1"].GitHubUpdatedAt; got == nil || !got.Equal(reopenedAt) {
 		t.Errorf("cycle 4 should persist the search timestamp once the syncs ran, got %v", got)

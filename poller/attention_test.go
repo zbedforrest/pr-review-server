@@ -63,7 +63,7 @@ func (f *attentionFixture) pollCapturingLog() string {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
-	f.poller.poll(context.Background())
+	f.poller.poll(context.Background(), false)
 	return buf.String()
 }
 

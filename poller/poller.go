@@ -1236,10 +1236,12 @@ func (p *Poller) Start(ctx context.Context) {
 			}
 			elapsed := tickTime.Sub(tickerStartTime)
 			log.Printf("Ticker fired at %s (%.3fs since ticker start)", tickTime.Format("15:04:05.000"), elapsed.Seconds())
-			// Only the lease holder runs the automatic cycle, so concurrent
-			// instances never poll (and prune) at the same time. Manual triggers
-			// below are deliberately exempt — they're explicit user actions.
-			if p.isLeader() {
+			// Only the lease holder runs the automatic cycle and scans, so
+			// concurrent instances never poll (and prune) at the same time. The
+			// lease is renewed here rather than read from the flag, which can be
+			// a renew interval stale. Manual triggers below are deliberately
+			// exempt — they're explicit user actions.
+			if p.updateLeadership(ctx) {
 				p.startPoll(ctx, "scheduled")
 				go p.scanAuthorReplies(ctx)
 				go p.scanMentions(ctx)
@@ -1690,6 +1692,8 @@ func (p *Poller) startPoll(ctx context.Context, trigger string) {
 		p.StatusEventFunc()
 	}
 
+	// Manual triggers are explicit user actions and run on any instance.
+	leaderOnly := trigger != "manual"
 	go func() {
 		defer func() {
 			p.pollMutex.Lock()
@@ -1700,7 +1704,7 @@ func (p *Poller) startPoll(ctx context.Context, trigger string) {
 				p.StatusEventFunc()
 			}
 		}()
-		p.poll(ctx)
+		p.poll(ctx, leaderOnly)
 	}()
 }
 
@@ -2542,7 +2546,16 @@ func (p *Poller) syncUserPRViews(allPRs []github.PullRequest, dbPRMap map[string
 	}
 }
 
-func (p *Poller) poll(ctx context.Context) {
+// poll runs one cycle. A leaderOnly cycle re-verifies the lease against the
+// database at the start, before the first GitHub call, and again before the
+// parallel fetch phase: the tick can fire in the same instant the lease moves
+// to a new revision, before the renew loop has noticed, and the isLeader flag
+// alone would let the old instance run a full cycle alongside the new leader.
+func (p *Poller) poll(ctx context.Context, leaderOnly bool) {
+	if leaderOnly && !p.updateLeadership(ctx) {
+		log.Printf("[LEADER] not leader at poll start, skipping cycle")
+		return
+	}
 	startTime := time.Now()
 
 	// Update last poll time for countdown display
@@ -2627,6 +2640,11 @@ func (p *Poller) poll(ctx context.Context) {
 			key := fmt.Sprintf("%s/%s/%d", dbPRsAll[i].RepoOwner, dbPRsAll[i].RepoName, dbPRsAll[i].PRNumber)
 			dbPRMap[key] = &dbPRsAll[i]
 		}
+	}
+
+	if leaderOnly && !p.updateLeadership(ctx) {
+		log.Printf("[LEADER] lost leadership before the PR search, skipping the rest of this poll")
+		return
 	}
 
 	// Fetch PRs from GitHub.
@@ -2845,6 +2863,11 @@ func (p *Poller) poll(ctx context.Context) {
 		log.Printf("[POLL] %d/%d PRs changed, skipping %d unchanged", len(metadataPRs), len(allPRs), len(allPRs)-len(metadataPRs))
 	} else {
 		metadataPRs = allPRs
+	}
+
+	if leaderOnly && !p.updateLeadership(ctx) {
+		log.Printf("[LEADER] lost leadership before the CI status fetch, skipping the rest of this poll")
+		return
 	}
 
 	// --- Parallel GitHub API fetches ---
