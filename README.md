@@ -55,7 +55,7 @@ Minimal deployment: a single VM with Docker and a GitHub App.
 ### Auth modes
 
 - **Dev mode** (default when no GitHub App is configured): authenticates to GitHub with `GITHUB_TOKEN` and auto-logs-in `GITHUB_USERNAME`. Good for single-user/local use.
-- **Multi-user mode**: set the `GITHUB_APP_*` variables, `OAUTH_CALLBACK_URL`, and `SESSION_SECRET`. Users log in via GitHub OAuth; org membership (`GITHUB_ORG_NAME`) gates access. The OAuth callback path is `/auth/github/callback`.
+- **Multi-user mode**: set the `GITHUB_APP_*` variables, `OAUTH_CALLBACK_URL`, and `SESSION_SECRET`. Users log in via GitHub OAuth; org membership (`GITHUB_ORG_NAME`) gates access. The OAuth callback path is `/auth/github/callback`. Each login also stores the user's OAuth token on the session row, encrypted (AES-256-GCM) under `SESSION_SECRET`, so quick actions can post reviews as that person; the App's "Expire user authorization tokens" setting is supported (tokens refresh automatically). Rotating `SESSION_SECRET` invalidates the stored tokens and users see "Sign in again" until they log in once more.
 
 GitHub App permissions: Pull requests (read and write), Issues (read and write), Contents (read), Members (read), Checks (read) and Commit statuses (read). The last two cover the two kinds of entries in a commit's `statusCheckRollup.contexts`: `CheckRun` needs Checks, `StatusContext` (legacy commit statuses) needs Commit statuses. Missing either one makes GitHub return those entries as `FORBIDDEN`; the rollup state still arrives, but the failed-check names for hidden entries do not, and the poller logs one `[GRAPHQL] CI status: ... partial errors` summary per cycle.
 
@@ -65,11 +65,13 @@ The most common ones:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GITHUB_TOKEN` | Dev mode | GitHub PAT with `repo` and `read:org` scopes |
+| `GITHUB_TOKEN` | Dev mode | GitHub PAT with `repo` and `read:org` scopes; quick actions post reviews with it in dev mode |
 | `GITHUB_USERNAME` | Dev mode | Auto-login user and poller identity |
 | `GITHUB_APP_*`, `OAUTH_CALLBACK_URL`, `SESSION_SECRET` | Multi-user mode | GitHub App auth (see `.env.example`) |
 | `GEMINI_API_KEY` | For AI reviews | Enables the review pipeline; required even when the first pass runs on another provider |
 | `AGENTIC_REVIEWS` | No | Pipe reviews through the selected agent stage after the first pass |
+| `QUICK_ACTIONS_ENABLED` | No | Enable `POST /api/prs/quick-action` and the row menu's Approve / Request changes / Comment, posted as the signed-in human |
+| `QUICK_ACTIONS_ADMIN_ONLY` | No | Limit quick actions to admins while rolling out |
 | `AGENT_BACKEND` | No | `claude` (default) or `openrouter` |
 | `AGENT_MODEL` | No | Backend model; OpenRouter defaults to `openai/gpt-5.6-sol` |
 | `OPENROUTER_API_KEY` | OpenRouter backend | Authenticates Codex requests routed through OpenRouter |
@@ -140,7 +142,7 @@ BUG_MEMORY_OBJECT=bug-memory/bug-memory.json
 
 The gates contribute mechanical findings from the diff with no LLM involved, and `REQUIRED_CHECKS=true` is what gives them teeth: each fired gate and bug-memory hit becomes a check the agent must explicitly answer with a VIOLATED / SAFE / NOT-APPLICABLE verdict instead of silently ignoring. The task gate needs only the producer glob; `GATE_TASK_CONSUMER_GLOB` is an optional narrowing. Bug memory pays off once you have a distilled library of past bugs to point it at; start one early.
 
-The remaining feature flags (`SURFACE_ALERTS`, `CARRY_FORWARD_FINDINGS`, `FINDING_OUTCOMES_ENABLED`, `REVIEW_HISTORY_ARCHIVE`) are dashboard and workflow conveniences. They are independent of review quality; enable them as needed.
+The remaining feature flags (`SURFACE_ALERTS`, `CARRY_FORWARD_FINDINGS`, `FINDING_OUTCOMES_ENABLED`, `REVIEW_HISTORY_ARCHIVE`, `QUICK_ACTIONS_ENABLED`) are dashboard and workflow conveniences. They are independent of review quality; enable them as needed. Quick actions post reviews on GitHub as the signed-in user with their own OAuth token, never as the bot; sessions created before the flag shipped have no stored token and show "Sign in again" until the user logs in once more. Approving a draft is allowed only when PRism's verdict is approve with no critical findings and Greptile has reviewed the head with no P0/P1.
 
 ### Automatic reviews for allowlisted authors
 

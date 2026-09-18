@@ -410,16 +410,17 @@ type Review struct {
 
 // PRReviewData holds review information for a single PR
 type PRReviewData struct {
-	Owner           string
-	Repo            string
-	Number          int
-	ApprovalCount   int
-	MyReviewStatus  string            // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
-	UserReviews     map[string]string // Username -> latest review state (e.g. "APPROVED", "CHANGES_REQUESTED")
-	HeadOID         string
-	IsDraft         bool
-	State           string          // "OPEN", "CLOSED", "MERGED"; "" when the response omitted it
-	AttentionByUser map[string]bool // Username -> requested changes and has not reviewed the current head; absent when unknown
+	Owner            string
+	Repo             string
+	Number           int
+	ApprovalCount    int
+	MyReviewStatus   string            // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	UserReviews      map[string]string // Username -> latest review state (e.g. "APPROVED", "CHANGES_REQUESTED")
+	HeadOID          string
+	IsDraft          bool
+	State            string          // "OPEN", "CLOSED", "MERGED"; "" when the response omitted it
+	AttentionByUser  map[string]bool // Username -> requested changes and has not reviewed the current head; absent when unknown
+	HeadReviewCounts map[string]int  // Login -> reviews submitted against the current head (DISMISSED and PENDING excluded)
 }
 
 // ReviewerGroupData holds information about requested reviewer groups
@@ -610,6 +611,28 @@ func (c *Client) GetPR(ctx context.Context, owner, repo string, prNumber int) (*
 func (c *Client) ListReviews(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestReview, *github.Response, error) {
 	opts := &github.ListOptions{PerPage: 100}
 	return c.gh.PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
+}
+
+// ListAllReviews fetches every review on a PR, following pagination, with
+// the installation that can see owner/repo.
+func (c *Client) ListAllReviews(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestReview, error) {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	var out []*github.PullRequestReview
+	opts := &github.ListOptions{PerPage: 100}
+	for {
+		page, resp, err := gh.PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page...)
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		opts.Page = resp.NextPage
+	}
 }
 
 // GetMyReviewStatus returns the current user's most recent review state on a PR
@@ -813,16 +836,17 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 
 		key := prKey(owner, repo, prNumber)
 		results[key] = &PRReviewData{
-			Owner:           owner,
-			Repo:            repo,
-			Number:          prNumber,
-			ApprovalCount:   approvalCount,
-			MyReviewStatus:  myReviewStatus,
-			UserReviews:     userReviews,
-			HeadOID:         headOID,
-			IsDraft:         repoData.PullRequest.IsDraft,
-			State:           repoData.PullRequest.State,
-			AttentionByUser: attentionByUser(repoData.PullRequest.Reviews, headOID),
+			Owner:            owner,
+			Repo:             repo,
+			Number:           prNumber,
+			ApprovalCount:    approvalCount,
+			MyReviewStatus:   myReviewStatus,
+			UserReviews:      userReviews,
+			HeadOID:          headOID,
+			IsDraft:          repoData.PullRequest.IsDraft,
+			State:            repoData.PullRequest.State,
+			AttentionByUser:  attentionByUser(repoData.PullRequest.Reviews, headOID),
+			HeadReviewCounts: reviewCountsOfHead(repoData.PullRequest.Reviews, headOID),
 		}
 
 		log.Printf("[GRAPHQL] PR %s/%s#%d: %d approvals, my status: %s", owner, repo, prNumber, approvalCount, myReviewStatus)

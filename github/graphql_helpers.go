@@ -288,6 +288,22 @@ func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myR
 // and no review of theirs targets the current head. Unknown users (no head, a review with
 // no commit that could have targeted the head, or neither a decision nor a review of the
 // current head inside a truncated review window) are absent rather than false.
+// reviewCountsOfHead counts, per login, the live reviews submitted against
+// headOID. Dismissed and pending reviews are not evidence of anything.
+func reviewCountsOfHead(reviews ReviewsData, headOID string) map[string]int {
+	counts := map[string]int{}
+	if headOID == "" {
+		return counts
+	}
+	for _, node := range reviews.Nodes {
+		if node.Author == nil || node.Commit == nil || node.Commit.OID != headOID || node.State == "DISMISSED" || node.State == "PENDING" {
+			continue
+		}
+		counts[node.Author.Login]++
+	}
+	return counts
+}
+
 func attentionByUser(reviews ReviewsData, headOID string) map[string]bool {
 	result := make(map[string]bool)
 	if headOID == "" {

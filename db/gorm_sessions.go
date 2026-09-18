@@ -1,6 +1,8 @@
 package db
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 )
 
@@ -11,10 +13,13 @@ func sessionModelToSession(m *SessionModel) *Session {
 	}
 
 	return &Session{
-		ID:        m.ID,
-		UserID:    int(m.UserID),
-		ExpiresAt: m.ExpiresAt,
-		CreatedAt: m.CreatedAt,
+		ID:                    m.ID,
+		UserID:                int(m.UserID),
+		ExpiresAt:             m.ExpiresAt,
+		CreatedAt:             m.CreatedAt,
+		GitHubTokenEnc:        m.GitHubTokenEnc,
+		GitHubRefreshTokenEnc: m.GitHubRefreshTokenEnc,
+		GitHubTokenExpiresAt:  m.GitHubTokenExpiresAt,
 	}
 }
 
@@ -25,10 +30,13 @@ func sessionToSessionModel(s *Session) *SessionModel {
 	}
 
 	return &SessionModel{
-		ID:        s.ID,
-		UserID:    uint(s.UserID),
-		ExpiresAt: s.ExpiresAt,
-		CreatedAt: s.CreatedAt,
+		ID:                    s.ID,
+		UserID:                uint(s.UserID),
+		ExpiresAt:             s.ExpiresAt,
+		CreatedAt:             s.CreatedAt,
+		GitHubTokenEnc:        s.GitHubTokenEnc,
+		GitHubRefreshTokenEnc: s.GitHubRefreshTokenEnc,
+		GitHubTokenExpiresAt:  s.GitHubTokenExpiresAt,
 	}
 }
 
@@ -61,4 +69,19 @@ func (g *GormDB) GetSession(id string) (*Session, error) {
 // DeleteSession removes a session by ID
 func (g *GormDB) DeleteSession(id string) error {
 	return g.db.Where("id = ?", id).Delete(&SessionModel{}).Error
+}
+
+// UpdateSessionGitHubToken replaces the sealed GitHub tokens on a session,
+// but only while the row still holds expectedEnc: two instances refreshing
+// the same rotating token must not overwrite each other's result. Empty
+// values clear the tokens. Returns whether the row was written.
+func (g *GormDB) UpdateSessionGitHubToken(id, expectedEnc, enc, refreshEnc string, expiresAt *time.Time) (bool, error) {
+	res := g.db.Model(&SessionModel{}).
+		Where("id = ? AND github_token_enc = ?", id, expectedEnc).
+		Updates(map[string]interface{}{
+			"github_token_enc":         enc,
+			"github_refresh_token_enc": refreshEnc,
+			"github_token_expires_at":  expiresAt,
+		})
+	return res.RowsAffected > 0, res.Error
 }

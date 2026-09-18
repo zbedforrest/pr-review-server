@@ -50,6 +50,10 @@ type PR struct {
 	ReviewVerdict string
 	// Merge confidence 0..5 for the latest review; nil when not yet scored
 	MergeConfidence *int
+	// Greptile's verdict ("green", "red", "absent") for GreptileStatusSHA
+	GreptileStatus      string
+	GreptileStatusSHA   string
+	GreptileReviewCount int
 	// User notes (single-user mode)
 	Notes string
 	// Poll economy: last seen updated_at from GitHub search API
@@ -74,6 +78,10 @@ type Session struct {
 	UserID    int
 	ExpiresAt time.Time
 	CreatedAt time.Time
+	// Sealed GitHub OAuth tokens (see auth.SealToken); empty when none stored.
+	GitHubTokenEnc        string
+	GitHubRefreshTokenEnc string
+	GitHubTokenExpiresAt  *time.Time
 }
 
 // UserPRAssignment represents the relationship between users and PRs

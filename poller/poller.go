@@ -2892,6 +2892,7 @@ func (p *Poller) poll(ctx context.Context) {
 		updateCount := 0
 		storedAttention, snapshotOK := p.storedAttentionFlags(reviewDataMap, dbPRMap)
 		var transitions []attentionTransition
+		greptileRefreshes := 0
 		for _, pr := range allPRs {
 			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
 			if reviewData, exists := reviewDataMap[key]; exists {
@@ -2900,6 +2901,12 @@ func (p *Poller) poll(ctx context.Context) {
 					continue
 				}
 				isOpen := isOpenPRState(existingPR.PRState)
+				if isOpen && greptileRefreshes < greptileRefreshesPerCycle && needsGreptileRefresh(existingPR, reviewData) {
+					greptileRefreshes++
+					if p.refreshGreptileStatus(ctx, pr.Owner, pr.Repo, pr.Number, reviewData.HeadOID) {
+						changedPRs[key] = true
+					}
+				}
 
 				for _, user := range allUsers {
 					userStatus := ""
@@ -3706,6 +3713,7 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 					confidence, confidenceErr := p.sidecarConfidence(pr, cachedPayload)
 					p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
 				}
+				p.refreshGreptileStatus(queuedCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 				p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 			} else {
 				log.Printf("[REVIEWER] PR %d cache hit left the current live/completed projection unchanged", pr.Number)
@@ -4052,6 +4060,7 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 	}
 	confidence, confidenceErr := p.mergeConfidence(pr, published, sidecarBody)
 	p.storeMergeConfidence(job.RunID, pr, confidence, confidenceErr)
+	p.refreshGreptileStatus(prCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 	confidenceField := ""
 	if confidenceErr == nil {
 		confidenceField = fmt.Sprintf(", confidence=%d", confidence)

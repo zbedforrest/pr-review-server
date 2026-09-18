@@ -87,6 +87,9 @@ type Server struct {
 	wsWriteTimeout time.Duration
 	clientsMux     sync.RWMutex
 	broadcastCh    chan wsOutboundMessage
+	// quickActions holds the per-instance replay, duplicate and rate-limit
+	// state for POST /api/prs/quick-action.
+	quickActions *quickActionState
 }
 
 // reviewURL returns the review URL path if htmlPath is set, otherwise empty string
@@ -136,6 +139,9 @@ type PRResponse struct {
 	ReviewVerdict string `json:"review_verdict"`
 	// Merge confidence 0..5 for the latest review; null until it is scored
 	MergeConfidence *int `json:"merge_confidence"`
+	// Greptile's verdict on the current head: "green" (reviewed, no P0/P1),
+	// "red" (a P0/P1 posted) or "absent" (no Greptile review of this head).
+	GreptileStatus string `json:"greptile_status"`
 	// Latest review ran on a fallback model, not the requested one
 	ModelFallback bool `json:"model_fallback"`
 	// Structured execution and model provenance for the latest review.
@@ -268,6 +274,7 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		},
 		clients:        make(map[*websocket.Conn]*wsClient),
 		broadcastCh:    make(chan wsOutboundMessage, broadcastQueueSize),
+		quickActions:   newQuickActionState(),
 		wsWriteTimeout: defaultWSWriteTimeout,
 	}
 }
@@ -330,6 +337,8 @@ func (s *Server) Start() error {
 	http.Handle("/api/prs/notes", withAuth(s.handleUpdatePRNotes))
 	http.Handle("/api/prs/trigger-review", withAuth(s.handleTriggerReview))
 	http.Handle("/api/prs/generate-review", withAuth(s.handleGenerateReview))
+	http.Handle(quickActionPath, withAuth(s.handleQuickAction))
+	log.Printf("[QUICK-ACTIONS] enabled=%t admin_only=%t", quickActionsEnabled(), quickActionsAdminOnly())
 	http.Handle(findingOutcomesPath, withAuth(s.handleFindingOutcomes))
 	http.Handle("/api/poll/trigger", withAuth(s.handleTriggerPoll))
 	http.Handle("/api/status", withAuth(s.handleStatus))
@@ -496,6 +505,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			LowCount:          dbPR.LowCount,
 			ReviewVerdict:     dbPR.ReviewVerdict,
 			MergeConfidence:   completedMergeConfidence(dbPR),
+			GreptileStatus:    greptileStatusFor(dbPR),
 			PublishedToGitHub: isPublished,
 			PublishedRounds:   summaryRow.Rounds,
 			ModelFallback:     dbPR.ModelFallback,
@@ -1879,6 +1889,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		LowCount:          pr.LowCount,
 		ReviewVerdict:     pr.ReviewVerdict,
 		MergeConfidence:   completedMergeConfidence(*pr),
+		GreptileStatus:    greptileStatusFor(*pr),
 		PublishedToGitHub: isPublished,
 		PublishedRounds:   summaryRow.Rounds,
 		ModelFallback:     pr.ModelFallback,

@@ -32,6 +32,8 @@ type MockDatabase struct {
 
 	UpdateUserGitHubUsernameErr error
 	usernameUpdates             int
+
+	tokenUpdates int
 }
 
 func newMockDatabase() *MockDatabase {
@@ -112,6 +114,18 @@ func (m *MockDatabase) GetSession(id string) (*db.Session, error) {
 		return nil, m.GetSessionErr
 	}
 	return m.sessions[id], nil
+}
+
+func (m *MockDatabase) UpdateSessionGitHubToken(id, expectedEnc, enc, refreshEnc string, expiresAt *time.Time) (bool, error) {
+	s, ok := m.sessions[id]
+	if !ok || s.GitHubTokenEnc != expectedEnc {
+		return false, nil
+	}
+	m.tokenUpdates++
+	copied := *s
+	copied.GitHubTokenEnc, copied.GitHubRefreshTokenEnc, copied.GitHubTokenExpiresAt = enc, refreshEnc, expiresAt
+	m.sessions[id] = &copied
+	return true, nil
 }
 
 func (m *MockDatabase) DeleteSession(id string) error {

@@ -65,6 +65,12 @@ type SessionModel struct {
 	User      UserModel `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE"`
 	ExpiresAt time.Time `gorm:"index;not null"`
 	CreatedAt time.Time `gorm:"autoCreateTime"`
+	// The user's GitHub OAuth tokens, sealed with auth.SealToken under
+	// SESSION_SECRET. Empty when the login predates token persistence or a
+	// refresh was refused; the row itself is deleted on logout.
+	GitHubTokenEnc        string     `gorm:"column:github_token_enc;type:text"`
+	GitHubRefreshTokenEnc string     `gorm:"column:github_refresh_token_enc;type:text"`
+	GitHubTokenExpiresAt  *time.Time `gorm:"column:github_token_expires_at"`
 }
 
 // TableName specifies the table name for SessionModel
@@ -121,6 +127,13 @@ type PRModel struct {
 	// Merge confidence 0..5 for the review of LastCommitSHA; nil until the
 	// poller stores it after completion, and cleared whenever the head moves.
 	MergeConfidence *int16 `gorm:"column:merge_confidence"`
+	// Greptile's verdict on GreptileStatusSHA: "green", "red" or "absent".
+	// Stale once the head moves past GreptileStatusSHA; readers compare.
+	GreptileStatus    string `gorm:"column:greptile_status;size:8;not null;default:''"`
+	GreptileStatusSHA string `gorm:"column:greptile_status_sha;size:40;not null;default:''"`
+	// How many Greptile reviews of GreptileStatusSHA the verdict covers, so a
+	// later review of the same head triggers a recompute.
+	GreptileReviewCount int `gorm:"column:greptile_review_count;not null;default:0"`
 	// User notes (single-user mode)
 	Notes string `gorm:"size:15"`
 	// Poll economy: last seen updated_at from GitHub search API
