@@ -3,11 +3,14 @@ package github
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -109,7 +112,7 @@ func TestBatchGetCIStatus_MergeStateBatchesAreSmallerAndSeparate(t *testing.T) {
 	if mergeBatches != 2 || checksBatches != 2 {
 		t.Errorf("batches merge=%d checks=%d, want 2 and 2", mergeBatches, checksBatches)
 	}
-	want := "[GRAPHQL] CI status cycle: prs=90 (merge-state=30 checks-only=60) batches=4 ok=4 failed=0 skipped=0 fetched=90/90"
+	want := "[GRAPHQL] CI status cycle: prs=90 (merge-state=30 checks-only=60) batches=4 ok=4 failed=0 skipped=0 retried=0 fetched=90/90"
 	if !strings.Contains(buf.String(), want) {
 		t.Errorf("summary line missing %q in:\n%s", want, buf.String())
 	}
@@ -389,5 +392,193 @@ func TestBatchGetCIStatus_MissingNodeIsFlagged(t *testing.T) {
 	}
 	if !results["acme/example/3"].Missing {
 		t.Errorf("omitted alias must be flagged Missing: %+v", results["acme/example/3"])
+	}
+}
+
+func TestBatchGetCIStatus_First429SkipsRemainingBatchesWithoutRetry(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+	sleeps := 0
+	client.ciBatchSleep = func(time.Duration) { sleeps++ }
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	results, err := client.BatchGetCIStatus(context.Background(), ciPRs(200, true))
+	if err != nil {
+		t.Fatalf("BatchGetCIStatus: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("results = %d, want none after 429s", len(results))
+	}
+	mu.Lock()
+	sent := requests
+	mu.Unlock()
+	const batches = 8
+	if sent >= batches || sent > 5 {
+		t.Fatalf("requests sent = %d, want fewer than the %d batches (at most the 5 in flight when the 429 landed)", sent, batches)
+	}
+	logs := buf.String()
+	for _, want := range []string{
+		"batches=8", "failures(429=" + strconv.Itoa(sent) + ")", "skipped=" + strconv.Itoa(batches-sent),
+		"retried=0", "rate-limited: remaining batches skipped this cycle",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("summary missing %q:\n%s", want, logs)
+		}
+	}
+	if sleeps >= batches-1 {
+		t.Errorf("sleeps = %d, want pacing to stop once the 429 trips the limit", sleeps)
+	}
+}
+
+func TestIsTransientCIBatchError(t *testing.T) {
+	wrap := func(err error) error { return fmt.Errorf("failed to execute GraphQL query: %w", err) }
+	var syntaxErr error = json.Unmarshal([]byte(`{"data":{"pr0":`), &map[string]any{})
+	var typeErr error = json.Unmarshal([]byte(`{"a":"x"}`), &struct{ A int }{})
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"504", &GraphQLHTTPError{Status: http.StatusGatewayTimeout}, true},
+		{"502", &GraphQLHTTPError{Status: http.StatusBadGateway}, true},
+		{"500", &GraphQLHTTPError{Status: http.StatusInternalServerError}, true},
+		{"403", &GraphQLHTTPError{Status: http.StatusForbidden}, false},
+		{"429", &GraphQLHTTPError{Status: http.StatusTooManyRequests}, false},
+		{"401", &GraphQLHTTPError{Status: http.StatusUnauthorized}, false},
+		{"rate limited 200", ErrGraphQLRateLimited, false},
+		{"rate limited 200 with reset", &GraphQLRateLimitError{ResetAt: time.Now()}, false},
+		{"truncated JSON", fmt.Errorf("failed to decode GraphQL response: %w", syntaxErr), true},
+		{"shape mismatch", fmt.Errorf("failed to decode GraphQL response: %w", typeErr), false},
+		{"truncated body read", fmt.Errorf("failed to read GraphQL response: %w", io.ErrUnexpectedEOF), true},
+		{"h2 stream cancel", wrap(&url.Error{Op: "Post", URL: graphQLEndpoint, Err: errors.New("stream error: stream ID 7; CANCEL; received from peer")}), true},
+		{"context cancelled", wrap(&url.Error{Op: "Post", URL: graphQLEndpoint, Err: context.Canceled}), false},
+		{"deadline exceeded", wrap(context.DeadlineExceeded), false},
+	}
+	for _, tc := range cases {
+		if got := isTransientCIBatchError(tc.err); got != tc.want {
+			t.Errorf("%s: isTransientCIBatchError = %v, want %v (err: %v)", tc.name, got, tc.want, tc.err)
+		}
+	}
+}
+
+func TestBatchGetCIStatus_RetriesTransientFailureOnce(t *testing.T) {
+	responses := map[string]func(w http.ResponseWriter, attempt int){
+		"504 then ok": func(w http.ResponseWriter, attempt int) {
+			if attempt == 1 {
+				w.WriteHeader(http.StatusGatewayTimeout)
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":{}}`))
+		},
+		"truncated JSON then ok": func(w http.ResponseWriter, attempt int) {
+			if attempt == 1 {
+				_, _ = w.Write([]byte(`{"data":{"pr0":{"pullRequest":`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":{}}`))
+		},
+	}
+	for name, respond := range responses {
+		t.Run(name, func(t *testing.T) {
+			var mu sync.Mutex
+			requests := 0
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				requests++
+				attempt := requests
+				mu.Unlock()
+				respond(w, attempt)
+			}))
+			defer ts.Close()
+			client := NewClient("test-token", "")
+			client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+			var slept []time.Duration
+			client.ciBatchSleep = func(d time.Duration) { slept = append(slept, d) }
+
+			var buf bytes.Buffer
+			log.SetOutput(&buf)
+			defer log.SetOutput(os.Stderr)
+
+			results, err := client.BatchGetCIStatus(context.Background(), ciPRs(50, false))
+			if err != nil {
+				t.Fatalf("BatchGetCIStatus: %v", err)
+			}
+			if len(results) != 50 {
+				t.Errorf("results = %d, want all 50 after the retry", len(results))
+			}
+			mu.Lock()
+			sent := requests
+			mu.Unlock()
+			if sent != 2 {
+				t.Errorf("requests = %d, want the failed attempt plus one retry", sent)
+			}
+			if len(slept) != 1 || slept[0] != ciBatchRetryDelay {
+				t.Errorf("sleeps = %v, want one %s pause before the retry", slept, ciBatchRetryDelay)
+			}
+			logs := buf.String()
+			for _, want := range []string{"CI status batch failed, retrying once", "batches=1 ok=1 failed=0 skipped=0 retried=1 fetched=50/50"} {
+				if !strings.Contains(logs, want) {
+					t.Errorf("logs missing %q:\n%s", want, logs)
+				}
+			}
+			if strings.Contains(logs, "failures(") {
+				t.Errorf("a recovered batch must not count as a failure:\n%s", logs)
+			}
+		})
+	}
+}
+
+func TestBatchGetCIStatus_RetryIsOnlyOnce(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+	client.ciBatchSleep = func(time.Duration) {}
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	results, err := client.BatchGetCIStatus(context.Background(), ciPRs(50, false))
+	if err != nil {
+		t.Fatalf("BatchGetCIStatus: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("results = %d, want none when both attempts fail", len(results))
+	}
+	mu.Lock()
+	sent := requests
+	mu.Unlock()
+	if sent != 2 {
+		t.Errorf("requests = %d, want exactly one retry", sent)
+	}
+	logs := buf.String()
+	for _, want := range []string{"batches=1 ok=0 failed=1 skipped=0 retried=1 fetched=0/50", "failures(502=1)"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("summary missing %q:\n%s", want, logs)
+		}
+	}
+	if strings.Contains(logs, "rate-limited") {
+		t.Errorf("a 5xx must not trip the rate-limit stop:\n%s", logs)
 	}
 }

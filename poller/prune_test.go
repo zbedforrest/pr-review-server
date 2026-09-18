@@ -303,7 +303,7 @@ func TestPoll_PrunesStaleViaTeams_UserLeftTeam(t *testing.T) {
 	ctx := context.Background()
 
 	// Cycle 1: alice is on Platform, so the view row gets via_teams.
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	view := mockDB.UserPRViews[viewMockKey(1, 0)] // mock PRs keep ID 0
 	if view == nil {
 		t.Fatal("expected a user PR view for alice after cycle 1")
@@ -320,7 +320,7 @@ func TestPoll_PrunesStaleViaTeams_UserLeftTeam(t *testing.T) {
 	expireTeamCache(poller)
 
 	// Cycle 2: the reconciliation pass must clear and hide the stale row.
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	view = mockDB.UserPRViews[viewMockKey(1, 0)]
 	if view.ViaTeams != "[]" {
 		t.Errorf("expected via_teams cleared after alice left the team, got %q", view.ViaTeams)
@@ -336,7 +336,7 @@ func TestPoll_PrunesStaleViaTeams_TeamRemovedFromPR(t *testing.T) {
 	poller, mockDB, mockGH, _ := e2eTeamPollSetup(t)
 	ctx := context.Background()
 
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	view := mockDB.UserPRViews[viewMockKey(1, 0)]
 	if view == nil || view.ViaTeams != `["Platform:my_pending"]` {
 		t.Fatalf("expected via_teams for Platform after cycle 1, got %+v", view)
@@ -348,7 +348,7 @@ func TestPoll_PrunesStaleViaTeams_TeamRemovedFromPR(t *testing.T) {
 	mockGH.BatchGetReviewerGroupsResults["owner/repo/1"].TeamSlugs = nil
 	expireTeamCache(poller)
 
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	view = mockDB.UserPRViews[viewMockKey(1, 0)]
 	if view.ViaTeams != "[]" {
 		t.Errorf("expected via_teams cleared after team removed from PR, got %q", view.ViaTeams)
@@ -364,9 +364,9 @@ func TestPoll_KeepsViaTeams_WhileStillMember(t *testing.T) {
 	poller, mockDB, _, _ := e2eTeamPollSetup(t)
 	ctx := context.Background()
 
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 	expireTeamCache(poller)
-	poller.poll(ctx)
+	poller.poll(ctx, false)
 
 	view := mockDB.UserPRViews[viewMockKey(1, 0)]
 	if view == nil || view.ViaTeams != `["Platform:my_pending"]` {

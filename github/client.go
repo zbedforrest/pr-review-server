@@ -3,8 +3,10 @@ package github
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -1125,7 +1127,38 @@ const (
 	// ciBatchPace spaces batch launches so a cycle's merge-state queries do
 	// not arrive as one burst, which is what trips the secondary rate limit.
 	ciBatchPace = 250 * time.Millisecond
+	// ciBatchRetryDelay is the pause before the single retry of a batch that
+	// failed transiently (5xx, cancelled HTTP/2 stream, truncated body).
+	ciBatchRetryDelay = time.Second
 )
+
+// isCIRateLimitError reports the signals GitHub uses for both primary and
+// secondary limits: HTTP 403 or 429, or a 200 carrying a RATE_LIMITED error.
+func isCIRateLimitError(err error) bool {
+	if errors.Is(err, ErrGraphQLRateLimited) {
+		return true
+	}
+	var httpErr *GraphQLHTTPError
+	return errors.As(err, &httpErr) && (httpErr.Status == http.StatusForbidden || httpErr.Status == http.StatusTooManyRequests)
+}
+
+// isTransientCIBatchError reports whether one retry is worth it: a 5xx, a
+// cancelled HTTP/2 stream, or a truncated/undecodable JSON body. Rate limits
+// and a cancelled context are excluded since retrying only extends them.
+func isTransientCIBatchError(err error) bool {
+	if err == nil || isCIRateLimitError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var httpErr *GraphQLHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Status >= 500
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &syntaxErr) {
+		return true
+	}
+	return strings.Contains(err.Error(), "stream error")
+}
 
 // ciBatchStats counts one BatchGetCIStatus call for its summary line.
 type ciBatchStats struct {
@@ -1134,6 +1167,7 @@ type ciBatchStats struct {
 	ok          int
 	failed      int
 	skipped     int
+	retried     int
 	rateLimited int
 	byStatus    map[int]int
 	otherErrs   int
@@ -1184,9 +1218,11 @@ func (s *ciBatchStats) failuresByStatus() string {
 // BatchGetCIStatus fetches CI check status for multiple PRs using batched
 // GraphQL. PRs with IncludeMergeState also get mergeStateStatus and
 // reviewDecision, in batches of 25; the rest go in batches of 50. The first
-// rate-limit signal, an HTTP 403 (secondary limit) or a 200 carrying a
-// RATE_LIMITED error, skips every batch not yet sent, since retrying into the
-// limit only extends it. One summary line is logged per call.
+// rate-limit signal, an HTTP 403 or 429 or a 200 carrying a RATE_LIMITED
+// error, skips every batch not yet sent, since retrying into the limit only
+// extends it. A batch that fails transiently (5xx, cancelled HTTP/2 stream,
+// truncated body) is retried once after a short pause. One summary line is
+// logged per call.
 func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string]*CIStatus, error) {
 	if len(prs) == 0 {
 		return make(map[string]*CIStatus), nil
@@ -1237,13 +1273,21 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 			return
 		}
 
+		query := buildCIStatusQuery(batch)
 		var graphqlResp GraphQLCIStatusResponse
-		partialErrs, err := c.executeGraphQLPartial(ctx, buildCIStatusQuery(batch), &graphqlResp)
+		partialErrs, err := c.executeGraphQLPartial(ctx, query, &graphqlResp)
+		if isTransientCIBatchError(err) && !rateLimited.Load() && pace(ciBatchRetryDelay) {
+			log.Printf("[GRAPHQL] Warning: CI status batch failed, retrying once: %v", err)
+			stats.mu.Lock()
+			stats.retried++
+			stats.mu.Unlock()
+			graphqlResp = GraphQLCIStatusResponse{}
+			partialErrs, err = c.executeGraphQLPartial(ctx, query, &graphqlResp)
+		}
 		partial.add(partialErrs, batch)
 		stats.record(err)
 		if err != nil {
-			var httpErr *GraphQLHTTPError
-			if errors.Is(err, ErrGraphQLRateLimited) || (errors.As(err, &httpErr) && httpErr.Status == http.StatusForbidden) {
+			if isCIRateLimitError(err) {
 				rateLimited.Store(true)
 				if at := RateLimitResetAt(err); !at.IsZero() {
 					resetAt.Store(&at)
@@ -1321,8 +1365,8 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 	wg.Wait()
 
 	partial.log("CI status", len(prs))
-	summary := fmt.Sprintf("[GRAPHQL] CI status cycle: prs=%d (merge-state=%d checks-only=%d) batches=%d ok=%d failed=%d skipped=%d fetched=%d/%d",
-		len(prs), len(withMerge), len(checksOnly), stats.batches, stats.ok, stats.failed, stats.skipped, len(results), len(prs))
+	summary := fmt.Sprintf("[GRAPHQL] CI status cycle: prs=%d (merge-state=%d checks-only=%d) batches=%d ok=%d failed=%d skipped=%d retried=%d fetched=%d/%d",
+		len(prs), len(withMerge), len(checksOnly), stats.batches, stats.ok, stats.failed, stats.skipped, stats.retried, len(results), len(prs))
 	if stats.failed > 0 {
 		summary += " failures(" + stats.failuresByStatus() + ")"
 	}
