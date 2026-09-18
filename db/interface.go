@@ -34,9 +34,13 @@ type PR struct {
 	CIState         string     // CI status: "success", "failure", "pending", "unknown"
 	CIFailedChecks  string     // JSON array of failed check names
 	PRState         string     // GitHub PR state: "open", "closed", "merged"
-	ModelFallback   bool       // latest review ran on a fallback model, not the requested one
-	ReviewRunID     string     // opaque ID for the latest review execution
-	ReviewRunJSON   string     // structured model/run metadata for the latest review
+	// GitHub merge-box summary for the current head, refreshed every poll cycle
+	// with CI status. "" until first fetched or when GitHub returned null.
+	MergeStateStatus string // CLEAN, BLOCKED, BEHIND, DIRTY, UNSTABLE, HAS_HOOKS, DRAFT, UNKNOWN, or ""
+	ReviewDecision   string // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
+	ModelFallback    bool   // latest review ran on a fallback model, not the requested one
+	ReviewRunID      string // opaque ID for the latest review execution
+	ReviewRunJSON    string // structured model/run metadata for the latest review
 	// Review importance counts
 	CriticalCount int // Number of CRITICAL importance comments
 	MediumCount   int // Number of MEDIUM importance comments

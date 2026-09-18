@@ -93,6 +93,41 @@ func TestGormDB_UpsertPR_Update(t *testing.T) {
 	assert.Equal(t, "Updated Title", fetched.Title)
 }
 
+func TestUpsertPR_PersistsMergeStateColumns(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner:        "acme",
+		RepoName:         "example",
+		PRNumber:         1,
+		LastCommitSHA:    "abc123",
+		Status:           "pending",
+		MergeStateStatus: "BLOCKED",
+		ReviewDecision:   "REVIEW_REQUIRED",
+	}))
+	fetched, err := db.GetPR("acme", "example", 1)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	assert.Equal(t, "BLOCKED", fetched.MergeStateStatus)
+	assert.Equal(t, "REVIEW_REQUIRED", fetched.ReviewDecision)
+
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner:        "acme",
+		RepoName:         "example",
+		PRNumber:         1,
+		LastCommitSHA:    "abc123",
+		Status:           "pending",
+		MergeStateStatus: "CLEAN",
+		ReviewDecision:   "APPROVED",
+	}))
+	fetched, err = db.GetPR("acme", "example", 1)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	assert.Equal(t, "CLEAN", fetched.MergeStateStatus)
+	assert.Equal(t, "APPROVED", fetched.ReviewDecision)
+}
+
 // Regression: UpsertPR's OnConflict whitelist (upsertMetadataColumns) must
 // include the columns the poller's reviewPRBatch / ciPRBatch flushes write
 // to — approval_count, my_review_status, ci_state, ci_failed_checks. If any

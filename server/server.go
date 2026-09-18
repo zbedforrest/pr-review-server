@@ -116,9 +116,17 @@ type PRResponse struct {
 	PRState         string   `json:"pr_state"`         // GitHub PR state: "open", "closed", "merged"
 	CIState         string   `json:"ci_state"`         // "success", "failure", "pending", "unknown"
 	CIFailedChecks  []string `json:"ci_failed_checks"` // Names of failed checks
-	CreatedAt       *string  `json:"created_at"`       // PR creation timestamp from GitHub
-	IsMine          bool     `json:"is_mine"`          // true if current user is the PR author
-	ViaTeams        []string `json:"via_teams"`        // Team names that caused this review request
+	// GitHub merge-box summary for the current head: CLEAN, BLOCKED, BEHIND,
+	// DIRTY, UNSTABLE, HAS_HOOKS, DRAFT, UNKNOWN, or "" when not yet fetched.
+	MergeStateStatus string `json:"merge_state_status"`
+	// APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or "" (no required reviews
+	// configured, or not yet fetched).
+	ReviewDecision string `json:"review_decision"`
+	// Derived: GitHub would let a user press Merge right now. See readyToMerge.
+	ReadyToMerge bool     `json:"ready_to_merge"`
+	CreatedAt    *string  `json:"created_at"` // PR creation timestamp from GitHub
+	IsMine       bool     `json:"is_mine"`    // true if current user is the PR author
+	ViaTeams     []string `json:"via_teams"`  // Team names that caused this review request
 	// Review importance counts
 	CriticalCount int `json:"critical_count"` // Number of CRITICAL importance comments
 	MediumCount   int `json:"medium_count"`   // Number of MEDIUM importance comments
@@ -477,6 +485,9 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			PRState:           prStateOrOpen(dbPR.PRState),
 			CIState:           dbPR.CIState,
 			CIFailedChecks:    ciFailedChecks,
+			MergeStateStatus:  dbPR.MergeStateStatus,
+			ReviewDecision:    dbPR.ReviewDecision,
+			ReadyToMerge:      readyToMerge(dbPR),
 			CreatedAt:         createdAt,
 			IsMine:            prView.IsAuthor, // Use IsAuthor from user_pr_views
 			ViaTeams:          viaTeams,
@@ -1707,6 +1718,18 @@ func completedMergeConfidence(pr db.PR) *int {
 	return pr.MergeConfidence
 }
 
+// readyToMerge reports whether GitHub's merge box would be enabled. CLEAN
+// already encodes the repo's protection rules (required checks, required
+// reviews, conflicts, up-to-date); the reviewDecision guard adds the social
+// rule that a standing changes-requested review is never "ready" even on
+// repos whose protection does not enforce it.
+func readyToMerge(pr db.PR) bool {
+	return prStateOrOpen(pr.PRState) == "open" &&
+		!pr.Draft &&
+		pr.MergeStateStatus == "CLEAN" &&
+		pr.ReviewDecision != "CHANGES_REQUESTED"
+}
+
 // getPRResponse constructs a PR response using the default dev-mode user context.
 func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 	return s.getPRResponseForUser(s.getDevUserID(), owner, repo, number)
@@ -1826,6 +1849,9 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		PRState:           prStateOrOpen(pr.PRState),
 		CIState:           pr.CIState,
 		CIFailedChecks:    ciFailedChecks,
+		MergeStateStatus:  pr.MergeStateStatus,
+		ReviewDecision:    pr.ReviewDecision,
+		ReadyToMerge:      readyToMerge(*pr),
 		CreatedAt:         createdAt,
 		IsMine:            isMine,
 		ViaTeams:          viaTeams,

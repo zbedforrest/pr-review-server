@@ -478,3 +478,38 @@ func TestBroadcaster_StalledClientIsDroppedAndOthersStillReceive(t *testing.T) {
 		}
 	}
 }
+
+func TestGetPRResponseForUser_IncludesMergeStateFields(t *testing.T) {
+	server, database := newWebSocketTestServerApp(t, "")
+	defer database.Close()
+
+	user := createTestUser(t, database, "merge-user")
+	require.NoError(t, database.UpsertPR(&db.PR{
+		RepoOwner:        "acme",
+		RepoName:         "example",
+		PRNumber:         3,
+		LastCommitSHA:    "abc123",
+		Status:           "completed",
+		Title:            "Ready PR",
+		Author:           "otheruser",
+		PRState:          "open",
+		MergeStateStatus: "CLEAN",
+		ReviewDecision:   "APPROVED",
+	}))
+	storedPR, err := database.GetPR("acme", "example", 3)
+	require.NoError(t, err)
+	require.NotNil(t, storedPR)
+	ensureUserPRView(t, database, user.ID, storedPR.ID, false)
+
+	resp := server.getPRResponseForUser(user.ID, "acme", "example", 3)
+	require.NotNil(t, resp)
+	assert.Equal(t, "CLEAN", resp.MergeStateStatus)
+	assert.Equal(t, "APPROVED", resp.ReviewDecision)
+	assert.True(t, resp.ReadyToMerge)
+
+	encoded, err := json.Marshal(resp)
+	require.NoError(t, err)
+	for _, want := range []string{`"merge_state_status":"CLEAN"`, `"review_decision":"APPROVED"`, `"ready_to_merge":true`} {
+		assert.Contains(t, string(encoded), want)
+	}
+}

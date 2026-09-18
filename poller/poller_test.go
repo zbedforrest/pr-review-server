@@ -2204,6 +2204,102 @@ func TestPoll_CIStatusUpdate_BroadcastsWhenStateChanges(t *testing.T) {
 	}
 }
 
+func mergeStatePollFixture(t *testing.T, storedMergeState, returnedMergeState string) (*MockDatabase, *Poller, *[]string) {
+	t.Helper()
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockStorage := NewMockReviewStorage()
+	mockGenerator := NewMockReviewGenerator()
+
+	const sha = "abc123def456789012345678901234567890abcd"
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		RepoOwner:        "owner",
+		RepoName:         "repo",
+		PRNumber:         1,
+		LastCommitSHA:    sha,
+		Status:           "completed",
+		Title:            "Test PR",
+		Author:           "author",
+		ApprovalCount:    2,
+		MyReviewStatus:   "APPROVED",
+		CIState:          "success",
+		CIFailedChecks:   "[]",
+		MergeStateStatus: storedMergeState,
+		ReviewDecision:   "APPROVED",
+	}
+	mockGH.BatchGetPRReviewDataResults["owner/repo/1"] = &github.PRReviewData{
+		ApprovalCount:  2,
+		MyReviewStatus: "APPROVED",
+	}
+	mockGH.BatchGetCIStatusResults["owner/repo/1"] = &github.CIStatus{
+		State:            "success",
+		FailedChecks:     []string{},
+		MergeStateStatus: returnedMergeState,
+		ReviewDecision:   "APPROVED",
+	}
+	mockGH.IsPROpenResults["owner/repo/1"] = struct {
+		IsOpen bool
+		Err    error
+	}{true, nil}
+	mockGH.GetPRHeadSHAResults["owner/repo/1"] = struct {
+		SHA string
+		Err error
+	}{sha, nil}
+	mockGH.PRsRequestingReview = []github.PullRequest{
+		{Owner: "owner", Repo: "repo", Number: 1, CommitSHA: sha, Title: "Test PR", Author: "author"},
+	}
+	mockStorage.ExistingReviews["owner/repo/1/"+sha] = true
+
+	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
+	events := &[]string{}
+	poller.EventFunc = func(eventType string, payload interface{}) {
+		*events = append(*events, eventType)
+	}
+	return mockDB, poller, events
+}
+
+func countEvents(events []string, eventType string) int {
+	n := 0
+	for _, e := range events {
+		if e == eventType {
+			n++
+		}
+	}
+	return n
+}
+
+func TestPoll_CIStatusUpdate_BroadcastsWhenMergeStateChanges(t *testing.T) {
+	mockDB, poller, events := mergeStatePollFixture(t, "BLOCKED", "CLEAN")
+
+	poller.poll(context.Background())
+	waitForDetachedReviews(t, poller)
+
+	pr := mockDB.PRs["owner/repo/1"]
+	if pr.MergeStateStatus != "CLEAN" {
+		t.Errorf("expected MergeStateStatus CLEAN, got %q", pr.MergeStateStatus)
+	}
+	if pr.ReviewDecision != "APPROVED" {
+		t.Errorf("expected ReviewDecision APPROVED, got %q", pr.ReviewDecision)
+	}
+	if countEvents(*events, "pr_updated") != 1 {
+		t.Errorf("expected exactly one pr_updated event when only merge state changed, got %d (%v)", countEvents(*events, "pr_updated"), *events)
+	}
+}
+
+func TestPoll_CIStatusUpdate_NoBroadcastWhenMergeStateUnchanged(t *testing.T) {
+	mockDB, poller, events := mergeStatePollFixture(t, "CLEAN", "CLEAN")
+
+	poller.poll(context.Background())
+	waitForDetachedReviews(t, poller)
+
+	if pr := mockDB.PRs["owner/repo/1"]; pr.MergeStateStatus != "CLEAN" {
+		t.Errorf("expected MergeStateStatus to stay CLEAN, got %q", pr.MergeStateStatus)
+	}
+	if n := countEvents(*events, "pr_updated"); n != 0 {
+		t.Errorf("expected no pr_updated events when nothing changed, got %d", n)
+	}
+}
+
 func TestPoll_CIStatusUpdate_NoBroadcastWhenUnchanged(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()

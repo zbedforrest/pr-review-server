@@ -296,6 +296,16 @@ func (g *GormDB) ensureIdempotentColumns() error {
 				return fmt.Errorf("add merge_confidence: %w", err)
 			}
 		}
+		if !g.db.Migrator().HasColumn(&PRModel{}, "merge_state_status") {
+			if err := g.db.Migrator().AddColumn(&PRModel{}, "MergeStateStatus"); err != nil {
+				return fmt.Errorf("add merge_state_status: %w", err)
+			}
+		}
+		if !g.db.Migrator().HasColumn(&PRModel{}, "review_decision") {
+			if err := g.db.Migrator().AddColumn(&PRModel{}, "ReviewDecision"); err != nil {
+				return fmt.Errorf("add review_decision: %w", err)
+			}
+		}
 		if err := g.db.Exec("UPDATE prs SET projection_run_id = '' WHERE projection_run_id IS NULL").Error; err != nil {
 			return fmt.Errorf("backfill projection_run_id: %w", err)
 		}
@@ -342,6 +352,12 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	}
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS merge_confidence smallint").Error; err != nil {
 		return fmt.Errorf("add merge_confidence: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS merge_state_status varchar(16) NOT NULL DEFAULT ''").Error; err != nil {
+		return fmt.Errorf("add merge_state_status: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS review_decision varchar(20) NOT NULL DEFAULT ''").Error; err != nil {
+		return fmt.Errorf("add review_decision: %w", err)
 	}
 	if err := g.db.Exec("ALTER TABLE review_stage_attempts ADD COLUMN IF NOT EXISTS budget_units_used integer NOT NULL DEFAULT 0").Error; err != nil {
 		return fmt.Errorf("add budget_units_used: %w", err)
