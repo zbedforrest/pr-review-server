@@ -2462,10 +2462,10 @@ func (s ciSelection) String() string {
 // expensive part of the query. Open PRs are queried with merge state when at
 // least one dashboard shows them (watched, by PR ID; nil means the lookup
 // failed and every open PR is watched). Open PRs nobody watches are skipped:
-// the poller syncs their views before this selection, so they join the next
-// cycle after someone gains a view. Closed, merged and unknown-state rows keep
-// their stored merge fields and are queried for checks only when their CI
-// state is empty or on a full-refresh cycle.
+// author views are synced before this selection and reviewer views after it,
+// so a PR whose only watcher is a reviewer joins on the next cycle. Closed,
+// merged and unknown-state rows keep their stored merge fields and are queried
+// for checks only when their CI state is empty or on a full-refresh cycle.
 func selectCIStatusPRs(allPRs []github.PullRequest, dbPRMap map[string]*db.PR, ghKeys map[string]bool, watched map[int]bool, fullRefresh bool) ciSelection {
 	sel := ciSelection{prs: make([]github.PRInfo, 0, len(allPRs))}
 	for _, pr := range allPRs {
