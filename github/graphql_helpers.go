@@ -235,6 +235,24 @@ func (c *Client) countUserApprovals(reviews ReviewsData) (approvalCount int, myR
 // and no review of theirs targets the current head. Unknown users (no head, a review with
 // no commit that could have targeted the head, or neither a decision nor a review of the
 // current head inside a truncated review window) are absent rather than false.
+// reviewersOfHead lists the logins whose reviews were submitted against
+// headOID, in review order without duplicates.
+func reviewersOfHead(reviews ReviewsData, headOID string) []string {
+	if headOID == "" {
+		return nil
+	}
+	var logins []string
+	seen := map[string]bool{}
+	for _, node := range reviews.Nodes {
+		if node.Author == nil || node.Commit == nil || node.Commit.OID != headOID || seen[node.Author.Login] {
+			continue
+		}
+		seen[node.Author.Login] = true
+		logins = append(logins, node.Author.Login)
+	}
+	return logins
+}
+
 func attentionByUser(reviews ReviewsData, headOID string) map[string]bool {
 	result := make(map[string]bool)
 	if headOID == "" {

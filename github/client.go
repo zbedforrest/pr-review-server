@@ -416,6 +416,7 @@ type PRReviewData struct {
 	IsDraft         bool
 	State           string          // "OPEN", "CLOSED", "MERGED"; "" when the response omitted it
 	AttentionByUser map[string]bool // Username -> requested changes and has not reviewed the current head; absent when unknown
+	HeadReviewers   []string        // Logins that submitted a review against the current head
 }
 
 // ReviewerGroupData holds information about requested reviewer groups
@@ -815,6 +816,7 @@ func (c *Client) fetchReviewDataForRepo(ctx context.Context, prs []PullRequest) 
 			IsDraft:         repoData.PullRequest.IsDraft,
 			State:           repoData.PullRequest.State,
 			AttentionByUser: attentionByUser(repoData.PullRequest.Reviews, headOID),
+			HeadReviewers:   reviewersOfHead(repoData.PullRequest.Reviews, headOID),
 		}
 
 		log.Printf("[GRAPHQL] PR %s/%s#%d: %d approvals, my status: %s", owner, repo, prNumber, approvalCount, myReviewStatus)
