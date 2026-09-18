@@ -48,6 +48,8 @@ type MockGitHubClient struct {
 	BatchGetPRReviewDataResults map[string]*github.PRReviewData
 	// BatchGetCIStatusResults to return from BatchGetCIStatus
 	BatchGetCIStatusResults map[string]*github.CIStatus
+	// BatchGetCIStatusCalls records the PRs passed to each BatchGetCIStatus call
+	BatchGetCIStatusCalls [][]github.PRInfo
 
 	// BatchGetReviewerGroupsResults to return from BatchGetReviewerGroups
 	BatchGetReviewerGroupsResults map[string]*github.ReviewerGroupData
@@ -207,6 +209,9 @@ func (m *MockGitHubClient) BatchGetPRReviewData(ctx context.Context, prs []githu
 }
 
 func (m *MockGitHubClient) BatchGetCIStatus(ctx context.Context, prs []github.PRInfo) (map[string]*github.CIStatus, error) {
+	m.callLogMu.Lock()
+	m.BatchGetCIStatusCalls = append(m.BatchGetCIStatusCalls, append([]github.PRInfo(nil), prs...))
+	m.callLogMu.Unlock()
 	return m.BatchGetCIStatusResults, nil
 }
 

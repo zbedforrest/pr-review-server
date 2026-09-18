@@ -39,8 +39,8 @@ func TestBuildPRAliasMap(t *testing.T) {
 
 func TestBuildCIStatusQuery(t *testing.T) {
 	prs := []PRInfo{
-		{Owner: "owner1", Repo: "repo1", Number: 101},
-		{Owner: "owner2", Repo: "repo2", Number: 102},
+		{Owner: "owner1", Repo: "repo1", Number: 101, IncludeMergeState: true},
+		{Owner: "owner2", Repo: "repo2", Number: 102, IncludeMergeState: true},
 	}
 
 	query := buildCIStatusQuery(prs)

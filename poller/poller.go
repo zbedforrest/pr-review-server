@@ -2444,6 +2444,28 @@ func isOpenPRState(state string) bool {
 // claim, active review) are skipped here and in the other view syncs;
 // otherwise the next cycle would undo the hide that closed-PR cleanup
 // applied for non-claimants.
+// selectCIStatusPRs picks the PRs whose CI status is fetched this cycle. Open
+// PRs (and rows not yet in the database) are queried with merge state every
+// cycle; closed and merged rows keep their stored merge fields and are queried
+// for checks only when their CI state is empty or on a full-refresh cycle.
+func selectCIStatusPRs(allPRs []github.PullRequest, dbPRMap map[string]*db.PR, fullRefresh bool) []github.PRInfo {
+	ciPRs := make([]github.PRInfo, 0, len(allPRs))
+	for _, pr := range allPRs {
+		info := github.PRInfo{Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number, IncludeMergeState: true}
+		if dbPR, ok := dbPRMap[fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)]; ok {
+			switch dbPR.PRState {
+			case "closed", "merged":
+				if dbPR.CIState != "" && !fullRefresh {
+					continue
+				}
+				info.IncludeMergeState = false
+			}
+		}
+		ciPRs = append(ciPRs, info)
+	}
+	return ciPRs
+}
+
 func (p *Poller) syncUserPRViews(allPRs []github.PullRequest, dbPRMap map[string]*db.PR, users []db.User) {
 	batch := newViewBatch()
 	for _, user := range users {
@@ -2806,21 +2828,16 @@ func (p *Poller) poll(ctx context.Context) {
 			}()
 		}
 
-		// Fetch CI status for ALL PRs every cycle — CI check completions
+		// Fetch CI status for open PRs every cycle — CI check completions
 		// don't update GitHub's PR updated_at, so we can't rely on change detection.
 		// The query targets each PR's current head commit on GitHub, so the result
 		// is correct even when our stored SHA is behind (new push / force-push).
+		// Closed and merged PRs no longer change, so they ride along only when
+		// their CI state was never captured or on the periodic full refresh.
+		ciPRs := selectCIStatusPRs(allPRs, dbPRMap, p.pollCount%10 == 0)
 		fetchWg.Add(1)
 		go func() {
 			defer fetchWg.Done()
-			ciPRs := make([]github.PRInfo, 0, len(allPRs))
-			for _, pr := range allPRs {
-				ciPRs = append(ciPRs, github.PRInfo{
-					Owner:  pr.Owner,
-					Repo:   pr.Repo,
-					Number: pr.Number,
-				})
-			}
 			var err error
 			ciStatusMap, err = p.ghClient.BatchGetCIStatus(ctx, ciPRs)
 			if err != nil {
@@ -3062,8 +3079,12 @@ func (p *Poller) poll(ctx context.Context) {
 				}
 			}
 
-			mergeChanged := existingPR.MergeStateStatus != ciStatus.MergeStateStatus ||
-				existingPR.ReviewDecision != ciStatus.ReviewDecision
+			mergeState, reviewDecision := existingPR.MergeStateStatus, existingPR.ReviewDecision
+			if ciStatus.MergeStateRequested {
+				mergeState, reviewDecision = ciStatus.MergeStateStatus, ciStatus.ReviewDecision
+			}
+			mergeChanged := existingPR.MergeStateStatus != mergeState ||
+				existingPR.ReviewDecision != reviewDecision
 			if existingPR.CIState == ciStatus.State &&
 				existingPR.CIFailedChecks == failedChecksJSON && !mergeChanged {
 				continue
@@ -3071,8 +3092,8 @@ func (p *Poller) poll(ctx context.Context) {
 
 			existingPR.CIState = ciStatus.State
 			existingPR.CIFailedChecks = failedChecksJSON
-			existingPR.MergeStateStatus = ciStatus.MergeStateStatus
-			existingPR.ReviewDecision = ciStatus.ReviewDecision
+			existingPR.MergeStateStatus = mergeState
+			existingPR.ReviewDecision = reviewDecision
 			ciPRBatch.Upsert(existingPR)
 			changedPRs[key] = true
 			updateCount++

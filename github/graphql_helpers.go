@@ -14,6 +14,16 @@ import (
 
 const graphQLEndpoint = "https://api.github.com/graphql"
 
+// GraphQLHTTPError is a non-200 response from the GraphQL endpoint. 403 is
+// GitHub's secondary rate limit; 502 and 504 are query timeouts.
+type GraphQLHTTPError struct {
+	Status int
+}
+
+func (e *GraphQLHTTPError) Error() string {
+	return fmt.Sprintf("GraphQL query failed with status %d", e.Status)
+}
+
 // ErrGraphQLRateLimited is returned when a GraphQL response carries a
 // rate-limit error. GitHub still returns HTTP 200 with whatever partial data
 // it managed, but that data is unreliable (aliases come back null), so callers
@@ -124,7 +134,7 @@ func (c *Client) executeGraphQLPartial(ctx context.Context, query string, result
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
+		return nil, &GraphQLHTTPError{Status: resp.StatusCode}
 	}
 
 	return decodeGraphQLResponsePartial(resp.Body, result)
@@ -158,7 +168,7 @@ func (c *AppClient) executeGraphQL(ctx context.Context, query string, result int
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
+		return &GraphQLHTTPError{Status: resp.StatusCode}
 	}
 
 	return decodeGraphQLResponse("appclient", resp.Body, result)

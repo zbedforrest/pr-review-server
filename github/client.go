@@ -8,8 +8,10 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/go-github/v57/github"
@@ -457,6 +459,9 @@ type CIStatus struct {
 	MergeStateStatus string
 	// APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or "" when GitHub returned null.
 	ReviewDecision string
+	// MergeStateRequested is false when the query did not ask for the merge
+	// fields (closed and merged PRs); callers keep their stored values then.
+	MergeStateRequested bool
 }
 
 // NewTestClient creates a Client for testing with a custom base URL for the REST API.
@@ -1080,97 +1085,175 @@ func (c *Client) extractReviewerGroups(timelineItems TimelineItemsData) ([]strin
 	return reviewerGroups, teamSlugs, orgName, requestedUsers
 }
 
-// BatchGetCIStatus fetches CI check status for multiple PRs using batched GraphQL.
-// Batches into chunks of 50 PRs (CI queries are heavier due to statusCheckRollup contexts).
+// CI status batch sizes. Merge-state batches are smaller because GitHub
+// computes mergeability per PR on demand and large batches time out.
+const (
+	ciBatchSizeMergeState = 25
+	ciBatchSizeChecksOnly = 50
+)
+
+// ciBatchStats counts one BatchGetCIStatus call for its summary line.
+type ciBatchStats struct {
+	mu        sync.Mutex
+	batches   int
+	ok        int
+	failed    int
+	skipped   int
+	byStatus  map[int]int
+	otherErrs int
+}
+
+func (s *ciBatchStats) record(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err == nil {
+		s.ok++
+		return
+	}
+	s.failed++
+	var httpErr *GraphQLHTTPError
+	if errors.As(err, &httpErr) {
+		if s.byStatus == nil {
+			s.byStatus = map[int]int{}
+		}
+		s.byStatus[httpErr.Status]++
+		return
+	}
+	s.otherErrs++
+}
+
+func (s *ciBatchStats) failuresByStatus() string {
+	statuses := make([]int, 0, len(s.byStatus))
+	for st := range s.byStatus {
+		statuses = append(statuses, st)
+	}
+	sort.Ints(statuses)
+	parts := make([]string, 0, len(statuses)+1)
+	for _, st := range statuses {
+		parts = append(parts, fmt.Sprintf("%d=%d", st, s.byStatus[st]))
+	}
+	if s.otherErrs > 0 {
+		parts = append(parts, fmt.Sprintf("other=%d", s.otherErrs))
+	}
+	return strings.Join(parts, " ")
+}
+
+// BatchGetCIStatus fetches CI check status for multiple PRs using batched
+// GraphQL. PRs with IncludeMergeState also get mergeStateStatus and
+// reviewDecision, in batches of 25; the rest go in batches of 50. The first
+// 403 (secondary rate limit) skips every batch not yet sent, since retrying
+// into the limit only extends it. One summary line is logged per call.
 func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string]*CIStatus, error) {
-	const batchSize = 50
 	if len(prs) == 0 {
 		return make(map[string]*CIStatus), nil
 	}
 
+	var withMerge, checksOnly []PRInfo
+	for _, pr := range prs {
+		if pr.IncludeMergeState {
+			withMerge = append(withMerge, pr)
+		} else {
+			checksOnly = append(checksOnly, pr)
+		}
+	}
+
 	var (
-		mu      sync.Mutex
-		results = make(map[string]*CIStatus)
-		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 5)
-		partial = newPartialErrorSummary()
+		mu          sync.Mutex
+		results     = make(map[string]*CIStatus)
+		wg          sync.WaitGroup
+		sem         = make(chan struct{}, 5)
+		partial     = newPartialErrorSummary()
+		stats       ciBatchStats
+		rateLimited atomic.Bool
 	)
 
-	for i := 0; i < len(prs); i += batchSize {
-		end := i + batchSize
-		if end > len(prs) {
-			end = len(prs)
+	runBatch := func(batch []PRInfo) {
+		defer wg.Done()
+		defer func() { <-sem }()
+		if rateLimited.Load() {
+			stats.mu.Lock()
+			stats.skipped++
+			stats.mu.Unlock()
+			return
 		}
-		chunk := prs[i:end]
 
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(batch []PRInfo) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			query := buildCIStatusQuery(batch)
-
-			var graphqlResp GraphQLCIStatusResponse
-			partialErrs, err := c.executeGraphQLPartial(ctx, query, &graphqlResp)
-			partial.add(partialErrs, batch)
-			if err != nil {
-				log.Printf("[GRAPHQL] Warning: Failed to fetch CI status batch: %v", err)
-				return
+		var graphqlResp GraphQLCIStatusResponse
+		partialErrs, err := c.executeGraphQLPartial(ctx, buildCIStatusQuery(batch), &graphqlResp)
+		partial.add(partialErrs, batch)
+		stats.record(err)
+		if err != nil {
+			var httpErr *GraphQLHTTPError
+			if errors.As(err, &httpErr) && httpErr.Status == http.StatusForbidden {
+				rateLimited.Store(true)
 			}
+			log.Printf("[GRAPHQL] Warning: Failed to fetch CI status batch: %v", err)
+			return
+		}
+		forbiddenContexts := forbiddenContextsByAlias(partialErrs)
 
-			forbiddenContexts := forbiddenContextsByAlias(partialErrs)
-			mu.Lock()
-			for j, prInfo := range batch {
-				alias := fmt.Sprintf("pr%d", j)
-				key := prKey(prInfo.Owner, prInfo.Repo, prInfo.Number)
-				repoData, ok := graphqlResp.Data[alias]
-				var prData *CIPullRequestData
-				if ok {
-					prData = repoData.PullRequest
-				}
-				mergeState, reviewDecision := mergeFieldsFrom(prData)
-				var rollup *StatusCheckRollup
-				if prData != nil && len(prData.Commits.Nodes) > 0 {
-					rollup = prData.Commits.Nodes[0].Commit.StatusCheckRollup
-				}
-				if rollup == nil {
-					// No rollup means the head commit genuinely has no check
-					// contexts (yet): report unknown rather than a stale state.
-					// A PR with no checks can still be CLEAN, so merge fields ride along.
-					results[key] = &CIStatus{
-						Owner:            prInfo.Owner,
-						Repo:             prInfo.Repo,
-						Number:           prInfo.Number,
-						State:            "unknown",
-						FailedChecks:     []string{},
-						MergeStateStatus: mergeState,
-						ReviewDecision:   reviewDecision,
-					}
-					continue
-				}
-
+		mu.Lock()
+		defer mu.Unlock()
+		for j, prInfo := range batch {
+			alias := fmt.Sprintf("pr%d", j)
+			key := prKey(prInfo.Owner, prInfo.Repo, prInfo.Number)
+			repoData, ok := graphqlResp.Data[alias]
+			var prData *CIPullRequestData
+			if ok {
+				prData = repoData.PullRequest
+			}
+			mergeState, reviewDecision := mergeFieldsFrom(prData)
+			var rollup *StatusCheckRollup
+			if prData != nil && len(prData.Commits.Nodes) > 0 {
+				rollup = prData.Commits.Nodes[0].Commit.StatusCheckRollup
+			}
+			status := &CIStatus{
+				Owner:               prInfo.Owner,
+				Repo:                prInfo.Repo,
+				Number:              prInfo.Number,
+				State:               "unknown",
+				FailedChecks:        []string{},
+				MergeStateStatus:    mergeState,
+				ReviewDecision:      reviewDecision,
+				MergeStateRequested: prInfo.IncludeMergeState,
+			}
+			if rollup != nil {
+				// No rollup means the head commit genuinely has no check
+				// contexts (yet): report unknown rather than a stale state.
+				// A PR with no checks can still be CLEAN, so merge fields ride along.
 				state, failedChecks, nullNodes := parseCIStatusFromRollup(rollup)
 				hidden := min(nullNodes, forbiddenContexts[alias])
-				results[key] = &CIStatus{
-					Owner:              prInfo.Owner,
-					Repo:               prInfo.Repo,
-					Number:             prInfo.Number,
-					State:              state,
-					FailedChecks:       failedChecks,
-					HiddenContexts:     hidden,
-					UnreadableContexts: nullNodes - hidden,
-					MergeStateStatus:   mergeState,
-					ReviewDecision:     reviewDecision,
-				}
+				status.State = state
+				status.FailedChecks = failedChecks
+				status.HiddenContexts = hidden
+				status.UnreadableContexts = nullNodes - hidden
 			}
-			mu.Unlock()
-		}(chunk)
+			results[key] = status
+		}
 	}
+
+	dispatch := func(list []PRInfo, batchSize int) {
+		for i := 0; i < len(list); i += batchSize {
+			end := min(i+batchSize, len(list))
+			stats.batches++
+			wg.Add(1)
+			sem <- struct{}{}
+			go runBatch(list[i:end])
+		}
+	}
+	dispatch(withMerge, ciBatchSizeMergeState)
+	dispatch(checksOnly, ciBatchSizeChecksOnly)
 	wg.Wait()
 
 	partial.log("CI status", len(prs))
-	log.Printf("[GRAPHQL] Fetched CI status for %d/%d PRs", len(results), len(prs))
+	summary := fmt.Sprintf("[GRAPHQL] CI status cycle: prs=%d (merge-state=%d checks-only=%d) batches=%d ok=%d failed=%d skipped=%d fetched=%d/%d",
+		len(prs), len(withMerge), len(checksOnly), stats.batches, stats.ok, stats.failed, stats.skipped, len(results), len(prs))
+	if stats.failed > 0 {
+		summary += " failures(" + stats.failuresByStatus() + ")"
+	}
+	if rateLimited.Load() {
+		summary += " rate-limited: remaining batches skipped this cycle"
+	}
+	log.Print(summary)
 	return results, nil
 }
 
@@ -1178,17 +1261,23 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 // It queries each PR's current head commit (commits(last: 1)) rather than a
 // stored commit oid, so the result always reflects the PR's actual HEAD —
 // including new pushes and force-pushes our database hasn't caught up with.
+// mergeStateStatus and reviewDecision are requested only for PRs that ask
+// for them (open PRs): GitHub computes mergeability on demand.
 func buildCIStatusQuery(prs []PRInfo) string {
 	var queryBuilder strings.Builder
 	queryBuilder.WriteString("query {")
 
 	for i, pr := range prs {
 		alias := fmt.Sprintf("pr%d", i)
+		mergeFields := ""
+		if pr.IncludeMergeState {
+			mergeFields = `
+					mergeStateStatus
+					reviewDecision`
+		}
 		queryBuilder.WriteString(fmt.Sprintf(`
 			%s: repository(owner: %q, name: %q) {
-				pullRequest(number: %d) {
-					mergeStateStatus
-					reviewDecision
+				pullRequest(number: %d) {%s
 					commits(last: 1) {
 						nodes {
 							commit {
@@ -1215,7 +1304,7 @@ func buildCIStatusQuery(prs []PRInfo) string {
 					}
 				}
 			}`,
-			alias, pr.Owner, pr.Repo, pr.Number))
+			alias, pr.Owner, pr.Repo, pr.Number, mergeFields))
 	}
 	queryBuilder.WriteString("}")
 	return queryBuilder.String()
