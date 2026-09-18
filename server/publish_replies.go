@@ -92,6 +92,8 @@ func (s *Server) handlePublishReplies(w http.ResponseWriter, r *http.Request) {
 			"action":            row.Action,
 			"body":              row.Body,
 			"decision":          row.Decision,
+			"note":              row.Note,
+			"deferred_to":       splitTicketKeys(row.DeferredTo),
 			"outcome":           row.Outcome,
 			"attempts":          row.Attempts,
 			"reply_body":        row.ReplyBody,
@@ -115,4 +117,14 @@ func (s *Server) handlePublishReplies(w http.ResponseWriter, r *http.Request) {
 		"unlinked_roots": len(unlinked),
 		"recent":         items,
 	})
+}
+
+func splitTicketKeys(s string) []string {
+	keys := []string{}
+	for _, k := range strings.Split(s, ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			keys = append(keys, k)
+		}
+	}
+	return keys
 }

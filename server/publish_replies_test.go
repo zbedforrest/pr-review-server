@@ -31,7 +31,7 @@ func TestPublishReplies_ReportsRecentRepliesCountsAndUnlinkedRoots(t *testing.T)
 		require.NoError(t, err)
 	}
 
-	require.NoError(t, database.SetPublishedReplyDecision("acme", "example", 7, 103, db.ReplyDecisionRecord{Decision: "hold", Cited: `[{"file":"a.go","line":12}]`}))
+	require.NoError(t, database.SetPublishedReplyDecision("acme", "example", 7, 103, db.ReplyDecisionRecord{Decision: "hold", Cited: `[{"file":"a.go","line":12}]`, Note: "budget_exhausted", DeferredTo: "MSG-1,MSG-2"}))
 
 	w := httptest.NewRecorder()
 	server.handlePublishReplies(w, addUserToRequest(httptest.NewRequest(http.MethodGet, "/api/publish/replies?limit=2", nil), &db.User{GitHubUsername: "tester"}))
@@ -57,6 +57,9 @@ func TestPublishReplies_ReportsRecentRepliesCountsAndUnlinkedRoots(t *testing.T)
 	assert.Equal(t, "https://github.com/acme/example/pull/7#discussion_r103", got.Recent[0]["url"])
 	assert.Equal(t, `[{"file":"a.go","line":12}]`, got.Recent[0]["cited"])
 	assert.Equal(t, "", got.Recent[1]["cited"], "rows the reply model never ran on carry no evidence")
+	assert.Equal(t, "budget_exhausted", got.Recent[0]["note"])
+	assert.Equal(t, []any{"MSG-1", "MSG-2"}, got.Recent[0]["deferred_to"])
+	assert.Equal(t, []any{}, got.Recent[1]["deferred_to"])
 }
 
 func TestPublishReplies_RejectsWrites(t *testing.T) {

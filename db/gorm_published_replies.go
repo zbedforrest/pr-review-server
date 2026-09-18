@@ -22,6 +22,7 @@ func (g *GormDB) RecordPublishedReply(r *PublishedReply) (bool, error) {
 		Action:          r.Action,
 		Body:            r.Body,
 		ReplyCommentID:  r.ReplyCommentID,
+		DeferredTo:      r.DeferredTo,
 		CreatedAt:       r.CreatedAt,
 		ProcessedAt:     time.Now().UTC(),
 	}
@@ -126,6 +127,7 @@ func publishedRepliesFromModels(models []PublishedReplyModel) []PublishedReply {
 			Body: m.Body, ReplyCommentID: m.ReplyCommentID,
 			Decision: m.Decision, ReplyBody: m.ReplyBody, Cited: m.Cited, Model: m.Model, DurationMS: m.DurationMS,
 			Outcome: m.Outcome, Attempts: m.Attempts, DecisionReact: m.DecisionReact, DecisionHead: m.DecisionHead, DecisionThread: m.DecisionThread,
+			Note: m.Note, DeferredTo: m.DeferredTo,
 			ClaimedBy: m.ClaimedBy, ClaimedAt: m.ClaimedAt, RepliedAt: m.RepliedAt,
 			CreatedAt: m.CreatedAt, ProcessedAt: m.ProcessedAt,
 		})
@@ -143,7 +145,7 @@ func (g *GormDB) replyRow(owner, repo string, number int, authorCommentID int64)
 func (g *GormDB) SetPublishedReplyDecision(owner, repo string, number int, authorCommentID int64, d ReplyDecisionRecord) error {
 	return g.replyRow(owner, repo, number, authorCommentID).Updates(map[string]interface{}{
 		"decision": d.Decision, "reply_body": d.ReplyBody, "cited": d.Cited, "model": d.Model, "duration_ms": d.DurationMS,
-		"decision_head": d.Head, "decision_thread": d.Thread, "decision_react": d.React,
+		"decision_head": d.Head, "decision_thread": d.Thread, "decision_react": d.React, "note": d.Note, "deferred_to": d.DeferredTo,
 	}).Error
 }
 

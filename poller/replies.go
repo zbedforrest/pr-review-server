@@ -2,6 +2,7 @@ package poller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -172,7 +173,11 @@ func replyOutcomeEvents(o publisher.ReplyOutcome, err error, userID int) []db.Te
 
 // replyOutcomeEvent records one finished or failed text step.
 func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.TelemetryEvent {
-	label := fmt.Sprintf("outcome=%s decision=%s posted=%t action=%s model=%s ms=%d comment=%d", o.Outcome, o.Decision, o.Posted, o.Action, o.Model, o.DurationMS, o.AuthorCommentID)
+	note := ""
+	if o.Note != "" {
+		note = " note=" + o.Note
+	}
+	label := fmt.Sprintf("outcome=%s decision=%s%s posted=%t action=%s model=%s ms=%d comment=%d", o.Outcome, o.Decision, note, o.Posted, o.Action, o.Model, o.DurationMS, o.AuthorCommentID)
 	action := "reply_decision"
 	switch {
 	case err != nil:
@@ -219,7 +224,11 @@ func (p *Poller) replyResponder() publisher.Responder {
 			FailureLogSink: p.persistAgentFailureLog,
 		}
 		ourID := req.Root.AuthorID
+		started := time.Now()
 		out, err := service.RunAgentReply(ctx, cfg, p.agentSpawner, replyInputFromRequest(req, ourID))
+		if errors.Is(err, service.ErrReplyBudgetExhausted) {
+			return publisher.ReplyDecision{Model: model, DurationMS: time.Since(started).Milliseconds()}, fmt.Errorf("%w: %v", publisher.ErrBudgetExhausted, err)
+		}
 		if err != nil {
 			return publisher.ReplyDecision{}, err
 		}

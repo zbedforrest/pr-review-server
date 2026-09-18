@@ -19,8 +19,8 @@ import (
 )
 
 // ReplyClass is what an author's reply to one of our inline comments amounts
-// to. Only questions and pushback ever earn a text response; everything else
-// is acknowledged with a reaction.
+// to. Questions, pushback and fix claims (resolution) earn a text response;
+// bare acknowledgements and everything classed other get a reaction only.
 type ReplyClass string
 
 const (
@@ -75,6 +75,241 @@ func ClassifyReply(body string) ReplyClass {
 	return ReplyPushback
 }
 
+var (
+	shortAckMaxWords = 6
+	commitShaRe      = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
+	hexLetterRe      = regexp.MustCompile(`[a-f]`)
+	nonWordRe        = regexp.MustCompile(`[^\pL\pN]`)
+	// Emoji and shortcodes that read as agreement; a thumbs-down or a cross
+	// is not an acknowledgment.
+	ackEmojiRe    = regexp.MustCompile(`^(:(\+1|thumbsup|thumbs_up|white_check_mark|heavy_check_mark|ok_hand|pray|tada|heart|100):|[\x{1F44D}\x{2705}\x{2714}\x{1F44C}\x{1F64F}\x{1F389}\x{2764}\x{1F4AF}][\x{FE0F}\x{1F3FB}-\x{1F3FF}]*)$`)
+	punctOnlyRe   = regexp.MustCompile(`^[[:punct:]]+$`)
+	fixClaimRe    = regexp.MustCompile(`(?i)\b(fixed|done|addressed|resolved|updated|removed|handled)\b`)
+	ackVocabulary = map[string]bool{}
+)
+
+func init() {
+	for _, w := range strings.Fields("done fixed fix fixing resolved addressed updated removed handled ok okay ack acked thanks thank thx ty you yes yep yup sure noted good catch got it will do sounds makes sense this that now all in the latest push and too as well") {
+		ackVocabulary[w] = true
+	}
+}
+
+// hasCommitSha finds an abbreviated or full sha; a run of digits alone (a
+// build or ticket number) is not one.
+func hasCommitSha(text string) bool {
+	for _, m := range commitShaRe.FindAllString(strings.ToLower(text), -1) {
+		if hexLetterRe.MatchString(m) {
+			return true
+		}
+	}
+	return false
+}
+
+// shortAcknowledgment reports a bare "done" / "fixed" / "ok" / thumbs-up: a
+// few words drawn only from acknowledgement vocabulary (or emoji). Such a
+// reply names nothing the model could verify, so it never earns text; a word
+// outside the vocabulary ("fixed the race") is a claim and does.
+func shortAcknowledgment(body string) bool {
+	words := strings.Fields(strings.TrimSpace(body))
+	if len(words) == 0 || len(words) >= shortAckMaxWords {
+		return false
+	}
+	for _, w := range words {
+		if ackEmojiRe.MatchString(w) || punctOnlyRe.MatchString(w) {
+			continue
+		}
+		w = nonWordRe.ReplaceAllString(strings.ToLower(w), "")
+		if !ackVocabulary[w] {
+			return false
+		}
+	}
+	return true
+}
+
+// acceptsWithoutFix reports a resolution-class reply that accepts the finding
+// and defers it ("accepted for now, tracked in XO-291", "good catch, will do
+// in a follow-up") rather than claiming a fix: no commit sha anywhere and
+// every substantive sentence is deferral language. The code still has the
+// problem by the author's own account, so running the model would only rebut
+// an agreement. A sentence that neither defers nor merely acknowledges, or
+// that carries a fix verb anywhere ("good catch, fixed the race, cleanup is
+// tracked in ABC-1"), is a claim to verify. Code spans stay in as opaque
+// words so "fixed `validateToken`" is not mistaken for a bare "fixed".
+func acceptsWithoutFix(body string) bool {
+	if hasCommitSha(body) {
+		return false
+	}
+	deferred := false
+	for _, s := range sentenceEndRe.Split(codeSpanRe.ReplaceAllString(body, " code "), -1) {
+		s = strings.TrimSpace(s)
+		if s == "" || shortAcknowledgment(s) {
+			continue
+		}
+		if !defersFinding(s) || fixClaimRe.MatchString(s) {
+			return false
+		}
+		deferred = true
+	}
+	return deferred
+}
+
+// wantsText reports whether a reply is one the reply model should answer:
+// questions and pushback always, fix claims unless they are a bare
+// acknowledgement or an acceptance that defers the fix, never anything
+// classed other.
+func wantsText(reply AuthorReply) bool {
+	switch reply.Class {
+	case ReplyQuestion, ReplyPushback:
+		return true
+	case ReplyResolution:
+		return !shortAcknowledgment(reply.Body) && !acceptsWithoutFix(reply.Body)
+	}
+	return false
+}
+
+var (
+	ticketKeyRe = regexp.MustCompile(`\b([A-Z][A-Z0-9]{1,9}-\d+)\b`)
+	// Uppercase-dash-number tokens that show up in review threads and are
+	// not tracker keys.
+	notTicketPrefixes = map[string]bool{"PR": true, "GH": true, "SHA": true, "MD": true, "UTF": true, "ISO": true, "RFC": true, "HTTP": true, "HTTPS": true, "CVE": true, "TLS": true, "IPV": true, "UUID": true, "AES": true, "GPT": true, "COVID": true, "EC": true, "EC2": true, "ES": true, "X": true}
+	// A deferral is a construction, not a keyword: "later", "ticket" and
+	// "defer" on their own are ordinary fix vocabulary ("released later in
+	// the callback", "the ticket parser", "the defer block").
+	deferralPhraseRe = regexp.MustCompile(`(?i)\b(follow[ -]?ups?|out of scope|known gaps?|for now|will (fix|do|handle|address|take care)|(separate|another|later|future|different|subsequent|next|new) (pr|mr|pull request|change|patch))\b`)
+	// These verbs defer only when the same clause names the ticket they
+	// defer to; "scoped to the request" and "tracked by the flag" do not.
+	deferralVerbRe    = regexp.MustCompile(`(?i)\b(tracked|tracking|scoped|deferred|deferring|punted|filed|ticketed)\b`)
+	negatedDeferralRe = regexp.MustCompile(`(?i)\b(not|never|no longer|isn'?t|aren'?t|wasn'?t|won'?t|don'?t|doesn'?t)\s+(\w+\s+){0,2}(deferr|track|scop|punt|filed|out of scope|follow[ -]?up|for now|known gap)`)
+	codeSpanRe        = regexp.MustCompile("(?s)```.*?```|`[^`\n]*`")
+	outOfScopeRe      = regexp.MustCompile(`(?i)\bout of scope\b`)
+	sentenceEndRe     = regexp.MustCompile(`[.;!?]+(\s+|$)|\n+`)
+	clauseEndRe       = regexp.MustCompile(`,\s*`)
+)
+
+// defersFinding reports whether one sentence postpones the finding: an
+// explicit deferral phrase, or a deferral verb in the same clause as a ticket
+// key, and neither negated ("this is not deferred to ABC-1").
+func defersFinding(sentence string) bool {
+	if negatedDeferralRe.MatchString(sentence) {
+		return false
+	}
+	if deferralPhraseRe.MatchString(sentence) {
+		return true
+	}
+	for _, clause := range clauseEndRe.Split(sentence, -1) {
+		if deferralVerbRe.MatchString(clause) && ticketKeyRe.MatchString(clause) {
+			return true
+		}
+	}
+	return false
+}
+
+// ticketKeys returns every tracker key ([A-Z][A-Z0-9]{1,9}-\d+) in body
+// outside code spans, deduplicated in order of appearance. It feeds the
+// deferral scan below, which supplies the context; a key the author talks
+// about as a ticket in the reply text is replytext.TicketKeys' job.
+func ticketKeys(body string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range ticketKeyRe.FindAllStringSubmatch(codeSpanRe.ReplaceAllString(body, " "), -1) {
+		key := m[1]
+		prefix, _, _ := strings.Cut(key, "-")
+		if notTicketPrefixes[prefix] || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	return out
+}
+
+// DeferredTickets returns the tracker keys an author comment defers the
+// finding to: a key in a deferring sentence (see defersFinding) whose own
+// clause carries the deferral and no fix verb ("fixed the issue tracked in
+// AUTH-42" is a reference, "fixed X, Y is tracked in AUTH-42" a deferral,
+// "AUTH-42 introduced this, cleanup is a follow-up" names no ticket). A
+// deferral verb takes only the keys after it, since English puts the ticket
+// there ("tracked in X", "deferred to X"): "AUTH-42 introduced this and
+// cleanup is tracked in MSG-1" defers to MSG-1 alone. A key on its own, or
+// in another sentence, is not a deferral.
+func DeferredTickets(body string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, sentence := range sentenceEndRe.Split(codeSpanRe.ReplaceAllString(body, " "), -1) {
+		if !defersFinding(sentence) {
+			continue
+		}
+		for _, clause := range clauseEndRe.Split(sentence, -1) {
+			if fixClaimRe.MatchString(clause) {
+				continue
+			}
+			if verb := deferralVerbRe.FindStringIndex(clause); verb != nil {
+				clause = clause[verb[1]:]
+			} else if !deferralPhraseRe.MatchString(clause) {
+				continue
+			}
+			for _, k := range ticketKeys(clause) {
+				if !seen[k] {
+					seen[k] = true
+					out = append(out, k)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// outOfScopeSentences returns the sentences of our reply that call the
+// finding out of scope without negating it ("this is not out of scope"
+// does not count).
+func outOfScopeSentences(ourReply string) []string {
+	var out []string
+	for _, s := range sentenceEndRe.Split(ourReply, -1) {
+		if outOfScopeRe.MatchString(s) && !negatedDeferralRe.MatchString(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// outOfScopeTickets is the deferral list for an author comment our reply
+// called out of scope: what the comment itself deferred plus any key in the
+// out-of-scope sentences of our reply that the author also named. A key the
+// author merely mentioned ("AUTH-42 introduced this") is not taken on its
+// own, and a key only the model wrote is not taken at all.
+func outOfScopeTickets(recorded, authorBody string, ourSentences []string) string {
+	named := map[string]bool{}
+	for _, k := range ticketKeys(authorBody) {
+		named[k] = true
+	}
+	var ours []string
+	for _, s := range ourSentences {
+		for _, k := range ticketKeys(s) {
+			if named[k] {
+				ours = append(ours, k)
+			}
+		}
+	}
+	return mergeTicketKeys(recorded, strings.Join(DeferredTickets(authorBody), ","), strings.Join(ours, ","))
+}
+
+// mergeTicketKeys joins comma-separated key lists without duplicates.
+func mergeTicketKeys(lists ...string) string {
+	var out []string
+	seen := map[string]bool{}
+	for _, l := range lists {
+		for _, k := range strings.Split(l, ",") {
+			k = strings.TrimSpace(k)
+			if k == "" || seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
 // FindAuthorReplies returns the PR author's replies under our root comments,
 // oldest first, ignoring anything created before since. roots maps our
 // comment ids (from the ledger) to finding fingerprints; markers alone are
@@ -125,6 +360,16 @@ const (
 // errClaimedElsewhere reports a text step another instance currently holds;
 // the scan neither settles the PR nor reports an outcome for it.
 var errClaimedElsewhere = errors.New("text step claimed by another instance")
+
+// ErrBudgetExhausted is what a Responder wraps when the model ran out of
+// turns or wall clock before deciding. The step then posts a fixed notice
+// instead of retrying, so a claim is never left unanswered.
+var ErrBudgetExhausted = errors.New("reply model budget exhausted")
+
+// NoteBudgetExhausted marks a ledger row whose reply is the budget notice.
+const NoteBudgetExhausted = "budget_exhausted"
+
+const budgetExhaustedReply = "PRism could not complete verification of this claim within its budget and is leaving the finding as written. Please have a reviewer confirm it."
 
 // ReplyMarker tags a text reply PRism posted with the author comment it
 // answers, so a crash between posting and recording cannot produce a second
@@ -233,10 +478,11 @@ func renderDecision(d ReplyDecision, reply AuthorReply, root ThreadComment) (Rep
 // Responder runs the reply model.
 type Responder func(ctx context.Context, req ReplyRequest) (ReplyDecision, error)
 
-// TextPolicy bounds text replies: questions and substantive pushback only,
-// while the thread is fresh, at most MaxPerThread per thread, MaxPerPRPerDay
-// per PR, and MaxChars per reply paragraph (a longer reply is dropped, not
-// truncated; the sentences the renderer itself appends are allowed on top).
+// TextPolicy bounds text replies: questions, substantive pushback and fix
+// claims only, while the thread is fresh, at most MaxPerThread per thread,
+// MaxPerPRPerDay per PR, and MaxChars per reply paragraph (a longer reply is
+// dropped, not truncated; the sentences the renderer itself appends are
+// allowed on top).
 type TextPolicy struct {
 	MaxPerThread   int
 	MaxPerPRPerDay int
@@ -250,13 +496,20 @@ func DefaultTextPolicy() TextPolicy {
 }
 
 // TextEligibility returns "" when a text reply may be attempted, otherwise the
-// reason it may not: class, stale, thread_cap, conceded, pr_cap. The caps are
+// reason it may not: class, acknowledgment, deferred, stale, thread_cap,
+// conceded, pr_cap. The caps are
 // exact within one process (text steps on a PR are serialized) and best-effort
 // across two instances that both believe they lead, where sibling replies
 // claimed separately can overshoot a cap by one.
 func TextEligibility(reply AuthorReply, prior []db.PublishedReply, prTextToday int, now time.Time, p TextPolicy) string {
-	if reply.Class != ReplyQuestion && reply.Class != ReplyPushback {
-		return "class"
+	if !wantsText(reply) {
+		switch {
+		case reply.Class != ReplyResolution:
+			return "class"
+		case shortAcknowledgment(reply.Body):
+			return "acknowledgment"
+		}
+		return "deferred"
 	}
 	if now.Sub(reply.CreatedAt) > p.MaxAge {
 		return "stale"
@@ -365,10 +618,10 @@ type ReplyOutcome struct {
 	PRNumber        int
 	AuthorCommentID int64
 	Decision        string
-	Note            string
 	Outcome         string
 	Posted          bool
 	Action          string // how the author's comment was acknowledged: reacted or observed
+	Note            string // NoteBudgetExhausted for the budget notice, else the renderer's note
 	Model           string
 	DurationMS      int64
 }
@@ -523,7 +776,7 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		if !handled {
 			action := ReplyActionObserved
 			switch {
-			case r.reacts() && r.textMode() && textClass(reply.Class):
+			case r.reacts() && r.textMode() && wantsText(reply):
 				// The model decides whether this one gets a 👍; see text().
 				action = ReplyActionPending
 			case r.reacts():
@@ -538,6 +791,7 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 				RootCommentID: reply.RootCommentID, AuthorCommentID: reply.CommentID,
 				Fingerprint: reply.Fingerprint, AuthorID: state.AuthorID,
 				Class: string(reply.Class), Action: action, Body: reply.Body, CreatedAt: reply.CreatedAt,
+				DeferredTo: strings.Join(DeferredTickets(reply.Body), ","),
 			}
 			created, err := r.Ledger.RecordPublishedReply(&row)
 			if err != nil {
@@ -735,11 +989,6 @@ func (f *ReplyInFlight) remove(id int64) {
 	delete(f.ids, id)
 }
 
-// textClass reports whether a reply class is one the reply model handles.
-func textClass(c ReplyClass) bool {
-	return c == ReplyQuestion || c == ReplyPushback
-}
-
 func (r ReplyReactor) reacts() bool {
 	return r.Mode == ReplyModeReact || r.Mode == ReplyModeShadow || r.Mode == ReplyModeRespond
 }
@@ -789,7 +1038,7 @@ func threadUnder(comments []ThreadComment, rootID int64) []ThreadComment {
 // redoing it. rep may be nil when running in the background.
 func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, reply AuthorReply, row db.PublishedReply, rep *ReplyReport) (outcome ReplyOutcome, err error) {
 	outcome = ReplyOutcome{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, AuthorCommentID: reply.CommentID,
-		Decision: row.Decision, Model: row.Model, DurationMS: row.DurationMS}
+		Decision: row.Decision, Note: row.Note, Model: row.Model, DurationMS: row.DurationMS}
 	// A deferred reaction is settled with the step. The model's choice applies
 	// only when its reply is posted (a thumbs-up on a comment about to be
 	// rebutted reads as agreement); every other ending, including shadow and
@@ -918,7 +1167,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	for _, f := range current {
 		if f.AuthorCommentID == reply.CommentID {
 			row = f
-			outcome.Decision, outcome.Model, outcome.DurationMS = row.Decision, row.Model, row.DurationMS
+			outcome.Decision, outcome.Note, outcome.Model, outcome.DurationMS = row.Decision, row.Note, row.Model, row.DurationMS
 		}
 	}
 	// A reply we posted but never recorded (crash between the two, or another
@@ -976,14 +1225,22 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 				return outcome, ierr
 			}
 		}
-		if err != nil {
+		record := db.ReplyDecisionRecord{Head: state.HeadSHA, Thread: fingerprint, DeferredTo: row.DeferredTo}
+		switch {
+		case errors.Is(err, ErrBudgetExhausted) && ctx.Err() == nil && reply.Class != ReplyQuestion:
+			// The model never decided, so nothing it might have said can be
+			// retried; a fixed hold is posted once and the finding stands. A
+			// question has no claim to hold against, so it keeps the retry path.
+			decision = ReplyDecision{Decision: DecisionHold, Reply: budgetExhaustedReply, Cited: []EvidenceRef{}, Model: decision.Model, DurationMS: decision.DurationMS}
+			record.Note = NoteBudgetExhausted
+		case err != nil:
 			return outcome, err
 		}
 		decision, appendixRunes = renderDecision(decision, reply, root)
 		cited, _ := json.Marshal(decision.Cited)
-		record := db.ReplyDecisionRecord{
-			Decision: decision.Decision, ReplyBody: decision.Reply, Cited: string(cited), Model: decision.Model, DurationMS: decision.DurationMS,
-			Head: state.HeadSHA, Thread: fingerprint, React: decision.React,
+		record.Decision, record.ReplyBody, record.Cited, record.Model, record.DurationMS, record.React = decision.Decision, decision.Reply, string(cited), decision.Model, decision.DurationMS, decision.React
+		if ours := outOfScopeSentences(decision.Reply); record.Note == "" && len(ours) > 0 && (decision.Decision == DecisionHold || decision.Decision == DecisionConcede) {
+			record.DeferredTo = outOfScopeTickets(row.DeferredTo, reply.Body, ours)
 		}
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, record); err != nil {
 			return outcome, err
@@ -991,8 +1248,8 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		// The in-memory row mirrors the record in full, so a later write-back
 		// of this row cannot blank the head, thread or citations just stored.
 		row.Decision, row.ReplyBody, row.Cited, row.Model, row.DurationMS = record.Decision, record.ReplyBody, record.Cited, record.Model, record.DurationMS
-		row.DecisionHead, row.DecisionThread, row.DecisionReact = record.Head, record.Thread, record.React
-		outcome.Decision, outcome.Model, outcome.DurationMS = decision.Decision, decision.Model, decision.DurationMS
+		row.DecisionHead, row.DecisionThread, row.DecisionReact, row.Note, row.DeferredTo = record.Head, record.Thread, record.React, record.Note, record.DeferredTo
+		outcome.Decision, outcome.Note, outcome.Model, outcome.DurationMS = record.Decision, record.Note, record.Model, record.DurationMS
 		decidedNow = true
 	}
 	// A row decided before this convention took effect is rendered here and
@@ -1016,13 +1273,15 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	if text != row.ReplyBody || row.Decision != decided {
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
 			Decision: row.Decision, ReplyBody: text, Cited: row.Cited, Model: row.Model, DurationMS: row.DurationMS,
-			Head: row.DecisionHead, Thread: row.DecisionThread, React: row.DecisionReact,
+			Head: row.DecisionHead, Thread: row.DecisionThread, React: row.DecisionReact, Note: row.Note, DeferredTo: row.DeferredTo,
 		}); err != nil {
 			return outcome, err
 		}
 		row.ReplyBody, outcome.Decision = text, row.Decision
 	}
-	outcome.Note = replytext.Note(rctx)
+	if outcome.Note == "" {
+		outcome.Note = replytext.Note(rctx)
+	}
 	switch {
 	case row.Decision == DecisionAbstain || !renderable:
 		if rep != nil {
@@ -1102,7 +1361,13 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	return finish("posted")
 }
 
-// adopt records a posted reply and applies a concession's side effect.
+// adopt records a posted reply and applies a concession's side effect. A
+// conceded fix claim is dismissed like any other concession: only dismissed
+// fingerprints are suppressed on the next review, and fingerprints hash the
+// finding's wording rather than the code, so a resolved row would come back
+// as a fresh comment the next time the reviewer phrases it the same way.
+// The trade-off, accepted here as for every concession, is that a later
+// regression with the same wording stays suppressed on this PR.
 func (r ReplyReactor) adopt(t db.PublishedReplyTarget, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome) error {
 	if err := r.Ledger.MarkPublishedReplyPosted(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, posted.ID, posted.CreatedAt); err != nil {
 		return err

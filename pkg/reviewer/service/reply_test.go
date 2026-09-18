@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,41 @@ func runReply(t *testing.T, final string) (*ReplyResult, error, *fakeSpawner) {
 	cfg := AgentConfig{CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10, Model: "claude-fable-5-1"}
 	out, err := RunAgentReply(context.Background(), cfg, spawner, replyInput(sha))
 	return out, err, spawner
+}
+
+func TestRunAgentReply_MaxTurnsIsReportedAsBudgetExhausted(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	turn := `{"type":"assistant","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"looking"}]}}` + "\n"
+	spawner := &fakeSpawner{proc: &fakeProcess{stdout: bytes.NewBufferString(strings.Repeat(turn, 3)), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}}
+	cfg := AgentConfig{CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 2, Model: "claude-fable-5-1"}
+	_, err := RunAgentReply(context.Background(), cfg, spawner, replyInput(sha))
+	if !errors.Is(err, ErrReplyBudgetExhausted) || !strings.Contains(err.Error(), "max-turns") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRunAgentReply_WallClockIsReportedAsBudgetExhaustedUnlessTheCallerExpired(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	// The wall clocks leave room for the clone step; the fake process outlives
+	// every deadline so the run ends by timeout, not by exit.
+	run := func(ctx context.Context, wallClock time.Duration) error {
+		spawner := &fakeSpawner{proc: &fakeProcess{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, killCh: make(chan struct{}), exitAfter: 3 * time.Second}}
+		cfg := AgentConfig{CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: wallClock, MaxTurns: 10, Model: "claude-fable-5-1"}
+		_, err := RunAgentReply(ctx, cfg, spawner, replyInput(sha))
+		return err
+	}
+	if err := run(context.Background(), 2*time.Second); !errors.Is(err, ErrReplyBudgetExhausted) || !strings.Contains(err.Error(), "wall-clock") {
+		t.Fatalf("own deadline: err = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := run(ctx, time.Minute); err == nil || errors.Is(err, ErrReplyBudgetExhausted) {
+		t.Fatalf("an expired caller deadline is not the model's budget: err = %v", err)
+	}
 }
 
 func TestRunAgentReply_HoldWithResolvingEvidence(t *testing.T) {

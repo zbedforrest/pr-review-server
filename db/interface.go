@@ -405,11 +405,16 @@ type PublishedReply struct {
 	DecisionReact  bool
 	DecisionHead   string
 	DecisionThread string
-	ClaimedBy      string
-	ClaimedAt      *time.Time
-	RepliedAt      *time.Time
-	CreatedAt      time.Time
-	ProcessedAt    time.Time
+	// Note qualifies the decision (budget_exhausted when the posted text is
+	// the fixed notice that verification ran out of budget). DeferredTo lists
+	// the tracker keys the author deferred the finding to, comma-separated.
+	Note        string
+	DeferredTo  string
+	ClaimedBy   string
+	ClaimedAt   *time.Time
+	RepliedAt   *time.Time
+	CreatedAt   time.Time
+	ProcessedAt time.Time
 }
 
 // ReplyDecisionRecord is what the reply model concluded about one author
@@ -426,7 +431,9 @@ type ReplyDecisionRecord struct {
 	Thread string
 	// React is the model's choice about acknowledging the author's comment
 	// with a thumbs-up; it applies only when the reply is actually posted.
-	React bool
+	React      bool
+	Note       string
+	DeferredTo string
 }
 
 // PublishedReplyTarget is a PR with inline comments PRism owns, keyed by the

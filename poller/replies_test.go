@@ -118,6 +118,12 @@ func TestReplyOutcomeEventDistinguishesFailuresFromDecisions(t *testing.T) {
 	if ev.Action != "reply_text_error" || ev.Label != "comment=101: wall clock" {
 		t.Errorf("error event = %+v", ev)
 	}
+	o.Note = publisher.NoteBudgetExhausted
+	o.Model = strings.Repeat("m", 300)
+	if ev := replyOutcomeEvent(o, nil, 3); ev.Action != "reply_decision" || !strings.HasPrefix(ev.Label, "outcome=posted decision=hold note=budget_exhausted posted=true") || len([]rune(ev.Label)) != 255 {
+		t.Errorf("budget notice event keeps its note ahead of the truncation: %+v", ev)
+	}
+	o.Note, o.Model = "", "m"
 	for _, outcome := range []string{"skipped:thread_moved", "ineligible:thread_cap"} {
 		o.Outcome = outcome
 		if ev := replyOutcomeEvent(o, nil, 3); ev.Action != "reply_text_skipped" {
