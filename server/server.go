@@ -1289,6 +1289,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			PublishShowUnverified    *bool   `json:"publish_show_unverified"`
 			AutoReviewReadyPRs       *bool   `json:"auto_review_ready_prs"`
 			AdminLogins              *string `json:"admin_logins"`
+			CIStatusExcludeAuthors   *string `json:"ci_status_exclude_authors"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
@@ -1310,7 +1311,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "publish_reply_mode must be off, observe, react, shadow, or respond", http.StatusBadRequest)
 			return
 		}
-		var publishAuthors, adminLogins string
+		var publishAuthors, adminLogins, ciExcludeAuthors string
 		if req.PublishEnabledAuthors != nil {
 			normalized, err := normalizeLoginCSV(*req.PublishEnabledAuthors, true)
 			if err != nil {
@@ -1326,6 +1327,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			adminLogins = normalized
+		}
+		if req.CIStatusExcludeAuthors != nil {
+			normalized, err := normalizeLoginCSV(*req.CIStatusExcludeAuthors, true)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("%s: %v", db.SettingCIStatusExcludeAuthors, err), http.StatusBadRequest)
+				return
+			}
+			ciExcludeAuthors = normalized
 		}
 
 		type settingWrite struct{ key, value string }
@@ -1374,6 +1383,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.AdminLogins != nil {
 			updates = append(updates, settingWrite{settingAdminLogins, adminLogins})
+		}
+		if req.CIStatusExcludeAuthors != nil {
+			updates = append(updates, settingWrite{db.SettingCIStatusExcludeAuthors, ciExcludeAuthors})
 		}
 		for _, u := range updates {
 			if err := s.writeSetting(user.GitHubUsername, u.key, u.value); err != nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -474,12 +475,19 @@ func (g *GormDB) GetPRIDsWithManualClaims() (map[int]bool, error) {
 	return claims, nil
 }
 
-// GetPRIDsWithViews returns every PR that appears on at least one user's
-// dashboard, hidden rows included. PRs outside this set are tracked but never
-// rendered, so per-cycle metadata such as CI status is wasted on them.
-func (g *GormDB) GetPRIDsWithViews() (map[int]bool, error) {
+// GetWatchedPRIDs returns the PRs some dashboard actually renders: PRs with a
+// non-hidden view belonging to a user who logged in since activeSince or still
+// holds an unexpired session. Per-cycle GitHub metadata such as merge state is
+// spent only on this set.
+func (g *GormDB) GetWatchedPRIDs(activeSince time.Time) (map[int]bool, error) {
 	var prIDs []int
-	if err := g.db.Model(&UserPRViewModel{}).Distinct().Pluck("pr_id", &prIDs).Error; err != nil {
+	err := g.db.Model(&UserPRViewModel{}).
+		Joins("INNER JOIN users ON users.id = user_pr_views.user_id").
+		Where("user_pr_views.hidden = ?", false).
+		Where("users.last_login_at >= ? OR EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = users.id AND sessions.expires_at > ?)", activeSince, time.Now()).
+		Distinct().
+		Pluck("user_pr_views.pr_id", &prIDs).Error
+	if err != nil {
 		return nil, err
 	}
 	watched := make(map[int]bool, len(prIDs))

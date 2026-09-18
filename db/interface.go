@@ -350,7 +350,7 @@ type Database interface {
 	EnsureUserPRView(userID, prID int, isAuthor bool) error
 	EnsureManualPRView(userID, prID int, isAuthor bool) error
 	GetPRIDsWithManualClaims() (map[int]bool, error)
-	GetPRIDsWithViews() (map[int]bool, error)
+	GetWatchedPRIDs(activeSince time.Time) (map[int]bool, error)
 	HideNonManualViewsForPR(prID int) error
 	SetPRState(owner, repo string, prNumber int, state string) error
 	MigrateLegacyNotes(userID int) (int, error)

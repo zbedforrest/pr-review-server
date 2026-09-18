@@ -76,6 +76,8 @@ func (s *Server) addAdminSettings(response map[string]interface{}) {
 	row, _ := s.db.GetSetting(settingAdminLogins)
 	response[settingAdminLogins] = strings.Join(splitLogins(row), ",")
 	response["admin_logins_fixed"] = append([]string{}, s.cfg.AdminLogins...)
+	excluded, _ := s.db.GetSetting(db.SettingCIStatusExcludeAuthors)
+	response[db.SettingCIStatusExcludeAuthors] = strings.Join(splitLogins(excluded), ",")
 }
 
 func (s *Server) writeSetting(actor, key, value string) error {

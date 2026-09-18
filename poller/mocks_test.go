@@ -325,8 +325,8 @@ type MockDatabase struct {
 	// User PR views (keyed by "userID/prID"), maintained by
 	// BatchUpsertUserPRViews and BatchPruneViaTeams so multi-cycle poll tests
 	// observe the same state evolution as the real database.
-	UserPRViews            map[string]*db.UserPRView
-	GetPRIDsWithViewsError error
+	UserPRViews          map[string]*db.UserPRView
+	GetWatchedPRIDsError error
 
 	// Track prune calls for verification
 	BatchPruneViaTeamsCalls [][]db.ViaTeamsPrune
@@ -1185,14 +1185,27 @@ func (m *MockDatabase) GetPRIDsWithManualClaims() (map[int]bool, error) {
 	return claims, nil
 }
 
-func (m *MockDatabase) GetPRIDsWithViews() (map[int]bool, error) {
+// GetWatchedPRIDs mirrors the SQL: non-hidden views of users who logged in
+// since activeSince. A view whose user is not in Users, or whose user has no
+// login stamp, counts as active.
+func (m *MockDatabase) GetWatchedPRIDs(activeSince time.Time) (map[int]bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if m.GetPRIDsWithViewsError != nil {
-		return nil, m.GetPRIDsWithViewsError
+	if m.GetWatchedPRIDsError != nil {
+		return nil, m.GetWatchedPRIDsError
+	}
+	lastLogin := map[int]*time.Time{}
+	for _, u := range m.Users {
+		lastLogin[u.ID] = u.LastLoginAt
 	}
 	watched := make(map[int]bool, len(m.UserPRViews))
 	for _, view := range m.UserPRViews {
+		if view.Hidden {
+			continue
+		}
+		if at := lastLogin[view.UserID]; at != nil && at.Before(activeSince) {
+			continue
+		}
 		watched[view.PRID] = true
 	}
 	return watched, nil

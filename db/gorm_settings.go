@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -91,4 +92,23 @@ func (g *GormDB) SetGenerateHTML(enabled bool) error {
 		value = "true"
 	}
 	return g.SetSetting("generate_html", value)
+}
+
+// SettingCIStatusExcludeAuthors holds the CSV of PR author logins whose PRs
+// never get per-cycle merge-state requests; initDefaultSettings seeds it, so
+// an empty value means the admin cleared the list.
+const SettingCIStatusExcludeAuthors = "ci_status_exclude_authors"
+
+const DefaultCIStatusExcludeAuthors = "renovate,dependabot,mm-renovate-bot"
+
+// ParseLoginCSV lowercases, trims and de-duplicates a comma-separated login list.
+func ParseLoginCSV(csv string) map[string]bool {
+	logins := map[string]bool{}
+	for _, part := range strings.Split(csv, ",") {
+		login := strings.ToLower(strings.TrimSpace(part))
+		if login != "" {
+			logins[login] = true
+		}
+	}
+	return logins
 }

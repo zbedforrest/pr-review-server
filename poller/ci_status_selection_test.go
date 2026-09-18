@@ -13,15 +13,15 @@ import (
 	"pr-review-server/github"
 )
 
-func ciSelectionFixture() ([]github.PullRequest, map[string]*db.PR, map[string]bool, map[int]bool) {
+func ciSelectionFixture() ([]github.PullRequest, map[string]*db.PR, map[string]bool, ciSelectOptions) {
 	allPRs := []github.PullRequest{
-		{Owner: "acme", Repo: "example", Number: 1},
-		{Owner: "acme", Repo: "example", Number: 2},
-		{Owner: "acme", Repo: "example", Number: 3},
-		{Owner: "acme", Repo: "example", Number: 4},
-		{Owner: "acme", Repo: "example", Number: 5},
-		{Owner: "acme", Repo: "example", Number: 6},
-		{Owner: "acme", Repo: "example", Number: 7},
+		{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "head1", Author: "alice"},
+		{Owner: "acme", Repo: "example", Number: 2, CommitSHA: "head2"},
+		{Owner: "acme", Repo: "example", Number: 3, CommitSHA: "head3"},
+		{Owner: "acme", Repo: "example", Number: 4, CommitSHA: "head4", Author: "bob"},
+		{Owner: "acme", Repo: "example", Number: 5, CommitSHA: "head5"},
+		{Owner: "acme", Repo: "example", Number: 6, CommitSHA: "head6"},
+		{Owner: "acme", Repo: "example", Number: 7, CommitSHA: "head7"},
 	}
 	dbPRMap := map[string]*db.PR{
 		"acme/example/1": {ID: 1, PRState: "open", CIState: "success"},
@@ -32,8 +32,13 @@ func ciSelectionFixture() ([]github.PullRequest, map[string]*db.PR, map[string]b
 		"acme/example/6": {ID: 6, PRState: "open", CIState: "success"},
 	}
 	ghKeys := map[string]bool{"acme/example/1": true, "acme/example/4": true}
-	watched := map[int]bool{1: true, 4: true}
-	return allPRs, dbPRMap, ghKeys, watched
+	opts := ciSelectOptions{
+		watched:         map[int]bool{1: true, 4: true},
+		excludedAuthors: db.ParseLoginCSV(db.DefaultCIStatusExcludeAuthors),
+		marks:           map[string]ciMergeMark{},
+		cycle:           1,
+	}
+	return allPRs, dbPRMap, ghKeys, opts
 }
 
 func mergeStateByNumber(prs []github.PRInfo) map[int]bool {
@@ -45,40 +50,148 @@ func mergeStateByNumber(prs []github.PRInfo) map[int]bool {
 }
 
 func TestSelectCIStatusPRs_OnlyWatchedOpenPRsGetMergeState(t *testing.T) {
-	allPRs, dbPRMap, ghKeys, watched := ciSelectionFixture()
+	allPRs, dbPRMap, ghKeys, opts := ciSelectionFixture()
 
-	sel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, watched, false)
+	sel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, opts)
 
-	want := map[int]bool{1: true, 4: true, 5: false, 7: true}
+	want := map[int]bool{1: true, 4: true, 5: false, 7: false}
 	if got := mergeStateByNumber(sel.prs); !reflect.DeepEqual(got, want) {
-		t.Errorf("selected %v, want %v (open+search rows with merge state, empty-CI unknown row checks-only, unknown-to-DB row with merge state)", got, want)
+		t.Errorf("selected %v, want %v (watched open rows with merge state, empty-CI unknown row and unknown-to-DB row checks-only)", got, want)
 	}
-	if got, want := sel.String(), "open=4 (watched=3 unwatched-skipped=1) closed-skipped=2 checks-only=1 unknown-state=1"; got != want {
+	if got, want := sel.String(), "open=4 watched=2 (visible=2 bot-excluded=0 due=2) unwatched-skipped=1 closed-skipped=2 checks-only=2"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 }
 
 func TestSelectCIStatusPRs_FullRefreshQueriesClosedRowsChecksOnly(t *testing.T) {
-	allPRs, dbPRMap, ghKeys, watched := ciSelectionFixture()
+	allPRs, dbPRMap, ghKeys, opts := ciSelectionFixture()
+	opts.fullRefresh = true
 
-	sel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, watched, true)
+	sel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, opts)
 
-	want := map[int]bool{1: true, 2: false, 3: false, 4: true, 5: false, 7: true}
+	want := map[int]bool{1: true, 2: false, 3: false, 4: true, 5: false, 7: false}
 	if got := mergeStateByNumber(sel.prs); !reflect.DeepEqual(got, want) {
 		t.Errorf("full refresh selected %v, want %v", got, want)
 	}
-	if sel.closedSkipped != 0 || sel.checksOnly != 3 || sel.unwatched != 1 {
-		t.Errorf("full refresh counts = %s, want closed-skipped=0 checks-only=3 unwatched-skipped=1", sel)
+	if sel.closedSkipped != 0 || sel.checksOnly != 4 || sel.unwatched != 1 {
+		t.Errorf("full refresh counts = %s, want closed-skipped=0 checks-only=4 unwatched-skipped=1", sel)
 	}
 }
 
 func TestSelectCIStatusPRs_WatchedLookupFailureFallsBackToEveryOpenPR(t *testing.T) {
-	allPRs, dbPRMap, ghKeys, _ := ciSelectionFixture()
+	allPRs, dbPRMap, ghKeys, opts := ciSelectionFixture()
+	opts.watched = nil
 
-	sel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, nil, false)
+	sel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, opts)
 
-	if got := mergeStateByNumber(sel.prs); !got[6] || sel.unwatched != 0 || sel.watched != 4 {
-		t.Errorf("with no watched set every open PR must be queried with merge state, got %v counts %s", got, sel)
+	if got := mergeStateByNumber(sel.prs); !got[6] || got[7] || sel.unwatched != 0 || sel.watched != 3 || sel.due != 3 {
+		t.Errorf("with no watched set every known open PR must be queried with merge state, got %v counts %s", got, sel)
+	}
+}
+
+func TestSelectCIStatusPRs_ExcludedAuthorsNeverGetMergeState(t *testing.T) {
+	allPRs, dbPRMap, ghKeys, opts := ciSelectionFixture()
+	allPRs[0].Author = "renovate"
+	allPRs[3].Author = "dependabot[bot]"
+	dbPRMap["acme/example/4"].CIState = ""
+
+	sel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, opts)
+
+	want := map[int]bool{4: false, 5: false, 7: false}
+	if got := mergeStateByNumber(sel.prs); !reflect.DeepEqual(got, want) {
+		t.Errorf("selected %v, want %v (bot PR with CI state skipped, bot PR without CI state checks-only)", got, want)
+	}
+	if got, want := sel.String(), "open=4 watched=0 (visible=2 bot-excluded=2 due=0) unwatched-skipped=1 closed-skipped=2 checks-only=3"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+
+	opts.fullRefresh = true
+	sel = selectCIStatusPRs(allPRs, dbPRMap, ghKeys, opts)
+	if v, ok := mergeStateByNumber(sel.prs)[1]; !ok || v {
+		t.Errorf("full refresh must include bot PR 1 checks-only, got %v", mergeStateByNumber(sel.prs))
+	}
+}
+
+func TestIsExcludedCIAuthor(t *testing.T) {
+	excluded := db.ParseLoginCSV(db.DefaultCIStatusExcludeAuthors)
+	cases := map[string]bool{
+		"renovate": true, "Renovate": true, "mm-renovate-bot": true, "dependabot[bot]": true,
+		"github-actions[bot]": true, "alice": false, "": false, "renovate-fan": false,
+	}
+	for login, want := range cases {
+		if got := isExcludedCIAuthor(login, excluded); got != want {
+			t.Errorf("isExcludedCIAuthor(%q) = %v, want %v", login, got, want)
+		}
+	}
+	if isExcludedCIAuthor("renovate", db.ParseLoginCSV("")) {
+		t.Errorf("a cleared list must only exclude [bot] logins")
+	}
+}
+
+func TestMergeStateDue_UnchangedPRWaitsFiveCycles(t *testing.T) {
+	mark := ciMergeMark{cycle: 1, head: "head1", ciState: "success"}
+	for cycle := 2; cycle <= 5; cycle++ {
+		if mergeStateDue(mark, true, cycle, "head1", "success") {
+			t.Errorf("cycle %d: unchanged PR must not be due", cycle)
+		}
+	}
+	if !mergeStateDue(mark, true, 6, "head1", "success") {
+		t.Errorf("cycle 6: unchanged PR must be due after %d cycles", ciMergeStateEveryCycles)
+	}
+	if !mergeStateDue(mark, true, 2, "head2", "success") {
+		t.Errorf("a head change must make the PR due immediately")
+	}
+	if !mergeStateDue(mark, true, 2, "head1", "failure") {
+		t.Errorf("a CI state change must make the PR due immediately")
+	}
+	if !mergeStateDue(ciMergeMark{}, false, 2, "head1", "success") {
+		t.Errorf("a PR never fetched must be due")
+	}
+}
+
+func TestSelectCIStatusPRs_CadenceSendsUnchangedWatchedPRsChecksOnly(t *testing.T) {
+	allPRs, dbPRMap, ghKeys, opts := ciSelectionFixture()
+	opts.marks["acme/example/1"] = ciMergeMark{cycle: 1, head: "head1", ciState: "success"}
+	opts.marks["acme/example/4"] = ciMergeMark{cycle: 1, head: "old4", ciState: "pending"}
+	opts.cycle = 3
+
+	sel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, opts)
+
+	want := map[int]bool{1: false, 4: true, 5: false, 7: false}
+	if got := mergeStateByNumber(sel.prs); !reflect.DeepEqual(got, want) {
+		t.Errorf("selected %v, want %v (unchanged PR 1 checks-only, PR 4 with a new head due)", got, want)
+	}
+	if sel.watched != 2 || sel.due != 1 || sel.checksOnly != 3 {
+		t.Errorf("counts = %s, want watched=2 due=1 checks-only=3", sel)
+	}
+}
+
+func TestRecordMergeStateFetches_MarksFetchedAndForgetsUntracked(t *testing.T) {
+	allPRs := []github.PullRequest{{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "head1"}}
+	marks := map[string]ciMergeMark{"acme/example/9": {cycle: 1}}
+	requested := []github.PRInfo{{Owner: "acme", Repo: "example", Number: 1, IncludeMergeState: true}}
+	results := map[string]*github.CIStatus{
+		"acme/example/1": {State: "failure", MergeStateRequested: true},
+	}
+
+	recordMergeStateFetches(marks, allPRs, requested, results, 7)
+
+	if got, want := marks["acme/example/1"], (ciMergeMark{cycle: 7, head: "head1", ciState: "failure"}); got != want {
+		t.Errorf("mark = %+v, want %+v", got, want)
+	}
+	if _, kept := marks["acme/example/9"]; kept {
+		t.Errorf("mark for an untracked PR must be dropped")
+	}
+	requested[0].IncludeMergeState = false
+	recordMergeStateFetches(marks, allPRs, requested, results, 8)
+	if marks["acme/example/1"].cycle != 7 {
+		t.Errorf("a checks-only request must not refresh the merge-state mark")
+	}
+	delete(results, "acme/example/1")
+	requested[0].IncludeMergeState = true
+	recordMergeStateFetches(marks, allPRs, requested, results, 9)
+	if marks["acme/example/1"].cycle != 7 {
+		t.Errorf("an unanswered request (skipped batch) must not refresh the merge-state mark")
 	}
 }
 
@@ -111,9 +224,87 @@ func TestPoll_CIStatusSelectionSkipsClosedAndUnwatchedRows(t *testing.T) {
 	if got := mergeStateByNumber(mockGH.BatchGetCIStatusCalls[0]); !reflect.DeepEqual(got, want) {
 		t.Errorf("CI query PRs = %v, want %v", got, want)
 	}
-	wantLine := "[POLL] CI status selection: open=3 (watched=2 unwatched-skipped=1) closed-skipped=2 checks-only=1 unknown-state=1"
+	wantLine := "[POLL] CI status selection: open=3 watched=2 (visible=2 bot-excluded=0 due=2) unwatched-skipped=1 closed-skipped=2 checks-only=1"
 	if !strings.Contains(logs.String(), wantLine) {
 		t.Errorf("poll log missing %q", wantLine)
+	}
+}
+
+func TestPoll_CIStatusHiddenViewAndBotAuthorAreNotWatched(t *testing.T) {
+	mockDB, poller, _ := mergeStatePollFixture(t, "CLEAN", "CLEAN")
+	mockGH := poller.ghClient.(*MockGitHubClient)
+	mockDB.UserPRViews["1/1"].Hidden = true
+	mockDB.PRs["owner/repo/2"] = &db.PR{ID: 2, RepoOwner: "owner", RepoName: "repo", PRNumber: 2, Status: "completed", PRState: "open", CIState: "success", Author: "renovate"}
+	mockDB.UserPRViews["1/2"] = &db.UserPRView{UserID: 1, PRID: 2}
+	_ = mockDB.SetSetting(db.SettingCIStatusExcludeAuthors, db.DefaultCIStatusExcludeAuthors)
+	mockGH.PRsRequestingReview = append(mockGH.PRsRequestingReview,
+		github.PullRequest{Owner: "owner", Repo: "repo", Number: 2, CommitSHA: "def", Title: "Bot bump", Author: "renovate"})
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
+	poller.poll(context.Background())
+	waitForDetachedReviews(t, poller)
+
+	if len(mockGH.BatchGetCIStatusCalls) != 1 {
+		t.Fatalf("BatchGetCIStatus calls = %d, want 1", len(mockGH.BatchGetCIStatusCalls))
+	}
+	if got := mockGH.BatchGetCIStatusCalls[0]; len(got) != 0 {
+		t.Errorf("CI query PRs = %+v, want none (hidden view unwatched, bot PR with CI state skipped)", got)
+	}
+	wantLine := "[POLL] CI status selection: open=2 watched=0 (visible=1 bot-excluded=1 due=0) unwatched-skipped=1 closed-skipped=0 checks-only=0"
+	if !strings.Contains(logs.String(), wantLine) {
+		t.Errorf("poll log missing %q in:\n%s", wantLine, logs.String())
+	}
+}
+
+func TestPoll_CIStatusMergeStateFollowsCadenceAcrossCycles(t *testing.T) {
+	_, poller, _ := mergeStatePollFixture(t, "CLEAN", "CLEAN")
+	mockGH := poller.ghClient.(*MockGitHubClient)
+
+	for cycle := 1; cycle <= 6; cycle++ {
+		poller.poll(context.Background())
+		waitForDetachedReviews(t, poller)
+	}
+
+	calls := mockGH.BatchGetCIStatusCalls
+	if len(calls) != 6 {
+		t.Fatalf("BatchGetCIStatus calls = %d, want 6", len(calls))
+	}
+	wantMerge := []bool{true, false, false, false, false, true}
+	for i, call := range calls {
+		if len(call) != 1 || call[0].Number != 1 {
+			t.Fatalf("cycle %d: CI query PRs = %+v, want the open PR", i+1, call)
+		}
+		if call[0].IncludeMergeState != wantMerge[i] {
+			t.Errorf("cycle %d: IncludeMergeState = %v, want %v", i+1, call[0].IncludeMergeState, wantMerge[i])
+		}
+	}
+}
+
+func TestPoll_CIStatusHeadChangeMakesMergeStateDue(t *testing.T) {
+	mockDB, poller, _ := mergeStatePollFixture(t, "CLEAN", "CLEAN")
+	mockGH := poller.ghClient.(*MockGitHubClient)
+
+	poller.poll(context.Background())
+	waitForDetachedReviews(t, poller)
+	const newSHA = "fedcba9876543210fedcba9876543210fedcba98"
+	mockGH.PRsRequestingReview[0].CommitSHA = newSHA
+	mockGH.GetPRHeadSHAResults["owner/repo/1"] = struct {
+		SHA string
+		Err error
+	}{newSHA, nil}
+	mockDB.PRs["owner/repo/1"].LastCommitSHA = newSHA
+	poller.poll(context.Background())
+	waitForDetachedReviews(t, poller)
+
+	calls := mockGH.BatchGetCIStatusCalls
+	if len(calls) != 2 || len(calls[1]) != 1 {
+		t.Fatalf("BatchGetCIStatus calls = %+v, want two single-PR calls", calls)
+	}
+	if !calls[1][0].IncludeMergeState {
+		t.Errorf("a new head must make merge state due on the next cycle")
 	}
 }
 

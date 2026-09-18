@@ -1724,31 +1724,49 @@ func TestGormDB_GetPRIDsWithManualClaims(t *testing.T) {
 	assert.False(t, claims[pr3.ID], "team assignment is not a manual claim")
 }
 
-func TestGormDB_GetPRIDsWithViews(t *testing.T) {
+func TestGormDB_GetWatchedPRIDs(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()
 
-	user := &User{GitHubID: 12345, GitHubUsername: "testuser"}
-	require.NoError(t, db.CreateUser(user))
-	for i := 1; i <= 3; i++ {
-		require.NoError(t, db.UpsertPR(&PR{
-			RepoOwner: "owner", RepoName: "repo", PRNumber: i,
-			LastCommitSHA: "abc123", Status: "completed",
-		}))
+	recent := time.Now().Add(-time.Hour)
+	stale := time.Now().Add(-40 * 24 * time.Hour)
+	active := &User{GitHubID: 1, GitHubUsername: "active", LastLoginAt: &recent}
+	inactive := &User{GitHubID: 2, GitHubUsername: "inactive", LastLoginAt: &stale}
+	sessionOnly := &User{GitHubID: 3, GitHubUsername: "session-only"}
+	for _, u := range []*User{active, inactive, sessionOnly} {
+		require.NoError(t, db.CreateUser(u))
 	}
-	pr1, _ := db.GetPR("owner", "repo", 1)
-	pr2, _ := db.GetPR("owner", "repo", 2)
-	pr3, _ := db.GetPR("owner", "repo", 3)
+	require.NoError(t, db.CreateSession(&Session{ID: "live", UserID: sessionOnly.ID, ExpiresAt: time.Now().Add(time.Hour)}))
 
-	require.NoError(t, db.EnsureUserPRView(user.ID, pr1.ID, false))
-	require.NoError(t, db.EnsureManualPRView(user.ID, pr2.ID, false))
-	require.NoError(t, db.HidePRForUser(user.ID, pr2.ID))
+	prs := make([]*PR, 6)
+	for i := range prs {
+		require.NoError(t, db.UpsertPR(&PR{
+			RepoOwner: "owner", RepoName: "repo", PRNumber: i + 1,
+			LastCommitSHA: "abc123", Status: "completed", PRState: "open",
+		}))
+		prs[i], _ = db.GetPR("owner", "repo", i+1)
+	}
 
-	watched, err := db.GetPRIDsWithViews()
+	require.NoError(t, db.EnsureUserPRView(active.ID, prs[0].ID, true))
+	require.NoError(t, db.EnsureManualPRView(active.ID, prs[1].ID, false))
+	require.NoError(t, db.HidePRForUser(active.ID, prs[1].ID))
+	require.NoError(t, db.EnsureUserPRView(inactive.ID, prs[2].ID, false))
+	teams := []string{"backend"}
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: active.ID, PRID: prs[3].ID, ViaTeams: &teams},
+		{UserID: active.ID, PRID: prs[4].ID, ViaTeams: &teams},
+	}))
+	require.NoError(t, db.HidePRForUser(active.ID, prs[4].ID))
+	require.NoError(t, db.EnsureUserPRView(sessionOnly.ID, prs[5].ID, false))
+
+	watched, err := db.GetWatchedPRIDs(time.Now().Add(-30 * 24 * time.Hour))
 	require.NoError(t, err)
-	assert.True(t, watched[pr1.ID], "team-assigned view counts as watched")
-	assert.True(t, watched[pr2.ID], "a hidden view still counts as watched")
-	assert.False(t, watched[pr3.ID], "a PR with no view is not watched")
+	assert.True(t, watched[prs[0].ID], "visible view of an active user is watched")
+	assert.False(t, watched[prs[1].ID], "a hidden view does not count")
+	assert.False(t, watched[prs[2].ID], "a view of a user inactive for 30 days does not count")
+	assert.True(t, watched[prs[3].ID], "a visible team view counts")
+	assert.False(t, watched[prs[4].ID], "a hidden team view does not count")
+	assert.True(t, watched[prs[5].ID], "a user with no login stamp but a live session is active")
 }
 
 // =============================================================================

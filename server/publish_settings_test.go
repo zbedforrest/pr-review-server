@@ -325,3 +325,20 @@ func TestSettingsAutoReviewReadyPRsRoundTripsAndDefaultsOff(t *testing.T) {
 	stored, _ := database.GetSetting("auto_review_ready_prs")
 	assert.Equal(t, "true", stored)
 }
+
+func TestSettings_CIStatusExcludeAuthorsRoundTrip(t *testing.T) {
+	server, database := newNonDevTestServer(t)
+	server.cfg.AdminLogins = []string{"root"}
+	admin := &db.User{GitHubUsername: "root"}
+
+	assert.Equal(t, db.DefaultCIStatusExcludeAuthors, settingsGet(t, server, admin)[db.SettingCIStatusExcludeAuthors])
+
+	w := settingsPatchAs(server, admin, `{"ci_status_exclude_authors":"Renovate, dependabot[bot],,renovate"}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	stored, _ := database.GetSetting(db.SettingCIStatusExcludeAuthors)
+	assert.Equal(t, "renovate,dependabot[bot]", stored)
+
+	w = settingsPatchAs(server, admin, `{"ci_status_exclude_authors":""}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, "", settingsGet(t, server, admin)[db.SettingCIStatusExcludeAuthors])
+}

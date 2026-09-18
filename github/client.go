@@ -33,6 +33,10 @@ type Client struct {
 
 	truncatedReviewsWarned     map[string]string
 	truncatedReviewsWarnedLock sync.Mutex
+
+	// ciBatchSleep paces CI status batches; nil means time.Sleep. Tests
+	// inject a recorder so pacing is asserted without waiting.
+	ciBatchSleep func(time.Duration)
 }
 
 // warnReviewsTruncatedOnce logs the truncated-history warning the first time a
@@ -1090,6 +1094,9 @@ func (c *Client) extractReviewerGroups(timelineItems TimelineItemsData) ([]strin
 const (
 	ciBatchSizeMergeState = 25
 	ciBatchSizeChecksOnly = 50
+	// ciBatchPace spaces batch launches so a cycle's merge-state queries do
+	// not arrive as one burst, which is what trips the secondary rate limit.
+	ciBatchPace = 250 * time.Millisecond
 )
 
 // ciBatchStats counts one BatchGetCIStatus call for its summary line.
@@ -1174,7 +1181,12 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 		partial     = newPartialErrorSummary()
 		stats       ciBatchStats
 		rateLimited atomic.Bool
+		resetAt     atomic.Pointer[time.Time]
 	)
+	sleep := c.ciBatchSleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
 
 	runBatch := func(batch []PRInfo) {
 		defer wg.Done()
@@ -1194,6 +1206,9 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 			var httpErr *GraphQLHTTPError
 			if errors.Is(err, ErrGraphQLRateLimited) || (errors.As(err, &httpErr) && httpErr.Status == http.StatusForbidden) {
 				rateLimited.Store(true)
+				if at := RateLimitResetAt(err); !at.IsZero() {
+					resetAt.Store(&at)
+				}
 			}
 			log.Printf("[GRAPHQL] Warning: Failed to fetch CI status batch: %v", err)
 			return
@@ -1240,10 +1255,15 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 		}
 	}
 
+	launched := 0
 	dispatch := func(list []PRInfo, batchSize int) {
 		for i := 0; i < len(list); i += batchSize {
 			end := min(i+batchSize, len(list))
 			stats.batches++
+			if launched > 0 && !rateLimited.Load() {
+				sleep(ciBatchPace)
+			}
+			launched++
 			wg.Add(1)
 			sem <- struct{}{}
 			go runBatch(list[i:end])
@@ -1261,6 +1281,9 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 	}
 	if rateLimited.Load() {
 		summary += " rate-limited: remaining batches skipped this cycle"
+		if at := resetAt.Load(); at != nil {
+			summary += fmt.Sprintf(" (limit resets at %s, in %s)", at.UTC().Format(time.RFC3339), time.Until(*at).Round(time.Second))
+		}
 	}
 	log.Print(summary)
 	return results, nil
