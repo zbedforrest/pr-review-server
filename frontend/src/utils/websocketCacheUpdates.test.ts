@@ -58,3 +58,23 @@ describe('applyPRWebSocketMessage hidden handling', () => {
     expect(result?.[0].hidden).toBe(true);
   });
 });
+
+describe('applyPRWebSocketMessage merge fields', () => {
+  it('pr_updated replaces merge fields from the payload', () => {
+    const stale = [makePR({ ready_to_merge: false, merge_state_status: 'BLOCKED', review_decision: 'REVIEW_REQUIRED' })];
+    const nowReady = applyPRWebSocketMessage(
+      stale,
+      prUpdated(makePR({ ready_to_merge: true, merge_state_status: 'CLEAN', review_decision: 'APPROVED' }))
+    );
+    expect(nowReady?.[0].ready_to_merge).toBe(true);
+    expect(nowReady?.[0].merge_state_status).toBe('CLEAN');
+    expect(nowReady?.[0].review_decision).toBe('APPROVED');
+
+    const noLongerReady = applyPRWebSocketMessage(
+      nowReady,
+      prUpdated(makePR({ ready_to_merge: false, merge_state_status: 'DIRTY', review_decision: 'APPROVED' }))
+    );
+    expect(noLongerReady?.[0].ready_to_merge).toBe(false);
+    expect(noLongerReady?.[0].merge_state_status).toBe('DIRTY');
+  });
+});

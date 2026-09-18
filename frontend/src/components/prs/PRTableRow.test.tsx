@@ -270,6 +270,38 @@ describe('PRTableRow confidence cell', () => {
   });
 });
 
+describe('PRTableRow approvals cell', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+  });
+  afterEach(() => cleanup());
+
+  const approvalsCell = () => document.querySelector('td.pr-table__approval-count') as HTMLElement;
+
+  it('shows the ready-to-merge check immediately after the count', () => {
+    renderRow(makePR({ approval_count: 2, ready_to_merge: true, merge_state_status: 'CLEAN', review_decision: 'APPROVED' }));
+    expect(approvalsCell().textContent?.replace(/\s+/g, '')).toBe('2✅');
+    const check = screen.getByRole('img', { name: /^Ready to merge: 2 approvals, required reviews approved/ });
+    expect(approvalsCell().contains(check)).toBe(true);
+  });
+
+  it('shows only the count when the payload omits ready_to_merge', () => {
+    renderRow(makePR({ approval_count: 2 }));
+    expect(approvalsCell().textContent).toBe('2');
+    expect(screen.queryByRole('img', { name: /^Ready to merge:/ })).toBeNull();
+  });
+
+  it('keeps the positive/zero count classes unchanged when the check is present', () => {
+    renderRow(makePR({ approval_count: 2, ready_to_merge: true }));
+    expect(approvalsCell().className).toBe('pr-table__approval-count pr-table__approval-count--positive');
+    cleanup();
+    renderRow(makePR({ approval_count: 0, ready_to_merge: true }));
+    expect(approvalsCell().className).toBe('pr-table__approval-count pr-table__approval-count--zero');
+    expect(approvalsCell().textContent?.replace(/\s+/g, '')).toBe('0✅');
+  });
+});
+
 describe('PRTableRow PR link click behavior', () => {
   const PR_URL = 'https://github.com/test-org/test-repo/pull/1';
   const originalLocation = window.location;

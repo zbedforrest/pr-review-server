@@ -64,6 +64,14 @@
     }
   }
 
+  &__merge-ready {
+    margin-left: 4px;
+    font-size: 13px;
+    line-height: 1;
+    cursor: help;
+    vertical-align: baseline;
+  }
+
   &__review-emoji {
     text-align: center;
     font-size: 18px;
