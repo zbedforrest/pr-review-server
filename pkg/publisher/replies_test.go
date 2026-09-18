@@ -206,6 +206,7 @@ func (f *fakeReplyLedger) SetPublishedReplyDecision(_, _ string, _ int, authorCo
 		if f.rows[i].AuthorCommentID == authorCommentID {
 			f.rows[i].Decision, f.rows[i].ReplyBody, f.rows[i].Cited, f.rows[i].Model = d.Decision, d.ReplyBody, d.Cited, d.Model
 			f.rows[i].DecisionHead, f.rows[i].DecisionThread, f.rows[i].DecisionReact = d.Head, d.Thread, d.React
+			f.rows[i].Note, f.rows[i].DeferredTo = d.Note, d.DeferredTo
 		}
 	}
 	return nil
@@ -450,8 +451,9 @@ func TestTextEligibilityRules(t *testing.T) {
 	}{
 		{"pushback gets text", fresh, nil, 0, ""},
 		{"question gets text", AuthorReply{Class: ReplyQuestion, CreatedAt: now}, nil, 0, ""},
-		{"resolution never", AuthorReply{Class: ReplyResolution, CreatedAt: now}, nil, 0, "class"},
-		{"other never", AuthorReply{Class: ReplyOther, CreatedAt: now}, nil, 0, "class"},
+		{"fix claim gets text", AuthorReply{Class: ReplyResolution, Body: "Fixed in 9de3bed, the guard now runs first.", CreatedAt: now}, nil, 0, ""},
+		{"bare acknowledgment never", AuthorReply{Class: ReplyResolution, Body: "Fixed", CreatedAt: now}, nil, 0, "acknowledgment"},
+		{"other never", AuthorReply{Class: ReplyOther, Body: "Yep, known gap for this PR. Scoped in MSG-3282", CreatedAt: now}, nil, 0, "class"},
 		{"stale", AuthorReply{Class: ReplyPushback, CreatedAt: now.Add(-25 * time.Hour)}, nil, 0, "stale"},
 		{"thread cap", fresh, []db.PublishedReply{{ReplyCommentID: 1, RepliedAt: &posted}, {ReplyCommentID: 2, RepliedAt: &posted}}, 0, "thread_cap"},
 		{"one prior text is fine", fresh, []db.PublishedReply{{ReplyCommentID: 1, RepliedAt: &posted}, {Decision: "abstain"}}, 0, ""},
@@ -948,10 +950,10 @@ func TestReplyReactor_OutcomeReportsTheActionOnlyWhenTheStepSettledIt(t *testing
 
 	outcomes = nil
 	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
-		t.Fatal("a resolution never reaches the model")
+		t.Fatal("a bare acknowledgment never reaches the model")
 		return ReplyDecision{}, nil
 	})
-	gh.threads["acme/example#7"][1].Body = "Fixed in 9de3bed."
+	gh.threads["acme/example#7"][1].Body = "Fixed."
 	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
 	r.Run(context.Background())
 	for _, o := range outcomes {
@@ -961,16 +963,187 @@ func TestReplyReactor_OutcomeReportsTheActionOnlyWhenTheStepSettledIt(t *testing
 	}
 }
 
-func TestReplyReactor_ResolutionsStillGetTheInstantThumbsUp(t *testing.T) {
+func TestReplyReactor_BareAcknowledgmentsStillGetTheInstantThumbsUp(t *testing.T) {
+	for _, body := range []string{"Fixed", "Done.", "done, thanks", "ok", "ack", "👍", "Will fix", "Thanks!"} {
+		runs := 0
+		r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+			runs++
+			return ReplyDecision{}, nil
+		})
+		gh.threads["acme/example#7"][1].Body = body
+		rep, _ := r.Run(context.Background())
+		if runs != 0 || len(gh.reactions) != 1 || len(gh.posted) != 0 || rep.Reacted != 1 || ledger.rows[0].Action != "reacted" {
+			t.Fatalf("%q: runs=%d reactions=%v posted=%v rep=%+v", body, runs, gh.reactions, gh.posted, rep)
+		}
+	}
+}
+
+func TestShortAcknowledgment(t *testing.T) {
+	cases := map[string]bool{
+		"done": true, "Done.": true, "fixed": true, "ok": true, "ack": true, "👍": true, "fixed, thanks!": true, "Good catch, removed.": true,
+		"Fixed in 9de3bed.":                    false,
+		"fixed handleSetupClose":               false,
+		"done, see a.go":                       false,
+		"Fixed: `retry()` now guards":          false,
+		"Fixed, tracked in MSG-1":              false,
+		"done done done done":                  false,
+		"Fixed this in the latest push, works": false,
+	}
+	for body, want := range cases {
+		if got := shortAcknowledgment(body); got != want {
+			t.Errorf("shortAcknowledgment(%q) = %t, want %t", body, got, want)
+		}
+	}
+}
+
+func TestReplyReactor_FixClaimsAreVerifiedByTheModel(t *testing.T) {
+	var got ReplyRequest
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, req ReplyRequest) (ReplyDecision, error) {
+		got = req
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right, handleSetupClose returns early on a.go:12 while the modal is open.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}, React: true}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "fixed in 519f006, handleSetupClose bails while isCameraAccessModalOpen"
+	rep, _ := r.Run(context.Background())
+	if got.Reply.Class != ReplyResolution || rep.Responded != 1 || len(gh.posted) != 1 || len(gh.reactions) != 1 {
+		t.Fatalf("a fix claim runs the model and posts its verdict: req=%+v rep=%+v posted=%v reactions=%v", got.Reply, rep, gh.posted, gh.reactions)
+	}
+	if ledger.states["a.go:1:abc"] != db.PublishedStateResolved {
+		t.Fatalf("a verified fix leaves the finding resolved, not dismissed: states=%v", ledger.states)
+	}
+
+	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "a.go:12 still reaches the close path with the modal open; 519f006 only guards the other branch.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}, React: false}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Fixed in 519f006."
+	rep, _ = r.Run(context.Background())
+	if rep.Responded != 1 || len(gh.posted) != 1 || len(gh.reactions) != 0 || ledger.rows[0].Decision != DecisionHold || ledger.states["a.go:1:abc"] != "" {
+		t.Fatalf("a refuted fix claim is held without a thumbs-up: rep=%+v posted=%v reactions=%v row=%+v states=%v", rep, gh.posted, gh.reactions, ledger.rows[0], ledger.states)
+	}
+}
+
+func TestReplyReactor_BudgetExhaustedPostsOneFixedNotice(t *testing.T) {
 	runs := 0
-	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+	var outcomes []ReplyOutcome
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
 		runs++
+		return ReplyDecision{}, fmt.Errorf("%w: reply: exceeded max-turns (20)", ErrBudgetExhausted)
+	})
+	r.OnOutcome = func(o ReplyOutcome, err error) {
+		if err != nil {
+			t.Fatalf("budget exhaustion is not a failed step: %v", err)
+		}
+		outcomes = append(outcomes, o)
+	}
+	rep, _ := r.Run(context.Background())
+	if runs != 1 || len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], "PRism could not complete verification") || !strings.HasSuffix(gh.posted[0], ReplyMarker(101)) {
+		t.Fatalf("runs=%d posted=%q rep=%+v", runs, gh.posted, rep)
+	}
+	row := ledger.rows[0]
+	if row.Outcome != "posted" || row.Decision != DecisionHold || row.Note != NoteBudgetExhausted || row.Attempts != 1 || row.Action != "observed" || len(gh.reactions) != 0 || row.ReplyCommentID == 0 {
+		t.Fatalf("row=%+v reactions=%v", row, gh.reactions)
+	}
+	if len(outcomes) != 1 || outcomes[0].Note != NoteBudgetExhausted || outcomes[0].Decision != DecisionHold || !outcomes[0].Posted {
+		t.Fatalf("outcomes=%+v", outcomes)
+	}
+	if ledger.states["a.go:1:abc"] != "" {
+		t.Fatalf("the notice must not change the finding state")
+	}
+
+	r.Run(context.Background())
+	if runs != 1 || len(gh.posted) != 1 {
+		t.Fatalf("the notice is posted once and the model is not run again: runs=%d posted=%d", runs, len(gh.posted))
+	}
+}
+
+func TestReplyReactor_BudgetNoticeResumesAfterAGitHubErrorWithoutRerunningTheModel(t *testing.T) {
+	runs := 0
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{}, fmt.Errorf("%w: wall-clock timeout", ErrBudgetExhausted)
+	})
+	gh.failPostOnce = true
+	rep, _ := r.Run(context.Background())
+	if len(rep.Errors) != 1 || len(gh.posted) != 0 || ledger.rows[0].Outcome != "" || ledger.rows[0].Note != NoteBudgetExhausted {
+		t.Fatalf("first cycle: rep=%+v row=%+v", rep, ledger.rows[0])
+	}
+	rep, _ = r.Run(context.Background())
+	if runs != 1 || len(gh.posted) != 1 || rep.Responded != 1 || ledger.rows[0].Outcome != "posted" {
+		t.Fatalf("second cycle: runs=%d posted=%d rep=%+v row=%+v", runs, len(gh.posted), rep, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_BudgetNoticeIsOnlyRecordedInShadowMode(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeShadow, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{}, fmt.Errorf("%w: exceeded max-turns (20)", ErrBudgetExhausted)
+	})
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || rep.Shadowed != 1 || ledger.rows[0].Outcome != "shadowed" || ledger.rows[0].Note != NoteBudgetExhausted || len(gh.reactions) != 1 {
+		t.Fatalf("posted=%v rep=%+v row=%+v reactions=%v", gh.posted, rep, ledger.rows[0], gh.reactions)
+	}
+}
+
+func TestReplyReactor_OtherFailuresStillResumeWithoutANotice(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{}, fmt.Errorf("reply: clone: 502")
+	})
+	rep, _ := r.Run(context.Background())
+	if len(rep.Errors) != 1 || len(gh.posted) != 0 || ledger.rows[0].Outcome != "" || ledger.rows[0].Decision != "" {
+		t.Fatalf("rep=%+v posted=%v row=%+v", rep, gh.posted, ledger.rows[0])
+	}
+}
+
+func TestTicketKeysAndDeferredTickets(t *testing.T) {
+	cases := []struct {
+		body     string
+		keys     []string
+		deferred []string
+	}{
+		{"Yep, known gap for this PR. Scoped in MSG-3282", []string{"MSG-3282"}, []string{"MSG-3282"}},
+		{"Follow-up in AUTH-42 and AUTH-43; the rest lands here.", []string{"AUTH-42", "AUTH-43"}, []string{"AUTH-42", "AUTH-43"}},
+		{"Accepted for now: XO-291 hasn't landed yet.", []string{"XO-291"}, []string{"XO-291"}},
+		{"Fixed in 9de3bed, see XO-291 for the background.", []string{"XO-291"}, nil},
+		{"Renamed `PR-123` to `PR-124` in the fixture; tracked later.", nil, nil},
+		{"PR-123 is a follow-up, the UTF-8 and SHA-256 paths are fine.", nil, nil},
+		{"tracked in ABC-1, ABC-1 again, and abc-2.", []string{"ABC-1"}, []string{"ABC-1"}},
+		{"out of scope, done", nil, nil},
+	}
+	for _, c := range cases {
+		if got := TicketKeys(c.body); fmt.Sprint(got) != fmt.Sprint(c.keys) {
+			t.Errorf("TicketKeys(%q) = %v, want %v", c.body, got, c.keys)
+		}
+		if got := DeferredTickets(c.body); fmt.Sprint(got) != fmt.Sprint(c.deferred) {
+			t.Errorf("DeferredTickets(%q) = %v, want %v", c.body, got, c.deferred)
+		}
+	}
+}
+
+func TestReplyReactor_DeferralIsRecordedOnTheLedgerRow(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		t.Fatal("an other-class deferral never reaches the model")
 		return ReplyDecision{}, nil
 	})
-	gh.threads["acme/example#7"][1].Body = "Fixed in 9de3bed."
+	gh.threads["acme/example#7"][1].Body = "Yep, known gap for this PR. Scoped in MSG-3282"
 	rep, _ := r.Run(context.Background())
-	if runs != 0 || len(gh.reactions) != 1 || rep.Reacted != 1 {
-		t.Fatalf("runs=%d reactions=%v rep=%+v", runs, gh.reactions, rep)
+	if len(gh.posted) != 0 || len(gh.reactions) != 1 || rep.Reacted != 1 || ledger.rows[0].Class != "other" || ledger.rows[0].DeferredTo != "MSG-3282" {
+		t.Fatalf("posted=%v reactions=%v rep=%+v row=%+v", gh.posted, gh.reactions, rep, ledger.rows[0])
+	}
+
+	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "a.go:12 still dereferences it; the auth refactor is out of scope here but the nil check is not.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "This belongs to the auth refactor, AUTH-42 and AUTH-43 cover that path."
+	r.Run(context.Background())
+	if ledger.rows[0].DeferredTo != "AUTH-42,AUTH-43" || ledger.rows[0].Outcome != "posted" {
+		t.Fatalf("an out-of-scope hold records the author's ticket keys: row=%+v", ledger.rows[0])
+	}
+
+	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "a.go:12 still reaches here with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "The caller in AUTH-42 was supposed to guard this, it does not."
+	r.Run(context.Background())
+	if ledger.rows[0].DeferredTo != "" {
+		t.Fatalf("a key without deferral language or an out-of-scope reply is not a deferral: row=%+v", ledger.rows[0])
 	}
 }
 

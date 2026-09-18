@@ -81,6 +81,10 @@ func (d replyJSON) reacts() bool {
 	return d.Decision != ReplyDecisionHold
 }
 
+// ErrReplyBudgetExhausted wraps a run that hit MaxTurns or WallClock before
+// producing a decision; callers post a fixed notice rather than retrying.
+var ErrReplyBudgetExhausted = errors.New("reply budget exhausted")
+
 var replyDecisions = map[string]bool{ReplyDecisionConcede: true, ReplyDecisionHold: true, ReplyDecisionAnswer: true, ReplyDecisionAbstain: true}
 
 // RunAgentReply checks out the PR head, hands the agent the finding, the
@@ -166,10 +170,12 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 	wg.Wait()
 	redact := func(s string) string { return truncate(redactToken(s, credentialValue), 600) }
 	switch {
+	case parseErr != nil && strings.Contains(parseErr.Error(), "max-turns"):
+		return nil, fmt.Errorf("reply: %w: %v", ErrReplyBudgetExhausted, parseErr)
 	case parseErr != nil:
 		return nil, fmt.Errorf("reply: %w (stderr: %s)", parseErr, redact(stderrBuf.String()))
 	case runCtx.Err() == context.DeadlineExceeded:
-		return nil, fmt.Errorf("reply: wall-clock timeout (%s)", cfg.WallClock)
+		return nil, fmt.Errorf("reply: %w: wall-clock timeout (%s)", ErrReplyBudgetExhausted, cfg.WallClock)
 	case parsed.streamErr != "":
 		return nil, fmt.Errorf("reply: CLI reported error: %s", redact(parsed.streamErr))
 	case waitErr != nil:

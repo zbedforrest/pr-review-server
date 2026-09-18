@@ -178,6 +178,7 @@ func TestGormDB_PublishedReply_DecisionAndPostingRoundTrip(t *testing.T) {
 	}))
 	require.NoError(t, db.MarkPublishedReplyPosted("owner", "repo", 7, 9010, 9500, base.Add(time.Minute)))
 	require.NoError(t, db.SetPublishedReplyDecision("owner", "repo", 7, 9011, ReplyDecisionRecord{Decision: "abstain"}))
+	require.NoError(t, db.SetPublishedReplyDecision("owner", "repo", 7, 9020, ReplyDecisionRecord{Decision: "hold", Note: "budget_exhausted", DeferredTo: "MSG-1,MSG-2"}))
 
 	rows, err := db.ListPublishedRepliesForRoot("owner", "repo", 7, 9001)
 	require.NoError(t, err)
@@ -189,6 +190,13 @@ func TestGormDB_PublishedReply_DecisionAndPostingRoundTrip(t *testing.T) {
 	require.NotNil(t, rows[0].RepliedAt)
 	assert.Equal(t, "abstain", rows[1].Decision)
 	assert.Equal(t, int64(0), rows[1].ReplyCommentID)
+	assert.Equal(t, "", rows[1].Note)
+	assert.Equal(t, "", rows[1].DeferredTo)
+	other, err := db.ListPublishedRepliesForRoot("owner", "repo", 7, 9002)
+	require.NoError(t, err)
+	require.Len(t, other, 1)
+	assert.Equal(t, "budget_exhausted", other[0].Note)
+	assert.Equal(t, "MSG-1,MSG-2", other[0].DeferredTo)
 
 	n, err := db.CountPublishedTextRepliesSince("owner", "repo", 7, base)
 	require.NoError(t, err)
@@ -235,18 +243,19 @@ func TestGormDB_PublishedReply_OutcomeAndAttempts(t *testing.T) {
 
 func TestGormDB_EnsureIdempotentColumns_AddsReplyDecisionColumnsToAnOldTable(t *testing.T) {
 	database := newTestDB(t)
-	for _, col := range []string{"decision", "reply_body", "cited", "model", "duration_ms", "outcome", "attempts", "decision_head", "decision_thread", "replied_at", "claimed_by", "claimed_at", "decision_react", "updated_at"} {
+	for _, col := range []string{"decision", "reply_body", "cited", "model", "duration_ms", "outcome", "attempts", "decision_head", "decision_thread", "replied_at", "claimed_by", "claimed_at", "decision_react", "updated_at", "note", "deferred_to"} {
 		require.NoError(t, database.db.Migrator().DropColumn(&PublishedReplyModel{}, col), col)
 	}
 	require.NoError(t, database.ensureIdempotentColumns())
 	_, err := database.RecordPublishedReply(&PublishedReply{
 		RepoOwner: "owner", RepoName: "repo", PRNumber: 7, RootCommentID: 9001, AuthorCommentID: 9010,
-		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: "pushback", Action: "reacted", Body: "b", CreatedAt: time.Now().UTC(),
+		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: "other", Action: "reacted", Body: "b", DeferredTo: "MSG-3282", CreatedAt: time.Now().UTC(),
 	})
 	require.NoError(t, err)
 	rows, err := database.ListPublishedRepliesForPR("owner", "repo", 7)
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
+	assert.Equal(t, "MSG-3282", rows[0].DeferredTo)
 }
 
 func TestGormDB_ClaimPublishedReply_IsExclusiveUntilReleasedOrStale(t *testing.T) {

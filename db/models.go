@@ -397,6 +397,8 @@ type PublishedReplyModel struct {
 	Attempts        int    `gorm:"not null;default:0"`
 	DecisionHead    string `gorm:"size:64;not null;default:''"`
 	DecisionThread  string `gorm:"size:64;not null;default:''"`
+	Note            string `gorm:"size:32;not null;default:''"`
+	DeferredTo      string `gorm:"size:255"`
 	ClaimedBy       string `gorm:"size:128;not null;default:''"`
 	ClaimedAt       *time.Time
 	RepliedAt       *time.Time

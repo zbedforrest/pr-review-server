@@ -118,6 +118,11 @@ func TestReplyOutcomeEventDistinguishesFailuresFromDecisions(t *testing.T) {
 	if ev.Action != "reply_text_error" || ev.Label != "comment=101: wall clock" {
 		t.Errorf("error event = %+v", ev)
 	}
+	o.Note = publisher.NoteBudgetExhausted
+	if ev := replyOutcomeEvent(o, nil, 3); ev.Action != "reply_decision" || !strings.HasSuffix(ev.Label, " note=budget_exhausted") {
+		t.Errorf("budget notice event = %+v", ev)
+	}
+	o.Note = ""
 	for _, outcome := range []string{"skipped:thread_moved", "ineligible:thread_cap"} {
 		o.Outcome = outcome
 		if ev := replyOutcomeEvent(o, nil, 3); ev.Action != "reply_text_skipped" {
