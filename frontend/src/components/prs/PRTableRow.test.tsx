@@ -269,7 +269,7 @@ describe('PRTableRow profile chip', () => {
     renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', review_run: reviewRun('lite', 'Lite') }));
     const chip = screen.getByText('Lite');
     expect(chip.className).toContain('pr-table__profile-chip--lite');
-    expect(chip.getAttribute('title')).toBe('Reviewed with the Lite profile');
+    expect(chip.getAttribute('title')).toBe('Review profile: Lite');
   });
 
   it('shows a Lite+ chip for lite_plus and names the overrides of a custom run', () => {
@@ -279,7 +279,7 @@ describe('PRTableRow profile chip', () => {
     }));
     const chip = screen.getByText('Lite+');
     expect(chip.className).toContain('pr-table__profile-chip--lite_plus');
-    expect(chip.getAttribute('title')).toContain('effort high (default medium)');
+    expect(chip.getAttribute('title')).toBe('Review profile: Custom (based on Lite+): effort high (default medium)');
   });
 
   it('shows no chip for full-profile or legacy reviews', () => {

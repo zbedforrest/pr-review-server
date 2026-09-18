@@ -12,4 +12,4 @@ export const PROFILE_CHOICES: { profile: ReviewProfile; title: string; descripti
   { profile: 'full', title: 'Full (heavy) review', description: 'First pass, gates and agent; the complete pipeline' },
 ];
 
-export const formatCost = (usd: number) => `$${usd.toFixed(2)}`;
+export const formatCost = (usd: number) => (usd < 0.005 ? '<$0.01' : `$${usd.toFixed(2)}`);

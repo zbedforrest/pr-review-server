@@ -222,7 +222,7 @@ describe('ReviewLinkMenu profile and cost', () => {
     expect(screen.getByLabelText('Models used').textContent).toContain('claude-fable-5-1');
   });
 
-  it('labels a legacy run as full without a cost line', () => {
+  it('omits the profile line for a legacy run without profile or cost', () => {
     renderMenu({
       pr: makePR({
         review_run: {

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { AUTO_REVIEW_TRIGGERS, EMPTY_PROFILE_BY_TRIGGER, type AutoReviewTrigger, type ReplyMode, type Settings } from '@/api/settings';
+import { PROFILE_LABELS } from '@/components/prs/reviewProfiles';
 import type { ReviewProfile } from '@/types/pr';
 import { useUpdateSettings } from '@/hooks/useSettings';
 import { LoginListField } from './LoginListField';
@@ -47,14 +48,15 @@ const TRIGGER_LABELS: Record<AutoReviewTrigger, string> = {
   poll_fallback: 'Poll fallback',
 };
 
-const PROFILE_OPTIONS: { value: ReviewProfile; label: string }[] = [
-  { value: 'full', label: 'Full (heavy)' },
-  { value: 'lite', label: 'Lite' },
-  { value: 'lite_plus', label: 'Lite+' },
-];
+const profileName = (profile: ReviewProfile | undefined) => PROFILE_LABELS[profile ?? 'full'];
 
-const profileName = (profile: ReviewProfile | undefined) =>
-  PROFILE_OPTIONS.find((option) => option.value === profile)?.label ?? 'Full (heavy)';
+// Object-valued settings are rebuilt on every edit, so compare them by value
+// rather than by reference like the scalar keys.
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 function pick<K extends keyof Settings>(settings: Settings, keys: readonly K[]): Pick<Settings, K> {
   return Object.fromEntries(keys.map((key) => [key, settings[key]])) as Pick<Settings, K>;
@@ -87,7 +89,7 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
     follow(base, settings);
   }
 
-  const changed = keys.filter((key) => draft[key] !== settings[key]);
+  const changed = keys.filter((key) => !sameValue(draft[key], settings[key]));
 
   const save = async () => {
     const sent = draft;
@@ -363,10 +365,10 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
               }
               disabled={disabled}
             >
-              <option value="">Default ({defaultProfileName})</option>
-              {PROFILE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
+              <option value="">Default: {defaultProfileName}</option>
+              {(settings.review_profiles ?? (Object.keys(PROFILE_LABELS) as ReviewProfile[])).map((profile) => (
+                <option key={profile} value={profile}>
+                  {PROFILE_LABELS[profile] ?? profile}
                 </option>
               ))}
             </select>
@@ -380,6 +382,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
           authors
           disabled={disabled}
           knownLogins={knownLogins}
+          confirmAll="Allow lite reviews for every author?"
         />
         <p className="settings-section__notice">
           {noLiteAuthors

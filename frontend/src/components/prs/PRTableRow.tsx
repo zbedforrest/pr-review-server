@@ -246,7 +246,7 @@ export const PRTableRow = memo(function PRTableRow({
             {liteProfile && (
               <span
                 className={`pr-table__profile-chip pr-table__profile-chip--${liteProfile}`}
-                title={pr.review_run?.profile_label ? `Reviewed with the ${pr.review_run.profile_label} profile` : `Reviewed with the ${PROFILE_LABELS[liteProfile]} profile`}
+                title={`Review profile: ${pr.review_run?.profile_label || PROFILE_LABELS[liteProfile]}`}
               >
                 {PROFILE_LABELS[liteProfile]}
               </span>

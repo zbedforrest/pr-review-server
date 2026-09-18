@@ -53,15 +53,35 @@ function reviewRequestBody({ publish, profile: _profile, ...rest }: TriggerRevie
   return publish === undefined ? rest : { ...rest, publish };
 }
 
+// The versioned API wraps failures as {"error":{"code","message"}}; the alert
+// that shows err.message wants the sentence, not the envelope.
+function unwrapV1Error(err: unknown): unknown {
+  if (!(err instanceof Error)) return err;
+  try {
+    const parsed = JSON.parse(err.message) as { error?: { message?: string } };
+    if (parsed?.error?.message) {
+      err.message = parsed.error.message;
+    }
+  } catch {
+    // Not a JSON envelope; the message already reads as text.
+  }
+  return err;
+}
+
 // An explicit profile goes through the versioned run API, the only endpoint
 // that accepts a review configuration; the legacy trigger keeps the default.
 export async function triggerReview(params: TriggerReviewParams): Promise<{ status: string }> {
   if (params.profile) {
-    const run = await apiPost<{ run_id: string; status: string }>('/api/v1/review-runs', {
-      target: { owner: params.owner, repo: params.repo, pull_request: params.number },
-      publish: params.publish ?? true,
-      config: { profile: params.profile },
-    });
+    let run: { run_id: string; status: string };
+    try {
+      run = await apiPost<{ run_id: string; status: string }>('/api/v1/review-runs', {
+        target: { owner: params.owner, repo: params.repo, pull_request: params.number },
+        publish: params.publish ?? true,
+        config: { profile: params.profile },
+      });
+    } catch (err) {
+      throw unwrapV1Error(err);
+    }
     return { status: run.status };
   }
   return apiPost<{ status: string }>('/api/prs/trigger-review', reviewRequestBody(params));

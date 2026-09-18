@@ -372,7 +372,7 @@ describe('SettingsForm', () => {
     expect(selects).toHaveLength(4);
     for (const select of selects) {
       expect(select.value).toBe('');
-      expect(select.options[0].textContent).toBe('Default (Lite)');
+      expect(select.options[0].textContent).toBe('Default: Lite');
       expect([...select.options].map((o) => o.value)).toEqual(['', 'full', 'lite', 'lite_plus']);
     }
     expect(saveIn('Review profiles').disabled).toBe(true);
@@ -386,6 +386,22 @@ describe('SettingsForm', () => {
     );
     await waitFor(() => expect(saveIn('Review profiles').disabled).toBe(true));
     expect((screen.getByLabelText('New push') as HTMLSelectElement).value).toBe('lite');
+  });
+
+  it('is clean again when a profile select is changed and then reverted', () => {
+    renderForm();
+    fireEvent.change(screen.getByLabelText('New push'), { target: { value: 'lite' } });
+    expect(saveIn('Review profiles').disabled).toBe(false);
+    fireEvent.change(screen.getByLabelText('New push'), { target: { value: '' } });
+    expect(saveIn('Review profiles').disabled).toBe(true);
+  });
+
+  it('asks a lite-specific question before admitting every author', () => {
+    renderForm();
+    const input = within(section('Review profiles')).getByRole('textbox') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '*' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(window.confirm).toHaveBeenCalledWith('Allow lite reviews for every author?');
   });
 
   it('saves auto_review_lite_authors as a normalized login list', async () => {

@@ -21,6 +21,15 @@ describe('triggerReview with a profile', () => {
     expect(result).toEqual({ status: 'queued' });
   });
 
+  it('unwraps the v1 error envelope so the alert shows the sentence', async () => {
+    apiPostMock.mockRejectedValue(new Error('{"error":{"code":"review_already_active","message":"a review is already active for this pull request"}}'));
+    await expect(triggerReview({ owner: 'acme', repo: 'example', number: 7, profile: 'lite' })).rejects.toThrow(
+      'a review is already active for this pull request'
+    );
+    apiPostMock.mockRejectedValue(new Error('plain text failure'));
+    await expect(triggerReview({ owner: 'acme', repo: 'example', number: 7, profile: 'lite' })).rejects.toThrow('plain text failure');
+  });
+
   it('publishes by default when a profile is requested without a publish choice', async () => {
     apiPostMock.mockResolvedValue({ run_id: 'run-1', status: 'queued' });
     await triggerReview({ owner: 'acme', repo: 'example', number: 7, profile: 'lite_plus' });
