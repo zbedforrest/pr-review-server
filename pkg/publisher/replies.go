@@ -78,36 +78,58 @@ func ClassifyReply(body string) ReplyClass {
 var (
 	shortAckMaxWords = 4
 	commitShaRe      = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
-	codeTokenRe      = regexp.MustCompile("[`_./\\\\()]|[a-z][A-Z]")
-	trailingPunctRe  = regexp.MustCompile(`[[:punct:]]+$`)
+	letterRe         = regexp.MustCompile(`\pL`)
+	edgePunctRe      = regexp.MustCompile(`^[[:punct:]]+|[[:punct:]]+$`)
+	ackVocabulary    = map[string]bool{}
 )
 
+func init() {
+	for _, w := range strings.Fields("done fixed fix fixing resolved addressed updated removed handled ok okay ack acked thanks thank thx ty you yes yep yup sure noted good catch got it will do sounds makes sense this that now all in the latest push and too as well") {
+		ackVocabulary[w] = true
+	}
+}
+
 // shortAcknowledgment reports a bare "done" / "fixed" / "ok" / thumbs-up: a
-// handful of words with no commit sha, ticket key or code reference. Such a
-// reply claims nothing the model could verify, so it never earns text.
+// few words drawn only from acknowledgement vocabulary (or emoji). Such a
+// reply names nothing the model could verify, so it never earns text; a word
+// outside the vocabulary ("fixed the race") is a claim and does.
 func shortAcknowledgment(body string) bool {
 	words := strings.Fields(strings.TrimSpace(body))
 	if len(words) == 0 || len(words) >= shortAckMaxWords {
 		return false
 	}
 	for _, w := range words {
-		w = trailingPunctRe.ReplaceAllString(w, "")
-		if commitShaRe.MatchString(strings.ToLower(w)) || ticketKeyRe.MatchString(w) || codeTokenRe.MatchString(w) {
+		w = strings.ToLower(edgePunctRe.ReplaceAllString(w, ""))
+		if w == "" || !letterRe.MatchString(w) {
+			continue
+		}
+		if !ackVocabulary[w] {
 			return false
 		}
 	}
 	return true
 }
 
+// acceptsWithoutFix reports a resolution-class reply that accepts the finding
+// and defers it ("accepted for now, tracked in XO-291", "good catch, will do
+// in a follow-up") rather than claiming a fix: deferral language with no
+// commit sha. The code still has the problem by the author's own account, so
+// running the model would only rebut an agreement.
+func acceptsWithoutFix(body string) bool {
+	text := codeSpanRe.ReplaceAllString(body, " ")
+	return deferralRe.MatchString(text) && !commitShaRe.MatchString(strings.ToLower(text))
+}
+
 // wantsText reports whether a reply is one the reply model should answer:
 // questions and pushback always, fix claims unless they are a bare
-// acknowledgement, never anything classed other.
+// acknowledgement or an acceptance that defers the fix, never anything
+// classed other.
 func wantsText(reply AuthorReply) bool {
 	switch reply.Class {
 	case ReplyQuestion, ReplyPushback:
 		return true
 	case ReplyResolution:
-		return !shortAcknowledgment(reply.Body)
+		return !shortAcknowledgment(reply.Body) && !acceptsWithoutFix(reply.Body)
 	}
 	return false
 }
@@ -120,6 +142,7 @@ var (
 	deferralRe        = regexp.MustCompile(`(?i)\b(scoped|follow[ -]?ups?|tickets?|later|known gaps?|tracked|tracking|out of scope|deferr?(ed|ing)?|for now|separate pr)\b`)
 	codeSpanRe        = regexp.MustCompile("(?s)```.*?```|`[^`\n]*`")
 	outOfScopeRe      = regexp.MustCompile(`(?i)\bout of scope\b`)
+	sentenceEndRe     = regexp.MustCompile(`[.;!?]+(\s+|$)|\n+`)
 )
 
 // TicketKeys returns the tracker keys ([A-Z][A-Z0-9]+-\d+) in body outside
@@ -140,14 +163,24 @@ func TicketKeys(body string) []string {
 }
 
 // DeferredTickets returns the tracker keys an author comment defers the
-// finding to: a key together with deferral language ("scoped in", "follow-up",
-// "known gap", "tracked", "out of scope", ...). A key on its own is not a
-// deferral.
+// finding to: a key in the same sentence as deferral language ("scoped in",
+// "follow-up", "known gap", "tracked", "out of scope", ...). A key on its
+// own, or in another sentence, is not a deferral.
 func DeferredTickets(body string) []string {
-	if !deferralRe.MatchString(codeSpanRe.ReplaceAllString(body, " ")) {
-		return nil
+	var out []string
+	seen := map[string]bool{}
+	for _, sentence := range sentenceEndRe.Split(codeSpanRe.ReplaceAllString(body, " "), -1) {
+		if !deferralRe.MatchString(sentence) {
+			continue
+		}
+		for _, k := range TicketKeys(sentence) {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
 	}
-	return TicketKeys(body)
+	return out
 }
 
 // mergeTicketKeys joins comma-separated key lists without duplicates.
@@ -1081,7 +1114,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		record := db.ReplyDecisionRecord{Head: state.HeadSHA, Thread: fingerprint, DeferredTo: row.DeferredTo}
 		switch {
-		case errors.Is(err, ErrBudgetExhausted):
+		case errors.Is(err, ErrBudgetExhausted) && ctx.Err() == nil:
 			// The model never decided, so nothing it might have said can be
 			// retried; a fixed hold is posted once and the finding stands.
 			decision = ReplyDecision{Decision: DecisionHold, Reply: budgetExhaustedReply, Cited: []EvidenceRef{}, Model: decision.Model, DurationMS: decision.DurationMS}

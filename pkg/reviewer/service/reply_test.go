@@ -52,6 +52,28 @@ func TestRunAgentReply_MaxTurnsIsReportedAsBudgetExhausted(t *testing.T) {
 	}
 }
 
+func TestRunAgentReply_WallClockIsReportedAsBudgetExhaustedUnlessTheCallerExpired(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	// The wall clocks leave room for the clone step; the fake process outlives
+	// every deadline so the run ends by timeout, not by exit.
+	run := func(ctx context.Context, wallClock time.Duration) error {
+		spawner := &fakeSpawner{proc: &fakeProcess{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, killCh: make(chan struct{}), exitAfter: 3 * time.Second}}
+		cfg := AgentConfig{CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: wallClock, MaxTurns: 10, Model: "claude-fable-5-1"}
+		_, err := RunAgentReply(ctx, cfg, spawner, replyInput(sha))
+		return err
+	}
+	if err := run(context.Background(), 2*time.Second); !errors.Is(err, ErrReplyBudgetExhausted) || !strings.Contains(err.Error(), "wall-clock") {
+		t.Fatalf("own deadline: err = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := run(ctx, time.Minute); err == nil || errors.Is(err, ErrReplyBudgetExhausted) {
+		t.Fatalf("an expired caller deadline is not the model's budget: err = %v", err)
+	}
+}
+
 func TestRunAgentReply_HoldWithResolvingEvidence(t *testing.T) {
 	out, err, spawner := runReply(t, `{"decision":"hold","reply":"hello.txt only contains the word hi; nothing there reads change.txt, so the file is still unused at this commit.","cited":[{"file":"hello.txt","line":1}]}`)
 	if err != nil {

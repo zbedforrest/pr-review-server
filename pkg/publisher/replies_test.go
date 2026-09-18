@@ -980,8 +980,11 @@ func TestReplyReactor_BareAcknowledgmentsStillGetTheInstantThumbsUp(t *testing.T
 
 func TestShortAcknowledgment(t *testing.T) {
 	cases := map[string]bool{
-		"done": true, "Done.": true, "fixed": true, "ok": true, "ack": true, "👍": true, "fixed, thanks!": true, "Good catch, removed.": true,
+		"done": true, "Done.": true, "fixed": true, "ok": true, "ack": true, "👍": true, "fixed, thanks!": true, "Good catch, removed.": true, "Fixed this, thanks": true, ":+1: done": true,
 		"Fixed in 9de3bed.":                    false,
+		"Fixed the race":                       false,
+		"Removed unsafe fallback":              false,
+		"Updated retry handling":               false,
 		"fixed handleSetupClose":               false,
 		"done, see a.go":                       false,
 		"Fixed: `retry()` now guards":          false,
@@ -993,6 +996,35 @@ func TestShortAcknowledgment(t *testing.T) {
 		if got := shortAcknowledgment(body); got != want {
 			t.Errorf("shortAcknowledgment(%q) = %t, want %t", body, got, want)
 		}
+	}
+}
+
+func TestAcceptsWithoutFix(t *testing.T) {
+	cases := map[string]bool{
+		"Accepted for now: XO-291 hasn't landed yet.":                      true,
+		"Good catch, will handle in a follow-up.":                          true,
+		"Fixed in 519f006, the rename is tracked in MSG-1.":                false,
+		"Fixed, handleSetupClose bails while the modal is open.":           false,
+		"Addressed; the retry path stays as is and is tracked in ABC-1.":   true,
+		"Done, the `tracked` flag is set before the guard now.":            false,
+		"Removed the fallback (see 9de3bed), rest is out of scope, ABC-2.": false,
+	}
+	for body, want := range cases {
+		if got := acceptsWithoutFix(body); got != want {
+			t.Errorf("acceptsWithoutFix(%q) = %t, want %t", body, got, want)
+		}
+	}
+}
+
+func TestReplyReactor_AcceptedAndDeferredResolutionsAreNotRebutted(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		t.Fatal("an acceptance that defers the fix never reaches the model")
+		return ReplyDecision{}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Accepted for now: XO-291 hasn't landed yet."
+	rep, _ := r.Run(context.Background())
+	if len(gh.posted) != 0 || len(gh.reactions) != 1 || rep.Reacted != 1 || ledger.rows[0].Class != "resolution" || ledger.rows[0].DeferredTo != "XO-291" {
+		t.Fatalf("posted=%v reactions=%v rep=%+v row=%+v", gh.posted, gh.reactions, rep, ledger.rows[0])
 	}
 }
 
@@ -1082,6 +1114,18 @@ func TestReplyReactor_BudgetNoticeIsOnlyRecordedInShadowMode(t *testing.T) {
 	}
 }
 
+func TestReplyReactor_BudgetExhaustionDuringShutdownIsNotANotice(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		cancel()
+		return ReplyDecision{}, fmt.Errorf("%w: wall-clock timeout", ErrBudgetExhausted)
+	})
+	rep, _ := r.Run(ctx)
+	if len(rep.Errors) != 1 || len(gh.posted) != 0 || ledger.rows[0].Decision != "" || ledger.rows[0].Attempts != 0 {
+		t.Fatalf("rep=%+v posted=%v row=%+v", rep, gh.posted, ledger.rows[0])
+	}
+}
+
 func TestReplyReactor_OtherFailuresStillResumeWithoutANotice(t *testing.T) {
 	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
 		return ReplyDecision{}, fmt.Errorf("reply: clone: 502")
@@ -1106,6 +1150,10 @@ func TestTicketKeysAndDeferredTickets(t *testing.T) {
 		{"PR-123 is a follow-up, the UTF-8 and SHA-256 paths are fine.", nil, nil},
 		{"tracked in ABC-1, ABC-1 again, and abc-2.", []string{"ABC-1"}, []string{"ABC-1"}},
 		{"out of scope, done", nil, nil},
+		{"AUTH-42 caused this; unrelated cleanup is tracked later in MSG-1", []string{"AUTH-42", "MSG-1"}, []string{"MSG-1"}},
+		{"Fixed, see XO-1 for the background. The rename is a follow-up.", []string{"XO-1"}, nil},
+		{"Known gap for this PR.\nMSG-3282 covers it.", []string{"MSG-3282"}, nil},
+		{"AUTH-1 caused this. Tracked later in MSG-1 and MSG-2.", []string{"AUTH-1", "MSG-1", "MSG-2"}, []string{"MSG-1", "MSG-2"}},
 	}
 	for _, c := range cases {
 		if got := TicketKeys(c.body); fmt.Sprint(got) != fmt.Sprint(c.keys) {

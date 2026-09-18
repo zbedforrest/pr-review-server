@@ -149,7 +149,7 @@ var replyDecisionColumns = []struct {
 	{"decision_react", "DecisionReact", "boolean NOT NULL DEFAULT true"},
 	{"updated_at", "UpdatedAt", "timestamptz"},
 	{"note", "Note", "varchar(32) NOT NULL DEFAULT ''"},
-	{"deferred_to", "DeferredTo", "varchar(255)"},
+	{"deferred_to", "DeferredTo", "text"},
 }
 
 func (g *GormDB) ensureIdempotentColumns() error {

@@ -319,7 +319,7 @@ const promptAgentReply = `You posted a code review finding on a pull request and
 
 Read the code before deciding. The author knows this codebase better than you do and is often right; the finding was produced by a reviewer with limited context. But do not fold just because they pushed back: check their claim against the files.
 
-When the author says the finding is fixed (reply_class "resolution"), verify the fix in this checkout: concede when the code now handles the case the finding raised, hold when it still applies, abstain when you cannot tell.
+When the author says the finding is fixed (reply_class "resolution"), verify the fix in this checkout: concede when the code now handles the case the finding raised, hold when it still applies, abstain when you cannot tell. When the author accepts the finding without fixing it (deferring it to a ticket or a follow-up), abstain: there is nothing to verify and nothing to rebut.
 
 Decisions:
 - "concede": you verified in this checkout that the author is right, or they made a call that is theirs to make (the intent path below). Cite the file and line that settles it. Concession ends the discussion and the finding is never raised again, so if you could neither confirm nor refute their claim, abstain instead.
