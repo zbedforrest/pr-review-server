@@ -227,8 +227,11 @@ func ticketKeys(body string) []string {
 // finding to: a key in a deferring sentence (see defersFinding) whose own
 // clause carries the deferral and no fix verb ("fixed the issue tracked in
 // AUTH-42" is a reference, "fixed X, Y is tracked in AUTH-42" a deferral,
-// "AUTH-42 introduced this, cleanup is a follow-up" names no ticket). A key
-// on its own, or in another sentence, is not a deferral.
+// "AUTH-42 introduced this, cleanup is a follow-up" names no ticket). A
+// deferral verb takes only the keys after it, since English puts the ticket
+// there ("tracked in X", "deferred to X"): "AUTH-42 introduced this and
+// cleanup is tracked in MSG-1" defers to MSG-1 alone. A key on its own, or
+// in another sentence, is not a deferral.
 func DeferredTickets(body string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -237,7 +240,12 @@ func DeferredTickets(body string) []string {
 			continue
 		}
 		for _, clause := range clauseEndRe.Split(sentence, -1) {
-			if fixClaimRe.MatchString(clause) || !(deferralPhraseRe.MatchString(clause) || deferralVerbRe.MatchString(clause)) {
+			if fixClaimRe.MatchString(clause) {
+				continue
+			}
+			if verb := deferralVerbRe.FindStringIndex(clause); verb != nil {
+				clause = clause[verb[1]:]
+			} else if !deferralPhraseRe.MatchString(clause) {
 				continue
 			}
 			for _, k := range ticketKeys(clause) {
@@ -266,12 +274,21 @@ func outOfScopeSentences(ourReply string) []string {
 
 // outOfScopeTickets is the deferral list for an author comment our reply
 // called out of scope: what the comment itself deferred plus any key in the
-// out-of-scope sentences of our reply. A key the author merely mentioned
-// ("AUTH-42 introduced this") is not taken.
+// out-of-scope sentences of our reply that the author also named. A key the
+// author merely mentioned ("AUTH-42 introduced this") is not taken on its
+// own, and a key only the model wrote is not taken at all.
 func outOfScopeTickets(recorded, authorBody string, ourSentences []string) string {
+	named := map[string]bool{}
+	for _, k := range ticketKeys(authorBody) {
+		named[k] = true
+	}
 	var ours []string
 	for _, s := range ourSentences {
-		ours = append(ours, ticketKeys(s)...)
+		for _, k := range ticketKeys(s) {
+			if named[k] {
+				ours = append(ours, k)
+			}
+		}
 	}
 	return mergeTicketKeys(recorded, strings.Join(DeferredTickets(authorBody), ","), strings.Join(ours, ","))
 }

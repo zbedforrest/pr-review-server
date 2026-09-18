@@ -1258,6 +1258,8 @@ func TestTicketKeysAndDeferredTickets(t *testing.T) {
 		{"Done. The lock is scoped to the request now, ABC-1 is unrelated.", []string{"ABC-1"}, nil},
 		{"AUTH-42 introduced this, cleanup will happen in a follow-up", []string{"AUTH-42"}, nil},
 		{"Follow-up in AUTH-42 and AUTH-43, the rest lands here.", []string{"AUTH-42", "AUTH-43"}, []string{"AUTH-42", "AUTH-43"}},
+		{"AUTH-42 introduced this and cleanup is tracked in MSG-1", []string{"AUTH-42", "MSG-1"}, []string{"MSG-1"}},
+		{"AUTH-42 regression, deferred to MSG-1 and MSG-2 for now", []string{"AUTH-42", "MSG-1", "MSG-2"}, []string{"MSG-1", "MSG-2"}},
 	}
 	for _, c := range cases {
 		if got := ticketKeys(c.body); fmt.Sprint(got) != fmt.Sprint(c.keys) {
@@ -1296,6 +1298,15 @@ func TestReplyReactor_DeferralIsRecordedOnTheLedgerRow(t *testing.T) {
 	r.Run(context.Background())
 	if ledger.rows[0].DeferredTo != "AUTH-42" {
 		t.Fatalf("a key in our own out-of-scope sentence is recorded: row=%+v", ledger.rows[0])
+	}
+
+	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "The AUTH-99 refactor is out of scope here. a.go:12 still dereferences it.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "This belongs to the auth refactor, AUTH-42 and AUTH-43 cover that path."
+	r.Run(context.Background())
+	if ledger.rows[0].DeferredTo != "" || ledger.rows[0].Outcome != "posted" {
+		t.Fatalf("a key only the model wrote is not recorded: row=%+v", ledger.rows[0])
 	}
 
 	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
