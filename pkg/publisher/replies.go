@@ -78,6 +78,7 @@ func ClassifyReply(body string) ReplyClass {
 var (
 	shortAckMaxWords = 4
 	commitShaRe      = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
+	hexLetterRe      = regexp.MustCompile(`[a-f]`)
 	wordRe           = regexp.MustCompile(`[\pL\pN]`)
 	emojiShortcodeRe = regexp.MustCompile(`^:[a-z0-9_+-]+:$`)
 	fixClaimOpenerRe = regexp.MustCompile(`^(fixed|done|addressed|resolved|updated|removed|handled)\b`)
@@ -95,6 +96,17 @@ func init() {
 // few words drawn only from acknowledgement vocabulary (or emoji). Such a
 // reply names nothing the model could verify, so it never earns text; a word
 // outside the vocabulary ("fixed the race") is a claim and does.
+// hasCommitSha finds an abbreviated or full sha; a run of digits alone (a
+// build or ticket number) is not one.
+func hasCommitSha(text string) bool {
+	for _, m := range commitShaRe.FindAllString(strings.ToLower(text), -1) {
+		if hexLetterRe.MatchString(m) {
+			return true
+		}
+	}
+	return false
+}
+
 func shortAcknowledgment(body string) bool {
 	words := strings.Fields(strings.TrimSpace(body))
 	if len(words) == 0 || len(words) >= shortAckMaxWords {
@@ -124,7 +136,7 @@ func shortAcknowledgment(body string) bool {
 // ("fixed the race; cleanup is tracked in ABC-1"), or that opens with a fix
 // verb and goes on ("fixed for now, the handler ..."), is a claim to verify.
 func acceptsWithoutFix(body string) bool {
-	if commitShaRe.MatchString(strings.ToLower(body)) {
+	if hasCommitSha(body) {
 		return false
 	}
 	deferred := false
@@ -1286,20 +1298,17 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	return finish("posted")
 }
 
-// adopt records a posted reply and applies a concession's side effect: a
-// conceded fix claim leaves the finding resolved (it was right and is now
-// fixed), any other concession dismisses it.
+// adopt records a posted reply and applies a concession's side effect. A
+// conceded fix claim is dismissed like any other concession: only dismissed
+// fingerprints are suppressed on the next review, so a verified fix must not
+// come back as a fresh comment.
 func (r ReplyReactor) adopt(t db.PublishedReplyTarget, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome) error {
 	if err := r.Ledger.MarkPublishedReplyPosted(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, posted.ID, posted.CreatedAt); err != nil {
 		return err
 	}
 	outcome.Posted = true
 	if outcome.Decision == DecisionConcede {
-		state := db.PublishedStateDismissed
-		if reply.Class == ReplyResolution {
-			state = db.PublishedStateResolved
-		}
-		return r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, state)
+		return r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed)
 	}
 	return nil
 }

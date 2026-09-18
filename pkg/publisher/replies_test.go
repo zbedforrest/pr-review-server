@@ -1013,6 +1013,7 @@ func TestAcceptsWithoutFix(t *testing.T) {
 		"Fixed in `519f006`; follow-up in ABC-1":                           false,
 		"Fixed for now, the handler validates the ticket id":               false,
 		"Done. Tracked in ABC-1 for later.":                                true,
+		"Accepted for now, tracked under build 1234567 in ABC-1.":          true,
 	}
 	for body, want := range cases {
 		if got := acceptsWithoutFix(body); got != want {
@@ -1044,8 +1045,8 @@ func TestReplyReactor_FixClaimsAreVerifiedByTheModel(t *testing.T) {
 	if got.Reply.Class != ReplyResolution || rep.Responded != 1 || len(gh.posted) != 1 || len(gh.reactions) != 1 {
 		t.Fatalf("a fix claim runs the model and posts its verdict: req=%+v rep=%+v posted=%v reactions=%v", got.Reply, rep, gh.posted, gh.reactions)
 	}
-	if ledger.states["a.go:1:abc"] != db.PublishedStateResolved {
-		t.Fatalf("a verified fix leaves the finding resolved, not dismissed: states=%v", ledger.states)
+	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
+		t.Fatalf("a conceded fix claim is dismissed so the next review does not re-post it: states=%v", ledger.states)
 	}
 
 	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
