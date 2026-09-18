@@ -93,6 +93,14 @@ type ReviewRunInfo struct {
 	// Config is the immutable requested/effective configuration snapshot.
 	// It is omitted on legacy runs created before first-class run metadata.
 	Config *runconfig.Snapshot `json:"config,omitempty"`
+	// Profile mirrors Config.Effective.Profile; ProfileLabel is the rendered
+	// description ("Lite", "Custom (based on Lite): effort high (default
+	// medium)") shared by the report header, dashboard chip and footer.
+	Profile      string `json:"profile,omitempty"`
+	ProfileLabel string `json:"profile_label,omitempty"`
+	// DiffSource records where a lite review's inlined diff came from: "git"
+	// for the worktree diff, "api" when it fell back to the GitHub API diff.
+	DiffSource string `json:"diff_source,omitempty"`
 }
 
 // StageTiming is one pipeline stage's wall-clock measurement. Stages:
@@ -139,6 +147,9 @@ type ModelUse struct {
 	ServingModelVerified bool   `json:"serving_model_verified"`
 	Effort               string `json:"effort,omitempty"`
 	Fallback             bool   `json:"fallback"`
+	// CostUSD is the provider-reported spend for the stage when the backend
+	// exposes it (the Claude CLI result event); zero otherwise.
+	CostUSD float64 `json:"cost_usd,omitempty"`
 }
 
 // CarryForwardInfo is the cross-review carry-forward telemetry.

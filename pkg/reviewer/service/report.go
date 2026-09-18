@@ -24,6 +24,7 @@ func GenerateHTMLReportContent(result *ReviewResult, prNumber int, owner string,
 		Prompt: result.Prompt, CommitSHA: commitSHA, ModelName: modelName, PromptTokens: result.PromptTokenCount,
 		CandidateTokens: result.CandidatesTokenCount, TotalTokens: result.TotalTokenCount, GeneratedAt: time.Now(),
 		FileContents: result.FileContents, Checks: checks,
+		Profile: result.ProfileTitle, ProfileDeviations: result.ProfileDeviations,
 	})
 	if err != nil {
 		log.Printf("Error generating HTML report: %v", err)

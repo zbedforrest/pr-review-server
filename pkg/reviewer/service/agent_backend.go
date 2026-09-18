@@ -10,6 +10,8 @@ import (
 	"log"
 	"strconv"
 	"strings"
+
+	"pr-review-server/pkg/reviewer/runconfig"
 )
 
 const (
@@ -97,12 +99,16 @@ func resolveAgentRuntime(cfg AgentConfig) (agentRuntime, error) {
 }
 
 func (r agentRuntime) args(prompt string) []string {
-	return r.argsWithTools(prompt, "Read,Grep,Glob,Bash")
+	return r.argsWithTools(prompt, "")
 }
 
-// argsWithTools is args with the Claude tool allowlist chosen by the caller;
-// the Codex backend's sandbox is fixed by its own flags.
+// argsWithTools is args with the Claude tool allowlist chosen by the caller
+// (empty means the default read-only set); the Codex backend's sandbox is
+// fixed by its own flags.
 func (r agentRuntime) argsWithTools(prompt, tools string) []string {
+	if strings.TrimSpace(tools) == "" {
+		tools = runconfig.ToolsDefault
+	}
 	if r.backend == AgentBackendClaude {
 		return []string{
 			"-p", prompt,

@@ -67,7 +67,12 @@ type reviewExecution struct {
 	AgentSlotReserved bool
 	// QueueWait is the time between tracking the job and starting its
 	// execution budget (dispatch, cache checks, concurrency-slot waits).
-	QueueWait         time.Duration
+	QueueWait time.Duration
+	// Profile describes the run's profile against the deployment baseline
+	// for the report header, sidecar and summary footer.
+	Profile runconfig.ProfileDescription
+	// DiffSource is where a lite run's inlined diff came from ("" for full).
+	DiffSource        string
 	attemptsMu        sync.Mutex
 	providerAttempts  map[string]service.ProviderAttemptEvent
 	extraStageTimings []payload.StageTiming
@@ -214,6 +219,7 @@ func (e *reviewExecution) providerModelUses() []payload.ModelUse {
 			Stage: event.Stage, Provider: event.Provider, Backend: event.Backend,
 			RequestedModel: requested, ServedModel: event.PrimaryServedModel,
 			ServingModelVerified: event.ServingModelVerified, Effort: event.Effort, Fallback: event.Fallback,
+			CostUSD: event.CostUSD,
 		})
 	}
 	return uses
@@ -247,7 +253,9 @@ func (j ReviewJob) Validate() error {
 	if j.IdempotencyScope != "" && j.RequestHash == "" {
 		return fmt.Errorf("review job %s: idempotent requests require a request hash", j.RunID)
 	}
-	if j.Config.Effective.SchemaVersion != runconfig.SchemaVersion || j.Config.Effective.FirstPass.Samples <= 0 {
+	if j.Config.Effective.SchemaVersion != runconfig.SchemaVersion || !runconfig.KnownProfile(j.Config.Effective.Profile) ||
+		(j.Config.Effective.FirstPass.Enabled && j.Config.Effective.FirstPass.Samples <= 0) ||
+		(!j.Config.Effective.FirstPass.Enabled && !j.Config.Effective.Agent.Enabled) {
 		return fmt.Errorf("review job %s: resolved config is incomplete", j.RunID)
 	}
 	if j.Config.Effective.Agent.Enabled && (j.Config.Effective.Agent.Backend == "" || j.Config.Effective.Agent.Model == "" ||
@@ -311,6 +319,9 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	openRouterModels := policyValues(p.cfg.ReviewAgentModelsOpenRouter, service.DefaultOpenRouterAgentModel)
 	claudeEfforts := policyValues(p.cfg.ReviewAgentEffortsClaude, service.DefaultAgentEffort)
 	openRouterEfforts := policyValues(p.cfg.ReviewAgentEffortsOpenRouter, service.DefaultAgentEffort)
+	// The lite profiles pin their own model; admit it so they resolve on
+	// every deployment.
+	claudeModels = appendPolicyValue(claudeModels, runconfig.LiteModel)
 	if backend == service.AgentBackendClaude {
 		claudeModels = appendPolicyValue(claudeModels, model)
 		claudeEfforts = appendPolicyValue(claudeEfforts, effort)
@@ -331,7 +342,10 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 		FirstPass:      runconfig.FirstPass{Samples: nRequests, Provider: string(firstPassProvider), Model: firstPassModel},
 		RequiredChecks: p.cfg.RequiredChecks,
 	}
-	defaults.Agent.TurnBudgetUnit, defaults.Agent.TurnBudgetVersion = runconfig.TurnBudgetSemantics(backend)
+	defaults, err = runconfig.Expand(runconfig.ProfileFull, defaults)
+	if err != nil {
+		return runconfig.Effective{}, runconfig.Policy{}, err
+	}
 	gitAvailable := p.executableAvailable("git")
 	claudeDefaultMaxTurns := reviewBackendDefaultMaxTurns(service.AgentBackendClaude, backend, defaults.Agent.MaxTurns)
 	openRouterDefaultMaxTurns := reviewBackendDefaultMaxTurns(service.AgentBackendOpenRouter, backend, defaults.Agent.MaxTurns)
@@ -398,6 +412,7 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 		MaxWallClockSeconds: reviewPolicyMaximum(p.cfg.ReviewMaxWallClockSec, defaults.Agent.WallClockSeconds, fallbackReviewMaxWallClockSec),
 		MaxTurns:            maxTurns,
 		MaxFirstPassSamples: reviewPolicyMaximum(p.cfg.ReviewMaxFirstPassSamples, defaults.FirstPass.Samples, fallbackReviewMaxFirstPassSamples),
+		DefaultProfile:      p.defaultReviewProfile(),
 	}
 	return defaults, policy, nil
 }
@@ -611,16 +626,47 @@ func (p *Poller) reviewTimeout(cfg runconfig.Effective) time.Duration {
 	return reviewTimeoutWithMargin(cfg, margin)
 }
 
+// defaultReviewProfile is the profile for callers that name none, from
+// REVIEW_DEFAULT_PROFILE; anything unknown falls back to full.
+func (p *Poller) defaultReviewProfile() string {
+	if p.cfg == nil {
+		return runconfig.ProfileFull
+	}
+	profile := runconfig.NormalizeProfile(p.cfg.ReviewDefaultProfile)
+	if !runconfig.KnownProfile(profile) {
+		log.Printf("[REVIEWER] WARN: REVIEW_DEFAULT_PROFILE=%q is not a profile; using full", p.cfg.ReviewDefaultProfile)
+		return runconfig.ProfileFull
+	}
+	return profile
+}
+
+// describeProfile compares a run's config with the deployment's full baseline
+// so the report, sidecar and footer name its profile and any overrides.
+func (p *Poller) describeProfile(effective runconfig.Effective) runconfig.ProfileDescription {
+	base := effective
+	if defaults, _, err := p.ReviewConfigDefaultsAndPolicy(); err == nil {
+		base = defaults
+	}
+	return runconfig.DescribeProfile(effective, base)
+}
+
 func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string) service.AgentConfig {
-	agent := exec.Job.Config.Effective.Agent
+	effective := exec.Job.Config.Effective
+	agent := effective.Agent
+	bugMemory := p.bugMemory
+	if !effective.BugMemory {
+		bugMemory = nil
+	}
 	return service.AgentConfig{
 		CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
 		WallClock: time.Duration(agent.WallClockSeconds) * time.Second, MaxTurns: agent.MaxTurns,
 		GitHubToken: gitToken, Backend: agent.Backend, Model: agent.Model, Effort: agent.Effort,
+		Tools: agent.Tools, Prompt: agent.Prompt, SkipGates: !effective.Gates,
+		CollectCitedFiles: !effective.FirstPass.Enabled,
 		AnthropicAPIKey:   p.cfg.AnthropicAPIKey,
 		OpenRouterAPIKey:  p.cfg.OpenRouterAPIKey,
-		OpenRouterBaseURL: p.cfg.OpenRouterBaseURL, BugMemory: p.bugMemory,
-		RequiredChecks: exec.Job.Config.Effective.RequiredChecks, FailureLogSink: p.persistAgentFailureLog,
+		OpenRouterBaseURL: p.cfg.OpenRouterBaseURL, BugMemory: bugMemory,
+		RequiredChecks: effective.RequiredChecks, FailureLogSink: p.persistAgentFailureLog,
 		AttemptObserver: p.providerAttemptObserver(exec),
 	}
 }
@@ -681,8 +727,8 @@ func (p *Poller) ensureReviewRunWithQueueLease(job ReviewJob, queueHolder string
 		TriggerSource: job.TriggerSource, Status: db.ReviewRunStatusQueued,
 		RequestedConfigJSON: string(requestedJSON), EffectiveConfigJSON: string(effectiveJSON),
 		ConfigSourcesJSON: string(sourcesJSON), ConfigHash: job.Config.Hash,
-		ConfigSchemaVersion: job.Config.Effective.SchemaVersion,
-		AgentBackend:        job.Config.Effective.Agent.Backend, AgentModel: job.Config.Effective.Agent.Model,
+		ConfigSchemaVersion: job.Config.Effective.SchemaVersion, Profile: job.Config.Effective.Profile,
+		AgentBackend: job.Config.Effective.Agent.Backend, AgentModel: job.Config.Effective.Agent.Model,
 		AgentEffort: job.Config.Effective.Agent.Effort, AgentWallClockSec: job.Config.Effective.Agent.WallClockSeconds,
 		AgentMaxTurns: job.Config.Effective.Agent.MaxTurns, AcceptedAt: now, QueuedAt: now,
 		ServiceRevision: revisionName(), LeaseHolder: queueHolder,
@@ -768,8 +814,24 @@ func (p *Poller) reviewRunArtifactInfo(exec *reviewExecution) *payload.ReviewRun
 		HTMLPath:  gcs.ReviewRunFileName(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.PR.CommitSHA, exec.Job.RunID),
 		JSONPath:  gcs.ReviewRunJSONFileName(exec.Job.PR.Owner, exec.Job.PR.Repo, exec.Job.PR.Number, exec.Job.PR.CommitSHA, exec.Job.RunID),
 		StartedAt: exec.RunStartedAt, Config: &exec.Job.Config,
-		QueueWaitMS: queueWaitMS,
+		QueueWaitMS:  queueWaitMS,
+		Profile:      exec.Job.Config.Effective.Profile,
+		ProfileLabel: profileLabel(exec.Profile),
+		DiffSource:   exec.DiffSource,
 	}
+}
+
+// profileLabel renders the description as one line: the title, then the
+// deviations for a custom run ("Custom (based on Lite): effort high (default medium)").
+func profileLabel(d runconfig.ProfileDescription) string {
+	if d.Profile == "" {
+		return ""
+	}
+	label := d.Title()
+	if d.Custom() {
+		label += ": " + strings.Join(d.Deviations, ", ")
+	}
+	return label
 }
 
 func (p *Poller) reviewRunInfo(exec *reviewExecution, completedAt time.Time) *payload.ReviewRunInfo {
@@ -1095,6 +1157,7 @@ func (p *Poller) providerAttemptObserver(exec *reviewExecution) service.Provider
 			BudgetUnitsUsed: event.BudgetUnitsUsed,
 			TurnBudgetUnit:  event.TurnBudgetUnit, TurnBudgetVersion: event.TurnBudgetVersion,
 			InputTokens: event.InputTokens, OutputTokens: event.OutputTokens, TotalTokens: event.TotalTokens,
+			CostUSD:   event.CostUSD,
 			StartedAt: event.StartedAt, CompletedAt: event.CompletedAt, DurationMS: event.DurationMS,
 			StopReason: event.StopReason, ErrorCode: event.ErrorCode, ErrorSummary: event.ErrorSummary,
 		}

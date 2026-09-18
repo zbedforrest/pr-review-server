@@ -78,6 +78,8 @@
         .report-meta { text-align: center; color: #8b949e; font-size: 14px; margin: 0; }
         .report-meta a { color: #58a6ff; text-decoration: none; }
         .report-meta a:hover { text-decoration: underline; }
+        .report-profile { margin-top: 4px; }
+        .report-profile-deviations { font-size: 13px; }
         .report-meta .commit-sha { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; }
         .pr-description-preview { color: #c9d1d9; }
         .pr-description:has(.pr-description-fold[open]) .pr-description-preview { display: none; }
@@ -353,6 +355,7 @@
     <div class="report-header">
         <h1>{{.Heading}}</h1>
         <p class="report-meta"><a href="{{.PRURL}}" target="_blank">#{{.PRNumber}}</a> · Commit <a href="{{.PRURL}}/commits/{{.CommitSHA}}" target="_blank" class="commit-sha">{{.ShortCommitSHA}}</a> · Generated on {{.GeneratedAt}}</p>
+        {{if .Profile}}<p class="report-meta report-profile">Profile: {{.Profile}}{{if .ProfileDeviations}} <span class="report-profile-deviations">({{.ProfileDeviations}})</span>{{end}}</p>{{end}}
     </div>
 
     {{template "report-content" .}}

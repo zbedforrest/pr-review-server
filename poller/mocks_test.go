@@ -1850,6 +1850,26 @@ func (m *MockDatabase) upsertReviewStageAttemptLocked(attempt *db.ReviewStageAtt
 	return nil
 }
 
+func (m *MockDatabase) ReviewProfileStats(since time.Time) (map[string]db.ReviewProfileStats, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var samples []db.ReviewProfileRunSample
+	for _, run := range m.ReviewRuns {
+		if run.AcceptedAt.Before(since) || (run.Status != db.ReviewRunStatusCompleted && run.Status != db.ReviewRunStatusFailed && run.Status != db.ReviewRunStatusTimedOut) {
+			continue
+		}
+		sample := db.ReviewProfileRunSample{RunID: run.RunID, Profile: run.Profile, Status: run.Status, DurationMS: run.DurationMS, TimedOut: run.Status == db.ReviewRunStatusTimedOut}
+		for _, attempt := range m.ReviewStageAttempts[run.RunID] {
+			sample.CostUSD += attempt.CostUSD
+			if attempt.StopReason == "wall_clock_timeout" {
+				sample.TimedOut = true
+			}
+		}
+		samples = append(samples, sample)
+	}
+	return db.SummarizeReviewProfiles(samples), nil
+}
+
 func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAttempt, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

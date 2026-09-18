@@ -56,15 +56,16 @@ func (s *Service) fetchPRData(ctx context.Context, cfg PerformReviewConfig) (*PR
 	data.PR = pr
 	color.Green("%s Successfully fetched PR details.", prefix)
 
-	// Fetch context
-	color.White("%s Fetching file context...", prefix)
-	fileContext, fileContents, err := s.getPRContext(cfg.Token, cfg.Owner, cfg.RepoName, pr, cfg.PRNumber, cfg.Testing, cfg.Adjacent, cfg.SelectedContext)
-	if err != nil {
-		return nil, fmt.Errorf("error fetching PR context: %v", err)
+	if !cfg.SkipFileContext {
+		color.White("%s Fetching file context...", prefix)
+		fileContext, fileContents, err := s.getPRContext(cfg.Token, cfg.Owner, cfg.RepoName, pr, cfg.PRNumber, cfg.Testing, cfg.Adjacent, cfg.SelectedContext)
+		if err != nil {
+			return nil, fmt.Errorf("error fetching PR context: %v", err)
+		}
+		data.FileContext = fileContext
+		data.FileContents = fileContents
+		color.Green("%s Successfully fetched file context.", prefix)
 	}
-	data.FileContext = fileContext
-	data.FileContents = fileContents
-	color.Green("%s Successfully fetched file context.", prefix)
 
 	// Fetch diff
 	color.White("%s Fetching diff...", prefix)

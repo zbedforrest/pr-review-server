@@ -209,3 +209,31 @@ func TestRenderSummaryStaysUnderCap(t *testing.T) {
 		t.Fatalf("truncated summary lost structure\n%s", out[len(out)-300:])
 	}
 }
+
+func TestRenderSummary_LiteFooterNamesTheProfile(t *testing.T) {
+	r := roundOne()
+	r.ProfileFooter = "PRism Lite"
+	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
+	if !strings.Contains(out, "<sub>Reviews (1) · reviewed sha-rou · 2 changed files · Reviewed by PRism Lite</sub>") {
+		t.Errorf("lite footer missing:\n%s", out)
+	}
+	if !strings.Contains(out, SummaryMarker) || !strings.Contains(out, "### PRism review: merge confidence") {
+		t.Errorf("marker and heading must be unchanged so the sticky comment is found and edited in place:\n%s", out)
+	}
+	r.ProfileFooter = "PRism Lite+ (custom)"
+	out = RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
+	if !strings.Contains(out, " · Reviewed by PRism Lite+ (custom)</sub>") {
+		t.Errorf("custom lite_plus footer missing:\n%s", out)
+	}
+}
+
+func TestRenderSummary_FullFooterUnchanged(t *testing.T) {
+	r := roundOne()
+	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
+	if !strings.Contains(out, "<sub>Reviews (1) · reviewed sha-rou · 2 changed files</sub>") {
+		t.Errorf("full footer changed:\n%s", out)
+	}
+	if strings.Contains(out, "Reviewed by") {
+		t.Errorf("full reviews carry no profile attribution:\n%s", out)
+	}
+}

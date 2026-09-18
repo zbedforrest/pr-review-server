@@ -282,12 +282,18 @@ func (g *GormDB) ensureIdempotentColumns() error {
 			{column: "budget_units_used", field: "BudgetUnitsUsed"},
 			{column: "turn_budget_unit", field: "TurnBudgetUnit"},
 			{column: "turn_budget_version", field: "TurnBudgetVersion"},
+			{column: "cost_usd", field: "CostUSD"},
 		}
 		for _, addition := range attemptColumns {
 			if !g.db.Migrator().HasColumn(&ReviewStageAttemptModel{}, addition.column) {
 				if err := g.db.Migrator().AddColumn(&ReviewStageAttemptModel{}, addition.field); err != nil {
 					return fmt.Errorf("add %s: %w", addition.column, err)
 				}
+			}
+		}
+		if !g.db.Migrator().HasColumn(&ReviewRunModel{}, "profile") {
+			if err := g.db.Migrator().AddColumn(&ReviewRunModel{}, "Profile"); err != nil {
+				return fmt.Errorf("add review_runs.profile: %w", err)
 			}
 		}
 		for _, addition := range replyDecisionColumns {
@@ -407,6 +413,15 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	}
 	if err := g.db.Exec("ALTER TABLE review_stage_attempts ADD COLUMN IF NOT EXISTS turn_budget_version integer NOT NULL DEFAULT 0").Error; err != nil {
 		return fmt.Errorf("add turn_budget_version: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE review_stage_attempts ADD COLUMN IF NOT EXISTS cost_usd numeric(12,6) NOT NULL DEFAULT 0").Error; err != nil {
+		return fmt.Errorf("add cost_usd: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS profile varchar(16) NOT NULL DEFAULT ''").Error; err != nil {
+		return fmt.Errorf("add review_runs.profile: %w", err)
+	}
+	if err := g.db.Exec("CREATE INDEX IF NOT EXISTS idx_review_runs_profile ON review_runs(profile)").Error; err != nil {
+		return fmt.Errorf("index review_runs.profile: %w", err)
 	}
 	for _, addition := range replyDecisionColumns {
 		if err := g.db.Exec("ALTER TABLE published_reply_models ADD COLUMN IF NOT EXISTS " + addition.column + " " + addition.postgres).Error; err != nil {

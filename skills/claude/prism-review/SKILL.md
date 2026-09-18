@@ -62,6 +62,12 @@ Accepted PR references are `42` (resolved from the current Git remote),
    printf '%s\n' "$create_json"
    ```
 
+   `--profile lite` (or `lite_plus`, `full`) selects a review profile instead
+   of individual knobs; `capabilities` lists each profile's effective config
+   under `profiles` and the deployment default under `default_profile`. Agent
+   options such as `--effort` still apply on top of a profile; first-pass and
+   required-checks options are rejected with a lite profile.
+
    In both paths, the client resolves and sends the current full GitHub HEAD SHA
    unless `--expected-head-sha` is supplied, preventing an accidental review of
    a moving target.

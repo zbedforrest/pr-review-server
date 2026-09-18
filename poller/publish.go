@@ -12,6 +12,7 @@ import (
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/reconcile"
+	"pr-review-server/pkg/reviewer/runconfig"
 )
 
 // GitHub publication is gated per PR author so the pilot can widen team by
@@ -128,6 +129,7 @@ func buildPublishRound(pr github.PullRequest, pl payload.Payload, comments []git
 		InlineComments: inlineComments,
 
 		RequiredCheckViolated: pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0,
+		ProfileFooter:         profileFooter(pl.ReviewRun),
 	}
 	if base := strings.TrimRight(baseURL, "/"); base != "" {
 		r.AgentLinkBase = fmt.Sprintf("%s/go/agent?o=%s&r=%s&n=%d", base, pr.Owner, pr.Repo, pr.Number)
@@ -135,6 +137,24 @@ func buildPublishRound(pr github.PullRequest, pl payload.Payload, comments []git
 		r.DashboardURL = fmt.Sprintf("%s/api/review/%s/%s/%d?format=html", base, pr.Owner, pr.Repo, pr.Number)
 	}
 	return r
+}
+
+// profileFooter derives the summary footer's attribution from the sidecar's
+// run info: nothing for an exact full run or a legacy sidecar, otherwise the
+// profile name, marked custom when the label recorded any deviation.
+func profileFooter(run *payload.ReviewRunInfo) string {
+	if run == nil || run.Profile == "" {
+		return ""
+	}
+	custom := strings.HasPrefix(run.ProfileLabel, "Custom")
+	if run.Profile == runconfig.ProfileFull && !custom {
+		return ""
+	}
+	footer := "PRism " + runconfig.ProfileLabel(run.Profile)
+	if custom {
+		footer += " (custom)"
+	}
+	return footer
 }
 
 // ghPublishAdapter bridges the concrete GitHub client to the publisher's

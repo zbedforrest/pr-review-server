@@ -216,6 +216,8 @@ type StatusSnapshot struct {
 	NextPollAtUnix          *int64             `json:"next_poll_at_unix"`
 	RateLimit               StatusRateLimit    `json:"rate_limit"`
 	Webhook                 StatusWebhook      `json:"webhook"`
+	// Profiles24h summarizes the finished runs of the last day per profile.
+	Profiles24h map[string]db.ReviewProfileStats `json:"profiles_24h"`
 }
 
 // StatusWebhook is the operator view of GitHub webhook ingress and the
@@ -1102,7 +1104,14 @@ func (s *Server) buildStatusSnapshot(ctx context.Context) (*StatusSnapshot, erro
 		}
 	}
 
+	profiles, err := s.db.ReviewProfileStats(now.Add(-24 * time.Hour))
+	if err != nil {
+		log.Printf("[STATUS] profile stats query failed: %v", err)
+		profiles = map[string]db.ReviewProfileStats{}
+	}
+
 	return &StatusSnapshot{
+		Profiles24h:             profiles,
 		UptimeSeconds:           int(time.Since(s.startTime).Seconds()),
 		ServerTimeUnix:          now.Unix(),
 		ServerStartedAtUnix:     s.startTime.Unix(),
@@ -1300,6 +1309,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			AutoReviewReadyPRs       *bool   `json:"auto_review_ready_prs"`
 			AdminLogins              *string `json:"admin_logins"`
 			CIStatusExcludeAuthors   *string `json:"ci_status_exclude_authors"`
+			// AutoReviewProfileByTrigger accepts the object form the GET returns
+			// or a JSON string of it; AutoReviewLiteAuthors is a login CSV or "*".
+			AutoReviewProfileByTrigger json.RawMessage `json:"auto_review_profile_by_trigger"`
+			AutoReviewLiteAuthors      *string         `json:"auto_review_lite_authors"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
@@ -1320,6 +1333,29 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.PublishReplyMode != nil && !publishReplyModes[strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))] {
 			http.Error(w, "publish_reply_mode must be off, observe, react, shadow, or respond", http.StatusBadRequest)
 			return
+		}
+		var profilePolicyJSON string
+		if len(req.AutoReviewProfileByTrigger) > 0 && string(req.AutoReviewProfileByTrigger) != "null" {
+			raw := string(req.AutoReviewProfileByTrigger)
+			var asString string
+			if json.Unmarshal(req.AutoReviewProfileByTrigger, &asString) == nil {
+				raw = asString
+			}
+			policy, err := poller.ParseAutoReviewProfilePolicy(raw)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("auto_review_profile_by_trigger: %v", err), http.StatusBadRequest)
+				return
+			}
+			profilePolicyJSON = policy.JSON()
+		}
+		var liteAuthors string
+		if req.AutoReviewLiteAuthors != nil {
+			normalized, err := normalizeLoginCSV(*req.AutoReviewLiteAuthors, true)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("auto_review_lite_authors: %v", err), http.StatusBadRequest)
+				return
+			}
+			liteAuthors = normalized
 		}
 		var publishAuthors, adminLogins, ciExcludeAuthors string
 		if req.PublishEnabledAuthors != nil {
@@ -1399,6 +1435,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.CIStatusExcludeAuthors != nil {
 			updates = append(updates, settingWrite{db.SettingCIStatusExcludeAuthors, ciExcludeAuthors})
+		}
+		if len(req.AutoReviewProfileByTrigger) > 0 && string(req.AutoReviewProfileByTrigger) != "null" {
+			updates = append(updates, settingWrite{poller.SettingAutoReviewProfileByTrigger, profilePolicyJSON})
+		}
+		if req.AutoReviewLiteAuthors != nil {
+			updates = append(updates, settingWrite{poller.SettingAutoReviewLiteAuthors, liteAuthors})
 		}
 		for _, u := range updates {
 			if err := s.writeSetting(user.GitHubUsername, u.key, u.value); err != nil {

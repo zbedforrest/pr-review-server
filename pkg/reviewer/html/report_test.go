@@ -947,3 +947,27 @@ func TestCommentView_SeverityExclusionsAndClassWhitelist(t *testing.T) {
 	assert.Equal(t, "note", v.SeverityClass(), "unknown severities never reach the class attribute")
 	assert.Equal(t, "critical", severityClass("High"))
 }
+
+func TestGenerateReport_ProfileLineInHeader(t *testing.T) {
+	in := layoutFixtureInput()
+	in.Profile = "Lite"
+	report := renderLayoutFixture(t, in)
+	header := report[:strings.Index(report, "<summary>Review details</summary>")]
+	assert.Contains(t, header, `<p class="report-meta report-profile">Profile: Lite</p>`)
+	assert.Greater(t, strings.Index(header, "Profile: Lite"), strings.Index(header, "<h1>Add retry to the sync worker</h1>"), "profile line sits under the title")
+
+	in.Profile = "Custom (based on Lite)"
+	in.ProfileDeviations = []string{"effort high (default medium)", "wall clock 600 s (default 300 s)"}
+	report = renderLayoutFixture(t, in)
+	assert.Contains(t, report, `Profile: Custom (based on Lite) <span class="report-profile-deviations">(effort high (default medium), wall clock 600 s (default 300 s))</span></p>`)
+
+	in.Profile = "Full (legacy config)"
+	in.ProfileDeviations = nil
+	report = renderLayoutFixture(t, in)
+	assert.Contains(t, report, `Profile: Full (legacy config)</p>`)
+	assert.NotContains(t, report, `<span class="report-profile-deviations">`)
+
+	in.Profile = ""
+	report = renderLayoutFixture(t, in)
+	assert.NotContains(t, report, "Profile:")
+}

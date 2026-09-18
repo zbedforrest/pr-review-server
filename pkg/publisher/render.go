@@ -54,6 +54,9 @@ type Round struct {
 	InlineComments map[string]int64
 	// ShowUnverified is Policy.ShowUnverified as applied to this round.
 	ShowUnverified bool
+	// ProfileFooter names the review flavor in the summary footer ("PRism
+	// Lite", "PRism Lite+ (custom)"); empty for an ordinary full review.
+	ProfileFooter string
 }
 
 func (r Round) sourceTag(id string) string {
@@ -330,6 +333,9 @@ func RenderSummary(r Round, sel Selection) string {
 	fmt.Fprintf(&b, "<sub>Reviews (%d) · reviewed %s", r.RoundNumber, shortSHA(r.HeadSHA))
 	if n := len(r.Commentable); n > 0 {
 		fmt.Fprintf(&b, " · %d changed file%s", n, plural(n))
+	}
+	if r.ProfileFooter != "" {
+		fmt.Fprintf(&b, " · Reviewed by %s", r.ProfileFooter)
 	}
 	b.WriteString("</sub>\n")
 	return b.String()
