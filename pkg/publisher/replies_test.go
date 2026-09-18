@@ -981,6 +981,7 @@ func TestReplyReactor_BareAcknowledgmentsStillGetTheInstantThumbsUp(t *testing.T
 func TestShortAcknowledgment(t *testing.T) {
 	cases := map[string]bool{
 		"done": true, "Done.": true, "fixed": true, "ok": true, "ack": true, "👍": true, "fixed, thanks!": true, "Good catch, removed.": true, "Fixed this, thanks": true, ":+1: done": true,
+		"fixed 123":                            false,
 		"Fixed in 9de3bed.":                    false,
 		"Fixed the race":                       false,
 		"Removed unsafe fallback":              false,
@@ -1008,6 +1009,10 @@ func TestAcceptsWithoutFix(t *testing.T) {
 		"Addressed; the retry path stays as is and is tracked in ABC-1.":   true,
 		"Done, the `tracked` flag is set before the guard now.":            false,
 		"Removed the fallback (see 9de3bed), rest is out of scope, ABC-2.": false,
+		"Fixed the race by moving the lock; cleanup is tracked in ABC-1":   false,
+		"Fixed in `519f006`; follow-up in ABC-1":                           false,
+		"Fixed for now, the handler validates the ticket id":               false,
+		"Done. Tracked in ABC-1 for later.":                                true,
 	}
 	for body, want := range cases {
 		if got := acceptsWithoutFix(body); got != want {
@@ -1183,6 +1188,15 @@ func TestReplyReactor_DeferralIsRecordedOnTheLedgerRow(t *testing.T) {
 	r.Run(context.Background())
 	if ledger.rows[0].DeferredTo != "AUTH-42,AUTH-43" || ledger.rows[0].Outcome != "posted" {
 		t.Fatalf("an out-of-scope hold records the author's ticket keys: row=%+v", ledger.rows[0])
+	}
+
+	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "a.go:12 still dereferences it. The cleanup is out of scope here.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "AUTH-42 caused this; the cleanup is tracked later in MSG-1 and the nil path is fine."
+	r.Run(context.Background())
+	if ledger.rows[0].DeferredTo != "MSG-1" {
+		t.Fatalf("an out-of-scope hold keeps only the keys the author deferred when there are any: row=%+v", ledger.rows[0])
 	}
 
 	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {

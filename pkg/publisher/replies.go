@@ -78,7 +78,9 @@ func ClassifyReply(body string) ReplyClass {
 var (
 	shortAckMaxWords = 4
 	commitShaRe      = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
-	letterRe         = regexp.MustCompile(`\pL`)
+	wordRe           = regexp.MustCompile(`[\pL\pN]`)
+	emojiShortcodeRe = regexp.MustCompile(`^:[a-z0-9_+-]+:$`)
+	fixClaimOpenerRe = regexp.MustCompile(`^(fixed|done|addressed|resolved|updated|removed|handled)\b`)
 	edgePunctRe      = regexp.MustCompile(`^[[:punct:]]+|[[:punct:]]+$`)
 	ackVocabulary    = map[string]bool{}
 )
@@ -99,9 +101,12 @@ func shortAcknowledgment(body string) bool {
 		return false
 	}
 	for _, w := range words {
-		w = strings.ToLower(edgePunctRe.ReplaceAllString(w, ""))
-		if w == "" || !letterRe.MatchString(w) {
+		if emojiShortcodeRe.MatchString(w) {
 			continue
+		}
+		w = strings.ToLower(edgePunctRe.ReplaceAllString(w, ""))
+		if !wordRe.MatchString(w) {
+			continue // emoji or bare punctuation
 		}
 		if !ackVocabulary[w] {
 			return false
@@ -112,12 +117,28 @@ func shortAcknowledgment(body string) bool {
 
 // acceptsWithoutFix reports a resolution-class reply that accepts the finding
 // and defers it ("accepted for now, tracked in XO-291", "good catch, will do
-// in a follow-up") rather than claiming a fix: deferral language with no
-// commit sha. The code still has the problem by the author's own account, so
-// running the model would only rebut an agreement.
+// in a follow-up") rather than claiming a fix: no commit sha anywhere and
+// every substantive sentence is deferral language. The code still has the
+// problem by the author's own account, so running the model would only rebut
+// an agreement. A sentence that neither defers nor merely acknowledges
+// ("fixed the race; cleanup is tracked in ABC-1"), or that opens with a fix
+// verb and goes on ("fixed for now, the handler ..."), is a claim to verify.
 func acceptsWithoutFix(body string) bool {
-	text := codeSpanRe.ReplaceAllString(body, " ")
-	return deferralRe.MatchString(text) && !commitShaRe.MatchString(strings.ToLower(text))
+	if commitShaRe.MatchString(strings.ToLower(body)) {
+		return false
+	}
+	deferred := false
+	for _, s := range sentenceEndRe.Split(codeSpanRe.ReplaceAllString(body, " "), -1) {
+		s = strings.TrimSpace(s)
+		if s == "" || shortAcknowledgment(s) {
+			continue
+		}
+		if !deferralRe.MatchString(s) || fixClaimOpenerRe.MatchString(strings.ToLower(s)) {
+			return false
+		}
+		deferred = true
+	}
+	return deferred
 }
 
 // wantsText reports whether a reply is one the reply model should answer:
@@ -181,6 +202,24 @@ func DeferredTickets(body string) []string {
 		}
 	}
 	return out
+}
+
+// outOfScopeTickets is the deferral list for an author comment our reply
+// called out of scope: what the comment itself deferred plus any key in the
+// out-of-scope sentence of our reply. When neither names one, the verdict is
+// the deferral signal and every key the author mentioned is taken.
+func outOfScopeTickets(recorded, authorBody, ourReply string) string {
+	var ours []string
+	for _, s := range sentenceEndRe.Split(ourReply, -1) {
+		if outOfScopeRe.MatchString(s) {
+			ours = append(ours, TicketKeys(s)...)
+		}
+	}
+	merged := mergeTicketKeys(recorded, strings.Join(DeferredTickets(authorBody), ","), strings.Join(ours, ","))
+	if merged == "" {
+		return strings.Join(TicketKeys(authorBody), ",")
+	}
+	return merged
 }
 
 // mergeTicketKeys joins comma-separated key lists without duplicates.
@@ -1126,7 +1165,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		cited, _ := json.Marshal(decision.Cited)
 		record.Decision, record.ReplyBody, record.Cited, record.Model, record.DurationMS, record.React = decision.Decision, decision.Reply, string(cited), decision.Model, decision.DurationMS, decision.React
 		if record.Note == "" && (decision.Decision == DecisionHold || decision.Decision == DecisionConcede) && outOfScopeRe.MatchString(decision.Reply) {
-			record.DeferredTo = mergeTicketKeys(row.DeferredTo, strings.Join(TicketKeys(reply.Body), ","), strings.Join(TicketKeys(decision.Reply), ","))
+			record.DeferredTo = outOfScopeTickets(row.DeferredTo, reply.Body, decision.Reply)
 		}
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, record); err != nil {
 			return outcome, err
