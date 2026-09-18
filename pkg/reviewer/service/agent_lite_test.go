@@ -305,6 +305,27 @@ func TestParseAgentStream_CapturesCostAndUsageFromResultEvent(t *testing.T) {
 	}
 }
 
+func TestParseAgentStream_IgnoresSubAgentModelsForFallbackDetection(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","model":"claude-fable-5-1"}
+{"type":"assistant","parent_tool_use_id":null,"message":{"model":"claude-fable-5-1","content":[{"type":"tool_use","name":"Agent","input":{}}]}}
+{"type":"assistant","parent_tool_use_id":"toolu_01","message":{"model":"claude-opus-5","content":[{"type":"text","text":"sub-agent"}]}}
+{"type":"assistant","parent_tool_use_id":"toolu_01","message":{"model":"claude-opus-5","content":[{"type":"text","text":"more"}]}}
+{"type":"assistant","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"done"}]}}
+{"type":"result","subtype":"success","result":"[]"}
+`
+	proc := &fakeProcess{stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}
+	result, err := parseAgentStream(proc, &bytes.Buffer{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.servedModels) != 1 || result.servedModels[0] != "claude-fable-5-1" {
+		t.Fatalf("served models=%v; sub-agent models must not count", result.servedModels)
+	}
+	if result.assistantTurns != 4 {
+		t.Fatalf("sub-agent events still consume the turn budget: turns=%d", result.assistantTurns)
+	}
+}
+
 func TestArgsWithTools_IncludesAgentForLitePlus(t *testing.T) {
 	rt := agentRuntime{backend: AgentBackendClaude, model: "m", effort: "medium"}
 	plus := strings.Join(rt.argsWithTools("p", runconfig.ToolsWithAgent), " ")

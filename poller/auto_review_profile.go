@@ -78,6 +78,9 @@ func ParseAutoReviewProfilePolicy(raw string) (AutoReviewProfilePolicy, error) {
 	return policy, nil
 }
 
+// normalizeTriggerProfiles validates one trigger-to-profile map. An empty
+// profile means "unset" so the settings API's GET shape, which lists every
+// trigger, round-trips through PATCH.
 func normalizeTriggerProfiles(triggers map[string]string) (map[string]string, error) {
 	out := map[string]string{}
 	for trigger, profile := range triggers {
@@ -85,8 +88,11 @@ func normalizeTriggerProfiles(triggers map[string]string) (map[string]string, er
 		if !isAutoReviewTrigger(trigger) {
 			return nil, fmt.Errorf("unknown trigger %q (want %s)", trigger, strings.Join(AutoReviewTriggers, ", "))
 		}
+		if strings.TrimSpace(profile) == "" {
+			continue
+		}
 		name := runconfig.NormalizeProfile(profile)
-		if strings.TrimSpace(profile) == "" || !runconfig.KnownProfile(name) {
+		if !runconfig.KnownProfile(name) {
 			return nil, fmt.Errorf("%s: unknown profile %q (want %s)", trigger, profile, strings.Join(runconfig.Profiles(), ", "))
 		}
 		out[trigger] = name

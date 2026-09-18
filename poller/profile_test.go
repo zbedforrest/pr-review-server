@@ -172,6 +172,10 @@ func TestParseAutoReviewProfilePolicy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", empty.JSON())
 
+	roundTrip, err := ParseAutoReviewProfilePolicy(`{"ready_for_review":"","opened":"","synchronize":"lite","poll_fallback":"","repos":{"acme/example":{"opened":""}}}`)
+	require.NoError(t, err, "the GET shape lists every trigger with \"\" for unset and must be accepted back")
+	assert.JSONEq(t, `{"synchronize":"lite"}`, roundTrip.JSON())
+
 	for _, bad := range []string{`{"pushed":"lite"}`, `{"synchronize":"turbo"}`, `{"repos":{"acme":{"synchronize":"lite"}}}`, `{"repos":{"a/b":{"nope":"lite"}}}`, `[1]`, `{"synchronize":3}`} {
 		_, err := ParseAutoReviewProfilePolicy(bad)
 		assert.Error(t, err, bad)

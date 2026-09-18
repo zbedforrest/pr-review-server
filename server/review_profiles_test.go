@@ -44,6 +44,12 @@ func TestSettings_AutoReviewProfileByTriggerRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"ready_for_review":"full","synchronize":"lite","poll_fallback":"lite_plus","repos":{"acme/example":{"synchronize":"full"}}}`, stored)
 
+	// The GET shape, with "" for unset triggers, round-trips through PATCH.
+	w = patchSettings(t, server, `{"auto_review_profile_by_trigger":{"ready_for_review":"","opened":"","synchronize":"lite_plus","poll_fallback":"","repos":{}}}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	stored, _ = database.GetSetting(poller.SettingAutoReviewProfileByTrigger)
+	assert.JSONEq(t, `{"synchronize":"lite_plus"}`, stored)
+
 	// The string form of the same mapping is accepted too.
 	w = patchSettings(t, server, `{"auto_review_profile_by_trigger":"{\"synchronize\":\"full\"}"}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())

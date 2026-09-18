@@ -1313,7 +1313,10 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 				result.noteServedModel(ev["model"])
 			}
 		case "assistant":
-			if msg, ok := ev["message"].(map[string]any); ok {
+			// Sub-agents spawned through the Agent tool report their own model
+			// under a parent_tool_use_id; only the top-level agent's model says
+			// what served the review.
+			if msg, ok := ev["message"].(map[string]any); ok && ev["parent_tool_use_id"] == nil {
 				result.noteServedModel(msg["model"])
 			}
 			result.assistantTurns++
