@@ -65,6 +65,7 @@ type Server struct {
 	ghClient        *github.Client
 	gcsClient       *gcs.Client
 	blogObjects     blogObjectStore
+	blogUploadMu    sync.Mutex
 	auth            AuthHandler
 	prCache         []github.PullRequest
 	prCacheMux      sync.RWMutex

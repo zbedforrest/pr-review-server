@@ -25,9 +25,9 @@ const (
 	blogPath      = "/blog"
 	blogIndexFile = "index.html"
 
-	// blogPageCSP lets a post carry inline styles and same-origin images and
-	// media, and nothing else: uploaded HTML must not run scripts.
-	blogPageCSP = "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; font-src 'self'; form-action 'none'"
+	// blogPageCSP lets a post carry inline or same-origin styles, images,
+	// media and fonts, and nothing else: uploaded HTML must not run scripts.
+	blogPageCSP = "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; form-action 'none'"
 )
 
 var validBlogSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,80}$`)
@@ -48,6 +48,7 @@ type blogStore interface {
 	UpsertBlogAsset(a *db.BlogAsset) error
 	GetBlogAsset(slug, path string) (*db.BlogAsset, error)
 	ListBlogAssets(slug string) ([]db.BlogAsset, error)
+	DeleteBlogAsset(slug, path string) error
 }
 
 // cleanBlogPath validates a post-relative file path such as "img/hero.png".

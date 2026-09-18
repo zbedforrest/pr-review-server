@@ -22,6 +22,7 @@ import (
 //	PUT    /api/blog/posts/<slug>               create or update {title, dek, published}
 //	DELETE /api/blog/posts/<slug>               remove the post and its files
 //	PUT    /api/blog/posts/<slug>/files/<path>  upload one file (raw body, Content-Type header)
+//	DELETE /api/blog/posts/<slug>/files/<path>  remove one file
 //
 // Reads need a session; writes need an admin.
 
@@ -159,11 +160,14 @@ func (s *Server) handleBlogAPI(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method != http.MethodPut {
+	switch r.Method {
+	case http.MethodPut:
+		s.putBlogFile(w, r, store, user, slug, filePath)
+	case http.MethodDelete:
+		s.deleteBlogFile(w, r, store, user, slug, filePath)
+	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
 	}
-	s.putBlogFile(w, r, store, user, slug, filePath)
 }
 
 func writeBlogJSON(w http.ResponseWriter, status int, body any) {
@@ -286,22 +290,66 @@ func (s *Server) deleteBlogPost(w http.ResponseWriter, r *http.Request, store bl
 	if !ok {
 		return
 	}
-	var total int64
-	for _, a := range assets {
-		if err := s.blogObjects.Delete(r.Context(), a.StorageObject); err != nil {
-			log.Printf("[BLOG] delete object %s: %v", a.StorageObject, err)
-			http.Error(w, "Failed to delete files", http.StatusInternalServerError)
-			return
-		}
-		total += a.SizeBytes
-	}
 	if err := store.DeleteBlogPost(post.Slug); err != nil {
 		log.Printf("[BLOG] delete post %s: %v", slug, err)
 		http.Error(w, "Failed to delete post", http.StatusInternalServerError)
 		return
 	}
+	var total int64
+	for _, a := range assets {
+		total += a.SizeBytes
+		s.removeBlogObject(r, a.StorageObject)
+	}
 	blogAudit(user.GitHubUsername, "delete", slug, "", int(total))
 	writeBlogJSON(w, http.StatusOK, map[string]any{"status": "deleted", "slug": slug})
+}
+
+// removeBlogObject is best effort: once the rows are gone an orphaned object
+// is unreachable and only costs storage, while a missing object behind a live
+// row would 404 for readers.
+func (s *Server) removeBlogObject(r *http.Request, key string) {
+	if err := s.blogObjects.Delete(r.Context(), key); err != nil {
+		log.Printf("[BLOG] orphaned object %s: %v", key, err)
+	}
+}
+
+func (s *Server) deleteBlogFile(w http.ResponseWriter, r *http.Request, store blogStore, user *db.User, slug, rawPath string) {
+	filePath, err := cleanBlogPath(rawPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	post, _, ok := s.loadBlogPost(w, store, slug, true)
+	if !ok {
+		return
+	}
+	asset, err := store.GetBlogAsset(slug, filePath)
+	if err != nil {
+		log.Printf("[BLOG] load asset %s/%s: %v", slug, filePath, err)
+		http.Error(w, "Failed to load file", http.StatusInternalServerError)
+		return
+	}
+	if asset == nil {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	if filePath == blogIndexFile {
+		post.IndexObject = ""
+		post.Published = false
+		if err := store.SaveBlogPost(post); err != nil {
+			log.Printf("[BLOG] save post %s: %v", slug, err)
+			http.Error(w, "Failed to save post", http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := store.DeleteBlogAsset(slug, filePath); err != nil {
+		log.Printf("[BLOG] delete asset %s/%s: %v", slug, filePath, err)
+		http.Error(w, "Failed to delete file", http.StatusInternalServerError)
+		return
+	}
+	s.removeBlogObject(r, asset.StorageObject)
+	blogAudit(user.GitHubUsername, "delete-file", slug, filePath, int(asset.SizeBytes))
+	writeBlogJSON(w, http.StatusOK, map[string]any{"status": "deleted", "slug": slug, "path": filePath})
 }
 
 // blogUploadContentType validates the declared type against the allowlist and
@@ -338,11 +386,6 @@ func (s *Server) putBlogFile(w http.ResponseWriter, r *http.Request, store blogS
 		http.Error(w, fmt.Sprintf("file exceeds %d bytes", blogMaxFileBytes), http.StatusRequestEntityTooLarge)
 		return
 	}
-	post, assets, ok := s.loadBlogPost(w, store, slug, true)
-	if !ok {
-		return
-	}
-
 	content, err := io.ReadAll(http.MaxBytesReader(w, r.Body, blogMaxFileBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -358,10 +401,22 @@ func (s *Server) putBlogFile(w http.ResponseWriter, r *http.Request, store blogS
 		return
 	}
 
+	// One upload at a time per process keeps the quota check and the row
+	// write together; the limits are guardrails for admins, not a hard cap
+	// across instances.
+	s.blogUploadMu.Lock()
+	defer s.blogUploadMu.Unlock()
+
+	post, assets, ok := s.loadBlogPost(w, store, slug, true)
+	if !ok {
+		return
+	}
 	var otherBytes int64
 	otherFiles := 0
+	previousObject := ""
 	for _, a := range assets {
 		if a.Path == filePath {
+			previousObject = a.StorageObject
 			continue
 		}
 		otherBytes += a.SizeBytes
@@ -376,7 +431,8 @@ func (s *Server) putBlogFile(w http.ResponseWriter, r *http.Request, store blogS
 		return
 	}
 
-	key := blogObjectKey(slug, filePath)
+	etag := blogETag(content)
+	key := blogObjectKey(slug, filePath, strings.Trim(etag, `"`))
 	if err := s.blogObjects.Put(r.Context(), key, blogServedContentType(contentType), content); err != nil {
 		log.Printf("[BLOG] store %s: %v", key, err)
 		http.Error(w, "Failed to store file", http.StatusInternalServerError)
@@ -388,11 +444,12 @@ func (s *Server) putBlogFile(w http.ResponseWriter, r *http.Request, store blogS
 		ContentType:   contentType,
 		SizeBytes:     int64(len(content)),
 		StorageObject: key,
-		ETag:          blogETag(content),
+		ETag:          etag,
 		UploadedAt:    time.Now(),
 	}
 	if err := store.UpsertBlogAsset(&asset); err != nil {
 		log.Printf("[BLOG] record %s: %v", key, err)
+		s.removeBlogObject(r, key)
 		http.Error(w, "Failed to record file", http.StatusInternalServerError)
 		return
 	}
@@ -403,6 +460,9 @@ func (s *Server) putBlogFile(w http.ResponseWriter, r *http.Request, store blogS
 			http.Error(w, "Failed to save post", http.StatusInternalServerError)
 			return
 		}
+	}
+	if previousObject != "" && previousObject != key {
+		s.removeBlogObject(r, previousObject)
 	}
 	blogAudit(user.GitHubUsername, "upload", slug, filePath, len(content))
 	writeBlogJSON(w, http.StatusOK, map[string]any{"file": blogFileToJSON(asset)})

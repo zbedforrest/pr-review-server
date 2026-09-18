@@ -218,11 +218,12 @@ PRISM_BASE_URL=https://prism.example.com \
   scripts/blog_publish.sh ./site my-post "Post title" "One-line summary" --publish
 ```
 
-Without `--publish` the post stays a draft that only admins can open. Re-running the script with the same slug replaces the files and keeps the publish state.
+Without `--publish` the post stays a draft that only admins can open. Re-running the script with the same slug uploads the current files, removes stored files that are no longer in the directory, and keeps the publish state.
 
 - `GET /api/blog/posts` lists posts (drafts for admins only)
 - `PUT /api/blog/posts/{slug}` creates or updates `{title, dek, published}`; publishing requires an uploaded `index.html`
 - `PUT /api/blog/posts/{slug}/files/{path}` uploads one file as the raw body with its `Content-Type`; 15 MiB per file, 64 MiB and 200 files per post; `index.html` must be `text/html`, assets may be PNG, JPEG, GIF, WebP, SVG, WebM, MP4, CSS, WOFF2, JSON or plain text
+- `DELETE /api/blog/posts/{slug}/files/{path}` removes one file; removing `index.html` unpublishes the post
 - `DELETE /api/blog/posts/{slug}` removes the post and its files
 
 ## Themes

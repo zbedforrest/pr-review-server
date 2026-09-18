@@ -107,6 +107,13 @@ func TestGormDB_BlogAsset_RoundTripReplaceAndDeleteWithPost(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, missing)
 
+	require.NoError(t, db.DeleteBlogAsset("hello", "img/a.png"))
+	require.NoError(t, db.DeleteBlogAsset("hello", "img/a.png"), "deleting twice is fine")
+	assets, err = db.ListBlogAssets("hello")
+	require.NoError(t, err)
+	require.Len(t, assets, 1)
+	assert.Equal(t, "index.html", assets[0].Path)
+
 	require.NoError(t, db.DeleteBlogPost("hello"))
 	post, err := db.GetBlogPost("hello")
 	require.NoError(t, err)

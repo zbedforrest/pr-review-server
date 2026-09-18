@@ -34,8 +34,11 @@ func newBlogObjectStore(cfg *config.Config, gcsClient *gcs.Client) blogObjectSto
 	return localBlogObjects{dir: dir}
 }
 
-func blogObjectKey(slug, path string) string {
-	return "blog/" + slug + "/" + path
+// blogObjectKey names an upload by its content so a replacement lands at a
+// fresh key: the row flips to the new object only after it is fully written,
+// and the old object is removed afterwards.
+func blogObjectKey(slug, path, contentHash string) string {
+	return "blog/" + slug + "/" + path + "." + contentHash[:16]
 }
 
 type gcsBlogObjects struct{ client *gcs.Client }

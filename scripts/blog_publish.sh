@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Publish a directory as a PRism blog post: metadata first, then every file
-# under <dir> with its relative path preserved, then the publish flag.
+# under <dir> with its relative path preserved, then remove stored files that
+# are no longer in <dir>, then the publish flag.
 #
 #   PRISM_BASE_URL=https://prism.example.com \
 #     scripts/blog_publish.sh ./site my-post "Title" "One-line dek" [--publish]
@@ -77,9 +78,13 @@ post_path="/api/blog/posts/$slug"
 
 # Keep an existing post's publish state while its files are replaced.
 current_published=false
+: > "$tmp/remote_files"
 status=$(request GET "$post_path" application/json)
 case "$status" in
-  200) current_published=$(jq -r '.post.published' "$tmp/body") ;;
+  200)
+    current_published=$(jq -r '.post.published' "$tmp/body")
+    jq -r '.files[].path' "$tmp/body" > "$tmp/remote_files"
+    ;;
   404) ;;
   *) fail "could not read $slug" "$status" ;;
 esac
@@ -90,13 +95,22 @@ status=$(request PUT "$post_path" application/json "$tmp/meta.json")
 [[ "$status" == 200 || "$status" == 201 ]] || fail "could not save metadata for $slug" "$status"
 echo "metadata saved: $slug"
 
+: > "$tmp/local_files"
 while IFS= read -r -d '' file; do
   rel=${file#"$dir"/}
+  echo "$rel" >> "$tmp/local_files"
   type=$(content_type "$file")
   status=$(request PUT "$post_path/files/$rel" "$type" "$file")
   [ "$status" == 200 ] || fail "upload failed for $rel" "$status"
   echo "uploaded: $rel ($type, $(wc -c < "$file" | tr -d ' ') bytes)"
 done < <(find "$dir" -type f -not -path '*/.*' -print0 | sort -z)
+
+while IFS= read -r stale; do
+  [ -n "$stale" ] || continue
+  status=$(request DELETE "$post_path/files/$stale" application/json)
+  [ "$status" == 200 ] || fail "could not remove $stale" "$status"
+  echo "removed: $stale"
+done < <(grep -vxF -f "$tmp/local_files" "$tmp/remote_files" || true)
 
 if $publish; then
   jq '.published = true' "$tmp/meta.json" > "$tmp/publish.json"

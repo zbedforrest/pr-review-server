@@ -62,6 +62,21 @@ func putBlogFile(t *testing.T, server *Server, user *db.User, slug, path, conten
 	return blogRequest(t, server, user, http.MethodPut, blogAPIPath+"/"+slug+"/files/"+path, content, map[string]string{"Content-Type": contentType})
 }
 
+// storedObjects lists the object files under a post's storage directory.
+func storedObjects(t *testing.T, server *Server, slug string) []string {
+	t.Helper()
+	var found []string
+	root := filepath.Join(server.cfg.BlogLocalDir, "blog", slug)
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			rel, _ := filepath.Rel(root, path)
+			found = append(found, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	return found
+}
+
 const testPostHTML = `<!doctype html><html><body><h1>Hi</h1><img src="img/a.png"></body></html>`
 
 var testPNG = []byte("\x89PNG\r\n\x1a\nfake")
@@ -114,6 +129,8 @@ func TestBlogPage_ServesIndexHTMLWithStrictHeaders(t *testing.T) {
 	assert.Equal(t, testPostHTML, w.Body.String())
 	assert.Equal(t, "text/html; charset=utf-8", w.Header().Get("Content-Type"))
 	assert.Equal(t, blogPageCSP, w.Header().Get("Content-Security-Policy"))
+	assert.Contains(t, blogPageCSP, "style-src 'self' 'unsafe-inline'", "linked same-origin stylesheets must load")
+	assert.NotContains(t, blogPageCSP, "script-src")
 	assert.Equal(t, "DENY", w.Header().Get("X-Frame-Options"))
 	assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
 	assert.NotEmpty(t, w.Header().Get("ETag"))
@@ -323,12 +340,44 @@ func TestBlogAPI_ReuploadReplacesContent(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, string(updated), w.Body.String())
 	assert.Equal(t, blogETag(updated), w.Header().Get("ETag"))
+
+	objects := storedObjects(t, server, "hello")
+	assert.Len(t, objects, 2, "the replaced index.html object is removed: %v", objects)
+	for _, obj := range objects {
+		assert.NotEqual(t, "index.html."+strings.Trim(blogETag([]byte(testPostHTML)), `"`)[:16], obj)
+	}
+}
+
+func TestBlogAPI_DeleteFile(t *testing.T) {
+	server := newBlogTestServer(t)
+	createPublishedPost(t, server, "hello")
+
+	assert.Equal(t, http.StatusForbidden, blogRequest(t, server, blogMember, http.MethodDelete, blogAPIPath+"/hello/files/img/a.png", nil, nil).Code)
+	assert.Equal(t, http.StatusNotFound, blogRequest(t, server, blogAdmin, http.MethodDelete, blogAPIPath+"/hello/files/img/zzz.png", nil, nil).Code)
+	assert.Equal(t, http.StatusBadRequest, blogRequest(t, server, blogAdmin, http.MethodDelete, blogAPIPath+"/hello/files/../a.png", nil, nil).Code)
+
+	require.Equal(t, http.StatusOK, blogRequest(t, server, blogAdmin, http.MethodDelete, blogAPIPath+"/hello/files/img/a.png", nil, nil).Code)
+	assert.Equal(t, http.StatusNotFound, blogRequest(t, server, blogMember, http.MethodGet, "/blog/hello/img/a.png", nil, nil).Code)
+	assert.Equal(t, http.StatusOK, blogRequest(t, server, blogMember, http.MethodGet, "/blog/hello/", nil, nil).Code, "the page stays published")
+	assert.Len(t, storedObjects(t, server, "hello"), 1)
+
+	require.Equal(t, http.StatusOK, blogRequest(t, server, blogAdmin, http.MethodDelete, blogAPIPath+"/hello/files/index.html", nil, nil).Code)
+	assert.Equal(t, http.StatusNotFound, blogRequest(t, server, blogMember, http.MethodGet, "/blog/hello/", nil, nil).Code, "a post without a page is unpublished")
+	w := blogRequest(t, server, blogAdmin, http.MethodGet, blogAPIPath+"/hello", nil, nil)
+	require.Equal(t, http.StatusOK, w.Code)
+	var detail struct {
+		Post blogPostJSON `json:"post"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &detail))
+	assert.False(t, detail.Post.Published)
+	assert.False(t, detail.Post.HasIndex)
+	assert.Empty(t, storedObjects(t, server, "hello"))
 }
 
 func TestBlogAPI_DeleteRemovesRowsAndObjects(t *testing.T) {
 	server := newBlogTestServer(t)
 	createPublishedPost(t, server, "hello")
-	require.FileExists(t, filepath.Join(server.cfg.BlogLocalDir, "blog", "hello", "img", "a.png"))
+	require.Len(t, storedObjects(t, server, "hello"), 2)
 
 	assert.Equal(t, http.StatusNotFound, blogRequest(t, server, blogAdmin, http.MethodDelete, blogAPIPath+"/missing", nil, nil).Code)
 	w := blogRequest(t, server, blogAdmin, http.MethodDelete, blogAPIPath+"/hello", nil, nil)
@@ -336,8 +385,7 @@ func TestBlogAPI_DeleteRemovesRowsAndObjects(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, blogRequest(t, server, blogAdmin, http.MethodGet, "/blog/hello/", nil, nil).Code)
 	assert.Equal(t, http.StatusNotFound, blogRequest(t, server, blogAdmin, http.MethodGet, "/blog/hello/img/a.png", nil, nil).Code)
-	assert.NoFileExists(t, filepath.Join(server.cfg.BlogLocalDir, "blog", "hello", "img", "a.png"))
-	assert.NoFileExists(t, filepath.Join(server.cfg.BlogLocalDir, "blog", "hello", "index.html"))
+	assert.Empty(t, storedObjects(t, server, "hello"))
 }
 
 func TestBlogAPI_UnknownRoutes(t *testing.T) {
@@ -348,6 +396,7 @@ func TestBlogAPI_UnknownRoutes(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, blogRequest(t, server, blogAdmin, http.MethodPost, blogAPIPath+"/hello", nil, nil).Code)
 	assert.Equal(t, http.StatusNotFound, blogRequest(t, server, blogAdmin, http.MethodPut, blogAPIPath+"/hello/other/x", nil, nil).Code)
 	assert.Equal(t, http.StatusMethodNotAllowed, blogRequest(t, server, blogAdmin, http.MethodGet, blogAPIPath+"/hello/files/index.html", nil, nil).Code)
+	assert.Equal(t, http.StatusMethodNotAllowed, blogRequest(t, server, blogAdmin, http.MethodPost, blogAPIPath+"/hello/files/index.html", nil, nil).Code)
 }
 
 func TestReactApp_StillServesDashboardForOtherPaths(t *testing.T) {

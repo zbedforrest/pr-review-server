@@ -146,3 +146,8 @@ func (g *GormDB) ListBlogAssets(slug string) ([]BlogAsset, error) {
 	}
 	return assets, nil
 }
+
+// DeleteBlogAsset removes one file row; a missing row is not an error.
+func (g *GormDB) DeleteBlogAsset(slug, path string) error {
+	return g.db.Where("slug = ? AND path = ?", slug, path).Delete(&BlogAssetModel{}).Error
+}
