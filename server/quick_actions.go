@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"pr-review-server/auth"
 	"pr-review-server/db"
@@ -240,7 +241,7 @@ func validateQuickAction(req *quickActionRequest) *quickActionError {
 		return bad("action must be one of approve, request_changes, comment")
 	}
 	req.Body = strings.TrimSpace(req.Body)
-	if len(req.Body) > quickActionMaxBodyLen {
+	if utf8.RuneCountInString(req.Body) > quickActionMaxBodyLen {
 		return bad(fmt.Sprintf("body must be at most %d characters", quickActionMaxBodyLen))
 	}
 	if req.Action != "approve" && req.Body == "" {
@@ -329,12 +330,21 @@ func userReviewToQuickActionError(err error) *quickActionError {
 	}
 }
 
+// tokenError maps a token source failure: no usable token means sign in
+// again, anything else (the token endpoint is down) is a retryable error.
+func tokenError(err error) *github.UserReviewError {
+	if errors.Is(err, auth.ErrNoGitHubToken) {
+		return &github.UserReviewError{Code: "reauth_required", Message: err.Error()}
+	}
+	return &github.UserReviewError{Code: "github_error", Message: "GitHub token refresh failed, try again: " + err.Error()}
+}
+
 // withUserToken runs call with the human's token, refreshing once and
 // retrying when GitHub answered 401 with a session token.
 func withUserToken(ctx context.Context, src auth.GitHubTokenSource, call func(token string) error) error {
 	token, err := src.Token(ctx)
 	if err != nil {
-		return &github.UserReviewError{Code: "reauth_required", Message: err.Error()}
+		return tokenError(err)
 	}
 	err = call(token)
 	var ure *github.UserReviewError
@@ -385,9 +395,17 @@ func (s *Server) handleQuickAction(w http.ResponseWriter, r *http.Request) {
 	actor := user.GitHubUsername
 
 	src := auth.GitHubTokenSourceFromRequest(r)
-	_, source, tokenOK := auth.GitHubUserToken(r)
-	if !tokenOK || src == nil {
+	if src == nil {
 		writeQuickActionError(w, &quickActionError{http.StatusPreconditionRequired, "reauth_required", "GitHub authorization missing, sign in again", nil})
+		return
+	}
+	source := src.Source()
+	if _, err := src.Token(r.Context()); err != nil {
+		e := userReviewToQuickActionError(tokenError(err))
+		if e.code == "reauth_required" {
+			e.message = "GitHub authorization missing, sign in again"
+		}
+		writeQuickActionError(w, e)
 		return
 	}
 
@@ -400,15 +418,12 @@ func (s *Server) handleQuickAction(w http.ResponseWriter, r *http.Request) {
 		writeQuickActionError(w, &quickActionError{http.StatusNotFound, "pr_unknown", "PR not found", nil})
 		return
 	}
-	// GitHub is the authority on who may review, but these two answers are
-	// certain and save a round trip.
+	// GitHub is the authority on who may review, but authorship never changes
+	// and this answer saves a round trip. Open/closed is read live below: the
+	// stored state lags a reopen until the next poll.
 	if req.Action != "comment" && strings.EqualFold(pr.Author, actor) {
 		s.logQuickActionFailure(actor, user.ID, req.Action, prRef, req.ExpectedHeadSHA, source, http.StatusUnprocessableEntity, "own_pr")
 		writeQuickActionError(w, &quickActionError{http.StatusUnprocessableEntity, "own_pr", "GitHub does not allow reviewing your own pull request", nil})
-		return
-	}
-	if prStateOrOpen(pr.PRState) != "open" {
-		writeQuickActionError(w, &quickActionError{http.StatusUnprocessableEntity, "pr_closed", "The pull request is closed on GitHub", nil})
 		return
 	}
 
@@ -452,8 +467,8 @@ func (s *Server) handleQuickAction(w http.ResponseWriter, r *http.Request) {
 		writeQuickActionError(w, &quickActionError{http.StatusUnprocessableEntity, "pr_closed", "The pull request is closed on GitHub", nil})
 		return
 	}
-	// GitHub's draft flag wins over the row, which may predate a convert-to-draft.
-	if req.Action == "approve" && (live.Draft || pr.Draft) {
+	// GitHub's draft flag is the one that counts; the row may lag a conversion either way.
+	if req.Action == "approve" && live.Draft {
 		if e := draftApproveGate(pr, head); e != nil {
 			s.quickActions.release(dupKey)
 			s.logQuickActionFailure(actor, user.ID, req.Action, prRef, head, source, e.status, e.code)
@@ -470,8 +485,16 @@ func (s *Server) handleQuickAction(w http.ResponseWriter, r *http.Request) {
 		return callErr
 	})
 	if err != nil {
-		s.quickActions.release(dupKey)
+		// A definite rejection frees the duplicate window for an immediate
+		// retry. An unknown outcome (transport failure, GitHub 5xx) keeps it:
+		// the review may exist, so a reflexive second click must not post again.
+		if isDefiniteRejection(err) {
+			s.quickActions.release(dupKey)
+		}
 		e := userReviewToQuickActionError(err)
+		if !isDefiniteRejection(err) {
+			e.message += "; check the PR on GitHub before retrying"
+		}
 		s.logQuickActionFailure(actor, user.ID, req.Action, prRef, head, source, e.status, e.code)
 		writeQuickActionError(w, e)
 		return
@@ -499,6 +522,11 @@ func (s *Server) handleQuickAction(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp) // nolint:errcheck
+}
+
+func isDefiniteRejection(err error) bool {
+	var ure *github.UserReviewError
+	return errors.As(err, &ure) && ure.Status >= 400 && ure.Status < 500
 }
 
 func (s *Server) logQuickActionFailure(actor string, userID int, action, prRef, head, source string, status int, code string) {

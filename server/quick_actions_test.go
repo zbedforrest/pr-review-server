@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -225,19 +226,41 @@ func TestQuickAction_422OwnPR(t *testing.T) {
 
 func TestQuickAction_422ClosedPR(t *testing.T) {
 	env := newQuickActionEnv(t)
-	require.NoError(t, env.database.SetPRState("acme", "example", 123, "merged"))
+	env.gh.state, env.gh.merged = "closed", true
 	w, got := env.do(t, http.MethodPost, quickActionBody(nil), sessionToken(), nil)
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 	assert.Equal(t, "pr_closed", got["code"])
 	assert.Zero(t, env.gh.reviewPosts.Load())
 
-	require.NoError(t, env.database.SetPRState("acme", "example", 123, "open"))
-	env.gh.state, env.gh.merged = "closed", true
-	w, got = env.do(t, http.MethodPost, quickActionBody(nil), sessionToken(), nil)
+	env.gh.state, env.gh.merged = "closed", false
+	w, got = env.do(t, http.MethodPost, quickActionBody(map[string]any{"request_id": "7e1c0000-req-2"}), sessionToken(), nil)
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
-	assert.Equal(t, "pr_closed", got["code"], "GitHub's answer wins over a stale row")
+	assert.Equal(t, "pr_closed", got["code"])
+
+	require.NoError(t, env.database.SetPRState("acme", "example", 123, "closed"))
+	env.gh.state, env.gh.merged = "open", false
+	w, _ = env.do(t, http.MethodPost, quickActionBody(map[string]any{"request_id": "7e1c0000-req-3"}), sessionToken(), nil)
+	assert.Equal(t, http.StatusOK, w.Code, "a PR reopened on GitHub works before the poller catches up")
+	assert.Equal(t, int32(1), env.gh.reviewPosts.Load())
+}
+
+func TestQuickAction_428OnlyWhenNoToken_502WhenRefreshUnavailable(t *testing.T) {
+	env := newQuickActionEnv(t)
+	w, got := env.do(t, http.MethodPost, quickActionBody(nil), &failingSource{err: auth.ErrNoGitHubToken}, nil)
+	assert.Equal(t, http.StatusPreconditionRequired, w.Code)
+	assert.Equal(t, "reauth_required", got["code"])
+
+	w, got = env.do(t, http.MethodPost, quickActionBody(nil), &failingSource{err: errors.New("token endpoint 503")}, nil)
+	assert.Equal(t, http.StatusBadGateway, w.Code, w.Body.String())
+	assert.Equal(t, "github_error", got["code"], "an intact token that could not refresh is not a sign-in problem")
 	assert.Zero(t, env.gh.reviewPosts.Load())
 }
+
+type failingSource struct{ err error }
+
+func (s *failingSource) Token(context.Context) (string, error)   { return "", s.err }
+func (s *failingSource) Refresh(context.Context) (string, error) { return "", s.err }
+func (s *failingSource) Source() string                          { return "session" }
 
 func TestQuickAction_409HeadMoved(t *testing.T) {
 	env := newQuickActionEnv(t)
@@ -343,6 +366,20 @@ func TestQuickAction_FailureReleasesDuplicateWindow(t *testing.T) {
 	env.gh.head = qaHead
 	w, _ = env.do(t, http.MethodPost, quickActionBody(map[string]any{"request_id": "7e1c0000-req-2"}), sessionToken(), nil)
 	assert.Equal(t, http.StatusOK, w.Code, "a rejected attempt must not block the retry")
+}
+
+func TestQuickAction_AmbiguousFailureKeepsDuplicateWindow(t *testing.T) {
+	env := newQuickActionEnv(t)
+	env.gh.reviewStatus, env.gh.reviewBody = http.StatusBadGateway, `{"message":"boom"}`
+	w, got := env.do(t, http.MethodPost, quickActionBody(nil), sessionToken(), nil)
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	assert.Contains(t, got["error"], "check the PR on GitHub before retrying")
+
+	env.gh.reviewStatus, env.gh.reviewBody = http.StatusOK, `{"id": 2233, "state": "APPROVED", "html_url": "u"}`
+	w, got = env.do(t, http.MethodPost, quickActionBody(map[string]any{"request_id": "7e1c0000-req-2"}), sessionToken(), nil)
+	assert.Equal(t, http.StatusConflict, w.Code, "the review may already exist, so a reflexive retry is held for the window")
+	assert.Equal(t, "duplicate", got["code"])
+	assert.Equal(t, int32(1), env.gh.reviewPosts.Load())
 }
 
 func TestQuickAction_429PerUserRateLimit(t *testing.T) {
@@ -496,25 +533,29 @@ func TestQuickAction_NeverLogsBodyOrToken(t *testing.T) {
 	assert.NotContains(t, logs, qaToken)
 }
 
-func setDraftReviewState(t *testing.T, database *db.GormDB, verdict string, critical int, greptile, greptileSHA string) {
+// setDraftReviewState marks the PR a draft on GitHub and in the row, and
+// stores the automated verdicts the gate reads.
+func setDraftReviewState(t *testing.T, env *quickActionEnv, verdict string, critical int, greptile, greptileSHA string) {
 	t.Helper()
-	require.NoError(t, database.UpdatePRDraft("acme", "example", 123, true))
-	require.NoError(t, database.MarkPRCompleted("acme", "example", 123, qaHead, "r.html", critical, 0, 0, verdict, false))
+	env.gh.draftJSON = "true"
+	require.NoError(t, env.database.UpdatePRDraft("acme", "example", 123, true))
+	require.NoError(t, env.database.MarkPRCompleted("acme", "example", 123, qaHead, "r.html", critical, 0, 0, verdict, false))
 	if greptile != "" {
-		require.NoError(t, database.SetPRGreptileStatus("acme", "example", 123, greptileSHA, greptile))
+		_, err := env.database.SetPRGreptileStatus("acme", "example", 123, greptileSHA, greptile, 1)
+		require.NoError(t, err)
 	}
 }
 
 func TestQuickAction_DraftApproveGate(t *testing.T) {
 	t.Run("both green approves", func(t *testing.T) {
 		env := newQuickActionEnv(t)
-		setDraftReviewState(t, env.database, "approve_suggestions", 0, "green", qaHead)
+		setDraftReviewState(t, env, "approve_suggestions", 0, "green", qaHead)
 		w, _ := env.do(t, http.MethodPost, quickActionBody(nil), sessionToken(), nil)
 		assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	})
 	t.Run("prism red", func(t *testing.T) {
 		env := newQuickActionEnv(t)
-		setDraftReviewState(t, env.database, "request_changes", 0, "green", qaHead)
+		setDraftReviewState(t, env, "request_changes", 0, "green", qaHead)
 		w, got := env.do(t, http.MethodPost, quickActionBody(nil), sessionToken(), nil)
 		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 		assert.Equal(t, "draft_not_green", got["code"])
@@ -525,14 +566,14 @@ func TestQuickAction_DraftApproveGate(t *testing.T) {
 	})
 	t.Run("critical finding", func(t *testing.T) {
 		env := newQuickActionEnv(t)
-		setDraftReviewState(t, env.database, "approve", 1, "green", qaHead)
+		setDraftReviewState(t, env, "approve", 1, "green", qaHead)
 		w, got := env.do(t, http.MethodPost, quickActionBody(nil), sessionToken(), nil)
 		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 		assert.Equal(t, "red", got["details"].(map[string]any)["prism"])
 	})
 	t.Run("greptile red", func(t *testing.T) {
 		env := newQuickActionEnv(t)
-		setDraftReviewState(t, env.database, "approve", 0, "red", qaHead)
+		setDraftReviewState(t, env, "approve", 0, "red", qaHead)
 		w, got := env.do(t, http.MethodPost, quickActionBody(nil), sessionToken(), nil)
 		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 		assert.Equal(t, "red", got["details"].(map[string]any)["greptile"])
@@ -540,12 +581,13 @@ func TestQuickAction_DraftApproveGate(t *testing.T) {
 	})
 	t.Run("greptile absent or stale", func(t *testing.T) {
 		env := newQuickActionEnv(t)
-		setDraftReviewState(t, env.database, "approve", 0, "", "")
+		setDraftReviewState(t, env, "approve", 0, "", "")
 		w, got := env.do(t, http.MethodPost, quickActionBody(nil), sessionToken(), nil)
 		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 		assert.Equal(t, "absent", got["details"].(map[string]any)["greptile"])
 
-		require.NoError(t, env.database.SetPRGreptileStatus("acme", "example", 123, qaOtherSHA, "green"))
+		_, err := env.database.SetPRGreptileStatus("acme", "example", 123, qaOtherSHA, "green", 1)
+		require.NoError(t, err)
 		w, got = env.do(t, http.MethodPost, quickActionBody(map[string]any{"request_id": "7e1c0000-req-2"}), sessionToken(), nil)
 		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 		assert.Equal(t, "absent", got["details"].(map[string]any)["greptile"], "a verdict for another head does not count")
@@ -559,9 +601,16 @@ func TestQuickAction_DraftApproveGate(t *testing.T) {
 		assert.Equal(t, "draft_not_green", got["code"])
 		assert.Zero(t, env.gh.reviewPosts.Load())
 	})
+	t.Run("a row still marked draft does not gate a PR GitHub says is ready", func(t *testing.T) {
+		env := newQuickActionEnv(t)
+		setDraftReviewState(t, env, "request_changes", 3, "red", qaHead)
+		env.gh.draftJSON = "false"
+		w, _ := env.do(t, http.MethodPost, quickActionBody(nil), sessionToken(), nil)
+		assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	})
 	t.Run("verdicts for an older head do not count", func(t *testing.T) {
 		env := newQuickActionEnv(t)
-		setDraftReviewState(t, env.database, "approve", 0, "green", qaHead)
+		setDraftReviewState(t, env, "approve", 0, "green", qaHead)
 		env.gh.head = qaOtherSHA
 		w, got := env.do(t, http.MethodPost, quickActionBody(map[string]any{"expected_head_sha": qaOtherSHA}), sessionToken(), nil)
 		assert.Equal(t, http.StatusUnprocessableEntity, w.Code, w.Body.String())
@@ -573,7 +622,7 @@ func TestQuickAction_DraftApproveGate(t *testing.T) {
 	})
 	t.Run("request changes and comment stay allowed", func(t *testing.T) {
 		env := newQuickActionEnv(t)
-		setDraftReviewState(t, env.database, "request_changes", 2, "red", qaHead)
+		setDraftReviewState(t, env, "request_changes", 2, "red", qaHead)
 		env.gh.reviewBody = `{"id": 5, "state": "CHANGES_REQUESTED", "html_url": "u"}`
 		w, _ := env.do(t, http.MethodPost, quickActionBody(map[string]any{"action": "request_changes", "body": "fix"}), sessionToken(), nil)
 		assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -601,7 +650,8 @@ func TestPRResponse_CarriesGreptileStatus(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Equal(t, "absent", resp.GreptileStatus)
 
-	require.NoError(t, database.SetPRGreptileStatus("acme", "example", 9, qaHead, "green"))
+	_, err := database.SetPRGreptileStatus("acme", "example", 9, qaHead, "green", 1)
+	require.NoError(t, err)
 	resp = server.getPRResponseForUser(user.ID, "acme", "example", 9)
 	assert.Equal(t, "green", resp.GreptileStatus)
 
