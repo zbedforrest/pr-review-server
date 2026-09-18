@@ -791,8 +791,8 @@ var reviewStageAttemptMutableColumns = []string{
 	"error_code", "error_summary", "updated_at",
 }
 
-// ReviewProfileStats reads every run accepted since the given time that
-// reached a terminal state and folds it into per-profile statistics. Cost is
+// ReviewProfileStats reads every run that reached a terminal state since the
+// given time and folds it into per-profile statistics. Cost is
 // the sum of the run's stage attempts; a timeout is any attempt stopped by the
 // wall clock or a run that timed out as a whole.
 func (g *GormDB) ReviewProfileStats(since time.Time) (map[string]ReviewProfileStats, error) {
@@ -810,7 +810,7 @@ func (g *GormDB) ReviewProfileStats(since time.Time) (map[string]ReviewProfileSt
 			COALESCE(SUM(CASE WHEN a.stop_reason = 'wall_clock_timeout' THEN 1 ELSE 0 END), 0) AS timeouts
 		FROM review_runs r
 		LEFT JOIN review_stage_attempts a ON a.run_id = r.run_id
-		WHERE r.accepted_at >= ? AND r.status IN (?, ?, ?)
+		WHERE COALESCE(r.completed_at, r.accepted_at) >= ? AND r.status IN (?, ?, ?)
 		GROUP BY r.run_id, r.profile, r.status, r.duration_ms`,
 		since.UTC(), ReviewRunStatusCompleted, ReviewRunStatusFailed, ReviewRunStatusTimedOut).Scan(&rows).Error
 	if err != nil {

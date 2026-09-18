@@ -832,6 +832,7 @@ func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext 
 
 const (
 	diffInlineLimit = 60000
+	statInlineLimit = 20000
 	diffSourceGit   = "git"
 	diffSourceAPI   = "api"
 )
@@ -912,11 +913,19 @@ func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string) lit
 	}
 }
 
-// capDiff returns stat, the first diffInlineLimit characters of full cut at a
-// line boundary, and a truncation note carrying the caller's recovery hint.
+// capDiff returns stat (itself capped at statInlineLimit), the first
+// diffInlineLimit characters of full cut at a line boundary, and a truncation
+// note carrying the caller's recovery hint.
 func capDiff(full, stat, hint string) string {
 	if len(full) <= diffInlineLimit {
 		return full
+	}
+	if len(stat) > statInlineLimit {
+		cut := strings.LastIndex(stat[:statInlineLimit], "\n")
+		if cut < 0 {
+			cut = statInlineLimit
+		}
+		stat = stat[:cut] + fmt.Sprintf("\n[path list truncated after %d characters]\n", statInlineLimit)
 	}
 	head := full[:diffInlineLimit]
 	if cut := strings.LastIndex(head, "\n"); cut >= 0 {
@@ -934,10 +943,13 @@ func diffHeaderPaths(diff string) string {
 		if !strings.HasPrefix(line, "diff --git ") {
 			continue
 		}
-		fields := strings.Fields(line)
-		path := fields[len(fields)-1]
-		path = strings.TrimPrefix(path, "b/")
-		b.WriteString("- " + path + "\n")
+		// Paths may contain spaces; the post-image path is everything after
+		// the last " b/" separator.
+		idx := strings.LastIndex(line, " b/")
+		if idx < 0 {
+			continue
+		}
+		b.WriteString("- " + line[idx+3:] + "\n")
 	}
 	return b.String()
 }

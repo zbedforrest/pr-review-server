@@ -1855,7 +1855,11 @@ func (m *MockDatabase) ReviewProfileStats(since time.Time) (map[string]db.Review
 	defer m.mu.RUnlock()
 	var samples []db.ReviewProfileRunSample
 	for _, run := range m.ReviewRuns {
-		if run.AcceptedAt.Before(since) || (run.Status != db.ReviewRunStatusCompleted && run.Status != db.ReviewRunStatusFailed && run.Status != db.ReviewRunStatusTimedOut) {
+		finished := run.AcceptedAt
+		if run.CompletedAt != nil {
+			finished = *run.CompletedAt
+		}
+		if finished.Before(since) || (run.Status != db.ReviewRunStatusCompleted && run.Status != db.ReviewRunStatusFailed && run.Status != db.ReviewRunStatusTimedOut) {
 			continue
 		}
 		sample := db.ReviewProfileRunSample{RunID: run.RunID, Profile: run.Profile, Status: run.Status, DurationMS: run.DurationMS, TimedOut: run.Status == db.ReviewRunStatusTimedOut}

@@ -158,6 +158,17 @@ func TestProfileLabelAndHeader(t *testing.T) {
 	assert.Empty(t, profileLabel(runconfig.ProfileDescription{}))
 }
 
+func TestApplyAgentUsageFillsTheGenerationBlockForLiteRuns(t *testing.T) {
+	result := &service.ReviewResult{}
+	verified := &service.AgentReview{InputTokens: 1300, OutputTokens: 300, RequestedModel: "claude-fable-5-1", ServedModel: "claude-fable-5-1", ServingModelVerified: true}
+	assert.Equal(t, "claude-fable-5-1", applyAgentUsage(result, verified))
+	assert.Equal(t, int32(1300), result.PromptTokenCount)
+	assert.Equal(t, int32(300), result.CandidatesTokenCount)
+	assert.Equal(t, int32(1600), result.TotalTokenCount)
+	unverified := &service.AgentReview{RequestedModel: "openai/gpt-5.6-sol", ServedModel: "openai/gpt-5.6-sol"}
+	assert.Equal(t, "openai/gpt-5.6-sol", applyAgentUsage(&service.ReviewResult{}, unverified))
+}
+
 func TestParseAutoReviewProfilePolicy(t *testing.T) {
 	policy, err := ParseAutoReviewProfilePolicy(`{"synchronize":"lite","poll_fallback":"Lite_Plus","repos":{"Acme/Example":{"synchronize":"full"}}}`)
 	require.NoError(t, err)

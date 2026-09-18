@@ -86,9 +86,15 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 	response["review_profiles"] = runconfig.Profiles()
 }
 
-// defaultReviewProfile mirrors the poller's REVIEW_DEFAULT_PROFILE handling
-// for the settings page, so its selects can say what "default" means.
+// defaultReviewProfile is what "default" resolves to for the settings page:
+// the poller's admitted default (the configured profile unless policy rejects
+// it), falling back to the raw setting when no poller is attached.
 func (s *Server) defaultReviewProfile() string {
+	if s.poller != nil {
+		if _, policy, err := s.poller.ReviewConfigDefaultsAndPolicy(); err == nil {
+			return runconfig.NormalizeProfile(policy.DefaultProfile)
+		}
+	}
 	if s.cfg == nil {
 		return runconfig.ProfileFull
 	}

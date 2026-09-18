@@ -101,6 +101,18 @@ func TestSettings_ReviewDefaultProfileReflectsDeploymentFlag(t *testing.T) {
 	assert.Equal(t, "", got["auto_review_lite_authors"])
 }
 
+func TestSettings_ReviewDefaultProfileUsesTheAdmittedDefault(t *testing.T) {
+	s, _, apiPoller, _ := newReviewAPIServer(t, githubPRResponse("0123456789abcdef0123456789abcdef01234567"))
+	s.cfg.ReviewDefaultProfile = "lite"
+	apiPoller.policy.DefaultProfile = "full"
+	w := httptest.NewRecorder()
+	s.handleSettings(w, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, "full", got["review_default_profile"], "settings and capabilities must agree on what default means")
+}
+
 func TestCreateReviewRunAcceptsProfileOverride(t *testing.T) {
 	headSHA := "0123456789abcdef0123456789abcdef01234567"
 	s, database, apiPoller, userID := newReviewAPIServer(t, githubPRResponse(headSHA))

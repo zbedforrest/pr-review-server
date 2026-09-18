@@ -172,9 +172,22 @@ func TestRenderedDiff_OverCapAPIFallbackListsPathsAndReadHint(t *testing.T) {
 }
 
 func TestDiffHeaderPaths(t *testing.T) {
-	got := diffHeaderPaths("diff --git a/x.go b/x.go\n+1\ndiff --git a/dir/old.go b/dir/new.go\n+2\n")
-	if got != "- x.go\n- dir/new.go\n" {
+	got := diffHeaderPaths("diff --git a/x.go b/x.go\n+1\ndiff --git a/dir/old.go b/dir/new.go\n+2\ndiff --git a/docs/my file.md b/docs/my file.md\n+3\n")
+	if got != "- x.go\n- dir/new.go\n- docs/my file.md\n" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestCapDiff_CapsThePrependedStat(t *testing.T) {
+	full := strings.Repeat("+x\n", 30000)
+	stat := strings.Repeat(" some/very/long/path/name.go | 1 +\n", 1000)
+	out := capDiff(full, stat, "hint")
+	statEnd := strings.Index(out, "[path list truncated after 20000 characters]")
+	if statEnd < 0 || statEnd > statInlineLimit+100 {
+		t.Fatalf("stat must be capped near %d chars: end=%d", statInlineLimit, statEnd)
+	}
+	if !strings.HasSuffix(out, "hint]\n") {
+		t.Fatalf("hint must close the diff: %q", out[len(out)-40:])
 	}
 }
 

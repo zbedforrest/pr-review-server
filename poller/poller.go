@@ -691,7 +691,11 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 
 	result.Checks = agentOut.Checks
 	applyProfileHeader(result, execution)
-	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
+	modelName := llm.ProModelName()
+	if !execution.Job.Config.Effective.FirstPass.Enabled {
+		modelName = applyAgentUsage(result, agentOut)
+	}
+	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName)
 	if htmlContent == nil {
 		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
 	}
@@ -715,6 +719,19 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		Carried:       carriedInfo,
 		LinkedTickets: ticketCtx.keys(),
 	}, nil
+}
+
+// applyAgentUsage fills the report's generation block from the agent stage
+// for runs with no first pass, and returns the model name to print: the
+// served model when verified, otherwise the requested one.
+func applyAgentUsage(result *service.ReviewResult, agentOut *service.AgentReview) string {
+	result.PromptTokenCount = int32(agentOut.InputTokens)
+	result.CandidatesTokenCount = int32(agentOut.OutputTokens)
+	result.TotalTokenCount = int32(agentOut.InputTokens + agentOut.OutputTokens)
+	if agentOut.ServingModelVerified && agentOut.ServedModel != "" {
+		return agentOut.ServedModel
+	}
+	return agentOut.RequestedModel
 }
 
 // applyProfileHeader stamps the report header's profile line from the run's
