@@ -55,6 +55,9 @@ type Auth struct {
 	// never stores the raw PAT.
 	bearerCacheMux sync.RWMutex
 	bearerCache    map[string]bearerCacheEntry
+
+	// tokenRefreshMu serializes session token refreshes; see refreshLocked.
+	tokenRefreshMu sync.Mutex
 }
 
 type bearerCacheEntry struct {
@@ -234,11 +237,22 @@ func (a *Auth) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		UserID:    user.ID,
 		ExpiresAt: time.Now().Add(SessionDuration),
 	}
+	// The user-to-server token lets quick actions post as the human. Sealing
+	// can only fail on a misconfigured secret; login still succeeds and the
+	// dashboard offers "sign in again" instead of the actions.
+	if enc, refreshEnc, expiresAt, err := a.sealOAuthToken(token); err != nil {
+		log.Printf("[AUTH] failed to seal user token for session: %v", err)
+	} else {
+		session.GitHubTokenEnc, session.GitHubRefreshTokenEnc, session.GitHubTokenExpiresAt = enc, refreshEnc, expiresAt
+	}
 
 	if err := a.db.CreateSession(session); err != nil {
 		log.Printf("[AUTH] Failed to create session: %v", err)
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
+	}
+	if session.GitHubTokenEnc != "" {
+		log.Printf("[AUTH] stored user token for session (expires=%s)", formatExpiry(session.GitHubTokenExpiresAt))
 	}
 
 	// Set session cookie
@@ -283,7 +297,7 @@ func (a *Auth) HandleLogout(w http.ResponseWriter, r *http.Request) {
 
 // fetchGitHubUser fetches the authenticated user from GitHub
 func (a *Auth) fetchGitHubUser(ctx context.Context, accessToken string) (*GitHubUser, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", a.apiBase()+"/user", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +329,7 @@ func (a *Auth) verifyOrgMembership(ctx context.Context, accessToken, username st
 		return nil
 	}
 
-	url := fmt.Sprintf("https://api.github.com/orgs/%s/members/%s", a.cfg.GitHubOrgName, username)
+	url := fmt.Sprintf("%s/orgs/%s/members/%s", a.apiBase(), a.cfg.GitHubOrgName, username)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
@@ -356,6 +370,8 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 		// cookie path if no Authorization header is set.
 		if user, ok := a.tryBearerAuth(r); ok {
 			ctx := context.WithValue(r.Context(), UserContextKey, user)
+			// The PAT lives only in this request, never in a row or a cache.
+			ctx = context.WithValue(ctx, GitHubTokenContextKey, staticTokenSource{token: extractBearerToken(r), source: "bearer"})
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -412,8 +428,8 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Add user to context
 		ctx := context.WithValue(r.Context(), UserContextKey, user)
+		ctx = context.WithValue(ctx, GitHubTokenContextKey, a.newSessionTokenSource(session))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -437,8 +453,8 @@ func (a *Auth) DevModeMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Add user to context
 		ctx := context.WithValue(r.Context(), UserContextKey, user)
+		ctx = context.WithValue(ctx, GitHubTokenContextKey, staticTokenSource{token: a.cfg.GitHubToken, source: "dev_pat"})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -614,15 +630,18 @@ func hashBearerToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func (a *Auth) apiBase() string {
+	if a.githubAPIBase == "" {
+		return "https://api.github.com"
+	}
+	return a.githubAPIBase
+}
+
 // fetchGitHubIdentity calls api.github.com/user with the given PAT and returns
 // the account's ID and login on success. Test code overrides githubAPIBase to
 // point at a fake.
 func (a *Auth) fetchGitHubIdentity(ctx context.Context, token string) (gitHubIdentity, error) {
-	base := a.githubAPIBase
-	if base == "" {
-		base = "https://api.github.com"
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/user", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.apiBase()+"/user", nil)
 	if err != nil {
 		return gitHubIdentity{}, err
 	}
