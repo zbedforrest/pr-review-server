@@ -184,13 +184,38 @@ func TestPoll_LeaseLostMidCycleStopsBeforeGitHubFetch(t *testing.T) {
 	p.poll(context.Background(), true)
 
 	if leaseCalls != 2 {
-		t.Errorf("lease calls = %d, want one at poll start and one before the fetch phase", leaseCalls)
+		t.Errorf("lease calls = %d, want one at poll start and one before the PR search", leaseCalls)
+	}
+	if calls := githubCallLog(mockGH); len(calls) != 0 {
+		t.Errorf("a stale leader made GitHub calls after losing the lease: %v", calls)
 	}
 	if n := len(mockGH.BatchGetCIStatusCalls); n != 0 {
 		t.Errorf("BatchGetCIStatus calls = %d, want 0 after losing the lease mid-cycle", n)
 	}
+}
+
+func TestPoll_LeaseLostAfterSearchStopsBeforeCIStatusFetch(t *testing.T) {
+	_, p, _ := mergeStatePollFixture(t, "CLEAN", "CLEAN")
+	mockGH := p.ghClient.(*MockGitHubClient)
+	mockDB := p.db.(*MockDatabase)
+	p.holderID = "inst-old"
+	p.isLeaderFlag.Store(true)
+	leaseCalls := 0
+	mockDB.TryAcquireOrRenewLeadershipFunc = func(string, int64, time.Duration) (bool, error) {
+		leaseCalls++
+		return leaseCalls <= 2, nil
+	}
+
+	p.poll(context.Background(), true)
+
+	if leaseCalls != 3 {
+		t.Errorf("lease calls = %d, want a third check before the CI status fetch", leaseCalls)
+	}
+	if n := len(mockGH.BatchGetCIStatusCalls); n != 0 {
+		t.Errorf("BatchGetCIStatus calls = %d, want 0 after losing the lease before the fetch phase", n)
+	}
 	if n := len(mockGH.BatchGetPRReviewDataCalls); n != 0 {
-		t.Errorf("BatchGetPRReviewData calls = %d, want 0 after losing the lease mid-cycle", n)
+		t.Errorf("BatchGetPRReviewData calls = %d, want 0 after losing the lease before the fetch phase", n)
 	}
 }
 
@@ -208,8 +233,8 @@ func TestPoll_LeaderKeepsLeaseAndFetches(t *testing.T) {
 	p.poll(context.Background(), true)
 	waitForDetachedReviews(t, p)
 
-	if leaseCalls != 2 {
-		t.Errorf("lease calls = %d, want 2", leaseCalls)
+	if leaseCalls != 3 {
+		t.Errorf("lease calls = %d, want 3", leaseCalls)
 	}
 	if n := len(mockGH.BatchGetCIStatusCalls); n != 1 {
 		t.Errorf("BatchGetCIStatus calls = %d, want 1 for a leader that kept the lease", n)

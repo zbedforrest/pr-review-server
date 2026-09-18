@@ -1276,13 +1276,16 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 		query := buildCIStatusQuery(batch)
 		var graphqlResp GraphQLCIStatusResponse
 		partialErrs, err := c.executeGraphQLPartial(ctx, query, &graphqlResp)
-		if isTransientCIBatchError(err) && !rateLimited.Load() && pace(ciBatchRetryDelay) {
+		if isTransientCIBatchError(err) && !rateLimited.Load() {
 			log.Printf("[GRAPHQL] Warning: CI status batch failed, retrying once: %v", err)
-			stats.mu.Lock()
-			stats.retried++
-			stats.mu.Unlock()
-			graphqlResp = GraphQLCIStatusResponse{}
-			partialErrs, err = c.executeGraphQLPartial(ctx, query, &graphqlResp)
+			// A sibling batch may trip the limit during the pause.
+			if pace(ciBatchRetryDelay) && !rateLimited.Load() {
+				stats.mu.Lock()
+				stats.retried++
+				stats.mu.Unlock()
+				graphqlResp = GraphQLCIStatusResponse{}
+				partialErrs, err = c.executeGraphQLPartial(ctx, query, &graphqlResp)
+			}
 		}
 		partial.add(partialErrs, batch)
 		stats.record(err)

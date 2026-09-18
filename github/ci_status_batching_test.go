@@ -582,3 +582,86 @@ func TestBatchGetCIStatus_RetryIsOnlyOnce(t *testing.T) {
 		t.Errorf("a 5xx must not trip the rate-limit stop:\n%s", logs)
 	}
 }
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestBatchGetCIStatus_NoRetryWhenSiblingTripsLimitDuringPause(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	// The 403 batch answers only once the 504 batch is inside its retry pause,
+	// so the pre-pause flag check has already passed.
+	pauseEntered := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		if strings.Contains(string(body), "pullRequest(number: 51)") {
+			<-pauseEntered
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusGatewayTimeout)
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	logs := &syncBuffer{}
+	log.SetOutput(logs)
+	defer log.SetOutput(os.Stderr)
+
+	retryPauses := 0
+	client.ciBatchSleep = func(d time.Duration) {
+		if d != ciBatchRetryDelay {
+			return
+		}
+		retryPauses++
+		close(pauseEntered)
+		deadline := time.Now().Add(5 * time.Second)
+		for !strings.Contains(logs.String(), "status 403") {
+			if time.Now().After(deadline) {
+				t.Error("the 403 batch never landed during the retry pause")
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	results, err := client.BatchGetCIStatus(context.Background(), ciPRs(100, false))
+	if err != nil {
+		t.Fatalf("BatchGetCIStatus: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("results = %d, want none", len(results))
+	}
+	if retryPauses != 1 {
+		t.Fatalf("retry pauses = %d, want the 504 batch to reach its pause", retryPauses)
+	}
+	mu.Lock()
+	sent := requests
+	mu.Unlock()
+	if sent != 2 {
+		t.Errorf("requests = %d, want no retry once a sibling batch tripped the limit", sent)
+	}
+	for _, want := range []string{"batches=2 ok=0 failed=2 skipped=0 retried=0 fetched=0/100", "failures(403=1 504=1)", "rate-limited: remaining batches skipped this cycle"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("summary missing %q:\n%s", want, logs.String())
+		}
+	}
+}
