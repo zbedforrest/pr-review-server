@@ -1,6 +1,7 @@
 import { Component, ErrorInfo, ReactNode, useCallback, useState, useEffect } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
+import { ToastHost } from '@/components/common/Toast';
 import { Header, StatusBar } from '@/components/layout';
 import { FilterBar } from '@/components/filters';
 import { NeedsReReviewSection, ReviewPRsSection, StatusPRPanel } from '@/components/prs';
@@ -184,6 +185,7 @@ function App() {
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <AppRouter />
+        <ToastHost />
         <ReactQueryDevtools initialIsOpen={false} />
       </QueryClientProvider>
     </ErrorBoundary>

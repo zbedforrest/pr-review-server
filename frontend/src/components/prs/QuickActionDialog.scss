@@ -1,0 +1,168 @@
+@use '../../styles/abstracts/variables' as *;
+@use '../../styles/abstracts/mixins' as *;
+
+.quick-action-dialog__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: $color-overlay;
+}
+
+.quick-action-dialog {
+  width: min(520px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: $spacing-xl;
+  background: $color-bg-secondary;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+  box-shadow: $shadow-lg;
+  color: $color-text-primary;
+  font-size: $font-size-base;
+
+  &__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: $spacing-md;
+  }
+
+  &__title {
+    margin: 0;
+    font-size: $font-size-lg;
+    font-weight: 600;
+  }
+
+  &__close {
+    @include button-base;
+    padding: 2px $spacing-sm;
+    line-height: 1;
+  }
+
+  &__subtitle {
+    margin: $spacing-xs 0 $spacing-lg;
+    color: $color-text-secondary;
+    font-size: $font-size-md;
+    overflow-wrap: anywhere;
+  }
+
+  &__sha {
+    font-family: $font-mono;
+  }
+
+  &__label {
+    display: block;
+    margin-bottom: $spacing-xs;
+    color: $color-text-secondary;
+    font-size: $font-size-md;
+  }
+
+  &__textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: $spacing-sm;
+    background: $color-bg-primary;
+    border: 1px solid $color-border;
+    border-radius: $radius-sm;
+    color: $color-text-primary;
+    font: inherit;
+    resize: vertical;
+
+    &:focus {
+      outline: none;
+      border-color: $color-link;
+    }
+
+    &:disabled {
+      opacity: 0.6;
+    }
+  }
+
+  &__counter {
+    margin-top: 2px;
+    text-align: right;
+    color: $color-text-muted;
+    font-size: $font-size-xs;
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__hint,
+  &__notice {
+    margin: $spacing-md 0 0;
+    font-size: $font-size-md;
+  }
+
+  &__hint {
+    color: $color-text-muted;
+  }
+
+  &__notice {
+    padding: $spacing-sm $spacing-md;
+    background: $color-bg-warning-dim;
+    border: 1px solid $color-border-warning-dim;
+    border-radius: $radius-sm;
+    color: $color-warning-text;
+  }
+
+  &__error {
+    margin: $spacing-md 0 0;
+  }
+
+  &__error-link {
+    color: inherit;
+    text-decoration: underline;
+    white-space: nowrap;
+  }
+
+  &__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: $spacing-sm;
+    margin-top: $spacing-xl;
+  }
+
+  &__button {
+    @include button-base;
+    padding: $spacing-sm $spacing-lg;
+    font-size: $font-size-md;
+    color: $color-text-primary;
+
+    &--primary {
+      border-color: transparent;
+      color: white;
+
+      &:hover:not(:disabled) {
+        color: white;
+        border-color: transparent;
+        filter: brightness(1.1);
+      }
+    }
+
+    &--success {
+      background: $color-success-emphasis;
+
+      &:hover:not(:disabled) {
+        background: $color-success-emphasis;
+      }
+    }
+
+    &--danger {
+      background: $color-error;
+
+      &:hover:not(:disabled) {
+        background: $color-error;
+      }
+    }
+
+    &--neutral {
+      background: $color-link;
+
+      &:hover:not(:disabled) {
+        background: $color-link-hover;
+      }
+    }
+  }
+}

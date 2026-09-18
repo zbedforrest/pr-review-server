@@ -62,6 +62,10 @@ export interface PR {
   // Merge confidence 0..5 recorded when the latest review completed. Null for
   // rows with no scored review; optional for the older-payload reason.
   merge_confidence?: number | null;
+  // Greptile's verdict on the current head: green when it posted with no
+  // P0/P1 findings, red otherwise, absent when it has not posted. Optional
+  // for the older-payload reason.
+  greptile_status?: 'green' | 'red' | 'absent';
 }
 
 export interface ReviewRun {

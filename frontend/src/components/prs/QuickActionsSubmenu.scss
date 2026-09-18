@@ -1,0 +1,103 @@
+@use '../../styles/abstracts/variables' as *;
+
+// Keep $leaf-width in sync with QUICK_ACTIONS_LEAF_WIDTH in QuickActionsSubmenu.tsx.
+$leaf-width: 240px;
+
+.quick-actions {
+  position: fixed;
+  z-index: 1001;
+  width: $leaf-width;
+  background: $color-bg-secondary;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+  box-shadow: $shadow-lg;
+  padding: $spacing-xs;
+  font-size: $font-size-sm;
+  color: $color-text-primary;
+  animation: quick-actions-fade $transition-fast;
+
+  &--inline {
+    position: static;
+    width: auto;
+    box-shadow: none;
+    border: none;
+    border-top: 1px solid $color-border;
+    border-radius: 0;
+    margin: $spacing-xs 0 0;
+    padding: $spacing-xs 0 0 $spacing-lg;
+    animation: none;
+  }
+
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: $spacing-sm;
+    width: 100%;
+    padding: $spacing-sm;
+    border: none;
+    border-radius: $radius-sm;
+    background: transparent;
+    color: $color-text-primary;
+    font: inherit;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color $transition-fast;
+
+    &:hover:not([aria-disabled='true']),
+    &:focus-visible {
+      background: $color-bg-hover;
+      color: $color-link-hover;
+    }
+
+    &[aria-disabled='true'] {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    &--danger {
+      color: $color-error-text;
+
+      &:hover:not([aria-disabled='true']) {
+        background: $color-bg-error-dim;
+        color: $color-error-text;
+      }
+    }
+
+    &--signin {
+      color: $color-link;
+    }
+  }
+
+  &__icon {
+    display: inline-block;
+    width: 1.2em;
+    text-align: center;
+  }
+
+  &__divider {
+    height: 1px;
+    margin: $spacing-xs 0;
+    background: $color-border;
+  }
+
+  &__footer {
+    padding: $spacing-xs $spacing-sm 2px;
+    color: $color-text-muted;
+    font-size: $font-size-xs;
+  }
+
+  &__sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
+
+@keyframes quick-actions-fade {
+  from { opacity: 0; transform: translateX(-2px); }
+  to { opacity: 1; transform: translateX(0); }
+}

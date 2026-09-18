@@ -1,6 +1,11 @@
-import { memo, useCallback, type MouseEvent } from 'react';
+import { memo, useCallback, useMemo, type MouseEvent } from 'react';
 import type { PR } from '@/types/pr';
+import { APIError } from '@/api/client';
+import { newRequestId, type QuickAction, type QuickActionResponse } from '@/api/prActions';
 import { CommitSha } from '@/components/common';
+import { toast } from '@/components/common/toastStore';
+import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { useSubmitQuickAction } from '@/hooks/usePRActions';
 import { useDeletePR, useSetPRHidden, useTriggerReview } from '@/hooks/usePRs';
 import { useSettings } from '@/hooks/useSettings';
 import { useTelemetry } from '@/hooks/useTelemetry';
@@ -11,10 +16,16 @@ import { MergeReadyIndicator } from './MergeReadyIndicator';
 import { NotesCell } from './NotesCell';
 import { publishAllowedForAuthor } from './publishPolicy';
 import { ReviewLinkMenu } from './ReviewLinkMenu';
-import { RowActionsMenu } from './RowActionsMenu';
+import { RowActionsMenu, type QuickActionsWiring } from './RowActionsMenu';
 import { buildViaTeamParts } from '@/utils/teamFilters';
 
 export type PRRowVariant = 'default' | 'attention';
+
+const QUICK_ACTION_TOAST: Record<QuickAction, { verb: string; show: typeof toast.success }> = {
+  approve: { verb: 'Approved', show: toast.success },
+  request_changes: { verb: 'Requested changes on', show: toast.error },
+  comment: { verb: 'Commented on', show: toast.info },
+};
 
 interface PRTableRowProps {
   pr: PR;
@@ -30,6 +41,8 @@ export const PRTableRow = memo(function PRTableRow({
   const deleteMutation = useDeletePR();
   const setHiddenMutation = useSetPRHidden();
   const triggerReviewMutation = useTriggerReview();
+  const quickActionMutation = useSubmitQuickAction();
+  const { data: currentUser } = useCurrentUser();
   const { data: settings } = useSettings();
   const { track } = useTelemetry();
   // Until settings load we cannot know the pilot list; assume allowed so the
@@ -72,6 +85,29 @@ export const PRTableRow = memo(function PRTableRow({
     });
   }, [pr.owner, pr.repo, pr.number, triggerReviewMutation, track]);
 
+  const submitQuickAction = useCallback(async (action: QuickAction, body: string, expectedHeadSha: string): Promise<QuickActionResponse> => {
+    const opts = { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number };
+    try {
+      const result = await quickActionMutation.mutateAsync({
+        owner: pr.owner,
+        repo: pr.repo,
+        number: pr.number,
+        action,
+        body,
+        expected_head_sha: expectedHeadSha,
+        request_id: newRequestId(),
+      });
+      track(`quick_action_${action}`, { ...opts, label: 'ok' });
+      const { verb, show } = QUICK_ACTION_TOAST[action];
+      show({ title: `${verb} ${pr.owner}/${pr.repo} #${pr.number} as @${result.actor}`, href: result.html_url });
+      return result;
+    } catch (err) {
+      const code = err instanceof APIError && err.code ? err.code : 'network';
+      track(`quick_action_${action}`, { ...opts, label: code });
+      throw err;
+    }
+  }, [pr.owner, pr.repo, pr.number, quickActionMutation, track]);
+
   const openOnGitHub = useCallback((url: string, label?: string) => (e: MouseEvent<HTMLAnchorElement>) => {
     track('open_pr_github', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number, label });
     // Opt-in same-tab: Alt/Option+click (and only Alt) navigates the current
@@ -83,6 +119,23 @@ export const PRTableRow = memo(function PRTableRow({
       window.location.assign(url);
     }
   }, [pr.owner, pr.repo, pr.number, track]);
+
+  const trackCopyLink = useCallback(() => {
+    track('quick_action_copy_link', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
+  }, [pr.owner, pr.repo, pr.number, track]);
+
+  const quickActions = useMemo<QuickActionsWiring | undefined>(() => {
+    if (!currentUser?.quick_actions_enabled) return undefined;
+    return {
+      user: currentUser,
+      onSubmit: submitQuickAction,
+      onOpenGitHub: openOnGitHub(prUrl, 'quick_actions'),
+      onCopyLink: trackCopyLink,
+      onDialogClose: quickActionMutation.reset,
+      pending: quickActionMutation.isPending,
+      error: quickActionMutation.error ?? null,
+    };
+  }, [currentUser, submitQuickAction, openOnGitHub, prUrl, trackCopyLink, quickActionMutation.reset, quickActionMutation.isPending, quickActionMutation.error]);
 
   return (
     <tr className={variant === 'attention' ? 'pr-table__row--attention' : undefined}>
@@ -204,6 +257,7 @@ export const PRTableRow = memo(function PRTableRow({
           hiddenPending={setHiddenMutation.isPending}
           deletePending={deleteMutation.isPending}
           publishAllowed={publishAllowed}
+          quickActions={quickActions}
         />
       </td>
     </tr>

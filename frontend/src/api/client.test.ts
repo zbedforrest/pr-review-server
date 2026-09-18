@@ -66,6 +66,37 @@ describe('api client', () => {
     }
   });
 
+  it('parses a JSON error body into message, code and details', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('{"error":"PR head moved","code":"head_moved","details":{"head_sha":"def5678"}}', { status: 409, statusText: 'Conflict' })
+    );
+    const err = (await apiPost('/api/prs/quick-action', {}).catch((e: unknown) => e)) as APIError;
+    expect(err).toBeInstanceOf(APIError);
+    expect(err.message).toBe('PR head moved');
+    expect(err.code).toBe('head_moved');
+    expect(err.details).toEqual({ head_sha: 'def5678' });
+    expect(err.status).toBe(409);
+  });
+
+  it('keeps only string-valued details and falls back when the JSON error text is too long', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'x'.repeat(600), code: 'github_error', details: { head_sha: 123, note: 'n', nested: { a: 1 } } }), {
+        status: 502, statusText: 'Bad Gateway',
+      })
+    );
+    const err = (await apiPost('/api/prs/quick-action', {}).catch((e: unknown) => e)) as APIError;
+    expect(err.message).toBe('API error: Bad Gateway');
+    expect(err.code).toBe('github_error');
+    expect(err.details).toEqual({ note: 'n' });
+  });
+
+  it('keeps the raw text when a body starting with a brace is not a JSON error object', async () => {
+    fetchMock.mockResolvedValue(new Response('{not json', { status: 400, statusText: 'Bad Request' }));
+    const err = (await apiPost('/api/settings', {}).catch((e: unknown) => e)) as APIError;
+    expect(err.message).toBe('{not json');
+    expect(err.code).toBeUndefined();
+  });
+
   it('falls back to the status text when the error body is empty', async () => {
     fetchMock.mockResolvedValue(new Response('', { status: 500, statusText: 'Internal Server Error' }));
     const err = await apiGet('/api/settings').catch((e: unknown) => e);

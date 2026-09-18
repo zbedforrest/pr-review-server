@@ -11,6 +11,12 @@ vi.mock('@/hooks/usePRs', () => ({
   useSetPRHidden: () => ({ mutate: vi.fn(), isPending: false }),
   useTriggerReview: () => ({ mutate: vi.fn(), isPending: false }),
 }));
+vi.mock('@/hooks/useCurrentUser', () => ({
+  useCurrentUser: () => ({ data: undefined }),
+}));
+vi.mock('@/hooks/usePRActions', () => ({
+  useSubmitQuickAction: () => ({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() }),
+}));
 vi.mock('@/hooks/useSettings', () => ({
   useSettings: () => ({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } }),
 }));
