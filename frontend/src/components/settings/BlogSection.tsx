@@ -43,6 +43,8 @@ export function BlogSection() {
   const [progress, setProgress] = useState<UploadProgress[]>([]);
   const [uploading, setUploading] = useState(false);
   const [formError, setFormError] = useState<string>();
+  // The slug this form created, so a retry after a failed upload is allowed.
+  const [ownedSlug, setOwnedSlug] = useState<string>();
   const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -55,7 +57,7 @@ export function BlogSection() {
   const paths = files.map(blogRelativePath);
   const hasIndex = paths.includes('index.html');
   const slugValid = BLOG_SLUG_PATTERN.test(slug);
-  const slugTaken = posts.data?.some((post) => post.slug === slug) ?? false;
+  const slugTaken = slug !== ownedSlug && (posts.data?.some((post) => post.slug === slug) ?? false);
   const canCreate = slugValid && !slugTaken && title.trim() !== '' && files.length > 0 && !uploading;
   const willPublish = publishAfter && hasIndex;
 
@@ -68,6 +70,7 @@ export function BlogSection() {
     setProgress(paths.map((path) => ({ path, status: 'pending' })));
     try {
       await saveBlogPost(slug, { title: title.trim(), dek: dek.trim(), published: false });
+      setOwnedSlug(slug);
       let failed = 0;
       for (const [i, file] of files.entries()) {
         setStatus(i, { status: 'uploading' });
@@ -87,9 +90,12 @@ export function BlogSection() {
         setTitle('');
         setDek('');
         setFiles([]);
+        setOwnedSlug(undefined);
         if (fileInput.current) fileInput.current.value = '';
       } else {
-        setFormError(`${failed} of ${files.length} files failed; fix them and upload again with the same slug`);
+        setFormError(
+          `${failed} of ${files.length} files failed; the post is saved as a draft, fix the files and press Create post again`
+        );
       }
     } catch (err) {
       setFormError(errorText(err));

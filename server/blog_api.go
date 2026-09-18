@@ -452,7 +452,9 @@ func (s *Server) putBlogFile(w http.ResponseWriter, r *http.Request, store blogS
 	}
 	if err := store.UpsertBlogAsset(&asset); err != nil {
 		log.Printf("[BLOG] record %s: %v", key, err)
-		s.removeBlogObject(r, key)
+		if key != previousObject {
+			s.removeBlogObject(r, key)
+		}
 		http.Error(w, "Failed to record file", http.StatusInternalServerError)
 		return
 	}

@@ -236,4 +236,43 @@ describe('BlogSection', () => {
     expect(metaPuts.length).toBe(1);
     expect((screen.getByLabelText('Slug') as HTMLInputElement).value).toBe('broken');
   });
+
+  it('lets the same form retry the draft it created after a failure', async () => {
+    let posts: BlogPost[] = [];
+    let scriptRejected = false;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/blog/posts') return Promise.resolve(jsonResponse({ posts }));
+      if (init?.method === 'PUT' && url.endsWith('/files/run.css') && !scriptRejected) {
+        scriptRejected = true;
+        return Promise.resolve(new Response('storage unavailable', { status: 500 }));
+      }
+      if (init?.method === 'PUT' && url.includes('/files/')) {
+        return Promise.resolve(jsonResponse({ file: { path: 'x', content_type: 'x', size_bytes: 1, uploaded_at: '' } }));
+      }
+      if (init?.method === 'PUT') {
+        posts = [{ ...livePost, slug: 'retry', title: 'Retry', published: false, has_index: true }];
+        return Promise.resolve(jsonResponse({ post: posts[0] }, 201));
+      }
+      return Promise.resolve(new Response('not found', { status: 404 }));
+    });
+    renderSection();
+    await screen.findByText('No posts yet.');
+
+    fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'retry' } });
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Retry' } });
+    const files = [new File(['<p>hi</p>'], 'index.html', { type: 'text/html' }), new File(['a{}'], 'run.css', { type: 'text/css' })];
+    fireEvent.change(screen.getByLabelText('Files'), { target: { files } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create post' }));
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('1 of 2 files failed'));
+    await screen.findByRole('link', { name: 'Retry' });
+    const createButton = screen.getByRole('button', { name: 'Create post' }) as HTMLButtonElement;
+    expect(createButton.disabled).toBe(false);
+    expect(screen.queryByText(/already exists/)).toBeNull();
+
+    fireEvent.click(createButton);
+    await waitFor(() => expect((screen.getByLabelText('Slug') as HTMLInputElement).value).toBe(''));
+    expect(calls().filter((c) => c.method === 'PUT' && c.url.endsWith('/files/run.css')).length).toBe(2);
+    expect(screen.getByText('run.css').nextElementSibling?.textContent).toBe('done');
+  });
 });

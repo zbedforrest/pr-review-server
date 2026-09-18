@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -356,6 +357,51 @@ func TestBlogAPI_ReuploadReplacesContent(t *testing.T) {
 	for _, obj := range objects {
 		assert.NotEqual(t, "index.html."+strings.Trim(blogETag([]byte(testPostHTML)), `"`)[:16], obj)
 	}
+}
+
+// failingAssetStore is the GormDB with UpsertBlogAsset broken, standing in for
+// a database hiccup between the object write and the row write.
+type failingAssetStore struct {
+	db.Database
+	inner blogStore
+}
+
+func (f failingAssetStore) SaveBlogPost(p *db.BlogPost) error { return f.inner.SaveBlogPost(p) }
+func (f failingAssetStore) GetBlogPost(slug string) (*db.BlogPost, error) {
+	return f.inner.GetBlogPost(slug)
+}
+func (f failingAssetStore) ListBlogPosts(only bool) ([]db.BlogPost, error) {
+	return f.inner.ListBlogPosts(only)
+}
+func (f failingAssetStore) DeleteBlogPost(slug string) error { return f.inner.DeleteBlogPost(slug) }
+func (f failingAssetStore) UpsertBlogAsset(*db.BlogAsset) error {
+	return errors.New("database unavailable")
+}
+func (f failingAssetStore) GetBlogAsset(s, p string) (*db.BlogAsset, error) {
+	return f.inner.GetBlogAsset(s, p)
+}
+func (f failingAssetStore) ListBlogAssets(slug string) ([]db.BlogAsset, error) {
+	return f.inner.ListBlogAssets(slug)
+}
+func (f failingAssetStore) DeleteBlogAsset(s, p string) error { return f.inner.DeleteBlogAsset(s, p) }
+
+func TestBlogAPI_FailedRowWriteKeepsTheLiveObject(t *testing.T) {
+	server := newBlogTestServer(t)
+	createPublishedPost(t, server, "hello")
+	gorm := server.db.(*db.GormDB)
+	server.db = failingAssetStore{Database: gorm, inner: gorm}
+
+	w := putBlogFile(t, server, blogAdmin, "hello", "img/a.png", "image/png", testPNG)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	w = blogRequest(t, server, blogMember, http.MethodGet, "/blog/hello/img/a.png", nil, nil)
+	assert.Equal(t, http.StatusOK, w.Code, "re-uploading identical bytes must not delete the live object on failure")
+	assert.Equal(t, testPNG, w.Body.Bytes())
+
+	w = putBlogFile(t, server, blogAdmin, "hello", "img/a.png", "image/png", []byte("different bytes"))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Len(t, storedObjects(t, server, "hello"), 2, "the orphaned new object is removed")
+	w = blogRequest(t, server, blogMember, http.MethodGet, "/blog/hello/img/a.png", nil, nil)
+	assert.Equal(t, testPNG, w.Body.Bytes(), "the old bytes stay live")
 }
 
 func TestBlogAPI_DeleteFile(t *testing.T) {
