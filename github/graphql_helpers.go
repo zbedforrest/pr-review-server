@@ -9,19 +9,66 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const graphQLEndpoint = "https://api.github.com/graphql"
 
 // GraphQLHTTPError is a non-200 response from the GraphQL endpoint. 403 is
-// GitHub's secondary rate limit; 502 and 504 are query timeouts.
+// GitHub's secondary rate limit; 502 and 504 are query timeouts. ResetAt is
+// when GitHub says the limit lifts (Retry-After or X-RateLimit-Reset), zero
+// when the response carried neither.
 type GraphQLHTTPError struct {
-	Status int
+	Status  int
+	ResetAt time.Time
 }
 
 func (e *GraphQLHTTPError) Error() string {
-	return fmt.Sprintf("GraphQL query failed with status %d", e.Status)
+	if e.ResetAt.IsZero() {
+		return fmt.Sprintf("GraphQL query failed with status %d", e.Status)
+	}
+	return fmt.Sprintf("GraphQL query failed with status %d (limit resets at %s)", e.Status, e.ResetAt.UTC().Format(time.RFC3339))
+}
+
+// GraphQLRateLimitError is ErrGraphQLRateLimited plus the reset time GitHub
+// sent with the throttled 200 response. errors.Is(err, ErrGraphQLRateLimited)
+// still holds for it.
+type GraphQLRateLimitError struct {
+	ResetAt time.Time
+}
+
+func (e *GraphQLRateLimitError) Error() string {
+	return fmt.Sprintf("%v (limit resets at %s)", ErrGraphQLRateLimited, e.ResetAt.UTC().Format(time.RFC3339))
+}
+
+func (e *GraphQLRateLimitError) Is(target error) bool { return target == ErrGraphQLRateLimited }
+
+// rateLimitResetAt reads the reset time from a GitHub response: Retry-After
+// (seconds) wins over X-RateLimit-Reset (unix seconds).
+func rateLimitResetAt(h http.Header, now time.Time) time.Time {
+	if secs, err := strconv.Atoi(strings.TrimSpace(h.Get("Retry-After"))); err == nil && secs > 0 {
+		return now.Add(time.Duration(secs) * time.Second)
+	}
+	if unix, err := strconv.ParseInt(strings.TrimSpace(h.Get("X-RateLimit-Reset")), 10, 64); err == nil && unix > 0 {
+		return time.Unix(unix, 0)
+	}
+	return time.Time{}
+}
+
+// RateLimitResetAt returns the reset time carried by a rate-limit error, or
+// zero for any other error.
+func RateLimitResetAt(err error) time.Time {
+	var httpErr *GraphQLHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.ResetAt
+	}
+	var rlErr *GraphQLRateLimitError
+	if errors.As(err, &rlErr) {
+		return rlErr.ResetAt
+	}
+	return time.Time{}
 }
 
 // ErrGraphQLRateLimited is returned when a GraphQL response carries a
@@ -134,10 +181,16 @@ func (c *Client) executeGraphQLPartial(ctx context.Context, query string, result
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &GraphQLHTTPError{Status: resp.StatusCode}
+		return nil, &GraphQLHTTPError{Status: resp.StatusCode, ResetAt: rateLimitResetAt(resp.Header, time.Now())}
 	}
 
-	return decodeGraphQLResponsePartial(resp.Body, result)
+	partial, err := decodeGraphQLResponsePartial(resp.Body, result)
+	if errors.Is(err, ErrGraphQLRateLimited) {
+		if resetAt := rateLimitResetAt(resp.Header, time.Now()); !resetAt.IsZero() {
+			err = &GraphQLRateLimitError{ResetAt: resetAt}
+		}
+	}
+	return partial, err
 }
 
 // executeGraphQL on AppClient executes a GraphQL query using the App installation token.

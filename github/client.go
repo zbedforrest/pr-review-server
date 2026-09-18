@@ -33,6 +33,10 @@ type Client struct {
 
 	truncatedReviewsWarned     map[string]string
 	truncatedReviewsWarnedLock sync.Mutex
+
+	// ciBatchSleep paces CI status batches; nil means time.Sleep. Tests
+	// inject a recorder so pacing is asserted without waiting.
+	ciBatchSleep func(time.Duration)
 }
 
 // warnReviewsTruncatedOnce logs the truncated-history warning the first time a
@@ -462,6 +466,10 @@ type CIStatus struct {
 	// MergeStateRequested is false when the query did not ask for the merge
 	// fields (closed and merged PRs); callers keep their stored values then.
 	MergeStateRequested bool
+	// Missing is true when GitHub returned no pullRequest node for this PR
+	// (omitted alias, null node, per-alias error): every other field is a
+	// placeholder and the PR was not really answered.
+	Missing bool
 }
 
 // NewTestClient creates a Client for testing with a custom base URL for the REST API.
@@ -1090,6 +1098,9 @@ func (c *Client) extractReviewerGroups(timelineItems TimelineItemsData) ([]strin
 const (
 	ciBatchSizeMergeState = 25
 	ciBatchSizeChecksOnly = 50
+	// ciBatchPace spaces batch launches so a cycle's merge-state queries do
+	// not arrive as one burst, which is what trips the secondary rate limit.
+	ciBatchPace = 250 * time.Millisecond
 )
 
 // ciBatchStats counts one BatchGetCIStatus call for its summary line.
@@ -1174,7 +1185,23 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 		partial     = newPartialErrorSummary()
 		stats       ciBatchStats
 		rateLimited atomic.Bool
+		resetAt     atomic.Pointer[time.Time]
 	)
+	// pace waits between batch launches and reports false once ctx is done.
+	pace := func(d time.Duration) bool {
+		if c.ciBatchSleep != nil {
+			c.ciBatchSleep(d)
+			return ctx.Err() == nil
+		}
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 
 	runBatch := func(batch []PRInfo) {
 		defer wg.Done()
@@ -1194,6 +1221,9 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 			var httpErr *GraphQLHTTPError
 			if errors.Is(err, ErrGraphQLRateLimited) || (errors.As(err, &httpErr) && httpErr.Status == http.StatusForbidden) {
 				rateLimited.Store(true)
+				if at := RateLimitResetAt(err); !at.IsZero() {
+					resetAt.Store(&at)
+				}
 			}
 			log.Printf("[GRAPHQL] Warning: Failed to fetch CI status batch: %v", err)
 			return
@@ -1224,6 +1254,7 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 				MergeStateStatus:    mergeState,
 				ReviewDecision:      reviewDecision,
 				MergeStateRequested: prInfo.IncludeMergeState,
+				Missing:             prData == nil,
 			}
 			if rollup != nil {
 				// No rollup means the head commit genuinely has no check
@@ -1240,10 +1271,22 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 		}
 	}
 
+	launched := 0
+	cancelled := false
 	dispatch := func(list []PRInfo, batchSize int) {
 		for i := 0; i < len(list); i += batchSize {
 			end := min(i+batchSize, len(list))
 			stats.batches++
+			if !cancelled && launched > 0 && !rateLimited.Load() && !pace(ciBatchPace) {
+				cancelled = true
+			}
+			if cancelled {
+				stats.mu.Lock()
+				stats.skipped++
+				stats.mu.Unlock()
+				continue
+			}
+			launched++
 			wg.Add(1)
 			sem <- struct{}{}
 			go runBatch(list[i:end])
@@ -1261,6 +1304,12 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 	}
 	if rateLimited.Load() {
 		summary += " rate-limited: remaining batches skipped this cycle"
+		if at := resetAt.Load(); at != nil {
+			summary += fmt.Sprintf(" (limit resets at %s, in %s)", at.UTC().Format(time.RFC3339), time.Until(*at).Round(time.Second))
+		}
+	}
+	if cancelled {
+		summary += " cancelled: remaining batches skipped"
 	}
 	log.Print(summary)
 	return results, nil

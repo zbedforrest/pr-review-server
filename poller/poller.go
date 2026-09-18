@@ -148,6 +148,9 @@ type Poller struct {
 	teamCacheExpiry time.Time
 	// Poll economy: track cycles for periodic full refresh
 	pollCount int
+	// Last merge-state fetch per PR key, for the CI status cadence. Only poll
+	// touches it, so it needs no lock.
+	ciMergeMarks map[string]ciMergeMark
 	// Agent-review subprocess spawner (nil-safe: defaults to the configured CLI).
 	agentSpawner service.Spawner
 	// Linked-ticket source for the agent prompt (nil-safe: defaults to Jira
@@ -2442,58 +2445,31 @@ func isOpenPRState(state string) bool {
 	return state == "" || strings.EqualFold(state, "open")
 }
 
-// ciSelection is the outcome of selectCIStatusPRs: the PRs to query plus the
-// per-reason counts logged with every cycle.
-type ciSelection struct {
-	prs                                                               []github.PRInfo
-	open, watched, unwatched, checksOnly, closedSkipped, unknownState int
-}
-
-func (s ciSelection) String() string {
-	return fmt.Sprintf("open=%d (watched=%d unwatched-skipped=%d) closed-skipped=%d checks-only=%d unknown-state=%d",
-		s.open, s.watched, s.unwatched, s.closedSkipped, s.checksOnly, s.unknownState)
-}
-
-// selectCIStatusPRs picks the PRs whose CI status is fetched this cycle.
-//
-// A row is open only if GitHub returned it this cycle (ghKeys), it is not yet
-// in the database, or its stored pr_state says so; an empty pr_state is not a
-// vote for open here, unlike isOpenPRState, because merge state is the
-// expensive part of the query. Open PRs are queried with merge state when at
-// least one dashboard shows them (watched, by PR ID; nil means the lookup
-// failed and every open PR is watched). Open PRs nobody watches are skipped:
-// author views are synced before this selection and reviewer views after it,
-// so a PR whose only watcher is a reviewer joins on the next cycle. Closed,
-// merged and unknown-state rows keep their stored merge fields and are queried
-// for checks only when their CI state is empty or on a full-refresh cycle.
-func selectCIStatusPRs(allPRs []github.PullRequest, dbPRMap map[string]*db.PR, ghKeys map[string]bool, watched map[int]bool, fullRefresh bool) ciSelection {
-	sel := ciSelection{prs: make([]github.PRInfo, 0, len(allPRs))}
-	for _, pr := range allPRs {
-		key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
-		info := github.PRInfo{Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number}
-		dbPR, known := dbPRMap[key]
-		if !known || ghKeys[key] || strings.EqualFold(dbPR.PRState, "open") {
-			sel.open++
-			if known && watched != nil && !watched[dbPR.ID] {
-				sel.unwatched++
-				continue
-			}
-			sel.watched++
-			info.IncludeMergeState = true
-			sel.prs = append(sel.prs, info)
-			continue
-		}
-		if dbPR.PRState == "" {
-			sel.unknownState++
-		}
-		if dbPR.CIState != "" && !fullRefresh {
-			sel.closedSkipped++
-			continue
-		}
-		sel.checksOnly++
-		sel.prs = append(sel.prs, info)
+// ciWatchedPRIDs returns the PR IDs on an active user's dashboard, or nil
+// (every open PR visible) when the lookup fails or in dev mode, where the
+// injected dev user never logs in or holds a session.
+func (p *Poller) ciWatchedPRIDs() map[int]bool {
+	if p.devUser != nil {
+		return nil
 	}
-	return sel
+	watched, err := p.db.GetWatchedPRIDs(time.Now().Add(-ciWatcherActiveWindow))
+	if err != nil {
+		log.Printf("[POLL] WARNING: Failed to load watched PRs, treating every open PR as visible this cycle: %v", err)
+		return nil
+	}
+	return watched
+}
+
+// ciStatusExcludedAuthors reads the ci_status_exclude_authors setting; a read
+// failure falls back to the default list rather than spending merge state on
+// bot PRs.
+func (p *Poller) ciStatusExcludedAuthors() map[string]bool {
+	raw, err := p.db.GetSetting(db.SettingCIStatusExcludeAuthors)
+	if err != nil {
+		log.Printf("[POLL] WARNING: Failed to read %s, using default: %v", db.SettingCIStatusExcludeAuthors, err)
+		raw = db.DefaultCIStatusExcludeAuthors
+	}
+	return db.ParseLoginCSV(raw)
 }
 
 // syncUserPRViews creates user_pr_view records for PRs the user authored.
@@ -2799,6 +2775,9 @@ func (p *Poller) poll(ctx context.Context) {
 	}
 
 	var metadataPRs []github.PullRequest
+	// PRs whose GitHub updatedAt moved this cycle; a review or push bumps it,
+	// so the CI selection treats them as due for merge state.
+	var ciChanged map[string]bool
 	if !isFullRefresh {
 		changedPRKeys := make(map[string]bool)
 		for key, searchUpdatedAt := range prInfoMap {
@@ -2807,6 +2786,10 @@ func (p *Poller) poll(ctx context.Context) {
 				!searchUpdatedAt.Truncate(time.Second).Equal(dbPR.GitHubUpdatedAt.Truncate(time.Second)) {
 				changedPRKeys[key] = true
 			}
+		}
+		ciChanged = make(map[string]bool, len(changedPRKeys))
+		for key := range changedPRKeys {
+			ciChanged[key] = true
 		}
 		// DB-only PRs (not in search) always included — unknown state
 		for _, pr := range allPRs {
@@ -2832,6 +2815,7 @@ func (p *Poller) poll(ctx context.Context) {
 	var reviewDataMap map[string]*github.PRReviewData
 	var reviewerGroupsMap map[string]*github.ReviewerGroupData
 	var ciStatusMap map[string]*github.CIStatus
+	var ciRequested []github.PRInfo
 
 	if len(allPRs) > 0 {
 		log.Printf("[POLL] Parallel-fetching review data + reviewer groups for %d changed PRs, CI status for all %d PRs...", len(metadataPRs), len(allPRs))
@@ -2872,13 +2856,20 @@ func (p *Poller) poll(ctx context.Context) {
 		// is correct even when our stored SHA is behind (new push / force-push).
 		// Closed and merged PRs no longer change, so they ride along only when
 		// their CI state was never captured or on the periodic full refresh.
-		watched, err := p.db.GetPRIDsWithViews()
-		if err != nil {
-			log.Printf("[POLL] WARNING: Failed to load watched PRs, fetching CI status for every open PR this cycle: %v", err)
-			watched = nil
+		watched := p.ciWatchedPRIDs()
+		if p.ciMergeMarks == nil {
+			p.ciMergeMarks = make(map[string]ciMergeMark)
 		}
-		ciSel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, watched, p.pollCount%10 == 0)
+		ciSel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, ciSelectOptions{
+			watched:         watched,
+			excludedAuthors: p.ciStatusExcludedAuthors(),
+			changed:         ciChanged,
+			marks:           p.ciMergeMarks,
+			cycle:           p.pollCount,
+			fullRefresh:     p.pollCount%10 == 0,
+		})
 		log.Printf("[POLL] CI status selection: %s", ciSel)
+		ciRequested = ciSel.prs
 		fetchWg.Add(1)
 		go func() {
 			defer fetchWg.Done()
@@ -3103,12 +3094,14 @@ func (p *Poller) poll(ctx context.Context) {
 
 	// --- Process CI status ---
 	if ciStatusMap != nil {
+		recordMergeStateFetches(p.ciMergeMarks, allPRs, ciRequested, ciStatusMap, p.pollCount)
 		ciPRBatch := newPRBatch()
 		updateCount := 0
 		for _, pr := range allPRs {
 			key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
 			ciStatus, hasCIData := ciStatusMap[key]
-			if !hasCIData {
+			// A placeholder for a node GitHub omitted must not replace the last known state.
+			if !hasCIData || ciStatus.Missing {
 				continue
 			}
 			existingPR, existsInDB := dbPRMap[key]

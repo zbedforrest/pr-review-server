@@ -3,6 +3,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestBuildCIStatusQuery_MergeFieldsOnlyForPRsThatAskForThem(t *testing.T) {
@@ -218,5 +220,174 @@ func TestBatchGetCIStatus_RateLimitedIn200BodySkipsRemainingBatches(t *testing.T
 		if !strings.Contains(logs, want) {
 			t.Errorf("summary missing %q:\n%s", want, logs)
 		}
+	}
+}
+
+func TestBatchGetCIStatus_PacesBatchesWithinTheCycleBudget(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+	var slept []time.Duration
+	client.ciBatchSleep = func(d time.Duration) { slept = append(slept, d) }
+
+	prs := append(ciPRs(1000, true), ciPRs(500, false)...)
+	start := time.Now()
+	if _, err := client.BatchGetCIStatus(context.Background(), prs); err != nil {
+		t.Fatalf("BatchGetCIStatus: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("injected sleep must not block: took %s", elapsed)
+	}
+
+	const batches = 40 + 10
+	if len(slept) != batches-1 {
+		t.Fatalf("sleeps = %d, want one between each of %d batches", len(slept), batches)
+	}
+	var total time.Duration
+	for _, d := range slept {
+		if d != ciBatchPace {
+			t.Errorf("sleep = %s, want %s", d, ciBatchPace)
+		}
+		total += d
+	}
+	if total >= 30*time.Second {
+		t.Errorf("pacing for %d batches sleeps %s in total, must stay well inside the 60s cycle", batches, total)
+	}
+}
+
+func TestBatchGetCIStatus_RateLimitStopsPacingAndLogsReset(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "42")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+	sleeps := 0
+	client.ciBatchSleep = func(time.Duration) { sleeps++ }
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	if _, err := client.BatchGetCIStatus(context.Background(), ciPRs(500, true)); err != nil {
+		t.Fatalf("BatchGetCIStatus: %v", err)
+	}
+	if sleeps >= 19 {
+		t.Errorf("sleeps = %d, want pacing to stop once the limit trips (20 batches)", sleeps)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "rate-limited: remaining batches skipped this cycle (limit resets at ") || !strings.Contains(logs, ", in ") {
+		t.Errorf("summary must name the reset time from Retry-After:\n%s", logs)
+	}
+	if !strings.Contains(logs, "status 403 (limit resets at ") {
+		t.Errorf("batch warning must carry the reset time:\n%s", logs)
+	}
+}
+
+func TestRateLimitResetAt_HeaderPrecedence(t *testing.T) {
+	now := time.Date(2026, 9, 18, 20, 0, 0, 0, time.UTC)
+	h := http.Header{}
+	if got := rateLimitResetAt(h, now); !got.IsZero() {
+		t.Errorf("no headers: got %s, want zero", got)
+	}
+	h.Set("X-RateLimit-Reset", "1789000000")
+	if got := rateLimitResetAt(h, now); !got.Equal(time.Unix(1789000000, 0)) {
+		t.Errorf("X-RateLimit-Reset: got %s", got)
+	}
+	h.Set("Retry-After", "30")
+	if got := rateLimitResetAt(h, now); !got.Equal(now.Add(30 * time.Second)) {
+		t.Errorf("Retry-After must win: got %s", got)
+	}
+}
+
+func TestExecuteGraphQLPartial_RateLimited200CarriesReset(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Reset", "1789000000")
+		_, _ = w.Write([]byte(`{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded"}]}`))
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	var out struct{}
+	_, err := client.executeGraphQLPartial(context.Background(), "query {}", &out)
+	if !errors.Is(err, ErrGraphQLRateLimited) {
+		t.Fatalf("err = %v, want ErrGraphQLRateLimited", err)
+	}
+	if got := RateLimitResetAt(err); !got.Equal(time.Unix(1789000000, 0)) {
+		t.Errorf("reset = %s, want the X-RateLimit-Reset stamp", got)
+	}
+}
+
+func TestBatchGetCIStatus_CancelledContextStopsDispatch(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+	ctx, cancel := context.WithCancel(context.Background())
+	sleeps := 0
+	client.ciBatchSleep = func(time.Duration) {
+		sleeps++
+		cancel()
+	}
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	if _, err := client.BatchGetCIStatus(ctx, ciPRs(500, true)); err != nil {
+		t.Fatalf("BatchGetCIStatus: %v", err)
+	}
+	if sleeps != 1 {
+		t.Errorf("sleeps = %d, want dispatch to stop at the first cancelled wait", sleeps)
+	}
+	mu.Lock()
+	sent := requests
+	mu.Unlock()
+	if sent > 1 {
+		t.Errorf("requests = %d, want at most the batch launched before cancellation", sent)
+	}
+	if !strings.Contains(buf.String(), "batches=20") || !strings.Contains(buf.String(), "skipped=19") || !strings.Contains(buf.String(), "cancelled: remaining batches skipped") {
+		t.Errorf("summary must count the 19 undispatched batches as skipped:\n%s", buf.String())
+	}
+}
+
+func TestBatchGetCIStatus_MissingNodeIsFlagged(t *testing.T) {
+	body := `{"data":{"pr0":{"pullRequest":null},"pr1":{"pullRequest":{"mergeStateStatus":"CLEAN","reviewDecision":null,
+		"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	results, err := client.BatchGetCIStatus(context.Background(), []PRInfo{
+		{Owner: "acme", Repo: "example", Number: 1, IncludeMergeState: true},
+		{Owner: "acme", Repo: "example", Number: 2, IncludeMergeState: true},
+		{Owner: "acme", Repo: "example", Number: 3, IncludeMergeState: true},
+	})
+	if err != nil {
+		t.Fatalf("BatchGetCIStatus: %v", err)
+	}
+	if !results["acme/example/1"].Missing || results["acme/example/1"].State != "unknown" {
+		t.Errorf("null pullRequest node must be flagged Missing: %+v", results["acme/example/1"])
+	}
+	if results["acme/example/2"].Missing || results["acme/example/2"].MergeStateStatus != "CLEAN" {
+		t.Errorf("answered node must not be Missing: %+v", results["acme/example/2"])
+	}
+	if !results["acme/example/3"].Missing {
+		t.Errorf("omitted alias must be flagged Missing: %+v", results["acme/example/3"])
 	}
 }
