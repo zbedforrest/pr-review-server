@@ -1,6 +1,19 @@
 import { apiGet, apiPost } from './client';
+import type { ReviewProfile } from '@/types/pr';
 
 export type ReplyMode = 'off' | 'observe' | 'react' | 'shadow' | 'respond';
+
+export const AUTO_REVIEW_TRIGGERS = ['ready_for_review', 'opened', 'synchronize', 'poll_fallback'] as const;
+export type AutoReviewTrigger = (typeof AUTO_REVIEW_TRIGGERS)[number];
+
+// Per-trigger profile overrides; "" means the deployment default applies.
+export type AutoReviewProfileByTrigger = Record<AutoReviewTrigger, ReviewProfile | ''> & {
+  repos: Record<string, Partial<Record<AutoReviewTrigger, ReviewProfile>>>;
+};
+
+export const EMPTY_PROFILE_BY_TRIGGER: AutoReviewProfileByTrigger = {
+  ready_for_review: '', opened: '', synchronize: '', poll_fallback: '', repos: {},
+};
 
 export interface Settings {
   auto_review_requested_prs: boolean;
@@ -19,6 +32,13 @@ export interface Settings {
   publish_reply_enabled_at: string;
   admin_logins: string;
   admin_logins_fixed: string[];
+  // Review profile per automatic trigger, and the authors whose automatic
+  // reviews may run a lite profile. Optional: older servers omit them.
+  auto_review_profile_by_trigger?: AutoReviewProfileByTrigger;
+  auto_review_lite_authors?: string;
+  // Read-only: what "default" resolves to (REVIEW_DEFAULT_PROFILE).
+  review_default_profile?: ReviewProfile;
+  review_profiles?: ReviewProfile[];
   // Legacy flag the server still returns; never shown in the UI.
   generate_html?: boolean;
 }

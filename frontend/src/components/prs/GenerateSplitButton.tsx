@@ -1,15 +1,18 @@
 import { useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useDropdown } from '@/hooks/useDropdown';
+import type { ReviewProfile } from '@/types/pr';
 import { PILOT_BLOCKED_TITLE } from './publishPolicy';
+import { PROFILE_CHOICES } from './reviewProfiles';
 import './GenerateSplitButton.scss';
 
 // Keep in sync with $panel-width in GenerateSplitButton.scss.
 const PANEL_WIDTH = 260;
 
 interface GenerateSplitButtonProps {
-  /** Starts a review; publish=true also posts it to the GitHub PR. */
-  onGenerate: (publish: boolean) => void;
+  /** Starts a review; publish=true also posts it to the GitHub PR. An explicit
+   *  profile overrides the deployment default. */
+  onGenerate: (publish: boolean, profile?: ReviewProfile) => void;
   /** True while the trigger-review mutation is in flight. */
   pending: boolean;
   /** False when the PR author is outside the publish pilot, so posting is not offered. */
@@ -31,8 +34,9 @@ export function GenerateSplitButton({ onGenerate, pending, publishAllowed }: Gen
 
   const handlePrimary = useCallback(() => onGenerate(publishAllowed), [onGenerate, publishAllowed]);
 
-  const choose = useCallback((publish: boolean) => {
-    onGenerate(publish);
+  const choose = useCallback((publish: boolean, profile?: ReviewProfile) => {
+    if (profile) onGenerate(publish, profile);
+    else onGenerate(publish);
     close();
   }, [onGenerate, close]);
 
@@ -93,6 +97,21 @@ export function GenerateSplitButton({ onGenerate, pending, publishAllowed }: Gen
             <span className="generate-split__item-title">Generate review HTML only</span>
             <span className="generate-split__item-desc">Dashboard report only, nothing posted to GitHub</span>
           </button>
+          <div className="generate-split__divider" role="separator" />
+          {PROFILE_CHOICES.map((choice) => (
+            <button
+              key={choice.profile}
+              type="button"
+              role="menuitem"
+              className="generate-split__item"
+              onClick={() => choose(publishAllowed, choice.profile)}
+            >
+              <span className="generate-split__item-title">{choice.title}</span>
+              <span className="generate-split__item-desc">
+                {choice.description}; {publishAllowed ? 'posted to the PR' : 'dashboard only'}
+              </span>
+            </button>
+          ))}
         </div>,
         document.body
       )}

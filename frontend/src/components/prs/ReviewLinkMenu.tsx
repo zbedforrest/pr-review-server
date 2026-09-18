@@ -6,6 +6,7 @@ import { useDropdown } from '@/hooks/useDropdown';
 import { formatRelativeTime } from '@/utils/formatDate';
 import { CriticalFindingsTriage } from './CriticalFindingsTriage';
 import { PILOT_BLOCKED_TITLE } from './publishPolicy';
+import { PROFILE_LABELS, formatCost } from './reviewProfiles';
 import './ReviewLinkMenu.scss';
 
 interface ReviewLinkMenuProps {
@@ -132,6 +133,9 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending, 
   // a different model than requested.
   const showFallbackBadge = !!reviewUrl && !!pr.model_fallback;
   const modelUses = pr.review_run?.models ?? [];
+  const profile = pr.review_run?.profile;
+  const profileLabel = pr.review_run?.profile_label || (profile ? PROFILE_LABELS[profile] : '');
+  const totalCost = modelUses.reduce((sum, model) => sum + (model.cost_usd ?? 0), 0);
   const publishedRounds = pr.published_rounds ?? 0;
   const showPublished = !!pr.published_to_github;
 
@@ -211,6 +215,13 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending, 
             {showPublished && (
               <div className="review-menu__meta">
                 Posted to PR · {publishedRounds} {publishedRounds === 1 ? 'round' : 'rounds'}
+              </div>
+            )}
+            {(profileLabel || totalCost > 0) && (
+              <div className="review-menu__meta review-menu__profile" aria-label="Review profile">
+                {profileLabel && <span title={profileLabel}>Profile {profileLabel}</span>}
+                {profileLabel && totalCost > 0 && ' · '}
+                {totalCost > 0 && <span title="Provider-reported cost of this review run, all stages">{formatCost(totalCost)}</span>}
               </div>
             )}
             {modelUses.length > 0 && (

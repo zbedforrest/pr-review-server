@@ -67,6 +67,29 @@ describe('GenerateSplitButton', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  it('offers a Lite review option that requests config.profile lite', () => {
+    const { onGenerate } = renderButton();
+    openMenu();
+    const lite = screen.getByRole('menuitem', { name: /^Lite review/ });
+    expect(lite.textContent).toContain('One agent over the inlined diff');
+    expect(lite.textContent).toContain('posted to the PR');
+    fireEvent.click(lite);
+    expect(onGenerate).toHaveBeenCalledWith(true, 'lite');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('offers Lite+ and Full (heavy) options that follow the publish default', () => {
+    const { onGenerate } = renderButton({ publishAllowed: false });
+    openMenu();
+    const litePlus = screen.getByRole('menuitem', { name: /^Lite\+ review/ });
+    expect(litePlus.textContent).toContain('dashboard only');
+    fireEvent.click(litePlus);
+    expect(onGenerate).toHaveBeenCalledWith(false, 'lite_plus');
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Full \(heavy\) review/ }));
+    expect(onGenerate).toHaveBeenCalledWith(false, 'full');
+  });
+
   it('calls onGenerate(false) from the dashboard-only item and closes the menu', () => {
     const { onGenerate } = renderButton();
     openMenu();

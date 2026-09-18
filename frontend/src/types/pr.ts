@@ -68,6 +68,8 @@ export interface PR {
   greptile_status?: 'green' | 'red' | 'absent';
 }
 
+export type ReviewProfile = 'full' | 'lite' | 'lite_plus';
+
 export interface ReviewRun {
   run_id: string;
   html_path?: string;
@@ -77,6 +79,13 @@ export interface ReviewRun {
   duration_ms: number;
   models: ReviewModelUse[];
   config?: ReviewConfigSnapshot;
+  // Profile the run used and its rendered description ("Lite", "Custom
+  // (based on Lite): effort high (default medium)"). Absent on runs recorded
+  // before profiles existed, which read as full.
+  profile?: ReviewProfile;
+  profile_label?: string;
+  // Where a lite run's inlined diff came from: the worktree or the GitHub API.
+  diff_source?: 'git' | 'api';
 }
 
 export interface ReviewConfigSnapshot {
@@ -87,6 +96,7 @@ export interface ReviewConfigSnapshot {
 }
 
 export interface ReviewConfigOverrides {
+  profile?: ReviewProfile;
   agent?: Partial<EffectiveAgentConfig>;
   first_pass?: Partial<EffectiveFirstPassConfig>;
   required_checks?: boolean;
@@ -94,9 +104,13 @@ export interface ReviewConfigOverrides {
 
 export interface EffectiveReviewConfig {
   schema_version: number;
+  // Optional for schema_version 3 snapshots, which predate profiles.
+  profile?: ReviewProfile;
   agent: EffectiveAgentConfig;
   first_pass: EffectiveFirstPassConfig;
   required_checks: boolean;
+  gates?: boolean;
+  bug_memory?: boolean;
 }
 
 export interface EffectiveAgentConfig {
@@ -106,9 +120,12 @@ export interface EffectiveAgentConfig {
   effort: string;
   wall_clock_seconds: number;
   max_turns: number;
+  tools?: string;
+  prompt?: string;
 }
 
 export interface EffectiveFirstPassConfig {
+  enabled?: boolean;
   samples: number;
 }
 
@@ -121,4 +138,6 @@ export interface ReviewModelUse {
   serving_model_verified: boolean;
   effort?: string;
   fallback: boolean;
+  // Provider-reported spend for the stage, when the backend exposes it.
+  cost_usd?: number;
 }

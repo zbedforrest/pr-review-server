@@ -248,6 +248,64 @@ describe('PRTableRow review cell', () => {
   });
 });
 
+const reviewRun = (profile?: 'full' | 'lite' | 'lite_plus', profile_label?: string): PR['review_run'] => ({
+  run_id: 'run-0123456789abcdef0123456789abcdef',
+  started_at: '2026-09-18T12:00:00Z',
+  completed_at: '2026-09-18T12:02:00Z',
+  duration_ms: 120000,
+  models: [],
+  profile,
+  profile_label,
+});
+
+describe('PRTableRow profile chip', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+  });
+  afterEach(() => cleanup());
+
+  it('shows a Lite chip when the latest review ran the lite profile', () => {
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', review_run: reviewRun('lite', 'Lite') }));
+    const chip = screen.getByText('Lite');
+    expect(chip.className).toContain('pr-table__profile-chip--lite');
+    expect(chip.getAttribute('title')).toBe('Review profile: Lite');
+  });
+
+  it('shows a Lite+ chip for lite_plus and names the overrides of a custom run', () => {
+    renderRow(makePR({
+      status: 'completed', review_url: '/reviews/x.html',
+      review_run: reviewRun('lite_plus', 'Custom (based on Lite+): effort high (default medium)'),
+    }));
+    const chip = screen.getByText('Lite+');
+    expect(chip.className).toContain('pr-table__profile-chip--lite_plus');
+    expect(chip.getAttribute('title')).toBe('Review profile: Custom (based on Lite+): effort high (default medium)');
+  });
+
+  it('shows no chip for full-profile or legacy reviews', () => {
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', review_run: reviewRun('full', 'Full') }));
+    expect(screen.queryByText('Lite')).toBeNull();
+    expect(document.querySelector('.pr-table__profile-chip')).toBeNull();
+    cleanup();
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', review_run: reviewRun() }));
+    expect(document.querySelector('.pr-table__profile-chip')).toBeNull();
+  });
+
+  it('does not show the chip while a review is generating', () => {
+    renderRow(makePR({ status: 'agent_reviewing', review_run: reviewRun('lite', 'Lite') }));
+    expect(document.querySelector('.pr-table__profile-chip')).toBeNull();
+    expect(screen.getByText('Generating…')).toBeTruthy();
+  });
+
+  it('forwards an explicit profile from the generate menu to the review request', () => {
+    renderRow(makePR());
+    fireEvent.click(screen.getByRole('button', { name: 'More generate options' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Lite review/ }));
+    expect(triggerMutate).toHaveBeenCalledWith({ owner: 'test-org', repo: 'test-repo', number: 1, publish: true, profile: 'lite' });
+    expect(trackMock).toHaveBeenCalledWith('trigger_review', expect.objectContaining({ publish: true, profile: 'lite' }));
+  });
+});
+
 describe('PRTableRow default variant', () => {
   beforeEach(() => {
     vi.clearAllMocks();

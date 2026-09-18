@@ -18,13 +18,16 @@ interface TrackOptions {
   pr_number?: number;
   /** Whether the review was requested with posting to GitHub. Rides in `label`. */
   publish?: boolean;
+  /** Explicitly chosen review profile, appended to `label` after the publish choice. */
+  profile?: string;
 }
 
-// The telemetry payload has no free-form field, so the publish choice travels
-// in `label` like the other on/off style events.
-function publishLabel(publish: boolean | undefined): string | undefined {
+// The telemetry payload has no free-form field, so the publish choice (and an
+// explicit profile) travel in `label` like the other on/off style events.
+function publishLabel(publish: boolean | undefined, profile?: string): string | undefined {
   if (publish === undefined) return undefined;
-  return publish ? 'publish' : 'dashboard_only';
+  const base = publish ? 'publish' : 'dashboard_only';
+  return profile ? `${base}:${profile}` : base;
 }
 
 function flush() {
@@ -74,7 +77,7 @@ export function useTelemetry() {
     (action: string, opts?: TrackOptions) => {
       enqueue({
         action,
-        label: opts?.label ?? publishLabel(opts?.publish),
+        label: opts?.label ?? publishLabel(opts?.publish, opts?.profile),
         pr_owner: opts?.pr_owner,
         pr_repo: opts?.pr_repo,
         pr_number: opts?.pr_number,

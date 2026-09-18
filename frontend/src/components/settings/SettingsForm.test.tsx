@@ -19,6 +19,9 @@ const serverSettings: Settings = {
   publish_reply_enabled_at: '2026-09-10T12:00:00Z',
   admin_logins: 'alice,carol',
   admin_logins_fixed: ['owner'],
+  auto_review_profile_by_trigger: { ready_for_review: '', opened: '', synchronize: '', poll_fallback: '', repos: {} },
+  auto_review_lite_authors: '',
+  review_default_profile: 'full',
   generate_html: true,
 };
 
@@ -354,6 +357,63 @@ describe('SettingsForm', () => {
     fireEvent.click(toggle);
     expect(toggle.checked).toBe(false);
     expect(saveIn('Publishing').disabled).toBe(false);
+  });
+
+  it('renders one profile select per trigger and saves auto_review_profile_by_trigger', async () => {
+    const saved = {
+      ...serverSettings,
+      auto_review_profile_by_trigger: { ready_for_review: '', opened: '', synchronize: 'lite', poll_fallback: '', repos: {} },
+    };
+    fetchMock.mockResolvedValue(jsonResponse(saved));
+    renderForm({}, { ...serverSettings, review_default_profile: 'lite' });
+    const selects = ['Ready for review', 'Opened ready', 'New push', 'Poll fallback'].map(
+      (label) => screen.getByLabelText(label) as HTMLSelectElement
+    );
+    expect(selects).toHaveLength(4);
+    for (const select of selects) {
+      expect(select.value).toBe('');
+      expect(select.options[0].textContent).toBe('Default: Lite');
+      expect([...select.options].map((o) => o.value)).toEqual(['', 'full', 'lite', 'lite_plus']);
+    }
+    expect(saveIn('Review profiles').disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('New push'), { target: { value: 'lite' } });
+    expect(saveIn('Review profiles').disabled).toBe(false);
+    fireEvent.click(saveIn('Review profiles'));
+    await waitFor(() =>
+      expect(postedBodies()).toEqual([
+        { auto_review_profile_by_trigger: { ready_for_review: '', opened: '', synchronize: 'lite', poll_fallback: '', repos: {} } },
+      ])
+    );
+    await waitFor(() => expect(saveIn('Review profiles').disabled).toBe(true));
+    expect((screen.getByLabelText('New push') as HTMLSelectElement).value).toBe('lite');
+  });
+
+  it('is clean again when a profile select is changed and then reverted', () => {
+    renderForm();
+    fireEvent.change(screen.getByLabelText('New push'), { target: { value: 'lite' } });
+    expect(saveIn('Review profiles').disabled).toBe(false);
+    fireEvent.change(screen.getByLabelText('New push'), { target: { value: '' } });
+    expect(saveIn('Review profiles').disabled).toBe(true);
+  });
+
+  it('asks a lite-specific question before admitting every author', () => {
+    renderForm();
+    const input = within(section('Review profiles')).getByRole('textbox') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '*' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(window.confirm).toHaveBeenCalledWith('Allow lite reviews for every author?');
+  });
+
+  it('saves auto_review_lite_authors as a normalized login list', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...serverSettings, auto_review_lite_authors: 'alice,dave' }));
+    renderForm();
+    expect(screen.getByText(/every automatic review runs the full profile/)).toBeTruthy();
+    const input = within(section('Review profiles')).getByRole('textbox') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: ' Alice, DAVE ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.getByText(/Automatic lite reviews run only for these authors/)).toBeTruthy();
+    fireEvent.click(saveIn('Review profiles'));
+    await waitFor(() => expect(postedBodies()).toEqual([{ auto_review_lite_authors: 'alice,dave' }]));
   });
 
   it('never renders generate_html', () => {

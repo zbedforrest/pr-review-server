@@ -1,5 +1,5 @@
 import { apiGet, apiPost } from './client';
-import type { PR } from '@/types/pr';
+import type { PR, ReviewProfile } from '@/types/pr';
 
 export async function fetchPRs(): Promise<PR[]> {
   return apiGet<PR[]>('/api/prs');
@@ -43,15 +43,47 @@ export interface TriggerReviewParams {
   number: number;
   /** Post the review to the GitHub PR. Omitted or true = post; false = dashboard only. */
   publish?: boolean;
+  /** Review profile to run. Omitted = the deployment's default profile. */
+  profile?: ReviewProfile;
 }
 
 // The server treats a missing key as "publish"; sending publish: undefined
 // would serialize to nothing anyway, but dropping it keeps the body explicit.
-function reviewRequestBody({ publish, ...rest }: TriggerReviewParams): Record<string, unknown> {
+function reviewRequestBody({ publish, profile: _profile, ...rest }: TriggerReviewParams): Record<string, unknown> {
   return publish === undefined ? rest : { ...rest, publish };
 }
 
+// The versioned API wraps failures as {"error":{"code","message"}}; the alert
+// that shows err.message wants the sentence, not the envelope.
+function unwrapV1Error(err: unknown): unknown {
+  if (!(err instanceof Error)) return err;
+  try {
+    const parsed = JSON.parse(err.message) as { error?: { message?: string } };
+    if (parsed?.error?.message) {
+      err.message = parsed.error.message;
+    }
+  } catch {
+    // Not a JSON envelope; the message already reads as text.
+  }
+  return err;
+}
+
+// An explicit profile goes through the versioned run API, the only endpoint
+// that accepts a review configuration; the legacy trigger keeps the default.
 export async function triggerReview(params: TriggerReviewParams): Promise<{ status: string }> {
+  if (params.profile) {
+    let run: { run_id: string; status: string };
+    try {
+      run = await apiPost<{ run_id: string; status: string }>('/api/v1/review-runs', {
+        target: { owner: params.owner, repo: params.repo, pull_request: params.number },
+        publish: params.publish ?? true,
+        config: { profile: params.profile },
+      });
+    } catch (err) {
+      throw unwrapV1Error(err);
+    }
+    return { status: run.status };
+  }
   return apiPost<{ status: string }>('/api/prs/trigger-review', reviewRequestBody(params));
 }
 
@@ -71,6 +103,6 @@ export interface GenerateReviewResponse {
 // source: "form" marks a deliberate paste into the dashboard's URL input —
 // the only origin that claims the PR into the Requested by Me section.
 // API/skill callers omit it and stay off the requester's dashboard.
-export async function generateReview(params: TriggerReviewParams): Promise<GenerateReviewResponse> {
+export async function generateReview(params: Omit<TriggerReviewParams, 'profile'>): Promise<GenerateReviewResponse> {
   return apiPost<GenerateReviewResponse>('/api/prs/generate-review', { ...reviewRequestBody(params), source: 'form' });
 }

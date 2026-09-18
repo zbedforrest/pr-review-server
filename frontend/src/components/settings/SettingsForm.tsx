@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import type { ReplyMode, Settings } from '@/api/settings';
+import { AUTO_REVIEW_TRIGGERS, EMPTY_PROFILE_BY_TRIGGER, type AutoReviewTrigger, type ReplyMode, type Settings } from '@/api/settings';
+import { PROFILE_LABELS } from '@/components/prs/reviewProfiles';
+import type { ReviewProfile } from '@/types/pr';
 import { useUpdateSettings } from '@/hooks/useSettings';
 import { LoginListField } from './LoginListField';
 import { normalizeLogins } from './loginList';
@@ -39,6 +41,23 @@ const EMPTY_AUTHORS_NOTICE =
 const AUTO_REVIEW_READY_HELP =
   "Review and comment automatically when an allowlisted author's PR becomes ready for review, opens ready, or gets a new push";
 
+const TRIGGER_LABELS: Record<AutoReviewTrigger, string> = {
+  ready_for_review: 'Ready for review',
+  opened: 'Opened ready',
+  synchronize: 'New push',
+  poll_fallback: 'Poll fallback',
+};
+
+const profileName = (profile: ReviewProfile | undefined) => PROFILE_LABELS[profile ?? 'full'];
+
+// Object-valued settings are rebuilt on every edit, so compare them by value
+// rather than by reference like the scalar keys.
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function pick<K extends keyof Settings>(settings: Settings, keys: readonly K[]): Pick<Settings, K> {
   return Object.fromEntries(keys.map((key) => [key, settings[key]])) as Pick<Settings, K>;
 }
@@ -70,7 +89,7 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
     follow(base, settings);
   }
 
-  const changed = keys.filter((key) => draft[key] !== settings[key]);
+  const changed = keys.filter((key) => !sameValue(draft[key], settings[key]));
 
   const save = async () => {
     const sent = draft;
@@ -123,7 +142,12 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
     'auto_review_ready_prs',
   ]);
   const replies = useSectionDraft(settings, ['publish_reply_mode']);
+  const profiles = useSectionDraft(settings, ['auto_review_profile_by_trigger', 'auto_review_lite_authors']);
   const admins = useSectionDraft(settings, ['admin_logins']);
+  const profileByTrigger = profiles.draft.auto_review_profile_by_trigger ?? EMPTY_PROFILE_BY_TRIGGER;
+  const defaultProfileName = profileName(settings.review_default_profile);
+  const liteAuthors = profiles.draft.auto_review_lite_authors ?? '';
+  const noLiteAuthors = normalizeLogins(liteAuthors, true).logins.length === 0;
 
   const noAuthorsDraft = normalizeLogins(publishing.draft.publish_enabled_authors, true).logins.length === 0;
   const noAuthorsSaved = normalizeLogins(settings.publish_enabled_authors, true).logins.length === 0;
@@ -312,6 +336,59 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
             Show unverified findings
           </label>
         </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Review profiles"
+        description="Which review flavor each automatic trigger runs, and for whom"
+        dirty={profiles.dirty}
+        canSave={isAdmin}
+        saving={profiles.saving}
+        saved={profiles.saved}
+        error={profiles.error}
+        onSave={profiles.save}
+        onReset={profiles.reset}
+      >
+        {AUTO_REVIEW_TRIGGERS.map((trigger) => (
+          <div className="settings-field" key={trigger}>
+            <label className="settings-field__label" htmlFor={`settings-profile-${trigger}`}>
+              {TRIGGER_LABELS[trigger]}
+            </label>
+            <select
+              id={`settings-profile-${trigger}`}
+              className="settings-field__select"
+              value={profileByTrigger[trigger]}
+              onChange={(e) =>
+                profiles.patch({
+                  auto_review_profile_by_trigger: { ...profileByTrigger, [trigger]: e.target.value as ReviewProfile | '' },
+                })
+              }
+              disabled={disabled}
+            >
+              <option value="">Default: {defaultProfileName}</option>
+              {(settings.review_profiles ?? (Object.keys(PROFILE_LABELS) as ReviewProfile[])).map((profile) => (
+                <option key={profile} value={profile}>
+                  {PROFILE_LABELS[profile] ?? profile}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+        <LoginListField
+          id="settings-lite-authors"
+          label="Lite profiles for authors"
+          value={liteAuthors}
+          onChange={(next) => profiles.patch({ auto_review_lite_authors: next })}
+          authors
+          disabled={disabled}
+          knownLogins={knownLogins}
+          confirmAll="Allow lite reviews for every author?"
+        />
+        <p className="settings-section__notice">
+          {noLiteAuthors
+            ? 'No author is listed, so every automatic review runs the full profile regardless of the mapping above'
+            : 'Automatic lite reviews run only for these authors; everyone else gets the full profile'}
+        </p>
       </SettingsSection>
 
       <SettingsSection

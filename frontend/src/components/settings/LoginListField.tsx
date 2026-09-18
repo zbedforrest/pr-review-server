@@ -12,6 +12,8 @@ interface LoginListFieldProps {
   disabled: boolean;
   fixed?: string[];
   knownLogins?: Set<string>;
+  // Question asked before "*" is added; defaults to the publish allowlist's.
+  confirmAll?: string;
 }
 
 const UNKNOWN_HINT = 'not seen on any PR';
@@ -25,6 +27,7 @@ export function LoginListField({
   disabled,
   fixed = [],
   knownLogins,
+  confirmAll = 'Publish for every author?',
 }: LoginListFieldProps) {
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +55,7 @@ export function LoginListField({
       setDraft('');
       return;
     }
-    if (added.includes('*') && !window.confirm('Publish for every author?')) {
+    if (added.includes('*') && !window.confirm(confirmAll)) {
       setDraft('');
       return;
     }
