@@ -9,10 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -100,9 +98,9 @@ exit 0
 }
 
 func TestDefaultSpawnerMaxTurnsKillTearsDownProcessGroup(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "grandchild-survived")
 	script := writeChildScript(t, `
-sleep 60 &
-echo "$!" >&2
+( sleep 1; touch "`+marker+`" ) &
 while :; do echo '{"type":"assistant"}'; done
 `)
 	baseline := runtime.NumGoroutine()
@@ -123,17 +121,9 @@ while :; do echo '{"type":"assistant"}'; done
 		t.Fatalf("Wait took %s after the kill", elapsed)
 	}
 
-	grandchild, err := strconv.Atoi(strings.TrimSpace(strings.SplitN(out.stderr.String(), "\n", 2)[0]))
-	if err != nil {
-		t.Fatalf("grandchild pid from stderr %q: %v", out.stderr.String(), err)
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for syscall.Kill(grandchild, 0) == nil && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err := syscall.Kill(grandchild, 0); err == nil {
-		_ = syscall.Kill(grandchild, syscall.SIGKILL)
-		t.Fatalf("grandchild %d survived the process-group kill", grandchild)
+	time.Sleep(2 * time.Second)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("grandchild survived the process-group kill (marker stat err=%v)", err)
 	}
 	waitForGoroutineBaseline(t, baseline)
 }

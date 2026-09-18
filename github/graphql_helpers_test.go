@@ -753,6 +753,7 @@ func TestParseCIStatusFromRollup(t *testing.T) {
 		rollup         *StatusCheckRollup
 		expectedState  string
 		expectedFailed []string
+		expectedHidden int
 	}{
 		{
 			name: "All success",
@@ -808,11 +809,44 @@ func TestParseCIStatusFromRollup(t *testing.T) {
 			expectedState:  "failure",
 			expectedFailed: []string{"ci/build"},
 		},
+		{
+			name: "Hidden failure with a visible in-progress check keeps the failing rollup",
+			rollup: &StatusCheckRollup{
+				State: "FAILURE",
+				Contexts: ContextsData{
+					Nodes: []CheckNode{
+						{TypeName: "CheckRun", Name: "test", Status: "IN_PROGRESS"},
+						{},
+					},
+				},
+			},
+			expectedState:  "failure",
+			expectedFailed: nil,
+			expectedHidden: 1,
+		},
+		{
+			name: "Hidden failure with a visible pending status keeps the failing rollup",
+			rollup: &StatusCheckRollup{
+				State: "FAILURE",
+				Contexts: ContextsData{
+					Nodes: []CheckNode{
+						{TypeName: "StatusContext", Context: "ci/build", State: "PENDING"},
+						{},
+					},
+				},
+			},
+			expectedState:  "failure",
+			expectedFailed: nil,
+			expectedHidden: 1,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state, failed, _ := parseCIStatusFromRollup(tt.rollup)
+			state, failed, hidden := parseCIStatusFromRollup(tt.rollup)
+			if hidden != tt.expectedHidden {
+				t.Errorf("Expected %d hidden contexts, got %d", tt.expectedHidden, hidden)
+			}
 			if state != tt.expectedState {
 				t.Errorf("Expected state %q, got %q", tt.expectedState, state)
 			}

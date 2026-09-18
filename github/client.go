@@ -446,7 +446,8 @@ type CIStatus struct {
 	FailedChecks []string // Names of failed checks
 	// Check contexts GitHub declined to return (FORBIDDEN, the App lacks a read
 	// permission for that context type). State is still GitHub's rollup over
-	// every context, but FailedChecks is incomplete when this is non-zero.
+	// every context; a non-zero count means FailedChecks is missing names
+	// (zero does not prove completeness: the query reads the first 100 contexts).
 	HiddenContexts int
 	// GitHub merge-box summary for the current head: CLEAN, BLOCKED, BEHIND,
 	// DIRTY, UNSTABLE, HAS_HOOKS, DRAFT, UNKNOWN, or "" when unavailable.
@@ -1229,9 +1230,16 @@ func mergeFieldsFrom(pr *CIPullRequestData) (mergeState, reviewDecision string) 
 // parseCIStatusFromRollup extracts CI state and failed checks from a status
 // check rollup. A context the App may not read arrives as a null node (its
 // FORBIDDEN error is reported separately); the rollup state GitHub computed
-// over all contexts is kept and the node is counted as hidden.
+// over all contexts is kept and the node is counted as hidden. A visible
+// in-progress context therefore never downgrades a failing rollup: the
+// failure may live in a hidden node that cannot be named in failedChecks.
 func parseCIStatusFromRollup(rollup *StatusCheckRollup) (state string, failedChecks []string, hidden int) {
 	state = strings.ToLower(rollup.State)
+	markPending := func() {
+		if state != "failure" && state != "error" {
+			state = "pending"
+		}
+	}
 
 	for _, node := range rollup.Contexts.Nodes {
 		if node.TypeName == "" {
@@ -1240,14 +1248,14 @@ func parseCIStatusFromRollup(rollup *StatusCheckRollup) (state string, failedChe
 			// CheckRun conclusion: SUCCESS, FAILURE, NEUTRAL, CANCELLED, SKIPPED, TIMED_OUT, ACTION_REQUIRED
 			// Status: QUEUED, IN_PROGRESS, COMPLETED
 			if node.Status != "COMPLETED" {
-				state = "pending"
+				markPending()
 			} else if node.Conclusion == "FAILURE" || node.Conclusion == "TIMED_OUT" || node.Conclusion == "ACTION_REQUIRED" {
 				failedChecks = append(failedChecks, node.Name)
 			}
 		} else if node.TypeName == "StatusContext" {
 			// StatusContext state: ERROR, EXPECTED, FAILURE, PENDING, SUCCESS
 			if node.State == "PENDING" {
-				state = "pending"
+				markPending()
 			} else if node.State == "ERROR" || node.State == "FAILURE" {
 				failedChecks = append(failedChecks, node.Context)
 			}

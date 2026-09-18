@@ -97,14 +97,25 @@ func (s *partialErrorSummary) log(label string, totalPRs int) {
 func normalizeGraphQLPath(path []interface{}) string {
 	parts := make([]string, 0, len(path))
 	for i, elem := range path {
-		if i == 0 {
+		seg, ok := elem.(string)
+		if !ok || (i == 0 && aliasIndex(seg) >= 0) {
 			continue
 		}
-		if seg, ok := elem.(string); ok {
-			parts = append(parts, seg)
-		}
+		parts = append(parts, seg)
 	}
 	return strings.Join(parts, ".")
+}
+
+// aliasIndex returns N for a prN batch alias, or -1 for any other segment.
+func aliasIndex(seg string) int {
+	if !strings.HasPrefix(seg, "pr") {
+		return -1
+	}
+	idx, err := strconv.Atoi(seg[2:])
+	if err != nil || idx < 0 {
+		return -1
+	}
+	return idx
 }
 
 // aliasedPR resolves the leading prN alias of an error path to owner/repo#number.
@@ -113,11 +124,11 @@ func aliasedPR(path []interface{}, batch []PRInfo) string {
 		return ""
 	}
 	alias, ok := path[0].(string)
-	if !ok || !strings.HasPrefix(alias, "pr") {
+	if !ok {
 		return ""
 	}
-	idx, err := strconv.Atoi(alias[2:])
-	if err != nil || idx < 0 || idx >= len(batch) {
+	idx := aliasIndex(alias)
+	if idx < 0 || idx >= len(batch) {
 		return ""
 	}
 	pr := batch[idx]

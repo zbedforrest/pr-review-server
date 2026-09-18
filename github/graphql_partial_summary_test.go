@@ -100,6 +100,7 @@ func TestPartialErrorSummary_GroupsAcrossBatchesAndTypes(t *testing.T) {
 		{Type: "FORBIDDEN", Message: "nope", Path: []interface{}{"pr1", "pullRequest", "commits", "nodes", float64(0), "commit", "statusCheckRollup", "contexts", "nodes", float64(3)}},
 		{Type: "FORBIDDEN", Message: "nope", Path: []interface{}{"pr1", "pullRequest", "commits", "nodes", float64(0), "commit", "statusCheckRollup", "contexts", "nodes", float64(4)}},
 		{Type: "NOT_FOUND", Message: "gone", Path: []interface{}{"pr0", "pullRequest"}},
+		{Type: "RATE_LIMITED", Message: "slow down", Path: []interface{}{"rateLimit", "remaining"}},
 	}, []PRInfo{{Owner: "acme", Repo: "example", Number: 1}, {Owner: "acme", Repo: "example", Number: 2}})
 	s.add([]GraphQLPartialError{
 		{Type: "FORBIDDEN", Message: "nope", Path: []interface{}{"pr0", "pullRequest", "commits", "nodes", float64(0), "commit", "statusCheckRollup", "contexts", "nodes", float64(0)}},
@@ -115,9 +116,10 @@ func TestPartialErrorSummary_GroupsAcrossBatchesAndTypes(t *testing.T) {
 		t.Fatalf("want exactly one line:\n%s", line)
 	}
 	for _, want := range []string{
-		"CI status: 4 partial errors on 3/60 PRs",
+		"CI status: 5 partial errors on 3/60 PRs",
 		"FORBIDDEN at pullRequest.commits.nodes.commit.statusCheckRollup.contexts.nodes x3 on 2 PRs (e.g. acme/example#2): nope",
 		"NOT_FOUND at pullRequest x1 on 1 PRs (e.g. acme/example#1): gone",
+		"RATE_LIMITED at rateLimit.remaining x1 on 0 PRs: slow down",
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("missing %q in:\n%s", want, line)
