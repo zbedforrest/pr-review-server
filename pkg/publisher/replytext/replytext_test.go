@@ -56,8 +56,10 @@ func TestAssertsIntent(t *testing.T) {
 		"This commit intentionally keeps the behavior as-is.",
 		"This is intentional; we changed nothing.",
 		"This is intentional and will not be fixed.",
+		"This is intentional; see commit 519f006 for context, keeping it as-is.",
 	}
 	no := []string{
+		"This is not something we consider to be intentional.",
 		"I don't think this is by design.",
 		"I didn't do this on purpose.",
 		"Not sure this was intentional.",
@@ -95,6 +97,7 @@ func TestDefersAndTicketKeys(t *testing.T) {
 		"Tracking it separately in PROJ-42.",
 		"PROJ-42 is the follow-up.",
 		"I'll fix it in a follow-up PR.",
+		"Not fixed here; I'll handle it in a follow-up.",
 	}
 	for _, s := range yes {
 		if !Defers(s) {
@@ -285,30 +288,21 @@ func TestRenderIntentPushbackBelowMediumDoesNotAskAboutAcceptedRisk(t *testing.T
 	}
 }
 
-func TestAppendixLenCountsOnlyWhatRenderAppended(t *testing.T) {
+func TestRenderPartsSeparatesTheAppendix(t *testing.T) {
 	body := "The guard on a.go:12 is gone."
 	ctx := Context{AuthorComment: "Intentional, out of scope here, keeping as is.", FindingBody: "**[HIGH] x**", Decision: "concede"}
-	got, _ := Render(body, ctx)
-	if got == body || AppendixLen(got) != len([]rune(got))-len([]rune(body)) {
-		t.Errorf("got %q appendix=%d", got, AppendixLen(got))
-	}
-	if AppendixLen(body) != 0 || AppendixLen("Tracked against PROJ-1 already.") != 0 {
-		t.Errorf("a body with nothing appended has no appendix")
-	}
-	withKey, _ := Render(body, Context{AuthorComment: "Out of scope, see PROJ-42.", Decision: "hold"})
-	if AppendixLen(withKey) != len([]rune(" Tracking this against PROJ-42.")) {
-		t.Errorf("got %q appendix=%d", withKey, AppendixLen(withKey))
-	}
 	paragraph, appendix, ok := RenderParts(body, ctx)
 	if !ok || paragraph != body || appendix != " "+riskAskBare+" "+TicketAsk {
 		t.Errorf("paragraph=%q appendix=%q ok=%t", paragraph, appendix, ok)
 	}
+	if _, appendix, _ := RenderParts(body, Context{AuthorComment: "Out of scope, see PROJ-42.", Decision: "hold"}); appendix != " Tracking this against PROJ-42." {
+		t.Errorf("appendix=%q", appendix)
+	}
 	if _, appendix, _ := RenderParts(body+" "+TicketAsk, Context{AuthorComment: "Out of scope, follow-up.", Decision: "hold"}); appendix != "" {
 		t.Errorf("an ask the model wrote is part of its paragraph: appendix=%q", appendix)
 	}
-	repeated := body + strings.Repeat(" "+TicketAsk, 8)
-	if AppendixLen(repeated) != len([]rune(" "+TicketAsk)) {
-		t.Errorf("each appended sentence counts once: %d", AppendixLen(repeated))
+	if paragraph, appendix, _ := RenderParts(body, Context{AuthorComment: "Fixed in 519f006.", Decision: "concede"}); paragraph != body || appendix != "" {
+		t.Errorf("nothing to append: paragraph=%q appendix=%q", paragraph, appendix)
 	}
 }
 

@@ -1007,14 +1007,11 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		row.Decision, row.DecisionReact, text = DecisionAbstain, true, ""
 	}
 	rctx.Decision = row.Decision
-	switch {
-	case decidedNow:
-	case text != row.ReplyBody:
+	// A row rendered by an earlier step does not say what that step
+	// appended, so it is capped whole rather than crediting a sentence the
+	// model may have written itself.
+	if !decidedNow && text != row.ReplyBody {
 		appendixRunes = len([]rune(appendix))
-	default:
-		// Rendered by an earlier step that is not around to say what it
-		// appended; the text itself is the best record.
-		appendixRunes = replytext.AppendixLen(text)
 	}
 	if text != row.ReplyBody || row.Decision != decided {
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{

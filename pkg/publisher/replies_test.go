@@ -1314,3 +1314,22 @@ func TestReplyReactor_TicketAskWrittenByTheModelCountsTowardTheCap(t *testing.T)
 		t.Fatalf("posted=%d rep=%+v", len(gh.posted), rep)
 	}
 }
+
+func TestReplyReactor_ResumedRenderedDecisionIsCappedWhole(t *testing.T) {
+	paragraph := strings.TrimSpace(strings.Repeat("The over-count is introduced on purrBridge.ts:353 before the drop on PurrMediaExperiences.tsx:68. ", 6))
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{}, fmt.Errorf("must not run: the decision is persisted")
+	})
+	gh.threads["acme/example#7"][1].Body = "Out of scope for this PR, will handle it in a follow-up."
+	thread := threadUnder(gh.threads["acme/example#7"], 100)
+	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", Class: "pushback", Action: ReplyActionPending, Decision: DecisionHold, ReplyBody: paragraph + " " + replytext.TicketAsk,
+		DecisionHead: "head1", DecisionThread: threadFingerprint(thread, 1), CreatedAt: time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)}}
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 0 || rep.TextSkipped["too_long"] != 1 || ledger.rows[0].ReplyBody != paragraph+" "+replytext.TicketAsk {
+		t.Fatalf("posted=%d rep=%+v row=%q", len(gh.posted), rep, ledger.rows[0].ReplyBody)
+	}
+}

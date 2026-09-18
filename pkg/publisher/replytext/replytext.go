@@ -90,18 +90,22 @@ var (
 	// A negated intent phrase ("not intentional", "wasn't by design", "I
 	// don't think this is on purpose") is a concession, and a promised fix
 	// is a change even before it lands.
-	negatedIntentRe = regexp.MustCompile(`(?i)\b(?:not|no|never|isn(?:'|’)?t|wasn(?:'|’)?t|aren(?:'|’)?t|weren(?:'|’)?t|don(?:'|’)?t|didn(?:'|’)?t|doesn(?:'|’)?t|unsure)\b(?:\s+\w+){0,3}\s+(?:intentional|intended|by design|on purpose|deliberate|working as|a (?:product|design) (?:decision|call|choice))`)
+	negatedIntentRe = regexp.MustCompile(`(?i)\b(?:not|no|never|isn(?:'|’)?t|wasn(?:'|’)?t|aren(?:'|’)?t|weren(?:'|’)?t|don(?:'|’)?t|didn(?:'|’)?t|doesn(?:'|’)?t|unsure)\b(?:\s+\w+){0,5}\s+(?:intentional|intended|by design|on purpose|deliberate|working as|a (?:product|design) (?:decision|call|choice))`)
 	// A change claim is affirmative fix language, not any change word:
 	// "nothing changed" and "was added intentionally" are intent, not fixes,
-	// and "this commit" only counts when it is said to change something.
-	changeRe = regexp.MustCompile(`(?i)(?:\bfixed\b|\b(?:i|we)(?:(?:'|’)ve| have|(?:'|’)ll| will)? (?:fix|fixed|change|changed|moved|updated|removed|replaced|added|patched|pushed|split|lifted)\b|\bwill fix\b|\b(?:latest|new|this|that) commit (?:fixes|changes|moves|removes|adds|clears|drops|updates|replaces|addresses|handles|covers|guards)\b|\b(?:fixed|changed|addressed|handled) in (?:the )?(?:latest|new|this|that) commit\b|\bpushed\b|\bno longer\b|\bnow (?:works|returns|checks|guards|handles|rejects|clears|drops|skips|uses)\b|(?:\bin |\bat |\(|\bcommit )[0-9a-f]{7,40}\b)`)
+	// and a commit, by noun or by hash, only counts when it is said to
+	// change something.
+	changeRe = regexp.MustCompile(`(?i)(?:\bfixed\b|\b(?:i|we)(?:(?:'|’)ve| have|(?:'|’)ll| will)? (?:fix|fixed|change|changed|moved|updated|removed|replaced|added|patched|pushed|split|lifted)\b|\bwill fix\b|\b(?:latest|new|this|that) commit (?:fixes|changes|moves|removes|adds|clears|drops|updates|replaces|addresses|handles|covers|guards)\b|\b(?:fixed|changed|addressed|handled) in (?:the )?(?:latest|new|this|that) commit\b|\bpushed\b|\bno longer\b|\bnow (?:works|returns|checks|guards|handles|rejects|clears|drops|skips|uses)\b|\b(?:fixed|changed|addressed|handled|moved|removed|updated|patched|resolved) (?:it |this |that )?(?:in |at |\()(?:commit )?[0-9a-f]{7,40}\b)`)
 	// "will not be fixed" and "we changed nothing" are the opposite of a fix.
 	negatedChangeRe = regexp.MustCompile(`(?i)\b(?:(?:not|never|won(?:'|’)?t)\s+(?:be\s+|going\s+to\s+(?:be\s+)?)?(?:fix(?:ed|ing)?|chang(?:ed|ing)|updated?|moved?|removed?)\b|(?:fixed|changed|moved|updated|removed) nothing\b)`)
 	deferRe         = regexp.MustCompile(`(?i)\b(?:out of scope|follow[- ]?up|later (?:pr|change|commit)|(?:separate|another|different|future|new|its own) (?:pr|ticket|change|issue)|not (?:touching|addressing|fixing|changing|doing) (?:it|this|that) here|(?:in|as) a ticket|track(?:s|ed|ing)? (?:it |this |that )?(?:separately|elsewhere))\b`)
 	// "not a separate issue" and "no follow-up needed" are the opposite; so
-	// are the verb "follow up with", a "follow-up commit" already pushed, and
-	// a deferral that ends in "fixed it here".
-	negatedDeferRe = regexp.MustCompile(`(?i)\b(?:(?:not|no|never|isn(?:'|’)?t|doesn(?:'|’)?t|don(?:'|’)?t|without)\b(?:\s+\w+){0,2}\s+(?:out of scope|follow[- ]?up|(?:separate|another|different|future|new) (?:pr|ticket|change|issue)|track(?:s|ed|ing)? (?:it |this |that )?(?:separately|elsewhere))|follow up (?:with|on|about)\b|follow[- ]?up (?:commit|push)\b|(?:fixed|done|addressed|handled|changed) (?:it |this |that )?(?:here|in this (?:pr|commit|branch))\b)`)
+	// are the verb "follow up with" and a "follow-up commit" already pushed.
+	negatedDeferRe = regexp.MustCompile(`(?i)\b(?:(?:not|no|never|isn(?:'|’)?t|doesn(?:'|’)?t|don(?:'|’)?t|without)\b(?:\s+\w+){0,2}\s+(?:out of scope|follow[- ]?up|(?:separate|another|different|future|new) (?:pr|ticket|change|issue)|track(?:s|ed|ing)? (?:it |this |that )?(?:separately|elsewhere))|follow up (?:with|on|about)\b|follow[- ]?up (?:commit|push)\b)`)
+	// A deferral that ends in "fixed it here" is a fix, unless the fix here
+	// is what is being denied ("not fixed here; follow-up").
+	fixedHereRe    = regexp.MustCompile(`(?i)\b(?:fixed|done|addressed|handled|changed) (?:it |this |that )?(?:here|in this (?:pr|commit|branch))\b`)
+	notFixedHereRe = regexp.MustCompile(`(?i)\b(?:not|never|isn(?:'|’)?t|wasn(?:'|’)?t)\b(?:\s+\w+){0,2}\s+(?:fixed|done|addressed|handled|changed) (?:it |this |that )?(?:here|in this (?:pr|commit|branch))\b`)
 	// A key counts when the author talks about it as a ticket (or links it),
 	// or leads a sentence with it ("PROJ-42 is the follow-up."); a bare GPT-4
 	// or COVID-19 in passing is not one.
@@ -120,7 +124,6 @@ var (
 	// A sentence ends at terminal punctuation followed by whitespace, so the
 	// dots in retry.go:41 do not split it; a wrapped line is one sentence.
 	sentenceRe = regexp.MustCompile(`(?s).*?[.!?]+["')\]]*(?:\s+|$)|.+$`)
-	trackingRe = regexp.MustCompile(`\sTracking this against [A-Z][A-Z0-9]{1,9}-\d{1,6}\.$`)
 	// The idempotency guards match an actual ask, not the words in passing:
 	// "the issue key on cache.go:12" and "the description column" are evidence.
 	ticketAskRe = regexp.MustCompile(`(?i)\bif there is a ticket\b|(?:\b(?:ticket|issue|jira)\b[^.!?]{0,40}\bkey\b|\bkey\b[^.!?]{0,40}\b(?:ticket|issue|jira)\b)[^.!?]*\?`)
@@ -142,7 +145,8 @@ func AssertsIntent(comment string) bool {
 // Defers reports an author reply that sends the fix elsewhere: out of scope,
 // a follow-up, a later PR, a separate ticket.
 func Defers(comment string) bool {
-	return deferRe.MatchString(comment) && !negatedDeferRe.MatchString(comment)
+	fixedHere := fixedHereRe.MatchString(comment) && !notFixedHereRe.MatchString(comment)
+	return deferRe.MatchString(comment) && !negatedDeferRe.MatchString(comment) && !fixedHere
 }
 
 // TicketKeys returns the issue keys (ABC-123) named in the text, in order,
@@ -245,25 +249,6 @@ func containsAny(s string, subs []string) bool {
 		}
 	}
 	return false
-}
-
-// AppendixLen is the rune count of the renderer's sentences at the end of a
-// body rendered by an earlier step, when the step that appended them is not
-// around to say. It reads the text, so a model that wrote the exact ticket
-// ask itself is credited for it too; each sentence counts at most once.
-func AppendixLen(body string) int {
-	n := 0
-	if m := trackingRe.FindString(body); m != "" {
-		body = strings.TrimSuffix(body, m)
-		n += len([]rune(m))
-	} else if strings.HasSuffix(body, " "+TicketAsk) {
-		body = strings.TrimSuffix(body, " "+TicketAsk)
-		n += len([]rune(" " + TicketAsk))
-	}
-	if strings.HasSuffix(body, " "+riskAskBare) {
-		n += len([]rune(" " + riskAskBare))
-	}
-	return n
 }
 
 // dropWithdrawal removes the withdrawal clause and any sentence that was
