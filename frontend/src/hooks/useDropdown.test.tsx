@@ -109,6 +109,45 @@ describe('computeDropdownPosition', () => {
   });
 });
 
+describe('computeDropdownPosition placement right', () => {
+  it('places the panel to the right of the anchor', () => {
+    const pos = computeDropdownPosition(rect({ top: 100, right: 400 }), VIEWPORT, { panelWidth: 240, placement: 'right', gap: 4 });
+    expect(pos.placement).toBe('right');
+    expect(pos.left).toBe(404);
+    expect(pos.top).toBe(100);
+  });
+
+  it('flips to the left when the right side overflows', () => {
+    const pos = computeDropdownPosition(
+      rect({ left: 700, right: 900 }),
+      VIEWPORT,
+      { panelWidth: 240, placement: 'right', gap: 4, viewportMargin: 8 }
+    );
+    expect(pos.placement).toBe('left');
+    expect(pos.left).toBe(700 - 4 - 240);
+  });
+
+  it('clamps horizontally when neither side fits', () => {
+    const pos = computeDropdownPosition(
+      rect({ left: 100, right: 900 }),
+      VIEWPORT,
+      { panelWidth: 240, placement: 'right', gap: 4, viewportMargin: 8 }
+    );
+    expect(pos.placement).toBe('right');
+    expect(pos.left).toBe(1024 - 240 - 8);
+  });
+
+  it('clamps a right-placed panel vertically', () => {
+    const pos = computeDropdownPosition(
+      rect({ top: 700, bottom: 720, right: 400 }),
+      VIEWPORT,
+      { panelWidth: 240, panelHeight: 200, placement: 'right', gap: 4, viewportMargin: 8 }
+    );
+    expect(pos.top).toBe(768 - 200 - 8);
+    expect(pos.maxHeight).toBe(200);
+  });
+});
+
 // A tiny harness that wires the hook's refs to real DOM nodes so we can
 // exercise outside-click / Escape behavior.
 function Harness({ options }: { options?: UseDropdownOptions }) {

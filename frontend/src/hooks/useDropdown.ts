@@ -3,7 +3,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 export interface DropdownPosition {
   top: number;
   left: number;
-  placement: 'top' | 'bottom';
+  /** Where the panel ended up relative to the anchor after any flip. */
+  placement: 'top' | 'bottom' | 'right' | 'left';
   /** Room between the panel and the viewport edge it grows toward, in px. */
   maxHeight: number;
 }
@@ -16,8 +17,13 @@ export interface DropdownPositionOptions {
    * if there isn't room below. Omit to always open downward.
    */
   panelHeight?: number;
-  /** Which anchor edge the panel aligns to. Defaults to 'right'. */
+  /** Which anchor edge the panel aligns to. Defaults to 'right'. Ignored for placement 'right'. */
   align?: 'left' | 'right';
+  /**
+   * 'below' (default) opens under the anchor; 'right' opens beside it,
+   * top-aligned, flipping to the anchor's left when the right side overflows.
+   */
+  placement?: 'below' | 'right';
   /** Gap between the anchor and the panel, in px. Defaults to 6. */
   gap?: number;
   /** Minimum distance to keep from the viewport edges, in px. Defaults to 8. */
@@ -34,7 +40,9 @@ export function computeDropdownPosition(
   viewport: { width: number; height: number },
   opts: DropdownPositionOptions
 ): DropdownPosition {
-  const { panelWidth, panelHeight, align = 'right', gap = 6, viewportMargin = 8 } = opts;
+  const { panelWidth, panelHeight, align = 'right', gap = 6, viewportMargin = 8, placement: mode = 'below' } = opts;
+
+  if (mode === 'right') return computeBesidePosition(anchor, viewport, { panelWidth, panelHeight, gap, viewportMargin });
 
   // Horizontal: align to one anchor edge, then clamp inside the viewport.
   const rawLeft = align === 'right' ? anchor.right - panelWidth : anchor.left;
@@ -56,6 +64,29 @@ export function computeDropdownPosition(
     ? viewport.height - top - viewportMargin
     : anchor.top - gap - viewportMargin;
   const maxHeight = Math.max(0, room);
+
+  return { top, left, placement, maxHeight };
+}
+
+function computeBesidePosition(
+  anchor: Pick<DOMRect, 'top' | 'bottom' | 'left' | 'right'>,
+  viewport: { width: number; height: number },
+  opts: { panelWidth: number; panelHeight?: number; gap: number; viewportMargin: number }
+): DropdownPosition {
+  const { panelWidth, panelHeight, gap, viewportMargin } = opts;
+  const maxLeft = viewport.width - panelWidth - viewportMargin;
+
+  let placement: 'right' | 'left' = 'right';
+  let left = anchor.right + gap;
+  if (left > maxLeft && anchor.left - gap - panelWidth >= viewportMargin) {
+    placement = 'left';
+    left = anchor.left - gap - panelWidth;
+  }
+  left = Math.max(viewportMargin, Math.min(left, maxLeft));
+
+  const maxTop = panelHeight != null ? viewport.height - panelHeight - viewportMargin : Infinity;
+  const top = Math.max(viewportMargin, Math.min(anchor.top, maxTop));
+  const maxHeight = Math.max(0, viewport.height - top - viewportMargin);
 
   return { top, left, placement, maxHeight };
 }
@@ -88,6 +119,7 @@ export function useDropdown(options: UseDropdownOptions): UseDropdownResult {
     panelWidth,
     panelHeight,
     align,
+    placement,
     gap,
     viewportMargin,
     closeOnOutsideClick = false,
@@ -123,10 +155,10 @@ export function useDropdown(options: UseDropdownOptions): UseDropdownResult {
       computeDropdownPosition(
         anchor,
         { width: window.innerWidth, height: window.innerHeight },
-        { panelWidth, panelHeight: measured || panelHeight, align, gap, viewportMargin }
+        { panelWidth, panelHeight: measured || panelHeight, align, placement, gap, viewportMargin }
       )
     );
-  }, [panelWidth, panelHeight, align, gap, viewportMargin]);
+  }, [panelWidth, panelHeight, align, placement, gap, viewportMargin]);
 
   // Recompute once the panel has mounted so flip-up can use its real height.
   useLayoutEffect(() => {

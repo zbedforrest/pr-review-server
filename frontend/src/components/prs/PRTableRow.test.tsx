@@ -1,15 +1,19 @@
-import { cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { APIError } from '@/api/client';
 import type { PR } from '@/types/pr';
 import { PRTableRow, type PRRowVariant } from './PRTableRow';
 
-const { triggerMutate, deleteMutate, setHiddenMutate, trackMock, useSettingsMock } = vi.hoisted(() => ({
-  triggerMutate: vi.fn(),
-  deleteMutate: vi.fn(),
-  setHiddenMutate: vi.fn(),
-  trackMock: vi.fn(),
-  useSettingsMock: vi.fn(),
-}));
+const { triggerMutate, deleteMutate, setHiddenMutate, quickActionMutateAsync, trackMock, useSettingsMock, useCurrentUserMock } =
+  vi.hoisted(() => ({
+    triggerMutate: vi.fn(),
+    deleteMutate: vi.fn(),
+    setHiddenMutate: vi.fn(),
+    quickActionMutateAsync: vi.fn(),
+    trackMock: vi.fn(),
+    useSettingsMock: vi.fn(),
+    useCurrentUserMock: vi.fn(),
+  }));
 
 vi.mock('@/hooks/usePRs', () => ({
   useDeletePR: () => ({ mutate: deleteMutate, isPending: false }),
@@ -18,6 +22,12 @@ vi.mock('@/hooks/usePRs', () => ({
 }));
 vi.mock('@/hooks/useSettings', () => ({
   useSettings: () => useSettingsMock(),
+}));
+vi.mock('@/hooks/useCurrentUser', () => ({
+  useCurrentUser: () => useCurrentUserMock(),
+}));
+vi.mock('@/hooks/usePRActions', () => ({
+  useSubmitQuickAction: () => ({ mutateAsync: quickActionMutateAsync, isPending: false, error: null, reset: vi.fn() }),
 }));
 vi.mock('@/hooks/useTelemetry', () => ({
   useTelemetry: () => ({ track: trackMock }),
@@ -28,9 +38,21 @@ vi.mock('@/components/common', () => ({
 vi.mock('./CIStatusIndicator', () => ({ CIStatusIndicator: () => <span>ci</span> }));
 vi.mock('./NotesCell', () => ({ NotesCell: () => <span>notes</span> }));
 vi.mock('./RowActionsMenu', () => ({
-  RowActionsMenu: (props: { publishAllowed: boolean; onTriggerReview: (publish: boolean) => void }) => (
-    <span data-testid="actions" data-publish-allowed={String(props.publishAllowed)}>
+  RowActionsMenu: (props: {
+    publishAllowed: boolean;
+    onTriggerReview: (publish: boolean) => void;
+    quickActions?: { onSubmit: (action: string, body: string, sha: string) => Promise<unknown>; onCopyLink: () => void };
+  }) => (
+    <span data-testid="actions" data-publish-allowed={String(props.publishAllowed)} data-quick-actions={String(!!props.quickActions)}>
       <button type="button" onClick={() => props.onTriggerReview(false)}>actions-dashboard-only</button>
+      {props.quickActions && (
+        <>
+          <button type="button" onClick={() => props.quickActions?.onSubmit('approve', 'LGTM', 'abc123').catch(() => {})}>
+            quick-approve
+          </button>
+          <button type="button" onClick={() => props.quickActions?.onCopyLink()}>quick-copy</button>
+        </>
+      )}
     </span>
   ),
 }));
@@ -85,6 +107,7 @@ const queryGenerateButton = () => screen.queryByRole('button', { name: /^🔄 Ge
 describe('PRTableRow review cell', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useCurrentUserMock.mockReturnValue({ data: undefined });
     useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
   });
   afterEach(() => cleanup());
@@ -228,6 +251,7 @@ describe('PRTableRow review cell', () => {
 describe('PRTableRow default variant', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useCurrentUserMock.mockReturnValue({ data: undefined });
     useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
   });
   afterEach(() => cleanup());
@@ -243,6 +267,7 @@ describe('PRTableRow default variant', () => {
 describe('PRTableRow confidence cell', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useCurrentUserMock.mockReturnValue({ data: undefined });
     useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
   });
   afterEach(() => cleanup());
@@ -273,6 +298,7 @@ describe('PRTableRow confidence cell', () => {
 describe('PRTableRow approvals cell', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useCurrentUserMock.mockReturnValue({ data: undefined });
     useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
   });
   afterEach(() => cleanup());
@@ -309,6 +335,7 @@ describe('PRTableRow PR link click behavior', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    useCurrentUserMock.mockReturnValue({ data: undefined });
     useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
     assignSpy = vi.fn();
     // jsdom's window.location.assign is non-configurable, so replace the whole
@@ -394,6 +421,7 @@ describe('PRTableRow "Review on GitHub" link click behavior', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    useCurrentUserMock.mockReturnValue({ data: undefined });
     useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
     assignSpy = vi.fn();
     Object.defineProperty(window, 'location', {
@@ -455,5 +483,52 @@ describe('PRTableRow "Review on GitHub" link click behavior', () => {
       pr_number: 1,
       label: 'needs_re_review',
     });
+  });
+});
+
+describe('PRTableRow quick actions', () => {
+  const user = { id: 1, github_username: 'alice', github_avatar_url: '', is_admin: false, quick_actions_enabled: true, github_actions_available: true };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSettingsMock.mockReturnValue({ data: { auto_review_requested_prs: true, publish_enabled_authors: '*' } });
+    useCurrentUserMock.mockReturnValue({ data: user });
+  });
+  afterEach(() => cleanup());
+
+  it('passes no quick actions wiring when the flag is off', () => {
+    useCurrentUserMock.mockReturnValue({ data: { ...user, quick_actions_enabled: false } });
+    renderRow(makePR());
+    expect(screen.getByTestId('actions').getAttribute('data-quick-actions')).toBe('false');
+  });
+
+  it('tracks quick_action_approve and calls mutate with expected_head_sha', async () => {
+    quickActionMutateAsync.mockResolvedValue({
+      status: 'success', action: 'approve', review_id: 7, html_url: 'https://github.com/test-org/test-repo/pull/1#pullrequestreview-7',
+      state: 'APPROVED', head_sha: 'abc123', actor: 'alice',
+    });
+    renderRow(makePR());
+    fireEvent.click(screen.getByRole('button', { name: 'quick-approve' }));
+    await waitFor(() => expect(trackMock).toHaveBeenCalledWith('quick_action_approve', {
+      pr_owner: 'test-org', pr_repo: 'test-repo', pr_number: 1, label: 'ok',
+    }));
+    expect(quickActionMutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+      owner: 'test-org', repo: 'test-repo', number: 1, action: 'approve', body: 'LGTM', expected_head_sha: 'abc123',
+    }));
+    const requestId = quickActionMutateAsync.mock.calls[0][0].request_id as string;
+    expect(requestId.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it('labels the telemetry with the error code when the action fails', async () => {
+    quickActionMutateAsync.mockRejectedValue(new APIError('own', 422, 'Unprocessable', 'own_pr'));
+    renderRow(makePR());
+    fireEvent.click(screen.getByRole('button', { name: 'quick-approve' }));
+    await waitFor(() => expect(trackMock).toHaveBeenCalledWith('quick_action_approve', expect.objectContaining({ label: 'own_pr' })));
+  });
+
+  it('tracks quick_action_copy_link', () => {
+    renderRow(makePR());
+    fireEvent.click(screen.getByRole('button', { name: 'quick-copy' }));
+    expect(trackMock).toHaveBeenCalledWith('quick_action_copy_link', { pr_owner: 'test-org', pr_repo: 'test-repo', pr_number: 1 });
   });
 });

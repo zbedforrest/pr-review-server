@@ -1,0 +1,56 @@
+@use '../../styles/abstracts/variables' as *;
+
+.toast-host {
+  position: fixed;
+  right: $spacing-xl;
+  bottom: $spacing-xl;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+  max-width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: baseline;
+  gap: $spacing-sm;
+  padding: $spacing-md $spacing-lg;
+  background: $color-bg-secondary;
+  border: 1px solid $color-border;
+  border-left: 4px solid $color-border;
+  border-radius: $radius-md;
+  box-shadow: $shadow-lg;
+  color: $color-text-primary;
+  font-size: $font-size-md;
+  cursor: pointer;
+  pointer-events: auto;
+  animation: toast-in $transition-fast;
+
+  &--success {
+    border-left-color: $color-success-emphasis;
+  }
+
+  &--danger {
+    border-left-color: $color-error;
+  }
+
+  &__sep {
+    color: $color-text-muted;
+  }
+
+  &__link {
+    color: $color-link;
+    white-space: nowrap;
+
+    &:hover {
+      color: $color-link-hover;
+    }
+  }
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}

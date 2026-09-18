@@ -64,6 +64,10 @@ $panel-width: 220px;
     cursor: not-allowed;
   }
 
+  &--submenu {
+    justify-content: space-between;
+  }
+
   &--danger {
     color: $color-error-text;
 
@@ -72,6 +76,11 @@ $panel-width: 220px;
       color: $color-error-text;
     }
   }
+}
+
+.row-actions__chevron {
+  margin-left: auto;
+  color: $color-text-muted;
 }
 
 @keyframes row-actions-fade {
