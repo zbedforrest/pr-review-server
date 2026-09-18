@@ -13,6 +13,11 @@ type UserResponse struct {
 	GitHubUsername  string `json:"github_username"`
 	GitHubAvatarURL string `json:"github_avatar_url"`
 	IsAdmin         bool   `json:"is_admin"`
+	// QuickActionsEnabled mirrors QUICK_ACTIONS_ENABLED (and the admin-only
+	// stage); GitHubActionsAvailable is whether this request carries a usable
+	// GitHub token to act as the human.
+	QuickActionsEnabled    bool `json:"quick_actions_enabled"`
+	GitHubActionsAvailable bool `json:"github_actions_available"`
 }
 
 // handleGetUser returns information about the currently logged-in user
@@ -23,11 +28,14 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_, _, tokenOK := auth.GitHubUserToken(r)
 	response := UserResponse{
-		ID:              user.ID,
-		GitHubUsername:  user.GitHubUsername,
-		GitHubAvatarURL: user.GitHubAvatarURL,
-		IsAdmin:         s.isAdmin(user),
+		ID:                     user.ID,
+		GitHubUsername:         user.GitHubUsername,
+		GitHubAvatarURL:        user.GitHubAvatarURL,
+		IsAdmin:                s.isAdmin(user),
+		QuickActionsEnabled:    s.quickActionsAvailableTo(user),
+		GitHubActionsAvailable: tokenOK,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
