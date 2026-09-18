@@ -720,13 +720,13 @@ func TestDiffFilesForWorktree_StackedBase(t *testing.T) {
 	}
 
 	// True base: only the child PR's own change.
-	got := names(diffFilesForWorktree(context.Background(), clone, "feature-parent", "", "", 0))
+	got := names(diffFilesForWorktree(context.Background(), clone, "feature-parent", "", "", 0, ""))
 	if !got["app/child.ts"] || got["app/parent.ts"] {
 		t.Fatalf("base=feature-parent: want exactly the child change, got %v", got)
 	}
 
 	// Fallback ("" -> origin/HEAD = main): the parent branch's changes leak in.
-	got = names(diffFilesForWorktree(context.Background(), clone, "", "", "", 0))
+	got = names(diffFilesForWorktree(context.Background(), clone, "", "", "", 0, ""))
 	if !got["app/child.ts"] || !got["app/parent.ts"] {
 		t.Fatalf("base=\"\": expected documented inflation (parent+child), got %v", got)
 	}
@@ -741,7 +741,7 @@ func TestDiffFilesForWorktree_StackedBase(t *testing.T) {
 	runIn(".", "clone", "-q", "--depth", "1", "--branch", "main", "file://"+upstream, sb)
 	runIn(sb, "fetch", "-q", "origin", "+refs/heads/feature-child:refs/agent-pr/7")
 	runIn(sb, "checkout", "-q", "--detach", "refs/agent-pr/7")
-	got = names(diffFilesForWorktree(context.Background(), sb, "feature-parent", "", "", 0))
+	got = names(diffFilesForWorktree(context.Background(), sb, "feature-parent", "", "", 0, ""))
 	if !got["app/child.ts"] || got["app/parent.ts"] {
 		t.Fatalf("single-branch clone: want the missing base ref fetched and only the child change diffed, got %v", got)
 	}
