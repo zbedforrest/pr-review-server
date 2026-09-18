@@ -44,13 +44,13 @@ $leaf-width: 240px;
     cursor: pointer;
     transition: background-color $transition-fast;
 
-    &:hover:not(:disabled),
+    &:hover:not([aria-disabled='true']),
     &:focus-visible {
       background: $color-bg-hover;
       color: $color-link-hover;
     }
 
-    &:disabled {
+    &[aria-disabled='true'] {
       opacity: 0.6;
       cursor: not-allowed;
     }
@@ -58,7 +58,7 @@ $leaf-width: 240px;
     &--danger {
       color: $color-error-text;
 
-      &:hover:not(:disabled) {
+      &:hover:not([aria-disabled='true']) {
         background: $color-bg-error-dim;
         color: $color-error-text;
       }

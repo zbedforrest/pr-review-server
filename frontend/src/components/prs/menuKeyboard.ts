@@ -1,11 +1,17 @@
 // Keep in sync with $leaf-width in QuickActionsSubmenu.scss.
 export const QUICK_ACTIONS_LEAF_WIDTH = 240;
 
-export function focusableMenuItems(root: HTMLElement | null): HTMLElement[] {
+/** Items arrow keys can land on: aria-disabled ones stay reachable so their reason is announced. */
+export function roveableMenuItems(root: HTMLElement | null): HTMLElement[] {
   if (!root) return [];
   return Array.from(root.querySelectorAll<HTMLElement>('[role="menuitem"]')).filter(
-    (el) => !el.hasAttribute('disabled') && el.getAttribute('aria-disabled') !== 'true'
+    (el) => !el.hasAttribute('disabled')
   );
+}
+
+/** Items that can be activated; the first of these takes focus when a menu opens. */
+export function focusableMenuItems(root: HTMLElement | null): HTMLElement[] {
+  return roveableMenuItems(root).filter((el) => el.getAttribute('aria-disabled') !== 'true');
 }
 
 /** Moves focus among enabled menu items for ArrowUp/Down/Home/End. Returns true when handled. */

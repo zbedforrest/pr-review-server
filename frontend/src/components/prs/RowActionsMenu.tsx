@@ -211,13 +211,15 @@ export function RowActionsMenu({
     close();
   }, [onDelete, close]);
 
-  const handleLeafItemClick = useCallback(() => {
+  // Enter and Space arrive as a native click with detail 0; handling them on
+  // keydown too would let Firefox's keyup click toggle the leaf shut again.
+  const handleLeafItemClick = useCallback((e: MouseEvent<HTMLButtonElement>) => {
     if (leafIsOpen) closeLeaf();
-    else openLeaf('click');
+    else openLeaf(e.detail === 0 ? 'keyboard' : 'click');
   }, [leafIsOpen, closeLeaf, openLeaf]);
 
   const handleLeafItemKeyDown = useCallback((e: KeyboardEvent<HTMLButtonElement>) => {
-    if (e.key === 'ArrowRight' || e.key === 'Enter' || e.key === ' ') {
+    if (e.key === 'ArrowRight') {
       e.preventDefault();
       e.stopPropagation();
       openLeaf('keyboard');

@@ -40,6 +40,8 @@ export function quickActionErrorMessage(action: QuickAction, error: APIError | E
       return 'Your GitHub authorization expired. Sign in again.';
     case 'pr_closed':
       return 'This PR is closed on GitHub.';
+    case 'head_moved':
+      return 'The PR head moved since this row loaded. Close this dialog and try again from the refreshed row.';
     case 'pr_unknown':
       return 'PRism no longer tracks this PR.';
     case 'draft_not_green':

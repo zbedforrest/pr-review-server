@@ -1,7 +1,7 @@
 import { Fragment, forwardRef, useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import type { QuickAction } from '@/api/prActions';
 import type { PR } from '@/types/pr';
-import { QUICK_ACTIONS_LEAF_WIDTH, focusableMenuItems, roveMenuFocus } from './menuKeyboard';
+import { QUICK_ACTIONS_LEAF_WIDTH, roveMenuFocus, roveableMenuItems } from './menuKeyboard';
 import type { QuickActionAvailabilityMap } from './quickActionPolicy';
 import './QuickActionsSubmenu.scss';
 
@@ -66,7 +66,7 @@ export const QuickActionsSubmenu = forwardRef<HTMLDivElement, QuickActionsSubmen
         return;
       }
       const root = e.currentTarget;
-      if (roveMenuFocus(focusableMenuItems(root), e.key, document.activeElement)) {
+      if (roveMenuFocus(roveableMenuItems(root), e.key, document.activeElement)) {
         e.preventDefault();
         e.stopPropagation();
       }
@@ -96,11 +96,10 @@ export const QuickActionsSubmenu = forwardRef<HTMLDivElement, QuickActionsSubmen
               type="button"
               role="menuitem"
               className={`quick-actions__item${className ? ` ${className}` : ''}`}
-              disabled={!state.enabled}
               aria-disabled={!state.enabled}
               title={state.reason}
               aria-describedby={state.reason ? reasonId : undefined}
-              onClick={() => onChoose(action)}
+              onClick={state.enabled ? () => onChoose(action) : undefined}
             >
               <span className="quick-actions__icon" aria-hidden="true">{icon}</span> {label}
             </button>
@@ -125,10 +124,9 @@ export const QuickActionsSubmenu = forwardRef<HTMLDivElement, QuickActionsSubmen
         type="button"
         role="menuitem"
         className="quick-actions__item"
-        disabled={!availability.copy.enabled}
         aria-disabled={!availability.copy.enabled}
         title={availability.copy.reason}
-        onClick={handleCopy}
+        onClick={availability.copy.enabled ? handleCopy : undefined}
       >
         <span className="quick-actions__icon" aria-hidden="true">⧉</span> {copyLabel}
       </button>

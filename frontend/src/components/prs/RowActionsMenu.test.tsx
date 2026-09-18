@@ -269,7 +269,7 @@ describe('RowActionsMenu quick actions', () => {
   it('opens the quick actions leaf on click, inside the parent panel, with the footer login', () => {
     renderMenu({ quickActions: makeWiring() });
     openMenu();
-    fireEvent.click(quickItem());
+    fireEvent.click(quickItem(), { detail: 1 });
     const panel = leaf();
     expect(panel).toBeTruthy();
     expect(quickItem().getAttribute('aria-expanded')).toBe('true');
@@ -326,13 +326,15 @@ describe('RowActionsMenu quick actions', () => {
   it('Escape in the leaf closes only the leaf and refocuses the item', () => {
     renderMenu({ quickActions: makeWiring() });
     openMenu();
-    fireEvent.keyDown(quickItem(), { key: 'Enter' });
+    fireEvent.click(quickItem(), { detail: 0 });
     expect(leaf()).toBeTruthy();
+    expect(document.activeElement).toBe(approveItem());
+    expect(track).toHaveBeenCalledWith('quick_actions_open', expect.objectContaining({ label: 'keyboard' }));
     fireEvent.keyDown(approveItem(), { key: 'Escape' });
     expect(leaf()).toBeNull();
     expect(screen.queryAllByRole('menu')).toHaveLength(1);
     expect(document.activeElement).toBe(quickItem());
-    fireEvent.keyDown(quickItem(), { key: ' ' });
+    fireEvent.click(quickItem(), { detail: 0 });
     fireEvent.keyDown(approveItem(), { key: 'ArrowLeft' });
     expect(leaf()).toBeNull();
     expect(screen.queryAllByRole('menu')).toHaveLength(1);
@@ -389,23 +391,38 @@ describe('RowActionsMenu quick actions', () => {
     renderMenu({ pr: makePR({ is_mine: true }), quickActions: makeWiring() });
     openMenu();
     fireEvent.click(quickItem());
-    expect(approveItem().disabled).toBe(true);
     expect(approveItem().getAttribute('aria-disabled')).toBe('true');
     expect(approveItem().getAttribute('title')).toBe('You cannot approve your own PR');
-    expect((screen.getByRole('menuitem', { name: /Comment/ }) as HTMLButtonElement).disabled).toBe(false);
+    expect(document.getElementById(approveItem().getAttribute('aria-describedby')!)?.textContent).toBe('You cannot approve your own PR');
+    expect(screen.getByRole('menuitem', { name: /Comment/ }).getAttribute('aria-disabled')).toBe('false');
+    fireEvent.click(approveItem());
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryAllByRole('menu')).toHaveLength(2);
   });
 
   it('offers sign-in and disables review items when the token is unavailable', () => {
     renderMenu({ quickActions: makeWiring({ user: { ...quickUser, github_actions_available: false } }) });
     openMenu();
     fireEvent.click(quickItem());
-    expect(approveItem().disabled).toBe(true);
+    expect(approveItem().getAttribute('aria-disabled')).toBe('true');
     expect(approveItem().getAttribute('title')).toBe('Sign in again to enable GitHub actions');
     const signIn = screen.getByRole('menuitem', { name: /Sign in again to enable/ });
     expect(signIn.getAttribute('href')).toBe('/login');
     expect(screen.getByRole('menuitem', { name: /Open on GitHub/ }).getAttribute('href')).toBe(
       'https://github.com/test-org/test-repo/pull/1'
     );
+  });
+
+  it('keeps aria-disabled leaf items in the arrow order but not as the initial focus', () => {
+    renderMenu({ pr: makePR({ is_mine: true }), quickActions: makeWiring() });
+    openMenu();
+    fireEvent.keyDown(quickItem(), { key: 'ArrowRight' });
+    const comment = screen.getByRole('menuitem', { name: /Comment/ });
+    expect(document.activeElement).toBe(comment);
+    fireEvent.keyDown(leaf()!, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Request changes/ }));
+    fireEvent.keyDown(leaf()!, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(approveItem());
   });
 
   it('roves focus through the parent items with arrow keys and skips leaf items', () => {

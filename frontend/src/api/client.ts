@@ -31,6 +31,15 @@ interface JSONErrorBody {
   details?: Record<string, string>;
 }
 
+function stringFields(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, field] of Object.entries(value)) {
+    if (typeof field === 'string') out[key] = field;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function parseJSONError(body: string): JSONErrorBody | null {
   if (!body.startsWith('{')) return null;
   try {
@@ -38,11 +47,7 @@ function parseJSONError(body: string): JSONErrorBody | null {
     if (typeof parsed !== 'object' || parsed === null) return null;
     const { error, code, details } = parsed as Record<string, unknown>;
     if (typeof error !== 'string') return null;
-    return {
-      error,
-      code: typeof code === 'string' ? code : undefined,
-      details: typeof details === 'object' && details !== null ? (details as Record<string, string>) : undefined,
-    };
+    return { error, code: typeof code === 'string' ? code : undefined, details: stringFields(details) };
   } catch {
     return null;
   }
@@ -53,7 +58,8 @@ async function errorFromResponse(response: Response): Promise<APIError> {
   const fallback = `API error: ${response.statusText || response.status}`;
   const json = parseJSONError(body);
   if (json) {
-    return new APIError(json.error || fallback, response.status, response.statusText, json.code, json.details);
+    const readable = json.error !== '' && json.error.length <= MAX_ERROR_BODY;
+    return new APIError(readable ? json.error : fallback, response.status, response.statusText, json.code, json.details);
   }
   const readable = body !== '' && body.length <= MAX_ERROR_BODY && !body.startsWith('<');
   return new APIError(readable ? body : fallback, response.status, response.statusText);

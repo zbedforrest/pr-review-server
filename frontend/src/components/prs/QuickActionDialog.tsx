@@ -39,11 +39,14 @@ export function QuickActionDialog({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const primaryRef = useRef<HTMLButtonElement>(null);
   const [body, setBody] = useState('');
+  // The head the user saw when the dialog opened; a row refresh must not
+  // retarget the review, only an explicit head-moved confirmation may.
+  const [openedSha] = useState(pr.commit_sha);
 
-  const movedTo = headMovedTo && headMovedTo !== pr.commit_sha ? headMovedTo : undefined;
-  const expectedHeadSha = movedTo ?? pr.commit_sha;
+  const movedTo = headMovedTo && headMovedTo !== openedSha ? headMovedTo : undefined;
+  const expectedHeadSha = movedTo ?? openedSha;
   const canSubmit = !pending && (!copy.requiresBody || body.trim() !== '');
-  const showError = error !== null && error.code !== 'head_moved';
+  const showError = error !== null && !(error.code === 'head_moved' && movedTo);
   const prLabel = `${pr.owner}/${pr.repo} #${pr.number}`;
   const prUrl = `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
 
@@ -119,7 +122,7 @@ export function QuickActionDialog({
           </button>
         </div>
         <div className="quick-action-dialog__subtitle">
-          “{pr.title}” · <span className="quick-action-dialog__sha">{shortSha(pr.commit_sha)}</span>
+          “{pr.title}” · <span className="quick-action-dialog__sha">{shortSha(openedSha)}</span>
         </div>
 
         <label className="quick-action-dialog__label" htmlFor={`${titleId}-body`}>
@@ -143,12 +146,12 @@ export function QuickActionDialog({
 
         {movedTo ? (
           <div className="quick-action-dialog__notice" role="status">
-            The PR head moved from {shortSha(pr.commit_sha)} to {shortSha(movedTo)} since this row loaded.{' '}
+            The PR head moved from {shortSha(openedSha)} to {shortSha(movedTo)} since this row loaded.{' '}
             {copy.verb} the new head?
           </div>
         ) : (
           <div className="quick-action-dialog__hint">
-            Posts to GitHub as @{login ?? 'you'}. Reviewed head {shortSha(pr.commit_sha)}; if the head has moved you
+            Posts to GitHub as @{login ?? 'you'}. Reviewed head {shortSha(openedSha)}; if the head has moved you
             will be asked before anything is posted.
           </div>
         )}

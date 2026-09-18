@@ -122,6 +122,36 @@ describe('QuickActionDialog', () => {
     expect(props.onSubmit).toHaveBeenCalledWith('', 'def5678abc');
   });
 
+  it('keeps the head it opened with when the row refreshes underneath it', () => {
+    const onSubmit = vi.fn();
+    const { view } = renderDialog({ onSubmit });
+    view.rerender(
+      <QuickActionDialog pr={makePR({ commit_sha: 'def5678abc' })} action="approve" login="alice" onSubmit={onSubmit} pending={false} error={null} onClose={vi.fn()} />
+    );
+    expect(screen.getByText(/Reviewed head abc1234/)).toBeTruthy();
+    fireEvent.click(primary(/^Approve$/));
+    expect(onSubmit).toHaveBeenCalledWith('', 'abc1234def');
+  });
+
+  it('still shows the head-moved notice after the row catches up to the new head', () => {
+    const error = new APIError('head moved', 409, 'Conflict', 'head_moved', { head_sha: 'def5678abc' });
+    const { view } = renderDialog();
+    view.rerender(
+      <QuickActionDialog pr={makePR({ commit_sha: 'def5678abc' })} action="approve" login="alice" onSubmit={vi.fn()} pending={false} error={error} headMovedTo="def5678abc" onClose={vi.fn()} />
+    );
+    expect(screen.getByRole('status').textContent).toContain('moved from abc1234 to def5678');
+    expect(screen.getByRole('button', { name: 'Approve def5678' })).toBeTruthy();
+  });
+
+  it('shows an error when head_moved carries no usable replacement sha', () => {
+    renderDialog({ error: new APIError('head moved', 409, 'Conflict', 'head_moved') });
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('The PR head moved since this row loaded');
+    cleanup();
+    renderDialog({ error: new APIError('head moved', 409, 'Conflict', 'head_moved', { head_sha: 'abc1234def' }), headMovedTo: 'abc1234def' });
+    expect(screen.getByRole('alert')).toBeTruthy();
+  });
+
   it('keeps text and shows error on failure', () => {
     const { view } = renderDialog({ action: 'request_changes' });
     fireEvent.change(textarea(), { target: { value: 'needs work' } });

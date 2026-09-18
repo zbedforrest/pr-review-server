@@ -114,6 +114,41 @@ describe('useSubmitQuickAction', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).body).toBe('please fix');
   });
 
+  it('decrements approval_count when an approved user requests changes or comments', async () => {
+    for (const action of ['request_changes', 'comment'] as const) {
+      const client = makeClient();
+      client.setQueryData<PR[]>(['prs'], [makePR({ my_review_status: 'APPROVED' })]);
+      fetchMock.mockReturnValue(deferred<Response>().promise);
+      const { result } = renderHook(() => useSubmitQuickAction(), { wrapper: wrapperFor(client) });
+      act(() => result.current.mutate(params(action)));
+      await waitFor(() => expect(rowOf(client).my_review_status).not.toBe('APPROVED'));
+      expect(rowOf(client).approval_count).toBe(1);
+      cleanup();
+    }
+  });
+
+  it('rolls back only the target row fields, keeping updates that landed meanwhile', async () => {
+    const client = makeClient();
+    client.setQueryData<PR[]>(['prs'], [makePR({ title: 'old title' }), makePR({ number: 2 })]);
+    const pending = deferred<Response>();
+    fetchMock.mockReturnValue(pending.promise);
+
+    const { result } = renderHook(() => useSubmitQuickAction(), { wrapper: wrapperFor(client) });
+    act(() => result.current.mutate(params('approve')));
+    await waitFor(() => expect(rowOf(client).my_review_status).toBe('APPROVED'));
+
+    act(() => {
+      client.setQueryData<PR[]>(['prs'], (old) =>
+        old!.map((pr) => (pr.number === 1 ? { ...pr, title: 'new title' } : { ...pr, approval_count: 9 }))
+      );
+    });
+    pending.resolve(new Response('{"error":"no","code":"no_permission"}', { status: 403, statusText: 'Forbidden' }));
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    expect(rowOf(client)).toMatchObject({ title: 'new title', my_review_status: '', approval_count: 2 });
+    expect(client.getQueryData<PR[]>(['prs'])![1].approval_count).toBe(9);
+  });
+
   it('rolls back on error and exposes the parsed code', async () => {
     const client = makeClient();
     const original = [makePR()];
