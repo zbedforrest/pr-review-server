@@ -444,6 +444,10 @@ type CIStatus struct {
 	Number       int
 	State        string   // "success", "failure", "pending", "unknown"
 	FailedChecks []string // Names of failed checks
+	// Check contexts GitHub declined to return (FORBIDDEN, the App lacks a read
+	// permission for that context type). State is still GitHub's rollup over
+	// every context, but FailedChecks is incomplete when this is non-zero.
+	HiddenContexts int
 	// GitHub merge-box summary for the current head: CLEAN, BLOCKED, BEHIND,
 	// DIRTY, UNSTABLE, HAS_HOOKS, DRAFT, UNKNOWN, or "" when unavailable.
 	MergeStateStatus string
@@ -1085,6 +1089,7 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 		results = make(map[string]*CIStatus)
 		wg      sync.WaitGroup
 		sem     = make(chan struct{}, 5)
+		partial = newPartialErrorSummary()
 	)
 
 	for i := 0; i < len(prs); i += batchSize {
@@ -1103,7 +1108,9 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 			query := buildCIStatusQuery(batch)
 
 			var graphqlResp GraphQLCIStatusResponse
-			if err := c.executeGraphQL(ctx, query, &graphqlResp); err != nil {
+			partialErrs, err := c.executeGraphQLPartial(ctx, query, &graphqlResp)
+			partial.add(partialErrs, batch)
+			if err != nil {
 				log.Printf("[GRAPHQL] Warning: Failed to fetch CI status batch: %v", err)
 				return
 			}
@@ -1138,13 +1145,14 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 					continue
 				}
 
-				state, failedChecks := parseCIStatusFromRollup(rollup)
+				state, failedChecks, hidden := parseCIStatusFromRollup(rollup)
 				results[key] = &CIStatus{
 					Owner:            prInfo.Owner,
 					Repo:             prInfo.Repo,
 					Number:           prInfo.Number,
 					State:            state,
 					FailedChecks:     failedChecks,
+					HiddenContexts:   hidden,
 					MergeStateStatus: mergeState,
 					ReviewDecision:   reviewDecision,
 				}
@@ -1154,6 +1162,7 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 	}
 	wg.Wait()
 
+	partial.log("CI status", len(prs))
 	log.Printf("[GRAPHQL] Fetched CI status for %d/%d PRs", len(results), len(prs))
 	return results, nil
 }
@@ -1217,12 +1226,17 @@ func mergeFieldsFrom(pr *CIPullRequestData) (mergeState, reviewDecision string) 
 	return pr.MergeStateStatus, reviewDecision
 }
 
-// parseCIStatusFromRollup extracts CI state and failed checks from a status check rollup.
-func parseCIStatusFromRollup(rollup *StatusCheckRollup) (state string, failedChecks []string) {
+// parseCIStatusFromRollup extracts CI state and failed checks from a status
+// check rollup. A context the App may not read arrives as a null node (its
+// FORBIDDEN error is reported separately); the rollup state GitHub computed
+// over all contexts is kept and the node is counted as hidden.
+func parseCIStatusFromRollup(rollup *StatusCheckRollup) (state string, failedChecks []string, hidden int) {
 	state = strings.ToLower(rollup.State)
 
 	for _, node := range rollup.Contexts.Nodes {
-		if node.TypeName == "CheckRun" {
+		if node.TypeName == "" {
+			hidden++
+		} else if node.TypeName == "CheckRun" {
 			// CheckRun conclusion: SUCCESS, FAILURE, NEUTRAL, CANCELLED, SKIPPED, TIMED_OUT, ACTION_REQUIRED
 			// Status: QUEUED, IN_PROGRESS, COMPLETED
 			if node.Status != "COMPLETED" {
@@ -1245,7 +1259,7 @@ func parseCIStatusFromRollup(rollup *StatusCheckRollup) (state string, failedChe
 		state = "failure"
 	}
 
-	return state, failedChecks
+	return state, failedChecks, hidden
 }
 
 // GetOrgTeamMembers fetches the members of a GitHub team by organization and team slug.

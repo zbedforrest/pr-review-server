@@ -23,6 +23,13 @@ const graphQLEndpoint = "https://api.github.com/graphql"
 // genuine failure or a genuinely-empty result.
 var ErrGraphQLRateLimited = errors.New("github: GraphQL rate limit exceeded")
 
+// GraphQLPartialError is one entry of a GraphQL response's `errors` array.
+type GraphQLPartialError struct {
+	Type    string        `json:"type"`
+	Message string        `json:"message"`
+	Path    []interface{} `json:"path"`
+}
+
 // decodeGraphQLResponse decodes a GraphQL HTTP response body into result, after
 // surfacing any GraphQL-level errors. GitHub returns HTTP 200 even for PARTIAL
 // failures: the affected fields come back null while an `errors` array explains
@@ -32,23 +39,28 @@ var ErrGraphQLRateLimited = errors.New("github: GraphQL rate limit exceeded")
 // identifies the calling query; the error `path` pinpoints the alias (e.g.
 // pr5 -> pullRequest -> timelineItems) so the failing PR can be cross-referenced.
 func decodeGraphQLResponse(label string, body io.Reader, result interface{}) error {
+	partial, err := decodeGraphQLResponsePartial(body, result)
+	for _, e := range partial {
+		log.Printf("[GRAPHQL] %s partial error: type=%s path=%v message=%s",
+			label, e.Type, e.Path, e.Message)
+	}
+	return err
+}
+
+// decodeGraphQLResponsePartial is decodeGraphQLResponse minus the logging: the
+// caller receives the partial errors and decides how to report them.
+func decodeGraphQLResponsePartial(body io.Reader, result interface{}) ([]GraphQLPartialError, error) {
 	raw, err := io.ReadAll(body)
 	if err != nil {
-		return fmt.Errorf("failed to read GraphQL response: %w", err)
+		return nil, fmt.Errorf("failed to read GraphQL response: %w", err)
 	}
 
 	var envelope struct {
-		Errors []struct {
-			Type    string        `json:"type"`
-			Message string        `json:"message"`
-			Path    []interface{} `json:"path"`
-		} `json:"errors"`
+		Errors []GraphQLPartialError `json:"errors"`
 	}
 	rateLimited := false
 	if json.Unmarshal(raw, &envelope) == nil {
 		for _, e := range envelope.Errors {
-			log.Printf("[GRAPHQL] %s partial error: type=%s path=%v message=%s",
-				label, e.Type, e.Path, e.Message)
 			if e.Type == "RATE_LIMITED" || strings.Contains(strings.ToLower(e.Message), "rate limit") {
 				rateLimited = true
 			}
@@ -62,26 +74,36 @@ func decodeGraphQLResponse(label string, body io.Reader, result interface{}) err
 	// decode failure. Decoding still ran first, so callers that want partial data
 	// can read whatever populated.
 	if rateLimited {
-		return ErrGraphQLRateLimited
+		return envelope.Errors, ErrGraphQLRateLimited
 	}
 	if errDecode != nil {
-		return fmt.Errorf("failed to decode GraphQL response: %w", errDecode)
+		return envelope.Errors, fmt.Errorf("failed to decode GraphQL response: %w", errDecode)
 	}
-	return nil
+	return envelope.Errors, nil
 }
 
 // executeGraphQL executes a GraphQL query and decodes the response into the provided result struct.
 // This consolidates the common GraphQL execution boilerplate used across multiple functions.
 func (c *Client) executeGraphQL(ctx context.Context, query string, result interface{}) error {
+	partial, err := c.executeGraphQLPartial(ctx, query, result)
+	for _, e := range partial {
+		log.Printf("[GRAPHQL] client partial error: type=%s path=%v message=%s", e.Type, e.Path, e.Message)
+	}
+	return err
+}
+
+// executeGraphQLPartial is executeGraphQL for callers that aggregate the
+// response's partial errors themselves instead of logging one line each.
+func (c *Client) executeGraphQLPartial(ctx context.Context, query string, result interface{}) ([]GraphQLPartialError, error) {
 	graphqlQuery := map[string]string{"query": query}
 	jsonData, err := json.Marshal(graphqlQuery)
 	if err != nil {
-		return fmt.Errorf("failed to marshal GraphQL query: %w", err)
+		return nil, fmt.Errorf("failed to marshal GraphQL query: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", graphQLEndpoint, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return fmt.Errorf("failed to build HTTP request: %w", err)
+		return nil, fmt.Errorf("failed to build HTTP request: %w", err)
 	}
 
 	// Use fresh installation token from AppClient if available (tokens expire after 1 hour).
@@ -97,15 +119,15 @@ func (c *Client) executeGraphQL(ctx context.Context, query string, result interf
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to execute GraphQL query: %w", err)
+		return nil, fmt.Errorf("failed to execute GraphQL query: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
+		return nil, fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
 	}
 
-	return decodeGraphQLResponse("client", resp.Body, result)
+	return decodeGraphQLResponsePartial(resp.Body, result)
 }
 
 // executeGraphQL on AppClient executes a GraphQL query using the App installation token.

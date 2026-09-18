@@ -812,7 +812,7 @@ func TestParseCIStatusFromRollup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state, failed := parseCIStatusFromRollup(tt.rollup)
+			state, failed, _ := parseCIStatusFromRollup(tt.rollup)
 			if state != tt.expectedState {
 				t.Errorf("Expected state %q, got %q", tt.expectedState, state)
 			}

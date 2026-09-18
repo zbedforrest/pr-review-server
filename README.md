@@ -57,6 +57,8 @@ Minimal deployment: a single VM with Docker and a GitHub App.
 - **Dev mode** (default when no GitHub App is configured): authenticates to GitHub with `GITHUB_TOKEN` and auto-logs-in `GITHUB_USERNAME`. Good for single-user/local use.
 - **Multi-user mode**: set the `GITHUB_APP_*` variables, `OAUTH_CALLBACK_URL`, and `SESSION_SECRET`. Users log in via GitHub OAuth; org membership (`GITHUB_ORG_NAME`) gates access. The OAuth callback path is `/auth/github/callback`.
 
+GitHub App permissions: Pull requests (read and write), Issues (read and write), Contents (read), Members (read), Checks (read) and Commit statuses (read). The last two cover the two kinds of entries in a commit's `statusCheckRollup.contexts`: `CheckRun` needs Checks, `StatusContext` (legacy commit statuses) needs Commit statuses. Missing either one makes GitHub return those entries as `FORBIDDEN`; the rollup state still arrives, but the failed-check names for hidden entries do not, and the poller logs one `[GRAPHQL] CI status: ... partial errors` summary per cycle.
+
 ## Environment variables
 
 The most common ones:
