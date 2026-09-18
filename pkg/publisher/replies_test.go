@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/pkg/publisher/replytext"
 )
 
 func TestClassifyReply(t *testing.T) {
@@ -1119,5 +1120,216 @@ func TestReplyReactor_TerminalPendingPostedRebuttalIsNotThumbedUp(t *testing.T) 
 	r.Run(context.Background())
 	if len(gh.reactions) != 0 || ledger.rows[0].Action != "observed" {
 		t.Fatalf("reactions=%v row=%+v", gh.reactions, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_PostedReplyDropsTheAgreementOpener(t *testing.T) {
+	var outcomes []ReplyOutcome
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right, the caller on b.go:7 checks for nil before this call. Withdrawn.", Cited: []EvidenceRef{{File: "b.go", Line: 7}}}, nil
+	})
+	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "The caller on b.go:7 checks for nil before this call. Withdrawn."
+	if len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], want+"\n\n") {
+		t.Fatalf("posted=%q", gh.posted)
+	}
+	if ledger.rows[0].ReplyBody != want || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
+		t.Errorf("row=%+v states=%v", ledger.rows[0], ledger.states)
+	}
+	if len(outcomes) != 1 || outcomes[0].Note != "" {
+		t.Errorf("a plain dispute carries no note: %+v", outcomes)
+	}
+}
+
+func TestReplyReactor_ReplyThatIsOnlyAnAgreementFormulaIsNotPosted(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right. Agreed.", Cited: []EvidenceRef{{File: "b.go", Line: 7}}}, nil
+	})
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 0 || rep.Abstained != 1 || ledger.rows[0].Decision != DecisionAbstain || ledger.rows[0].ReplyBody != "" {
+		t.Fatalf("posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
+	}
+	if ledger.states["a.go:1:abc"] != "" || len(gh.reactions) != 1 {
+		t.Errorf("an unposted concession must not dismiss the finding: states=%v reactions=%v", ledger.states, gh.reactions)
+	}
+}
+
+func TestReplyReactor_IntentPushbackIsAcknowledgedAndRecordedNotWithdrawn(t *testing.T) {
+	var outcomes []ReplyOutcome
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Cited: []EvidenceRef{{File: "a.go", Line: 12}},
+			Reply: "You're right. That is your call. Keeping it means a request with a nil body reaches parse on a.go:12 and the handler returns 500 instead of 400. Withdrawing this."}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "This is intentional, callers are trusted here. Not a bug, keeping as is."
+	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "That is your call. Keeping it means a request with a nil body reaches parse on a.go:12 and the handler returns 500 instead of 400. Should this be noted in the PR description as accepted risk?"
+	if len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], want+"\n\n") {
+		t.Fatalf("posted=%q", gh.posted)
+	}
+	if ledger.rows[0].Decision != DecisionConcede || ledger.rows[0].ReplyBody != want || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
+		t.Errorf("row=%+v states=%v", ledger.rows[0], ledger.states)
+	}
+	if len(outcomes) != 1 || outcomes[0].Note != replytext.NoteIntentAcknowledged {
+		t.Errorf("outcomes=%+v", outcomes)
+	}
+}
+
+func TestReplyReactor_DeferralAsksForTheTicketKey(t *testing.T) {
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "The nil path is introduced here: a.go:12 dereferences req before the guard that b.go:7 used to provide.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Out of scope for this PR, will handle it in a follow-up."
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 1 || !strings.Contains(gh.posted[0], " "+replytext.TicketAsk+"\n\n") {
+		t.Fatalf("posted=%q", gh.posted)
+	}
+}
+
+func TestReplyReactor_PersistedPreConventionDecisionIsRenderedOnResume(t *testing.T) {
+	runs := 0
+	var outcomes []ReplyOutcome
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{}, fmt.Errorf("must not run: the decision is persisted")
+	})
+	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
+	gh.threads["acme/example#7"][1].Body = "This is intentional, callers are trusted here. Not a bug, keeping as is."
+	seed := func(body string) {
+		thread := threadUnder(gh.threads["acme/example#7"], 100)
+		ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+			Fingerprint: "a.go:1:abc", Class: "pushback", Action: ReplyActionPending, Decision: DecisionConcede, ReplyBody: body,
+			DecisionHead: "head1", DecisionThread: threadFingerprint(thread, 1), CreatedAt: time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)}}
+	}
+	seed("You're right. Trusted callers are your call. A nil body reaches parse on a.go:12 and the handler returns 500. Withdrawing this.")
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "Trusted callers are your call. A nil body reaches parse on a.go:12 and the handler returns 500. Should this be noted in the PR description as accepted risk?"
+	if runs != 0 || len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], want+"\n\n") {
+		t.Fatalf("runs=%d posted=%q", runs, gh.posted)
+	}
+	if len(outcomes) != 1 || outcomes[0].Note != replytext.NoteIntentAcknowledged || outcomes[0].Outcome != "posted" {
+		t.Errorf("outcomes=%+v", outcomes)
+	}
+	if ledger.rows[0].ReplyBody != want || ledger.rows[0].DecisionHead != "head1" {
+		t.Errorf("the ledger must hold what was posted: %+v", ledger.rows[0])
+	}
+
+	gh.posted, outcomes, ledger.states = nil, nil, nil
+	gh.threads["acme/example#7"] = gh.threads["acme/example#7"][:2]
+	seed("You're right. Withdrawing this.")
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 0 || rep.Abstained != 1 || ledger.rows[0].Outcome != "abstained" || ledger.rows[0].Decision != DecisionAbstain || ledger.rows[0].ReplyBody != "" || ledger.states["a.go:1:abc"] != "" {
+		t.Errorf("posted=%v rep=%+v row=%+v states=%v", gh.posted, rep, ledger.rows[0], ledger.states)
+	}
+	if len(outcomes) != 1 || outcomes[0].Decision != DecisionAbstain || outcomes[0].Note != "" {
+		t.Errorf("an abstain carries no intent note: %+v", outcomes)
+	}
+
+	gh.posted, outcomes, ledger.states = nil, nil, nil
+	seed("")
+	rep, err = r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 0 || rep.Abstained != 1 || ledger.rows[0].Decision != DecisionAbstain || ledger.rows[0].Outcome != "abstained" || outcomes[0].Decision != DecisionAbstain {
+		t.Errorf("an empty persisted body must be written back as an abstain: rep=%+v row=%+v outcomes=%+v", rep, ledger.rows[0], outcomes)
+	}
+}
+
+func TestReplyReactor_RendererAppendixDoesNotTripTheLengthCap(t *testing.T) {
+	paragraph := strings.TrimSpace(strings.Repeat("The over-count is introduced on purrBridge.ts:353 before the drop on PurrMediaExperiences.tsx:68. ", 6))
+	if n := len([]rune(paragraph)); n < 560 || n > 600 {
+		t.Fatalf("fixture paragraph is %d chars", n)
+	}
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: paragraph, Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Out of scope for this PR, will handle it in a follow-up."
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 1 || !strings.Contains(gh.posted[0], replytext.TicketAsk) || rep.TextSkipped["too_long"] != 0 {
+		t.Fatalf("posted=%d rep=%+v", len(gh.posted), rep)
+	}
+}
+
+func TestReplyReactor_AnswerKeepsItsLeadingYes(t *testing.T) {
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionAnswer, Reply: "Yes, the guard on a.go:12 runs before the branch.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}, React: true}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Does the guard run first, or should this be a follow-up?"
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], "Yes, the guard on a.go:12 runs before the branch.\n\n") {
+		t.Fatalf("posted=%q", gh.posted)
+	}
+}
+
+func TestReplyReactor_FreshDecisionKeepsItsHeadAndCitationsInTheLedger(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Cited: []EvidenceRef{{File: "a.go", Line: 12}}, Model: "m", DurationMS: 7,
+			Reply: "Withdrawing this. You're right, keeping it means a nil body reaches parse on a.go:12 and returns 500."}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "This is intentional, callers are trusted here. Not a bug, keeping as is."
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	row := ledger.rows[0]
+	if len(gh.posted) != 1 || row.ReplyCommentID == 0 || row.DecisionHead != "head1" || row.DecisionThread == "" || !strings.Contains(row.Cited, "a.go") || row.Model != "m" {
+		t.Fatalf("the ledger must keep what the decision recorded: posted=%d row=%+v", len(gh.posted), row)
+	}
+	if !strings.HasPrefix(gh.posted[0], "Keeping it means a nil body reaches parse on a.go:12 and returns 500. Should this") || row.ReplyBody+"\n\n"+ReplyMarker(101) != gh.posted[0] {
+		t.Errorf("posted=%q row=%q", gh.posted[0], row.ReplyBody)
+	}
+}
+
+func TestReplyReactor_TicketAskWrittenByTheModelCountsTowardTheCap(t *testing.T) {
+	paragraph := strings.TrimSpace(strings.Repeat("The over-count is introduced on purrBridge.ts:353 before the drop on PurrMediaExperiences.tsx:68. ", 6))
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: paragraph + " " + replytext.TicketAsk, Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Out of scope for this PR, will handle it in a follow-up."
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 0 || rep.TextSkipped["too_long"] != 1 {
+		t.Fatalf("posted=%d rep=%+v", len(gh.posted), rep)
+	}
+}
+
+func TestReplyReactor_ResumedRenderedDecisionIsCappedWhole(t *testing.T) {
+	paragraph := strings.TrimSpace(strings.Repeat("The over-count is introduced on purrBridge.ts:353 before the drop on PurrMediaExperiences.tsx:68. ", 6))
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{}, fmt.Errorf("must not run: the decision is persisted")
+	})
+	gh.threads["acme/example#7"][1].Body = "Out of scope for this PR, will handle it in a follow-up."
+	thread := threadUnder(gh.threads["acme/example#7"], 100)
+	ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", Class: "pushback", Action: ReplyActionPending, Decision: DecisionHold, ReplyBody: paragraph + " " + replytext.TicketAsk,
+		DecisionHead: "head1", DecisionThread: threadFingerprint(thread, 1), CreatedAt: time.Date(2026, 9, 9, 17, 59, 0, 0, time.UTC)}}
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 0 || rep.TextSkipped["too_long"] != 1 || ledger.rows[0].ReplyBody != paragraph+" "+replytext.TicketAsk {
+		t.Fatalf("posted=%d rep=%+v row=%q", len(gh.posted), rep, ledger.rows[0].ReplyBody)
 	}
 }

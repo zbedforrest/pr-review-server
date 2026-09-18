@@ -184,3 +184,35 @@ func jsonString(s string) string {
 }
 
 var _ = types.EvidenceRef{}
+
+func TestReplyPromptGuidanceIsEvidenceFirstAndCoversIntentAndDeferral(t *testing.T) {
+	in := replyInput("abc")
+	in.AuthorReply = "This is intended, not a bug, keeping as is. Anything further is out of scope, tracked in PROJ-42."
+	prompt, err := buildReplyPrompt(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`Never open with an agreement formula: not "You're right"`,
+		"The first sentence states the verified fact",
+		`never write "withdrawing" or "withdrawn"`,
+		"one concrete sentence stating the user-visible consequence",
+		"name that consequence as accepted risk and ask whether it should be noted in the PR description",
+		`"If there is a ticket for this, reply with its key and this thread can be closed against it."`,
+		"Never invent a key",
+		"200 to 400 characters (about 40 to 90 words), never more than 600",
+		`"finding_severity": "medium"`,
+		`"author_asserts_intent": true`,
+		`"author_defers": true`,
+		`"ticket_keys": [` + "\n" + `    "PROJ-42"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	for _, banned := range []string{`start with "You're right"`, "Withdrawing this"} {
+		if strings.Contains(prompt, banned) {
+			t.Errorf("prompt still carries %q", banned)
+		}
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"pr-review-server/pkg/publisher/replytext"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -276,13 +277,18 @@ func buildReplyPrompt(in ReplyInput) (string, error) {
 		}
 		thread = append(thread, message{Author: m.Author, Role: role, At: m.At.UTC().Format(time.RFC3339), Body: stripMarkers(m.Body)})
 	}
+	authorReply := stripMarkers(in.AuthorReply)
 	payload, err := json.MarshalIndent(map[string]any{
-		"finding_id":   in.Fingerprint,
-		"finding":      stripMarkers(in.FindingBody),
-		"thread":       thread,
-		"author_reply": stripMarkers(in.AuthorReply),
-		"reply_class":  in.Class,
-		"head_sha":     in.HeadSHA,
+		"finding_id":            in.Fingerprint,
+		"finding":               stripMarkers(in.FindingBody),
+		"finding_severity":      replytext.FindingSeverity(in.FindingBody),
+		"thread":                thread,
+		"author_reply":          authorReply,
+		"reply_class":           in.Class,
+		"author_asserts_intent": replytext.AssertsIntent(authorReply),
+		"author_defers":         replytext.Defers(authorReply),
+		"ticket_keys":           replytext.TicketKeys(authorReply),
+		"head_sha":              in.HeadSHA,
 	}, "", "  ")
 	if err != nil {
 		return "", err
