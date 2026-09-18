@@ -17,6 +17,12 @@ export interface PR {
   draft: boolean;
   ci_state: 'success' | 'failure' | 'pending' | 'unknown';
   ci_failed_checks: string[];
+  // GitHub merge-box summary; optional so cached payloads from older servers
+  // stay valid and read as "unknown".
+  merge_state_status?: 'CLEAN' | 'BLOCKED' | 'BEHIND' | 'DIRTY' | 'UNSTABLE' | 'HAS_HOOKS' | 'DRAFT' | 'UNKNOWN' | '';
+  review_decision?: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | '';
+  // Server-derived: GitHub would let a user press Merge right now.
+  ready_to_merge?: boolean;
   created_at: string | null;
   is_mine: boolean;
   // Team names that caused this review request

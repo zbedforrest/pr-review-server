@@ -31,35 +31,37 @@ func prModelToPR(m *PRModel) *PR {
 	}
 
 	return &PR{
-		ID:              int(m.ID),
-		RepoOwner:       m.RepoOwner,
-		RepoName:        m.RepoName,
-		PRNumber:        m.PRNumber,
-		LastCommitSHA:   m.LastCommitSHA,
-		LastReviewedAt:  m.LastReviewedAt,
-		ReviewHTMLPath:  m.ReviewPath,
-		Status:          m.Status,
-		GeneratingSince: m.GeneratingSince,
-		Title:           m.Title,
-		Author:          m.Author,
-		ApprovalCount:   m.ApprovalCount,
-		MyReviewStatus:  m.MyReviewStatus,
-		CreatedAt:       m.CreatedAt,
-		Draft:           m.Draft,
-		CIState:         m.CIState,
-		CIFailedChecks:  ciFailedChecks,
-		PRState:         m.PRState,
-		ModelFallback:   m.ModelFallback,
-		ReviewRunID:     m.ReviewRunID,
-		ReviewRunJSON:   m.ReviewRunJSON,
-		CriticalCount:   m.CriticalCount,
-		MediumCount:     m.MediumCount,
-		LowCount:        m.LowCount,
-		ReviewVerdict:   m.ReviewVerdict,
-		MergeConfidence: mergeConfidence,
-		Notes:           m.Notes,
-		GitHubUpdatedAt: m.GitHubUpdatedAt,
-		ErrorMessage:    m.ErrorMessage,
+		ID:               int(m.ID),
+		RepoOwner:        m.RepoOwner,
+		RepoName:         m.RepoName,
+		PRNumber:         m.PRNumber,
+		LastCommitSHA:    m.LastCommitSHA,
+		LastReviewedAt:   m.LastReviewedAt,
+		ReviewHTMLPath:   m.ReviewPath,
+		Status:           m.Status,
+		GeneratingSince:  m.GeneratingSince,
+		Title:            m.Title,
+		Author:           m.Author,
+		ApprovalCount:    m.ApprovalCount,
+		MyReviewStatus:   m.MyReviewStatus,
+		CreatedAt:        m.CreatedAt,
+		Draft:            m.Draft,
+		CIState:          m.CIState,
+		CIFailedChecks:   ciFailedChecks,
+		PRState:          m.PRState,
+		MergeStateStatus: m.MergeStateStatus,
+		ReviewDecision:   m.ReviewDecision,
+		ModelFallback:    m.ModelFallback,
+		ReviewRunID:      m.ReviewRunID,
+		ReviewRunJSON:    m.ReviewRunJSON,
+		CriticalCount:    m.CriticalCount,
+		MediumCount:      m.MediumCount,
+		LowCount:         m.LowCount,
+		ReviewVerdict:    m.ReviewVerdict,
+		MergeConfidence:  mergeConfidence,
+		Notes:            m.Notes,
+		GitHubUpdatedAt:  m.GitHubUpdatedAt,
+		ErrorMessage:     m.ErrorMessage,
 	}
 }
 
@@ -81,35 +83,37 @@ func prToPRModel(p *PR) *PRModel {
 	}
 
 	return &PRModel{
-		ID:              uint(p.ID),
-		RepoOwner:       p.RepoOwner,
-		RepoName:        p.RepoName,
-		PRNumber:        p.PRNumber,
-		Title:           p.Title,
-		Author:          p.Author,
-		LastCommitSHA:   p.LastCommitSHA,
-		Status:          p.Status,
-		ReviewPath:      p.ReviewHTMLPath,
-		LastReviewedAt:  p.LastReviewedAt,
-		GeneratingSince: p.GeneratingSince,
-		CreatedAt:       p.CreatedAt,
-		Draft:           p.Draft,
-		ApprovalCount:   p.ApprovalCount,
-		MyReviewStatus:  p.MyReviewStatus,
-		CIState:         p.CIState,
-		CIFailedChecks:  ciFailedChecks,
-		PRState:         p.PRState,
-		ModelFallback:   p.ModelFallback,
-		ReviewRunID:     p.ReviewRunID,
-		ReviewRunJSON:   p.ReviewRunJSON,
-		CriticalCount:   p.CriticalCount,
-		MediumCount:     p.MediumCount,
-		LowCount:        p.LowCount,
-		ReviewVerdict:   p.ReviewVerdict,
-		MergeConfidence: mergeConfidence,
-		Notes:           p.Notes,
-		GitHubUpdatedAt: p.GitHubUpdatedAt,
-		ErrorMessage:    p.ErrorMessage,
+		ID:               uint(p.ID),
+		RepoOwner:        p.RepoOwner,
+		RepoName:         p.RepoName,
+		PRNumber:         p.PRNumber,
+		Title:            p.Title,
+		Author:           p.Author,
+		LastCommitSHA:    p.LastCommitSHA,
+		Status:           p.Status,
+		ReviewPath:       p.ReviewHTMLPath,
+		LastReviewedAt:   p.LastReviewedAt,
+		GeneratingSince:  p.GeneratingSince,
+		CreatedAt:        p.CreatedAt,
+		Draft:            p.Draft,
+		ApprovalCount:    p.ApprovalCount,
+		MyReviewStatus:   p.MyReviewStatus,
+		CIState:          p.CIState,
+		CIFailedChecks:   ciFailedChecks,
+		PRState:          p.PRState,
+		MergeStateStatus: p.MergeStateStatus,
+		ReviewDecision:   p.ReviewDecision,
+		ModelFallback:    p.ModelFallback,
+		ReviewRunID:      p.ReviewRunID,
+		ReviewRunJSON:    p.ReviewRunJSON,
+		CriticalCount:    p.CriticalCount,
+		MediumCount:      p.MediumCount,
+		LowCount:         p.LowCount,
+		ReviewVerdict:    p.ReviewVerdict,
+		MergeConfidence:  mergeConfidence,
+		Notes:            p.Notes,
+		GitHubUpdatedAt:  p.GitHubUpdatedAt,
+		ErrorMessage:     p.ErrorMessage,
 	}
 }
 
@@ -139,9 +143,10 @@ func (g *GormDB) GetPR(owner, repo string, prNumber int) (*PR, error) {
 // must NOT clobber a freshly-triggered review's SHA. See the CASE expression
 // in upsertOnConflict.
 //
-// approval_count, my_review_status, ci_state, ci_failed_checks ARE included:
-// the poller's reviewPRBatch / ciPRBatch flushes in poller.go are the only
-// writers for those columns, so the stale-clobber concern doesn't apply.
+// approval_count, my_review_status, ci_state, ci_failed_checks,
+// merge_state_status and review_decision ARE included: the poller's
+// reviewPRBatch / ciPRBatch flushes in poller.go are the only writers for
+// those columns, so the stale-clobber concern doesn't apply.
 var upsertMetadataColumns = []string{
 	"title",
 	"author",
@@ -152,6 +157,8 @@ var upsertMetadataColumns = []string{
 	"my_review_status",
 	"ci_state",
 	"ci_failed_checks",
+	"merge_state_status",
+	"review_decision",
 }
 
 // upsertOnConflict returns the OnConflict clause used by UpsertPR /
@@ -321,15 +328,17 @@ func (g *GormDB) ResetPRToOutdated(owner, repo string, prNumber int, fromCommitS
 	result := g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND last_commit_sha = ?", owner, repo, prNumber, fromCommitSHA).
 		Updates(map[string]interface{}{
-			"status":            "pending",
-			"last_commit_sha":   newCommitSHA,
-			"review_path":       nil,
-			"last_reviewed_at":  nil,
-			"generating_since":  nil,
-			"merge_confidence":  nil,
-			"projection_run_id": "",
-			"error_message":     "",
-			"error_retry_count": 0,
+			"status":             "pending",
+			"last_commit_sha":    newCommitSHA,
+			"review_path":        nil,
+			"last_reviewed_at":   nil,
+			"generating_since":   nil,
+			"merge_confidence":   nil,
+			"merge_state_status": "",
+			"review_decision":    "",
+			"projection_run_id":  "",
+			"error_message":      "",
+			"error_retry_count":  0,
 		})
 	if result.Error != nil {
 		return false, result.Error

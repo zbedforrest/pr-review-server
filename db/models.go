@@ -91,6 +91,10 @@ type PRModel struct {
 	MyReviewStatus  string          `gorm:"size:20"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
 	CIState         string          `gorm:"size:20;default:unknown"`
 	CIFailedChecks  JSONStringArray `gorm:"type:text"`
+	// GitHub merge-box summary for the current head, refreshed every poll
+	// cycle with CI status. "" until first fetched or when GitHub returned null.
+	MergeStateStatus string `gorm:"column:merge_state_status;size:16;not null;default:''"`
+	ReviewDecision   string `gorm:"column:review_decision;size:20;not null;default:''"`
 	// GitHub PR state: "open", "closed", or "merged". Only diverges from
 	// "open" on rows retained past close (manual claims) — everything else
 	// is deleted at close by cleanup.

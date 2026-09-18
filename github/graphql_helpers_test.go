@@ -57,10 +57,86 @@ func TestBuildCIStatusQuery(t *testing.T) {
 		`pullRequest(number: 102)`,
 		`commits(last: 1)`,
 		`statusCheckRollup`,
+		`mergeStateStatus`,
+		`reviewDecision`,
 	} {
 		if !strings.Contains(query, want) {
 			t.Errorf("Expected CI status query to contain %q:\n%s", want, query)
 		}
+	}
+}
+
+func batchGetCIStatusFromBody(t *testing.T, body string) *CIStatus {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	results, err := client.BatchGetCIStatus(context.Background(), []PRInfo{{Owner: "acme", Repo: "example", Number: 7}})
+	if err != nil {
+		t.Fatalf("BatchGetCIStatus failed: %v", err)
+	}
+	status := results["acme/example/7"]
+	if status == nil {
+		t.Fatalf("expected result for acme/example/7, got %v", results)
+	}
+	return status
+}
+
+func TestBatchGetCIStatus_PopulatesMergeStateAndReviewDecision(t *testing.T) {
+	status := batchGetCIStatusFromBody(t, `{"data":{"pr0":{"pullRequest":{
+		"mergeStateStatus":"CLEAN","reviewDecision":"APPROVED",
+		"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS","contexts":{"nodes":[
+			{"__typename":"CheckRun","name":"build","conclusion":"SUCCESS","status":"COMPLETED"}
+		]}}}}]}}}}}`)
+	if status.State != "success" {
+		t.Errorf("State = %q, want success", status.State)
+	}
+	if status.MergeStateStatus != "CLEAN" {
+		t.Errorf("MergeStateStatus = %q, want CLEAN", status.MergeStateStatus)
+	}
+	if status.ReviewDecision != "APPROVED" {
+		t.Errorf("ReviewDecision = %q, want APPROVED", status.ReviewDecision)
+	}
+}
+
+func TestBatchGetCIStatus_NullReviewDecisionStoredAsEmpty(t *testing.T) {
+	status := batchGetCIStatusFromBody(t, `{"data":{"pr0":{"pullRequest":{
+		"mergeStateStatus":"BLOCKED","reviewDecision":null,
+		"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{"nodes":[]}}}}]}}}}}`)
+	if status.MergeStateStatus != "BLOCKED" {
+		t.Errorf("MergeStateStatus = %q, want BLOCKED", status.MergeStateStatus)
+	}
+	if status.ReviewDecision != "" {
+		t.Errorf("ReviewDecision = %q, want empty for null", status.ReviewDecision)
+	}
+}
+
+func TestBatchGetCIStatus_NoRollupStillCarriesMergeState(t *testing.T) {
+	status := batchGetCIStatusFromBody(t, `{"data":{"pr0":{"pullRequest":{
+		"mergeStateStatus":"CLEAN","reviewDecision":"APPROVED",
+		"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}`)
+	if status.State != "unknown" {
+		t.Errorf("State = %q, want unknown when the head has no rollup", status.State)
+	}
+	if status.MergeStateStatus != "CLEAN" {
+		t.Errorf("MergeStateStatus = %q, want CLEAN even without a rollup", status.MergeStateStatus)
+	}
+	if status.ReviewDecision != "APPROVED" {
+		t.Errorf("ReviewDecision = %q, want APPROVED even without a rollup", status.ReviewDecision)
+	}
+}
+
+func TestBatchGetCIStatus_MissingPullRequestYieldsEmptyMergeFields(t *testing.T) {
+	status := batchGetCIStatusFromBody(t, `{"data":{"pr0":{"pullRequest":null}}}`)
+	if status.State != "unknown" || status.MergeStateStatus != "" || status.ReviewDecision != "" {
+		t.Errorf("got State=%q MergeStateStatus=%q ReviewDecision=%q, want unknown/\"\"/\"\"",
+			status.State, status.MergeStateStatus, status.ReviewDecision)
 	}
 }
 

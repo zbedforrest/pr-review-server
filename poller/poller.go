@@ -3062,12 +3062,17 @@ func (p *Poller) poll(ctx context.Context) {
 				}
 			}
 
-			if existingPR.CIState == ciStatus.State && existingPR.CIFailedChecks == failedChecksJSON {
+			mergeChanged := existingPR.MergeStateStatus != ciStatus.MergeStateStatus ||
+				existingPR.ReviewDecision != ciStatus.ReviewDecision
+			if existingPR.CIState == ciStatus.State &&
+				existingPR.CIFailedChecks == failedChecksJSON && !mergeChanged {
 				continue
 			}
 
 			existingPR.CIState = ciStatus.State
 			existingPR.CIFailedChecks = failedChecksJSON
+			existingPR.MergeStateStatus = ciStatus.MergeStateStatus
+			existingPR.ReviewDecision = ciStatus.ReviewDecision
 			ciPRBatch.Upsert(existingPR)
 			changedPRs[key] = true
 			updateCount++
@@ -3075,7 +3080,7 @@ func (p *Poller) poll(ctx context.Context) {
 		if err := ciPRBatch.Flush(p.db); err != nil {
 			log.Printf("[POLL] ERROR: Failed to batch-upsert CI status: %v", err)
 		}
-		log.Printf("[POLL] Updated CI status for %d PRs (only those with changes)", updateCount)
+		log.Printf("[POLL] Updated CI and merge status for %d PRs (only those with changes)", updateCount)
 	}
 
 	// Broadcast all changed PRs once, after all metadata phases are complete.

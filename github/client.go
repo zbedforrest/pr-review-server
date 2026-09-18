@@ -444,6 +444,11 @@ type CIStatus struct {
 	Number       int
 	State        string   // "success", "failure", "pending", "unknown"
 	FailedChecks []string // Names of failed checks
+	// GitHub merge-box summary for the current head: CLEAN, BLOCKED, BEHIND,
+	// DIRTY, UNSTABLE, HAS_HOOKS, DRAFT, UNKNOWN, or "" when unavailable.
+	MergeStateStatus string
+	// APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or "" when GitHub returned null.
+	ReviewDecision string
 }
 
 // NewTestClient creates a Client for testing with a custom base URL for the REST API.
@@ -1108,30 +1113,40 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 				alias := fmt.Sprintf("pr%d", j)
 				key := prKey(prInfo.Owner, prInfo.Repo, prInfo.Number)
 				repoData, ok := graphqlResp.Data[alias]
+				var prData *CIPullRequestData
+				if ok {
+					prData = repoData.PullRequest
+				}
+				mergeState, reviewDecision := mergeFieldsFrom(prData)
 				var rollup *StatusCheckRollup
-				if ok && repoData.PullRequest != nil && len(repoData.PullRequest.Commits.Nodes) > 0 {
-					rollup = repoData.PullRequest.Commits.Nodes[0].Commit.StatusCheckRollup
+				if prData != nil && len(prData.Commits.Nodes) > 0 {
+					rollup = prData.Commits.Nodes[0].Commit.StatusCheckRollup
 				}
 				if rollup == nil {
 					// No rollup means the head commit genuinely has no check
-					// contexts (yet) — report unknown rather than a stale state.
+					// contexts (yet): report unknown rather than a stale state.
+					// A PR with no checks can still be CLEAN, so merge fields ride along.
 					results[key] = &CIStatus{
-						Owner:        prInfo.Owner,
-						Repo:         prInfo.Repo,
-						Number:       prInfo.Number,
-						State:        "unknown",
-						FailedChecks: []string{},
+						Owner:            prInfo.Owner,
+						Repo:             prInfo.Repo,
+						Number:           prInfo.Number,
+						State:            "unknown",
+						FailedChecks:     []string{},
+						MergeStateStatus: mergeState,
+						ReviewDecision:   reviewDecision,
 					}
 					continue
 				}
 
 				state, failedChecks := parseCIStatusFromRollup(rollup)
 				results[key] = &CIStatus{
-					Owner:        prInfo.Owner,
-					Repo:         prInfo.Repo,
-					Number:       prInfo.Number,
-					State:        state,
-					FailedChecks: failedChecks,
+					Owner:            prInfo.Owner,
+					Repo:             prInfo.Repo,
+					Number:           prInfo.Number,
+					State:            state,
+					FailedChecks:     failedChecks,
+					MergeStateStatus: mergeState,
+					ReviewDecision:   reviewDecision,
 				}
 			}
 			mu.Unlock()
@@ -1156,6 +1171,8 @@ func buildCIStatusQuery(prs []PRInfo) string {
 		queryBuilder.WriteString(fmt.Sprintf(`
 			%s: repository(owner: %q, name: %q) {
 				pullRequest(number: %d) {
+					mergeStateStatus
+					reviewDecision
 					commits(last: 1) {
 						nodes {
 							commit {
@@ -1186,6 +1203,18 @@ func buildCIStatusQuery(prs []PRInfo) string {
 	}
 	queryBuilder.WriteString("}")
 	return queryBuilder.String()
+}
+
+// mergeFieldsFrom returns the merge-box scalars from a CI query node, with
+// "" for a missing PR or a null reviewDecision.
+func mergeFieldsFrom(pr *CIPullRequestData) (mergeState, reviewDecision string) {
+	if pr == nil {
+		return "", ""
+	}
+	if pr.ReviewDecision != nil {
+		reviewDecision = *pr.ReviewDecision
+	}
+	return pr.MergeStateStatus, reviewDecision
 }
 
 // parseCIStatusFromRollup extracts CI state and failed checks from a status check rollup.

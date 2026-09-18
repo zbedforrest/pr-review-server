@@ -124,7 +124,9 @@ type CICommitNode struct {
 // Querying commits(last: 1) instead of object(oid:) means the rollup is
 // always for the PR's actual current head, even if our stored SHA is stale.
 type CIPullRequestData struct {
-	Commits struct {
+	MergeStateStatus string  `json:"mergeStateStatus"`
+	ReviewDecision   *string `json:"reviewDecision"`
+	Commits          struct {
 		Nodes []CICommitNode `json:"nodes"`
 	} `json:"commits"`
 }

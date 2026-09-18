@@ -7,6 +7,7 @@ import { useTelemetry } from '@/hooks/useTelemetry';
 import { CIStatusIndicator } from './CIStatusIndicator';
 import { ConfidenceBadge } from './ConfidenceBadge';
 import { GenerateSplitButton } from './GenerateSplitButton';
+import { MergeReadyIndicator } from './MergeReadyIndicator';
 import { NotesCell } from './NotesCell';
 import { publishAllowedForAuthor } from './publishPolicy';
 import { ReviewLinkMenu } from './ReviewLinkMenu';
@@ -121,6 +122,7 @@ export const PRTableRow = memo(function PRTableRow({
       </td>
       <td className={`pr-table__approval-count ${pr.approval_count > 0 ? 'pr-table__approval-count--positive' : 'pr-table__approval-count--zero'}`}>
         {pr.approval_count}
+        <MergeReadyIndicator pr={pr} />
       </td>
       <td className="pr-table__my-review">
         {pr.my_review_status === 'APPROVED' && <span className="pr-table__my-review--approved" title="You approved this PR">✓</span>}

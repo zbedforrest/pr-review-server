@@ -1,5 +1,6 @@
 export { PRTable } from './PRTable';
 export { PRTableRow } from './PRTableRow';
+export { MergeReadyIndicator } from './MergeReadyIndicator';
 export { RowActionsMenu } from './RowActionsMenu';
 export { ReviewPRsSection } from './ReviewPRsSection';
 export { NeedsReReviewSection } from './NeedsReReviewSection';
