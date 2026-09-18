@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const apiPostMock = vi.fn();
 vi.mock('./client', () => ({
@@ -6,6 +6,28 @@ vi.mock('./client', () => ({
 }));
 
 import { generateReview, triggerReview } from './prs';
+
+describe('triggerReview with a profile', () => {
+  afterEach(() => apiPostMock.mockClear());
+
+  it('requests config.profile through the versioned run API', async () => {
+    apiPostMock.mockResolvedValue({ run_id: 'run-1', status: 'queued' });
+    const result = await triggerReview({ owner: 'acme', repo: 'example', number: 7, publish: false, profile: 'lite' });
+    expect(apiPostMock).toHaveBeenCalledWith('/api/v1/review-runs', {
+      target: { owner: 'acme', repo: 'example', pull_request: 7 },
+      publish: false,
+      config: { profile: 'lite' },
+    });
+    expect(result).toEqual({ status: 'queued' });
+  });
+
+  it('publishes by default when a profile is requested without a publish choice', async () => {
+    apiPostMock.mockResolvedValue({ run_id: 'run-1', status: 'queued' });
+    await triggerReview({ owner: 'acme', repo: 'example', number: 7, profile: 'lite_plus' });
+    const last = apiPostMock.mock.calls[apiPostMock.mock.calls.length - 1];
+    expect(last[1]).toMatchObject({ publish: true, config: { profile: 'lite_plus' } });
+  });
+});
 
 describe('generateReview', () => {
   it('marks dashboard submissions with source=form so the server claims the PR', async () => {

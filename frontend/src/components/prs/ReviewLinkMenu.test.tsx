@@ -182,6 +182,63 @@ describe('ReviewLinkMenu review-run metadata', () => {
   });
 });
 
+describe('ReviewLinkMenu profile and cost', () => {
+  beforeEach(() => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  const openMenu = () => {
+    fireEvent.mouseEnter(screen.getByRole('link', { name: /view/i }).parentElement!);
+    act(() => vi.advanceTimersByTime(300));
+  };
+
+  it('shows the profile and cost beside the model list', () => {
+    renderMenu({
+      pr: makePR({
+        review_run: {
+          run_id: 'run-0123456789abcdef0123456789abcdef',
+          started_at: '2026-09-18T12:00:00Z',
+          completed_at: '2026-09-18T12:02:00Z',
+          duration_ms: 120000,
+          profile: 'lite',
+          profile_label: 'Lite',
+          models: [
+            {
+              stage: 'agent', provider: 'anthropic', backend: 'claude', requested_model: 'claude-fable-5-1',
+              served_model: 'claude-fable-5-1', serving_model_verified: true, fallback: false, cost_usd: 0.4321,
+            },
+          ],
+        },
+      }),
+    });
+    openMenu();
+    const meta = screen.getByLabelText('Review profile');
+    expect(meta.textContent).toBe('Profile Lite · $0.43');
+    expect(screen.getByLabelText('Models used').textContent).toContain('claude-fable-5-1');
+  });
+
+  it('labels a legacy run as full without a cost line', () => {
+    renderMenu({
+      pr: makePR({
+        review_run: {
+          run_id: 'run-0123456789abcdef0123456789abcdef',
+          started_at: '2026-09-18T12:00:00Z',
+          completed_at: '2026-09-18T12:02:00Z',
+          duration_ms: 120000,
+          models: [{ stage: 'agent', provider: 'anthropic', requested_model: 'claude-fable-5', serving_model_verified: false, fallback: false }],
+        },
+      }),
+    });
+    openMenu();
+    expect(screen.queryByLabelText('Review profile')).toBeNull();
+  });
+});
+
 describe('ReviewLinkMenu regenerate action', () => {
   beforeEach(() => {
     useTelemetryMock.mockReturnValue({ track: vi.fn() });

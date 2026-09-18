@@ -105,7 +105,7 @@ describe('SettingsPage', () => {
     });
     renderPage();
 
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(4));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(5));
     expect(screen.queryByText('Loading...')).toBeNull();
     expect((screen.getByLabelText('First-pass samples') as HTMLInputElement).disabled).toBe(false);
     await waitFor(() => expect(screen.getByText(/4 replies/).textContent).toContain('react: 4'));
@@ -121,7 +121,7 @@ describe('SettingsPage', () => {
     });
     renderPage();
 
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(4));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(5));
     expect(screen.getByText(/Read only\. Admins: owner, alice/)).toBeTruthy();
     expect(requestedPaths()).not.toContain('/api/publish/replies');
     expect(screen.queryByText(/replies,/)).toBeNull();
@@ -154,7 +154,7 @@ describe('SettingsPage', () => {
     });
     renderPage();
 
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(4));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(5));
     expect(screen.queryAllByText('not seen on any PR')).toEqual([]);
 
     resolvePRs(jsonResponse([{ author: 'alice' }]));
@@ -185,7 +185,7 @@ describe('SettingsPage', () => {
     });
     const client = renderPage();
 
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(4));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(5));
     fireEvent.change(screen.getByLabelText('First-pass samples'), { target: { value: '7' } });
 
     settingsFailing = true;
@@ -193,7 +193,7 @@ describe('SettingsPage', () => {
 
     await waitFor(() => expect(client.getQueryState(['settings'])?.error).toBeTruthy());
     expect((screen.getByLabelText('First-pass samples') as HTMLInputElement).value).toBe('7');
-    expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(4);
+    expect(screen.getAllByRole('button', { name: 'Save' }).length).toBe(5);
     expect(screen.queryByText('upstream connect error')).toBeNull();
   });
 });

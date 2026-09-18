@@ -113,6 +113,10 @@ $panel-width: 240px;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
 
+  &__profile {
+    margin-top: 2px;
+  }
+
   &__models {
     display: flex;
     flex-wrap: wrap;

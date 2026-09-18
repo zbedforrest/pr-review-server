@@ -106,6 +106,20 @@
     &--agent { color: $color-agent-reviewing-text; }
   }
 
+  &__profile-chip {
+    display: inline-block;
+    margin-left: $spacing-xs;
+    padding: 0 6px;
+    border-radius: $radius-sm;
+    font-size: $font-size-xs;
+    font-weight: 600;
+    line-height: 1.6;
+    color: $color-text-secondary;
+    background: $color-bg-hover;
+    border: 1px solid $color-border;
+    vertical-align: middle;
+  }
+
   &__review-link {
     @include button-base;
     display: inline-flex;

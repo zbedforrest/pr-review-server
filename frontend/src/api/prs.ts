@@ -1,5 +1,5 @@
 import { apiGet, apiPost } from './client';
-import type { PR } from '@/types/pr';
+import type { PR, ReviewProfile } from '@/types/pr';
 
 export async function fetchPRs(): Promise<PR[]> {
   return apiGet<PR[]>('/api/prs');
@@ -43,15 +43,27 @@ export interface TriggerReviewParams {
   number: number;
   /** Post the review to the GitHub PR. Omitted or true = post; false = dashboard only. */
   publish?: boolean;
+  /** Review profile to run. Omitted = the deployment's default profile. */
+  profile?: ReviewProfile;
 }
 
 // The server treats a missing key as "publish"; sending publish: undefined
 // would serialize to nothing anyway, but dropping it keeps the body explicit.
-function reviewRequestBody({ publish, ...rest }: TriggerReviewParams): Record<string, unknown> {
+function reviewRequestBody({ publish, profile: _profile, ...rest }: TriggerReviewParams): Record<string, unknown> {
   return publish === undefined ? rest : { ...rest, publish };
 }
 
+// An explicit profile goes through the versioned run API, the only endpoint
+// that accepts a review configuration; the legacy trigger keeps the default.
 export async function triggerReview(params: TriggerReviewParams): Promise<{ status: string }> {
+  if (params.profile) {
+    const run = await apiPost<{ run_id: string; status: string }>('/api/v1/review-runs', {
+      target: { owner: params.owner, repo: params.repo, pull_request: params.number },
+      publish: params.publish ?? true,
+      config: { profile: params.profile },
+    });
+    return { status: run.status };
+  }
   return apiPost<{ status: string }>('/api/prs/trigger-review', reviewRequestBody(params));
 }
 

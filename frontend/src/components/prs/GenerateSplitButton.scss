@@ -93,6 +93,12 @@ $panel-width: 260px;
     font-weight: 600;
   }
 
+  &__divider {
+    height: 1px;
+    margin: $spacing-xs 0;
+    background: $color-border;
+  }
+
   &__item-desc {
     color: $color-text-secondary;
     font-size: $font-size-xs;

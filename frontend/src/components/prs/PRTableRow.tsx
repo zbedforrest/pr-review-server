@@ -1,5 +1,5 @@
 import { memo, useCallback, useMemo, type MouseEvent } from 'react';
-import type { PR } from '@/types/pr';
+import type { PR, ReviewProfile } from '@/types/pr';
 import { APIError } from '@/api/client';
 import { newRequestId, type QuickAction, type QuickActionResponse } from '@/api/prActions';
 import { CommitSha } from '@/components/common';
@@ -15,6 +15,7 @@ import { GenerateSplitButton } from './GenerateSplitButton';
 import { MergeReadyIndicator } from './MergeReadyIndicator';
 import { NotesCell } from './NotesCell';
 import { publishAllowedForAuthor } from './publishPolicy';
+import { PROFILE_LABELS } from './reviewProfiles';
 import { ReviewLinkMenu } from './ReviewLinkMenu';
 import { RowActionsMenu, type QuickActionsWiring } from './RowActionsMenu';
 import { buildViaTeamParts } from '@/utils/teamFilters';
@@ -54,6 +55,9 @@ export const PRTableRow = memo(function PRTableRow({
   const reviewUrl = pr.status === 'completed' && pr.review_url
     ? pr.review_url
     : null;
+  const liteProfile = reviewUrl && (pr.review_run?.profile === 'lite' || pr.review_run?.profile === 'lite_plus')
+    ? pr.review_run.profile
+    : null;
 
   const handleDelete = useCallback(() => {
     track('delete_pr', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
@@ -75,13 +79,14 @@ export const PRTableRow = memo(function PRTableRow({
     });
   }, [pr.owner, pr.repo, pr.number, pr.hidden, setHiddenMutation, track]);
 
-  const handleTriggerReview = useCallback((publish: boolean) => {
-    track('trigger_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number, publish });
+  const handleTriggerReview = useCallback((publish: boolean, profile?: ReviewProfile) => {
+    track('trigger_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number, publish, profile });
     triggerReviewMutation.mutate({
       owner: pr.owner,
       repo: pr.repo,
       number: pr.number,
       publish,
+      profile,
     });
   }, [pr.owner, pr.repo, pr.number, triggerReviewMutation, track]);
 
@@ -230,13 +235,23 @@ export const PRTableRow = memo(function PRTableRow({
             Generating…
           </span>
         ) : reviewUrl ? (
-          <ReviewLinkMenu
-            pr={pr}
-            reviewUrl={reviewUrl}
-            onTriggerReview={handleTriggerReview}
-            reviewPending={triggerReviewMutation.isPending}
-            publishAllowed={publishAllowed}
-          />
+          <>
+            <ReviewLinkMenu
+              pr={pr}
+              reviewUrl={reviewUrl}
+              onTriggerReview={handleTriggerReview}
+              reviewPending={triggerReviewMutation.isPending}
+              publishAllowed={publishAllowed}
+            />
+            {liteProfile && (
+              <span
+                className={`pr-table__profile-chip pr-table__profile-chip--${liteProfile}`}
+                title={pr.review_run?.profile_label ? `Reviewed with the ${pr.review_run.profile_label} profile` : `Reviewed with the ${PROFILE_LABELS[liteProfile]} profile`}
+              >
+                {PROFILE_LABELS[liteProfile]}
+              </span>
+            )}
+          </>
         ) : (
           // No up-to-date review: brand-new PR, or one whose prior review was
           // cleared server-side after a new commit made it stale.
