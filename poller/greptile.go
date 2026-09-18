@@ -21,19 +21,25 @@ const (
 	GreptileStatusAbsent = "absent"
 )
 
-// greptileRefreshesPerCycle bounds the REST calls one poll cycle spends
-// catching up on Greptile verdicts (two per PR).
+// greptileRefreshesPerCycle bounds how many PRs one poll cycle catches up
+// on; each refresh is at least two REST calls, more on PRs with over a
+// hundred reviews or comments.
 const greptileRefreshesPerCycle = 20
 
 // greptileStatusStore is the narrow persistence capability behind the
 // verdict, implemented by *db.GormDB and type-asserted so mocks stay untouched.
 type greptileStatusStore interface {
-	SetPRGreptileStatus(owner, repo string, prNumber int, headSHA, status string) error
+	SetPRGreptileStatus(owner, repo string, prNumber int, headSHA, status string, reviewCount int) (bool, error)
 }
 
+// greptileReviewIDsForHead picks Greptile's live reviews of head; a review
+// someone dismissed no longer vouches for anything.
 func greptileReviewIDsForHead(reviews []*gh.PullRequestReview, head string) map[int64]bool {
 	ids := map[int64]bool{}
 	for _, r := range reviews {
+		if r.GetState() == "DISMISSED" || r.GetState() == "PENDING" {
+			continue
+		}
 		if reconcile.IsGreptileAuthor(r.GetUser().GetLogin()) && isSameCommit(r.GetCommitID(), head) {
 			ids[r.GetID()] = true
 		}
@@ -67,55 +73,69 @@ func computeGreptileStatus(reviews []*gh.PullRequestReview, comments []github.Re
 	return GreptileStatusGreen
 }
 
-// headReviewedByGreptile reports whether the batch review data shows a
-// Greptile review submitted against the head.
-func headReviewedByGreptile(data *github.PRReviewData) bool {
-	for _, login := range data.HeadReviewers {
+// greptileHeadReviews counts Greptile's live reviews of the head in the
+// batch review data.
+func greptileHeadReviews(data *github.PRReviewData) int {
+	n := 0
+	for login, count := range data.HeadReviewCounts {
 		if reconcile.IsGreptileAuthor(login) {
-			return true
+			n += count
 		}
 	}
-	return false
+	return n
 }
 
 // needsGreptileRefresh is the poll-cycle catch-up: Greptile usually posts
-// after PRism finishes, so completion stored "absent" for this very head and
-// the verdict must be recomputed once a Greptile review of the head shows up.
+// after PRism finishes, so completion stored "absent" for this very head, and
+// it may review the same head again later. Recompute whenever the stored
+// verdict covers fewer Greptile reviews of the head than GitHub now shows.
 func needsGreptileRefresh(pr *db.PR, data *github.PRReviewData) bool {
-	if !headReviewedByGreptile(data) {
+	reviews := greptileHeadReviews(data)
+	if reviews == 0 {
 		return false
 	}
 	if !isSameCommit(pr.GreptileStatusSHA, data.HeadOID) {
 		return true
 	}
-	return pr.GreptileStatus != GreptileStatusGreen && pr.GreptileStatus != GreptileStatusRed
+	if pr.GreptileStatus != GreptileStatusGreen && pr.GreptileStatus != GreptileStatusRed {
+		return true
+	}
+	return reviews > pr.GreptileReviewCount
 }
 
 // refreshGreptileStatus reads Greptile's reviews of head with the App client
-// and stores the verdict. Best-effort: a failure leaves the previous verdict
-// (or none) in place and the gate reads it as absent.
-func (p *Poller) refreshGreptileStatus(ctx context.Context, owner, repo string, number int, head string) {
+// and stores the verdict, reporting whether the row changed. Best-effort: a
+// failure leaves the previous verdict (or none) in place and the gate reads
+// it as absent.
+func (p *Poller) refreshGreptileStatus(ctx context.Context, owner, repo string, number int, head string) bool {
 	store, ok := p.db.(greptileStatusStore)
 	if !ok || p.ghClientConcrete == nil || head == "" {
-		return
+		return false
 	}
 	reviews, err := p.ghClientConcrete.ListAllReviews(ctx, owner, repo, number)
 	if err != nil {
 		log.Printf("[GREPTILE] %s/%s#%d: list reviews: %v", owner, repo, number, err)
-		return
+		return false
 	}
 	status := GreptileStatusAbsent
-	if len(greptileReviewIDsForHead(reviews, head)) > 0 {
+	headReviews := len(greptileReviewIDsForHead(reviews, head))
+	if headReviews > 0 {
 		comments, err := p.ghClientConcrete.ListReviewComments(ctx, owner, repo, number)
 		if err != nil {
 			log.Printf("[GREPTILE] %s/%s#%d: list review comments: %v", owner, repo, number, err)
-			return
+			return false
 		}
 		status = computeGreptileStatus(reviews, comments, head)
 	}
-	if err := store.SetPRGreptileStatus(owner, repo, number, head, status); err != nil {
+	written, err := store.SetPRGreptileStatus(owner, repo, number, head, status, headReviews)
+	if err != nil {
 		log.Printf("[GREPTILE] %s/%s#%d: store status: %v", owner, repo, number, err)
-		return
+		return false
 	}
-	log.Printf("[GREPTILE] %s/%s#%d head=%s status=%s", owner, repo, number, shortSHA(head), status)
+	if !written {
+		log.Printf("[GREPTILE] %s/%s#%d head=%s status=%s not stored, row is on a newer head", owner, repo, number, shortSHA(head), status)
+		return false
+	}
+	log.Printf("[GREPTILE] %s/%s#%d head=%s status=%s reviews=%d", owner, repo, number, shortSHA(head), status, headReviews)
+	return true
 }

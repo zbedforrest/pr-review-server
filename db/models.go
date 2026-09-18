@@ -131,6 +131,9 @@ type PRModel struct {
 	// Stale once the head moves past GreptileStatusSHA; readers compare.
 	GreptileStatus    string `gorm:"column:greptile_status;size:8;not null;default:''"`
 	GreptileStatusSHA string `gorm:"column:greptile_status_sha;size:40;not null;default:''"`
+	// How many Greptile reviews of GreptileStatusSHA the verdict covers, so a
+	// later review of the same head triggers a recompute.
+	GreptileReviewCount int `gorm:"column:greptile_review_count;not null;default:0"`
 	// User notes (single-user mode)
 	Notes string `gorm:"size:15"`
 	// Poll economy: last seen updated_at from GitHub search API

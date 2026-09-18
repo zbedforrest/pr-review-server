@@ -171,6 +171,7 @@ var greptileStatusColumns = []struct {
 }{
 	{"greptile_status", "GreptileStatus", "varchar(8) NOT NULL DEFAULT ''"},
 	{"greptile_status_sha", "GreptileStatusSHA", "varchar(40) NOT NULL DEFAULT ''"},
+	{"greptile_review_count", "GreptileReviewCount", "integer NOT NULL DEFAULT 0"},
 }
 
 func (g *GormDB) ensureIdempotentColumns() error {

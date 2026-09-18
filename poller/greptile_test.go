@@ -46,6 +46,13 @@ func TestComputeGreptileStatus(t *testing.T) {
 	assert.Equal(t, GreptileStatusGreen, computeGreptileStatus([]*gh.PullRequestReview{greptileReview(2, "abc")},
 		[]github.ReviewCommentInfo{{ID: 11, ReviewID: 2, Author: "greptile-apps[bot]", InReplyToID: 10, Body: `<img alt="P0"> **reply**`}}, "abc"), "thread replies carry no verdict")
 	assert.Equal(t, GreptileStatusGreen, computeGreptileStatus([]*gh.PullRequestReview{greptileReview(2, "abc1234567")}, nil, "abc1234"), "short and long SHAs match")
+
+	dismissed := greptileReview(2, "abc")
+	dismissed.State = gh.String("DISMISSED")
+	assert.Equal(t, GreptileStatusAbsent, computeGreptileStatus([]*gh.PullRequestReview{dismissed}, nil, "abc"), "a dismissed review vouches for nothing")
+	assert.Equal(t, GreptileStatusRed, computeGreptileStatus(
+		[]*gh.PullRequestReview{greptileReview(2, "abc"), greptileReview(3, "abc")},
+		[]github.ReviewCommentInfo{greptileComment(10, 3, "P1")}, "abc"), "a later review of the same head with a P1 turns it red")
 }
 
 func TestRefreshGreptileStatus_StoresVerdictForHead(t *testing.T) {
@@ -68,16 +75,22 @@ func TestRefreshGreptileStatus_StoresVerdictForHead(t *testing.T) {
 	require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, LastCommitSHA: "abc"}))
 	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
 
-	p.refreshGreptileStatus(context.Background(), "acme", "example", 1, "abc")
+	assert.True(t, p.refreshGreptileStatus(context.Background(), "acme", "example", 1, "abc"))
 	pr, err := database.GetPR("acme", "example", 1)
 	require.NoError(t, err)
 	assert.Equal(t, GreptileStatusRed, pr.GreptileStatus)
 	assert.Equal(t, "abc", pr.GreptileStatusSHA)
+	assert.Equal(t, 1, pr.GreptileReviewCount)
 
-	p.refreshGreptileStatus(context.Background(), "acme", "example", 1, "def")
+	require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, LastCommitSHA: "def"}))
+	assert.True(t, p.refreshGreptileStatus(context.Background(), "acme", "example", 1, "def"))
 	pr, err = database.GetPR("acme", "example", 1)
 	require.NoError(t, err)
 	assert.Equal(t, GreptileStatusAbsent, pr.GreptileStatus, "no Greptile review of the new head")
+	assert.Equal(t, "def", pr.GreptileStatusSHA)
+
+	assert.False(t, p.refreshGreptileStatus(context.Background(), "acme", "example", 1, "abc"), "a late result for the old head is dropped")
+	pr, _ = database.GetPR("acme", "example", 1)
 	assert.Equal(t, "def", pr.GreptileStatusSHA)
 }
 
@@ -87,21 +100,24 @@ func TestRefreshGreptileStatus_NoConcreteClientIsNoop(t *testing.T) {
 	defer database.Close()
 	require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, LastCommitSHA: "abc"}))
 	p := &Poller{cfg: &config.Config{}, db: database}
-	p.refreshGreptileStatus(context.Background(), "acme", "example", 1, "abc")
+	assert.False(t, p.refreshGreptileStatus(context.Background(), "acme", "example", 1, "abc"))
 	pr, _ := database.GetPR("acme", "example", 1)
 	assert.Empty(t, pr.GreptileStatus)
 }
 
 func TestNeedsGreptileRefresh(t *testing.T) {
-	greptileOnHead := &github.PRReviewData{HeadOID: "abc", HeadReviewers: []string{"greptile-apps[bot]"}}
-	humansOnly := &github.PRReviewData{HeadOID: "abc", HeadReviewers: []string{"alice"}}
+	greptileOnHead := &github.PRReviewData{HeadOID: "abc", HeadReviewCounts: map[string]int{"greptile-apps[bot]": 1, "alice": 2}}
+	humansOnly := &github.PRReviewData{HeadOID: "abc", HeadReviewCounts: map[string]int{"alice": 1}}
 
 	assert.False(t, needsGreptileRefresh(&db.PR{}, humansOnly), "nothing to read without a Greptile review")
 	assert.True(t, needsGreptileRefresh(&db.PR{}, greptileOnHead), "never computed")
-	assert.True(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusGreen, GreptileStatusSHA: "old"}, greptileOnHead), "verdict is for an older head")
+	assert.True(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusGreen, GreptileStatusSHA: "old", GreptileReviewCount: 1}, greptileOnHead), "verdict is for an older head")
 	assert.True(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusAbsent, GreptileStatusSHA: "abc"}, greptileOnHead), "completion ran before Greptile posted")
-	assert.False(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusGreen, GreptileStatusSHA: "abc"}, greptileOnHead))
-	assert.False(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusRed, GreptileStatusSHA: "abc"}, greptileOnHead))
+	assert.False(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusGreen, GreptileStatusSHA: "abc", GreptileReviewCount: 1}, greptileOnHead))
+	assert.False(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusRed, GreptileStatusSHA: "abc", GreptileReviewCount: 1}, greptileOnHead))
+
+	reviewedAgain := &github.PRReviewData{HeadOID: "abc", HeadReviewCounts: map[string]int{"greptile-apps[bot]": 2}}
+	assert.True(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusGreen, GreptileStatusSHA: "abc", GreptileReviewCount: 1}, reviewedAgain), "a second Greptile review of the same head is regraded")
 }
 
 func TestRefreshGreptileStatus_FollowsReviewPagination(t *testing.T) {
@@ -133,7 +149,7 @@ func TestRefreshGreptileStatus_FollowsReviewPagination(t *testing.T) {
 	assert.Equal(t, GreptileStatusGreen, pr.GreptileStatus, "the Greptile review on page two counts")
 }
 
-func TestHeadReviewedByGreptile(t *testing.T) {
-	assert.False(t, headReviewedByGreptile(&github.PRReviewData{HeadReviewers: []string{"alice"}}))
-	assert.True(t, headReviewedByGreptile(&github.PRReviewData{HeadReviewers: []string{"alice", "greptile-apps[bot]"}}))
+func TestGreptileHeadReviews(t *testing.T) {
+	assert.Equal(t, 0, greptileHeadReviews(&github.PRReviewData{HeadReviewCounts: map[string]int{"alice": 3}}))
+	assert.Equal(t, 2, greptileHeadReviews(&github.PRReviewData{HeadReviewCounts: map[string]int{"alice": 1, "greptile-apps[bot]": 2}}))
 }

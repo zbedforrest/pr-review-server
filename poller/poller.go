@@ -2868,7 +2868,9 @@ func (p *Poller) poll(ctx context.Context) {
 				isOpen := isOpenPRState(existingPR.PRState)
 				if isOpen && greptileRefreshes < greptileRefreshesPerCycle && needsGreptileRefresh(existingPR, reviewData) {
 					greptileRefreshes++
-					p.refreshGreptileStatus(ctx, pr.Owner, pr.Repo, pr.Number, reviewData.HeadOID)
+					if p.refreshGreptileStatus(ctx, pr.Owner, pr.Repo, pr.Number, reviewData.HeadOID) {
+						changedPRs[key] = true
+					}
 				}
 
 				for _, user := range allUsers {

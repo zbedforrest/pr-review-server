@@ -51,8 +51,9 @@ type PR struct {
 	// Merge confidence 0..5 for the latest review; nil when not yet scored
 	MergeConfidence *int
 	// Greptile's verdict ("green", "red", "absent") for GreptileStatusSHA
-	GreptileStatus    string
-	GreptileStatusSHA string
+	GreptileStatus      string
+	GreptileStatusSHA   string
+	GreptileReviewCount int
 	// User notes (single-user mode)
 	Notes string
 	// Poll economy: last seen updated_at from GitHub search API

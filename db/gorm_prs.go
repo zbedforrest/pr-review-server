@@ -31,39 +31,40 @@ func prModelToPR(m *PRModel) *PR {
 	}
 
 	return &PR{
-		ID:                int(m.ID),
-		RepoOwner:         m.RepoOwner,
-		RepoName:          m.RepoName,
-		PRNumber:          m.PRNumber,
-		LastCommitSHA:     m.LastCommitSHA,
-		LastReviewedAt:    m.LastReviewedAt,
-		ReviewHTMLPath:    m.ReviewPath,
-		Status:            m.Status,
-		GeneratingSince:   m.GeneratingSince,
-		Title:             m.Title,
-		Author:            m.Author,
-		ApprovalCount:     m.ApprovalCount,
-		MyReviewStatus:    m.MyReviewStatus,
-		CreatedAt:         m.CreatedAt,
-		Draft:             m.Draft,
-		CIState:           m.CIState,
-		CIFailedChecks:    ciFailedChecks,
-		PRState:           m.PRState,
-		MergeStateStatus:  m.MergeStateStatus,
-		ReviewDecision:    m.ReviewDecision,
-		ModelFallback:     m.ModelFallback,
-		ReviewRunID:       m.ReviewRunID,
-		ReviewRunJSON:     m.ReviewRunJSON,
-		CriticalCount:     m.CriticalCount,
-		MediumCount:       m.MediumCount,
-		LowCount:          m.LowCount,
-		ReviewVerdict:     m.ReviewVerdict,
-		MergeConfidence:   mergeConfidence,
-		GreptileStatus:    m.GreptileStatus,
-		GreptileStatusSHA: m.GreptileStatusSHA,
-		Notes:             m.Notes,
-		GitHubUpdatedAt:   m.GitHubUpdatedAt,
-		ErrorMessage:      m.ErrorMessage,
+		ID:                  int(m.ID),
+		RepoOwner:           m.RepoOwner,
+		RepoName:            m.RepoName,
+		PRNumber:            m.PRNumber,
+		LastCommitSHA:       m.LastCommitSHA,
+		LastReviewedAt:      m.LastReviewedAt,
+		ReviewHTMLPath:      m.ReviewPath,
+		Status:              m.Status,
+		GeneratingSince:     m.GeneratingSince,
+		Title:               m.Title,
+		Author:              m.Author,
+		ApprovalCount:       m.ApprovalCount,
+		MyReviewStatus:      m.MyReviewStatus,
+		CreatedAt:           m.CreatedAt,
+		Draft:               m.Draft,
+		CIState:             m.CIState,
+		CIFailedChecks:      ciFailedChecks,
+		PRState:             m.PRState,
+		MergeStateStatus:    m.MergeStateStatus,
+		ReviewDecision:      m.ReviewDecision,
+		ModelFallback:       m.ModelFallback,
+		ReviewRunID:         m.ReviewRunID,
+		ReviewRunJSON:       m.ReviewRunJSON,
+		CriticalCount:       m.CriticalCount,
+		MediumCount:         m.MediumCount,
+		LowCount:            m.LowCount,
+		ReviewVerdict:       m.ReviewVerdict,
+		MergeConfidence:     mergeConfidence,
+		GreptileStatus:      m.GreptileStatus,
+		GreptileStatusSHA:   m.GreptileStatusSHA,
+		GreptileReviewCount: m.GreptileReviewCount,
+		Notes:               m.Notes,
+		GitHubUpdatedAt:     m.GitHubUpdatedAt,
+		ErrorMessage:        m.ErrorMessage,
 	}
 }
 
@@ -85,39 +86,40 @@ func prToPRModel(p *PR) *PRModel {
 	}
 
 	return &PRModel{
-		ID:                uint(p.ID),
-		RepoOwner:         p.RepoOwner,
-		RepoName:          p.RepoName,
-		PRNumber:          p.PRNumber,
-		Title:             p.Title,
-		Author:            p.Author,
-		LastCommitSHA:     p.LastCommitSHA,
-		Status:            p.Status,
-		ReviewPath:        p.ReviewHTMLPath,
-		LastReviewedAt:    p.LastReviewedAt,
-		GeneratingSince:   p.GeneratingSince,
-		CreatedAt:         p.CreatedAt,
-		Draft:             p.Draft,
-		ApprovalCount:     p.ApprovalCount,
-		MyReviewStatus:    p.MyReviewStatus,
-		CIState:           p.CIState,
-		CIFailedChecks:    ciFailedChecks,
-		PRState:           p.PRState,
-		MergeStateStatus:  p.MergeStateStatus,
-		ReviewDecision:    p.ReviewDecision,
-		ModelFallback:     p.ModelFallback,
-		ReviewRunID:       p.ReviewRunID,
-		ReviewRunJSON:     p.ReviewRunJSON,
-		CriticalCount:     p.CriticalCount,
-		MediumCount:       p.MediumCount,
-		LowCount:          p.LowCount,
-		ReviewVerdict:     p.ReviewVerdict,
-		MergeConfidence:   mergeConfidence,
-		GreptileStatus:    p.GreptileStatus,
-		GreptileStatusSHA: p.GreptileStatusSHA,
-		Notes:             p.Notes,
-		GitHubUpdatedAt:   p.GitHubUpdatedAt,
-		ErrorMessage:      p.ErrorMessage,
+		ID:                  uint(p.ID),
+		RepoOwner:           p.RepoOwner,
+		RepoName:            p.RepoName,
+		PRNumber:            p.PRNumber,
+		Title:               p.Title,
+		Author:              p.Author,
+		LastCommitSHA:       p.LastCommitSHA,
+		Status:              p.Status,
+		ReviewPath:          p.ReviewHTMLPath,
+		LastReviewedAt:      p.LastReviewedAt,
+		GeneratingSince:     p.GeneratingSince,
+		CreatedAt:           p.CreatedAt,
+		Draft:               p.Draft,
+		ApprovalCount:       p.ApprovalCount,
+		MyReviewStatus:      p.MyReviewStatus,
+		CIState:             p.CIState,
+		CIFailedChecks:      ciFailedChecks,
+		PRState:             p.PRState,
+		MergeStateStatus:    p.MergeStateStatus,
+		ReviewDecision:      p.ReviewDecision,
+		ModelFallback:       p.ModelFallback,
+		ReviewRunID:         p.ReviewRunID,
+		ReviewRunJSON:       p.ReviewRunJSON,
+		CriticalCount:       p.CriticalCount,
+		MediumCount:         p.MediumCount,
+		LowCount:            p.LowCount,
+		ReviewVerdict:       p.ReviewVerdict,
+		MergeConfidence:     mergeConfidence,
+		GreptileStatus:      p.GreptileStatus,
+		GreptileStatusSHA:   p.GreptileStatusSHA,
+		GreptileReviewCount: p.GreptileReviewCount,
+		Notes:               p.Notes,
+		GitHubUpdatedAt:     p.GitHubUpdatedAt,
+		ErrorMessage:        p.ErrorMessage,
 	}
 }
 
@@ -294,24 +296,28 @@ func (g *GormDB) SetPRMergeConfidence(owner, repo string, prNumber int, projecti
 	return res.RowsAffected > 0, nil
 }
 
-// SetPRGreptileStatus records Greptile's verdict for one head. Readers treat
-// a status whose SHA is not the current head as absent, so no fencing on
-// last_commit_sha is needed here.
-func (g *GormDB) SetPRGreptileStatus(owner, repo string, prNumber int, headSHA, status string) error {
+// SetPRGreptileStatus records Greptile's verdict for one head and how many
+// Greptile reviews of it were graded. A late result for an older head never
+// replaces the verdict already stored for the row's current head. Reports
+// whether the row was written.
+func (g *GormDB) SetPRGreptileStatus(owner, repo string, prNumber int, headSHA, status string, reviewCount int) (bool, error) {
 	switch status {
 	case "green", "red", "absent":
 	default:
-		return fmt.Errorf("set PR greptile status: unknown status %q", status)
+		return false, fmt.Errorf("set PR greptile status: unknown status %q", status)
 	}
 	if headSHA == "" {
-		return errors.New("set PR greptile status: head SHA is required")
+		return false, errors.New("set PR greptile status: head SHA is required")
 	}
-	return g.db.Model(&PRModel{}).
+	res := g.db.Model(&PRModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Where("NOT (greptile_status_sha = last_commit_sha AND last_commit_sha <> ?)", headSHA).
 		Updates(map[string]interface{}{
-			"greptile_status":     status,
-			"greptile_status_sha": headSHA,
-		}).Error
+			"greptile_status":       status,
+			"greptile_status_sha":   headSHA,
+			"greptile_review_count": reviewCount,
+		})
+	return res.RowsAffected > 0, res.Error
 }
 
 // UpdatePRStatus updates the status of a PR
