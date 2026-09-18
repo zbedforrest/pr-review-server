@@ -267,6 +267,7 @@ func (m *MockDatabase) SetUserHiddenForPR(userID, prID int, hidden bool) error  
 func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error       { return nil }
 func (m *MockDatabase) EnsureManualPRView(userID, prID int, isAuthor bool) error     { return nil }
 func (m *MockDatabase) GetPRIDsWithManualClaims() (map[int]bool, error)              { return nil, nil }
+func (m *MockDatabase) GetPRIDsWithViews() (map[int]bool, error)                     { return nil, nil }
 func (m *MockDatabase) HideNonManualViewsForPR(prID int) error                       { return nil }
 func (m *MockDatabase) SetPRState(owner, repo string, prNumber int, state string) error {
 	return nil

@@ -2213,6 +2213,7 @@ func mergeStatePollFixture(t *testing.T, storedMergeState, returnedMergeState st
 
 	const sha = "abc123def456789012345678901234567890abcd"
 	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID:               1,
 		RepoOwner:        "owner",
 		RepoName:         "repo",
 		PRNumber:         1,
@@ -2227,6 +2228,7 @@ func mergeStatePollFixture(t *testing.T, storedMergeState, returnedMergeState st
 		MergeStateStatus: storedMergeState,
 		ReviewDecision:   "APPROVED",
 	}
+	mockDB.UserPRViews["1/1"] = &db.UserPRView{UserID: 1, PRID: 1}
 	mockGH.BatchGetPRReviewDataResults["owner/repo/1"] = &github.PRReviewData{
 		ApprovalCount:  2,
 		MyReviewStatus: "APPROVED",

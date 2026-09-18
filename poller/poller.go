@@ -1941,9 +1941,15 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 		// --- PR-state sync (re-opened retained PRs) ---
 		// A PR retained past close (manual claim) had pr_state persisted as
 		// closed/merged; if it's re-opened on GitHub, restore it or the UI
-		// keeps showing the merged/closed dot instead of live CI.
-		if !isOpenPRState(pr.PRState) {
-			log.Printf("[STATE-SYNC] PR %s re-opened on GitHub, restoring pr_state to open", key)
+		// keeps showing the merged/closed dot instead of live CI. Rows with an
+		// empty pr_state are backfilled here so the CI selection, which does
+		// not treat empty as open, stops guessing about them.
+		if !strings.EqualFold(pr.PRState, "open") {
+			if pr.PRState == "" {
+				log.Printf("[STATE-SYNC] PR %s is open on GitHub, backfilling empty pr_state", key)
+			} else {
+				log.Printf("[STATE-SYNC] PR %s re-opened on GitHub, restoring pr_state to open", key)
+			}
 			if err := p.db.SetPRState(pr.RepoOwner, pr.RepoName, pr.PRNumber, "open"); err != nil {
 				log.Printf("[STATE-SYNC] ERROR: failed to restore state for PR %s: %v", key, err)
 			} else {
@@ -2436,6 +2442,60 @@ func isOpenPRState(state string) bool {
 	return state == "" || strings.EqualFold(state, "open")
 }
 
+// ciSelection is the outcome of selectCIStatusPRs: the PRs to query plus the
+// per-reason counts logged with every cycle.
+type ciSelection struct {
+	prs                                                               []github.PRInfo
+	open, watched, unwatched, checksOnly, closedSkipped, unknownState int
+}
+
+func (s ciSelection) String() string {
+	return fmt.Sprintf("open=%d (watched=%d unwatched-skipped=%d) closed-skipped=%d checks-only=%d unknown-state=%d",
+		s.open, s.watched, s.unwatched, s.closedSkipped, s.checksOnly, s.unknownState)
+}
+
+// selectCIStatusPRs picks the PRs whose CI status is fetched this cycle.
+//
+// A row is open only if GitHub returned it this cycle (ghKeys), it is not yet
+// in the database, or its stored pr_state says so; an empty pr_state is not a
+// vote for open here, unlike isOpenPRState, because merge state is the
+// expensive part of the query. Open PRs are queried with merge state when at
+// least one dashboard shows them (watched, by PR ID; nil means the lookup
+// failed and every open PR is watched). Open PRs nobody watches are skipped:
+// the poller syncs their views before this selection, so they join the next
+// cycle after someone gains a view. Closed, merged and unknown-state rows keep
+// their stored merge fields and are queried for checks only when their CI
+// state is empty or on a full-refresh cycle.
+func selectCIStatusPRs(allPRs []github.PullRequest, dbPRMap map[string]*db.PR, ghKeys map[string]bool, watched map[int]bool, fullRefresh bool) ciSelection {
+	sel := ciSelection{prs: make([]github.PRInfo, 0, len(allPRs))}
+	for _, pr := range allPRs {
+		key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+		info := github.PRInfo{Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number}
+		dbPR, known := dbPRMap[key]
+		if !known || ghKeys[key] || strings.EqualFold(dbPR.PRState, "open") {
+			sel.open++
+			if known && watched != nil && !watched[dbPR.ID] {
+				sel.unwatched++
+				continue
+			}
+			sel.watched++
+			info.IncludeMergeState = true
+			sel.prs = append(sel.prs, info)
+			continue
+		}
+		if dbPR.PRState == "" {
+			sel.unknownState++
+		}
+		if dbPR.CIState != "" && !fullRefresh {
+			sel.closedSkipped++
+			continue
+		}
+		sel.checksOnly++
+		sel.prs = append(sel.prs, info)
+	}
+	return sel
+}
+
 // syncUserPRViews creates user_pr_view records for PRs the user authored.
 // Reviewer views are created separately in the reviewer groups phase.
 // Uses the pre-built dbPRMap to avoid N+1 GetPR queries.
@@ -2444,28 +2504,6 @@ func isOpenPRState(state string) bool {
 // claim, active review) are skipped here and in the other view syncs;
 // otherwise the next cycle would undo the hide that closed-PR cleanup
 // applied for non-claimants.
-// selectCIStatusPRs picks the PRs whose CI status is fetched this cycle. Open
-// PRs (and rows not yet in the database) are queried with merge state every
-// cycle; closed and merged rows keep their stored merge fields and are queried
-// for checks only when their CI state is empty or on a full-refresh cycle.
-func selectCIStatusPRs(allPRs []github.PullRequest, dbPRMap map[string]*db.PR, fullRefresh bool) []github.PRInfo {
-	ciPRs := make([]github.PRInfo, 0, len(allPRs))
-	for _, pr := range allPRs {
-		info := github.PRInfo{Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number, IncludeMergeState: true}
-		if dbPR, ok := dbPRMap[fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)]; ok {
-			switch dbPR.PRState {
-			case "closed", "merged":
-				if dbPR.CIState != "" && !fullRefresh {
-					continue
-				}
-				info.IncludeMergeState = false
-			}
-		}
-		ciPRs = append(ciPRs, info)
-	}
-	return ciPRs
-}
-
 func (p *Poller) syncUserPRViews(allPRs []github.PullRequest, dbPRMap map[string]*db.PR, users []db.User) {
 	batch := newViewBatch()
 	for _, user := range users {
@@ -2828,18 +2866,24 @@ func (p *Poller) poll(ctx context.Context) {
 			}()
 		}
 
-		// Fetch CI status for open PRs every cycle — CI check completions
+		// Fetch CI status for watched open PRs every cycle — CI check completions
 		// don't update GitHub's PR updated_at, so we can't rely on change detection.
 		// The query targets each PR's current head commit on GitHub, so the result
 		// is correct even when our stored SHA is behind (new push / force-push).
 		// Closed and merged PRs no longer change, so they ride along only when
 		// their CI state was never captured or on the periodic full refresh.
-		ciPRs := selectCIStatusPRs(allPRs, dbPRMap, p.pollCount%10 == 0)
+		watched, err := p.db.GetPRIDsWithViews()
+		if err != nil {
+			log.Printf("[POLL] WARNING: Failed to load watched PRs, fetching CI status for every open PR this cycle: %v", err)
+			watched = nil
+		}
+		ciSel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, watched, p.pollCount%10 == 0)
+		log.Printf("[POLL] CI status selection: %s", ciSel)
 		fetchWg.Add(1)
 		go func() {
 			defer fetchWg.Done()
 			var err error
-			ciStatusMap, err = p.ghClient.BatchGetCIStatus(ctx, ciPRs)
+			ciStatusMap, err = p.ghClient.BatchGetCIStatus(ctx, ciSel.prs)
 			if err != nil {
 				log.Printf("[POLL] WARNING: Failed to batch fetch CI status: %v", err)
 				ciStatusMap = nil
