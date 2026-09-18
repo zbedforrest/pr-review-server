@@ -40,11 +40,12 @@ type fakeGitHubForQuickActions struct {
 	lastReview   map[string]any
 	lastAuth     string
 	failGetWith  int
+	draftJSON    string
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHubForQuickActions {
 	t.Helper()
-	f := &fakeGitHubForQuickActions{head: qaHead, state: "open", reviewStatus: http.StatusOK,
+	f := &fakeGitHubForQuickActions{head: qaHead, state: "open", reviewStatus: http.StatusOK, draftJSON: "false",
 		reviewBody: `{"id": 2233, "state": "APPROVED", "commit_id": "` + qaHead + `", "html_url": "https://github.com/acme/example/pull/123#pullrequestreview-2233"}`}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -56,7 +57,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHubForQuickActions {
 				fmt.Fprint(w, `{"message":"nope"}`)
 				return
 			}
-			fmt.Fprintf(w, `{"number":123,"state":%q,"merged":%t,"head":{"sha":%q}}`, f.state, f.merged, f.head)
+			fmt.Fprintf(w, `{"number":123,"state":%q,"merged":%t,"draft":%s,"head":{"sha":%q}}`, f.state, f.merged, f.draftJSON, f.head)
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/example/pulls/123/reviews":
 			f.reviewPosts.Add(1)
 			raw, _ := io.ReadAll(r.Body)
@@ -169,6 +170,7 @@ func TestQuickAction_400Validation(t *testing.T) {
 		"comment body":         {"action": "comment", "body": nil},
 		"body too long":        {"body": strings.Repeat("x", quickActionMaxBodyLen+1)},
 		"bad sha":              {"expected_head_sha": "not-hex"},
+		"short sha":            {"expected_head_sha": "abc1234"},
 		"short request id":     {"request_id": "abc"},
 		"request id chars":     {"request_id": "abcdefgh!!"},
 	}
@@ -306,6 +308,11 @@ func TestQuickAction_ReplaysSameRequestID(t *testing.T) {
 	assert.Equal(t, http.StatusOK, second.Code)
 	assert.JSONEq(t, first.Body.String(), second.Body.String())
 	assert.Equal(t, int32(1), env.gh.reviewPosts.Load(), "the replay never reaches GitHub")
+
+	w, got := env.do(t, http.MethodPost, quickActionBody(map[string]any{"action": "comment", "body": "other"}), sessionToken(), nil)
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Equal(t, "duplicate", got["code"], "a request id reused with another payload is refused, not replayed")
+	assert.Equal(t, int32(1), env.gh.reviewPosts.Load())
 }
 
 func TestQuickAction_409DuplicateWithinWindow(t *testing.T) {
@@ -542,6 +549,27 @@ func TestQuickAction_DraftApproveGate(t *testing.T) {
 		w, got = env.do(t, http.MethodPost, quickActionBody(map[string]any{"request_id": "7e1c0000-req-2"}), sessionToken(), nil)
 		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 		assert.Equal(t, "absent", got["details"].(map[string]any)["greptile"], "a verdict for another head does not count")
+	})
+	t.Run("github draft flag wins over a stale row", func(t *testing.T) {
+		env := newQuickActionEnv(t)
+		require.NoError(t, env.database.MarkPRCompleted("acme", "example", 123, qaHead, "r.html", 0, 0, 0, "request_changes", false))
+		env.gh.draftJSON = "true"
+		w, got := env.do(t, http.MethodPost, quickActionBody(nil), sessionToken(), nil)
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code, w.Body.String())
+		assert.Equal(t, "draft_not_green", got["code"])
+		assert.Zero(t, env.gh.reviewPosts.Load())
+	})
+	t.Run("verdicts for an older head do not count", func(t *testing.T) {
+		env := newQuickActionEnv(t)
+		setDraftReviewState(t, env.database, "approve", 0, "green", qaHead)
+		env.gh.head = qaOtherSHA
+		w, got := env.do(t, http.MethodPost, quickActionBody(map[string]any{"expected_head_sha": qaOtherSHA}), sessionToken(), nil)
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code, w.Body.String())
+		assert.Equal(t, "draft_not_green", got["code"])
+		details := got["details"].(map[string]any)
+		assert.Equal(t, "absent", details["prism"])
+		assert.Equal(t, "absent", details["greptile"])
+		assert.Zero(t, env.gh.reviewPosts.Load())
 	})
 	t.Run("request changes and comment stay allowed", func(t *testing.T) {
 		env := newQuickActionEnv(t)

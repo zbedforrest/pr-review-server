@@ -95,21 +95,29 @@ func SubmitReviewAsUser(ctx context.Context, apiBase, token, owner, repo string,
 	}, nil
 }
 
+// UserPRHead is the PR state GitHub reports to the human's token.
+type UserPRHead struct {
+	SHA    string
+	State  string
+	Merged bool
+	Draft  bool
+}
+
 // GetPRHeadAsUser reads the PR's current head and state with the caller's
 // token, which also proves the token can see the repository.
-func GetPRHeadAsUser(ctx context.Context, apiBase, token, owner, repo string, number int) (headSHA, state string, merged bool, err error) {
+func GetPRHeadAsUser(ctx context.Context, apiBase, token, owner, repo string, number int) (*UserPRHead, error) {
 	if token == "" {
-		return "", "", false, &UserReviewError{Code: "reauth_required", Message: "no GitHub token"}
+		return nil, &UserReviewError{Code: "reauth_required", Message: "no GitHub token"}
 	}
 	gh, err := newUserClient(ctx, apiBase, token)
 	if err != nil {
-		return "", "", false, &UserReviewError{Code: "github_error", Message: err.Error()}
+		return nil, &UserReviewError{Code: "github_error", Message: err.Error()}
 	}
 	pr, _, err := gh.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
-		return "", "", false, mapUserReviewError(err)
+		return nil, mapUserReviewError(err)
 	}
-	return pr.GetHead().GetSHA(), pr.GetState(), pr.GetMerged(), nil
+	return &UserPRHead{SHA: pr.GetHead().GetSHA(), State: pr.GetState(), Merged: pr.GetMerged(), Draft: pr.GetDraft()}, nil
 }
 
 func mapUserReviewError(err error) error {

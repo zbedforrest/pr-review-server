@@ -92,6 +92,47 @@ func TestRefreshGreptileStatus_NoConcreteClientIsNoop(t *testing.T) {
 	assert.Empty(t, pr.GreptileStatus)
 }
 
+func TestNeedsGreptileRefresh(t *testing.T) {
+	greptileOnHead := &github.PRReviewData{HeadOID: "abc", HeadReviewers: []string{"greptile-apps[bot]"}}
+	humansOnly := &github.PRReviewData{HeadOID: "abc", HeadReviewers: []string{"alice"}}
+
+	assert.False(t, needsGreptileRefresh(&db.PR{}, humansOnly), "nothing to read without a Greptile review")
+	assert.True(t, needsGreptileRefresh(&db.PR{}, greptileOnHead), "never computed")
+	assert.True(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusGreen, GreptileStatusSHA: "old"}, greptileOnHead), "verdict is for an older head")
+	assert.True(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusAbsent, GreptileStatusSHA: "abc"}, greptileOnHead), "completion ran before Greptile posted")
+	assert.False(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusGreen, GreptileStatusSHA: "abc"}, greptileOnHead))
+	assert.False(t, needsGreptileRefresh(&db.PR{GreptileStatus: GreptileStatusRed, GreptileStatusSHA: "abc"}, greptileOnHead))
+}
+
+func TestRefreshGreptileStatus_FollowsReviewPagination(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos/acme/example/pulls/1/reviews" && r.URL.Query().Get("page") == "":
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s/repos/acme/example/pulls/1/reviews?page=2>; rel="next"`, r.Host))
+			fmt.Fprint(w, `[{"id": 1, "commit_id": "old", "user": {"login": "alice"}}]`)
+		case r.URL.Path == "/repos/acme/example/pulls/1/reviews":
+			fmt.Fprint(w, `[{"id": 5, "commit_id": "abc", "user": {"login": "greptile-apps[bot]"}}]`)
+		case r.URL.Path == "/repos/acme/example/pulls/1/comments":
+			fmt.Fprint(w, `[]`)
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, LastCommitSHA: "abc"}))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+
+	p.refreshGreptileStatus(context.Background(), "acme", "example", 1, "abc")
+	pr, err := database.GetPR("acme", "example", 1)
+	require.NoError(t, err)
+	assert.Equal(t, GreptileStatusGreen, pr.GreptileStatus, "the Greptile review on page two counts")
+}
+
 func TestHeadReviewedByGreptile(t *testing.T) {
 	assert.False(t, headReviewedByGreptile(&github.PRReviewData{HeadReviewers: []string{"alice"}}))
 	assert.True(t, headReviewedByGreptile(&github.PRReviewData{HeadReviewers: []string{"alice", "greptile-apps[bot]"}}))

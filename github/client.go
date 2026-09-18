@@ -605,6 +605,23 @@ func (c *Client) ListReviews(ctx context.Context, owner, repo string, prNumber i
 	return c.gh.PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
 }
 
+// ListAllReviews fetches every review on a PR, following pagination.
+func (c *Client) ListAllReviews(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestReview, error) {
+	var out []*github.PullRequestReview
+	opts := &github.ListOptions{PerPage: 100}
+	for {
+		page, resp, err := c.gh.PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page...)
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		opts.Page = resp.NextPage
+	}
+}
+
 // GetMyReviewStatus returns the current user's most recent review state on a PR
 // Returns: (status, wasRateLimited, error)
 // Status: "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "PENDING", or "" (no review)

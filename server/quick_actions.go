@@ -91,13 +91,15 @@ type quickActionError struct {
 }
 
 type replayEntry struct {
+	payload  string
 	response quickActionResponse
 	expires  time.Time
 }
 
-// quickActionState is per instance: with two instances a cross-instance
-// double is possible and harmless (GitHub's second review is idempotent for
-// approval state).
+// quickActionState is per instance. A retry that lands on another instance,
+// or after a restart, is not caught: it posts a second review (a duplicate
+// approval is inert; a duplicate comment is visible). Accepted for the
+// pilot; a shared ledger is the upgrade if the logs show it happening.
 type quickActionState struct {
 	mu       sync.Mutex
 	replays  map[string]replayEntry
@@ -137,13 +139,17 @@ func (q *quickActionState) sweepLocked(now time.Time) {
 
 // admit runs the replay, duplicate and rate-limit checks in one critical
 // section and reserves the duplicate window so a concurrent double-click sees
-// it. It returns a cached response for a replayed request id.
-func (q *quickActionState) admit(userID int, requestID, dupKey string) (*quickActionResponse, *quickActionError) {
+// it. It returns the cached response for a replayed request id, and refuses
+// a request id reused with a different payload.
+func (q *quickActionState) admit(userID int, requestID, payload, dupKey string) (*quickActionResponse, *quickActionError) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	now := q.now()
 	q.sweepLocked(now)
 	if e, ok := q.replays[quickActionKey(fmt.Sprint(userID), requestID)]; ok {
+		if e.payload != payload {
+			return nil, &quickActionError{http.StatusConflict, "duplicate", "request_id was already used for a different action", nil}
+		}
 		resp := e.response
 		return &resp, nil
 	}
@@ -166,10 +172,14 @@ func (q *quickActionState) admit(userID int, requestID, dupKey string) (*quickAc
 	return nil, nil
 }
 
-func (q *quickActionState) remember(userID int, requestID string, resp quickActionResponse) {
+func (q *quickActionState) remember(userID int, requestID, payload string, resp quickActionResponse) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.replays[quickActionKey(fmt.Sprint(userID), requestID)] = replayEntry{response: resp, expires: q.now().Add(quickActionReplayTTL)}
+	q.replays[quickActionKey(fmt.Sprint(userID), requestID)] = replayEntry{payload: payload, response: resp, expires: q.now().Add(quickActionReplayTTL)}
+}
+
+func (req *quickActionRequest) payloadKey() string {
+	return quickActionKey(req.Owner, req.Repo, fmt.Sprint(req.Number), req.Action, strings.ToLower(req.ExpectedHeadSHA), req.Body)
 }
 
 // release frees the duplicate window after a failure so the user can retry
@@ -236,8 +246,8 @@ func validateQuickAction(req *quickActionRequest) *quickActionError {
 	if req.Action != "approve" && req.Body == "" {
 		return bad("body is required for " + req.Action)
 	}
-	if !isSafeSHA(req.ExpectedHeadSHA) {
-		return bad("expected_head_sha must be a 4-40 char hex commit SHA")
+	if len(req.ExpectedHeadSHA) != 40 || !isSafeSHA(req.ExpectedHeadSHA) {
+		return bad("expected_head_sha must be the full 40 char hex commit SHA")
 	}
 	if !quickActionRequestIDRe.MatchString(req.RequestID) {
 		return bad("request_id must be 8-64 characters of letters, digits or '-'")
@@ -246,13 +256,18 @@ func validateQuickAction(req *quickActionRequest) *quickActionError {
 }
 
 // draftApproveGate allows approving a draft only when both automated
-// reviews are green on the current head. Details name the failing signal.
-func draftApproveGate(pr *db.PR) *quickActionError {
-	prism := "red"
-	if (pr.ReviewVerdict == "approve" || pr.ReviewVerdict == "approve_suggestions") && pr.CriticalCount == 0 && pr.Status == "completed" {
-		prism = "green"
+// reviews are green on the head GitHub just reported. Stored verdicts belong
+// to pr.LastCommitSHA, so a row that has not caught up with the head counts
+// as absent. Details name the failing signal.
+func draftApproveGate(pr *db.PR, head string) *quickActionError {
+	prism, greptile := "absent", "absent"
+	if strings.EqualFold(pr.LastCommitSHA, head) {
+		prism = "red"
+		if (pr.ReviewVerdict == "approve" || pr.ReviewVerdict == "approve_suggestions") && pr.CriticalCount == 0 && pr.Status == "completed" {
+			prism = "green"
+		}
+		greptile = greptileStatusFor(*pr)
 	}
-	greptile := greptileStatusFor(*pr)
 	if prism == "green" && greptile == "green" {
 		return nil
 	}
@@ -396,16 +411,10 @@ func (s *Server) handleQuickAction(w http.ResponseWriter, r *http.Request) {
 		writeQuickActionError(w, &quickActionError{http.StatusUnprocessableEntity, "pr_closed", "The pull request is closed on GitHub", nil})
 		return
 	}
-	if req.Action == "approve" && pr.Draft {
-		if e := draftApproveGate(pr); e != nil {
-			s.logQuickActionFailure(actor, user.ID, req.Action, prRef, req.ExpectedHeadSHA, source, e.status, e.code)
-			writeQuickActionError(w, e)
-			return
-		}
-	}
 
 	dupKey := quickActionKey(fmt.Sprint(user.ID), prRef, req.Action)
-	cached, e := s.quickActions.admit(user.ID, req.RequestID, dupKey)
+	payload := req.payloadKey()
+	cached, e := s.quickActions.admit(user.ID, req.RequestID, payload, dupKey)
 	if e != nil {
 		writeQuickActionError(w, e)
 		return
@@ -417,11 +426,10 @@ func (s *Server) handleQuickAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	var head, state string
-	var merged bool
+	var live *github.UserPRHead
 	err = withUserToken(ctx, src, func(token string) error {
 		var callErr error
-		head, state, merged, callErr = github.GetPRHeadAsUser(ctx, s.quickActions.apiBase, token, req.Owner, req.Repo, req.Number)
+		live, callErr = github.GetPRHeadAsUser(ctx, s.quickActions.apiBase, token, req.Owner, req.Repo, req.Number)
 		return callErr
 	})
 	if err != nil {
@@ -431,17 +439,27 @@ func (s *Server) handleQuickAction(w http.ResponseWriter, r *http.Request) {
 		writeQuickActionError(w, e)
 		return
 	}
-	if !strings.EqualFold(head, req.ExpectedHeadSHA) && !strings.HasPrefix(strings.ToLower(head), strings.ToLower(req.ExpectedHeadSHA)) {
+	head := live.SHA
+	if !strings.EqualFold(head, req.ExpectedHeadSHA) {
 		s.quickActions.release(dupKey)
 		log.Printf("[PR-ACTION] actor=%s user_id=%d action=%s pr=%s rejected code=head_moved expected=%s actual=%s", actor, user.ID, req.Action, prRef, req.ExpectedHeadSHA, head)
 		writeQuickActionError(w, &quickActionError{http.StatusConflict, "head_moved", "The PR head moved since this row loaded", map[string]string{"head_sha": head}})
 		return
 	}
-	if merged || !strings.EqualFold(state, "open") {
+	if live.Merged || !strings.EqualFold(live.State, "open") {
 		s.quickActions.release(dupKey)
 		s.logQuickActionFailure(actor, user.ID, req.Action, prRef, head, source, http.StatusUnprocessableEntity, "pr_closed")
 		writeQuickActionError(w, &quickActionError{http.StatusUnprocessableEntity, "pr_closed", "The pull request is closed on GitHub", nil})
 		return
+	}
+	// GitHub's draft flag wins over the row, which may predate a convert-to-draft.
+	if req.Action == "approve" && (live.Draft || pr.Draft) {
+		if e := draftApproveGate(pr, head); e != nil {
+			s.quickActions.release(dupKey)
+			s.logQuickActionFailure(actor, user.ID, req.Action, prRef, head, source, e.status, e.code)
+			writeQuickActionError(w, e)
+			return
+		}
 	}
 
 	mapping := quickActionEvents[req.Action]
@@ -475,7 +493,7 @@ func (s *Server) handleQuickAction(w http.ResponseWriter, r *http.Request) {
 		Status: "success", Action: req.Action, ReviewID: result.ReviewID, HTMLURL: result.HTMLURL,
 		State: reviewState, HeadSHA: head, Actor: actor,
 	}
-	s.quickActions.remember(user.ID, req.RequestID, resp)
+	s.quickActions.remember(user.ID, req.RequestID, payload, resp)
 	log.Printf("[PR-ACTION] actor=%s user_id=%d action=%s pr=%s head=%s source=%s review_id=%d body_len=%d",
 		actor, user.ID, req.Action, prRef, head, source, result.ReviewID, len(req.Body))
 

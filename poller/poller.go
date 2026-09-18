@@ -2866,9 +2866,7 @@ func (p *Poller) poll(ctx context.Context) {
 					continue
 				}
 				isOpen := isOpenPRState(existingPR.PRState)
-				// Greptile usually posts after PRism finishes, so the verdict
-				// stored at completion goes stale; catch up once per head.
-				if isOpen && greptileRefreshes < greptileRefreshesPerCycle && headReviewedByGreptile(reviewData) && !isSameCommit(existingPR.GreptileStatusSHA, reviewData.HeadOID) {
+				if isOpen && greptileRefreshes < greptileRefreshesPerCycle && needsGreptileRefresh(existingPR, reviewData) {
 					greptileRefreshes++
 					p.refreshGreptileStatus(ctx, pr.Owner, pr.Repo, pr.Number, reviewData.HeadOID)
 				}

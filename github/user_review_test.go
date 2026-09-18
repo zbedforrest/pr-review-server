@@ -176,16 +176,16 @@ func TestGetPRHeadAsUser(t *testing.T) {
 		if r.URL.Path != "/repos/acme/example/pulls/7" || r.Header.Get("Authorization") != "Bearer gho" {
 			t.Errorf("unexpected %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
 		}
-		fmt.Fprint(w, `{"number": 7, "state": "closed", "merged": true, "head": {"sha": "def5678"}}`)
+		fmt.Fprint(w, `{"number": 7, "state": "closed", "merged": true, "draft": true, "head": {"sha": "def5678"}}`)
 	}))
 	defer ts.Close()
-	head, state, merged, err := GetPRHeadAsUser(context.Background(), ts.URL, "gho", "acme", "example", 7)
-	if err != nil || head != "def5678" || state != "closed" || !merged {
-		t.Fatalf("got head=%q state=%q merged=%v err=%v", head, state, merged, err)
+	head, err := GetPRHeadAsUser(context.Background(), ts.URL, "gho", "acme", "example", 7)
+	if err != nil || head.SHA != "def5678" || head.State != "closed" || !head.Merged || !head.Draft {
+		t.Fatalf("got %+v err=%v", head, err)
 	}
 	nf := statusServer(t, 404, `{"message":"Not Found"}`, nil)
 	defer nf.Close()
-	_, _, _, err = GetPRHeadAsUser(context.Background(), nf.URL, "gho", "acme", "example", 7)
+	_, err = GetPRHeadAsUser(context.Background(), nf.URL, "gho", "acme", "example", 7)
 	if ure := userReviewErr(t, err); ure.Code != "no_permission" {
 		t.Errorf("404: got %+v", ure)
 	}

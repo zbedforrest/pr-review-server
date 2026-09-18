@@ -6,6 +6,7 @@ import (
 
 	gh "github.com/google/go-github/v57/github"
 
+	"pr-review-server/db"
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/reconcile"
 )
@@ -77,6 +78,19 @@ func headReviewedByGreptile(data *github.PRReviewData) bool {
 	return false
 }
 
+// needsGreptileRefresh is the poll-cycle catch-up: Greptile usually posts
+// after PRism finishes, so completion stored "absent" for this very head and
+// the verdict must be recomputed once a Greptile review of the head shows up.
+func needsGreptileRefresh(pr *db.PR, data *github.PRReviewData) bool {
+	if !headReviewedByGreptile(data) {
+		return false
+	}
+	if !isSameCommit(pr.GreptileStatusSHA, data.HeadOID) {
+		return true
+	}
+	return pr.GreptileStatus != GreptileStatusGreen && pr.GreptileStatus != GreptileStatusRed
+}
+
 // refreshGreptileStatus reads Greptile's reviews of head with the App client
 // and stores the verdict. Best-effort: a failure leaves the previous verdict
 // (or none) in place and the gate reads it as absent.
@@ -85,7 +99,7 @@ func (p *Poller) refreshGreptileStatus(ctx context.Context, owner, repo string, 
 	if !ok || p.ghClientConcrete == nil || head == "" {
 		return
 	}
-	reviews, _, err := p.ghClientConcrete.ListReviews(ctx, owner, repo, number)
+	reviews, err := p.ghClientConcrete.ListAllReviews(ctx, owner, repo, number)
 	if err != nil {
 		log.Printf("[GREPTILE] %s/%s#%d: list reviews: %v", owner, repo, number, err)
 		return
