@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/pkg/publisher/replytext"
 )
 
 // ReplyClass is what an author's reply to one of our inline comments amounts
@@ -201,7 +202,9 @@ type ReplyRequest struct {
 
 // ReplyDecision is the reply model's conclusion. Reply is empty for abstain.
 // React says whether the author's comment gets a 👍 alongside (or instead of)
-// the text; the model chooses so a rebutted pushback is not thumbed up.
+// the text; the model chooses so a rebutted pushback is not thumbed up. Note
+// names the sub-path a concession took (replytext.NoteIntentAcknowledged);
+// it is derived from the author's words and reported, not persisted.
 type ReplyDecision struct {
 	Decision   string
 	Reply      string
@@ -209,6 +212,24 @@ type ReplyDecision struct {
 	React      bool
 	Model      string
 	DurationMS int64
+	Note       string
+}
+
+// renderDecision applies the posting conventions to the model's reply before
+// it is recorded, so the ledger holds what will be posted. A body with
+// nothing postable left turns the decision into an abstain.
+func renderDecision(d ReplyDecision, reply AuthorReply, root ThreadComment) ReplyDecision {
+	if d.Decision == DecisionAbstain {
+		d.Reply = ""
+		return d
+	}
+	ctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, Decision: d.Decision}
+	body, ok := replytext.Render(d.Reply, ctx)
+	if !ok {
+		return ReplyDecision{Decision: DecisionAbstain, Cited: d.Cited, React: true, Model: d.Model, DurationMS: d.DurationMS}
+	}
+	d.Reply, d.Note = body, replytext.Note(ctx)
+	return d
 }
 
 // Responder runs the reply model.
@@ -345,6 +366,7 @@ type ReplyOutcome struct {
 	PRNumber        int
 	AuthorCommentID int64
 	Decision        string
+	Note            string
 	Outcome         string
 	Posted          bool
 	Action          string // how the author's comment was acknowledged: reacted or observed
@@ -957,6 +979,8 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		if err != nil {
 			return outcome, err
 		}
+		decision = renderDecision(decision, reply, root)
+		outcome.Note = decision.Note
 		cited, _ := json.Marshal(decision.Cited)
 		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{
 			Decision: decision.Decision, ReplyBody: decision.Reply, Cited: string(cited), Model: decision.Model, DurationMS: decision.DurationMS,
@@ -967,9 +991,11 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		row.Decision, row.ReplyBody, row.DecisionReact = decision.Decision, decision.Reply, decision.React
 		outcome.Decision, outcome.Model, outcome.DurationMS = decision.Decision, decision.Model, decision.DurationMS
 	}
-	text := strings.TrimSpace(row.ReplyBody)
+	// A row decided before this convention took effect is rendered again here;
+	// rendering is a no-op on an already rendered body.
+	text, renderable := replytext.Render(row.ReplyBody, replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, Decision: row.Decision})
 	switch {
-	case row.Decision == DecisionAbstain || text == "":
+	case row.Decision == DecisionAbstain || !renderable:
 		if rep != nil {
 			rep.Abstained++
 		}

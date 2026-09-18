@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/pkg/publisher/replytext"
 )
 
 func TestClassifyReply(t *testing.T) {
@@ -1119,5 +1120,78 @@ func TestReplyReactor_TerminalPendingPostedRebuttalIsNotThumbedUp(t *testing.T) 
 	r.Run(context.Background())
 	if len(gh.reactions) != 0 || ledger.rows[0].Action != "observed" {
 		t.Fatalf("reactions=%v row=%+v", gh.reactions, ledger.rows[0])
+	}
+}
+
+func TestReplyReactor_PostedReplyDropsTheAgreementOpener(t *testing.T) {
+	var outcomes []ReplyOutcome
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right, the caller on b.go:7 checks for nil before this call. Withdrawn.", Cited: []EvidenceRef{{File: "b.go", Line: 7}}}, nil
+	})
+	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "The caller on b.go:7 checks for nil before this call. Withdrawn."
+	if len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], want+"\n\n") {
+		t.Fatalf("posted=%q", gh.posted)
+	}
+	if ledger.rows[0].ReplyBody != want || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
+		t.Errorf("row=%+v states=%v", ledger.rows[0], ledger.states)
+	}
+	if len(outcomes) != 1 || outcomes[0].Note != "" {
+		t.Errorf("a plain dispute carries no note: %+v", outcomes)
+	}
+}
+
+func TestReplyReactor_ReplyThatIsOnlyAnAgreementFormulaIsNotPosted(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right. Agreed.", Cited: []EvidenceRef{{File: "b.go", Line: 7}}}, nil
+	})
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 0 || rep.Abstained != 1 || ledger.rows[0].Decision != DecisionAbstain || ledger.rows[0].ReplyBody != "" {
+		t.Fatalf("posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
+	}
+	if ledger.states["a.go:1:abc"] != "" || len(gh.reactions) != 1 {
+		t.Errorf("an unposted concession must not dismiss the finding: states=%v reactions=%v", ledger.states, gh.reactions)
+	}
+}
+
+func TestReplyReactor_IntentPushbackIsAcknowledgedAndRecordedNotWithdrawn(t *testing.T) {
+	var outcomes []ReplyOutcome
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Cited: []EvidenceRef{{File: "a.go", Line: 12}},
+			Reply: "You're right. That is your call. Keeping it means a request with a nil body reaches parse on a.go:12 and the handler returns 500 instead of 400. Withdrawing this."}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "This is intentional, callers are trusted here. Not a bug, keeping as is."
+	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "That is your call. Keeping it means a request with a nil body reaches parse on a.go:12 and the handler returns 500 instead of 400. Should this be noted in the PR description as accepted risk?"
+	if len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], want+"\n\n") {
+		t.Fatalf("posted=%q", gh.posted)
+	}
+	if ledger.rows[0].Decision != DecisionConcede || ledger.rows[0].ReplyBody != want || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
+		t.Errorf("row=%+v states=%v", ledger.rows[0], ledger.states)
+	}
+	if len(outcomes) != 1 || outcomes[0].Note != replytext.NoteIntentAcknowledged {
+		t.Errorf("outcomes=%+v", outcomes)
+	}
+}
+
+func TestReplyReactor_DeferralAsksForTheTicketKey(t *testing.T) {
+	r, gh, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "The nil path is introduced here: a.go:12 dereferences req before the guard that b.go:7 used to provide.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "Out of scope for this PR, will handle it in a follow-up."
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 1 || !strings.Contains(gh.posted[0], " "+replytext.TicketAsk+"\n\n") {
+		t.Fatalf("posted=%q", gh.posted)
 	}
 }
