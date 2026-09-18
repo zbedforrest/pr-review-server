@@ -254,10 +254,16 @@ func (s *Server) serveBlogAsset(w http.ResponseWriter, r *http.Request, asset *d
 	}
 	if asset.ETag != "" {
 		h.Set("ETag", asset.ETag)
-		if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, asset.ETag) {
+		if etagMatches(r.Header.Get("If-None-Match"), asset.ETag) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
+	}
+	h.Set("Content-Type", blogServedContentType(asset.ContentType))
+	if r.Method == http.MethodHead {
+		h.Set("Content-Length", fmt.Sprint(asset.SizeBytes))
+		w.WriteHeader(http.StatusOK)
+		return
 	}
 	content, err := s.blogObjects.Get(r.Context(), asset.StorageObject)
 	if err != nil {
@@ -270,7 +276,21 @@ func (s *Server) serveBlogAsset(w http.ResponseWriter, r *http.Request, asset *d
 		http.Error(w, "Failed to read file", http.StatusInternalServerError)
 		return
 	}
-	h.Set("Content-Type", blogServedContentType(asset.ContentType))
 	h.Set("Content-Length", fmt.Sprint(len(content)))
 	_, _ = w.Write(content) // nolint:errcheck
+}
+
+// etagMatches implements the If-None-Match comparison for GET and HEAD: any
+// listed tag equal to the current one, weak markers ignored, or "*".
+func etagMatches(header, etag string) bool {
+	if header == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }

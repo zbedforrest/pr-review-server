@@ -122,10 +122,19 @@ func (s *Server) handleBlogAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isAdmin := s.isAdmin(user)
-	if r.Method != http.MethodGet && !isAdmin {
-		log.Printf("[BLOG] denied actor=%s method=%s path=%s", user.GitHubUsername, r.Method, r.URL.Path)
-		http.Error(w, "admin required", http.StatusForbidden)
-		return
+	if r.Method != http.MethodGet {
+		if !isAdmin {
+			log.Printf("[BLOG] denied actor=%s method=%s path=%s", user.GitHubUsername, r.Method, r.URL.Path)
+			http.Error(w, "admin required", http.StatusForbidden)
+			return
+		}
+		// One mutation at a time per process: every write re-reads the post
+		// under the lock, so an upload cannot resurrect a post deleted
+		// moments earlier and the quota check sees every committed file.
+		// Admin writes are rare and human-driven; a cross-instance lock is
+		// not worth its complexity here.
+		s.blogMutationMu.Lock()
+		defer s.blogMutationMu.Unlock()
 	}
 
 	rest := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, blogAPIPath), "/")
@@ -400,12 +409,6 @@ func (s *Server) putBlogFile(w http.ResponseWriter, r *http.Request, store blogS
 		http.Error(w, "empty file", http.StatusBadRequest)
 		return
 	}
-
-	// One upload at a time per process keeps the quota check and the row
-	// write together; the limits are guardrails for admins, not a hard cap
-	// across instances.
-	s.blogUploadMu.Lock()
-	defer s.blogUploadMu.Unlock()
 
 	post, assets, ok := s.loadBlogPost(w, store, slug, true)
 	if !ok {

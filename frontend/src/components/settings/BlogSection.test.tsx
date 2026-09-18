@@ -136,7 +136,7 @@ describe('BlogSection', () => {
     const image = new File(['png'], 'hero.png', { type: '' });
     Object.defineProperty(image, 'webkitRelativePath', { value: 'site/img/hero.png' });
     fireEvent.change(screen.getByLabelText('Files'), { target: { files: [index, image] } });
-    fireEvent.click(screen.getByLabelText('Publish once every file is uploaded'));
+    fireEvent.click(screen.getByLabelText(/Publish once every file is uploaded/));
 
     expect(createButton.disabled).toBe(false);
     fireEvent.click(createButton);
@@ -155,6 +155,56 @@ describe('BlogSection', () => {
     expect(screen.getByText('index.html').nextElementSibling?.textContent).toBe('done');
     expect(screen.getByText('img/hero.png').nextElementSibling?.textContent).toBe('done');
     expect((screen.getByLabelText('Slug') as HTMLInputElement).value).toBe('');
+  });
+
+  it('refuses a slug that already exists and drops hidden files from a folder pick', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/blog/posts') return Promise.resolve(jsonResponse({ posts: [livePost] }));
+      if (init?.method === 'PUT' && url.includes('/files/')) {
+        return Promise.resolve(jsonResponse({ file: { path: 'x', content_type: 'x', size_bytes: 1, uploaded_at: '' } }));
+      }
+      if (init?.method === 'PUT') return Promise.resolve(jsonResponse({ post: { ...livePost, slug: 'hello-2' } }, 201));
+      return Promise.resolve(new Response('not found', { status: 404 }));
+    });
+    renderSection();
+    await screen.findByRole('link', { name: 'Hello' });
+
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Again' } });
+    const index = new File(['<p>hi</p>'], 'index.html', { type: 'text/html' });
+    Object.defineProperty(index, 'webkitRelativePath', { value: 'site/index.html' });
+    const junk = new File([''], '.DS_Store', { type: '' });
+    Object.defineProperty(junk, 'webkitRelativePath', { value: 'site/img/.DS_Store' });
+    fireEvent.change(screen.getByLabelText('Files'), { target: { files: [index, junk] } });
+
+    fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'hello' } });
+    expect(screen.getByRole('alert').textContent).toContain('already exists');
+    expect((screen.getByRole('button', { name: 'Create post' }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText('Slug'), { target: { value: 'hello-2' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+    const publishToggle = screen.getByLabelText(/Publish once every file is uploaded/) as HTMLInputElement;
+    expect(publishToggle.disabled).toBe(false);
+    fireEvent.click(publishToggle);
+    fireEvent.click(screen.getByRole('button', { name: 'Create post' }));
+
+    await waitFor(() => expect(calls().filter((c) => c.method === 'PUT').length).toBe(3));
+    const urls = calls().filter((c) => c.method === 'PUT').map((c) => c.url);
+    expect(urls).toEqual(['/api/blog/posts/hello-2', '/api/blog/posts/hello-2/files/index.html', '/api/blog/posts/hello-2']);
+  });
+
+  it('cannot ask to publish without an index.html', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/blog/posts') return Promise.resolve(jsonResponse({ posts: [] }));
+      return Promise.resolve(new Response('not found', { status: 404 }));
+    });
+    renderSection();
+    await screen.findByText('No posts yet.');
+
+    const publishToggle = screen.getByLabelText(/Publish once every file is uploaded/) as HTMLInputElement;
+    expect(publishToggle.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Files'), { target: { files: [new File(['png'], 'hero.png', { type: 'image/png' })] } });
+    expect(publishToggle.disabled).toBe(true);
+    expect(screen.getByText(/No index\.html selected/)).toBeTruthy();
   });
 
   it('keeps the form and reports a failed upload without publishing', async () => {
@@ -177,7 +227,7 @@ describe('BlogSection', () => {
     const index = new File(['<p>hi</p>'], 'index.html', { type: 'text/html' });
     const script = new File(['alert(1)'], 'run.js', { type: 'application/javascript' });
     fireEvent.change(screen.getByLabelText('Files'), { target: { files: [index, script] } });
-    fireEvent.click(screen.getByLabelText('Publish once every file is uploaded'));
+    fireEvent.click(screen.getByLabelText(/Publish once every file is uploaded/));
     fireEvent.click(screen.getByRole('button', { name: 'Create post' }));
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('1 of 2 files failed'));

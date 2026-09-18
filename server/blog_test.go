@@ -155,6 +155,16 @@ func TestBlogAsset_ContentTypeCacheAndETag(t *testing.T) {
 	w = blogRequest(t, server, blogMember, http.MethodGet, "/blog/hello/img/a.png", nil, map[string]string{"If-None-Match": etag})
 	assert.Equal(t, http.StatusNotModified, w.Code)
 	assert.Empty(t, w.Body.Bytes())
+	w = blogRequest(t, server, blogMember, http.MethodGet, "/blog/hello/img/a.png", nil, map[string]string{"If-None-Match": `"other", W/` + etag})
+	assert.Equal(t, http.StatusNotModified, w.Code, "weak tags in a list match")
+	w = blogRequest(t, server, blogMember, http.MethodGet, "/blog/hello/img/a.png", nil, map[string]string{"If-None-Match": `"x` + strings.Trim(etag, `"`) + `y"`})
+	assert.Equal(t, http.StatusOK, w.Code, "a tag that merely contains ours is not a match")
+
+	w = blogRequest(t, server, blogMember, http.MethodHead, "/blog/hello/img/a.png", nil, nil)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, w.Body.Bytes())
+	assert.Equal(t, fmt.Sprint(len(testPNG)), w.Header().Get("Content-Length"))
+	assert.Equal(t, "image/png", w.Header().Get("Content-Type"))
 
 	w = blogRequest(t, server, blogMember, http.MethodGet, "/blog/hello/img/missing.png", nil, nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -409,6 +419,16 @@ func TestReactApp_StillServesDashboardForOtherPaths(t *testing.T) {
 		assert.Equal(t, "text/html; charset=utf-8", w.Header().Get("Content-Type"), target)
 		assert.Contains(t, strings.ToLower(w.Body.String()), "<!doctype html>", target)
 	}
+}
+
+func TestEtagMatches(t *testing.T) {
+	assert.True(t, etagMatches(`"abc"`, `"abc"`))
+	assert.True(t, etagMatches(`W/"abc"`, `"abc"`))
+	assert.True(t, etagMatches(`"x", "abc"`, `"abc"`))
+	assert.True(t, etagMatches(`*`, `"abc"`))
+	assert.False(t, etagMatches(``, `"abc"`))
+	assert.False(t, etagMatches(`"abcd"`, `"abc"`))
+	assert.False(t, etagMatches(`"zabcz"`, `"abc"`))
 }
 
 func TestLocalBlogObjects_RefusesKeysOutsideRoot(t *testing.T) {

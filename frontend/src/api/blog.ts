@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiPut, APIError } from './client';
+import { apiDelete, apiGet, apiPut, APIError, handleUnauthorized } from './client';
 
 export interface BlogPost {
   slug: string;
@@ -67,6 +67,7 @@ export async function uploadBlogFile(slug: string, path: string, file: Blob, con
     headers: { 'Content-Type': contentType },
     body: file,
   });
+  handleUnauthorized(response);
   if (!response.ok) {
     const body = (await response.text().catch(() => '')).trim();
     throw new APIError(body || `API error: ${response.status}`, response.status, response.statusText);
@@ -79,6 +80,11 @@ export async function uploadBlogFile(slug: string, path: string, file: Blob, con
 export function blogContentType(path: string, reported: string): string {
   const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
   return CONTENT_TYPES[ext] ?? reported ?? '';
+}
+
+/** Hidden files such as .DS_Store come along with a folder pick and are never wanted. */
+export function isHiddenBlogPath(path: string): boolean {
+  return path.split('/').some((segment) => segment.startsWith('.'));
 }
 
 /** Post-relative path of a picked file; a folder pick drops the folder itself. */

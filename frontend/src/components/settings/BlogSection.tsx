@@ -6,6 +6,7 @@ import {
   blogRelativePath,
   deleteBlogPost,
   fetchBlogPosts,
+  isHiddenBlogPath,
   saveBlogPost,
   uploadBlogFile,
   type BlogPost,
@@ -54,7 +55,9 @@ export function BlogSection() {
   const paths = files.map(blogRelativePath);
   const hasIndex = paths.includes('index.html');
   const slugValid = BLOG_SLUG_PATTERN.test(slug);
-  const canCreate = slugValid && title.trim() !== '' && files.length > 0 && !uploading;
+  const slugTaken = posts.data?.some((post) => post.slug === slug) ?? false;
+  const canCreate = slugValid && !slugTaken && title.trim() !== '' && files.length > 0 && !uploading;
+  const willPublish = publishAfter && hasIndex;
 
   const setStatus = (index: number, patch: Partial<UploadProgress>) =>
     setProgress((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
@@ -76,7 +79,7 @@ export function BlogSection() {
           setStatus(i, { status: 'error', error: errorText(err) });
         }
       }
-      if (publishAfter && failed === 0 && hasIndex) {
+      if (willPublish && failed === 0) {
         await saveBlogPost(slug, { title: title.trim(), dek: dek.trim(), published: true });
       }
       if (failed === 0) {
@@ -170,12 +173,17 @@ export function BlogSection() {
               value={slug}
               onChange={(e) => setSlug(e.target.value.trim().toLowerCase())}
               placeholder="my-first-post"
-              aria-invalid={slug !== '' && !slugValid}
-              aria-describedby="blog-slug-help"
+              aria-invalid={slug !== '' && (!slugValid || slugTaken)}
+              aria-describedby={slugTaken ? 'blog-slug-help blog-slug-error' : 'blog-slug-help'}
             />
             <span id="blog-slug-help" className="settings-field__help">
               Lowercase letters, digits and dashes; becomes /blog/&lt;slug&gt;/
             </span>
+            {slugTaken && (
+              <span id="blog-slug-error" role="alert" className="settings-field__error">
+                A post with this slug already exists; delete it here or replace its files with scripts/blog_publish.sh
+              </span>
+            )}
           </div>
           <div className="settings-field">
             <label className="settings-field__label" htmlFor="blog-title">
@@ -204,7 +212,9 @@ export function BlogSection() {
               ref={fileInput}
               type="file"
               multiple
-              onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
+              onChange={(e) =>
+                setFiles(Array.from(e.target.files ?? []).filter((file) => !isHiddenBlogPath(blogRelativePath(file))))
+              }
               aria-describedby="blog-files-help"
             />
             <span id="blog-files-help" className="settings-field__help">
@@ -226,11 +236,12 @@ export function BlogSection() {
             <input
               id="blog-publish-after"
               type="checkbox"
-              checked={publishAfter}
+              checked={willPublish}
+              disabled={!hasIndex}
               onChange={(e) => setPublishAfter(e.target.checked)}
             />
             <label className="settings-field__label" htmlFor="blog-publish-after">
-              Publish once every file is uploaded
+              Publish once every file is uploaded{hasIndex ? '' : ' (needs index.html)'}
             </label>
           </div>
           <div className="settings-section__actions">

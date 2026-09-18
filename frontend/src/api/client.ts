@@ -12,7 +12,7 @@ export class APIError extends Error {
   }
 }
 
-function handleUnauthorized(response: Response): void {
+export function handleUnauthorized(response: Response): void {
   if (response.status === 401) {
     window.location.href = '/login';
   }

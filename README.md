@@ -209,7 +209,7 @@ the PR row remains only the latest published projection.
 
 ## Blog
 
-Signed-in members can read posts at `/blog`; admins manage them from the Settings page or the API. A post is a directory: `index.html` is the page and every other file is an asset it references by relative path, so a self-contained static page publishes unchanged. Pages are served with a CSP that allows inline styles and same-origin images and media only, so uploaded HTML cannot run scripts. Files live under `blog/<slug>/` in `GCS_BUCKET`, or under `BLOG_LOCAL_DIR` (default `./data/blog`) when no bucket is configured.
+Signed-in members can read posts at `/blog`; admins manage them from the Settings page or the API. A post is a directory: `index.html` is the page and every other file is an asset it references by relative path, so a self-contained static page publishes unchanged. Pages are served with a CSP that allows inline styles and same-origin images and media only, so uploaded HTML cannot run scripts. Files live under `blog/<slug>/` in `GCS_BUCKET`, or under `BLOG_LOCAL_DIR` (default `./data/blog`) when no bucket is configured. The bucket must stay private, as it already must for review artifacts: access control is enforced by the server, not by object ACLs.
 
 Publish from a terminal with the GitHub CLI token of an admin:
 
