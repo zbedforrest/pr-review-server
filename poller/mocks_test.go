@@ -325,7 +325,8 @@ type MockDatabase struct {
 	// User PR views (keyed by "userID/prID"), maintained by
 	// BatchUpsertUserPRViews and BatchPruneViaTeams so multi-cycle poll tests
 	// observe the same state evolution as the real database.
-	UserPRViews map[string]*db.UserPRView
+	UserPRViews            map[string]*db.UserPRView
+	GetPRIDsWithViewsError error
 
 	// Track prune calls for verification
 	BatchPruneViaTeamsCalls [][]db.ViaTeamsPrune
@@ -1182,6 +1183,19 @@ func (m *MockDatabase) GetPRIDsWithManualClaims() (map[int]bool, error) {
 		claims[id] = true
 	}
 	return claims, nil
+}
+
+func (m *MockDatabase) GetPRIDsWithViews() (map[int]bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.GetPRIDsWithViewsError != nil {
+		return nil, m.GetPRIDsWithViewsError
+	}
+	watched := make(map[int]bool, len(m.UserPRViews))
+	for _, view := range m.UserPRViews {
+		watched[view.PRID] = true
+	}
+	return watched, nil
 }
 
 func (m *MockDatabase) BatchUpsertPRs(prs []*db.PR) error {

@@ -1724,6 +1724,33 @@ func TestGormDB_GetPRIDsWithManualClaims(t *testing.T) {
 	assert.False(t, claims[pr3.ID], "team assignment is not a manual claim")
 }
 
+func TestGormDB_GetPRIDsWithViews(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "testuser"}
+	require.NoError(t, db.CreateUser(user))
+	for i := 1; i <= 3; i++ {
+		require.NoError(t, db.UpsertPR(&PR{
+			RepoOwner: "owner", RepoName: "repo", PRNumber: i,
+			LastCommitSHA: "abc123", Status: "completed",
+		}))
+	}
+	pr1, _ := db.GetPR("owner", "repo", 1)
+	pr2, _ := db.GetPR("owner", "repo", 2)
+	pr3, _ := db.GetPR("owner", "repo", 3)
+
+	require.NoError(t, db.EnsureUserPRView(user.ID, pr1.ID, false))
+	require.NoError(t, db.EnsureManualPRView(user.ID, pr2.ID, false))
+	require.NoError(t, db.HidePRForUser(user.ID, pr2.ID))
+
+	watched, err := db.GetPRIDsWithViews()
+	require.NoError(t, err)
+	assert.True(t, watched[pr1.ID], "team-assigned view counts as watched")
+	assert.True(t, watched[pr2.ID], "a hidden view still counts as watched")
+	assert.False(t, watched[pr3.ID], "a PR with no view is not watched")
+}
+
 // =============================================================================
 // Edge Cases and Integration Tests
 // =============================================================================

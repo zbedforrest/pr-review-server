@@ -474,6 +474,21 @@ func (g *GormDB) GetPRIDsWithManualClaims() (map[int]bool, error) {
 	return claims, nil
 }
 
+// GetPRIDsWithViews returns every PR that appears on at least one user's
+// dashboard, hidden rows included. PRs outside this set are tracked but never
+// rendered, so per-cycle metadata such as CI status is wasted on them.
+func (g *GormDB) GetPRIDsWithViews() (map[int]bool, error) {
+	var prIDs []int
+	if err := g.db.Model(&UserPRViewModel{}).Distinct().Pluck("pr_id", &prIDs).Error; err != nil {
+		return nil, err
+	}
+	watched := make(map[int]bool, len(prIDs))
+	for _, id := range prIDs {
+		watched[id] = true
+	}
+	return watched, nil
+}
+
 // GetPRsForUserWithNotes returns all PRs for a user, with user-specific view data merged
 func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 	var results []struct {
