@@ -167,6 +167,11 @@ type PRInfo struct {
 	Number    int
 	Title     string     // PR title (populated by search, "" otherwise)
 	UpdatedAt *time.Time // GitHub updated_at (populated by search, nil otherwise)
+	// IncludeMergeState asks the CI status query for mergeStateStatus and
+	// reviewDecision. GitHub computes mergeability on demand, so only open PRs
+	// should set it: asking for every tracked PR every minute times out batches
+	// and trips secondary rate limits.
+	IncludeMergeState bool
 }
 
 // PRDetailsAuthor represents the author in a PR details GraphQL response

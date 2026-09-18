@@ -39,8 +39,8 @@ func TestBuildPRAliasMap(t *testing.T) {
 
 func TestBuildCIStatusQuery(t *testing.T) {
 	prs := []PRInfo{
-		{Owner: "owner1", Repo: "repo1", Number: 101},
-		{Owner: "owner2", Repo: "repo2", Number: 102},
+		{Owner: "owner1", Repo: "repo1", Number: 101, IncludeMergeState: true},
+		{Owner: "owner2", Repo: "repo2", Number: 102, IncludeMergeState: true},
 	}
 
 	query := buildCIStatusQuery(prs)
@@ -749,10 +749,11 @@ func TestExtractReviewerGroups_OrgNameEmpty_WhenNoTeams(t *testing.T) {
 
 func TestParseCIStatusFromRollup(t *testing.T) {
 	tests := []struct {
-		name           string
-		rollup         *StatusCheckRollup
-		expectedState  string
-		expectedFailed []string
+		name              string
+		rollup            *StatusCheckRollup
+		expectedState     string
+		expectedFailed    []string
+		expectedNullNodes int
 	}{
 		{
 			name: "All success",
@@ -808,11 +809,44 @@ func TestParseCIStatusFromRollup(t *testing.T) {
 			expectedState:  "failure",
 			expectedFailed: []string{"ci/build"},
 		},
+		{
+			name: "Hidden failure with a visible in-progress check keeps the failing rollup",
+			rollup: &StatusCheckRollup{
+				State: "FAILURE",
+				Contexts: ContextsData{
+					Nodes: []CheckNode{
+						{TypeName: "CheckRun", Name: "test", Status: "IN_PROGRESS"},
+						{},
+					},
+				},
+			},
+			expectedState:     "failure",
+			expectedFailed:    nil,
+			expectedNullNodes: 1,
+		},
+		{
+			name: "Hidden failure with a visible pending status keeps the failing rollup",
+			rollup: &StatusCheckRollup{
+				State: "FAILURE",
+				Contexts: ContextsData{
+					Nodes: []CheckNode{
+						{TypeName: "StatusContext", Context: "ci/build", State: "PENDING"},
+						{},
+					},
+				},
+			},
+			expectedState:     "failure",
+			expectedFailed:    nil,
+			expectedNullNodes: 1,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state, failed := parseCIStatusFromRollup(tt.rollup)
+			state, failed, nullNodes := parseCIStatusFromRollup(tt.rollup)
+			if nullNodes != tt.expectedNullNodes {
+				t.Errorf("Expected %d null contexts, got %d", tt.expectedNullNodes, nullNodes)
+			}
 			if state != tt.expectedState {
 				t.Errorf("Expected state %q, got %q", tt.expectedState, state)
 			}

@@ -85,12 +85,8 @@ func TestDefaultSpawnerPreservesExplicitEmptyEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read stdout: %v", err)
 	}
-	stderr, stderrErr := io.ReadAll(proc.Stderr())
-	if stderrErr != nil {
-		t.Fatalf("read stderr: %v", stderrErr)
-	}
 	if err := proc.Wait(); err != nil {
-		t.Fatalf("wait: %v; stderr=%s", err, stderr)
+		t.Fatalf("wait: %v; stderr=%s", err, readAllString(proc.Stderr()))
 	}
 	if len(bytes.TrimSpace(stdout)) != 0 {
 		t.Fatalf("empty child environment inherited parent values: %s", stdout)

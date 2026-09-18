@@ -2232,10 +2232,11 @@ func mergeStatePollFixture(t *testing.T, storedMergeState, returnedMergeState st
 		MyReviewStatus: "APPROVED",
 	}
 	mockGH.BatchGetCIStatusResults["owner/repo/1"] = &github.CIStatus{
-		State:            "success",
-		FailedChecks:     []string{},
-		MergeStateStatus: returnedMergeState,
-		ReviewDecision:   "APPROVED",
+		State:               "success",
+		FailedChecks:        []string{},
+		MergeStateStatus:    returnedMergeState,
+		ReviewDecision:      "APPROVED",
+		MergeStateRequested: true,
 	}
 	mockGH.IsPROpenResults["owner/repo/1"] = struct {
 		IsOpen bool

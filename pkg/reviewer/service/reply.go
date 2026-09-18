@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"pr-review-server/pkg/publisher/replytext"
@@ -158,16 +156,9 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 		}
 	}()
 
-	var stderrBuf strings.Builder
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&stderrBuf, proc.Stderr())
-	}()
 	parsed, parseErr := runtime.parseStream(proc, logFile, cfg.MaxTurns)
 	waitErr := proc.Wait()
-	wg.Wait()
+	stderrBuf := readAllString(proc.Stderr())
 	redact := func(s string) string { return truncate(redactToken(s, credentialValue), 600) }
 	// The budget cases come first: a killed process can also fail the stream
 	// read, and only this function's own deadline (not one inherited from the
@@ -178,13 +169,13 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 	case ctx.Err() == nil && runCtx.Err() == context.DeadlineExceeded:
 		return nil, fmt.Errorf("reply: %w: wall-clock timeout (%s)", ErrReplyBudgetExhausted, cfg.WallClock)
 	case parseErr != nil:
-		return nil, fmt.Errorf("reply: %w (stderr: %s)", parseErr, redact(stderrBuf.String()))
+		return nil, fmt.Errorf("reply: %w (stderr: %s)", parseErr, redact(stderrBuf))
 	case runCtx.Err() == context.DeadlineExceeded:
 		return nil, fmt.Errorf("reply: wall-clock timeout (%s)", cfg.WallClock)
 	case parsed.streamErr != "":
 		return nil, fmt.Errorf("reply: CLI reported error: %s", redact(parsed.streamErr))
 	case waitErr != nil:
-		return nil, fmt.Errorf("reply: %s exited with error: %w (stderr: %s)", runtime.command, waitErr, redact(stderrBuf.String()))
+		return nil, fmt.Errorf("reply: %s exited with error: %w (stderr: %s)", runtime.command, waitErr, redact(stderrBuf))
 	case parsed.finalOutput == "":
 		return nil, fmt.Errorf("reply: no final result emitted (stream: %s)", redact(parsed.diagnostic()))
 	}
