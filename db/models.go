@@ -174,6 +174,7 @@ type ReviewRunModel struct {
 	ConfigHash          string `gorm:"column:config_hash;size:64;not null;index"`
 	ConfigSchemaVersion int    `gorm:"column:config_schema_version;not null"`
 
+	Profile           string `gorm:"column:profile;size:16;not null;default:'';index"`
 	AgentBackend      string `gorm:"column:agent_backend;size:32;index"`
 	AgentModel        string `gorm:"column:agent_model;size:255;index"`
 	AgentEffort       string `gorm:"column:agent_effort;size:32"`
@@ -243,6 +244,7 @@ type ReviewStageAttemptModel struct {
 	InputTokens          int64           `gorm:"column:input_tokens"`
 	OutputTokens         int64           `gorm:"column:output_tokens"`
 	TotalTokens          int64           `gorm:"column:total_tokens"`
+	CostUSD              float64         `gorm:"column:cost_usd;type:numeric(12,6);not null;default:0"`
 	StartedAt            *time.Time      `gorm:"column:started_at;index"`
 	CompletedAt          *time.Time      `gorm:"column:completed_at"`
 	DurationMS           int64           `gorm:"column:duration_ms"`

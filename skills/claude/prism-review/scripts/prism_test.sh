@@ -174,6 +174,7 @@ assert_contains "$(cat "$FAKE_LAST_AUTH")" "Authorization: Bearer test-token"
 assert_not_contains "$(cat "$FAKE_LAST_ARGV")" "test-token"
 
 created=$("$CLIENT" create acme/widgets#42 \
+  --profile full \
   --backend openrouter \
   --model openai/gpt-5.6-sol \
   --effort high \
@@ -192,7 +193,19 @@ assert_eq "$(jq -r '.config.agent.max_turns' "$FAKE_LAST_REQUEST")" "100"
 assert_eq "$(jq -r '.config.first_pass.samples' "$FAKE_LAST_REQUEST")" "2"
 assert_eq "$(jq -r '.config.first_pass.provider' "$FAKE_LAST_REQUEST")" "claude-code"
 assert_eq "$(jq -r '.config.first_pass.model' "$FAKE_LAST_REQUEST")" "claude-fable-5-1"
+assert_eq "$(jq -r '.config.profile' "$FAKE_LAST_REQUEST")" "full"
 assert_contains "$(cat "$FAKE_LAST_HEADERS")" "Idempotency-Key: client-test-key"
+
+lite=$("$CLIENT" create acme/widgets#42 --profile lite --idempotency-key client-test-lite)
+assert_eq "$(printf '%s' "$lite" | jq -r '.run_id')" "run-0123456789abcdef0123456789abcdef"
+assert_eq "$(jq -c '.config' "$FAKE_LAST_REQUEST")" '{"profile":"lite"}'
+
+set +e
+"$CLIENT" create acme/widgets#42 --profile turbo >"$TEST_TMP/profile.out" 2>"$TEST_TMP/profile.err"
+profile_status=$?
+set -e
+assert_eq "$profile_status" "2"
+assert_contains "$(cat "$TEST_TMP/profile.err")" "full, lite, or lite_plus"
 
 : >"$FAKE_TRACE"
 set +e

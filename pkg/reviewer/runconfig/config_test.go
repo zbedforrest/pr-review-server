@@ -8,6 +8,7 @@ import (
 func testDefaults() Effective {
 	return Effective{
 		SchemaVersion: SchemaVersion,
+		Profile:       ProfileFull,
 		Agent: Agent{
 			Enabled:           true,
 			Backend:           "claude",
@@ -15,11 +16,15 @@ func testDefaults() Effective {
 			Effort:            "medium",
 			WallClockSeconds:  900,
 			MaxTurns:          120,
+			Tools:             ToolsDefault,
+			Prompt:            PromptPipeline,
 			TurnBudgetUnit:    TurnBudgetUnitAssistantEvent,
 			TurnBudgetVersion: TurnBudgetVersion,
 		},
-		FirstPass:      FirstPass{Samples: 3, Provider: "gemini", Model: "gemini-3.1-pro-preview"},
+		FirstPass:      FirstPass{Enabled: true, Samples: 3, Provider: "gemini", Model: "gemini-3.1-pro-preview"},
 		RequiredChecks: true,
+		Gates:          true,
+		BugMemory:      true,
 	}
 }
 

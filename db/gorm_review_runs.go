@@ -787,8 +787,43 @@ var reviewStageAttemptMutableColumns = []string{
 	"serving_model_verified", "fallback", "fallback_reason", "matcher_version",
 	"effort", "status", "assistant_turns", "budget_units_used", "turn_budget_unit", "turn_budget_version",
 	"input_tokens", "output_tokens",
-	"total_tokens", "started_at", "completed_at", "duration_ms", "stop_reason",
+	"total_tokens", "cost_usd", "started_at", "completed_at", "duration_ms", "stop_reason",
 	"error_code", "error_summary", "updated_at",
+}
+
+// ReviewProfileStats reads every run that reached a terminal state since the
+// given time and folds it into per-profile statistics. Cost is
+// the sum of the run's stage attempts; a timeout is any attempt stopped by the
+// wall clock or a run that timed out as a whole.
+func (g *GormDB) ReviewProfileStats(since time.Time) (map[string]ReviewProfileStats, error) {
+	type row struct {
+		RunID      string
+		Profile    string
+		Status     string
+		DurationMS int64
+		CostUSD    float64
+		Timeouts   int
+	}
+	var rows []row
+	err := g.db.Raw(`SELECT r.run_id AS run_id, r.profile AS profile, r.status AS status, r.duration_ms AS duration_ms,
+			COALESCE(SUM(a.cost_usd), 0) AS cost_usd,
+			COALESCE(SUM(CASE WHEN a.stop_reason = 'wall_clock_timeout' THEN 1 ELSE 0 END), 0) AS timeouts
+		FROM review_runs r
+		LEFT JOIN review_stage_attempts a ON a.run_id = r.run_id
+		WHERE COALESCE(r.completed_at, r.accepted_at) >= ? AND r.status IN (?, ?, ?)
+		GROUP BY r.run_id, r.profile, r.status, r.duration_ms`,
+		since.UTC(), ReviewRunStatusCompleted, ReviewRunStatusFailed, ReviewRunStatusTimedOut).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("review profile stats: %w", err)
+	}
+	samples := make([]ReviewProfileRunSample, 0, len(rows))
+	for _, r := range rows {
+		samples = append(samples, ReviewProfileRunSample{
+			RunID: r.RunID, Profile: r.Profile, Status: r.Status, DurationMS: r.DurationMS, CostUSD: r.CostUSD,
+			TimedOut: r.Timeouts > 0 || r.Status == ReviewRunStatusTimedOut,
+		})
+	}
+	return SummarizeReviewProfiles(samples), nil
 }
 
 func (g *GormDB) ListReviewStageAttempts(runID string) ([]ReviewStageAttempt, error) {
@@ -824,7 +859,7 @@ func reviewRunToModel(run ReviewRun) ReviewRunModel {
 		RequestedByUserID: intPtrToUint(run.RequestedByUserID), TriggerSource: run.TriggerSource,
 		Status: run.Status, RequestedConfigJSON: run.RequestedConfigJSON,
 		EffectiveConfigJSON: run.EffectiveConfigJSON, ConfigSourcesJSON: run.ConfigSourcesJSON,
-		ConfigHash: run.ConfigHash, ConfigSchemaVersion: run.ConfigSchemaVersion,
+		ConfigHash: run.ConfigHash, ConfigSchemaVersion: run.ConfigSchemaVersion, Profile: run.Profile,
 		AgentBackend: run.AgentBackend, AgentModel: run.AgentModel, AgentEffort: run.AgentEffort,
 		AgentWallClockSec: run.AgentWallClockSec, AgentMaxTurns: run.AgentMaxTurns,
 		AcceptedAt: run.AcceptedAt, QueuedAt: run.QueuedAt, StartedAt: run.StartedAt,
@@ -848,7 +883,7 @@ func reviewRunFromModel(model ReviewRunModel) ReviewRun {
 		RequestedByUserID: uintPtrToInt(model.RequestedByUserID), TriggerSource: model.TriggerSource,
 		Status: model.Status, RequestedConfigJSON: model.RequestedConfigJSON,
 		EffectiveConfigJSON: model.EffectiveConfigJSON, ConfigSourcesJSON: model.ConfigSourcesJSON,
-		ConfigHash: model.ConfigHash, ConfigSchemaVersion: model.ConfigSchemaVersion,
+		ConfigHash: model.ConfigHash, ConfigSchemaVersion: model.ConfigSchemaVersion, Profile: model.Profile,
 		AgentBackend: model.AgentBackend, AgentModel: model.AgentModel, AgentEffort: model.AgentEffort,
 		AgentWallClockSec: model.AgentWallClockSec, AgentMaxTurns: model.AgentMaxTurns,
 		AcceptedAt: model.AcceptedAt, QueuedAt: model.QueuedAt, StartedAt: model.StartedAt,
@@ -878,6 +913,7 @@ func reviewStageAttemptToModel(attempt ReviewStageAttempt) ReviewStageAttemptMod
 		BudgetUnitsUsed: attempt.BudgetUnitsUsed,
 		TurnBudgetUnit:  attempt.TurnBudgetUnit, TurnBudgetVersion: attempt.TurnBudgetVersion,
 		InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens, TotalTokens: attempt.TotalTokens,
+		CostUSD:   attempt.CostUSD,
 		StartedAt: attempt.StartedAt, CompletedAt: attempt.CompletedAt, DurationMS: attempt.DurationMS,
 		StopReason: attempt.StopReason, ErrorCode: attempt.ErrorCode, ErrorSummary: attempt.ErrorSummary,
 		CreatedAt: attempt.CreatedAt, UpdatedAt: attempt.UpdatedAt,
@@ -897,6 +933,7 @@ func reviewStageAttemptFromModel(model ReviewStageAttemptModel) ReviewStageAttem
 		BudgetUnitsUsed: model.BudgetUnitsUsed,
 		TurnBudgetUnit:  model.TurnBudgetUnit, TurnBudgetVersion: model.TurnBudgetVersion,
 		InputTokens: model.InputTokens, OutputTokens: model.OutputTokens, TotalTokens: model.TotalTokens,
+		CostUSD:   model.CostUSD,
 		StartedAt: model.StartedAt, CompletedAt: model.CompletedAt, DurationMS: model.DurationMS,
 		StopReason: model.StopReason, ErrorCode: model.ErrorCode, ErrorSummary: model.ErrorSummary,
 		CreatedAt: model.CreatedAt, UpdatedAt: model.UpdatedAt,

@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 const (
 	SourceRequest           = "request"
@@ -35,6 +35,9 @@ const (
 // Pointer fields distinguish omission from explicit false/zero values, which
 // lets validation reject invalid input instead of silently defaulting it.
 type Overrides struct {
+	// Profile selects a named pipeline shape (full, lite, lite_plus); omitted
+	// means the deployment's default profile.
+	Profile        *string             `json:"profile,omitempty"`
 	Agent          *AgentOverrides     `json:"agent,omitempty"`
 	FirstPass      *FirstPassOverrides `json:"first_pass,omitempty"`
 	RequiredChecks *bool               `json:"required_checks,omitempty"`
@@ -59,9 +62,14 @@ type FirstPassOverrides struct {
 // begins and passed unchanged through the review pipeline.
 type Effective struct {
 	SchemaVersion  int       `json:"schema_version"`
+	Profile        string    `json:"profile"`
 	Agent          Agent     `json:"agent"`
 	FirstPass      FirstPass `json:"first_pass"`
 	RequiredChecks bool      `json:"required_checks"`
+	// Gates runs the deterministic mechanical gates before the agent;
+	// BugMemory injects the deployment's bug-pattern library when loaded.
+	Gates     bool `json:"gates"`
+	BugMemory bool `json:"bug_memory"`
 }
 
 type Agent struct {
@@ -71,11 +79,14 @@ type Agent struct {
 	Effort            string `json:"effort"`
 	WallClockSeconds  int    `json:"wall_clock_seconds"`
 	MaxTurns          int    `json:"max_turns"`
+	Tools             string `json:"tools"`
+	Prompt            string `json:"prompt"`
 	TurnBudgetUnit    string `json:"turn_budget_unit"`
 	TurnBudgetVersion int    `json:"turn_budget_version"`
 }
 
 type FirstPass struct {
+	Enabled  bool   `json:"enabled"`
 	Samples  int    `json:"samples"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
@@ -121,6 +132,8 @@ type Policy struct {
 	MaxWallClockSeconds int
 	MaxTurns            int
 	MaxFirstPassSamples int
+	// DefaultProfile applies when a caller names no profile; "" means full.
+	DefaultProfile string
 }
 
 // Snapshot is the safe, durable configuration metadata attached to a run.
@@ -145,9 +158,30 @@ func (e *ValidationError) Error() string {
 // Resolve applies caller overrides to defaults, validates the complete
 // result against deployment policy, and returns a deterministic snapshot.
 func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, error) {
-	effective := defaults
-	effective.SchemaVersion = SchemaVersion
 	sources := defaultSources()
+	profile := NormalizeProfile(policy.DefaultProfile)
+	if requested.Profile != nil {
+		profile = NormalizeProfile(*requested.Profile)
+		sources["profile"] = SourceRequest
+	}
+	effective, err := Expand(profile, defaults)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if profile != ProfileFull {
+		// Lite profiles fix everything but the agent knobs; a first-pass or
+		// required-checks override would silently describe a different pipeline.
+		if requested.FirstPass != nil {
+			return Snapshot{}, invalid("profile", "first_pass overrides are not allowed with profile %q", profile)
+		}
+		if requested.RequiredChecks != nil {
+			return Snapshot{}, invalid("profile", "required_checks overrides are not allowed with profile %q", profile)
+		}
+		for _, field := range []string{"agent.enabled", "agent.backend", "agent.model", "agent.effort", "agent.wall_clock_seconds",
+			"agent.max_turns", "first_pass.samples", "first_pass.provider", "first_pass.model", "required_checks", "gates", "bug_memory"} {
+			sources[field] = SourceDerived
+		}
+	}
 
 	if requested.Agent != nil {
 		a := requested.Agent
@@ -207,7 +241,7 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 	// A provider switch moves model ids into another provider's namespace. When
 	// the caller omitted model, derive that provider's default instead of
 	// carrying the deployment provider's model.
-	if sources["first_pass.model"] != SourceRequest &&
+	if effective.FirstPass.Enabled && sources["first_pass.model"] != SourceRequest &&
 		effective.FirstPass.Provider != strings.ToLower(strings.TrimSpace(defaults.FirstPass.Provider)) {
 		if providerPolicy, ok := policy.FirstPassProviders[effective.FirstPass.Provider]; ok {
 			if providerPolicy.DefaultModel == "" {
@@ -220,7 +254,7 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 	// A backend switch changes the unit represented by max_turns. When the
 	// caller omitted max_turns, derive that backend's default instead of
 	// carrying a number expressed in the deployment backend's unit.
-	if sources["agent.max_turns"] != SourceRequest &&
+	if sources["agent.max_turns"] == SourceDeploymentDefault &&
 		effective.Agent.TurnBudgetUnit != defaults.Agent.TurnBudgetUnit {
 		if backendPolicy, ok := findBackendPolicy(policy, effective.Agent.Backend); ok {
 			if backendPolicy.DefaultMaxTurns <= 0 {
@@ -253,17 +287,30 @@ func Validate(cfg Effective, policy Policy) error {
 	if cfg.SchemaVersion != SchemaVersion {
 		return invalid("schema_version", "unsupported value %d", cfg.SchemaVersion)
 	}
-	if cfg.FirstPass.Samples <= 0 {
-		return invalid("first_pass.samples", "must be greater than zero")
+	if !KnownProfile(cfg.Profile) {
+		return invalid("profile", "unknown profile %q", cfg.Profile)
 	}
-	if policy.MaxFirstPassSamples > 0 && cfg.FirstPass.Samples > policy.MaxFirstPassSamples {
-		return invalid("first_pass.samples", "must be at most %d", policy.MaxFirstPassSamples)
-	}
-	if err := validateFirstPassIdentity(cfg.FirstPass, policy); err != nil {
-		return err
+	if cfg.FirstPass.Enabled {
+		if cfg.FirstPass.Samples <= 0 {
+			return invalid("first_pass.samples", "must be greater than zero")
+		}
+		if policy.MaxFirstPassSamples > 0 && cfg.FirstPass.Samples > policy.MaxFirstPassSamples {
+			return invalid("first_pass.samples", "must be at most %d", policy.MaxFirstPassSamples)
+		}
+		if err := validateFirstPassIdentity(cfg.FirstPass, policy); err != nil {
+			return err
+		}
+	} else if !cfg.Agent.Enabled {
+		return invalid("agent.enabled", "a review needs the first pass or the agent stage")
 	}
 	if !cfg.Agent.Enabled {
 		return nil
+	}
+	if !ValidTools(cfg.Agent.Tools) {
+		return invalid("agent.tools", "unsupported tool list %q", cfg.Agent.Tools)
+	}
+	if !validPrompt(cfg.Agent.Prompt) {
+		return invalid("agent.prompt", "unsupported prompt %q", cfg.Agent.Prompt)
 	}
 
 	backend := strings.ToLower(strings.TrimSpace(cfg.Agent.Backend))
@@ -388,18 +435,24 @@ func (p Policy) AvailableBackends() []string {
 
 func defaultSources() map[string]string {
 	return map[string]string{
+		"profile":                   SourceDeploymentDefault,
 		"agent.enabled":             SourceDeploymentDefault,
 		"agent.backend":             SourceDeploymentDefault,
 		"agent.model":               SourceDeploymentDefault,
 		"agent.effort":              SourceDeploymentDefault,
 		"agent.wall_clock_seconds":  SourceDeploymentDefault,
 		"agent.max_turns":           SourceDeploymentDefault,
+		"agent.tools":               SourceDerived,
+		"agent.prompt":              SourceDerived,
 		"agent.turn_budget_unit":    SourceDerived,
 		"agent.turn_budget_version": SourceDerived,
+		"first_pass.enabled":        SourceDerived,
 		"first_pass.samples":        SourceDeploymentDefault,
 		"first_pass.provider":       SourceDeploymentDefault,
 		"first_pass.model":          SourceDeploymentDefault,
 		"required_checks":           SourceDeploymentDefault,
+		"gates":                     SourceDerived,
+		"bug_memory":                SourceDerived,
 	}
 }
 

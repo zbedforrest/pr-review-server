@@ -61,6 +61,7 @@ type createReviewRunTarget struct {
 type reviewRunResponse struct {
 	RunID            string                     `json:"run_id"`
 	Target           reviewRunTargetResponse    `json:"target"`
+	Profile          string                     `json:"profile"`
 	Status           string                     `json:"status"`
 	TriggerSource    string                     `json:"trigger_source"`
 	AcceptedAt       time.Time                  `json:"accepted_at"`
@@ -141,6 +142,7 @@ type reviewRunAttemptResponse struct {
 	InputTokens          int64      `json:"input_tokens"`
 	OutputTokens         int64      `json:"output_tokens"`
 	TotalTokens          int64      `json:"total_tokens"`
+	CostUSD              float64    `json:"cost_usd"`
 	StartedAt            *time.Time `json:"started_at,omitempty"`
 	CompletedAt          *time.Time `json:"completed_at,omitempty"`
 	DurationMS           int64      `json:"duration_ms"`
@@ -160,12 +162,18 @@ type reviewRunListResponse struct {
 }
 
 type reviewCapabilitiesResponse struct {
-	SchemaVersion int                                `json:"schema_version"`
-	Available     bool                               `json:"available"`
-	Defaults      runconfig.Effective                `json:"defaults"`
-	Backends      map[string]reviewBackendCapability `json:"backends"`
-	FirstPass     reviewFirstPassCapability          `json:"first_pass"`
-	Limits        reviewCustomizationLimits          `json:"limits"`
+	SchemaVersion int                 `json:"schema_version"`
+	Available     bool                `json:"available"`
+	Defaults      runconfig.Effective `json:"defaults"`
+	// DefaultProfile is the profile a request without config.profile gets;
+	// Profiles lists the effective config of every profile this deployment's
+	// policy admits, and UnavailableProfiles the rejection reason for the rest.
+	DefaultProfile      string                             `json:"default_profile"`
+	Profiles            map[string]runconfig.Effective     `json:"profiles"`
+	UnavailableProfiles map[string]string                  `json:"unavailable_profiles"`
+	Backends            map[string]reviewBackendCapability `json:"backends"`
+	FirstPass           reviewFirstPassCapability          `json:"first_pass"`
+	Limits              reviewCustomizationLimits          `json:"limits"`
 }
 
 type reviewFirstPassCapability struct {
@@ -688,11 +696,25 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 			Models:               append([]string{}, provider.Models...),
 		}
 	}
+	profiles := make(map[string]runconfig.Effective, 3)
+	unavailable := map[string]string{}
+	for _, name := range runconfig.Profiles() {
+		profile := name
+		snapshot, resolveErr := runconfig.Resolve(runconfig.Overrides{Profile: &profile}, defaults, policy)
+		if resolveErr != nil {
+			unavailable[name] = resolveErr.Error()
+			continue
+		}
+		profiles[name] = snapshot.Effective
+	}
 	writeV1JSON(w, http.StatusOK, reviewCapabilitiesResponse{
-		SchemaVersion: runconfig.SchemaVersion,
-		Available:     s.cfg != nil && s.cfg.ReviewerEnabled,
-		Defaults:      defaults,
-		Backends:      backends,
+		SchemaVersion:       runconfig.SchemaVersion,
+		Available:           s.cfg != nil && s.cfg.ReviewerEnabled,
+		Defaults:            defaults,
+		DefaultProfile:      runconfig.NormalizeProfile(policy.DefaultProfile),
+		Profiles:            profiles,
+		UnavailableProfiles: unavailable,
+		Backends:            backends,
 		FirstPass: reviewFirstPassCapability{
 			DefaultProvider: defaults.FirstPass.Provider,
 			DefaultModel:    defaults.FirstPass.Model,
@@ -733,12 +755,17 @@ func (s *Server) buildReviewRunResponse(run *db.ReviewRun, includeAttempts bool)
 	if jsonPath == "" {
 		jsonPath = gcs.ReviewRunJSONFileName(run.RepoOwner, run.RepoName, run.PRNumber, run.CommitSHA, run.RunID)
 	}
+	profile := run.Profile
+	if profile == "" {
+		profile = effective.Profile
+	}
 	response := reviewRunResponse{
 		RunID: run.RunID,
 		Target: reviewRunTargetResponse{
 			Owner: run.RepoOwner, Repo: run.RepoName, PullRequest: run.PRNumber, CommitSHA: run.CommitSHA,
 		},
-		Status: run.Status, TriggerSource: run.TriggerSource, AcceptedAt: run.AcceptedAt, QueuedAt: run.QueuedAt,
+		Profile: runconfig.NormalizeProfile(profile),
+		Status:  run.Status, TriggerSource: run.TriggerSource, AcceptedAt: run.AcceptedAt, QueuedAt: run.QueuedAt,
 		StartedAt: run.StartedAt, CompletedAt: run.CompletedAt, DurationMS: run.DurationMS,
 		ExecutionAttempt: run.ExecutionAttempt, TerminalCode: run.TerminalCode, FailureStage: run.FailureStage,
 		Config: reviewRunConfigResponse{
@@ -781,6 +808,7 @@ func (s *Server) buildReviewRunResponse(run *db.ReviewRun, includeAttempts bool)
 				BudgetUnitsUsed: attempt.BudgetUnitsUsed,
 				TurnBudgetUnit:  attempt.TurnBudgetUnit, TurnBudgetVersion: attempt.TurnBudgetVersion,
 				InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens, TotalTokens: attempt.TotalTokens,
+				CostUSD:   attempt.CostUSD,
 				StartedAt: attempt.StartedAt, CompletedAt: attempt.CompletedAt, DurationMS: attempt.DurationMS,
 				StopReason: attempt.StopReason, ErrorCode: attempt.ErrorCode,
 				ErrorSummary: sanitizeAttemptErrorSummary(attempt.ErrorSummary),

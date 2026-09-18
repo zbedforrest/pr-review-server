@@ -56,6 +56,22 @@ type AgentConfig struct {
 	// bugmemory.go.
 	BugMemory *BugMemoryLibrary
 
+	// Tools is the Claude tool allowlist (empty = runconfig.ToolsDefault).
+	Tools string
+	// Prompt selects the prompt shape: runconfig.PromptPipeline (default,
+	// first-pass claims plus the agent's own pass) or one of the lite prompts,
+	// which inline the diff and run without gates or required checks.
+	Prompt string
+	// SkipGates leaves the mechanical gates (and therefore required checks)
+	// out of the run; the lite profile sets it.
+	SkipGates bool
+	// CollectCitedFiles reads every file the findings cite from the worktree
+	// before it is removed, for callers that fetched no file context.
+	CollectCitedFiles bool
+	// APIDiff is the GitHub API diff already fetched for the run; the lite
+	// prompt falls back to it when the worktree diff cannot be produced.
+	APIDiff string
+
 	// RequiredChecks converts fired gates + matched memory entries into
 	// forced-choice checks the agent must answer with evidence, enforced
 	// deterministically post-parse (see checks.go). Off by default; when off
@@ -111,6 +127,16 @@ type AgentReview struct {
 	AssistantTurns       int
 	BudgetUnitsUsed      int
 	DurationMS           int64
+	// CostUSD and the token counts are the provider-reported usage from the
+	// CLI result event; zero when the backend does not report them.
+	CostUSD      float64
+	InputTokens  int64
+	OutputTokens int64
+	// DiffSource is "git" or "api" for prompts that inline the diff, "" otherwise.
+	DiffSource string
+	// CitedFileContents holds the worktree content of every file the findings
+	// cite, when AgentConfig.CollectCitedFiles is set.
+	CitedFileContents map[string]string
 	// GatesStartedAt/GatesDurationMS time the mechanical-gates run inside the
 	// agent stage; GatesStartedAt is zero when gates were skipped (no diff).
 	GatesStartedAt  time.Time
@@ -235,7 +261,7 @@ func RunAgentReview(
 	var gates []types.LineComment
 	var gatesStartedAt time.Time
 	var gatesDurationMS int64
-	if diffFiles != nil {
+	if diffFiles != nil && !agentCfg.SkipGates {
 		gatesStartedAt = time.Now().UTC()
 		gates = RunMechanicalGates(runCtx, cloneDir, diffFiles)
 		gatesDurationMS = time.Since(gatesStartedAt).Milliseconds()
@@ -257,7 +283,7 @@ func RunAgentReview(
 	// memory entries above, answered in the findings JSON and enforced
 	// post-parse. Feature-gated; an empty list leaves the prompt unchanged.
 	var checks []RequiredCheck
-	if agentCfg.RequiredChecks {
+	if agentCfg.RequiredChecks && !agentCfg.SkipGates {
 		checks = BuildRequiredChecks(gates, memEntries, diffFiles)
 	}
 	if len(checks) > 0 {
@@ -270,12 +296,25 @@ func RunAgentReview(
 
 	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets)
 	claims := firstPassClaims(geminiComments)
-	prompt, err := buildAgentPromptContent(defaultBranch, diffFiles, prContext, claims, gates, memEntries, checks)
-	if err != nil {
-		return nil, fmt.Errorf("agent: build prompt: %w", err)
+	var prompt, diffSource string
+	if isLitePrompt(agentCfg.Prompt) {
+		rendered := renderedDiff(runCtx, cloneDir, defaultBranch, agentCfg.APIDiff)
+		diffSource = rendered.Source
+		if diffSource == diffSourceAPI {
+			log.Printf("%s worktree diff unavailable; inlining the API diff instead", logPrefix)
+		}
+		if rendered.Truncated {
+			log.Printf("%s inlined diff truncated at %d chars (source=%s)", logPrefix, diffInlineLimit, diffSource)
+		}
+		prompt = buildLitePromptContent(defaultBranch, rendered, prContext, memEntries, agentCfg.Prompt == runconfig.PromptLiteArmASub)
+	} else {
+		prompt, err = buildAgentPromptContent(defaultBranch, diffFiles, prContext, claims, gates, memEntries, checks)
+		if err != nil {
+			return nil, fmt.Errorf("agent: build prompt: %w", err)
+		}
 	}
 
-	args := runtime.args(prompt)
+	args := runtime.argsWithTools(prompt, agentCfg.Tools)
 
 	// Log the argv without the full prompt (too big; promptAgentReview is static
 	// and the comment list is in geminiComments count above).
@@ -335,6 +374,9 @@ func RunAgentReview(
 		if parseResult != nil {
 			event.AssistantTurns = parseResult.assistantTurns
 			event.BudgetUnitsUsed = parseResult.budgetUnits
+			event.InputTokens, event.OutputTokens = parseResult.inputTokens, parseResult.outputTokens
+			event.TotalTokens = parseResult.inputTokens + parseResult.outputTokens
+			event.CostUSD = parseResult.costUSD
 			event.ObservedServedModels = append([]string(nil), parseResult.servedModels...)
 			event.PrimaryServedModel, event.ServedModelSource, event.ServingModelVerified,
 				event.Fallback, event.FallbackReason = agentServingMetadata(runtime, parseResult.servedModels)
@@ -396,7 +438,7 @@ func RunAgentReview(
 	waitErr := proc.Wait()
 	agentCompletedAt = time.Now().UTC()
 	stderrBuf := stderrOutput()
-	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d", parseResult.assistantTurns, parseResult.budgetUnits)
+	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d sub_agent_turns=%d", parseResult.assistantTurns, parseResult.budgetUnits, parseResult.subAgentTurns)
 
 	// Failure messages below feed the run's error_summary, which the API now
 	// exposes; scrub the provider credential from quoted subprocess output in
@@ -516,9 +558,14 @@ func RunAgentReview(
 			logPrefix, runtime.model, servedModel, parseResult.servedModels)
 	}
 
+	var citedFiles map[string]string
+	if agentCfg.CollectCitedFiles {
+		citedFiles = readCitedFiles(cloneDir, comments)
+	}
+
 	agentDuration := agentCompletedAt.Sub(agentStartedAt)
-	log.Printf("%s complete in %s (%s, comments=%d, model=%s)",
-		logPrefix, agentDuration, usage, len(comments), servedModel)
+	log.Printf("%s complete in %s (%s, comments=%d, model=%s, cost_usd=%.4f)",
+		logPrefix, agentDuration, usage, len(comments), servedModel, parseResult.costUSD)
 
 	logRemovable = true
 	return &AgentReview{
@@ -541,6 +588,11 @@ func RunAgentReview(
 		AssistantTurns:       parseResult.assistantTurns,
 		BudgetUnitsUsed:      parseResult.budgetUnits,
 		DurationMS:           agentDuration.Milliseconds(),
+		CostUSD:              parseResult.costUSD,
+		InputTokens:          parseResult.inputTokens,
+		OutputTokens:         parseResult.outputTokens,
+		DiffSource:           diffSource,
+		CitedFileContents:    citedFiles,
 		GatesStartedAt:       gatesStartedAt,
 		GatesDurationMS:      gatesDurationMS,
 		ServingModelVerified: runtime.reportsServingModel && len(parseResult.servedModels) > 0,
@@ -778,6 +830,200 @@ func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext 
 	return b.String(), nil
 }
 
+const (
+	diffInlineLimit = 60000
+	statInlineLimit = 20000
+	diffSourceGit   = "git"
+	diffSourceAPI   = "api"
+)
+
+func isLitePrompt(prompt string) bool {
+	return prompt == runconfig.PromptLiteArmA || prompt == runconfig.PromptLiteArmASub
+}
+
+// liteDiff is the diff text inlined into the lite prompt and how it was made.
+type liteDiff struct {
+	Text      string
+	Source    string // diffSourceGit or diffSourceAPI
+	Truncated bool
+}
+
+// buildLitePromptContent assembles the single-agent (Arm A) prompt: the
+// review instruction naming the worktree refs (a partial-diff variant when
+// the diff was cut), the PR context, the matched bug-history section, the
+// sub-agent sentence for lite_plus, the pipeline's output contract without
+// its first-pass text, and the diff last.
+func buildLitePromptContent(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
+	if baseBranch == "" {
+		baseBranch = "HEAD"
+	}
+	opening := promptLiteReview
+	if diff.Truncated {
+		opening = promptLiteReviewTruncated
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, opening, baseBranch, baseBranch)
+	b.WriteString(prContext)
+	b.WriteString(bugMemorySection(bugHistory))
+	if subAgents {
+		b.WriteString(promptLiteSubAgents)
+	}
+	b.WriteString(promptLiteOutputFormat)
+	b.WriteString("\n<diff>\n")
+	b.WriteString(diff.Text)
+	if !strings.HasSuffix(diff.Text, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("</diff>\n")
+	return b.String()
+}
+
+// renderedDiff is the diff inlined into the lite prompt: the worktree's
+// origin/<base>...HEAD diff, or past diffInlineLimit its --stat plus the first
+// chunk and a per-path git command for the rest, so a huge PR does not blow
+// the prompt but nothing is hidden. When git cannot produce it (severed
+// shallow history, a missing base ref) the GitHub API diff stands in; past the
+// cap that variant lists the changed paths and tells the model to read them at
+// HEAD, since the failed git command cannot recover them.
+func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string) liteDiff {
+	base := "origin/HEAD"
+	if baseBranch != "" {
+		base = "origin/" + baseBranch
+	}
+	full, err := gitOutput(ctx, cloneDir, "diff", "--find-renames", "-U12", base+"...HEAD")
+	if err != nil {
+		log.Printf("[AGENT] lite diff via git failed (%v); using the API diff", err)
+		if len(apiDiff) <= diffInlineLimit {
+			return liteDiff{Text: apiDiff, Source: diffSourceAPI}
+		}
+		paths := diffHeaderPaths(apiDiff)
+		return liteDiff{
+			Text: capDiff(apiDiff, "Changed paths:\n"+paths,
+				"the worktree diff is unavailable, so Read each changed path above at HEAD and review in full every file not shown here"),
+			Source: diffSourceAPI, Truncated: true,
+		}
+	}
+	if len(full) <= diffInlineLimit {
+		return liteDiff{Text: full, Source: diffSourceGit}
+	}
+	stat, _ := gitOutput(ctx, cloneDir, "diff", "--stat", base+"...HEAD")
+	return liteDiff{
+		Text:   capDiff(full, stat, fmt.Sprintf("fetch the remaining files with `git diff %s...HEAD -- <path>`", base)),
+		Source: diffSourceGit, Truncated: true,
+	}
+}
+
+// capDiff returns stat (itself capped at statInlineLimit), the first
+// diffInlineLimit characters of full cut at a line boundary, and a truncation
+// note carrying the caller's recovery hint.
+func capDiff(full, stat, hint string) string {
+	if len(full) <= diffInlineLimit {
+		return full
+	}
+	if len(stat) > statInlineLimit {
+		cut := strings.LastIndex(stat[:statInlineLimit], "\n")
+		if cut < 0 {
+			cut = statInlineLimit
+		}
+		stat = stat[:cut] + fmt.Sprintf("\n[path list truncated after %d characters]\n", statInlineLimit)
+	}
+	head := full[:diffInlineLimit]
+	if cut := strings.LastIndex(head, "\n"); cut >= 0 {
+		head = head[:cut+1]
+	}
+	return fmt.Sprintf("%s\n%s\n[diff truncated after %d characters of %d; %s]\n",
+		stat, head, diffInlineLimit, len(full), hint)
+}
+
+// diffHeaderPaths lists the post-image path of every "diff --git" header, one
+// "- path" line each, for API diffs whose --stat git cannot produce.
+func diffHeaderPaths(diff string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(diff, "\n") {
+		if !strings.HasPrefix(line, "diff --git ") {
+			continue
+		}
+		// Paths may contain spaces; the post-image path is everything after
+		// the last " b/" separator.
+		idx := strings.LastIndex(line, " b/")
+		if idx < 0 {
+			continue
+		}
+		b.WriteString("- " + line[idx+3:] + "\n")
+	}
+	return b.String()
+}
+
+// gitOutput runs git and returns stdout only; stderr goes into the error so a
+// failure message never lands in the prompt.
+func gitOutput(ctx context.Context, cwd string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = cwd
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+const citedFileMaxBytes = 1 << 20
+
+// readCitedFiles returns the worktree content of each regular file the
+// findings cite, skipping control entries, anything that is or sits under a
+// symlink (a committed link could point outside the checkout), paths that
+// resolve outside the worktree, and files over citedFileMaxBytes.
+func readCitedFiles(cloneDir string, comments []types.LineComment) map[string]string {
+	root, err := filepath.EvalSymlinks(cloneDir)
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, c := range comments {
+		path := strings.TrimSpace(c.FilePath)
+		if path == "" || path == "SUMMARY" || path == checkFilePath || filepath.IsAbs(path) {
+			continue
+		}
+		clean := filepath.Clean(path)
+		if clean == "." || strings.HasPrefix(clean, "..") {
+			continue
+		}
+		if _, seen := out[path]; seen {
+			continue
+		}
+		body, ok := readWorktreeFile(root, clean)
+		if ok {
+			out[path] = body
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// readWorktreeFile reads root/rel only when every path component is a real
+// directory or file inside root and the file is a regular file under the cap.
+func readWorktreeFile(root, rel string) (string, bool) {
+	full := filepath.Join(root, rel)
+	real, err := filepath.EvalSymlinks(full)
+	if err != nil || (real != full) {
+		return "", false
+	}
+	info, err := os.Lstat(full)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > citedFileMaxBytes {
+		return "", false
+	}
+	if real != root && !strings.HasPrefix(real, root+string(filepath.Separator)) {
+		return "", false
+	}
+	body, err := os.ReadFile(full)
+	if err != nil {
+		return "", false
+	}
+	return string(body), true
+}
+
 // cacheMutexes serializes cache-repo work per (owner, repo). Each repo gets
 // its own mutex so concurrent reviews of *different* repos don't block each
 // other, but two reviews of the same repo share the cache fetch step.
@@ -982,6 +1228,31 @@ type agentParseResult struct {
 	streamErr      string   // error the CLI reported inside the stream (result event with error subtype)
 	lastEvent      string   // raw last stream line, fallback diagnostic when no structured error arrived
 	servedModels   []string // distinct models the stream reported, in first-seen order; empty if never reported
+	costUSD        float64  // total_cost_usd from the Claude result event
+	inputTokens    int64    // usage.input_tokens plus cache reads and cache creation
+	outputTokens   int64
+	subAgentTurns  int // assistant events from Agent-tool sub-agents, outside the turn budget
+}
+
+// noteUsage records the result event's spend and token usage. Cache reads and
+// cache creation are folded into input tokens so the total reflects what the
+// provider actually processed.
+func (r *agentParseResult) noteUsage(ev map[string]any) {
+	if cost, ok := ev["total_cost_usd"].(float64); ok {
+		r.costUSD = cost
+	}
+	usage, ok := ev["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	count := func(key string) int64 {
+		if v, ok := usage[key].(float64); ok {
+			return int64(v)
+		}
+		return 0
+	}
+	r.inputTokens = count("input_tokens") + count("cache_read_input_tokens") + count("cache_creation_input_tokens")
+	r.outputTokens = count("output_tokens")
 }
 
 func agentChildEnvironment(base []string, credentialKey, credentialValue string) []string {
@@ -1055,6 +1326,14 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 				result.noteServedModel(ev["model"])
 			}
 		case "assistant":
+			// Sub-agents spawned through the Agent tool stream their own
+			// assistant events under a parent_tool_use_id. They neither name the
+			// serving model nor spend the turn budget, which bounds the top-level
+			// agent's loop; the wall clock bounds their work.
+			if ev["parent_tool_use_id"] != nil {
+				result.subAgentTurns++
+				continue
+			}
 			if msg, ok := ev["message"].(map[string]any); ok {
 				result.noteServedModel(msg["model"])
 			}
@@ -1071,6 +1350,7 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 			if s, ok := ev["result"].(string); ok {
 				result.finalOutput = s
 			}
+			result.noteUsage(ev)
 			subtype, _ := ev["subtype"].(string)
 			isErr, _ := ev["is_error"].(bool)
 			if isErr || (subtype != "" && subtype != "success") {

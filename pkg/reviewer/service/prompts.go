@@ -207,7 +207,19 @@ Provide your summary as plain text (not JSON). Structure it clearly with headers
 // promptAgentReview is the system-prompt template handed to the agent. The
 // caller appends the first-pass claims as JSON before invoking it.
 // The agent runs with its cwd set to a shallow checkout of the PR branch.
-const promptAgentReview = `You are reviewing a pull request. A first pass has already produced a list of claims about this PR (appended below as JSON, each with a "source_id"). Your working directory is a checkout of the PR branch; read any files you need to verify or refute each claim.
+// It is assembled from pieces so the lite prompt can reuse the output-format
+// contract verbatim without the first-pass and disposition text.
+const promptAgentReview = promptAgentReviewTasks + promptAgentOutputFormatHead + promptAgentIDField +
+	promptAgentEntryFields + promptAgentSourcesField + promptAgentContractFields + promptAgentDispositionEntries +
+	promptAgentSummaryEntry + promptAgentSummaryRule + promptAgentNoIssues
+
+// promptLiteOutputFormat is the same output contract for a single-agent
+// review with no first pass: no "sources" field, no disposition entries, and
+// a SUMMARY rule that does not mention first-pass claims.
+const promptLiteOutputFormat = promptAgentOutputFormatHead + promptLiteIDField + promptAgentEntryFields +
+	promptAgentContractFields + promptAgentSummaryEntry + promptLiteSummaryRule + promptAgentNoIssues
+
+const promptAgentReviewTasks = `You are reviewing a pull request. A first pass has already produced a list of claims about this PR (appended below as JSON, each with a "source_id"). Your working directory is a checkout of the PR branch; read any files you need to verify or refute each claim.
 
 Tasks, in order:
 
@@ -217,19 +229,32 @@ Tasks, in order:
    - Leave it: if you could not complete the investigation, emit nothing for it. Unaccounted claims are recorded as unverified, never as dismissed. Lack of evidence is not rejection.
    Never silently omit a claim, and never name the tool or model that produced the first pass; call it "the first pass".
 2. Do your own review pass. Look for issues the first pass missed: bugs, unsafe concurrency, broken invariants, missing tests, security footguns, performance regressions. Every distinct issue or recommendation must be its own finding with a location where one exists. Do not put unique findings, rejection explanations, or check results in the SUMMARY.
+`
 
+const promptAgentOutputFormatHead = `
 **Output format (STRICT):**
 
 Respond with a single JSON array of review comment objects, nothing else. No prose before or after. No code-fence wrapper.
 
 Each object must have these fields:
-- "id" (string): your short label for the entry, "A-1", "A-2", ... in order. Omit on SUMMARY and disposition entries.
-- "file_path" (string): the path to the file the comment targets. Use "SUMMARY" for the single summary entry.
+`
+
+const promptAgentIDField = `- "id" (string): your short label for the entry, "A-1", "A-2", ... in order. Omit on SUMMARY and disposition entries.
+`
+
+const promptLiteIDField = `- "id" (string): your short label for the entry, "A-1", "A-2", ... in order. Omit on the SUMMARY entry.
+`
+
+const promptAgentEntryFields = `- "file_path" (string): the path to the file the comment targets. Use "SUMMARY" for the single summary entry.
 - "line_number" (integer): the line to anchor the comment to. Use 0 for SUMMARY entries or whole-file notes.
 - "comment_body" (string): the comment text. Markdown is fine. For concrete code changes include a ` + "```suggestion" + ` block inside the body.
 - "importance" (string): "LOW", "MEDIUM", or "CRITICAL". Use CRITICAL for bugs/security, MEDIUM for things a reviewer should address, LOW for nits. SUMMARY entries can use any level.
-- "sources" (array of strings, optional): the first-pass source_ids this finding confirms or covers.
-- "finding_contract" (object): required for every ordinary finding and omitted for SUMMARY and CHECK entries. It must contain:
+`
+
+const promptAgentSourcesField = `- "sources" (array of strings, optional): the first-pass source_ids this finding confirms or covers.
+`
+
+const promptAgentContractFields = `- "finding_contract" (object): required for every ordinary finding and omitted for SUMMARY and CHECK entries. It must contain:
   - "schema_version": 1
   - "finding_kind": one of "production_behavior", "security_risk", "latent_hazard", "design_opinion", "description_drift", "test_quality", or "operational_risk"
   - "materiality": one of "current_impact", "future_condition_only", "no_user_impact", or "unknown"
@@ -253,18 +278,49 @@ Cross-field constraints are strict:
 - "falsifiable" requires both "falsifiable_condition" and "expected_observable"; "not_falsifiable" or "unknown" requires both fields to be null.
 
 If non-security harm requires another future change that this PR does not introduce, use "latent_hazard" with "future_condition_only" and LOW importance. Future-only security risks retain "security_risk" but stay LOW unless a separate policy layer escalates them. Design opinions, description drift, test-quality observations, and findings with no current user impact are LOW. They do not enter the defect-verification ladder. Design opinions and description drift are non-falsifiable and cannot claim current impact. A stale description is not evidence of author intent.
+`
 
+const promptAgentDispositionEntries = `
 Disposition entries (one per rejected first-pass claim) have "file_path" and "line_number" from the claim, no "comment_body", no "importance", no "finding_contract", and:
 - "disposition": {"source_id": "FP-n", "state": "rejected", "reason": "one specific sentence grounded in the code", "evidence": [{"file": "path", "line": N}, ...]}
+`
 
+const promptAgentSummaryEntry = `
 Include exactly one "SUMMARY" entry with "file_path": "SUMMARY", "line_number": 0, no "comment_body", and a "summary" object with these fields:
 - "verdict" (string): one of "approve", "approve_suggestions", "request_changes"
 - "upshot" (string): one sentence stating the practical consequence for the author
 - "priority_ids" (array of strings): zero to three finding ids ordered by what the author should do first
 - "notes" (string): two to four sentences on what the PR does, whether it does it, and what you verified and found holding
-The summary must not describe how you handled the first-pass claims, must not mention required checks or blast radius (answer those in CHECK entries and findings), and must not name any tool or model.
+`
 
+const promptAgentSummaryRule = `The summary must not describe how you handled the first-pass claims, must not mention required checks or blast radius (answer those in CHECK entries and findings), and must not name any tool or model.
+`
+
+const promptLiteSummaryRule = `The summary must not mention required checks or blast radius (answer those in CHECK entries and findings), and must not name any tool or model.
+`
+
+const promptAgentNoIssues = `
 If you find no issues worth flagging, return the SUMMARY entry only (with "approve").
+`
+
+// promptLiteReview opens the lite (Arm A) prompt. The ref names are the
+// worktree's; %s is the PR's base branch, twice.
+const promptLiteReview = `Review this PR.
+
+The working directory is a checkout of the PR head (` + "`HEAD`" + `); the base is ` + "`origin/%s`" + `. The complete diff (` + "`git diff --find-renames -U12 origin/%s...HEAD`" + `) is below. Do not fetch it again; use shell commands only to read surrounding code. No dependencies are installed in this checkout, so do not run tests, linters, type checkers, builds or package managers; CI is the authority on whether the code builds. Review by reading.
+`
+
+// promptLiteReviewTruncated replaces promptLiteReview when the inlined diff
+// was cut at diffInlineLimit: the model must not treat what it sees as the
+// whole change.
+const promptLiteReviewTruncated = `Review this PR.
+
+The working directory is a checkout of the PR head (` + "`HEAD`" + `); the base is ` + "`origin/%s`" + `. The diff (` + "`git diff --find-renames -U12 origin/%s...HEAD`" + `) is too large to inline in full: below you get the list of every changed path, then the first part of the diff, then a note on how to reach the rest. Read every changed file that is not shown in full before you judge the change; a file you did not read is not reviewed. Use shell commands only to read code. No dependencies are installed in this checkout, so do not run tests, linters, type checkers, builds or package managers; CI is the authority on whether the code builds. Review by reading.
+`
+
+// promptLiteSubAgents is added for lite_plus, which may spawn sub-agents.
+const promptLiteSubAgents = `
+Spawn sub-agents to investigate independent parts of the change in parallel and report back to you; you own the final judgment.
 `
 
 // promptRequiredChecksContract heads the REQUIRED CHECKS block that

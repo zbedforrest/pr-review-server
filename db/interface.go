@@ -279,6 +279,7 @@ type Database interface {
 	AbandonExpiredReviewRuns(now time.Time, runningGrace, queuedMaxAge time.Duration) (int, error)
 	UpsertReviewStageAttempt(attempt *ReviewStageAttempt) error
 	ListReviewStageAttempts(runID string) ([]ReviewStageAttempt, error)
+	ReviewProfileStats(since time.Time) (map[string]ReviewProfileStats, error)
 
 	// PR operations
 	GetPR(owner, repo string, prNumber int) (*PR, error)

@@ -51,7 +51,7 @@ func newReviewAPITestPoller(database db.Database) *reviewAPITestPoller {
 					Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, ExecutableAvailable: true,
 					TurnBudgetUnit: runconfig.TurnBudgetUnitAssistantEvent, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 					DefaultMaxTurns: 40, MaxTurns: 120,
-					Models: []string{"claude-fable-5"}, Efforts: []string{"medium", "high"},
+					Models: []string{"claude-fable-5", runconfig.LiteModel}, Efforts: []string{"medium", "high"},
 				},
 				service.AgentBackendOpenRouter: {
 					Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, CredentialRequired: true, ExecutableAvailable: true,
@@ -131,7 +131,7 @@ func (p *reviewAPITestPoller) ProcessReviewJob(_ context.Context, job poller.Rev
 		CommitSHA: job.PR.CommitSHA, RequestedByUserID: job.RequestedByUserID, TriggerSource: job.TriggerSource,
 		Status: db.ReviewRunStatusQueued, RequestedConfigJSON: string(requestedJSON),
 		EffectiveConfigJSON: string(effectiveJSON), ConfigSourcesJSON: string(sourcesJSON),
-		ConfigHash: job.Config.Hash, ConfigSchemaVersion: job.Config.Effective.SchemaVersion,
+		ConfigHash: job.Config.Hash, ConfigSchemaVersion: job.Config.Effective.SchemaVersion, Profile: job.Config.Effective.Profile,
 		AgentBackend: job.Config.Effective.Agent.Backend, AgentModel: job.Config.Effective.Agent.Model,
 		AgentEffort: job.Config.Effective.Agent.Effort, AgentWallClockSec: job.Config.Effective.Agent.WallClockSeconds,
 		AgentMaxTurns: job.Config.Effective.Agent.MaxTurns, AcceptedAt: now, QueuedAt: now,

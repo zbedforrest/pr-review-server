@@ -173,6 +173,9 @@ type Poller struct {
 	// capacity first (when needed), then this slot, before starting their
 	// execution lease or wall clock.
 	firstPassSlots chan struct{}
+	// defaultProfileWarned makes the policy-rejected default profile a
+	// one-line warning instead of one per resolution.
+	defaultProfileWarned atomic.Bool
 	// dispatchSlots bounds pre-provider cache/storage/DB work. It is released
 	// before agent/first-pass capacity waits, so it cannot cap agent throughput.
 	dispatchSlots chan struct{}
@@ -316,6 +319,7 @@ func agentModelUse(review *service.AgentReview) payload.ModelUse {
 		ServingModelVerified: review.ServingModelVerified,
 		Effort:               review.Effort,
 		Fallback:             review.ModelFallback,
+		CostUSD:              review.CostUSD,
 	}
 }
 
@@ -572,8 +576,12 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		return nil, fmt.Errorf("agent review: concurrency slot was not reserved before execution budget started")
 	}
 
-	log.Printf("[REVIEWER] PR %d: Gemini pass done (comments=%d), entering agent stage",
-		pr.Number, len(result.Comments))
+	if execution.Job.Config.Effective.FirstPass.Enabled {
+		log.Printf("[REVIEWER] PR %d: first pass done (comments=%d), entering agent stage", pr.Number, len(result.Comments))
+	} else {
+		log.Printf("[REVIEWER] PR %d: %s profile, entering agent stage without a first pass",
+			pr.Number, execution.Job.Config.Effective.Profile)
+	}
 	projected, setErr := p.db.SetPRAgentReviewingForReviewRun(pr.Owner, pr.Repo, pr.Number, execution.Job.RunID)
 	if setErr != nil {
 		log.Printf("[REVIEWER] WARNING: could not set agent_reviewing status for PR %d: %v", pr.Number, setErr)
@@ -594,6 +602,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		return nil, fmt.Errorf("agent review: get GitHub token: %w", tokenErr)
 	}
 	agentCfg := p.agentConfigForExecution(execution, gitToken)
+	agentCfg.APIDiff = result.Diff
 	ticketCtx := p.linkedTicketContext(ctx, pr, result.PRBody)
 	ticketCtx.applyTo(&agentCfg)
 	// Pass the PR's true base branch so the clone and the deterministic-layer
@@ -611,6 +620,10 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		execution.recordStageTiming(payload.StageTiming{
 			Stage: "gates", StartedAt: agentOut.GatesStartedAt, DurationMS: agentOut.GatesDurationMS,
 		})
+	}
+	execution.DiffSource = agentOut.DiffSource
+	if len(result.FileContents) == 0 && len(agentOut.CitedFileContents) > 0 {
+		result.FileContents = agentOut.CitedFileContents
 	}
 
 	if agentOut.ModelFallback {
@@ -677,7 +690,12 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	}
 
 	result.Checks = agentOut.Checks
-	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
+	applyProfileHeader(result, execution)
+	modelName := llm.ProModelName()
+	if !execution.Job.Config.Effective.FirstPass.Enabled {
+		modelName = applyAgentUsage(result, agentOut)
+	}
+	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, modelName)
 	if htmlContent == nil {
 		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
 	}
@@ -701,6 +719,26 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		Carried:       carriedInfo,
 		LinkedTickets: ticketCtx.keys(),
 	}, nil
+}
+
+// applyAgentUsage fills the report's generation block from the agent stage
+// for runs with no first pass, and returns the model name to print: the
+// served model when verified, otherwise the requested one.
+func applyAgentUsage(result *service.ReviewResult, agentOut *service.AgentReview) string {
+	result.PromptTokenCount = int32(agentOut.InputTokens)
+	result.CandidatesTokenCount = int32(agentOut.OutputTokens)
+	result.TotalTokenCount = int32(agentOut.InputTokens + agentOut.OutputTokens)
+	if agentOut.ServingModelVerified && agentOut.ServedModel != "" {
+		return agentOut.ServedModel
+	}
+	return agentOut.RequestedModel
+}
+
+// applyProfileHeader stamps the report header's profile line from the run's
+// description.
+func applyProfileHeader(result *service.ReviewResult, execution *reviewExecution) {
+	result.ProfileTitle = execution.Profile.Title()
+	result.ProfileDeviations = append([]string(nil), execution.Profile.Deviations...)
 }
 
 // ---- Linked ticket context ------------------------------------------------
@@ -3595,7 +3633,19 @@ func (p *Poller) admitReviewJobs(ctx context.Context, jobs []ReviewJob) (admitte
 	// If using mock generator (for testing), skip LLM client initialization
 	var reviewSvc *service.Service
 	var reviewSvcInitErr error
-	if p.reviewGenerator == nil {
+	needsFirstPass := false
+	for _, job := range jobs {
+		if job.Config.Effective.FirstPass.Enabled {
+			needsFirstPass = true
+			break
+		}
+	}
+	if p.reviewGenerator == nil && !needsFirstPass {
+		// Lite-only batches fetch PR inputs over GitHub and never call a
+		// first-pass provider, so a missing or failing first-pass credential
+		// must not reject them.
+		reviewSvc = service.NewServiceWithFirstPass(p.ghClientConcrete, nil, nil, service.FirstPassInfo{})
+	} else if p.reviewGenerator == nil {
 		// Initialize reviewer clients. The deployment-default first-pass client
 		// is built and key-validated up front (fail fast); per-run overrides
 		// resolve their own client later, once each job's effective config is
@@ -3744,7 +3794,7 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 		}
 	}
 	firstPassSlotReserved := false
-	if p.firstPassSlots != nil {
+	if p.firstPassSlots != nil && job.Config.Effective.FirstPass.Enabled {
 		// Acquire only after scarce agent capacity so an agent job can never
 		// occupy a first-pass slot while waiting for the longer-lived slot.
 		select {
@@ -3824,6 +3874,7 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 	}
 	execution.AgentSlotReserved = agentSlotReserved
 	execution.QueueWait = queueWait
+	execution.Profile = p.describeProfile(job.Config.Effective)
 	execStart := execution.AttemptStartedAt
 	nRequests := job.Config.Effective.FirstPass.Samples
 
@@ -3847,6 +3898,15 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 		}
 		reviewResult, err = p.reviewGenerator.GenerateReview(prCtx, genCfg)
 		releaseFirstPassSlot()
+	} else if !job.Config.Effective.FirstPass.Enabled {
+		inputs, fetchErr := reviewSvc.FetchPRInputs(prCtx, service.PerformReviewConfig{
+			Token: p.cfg.GitHubToken, Owner: pr.Owner, RepoName: pr.Repo, PRNumber: pr.Number, SkipFileContext: true,
+		})
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			reviewResult, err = p.runAgentStage(prCtx, execution, inputs)
+		}
 	} else if firstPassClient, firstPassInfo, firstPassErr := p.firstPassClientForRun(job.Config.Effective.FirstPass); firstPassErr != nil {
 		releaseFirstPassSlot()
 		err = fmt.Errorf("initialize first-pass provider for run %s: %w", job.RunID, firstPassErr)
@@ -3876,6 +3936,7 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 			reviewResult, err = p.runAgentStage(prCtx, execution, result)
 		} else {
 			// Legacy HTML report path.
+			applyProfileHeader(result, execution)
 			htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
 			if htmlContent == nil {
 				err = fmt.Errorf("failed to generate HTML content")

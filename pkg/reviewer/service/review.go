@@ -99,6 +99,9 @@ type PerformReviewConfig struct {
 	// record the attempt before execution advances. Errors are logged and ignored
 	// except ErrProviderAttemptAborted, which stops work before provider startup.
 	AttemptObserver ProviderAttemptObserver
+	// SkipFileContext leaves out the per-file base-branch content fetch; the
+	// lite profile reads cited files from its worktree instead.
+	SkipFileContext bool
 }
 
 // ProviderAttemptObserver is the dependency-neutral seam between provider
@@ -139,6 +142,7 @@ type ProviderAttemptEvent struct {
 	InputTokens          int64
 	OutputTokens         int64
 	TotalTokens          int64
+	CostUSD              float64
 	StartedAt            *time.Time
 	CompletedAt          *time.Time
 	DurationMS           int64
@@ -177,6 +181,10 @@ type ReviewResult struct {
 	CandidatesTokenCount int32
 	TotalTokenCount      int32
 	FileContents         map[string]string // File contents for context generation
+	// ProfileTitle and ProfileDeviations feed the report header ("Profile:
+	// Lite", "Profile: Custom (based on Lite)" plus what changed).
+	ProfileTitle      string
+	ProfileDeviations []string
 	// Importance counts (computed from Comments)
 	CriticalCount int
 	MediumCount   int
@@ -201,6 +209,19 @@ func (r *ReviewResult) ComputeImportanceCounts() {
 			r.LowCount++
 		}
 	}
+}
+
+// FetchPRInputs fetches the PR metadata and diff a single-agent review needs
+// without running any model call; the result carries no comments.
+func (s *Service) FetchPRInputs(ctx context.Context, cfg PerformReviewConfig) (*ReviewResult, error) {
+	data, err := s.fetchPRData(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &ReviewResult{
+		Diff: data.Diff, PRBody: data.PR.Body, PRTitle: data.PR.Title, BaseRef: data.PR.Base.Ref,
+		FileContents: data.FileContents,
+	}, nil
 }
 
 // PerformReview conducts a code review for a given pull request.

@@ -210,9 +210,18 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 		log.Printf("[AUTO-REVIEW] %s intent=%d: left queued, the resident review queue is full", key, intent.ID)
 		return false
 	}
-	job, err := p.PrepareReviewJob(pr, runconfig.Overrides{}, true, autoReviewTriggerSource, nil)
+	profile := p.autoReviewProfileFor(intent.Trigger, pr.Owner, pr.Repo, pr.Author)
+	job, err := p.PrepareReviewJob(pr, runconfig.Overrides{Profile: &profile}, true, autoReviewTriggerSource, nil)
+	var validationErr *runconfig.ValidationError
+	if errors.As(err, &validationErr) && profile != runconfig.ProfileFull {
+		// A lite profile the deployment policy rejects would otherwise leave the
+		// intent queued and retried forever; the full pipeline still reviews it.
+		log.Printf("[AUTO-REVIEW] %s intent=%d: %s profile rejected by policy (%v); reviewing with full", key, intent.ID, profile, err)
+		profile = runconfig.ProfileFull
+		job, err = p.PrepareReviewJob(pr, runconfig.Overrides{Profile: &profile}, true, autoReviewTriggerSource, nil)
+	}
 	if err != nil {
-		log.Printf("[AUTO-REVIEW] %s intent=%d: cannot prepare review, left queued for the next poll: %v", key, intent.ID, err)
+		log.Printf("[AUTO-REVIEW] %s intent=%d: cannot prepare %s review, left queued for the next poll: %v", key, intent.ID, profile, err)
 		return false
 	}
 	job.SkipPublish = false
@@ -234,7 +243,7 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 		p.moveAutoReviewIntent(intent, db.AutoReviewIntentRunning, db.AutoReviewIntentQueued, "")
 		return false
 	}
-	log.Printf("[AUTO-REVIEW] %s intent=%d run=%s: review admitted (trigger=%s delivery=%s)", key, intent.ID, job.RunID, intent.Trigger, intent.DeliveryID)
+	log.Printf("[AUTO-REVIEW] %s intent=%d run=%s: %s review admitted (trigger=%s delivery=%s)", key, intent.ID, job.RunID, profile, intent.Trigger, intent.DeliveryID)
 	return true
 }
 

@@ -169,6 +169,9 @@ func (m *MockDatabase) UpsertReviewStageAttempt(attempt *db.ReviewStageAttempt) 
 func (m *MockDatabase) ListReviewStageAttempts(runID string) ([]db.ReviewStageAttempt, error) {
 	return nil, nil
 }
+func (m *MockDatabase) ReviewProfileStats(since time.Time) (map[string]db.ReviewProfileStats, error) {
+	return nil, nil
+}
 func (m *MockDatabase) UpsertPR(pr *db.PR) error { return nil }
 func (m *MockDatabase) UpdatePRStatus(owner, repo string, prNumber int, status string) error {
 	return nil

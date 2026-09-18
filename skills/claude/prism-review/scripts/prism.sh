@@ -18,6 +18,7 @@ Usage:
   prism.sh fetch <pr-ref> [--sha SHA]
 
 Create options:
+  --profile NAME                 full | lite | lite_plus (deployment default when omitted)
   --backend NAME                 claude | openrouter
   --model MODEL_ID
   --effort LEVEL
@@ -240,6 +241,7 @@ command_create() {
   resolve_ref "$1"
   shift
 
+  profile=""
   backend=""
   model=""
   effort=""
@@ -257,7 +259,7 @@ command_create() {
   while [ "$#" -gt 0 ]; do
     option="$1"
     case "$option" in
-      --backend|--model|--effort|--wall-clock-seconds|--max-turns|--first-pass-samples|--first-pass-provider|--first-pass-model|--agent-enabled|--required-checks|--expected-head-sha|--idempotency-key)
+      --profile|--backend|--model|--effort|--wall-clock-seconds|--max-turns|--first-pass-samples|--first-pass-provider|--first-pass-model|--agent-enabled|--required-checks|--expected-head-sha|--idempotency-key)
         [ "$#" -ge 2 ] || die "$option requires a value"
         value="$2"
         shift 2
@@ -265,6 +267,13 @@ command_create() {
       *) die "unknown create option: $option" ;;
     esac
     case "$option" in
+      --profile)
+        case "$value" in
+          full|lite|lite_plus) ;;
+          *) die "$option must be full, lite, or lite_plus" ;;
+        esac
+        profile="$value"; has_customization=1
+        ;;
       --backend) backend="$value"; has_customization=1 ;;
       --model) model="$value"; has_customization=1 ;;
       --effort) effort="$value"; has_customization=1 ;;
@@ -299,6 +308,7 @@ command_create() {
 
   request=$(jq -cn --arg owner "$OWNER" --arg repo "$REPO" --argjson pr "$PR_NUMBER" --arg sha "$expected_head" \
     '{target:{owner:$owner,repo:$repo,pull_request:$pr,expected_head_sha:$sha},config:{}}')
+  [ -z "$profile" ] || request=$(printf '%s' "$request" | jq -c --arg value "$profile" '.config.profile=$value')
   if [ -n "$backend$model$effort$wall_clock$max_turns$agent_enabled" ]; then
     request=$(printf '%s' "$request" | jq -c '.config.agent = {}')
   fi

@@ -528,6 +528,11 @@ type ReportInput struct {
 	GeneratedAt     time.Time
 	FileContents    map[string]string
 	Checks          []CheckRecord
+	// Profile names the review flavor for the header ("Full", "Lite",
+	// "Custom (based on Lite)"); ProfileDeviations lists the fields a custom
+	// run changed from that profile. Empty Profile renders no profile line.
+	Profile           string
+	ProfileDeviations []string
 }
 
 // GenerateReportFrom renders the review report from a ReportInput.
@@ -812,6 +817,8 @@ func generateReport(in ReportInput) (string, error) {
 		GeneratedAt          string
 		CommitSHA            string
 		ShortCommitSHA       string
+		Profile              string
+		ProfileDeviations    string
 	}{
 		PRNumber:        in.PRNumber,
 		PRURL:           in.PRURL,
@@ -852,6 +859,8 @@ func generateReport(in ReportInput) (string, error) {
 		GeneratedAt:          in.GeneratedAt.Format("Monday, January 2, 2006 at 3:04 PM MST"),
 		CommitSHA:            in.CommitSHA,
 		ShortCommitSHA:       shortCommitSHA,
+		Profile:              in.Profile,
+		ProfileDeviations:    strings.Join(in.ProfileDeviations, ", "),
 	}
 
 	funcMap := template.FuncMap{

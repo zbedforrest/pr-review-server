@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"sort"
 	"time"
 )
 
@@ -42,6 +43,7 @@ type ReviewRun struct {
 	ConfigHash          string
 	ConfigSchemaVersion int
 
+	Profile           string
 	AgentBackend      string
 	AgentModel        string
 	AgentEffort       string
@@ -201,6 +203,7 @@ type ReviewStageAttempt struct {
 	InputTokens          int64
 	OutputTokens         int64
 	TotalTokens          int64
+	CostUSD              float64
 	StartedAt            *time.Time
 	CompletedAt          *time.Time
 	DurationMS           int64
@@ -209,4 +212,54 @@ type ReviewStageAttempt struct {
 	ErrorSummary         string
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+// ReviewProfileStats summarizes finished runs of one profile over a window:
+// how many ran, their median wall time, mean provider cost, and how many hit
+// the agent wall clock.
+type ReviewProfileStats struct {
+	Runs          int     `json:"runs"`
+	P50DurationMS int64   `json:"p50_duration_ms"`
+	MeanCostUSD   float64 `json:"mean_cost_usd"`
+	Timeouts      int     `json:"timeouts"`
+}
+
+// ReviewProfileRunSample is one finished run as read for profile statistics.
+type ReviewProfileRunSample struct {
+	RunID      string
+	Profile    string
+	Status     string
+	DurationMS int64
+	CostUSD    float64
+	TimedOut   bool
+}
+
+// SummarizeReviewProfiles folds run samples into per-profile statistics;
+// runs recorded before profiles existed count under full.
+func SummarizeReviewProfiles(samples []ReviewProfileRunSample) map[string]ReviewProfileStats {
+	durations := map[string][]int64{}
+	stats := map[string]ReviewProfileStats{}
+	costs := map[string]float64{}
+	for _, sample := range samples {
+		profile := sample.Profile
+		if profile == "" {
+			profile = "full"
+		}
+		current := stats[profile]
+		current.Runs++
+		if sample.TimedOut {
+			current.Timeouts++
+		}
+		costs[profile] += sample.CostUSD
+		durations[profile] = append(durations[profile], sample.DurationMS)
+		stats[profile] = current
+	}
+	for profile, current := range stats {
+		sorted := durations[profile]
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+		current.P50DurationMS = sorted[len(sorted)/2]
+		current.MeanCostUSD = costs[profile] / float64(current.Runs)
+		stats[profile] = current
+	}
+	return stats
 }

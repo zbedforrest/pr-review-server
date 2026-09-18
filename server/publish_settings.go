@@ -1,10 +1,13 @@
 package server
 
 import (
-	"pr-review-server/pkg/publisher"
 	"strconv"
 	"strings"
 	"time"
+
+	"pr-review-server/pkg/publisher"
+	"pr-review-server/pkg/reviewer/runconfig"
+	"pr-review-server/poller"
 )
 
 // GitHub publication settings, shared with the poller by key name. Defaults
@@ -70,6 +73,36 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 		}
 	}
 	response[settingAutoReviewReadyPRs] = autoReviewReady
+
+	rawProfiles, _ := s.db.GetSetting(poller.SettingAutoReviewProfileByTrigger)
+	profilePolicy, err := poller.ParseAutoReviewProfilePolicy(rawProfiles)
+	if err != nil {
+		profilePolicy, _ = poller.ParseAutoReviewProfilePolicy("")
+	}
+	response[poller.SettingAutoReviewProfileByTrigger] = profilePolicy.Map()
+	liteAuthors, _ := s.db.GetSetting(poller.SettingAutoReviewLiteAuthors)
+	response[poller.SettingAutoReviewLiteAuthors] = liteAuthors
+	response["review_default_profile"] = s.defaultReviewProfile()
+	response["review_profiles"] = runconfig.Profiles()
+}
+
+// defaultReviewProfile is what "default" resolves to for the settings page:
+// the poller's admitted default (the configured profile unless policy rejects
+// it), falling back to the raw setting when no poller is attached.
+func (s *Server) defaultReviewProfile() string {
+	if s.poller != nil {
+		if _, policy, err := s.poller.ReviewConfigDefaultsAndPolicy(); err == nil {
+			return runconfig.NormalizeProfile(policy.DefaultProfile)
+		}
+	}
+	if s.cfg == nil {
+		return runconfig.ProfileFull
+	}
+	profile := runconfig.NormalizeProfile(s.cfg.ReviewDefaultProfile)
+	if !runconfig.KnownProfile(profile) {
+		return runconfig.ProfileFull
+	}
+	return profile
 }
 
 // publishReplyMode reads the stored mode the way the poller does: trimmed and
