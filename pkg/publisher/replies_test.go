@@ -997,6 +997,12 @@ func TestShortAcknowledgment(t *testing.T) {
 		"Fixed👍":                               true,
 		"Fixed in the latest push":             true,
 		"fixed a.go":                           false,
+		"👎":                                    false,
+		"Fixed ❌":                              false,
+		"done :-1:":                            false,
+		"Fixed ✅":                              true,
+		"Done :white_check_mark:":              true,
+		"done ...":                             true,
 	}
 	for body, want := range cases {
 		if got := shortAcknowledgment(body); got != want {
@@ -1116,6 +1122,23 @@ func TestReplyReactor_BudgetExhaustedPostsOneFixedNotice(t *testing.T) {
 	}
 }
 
+func TestReplyReactor_BudgetExhaustionOnAQuestionIsRetriedNotNoticed(t *testing.T) {
+	runs := 0
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{}, fmt.Errorf("%w: exceeded max-turns (20)", ErrBudgetExhausted)
+	})
+	gh.threads["acme/example#7"][1].Body = "Why does the guard need to run first here?"
+	rep, _ := r.Run(context.Background())
+	if runs != 1 || len(rep.Errors) != 1 || len(gh.posted) != 0 || ledger.rows[0].Decision != "" || ledger.rows[0].Attempts != 1 {
+		t.Fatalf("a question has no claim to hold against: rep=%+v posted=%v row=%+v", rep, gh.posted, ledger.rows[0])
+	}
+	r.Run(context.Background())
+	if runs != 2 || len(gh.posted) != 0 {
+		t.Fatalf("the question is retried next cycle: runs=%d posted=%v", runs, gh.posted)
+	}
+}
+
 func TestReplyReactor_BudgetNoticeResumesAfterAGitHubErrorWithoutRerunningTheModel(t *testing.T) {
 	runs := 0
 	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
@@ -1190,6 +1213,8 @@ func TestTicketKeysAndDeferredTickets(t *testing.T) {
 		{"Good catch, will fix in ABC-1.", []string{"ABC-1"}, []string{"ABC-1"}},
 		{"We'll move to AES-256 and GPT-4 in a follow-up, see X-1 and EC2-1.", nil, nil},
 		{"Done. The lock is scoped to the request now, ABC-1 is unrelated.", []string{"ABC-1"}, nil},
+		{"AUTH-42 introduced this, cleanup will happen in a follow-up", []string{"AUTH-42"}, nil},
+		{"Follow-up in AUTH-42 and AUTH-43, the rest lands here.", []string{"AUTH-42", "AUTH-43"}, []string{"AUTH-42", "AUTH-43"}},
 	}
 	for _, c := range cases {
 		if got := TicketKeys(c.body); fmt.Sprint(got) != fmt.Sprint(c.keys) {

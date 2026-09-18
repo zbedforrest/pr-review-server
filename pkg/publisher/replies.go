@@ -80,9 +80,12 @@ var (
 	commitShaRe      = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
 	hexLetterRe      = regexp.MustCompile(`[a-f]`)
 	nonWordRe        = regexp.MustCompile(`[^\pL\pN]`)
-	emojiShortcodeRe = regexp.MustCompile(`^:[a-z0-9_+-]+:$`)
-	fixClaimRe       = regexp.MustCompile(`(?i)\b(fixed|done|addressed|resolved|updated|removed|handled)\b`)
-	ackVocabulary    = map[string]bool{}
+	// Emoji and shortcodes that read as agreement; a thumbs-down or a cross
+	// is not an acknowledgment.
+	ackEmojiRe    = regexp.MustCompile(`^(:(\+1|thumbsup|thumbs_up|white_check_mark|heavy_check_mark|ok_hand|pray|tada|heart|100):|[\x{1F44D}\x{2705}\x{2714}\x{1F44C}\x{1F64F}\x{1F389}\x{2764}\x{1F4AF}][\x{FE0F}\x{1F3FB}-\x{1F3FF}]*)$`)
+	punctOnlyRe   = regexp.MustCompile(`^[[:punct:]]+$`)
+	fixClaimRe    = regexp.MustCompile(`(?i)\b(fixed|done|addressed|resolved|updated|removed|handled)\b`)
+	ackVocabulary = map[string]bool{}
 )
 
 func init() {
@@ -112,13 +115,10 @@ func shortAcknowledgment(body string) bool {
 		return false
 	}
 	for _, w := range words {
-		if emojiShortcodeRe.MatchString(w) {
+		if ackEmojiRe.MatchString(w) || punctOnlyRe.MatchString(w) {
 			continue
 		}
 		w = nonWordRe.ReplaceAllString(strings.ToLower(w), "")
-		if w == "" {
-			continue // emoji or bare punctuation
-		}
 		if !ackVocabulary[w] {
 			return false
 		}
@@ -222,10 +222,11 @@ func TicketKeys(body string) []string {
 }
 
 // DeferredTickets returns the tracker keys an author comment defers the
-// finding to: a key in a deferring sentence (see defersFinding), outside any
-// clause that claims a fix ("fixed the issue tracked in AUTH-42" is a
-// reference, "fixed X, Y is tracked in AUTH-42" a deferral). A key on its
-// own, or in another sentence, is not a deferral.
+// finding to: a key in a deferring sentence (see defersFinding) whose own
+// clause carries the deferral and no fix verb ("fixed the issue tracked in
+// AUTH-42" is a reference, "fixed X, Y is tracked in AUTH-42" a deferral,
+// "AUTH-42 introduced this, cleanup is a follow-up" names no ticket). A key
+// on its own, or in another sentence, is not a deferral.
 func DeferredTickets(body string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -234,7 +235,7 @@ func DeferredTickets(body string) []string {
 			continue
 		}
 		for _, clause := range clauseEndRe.Split(sentence, -1) {
-			if fixClaimRe.MatchString(clause) {
+			if fixClaimRe.MatchString(clause) || !(deferralPhraseRe.MatchString(clause) || deferralVerbRe.MatchString(clause)) {
 				continue
 			}
 			for _, k := range TicketKeys(clause) {
@@ -1207,9 +1208,10 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		record := db.ReplyDecisionRecord{Head: state.HeadSHA, Thread: fingerprint, DeferredTo: row.DeferredTo}
 		switch {
-		case errors.Is(err, ErrBudgetExhausted) && ctx.Err() == nil:
+		case errors.Is(err, ErrBudgetExhausted) && ctx.Err() == nil && reply.Class != ReplyQuestion:
 			// The model never decided, so nothing it might have said can be
-			// retried; a fixed hold is posted once and the finding stands.
+			// retried; a fixed hold is posted once and the finding stands. A
+			// question has no claim to hold against, so it keeps the retry path.
 			decision = ReplyDecision{Decision: DecisionHold, Reply: budgetExhaustedReply, Cited: []EvidenceRef{}, Model: decision.Model, DurationMS: decision.DurationMS}
 			record.Note = NoteBudgetExhausted
 		case err != nil:
