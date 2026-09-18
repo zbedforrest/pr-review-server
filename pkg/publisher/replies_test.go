@@ -453,6 +453,7 @@ func TestTextEligibilityRules(t *testing.T) {
 		{"question gets text", AuthorReply{Class: ReplyQuestion, CreatedAt: now}, nil, 0, ""},
 		{"fix claim gets text", AuthorReply{Class: ReplyResolution, Body: "Fixed in 9de3bed, the guard now runs first.", CreatedAt: now}, nil, 0, ""},
 		{"bare acknowledgment never", AuthorReply{Class: ReplyResolution, Body: "Fixed", CreatedAt: now}, nil, 0, "acknowledgment"},
+		{"deferral never", AuthorReply{Class: ReplyResolution, Body: "Accepted for now, tracked in XO-291.", CreatedAt: now}, nil, 0, "deferred"},
 		{"other never", AuthorReply{Class: ReplyOther, Body: "Yep, known gap for this PR. Scoped in MSG-3282", CreatedAt: now}, nil, 0, "class"},
 		{"stale", AuthorReply{Class: ReplyPushback, CreatedAt: now.Add(-25 * time.Hour)}, nil, 0, "stale"},
 		{"thread cap", fresh, []db.PublishedReply{{ReplyCommentID: 1, RepliedAt: &posted}, {ReplyCommentID: 2, RepliedAt: &posted}}, 0, "thread_cap"},
@@ -990,8 +991,12 @@ func TestShortAcknowledgment(t *testing.T) {
 		"done, see a.go":                       false,
 		"Fixed: `retry()` now guards":          false,
 		"Fixed, tracked in MSG-1":              false,
-		"done done done done":                  false,
+		"done done done done done done":        false,
 		"Fixed this in the latest push, works": false,
+		"Good catch, thank you!":               true,
+		"Fixed👍":                               true,
+		"Fixed in the latest push":             true,
+		"fixed a.go":                           false,
 	}
 	for body, want := range cases {
 		if got := shortAcknowledgment(body); got != want {
@@ -1014,6 +1019,21 @@ func TestAcceptsWithoutFix(t *testing.T) {
 		"Fixed for now, the handler validates the ticket id":               false,
 		"Done. Tracked in ABC-1 for later.":                                true,
 		"Accepted for now, tracked under build 1234567 in ABC-1.":          true,
+		"Good catch, will fix in ABC-1.":                                   true,
+		"Good catch, will fix in another PR.":                              true,
+		"Good catch, filed ABC-1.":                                         true,
+		"Addressed. The lock is now released later in the callback.":       false,
+		"Done. The lock is scoped to the request now.":                     false,
+		"Done, the tracked flag is set before the guard now.":              false,
+		"Good catch, moved it into the defer block.":                       false,
+		"Good catch, fixed in the follow-up commit.":                       false,
+		"Good catch, the later nil check on line 40 handles this.":         false,
+		"Done. The ticket parser now handles this case.":                   false,
+		"Handled. This is tracked by the flag set on line 12 now.":         false,
+		"Fixed `validateToken`; cleanup is tracked in ABC-1.":              false,
+		"Good catch, fixed the race, and cleanup is tracked in ABC-1.":     false,
+		"Addressed; this is not deferred to ABC-1.":                        false,
+		"Done. No longer tracked in ABC-1, it is fixed here.":              false,
 	}
 	for body, want := range cases {
 		if got := acceptsWithoutFix(body); got != want {
@@ -1064,7 +1084,7 @@ func TestReplyReactor_BudgetExhaustedPostsOneFixedNotice(t *testing.T) {
 	var outcomes []ReplyOutcome
 	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
 		runs++
-		return ReplyDecision{}, fmt.Errorf("%w: reply: exceeded max-turns (20)", ErrBudgetExhausted)
+		return ReplyDecision{Model: "m", DurationMS: 900}, fmt.Errorf("%w: reply: exceeded max-turns (20)", ErrBudgetExhausted)
 	})
 	r.OnOutcome = func(o ReplyOutcome, err error) {
 		if err != nil {
@@ -1080,8 +1100,11 @@ func TestReplyReactor_BudgetExhaustedPostsOneFixedNotice(t *testing.T) {
 	if row.Outcome != "posted" || row.Decision != DecisionHold || row.Note != NoteBudgetExhausted || row.Attempts != 1 || row.Action != "observed" || len(gh.reactions) != 0 || row.ReplyCommentID == 0 {
 		t.Fatalf("row=%+v reactions=%v", row, gh.reactions)
 	}
-	if len(outcomes) != 1 || outcomes[0].Note != NoteBudgetExhausted || outcomes[0].Decision != DecisionHold || !outcomes[0].Posted {
+	if len(outcomes) != 1 || outcomes[0].Note != NoteBudgetExhausted || outcomes[0].Decision != DecisionHold || !outcomes[0].Posted || outcomes[0].Model != "m" || outcomes[0].DurationMS != 900 {
 		t.Fatalf("outcomes=%+v", outcomes)
+	}
+	if row.Model != "m" {
+		t.Fatalf("the notice row keeps the model that ran out of budget: row=%+v", row)
 	}
 	if ledger.states["a.go:1:abc"] != "" {
 		t.Fatalf("the notice must not change the finding state")
@@ -1160,6 +1183,13 @@ func TestTicketKeysAndDeferredTickets(t *testing.T) {
 		{"Fixed, see XO-1 for the background. The rename is a follow-up.", []string{"XO-1"}, nil},
 		{"Known gap for this PR.\nMSG-3282 covers it.", []string{"MSG-3282"}, nil},
 		{"AUTH-1 caused this. Tracked later in MSG-1 and MSG-2.", []string{"AUTH-1", "MSG-1", "MSG-2"}, []string{"MSG-1", "MSG-2"}},
+		{"Addressed; this is not deferred to ABC-1.", []string{"ABC-1"}, nil},
+		{"Fixed the issue tracked in AUTH-42.", []string{"AUTH-42"}, nil},
+		{"Fixed in 519f006, the rename is tracked in MSG-1.", []string{"MSG-1"}, []string{"MSG-1"}},
+		{"Good catch, filed ABC-1.", []string{"ABC-1"}, []string{"ABC-1"}},
+		{"Good catch, will fix in ABC-1.", []string{"ABC-1"}, []string{"ABC-1"}},
+		{"We'll move to AES-256 and GPT-4 in a follow-up, see X-1 and EC2-1.", nil, nil},
+		{"Done. The lock is scoped to the request now, ABC-1 is unrelated.", []string{"ABC-1"}, nil},
 	}
 	for _, c := range cases {
 		if got := TicketKeys(c.body); fmt.Sprint(got) != fmt.Sprint(c.keys) {
@@ -1187,8 +1217,26 @@ func TestReplyReactor_DeferralIsRecordedOnTheLedgerRow(t *testing.T) {
 	})
 	gh.threads["acme/example#7"][1].Body = "This belongs to the auth refactor, AUTH-42 and AUTH-43 cover that path."
 	r.Run(context.Background())
-	if ledger.rows[0].DeferredTo != "AUTH-42,AUTH-43" || ledger.rows[0].Outcome != "posted" {
-		t.Fatalf("an out-of-scope hold records the author's ticket keys: row=%+v", ledger.rows[0])
+	if ledger.rows[0].DeferredTo != "" || ledger.rows[0].Outcome != "posted" {
+		t.Fatalf("keys the author only mentioned are not a deferral, even under an out-of-scope hold: row=%+v", ledger.rows[0])
+	}
+
+	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "The AUTH-42 refactor is out of scope here. a.go:12 still dereferences it.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "This belongs to the auth refactor, AUTH-42 and AUTH-43 cover that path."
+	r.Run(context.Background())
+	if ledger.rows[0].DeferredTo != "AUTH-42" {
+		t.Fatalf("a key in our own out-of-scope sentence is recorded: row=%+v", ledger.rows[0])
+	}
+
+	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "This is not out of scope: a.go:12 still dereferences nil.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	gh.threads["acme/example#7"][1].Body = "AUTH-42 introduced this regression, please re-check."
+	r.Run(context.Background())
+	if ledger.rows[0].DeferredTo != "" {
+		t.Fatalf("a negated out-of-scope sentence is not a deferral: row=%+v", ledger.rows[0])
 	}
 
 	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
