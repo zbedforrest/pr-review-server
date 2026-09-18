@@ -23,7 +23,9 @@ func TestUpdateSessionGitHubToken_RoundTrip(t *testing.T) {
 	session := createSessionForTest(t, database)
 
 	expires := time.Now().Add(8 * time.Hour).UTC().Truncate(time.Second)
-	require.NoError(t, database.UpdateSessionGitHubToken(session.ID, "v1:access", "v1:refresh", &expires))
+	written, err := database.UpdateSessionGitHubToken(session.ID, "", "v1:access", "v1:refresh", &expires)
+	require.NoError(t, err)
+	assert.True(t, written)
 
 	got, err := database.GetSession(session.ID)
 	require.NoError(t, err)
@@ -33,7 +35,13 @@ func TestUpdateSessionGitHubToken_RoundTrip(t *testing.T) {
 	require.NotNil(t, got.GitHubTokenExpiresAt)
 	assert.True(t, expires.Equal(*got.GitHubTokenExpiresAt))
 
-	require.NoError(t, database.UpdateSessionGitHubToken(session.ID, "", "", nil))
+	written, err = database.UpdateSessionGitHubToken(session.ID, "v1:stale", "v1:other", "", nil)
+	require.NoError(t, err)
+	assert.False(t, written, "a write fenced on a superseded ciphertext is refused")
+
+	written, err = database.UpdateSessionGitHubToken(session.ID, "v1:access", "", "", nil)
+	require.NoError(t, err)
+	assert.True(t, written)
 	got, err = database.GetSession(session.ID)
 	require.NoError(t, err)
 	assert.Empty(t, got.GitHubTokenEnc)
@@ -62,7 +70,8 @@ func TestDeleteSession_RemovesToken(t *testing.T) {
 	database := newTestDB(t)
 	defer database.Close()
 	session := createSessionForTest(t, database)
-	require.NoError(t, database.UpdateSessionGitHubToken(session.ID, "v1:access", "v1:refresh", nil))
+	_, err := database.UpdateSessionGitHubToken(session.ID, "", "v1:access", "v1:refresh", nil)
+	require.NoError(t, err)
 
 	require.NoError(t, database.DeleteSession(session.ID))
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"pr-review-server/db"
@@ -42,7 +43,7 @@ type GitHubTokenSource interface {
 // tokens, implemented by *db.GormDB and type-asserted so db.Database mocks
 // stay untouched.
 type sessionTokenStore interface {
-	UpdateSessionGitHubToken(id string, enc, refreshEnc string, expiresAt *time.Time) error
+	UpdateSessionGitHubToken(id, expectedEnc, enc, refreshEnc string, expiresAt *time.Time) (bool, error)
 }
 
 type staticTokenSource struct {
@@ -76,6 +77,7 @@ func (s staticTokenSource) Source() string { return s.source }
 type sessionTokenSource struct {
 	auth    *Auth
 	session *db.Session
+	mu      sync.Mutex
 	token   *oauth2.Token
 	loaded  bool
 	loadErr error
@@ -88,8 +90,8 @@ func (a *Auth) newSessionTokenSource(session *db.Session) *sessionTokenSource {
 func (s *sessionTokenSource) Source() string { return "session" }
 
 func (s *sessionTokenSource) Token(ctx context.Context) (string, error) {
-	s.auth.tokenRefreshMu.Lock()
-	defer s.auth.tokenRefreshMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.load(); err != nil {
 		return "", err
 	}
@@ -97,18 +99,18 @@ func (s *sessionTokenSource) Token(ctx context.Context) (string, error) {
 		return "", ErrNoGitHubToken
 	}
 	if !s.token.Expiry.IsZero() && time.Until(s.token.Expiry) < tokenRefreshLeeway {
-		return s.refreshLocked(ctx)
+		return s.refresh(ctx)
 	}
 	return s.token.AccessToken, nil
 }
 
 func (s *sessionTokenSource) Refresh(ctx context.Context) (string, error) {
-	s.auth.tokenRefreshMu.Lock()
-	defer s.auth.tokenRefreshMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.load(); err != nil {
 		return "", err
 	}
-	return s.refreshLocked(ctx)
+	return s.refresh(ctx)
 }
 
 func (s *sessionTokenSource) load() error {
@@ -124,18 +126,16 @@ func (s *sessionTokenSource) load() error {
 	return s.loadErr
 }
 
-// refreshLocked runs under tokenRefreshMu. GitHub rotates refresh tokens, so
-// two requests refreshing the same session at once would leave one holding a
-// dead token: the mutex serializes them and the re-read adopts a sibling's
-// fresh token instead of spending the refresh token a second time.
-func (s *sessionTokenSource) refreshLocked(ctx context.Context) (string, error) {
-	if fresh, err := s.auth.db.GetSession(s.session.ID); err == nil && fresh != nil && fresh.GitHubTokenEnc != s.session.GitHubTokenEnc {
-		if tok, openErr := s.auth.openSessionToken(fresh); openErr == nil && tok.AccessToken != "" {
-			s.session, s.token = fresh, tok
-			if tok.Expiry.IsZero() || time.Until(tok.Expiry) >= tokenRefreshLeeway {
-				return tok.AccessToken, nil
-			}
-		}
+// refresh serializes on the session. GitHub rotates refresh tokens, so two
+// requests refreshing the same session at once would leave one holding a
+// dead token: the per-session lock covers siblings in this process and the
+// re-read adopts a token another request (or instance) already persisted
+// instead of spending the refresh token a second time.
+func (s *sessionTokenSource) refresh(ctx context.Context) (string, error) {
+	unlock := s.auth.lockSession(s.session.ID)
+	defer unlock()
+	if s.adoptStoredToken() && (s.token.Expiry.IsZero() || time.Until(s.token.Expiry) >= tokenRefreshLeeway) {
+		return s.token.AccessToken, nil
 	}
 	if s.token.RefreshToken == "" {
 		s.clearStored()
@@ -145,9 +145,8 @@ func (s *sessionTokenSource) refreshLocked(ctx context.Context) (string, error) 
 	expired.Expiry = time.Now().Add(-time.Minute)
 	refreshed, err := s.auth.oauthConfig.TokenSource(ctx, &expired).Token()
 	if err != nil {
-		var refused *oauth2.RetrieveError
-		if errors.As(err, &refused) {
-			log.Printf("[AUTH] GitHub refused token refresh for user %d (status %d), clearing stored token", s.session.UserID, refused.Response.StatusCode)
+		if refreshRefused(err) {
+			log.Printf("[AUTH] GitHub refused token refresh for user %d, clearing stored token: %v", s.session.UserID, err)
 			s.clearStored()
 			return "", ErrNoGitHubToken
 		}
@@ -159,17 +158,62 @@ func (s *sessionTokenSource) refreshLocked(ctx context.Context) (string, error) 
 	s.token = refreshed
 	if enc, refreshEnc, expiresAt, sealErr := s.auth.sealOAuthToken(refreshed); sealErr != nil {
 		log.Printf("[AUTH] failed to seal refreshed token for user %d: %v", s.session.UserID, sealErr)
-	} else {
+	} else if s.auth.storeSessionToken(s.session.ID, s.session.GitHubTokenEnc, enc, refreshEnc, expiresAt) {
 		s.session.GitHubTokenEnc, s.session.GitHubRefreshTokenEnc, s.session.GitHubTokenExpiresAt = enc, refreshEnc, expiresAt
-		s.auth.storeSessionToken(s.session.ID, enc, refreshEnc, expiresAt)
 	}
 	return refreshed.AccessToken, nil
 }
 
+// refreshRefused tells a dead refresh token apart from a token endpoint that
+// is merely unavailable. GitHub answers a bad or expired refresh token with
+// an OAuth error code (often inside a 200 body); 429 and 5xx are transient.
+func refreshRefused(err error) bool {
+	var re *oauth2.RetrieveError
+	if !errors.As(err, &re) {
+		return false
+	}
+	if re.ErrorCode != "" {
+		return true
+	}
+	status := 0
+	if re.Response != nil {
+		status = re.Response.StatusCode
+	}
+	return status == http.StatusBadRequest || status == http.StatusUnauthorized
+}
+
+// adoptStoredToken re-reads the session row and, when another request has
+// already stored a different token, switches to it. Reports whether it did.
+func (s *sessionTokenSource) adoptStoredToken() bool {
+	fresh, err := s.auth.db.GetSession(s.session.ID)
+	if err != nil || fresh == nil || fresh.GitHubTokenEnc == s.session.GitHubTokenEnc {
+		return false
+	}
+	tok, err := s.auth.openSessionToken(fresh)
+	if err != nil || tok.AccessToken == "" {
+		return false
+	}
+	s.session, s.token = fresh, tok
+	return true
+}
+
+// clearStored drops the token so the UI offers "sign in again". The clear is
+// fenced on the ciphertext this request read: if a sibling refreshed in the
+// meantime its token survives and is adopted instead.
 func (s *sessionTokenSource) clearStored() {
-	s.token = &oauth2.Token{}
-	s.session.GitHubTokenEnc, s.session.GitHubRefreshTokenEnc, s.session.GitHubTokenExpiresAt = "", "", nil
-	s.auth.storeSessionToken(s.session.ID, "", "", nil)
+	if s.auth.storeSessionToken(s.session.ID, s.session.GitHubTokenEnc, "", "", nil) {
+		s.token = &oauth2.Token{}
+		s.session.GitHubTokenEnc, s.session.GitHubRefreshTokenEnc, s.session.GitHubTokenExpiresAt = "", "", nil
+		return
+	}
+	s.adoptStoredToken()
+}
+
+// lockSession serializes token refreshes for one session within this process.
+func (a *Auth) lockSession(sessionID string) func() {
+	mu, _ := a.sessionLocks.LoadOrStore(sessionID, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	return mu.(*sync.Mutex).Unlock
 }
 
 func (a *Auth) openSessionToken(session *db.Session) (*oauth2.Token, error) {
@@ -202,21 +246,29 @@ func (a *Auth) sealOAuthToken(tok *oauth2.Token) (enc, refreshEnc string, expire
 	return enc, refreshEnc, expiresAt, nil
 }
 
-func (a *Auth) storeSessionToken(sessionID, enc, refreshEnc string, expiresAt *time.Time) {
+// storeSessionToken writes sealed tokens fenced on the ciphertext currently
+// stored and reports whether the row was written.
+func (a *Auth) storeSessionToken(sessionID, expectedEnc, enc, refreshEnc string, expiresAt *time.Time) bool {
 	store, ok := a.db.(sessionTokenStore)
 	if !ok {
 		log.Printf("[AUTH] database cannot store session tokens; GitHub actions stay unavailable")
-		return
+		return false
 	}
-	if err := store.UpdateSessionGitHubToken(sessionID, enc, refreshEnc, expiresAt); err != nil {
+	written, err := store.UpdateSessionGitHubToken(sessionID, expectedEnc, enc, refreshEnc, expiresAt)
+	if err != nil {
 		log.Printf("[AUTH] failed to store user token for session: %v", err)
-		return
+		return false
+	}
+	if !written {
+		log.Printf("[AUTH] session token changed underneath this request; keeping the newer token")
+		return false
 	}
 	if enc == "" {
 		log.Printf("[AUTH] cleared user token for session")
-		return
+	} else {
+		log.Printf("[AUTH] stored user token for session (expires=%s)", formatExpiry(expiresAt))
 	}
-	log.Printf("[AUTH] stored user token for session (expires=%s)", formatExpiry(expiresAt))
+	return true
 }
 
 func formatExpiry(t *time.Time) string {

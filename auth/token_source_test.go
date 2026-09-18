@@ -75,7 +75,7 @@ func newFakeTokenEndpoint(t *testing.T, mux *http.ServeMux) *fakeTokenEndpoint {
 		w.Header().Set("Content-Type", "application/json")
 		if f.status != http.StatusOK {
 			w.WriteHeader(f.status)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "bad_refresh_token"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "unavailable"})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(f.body)
@@ -293,24 +293,88 @@ func TestTokenSource_RefreshesAndPersists(t *testing.T) {
 }
 
 func TestTokenSource_RefreshRefusedClearsStoredToken(t *testing.T) {
+	// GitHub reports a dead refresh token as an OAuth error code, usually in
+	// a 200 body; a 400 or 401 without a code is refused too.
+	for name, setup := range map[string]func(*fakeTokenEndpoint){
+		"error code in 200 body": func(f *fakeTokenEndpoint) {
+			f.body = map[string]any{"error": "bad_refresh_token", "error_description": "The refresh token passed is incorrect or expired."}
+		},
+		"400": func(f *fakeTokenEndpoint) { f.status = http.StatusBadRequest },
+		"401": func(f *fakeTokenEndpoint) { f.status = http.StatusUnauthorized },
+	} {
+		t.Run(name, func(t *testing.T) {
+			mockDB := newMockDatabase()
+			user := &db.User{GitHubID: 42, GitHubUsername: "alice"}
+			_ = mockDB.CreateUser(user)
+			authInst, tokens := newTokenTestAuth(t, mockDB, http.NewServeMux())
+			setup(tokens)
+			expired := time.Now().Add(-time.Minute)
+			mockDB.sessions["s1"] = sealedSession(t, "s1", user.ID, "gho_old", "ghr_revoked", &expired)
+
+			_, source, ok, code := runMiddlewareWithSession(t, authInst, "s1")
+			if code != http.StatusOK || ok || source != "session" {
+				t.Fatalf("expected no token, got ok=%v source=%q code=%d", ok, source, code)
+			}
+			stored := mockDB.sessions["s1"]
+			if stored.GitHubTokenEnc != "" || stored.GitHubRefreshTokenEnc != "" || stored.GitHubTokenExpiresAt != nil {
+				t.Errorf("stored token not cleared: %+v", stored)
+			}
+			if mockDB.tokenUpdates != 1 {
+				t.Errorf("expected one clearing write, got %d", mockDB.tokenUpdates)
+			}
+		})
+	}
+}
+
+func TestTokenSource_TransientEndpointStatusKeepsStoredToken(t *testing.T) {
+	for name, status := range map[string]int{"429": http.StatusTooManyRequests, "500": http.StatusInternalServerError, "502": http.StatusBadGateway} {
+		t.Run(name, func(t *testing.T) {
+			mockDB := newMockDatabase()
+			user := &db.User{GitHubID: 42, GitHubUsername: "alice"}
+			_ = mockDB.CreateUser(user)
+			authInst, tokens := newTokenTestAuth(t, mockDB, http.NewServeMux())
+			tokens.status = status
+			soon := time.Now().Add(5 * time.Minute)
+			mockDB.sessions["s1"] = sealedSession(t, "s1", user.ID, "gho_old", "ghr_old", &soon)
+
+			_, _, ok, _ := runMiddlewareWithSession(t, authInst, "s1")
+			if ok {
+				t.Fatal("expected no token while the endpoint is failing")
+			}
+			if mockDB.tokenUpdates != 0 || mockDB.sessions["s1"].GitHubRefreshTokenEnc == "" {
+				t.Fatalf("a %s must not clear the stored token (updates=%d)", name, mockDB.tokenUpdates)
+			}
+
+			tokens.status = http.StatusOK
+			token, _, ok, _ := runMiddlewareWithSession(t, authInst, "s1")
+			if !ok || token != "gho_new" {
+				t.Fatalf("expected the refresh to succeed once GitHub recovers, got token=%q ok=%v", token, ok)
+			}
+		})
+	}
+}
+
+func TestTokenSource_ClearLosesToSiblingRefresh(t *testing.T) {
 	mockDB := newMockDatabase()
 	user := &db.User{GitHubID: 42, GitHubUsername: "alice"}
 	_ = mockDB.CreateUser(user)
 	authInst, tokens := newTokenTestAuth(t, mockDB, http.NewServeMux())
 	tokens.status = http.StatusBadRequest
 	expired := time.Now().Add(-time.Minute)
-	mockDB.sessions["s1"] = sealedSession(t, "s1", user.ID, "gho_old", "ghr_revoked", &expired)
+	stale := sealedSession(t, "s1", user.ID, "gho_old", "ghr_spent", &expired)
+	far := time.Now().Add(6 * time.Hour)
+	mockDB.sessions["s1"] = sealedSession(t, "s1", user.ID, "gho_sibling", "ghr_sibling", &far)
 
-	_, source, ok, code := runMiddlewareWithSession(t, authInst, "s1")
-	if code != http.StatusOK || ok || source != "session" {
-		t.Fatalf("expected no token, got ok=%v source=%q code=%d", ok, source, code)
+	src := authInst.newSessionTokenSource(stale)
+	src.loaded, src.token = true, &oauth2.Token{AccessToken: "gho_old", RefreshToken: "ghr_spent", Expiry: expired}
+	src.session.GitHubTokenEnc = "v1:not-what-is-stored"
+
+	token, err := src.Refresh(context.Background())
+	if err != nil || token != "gho_sibling" {
+		t.Fatalf("expected to adopt the sibling's token, got %q, %v", token, err)
 	}
-	stored := mockDB.sessions["s1"]
-	if stored.GitHubTokenEnc != "" || stored.GitHubRefreshTokenEnc != "" || stored.GitHubTokenExpiresAt != nil {
-		t.Errorf("stored token not cleared: %+v", stored)
-	}
-	if mockDB.tokenUpdates != 1 {
-		t.Errorf("expected one clearing write, got %d", mockDB.tokenUpdates)
+	if mockDB.tokenUpdates != 0 || mockDB.sessions["s1"].GitHubTokenEnc == "" {
+		t.Errorf("the fenced clear must not erase the sibling's token (updates=%d)", mockDB.tokenUpdates)
 	}
 }
 

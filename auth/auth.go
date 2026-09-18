@@ -56,8 +56,8 @@ type Auth struct {
 	bearerCacheMux sync.RWMutex
 	bearerCache    map[string]bearerCacheEntry
 
-	// tokenRefreshMu serializes session token refreshes; see refreshLocked.
-	tokenRefreshMu sync.Mutex
+	// sessionLocks holds one mutex per session ID for token refreshes.
+	sessionLocks sync.Map
 }
 
 type bearerCacheEntry struct {

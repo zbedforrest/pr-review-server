@@ -71,15 +71,17 @@ func (g *GormDB) DeleteSession(id string) error {
 	return g.db.Where("id = ?", id).Delete(&SessionModel{}).Error
 }
 
-// UpdateSessionGitHubToken replaces the sealed GitHub tokens on a session.
-// Empty values clear them, which is how a refused refresh falls back to
-// "sign in again".
-func (g *GormDB) UpdateSessionGitHubToken(id string, enc, refreshEnc string, expiresAt *time.Time) error {
-	return g.db.Model(&SessionModel{}).
-		Where("id = ?", id).
+// UpdateSessionGitHubToken replaces the sealed GitHub tokens on a session,
+// but only while the row still holds expectedEnc: two instances refreshing
+// the same rotating token must not overwrite each other's result. Empty
+// values clear the tokens. Returns whether the row was written.
+func (g *GormDB) UpdateSessionGitHubToken(id, expectedEnc, enc, refreshEnc string, expiresAt *time.Time) (bool, error) {
+	res := g.db.Model(&SessionModel{}).
+		Where("id = ? AND github_token_enc = ?", id, expectedEnc).
 		Updates(map[string]interface{}{
 			"github_token_enc":         enc,
 			"github_refresh_token_enc": refreshEnc,
 			"github_token_expires_at":  expiresAt,
-		}).Error
+		})
+	return res.RowsAffected > 0, res.Error
 }
