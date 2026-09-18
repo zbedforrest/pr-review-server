@@ -2760,6 +2760,9 @@ func (p *Poller) poll(ctx context.Context) {
 	}
 
 	var metadataPRs []github.PullRequest
+	// PRs whose GitHub updatedAt moved this cycle; a review or push bumps it,
+	// so the CI selection treats them as due for merge state.
+	var ciChanged map[string]bool
 	if !isFullRefresh {
 		changedPRKeys := make(map[string]bool)
 		for key, searchUpdatedAt := range prInfoMap {
@@ -2768,6 +2771,10 @@ func (p *Poller) poll(ctx context.Context) {
 				!searchUpdatedAt.Truncate(time.Second).Equal(dbPR.GitHubUpdatedAt.Truncate(time.Second)) {
 				changedPRKeys[key] = true
 			}
+		}
+		ciChanged = make(map[string]bool, len(changedPRKeys))
+		for key := range changedPRKeys {
+			ciChanged[key] = true
 		}
 		// DB-only PRs (not in search) always included — unknown state
 		for _, pr := range allPRs {
@@ -2845,6 +2852,7 @@ func (p *Poller) poll(ctx context.Context) {
 		ciSel := selectCIStatusPRs(allPRs, dbPRMap, ghKeys, ciSelectOptions{
 			watched:         watched,
 			excludedAuthors: p.ciStatusExcludedAuthors(),
+			changed:         ciChanged,
 			marks:           p.ciMergeMarks,
 			cycle:           p.pollCount,
 			fullRefresh:     p.pollCount%10 == 0,

@@ -1330,6 +1330,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.CIStatusExcludeAuthors != nil {
 			normalized, err := normalizeLoginCSV(*req.CIStatusExcludeAuthors, true)
+			if err == nil && db.ParseLoginCSV(normalized)["*"] {
+				err = fmt.Errorf("%q is not a valid login", "*")
+			}
 			if err != nil {
 				http.Error(w, fmt.Sprintf("%s: %v", db.SettingCIStatusExcludeAuthors, err), http.StatusBadRequest)
 				return

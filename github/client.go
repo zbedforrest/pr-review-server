@@ -466,6 +466,10 @@ type CIStatus struct {
 	// MergeStateRequested is false when the query did not ask for the merge
 	// fields (closed and merged PRs); callers keep their stored values then.
 	MergeStateRequested bool
+	// Missing is true when GitHub returned no pullRequest node for this PR
+	// (omitted alias, null node, per-alias error): every other field is a
+	// placeholder and the PR was not really answered.
+	Missing bool
 }
 
 // NewTestClient creates a Client for testing with a custom base URL for the REST API.
@@ -1183,9 +1187,20 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 		rateLimited atomic.Bool
 		resetAt     atomic.Pointer[time.Time]
 	)
-	sleep := c.ciBatchSleep
-	if sleep == nil {
-		sleep = time.Sleep
+	// pace waits between batch launches and reports false once ctx is done.
+	pace := func(d time.Duration) bool {
+		if c.ciBatchSleep != nil {
+			c.ciBatchSleep(d)
+			return ctx.Err() == nil
+		}
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			return true
+		case <-ctx.Done():
+			return false
+		}
 	}
 
 	runBatch := func(batch []PRInfo) {
@@ -1239,6 +1254,7 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 				MergeStateStatus:    mergeState,
 				ReviewDecision:      reviewDecision,
 				MergeStateRequested: prInfo.IncludeMergeState,
+				Missing:             prData == nil,
 			}
 			if rollup != nil {
 				// No rollup means the head commit genuinely has no check
@@ -1256,12 +1272,19 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 	}
 
 	launched := 0
+	cancelled := false
 	dispatch := func(list []PRInfo, batchSize int) {
 		for i := 0; i < len(list); i += batchSize {
 			end := min(i+batchSize, len(list))
 			stats.batches++
-			if launched > 0 && !rateLimited.Load() {
-				sleep(ciBatchPace)
+			if !cancelled && launched > 0 && !rateLimited.Load() && !pace(ciBatchPace) {
+				cancelled = true
+			}
+			if cancelled {
+				stats.mu.Lock()
+				stats.skipped++
+				stats.mu.Unlock()
+				continue
 			}
 			launched++
 			wg.Add(1)
@@ -1284,6 +1307,9 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string
 		if at := resetAt.Load(); at != nil {
 			summary += fmt.Sprintf(" (limit resets at %s, in %s)", at.UTC().Format(time.RFC3339), time.Until(*at).Round(time.Second))
 		}
+	}
+	if cancelled {
+		summary += " cancelled: remaining batches skipped"
 	}
 	log.Print(summary)
 	return results, nil

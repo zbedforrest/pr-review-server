@@ -322,3 +322,72 @@ func TestExecuteGraphQLPartial_RateLimited200CarriesReset(t *testing.T) {
 		t.Errorf("reset = %s, want the X-RateLimit-Reset stamp", got)
 	}
 }
+
+func TestBatchGetCIStatus_CancelledContextStopsDispatch(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+	ctx, cancel := context.WithCancel(context.Background())
+	sleeps := 0
+	client.ciBatchSleep = func(time.Duration) {
+		sleeps++
+		cancel()
+	}
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	if _, err := client.BatchGetCIStatus(ctx, ciPRs(500, true)); err != nil {
+		t.Fatalf("BatchGetCIStatus: %v", err)
+	}
+	if sleeps != 1 {
+		t.Errorf("sleeps = %d, want dispatch to stop at the first cancelled wait", sleeps)
+	}
+	mu.Lock()
+	sent := requests
+	mu.Unlock()
+	if sent > 1 {
+		t.Errorf("requests = %d, want at most the batch launched before cancellation", sent)
+	}
+	if !strings.Contains(buf.String(), "batches=20") || !strings.Contains(buf.String(), "skipped=19") || !strings.Contains(buf.String(), "cancelled: remaining batches skipped") {
+		t.Errorf("summary must count the 19 undispatched batches as skipped:\n%s", buf.String())
+	}
+}
+
+func TestBatchGetCIStatus_MissingNodeIsFlagged(t *testing.T) {
+	body := `{"data":{"pr0":{"pullRequest":null},"pr1":{"pullRequest":{"mergeStateStatus":"CLEAN","reviewDecision":null,
+		"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+	client := NewClient("test-token", "")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	results, err := client.BatchGetCIStatus(context.Background(), []PRInfo{
+		{Owner: "acme", Repo: "example", Number: 1, IncludeMergeState: true},
+		{Owner: "acme", Repo: "example", Number: 2, IncludeMergeState: true},
+		{Owner: "acme", Repo: "example", Number: 3, IncludeMergeState: true},
+	})
+	if err != nil {
+		t.Fatalf("BatchGetCIStatus: %v", err)
+	}
+	if !results["acme/example/1"].Missing || results["acme/example/1"].State != "unknown" {
+		t.Errorf("null pullRequest node must be flagged Missing: %+v", results["acme/example/1"])
+	}
+	if results["acme/example/2"].Missing || results["acme/example/2"].MergeStateStatus != "CLEAN" {
+		t.Errorf("answered node must not be Missing: %+v", results["acme/example/2"])
+	}
+	if !results["acme/example/3"].Missing {
+		t.Errorf("omitted alias must be flagged Missing: %+v", results["acme/example/3"])
+	}
+}

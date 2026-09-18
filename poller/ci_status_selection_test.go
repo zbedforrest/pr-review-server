@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"pr-review-server/db"
 	"pr-review-server/github"
@@ -131,20 +132,23 @@ func TestIsExcludedCIAuthor(t *testing.T) {
 func TestMergeStateDue_UnchangedPRWaitsFiveCycles(t *testing.T) {
 	mark := ciMergeMark{cycle: 1, head: "head1", ciState: "success"}
 	for cycle := 2; cycle <= 5; cycle++ {
-		if mergeStateDue(mark, true, cycle, "head1", "success") {
+		if mergeStateDue(mark, true, cycle, "head1", "success", false) {
 			t.Errorf("cycle %d: unchanged PR must not be due", cycle)
 		}
 	}
-	if !mergeStateDue(mark, true, 6, "head1", "success") {
+	if !mergeStateDue(mark, true, 6, "head1", "success", false) {
 		t.Errorf("cycle 6: unchanged PR must be due after %d cycles", ciMergeStateEveryCycles)
 	}
-	if !mergeStateDue(mark, true, 2, "head2", "success") {
+	if !mergeStateDue(mark, true, 2, "head2", "success", false) {
 		t.Errorf("a head change must make the PR due immediately")
 	}
-	if !mergeStateDue(mark, true, 2, "head1", "failure") {
+	if !mergeStateDue(mark, true, 2, "head1", "failure", false) {
 		t.Errorf("a CI state change must make the PR due immediately")
 	}
-	if !mergeStateDue(ciMergeMark{}, false, 2, "head1", "success") {
+	if !mergeStateDue(mark, true, 2, "head1", "success", true) {
+		t.Errorf("GitHub activity (updatedAt moved) must make the PR due immediately")
+	}
+	if !mergeStateDue(ciMergeMark{}, false, 2, "head1", "success", false) {
 		t.Errorf("a PR never fetched must be due")
 	}
 }
@@ -163,6 +167,12 @@ func TestSelectCIStatusPRs_CadenceSendsUnchangedWatchedPRsChecksOnly(t *testing.
 	}
 	if sel.watched != 2 || sel.due != 1 || sel.checksOnly != 3 {
 		t.Errorf("counts = %s, want watched=2 due=1 checks-only=3", sel)
+	}
+
+	opts.changed = map[string]bool{"acme/example/1": true}
+	sel = selectCIStatusPRs(allPRs, dbPRMap, ghKeys, opts)
+	if got := mergeStateByNumber(sel.prs); !got[1] || sel.due != 2 {
+		t.Errorf("a PR with GitHub activity must be due: selected %v counts %s", got, sel)
 	}
 }
 
@@ -192,6 +202,42 @@ func TestRecordMergeStateFetches_MarksFetchedAndForgetsUntracked(t *testing.T) {
 	recordMergeStateFetches(marks, allPRs, requested, results, 9)
 	if marks["acme/example/1"].cycle != 7 {
 		t.Errorf("an unanswered request (skipped batch) must not refresh the merge-state mark")
+	}
+	results["acme/example/1"] = &github.CIStatus{State: "unknown", MergeStateRequested: true, Missing: true}
+	recordMergeStateFetches(marks, allPRs, requested, results, 10)
+	if marks["acme/example/1"].cycle != 7 {
+		t.Errorf("a placeholder for a missing pullRequest node must not refresh the merge-state mark")
+	}
+}
+
+func TestPoll_CIStatusGitHubActivityMakesMergeStateDue(t *testing.T) {
+	mockDB, poller, _ := mergeStatePollFixture(t, "CLEAN", "CLEAN")
+	mockGH := poller.ghClient.(*MockGitHubClient)
+	poller.cfg.GitHubOrgName = "myorg"
+	first := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	mockGH.SearchOpenPRsResults = []github.PRInfo{{Owner: "owner", Repo: "repo", Number: 1, UpdatedAt: &first}}
+
+	poller.poll(context.Background())
+	waitForDetachedReviews(t, poller)
+	poller.poll(context.Background())
+	waitForDetachedReviews(t, poller)
+	if got := mockDB.PRs["owner/repo/1"].GitHubUpdatedAt; got == nil || !got.Equal(first) {
+		t.Fatalf("search timestamp not persisted after cycle 1, got %v", got)
+	}
+	reviewed := first.Add(time.Hour)
+	mockGH.SearchOpenPRsResults[0].UpdatedAt = &reviewed
+	poller.poll(context.Background())
+	waitForDetachedReviews(t, poller)
+
+	calls := mockGH.BatchGetCIStatusCalls
+	if len(calls) != 3 {
+		t.Fatalf("BatchGetCIStatus calls = %d, want 3", len(calls))
+	}
+	wantMerge := []bool{true, false, true}
+	for i, call := range calls {
+		if len(call) != 1 || call[0].IncludeMergeState != wantMerge[i] {
+			t.Errorf("cycle %d: CI query = %+v, want one PR with IncludeMergeState=%v", i+1, call, wantMerge[i])
+		}
 	}
 }
 

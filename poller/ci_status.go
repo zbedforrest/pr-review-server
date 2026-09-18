@@ -27,10 +27,11 @@ type ciMergeMark struct {
 }
 
 // mergeStateDue reports whether a watched PR gets merge state this cycle: on
-// first sight, on a head or CI state change since the last fetch, or when the
-// cadence cap is reached.
-func mergeStateDue(mark ciMergeMark, marked bool, cycle int, head, ciState string) bool {
-	if !marked {
+// first sight, when GitHub reports activity on the PR (changed: its search
+// updatedAt moved, which a review or push does), on a head or CI state change
+// since the last fetch, or when the cadence cap is reached.
+func mergeStateDue(mark ciMergeMark, marked bool, cycle int, head, ciState string, changed bool) bool {
+	if !marked || changed {
 		return true
 	}
 	return mark.head != head || mark.ciState != ciState || cycle-mark.cycle >= ciMergeStateEveryCycles
@@ -53,9 +54,12 @@ type ciSelectOptions struct {
 	watched map[int]bool
 	// excludedAuthors are lowercase logins whose PRs skip merge state.
 	excludedAuthors map[string]bool
-	marks           map[string]ciMergeMark
-	cycle           int
-	fullRefresh     bool
+	// changed holds the PR keys whose GitHub updatedAt moved since the last
+	// cycle; nil on full-refresh cycles.
+	changed     map[string]bool
+	marks       map[string]ciMergeMark
+	cycle       int
+	fullRefresh bool
 }
 
 // ciSelection is the outcome of selectCIStatusPRs: the PRs to query plus the
@@ -79,7 +83,9 @@ func (s ciSelection) String() string {
 // in the database, or its stored pr_state says so; an empty pr_state is not a
 // vote for open here, unlike isOpenPRState, because merge state is the
 // expensive part of the query. A PR not yet in the database has no views, so
-// it is queried checks-only on first sight. Open PRs on an active dashboard
+// it is queried checks-only on first sight (poll pre-inserts most new PRs
+// before this runs, so in practice they follow the watched rule from their
+// first cycle). Open PRs on an active dashboard
 // are watched unless their author is excluded; watched PRs get merge state
 // when due (see mergeStateDue) and checks only otherwise. Open PRs nobody
 // watches are skipped: author views are synced before this selection and
@@ -131,7 +137,7 @@ func selectCIStatusPRs(allPRs []github.PullRequest, dbPRMap map[string]*db.PR, g
 		}
 		sel.watched++
 		mark, marked := opts.marks[key]
-		if mergeStateDue(mark, marked, opts.cycle, pr.CommitSHA, dbPR.CIState) {
+		if mergeStateDue(mark, marked, opts.cycle, pr.CommitSHA, dbPR.CIState, opts.changed[key]) {
 			sel.due++
 			info.IncludeMergeState = true
 		} else {
@@ -143,8 +149,9 @@ func selectCIStatusPRs(allPRs []github.PullRequest, dbPRMap map[string]*db.PR, g
 }
 
 // recordMergeStateFetches marks every PR whose merge state was requested this
-// cycle and answered, and forgets PRs no longer tracked so the map cannot grow
-// past the tracked set.
+// cycle and answered with a real node (a placeholder for an omitted or null
+// node leaves the PR due again), and forgets PRs no longer tracked so the map
+// cannot grow past the tracked set.
 func recordMergeStateFetches(marks map[string]ciMergeMark, allPRs []github.PullRequest, requested []github.PRInfo, results map[string]*github.CIStatus, cycle int) {
 	withMerge := make(map[string]bool, len(requested))
 	for _, info := range requested {
@@ -156,7 +163,7 @@ func recordMergeStateFetches(marks map[string]ciMergeMark, allPRs []github.PullR
 	for _, pr := range allPRs {
 		key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
 		tracked[key] = true
-		if status, ok := results[key]; ok && withMerge[key] {
+		if status, ok := results[key]; ok && withMerge[key] && !status.Missing {
 			marks[key] = ciMergeMark{cycle: cycle, head: pr.CommitSHA, ciState: status.State}
 		}
 	}
