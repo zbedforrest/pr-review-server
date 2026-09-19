@@ -615,8 +615,12 @@ func reviewTimeoutWithMargin(cfg runconfig.Effective, margin time.Duration) time
 	timeout := margin
 	// Preserve the deployment's historical total-review allowance even when
 	// the agent stage is disabled; first-pass-only reviews can still be large.
-	if cfg.Agent.WallClockSeconds > 0 {
-		timeout += time.Duration(cfg.Agent.WallClockSeconds) * time.Second
+	wallClock := cfg.Agent.WallClockSeconds
+	if capped := runconfig.CappedDiffWallClockSeconds(cfg); capped > wallClock {
+		wallClock = capped
+	}
+	if wallClock > 0 {
+		timeout += time.Duration(wallClock) * time.Second
 	}
 	return timeout
 }
@@ -680,7 +684,8 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 	return service.AgentConfig{
 		CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
 		WallClock: time.Duration(agent.WallClockSeconds) * time.Second, MaxTurns: agent.MaxTurns,
-		GitHubToken: gitToken, Backend: agent.Backend, Model: agent.Model, Effort: agent.Effort,
+		CappedDiffWallClock: time.Duration(runconfig.CappedDiffWallClockSeconds(effective)) * time.Second,
+		GitHubToken:         gitToken, Backend: agent.Backend, Model: agent.Model, Effort: agent.Effort,
 		Tools: agent.Tools, Prompt: agent.Prompt, SkipGates: !effective.Gates,
 		CollectCitedFiles: !effective.FirstPass.Enabled,
 		AnthropicAPIKey:   p.cfg.AnthropicAPIKey,

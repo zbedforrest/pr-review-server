@@ -66,7 +66,12 @@ Accepted PR references are `42` (resolved from the current Git remote),
    of individual knobs; `capabilities` lists each profile's effective config
    under `profiles` and the deployment default under `default_profile`. Agent
    options such as `--effort` still apply on top of a profile; first-pass and
-   required-checks options are rejected with a lite profile.
+   required-checks options are rejected with a lite profile. `--prompt NAME`
+   picks a prompt shape within the profile's family (lite: `lite_arm_a_v2`,
+   the default; `lite_arm_a_v3` adds bug memory; `lite_arm_a` and
+   `lite_arm_a_sub` are the legacy shapes). `profile_notes` in `capabilities`
+   records run-time behavior the fixed fields cannot show, such as the lite
+   wall clock rising to 360 s when the inlined diff is cut at the 60k cap.
 
    In both paths, the client resolves and sends the current full GitHub HEAD SHA
    unless `--expected-head-sha` is supplied, preventing an accidental review of

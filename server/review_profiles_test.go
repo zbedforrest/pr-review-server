@@ -146,6 +146,28 @@ func TestCreateReviewRunAcceptsProfileOverride(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), "first_pass overrides are not allowed")
 }
 
+func TestCreateReviewRunAcceptsLitePromptOverride(t *testing.T) {
+	headSHA := "0123456789abcdef0123456789abcdef01234567"
+	s, _, apiPoller, userID := newReviewAPIServer(t, githubPRResponse(headSHA))
+	body := `{"target":{"owner":"acme","repo":"widgets","pull_request":42,"expected_head_sha":"` + headSHA + `"},"publish":false,"config":{"profile":"lite","agent":{"prompt":"lite_arm_a_v2"}}}`
+	recorder := httptest.NewRecorder()
+	s.handleReviewRuns(recorder, addReviewAPIUser(httptest.NewRequest(http.MethodPost, reviewRunsPath, strings.NewReader(body)), *userID))
+	require.Equal(t, http.StatusAccepted, recorder.Code, recorder.Body.String())
+	require.Len(t, apiPoller.jobs, 1)
+	effective := apiPoller.jobs[0].Config.Effective
+	assert.Equal(t, runconfig.PromptLiteArmAV2, effective.Agent.Prompt)
+	assert.Equal(t, runconfig.SourceRequest, apiPoller.jobs[0].Config.Sources["agent.prompt"])
+	assert.Equal(t, 300, effective.Agent.WallClockSeconds)
+	assert.False(t, effective.BugMemory)
+	assert.Contains(t, recorder.Body.String(), `"prompt":"lite_arm_a_v2"`)
+
+	pipelineOnLite := strings.Replace(body, `"lite_arm_a_v2"`, `"pipeline"`, 1)
+	recorder = httptest.NewRecorder()
+	s.handleReviewRuns(recorder, addReviewAPIUser(httptest.NewRequest(http.MethodPost, reviewRunsPath, strings.NewReader(pipelineOnLite)), *userID))
+	assert.Equal(t, http.StatusUnprocessableEntity, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "agent.prompt")
+}
+
 func TestReviewCapabilitiesListProfiles(t *testing.T) {
 	s, _, apiPoller, userID := newReviewAPIServer(t, githubPRResponse("0123456789abcdef0123456789abcdef01234567"))
 	apiPoller.policy.DefaultProfile = "lite"
@@ -158,6 +180,7 @@ func TestReviewCapabilitiesListProfiles(t *testing.T) {
 		DefaultProfile      string                         `json:"default_profile"`
 		Profiles            map[string]runconfig.Effective `json:"profiles"`
 		UnavailableProfiles map[string]string              `json:"unavailable_profiles"`
+		ProfileNotes        map[string]string              `json:"profile_notes"`
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &got))
 	assert.Equal(t, 4, got.SchemaVersion)
@@ -167,12 +190,16 @@ func TestReviewCapabilitiesListProfiles(t *testing.T) {
 	lite := got.Profiles["lite"]
 	assert.Equal(t, runconfig.Agent{
 		Enabled: true, Backend: "claude", Model: "claude-fable-5-1", Effort: "medium", WallClockSeconds: 300, MaxTurns: 60,
-		Tools: "Read,Grep,Glob,Bash", Prompt: "lite_arm_a", TurnBudgetUnit: "assistant_event", TurnBudgetVersion: 1,
+		Tools: "Read,Grep,Glob,Bash", Prompt: "lite_arm_a_v2", TurnBudgetUnit: "assistant_event", TurnBudgetVersion: 1,
 	}, lite.Agent)
 	assert.Equal(t, runconfig.FirstPass{}, lite.FirstPass)
 	assert.False(t, lite.RequiredChecks)
 	assert.False(t, lite.Gates)
-	assert.True(t, lite.BugMemory)
+	assert.False(t, lite.BugMemory)
+	assert.Contains(t, got.ProfileNotes["lite"], "360")
+	assert.NotContains(t, got.ProfileNotes, "full")
+	assert.Equal(t, "lite_arm_a_v2_sub", got.Profiles["lite_plus"].Agent.Prompt)
+	assert.False(t, got.Profiles["lite_plus"].BugMemory)
 	assert.Equal(t, "Read,Grep,Glob,Bash,Agent", got.Profiles["lite_plus"].Agent.Tools)
 	assert.Equal(t, 600, got.Profiles["lite_plus"].Agent.WallClockSeconds)
 	assert.Equal(t, "claude-fable-5", got.Profiles["full"].Agent.Model)

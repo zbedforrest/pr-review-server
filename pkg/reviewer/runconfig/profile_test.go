@@ -27,13 +27,13 @@ func TestResolveExpandsLiteProfile(t *testing.T) {
 	}
 	want := Agent{
 		Enabled: true, Backend: "claude", Model: "claude-fable-5-1", Effort: "medium",
-		WallClockSeconds: 300, MaxTurns: 60, Tools: ToolsDefault, Prompt: PromptLiteArmA,
+		WallClockSeconds: 300, MaxTurns: 60, Tools: ToolsDefault, Prompt: PromptLiteArmAV2,
 		TurnBudgetUnit: TurnBudgetUnitAssistantEvent, TurnBudgetVersion: TurnBudgetVersion,
 	}
 	if e.Agent != want {
 		t.Fatalf("agent=%+v want %+v", e.Agent, want)
 	}
-	if e.FirstPass != (FirstPass{}) || e.RequiredChecks || e.Gates || !e.BugMemory {
+	if e.FirstPass != (FirstPass{}) || e.RequiredChecks || e.Gates || e.BugMemory {
 		t.Fatalf("stages: first_pass=%+v checks=%t gates=%t memory=%t", e.FirstPass, e.RequiredChecks, e.Gates, e.BugMemory)
 	}
 	if snapshot.Sources["profile"] != SourceRequest || snapshot.Sources["agent.model"] != SourceDerived || snapshot.Sources["first_pass.samples"] != SourceDerived {
@@ -47,7 +47,7 @@ func TestResolveExpandsLitePlusWithAgentToolAndLongerWallClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := snapshot.Effective
-	if e.Profile != ProfileLitePlus || e.Agent.Tools != ToolsWithAgent || e.Agent.Prompt != PromptLiteArmASub ||
+	if e.Profile != ProfileLitePlus || e.Agent.Tools != ToolsWithAgent || e.Agent.Prompt != PromptLiteArmAV2Sub || e.BugMemory ||
 		e.Agent.WallClockSeconds != 600 || e.Agent.MaxTurns != 120 || e.Agent.Effort != "medium" {
 		t.Fatalf("effective=%+v", e)
 	}
@@ -266,5 +266,39 @@ func TestDescribeProfile_Legacy(t *testing.T) {
 	unnamed.Profile = ""
 	if d := DescribeProfile(unnamed, testDefaults()); !d.Legacy {
 		t.Fatalf("schema 4 without a profile is legacy: %+v", d)
+	}
+}
+
+func TestCappedDiffWallClockSecondsIsTheLiteDefaultOnly(t *testing.T) {
+	lite, err := Resolve(Overrides{Profile: strPtr("lite")}, testDefaults(), litePolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := CappedDiffWallClockSeconds(lite.Effective); got != 360 {
+		t.Fatalf("lite: %d", got)
+	}
+	if DescribeProfile(lite.Effective, testDefaults()).Custom() {
+		t.Fatal("the capped-diff budget must not register as a deviation")
+	}
+	wall := 450
+	custom, err := Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{WallClockSeconds: &wall}}, testDefaults(), litePolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := CappedDiffWallClockSeconds(custom.Effective); got != 0 {
+		t.Fatalf("a caller-chosen wall clock must stand: %d", got)
+	}
+	plus, err := Resolve(Overrides{Profile: strPtr("lite_plus")}, testDefaults(), litePolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := CappedDiffWallClockSeconds(plus.Effective); got != 0 {
+		t.Fatalf("lite_plus: %d", got)
+	}
+	if got := CappedDiffWallClockSeconds(testDefaults()); got != 0 {
+		t.Fatalf("full: %d", got)
+	}
+	if !strings.Contains(ProfileNote(ProfileLite), "360") || ProfileNote(ProfileFull) != "" || ProfileNote(ProfileLitePlus) != "" {
+		t.Fatalf("notes: lite=%q full=%q plus=%q", ProfileNote(ProfileLite), ProfileNote(ProfileFull), ProfileNote(ProfileLitePlus))
 	}
 }

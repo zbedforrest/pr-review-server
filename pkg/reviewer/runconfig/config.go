@@ -50,6 +50,9 @@ type AgentOverrides struct {
 	Effort           *string `json:"effort,omitempty"`
 	WallClockSeconds *int    `json:"wall_clock_seconds,omitempty"`
 	MaxTurns         *int    `json:"max_turns,omitempty"`
+	// Prompt selects a prompt shape within the profile's family (a lite
+	// profile may name any lite_* prompt); omitted means the profile's own.
+	Prompt *string `json:"prompt,omitempty"`
 }
 
 type FirstPassOverrides struct {
@@ -209,6 +212,13 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 			effective.Agent.MaxTurns = *a.MaxTurns
 			sources["agent.max_turns"] = SourceRequest
 		}
+		if a.Prompt != nil {
+			effective.Agent.Prompt = strings.ToLower(strings.TrimSpace(*a.Prompt))
+			sources["agent.prompt"] = SourceRequest
+		}
+	}
+	if profile != ProfileFull {
+		effective.BugMemory = PromptUsesBugMemory(effective.Agent.Prompt)
 	}
 	if requested.FirstPass != nil {
 		f := requested.FirstPass
@@ -303,14 +313,19 @@ func Validate(cfg Effective, policy Policy) error {
 	} else if !cfg.Agent.Enabled {
 		return invalid("agent.enabled", "a review needs the first pass or the agent stage")
 	}
+	// The prompt is part of the durable snapshot whether or not the agent
+	// runs, so it is checked before the disabled-agent return.
+	if !validPrompt(cfg.Agent.Prompt) {
+		return invalid("agent.prompt", "unsupported prompt %q", cfg.Agent.Prompt)
+	}
+	if !promptFitsProfile(cfg.Profile, cfg.Agent.Prompt) {
+		return invalid("agent.prompt", "prompt %q is not available on profile %q", cfg.Agent.Prompt, NormalizeProfile(cfg.Profile))
+	}
 	if !cfg.Agent.Enabled {
 		return nil
 	}
 	if !ValidTools(cfg.Agent.Tools) {
 		return invalid("agent.tools", "unsupported tool list %q", cfg.Agent.Tools)
-	}
-	if !validPrompt(cfg.Agent.Prompt) {
-		return invalid("agent.prompt", "unsupported prompt %q", cfg.Agent.Prompt)
 	}
 
 	backend := strings.ToLower(strings.TrimSpace(cfg.Agent.Backend))
@@ -337,6 +352,12 @@ func Validate(cfg Effective, policy Policy) error {
 	}
 	if policy.MaxWallClockSeconds > 0 && cfg.Agent.WallClockSeconds > policy.MaxWallClockSeconds {
 		return invalid("agent.wall_clock_seconds", "must be at most %d", policy.MaxWallClockSeconds)
+	}
+	// The capped-diff budget is the run's worst case, so the ceiling must
+	// admit it too; otherwise the profile is unavailable on this deployment.
+	if capped := CappedDiffWallClockSeconds(cfg); policy.MaxWallClockSeconds > 0 && capped > policy.MaxWallClockSeconds {
+		return invalid("agent.wall_clock_seconds", "the %s profile needs %d seconds for capped diffs, above the deployment ceiling %d",
+			NormalizeProfile(cfg.Profile), capped, policy.MaxWallClockSeconds)
 	}
 	if cfg.Agent.MaxTurns <= 0 {
 		return invalid("agent.max_turns", "must be greater than zero")

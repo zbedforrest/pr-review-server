@@ -22,6 +22,7 @@ Create options:
   --backend NAME                 claude | openrouter
   --model MODEL_ID
   --effort LEVEL
+  --prompt NAME                  prompt shape within the profile (lite default lite_arm_a_v2; also lite_arm_a_v2_sub, lite_arm_a_v3, legacy lite_arm_a, lite_arm_a_sub)
   --wall-clock-seconds N
   --max-turns N
   --first-pass-samples N
@@ -245,6 +246,7 @@ command_create() {
   backend=""
   model=""
   effort=""
+  prompt=""
   wall_clock=""
   max_turns=""
   first_pass_samples=""
@@ -259,7 +261,7 @@ command_create() {
   while [ "$#" -gt 0 ]; do
     option="$1"
     case "$option" in
-      --profile|--backend|--model|--effort|--wall-clock-seconds|--max-turns|--first-pass-samples|--first-pass-provider|--first-pass-model|--agent-enabled|--required-checks|--expected-head-sha|--idempotency-key)
+      --profile|--backend|--model|--effort|--prompt|--wall-clock-seconds|--max-turns|--first-pass-samples|--first-pass-provider|--first-pass-model|--agent-enabled|--required-checks|--expected-head-sha|--idempotency-key)
         [ "$#" -ge 2 ] || die "$option requires a value"
         value="$2"
         shift 2
@@ -277,6 +279,7 @@ command_create() {
       --backend) backend="$value"; has_customization=1 ;;
       --model) model="$value"; has_customization=1 ;;
       --effort) effort="$value"; has_customization=1 ;;
+      --prompt) [ -n "$value" ] || die "$option must not be empty"; prompt="$value"; has_customization=1 ;;
       --wall-clock-seconds) is_positive_integer "$value" || die "$option must be a positive integer without leading zeros"; wall_clock="$value"; has_customization=1 ;;
       --max-turns) is_positive_integer "$value" || die "$option must be a positive integer without leading zeros"; max_turns="$value"; has_customization=1 ;;
       --first-pass-samples) is_positive_integer "$value" || die "$option must be a positive integer without leading zeros"; first_pass_samples="$value"; has_customization=1 ;;
@@ -309,12 +312,13 @@ command_create() {
   request=$(jq -cn --arg owner "$OWNER" --arg repo "$REPO" --argjson pr "$PR_NUMBER" --arg sha "$expected_head" \
     '{target:{owner:$owner,repo:$repo,pull_request:$pr,expected_head_sha:$sha},config:{}}')
   [ -z "$profile" ] || request=$(printf '%s' "$request" | jq -c --arg value "$profile" '.config.profile=$value')
-  if [ -n "$backend$model$effort$wall_clock$max_turns$agent_enabled" ]; then
+  if [ -n "$backend$model$effort$prompt$wall_clock$max_turns$agent_enabled" ]; then
     request=$(printf '%s' "$request" | jq -c '.config.agent = {}')
   fi
   [ -z "$backend" ] || request=$(printf '%s' "$request" | jq -c --arg value "$backend" '.config.agent.backend=$value')
   [ -z "$model" ] || request=$(printf '%s' "$request" | jq -c --arg value "$model" '.config.agent.model=$value')
   [ -z "$effort" ] || request=$(printf '%s' "$request" | jq -c --arg value "$effort" '.config.agent.effort=$value')
+  [ -z "$prompt" ] || request=$(printf '%s' "$request" | jq -c --arg value "$prompt" '.config.agent.prompt=$value')
   [ -z "$wall_clock" ] || request=$(printf '%s' "$request" | jq -c --argjson value "$wall_clock" '.config.agent.wall_clock_seconds=$value')
   [ -z "$max_turns" ] || request=$(printf '%s' "$request" | jq -c --argjson value "$max_turns" '.config.agent.max_turns=$value')
   [ -z "$agent_enabled" ] || request=$(printf '%s' "$request" | jq -c --argjson value "$agent_enabled" '.config.agent.enabled=$value')
