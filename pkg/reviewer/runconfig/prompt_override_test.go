@@ -6,7 +6,7 @@ import (
 )
 
 func TestResolveAllowsLitePromptOverrideOnLiteProfile(t *testing.T) {
-	for _, prompt := range []string{PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV2, PromptLiteArmAV3} {
+	for _, prompt := range []string{PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV2, PromptLiteArmAV2Sub, PromptLiteArmAV3} {
 		snapshot, err := Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{Prompt: strPtr(prompt)}}, testDefaults(), litePolicy())
 		if err != nil {
 			t.Fatalf("%s: %v", prompt, err)
@@ -14,7 +14,7 @@ func TestResolveAllowsLitePromptOverrideOnLiteProfile(t *testing.T) {
 		if snapshot.Effective.Agent.Prompt != prompt || snapshot.Sources["agent.prompt"] != SourceRequest {
 			t.Fatalf("%s: effective=%+v sources=%v", prompt, snapshot.Effective.Agent, snapshot.Sources)
 		}
-		if snapshot.Effective.Agent.WallClockSeconds != 300 || snapshot.Effective.Agent.MaxTurns != 60 || snapshot.Effective.BugMemory != true {
+		if snapshot.Effective.Agent.WallClockSeconds != 300 || snapshot.Effective.Agent.MaxTurns != 60 || snapshot.Effective.BugMemory {
 			t.Fatalf("%s: a prompt override must leave the rest of the lite profile alone: %+v", prompt, snapshot.Effective)
 		}
 	}
@@ -25,7 +25,7 @@ func TestResolveLitePromptOverrideChangesTheHashAndDescribesAsCustom(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	v2, err := Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{Prompt: strPtr(PromptLiteArmAV2)}}, testDefaults(), litePolicy())
+	v2, err := Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{Prompt: strPtr(PromptLiteArmA)}}, testDefaults(), litePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +38,9 @@ func TestResolveLitePromptOverrideChangesTheHashAndDescribesAsCustom(t *testing.
 	}
 	if DescribeProfile(plain.Effective, testDefaults()).Custom() {
 		t.Fatal("the default lite prompt is not a deviation")
+	}
+	if plain.Effective.Agent.Prompt != PromptLiteArmAV2 || plain.Effective.BugMemory {
+		t.Fatalf("lite default must be v2 without bug memory: %+v", plain.Effective)
 	}
 }
 

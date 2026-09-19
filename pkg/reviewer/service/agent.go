@@ -42,18 +42,21 @@ var ErrCloneTimeout = errors.New("clone_timeout")
 
 // AgentConfig holds runtime knobs for a single agent-review invocation.
 type AgentConfig struct {
-	CloneRootDir      string        // parent dir for per-invocation clones
-	LogsDir           string        // parent dir for raw stream-json logs
-	WallClock         time.Duration // hard wall-clock timeout for the agent subprocess, measured from spawn
-	PrepBudget        time.Duration // clone through prompt build; zero = DefaultAgentPrepBudget
-	MaxTurns          int           // abort after this many backend-specific turn-budget units
-	GitHubToken       string        // optional; HTTPS clone auth
-	Backend           string        // claude (default) or openrouter
-	Model             string        // backend model id; defaults according to Backend
-	Effort            string        // backend reasoning effort; defaults to DefaultAgentEffort
-	AnthropicAPIKey   string        // frozen optional credential; OAuth via HOME remains supported
-	OpenRouterAPIKey  string        // frozen deployment credential; injected into the Codex child environment
-	OpenRouterBaseURL string        // optional OpenRouter API root; used only by the openrouter backend
+	CloneRootDir string        // parent dir for per-invocation clones
+	LogsDir      string        // parent dir for raw stream-json logs
+	WallClock    time.Duration // hard wall-clock timeout for the agent subprocess, measured from spawn
+	// CappedDiffWallClock replaces WallClock when a lite prompt's inlined diff
+	// was cut at the cap (zero or smaller than WallClock = no change).
+	CappedDiffWallClock time.Duration
+	PrepBudget          time.Duration // clone through prompt build; zero = DefaultAgentPrepBudget
+	MaxTurns            int           // abort after this many backend-specific turn-budget units
+	GitHubToken         string        // optional; HTTPS clone auth
+	Backend             string        // claude (default) or openrouter
+	Model               string        // backend model id; defaults according to Backend
+	Effort              string        // backend reasoning effort; defaults to DefaultAgentEffort
+	AnthropicAPIKey     string        // frozen optional credential; OAuth via HOME remains supported
+	OpenRouterAPIKey    string        // frozen deployment credential; injected into the Codex child environment
+	OpenRouterBaseURL   string        // optional OpenRouter API root; used only by the openrouter backend
 
 	// PRTitle, PRBody and LinkedTickets give the agent the author's stated
 	// intent (see pkg/reviewer/tickets). All optional; empty values add
@@ -321,6 +324,7 @@ func RunAgentReview(
 	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets)
 	claims := firstPassClaims(geminiComments)
 	var prompt, diffSource string
+	wallClock := agentCfg.WallClock
 	if isLitePrompt(agentCfg.Prompt) {
 		rendered := renderedDiff(prepCtx, cloneDir, defaultBranch, agentCfg.APIDiff)
 		diffSource = rendered.Source
@@ -328,7 +332,8 @@ func RunAgentReview(
 			log.Printf("%s worktree diff unavailable; inlining the API diff instead", logPrefix)
 		}
 		if rendered.Truncated {
-			log.Printf("%s inlined diff truncated at %d chars (source=%s)", logPrefix, diffInlineLimit, diffSource)
+			wallClock = agentWallClock(agentCfg, true)
+			log.Printf("%s inlined diff truncated at %d chars (source=%s); agent wall clock %s", logPrefix, diffInlineLimit, diffSource, wallClock)
 		}
 		prompt = buildLitePrompt(agentCfg.Prompt, defaultBranch, rendered, prContext, memEntries)
 	} else {
@@ -366,7 +371,7 @@ func RunAgentReview(
 	// The agent wall clock starts here, at the spawn, after the observer's
 	// synchronous ledger write; the completion event reads agentStartedAt by
 	// reference, so re-stamping it keeps DurationMS spawn-to-exit as well.
-	runCtx, cancel := context.WithTimeout(ctx, agentCfg.WallClock)
+	runCtx, cancel := context.WithTimeout(ctx, wallClock)
 	defer cancel()
 	agentStartedAt = time.Now().UTC()
 	credentialKey, credentialValue := "ANTHROPIC_API_KEY", agentCfg.AnthropicAPIKey
@@ -499,7 +504,7 @@ func RunAgentReview(
 	if runCtx.Err() == context.DeadlineExceeded {
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: wall-clock timeout (%s; %s; stderr: %s)",
-			agentCfg.WallClock, usage, redact(stderrBuf))
+			wallClock, usage, redact(stderrBuf))
 	}
 
 	// The stream error outranks the exit status: the CLI reports API failures
@@ -883,9 +888,11 @@ func isLitePrompt(prompt string) bool {
 func buildLitePrompt(prompt, baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry) string {
 	switch prompt {
 	case runconfig.PromptLiteArmAV2:
-		return buildLitePromptV2Content(baseBranch, diff, prContext, nil)
+		return buildLitePromptV2Content(baseBranch, diff, prContext, nil, false)
+	case runconfig.PromptLiteArmAV2Sub:
+		return buildLitePromptV2Content(baseBranch, diff, prContext, nil, true)
 	case runconfig.PromptLiteArmAV3:
-		return buildLitePromptV2Content(baseBranch, diff, prContext, bugHistory)
+		return buildLitePromptV2Content(baseBranch, diff, prContext, bugHistory, false)
 	default:
 		return buildLitePromptContent(baseBranch, diff, prContext, bugHistory, prompt == runconfig.PromptLiteArmASub)
 	}
@@ -896,19 +903,29 @@ func buildLitePrompt(prompt, baseBranch string, diff liteDiff, prContext string,
 // rely on the prose contract alone, as the pipeline always has.
 func liteJSONSchema(prompt string) string {
 	switch prompt {
-	case runconfig.PromptLiteArmAV2, runconfig.PromptLiteArmAV3:
+	case runconfig.PromptLiteArmAV2, runconfig.PromptLiteArmAV2Sub, runconfig.PromptLiteArmAV3:
 		return liteFindingsJSONSchema
 	}
 	return ""
 }
 
+// agentWallClock is the wall clock for this spawn: the configured one, or
+// the capped-diff budget when the inlined diff was cut and the profile grants
+// a longer one.
+func agentWallClock(cfg AgentConfig, diffTruncated bool) time.Duration {
+	if diffTruncated && cfg.CappedDiffWallClock > cfg.WallClock {
+		return cfg.CappedDiffWallClock
+	}
+	return cfg.WallClock
+}
+
 // buildLitePromptV2Content is the measured Arm A prompt with the ref names
 // adjusted, then the PR context, the bug-history section when entries are
-// given, the compact output contract, and the diff last. Unlike
-// buildLitePromptContent it keeps the Arm A opening even for a truncated
-// diff: the truncation note and per-path hint travel inside the diff block,
-// as they did in the measured harness.
-func buildLitePromptV2Content(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry) string {
+// given, the sub-agent sentence for lite_plus, the compact output contract,
+// and the diff last. Unlike buildLitePromptContent it keeps the Arm A opening
+// even for a truncated diff: the truncation note and per-path hint travel
+// inside the diff block, as they did in the measured harness.
+func buildLitePromptV2Content(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
 	if baseBranch == "" {
 		baseBranch = "HEAD"
 	}
@@ -916,6 +933,9 @@ func buildLitePromptV2Content(baseBranch string, diff liteDiff, prContext string
 	fmt.Fprintf(&b, promptLiteReviewArmA, baseBranch, baseBranch)
 	b.WriteString(prContext)
 	b.WriteString(bugMemorySection(bugHistory))
+	if subAgents {
+		b.WriteString(promptLiteSubAgents)
+	}
 	b.WriteString(promptLiteOutputFormatV2)
 	b.WriteString("\n<diff>\n")
 	b.WriteString(diff.Text)

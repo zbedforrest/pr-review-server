@@ -17,10 +17,13 @@ const (
 	PromptLiteArmA    = "lite_arm_a"
 	PromptLiteArmASub = "lite_arm_a_sub"
 	// PromptLiteArmAV2 is the measured Arm A text with a compact output
-	// contract and no bug memory; V3 is V2 with bug memory. Both are the
-	// spec's single permitted prompt iteration and are selectable only.
-	PromptLiteArmAV2 = "lite_arm_a_v2"
-	PromptLiteArmAV3 = "lite_arm_a_v3"
+	// contract: the lite default since the 2026-09-18 iteration. V2Sub adds
+	// the sub-agent sentence for lite_plus; V3 is V2 with bug memory, kept
+	// selectable as the measured control. lite_arm_a and lite_arm_a_sub stay
+	// selectable as the legacy shapes.
+	PromptLiteArmAV2    = "lite_arm_a_v2"
+	PromptLiteArmAV2Sub = "lite_arm_a_v2_sub"
+	PromptLiteArmAV3    = "lite_arm_a_v3"
 
 	ToolsDefault   = "Read,Grep,Glob,Bash"
 	ToolsWithAgent = "Read,Grep,Glob,Bash,Agent"
@@ -29,13 +32,18 @@ const (
 	// it regardless of their own agent model allowlist.
 	LiteModel = "claude-fable-5-1"
 
-	liteBackend              = "claude"
-	liteModel                = LiteModel
-	liteEffort               = "medium"
-	liteWallClockSeconds     = 300
-	liteMaxTurns             = 60
-	litePlusWallClockSeconds = 600
-	litePlusMaxTurns         = 120
+	liteBackend          = "claude"
+	liteModel            = LiteModel
+	liteEffort           = "medium"
+	liteWallClockSeconds = 300
+	liteMaxTurns         = 60
+	// liteCappedDiffWallClockSeconds replaces liteWallClockSeconds at run time
+	// when the inlined diff hit the 60k-char cap: both wall-clock kills in the
+	// v2 validation were capped diffs. It is part of the lite default, so it
+	// never counts as a deviation.
+	liteCappedDiffWallClockSeconds = 360
+	litePlusWallClockSeconds       = 600
+	litePlusMaxTurns               = 120
 )
 
 var profileOrder = []string{ProfileFull, ProfileLite, ProfileLitePlus}
@@ -80,6 +88,27 @@ func ProfileLabel(profile string) string {
 func ProfileMaxWallClockSeconds() int { return litePlusWallClockSeconds }
 func ProfileMaxTurns() int            { return litePlusMaxTurns }
 
+// CappedDiffWallClockSeconds is the agent wall clock a run gets when its
+// inlined diff was cut at the cap: the lite profile's 360 s, but only while
+// the run still carries the profile's own 300 s (a caller-chosen wall clock
+// stands as given). 0 means no change for every other profile.
+func CappedDiffWallClockSeconds(effective Effective) int {
+	if NormalizeProfile(effective.Profile) == ProfileLite && effective.Agent.WallClockSeconds == liteWallClockSeconds {
+		return liteCappedDiffWallClockSeconds
+	}
+	return 0
+}
+
+// ProfileNote is the operator-facing footnote to a profile's effective config,
+// for behavior the fixed fields cannot show; "" when there is none.
+func ProfileNote(profile string) string {
+	if NormalizeProfile(profile) == ProfileLite {
+		return fmt.Sprintf("agent.wall_clock_seconds becomes %d when the inlined diff is cut at the 60000-character cap; this is the profile default, not a deviation",
+			liteCappedDiffWallClockSeconds)
+	}
+	return ""
+}
+
 // Expand returns the canonical effective config for profile. base is the
 // deployment's full-pipeline default; full returns it with the profile fields
 // made explicit, while lite and lite_plus replace every stage setting with the
@@ -100,18 +129,20 @@ func Expand(profile string, base Effective) (Effective, error) {
 		effective.Agent = Agent{
 			Enabled: true, Backend: liteBackend, Model: liteModel, Effort: liteEffort,
 			WallClockSeconds: liteWallClockSeconds, MaxTurns: liteMaxTurns,
-			Tools: ToolsDefault, Prompt: PromptLiteArmA,
+			Tools: ToolsDefault, Prompt: PromptLiteArmAV2,
 		}
 		if profile == ProfileLitePlus {
 			effective.Agent.WallClockSeconds = litePlusWallClockSeconds
 			effective.Agent.MaxTurns = litePlusMaxTurns
 			effective.Agent.Tools = ToolsWithAgent
-			effective.Agent.Prompt = PromptLiteArmASub
+			effective.Agent.Prompt = PromptLiteArmAV2Sub
 		}
 		effective.FirstPass = FirstPass{}
 		effective.RequiredChecks = false
 		effective.Gates = false
-		effective.BugMemory = true
+		// Bug memory cost this agent 6.0 of 37 battery cases (lite_arm_a_v3
+		// vs v2); the full pipeline keeps it.
+		effective.BugMemory = false
 	default:
 		return Effective{}, invalid("profile", "unknown profile %q (want full, lite, or lite_plus)", profile)
 	}
@@ -240,7 +271,7 @@ func validPrompt(prompt string) bool {
 // inline the diff and run without gates or required checks.
 func LitePrompt(prompt string) bool {
 	switch prompt {
-	case PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV2, PromptLiteArmAV3:
+	case PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV2, PromptLiteArmAV2Sub, PromptLiteArmAV3:
 		return true
 	}
 	return false

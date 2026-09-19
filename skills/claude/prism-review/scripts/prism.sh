@@ -22,7 +22,7 @@ Create options:
   --backend NAME                 claude | openrouter
   --model MODEL_ID
   --effort LEVEL
-  --prompt NAME                  prompt shape within the profile (lite: lite_arm_a | lite_arm_a_v2 | lite_arm_a_v3)
+  --prompt NAME                  prompt shape within the profile (lite default lite_arm_a_v2; also lite_arm_a_v2_sub, lite_arm_a_v3, legacy lite_arm_a, lite_arm_a_sub)
   --wall-clock-seconds N
   --max-turns N
   --first-pass-samples N

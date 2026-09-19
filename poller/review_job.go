@@ -680,7 +680,8 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 	return service.AgentConfig{
 		CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
 		WallClock: time.Duration(agent.WallClockSeconds) * time.Second, MaxTurns: agent.MaxTurns,
-		GitHubToken: gitToken, Backend: agent.Backend, Model: agent.Model, Effort: agent.Effort,
+		CappedDiffWallClock: time.Duration(runconfig.CappedDiffWallClockSeconds(effective)) * time.Second,
+		GitHubToken:         gitToken, Backend: agent.Backend, Model: agent.Model, Effort: agent.Effort,
 		Tools: agent.Tools, Prompt: agent.Prompt, SkipGates: !effective.Gates,
 		CollectCitedFiles: !effective.FirstPass.Enabled,
 		AnthropicAPIKey:   p.cfg.AnthropicAPIKey,

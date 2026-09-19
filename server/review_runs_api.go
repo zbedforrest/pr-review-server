@@ -168,12 +168,15 @@ type reviewCapabilitiesResponse struct {
 	// DefaultProfile is the profile a request without config.profile gets;
 	// Profiles lists the effective config of every profile this deployment's
 	// policy admits, and UnavailableProfiles the rejection reason for the rest.
-	DefaultProfile      string                             `json:"default_profile"`
-	Profiles            map[string]runconfig.Effective     `json:"profiles"`
-	UnavailableProfiles map[string]string                  `json:"unavailable_profiles"`
-	Backends            map[string]reviewBackendCapability `json:"backends"`
-	FirstPass           reviewFirstPassCapability          `json:"first_pass"`
-	Limits              reviewCustomizationLimits          `json:"limits"`
+	DefaultProfile      string                         `json:"default_profile"`
+	Profiles            map[string]runconfig.Effective `json:"profiles"`
+	UnavailableProfiles map[string]string              `json:"unavailable_profiles"`
+	// ProfileNotes explains run-time behavior a profile's fixed fields cannot
+	// show (the lite capped-diff wall clock); only profiles with a note appear.
+	ProfileNotes map[string]string                  `json:"profile_notes"`
+	Backends     map[string]reviewBackendCapability `json:"backends"`
+	FirstPass    reviewFirstPassCapability          `json:"first_pass"`
+	Limits       reviewCustomizationLimits          `json:"limits"`
 }
 
 type reviewFirstPassCapability struct {
@@ -698,6 +701,7 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 	}
 	profiles := make(map[string]runconfig.Effective, 3)
 	unavailable := map[string]string{}
+	notes := map[string]string{}
 	for _, name := range runconfig.Profiles() {
 		profile := name
 		snapshot, resolveErr := runconfig.Resolve(runconfig.Overrides{Profile: &profile}, defaults, policy)
@@ -706,6 +710,9 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		profiles[name] = snapshot.Effective
+		if note := runconfig.ProfileNote(name); note != "" {
+			notes[name] = note
+		}
 	}
 	writeV1JSON(w, http.StatusOK, reviewCapabilitiesResponse{
 		SchemaVersion:       runconfig.SchemaVersion,
@@ -714,6 +721,7 @@ func (s *Server) handleReviewCapabilities(w http.ResponseWriter, r *http.Request
 		DefaultProfile:      runconfig.NormalizeProfile(policy.DefaultProfile),
 		Profiles:            profiles,
 		UnavailableProfiles: unavailable,
+		ProfileNotes:        notes,
 		Backends:            backends,
 		FirstPass: reviewFirstPassCapability{
 			DefaultProvider: defaults.FirstPass.Provider,

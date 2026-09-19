@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/types"
@@ -12,7 +13,7 @@ import (
 const armAOpeningForMain = "Review this PR.\n\nThe working directory is a checkout of the PR head (`HEAD`); the base is `origin/main`. The complete diff (`git diff --find-renames -U12 origin/main...HEAD`) is below. Do not fetch it again; use shell commands only to read surrounding code. No dependencies are installed in this checkout and CI already passed on this PR: do not run tests, linters, type checkers, builds or package managers. Review by reading.\n"
 
 func TestBuildLitePromptV2Content_ArmAVerbatimThenContextThenCompactFormatThenDiff(t *testing.T) {
-	prompt := buildLitePromptV2Content("main", liteDiff{Text: "diff --git a/x b/x\n+1\n", Source: diffSourceGit}, prContextSection("Title", "Body", nil), nil)
+	prompt := buildLitePromptV2Content("main", liteDiff{Text: "diff --git a/x b/x\n+1\n", Source: diffSourceGit}, prContextSection("Title", "Body", nil), nil, false)
 	if !strings.HasPrefix(prompt, armAOpeningForMain) {
 		t.Fatalf("prompt must open with the Arm A text verbatim:\n%s", prompt[:500])
 	}
@@ -35,7 +36,7 @@ func TestBuildLitePromptV2Content_ArmAVerbatimThenContextThenCompactFormatThenDi
 }
 
 func TestBuildLitePromptV2Content_KeepsArmAOpeningForTruncatedDiff(t *testing.T) {
-	prompt := buildLitePromptV2Content("main", liteDiff{Text: "stat\n[diff truncated after 60000 characters of 70000; fetch the remaining files with `git diff origin/main...HEAD -- <path>`]\n", Source: diffSourceGit, Truncated: true}, "", nil)
+	prompt := buildLitePromptV2Content("main", liteDiff{Text: "stat\n[diff truncated after 60000 characters of 70000; fetch the remaining files with `git diff origin/main...HEAD -- <path>`]\n", Source: diffSourceGit, Truncated: true}, "", nil, false)
 	if !strings.HasPrefix(prompt, armAOpeningForMain) {
 		t.Fatalf("truncation must not change the Arm A opening:\n%s", prompt[:500])
 	}
@@ -187,7 +188,7 @@ func TestArgsWithToolsAndSchema_PassesTheSchemaOnlyForTheV2AndV3Prompts(t *testi
 			t.Errorf("%s must not carry a JSON schema", prompt)
 		}
 	}
-	for _, prompt := range []string{runconfig.PromptLiteArmAV2, runconfig.PromptLiteArmAV3} {
+	for _, prompt := range []string{runconfig.PromptLiteArmAV2, runconfig.PromptLiteArmAV2Sub, runconfig.PromptLiteArmAV3} {
 		args := rt.argsWithToolsAndSchema("p", "", liteJSONSchema(prompt))
 		if args[len(args)-2] != "--json-schema" || args[len(args)-1] != liteFindingsJSONSchema {
 			t.Errorf("%s args must end with --json-schema <schema>: %v", prompt, args[len(args)-3:])
@@ -200,5 +201,38 @@ func TestArgsWithToolsAndSchema_PassesTheSchemaOnlyForTheV2AndV3Prompts(t *testi
 	codex := agentRuntime{backend: AgentBackendOpenRouter, model: "m", effort: "medium", openRouterBaseURL: "https://example.test"}
 	if strings.Contains(strings.Join(codex.argsWithToolsAndSchema("p", "", liteFindingsJSONSchema), " "), "--json-schema") {
 		t.Fatal("codex has no --json-schema flag")
+	}
+}
+
+func TestBuildLitePrompt_V2SubAddsTheSubAgentSentenceBeforeTheOutputFormat(t *testing.T) {
+	const sentence = "Spawn sub-agents to investigate independent parts of the change in parallel"
+	v2 := buildLitePrompt(runconfig.PromptLiteArmAV2, "main", liteDiff{Text: "d"}, "", nil)
+	if strings.Contains(v2, sentence) {
+		t.Fatal("v2 must not ask for sub-agents")
+	}
+	sub := buildLitePrompt(runconfig.PromptLiteArmAV2Sub, "main", liteDiff{Text: "d"}, "", nil)
+	at := strings.Index(sub, sentence)
+	format := strings.Index(sub, "**Output format (STRICT):**")
+	if at < 0 || at > format || !strings.HasPrefix(sub, armAOpeningForMain) {
+		t.Fatalf("v2_sub must keep the Arm A opening and place the sentence before the output format: at=%d format=%d", at, format)
+	}
+	if strings.Replace(sub, promptLiteSubAgents, "", 1) != v2 {
+		t.Fatal("v2_sub must equal v2 plus the sub-agent sentence")
+	}
+}
+
+func TestAgentWallClock_UsesTheCappedDiffBudgetOnlyWhenTheDiffWasCut(t *testing.T) {
+	cfg := AgentConfig{WallClock: 300 * time.Second, CappedDiffWallClock: 360 * time.Second}
+	if got := agentWallClock(cfg, false); got != 300*time.Second {
+		t.Fatalf("complete diff: %s", got)
+	}
+	if got := agentWallClock(cfg, true); got != 360*time.Second {
+		t.Fatalf("capped diff: %s", got)
+	}
+	if got := agentWallClock(AgentConfig{WallClock: 600 * time.Second}, true); got != 600*time.Second {
+		t.Fatalf("no capped budget configured: %s", got)
+	}
+	if got := agentWallClock(AgentConfig{WallClock: 900 * time.Second, CappedDiffWallClock: 360 * time.Second}, true); got != 900*time.Second {
+		t.Fatalf("a longer configured wall clock must stand: %s", got)
 	}
 }
