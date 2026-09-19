@@ -16,6 +16,11 @@ const (
 	PromptPipeline    = "pipeline"
 	PromptLiteArmA    = "lite_arm_a"
 	PromptLiteArmASub = "lite_arm_a_sub"
+	// PromptLiteArmAV2 is the measured Arm A text with a compact output
+	// contract and no bug memory; V3 is V2 with bug memory. Both are the
+	// spec's single permitted prompt iteration and are selectable only.
+	PromptLiteArmAV2 = "lite_arm_a_v2"
+	PromptLiteArmAV3 = "lite_arm_a_v3"
 
 	ToolsDefault   = "Read,Grep,Glob,Bash"
 	ToolsWithAgent = "Read,Grep,Glob,Bash,Agent"
@@ -228,9 +233,25 @@ func ValidTools(tools string) bool {
 }
 
 func validPrompt(prompt string) bool {
+	return prompt == PromptPipeline || LitePrompt(prompt)
+}
+
+// LitePrompt reports whether prompt is one of the single-agent shapes that
+// inline the diff and run without gates or required checks.
+func LitePrompt(prompt string) bool {
 	switch prompt {
-	case PromptPipeline, PromptLiteArmA, PromptLiteArmASub:
+	case PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV2, PromptLiteArmAV3:
 		return true
 	}
 	return false
+}
+
+// promptFitsProfile keeps the prompt shape inside its pipeline: the full
+// profile builds around first-pass claims, the lite profiles around an
+// inlined diff, and neither prompt makes sense in the other pipeline.
+func promptFitsProfile(profile, prompt string) bool {
+	if NormalizeProfile(profile) == ProfileFull {
+		return prompt == PromptPipeline
+	}
+	return LitePrompt(prompt)
 }

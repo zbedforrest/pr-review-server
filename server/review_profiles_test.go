@@ -146,6 +146,28 @@ func TestCreateReviewRunAcceptsProfileOverride(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), "first_pass overrides are not allowed")
 }
 
+func TestCreateReviewRunAcceptsLitePromptOverride(t *testing.T) {
+	headSHA := "0123456789abcdef0123456789abcdef01234567"
+	s, _, apiPoller, userID := newReviewAPIServer(t, githubPRResponse(headSHA))
+	body := `{"target":{"owner":"acme","repo":"widgets","pull_request":42,"expected_head_sha":"` + headSHA + `"},"publish":false,"config":{"profile":"lite","agent":{"prompt":"lite_arm_a_v2"}}}`
+	recorder := httptest.NewRecorder()
+	s.handleReviewRuns(recorder, addReviewAPIUser(httptest.NewRequest(http.MethodPost, reviewRunsPath, strings.NewReader(body)), *userID))
+	require.Equal(t, http.StatusAccepted, recorder.Code, recorder.Body.String())
+	require.Len(t, apiPoller.jobs, 1)
+	effective := apiPoller.jobs[0].Config.Effective
+	assert.Equal(t, runconfig.PromptLiteArmAV2, effective.Agent.Prompt)
+	assert.Equal(t, runconfig.SourceRequest, apiPoller.jobs[0].Config.Sources["agent.prompt"])
+	assert.Equal(t, 300, effective.Agent.WallClockSeconds)
+	assert.True(t, effective.BugMemory)
+	assert.Contains(t, recorder.Body.String(), `"prompt":"lite_arm_a_v2"`)
+
+	pipelineOnLite := strings.Replace(body, `"lite_arm_a_v2"`, `"pipeline"`, 1)
+	recorder = httptest.NewRecorder()
+	s.handleReviewRuns(recorder, addReviewAPIUser(httptest.NewRequest(http.MethodPost, reviewRunsPath, strings.NewReader(pipelineOnLite)), *userID))
+	assert.Equal(t, http.StatusUnprocessableEntity, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "agent.prompt")
+}
+
 func TestReviewCapabilitiesListProfiles(t *testing.T) {
 	s, _, apiPoller, userID := newReviewAPIServer(t, githubPRResponse("0123456789abcdef0123456789abcdef01234567"))
 	apiPoller.policy.DefaultProfile = "lite"

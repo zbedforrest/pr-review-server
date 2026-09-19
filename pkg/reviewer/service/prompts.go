@@ -318,6 +318,50 @@ const promptLiteReviewTruncated = `Review this PR.
 The working directory is a checkout of the PR head (` + "`HEAD`" + `); the base is ` + "`origin/%s`" + `. The diff (` + "`git diff --find-renames -U12 origin/%s...HEAD`" + `) is too large to inline in full: below you get the list of every changed path, then the first part of the diff, then a note on how to reach the rest. Read every changed file that is not shown in full before you judge the change; a file you did not read is not reviewed. Use shell commands only to read code. No dependencies are installed in this checkout, so do not run tests, linters, type checkers, builds or package managers; CI is the authority on whether the code builds. Review by reading.
 `
 
+// promptLiteReviewArmA is the measured Arm A opening verbatim, with the ref
+// names adjusted to the worktree (%s is the PR's base branch, twice). It
+// asserts a CI pass the way the measured harness did; the lite_arm_a prompt
+// above softened that sentence.
+const promptLiteReviewArmA = `Review this PR.
+
+The working directory is a checkout of the PR head (` + "`HEAD`" + `); the base is ` + "`origin/%s`" + `. The complete diff (` + "`git diff --find-renames -U12 origin/%s...HEAD`" + `) is below. Do not fetch it again; use shell commands only to read surrounding code. No dependencies are installed in this checkout and CI already passed on this PR: do not run tests, linters, type checkers, builds or package managers. Review by reading.
+`
+
+// promptLiteOutputFormatV2 is the compact output contract for the v2 and v3
+// lite prompts: the same fields the publisher requires, in at most 25 lines.
+// The CLI enforces the shape through liteFindingsJSONSchema; this block
+// carries the semantics and the cross-field rules a schema cannot express.
+const promptLiteOutputFormatV2 = `
+**Output format (STRICT):** respond with one JSON object {"findings": [...]} and nothing else: no prose before or after, no code-fence wrapper.
+Each finding is an object with:
+- "id": "A-1", "A-2", ... in order
+- "file_path" and "line_number" (integer; the line to anchor the comment to, 0 for a whole-file note)
+- "comment_body": markdown; include a ` + "```suggestion" + ` block for a concrete code change
+- "importance": "CRITICAL" for bugs and security, "MEDIUM" for what a reviewer should address, "LOW" for nits
+- "finding_contract": an object with every one of these fields:
+  "schema_version": 1
+  "finding_kind": "production_behavior" | "security_risk" | "latent_hazard" | "design_opinion" | "description_drift" | "test_quality" | "operational_risk"
+  "materiality": "current_impact" | "future_condition_only" | "no_user_impact" | "unknown"
+  "current_impact": one sentence on the present user or system impact, also when none is demonstrated
+  "counterfactual_trigger": the separate future condition required for harm when materiality is "future_condition_only", otherwise null
+  "falsifiability": "falsifiable" | "not_falsifiable" | "unknown"
+  "falsifiable_condition" and "expected_observable": one sentence each when falsifiable, otherwise both null
+  "subjects": one to eight of {"kind": "file" | "symbol" | "selector" | "config_key" | "endpoint" | "workflow" | "other", "path": "...", "name": "..."} ("name" omitted for kind "file")
+  "uncertainty" and "severity_rationale": one sentence each
+  "headline": a plain-language title of at most 12 words and 90 characters, no file paths, severity words or trailing period
+  Constraints: "latent_hazard" requires "future_condition_only", and "future_condition_only" requires "latent_hazard" or "security_risk"; "design_opinion" and "description_drift" are "not_falsifiable" with materiality "no_user_impact" ("design_opinion" may also be "unknown"); "test_quality" is "no_user_impact" or "unknown". Sentences are single-line and at most 500 characters. Findings with no current user impact are LOW.
+Add exactly one summary entry {"file_path": "SUMMARY", "line_number": 0, "summary": {"verdict": "approve" | "approve_suggestions" | "request_changes", "upshot": one sentence on the practical consequence for the author, "priority_ids": zero to three finding ids in the order to address them, "notes": two to four sentences on what the PR does, whether it does it, and what you verified}} with no "id", "comment_body", "importance" or "finding_contract". The summary must not name any tool or model.
+If you find no issues worth flagging, return the SUMMARY entry only, with "approve".
+`
+
+// liteFindingsJSONSchema is handed to the Claude CLI as --json-schema for the
+// v2 and v3 prompts. The findings array holds both ordinary findings and the
+// SUMMARY entry, so only the anchor fields are required per item and the
+// vocabulary enums match pkg/reviewer/types. parseAgentJSON slices the first
+// balanced array out of the result, so the {"findings": ...} wrapper needs no
+// parser change.
+const liteFindingsJSONSchema = `{"type":"object","additionalProperties":false,"required":["findings"],"properties":{"findings":{"type":"array","items":{"type":"object","required":["file_path","line_number"],"properties":{"id":{"type":"string"},"file_path":{"type":"string"},"line_number":{"type":"integer"},"importance":{"type":"string","enum":["LOW","MEDIUM","CRITICAL"]},"comment_body":{"type":"string"},"finding_contract":{"type":"object","required":["schema_version","finding_kind","materiality","current_impact","counterfactual_trigger","falsifiability","falsifiable_condition","expected_observable","subjects","uncertainty","severity_rationale","headline"],"properties":{"schema_version":{"type":"integer","enum":[1]},"finding_kind":{"type":"string","enum":["production_behavior","security_risk","latent_hazard","design_opinion","description_drift","test_quality","operational_risk"]},"materiality":{"type":"string","enum":["current_impact","future_condition_only","no_user_impact","unknown"]},"current_impact":{"type":"string"},"counterfactual_trigger":{"type":["string","null"]},"falsifiability":{"type":"string","enum":["falsifiable","not_falsifiable","unknown"]},"falsifiable_condition":{"type":["string","null"]},"expected_observable":{"type":["string","null"]},"subjects":{"type":"array","items":{"type":"object","required":["kind","path"],"properties":{"kind":{"type":"string","enum":["file","symbol","selector","config_key","endpoint","workflow","other"]},"path":{"type":"string"},"name":{"type":"string"}}}},"uncertainty":{"type":"string"},"severity_rationale":{"type":"string"},"headline":{"type":"string"}}},"summary":{"type":"object","required":["verdict","upshot","priority_ids","notes"],"properties":{"verdict":{"type":"string","enum":["approve","approve_suggestions","request_changes"]},"upshot":{"type":"string"},"priority_ids":{"type":"array","items":{"type":"string"}},"notes":{"type":"string"}}}}}}}}`
+
 // promptLiteSubAgents is added for lite_plus, which may spawn sub-agents.
 const promptLiteSubAgents = `
 Spawn sub-agents to investigate independent parts of the change in parallel and report back to you; you own the final judgment.

@@ -50,6 +50,9 @@ type AgentOverrides struct {
 	Effort           *string `json:"effort,omitempty"`
 	WallClockSeconds *int    `json:"wall_clock_seconds,omitempty"`
 	MaxTurns         *int    `json:"max_turns,omitempty"`
+	// Prompt selects a prompt shape within the profile's family (a lite
+	// profile may name any lite_* prompt); omitted means the profile's own.
+	Prompt *string `json:"prompt,omitempty"`
 }
 
 type FirstPassOverrides struct {
@@ -209,6 +212,10 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 			effective.Agent.MaxTurns = *a.MaxTurns
 			sources["agent.max_turns"] = SourceRequest
 		}
+		if a.Prompt != nil {
+			effective.Agent.Prompt = strings.ToLower(strings.TrimSpace(*a.Prompt))
+			sources["agent.prompt"] = SourceRequest
+		}
 	}
 	if requested.FirstPass != nil {
 		f := requested.FirstPass
@@ -311,6 +318,9 @@ func Validate(cfg Effective, policy Policy) error {
 	}
 	if !validPrompt(cfg.Agent.Prompt) {
 		return invalid("agent.prompt", "unsupported prompt %q", cfg.Agent.Prompt)
+	}
+	if !promptFitsProfile(cfg.Profile, cfg.Agent.Prompt) {
+		return invalid("agent.prompt", "prompt %q is not available on profile %q", cfg.Agent.Prompt, NormalizeProfile(cfg.Profile))
 	}
 
 	backend := strings.ToLower(strings.TrimSpace(cfg.Agent.Backend))

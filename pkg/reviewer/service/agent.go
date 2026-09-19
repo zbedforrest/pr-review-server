@@ -330,7 +330,7 @@ func RunAgentReview(
 		if rendered.Truncated {
 			log.Printf("%s inlined diff truncated at %d chars (source=%s)", logPrefix, diffInlineLimit, diffSource)
 		}
-		prompt = buildLitePromptContent(defaultBranch, rendered, prContext, memEntries, agentCfg.Prompt == runconfig.PromptLiteArmASub)
+		prompt = buildLitePrompt(agentCfg.Prompt, defaultBranch, rendered, prContext, memEntries)
 	} else {
 		prompt, err = buildAgentPromptContent(defaultBranch, diffFiles, prContext, claims, gates, memEntries, checks)
 		if err != nil {
@@ -338,7 +338,7 @@ func RunAgentReview(
 		}
 	}
 
-	args := runtime.argsWithTools(prompt, agentCfg.Tools)
+	args := runtime.argsWithToolsAndSchema(prompt, agentCfg.Tools, liteJSONSchema(agentCfg.Prompt))
 
 	prepDuration := time.Since(prepStart)
 	if prepCtx.Err() == context.DeadlineExceeded {
@@ -875,7 +875,55 @@ const (
 )
 
 func isLitePrompt(prompt string) bool {
-	return prompt == runconfig.PromptLiteArmA || prompt == runconfig.PromptLiteArmASub
+	return runconfig.LitePrompt(prompt)
+}
+
+// buildLitePrompt renders the lite prompt named by prompt. The v2 and v3
+// shapes share one builder and differ only in whether bug memory is shown.
+func buildLitePrompt(prompt, baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry) string {
+	switch prompt {
+	case runconfig.PromptLiteArmAV2:
+		return buildLitePromptV2Content(baseBranch, diff, prContext, nil)
+	case runconfig.PromptLiteArmAV3:
+		return buildLitePromptV2Content(baseBranch, diff, prContext, bugHistory)
+	default:
+		return buildLitePromptContent(baseBranch, diff, prContext, bugHistory, prompt == runconfig.PromptLiteArmASub)
+	}
+}
+
+// liteJSONSchema is the CLI structured-output schema for the prompts whose
+// output block describes the {"findings": [...]} wrapper; the other prompts
+// rely on the prose contract alone, as the pipeline always has.
+func liteJSONSchema(prompt string) string {
+	switch prompt {
+	case runconfig.PromptLiteArmAV2, runconfig.PromptLiteArmAV3:
+		return liteFindingsJSONSchema
+	}
+	return ""
+}
+
+// buildLitePromptV2Content is the measured Arm A prompt with the ref names
+// adjusted, then the PR context, the bug-history section when entries are
+// given, the compact output contract, and the diff last. Unlike
+// buildLitePromptContent it keeps the Arm A opening even for a truncated
+// diff: the truncation note and per-path hint travel inside the diff block,
+// as they did in the measured harness.
+func buildLitePromptV2Content(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry) string {
+	if baseBranch == "" {
+		baseBranch = "HEAD"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, promptLiteReviewArmA, baseBranch, baseBranch)
+	b.WriteString(prContext)
+	b.WriteString(bugMemorySection(bugHistory))
+	b.WriteString(promptLiteOutputFormatV2)
+	b.WriteString("\n<diff>\n")
+	b.WriteString(diff.Text)
+	if !strings.HasSuffix(diff.Text, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("</diff>\n")
+	return b.String()
 }
 
 // liteDiff is the diff text inlined into the lite prompt and how it was made.

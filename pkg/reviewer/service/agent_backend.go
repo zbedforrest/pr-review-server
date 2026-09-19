@@ -106,11 +106,18 @@ func (r agentRuntime) args(prompt string) []string {
 // (empty means the default read-only set); the Codex backend's sandbox is
 // fixed by its own flags.
 func (r agentRuntime) argsWithTools(prompt, tools string) []string {
+	return r.argsWithToolsAndSchema(prompt, tools, "")
+}
+
+// argsWithToolsAndSchema additionally hands the Claude CLI a JSON schema for
+// its structured output (--json-schema); empty means none. Codex has no
+// equivalent flag, so the schema is ignored there.
+func (r agentRuntime) argsWithToolsAndSchema(prompt, tools, jsonSchema string) []string {
 	if strings.TrimSpace(tools) == "" {
 		tools = runconfig.ToolsDefault
 	}
 	if r.backend == AgentBackendClaude {
-		return []string{
+		args := []string{
 			"-p", prompt,
 			"--model", r.model,
 			"--effort", r.effort,
@@ -119,6 +126,10 @@ func (r agentRuntime) argsWithTools(prompt, tools string) []string {
 			"--output-format", "stream-json",
 			"--verbose", // required by `claude` when combining --print + stream-json
 		}
+		if jsonSchema != "" {
+			args = append(args, "--json-schema", jsonSchema)
+		}
+		return args
 	}
 
 	// Every provider setting is an explicit CLI override so a developer's
