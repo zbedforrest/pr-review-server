@@ -129,6 +129,18 @@ func TestAgentConfigForExecutionFollowsTheProfile(t *testing.T) {
 	liteCfg := p.agentConfigForExecution(&reviewExecution{Job: plain}, "tok")
 	assert.Equal(t, 300*time.Second, liteCfg.WallClock)
 	assert.Equal(t, 360*time.Second, liteCfg.CappedDiffWallClock)
+	assert.Nil(t, liteCfg.BugMemory)
+
+	v3 := liteReviewJob(t, "run-51000000000000000000000000000007", runconfig.ProfileLite)
+	v3.Config.Effective.Agent.Prompt = runconfig.PromptLiteArmAV3
+	v3.Config.Effective.BugMemory = runconfig.PromptUsesBugMemory(v3.Config.Effective.Agent.Prompt)
+	v3.Config = snapshotFor(t, v3.Config.Effective)
+	v3Cfg := p.agentConfigForExecution(&reviewExecution{Job: v3}, "tok")
+	assert.Equal(t, runconfig.PromptLiteArmAV3, v3Cfg.Prompt)
+	assert.Same(t, p.bugMemory, v3Cfg.BugMemory, "v3 must receive the loaded library")
+
+	assert.Equal(t, ReviewPipelineMargin+360*time.Second, reviewTimeout(plain.Config.Effective), "the lease covers the capped-diff budget")
+	assert.Equal(t, ReviewPipelineMargin+600*time.Second, reviewTimeout(lite.Config.Effective))
 
 	full := customReviewJob(t, "run-51000000000000000000000000000006")
 	fullCfg := p.agentConfigForExecution(&reviewExecution{Job: full}, "tok")

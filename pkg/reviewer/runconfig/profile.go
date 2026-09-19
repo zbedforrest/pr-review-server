@@ -277,6 +277,17 @@ func LitePrompt(prompt string) bool {
 	return false
 }
 
+// PromptUsesBugMemory reports whether a lite prompt renders the bug-history
+// section; the lite profiles turn bug memory on only for those shapes, so the
+// v3 control and the legacy prompts keep the library they were measured with.
+func PromptUsesBugMemory(prompt string) bool {
+	switch prompt {
+	case PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV3:
+		return true
+	}
+	return false
+}
+
 // promptFitsProfile keeps the prompt shape inside its pipeline: the full
 // profile builds around first-pass claims, the lite profiles around an
 // inlined diff, and neither prompt makes sense in the other pipeline.

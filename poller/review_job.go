@@ -615,8 +615,12 @@ func reviewTimeoutWithMargin(cfg runconfig.Effective, margin time.Duration) time
 	timeout := margin
 	// Preserve the deployment's historical total-review allowance even when
 	// the agent stage is disabled; first-pass-only reviews can still be large.
-	if cfg.Agent.WallClockSeconds > 0 {
-		timeout += time.Duration(cfg.Agent.WallClockSeconds) * time.Second
+	wallClock := cfg.Agent.WallClockSeconds
+	if capped := runconfig.CappedDiffWallClockSeconds(cfg); capped > wallClock {
+		wallClock = capped
+	}
+	if wallClock > 0 {
+		timeout += time.Duration(wallClock) * time.Second
 	}
 	return timeout
 }
