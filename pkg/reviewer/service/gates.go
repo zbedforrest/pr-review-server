@@ -928,12 +928,23 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 	if err != nil {
 		return nil, fmt.Errorf("unified diff: %w", err)
 	}
-	added := map[string][]string{}
-	removed := map[string][]string{}
-	addedHunks := map[string][][]string{}
+	added, removed, addedHunks := unifiedDiffLines(full)
+	var files []diffFile
+	for _, p := range order {
+		files = append(files, diffFile{Path: p, Added: added[p], Removed: removed[p], Status: status[p], AddedHunks: addedHunks[p]})
+	}
+	return files, nil
+}
+
+// unifiedDiffLines splits a unified diff into per-path added and removed
+// lines plus the added lines grouped by "@@" hunk. With --unified=0 every
+// hunk holds one contiguous '+' run; with context (the API diff) the added
+// lines of one hunk stay together across its unchanged lines.
+func unifiedDiffLines(full string) (added, removed map[string][]string, addedHunks map[string][][]string) {
+	added = map[string][]string{}
+	removed = map[string][]string{}
+	addedHunks = map[string][][]string{}
 	cur := ""
-	// With --unified=0 a hunk's added lines are one contiguous '+' run, so
-	// hunk grouping is "flush the pending run on any non-'+' line".
 	var pendingHunk []string
 	flushHunk := func(file string) {
 		if len(pendingHunk) > 0 && file != "" {
@@ -945,6 +956,10 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 		if strings.HasPrefix(line, "diff --git ") {
 			flushHunk(cur)
 			cur = "" // reset so one file's hunks don't attach to the previous file
+			continue
+		}
+		if strings.HasPrefix(line, "@@") {
+			flushHunk(cur)
 			continue
 		}
 		// A deleted file has `--- a/<path>` / `+++ /dev/null`, so the old-side
@@ -967,27 +982,22 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
 			added[cur] = append(added[cur], line[1:])
 			pendingHunk = append(pendingHunk, line[1:])
-		} else {
-			flushHunk(cur)
-			if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
-				removed[cur] = append(removed[cur], line[1:])
-			}
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			removed[cur] = append(removed[cur], line[1:])
 		}
 	}
 	flushHunk(cur)
-
-	var files []diffFile
-	for _, p := range order {
-		files = append(files, diffFile{Path: p, Added: added[p], Removed: removed[p], Status: status[p], AddedHunks: addedHunks[p]})
-	}
-	return files, nil
+	return added, removed, addedHunks
 }
 
 // diffFilesForWorktree parses the PR's diff against origin/<defaultBranch>.
-// Best-effort — on any error (or a pathological >20k-added-lines diff) it
-// returns nil, which downstream consumers (gates, bug memory) treat as
-// "no signal", never as a review failure.
-func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLockKey string, prNumber int) []diffFile {
+// Best-effort: when git cannot produce the diff it falls back to apiDiff (the
+// PR's GitHub API diff, "" when the caller has none), and on any other error
+// (or a pathological >20k-changed-lines diff) it returns nil, which downstream
+// consumers (gates, bug memory) treat as "no signal", never as a review
+// failure. It never deepens or unshallows the shared cache: that could cost
+// minutes inside a review, serialized across every review of the repo.
+func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLockKey, apiDiff string) []diffFile {
 	if dir == "" {
 		return nil
 	}
@@ -998,76 +1008,36 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLo
 		base = "origin/" + defaultBranch
 	}
 	files, err := parseNameStatusDiff(ctx, dir, base)
-	if err != nil {
-		// Two known causes. (1) The cache clone is single-branch (--depth
-		// implies --single-branch), so origin/<base> simply does not exist
-		// for a PR based on any branch other than the one the cache was
-		// initialized with — no amount of deepening creates it. (2) A shallow
-		// clone (prod uses --depth 200) has no merge-base for the three-dot
-		// diff — fresh PRs fit the window; old PRs (replays, benchmarks) do
-		// not. Fetch the base ref and deepen once, then retry, rather than
-		// silently reporting "no signal".
-		log.Printf("[GATES] diff vs %s failed (%v) — fetching the base ref, deepening history, and retrying", base, err)
-		// Deepening writes the shared repo's shallow file; concurrent cache
-		// fetches for the same repo fail on shallow.lock instead of waiting,
-		// so hold the same per-repo mutex cloneForAgent uses for cache work.
-		deepen := func() error {
+	if err != nil && defaultBranch != "" {
+		// The cache is single-branch, so origin/<base> does not exist for a
+		// PR based on a branch the cache has never fetched. Create it and
+		// retry once; the fetch mutates the shared cache, so take the same
+		// per-repo mutex cloneForAgent uses. A missing merge-base (shallow
+		// cache) is not fixed by this and falls through to the API diff.
+		log.Printf("[GATES] diff vs %s failed (%v); fetching the base ref and retrying", base, err)
+		fetchBase := func() {
 			if repoLockKey != "" {
 				m := cacheLock(repoLockKey)
 				m.Lock()
 				defer m.Unlock()
 			}
-			// Cause (1): create/refresh origin/<base> explicitly — a
-			// single-branch clone's fetch refspec never will. Best-effort:
-			// when the ref already existed, the real failure is a severed
-			// merge-base and the unshallow below is the actual fix.
-			if defaultBranch != "" {
-				bargs := authHeaderArgs(token)
-				bargs = append(bargs, "fetch", "--quiet", "--depth", "200", "origin",
-					fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", defaultBranch, defaultBranch))
-				if bout, berr := runGit(ctx, dir, bargs...); berr != nil {
-					log.Printf("[GATES] base-ref fetch for %s failed: %v (%s)", base, berr, redactToken(bout, token))
-				}
+			bargs := authHeaderArgs(token)
+			bargs = append(bargs, "fetch", "--quiet", "origin",
+				fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", defaultBranch, defaultBranch))
+			if bout, berr := runGit(ctx, dir, bargs...); berr != nil {
+				log.Printf("[GATES] base-ref fetch for %s failed: %v (%s)", base, berr, redactToken(bout, token))
 			}
-			// Cause (2): a bounded deepen cannot reconnect an old PR: the
-			// PR-head ref is itself fetched shallow, so its ancestry is
-			// severed from the base branch regardless of how deep the base
-			// goes. Fetch the PR ref with --unshallow, which completes both
-			// sides of the graph until they connect. One-time cost per
-			// cache repo.
-			args := authHeaderArgs(token)
-			args = append(args, "fetch", "--quiet", "--unshallow", "origin")
-			if prNumber > 0 {
-				args = append(args, fmt.Sprintf("+pull/%d/head:refs/agent-pr/%d", prNumber, prNumber))
-			}
-			out, derr := runGit(ctx, dir, args...)
-			if derr != nil && strings.Contains(out, "does not make sense") {
-				// Already unshallow: refetch just the PR ref to connect it.
-				// With no PR ref to fetch, the missing piece can only have
-				// been the base ref handled above — retry the diff.
-				if prNumber > 0 {
-					args = authHeaderArgs(token)
-					args = append(args, "fetch", "--quiet", "origin",
-						fmt.Sprintf("+pull/%d/head:refs/agent-pr/%d", prNumber, prNumber))
-					out, derr = runGit(ctx, dir, args...)
-				} else {
-					derr = nil
-				}
-			}
-			if derr != nil {
-				return fmt.Errorf("%v (%s)", derr, redactToken(out, token))
-			}
-			return nil
 		}
-		if derr := deepen(); derr != nil {
-			log.Printf("[GATES] deepen failed: %v — no deterministic signals for this review", derr)
-			return nil
-		}
+		fetchBase()
 		files, err = parseNameStatusDiff(ctx, dir, base)
-		if err != nil {
-			log.Printf("[GATES] diff still failing after deepen: %v — no deterministic signals for this review", err)
+	}
+	if err != nil {
+		if apiDiff == "" {
+			log.Printf("[GATES] diff vs %s failed (%v) and no API diff is available; no deterministic signals for this review", base, err)
 			return nil
 		}
+		log.Printf("[GATES] diff vs %s failed (%v); using the PR's API diff for the deterministic layer", base, err)
+		files = diffFilesFromAPIDiff(apiDiff)
 	}
 	// Guard pathological diffs: gates and memory are per-line regex scans.
 	total := 0
@@ -1076,6 +1046,39 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLo
 	}
 	if total > 20000 {
 		return nil
+	}
+	return files
+}
+
+// diffFilesFromAPIDiff builds diffFiles from a GitHub API unified diff. File
+// order and paths come from the "diff --git" headers (post-image side, so a
+// rename lists its new path, matching git's --name-status), and status from
+// the "new file mode" / "deleted file mode" header lines.
+func diffFilesFromAPIDiff(diff string) []diffFile {
+	var order []string
+	status := map[string]string{}
+	cur := ""
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			idx := strings.LastIndex(line, " b/")
+			if idx < 0 {
+				cur = ""
+				continue
+			}
+			cur = line[idx+3:]
+			order = append(order, cur)
+			status[cur] = "modified"
+		case cur != "" && strings.HasPrefix(line, "new file mode"):
+			status[cur] = "added"
+		case cur != "" && strings.HasPrefix(line, "deleted file mode"):
+			status[cur] = "removed"
+		}
+	}
+	added, removed, addedHunks := unifiedDiffLines(diff)
+	var files []diffFile
+	for _, p := range order {
+		files = append(files, diffFile{Path: p, Added: added[p], Removed: removed[p], Status: status[p], AddedHunks: addedHunks[p]})
 	}
 	return files
 }
@@ -1094,7 +1097,7 @@ type OfflineWorktreeReport struct {
 // worktree exactly as production would (same diff parse, same matchers).
 func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *BugMemoryLibrary, owner, repo string, prNumber int) OfflineWorktreeReport {
 	rep := OfflineWorktreeReport{}
-	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", prNumber)
+	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", "")
 	if files == nil {
 		return rep
 	}
@@ -1109,7 +1112,7 @@ func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *B
 // any error it returns nil findings (gates are advisory; they must never
 // fail a review).
 func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
-	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", 0)
+	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", "")
 	if files == nil {
 		return nil
 	}

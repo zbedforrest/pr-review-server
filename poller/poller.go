@@ -40,10 +40,11 @@ import (
 //   - ErrorPRRetryTimeout: Time after which an "error" PR is retried
 const (
 	// ReviewPipelineMargin covers everything in a review besides the agent
-	// subprocess: the first-pass LLM stage (~4 min on large PRs), clone/fetch,
-	// and artifact save. Added to the configured agent wall-clock budget by
-	// reviewProcessTimeout() to derive the monitor and stale-reset timeouts.
-	ReviewPipelineMargin = 8 * time.Minute
+	// subprocess: the first-pass LLM stage (~4 min on large PRs), the agent
+	// stage's clone/prep budget, and artifact save. Added to the configured
+	// agent wall-clock budget by reviewProcessTimeout() to derive the monitor
+	// and stale-reset timeouts.
+	ReviewPipelineMargin = 8*time.Minute + service.DefaultAgentPrepBudget
 	// ReviewQueueAbandonAfter is the compatibility cutoff for old queued rows
 	// that predate dispatcher leases. Newly accepted work uses the short,
 	// renewable lease below instead of this age heuristic.
@@ -622,6 +623,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		})
 	}
 	execution.DiffSource = agentOut.DiffSource
+	execution.PrepMS, execution.AgentMS = agentOut.PrepDurationMS, agentOut.DurationMS
 	if len(result.FileContents) == 0 && len(agentOut.CitedFileContents) > 0 {
 		result.FileContents = agentOut.CitedFileContents
 	}
@@ -4005,6 +4007,9 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 			} else {
 				status := db.ReviewRunStatusFailed
 				terminalCode := "review_failed"
+				if errors.Is(err, service.ErrCloneTimeout) {
+					terminalCode = "clone_timeout"
+				}
 				failureStage := "generation"
 				errorSummary := err.Error()
 				if p.finishReviewExecution(execution, db.ReviewRunPatch{Status: &status, TerminalCode: &terminalCode, FailureStage: &failureStage, ErrorSummary: &errorSummary}) {

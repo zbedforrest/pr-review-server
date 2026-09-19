@@ -101,6 +101,11 @@ type ReviewRunInfo struct {
 	// DiffSource records where a lite review's inlined diff came from: "git"
 	// for the worktree diff, "api" when it fell back to the GitHub API diff.
 	DiffSource string `json:"diff_source,omitempty"`
+	// PrepMS is the agent stage's time before the CLI spawned (clone, diff
+	// parse, gates, bug memory); AgentMS is the CLI subprocess alone. The
+	// agent wall-clock budget applies to AgentMS only.
+	PrepMS  int64 `json:"prep_ms,omitempty"`
+	AgentMS int64 `json:"agent_ms,omitempty"`
 }
 
 // StageTiming is one pipeline stage's wall-clock measurement. Stages:

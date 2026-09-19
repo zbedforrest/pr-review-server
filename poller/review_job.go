@@ -72,7 +72,10 @@ type reviewExecution struct {
 	// for the report header, sidecar and summary footer.
 	Profile runconfig.ProfileDescription
 	// DiffSource is where a lite run's inlined diff came from ("" for full).
-	DiffSource        string
+	DiffSource string
+	// PrepMS and AgentMS split the agent stage at the CLI spawn.
+	PrepMS            int64
+	AgentMS           int64
 	attemptsMu        sync.Mutex
 	providerAttempts  map[string]service.ProviderAttemptEvent
 	extraStageTimings []payload.StageTiming
@@ -835,6 +838,8 @@ func (p *Poller) reviewRunArtifactInfo(exec *reviewExecution) *payload.ReviewRun
 		Profile:      exec.Job.Config.Effective.Profile,
 		ProfileLabel: profileLabel(exec.Profile),
 		DiffSource:   exec.DiffSource,
+		PrepMS:       exec.PrepMS,
+		AgentMS:      exec.AgentMS,
 	}
 }
 
