@@ -247,3 +247,7 @@ cd frontend && npm run lint && npm run type-check && npm test
 ```
 
 For frontend work, `npm run dev` in `frontend/` starts a Vite dev server on port 3000 that proxies API calls to the Go server (`BACKEND_URL`, default `http://localhost:7769`).
+
+### Approval candidates
+
+An optional dashboard investigation finds PRs whose existing reviews support a quick human approval decision. It combines PRism, Greptile, Copilot, human-review and CI evidence with bounded code inspection. Recommendations never submit an approval. The feature is disabled by default; see [configuration, limits and rollout](docs/approval-candidates-operations.md) and the [implementation specification](docs/approval-candidates-spec.md).

@@ -226,12 +226,17 @@ func TestApprovalCancelPreservesCompletedAndFencesRemaining(t *testing.T) {
 	require.ErrorIs(t, g.HeartbeatApprovalTarget(second.ID, second.LeaseToken, now, time.Minute), ErrApprovalLeaseLost)
 	scan, err := g.GetApprovalScan(1, "cancel")
 	require.NoError(t, err)
-	require.Equal(t, "cancelled", scan.Status)
+	require.Equal(t, "cancelling", scan.Status)
+	require.Nil(t, scan.CompletedAt)
 	targets, err := g.ListApprovalTargets(1, "cancel", 100, "")
 	require.NoError(t, err)
 	require.Equal(t, "completed", targets[0].ExecutionStatus)
 	require.Equal(t, "cancelled", targets[1].ExecutionStatus)
 	require.Equal(t, "cancelled", targets[2].ExecutionStatus)
+	require.NoError(t, g.ReleaseApprovalTargetSlot(second.ID, second.LeaseToken))
+	scan, err = g.GetApprovalScan(1, "cancel")
+	require.NoError(t, err)
+	require.Equal(t, "cancelled", scan.Status)
 }
 
 func TestApprovalGenerationFencesValidationAndPreservesOtherPRs(t *testing.T) {
@@ -347,19 +352,48 @@ func TestApprovalCancelledSlotHeldUntilWorkerAcknowledges(t *testing.T) {
 	require.NotNil(t, old)
 	require.NoError(t, g.CancelApprovalScan(1, "old", now))
 	_, _, err = g.AdmitApprovalScan(approvalTestAdmission("new", 1, now, 2))
-	require.NoError(t, err)
+	var conflict *ApprovalActiveConflict
+	require.ErrorAs(t, err, &conflict)
+	require.Equal(t, "old", conflict.ScanID)
 	next, err := approvalTestClaim(g, now)
 	require.NoError(t, err)
 	require.Nil(t, next)
 	require.NoError(t, g.ReleaseApprovalTargetSlot(old.ID, "wrong"))
+	_, _, err = g.AdmitApprovalScan(approvalTestAdmission("new", 1, now, 2))
+	require.ErrorAs(t, err, &conflict)
 	next, err = approvalTestClaim(g, now)
 	require.NoError(t, err)
 	require.Nil(t, next)
 	require.NoError(t, g.ReleaseApprovalTargetSlot(old.ID, old.LeaseToken))
+	_, _, err = g.AdmitApprovalScan(approvalTestAdmission("new", 1, now, 2))
+	require.NoError(t, err)
 	next, err = approvalTestClaim(g, now)
 	require.NoError(t, err)
 	require.NotNil(t, next)
 	require.Equal(t, "new-2", next.ID)
+}
+
+func TestApprovalCancelledScanSettlesAfterLeaseExpiry(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Now().UTC()
+	_, _, err := g.AdmitApprovalScan(approvalTestAdmission("cancelled-worker", 1, now, 1))
+	require.NoError(t, err)
+	target, err := approvalTestClaim(g, now)
+	require.NoError(t, err)
+	require.NotNil(t, target)
+	require.NoError(t, g.CancelApprovalScan(1, "cancelled-worker", now))
+	scan, err := g.GetApprovalScan(1, "cancelled-worker")
+	require.NoError(t, err)
+	require.Equal(t, "cancelling", scan.Status)
+	next, err := approvalTestClaim(g, now.Add(61*time.Second))
+	require.NoError(t, err)
+	require.Nil(t, next)
+	scan, err = g.GetApprovalScan(1, "cancelled-worker")
+	require.NoError(t, err)
+	require.Equal(t, "cancelled", scan.Status)
+	require.NotNil(t, scan.CompletedAt)
+	_, _, err = g.AdmitApprovalScan(approvalTestAdmission("replacement", 1, now.Add(62*time.Second), 2))
+	require.NoError(t, err)
 }
 
 func TestApprovalScanPaginationSentinelAndOwnership(t *testing.T) {
@@ -377,5 +411,101 @@ func TestApprovalScanPaginationSentinelAndOwnership(t *testing.T) {
 	require.Len(t, rest, 3)
 	for _, scan := range rest {
 		require.Equal(t, 1, scan.UserID)
+	}
+}
+
+func TestApprovalObservedChangeFencesFinalizationAndValidation(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Now().UTC()
+	_, _, err := g.AdmitApprovalScan(approvalTestAdmission("observed", 1, now, 1))
+	require.NoError(t, err)
+	target, err := approvalTestClaim(g, now)
+	require.NoError(t, err)
+	require.NotNil(t, target)
+	require.NoError(t, g.InvalidateApprovalTargets("acme", "example", 1, "changed", now.Add(time.Second)))
+	require.NoError(t, approvalTestFinish(g, target, now.Add(2*time.Second)))
+	result, err := g.GetApprovalTarget(1, "observed", target.ID)
+	require.NoError(t, err)
+	require.Equal(t, "stale", result.Freshness)
+	_, err = g.ClaimApprovalValidation(1, target.ID, now.Add(3*time.Second), time.Minute)
+	require.ErrorIs(t, err, ErrApprovalLeaseLost)
+}
+
+func approvalTestWaitBehindGate(t *testing.T, g *GormDB, operation func() error) error {
+	t.Helper()
+	locked := g.db.Begin()
+	require.NoError(t, locked.Error)
+	defer locked.Rollback()
+	require.NoError(t, locked.Model(&approvalGate{}).Where("id = 1").UpdateColumn("version", gorm.Expr("version + 1")).Error)
+	waiting := make(chan struct{})
+	var once sync.Once
+	require.NoError(t, g.db.Callback().Update().Before("gorm:update").Register("approval_test_gate_wait", func(tx *gorm.DB) {
+		if tx.Statement.Table == "approval_mutation_gate" {
+			once.Do(func() { close(waiting) })
+		}
+	}))
+	defer g.db.Callback().Update().Remove("approval_test_gate_wait")
+	done := make(chan error, 1)
+	go func() { done <- operation() }()
+	select {
+	case <-waiting:
+	case <-time.After(3 * time.Second):
+		t.Fatal("operation did not reach mutation gate")
+	}
+	timer := time.NewTimer(150 * time.Millisecond)
+	<-timer.C
+	require.NoError(t, locked.Commit().Error)
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(3 * time.Second):
+		t.Fatal("operation did not finish after gate release")
+		return nil
+	}
+}
+
+func TestApprovalLeaseChecksAdvanceAcrossMutationGateWait(t *testing.T) {
+	for _, operation := range []string{"heartbeat", "finalize", "validate", "claim"} {
+		t.Run(operation, func(t *testing.T) {
+			g := approvalTestStore(t)
+			now := time.Date(2031, 4, 5, 12, 0, 0, 0, time.UTC)
+			admission := approvalTestAdmission("clock", 1, now, 1)
+			if operation == "claim" {
+				admission.Scan.Deadline = now.Add(50 * time.Millisecond)
+			}
+			_, _, err := g.AdmitApprovalScan(admission)
+			require.NoError(t, err)
+			if operation == "claim" {
+				var claimed *ApprovalTarget
+				err = approvalTestWaitBehindGate(t, g, func() error { var claimErr error; claimed, claimErr = approvalTestClaim(g, now); return claimErr })
+				require.NoError(t, err)
+				require.Nil(t, claimed)
+				target, readErr := g.GetApprovalTarget(1, "clock", "clock-1")
+				require.NoError(t, readErr)
+				require.Equal(t, "timed_out", target.ExecutionStatus)
+				return
+			}
+			leaseDuration := 50 * time.Millisecond
+			if operation == "validate" {
+				leaseDuration = time.Minute
+			}
+			target, err := g.ClaimApprovalTarget(ApprovalClaim{Worker: "fixture", Now: now, LeaseDuration: leaseDuration, TargetDuration: time.Minute, MaxSlots: 2})
+			require.NoError(t, err)
+			require.NotNil(t, target)
+			var guarded func() error
+			switch operation {
+			case "heartbeat":
+				guarded = func() error { return g.HeartbeatApprovalTarget(target.ID, target.LeaseToken, now, time.Minute) }
+			case "finalize":
+				guarded = func() error { return approvalTestFinish(g, target, now) }
+			case "validate":
+				require.NoError(t, approvalTestFinish(g, target, now))
+				validation, err := g.ClaimApprovalValidation(1, target.ID, now, 50*time.Millisecond)
+				require.NoError(t, err)
+				require.NotNil(t, validation)
+				guarded = func() error { return g.FinishApprovalValidation(1, target.ID, validation.Token, now, "current", "") }
+			}
+			require.ErrorIs(t, approvalTestWaitBehindGate(t, g, guarded), ErrApprovalLeaseLost)
+		})
 	}
 }

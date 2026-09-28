@@ -138,6 +138,18 @@ func ValidateAssessment(s Snapshot, a Assessment) error {
 	if a.SnapshotID != s.ID || a.SnapshotDigest != s.Digest || s.Digest == "" || s.Digest != SnapshotDigest(s) {
 		return fmt.Errorf("snapshot mismatch")
 	}
+	claims := []string{a.Summary}
+	for _, concern := range a.Concerns {
+		claims = append(claims, concern.Rationale)
+	}
+	for _, claim := range claims {
+		lower := strings.ToLower(claim)
+		for _, phrase := range []string{"i ran ", "we ran ", "i executed ", "we executed ", "executed tests", "ran the tests"} {
+			if strings.Contains(lower, phrase) {
+				return fmt.Errorf("unsupported test execution claim")
+			}
+		}
+	}
 	if strings.TrimSpace(a.Summary) == "" {
 		return fmt.Errorf("missing summary")
 	}
@@ -163,6 +175,15 @@ func ValidateAssessment(s Snapshot, a Assessment) error {
 		for _, id := range c.EvidenceIDs {
 			if _, ok := evidence[id]; !ok {
 				return fmt.Errorf("unknown evidence")
+			}
+		}
+		if c.Disposition == "fixed" {
+			attributed := false
+			for _, id := range c.EvidenceIDs {
+				attributed = attributed || evidence[id].ReviewedSHA == c.OriginalRevision && fullSHA.MatchString(c.OriginalRevision)
+			}
+			if !attributed {
+				return fmt.Errorf("fix original revision lacks source attribution")
 			}
 		}
 		switch c.Disposition {
@@ -208,6 +229,9 @@ func ValidateAssessment(s Snapshot, a Assessment) error {
 		ac, ok := concerns[c.ID]
 		if !ok {
 			return fmt.Errorf("omitted concern")
+		}
+		if ac.Claim != c.Claim || ac.OriginalSeverity != c.OriginalSeverity || ac.OriginalRevision != c.OriginalRevision {
+			return fmt.Errorf("altered concern provenance")
 		}
 		for _, id := range c.EvidenceIDs {
 			found := false

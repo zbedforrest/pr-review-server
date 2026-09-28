@@ -40,8 +40,22 @@ func TestNativeToolRoundTrip(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Error(err)
 				}
+				if calls > 1 {
+					for _, message := range req["messages"].([]any) {
+						if message.(map[string]any)["role"] == nil {
+							t.Error("continuation missing role")
+						}
+					}
+				}
 				if req["model"] != "pinned-model" {
 					t.Error("model changed")
+				}
+				if calls > 1 && provider == "openrouter" {
+					for _, message := range req["messages"].([]any) {
+						if message.(map[string]any)["role"] == nil {
+							t.Error("message omitted role")
+						}
+					}
 				}
 				if len(req["tools"].([]any)) != 6 {
 					t.Error("wrong tool inventory")
@@ -49,6 +63,10 @@ func TestNativeToolRoundTrip(t *testing.T) {
 				if provider == "anthropic" {
 					content := []any{map[string]any{"type": "text", "text": string(payload)}}
 					stop := "end_turn"
+					if calls == 2 {
+						content = []any{map[string]any{"type": "tool_use", "id": "body1", "name": "read_evidence", "input": map[string]any{"evidence_id": "review"}}}
+						stop = "tool_use"
+					}
 					if calls == 1 {
 						content = []any{map[string]any{"type": "tool_use", "id": "read1", "name": "list_evidence", "input": map[string]any{}}}
 						stop = "tool_use"
@@ -57,6 +75,10 @@ func TestNativeToolRoundTrip(t *testing.T) {
 				} else {
 					message := map[string]any{"role": "assistant", "content": string(payload)}
 					finish := "stop"
+					if calls == 2 {
+						message = map[string]any{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "body1", "type": "function", "function": map[string]any{"name": "read_evidence", "arguments": `{"evidence_id":"review"}`}}}}
+						finish = "tool_calls"
+					}
 					if calls == 1 {
 						message = map[string]any{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "read1", "type": "function", "function": map[string]any{"name": "list_evidence", "arguments": "{}"}}}}
 						finish = "tool_calls"
@@ -71,7 +93,7 @@ func TestNativeToolRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Decision != "candidate" || calls != 2 || b.used.InputTokens != 200 || b.used.ToolCalls != 1 {
+			if got.Decision != "candidate" || calls != 3 || b.used.InputTokens != 300 || b.used.ToolCalls != 2 {
 				t.Fatalf("unexpected roundtrip: %+v calls=%d budget=%+v", got, calls, b.used)
 			}
 		})
@@ -116,5 +138,34 @@ func TestToolBoundary(t *testing.T) {
 		if _, err := dispatch(context.Background(), s, nil, "read_file", args); err == nil {
 			t.Fatal("accepted", p)
 		}
+	}
+}
+
+func TestNativeRejectsClassificationsWithoutReadingArtifactBodies(t *testing.T) {
+	for _, listed := range []bool{false, true} {
+		t.Run(fmt.Sprint("listed=", listed), func(t *testing.T) {
+			s, a := validFixture()
+			s.Evidence[0].Body = "Critical: this change permits unauthorized access."
+			s.Digest = SnapshotDigest(s)
+			a.SnapshotDigest = s.Digest
+			payload, _ := json.Marshal(a)
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				content := []any{map[string]any{"type": "text", "text": string(payload)}}
+				stop := "end_turn"
+				if listed && calls == 1 {
+					content = []any{map[string]any{"type": "tool_use", "id": "list", "name": "list_evidence", "input": map[string]any{}}}
+					stop = "tool_use"
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"model": "model", "stop_reason": stop, "content": content, "usage": map[string]int{"input_tokens": 100, "output_tokens": 100}})
+			}))
+			defer server.Close()
+			n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture", BaseURL: server.URL}}
+			_, err := n.Investigate(context.Background(), s, nil, &testBudget{})
+			if err == nil || !strings.Contains(err.Error(), "unread evidence artifact") {
+				t.Fatalf("unread blocker accepted: %v", err)
+			}
+		})
 	}
 }

@@ -64,7 +64,12 @@ func (g *GormDB) ensureApprovalTables() error {
 	return g.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&approvalGate{ID: 1}).Error
 }
 
-func (g *GormDB) approvalTransaction(fn func(*gorm.DB) error) error {
+func (g *GormDB) approvalTransaction(fn func(*gorm.DB) error, clocks ...*time.Time) error {
+	started := time.Now()
+	initial := make([]time.Time, len(clocks))
+	for index, clock := range clocks {
+		initial[index] = *clock
+	}
 	for attempt := 0; ; attempt++ {
 		err := g.db.Transaction(func(tx *gorm.DB) error {
 			locked := tx.Model(&approvalGate{}).Where("id = 1").UpdateColumn("version", gorm.Expr("version + 1"))
@@ -73,6 +78,10 @@ func (g *GormDB) approvalTransaction(fn func(*gorm.DB) error) error {
 			}
 			if locked.RowsAffected != 1 {
 				return fmt.Errorf("approval mutation gate unavailable")
+			}
+			elapsed := time.Since(started)
+			for index, clock := range clocks {
+				*clock = initial[index].Add(elapsed)
 			}
 			return fn(tx)
 		})
@@ -195,7 +204,7 @@ func (g *GormDB) AdmitApprovalScan(req ApprovalAdmission) (*ApprovalScan, bool, 
 			}
 		}
 		return nil
-	})
+	}, &req.Now)
 	if err != nil {
 		return nil, false, err
 	}
@@ -221,9 +230,20 @@ func (g *GormDB) GetApprovalScanByIdempotency(user int, key string) (*ApprovalSc
 }
 
 func (g *GormDB) ReleaseApprovalTargetSlot(id, token string) error {
+	now := time.Now()
 	return g.approvalTransaction(func(tx *gorm.DB) error {
-		return tx.Model(&ApprovalTarget{}).Where("id = ? AND lease_token = ? AND execution_status IN ?", id, token, []string{"completed", "failed", "timed_out", "cancelled"}).Updates(map[string]any{"lease_token": "", "lease_until": nil}).Error
-	})
+		var target ApprovalTarget
+		if err := tx.Where("id = ? AND lease_token = ? AND execution_status IN ?", id, token, []string{"completed", "failed", "timed_out", "cancelled"}).First(&target).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if err := tx.Model(&target).Updates(map[string]any{"lease_token": "", "lease_until": nil}).Error; err != nil {
+			return err
+		}
+		return approvalSettleParent(tx, target.ScanID, now)
+	}, &now)
 }
 func (g *GormDB) ListApprovalScans(user int, kind string, limit int, cursor string) ([]ApprovalScan, error) {
 	q := g.db.Where("user_id = ?", user)
@@ -339,7 +359,7 @@ func approvalSettleParent(tx *gorm.DB, id string, now time.Time) error {
 	active := false
 	started := false
 	for _, t := range targets {
-		if !approvalTerminal(t.ExecutionStatus) {
+		if !approvalTerminal(t.ExecutionStatus) || (t.ExecutionStatus == "cancelled" && t.LeaseUntil != nil && t.LeaseUntil.After(now)) {
 			active = true
 		}
 		if t.StartedAt != nil {
@@ -353,6 +373,7 @@ func approvalSettleParent(tx *gorm.DB, id string, now time.Time) error {
 		}
 	}
 	if active {
+		scan.CompletedAt = nil
 		if scan.CancelRequested {
 			scan.Status = "cancelling"
 		} else if started {
@@ -400,6 +421,15 @@ func (g *GormDB) ClaimApprovalTarget(req ApprovalClaim) (*ApprovalTarget, error)
 	}
 	var claimed *ApprovalTarget
 	err := g.approvalTransaction(func(tx *gorm.DB) error {
+		var cancelling []ApprovalScan
+		if err := tx.Where("status = ?", "cancelling").Find(&cancelling).Error; err != nil {
+			return err
+		}
+		for _, scan := range cancelling {
+			if err := approvalSettleParent(tx, scan.ID, req.Now); err != nil {
+				return err
+			}
+		}
 		var targets []ApprovalTarget
 		if err := tx.Where("execution_status IN ?", []string{"queued", "collecting", "investigating", "validating"}).Order("created_at ASC, id ASC").Find(&targets).Error; err != nil {
 			return err
@@ -483,7 +513,7 @@ func (g *GormDB) ClaimApprovalTarget(req ApprovalClaim) (*ApprovalTarget, error)
 			return nil
 		}
 		return nil
-	})
+	}, &req.Now)
 	return claimed, err
 }
 
@@ -498,7 +528,7 @@ func (g *GormDB) HeartbeatApprovalTarget(id, token string, now time.Time, durati
 			until = *t.Deadline
 		}
 		return tx.Model(t).Update("lease_until", until).Error
-	})
+	}, &now)
 }
 func (g *GormDB) SetApprovalTargetStage(id, token, stage string, now time.Time) error {
 	if stage != "collecting" && stage != "investigating" && stage != "validating" {
@@ -510,7 +540,7 @@ func (g *GormDB) SetApprovalTargetStage(id, token, stage string, now time.Time) 
 			return err
 		}
 		return tx.Model(t).Update("execution_status", stage).Error
-	})
+	}, &now)
 }
 func (g *GormDB) SaveApprovalSnapshot(id, token, body string, now time.Time) error {
 	if !json.Valid([]byte(body)) {
@@ -532,7 +562,7 @@ func (g *GormDB) SaveApprovalSnapshot(id, token, body string, now time.Time) err
 			return err
 		}
 		return tx.Create(&approvalSnapshot{TargetID: id, JSON: body, CreatedAt: now}).Error
-	})
+	}, &now)
 }
 
 func (g *GormDB) ReserveApprovalBudget(id, token string, now time.Time, dailyInput, dailyOutput, targetInput, targetOutput int64) error {
@@ -567,7 +597,7 @@ func (g *GormDB) ReserveApprovalBudget(id, token string, now time.Time, dailyInp
 		t.ReservedInput = targetInput
 		t.ReservedOutput = targetOutput
 		return tx.Save(t).Error
-	})
+	}, &now)
 }
 func (g *GormDB) ReserveApprovalCall(id, token string, now time.Time, r ApprovalCallReservation) error {
 	if r.CallID == "" || r.InputTokens < 0 || r.OutputTokens < 0 || r.ToolCalls < 0 {
@@ -589,7 +619,7 @@ func (g *GormDB) ReserveApprovalCall(id, token string, now time.Time, r Approval
 		t.PendingInput = r.InputTokens
 		t.PendingOutput = r.OutputTokens
 		return tx.Save(t).Error
-	})
+	}, &now)
 }
 func (g *GormDB) CompleteApprovalCall(id, token, callID string, now time.Time, input, output int64) error {
 	return g.approvalTransaction(func(tx *gorm.DB) error {
@@ -609,7 +639,7 @@ func (g *GormDB) CompleteApprovalCall(id, token, callID string, now time.Time, i
 		t.PendingInput = 0
 		t.PendingOutput = 0
 		return tx.Save(t).Error
-	})
+	}, &now)
 }
 
 func (g *GormDB) FinalizeApprovalTarget(id, token string, now time.Time, f ApprovalFinalization) error {
@@ -658,6 +688,11 @@ func (g *GormDB) FinalizeApprovalTarget(id, token string, now time.Time, f Appro
 			t.Decision = ""
 		}
 		t.Freshness = f.Freshness
+		if f.Freshness == "current" && t.ObservedChangeAt != nil && t.StartedAt != nil && !t.ObservedChangeAt.Before(*t.StartedAt) {
+			t.Freshness = "stale"
+			f.ValidUntil = &now
+			f.ReasonCodesJSON = approvalReason("observed_pr_change")
+		}
 		t.ReasonCodesJSON = f.ReasonCodesJSON
 		t.Summary = f.Summary
 		t.ValidatedAt = f.ValidatedAt
@@ -675,7 +710,7 @@ func (g *GormDB) FinalizeApprovalTarget(id, token string, now time.Time, f Appro
 			return err
 		}
 		return approvalSettleParent(tx, t.ScanID, now)
-	})
+	}, &now)
 }
 
 func (g *GormDB) ReserveApprovalUsage(id, token string, now time.Time, r ApprovalUsageReservation) error {
@@ -705,7 +740,7 @@ func (g *GormDB) ReserveApprovalUsage(id, token string, now time.Time, r Approva
 		t.Rounds += u.Rounds
 		t.ToolCalls += u.ToolCalls
 		return tx.Save(t).Error
-	})
+	}, &now)
 }
 
 func (g *GormDB) SettleApprovalUsage(id, token, reservationID string, now time.Time, actual ApprovalUsage) error {
@@ -728,7 +763,7 @@ func (g *GormDB) SettleApprovalUsage(id, token, reservationID string, now time.T
 			return err
 		}
 		return tx.Model(&r).Update("settled", true).Error
-	})
+	}, &now)
 }
 
 func approvalCancel(tx *gorm.DB, user int, id string, now time.Time) error {
@@ -760,7 +795,7 @@ func approvalCancel(tx *gorm.DB, user int, id string, now time.Time) error {
 	return approvalSettleParent(tx, id, now)
 }
 func (g *GormDB) CancelApprovalScan(user int, id string, now time.Time) error {
-	return g.approvalTransaction(func(tx *gorm.DB) error { return approvalCancel(tx, user, id, now) })
+	return g.approvalTransaction(func(tx *gorm.DB) error { return approvalCancel(tx, user, id, now) }, &now)
 }
 func (g *GormDB) CancelAllApprovalScans(now time.Time) error {
 	return g.approvalTransaction(func(tx *gorm.DB) error {
@@ -774,7 +809,7 @@ func (g *GormDB) CancelAllApprovalScans(now time.Time) error {
 			}
 		}
 		return nil
-	})
+	}, &now)
 }
 
 func (g *GormDB) ClaimApprovalValidation(user int, id string, now time.Time, duration time.Duration) (*ApprovalValidation, error) {
@@ -815,7 +850,7 @@ func (g *GormDB) ClaimApprovalValidation(user int, id string, now time.Time, dur
 		}
 		result = &v
 		return nil
-	})
+	}, &now)
 	return result, err
 }
 func (g *GormDB) FinishApprovalValidation(user int, id, token string, now time.Time, freshness, reason string) error {
@@ -855,12 +890,12 @@ func (g *GormDB) FinishApprovalValidation(user int, id, token string, now time.T
 			return err
 		}
 		return tx.Delete(&v).Error
-	})
+	}, &now)
 }
 func (g *GormDB) InvalidateApprovalTargets(owner, repo string, number int, reason string, now time.Time) error {
 	return g.approvalTransaction(func(tx *gorm.DB) error {
-		return tx.Model(&ApprovalTarget{}).Where("owner = ? AND repo = ? AND number = ? AND execution_status = ? AND freshness = ?", strings.ToLower(owner), strings.ToLower(repo), number, "completed", "current").Updates(map[string]any{"freshness": "stale", "valid_until": now, "reason_codes_json": approvalReason(reason)}).Error
-	})
+		return tx.Model(&ApprovalTarget{}).Where("owner = ? AND repo = ? AND number = ? AND execution_status IN ?", strings.ToLower(owner), strings.ToLower(repo), number, []string{"collecting", "investigating", "validating", "completed"}).Updates(map[string]any{"observed_change_at": now, "freshness": "stale", "valid_until": now, "reason_codes_json": approvalReason(reason)}).Error
+	}, &now)
 }
 func (g *GormDB) PruneApprovalScans(before time.Time) (int64, error) {
 	var count int64

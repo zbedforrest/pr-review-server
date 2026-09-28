@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -201,5 +202,66 @@ func validateCitations(ctx context.Context, s Snapshot, repo Repository, a *Asse
 			}
 		}
 	}
+	for _, concern := range a.Concerns {
+		if concern.Disposition != "fixed" {
+			continue
+		}
+		supported := false
+		for _, current := range concern.Citations {
+			if current.Path == "" || current.Revision != s.Revision.Head {
+				continue
+			}
+			hasOriginal := false
+			for _, old := range concern.Citations {
+				if old.Path == current.Path && old.Revision == concern.OriginalRevision && old.Revision != s.Revision.Head {
+					hasOriginal = true
+				}
+			}
+			if !hasOriginal {
+				continue
+			}
+			diff, err := repo.Read(ctx, "read_diff", ReadRequest{Revision: s.Revision.Head, OtherRevision: concern.OriginalRevision, Path: current.Path})
+			if err != nil {
+				return err
+			}
+			if changedLinesSupport(diff.Text, current.StartLine, current.EndLine) {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return fmt.Errorf("fix has no relevant cited code change")
+		}
+	}
+
 	return nil
+}
+
+var approvalDiffHunk = regexp.MustCompile(`^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@`)
+
+func changedLinesSupport(diff string, start, end int) bool {
+	line := 0
+	for _, text := range strings.Split(diff, "\n") {
+		if match := approvalDiffHunk.FindStringSubmatch(text); match != nil {
+			line, _ = strconv.Atoi(match[1])
+			continue
+		}
+		if line == 0 || strings.HasPrefix(text, "+++") || strings.HasPrefix(text, "---") || text == "" {
+			continue
+		}
+		switch text[0] {
+		case '+':
+			if line >= start && line <= end {
+				return true
+			}
+			line++
+		case '-':
+			if line >= start && line <= end {
+				return true
+			}
+		case ' ':
+			line++
+		}
+	}
+	return false
 }

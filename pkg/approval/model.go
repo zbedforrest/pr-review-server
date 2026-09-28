@@ -84,7 +84,9 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	boundedClient := *client
+	boundedClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := boundedClient.Do(req)
 	if err != nil {
 		return reply, err
 	}
@@ -150,6 +152,7 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 			Choices []struct {
 				Finish  string `json:"finish_reason"`
 				Message struct {
+					Role    string `json:"role"`
 					Content string `json:"content"`
 					Calls   []struct {
 						ID       string `json:"id"`
@@ -180,7 +183,12 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 			}
 			reply.Calls = append(reply.Calls, modelCall{call.ID, call.Function.Name, json.RawMessage(call.Function.Arguments)})
 		}
-		reply.Raw, _ = json.Marshal(ch.Message)
+		ch.Message.Role = "assistant"
+		message, _ := json.Marshal(ch.Message)
+		var continuation map[string]any
+		_ = json.Unmarshal(message, &continuation)
+		continuation["role"] = "assistant"
+		reply.Raw, _ = json.Marshal(continuation)
 	}
 	if reply.Usage.InputTokens > 100000 || reply.Usage.OutputTokens > maxOutput {
 		return reply, fmt.Errorf("model exceeded reserved usage")

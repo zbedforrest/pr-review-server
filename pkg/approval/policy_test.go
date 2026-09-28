@@ -65,3 +65,46 @@ func TestDigestContentAndTime(t *testing.T) {
 		t.Fatal("edited review did not change digest")
 	}
 }
+
+func TestPolicyPreservesExtractedConcernProvenance(t *testing.T) {
+	for _, field := range []string{"claim", "severity", "revision"} {
+		t.Run(field, func(t *testing.T) {
+			s, a := validFixture()
+			s.Concerns = []Concern{{ID: "concern", EvidenceIDs: []string{"review"}, Claim: "Missing authorization check", OriginalSeverity: "critical", OriginalRevision: s.Revision.Head}}
+			a.Concerns = append([]Concern(nil), s.Concerns...)
+			a.Concerns[0].Disposition = "unresolved"
+			a.Concerns[0].Rationale = "The condition persists."
+			a.Artifacts[0].Classification = "concerns"
+			a.Artifacts[0].ConcernIDs = []string{"concern"}
+			s.Digest = SnapshotDigest(s)
+			a.SnapshotDigest = s.Digest
+			if err := ValidateAssessment(s, a); err != nil {
+				t.Fatal(err)
+			}
+			switch field {
+			case "claim":
+				a.Concerns[0].Claim = "Style suggestion"
+			case "severity":
+				a.Concerns[0].OriginalSeverity = "low"
+			case "revision":
+				a.Concerns[0].OriginalRevision = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			}
+			if err := ValidateAssessment(s, a); err == nil {
+				t.Fatal("altered concern accepted")
+			}
+		})
+	}
+}
+
+func TestPolicyRejectsInventedOriginalRevisionForDiscoveredConcern(t *testing.T) {
+	s, a := validFixture()
+	s.Evidence[0].ReviewedSHA = ""
+	a.Concerns = []Concern{{ID: "new", EvidenceIDs: []string{"review"}, Claim: "A reported bug", OriginalRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Disposition: "fixed", Rationale: "Changed code", Citations: []Citation{{Revision: s.Revision.Head, Path: "main.go", StartLine: 1, EndLine: 1, Excerpt: "new", Validated: true}, {Revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Path: "main.go", StartLine: 1, EndLine: 1, Excerpt: "old", Validated: true}}}}
+	a.Artifacts[0].Classification = "concerns"
+	a.Artifacts[0].ConcernIDs = []string{"new"}
+	s.Digest = SnapshotDigest(s)
+	a.SnapshotDigest = s.Digest
+	if err := ValidateAssessment(s, a); err == nil {
+		t.Fatal("unattributed original revision accepted")
+	}
+}
