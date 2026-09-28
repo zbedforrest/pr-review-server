@@ -16,8 +16,9 @@ type Target struct {
 	ExpectedHeadSHA string `json:"expected_head_sha"`
 }
 type Viewer struct {
-	ID    int    `json:"id"`
-	Login string `json:"login"`
+	ID       int    `json:"id"`
+	Login    string `json:"login"`
+	GitHubID int64  `json:"github_id"`
 }
 type Revision struct {
 	Head      string `json:"head"`
@@ -40,6 +41,7 @@ type Source struct {
 	RevisionRelation string `json:"revision_relation"`
 	FileCoverage     string `json:"file_coverage"`
 	Incomplete       bool   `json:"incomplete"`
+	Verdict          string `json:"verdict"`
 }
 type Evidence struct {
 	ID          string    `json:"id"`
@@ -55,6 +57,9 @@ type Evidence struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 	Resolved    bool      `json:"resolved"`
 	ConcernIDs  []string  `json:"concern_ids"`
+	Path        string    `json:"path,omitempty"`
+	StartLine   int       `json:"start_line,omitempty"`
+	EndLine     int       `json:"end_line,omitempty"`
 }
 type Citation struct {
 	EvidenceID string `json:"evidence_id,omitempty"`
@@ -72,6 +77,9 @@ type Concern struct {
 	Impact           string     `json:"impact"`
 	Claim            string     `json:"claim"`
 	OriginalRevision string     `json:"original_revision"`
+	Path             string     `json:"path,omitempty"`
+	StartLine        int        `json:"start_line,omitempty"`
+	EndLine          int        `json:"end_line,omitempty"`
 	Disposition      string     `json:"disposition"`
 	Rationale        string     `json:"rationale"`
 	Citations        []Citation `json:"citations"`
@@ -102,24 +110,25 @@ type Check struct {
 	SHA   string `json:"sha"`
 }
 type Snapshot struct {
-	ID                    string     `json:"id"`
-	Target                Target     `json:"target"`
-	Viewer                Viewer     `json:"viewer"`
-	RepositoryID          int64      `json:"repository_id"`
-	AccessPartition       string     `json:"access_partition"`
-	Revision              Revision   `json:"revision"`
-	CapturedAt            time.Time  `json:"captured_at"`
-	Digest                string     `json:"digest"`
-	Eligible              bool       `json:"eligible"`
-	ExclusionReasons      []string   `json:"exclusion_reasons"`
-	HumanChangesRequested bool       `json:"human_changes_requested"`
-	ReviewInProgress      bool       `json:"review_in_progress"`
-	Sources               []Source   `json:"sources"`
-	Evidence              []Evidence `json:"evidence"`
-	Concerns              []Concern  `json:"concerns"`
-	Manifest              Manifest   `json:"manifest"`
-	Checks                []Check    `json:"checks"`
-	AllowedRevisions      []string   `json:"allowed_revisions"`
+	ID                       string     `json:"id"`
+	Target                   Target     `json:"target"`
+	Viewer                   Viewer     `json:"viewer"`
+	RepositoryID             int64      `json:"repository_id"`
+	AccessPartition          string     `json:"access_partition"`
+	Revision                 Revision   `json:"revision"`
+	CapturedAt               time.Time  `json:"captured_at"`
+	Digest                   string     `json:"digest"`
+	Eligible                 bool       `json:"eligible"`
+	ExclusionReasons         []string   `json:"exclusion_reasons"`
+	HumanChangesRequested    bool       `json:"human_changes_requested"`
+	ProviderChangesRequested bool       `json:"provider_changes_requested"`
+	ReviewInProgress         bool       `json:"review_in_progress"`
+	Sources                  []Source   `json:"sources"`
+	Evidence                 []Evidence `json:"evidence"`
+	Concerns                 []Concern  `json:"concerns"`
+	Manifest                 Manifest   `json:"manifest"`
+	Checks                   []Check    `json:"checks"`
+	AllowedRevisions         []string   `json:"allowed_revisions"`
 }
 type Assessment struct {
 	SchemaVersion  string                `json:"schema_version"`

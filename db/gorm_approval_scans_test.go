@@ -414,6 +414,57 @@ func TestApprovalScanPaginationSentinelAndOwnership(t *testing.T) {
 	}
 }
 
+func TestApprovalReportedUsageOverReservationDebitsDailyBudget(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Now().UTC()
+	_, _, err := g.AdmitApprovalScan(approvalTestAdmission("overage", 1, now, 1))
+	require.NoError(t, err)
+	target, err := approvalTestClaim(g, now)
+	require.NoError(t, err)
+	require.NoError(t, g.ReserveApprovalBudget(target.ID, target.LeaseToken, now, 600000, 12000, 600000, 12000))
+	limits := ApprovalUsage{InputTokens: 600000, OutputTokens: 12000, Rounds: 16, ToolCalls: 40, ToolBytes: 1 << 20}
+	require.NoError(t, g.ReserveApprovalUsage(target.ID, target.LeaseToken, now, ApprovalUsageReservation{ID: "call", Usage: ApprovalUsage{InputTokens: 100000, OutputTokens: 12000, Rounds: 1}, Limits: limits}))
+	require.NoError(t, g.SettleApprovalUsage(target.ID, target.LeaseToken, "call", now, ApprovalUsage{InputTokens: 650000, OutputTokens: 13000, Rounds: 1}))
+	saved, err := g.GetApprovalTarget(1, "overage", target.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, 650000, saved.InputTokens)
+	require.EqualValues(t, 13000, saved.OutputTokens)
+	var budget approvalDailyBudget
+	require.NoError(t, g.db.First(&budget).Error)
+	require.EqualValues(t, 650000, budget.InputTokens)
+	require.EqualValues(t, 13000, budget.OutputTokens)
+	require.ErrorIs(t, g.ReserveApprovalUsage(target.ID, target.LeaseToken, now, ApprovalUsageReservation{ID: "next", Usage: ApprovalUsage{InputTokens: 1, OutputTokens: 1, Rounds: 1}, Limits: limits}), ErrApprovalBudget)
+	require.ErrorIs(t, g.SettleApprovalUsage(target.ID, target.LeaseToken, "call", now, ApprovalUsage{InputTokens: 650000, OutputTokens: 13000, Rounds: 1}), ErrApprovalLeaseLost)
+	require.NoError(t, g.FinalizeApprovalTarget(target.ID, target.LeaseToken, now, ApprovalFinalization{ExecutionStatus: "completed", Decision: "insufficient_evidence", Freshness: "expired", ReasonCodesJSON: `["budget_exhausted"]`}))
+	require.NoError(t, g.db.First(&budget).Error)
+	require.EqualValues(t, 650000, budget.InputTokens)
+	require.EqualValues(t, 13000, budget.OutputTokens)
+	r := approvalTestAdmission("blocked", 2, now, 2)
+	r.DailyInputLimit = 600000
+	r.DailyOutputLimit = 12000
+	_, _, err = g.AdmitApprovalScan(r)
+	require.ErrorIs(t, err, ErrApprovalBudget)
+}
+
+func TestApprovalSettlementRejectsHostileUsageAndReleasesOnlyUnusedTokens(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Now().UTC()
+	_, _, err := g.AdmitApprovalScan(approvalTestAdmission("bounded", 1, now, 1))
+	require.NoError(t, err)
+	target, err := approvalTestClaim(g, now)
+	require.NoError(t, err)
+	require.NoError(t, g.ReserveApprovalBudget(target.ID, target.LeaseToken, now, 600000, 12000, 600000, 12000))
+	limits := ApprovalUsage{InputTokens: 600000, OutputTokens: 12000, Rounds: 16, ToolCalls: 40, ToolBytes: 1 << 20}
+	require.NoError(t, g.ReserveApprovalUsage(target.ID, target.LeaseToken, now, ApprovalUsageReservation{ID: "call", Usage: ApprovalUsage{InputTokens: 100000, OutputTokens: 12000, Rounds: 1}, Limits: limits}))
+	require.ErrorIs(t, g.SettleApprovalUsage(target.ID, target.LeaseToken, "call", now, ApprovalUsage{InputTokens: 1 << 62, OutputTokens: 1, Rounds: 1}), ErrApprovalBudget)
+	require.NoError(t, g.SettleApprovalUsage(target.ID, target.LeaseToken, "call", now, ApprovalUsage{InputTokens: 150000, OutputTokens: 200, Rounds: 1}))
+	require.NoError(t, g.FinalizeApprovalTarget(target.ID, target.LeaseToken, now, ApprovalFinalization{ExecutionStatus: "completed", Decision: "insufficient_evidence", Freshness: "expired"}))
+	var budget approvalDailyBudget
+	require.NoError(t, g.db.First(&budget).Error)
+	require.EqualValues(t, 150000, budget.InputTokens)
+	require.EqualValues(t, 200, budget.OutputTokens)
+}
+
 func TestApprovalObservedChangeFencesFinalizationAndValidation(t *testing.T) {
 	g := approvalTestStore(t)
 	now := time.Now().UTC()
@@ -508,4 +559,65 @@ func TestApprovalLeaseChecksAdvanceAcrossMutationGateWait(t *testing.T) {
 			require.ErrorIs(t, approvalTestWaitBehindGate(t, g, guarded), ErrApprovalLeaseLost)
 		})
 	}
+}
+
+func TestApprovalQueueDeadlineDoesNotShortenStartedTarget(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Now().UTC()
+	req := approvalTestAdmission("queue-deadline", 1, now, 1, 2)
+	_, _, err := g.AdmitApprovalScan(req)
+	require.NoError(t, err)
+	scan, err := g.GetApprovalScan(1, "queue-deadline")
+	require.NoError(t, err)
+	start := scan.Deadline.Add(-time.Second)
+	target, err := approvalTestClaim(g, start)
+	require.NoError(t, err)
+	require.NotNil(t, target)
+	require.NoError(t, g.HeartbeatApprovalTarget(target.ID, target.LeaseToken, scan.Deadline.Add(time.Second), time.Minute))
+	require.NoError(t, approvalTestFinish(g, target, scan.Deadline.Add(2*time.Second)))
+	_, err = approvalTestClaim(g, scan.Deadline.Add(3*time.Second))
+	require.NoError(t, err)
+	rows, err := g.ListApprovalTargets(1, "queue-deadline", 25, "")
+	require.NoError(t, err)
+	require.Equal(t, "completed", rows[0].ExecutionStatus)
+	require.Equal(t, "timed_out", rows[1].ExecutionStatus)
+}
+
+func TestApprovalPrivateObservationDoesNotInvalidateOtherUsers(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Now().UTC()
+	for _, user := range []int{1, 2} {
+		_, _, err := g.AdmitApprovalScan(approvalTestAdmission(fmt.Sprintf("user-%d", user), user, now, 1))
+		require.NoError(t, err)
+		target, err := approvalTestClaim(g, now)
+		require.NoError(t, err)
+		require.NotNil(t, target)
+		require.NoError(t, approvalTestFinish(g, target, now))
+	}
+	require.NoError(t, g.InvalidateUserApprovalTargets(1, "acme", "example", 1, "private_update", now.Add(time.Second)))
+	first, err := g.GetApprovalTarget(1, "user-1", "user-1-1")
+	require.NoError(t, err)
+	require.Equal(t, "stale", first.Freshness)
+	second, err := g.GetApprovalTarget(2, "user-2", "user-2-1")
+	require.NoError(t, err)
+	require.Equal(t, "current", second.Freshness)
+	require.NoError(t, g.InvalidateApprovalTargets("acme", "example", 1, "global_update", now.Add(2*time.Second)))
+	second, err = g.GetApprovalTarget(2, "user-2", "user-2-1")
+	require.NoError(t, err)
+	require.Equal(t, "stale", second.Freshness)
+}
+
+func TestApprovalWorkerCanFinalizeOwnDeadlineWithoutLeaseTakeover(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Now().UTC()
+	_, _, err := g.AdmitApprovalScan(approvalTestAdmission("deadline-final", 1, now, 1))
+	require.NoError(t, err)
+	target, err := approvalTestClaim(g, now)
+	require.NoError(t, err)
+	require.NotNil(t, target)
+	require.NoError(t, g.FinalizeApprovalTarget(target.ID, target.LeaseToken, target.Deadline.Add(time.Millisecond), ApprovalFinalization{ExecutionStatus: "timed_out", Freshness: "expired"}))
+	result, err := g.GetApprovalTarget(1, "deadline-final", target.ID)
+	require.NoError(t, err)
+	require.Equal(t, "timed_out", result.ExecutionStatus)
+	require.ErrorIs(t, g.FinalizeApprovalTarget(target.ID, "wrong-holder", target.Deadline.Add(time.Second), ApprovalFinalization{ExecutionStatus: "timed_out"}), ErrApprovalLeaseLost)
 }

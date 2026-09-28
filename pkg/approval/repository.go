@@ -3,6 +3,7 @@ package approval
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,7 @@ const maxRepositoryRead = 64 << 10
 
 var fullRevision = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var repositoryComponent = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+var errUnsearchableBlob = errors.New("binary or oversized repository file")
 
 type GitRepository struct {
 	directory string
@@ -182,12 +184,23 @@ func (r *GitRepository) blob(ctx context.Context, revision, p string) (string, e
 	if len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") || fields[1] != "blob" || !fullRevision.MatchString(fields[2]) {
 		return "", fmt.Errorf("non-regular file denied")
 	}
+	sizeText, err := r.run(ctx, 64, "cat-file", "-s", fields[2])
+	if err != nil {
+		return "", err
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(sizeText), 10, 64)
+	if err != nil || size < 0 {
+		return "", fmt.Errorf("invalid blob size")
+	}
+	if size > 2<<20 {
+		return "", errUnsearchableBlob
+	}
 	out, err := r.run(ctx, 2<<20, "cat-file", "blob", fields[2])
 	if err != nil {
 		return "", err
 	}
 	if strings.ContainsRune(out, 0) {
-		return "", fmt.Errorf("binary file denied")
+		return "", errUnsearchableBlob
 	}
 	return out, nil
 }
@@ -258,6 +271,7 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 		}
 		var out strings.Builder
 		matches := 0
+		skipped := 0
 		next := offset
 		for ; next < len(entries) && next < offset+100; next++ {
 			parts := strings.SplitN(entries[next], "\t", 2)
@@ -277,6 +291,10 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 			} else {
 				body, e := r.blob(ctx, req.Revision, p)
 				if e != nil {
+					if errors.Is(e, errUnsearchableBlob) {
+						skipped++
+						continue
+					}
 					return ReadResult{}, e
 				}
 				for index, line := range strings.Split(body, "\n") {
@@ -301,6 +319,12 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 			}
 		}
 		result := ReadResult{Text: out.String()}
+		if skipped > 0 {
+			result.Text += fmt.Sprintf("Skipped %d binary or oversized files.\n", skipped)
+			if len(result.Text) > maxRepositoryRead {
+				return ReadResult{}, fmt.Errorf("search output limit exceeded")
+			}
+		}
 		if next < len(entries) {
 			result.NextCursor = strconv.Itoa(next)
 		}

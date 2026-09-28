@@ -135,15 +135,22 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
 			worker := approvalID()
+			available := s.approvalAvailable() == ""
+			nextMaintenance := time.Now().Add(time.Minute)
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
 					if s.approvalAvailable() != "" {
-						_ = store.CancelAllApprovalScans(time.Now())
+						if available || !time.Now().Before(nextMaintenance) {
+							_ = store.CancelAllApprovalScans(time.Now())
+							available = false
+							nextMaintenance = time.Now().Add(time.Minute)
+						}
 						continue
 					}
+					available = true
 					target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: worker, Now: time.Now(), LeaseDuration: 60 * time.Second, TargetDuration: 180 * time.Second, MaxSlots: 2})
 					if err == nil && target != nil {
 						s.investigateApproval(ctx, *target)
@@ -179,22 +186,36 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		renewed := time.Now()
+		failures := 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				scan, err := store.GetApprovalScan(target.UserID, target.ScanID)
-				if err != nil || scan.CancelRequested || s.approvalAvailable() != "" {
+				if err != nil {
+					failures++
+					if failures < 3 {
+						continue
+					}
+					cancel()
+					return
+				}
+				if scan.CancelRequested || s.approvalAvailable() != "" {
 					cancel()
 					return
 				}
 				if time.Since(renewed) >= 15*time.Second {
 					if err := store.HeartbeatApprovalTarget(target.ID, target.LeaseToken, time.Now(), 60*time.Second); err != nil {
+						failures++
+						if failures < 3 && !errors.Is(err, db.ErrApprovalLeaseLost) {
+							continue
+						}
 						cancel()
 						return
 					}
 					renewed = time.Now()
+					failures = 0
 				}
 			}
 		}
@@ -217,6 +238,11 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 		}
 		_ = store.FinalizeApprovalTarget(target.ID, target.LeaseToken, time.Now(), f)
 	}
+	defer func() {
+		if recover() != nil {
+			finish("failed", "insufficient_evidence", "expired", "runtime_failed", "Investigation could not complete", nil)
+		}
+	}()
 	fail := func(reason string) {
 		status := "failed"
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -224,8 +250,19 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 			reason = "deadline_exceeded"
 		}
 		if errors.Is(ctx.Err(), context.Canceled) {
-			status = "cancelled"
-			reason = "cancelled"
+			if parent.Err() != nil {
+				return
+			}
+			scan, err := store.GetApprovalScan(target.UserID, target.ScanID)
+			if err == nil && scan.CancelRequested {
+				return
+			}
+			if s.approvalAvailable() != "" {
+				_ = store.CancelApprovalScan(target.UserID, target.ScanID, time.Now())
+				return
+			}
+			status = "failed"
+			reason = "control_unavailable"
 		}
 		finish(status, "insufficient_evidence", "expired", reason, "Investigation could not complete", nil)
 	}
@@ -251,7 +288,7 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 		return
 	}
 	requested := approval.Target{Owner: target.Owner, Repo: target.Repo, Number: target.Number, ExpectedHeadSHA: target.ExpectedHeadSHA}
-	snapshot, err := s.collectApprovalSnapshot(ctx, requested, approval.Viewer{ID: user.ID, Login: user.GitHubUsername})
+	snapshot, err := s.collectApprovalSnapshot(ctx, requested, approval.Viewer{ID: user.ID, Login: user.GitHubUsername, GitHubID: user.GitHubID})
 	if err != nil {
 		fail("collection_failed")
 		return
@@ -310,6 +347,11 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 	investigator := s.approvalInvestigator(target)
 	assessment, err := investigator.Investigate(ctx, snapshot, repo, &approvalBudget{store: store, target: target})
 	if err != nil {
+		if errors.Is(err, approval.ErrInvestigationLimit) {
+			limited := approval.Evaluate(snapshot, approval.Assessment{SnapshotID: snapshot.ID, SnapshotDigest: snapshot.Digest, Summary: "Investigation reached its resource limit", CoverageGaps: []string{"Investigation could not inspect all required evidence within its resource budget"}})
+			finish("completed", limited.Decision, "expired", "budget_exhausted", limited.Summary, &limited)
+			return
+		}
 		fail("investigation_failed")
 		return
 	}
@@ -321,9 +363,9 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 		fail("access_unavailable")
 		return
 	}
-	fresh, err := s.collectApprovalSnapshot(ctx, requested, approval.Viewer{ID: user.ID, Login: user.GitHubUsername})
-	if err != nil {
-		fail("validation_failed")
+	fresh, err := s.collectApprovalSnapshot(ctx, requested, approval.Viewer{ID: user.ID, Login: user.GitHubUsername, GitHubID: user.GitHubID})
+	if err != nil || !fresh.Manifest.Complete {
+		finish("completed", assessment.Decision, "expired", "validation_failed", "Evidence could not be revalidated", &assessment)
 		return
 	}
 	if !s.approvalConfigurationMatches(*scan, &assessment) {
@@ -407,7 +449,7 @@ func (s *Server) handleApprovalRevalidate(w http.ResponseWriter, r *http.Request
 		}
 		states[target.ID] = "validating"
 		accepted = append(accepted, target.ID)
-		go s.revalidateApproval(target, *lease, approval.Viewer{ID: user.ID, Login: user.GitHubUsername})
+		go s.revalidateApproval(target, *lease, approval.Viewer{ID: user.ID, Login: user.GitHubUsername, GitHubID: user.GitHubID})
 	}
 	writeV1JSON(w, 202, map[string]any{"target_ids": accepted, "states": states})
 }
@@ -418,6 +460,10 @@ func (s *Server) revalidateApproval(target db.ApprovalTarget, lease db.ApprovalV
 	store := s.approvalStore()
 	freshness, reason := "expired", "validation_failed"
 	defer func() {
+		if recover() != nil {
+			freshness = "expired"
+			reason = "validation_failed"
+		}
 		_ = store.FinishApprovalValidation(viewer.ID, target.ID, lease.Token, time.Now(), freshness, reason)
 	}()
 	if !s.approvalValidationAvailable() || !s.approvalCanRead(ctx, viewer.ID, target) {

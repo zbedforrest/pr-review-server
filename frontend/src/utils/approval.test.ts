@@ -32,7 +32,7 @@ describe('candidate freshness', () => {
 describe('observed dashboard changes', () => {
   it('immediately withdraws old-head and newly ineligible candidates', () => {
     const old = target({ revision: sha });
-    for (const changed of [pr({ commit_sha: 'b'.repeat(40) }), pr({ draft: true }), pr({ pr_state: 'closed' }), pr({ hidden: true }), pr({ my_review_status: 'APPROVED', my_review_commit_sha: sha })]) {
+    for (const changed of [pr({ commit_sha: 'b'.repeat(40) }), pr({ draft: true }), pr({ pr_state: 'closed' }), pr({ hidden: true }), pr({ my_review_status: 'APPROVED', my_review_commit_sha: sha }), pr({ ci_state: 'failure' }), pr({ ci_state: 'pending' }), pr({ review_decision: 'CHANGES_REQUESTED' }), pr({ status: 'agent_reviewing' })]) {
       expect(isApprovalCandidate(reconcileApprovalTarget(old, changed), 100)).toBe(false);
     }
   });

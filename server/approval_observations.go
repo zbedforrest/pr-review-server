@@ -2,7 +2,7 @@ package server
 
 import "time"
 
-func (s *Server) observeApprovalEvent(eventType string, payload any) {
+func (s *Server) observeApprovalEvent(user int, eventType string, payload any) {
 	if eventType != EventPRUpdated && eventType != EventPRDeleted {
 		return
 	}
@@ -17,5 +17,5 @@ func (s *Server) observeApprovalEvent(eventType string, payload any) {
 	if !ok {
 		return
 	}
-	_ = store.InvalidateApprovalTargets(owner, repo, number, "observed_pr_change", time.Now())
+	_ = store.InvalidateUserApprovalTargets(user, owner, repo, number, "observed_pr_change", time.Now())
 }

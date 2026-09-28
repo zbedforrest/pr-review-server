@@ -5,6 +5,8 @@ import { ApprovalAPIError, approvalRequest, fetchApprovalCapabilities, fetchAppr
 import { usePRs } from '@/hooks/usePRs';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { approvalBucket, approvalKey, approvalScope, isApprovalCandidate, reconcileApprovalTarget, safeEvidenceURL } from '@/utils/approval';
+import { subscribeToWebSocketMessages } from '@/utils/websocket';
+import type { PR } from '@/types/pr';
 import { filterAndSortPRs, type PRFilterCriteria } from '@/utils/sectionFilters';
 import type { ApprovalCitation, ApprovalScan, ApprovalTarget } from '@/types/approval';
 import '@/styles/components/_approval-candidates.scss';
@@ -68,17 +70,35 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
   const currentDetail = detail.data && selectedPR && !selectedPR.hidden && latestSelected
     ? reconcileApprovalTarget(detail.data, selectedPR, latestSelected) : undefined;
 
+  useEffect(() => {
+    if (!enabled) return;
+    return subscribeToWebSocketMessages(message => {
+      if (!['pr_updated', 'pr_deleted'].includes(message.type) || !message.payload) return;
+      const pr = message.payload as Partial<PR>;
+      if (!pr.owner || !pr.repo || typeof pr.number !== 'number') return;
+      const key = approvalKey({ owner: pr.owner, repo: pr.repo, number: pr.number });
+      const withdraw = (target: ApprovalTarget): ApprovalTarget => approvalKey(target) === key
+        ? { ...target, freshness_state: 'stale', reason_codes: Array.from(new Set([...(target.reason_codes || []), 'evidence_changed'])) } : target;
+      void client.cancelQueries({ queryKey: ['approval-targets'] }, { revert: false });
+      void client.cancelQueries({ queryKey: ['approval-evidence'] }, { revert: false });
+      client.setQueryData<ApprovalTarget[]>(['approval-targets'], old => old?.map(withdraw));
+      client.setQueriesData<ApprovalTarget>({ queryKey: ['approval-evidence'] }, old => old ? withdraw(old) : old);
+      client.setQueriesData<{ scan: ApprovalScan; targets: ApprovalTarget[] | null }>({ queryKey: ['approval-scan'] }, old => old ? { ...old, targets: old.targets?.map(withdraw) || null } : old);
+      void client.invalidateQueries({ queryKey: ['approval-targets'] });
+      void client.invalidateQueries({ predicate: query => query.queryKey[0] === 'approval-evidence' && !!query.state.data && approvalKey(query.state.data as ApprovalTarget) === key });
+    });
+  }, [client, enabled]);
   useEffect(() => { setSlot(document.getElementById('approval-action-slot')); const interval = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(interval); }, []);
   useEffect(() => {
     if (!enabled || !targets.data || now - lastValidationRequest.current < 10000) return;
-    const pending = targets.data.filter(target => visibleKeys.has(approvalKey(target)) && target.decision === 'candidate' && target.execution_status === 'completed' && target.freshness_state !== 'stale' && (open || !isApprovalCandidate(target, now)) && (!validated.current.has(target.target_id) || (!isApprovalCandidate(target, now) && !validated.current.has(`${target.target_id}:${target.valid_until}`)))).slice(0, 2);
+    const pending = targets.data.filter(target => visibleKeys.has(approvalKey(target)) && target.decision === 'candidate' && target.execution_status === 'completed' && target.freshness_state !== 'stale' && (open || !isApprovalCandidate(target, now)) && (!validated.current.has(target.target_id) || (!isApprovalCandidate(target, now) && !validated.current.has(`${target.target_id}:${target.validated_at || "never"}`)))).slice(0, 2);
     if (!pending.length) return;
     lastValidationRequest.current = now;
-    pending.forEach(target => { validated.current.add(target.target_id); validated.current.add(`${target.target_id}:${target.valid_until}`); });
+    pending.forEach(target => { validated.current.add(target.target_id); validated.current.add(`${target.target_id}:${target.validated_at || "never"}`); });
     void approvalRequest<{ states?: Record<string, string> }>('approval-candidates/revalidate', { target_ids: pending.map(target => target.target_id) }).then(response => {
       if (Object.values(response?.states || {}).some(state => state === 'validating' || state === 'busy_or_already_running')) setValidationPollingUntil(Date.now() + 30000);
       pending.forEach(target => {
-        const key = `${target.target_id}:${target.valid_until}`;
+        const key = `${target.target_id}:${target.validated_at || "never"}`;
         const attempts = (validationAttempts.current.get(key) || 0) + 1;
         validationAttempts.current.set(key, attempts);
         if (response?.states?.[target.target_id] === 'busy_or_already_running' && attempts < 3) { validated.current.delete(target.target_id); validated.current.delete(key); }
@@ -146,8 +166,8 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
           <p className="approval-muted">Assessed commit <code>{currentDetail.revision.slice(0, 12)}</code><br />Assessed {time(currentDetail.assessment?.assessed_at)}<br />Last checked {time(currentDetail.validated_at)}</p>
           <div className="approval-actions"><button disabled={busy || !!active || !capabilities.data?.available} onClick={() => recheck(currentDetail)} title={active ? 'Investigation already running' : undefined}>Recheck</button><a href={`https://github.com/${encodeURIComponent(currentDetail.owner)}/${encodeURIComponent(currentDetail.repo)}/pull/${currentDetail.number}`} target="_blank" rel="noreferrer">Open PR</a></div>
           {!!active && <p>Investigation already running. View progress above.</p>}
-          <h4>Review sources</h4>{(currentDetail.assessment?.sources || []).map(source => <div className="approval-source" key={source.id}><strong>{source.provider}</strong> · {source.verified ? 'Verified identity' : 'Unverified identity'}<br />{label(source.completion)} · {source.reviewed_sha ? `${source.reviewed_sha === selectedPR?.commit_sha && currentDetail.freshness_state === 'current' ? 'Current commit' : 'Reviewed commit'} ${source.reviewed_sha.slice(0, 12)}` : 'Commit unknown'}<br /><small>{source.file_coverage === 'not_reported' ? 'File coverage not reported' : label(source.file_coverage || 'not_reported')}</small></div>)}
-          {!currentDetail.assessment?.sources?.some(source => source.provider === 'copilot') && <p className="approval-muted">Copilot: Not observed</p>}
+          <h4>Review sources</h4>{(currentDetail.sources || currentDetail.assessment?.sources || []).map(source => <div className="approval-source" key={source.id}><strong>{source.provider}</strong> · {source.verified ? 'Verified identity' : 'Unverified identity'}<br />{label(source.completion)} · {source.reviewed_sha ? `${source.reviewed_sha === selectedPR?.commit_sha && currentDetail.freshness_state === 'current' ? 'Current commit' : 'Reviewed commit'} ${source.reviewed_sha.slice(0, 12)}` : 'Commit unknown'}<br /><small>{source.file_coverage === 'not_reported' ? 'File coverage not reported' : label(source.file_coverage || 'not_reported')}</small></div>)}
+          {!(currentDetail.sources || currentDetail.assessment?.sources || []).some(source => source.provider === 'copilot') && <p className="approval-muted">Copilot: Not observed</p>}
           <h4>Concerns</h4>{(currentDetail.assessment?.concerns || []).map(concern => <article className="approval-concern" key={concern.id}><strong>{concern.claim}</strong><p>Agent assessment: {concern.disposition === 'fixed' ? 'Fix supported by code inspection' : label(concern.disposition)}</p><p>{concern.rationale}</p>{(concern.citations || []).map((citation, index) => <Citation key={index} citation={citation} target={currentDetail} />)}</article>)}
           {!currentDetail.assessment?.concerns?.length && <p>No concern dispositions recorded.</p>}
           <h4>Checks and limitations</h4>{currentDetail.snapshot?.human_changes_requested && <p>Standing human changes requested.</p>}

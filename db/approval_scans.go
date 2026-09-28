@@ -145,5 +145,6 @@ type ApprovalStore interface {
 	ClaimApprovalValidation(int, string, time.Time, time.Duration) (*ApprovalValidation, error)
 	FinishApprovalValidation(int, string, string, time.Time, string, string) error
 	InvalidateApprovalTargets(string, string, int, string, time.Time) error
+	InvalidateUserApprovalTargets(int, string, string, int, string, time.Time) error
 	PruneApprovalScans(time.Time) (int64, error)
 }

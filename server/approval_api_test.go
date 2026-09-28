@@ -155,6 +155,7 @@ func TestApprovalAPIAdmissionAtomicAndStandingApproval(t *testing.T) {
 		{name: "wrong head", numbers: []int{1}, head: strings.Repeat("f", 40), code: 409},
 		{name: "draft", numbers: []int{1}, draft: true, code: 422},
 		{name: "standing approval survives comment", numbers: []int{1}, reviews: fmt.Sprintf(`[{"id":1,"user":{"login":"reviewer"},"state":"APPROVED","commit_id":%q},{"id":2,"user":{"login":"reviewer"},"state":"COMMENTED"}]`, strings.Repeat("a", 40)), code: 422},
+		{name: "later submission wins over creation ID", numbers: []int{1}, reviews: fmt.Sprintf(`[{"id":2,"user":{"login":"reviewer"},"state":"APPROVED","commit_id":%q,"submitted_at":"2026-09-27T12:00:00Z"},{"id":1,"user":{"login":"reviewer"},"state":"CHANGES_REQUESTED","commit_id":%q,"submitted_at":"2026-09-28T12:00:00Z"}]`, strings.Repeat("a", 40), strings.Repeat("a", 40)), code: 202},
 		{name: "old approval eligible", numbers: []int{1}, reviews: fmt.Sprintf(`[{"id":1,"user":{"login":"reviewer"},"state":"APPROVED","commit_id":%q}]`, strings.Repeat("f", 40)), code: 202},
 	} {
 		t.Run(test.name, func(t *testing.T) {

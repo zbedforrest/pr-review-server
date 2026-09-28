@@ -24,7 +24,7 @@ An identity configuration has this shape, using example IDs only:
 [{"provider":"greptile","actor_id":12345},{"provider":"copilot","actor_id":67890}]
 ```
 
-Resolve and verify the actual GitHub numeric bot account IDs before configuration. A matching display name, login substring, or comment marker never establishes trust. Actors must also have GitHub's `Bot` type. An optional `app_id` constraint remains unverified when GitHub's review payload does not expose that identity. Missing allowlists leave those artifacts visible as generic evidence. Local PRism evidence is verified against durable completed runs and immutable sidecars.
+Resolve and verify the actual GitHub numeric bot account IDs before configuration. A matching display name, login substring, or comment marker never establishes trust. Actors must also have GitHub's `Bot` type. Nonzero `app_id` constraints make this runtime unavailable because GitHub review payloads do not expose enough app identity; configure verified actor IDs instead. Missing allowlists leave those artifacts visible as generic evidence. Local PRism evidence is verified against durable completed runs and immutable sidecars.
 
 ## Runtime and storage
 
@@ -40,7 +40,7 @@ Admission snapshots provider, model and policy/runtime versions. Configuration d
 
 ## Rollout and rollback
 
-1. Apply the additive migrations with the feature disabled. Existing ordinary reviews continue independently.
+1. Merge the complete draft stack and apply the additive migrations with the feature disabled. Existing ordinary reviews continue independently.
 2. Configure an explicit provider/model and small daily budgets. Confirm authenticated `GET /api/v1/approval-capabilities` reports availability without revealing credentials.
 3. Enable in a pilot deployment. Start with a few PRs covering PRism, Greptile, Copilot, a changed HEAD, unresolved concerns, and missing evidence. Compare every recommendation with a human review.
 4. Confirm tool use and cumulative usage in retained results, test cancellation, and confirm observations or expiration withdraw recommendations.
@@ -50,8 +50,8 @@ Set `APPROVAL_CANDIDATES_ENABLED=false` and restart replicas to roll back. The U
 
 ## Validation and limits
 
-Automated fixtures cover both native API adapters, required artifact reads, immutable concern provenance, provider identity, nested pagination failures, incomplete coverage, code citation checks, tool boundaries, cancellation, recovery, budget reservations, generation fencing, SQLite/PostgreSQL transactions, API ownership, and UI freshness. Browser fixtures exercise desktop/mobile themes and keyboard focus.
+Automated fixtures cover both native API adapters, required artifact reads, anchored concern provenance, provider identity, nested pagination failures, incomplete coverage, code citation checks, tool boundaries, cancellation, recovery, budget reservations, generation fencing, SQLite/PostgreSQL transactions, API ownership, and UI freshness. Browser fixtures exercise desktop/mobile themes and keyboard focus.
 
 The implementation was verified with controlled HTTP/provider fixtures. A paid live-model pilot and a production rollout have not been performed. API compatibility tests do not measure recommendation quality on a deployed repository.
 
-Reviews without immutable PRism sidecars, unknown reviewed revisions, incomplete pagination, missing provider identity, large evidence sets, or exhausted tool/model budgets produce gaps or failed investigations. The dashboard may lack the current user's actual reviewed SHA; it then keeps that PR in the launch pool and admission resolves eligibility using live review metadata. File coverage is labeled unreported unless the source supplies it. Positive CI does not assert branch-rule compliance, and code inspection does not assert tests were executed.
+Historical legacy or cache-restored PRism runs without immutable full-revision sidecars remain evidence gaps even after a newer review succeeds; the runtime does not silently discard or override them. Reviews without immutable PRism sidecars, unknown reviewed revisions, incomplete pagination, missing provider identity, large evidence sets, or exhausted tool/model budgets produce gaps or failed investigations. The dashboard may lack the current user's actual reviewed SHA; it then keeps that PR in the launch pool and admission resolves eligibility using live review metadata. Safe concern dispositions require source anchors; unanchored concerns remain insufficient evidence. Collection ceilings do not guarantee that every artifact fits the smaller investigation budget. File coverage is labeled unreported unless the source supplies it. Positive CI does not assert branch-rule compliance, and code inspection does not assert tests were executed.

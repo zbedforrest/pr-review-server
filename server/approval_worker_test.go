@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -225,4 +226,67 @@ func TestApprovalRevalidationChecksConfigurationAndAssessmentVersions(t *testing
 			}
 		})
 	}
+}
+
+func TestApprovalWorkerPartialValidationExpiresAssessment(t *testing.T) {
+	s, store, target := approvalWorkerFixture(t)
+	collector := s.approvalExecution.collector
+	calls := 0
+	s.approvalExecution.collector = approvalCollectorFunc(func(ctx context.Context, target approval.Target, viewer approval.Viewer) (approval.Snapshot, error) {
+		snapshot, err := collector.Collect(ctx, target, viewer)
+		calls++
+		if calls > 1 {
+			snapshot.Manifest.Complete = false
+			approval.CanonicalizeSnapshot(&snapshot)
+		}
+		return snapshot, err
+	})
+	s.approvalExecution.investigator = func(db.ApprovalTarget) approval.Investigator {
+		return approvalInvestigatorFunc(func(context.Context, approval.Snapshot, approval.Repository, approval.Budget) (approval.Assessment, error) {
+			return approval.Assessment{SchemaVersion: "1", PolicyVersion: approval.PolicyVersion, PromptVersion: approval.PromptVersion, RuntimeVersion: approval.RuntimeVersion, Model: "fixture-model", Decision: "candidate", Summary: "Fixture assessment"}, nil
+		})
+	}
+	s.investigateApproval(context.Background(), target)
+	result, err := store.GetApprovalTarget(target.UserID, target.ScanID, target.ID)
+	require.NoError(t, err)
+	require.Equal(t, "completed", result.ExecutionStatus)
+	require.Equal(t, "expired", result.Freshness)
+	require.Contains(t, result.ReasonCodesJSON, "validation_failed")
+	require.NotEmpty(t, result.AssessmentJSON)
+}
+
+func TestApprovalWorkerRecoversInvestigatorPanic(t *testing.T) {
+	s, store, target := approvalWorkerFixture(t)
+	s.approvalExecution.investigator = func(db.ApprovalTarget) approval.Investigator {
+		return approvalInvestigatorFunc(func(context.Context, approval.Snapshot, approval.Repository, approval.Budget) (approval.Assessment, error) {
+			panic("fixture")
+		})
+	}
+	s.investigateApproval(context.Background(), target)
+	result, err := store.GetApprovalTarget(target.UserID, target.ScanID, target.ID)
+	require.NoError(t, err)
+	require.Equal(t, "failed", result.ExecutionStatus)
+	require.Contains(t, result.ReasonCodesJSON, "runtime_failed")
+}
+
+type approvalCountingDatabase struct {
+	db.Database
+	db.ApprovalStore
+	cancellations atomic.Int32
+}
+
+func (d *approvalCountingDatabase) CancelAllApprovalScans(now time.Time) error {
+	d.cancellations.Add(1)
+	return d.ApprovalStore.CancelAllApprovalScans(now)
+}
+func TestApprovalDisabledWorkerDoesNotContinuouslyWrite(t *testing.T) {
+	s, store, _ := approvalWorkerFixture(t)
+	counting := &approvalCountingDatabase{Database: store, ApprovalStore: store}
+	s.db = counting
+	t.Setenv("APPROVAL_CANDIDATES_ENABLED", "false")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.runApprovalWorkers(ctx)
+	time.Sleep(2200 * time.Millisecond)
+	require.EqualValues(t, 1, counting.cancellations.Load())
 }

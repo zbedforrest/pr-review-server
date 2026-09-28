@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -321,7 +322,7 @@ func approvalLease(tx *gorm.DB, id, token string, now time.Time) (*ApprovalTarge
 	if err := tx.First(&s, "id = ?", t.ScanID).Error; err != nil {
 		return nil, err
 	}
-	if s.CancelRequested || !s.Deadline.After(now) {
+	if s.CancelRequested {
 		return nil, ErrApprovalLeaseLost
 	}
 	return &t, nil
@@ -331,20 +332,35 @@ func approvalReleaseBudget(tx *gorm.DB, t *ApprovalTarget) error {
 	if t.BudgetDay == "" {
 		return nil
 	}
-	input := t.ReservedInput - t.InputTokens
-	output := t.ReservedOutput - t.OutputTokens
-	if input < 0 {
-		input = 0
-	}
-	if output < 0 {
-		output = 0
-	}
-	if err := tx.Model(&approvalDailyBudget{}).Where("day = ?", t.BudgetDay).Updates(map[string]any{"input_tokens": gorm.Expr("input_tokens - ?", input), "output_tokens": gorm.Expr("output_tokens - ?", output)}).Error; err != nil {
+	if err := approvalAdjustDailyBudget(tx, t.BudgetDay, t.InputTokens-t.ReservedInput, t.OutputTokens-t.ReservedOutput); err != nil {
 		return err
 	}
 	t.ReservedInput = t.InputTokens
 	t.ReservedOutput = t.OutputTokens
 	return nil
+}
+
+func approvalAdjustDailyBudget(tx *gorm.DB, day string, inputDelta, outputDelta int64) error {
+	var budget approvalDailyBudget
+	if err := tx.First(&budget, "day = ?", day).Error; err != nil {
+		return err
+	}
+	adjust := func(current, delta int64) (int64, error) {
+		if current < 0 || delta > 0 && current > math.MaxInt64-delta || delta < 0 && current < -delta {
+			return 0, ErrApprovalBudget
+		}
+		return current + delta, nil
+	}
+	var err error
+	budget.InputTokens, err = adjust(budget.InputTokens, inputDelta)
+	if err != nil {
+		return err
+	}
+	budget.OutputTokens, err = adjust(budget.OutputTokens, outputDelta)
+	if err != nil {
+		return err
+	}
+	return tx.Save(&budget).Error
 }
 func approvalSettleParent(tx *gorm.DB, id string, now time.Time) error {
 	var scan ApprovalScan
@@ -447,7 +463,7 @@ func (g *GormDB) ClaimApprovalTarget(req ApprovalClaim) (*ApprovalTarget, error)
 			case scan.CancelRequested:
 				reason = "cancelled"
 				status = "cancelled"
-			case !scan.Deadline.After(req.Now):
+			case t.StartedAt == nil && !scan.Deadline.After(req.Now):
 				reason = "queue_deadline"
 			case t.Deadline != nil && !t.Deadline.After(req.Now):
 				reason = "target_deadline"
@@ -653,6 +669,18 @@ func (g *GormDB) FinalizeApprovalTarget(id, token string, now time.Time, f Appro
 		return fmt.Errorf("invalid assessment JSON")
 	}
 	return g.approvalTransaction(func(tx *gorm.DB) error {
+		if f.ExecutionStatus == "timed_out" {
+			var expired ApprovalTarget
+			if err := tx.Where("id = ? AND lease_token = ?", id, token).First(&expired).Error; err != nil {
+				return ErrApprovalLeaseLost
+			}
+			if !approvalTerminal(expired.ExecutionStatus) && expired.Deadline != nil && !expired.Deadline.After(now) {
+				if err := approvalTerminate(tx, &expired, now, "timed_out", "deadline_exceeded"); err != nil {
+					return err
+				}
+				return approvalSettleParent(tx, expired.ScanID, now)
+			}
+		}
 		t, err := approvalLease(tx, id, token, now)
 		if err != nil {
 			return err
@@ -753,12 +781,26 @@ func (g *GormDB) SettleApprovalUsage(id, token, reservationID string, now time.T
 		if err := tx.Where("id = ? AND target_id = ? AND lease_token = ? AND settled = ?", reservationID, id, token, false).First(&r).Error; err != nil {
 			return ErrApprovalLeaseLost
 		}
-		if actual.InputTokens < 0 || actual.OutputTokens < 0 || actual.ToolBytes < 0 || actual.Rounds < 0 || actual.ToolCalls < 0 || actual.InputTokens > r.InputTokens || actual.OutputTokens > r.OutputTokens || actual.ToolBytes > r.ToolBytes || actual.Rounds > r.Rounds || actual.ToolCalls > r.ToolCalls {
+		if actual.InputTokens < 0 || actual.OutputTokens < 0 || actual.ToolBytes < 0 || actual.Rounds < 0 || actual.ToolCalls < 0 || actual.InputTokens > 1_000_000_000 || actual.OutputTokens > 1_000_000_000 || actual.ToolBytes > r.ToolBytes || actual.Rounds > r.Rounds || actual.ToolCalls > r.ToolCalls || t.InputTokens > math.MaxInt64-actual.InputTokens || t.OutputTokens > math.MaxInt64-actual.OutputTokens {
 			return ErrApprovalBudget
 		}
 		t.InputTokens -= r.InputTokens - actual.InputTokens
 		t.OutputTokens -= r.OutputTokens - actual.OutputTokens
 		t.ToolBytes -= r.ToolBytes - actual.ToolBytes
+		inputOver, outputOver := int64(0), int64(0)
+		if t.InputTokens > t.ReservedInput {
+			inputOver = t.InputTokens - t.ReservedInput
+		}
+		if t.OutputTokens > t.ReservedOutput {
+			outputOver = t.OutputTokens - t.ReservedOutput
+		}
+		if inputOver > 0 || outputOver > 0 {
+			if err := approvalAdjustDailyBudget(tx, t.BudgetDay, inputOver, outputOver); err != nil {
+				return err
+			}
+			t.ReservedInput += inputOver
+			t.ReservedOutput += outputOver
+		}
 		if err := tx.Save(t).Error; err != nil {
 			return err
 		}
@@ -798,6 +840,13 @@ func (g *GormDB) CancelApprovalScan(user int, id string, now time.Time) error {
 	return g.approvalTransaction(func(tx *gorm.DB) error { return approvalCancel(tx, user, id, now) }, &now)
 }
 func (g *GormDB) CancelAllApprovalScans(now time.Time) error {
+	var count int64
+	if err := g.db.Model(&ApprovalScan{}).Where("status IN ?", []string{"queued", "running", "cancelling"}).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return nil
+	}
 	return g.approvalTransaction(func(tx *gorm.DB) error {
 		var scans []ApprovalScan
 		if err := tx.Where("status IN ?", []string{"queued", "running", "cancelling"}).Find(&scans).Error; err != nil {
@@ -893,8 +942,37 @@ func (g *GormDB) FinishApprovalValidation(user int, id, token string, now time.T
 	}, &now)
 }
 func (g *GormDB) InvalidateApprovalTargets(owner, repo string, number int, reason string, now time.Time) error {
+	return g.InvalidateUserApprovalTargets(0, owner, repo, number, reason, now)
+}
+func (g *GormDB) InvalidateUserApprovalTargets(user int, owner, repo string, number int, reason string, now time.Time) error {
 	return g.approvalTransaction(func(tx *gorm.DB) error {
-		return tx.Model(&ApprovalTarget{}).Where("owner = ? AND repo = ? AND number = ? AND execution_status IN ?", strings.ToLower(owner), strings.ToLower(repo), number, []string{"collecting", "investigating", "validating", "completed"}).Updates(map[string]any{"observed_change_at": now, "freshness": "stale", "valid_until": now, "reason_codes_json": approvalReason(reason)}).Error
+		q := tx.Where("owner = ? AND repo = ? AND number = ? AND execution_status IN ?", strings.ToLower(owner), strings.ToLower(repo), number, []string{"collecting", "investigating", "validating", "completed"})
+		q = q.Where("execution_status <> ? OR id IN (?)", "completed", tx.Model(&approvalProjection{}).Select("target_id"))
+		if user > 0 {
+			q = q.Where("user_id = ?", user)
+		}
+		var targets []ApprovalTarget
+		if err := q.Find(&targets).Error; err != nil {
+			return err
+		}
+		for _, t := range targets {
+			var reasons []string
+			_ = json.Unmarshal([]byte(t.ReasonCodesJSON), &reasons)
+			found := false
+			for _, r := range reasons {
+				if r == reason {
+					found = true
+				}
+			}
+			if !found {
+				reasons = append(reasons, reason)
+			}
+			body, _ := json.Marshal(reasons)
+			if err := tx.Model(&t).Updates(map[string]any{"observed_change_at": now, "freshness": "stale", "valid_until": now, "reason_codes_json": string(body)}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	}, &now)
 }
 func (g *GormDB) PruneApprovalScans(before time.Time) (int64, error) {

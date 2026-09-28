@@ -42,6 +42,10 @@ export function reconcileApprovalTarget(target: ApprovalTarget, pr: PR, latest?:
   else if (pr.draft) reason = 'draft';
   else if (pr.pr_state && pr.pr_state !== 'open') reason = 'closed';
   else if (pr.is_mine) reason = 'self_authored';
+  else if (pr.ci_state === 'failure') reason = 'ci_failed';
+  else if (pr.ci_state === 'pending') reason = 'ci_pending';
+  else if (pr.review_decision === 'CHANGES_REQUESTED' || pr.my_review_status === 'CHANGES_REQUESTED') reason = 'human_changes_requested';
+  else if (['pending', 'generating', 'agent_reviewing'].includes(pr.status)) reason = 'review_in_progress';
   else if (pr.my_review_status === 'APPROVED' && pr.my_review_commit_sha === pr.commit_sha) reason = 'already_approved';
   if (reason) return { ...current, freshness_state: 'stale', reason_codes: Array.from(new Set([...(current.reason_codes || []), reason])) };
   return current;

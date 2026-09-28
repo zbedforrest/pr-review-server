@@ -3,6 +3,7 @@ package approval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,8 +12,9 @@ import (
 )
 
 type testBudget struct {
-	used   Usage
-	refuse bool
+	used        Usage
+	refuse      bool
+	settlements int
 }
 
 func (b *testBudget) Reserve(ctx context.Context, u Usage) error {
@@ -23,6 +25,7 @@ func (b *testBudget) Reserve(ctx context.Context, u Usage) error {
 	return nil
 }
 func (b *testBudget) Settle(ctx context.Context, reserved, actual Usage) error {
+	b.settlements++
 	b.used.InputTokens += actual.InputTokens - reserved.InputTokens
 	b.used.OutputTokens += actual.OutputTokens - reserved.OutputTokens
 	b.used.ToolBytes += actual.ToolBytes - reserved.ToolBytes
@@ -167,5 +170,107 @@ func TestNativeRejectsClassificationsWithoutReadingArtifactBodies(t *testing.T) 
 				t.Fatalf("unread blocker accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestNativeRecoversRejectedReadAndTracksBatchBodies(t *testing.T) {
+	s, a := validFixture()
+	s.Evidence = append(s.Evidence, Evidence{ID: "second", Body: "Additional reviewer context"})
+	a.Artifacts = append(a.Artifacts, ArtifactDisposition{EvidenceID: "second", Classification: "non_actionable", Rationale: "Additional context contains no concern."})
+	s.Digest = SnapshotDigest(s)
+	a.SnapshotDigest = s.Digest
+	payload, _ := json.Marshal(a)
+	calls := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		if calls == 2 {
+			raw, _ := json.Marshal(request["messages"])
+			if !strings.Contains(string(raw), "Read rejected") {
+				t.Error("read failure was not returned to investigator")
+			}
+		}
+		content := []any{map[string]any{"type": "text", "text": string(payload)}}
+		stop := "end_turn"
+		if calls == 1 {
+			content = []any{map[string]any{"type": "tool_use", "id": "bad", "name": "read_file", "input": map[string]any{"revision": s.Revision.Head, "path": "../secret", "start_line": 1, "end_line": 1}}}
+			stop = "tool_use"
+		}
+		if calls == 2 {
+			content = []any{map[string]any{"type": "tool_use", "id": "batch", "name": "read_evidence", "input": map[string]any{"evidence_ids": []string{"review", "second"}}}}
+			stop = "tool_use"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": "model", "stop_reason": stop, "content": content, "usage": map[string]int{"input_tokens": 100, "output_tokens": 100}})
+	}))
+	defer remote.Close()
+	budget := &testBudget{}
+	n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture", BaseURL: remote.URL}}
+	result, err := n.Investigate(context.Background(), s, nil, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != "candidate" || budget.used.ToolCalls != 2 {
+		t.Fatalf("unexpected result %s with %+v", result.Decision, budget.used)
+	}
+}
+
+func TestNativeReportsBudgetCeilingAsInvestigationLimit(t *testing.T) {
+	s, _ := validFixture()
+	n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture"}, InitialUsage: Usage{Rounds: 16}}
+	_, err := n.Investigate(context.Background(), s, nil, &testBudget{})
+	if !errors.Is(err, ErrInvestigationLimit) {
+		t.Fatalf("expected resource limit, got %v", err)
+	}
+}
+
+func TestNativeSettlesOnlyValidatedReportedLimitUsage(t *testing.T) {
+	for _, provider := range []string{"anthropic", "openrouter"} {
+		for _, test := range []struct {
+			name          string
+			input, output int
+			model, stop   string
+			settled       bool
+		}{
+			{"input overage", 100001, 100, "model", "", true},
+			{"output overage", 100, 12001, "model", "", true},
+			{"truncated output", 100, 12000, "model", "limit", true},
+			{"wrong model", 100001, 100, "unexpected", "", false},
+			{"missing input", 0, 100, "model", "", false},
+			{"hostile integer", int(^uint(0) >> 1), 100, "model", "", false},
+		} {
+			t.Run(provider+"/"+test.name, func(t *testing.T) {
+				remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if provider == "anthropic" {
+						stop := "end_turn"
+						if test.stop == "limit" {
+							stop = "max_tokens"
+						}
+						_ = json.NewEncoder(w).Encode(map[string]any{"model": test.model, "stop_reason": stop, "content": []any{map[string]any{"type": "text", "text": "{}"}}, "usage": map[string]int{"input_tokens": test.input, "output_tokens": test.output}})
+					} else {
+						stop := "stop"
+						if test.stop == "limit" {
+							stop = "length"
+						}
+						_ = json.NewEncoder(w).Encode(map[string]any{"model": test.model, "choices": []any{map[string]any{"finish_reason": stop, "message": map[string]any{"role": "assistant", "content": "{}"}}}, "usage": map[string]int{"prompt_tokens": test.input, "completion_tokens": test.output}})
+					}
+				}))
+				defer remote.Close()
+				s, _ := validFixture()
+				budget := &testBudget{}
+				n := NativeInvestigator{Config: ModelConfig{Provider: provider, Model: "model", APIKey: "fixture", BaseURL: remote.URL}}
+				_, err := n.Investigate(context.Background(), s, nil, budget)
+				if err == nil {
+					t.Fatal("invalid model completion accepted")
+				}
+				if test.settled {
+					if !errors.Is(err, ErrInvestigationLimit) || budget.settlements != 1 || budget.used.InputTokens != test.input || budget.used.OutputTokens != test.output {
+						t.Fatalf("usage lost: %v %+v", err, budget)
+					}
+				} else if budget.settlements != 0 || budget.used.InputTokens != 100000 || budget.used.OutputTokens != 12000 {
+					t.Fatalf("untrusted usage settled: %+v", budget)
+				}
+			})
+		}
 	}
 }

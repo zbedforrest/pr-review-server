@@ -335,7 +335,7 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		if pr.GetState() != "open" {
 			exclusions = append(exclusions, "closed")
 		}
-		if strings.EqualFold(pr.GetUser().GetLogin(), user.GitHubUsername) {
+		if approvalViewerMatches(user, pr.GetUser().GetID(), pr.GetUser().GetLogin()) {
 			exclusions = append(exclusions, "self_authored")
 		}
 		reviews, err := s.ghClient.ListAllReviews(ctx, target.Owner, target.Repo, target.Number)
@@ -345,9 +345,13 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		}
 		standingState, standingSHA := "", ""
 		var latest int64
+		var latestSubmitted time.Time
 		for _, review := range reviews {
-			if strings.EqualFold(review.GetUser().GetLogin(), user.GitHubUsername) && review.GetID() > latest && (review.GetState() == "APPROVED" || review.GetState() == "CHANGES_REQUESTED" || review.GetState() == "DISMISSED") {
+			submitted := review.GetSubmittedAt().Time
+			newer := submitted.After(latestSubmitted) || submitted.Equal(latestSubmitted) && review.GetID() > latest
+			if approvalViewerMatches(user, review.GetUser().GetID(), review.GetUser().GetLogin()) && newer && (review.GetState() == "APPROVED" || review.GetState() == "CHANGES_REQUESTED" || review.GetState() == "DISMISSED") {
 				latest = review.GetID()
+				latestSubmitted = submitted
 				standingState = review.GetState()
 				standingSHA = review.GetCommitID()
 			}
@@ -461,7 +465,7 @@ func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target
 			reason = "observed_review_change"
 		case row.UserHidden:
 			reason = "hidden"
-		case strings.EqualFold(pr.GetUser().GetLogin(), user.GitHubUsername):
+		case approvalViewerMatches(user, pr.GetUser().GetID(), pr.GetUser().GetLogin()):
 			reason = "self_authored"
 		}
 		var snapshot approval.Snapshot
@@ -601,4 +605,11 @@ func (s *Server) handleApprovalCandidates(w http.ResponseWriter, r *http.Request
 		}
 	}
 	writeV1JSON(w, 200, map[string]any{"targets": targets, "next_cursor": next})
+}
+
+func approvalViewerMatches(user *db.User, id int64, login string) bool {
+	if user.GitHubID > 0 && id > 0 {
+		return user.GitHubID == id
+	}
+	return strings.EqualFold(login, user.GitHubUsername)
 }

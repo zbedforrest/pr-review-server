@@ -3,8 +3,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApprovalCandidates } from './ApprovalCandidates';
 import * as api from '@/api/approval';
+import { subscribeToWebSocketMessages } from '@/utils/websocket';
 import type { ApprovalTarget } from '@/types/approval';
 
+vi.mock('@/utils/websocket', () => ({ subscribeToWebSocketMessages: vi.fn(() => () => {}) }));
 vi.mock('@/hooks/usePRs', () => ({ usePRs: () => ({ data: [{ owner: 'acme', repo: 'example', number: 1, commit_sha: 'a'.repeat(40), title: 'Retry handling', author: 'alex', via_teams: [], created_at: null }] }) }));
 vi.mock('@/hooks/useCurrentUser', () => ({ useCurrentUser: () => ({ data: { github_username: 'sam' } }) }));
 vi.mock('@/api/approval', async importOriginal => ({ ...(await importOriginal<typeof import('@/api/approval')>()), approvalRequest: vi.fn(), fetchApprovalCapabilities: vi.fn(), fetchApprovalTargets: vi.fn(), fetchApprovalScans: vi.fn(), fetchApprovalScan: vi.fn() }));
@@ -18,7 +20,7 @@ beforeEach(() => {
   vi.mocked(api.approvalRequest).mockResolvedValue({ scan_id: 'new-scan' });
   vi.mocked(api.fetchApprovalScan).mockResolvedValue({ scan: { scan_id: 'new-scan', status: 'queued', kind: 'full', cancel_requested: false, total: 1 }, targets: [] });
 });
-afterEach(() => { cleanup(); document.getElementById('approval-action-slot')?.remove(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); document.getElementById('approval-action-slot')?.remove(); });
 describe('approval investigation controls', () => {
   it('opening the launch panel does not start a model scan', async () => {
     mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
@@ -53,4 +55,54 @@ it('withdraws a cached open evidence decision when the current projection become
   await waitFor(() => expect(screen.queryByText('candidate')).toBeNull());
   expect(screen.queryByText('View evidence')).toBeNull();
   expect(screen.getAllByText('Historical rationale').length).toBeGreaterThan(0);
+});
+
+it('withdraws matching cached candidates immediately after review activity without a model request', async () => {
+  const candidate = { target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'candidate', freshness_state: 'current', valid_until: new Date(Date.now() + 300000).toISOString(), reason_codes: [], summary: 'Supported' } as unknown as ApprovalTarget;
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([candidate]);
+  const { client } = mount();
+  await screen.findByText('View evidence');
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ ...candidate, freshness_state: 'stale' }]);
+  const listener = vi.mocked(subscribeToWebSocketMessages).mock.calls[0][0];
+  act(() => listener({ type: 'pr_updated', payload: { owner: 'acme', repo: 'example', number: 1 } }));
+  expect(client.getQueryData<ApprovalTarget[]>(['approval-targets'])?.[0].freshness_state).toBe('stale');
+  await waitFor(() => expect(screen.queryByText('View evidence')).toBeNull());
+  expect(api.approvalRequest).not.toHaveBeenCalled();
+});
+it('does not subscribe to approval invalidation when disabled', async () => {
+  vi.mocked(api.fetchApprovalCapabilities).mockResolvedValue({ enabled: false, available: false, unavailable_reason: 'Disabled', max_targets: 25 });
+  const { client } = mount();
+  await waitFor(() => expect(client.getQueryData(['approval-capabilities'])).toBeTruthy());
+  expect(subscribeToWebSocketMessages).not.toHaveBeenCalled();
+  expect(api.fetchApprovalTargets).not.toHaveBeenCalled();
+});
+
+it('does not retry failed validation after expiry changes, but permits a renewed validation cycle or reopening', async () => {
+  const start = Date.now();
+  const interval = vi.spyOn(window, 'setInterval');
+  const expired = { target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'candidate', freshness_state: 'expired', valid_until: new Date(start - 1000).toISOString(), validated_at: new Date(start - 300000).toISOString(), reason_codes: [], summary: 'Historical rationale' } as unknown as ApprovalTarget;
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([expired]);
+  vi.mocked(api.approvalRequest).mockResolvedValue({ states: { target: 'validating' } });
+  const { client } = mount();
+  await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledTimes(1));
+  const tick = interval.mock.calls.find(([, delay]) => delay === 1000)?.[0];
+  expect(typeof tick).toBe('function');
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(start + 11000);
+  const failed = { ...expired, valid_until: new Date(start + 1000).toISOString() };
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([failed]);
+  await act(async () => {
+    if (typeof tick === 'function') tick();
+    client.setQueryData(['approval-targets'], [failed]);
+  });
+  expect(api.approvalRequest).toHaveBeenCalledTimes(1);
+  const renewedThenExpired = { ...failed, validated_at: new Date(start + 2000).toISOString() };
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([renewedThenExpired]);
+  clock.mockReturnValue(start + 22000);
+  await act(async () => {
+    if (typeof tick === 'function') tick();
+    client.setQueryData(['approval-targets'], [renewedThenExpired]);
+  });
+  await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByText('Find approval candidates'));
+  await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledTimes(3));
 });

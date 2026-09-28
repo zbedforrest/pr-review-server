@@ -35,6 +35,8 @@ func approvalFixtureClient(t *testing.T, failPage bool, partialGraphQL bool) *Cl
 			}
 		case strings.Contains(r.URL.Path, "/compare/"):
 			fmt.Fprintf(w, `{"merge_base_commit":{"sha":%q}}`, base)
+		case strings.HasSuffix(r.URL.Path, "/check-suites"):
+			fmt.Fprint(w, `{"check_suites":[]}`)
 		case strings.HasSuffix(r.URL.Path, "/check-runs"):
 			fmt.Fprint(w, `{"check_runs":[]}`)
 		case strings.HasSuffix(r.URL.Path, "/requested_reviewers"):
@@ -49,9 +51,9 @@ func approvalFixtureClient(t *testing.T, failPage bool, partialGraphQL bool) *Cl
 			if partialGraphQL {
 				fmt.Fprint(w, `{"data":{"repository":null},"errors":[{"message":"partial"}]}`)
 			} else if body.Variables["id"] != nil {
-				fmt.Fprint(w, `{"data":{"node":{"comments":{"nodes":[{"databaseId":12}],"pageInfo":{"hasNextPage":false}}}}}`)
+				fmt.Fprint(w, `{"data":{"node":{"comments":{"nodes":[{"fullDatabaseId":12}],"pageInfo":{"hasNextPage":false}}}}}`)
 			} else {
-				fmt.Fprint(w, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"thread-1","isResolved":true,"isOutdated":false,"comments":{"nodes":[{"databaseId":11}],"pageInfo":{"hasNextPage":true,"endCursor":"reply-page-2"}}}],"pageInfo":{"hasNextPage":false}}}}}}`)
+				fmt.Fprint(w, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"thread-1","isResolved":true,"isOutdated":false,"comments":{"nodes":[{"fullDatabaseId":11}],"pageInfo":{"hasNextPage":true,"endCursor":"reply-page-2"}}}],"pageInfo":{"hasNextPage":false}}}}}}`)
 			}
 		default:
 			fmt.Fprint(w, `[]`)
@@ -106,6 +108,19 @@ func TestApprovalEvidenceRejectsTargetPathInjection(t *testing.T) {
 	for _, owner := range []string{"..", "acme/other", "acme?x=y"} {
 		if _, err := client.CollectApprovalEvidence(context.Background(), owner, "example", 1, ApprovalReadLimits{}); err == nil {
 			t.Fatal("invalid owner accepted")
+		}
+	}
+}
+
+func TestApprovalEvidenceFullDatabaseIDs(t *testing.T) {
+	for _, value := range []string{`3000000001`, `"3000000001"`} {
+		var connection approvalCommentIDs
+		body := `{"nodes":[{"fullDatabaseId":` + value + `}],"pageInfo":{"hasNextPage":false}}`
+		if err := json.Unmarshal([]byte(body), &connection); err != nil {
+			t.Fatal(err)
+		}
+		if int64(connection.Nodes[0].ID) != 3000000001 {
+			t.Fatal("64-bit comment identity lost")
 		}
 	}
 }

@@ -1778,7 +1778,7 @@ func (s *Server) broadcaster() {
 
 // BroadcastEvent sends an event to all connected WebSocket clients.
 func (s *Server) BroadcastEvent(eventType string, payload interface{}) {
-	s.observeApprovalEvent(eventType, payload)
+	s.observeApprovalEvent(0, eventType, payload)
 	s.broadcastCh <- wsOutboundMessage{
 		Type:    eventType,
 		Payload: payload,
@@ -1787,7 +1787,7 @@ func (s *Server) BroadcastEvent(eventType string, payload interface{}) {
 
 // BroadcastEventToUser sends an event only to a single user's connected clients.
 func (s *Server) BroadcastEventToUser(userID int, eventType string, payload interface{}) {
-	s.observeApprovalEvent(eventType, payload)
+	s.observeApprovalEvent(userID, eventType, payload)
 	s.broadcastCh <- wsOutboundMessage{
 		Type:         eventType,
 		Payload:      payload,

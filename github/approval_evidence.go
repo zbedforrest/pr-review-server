@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	gh "github.com/google/go-github/v57/github"
@@ -32,6 +33,7 @@ type ApprovalEvidence struct {
 	InlineComments  []*gh.PullRequestComment
 	Threads         []ApprovalThread
 	Checks          []*gh.CheckRun
+	Suites          []*gh.CheckSuite
 	Statuses        []*gh.RepoStatus
 	RequestedUsers  []*gh.User
 	RequestedTeams  []*gh.Team
@@ -85,6 +87,7 @@ func approvalPages[T any](ctx context.Context, r *approvalReader, name, path, fi
 	ep := ApprovalEndpoint{Name: name}
 	defer func() { r.result.Endpoints = append(r.result.Endpoints, ep) }()
 	var all []T
+	responseTotal := -1
 	for page := 1; page <= r.limits.Pages; page++ {
 		sep := "?"
 		if strings.Contains(path, "?") {
@@ -103,6 +106,12 @@ func approvalPages[T any](ctx context.Context, r *approvalReader, name, path, fi
 				ep.Error = "missing required response field"
 				return all
 			}
+			if count, ok := obj["total_count"]; ok {
+				if json.Unmarshal(count, &responseTotal) != nil || responseTotal < 0 {
+					ep.Error = "invalid evidence total"
+					return all
+				}
+			}
 			raw = obj[field]
 		}
 		var batch []T
@@ -116,6 +125,10 @@ func approvalPages[T any](ctx context.Context, r *approvalReader, name, path, fi
 		}
 		all = append(all, batch...)
 		if resp.NextPage == 0 {
+			if responseTotal > len(all) {
+				ep.Error = "evidence total exceeds collected items"
+				return all
+			}
 			ep.Complete = true
 			return all
 		}
@@ -170,7 +183,8 @@ func (c *Client) CollectApprovalEvidence(ctx context.Context, owner, repo string
 	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(head) {
 		return nil, fmt.Errorf("invalid head revision")
 	}
-	out.Checks = approvalPages[*gh.CheckRun](ctx, r, "checks", base+"/commits/"+head+"/check-runs?filter=latest", "check_runs")
+	out.Checks = approvalPages[*gh.CheckRun](ctx, r, "checks", base+"/commits/"+head+"/check-runs?filter=all", "check_runs")
+	out.Suites = approvalPages[*gh.CheckSuite](ctx, r, "check_suites", base+"/commits/"+head+"/check-suites", "check_suites")
 	out.Statuses = approvalPages[*gh.RepoStatus](ctx, r, "statuses", base+"/commits/"+head+"/statuses", "")
 	var comparison gh.CommitsComparison
 	_, compareErr := r.read(ctx, "GET", base+"/compare/"+pull.GetBase().GetSHA()+"..."+head, nil, &comparison)
@@ -205,10 +219,28 @@ type approvalPageInfo struct {
 }
 type approvalCommentIDs struct {
 	Nodes []struct {
-		ID int64 `json:"databaseId"`
+		ID approvalDatabaseID `json:"fullDatabaseId"`
 	} `json:"nodes"`
 	Page *approvalPageInfo `json:"pageInfo"`
 }
+
+type approvalDatabaseID int64
+
+func (id *approvalDatabaseID) UnmarshalJSON(data []byte) error {
+	value := string(data)
+	if len(value) > 0 && value[0] == '"' {
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return fmt.Errorf("invalid comment identity")
+	}
+	*id = approvalDatabaseID(parsed)
+	return nil
+}
+
 type approvalThreadNode struct {
 	ID       string              `json:"id"`
 	Resolved bool                `json:"isResolved"`
@@ -250,7 +282,7 @@ func (r *approvalReader) threads(ctx context.Context, owner, repo string, number
 				} `json:"pullRequest"`
 			} `json:"repository"`
 		}
-		query := `query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$after){nodes{id isResolved isOutdated comments(first:100){nodes{databaseId} pageInfo{hasNextPage endCursor}}} pageInfo{hasNextPage endCursor}}}}}`
+		query := `query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$after){nodes{id isResolved isOutdated comments(first:100){nodes{fullDatabaseId} pageInfo{hasNextPage endCursor}}} pageInfo{hasNextPage endCursor}}}}}`
 		err := r.graphql(ctx, query, map[string]any{"owner": owner, "repo": repo, "number": number, "after": cursor}, &data)
 		ep.Pages++
 		if err != nil {
@@ -287,7 +319,7 @@ func (r *approvalReader) threads(ctx context.Context, owner, repo string, number
 						ep.Error = "missing comment identity"
 						return
 					}
-					thread.Comments = append(thread.Comments, comment.ID)
+					thread.Comments = append(thread.Comments, int64(comment.ID))
 				}
 				if len(thread.Comments) > r.limits.Items {
 					ep.Error = "reply limit exceeded"
@@ -305,7 +337,7 @@ func (r *approvalReader) threads(ctx context.Context, owner, repo string, number
 						Comments *approvalCommentIDs `json:"comments"`
 					} `json:"node"`
 				}
-				q := `query($id:ID!,$after:String!){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$after){nodes{databaseId} pageInfo{hasNextPage endCursor}}}}}`
+				q := `query($id:ID!,$after:String!){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$after){nodes{fullDatabaseId} pageInfo{hasNextPage endCursor}}}}}`
 				err = r.graphql(ctx, q, map[string]any{"id": node.ID, "after": comments.Page.End}, &reply)
 				ep.Pages++
 				if err != nil {
