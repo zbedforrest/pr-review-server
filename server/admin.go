@@ -166,8 +166,14 @@ func (s *Server) authorListTeam(ctx context.Context, slug string) map[string]int
 	if !membership.ResolvedAt.IsZero() {
 		out["resolved_at"] = membership.ResolvedAt.UTC().Format(time.RFC3339)
 	}
-	if err != nil {
+	switch {
+	case err == nil:
+	case errors.Is(err, github.ErrTeamNotFound), errors.Is(err, github.ErrTeamForbidden):
 		out["error"] = err.Error()
+	default:
+		// The wrapped client error names the request; the chip only needs
+		// to know the lookup has not succeeded yet.
+		out["error"] = "team lookup failed; retrying"
 	}
 	return out
 }

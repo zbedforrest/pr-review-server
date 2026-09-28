@@ -247,3 +247,12 @@ func TestTeamResolver_OneFetchPerSlugWhileInFlight(t *testing.T) {
 	assert.True(t, r.IsMember(ctx, "core", "alice"))
 	assert.Equal(t, int32(1), lister.calls.Load())
 }
+
+func TestTeamResolver_FetchOutlivesACancelledCaller(t *testing.T) {
+	lister := &fakeLister{members: []string{"alice"}}
+	r, _ := newClockedResolver(lister)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.True(t, r.IsMember(ctx, "core", "alice"))
+	assert.Equal(t, 1, lister.calls)
+}

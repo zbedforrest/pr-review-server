@@ -196,7 +196,9 @@ func (r *TeamResolver) entry(ctx context.Context, slug string) teamEntry {
 	r.inflight[slug] = true
 	r.mu.Unlock()
 
-	fetchCtx, cancel := context.WithTimeout(ctx, teamFetchWait)
+	// The cache is shared with the poller's gates, so a fetch must outlive
+	// the request that happened to trigger it; only the timeout applies.
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), teamFetchWait)
 	logins, err := r.lister.GetOrgTeamMembers(fetchCtx, r.org, slug)
 	cancel()
 
