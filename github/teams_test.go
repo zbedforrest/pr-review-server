@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -209,4 +211,39 @@ func TestTeamResolver_ClassifiesRealClientErrorsAndPaginates(t *testing.T) {
 	assert.ErrorIs(t, err, ErrTeamNotFound)
 	_, err = r.Members(ctx, "secret")
 	assert.ErrorIs(t, err, ErrTeamForbidden)
+}
+
+type blockingLister struct {
+	calls   atomic.Int32
+	release chan struct{}
+}
+
+func (b *blockingLister) GetOrgTeamMembers(context.Context, string, string) ([]string, error) {
+	b.calls.Add(1)
+	<-b.release
+	return []string{"alice"}, nil
+}
+
+func TestTeamResolver_OneFetchPerSlugWhileInFlight(t *testing.T) {
+	lister := &blockingLister{release: make(chan struct{})}
+	r := NewTeamResolver("acme", lister)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		assert.True(t, r.IsMember(ctx, "core", "alice"), "the fetching caller sees the result")
+	}()
+	require.Eventually(t, func() bool { return lister.calls.Load() == 1 }, time.Second, time.Millisecond)
+
+	assert.False(t, r.IsMember(ctx, "core", "alice"), "a caller during the fetch answers from nothing, without fetching")
+	_, err := r.Members(ctx, "core")
+	assert.EqualError(t, err, "team not resolved")
+	assert.Equal(t, int32(1), lister.calls.Load())
+
+	close(lister.release)
+	wg.Wait()
+	assert.True(t, r.IsMember(ctx, "core", "alice"))
+	assert.Equal(t, int32(1), lister.calls.Load())
 }

@@ -120,18 +120,20 @@ type TeamResolver struct {
 	retry  time.Duration
 	now    func() time.Time
 
-	mu    sync.Mutex
-	teams map[string]*teamEntry
+	mu       sync.Mutex
+	teams    map[string]*teamEntry
+	inflight map[string]bool
 }
 
 func NewTeamResolver(org string, lister TeamMemberLister) *TeamResolver {
 	return &TeamResolver{
-		org:    org,
-		lister: lister,
-		ttl:    teamCacheTTL,
-		retry:  teamRetryAfter,
-		now:    time.Now,
-		teams:  map[string]*teamEntry{},
+		org:      org,
+		lister:   lister,
+		ttl:      teamCacheTTL,
+		retry:    teamRetryAfter,
+		now:      time.Now,
+		teams:    map[string]*teamEntry{},
+		inflight: map[string]bool{},
 	}
 }
 
@@ -174,16 +176,25 @@ func (r *TeamResolver) AnyMember(ctx context.Context, slugs []string, login stri
 
 // entry returns a copy of the cached state for slug, fetching first when
 // nothing usable is cached or the cache is due. The fetch runs outside the
-// lock; two concurrent first lookups of one slug may both fetch, which is
-// harmless and rare.
+// lock, and one fetch per slug at a time: callers arriving during it answer
+// from the cached state (a stale list, or nothing) instead of piling on.
 func (r *TeamResolver) entry(ctx context.Context, slug string) teamEntry {
 	now := r.now()
 	r.mu.Lock()
 	cached, ok := r.teams[slug]
-	r.mu.Unlock()
 	if ok && !r.due(cached, now) {
+		r.mu.Unlock()
 		return *cached
 	}
+	if r.inflight[slug] {
+		r.mu.Unlock()
+		if ok {
+			return *cached
+		}
+		return teamEntry{err: errors.New("team not resolved"), checkedAt: now}
+	}
+	r.inflight[slug] = true
+	r.mu.Unlock()
 
 	fetchCtx, cancel := context.WithTimeout(ctx, teamFetchWait)
 	logins, err := r.lister.GetOrgTeamMembers(fetchCtx, r.org, slug)
@@ -191,6 +202,7 @@ func (r *TeamResolver) entry(ctx context.Context, slug string) teamEntry {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	delete(r.inflight, slug)
 	next := &teamEntry{checkedAt: now}
 	if prev, ok := r.teams[slug]; ok {
 		*next = *prev

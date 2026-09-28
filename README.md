@@ -181,9 +181,13 @@ hand. Membership is fetched through the installation token the first time a
 team entry is matched and cached for 10 minutes; a team that does not exist
 or cannot be read matches nobody, and saving a list names the team that
 failed. Listing members needs the App's Organization **Members (read)**
-permission; if it is missing the server logs one `[TEAMS]` line per team and
-the settings page shows the error on the team chip. `GET /api/settings`
-returns the resolved members per team under `author_list_teams`.
+permission; if it is missing, saving a list with a team entry fails with the
+reason, the server logs one `[TEAMS]` line per team, and a team saved before
+the permission was revoked (or the team deleted) shows the error on its chip
+and matches nobody. `GET /api/settings` returns the resolved members per team
+under `author_list_teams` to every signed-in dashboard user, secret teams
+included, so the row menu can apply the publish gate; list only teams whose
+membership may be shown that widely.
 
 ### Linked ticket context (optional)
 
