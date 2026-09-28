@@ -1,0 +1,322 @@
+package github
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"regexp"
+	"strings"
+
+	gh "github.com/google/go-github/v57/github"
+)
+
+type ApprovalEndpoint struct {
+	Name     string `json:"name"`
+	Pages    int    `json:"pages"`
+	Complete bool   `json:"complete"`
+	Error    string `json:"error,omitempty"`
+}
+
+type ApprovalThread struct {
+	ID       string  `json:"id"`
+	Resolved bool    `json:"isResolved"`
+	Outdated bool    `json:"isOutdated"`
+	Comments []int64 `json:"comments"`
+}
+
+type ApprovalEvidence struct {
+	PR              *gh.PullRequest
+	Reviews         []*gh.PullRequestReview
+	Comments        []*gh.IssueComment
+	InlineComments  []*gh.PullRequestComment
+	Threads         []ApprovalThread
+	Checks          []*gh.CheckRun
+	Statuses        []*gh.RepoStatus
+	RequestedUsers  []*gh.User
+	RequestedTeams  []*gh.Team
+	Endpoints       []ApprovalEndpoint
+	Bytes           int
+	AccessPartition string
+	MergeBase       string
+}
+
+type ApprovalReadLimits struct{ Pages, Items, Bytes int }
+
+var approvalRepoPart = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+type approvalReader struct {
+	client *gh.Client
+	limits ApprovalReadLimits
+	result *ApprovalEvidence
+}
+
+type approvalBuffer struct {
+	data  []byte
+	limit int
+}
+
+func (b *approvalBuffer) Write(p []byte) (int, error) {
+	if len(p) > b.limit-len(b.data) {
+		return 0, fmt.Errorf("evidence byte limit exceeded")
+	}
+	b.data = append(b.data, p...)
+	return len(p), nil
+}
+
+func (r *approvalReader) read(ctx context.Context, method, path string, body any, out any) (*gh.Response, error) {
+	req, err := r.client.NewRequest(method, path, body)
+	if err != nil {
+		return nil, err
+	}
+	buf := &approvalBuffer{limit: r.limits.Bytes - r.result.Bytes}
+	resp, err := r.client.Do(ctx, req, buf)
+	r.result.Bytes += len(buf.data)
+	if err != nil {
+		return resp, fmt.Errorf("evidence request failed")
+	}
+	if err = json.Unmarshal(buf.data, out); err != nil {
+		return resp, fmt.Errorf("invalid evidence response")
+	}
+	return resp, nil
+}
+
+func approvalPages[T any](ctx context.Context, r *approvalReader, name, path, field string) []T {
+	ep := ApprovalEndpoint{Name: name}
+	defer func() { r.result.Endpoints = append(r.result.Endpoints, ep) }()
+	var all []T
+	for page := 1; page <= r.limits.Pages; page++ {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		var raw json.RawMessage
+		resp, err := r.read(ctx, "GET", fmt.Sprintf("%s%sper_page=100&page=%d", path, sep, page), nil, &raw)
+		ep.Pages++
+		if err != nil {
+			ep.Error = err.Error()
+			return all
+		}
+		if field != "" {
+			var obj map[string]json.RawMessage
+			if json.Unmarshal(raw, &obj) != nil || obj[field] == nil {
+				ep.Error = "missing required response field"
+				return all
+			}
+			raw = obj[field]
+		}
+		var batch []T
+		if string(raw) == "null" || json.Unmarshal(raw, &batch) != nil {
+			ep.Error = "invalid evidence page"
+			return all
+		}
+		if len(all)+len(batch) > r.limits.Items {
+			ep.Error = "evidence item limit exceeded"
+			return all
+		}
+		all = append(all, batch...)
+		if resp.NextPage == 0 {
+			ep.Complete = true
+			return all
+		}
+		if resp.NextPage != page+1 {
+			ep.Error = "invalid pagination"
+			return all
+		}
+	}
+	ep.Error = "evidence page limit exceeded"
+	return all
+}
+
+func (c *Client) CollectApprovalEvidence(ctx context.Context, owner, repo string, number int, limits ApprovalReadLimits) (*ApprovalEvidence, error) {
+	if !approvalRepoPart.MatchString(owner) || !approvalRepoPart.MatchString(repo) || owner == "." || repo == "." || owner == ".." || repo == ".." || number < 1 {
+		return nil, fmt.Errorf("invalid target")
+	}
+	if limits.Pages <= 0 {
+		limits.Pages = 20
+	}
+	if limits.Items <= 0 {
+		limits.Items = 2000
+	}
+	if limits.Bytes <= 0 {
+		limits.Bytes = 16 << 20
+	}
+	client, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	out := &ApprovalEvidence{AccessPartition: "pat"}
+	if c.appClient != nil {
+		partition, e := c.appClient.installationFor(ctx, owner, repo)
+		if e != nil {
+			return nil, e
+		}
+		out.AccessPartition = "installation:" + partition
+	}
+	r := &approvalReader{client: client, limits: limits, result: out}
+	base := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
+	pr := fmt.Sprintf("%s/pulls/%d", base, number)
+	var pull gh.PullRequest
+	_, err = r.read(ctx, "GET", pr, nil, &pull)
+	if err != nil {
+		return nil, err
+	}
+	out.PR = &pull
+	out.Endpoints = append(out.Endpoints, ApprovalEndpoint{Name: "pull", Pages: 1, Complete: true})
+	out.Reviews = approvalPages[*gh.PullRequestReview](ctx, r, "reviews", pr+"/reviews", "")
+	out.Comments = approvalPages[*gh.IssueComment](ctx, r, "comments", fmt.Sprintf("%s/issues/%d/comments", base, number), "")
+	out.InlineComments = approvalPages[*gh.PullRequestComment](ctx, r, "inline_comments", pr+"/comments", "")
+	head := pull.GetHead().GetSHA()
+	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(head) {
+		return nil, fmt.Errorf("invalid head revision")
+	}
+	out.Checks = approvalPages[*gh.CheckRun](ctx, r, "checks", base+"/commits/"+head+"/check-runs?filter=latest", "check_runs")
+	out.Statuses = approvalPages[*gh.RepoStatus](ctx, r, "statuses", base+"/commits/"+head+"/statuses", "")
+	var comparison gh.CommitsComparison
+	_, compareErr := r.read(ctx, "GET", base+"/compare/"+pull.GetBase().GetSHA()+"..."+head, nil, &comparison)
+	compareEndpoint := ApprovalEndpoint{Name: "merge_base", Pages: 1, Complete: compareErr == nil}
+	if compareErr != nil {
+		compareEndpoint.Error = compareErr.Error()
+	} else {
+		out.MergeBase = comparison.GetMergeBaseCommit().GetSHA()
+		if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(out.MergeBase) {
+			compareEndpoint.Complete = false
+			compareEndpoint.Error = "missing merge base"
+		}
+	}
+	out.Endpoints = append(out.Endpoints, compareEndpoint)
+	out.RequestedUsers = approvalPages[*gh.User](ctx, r, "requested_users", pr+"/requested_reviewers", "users")
+	out.RequestedTeams = approvalPages[*gh.Team](ctx, r, "requested_teams", pr+"/requested_reviewers", "teams")
+	r.threads(ctx, owner, repo, number)
+	return out, nil
+}
+
+func (c *Client) ApprovalRepositoryToken(ctx context.Context, owner, repo string) (string, error) {
+	if c.appClient == nil {
+		return c.token, nil
+	}
+	token, _, err := c.appClient.TokenForRepo(ctx, owner, repo)
+	return token, err
+}
+
+type approvalPageInfo struct {
+	HasNext bool   `json:"hasNextPage"`
+	End     string `json:"endCursor"`
+}
+type approvalCommentIDs struct {
+	Nodes []struct {
+		ID int64 `json:"databaseId"`
+	} `json:"nodes"`
+	Page approvalPageInfo `json:"pageInfo"`
+}
+type approvalThreadNode struct {
+	ID       string              `json:"id"`
+	Resolved bool                `json:"isResolved"`
+	Outdated bool                `json:"isOutdated"`
+	Comments *approvalCommentIDs `json:"comments"`
+}
+
+func (r *approvalReader) graphql(ctx context.Context, query string, variables map[string]any, out any) error {
+	var response struct {
+		Data   json.RawMessage   `json:"data"`
+		Errors []json.RawMessage `json:"errors"`
+	}
+	path := "graphql"
+	if r.client.BaseURL.Host == "api.github.com" {
+		path = "https://api.github.com/graphql"
+	}
+	_, err := r.read(ctx, "POST", path, map[string]any{"query": query, "variables": variables}, &response)
+	if err != nil {
+		return err
+	}
+	if len(response.Errors) > 0 || len(response.Data) == 0 || string(response.Data) == "null" {
+		return fmt.Errorf("partial GraphQL evidence")
+	}
+	return json.Unmarshal(response.Data, out)
+}
+
+func (r *approvalReader) threads(ctx context.Context, owner, repo string, number int) {
+	ep := ApprovalEndpoint{Name: "threads"}
+	defer func() { r.result.Endpoints = append(r.result.Endpoints, ep) }()
+	var cursor any
+	for page := 0; page < r.limits.Pages; page++ {
+		var data struct {
+			Repository *struct {
+				PullRequest *struct {
+					Threads *struct {
+						Nodes []approvalThreadNode `json:"nodes"`
+						Page  approvalPageInfo     `json:"pageInfo"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		}
+		query := `query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$after){nodes{id isResolved isOutdated comments(first:100){nodes{databaseId} pageInfo{hasNextPage endCursor}}} pageInfo{hasNextPage endCursor}}}}}`
+		err := r.graphql(ctx, query, map[string]any{"owner": owner, "repo": repo, "number": number, "after": cursor}, &data)
+		ep.Pages++
+		if err != nil {
+			ep.Error = err.Error()
+			return
+		}
+		if data.Repository == nil || data.Repository.PullRequest == nil || data.Repository.PullRequest.Threads == nil {
+			ep.Error = "missing review threads"
+			return
+		}
+		conn := data.Repository.PullRequest.Threads
+		for _, node := range conn.Nodes {
+			if node.ID == "" || node.Comments == nil {
+				ep.Error = "missing thread data"
+				return
+			}
+			if len(r.result.Threads) >= r.limits.Items {
+				ep.Error = "thread limit exceeded"
+				return
+			}
+			thread := ApprovalThread{ID: node.ID, Resolved: node.Resolved, Outdated: node.Outdated}
+			comments := *node.Comments
+			for nested := 0; ; nested++ {
+				for _, comment := range comments.Nodes {
+					thread.Comments = append(thread.Comments, comment.ID)
+				}
+				if len(thread.Comments) > r.limits.Items {
+					ep.Error = "reply limit exceeded"
+					return
+				}
+				if !comments.Page.HasNext {
+					break
+				}
+				if nested+1 >= r.limits.Pages || comments.Page.End == "" {
+					ep.Error = "reply pagination incomplete"
+					return
+				}
+				var reply struct {
+					Node *struct {
+						Comments *approvalCommentIDs `json:"comments"`
+					} `json:"node"`
+				}
+				q := `query($id:ID!,$after:String!){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$after){nodes{databaseId} pageInfo{hasNextPage endCursor}}}}}`
+				err = r.graphql(ctx, q, map[string]any{"id": node.ID, "after": comments.Page.End}, &reply)
+				ep.Pages++
+				if err != nil {
+					ep.Error = err.Error()
+					return
+				}
+				if reply.Node == nil || reply.Node.Comments == nil {
+					ep.Error = "missing thread replies"
+					return
+				}
+				comments = *reply.Node.Comments
+			}
+			r.result.Threads = append(r.result.Threads, thread)
+		}
+		if !conn.Page.HasNext {
+			ep.Complete = true
+			return
+		}
+		if conn.Page.End == "" || conn.Page.End == cursor {
+			ep.Error = "invalid thread pagination"
+			return
+		}
+		cursor = conn.Page.End
+	}
+	ep.Error = "thread pagination incomplete"
+}
