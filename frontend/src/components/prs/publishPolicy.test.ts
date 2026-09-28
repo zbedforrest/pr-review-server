@@ -24,6 +24,25 @@ describe('publishAllowedForAuthor', () => {
     expect(publishAllowedForAuthor('alice', 'ali')).toBe(false);
   });
 
+  it('matches a member of a listed team through the resolved members', () => {
+    const teams = { core: { members: ['Bob', 'carol'], resolved_at: '2026-09-28T12:00:00Z' } };
+    expect(publishAllowedForAuthor('bob', 'alice,team:core', teams)).toBe(true);
+    expect(publishAllowedForAuthor('Carol', 'team:core', teams)).toBe(true);
+    expect(publishAllowedForAuthor('bob', '@acme/core', teams)).toBe(true);
+    expect(publishAllowedForAuthor('dave', 'alice,team:core', teams)).toBe(false);
+    expect(publishAllowedForAuthor('core', 'team:core', teams)).toBe(false);
+  });
+
+  it('treats a team that is missing from the payload or unresolved as matching nobody', () => {
+    expect(publishAllowedForAuthor('bob', 'team:core', undefined)).toBe(false);
+    expect(publishAllowedForAuthor('bob', 'team:core', {})).toBe(false);
+    expect(
+      publishAllowedForAuthor('bob', 'team:core', {
+        core: { members: ['bob'], resolved_at: '', error: 'team not found' },
+      }),
+    ).toBe(false);
+  });
+
   it('never allows an empty author', () => {
     expect(publishAllowedForAuthor('', 'alice,')).toBe(false);
     expect(publishAllowedForAuthor('', '*')).toBe(false);

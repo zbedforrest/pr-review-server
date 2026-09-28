@@ -372,7 +372,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 	}
 	scanner := mentionScanner{
 		gh: mentionGitHubAdapter{p.ghClientConcrete}, ledger: ledger, handle: p.cfg.MentionHandle, holder: p.holderID, since: since,
-		allowed: func(author string) bool { return publishEnabledFor(author, enabled) },
+		allowed: p.authorMatcher(enabled),
 		now:     func() time.Time { return time.Now().UTC() },
 		log:     log.Printf,
 		reviewed: func(owner, repo string, number int, headSHA string, publish bool, since time.Time) (bool, error) {

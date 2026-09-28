@@ -212,6 +212,7 @@ func start(cfg *config.Config) {
 	p.SetCacheUpdateFunc(srv.UpdatePRCache)
 	srv.SetPollTrigger(p.Trigger)
 	srv.SetPoller(p)
+	srv.SetTeamResolver(p.TeamResolver())
 	srv.SetWebhookDeliveryHandler(p.HandleWebhookDelivery)
 	p.EventFunc = srv.BroadcastEvent
 	p.UserEventFunc = srv.BroadcastEventToUser

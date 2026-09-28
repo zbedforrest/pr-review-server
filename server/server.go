@@ -90,6 +90,9 @@ type Server struct {
 	// quickActions holds the per-instance replay, duplicate and rate-limit
 	// state for POST /api/prs/quick-action.
 	quickActions *quickActionState
+	// teams resolves team: entries of the author allowlists; shared with the
+	// poller so validation and the gates see one cache.
+	teams *github.TeamResolver
 }
 
 // reviewURL returns the review URL path if htmlPath is set, otherwise empty string
@@ -283,6 +286,10 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 
 func (s *Server) SetPoller(p PollerInterface) {
 	s.poller = p
+}
+
+func (s *Server) SetTeamResolver(r *github.TeamResolver) {
+	s.teams = r
 }
 
 func (s *Server) SetAuth(a AuthHandler) {
@@ -1281,7 +1288,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"review_n_requests":         nRequests,
 			"generate_html":             generateHTML,
 		}
-		s.addPublishSettings(response)
+		s.addPublishSettings(r.Context(), response)
 		s.addAdminSettings(response)
 		_ = json.NewEncoder(w).Encode(response) // nolint:errcheck
 
@@ -1350,18 +1357,26 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		var liteAuthors string
 		if req.AutoReviewLiteAuthors != nil {
-			normalized, err := normalizeLoginCSV(*req.AutoReviewLiteAuthors, true)
+			normalized, teams, err := normalizeAuthorCSV(*req.AutoReviewLiteAuthors, s.teamOrg())
 			if err != nil {
 				http.Error(w, fmt.Sprintf("auto_review_lite_authors: %v", err), http.StatusBadRequest)
+				return
+			}
+			if status, err := s.verifyAuthorTeams(r.Context(), poller.SettingAutoReviewLiteAuthors, teams); err != nil {
+				http.Error(w, err.Error(), status)
 				return
 			}
 			liteAuthors = normalized
 		}
 		var publishAuthors, adminLogins, ciExcludeAuthors string
 		if req.PublishEnabledAuthors != nil {
-			normalized, err := normalizeLoginCSV(*req.PublishEnabledAuthors, true)
+			normalized, teams, err := normalizeAuthorCSV(*req.PublishEnabledAuthors, s.teamOrg())
 			if err != nil {
 				http.Error(w, fmt.Sprintf("publish_enabled_authors: %v", err), http.StatusBadRequest)
+				return
+			}
+			if status, err := s.verifyAuthorTeams(r.Context(), settingPublishEnabledAuthors, teams); err != nil {
+				http.Error(w, err.Error(), status)
 				return
 			}
 			publishAuthors = normalized
@@ -1459,7 +1474,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"review_n_requests":         nRequests,
 			"generate_html":             generateHTML,
 		}
-		s.addPublishSettings(response)
+		s.addPublishSettings(r.Context(), response)
 		s.addAdminSettings(response)
 		_ = json.NewEncoder(w).Encode(response) // nolint:errcheck
 

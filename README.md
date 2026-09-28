@@ -173,6 +173,18 @@ fallback for a missed delivery. To enable it:
 and `webhook.intents_queued`. Clearing `publish_enabled_authors` stops all
 publishing, automatic reviews included.
 
+`publish_enabled_authors` and `auto_review_lite_authors` take GitHub logins,
+`*`, and team entries: `team:<slug>` (or `@<your-org>/<slug>`, stored as the
+`team:` form) enrols whoever is on that team of the `GITHUB_ORG_NAME`
+organization, so the list follows team membership instead of being pasted by
+hand. Membership is fetched through the installation token the first time a
+team entry is matched and cached for 10 minutes; a team that does not exist
+or cannot be read matches nobody, and saving a list names the team that
+failed. Listing members needs the App's Organization **Members (read)**
+permission; if it is missing the server logs one `[TEAMS]` line per team and
+the settings page shows the error on the team chip. `GET /api/settings`
+returns the resolved members per team under `author_list_teams`.
+
 ### Linked ticket context (optional)
 
 The agent otherwise reviews a PR without knowing the intent recorded in its Jira ticket, and will flag deliberate decisions the author documented there. Set `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` (a Jira API token for a service or personal account with read access) and the review fetches the tickets referenced directly in the PR title, body, or branch name (up to 3): summary, status, type, description, and the newest 10 comments. The prompt tells the agent to treat decisions recorded there as intentional, cite the ticket key when a finding touches one, and flag only when the change contradicts the ticket or its rationale no longer holds. `JIRA_PROJECT_KEYS` (comma-separated, optional) restricts which project keys count as references. The PR title and body always reach the agent, with or without Jira; the sidecar's `review_run.linked_tickets` lists the keys that informed a review.

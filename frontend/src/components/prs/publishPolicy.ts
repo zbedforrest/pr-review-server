@@ -1,17 +1,33 @@
+import type { AuthorListTeam } from '@/api/settings';
+import { teamSlug } from '@/components/settings/loginList';
+
 /** Tooltip on any post-to-PR action that is disabled by the author gate. */
 export const PILOT_BLOCKED_TITLE = 'Author is not in the comment pilot';
 
 /**
  * Mirrors the server's publish_enabled_authors gate: a comma-separated list of
- * GitHub logins, or "*" for everyone. Empty or undefined means nobody, so the
- * dashboard never advertises "post to PR" for a PR the server will not post.
+ * GitHub logins, "team:<slug>" entries, or "*" for everyone. Empty or
+ * undefined means nobody, so the dashboard never advertises "post to PR" for
+ * a PR the server will not post. Team entries match through the members the
+ * server resolved and returned alongside the settings; an unresolved team
+ * matches nobody, as on the server.
  */
-export function publishAllowedForAuthor(author: string, enabledCsv: string | undefined): boolean {
+export function publishAllowedForAuthor(
+  author: string,
+  enabledCsv: string | undefined,
+  teams: Record<string, AuthorListTeam> | undefined = undefined,
+): boolean {
   const login = author.trim().toLowerCase();
   if (!login || !enabledCsv) return false;
   const entries = enabledCsv
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  return entries.includes('*') || entries.includes(login);
+  if (entries.includes('*') || entries.includes(login)) return true;
+  return entries.some((entry) => {
+    const slug = teamSlug(entry);
+    if (slug === null) return false;
+    const team = teams?.[slug];
+    return team !== undefined && !team.error && team.members.some((m) => m.toLowerCase() === login);
+  });
 }

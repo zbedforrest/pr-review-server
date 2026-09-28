@@ -318,7 +318,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			if err != nil {
 				return "", nil, fmt.Errorf("read publish authors: %w", err)
 			}
-			return strings.TrimSpace(strings.ToLower(liveMode)), func(login string) bool { return publishEnabledFor(login, liveEnabled) }, nil
+			return strings.TrimSpace(strings.ToLower(liveMode)), p.authorMatcher(liveEnabled), nil
 		},
 		OnOutcome: func(o publisher.ReplyOutcome, err error) {
 			if err != nil {
@@ -332,7 +332,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				}
 			}
 		},
-		Allowed: func(login string) bool { return publishEnabledFor(login, enabled) },
+		Allowed: p.authorMatcher(enabled),
 		PR: func(ctx context.Context, owner, repo string, number int) (publisher.PRState, error) {
 			ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)
 			if err != nil {

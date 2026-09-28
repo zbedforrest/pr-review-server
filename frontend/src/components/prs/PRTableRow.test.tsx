@@ -197,6 +197,24 @@ describe('PRTableRow review cell', () => {
     expect(screen.getByTestId('actions').getAttribute('data-publish-allowed')).toBe('false');
   });
 
+  it('allows a member of a listed team through the resolved members in the settings payload', () => {
+    useSettingsMock.mockReturnValue({
+      data: {
+        auto_review_requested_prs: true,
+        publish_enabled_authors: 'bob,team:core',
+        author_list_teams: { core: { members: ['Alice'], resolved_at: '2026-09-28T12:00:00Z' } },
+      },
+    });
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', author: 'alice' }));
+    expect(screen.getByTestId('review-link-menu').getAttribute('data-publish-allowed')).toBe('true');
+    cleanup();
+    useSettingsMock.mockReturnValue({
+      data: { auto_review_requested_prs: true, publish_enabled_authors: 'bob,team:core' },
+    });
+    renderRow(makePR({ status: 'completed', review_url: '/reviews/x.html', author: 'alice' }));
+    expect(screen.getByTestId('review-link-menu').getAttribute('data-publish-allowed')).toBe('false');
+  });
+
   it('treats settings that have not loaded yet as allowed so the control does not flicker', () => {
     useSettingsMock.mockReturnValue({ data: undefined });
     const pr = makePR({ status: 'pending', review_url: '' });

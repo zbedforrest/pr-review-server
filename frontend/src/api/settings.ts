@@ -15,11 +15,19 @@ export const EMPTY_PROFILE_BY_TRIGGER: AutoReviewProfileByTrigger = {
   ready_for_review: '', opened: '', synchronize: '', poll_fallback: '', repos: {},
 };
 
+// A team named by an author list ("team:<slug>"), with the members the
+// server resolved for it; error is set when the team could not be resolved.
+export interface AuthorListTeam {
+  members: string[];
+  resolved_at: string;
+  error?: string;
+}
+
 export interface Settings {
   auto_review_requested_prs: boolean;
   review_n_requests: number;
-  // GitHub logins whose PRs may receive posted reviews, comma-separated, or
-  // "*" for everyone.
+  // GitHub logins whose PRs may receive posted reviews, comma-separated,
+  // "team:<slug>" entries, or "*" for everyone.
   publish_enabled_authors: string;
   publish_inline_cap: number;
   publish_inline_min_severity: string;
@@ -36,6 +44,8 @@ export interface Settings {
   // reviews may run a lite profile. Optional: older servers omit them.
   auto_review_profile_by_trigger?: AutoReviewProfileByTrigger;
   auto_review_lite_authors?: string;
+  // Read-only: teams named by either author list, keyed by slug.
+  author_list_teams?: Record<string, AuthorListTeam>;
   // Read-only: what "default" resolves to (REVIEW_DEFAULT_PROFILE).
   review_default_profile?: ReviewProfile;
   review_profiles?: ReviewProfile[];

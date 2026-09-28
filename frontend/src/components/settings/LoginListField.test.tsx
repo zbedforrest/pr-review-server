@@ -117,7 +117,7 @@ describe('LoginListField', () => {
 
   it('tells the user to press Enter while a login is typed but not added', () => {
     renderField();
-    expect(input().placeholder).toBe('Type a login and press Enter');
+    expect(input().placeholder).toBe('Type a login or team:slug and press Enter');
     expect(screen.queryByText('Press Enter to add')).toBeNull();
     type('carol');
     const hint = screen.getByText('Press Enter to add');
@@ -286,5 +286,39 @@ describe('LoginListField', () => {
   it('shows no hint when knownLogins is not provided', () => {
     renderField();
     expect(screen.queryByText('not seen on any PR')).toBeNull();
+  });
+  it('shows the resolved member count on a team entry and never calls it unknown', () => {
+    renderField({
+      value: 'alice,team:core,team:web,team:ghosts',
+      knownLogins: new Set(['alice']),
+      teams: {
+        core: { members: ['bob', 'carol'], resolved_at: '2026-09-28T12:00:00Z' },
+        web: { members: ['dave'], resolved_at: '2026-09-28T12:00:00Z' },
+        ghosts: { members: [], resolved_at: '', error: 'team not found' },
+      },
+    });
+    expect(screen.getByText('team:core').textContent).toContain('2 members');
+    expect(screen.getByText('team:web').textContent).toContain('1 member');
+    expect(screen.getByText('team:ghosts').textContent).toContain('team not found');
+    expect(screen.queryByText('not seen on any PR')).toBeNull();
+  });
+
+  it('says a team is not resolved yet when the payload has no entry for it', () => {
+    renderField({ value: 'team:core', teams: {} });
+    expect(screen.getByText('team:core').textContent).toContain('members not resolved yet');
+  });
+
+  it('accepts a typed team entry for authors and rejects it for admins', () => {
+    const { onChange } = renderField({ value: '' });
+    type('team:core');
+    fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledWith('team:core');
+
+    cleanup();
+    const admins = renderField({ value: '', authors: false });
+    type('team:core');
+    fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(admins.onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toBe('"team:core" is not a valid login');
   });
 });
