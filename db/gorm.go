@@ -175,6 +175,9 @@ var greptileStatusColumns = []struct {
 }
 
 func (g *GormDB) ensureIdempotentColumns() error {
+	if err := g.ensureApprovalTables(); err != nil {
+		return err
+	}
 	// Whole-table creation for tables added after the initial schema. Unlike
 	// the column adds below this is dialect-agnostic: HasTable+CreateTable is
 	// idempotent and safe on every boot, and it keeps SKIP_DB_MIGRATIONS
