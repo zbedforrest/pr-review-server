@@ -89,7 +89,8 @@ type Server struct {
 	broadcastCh    chan wsOutboundMessage
 	// quickActions holds the per-instance replay, duplicate and rate-limit
 	// state for POST /api/prs/quick-action.
-	quickActions *quickActionState
+	quickActions      *quickActionState
+	approvalExecution *approvalExecution
 	// teams resolves team: entries of the author allowlists; shared with the
 	// poller so validation and the gates see one cache.
 	teams *github.TeamResolver
@@ -104,24 +105,25 @@ func reviewURL(htmlPath string) string {
 }
 
 type PRResponse struct {
-	Owner           string   `json:"owner"`
-	Repo            string   `json:"repo"`
-	Number          int      `json:"number"`
-	CommitSHA       string   `json:"commit_sha"`
-	LastReviewedAt  *string  `json:"last_reviewed_at"`
-	ReviewHTMLPath  string   `json:"review_html_path"`
-	GitHubURL       string   `json:"github_url"`
-	ReviewURL       string   `json:"review_url"`
-	Status          string   `json:"status"` // "pending", "generating", "agent_reviewing", "completed", "error"
-	Title           string   `json:"title"`
-	Author          string   `json:"author"`
-	GeneratingSince *string  `json:"generating_since"`
-	ApprovalCount   int      `json:"approval_count"`   // Number of current approvals
-	MyReviewStatus  string   `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
-	Draft           bool     `json:"draft"`            // true if PR is in draft mode
-	PRState         string   `json:"pr_state"`         // GitHub PR state: "open", "closed", "merged"
-	CIState         string   `json:"ci_state"`         // "success", "failure", "pending", "unknown"
-	CIFailedChecks  []string `json:"ci_failed_checks"` // Names of failed checks
+	Owner             string   `json:"owner"`
+	Repo              string   `json:"repo"`
+	Number            int      `json:"number"`
+	CommitSHA         string   `json:"commit_sha"`
+	LastReviewedAt    *string  `json:"last_reviewed_at"`
+	ReviewHTMLPath    string   `json:"review_html_path"`
+	GitHubURL         string   `json:"github_url"`
+	ReviewURL         string   `json:"review_url"`
+	Status            string   `json:"status"` // "pending", "generating", "agent_reviewing", "completed", "error"
+	Title             string   `json:"title"`
+	Author            string   `json:"author"`
+	GeneratingSince   *string  `json:"generating_since"`
+	ApprovalCount     int      `json:"approval_count"` // Number of current approvals
+	MyReviewCommitSHA string   `json:"my_review_commit_sha,omitempty"`
+	MyReviewStatus    string   `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
+	Draft             bool     `json:"draft"`            // true if PR is in draft mode
+	PRState           string   `json:"pr_state"`         // GitHub PR state: "open", "closed", "merged"
+	CIState           string   `json:"ci_state"`         // "success", "failure", "pending", "unknown"
+	CIFailedChecks    []string `json:"ci_failed_checks"` // Names of failed checks
 	// GitHub merge-box summary for the current head: CLEAN, BLOCKED, BEHIND,
 	// DIRTY, UNSTABLE, HAS_HOOKS, DRAFT, UNKNOWN, or "" when not yet fetched.
 	MergeStateStatus string `json:"merge_state_status"`
@@ -316,6 +318,9 @@ func (s *Server) SetPollTrigger(f func()) {
 }
 
 func (s *Server) Start() error {
+	approvalContext, stopApproval := context.WithCancel(context.Background())
+	defer stopApproval()
+	s.runApprovalWorkers(approvalContext)
 	// Start broadcaster
 	go s.broadcaster()
 
@@ -370,6 +375,11 @@ func (s *Server) Start() error {
 	http.Handle("/api/v1/review-runs", withV1Auth(authMiddleware, s.handleReviewRuns))
 	http.Handle("/api/v1/review-runs/", withV1Auth(authMiddleware, s.handleReviewRunByID))
 	http.Handle("/api/v1/review-capabilities", withV1Auth(authMiddleware, s.handleReviewCapabilities))
+	http.Handle("/api/v1/approval-capabilities", withV1Auth(authMiddleware, s.handleApprovalCapabilities))
+	http.Handle("/api/v1/approval-scans", withV1Auth(authMiddleware, s.handleApprovalScans))
+	http.Handle("/api/v1/approval-scans/", withV1Auth(authMiddleware, s.handleApprovalScanByID))
+	http.Handle("/api/v1/approval-candidates", withV1Auth(authMiddleware, s.handleApprovalCandidates))
+	http.Handle("/api/v1/approval-candidates/revalidate", withV1Auth(authMiddleware, s.handleApprovalRevalidate))
 
 	// Static content (protected - reviews contain sensitive code)
 	http.Handle("/reviews/", withAuth(s.handleReviewFromGCS))
@@ -1768,6 +1778,7 @@ func (s *Server) broadcaster() {
 
 // BroadcastEvent sends an event to all connected WebSocket clients.
 func (s *Server) BroadcastEvent(eventType string, payload interface{}) {
+	s.observeApprovalEvent(eventType, payload)
 	s.broadcastCh <- wsOutboundMessage{
 		Type:    eventType,
 		Payload: payload,
@@ -1776,6 +1787,7 @@ func (s *Server) BroadcastEvent(eventType string, payload interface{}) {
 
 // BroadcastEventToUser sends an event only to a single user's connected clients.
 func (s *Server) BroadcastEventToUser(userID int, eventType string, payload interface{}) {
+	s.observeApprovalEvent(eventType, payload)
 	s.broadcastCh <- wsOutboundMessage{
 		Type:         eventType,
 		Payload:      payload,
