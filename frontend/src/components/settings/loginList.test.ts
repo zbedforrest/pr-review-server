@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isValidLogin, joinLogins, normalizeLogins } from './loginList';
+import { isValidLogin, joinLogins, normalizeLogins, teamSlug } from './loginList';
 
 const login39 = 'a'.repeat(39);
 const login40 = 'a'.repeat(40);
@@ -32,6 +32,19 @@ describe('isValidLogin', () => {
     expect(isValidLogin('*', false)).toBe(false);
   });
 
+  it('accepts team entries only for authors', () => {
+    expect(isValidLogin('team:core', true)).toBe(true);
+    expect(isValidLogin('team:core-devs.2', true)).toBe(true);
+    expect(isValidLogin('@acme/core', true)).toBe(true);
+    expect(isValidLogin('team:core', false)).toBe(false);
+    expect(isValidLogin('@acme/core', false)).toBe(false);
+    expect(isValidLogin('team:', true)).toBe(false);
+    expect(isValidLogin('team:-core', true)).toBe(false);
+    expect(isValidLogin('team:co re', true)).toBe(false);
+    expect(isValidLogin('@acme', true)).toBe(false);
+    expect(isValidLogin('@/core', true)).toBe(false);
+  });
+
   it('accepts a [bot] suffix only for authors, with the same rules on the name', () => {
     expect(isValidLogin('dependabot[bot]', true)).toBe(true);
     expect(isValidLogin('dependabot[bot]', false)).toBe(false);
@@ -39,6 +52,16 @@ describe('isValidLogin', () => {
     expect(isValidLogin(`${login40}[bot]`, true)).toBe(false);
     expect(isValidLogin('-dependabot[bot]', true)).toBe(false);
     expect(isValidLogin('a[bot][bot]', true)).toBe(false);
+  });
+});
+
+describe('teamSlug', () => {
+  it('extracts the slug from either team form and returns null for logins', () => {
+    expect(teamSlug('team:core')).toBe('core');
+    expect(teamSlug(' Team:Core ')).toBe('core');
+    expect(teamSlug('@acme/Web')).toBe('web');
+    expect(teamSlug('alice')).toBeNull();
+    expect(teamSlug('*')).toBeNull();
   });
 });
 
@@ -67,6 +90,14 @@ describe('normalizeLogins', () => {
       logins: ['*', 'dependabot[bot]'],
       invalid: [],
     });
+  });
+
+  it('keeps team entries in an author list and rejects them elsewhere', () => {
+    expect(normalizeLogins('alice,Team:Core,@acme/web', true)).toEqual({
+      logins: ['alice', 'team:core', '@acme/web'],
+      invalid: [],
+    });
+    expect(normalizeLogins('alice,team:core', false).invalid).toEqual(['team:core']);
   });
 
   it('returns empty lists for blank input', () => {

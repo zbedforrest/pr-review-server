@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -36,7 +37,7 @@ var publishSeverities = map[string]bool{"critical": true, "medium": true, "low":
 // the reply model and records what it would say, respond posts it.
 var publishReplyModes = map[string]bool{"off": true, "observe": true, "react": true, "shadow": true, "respond": true}
 
-func (s *Server) addPublishSettings(response map[string]interface{}) {
+func (s *Server) addPublishSettings(ctx context.Context, response map[string]interface{}) {
 	authors, _ := s.db.GetSetting(settingPublishEnabledAuthors)
 	response[settingPublishEnabledAuthors] = authors
 
@@ -82,8 +83,17 @@ func (s *Server) addPublishSettings(response map[string]interface{}) {
 	response[poller.SettingAutoReviewProfileByTrigger] = profilePolicy.Map()
 	liteAuthors, _ := s.db.GetSetting(poller.SettingAutoReviewLiteAuthors)
 	response[poller.SettingAutoReviewLiteAuthors] = liteAuthors
+	s.addAuthorListTeams(ctx, response, authors, liteAuthors)
 	response["review_default_profile"] = s.defaultReviewProfile()
 	response["review_profiles"] = runconfig.Profiles()
+}
+
+// teamOrg is the organization team entries are validated against.
+func (s *Server) teamOrg() string {
+	if s.teams == nil {
+		return ""
+	}
+	return s.teams.Org()
 }
 
 // defaultReviewProfile is what "default" resolves to for the settings page:

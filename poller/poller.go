@@ -147,6 +147,9 @@ type Poller struct {
 	teamMemberCache map[string][]string // team slug -> member logins
 	teamCacheMutex  sync.RWMutex
 	teamCacheExpiry time.Time
+	// teams resolves team: entries of the author allowlists; nil when no
+	// organization is configured.
+	teams *github.TeamResolver
 	// Poll economy: track cycles for periodic full refresh
 	pollCount int
 	// Last merge-state fetch per PR key, for the CI status cadence. Only poll
@@ -393,6 +396,9 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		lookPath:         osexec.LookPath,
 		holderID:         newHolderID(),
 		generation:       time.Now().UnixNano(),
+	}
+	if ghClient != nil && cfg.GitHubOrgName != "" {
+		p.teams = github.NewTeamResolver(cfg.GitHubOrgName, ghClient)
 	}
 	agentConcurrent := cfg.AgentMaxConcurrent
 	if agentConcurrent <= 0 {

@@ -24,6 +24,9 @@ const (
 	settingPublishShowUnverified    = "publish_show_unverified"
 )
 
+// publishEnabledFor is the pure login matcher: an entry equal to the author
+// (case-insensitive) or "*". Team entries are the resolver's job, see
+// authorAllowed.
 func publishEnabledFor(author, enabledCSV string) bool {
 	author = strings.TrimSpace(author)
 	if author == "" {

@@ -188,7 +188,7 @@ func (p *Poller) autoReviewProfileFor(trigger, owner, repo, author string) strin
 		log.Printf("[AUTO-REVIEW] read %s failed (%v); %s falls back to full", SettingAutoReviewLiteAuthors, err, author)
 		return runconfig.ProfileFull
 	}
-	if !publishEnabledFor(author, liteAuthors) {
+	if !p.authorAllowed(liteAuthors, author) {
 		return runconfig.ProfileFull
 	}
 	return profile

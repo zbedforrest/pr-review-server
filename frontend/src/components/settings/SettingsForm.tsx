@@ -257,6 +257,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
           authors
           disabled={disabled}
           knownLogins={knownLogins}
+          teams={settings.author_list_teams}
         />
         {noAuthorsDraft && <p className="settings-section__notice">{EMPTY_AUTHORS_NOTICE}</p>}
         <div className="settings-field">
@@ -383,6 +384,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
           disabled={disabled}
           knownLogins={knownLogins}
           confirmAll="Allow lite reviews for every author?"
+          teams={settings.author_list_teams}
         />
         <p className="settings-section__notice">
           {noLiteAuthors

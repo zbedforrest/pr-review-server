@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { joinLogins, normalizeLogins } from './loginList';
+import type { AuthorListTeam } from '@/api/settings';
+import { joinLogins, normalizeLogins, teamSlug } from './loginList';
 import './settings.scss';
 
 interface LoginListFieldProps {
@@ -14,9 +15,20 @@ interface LoginListFieldProps {
   knownLogins?: Set<string>;
   // Question asked before "*" is added; defaults to the publish allowlist's.
   confirmAll?: string;
+  // Resolved members per team slug, for the hint on team entries.
+  teams?: Record<string, AuthorListTeam>;
 }
 
 const UNKNOWN_HINT = 'not seen on any PR';
+
+function teamHint(entry: string, teams: Record<string, AuthorListTeam> | undefined): string | null {
+  const slug = teamSlug(entry);
+  if (slug === null) return null;
+  const team = teams?.[slug];
+  if (team === undefined) return 'members not resolved yet';
+  if (team.error) return team.error;
+  return `${team.members.length} ${team.members.length === 1 ? 'member' : 'members'}`;
+}
 
 export function LoginListField({
   id,
@@ -28,6 +40,7 @@ export function LoginListField({
   fixed = [],
   knownLogins,
   confirmAll = 'Publish for every author?',
+  teams,
 }: LoginListFieldProps) {
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +115,8 @@ export function LoginListField({
     () => knownLogins && new Set([...knownLogins].map((login) => login.trim().toLowerCase())),
     [knownLogins],
   );
-  const isUnknown = (login: string) => known !== undefined && login !== '*' && !known.has(login);
+  const isUnknown = (login: string) =>
+    known !== undefined && login !== '*' && teamSlug(login) === null && !known.has(login);
 
   const chipClass = (login: string, isFixed: boolean) =>
     [
@@ -135,6 +149,9 @@ export function LoginListField({
           <span key={login} className={chipClass(login, false)}>
             {login}
             {isUnknown(login) && <span className="settings-field__chip-hint">{UNKNOWN_HINT}</span>}
+            {teamHint(login, teams) !== null && (
+              <span className="settings-field__chip-hint">{teamHint(login, teams)}</span>
+            )}
             {!disabled && (
               <button
                 type="button"
@@ -158,7 +175,7 @@ export function LoginListField({
           onPaste={handlePaste}
           onBlur={handleBlur}
           disabled={disabled}
-          placeholder={disabled ? '' : 'Type a login and press Enter'}
+          placeholder={disabled ? '' : authors ? 'Type a login or team:slug and press Enter' : 'Type a login and press Enter'}
           aria-invalid={error !== null}
           aria-describedby={describedBy}
           autoComplete="off"
