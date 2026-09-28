@@ -12,6 +12,7 @@ import { useUrlFilters } from '@/hooks/useUrlFilters';
 import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
 import { SettingsPage } from '@/components/settings/SettingsPage';
 import { PR } from '@/types/pr';
+import { ApprovalCandidates } from '@/components/prs/ApprovalCandidates';
 import { ServerStatus, StatusPanelFilter } from '@/types/status';
 import { ConnectionStatus, subscribeToWebSocketMessages, subscribeToWebSocketStatus } from '@/utils/websocket';
 import { applyPRWebSocketMessage, applyStatusWebSocketMessage } from '@/utils/websocketCacheUpdates';
@@ -155,6 +156,7 @@ function AppContent() {
           />
         </div>
       </div>
+      <ApprovalCandidates filters={{ search: searchTerm, repos: selectedRepos, teams: selectedTeams, states: selectedStates }} />
       <ReviewPRsSection
         searchTerm={searchTerm}
         selectedTeams={selectedTeams}
