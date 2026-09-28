@@ -139,7 +139,7 @@ func (c *Client) CollectApprovalEvidence(ctx context.Context, owner, repo string
 		limits.Items = 2000
 	}
 	if limits.Bytes <= 0 {
-		limits.Bytes = 16 << 20
+		limits.Bytes = 8 << 20
 	}
 	client, err := c.clientFor(ctx, owner, repo)
 	if err != nil {
@@ -207,7 +207,7 @@ type approvalCommentIDs struct {
 	Nodes []struct {
 		ID int64 `json:"databaseId"`
 	} `json:"nodes"`
-	Page approvalPageInfo `json:"pageInfo"`
+	Page *approvalPageInfo `json:"pageInfo"`
 }
 type approvalThreadNode struct {
 	ID       string              `json:"id"`
@@ -245,7 +245,7 @@ func (r *approvalReader) threads(ctx context.Context, owner, repo string, number
 				PullRequest *struct {
 					Threads *struct {
 						Nodes []approvalThreadNode `json:"nodes"`
-						Page  approvalPageInfo     `json:"pageInfo"`
+						Page  *approvalPageInfo    `json:"pageInfo"`
 					} `json:"reviewThreads"`
 				} `json:"pullRequest"`
 			} `json:"repository"`
@@ -262,6 +262,10 @@ func (r *approvalReader) threads(ctx context.Context, owner, repo string, number
 			return
 		}
 		conn := data.Repository.PullRequest.Threads
+		if conn.Page == nil || conn.Nodes == nil {
+			ep.Error = "missing thread page metadata"
+			return
+		}
 		for _, node := range conn.Nodes {
 			if node.ID == "" || node.Comments == nil {
 				ep.Error = "missing thread data"
@@ -274,7 +278,15 @@ func (r *approvalReader) threads(ctx context.Context, owner, repo string, number
 			thread := ApprovalThread{ID: node.ID, Resolved: node.Resolved, Outdated: node.Outdated}
 			comments := *node.Comments
 			for nested := 0; ; nested++ {
+				if comments.Page == nil || comments.Nodes == nil {
+					ep.Error = "missing reply page metadata"
+					return
+				}
 				for _, comment := range comments.Nodes {
+					if comment.ID <= 0 {
+						ep.Error = "missing comment identity"
+						return
+					}
 					thread.Comments = append(thread.Comments, comment.ID)
 				}
 				if len(thread.Comments) > r.limits.Items {

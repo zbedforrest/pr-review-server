@@ -15,7 +15,7 @@ import (
 	"sync"
 )
 
-const maxRepositoryRead = 256 << 10
+const maxRepositoryRead = 64 << 10
 
 var fullRevision = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var repositoryComponent = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
@@ -182,7 +182,7 @@ func (r *GitRepository) blob(ctx context.Context, revision, p string) (string, e
 	if len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") || fields[1] != "blob" || !fullRevision.MatchString(fields[2]) {
 		return "", fmt.Errorf("non-regular file denied")
 	}
-	out, err := r.run(ctx, maxRepositoryRead, "cat-file", "blob", fields[2])
+	out, err := r.run(ctx, 2<<20, "cat-file", "blob", fields[2])
 	if err != nil {
 		return "", err
 	}
@@ -211,7 +211,11 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 		if req.StartLine < 1 || req.EndLine < req.StartLine || req.EndLine-req.StartLine >= 400 || req.EndLine > len(lines) {
 			return ReadResult{}, fmt.Errorf("invalid line range")
 		}
-		return ReadResult{Text: strings.Join(lines[req.StartLine-1:req.EndLine], "\n")}, nil
+		text := strings.Join(lines[req.StartLine-1:req.EndLine], "\n")
+		if len(text) > maxRepositoryRead {
+			return ReadResult{}, fmt.Errorf("file excerpt limit exceeded")
+		}
+		return ReadResult{Text: text}, nil
 	case "read_diff":
 		if !fullRevision.MatchString(req.OtherRevision) || !r.revisions[req.OtherRevision] {
 			return ReadResult{}, fmt.Errorf("unregistered revision")
@@ -220,8 +224,11 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 		if req.Path != "" {
 			args = append(args, req.Path)
 		}
-		text, err := r.run(ctx, maxRepositoryRead, args...)
-		return ReadResult{Text: text}, err
+		text, err := r.run(ctx, 2<<20, args...)
+		if err != nil {
+			return ReadResult{}, err
+		}
+		return repositoryTextPage(text, req.Cursor)
 	case "list_files", "search_code":
 		text, err := r.run(ctx, 2<<20, "ls-tree", "-rz", req.Revision)
 		if err != nil {
@@ -229,16 +236,28 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 		}
 		entries := strings.Split(strings.TrimSuffix(text, "\x00"), "\x00")
 		offset := 0
+		startLine := 0
 		if req.Cursor != "" {
-			offset, err = strconv.Atoi(req.Cursor)
+			cursor := strings.Split(req.Cursor, ":")
+			if len(cursor) > 2 {
+				return ReadResult{}, fmt.Errorf("invalid cursor")
+			}
+			offset, err = strconv.Atoi(cursor[0])
 			if err != nil || offset < 0 || offset > len(entries) {
 				return ReadResult{}, fmt.Errorf("invalid cursor")
+			}
+			if len(cursor) == 2 {
+				startLine, err = strconv.Atoi(cursor[1])
+				if name != "search_code" || err != nil || startLine < 0 {
+					return ReadResult{}, fmt.Errorf("invalid cursor")
+				}
 			}
 		}
 		if name == "search_code" && (req.Query == "" || len(req.Query) > 256) {
 			return ReadResult{}, fmt.Errorf("invalid search")
 		}
 		var out strings.Builder
+		matches := 0
 		next := offset
 		for ; next < len(entries) && next < offset+100; next++ {
 			parts := strings.SplitN(entries[next], "\t", 2)
@@ -261,8 +280,19 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 					return ReadResult{}, e
 				}
 				for index, line := range strings.Split(body, "\n") {
+					if next == offset && index < startLine {
+						continue
+					}
 					if strings.Contains(line, req.Query) {
-						fmt.Fprintf(&out, "%s:%d:%s\n", p, index+1, line)
+						match := fmt.Sprintf("%s:%d:%s\n", p, index+1, line)
+						if len(match) > maxRepositoryRead {
+							return ReadResult{}, fmt.Errorf("search line limit exceeded")
+						}
+						if matches == 200 || out.Len()+len(match) > maxRepositoryRead {
+							return ReadResult{Text: out.String(), NextCursor: fmt.Sprintf("%d:%d", next, index)}, nil
+						}
+						out.WriteString(match)
+						matches++
 					}
 				}
 			}
@@ -278,6 +308,54 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 	default:
 		return ReadResult{}, fmt.Errorf("unsupported repository read")
 	}
+}
+
+func repositoryTextPage(text, cursor string) (ReadResult, error) {
+	lines := strings.SplitAfter(text, "\n")
+	start := 0
+	var err error
+	if cursor != "" {
+		start, err = strconv.Atoi(cursor)
+		if err != nil || start < 0 || start > len(lines) {
+			return ReadResult{}, fmt.Errorf("invalid cursor")
+		}
+	}
+	var out strings.Builder
+	next := start
+	for ; next < len(lines) && next < start+400; next++ {
+		if len(lines[next]) > maxRepositoryRead {
+			return ReadResult{}, fmt.Errorf("diff line limit exceeded")
+		}
+		if out.Len()+len(lines[next]) > maxRepositoryRead {
+			break
+		}
+		out.WriteString(lines[next])
+	}
+	result := ReadResult{Text: out.String()}
+	if next < len(lines) {
+		result.NextCursor = strconv.Itoa(next)
+	}
+	return result, nil
+}
+
+func (r *GitRepository) ValidateDiff(ctx context.Context, base, head string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.revisions[base] || !r.revisions[head] {
+		return fmt.Errorf("unregistered revision")
+	}
+	_, err := r.run(ctx, 2<<20, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--")
+	if err != nil {
+		return fmt.Errorf("required diff unavailable or exceeds limit")
+	}
+	files, err := r.run(ctx, 1<<20, "diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--")
+	if err != nil {
+		return err
+	}
+	if strings.Count(files, "\x00") > 500 {
+		return fmt.Errorf("changed file limit exceeded")
+	}
+	return nil
 }
 
 func ApprovalCacheRoot(root string) string { return filepath.Join(root, "approval-objects") }

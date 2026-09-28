@@ -101,3 +101,45 @@ func TestRepositoryIgnoresInheritedGitOverrides(t *testing.T) {
 		}
 	}
 }
+
+func TestRepositoryCredentialHelperReadsDedicatedPipe(t *testing.T) {
+	r, _, _ := fixtureRepository(t)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	_, err = writer.WriteString("username=fixture\npassword=synthetic-secret\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Close()
+	cmd := r.command(context.Background(), "-c", `credential.helper=!f() { if test "$1" = get; then cat <&3; fi; }; f`, "credential", "fill")
+	cmd.ExtraFiles = []*os.File{reader}
+	cmd.Stdin = strings.NewReader("protocol=https\nhost=github.com\n\n")
+	body, err := cmd.Output()
+	if err != nil || !strings.Contains(string(body), "password=synthetic-secret") {
+		t.Fatal("dedicated credential pipe unavailable")
+	}
+	for _, arg := range append(cmd.Args, cmd.Env...) {
+		if strings.Contains(arg, "synthetic-secret") {
+			t.Fatal("credential appeared in process arguments or environment")
+		}
+	}
+}
+
+func TestRepositoryTextPagesRespectLineAndByteLimits(t *testing.T) {
+	body := strings.Repeat(strings.Repeat("a", 200)+"\n", 700)
+	first, err := repositoryTextPage(body, "")
+	if err != nil || len(first.Text) > 64<<10 || first.NextCursor == "" {
+		t.Fatalf("invalid first page: %v", err)
+	}
+	second, err := repositoryTextPage(body, first.NextCursor)
+	if err != nil || len(second.Text) > 64<<10 {
+		t.Fatalf("invalid second page: %v", err)
+	}
+	if _, err := repositoryTextPage(body, "-1"); err == nil {
+		t.Fatal("negative cursor accepted")
+	}
+}

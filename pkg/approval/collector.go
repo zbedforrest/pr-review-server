@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,6 +60,31 @@ func sourceRevision(s *Source, sha, head string) {
 	}
 }
 
+var reportedFileCoverage = regexp.MustCompile(`(?i)reviewed\s+(\d+)\s*(?:of|/)\s*(\d+)\s+files`)
+
+func sourceCoverage(source *Source, body string) {
+	if !source.Verified {
+		return
+	}
+	lower := strings.ToLower(body)
+	for _, marker := range []string{"unable to review", "could not review", "review skipped", "timed out", "review incomplete", "files were skipped", "partial review", "review was interrupted"} {
+		if strings.Contains(lower, marker) {
+			source.Incomplete = true
+			source.FileCoverage = "reported_partial"
+		}
+	}
+	for _, count := range reportedFileCoverage.FindAllStringSubmatch(body, -1) {
+		reviewed, a := strconv.Atoi(count[1])
+		total, b := strconv.Atoi(count[2])
+		if a != nil || b != nil || reviewed < total {
+			source.Incomplete = true
+			source.FileCoverage = "reported_partial"
+		} else if total > 0 && reviewed == total && !source.Incomplete {
+			source.FileCoverage = "reported_complete"
+		}
+	}
+}
+
 func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (Snapshot, error) {
 	if c.GitHub == nil {
 		return Snapshot{}, fmt.Errorf("evidence client unavailable")
@@ -92,6 +118,10 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 	if strings.EqualFold(pr.GetUser().GetLogin(), viewer.Login) {
 		exclude("own_pr")
 	}
+	if pr.GetChangedFiles() > 500 {
+		s.Manifest.Complete = false
+		s.Manifest.Errors = append(s.Manifest.Errors, "changed file limit exceeded")
+	}
 	baseURL := fmt.Sprintf("https://github.com/%s/%s/pull/%d", target.Owner, target.Repo, target.Number)
 	add := func(source Source, e Evidence) {
 		e.SourceID = source.ID
@@ -114,6 +144,10 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 		source := c.identity(review.GetUser(), id)
 		sourceRevision(&source, review.GetCommitID(), s.Revision.Head)
 		state := strings.ToUpper(review.GetState())
+		if review.GetUser().GetID() <= 0 || (review.GetUser().GetType() != "User" && review.GetUser().GetType() != "Bot") || (state != "PENDING" && review.GetSubmittedAt().Time.IsZero()) {
+			s.Manifest.Complete = false
+			s.Manifest.Errors = append(s.Manifest.Errors, "review identity or submission metadata unavailable")
+		}
 		if source.Verified && (state == "COMMENTED" || state == "APPROVED" || state == "CHANGES_REQUESTED") {
 			source.Completion = "completed"
 		}
@@ -123,13 +157,7 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 				s.ReviewInProgress = true
 			}
 		}
-		lower := strings.ToLower(review.GetBody())
-		for _, marker := range []string{"unable to review", "could not review", "review skipped", "timed out", "review incomplete", "files were skipped"} {
-			if source.Verified && strings.Contains(lower, marker) {
-				source.Incomplete = true
-				source.FileCoverage = "reported_partial"
-			}
-		}
+		sourceCoverage(&source, review.GetBody())
 		if review.GetUser().GetType() == "User" && (state == "APPROVED" || state == "CHANGES_REQUESTED" || state == "DISMISSED") {
 			standing[review.GetUser().GetID()] = review
 		}
@@ -145,7 +173,9 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 	}
 	for _, comment := range remote.Comments {
 		id := "comment:" + strconv.FormatInt(comment.GetID(), 10)
-		add(c.identity(comment.GetUser(), id), Evidence{ID: id, Kind: "comment", RemoteID: strconv.FormatInt(comment.GetID(), 10), Body: comment.GetBody(), URL: baseURL + "#issuecomment-" + strconv.FormatInt(comment.GetID(), 10), CreatedAt: comment.GetCreatedAt().Time, UpdatedAt: comment.GetUpdatedAt().Time})
+		source := c.identity(comment.GetUser(), id)
+		sourceCoverage(&source, comment.GetBody())
+		add(source, Evidence{ID: id, Kind: "comment", RemoteID: strconv.FormatInt(comment.GetID(), 10), Body: comment.GetBody(), URL: baseURL + "#issuecomment-" + strconv.FormatInt(comment.GetID(), 10), CreatedAt: comment.GetCreatedAt().Time, UpdatedAt: comment.GetUpdatedAt().Time})
 	}
 	threadFor := map[int64]githubclient.ApprovalThread{}
 	for _, thread := range remote.Threads {
@@ -164,7 +194,7 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 		}
 		source := c.identity(comment.GetUser(), id)
 		sourceRevision(&source, comment.GetOriginalCommitID(), s.Revision.Head)
-		body := fmt.Sprintf("File: %s\nOriginal line: %d\nCurrent line: %d\nReply to: %d\nDiff:\n%s\n\n%s", comment.GetPath(), comment.GetOriginalLine(), comment.GetLine(), comment.GetInReplyTo(), comment.GetDiffHunk(), comment.GetBody())
+		body := fmt.Sprintf("File: %s\nOriginal line: %d\nCurrent line: %d\nOriginal revision: %s\nCurrent revision: %s\nReview: %d\nReply to: %d\nOutdated thread: %t\nDiff:\n%s\n\n%s", comment.GetPath(), comment.GetOriginalLine(), comment.GetLine(), comment.GetOriginalCommitID(), comment.GetCommitID(), comment.GetPullRequestReviewID(), comment.GetInReplyTo(), thread.Outdated, comment.GetDiffHunk(), comment.GetBody())
 		add(source, Evidence{ID: id, Kind: "inline_comment", RemoteID: strconv.FormatInt(comment.GetID(), 10), ParentID: thread.ID, Body: body, URL: baseURL + "#discussion_r" + strconv.FormatInt(comment.GetID(), 10), ReviewedSHA: comment.GetOriginalCommitID(), Resolved: thread.Resolved, CreatedAt: comment.GetCreatedAt().Time, UpdatedAt: comment.GetUpdatedAt().Time})
 	}
 	for id := range threadFor {
@@ -229,7 +259,7 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 			}
 		}
 		for _, source := range sources {
-			if source.Completion == "queued" || source.Completion == "running" {
+			if (source.Completion == "queued" || source.Completion == "running") && (source.ReviewedSHA == s.Revision.Head || source.ReviewedSHA == "") {
 				s.ReviewInProgress = true
 			}
 		}
@@ -255,6 +285,15 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 	if s.RepositoryID == 0 {
 		s.Manifest.Complete = false
 		s.Manifest.Errors = append(s.Manifest.Errors, "repository identity unavailable")
+	}
+	s.Manifest.TotalBytes = 0
+	for _, artifact := range s.Evidence {
+		s.Manifest.TotalBytes += int64(len(artifact.Body))
+	}
+	if len(s.Evidence) > 2000 || s.Manifest.TotalBytes > 8<<20 {
+		s.Manifest.Complete = false
+		s.Manifest.Errors = append(s.Manifest.Errors, "combined evidence limit exceeded")
+		s.Manifest.Endpoints = append(s.Manifest.Endpoints, Endpoint{Name: "combined_evidence", Truncated: true, Errors: []string{"combined evidence limit exceeded"}})
 	}
 	CanonicalizeSnapshot(&s)
 	return s, nil

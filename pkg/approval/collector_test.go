@@ -110,3 +110,39 @@ func TestCollectorIncompleteThreadsAndRequestsFailClosed(t *testing.T) {
 		t.Fatal("missing PRism collector accepted")
 	}
 }
+
+func TestCollectorCombinedArtifactCeiling(t *testing.T) {
+	c, remote := fixtureCollector()
+	for index := 0; index < 2000; index++ {
+		remote.Comments = append(remote.Comments, &gh.IssueComment{ID: gh.Int64(int64(index + 1)), Body: gh.String("context")})
+	}
+	s := collectFixture(t, c)
+	if s.Manifest.Complete {
+		t.Fatal("combined artifact ceiling ignored")
+	}
+}
+
+func TestCollectorOldRunningReviewDoesNotBlockCurrentHead(t *testing.T) {
+	c, _ := fixtureCollector()
+	c.PRism = func(context.Context, Target) ([]Source, []Evidence, []Concern, []Endpoint, error) {
+		return []Source{{ID: "older", Completion: "running", ReviewedSHA: strings.Repeat("f", 40)}}, nil, nil, []Endpoint{{Name: "prism", Complete: true}}, nil
+	}
+	if collectFixture(t, c).ReviewInProgress {
+		t.Fatal("old revision review blocked current head")
+	}
+}
+
+func TestCollectorSummaryCoverageCountsRemainEvidence(t *testing.T) {
+	c, remote := fixtureCollector()
+	remote.Comments = []*gh.IssueComment{{ID: gh.Int64(42), User: &gh.User{ID: gh.Int64(20), Type: gh.String("Bot")}, Body: gh.String("Reviewed 3 of 8 files. Remaining inputs were unavailable.")}}
+	s := collectFixture(t, c)
+	for _, source := range s.Sources {
+		if source.ID == "comment:42" {
+			if !source.Incomplete || source.FileCoverage != "reported_partial" || source.Completion == "completed" {
+				t.Fatalf("invalid summary coverage: %+v", source)
+			}
+			return
+		}
+	}
+	t.Fatal("summary source missing")
+}
