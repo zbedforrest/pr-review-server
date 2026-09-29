@@ -69,7 +69,7 @@ export interface PR {
   greptile_status?: 'green' | 'red' | 'absent';
 }
 
-export type ReviewProfile = 'full' | 'lite' | 'lite_plus';
+export type ReviewProfile = 'full' | 'lite' | 'lite_classic' | 'lite_plus';
 
 export interface ReviewRun {
   run_id: string;

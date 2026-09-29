@@ -73,6 +73,7 @@ func TestAutoReviewProfileFor_TeamEntryGatesLite(t *testing.T) {
 	database := NewMockDatabase()
 	mockGH := NewMockGitHubClient()
 	p := newTestPoller(mockGH, database)
+	p.cfg.OpenRouterAPIKey = "test-openrouter-key"
 	teamAware(p, mockGH, map[string][]string{"pilots": {"alice"}})
 	p.cfg.AgenticReviews, p.cfg.AgentModel, p.cfg.AgentWallClockSec, p.cfg.AgentMaxTurns = true, "claude-fable-5", 900, 120
 	p.cfg.ReviewDefaultProfile = "lite"

@@ -125,13 +125,13 @@ func TestAgentConfigForExecutionFollowsTheProfile(t *testing.T) {
 	assert.Nil(t, cfg.BugMemory, "lite profiles run without bug memory")
 	assert.Equal(t, 600*time.Second, cfg.WallClock)
 	assert.Zero(t, cfg.CappedDiffWallClock, "lite_plus keeps 600 s for capped diffs")
-	plain := liteReviewJob(t, "run-51000000000000000000000000000006", runconfig.ProfileLite)
+	plain := liteReviewJob(t, "run-51000000000000000000000000000006", runconfig.ProfileLiteClassic)
 	liteCfg := p.agentConfigForExecution(&reviewExecution{Job: plain}, "tok")
 	assert.Equal(t, 300*time.Second, liteCfg.WallClock)
 	assert.Equal(t, 360*time.Second, liteCfg.CappedDiffWallClock)
 	assert.Nil(t, liteCfg.BugMemory)
 
-	v3 := liteReviewJob(t, "run-51000000000000000000000000000007", runconfig.ProfileLite)
+	v3 := liteReviewJob(t, "run-51000000000000000000000000000007", runconfig.ProfileLiteClassic)
 	v3.Config.Effective.Agent.Prompt = runconfig.PromptLiteArmAV3
 	v3.Config.Effective.BugMemory = runconfig.PromptUsesBugMemory(v3.Config.Effective.Agent.Prompt)
 	v3.Config = snapshotFor(t, v3.Config.Effective)
@@ -159,18 +159,18 @@ func TestAgentConfigForExecutionFollowsTheProfile(t *testing.T) {
 
 func TestProfileLabelAndHeader(t *testing.T) {
 	base := customReviewJob(t, "run-51000000000000000000000000000007").Config.Effective
-	lite, err := runconfig.Expand(runconfig.ProfileLite, base)
+	lite, err := runconfig.Expand(runconfig.ProfileLiteClassic, base)
 	require.NoError(t, err)
 	exact := runconfig.DescribeProfile(lite, base)
-	assert.Equal(t, "Lite", profileLabel(exact))
+	assert.Equal(t, "Lite (Claude)", profileLabel(exact))
 
 	lite.Agent.Effort = "high"
 	custom := runconfig.DescribeProfile(lite, base)
-	assert.Equal(t, "Custom (based on Lite): effort high (default medium)", profileLabel(custom))
+	assert.Equal(t, "Custom (based on Lite (Claude)): effort high (default medium)", profileLabel(custom))
 
 	result := &service.ReviewResult{}
 	applyProfileHeader(result, &reviewExecution{Profile: custom})
-	assert.Equal(t, "Custom (based on Lite)", result.ProfileTitle)
+	assert.Equal(t, "Custom (based on Lite (Claude))", result.ProfileTitle)
 	assert.Equal(t, []string{"effort high (default medium)"}, result.ProfileDeviations)
 	assert.Empty(t, profileLabel(runconfig.ProfileDescription{}))
 }
@@ -213,6 +213,7 @@ func TestParseAutoReviewProfilePolicy(t *testing.T) {
 func TestAutoReviewProfileFor_DefaultsRepoOverrideAndAuthorGate(t *testing.T) {
 	database := NewMockDatabase()
 	p := newTestPoller(NewMockGitHubClient(), database)
+	p.cfg.OpenRouterAPIKey = "test-openrouter-key"
 	p.cfg.AgenticReviews, p.cfg.AgentModel, p.cfg.AgentWallClockSec, p.cfg.AgentMaxTurns = true, "claude-fable-5", 900, 120
 	assert.Equal(t, "full", p.autoReviewProfileFor("synchronize", "acme", "example", "alice"), "compiled default is full")
 
@@ -252,6 +253,7 @@ func autoReviewRunProfile(t *testing.T, f autoReviewFixture) string {
 
 func TestAdmitAutoReviewIntentUsesTriggerProfile(t *testing.T) {
 	f := liteAutoReviewFixture(t)
+	f.p.cfg.OpenRouterAPIKey = "test-openrouter-key"
 	require.NoError(t, f.db.SetSetting(SettingAutoReviewProfileByTrigger, `{"synchronize":"lite"}`))
 	require.NoError(t, f.db.SetSetting(SettingAutoReviewLiteAuthors, "alice"))
 
@@ -277,6 +279,7 @@ func TestAdmitAutoReviewIntentFallsBackToFullOutsideLiteAuthors(t *testing.T) {
 
 func TestWebhookSynchronizeAdmitsLiteAndSupersedesQueuedOlderHead(t *testing.T) {
 	f := liteAutoReviewFixture(t)
+	f.p.cfg.OpenRouterAPIKey = "test-openrouter-key"
 	f.p.cfg.ReviewDefaultProfile = runconfig.ProfileLite
 	require.NoError(t, f.db.SetSetting(SettingAutoReviewLiteAuthors, "*"))
 	older := db.AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: autoReviewOldHead, Trigger: "ready_for_review"}
@@ -318,13 +321,13 @@ func TestDefaultReviewProfileFallsBackToFullWhenPolicyRejectsIt(t *testing.T) {
 	p.cfg.ReviewDefaultProfile = "lite"
 	_, policy, err := p.ReviewConfigDefaultsAndPolicy()
 	require.NoError(t, err)
-	assert.Equal(t, runconfig.ProfileFull, policy.DefaultProfile, "the default 40-turn ceiling rejects lite")
+	assert.Equal(t, runconfig.ProfileFull, policy.DefaultProfile, "without an OpenRouter key lite cannot run, and the 40-turn ceiling rejects lite_classic")
 	assert.Equal(t, "full", p.autoReviewProfileFor("synchronize", "acme", "example", "alice"))
 
 	p.cfg.AgentMaxTurns = 120
 	_, policy, err = p.ReviewConfigDefaultsAndPolicy()
 	require.NoError(t, err)
-	assert.Equal(t, runconfig.ProfileLite, policy.DefaultProfile)
+	assert.Equal(t, runconfig.ProfileLiteClassic, policy.DefaultProfile, "a keyless deployment degrades lite to lite_classic, never to full")
 }
 
 func TestAdmitReviewJobsSkipsFirstPassInitForLiteOnlyBatch(t *testing.T) {
@@ -358,6 +361,7 @@ func TestBuildPublishRound_CarriesProfile(t *testing.T) {
 
 func TestDefaultReviewProfileFollowsDeploymentFlag(t *testing.T) {
 	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.cfg.OpenRouterAPIKey = "test-openrouter-key"
 	p.cfg.AgenticReviews = true
 	p.cfg.AgentModel = "claude-fable-5"
 	p.cfg.AgentWallClockSec = 900
@@ -371,7 +375,7 @@ func TestDefaultReviewProfileFollowsDeploymentFlag(t *testing.T) {
 	job, err = p.defaultReviewJob(github.PullRequest{Owner: "acme", Repo: "widgets", Number: 7, CommitSHA: strings.Repeat("0", 40)}, false, "poller")
 	require.NoError(t, err)
 	assert.Equal(t, runconfig.ProfileLite, job.Config.Effective.Profile)
-	assert.Equal(t, runconfig.LiteModel, job.Config.Effective.Agent.Model, "the lite model is admitted even when it is not the deployment model")
+	assert.Equal(t, runconfig.EnsembleModel, job.Config.Effective.Agent.Model, "the lite model is admitted even when it is not the deployment model")
 	assert.False(t, job.Config.Effective.FirstPass.Enabled)
 	assert.Equal(t, runconfig.SourceDeploymentDefault, job.Config.Sources["profile"])
 	_, _, err = p.ReviewConfigDefaultsAndPolicy()

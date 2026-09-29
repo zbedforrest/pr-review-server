@@ -84,6 +84,9 @@ type Config struct {
 	AgentBackend         string // claude (default) or openrouter
 	AgentModel           string // backend model id for agent reviews (empty = backend default)
 	AgentEffort          string // backend reasoning effort for agent reviews (empty = service default)
+	// EnsembleMaxAgents caps concurrent ensemble agent processes per server,
+	// on top of the one agent slot each ensemble review holds.
+	EnsembleMaxAgents int
 	// Author-reply model (pkg/reviewer/service/reply.go). Same backend and
 	// credentials as the review agent; smaller budgets, own concurrency cap.
 	ReplyModel         string // empty = the review agent's model
@@ -323,6 +326,7 @@ func Load() *Config {
 		AgentMaxTurns:        agentMaxTurns,
 		AgentMaxConcurrent:   getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
 		AgentCloneCacheMaxGB: getEnvIntOrDefault("AGENT_CLONE_CACHE_MAX_GB", 0),
+		EnsembleMaxAgents:    getEnvIntOrDefault("ENSEMBLE_MAX_AGENTS", 25),
 		AgentBackend:         agentBackend,
 		AgentModel:           agentModel,
 		AgentEffort:          agentEffort,

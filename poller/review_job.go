@@ -325,6 +325,8 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	// The lite profiles pin their own model; admit it so they resolve on
 	// every deployment.
 	claudeModels = appendPolicyValue(claudeModels, runconfig.LiteModel)
+	openRouterModels = appendPolicyValue(openRouterModels, runconfig.EnsembleModel)
+	openRouterEfforts = appendPolicyValue(openRouterEfforts, "high")
 	if backend == service.AgentBackendClaude {
 		claudeModels = appendPolicyValue(claudeModels, model)
 		claudeEfforts = appendPolicyValue(claudeEfforts, effort)
@@ -655,13 +657,22 @@ func (p *Poller) admittedDefaultProfile(defaults runconfig.Effective, policy run
 	if profile == runconfig.ProfileFull {
 		return profile
 	}
-	if _, err := runconfig.Resolve(runconfig.Overrides{Profile: &profile}, defaults, policy); err != nil {
-		if p.defaultProfileWarned.CompareAndSwap(false, true) {
-			log.Printf("[REVIEWER] WARN: REVIEW_DEFAULT_PROFILE=%s is rejected by this deployment's policy (%v); using full", profile, err)
-		}
-		return runconfig.ProfileFull
+	_, err := runconfig.Resolve(runconfig.Overrides{Profile: &profile}, defaults, policy)
+	if err == nil {
+		return profile
 	}
-	return profile
+	if degraded := runconfig.DegradedProfile(profile); degraded != "" {
+		if _, derr := runconfig.Resolve(runconfig.Overrides{Profile: &degraded}, defaults, policy); derr == nil {
+			if p.defaultProfileWarned.CompareAndSwap(false, true) {
+				log.Printf("[REVIEWER] WARN: REVIEW_DEFAULT_PROFILE=%s cannot run on this deployment (%v); using %s", profile, err, degraded)
+			}
+			return degraded
+		}
+	}
+	if p.defaultProfileWarned.CompareAndSwap(false, true) {
+		log.Printf("[REVIEWER] WARN: REVIEW_DEFAULT_PROFILE=%s is rejected by this deployment's policy (%v); using full", profile, err)
+	}
+	return runconfig.ProfileFull
 }
 
 // describeProfile compares a run's config with the deployment's full baseline

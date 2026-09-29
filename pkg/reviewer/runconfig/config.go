@@ -73,6 +73,9 @@ type Effective struct {
 	// BugMemory injects the deployment's bug-pattern library when loaded.
 	Gates     bool `json:"gates"`
 	BugMemory bool `json:"bug_memory"`
+	// Ensemble is set only by lite; nil keeps every other
+	// profile's persisted config and hash unchanged.
+	Ensemble *Ensemble `json:"ensemble,omitempty"`
 }
 
 type Agent struct {

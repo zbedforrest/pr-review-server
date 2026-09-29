@@ -8,7 +8,7 @@ import (
 
 func TestResolveAllowsLitePromptOverrideOnLiteProfile(t *testing.T) {
 	for _, prompt := range []string{PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV2, PromptLiteArmAV2Sub, PromptLiteArmAV3} {
-		snapshot, err := Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{Prompt: strPtr(prompt)}}, testDefaults(), litePolicy())
+		snapshot, err := Resolve(Overrides{Profile: strPtr("lite_classic"), Agent: &AgentOverrides{Prompt: strPtr(prompt)}}, testDefaults(), litePolicy())
 		if err != nil {
 			t.Fatalf("%s: %v", prompt, err)
 		}
@@ -28,11 +28,11 @@ func TestResolveAllowsLitePromptOverrideOnLiteProfile(t *testing.T) {
 }
 
 func TestResolveLitePromptOverrideChangesTheHashAndDescribesAsCustom(t *testing.T) {
-	plain, err := Resolve(Overrides{Profile: strPtr("lite")}, testDefaults(), litePolicy())
+	plain, err := Resolve(Overrides{Profile: strPtr("lite_classic")}, testDefaults(), litePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
-	v2, err := Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{Prompt: strPtr(PromptLiteArmA)}}, testDefaults(), litePolicy())
+	v2, err := Resolve(Overrides{Profile: strPtr("lite_classic"), Agent: &AgentOverrides{Prompt: strPtr(PromptLiteArmA)}}, testDefaults(), litePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestResolveLitePromptOverrideChangesTheHashAndDescribesAsCustom(t *testing.
 		t.Fatal("the prompt must be part of the config hash")
 	}
 	description := DescribeProfile(v2.Effective, testDefaults())
-	if !description.Custom() || description.Footer() != "PRism Lite (custom)" {
+	if !description.Custom() || description.Footer() != "PRism Lite (Claude) (custom)" {
 		t.Fatalf("description=%+v footer=%q", description, description.Footer())
 	}
 	if DescribeProfile(plain.Effective, testDefaults()).Custom() {
@@ -53,7 +53,7 @@ func TestResolveLitePromptOverrideChangesTheHashAndDescribesAsCustom(t *testing.
 
 func TestResolveRejectsPromptOverridesOutsideTheProfileFamily(t *testing.T) {
 	var verr *ValidationError
-	_, err := Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{Prompt: strPtr(PromptPipeline)}}, testDefaults(), litePolicy())
+	_, err := Resolve(Overrides{Profile: strPtr("lite_classic"), Agent: &AgentOverrides{Prompt: strPtr(PromptPipeline)}}, testDefaults(), litePolicy())
 	if !errors.As(err, &verr) || verr.Field != "agent.prompt" {
 		t.Fatalf("pipeline prompt on lite: err=%v", err)
 	}
@@ -61,7 +61,7 @@ func TestResolveRejectsPromptOverridesOutsideTheProfileFamily(t *testing.T) {
 	if !errors.As(err, &verr) || verr.Field != "agent.prompt" {
 		t.Fatalf("lite prompt on full: err=%v", err)
 	}
-	_, err = Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{Prompt: strPtr("lite_arm_b")}}, testDefaults(), litePolicy())
+	_, err = Resolve(Overrides{Profile: strPtr("lite_classic"), Agent: &AgentOverrides{Prompt: strPtr("lite_arm_b")}}, testDefaults(), litePolicy())
 	if !errors.As(err, &verr) || verr.Field != "agent.prompt" {
 		t.Fatalf("unknown prompt: err=%v", err)
 	}
@@ -87,16 +87,16 @@ func TestResolveRejectsLiteWhenTheCeilingCannotCoverCappedDiffs(t *testing.T) {
 	policy := litePolicy()
 	policy.MaxWallClockSeconds = 300
 	var verr *ValidationError
-	_, err := Resolve(Overrides{Profile: strPtr("lite")}, testDefaults(), policy)
+	_, err := Resolve(Overrides{Profile: strPtr("lite_classic")}, testDefaults(), policy)
 	if !errors.As(err, &verr) || verr.Field != "agent.wall_clock_seconds" || !strings.Contains(verr.Message, "360") {
 		t.Fatalf("ceiling 300: err=%v", err)
 	}
 	policy.MaxWallClockSeconds = 360
-	if _, err := Resolve(Overrides{Profile: strPtr("lite")}, testDefaults(), policy); err != nil {
+	if _, err := Resolve(Overrides{Profile: strPtr("lite_classic")}, testDefaults(), policy); err != nil {
 		t.Fatalf("ceiling 360 must admit lite: %v", err)
 	}
 	wall := 300
-	if _, err := Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{WallClockSeconds: &wall}}, testDefaults(), policy); err != nil {
+	if _, err := Resolve(Overrides{Profile: strPtr("lite_classic"), Agent: &AgentOverrides{WallClockSeconds: &wall}}, testDefaults(), policy); err != nil {
 		t.Fatalf("an explicit 300 still carries the profile default budget: %v", err)
 	}
 }

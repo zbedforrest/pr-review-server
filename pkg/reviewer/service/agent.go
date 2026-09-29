@@ -43,6 +43,9 @@ var ErrCloneTimeout = errors.New("clone_timeout")
 
 // AgentConfig holds runtime knobs for a single agent-review invocation.
 type AgentConfig struct {
+	// Invocation numbers this agent run within its review (1-based); an
+	// ensemble runs several, and each needs its own attempt record.
+	Invocation   int
 	CloneRootDir string        // parent dir for per-invocation clones
 	LogsDir      string        // parent dir for raw stream-json logs
 	WallClock    time.Duration // hard wall-clock timeout for the agent subprocess, measured from spawn
@@ -124,8 +127,11 @@ type AgentReview struct {
 	CheckFindings []types.LineComment
 
 	RawFinal string // the agent's final result text (pre-parse, for debugging)
-	CloneDir string // path to the per-invocation clone (kept for inspection)
-	LogPath  string // where the raw stream-json was written (removed by then — /tmp hygiene)
+	// ParseFallback is true when the final text was not findings JSON even
+	// after healing, so Comments holds it as a single SUMMARY entry.
+	ParseFallback bool
+	CloneDir      string // path to the per-invocation clone (kept for inspection)
+	LogPath       string // where the raw stream-json was written (removed by then — /tmp hygiene)
 
 	// Model verification: Claude reports the serving model in init + assistant
 	// events. Codex JSONL does not, so OpenRouter reports its exact pinned
@@ -360,7 +366,7 @@ func RunAgentReview(
 	agentStartedAt := time.Now().UTC()
 	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(runtime.backend)
 	startedEvent := ProviderAttemptEvent{
-		Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
+		Stage: "agent", InvocationNumber: agentCfg.invocation(), AttemptNumber: 1,
 		Provider: agentProviderName(runtime.backend), Backend: runtime.backend,
 		RequestedModel: runtime.model, ResolvedModel: runtime.model, Effort: runtime.effort,
 		TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
@@ -405,7 +411,7 @@ func RunAgentReview(
 			completedAt = time.Now().UTC()
 		}
 		event := ProviderAttemptEvent{
-			Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
+			Stage: "agent", InvocationNumber: agentCfg.invocation(), AttemptNumber: 1,
 			Provider: agentProviderName(runtime.backend), Backend: runtime.backend,
 			RequestedModel: runtime.model, ResolvedModel: runtime.model, Effort: runtime.effort,
 			TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
@@ -611,6 +617,7 @@ func RunAgentReview(
 
 	logRemovable = true
 	return &AgentReview{
+		ParseFallback:        parseErr != nil,
 		Comments:             comments,
 		FirstPassActive:      firstPassActive,
 		Records:              records,
@@ -1586,3 +1593,10 @@ func truncate(s string, max int) string {
 // parent rather than orphaned. The Windows stub exists only so the package
 // compiles; agent reviews are not supported on Windows (no test, no deploy
 // target).
+
+func (c AgentConfig) invocation() int {
+	if c.Invocation > 0 {
+		return c.Invocation
+	}
+	return 1
+}
