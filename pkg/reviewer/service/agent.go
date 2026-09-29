@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"pr-review-server/pkg/reviewer/heal"
 	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/tickets"
@@ -706,6 +707,37 @@ func agentAttemptFailure(err error, runCtx context.Context) (stopReason, errorCo
 // parse only that span. If the model emits something that doesn't contain
 // a valid array span, return the unmarshal error from the trimmed slice
 // so the caller's diagnostic still points at the malformed content.
+// healAgentJSON recovers findings from an answer whose JSON structure is
+// broken, accepting only a repair that changed no content (see package heal).
+// A summary block the model put beside the findings becomes the SUMMARY entry.
+func healAgentJSON(raw string) ([]types.LineComment, bool) {
+	res, err := heal.Heal(raw)
+	if err != nil {
+		return nil, false
+	}
+	var doc struct {
+		Findings []types.LineComment `json:"findings"`
+		Summary  *types.SummaryBlock `json:"summary"`
+	}
+	if err := json.Unmarshal(res.JSON, &doc); err != nil {
+		return nil, false
+	}
+	if doc.Summary != nil && !hasSummaryEntry(doc.Findings) {
+		doc.Findings = append(doc.Findings, types.LineComment{FilePath: "SUMMARY", Summary: doc.Summary})
+	}
+	log.Printf("[AGENT] healed findings JSON (%s, %d findings)", res.Method, res.Findings)
+	return doc.Findings, true
+}
+
+func hasSummaryEntry(findings []types.LineComment) bool {
+	for _, f := range findings {
+		if f.FilePath == "SUMMARY" {
+			return true
+		}
+	}
+	return false
+}
+
 func parseAgentJSON(raw string) ([]types.LineComment, error) {
 	trimmed := strings.TrimSpace(raw)
 	trimmed = strings.TrimPrefix(trimmed, "```json")
@@ -730,10 +762,13 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 	if err := json.Unmarshal([]byte(trimmed), &comments); err != nil {
 		// Code suggestions carry literal tabs and newlines into string
 		// literals, which strict JSON rejects; escape them and try once more.
-		if err2 := json.Unmarshal([]byte(escapeControlCharsInStrings(trimmed)), &comments); err2 != nil {
+		if err2 := json.Unmarshal([]byte(escapeControlCharsInStrings(trimmed)), &comments); err2 == nil {
+			log.Printf("[AGENT] recovered findings JSON by escaping raw control characters (%v)", err)
+		} else if healed, ok := healAgentJSON(raw); ok {
+			comments = healed
+		} else {
 			return nil, err
 		}
-		log.Printf("[AGENT] recovered findings JSON by escaping raw control characters (%v)", err)
 	}
 	EnforceAgentFindingContractPolicy(comments)
 	return comments, nil
