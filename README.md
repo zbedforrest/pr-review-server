@@ -227,6 +227,25 @@ Separate executions of the same PR commit are distinguished by opaque unique
 `run_id` values. Successful artifacts are immutable run-scoped objects, while
 the PR row remains only the latest published projection.
 
+## Published pages
+
+The server can host standalone HTML pages (a slide deck, a report) at `/pages/<slug>/`. Pages live in the review bucket (or `REVIEWS_DIR` locally), never in the repo:
+
+```
+pages/<slug>/index.html            the page, shown to signed-in org members
+pages/<slug>/meta.json             {"title": "...", "description": "..."}
+pages/<slug>/preview.png           1200x630 link-preview image
+pages/<slug>/favicon.svg           optional icons
+pages/<slug>/favicon.png
+pages/<slug>/apple-touch-icon.png
+```
+
+Signed-out visitors, including Slack and iMessage link unfurlers, get a card with the title, description and preview image as Open Graph tags, plus a sign-in link that returns to the page. The preview image and icons are public; the page itself is not. Slugs are lowercase letters, digits and hyphens.
+
+```bash
+gsutil -m cp index.html meta.json preview.png favicon.svg favicon.png apple-touch-icon.png gs://<bucket>/pages/<slug>/
+```
+
 ## Themes
 
 The dashboard ships twenty themes — One Dark/Light, GitHub, Gruvbox, Solarized, Monokai, Dracula, Nord, Night Owl, Tokyo Night, the four Catppuccin flavors, Everforest, Rose Pine and SynthWave '84. Pick one from the **Theme** control in the header; the choice is a per-browser preference stored in `localStorage` under `prism.theme.v1` and re-applied before the first paint, so it survives reloads without flashing the default. With nothing stored, the OS light/dark preference decides.
