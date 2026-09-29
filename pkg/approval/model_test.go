@@ -274,3 +274,48 @@ func TestNativeSettlesOnlyValidatedReportedLimitUsage(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeCorrectsAnAnswerThatSkippedRequiredEvidence(t *testing.T) {
+	s, a := validFixture()
+	payload, _ := json.Marshal(a)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		raw, _ := json.Marshal(request["messages"])
+		content := []any{map[string]any{"type": "text", "text": string(payload)}}
+		stop := "end_turn"
+		switch calls {
+		case 2:
+			if !strings.Contains(string(raw), "not yet read with read_evidence: "+s.Evidence[0].ID) {
+				t.Errorf("correction did not name the unread artifact: %s", raw)
+			}
+			content = []any{map[string]any{"type": "tool_use", "id": "read", "name": "read_evidence", "input": map[string]any{"evidence_ids": []string{s.Evidence[0].ID}}}}
+			stop = "tool_use"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": "model", "stop_reason": stop, "content": content, "usage": map[string]int{"input_tokens": 100, "output_tokens": 100}})
+	}))
+	defer server.Close()
+	n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture", BaseURL: server.URL}}
+	result, err := n.Investigate(context.Background(), s, nil, &testBudget{})
+	if err != nil {
+		t.Fatalf("corrected answer rejected: %v", err)
+	}
+	if calls != 3 || result.Decision != "candidate" {
+		t.Fatalf("calls=%d decision=%s, want the skipped read corrected in one extra round", calls, result.Decision)
+	}
+}
+
+func TestInvestigationLimitsNameTheirCeiling(t *testing.T) {
+	err := investigationLimit(LimitConversation, "conversation reached %d bytes", 250000)
+	if !errors.Is(err, ErrInvestigationLimit) || LimitCode(err) != LimitConversation {
+		t.Fatalf("err=%v code=%s", err, LimitCode(err))
+	}
+	if LimitCode(fmt.Errorf("wrapped: %w", err)) != LimitConversation {
+		t.Fatal("wrapping lost the limit code")
+	}
+	if LimitCode(&ModelUsageLimitError{}) != LimitBudget {
+		t.Fatal("a provider usage limit should report the token budget")
+	}
+}

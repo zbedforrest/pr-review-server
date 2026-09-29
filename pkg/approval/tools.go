@@ -219,7 +219,7 @@ func dispatch(ctx context.Context, s Snapshot, repo Repository, name string, arg
 		return "", err
 	}
 	if len(b) > 65536 {
-		return "", fmt.Errorf("%w: tool result limit exceeded", ErrInvestigationLimit)
+		return "", investigationLimit(LimitToolResult, "a tool result exceeded 65,536 bytes")
 	}
 	return string(b), nil
 }
@@ -312,7 +312,7 @@ func citationChangeSupported(ctx context.Context, repo Repository, head string, 
 			return false, err
 		}
 		if diff.Len()+len(page.Text) > 2<<20 {
-			return false, fmt.Errorf("%w: citation diff limit exceeded", ErrInvestigationLimit)
+			return false, investigationLimit(LimitBudget, "citation diff exceeded its size limit")
 		}
 		diff.WriteString(page.Text)
 		if changedLinesSupportAtAnchor(diff.String(), current.StartLine, current.EndLine, &concern) {
@@ -327,7 +327,7 @@ func citationChangeSupported(ctx context.Context, repo Repository, head string, 
 		seen[page.NextCursor] = true
 		request.Cursor = page.NextCursor
 	}
-	return false, fmt.Errorf("%w: citation diff page limit exceeded", ErrInvestigationLimit)
+	return false, investigationLimit(LimitBudget, "citation diff exceeded its page limit")
 }
 
 var approvalDiffHunk = regexp.MustCompile(`^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,[0-9]+)? @@`)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -30,6 +31,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 		return result, fmt.Errorf("invalid snapshot digest")
 	}
 	usage := n.InitialUsage
+	corrections := 0
 	readEvidence := make(map[string]bool, len(s.Evidence))
 	evidenceLimited := false
 	messages := []any{map[string]any{"role": "user", "content": "Investigate the frozen target using list_evidence and the registered reads. Return the complete assessment JSON."}}
@@ -39,7 +41,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 		}
 		remaining := 12000 - usage.OutputTokens
 		if usage.Rounds >= 16 || usage.InputTokens+100000 > 600000 || remaining <= 0 {
-			return result, fmt.Errorf("%w: budget_exhausted", ErrInvestigationLimit)
+			return result, investigationLimit(LimitBudget, "%d rounds, %d input and %d output tokens used", usage.Rounds, usage.InputTokens, usage.OutputTokens)
 		}
 		reservation := Usage{InputTokens: 100000, OutputTokens: remaining, Rounds: 1}
 		if err := budget.Reserve(ctx, reservation); err != nil {
@@ -61,15 +63,35 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 		}
 		usage = addUsage(usage, reply.Usage)
 		if len(reply.Calls) == 0 {
+			correct := func(problem error) bool {
+				if corrections >= maxAssessmentCorrections {
+					return false
+				}
+				corrections++
+				messages = append(messages, n.assistantMessage(reply), map[string]any{"role": "user", "content": "The server rejected that answer: " + problem.Error() + ". Fix this and return the complete assessment JSON."})
+				return true
+			}
+			var unread []string
 			for _, artifact := range s.Evidence {
 				if !readEvidence[artifact.ID] {
-					if evidenceLimited {
-						return result, fmt.Errorf("%w: required evidence could not fit", ErrInvestigationLimit)
-					}
-					return result, fmt.Errorf("invalid_assessment: unread evidence artifact %s", artifact.ID)
+					unread = append(unread, artifact.ID)
 				}
 			}
+			if len(unread) > 0 {
+				if evidenceLimited {
+					return result, investigationLimit(LimitEvidence, "required evidence artifact %s could not be read within the tool result limit", unread[0])
+				}
+				problem := fmt.Errorf("evidence artifacts not yet read with read_evidence: %s", strings.Join(unread, ", "))
+				if correct(problem) {
+					continue
+				}
+				return result, fmt.Errorf("invalid_assessment: unread evidence artifact %s", unread[0])
+			}
+			result = Assessment{}
 			if err := decodeStrict([]byte(reply.Text), &result); err != nil {
+				if correct(fmt.Errorf("the reply was not a valid assessment JSON object (%v)", err)) {
+					continue
+				}
 				return result, fmt.Errorf("invalid_assessment: %w", err)
 			}
 			result.SnapshotID = s.ID
@@ -83,19 +105,21 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			result.Usage = usage
 			reportActivity(ctx, Activity{Stage: "citations", Round: usage.Rounds, ToolCalls: usage.ToolCalls})
 			if err := validateCitations(ctx, s, validationRepository{repo, budget, &usage}, &result); err != nil {
+				if !errors.Is(err, ErrInvestigationLimit) && correct(fmt.Errorf("citation validation failed: %w", err)) {
+					continue
+				}
 				return result, fmt.Errorf("invalid_assessment: %w", err)
 			}
 			if err := ValidateAssessment(s, result); err != nil {
+				if correct(fmt.Errorf("assessment validation failed: %w", err)) {
+					continue
+				}
 				return result, fmt.Errorf("invalid_assessment: %w", err)
 			}
 			result.Usage = usage
 			return Evaluate(s, result), nil
 		}
-		if n.Config.Provider == "anthropic" {
-			messages = append(messages, map[string]any{"role": "assistant", "content": reply.Raw})
-		} else {
-			messages = append(messages, reply.Raw)
-		}
+		messages = append(messages, n.assistantMessage(reply))
 		results := []any{}
 		ids := map[string]bool{}
 		for _, call := range reply.Calls {
@@ -104,11 +128,11 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			}
 			ids[call.ID] = true
 			if usage.ToolCalls >= 40 || usage.ToolBytes >= 1024*1024 {
-				return result, fmt.Errorf("%w: budget_exhausted", ErrInvestigationLimit)
+				return result, investigationLimit(LimitBudget, "%d tool calls and %d tool bytes used", usage.ToolCalls, usage.ToolBytes)
 			}
 			reserved := Usage{ToolCalls: 1, ToolBytes: 65536}
 			if usage.ToolBytes+reserved.ToolBytes > 1024*1024 {
-				return result, fmt.Errorf("%w: budget_exhausted", ErrInvestigationLimit)
+				return result, investigationLimit(LimitBudget, "%d tool bytes used", usage.ToolBytes)
 			}
 			if err := budget.Reserve(ctx, reserved); err != nil {
 				return result, err
@@ -152,10 +176,23 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			messages = append(messages, map[string]any{"role": "user", "content": results})
 		}
 		raw, _ := json.Marshal(messages)
-		if len(raw) > 90000 {
-			return result, fmt.Errorf("%w: model input limit exceeded", ErrInvestigationLimit)
+		if len(raw) > maxConversationBytes {
+			return result, investigationLimit(LimitConversation, "conversation reached %d bytes after %d rounds and %d tool calls", len(raw), usage.Rounds, usage.ToolCalls)
 		}
 	}
+}
+
+// maxAssessmentCorrections bounds how often a rejected final answer is sent
+// back with the server's reason; each retry still spends rounds and tokens
+// from the same budget, and validation itself is never relaxed.
+const maxAssessmentCorrections = 2
+
+// assistantMessage replays a model reply in the provider's message format.
+func (n NativeInvestigator) assistantMessage(reply modelReply) any {
+	if n.Config.Provider == "anthropic" {
+		return map[string]any{"role": "assistant", "content": reply.Raw}
+	}
+	return reply.Raw
 }
 
 type validationRepository struct {
@@ -169,7 +206,7 @@ func (r validationRepository) Read(ctx context.Context, name string, req ReadReq
 		return ReadResult{}, fmt.Errorf("repository unavailable")
 	}
 	if r.usage.ToolCalls >= 40 || r.usage.ToolBytes+65536 > 1024*1024 {
-		return ReadResult{}, fmt.Errorf("%w: budget_exhausted", ErrInvestigationLimit)
+		return ReadResult{}, investigationLimit(LimitBudget, "citation validation needed more than the remaining tool budget")
 	}
 	reserved := Usage{ToolCalls: 1, ToolBytes: 65536}
 	if err := r.budget.Reserve(ctx, reserved); err != nil {

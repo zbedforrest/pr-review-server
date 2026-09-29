@@ -317,6 +317,10 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 			return
 		}
 		pr, _, err := s.ghClient.GetPR(ctx, target.Owner, target.Repo, target.Number)
+		if s.approvalRate.note(err, time.Now()) {
+			writeV1Error(w, 429, "github_rate_limited", "GitHub's rate limit is exhausted; try again after it resets")
+			return
+		}
 		if err != nil {
 			writeV1Error(w, 404, "not_found", "Pull request is inaccessible")
 			return
@@ -419,19 +423,6 @@ func (s *Server) approvalResponse(target db.ApprovalTarget, detail bool) approva
 	return response
 }
 
-func (s *Server) approvalCanRead(ctx context.Context, user int, target db.ApprovalTarget) bool {
-	inventory, err := s.approvalInventory(user)
-	if err != nil {
-		return false
-	}
-	_, exists := inventory[approvalKey(target.Owner, target.Repo, target.Number)]
-	if !exists || s.ghClient == nil {
-		return false
-	}
-	pr, _, err := s.ghClient.GetPR(ctx, target.Owner, target.Repo, target.Number)
-	return err == nil && pr.GetBase().GetRepo().GetID() == target.RepositoryID
-}
-
 func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target db.ApprovalTarget, detail bool) (approvalTargetResponse, bool) {
 	inventory, err := s.approvalInventory(user.ID)
 	if err != nil || s.ghClient == nil {
@@ -441,7 +432,11 @@ func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target
 	if !exists {
 		return approvalTargetResponse{}, false
 	}
-	pr, _, err := s.ghClient.GetPR(ctx, target.Owner, target.Repo, target.Number)
+	read := s.approvalPR
+	if target.Decision == "candidate" {
+		read = s.approvalLivePR
+	}
+	pr, err := read(ctx, target.Owner, target.Repo, target.Number)
 	if err != nil || pr.GetBase().GetRepo().GetID() != target.RepositoryID {
 		return approvalTargetResponse{}, false
 	}

@@ -284,9 +284,19 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 	for _, status := range statuses {
 		s.Checks = append(s.Checks, Check{Name: status.GetContext(), State: status.GetState(), SHA: s.Revision.Head})
 	}
+	suiteRuns := map[int64]int{}
+	for _, check := range remote.Checks {
+		suiteRuns[check.GetCheckSuite().GetID()]++
+	}
 	for _, suite := range remote.Suites {
 		state := strings.ToLower(suite.GetConclusion())
 		if suite.GetStatus() != "completed" {
+			// Apps register a suite on every push whether or not they run
+			// anything; an unfinished suite with no check runs is not CI.
+			// Suites that do run checks are represented by those runs.
+			if suiteRuns[suite.GetID()] == 0 {
+				continue
+			}
 			state = "pending"
 		}
 		if state == "" {

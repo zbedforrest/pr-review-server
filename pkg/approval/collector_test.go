@@ -132,15 +132,35 @@ func TestCollectorPendingAndActionRequiredSuitesBlock(t *testing.T) {
 		suite := &gh.CheckSuite{ID: gh.Int64(7), HeadSHA: remote.PR.Head.SHA, Status: gh.String("completed"), Conclusion: &state}
 		if state == "queued" {
 			suite.Status = &state
+			remote.Checks = append(remote.Checks, &gh.CheckRun{ID: gh.Int64(2), CheckSuite: &gh.CheckSuite{ID: gh.Int64(7)}, Name: gh.String("lint"), HeadSHA: remote.PR.Head.SHA, Status: gh.String("queued")})
 		}
 		remote.Suites = []*gh.CheckSuite{suite}
 		snapshot := collectFixture(t, c)
-		if len(snapshot.Checks) != 2 {
-			t.Fatal("suite omitted")
+		want := 2
+		if state == "queued" {
+			want = 3
+		}
+		if len(snapshot.Checks) != want {
+			t.Fatalf("got %d checks, want %d: suite omitted", len(snapshot.Checks), want)
 		}
 		decision := Evaluate(snapshot, Assessment{})
 		if decision.Decision == "candidate" {
 			t.Fatal("unfinished suite accepted")
+		}
+	}
+}
+
+func TestCollectorIgnoresUnfinishedSuitesWithNoCheckRuns(t *testing.T) {
+	c, remote := fixtureCollector()
+	queued := "queued"
+	remote.Suites = []*gh.CheckSuite{{ID: gh.Int64(8), HeadSHA: remote.PR.Head.SHA, Status: &queued}}
+	snapshot := collectFixture(t, c)
+	if len(snapshot.Checks) != 1 {
+		t.Fatalf("got %d checks, want only the fixture's check run: an empty suite is not CI", len(snapshot.Checks))
+	}
+	for _, reason := range Evaluate(snapshot, Assessment{}).ReasonCodes {
+		if reason == "ci_pending" {
+			t.Fatal("empty queued suite reported pending CI")
 		}
 	}
 }

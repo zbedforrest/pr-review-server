@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -152,6 +153,9 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 						continue
 					}
 					available = true
+					if time.Now().Before(s.approvalRate.pausedUntil()) {
+						continue
+					}
 					target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: worker, Now: time.Now(), LeaseDuration: 60 * time.Second, TargetDuration: 180 * time.Second, MaxSlots: 2})
 					if err == nil && target != nil {
 						s.investigateApproval(ctx, *target)
@@ -251,7 +255,10 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 			finish("failed", "insufficient_evidence", "expired", "runtime_failed", "Investigation could not complete", nil)
 		}
 	}()
-	fail := func(reason string) {
+	fail := func(reason string, cause error) {
+		if cause != nil {
+			log.Printf("[APPROVAL] target %s (%s/%s#%d) %s: %v", target.ID, target.Owner, target.Repo, target.Number, reason, cause)
+		}
 		status := "failed"
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			status = "timed_out"
@@ -272,11 +279,11 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 			status = "failed"
 			reason = "control_unavailable"
 		}
-		finish(status, "insufficient_evidence", "expired", reason, "Investigation could not complete", nil)
+		finish(status, "insufficient_evidence", "expired", reason, approvalFailureSummary(cause), nil)
 	}
 	scan, err := store.GetApprovalScan(target.UserID, target.ScanID)
 	if err != nil {
-		fail("configuration_unavailable")
+		fail("configuration_unavailable", err)
 		return
 	}
 	configurationChanged := func() {
@@ -288,21 +295,26 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 	}
 	user, err := s.db.GetUserByID(target.UserID)
 	if err != nil || user == nil {
-		fail("access_unavailable")
+		fail("access_unavailable", err)
 		return
 	}
-	if !s.approvalCanRead(ctx, user.ID, target) {
-		fail("access_unavailable")
+	if err := s.approvalRetryAfterRateLimit(ctx, func() error { return s.approvalAccess(ctx, user.ID, target) }); err != nil {
+		fail(approvalFailure(err, "access_unavailable"), err)
 		return
 	}
 	requested := approval.Target{Owner: target.Owner, Repo: target.Repo, Number: target.Number, ExpectedHeadSHA: target.ExpectedHeadSHA}
-	snapshot, err := s.collectApprovalSnapshot(ctx, requested, approval.Viewer{ID: user.ID, Login: user.GitHubUsername, GitHubID: user.GitHubID})
+	var snapshot approval.Snapshot
+	err = s.approvalRetryAfterRateLimit(ctx, func() error {
+		var err error
+		snapshot, err = s.collectApprovalSnapshot(ctx, requested, approval.Viewer{ID: user.ID, Login: user.GitHubUsername, GitHubID: user.GitHubID})
+		return err
+	})
 	if err != nil {
-		fail("collection_failed")
+		fail(approvalFailure(err, "collection_failed"), err)
 		return
 	}
 	if snapshot.RepositoryID != target.RepositoryID {
-		fail("repository_changed")
+		fail("repository_changed", nil)
 		return
 	}
 	if snapshot.Revision.Head != target.ExpectedHeadSHA {
@@ -312,7 +324,7 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 	if target.Attempts > 1 {
 		stored, err := store.GetApprovalTarget(user.ID, target.ScanID, target.ID)
 		if err != nil {
-			fail("snapshot_unavailable")
+			fail("snapshot_unavailable", err)
 			return
 		}
 		if stored.SnapshotJSON != "" {
@@ -325,7 +337,7 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 		}
 	}
 	if err := store.SaveApprovalSnapshot(target.ID, target.LeaseToken, approvalJSON(snapshot), time.Now()); err != nil {
-		fail("snapshot_unavailable")
+		fail("snapshot_unavailable", err)
 		return
 	}
 	if !snapshot.Eligible {
@@ -339,17 +351,17 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 	}
 	cfg := s.cfg.ApprovalCandidates()
 	if err := store.ReserveApprovalBudget(target.ID, target.LeaseToken, time.Now(), cfg.DailyInput, cfg.DailyOutput, 600000, 12000); err != nil {
-		fail("daily_budget")
+		fail("daily_budget", err)
 		return
 	}
 	if err := store.SetApprovalTargetStage(target.ID, target.LeaseToken, "investigating", time.Now()); err != nil {
-		fail("lease_lost")
+		fail("lease_lost", err)
 		return
 	}
 	report(approval.Activity{Stage: "repository"})
 	repo, closeRepository, err := s.openApprovalRepository(ctx, snapshot)
 	if err != nil {
-		fail("code_unavailable")
+		fail("code_unavailable", err)
 		return
 	}
 	defer closeRepository()
@@ -357,24 +369,37 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 	assessment, err := investigator.Investigate(ctx, snapshot, repo, &approvalBudget{store: store, target: target})
 	if err != nil {
 		if errors.Is(err, approval.ErrInvestigationLimit) {
-			limited := approval.Evaluate(snapshot, approval.Assessment{SnapshotID: snapshot.ID, SnapshotDigest: snapshot.Digest, Summary: "Investigation reached its resource limit", CoverageGaps: []string{"Investigation could not inspect all required evidence within its resource budget"}})
-			finish("completed", limited.Decision, "expired", "budget_exhausted", limited.Summary, &limited)
+			limit := approval.LimitCode(err)
+			log.Printf("[APPROVAL] target %s (%s/%s#%d) stopped at %s: %v", target.ID, target.Owner, target.Repo, target.Number, limit, err)
+			limited := approval.Evaluate(snapshot, approval.Assessment{SnapshotID: snapshot.ID, SnapshotDigest: snapshot.Digest, Summary: "Investigation reached its resource limit", CoverageGaps: []string{"Investigation stopped at its " + approval.LimitDescription(limit) + " before inspecting all required evidence"}})
+			// The fallback assessment is synthesized, not the model's, so its
+			// validation failure would only restate the limit.
+			limited.ReasonCodes = approvalWithout(limited.ReasonCodes, "invalid_assessment")
+			finish("completed", limited.Decision, "expired", limit, limited.Summary, &limited)
 			return
 		}
-		fail("investigation_failed")
+		fail(approvalFailure(err, "investigation_failed"), err)
 		return
 	}
 	if err := store.SetApprovalTargetStage(target.ID, target.LeaseToken, "validating", time.Now()); err != nil {
-		fail("lease_lost")
+		fail("lease_lost", err)
 		return
 	}
 	report(approval.Activity{Stage: "validating"})
-	if !s.approvalCanRead(ctx, user.ID, target) {
-		fail("access_unavailable")
+	if err := s.approvalRetryAfterRateLimit(ctx, func() error { return s.approvalAccess(ctx, user.ID, target) }); err != nil {
+		fail(approvalFailure(err, "access_unavailable"), err)
 		return
 	}
-	fresh, err := s.collectApprovalSnapshot(ctx, requested, approval.Viewer{ID: user.ID, Login: user.GitHubUsername, GitHubID: user.GitHubID})
+	var fresh approval.Snapshot
+	err = s.approvalRetryAfterRateLimit(ctx, func() error {
+		var err error
+		fresh, err = s.collectApprovalSnapshot(ctx, requested, approval.Viewer{ID: user.ID, Login: user.GitHubUsername, GitHubID: user.GitHubID})
+		return err
+	})
 	if err != nil || !fresh.Manifest.Complete {
+		if err != nil {
+			log.Printf("[APPROVAL] target %s (%s/%s#%d) revalidation: %v", target.ID, target.Owner, target.Repo, target.Number, err)
+		}
 		finish("completed", assessment.Decision, "expired", "validation_failed", "Evidence could not be revalidated", &assessment)
 		return
 	}
@@ -514,4 +539,29 @@ func (s *Server) revalidateApproval(target db.ApprovalTarget, lease db.ApprovalV
 	}
 	freshness = "current"
 	reason = ""
+}
+
+const approvalFailureDetailMax = 240
+
+// approvalFailureSummary is the stored summary of a failed target: the cause
+// is kept, bounded, so a failure can be diagnosed after the fact.
+func approvalFailureSummary(cause error) string {
+	if cause == nil {
+		return "Investigation could not complete"
+	}
+	detail := cause.Error()
+	if len(detail) > approvalFailureDetailMax {
+		detail = detail[:approvalFailureDetailMax] + "..."
+	}
+	return "Investigation could not complete: " + detail
+}
+
+func approvalWithout(reasons []string, drop string) []string {
+	out := reasons[:0:0]
+	for _, r := range reasons {
+		if r != drop {
+			out = append(out, r)
+		}
+	}
+	return out
 }

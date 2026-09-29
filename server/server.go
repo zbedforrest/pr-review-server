@@ -91,6 +91,10 @@ type Server struct {
 	// state for POST /api/prs/quick-action.
 	quickActions      *quickActionState
 	approvalExecution *approvalExecution
+	// approvalRate and approvalPRs keep approval scans inside GitHub's rate
+	// limit: a shared pause after throttling, and short-lived PR reads.
+	approvalRate approvalRateGate
+	approvalPRs  approvalPRCache
 	// teams resolves team: entries of the author allowlists; shared with the
 	// poller so validation and the gates see one cache.
 	teams *github.TeamResolver
