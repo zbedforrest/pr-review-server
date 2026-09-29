@@ -38,6 +38,8 @@ Freeze the explicit target list when the user starts. The server rechecks member
 
 While active, the header action becomes **View investigation**. Show queued/running progress, terminal count, candidate count and **Cancel remaining**. Cancellation does not erase completed results. Closing the panel, navigating away, refreshing the page or closing the browser does not cancel the server job. Restore the user's active scan, latest `kind=full` scan and current per-PR results on return. A single-PR recheck replaces only that PR's current result, not the rest of the shortlist. V1 permits one active scan of either kind per user. While it is queued, running or cancelling, disable Recheck with **Investigation already running** and link to that scan; the API returns 409 with its ID. Full-section Recheck opens the launch panel with the current filters, so it does not silently reuse an obsolete scope.
 
+The collapsed bar retains a prism animation, a finished-target count and an activity line of at most ten words. Poll aggregate progress every two seconds without GitHub reads; refresh evidence lists every ten seconds. Fill tracks finished targets, including failures, and never implies estimated time remaining. Respect reduced-motion preferences. Workers report only observed stages and tool names. Optional Flash-Lite summaries refresh at most every ten seconds when activity changes, with a deterministic fallback, a four-second timeout and at most 18 calls of 64 output tokens per target attempt. These presentation calls are separate from investigation reservations and cannot influence assessments. They receive no source content, tool arguments or model reasoning.
+
 ### Results
 
 Insert a fixed **Approval candidates (N)** section below the global filters and above configurable PR sections. Keep the existing needs-re-review pin in its current position. Do not migrate or reset the user's section preferences. Candidate PRs continue to appear in their normal sections, as in the approved mockup.
@@ -243,7 +245,7 @@ Lease expiry permits at most one recovery attempt. A new holder must not extend 
 | Daily model budget | Operator-set input/output token caps per UTC day; unset means runtime unavailable |
 | Execution attempts | 1 normal, at most 1 interrupted-worker recovery |
 | Lease / heartbeat | 60 seconds / 15 seconds |
-| Poll active scan | 2 seconds, back off on errors/hidden tab |
+| Poll active scan | Aggregate progress every 2 seconds; evidence lists every 10 seconds; back off on errors/hidden tab |
 | Positive-result validation window | 5 minutes |
 | Full scan/evidence retention | 30 days |
 
@@ -264,6 +266,7 @@ All routes use existing authenticated JSON API conventions and return `Cache-Con
 | Endpoint | Contract |
 | --- | --- |
 | `GET /api/v1/approval-capabilities` | Enabled/available, supported runtime, limits and concise unavailable reason; no secrets |
+| `GET /api/v1/approval-scans/{scan_id}/progress` | Owner-scoped aggregate counts and activity label, without target identities or evidence; no GitHub/model calls |
 | `POST /api/v1/approval-scans` | Explicit targets with full expected HEADs plus scope description; caller-scoped Idempotency-Key; returns 202 and Location |
 | `GET /api/v1/approval-candidates?limit=...&cursor=...` | Current user/PR projections, freshness and links to source scan/target; each result has one latest generation |
 | `GET /api/v1/approval-scans?kind=...&limit=...&cursor=...` | Requesting user's scans, newest first |

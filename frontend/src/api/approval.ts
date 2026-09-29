@@ -1,4 +1,4 @@
-import type { ApprovalCapabilities, ApprovalScan, ApprovalTarget } from '@/types/approval';
+import type { ApprovalCapabilities, ApprovalProgress, ApprovalScan, ApprovalTarget } from '@/types/approval';
 
 export class ApprovalAPIError extends Error {
   constructor(message: string, public scanID?: string) { super(message); }
@@ -38,4 +38,5 @@ export async function fetchApprovalScans(): Promise<{ scans: ApprovalScan[] }> {
   return { scans };
 }
 export const fetchApprovalScan = (id: string) => approvalRequest<{ scan: ApprovalScan; targets: ApprovalTarget[] | null }>(`approval-scans/${id}?limit=100`);
+export const fetchApprovalProgress = (id: string) => approvalRequest<ApprovalProgress>(`approval-scans/${id}/progress`);
 export const targetPath = (target: ApprovalTarget) => `approval-scans/${target.scan_id}/targets/${target.target_id}`;

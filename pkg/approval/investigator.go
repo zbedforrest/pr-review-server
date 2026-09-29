@@ -45,6 +45,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 		if err := budget.Reserve(ctx, reservation); err != nil {
 			return result, err
 		}
+		reportActivity(ctx, Activity{Stage: "model", Round: usage.Rounds + 1, ToolCalls: usage.ToolCalls})
 		reply, err := n.Config.call(ctx, messages, remaining)
 		if err != nil {
 			var reported *ModelUsageLimitError
@@ -80,6 +81,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			result.Model = n.Config.Model
 			result.AssessedAt = time.Now().UTC()
 			result.Usage = usage
+			reportActivity(ctx, Activity{Stage: "citations", Round: usage.Rounds, ToolCalls: usage.ToolCalls})
 			if err := validateCitations(ctx, s, validationRepository{repo, budget, &usage}, &result); err != nil {
 				return result, fmt.Errorf("invalid_assessment: %w", err)
 			}
@@ -111,6 +113,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			if err := budget.Reserve(ctx, reserved); err != nil {
 				return result, err
 			}
+			reportActivity(ctx, Activity{Stage: "tool", Tool: call.Name, Round: usage.Rounds, ToolCalls: usage.ToolCalls + 1})
 			text, err := dispatch(ctx, s, repo, call.Name, call.Arguments)
 			toolError := err != nil
 			if err != nil {

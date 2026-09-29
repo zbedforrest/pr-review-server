@@ -495,6 +495,14 @@ func (s *Server) handleApprovalScanByID(w http.ResponseWriter, r *http.Request) 
 		approvalError(w, err)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "progress" {
+		if r.Method != http.MethodGet {
+			writeV1Error(w, 405, "method_not_allowed", "Use GET")
+			return
+		}
+		s.handleApprovalProgress(w, *scan)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost {
 		var body struct{}
 		if !decodeApprovalRequest(w, r, &body) {

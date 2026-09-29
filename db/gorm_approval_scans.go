@@ -558,6 +558,20 @@ func (g *GormDB) SetApprovalTargetStage(id, token, stage string, now time.Time) 
 		return tx.Model(t).Update("execution_status", stage).Error
 	}, &now)
 }
+
+func (g *GormDB) SetApprovalTargetProgress(id, token, summary string, now time.Time) error {
+	if len(summary) > 160 || len(strings.Fields(summary)) > 10 {
+		return fmt.Errorf("invalid approval progress summary")
+	}
+	return g.approvalTransaction(func(tx *gorm.DB) error {
+		t, err := approvalLease(tx, id, token, now)
+		if err != nil {
+			return err
+		}
+		return tx.Model(t).Update("summary", summary).Error
+	}, &now)
+}
+
 func (g *GormDB) SaveApprovalSnapshot(id, token, body string, now time.Time) error {
 	if !json.Valid([]byte(body)) {
 		return fmt.Errorf("invalid snapshot JSON")

@@ -19,6 +19,7 @@ type approvalExecution struct {
 	collector    approvalEvidenceCollector
 	repository   func(context.Context, approval.Snapshot) (approval.Repository, func(), error)
 	investigator func(db.ApprovalTarget) approval.Investigator
+	summarize    func(context.Context, []approval.Activity) (string, error)
 }
 
 func (s *Server) approvalConfigurationMatches(scan db.ApprovalScan, assessment *approval.Assessment) bool {
@@ -185,6 +186,9 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 	}
 	ctx, cancel := context.WithDeadline(parent, deadline)
 	defer cancel()
+	report, stopProgress := s.startApprovalProgress(ctx, target)
+	defer stopProgress()
+	ctx = approval.WithActivityObserver(ctx, report)
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -224,6 +228,7 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 		}
 	}()
 	finish := func(status, decision, freshness, reason, summary string, a *approval.Assessment) {
+		stopProgress()
 		f := db.ApprovalFinalization{ExecutionStatus: status, Decision: decision, Freshness: freshness, ReasonCodesJSON: approvalJSON([]string{reason}), Summary: summary}
 		if a != nil {
 			f.AssessmentJSON = approvalJSON(a)
@@ -341,6 +346,7 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 		fail("lease_lost")
 		return
 	}
+	report(approval.Activity{Stage: "repository"})
 	repo, closeRepository, err := s.openApprovalRepository(ctx, snapshot)
 	if err != nil {
 		fail("code_unavailable")
@@ -362,6 +368,7 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 		fail("lease_lost")
 		return
 	}
+	report(approval.Activity{Stage: "validating"})
 	if !s.approvalCanRead(ctx, user.ID, target) {
 		fail("access_unavailable")
 		return

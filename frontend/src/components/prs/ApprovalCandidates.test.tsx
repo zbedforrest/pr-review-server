@@ -10,7 +10,7 @@ vi.mock('@/utils/websocket', () => ({ subscribeToWebSocketMessages: vi.fn(() => 
 const dashboardPRs = vi.hoisted(() => ({ items: [{ owner: 'acme', repo: 'example', number: 1, commit_sha: 'a'.repeat(40), title: 'Retry handling', author: 'alex', via_teams: [], created_at: null }] }));
 vi.mock('@/hooks/usePRs', () => ({ usePRs: () => ({ data: dashboardPRs.items }) }));
 vi.mock('@/hooks/useCurrentUser', () => ({ useCurrentUser: () => ({ data: { github_username: 'sam' } }) }));
-vi.mock('@/api/approval', async importOriginal => ({ ...(await importOriginal<typeof import('@/api/approval')>()), approvalRequest: vi.fn(), fetchApprovalCapabilities: vi.fn(), fetchApprovalTargets: vi.fn(), fetchApprovalScans: vi.fn(), fetchApprovalScan: vi.fn() }));
+vi.mock('@/api/approval', async importOriginal => ({ ...(await importOriginal<typeof import('@/api/approval')>()), approvalRequest: vi.fn(), fetchApprovalCapabilities: vi.fn(), fetchApprovalTargets: vi.fn(), fetchApprovalScans: vi.fn(), fetchApprovalScan: vi.fn(), fetchApprovalProgress: vi.fn() }));
 function mount() { const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><ApprovalCandidates filters={{}} /></QueryClientProvider>), client }; }
 beforeEach(() => {
   vi.resetAllMocks();
@@ -19,10 +19,50 @@ beforeEach(() => {
   vi.mocked(api.fetchApprovalCapabilities).mockResolvedValue({ enabled: true, available: true, unavailable_reason: '', max_targets: 50 });
   vi.mocked(api.fetchApprovalScans).mockResolvedValue({ scans: [] });
   vi.mocked(api.fetchApprovalTargets).mockResolvedValue([]);
+  vi.mocked(api.fetchApprovalProgress).mockResolvedValue({ scan_id: 'new-scan', status: 'queued', total: 1, finished: 0, running: 0, queued: 1, summary: 'Waiting for an available investigator', tool_calls: 0 });
   vi.mocked(api.approvalRequest).mockResolvedValue({ scan_id: 'new-scan' });
   vi.mocked(api.fetchApprovalScan).mockResolvedValue({ scan: { scan_id: 'new-scan', status: 'queued', kind: 'full', cancel_requested: false, total: 1 }, targets: [] });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); document.getElementById('approval-action-slot')?.remove(); });
+
+it('shows live prism progress while collapsed and withdraws it when finished', async () => {
+  const active = { scan_id: 'new-scan', status: 'running', kind: 'full', total: 35, cancel_requested: false };
+  vi.mocked(api.fetchApprovalScans).mockResolvedValue({ scans: [active] });
+  vi.mocked(api.fetchApprovalProgress).mockResolvedValue({ scan_id: active.scan_id, status: 'running', total: 35, finished: 8, running: 2, queued: 25, summary: 'Comparing code changes with earlier review concerns', tool_calls: 14 });
+  const { client } = mount();
+  await screen.findByText('Comparing code changes with earlier review concerns');
+  const bar = screen.getByRole('progressbar', { name: 'Pull requests investigated' });
+  expect(bar.getAttribute('aria-valuenow')).toBe('8');
+  expect(bar.getAttribute('aria-valuemax')).toBe('35');
+  expect(screen.getByRole('button', { name: 'Approval candidates (0)' }).getAttribute('aria-expanded')).toBe('false');
+  expect(screen.getByText('Investigating · 2 agents')).toBeTruthy();
+  expect(api.approvalRequest).not.toHaveBeenCalled();
+  vi.mocked(api.fetchApprovalScans).mockResolvedValue({ scans: [{ ...active, status: 'completed' }] });
+  await act(async () => { client.setQueryData(['approval-progress', active.scan_id], { scan_id: active.scan_id, status: 'completed', total: 35, finished: 35, running: 0, queued: 0, summary: 'Investigation finished', tool_calls: 20 }); });
+  await waitFor(() => expect(screen.queryByRole('progressbar')).toBeNull());
+});
+
+it('keeps factual progress visible when the activity endpoint is unavailable', async () => {
+  const active = { scan_id: 'new-scan', status: 'running', kind: 'full', total: 2, cancel_requested: false };
+  vi.mocked(api.fetchApprovalScans).mockResolvedValue({ scans: [active] });
+  vi.mocked(api.fetchApprovalProgress).mockRejectedValue(new Error('Unavailable'));
+  vi.mocked(api.fetchApprovalScan).mockResolvedValue({ scan: active, targets: [{ execution_status: 'investigating' }, { execution_status: 'failed' }] as ApprovalTarget[] });
+  mount();
+  await screen.findByText('Investigating existing reviews and supporting code');
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('1');
+  expect(screen.queryByText('Reconnecting')).toBeNull();
+});
+
+it('loads final aggregate counts even when no target evidence is accessible', async () => {
+  const scan = { scan_id: 'new-scan', status: 'partial', kind: 'full', total: 2, cancel_requested: false };
+  vi.mocked(api.fetchApprovalScans).mockResolvedValue({ scans: [scan] });
+  vi.mocked(api.fetchApprovalScan).mockResolvedValue({ scan, targets: [] });
+  vi.mocked(api.fetchApprovalProgress).mockResolvedValue({ scan_id: scan.scan_id, status: 'partial', total: 2, finished: 2, running: 0, queued: 0, summary: 'Investigation finished', tool_calls: 3 });
+  mount();
+  await screen.findByText(/2 of 2 finished/);
+  expect(screen.queryByRole('progressbar')).toBeNull();
+});
+
 describe('approval investigation controls', () => {
   it('opening the launch panel does not start a model scan', async () => {
     mount(); fireEvent.click(await screen.findByText('Find approval candidates'));

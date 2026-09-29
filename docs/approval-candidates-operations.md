@@ -38,6 +38,16 @@ Every target reserves its maximum allowance before model execution. Trusted usag
 
 Admission snapshots provider, model and policy/runtime versions. Configuration drift blocks execution or freshness renewal. Changing credentials without changing provider/model remains possible. The provider cannot silently fall back to a different model.
 
+## Live progress
+
+The collapsed approval bar shows an animated prism, a ten-word-or-shorter activity line, and the number of finished PRs. The fill represents finished targets, including failures, rather than estimated time remaining. Reduced-motion preferences disable the animation.
+
+While a scan runs, the browser polls its authenticated `/api/v1/approval-scans/{scan_id}/progress` endpoint every two seconds. This returns owner-scoped aggregate progress from the database without GitHub or model calls. Evidence lists refresh every ten seconds. Progress updates never publish PRism review documents or GitHub comments.
+
+Workers report observed stages and tool names without exposing source text, file paths, review bodies, model reasoning, or tool arguments. An optional Gemini Flash-Lite call summarizes up to eight recent activity labels at most once every ten seconds when activity changes. It uses the existing Gemini key when available, otherwise OpenRouter, and falls back to a deterministic activity label when unavailable. Each request has a four-second timeout and a 64-token output limit; each target attempt permits at most 18 summary requests. These small presentation calls are separate from investigation token reservations and cannot change the assessment.
+
+Set `APPROVAL_CANDIDATES_PROGRESS_SUMMARIES=false` to disable summary model calls while retaining live progress. `APPROVAL_CANDIDATES_PROGRESS_MODEL` overrides the default `gemini-2.5-flash-lite` (Gemini API) or `google/gemini-2.5-flash-lite` (OpenRouter); use the model ID format for the selected provider.
+
 ## Rollout and rollback
 
 1. Merge the complete draft stack and apply the additive migrations with the feature disabled. Existing ordinary reviews continue independently.
@@ -52,6 +62,6 @@ Set `APPROVAL_CANDIDATES_ENABLED=false` and restart replicas to roll back. The U
 
 Automated fixtures cover both native API adapters, required artifact reads, anchored concern provenance, provider identity, nested pagination failures, incomplete coverage, code citation checks, tool boundaries, cancellation, recovery, budget reservations, generation fencing, SQLite/PostgreSQL transactions, API ownership, and UI freshness. Browser fixtures exercise desktop/mobile themes and keyboard focus.
 
-The implementation was verified with controlled HTTP/provider fixtures. A paid live-model pilot and a production rollout have not been performed. API compatibility tests do not measure recommendation quality on a deployed repository.
+Controlled HTTP/provider fixtures validate API compatibility. They do not establish recommendation quality on a deployed repository or replace a live-model pilot before production rollout.
 
 Historical legacy or cache-restored PRism runs without immutable full-revision sidecars remain evidence gaps even after a newer review succeeds; the runtime does not silently discard or override them. Reviews without immutable PRism sidecars, unknown reviewed revisions, incomplete pagination, missing provider identity, large evidence sets, or exhausted tool/model budgets produce gaps or failed investigations. The dashboard may lack the current user's actual reviewed SHA; it then keeps that PR in the launch pool and admission resolves eligibility using live review metadata. Safe concern dispositions require source anchors; unanchored concerns remain insufficient evidence. Collection ceilings do not guarantee that every artifact fits the smaller investigation budget. File coverage is labeled unreported unless the source supplies it. Positive CI does not assert branch-rule compliance, and code inspection does not assert tests were executed.

@@ -135,6 +135,7 @@ type ApprovalStore interface {
 	ClaimApprovalTarget(ApprovalClaim) (*ApprovalTarget, error)
 	HeartbeatApprovalTarget(string, string, time.Time, time.Duration) error
 	SetApprovalTargetStage(string, string, string, time.Time) error
+	SetApprovalTargetProgress(string, string, string, time.Time) error
 	SaveApprovalSnapshot(string, string, string, time.Time) error
 	ReserveApprovalBudget(string, string, time.Time, int64, int64, int64, int64) error
 	ReserveApprovalCall(string, string, time.Time, ApprovalCallReservation) error

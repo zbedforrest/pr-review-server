@@ -24,3 +24,7 @@ export interface ApprovalTarget {
 }
 export interface ApprovalScan { scan_id: string; kind: string; status: string; cancel_requested: boolean; total: number; scope?: Record<string, unknown> }
 export interface ApprovalCapabilities { enabled: boolean; available: boolean; unavailable_reason: string; max_targets: number }
+export interface ApprovalProgress {
+  scan_id: string; status: string; total: number; finished: number;
+  running: number; queued: number; summary: string; tool_calls: number;
+}
