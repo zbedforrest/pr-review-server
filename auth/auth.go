@@ -302,14 +302,21 @@ func consumeReturnTo(w http.ResponseWriter, r *http.Request) string {
 }
 
 // SafeReturnPath returns p when it is a same-origin absolute path, and "" for
-// anything that could leave the site (a scheme, a host, "//" or "/\"), so
-// the post-login redirect can never become an open redirect.
+// anything that could leave the site, so the post-login redirect can never
+// become an open redirect. Browsers strip tabs and newlines from URLs and read
+// a backslash as a slash, so control characters and backslashes are rejected
+// anywhere in p: "/<tab>/host" and "/\host" would otherwise both mean "//host".
 func SafeReturnPath(p string) string {
-	if len(p) > 512 || !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || strings.HasPrefix(p, "/\\") {
+	if len(p) > 512 || !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || strings.ContainsRune(p, '\\') {
 		return ""
 	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return ""
+		}
+	}
 	u, err := neturl.Parse(p)
-	if err != nil || u.Scheme != "" || u.Host != "" || strings.ContainsAny(p, "\r\n") {
+	if err != nil || u.Scheme != "" || u.Host != "" {
 		return ""
 	}
 	return p

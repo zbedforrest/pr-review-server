@@ -16,6 +16,9 @@ func TestSafeReturnPathKeepsOnlySameOriginPaths(t *testing.T) {
 		"/\\evil.example.com":        "",
 		"https://evil.example.com/x": "",
 		"/x\r\nSet-Cookie: a=b":      "",
+		"/\t/evil.example.com":       "",
+		"/\n/evil.example.com":       "",
+		"/a/..\\..\\evil":            "",
 	} {
 		if got := SafeReturnPath(in); got != want {
 			t.Errorf("SafeReturnPath(%q) = %q, want %q", in, got, want)
