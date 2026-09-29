@@ -270,24 +270,24 @@ func validateCitations(ctx context.Context, s Snapshot, repo Repository, a *Asse
 		}
 		supported := false
 		for _, current := range concern.Citations {
-			if current.Path == "" || current.Revision != s.Revision.Head {
+			if current.Path == "" || current.Path != concern.Path || current.Revision != s.Revision.Head {
 				continue
 			}
 			hasOriginal := false
 			for _, old := range concern.Citations {
-				if old.Path == current.Path && old.Revision == concern.OriginalRevision && old.Revision != s.Revision.Head {
+				if old.Path == concern.Path && old.Revision == concern.OriginalRevision && old.Revision != s.Revision.Head && anchorOverlap(concern, old) {
 					hasOriginal = true
 				}
 			}
 			if !hasOriginal {
 				continue
 			}
-			diff, err := repo.Read(ctx, "read_diff", ReadRequest{Revision: s.Revision.Head, OtherRevision: concern.OriginalRevision, Path: current.Path})
+			var err error
+			supported, err = citationChangeSupported(ctx, repo, s.Revision.Head, concern, current)
 			if err != nil {
 				return err
 			}
-			if changedLinesSupport(diff.Text, current.StartLine, current.EndLine) {
-				supported = true
+			if supported {
 				break
 			}
 		}
@@ -299,13 +299,58 @@ func validateCitations(ctx context.Context, s Snapshot, repo Repository, a *Asse
 	return nil
 }
 
-var approvalDiffHunk = regexp.MustCompile(`^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@`)
+func citationChangeSupported(ctx context.Context, repo Repository, head string, concern Concern, current Citation) (bool, error) {
+	request := ReadRequest{Revision: head, OtherRevision: concern.OriginalRevision, Path: concern.Path}
+	var diff strings.Builder
+	seen := map[string]bool{}
+	for pages := 0; pages < 40; pages++ {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		page, err := repo.Read(ctx, "read_diff", request)
+		if err != nil {
+			return false, err
+		}
+		if diff.Len()+len(page.Text) > 2<<20 {
+			return false, fmt.Errorf("%w: citation diff limit exceeded", ErrInvestigationLimit)
+		}
+		diff.WriteString(page.Text)
+		if changedLinesSupportAtAnchor(diff.String(), current.StartLine, current.EndLine, &concern) {
+			return true, nil
+		}
+		if page.NextCursor == "" {
+			return false, nil
+		}
+		if seen[page.NextCursor] || page.NextCursor == request.Cursor {
+			return false, fmt.Errorf("invalid citation diff pagination")
+		}
+		seen[page.NextCursor] = true
+		request.Cursor = page.NextCursor
+	}
+	return false, fmt.Errorf("%w: citation diff page limit exceeded", ErrInvestigationLimit)
+}
+
+var approvalDiffHunk = regexp.MustCompile(`^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,[0-9]+)? @@`)
 
 func changedLinesSupport(diff string, start, end int) bool {
+	return changedLinesSupportAtAnchor(diff, start, end, nil)
+}
+
+func changedLinesSupportAtAnchor(diff string, start, end int, concern *Concern) bool {
 	line := 0
 	for _, text := range strings.Split(diff, "\n") {
 		if match := approvalDiffHunk.FindStringSubmatch(text); match != nil {
-			line, _ = strconv.Atoi(match[1])
+			line, _ = strconv.Atoi(match[3])
+			if concern != nil {
+				oldStart, _ := strconv.Atoi(match[1])
+				oldCount := 1
+				if match[2] != "" {
+					oldCount, _ = strconv.Atoi(match[2])
+				}
+				if oldCount == 0 || !anchorOverlap(*concern, Citation{StartLine: oldStart, EndLine: oldStart + oldCount - 1}) {
+					line = 0
+				}
+			}
 			continue
 		}
 		if line == 0 || text == "" {

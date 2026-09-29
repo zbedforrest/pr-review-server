@@ -46,3 +46,20 @@ describe('observed dashboard changes', () => {
     expect(replaced.reason_codes).toContain('superseded');
   });
 });
+
+it('preserves stale detail against an older current projection in either reconciliation order', () => {
+  const current = target({ target_id: 't', revision: sha, validated_at: new Date(1000).toISOString(), reason_codes: [] });
+  const stale = { ...current, freshness_state: 'stale', reason_codes: ['base_changed'] };
+  for (const [detail, projection] of [[stale, current], [current, stale]]) {
+    const result = reconcileApprovalTarget(detail, pr(), projection);
+    expect(result.freshness_state).toBe('stale');
+    expect(result.reason_codes).toContain('base_changed');
+  }
+});
+it('accepts a newer successful renewal without reviving stale evidence', () => {
+  const expired = target({ target_id: 't', revision: sha, freshness_state: 'expired', validated_at: new Date(1000).toISOString(), valid_until: new Date(2000).toISOString() });
+  const renewed = { ...expired, freshness_state: 'current', validated_at: new Date(3000).toISOString(), valid_until: new Date(4000).toISOString() };
+  expect(reconcileApprovalTarget(expired, pr(), renewed).freshness_state).toBe('current');
+  expect(reconcileApprovalTarget(renewed, pr(), expired).valid_until).toBe(renewed.valid_until);
+  expect(reconcileApprovalTarget({ ...expired, freshness_state: 'stale' }, pr(), renewed).freshness_state).toBe('stale');
+});

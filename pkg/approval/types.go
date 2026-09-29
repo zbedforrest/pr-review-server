@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-const PolicyVersion = "approval-v1"
+const PolicyVersion = "approval-v2"
 const PromptVersion = "approval-v1"
 const RuntimeVersion = "native-tools-v1"
 

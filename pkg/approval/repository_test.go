@@ -1,6 +1,7 @@
 package approval
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -14,9 +15,11 @@ func fixtureGit(t *testing.T, dir, input string, args ...string) string {
 	cmd := exec.Command("git", append([]string{"--git-dir=" + dir}, args...)...)
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/nonexistent", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.test", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.test"}
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("git %v: %v %s", args, err, out)
+		t.Fatalf("git %v: %v %s", args, err, stderr.String())
 	}
 	return strings.TrimSpace(string(out))
 }

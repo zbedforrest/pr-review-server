@@ -106,3 +106,47 @@ it('does not retry failed validation after expiry changes, but permits a renewed
   fireEvent.click(screen.getByText('Find approval candidates'));
   await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledTimes(3));
 });
+
+function evidenceCandidate(): ApprovalTarget {
+  return { target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'candidate', freshness_state: 'current', valid_until: new Date(Date.now() + 300000).toISOString(), validated_at: new Date().toISOString(), reason_codes: [], summary: 'Supported', assessment: { summary: 'Supported', sources: [], concerns: [], coverage_gaps: [], citations: [] } } as unknown as ApprovalTarget;
+}
+it('withdraws the row when fresh evidence reports a base change before the list refreshes', async () => {
+  const candidate = evidenceCandidate();
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([candidate]);
+  vi.mocked(api.approvalRequest).mockResolvedValue({ ...candidate, freshness_state: 'stale', reason_codes: ['base_changed'] });
+  mount();
+  fireEvent.click(await screen.findByText('View evidence'));
+  await screen.findByText('base changed');
+  expect(screen.queryByText('candidate')).toBeNull();
+  expect(screen.queryByText('View evidence')).toBeNull();
+});
+it('keeps an initial evidence request running when an unrelated PR changes', async () => {
+  const candidate = evidenceCandidate();
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([candidate]);
+  let finish!: (target: ApprovalTarget) => void;
+  vi.mocked(api.approvalRequest).mockImplementation(() => new Promise(resolve => { finish = resolve as typeof finish; }));
+  mount();
+  fireEvent.click(await screen.findByText('View evidence'));
+  await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledTimes(1));
+  const listeners = vi.mocked(subscribeToWebSocketMessages).mock.calls;
+  act(() => listeners[listeners.length - 1][0]({ type: 'pr_updated', payload: { owner: 'acme', repo: 'example', number: 2 } }));
+  await act(async () => finish(candidate));
+  await screen.findByText('candidate');
+  expect(api.approvalRequest).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText('CancelledError')).toBeNull();
+});
+it('restarts a matching initial evidence request even before it has cached data', async () => {
+  const candidate = evidenceCandidate();
+  const stale = { ...candidate, freshness_state: 'stale', reason_codes: ['evidence_changed'] };
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([candidate]);
+  vi.mocked(api.approvalRequest).mockImplementationOnce(() => new Promise(() => {})).mockResolvedValue(stale);
+  mount();
+  fireEvent.click(await screen.findByText('View evidence'));
+  await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledTimes(1));
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([stale]);
+  const listeners = vi.mocked(subscribeToWebSocketMessages).mock.calls;
+  act(() => listeners[listeners.length - 1][0]({ type: 'pr_updated', payload: { owner: 'acme', repo: 'example', number: 1 } }));
+  await waitFor(() => expect(vi.mocked(api.approvalRequest).mock.calls.length).toBeGreaterThan(1));
+  await screen.findByText('Checks and limitations');
+  expect(screen.queryByText('CancelledError')).toBeNull();
+});

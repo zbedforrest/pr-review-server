@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type Query } from '@tanstack/react-query';
 import { ApprovalAPIError, approvalRequest, fetchApprovalCapabilities, fetchApprovalScan, fetchApprovalScans, fetchApprovalTargets, targetPath } from '@/api/approval';
 import { usePRs } from '@/hooks/usePRs';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
@@ -79,15 +79,19 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
       const key = approvalKey({ owner: pr.owner, repo: pr.repo, number: pr.number });
       const withdraw = (target: ApprovalTarget): ApprovalTarget => approvalKey(target) === key
         ? { ...target, freshness_state: 'stale', reason_codes: Array.from(new Set([...(target.reason_codes || []), 'evidence_changed'])) } : target;
+      const affectedIDs = new Set((client.getQueryData<ApprovalTarget[]>(['approval-targets']) || []).filter(target => approvalKey(target) === key).map(target => target.target_id));
+      if (selected && approvalKey(selected) === key) affectedIDs.add(selected.target_id);
+      const matchesEvidence = (query: Query) => query.queryKey[0] === 'approval-evidence' &&
+        (affectedIDs.has(String(query.queryKey[1])) || (!!query.state.data && approvalKey(query.state.data as ApprovalTarget) === key));
       void client.cancelQueries({ queryKey: ['approval-targets'] }, { revert: false });
-      void client.cancelQueries({ queryKey: ['approval-evidence'] }, { revert: false });
+      void client.cancelQueries({ predicate: matchesEvidence }, { revert: false });
       client.setQueryData<ApprovalTarget[]>(['approval-targets'], old => old?.map(withdraw));
       client.setQueriesData<ApprovalTarget>({ queryKey: ['approval-evidence'] }, old => old ? withdraw(old) : old);
       client.setQueriesData<{ scan: ApprovalScan; targets: ApprovalTarget[] | null }>({ queryKey: ['approval-scan'] }, old => old ? { ...old, targets: old.targets?.map(withdraw) || null } : old);
       void client.invalidateQueries({ queryKey: ['approval-targets'] });
-      void client.invalidateQueries({ predicate: query => query.queryKey[0] === 'approval-evidence' && !!query.state.data && approvalKey(query.state.data as ApprovalTarget) === key });
+      void client.invalidateQueries({ predicate: matchesEvidence });
     });
-  }, [client, enabled]);
+  }, [client, enabled, selected]);
   useEffect(() => { setSlot(document.getElementById('approval-action-slot')); const interval = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(interval); }, []);
   useEffect(() => {
     if (!enabled || !targets.data || now - lastValidationRequest.current < 10000) return;
@@ -106,6 +110,12 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
       return client.invalidateQueries({ queryKey: ['approval-targets'] });
     }).catch((err: Error) => setError(err.message));
   }, [enabled, open, targets.data, now, visibleKeys, client]);
+  useEffect(() => {
+    if (detail.data?.freshness_state !== 'stale') return;
+    const stale = detail.data;
+    client.setQueryData<ApprovalTarget[]>(['approval-targets'], old => old?.map(target => target.target_id === stale.target_id && target.freshness_state !== 'stale'
+      ? { ...target, freshness_state: 'stale', reason_codes: Array.from(new Set([...(target.reason_codes || []), ...(stale.reason_codes || [])])) } : target));
+  }, [client, detail.data]);
   useEffect(() => {
     if (selected && currentDetail && focusedEvidence.current !== selected.target_id) { evidenceRef.current?.focus(); focusedEvidence.current = selected.target_id; }
   }, [selected, currentDetail]);

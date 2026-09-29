@@ -56,3 +56,14 @@ func TestEvidenceInventoryOnlyIncludesPageSources(t *testing.T) {
 		t.Fatal("unpaged source inventory leaked into a page")
 	}
 }
+
+func TestChangedLinesRequireTheConcernHunk(t *testing.T) {
+	diff := "@@ -1,3 +1,3 @@\n unchanged source\n-old value\n+new value\n unchanged source\n@@ -500,3 +500,3 @@\n distant source\n-old unrelated value\n+new unrelated value\n distant source\n"
+	concern := Concern{StartLine: 2, EndLine: 2}
+	if !changedLinesSupportAtAnchor(diff, 2, 2, &concern) {
+		t.Fatal("relevant changed hunk rejected")
+	}
+	if changedLinesSupportAtAnchor(diff, 501, 501, &concern) {
+		t.Fatal("unrelated hunk in the same file accepted")
+	}
+}

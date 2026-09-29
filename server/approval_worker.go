@@ -164,6 +164,9 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 		defer ticker.Stop()
 		for {
 			_, _ = store.PruneApprovalScans(time.Now().Add(-30 * 24 * time.Hour))
+			if s.cfg != nil {
+				_, _ = approval.PruneRepositoryCache(ctx, s.cfg.ApprovalCandidates().CacheRoot)
+			}
 			select {
 			case <-ctx.Done():
 				return
