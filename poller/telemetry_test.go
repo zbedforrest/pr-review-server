@@ -29,7 +29,8 @@ func TestReviewTelemetryReportsTheRunItsEnsembleAndTheMergeCall(t *testing.T) {
 		mu.Unlock()
 	}))
 	defer srv.Close()
-	p := &Poller{telemetry: newrelic.New(newrelic.Config{AccountID: "1", LicenseKey: "k", Endpoint: srv.URL})}
+	sink := newrelic.New(newrelic.Config{AccountID: "1", LicenseKey: "k", Endpoint: srv.URL})
+	p := &Poller{telemetry: sink}
 	exec := &reviewExecution{
 		Job: ReviewJob{RunID: "run-1", TriggerSource: "auto_review", PR: github.PullRequest{Owner: "acme", Repo: "example", Number: 7, CommitSHA: "abc"},
 			Config: runconfig.Snapshot{Effective: runconfig.Effective{Profile: runconfig.ProfileLite}}},
@@ -42,7 +43,7 @@ func TestReviewTelemetryReportsTheRunItsEnsembleAndTheMergeCall(t *testing.T) {
 	}
 	status, verdict, crit := "completed", "approve_suggestions", 0
 	p.recordReviewTelemetry(exec, db.ReviewRunPatch{Status: &status, Verdict: &verdict, CriticalCount: &crit}, 120000)
-	p.telemetry.Close()
+	sink.Close()
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -12,6 +12,7 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"pr-review-server/pkg/telemetry"
 	"pr-review-server/pkg/telemetry/newrelic"
 	"sort"
 	"strconv"
@@ -175,9 +176,9 @@ type Poller struct {
 	agentSlots chan struct{}
 	// ensembleSlots caps the extra agent processes ensemble reviews fan out.
 	ensembleSlots chan struct{}
-	// telemetry sends review and ensemble events to New Relic; nil when
-	// unconfigured.
-	telemetry *newrelic.Sink
+	// telemetry records review and ensemble events: structured JSON log
+	// lines, plus New Relic when it is configured.
+	telemetry telemetry.Recorder
 	// firstPassSlots caps provider-heavy first-pass pipelines across every
 	// batch and immediate API request in this process. Jobs acquire agent
 	// capacity first (when needed), then this slot, before starting their
@@ -417,7 +418,11 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		ensembleAgents = 25
 	}
 	p.ensembleSlots = make(chan struct{}, ensembleAgents)
-	p.telemetry = newrelic.New(newrelic.Config{AccountID: cfg.NewRelicAccountID, InsertKey: cfg.NewRelicInsertKey, LicenseKey: cfg.NewRelicLicenseKey, Region: cfg.NewRelicRegion})
+	recorders := telemetry.Multi{telemetry.NewJSONLog(nil)}
+	if nr := newrelic.New(newrelic.Config{AccountID: cfg.NewRelicAccountID, InsertKey: cfg.NewRelicInsertKey, LicenseKey: cfg.NewRelicLicenseKey, Region: cfg.NewRelicRegion}); nr != nil {
+		recorders = append(recorders, nr)
+	}
+	p.telemetry = recorders
 	replyConcurrent := cfg.ReplyMaxConcurrent
 	if replyConcurrent <= 0 {
 		replyConcurrent = 1
