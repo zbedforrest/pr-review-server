@@ -13,6 +13,7 @@ export interface PR {
   author: string;
   generating_since: string | null;
   approval_count: number;
+  my_review_commit_sha?: string;
   my_review_status: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | '';
   draft: boolean;
   ci_state: 'success' | 'failure' | 'pending' | 'unknown';

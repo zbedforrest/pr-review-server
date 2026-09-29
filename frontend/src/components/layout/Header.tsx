@@ -47,6 +47,7 @@ export function Header() {
         >
           {isPolling ? 'Polling...' : 'Refresh PRs'}
         </button>
+        <span id="approval-action-slot" />
         <ThemeSelector />
       </div>
     </header>
