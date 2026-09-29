@@ -57,6 +57,7 @@ type AuthHandler interface {
 	HandleLogout(w http.ResponseWriter, r *http.Request)
 	Middleware(next http.Handler) http.Handler
 	DevModeMiddleware(next http.Handler) http.Handler
+	SessionUser(r *http.Request) *db.User
 }
 
 type Server struct {
@@ -378,6 +379,11 @@ func (s *Server) Start() error {
 	// only the PR coordinates already visible on GitHub)
 	http.HandleFunc(agentLinkPath, s.handleAgentLink)
 	http.HandleFunc(badgePath, s.handleBadge)
+	pageUser := s.auth.SessionUser
+	if s.cfg.IsDevMode() {
+		pageUser = func(*http.Request) *db.User { return &db.User{} }
+	}
+	http.HandleFunc(pagesPath, func(w http.ResponseWriter, r *http.Request) { s.handlePage(w, r, pageUser) })
 	// GitHub webhook (not protected by session auth: authenticated by the
 	// X-Hub-Signature-256 HMAC over the body)
 	http.HandleFunc(githubWebhookPath, s.handleGitHubWebhook)
