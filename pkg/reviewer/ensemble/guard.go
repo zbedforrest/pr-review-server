@@ -155,8 +155,8 @@ func (r *Result) assignIDs() map[string]string {
 
 // guardSummary keeps the author's summary with its priority ids translated to
 // merged ids (dropping any that name no surviving finding), and derives a
-// summary when the author gave none. A review that keeps an active critical
-// always asks for changes.
+// summary when the author gave none. The verdict follows severity, not the
+// author: an active critical asks for changes, and nothing less does.
 func guardSummary(s *types.SummaryBlock, findings []types.LineComment, renamed map[string]string) *types.SummaryBlock {
 	hasCritical := false
 	for _, f := range findings {
@@ -177,9 +177,9 @@ func guardSummary(s *types.SummaryBlock, findings []types.LineComment, renamed m
 	switch {
 	case hasCritical:
 		out.Verdict = "request_changes"
-	case out.Verdict == "" && len(findings) > 0:
+	case len(findings) > 0:
 		out.Verdict = "approve_suggestions"
-	case out.Verdict == "":
+	default:
 		out.Verdict = "approve"
 	}
 	return out

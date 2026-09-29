@@ -157,3 +157,17 @@ func TestDeterministicKeepsOneFindingPerClusterCitingAllMembers(t *testing.T) {
 		t.Fatalf("got %+v", f)
 	}
 }
+
+func TestGuardDoesNotLetTheAuthorAskForChangesWithoutACritical(t *testing.T) {
+	ms := Members([][]types.LineComment{{lc("A", "a.go", 10, "MEDIUM", "worth fixing")}})
+	d := Draft{
+		Findings: []types.LineComment{{FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "worth fixing", Sources: []string{"r1:A"}}},
+		Summary:  &types.SummaryBlock{Verdict: "request_changes"},
+	}
+	if v := Guard(d, ms, Options{}).Summary.Verdict; v != "approve_suggestions" {
+		t.Fatalf("verdict = %q, want approve_suggestions without an active critical", v)
+	}
+	if v := Guard(Draft{}, nil, Options{}).Summary.Verdict; v != "approve" {
+		t.Fatalf("empty review verdict = %q, want approve", v)
+	}
+}
