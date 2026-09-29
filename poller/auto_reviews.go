@@ -237,6 +237,14 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 	profile := p.autoReviewProfileFor(intent.Trigger, pr.Owner, pr.Repo, pr.Author)
 	job, err := p.PrepareReviewJob(pr, runconfig.Overrides{Profile: &profile}, true, autoReviewTriggerSource, nil)
 	var validationErr *runconfig.ValidationError
+	if degraded := runconfig.DegradedProfile(profile); errors.As(err, &validationErr) && degraded != "" {
+		// A profile that cannot run here may have a cheaper equivalent that
+		// can (lite without the OpenRouter backend runs as lite_classic).
+		if djob, derr := p.PrepareReviewJob(pr, runconfig.Overrides{Profile: &degraded}, true, autoReviewTriggerSource, nil); derr == nil {
+			log.Printf("[AUTO-REVIEW] %s intent=%d: %s cannot run here (%v); using %s", key, intent.ID, profile, err, degraded)
+			job, err, profile = djob, nil, degraded
+		}
+	}
 	if errors.As(err, &validationErr) {
 		// Fail closed: never escalate to a costlier profile implicitly. The
 		// intent stays queued with the reason, so the head is reviewed once an

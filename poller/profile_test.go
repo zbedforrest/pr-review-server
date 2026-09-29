@@ -381,3 +381,15 @@ func TestDefaultReviewProfileFollowsDeploymentFlag(t *testing.T) {
 	_, _, err = p.ReviewConfigDefaultsAndPolicy()
 	require.NoError(t, err)
 }
+
+func TestAutoReviewDegradesLiteToClassicWhenTheEnsembleCannotRun(t *testing.T) {
+	f := liteAutoReviewFixture(t)
+	f.p.cfg.OpenRouterAPIKey = ""
+	require.NoError(t, f.db.SetSetting(SettingAutoReviewProfileByTrigger, `{"synchronize":"lite"}`))
+	require.NoError(t, f.db.SetSetting(SettingAutoReviewLiteAuthors, "alice"))
+
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+	waitForDetachedReviews(t, f.p)
+
+	assert.Equal(t, runconfig.ProfileLiteClassic, autoReviewRunProfile(t, f), "a keyless deployment reviews with lite_classic instead of skipping or escalating")
+}
