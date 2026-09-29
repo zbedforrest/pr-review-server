@@ -145,3 +145,24 @@ func TestPercentiles(t *testing.T) {
 		t.Fatal("empty input must be zero")
 	}
 }
+
+func TestEvaluateEscalatesAnAgingAutoReviewBacklog(t *testing.T) {
+	for age, want := range map[time.Duration]Status{
+		5 * time.Minute:  StatusOK,
+		45 * time.Minute: StatusWarn,
+		3 * time.Hour:    StatusCritical,
+	} {
+		m := healthyMetrics()
+		m.AutoReview = AutoReviewMetrics{Queued: 4, OldestQueuedAge: age}
+		var got *Check
+		for _, c := range Evaluate(m).Checks {
+			if c.Name == "auto-review backlog" {
+				c := c
+				got = &c
+			}
+		}
+		if got == nil || got.Status != want {
+			t.Errorf("age %s: check = %+v, want %s", age, got, want)
+		}
+	}
+}

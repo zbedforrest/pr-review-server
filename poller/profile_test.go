@@ -296,7 +296,7 @@ func TestWebhookSynchronizeAdmitsLiteAndSupersedesQueuedOlderHead(t *testing.T) 
 	assert.Equal(t, autoReviewNewHead, f.runs()[0].CommitSHA)
 }
 
-func TestAdmitAutoReviewIntentFallsBackToFullWhenPolicyRejectsLite(t *testing.T) {
+func TestAdmitAutoReviewIntentSkipsInsteadOfEscalatingWhenPolicyRejectsLite(t *testing.T) {
 	f := newAutoReviewFixture(t, true, "*")
 	require.NoError(t, f.db.SetSetting(SettingAutoReviewProfileByTrigger, `{"synchronize":"lite"}`))
 	require.NoError(t, f.db.SetSetting(SettingAutoReviewLiteAuthors, "*"))
@@ -304,10 +304,11 @@ func TestAdmitAutoReviewIntentFallsBackToFullWhenPolicyRejectsLite(t *testing.T)
 	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
 	waitForDetachedReviews(t, f.p)
 
-	assert.Equal(t, runconfig.ProfileFull, autoReviewRunProfile(t, f), "the agent is disabled here, so lite cannot resolve and full must run instead of retrying forever")
-	for _, intent := range f.intents(t) {
-		assert.Equal(t, db.AutoReviewIntentRunning, intent.Status)
-	}
+	assert.Empty(t, f.runs(), "the agent is disabled here, so lite cannot resolve; no costlier profile may run in its place")
+	intents := f.intents(t)
+	require.Len(t, intents, 1)
+	assert.Equal(t, db.AutoReviewIntentQueued, intents[0].Status, "the head stays owed until the policy is fixed")
+	assert.Contains(t, intents[0].Publication, "lite profile rejected by policy")
 }
 
 func TestDefaultReviewProfileFallsBackToFullWhenPolicyRejectsIt(t *testing.T) {

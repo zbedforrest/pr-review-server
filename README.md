@@ -76,6 +76,7 @@ The most common ones:
 | `QUICK_ACTIONS_ADMIN_ONLY` | No | Limit quick actions to admins while rolling out |
 | `AGENT_BACKEND` | No | `claude` (default) or `openrouter` |
 | `AGENT_MODEL` | No | Backend model; OpenRouter defaults to `openai/gpt-5.6-sol` |
+| `AGENT_CLONE_CACHE_MAX_GB` | No | Cap on the repo clone caches under `AGENT_CLONE_ROOT_DIR`; least recently used idle caches are evicted past it. `0` (default) is unlimited |
 | `OPENROUTER_API_KEY` | OpenRouter backend | Authenticates Codex requests routed through OpenRouter |
 | `REVIEW_AGENT_MODELS_*`, `REVIEW_AGENT_EFFORTS_*` | No | Per-backend allowlists for authenticated review API callers |
 | `REVIEW_MAX_WALL_CLOCK_SEC`, `REVIEW_MAX_TURNS`, `REVIEW_MAX_FIRST_PASS_SAMPLES` | No | Operator-owned ceilings for per-review overrides |
@@ -171,11 +172,23 @@ fallback for a missed delivery. To enable it:
 4. Turn on `auto_review_ready_prs` once `publish_enabled_authors` lists the
    authors you want reviewed.
 
-`GET /api/status` reports `webhook.deliveries_24h`, `webhook.last_delivery_at`
-and `webhook.intents_queued`. Clearing `publish_enabled_authors` stops all
+`auto_review_authors` decides who gets automatic reviews when it is set; left
+empty it follows `publish_enabled_authors`. An automatic review publishes for
+its author even when that author is not on the publishing list, while replies
+and mentions keep following `publish_enabled_authors`, so `auto_review_authors`
+can be `*` without opening replies to everyone. Bots never get automatic
+reviews, `*` included: GitHub App logins (`[bot]`), authors GitHub reports as
+bots, and the `ci_status_exclude_authors` list. When the deployment policy
+rejects the profile an automatic review resolves to, the review is skipped and
+the head stays queued with the reason, rather than running a costlier profile.
+
+`GET /api/status` reports `webhook.deliveries_24h`, `webhook.last_delivery_at`,
+`webhook.intents_queued` and `webhook.oldest_queued_age_sec`, and the daily
+health report flags a backlog older than 30 minutes. Clearing
+`publish_enabled_authors` (with `auto_review_authors` empty) stops all
 publishing, automatic reviews included.
 
-`publish_enabled_authors` and `auto_review_lite_authors` take GitHub logins,
+`publish_enabled_authors`, `auto_review_authors` and `auto_review_lite_authors` take GitHub logins,
 `*`, and team entries: `team:<slug>` (or `@<your-org>/<slug>`, stored as the
 `team:` form) enrols whoever is on that team of the `GITHUB_ORG_NAME`
 organization, so the list follows team membership instead of being pasted by

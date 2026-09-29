@@ -139,6 +139,17 @@ func (g *GormDB) GetWebhookStatus(since time.Time) (WebhookStatus, error) {
 		return status, fmt.Errorf("count queued auto review intents: %w", err)
 	}
 	status.IntentsQueued = int(queued)
+	if queued > 0 {
+		var oldest AutoReviewIntentModel
+		res := g.db.Where("status = ?", AutoReviewIntentQueued).Order("created_at ASC").Limit(1).Find(&oldest)
+		if res.Error != nil {
+			return status, fmt.Errorf("oldest queued auto review intent: %w", res.Error)
+		}
+		if res.RowsAffected > 0 {
+			at := oldest.CreatedAt
+			status.OldestQueuedAt = &at
+		}
+	}
 	return status, nil
 }
 
@@ -244,6 +255,22 @@ func (g *GormDB) SetAutoReviewIntentPublicationByRun(runID, outcome string) erro
 		return fmt.Errorf("record publication for run %s: %w", runID, err)
 	}
 	return nil
+}
+
+// NoteQueuedAutoReviewIntent records why a queued intent was not admitted in
+// its publication outcome, truncated to the column. The intent stays queued,
+// so the head is still owed once an operator fixes the cause; a later
+// publication outcome overwrites the note.
+func (g *GormDB) NoteQueuedAutoReviewIntent(id uint, note string) (bool, error) {
+	if len(note) > 128 {
+		note = note[:128]
+	}
+	res := g.db.Model(&AutoReviewIntentModel{}).Where("id = ? AND status = ?", id, AutoReviewIntentQueued).
+		Updates(map[string]interface{}{"publication": note, "updated_at": time.Now().UTC()})
+	if res.Error != nil {
+		return false, fmt.Errorf("note auto review intent %d: %w", id, res.Error)
+	}
+	return res.RowsAffected > 0, nil
 }
 
 // SupersedeQueuedAutoReviewIntents marks the PR's queued intents superseded,

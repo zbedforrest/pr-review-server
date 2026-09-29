@@ -1171,12 +1171,15 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 		return noopCleanup, fmt.Errorf("abs worktree dir: %w", err)
 	}
 	logPrefix := fmt.Sprintf("[AGENT %s/%s#%d]", owner, repo, prNumber)
+	release := acquireCacheUse(owner + "/" + repo)
 
 	cacheDir, err := ensureAgentCache(ctx, cloneRoot, owner, repo, defaultBranch, token, logPrefix)
 	if err != nil {
+		release()
 		return noopCleanup, err
 	}
 	if err := fetchAgentRefs(ctx, owner+"/"+repo, cacheDir, defaultBranch, prNumber, token, logPrefix); err != nil {
+		release()
 		return noopCleanup, err
 	}
 
@@ -1187,6 +1190,7 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	log.Printf("%s git worktree add %s @ %s START", logPrefix, absDir, commitSHA)
 	t2 := time.Now()
 	if out, err := runGit(ctx, cacheDir, "worktree", "add", "--detach", absDir, commitSHA); err != nil {
+		release()
 		return noopCleanup, fmt.Errorf("git worktree add: %w (%s)", err, out)
 	}
 	log.Printf("%s git worktree add DONE in %s", logPrefix, time.Since(t2))
@@ -1196,6 +1200,8 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	// background context because the run's ctx may already be expired by
 	// the time the deferred cleanup runs.
 	cleanup = func() error {
+		defer maybeEvictCloneCaches(cloneRoot)
+		defer release()
 		log.Printf("%s git worktree remove %s START", logPrefix, absDir)
 		t := time.Now()
 		if out, err := runGit(context.Background(), cacheDir, "worktree", "remove", "--force", absDir); err != nil {

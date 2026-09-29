@@ -18,6 +18,9 @@ import (
 const (
 	SettingAutoReviewProfileByTrigger = "auto_review_profile_by_trigger"
 	SettingAutoReviewLiteAuthors      = "auto_review_lite_authors"
+	// SettingAutoReviewAuthors is who gets automatic reviews; unset falls back
+	// to publish_enabled_authors, which keeps gating replies and mentions.
+	SettingAutoReviewAuthors = "auto_review_authors"
 )
 
 // AutoReviewTriggers lists the intent triggers a profile may be mapped to.

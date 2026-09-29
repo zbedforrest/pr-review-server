@@ -244,6 +244,9 @@ func (m *MockDatabase) DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (
 func (m *MockDatabase) SetAutoReviewIntentPublicationByRun(runID, outcome string) error {
 	return nil
 }
+func (m *MockDatabase) NoteQueuedAutoReviewIntent(id uint, note string) (bool, error) {
+	return false, nil
+}
 func (m *MockDatabase) GetWebhookStatus(since time.Time) (db.WebhookStatus, error) {
 	return db.WebhookStatus{}, nil
 }

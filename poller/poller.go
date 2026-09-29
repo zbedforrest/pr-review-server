@@ -2027,7 +2027,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 		// The webhook normally records the intent first; this catches a
 		// missed or failed delivery for a ready, allowlisted PR.
 		if autoReviewReady && !state.IsDraft && state.HeadRefOid != "" {
-			if eligible, err := p.publishAllowedFor(pr.Author); err != nil {
+			if eligible, err := p.autoReviewAuthorAllowed(pr.Author); err != nil {
 				log.Printf("[AUTO-REVIEW] PR %s: allowlist read failed: %v", key, err)
 			} else if eligible {
 				p.ensureFallbackAutoReviewIntent(pr, state.HeadRefOid, intentIndex[autoReviewTargetKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)])
@@ -4146,7 +4146,7 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 	var published *publisher.Report
 	if !job.SkipPublish {
 		var outcome string
-		published, outcome = p.publishGitHubReview(prCtx, pr, sidecarBody)
+		published, outcome = p.publishGitHubReview(prCtx, pr, sidecarBody, job.TriggerSource == autoReviewTriggerSource)
 		if job.TriggerSource == autoReviewTriggerSource {
 			if err := p.db.SetAutoReviewIntentPublicationByRun(job.RunID, outcome); err != nil {
 				log.Printf("[AUTO-REVIEW] run %s: could not record publication outcome %q: %v", job.RunID, outcome, err)

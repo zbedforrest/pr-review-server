@@ -73,6 +73,14 @@ func (s *Server) runDailyHealth(store healthStore, now time.Time) (health.Report
 		return health.Report{}, err
 	}
 	metrics.WallClock = time.Duration(s.cfg.AgentWallClockSec) * time.Second
+	if status, err := s.db.GetWebhookStatus(now); err != nil {
+		log.Printf("[HEALTH] auto-review backlog query failed: %v", err)
+	} else {
+		metrics.AutoReview.Queued = status.IntentsQueued
+		if status.OldestQueuedAt != nil {
+			metrics.AutoReview.OldestQueuedAge = now.Sub(*status.OldestQueuedAt)
+		}
+	}
 	metrics.PollingDisabled = s.cfg.DisablePolling
 	report := health.Evaluate(metrics)
 	body, err := json.Marshal(report)

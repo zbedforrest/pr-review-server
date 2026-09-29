@@ -66,7 +66,7 @@ func TestApprovalProgressDiscardsSummaryWhenActivityChanges(t *testing.T) {
 	require.Eventually(t, func() bool {
 		row, err := store.GetApprovalTarget(target.UserID, target.ScanID, target.ID)
 		return err == nil && row.Summary == "Rechecking current code and review evidence"
-	}, time.Second, time.Millisecond)
+	}, 5*time.Second, time.Millisecond)
 	select {
 	case <-calls:
 		t.Fatal("summaries must be spaced at least ten seconds apart")

@@ -77,10 +77,13 @@ type Config struct {
 	AgentLogsDir       string
 	AgentWallClockSec  int
 	AgentMaxTurns      int
-	AgentMaxConcurrent int    // <=0 uses the poller's safe five-process fallback
-	AgentBackend       string // claude (default) or openrouter
-	AgentModel         string // backend model id for agent reviews (empty = backend default)
-	AgentEffort        string // backend reasoning effort for agent reviews (empty = service default)
+	AgentMaxConcurrent int // <=0 uses the poller's safe five-process fallback
+	// AgentCloneCacheMaxGB caps the repo clone caches under AgentCloneRootDir;
+	// least recently used idle caches are evicted past it. 0 is unlimited.
+	AgentCloneCacheMaxGB int
+	AgentBackend         string // claude (default) or openrouter
+	AgentModel           string // backend model id for agent reviews (empty = backend default)
+	AgentEffort          string // backend reasoning effort for agent reviews (empty = service default)
 	// Author-reply model (pkg/reviewer/service/reply.go). Same backend and
 	// credentials as the review agent; smaller budgets, own concurrency cap.
 	ReplyModel         string // empty = the review agent's model
@@ -319,6 +322,7 @@ func Load() *Config {
 		AgentWallClockSec:    agentWallClockSec,
 		AgentMaxTurns:        agentMaxTurns,
 		AgentMaxConcurrent:   getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
+		AgentCloneCacheMaxGB: getEnvIntOrDefault("AGENT_CLONE_CACHE_MAX_GB", 0),
 		AgentBackend:         agentBackend,
 		AgentModel:           agentModel,
 		AgentEffort:          agentEffort,

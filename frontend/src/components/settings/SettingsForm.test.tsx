@@ -398,7 +398,7 @@ describe('SettingsForm', () => {
 
   it('asks a lite-specific question before admitting every author', () => {
     renderForm();
-    const input = within(section('Review profiles')).getByRole('textbox') as HTMLInputElement;
+    const input = within(section('Review profiles')).getByLabelText('Lite profiles for authors') as HTMLInputElement;
     fireEvent.change(input, { target: { value: '*' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(window.confirm).toHaveBeenCalledWith('Allow lite reviews for every author?');
@@ -408,12 +408,24 @@ describe('SettingsForm', () => {
     fetchMock.mockResolvedValue(jsonResponse({ ...serverSettings, auto_review_lite_authors: 'alice,dave' }));
     renderForm();
     expect(screen.getByText(/every automatic review runs the full profile/)).toBeTruthy();
-    const input = within(section('Review profiles')).getByRole('textbox') as HTMLInputElement;
+    const input = within(section('Review profiles')).getByLabelText('Lite profiles for authors') as HTMLInputElement;
     fireEvent.change(input, { target: { value: ' Alice, DAVE ' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(screen.getByText(/Automatic lite reviews run only for these authors/)).toBeTruthy();
     fireEvent.click(saveIn('Review profiles'));
     await waitFor(() => expect(postedBodies()).toEqual([{ auto_review_lite_authors: 'alice,dave' }]));
+  });
+
+  it('saves auto_review_authors separately from the publishing list', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...serverSettings, auto_review_authors: 'alice' }));
+    renderForm();
+    expect(screen.getByText(/automatic reviews follow the publishing list above/)).toBeTruthy();
+    const input = within(section('Review profiles')).getByLabelText('Automatic reviews for authors') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: ' Alice ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.getByText(/bots are always excluded, and replies still follow the publishing list/)).toBeTruthy();
+    fireEvent.click(saveIn('Review profiles'));
+    await waitFor(() => expect(postedBodies()).toEqual([{ auto_review_authors: 'alice' }]));
   });
 
   it('never renders generate_html', () => {
