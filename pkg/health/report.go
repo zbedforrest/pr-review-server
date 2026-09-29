@@ -24,15 +24,18 @@ type Metrics struct {
 	WindowEnd   time.Time `json:"window_end"`
 	Now         time.Time `json:"now"`
 
-	Runs      RunMetrics     `json:"runs"`
-	Attempts  map[string]int `json:"failed_attempts"` // "<stage>/<error_code>" -> failed attempts
-	Queue     QueueMetrics   `json:"queue"`
-	Publish   PublishMetrics `json:"publish"`
-	Replies   ReplyMetrics   `json:"replies"`
-	Telemetry map[string]int `json:"telemetry"` // action -> events in the window
-	Lease     LeaseMetrics   `json:"lease"`
-	PRErrors  int            `json:"pr_errors"`     // PRs currently carrying an error message
-	WallClock time.Duration  `json:"wall_clock_ns"` // the configured agent wall clock
+	Runs     RunMetrics     `json:"runs"`
+	Attempts map[string]int `json:"failed_attempts"` // "<stage>/<error_code>" -> failed attempts
+	Queue    QueueMetrics   `json:"queue"`
+	// AutoReview is the automatic review backlog: intents owed a review that
+	// have not been admitted yet.
+	AutoReview AutoReviewMetrics `json:"auto_review"`
+	Publish    PublishMetrics    `json:"publish"`
+	Replies    ReplyMetrics      `json:"replies"`
+	Telemetry  map[string]int    `json:"telemetry"` // action -> events in the window
+	Lease      LeaseMetrics      `json:"lease"`
+	PRErrors   int               `json:"pr_errors"`     // PRs currently carrying an error message
+	WallClock  time.Duration     `json:"wall_clock_ns"` // the configured agent wall clock
 	// PollingDisabled marks an on-demand deployment, which holds no poller
 	// lease by design.
 	PollingDisabled bool `json:"polling_disabled"`
@@ -58,6 +61,12 @@ type QueueMetrics struct {
 	// run's wall clock plus the pipeline margin); OverTwice, twice that.
 	RunningOverBudget      int `json:"running_over_budget"`
 	RunningOverTwiceBudget int `json:"running_over_twice_budget"`
+}
+
+// AutoReviewMetrics is the automatic review intent backlog.
+type AutoReviewMetrics struct {
+	Queued          int           `json:"queued"`
+	OldestQueuedAge time.Duration `json:"oldest_queued_age_ns"`
 }
 
 // PublishMetrics counts ledger rows first created in the window: PRs that got
@@ -172,6 +181,17 @@ func Evaluate(m Metrics) Report {
 		add("queue age", StatusWarn, fmt.Sprintf("%d queued, oldest waiting %s", m.Queue.Queued, dur(m.Queue.OldestQueuedAge.Milliseconds())))
 	default:
 		add("queue age", StatusOK, fmt.Sprintf("%d queued", m.Queue.Queued))
+	}
+	backlog := fmt.Sprintf("%d heads owed a review, oldest waiting %s", m.AutoReview.Queued, dur(m.AutoReview.OldestQueuedAge.Milliseconds()))
+	switch {
+	case m.AutoReview.Queued == 0:
+		add("auto-review backlog", StatusOK, "no heads waiting")
+	case m.AutoReview.OldestQueuedAge > 2*time.Hour:
+		add("auto-review backlog", StatusCritical, backlog)
+	case m.AutoReview.OldestQueuedAge > 30*time.Minute:
+		add("auto-review backlog", StatusWarn, backlog)
+	default:
+		add("auto-review backlog", StatusOK, backlog)
 	}
 	switch {
 	case m.Queue.RunningOverTwiceBudget > 0:

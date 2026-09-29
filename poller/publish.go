@@ -223,10 +223,16 @@ const (
 
 // publishGitHubReview posts a completed review to the PR and reports what it
 // posted; the report is nil when no round was attempted, and the outcome
-// says why. Best-effort by design: the review is already saved and visible
-// on the dashboard, so any failure here is logged and never fails the run.
-func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) (*publisher.Report, string) {
-	if allowed, err := p.publishAllowedFor(pr.Author); err != nil || !allowed {
+// says why. An automatic review also publishes for authors allowed automatic
+// reviews but not on the publish list. Best-effort by design: the review is
+// already saved and visible on the dashboard, so any failure here is logged
+// and never fails the run.
+func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte, autoReview bool) (*publisher.Report, string) {
+	allowed, err := p.publishAllowedFor(pr.Author)
+	if err == nil && !allowed && autoReview {
+		allowed, err = p.autoReviewAuthorAllowed(pr.Author)
+	}
+	if err != nil || !allowed {
 		return nil, publicationNotAllowed
 	}
 	ledger, ok := p.db.(publisher.Ledger)

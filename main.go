@@ -16,6 +16,7 @@ import (
 	"pr-review-server/gcs"
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/llm"
+	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/poller"
 	"pr-review-server/server"
 )
@@ -206,6 +207,7 @@ func start(cfg *config.Config) {
 	srv.SetAuth(authHandler)
 
 	// Initialize poller
+	service.SetCloneCacheMaxBytes(int64(cfg.AgentCloneCacheMaxGB) << 30)
 	p := poller.New(cfg, database, ghClient, gcsClient)
 
 	// Wire components together

@@ -55,13 +55,32 @@ func (p *Poller) autoReviewReadyEnabled() (bool, error) {
 }
 
 // autoReviewEligible is the one author policy for automatic reviews: the
-// switch must be on and the PR author must be publish-enabled.
+// switch must be on and the PR author must be allowed automatic reviews.
 func (p *Poller) autoReviewEligible(author string) (bool, error) {
 	enabled, err := p.autoReviewReadyEnabled()
 	if err != nil || !enabled {
 		return false, err
 	}
-	return p.publishAllowedFor(author)
+	return p.autoReviewAuthorAllowed(author)
+}
+
+// autoReviewAuthorAllowed matches the author against auto_review_authors (or
+// publish_enabled_authors when that is unset). Bots never match, not even
+// "*": GitHub App logins and the ci_status_exclude_authors list.
+func (p *Poller) autoReviewAuthorAllowed(author string) (bool, error) {
+	if isExcludedCIAuthor(author, p.ciStatusExcludedAuthors()) {
+		return false, nil
+	}
+	list, err := p.db.GetSetting(SettingAutoReviewAuthors)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(list) == "" {
+		if list, err = p.db.GetSetting(settingPublishEnabledAuthors); err != nil {
+			return false, err
+		}
+	}
+	return p.authorAllowed(list, author), nil
 }
 
 func autoReviewKey(owner, repo string, number int, head string) string {
@@ -134,6 +153,10 @@ func (p *Poller) HandleWebhookDelivery(ctx context.Context, d db.WebhookDelivery
 	}
 	if d.HeadSHA == "" {
 		log.Printf("[AUTO-REVIEW] delivery=%s %s: %s without a head sha, ignoring", d.DeliveryID, key, d.Action)
+		return nil
+	}
+	if strings.EqualFold(d.AuthorType, "Bot") {
+		log.Printf("[AUTO-REVIEW] delivery=%s %s: author %s is a bot, no automatic review", d.DeliveryID, key, d.Author)
 		return nil
 	}
 	eligible, err := p.autoReviewEligible(d.Author)
@@ -214,12 +237,16 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 	profile := p.autoReviewProfileFor(intent.Trigger, pr.Owner, pr.Repo, pr.Author)
 	job, err := p.PrepareReviewJob(pr, runconfig.Overrides{Profile: &profile}, true, autoReviewTriggerSource, nil)
 	var validationErr *runconfig.ValidationError
-	if errors.As(err, &validationErr) && profile != runconfig.ProfileFull {
-		// A lite profile the deployment policy rejects would otherwise leave the
-		// intent queued and retried forever; the full pipeline still reviews it.
-		log.Printf("[AUTO-REVIEW] %s intent=%d: %s profile rejected by policy (%v); reviewing with full", key, intent.ID, profile, err)
-		profile = runconfig.ProfileFull
-		job, err = p.PrepareReviewJob(pr, runconfig.Overrides{Profile: &profile}, true, autoReviewTriggerSource, nil)
+	if errors.As(err, &validationErr) {
+		// Fail closed: never escalate to a costlier profile implicitly. The
+		// intent stays queued with the reason, so the head is reviewed once an
+		// operator fixes the policy.
+		reason := fmt.Sprintf("skipped: %s profile rejected by policy: %v", profile, err)
+		log.Printf("[AUTO-REVIEW] %s intent=%d: %s", key, intent.ID, reason)
+		if _, noteErr := p.db.NoteQueuedAutoReviewIntent(intent.ID, reason); noteErr != nil {
+			log.Printf("[AUTO-REVIEW] %s intent=%d: could not record the policy rejection: %v", key, intent.ID, noteErr)
+		}
+		return false
 	}
 	if err != nil {
 		log.Printf("[AUTO-REVIEW] %s intent=%d: cannot prepare %s review, left queued for the next poll: %v", key, intent.ID, profile, err)

@@ -142,12 +142,18 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
     'auto_review_ready_prs',
   ]);
   const replies = useSectionDraft(settings, ['publish_reply_mode']);
-  const profiles = useSectionDraft(settings, ['auto_review_profile_by_trigger', 'auto_review_lite_authors']);
+  const profiles = useSectionDraft(settings, [
+    'auto_review_profile_by_trigger',
+    'auto_review_lite_authors',
+    'auto_review_authors',
+  ]);
   const admins = useSectionDraft(settings, ['admin_logins']);
   const profileByTrigger = profiles.draft.auto_review_profile_by_trigger ?? EMPTY_PROFILE_BY_TRIGGER;
   const defaultProfileName = profileName(settings.review_default_profile);
   const liteAuthors = profiles.draft.auto_review_lite_authors ?? '';
   const noLiteAuthors = normalizeLogins(liteAuthors, true).logins.length === 0;
+  const autoAuthors = profiles.draft.auto_review_authors ?? '';
+  const noAutoAuthors = normalizeLogins(autoAuthors, true).logins.length === 0;
 
   const noAuthorsDraft = normalizeLogins(publishing.draft.publish_enabled_authors, true).logins.length === 0;
   const noAuthorsSaved = normalizeLogins(settings.publish_enabled_authors, true).logins.length === 0;
@@ -375,6 +381,22 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
             </select>
           </div>
         ))}
+        <LoginListField
+          id="settings-auto-review-authors"
+          label="Automatic reviews for authors"
+          value={autoAuthors}
+          onChange={(next) => profiles.patch({ auto_review_authors: next })}
+          authors
+          disabled={disabled}
+          knownLogins={knownLogins}
+          confirmAll="Review every author's PRs automatically? Bots are always excluded."
+          teams={settings.author_list_teams}
+        />
+        <p className="settings-section__notice">
+          {noAutoAuthors
+            ? 'No author is listed, so automatic reviews follow the publishing list above'
+            : 'Automatic reviews run and post for these authors; bots are always excluded, and replies still follow the publishing list'}
+        </p>
         <LoginListField
           id="settings-lite-authors"
           label="Lite profiles for authors"

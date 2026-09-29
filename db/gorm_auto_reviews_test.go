@@ -224,3 +224,28 @@ func TestSupersedeQueuedAutoReviewIntentsKeepsCurrentHeadAndRunningWork(t *testi
 	require.NoError(t, err)
 	assert.Equal(t, 0, status.IntentsQueued)
 }
+
+func TestWebhookStatusReportsTheOldestQueuedIntentAndNotesKeepItQueued(t *testing.T) {
+	database := newTestDB(t)
+	defer database.Close()
+	older := AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 1, HeadSHA: "aaa", Trigger: "opened"}
+	_, err := database.EnsureAutoReviewIntent(&older, nil)
+	require.NoError(t, err)
+	time.Sleep(10 * time.Millisecond)
+	newer := AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 2, HeadSHA: "bbb", Trigger: "opened"}
+	_, err = database.EnsureAutoReviewIntent(&newer, nil)
+	require.NoError(t, err)
+
+	status, err := database.GetWebhookStatus(time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, 2, status.IntentsQueued)
+	require.NotNil(t, status.OldestQueuedAt)
+	assert.WithinDuration(t, older.CreatedAt, *status.OldestQueuedAt, time.Second)
+
+	noted, err := database.NoteQueuedAutoReviewIntent(older.ID, "skipped: lite profile rejected by policy")
+	require.NoError(t, err)
+	assert.True(t, noted)
+	intents, err := database.ListAutoReviewIntents(AutoReviewIntentFilter{Statuses: []string{AutoReviewIntentQueued}})
+	require.NoError(t, err)
+	assert.Len(t, intents, 2, "a noted intent stays queued")
+}

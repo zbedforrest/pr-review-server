@@ -83,7 +83,9 @@ func (s *Server) addPublishSettings(ctx context.Context, response map[string]int
 	response[poller.SettingAutoReviewProfileByTrigger] = profilePolicy.Map()
 	liteAuthors, _ := s.db.GetSetting(poller.SettingAutoReviewLiteAuthors)
 	response[poller.SettingAutoReviewLiteAuthors] = liteAuthors
-	s.addAuthorListTeams(ctx, response, authors, liteAuthors)
+	autoAuthors, _ := s.db.GetSetting(poller.SettingAutoReviewAuthors)
+	response[poller.SettingAutoReviewAuthors] = autoAuthors
+	s.addAuthorListTeams(ctx, response, authors, liteAuthors, autoAuthors)
 	response["review_default_profile"] = s.defaultReviewProfile()
 	response["review_profiles"] = runconfig.Profiles()
 }

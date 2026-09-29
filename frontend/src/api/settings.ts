@@ -44,6 +44,8 @@ export interface Settings {
   // reviews may run a lite profile. Optional: older servers omit them.
   auto_review_profile_by_trigger?: AutoReviewProfileByTrigger;
   auto_review_lite_authors?: string;
+  // Authors whose PRs get automatic reviews; empty means the publishing list.
+  auto_review_authors?: string;
   // Read-only: teams named by either author list, keyed by slug.
   author_list_teams?: Record<string, AuthorListTeam>;
   // Read-only: what "default" resolves to (REVIEW_DEFAULT_PROFILE).

@@ -318,6 +318,9 @@ type Database interface {
 	ListAutoReviewIntents(filter AutoReviewIntentFilter) ([]AutoReviewIntent, error)
 	UpdateAutoReviewIntentStatus(id uint, from []string, to, runID string) (bool, error)
 	SetAutoReviewIntentPublicationByRun(runID, outcome string) error
+	// NoteQueuedAutoReviewIntent records why a queued intent was not admitted
+	// in its publication outcome; false when it was no longer queued.
+	NoteQueuedAutoReviewIntent(id uint, note string) (bool, error)
 	SupersedeQueuedAutoReviewIntents(owner, repo string, number int, keepHeadSHA string) (int, error)
 	DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (int64, error)
 
@@ -484,10 +487,13 @@ type WebhookDelivery struct {
 	HeadSHA        string
 	BaseSHA        string
 	Author         string
-	Title          string
-	Draft          bool
-	State          string
-	ReceivedAt     time.Time
+	// AuthorType is GitHub's user type for the author ("User", "Bot"); it
+	// comes from the delivery payload and is not stored.
+	AuthorType string
+	Title      string
+	Draft      bool
+	State      string
+	ReceivedAt time.Time
 }
 
 // WebhookStatus is the operator view of webhook ingress and the automatic
@@ -496,6 +502,8 @@ type WebhookStatus struct {
 	Deliveries     int
 	LastDeliveryAt *time.Time
 	IntentsQueued  int
+	// OldestQueuedAt is when the longest-waiting queued intent was recorded.
+	OldestQueuedAt *time.Time
 }
 
 // Automatic review intent statuses and triggers.

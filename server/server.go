@@ -236,6 +236,9 @@ type StatusWebhook struct {
 	Deliveries24h  int     `json:"deliveries_24h"`
 	LastDeliveryAt *string `json:"last_delivery_at"`
 	IntentsQueued  int     `json:"intents_queued"`
+	// OldestQueuedAgeSec is how long the longest-waiting queued head has been
+	// owed a review; zero when nothing is queued.
+	OldestQueuedAgeSec int64 `json:"oldest_queued_age_sec"`
 }
 
 // WebSocket message types
@@ -1125,6 +1128,9 @@ func (s *Server) buildStatusSnapshot(ctx context.Context) (*StatusSnapshot, erro
 	} else {
 		webhook.Deliveries24h = status.Deliveries
 		webhook.IntentsQueued = status.IntentsQueued
+		if status.OldestQueuedAt != nil {
+			webhook.OldestQueuedAgeSec = int64(now.Sub(*status.OldestQueuedAt).Seconds())
+		}
 		if status.LastDeliveryAt != nil {
 			at := status.LastDeliveryAt.UTC().Format(time.RFC3339)
 			webhook.LastDeliveryAt = &at
@@ -1340,6 +1346,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			// or a JSON string of it; AutoReviewLiteAuthors is a login CSV or "*".
 			AutoReviewProfileByTrigger json.RawMessage `json:"auto_review_profile_by_trigger"`
 			AutoReviewLiteAuthors      *string         `json:"auto_review_lite_authors"`
+			// AutoReviewAuthors is who gets automatic reviews; empty falls back to
+			// publish_enabled_authors.
+			AutoReviewAuthors *string `json:"auto_review_authors"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
@@ -1387,6 +1396,19 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			liteAuthors = normalized
+		}
+		var autoAuthors string
+		if req.AutoReviewAuthors != nil {
+			normalized, teams, err := normalizeAuthorCSV(*req.AutoReviewAuthors, s.teamOrg())
+			if err != nil {
+				http.Error(w, fmt.Sprintf("auto_review_authors: %v", err), http.StatusBadRequest)
+				return
+			}
+			if status, err := s.verifyAuthorTeams(r.Context(), poller.SettingAutoReviewAuthors, teams); err != nil {
+				http.Error(w, err.Error(), status)
+				return
+			}
+			autoAuthors = normalized
 		}
 		var publishAuthors, adminLogins, ciExcludeAuthors string
 		if req.PublishEnabledAuthors != nil {
@@ -1476,6 +1498,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.AutoReviewLiteAuthors != nil {
 			updates = append(updates, settingWrite{poller.SettingAutoReviewLiteAuthors, liteAuthors})
+		}
+		if req.AutoReviewAuthors != nil {
+			updates = append(updates, settingWrite{poller.SettingAutoReviewAuthors, autoAuthors})
 		}
 		for _, u := range updates {
 			if err := s.writeSetting(user.GitHubUsername, u.key, u.value); err != nil {

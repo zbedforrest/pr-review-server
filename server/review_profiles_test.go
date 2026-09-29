@@ -260,3 +260,18 @@ func TestStatusSnapshotIncludesProfileCounts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `"profiles_24h":{`)
 }
+
+func TestSettings_AutoReviewAuthorsNormalizesAndValidates(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	w := patchSettings(t, server, `{"auto_review_authors":" Alice, * "}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, "alice,*", got["auto_review_authors"])
+	stored, _ := database.GetSetting(poller.SettingAutoReviewAuthors)
+	assert.Equal(t, "alice,*", stored)
+
+	w = patchSettings(t, server, `{"auto_review_authors":"not a login!"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "auto_review_authors")
+}

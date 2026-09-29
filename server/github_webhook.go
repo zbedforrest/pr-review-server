@@ -57,6 +57,7 @@ type pullRequestWebhookPayload struct {
 		Draft  bool   `json:"draft"`
 		User   struct {
 			Login string `json:"login"`
+			Type  string `json:"type"`
 		} `json:"user"`
 		Head struct {
 			SHA string `json:"sha"`
@@ -171,7 +172,7 @@ func (s *Server) acceptPullRequestWebhook(w http.ResponseWriter, deliveryID stri
 		DeliveryID: deliveryID, Event: "pull_request", Action: payload.Action, InstallationID: payload.Installation.ID,
 		RepoOwner: owner, RepoName: repo, PRNumber: payload.PullRequest.Number,
 		HeadSHA: payload.PullRequest.Head.SHA, BaseSHA: payload.PullRequest.Base.SHA,
-		Author: payload.PullRequest.User.Login, Title: payload.PullRequest.Title,
+		Author: payload.PullRequest.User.Login, AuthorType: payload.PullRequest.User.Type, Title: payload.PullRequest.Title,
 		Draft: payload.PullRequest.Draft, State: payload.PullRequest.State, ReceivedAt: time.Now().UTC(),
 	}
 	inserted, err := s.db.CreateWebhookDelivery(&delivery)
