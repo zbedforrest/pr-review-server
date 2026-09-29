@@ -7,14 +7,16 @@ import { subscribeToWebSocketMessages } from '@/utils/websocket';
 import type { ApprovalTarget } from '@/types/approval';
 
 vi.mock('@/utils/websocket', () => ({ subscribeToWebSocketMessages: vi.fn(() => () => {}) }));
-vi.mock('@/hooks/usePRs', () => ({ usePRs: () => ({ data: [{ owner: 'acme', repo: 'example', number: 1, commit_sha: 'a'.repeat(40), title: 'Retry handling', author: 'alex', via_teams: [], created_at: null }] }) }));
+const dashboardPRs = vi.hoisted(() => ({ items: [{ owner: 'acme', repo: 'example', number: 1, commit_sha: 'a'.repeat(40), title: 'Retry handling', author: 'alex', via_teams: [], created_at: null }] }));
+vi.mock('@/hooks/usePRs', () => ({ usePRs: () => ({ data: dashboardPRs.items }) }));
 vi.mock('@/hooks/useCurrentUser', () => ({ useCurrentUser: () => ({ data: { github_username: 'sam' } }) }));
 vi.mock('@/api/approval', async importOriginal => ({ ...(await importOriginal<typeof import('@/api/approval')>()), approvalRequest: vi.fn(), fetchApprovalCapabilities: vi.fn(), fetchApprovalTargets: vi.fn(), fetchApprovalScans: vi.fn(), fetchApprovalScan: vi.fn() }));
 function mount() { const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); return { ...render(<QueryClientProvider client={client}><ApprovalCandidates filters={{}} /></QueryClientProvider>), client }; }
 beforeEach(() => {
   vi.resetAllMocks();
+  dashboardPRs.items = [{ ...dashboardPRs.items[0], number: 1 }];
   const slot = document.createElement('span'); slot.id = 'approval-action-slot'; document.body.append(slot);
-  vi.mocked(api.fetchApprovalCapabilities).mockResolvedValue({ enabled: true, available: true, unavailable_reason: '', max_targets: 25 });
+  vi.mocked(api.fetchApprovalCapabilities).mockResolvedValue({ enabled: true, available: true, unavailable_reason: '', max_targets: 50 });
   vi.mocked(api.fetchApprovalScans).mockResolvedValue({ scans: [] });
   vi.mocked(api.fetchApprovalTargets).mockResolvedValue([]);
   vi.mocked(api.approvalRequest).mockResolvedValue({ scan_id: 'new-scan' });
@@ -29,7 +31,7 @@ describe('approval investigation controls', () => {
     await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledWith('approval-scans', expect.objectContaining({ targets: [{ owner: 'acme', repo: 'example', number: 1, expected_head_sha: 'a'.repeat(40) }] }), expect.any(String)));
   });
   it('keeps history visible but disables launch when runtime is unavailable', async () => {
-    vi.mocked(api.fetchApprovalCapabilities).mockResolvedValue({ enabled: true, available: false, unavailable_reason: 'Native model unavailable', max_targets: 25 });
+    vi.mocked(api.fetchApprovalCapabilities).mockResolvedValue({ enabled: true, available: false, unavailable_reason: 'Native model unavailable', max_targets: 50 });
     mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
     expect(screen.getByText('Native model unavailable')).toBeTruthy();
     expect((screen.getByText('Investigate 1 PRs') as HTMLButtonElement).disabled).toBe(true);
@@ -70,7 +72,7 @@ it('withdraws matching cached candidates immediately after review activity witho
   expect(api.approvalRequest).not.toHaveBeenCalled();
 });
 it('does not subscribe to approval invalidation when disabled', async () => {
-  vi.mocked(api.fetchApprovalCapabilities).mockResolvedValue({ enabled: false, available: false, unavailable_reason: 'Disabled', max_targets: 25 });
+  vi.mocked(api.fetchApprovalCapabilities).mockResolvedValue({ enabled: false, available: false, unavailable_reason: 'Disabled', max_targets: 50 });
   const { client } = mount();
   await waitFor(() => expect(client.getQueryData(['approval-capabilities'])).toBeTruthy());
   expect(subscribeToWebSocketMessages).not.toHaveBeenCalled();
@@ -149,4 +151,54 @@ it('restarts a matching initial evidence request even before it has cached data'
   await waitFor(() => expect(vi.mocked(api.approvalRequest).mock.calls.length).toBeGreaterThan(1));
   await screen.findByText('Checks and limitations');
   expect(screen.queryByText('CancelledError')).toBeNull();
+});
+
+
+it('uses the entire heading as an accessible disclosure without starting an investigation', async () => {
+  mount();
+  const heading = await screen.findByRole('heading', { name: 'Approval candidates (0)' });
+  const toggle = screen.getByRole('button', { name: 'Approval candidates (0)' });
+  expect(toggle.tagName).toBe('BUTTON');
+  expect(toggle.getAttribute('type')).toBe('button');
+  expect(heading.contains(toggle)).toBe(true);
+  expect(toggle.querySelector('button')).toBeNull();
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  const controls = document.getElementById(toggle.getAttribute('aria-controls')!);
+  expect(controls?.hidden).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Investigate' })).toBeNull();
+  toggle.focus();
+  expect(document.activeElement).toBe(toggle);
+  const description = await screen.findByText('Find PRs where existing review evidence supports a quick human approval decision.');
+  expect(toggle.contains(description)).toBe(true);
+  expect(toggle.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+  fireEvent.click(description);
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  expect(controls?.hidden).toBe(false);
+  expect(screen.getByRole('button', { name: 'Investigate 1 PRs' })).toBeTruthy();
+  expect(api.approvalRequest).not.toHaveBeenCalled();
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(controls?.hidden).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Investigate 1 PRs' })).toBeNull();
+  expect(api.approvalRequest).not.toHaveBeenCalled();
+});
+
+
+it('launches all 35 eligible PRs without sampling', async () => {
+  dashboardPRs.items = Array.from({ length: 35 }, (_, index) => ({ ...dashboardPRs.items[0], number: index + 1 }));
+  mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Approval candidates (0)' }));
+  const launch = screen.getByRole('button', { name: 'Investigate 35 PRs' }) as HTMLButtonElement;
+  expect(launch.disabled).toBe(false);
+  fireEvent.click(launch);
+  await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledWith('approval-scans', expect.objectContaining({ targets: dashboardPRs.items.map(pr => ({ owner: pr.owner, repo: pr.repo, number: pr.number, expected_head_sha: pr.commit_sha })) }), expect.any(String)));
+});
+
+it('requires narrowing filters above 50 eligible PRs', async () => {
+  dashboardPRs.items = Array.from({ length: 51 }, (_, index) => ({ ...dashboardPRs.items[0], number: index + 1 }));
+  mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Approval candidates (0)' }));
+  expect((screen.getByRole('button', { name: 'Investigate 51 PRs' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText('Narrow your filters to 50 PRs or fewer. No PRs will be sampled.')).toBeTruthy();
+  expect(api.approvalRequest).not.toHaveBeenCalled();
 });

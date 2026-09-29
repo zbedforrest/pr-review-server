@@ -64,7 +64,7 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
   const others = visible.filter(target => !isApprovalCandidate(target, now));
   const completed = (scan.data?.targets || []).filter(target => terminalStates.includes(target.execution_status)).length;
   const scanCandidates = (scan.data?.targets || []).filter(target => { const pr = prByKey.get(approvalKey(target)); const latest = allTargets.find(item => approvalKey(item) === approvalKey(target)); return pr && latest && isApprovalCandidate(reconcileApprovalTarget(target, pr, latest), now); }).length;
-  const overLimit = scope.length > (capabilities.data?.max_targets || 25);
+  const overLimit = scope.length > (capabilities.data?.max_targets || 50);
   const selectedPR = selected ? prByKey.get(approvalKey(selected)) : undefined;
   const latestSelected = selected ? allTargets.find(target => approvalKey(target) === approvalKey(selected)) : undefined;
   const currentDetail = detail.data && selectedPR && !selectedPR.hidden && latestSelected
@@ -145,10 +145,10 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
 
   if (!enabled) return null;
   return <>
-    {slot && createPortal(<button className="app-header__action-btn" onClick={toggle} aria-expanded={open} aria-controls="approval-candidates">{active ? 'View investigation' : 'Find approval candidates'}</button>, slot)}
+    {slot && createPortal(<button className="app-header__action-btn" onClick={toggle} aria-expanded={open} aria-controls="approval-candidate-controls">{active ? 'View investigation' : 'Find approval candidates'}</button>, slot)}
     <section id="approval-candidates" ref={sectionRef} className="approval-candidates" aria-label="Approval candidates">
-      <div className="approval-heading"><h2>Approval candidates <span>({candidates.length})</span></h2><button onClick={toggle} aria-expanded={open}>{open ? 'Hide controls' : 'Investigate'}</button></div>
-      {open && <div className="approval-launch">
+      <h2 className="approval-disclosure-heading" aria-labelledby="approval-disclosure-title"><button type="button" className="approval-disclosure" aria-labelledby="approval-disclosure-title" onClick={toggle} aria-expanded={open} aria-controls="approval-candidate-controls"><span className="approval-disclosure-row"><span id="approval-disclosure-title">Approval candidates <span className="approval-disclosure-count">({candidates.length})</span></span><svg className="approval-disclosure-chevron" aria-hidden="true" viewBox="0 0 20 20" width="20" height="20"><path d="m6 8 4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" /></svg></span>{!open && !allTargets.length && !active && <span className="approval-disclosure-description">{targets.isPending ? 'Loading investigations...' : 'Find PRs where existing review evidence supports a quick human approval decision.'}</span>}</button></h2>
+      <div id="approval-candidate-controls" className="approval-launch" hidden={!open}>
         <p>Investigate existing reviews and inspect supporting code for PRs in your current filters.</p>
         <p className="approval-muted">Scope: {filters.repos?.join(', ') || 'All repositories'} · {filters.teams?.join(', ') || 'All teams'} · {filters.states?.join(', ') || 'All states'}{filters.search ? ` · Search: ${filters.search}` : ''}</p>
         {!capabilities.data?.available && <p role="status">{capabilities.data?.unavailable_reason}</p>}
@@ -156,12 +156,12 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
         {!scope.length && <p>No eligible PRs in these filters. Your own, hidden, draft, closed and already approved current revisions are excluded.</p>}
         <button className="approval-primary" onClick={launch} disabled={busy || !!active || !capabilities.data?.available || overLimit || !scope.length}>Investigate {scope.length} PRs</button>
         {active && <span> Investigation already running.</span>}
-      </div>}
+      </div>
       {(error || targets.error || scans.error) && <p role="alert">{error || targets.error?.message || scans.error?.message}</p>}
       {scan.data && <div className="approval-progress" role="status" aria-live="polite"><span>Selected {scan.data.scan.kind === 'recheck' ? 'recheck' : 'scan'}: {label(scan.data.scan.status)} · {completed} of {scan.data.scan.total} finished · {scanCandidates} candidates{active ? ' · Investigation still running' : ''}</span>{active && <button disabled={busy || active.cancel_requested} onClick={() => perform(() => approvalRequest(`approval-scans/${active.scan_id}/cancel`, {}))}>{active.cancel_requested ? 'Cancelling remaining' : 'Cancel remaining'}</button>}</div>}
       {scan.data?.scan.scope && <p className="approval-muted">Captured scope: {scopeDescription(scan.data.scan.scope)}</p>}
       {allTargets.length > visible.length && <p className="approval-muted">{allTargets.length - visible.length} results hidden by current filters.</p>}
-      {!allTargets.length && !active && <p className="approval-muted">{targets.isPending ? 'Loading investigations...' : 'Find PRs where existing review evidence supports a quick human approval decision.'}</p>}
+      {open && !allTargets.length && !active && <p className="approval-muted">{targets.isPending ? 'Loading investigations...' : 'Find PRs where existing review evidence supports a quick human approval decision.'}</p>}
       {!!allTargets.length && !candidates.length && <p>No current approval candidates in this view. Inspect other results for blockers, evidence gaps or expired assessments.</p>}
       <div className={`approval-layout${selected ? ' approval-layout--selected' : ''}`}><div className="approval-list">
         {!!candidates.length && <table><caption className="approval-sr-only">Current approval candidates</caption><thead><tr><th>Pull request</th><th>Why it qualifies</th><th>Evidence</th></tr></thead><tbody>{candidates.map(target => <tr key={target.target_id} className="approval-positive"><td><strong>#{target.number} · {title(target)}</strong><small>{target.owner}/{target.repo}</small></td><td>{target.summary}<div className="approval-chips">{Array.from(new Set((target.sources || []).map(source => source.provider))).map(provider => <span key={provider}>{provider}</span>)}</div><small>Last checked {time(target.validated_at)}</small></td><td><button onClick={event => showEvidence(target, event.currentTarget)}>View evidence</button></td></tr>)}</tbody></table>}

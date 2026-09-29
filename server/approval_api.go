@@ -83,7 +83,7 @@ func (s *Server) handleApprovalCapabilities(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	enabled := s.cfg != nil && s.cfg.ApprovalCandidates().Enabled
-	writeV1JSON(w, 200, map[string]any{"enabled": enabled, "available": s.approvalAvailable() == "", "unavailable_reason": s.approvalAvailable(), "max_targets": 25, "policy_version": approval.PolicyVersion})
+	writeV1JSON(w, 200, map[string]any{"enabled": enabled, "available": s.approvalAvailable() == "", "unavailable_reason": s.approvalAvailable(), "max_targets": db.MaxApprovalTargetsPerScan, "policy_version": approval.PolicyVersion})
 }
 
 func (s *Server) approvalRequest(w http.ResponseWriter, r *http.Request) (*db.User, bool) {
@@ -260,8 +260,8 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		}
 		unique[identity] = target
 	}
-	if len(unique) == 0 || len(unique) > 25 {
-		writeV1Error(w, 422, "invalid_scope", "Choose between 1 and 25 pull requests")
+	if len(unique) == 0 || len(unique) > db.MaxApprovalTargetsPerScan {
+		writeV1Error(w, 422, "invalid_scope", fmt.Sprintf("Choose between 1 and %d pull requests", db.MaxApprovalTargetsPerScan))
 		return
 	}
 	request.Targets = nil
@@ -375,7 +375,7 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	cfg := s.cfg.ApprovalCandidates()
-	limits := map[string]any{"max_targets": 25, "target_seconds": 180, "max_rounds": 16, "max_tool_calls": 40, "max_tool_bytes": 1048576, "max_input_tokens": 600000, "max_output_tokens": 12000, "max_call_input_tokens": 100000, "daily_input_tokens": cfg.DailyInput, "daily_output_tokens": cfg.DailyOutput, "provider": cfg.Provider, "model": cfg.Model, "policy_version": approval.PolicyVersion, "prompt_version": approval.PromptVersion, "runtime_version": approval.RuntimeVersion}
+	limits := map[string]any{"max_targets": db.MaxApprovalTargetsPerScan, "target_seconds": 180, "max_rounds": 16, "max_tool_calls": 40, "max_tool_bytes": 1048576, "max_input_tokens": 600000, "max_output_tokens": 12000, "max_call_input_tokens": 100000, "daily_input_tokens": cfg.DailyInput, "daily_output_tokens": cfg.DailyOutput, "provider": cfg.Provider, "model": cfg.Model, "policy_version": approval.PolicyVersion, "prompt_version": approval.PromptVersion, "runtime_version": approval.RuntimeVersion}
 	scan, replayed, err := s.approvalStore().AdmitApprovalScan(db.ApprovalAdmission{Scan: db.ApprovalScan{ID: scanID, UserID: user.ID, Kind: kind, Status: "queued", IdempotencyKey: key, RequestHash: requestHash, ScopeJSON: string(request.Scope), LimitsJSON: approvalJSON(limits), CreatedAt: now, Deadline: now.Add(time.Duration(len(targets))*180*time.Second + 10*time.Minute), Total: len(targets)}, Targets: targets, Now: now, DailyInputLimit: cfg.DailyInput, DailyOutputLimit: cfg.DailyOutput, TargetInputLimit: 600000, TargetOutputLimit: 12000})
 	if err != nil {
 		approvalError(w, err)

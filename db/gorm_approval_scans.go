@@ -115,7 +115,7 @@ func approvalLimit(n int) int {
 func approvalReason(reason string) string { b, _ := json.Marshal([]string{reason}); return string(b) }
 
 func (g *GormDB) AdmitApprovalScan(req ApprovalAdmission) (*ApprovalScan, bool, error) {
-	if req.Scan.ID == "" || req.Scan.UserID <= 0 || req.Scan.IdempotencyKey == "" || req.Scan.RequestHash == "" || (req.Scan.Kind != "full" && req.Scan.Kind != "recheck") || len(req.Targets) == 0 || len(req.Targets) > 25 {
+	if req.Scan.ID == "" || req.Scan.UserID <= 0 || req.Scan.IdempotencyKey == "" || req.Scan.RequestHash == "" || (req.Scan.Kind != "full" && req.Scan.Kind != "recheck") || len(req.Targets) == 0 || len(req.Targets) > MaxApprovalTargetsPerScan {
 		return nil, false, fmt.Errorf("invalid approval admission")
 	}
 	if req.Now.IsZero() {

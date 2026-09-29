@@ -621,3 +621,25 @@ func TestApprovalWorkerCanFinalizeOwnDeadlineWithoutLeaseTakeover(t *testing.T) 
 	require.Equal(t, "timed_out", result.ExecutionStatus)
 	require.ErrorIs(t, g.FinalizeApprovalTarget(target.ID, "wrong-holder", target.Deadline.Add(time.Second), ApprovalFinalization{ExecutionStatus: "timed_out"}), ErrApprovalLeaseLost)
 }
+
+func TestApprovalAdmissionTargetLimit(t *testing.T) {
+	for _, count := range []int{35, MaxApprovalTargetsPerScan, MaxApprovalTargetsPerScan + 1} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			g := approvalTestStore(t)
+			numbers := make([]int, count)
+			for i := range numbers {
+				numbers[i] = i + 1
+			}
+			scan, _, err := g.AdmitApprovalScan(approvalTestAdmission("limit", 1, time.Now(), numbers...))
+			if count > MaxApprovalTargetsPerScan {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, count, scan.Total)
+			targets, err := g.ListApprovalTargets(1, scan.ID, 100, "")
+			require.NoError(t, err)
+			require.Len(t, targets, count)
+		})
+	}
+}

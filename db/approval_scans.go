@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const MaxApprovalTargetsPerScan = 50
+
 var (
 	ErrApprovalNotFound    = errors.New("approval record not found")
 	ErrApprovalLeaseLost   = errors.New("approval lease lost")

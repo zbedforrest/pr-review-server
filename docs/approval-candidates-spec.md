@@ -232,11 +232,11 @@ Lease expiry permits at most one recovery attempt. A new holder must not extend 
 | Limit | Default |
 | --- | --- |
 | Feature flag | `APPROVAL_CANDIDATES_ENABLED=false` |
-| Targets per scan | 25 |
+| Targets per scan | 50 |
 | Active scans per user | 1 total across full scans and rechecks |
 | Concurrent investigators | 2 deployment-wide; at most 1 per user |
 | Target active deadline | 180 seconds, including collection and final validation |
-| Scan deadline | Target count × 180 seconds + 10 minutes queue allowance from acceptance; 85 minutes for 25 targets |
+| Scan deadline | Target count × 180 seconds + 10 minutes queue allowance from acceptance; 160 minutes for 50 targets |
 | Investigator tool calls | 40 per target across recovery attempts |
 | Model rounds | 16 per target across recovery attempts |
 | Token ceilings | At most 100,000 input tokens per call; 600,000 aggregate input and 12,000 aggregate output per target |
@@ -383,7 +383,7 @@ Disable new admissions when the feature flag is turned off. Cancel active scan w
 | A21 | User B guesses user A's scan/target/evidence ID; access revoked mid-scan | No disclosure or new positive finalization; safe 404/access-unavailable outcome |
 | A22 | Browser closes/reloads or websocket is offline | Job persists; HTTP polling restores progress; websocket status does not disable the feature |
 | A23 | One PR fails while another qualifies | Useful partial scan; failure never rendered as empty success |
-| A24 | Filters change, duplicate section membership, >25 targets or zero eligible targets | Captured scope explicit; deduplication; no silent truncation; appropriate start state |
+| A24 | Filters change, duplicate section membership, >50 targets or zero eligible targets | Captured scope explicit; deduplication; no silent truncation; appropriate start state |
 | A25 | Five-minute expiry, reopening, read failure, approval/draft change or concurrent newer target | Explicit revalidation POST; no work from GET; no positive count until successful validation; latest generation wins |
 | A26 | Keyboard-only, narrow viewport and alternate themes | Usable launch/table/panel, restored focus, readable non-color state indicators |
 | A27 | Native provider lacks tools, returns no usage or attempts a model fallback | Capability or budget/provenance failure, no CLI fallback |

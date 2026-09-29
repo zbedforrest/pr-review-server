@@ -273,3 +273,28 @@ func TestApprovalAPICancelAndRecheckRequiresExplicitHead(t *testing.T) {
 	require.Contains(t, w.Body.String(), `"kind":"recheck"`)
 	require.Equal(t, 405, approvalAPICall(s, user, "GET", path+"/cancel", "", "").Code)
 }
+
+func TestApprovalAPIAcceptsThirtyFiveTargets(t *testing.T) {
+	s, database, user, f := newApprovalAPITestServer(t)
+	numbers := make([]int, 35)
+	for i := range numbers {
+		number := i + 1
+		numbers[i] = number
+		if number <= 2 {
+			continue
+		}
+		require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: number, LastCommitSHA: f.head, Author: "contributor", Title: "Example change", Status: "completed"}))
+		pr, err := database.GetPR("acme", "example", number)
+		require.NoError(t, err)
+		ensureUserPRView(t, database, user.ID, pr.ID, false)
+	}
+	scan := approvalAPIAdmit(t, s, user, f.head, numbers...)
+	require.Equal(t, 35, scan.Total)
+	capabilities := approvalAPICall(s, user, "GET", "/api/v1/approval-capabilities", "", "")
+	require.Equal(t, 200, capabilities.Code)
+	var response struct {
+		MaxTargets int `json:"max_targets"`
+	}
+	require.NoError(t, json.Unmarshal(capabilities.Body.Bytes(), &response))
+	require.Equal(t, db.MaxApprovalTargetsPerScan, response.MaxTargets)
+}
