@@ -77,10 +77,48 @@ func TestApprovalPRismPreservesInactiveAndSummaryEvidence(t *testing.T) {
 	if concerns[0].Disposition != "" || !strings.Contains(concerns[0].ID, "run-fixture") {
 		t.Fatal("inactive finding pre-resolved or lost run identity")
 	}
+	if concerns[0].Path != "file.go" || concerns[0].StartLine != 12 || concerns[0].EndLine != 12 {
+		t.Fatalf("finding anchor missing: %+v", concerns[0])
+	}
 	for _, endpoint := range endpoints {
 		if !endpoint.Complete {
 			t.Fatalf("incomplete %+v", endpoint)
 		}
+	}
+}
+
+func TestApprovalPRismKeepsCurrentVerdictsAndRequiredCheckVeto(t *testing.T) {
+	for _, mode := range []string{"run", "check"} {
+		t.Run(mode, func(t *testing.T) {
+			s, history, target, pl := approvalPRismFixture(t)
+			if mode == "run" {
+				history.runs[0].Verdict = "request_changes"
+			} else {
+				pl.RequiredChecks = &payload.RequiredChecksInfo{Issued: 1, Answered: 1, Violated: 1}
+				writeApprovalSidecar(t, s, history.runs[0].JSONPath, pl)
+			}
+			sources, _, _, _, err := s.collectApprovalPRism(context.Background(), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(sources) != 1 || sources[0].Verdict != "request_changes" {
+				t.Fatalf("request-changes verdict lost: %+v", sources)
+			}
+		})
+	}
+}
+
+func TestApprovalPRismStageFallbackNeedsExplicitPermission(t *testing.T) {
+	s, history, target, pl := approvalPRismFixture(t)
+	history.runs[0].ModelFallback = false
+	pl.ReviewRun.Models = []payload.ModelUse{{Stage: "first_pass", Provider: "fixture", RequestedModel: "requested", ServedModel: "fallback", ServingModelVerified: true, Fallback: true}}
+	writeApprovalSidecar(t, s, history.runs[0].JSONPath, pl)
+	sources, _, _, _, err := s.collectApprovalPRism(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sources[0].Incomplete {
+		t.Fatal("stage fallback bypassed permission check")
 	}
 }
 

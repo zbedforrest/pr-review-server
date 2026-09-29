@@ -52,6 +52,7 @@ func (s *Server) collectApprovalPRism(ctx context.Context, target approval.Targe
 			}
 			seen[run.RunID] = true
 			source := approval.Source{ID: "prism:" + run.RunID, Provider: "prism", Verified: true, Verification: "durable_run_and_immutable_sidecar", AdapterVersion: "prism-v1", Presence: "observed", Completion: run.Status, ReviewedSHA: run.CommitSHA, RevisionRelation: "older", FileCoverage: "not_reported"}
+			source.Verdict = run.Verdict
 			if run.CommitSHA == target.ExpectedHeadSHA {
 				source.RevisionRelation = "current"
 			}
@@ -93,7 +94,14 @@ func (s *Server) collectApprovalPRism(ctx context.Context, target approval.Targe
 						source.Incomplete = true
 						source.FileCoverage = "reported_partial"
 					}
-					if run.ModelFallback && !s.approvalFallbackAllowed(pl.ReviewRun.Models) {
+					if pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0 {
+						source.Verdict = "request_changes"
+					}
+					fallback := run.ModelFallback
+					for _, model := range pl.ReviewRun.Models {
+						fallback = fallback || model.Fallback
+					}
+					if fallback && !s.approvalFallbackAllowed(pl.ReviewRun.Models) {
 						source.Incomplete = true
 					}
 					for index, finding := range pl.Findings {
@@ -102,10 +110,16 @@ func (s *Server) collectApprovalPRism(ctx context.Context, target approval.Targe
 						e := approval.Evidence{ID: id, SourceID: source.ID, Kind: "prism_finding", RemoteID: run.RunID + ":" + strconv.Itoa(index), ParentID: source.ID, Body: string(body), BodyDigest: approvalBodyDigest(string(body)), URL: url, ReviewedSHA: run.CommitSHA, CreatedAt: pl.ReviewRun.CompletedAt, UpdatedAt: pl.ReviewRun.CompletedAt}
 						if strings.EqualFold(finding.File, "SUMMARY") {
 							e.Kind = "prism_summary"
+							if finding.Summary != nil && finding.Summary.Verdict == "request_changes" {
+								source.Verdict = "request_changes"
+							}
 						} else if strings.EqualFold(finding.File, "CHECK") {
 							e.Kind = "prism_check"
 						} else {
-							concern := approval.Concern{ID: id + ":concern", EvidenceIDs: []string{id}, OriginalSeverity: finding.Severity, Impact: "unknown", Claim: finding.Comment, OriginalRevision: run.CommitSHA}
+							e.Path = finding.File
+							e.StartLine = finding.Line
+							e.EndLine = finding.Line
+							concern := approval.Concern{ID: id + ":concern", EvidenceIDs: []string{id}, OriginalSeverity: finding.Severity, Impact: "unknown", Claim: finding.Comment, OriginalRevision: run.CommitSHA, Path: finding.File, StartLine: finding.Line, EndLine: finding.Line}
 							concerns = append(concerns, concern)
 							e.ConcernIDs = []string{concern.ID}
 						}
@@ -113,6 +127,9 @@ func (s *Server) collectApprovalPRism(ctx context.Context, target approval.Targe
 					}
 					if pl.RequiredChecks != nil {
 						for index, check := range pl.RequiredChecks.Records {
+							if check.Unresolved || strings.EqualFold(check.Verdict, "VIOLATED") {
+								source.Verdict = "request_changes"
+							}
 							id := source.ID + ":check:" + strconv.Itoa(index)
 							body, _ := json.Marshal(check)
 							evidence = append(evidence, approval.Evidence{ID: id, SourceID: source.ID, Kind: "prism_check", RemoteID: run.RunID + ":check:" + strconv.Itoa(index), ParentID: source.ID, Body: string(body), BodyDigest: approvalBodyDigest(string(body)), URL: url, ReviewedSHA: run.CommitSHA, CreatedAt: pl.ReviewRun.CompletedAt, UpdatedAt: pl.ReviewRun.CompletedAt})

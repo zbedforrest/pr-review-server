@@ -12,6 +12,7 @@ import (
 )
 
 var fullSHA = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
+var testExecutionClaim = regexp.MustCompile(`(?i)\b(?:tests?|test\s+suite)\s+(?:(?:all|have|has|were|was|are|is|successfully)\s+)*(?:pass(?:ed|es|ing)?|succeed(?:ed|s)?|executed|run|green)\b|\b(?:ran|executed|running)\s+(?:the\s+)?(?:tests?|pytest|unittest|go\s+test|npm\s+test)\b`)
 
 func SnapshotDigest(s Snapshot) string {
 	s.ID = ""
@@ -53,6 +54,10 @@ func Evaluate(s Snapshot, a Assessment) Assessment {
 	if s.HumanChangesRequested {
 		blocked = true
 		add("human_changes_requested")
+	}
+	if s.ProviderChangesRequested {
+		blocked = true
+		add("provider_changes_requested")
 	}
 	success := false
 	if len(s.Checks) == 0 {
@@ -138,6 +143,25 @@ func ValidateAssessment(s Snapshot, a Assessment) error {
 	if a.SnapshotID != s.ID || a.SnapshotDigest != s.Digest || s.Digest == "" || s.Digest != SnapshotDigest(s) {
 		return fmt.Errorf("snapshot mismatch")
 	}
+	claims := []string{a.Summary}
+	for _, concern := range a.Concerns {
+		claims = append(claims, concern.Rationale)
+	}
+	claims = append(claims, a.CoverageGaps...)
+	for _, artifact := range a.Artifacts {
+		claims = append(claims, artifact.Rationale)
+	}
+	for _, claim := range claims {
+		if testExecutionClaim.MatchString(claim) {
+			return fmt.Errorf("unsupported test execution claim")
+		}
+		lower := strings.ToLower(claim)
+		for _, phrase := range []string{"i ran ", "we ran ", "i executed ", "we executed ", "executed tests", "ran the tests", "tests pass", "tests passed", "test passed", "test passes", "tests succeed", "tests succeeded", "test suite pass", "tests were run", "tests were executed", "tests have passed", "tested successfully"} {
+			if strings.Contains(lower, phrase) {
+				return fmt.Errorf("unsupported test execution claim")
+			}
+		}
+	}
 	if strings.TrimSpace(a.Summary) == "" {
 		return fmt.Errorf("missing summary")
 	}
@@ -152,6 +176,10 @@ func ValidateAssessment(s Snapshot, a Assessment) error {
 		evidence[e.ID] = e
 	}
 	concerns := map[string]Concern{}
+	canonical := map[string]Concern{}
+	for _, c := range s.Concerns {
+		canonical[c.ID] = c
+	}
 	for _, c := range a.Concerns {
 		if c.ID == "" || c.Claim == "" || c.Rationale == "" || len(c.EvidenceIDs) == 0 {
 			return fmt.Errorf("incomplete concern")
@@ -165,13 +193,44 @@ func ValidateAssessment(s Snapshot, a Assessment) error {
 				return fmt.Errorf("unknown evidence")
 			}
 		}
+		original, known := canonical[c.ID]
+		if !known && (c.Disposition == "fixed" || c.Disposition == "not_applicable" || c.Disposition == "non_blocking") {
+			if len(c.EvidenceIDs) != 1 {
+				return fmt.Errorf("discovered concern needs one authoritative source")
+			}
+			source := evidence[c.EvidenceIDs[0]]
+			if len(strings.TrimSpace(c.Claim)) < 16 || !strings.Contains(source.Body, c.Claim) {
+				return fmt.Errorf("discovered concern lacks source claim")
+			}
+			original = Concern{Path: source.Path, StartLine: source.StartLine, EndLine: source.EndLine, OriginalRevision: source.ReviewedSHA, Impact: "unknown"}
+			if c.OriginalRevision != original.OriginalRevision {
+				return fmt.Errorf("discovered concern revision changed")
+			}
+		}
+		if c.Disposition == "fixed" || c.Disposition == "not_applicable" {
+			if original.Path == "" || !safePath(original.Path) || original.StartLine < 1 || c.Path != original.Path || c.StartLine != original.StartLine || c.EndLine != original.EndLine {
+				return fmt.Errorf("concern lacks immutable source anchor")
+			}
+		}
+		if c.Disposition == "fixed" {
+			attributed := false
+			for _, id := range c.EvidenceIDs {
+				attributed = attributed || evidence[id].ReviewedSHA == c.OriginalRevision && fullSHA.MatchString(c.OriginalRevision)
+			}
+			if !attributed {
+				return fmt.Errorf("fix original revision lacks source attribution")
+			}
+		}
 		switch c.Disposition {
 		case "fixed", "not_applicable", "non_blocking", "unresolved", "uncertain":
 		default:
 			return fmt.Errorf("unknown disposition")
 		}
-		if c.Disposition == "non_blocking" && c.Impact != "style" && c.Impact != "documentation" {
-			return fmt.Errorf("unsupported non-blocking impact")
+		if c.Disposition == "non_blocking" && ((original.Impact != "style" && original.Impact != "documentation") || c.Impact != original.Impact) {
+			return fmt.Errorf("unsupported non-blocking source impact")
+		}
+		if c.Disposition == "non_blocking" && (strings.EqualFold(original.OriginalSeverity, "critical") || strings.EqualFold(original.OriginalSeverity, "high")) {
+			return fmt.Errorf("blocking source severity cannot be downgraded")
 		}
 		current, old := false, false
 		currentExcerpts, oldExcerpts := map[string]bool{}, map[string]bool{}
@@ -179,14 +238,15 @@ func ValidateAssessment(s Snapshot, a Assessment) error {
 			if err := validateCitation(evidence, cite); err != nil {
 				return err
 			}
-			if cite.Path != "" && cite.Revision == s.Revision.Head {
+			anchored := cite.Path == original.Path && sourceExcerpt(cite.Excerpt)
+			if anchored && cite.Revision == s.Revision.Head {
 				currentExcerpts[cite.Excerpt] = true
 			}
-			if cite.Path != "" && cite.Revision == c.OriginalRevision {
+			if anchored && cite.Revision == c.OriginalRevision && anchorOverlap(original, cite) {
 				oldExcerpts[cite.Excerpt] = true
 			}
-			current = current || cite.Path != "" && cite.Revision == s.Revision.Head
-			old = old || cite.Path != "" && cite.Revision == c.OriginalRevision && c.OriginalRevision != s.Revision.Head
+			current = current || anchored && cite.Revision == s.Revision.Head && (c.OriginalRevision != s.Revision.Head || anchorOverlap(original, cite))
+			old = old || anchored && cite.Revision == c.OriginalRevision && c.OriginalRevision != s.Revision.Head && anchorOverlap(original, cite)
 		}
 		different := false
 		for excerpt := range currentExcerpts {
@@ -200,14 +260,25 @@ func ValidateAssessment(s Snapshot, a Assessment) error {
 		if c.Disposition == "not_applicable" && !current {
 			return fmt.Errorf("inapplicable lacks current code")
 		}
-		if c.Disposition == "non_blocking" && len(c.Citations) == 0 {
-			return fmt.Errorf("non-blocking lacks support")
+		if c.Disposition == "non_blocking" {
+			supported := false
+			for _, cite := range c.Citations {
+				for _, id := range original.EvidenceIDs {
+					supported = supported || cite.EvidenceID == id && sourceExcerpt(cite.Excerpt)
+				}
+			}
+			if !supported {
+				return fmt.Errorf("non-blocking lacks source support")
+			}
 		}
 	}
 	for _, c := range s.Concerns {
 		ac, ok := concerns[c.ID]
 		if !ok {
 			return fmt.Errorf("omitted concern")
+		}
+		if ac.Claim != c.Claim || ac.OriginalSeverity != c.OriginalSeverity || ac.OriginalRevision != c.OriginalRevision || ac.Path != c.Path || ac.StartLine != c.StartLine || ac.EndLine != c.EndLine {
+			return fmt.Errorf("altered concern provenance")
 		}
 		for _, id := range c.EvidenceIDs {
 			found := false
@@ -254,6 +325,16 @@ func ValidateAssessment(s Snapshot, a Assessment) error {
 		}
 	}
 	return nil
+}
+
+func sourceExcerpt(text string) bool { return len(strings.TrimSpace(text)) >= 16 }
+
+func anchorOverlap(concern Concern, cite Citation) bool {
+	end := concern.EndLine
+	if end < concern.StartLine {
+		end = concern.StartLine
+	}
+	return concern.StartLine > 0 && cite.StartLine <= end && cite.EndLine >= concern.StartLine
 }
 
 func validateCitation(evidence map[string]Evidence, c Citation) error {

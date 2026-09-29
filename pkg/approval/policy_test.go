@@ -65,3 +65,179 @@ func TestDigestContentAndTime(t *testing.T) {
 		t.Fatal("edited review did not change digest")
 	}
 }
+
+func TestPolicyPreservesExtractedConcernProvenance(t *testing.T) {
+	for _, field := range []string{"claim", "severity", "revision"} {
+		t.Run(field, func(t *testing.T) {
+			s, a := validFixture()
+			s.Concerns = []Concern{{ID: "concern", EvidenceIDs: []string{"review"}, Claim: "Missing authorization check", OriginalSeverity: "critical", OriginalRevision: s.Revision.Head}}
+			a.Concerns = append([]Concern(nil), s.Concerns...)
+			a.Concerns[0].Disposition = "unresolved"
+			a.Concerns[0].Rationale = "The condition persists."
+			a.Artifacts[0].Classification = "concerns"
+			a.Artifacts[0].ConcernIDs = []string{"concern"}
+			s.Digest = SnapshotDigest(s)
+			a.SnapshotDigest = s.Digest
+			if err := ValidateAssessment(s, a); err != nil {
+				t.Fatal(err)
+			}
+			switch field {
+			case "claim":
+				a.Concerns[0].Claim = "Style suggestion"
+			case "severity":
+				a.Concerns[0].OriginalSeverity = "low"
+			case "revision":
+				a.Concerns[0].OriginalRevision = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			}
+			if err := ValidateAssessment(s, a); err == nil {
+				t.Fatal("altered concern accepted")
+			}
+		})
+	}
+}
+
+func TestPolicyRejectsInventedOriginalRevisionForDiscoveredConcern(t *testing.T) {
+	s, a := validFixture()
+	s.Evidence[0].ReviewedSHA = ""
+	a.Concerns = []Concern{{ID: "new", EvidenceIDs: []string{"review"}, Claim: "A reported bug", OriginalRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Disposition: "fixed", Rationale: "Changed code", Citations: []Citation{{Revision: s.Revision.Head, Path: "main.go", StartLine: 1, EndLine: 1, Excerpt: "new", Validated: true}, {Revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Path: "main.go", StartLine: 1, EndLine: 1, Excerpt: "old", Validated: true}}}}
+	a.Artifacts[0].Classification = "concerns"
+	a.Artifacts[0].ConcernIDs = []string{"new"}
+	s.Digest = SnapshotDigest(s)
+	a.SnapshotDigest = s.Digest
+	if err := ValidateAssessment(s, a); err == nil {
+		t.Fatal("unattributed original revision accepted")
+	}
+}
+
+func anchoredConcernFixture() (Snapshot, Assessment) {
+	s, a := validFixture()
+	s.Evidence[0].Body = "The authorization guard may be missing."
+	s.Evidence[0].ReviewedSHA = s.Revision.Head
+	s.Evidence[0].Path = "auth.go"
+	s.Evidence[0].StartLine = 10
+	s.Evidence[0].EndLine = 10
+	s.Concerns = []Concern{{ID: "concern", EvidenceIDs: []string{"review"}, Claim: s.Evidence[0].Body, OriginalSeverity: "critical", OriginalRevision: s.Revision.Head, Impact: "unknown", Path: "auth.go", StartLine: 10, EndLine: 10}}
+	a.Concerns = append([]Concern(nil), s.Concerns...)
+	a.Concerns[0].Disposition = "not_applicable"
+	a.Concerns[0].Rationale = "The existing authorization guard rejects unauthenticated requests."
+	a.Concerns[0].Citations = []Citation{{Revision: s.Revision.Head, Path: "auth.go", StartLine: 10, EndLine: 10, Excerpt: "if !authorized(request) { return denied }", Validated: true}}
+	a.Artifacts[0].Classification = "concerns"
+	a.Artifacts[0].ConcernIDs = []string{"concern"}
+	s.Digest = SnapshotDigest(s)
+	a.SnapshotDigest = s.Digest
+	return s, a
+}
+
+func TestPolicySafeDispositionsRequireCanonicalAnchors(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*Snapshot, *Assessment)
+		want   string
+	}{
+		{"anchored guard", func(s *Snapshot, a *Assessment) {}, "candidate"},
+		{"unrelated README", func(s *Snapshot, a *Assessment) { a.Concerns[0].Citations[0].Path = "README.md" }, "insufficient_evidence"},
+		{"unrelated line", func(s *Snapshot, a *Assessment) {
+			a.Concerns[0].Citations[0].StartLine = 50
+			a.Concerns[0].Citations[0].EndLine = 50
+		}, "insufficient_evidence"},
+		{"single character", func(s *Snapshot, a *Assessment) { a.Concerns[0].Citations[0].Excerpt = "#" }, "insufficient_evidence"},
+		{"invented anchor", func(s *Snapshot, a *Assessment) {
+			a.Concerns[0].Path = "README.md"
+			a.Concerns[0].Citations[0].Path = "README.md"
+		}, "insufficient_evidence"},
+		{"missing anchor", func(s *Snapshot, a *Assessment) { s.Concerns[0].Path = ""; a.Concerns[0].Path = "" }, "insufficient_evidence"},
+		{"unknown to style", func(s *Snapshot, a *Assessment) {
+			a.Concerns[0].Impact = "style"
+			a.Concerns[0].Disposition = "non_blocking"
+			a.Concerns[0].Citations = []Citation{{EvidenceID: "review", Excerpt: "a", Validated: true}}
+		}, "insufficient_evidence"},
+		{"provider objection", func(s *Snapshot, a *Assessment) { s.ProviderChangesRequested = true }, "needs_attention"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, a := anchoredConcernFixture()
+			test.change(&s, &a)
+			s.Digest = SnapshotDigest(s)
+			a.SnapshotDigest = s.Digest
+			if got := Evaluate(s, a).Decision; got != test.want {
+				t.Fatalf("got %s want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPolicyNonBlockingRequiresCanonicalNonBlockingImpact(t *testing.T) {
+	s, a := anchoredConcernFixture()
+	s.Concerns[0].Impact = "style"
+	s.Concerns[0].OriginalSeverity = "low"
+	a.Concerns[0].Impact = "style"
+	a.Concerns[0].OriginalSeverity = "low"
+	a.Concerns[0].Disposition = "non_blocking"
+	a.Concerns[0].Citations = []Citation{{EvidenceID: "review", Excerpt: s.Evidence[0].Body, Validated: true}}
+	s.Digest = SnapshotDigest(s)
+	a.SnapshotDigest = s.Digest
+	if got := Evaluate(s, a).Decision; got != "candidate" {
+		t.Fatal(got)
+	}
+	a.Concerns[0].Citations[0].Excerpt = "a"
+	if got := Evaluate(s, a).Decision; got != "insufficient_evidence" {
+		t.Fatal(got)
+	}
+}
+
+func TestPolicyDiscoveredConcernCannotBorrowOlderArtifactRevision(t *testing.T) {
+	s, a := anchoredConcernFixture()
+	s.Concerns = nil
+	old := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	s.Evidence = append(s.Evidence, Evidence{ID: "older", Body: "Earlier unrelated review", ReviewedSHA: old})
+	a.Concerns[0].EvidenceIDs = append(a.Concerns[0].EvidenceIDs, "older")
+	a.Concerns[0].OriginalRevision = old
+	a.Concerns[0].Disposition = "fixed"
+	a.Concerns[0].Citations = append(a.Concerns[0].Citations, Citation{Revision: old, Path: "auth.go", StartLine: 10, EndLine: 10, Excerpt: "return allowWithoutAuthorization()", Validated: true})
+	a.Artifacts = append(a.Artifacts, ArtifactDisposition{EvidenceID: "older", Classification: "concerns", ConcernIDs: []string{"concern"}, Rationale: "Claims previous revision"})
+	s.Digest = SnapshotDigest(s)
+	a.SnapshotDigest = s.Digest
+	if got := Evaluate(s, a).Decision; got != "insufficient_evidence" {
+		t.Fatal(got)
+	}
+}
+
+func TestPolicyRejectsUnsupportedTestClaimsInGeneratedProse(t *testing.T) {
+	for _, field := range []string{"summary", "gap", "artifact", "concern"} {
+		t.Run(field, func(t *testing.T) {
+			s, a := anchoredConcernFixture()
+			switch field {
+			case "summary":
+				a.Summary = "Tests pass."
+			case "gap":
+				a.CoverageGaps = []string{"Tests were executed successfully."}
+			case "artifact":
+				a.Artifacts[0].Rationale = "Tests have passed."
+			case "concern":
+				a.Concerns[0].Rationale = "The test suite passes."
+			}
+			if err := ValidateAssessment(s, a); err == nil {
+				t.Fatal("unsupported execution claim accepted")
+			}
+		})
+	}
+}
+
+func TestPolicyFixedRequiresOriginalCodeAtSourceAnchor(t *testing.T) {
+	s, a := anchoredConcernFixture()
+	old := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	s.Concerns[0].OriginalRevision = old
+	s.Evidence[0].ReviewedSHA = old
+	a.Concerns[0].OriginalRevision = old
+	a.Concerns[0].Disposition = "fixed"
+	a.Concerns[0].Citations = append(a.Concerns[0].Citations, Citation{Revision: old, Path: "auth.go", StartLine: 10, EndLine: 10, Excerpt: "return allowWithoutAuthorization()", Validated: true})
+	s.Digest = SnapshotDigest(s)
+	a.SnapshotDigest = s.Digest
+	if got := Evaluate(s, a).Decision; got != "candidate" {
+		t.Fatalf("source anchored fix rejected: %s", got)
+	}
+	a.Concerns[0].Citations[1].StartLine = 50
+	a.Concerns[0].Citations[1].EndLine = 50
+	if got := Evaluate(s, a).Decision; got != "insufficient_evidence" {
+		t.Fatalf("unrelated original code accepted: %s", got)
+	}
+}

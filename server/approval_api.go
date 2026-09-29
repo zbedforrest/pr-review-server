@@ -83,7 +83,7 @@ func (s *Server) handleApprovalCapabilities(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	enabled := s.cfg != nil && s.cfg.ApprovalCandidates().Enabled
-	writeV1JSON(w, 200, map[string]any{"enabled": enabled, "available": s.approvalAvailable() == "", "unavailable_reason": s.approvalAvailable(), "max_targets": 25, "policy_version": approval.PolicyVersion})
+	writeV1JSON(w, 200, map[string]any{"enabled": enabled, "available": s.approvalAvailable() == "", "unavailable_reason": s.approvalAvailable(), "max_targets": db.MaxApprovalTargetsPerScan, "policy_version": approval.PolicyVersion})
 }
 
 func (s *Server) approvalRequest(w http.ResponseWriter, r *http.Request) (*db.User, bool) {
@@ -260,8 +260,8 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		}
 		unique[identity] = target
 	}
-	if len(unique) == 0 || len(unique) > 25 {
-		writeV1Error(w, 422, "invalid_scope", "Choose between 1 and 25 pull requests")
+	if len(unique) == 0 || len(unique) > db.MaxApprovalTargetsPerScan {
+		writeV1Error(w, 422, "invalid_scope", fmt.Sprintf("Choose between 1 and %d pull requests", db.MaxApprovalTargetsPerScan))
 		return
 	}
 	request.Targets = nil
@@ -317,6 +317,10 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 			return
 		}
 		pr, _, err := s.ghClient.GetPR(ctx, target.Owner, target.Repo, target.Number)
+		if s.approvalRate.note(err, time.Now()) {
+			writeV1Error(w, 429, "github_rate_limited", "GitHub's rate limit is exhausted; try again after it resets")
+			return
+		}
 		if err != nil {
 			writeV1Error(w, 404, "not_found", "Pull request is inaccessible")
 			return
@@ -335,7 +339,7 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		if pr.GetState() != "open" {
 			exclusions = append(exclusions, "closed")
 		}
-		if strings.EqualFold(pr.GetUser().GetLogin(), user.GitHubUsername) {
+		if approvalViewerMatches(user, pr.GetUser().GetID(), pr.GetUser().GetLogin()) {
 			exclusions = append(exclusions, "self_authored")
 		}
 		reviews, err := s.ghClient.ListAllReviews(ctx, target.Owner, target.Repo, target.Number)
@@ -345,9 +349,13 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		}
 		standingState, standingSHA := "", ""
 		var latest int64
+		var latestSubmitted time.Time
 		for _, review := range reviews {
-			if strings.EqualFold(review.GetUser().GetLogin(), user.GitHubUsername) && review.GetID() > latest && (review.GetState() == "APPROVED" || review.GetState() == "CHANGES_REQUESTED" || review.GetState() == "DISMISSED") {
+			submitted := review.GetSubmittedAt().Time
+			newer := submitted.After(latestSubmitted) || submitted.Equal(latestSubmitted) && review.GetID() > latest
+			if approvalViewerMatches(user, review.GetUser().GetID(), review.GetUser().GetLogin()) && newer && (review.GetState() == "APPROVED" || review.GetState() == "CHANGES_REQUESTED" || review.GetState() == "DISMISSED") {
 				latest = review.GetID()
+				latestSubmitted = submitted
 				standingState = review.GetState()
 				standingSHA = review.GetCommitID()
 			}
@@ -371,7 +379,7 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	cfg := s.cfg.ApprovalCandidates()
-	limits := map[string]any{"max_targets": 25, "target_seconds": 180, "max_rounds": 16, "max_tool_calls": 40, "max_tool_bytes": 1048576, "max_input_tokens": 600000, "max_output_tokens": 12000, "max_call_input_tokens": 100000, "daily_input_tokens": cfg.DailyInput, "daily_output_tokens": cfg.DailyOutput, "provider": cfg.Provider, "model": cfg.Model, "policy_version": approval.PolicyVersion, "prompt_version": approval.PromptVersion, "runtime_version": approval.RuntimeVersion}
+	limits := map[string]any{"max_targets": db.MaxApprovalTargetsPerScan, "target_seconds": 180, "max_rounds": 16, "max_tool_calls": 40, "max_tool_bytes": 1048576, "max_input_tokens": 600000, "max_output_tokens": 12000, "max_call_input_tokens": 100000, "daily_input_tokens": cfg.DailyInput, "daily_output_tokens": cfg.DailyOutput, "provider": cfg.Provider, "model": cfg.Model, "policy_version": approval.PolicyVersion, "prompt_version": approval.PromptVersion, "runtime_version": approval.RuntimeVersion}
 	scan, replayed, err := s.approvalStore().AdmitApprovalScan(db.ApprovalAdmission{Scan: db.ApprovalScan{ID: scanID, UserID: user.ID, Kind: kind, Status: "queued", IdempotencyKey: key, RequestHash: requestHash, ScopeJSON: string(request.Scope), LimitsJSON: approvalJSON(limits), CreatedAt: now, Deadline: now.Add(time.Duration(len(targets))*180*time.Second + 10*time.Minute), Total: len(targets)}, Targets: targets, Now: now, DailyInputLimit: cfg.DailyInput, DailyOutputLimit: cfg.DailyOutput, TargetInputLimit: 600000, TargetOutputLimit: 12000})
 	if err != nil {
 		approvalError(w, err)
@@ -415,19 +423,6 @@ func (s *Server) approvalResponse(target db.ApprovalTarget, detail bool) approva
 	return response
 }
 
-func (s *Server) approvalCanRead(ctx context.Context, user int, target db.ApprovalTarget) bool {
-	inventory, err := s.approvalInventory(user)
-	if err != nil {
-		return false
-	}
-	_, exists := inventory[approvalKey(target.Owner, target.Repo, target.Number)]
-	if !exists || s.ghClient == nil {
-		return false
-	}
-	pr, _, err := s.ghClient.GetPR(ctx, target.Owner, target.Repo, target.Number)
-	return err == nil && pr.GetBase().GetRepo().GetID() == target.RepositoryID
-}
-
 func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target db.ApprovalTarget, detail bool) (approvalTargetResponse, bool) {
 	inventory, err := s.approvalInventory(user.ID)
 	if err != nil || s.ghClient == nil {
@@ -437,7 +432,11 @@ func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target
 	if !exists {
 		return approvalTargetResponse{}, false
 	}
-	pr, _, err := s.ghClient.GetPR(ctx, target.Owner, target.Repo, target.Number)
+	read := s.approvalPR
+	if target.Decision == "candidate" {
+		read = s.approvalLivePR
+	}
+	pr, err := read(ctx, target.Owner, target.Repo, target.Number)
 	if err != nil || pr.GetBase().GetRepo().GetID() != target.RepositoryID {
 		return approvalTargetResponse{}, false
 	}
@@ -461,7 +460,7 @@ func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target
 			reason = "observed_review_change"
 		case row.UserHidden:
 			reason = "hidden"
-		case strings.EqualFold(pr.GetUser().GetLogin(), user.GitHubUsername):
+		case approvalViewerMatches(user, pr.GetUser().GetID(), pr.GetUser().GetLogin()):
 			reason = "self_authored"
 		}
 		var snapshot approval.Snapshot
@@ -489,6 +488,14 @@ func (s *Server) handleApprovalScanByID(w http.ResponseWriter, r *http.Request) 
 	scan, err := s.approvalStore().GetApprovalScan(user.ID, parts[0])
 	if err != nil {
 		approvalError(w, err)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "progress" {
+		if r.Method != http.MethodGet {
+			writeV1Error(w, 405, "method_not_allowed", "Use GET")
+			return
+		}
+		s.handleApprovalProgress(w, *scan)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost {
@@ -601,4 +608,11 @@ func (s *Server) handleApprovalCandidates(w http.ResponseWriter, r *http.Request
 		}
 	}
 	writeV1JSON(w, 200, map[string]any{"targets": targets, "next_cursor": next})
+}
+
+func approvalViewerMatches(user *db.User, id int64, login string) bool {
+	if user.GitHubID > 0 && id > 0 {
+		return user.GitHubID == id
+	}
+	return strings.EqualFold(login, user.GitHubUsername)
 }

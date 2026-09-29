@@ -3,6 +3,7 @@ package approval
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,17 +14,21 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const maxRepositoryRead = 64 << 10
 
 var fullRevision = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var repositoryComponent = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+var errUnsearchableBlob = errors.New("binary or oversized repository file")
 
 type GitRepository struct {
 	directory string
 	revisions map[string]bool
 	mu        sync.Mutex
+	lease     *os.File
+	managed   bool
 }
 type RepositoryToken func(context.Context, string, string) (string, error)
 
@@ -43,6 +48,9 @@ func (r *GitRepository) command(ctx context.Context, args ...string) *exec.Cmd {
 	base := []string{"-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "core.attributesFile=/dev/null", "-c", "diff.external=", "-c", "protocol.file.allow=never", "-c", "protocol.ext.allow=never", "-c", "protocol.version=2", "-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false", "--git-dir=" + r.directory}
 	cmd := exec.CommandContext(ctx, "git", append(base, args...)...)
 	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/local/bin", "HOME=/nonexistent", "XDG_CONFIG_HOME=/nonexistent", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_ATTR_NOSYSTEM=1", "LC_ALL=C"}
+	if r.lease != nil {
+		cmd.ExtraFiles = []*os.File{r.lease}
+	}
 	return cmd
 }
 
@@ -68,14 +76,11 @@ func NewGitRepository(ctx context.Context, root string, target Target, revisions
 			return nil, fmt.Errorf("invalid revision")
 		}
 	}
-	if err := os.MkdirAll(root, 0700); err != nil {
-		return nil, err
-	}
-	directory, err := os.MkdirTemp(root, "objects-")
+	directory, lease, err := newRepositoryDirectory(ctx, root)
 	if err != nil {
 		return nil, err
 	}
-	r := &GitRepository{directory: directory, revisions: map[string]bool{}}
+	r := &GitRepository{directory: directory, revisions: map[string]bool{}, lease: lease, managed: true}
 	ok := false
 	defer func() {
 		if !ok {
@@ -122,7 +127,11 @@ func (r *GitRepository) fetch(ctx context.Context, target Target, sha string, to
 		}
 		defer reader.Close()
 		defer writer.Close()
-		args = append(args, "-c", `credential.helper=!f() { if test "$1" = get; then cat <&3; fi; }; f`)
+		credentialFD := 3
+		if r.lease != nil {
+			credentialFD++
+		}
+		args = append(args, "-c", fmt.Sprintf(`credential.helper=!f() { if test "$1" = get; then cat <&%d; fi; }; f`, credentialFD))
 		go func() {
 			defer writer.Close()
 			_, _ = io.WriteString(writer, "username=x-access-token\npassword="+secret+"\n\n")
@@ -131,7 +140,7 @@ func (r *GitRepository) fetch(ctx context.Context, target Target, sha string, to
 	args = append(args, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "https://github.com/"+target.Owner+"/"+target.Repo+".git", sha)
 	cmd := r.command(ctx, args...)
 	if reader != nil {
-		cmd.ExtraFiles = []*os.File{reader}
+		cmd.ExtraFiles = append(cmd.ExtraFiles, reader)
 	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("repository fetch failed")
@@ -139,7 +148,37 @@ func (r *GitRepository) fetch(ctx context.Context, target Target, sha string, to
 	return nil
 }
 
-func (r *GitRepository) Close() error { return os.RemoveAll(r.directory) }
+func (r *GitRepository) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.managed {
+		return os.RemoveAll(r.directory)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	guard, err := lockRepositoryCache(ctx, filepath.Dir(r.directory))
+	if r.lease != nil {
+		_ = r.lease.Close()
+		r.lease = nil
+	}
+	if err != nil {
+		return err
+	}
+	defer guard.Close()
+	lease, err := openRepositoryLock(filepath.Join(r.directory, repositoryLeaseName), false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer lease.Close()
+	locked, err := tryRepositoryLock(lease)
+	if err != nil || !locked {
+		return err
+	}
+	return os.RemoveAll(r.directory)
+}
 
 func (r *GitRepository) MergeBase(ctx context.Context, base, head string) (string, error) {
 	r.mu.Lock()
@@ -182,12 +221,23 @@ func (r *GitRepository) blob(ctx context.Context, revision, p string) (string, e
 	if len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") || fields[1] != "blob" || !fullRevision.MatchString(fields[2]) {
 		return "", fmt.Errorf("non-regular file denied")
 	}
+	sizeText, err := r.run(ctx, 64, "cat-file", "-s", fields[2])
+	if err != nil {
+		return "", err
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(sizeText), 10, 64)
+	if err != nil || size < 0 {
+		return "", fmt.Errorf("invalid blob size")
+	}
+	if size > 2<<20 {
+		return "", errUnsearchableBlob
+	}
 	out, err := r.run(ctx, 2<<20, "cat-file", "blob", fields[2])
 	if err != nil {
 		return "", err
 	}
 	if strings.ContainsRune(out, 0) {
-		return "", fmt.Errorf("binary file denied")
+		return "", errUnsearchableBlob
 	}
 	return out, nil
 }
@@ -258,6 +308,7 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 		}
 		var out strings.Builder
 		matches := 0
+		skipped := 0
 		next := offset
 		for ; next < len(entries) && next < offset+100; next++ {
 			parts := strings.SplitN(entries[next], "\t", 2)
@@ -277,6 +328,10 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 			} else {
 				body, e := r.blob(ctx, req.Revision, p)
 				if e != nil {
+					if errors.Is(e, errUnsearchableBlob) {
+						skipped++
+						continue
+					}
 					return ReadResult{}, e
 				}
 				for index, line := range strings.Split(body, "\n") {
@@ -301,6 +356,12 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 			}
 		}
 		result := ReadResult{Text: out.String()}
+		if skipped > 0 {
+			result.Text += fmt.Sprintf("Skipped %d binary or oversized files.\n", skipped)
+			if len(result.Text) > maxRepositoryRead {
+				return ReadResult{}, fmt.Errorf("search output limit exceeded")
+			}
+		}
 		if next < len(entries) {
 			result.NextCursor = strconv.Itoa(next)
 		}

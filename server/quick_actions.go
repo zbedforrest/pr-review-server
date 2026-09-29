@@ -513,6 +513,7 @@ func (s *Server) handleQuickAction(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.UpdateUserReviewStatus(user.ID, pr.ID, reviewState); err != nil && !errors.Is(err, db.ErrUserPRViewNotFound) {
 		log.Printf("[PR-ACTION] actor=%s user_id=%d pr=%s review status not updated: %v", actor, user.ID, prRef, err)
 	}
+	s.observeApprovalEvent(0, EventPRUpdated, map[string]interface{}{"owner": req.Owner, "repo": req.Repo, "number": req.Number})
 	s.BroadcastEventToUser(user.ID, EventPRUpdated, map[string]interface{}{
 		"owner":  req.Owner,
 		"repo":   req.Repo,

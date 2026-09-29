@@ -60,14 +60,41 @@ func sourceRevision(s *Source, sha, head string) {
 	}
 }
 
-var reportedFileCoverage = regexp.MustCompile(`(?i)reviewed\s+(\d+)\s*(?:of|/)\s*(\d+)\s+files`)
+var reportedFileCoverage = regexp.MustCompile(`(?i)reviewed\s+(\d+)\s*(?:out\s+of|of|/)\s*(\d+)\s+(?:changed\s+)?files`)
+var greptileReviewSummary = regexp.MustCompile(`(?im)(?:#{1,6}\s*Greptile Summary|<h[1-6]>\s*Greptile Summary)`)
+
+func reviewCompletesProvider(source Source, review *gh.PullRequestReview) bool {
+	if !source.Verified {
+		return false
+	}
+	switch strings.ToUpper(review.GetState()) {
+	case "APPROVED", "CHANGES_REQUESTED":
+		return true
+	case "COMMENTED":
+		body := review.GetBody()
+		lower := strings.ToLower(body)
+		if source.Provider == "copilot" {
+			return strings.Contains(lower, "copilot reviewed") && reportedFileCoverage.MatchString(body)
+		}
+		return source.Provider == "greptile" && greptileReviewSummary.MatchString(body)
+	default:
+		return false
+	}
+}
+
+func isViewer(user *gh.User, viewer Viewer) bool {
+	if viewer.GitHubID > 0 && user.GetID() > 0 {
+		return viewer.GitHubID == user.GetID()
+	}
+	return viewer.Login != "" && strings.EqualFold(user.GetLogin(), viewer.Login)
+}
 
 func sourceCoverage(source *Source, body string) {
 	if !source.Verified {
 		return
 	}
 	lower := strings.ToLower(body)
-	for _, marker := range []string{"unable to review", "could not review", "review skipped", "timed out", "review incomplete", "files were skipped", "partial review", "review was interrupted"} {
+	for _, marker := range []string{"unable to review", "could not review", "review skipped", "timed out", "review incomplete", "files were skipped", "partial review", "review was interrupted", "wasn't able to review", "was not able to review"} {
 		if strings.Contains(lower, marker) {
 			source.Incomplete = true
 			source.FileCoverage = "reported_partial"
@@ -115,7 +142,7 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 	if pr.GetDraft() {
 		exclude("pr_draft")
 	}
-	if strings.EqualFold(pr.GetUser().GetLogin(), viewer.Login) {
+	if isViewer(pr.GetUser(), viewer) {
 		exclude("own_pr")
 	}
 	if pr.GetChangedFiles() > 500 {
@@ -139,6 +166,7 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 		return a.Before(b)
 	})
 	standing := map[int64]*gh.PullRequestReview{}
+	botStanding := map[int64]*gh.PullRequestReview{}
 	for _, review := range reviews {
 		id := "review:" + strconv.FormatInt(review.GetID(), 10)
 		source := c.identity(review.GetUser(), id)
@@ -148,7 +176,8 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 			s.Manifest.Complete = false
 			s.Manifest.Errors = append(s.Manifest.Errors, "review identity or submission metadata unavailable")
 		}
-		if source.Verified && (state == "COMMENTED" || state == "APPROVED" || state == "CHANGES_REQUESTED") {
+		source.Verdict = strings.ToLower(state)
+		if reviewCompletesProvider(source, review) {
 			source.Completion = "completed"
 		}
 		if state == "PENDING" {
@@ -161,14 +190,22 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 		if review.GetUser().GetType() == "User" && (state == "APPROVED" || state == "CHANGES_REQUESTED" || state == "DISMISSED") {
 			standing[review.GetUser().GetID()] = review
 		}
+		if review.GetUser().GetType() == "Bot" && (state == "APPROVED" || state == "CHANGES_REQUESTED" || state == "DISMISSED") {
+			botStanding[review.GetUser().GetID()] = review
+		}
 		add(source, Evidence{ID: id, Kind: "review", RemoteID: strconv.FormatInt(review.GetID(), 10), Body: "Review state: " + state + "\n" + review.GetBody(), URL: baseURL + "#pullrequestreview-" + strconv.FormatInt(review.GetID(), 10), ReviewedSHA: review.GetCommitID(), CreatedAt: review.GetSubmittedAt().Time, UpdatedAt: review.GetSubmittedAt().Time})
 	}
 	for _, review := range standing {
 		if review.GetState() == "CHANGES_REQUESTED" {
 			s.HumanChangesRequested = true
 		}
-		if strings.EqualFold(review.GetUser().GetLogin(), viewer.Login) && review.GetState() == "APPROVED" && review.GetCommitID() == s.Revision.Head {
+		if isViewer(review.GetUser(), viewer) && review.GetState() == "APPROVED" && review.GetCommitID() == s.Revision.Head {
 			exclude("already_approved")
+		}
+	}
+	for _, review := range botStanding {
+		if review.GetState() == "CHANGES_REQUESTED" && review.GetCommitID() == s.Revision.Head {
+			s.ProviderChangesRequested = true
 		}
 	}
 	for _, comment := range remote.Comments {
@@ -195,7 +232,11 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 		source := c.identity(comment.GetUser(), id)
 		sourceRevision(&source, comment.GetOriginalCommitID(), s.Revision.Head)
 		body := fmt.Sprintf("File: %s\nOriginal line: %d\nCurrent line: %d\nOriginal revision: %s\nCurrent revision: %s\nReview: %d\nReply to: %d\nOutdated thread: %t\nDiff:\n%s\n\n%s", comment.GetPath(), comment.GetOriginalLine(), comment.GetLine(), comment.GetOriginalCommitID(), comment.GetCommitID(), comment.GetPullRequestReviewID(), comment.GetInReplyTo(), thread.Outdated, comment.GetDiffHunk(), comment.GetBody())
-		add(source, Evidence{ID: id, Kind: "inline_comment", RemoteID: strconv.FormatInt(comment.GetID(), 10), ParentID: thread.ID, Body: body, URL: baseURL + "#discussion_r" + strconv.FormatInt(comment.GetID(), 10), ReviewedSHA: comment.GetOriginalCommitID(), Resolved: thread.Resolved, CreatedAt: comment.GetCreatedAt().Time, UpdatedAt: comment.GetUpdatedAt().Time})
+		start, end := comment.GetOriginalStartLine(), comment.GetOriginalLine()
+		if start <= 0 {
+			start = end
+		}
+		add(source, Evidence{ID: id, Kind: "inline_comment", RemoteID: strconv.FormatInt(comment.GetID(), 10), ParentID: thread.ID, Body: body, URL: baseURL + "#discussion_r" + strconv.FormatInt(comment.GetID(), 10), ReviewedSHA: comment.GetOriginalCommitID(), Resolved: thread.Resolved, CreatedAt: comment.GetCreatedAt().Time, UpdatedAt: comment.GetUpdatedAt().Time, Path: comment.GetPath(), StartLine: start, EndLine: end})
 	}
 	for id := range threadFor {
 		if !seenInline[id] {
@@ -216,7 +257,10 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 	}
 	checks := map[string]*gh.CheckRun{}
 	for _, check := range remote.Checks {
-		key := fmt.Sprintf("%d:%s", check.GetApp().GetID(), check.GetName())
+		key := fmt.Sprintf("%d:%d:%s", check.GetApp().GetID(), check.GetCheckSuite().GetID(), check.GetName())
+		if check.GetCheckSuite().GetID() == 0 {
+			key = fmt.Sprintf("unattributed:%d", check.GetID())
+		}
 		if prev := checks[key]; prev == nil || check.GetID() > prev.GetID() {
 			checks[key] = check
 		}
@@ -240,6 +284,29 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 	for _, status := range statuses {
 		s.Checks = append(s.Checks, Check{Name: status.GetContext(), State: status.GetState(), SHA: s.Revision.Head})
 	}
+	suiteRuns := map[int64]int{}
+	for _, check := range remote.Checks {
+		suiteRuns[check.GetCheckSuite().GetID()]++
+	}
+	for _, suite := range remote.Suites {
+		state := strings.ToLower(suite.GetConclusion())
+		if suite.GetStatus() != "completed" {
+			// Apps register a suite on every push whether or not they run
+			// anything; an unfinished suite with no check runs is not CI.
+			// Suites that do run checks are represented by those runs.
+			if suiteRuns[suite.GetID()] == 0 {
+				continue
+			}
+			state = "pending"
+		}
+		if state == "" {
+			state = "unknown"
+		}
+		if state == "success" {
+			continue
+		}
+		s.Checks = append(s.Checks, Check{Name: fmt.Sprintf("Check suite %d", suite.GetID()), State: state, SHA: suite.GetHeadSHA()})
+	}
 	if c.PRism == nil {
 		s.Manifest.Complete = false
 		s.Manifest.Errors = append(s.Manifest.Errors, "PRism history unavailable")
@@ -258,10 +325,23 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 				s.Manifest.Complete = false
 			}
 		}
-		for _, source := range sources {
+		runTimes := map[string]time.Time{}
+		for _, artifact := range evidence {
+			if artifact.Kind == "prism_run" {
+				runTimes[artifact.SourceID] = artifact.CreatedAt
+			}
+		}
+		var latestRun *Source
+		for index, source := range sources {
+			if source.Provider == "prism" && source.ReviewedSHA == s.Revision.Head && source.Completion == "completed" && (latestRun == nil || runTimes[source.ID].After(runTimes[latestRun.ID]) || (runTimes[source.ID].Equal(runTimes[latestRun.ID]) && source.ID > latestRun.ID)) {
+				latestRun = &sources[index]
+			}
 			if (source.Completion == "queued" || source.Completion == "running") && (source.ReviewedSHA == s.Revision.Head || source.ReviewedSHA == "") {
 				s.ReviewInProgress = true
 			}
+		}
+		if latestRun != nil && latestRun.Verdict == "request_changes" {
+			s.ProviderChangesRequested = true
 		}
 	}
 	allowed := map[string]bool{}

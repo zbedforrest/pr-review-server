@@ -29,6 +29,18 @@ type modelReply struct {
 	Raw   json.RawMessage
 }
 
+const maxReportedModelTokens = 1_000_000_000
+
+type ModelUsageLimitError struct {
+	Usage  Usage
+	Reason string
+}
+
+func (e *ModelUsageLimitError) Error() string {
+	return "investigation resource limit exceeded: " + e.Reason
+}
+func (e *ModelUsageLimitError) Unwrap() error { return ErrInvestigationLimit }
+
 func (c ModelConfig) Available() error {
 	if c.Provider != "anthropic" && c.Provider != "openrouter" {
 		return fmt.Errorf("unsupported native provider")
@@ -84,7 +96,9 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	boundedClient := *client
+	boundedClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := boundedClient.Do(req)
 	if err != nil {
 		return reply, err
 	}
@@ -120,13 +134,23 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 		if err := json.Unmarshal(raw, &r); err != nil {
 			return reply, err
 		}
-		if r.Model != c.Model || r.Usage == nil || r.Usage.Input <= 0 || r.Usage.Output <= 0 || r.Usage.CacheRead < 0 || r.Usage.CacheWrite < 0 {
+		if r.Model != c.Model || r.Usage == nil || r.Usage.Input <= 0 || r.Usage.Output <= 0 || r.Usage.Input > maxReportedModelTokens || r.Usage.Output > maxReportedModelTokens || r.Usage.CacheRead < 0 || r.Usage.CacheWrite < 0 || r.Usage.CacheRead > maxReportedModelTokens || r.Usage.CacheWrite > maxReportedModelTokens {
 			return reply, fmt.Errorf("invalid model provenance or usage")
 		}
+		input := int64(r.Usage.Input) + int64(r.Usage.CacheRead) + int64(r.Usage.CacheWrite)
+		if input > maxReportedModelTokens {
+			return reply, fmt.Errorf("invalid aggregate model usage")
+		}
+		reply.Usage = Usage{InputTokens: int(input), OutputTokens: r.Usage.Output, Rounds: 1}
+		if reply.Usage.InputTokens > 100000 || reply.Usage.OutputTokens > maxOutput {
+			return reply, &ModelUsageLimitError{Usage: reply.Usage, Reason: "model exceeded reserved usage"}
+		}
 		if r.Stop != "end_turn" && r.Stop != "tool_use" {
+			if r.Stop == "max_tokens" {
+				return reply, &ModelUsageLimitError{Usage: reply.Usage, Reason: "model output limit"}
+			}
 			return reply, fmt.Errorf("model stopped without completion")
 		}
-		reply.Usage = Usage{InputTokens: r.Usage.Input + r.Usage.CacheRead + r.Usage.CacheWrite, OutputTokens: r.Usage.Output, Rounds: 1}
 		for _, b := range r.Content {
 			switch b.Type {
 			case "text":
@@ -150,6 +174,7 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 			Choices []struct {
 				Finish  string `json:"finish_reason"`
 				Message struct {
+					Role    string `json:"role"`
 					Content string `json:"content"`
 					Calls   []struct {
 						ID       string `json:"id"`
@@ -165,11 +190,18 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 		if err := json.Unmarshal(raw, &r); err != nil {
 			return reply, err
 		}
-		if r.Model != c.Model || r.Usage == nil || r.Usage.Input <= 0 || r.Usage.Output <= 0 || len(r.Choices) != 1 {
+		if r.Model != c.Model || r.Usage == nil || r.Usage.Input <= 0 || r.Usage.Output <= 0 || r.Usage.Input > maxReportedModelTokens || r.Usage.Output > maxReportedModelTokens || len(r.Choices) != 1 {
 			return reply, fmt.Errorf("invalid model provenance or usage")
 		}
 		ch := r.Choices[0]
+		reply.Usage = Usage{InputTokens: r.Usage.Input, OutputTokens: r.Usage.Output, Rounds: 1}
+		if reply.Usage.InputTokens > 100000 || reply.Usage.OutputTokens > maxOutput {
+			return reply, &ModelUsageLimitError{Usage: reply.Usage, Reason: "model exceeded reserved usage"}
+		}
 		if ch.Finish != "stop" && ch.Finish != "tool_calls" {
+			if ch.Finish == "length" {
+				return reply, &ModelUsageLimitError{Usage: reply.Usage, Reason: "model output limit"}
+			}
 			return reply, fmt.Errorf("model stopped without completion")
 		}
 		reply.Text = ch.Message.Content
@@ -180,10 +212,12 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 			}
 			reply.Calls = append(reply.Calls, modelCall{call.ID, call.Function.Name, json.RawMessage(call.Function.Arguments)})
 		}
-		reply.Raw, _ = json.Marshal(ch.Message)
-	}
-	if reply.Usage.InputTokens > 100000 || reply.Usage.OutputTokens > maxOutput {
-		return reply, fmt.Errorf("model exceeded reserved usage")
+		ch.Message.Role = "assistant"
+		message, _ := json.Marshal(ch.Message)
+		var continuation map[string]any
+		_ = json.Unmarshal(message, &continuation)
+		continuation["role"] = "assistant"
+		reply.Raw, _ = json.Marshal(continuation)
 	}
 	return reply, nil
 }

@@ -26,3 +26,103 @@
 @media (max-width: 900px) { .approval-layout--selected { display: block; } .approval-evidence { margin-top: 1rem; } .approval-candidates { padding: .65rem; } }
 
 .approval-chips { display: flex; gap: .35rem; margin-top: .45rem; flex-wrap: wrap; span { font-size: .7rem; padding: .15rem .4rem; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-secondary); color: var(--text-secondary); } }
+
+.approval-candidates {
+  .approval-disclosure-heading { margin: -1rem -1rem 0; }
+  .approval-disclosure { display: block; width: 100%; padding: 1rem; border: 0; background: transparent; text-align: left; font: inherit; font-weight: 600; transition: background-color .15s ease, color .15s ease; }
+  .approval-disclosure-row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+  .approval-disclosure-description { display: block; margin-top: .65rem; color: var(--text-secondary); font-size: .875rem; font-weight: 400; }
+  .approval-disclosure:hover { background: var(--bg-tertiary); color: var(--accent); }
+  .approval-disclosure-count { color: var(--text-secondary); font-weight: 400; }
+  .approval-disclosure-chevron { flex: none; transition: transform .15s ease; }
+  .approval-disclosure[aria-expanded='true'] .approval-disclosure-chevron { transform: rotate(180deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .approval-candidates .approval-disclosure, .approval-candidates .approval-disclosure-chevron { transition: none; }
+}
+
+@media (max-width: 900px) {
+  .approval-candidates .approval-disclosure-heading { margin: -.65rem -.65rem 0; }
+  .approval-candidates .approval-disclosure { padding: .65rem; }
+}
+
+.approval-candidates--running {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+.approval-prism-status {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  min-height: 100px;
+  margin: .25rem -1rem 0;
+  padding: 1rem 1.5rem 1rem 230px;
+  background: linear-gradient(105deg, transparent 20%, color-mix(in srgb, var(--accent) 5%, transparent));
+  border-top: 1px solid color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.approval-prism-fill {
+  position: absolute;
+  z-index: -1;
+  inset: 0 auto 0 0;
+  width: var(--approval-progress);
+  background: linear-gradient(100deg, #80baff10, #ac91f31b, #7cd4c51b);
+  border-right: 1px solid #adbcf345;
+  transition: width 1s ease;
+}
+.approval-prism-status::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 30%, #a591f30a 43%, #82b8f313 47%, #82d5b50e 52%, transparent 65%);
+  background-size: 240% 100%;
+  animation: approval-spectrum-sweep 7s linear infinite;
+}
+.approval-prism-art {
+  position: absolute;
+  left: 0;
+  width: 220px;
+  height: 90px;
+  overflow: visible;
+  fill: none;
+  pointer-events: none;
+}
+.approval-prism-beam { stroke: #cbd8ef; stroke-width: 1.5; stroke-dasharray: 65 25; animation: approval-beam-flow 2.4s linear infinite; }
+.approval-prism-glass { fill: #9daee218; stroke: #a9bdec; stroke-width: 1.15; }
+.approval-prism-facet { stroke: #a9bdec55; stroke-width: .8; }
+.approval-prism-inner { stroke: #e2e9ff; stroke-width: 1.7; }
+.approval-prism-spectrum {
+  stroke-width: 1.5;
+  opacity: .8;
+  animation: approval-prism-glow 3.5s ease-in-out infinite;
+  path { stroke-dasharray: 90 35; animation: approval-spectrum-flow 3s linear infinite; }
+  path:nth-child(2n) { animation-delay: -.7s; }
+  path:nth-child(3n) { animation-delay: -1.4s; }
+}
+.approval-prism-copy { position: relative; display: flex; flex: 1; min-width: 0; flex-direction: column; gap: .5rem; }
+.approval-prism-eyebrow { display: flex; align-items: center; gap: .45rem; color: var(--text-secondary); font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; }
+.approval-prism-dot { width: 5px; height: 5px; flex: none; background: #a5baf3; border-radius: 50%; box-shadow: 0 0 8px #8aa8f366; animation: approval-prism-glow 3s ease-in-out infinite; }
+.approval-prism-summary { font-size: .9rem; line-height: 1.5; overflow-wrap: anywhere; }
+.approval-prism-meter {
+  display: flex; flex: none; flex-direction: column; gap: .3rem; text-align: right; font-variant-numeric: tabular-nums;
+  strong { font-size: 1.5rem; font-weight: 500; }
+  strong span { color: var(--text-secondary); font-size: 1rem; }
+  > span { color: var(--text-secondary); font-size: .72rem; }
+}
+@keyframes approval-beam-flow { to { stroke-dashoffset: -90; } }
+@keyframes approval-spectrum-flow { to { stroke-dashoffset: -125; } }
+@keyframes approval-prism-glow { 50% { opacity: .45; } }
+@keyframes approval-spectrum-sweep { from { background-position: 140% 0; } to { background-position: -100% 0; } }
+@media (max-width: 700px) {
+  .approval-prism-status { margin-inline: -.65rem; padding: 1rem .75rem 1rem 105px; gap: .75rem; min-height: 112px; }
+  .approval-prism-art { left: -50px; width: 155px; }
+  .approval-prism-summary { font-size: .8rem; }
+  .approval-prism-eyebrow { font-size: .65rem; letter-spacing: .02em; }
+  .approval-prism-meter strong { font-size: 1.2rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .approval-prism-fill { transition: none; }
+  .approval-prism-status::after, .approval-prism-beam, .approval-prism-spectrum, .approval-prism-spectrum path, .approval-prism-dot { animation: none; }
+}

@@ -1,5 +1,7 @@
 # PR Review Server
 
+**Approval candidates follow-up: [START HERE: findings and resume checklist](START-HERE-APPROVAL-CANDIDATES.md).**
+
 A self-hostable code review dashboard for GitHub pull requests, with an optional multi-stage AI review pipeline.
 
 **Dashboard** — polls GitHub for PRs assigned to you (or your org), shows CI status, draft/ready state, and merged/closed indicators, with filtering and search mirrored into the URL for shareable views. Rows can be hidden into a collapsed section, and reviews you request by pasting any PR URL land in a "Requested by Me" section.
@@ -266,3 +268,7 @@ cd frontend && npm run lint && npm run type-check && npm test
 ```
 
 For frontend work, `npm run dev` in `frontend/` starts a Vite dev server on port 3000 that proxies API calls to the Go server (`BACKEND_URL`, default `http://localhost:7769`).
+
+### Approval candidates
+
+An optional dashboard investigation finds PRs whose existing reviews support a quick human approval decision. It combines PRism, Greptile, Copilot, human-review and CI evidence with bounded code inspection. Recommendations never submit an approval. The feature is disabled by default; see [configuration, limits and rollout](docs/approval-candidates-operations.md) and the [implementation specification](docs/approval-candidates-spec.md).

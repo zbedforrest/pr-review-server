@@ -53,6 +53,9 @@ func (c *Config) ApprovalCandidates() ApprovalConfig {
 			a.UnavailableReason = "Invalid approval provider identities"
 		}
 		for _, identity := range a.Identities {
+			if identity.AppID != 0 {
+				a.UnavailableReason = "Review artifacts do not expose app identity; configure verified actor IDs"
+			}
 			if identity.ActorID <= 0 || (identity.Provider != "greptile" && identity.Provider != "copilot") {
 				a.UnavailableReason = "Invalid approval provider identities"
 			}

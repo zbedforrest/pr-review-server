@@ -35,6 +35,21 @@ export function reconcileApprovalTarget(target: ApprovalTarget, pr: PR, latest?:
   const current = latest?.target_id === target.target_id
     ? { ...target, ...latest, assessment: target.assessment, snapshot: target.snapshot }
     : { ...target };
+  if (latest && latest.target_id === target.target_id) {
+    const targetValidated = Date.parse(target.validated_at || '') || 0;
+    const latestValidated = Date.parse(latest.validated_at || '') || 0;
+    const freshness = targetValidated > latestValidated ? target : latest;
+    current.validated_at = freshness.validated_at;
+    current.valid_until = freshness.valid_until;
+    current.freshness_state = freshness.freshness_state;
+    if (target.freshness_state === 'stale' || latest.freshness_state === 'stale') {
+      current.freshness_state = 'stale';
+      current.reason_codes = Array.from(new Set([...(target.reason_codes || []), ...(latest.reason_codes || [])]));
+    } else if (targetValidated === latestValidated && target.freshness_state === 'expired') {
+      current.freshness_state = 'expired';
+      current.valid_until = target.valid_until;
+    }
+  }
   let reason = '';
   if (latest && latest.target_id !== target.target_id) reason = 'superseded';
   else if (pr.commit_sha !== target.revision) reason = 'head_changed';
@@ -42,6 +57,10 @@ export function reconcileApprovalTarget(target: ApprovalTarget, pr: PR, latest?:
   else if (pr.draft) reason = 'draft';
   else if (pr.pr_state && pr.pr_state !== 'open') reason = 'closed';
   else if (pr.is_mine) reason = 'self_authored';
+  else if (pr.ci_state === 'failure') reason = 'ci_failed';
+  else if (pr.ci_state === 'pending') reason = 'ci_pending';
+  else if (pr.review_decision === 'CHANGES_REQUESTED' || pr.my_review_status === 'CHANGES_REQUESTED') reason = 'human_changes_requested';
+  else if (['pending', 'generating', 'agent_reviewing'].includes(pr.status)) reason = 'review_in_progress';
   else if (pr.my_review_status === 'APPROVED' && pr.my_review_commit_sha === pr.commit_sha) reason = 'already_approved';
   if (reason) return { ...current, freshness_state: 'stale', reason_codes: Array.from(new Set([...(current.reason_codes || []), reason])) };
   return current;

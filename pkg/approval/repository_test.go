@@ -1,6 +1,7 @@
 package approval
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -14,9 +15,11 @@ func fixtureGit(t *testing.T, dir, input string, args ...string) string {
 	cmd := exec.Command("git", append([]string{"--git-dir=" + dir}, args...)...)
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/nonexistent", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.test", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.test"}
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("git %v: %v %s", args, err, out)
+		t.Fatalf("git %v: %v %s", args, err, stderr.String())
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -141,5 +144,28 @@ func TestRepositoryTextPagesRespectLineAndByteLimits(t *testing.T) {
 	}
 	if _, err := repositoryTextPage(body, "-1"); err == nil {
 		t.Fatal("negative cursor accepted")
+	}
+}
+
+func TestRepositorySearchSkipsBinaryAndOversizedBlobs(t *testing.T) {
+	r, _, _ := fixtureRepository(t)
+	text := fixtureGit(t, r.directory, "needle in source\n", "hash-object", "-w", "--stdin")
+	binary := fixtureGit(t, r.directory, "\x00binary\x00", "hash-object", "-w", "--stdin")
+	large := fixtureGit(t, r.directory, strings.Repeat("x", (2<<20)+1), "hash-object", "-w", "--stdin")
+	tree := fixtureGit(t, r.directory, "100644 blob "+binary+"\timage.bin\n100644 blob "+large+"\tlarge.txt\n100644 blob "+text+"\ttext.txt\n", "mktree")
+	sha := fixtureGit(t, r.directory, "mixed files\n", "commit-tree", tree)
+	r.revisions[sha] = true
+	result, err := r.Read(context.Background(), "search_code", ReadRequest{Revision: sha, Query: "needle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Text, "text.txt:1:needle in source") || !strings.Contains(result.Text, "Skipped 2 binary or oversized files") {
+		t.Fatalf("search failed to report skipped files: %+v", result)
+	}
+	if _, err = r.Read(context.Background(), "read_file", ReadRequest{Revision: sha, Path: "image.bin", StartLine: 1, EndLine: 1}); err == nil {
+		t.Fatal("binary content returned to file reader")
+	}
+	if _, err = r.Read(context.Background(), "search_code", ReadRequest{Revision: sha, Path: "text.txt", Query: strings.Repeat("q", 256)}); err != nil {
+		t.Fatalf("dispatcher-sized query rejected: %v", err)
 	}
 }

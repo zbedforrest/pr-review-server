@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const MaxApprovalTargetsPerScan = 50
+
 var (
 	ErrApprovalNotFound    = errors.New("approval record not found")
 	ErrApprovalLeaseLost   = errors.New("approval lease lost")
@@ -33,43 +35,44 @@ type ApprovalScan struct {
 }
 
 type ApprovalTarget struct {
-	ID              string     `gorm:"primaryKey;size:64" json:"target_id"`
-	ScanID          string     `gorm:"index;size:64" json:"scan_id"`
-	UserID          int        `gorm:"index" json:"-"`
-	Owner           string     `json:"owner"`
-	Repo            string     `json:"repo"`
-	Number          int        `json:"number"`
-	RepositoryID    int64      `json:"repository_id"`
-	AccessPartition string     `json:"-"`
-	ExpectedHeadSHA string     `json:"revision"`
-	Generation      int64      `json:"generation"`
-	ExecutionStatus string     `gorm:"index" json:"execution_status"`
-	Decision        string     `json:"decision"`
-	Freshness       string     `json:"freshness_state"`
-	ReasonCodesJSON string     `gorm:"type:text" json:"-"`
-	Summary         string     `gorm:"type:text" json:"summary"`
-	CreatedAt       time.Time  `json:"created_at"`
-	StartedAt       *time.Time `json:"started_at"`
-	CompletedAt     *time.Time `json:"completed_at"`
-	Deadline        *time.Time `json:"deadline"`
-	LeaseToken      string     `json:"-"`
-	LeaseUntil      *time.Time `gorm:"index" json:"-"`
-	Attempts        int        `json:"attempts"`
-	InputTokens     int64      `json:"input_tokens"`
-	OutputTokens    int64      `json:"output_tokens"`
-	Rounds          int        `json:"rounds"`
-	ToolCalls       int        `json:"tool_calls"`
-	ToolBytes       int64      `json:"tool_bytes"`
-	PendingCallID   string     `json:"-"`
-	PendingInput    int64      `json:"-"`
-	PendingOutput   int64      `json:"-"`
-	BudgetDay       string     `json:"-"`
-	ReservedInput   int64      `json:"-"`
-	ReservedOutput  int64      `json:"-"`
-	ValidatedAt     *time.Time `json:"validated_at"`
-	ValidUntil      *time.Time `json:"valid_until"`
-	SnapshotJSON    string     `gorm:"-" json:"-"`
-	AssessmentJSON  string     `gorm:"-" json:"-"`
+	ID               string     `gorm:"primaryKey;size:64" json:"target_id"`
+	ScanID           string     `gorm:"index;size:64" json:"scan_id"`
+	UserID           int        `gorm:"index" json:"-"`
+	Owner            string     `json:"owner"`
+	Repo             string     `json:"repo"`
+	Number           int        `json:"number"`
+	RepositoryID     int64      `json:"repository_id"`
+	AccessPartition  string     `json:"-"`
+	ExpectedHeadSHA  string     `json:"revision"`
+	Generation       int64      `json:"generation"`
+	ExecutionStatus  string     `gorm:"index" json:"execution_status"`
+	Decision         string     `json:"decision"`
+	Freshness        string     `json:"freshness_state"`
+	ReasonCodesJSON  string     `gorm:"type:text" json:"-"`
+	Summary          string     `gorm:"type:text" json:"summary"`
+	CreatedAt        time.Time  `json:"created_at"`
+	StartedAt        *time.Time `json:"started_at"`
+	CompletedAt      *time.Time `json:"completed_at"`
+	Deadline         *time.Time `json:"deadline"`
+	LeaseToken       string     `json:"-"`
+	LeaseUntil       *time.Time `gorm:"index" json:"-"`
+	Attempts         int        `json:"attempts"`
+	InputTokens      int64      `json:"input_tokens"`
+	OutputTokens     int64      `json:"output_tokens"`
+	Rounds           int        `json:"rounds"`
+	ToolCalls        int        `json:"tool_calls"`
+	ToolBytes        int64      `json:"tool_bytes"`
+	PendingCallID    string     `json:"-"`
+	PendingInput     int64      `json:"-"`
+	PendingOutput    int64      `json:"-"`
+	BudgetDay        string     `json:"-"`
+	ReservedInput    int64      `json:"-"`
+	ReservedOutput   int64      `json:"-"`
+	ObservedChangeAt *time.Time `json:"-"`
+	ValidatedAt      *time.Time `json:"validated_at"`
+	ValidUntil       *time.Time `json:"valid_until"`
+	SnapshotJSON     string     `gorm:"-" json:"-"`
+	AssessmentJSON   string     `gorm:"-" json:"-"`
 }
 
 type ApprovalAdmission struct {
@@ -132,6 +135,7 @@ type ApprovalStore interface {
 	ClaimApprovalTarget(ApprovalClaim) (*ApprovalTarget, error)
 	HeartbeatApprovalTarget(string, string, time.Time, time.Duration) error
 	SetApprovalTargetStage(string, string, string, time.Time) error
+	SetApprovalTargetProgress(string, string, string, time.Time) error
 	SaveApprovalSnapshot(string, string, string, time.Time) error
 	ReserveApprovalBudget(string, string, time.Time, int64, int64, int64, int64) error
 	ReserveApprovalCall(string, string, time.Time, ApprovalCallReservation) error
@@ -144,5 +148,6 @@ type ApprovalStore interface {
 	ClaimApprovalValidation(int, string, time.Time, time.Duration) (*ApprovalValidation, error)
 	FinishApprovalValidation(int, string, string, time.Time, string, string) error
 	InvalidateApprovalTargets(string, string, int, string, time.Time) error
+	InvalidateUserApprovalTargets(int, string, string, int, string, time.Time) error
 	PruneApprovalScans(time.Time) (int64, error)
 }

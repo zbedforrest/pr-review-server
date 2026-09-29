@@ -155,6 +155,7 @@ func TestApprovalAPIAdmissionAtomicAndStandingApproval(t *testing.T) {
 		{name: "wrong head", numbers: []int{1}, head: strings.Repeat("f", 40), code: 409},
 		{name: "draft", numbers: []int{1}, draft: true, code: 422},
 		{name: "standing approval survives comment", numbers: []int{1}, reviews: fmt.Sprintf(`[{"id":1,"user":{"login":"reviewer"},"state":"APPROVED","commit_id":%q},{"id":2,"user":{"login":"reviewer"},"state":"COMMENTED"}]`, strings.Repeat("a", 40)), code: 422},
+		{name: "later submission wins over creation ID", numbers: []int{1}, reviews: fmt.Sprintf(`[{"id":2,"user":{"login":"reviewer"},"state":"APPROVED","commit_id":%q,"submitted_at":"2026-09-27T12:00:00Z"},{"id":1,"user":{"login":"reviewer"},"state":"CHANGES_REQUESTED","commit_id":%q,"submitted_at":"2026-09-28T12:00:00Z"}]`, strings.Repeat("a", 40), strings.Repeat("a", 40)), code: 202},
 		{name: "old approval eligible", numbers: []int{1}, reviews: fmt.Sprintf(`[{"id":1,"user":{"login":"reviewer"},"state":"APPROVED","commit_id":%q}]`, strings.Repeat("f", 40)), code: 202},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -271,4 +272,29 @@ func TestApprovalAPICancelAndRecheckRequiresExplicitHead(t *testing.T) {
 	require.Equal(t, 202, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), `"kind":"recheck"`)
 	require.Equal(t, 405, approvalAPICall(s, user, "GET", path+"/cancel", "", "").Code)
+}
+
+func TestApprovalAPIAcceptsThirtyFiveTargets(t *testing.T) {
+	s, database, user, f := newApprovalAPITestServer(t)
+	numbers := make([]int, 35)
+	for i := range numbers {
+		number := i + 1
+		numbers[i] = number
+		if number <= 2 {
+			continue
+		}
+		require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: number, LastCommitSHA: f.head, Author: "contributor", Title: "Example change", Status: "completed"}))
+		pr, err := database.GetPR("acme", "example", number)
+		require.NoError(t, err)
+		ensureUserPRView(t, database, user.ID, pr.ID, false)
+	}
+	scan := approvalAPIAdmit(t, s, user, f.head, numbers...)
+	require.Equal(t, 35, scan.Total)
+	capabilities := approvalAPICall(s, user, "GET", "/api/v1/approval-capabilities", "", "")
+	require.Equal(t, 200, capabilities.Code)
+	var response struct {
+		MaxTargets int `json:"max_targets"`
+	}
+	require.NoError(t, json.Unmarshal(capabilities.Body.Bytes(), &response))
+	require.Equal(t, db.MaxApprovalTargetsPerScan, response.MaxTargets)
 }
