@@ -87,6 +87,12 @@ type Config struct {
 	// EnsembleMaxAgents caps concurrent ensemble agent processes per server,
 	// on top of the one agent slot each ensemble review holds.
 	EnsembleMaxAgents int
+	// New Relic custom events (optional): account, one of the two keys, and
+	// the region (US or EU).
+	NewRelicAccountID  string
+	NewRelicInsertKey  string
+	NewRelicLicenseKey string
+	NewRelicRegion     string
 	// Author-reply model (pkg/reviewer/service/reply.go). Same backend and
 	// credentials as the review agent; smaller budgets, own concurrency cap.
 	ReplyModel         string // empty = the review agent's model
@@ -327,6 +333,10 @@ func Load() *Config {
 		AgentMaxConcurrent:   getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
 		AgentCloneCacheMaxGB: getEnvIntOrDefault("AGENT_CLONE_CACHE_MAX_GB", 0),
 		EnsembleMaxAgents:    getEnvIntOrDefault("ENSEMBLE_MAX_AGENTS", 25),
+		NewRelicAccountID:    os.Getenv("NEW_RELIC_ACCOUNT_ID"),
+		NewRelicInsertKey:    os.Getenv("NEW_RELIC_INSERT_KEY"),
+		NewRelicLicenseKey:   os.Getenv("NEW_RELIC_LICENSE_KEY"),
+		NewRelicRegion:       os.Getenv("NEW_RELIC_REGION"),
 		AgentBackend:         agentBackend,
 		AgentModel:           agentModel,
 		AgentEffort:          agentEffort,

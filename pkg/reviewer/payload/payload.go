@@ -106,6 +106,9 @@ type ReviewRunInfo struct {
 	// agent wall-clock budget applies to AgentMS only.
 	PrepMS  int64 `json:"prep_ms,omitempty"`
 	AgentMS int64 `json:"agent_ms,omitempty"`
+	// Ensemble is the multi-agent account (runs, quorum, merge) of a run that
+	// used one; absent otherwise.
+	Ensemble any `json:"ensemble,omitempty"`
 }
 
 // StageTiming is one pipeline stage's wall-clock measurement. Stages:

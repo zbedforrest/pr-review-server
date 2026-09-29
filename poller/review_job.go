@@ -74,8 +74,10 @@ type reviewExecution struct {
 	// DiffSource is where a lite run's inlined diff came from ("" for full).
 	DiffSource string
 	// PrepMS and AgentMS split the agent stage at the CLI spawn.
-	PrepMS            int64
-	AgentMS           int64
+	PrepMS  int64
+	AgentMS int64
+	// Ensemble is the ensemble report when the run used one.
+	Ensemble          *EnsembleReport
 	attemptsMu        sync.Mutex
 	providerAttempts  map[string]service.ProviderAttemptEvent
 	extraStageTimings []payload.StageTiming
@@ -856,6 +858,7 @@ func (p *Poller) reviewRunArtifactInfo(exec *reviewExecution) *payload.ReviewRun
 		DiffSource:   exec.DiffSource,
 		PrepMS:       exec.PrepMS,
 		AgentMS:      exec.AgentMS,
+		Ensemble:     exec.Ensemble.sidecar(),
 	}
 }
 
@@ -883,6 +886,7 @@ func (p *Poller) finishReviewExecution(exec *reviewExecution, patch db.ReviewRun
 	now := time.Now().UTC()
 	completedAt := now
 	durationMS := now.Sub(exec.RunStartedAt).Milliseconds()
+	p.recordReviewTelemetry(exec, patch, durationMS)
 	emptyHolder := ""
 	zeroLease := time.Time{}
 	patch.CompletedAt = &completedAt

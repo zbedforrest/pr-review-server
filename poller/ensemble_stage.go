@@ -89,6 +89,7 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 	ens := execution.Job.Config.Effective.Ensemble
 	started := time.Now()
 	review, report, err := p.runEnsembleAgents(ctx, ens, base, pr.Owner, pr.Repo, result.BaseRef, pr.Number, pr.CommitSHA)
+	defer func() { execution.Ensemble = &report }()
 	if errors.Is(err, errEnsembleTooFewValid) {
 		report.StopReason, report.Fallback = "fallback", ens.FallbackProfile
 		logEnsembleReport(pr.Owner, pr.Repo, pr.Number, report)
@@ -334,4 +335,38 @@ func containsInvocation(os []ensembleOutcome, inv int) bool {
 func logEnsembleReport(owner, repo string, number int, r EnsembleReport) {
 	b, _ := json.Marshal(r)
 	log.Printf("[ENSEMBLE %s/%s#%d] %s", owner, repo, number, b)
+}
+
+// ensembleSidecar is the report as stored in the review sidecar: the merged
+// findings themselves are already the sidecar's findings.
+type ensembleSidecar struct {
+	Runs         []EnsembleRun   `json:"runs"`
+	Launched     int             `json:"launched"`
+	Valid        int             `json:"valid"`
+	Merged       int             `json:"merged"`
+	Relaunches   int             `json:"relaunches"`
+	StopReason   string          `json:"stop_reason"`
+	QuorumMS     int64           `json:"quorum_ms"`
+	Fallback     string          `json:"fallback,omitempty"`
+	MergeMethod  string          `json:"merge_method"`
+	MergeModel   string          `json:"merge_model"`
+	MergeError   string          `json:"merge_error,omitempty"`
+	MergeCall    llm.Call        `json:"merge_call"`
+	Clusters     int             `json:"clusters"`
+	Guard        ensemble.Report `json:"guard"`
+	Support      []int           `json:"support"`
+	TotalCostUSD float64         `json:"total_cost_usd"`
+}
+
+// sidecar returns the compact form, or nil (no sidecar field) for a nil report.
+func (r *EnsembleReport) sidecar() any {
+	if r == nil {
+		return nil
+	}
+	return ensembleSidecar{
+		Runs: r.Runs, Launched: r.Launched, Valid: r.Valid, Merged: r.Merged, Relaunches: r.Relaunches,
+		StopReason: r.StopReason, QuorumMS: r.QuorumMS, Fallback: r.Fallback,
+		MergeMethod: r.Merge.Method, MergeModel: r.MergeModel, MergeError: r.Merge.AuthorErr, MergeCall: r.Merge.Call,
+		Clusters: r.Merge.Clusters, Guard: r.Merge.Report, Support: r.Merge.Support, TotalCostUSD: r.TotalCostUSD,
+	}
 }

@@ -109,3 +109,23 @@ func TestEnsembleReportsTooFewValidRunsForTheFallback(t *testing.T) {
 		t.Fatalf("err=%v report=%+v", err, report)
 	}
 }
+
+func TestEnsembleSidecarIsCompactAndAbsentWithoutAnEnsemble(t *testing.T) {
+	var none *EnsembleReport
+	if none.sidecar() != nil {
+		t.Fatal("a run without an ensemble must add no sidecar field")
+	}
+	withFakeRuns(t, map[int]fakeRun{
+		1: {delay: time.Millisecond, findings: finding("a.go", 1)}, 2: {delay: time.Millisecond, findings: finding("a.go", 2)},
+		3: {delay: time.Millisecond, findings: finding("a.go", 3)}, 4: {delay: time.Millisecond, findings: finding("b.go", 1)},
+		5: {delay: time.Hour},
+	})
+	_, report, err := testPoller().runEnsembleAgents(context.Background(), ensembleCfg(), service.AgentConfig{}, "o", "r", "main", 1, "sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := report.sidecar().(ensembleSidecar)
+	if !ok || s.StopReason != "quorum" || s.Merged != 4 || s.MergeMethod != "deterministic" || len(s.Support) != 2 {
+		t.Fatalf("sidecar = %+v", report.sidecar())
+	}
+}
