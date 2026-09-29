@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,9 @@ const (
 
 	// StateCookieName is the name of the OAuth state cookie
 	StateCookieName = "oauth_state"
+	// ReturnToCookieName carries the page a signed-out visitor asked for
+	// across the OAuth round trip.
+	ReturnToCookieName = "login_return_to"
 )
 
 // Auth handles OAuth authentication
@@ -131,6 +135,18 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		Secure:   strings.HasPrefix(a.cfg.BaseURL, "https"),
 		SameSite: http.SameSiteLaxMode,
 	})
+
+	if next := SafeReturnPath(r.URL.Query().Get("next")); next != "" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     ReturnToCookieName,
+			Value:    next,
+			Path:     "/",
+			MaxAge:   300,
+			HttpOnly: true,
+			Secure:   strings.HasPrefix(a.cfg.BaseURL, "https"),
+			SameSite: http.SameSiteLaxMode,
+		})
+	}
 
 	// Redirect to GitHub
 	url := a.oauthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
@@ -268,8 +284,42 @@ func (a *Auth) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[AUTH] Session created for user %s", ghUser.Login)
 
-	// Redirect to dashboard
-	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+	http.Redirect(w, r, consumeReturnTo(w, r), http.StatusTemporaryRedirect)
+}
+
+// consumeReturnTo clears the return-to cookie and returns where a fresh login
+// should land: the page the visitor asked for, or the dashboard.
+func consumeReturnTo(w http.ResponseWriter, r *http.Request) string {
+	c, err := r.Cookie(ReturnToCookieName)
+	if err != nil {
+		return "/"
+	}
+	http.SetCookie(w, &http.Cookie{Name: ReturnToCookieName, Value: "", Path: "/", MaxAge: -1})
+	if next := SafeReturnPath(c.Value); next != "" {
+		return next
+	}
+	return "/"
+}
+
+// SafeReturnPath returns p when it is a same-origin absolute path, and "" for
+// anything that could leave the site, so the post-login redirect can never
+// become an open redirect. Browsers strip tabs and newlines from URLs and read
+// a backslash as a slash, so control characters and backslashes are rejected
+// anywhere in p: "/<tab>/host" and "/\host" would otherwise both mean "//host".
+func SafeReturnPath(p string) string {
+	if len(p) > 512 || !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || strings.ContainsRune(p, '\\') {
+		return ""
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return ""
+		}
+	}
+	u, err := neturl.Parse(p)
+	if err != nil || u.Scheme != "" || u.Host != "" {
+		return ""
+	}
+	return p
 }
 
 // HandleLogout clears the session and redirects to login
@@ -432,6 +482,28 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, GitHubTokenContextKey, a.newSessionTokenSource(session))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// SessionUser returns the signed-in user for r (a bearer token or a live
+// session cookie), or nil. Unlike Middleware it never writes a response, for
+// routes that serve signed-out visitors something else.
+func (a *Auth) SessionUser(r *http.Request) *db.User {
+	if user, ok := a.tryBearerAuth(r); ok {
+		return user
+	}
+	cookie, err := r.Cookie(SessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return nil
+	}
+	session, err := a.db.GetSession(cookie.Value)
+	if err != nil || session == nil || session.ExpiresAt.Before(time.Now()) {
+		return nil
+	}
+	user, err := a.db.GetUserByID(session.UserID)
+	if err != nil {
+		return nil
+	}
+	return user
 }
 
 // RequireAuth wraps a handler function with authentication middleware
