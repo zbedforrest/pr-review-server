@@ -83,12 +83,14 @@ func resolveAgentRuntime(cfg AgentConfig) (agentRuntime, error) {
 			baseURL = DefaultOpenRouterBaseURL
 		}
 		return agentRuntime{
-			backend:             backend,
-			command:             "codex",
-			model:               model,
-			effort:              effort,
-			openRouterBaseURL:   baseURL,
-			parseStream:         parseCodexStream,
+			backend:           backend,
+			command:           "codex",
+			model:             model,
+			effort:            effort,
+			openRouterBaseURL: baseURL,
+			parseStream: func(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
+				return parseCodexStreamModel(proc, logFile, maxTurns, model)
+			},
 			reportsServingModel: false,
 		}, nil
 
@@ -149,6 +151,9 @@ func (r agentRuntime) argsWithToolsAndSchema(prompt, tools, jsonSchema string) [
 		"-c", "model_providers.openrouter.base_url=" + strconv.Quote(r.openRouterBaseURL),
 		"-c", `model_providers.openrouter.env_key="OPENROUTER_API_KEY"`,
 		"-c", `model_providers.openrouter.wire_api="responses"`,
+		"-c", `model_providers.openrouter.request_max_retries=8`,
+		"-c", `model_providers.openrouter.stream_max_retries=8`,
+		"-c", `web_search="disabled"`,
 		"-c", "model_reasoning_effort=" + strconv.Quote(r.effort),
 		// These settings affect model-invoked shell commands, not the Codex
 		// process itself. Codex can still authenticate to OpenRouter, while its
@@ -165,7 +170,12 @@ func (r agentRuntime) argsWithToolsAndSchema(prompt, tools, jsonSchema string) [
 // error events. Unlike Claude's stream, it does not currently expose the
 // serving model, so model verification is handled by the pinned runtime model.
 func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
+	return parseCodexStreamModel(proc, logFile, maxTurns, "")
+}
+
+func parseCodexStreamModel(proc SpawnedProcess, logFile io.Writer, maxTurns int, modelSlug string) (*agentParseResult, error) {
 	result := &agentParseResult{}
+	turnCompleted := false
 	consecutiveExemptItems := 0
 	exemptItemCeiling := 2*maxTurns + 16
 	scanner := bufio.NewScanner(proc.Stdout())
@@ -219,11 +229,18 @@ func parseCodexStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 					return result, fmt.Errorf("exceeded max-turns (%d) after %d budget units", maxTurns, result.budgetUnits)
 				}
 			}
+		case "turn.completed":
+			turnCompleted = true
+			result.streamErr = ""
+			noteCodexUsage(result, ev, modelSlug)
+
 		case "turn.failed":
 			result.streamErr = codexErrorMessage(ev["error"], "turn failed")
 
 		case "error":
-			result.streamErr = codexErrorMessage(ev, "unspecified Codex error")
+			if !turnCompleted {
+				result.streamErr = codexErrorMessage(ev, "unspecified Codex error")
+			}
 		}
 	}
 
@@ -252,4 +269,27 @@ func codexErrorMessage(v any, fallback string) string {
 		return truncate(string(b), 2000)
 	}
 	return fallback
+}
+
+// openRouterListPrices is USD per million tokens: input, cached input, output.
+var openRouterListPrices = map[string][3]float64{
+	"deepseek/deepseek-v4.1-flash": {0.30, 0.006, 1.20},
+}
+
+func noteCodexUsage(r *agentParseResult, ev map[string]any, modelSlug string) {
+	usage, ok := ev["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	count := func(key string) float64 {
+		v, _ := usage[key].(float64)
+		return v
+	}
+	input, cached, output := count("input_tokens"), count("cached_input_tokens"), count("output_tokens")
+	r.inputTokens += int64(input)
+	r.outputTokens += int64(output)
+	if price, ok := openRouterListPrices[modelSlug]; ok {
+		r.costUSD += ((input-cached)*price[0] + cached*price[1] + output*price[2]) / 1e6
+	}
+	log.Printf("[AGENT] codex usage input=%d cached=%d output=%d reasoning=%d", int64(input), int64(cached), int64(output), int64(count("reasoning_output_tokens")))
 }

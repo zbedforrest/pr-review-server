@@ -928,6 +928,8 @@ func buildLitePrompt(prompt, baseBranch string, diff liteDiff, prContext string,
 		return buildLitePromptV2Content(baseBranch, diff, prContext, nil, true)
 	case runconfig.PromptLiteArmAV3:
 		return buildLitePromptV2Content(baseBranch, diff, prContext, bugHistory, false)
+	case runconfig.PromptLiteArmAV2Budget:
+		return buildLitePromptV2ContentOpening(promptLiteReviewArmABudget, baseBranch, diff, prContext)
 	default:
 		return buildLitePromptContent(baseBranch, diff, prContext, bugHistory, prompt == runconfig.PromptLiteArmASub)
 	}
@@ -938,7 +940,7 @@ func buildLitePrompt(prompt, baseBranch string, diff liteDiff, prContext string,
 // rely on the prose contract alone, as the pipeline always has.
 func liteJSONSchema(prompt string) string {
 	switch prompt {
-	case runconfig.PromptLiteArmAV2, runconfig.PromptLiteArmAV2Sub, runconfig.PromptLiteArmAV3:
+	case runconfig.PromptLiteArmAV2, runconfig.PromptLiteArmAV2Sub, runconfig.PromptLiteArmAV3, runconfig.PromptLiteArmAV2Budget:
 		return liteFindingsJSONSchema
 	}
 	return ""
@@ -960,12 +962,20 @@ func agentWallClock(cfg AgentConfig, diffTruncated bool) time.Duration {
 // and the diff last. Unlike buildLitePromptContent it keeps the Arm A opening
 // even for a truncated diff: the truncation note and per-path hint travel
 // inside the diff block, as they did in the measured harness.
+func buildLitePromptV2ContentOpening(opening, baseBranch string, diff liteDiff, prContext string) string {
+	return buildLitePromptV2With(opening, baseBranch, diff, prContext, nil, false)
+}
+
 func buildLitePromptV2Content(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
+	return buildLitePromptV2With(promptLiteReviewArmA, baseBranch, diff, prContext, bugHistory, subAgents)
+}
+
+func buildLitePromptV2With(opening, baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
 	if baseBranch == "" {
 		baseBranch = "HEAD"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, promptLiteReviewArmA, baseBranch, baseBranch)
+	fmt.Fprintf(&b, opening, baseBranch, baseBranch)
 	b.WriteString(prContext)
 	b.WriteString(bugMemorySection(bugHistory))
 	if subAgents {

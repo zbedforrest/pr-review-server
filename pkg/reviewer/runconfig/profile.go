@@ -21,9 +21,10 @@ const (
 	// the sub-agent sentence for lite_plus; V3 is V2 with bug memory, kept
 	// selectable as the measured control. lite_arm_a and lite_arm_a_sub stay
 	// selectable as the legacy shapes.
-	PromptLiteArmAV2    = "lite_arm_a_v2"
-	PromptLiteArmAV2Sub = "lite_arm_a_v2_sub"
-	PromptLiteArmAV3    = "lite_arm_a_v3"
+	PromptLiteArmAV2       = "lite_arm_a_v2"
+	PromptLiteArmAV2Sub    = "lite_arm_a_v2_sub"
+	PromptLiteArmAV3       = "lite_arm_a_v3"
+	PromptLiteArmAV2Budget = "lite_arm_a_v2_budget"
 
 	ToolsDefault   = "Read,Grep,Glob,Bash"
 	ToolsWithAgent = "Read,Grep,Glob,Bash,Agent"
@@ -271,7 +272,7 @@ func validPrompt(prompt string) bool {
 // inline the diff and run without gates or required checks.
 func LitePrompt(prompt string) bool {
 	switch prompt {
-	case PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV2, PromptLiteArmAV2Sub, PromptLiteArmAV3:
+	case PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV2, PromptLiteArmAV2Sub, PromptLiteArmAV3, PromptLiteArmAV2Budget:
 		return true
 	}
 	return false
