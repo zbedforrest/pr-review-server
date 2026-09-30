@@ -39,6 +39,10 @@ func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 		sqlDB.SetMaxOpenConns(10)                  // Leave headroom for Cloud SQL overhead + local dev
 		sqlDB.SetMaxIdleConns(5)                   // Keep a few warm connections
 		sqlDB.SetConnMaxLifetime(30 * time.Minute) // Recycle connections to avoid stale sockets
+		if d, ok := dialector.(*sqlite.Dialector); ok && d.DSN == ":memory:" {
+			// Each new connection to :memory: opens a separate, empty database.
+			sqlDB.SetMaxOpenConns(1)
+		}
 	}
 
 	// Run auto-migrations
