@@ -13,7 +13,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	gh "github.com/google/go-github/v57/github"
 
 	"pr-review-server/auth"
 	"pr-review-server/db"
@@ -311,12 +314,15 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	for _, target := range request.Targets {
-		row, exists := inventory[approvalKey(target.Owner, target.Repo, target.Number)]
-		if !exists {
+		if _, exists := inventory[approvalKey(target.Owner, target.Repo, target.Number)]; !exists {
 			writeV1Error(w, 404, "not_found", "Pull request is not in your dashboard")
 			return
 		}
-		pr, _, err := s.ghClient.GetPR(ctx, target.Owner, target.Repo, target.Number)
+	}
+	checks := s.fetchApprovalChecks(ctx, request.Targets)
+	for i, target := range request.Targets {
+		row := inventory[approvalKey(target.Owner, target.Repo, target.Number)]
+		pr, err := checks[i].pr, checks[i].prErr
 		if s.approvalRate.note(err, time.Now()) {
 			writeV1Error(w, 429, "github_rate_limited", "GitHub's rate limit is exhausted; try again after it resets")
 			return
@@ -342,7 +348,7 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		if approvalViewerMatches(user, pr.GetUser().GetID(), pr.GetUser().GetLogin()) {
 			exclusions = append(exclusions, "self_authored")
 		}
-		reviews, err := s.ghClient.ListAllReviews(ctx, target.Owner, target.Repo, target.Number)
+		reviews, err := checks[i].reviews, checks[i].reviewsErr
 		if err != nil {
 			writeV1Error(w, 503, "collection_failed", "Could not verify your review status")
 			return
@@ -615,4 +621,40 @@ func approvalViewerMatches(user *db.User, id int64, login string) bool {
 		return user.GitHubID == id
 	}
 	return strings.EqualFold(login, user.GitHubUsername)
+}
+
+// approvalCheckConcurrency bounds the GitHub reads admission makes in parallel;
+// the reads are independent per PR, and a serial pass over a full scan took
+// most of a minute.
+const approvalCheckConcurrency = 8
+
+type approvalCheck struct {
+	pr         *gh.PullRequest
+	prErr      error
+	reviews    []*gh.PullRequestReview
+	reviewsErr error
+}
+
+// fetchApprovalChecks reads each target's PR and reviews, several at a time,
+// and returns the results in target order so admission reports the same
+// first failure a serial pass would.
+func (s *Server) fetchApprovalChecks(ctx context.Context, targets []approval.Target) []approvalCheck {
+	checks := make([]approvalCheck, len(targets))
+	sem := make(chan struct{}, approvalCheckConcurrency)
+	var wg sync.WaitGroup
+	for i, target := range targets {
+		wg.Add(1)
+		go func(i int, target approval.Target) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			c := &checks[i]
+			c.pr, _, c.prErr = s.ghClient.GetPR(ctx, target.Owner, target.Repo, target.Number)
+			if c.prErr == nil {
+				c.reviews, c.reviewsErr = s.ghClient.ListAllReviews(ctx, target.Owner, target.Repo, target.Number)
+			}
+		}(i, target)
+	}
+	wg.Wait()
+	return checks
 }
