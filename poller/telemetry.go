@@ -47,6 +47,7 @@ func (p *Poller) recordReviewTelemetry(exec *reviewExecution, patch db.ReviewRun
 		ev["ensemble_relaunches"], ev["ensemble_stop_reason"], ev["ensemble_fallback"] = r.Relaunches, r.StopReason, r.Fallback
 		ev["ensemble_quorum_ms"], ev["merge_method"], ev["merge_model"] = r.QuorumMS, r.Merge.Method, r.MergeModel
 		ev["merge_reinserted"], ev["merge_clusters"] = len(r.Merge.Report.Reinserted), r.Merge.Clusters
+		ev["merge_unfolded"] = len(r.Merge.Report.Unfolded)
 		cost = max(cost, r.TotalCostUSD)
 		for _, run := range r.Runs {
 			re := copyAttrs(base)

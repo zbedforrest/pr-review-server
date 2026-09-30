@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"pr-review-server/pkg/reviewer/reconcile"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -34,7 +35,17 @@ type Report struct {
 	// SupportDowngraded counts criticals lowered to MEDIUM by the support
 	// threshold.
 	SupportDowngraded int `json:"support_downgraded,omitempty"`
+	// Unfolded are medium-or-higher sources a draft finding cited but whose
+	// substance it lost (its wording shares almost nothing with theirs);
+	// each came back as its own finding.
+	Unfolded []string `json:"unfolded,omitempty"`
 }
+
+// unfoldSimilarity is the token overlap below which a medium-or-higher
+// source counts as lost in the finding that cites it. Measured merges put
+// even their least similar 5% of sources at 0.20; the one source below 0.12
+// was a distinct defect folded into an unrelated finding.
+const unfoldSimilarity = 0.15
 
 // Result is the guarded merged review.
 type Result struct {
@@ -84,6 +95,10 @@ func Guard(d Draft, members []Member, opts Options) Result {
 			res.Report.Invented++
 			continue
 		}
+		srcs = res.unfold(f, srcs)
+		for _, id := range res.Report.Unfolded {
+			cited[id] = true
+		}
 		best := bestMember(srcs)
 		if !citesFile(srcs, f.FilePath) {
 			f.FilePath, f.LineNumber = best.Finding.FilePath, best.Finding.LineNumber
@@ -118,6 +133,42 @@ func Guard(d Draft, members []Member, opts Options) Result {
 	renamed := res.assignIDs()
 	res.Summary = guardSummary(d.Summary, res.Findings, renamed)
 	return res
+}
+
+// unfold returns srcs without the medium-or-higher sources whose substance
+// f lost, reinserting each as its own finding. It keeps srcs whole when no
+// source resembles f, since then the wording is the author's rewrite of all.
+func (r *Result) unfold(f types.LineComment, srcs []Member) []Member {
+	if len(srcs) < 2 {
+		return srcs
+	}
+	var kept, lost []Member
+	for _, m := range srcs {
+		if ImportanceRank(m.Finding.Importance) >= ImportanceRank("MEDIUM") && reconcile.Similarity(m.Finding.CommentBody, f.CommentBody) < unfoldSimilarity {
+			lost = append(lost, m)
+		} else {
+			kept = append(kept, m)
+		}
+	}
+	if len(lost) == 0 || !anySimilar(kept, f.CommentBody) {
+		return srcs
+	}
+	for _, m := range lost {
+		lf := m.Finding
+		lf.Sources = []string{m.ID}
+		r.add(lf, 1, "")
+		r.Report.Unfolded = append(r.Report.Unfolded, m.ID)
+	}
+	return kept
+}
+
+func anySimilar(ms []Member, body string) bool {
+	for _, m := range ms {
+		if reconcile.Similarity(m.Finding.CommentBody, body) >= unfoldSimilarity {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Result) add(f types.LineComment, support int, draftID string) {

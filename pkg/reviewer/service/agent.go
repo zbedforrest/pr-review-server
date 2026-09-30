@@ -45,6 +45,10 @@ var ErrCloneTimeout = errors.New("clone_timeout")
 
 // AgentConfig holds runtime knobs for a single agent-review invocation.
 type AgentConfig struct {
+	// SharedCheckout is a worktree of the PR head prepared by the caller (see
+	// PrepareSharedCheckout) for several read-only runs of one review. When
+	// set, the run neither clones nor removes it.
+	SharedCheckout string
 	// Invocation numbers this agent run within its review (1-based); an
 	// ensemble runs several, and each needs its own attempt record.
 	Invocation   int
@@ -258,7 +262,9 @@ func RunAgentReview(
 	// context instead: under the prep budget, a clone that cannot finish in
 	// time would be deleted and retried from scratch on every review.
 	prepStart := time.Now()
-	if _, err := ensureAgentCache(ctx, agentCfg.CloneRootDir, owner, repo, defaultBranch, agentCfg.GitHubToken, logPrefix); err != nil {
+	if agentCfg.SharedCheckout != "" {
+		cloneDir = agentCfg.SharedCheckout
+	} else if _, err := ensureAgentCache(ctx, agentCfg.CloneRootDir, owner, repo, defaultBranch, agentCfg.GitHubToken, logPrefix); err != nil {
 		log.Printf("%s cache init FAILED after %s: %v", logPrefix, time.Since(prepStart), err)
 		return nil, fmt.Errorf("agent: clone: %w", err)
 	}
@@ -269,7 +275,10 @@ func RunAgentReview(
 	prepCtx, cancelPrep := context.WithTimeout(ctx, prepBudget)
 	defer cancelPrep()
 
-	cleanupClone, err := cloneForAgent(prepCtx, agentCfg.CloneRootDir, cloneDir, owner, repo, defaultBranch, prNumber, commitSHA, agentCfg.GitHubToken)
+	cleanupClone := func() error { return nil }
+	if agentCfg.SharedCheckout == "" {
+		cleanupClone, err = cloneForAgent(prepCtx, agentCfg.CloneRootDir, cloneDir, owner, repo, defaultBranch, prNumber, commitSHA, agentCfg.GitHubToken)
+	}
 	if err != nil {
 		log.Printf("%s clone FAILED after %s: %v", logPrefix, time.Since(prepStart), err)
 		if prepCtx.Err() == context.DeadlineExceeded {
@@ -1611,4 +1620,40 @@ func randomSuffix() string {
 		return "0"
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// PrepareSharedCheckout creates one worktree of the PR head for several
+// read-only agent runs of the same review, under the same cache, prep budget
+// and cleanup rules as a single run's checkout. The caller removes it with
+// cleanup after every run that uses it has stopped.
+func PrepareSharedCheckout(ctx context.Context, agentCfg AgentConfig, owner, repo, defaultBranch string, prNumber int, commitSHA string) (string, func() error, error) {
+	logPrefix := fmt.Sprintf("[AGENT %s/%s#%d]", owner, repo, prNumber)
+	if err := os.MkdirAll(agentCfg.CloneRootDir, 0o755); err != nil {
+		return "", nil, fmt.Errorf("agent: create clone root: %w", err)
+	}
+	if _, err := ensureAgentCache(ctx, agentCfg.CloneRootDir, owner, repo, defaultBranch, agentCfg.GitHubToken, logPrefix); err != nil {
+		return "", nil, fmt.Errorf("agent: clone: %w", err)
+	}
+	prepBudget := agentCfg.PrepBudget
+	if prepBudget <= 0 {
+		prepBudget = DefaultAgentPrepBudget
+	}
+	prepCtx, cancel := context.WithTimeout(ctx, prepBudget)
+	defer cancel()
+	dir := filepath.Join(agentCfg.CloneRootDir, fmt.Sprintf("%s__%s__pr%d__shared__%d_%s", owner, repo, prNumber, time.Now().UnixNano(), randomSuffix()))
+	cleanup, err := cloneForAgent(prepCtx, agentCfg.CloneRootDir, dir, owner, repo, defaultBranch, prNumber, commitSHA, agentCfg.GitHubToken)
+	if err != nil {
+		return "", nil, fmt.Errorf("agent: shared checkout: %w", err)
+	}
+	return dir, cleanup, nil
+}
+
+// WarmAgentCache builds owner/repo's clone cache ahead of its first review,
+// so a fresh server does not make that review wait for a cold clone.
+func WarmAgentCache(ctx context.Context, cloneRoot, owner, repo, token string) error {
+	if err := os.MkdirAll(cloneRoot, 0o755); err != nil {
+		return fmt.Errorf("agent: create clone root: %w", err)
+	}
+	_, err := ensureAgentCache(ctx, cloneRoot, owner, repo, "", token, fmt.Sprintf("[PREWARM %s/%s]", owner, repo))
+	return err
 }

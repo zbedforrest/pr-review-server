@@ -88,8 +88,12 @@ type ensembleOutcome struct {
 
 var errEnsembleTooFewValid = errors.New("ensemble: too few valid runs")
 
-// runEnsembleAgent runs one agent of an ensemble; tests replace it.
-var runEnsembleAgent = service.RunAgentReview
+// runEnsembleAgent runs one agent of an ensemble, and prepareEnsembleCheckout
+// makes the worktree its runs share; tests replace both.
+var (
+	runEnsembleAgent        = service.RunAgentReview
+	prepareEnsembleCheckout = service.PrepareSharedCheckout
+)
 
 // runEnsembleStage runs the ensemble and returns its merged review in the
 // shape of a single agent's output, so the rest of the pipeline is unchanged.
@@ -129,6 +133,7 @@ func (p *Poller) ensembleFallbackConfig(profile string, base service.AgentConfig
 		return base, err
 	}
 	cfg := base
+	cfg.SharedCheckout = ""
 	cfg.Backend, cfg.Model, cfg.Effort = eff.Agent.Backend, eff.Agent.Model, eff.Agent.Effort
 	cfg.Tools, cfg.Prompt, cfg.MaxTurns = eff.Agent.Tools, eff.Agent.Prompt, eff.Agent.MaxTurns
 	cfg.WallClock = time.Duration(eff.Agent.WallClockSeconds) * time.Second
@@ -139,6 +144,18 @@ func (p *Poller) ensembleFallbackConfig(profile string, base service.AgentConfig
 
 func (p *Poller) runEnsembleAgents(ctx context.Context, ens *runconfig.Ensemble, base service.AgentConfig, owner, repo, baseRef string, number int, sha string) (*service.AgentReview, EnsembleReport, error) {
 	start := time.Now()
+	// One read-only worktree serves every run (the OpenRouter agents run in
+	// a read-only sandbox). If it cannot be made, each run clones its own.
+	if dir, cleanup, err := prepareEnsembleCheckout(ctx, base, owner, repo, baseRef, number, sha); err == nil {
+		base.SharedCheckout = dir
+		defer func() {
+			if cerr := cleanup(); cerr != nil {
+				log.Printf("[ENSEMBLE %s/%s#%d] shared checkout cleanup failed: %v", owner, repo, number, cerr)
+			}
+		}()
+	} else {
+		log.Printf("[ENSEMBLE %s/%s#%d] shared checkout failed, runs clone their own: %v", owner, repo, number, err)
+	}
 	ctx, cancelAll := context.WithCancel(ctx)
 	defer cancelAll()
 	results := make(chan ensembleOutcome, ens.Runs+ensembleMaxRelaunches)

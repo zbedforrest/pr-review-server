@@ -1213,6 +1213,7 @@ func (p *Poller) Start(ctx context.Context) {
 	monitorTicker := time.NewTicker(30 * time.Second)
 	defer monitorTicker.Stop()
 	go p.monitorReviewerProcesses(ctx, monitorTicker)
+	go p.prewarmCloneCaches(ctx)
 
 	log.Println("Starting poller...")
 	log.Printf("Ticker created at %s, will fire every %v", tickerStartTime.Format("15:04:05.000"), p.cfg.PollingInterval)

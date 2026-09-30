@@ -2,6 +2,7 @@ package ensemble
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"pr-review-server/pkg/reviewer/types"
@@ -169,5 +170,41 @@ func TestGuardDoesNotLetTheAuthorAskForChangesWithoutACritical(t *testing.T) {
 	}
 	if v := Guard(Draft{}, nil, Options{}).Summary.Verdict; v != "approve" {
 		t.Fatalf("empty review verdict = %q, want approve", v)
+	}
+}
+
+func TestGuardUnfoldsADistinctDefectFoldedIntoAnUnrelatedFinding(t *testing.T) {
+	ms := Members([][]types.LineComment{
+		{lc("A", "forms.py", 425, "MEDIUM", "Replacing the model gender field with a bare ChoiceField drops the blank placeholder option, so signup defaults to the first gender")},
+		{lc("A", "forms.py", 430, "MEDIUM", "Filtering OLD_TRANS_KEY out of the field choices breaks backward compatibility for clients posting the old key")},
+		{lc("A", "forms.py", 431, "LOW", "Filtering OLD_TRANS_KEY from choices rejects the old key that legacy clients still post")},
+	})
+	d := Draft{Findings: []types.LineComment{{
+		FilePath: "forms.py", LineNumber: 430, Importance: "MEDIUM",
+		CommentBody: "Filtering OLD_TRANS_KEY out of the choices breaks backward compatibility: legacy clients still post the old key",
+		Sources:     []string{"r1:A", "r2:A", "r3:A"},
+	}}}
+	res := Guard(d, ms, Options{})
+	if len(res.Findings) != 2 || !reflect.DeepEqual(res.Report.Unfolded, []string{"r1:A"}) || len(res.Report.Reinserted) != 0 {
+		t.Fatalf("findings=%d report=%+v", len(res.Findings), res.Report)
+	}
+	var blank, compat bool
+	for _, f := range res.Findings {
+		blank = blank || strings.Contains(f.CommentBody, "blank placeholder")
+		compat = compat || (strings.Contains(f.CommentBody, "OLD_TRANS_KEY") && reflect.DeepEqual(f.Sources, []string{"r2:A", "r3:A"}))
+	}
+	if !blank || !compat {
+		t.Fatalf("want the blank-option defect back on its own and the compat finding citing the rest: %+v", res.Findings)
+	}
+}
+
+func TestGuardKeepsAnAuthorRewriteThatResemblesNoSource(t *testing.T) {
+	ms := Members([][]types.LineComment{
+		{lc("A", "a.go", 10, "MEDIUM", "nil user id crashes the stats endpoint for anonymous visitors")},
+		{lc("A", "a.go", 11, "MEDIUM", "anonymous requests reach the lookup without an id and panic")},
+	})
+	d := Draft{Findings: []types.LineComment{{FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "Guard the unauthenticated path.", Sources: []string{"r1:A", "r2:A"}}}}
+	if res := Guard(d, ms, Options{}); len(res.Findings) != 1 || len(res.Report.Unfolded) != 0 {
+		t.Fatalf("a rewrite of every source must not unfold them: %+v", res.Report)
 	}
 }
