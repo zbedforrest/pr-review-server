@@ -38,7 +38,7 @@ const ensembleFallbackMergeModel = runconfig.EnsembleModel
 // EnsembleRun is one agent run's outcome, for telemetry.
 type EnsembleRun struct {
 	Invocation    int     `json:"invocation"`
-	Status        string  `json:"status"` // valid, parse_fallback, failed, cancelled
+	Status        string  `json:"status"` // valid, valid_unmerged, parse_fallback, failed, cancelled
 	Error         string  `json:"error,omitempty"`
 	DurationMS    int64   `json:"duration_ms"`
 	Findings      int     `json:"findings"`
@@ -50,6 +50,16 @@ type EnsembleRun struct {
 	BudgetUnits   int     `json:"budget_units"`
 	ServedModel   string  `json:"served_model,omitempty"`
 	RequestedFrom string  `json:"requested_model,omitempty"`
+	// Comments are the run's own findings, kept in the sidecar so a merge
+	// can be compared with the runs it merged.
+	Comments []ensembleComment `json:"comments,omitempty"`
+}
+
+type ensembleComment struct {
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Severity string `json:"severity"`
+	Comment  string `json:"comment"`
 }
 
 // EnsembleReport is the review-level account of an ensemble run.
@@ -197,28 +207,28 @@ wait:
 		}
 	}
 	report.QuorumMS = time.Since(start).Milliseconds()
+	cancelled := map[int]bool{}
 	for inv, cancel := range cancels {
-		if !containsInvocation(valid, inv) {
+		if !containsInvocation(all, inv) {
+			cancelled[inv] = true
 			cancel()
 		}
 	}
 	all = drainEnsemble(results, all, pending)
-	report.Runs, report.TotalCostUSD = ensembleRuns(all, valid)
 	report.Valid = len(valid)
-	if ctx.Err() != nil && len(valid) < ens.MinValid {
-		return nil, report, ctx.Err()
-	}
-	if len(valid) < ens.MinValid {
-		return nil, report, errEnsembleTooFewValid
-	}
 	sort.Slice(valid, func(a, b int) bool { return valid[a].invocation < valid[b].invocation })
 	if len(valid) > ens.Quorum {
 		valid = valid[:ens.Quorum]
 	}
-	report.Merged = len(valid)
-	for i := range report.Runs {
-		report.Runs[i].Merged = containsInvocation(valid, report.Runs[i].Invocation)
+	if len(valid) < ens.MinValid {
+		report.Runs, report.TotalCostUSD = ensembleRuns(all, nil, cancelled)
+		if ctx.Err() != nil {
+			return nil, report, ctx.Err()
+		}
+		return nil, report, errEnsembleTooFewValid
 	}
+	report.Merged = len(valid)
+	report.Runs, report.TotalCostUSD = ensembleRuns(all, valid, cancelled)
 	runs := make([][]types.LineComment, len(valid))
 	for i, o := range valid {
 		runs[i] = o.review.Comments
@@ -296,26 +306,35 @@ func drainEnsemble(results <-chan ensembleOutcome, all []ensembleOutcome, pendin
 	return all
 }
 
-func ensembleRuns(all, valid []ensembleOutcome) ([]EnsembleRun, float64) {
+// ensembleRuns labels every run: merged ("valid"), valid but finished after
+// the quorum ("valid_unmerged"), unparseable ("parse_fallback"), stopped by
+// the ensemble ("cancelled", whatever error the cancellation surfaced as),
+// or "failed".
+func ensembleRuns(all, merged []ensembleOutcome, cancelled map[int]bool) ([]EnsembleRun, float64) {
 	var runs []EnsembleRun
 	total := 0.0
 	for _, o := range all {
 		r := EnsembleRun{Invocation: o.invocation, Relaunch: o.relaunch, DurationMS: o.finished.Sub(o.started).Milliseconds()}
 		switch {
-		case containsInvocation(valid, o.invocation):
-			r.Status = "valid"
-		case o.err != nil && (errors.Is(o.err, context.Canceled)):
-			r.Status = "cancelled"
-		case o.err != nil:
-			r.Status, r.Error = "failed", o.err.Error()
-		default:
+		case containsInvocation(merged, o.invocation):
+			r.Status, r.Merged = "valid", true
+		case o.err == nil && o.review != nil && o.review.ParseFallback:
 			r.Status = "parse_fallback"
+		case o.err == nil && o.review != nil:
+			r.Status = "valid_unmerged"
+		case cancelled[o.invocation] || errors.Is(o.err, context.Canceled):
+			r.Status = "cancelled"
+		default:
+			r.Status, r.Error = "failed", errString(o.err)
 		}
 		if o.review != nil {
 			r.Findings = len(o.review.Comments)
 			r.CostUSD, r.InputTokens, r.OutputTokens = o.review.CostUSD, o.review.InputTokens, o.review.OutputTokens
 			r.BudgetUnits, r.ServedModel, r.RequestedFrom = o.review.BudgetUnitsUsed, o.review.ServedModel, o.review.RequestedModel
 			total += o.review.CostUSD
+			for _, c := range o.review.Comments {
+				r.Comments = append(r.Comments, ensembleComment{File: c.FilePath, Line: c.LineNumber, Severity: c.Importance, Comment: c.CommentBody})
+			}
 		}
 		runs = append(runs, r)
 	}
@@ -369,4 +388,11 @@ func (r *EnsembleReport) sidecar() any {
 		MergeMethod: r.Merge.Method, MergeModel: r.MergeModel, MergeError: r.Merge.AuthorErr, MergeCall: r.Merge.Call,
 		Clusters: r.Merge.Clusters, Guard: r.Merge.Report, Support: r.Merge.Support, TotalCostUSD: r.TotalCostUSD,
 	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

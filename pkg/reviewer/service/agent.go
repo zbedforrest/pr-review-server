@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -240,7 +242,9 @@ func RunAgentReview(
 		return nil, fmt.Errorf("agent: create logs dir: %w", err)
 	}
 
-	slug := fmt.Sprintf("%s__%s__pr%d__%d", owner, repo, prNumber, time.Now().UnixNano())
+	// Parallel runs of one PR start within the same clock tick on some
+	// platforms, so the invocation and a random suffix keep their paths apart.
+	slug := fmt.Sprintf("%s__%s__pr%d__i%d__%d_%s", owner, repo, prNumber, agentCfg.invocation(), time.Now().UnixNano(), randomSuffix())
 	cloneDir := filepath.Join(agentCfg.CloneRootDir, slug)
 	logPath := filepath.Join(agentCfg.LogsDir, slug+".jsonl")
 
@@ -1599,4 +1603,12 @@ func (c AgentConfig) invocation() int {
 		return c.Invocation
 	}
 	return 1
+}
+
+func randomSuffix() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "0"
+	}
+	return hex.EncodeToString(b[:])
 }

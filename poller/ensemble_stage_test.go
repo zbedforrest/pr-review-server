@@ -129,3 +129,39 @@ func TestEnsembleSidecarIsCompactAndAbsentWithoutAnEnsemble(t *testing.T) {
 		t.Fatalf("sidecar = %+v", report.sidecar())
 	}
 }
+
+func TestEnsembleLabelsEveryRunAndKeepsTheirFindings(t *testing.T) {
+	withFakeRuns(t, map[int]fakeRun{
+		1: {delay: time.Millisecond, findings: finding("a.go", 1)}, 2: {delay: time.Millisecond, findings: finding("a.go", 2)},
+		3: {delay: time.Millisecond, findings: finding("a.go", 3)}, 4: {delay: 2 * time.Millisecond, findings: finding("b.go", 1)},
+		5: {delay: time.Hour},
+	})
+	_, report, err := testPoller().runEnsembleAgents(context.Background(), ensembleCfg(), service.AgentConfig{}, "o", "r", "main", 1, "sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := map[int]string{}
+	for _, r := range report.Runs {
+		status[r.Invocation] = r.Status
+		if r.Status == "valid" && (len(r.Comments) != 1 || r.Comments[0].File == "") {
+			t.Fatalf("run %d findings not kept: %+v", r.Invocation, r)
+		}
+	}
+	if status[5] != "cancelled" || status[1] != "valid" || status[4] != "valid" {
+		t.Fatalf("statuses = %v", status)
+	}
+}
+
+func TestEnsembleReportsRunsEvenWhenFallingBack(t *testing.T) {
+	orig := ensembleRelaunchWindow
+	ensembleRelaunchWindow = time.Nanosecond
+	t.Cleanup(func() { ensembleRelaunchWindow = orig })
+	withFakeRuns(t, map[int]fakeRun{
+		1: {delay: time.Millisecond, findings: finding("a.go", 1)}, 2: {delay: time.Millisecond, err: errors.New("boom")},
+		3: {delay: time.Millisecond, err: errors.New("boom")}, 4: {delay: time.Millisecond, fallback: true}, 5: {delay: time.Millisecond, err: errors.New("boom")},
+	})
+	_, report, err := testPoller().runEnsembleAgents(context.Background(), ensembleCfg(), service.AgentConfig{}, "o", "r", "main", 1, "sha")
+	if !errors.Is(err, errEnsembleTooFewValid) || len(report.Runs) != 5 {
+		t.Fatalf("err=%v runs=%d", err, len(report.Runs))
+	}
+}
