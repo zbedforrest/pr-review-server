@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -48,7 +49,9 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			return result, err
 		}
 		reportActivity(ctx, Activity{Stage: "model", Round: usage.Rounds + 1, ToolCalls: usage.ToolCalls})
+		started := time.Now()
 		reply, err := n.Config.call(ctx, messages, remaining)
+		log.Printf("[APPROVAL] model round %d: %s, %d input and %d output tokens, %d tool calls requested, err=%v", usage.Rounds+1, time.Since(started).Round(time.Millisecond), reply.Usage.InputTokens, reply.Usage.OutputTokens, len(reply.Calls), err)
 		if err != nil {
 			var reported *ModelUsageLimitError
 			if errors.As(err, &reported) {

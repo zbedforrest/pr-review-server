@@ -237,8 +237,8 @@ Lease expiry permits at most one recovery attempt. A new holder must not extend 
 | Targets per scan | 50 |
 | Active scans per user | 1 total across full scans and rechecks |
 | Concurrent investigators | 2 deployment-wide; at most 1 per user |
-| Target active deadline | 180 seconds, including collection and final validation |
-| Scan deadline | Target count × 180 seconds + 10 minutes queue allowance from acceptance; 160 minutes for 50 targets |
+| Target active deadline | 7 minutes, including collection and final validation; 4 targets run at once |
+| Scan deadline | Target count × 7 minutes / 4 slots + 7 minutes + 10 minutes queue allowance from acceptance; about 105 minutes for 50 targets |
 | Investigator tool calls | 40 per target across recovery attempts |
 | Model rounds | 16 per target across recovery attempts |
 | Token ceilings | At most 100,000 input tokens per call; 600,000 aggregate input and 12,000 aggregate output per target |
@@ -249,7 +249,7 @@ Lease expiry permits at most one recovery attempt. A new holder must not extend 
 | Positive-result validation window | 5 minutes |
 | Full scan/evidence retention | 30 days |
 
-Resource ceilings are deployment-owned, snapshotted at admission, and enforced across replicas. The 180-second target clock begins when execution and its slot are acquired, not at enqueue. The scan deadline still bounds queue starvation; targets that cannot start before it expire with `queue_deadline`.
+Resource ceilings are deployment-owned, snapshotted at admission, and enforced across replicas. The 7-minute target clock begins when execution and its slot are acquired, not at enqueue. The scan deadline still bounds queue starvation; targets that cannot start before it expire with `queue_deadline`.
 
 Collector defaults are 2,000 review/discussion artifacts, 500 changed files, 2 MiB of aggregate diff, and 8 MiB of evidence text per target. Read tools return at most 64 KiB or 400 lines per call, searches at most 200 matches with explicit cursors, and at most 1 MiB of cumulative tool-result text per target. Counts include nested replies and general summaries. Exceeding any required-input limit produces `insufficient_evidence`, never silent truncation. Unread optional search pages are not themselves missing review evidence; unfinished required artifact/concern classification is.
 

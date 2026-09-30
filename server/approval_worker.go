@@ -128,6 +128,14 @@ func (s *Server) approvalValidationAvailable() bool {
 	return s.cfg != nil && s.cfg.ApprovalCandidates().Enabled && s.approvalStore() != nil && s.ghClient != nil
 }
 
+// approvalTargetDuration bounds one pull request's investigation, from
+// evidence collection to the final answer; approvalWorkerSlots is how many
+// run at once across the deployment.
+const (
+	approvalTargetDuration = 7 * time.Minute
+	approvalWorkerSlots    = 4
+)
+
 func (s *Server) runApprovalWorkers(ctx context.Context) {
 	store := s.approvalStore()
 	if store == nil {
@@ -136,7 +144,7 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 	if s.approvalAvailable() != "" {
 		_ = store.CancelAllApprovalScans(time.Now())
 	}
-	for i := 0; i < 2; i++ {
+	for range approvalWorkerSlots {
 		go func() {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
@@ -160,7 +168,7 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 					if time.Now().Before(s.approvalRate.pausedUntil()) {
 						continue
 					}
-					target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: worker, Now: time.Now(), LeaseDuration: 60 * time.Second, TargetDuration: 180 * time.Second, MaxSlots: 2})
+					target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: worker, Now: time.Now(), LeaseDuration: 60 * time.Second, TargetDuration: approvalTargetDuration, MaxSlots: approvalWorkerSlots})
 					if err == nil && target != nil {
 						s.investigateApproval(ctx, *target)
 					}
@@ -188,7 +196,7 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 func (s *Server) investigateApproval(parent context.Context, target db.ApprovalTarget) {
 	store := s.approvalStore()
 	defer store.ReleaseApprovalTargetSlot(target.ID, target.LeaseToken)
-	deadline := time.Now().Add(180 * time.Second)
+	deadline := time.Now().Add(approvalTargetDuration)
 	if target.Deadline != nil {
 		deadline = *target.Deadline
 	}
