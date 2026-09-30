@@ -39,6 +39,9 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
   const [selected, setSelected] = useState<ApprovalTarget>();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // While a scan request is admitting (the server checks every PR first), show
+  // the prism at once instead of waiting for the scan to exist.
+  const [launching, setLaunching] = useState(0);
   const [error, setError] = useState('');
   const [now, setNow] = useState(Date.now());
   const [slot, setSlot] = useState<HTMLElement | null>(null);
@@ -139,9 +142,10 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
     try { await operation(); await refresh(); } catch (err) {
       setError(err instanceof Error ? err.message : 'Investigation request failed');
       if (err instanceof ApprovalAPIError && err.scanID) setSelectedScan(err.scanID);
-    } finally { setBusy(false); }
+    } finally { setBusy(false); setLaunching(0); }
   };
   const launch = () => perform(async () => {
+    setLaunching(scope.length);
     const result = await approvalRequest<ApprovalScan>('approval-scans', {
       targets: scope.map(pr => ({ owner: pr.owner, repo: pr.repo, number: pr.number, expected_head_sha: pr.commit_sha })),
       scope: { repositories: filters.repos || [], teams: filters.teams || [], states: filters.states || [], search: filters.search || '' },
@@ -159,13 +163,14 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
     <section id="approval-candidates" ref={sectionRef} className={`approval-candidates${active ? ' approval-candidates--running' : ''}`} aria-label="Approval candidates">
       <h2 className="approval-disclosure-heading" aria-labelledby="approval-disclosure-title"><button type="button" className="approval-disclosure" aria-labelledby="approval-disclosure-title" onClick={toggle} aria-expanded={open} aria-controls="approval-candidate-controls"><span className="approval-disclosure-row"><span id="approval-disclosure-title">Approval candidates <span className="approval-disclosure-count">({candidates.length})</span></span><svg className="approval-disclosure-chevron" aria-hidden="true" viewBox="0 0 20 20" width="20" height="20"><path d="m6 8 4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" /></svg></span>{!open && !allTargets.length && !active && <span className="approval-disclosure-description">{targets.isPending ? 'Loading investigations...' : 'Find PRs where existing review evidence supports a quick human approval decision.'}</span>}</button></h2>
       {active && <ApprovalPrism finished={progress.data?.finished ?? completed} total={progress.data?.total ?? active.total} summary={activitySummary} running={progress.data?.running ?? runningTargets.length} reconnecting={!!progress.error && !!scan.error} />}
+      {!active && launching > 0 && <ApprovalPrism finished={0} total={launching} summary={`Checking ${launching} pull requests before investigating`} running={0} reconnecting={false} />}
       <div id="approval-candidate-controls" className="approval-launch" hidden={!open}>
         <p>Investigate existing reviews and inspect supporting code for PRs in your current filters.</p>
         <p className="approval-muted">Scope: {filters.repos?.join(', ') || 'All repositories'} · {filters.teams?.join(', ') || 'All teams'} · {filters.states?.join(', ') || 'All states'}{filters.search ? ` · Search: ${filters.search}` : ''}</p>
         {!capabilities.data?.available && <p role="status">{capabilities.data?.unavailable_reason}</p>}
         {overLimit && <p role="status">Narrow your filters to {capabilities.data?.max_targets} PRs or fewer. No PRs will be sampled.</p>}
         {!scope.length && <p>No eligible PRs in these filters. Your own, hidden, draft, closed and already approved current revisions are excluded.</p>}
-        <button className="approval-primary" onClick={launch} disabled={busy || !!active || !capabilities.data?.available || overLimit || !scope.length}>Investigate {scope.length} PRs</button>
+        <button className="approval-primary" onClick={launch} disabled={busy || !!active || !capabilities.data?.available || overLimit || !scope.length}>{launching ? 'Starting investigation...' : `Investigate ${scope.length} PRs`}</button>
         {active && <span> Investigation already running.</span>}
       </div>
       {(error || targets.error || scans.error) && <p role="alert">{error || targets.error?.message || scans.error?.message}</p>}

@@ -70,6 +70,17 @@ describe('approval investigation controls', () => {
     fireEvent.click(screen.getByText('Investigate 1 PRs'));
     await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledWith('approval-scans', expect.objectContaining({ targets: [{ owner: 'acme', repo: 'example', number: 1, expected_head_sha: 'a'.repeat(40) }] }), expect.any(String)));
   });
+  it('shows the prism and a starting label while the scan is being admitted', async () => {
+    let admit: (value: unknown) => void = () => {};
+    vi.mocked(api.approvalRequest).mockImplementation(() => new Promise(resolve => { admit = resolve; }));
+    mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
+    fireEvent.click(screen.getByText('Investigate 1 PRs'));
+    expect(await screen.findByText('Checking 1 pull requests before investigating')).toBeTruthy();
+    expect(screen.getByRole('progressbar')).toBeTruthy();
+    expect((screen.getByText('Starting investigation...') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { admit({ scan_id: 'new-scan' }); });
+    await waitFor(() => expect(screen.queryByText('Checking 1 pull requests before investigating')).toBeNull());
+  });
   it('keeps history visible but disables launch when runtime is unavailable', async () => {
     vi.mocked(api.fetchApprovalCapabilities).mockResolvedValue({ enabled: true, available: false, unavailable_reason: 'Native model unavailable', max_targets: 50 });
     mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
