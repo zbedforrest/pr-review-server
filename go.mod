@@ -1,8 +1,6 @@
 module pr-review-server
 
-go 1.25.0
-
-toolchain go1.25.8
+go 1.26.4
 
 require (
 	cloud.google.com/go/storage v1.59.2
@@ -14,6 +12,7 @@ require (
 	github.com/google/generative-ai-go v0.20.1
 	github.com/google/go-github/v57 v57.0.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/kaptinlin/jsonrepair v0.4.9
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/shurcooL/githubv4 v0.0.0-20240727222349-48295856cce7
 	github.com/stretchr/testify v1.11.1
@@ -49,6 +48,7 @@ require (
 	github.com/envoyproxy/protoc-gen-validate v1.2.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.3 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260601182631-00ed12fed2a6 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
