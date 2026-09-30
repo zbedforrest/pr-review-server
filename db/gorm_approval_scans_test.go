@@ -176,6 +176,23 @@ func TestApprovalRecoveryPreservesDeadlineAndCharges(t *testing.T) {
 	require.EqualValues(t, 4096, budget.OutputTokens)
 }
 
+func TestApprovalBudgetUnsetCapAdmitsAndStillRecordsUsage(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, g.db.Create(&approvalDailyBudget{Day: "2026-09-28", InputTokens: 50000000, OutputTokens: 1000000}).Error)
+	r := approvalTestAdmission("uncapped", 1, now, 1)
+	r.DailyInputLimit, r.DailyOutputLimit = 0, 0
+	_, _, err := g.AdmitApprovalScan(r)
+	require.NoError(t, err)
+	target, err := approvalTestClaim(g, now)
+	require.NoError(t, err)
+	require.NoError(t, g.ReserveApprovalBudget(target.ID, target.LeaseToken, now, 0, 0, 600000, 12000))
+	var budget approvalDailyBudget
+	require.NoError(t, g.db.First(&budget).Error)
+	require.EqualValues(t, 50600000, budget.InputTokens)
+	require.EqualValues(t, 1012000, budget.OutputTokens)
+}
+
 func TestApprovalBudgetSettlementAndMidnight(t *testing.T) {
 	g := approvalTestStore(t)
 	now := time.Date(2026, 9, 28, 23, 59, 30, 0, time.UTC)

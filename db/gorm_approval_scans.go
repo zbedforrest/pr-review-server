@@ -596,9 +596,10 @@ func (g *GormDB) SaveApprovalSnapshot(id, token, body string, now time.Time) err
 }
 
 func (g *GormDB) ReserveApprovalBudget(id, token string, now time.Time, dailyInput, dailyOutput, targetInput, targetOutput int64) error {
-	if dailyInput <= 0 || dailyOutput <= 0 || targetInput <= 0 || targetOutput <= 0 {
+	if targetInput <= 0 || targetOutput <= 0 {
 		return ErrApprovalBudget
 	}
+	capped := dailyInput > 0 && dailyOutput > 0
 	return g.approvalTransaction(func(tx *gorm.DB) error {
 		t, err := approvalLease(tx, id, token, now)
 		if err != nil {
@@ -615,7 +616,7 @@ func (g *GormDB) ReserveApprovalBudget(id, token string, now time.Time, dailyInp
 		} else if err != nil {
 			return err
 		}
-		if b.InputTokens+targetInput > dailyInput || b.OutputTokens+targetOutput > dailyOutput {
+		if capped && (b.InputTokens+targetInput > dailyInput || b.OutputTokens+targetOutput > dailyOutput) {
 			return ErrApprovalBudget
 		}
 		b.InputTokens += targetInput

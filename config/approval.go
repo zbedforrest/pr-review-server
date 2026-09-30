@@ -45,8 +45,8 @@ func (c *Config) ApprovalCandidates() ApprovalConfig {
 	if a.APIKey == "" {
 		a.UnavailableReason = "The selected provider requires an API key"
 	}
-	if a.DailyInput < 600000 || a.DailyOutput < 12000 {
-		a.UnavailableReason = "Configure daily token budgets sufficient for one investigation"
+	if (a.DailyInput > 0 && a.DailyInput < 600000) || (a.DailyOutput > 0 && a.DailyOutput < 12000) {
+		a.UnavailableReason = "Daily token budgets, when set, must admit one investigation"
 	}
 	if raw := os.Getenv("APPROVAL_CANDIDATES_PROVIDER_IDENTITIES"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &a.Identities); err != nil {
