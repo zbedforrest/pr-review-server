@@ -139,3 +139,20 @@ func dirBytes(dir string) int64 {
 	})
 	return n
 }
+
+// BorrowCloneCache returns the objects directory of owner/repo's review cache
+// under cloneRoot, marked in use so eviction skips it until release; it
+// returns "" when no cache exists.
+func BorrowCloneCache(cloneRoot, owner, repo string) (objects string, release func()) {
+	abs, err := filepath.Abs(cloneRoot)
+	if err != nil {
+		return "", func() {}
+	}
+	release = acquireCacheUse(owner + "/" + repo)
+	objects = filepath.Join(abs, ".cache", owner+"__"+repo, ".git", "objects")
+	if info, err := os.Stat(objects); err != nil || !info.IsDir() {
+		release()
+		return "", func() {}
+	}
+	return objects, release
+}

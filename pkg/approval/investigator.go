@@ -144,13 +144,17 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 				if ctx.Err() != nil {
 					return result, ctx.Err()
 				}
-				if errors.Is(err, ErrInvestigationLimit) && call.Name != "read_evidence" {
+				oversized := LimitCode(err) == LimitToolResult
+				if errors.Is(err, ErrInvestigationLimit) && call.Name != "read_evidence" && !oversized {
 					return result, err
 				}
 				if errors.Is(err, ErrInvestigationLimit) && call.Name == "read_evidence" {
 					evidenceLimited = true
 				}
 				text = `{"error":"Read rejected or unavailable; correct the request, narrow its scope, or report the evidence gap."}`
+				if oversized {
+					text = `{"error":"Result exceeded 65,536 bytes; narrow the request (fewer lines, a more specific search, or one path) and retry."}`
+				}
 			}
 			if !toolError && call.Name == "read_evidence" {
 				ids, err := evidenceReadIDs(call.Arguments)
