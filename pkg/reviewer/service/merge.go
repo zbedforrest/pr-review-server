@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"pr-review-server/pkg/reviewer/reconcile"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -18,6 +19,11 @@ type FindingSet struct {
 // mergeLineTolerance: two findings on the same file within this many lines are
 // treated as the same underlying issue.
 const mergeLineTolerance = 10
+
+// sameSourceFoldSimilarity is the word overlap at which a source's own
+// whole-file or ensemble findings still fold as one issue; on 634 prod
+// reviews it folded restated duplicates and kept about 430 distinct findings.
+const sameSourceFoldSimilarity = 0.25
 
 // importanceRank orders severities for the max-upgrade rule. Unknown/empty
 // ranks lowest so a labeled duplicate always wins.
@@ -226,8 +232,9 @@ func findDuplicate(merged []types.LineComment, origin []int, set int, c types.Li
 		}
 		// Within one source, a whole-file pair has no location to corroborate
 		// it, and ensemble findings (those with Sources) were already
-		// clustered across runs, so neither is folded again.
-		if origin[i] == set && (m.LineNumber == 0 || c.LineNumber == 0 || len(m.Sources) > 0 || len(c.Sources) > 0) {
+		// clustered across runs, so neither folds on location alone.
+		if origin[i] == set && (m.LineNumber == 0 || c.LineNumber == 0 || len(m.Sources) > 0 || len(c.Sources) > 0) &&
+			reconcile.Similarity(m.CommentBody, c.CommentBody) < sameSourceFoldSimilarity {
 			continue
 		}
 		if m.LineNumber == 0 || c.LineNumber == 0 {

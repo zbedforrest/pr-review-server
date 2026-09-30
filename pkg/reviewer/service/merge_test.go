@@ -498,3 +498,14 @@ func TestMergeFindingsWithRecords_StillFoldsWholeFileDuplicatesAcrossSources(t *
 		t.Fatalf("cross-source whole-file duplicates still fold: merged=%+v records=%+v", merged, records)
 	}
 }
+
+func TestMergeFindingsWithRecords_FoldsARestatedEnsembleFinding(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		{ID: "E-1", FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "The handler never verifies the posted payout belongs to the URL user", Sources: []string{"r1:A-1"}},
+		{ID: "E-2", FilePath: "a.go", LineNumber: 13, Importance: "LOW", CommentBody: "Nothing verifies the posted payout actually belongs to the URL user", Sources: []string{"r2:A-1"}},
+	}}
+	merged, records := MergeFindingsWithRecords(agent)
+	if len(merged) != 1 || len(records) != 1 {
+		t.Fatalf("a restated ensemble finding still folds: merged=%+v records=%+v", merged, records)
+	}
+}
