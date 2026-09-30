@@ -3,6 +3,7 @@ package poller
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,11 @@ type fakeRun struct {
 
 func withFakeRuns(t *testing.T, runs map[int]fakeRun) {
 	t.Helper()
+	origPrepare := prepareEnsembleCheckout
+	prepareEnsembleCheckout = func(context.Context, service.AgentConfig, string, string, string, int, string) (string, func() error, error) {
+		return "/shared/checkout", func() error { return nil }, nil
+	}
+	t.Cleanup(func() { prepareEnsembleCheckout = origPrepare })
 	orig := runEnsembleAgent
 	runEnsembleAgent = func(ctx context.Context, cfg service.AgentConfig, _ service.Spawner, _, _, _ string, _ int, _ string, _ []types.LineComment) (*service.AgentReview, error) {
 		r := runs[cfg.Invocation]
@@ -164,4 +170,56 @@ func TestEnsembleReportsRunsEvenWhenFallingBack(t *testing.T) {
 	if !errors.Is(err, errEnsembleTooFewValid) || len(report.Runs) != 5 {
 		t.Fatalf("err=%v runs=%d", err, len(report.Runs))
 	}
+}
+
+func TestEnsembleRunsShareOneCheckoutAndCleanItUpAfterTheDrain(t *testing.T) {
+	var seen sync.Map
+	var cleaned atomic.Bool
+	withFakeRuns(t, map[int]fakeRun{})
+	prepareEnsembleCheckout = func(context.Context, service.AgentConfig, string, string, string, int, string) (string, func() error, error) {
+		return "/shared/pr-1", func() error { cleaned.Store(true); return nil }, nil
+	}
+	runEnsembleAgent = func(ctx context.Context, cfg service.AgentConfig, _ service.Spawner, _, _, _ string, _ int, _ string, _ []types.LineComment) (*service.AgentReview, error) {
+		seen.Store(cfg.Invocation, cfg.SharedCheckout)
+		if cfg.Invocation == 5 {
+			<-ctx.Done()
+			if cleaned.Load() {
+				t.Error("the shared checkout was removed while a run was still using it")
+			}
+			return nil, ctx.Err()
+		}
+		return &service.AgentReview{Comments: finding("a.go", cfg.Invocation)}, nil
+	}
+	if _, _, err := testPoller().runEnsembleAgents(context.Background(), ensembleCfg(), service.AgentConfig{}, "o", "r", "main", 1, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 5; i++ {
+		if dir, _ := seen.Load(i); dir != "/shared/pr-1" {
+			t.Errorf("run %d used checkout %v", i, dir)
+		}
+	}
+	if !cleaned.Load() {
+		t.Fatal("shared checkout not cleaned up")
+	}
+}
+
+func TestEnsembleFallsBackToPerRunCheckoutsWhenTheSharedOneFails(t *testing.T) {
+	var shared sync.Map
+	withFakeRuns(t, map[int]fakeRun{})
+	prepareEnsembleCheckout = func(context.Context, service.AgentConfig, string, string, string, int, string) (string, func() error, error) {
+		return "", nil, errors.New("clone failed")
+	}
+	runEnsembleAgent = func(_ context.Context, cfg service.AgentConfig, _ service.Spawner, _, _, _ string, _ int, _ string, _ []types.LineComment) (*service.AgentReview, error) {
+		shared.Store(cfg.Invocation, cfg.SharedCheckout)
+		return &service.AgentReview{Comments: finding("a.go", 1)}, nil
+	}
+	if _, _, err := testPoller().runEnsembleAgents(context.Background(), ensembleCfg(), service.AgentConfig{}, "o", "r", "main", 1, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	shared.Range(func(k, v any) bool {
+		if v != "" {
+			t.Errorf("run %v was given a shared checkout after the shared prep failed", k)
+		}
+		return true
+	})
 }
