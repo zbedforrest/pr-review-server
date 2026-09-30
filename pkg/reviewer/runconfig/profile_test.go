@@ -17,12 +17,12 @@ func litePolicy() Policy {
 func strPtr(s string) *string { return &s }
 
 func TestResolveExpandsLiteProfile(t *testing.T) {
-	snapshot, err := Resolve(Overrides{Profile: strPtr("lite")}, testDefaults(), litePolicy())
+	snapshot, err := Resolve(Overrides{Profile: strPtr("lite_classic")}, testDefaults(), litePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
 	e := snapshot.Effective
-	if e.Profile != ProfileLite || e.SchemaVersion != 4 {
+	if e.Profile != ProfileLiteClassic || e.SchemaVersion != 4 {
 		t.Fatalf("profile=%q schema=%d", e.Profile, e.SchemaVersion)
 	}
 	want := Agent{
@@ -63,20 +63,20 @@ func TestResolveRejectsUnknownProfile(t *testing.T) {
 
 func TestResolveRejectsFirstPassOverridesOnLiteProfile(t *testing.T) {
 	samples := 2
-	_, err := Resolve(Overrides{Profile: strPtr("lite"), FirstPass: &FirstPassOverrides{Samples: &samples}}, testDefaults(), litePolicy())
+	_, err := Resolve(Overrides{Profile: strPtr("lite_classic"), FirstPass: &FirstPassOverrides{Samples: &samples}}, testDefaults(), litePolicy())
 	var verr *ValidationError
 	if !errors.As(err, &verr) || verr.Field != "profile" {
 		t.Fatalf("first_pass override: err=%v", err)
 	}
 	checks := true
-	_, err = Resolve(Overrides{Profile: strPtr("lite"), RequiredChecks: &checks}, testDefaults(), litePolicy())
+	_, err = Resolve(Overrides{Profile: strPtr("lite_classic"), RequiredChecks: &checks}, testDefaults(), litePolicy())
 	if !errors.As(err, &verr) || verr.Field != "profile" {
 		t.Fatalf("required_checks override: err=%v", err)
 	}
 }
 
 func TestResolveAllowsAgentEffortOverrideOnLiteProfile(t *testing.T) {
-	snapshot, err := Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{Effort: strPtr("high")}}, testDefaults(), litePolicy())
+	snapshot, err := Resolve(Overrides{Profile: strPtr("lite_classic"), Agent: &AgentOverrides{Effort: strPtr("high")}}, testDefaults(), litePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestResolveLiteKeepsItsTurnBudgetWhenDeploymentBackendDiffers(t *testing.T)
 	defaults.Agent.Model = "openai/gpt-5.6-sol"
 	defaults.Agent.MaxTurns = 200
 	defaults.Agent.TurnBudgetUnit, defaults.Agent.TurnBudgetVersion = TurnBudgetSemantics("openrouter")
-	snapshot, err := Resolve(Overrides{Profile: strPtr("lite")}, defaults, litePolicy())
+	snapshot, err := Resolve(Overrides{Profile: strPtr("lite_classic")}, defaults, litePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,12 +105,12 @@ func TestResolveLiteKeepsItsTurnBudgetWhenDeploymentBackendDiffers(t *testing.T)
 
 func TestResolveUsesPolicyDefaultProfile(t *testing.T) {
 	policy := litePolicy()
-	policy.DefaultProfile = ProfileLite
+	policy.DefaultProfile = ProfileLiteClassic
 	snapshot, err := Resolve(Overrides{}, testDefaults(), policy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Effective.Profile != ProfileLite || snapshot.Sources["profile"] != SourceDeploymentDefault {
+	if snapshot.Effective.Profile != ProfileLiteClassic || snapshot.Sources["profile"] != SourceDeploymentDefault {
 		t.Fatalf("profile=%q sources=%v", snapshot.Effective.Profile, snapshot.Sources)
 	}
 	full, err := Resolve(Overrides{Profile: strPtr("full")}, testDefaults(), policy)
@@ -148,7 +148,7 @@ func TestValidateRejectsUnknownToolsAndPrompt(t *testing.T) {
 }
 
 func TestHashChangesWithProfile(t *testing.T) {
-	lite, err := Resolve(Overrides{Profile: strPtr("lite")}, testDefaults(), litePolicy())
+	lite, err := Resolve(Overrides{Profile: strPtr("lite_classic")}, testDefaults(), litePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +205,10 @@ func TestDescribeProfile_ExactProfiles(t *testing.T) {
 	if DescribeProfile(base, base).Footer() != "" {
 		t.Fatal("exact full run must add no footer")
 	}
+	classic, _ := Expand(ProfileLiteClassic, base)
+	if got := DescribeProfile(classic, base).Footer(); got != "PRism Lite (Claude)" {
+		t.Fatalf("lite_classic footer=%q", got)
+	}
 	lite, _ := Expand(ProfileLite, base)
 	if got := DescribeProfile(lite, base).Footer(); got != "PRism Lite" {
 		t.Fatalf("lite footer=%q", got)
@@ -217,10 +221,10 @@ func TestDescribeProfile_ExactProfiles(t *testing.T) {
 
 func TestDescribeProfile_OneDeviation(t *testing.T) {
 	base := testDefaults()
-	lite, _ := Expand(ProfileLite, base)
+	lite, _ := Expand(ProfileLiteClassic, base)
 	lite.Agent.Effort = "high"
 	d := DescribeProfile(lite, base)
-	if !d.Custom() || d.Title() != "Custom (based on Lite)" || d.Footer() != "PRism Lite (custom)" {
+	if !d.Custom() || d.Title() != "Custom (based on Lite (Claude))" || d.Footer() != "PRism Lite (Claude) (custom)" {
 		t.Fatalf("%+v title=%q footer=%q", d, d.Title(), d.Footer())
 	}
 	if len(d.Deviations) != 1 || d.Deviations[0] != "effort high (default medium)" {
@@ -270,7 +274,7 @@ func TestDescribeProfile_Legacy(t *testing.T) {
 }
 
 func TestCappedDiffWallClockSecondsIsTheLiteDefaultOnly(t *testing.T) {
-	lite, err := Resolve(Overrides{Profile: strPtr("lite")}, testDefaults(), litePolicy())
+	lite, err := Resolve(Overrides{Profile: strPtr("lite_classic")}, testDefaults(), litePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +285,7 @@ func TestCappedDiffWallClockSecondsIsTheLiteDefaultOnly(t *testing.T) {
 		t.Fatal("the capped-diff budget must not register as a deviation")
 	}
 	wall := 450
-	custom, err := Resolve(Overrides{Profile: strPtr("lite"), Agent: &AgentOverrides{WallClockSeconds: &wall}}, testDefaults(), litePolicy())
+	custom, err := Resolve(Overrides{Profile: strPtr("lite_classic"), Agent: &AgentOverrides{WallClockSeconds: &wall}}, testDefaults(), litePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +302,7 @@ func TestCappedDiffWallClockSecondsIsTheLiteDefaultOnly(t *testing.T) {
 	if got := CappedDiffWallClockSeconds(testDefaults()); got != 0 {
 		t.Fatalf("full: %d", got)
 	}
-	if !strings.Contains(ProfileNote(ProfileLite), "360") || ProfileNote(ProfileFull) != "" || ProfileNote(ProfileLitePlus) != "" {
-		t.Fatalf("notes: lite=%q full=%q plus=%q", ProfileNote(ProfileLite), ProfileNote(ProfileFull), ProfileNote(ProfileLitePlus))
+	if !strings.Contains(ProfileNote(ProfileLiteClassic), "360") || ProfileNote(ProfileFull) != "" || ProfileNote(ProfileLitePlus) != "" {
+		t.Fatalf("notes: lite=%q full=%q plus=%q", ProfileNote(ProfileLiteClassic), ProfileNote(ProfileFull), ProfileNote(ProfileLitePlus))
 	}
 }

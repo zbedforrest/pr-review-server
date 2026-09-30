@@ -38,7 +38,7 @@ func TestSettings_AutoReviewProfileByTriggerRoundTrip(t *testing.T) {
 	assert.Equal(t, "lite_plus", mapping["poll_fallback"])
 	assert.Equal(t, map[string]any{"acme/example": map[string]any{"synchronize": "full"}}, mapping["repos"])
 	assert.Equal(t, "full", got["review_default_profile"])
-	assert.Equal(t, []any{"full", "lite", "lite_plus"}, got["review_profiles"])
+	assert.Equal(t, []any{"full", "lite", "lite_classic", "lite_plus"}, got["review_profiles"])
 
 	stored, err := database.GetSetting(poller.SettingAutoReviewProfileByTrigger)
 	require.NoError(t, err)
@@ -125,7 +125,7 @@ func TestCreateReviewRunAcceptsProfileOverride(t *testing.T) {
 	assert.Equal(t, runconfig.ProfileLite, effective.Profile)
 	assert.False(t, effective.FirstPass.Enabled)
 	assert.Equal(t, runconfig.ToolsDefault, effective.Agent.Tools)
-	assert.Equal(t, 300, effective.Agent.WallClockSeconds)
+	assert.Equal(t, 360, effective.Agent.WallClockSeconds)
 	assert.Equal(t, runconfig.SourceRequest, apiPoller.jobs[0].Config.Sources["profile"])
 	assert.Contains(t, recorder.Body.String(), `"profile":"lite"`)
 
@@ -149,7 +149,7 @@ func TestCreateReviewRunAcceptsProfileOverride(t *testing.T) {
 func TestCreateReviewRunAcceptsLitePromptOverride(t *testing.T) {
 	headSHA := "0123456789abcdef0123456789abcdef01234567"
 	s, _, apiPoller, userID := newReviewAPIServer(t, githubPRResponse(headSHA))
-	body := `{"target":{"owner":"acme","repo":"widgets","pull_request":42,"expected_head_sha":"` + headSHA + `"},"publish":false,"config":{"profile":"lite","agent":{"prompt":"lite_arm_a_v2"}}}`
+	body := `{"target":{"owner":"acme","repo":"widgets","pull_request":42,"expected_head_sha":"` + headSHA + `"},"publish":false,"config":{"profile":"lite_classic","agent":{"prompt":"lite_arm_a_v2"}}}`
 	recorder := httptest.NewRecorder()
 	s.handleReviewRuns(recorder, addReviewAPIUser(httptest.NewRequest(http.MethodPost, reviewRunsPath, strings.NewReader(body)), *userID))
 	require.Equal(t, http.StatusAccepted, recorder.Code, recorder.Body.String())
@@ -185,9 +185,9 @@ func TestReviewCapabilitiesListProfiles(t *testing.T) {
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &got))
 	assert.Equal(t, 4, got.SchemaVersion)
 	assert.Equal(t, "lite", got.DefaultProfile)
-	require.Len(t, got.Profiles, 3)
+	require.Len(t, got.Profiles, 4)
 	assert.Empty(t, got.UnavailableProfiles)
-	lite := got.Profiles["lite"]
+	lite := got.Profiles["lite_classic"]
 	assert.Equal(t, runconfig.Agent{
 		Enabled: true, Backend: "claude", Model: "claude-fable-5-1", Effort: "medium", WallClockSeconds: 300, MaxTurns: 60,
 		Tools: "Read,Grep,Glob,Bash", Prompt: "lite_arm_a_v2", TurnBudgetUnit: "assistant_event", TurnBudgetVersion: 1,
@@ -196,7 +196,12 @@ func TestReviewCapabilitiesListProfiles(t *testing.T) {
 	assert.False(t, lite.RequiredChecks)
 	assert.False(t, lite.Gates)
 	assert.False(t, lite.BugMemory)
-	assert.Contains(t, got.ProfileNotes["lite"], "360")
+	assert.Contains(t, got.ProfileNotes["lite_classic"], "360")
+	ensemble := got.Profiles["lite"]
+	assert.Equal(t, runconfig.EnsembleModel, ensemble.Agent.Model)
+	require.NotNil(t, ensemble.Ensemble)
+	assert.Equal(t, 5, ensemble.Ensemble.Runs)
+	assert.Equal(t, runconfig.ProfileLiteClassic, ensemble.Ensemble.FallbackProfile)
 	assert.NotContains(t, got.ProfileNotes, "full")
 	assert.Equal(t, "lite_arm_a_v2_sub", got.Profiles["lite_plus"].Agent.Prompt)
 	assert.False(t, got.Profiles["lite_plus"].BugMemory)
@@ -213,7 +218,7 @@ func TestReviewCapabilitiesListProfiles(t *testing.T) {
 		UnavailableProfiles map[string]string              `json:"unavailable_profiles"`
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &capped))
-	assert.Len(t, capped.Profiles, 2)
+	assert.Len(t, capped.Profiles, 3)
 	assert.NotContains(t, capped.Profiles, "lite_plus")
 	assert.Contains(t, capped.UnavailableProfiles["lite_plus"], "agent.wall_clock_seconds")
 }

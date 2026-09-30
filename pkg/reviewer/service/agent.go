@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +45,9 @@ var ErrCloneTimeout = errors.New("clone_timeout")
 
 // AgentConfig holds runtime knobs for a single agent-review invocation.
 type AgentConfig struct {
+	// Invocation numbers this agent run within its review (1-based); an
+	// ensemble runs several, and each needs its own attempt record.
+	Invocation   int
 	CloneRootDir string        // parent dir for per-invocation clones
 	LogsDir      string        // parent dir for raw stream-json logs
 	WallClock    time.Duration // hard wall-clock timeout for the agent subprocess, measured from spawn
@@ -124,8 +129,11 @@ type AgentReview struct {
 	CheckFindings []types.LineComment
 
 	RawFinal string // the agent's final result text (pre-parse, for debugging)
-	CloneDir string // path to the per-invocation clone (kept for inspection)
-	LogPath  string // where the raw stream-json was written (removed by then — /tmp hygiene)
+	// ParseFallback is true when the final text was not findings JSON even
+	// after healing, so Comments holds it as a single SUMMARY entry.
+	ParseFallback bool
+	CloneDir      string // path to the per-invocation clone (kept for inspection)
+	LogPath       string // where the raw stream-json was written (removed by then — /tmp hygiene)
 
 	// Model verification: Claude reports the serving model in init + assistant
 	// events. Codex JSONL does not, so OpenRouter reports its exact pinned
@@ -234,7 +242,9 @@ func RunAgentReview(
 		return nil, fmt.Errorf("agent: create logs dir: %w", err)
 	}
 
-	slug := fmt.Sprintf("%s__%s__pr%d__%d", owner, repo, prNumber, time.Now().UnixNano())
+	// Parallel runs of one PR start within the same clock tick on some
+	// platforms, so the invocation and a random suffix keep their paths apart.
+	slug := fmt.Sprintf("%s__%s__pr%d__i%d__%d_%s", owner, repo, prNumber, agentCfg.invocation(), time.Now().UnixNano(), randomSuffix())
 	cloneDir := filepath.Join(agentCfg.CloneRootDir, slug)
 	logPath := filepath.Join(agentCfg.LogsDir, slug+".jsonl")
 
@@ -360,7 +370,7 @@ func RunAgentReview(
 	agentStartedAt := time.Now().UTC()
 	turnBudgetUnit, turnBudgetVersion := runconfig.TurnBudgetSemantics(runtime.backend)
 	startedEvent := ProviderAttemptEvent{
-		Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
+		Stage: "agent", InvocationNumber: agentCfg.invocation(), AttemptNumber: 1,
 		Provider: agentProviderName(runtime.backend), Backend: runtime.backend,
 		RequestedModel: runtime.model, ResolvedModel: runtime.model, Effort: runtime.effort,
 		TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
@@ -405,7 +415,7 @@ func RunAgentReview(
 			completedAt = time.Now().UTC()
 		}
 		event := ProviderAttemptEvent{
-			Stage: "agent", InvocationNumber: 1, AttemptNumber: 1,
+			Stage: "agent", InvocationNumber: agentCfg.invocation(), AttemptNumber: 1,
 			Provider: agentProviderName(runtime.backend), Backend: runtime.backend,
 			RequestedModel: runtime.model, ResolvedModel: runtime.model, Effort: runtime.effort,
 			TurnBudgetUnit: turnBudgetUnit, TurnBudgetVersion: turnBudgetVersion,
@@ -611,6 +621,7 @@ func RunAgentReview(
 
 	logRemovable = true
 	return &AgentReview{
+		ParseFallback:        parseErr != nil,
 		Comments:             comments,
 		FirstPassActive:      firstPassActive,
 		Records:              records,
@@ -928,6 +939,8 @@ func buildLitePrompt(prompt, baseBranch string, diff liteDiff, prContext string,
 		return buildLitePromptV2Content(baseBranch, diff, prContext, nil, true)
 	case runconfig.PromptLiteArmAV3:
 		return buildLitePromptV2Content(baseBranch, diff, prContext, bugHistory, false)
+	case runconfig.PromptLiteArmAV2Budget:
+		return buildLitePromptV2ContentOpening(promptLiteReviewArmABudget, baseBranch, diff, prContext)
 	default:
 		return buildLitePromptContent(baseBranch, diff, prContext, bugHistory, prompt == runconfig.PromptLiteArmASub)
 	}
@@ -938,7 +951,7 @@ func buildLitePrompt(prompt, baseBranch string, diff liteDiff, prContext string,
 // rely on the prose contract alone, as the pipeline always has.
 func liteJSONSchema(prompt string) string {
 	switch prompt {
-	case runconfig.PromptLiteArmAV2, runconfig.PromptLiteArmAV2Sub, runconfig.PromptLiteArmAV3:
+	case runconfig.PromptLiteArmAV2, runconfig.PromptLiteArmAV2Sub, runconfig.PromptLiteArmAV3, runconfig.PromptLiteArmAV2Budget:
 		return liteFindingsJSONSchema
 	}
 	return ""
@@ -960,12 +973,20 @@ func agentWallClock(cfg AgentConfig, diffTruncated bool) time.Duration {
 // and the diff last. Unlike buildLitePromptContent it keeps the Arm A opening
 // even for a truncated diff: the truncation note and per-path hint travel
 // inside the diff block, as they did in the measured harness.
+func buildLitePromptV2ContentOpening(opening, baseBranch string, diff liteDiff, prContext string) string {
+	return buildLitePromptV2With(opening, baseBranch, diff, prContext, nil, false)
+}
+
 func buildLitePromptV2Content(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
+	return buildLitePromptV2With(promptLiteReviewArmA, baseBranch, diff, prContext, bugHistory, subAgents)
+}
+
+func buildLitePromptV2With(opening, baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
 	if baseBranch == "" {
 		baseBranch = "HEAD"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, promptLiteReviewArmA, baseBranch, baseBranch)
+	fmt.Fprintf(&b, opening, baseBranch, baseBranch)
 	b.WriteString(prContext)
 	b.WriteString(bugMemorySection(bugHistory))
 	if subAgents {
@@ -1576,3 +1597,18 @@ func truncate(s string, max int) string {
 // parent rather than orphaned. The Windows stub exists only so the package
 // compiles; agent reviews are not supported on Windows (no test, no deploy
 // target).
+
+func (c AgentConfig) invocation() int {
+	if c.Invocation > 0 {
+		return c.Invocation
+	}
+	return 1
+}
+
+func randomSuffix() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "0"
+	}
+	return hex.EncodeToString(b[:])
+}

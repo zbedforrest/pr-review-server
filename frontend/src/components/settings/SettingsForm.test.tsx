@@ -373,7 +373,7 @@ describe('SettingsForm', () => {
     for (const select of selects) {
       expect(select.value).toBe('');
       expect(select.options[0].textContent).toBe('Default: Lite');
-      expect([...select.options].map((o) => o.value)).toEqual(['', 'full', 'lite', 'lite_plus']);
+      expect([...select.options].map((o) => o.value)).toEqual(['', 'full', 'lite', 'lite_classic', 'lite_plus']);
     }
     expect(saveIn('Review profiles').disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('New push'), { target: { value: 'lite' } });

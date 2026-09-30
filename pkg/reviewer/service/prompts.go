@@ -327,6 +327,11 @@ const promptLiteReviewArmA = `Review this PR.
 The working directory is a checkout of the PR head (` + "`HEAD`" + `); the base is ` + "`origin/%s`" + `. The complete diff (` + "`git diff --find-renames -U12 origin/%s...HEAD`" + `) is below. Do not fetch it again; use shell commands only to read surrounding code. No dependencies are installed in this checkout and CI already passed on this PR: do not run tests, linters, type checkers, builds or package managers. Review by reading.
 `
 
+const promptLiteReviewArmABudget = `Review this PR.
+
+The working directory is a checkout of the PR head (` + "`HEAD`" + `); the base is ` + "`origin/%s`" + `. The complete diff (` + "`git diff --find-renames -U12 origin/%s...HEAD`" + `) is below. Do not fetch it again; use shell commands only to read surrounding code. No dependencies are installed in this checkout and CI already passed on this PR: do not run tests, linters, type checkers, builds or package managers. Review by reading. Budget: you have at most 25 shell commands and about 4 minutes in total. Read each changed file once around the diff hunks, check the direct callers or templates that the change affects, and then answer; do not re-read files you have already seen, do not grep repeatedly for the same symbol, and do not survey the whole repository.
+`
+
 // promptLiteOutputFormatV2 is the compact output contract for the v2 and v3
 // lite prompts: the same fields the publisher requires, in at most 25 lines.
 // The CLI enforces the shape through liteFindingsJSONSchema; this block

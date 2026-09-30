@@ -12,6 +12,8 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"pr-review-server/pkg/telemetry"
+	"pr-review-server/pkg/telemetry/newrelic"
 	"sort"
 	"strconv"
 	"strings"
@@ -172,6 +174,11 @@ type Poller struct {
 	// Buffered to AgentMaxConcurrent, with a safe fallback in New. Focused
 	// tests may still construct a Poller directly with a nil channel.
 	agentSlots chan struct{}
+	// ensembleSlots caps the extra agent processes ensemble reviews fan out.
+	ensembleSlots chan struct{}
+	// telemetry records review and ensemble events: structured JSON log
+	// lines, plus New Relic when it is configured.
+	telemetry telemetry.Recorder
 	// firstPassSlots caps provider-heavy first-pass pipelines across every
 	// batch and immediate API request in this process. Jobs acquire agent
 	// capacity first (when needed), then this slot, before starting their
@@ -406,6 +413,16 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		agentConcurrent = fallbackAgentConcurrent
 	}
 	p.agentSlots = make(chan struct{}, agentConcurrent)
+	ensembleAgents := cfg.EnsembleMaxAgents
+	if ensembleAgents <= 0 {
+		ensembleAgents = 25
+	}
+	p.ensembleSlots = make(chan struct{}, ensembleAgents)
+	recorders := telemetry.Multi{telemetry.NewJSONLog(nil)}
+	if nr := newrelic.New(newrelic.Config{AccountID: cfg.NewRelicAccountID, InsertKey: cfg.NewRelicInsertKey, LicenseKey: cfg.NewRelicLicenseKey, Region: cfg.NewRelicRegion}); nr != nil {
+		recorders = append(recorders, nr)
+	}
+	p.telemetry = recorders
 	replyConcurrent := cfg.ReplyMaxConcurrent
 	if replyConcurrent <= 0 {
 		replyConcurrent = 1
@@ -617,8 +634,14 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	// "" the diff falls back to origin/HEAD, which inflates the changed-line
 	// set for PRs stacked on non-default branches — misattributing gate alerts
 	// to parent-branch code or tripping the pathological-diff guard entirely.
-	agentOut, agentErr := service.RunAgentReview(ctx, agentCfg, p.agentSpawner,
-		pr.Owner, pr.Repo, result.BaseRef, pr.Number, pr.CommitSHA, result.Comments)
+	var agentOut *service.AgentReview
+	var agentErr error
+	if ens := execution.Job.Config.Effective.Ensemble; ens != nil && ens.Runs > 1 {
+		agentOut, agentErr = p.runEnsembleStage(ctx, execution, agentCfg, result)
+	} else {
+		agentOut, agentErr = service.RunAgentReview(ctx, agentCfg, p.agentSpawner,
+			pr.Owner, pr.Repo, result.BaseRef, pr.Number, pr.CommitSHA, result.Comments)
+	}
 	if agentErr != nil {
 		log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
 		return nil, fmt.Errorf("agent review: %w", agentErr)

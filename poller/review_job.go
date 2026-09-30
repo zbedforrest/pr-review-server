@@ -74,8 +74,10 @@ type reviewExecution struct {
 	// DiffSource is where a lite run's inlined diff came from ("" for full).
 	DiffSource string
 	// PrepMS and AgentMS split the agent stage at the CLI spawn.
-	PrepMS            int64
-	AgentMS           int64
+	PrepMS  int64
+	AgentMS int64
+	// Ensemble is the ensemble report when the run used one.
+	Ensemble          *EnsembleReport
 	attemptsMu        sync.Mutex
 	providerAttempts  map[string]service.ProviderAttemptEvent
 	extraStageTimings []payload.StageTiming
@@ -325,6 +327,8 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 	// The lite profiles pin their own model; admit it so they resolve on
 	// every deployment.
 	claudeModels = appendPolicyValue(claudeModels, runconfig.LiteModel)
+	openRouterModels = appendPolicyValue(openRouterModels, runconfig.EnsembleModel)
+	openRouterEfforts = appendPolicyValue(openRouterEfforts, "high")
 	if backend == service.AgentBackendClaude {
 		claudeModels = appendPolicyValue(claudeModels, model)
 		claudeEfforts = appendPolicyValue(claudeEfforts, effort)
@@ -655,13 +659,22 @@ func (p *Poller) admittedDefaultProfile(defaults runconfig.Effective, policy run
 	if profile == runconfig.ProfileFull {
 		return profile
 	}
-	if _, err := runconfig.Resolve(runconfig.Overrides{Profile: &profile}, defaults, policy); err != nil {
-		if p.defaultProfileWarned.CompareAndSwap(false, true) {
-			log.Printf("[REVIEWER] WARN: REVIEW_DEFAULT_PROFILE=%s is rejected by this deployment's policy (%v); using full", profile, err)
-		}
-		return runconfig.ProfileFull
+	_, err := runconfig.Resolve(runconfig.Overrides{Profile: &profile}, defaults, policy)
+	if err == nil {
+		return profile
 	}
-	return profile
+	if degraded := runconfig.DegradedProfile(profile); degraded != "" {
+		if _, derr := runconfig.Resolve(runconfig.Overrides{Profile: &degraded}, defaults, policy); derr == nil {
+			if p.defaultProfileWarned.CompareAndSwap(false, true) {
+				log.Printf("[REVIEWER] WARN: REVIEW_DEFAULT_PROFILE=%s cannot run on this deployment (%v); using %s", profile, err, degraded)
+			}
+			return degraded
+		}
+	}
+	if p.defaultProfileWarned.CompareAndSwap(false, true) {
+		log.Printf("[REVIEWER] WARN: REVIEW_DEFAULT_PROFILE=%s is rejected by this deployment's policy (%v); using full", profile, err)
+	}
+	return runconfig.ProfileFull
 }
 
 // describeProfile compares a run's config with the deployment's full baseline
@@ -845,6 +858,7 @@ func (p *Poller) reviewRunArtifactInfo(exec *reviewExecution) *payload.ReviewRun
 		DiffSource:   exec.DiffSource,
 		PrepMS:       exec.PrepMS,
 		AgentMS:      exec.AgentMS,
+		Ensemble:     exec.Ensemble.sidecar(),
 	}
 }
 
@@ -872,6 +886,7 @@ func (p *Poller) finishReviewExecution(exec *reviewExecution, patch db.ReviewRun
 	now := time.Now().UTC()
 	completedAt := now
 	durationMS := now.Sub(exec.RunStartedAt).Milliseconds()
+	p.recordReviewTelemetry(exec, patch, durationMS)
 	emptyHolder := ""
 	zeroLease := time.Time{}
 	patch.CompletedAt = &completedAt

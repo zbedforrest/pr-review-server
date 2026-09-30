@@ -6,12 +6,16 @@ import (
 )
 
 // Review profiles name a complete pipeline shape. Full is the historical
-// first-pass-plus-agent pipeline; lite and lite_plus are the single-agent
-// flavors measured in the solo campaign (see PRism Lite spec).
+// first-pass-plus-agent pipeline. Lite, the default, runs several cheap
+// agents on one PR and merges their findings. lite_classic and lite_plus are
+// the single-agent flavors measured in the solo campaign; lite_classic is
+// also lite's fallback, and runs recorded as lite before the ensemble are
+// lite_classic runs.
 const (
-	ProfileFull     = "full"
-	ProfileLite     = "lite"
-	ProfileLitePlus = "lite_plus"
+	ProfileFull        = "full"
+	ProfileLite        = "lite"
+	ProfileLiteClassic = "lite_classic"
+	ProfileLitePlus    = "lite_plus"
 
 	PromptPipeline    = "pipeline"
 	PromptLiteArmA    = "lite_arm_a"
@@ -21,15 +25,16 @@ const (
 	// the sub-agent sentence for lite_plus; V3 is V2 with bug memory, kept
 	// selectable as the measured control. lite_arm_a and lite_arm_a_sub stay
 	// selectable as the legacy shapes.
-	PromptLiteArmAV2    = "lite_arm_a_v2"
-	PromptLiteArmAV2Sub = "lite_arm_a_v2_sub"
-	PromptLiteArmAV3    = "lite_arm_a_v3"
+	PromptLiteArmAV2       = "lite_arm_a_v2"
+	PromptLiteArmAV2Sub    = "lite_arm_a_v2_sub"
+	PromptLiteArmAV3       = "lite_arm_a_v3"
+	PromptLiteArmAV2Budget = "lite_arm_a_v2_budget"
 
 	ToolsDefault   = "Read,Grep,Glob,Bash"
 	ToolsWithAgent = "Read,Grep,Glob,Bash,Agent"
 
-	// LiteModel is the agent model both lite profiles pin; deployments admit
-	// it regardless of their own agent model allowlist.
+	// LiteModel is the agent model lite_classic and lite_plus pin;
+	// deployments admit it regardless of their own agent model allowlist.
 	LiteModel = "claude-fable-5-1"
 
 	liteBackend          = "claude"
@@ -44,9 +49,36 @@ const (
 	liteCappedDiffWallClockSeconds = 360
 	litePlusWallClockSeconds       = 600
 	litePlusMaxTurns               = 120
+
+	// EnsembleModel and EnsembleMergeModel are what lite pins:
+	// the agent every run uses and the model that writes the merged review.
+	// Deployments admit them regardless of their own allowlists.
+	EnsembleModel         = "deepseek/deepseek-v4.1-flash"
+	EnsembleMergeModel    = "anthropic/claude-haiku-4.5"
+	ensembleBackend       = "openrouter"
+	ensembleEffort        = "high"
+	ensembleWallClockSecs = 360
+	ensembleMaxTurns      = 120
+	// Launch five, merge the first four valid runs, and fall back to a
+	// single lite review when fewer than two runs produce valid output.
+	ensembleRuns     = 5
+	ensembleQuorum   = 4
+	ensembleMinValid = 2
 )
 
-var profileOrder = []string{ProfileFull, ProfileLite, ProfileLitePlus}
+// Ensemble configures a multi-agent review: Runs agents with the Agent
+// settings, merged once Quorum of them have produced valid output. A run
+// with no valid output counts against the quorum; with fewer than MinValid
+// valid runs the review falls back to FallbackProfile.
+type Ensemble struct {
+	Runs            int    `json:"runs"`
+	Quorum          int    `json:"quorum"`
+	MinValid        int    `json:"min_valid"`
+	MergeModel      string `json:"merge_model"`
+	FallbackProfile string `json:"fallback_profile"`
+}
+
+var profileOrder = []string{ProfileFull, ProfileLite, ProfileLiteClassic, ProfileLitePlus}
 
 // Profiles lists every selectable profile name in display order.
 func Profiles() []string {
@@ -56,7 +88,7 @@ func Profiles() []string {
 // KnownProfile reports whether name is a selectable profile.
 func KnownProfile(name string) bool {
 	switch name {
-	case ProfileFull, ProfileLite, ProfileLitePlus:
+	case ProfileFull, ProfileLite, ProfileLiteClassic, ProfileLitePlus:
 		return true
 	}
 	return false
@@ -71,11 +103,23 @@ func NormalizeProfile(name string) string {
 	return name
 }
 
+// DegradedProfile is the cheaper equivalent to use when profile cannot run
+// on a deployment (lite needs the OpenRouter backend), or "" when there is
+// none. Callers try it before ever falling back to full.
+func DegradedProfile(profile string) string {
+	if NormalizeProfile(profile) == ProfileLite {
+		return ProfileLiteClassic
+	}
+	return ""
+}
+
 // ProfileLabel is the human name shown on dashboards and in the summary footer.
 func ProfileLabel(profile string) string {
 	switch profile {
 	case ProfileLite:
 		return "Lite"
+	case ProfileLiteClassic:
+		return "Lite (Claude)"
 	case ProfileLitePlus:
 		return "Lite+"
 	default:
@@ -93,7 +137,7 @@ func ProfileMaxTurns() int            { return litePlusMaxTurns }
 // the run still carries the profile's own 300 s (a caller-chosen wall clock
 // stands as given). 0 means no change for every other profile.
 func CappedDiffWallClockSeconds(effective Effective) int {
-	if NormalizeProfile(effective.Profile) == ProfileLite && effective.Agent.WallClockSeconds == liteWallClockSeconds {
+	if NormalizeProfile(effective.Profile) == ProfileLiteClassic && effective.Agent.WallClockSeconds == liteWallClockSeconds {
 		return liteCappedDiffWallClockSeconds
 	}
 	return 0
@@ -102,7 +146,7 @@ func CappedDiffWallClockSeconds(effective Effective) int {
 // ProfileNote is the operator-facing footnote to a profile's effective config,
 // for behavior the fixed fields cannot show; "" when there is none.
 func ProfileNote(profile string) string {
-	if NormalizeProfile(profile) == ProfileLite {
+	if NormalizeProfile(profile) == ProfileLiteClassic {
 		return fmt.Sprintf("agent.wall_clock_seconds becomes %d when the inlined diff is cut at the 60000-character cap; this is the profile default, not a deviation",
 			liteCappedDiffWallClockSeconds)
 	}
@@ -125,7 +169,7 @@ func Expand(profile string, base Effective) (Effective, error) {
 		effective.FirstPass.Enabled = true
 		effective.Gates = true
 		effective.BugMemory = true
-	case ProfileLite, ProfileLitePlus:
+	case ProfileLiteClassic, ProfileLitePlus:
 		effective.Agent = Agent{
 			Enabled: true, Backend: liteBackend, Model: liteModel, Effort: liteEffort,
 			WallClockSeconds: liteWallClockSeconds, MaxTurns: liteMaxTurns,
@@ -143,8 +187,22 @@ func Expand(profile string, base Effective) (Effective, error) {
 		// Bug memory cost this agent 6.0 of 37 battery cases (lite_arm_a_v3
 		// vs v2); the full pipeline keeps it.
 		effective.BugMemory = false
+	case ProfileLite:
+		effective.Agent = Agent{
+			Enabled: true, Backend: ensembleBackend, Model: EnsembleModel, Effort: ensembleEffort,
+			WallClockSeconds: ensembleWallClockSecs, MaxTurns: ensembleMaxTurns,
+			Tools: ToolsDefault, Prompt: PromptLiteArmAV2Budget,
+		}
+		effective.Ensemble = &Ensemble{
+			Runs: ensembleRuns, Quorum: ensembleQuorum, MinValid: ensembleMinValid,
+			MergeModel: EnsembleMergeModel, FallbackProfile: ProfileLiteClassic,
+		}
+		effective.FirstPass = FirstPass{}
+		effective.RequiredChecks = false
+		effective.Gates = false
+		effective.BugMemory = false
 	default:
-		return Effective{}, invalid("profile", "unknown profile %q (want full, lite, or lite_plus)", profile)
+		return Effective{}, invalid("profile", "unknown profile %q (want full, lite, lite_classic, or lite_plus)", profile)
 	}
 	effective.Agent.TurnBudgetUnit, effective.Agent.TurnBudgetVersion = TurnBudgetSemantics(effective.Agent.Backend)
 	return effective, nil
@@ -200,6 +258,10 @@ func DescribeProfile(effective Effective, base Effective) ProfileDescription {
 		return ProfileDescription{Profile: ProfileFull, Legacy: true}
 	}
 	profile := NormalizeProfile(effective.Profile)
+	if profile == ProfileLite && effective.Ensemble == nil {
+		// Recorded before lite became the ensemble: a single-agent lite run.
+		profile = ProfileLiteClassic
+	}
 	canonical, err := Expand(profile, base)
 	if err != nil {
 		return ProfileDescription{Profile: ProfileFull, Legacy: true}
@@ -271,7 +333,7 @@ func validPrompt(prompt string) bool {
 // inline the diff and run without gates or required checks.
 func LitePrompt(prompt string) bool {
 	switch prompt {
-	case PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV2, PromptLiteArmAV2Sub, PromptLiteArmAV3:
+	case PromptLiteArmA, PromptLiteArmASub, PromptLiteArmAV2, PromptLiteArmAV2Sub, PromptLiteArmAV3, PromptLiteArmAV2Budget:
 		return true
 	}
 	return false

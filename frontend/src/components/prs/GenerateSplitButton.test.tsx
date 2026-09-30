@@ -71,7 +71,7 @@ describe('GenerateSplitButton', () => {
     const { onGenerate } = renderButton();
     openMenu();
     const lite = screen.getByRole('menuitem', { name: /^Lite review/ });
-    expect(lite.textContent).toContain('One agent over the inlined diff');
+    expect(lite.textContent).toContain('Five agents merged into one review');
     expect(lite.textContent).toContain('posted to the PR');
     fireEvent.click(lite);
     expect(onGenerate).toHaveBeenCalledWith(true, 'lite');

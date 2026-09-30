@@ -57,7 +57,7 @@ func newReviewAPITestPoller(database db.Database) *reviewAPITestPoller {
 					Available: true, Ready: true, PolicyEnabled: true, CredentialConfigured: true, CredentialRequired: true, ExecutableAvailable: true,
 					TurnBudgetUnit: runconfig.TurnBudgetUnitCompletedNonReasoningItem, TurnBudgetVersion: runconfig.TurnBudgetVersion,
 					DefaultMaxTurns: 120, MaxTurns: 120,
-					Models: []string{"openai/gpt-5.6-sol"}, Efforts: []string{"medium", "high"},
+					Models: []string{"openai/gpt-5.6-sol", runconfig.EnsembleModel}, Efforts: []string{"medium", "high"},
 				},
 			},
 			FirstPassProviders: map[string]runconfig.FirstPassProviderPolicy{

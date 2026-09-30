@@ -78,6 +78,8 @@ The most common ones:
 | `AGENT_MODEL` | No | Backend model; OpenRouter defaults to `openai/gpt-5.6-sol` |
 | `AGENT_CLONE_CACHE_MAX_GB` | No | Cap on the repo clone caches under `AGENT_CLONE_ROOT_DIR`; least recently used idle caches are evicted past it. `0` (default) is unlimited |
 | `OPENROUTER_API_KEY` | OpenRouter backend | Authenticates Codex requests routed through OpenRouter |
+| `ENSEMBLE_MAX_AGENTS` | No | Concurrent agent processes the `lite` ensemble may run per server (default 25) |
+| `NEW_RELIC_ACCOUNT_ID`, `NEW_RELIC_LICENSE_KEY` or `NEW_RELIC_INSERT_KEY`, `NEW_RELIC_REGION` | No | Also send the telemetry events to New Relic (region `US` or `EU`). The events (`PrismReviewRun`, `PrismEnsembleRun`, `PrismLlmRequest`) are always written to stdout as one JSON object per line, which Cloud Logging indexes as structured fields |
 | `REVIEW_AGENT_MODELS_*`, `REVIEW_AGENT_EFFORTS_*` | No | Per-backend allowlists for authenticated review API callers |
 | `REVIEW_MAX_WALL_CLOCK_SEC`, `REVIEW_MAX_TURNS`, `REVIEW_MAX_FIRST_PASS_SAMPLES` | No | Operator-owned ceilings for per-review overrides |
 | `DATABASE_URL` | No | PostgreSQL connection string; unset = SQLite at `DB_PATH` |
