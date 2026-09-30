@@ -157,8 +157,10 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 				reply.Text += b.Text
 			case "tool_use":
 				reply.Calls = append(reply.Calls, modelCall{b.ID, b.Name, b.Input})
+			case "thinking", "redacted_thinking":
+				// Replayed untouched through reply.Raw, which the API requires alongside tool results.
 			default:
-				return reply, fmt.Errorf("unsupported model content")
+				return reply, fmt.Errorf("unsupported model content %q", b.Type)
 			}
 		}
 		var decoded map[string]json.RawMessage
