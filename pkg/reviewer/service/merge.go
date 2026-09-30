@@ -68,6 +68,9 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 // duplicate as an inactive merged record pointing at the finding that kept
 // the line, so a first-pass claim folded into an agent finding is preserved.
 func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineComment) {
+	// origin[i] is the set merged[i] came from; findDuplicate is stricter
+	// within one set than across sets.
+	var origin []int
 	for si, set := range sets {
 		for _, c := range set.Comments {
 			// The caller builds the sets, so the set label is the authoritative
@@ -82,6 +85,7 @@ func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineC
 			if c.FilePath == "SUMMARY" {
 				if si == 0 {
 					merged = append(merged, c)
+					origin = append(origin, si)
 				}
 				continue
 			}
@@ -92,7 +96,7 @@ func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineC
 			// cannot cover a claim (alerts never post), and an unverified claim
 			// does not clear a deterministic signal. The one exception is a
 			// VIOLATED check synthesis absorbing the gate alert that spawned it.
-			if di, ok := findDuplicate(merged, c); ok && c.Assessment == nil && dedupAllowed(merged[di], c) {
+			if di, ok := findDuplicate(merged, origin, si, c); ok && c.Assessment == nil && dedupAllowed(merged[di], c) {
 				// Duplicates upgrade severity to the max — but an upgrade
 				// sourced from a lower-priority set is capped at MEDIUM for
 				// the same reason re-admissions are (see below): unconfirmed
@@ -125,6 +129,7 @@ func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineC
 				}
 			}
 			merged = append(merged, c)
+			origin = append(origin, si)
 		}
 	}
 	return merged, records
@@ -214,9 +219,15 @@ func mergeTarget(f types.LineComment) string {
 }
 
 // findDuplicate returns the index in merged of a finding duplicating c.
-func findDuplicate(merged []types.LineComment, c types.LineComment) (int, bool) {
+func findDuplicate(merged []types.LineComment, origin []int, set int, c types.LineComment) (int, bool) {
 	for i, m := range merged {
 		if m.FilePath == "SUMMARY" || !sameFile(m.FilePath, c.FilePath) {
+			continue
+		}
+		// Within one source, a whole-file pair has no location to corroborate
+		// it, and ensemble findings (those with Sources) were already
+		// clustered across runs, so neither is folded again.
+		if origin[i] == set && (m.LineNumber == 0 || c.LineNumber == 0 || len(m.Sources) > 0 || len(c.Sources) > 0) {
 			continue
 		}
 		if m.LineNumber == 0 || c.LineNumber == 0 {

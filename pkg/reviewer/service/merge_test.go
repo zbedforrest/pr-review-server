@@ -467,3 +467,34 @@ func TestMergeFindingsWithRecords_ClaimsDoNotAbsorbMechanicalAlertsEither(t *tes
 		t.Fatalf("the VIOLATED synthesis still absorbs the gate alert that spawned it: merged=%+v records=%+v", merged, records)
 	}
 }
+
+func TestMergeFindingsWithRecords_KeepsDistinctWholeFileFindingsFromOneSource(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		{ID: "A-1", FilePath: "cmd.py", Importance: "MEDIUM", CommentBody: "export misses corrected rows"},
+		{ID: "A-2", FilePath: "cmd.py", Importance: "LOW", CommentBody: "no completion marker"},
+	}}
+	merged, records := MergeFindingsWithRecords(agent)
+	if len(merged) != 2 || len(records) != 0 {
+		t.Fatalf("two whole-file claims from one source are not the same defect: merged=%+v records=%+v", merged, records)
+	}
+}
+
+func TestMergeFindingsWithRecords_KeepsNearbyEnsembleFindings(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		{ID: "E-1", FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "nil map write", Sources: []string{"r1:A-1", "r3:A-2"}},
+		{ID: "E-2", FilePath: "a.go", LineNumber: 14, Importance: "LOW", CommentBody: "unchecked error", Sources: []string{"r2:A-1"}},
+	}}
+	merged, records := MergeFindingsWithRecords(agent)
+	if len(merged) != 2 || len(records) != 0 {
+		t.Fatalf("the ensemble already clustered its runs; nearby findings stay separate: merged=%+v records=%+v", merged, records)
+	}
+}
+
+func TestMergeFindingsWithRecords_StillFoldsWholeFileDuplicatesAcrossSources(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{{ID: "A-1", FilePath: "cmd.py", Importance: "LOW", CommentBody: "agent"}}}
+	first := FindingSet{Provenance: "first-pass", Comments: []types.LineComment{lc("cmd.py", 0, "LOW", "first pass")}}
+	merged, records := MergeFindingsWithRecords(agent, first)
+	if len(merged) != 1 || len(records) != 1 || records[0].MergeBasis != "proximity" {
+		t.Fatalf("cross-source whole-file duplicates still fold: merged=%+v records=%+v", merged, records)
+	}
+}
