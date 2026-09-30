@@ -702,6 +702,9 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 			pr.Number, carriedInfo.FromSHA, carriedInfo.CarriedIn, carriedInfo.CarriedDropped)
 	}
 	merged, mergedRecords := service.MergeFindingsWithRecords(sets...)
+	if n := service.AnchorWholeFileFindings(merged, result.Diff); n > 0 {
+		log.Printf("[REVIEWER] PR %d: anchored %d whole-file findings to diff lines", pr.Number, n)
+	}
 	service.EnforceFindingContractPolicy(merged)
 	records := append(mergedRecords, agentOut.Records...)
 	service.RemapMergeTargets(merged, records)
