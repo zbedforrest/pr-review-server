@@ -141,7 +141,9 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 				return result, err
 			}
 			reportActivity(ctx, Activity{Stage: "tool", Tool: call.Name, Round: usage.Rounds, ToolCalls: usage.ToolCalls + 1})
+			toolStarted := time.Now()
 			text, err := dispatch(ctx, s, repo, call.Name, call.Arguments)
+			log.Printf("[APPROVAL] tool %s: %s, %d bytes, err=%v", call.Name, time.Since(toolStarted).Round(time.Millisecond), len(text), err)
 			toolError := err != nil
 			if err != nil {
 				if ctx.Err() != nil {

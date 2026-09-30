@@ -132,7 +132,7 @@ func (s *Server) approvalValidationAvailable() bool {
 // evidence collection to the final answer; approvalWorkerSlots is how many
 // run at once across the deployment.
 const (
-	approvalTargetDuration = 7 * time.Minute
+	approvalTargetDuration = 3 * time.Minute
 	approvalWorkerSlots    = 4
 )
 

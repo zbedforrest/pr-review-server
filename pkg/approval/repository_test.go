@@ -159,7 +159,7 @@ func TestRepositorySearchSkipsBinaryAndOversizedBlobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Text, "text.txt:1:needle in source") || !strings.Contains(result.Text, "Skipped 2 binary or oversized files") {
+	if !strings.Contains(result.Text, "text.txt:1:needle in source") || !strings.Contains(result.Text, "Skipped 1 oversized files") || strings.Contains(result.Text, "image.bin") {
 		t.Fatalf("search failed to report skipped files: %+v", result)
 	}
 	if _, err = r.Read(context.Background(), "read_file", ReadRequest{Revision: sha, Path: "image.bin", StartLine: 1, EndLine: 1}); err == nil {

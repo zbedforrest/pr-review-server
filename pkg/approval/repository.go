@@ -1,6 +1,7 @@
 package approval
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -296,89 +297,39 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 			return ReadResult{}, err
 		}
 		return repositoryTextPage(text, req.Cursor)
-	case "list_files", "search_code":
-		text, err := r.run(ctx, 2<<20, "ls-tree", "-rz", req.Revision)
+	case "search_code":
+		return r.search(ctx, req)
+	case "list_files":
+		args := []string{"ls-tree", "-rz", req.Revision}
+		if req.Path != "" {
+			args = append(args, "--", req.Path)
+		}
+		text, err := r.run(ctx, 2<<20, args...)
 		if err != nil {
 			return ReadResult{}, err
 		}
 		entries := strings.Split(strings.TrimSuffix(text, "\x00"), "\x00")
 		offset := 0
-		startLine := 0
 		if req.Cursor != "" {
-			cursor := strings.Split(req.Cursor, ":")
-			if len(cursor) > 2 {
-				return ReadResult{}, fmt.Errorf("invalid cursor")
-			}
-			offset, err = strconv.Atoi(cursor[0])
+			offset, err = strconv.Atoi(req.Cursor)
 			if err != nil || offset < 0 || offset > len(entries) {
 				return ReadResult{}, fmt.Errorf("invalid cursor")
 			}
-			if len(cursor) == 2 {
-				startLine, err = strconv.Atoi(cursor[1])
-				if name != "search_code" || err != nil || startLine < 0 {
-					return ReadResult{}, fmt.Errorf("invalid cursor")
-				}
-			}
-		}
-		if name == "search_code" && (req.Query == "" || len(req.Query) > 256) {
-			return ReadResult{}, fmt.Errorf("invalid search")
 		}
 		var out strings.Builder
-		matches := 0
-		skipped := 0
 		next := offset
-		for ; next < len(entries) && next < offset+100; next++ {
+		for ; next < len(entries) && next < offset+1000 && out.Len() < maxRepositoryRead-512; next++ {
 			parts := strings.SplitN(entries[next], "\t", 2)
 			if len(parts) != 2 {
 				continue
 			}
 			fields := strings.Fields(parts[0])
-			p := parts[1]
-			if len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") || !validRepositoryPath(p, false) {
+			if len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") || !validRepositoryPath(parts[1], false) {
 				continue
 			}
-			if req.Path != "" && p != req.Path && !strings.HasPrefix(p, req.Path+"/") {
-				continue
-			}
-			if name == "list_files" {
-				out.WriteString(p + "\n")
-			} else {
-				body, e := r.blob(ctx, req.Revision, p)
-				if e != nil {
-					if errors.Is(e, errUnsearchableBlob) {
-						skipped++
-						continue
-					}
-					return ReadResult{}, e
-				}
-				for index, line := range strings.Split(body, "\n") {
-					if next == offset && index < startLine {
-						continue
-					}
-					if strings.Contains(line, req.Query) {
-						match := fmt.Sprintf("%s:%d:%s\n", p, index+1, line)
-						if len(match) > maxRepositoryRead {
-							return ReadResult{}, fmt.Errorf("search line limit exceeded")
-						}
-						if matches == 200 || out.Len()+len(match) > maxRepositoryRead {
-							return ReadResult{Text: out.String(), NextCursor: fmt.Sprintf("%d:%d", next, index)}, nil
-						}
-						out.WriteString(match)
-						matches++
-					}
-				}
-			}
-			if out.Len() > maxRepositoryRead {
-				return ReadResult{}, fmt.Errorf("search output limit exceeded")
-			}
+			out.WriteString(parts[1] + "\n")
 		}
 		result := ReadResult{Text: out.String()}
-		if skipped > 0 {
-			result.Text += fmt.Sprintf("Skipped %d binary or oversized files.\n", skipped)
-			if len(result.Text) > maxRepositoryRead {
-				return ReadResult{}, fmt.Errorf("search output limit exceeded")
-			}
-		}
 		if next < len(entries) {
 			result.NextCursor = strconv.Itoa(next)
 		}
@@ -437,3 +388,96 @@ func (r *GitRepository) ValidateDiff(ctx context.Context, base, head string) err
 }
 
 func ApprovalCacheRoot(root string) string { return filepath.Join(root, "approval-objects") }
+
+// search runs one fixed-string git grep over the revision (optionally under
+// req.Path) and returns up to 200 matches as path:line:text. Only regular
+// files of at most 2 MiB are searched and binary files are skipped. The
+// cursor is the number of matches already returned.
+func (r *GitRepository) search(ctx context.Context, req ReadRequest) (ReadResult, error) {
+	if req.Query == "" || len(req.Query) > 256 {
+		return ReadResult{}, fmt.Errorf("invalid search")
+	}
+	skip := 0
+	if req.Cursor != "" {
+		n, err := strconv.Atoi(req.Cursor)
+		if err != nil || n < 0 {
+			return ReadResult{}, fmt.Errorf("invalid cursor")
+		}
+		skip = n
+	}
+	listArgs := []string{"ls-tree", "-r", "-l", "-z", req.Revision}
+	if req.Path != "" {
+		listArgs = append(listArgs, "--", req.Path)
+	}
+	listing, err := r.run(ctx, 8<<20, listArgs...)
+	if err != nil {
+		return ReadResult{}, err
+	}
+	searchable := map[string]bool{}
+	oversized := 0
+	for _, entry := range strings.Split(strings.TrimSuffix(listing, "\x00"), "\x00") {
+		parts := strings.SplitN(entry, "\t", 2)
+		fields := strings.Fields(parts[0])
+		if len(parts) != 2 || len(fields) != 4 || (fields[0] != "100644" && fields[0] != "100755") || !validRepositoryPath(parts[1], false) {
+			continue
+		}
+		if size, err := strconv.ParseInt(fields[3], 10, 64); err != nil || size > 2<<20 {
+			oversized++
+			continue
+		}
+		searchable[parts[1]] = true
+	}
+
+	grepCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	args := []string{"grep", "-n", "-z", "-I", "-F", "--no-color", "-e", req.Query, req.Revision}
+	if req.Path != "" {
+		args = append(args, "--", req.Path)
+	}
+	cmd := r.command(grepCtx, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return ReadResult{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return ReadResult{}, fmt.Errorf("repository search failed")
+	}
+	var out strings.Builder
+	seen, matches, more := 0, 0, false
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64<<10), 4<<20)
+	prefix := req.Revision + ":"
+	for scanner.Scan() {
+		fields := strings.SplitN(strings.TrimPrefix(scanner.Text(), prefix), "\x00", 3)
+		if len(fields) != 3 || !searchable[fields[0]] {
+			continue
+		}
+		if seen++; seen <= skip {
+			continue
+		}
+		match := fields[0] + ":" + fields[1] + ":" + fields[2] + "\n"
+		if len(match) > maxRepositoryRead {
+			match = match[:maxRepositoryRead/4] + "...\n"
+		}
+		if matches == 200 || out.Len()+len(match) > maxRepositoryRead-512 {
+			more = true
+			break
+		}
+		out.WriteString(match)
+		matches++
+	}
+	cancel()
+	waitErr := cmd.Wait()
+	var exit *exec.ExitError
+	if !more && waitErr != nil && !(errors.As(waitErr, &exit) && exit.ExitCode() == 1) {
+		return ReadResult{}, fmt.Errorf("repository search failed")
+	}
+	result := ReadResult{Text: out.String()}
+	if oversized > 0 {
+		result.Text += fmt.Sprintf("Skipped %d oversized files; binary files are not searched.\n", oversized)
+	}
+	if more {
+		result.NextCursor = strconv.Itoa(skip + matches)
+	}
+	return result, nil
+}
