@@ -525,8 +525,12 @@ func TestHandleCallback_MissingCode_ReturnsBadRequest(t *testing.T) {
 func TestHandleCallback_ClearsStateCookie(t *testing.T) {
 	mockDB := newMockDatabase()
 	auth := newTestAuth(mockDB)
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad_verification_code", http.StatusBadRequest)
+	}))
+	defer tokenServer.Close()
+	auth.oauthConfig.Endpoint.TokenURL = tokenServer.URL
 
-	// This will fail at token exchange, but we can check the state cookie is cleared
 	req := httptest.NewRequest("GET", "/auth/callback?state=abc&code=xyz", nil)
 	req.AddCookie(&http.Cookie{Name: StateCookieName, Value: "abc"})
 	w := httptest.NewRecorder()
