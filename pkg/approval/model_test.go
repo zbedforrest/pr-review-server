@@ -319,3 +319,44 @@ func TestInvestigationLimitsNameTheirCeiling(t *testing.T) {
 		t.Fatal("a provider usage limit should report the token budget")
 	}
 }
+
+func TestNativeReplaysThinkingBlocksWithToolResults(t *testing.T) {
+	s, a := validFixture()
+	payload, _ := json.Marshal(a)
+	thinking := map[string]any{"type": "thinking", "thinking": "check the review", "signature": "sig"}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var req struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		content := []any{thinking, map[string]any{"type": "tool_use", "id": "read1", "name": "list_evidence", "input": map[string]any{}}}
+		stop := "tool_use"
+		if calls == 2 {
+			content = []any{map[string]any{"type": "tool_use", "id": "body1", "name": "read_evidence", "input": map[string]any{"evidence_id": "review"}}}
+		}
+		if calls == 3 {
+			content = []any{map[string]any{"type": "redacted_thinking", "data": "opaque"}, map[string]any{"type": "text", "text": string(payload)}}
+			stop = "end_turn"
+		}
+		if calls > 1 {
+			replayed, _ := json.Marshal(req.Messages[1]["content"])
+			if !strings.Contains(string(replayed), `"signature":"sig"`) {
+				t.Errorf("thinking block not replayed: %s", replayed)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": "pinned-model", "stop_reason": stop, "content": content, "usage": map[string]int{"input_tokens": 100, "output_tokens": 100}})
+	}))
+	defer server.Close()
+	n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "pinned-model", APIKey: "fixture", BaseURL: server.URL, Client: server.Client()}}
+	got, err := n.Investigate(context.Background(), s, nil, &testBudget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Decision != "candidate" || calls != 3 {
+		t.Fatalf("unexpected result: %+v calls=%d", got, calls)
+	}
+}
