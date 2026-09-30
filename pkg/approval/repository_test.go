@@ -169,3 +169,19 @@ func TestRepositorySearchSkipsBinaryAndOversizedBlobs(t *testing.T) {
 		t.Fatalf("dispatcher-sized query rejected: %v", err)
 	}
 }
+
+func TestNewGitRepositoryServesCachedRevisionsWithoutFetching(t *testing.T) {
+	cache, first, second := fixtureRepository(t)
+	offline := func(context.Context, string, string) (string, error) {
+		t.Fatal("fetched a revision the reference already holds")
+		return "", nil
+	}
+	r, err := NewGitRepository(context.Background(), t.TempDir(), Target{Owner: "acme", Repo: "example"}, []string{first, second}, offline, filepath.Join(cache.directory, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := r.ValidateDiff(context.Background(), first, second); err != nil {
+		t.Fatal(err)
+	}
+}

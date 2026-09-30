@@ -10,6 +10,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/approval"
+	"pr-review-server/pkg/reviewer/service"
 )
 
 type approvalEvidenceCollector interface {
@@ -45,15 +46,18 @@ func (s *Server) openApprovalRepository(ctx context.Context, snapshot approval.S
 	if s.approvalExecution != nil && s.approvalExecution.repository != nil {
 		return s.approvalExecution.repository(ctx, snapshot)
 	}
-	repo, err := approval.NewGitRepository(ctx, s.cfg.ApprovalCandidates().CacheRoot, snapshot.Target, snapshot.AllowedRevisions, s.ghClient.ApprovalRepositoryToken)
+	reference, release := service.BorrowCloneCache(s.cfg.AgentCloneRootDir, snapshot.Target.Owner, snapshot.Target.Repo)
+	repo, err := approval.NewGitRepository(ctx, s.cfg.ApprovalCandidates().CacheRoot, snapshot.Target, snapshot.AllowedRevisions, s.ghClient.ApprovalRepositoryToken, reference)
 	if err != nil {
+		release()
 		return nil, nil, err
 	}
 	if err := repo.ValidateDiff(ctx, snapshot.Revision.MergeBase, snapshot.Revision.Head); err != nil {
 		_ = repo.Close()
+		release()
 		return nil, nil, err
 	}
-	return repo, func() { _ = repo.Close() }, nil
+	return repo, func() { _ = repo.Close(); release() }, nil
 }
 
 func (s *Server) approvalInvestigator(target db.ApprovalTarget) approval.Investigator {

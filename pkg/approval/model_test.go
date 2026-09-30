@@ -360,3 +360,45 @@ func TestNativeReplaysThinkingBlocksWithToolResults(t *testing.T) {
 		t.Fatalf("unexpected result: %+v calls=%d", got, calls)
 	}
 }
+
+type oversizedRepository struct{}
+
+func (oversizedRepository) Read(context.Context, string, ReadRequest) (ReadResult, error) {
+	return ReadResult{Text: strings.Repeat("x", 70000)}, nil
+}
+
+func TestNativeReturnsOversizedToolResultToTheModel(t *testing.T) {
+	s, a := validFixture()
+	payload, _ := json.Marshal(a)
+	calls := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		content := []any{map[string]any{"type": "tool_use", "id": "search", "name": "search_code", "input": map[string]any{"revision": s.Revision.Head, "query": "x"}}}
+		stop := "tool_use"
+		switch calls {
+		case 2:
+			raw, _ := json.Marshal(request["messages"])
+			if !strings.Contains(string(raw), "narrow the request") {
+				t.Error("oversized result was not returned to the investigator")
+			}
+			content = []any{map[string]any{"type": "tool_use", "id": "list", "name": "list_evidence", "input": map[string]any{}}}
+		case 3:
+			content = []any{map[string]any{"type": "tool_use", "id": "read", "name": "read_evidence", "input": map[string]any{"evidence_id": "review"}}}
+		case 4:
+			content = []any{map[string]any{"type": "text", "text": string(payload)}}
+			stop = "end_turn"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": "model", "stop_reason": stop, "content": content, "usage": map[string]int{"input_tokens": 100, "output_tokens": 100}})
+	}))
+	defer remote.Close()
+	n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture", BaseURL: remote.URL}}
+	result, err := n.Investigate(context.Background(), s, oversizedRepository{}, &testBudget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != "candidate" {
+		t.Fatalf("unexpected decision %s", result.Decision)
+	}
+}

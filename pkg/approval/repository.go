@@ -64,7 +64,11 @@ func (r *GitRepository) run(ctx context.Context, limit int, args ...string) (str
 	return out.String(), nil
 }
 
-func NewGitRepository(ctx context.Context, root string, target Target, revisions []string, token RepositoryToken) (*GitRepository, error) {
+// NewGitRepository fetches revisions into a fresh bare repository. When
+// reference names a local objects directory for the same repository, it is
+// borrowed as an alternate so revisions already there skip the network and the
+// rest fetch only missing objects.
+func NewGitRepository(ctx context.Context, root string, target Target, revisions []string, token RepositoryToken, reference string) (*GitRepository, error) {
 	if !repositoryComponent.MatchString(target.Owner) || !repositoryComponent.MatchString(target.Repo) || target.Owner == ".." || target.Repo == ".." || target.Owner == "." || target.Repo == "." {
 		return nil, fmt.Errorf("invalid repository")
 	}
@@ -90,12 +94,25 @@ func NewGitRepository(ctx context.Context, root string, target Target, revisions
 	if _, err = r.run(ctx, 4096, "init", "--bare", "--template=", directory); err != nil {
 		return nil, err
 	}
+	if reference != "" {
+		if info, e := os.Stat(reference); e == nil && info.IsDir() {
+			alternates := filepath.Join(directory, "objects", "info")
+			if err = os.MkdirAll(alternates, 0o755); err != nil {
+				return nil, err
+			}
+			if err = os.WriteFile(filepath.Join(alternates, "alternates"), []byte(reference+"\n"), 0o644); err != nil {
+				return nil, err
+			}
+		}
+	}
 	for _, sha := range revisions {
 		if r.revisions[sha] {
 			continue
 		}
-		if err = r.fetch(ctx, target, sha, token); err != nil {
-			return nil, err
+		if kind, e := r.run(ctx, 128, "cat-file", "-t", sha); e != nil || strings.TrimSpace(kind) != "commit" {
+			if err = r.fetch(ctx, target, sha, token); err != nil {
+				return nil, err
+			}
 		}
 		kind, e := r.run(ctx, 128, "cat-file", "-t", sha)
 		if e != nil || strings.TrimSpace(kind) != "commit" {
