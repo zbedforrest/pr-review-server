@@ -12,6 +12,7 @@ import (
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/ensemble"
 	"pr-review-server/pkg/reviewer/llm"
+	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/telemetry/newrelic"
@@ -65,4 +66,40 @@ func TestReviewTelemetryReportsTheRunItsEnsembleAndTheMergeCall(t *testing.T) {
 
 func TestReviewTelemetryIsANoOpWithoutASink(t *testing.T) {
 	(&Poller{}).recordReviewTelemetry(&reviewExecution{}, db.ReviewRunPatch{}, 0)
+}
+
+type capturedEvents struct {
+	mu     sync.Mutex
+	events []map[string]any
+}
+
+func (c *capturedEvents) Record(eventType string, attrs map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ev := map[string]any{"event_type": eventType}
+	for k, v := range attrs {
+		ev[k] = v
+	}
+	c.events = append(c.events, ev)
+}
+
+func TestSuccessfulFinalizationRecordsTheReviewEvent(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	events := &capturedEvents{}
+	p.telemetry = events
+	exec := &reviewExecution{Job: ReviewJob{RunID: "run-ok", PR: github.PullRequest{Owner: "acme", Repo: "example", Number: 3, CommitSHA: "abc"},
+		Config: runconfig.Snapshot{Effective: runconfig.Effective{Profile: runconfig.ProfileLite}}}}
+	result := &ReviewResult{ReviewRun: &payload.ReviewRunInfo{DurationMS: 90000}}
+	result.CriticalCount = 1
+	if _, err := p.finalizeCompletedReviewExecution(exec, result, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if len(events.events) != 1 {
+		t.Fatalf("events = %v", events.events)
+	}
+	ev := events.events[0]
+	if ev["event_type"] != eventReviewRun || ev["status"] != db.ReviewRunStatusCompleted || ev["terminal_code"] != "success" || ev["duration_ms"] != int64(90000) || ev["critical"] != 1 {
+		t.Fatalf("event = %v", ev)
+	}
 }

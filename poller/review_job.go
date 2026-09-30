@@ -1022,6 +1022,12 @@ func (p *Poller) finalizeCompletedReviewExecution(exec *reviewExecution, result 
 		input.LeaseCheckedAt = time.Now().UTC()
 		outcome, err := ledger.FinalizeReviewRunSuccess(input)
 		if err == nil {
+			completed, success := db.ReviewRunStatusCompleted, "success"
+			crit, med, low := result.CriticalCount, result.MediumCount, result.LowCount
+			p.recordReviewTelemetry(exec, db.ReviewRunPatch{
+				Status: &completed, TerminalCode: &success, Verdict: &verdict,
+				CriticalCount: &crit, MediumCount: &med, LowCount: &low,
+			}, result.ReviewRun.DurationMS)
 			return outcome, nil
 		}
 		finalizationErr = err
