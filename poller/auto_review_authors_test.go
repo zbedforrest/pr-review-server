@@ -45,7 +45,7 @@ func TestWebhookSkipsAuthorsGitHubReportsAsBots(t *testing.T) {
 	assert.Empty(t, f.runs())
 }
 
-func TestPublishAllowsAutomaticReviewsForAutoReviewAuthorsOnly(t *testing.T) {
+func TestPublishNeverWidensToAutoReviewAuthors(t *testing.T) {
 	database, err := db.NewGormSQLite(":memory:")
 	require.NoError(t, err)
 	defer database.Close()
@@ -56,8 +56,10 @@ func TestPublishAllowsAutomaticReviewsForAutoReviewAuthorsOnly(t *testing.T) {
 	ts, _ := gitHubStub(t, openPRJSON, false)
 	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
 
-	_, manual := p.publishGitHubReview(context.Background(), bob, []byte(scoredSidecar), false)
-	assert.Equal(t, publicationNotAllowed, manual, "a manual review of a non-publish author stays unpublished")
-	_, auto := p.publishGitHubReview(context.Background(), bob, []byte(scoredSidecar), true)
-	assert.Equal(t, publicationPosted, auto, "an automatic review of an auto_review_authors author is published")
+	_, outcome := p.publishGitHubReview(context.Background(), bob, []byte(scoredSidecar))
+	assert.Equal(t, publicationNotAllowed, outcome, "auto_review_authors=* must not publish an author outside publish_enabled_authors")
+
+	alice := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}
+	_, outcome = p.publishGitHubReview(context.Background(), alice, []byte(scoredSidecar))
+	assert.Equal(t, publicationPosted, outcome, "a publish_enabled_authors author is published")
 }
