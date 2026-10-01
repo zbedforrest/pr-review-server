@@ -49,6 +49,7 @@ type Report struct {
 	StillOpen        int
 	Fixed            int
 	Confidence       int
+	Hygiene          Hygiene
 }
 
 const summaryFingerprint = "summary"
@@ -82,6 +83,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 			}
 		}
 	}
+	prior := priorRows(r.Previous)
 	r.Findings = WithoutDismissed(r.Findings, r.Previous)
 	if r.RoundNumber == 0 {
 		r.RoundNumber = 1
@@ -120,6 +122,8 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 				commentID = commentIDs[i]
 			}
 			postedThisRound[f.ID] = commentID
+			rep.Hygiene.notePosted(f, prior[f.ID])
+			rep.Hygiene.noteWritten(f, prior[f.ID])
 			if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
 				RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
 				Kind: db.PublishedKindFinding, Fingerprint: f.ID,
@@ -206,6 +210,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 			row.Kind, row.ReviewedSHA, row.PublishedAt = prev.Kind, prev.ReviewedSHA, prev.PublishedAt
 			row.CommentID, row.ReviewID, row.ThreadNodeID = prev.CommentID, prev.ReviewID, prev.ThreadNodeID
 		}
+		rep.Hygiene.noteWritten(f, prior[f.ID])
 		if err := p.Ledger.UpsertPublishedFinding(row); err != nil {
 			return rep, fmt.Errorf("record annotation %s: %w", f.ID, err)
 		}
@@ -231,6 +236,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		}
 		resolved := *row
 		resolved.State = db.PublishedStateResolved
+		rep.Hygiene.noteResolved(row, r.HeadSHA, r.ChangedFiles)
 		if err := p.Ledger.UpsertPublishedFinding(&resolved); err != nil {
 			return rep, fmt.Errorf("resolve finding %s: %w", id, err)
 		}

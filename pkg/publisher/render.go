@@ -43,6 +43,10 @@ type Round struct {
 	// Commentable is file -> RIGHT-side lines a review comment may target,
 	// typically built with CommentableLines from the PR file patches.
 	Commentable map[string]map[int]bool
+	// ChangedFiles is the set of files that changed between the previous
+	// head and HeadSHA; nil means the caller does not know, and a resolve
+	// then cannot be judged against it.
+	ChangedFiles map[string]bool
 
 	RequiredCheckViolated bool
 	DashboardURL          string

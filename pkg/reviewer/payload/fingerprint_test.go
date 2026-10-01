@@ -85,3 +85,16 @@ func TestFingerprint_DistinctCarriedFindingsInSameBucketDiffer(t *testing.T) {
 		t.Fatal("two different carried findings in one bucket must not collide")
 	}
 }
+
+func TestFingerprintFile(t *testing.T) {
+	for fp, want := range map[string]string{
+		Fingerprint("pkg/a.go", 42, "x"): "pkg/a.go",
+		"dir/with:colon.go:1:abc":        "dir/with:colon.go",
+		"a.go:0:abc":                     "a.go",
+		"nocolon":                        "nocolon",
+	} {
+		if got := FingerprintFile(fp); got != want {
+			t.Errorf("FingerprintFile(%q) = %q, want %q", fp, got, want)
+		}
+	}
+}
