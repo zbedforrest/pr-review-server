@@ -18,9 +18,18 @@ const (
 	prewarmRecentRuns = 1000
 )
 
+// PrewarmDone is closed once the startup clone-cache warm-up has finished
+// (or was skipped), so work that borrows those caches can wait for them.
+func (p *Poller) PrewarmDone() <-chan struct{} {
+	p.prewarmOnce.Do(func() { p.prewarmDone = make(chan struct{}) })
+	return p.prewarmDone
+}
+
 // prewarmCloneCaches builds clone caches in the background at startup. A
 // cache that cannot be built is left to the first review, as before.
 func (p *Poller) prewarmCloneCaches(ctx context.Context) {
+	p.PrewarmDone()
+	defer close(p.prewarmDone)
 	if !p.cfg.AgenticReviews || p.ghClientConcrete == nil {
 		return
 	}

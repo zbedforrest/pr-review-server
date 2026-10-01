@@ -255,7 +255,7 @@ func (r validationRepository) Read(ctx context.Context, name string, req ReadReq
 // finalizeReserve is the time left on the target clock at which the
 // investigator stops reading and asks for the answer; it covers one long
 // final reply plus citation validation.
-const finalizeReserve = 45 * time.Second
+const finalizeReserve = 75 * time.Second
 
 func (n NativeInvestigator) shouldFinalize(ctx context.Context, usage Usage) bool {
 	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < finalizeReserve {

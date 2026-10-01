@@ -101,6 +101,8 @@ type ProcessInfo struct {
 }
 
 type Poller struct {
+	prewarmOnce      sync.Once
+	prewarmDone      chan struct{}
 	cfg              *config.Config
 	db               db.Database
 	ghClient         GitHubClient
