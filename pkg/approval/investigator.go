@@ -36,6 +36,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 	readEvidence := make(map[string]bool, len(s.Evidence))
 	evidenceLimited := false
 	answered := map[string]bool{}
+	finalizing := false
 	messages := []any{map[string]any{"role": "user", "content": "Investigate the frozen target using list_evidence and the registered reads. Return the complete assessment JSON."}}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -45,13 +46,17 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 		if usage.Rounds >= MaxRounds || usage.InputTokens+CallInputTokens > TargetInputTokens || remaining <= 0 {
 			return result, investigationLimit(LimitBudget, "%d rounds, %d input and %d output tokens used", usage.Rounds, usage.InputTokens, usage.OutputTokens)
 		}
+		if !finalizing && n.shouldFinalize(ctx, usage) {
+			finalizing = true
+			messages = appendUserText(messages, finalRequest(s, readEvidence))
+		}
 		reservation := Usage{InputTokens: CallInputTokens, OutputTokens: remaining, Rounds: 1}
 		if err := budget.Reserve(ctx, reservation); err != nil {
 			return result, err
 		}
 		reportActivity(ctx, Activity{Stage: "model", Round: usage.Rounds + 1, ToolCalls: usage.ToolCalls})
 		started := time.Now()
-		reply, err := n.Config.call(ctx, messages, remaining)
+		reply, err := n.Config.call(ctx, messages, remaining, !finalizing)
 		log.Printf("[APPROVAL] model round %d: %s, %d input and %d output tokens, %d tool calls requested, err=%v", usage.Rounds+1, time.Since(started).Round(time.Millisecond), reply.Usage.InputTokens, reply.Usage.OutputTokens, len(reply.Calls), err)
 		if err != nil {
 			var reported *ModelUsageLimitError
@@ -66,6 +71,9 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			return result, err
 		}
 		usage = addUsage(usage, reply.Usage)
+		if finalizing && len(reply.Calls) > 0 {
+			return result, investigationLimit(LimitBudget, "the model kept requesting tools after the final answer was requested")
+		}
 		if len(reply.Calls) == 0 {
 			correct := func(problem error) bool {
 				if corrections >= maxAssessmentCorrections {
@@ -242,4 +250,49 @@ func (r validationRepository) Read(ctx context.Context, name string, req ReadReq
 	}
 	*r.usage = addUsage(*r.usage, actual)
 	return result, nil
+}
+
+// finalizeReserve is the time left on the target clock at which the
+// investigator stops reading and asks for the answer; it covers one long
+// final reply plus citation validation.
+const finalizeReserve = 45 * time.Second
+
+func (n NativeInvestigator) shouldFinalize(ctx context.Context, usage Usage) bool {
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < finalizeReserve {
+		return true
+	}
+	return usage.Rounds >= MaxRounds-1 || usage.ToolCalls >= MaxToolCalls-2
+}
+
+// finalRequest asks for the assessment now and supplies any evidence the
+// model has not read, so the every-artifact rule still holds; it marks that
+// evidence read.
+func finalRequest(s Snapshot, read map[string]bool) string {
+	var unread []Evidence
+	for _, e := range s.Evidence {
+		if !read[e.ID] {
+			unread = append(unread, e)
+			read[e.ID] = true
+		}
+	}
+	text := "Time is nearly up. Stop reading and return the complete assessment JSON now from what you have. Report anything you could not verify in coverage_gaps or with an uncertain disposition; do not guess."
+	if len(unread) > 0 {
+		body, _ := json.Marshal(unread)
+		text += " These evidence artifacts were not yet read; classify each of them:\n" + string(body)
+	}
+	return text
+}
+
+// appendUserText adds text to the trailing user turn (tool results), or as a
+// new user message, keeping the providers' role alternation valid.
+func appendUserText(messages []any, text string) []any {
+	if len(messages) > 0 {
+		if last, ok := messages[len(messages)-1].(map[string]any); ok && last["role"] == "user" {
+			if blocks, ok := last["content"].([]any); ok {
+				last["content"] = append(blocks, map[string]any{"type": "text", "text": text})
+				return messages
+			}
+		}
+	}
+	return append(messages, map[string]any{"role": "user", "content": text})
 }

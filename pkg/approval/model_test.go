@@ -436,3 +436,35 @@ func TestNativeAnswersARepeatedToolCallWithAPointer(t *testing.T) {
 		t.Fatalf("the second identical list_evidence call should get a pointer, not the listing again: %s", replayed)
 	}
 }
+
+func TestNativeAsksForTheAnswerWithoutToolsWhenAlmostOutOfRounds(t *testing.T) {
+	for _, provider := range []string{"anthropic", "openrouter"} {
+		t.Run(provider, func(t *testing.T) {
+			s, a := validFixture()
+			payload, _ := json.Marshal(a)
+			remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&request)
+				choice, _ := json.Marshal(request["tool_choice"])
+				if !strings.Contains(string(choice), "none") {
+					t.Errorf("final round must disable tools, got tool_choice %s", choice)
+				}
+				raw, _ := json.Marshal(request["messages"])
+				if !strings.Contains(string(raw), "Time is nearly up") || !strings.Contains(string(raw), `\"id\":\"review\"`) {
+					t.Errorf("final request must include the unread evidence: %s", raw)
+				}
+				if provider == "anthropic" {
+					_ = json.NewEncoder(w).Encode(map[string]any{"model": "model", "stop_reason": "end_turn", "content": []any{map[string]any{"type": "text", "text": string(payload)}}, "usage": map[string]int{"input_tokens": 100, "output_tokens": 100}})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"model": "model", "choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"role": "assistant", "content": string(payload)}}}, "usage": map[string]int{"prompt_tokens": 100, "completion_tokens": 100}})
+			}))
+			defer remote.Close()
+			n := NativeInvestigator{Config: ModelConfig{Provider: provider, Model: "model", APIKey: "fixture", BaseURL: remote.URL}, InitialUsage: Usage{Rounds: MaxRounds - 1}}
+			got, err := n.Investigate(context.Background(), s, nil, &testBudget{})
+			if err != nil || got.Decision != "candidate" {
+				t.Fatalf("final answer not accepted: %+v %v", got, err)
+			}
+		})
+	}
+}
