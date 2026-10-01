@@ -39,7 +39,9 @@ func TestGateDecidesSnapshotBlockersWithoutInvestigation(t *testing.T) {
 		reason, summary string
 		change          func(*Snapshot)
 	}{
-		{"ci_failed", "CI is failing", func(s *Snapshot) { s.Checks = append(s.Checks, Check{Name: "lint", State: "failure", SHA: s.Revision.Head}) }},
+		{"ci_failed", "CI is failing", func(s *Snapshot) {
+			s.Checks = append(s.Checks, Check{Name: "lint", State: "failure", SHA: s.Revision.Head})
+		}},
 		{"human_changes_requested", "change request is still standing", func(s *Snapshot) { s.HumanChangesRequested = true }},
 		{"provider_changes_requested", "review provider requested changes", func(s *Snapshot) { s.ProviderChangesRequested = true }},
 	} {
@@ -99,7 +101,11 @@ func TestGateLeavesNeutralFactsToInvestigation(t *testing.T) {
 		{"review_in_progress", func(s *Snapshot) { s.ReviewInProgress = true }},
 		{"source_incomplete", func(s *Snapshot) { s.Manifest.Complete = false }},
 		{"draft", func(s *Snapshot) { s.Draft = true }},
-		{"excluded", func(s *Snapshot) { s.Eligible = false; s.ExclusionReasons = []string{"pr_closed"}; s.Checks[0].State = "failure" }},
+		{"excluded", func(s *Snapshot) {
+			s.Eligible = false
+			s.ExclusionReasons = []string{"pr_closed"}
+			s.Checks[0].State = "failure"
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s, _ := validFixture()
