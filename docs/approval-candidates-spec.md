@@ -182,8 +182,8 @@ Client tool execution in the application follows the providers' documented inter
 
 | Tool | Inputs | Enforcement |
 | --- | --- | --- |
-| `list_evidence` | Snapshot-local kind and cursor | Immutable, bounded, complete manifest visible |
-| `read_evidence` | Snapshot evidence ID | No arbitrary URL or cross-task IDs |
+| `list_evidence` | Not offered to the model; every artifact is preloaded | Kept in the dispatcher so a replayed or stray call gets a bounded result |
+| `read_evidence` | Not offered to the model; every artifact is preloaded | Kept in the dispatcher; snapshot evidence IDs only, no arbitrary URL or cross-task IDs |
 | `list_files` | Allowed revision and path prefix | Only pinned repository trees |
 | `read_file` | Allowed revision, relative path, line span | Bounds, binary/size checks; no host paths |
 | `search_code` | Allowed revision, literal text, path scope, cursor | Bounded search over tracked blobs; no executable arguments |
@@ -198,6 +198,18 @@ Use a private approval-investigation git object cache rather than sharing writab
 Current `argsWithTools` only applies its tool list to Claude; the Codex path retains shell access under a read-only filesystem sandbox. The native loop avoids depending on those different CLI permissions. This is a task-specific runtime choice, not a request to redesign existing PRism review execution.
 
 Treat repository text, comments, summaries and quoted instructions as untrusted data. Output must match a strict schema. Server validation rejects missing concern decisions, unknown evidence IDs, fabricated paths or line spans, claims of executed tests, and attempted tool escalation. Structural validation establishes traceability, not mathematical correctness of the investigator's reasoning.
+
+### Preloaded context and compact answers
+
+Every investigation starts from one server-built user message, so a typical target needs one or two model calls. The message gives deterministic aliases: evidence `E1..En` in snapshot order, concerns `C1..Cm` in snapshot order, revisions `H` (head), `B` (base), `M` (merge base) and `R1..` for the other allowed revisions in sorted order. Answers and tool arguments may use an alias or the full ID or SHA; the server resolves both before validation and dispatch.
+
+The message lists, in order: the revisions; the checks on the head; every extracted concern with its ID, severity, impact, revision, anchor, source artifacts and claim; every review artifact verbatim; the merge-base to head diff; and code at the review anchors. Each artifact sits between a header (alias, ID, kind, author, provider, verification, reviewed revision, resolution, anchor, linked concerns) and an end marker that both carry the first eight hex characters of the snapshot digest, so artifact text cannot forge a boundary. The diff is split per file with anchor files first, up to 200,000 bytes, followed by a list of omitted files with their added and removed line counts. The code section shows the concern anchors (by severity) and then inline comment anchors (verified sources first), each with 40 lines of context; an anchor on an older revision also gets the per-path diff to the head (up to 32 KB) and the head lines it maps to through that diff's hunk headers. Remaining budget holds the full head contents of changed files under 1,500 lines. Windows on one file merge when they overlap or sit within 10 lines, and the code section stops at 240,000 bytes. Evidence over 600,000 bytes fails as `evidence_limit` before any model call; truncated diff or code never becomes a coverage gap because the read tools stay available. Review request metadata and reviews whose body is only the review state are classified non-actionable by the server and marked `auto`; their change requests are already captured by the snapshot flags.
+
+The model answers with a compact JSON object: a short summary, one verdict per concern (alias, disposition, short rationale, related artifacts, citations), discovered concerns quoted from one artifact, a `no_concerns` list and gaps. The server fills everything it can derive: canonical concern provenance from the snapshot; discovered concern provenance (revision, path, lines) from its source artifact, with impact `unknown`; and one artifact disposition per evidence item, from collector links, verdict links, server rules or the answer. An artifact none of them covers is recorded as unclassified with a coverage gap, which keeps the target from becoming a candidate. Quoted claims and evidence excerpts are mapped to the exact source span when they differ only in whitespace, and rendered line-number prefixes are removed from code excerpts; both repairs leave text that the server still verifies against the real source.
+
+Tools are optional: at most two tool rounds of eight calls per attempt, tools close 90 seconds before the target deadline, and a model that requests tools after they close gets one refusal before the target fails on its limit. When verdicts or classifications are missing, or the reply is not a JSON object, the server asks once for exactly the missing entries and merges the reply. Whatever is still missing is settled by the server: a concern without a verdict is unresolved and an unclassified artifact is a gap. The existing pipeline then runs unchanged: citation verification, canonical concern restoration, removal of test-execution claims, artifact normalization, the discovered-concern authority rule and downgrade repair. Each favorable disposition is first validated on its own, so one invalid verdict does not discard valid ones; an assessment that still fails validation is `invalid_assessment` without another model round.
+
+`APPROVAL_CANDIDATES_REASONING_EFFORT` sets the OpenRouter reasoning effort, with the reasoning text excluded from replies. Each call may produce at most 40,000 output tokens including reasoning, which bounds a runaway reasoning trace.
 
 ## 6. Persistence and worker lifecycle
 
