@@ -1,11 +1,9 @@
 package approval
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -90,37 +88,9 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int, al
 	if err != nil {
 		return reply, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	raw, err := c.post(ctx, endpoint, data)
 	if err != nil {
 		return reply, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.Provider == "anthropic" {
-		req.Header.Set("x-api-key", c.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	} else {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
-	client := c.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	boundedClient := *client
-	boundedClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := boundedClient.Do(req)
-	if err != nil {
-		return reply, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
-	if err != nil {
-		return reply, err
-	}
-	if len(raw) > 2*1024*1024 {
-		return reply, fmt.Errorf("model response too large")
-	}
-	if resp.StatusCode != 200 {
-		return reply, fmt.Errorf("model HTTP status %d", resp.StatusCode)
 	}
 	if c.Provider == "anthropic" {
 		var r struct {

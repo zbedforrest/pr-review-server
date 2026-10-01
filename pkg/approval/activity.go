@@ -29,6 +29,8 @@ func ActivitySummary(a Activity) string {
 		return "Preparing pinned code for inspection"
 	case "model":
 		return "Connecting review evidence with code findings"
+	case "model_wait":
+		return "Waiting for model capacity"
 	case "citations":
 		return "Checking citations against the reviewed code"
 	case "validating":
