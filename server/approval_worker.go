@@ -134,6 +134,10 @@ func (s *Server) approvalValidationAvailable() bool {
 const (
 	approvalTargetDuration = 3 * time.Minute
 	approvalWorkerSlots    = 4
+	approvalSlotsPerUser   = 2
+	// approvalIdleClaimEvery spaces a worker's claims when there is no work:
+	// every claim serializes on the approval mutation gate.
+	approvalIdleClaimEvery = 5 * time.Second
 )
 
 func (s *Server) runApprovalWorkers(ctx context.Context) {
@@ -151,6 +155,7 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 			worker := approvalID()
 			available := s.approvalAvailable() == ""
 			nextMaintenance := time.Now().Add(time.Minute)
+			var nextClaim time.Time
 			for {
 				select {
 				case <-ctx.Done():
@@ -168,10 +173,15 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 					if time.Now().Before(s.approvalRate.pausedUntil()) {
 						continue
 					}
-					target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: worker, Now: time.Now(), LeaseDuration: 60 * time.Second, TargetDuration: approvalTargetDuration, MaxSlots: approvalWorkerSlots})
-					if err == nil && target != nil {
-						s.investigateApproval(ctx, *target)
+					if time.Now().Before(nextClaim) {
+						continue
 					}
+					target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: worker, Now: time.Now(), LeaseDuration: 60 * time.Second, TargetDuration: approvalTargetDuration, MaxSlots: approvalWorkerSlots, MaxPerUser: approvalSlotsPerUser})
+					if err != nil || target == nil {
+						nextClaim = time.Now().Add(approvalIdleClaimEvery)
+						continue
+					}
+					s.investigateApproval(ctx, *target)
 				}
 			}
 		}()
