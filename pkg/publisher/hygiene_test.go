@@ -203,6 +203,10 @@ func TestHygiene_OpenInlineRowRenderedAtHigherSeverityIsAnEscalation(t *testing.
 	if d := rep.Hygiene.SeverityEscalations[0].Detail; !strings.Contains(d, "from=medium to=critical prior_state=open") {
 		t.Fatalf("detail = %q", d)
 	}
+	rep = publishRound(t, gh, ledger, r2)
+	if len(rep.Hygiene.SeverityEscalations) != 0 {
+		t.Fatalf("a re-run on the same head recounts nothing: %+v", rep.Hygiene.SeverityEscalations)
+	}
 }
 
 func TestHygiene_NoteWrittenCountsOnlyAHigherSeverity(t *testing.T) {

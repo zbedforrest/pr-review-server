@@ -221,13 +221,12 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	for _, f := range r.activeClaims() {
 		present[f.ID] = true
 		row, ok := published[f.ID]
-		if !ok || written[f.ID] {
+		if !ok || written[f.ID] || row.LastSeenSHA == r.HeadSHA {
 			continue
 		}
+		// The ledger severity is deliberately kept (decision 6); the
+		// escalation is counted once per head the bullet renders above it.
 		rep.Hygiene.noteWritten(f, row)
-		if row.LastSeenSHA == r.HeadSHA {
-			continue
-		}
 		refreshed := *row
 		refreshed.LastSeenSHA = r.HeadSHA
 		if err := p.Ledger.UpsertPublishedFinding(&refreshed); err != nil {
