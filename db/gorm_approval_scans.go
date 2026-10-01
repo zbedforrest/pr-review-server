@@ -365,6 +365,7 @@ func (g *GormDB) GetApprovalTarget(user int, scan, id string) (*ApprovalTarget, 
 	t.AssessmentJSON = assessment.JSON
 	return &t, nil
 }
+
 // attachApprovalAssessments fills AssessmentJSON for a page of targets with
 // one query; listed rows otherwise carry no assessment. Snapshots stay out of
 // lists because they are large.
