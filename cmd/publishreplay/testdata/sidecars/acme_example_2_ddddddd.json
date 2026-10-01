@@ -1,0 +1,46 @@
+{
+ "schema_version": "2",
+ "owner": "acme",
+ "repo": "example",
+ "pr_number": 2,
+ "commit_sha": "ddddddd444444444444444444444444444444444",
+ "counts": {
+  "critical": 0,
+  "medium": 1,
+  "low": 0
+ },
+ "findings": [
+  {
+   "id": "api/users.go:14:a1a1a1a1a1a1",
+   "severity": "medium",
+   "provenance": "agent",
+   "file": "api/users.go",
+   "line": 140,
+   "comment": "The retry loop in fetchUser never backs off, so a 429 from upstream is retried immediately and the rate limiter keeps rejecting every call.",
+   "finding_contract": {
+    "schema_version": 1,
+    "finding_kind": "production_behavior",
+    "materiality": "current_impact",
+    "current_impact": "Every retry after a 429 is rejected, so the call fails for users today.",
+    "counterfactual_trigger": null,
+    "falsifiability": "falsifiable",
+    "falsifiable_condition": "Return 429 once and watch the second attempt.",
+    "expected_observable": "A second request within the same millisecond.",
+    "subjects": [
+     {
+      "kind": "function",
+      "path": "api/users.go",
+      "name": "fetchUser"
+     }
+    ],
+    "uncertainty": "None.",
+    "severity_rationale": "Deterministic from the loop body.",
+    "headline": "Retry loop never backs off"
+   },
+   "finding_contract_status": "valid",
+   "state": "confirmed",
+   "active": true,
+   "diff_hunk": "@@ -138,6 +138,6 @@ func fetchUser(ctx context.Context, id string) (User, error) {\n \tvar last error\n \tfor i := 0; i < 3; i++ {\n \t\tu, err := client.Get(ctx, id)\n+\t\tif err == nil {\n+\t\t\treturn u, nil\n+\t\t}"
+  }
+ ]
+}

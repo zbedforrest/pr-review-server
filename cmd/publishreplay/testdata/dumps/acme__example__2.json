@@ -1,0 +1,118 @@
+{
+ "number": 2,
+ "title": "Fixture 2",
+ "url": "https://github.com/acme/example/pull/2",
+ "state": "OPEN",
+ "isDraft": false,
+ "merged": false,
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "eeeeeee555555555555555555555555555555555",
+ "reviews": {
+  "nodes": [
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 21,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-01T10:00:00Z",
+    "commit": {
+     "oid": "ddddddd444444444444444444444444444444444"
+    }
+   },
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 22,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-02T10:00:00Z",
+    "commit": {
+     "oid": "eeeeeee555555555555555555555555555555555"
+    }
+   },
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 23,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-03T10:00:00Z",
+    "commit": {
+     "oid": "eeeeeee555555555555555555555555555555555"
+    }
+   }
+  ],
+  "totalCount": 3
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "PRRT_3",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "api/users.go",
+    "line": 140,
+    "originalLine": 140,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 201,
+       "author": {
+        "login": "acme-bot"
+       },
+       "body": "<!-- prism:finding:api/users.go:14:a1a1a1a1a1a1 -->\n**CRITICAL** The retry loop in fetchUser never backs off, so a 429 from upstream is retried immediately and the rate limiter keeps rejecting every call.",
+       "createdAt": "2026-09-01T10:00:00Z",
+       "updatedAt": "2026-09-01T10:00:00Z",
+       "path": "api/users.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "PRRT_4",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "api/users.go",
+    "line": 143,
+    "originalLine": 143,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 202,
+       "author": {
+        "login": "acme-bot"
+       },
+       "body": "<!-- prism:finding:api/users.go:14:b2b2b2b2b2b2 -->\n**CRITICAL** fetchUser hammers the endpoint after a 429 response because no delay is inserted between attempts; the rate limiter rejects the burst.",
+       "createdAt": "2026-09-02T10:00:00Z",
+       "updatedAt": "2026-09-02T10:00:00Z",
+       "path": "api/users.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ],
+  "totalCount": 2
+ },
+ "comments": {
+  "nodes": []
+ }
+}

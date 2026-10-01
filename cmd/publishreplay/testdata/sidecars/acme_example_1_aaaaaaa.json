@@ -1,0 +1,46 @@
+{
+ "schema_version": "2",
+ "owner": "acme",
+ "repo": "example",
+ "pr_number": 1,
+ "commit_sha": "aaaaaaa111111111111111111111111111111111",
+ "counts": {
+  "critical": 1,
+  "medium": 0,
+  "low": 0
+ },
+ "findings": [
+  {
+   "id": "svc/retry.go:7:f1f1f1f1f1f1",
+   "severity": "critical",
+   "provenance": "agent",
+   "file": "svc/retry.go",
+   "line": 72,
+   "comment": "The retry loop in get never backs off after a 429, so every attempt is rejected by the upstream rate limiter and the request fails.",
+   "finding_contract": {
+    "schema_version": 1,
+    "finding_kind": "production_behavior",
+    "materiality": "current_impact",
+    "current_impact": "Every retry after a 429 is rejected, so the call fails for users today.",
+    "counterfactual_trigger": null,
+    "falsifiability": "falsifiable",
+    "falsifiable_condition": "Return 429 once and watch the second attempt.",
+    "expected_observable": "A second request within the same millisecond.",
+    "subjects": [
+     {
+      "kind": "function",
+      "path": "svc/retry.go",
+      "name": "get"
+     }
+    ],
+    "uncertainty": "None.",
+    "severity_rationale": "Deterministic from the loop body.",
+    "headline": "Retry loop never backs off"
+   },
+   "finding_contract_status": "valid",
+   "state": "confirmed",
+   "active": true,
+   "diff_hunk": "@@ -70,5 +70,5 @@ func (c *Client) get(ctx context.Context) error {\n \tfor attempt := 0; attempt < 5; attempt++ {\n \t\tresp, err := c.do(ctx)\n+\t\tif resp.StatusCode == 429 {\n+\t\t\tcontinue\n+\t\t}"
+  }
+ ]
+}
