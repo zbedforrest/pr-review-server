@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	gh "github.com/google/go-github/v57/github"
 )
@@ -51,7 +52,16 @@ type approvalReader struct {
 	client *gh.Client
 	limits ApprovalReadLimits
 	result *ApprovalEvidence
+	// limited holds the first rate-limit error; later reads fail fast with it.
+	limited error
 }
+
+// approvalReadError keeps the fixed text stored in manifests while letting
+// callers see the cause, so a rate limit can pause and retry collection.
+type approvalReadError struct{ cause error }
+
+func (e *approvalReadError) Error() string { return "evidence request failed" }
+func (e *approvalReadError) Unwrap() error { return e.cause }
 
 type approvalBuffer struct {
 	data  []byte
@@ -67,6 +77,9 @@ func (b *approvalBuffer) Write(p []byte) (int, error) {
 }
 
 func (r *approvalReader) read(ctx context.Context, method, path string, body any, out any) (*gh.Response, error) {
+	if r.limited != nil {
+		return nil, r.limited
+	}
 	req, err := r.client.NewRequest(method, path, body)
 	if err != nil {
 		return nil, err
@@ -75,7 +88,11 @@ func (r *approvalReader) read(ctx context.Context, method, path string, body any
 	resp, err := r.client.Do(ctx, req, buf)
 	r.result.Bytes += len(buf.data)
 	if err != nil {
-		return resp, fmt.Errorf("evidence request failed")
+		failed := &approvalReadError{cause: err}
+		if _, limited := RateLimited(err, time.Now()); limited {
+			r.limited = failed
+		}
+		return resp, failed
 	}
 	if err = json.Unmarshal(buf.data, out); err != nil {
 		return resp, fmt.Errorf("invalid evidence response")
@@ -199,10 +216,55 @@ func (c *Client) CollectApprovalEvidence(ctx context.Context, owner, repo string
 		}
 	}
 	out.Endpoints = append(out.Endpoints, compareEndpoint)
-	out.RequestedUsers = approvalPages[*gh.User](ctx, r, "requested_users", pr+"/requested_reviewers", "users")
-	out.RequestedTeams = approvalPages[*gh.Team](ctx, r, "requested_teams", pr+"/requested_reviewers", "teams")
+	out.RequestedUsers, out.RequestedTeams = r.requestedReviewers(ctx, pr+"/requested_reviewers")
 	r.threads(ctx, owner, repo, number)
+	if r.limited != nil {
+		return nil, r.limited
+	}
 	return out, nil
+}
+
+// requestedReviewers reads users and teams from one paged endpoint and
+// reports them as two manifest endpoints.
+func (r *approvalReader) requestedReviewers(ctx context.Context, path string) ([]*gh.User, []*gh.Team) {
+	users, teams := ApprovalEndpoint{Name: "requested_users"}, ApprovalEndpoint{Name: "requested_teams"}
+	var allUsers []*gh.User
+	var allTeams []*gh.Team
+	fail := func(reason string) { users.Error, teams.Error = reason, reason }
+	defer func() { r.result.Endpoints = append(r.result.Endpoints, users, teams) }()
+	for page := 1; page <= r.limits.Pages; page++ {
+		var batch struct {
+			Users *[]*gh.User `json:"users"`
+			Teams *[]*gh.Team `json:"teams"`
+		}
+		resp, err := r.read(ctx, "GET", fmt.Sprintf("%s?per_page=100&page=%d", path, page), nil, &batch)
+		users.Pages++
+		teams.Pages++
+		if err != nil {
+			fail(err.Error())
+			return allUsers, allTeams
+		}
+		if batch.Users == nil || batch.Teams == nil {
+			fail("missing required response field")
+			return allUsers, allTeams
+		}
+		if len(allUsers)+len(*batch.Users) > r.limits.Items || len(allTeams)+len(*batch.Teams) > r.limits.Items {
+			fail("evidence item limit exceeded")
+			return allUsers, allTeams
+		}
+		allUsers = append(allUsers, *batch.Users...)
+		allTeams = append(allTeams, *batch.Teams...)
+		if resp.NextPage == 0 {
+			users.Complete, teams.Complete = true, true
+			return allUsers, allTeams
+		}
+		if resp.NextPage != page+1 {
+			fail("invalid pagination")
+			return allUsers, allTeams
+		}
+	}
+	fail("evidence page limit exceeded")
+	return allUsers, allTeams
 }
 
 func (c *Client) ApprovalRepositoryToken(ctx context.Context, owner, repo string) (string, error) {

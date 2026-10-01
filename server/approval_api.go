@@ -495,11 +495,12 @@ func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target
 	if !exists {
 		return approvalTargetResponse{}, false
 	}
-	read := s.approvalPR
+	var pr *gh.PullRequest
 	if target.Decision == "candidate" {
-		read = s.approvalLivePR
+		pr, err = s.approvalLivePR(ctx, target.Owner, target.Repo, target.Number)
+	} else {
+		pr, err = s.approvalPR(ctx, target.Owner, target.Repo, target.Number, approvalPRFreshness)
 	}
-	pr, err := read(ctx, target.Owner, target.Repo, target.Number)
 	if err != nil || pr.GetBase().GetRepo().GetID() != target.RepositoryID {
 		return approvalTargetResponse{}, false
 	}
@@ -708,6 +709,7 @@ func (s *Server) fetchApprovalChecks(ctx context.Context, targets []approval.Tar
 			c := &checks[i]
 			c.pr, _, c.prErr = s.ghClient.GetPR(ctx, target.Owner, target.Repo, target.Number)
 			if c.prErr == nil {
+				s.approvalPRs.put(approvalPRKey(target.Owner, target.Repo, target.Number), c.pr, time.Now())
 				c.reviews, c.reviewsErr = s.ghClient.ListAllReviews(ctx, target.Owner, target.Repo, target.Number)
 			}
 		}(i, target)
