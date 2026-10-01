@@ -432,8 +432,9 @@ func (p *Poller) trackedReviewCount() int {
 }
 
 // settleAutoReviewIntents moves running intents to their run's outcome. A
-// completed run counts as done only when its review reached GitHub; a run
-// that finished while the PR was a draft, closed or on another head is
+// completed run counts as done when its review reached GitHub or publishing
+// was withheld by policy; a run that finished while the PR was a draft,
+// closed or on another head is
 // superseded so a later ready or push event can review the head again. The
 // run row completes before the worker publishes and records the outcome, so
 // a completed run with no outcome yet is left alone for a grace period. Past
@@ -466,6 +467,10 @@ func (p *Poller) settleAutoReviewIntents() {
 		case run.Status == db.ReviewRunStatusCompleted:
 			switch {
 			case intent.Publication == publicationPosted:
+				outcome = db.AutoReviewIntentDone
+			case intent.Publication == publicationNotAllowed:
+				// The review completed and is on the dashboard; publishing was
+				// withheld by policy, so the head is not owed another run.
 				outcome = db.AutoReviewIntentDone
 			case strings.HasPrefix(intent.Publication, publicationSkippedPrefix):
 				outcome = db.AutoReviewIntentSuperseded

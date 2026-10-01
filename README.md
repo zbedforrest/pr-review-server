@@ -176,10 +176,10 @@ fallback for a missed delivery. To enable it:
    authors you want reviewed.
 
 `auto_review_authors` decides who gets automatic reviews when it is set; left
-empty it follows `publish_enabled_authors`. An automatic review publishes for
-its author even when that author is not on the publishing list, while replies
-and mentions keep following `publish_enabled_authors`, so `auto_review_authors`
-can be `*` without opening replies to everyone. Bots never get automatic
+empty it follows `publish_enabled_authors`. It never widens publishing: a
+GitHub comment, reply or mention response requires the author to be on
+`publish_enabled_authors`, so `auto_review_authors` can be `*` to review every
+ready PR on the dashboard while comments stay with the pilot. Bots never get automatic
 reviews, `*` included: GitHub App logins (`[bot]`), authors GitHub reports as
 bots, and the `ci_status_exclude_authors` list. When the deployment policy
 rejects the profile an automatic review resolves to, the review is skipped and
@@ -188,8 +188,8 @@ the head stays queued with the reason, rather than running a costlier profile.
 `GET /api/status` reports `webhook.deliveries_24h`, `webhook.last_delivery_at`,
 `webhook.intents_queued` and `webhook.oldest_queued_age_sec`, and the daily
 health report flags a backlog older than 30 minutes. Clearing
-`publish_enabled_authors` (with `auto_review_authors` empty) stops all
-publishing, automatic reviews included.
+`publish_enabled_authors` stops all publishing; with `auto_review_authors`
+also empty, automatic reviews stop too.
 
 `publish_enabled_authors`, `auto_review_authors` and `auto_review_lite_authors` take GitHub logins,
 `*`, and team entries: `team:<slug>` (or `@<your-org>/<slug>`, stored as the

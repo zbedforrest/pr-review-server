@@ -423,7 +423,7 @@ describe('SettingsForm', () => {
     const input = within(section('Review profiles')).getByLabelText('Automatic reviews for authors') as HTMLInputElement;
     fireEvent.change(input, { target: { value: ' Alice ' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(screen.getByText(/bots are always excluded, and replies still follow the publishing list/)).toBeTruthy();
+    expect(screen.getByText(/posting a comment still requires the publishing list above/)).toBeTruthy();
     fireEvent.click(saveIn('Review profiles'));
     await waitFor(() => expect(postedBodies()).toEqual([{ auto_review_authors: 'alice' }]));
   });
