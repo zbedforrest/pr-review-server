@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -189,8 +190,39 @@ func TestApprovalBudgetUnsetCapAdmitsAndStillRecordsUsage(t *testing.T) {
 	require.NoError(t, g.ReserveApprovalBudget(target.ID, target.LeaseToken, now, 0, 0, 600000, 12000))
 	var budget approvalDailyBudget
 	require.NoError(t, g.db.First(&budget).Error)
-	require.EqualValues(t, 50600000, budget.InputTokens)
-	require.EqualValues(t, 1012000, budget.OutputTokens)
+	require.EqualValues(t, 50000000, budget.InputTokens)
+	require.EqualValues(t, 1000000, budget.OutputTokens)
+	require.NoError(t, g.ReserveApprovalCall(target.ID, target.LeaseToken, now, ApprovalCallReservation{CallID: "call", InputTokens: 1000, OutputTokens: 100, MaxInputTokens: 600000, MaxOutputTokens: 12000, MaxRounds: 8, MaxToolCalls: 16}))
+	require.NoError(t, g.CompleteApprovalCall(target.ID, target.LeaseToken, "call", now, 800, 50))
+	require.NoError(t, approvalTestFinish(g, target, now))
+	require.NoError(t, g.db.First(&budget).Error)
+	require.EqualValues(t, 50000800, budget.InputTokens)
+	require.EqualValues(t, 1000050, budget.OutputTokens)
+}
+
+func TestApprovalBudgetUncappedUsageCreatesTheDayRow(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	r := approvalTestAdmission("fresh-day", 1, now, 1, 2)
+	r.DailyInputLimit, r.DailyOutputLimit = 0, 0
+	_, _, err := g.AdmitApprovalScan(r)
+	require.NoError(t, err)
+	claimed := approvalTestClaimAll(t, g, now, 2)
+	require.Len(t, claimed, 2)
+	for i, target := range claimed {
+		require.NoError(t, g.ReserveApprovalBudget(target.ID, target.LeaseToken, now, 0, 0, 600000, 12000))
+		require.NoError(t, g.ReserveApprovalCall(target.ID, target.LeaseToken, now, ApprovalCallReservation{CallID: "call", InputTokens: 1000, OutputTokens: 100, MaxInputTokens: 600000, MaxOutputTokens: 12000, MaxRounds: 8, MaxToolCalls: 16}))
+		require.NoError(t, g.CompleteApprovalCall(target.ID, target.LeaseToken, "call", now, int64(500*(i+1)), 40))
+	}
+	var count int64
+	require.NoError(t, g.db.Model(&approvalDailyBudget{}).Count(&count).Error)
+	require.Zero(t, count)
+	require.NoError(t, approvalTestFinish(g, &claimed[0], now))
+	require.NoError(t, g.CancelApprovalScan(1, "fresh-day", now))
+	var budget approvalDailyBudget
+	require.NoError(t, g.db.First(&budget, "day = ?", "2026-09-29").Error)
+	require.EqualValues(t, 1500, budget.InputTokens)
+	require.EqualValues(t, 80, budget.OutputTokens)
 }
 
 func TestApprovalBudgetSettlementAndMidnight(t *testing.T) {
@@ -532,8 +564,40 @@ func approvalTestWaitBehindGate(t *testing.T, g *GormDB, operation func() error)
 	}
 }
 
+// approvalTestBesideGate runs operation while another transaction holds the
+// mutation gate and reports whether operation tried to take the gate and
+// whether it finished before the gate was released.
+func approvalTestBesideGate(t *testing.T, g *GormDB, operation func() error) (reached, beforeRelease bool, err error) {
+	t.Helper()
+	locked := g.db.Begin()
+	require.NoError(t, locked.Error)
+	defer locked.Rollback()
+	require.NoError(t, locked.Model(&approvalGate{}).Where("id = 1").UpdateColumn("version", gorm.Expr("version + 1")).Error)
+	var gate atomic.Bool
+	require.NoError(t, g.db.Callback().Update().Before("gorm:update").Register("approval_test_gate_beside", func(tx *gorm.DB) {
+		if tx.Statement.Table == "approval_mutation_gate" {
+			gate.Store(true)
+		}
+	}))
+	defer g.db.Callback().Update().Remove("approval_test_gate_beside")
+	done := make(chan error, 1)
+	go func() { done <- operation() }()
+	select {
+	case err = <-done:
+		return gate.Load(), true, err
+	case <-time.After(time.Second):
+	}
+	require.NoError(t, locked.Commit().Error)
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("operation did not finish after gate release")
+	}
+	return gate.Load(), false, err
+}
+
 func TestApprovalLeaseChecksAdvanceAcrossMutationGateWait(t *testing.T) {
-	for _, operation := range []string{"heartbeat", "finalize", "validate", "claim"} {
+	for _, operation := range []string{"validate", "claim"} {
 		t.Run(operation, func(t *testing.T) {
 			g := approvalTestStore(t)
 			now := time.Date(2031, 4, 5, 12, 0, 0, 0, time.UTC)
@@ -553,27 +617,36 @@ func TestApprovalLeaseChecksAdvanceAcrossMutationGateWait(t *testing.T) {
 				require.Equal(t, "timed_out", target.ExecutionStatus)
 				return
 			}
-			leaseDuration := 50 * time.Millisecond
-			if operation == "validate" {
-				leaseDuration = time.Minute
-			}
-			target, err := g.ClaimApprovalTarget(ApprovalClaim{Worker: "fixture", Now: now, LeaseDuration: leaseDuration, TargetDuration: time.Minute, MaxSlots: 2})
+			target, err := g.ClaimApprovalTarget(ApprovalClaim{Worker: "fixture", Now: now, LeaseDuration: time.Minute, TargetDuration: time.Minute, MaxSlots: 2})
 			require.NoError(t, err)
 			require.NotNil(t, target)
-			var guarded func() error
-			switch operation {
-			case "heartbeat":
-				guarded = func() error { return g.HeartbeatApprovalTarget(target.ID, target.LeaseToken, now, time.Minute) }
-			case "finalize":
-				guarded = func() error { return approvalTestFinish(g, target, now) }
-			case "validate":
-				require.NoError(t, approvalTestFinish(g, target, now))
-				validation, err := g.ClaimApprovalValidation(1, target.ID, now, 50*time.Millisecond)
-				require.NoError(t, err)
-				require.NotNil(t, validation)
-				guarded = func() error { return g.FinishApprovalValidation(1, target.ID, validation.Token, now, "current", "") }
+			require.NoError(t, approvalTestFinish(g, target, now))
+			validation, err := g.ClaimApprovalValidation(1, target.ID, now, 50*time.Millisecond)
+			require.NoError(t, err)
+			require.NotNil(t, validation)
+			require.ErrorIs(t, approvalTestWaitBehindGate(t, g, func() error { return g.FinishApprovalValidation(1, target.ID, validation.Token, now, "current", "") }), ErrApprovalLeaseLost)
+		})
+	}
+	for _, operation := range []string{"heartbeat", "finalize"} {
+		t.Run(operation, func(t *testing.T) {
+			g := approvalTestStore(t)
+			now := time.Date(2031, 4, 5, 12, 0, 0, 0, time.UTC)
+			_, _, err := g.AdmitApprovalScan(approvalTestAdmission("clock", 1, now, 1))
+			require.NoError(t, err)
+			target, err := g.ClaimApprovalTarget(ApprovalClaim{Worker: "fixture", Now: now, LeaseDuration: 50 * time.Millisecond, TargetDuration: time.Minute, MaxSlots: 2})
+			require.NoError(t, err)
+			require.NotNil(t, target)
+			expired := now.Add(100 * time.Millisecond)
+			guarded := func() error { return g.HeartbeatApprovalTarget(target.ID, target.LeaseToken, expired, time.Minute) }
+			if operation == "finalize" {
+				guarded = func() error { return approvalTestFinish(g, target, expired) }
 			}
-			require.ErrorIs(t, approvalTestWaitBehindGate(t, g, guarded), ErrApprovalLeaseLost)
+			reached, beforeRelease, err := approvalTestBesideGate(t, g, guarded)
+			require.ErrorIs(t, err, ErrApprovalLeaseLost)
+			require.False(t, reached)
+			if g.db.Dialector.Name() == "postgres" {
+				require.True(t, beforeRelease)
+			}
 		})
 	}
 }

@@ -8,7 +8,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	gh "github.com/google/go-github/v57/github"
 )
 
 func approvalFixtureClient(t *testing.T, failPage bool, partialGraphQL bool) *Client {
@@ -100,6 +104,76 @@ func TestApprovalEvidenceFailuresAndCeilingsRemainIncomplete(t *testing.T) {
 			}
 			t.Fatal("partial evidence reported complete")
 		})
+	}
+}
+
+func TestApprovalEvidenceReportsRateLimitsAndReadsReviewersOnce(t *testing.T) {
+	for _, limited := range []bool{false, true} {
+		t.Run(fmt.Sprint("limited=", limited), func(t *testing.T) {
+			var reviewerReads atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
+				switch {
+				case r.URL.Path == "/repos/acme/example/pulls/1":
+					fmt.Fprintf(w, `{"state":"open","head":{"sha":%q},"base":{"sha":%q}}`, head, base)
+				case strings.HasSuffix(r.URL.Path, "/check-runs") && limited:
+					w.Header().Set("X-RateLimit-Limit", "5000")
+					w.Header().Set("X-RateLimit-Remaining", "0")
+					w.Header().Set("X-RateLimit-Reset", fmt.Sprint(time.Now().Add(time.Minute).Unix()))
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+				case strings.HasSuffix(r.URL.Path, "/check-runs"):
+					fmt.Fprint(w, `{"check_runs":[]}`)
+				case strings.HasSuffix(r.URL.Path, "/check-suites"):
+					fmt.Fprint(w, `{"check_suites":[]}`)
+				case strings.Contains(r.URL.Path, "/compare/"):
+					fmt.Fprintf(w, `{"merge_base_commit":{"sha":%q}}`, base)
+				case strings.HasSuffix(r.URL.Path, "/requested_reviewers"):
+					reviewerReads.Add(1)
+					fmt.Fprint(w, `{"users":[{"id":7,"login":"someone"}],"teams":[{"id":8,"slug":"group"}]}`)
+				case r.URL.Path == "/graphql":
+					fmt.Fprint(w, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}`)
+				default:
+					fmt.Fprint(w, `[]`)
+				}
+			}))
+			defer server.Close()
+			client := NewClient("fixture-token", "fixture")
+			client.gh.BaseURL, _ = url.Parse(server.URL + "/")
+			result, err := client.CollectApprovalEvidence(context.Background(), "acme", "example", 1, ApprovalReadLimits{})
+			if limited {
+				if _, ok := RateLimited(err, time.Now()); !ok || err.Error() != "evidence request failed" || result != nil {
+					t.Fatalf("err=%v result=%+v", err, result)
+				}
+				return
+			}
+			if err != nil || reviewerReads.Load() != 1 || len(result.RequestedUsers) != 1 || len(result.RequestedTeams) != 1 {
+				t.Fatalf("err=%v reads=%d result=%+v", err, reviewerReads.Load(), result)
+			}
+			for _, ep := range result.Endpoints {
+				if !ep.Complete {
+					t.Fatalf("incomplete %s: %s", ep.Name, ep.Error)
+				}
+			}
+		})
+	}
+}
+
+func TestApprovalEvidenceReadsFailFastAfterARateLimit(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, `[]`)
+	}))
+	defer server.Close()
+	client := NewClient("fixture-token", "fixture")
+	client.gh.BaseURL, _ = url.Parse(server.URL + "/")
+	limited := &approvalReadError{cause: &gh.AbuseRateLimitError{Message: "slow down"}}
+	r := &approvalReader{client: client.gh, limits: ApprovalReadLimits{Pages: 1, Items: 10, Bytes: 1 << 20}, result: &ApprovalEvidence{}, shared: &approvalShared{limited: limited}}
+	var out []any
+	if _, err := r.read(context.Background(), "GET", "repos/acme/example/pulls/1/reviews", nil, &out); err != limited || requests.Load() != 0 {
+		t.Fatalf("err=%v requests=%d", err, requests.Load())
 	}
 }
 

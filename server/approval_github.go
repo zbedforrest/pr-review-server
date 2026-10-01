@@ -20,6 +20,10 @@ const (
 	// push shows as stale immediately; without the cache every feed refresh
 	// cost one GitHub request per target.
 	approvalPRFreshness = 30 * time.Second
+	// approvalWorkerPRFreshness lets a worker's access checks before and
+	// after one investigation share a PR read; the inventory is still
+	// checked each time and a candidate re-collects the PR live.
+	approvalWorkerPRFreshness = approvalTargetDuration
 	// approvalRateLimitFallback is the pause when GitHub rate-limits without
 	// saying when the limit resets.
 	approvalRateLimitFallback = time.Minute
@@ -87,9 +91,9 @@ func (c *approvalPRCache) put(key string, pr *gh.PullRequest, now time.Time) {
 	c.entries[key] = approvalPREntry{pr: pr, fetched: now}
 }
 
-func (c *approvalPRCache) get(ctx context.Context, key string, now time.Time, fetch func(context.Context) (*gh.PullRequest, error)) (*gh.PullRequest, error) {
+func (c *approvalPRCache) get(ctx context.Context, key string, now time.Time, freshness time.Duration, fetch func(context.Context) (*gh.PullRequest, error)) (*gh.PullRequest, error) {
 	c.mu.Lock()
-	if e, ok := c.entries[key]; ok && now.Sub(e.fetched) < approvalPRFreshness {
+	if e, ok := c.entries[key]; ok && now.Sub(e.fetched) < freshness {
 		c.mu.Unlock()
 		return e.pr, nil
 	}
@@ -101,7 +105,7 @@ func (c *approvalPRCache) get(ctx context.Context, key string, now time.Time, fe
 		}
 		c.mu.Lock()
 		for k, e := range c.entries {
-			if now.Sub(e.fetched) >= approvalPRFreshness {
+			if now.Sub(e.fetched) >= max(approvalPRFreshness, approvalWorkerPRFreshness) {
 				delete(c.entries, k)
 			}
 		}
@@ -115,9 +119,13 @@ func (c *approvalPRCache) get(ctx context.Context, key string, now time.Time, fe
 	return v.(*gh.PullRequest), nil
 }
 
+func approvalPRKey(owner, repo string, number int) string {
+	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
+}
+
 // approvalPR reads a PR through the shared cache and records rate limits.
-func (s *Server) approvalPR(ctx context.Context, owner, repo string, number int) (*gh.PullRequest, error) {
-	pr, err := s.approvalPRs.get(ctx, fmt.Sprintf("%s/%s#%d", owner, repo, number), time.Now(), func(ctx context.Context) (*gh.PullRequest, error) {
+func (s *Server) approvalPR(ctx context.Context, owner, repo string, number int, freshness time.Duration) (*gh.PullRequest, error) {
+	pr, err := s.approvalPRs.get(ctx, approvalPRKey(owner, repo, number), time.Now(), freshness, func(ctx context.Context) (*gh.PullRequest, error) {
 		// The read is shared by concurrent callers, so one caller cancelling
 		// must not fail it for the rest.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
@@ -137,22 +145,27 @@ func (s *Server) approvalLivePR(ctx context.Context, owner, repo string, number 
 	if err != nil {
 		return nil, err
 	}
-	s.approvalPRs.put(fmt.Sprintf("%s/%s#%d", owner, repo, number), pr, time.Now())
+	s.approvalPRs.put(approvalPRKey(owner, repo, number), pr, time.Now())
 	return pr, nil
 }
 
 // approvalAccess returns nil when the viewer can still see the target and it
 // still belongs to the admitted repository, errApprovalNoAccess when either
 // is no longer true, and the GitHub error when access could not be checked.
+// Workers use it with a briefly cached inventory.
 func (s *Server) approvalAccess(ctx context.Context, user int, target db.ApprovalTarget) error {
-	inventory, err := s.approvalInventory(user)
+	return s.approvalAccessWith(ctx, s.approvalInventoryCached, approvalWorkerPRFreshness, user, target)
+}
+
+func (s *Server) approvalAccessWith(ctx context.Context, load func(int) (map[string]db.PRWithUserView, error), freshness time.Duration, user int, target db.ApprovalTarget) error {
+	inventory, err := load(user)
 	if err != nil {
 		return fmt.Errorf("load visible pull requests: %w", err)
 	}
 	if _, exists := inventory[approvalKey(target.Owner, target.Repo, target.Number)]; !exists || s.ghClient == nil {
 		return errApprovalNoAccess
 	}
-	pr, err := s.approvalPR(ctx, target.Owner, target.Repo, target.Number)
+	pr, err := s.approvalPR(ctx, target.Owner, target.Repo, target.Number, freshness)
 	if err != nil {
 		return err
 	}
@@ -163,7 +176,7 @@ func (s *Server) approvalAccess(ctx context.Context, user int, target db.Approva
 }
 
 func (s *Server) approvalCanRead(ctx context.Context, user int, target db.ApprovalTarget) bool {
-	return s.approvalAccess(ctx, user, target) == nil
+	return s.approvalAccessWith(ctx, s.approvalInventory, approvalPRFreshness, user, target) == nil
 }
 
 // approvalRetryAfterRateLimit runs fn, and when GitHub rate-limits it waits

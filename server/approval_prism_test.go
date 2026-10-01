@@ -167,3 +167,17 @@ func TestApprovalPRismPaginatesAndRetainsRunningReview(t *testing.T) {
 		t.Fatal("running source lost")
 	}
 }
+
+func TestApprovalPRismReusesAnImmutableSidecarAlreadyRead(t *testing.T) {
+	s, history, target, _ := approvalPRismFixture(t)
+	if _, _, _, _, err := s.collectApprovalPRism(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(s.cfg.ReviewsDir, history.runs[0].JSONPath)); err != nil {
+		t.Fatal(err)
+	}
+	sources, _, _, _, err := s.collectApprovalPRism(context.Background(), target)
+	if err != nil || len(sources) != 1 || sources[0].Incomplete {
+		t.Fatalf("second collection did not reuse the sidecar: %+v %v", sources, err)
+	}
+}

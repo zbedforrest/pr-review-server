@@ -3678,6 +3678,7 @@ func TestProcessReviewImmediate_StartsReviewWithoutPoll(t *testing.T) {
 		Author:        "author",
 	})
 
+	mockGenerator.SimulateDelay = 200 * time.Millisecond
 	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
 	ctx := context.Background()
 

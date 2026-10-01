@@ -17,6 +17,7 @@ import (
 	"time"
 
 	gh "github.com/google/go-github/v57/github"
+	"golang.org/x/sync/singleflight"
 
 	"pr-review-server/auth"
 	"pr-review-server/db"
@@ -197,6 +198,56 @@ func (s *Server) approvalInventory(user int) (map[string]db.PRWithUserView, erro
 	return result, nil
 }
 
+// approvalInventoryCache shares a user's dashboard inventory across the
+// targets of a running scan for a few seconds.
+type approvalInventoryCache struct {
+	mu      sync.Mutex
+	entries map[int]approvalInventoryEntry
+	flight  singleflight.Group
+}
+
+type approvalInventoryEntry struct {
+	rows    map[string]db.PRWithUserView
+	fetched time.Time
+}
+
+const approvalInventoryFreshness = 5 * time.Second
+
+// approvalInventoryCached is approvalInventory for worker checks, which run
+// for every target of a scan at once. Callers must not modify the result.
+func (s *Server) approvalInventoryCached(user int) (map[string]db.PRWithUserView, error) {
+	c := &s.approvalInventories
+	c.mu.Lock()
+	if e, ok := c.entries[user]; ok && time.Since(e.fetched) < approvalInventoryFreshness {
+		c.mu.Unlock()
+		return e.rows, nil
+	}
+	c.mu.Unlock()
+	v, err, _ := c.flight.Do(strconv.Itoa(user), func() (any, error) {
+		rows, err := s.approvalInventory(user)
+		if err != nil {
+			return nil, err
+		}
+		now := time.Now()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.entries == nil {
+			c.entries = map[int]approvalInventoryEntry{}
+		}
+		for id, e := range c.entries {
+			if now.Sub(e.fetched) >= approvalInventoryFreshness {
+				delete(c.entries, id)
+			}
+		}
+		c.entries[user] = approvalInventoryEntry{rows: rows, fetched: now}
+		return rows, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(map[string]db.PRWithUserView), nil
+}
+
 func (s *Server) handleApprovalScans(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.approvalRequest(w, r)
 	if !ok {
@@ -339,9 +390,6 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		if row.UserHidden {
 			exclusions = append(exclusions, "hidden")
 		}
-		if pr.GetDraft() {
-			exclusions = append(exclusions, "draft")
-		}
 		if pr.GetState() != "open" {
 			exclusions = append(exclusions, "closed")
 		}
@@ -386,7 +434,7 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 	}
 	cfg := s.cfg.ApprovalCandidates()
 	limits := map[string]any{"max_targets": db.MaxApprovalTargetsPerScan, "target_seconds": int(approvalTargetDuration.Seconds()), "max_rounds": approval.MaxRounds, "max_tool_calls": approval.MaxToolCalls, "max_tool_bytes": approval.MaxToolBytes, "max_citation_reads": approval.MaxCitationReads, "max_input_tokens": approval.TargetInputTokens, "max_output_tokens": approval.TargetOutputTokens, "max_call_input_tokens": approval.CallInputTokens, "daily_input_tokens": cfg.DailyInput, "daily_output_tokens": cfg.DailyOutput, "provider": cfg.Provider, "model": cfg.Model, "policy_version": approval.PolicyVersion, "prompt_version": approval.PromptVersion, "runtime_version": approval.RuntimeVersion}
-	scan, replayed, err := s.approvalStore().AdmitApprovalScan(db.ApprovalAdmission{Scan: db.ApprovalScan{ID: scanID, UserID: user.ID, Kind: kind, Status: "queued", IdempotencyKey: key, RequestHash: requestHash, ScopeJSON: string(request.Scope), LimitsJSON: approvalJSON(limits), CreatedAt: now, Deadline: now.Add(time.Duration(len(targets))*approvalTargetDuration/approvalWorkerSlots + approvalTargetDuration + 10*time.Minute), Total: len(targets)}, Targets: targets, Now: now, DailyInputLimit: cfg.DailyInput, DailyOutputLimit: cfg.DailyOutput, TargetInputLimit: approval.TargetInputTokens, TargetOutputLimit: approval.TargetOutputTokens})
+	scan, replayed, err := s.approvalStore().AdmitApprovalScan(db.ApprovalAdmission{Scan: db.ApprovalScan{ID: scanID, UserID: user.ID, Kind: kind, Status: "queued", IdempotencyKey: key, RequestHash: requestHash, ScopeJSON: string(request.Scope), LimitsJSON: approvalJSON(limits), CreatedAt: now, Deadline: approvalScanDeadline(now, len(targets), approvalSlots()), Total: len(targets)}, Targets: targets, Now: now, DailyInputLimit: cfg.DailyInput, DailyOutputLimit: cfg.DailyOutput, TargetInputLimit: approval.TargetInputTokens, TargetOutputLimit: approval.TargetOutputTokens})
 	if err != nil {
 		approvalError(w, err)
 		return
@@ -395,9 +443,18 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 	if replayed {
 		status = 200
 	}
+	s.approvalWake.signal()
 	w.Header().Set("Location", "/api/v1/approval-scans/"+scan.ID)
 	w.Header().Set("Retry-After", "2")
 	writeV1JSON(w, status, approvalScanDTO(*scan))
+}
+
+// approvalScanDeadline gives queued targets time for every wave of slots, plus
+// one target's duration and a queue allowance.
+func approvalScanDeadline(now time.Time, targets, slots int) time.Time {
+	slots = max(slots, 1)
+	waves := (targets + slots - 1) / slots
+	return now.Add(time.Duration(waves)*approvalTargetDuration + approvalTargetDuration + 10*time.Minute)
 }
 
 func (s *Server) approvalResponse(target db.ApprovalTarget, detail bool) approvalTargetResponse {
@@ -438,11 +495,12 @@ func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target
 	if !exists {
 		return approvalTargetResponse{}, false
 	}
-	read := s.approvalPR
+	var pr *gh.PullRequest
 	if target.Decision == "candidate" {
-		read = s.approvalLivePR
+		pr, err = s.approvalLivePR(ctx, target.Owner, target.Repo, target.Number)
+	} else {
+		pr, err = s.approvalPR(ctx, target.Owner, target.Repo, target.Number, approvalPRFreshness)
 	}
-	pr, err := read(ctx, target.Owner, target.Repo, target.Number)
 	if err != nil || pr.GetBase().GetRepo().GetID() != target.RepositoryID {
 		return approvalTargetResponse{}, false
 	}
@@ -626,7 +684,7 @@ func approvalViewerMatches(user *db.User, id int64, login string) bool {
 // approvalCheckConcurrency bounds the GitHub reads admission makes in parallel;
 // the reads are independent per PR, and a serial pass over a full scan took
 // most of a minute.
-const approvalCheckConcurrency = 8
+const approvalCheckConcurrency = 16
 
 type approvalCheck struct {
 	pr         *gh.PullRequest
@@ -651,6 +709,7 @@ func (s *Server) fetchApprovalChecks(ctx context.Context, targets []approval.Tar
 			c := &checks[i]
 			c.pr, _, c.prErr = s.ghClient.GetPR(ctx, target.Owner, target.Repo, target.Number)
 			if c.prErr == nil {
+				s.approvalPRs.put(approvalPRKey(target.Owner, target.Repo, target.Number), c.pr, time.Now())
 				c.reviews, c.reviewsErr = s.ghClient.ListAllReviews(ctx, target.Owner, target.Repo, target.Number)
 			}
 		}(i, target)

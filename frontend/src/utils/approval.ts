@@ -9,7 +9,7 @@ export function approvalScope(prs: PR[], filters: PRFilterCriteria, username?: s
     const key = approvalKey(pr);
     if (seen.has(key)) return false;
     seen.add(key);
-    return !pr.is_mine && !pr.hidden && !pr.draft && (!pr.pr_state || pr.pr_state === 'open') &&
+    return !pr.is_mine && !pr.hidden && (!pr.pr_state || pr.pr_state === 'open') &&
       !(pr.my_review_status === 'APPROVED' && pr.my_review_commit_sha === pr.commit_sha) && /^[0-9a-f]{40}$/i.test(pr.commit_sha);
   });
 }
@@ -50,18 +50,23 @@ export function reconcileApprovalTarget(target: ApprovalTarget, pr: PR, latest?:
       current.valid_until = target.valid_until;
     }
   }
-  let reason = '';
-  if (latest && latest.target_id !== target.target_id) reason = 'superseded';
-  else if (pr.commit_sha !== target.revision) reason = 'head_changed';
-  else if (pr.hidden) reason = 'hidden';
-  else if (pr.draft) reason = 'draft';
-  else if (pr.pr_state && pr.pr_state !== 'open') reason = 'closed';
-  else if (pr.is_mine) reason = 'self_authored';
-  else if (pr.ci_state === 'failure') reason = 'ci_failed';
-  else if (pr.ci_state === 'pending') reason = 'ci_pending';
-  else if (pr.review_decision === 'CHANGES_REQUESTED' || pr.my_review_status === 'CHANGES_REQUESTED') reason = 'human_changes_requested';
-  else if (['pending', 'generating', 'agent_reviewing'].includes(pr.status)) reason = 'review_in_progress';
-  else if (pr.my_review_status === 'APPROVED' && pr.my_review_commit_sha === pr.commit_sha) reason = 'already_approved';
+  // A non-candidate already decided on a condition is not changed by observing it again.
+  const assessed = new Set(target.decision === 'candidate' ? [] : current.reason_codes || []);
+  const unlisted = (reason: string) => !assessed.has(reason);
+  const observed: [boolean, string][] = [
+    [!!latest && latest.target_id !== target.target_id, 'superseded'],
+    [pr.commit_sha !== target.revision, 'head_changed'],
+    [!!pr.hidden, 'hidden'],
+    [!!pr.draft && unlisted('pr_draft'), 'draft'],
+    [!!pr.pr_state && pr.pr_state !== 'open', 'closed'],
+    [!!pr.is_mine, 'self_authored'],
+    [pr.ci_state === 'failure' && unlisted('ci_failed'), 'ci_failed'],
+    [pr.ci_state === 'pending' && unlisted('ci_pending'), 'ci_pending'],
+    [(pr.review_decision === 'CHANGES_REQUESTED' || pr.my_review_status === 'CHANGES_REQUESTED') && unlisted('human_changes_requested'), 'human_changes_requested'],
+    [['pending', 'generating', 'agent_reviewing'].includes(pr.status) && unlisted('review_in_progress'), 'review_in_progress'],
+    [pr.my_review_status === 'APPROVED' && pr.my_review_commit_sha === pr.commit_sha, 'already_approved'],
+  ];
+  const reason = observed.find(([seen]) => seen)?.[1];
   if (reason) return { ...current, freshness_state: 'stale', reason_codes: Array.from(new Set([...(current.reason_codes || []), reason])) };
   return current;
 }

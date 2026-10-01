@@ -59,6 +59,19 @@ func TestCollectorStandingHumanOpinionSurvivesComment(t *testing.T) {
 	}
 }
 
+func TestCollectorDraftStaysEligible(t *testing.T) {
+	c, remote := fixtureCollector()
+	ready := collectFixture(t, c)
+	remote.PR.Draft = gh.Bool(true)
+	s := collectFixture(t, c)
+	if !s.Eligible || !s.Draft || len(s.ExclusionReasons) != 0 {
+		t.Fatalf("draft excluded: %+v", s)
+	}
+	if s.Digest == ready.Digest {
+		t.Fatal("draft state did not change the digest")
+	}
+}
+
 func TestCollectorAuthenticCopilotCommentReviewAndSpoof(t *testing.T) {
 	c, remote := fixtureCollector()
 	head := remote.PR.GetHead().GetSHA()

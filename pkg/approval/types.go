@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-const PolicyVersion = "approval-v2"
-const PromptVersion = "approval-v1"
-const RuntimeVersion = "native-tools-v1"
+const PolicyVersion = "approval-v3"
+const PromptVersion = "approval-v2"
+const RuntimeVersion = "preloaded-v1"
 
 type Target struct {
 	Owner           string `json:"owner"`
@@ -123,6 +123,7 @@ type Snapshot struct {
 	HumanChangesRequested    bool       `json:"human_changes_requested"`
 	ProviderChangesRequested bool       `json:"provider_changes_requested"`
 	ReviewInProgress         bool       `json:"review_in_progress"`
+	Draft                    bool       `json:"draft"`
 	Sources                  []Source   `json:"sources"`
 	Evidence                 []Evidence `json:"evidence"`
 	Concerns                 []Concern  `json:"concerns"`
@@ -148,6 +149,8 @@ type Assessment struct {
 	Model          string                `json:"model"`
 	AssessedAt     time.Time             `json:"assessed_at"`
 	Usage          Usage                 `json:"usage"`
+	Origin         string                `json:"origin,omitempty"`
+	ReusedFrom     string                `json:"reused_from,omitempty"`
 }
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`

@@ -1,11 +1,9 @@
 package approval
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -16,6 +14,9 @@ type ModelConfig struct {
 	APIKey   string
 	BaseURL  string
 	Client   *http.Client
+	// ReasoningTokens is the OpenRouter reasoning budget per call, with the
+	// reasoning text excluded from the reply; zero sends no reasoning setting.
+	ReasoningTokens int
 }
 type modelCall struct {
 	ID        string
@@ -23,10 +24,11 @@ type modelCall struct {
 	Arguments json.RawMessage
 }
 type modelReply struct {
-	Text  string
-	Calls []modelCall
-	Usage Usage
-	Raw   json.RawMessage
+	Text      string
+	Calls     []modelCall
+	Usage     Usage
+	Raw       json.RawMessage
+	Reasoning int
 }
 
 const maxReportedModelTokens = 1_000_000_000
@@ -85,42 +87,17 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int, al
 		if !allowTools {
 			body["tool_choice"] = "none"
 		}
+		if c.ReasoningTokens > 0 {
+			body["reasoning"] = map[string]any{"max_tokens": c.ReasoningTokens, "exclude": true}
+		}
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
 		return reply, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	raw, err := c.post(ctx, endpoint, data)
 	if err != nil {
 		return reply, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.Provider == "anthropic" {
-		req.Header.Set("x-api-key", c.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	} else {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
-	client := c.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	boundedClient := *client
-	boundedClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := boundedClient.Do(req)
-	if err != nil {
-		return reply, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
-	if err != nil {
-		return reply, err
-	}
-	if len(raw) > 2*1024*1024 {
-		return reply, fmt.Errorf("model response too large")
-	}
-	if resp.StatusCode != 200 {
-		return reply, fmt.Errorf("model HTTP status %d", resp.StatusCode)
 	}
 	if c.Provider == "anthropic" {
 		var r struct {
@@ -179,8 +156,11 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int, al
 		var r struct {
 			Model string `json:"model"`
 			Usage *struct {
-				Input  int `json:"prompt_tokens"`
-				Output int `json:"completion_tokens"`
+				Input   int `json:"prompt_tokens"`
+				Output  int `json:"completion_tokens"`
+				Details *struct {
+					Reasoning int `json:"reasoning_tokens"`
+				} `json:"completion_tokens_details"`
 			} `json:"usage"`
 			Choices []struct {
 				Finish  string `json:"finish_reason"`
@@ -217,6 +197,9 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int, al
 		}
 		reply.Text = ch.Message.Content
 		reply.Usage = Usage{InputTokens: r.Usage.Input, OutputTokens: r.Usage.Output, Rounds: 1}
+		if r.Usage.Details != nil {
+			reply.Reasoning = r.Usage.Details.Reasoning
+		}
 		for _, call := range ch.Message.Calls {
 			if call.Type != "function" {
 				return reply, fmt.Errorf("unsupported tool type")

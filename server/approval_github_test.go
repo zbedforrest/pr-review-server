@@ -53,7 +53,7 @@ func TestApprovalPRCacheSharesReadsWithinTheFreshnessWindow(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := c.get(context.Background(), "o/r#7", now, fetch); err != nil {
+			if _, err := c.get(context.Background(), "o/r#7", now, approvalPRFreshness, fetch); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -61,13 +61,13 @@ func TestApprovalPRCacheSharesReadsWithinTheFreshnessWindow(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	close(release)
 	wg.Wait()
-	if _, err := c.get(context.Background(), "o/r#7", now.Add(approvalPRFreshness/2), fetch); err != nil {
+	if _, err := c.get(context.Background(), "o/r#7", now.Add(approvalPRFreshness/2), approvalPRFreshness, fetch); err != nil {
 		t.Fatal(err)
 	}
 	if n := fetches.Load(); n != 1 {
 		t.Fatalf("%d fetches for concurrent and fresh reads, want 1", n)
 	}
-	if _, err := c.get(context.Background(), "o/r#7", now.Add(approvalPRFreshness), fetch); err != nil {
+	if _, err := c.get(context.Background(), "o/r#7", now.Add(approvalPRFreshness), approvalPRFreshness, fetch); err != nil {
 		t.Fatal(err)
 	}
 	if n := fetches.Load(); n != 2 {
@@ -86,10 +86,10 @@ func TestApprovalPRCacheDoesNotCacheFailures(t *testing.T) {
 		return &gh.PullRequest{}, nil
 	}
 	now := time.Now()
-	if _, err := c.get(context.Background(), "k", now, fetch); err == nil {
+	if _, err := c.get(context.Background(), "k", now, approvalPRFreshness, fetch); err == nil {
 		t.Fatal("want the first error")
 	}
-	if _, err := c.get(context.Background(), "k", now, fetch); err != nil || calls != 2 {
+	if _, err := c.get(context.Background(), "k", now, approvalPRFreshness, fetch); err != nil || calls != 2 {
 		t.Fatalf("err=%v calls=%d, want a fresh fetch after a failure", err, calls)
 	}
 }

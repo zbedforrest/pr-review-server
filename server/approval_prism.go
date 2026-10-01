@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"pr-review-server/db"
 	"pr-review-server/gcs"
@@ -45,8 +46,9 @@ func (s *Server) collectApprovalPRism(ctx context.Context, target approval.Targe
 			history.Errors = []string{"review history read failed"}
 			return sources, evidence, concerns, endpoints, fmt.Errorf("review history read failed")
 		}
+		sidecars := s.approvalSidecars(ctx, runs, target)
 		for _, run := range runs {
-			if seen[run.RunID] || !approvalArtifactID.MatchString(run.RunID) || !approvalArtifactSHA.MatchString(run.CommitSHA) || !strings.EqualFold(run.RepoOwner, target.Owner) || !strings.EqualFold(run.RepoName, target.Repo) || run.PRNumber != target.Number {
+			if seen[run.RunID] || !approvalRunIdentity(run, target) {
 				history.Errors = []string{"invalid review run identity or pagination"}
 				return sources, evidence, concerns, endpoints, fmt.Errorf("invalid review run identity")
 			}
@@ -66,7 +68,11 @@ func (s *Server) collectApprovalPRism(ctx context.Context, target approval.Targe
 					ep.Complete = false
 					ep.Errors = []string{"immutable sidecar unavailable"}
 				} else {
-					body, fetchErr := s.fetchReviewBytes(ctx, run.JSONPath)
+					read, fetched := sidecars[run.JSONPath]
+					body, fetchErr := read.body, read.err
+					if !fetched {
+						fetchErr = fmt.Errorf("sidecar not fetched")
+					}
 					totalBytes += len(body)
 					if fetchErr != nil {
 						ep.Complete = false
@@ -162,6 +168,107 @@ func (s *Server) collectApprovalPRism(ctx context.Context, target approval.Targe
 	history.Truncated = true
 	history.Errors = []string{"review history page limit exceeded"}
 	return sources, evidence, concerns, endpoints, fmt.Errorf("review history limit exceeded")
+}
+
+func approvalRunIdentity(run db.ReviewRun, target approval.Target) bool {
+	return approvalArtifactID.MatchString(run.RunID) && approvalArtifactSHA.MatchString(run.CommitSHA) && strings.EqualFold(run.RepoOwner, target.Owner) && strings.EqualFold(run.RepoName, target.Repo) && run.PRNumber == target.Number
+}
+
+type approvalSidecarRead struct {
+	body []byte
+	err  error
+}
+
+const (
+	approvalSidecarFetches    = 4
+	approvalSidecarCacheBytes = 64 << 20
+)
+
+// approvalSidecars reads the immutable sidecars of a page's completed runs a
+// few at a time, from the shared cache when possible, and starts no download
+// once the page has read the PRism byte ceiling.
+func (s *Server) approvalSidecars(ctx context.Context, runs []db.ReviewRun, target approval.Target) map[string]approvalSidecarRead {
+	out := map[string]approvalSidecarRead{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, approvalSidecarFetches)
+	total := 0
+	record := func(path string, read approvalSidecarRead) {
+		mu.Lock()
+		out[path] = read
+		total += len(read.body)
+		mu.Unlock()
+	}
+	for _, run := range runs {
+		if run.Status != db.ReviewRunStatusCompleted || !approvalRunIdentity(run, target) || run.JSONPath != gcs.ReviewRunJSONFileName(run.RepoOwner, run.RepoName, run.PRNumber, run.CommitSHA, run.RunID) {
+			continue
+		}
+		path := run.JSONPath
+		if body, ok := s.approvalSidecarCache.get(path); ok {
+			record(path, approvalSidecarRead{body: body})
+			continue
+		}
+		sem <- struct{}{}
+		mu.Lock()
+		_, started := out[path]
+		full := total > 8<<20
+		if !started && !full {
+			out[path] = approvalSidecarRead{err: fmt.Errorf("sidecar read pending")}
+		}
+		mu.Unlock()
+		if started || full {
+			<-sem
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			body, err := s.fetchReviewBytes(ctx, path)
+			if err == nil && len(body) <= 2<<20 {
+				s.approvalSidecarCache.put(path, body)
+			}
+			record(path, approvalSidecarRead{body: body, err: err})
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+// approvalSidecarCache keeps recently read sidecars, which never change once
+// written, so a candidate's re-collection does not download them again.
+type approvalSidecarCache struct {
+	mu      sync.Mutex
+	entries map[string][]byte
+	order   []string
+	bytes   int
+}
+
+func (c *approvalSidecarCache) get(path string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	body, ok := c.entries[path]
+	return body, ok
+}
+
+func (c *approvalSidecarCache) put(path string, body []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = map[string][]byte{}
+	}
+	if _, ok := c.entries[path]; ok {
+		return
+	}
+	c.entries[path] = body
+	c.order = append(c.order, path)
+	c.bytes += len(body)
+	for c.bytes > approvalSidecarCacheBytes && len(c.order) > 0 {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		c.bytes -= len(c.entries[oldest])
+		delete(c.entries, oldest)
+	}
 }
 
 func (s *Server) approvalFallbackAllowed(models []payload.ModelUse) bool {

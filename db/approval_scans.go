@@ -68,6 +68,7 @@ type ApprovalTarget struct {
 	BudgetDay        string     `json:"-"`
 	ReservedInput    int64      `json:"-"`
 	ReservedOutput   int64      `json:"-"`
+	BudgetDeferred   bool       `json:"-"`
 	ObservedChangeAt *time.Time `json:"-"`
 	ValidatedAt      *time.Time `json:"validated_at"`
 	ValidUntil       *time.Time `json:"valid_until"`
@@ -90,6 +91,8 @@ type ApprovalClaim struct {
 	MaxSlots                      int
 	// MaxPerUser caps one user's concurrent targets; zero means one.
 	MaxPerUser int
+	// MaxClaims caps the targets one claim takes; zero means one.
+	MaxClaims int
 }
 
 type ApprovalFinalization struct {
@@ -115,6 +118,9 @@ type ApprovalUsageReservation struct {
 	ID     string
 	Usage  ApprovalUsage
 	Limits ApprovalUsage
+	// Carry is tool and citation usage settled in process since the last
+	// durable write; it is added to the target before the limits are checked.
+	Carry ApprovalUsage
 }
 
 type ApprovalValidation struct {
@@ -135,6 +141,8 @@ type ApprovalStore interface {
 	ListApprovalTargets(int, string, int, string) ([]ApprovalTarget, error)
 	ListCurrentApprovalTargets(int, int, string) ([]ApprovalTarget, error)
 	ClaimApprovalTarget(ApprovalClaim) (*ApprovalTarget, error)
+	ClaimApprovalTargets(ApprovalClaim) ([]ApprovalTarget, error)
+	FlushApprovalUsage(string, string, time.Time, ApprovalUsage) error
 	HeartbeatApprovalTarget(string, string, time.Time, time.Duration) error
 	SetApprovalTargetStage(string, string, string, time.Time) error
 	SetApprovalTargetProgress(string, string, string, time.Time) error
@@ -152,4 +160,10 @@ type ApprovalStore interface {
 	InvalidateApprovalTargets(string, string, int, string, time.Time) error
 	InvalidateUserApprovalTargets(int, string, string, int, string, time.Time) error
 	PruneApprovalScans(time.Time) (int64, error)
+	RecordApprovalReuse(int, string, string, time.Time) error
+	FindApprovalReuse(int, string) (*ApprovalReuse, error)
+}
+
+type ApprovalReuse struct {
+	TargetID, AssessmentJSON string
 }
