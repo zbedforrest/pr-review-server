@@ -36,7 +36,7 @@ func approvalWorkerFixture(t *testing.T) (*Server, *db.GormDB, db.ApprovalTarget
 	t.Setenv("APPROVAL_CANDIDATES_PROVIDER", "anthropic")
 	t.Setenv("APPROVAL_CANDIDATES_MODEL", "fixture-model")
 	t.Setenv("APPROVAL_CANDIDATES_DAILY_INPUT_TOKENS", "60000000")
-	t.Setenv("APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS", "1000000")
+	t.Setenv("APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS", "4000000")
 	s, store := newTestServer(t, "alice")
 	t.Cleanup(func() { _ = store.Close() })
 	s.cfg.AnthropicAPIKey = "fixture-key"

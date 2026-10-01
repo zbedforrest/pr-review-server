@@ -84,7 +84,7 @@ func (b *approvalBudget) Reserve(ctx context.Context, u approval.Usage) error {
 		return err
 	}
 	id := approvalID()
-	err := b.store.ReserveApprovalUsage(b.target.ID, b.target.LeaseToken, time.Now(), db.ApprovalUsageReservation{ID: id, Usage: approvalUsage(u), Limits: db.ApprovalUsage{InputTokens: approval.TargetInputTokens, OutputTokens: approval.TargetOutputTokens, Rounds: approval.MaxRounds, ToolCalls: approval.MaxToolCalls, ToolBytes: approval.MaxToolBytes}})
+	err := b.store.ReserveApprovalUsage(b.target.ID, b.target.LeaseToken, time.Now(), db.ApprovalUsageReservation{ID: id, Usage: approvalUsage(u), Limits: db.ApprovalUsage{InputTokens: approval.TargetInputTokens, OutputTokens: approval.TargetOutputTokens, Rounds: approval.MaxRounds, ToolCalls: approval.MaxToolCalls + approval.MaxCitationReads, ToolBytes: approval.MaxToolBytes + approval.MaxCitationBytes}})
 	if err == nil {
 		b.reservation = id
 	}
@@ -136,7 +136,7 @@ func (s *Server) approvalValidationAvailable() bool {
 // evidence collection to the final answer; approvalWorkerSlots is how many
 // run at once across the deployment.
 const (
-	approvalTargetDuration = 3 * time.Minute
+	approvalTargetDuration = 5 * time.Minute
 	approvalWorkerSlots    = 4
 	approvalSlotsPerUser   = 2
 	// approvalIdleClaimEvery spaces a worker's claims when there is no work:

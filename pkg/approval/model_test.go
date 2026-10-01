@@ -144,7 +144,7 @@ func TestToolBoundary(t *testing.T) {
 	}
 }
 
-func TestNativeRejectsClassificationsWithoutReadingArtifactBodies(t *testing.T) {
+func TestNativeNeverAcceptsAnAnswerBeforeTheModelSawEveryArtifactBody(t *testing.T) {
 	for _, listed := range []bool{false, true} {
 		t.Run(fmt.Sprint("listed=", listed), func(t *testing.T) {
 			s, a := validFixture()
@@ -152,22 +152,27 @@ func TestNativeRejectsClassificationsWithoutReadingArtifactBodies(t *testing.T) 
 			s.Digest = SnapshotDigest(s)
 			a.SnapshotDigest = s.Digest
 			payload, _ := json.Marshal(a)
-			calls := 0
+			calls, answeredWithBody := 0, 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
+				var request map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&request)
+				raw, _ := json.Marshal(request["messages"])
 				content := []any{map[string]any{"type": "text", "text": string(payload)}}
 				stop := "end_turn"
 				if listed && calls == 1 {
 					content = []any{map[string]any{"type": "tool_use", "id": "list", "name": "list_evidence", "input": map[string]any{}}}
 					stop = "tool_use"
+				} else if strings.Contains(string(raw), "permits unauthorized access") {
+					answeredWithBody++
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"model": "model", "stop_reason": stop, "content": content, "usage": map[string]int{"input_tokens": 100, "output_tokens": 100}})
 			}))
 			defer server.Close()
 			n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture", BaseURL: server.URL}}
 			_, err := n.Investigate(context.Background(), s, nil, &testBudget{})
-			if err == nil || !strings.Contains(err.Error(), "unread evidence artifact") {
-				t.Fatalf("unread blocker accepted: %v", err)
+			if err == nil && answeredWithBody == 0 {
+				t.Fatal("an answer was accepted before the model was shown the critical artifact body")
 			}
 		})
 	}
@@ -288,8 +293,8 @@ func TestNativeCorrectsAnAnswerThatSkippedRequiredEvidence(t *testing.T) {
 		stop := "end_turn"
 		switch calls {
 		case 2:
-			if !strings.Contains(string(raw), "not yet read with read_evidence: "+s.Evidence[0].ID) {
-				t.Errorf("correction did not name the unread artifact: %s", raw)
+			if !strings.Contains(string(raw), "were not yet read") || !strings.Contains(string(raw), `\"id\":\"`+s.Evidence[0].ID+`\"`) {
+				t.Errorf("correction did not supply the unread artifact: %s", raw)
 			}
 			content = []any{map[string]any{"type": "tool_use", "id": "read", "name": "read_evidence", "input": map[string]any{"evidence_ids": []string{s.Evidence[0].ID}}}}
 			stop = "tool_use"
@@ -466,5 +471,39 @@ func TestNativeAsksForTheAnswerWithoutToolsWhenAlmostOutOfRounds(t *testing.T) {
 				t.Fatalf("final answer not accepted: %+v %v", got, err)
 			}
 		})
+	}
+}
+
+func TestStripCodeFence(t *testing.T) {
+	for in, want := range map[string]string{
+		"```json\n{\"a\":1}\n```": `{"a":1}`,
+		"```\n{\"a\":1}```":       `{"a":1}`,
+		`{"a":1}`:                 `{"a":1}`,
+	} {
+		if got := stripCodeFence(in); got != want {
+			t.Errorf("stripCodeFence(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNativeAnswersToolCallsAfterToolsCloseInsteadOfFailing(t *testing.T) {
+	s, a := validFixture()
+	payload, _ := json.Marshal(a)
+	calls := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		content := []any{map[string]any{"type": "text", "text": "```json\n" + string(payload) + "\n```"}}
+		stop := "end_turn"
+		if calls == 1 {
+			content = []any{map[string]any{"type": "tool_use", "id": "late", "name": "list_evidence", "input": map[string]any{}}}
+			stop = "tool_use"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": "model", "stop_reason": stop, "content": content, "usage": map[string]int{"input_tokens": 100, "output_tokens": 100}})
+	}))
+	defer remote.Close()
+	n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture", BaseURL: remote.URL}, InitialUsage: Usage{Rounds: MaxRounds - 2}}
+	got, err := n.Investigate(context.Background(), s, nil, &testBudget{})
+	if err != nil || got.Decision != "candidate" || calls != 2 {
+		t.Fatalf("late tool call should be answered and the fenced answer accepted: %+v %v calls=%d", got, err, calls)
 	}
 }

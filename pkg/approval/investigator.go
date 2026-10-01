@@ -37,6 +37,8 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 	evidenceLimited := false
 	answered := map[string]bool{}
 	finalizing := false
+	var citationUsage Usage
+	closedToolReplies, suppliedUnread := 0, false
 	messages := []any{map[string]any{"role": "user", "content": "Investigate the frozen target using list_evidence and the registered reads. Return the complete assessment JSON."}}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -72,10 +74,16 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 		}
 		usage = addUsage(usage, reply.Usage)
 		if finalizing && len(reply.Calls) > 0 {
-			return result, investigationLimit(LimitBudget, "the model kept requesting tools after the final answer was requested")
+			if closedToolReplies++; closedToolReplies > 1 {
+				return result, investigationLimit(LimitBudget, "the model kept requesting tools after the final answer was requested")
+			}
+			messages = append(messages, n.assistantMessage(reply))
+			messages = n.closedToolResults(messages, reply.Calls)
+			continue
 		}
 		if len(reply.Calls) == 0 {
 			correct := func(problem error) bool {
+				log.Printf("[APPROVAL] answer rejected after %d rounds (correction %d): %.300s", usage.Rounds, corrections+1, problem.Error())
 				if corrections >= maxAssessmentCorrections {
 					return false
 				}
@@ -90,17 +98,19 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 				}
 			}
 			if len(unread) > 0 {
+				if !suppliedUnread {
+					suppliedUnread = true
+					log.Printf("[APPROVAL] answer omitted %d unread artifacts; supplying them", len(unread))
+					messages = append(messages, n.assistantMessage(reply), map[string]any{"role": "user", "content": unreadEvidenceText("The answer skipped evidence you have not read. Read these artifacts and return the complete assessment JSON again, classifying every artifact.", s, readEvidence)})
+					continue
+				}
 				if evidenceLimited {
 					return result, investigationLimit(LimitEvidence, "required evidence artifact %s could not be read within the tool result limit", unread[0])
-				}
-				problem := fmt.Errorf("evidence artifacts not yet read with read_evidence: %s", strings.Join(unread, ", "))
-				if correct(problem) {
-					continue
 				}
 				return result, fmt.Errorf("invalid_assessment: unread evidence artifact %s", unread[0])
 			}
 			result = Assessment{}
-			if err := decodeStrict([]byte(reply.Text), &result); err != nil {
+			if err := decodeStrict([]byte(stripCodeFence(reply.Text)), &result); err != nil {
 				if correct(fmt.Errorf("the reply was not a valid assessment JSON object (%v)", err)) {
 					continue
 				}
@@ -116,19 +126,20 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			result.AssessedAt = time.Now().UTC()
 			result.Usage = usage
 			reportActivity(ctx, Activity{Stage: "citations", Round: usage.Rounds, ToolCalls: usage.ToolCalls})
-			if err := validateCitations(ctx, s, validationRepository{repo, budget, &usage}, &result); err != nil {
+			if err := validateCitations(ctx, s, validationRepository{repo, budget, &citationUsage}, &result); err != nil {
 				if !errors.Is(err, ErrInvestigationLimit) && correct(fmt.Errorf("citation validation failed: %w", err)) {
 					continue
 				}
 				return result, fmt.Errorf("invalid_assessment: %w", err)
 			}
+			downgradeUnsupportedDiscoveries(s, &result)
 			if err := ValidateAssessment(s, result); err != nil {
 				if correct(fmt.Errorf("assessment validation failed: %w", err)) {
 					continue
 				}
 				return result, fmt.Errorf("invalid_assessment: %w", err)
 			}
-			result.Usage = usage
+			result.Usage = addUsage(usage, citationUsage)
 			return Evaluate(s, result), nil
 		}
 		messages = append(messages, n.assistantMessage(reply))
@@ -142,7 +153,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			if usage.ToolCalls >= MaxToolCalls || usage.ToolBytes >= MaxToolBytes {
 				return result, investigationLimit(LimitBudget, "%d tool calls and %d tool bytes used", usage.ToolCalls, usage.ToolBytes)
 			}
-			reserved := Usage{ToolCalls: 1, ToolBytes: 65536}
+			reserved := Usage{ToolCalls: 1, ToolBytes: maxToolResultBytes}
 			if usage.ToolBytes+reserved.ToolBytes > MaxToolBytes {
 				return result, investigationLimit(LimitBudget, "%d tool bytes used", usage.ToolBytes)
 			}
@@ -220,6 +231,9 @@ func (n NativeInvestigator) assistantMessage(reply modelReply) any {
 	return reply.Raw
 }
 
+// validationRepository reads cited code for citation checks. Reads are
+// charged to the durable budget but counted against their own allowance, not
+// the model's tool calls.
 type validationRepository struct {
 	repository Repository
 	budget     Budget
@@ -230,10 +244,10 @@ func (r validationRepository) Read(ctx context.Context, name string, req ReadReq
 	if r.repository == nil {
 		return ReadResult{}, fmt.Errorf("repository unavailable")
 	}
-	if r.usage.ToolCalls >= 40 || r.usage.ToolBytes+65536 > 1024*1024 {
-		return ReadResult{}, investigationLimit(LimitBudget, "citation validation needed more than the remaining tool budget")
+	if r.usage.ToolCalls >= MaxCitationReads || r.usage.ToolBytes+maxToolResultBytes > MaxCitationBytes {
+		return ReadResult{}, investigationLimit(LimitBudget, "citation validation needed more than %d reads", MaxCitationReads)
 	}
-	reserved := Usage{ToolCalls: 1, ToolBytes: 65536}
+	reserved := Usage{ToolCalls: 1, ToolBytes: maxToolResultBytes}
 	if err := r.budget.Reserve(ctx, reserved); err != nil {
 		return ReadResult{}, err
 	}
@@ -241,7 +255,7 @@ func (r validationRepository) Read(ctx context.Context, name string, req ReadReq
 	if err != nil {
 		return result, err
 	}
-	if len(result.Text) > 65536 {
+	if len(result.Text) > maxToolResultBytes {
 		return ReadResult{}, fmt.Errorf("tool result limit exceeded")
 	}
 	actual := Usage{ToolCalls: 1, ToolBytes: len(result.Text)}
@@ -255,7 +269,7 @@ func (r validationRepository) Read(ctx context.Context, name string, req ReadReq
 // finalizeReserve is the time left on the target clock at which the
 // investigator stops reading and asks for the answer; it covers one long
 // final reply plus citation validation.
-const finalizeReserve = 75 * time.Second
+const finalizeReserve = 2 * time.Minute
 
 func (n NativeInvestigator) shouldFinalize(ctx context.Context, usage Usage) bool {
 	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < finalizeReserve {
@@ -265,9 +279,15 @@ func (n NativeInvestigator) shouldFinalize(ctx context.Context, usage Usage) boo
 }
 
 // finalRequest asks for the assessment now and supplies any evidence the
-// model has not read, so the every-artifact rule still holds; it marks that
-// evidence read.
+// model has not read, so the every-artifact rule still holds.
 func finalRequest(s Snapshot, read map[string]bool) string {
+	return unreadEvidenceText("Time is nearly up. Stop reading and return the complete assessment JSON now from what you have. Report anything you could not verify in coverage_gaps or with an uncertain disposition; do not guess.", s, read)
+}
+
+// unreadEvidenceText appends the artifacts the model has not read to text and
+// marks them read: the server hands them over directly when a read could not
+// (tool result limits) or there is no time left to request them.
+func unreadEvidenceText(text string, s Snapshot, read map[string]bool) string {
 	var unread []Evidence
 	for _, e := range s.Evidence {
 		if !read[e.ID] {
@@ -275,12 +295,11 @@ func finalRequest(s Snapshot, read map[string]bool) string {
 			read[e.ID] = true
 		}
 	}
-	text := "Time is nearly up. Stop reading and return the complete assessment JSON now from what you have. Report anything you could not verify in coverage_gaps or with an uncertain disposition; do not guess."
-	if len(unread) > 0 {
-		body, _ := json.Marshal(unread)
-		text += " These evidence artifacts were not yet read; classify each of them:\n" + string(body)
+	if len(unread) == 0 {
+		return text
 	}
-	return text
+	body, _ := json.Marshal(unread)
+	return text + " These evidence artifacts were not yet read; classify each of them:\n" + string(body)
 }
 
 // appendUserText adds text to the trailing user turn (tool results), or as a
@@ -295,4 +314,35 @@ func appendUserText(messages []any, text string) []any {
 		}
 	}
 	return append(messages, map[string]any{"role": "user", "content": text})
+}
+
+// closedToolResults answers tool calls made after tools were closed, keeping
+// the provider's call/result pairing valid while telling the model to answer.
+func (n NativeInvestigator) closedToolResults(messages []any, calls []modelCall) []any {
+	const closed = `{"error":"Tools are closed. Return the complete assessment JSON now."}`
+	if n.Config.Provider == "anthropic" {
+		results := []any{}
+		for _, call := range calls {
+			results = append(results, map[string]any{"type": "tool_result", "tool_use_id": call.ID, "content": closed, "is_error": true})
+		}
+		return append(messages, map[string]any{"role": "user", "content": results})
+	}
+	for _, call := range calls {
+		messages = append(messages, map[string]any{"role": "tool", "tool_call_id": call.ID, "content": closed})
+	}
+	return messages
+}
+
+// stripCodeFence removes one surrounding markdown code fence, which some
+// models add around a JSON answer despite instructions.
+func stripCodeFence(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "```") {
+		return text
+	}
+	trimmed = strings.TrimPrefix(trimmed, "```")
+	if newline := strings.IndexByte(trimmed, '\n'); newline >= 0 {
+		trimmed = trimmed[newline+1:]
+	}
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(trimmed), "```"))
 }

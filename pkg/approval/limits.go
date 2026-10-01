@@ -20,11 +20,17 @@ const (
 // input allowance, and both sit well inside the model's 1M-token context.
 const (
 	TargetInputTokens  = 6_000_000
-	TargetOutputTokens = 100_000
+	TargetOutputTokens = 400_000
 	CallInputTokens    = 400_000
-	MaxRounds          = 30
+	MaxRounds          = 60
 	MaxToolCalls       = 80
 	MaxToolBytes       = 8 << 20
+	// Citation checks read the cited code after the model answers; they get
+	// their own allowance so a long investigation cannot starve them.
+	MaxCitationReads = 200
+	MaxCitationBytes = 8 << 20
+	// maxToolResultBytes bounds one tool result returned to the model.
+	maxToolResultBytes = 65536
 
 	maxConversationBytes = 1_200_000
 )
