@@ -151,6 +151,7 @@ type Assessment struct {
 	Usage          Usage                 `json:"usage"`
 	Origin         string                `json:"origin,omitempty"`
 	ReusedFrom     string                `json:"reused_from,omitempty"`
+	Score          *Score                `json:"score,omitempty"`
 }
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`

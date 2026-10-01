@@ -34,6 +34,7 @@ type approvalTargetResponse struct {
 	ReasonCodes []string             `json:"reason_codes"`
 	Snapshot    *approval.Snapshot   `json:"snapshot,omitempty"`
 	Assessment  *approval.Assessment `json:"assessment"`
+	Score       *approval.Score      `json:"score,omitempty"`
 	Sources     []approval.Source    `json:"sources"`
 }
 
@@ -478,6 +479,7 @@ func (s *Server) approvalResponse(target db.ApprovalTarget, detail bool) approva
 			if len(assessment.Sources) > 0 {
 				response.Sources = assessment.Sources
 			}
+			response.Score = assessment.Score
 			if detail {
 				response.Assessment = &assessment
 			}

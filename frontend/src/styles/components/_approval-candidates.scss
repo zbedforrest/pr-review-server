@@ -126,3 +126,8 @@
   .approval-prism-fill { transition: none; }
   .approval-prism-status::after, .approval-prism-beam, .approval-prism-spectrum, .approval-prism-spectrum path, .approval-prism-dot { animation: none; }
 }
+.approval-score { display: inline-block; min-width: 2.2rem; margin-right: .5rem; padding: .1rem .35rem; border-radius: 10px; text-align: center; font-size: .75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.approval-score--high { background: var(--bg-success-dim); color: var(--success); }
+.approval-score--mid { background: var(--bg-warning-dim); color: var(--warning); }
+.approval-score--low { background: var(--bg-danger-dim); color: var(--danger); }
+.approval-score-breakdown { margin: .8rem 0; td small { margin-top: .2rem; } }

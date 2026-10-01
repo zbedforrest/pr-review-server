@@ -19,6 +19,7 @@ type ApprovalConfig struct {
 	Provider          string
 	Model             string
 	ReasoningTokens   int
+	ScoreCutoff       float64
 	APIKey            string
 	CacheRoot         string
 	DailyInput        int64
@@ -42,11 +43,24 @@ func (c *Config) ApprovalCandidates() ApprovalConfig {
 	if a.CacheRoot == "" {
 		a.CacheRoot = "data/approval-cache"
 	}
+	a.ScoreCutoff = approval.DefaultScoreCutoff
+	if raw := os.Getenv("APPROVAL_CANDIDATES_SCORE_CUTOFF"); raw != "" {
+		cutoff, err := strconv.ParseFloat(raw, 64)
+		if err != nil || cutoff <= 0 || cutoff > 100 {
+			a.UnavailableReason = "Invalid approval score cutoff"
+		}
+		a.ScoreCutoff = cutoff
+	}
 	switch a.Provider {
 	case "anthropic":
 		a.APIKey = c.AnthropicAPIKey
 	case "openrouter":
 		a.APIKey = c.OpenRouterAPIKey
+	case approval.ProviderJev:
+		a.APIKey = c.OpenRouterAPIKey
+		if a.Model == "" {
+			a.Model = "jev-latest"
+		}
 	default:
 		a.UnavailableReason = "Configure an approval investigation provider"
 	}

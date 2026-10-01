@@ -9,8 +9,9 @@ Set these environment variables on each server replica before enabling the featu
 | Variable | Value |
 | --- | --- |
 | `APPROVAL_CANDIDATES_ENABLED` | `false` initially; `true` enables admission and the UI |
-| `APPROVAL_CANDIDATES_PROVIDER` | `anthropic` or `openrouter` |
-| `APPROVAL_CANDIDATES_MODEL` | Explicit model ID supported by that provider |
+| `APPROVAL_CANDIDATES_PROVIDER` | `anthropic` or `openrouter` for a generative investigation, or `jev` to score pull requests with Jev through OpenRouter's System One endpoint (uses the OpenRouter key) |
+| `APPROVAL_CANDIDATES_MODEL` | Explicit model ID supported by that provider; defaults to `jev-latest` for `jev` |
+| `APPROVAL_CANDIDATES_SCORE_CUTOFF` | With `jev`, the score (0-100] a pull request needs, with no hard blocker and not a draft, to be a candidate; default 80 |
 | `APPROVAL_CANDIDATES_REASONING_TOKENS` | OpenRouter reasoning token budget per call, default `6000`; `0` sends no reasoning setting. A negative or non-numeric value, or more than half the per-call output cap, makes the feature unavailable |
 | `APPROVAL_CANDIDATES_DAILY_INPUT_TOKENS` | Optional deployment-wide UTC allocation budget, at least one target allowance (2,000,000) when set; unset means unlimited |
 | `APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS` | Optional deployment-wide UTC allocation budget, at least one target allowance (160,000) when set; unset means unlimited |
