@@ -260,3 +260,43 @@ func TestDowngradeUnsupportedDiscoveriesNarrowsOrDowngrades(t *testing.T) {
 		t.Fatalf("an unresolved concern is left as the model wrote it: %+v", a.Concerns[2])
 	}
 }
+
+func TestRepairByDowngradeSettlesAFavorableDispositionThePolicyRejects(t *testing.T) {
+	s, a := validFixture()
+	s.Evidence[0].Body = "Rename the helper to describe what it returns."
+	s.Digest = SnapshotDigest(s)
+	a.SnapshotDigest = s.Digest
+	a.Artifacts[0] = ArtifactDisposition{EvidenceID: "review", Classification: "concerns", Rationale: "Naming suggestion.", ConcernIDs: []string{"naming"}}
+	a.Concerns = []Concern{{ID: "naming", EvidenceIDs: []string{"review"}, OriginalSeverity: "low", Impact: "unknown", Claim: "Rename the helper to describe what it returns.", OriginalRevision: s.Revision.Head, Disposition: "non_blocking", Rationale: "Only a naming nit."}}
+	if ValidateAssessment(s, a) == nil {
+		t.Fatal("fixture should fail policy: non_blocking needs a style or documentation source")
+	}
+	if err := repairByDowngrade(s, &a); err != nil {
+		t.Fatalf("repair should settle the assessment: %v", err)
+	}
+	if a.Concerns[0].Disposition != "uncertain" || Evaluate(s, a).Decision == "candidate" {
+		t.Fatalf("the rejected disposition must become uncertain and must not yield a candidate: %+v %s", a.Concerns[0], Evaluate(s, a).Decision)
+	}
+}
+
+func TestRestoreCanonicalConcernsKeepsJudgmentAndRestoresProvenance(t *testing.T) {
+	canonical := Concern{ID: "c1", EvidenceIDs: []string{"review"}, Claim: "Exact reviewer claim.", OriginalSeverity: "high", OriginalRevision: "r1", Path: "a.go", StartLine: 3, EndLine: 4}
+	s := Snapshot{Concerns: []Concern{canonical, {ID: "c2", EvidenceIDs: []string{"review"}, Claim: "Second claim."}}}
+	a := Assessment{Concerns: []Concern{{ID: "c1", Claim: "Paraphrased claim.", OriginalSeverity: "low", Path: "b.go", Disposition: "unresolved", Rationale: "Still open."}}}
+	restoreCanonicalConcerns(s, &a)
+	got := a.Concerns[0]
+	if got.Claim != canonical.Claim || got.OriginalSeverity != "high" || got.Path != "a.go" || got.StartLine != 3 || got.Disposition != "unresolved" || got.Rationale != "Still open." || len(got.EvidenceIDs) != 1 {
+		t.Fatalf("provenance not restored or judgment lost: %+v", got)
+	}
+	if len(a.Concerns) != 2 || a.Concerns[1].ID != "c2" || a.Concerns[1].Disposition != "unresolved" {
+		t.Fatalf("an omitted canonical concern must be added as unresolved: %+v", a.Concerns)
+	}
+}
+
+func TestNormalizeArtifactsMapsSpellingsAndLinksConcerns(t *testing.T) {
+	a := Assessment{Concerns: []Concern{{ID: "c1"}}, Artifacts: []ArtifactDisposition{{EvidenceID: "e1", Classification: "Concern", ConcernIDs: []string{"c1"}}, {EvidenceID: "e2", Classification: "non-actionable"}}}
+	normalizeArtifacts(&a)
+	if a.Artifacts[0].Classification != "concerns" || a.Artifacts[1].Classification != "non_actionable" || len(a.Concerns[0].EvidenceIDs) != 1 || a.Concerns[0].EvidenceIDs[0] != "e1" {
+		t.Fatalf("not normalized: %+v", a)
+	}
+}

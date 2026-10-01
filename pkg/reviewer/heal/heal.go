@@ -57,16 +57,7 @@ func Heal(raw string) (Result, error) {
 	body := raw[start:]
 	want := keyCounts(body)
 	haystack := normalizeRaw(raw)
-	attempts := []struct {
-		method string
-		src    func() (string, error)
-	}{
-		{MethodClean, func() (string, error) { return trimTrailing(body), nil }},
-		{MethodRebalanced, func() (string, error) { return Rebalance(body), nil }},
-		{MethodRequoted, func() (string, error) { return jsonrepair.Repair(requoteDelimiters(body)) }},
-		{MethodRepaired, func() (string, error) { return jsonrepair.Repair(body) }},
-	}
-	for _, a := range attempts {
+	for _, a := range repairAttempts(body) {
 		src, err := a.src()
 		if err != nil {
 			continue
@@ -254,4 +245,47 @@ func normalizeRaw(raw string) string {
 
 func normalize(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+type repairAttempt struct {
+	method string
+	src    func() (string, error)
+}
+
+func repairAttempts(body string) []repairAttempt {
+	return []repairAttempt{
+		{MethodClean, func() (string, error) { return trimTrailing(body), nil }},
+		{MethodRebalanced, func() (string, error) { return Rebalance(body), nil }},
+		{MethodRequoted, func() (string, error) { return jsonrepair.Repair(requoteDelimiters(body)) }},
+		{MethodRepaired, func() (string, error) { return jsonrepair.Repair(body) }},
+	}
+}
+
+// HealObject returns the JSON object inside raw, repaired if needed, under the
+// same guarantees as Heal: every key the raw text names survives and every
+// string value appears verbatim in raw, so a repair never invents content.
+func HealObject(raw string) ([]byte, string, error) {
+	start := strings.Index(raw, "{")
+	if start < 0 {
+		return nil, "", ErrNoJSON
+	}
+	body := raw[start:]
+	want := keyCounts(body)
+	haystack := normalizeRaw(raw)
+	for _, a := range repairAttempts(body) {
+		src, err := a.src()
+		if err != nil {
+			continue
+		}
+		var doc map[string]any
+		if json.Unmarshal([]byte(src), &doc) != nil || !keysComplete(doc, want) || !allVerbatim(doc, haystack) {
+			continue
+		}
+		out, err := json.Marshal(doc)
+		if err != nil {
+			continue
+		}
+		return out, a.method, nil
+	}
+	return nil, "", ErrUnrecoverable
 }

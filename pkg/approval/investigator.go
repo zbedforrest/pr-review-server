@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"pr-review-server/pkg/reviewer/heal"
 	"strings"
 	"time"
 )
@@ -110,7 +111,17 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 				return result, fmt.Errorf("invalid_assessment: unread evidence artifact %s", unread[0])
 			}
 			result = Assessment{}
-			if err := decodeStrict([]byte(stripCodeFence(reply.Text)), &result); err != nil {
+			err := decodeStrict([]byte(stripCodeFence(reply.Text)), &result)
+			if err != nil {
+				if healed, method, healErr := heal.HealObject(reply.Text); healErr == nil {
+					result = Assessment{}
+					if decodeStrict(healed, &result) == nil {
+						log.Printf("[APPROVAL] repaired the answer JSON (%s)", method)
+						err = nil
+					}
+				}
+			}
+			if err != nil {
 				if correct(fmt.Errorf("the reply was not a valid assessment JSON object (%v)", err)) {
 					continue
 				}
@@ -132,8 +143,10 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 				}
 				return result, fmt.Errorf("invalid_assessment: %w", err)
 			}
+			restoreCanonicalConcerns(s, &result)
+			normalizeArtifacts(&result)
 			downgradeUnsupportedDiscoveries(s, &result)
-			if err := ValidateAssessment(s, result); err != nil {
+			if err := repairByDowngrade(s, &result); err != nil {
 				if correct(fmt.Errorf("assessment validation failed: %w", err)) {
 					continue
 				}
@@ -269,7 +282,7 @@ func (r validationRepository) Read(ctx context.Context, name string, req ReadReq
 // finalizeReserve is the time left on the target clock at which the
 // investigator stops reading and asks for the answer; it covers one long
 // final reply plus citation validation.
-const finalizeReserve = 2 * time.Minute
+const finalizeReserve = 3 * time.Minute
 
 func (n NativeInvestigator) shouldFinalize(ctx context.Context, usage Usage) bool {
 	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < finalizeReserve {

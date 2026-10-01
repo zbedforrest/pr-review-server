@@ -390,3 +390,113 @@ func downgradeUnsupportedDiscoveries(s Snapshot, a *Assessment) {
 		a.CoverageGaps = append(a.CoverageGaps, "Concern "+c.ID+": no single authoritative source for a discovered concern")
 	}
 }
+
+// repairByDowngrade validates a and, when that fails, retries with favorable
+// concern dispositions downgraded to uncertain: first one concern at a time,
+// then all of them. Downgrading only makes the decision less favorable, so the
+// server can settle a policy failure without another model round.
+func repairByDowngrade(s Snapshot, a *Assessment) error {
+	err := ValidateAssessment(s, *a)
+	if err == nil {
+		return nil
+	}
+	favorable := func(d string) bool { return d == "fixed" || d == "not_applicable" || d == "non_blocking" }
+	downgraded := func(indexes ...int) Assessment {
+		copy := *a
+		copy.Concerns = append([]Concern(nil), a.Concerns...)
+		copy.CoverageGaps = append([]string(nil), a.CoverageGaps...)
+		for _, i := range indexes {
+			c := &copy.Concerns[i]
+			c.Rationale += " [This " + c.Disposition + " disposition did not pass policy validation (" + err.Error() + "), so it is marked uncertain.]"
+			copy.CoverageGaps = append(copy.CoverageGaps, "Concern "+c.ID+": "+err.Error())
+			c.Disposition = "uncertain"
+		}
+		return copy
+	}
+	var all []int
+	for i, c := range a.Concerns {
+		if !favorable(c.Disposition) {
+			continue
+		}
+		all = append(all, i)
+		if candidate := downgraded(i); ValidateAssessment(s, candidate) == nil {
+			*a = candidate
+			return nil
+		}
+	}
+	if len(all) > 0 {
+		if candidate := downgraded(all...); ValidateAssessment(s, candidate) == nil {
+			*a = candidate
+			return nil
+		}
+	}
+	return err
+}
+
+// restoreCanonicalConcerns rewrites the provenance of concerns the collector
+// extracted (claim, severity, revision, anchors, evidence) from the snapshot,
+// keeping only the model's disposition and rationale, and adds any canonical
+// concern the model omitted as unresolved. The model judges concerns; it does
+// not get to restate where they came from.
+func restoreCanonicalConcerns(s Snapshot, a *Assessment) {
+	index := map[string]int{}
+	for i, c := range a.Concerns {
+		index[c.ID] = i
+	}
+	for _, canonical := range s.Concerns {
+		i, ok := index[canonical.ID]
+		if !ok {
+			missing := canonical
+			missing.Disposition = "unresolved"
+			missing.Rationale = "Not assessed by the investigator."
+			missing.Citations = nil
+			a.Concerns = append(a.Concerns, missing)
+			a.CoverageGaps = append(a.CoverageGaps, "Concern "+canonical.ID+" was not assessed and is treated as unresolved")
+			continue
+		}
+		c := &a.Concerns[i]
+		c.Claim, c.OriginalSeverity, c.OriginalRevision = canonical.Claim, canonical.OriginalSeverity, canonical.OriginalRevision
+		c.Path, c.StartLine, c.EndLine = canonical.Path, canonical.StartLine, canonical.EndLine
+		seen := map[string]bool{}
+		for _, id := range c.EvidenceIDs {
+			seen[id] = true
+		}
+		for _, id := range canonical.EvidenceIDs {
+			if !seen[id] {
+				c.EvidenceIDs = append(c.EvidenceIDs, id)
+			}
+		}
+	}
+}
+
+// normalizeArtifacts maps obvious classification spellings to the two the
+// policy accepts and links each concern an artifact names back to that
+// artifact; neither changes what the model judged.
+func normalizeArtifacts(a *Assessment) {
+	concerns := map[string]*Concern{}
+	for i := range a.Concerns {
+		concerns[a.Concerns[i].ID] = &a.Concerns[i]
+	}
+	for i := range a.Artifacts {
+		art := &a.Artifacts[i]
+		switch strings.ToLower(strings.TrimSpace(strings.ReplaceAll(art.Classification, "-", "_"))) {
+		case "concern", "concerns", "actionable":
+			art.Classification = "concerns"
+		case "non_actionable", "nonactionable", "not_actionable", "none":
+			art.Classification = "non_actionable"
+		}
+		for _, id := range art.ConcernIDs {
+			c, ok := concerns[id]
+			if !ok {
+				continue
+			}
+			linked := false
+			for _, e := range c.EvidenceIDs {
+				linked = linked || e == art.EvidenceID
+			}
+			if !linked {
+				c.EvidenceIDs = append(c.EvidenceIDs, art.EvidenceID)
+			}
+		}
+	}
+}

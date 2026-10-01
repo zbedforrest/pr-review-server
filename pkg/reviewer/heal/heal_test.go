@@ -130,3 +130,13 @@ func TestRebalanceLeavesStringsAlone(t *testing.T) {
 		t.Fatalf("open string not closed: %v %v", v, err)
 	}
 }
+
+func TestHealObjectRepairsStructureWithoutInventingContent(t *testing.T) {
+	out, _, err := HealObject("Here you go:\n{\"summary\": \"ok\", \"concerns\": [{\"id\": \"c1\"}]")
+	if err != nil || string(out) != `{"concerns":[{"id":"c1"}],"summary":"ok"}` {
+		t.Fatalf("truncated object not repaired: %s %v", out, err)
+	}
+	if _, _, err := HealObject("no json here"); err == nil {
+		t.Fatal("text without an object must not heal")
+	}
+}
