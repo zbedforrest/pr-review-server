@@ -48,6 +48,18 @@ Workers report observed stages and tool names without exposing source text, file
 
 Set `APPROVAL_CANDIDATES_PROGRESS_SUMMARIES=false` to disable summary model calls while retaining live progress. `APPROVAL_CANDIDATES_PROGRESS_MODEL` overrides the default `gemini-2.5-flash-lite` (Gemini API) or `google/gemini-2.5-flash-lite` (OpenRouter); use the model ID format for the selected provider.
 
+## Deterministic gates and reuse
+
+Before reserving daily budget or opening the repository, each target is checked for an outcome the model cannot change:
+
+- An ineligible snapshot (closed, own, outside the visible scope) finishes `excluded`.
+- A full scan whose snapshot is identical to an earlier completed investigation by the same user reuses that assessment. The assessment records `origin: reused` and the source target in `reused_from`, reports zero usage and is re-decided by the current policy. The reuse index (`approval_reuse_index`) is keyed by user and a hash of the snapshot digest, provider, model and versions, and is pruned with its scan. Recheck scans never reuse.
+- Failing CI on the head, a standing human change request or a head provider change request finishes `needs_attention` with `origin: gate`. The summary names the blocker and says no investigation ran.
+
+These targets make no model call and leave the daily budget untouched, so a dashboard of mostly blocked or unchanged PRs finishes in seconds. Drafts are investigated and always carry `pr_draft`, which keeps them out of candidates. A missing current review is not a gate: those targets are investigated and end `insufficient_evidence` at worst.
+
+A non-candidate investigation result rechecks access and configuration and then finalizes without collecting evidence a second time; only candidates pay for the final re-collection. Changing the provider, model, or any policy, prompt or runtime version changes the reuse key, so older assessments stop being reused. A reuse lookup failure is logged as `[APPROVAL] reuse lookup` and treated as a miss.
+
 ## Rollout and rollback
 
 1. Merge the complete draft stack and apply the additive migrations with the feature disabled. Existing ordinary reviews continue independently.
