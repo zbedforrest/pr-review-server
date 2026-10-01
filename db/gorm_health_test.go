@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"pr-review-server/pkg/health"
 )
 
 func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
@@ -67,8 +69,20 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, db.db.Model(&PublishedReplyModel{}).Where("author_comment_id = 13").UpdateColumns(map[string]interface{}{"processed_at": now.Add(-3 * time.Hour), "attempts": 1, "updated_at": now.Add(-3 * time.Hour)}).Error)
 
+	user := &User{GitHubID: -1, GitHubUsername: "prism_system"}
+	require.NoError(t, db.CreateUser(user))
+	require.NoError(t, db.CreateTelemetryEvents([]TelemetryEvent{
+		{UserID: user.ID, Action: health.ActionRepeatedPost, Label: "fp=a.go:1:x"},
+		{UserID: user.ID, Action: health.ActionRepeatedPost, Label: "fp=b.go:2:y"},
+		{UserID: user.ID, Action: health.ActionSameCommitResolve, Label: "fp=a.go:1:x"},
+		{UserID: user.ID, Action: "reply_decision", Label: "x"},
+		{UserID: user.ID, Action: "search", Label: "not a health action"},
+	}))
+	require.NoError(t, db.db.Model(&TelemetryEventModel{}).Where("user_id = ?", user.ID).UpdateColumn("created_at", now.Add(-time.Hour)).Error)
+
 	m, err := db.HealthMetrics(start, now, now, nil)
 	require.NoError(t, err)
+	assert.Equal(t, map[string]int{health.ActionRepeatedPost: 2, health.ActionSameCommitResolve: 1, "reply_decision": 1}, m.Telemetry)
 	assert.Equal(t, 3, m.Runs.Total)
 	assert.Equal(t, map[string]int{"completed": 2, "failed": 1}, m.Runs.ByStatus)
 	assert.Equal(t, 1, m.Runs.ModelFallbacks)

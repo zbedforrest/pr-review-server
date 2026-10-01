@@ -275,6 +275,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	round := buildPublishRound(pr, pl, comments, patches, previous, p.cfg.BaseURL)
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: p.publishPolicy()}
 	report, err := pub.Publish(ctx, round)
+	p.recordHygiene(pr, report.Hygiene)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 		// Confidence is scored before the first write, so a failed round still

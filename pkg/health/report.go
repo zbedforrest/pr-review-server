@@ -214,6 +214,7 @@ func Evaluate(m Metrics) Report {
 	}
 
 	add("publications", StatusOK, fmt.Sprintf("%d PRs got their first summary comment, %d inline comments posted, %d annotation-only findings; %d findings currently dismissed by concession (all time)", m.Publish.Summaries, m.Publish.Inline, m.Publish.Annotations, m.Publish.Dismissed))
+	add("publication hygiene", StatusOK, hygieneDetail(m.Telemetry))
 
 	replyDetail := fmt.Sprintf("%d author replies handled", m.Replies.Handled)
 	if m.Replies.Handled > 0 {

@@ -235,7 +235,7 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 	m.Replies.UnlinkedRoots = len(unlinked)
 
 	rows = nil
-	if err := g.db.Model(&TelemetryEventModel{}).Where("created_at >= ? AND created_at < ? AND (action LIKE 'reply\\_%' ESCAPE '\\' OR action = 'agent_model_fallback')", start, end).
+	if err := g.db.Model(&TelemetryEventModel{}).Where("created_at >= ? AND created_at < ? AND (action LIKE 'reply\\_%' ESCAPE '\\' OR action = 'agent_model_fallback' OR action IN ?)", start, end, health.HygieneActions).
 		Select("action AS key, count(*) AS count").Group("action").Scan(&rows).Error; err != nil {
 		return m, err
 	}
