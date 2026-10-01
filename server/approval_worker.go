@@ -185,6 +185,7 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 	}
 	for range approvalWorkerSlots {
 		go func() {
+			s.waitForCloneCaches(ctx)
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
 			worker := approvalID()
@@ -623,4 +624,19 @@ func approvalWithout(reasons []string, drop string) []string {
 		}
 	}
 	return out
+}
+
+// waitForCloneCaches holds approval workers until the startup clone-cache
+// warm-up finishes: a target claimed against a cold cache spends most of its
+// time budget fetching history the warm-up is already cloning.
+func (s *Server) waitForCloneCaches(ctx context.Context) {
+	warm, ok := s.poller.(interface{ PrewarmDone() <-chan struct{} })
+	if !ok {
+		return
+	}
+	select {
+	case <-warm.PrewarmDone():
+	case <-time.After(5 * time.Minute):
+	case <-ctx.Done():
+	}
 }
