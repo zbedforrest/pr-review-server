@@ -318,3 +318,26 @@ func TestApprovalCancelAndFinalizeRaceStaysConsistent(t *testing.T) {
 		}
 	}
 }
+
+func TestApprovalCancelTerminatesATargetWhoseStageMovedAfterItsRead(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Now().UTC()
+	_, _, err := g.AdmitApprovalScan(approvalTestAdmission("moved", 1, now, 1))
+	require.NoError(t, err)
+	claimed := approvalTestClaimAll(t, g, now, 1)
+	require.Len(t, claimed, 1)
+	require.NoError(t, g.SetApprovalTargetStage(claimed[0].ID, claimed[0].LeaseToken, "collecting", now))
+	var armed atomic.Bool
+	armed.Store(true)
+	name := "approval_test_stage_moves"
+	require.NoError(t, g.db.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Table == "approval_targets" && armed.CompareAndSwap(true, false) {
+			require.NoError(t, tx.Session(&gorm.Session{NewDB: true}).Exec("UPDATE approval_targets SET execution_status = ? WHERE id = ?", "investigating", claimed[0].ID).Error)
+		}
+	}))
+	t.Cleanup(func() { _ = g.db.Callback().Query().Remove(name) })
+	require.NoError(t, g.CancelApprovalScan(1, "moved", now))
+	saved, err := g.GetApprovalTarget(1, "moved", claimed[0].ID)
+	require.NoError(t, err)
+	require.Equal(t, "cancelled", saved.ExecutionStatus)
+}

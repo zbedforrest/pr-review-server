@@ -599,10 +599,11 @@ func approvalTerminate(tx *gorm.DB, t *ApprovalTarget, now time.Time, status, re
 }
 
 // approvalRelock locks a target that a gated transaction read without a lock
-// and returns its current row, or nil when its status or holder changed.
+// and returns its current row, or nil when its holder changed. Ungated stage
+// writes may move the status meanwhile, so callers recheck the fresh row.
 func approvalRelock(tx *gorm.DB, t ApprovalTarget) (*ApprovalTarget, error) {
 	var fresh ApprovalTarget
-	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND execution_status = ? AND lease_token = ?", t.ID, t.ExecutionStatus, t.LeaseToken).Take(&fresh).Error
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND lease_token = ?", t.ID, t.LeaseToken).Take(&fresh).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -688,7 +689,7 @@ func (g *GormDB) ClaimApprovalTargets(req ApprovalClaim) ([]ApprovalTarget, erro
 				if err != nil {
 					return err
 				}
-				if fresh == nil {
+				if fresh == nil || approvalTerminal(fresh.ExecutionStatus) {
 					ended[t.ID] = true
 					continue
 				}
