@@ -44,3 +44,18 @@ func hygieneDetail(telemetry map[string]int) string {
 		telemetry[ActionRepeatedPost], telemetry[ActionRepeatAfterDismiss], telemetry[ActionFixedWithoutFileChange], telemetry[ActionSameCommitResolve],
 		telemetry[ActionSeverityEscalation], telemetry[ActionVerdictSettled], telemetry[ActionOptedOut])
 }
+
+// withoutHygiene drops the hygiene actions, which have their own line.
+func withoutHygiene(telemetry map[string]int) map[string]int {
+	hygiene := make(map[string]bool, len(HygieneActions))
+	for _, a := range HygieneActions {
+		hygiene[a] = true
+	}
+	out := make(map[string]int, len(telemetry))
+	for k, n := range telemetry {
+		if !hygiene[k] {
+			out[k] = n
+		}
+	}
+	return out
+}

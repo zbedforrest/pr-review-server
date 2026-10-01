@@ -276,8 +276,8 @@ func (r Report) Markdown() string {
 	if len(m.Runs.ByTrigger) > 0 {
 		fmt.Fprintf(&b, "\nTriggers: %s. Verdicts: %s. Critical findings: %d.\n", countList(m.Runs.ByTrigger), countList(m.Runs.Verdicts), m.Runs.Criticals)
 	}
-	if len(m.Telemetry) > 0 {
-		fmt.Fprintf(&b, "Telemetry: %s.\n", countList(m.Telemetry))
+	if other := withoutHygiene(m.Telemetry); len(other) > 0 {
+		fmt.Fprintf(&b, "Telemetry: %s.\n", countList(other))
 	}
 	return b.String()
 }

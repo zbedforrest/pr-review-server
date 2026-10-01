@@ -189,8 +189,12 @@ func TestEvaluateReportsPublicationHygieneWithEveryCounter(t *testing.T) {
 	if r.Overall != StatusOK {
 		t.Fatalf("hygiene counters inform, they do not alarm: overall = %s", r.Overall)
 	}
-	if md := r.Markdown(); !strings.Contains(md, "**publication hygiene**: "+want) {
+	md := r.Markdown()
+	if !strings.Contains(md, "**publication hygiene**: "+want) {
 		t.Fatalf("markdown missing the hygiene line:\n%s", md)
+	}
+	if strings.Contains(md, "Telemetry: ") && strings.Contains(md[strings.Index(md, "Telemetry: "):], ActionRepeatedPost) {
+		t.Fatalf("hygiene actions must not repeat in the generic telemetry line:\n%s", md)
 	}
 }
 

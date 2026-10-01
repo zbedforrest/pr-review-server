@@ -179,3 +179,71 @@ func TestHygiene_LowerOrEqualSeverityIsNotAnEscalation(t *testing.T) {
 		t.Fatalf("escalations = %+v, want none", rep.Hygiene.SeverityEscalations)
 	}
 }
+
+func TestHygiene_OpenInlineRowRenderedAtHigherSeverityIsAnEscalation(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, roundOne())
+
+	r2 := roundOne()
+	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
+	for i := range r2.Findings {
+		if r2.Findings[i].ID == "c1" {
+			r2.Findings[i].Severity = "critical"
+			r2.Findings[i].Comment = "Critical thing."
+		}
+	}
+	ledger.rows["c1"].Severity = "medium"
+	rep := publishRound(t, gh, ledger, r2)
+	if rep.InlinePosted != 0 {
+		t.Fatalf("precondition: an open inline row is not reposted, got %+v", rep)
+	}
+	if got := fingerprints(rep.Hygiene.SeverityEscalations); len(got) != 1 || got[0] != "c1" {
+		t.Fatalf("escalations = %v, want the open row c1", got)
+	}
+	if d := rep.Hygiene.SeverityEscalations[0].Detail; !strings.Contains(d, "from=medium to=critical prior_state=open") {
+		t.Fatalf("detail = %q", d)
+	}
+}
+
+func TestHygiene_NoteWrittenCountsOnlyAHigherSeverity(t *testing.T) {
+	prior := &db.PublishedFinding{Fingerprint: "m1", Severity: "medium", State: db.PublishedStateOpen}
+	for _, tc := range []struct {
+		severity string
+		want     int
+	}{{"low", 0}, {"medium", 0}, {"critical", 1}} {
+		var h Hygiene
+		h.noteWritten(f("m1", tc.severity, "b.go", 20, "Medium thing."), prior)
+		if len(h.SeverityEscalations) != tc.want {
+			t.Fatalf("%s over medium: escalations = %+v, want %d", tc.severity, h.SeverityEscalations, tc.want)
+		}
+	}
+	var h Hygiene
+	h.noteWritten(f("m1", "critical", "b.go", 20, "Medium thing."), nil)
+	if len(h.SeverityEscalations) != 0 {
+		t.Fatalf("no prior row, no escalation: %+v", h)
+	}
+}
+
+func TestHygiene_NoteResolvedJudgesHeadAndChangedFiles(t *testing.T) {
+	row := &db.PublishedFinding{Fingerprint: payload.Fingerprint("a.go", 10, "Critical thing."), LastSeenSHA: "sha-1"}
+	var h Hygiene
+	h.noteResolved(row, "sha-1", map[string]bool{"a.go": true})
+	if len(h.SameCommitResolves) != 1 || len(h.FixedWithoutFileChange) != 0 {
+		t.Fatalf("same head: %+v", h)
+	}
+	h = Hygiene{}
+	h.noteResolved(row, "sha-2", nil)
+	if len(h.SameCommitResolves)+len(h.FixedWithoutFileChange) != 0 {
+		t.Fatalf("unknown changed files: %+v", h)
+	}
+	h = Hygiene{}
+	h.noteResolved(row, "sha-2", map[string]bool{"b.go": true})
+	if len(h.FixedWithoutFileChange) != 1 || !strings.Contains(h.FixedWithoutFileChange[0].Detail, "file=a.go from=sha-1 to=sha-2") {
+		t.Fatalf("cited file unchanged: %+v", h)
+	}
+	h = Hygiene{}
+	h.noteResolved(row, "sha-2", map[string]bool{"a.go": true})
+	if len(h.SameCommitResolves)+len(h.FixedWithoutFileChange) != 0 {
+		t.Fatalf("cited file changed: %+v", h)
+	}
+}

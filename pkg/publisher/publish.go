@@ -221,7 +221,11 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	for _, f := range r.activeClaims() {
 		present[f.ID] = true
 		row, ok := published[f.ID]
-		if !ok || written[f.ID] || row.LastSeenSHA == r.HeadSHA {
+		if !ok || written[f.ID] {
+			continue
+		}
+		rep.Hygiene.noteWritten(f, row)
+		if row.LastSeenSHA == r.HeadSHA {
 			continue
 		}
 		refreshed := *row
@@ -236,10 +240,10 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		}
 		resolved := *row
 		resolved.State = db.PublishedStateResolved
-		rep.Hygiene.noteResolved(row, r.HeadSHA, r.ChangedFiles)
 		if err := p.Ledger.UpsertPublishedFinding(&resolved); err != nil {
 			return rep, fmt.Errorf("resolve finding %s: %w", id, err)
 		}
+		rep.Hygiene.noteResolved(row, r.HeadSHA, r.ChangedFiles)
 	}
 	return rep, nil
 }

@@ -55,8 +55,9 @@ func (h *Hygiene) notePosted(f payload.Finding, prior *db.PublishedFinding) {
 	}
 }
 
-// noteWritten records a severity escalation when f is written over a row the
-// ledger holds at a lower severity, inline or annotation alike.
+// noteWritten records a severity escalation when f is rendered over a row the
+// ledger holds at a lower severity: an inline repost, an annotation rewrite,
+// or an open row whose summary bullet re-renders at the agent's new severity.
 func (h *Hygiene) noteWritten(f payload.Finding, prior *db.PublishedFinding) {
 	if prior == nil || severityRank(f.Severity) <= severityRank(prior.Severity) {
 		return
