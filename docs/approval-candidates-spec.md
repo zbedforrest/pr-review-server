@@ -236,12 +236,12 @@ Lease expiry permits at most one recovery attempt. A new holder must not extend 
 | Feature flag | `APPROVAL_CANDIDATES_ENABLED=false` |
 | Targets per scan | 50 |
 | Active scans per user | 1 total across full scans and rechecks |
-| Concurrent investigators | 4 deployment-wide, all usable by one user (the scan deadline assumes it); idle workers claim at most every 5 seconds |
-| Target active deadline | 8 minutes, including collection and final validation; the answer is requested 3 minutes before it; 4 targets run at once |
-| Scan deadline | Target count × 8 minutes / 4 slots + 8 minutes + 10 minutes queue allowance from acceptance; about 118 minutes for 50 targets |
-| Investigator tool calls | 40 per target across recovery attempts |
-| Model rounds | 16 per target across recovery attempts |
-| Token ceilings | At most 100,000 input tokens per call; 600,000 aggregate input and 12,000 aggregate output per target |
+| Concurrent investigators | 50 deployment-wide (`APPROVAL_CANDIDATES_SLOTS`, 1 to 100), all usable by one user; each process's dispatcher claims every free slot in one transaction, immediately after an admission or a finished target and otherwise at most every 5 seconds |
+| Target active deadline | 5 minutes, including collection and final validation; tools close 90 seconds before it |
+| Scan deadline | ceil(target count / slots) × 5 minutes + 5 minutes + 10 minutes queue allowance from acceptance; 20 minutes for 50 targets with 50 slots |
+| Investigator tool calls | 16 per target across recovery attempts; at most 2 tool rounds of 8 calls per attempt |
+| Model rounds | 8 per target across recovery attempts, typically 1 or 2 |
+| Token ceilings | At most 400,000 input and 40,000 output tokens per call; 2,000,000 aggregate input and 160,000 aggregate output per target |
 | Daily model budget | Optional operator-set input/output token caps per UTC day; unset means unlimited |
 | Execution attempts | 1 normal, at most 1 interrupted-worker recovery |
 | Lease / heartbeat | 60 seconds / 15 seconds |
@@ -249,7 +249,9 @@ Lease expiry permits at most one recovery attempt. A new holder must not extend 
 | Positive-result validation window | 5 minutes |
 | Full scan/evidence retention | 30 days |
 
-Resource ceilings are deployment-owned, snapshotted at admission, and enforced across replicas. The 8-minute target clock begins when execution and its slot are acquired, not at enqueue. The scan deadline still bounds queue starvation; targets that cannot start before it expire with `queue_deadline`.
+Resource ceilings are deployment-owned, snapshotted at admission, and enforced across replicas. The 5-minute target clock begins when execution and its slot are acquired, not at enqueue. The scan deadline still bounds queue starvation; targets that cannot start before it expire with `queue_deadline`.
+
+One database mutation gate serializes the writes that keep multi-row invariants: admission, claims (slot counting, housekeeping and settling scans whose targets all finished), cancellation, scan settlement, validation slots, invalidation and pruning. A running target's own writes (heartbeat, stage and progress, snapshot, budget and usage reservations, finalization) do not take the gate. Each is one conditional update carrying the lease predicate (holder, live lease, deadline, running status, no cancellation), or a transaction that first locks the target row, so they scale with concurrent targets. Gated writes to a target row re-lock it and re-check the status and holder they read; daily budget changes are atomic increments with overflow and negative guards. Tool and citation reads are counted in process against the same ceilings and written with the next token reservation or when the investigation returns.
 
 Collector defaults are 2,000 review/discussion artifacts, 500 changed files, 2 MiB of aggregate diff, and 8 MiB of evidence text per target. Read tools return at most 64 KiB or 400 lines per call, searches at most 200 matches with explicit cursors, and at most 1 MiB of cumulative tool-result text per target. Counts include nested replies and general summaries. Exceeding any required-input limit produces `insufficient_evidence`, never silent truncation. Unread optional search pages are not themselves missing review evidence; unfinished required artifact/concern classification is.
 
