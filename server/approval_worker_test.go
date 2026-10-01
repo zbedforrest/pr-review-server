@@ -87,7 +87,7 @@ func TestApprovalWorkerNativeRoundTripAndRevalidation(t *testing.T) {
 			modelCalls := 0
 			model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				modelCalls++
-				content := []any{map[string]any{"type": "text", "text": `{"summary":"Current review evidence is complete","artifacts":[],"concerns":[],"coverage_gaps":[],"citations":[]}`}}
+				content := []any{map[string]any{"type": "text", "text": `{"summary":"Current review evidence is complete","verdicts":[],"discovered":[],"no_concerns":[],"gaps":[]}`}}
 				stop := "end_turn"
 				if modelCalls == 1 {
 					content = []any{map[string]any{"type": "tool_use", "id": "evidence", "name": "list_evidence", "input": map[string]any{}}}
