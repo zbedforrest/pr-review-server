@@ -263,3 +263,24 @@ func TestNativeReleasesReservationOnlyForRejectionsWithoutUsage(t *testing.T) {
 		}
 	}
 }
+
+func TestModelPostBoundsOneRequestWithoutCancellingTheTarget(t *testing.T) {
+	previous := modelAttemptTimeout
+	modelAttemptTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { modelAttemptTimeout = previous })
+	stalled := make(chan struct{})
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-stalled:
+		}
+	}))
+	defer remote.Close()
+	defer close(stalled)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_, err := modelHTTPConfig(remote.URL).post(ctx, remote.URL, []byte("{}"))
+	if !errors.Is(err, ErrInvestigationLimit) || ctx.Err() != nil {
+		t.Fatalf("err=%v target=%v", err, ctx.Err())
+	}
+}

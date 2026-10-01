@@ -50,7 +50,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 	answered := map[string]bool{}
 	toolRounds, followUps, closedToolReplies := 0, 0, 0
 	var answer compactAnswer
-	decoded := false
+	decoded, partial := false, false
 	messages := []any{map[string]any{"role": "user", "content": preload.Text}}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -61,6 +61,9 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			return result, investigationLimit(LimitBudget, "%d rounds, %d input and %d output tokens used", usage.Rounds, usage.InputTokens, usage.OutputTokens)
 		}
 		output := min(CallOutputTokens, remaining)
+		if partial {
+			output = min(FollowUpOutputTokens, remaining)
+		}
 		allowTools := toolRounds < MaxToolRounds && followUps == 0 && !n.shouldFinalize(ctx, usage)
 		reservation := Usage{InputTokens: CallInputTokens, OutputTokens: output, Rounds: 1}
 		if err := budget.Reserve(ctx, reservation); err != nil {
@@ -129,8 +132,9 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			answer, decoded = next, true
 		}
 		concerns, artifacts := preload.missing(answer)
-		if len(concerns)+len(artifacts) > 0 && followUps < maxFollowUps && n.canFollowUp(ctx, usage) {
+		if len(concerns)+len(artifacts) > 0 && followUps < maxFollowUps && n.canFollowUp(ctx, usage) && !preload.blocked(s, answer) {
 			followUps++
+			partial = true
 			log.Printf("[APPROVAL] answer missed %d verdicts and %d classifications; asking once", len(concerns), len(artifacts))
 			messages = append(messages, n.assistantMessage(reply), map[string]any{"role": "user", "content": followUpRequest(concerns, artifacts)})
 			continue
@@ -165,6 +169,31 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 // that is not JSON or one for missing verdicts and classifications. Anything
 // still missing is settled by the server, never in the model's favor.
 const maxFollowUps = 1
+
+// blocked reports whether the target needs attention whatever the missing
+// entries say: the snapshot blocks it or the answer leaves a canonical
+// concern unresolved, which no later step makes favorable.
+func (p Preload) blocked(s Snapshot, a compactAnswer) bool {
+	if Evaluate(s, Assessment{SnapshotDigest: s.Digest}).Decision == "needs_attention" {
+		return true
+	}
+	canonical := map[string]bool{}
+	for _, c := range s.Concerns {
+		canonical[c.ID] = true
+	}
+	seen := map[string]bool{}
+	for _, v := range a.Verdicts {
+		id := p.concernID(v.Concern)
+		if !canonical[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if d, _ := normalizeDisposition(v.Disposition); d == "unresolved" {
+			return true
+		}
+	}
+	return false
+}
 
 func followUpRequest(concerns, artifacts []string) string {
 	var parts []string

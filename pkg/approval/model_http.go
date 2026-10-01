@@ -101,6 +101,11 @@ const (
 	maxModelResponse = 2 * 1024 * 1024
 )
 
+// modelAttemptTimeout bounds one request: a full CallOutputTokens reply at the
+// route's measured speed plus prefill, so a stalled upstream fails the target
+// instead of holding the scan to the target deadline.
+var modelAttemptTimeout = 120 * time.Second
+
 var modelSleep = func(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -139,8 +144,14 @@ func (c ModelConfig) post(ctx context.Context, endpoint string, data []byte) ([]
 		if err != nil {
 			return nil, err
 		}
-		raw, status, header, err := c.send(ctx, &boundedClient, endpoint, data)
+		attemptCtx, cancel := context.WithTimeout(ctx, modelAttemptTimeout)
+		raw, status, header, err := c.send(attemptCtx, &boundedClient, endpoint, data)
+		timedOut := attemptCtx.Err() != nil && ctx.Err() == nil
+		cancel()
 		release()
+		if err != nil && timedOut {
+			return nil, investigationLimit(LimitBudget, "model request took longer than %s", modelAttemptTimeout)
+		}
 		if err != nil {
 			return nil, err
 		}

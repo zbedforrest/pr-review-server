@@ -23,14 +23,16 @@ const (
 	TargetOutputTokens = 160_000
 	CallInputTokens    = 400_000
 	// CallOutputTokens bounds one reply, reasoning included, so a runaway
-	// reasoning trace cannot consume the target's time budget.
-	CallOutputTokens = 40_000
-	MaxRounds        = 8
-	MaxToolCalls     = 16
-	MaxToolBytes     = 1 << 20
+	// reasoning trace cannot consume the target's time budget; a follow-up
+	// for a few missing entries gets FollowUpOutputTokens.
+	CallOutputTokens     = 16_000
+	FollowUpOutputTokens = 6_000
+	MaxRounds            = 8
+	MaxToolCalls         = 16
+	MaxToolBytes         = 1 << 20
 	// MaxToolRounds and MaxToolCallsPerRound bound optional reads in one
 	// attempt; the evidence, diff and anchor code are already preloaded.
-	MaxToolRounds        = 2
+	MaxToolRounds        = 1
 	MaxToolCallsPerRound = 8
 	// Citation checks read the cited code after the model answers; they get
 	// their own allowance so a long investigation cannot starve them.

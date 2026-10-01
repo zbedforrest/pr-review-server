@@ -44,9 +44,9 @@ Admission snapshots provider, model and policy/runtime versions. Configuration d
 
 ## Investigation context
 
-The server preloads every review artifact, every extracted concern, the merge-base to head diff (up to 200,000 bytes) and the code at review anchors (up to 240,000 bytes) into the first model request, under short aliases such as `E3`, `C2` and `H`. The model returns only verdicts, discovered concerns, a list of artifacts without concerns and gaps; the server derives provenance and artifact dispositions and verifies every citation. Read tools remain for code that is not shown, with at most two tool rounds per attempt, so most targets finish in one or two model calls. Evidence over 600,000 bytes stops the target with `evidence_limit` before any model call.
+The server preloads every review artifact, every extracted concern, the merge-base to head diff (up to 200,000 bytes) and the code at review anchors (up to 240,000 bytes) into the first model request, under short aliases such as `E3`, `C2` and `H`. The model returns only verdicts, discovered concerns, a list of artifacts without concerns and gaps; the server derives provenance and artifact dispositions and verifies every citation. Read tools remain for code that is not shown, with at most one tool round per attempt, so most targets finish in one or two model calls. Evidence over 600,000 bytes stops the target with `evidence_limit` before any model call.
 
-Each model call reserves 400,000 input and up to 40,000 output tokens; a target allows 2,000,000 input and 160,000 output tokens across recovery attempts. Server logs record each round's duration, input, output and reasoning tokens. Pinned file and diff reads are cached per repository, so preloading, paging and citation checks do not repeat git work.
+Each model call reserves 400,000 input and up to 16,000 output tokens (6,000 for a follow-up that asks only for missing entries), and one request that runs past 120 seconds stops the target on its limit; a target allows 2,000,000 input and 160,000 output tokens across recovery attempts. Server logs record each round's duration, input, output and reasoning tokens. Pinned file and diff reads are cached per repository, so preloading, paging and citation checks do not repeat git work.
 
 ## Live progress
 

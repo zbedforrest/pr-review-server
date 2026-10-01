@@ -200,14 +200,11 @@ func TestNativeRecoversRejectedReadAndServesOldEvidenceCalls(t *testing.T) {
 	s.Evidence = append(s.Evidence, Evidence{ID: "second", Body: "Additional reviewer context"})
 	s.Digest = SnapshotDigest(s)
 	server, _ := fakeModel(t, "anthropic", func(call int, request map[string]any) modelTurn {
-		switch call {
-		case 1:
-			return toolTurn(modelTurnCall{"bad", "read_file", map[string]any{"revision": "H", "path": "../secret", "start_line": 1, "end_line": 1}})
-		case 2:
-			if !strings.Contains(requestText(request), "Read rejected") {
-				t.Error("read failure was not returned to investigator")
-			}
-			return toolTurn(modelTurnCall{"batch", "read_evidence", map[string]any{"evidence_ids": []string{"E1", "E2"}}})
+		if call == 1 {
+			return toolTurn(modelTurnCall{"bad", "read_file", map[string]any{"revision": "H", "path": "../secret", "start_line": 1, "end_line": 1}}, modelTurnCall{"batch", "read_evidence", map[string]any{"evidence_ids": []string{"E1", "E2"}}})
+		}
+		if !strings.Contains(requestText(request), "Read rejected") {
+			t.Error("read failure was not returned to investigator")
 		}
 		if !strings.Contains(requestText(request), "Additional reviewer context") {
 			t.Error("old-style evidence read did not resolve aliases")
@@ -315,6 +312,9 @@ func TestNativeAsksOnceForMissingVerdictsAndMergesTheReply(t *testing.T) {
 		if !toolsDisabled(request) {
 			t.Error("tools stay closed for the follow-up")
 		}
+		if max, _ := request["max_tokens"].(float64); int(max) != FollowUpOutputTokens {
+			t.Errorf("follow-up max_tokens = %v", request["max_tokens"])
+		}
 		return answerTurn(`{"verdicts":[{"concern":"C1","disposition":"Unresolved","rationale":"The loop still retries forever."}],"no_concerns":["E2"]}`)
 	})
 	got, err := fakeInvestigator("openrouter", server).Investigate(context.Background(), s, nil, &testBudget{})
@@ -326,6 +326,22 @@ func TestNativeAsksOnceForMissingVerdictsAndMergesTheReply(t *testing.T) {
 	}
 	if c := got.Concerns[0]; c.Disposition != "unresolved" || c.Rationale != "The loop still retries forever." || c.Claim != s.Concerns[0].Claim {
 		t.Fatalf("follow-up verdict not merged: %+v", c)
+	}
+}
+
+func TestNativeSkipsTheFollowUpWhenAnUnresolvedVerdictAlreadyBlocks(t *testing.T) {
+	s, _ := validFixture()
+	s.Evidence[0].Body = "The retry loop never stops after a permanent failure."
+	s.Evidence[0].ConcernIDs = []string{"retry"}
+	s.Evidence = append(s.Evidence, Evidence{ID: "second", Body: "Thanks for the update."})
+	s.Concerns = []Concern{{ID: "retry", EvidenceIDs: []string{"review"}, Claim: s.Evidence[0].Body, OriginalSeverity: "high", Impact: "correctness", OriginalRevision: s.Revision.Head}}
+	s.Digest = SnapshotDigest(s)
+	server, calls := fakeModel(t, "openrouter", func(int, map[string]any) modelTurn {
+		return answerTurn(`{"summary":"The retry concern needs a look.","verdicts":[{"concern":"C1","disposition":"unresolved","rationale":"Still retries."}]}`)
+	})
+	got, err := fakeInvestigator("openrouter", server).Investigate(context.Background(), s, nil, &testBudget{})
+	if err != nil || *calls != 1 || got.Decision != "needs_attention" {
+		t.Fatalf("calls=%d decision=%s err=%v", *calls, got.Decision, err)
 	}
 }
 
@@ -519,8 +535,8 @@ func TestNativeAnswersARepeatedToolCallWithAPointer(t *testing.T) {
 	s, _ := validFixture()
 	var replayed string
 	server, _ := fakeModel(t, "anthropic", func(call int, request map[string]any) modelTurn {
-		if call <= MaxToolRounds {
-			return toolTurn(modelTurnCall{fmt.Sprint("list", call), "list_files", map[string]any{"revision": "H"}})
+		if call == 1 {
+			return toolTurn(modelTurnCall{"list1", "list_files", map[string]any{"revision": "H"}}, modelTurnCall{"list2", "list_files", map[string]any{"revision": "H"}})
 		}
 		replayed = requestText(request)
 		return answerTurn(cleanAnswer)
