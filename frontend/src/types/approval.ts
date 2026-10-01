@@ -13,6 +13,7 @@ export interface ApprovalConcern {
 export interface ApprovalAssessment {
   decision: string; summary: string; reason_codes: string[]; sources: ApprovalSource[];
   concerns: ApprovalConcern[]; coverage_gaps: string[]; citations: ApprovalCitation[]; assessed_at: string;
+  origin?: string; reused_from?: string;
 }
 export interface ApprovalTarget {
   target_id: string; scan_id: string; owner: string; repo: string; number: number;

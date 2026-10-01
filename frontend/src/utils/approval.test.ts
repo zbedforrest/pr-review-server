@@ -9,9 +9,9 @@ describe('approval scope', () => {
   it('deduplicates and excludes only known exact-head approvals', () => {
     expect(approvalScope([pr(), pr(), pr({ number: 2, my_review_status: 'APPROVED' }), pr({ number: 3, my_review_status: 'APPROVED', my_review_commit_sha: sha }), pr({ number: 4, my_review_status: 'APPROVED', my_review_commit_sha: 'b'.repeat(40) })], {}).map(p => p.number)).toEqual([1, 2, 4]);
   });
-  it('respects global scope and excludes ineligible PRs', () => {
+  it('respects global scope, excludes ineligible PRs and investigates drafts', () => {
     const prs = [pr(), pr({ number: 2, draft: true }), pr({ number: 3, hidden: true }), pr({ number: 4, is_mine: true }), pr({ number: 5, pr_state: 'closed' }), pr({ number: 6, repo: 'other' })];
-    expect(approvalScope(prs, { repos: ['acme/example'] }).map(p => p.number)).toEqual([1]);
+    expect(approvalScope(prs, { repos: ['acme/example'] }).map(p => p.number)).toEqual([1, 2]);
   });
 });
 describe('candidate freshness', () => {
@@ -35,6 +35,24 @@ describe('observed dashboard changes', () => {
     for (const changed of [pr({ commit_sha: 'b'.repeat(40) }), pr({ draft: true }), pr({ pr_state: 'closed' }), pr({ hidden: true }), pr({ my_review_status: 'APPROVED', my_review_commit_sha: sha }), pr({ ci_state: 'failure' }), pr({ ci_state: 'pending' }), pr({ review_decision: 'CHANGES_REQUESTED' }), pr({ status: 'agent_reviewing' })]) {
       expect(isApprovalCandidate(reconcileApprovalTarget(old, changed), 100)).toBe(false);
     }
+  });
+  it('keeps a non-candidate decided on the condition it observes', () => {
+    const cases: [string, Partial<PR>][] = [['pr_draft', { draft: true }], ['ci_failed', { ci_state: 'failure' }], ['ci_pending', { ci_state: 'pending' }], ['human_changes_requested', { review_decision: 'CHANGES_REQUESTED' }], ['review_in_progress', { status: 'agent_reviewing' }]];
+    for (const [code, observed] of cases) {
+      const decided = target({ revision: sha, decision: 'needs_attention', reason_codes: [code] });
+      expect(reconcileApprovalTarget(decided, pr(observed)).freshness_state).toBe('current');
+    }
+  });
+  it('still marks a non-candidate stale for a condition it was not decided on', () => {
+    const draft = target({ revision: sha, decision: 'insufficient_evidence', reason_codes: ['pr_draft'] });
+    const failing = reconcileApprovalTarget(draft, pr({ draft: true, ci_state: 'failure' }));
+    expect(failing.freshness_state).toBe('stale');
+    expect(failing.reason_codes).toContain('ci_failed');
+    expect(reconcileApprovalTarget(draft, pr({ draft: true, commit_sha: 'b'.repeat(40) })).reason_codes).toContain('head_changed');
+  });
+  it('withdraws a candidate even when the observed condition is in its reason codes', () => {
+    const candidate = target({ revision: sha, reason_codes: ['pr_draft'] });
+    expect(isApprovalCandidate(reconcileApprovalTarget(candidate, pr({ draft: true })), 100)).toBe(false);
   });
   it('reconciles stale or replaced projections with cached evidence', () => {
     const cached = target({ target_id: 'old', revision: sha, assessment: { summary: 'Historical rationale' } as ApprovalTarget['assessment'] });
