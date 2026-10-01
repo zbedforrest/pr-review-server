@@ -339,9 +339,6 @@ func (s *Server) admitApprovalScan(w http.ResponseWriter, r *http.Request, user 
 		if row.UserHidden {
 			exclusions = append(exclusions, "hidden")
 		}
-		if pr.GetDraft() {
-			exclusions = append(exclusions, "draft")
-		}
 		if pr.GetState() != "open" {
 			exclusions = append(exclusions, "closed")
 		}

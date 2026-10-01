@@ -153,7 +153,7 @@ func TestApprovalAPIAdmissionAtomicAndStandingApproval(t *testing.T) {
 	}{
 		{name: "missing target", numbers: []int{1, 99}, code: 404},
 		{name: "wrong head", numbers: []int{1}, head: strings.Repeat("f", 40), code: 409},
-		{name: "draft", numbers: []int{1}, draft: true, code: 422},
+		{name: "draft", numbers: []int{1}, draft: true, code: 202},
 		{name: "standing approval survives comment", numbers: []int{1}, reviews: fmt.Sprintf(`[{"id":1,"user":{"login":"reviewer"},"state":"APPROVED","commit_id":%q},{"id":2,"user":{"login":"reviewer"},"state":"COMMENTED"}]`, strings.Repeat("a", 40)), code: 422},
 		{name: "later submission wins over creation ID", numbers: []int{1}, reviews: fmt.Sprintf(`[{"id":2,"user":{"login":"reviewer"},"state":"APPROVED","commit_id":%q,"submitted_at":"2026-09-27T12:00:00Z"},{"id":1,"user":{"login":"reviewer"},"state":"CHANGES_REQUESTED","commit_id":%q,"submitted_at":"2026-09-28T12:00:00Z"}]`, strings.Repeat("a", 40), strings.Repeat("a", 40)), code: 202},
 		{name: "old approval eligible", numbers: []int{1}, reviews: fmt.Sprintf(`[{"id":1,"user":{"login":"reviewer"},"state":"APPROVED","commit_id":%q}]`, strings.Repeat("f", 40)), code: 202},
@@ -176,6 +176,13 @@ func TestApprovalAPIAdmissionAtomicAndStandingApproval(t *testing.T) {
 			require.NoError(t, err)
 			if test.code != 202 {
 				require.Empty(t, scans)
+			}
+			if test.draft {
+				require.Len(t, scans, 1)
+				targets, err := database.ListApprovalTargets(user.ID, scans[0].ID, 100, "")
+				require.NoError(t, err)
+				require.Len(t, targets, 1)
+				require.Equal(t, "queued", targets[0].ExecutionStatus)
 			}
 		})
 	}
