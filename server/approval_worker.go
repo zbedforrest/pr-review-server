@@ -7,7 +7,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"pr-review-server/db"
@@ -44,10 +46,20 @@ func (s *Server) approvalConfigurationMatches(scan db.ApprovalScan, assessment *
 	return assessment == nil || (assessment.SchemaVersion == "1" && assessment.Model == admitted.Model && assessment.PolicyVersion == admitted.Policy && assessment.PromptVersion == admitted.Prompt && assessment.RuntimeVersion == admitted.Runtime)
 }
 
+// approvalRepositorySetups bounds concurrent repository preparation per
+// process: each one runs git fetches against the shared clone caches.
+var approvalRepositorySetups = make(chan struct{}, 16)
+
 func (s *Server) openApprovalRepository(ctx context.Context, snapshot approval.Snapshot) (approval.Repository, func(), error) {
 	if s.approvalExecution != nil && s.approvalExecution.repository != nil {
 		return s.approvalExecution.repository(ctx, snapshot)
 	}
+	select {
+	case approvalRepositorySetups <- struct{}{}:
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+	defer func() { <-approvalRepositorySetups }()
 	reference, release := service.BorrowCloneCache(s.cfg.AgentCloneRootDir, snapshot.Target.Owner, snapshot.Target.Repo)
 	repo, err := approval.NewGitRepository(ctx, s.cfg.ApprovalCandidates().CacheRoot, snapshot.Target, snapshot.AllowedRevisions, s.ghClient.ApprovalRepositoryToken, reference)
 	if err != nil {
@@ -70,31 +82,125 @@ func (s *Server) approvalInvestigator(target db.ApprovalTarget) approval.Investi
 	return approval.NativeInvestigator{Config: approval.ModelConfig{Provider: cfg.Provider, Model: cfg.Model, APIKey: cfg.APIKey}, InitialUsage: approval.Usage{InputTokens: int(target.InputTokens), OutputTokens: int(target.OutputTokens), Rounds: target.Rounds, ToolCalls: target.ToolCalls, ToolBytes: int(target.ToolBytes)}}
 }
 
+// approvalBudget enforces a target's allowance. Token-bearing reservations
+// are durable; tool and citation reservations carry no tokens, so they are
+// checked against the same limits in memory and their settled usage rides
+// along with the next durable write (Carry) or the final flush.
 type approvalBudget struct {
 	store       db.ApprovalStore
 	target      db.ApprovalTarget
+	mu          sync.Mutex
 	reservation string
+	durable     bool
+	used        db.ApprovalUsage
+	local       *db.ApprovalUsage
+	carry       db.ApprovalUsage
+}
+
+func newApprovalBudget(store db.ApprovalStore, target db.ApprovalTarget) *approvalBudget {
+	return &approvalBudget{store: store, target: target, used: db.ApprovalUsage{InputTokens: target.InputTokens, OutputTokens: target.OutputTokens, Rounds: target.Rounds, ToolCalls: target.ToolCalls, ToolBytes: target.ToolBytes}}
 }
 
 func approvalUsage(u approval.Usage) db.ApprovalUsage {
 	return db.ApprovalUsage{InputTokens: int64(u.InputTokens), OutputTokens: int64(u.OutputTokens), Rounds: u.Rounds, ToolCalls: u.ToolCalls, ToolBytes: int64(u.ToolBytes)}
 }
+
+func approvalUsageLimits() db.ApprovalUsage {
+	return db.ApprovalUsage{InputTokens: approval.TargetInputTokens, OutputTokens: approval.TargetOutputTokens, Rounds: approval.MaxRounds, ToolCalls: approval.MaxToolCalls + approval.MaxCitationReads, ToolBytes: approval.MaxToolBytes + approval.MaxCitationBytes}
+}
+
+// abandonLocal keeps the conservative charge of a local reservation that was
+// never settled.
+func (b *approvalBudget) abandonLocal() {
+	if b.local != nil {
+		b.carry.Rounds += b.local.Rounds
+		b.carry.ToolCalls += b.local.ToolCalls
+		b.carry.ToolBytes += b.local.ToolBytes
+		b.local = nil
+	}
+}
+
 func (b *approvalBudget) Reserve(ctx context.Context, u approval.Usage) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	id := approvalID()
-	err := b.store.ReserveApprovalUsage(b.target.ID, b.target.LeaseToken, time.Now(), db.ApprovalUsageReservation{ID: id, Usage: approvalUsage(u), Limits: db.ApprovalUsage{InputTokens: approval.TargetInputTokens, OutputTokens: approval.TargetOutputTokens, Rounds: approval.MaxRounds, ToolCalls: approval.MaxToolCalls + approval.MaxCitationReads, ToolBytes: approval.MaxToolBytes + approval.MaxCitationBytes}})
-	if err == nil {
-		b.reservation = id
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.abandonLocal()
+	b.reservation, b.durable = "", false
+	r, l := approvalUsage(u), approvalUsageLimits()
+	if r.InputTokens < 0 || r.OutputTokens < 0 || r.Rounds < 0 || r.ToolCalls < 0 || r.ToolBytes < 0 {
+		return errors.New("invalid usage reservation")
 	}
-	return err
+	if r.InputTokens == 0 && r.OutputTokens == 0 {
+		if b.used.Rounds+r.Rounds > l.Rounds || b.used.ToolCalls+r.ToolCalls > l.ToolCalls || b.used.ToolBytes+r.ToolBytes > l.ToolBytes {
+			return db.ErrApprovalBudget
+		}
+		b.used.Rounds += r.Rounds
+		b.used.ToolCalls += r.ToolCalls
+		b.used.ToolBytes += r.ToolBytes
+		b.local = &r
+		return nil
+	}
+	id := approvalID()
+	if err := b.store.ReserveApprovalUsage(b.target.ID, b.target.LeaseToken, time.Now(), db.ApprovalUsageReservation{ID: id, Usage: r, Limits: l, Carry: b.carry}); err != nil {
+		return err
+	}
+	b.carry = db.ApprovalUsage{}
+	b.used.InputTokens += r.InputTokens
+	b.used.OutputTokens += r.OutputTokens
+	b.used.Rounds += r.Rounds
+	b.used.ToolCalls += r.ToolCalls
+	b.used.ToolBytes += r.ToolBytes
+	b.reservation, b.durable = id, true
+	return nil
 }
+
 func (b *approvalBudget) Settle(ctx context.Context, reserved, actual approval.Usage) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return b.store.SettleApprovalUsage(b.target.ID, b.target.LeaseToken, b.reservation, time.Now(), approvalUsage(actual))
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	a := approvalUsage(actual)
+	if b.durable {
+		r := approvalUsage(reserved)
+		if err := b.store.SettleApprovalUsage(b.target.ID, b.target.LeaseToken, b.reservation, time.Now(), a); err != nil {
+			return err
+		}
+		b.used.InputTokens += a.InputTokens - r.InputTokens
+		b.used.OutputTokens += a.OutputTokens - r.OutputTokens
+		b.used.ToolBytes += a.ToolBytes - r.ToolBytes
+		b.reservation, b.durable = "", false
+		return nil
+	}
+	r := b.local
+	if r == nil {
+		return db.ErrApprovalLeaseLost
+	}
+	if a.InputTokens != 0 || a.OutputTokens != 0 || a.ToolBytes < 0 || a.Rounds < 0 || a.ToolCalls < 0 || a.ToolBytes > r.ToolBytes || a.Rounds > r.Rounds || a.ToolCalls > r.ToolCalls {
+		return db.ErrApprovalBudget
+	}
+	b.used.ToolBytes -= r.ToolBytes - a.ToolBytes
+	b.carry.Rounds += r.Rounds
+	b.carry.ToolCalls += r.ToolCalls
+	b.carry.ToolBytes += a.ToolBytes
+	b.local = nil
+	return nil
+}
+
+// flush writes the locally accounted usage; a failure loses only tool usage,
+// never tokens.
+func (b *approvalBudget) flush() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.abandonLocal()
+	if b.carry == (db.ApprovalUsage{}) {
+		return
+	}
+	if err := b.store.FlushApprovalUsage(b.target.ID, b.target.LeaseToken, time.Now(), b.carry); err == nil {
+		b.carry = db.ApprovalUsage{}
+	}
 }
 
 func (s *Server) approvalCollector() approvalEvidenceCollector {
@@ -115,7 +221,7 @@ func (s *Server) collectApprovalSnapshot(ctx context.Context, target approval.Ta
 	if err != nil {
 		return snapshot, err
 	}
-	inventory, err := s.approvalInventory(viewer.ID)
+	inventory, err := s.approvalInventoryCached(viewer.ID)
 	if err != nil {
 		return snapshot, err
 	}
@@ -133,16 +239,32 @@ func (s *Server) approvalValidationAvailable() bool {
 }
 
 // approvalTargetDuration bounds one pull request's investigation, from
-// evidence collection to the final answer; approvalWorkerSlots is how many
-// run at once across the deployment.
+// evidence collection to the final answer.
 const (
-	approvalTargetDuration = 8 * time.Minute
-	approvalWorkerSlots    = 4
-	approvalSlotsPerUser   = approvalWorkerSlots
-	// approvalIdleClaimEvery spaces a worker's claims when there is no work:
-	// every claim serializes on the approval mutation gate.
+	approvalTargetDuration = 5 * time.Minute
+	// approvalIdleClaimEvery spaces claims when there is no work: every
+	// claim serializes on the approval mutation gate.
 	approvalIdleClaimEvery = 5 * time.Second
 )
+
+// approvalSlots is how many targets investigate at once, both across the
+// deployment and for one user.
+func approvalSlots() int {
+	return approvalEnvCount("APPROVAL_CANDIDATES_SLOTS", 50)
+}
+
+// approvalModelConcurrency bounds this process's in-flight model requests.
+func approvalModelConcurrency() int {
+	return approvalEnvCount("APPROVAL_CANDIDATES_MODEL_CONCURRENCY", approvalSlots())
+}
+
+func approvalEnvCount(name string, fallback int) int {
+	n, err := strconv.Atoi(os.Getenv(name))
+	if err != nil {
+		return fallback
+	}
+	return min(max(n, 1), 100)
+}
 
 // approvalWorkerRevisionKey records the deployment revision whose workers
 // may claim targets. Cloud Run keeps a replaced revision's instances (and
@@ -183,45 +305,10 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 	if s.approvalAvailable() != "" {
 		_ = store.CancelAllApprovalScans(time.Now())
 	}
-	for range approvalWorkerSlots {
-		go func() {
-			s.waitForCloneCaches(ctx)
-			ticker := time.NewTicker(time.Second)
-			defer ticker.Stop()
-			worker := approvalID()
-			available := s.approvalAvailable() == ""
-			nextMaintenance := time.Now().Add(time.Minute)
-			var nextClaim time.Time
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if s.approvalAvailable() != "" {
-						if available || !time.Now().Before(nextMaintenance) {
-							_ = store.CancelAllApprovalScans(time.Now())
-							available = false
-							nextMaintenance = time.Now().Add(time.Minute)
-						}
-						continue
-					}
-					available = true
-					if time.Now().Before(s.approvalRate.pausedUntil()) {
-						continue
-					}
-					if time.Now().Before(nextClaim) || !isCurrent() {
-						continue
-					}
-					target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: worker, Now: time.Now(), LeaseDuration: 60 * time.Second, TargetDuration: approvalTargetDuration, MaxSlots: approvalWorkerSlots, MaxPerUser: approvalSlotsPerUser})
-					if err != nil || target == nil {
-						nextClaim = time.Now().Add(approvalIdleClaimEvery)
-						continue
-					}
-					s.investigateApproval(ctx, *target)
-				}
-			}
-		}()
-	}
+	go func() {
+		s.waitForCloneCaches(ctx)
+		s.dispatchApprovalTargets(ctx, store, isCurrent)
+	}()
 	go func() {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
@@ -239,6 +326,57 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 	}()
 }
 
+// dispatchApprovalTargets claims every free local slot in one claim, on a
+// one-second tick or as soon as a scan is admitted or a target finishes.
+func (s *Server) dispatchApprovalTargets(ctx context.Context, store db.ApprovalStore, isCurrent func() bool) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	slots := approvalSlots()
+	var running atomic.Int32
+	worker := approvalID()
+	available := s.approvalAvailable() == ""
+	nextMaintenance := time.Now().Add(time.Minute)
+	var nextClaim time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		case <-s.approvalWake.channel():
+			nextClaim = time.Time{}
+		}
+		if s.approvalAvailable() != "" {
+			if available || !time.Now().Before(nextMaintenance) {
+				_ = store.CancelAllApprovalScans(time.Now())
+				available = false
+				nextMaintenance = time.Now().Add(time.Minute)
+			}
+			continue
+		}
+		available = true
+		free := slots - int(running.Load())
+		if free <= 0 || time.Now().Before(s.approvalRate.pausedUntil()) || time.Now().Before(nextClaim) || !isCurrent() {
+			continue
+		}
+		targets, err := store.ClaimApprovalTargets(db.ApprovalClaim{Worker: worker, Now: time.Now(), LeaseDuration: approvalLeaseDuration, TargetDuration: approvalTargetDuration, MaxSlots: slots, MaxPerUser: slots, MaxClaims: free})
+		if err != nil || len(targets) == 0 {
+			if err != nil {
+				log.Printf("[APPROVAL] claim targets: %v", err)
+			}
+			nextClaim = time.Now().Add(approvalIdleClaimEvery)
+			continue
+		}
+		for _, target := range targets {
+			running.Add(1)
+			go func() {
+				defer s.approvalWake.signal()
+				defer running.Add(-1)
+				s.investigateApproval(ctx, target)
+			}()
+		}
+	}
+}
+
 func (s *Server) investigateApproval(parent context.Context, target db.ApprovalTarget) {
 	store := s.approvalStore()
 	defer store.ReleaseApprovalTargetSlot(target.ID, target.LeaseToken)
@@ -251,44 +389,8 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 	report, stopProgress := s.startApprovalProgress(ctx, target)
 	defer stopProgress()
 	ctx = approval.WithActivityObserver(ctx, report)
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		renewed := time.Now()
-		failures := 0
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				scan, err := store.GetApprovalScan(target.UserID, target.ScanID)
-				if err != nil {
-					failures++
-					if failures < 3 {
-						continue
-					}
-					cancel()
-					return
-				}
-				if scan.CancelRequested || s.approvalAvailable() != "" {
-					cancel()
-					return
-				}
-				if time.Since(renewed) >= 15*time.Second {
-					if err := store.HeartbeatApprovalTarget(target.ID, target.LeaseToken, time.Now(), 60*time.Second); err != nil {
-						failures++
-						if failures < 3 && !errors.Is(err, db.ErrApprovalLeaseLost) {
-							continue
-						}
-						cancel()
-						return
-					}
-					renewed = time.Now()
-					failures = 0
-				}
-			}
-		}
-	}()
+	ctx = approval.WithModelLimiter(ctx, s.approvalModelLimiter())
+	go s.watchApprovalTarget(ctx, cancel, target)
 	finish := func(status, decision, freshness, reason, summary string, a *approval.Assessment) {
 		stopProgress()
 		f := db.ApprovalFinalization{ExecutionStatus: status, Decision: decision, Freshness: freshness, ReasonCodesJSON: approvalJSON([]string{reason}), Summary: summary}
@@ -426,7 +528,9 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 	}
 	defer closeRepository()
 	investigator := s.approvalInvestigator(target)
-	assessment, err := investigator.Investigate(ctx, snapshot, repo, &approvalBudget{store: store, target: target})
+	budget := newApprovalBudget(store, target)
+	assessment, err := investigator.Investigate(ctx, snapshot, repo, budget)
+	budget.flush()
 	if err != nil {
 		if errors.Is(err, approval.ErrInvestigationLimit) {
 			limit := approval.LimitCode(err)
