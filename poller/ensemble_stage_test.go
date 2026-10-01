@@ -89,7 +89,7 @@ func TestEnsembleRelaunchesAFastFailureOnce(t *testing.T) {
 		2: {delay: 10 * time.Millisecond, findings: finding("a.go", 1)},
 		3: {delay: 10 * time.Millisecond, findings: finding("a.go", 1)},
 		4: {delay: 10 * time.Millisecond, findings: finding("a.go", 1)},
-		5: {delay: 10 * time.Millisecond, err: errors.New("provider down")},
+		5: {delay: 2 * time.Millisecond, err: errors.New("provider down")},
 		6: {delay: 10 * time.Millisecond, findings: finding("a.go", 1)},
 		7: {delay: 10 * time.Millisecond, findings: finding("a.go", 1)},
 	})

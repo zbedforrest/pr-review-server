@@ -15,7 +15,7 @@ import (
 func TestApprovalProgressIsOwnedAndDoesNotReadGitHub(t *testing.T) {
 	s, store, user, remote := newApprovalAPITestServer(t)
 	scan := approvalAPIAdmit(t, s, user, remote.head, 1, 2)
-	target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: "test", Now: time.Now(), LeaseDuration: time.Minute, TargetDuration: 180 * time.Second, MaxSlots: 2})
+	target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: "test", Now: time.Now(), LeaseDuration: time.Minute, TargetDuration: approvalTargetDuration, MaxSlots: 2})
 	require.NoError(t, err)
 	require.NoError(t, store.SetApprovalTargetProgress(target.ID, target.LeaseToken, "Reading review findings and discussion threads", time.Now()))
 	remote.mu.Lock()

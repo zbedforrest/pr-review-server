@@ -56,7 +56,7 @@ func approvalWorkerFixture(t *testing.T) (*Server, *db.GormDB, db.ApprovalTarget
 	limits := approvalJSON(map[string]any{"provider": "anthropic", "model": "fixture-model", "policy_version": approval.PolicyVersion, "prompt_version": approval.PromptVersion, "runtime_version": approval.RuntimeVersion})
 	_, _, err = store.AdmitApprovalScan(db.ApprovalAdmission{Scan: db.ApprovalScan{ID: "worker-scan", UserID: user.ID, Kind: "full", IdempotencyKey: "worker-key", RequestHash: "worker-hash", LimitsJSON: limits}, Targets: []db.ApprovalTarget{{ID: "worker-target", Owner: "acme", Repo: "example", Number: 123, ExpectedHeadSHA: head, RepositoryID: 42}}, Now: now, DailyInputLimit: 6000000, DailyOutputLimit: 120000, TargetInputLimit: 600000, TargetOutputLimit: 12000})
 	require.NoError(t, err)
-	target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: "fixture", Now: now, LeaseDuration: time.Minute, TargetDuration: 180 * time.Second, MaxSlots: 2})
+	target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: "fixture", Now: now, LeaseDuration: time.Minute, TargetDuration: approvalTargetDuration, MaxSlots: 2})
 	require.NoError(t, err)
 	require.NotNil(t, target)
 	s.approvalExecution = &approvalExecution{repository: func(context.Context, approval.Snapshot) (approval.Repository, func(), error) {
