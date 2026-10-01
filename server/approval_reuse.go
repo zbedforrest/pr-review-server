@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"strconv"
 
 	"pr-review-server/config"
 	"pr-review-server/db"
@@ -26,7 +27,7 @@ func (s *Server) approvalReuseKey(a *approval.Assessment) string {
 // approvalDigestReuseKey folds the reasoning effort into the model so an
 // effort change does not reuse answers given under another effort.
 func approvalDigestReuseKey(cfg config.ApprovalConfig, digest string) string {
-	return approval.ReuseKey(digest, cfg.Provider, cfg.Provider+"/"+cfg.Model+"/"+cfg.ReasoningEffort)
+	return approval.ReuseKey(digest, cfg.Provider, cfg.Provider+"/"+cfg.Model+"/"+strconv.Itoa(cfg.ReasoningTokens))
 }
 
 // approvalPrejudged settles a target without the model: a full scan first

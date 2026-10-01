@@ -158,7 +158,7 @@ func BuildPreload(ctx context.Context, s Snapshot, repo Repository) (Preload, er
 		out.WriteString("none extracted\n")
 	}
 	for _, c := range s.Concerns {
-		fmt.Fprintf(&out, "%s id=%s severity=%s impact=%s revision=%s anchor=%s sources=%s\nclaim: %s\n", p.concernAlias[c.ID], c.ID, orUnknown(c.OriginalSeverity), orUnknown(c.Impact), p.revisionName(c.OriginalRevision), anchorText(c.Path, c.StartLine, c.EndLine), p.aliases(p.evidenceAlias, c.EvidenceIDs), c.Claim)
+		fmt.Fprintf(&out, "%s id=%s severity=%s impact=%s revision=%s anchor=%s sources=%s allowed=%s\nclaim: %s\n", p.concernAlias[c.ID], c.ID, orUnknown(c.OriginalSeverity), orUnknown(c.Impact), p.revisionName(c.OriginalRevision), anchorText(c.Path, c.StartLine, c.EndLine), p.aliases(p.evidenceAlias, c.EvidenceIDs), strings.Join(allowedDispositions(c, s.Revision.Head), ","), c.Claim)
 	}
 
 	sourced := map[string][]string{}
@@ -667,4 +667,19 @@ func renderWindow(ctx context.Context, p Preload, repo Repository, u codeUnit) s
 		return fmt.Sprintf("--- %s:%s lines %d-%d are not available at this revision.\n", p.revisionName(u.revision), u.path, u.start, u.end)
 	}
 	return fmt.Sprintf("--- %s:%s lines %d-%d\n%s", p.revisionName(u.revision), u.path, u.start, last, body.String())
+}
+
+// allowedDispositions lists the verdicts the policy can accept for a concern,
+// so the model does not spend a verdict the server will downgrade.
+func allowedDispositions(c Concern, head string) []string {
+	out := []string{}
+	if c.OriginalRevision != head {
+		out = append(out, "fixed")
+	}
+	out = append(out, "not_applicable")
+	severe := strings.EqualFold(c.OriginalSeverity, "critical") || strings.EqualFold(c.OriginalSeverity, "high")
+	if (c.Impact == "style" || c.Impact == "documentation") && !severe {
+		out = append(out, "non_blocking")
+	}
+	return append(out, "unresolved", "uncertain")
 }

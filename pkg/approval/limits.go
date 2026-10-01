@@ -25,11 +25,14 @@ const (
 	// CallOutputTokens bounds one reply, reasoning included, so a runaway
 	// reasoning trace cannot consume the target's time budget; a follow-up
 	// for a few missing entries gets FollowUpOutputTokens.
-	CallOutputTokens     = 16_000
+	CallOutputTokens     = 32_000
 	FollowUpOutputTokens = 6_000
-	MaxRounds            = 8
-	MaxToolCalls         = 16
-	MaxToolBytes         = 1 << 20
+	// DefaultReasoningTokens caps the model's hidden reasoning per call; an
+	// effort level alone left it at 5-14k tokens and dominated wall time.
+	DefaultReasoningTokens = 6_000
+	MaxRounds              = 8
+	MaxToolCalls           = 16
+	MaxToolBytes           = 1 << 20
 	// MaxToolRounds and MaxToolCallsPerRound bound optional reads in one
 	// attempt; the evidence, diff and anchor code are already preloaded.
 	MaxToolRounds        = 1

@@ -97,7 +97,7 @@ func TestApprovalWorkerNativeRoundTripAndRevalidation(t *testing.T) {
 			}))
 			defer model.Close()
 			s.approvalExecution.investigator = func(db.ApprovalTarget) approval.Investigator {
-				return approval.NativeInvestigator{Config: approval.ModelConfig{Provider: "anthropic", Model: "fixture-model", APIKey: "fixture", BaseURL: model.URL, Client: model.Client()}}
+				return approval.NativeInvestigator{Config: approval.ModelConfig{Provider: "anthropic", Model: "fixture-model", APIKey: "fixture", BaseURL: model.URL, Client: model.Client()}, ToolRounds: approval.MaxToolRounds}
 			}
 			s.investigateApproval(context.Background(), target)
 			result, err := store.GetApprovalTarget(target.UserID, target.ScanID, target.ID)

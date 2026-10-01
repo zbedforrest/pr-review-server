@@ -18,7 +18,7 @@ type ApprovalConfig struct {
 	Enabled           bool
 	Provider          string
 	Model             string
-	ReasoningEffort   string
+	ReasoningTokens   int
 	APIKey            string
 	CacheRoot         string
 	DailyInput        int64
@@ -31,14 +31,13 @@ func (c *Config) ApprovalCandidates() ApprovalConfig {
 	a := ApprovalConfig{Enabled: os.Getenv("APPROVAL_CANDIDATES_ENABLED") == "true", Provider: os.Getenv("APPROVAL_CANDIDATES_PROVIDER"), Model: os.Getenv("APPROVAL_CANDIDATES_MODEL"), CacheRoot: os.Getenv("APPROVAL_CANDIDATES_CACHE_DIR")}
 	a.DailyInput, _ = strconv.ParseInt(os.Getenv("APPROVAL_CANDIDATES_DAILY_INPUT_TOKENS"), 10, 64)
 	a.DailyOutput, _ = strconv.ParseInt(os.Getenv("APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS"), 10, 64)
-	switch effort := os.Getenv("APPROVAL_CANDIDATES_REASONING_EFFORT"); effort {
-	case "":
-		a.ReasoningEffort = "low"
-	case "minimal", "low", "medium", "high":
-		a.ReasoningEffort = effort
-	case "off":
-	default:
-		a.UnavailableReason = "Invalid approval reasoning effort"
+	a.ReasoningTokens = approval.DefaultReasoningTokens
+	if raw := os.Getenv("APPROVAL_CANDIDATES_REASONING_TOKENS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 || n > approval.CallOutputTokens/2 {
+			a.UnavailableReason = "Invalid approval reasoning token budget"
+		}
+		a.ReasoningTokens = n
 	}
 	if a.CacheRoot == "" {
 		a.CacheRoot = "data/approval-cache"

@@ -14,9 +14,9 @@ type ModelConfig struct {
 	APIKey   string
 	BaseURL  string
 	Client   *http.Client
-	// ReasoningEffort is sent to OpenRouter with the reasoning text excluded
-	// from the reply; empty sends no reasoning setting.
-	ReasoningEffort string
+	// ReasoningTokens is the OpenRouter reasoning budget per call, with the
+	// reasoning text excluded from the reply; zero sends no reasoning setting.
+	ReasoningTokens int
 }
 type modelCall struct {
 	ID        string
@@ -87,8 +87,8 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int, al
 		if !allowTools {
 			body["tool_choice"] = "none"
 		}
-		if c.ReasoningEffort != "" {
-			body["reasoning"] = map[string]any{"effort": c.ReasoningEffort, "exclude": true}
+		if c.ReasoningTokens > 0 {
+			body["reasoning"] = map[string]any{"max_tokens": c.ReasoningTokens, "exclude": true}
 		}
 	}
 	data, err := json.Marshal(body)

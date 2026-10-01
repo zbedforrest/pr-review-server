@@ -122,10 +122,10 @@ func TestApprovalReuseMissesChangedEvidence(t *testing.T) {
 	require.Equal(t, approval.OriginInvestigator, assessment.Origin)
 }
 
-func TestApprovalReuseMissesChangedReasoningEffort(t *testing.T) {
+func TestApprovalReuseMissesChangedReasoningBudget(t *testing.T) {
 	h := newApprovalReuseHarness(t)
 	h.run(t, h.first)
-	t.Setenv("APPROVAL_CANDIDATES_REASONING_EFFORT", "high")
+	t.Setenv("APPROVAL_CANDIDATES_REASONING_TOKENS", "3000")
 	_, assessment := h.run(t, h.next(t, "effort-scan", "full"))
 	require.Equal(t, 2, h.models)
 	require.Equal(t, approval.OriginInvestigator, assessment.Origin)

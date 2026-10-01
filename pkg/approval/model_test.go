@@ -91,7 +91,22 @@ func fakeModel(t *testing.T, provider string, turn func(call int, request map[st
 }
 
 func fakeInvestigator(provider string, server *httptest.Server) NativeInvestigator {
-	return NativeInvestigator{Config: ModelConfig{Provider: provider, Model: "pinned-model", APIKey: "fixture", BaseURL: server.URL, Client: server.Client()}}
+	return NativeInvestigator{Config: ModelConfig{Provider: provider, Model: "pinned-model", APIKey: "fixture", BaseURL: server.URL, Client: server.Client()}, ToolRounds: MaxToolRounds}
+}
+
+func TestNativeDefaultInvestigatorAnswersWithToolsClosed(t *testing.T) {
+	s, _ := validFixture()
+	server, _ := fakeModel(t, "openrouter", func(_ int, request map[string]any) modelTurn {
+		if request["tool_choice"] != "none" {
+			t.Errorf("default investigator must request the answer with tools closed, got tool_choice %v", request["tool_choice"])
+		}
+		return answerTurn(cleanAnswer)
+	})
+	n := fakeInvestigator("openrouter", server)
+	n.ToolRounds = 0
+	if _, err := n.Investigate(context.Background(), s, nil, &testBudget{}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func requestText(request map[string]any) string {
@@ -550,12 +565,12 @@ func TestNativeAnswersARepeatedToolCallWithAPointer(t *testing.T) {
 }
 
 func TestOpenRouterRequestBoundsReasoning(t *testing.T) {
-	for _, effort := range []string{"", "low"} {
-		t.Run(fmt.Sprint("effort=", effort), func(t *testing.T) {
+	for _, budget := range []int{0, 6000} {
+		t.Run(fmt.Sprint("budget=", budget), func(t *testing.T) {
 			s, _ := validFixture()
 			server, _ := fakeModel(t, "openrouter", func(_ int, request map[string]any) modelTurn {
 				reasoning, present := request["reasoning"].(map[string]any)
-				if present != (effort != "") || present && (reasoning["effort"] != effort || reasoning["exclude"] != true) {
+				if max, _ := reasoning["max_tokens"].(float64); present != (budget > 0) || present && (int(max) != budget || reasoning["exclude"] != true) {
 					t.Errorf("reasoning setting = %v", request["reasoning"])
 				}
 				if max, _ := request["max_tokens"].(float64); int(max) != CallOutputTokens {
@@ -564,7 +579,7 @@ func TestOpenRouterRequestBoundsReasoning(t *testing.T) {
 				return answerTurn(cleanAnswer)
 			})
 			n := fakeInvestigator("openrouter", server)
-			n.Config.ReasoningEffort = effort
+			n.Config.ReasoningTokens = budget
 			if _, err := n.Investigate(context.Background(), s, nil, &testBudget{}); err != nil {
 				t.Fatal(err)
 			}

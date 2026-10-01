@@ -14,11 +14,14 @@ const investigatorPrompt = `You assess whether existing review evidence supports
 Return one JSON object and nothing else:
 {"summary": string, "verdicts": [{"concern": "C#", "disposition": d, "rationale": string, "related": ["E#"], "citations": [cite]}], "discovered": [{"evidence": "E#", "claim": string, "disposition": d, "rationale": string, "related": ["E#"], "citations": [cite]}], "no_concerns": ["E#"], "gaps": [string]}
 cite is {"evidence": "E#", "excerpt": string} or {"revision": "H" or "R#" or "B" or "M", "path": string, "lines": [start, end], "excerpt": string}.
-Rules: give every C# a verdict; d is fixed, not_applicable, non_blocking, unresolved or uncertain. fixed: cite the original code at the concern's revision and anchor, and the changed code at H in the same file; a concern raised on H cannot be fixed. not_applicable: cite code at H in the concern's file that contradicts it. non_blocking: only when the concern's impact is style or documentation and its severity is not high or critical; cite the source artifact. Otherwise use unresolved (still a problem) or uncertain (cannot tell). An author saying fixed, a resolved thread, or a later review that does not repeat a concern is not evidence. discovered: a concern raised in an artifact that no C# covers; quote its exact claim from that artifact, at least 16 characters; list duplicates of a C# in that verdict's related list instead. no_concerns: every other artifact with no actionable concern. Artifacts marked auto or concerns= are already classified; every other E# belongs in exactly one place: a verdict's related list, a discovered entry or no_concerns. Excerpts are exact text without the line-number prefix; a code citation spans at most 400 lines. Keep each rationale to one or two sentences and the summary to three. Think as long as you need; keep the JSON short. Report anything you could not verify in gaps.`
+Rules: give every C# a verdict, using only a disposition from its allowed list; d is fixed, not_applicable, non_blocking, unresolved or uncertain. fixed: cite the original code at the concern's revision and anchor, and the changed code at H in the same file; a concern raised on H cannot be fixed. not_applicable: cite code at H in the concern's file that contradicts it. non_blocking: only when the concern's impact is style or documentation and its severity is not high or critical; cite the source artifact. Otherwise use unresolved (still a problem) or uncertain (cannot tell). An author saying fixed, a resolved thread, or a later review that does not repeat a concern is not evidence. discovered: a concern raised in an artifact that no C# covers; quote its exact claim from that artifact, at least 16 characters; list duplicates of a C# in that verdict's related list instead. no_concerns: every other artifact with no actionable concern. Artifacts marked auto or concerns= are already classified; every other E# belongs in exactly one place: a verdict's related list, a discovered entry or no_concerns. Excerpts are exact text without the line-number prefix; a code citation spans at most 400 lines. Keep each rationale to one or two sentences and the summary to three. Reason efficiently and keep the JSON short. Report anything you could not verify in gaps.`
 
 type NativeInvestigator struct {
 	Config       ModelConfig
 	InitialUsage Usage
+	// ToolRounds allows optional read rounds before the answer, at most
+	// MaxToolRounds; production leaves it zero because the preload suffices.
+	ToolRounds int
 }
 
 func addUsage(a, b Usage) Usage {
@@ -64,7 +67,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 		if partial {
 			output = min(FollowUpOutputTokens, remaining)
 		}
-		allowTools := toolRounds < MaxToolRounds && followUps == 0 && !n.shouldFinalize(ctx, usage)
+		allowTools := toolRounds < min(n.ToolRounds, MaxToolRounds) && followUps == 0 && !n.shouldFinalize(ctx, usage)
 		reservation := Usage{InputTokens: CallInputTokens, OutputTokens: output, Rounds: 1}
 		if err := budget.Reserve(ctx, reservation); err != nil {
 			return result, err
@@ -103,7 +106,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			if messages, usage, err = n.runTools(ctx, s, preload, repo, budget, messages, reply, usage, answered); err != nil {
 				return result, err
 			}
-			if toolRounds++; toolRounds >= MaxToolRounds || n.shouldFinalize(ctx, usage) {
+			if toolRounds++; toolRounds >= min(n.ToolRounds, MaxToolRounds) || n.shouldFinalize(ctx, usage) {
 				// Some routes ignore tool_choice none, and a refused call costs a full reasoning pass.
 				messages = appendUserText(messages, "Tools are now closed. Return the JSON answer from the material you have.")
 			}

@@ -89,7 +89,7 @@ func TestPreloadCarriesEveryArtifactAndConcernUnderAliases(t *testing.T) {
 	for _, line := range []string{
 		"Revisions: H=" + s.Revision.Head + " head, B=" + s.Revision.Base + " base, M=" + s.Revision.Base + " merge base, R1=" + strings.Repeat("c", 40),
 		"build: success\nlint: failure (on R1)\n",
-		"C1 id=leak severity=high impact=correctness revision=R1 anchor=app.go:100-101 sources=E1\n",
+		"C1 id=leak severity=high impact=correctness revision=R1 anchor=app.go:100-101 sources=E1 allowed=fixed,not_applicable,unresolved,uncertain\n",
 		"=== E1 " + s.Digest[:8] + " id=finding kind=prism_finding by review-bot (prism, verified) reviewed=R1 anchor=app.go:100-101 concerns=C1\n",
 		"=== E2 " + s.Digest[:8] + " id=inline kind=inline_comment by reviewer (generic, unverified) reviewed=H resolved anchor=app.go:300-300\n",
 		"auto: Review request metadata.\n",
