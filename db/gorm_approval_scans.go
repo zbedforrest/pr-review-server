@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
+	"path"
+	"runtime"
 	"strings"
 	"time"
 
@@ -72,6 +75,7 @@ func (g *GormDB) approvalTransaction(fn func(*gorm.DB) error, clocks ...*time.Ti
 		initial[index] = *clock
 	}
 	for attempt := 0; ; attempt++ {
+		var gated time.Time
 		err := g.db.Transaction(func(tx *gorm.DB) error {
 			locked := tx.Model(&approvalGate{}).Where("id = 1").UpdateColumn("version", gorm.Expr("version + 1"))
 			if locked.Error != nil {
@@ -80,12 +84,24 @@ func (g *GormDB) approvalTransaction(fn func(*gorm.DB) error, clocks ...*time.Ti
 			if locked.RowsAffected != 1 {
 				return fmt.Errorf("approval mutation gate unavailable")
 			}
-			elapsed := time.Since(started)
+			gated = time.Now()
+			elapsed := gated.Sub(started)
 			for index, clock := range clocks {
 				*clock = initial[index].Add(elapsed)
 			}
 			return fn(tx)
 		})
+		if total := time.Since(started); total > time.Second {
+			caller := "unknown"
+			if pc, _, _, ok := runtime.Caller(1); ok {
+				caller = path.Base(runtime.FuncForPC(pc).Name())
+			}
+			wait := total
+			if !gated.IsZero() {
+				wait = gated.Sub(started)
+			}
+			log.Printf("[APPROVAL] slow transaction %s: %s total, %s waiting for the gate", caller, total.Round(time.Millisecond), wait.Round(time.Millisecond))
+		}
 		if err == nil || attempt >= 12 || (!strings.Contains(err.Error(), "database is locked") && !strings.Contains(err.Error(), "database table is locked")) {
 			return err
 		}
