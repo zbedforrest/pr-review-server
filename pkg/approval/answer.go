@@ -91,9 +91,10 @@ func (r *lineRange) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// decodeCompactAnswer reads the first JSON object of a reply. Unknown fields
-// are ignored and a mistyped field is left empty, which only removes what the
-// model claimed; it fails only when no JSON object can be decoded.
+// decodeCompactAnswer reads the first JSON object of a reply. The top level is
+// strict, so a misnamed or misshapen field fails instead of silently dropping
+// discoveries or gaps; inside a verdict or discovery a mistyped field is left
+// empty, which only removes what the model claimed.
 func decodeCompactAnswer(text string) (compactAnswer, error) {
 	var answer compactAnswer
 	body := strings.TrimSpace(stripCodeFence(text))
@@ -114,12 +115,56 @@ func decodeAnswerObject(data []byte, answer *compactAnswer) error {
 	if !strings.HasPrefix(strings.TrimSpace(string(data)), "{") {
 		return fmt.Errorf("no JSON object")
 	}
-	err := json.Unmarshal(data, answer)
-	var typeErr *json.UnmarshalTypeError
-	if errors.As(err, &typeErr) {
-		return nil
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
 	}
-	return err
+	for name, raw := range fields {
+		var err error
+		switch name {
+		case "summary":
+			if json.Unmarshal(raw, &answer.Summary) != nil {
+				answer.Summary = ""
+			}
+		case "verdicts":
+			err = decodeAnswerElements(raw, &answer.Verdicts)
+		case "discovered":
+			err = decodeAnswerElements(raw, &answer.Discovered)
+		case "no_concerns":
+			err = json.Unmarshal(raw, &answer.NoConcerns)
+		case "gaps":
+			err = json.Unmarshal(raw, &answer.Gaps)
+		default:
+			err = fmt.Errorf("unknown field")
+		}
+		if err != nil {
+			return fmt.Errorf("answer field %q could not be read: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// decodeAnswerElements requires an array of objects and tolerates mistyped
+// fields inside an element, whose omission every caller already fails closed.
+func decodeAnswerElements[T any](raw json.RawMessage, out *[]T) error {
+	var elements []json.RawMessage
+	if err := json.Unmarshal(raw, &elements); err != nil {
+		return err
+	}
+	*out = make([]T, 0, len(elements))
+	for _, element := range elements {
+		if !strings.HasPrefix(strings.TrimSpace(string(element)), "{") {
+			return fmt.Errorf("element is not an object")
+		}
+		var value T
+		err := json.Unmarshal(element, &value)
+		var typeErr *json.UnmarshalTypeError
+		if err != nil && !errors.As(err, &typeErr) {
+			return err
+		}
+		*out = append(*out, value)
+	}
+	return nil
 }
 
 // merge folds a follow-up answer into the accumulated one: missing verdicts

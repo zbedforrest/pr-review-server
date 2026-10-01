@@ -350,7 +350,7 @@ func TestNativeAsksOnceForJSONThenFails(t *testing.T) {
 		t.Run(fmt.Sprint("recovers=", recovers), func(t *testing.T) {
 			s, _ := validFixture()
 			server, calls := fakeModel(t, "anthropic", func(call int, request map[string]any) modelTurn {
-				if call == 2 && !strings.Contains(requestText(request), "was not a JSON object") {
+				if call == 2 && !strings.Contains(requestText(request), "was not the requested JSON object") {
 					t.Error("follow-up did not explain the problem")
 				}
 				if call == 2 && recovers {

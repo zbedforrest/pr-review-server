@@ -138,8 +138,8 @@ func TestStripLinePrefixesOnlyWhenEveryLineIsNumbered(t *testing.T) {
 }
 
 func TestDecodeCompactAnswer(t *testing.T) {
-	got, err := decodeCompactAnswer("```json\n{\"summary\":\"ok\",\"extra\":true,\"no_concerns\":\"E1\",\"verdicts\":[{\"concern\":\"C1\",\"disposition\":\"fixed\",\"citations\":[{\"revision\":\"H\",\"path\":\"a.go\",\"lines\":\"3-5\",\"excerpt\":\"x\"}]}],\"gaps\":7}\n```")
-	if err != nil || got.Summary != "ok" || !reflect.DeepEqual([]string(got.NoConcerns), []string{"E1"}) || !reflect.DeepEqual([]int(got.Verdicts[0].Citations[0].Lines), []int{3, 5}) || len(got.Gaps) != 0 {
+	got, err := decodeCompactAnswer("```json\n{\"summary\":\"ok\",\"no_concerns\":\"E1\",\"verdicts\":[{\"concern\":\"C1\",\"disposition\":\"fixed\",\"extra\":true,\"rationale\":7,\"citations\":[{\"revision\":\"H\",\"path\":\"a.go\",\"lines\":\"3-5\",\"excerpt\":\"x\"}]}],\"gaps\":\"one gap\"}\n```")
+	if err != nil || got.Summary != "ok" || !reflect.DeepEqual([]string(got.NoConcerns), []string{"E1"}) || got.Verdicts[0].Disposition != "fixed" || got.Verdicts[0].Rationale != "" || !reflect.DeepEqual([]int(got.Verdicts[0].Citations[0].Lines), []int{3, 5}) || !reflect.DeepEqual([]string(got.Gaps), []string{"one gap"}) {
 		t.Fatalf("lenient decode: %+v %v", got, err)
 	}
 	if got, err := decodeCompactAnswer(`Here it is: {"summary": "healed", "no_concerns": ["E1"],}`); err != nil || got.Summary != "healed" {
@@ -148,6 +148,37 @@ func TestDecodeCompactAnswer(t *testing.T) {
 	for _, text := range []string{"", "null", "[]", "no JSON here", `"just a string"`} {
 		if _, err := decodeCompactAnswer(text); err == nil {
 			t.Errorf("accepted %q", text)
+		}
+	}
+}
+
+func TestDecodeCompactAnswerRejectsMisshapenNegativeFields(t *testing.T) {
+	for _, text := range []string{
+		`{"summary":"ok","discovered":{"evidence":"E1","claim":"The retry loop never stops."}}`,
+		`{"summary":"ok","discoveries":[{"evidence":"E1","claim":"The retry loop never stops."}]}`,
+		`{"summary":"ok","discovered":["E1: the retry loop never stops"]}`,
+		`{"summary":"ok","gaps":[{"item":"E1","reason":"Could not verify the migration path."}]}`,
+		`{"summary":"ok","coverage_gaps":["Could not verify the migration path."]}`,
+		`{"summary":"ok","gaps":7}`,
+		`{"summary":"ok","verdicts":{"concern":"C1","disposition":"fixed"}}`,
+		`{"summary":"ok","no_concerns":[{"evidence":"E1"}]}`,
+	} {
+		if got, err := decodeCompactAnswer(text); err == nil {
+			t.Errorf("accepted %s as %+v", text, got)
+		}
+	}
+}
+
+func TestNativeFailsClosedOnMisshapenDiscoveriesAndGaps(t *testing.T) {
+	for _, text := range []string{
+		`{"summary":"ok","no_concerns":["E1"],"discovered":{"evidence":"E1","claim":"No concerns at all here."}}`,
+		`{"summary":"ok","no_concerns":["E1"],"coverage_gaps":["Could not verify the migration path."]}`,
+	} {
+		s, _ := validFixture()
+		server, calls := fakeModel(t, "anthropic", func(int, map[string]any) modelTurn { return answerTurn(text) })
+		got, err := fakeInvestigator("anthropic", server).Investigate(context.Background(), s, nil, &testBudget{})
+		if *calls != 2 || err == nil || !strings.Contains(err.Error(), "invalid_assessment") {
+			t.Fatalf("%s: calls=%d decision=%s err=%v", text, *calls, got.Decision, err)
 		}
 	}
 }

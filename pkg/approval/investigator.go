@@ -115,7 +115,7 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			log.Printf("[APPROVAL] undecodable answer after %d rounds: %.300s", usage.Rounds, err.Error())
 			if !decoded && followUps < maxFollowUps && n.canFollowUp(ctx, usage) {
 				followUps++
-				messages = append(messages, n.assistantMessage(reply), map[string]any{"role": "user", "content": "The reply was not a JSON object (" + err.Error() + "). Return only the JSON object."})
+				messages = append(messages, n.assistantMessage(reply), map[string]any{"role": "user", "content": "The reply was not the requested JSON object (" + err.Error() + "). Return only the JSON object, with exactly the fields and shapes given."})
 				continue
 			}
 			if !decoded {
