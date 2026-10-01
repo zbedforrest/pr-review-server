@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-const PolicyVersion = "approval-v2"
-const PromptVersion = "approval-v1"
-const RuntimeVersion = "native-tools-v1"
+const PolicyVersion = "approval-v3"
+const PromptVersion = "approval-v2"
+const RuntimeVersion = "preloaded-v1"
 
 type Target struct {
 	Owner           string `json:"owner"`

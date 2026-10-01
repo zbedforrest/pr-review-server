@@ -19,12 +19,19 @@ const (
 // conversation cap (about four bytes per token) stays inside the per-call
 // input allowance, and both sit well inside the model's 1M-token context.
 const (
-	TargetInputTokens  = 6_000_000
-	TargetOutputTokens = 400_000
+	TargetInputTokens  = 2_000_000
+	TargetOutputTokens = 160_000
 	CallInputTokens    = 400_000
-	MaxRounds          = 60
-	MaxToolCalls       = 80
-	MaxToolBytes       = 8 << 20
+	// CallOutputTokens bounds one reply, reasoning included, so a runaway
+	// reasoning trace cannot consume the target's time budget.
+	CallOutputTokens = 40_000
+	MaxRounds        = 8
+	MaxToolCalls     = 16
+	MaxToolBytes     = 1 << 20
+	// MaxToolRounds and MaxToolCallsPerRound bound optional reads in one
+	// attempt; the evidence, diff and anchor code are already preloaded.
+	MaxToolRounds        = 2
+	MaxToolCallsPerRound = 8
 	// Citation checks read the cited code after the model answers; they get
 	// their own allowance so a long investigation cannot starve them.
 	MaxCitationReads = 200
@@ -32,7 +39,13 @@ const (
 	// maxToolResultBytes bounds one tool result returned to the model.
 	maxToolResultBytes = 65536
 
-	maxConversationBytes = 1_200_000
+	maxConversationBytes = 1_400_000
+
+	// Preload budgets for the first prompt. Evidence over its budget is a
+	// limit; diff and code past theirs are left to the read tools.
+	PreloadEvidenceBytes = 600_000
+	PreloadDiffBytes     = 200_000
+	PreloadCodeBytes     = 240_000
 )
 
 type limitError struct {

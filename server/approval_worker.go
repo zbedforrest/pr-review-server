@@ -67,7 +67,7 @@ func (s *Server) approvalInvestigator(target db.ApprovalTarget) approval.Investi
 		return s.approvalExecution.investigator(target)
 	}
 	cfg := s.cfg.ApprovalCandidates()
-	return approval.NativeInvestigator{Config: approval.ModelConfig{Provider: cfg.Provider, Model: cfg.Model, APIKey: cfg.APIKey}, InitialUsage: approval.Usage{InputTokens: int(target.InputTokens), OutputTokens: int(target.OutputTokens), Rounds: target.Rounds, ToolCalls: target.ToolCalls, ToolBytes: int(target.ToolBytes)}}
+	return approval.NativeInvestigator{Config: approval.ModelConfig{Provider: cfg.Provider, Model: cfg.Model, APIKey: cfg.APIKey, ReasoningEffort: cfg.ReasoningEffort}, InitialUsage: approval.Usage{InputTokens: int(target.InputTokens), OutputTokens: int(target.OutputTokens), Rounds: target.Rounds, ToolCalls: target.ToolCalls, ToolBytes: int(target.ToolBytes)}}
 }
 
 type approvalBudget struct {
