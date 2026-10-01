@@ -30,7 +30,45 @@ type GitRepository struct {
 	mu        sync.Mutex
 	lease     *os.File
 	managed   bool
+	blobs     repositoryReadCache
+	diffs     repositoryReadCache
+	runs      int
 }
+
+// Pinned revisions are immutable, so read results (failures included) stay
+// valid for the repository's lifetime.
+const (
+	maxCachedBlobBytes = 32 << 20
+	maxCachedDiffBytes = 16 << 20
+)
+
+type cachedRead struct {
+	text string
+	err  error
+}
+
+type repositoryReadCache struct {
+	entries map[string]cachedRead
+	bytes   int
+}
+
+func (c *repositoryReadCache) get(key string) (cachedRead, bool) {
+	entry, ok := c.entries[key]
+	return entry, ok
+}
+
+func (c *repositoryReadCache) put(ctx context.Context, limit int, key, text string, err error) {
+	size := len(key) + len(text) + 64
+	if ctx.Err() != nil || c.bytes+size > limit {
+		return
+	}
+	if c.entries == nil {
+		c.entries = map[string]cachedRead{}
+	}
+	c.entries[key] = cachedRead{text, err}
+	c.bytes += size
+}
+
 type RepositoryToken func(context.Context, string, string) (string, error)
 
 type boundedGitOutput struct {
@@ -56,6 +94,7 @@ func (r *GitRepository) command(ctx context.Context, args ...string) *exec.Cmd {
 }
 
 func (r *GitRepository) run(ctx context.Context, limit int, args ...string) (string, error) {
+	r.runs++
 	cmd := r.command(ctx, args...)
 	out := &boundedGitOutput{limit: limit}
 	cmd.Stdout = out
@@ -224,6 +263,16 @@ func validRepositoryPath(p string, empty bool) bool {
 }
 
 func (r *GitRepository) blob(ctx context.Context, revision, p string) (string, error) {
+	key := revision + "\x00" + p
+	if cached, ok := r.blobs.get(key); ok {
+		return cached.text, cached.err
+	}
+	text, err := r.readBlob(ctx, revision, p)
+	r.blobs.put(ctx, maxCachedBlobBytes, key, text, err)
+	return text, err
+}
+
+func (r *GitRepository) readBlob(ctx context.Context, revision, p string) (string, error) {
 	if !validRepositoryPath(p, false) {
 		return "", fmt.Errorf("invalid path")
 	}
@@ -291,15 +340,20 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 		if !fullRevision.MatchString(req.OtherRevision) || !r.revisions[req.OtherRevision] {
 			return ReadResult{}, fmt.Errorf("unregistered revision")
 		}
-		args := []string{"diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", req.OtherRevision, req.Revision, "--"}
-		if req.Path != "" {
-			args = append(args, req.Path)
+		key := req.OtherRevision + "\x00" + req.Revision + "\x00" + req.Path
+		cached, ok := r.diffs.get(key)
+		if !ok {
+			args := []string{"diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", req.OtherRevision, req.Revision, "--"}
+			if req.Path != "" {
+				args = append(args, req.Path)
+			}
+			cached.text, cached.err = r.run(ctx, 2<<20, args...)
+			r.diffs.put(ctx, maxCachedDiffBytes, key, cached.text, cached.err)
 		}
-		text, err := r.run(ctx, 2<<20, args...)
-		if err != nil {
-			return ReadResult{}, err
+		if cached.err != nil {
+			return ReadResult{}, cached.err
 		}
-		return repositoryTextPage(text, req.Cursor)
+		return repositoryTextPage(cached.text, req.Cursor)
 	case "search_code":
 		return r.search(ctx, req)
 	case "list_files":

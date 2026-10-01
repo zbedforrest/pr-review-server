@@ -11,8 +11,9 @@ Set these environment variables on each server replica before enabling the featu
 | `APPROVAL_CANDIDATES_ENABLED` | `false` initially; `true` enables admission and the UI |
 | `APPROVAL_CANDIDATES_PROVIDER` | `anthropic` or `openrouter` |
 | `APPROVAL_CANDIDATES_MODEL` | Explicit model ID supported by that provider |
-| `APPROVAL_CANDIDATES_DAILY_INPUT_TOKENS` | Optional deployment-wide UTC allocation budget, at least one target allowance (6,000,000) when set; unset means unlimited |
-| `APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS` | Optional deployment-wide UTC allocation budget, at least one target allowance (400,000) when set; unset means unlimited |
+| `APPROVAL_CANDIDATES_REASONING_EFFORT` | OpenRouter reasoning effort: `minimal`, `low` (default), `medium` or `high`; `off` sends no reasoning setting. Any other value makes the feature unavailable |
+| `APPROVAL_CANDIDATES_DAILY_INPUT_TOKENS` | Optional deployment-wide UTC allocation budget, at least one target allowance (2,000,000) when set; unset means unlimited |
+| `APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS` | Optional deployment-wide UTC allocation budget, at least one target allowance (160,000) when set; unset means unlimited |
 | `APPROVAL_CANDIDATES_CACHE_DIR` | Private writable directory, default `data/approval-cache` |
 | `APPROVAL_CANDIDATES_PROVIDER_IDENTITIES` | JSON array of verified Greptile/Copilot numeric actor IDs |
 
@@ -37,6 +38,12 @@ Dedicated database tables retain scans, snapshots, assessments, leases, current 
 Every target reserves its maximum allowance before model execution. Trusted usage releases unused allowance. Missing or invalid usage retains the conservative reservation. An in-flight target keeps its original UTC allocation day across midnight and recovery; new targets allocate against the new day. These are resource allocation caps, not dollar budgets or an exact per-calendar-day billing report.
 
 Admission snapshots provider, model and policy/runtime versions. Configuration drift blocks execution or freshness renewal. Changing credentials without changing provider/model remains possible. The provider cannot silently fall back to a different model.
+
+## Investigation context
+
+The server preloads every review artifact, every extracted concern, the merge-base to head diff (up to 200,000 bytes) and the code at review anchors (up to 240,000 bytes) into the first model request, under short aliases such as `E3`, `C2` and `H`. The model returns only verdicts, discovered concerns, a list of artifacts without concerns and gaps; the server derives provenance and artifact dispositions and verifies every citation. Read tools remain for code that is not shown, with at most two tool rounds per attempt, so most targets finish in one or two model calls. Evidence over 600,000 bytes stops the target with `evidence_limit` before any model call.
+
+Each model call reserves 400,000 input and up to 40,000 output tokens; a target allows 2,000,000 input and 160,000 output tokens across recovery attempts. Server logs record each round's duration, input, output and reasoning tokens. Pinned file and diff reads are cached per repository, so preloading, paging and citation checks do not repeat git work.
 
 ## Live progress
 
@@ -82,6 +89,6 @@ Historical legacy or cache-restored PRism runs without immutable full-revision s
 
 Approval work shares the server's GitHub quota. A rate-limited response (REST or GraphQL, primary or secondary) pauses target claims until GitHub's reported reset, or for one minute when GitHub gives none, capped at one hour. A target that hits the limit mid-run waits for the reset and retries once when its deadline allows, and otherwise finishes as `github_rate_limited` rather than as an access failure. The candidate feed reads live PR state only for candidate rows; other rows reuse PR reads for up to 30 seconds.
 
-Failed targets keep their cause: the stored summary carries a bounded error message and the server logs the full error with the target ID. Investigations stopped by a resource ceiling record which one (`budget_exhausted`, `conversation_limit`, `evidence_limit` or `tool_result_limit`). A final answer that skips required evidence, is not valid JSON, or fails server validation is returned to the model with the reason up to twice before the target fails; validation is never relaxed and every retry spends the same budget. Unfinished check suites without check runs are not treated as pending CI.
+Failed targets keep their cause: the stored summary carries a bounded error message and the server logs the full error with the target ID. Investigations stopped by a resource ceiling record which one (`budget_exhausted`, `conversation_limit`, `evidence_limit` or `tool_result_limit`). A final answer that is not a JSON object, or that misses concern verdicts or artifact classifications, gets one follow-up asking for exactly what is missing; validation is never relaxed and the follow-up spends the same budget. After that the server settles the rest without the model: missing verdicts become unresolved, unclassified artifacts become coverage gaps, unverifiable citations are dropped with their dispositions marked uncertain, and an answer that still fails validation ends as `invalid_assessment`. Unfinished check suites without check runs are not treated as pending CI.
 
 Before a broad scan, validate one PR that already has a completed review at its current head. Local testing needs authentic review history (a read-only connection to deployed review runs or imported fixtures): a database with no review runs cannot produce candidates.

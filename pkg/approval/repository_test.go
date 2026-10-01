@@ -196,3 +196,50 @@ func TestRepositoryReadFileClampsARangePastTheEnd(t *testing.T) {
 		t.Fatal("a range starting past the end must still be rejected")
 	}
 }
+
+func TestRepositoryCachesBlobAndDiffReads(t *testing.T) {
+	r, base, head := fixtureRepository(t)
+	ctx := context.Background()
+	reads := []struct {
+		name string
+		req  ReadRequest
+	}{
+		{"read_file", ReadRequest{Revision: head, Path: "file.txt", StartLine: 1, EndLine: 3}},
+		{"read_file", ReadRequest{Revision: head, Path: "missing.txt", StartLine: 1, EndLine: 1}},
+		{"read_diff", ReadRequest{Revision: head, OtherRevision: base, Path: "file.txt"}},
+		{"read_diff", ReadRequest{Revision: head, OtherRevision: base}},
+	}
+	type outcome struct {
+		result ReadResult
+		err    string
+	}
+	read := func() []outcome {
+		var out []outcome
+		for _, q := range reads {
+			result, err := r.Read(ctx, q.name, q.req)
+			o := outcome{result: result}
+			if err != nil {
+				o.err = err.Error()
+			}
+			out = append(out, o)
+		}
+		return out
+	}
+	first := read()
+	runs := r.runs
+	if runs == 0 || first[0].err != "" || first[1].err == "" || !strings.Contains(first[2].result.Text, "+changed") {
+		t.Fatalf("unexpected first reads: %+v", first)
+	}
+	second := read()
+	if r.runs != runs {
+		t.Fatalf("cached reads ran git %d more times", r.runs-runs)
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Fatalf("read %d changed: %+v then %+v", i, first[i], second[i])
+		}
+	}
+	if _, err := r.Read(ctx, "read_file", ReadRequest{Revision: head, Path: "file.txt", StartLine: 2, EndLine: 2}); err != nil || r.runs != runs {
+		t.Fatalf("another range of a cached blob ran git: %v", err)
+	}
+}
