@@ -306,7 +306,10 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 			f.ValidatedAt = &now
 			f.ValidUntil = &until
 		}
-		_ = store.FinalizeApprovalTarget(target.ID, target.LeaseToken, time.Now(), f)
+		key := s.approvalReuseKey(a)
+		if err := store.FinalizeApprovalTarget(target.ID, target.LeaseToken, time.Now(), f); err == nil && key != "" {
+			_ = store.RecordApprovalReuse(target.UserID, key, target.ID, time.Now())
+		}
 	}
 	defer func() {
 		if recover() != nil {
@@ -400,7 +403,16 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 	}
 	if !snapshot.Eligible {
 		a := approval.Evaluate(snapshot, approval.Assessment{})
+		a.Origin = approval.OriginGate
 		finish("completed", a.Decision, "current", "excluded", "This pull request is outside the eligible scope", &a)
+		return
+	}
+	if a, ok := s.approvalPrejudged(*scan, user.ID, snapshot); ok {
+		if !s.approvalConfigurationMatches(*scan, a) {
+			configurationChanged()
+			return
+		}
+		finish("completed", a.Decision, "current", "", a.Summary, a)
 		return
 	}
 	if !s.approvalConfigurationMatches(*scan, nil) {
@@ -432,6 +444,7 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 			limit := approval.LimitCode(err)
 			log.Printf("[APPROVAL] target %s (%s/%s#%d) stopped at %s: %v", target.ID, target.Owner, target.Repo, target.Number, limit, err)
 			limited := approval.Evaluate(snapshot, approval.Assessment{SnapshotID: snapshot.ID, SnapshotDigest: snapshot.Digest, Summary: "Investigation reached its resource limit", CoverageGaps: []string{"Investigation stopped at its " + approval.LimitDescription(limit) + " before inspecting all required evidence"}})
+			limited.Origin = approval.OriginLimit
 			// The fallback assessment is synthesized, not the model's, so its
 			// validation failure would only restate the limit.
 			limited.ReasonCodes = approvalWithout(limited.ReasonCodes, "invalid_assessment")
@@ -439,6 +452,20 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 			return
 		}
 		fail(approvalFailure(err, "investigation_failed"), err)
+		return
+	}
+	assessment.Origin = approval.OriginInvestigator
+	// Only a candidate needs its evidence re-collected; nothing else can approve.
+	if assessment.Decision != "candidate" {
+		if err := s.approvalRetryAfterRateLimit(ctx, func() error { return s.approvalAccess(ctx, user.ID, target) }); err != nil {
+			fail(approvalFailure(err, "access_unavailable"), err)
+			return
+		}
+		if !s.approvalConfigurationMatches(*scan, &assessment) {
+			configurationChanged()
+			return
+		}
+		finish("completed", assessment.Decision, "current", "", assessment.Summary, &assessment)
 		return
 	}
 	if err := store.SetApprovalTargetStage(target.ID, target.LeaseToken, "validating", time.Now()); err != nil {

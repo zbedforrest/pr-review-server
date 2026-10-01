@@ -62,7 +62,7 @@ func (approvalSnapshot) TableName() string   { return "approval_evidence_snapsho
 func (approvalAssessment) TableName() string { return "approval_assessments" }
 
 func (g *GormDB) ensureApprovalTables() error {
-	if err := g.db.AutoMigrate(&ApprovalScan{}, &ApprovalTarget{}, &approvalGate{}, &approvalProjection{}, &approvalSnapshot{}, &approvalAssessment{}, &approvalDailyBudget{}, &ApprovalValidation{}, &approvalUsageReservation{}); err != nil {
+	if err := g.db.AutoMigrate(&ApprovalScan{}, &ApprovalTarget{}, &approvalGate{}, &approvalProjection{}, &approvalSnapshot{}, &approvalAssessment{}, &approvalDailyBudget{}, &ApprovalValidation{}, &approvalUsageReservation{}, &approvalReuseEntry{}); err != nil {
 		return err
 	}
 	return g.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&approvalGate{ID: 1}).Error
@@ -1037,7 +1037,7 @@ func (g *GormDB) PruneApprovalScans(before time.Time) (int64, error) {
 				return err
 			}
 			if len(ids) > 0 {
-				for _, model := range []any{&approvalProjection{}, &approvalSnapshot{}, &approvalAssessment{}, &ApprovalValidation{}, &approvalUsageReservation{}} {
+				for _, model := range []any{&approvalProjection{}, &approvalSnapshot{}, &approvalAssessment{}, &ApprovalValidation{}, &approvalUsageReservation{}, &approvalReuseEntry{}} {
 					if err := tx.Where("target_id IN ?", ids).Delete(model).Error; err != nil {
 						return err
 					}

@@ -1,6 +1,6 @@
 # Approval candidates: implementation specification
 
-Status: frozen v1, including the final consistency-audit resolutions. Implementation is organized as a six-part draft PR stack.
+Status: frozen v1, including the final consistency-audit resolutions. Implementation is organized as a six-part draft PR stack. Revised 2026-10-01: deterministic gates, reuse, one-shot investigation and parallel scans.
 Date: 2026-09-28. Planning baseline: `9037294`. Implementation baseline: `7df6ee8` (current mainline at kickoff).
 
 ## 1. Product contract
@@ -32,7 +32,7 @@ Automatic approval, merging, posting comments, resolving threads, triggering any
 
 Place **Find approval candidates** beside **Refresh PRs** in `Header.tsx`. It opens a small inline launch panel stating **Investigate N PRs** and showing the captured scope. This is the explicit cost-bearing action; opening the panel does not invoke a model.
 
-Scope is the current top-level search, repository, team and state filters applied to the user's visible PR inventory. Exclude the user's own PRs, hidden PRs, drafts, closed/merged PRs, and PRs whose user's latest standing approval is for the current HEAD. An approval on an older commit does not exclude a PR. Include manually requested PRs when they otherwise qualify. Section names, collapsed sections and custom section ordering do not determine membership. The same PR appearing in multiple sections is included once. The browser excludes an approval only when its revision is known to equal HEAD. Add optional `my_review_commit_sha` to the user-specific PR response, derived from actual review metadata rather than the PR's current SHA. Until that value is known, retain the target in the launch pool and let admission resolve its eligibility.
+Scope is the current top-level search, repository, team and state filters applied to the user's visible PR inventory. Exclude the user's own PRs, hidden PRs, closed/merged PRs, and PRs whose user's latest standing approval is for the current HEAD. Drafts are included: they are investigated and reported, but cannot become candidates. An approval on an older commit does not exclude a PR. Include manually requested PRs when they otherwise qualify. Section names, collapsed sections and custom section ordering do not determine membership. The same PR appearing in multiple sections is included once. The browser excludes an approval only when its revision is known to equal HEAD. Add optional `my_review_commit_sha` to the user-specific PR response, derived from actual review metadata rather than the PR's current SHA. Until that value is known, retain the target in the launch pool and let admission resolve its eligibility.
 
 Freeze the explicit target list when the user starts. The server rechecks membership and eligibility rather than trusting client filters or supplied identities. Changing filters during a scan changes what is displayed, not what is running. Show the original scope and a count of results hidden by current filters. Zero eligible PRs disables Investigate and explains why. A scan above the configured target limit asks the user to narrow filters; it does not silently sample.
 
@@ -92,7 +92,7 @@ A failed or timed-out task has no positive decision. Other-results buckets are m
 
 All must pass:
 
-1. The target remains visible to the requesting user, open, non-draft, non-owned, non-hidden and not already approved by that user at the current HEAD. A later COMMENTED review does not replace a standing opinionated review; dismissal does. Unknown approval revision is not treated as an exact-HEAD approval.
+1. The target remains visible to the requesting user, open, non-draft, non-owned, non-hidden and not already approved by that user at the current HEAD. A later COMMENTED review does not replace a standing opinionated review; dismissal does. Unknown approval revision is not treated as an exact-HEAD approval. Drafts are admitted and investigated but are never candidates: the policy adds the reason `pr_draft`, so a draft is `insufficient_evidence` unless a real blocker makes it `needs_attention`. The investigation still distinguishes a draft that is otherwise clean from one with open problems.
 2. Collection is complete within explicit limits, with no unhandled API failures, truncated required inputs or unrecognized substantive review artifacts.
 3. At least one trusted provider has a completed, revision-attributed review of the current HEAD, with no known interrupted or omitted review input. Optional providers may be absent. Mere comments, a passing check, a confidence score, or an overview's optimistic wording do not establish review completion.
 4. Every substantive concern from collected AI and human review evidence has a supported disposition. Unresolved concerns, material disagreement or uncertain classification exclude the PR from candidates.
@@ -106,6 +106,18 @@ A known blocker yields `needs_attention`, with any evidence gaps also reported. 
 A detected current-HEAD provider review that is still queued/running, or has an outstanding review request whose completion cannot be established, defers candidacy with `review_in_progress`; the scan does not wait indefinitely or start another review. A later failed run is shown separately and never rewrites an older completed artifact. Any known incompleteness of the selected evidence remains a gate failure.
 
 A completed review is not a proof that every line was examined. Record review execution completion separately from reported file coverage (`reported_complete`, `reported_partial`, `not_reported`). `reported_partial` cannot supply the sole current-HEAD review. A normal successful run with unreported per-file coverage can supply it, but the panel says **File coverage not reported**. Do not invent coverage counts. Known timeout, skipped input, malformed artifacts or unsupported completion formats cannot be treated as a normal completed run. Known model fallback is recorded and accepted only when the effective policy explicitly permits that actual model.
+
+### Deterministic gates
+
+Some snapshot facts decide a target before any model call. The server builds an assessment with no concerns and evaluates it with the same policy function; when that already yields `needs_attention`, the target finishes with that decision, assessment origin `gate`, no daily-budget reservation, no repository checkout and no model call. Only snapshot blockers can produce that outcome:
+
+- failing CI on the current head (`ci_failed`): any head check that is not success, neutral, skipped, pending, queued or in progress;
+- a standing human change request (`human_changes_requested`);
+- a review provider's change request on the current head (`provider_changes_requested`).
+
+Concerns can only add blockers, so no investigation could clear these; the gate is decision-equivalent to running the model. The collector already treats any standing human `CHANGES_REQUESTED` review as a blocker regardless of the commit it was left on, which includes the current head, so the gate covers that whole set. The gated summary names each blocker and states that no investigation ran; the gate invents no concerns, artifacts or coverage gaps and does not report `invalid_assessment`. Gates apply to full scans and rechecks.
+
+No gate fires for `review_missing`, `review_in_progress`, `ci_pending`, `ci_unknown`, `source_incomplete` or `pr_draft`; those targets are investigated. A missing current review is neutral: it never produces `needs_attention` by itself, and it still prevents candidacy, because candidate gate 3 requires a completed current-head trusted review.
 
 ### Revision policy
 
@@ -219,9 +231,9 @@ Do not cascade away historical scan records when the normal PR row is pruned. Du
 1. Authenticate, enforce feature availability and target limits, validate explicit user-visible targets, and persist scan plus queued targets in one transaction.
 2. Dispatcher claims targets with a durable holder ID, attempt and expiring lease. Reserve a bounded runtime slot before beginning the expensive stage. Use transactional database-backed slot/lease reservations for deployment-wide and per-user concurrency, not per-process semaphores alone. Active-scan uniqueness includes `cancelling` until all remaining work is fenced and settled.
 3. Recheck authorization and live PR state; collect complete evidence and pin revisions. Targets that move after admission finalize as execution `completed`, decision `insufficient_evidence`, reason `head_changed`, freshness `stale`, rather than silently switching commits. Targets that become ineligible after admission finalize `completed`/`excluded` with a reason.
-4. Apply deterministic blockers. Blocked/excluded targets can finish without a model call, retaining useful reasons and collection limitations.
+4. Apply deterministic blockers. Excluded targets finish `excluded`. A full scan whose snapshot is identical to an earlier completed investigation reuses that assessment (see Freshness and caching). Targets the deterministic gates decide finish `needs_attention`. None of these makes a model call or reserves daily budget.
 5. Invoke the investigator when evidence supports meaningful evaluation. Validate structured output and citations.
-6. Re-fetch relevant evidence and metadata. If the content/revision digest changed, produce a stale result, never publish an active candidate for the old snapshot.
+6. For a candidate only, re-fetch relevant evidence and metadata. If the content/revision digest changed, produce a stale result, never publish an active candidate for the old snapshot. A non-candidate decision rechecks access and configuration and finalizes without re-collection: it cannot approve anything, and observed PR changes still invalidate it.
 7. Atomically finalize only if holder, attempt, lease and cancellation still permit it. Advance the active result only when the user/PR generation is still current. Update scan progress from durable child states.
 8. Clean up temporary files and expire retained records on schedule.
 
@@ -278,7 +290,7 @@ All routes use existing authenticated JSON API conventions and return `Cache-Con
 
 Scan responses include `kind`. Results use `scan_id`, `target_id`, `revision`, `execution_status`, `decision`, `freshness`, `reason_codes`, `summary`, `sources`, `concerns`, `checked_at`, `validated_at`, `valid_until`. No terminal result is represented only by free text. Progress includes total/queued/running/completed/failed/timed_out/cancelled. `running` aggregates collecting, investigating and validating; `completed` includes all four completed decisions. These execution buckets sum to total. Candidate count is a separate subset of completed results that remain current and eligible. A known-stale target discovered before any assessment completes with `insufficient_evidence` and `head_changed`, rather than inventing an assessment for another revision.
 
-Validate request size and target count; reject unknown fields. Identical idempotency replay returns the original scan; reused keys with different canonical bodies return 409. Active-scan conflicts return 409 with the existing scan ID. Inaccessible targets return 404 without leaking existence. Admission is atomic for inaccessible, malformed and expected-HEAD-mismatch errors; no tasks are created on those errors. Accessible targets that are now self-authored, hidden, draft, closed or already approved at HEAD are recorded as completed/excluded without model calls. If no eligible targets remain, return 422 `no_eligible_targets` without creating a scan. This explicit excluded list handles stale view state without silently dropping targets. Recheck of an ineligible PR returns 422. A target moving after admission becomes stale at execution.
+Validate request size and target count; reject unknown fields. Identical idempotency replay returns the original scan; reused keys with different canonical bodies return 409. Active-scan conflicts return 409 with the existing scan ID. Inaccessible targets return 404 without leaking existence. Admission is atomic for inaccessible, malformed and expected-HEAD-mismatch errors; no tasks are created on those errors. Accessible targets that are now self-authored, hidden, closed or already approved at HEAD are recorded as completed/excluded without model calls. Drafts are admitted and queued like any other eligible target. If no eligible targets remain, return 422 `no_eligible_targets` without creating a scan. This explicit excluded list handles stale view state without silently dropping targets. Recheck of an ineligible PR returns 422. A target moving after admission becomes stale at execution.
 
 ### Request and result examples
 
@@ -298,7 +310,7 @@ Response is `202`, with `Location: /api/v1/approval-scans/<scan-id>`, `Retry-Aft
 
 A target response contains a discriminated assessment: `assessment: null` until one exists; otherwise `assessment: {decision, summary, reason_codes, sources, concerns, coverage_gaps, citations}`. `freshness` also carries `state`, `validated_at`, `valid_until` and invalidation reason. Source fields distinguish `presence`, `completion`, `reviewed_sha`, `revision_relation`, and `file_coverage`; they are not a single overloaded status. The current-result feed includes historical scan/target URLs and the active generation, so a recheck cannot erase unrelated PR results.
 
-Machine-readable reasons include `head_changed`, `base_changed`, `review_missing`, `review_stale`, `review_in_progress`, `source_incomplete`, `source_identity_unknown`, `open_concern`, `uncertain_concern`, `human_changes_requested`, `ci_failed`, `ci_pending`, `ci_unknown`, `invalid_assessment`, `budget_exhausted`, `access_unavailable`, `evidence_changed` and `validation_expired`. Extend this versioned enum deliberately; UI fallback must display an unknown reason safely.
+Machine-readable reasons include `head_changed`, `base_changed`, `review_missing`, `review_stale`, `review_in_progress`, `source_incomplete`, `source_identity_unknown`, `open_concern`, `uncertain_concern`, `human_changes_requested`, `pr_draft`, `ci_failed`, `ci_pending`, `ci_unknown`, `invalid_assessment`, `budget_exhausted`, `access_unavailable`, `evidence_changed` and `validation_expired`. Extend this versioned enum deliberately; UI fallback must display an unknown reason safely.
 
 Use 400 for malformed input, 401 for unauthenticated requests, 403 for failed same-origin checks, 404 for inaccessible resources, 409 for idempotency/active-scan conflicts or an expected-HEAD mismatch known at admission, 422 for empty/all-ineligible/over-limit scope, 429 with Retry-After for resource admission limits, and 503 for configured-but-unavailable runtime. Capabilities remains readable when disabled and returns `enabled: false`; other feature routes return 404. Reads of completed history do not depend on model availability.
 
@@ -321,6 +333,8 @@ Current-result GETs never schedule work. The browser calls `POST /api/v1/approva
 Expired or unsuccessfully revalidated recommendations leave the active candidate count immediately. Show **Last checked ...** even while current. There is no guarantee that GitHub cannot change between the last read and a user opening the PR. The Open PR action remains a normal link, not an approval operation.
 
 A Recheck deliberately creates a new assessment, bypassing reuse of the previous decision. It may reuse immutable fetched objects after validating their identity. No per-concern semantic disposition cache in v1: changed context can invalidate a conclusion even when the concern text and HEAD are unchanged. Read-only freshness validation alone may renew an identical snapshot without invoking the model.
+
+A full scan reuses an earlier assessment when nothing it depends on changed. The reuse key hashes the snapshot digest, provider, model, policy, prompt and runtime versions and the schema version. The digest already covers the viewer and access partition, target and expected head, repository, head/base/merge-base, eligibility, change-request flags, every source, evidence body, digest and resolved state, canonical concerns, the manifest and all checks, so the key matches only an identical snapshot. Reuse is per user (latest wins) and bounded by the 30-day retention. Only investigator assessments are recorded, including ones that finished stale or expired, which remain valid for their own snapshot; gate, limit and excluded results are never recorded. A reused assessment must still pass assessment validation against the new snapshot, its decision is recomputed by the current policy, it records `origin: reused` and the source target in `reused_from`, and it reports zero usage. Recheck scans always bypass reuse.
 
 ## 8. Delivery plan
 
@@ -394,6 +408,10 @@ Disable new admissions when the feature flag is turned off. Cancel active scan w
 | A29 | A completed Greptile review exists but PRism/Copilot has an outstanding current-head review request/run | Insufficient evidence with review_in_progress; no automatic review request or indefinite wait |
 | A30 | User approved an older commit; current HEAD has changed | Remains eligible for investigation; prior approval revision displayed |
 | A31 | Recheck requested during an active full scan, recheck or cancellation | UI explains active work; API 409 returns existing scan ID; one active scan invariant holds |
+| A32 | Failing head CI, a standing human change request or a head provider change request | `needs_attention` from a deterministic gate; no model call, repository checkout or daily-budget reservation |
+| A33 | Full scan of a snapshot identical to an earlier completed investigation | Assessment reused without a model call, revalidated and re-decided, `reused_from` recorded; a recheck investigates again |
+| A34 | Draft PR | Admitted and investigated; never a candidate; `pr_draft` shown, with `needs_attention` when a real blocker exists |
+| A35 | Investigation ends in a non-candidate decision | Finalized after an access and configuration recheck without re-collecting evidence |
 
 Testing uses deterministic provider/API fixtures for policy, pagination, race and authorization tests. Real model evaluation supplements these tests; it cannot replace them. Use a read-only GitHub interface in the scan service and assert zero mutating calls in integration tests. Run the backend test/race suite, frontend lint/type-check/tests and a real browser walkthrough appropriate to the changed paths during implementation. No application test run is needed for this documentation-only planning change.
 
@@ -415,6 +433,7 @@ Testing uses deterministic provider/API fixtures for policy, pagination, race an
 | Required checks or all observed CI? | Conservative all-observed latest check rule | Avoids requiring branch-rule introspection while never claiming mergeability |
 | Reuse semantic dispositions across snapshots? | No | Context and base changes can invalidate a conclusion |
 | User preference storage owns results? | No; user-owned durable server records | Results survive browsers and support fenced background work |
+| Reuse an assessment for an identical snapshot? | Yes, full scans only, keyed by snapshot digest, provider, model and versions | The snapshot digest already covers every input the assessment depends on |
 
 The product, policy, data model, API family, runtime boundary and milestone order above are the proposed freeze. Implementation details such as SQL column names, component extraction and parser internals may change without changing those contracts. Policy changes, broader tools, automatic model runs, provider requirements and new GitHub write actions require an explicit spec revision.
 

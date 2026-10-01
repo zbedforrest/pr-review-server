@@ -169,7 +169,7 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
         <p className="approval-muted">Scope: {filters.repos?.join(', ') || 'All repositories'} · {filters.teams?.join(', ') || 'All teams'} · {filters.states?.join(', ') || 'All states'}{filters.search ? ` · Search: ${filters.search}` : ''}</p>
         {!capabilities.data?.available && <p role="status">{capabilities.data?.unavailable_reason}</p>}
         {overLimit && <p role="status">Narrow your filters to {capabilities.data?.max_targets} PRs or fewer. No PRs will be sampled.</p>}
-        {!scope.length && <p>No eligible PRs in these filters. Your own, hidden, draft, closed and already approved current revisions are excluded.</p>}
+        {!scope.length && <p>No eligible PRs in these filters. Your own, hidden, closed and already approved current revisions are excluded. Drafts are investigated but cannot become candidates.</p>}
         <button className="approval-primary" onClick={launch} disabled={busy || !!active || !capabilities.data?.available || overLimit || !scope.length}>{launching ? 'Starting investigation...' : `Investigate ${scope.length} PRs`}</button>
         {active && <span> Investigation already running.</span>}
       </div>
@@ -190,6 +190,8 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
         {currentDetail && <>
           <p><strong>{label(approvalBucket(currentDetail, now))}</strong></p><p>{currentDetail.assessment?.summary || currentDetail.summary}</p>
           <p className="approval-muted">Assessed commit <code>{currentDetail.revision.slice(0, 12)}</code><br />Assessed {time(currentDetail.assessment?.assessed_at)}<br />Last checked {time(currentDetail.validated_at)}</p>
+          {currentDetail.assessment?.origin === 'reused' && <p className="approval-muted">Reused an identical earlier assessment from {time(currentDetail.assessment.assessed_at)}</p>}
+          {currentDetail.assessment?.origin === 'gate' && <p className="approval-muted">Decided by a deterministic gate; no investigation ran</p>}
           <div className="approval-actions"><button disabled={busy || !!active || !capabilities.data?.available} onClick={() => recheck(currentDetail)} title={active ? 'Investigation already running' : undefined}>Recheck</button><a href={`https://github.com/${encodeURIComponent(currentDetail.owner)}/${encodeURIComponent(currentDetail.repo)}/pull/${currentDetail.number}`} target="_blank" rel="noreferrer">Open PR</a></div>
           {!!active && <p>Investigation already running. View progress above.</p>}
           <h4>Review sources</h4>{(currentDetail.sources || currentDetail.assessment?.sources || []).map(source => <div className="approval-source" key={source.id}><strong>{source.provider}</strong> · {source.verified ? 'Verified identity' : 'Unverified identity'}<br />{label(source.completion)} · {source.reviewed_sha ? `${source.reviewed_sha === selectedPR?.commit_sha && currentDetail.freshness_state === 'current' ? 'Current commit' : 'Reviewed commit'} ${source.reviewed_sha.slice(0, 12)}` : 'Commit unknown'}<br /><small>{source.file_coverage === 'not_reported' ? 'File coverage not reported' : label(source.file_coverage || 'not_reported')}</small></div>)}
