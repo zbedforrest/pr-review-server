@@ -90,6 +90,8 @@ type ApprovalClaim struct {
 	MaxSlots                      int
 	// MaxPerUser caps one user's concurrent targets; zero means one.
 	MaxPerUser int
+	// MaxClaims caps the targets one claim takes; zero means one.
+	MaxClaims int
 }
 
 type ApprovalFinalization struct {
@@ -115,6 +117,9 @@ type ApprovalUsageReservation struct {
 	ID     string
 	Usage  ApprovalUsage
 	Limits ApprovalUsage
+	// Carry is tool and citation usage settled in process since the last
+	// durable write; it is added to the target before the limits are checked.
+	Carry ApprovalUsage
 }
 
 type ApprovalValidation struct {
@@ -135,6 +140,8 @@ type ApprovalStore interface {
 	ListApprovalTargets(int, string, int, string) ([]ApprovalTarget, error)
 	ListCurrentApprovalTargets(int, int, string) ([]ApprovalTarget, error)
 	ClaimApprovalTarget(ApprovalClaim) (*ApprovalTarget, error)
+	ClaimApprovalTargets(ApprovalClaim) ([]ApprovalTarget, error)
+	FlushApprovalUsage(string, string, time.Time, ApprovalUsage) error
 	HeartbeatApprovalTarget(string, string, time.Time, time.Duration) error
 	SetApprovalTargetStage(string, string, string, time.Time) error
 	SetApprovalTargetProgress(string, string, string, time.Time) error
