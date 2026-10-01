@@ -253,3 +253,14 @@ it('requires narrowing filters above 50 eligible PRs', async () => {
   expect(screen.getByText('Narrow your filters to 50 PRs or fewer. No PRs will be sampled.')).toBeTruthy();
   expect(api.approvalRequest).not.toHaveBeenCalled();
 });
+
+it('shows every scored result with its score, highest first', async () => {
+  dashboardPRs.items = [1, 2].map(number => ({ ...dashboardPRs.items[0], number }));
+  const scored = (number: number, value: number) => ({ target_id: `t${number}`, scan_id: 'scan', owner: 'acme', repo: 'example', number, execution_status: 'completed', decision: 'needs_attention', freshness_state: 'current', valid_until: new Date(Date.now() + 60000).toISOString(), reason_codes: ['score_below_threshold'], summary: '', score: { value, threshold: 80, candidate: false, readiness: 0, risk: 0, model: 'jev', latency_ms: 1 } }) as unknown as ApprovalTarget;
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([scored(1, 35), scored(2, 72)]);
+  mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
+  await screen.findByText('Other results (2)');
+  const badges = Array.from(document.querySelectorAll('.approval-other .approval-score')).map(node => node.textContent);
+  expect(badges).toEqual(['72', '35']);
+  expect(document.querySelector('.approval-other .approval-score--mid')?.textContent).toBe('72');
+});

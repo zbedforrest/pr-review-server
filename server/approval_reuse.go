@@ -50,6 +50,10 @@ func (s *Server) approvalPrejudged(scan db.ApprovalScan, user int, snapshot appr
 			}
 		}
 	}
+	if cfg.Provider == approval.ProviderJev {
+		// The scorer reports blockers itself so every pull request gets a score.
+		return nil, false
+	}
 	a, ok := approval.Gate(snapshot)
 	if !ok {
 		return nil, false

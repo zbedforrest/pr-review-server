@@ -75,6 +75,10 @@ func Reuse(s Snapshot, prior Assessment, priorTargetID string) (Assessment, bool
 		a.ReusedFrom = priorTargetID
 	}
 	a.Usage = Usage{}
+	if a.Score != nil {
+		// A scored assessment carries its own decision; it has no ledger to revalidate.
+		return a, true
+	}
 	if ValidateAssessment(s, a) != nil {
 		return Assessment{}, false
 	}

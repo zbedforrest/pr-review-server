@@ -8,7 +8,7 @@ import { approvalBucket, approvalKey, approvalScope, isApprovalCandidate, reconc
 import { subscribeToWebSocketMessages } from '@/utils/websocket';
 import type { PR } from '@/types/pr';
 import { filterAndSortPRs, type PRFilterCriteria } from '@/utils/sectionFilters';
-import type { ApprovalCitation, ApprovalScan, ApprovalTarget } from '@/types/approval';
+import type { ApprovalCitation, ApprovalScan, ApprovalScore, ApprovalTarget } from '@/types/approval';
 import '@/styles/components/_approval-candidates.scss';
 import { ApprovalPrism } from './ApprovalPrism';
 
@@ -64,7 +64,7 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
   const prByKey = new Map(prs.map(pr => [approvalKey(pr), pr]));
   const allTargets = (targets.data || []).map(target => { const pr = prByKey.get(approvalKey(target)); return pr ? reconcileApprovalTarget(target, pr) : target; });
   const ordered = new Map(visiblePRs.map((pr, index) => [approvalKey(pr), index]));
-  const visible = allTargets.filter(target => visibleKeys.has(approvalKey(target))).sort((a, b) => (ordered.get(approvalKey(a)) || 0) - (ordered.get(approvalKey(b)) || 0));
+  const visible = allTargets.filter(target => visibleKeys.has(approvalKey(target))).sort((a, b) => (b.score?.value ?? -1) - (a.score?.value ?? -1) || (ordered.get(approvalKey(a)) || 0) - (ordered.get(approvalKey(b)) || 0));
   const candidates = visible.filter(target => isApprovalCandidate(target, now));
   const others = visible.filter(target => !isApprovalCandidate(target, now));
   const completed = progress.data?.finished ?? (scan.data?.targets || []).filter(target => terminalStates.includes(target.execution_status)).length;
@@ -180,8 +180,8 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
       {open && !allTargets.length && !active && <p className="approval-muted">{targets.isPending ? 'Loading investigations...' : 'Find PRs where existing review evidence supports a quick human approval decision.'}</p>}
       {!!allTargets.length && !candidates.length && <p>No current approval candidates in this view. Inspect other results for blockers, evidence gaps or expired assessments.</p>}
       <div className={`approval-layout${selected ? ' approval-layout--selected' : ''}`}><div className="approval-list">
-        {!!candidates.length && <table><caption className="approval-sr-only">Current approval candidates</caption><thead><tr><th>Pull request</th><th>Why it qualifies</th><th>Evidence</th></tr></thead><tbody>{candidates.map(target => <tr key={target.target_id} className="approval-positive"><td><strong>#{target.number} · {title(target)}</strong><small>{target.owner}/{target.repo}</small></td><td>{target.summary}<div className="approval-chips">{Array.from(new Set((target.sources || []).map(source => source.provider))).map(provider => <span key={provider}>{provider}</span>)}</div><small>Last checked {time(target.validated_at)}</small></td><td><button onClick={event => showEvidence(target, event.currentTarget)}>View evidence</button></td></tr>)}</tbody></table>}
-        {!!others.length && <details className="approval-other"><summary>Other results ({others.length})</summary><p className="approval-muted">{Array.from(new Set(others.map(target => approvalBucket(target, now)))).map(bucket => `${label(bucket)}: ${others.filter(target => approvalBucket(target, now) === bucket).length}`).join(' · ')}</p><ul>{others.map(target => <li key={target.target_id}><button onClick={event => showEvidence(target, event.currentTarget)}>#{target.number} · {title(target)}</button><span>{label(approvalBucket(target, now))}</span><small>{(target.reason_codes || []).map(label).join(', ') || target.summary}</small></li>)}</ul></details>}
+        {!!candidates.length && <table><caption className="approval-sr-only">Current approval candidates</caption><thead><tr><th>Pull request</th><th>Why it qualifies</th><th>Evidence</th></tr></thead><tbody>{candidates.map(target => <tr key={target.target_id} className="approval-positive"><td><strong>{target.score && <ScoreBadge score={target.score} />}#{target.number} · {title(target)}</strong><small>{target.owner}/{target.repo}</small></td><td>{target.summary}<div className="approval-chips">{Array.from(new Set((target.sources || []).map(source => source.provider))).map(provider => <span key={provider}>{provider}</span>)}</div><small>Last checked {time(target.validated_at)}</small></td><td><button onClick={event => showEvidence(target, event.currentTarget)}>View evidence</button></td></tr>)}</tbody></table>}
+        {!!others.length && <details className="approval-other"><summary>Other results ({others.length})</summary><p className="approval-muted">{Array.from(new Set(others.map(target => approvalBucket(target, now)))).map(bucket => `${label(bucket)}: ${others.filter(target => approvalBucket(target, now) === bucket).length}`).join(' · ')}</p><ul>{others.map(target => <li key={target.target_id}>{target.score && <ScoreBadge score={target.score} />}<button onClick={event => showEvidence(target, event.currentTarget)}>#{target.number} · {title(target)}</button><span>{label(approvalBucket(target, now))}</span><small>{(target.reason_codes || []).map(label).join(', ') || target.summary}</small></li>)}</ul></details>}
       </div>
       {selected && <aside className="approval-evidence" ref={evidenceRef} tabIndex={-1} aria-label={`Evidence for PR ${selected.number}`} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); closeEvidence(); } }}>
         <div className="approval-heading"><h3>#{selected.number} · Review evidence</h3><button onClick={closeEvidence} aria-label="Close evidence">Close</button></div>
@@ -189,6 +189,7 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
         {detail.isPending && <p role="status">Loading evidence...</p>}{detail.error && <p role="alert">{detail.error.message}</p>}
         {currentDetail && <>
           <p><strong>{label(approvalBucket(currentDetail, now))}</strong></p><p>{currentDetail.assessment?.summary || currentDetail.summary}</p>
+          {currentDetail.assessment?.score && <ScoreBreakdown score={currentDetail.assessment.score} />}
           <p className="approval-muted">Assessed commit <code>{currentDetail.revision.slice(0, 12)}</code><br />Assessed {time(currentDetail.assessment?.assessed_at)}<br />Last checked {time(currentDetail.validated_at)}</p>
           {currentDetail.assessment?.origin === 'reused' && <p className="approval-muted">Reused an identical earlier assessment from {time(currentDetail.assessment.assessed_at)}</p>}
           {currentDetail.assessment?.origin === 'gate' && <p className="approval-muted">Decided by a deterministic gate; no investigation ran</p>}
@@ -206,4 +207,23 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
       </div>
     </section>
   </>;
+}
+
+function scoreBand(score: ApprovalScore) {
+  if (score.candidate) return 'high';
+  return score.value >= score.threshold * 0.6 ? 'mid' : 'low';
+}
+
+function ScoreBadge({ score }: { score: ApprovalScore }) {
+  return <span className={`approval-score approval-score--${scoreBand(score)}`} title={`Approval score ${score.value.toFixed(0)} of 100; candidates need ${score.threshold.toFixed(0)}`}>{score.value.toFixed(0)}</span>;
+}
+
+function ScoreBreakdown({ score }: { score: ApprovalScore }) {
+  const concerns = (score.concerns || []).filter(concern => concern.risk >= 0.01).slice(0, 8);
+  return <div className="approval-score-breakdown">
+    <p><ScoreBadge score={score} /> Approval score {score.value.toFixed(0)}/100 · candidates need {score.threshold.toFixed(0)}</p>
+    {!!score.blockers?.length && <p>Blocked by {score.blockers.map(label).join(', ')}</p>}
+    {!!score.deductions?.length && <p className="approval-muted">Deductions: {score.deductions.map(d => `${label(d.reason)} -${d.points}`).join(' · ')}</p>}
+    {!!concerns.length && <table><thead><tr><th>Concern</th><th>Unresolved</th><th>Impact</th><th>Raised on</th></tr></thead><tbody>{concerns.map(concern => <tr key={concern.id}><td>{concern.claim}<small>{label(concern.severity)} · {label(concern.disposition)}</small></td><td>{Math.round(100 * (1 - concern.p_resolved))}%</td><td>{concern.impact.toFixed(1)}/3</td><td>{concern.on_head ? 'Current head' : 'Older commit'}</td></tr>)}</tbody></table>}
+  </div>;
 }
