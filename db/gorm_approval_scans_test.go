@@ -190,8 +190,39 @@ func TestApprovalBudgetUnsetCapAdmitsAndStillRecordsUsage(t *testing.T) {
 	require.NoError(t, g.ReserveApprovalBudget(target.ID, target.LeaseToken, now, 0, 0, 600000, 12000))
 	var budget approvalDailyBudget
 	require.NoError(t, g.db.First(&budget).Error)
-	require.EqualValues(t, 50600000, budget.InputTokens)
-	require.EqualValues(t, 1012000, budget.OutputTokens)
+	require.EqualValues(t, 50000000, budget.InputTokens)
+	require.EqualValues(t, 1000000, budget.OutputTokens)
+	require.NoError(t, g.ReserveApprovalCall(target.ID, target.LeaseToken, now, ApprovalCallReservation{CallID: "call", InputTokens: 1000, OutputTokens: 100, MaxInputTokens: 600000, MaxOutputTokens: 12000, MaxRounds: 8, MaxToolCalls: 16}))
+	require.NoError(t, g.CompleteApprovalCall(target.ID, target.LeaseToken, "call", now, 800, 50))
+	require.NoError(t, approvalTestFinish(g, target, now))
+	require.NoError(t, g.db.First(&budget).Error)
+	require.EqualValues(t, 50000800, budget.InputTokens)
+	require.EqualValues(t, 1000050, budget.OutputTokens)
+}
+
+func TestApprovalBudgetUncappedUsageCreatesTheDayRow(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	r := approvalTestAdmission("fresh-day", 1, now, 1, 2)
+	r.DailyInputLimit, r.DailyOutputLimit = 0, 0
+	_, _, err := g.AdmitApprovalScan(r)
+	require.NoError(t, err)
+	claimed := approvalTestClaimAll(t, g, now, 2)
+	require.Len(t, claimed, 2)
+	for i, target := range claimed {
+		require.NoError(t, g.ReserveApprovalBudget(target.ID, target.LeaseToken, now, 0, 0, 600000, 12000))
+		require.NoError(t, g.ReserveApprovalCall(target.ID, target.LeaseToken, now, ApprovalCallReservation{CallID: "call", InputTokens: 1000, OutputTokens: 100, MaxInputTokens: 600000, MaxOutputTokens: 12000, MaxRounds: 8, MaxToolCalls: 16}))
+		require.NoError(t, g.CompleteApprovalCall(target.ID, target.LeaseToken, "call", now, int64(500*(i+1)), 40))
+	}
+	var count int64
+	require.NoError(t, g.db.Model(&approvalDailyBudget{}).Count(&count).Error)
+	require.Zero(t, count)
+	require.NoError(t, approvalTestFinish(g, &claimed[0], now))
+	require.NoError(t, g.CancelApprovalScan(1, "fresh-day", now))
+	var budget approvalDailyBudget
+	require.NoError(t, g.db.First(&budget, "day = ?", "2026-09-29").Error)
+	require.EqualValues(t, 1500, budget.InputTokens)
+	require.EqualValues(t, 80, budget.OutputTokens)
 }
 
 func TestApprovalBudgetSettlementAndMidnight(t *testing.T) {

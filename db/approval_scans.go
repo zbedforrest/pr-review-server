@@ -68,6 +68,7 @@ type ApprovalTarget struct {
 	BudgetDay        string     `json:"-"`
 	ReservedInput    int64      `json:"-"`
 	ReservedOutput   int64      `json:"-"`
+	BudgetDeferred   bool       `json:"-"`
 	ObservedChangeAt *time.Time `json:"-"`
 	ValidatedAt      *time.Time `json:"validated_at"`
 	ValidUntil       *time.Time `json:"valid_until"`

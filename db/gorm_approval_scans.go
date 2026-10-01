@@ -451,16 +451,23 @@ func (g *GormDB) approvalLeasedTransaction(id, token string, now *time.Time, fn 
 // day row once, after all of its target row locks.
 type approvalDeltas map[string][2]int64
 
+// release charges the day row with the target's usage beyond what its
+// reservation already charged; a deferred reservation charged nothing.
 func (d approvalDeltas) release(t *ApprovalTarget) {
 	if t.BudgetDay == "" {
 		return
 	}
+	chargedInput, chargedOutput := t.ReservedInput, t.ReservedOutput
+	if t.BudgetDeferred {
+		chargedInput, chargedOutput = 0, 0
+	}
 	v := d[t.BudgetDay]
-	v[0] += t.InputTokens - t.ReservedInput
-	v[1] += t.OutputTokens - t.ReservedOutput
+	v[0] += t.InputTokens - chargedInput
+	v[1] += t.OutputTokens - chargedOutput
 	d[t.BudgetDay] = v
 	t.ReservedInput = t.InputTokens
 	t.ReservedOutput = t.OutputTokens
+	t.BudgetDeferred = false
 }
 
 func (d approvalDeltas) apply(tx *gorm.DB) error {
@@ -470,9 +477,39 @@ func (d approvalDeltas) apply(tx *gorm.DB) error {
 	}
 	sort.Strings(days)
 	for _, day := range days {
-		if err := approvalAdjustDailyBudget(tx, day, d[day][0], d[day][1]); err != nil {
+		input, output := d[day][0], d[day][1]
+		var err error
+		if input >= 0 && output >= 0 {
+			err = approvalChargeDailyBudget(tx, day, input, output)
+		} else {
+			err = approvalAdjustDailyBudget(tx, day, input, output)
+		}
+		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// approvalChargeDailyBudget adds usage to a day row in one statement,
+// creating the row when no capped reservation has created it yet.
+func approvalChargeDailyBudget(tx *gorm.DB, day string, input, output int64) error {
+	if input == 0 && output == 0 {
+		return nil
+	}
+	charged := tx.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "day"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"input_tokens":  gorm.Expr("approval_daily_budgets.input_tokens + ?", input),
+			"output_tokens": gorm.Expr("approval_daily_budgets.output_tokens + ?", output),
+		}),
+		Where: clause.Where{Exprs: []clause.Expression{gorm.Expr("approval_daily_budgets.input_tokens BETWEEN 0 AND ? AND approval_daily_budgets.output_tokens BETWEEN 0 AND ?", int64(math.MaxInt64)-input, int64(math.MaxInt64)-output)}},
+	}).Create(&approvalDailyBudget{Day: day, InputTokens: input, OutputTokens: output})
+	if charged.Error != nil {
+		return charged.Error
+	}
+	if charged.RowsAffected != 1 {
+		return ErrApprovalBudget
 	}
 	return nil
 }
@@ -824,6 +861,10 @@ func (g *GormDB) SaveApprovalSnapshot(id, token, body string, now time.Time) err
 	})
 }
 
+// ReserveApprovalBudget sets the target's token allowance. Without a daily
+// cap the day row is charged only with actual usage at release, so parallel
+// targets never queue on its row lock; with a cap the day row update is the
+// last statement, which holds that lock for one round trip.
 func (g *GormDB) ReserveApprovalBudget(id, token string, now time.Time, dailyInput, dailyOutput, targetInput, targetOutput int64) error {
 	if targetInput <= 0 || targetOutput <= 0 {
 		return ErrApprovalBudget
@@ -834,15 +875,19 @@ func (g *GormDB) ReserveApprovalBudget(id, token string, now time.Time, dailyInp
 			return nil
 		}
 		day := now.UTC().Format("2006-01-02")
+		if err := tx.Model(t).UpdateColumns(map[string]any{"budget_day": day, "reserved_input": targetInput, "reserved_output": targetOutput, "budget_deferred": !capped}).Error; err != nil {
+			return err
+		}
+		if !capped {
+			return nil
+		}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&approvalDailyBudget{Day: day}).Error; err != nil {
 			return err
 		}
 		q := tx.Model(&approvalDailyBudget{}).Where("day = ? AND input_tokens >= 0 AND output_tokens >= 0", day)
 		q = approvalDeltaGuard(q, "input_tokens", targetInput)
 		q = approvalDeltaGuard(q, "output_tokens", targetOutput)
-		if capped {
-			q = q.Where("input_tokens <= ? AND output_tokens <= ?", dailyInput-targetInput, dailyOutput-targetOutput)
-		}
+		q = q.Where("input_tokens <= ? AND output_tokens <= ?", dailyInput-targetInput, dailyOutput-targetOutput)
 		reserved := q.UpdateColumns(map[string]any{"input_tokens": gorm.Expr("input_tokens + ?", targetInput), "output_tokens": gorm.Expr("output_tokens + ?", targetOutput)})
 		if reserved.Error != nil {
 			return reserved.Error
@@ -850,7 +895,7 @@ func (g *GormDB) ReserveApprovalBudget(id, token string, now time.Time, dailyInp
 		if reserved.RowsAffected != 1 {
 			return ErrApprovalBudget
 		}
-		return tx.Model(t).UpdateColumns(map[string]any{"budget_day": day, "reserved_input": targetInput, "reserved_output": targetOutput}).Error
+		return nil
 	})
 }
 func (g *GormDB) ReserveApprovalCall(id, token string, now time.Time, r ApprovalCallReservation) error {
@@ -1036,7 +1081,7 @@ func (g *GormDB) SettleApprovalUsage(id, token, reservationID string, now time.T
 		if t.OutputTokens > t.ReservedOutput {
 			outputOver = t.OutputTokens - t.ReservedOutput
 		}
-		if inputOver > 0 || outputOver > 0 {
+		if (inputOver > 0 || outputOver > 0) && !t.BudgetDeferred {
 			if err := approvalAdjustDailyBudget(tx, t.BudgetDay, inputOver, outputOver); err != nil {
 				return err
 			}
