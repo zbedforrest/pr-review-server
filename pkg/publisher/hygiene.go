@@ -27,6 +27,11 @@ type Hygiene struct {
 	SeverityEscalations    []HygieneNote
 }
 
+// Empty reports whether the round committed no defect.
+func (h Hygiene) Empty() bool {
+	return len(h.RepeatedPosts)+len(h.RepeatAfterDismiss)+len(h.FixedWithoutFileChange)+len(h.SameCommitResolves)+len(h.SeverityEscalations) == 0
+}
+
 // priorRows indexes every finding and annotation row the ledger holds for the
 // PR, whatever its state, by fingerprint.
 func priorRows(previous []db.PublishedFinding) map[string]*db.PublishedFinding {

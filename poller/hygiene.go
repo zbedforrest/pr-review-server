@@ -34,14 +34,14 @@ func hygieneEvent(pr github.PullRequest, action, label string, userID int) db.Te
 // recordHygiene writes a published round's hygiene notes. Best-effort, like
 // every server-emitted telemetry event.
 func (p *Poller) recordHygiene(pr github.PullRequest, h publisher.Hygiene) {
+	if h.Empty() {
+		return
+	}
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
 		return
 	}
 	events := hygieneTelemetryEvents(pr, h, userID)
-	if len(events) == 0 {
-		return
-	}
 	if err := p.db.CreateTelemetryEvents(events); err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: could not record hygiene telemetry: %v", pr.Owner, pr.Repo, pr.Number, err)
 	}

@@ -210,10 +210,10 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 			row.Kind, row.ReviewedSHA, row.PublishedAt = prev.Kind, prev.ReviewedSHA, prev.PublishedAt
 			row.CommentID, row.ReviewID, row.ThreadNodeID = prev.CommentID, prev.ReviewID, prev.ThreadNodeID
 		}
-		rep.Hygiene.noteWritten(f, prior[f.ID])
 		if err := p.Ledger.UpsertPublishedFinding(row); err != nil {
 			return rep, fmt.Errorf("record annotation %s: %w", f.ID, err)
 		}
+		rep.Hygiene.noteWritten(f, prior[f.ID])
 		written[f.ID] = true
 	}
 
