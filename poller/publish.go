@@ -59,11 +59,11 @@ func publishTargetReady(state string, draft bool, headSHA, reviewedSHA string) (
 	return true, ""
 }
 
-// buildPublishRound assembles everything the publisher needs from the review
+// BuildPublishRound assembles everything the publisher needs from the review
 // sidecar plus what is already on the PR: Greptile's inline comments are
 // reconciled against PRism's findings so nothing is posted twice, and the
 // file patches bound which lines may take an inline comment.
-func buildPublishRound(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, baseURL string) publisher.Round {
+func BuildPublishRound(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, baseURL string) publisher.Round {
 	// Only active claims reach GitHub, so only they take part in aliasing and
 	// reconciliation; an inactive record with first-pass wording must not
 	// steal a prior comment's identity from the agent finding it merged into.
@@ -272,7 +272,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		return nil, publicationFailedPrefix + "load ledger"
 	}
 
-	round := buildPublishRound(pr, pl, comments, patches, previous, p.cfg.BaseURL)
+	round := BuildPublishRound(pr, pl, comments, patches, previous, p.cfg.BaseURL)
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: p.publishPolicy()}
 	report, err := pub.Publish(ctx, round)
 	if err != nil {

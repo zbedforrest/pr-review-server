@@ -58,7 +58,7 @@ func TestBuildPublishRound_TagsReconciledFindingsAndBuildsLinks(t *testing.T) {
 	}
 	previous := []db.PublishedFinding{{Kind: db.PublishedKindSummary, Fingerprint: "summary", Rounds: 3}}
 
-	r := buildPublishRound(pr, pl, comments, patches, previous, "https://prism.example")
+	r := BuildPublishRound(pr, pl, comments, patches, previous, "https://prism.example")
 
 	assert.Equal(t, "acme", r.Owner)
 	assert.Equal(t, 7, r.Number)
@@ -97,16 +97,16 @@ func TestPublishPolicy_ReadsSettingsOverDefaults(t *testing.T) {
 }
 
 func TestBuildPublishRound_NoBaseURLDisablesLinks(t *testing.T) {
-	r := buildPublishRound(github.PullRequest{Owner: "a", Repo: "b", Number: 1}, payload.Payload{}, nil, nil, nil, "")
+	r := BuildPublishRound(github.PullRequest{Owner: "a", Repo: "b", Number: 1}, payload.Payload{}, nil, nil, nil, "")
 	assert.Empty(t, r.AgentLinkBase)
 	assert.Empty(t, r.DashboardURL)
 }
 
 func TestBuildPublishRound_CarriesRequiredCheckViolation(t *testing.T) {
 	pr := github.PullRequest{Owner: "a", Repo: "b", Number: 1}
-	quiet := buildPublishRound(pr, payload.Payload{RequiredChecks: &payload.RequiredChecksInfo{Issued: 2, Violated: 0}}, nil, nil, nil, "")
+	quiet := BuildPublishRound(pr, payload.Payload{RequiredChecks: &payload.RequiredChecksInfo{Issued: 2, Violated: 0}}, nil, nil, nil, "")
 	assert.False(t, quiet.RequiredCheckViolated)
-	loud := buildPublishRound(pr, payload.Payload{RequiredChecks: &payload.RequiredChecksInfo{Issued: 2, Violated: 1}}, nil, nil, nil, "")
+	loud := BuildPublishRound(pr, payload.Payload{RequiredChecks: &payload.RequiredChecksInfo{Issued: 2, Violated: 1}}, nil, nil, nil, "")
 	assert.True(t, loud.RequiredCheckViolated)
 }
 
@@ -383,7 +383,7 @@ func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) 
 			Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**"},
 	}
 	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateOpen}}
-	r := buildPublishRound(pr, pl, comments, nil, previous, "")
+	r := BuildPublishRound(pr, pl, comments, nil, previous, "")
 	if r.Findings[0].ID != "a.go:5:aaaaaaaaaaaa" {
 		t.Fatalf("finding must take its published identity, got %q", r.Findings[0].ID)
 	}
@@ -403,7 +403,7 @@ func TestBuildPublishRound_InactiveRecordsDoNotTakePartInReconciliation(t *testi
 	comments := []github.ReviewCommentInfo{{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54,
 		Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**"}}
 	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateOpen}}
-	r := buildPublishRound(pr, pl, comments, nil, previous, "")
+	r := BuildPublishRound(pr, pl, comments, nil, previous, "")
 	var active []string
 	for _, f := range r.Findings {
 		active = append(active, f.ID)

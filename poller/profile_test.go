@@ -352,11 +352,11 @@ func TestAdmitReviewJobsSkipsFirstPassInitForLiteOnlyBatch(t *testing.T) {
 
 func TestBuildPublishRound_CarriesProfile(t *testing.T) {
 	pr := github.PullRequest{Owner: "a", Repo: "b", Number: 1}
-	assert.Empty(t, buildPublishRound(pr, payload.Payload{}, nil, nil, nil, "").ProfileFooter, "legacy sidecar")
-	assert.Empty(t, buildPublishRound(pr, payload.Payload{ReviewRun: &payload.ReviewRunInfo{Profile: "full", ProfileLabel: "Full"}}, nil, nil, nil, "").ProfileFooter)
-	assert.Equal(t, "PRism Lite", buildPublishRound(pr, payload.Payload{ReviewRun: &payload.ReviewRunInfo{Profile: "lite", ProfileLabel: "Lite"}}, nil, nil, nil, "").ProfileFooter)
-	assert.Equal(t, "PRism Lite+ (custom)", buildPublishRound(pr, payload.Payload{ReviewRun: &payload.ReviewRunInfo{Profile: "lite_plus", ProfileLabel: "Custom (based on Lite+): effort high (default medium)"}}, nil, nil, nil, "").ProfileFooter)
-	assert.Equal(t, "PRism Full (custom)", buildPublishRound(pr, payload.Payload{ReviewRun: &payload.ReviewRunInfo{Profile: "full", ProfileLabel: "Custom (based on Full): required checks off (default on)"}}, nil, nil, nil, "").ProfileFooter)
+	assert.Empty(t, BuildPublishRound(pr, payload.Payload{}, nil, nil, nil, "").ProfileFooter, "legacy sidecar")
+	assert.Empty(t, BuildPublishRound(pr, payload.Payload{ReviewRun: &payload.ReviewRunInfo{Profile: "full", ProfileLabel: "Full"}}, nil, nil, nil, "").ProfileFooter)
+	assert.Equal(t, "PRism Lite", BuildPublishRound(pr, payload.Payload{ReviewRun: &payload.ReviewRunInfo{Profile: "lite", ProfileLabel: "Lite"}}, nil, nil, nil, "").ProfileFooter)
+	assert.Equal(t, "PRism Lite+ (custom)", BuildPublishRound(pr, payload.Payload{ReviewRun: &payload.ReviewRunInfo{Profile: "lite_plus", ProfileLabel: "Custom (based on Lite+): effort high (default medium)"}}, nil, nil, nil, "").ProfileFooter)
+	assert.Equal(t, "PRism Full (custom)", BuildPublishRound(pr, payload.Payload{ReviewRun: &payload.ReviewRunInfo{Profile: "full", ProfileLabel: "Custom (based on Full): required checks off (default on)"}}, nil, nil, nil, "").ProfileFooter)
 }
 
 func TestDefaultReviewProfileFollowsDeploymentFlag(t *testing.T) {
