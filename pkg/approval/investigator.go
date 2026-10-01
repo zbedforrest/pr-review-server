@@ -35,16 +35,17 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 	corrections := 0
 	readEvidence := make(map[string]bool, len(s.Evidence))
 	evidenceLimited := false
+	answered := map[string]bool{}
 	messages := []any{map[string]any{"role": "user", "content": "Investigate the frozen target using list_evidence and the registered reads. Return the complete assessment JSON."}}
 	for {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		remaining := 12000 - usage.OutputTokens
-		if usage.Rounds >= 16 || usage.InputTokens+100000 > 600000 || remaining <= 0 {
+		remaining := TargetOutputTokens - usage.OutputTokens
+		if usage.Rounds >= MaxRounds || usage.InputTokens+CallInputTokens > TargetInputTokens || remaining <= 0 {
 			return result, investigationLimit(LimitBudget, "%d rounds, %d input and %d output tokens used", usage.Rounds, usage.InputTokens, usage.OutputTokens)
 		}
-		reservation := Usage{InputTokens: 100000, OutputTokens: remaining, Rounds: 1}
+		reservation := Usage{InputTokens: CallInputTokens, OutputTokens: remaining, Rounds: 1}
 		if err := budget.Reserve(ctx, reservation); err != nil {
 			return result, err
 		}
@@ -130,11 +131,11 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 				return result, fmt.Errorf("invalid tool call ID")
 			}
 			ids[call.ID] = true
-			if usage.ToolCalls >= 40 || usage.ToolBytes >= 1024*1024 {
+			if usage.ToolCalls >= MaxToolCalls || usage.ToolBytes >= MaxToolBytes {
 				return result, investigationLimit(LimitBudget, "%d tool calls and %d tool bytes used", usage.ToolCalls, usage.ToolBytes)
 			}
 			reserved := Usage{ToolCalls: 1, ToolBytes: 65536}
-			if usage.ToolBytes+reserved.ToolBytes > 1024*1024 {
+			if usage.ToolBytes+reserved.ToolBytes > MaxToolBytes {
 				return result, investigationLimit(LimitBudget, "%d tool bytes used", usage.ToolBytes)
 			}
 			if err := budget.Reserve(ctx, reserved); err != nil {
@@ -142,7 +143,14 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 			}
 			reportActivity(ctx, Activity{Stage: "tool", Tool: call.Name, Round: usage.Rounds, ToolCalls: usage.ToolCalls + 1})
 			toolStarted := time.Now()
+			key := call.Name + "\x00" + string(call.Arguments)
 			text, err := dispatch(ctx, s, repo, call.Name, call.Arguments)
+			if err == nil && answered[key] {
+				// The full result is already in the conversation; resending it only fills the context.
+				text = `{"note":"Identical to the result of an earlier call with the same arguments; use that result."}`
+			} else if err == nil {
+				answered[key] = true
+			}
 			log.Printf("[APPROVAL] tool %s: %s, %d bytes, err=%v", call.Name, time.Since(toolStarted).Round(time.Millisecond), len(text), err)
 			toolError := err != nil
 			if err != nil {

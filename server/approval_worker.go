@@ -82,7 +82,7 @@ func (b *approvalBudget) Reserve(ctx context.Context, u approval.Usage) error {
 		return err
 	}
 	id := approvalID()
-	err := b.store.ReserveApprovalUsage(b.target.ID, b.target.LeaseToken, time.Now(), db.ApprovalUsageReservation{ID: id, Usage: approvalUsage(u), Limits: db.ApprovalUsage{InputTokens: 600000, OutputTokens: 12000, Rounds: 16, ToolCalls: 40, ToolBytes: 1024 * 1024}})
+	err := b.store.ReserveApprovalUsage(b.target.ID, b.target.LeaseToken, time.Now(), db.ApprovalUsageReservation{ID: id, Usage: approvalUsage(u), Limits: db.ApprovalUsage{InputTokens: approval.TargetInputTokens, OutputTokens: approval.TargetOutputTokens, Rounds: approval.MaxRounds, ToolCalls: approval.MaxToolCalls, ToolBytes: approval.MaxToolBytes}})
 	if err == nil {
 		b.reservation = id
 	}
@@ -372,7 +372,7 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 		return
 	}
 	cfg := s.cfg.ApprovalCandidates()
-	if err := store.ReserveApprovalBudget(target.ID, target.LeaseToken, time.Now(), cfg.DailyInput, cfg.DailyOutput, 600000, 12000); err != nil {
+	if err := store.ReserveApprovalBudget(target.ID, target.LeaseToken, time.Now(), cfg.DailyInput, cfg.DailyOutput, approval.TargetInputTokens, approval.TargetOutputTokens); err != nil {
 		fail("daily_budget", err)
 		return
 	}

@@ -14,11 +14,20 @@ const (
 	LimitToolResult   = "tool_result_limit"
 )
 
-// maxConversationBytes caps the serialized conversation sent on each model
-// round. At about four bytes per token it stays well inside the 100,000
-// input tokens reserved per round, leaving room for the system prompt and
-// tool definitions.
-const maxConversationBytes = 240000
+// Per-target resource ceilings. They guard against runaway investigations,
+// not spend; the target's time budget is the binding limit in practice. The
+// conversation cap (about four bytes per token) stays inside the per-call
+// input allowance, and both sit well inside the model's 1M-token context.
+const (
+	TargetInputTokens  = 6_000_000
+	TargetOutputTokens = 100_000
+	CallInputTokens    = 400_000
+	MaxRounds          = 30
+	MaxToolCalls       = 80
+	MaxToolBytes       = 8 << 20
+
+	maxConversationBytes = 1_200_000
+)
 
 type limitError struct {
 	code   string

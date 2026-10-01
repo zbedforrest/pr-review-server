@@ -466,10 +466,14 @@ func (r *GitRepository) search(ctx context.Context, req ReadRequest) (ReadResult
 		out.WriteString(match)
 		matches++
 	}
-	cancel()
+	scanErr := scanner.Err()
+	if more || scanErr != nil {
+		// Stop grep early; its kill status is expected and ignored below.
+		cancel()
+	}
 	waitErr := cmd.Wait()
 	var exit *exec.ExitError
-	if !more && waitErr != nil && !(errors.As(waitErr, &exit) && exit.ExitCode() == 1) {
+	if scanErr != nil || (!more && waitErr != nil && !(errors.As(waitErr, &exit) && exit.ExitCode() == 1)) {
 		return ReadResult{}, fmt.Errorf("repository search failed")
 	}
 	result := ReadResult{Text: out.String()}
