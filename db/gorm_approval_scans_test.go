@@ -749,3 +749,21 @@ func TestApprovalClaimHonorsThePerUserCap(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, third)
 }
+
+func TestApprovalListsCarryAssessments(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	_, _, err := g.AdmitApprovalScan(approvalTestAdmission("listed", 1, now, 1))
+	require.NoError(t, err)
+	target, err := approvalTestClaim(g, now)
+	require.NoError(t, err)
+	require.NoError(t, approvalTestFinish(g, target, now))
+	rows, err := g.ListApprovalTargets(1, "listed", 10, "")
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.JSONEq(t, `{"decision":"candidate"}`, rows[0].AssessmentJSON)
+	current, err := g.ListCurrentApprovalTargets(1, 10, "")
+	require.NoError(t, err)
+	require.Len(t, current, 1)
+	require.JSONEq(t, `{"decision":"candidate"}`, current[0].AssessmentJSON)
+}
