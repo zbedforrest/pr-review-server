@@ -102,6 +102,7 @@ func TestSettlementFollowsThePublicationOutcome(t *testing.T) {
 		want        string
 	}{
 		{publicationPosted, db.AutoReviewIntentDone},
+		{publicationNotAllowed, db.AutoReviewIntentDone},
 		{publicationSkippedPrefix + "pull request is a draft", db.AutoReviewIntentSuperseded},
 		{publicationSkippedPrefix + "pull request head moved past the reviewed commit", db.AutoReviewIntentSuperseded},
 		{publicationFailedPrefix + "publish", db.AutoReviewIntentFailed},

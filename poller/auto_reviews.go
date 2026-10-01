@@ -467,6 +467,10 @@ func (p *Poller) settleAutoReviewIntents() {
 			switch {
 			case intent.Publication == publicationPosted:
 				outcome = db.AutoReviewIntentDone
+			case intent.Publication == publicationNotAllowed:
+				// The review completed and is on the dashboard; publishing was
+				// withheld by policy, so the head is not owed another run.
+				outcome = db.AutoReviewIntentDone
 			case strings.HasPrefix(intent.Publication, publicationSkippedPrefix):
 				outcome = db.AutoReviewIntentSuperseded
 			case intent.Publication == "":
