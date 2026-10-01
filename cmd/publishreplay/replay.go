@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -174,6 +175,9 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	logf := o.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
+	}
+	if o.Store == nil {
+		return Result{}, errors.New("replay: Options.Store is nil")
 	}
 	ledger, err := db.NewGormSQLite(":memory:")
 	if err != nil {

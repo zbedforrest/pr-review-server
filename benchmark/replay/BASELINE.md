@@ -70,5 +70,8 @@ rather than drop the test.
   `fixed_file_change_unknown`; only a 404 is remembered with a `.missing` marker.
 - Line translation across pushes is not modelled; the alias check uses the cited lines as emitted.
 - Commentable lines come from the hunks stored with each finding, not the full PR patch set.
+- Observed same-defect reposts use text overlap only (the dumps carry rendered prose, not contract subjects), so
+  the observed column is a calibration aid, not the same rule as the replayed one.
+- A 404 sidecar is remembered with a `.missing` marker; delete the marker to ask the server again.
 - Changed files come from a three-dot compare, which after a rebase spans the whole PR diff and undercounts
   `fixed_without_file_change`.

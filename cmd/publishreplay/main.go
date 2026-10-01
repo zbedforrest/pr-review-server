@@ -57,9 +57,10 @@ func main() {
 	if !*offline {
 		lf, err := newLiveFetcher(os.Getenv("PRISM_BASE_URL"))
 		if err != nil {
-			log.Fatalf("fetcher: %v (use --offline to replay the cache only)", err)
+			log.Printf("fetcher: %v; replaying the cache only", err)
+		} else {
+			f = lf
 		}
-		f = lf
 	}
 	st, err := newStore(*sidecarsDir, f)
 	if err != nil {
