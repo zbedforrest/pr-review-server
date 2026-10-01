@@ -5,7 +5,6 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
-	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,6 +100,7 @@ type PRResult struct {
 	RootsPosted               int
 	SameMarkerReposts         int
 	SameDefectReposts         int
+	SameRoundDuplicates       int
 	Fixed                     int
 	FixedWithoutFileChange    int
 	FixedFileChangeUnknown    int
@@ -124,6 +124,7 @@ type Metrics struct {
 	SameMarkerReposts      int     `json:"same_marker_reposts"`
 	SameDefectReposts      int     `json:"same_defect_reposts"`
 	SameDefectRepostsPerPR float64 `json:"same_defect_reposts_per_pr"`
+	SameRoundDuplicates    int     `json:"same_round_duplicates"`
 	PRsWithReposts         int     `json:"prs_with_reposts"`
 
 	Fixed                  int `json:"fixed"`
@@ -183,7 +184,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	res.Metrics.PRs = len(o.Dumps)
 	for _, d := range o.Dumps {
 		bots := o.bots(d)
-		pr, pushes, err := replayPR(ctx, d, bots, o.Store, ledger, o.Policy)
+		pr, pushes, err := replayPR(ctx, d, bots, o.Store, ledger, o.Policy, logf)
 		if err != nil {
 			return Result{}, fmt.Errorf("%s: %w", d.key(), err)
 		}
@@ -202,6 +203,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.RootsPosted += pr.RootsPosted
 		m.SameMarkerReposts += pr.SameMarkerReposts
 		m.SameDefectReposts += pr.SameDefectReposts
+		m.SameRoundDuplicates += pr.SameRoundDuplicates
 		if pr.SameMarkerReposts+pr.SameDefectReposts > 0 {
 			m.PRsWithReposts++
 		}
@@ -226,7 +228,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	return res, nil
 }
 
-func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, policy publisher.Policy) (PRResult, []int, error) {
+func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, policy publisher.Policy, logf func(string, ...any)) (PRResult, []int, error) {
 	pr := PRResult{PR: d.key()}
 	rec := newRecorder()
 	pub := &publisher.Publisher{GH: rec, Ledger: ledger, Policy: policy}
@@ -239,7 +241,8 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		}
 		raw, ok, err := s.sidecar(d.Owner, d.Repo, d.Number, rd.SHA7)
 		if err != nil {
-			return pr, nil, err
+			logf("%s: sidecar %s: %v; round counts as missing", d.key(), rd.SHA7, err)
+			ok = false
 		}
 		if !ok {
 			pr.RoundsMissingSidecar++
@@ -267,20 +270,21 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		annotate(rec.posts[before:], round.Findings)
 		for j := before; j < len(rec.posts); j++ {
 			pr.RootsPosted++
-			switch classifyRepost(rec.posts[j], rec.posts[:j]) {
+			switch classifyRepost(rec.posts[j], rec.posts[:before]) {
 			case repostSameMarker:
 				pr.SameMarkerReposts++
 			case repostSameDefect:
 				pr.SameDefectReposts++
+			}
+			if classifyRepost(rec.posts[j], rec.posts[before:j]) != repostNone {
+				pr.SameRoundDuplicates++
 			}
 		}
 		after, err := ledger.GetPublishedFindingsForPR(d.Owner, d.Repo, d.Number)
 		if err != nil {
 			return pr, nil, err
 		}
-		if err := countResolutions(d, s, rd.SHA, previous, after, &pr); err != nil {
-			return pr, nil, err
-		}
+		countResolutions(d, s, rd.SHA, previous, after, &pr, logf)
 	}
 	return pr, pushes, nil
 }
@@ -288,7 +292,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 // countResolutions classifies every finding row the round flipped out of
 // open: same commit, cited file untouched, or a change the compare could not
 // be fetched for.
-func countResolutions(d *prDump, s *store, head string, previous, after []db.PublishedFinding, pr *PRResult) error {
+func countResolutions(d *prDump, s *store, head string, previous, after []db.PublishedFinding, pr *PRResult, logf func(string, ...any)) {
 	wasOpen := map[string]db.PublishedFinding{}
 	for _, row := range previous {
 		if isFindingRow(row) && row.State == db.PublishedStateOpen {
@@ -307,7 +311,8 @@ func countResolutions(d *prDump, s *store, head string, previous, after []db.Pub
 		}
 		cmp, known, err := s.compare(d.Owner, d.Repo, prev.LastSeenSHA, head)
 		if err != nil {
-			return err
+			logf("%s: compare %s...%s: %v; file change unknown", d.key(), short(prev.LastSeenSHA), short(head), err)
+			known = false
 		}
 		switch {
 		case !known:
@@ -316,7 +321,6 @@ func countResolutions(d *prDump, s *store, head string, previous, after []db.Pub
 			pr.FixedWithoutFileChange++
 		}
 	}
-	return nil
 }
 
 func isFindingRow(row db.PublishedFinding) bool {
@@ -443,7 +447,7 @@ func classifyRepost(p post, earlier []post) repostKind {
 // sameDefect is the alias rule from the program spec: same file, line within
 // ten, and either raw-text Jaccard at or above 0.20 or a shared subject.
 func sameDefect(file string, line int, text string, subjects []string, oFile string, oLine int, oText string, oSubjects []string) bool {
-	if !sameFile(file, oFile) && path.Base(file) != path.Base(oFile) {
+	if !sameFile(file, oFile) {
 		return false
 	}
 	if line > 0 && oLine > 0 && abs(line-oLine) > aliasLineTolerance {
@@ -509,7 +513,7 @@ func round3(v float64) float64 {
 	return float64(int(v*1000+0.5)) / 1000
 }
 
-var csvHeader = []string{"pr", "rounds", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts"}
+var csvHeader = []string{"pr", "rounds", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -517,7 +521,7 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 		return err
 	}
 	for _, r := range rows {
-		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts)}
+		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}

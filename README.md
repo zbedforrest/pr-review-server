@@ -273,7 +273,7 @@ Each theme is a block of CSS custom properties in `frontend/src/styles/themes/_p
 ## Auxiliary tools
 
 - `go run ./cmd/gatecheck <worktree-dir> <base-branch>` — offline report of what the deterministic layer (gates + bug memory) would contribute for a diff; no LLM calls or API keys needed
-- `go run ./cmd/publishreplay --dumps <dir> --sidecars <dir>` — replays historical publication rounds through the publisher against an in-memory ledger and prints repost and resolution metrics; baseline in `benchmark/replay/BASELINE.md`
+- `go run ./cmd/publishreplay --dumps <dir> --sidecars <dir>`: replays historical publication rounds through the publisher against an in-memory ledger and prints repost and resolution metrics; baseline in `benchmark/replay/BASELINE.md`
 - `skills/claude/prism-review/` — Claude Code skill for fetching and acting on reviews; install by copying it to `~/.claude/skills/prism-review/`
 
 ## Development

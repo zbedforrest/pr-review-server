@@ -66,7 +66,7 @@ func main() {
 		Policy: publisher.Policy{InlineCap: *inlineCap, InlineMinSeverity: *minSeverity, ShowUnverified: true}}
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
-			log.Printf("prefetch finished with errors; affected rounds count as missing: %v", err)
+			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)
 		}
 	}
 

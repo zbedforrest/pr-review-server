@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -29,6 +31,7 @@ func fixtureRun(t *testing.T) Result {
 
 func TestRun_FixtureMetrics(t *testing.T) {
 	m := fixtureRun(t).Metrics
+	// SameMarkerReposts 1 and FixedWithoutFileChange 1 encode master's publisher defects; both drop to 0 once the ledger fix ships.
 	want := Metrics{
 		PRs: 2, PRsWithRounds: 2, Rounds: 6, RoundsReplayed: 6, SameCommitRounds: 1,
 		RootsPosted: 4, SameMarkerReposts: 1, SameDefectReposts: 1, SameDefectRepostsPerPR: 0.5, PRsWithReposts: 2,
@@ -63,7 +66,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 3 || !strings.HasPrefix(lines[0], "pr,rounds,") || !strings.HasPrefix(lines[1], "example#1,3,0,0,2,1,0,1,1,0,0,") {
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "pr,rounds,") || !strings.HasPrefix(lines[1], "example#1,3,0,0,2,1,0,0,1,1,0,0,") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }
@@ -103,6 +106,41 @@ func TestSameDefect(t *testing.T) {
 	}
 	if sameDefect("api/users.go", 140, a, nil, "api/other.go", 140, a, nil) {
 		t.Fatal("different files must not match")
+	}
+	if sameDefect("a/index.ts", 10, a, nil, "b/index.ts", 10, a, nil) {
+		t.Fatal("a shared basename under different directories must not match")
+	}
+}
+
+type failingFetcher struct{}
+
+func (failingFetcher) Sidecar(string, string, int, string) ([]byte, error) {
+	return nil, errors.New("503 service unavailable")
+}
+
+func (failingFetcher) Compare(string, string, string, string) (compareResult, error) {
+	return compareResult{}, errors.New("rate limited")
+}
+
+func TestRun_TransientFetchErrorCountsAsMissing(t *testing.T) {
+	dumps, err := loadDumps("testdata/dumps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	st, err := newStore(dir, failingFetcher{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), Options{Dumps: dumps[:1], Store: st, Policy: publisher.DefaultPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Metrics.RoundsMissingSidecar != 3 {
+		t.Fatalf("metrics = %+v", res.Metrics)
+	}
+	if markers, _ := filepath.Glob(filepath.Join(dir, "*.missing")); len(markers) != 0 {
+		t.Fatalf("transient errors must not leave .missing markers: %v", markers)
 	}
 }
 
