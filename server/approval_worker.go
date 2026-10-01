@@ -109,7 +109,9 @@ func (s *Server) approvalCollector() approvalEvidenceCollector {
 }
 
 func (s *Server) collectApprovalSnapshot(ctx context.Context, target approval.Target, viewer approval.Viewer) (approval.Snapshot, error) {
+	started := time.Now()
 	snapshot, err := s.approvalCollector().Collect(ctx, target, viewer)
+	log.Printf("[APPROVAL] collected %s/%s#%d in %s: %d evidence, %d bytes, err=%v", target.Owner, target.Repo, target.Number, time.Since(started).Round(time.Millisecond), len(snapshot.Evidence), snapshot.Manifest.TotalBytes, err)
 	if err != nil {
 		return snapshot, err
 	}
@@ -414,7 +416,9 @@ func (s *Server) investigateApproval(parent context.Context, target db.ApprovalT
 		return
 	}
 	report(approval.Activity{Stage: "repository"})
+	repoStarted := time.Now()
 	repo, closeRepository, err := s.openApprovalRepository(ctx, snapshot)
+	log.Printf("[APPROVAL] repository for %s/%s#%d ready in %s, err=%v", target.Owner, target.Repo, target.Number, time.Since(repoStarted).Round(time.Millisecond), err)
 	if err != nil {
 		fail("code_unavailable", err)
 		return
