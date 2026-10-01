@@ -660,3 +660,19 @@ func TestApprovalAdmissionTargetLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestApprovalClaimHonorsThePerUserCap(t *testing.T) {
+	g := approvalTestStore(t)
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	_, _, err := g.AdmitApprovalScan(approvalTestAdmission("per-user", 1, now, 1, 2, 3))
+	require.NoError(t, err)
+	claim := ApprovalClaim{Worker: "test", Now: now, LeaseDuration: time.Minute, TargetDuration: 3 * time.Minute, MaxSlots: 4, MaxPerUser: 2}
+	for range 2 {
+		target, err := g.ClaimApprovalTarget(claim)
+		require.NoError(t, err)
+		require.NotNil(t, target)
+	}
+	third, err := g.ClaimApprovalTarget(claim)
+	require.NoError(t, err)
+	require.Nil(t, third)
+}

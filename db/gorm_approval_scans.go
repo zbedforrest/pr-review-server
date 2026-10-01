@@ -466,13 +466,31 @@ func (g *GormDB) ClaimApprovalTarget(req ApprovalClaim) (*ApprovalTarget, error)
 		if err := tx.Where("execution_status IN ?", []string{"queued", "collecting", "investigating", "validating"}).Order("created_at ASC, id ASC").Find(&targets).Error; err != nil {
 			return err
 		}
-		activeUsers := map[int]bool{}
+		perUser := req.MaxPerUser
+		if perUser <= 0 {
+			perUser = 1
+		}
+		scanIDs := make([]string, 0, len(targets))
+		for _, t := range targets {
+			scanIDs = append(scanIDs, t.ScanID)
+		}
+		var scanRows []ApprovalScan
+		if len(scanIDs) > 0 {
+			if err := tx.Where("id IN ?", scanIDs).Find(&scanRows).Error; err != nil {
+				return err
+			}
+		}
+		scans := make(map[string]ApprovalScan, len(scanRows))
+		for _, scan := range scanRows {
+			scans[scan.ID] = scan
+		}
+		activeUsers := map[int]int{}
 		slots := 0
 		for i := range targets {
 			t := &targets[i]
-			var scan ApprovalScan
-			if err := tx.First(&scan, "id = ?", t.ScanID).Error; err != nil {
-				return err
+			scan, ok := scans[t.ScanID]
+			if !ok {
+				return gorm.ErrRecordNotFound
 			}
 			reason, status := "", "timed_out"
 			switch {
@@ -498,7 +516,7 @@ func (g *GormDB) ClaimApprovalTarget(req ApprovalClaim) (*ApprovalTarget, error)
 			}
 			if t.LeaseUntil != nil && t.LeaseUntil.After(req.Now) {
 				slots++
-				activeUsers[t.UserID] = true
+				activeUsers[t.UserID]++
 			}
 		}
 		var cancelled []ApprovalTarget
@@ -507,14 +525,14 @@ func (g *GormDB) ClaimApprovalTarget(req ApprovalClaim) (*ApprovalTarget, error)
 		}
 		for _, t := range cancelled {
 			slots++
-			activeUsers[t.UserID] = true
+			activeUsers[t.UserID]++
 		}
 		if slots >= req.MaxSlots {
 			return nil
 		}
 		for i := range targets {
 			t := &targets[i]
-			if approvalTerminal(t.ExecutionStatus) || activeUsers[t.UserID] || (t.LeaseUntil != nil && t.LeaseUntil.After(req.Now)) {
+			if approvalTerminal(t.ExecutionStatus) || activeUsers[t.UserID] >= perUser || (t.LeaseUntil != nil && t.LeaseUntil.After(req.Now)) {
 				continue
 			}
 			if t.StartedAt == nil {

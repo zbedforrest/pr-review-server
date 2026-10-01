@@ -88,6 +88,8 @@ type ApprovalClaim struct {
 	Now                           time.Time
 	LeaseDuration, TargetDuration time.Duration
 	MaxSlots                      int
+	// MaxPerUser caps one user's concurrent targets; zero means one.
+	MaxPerUser int
 }
 
 type ApprovalFinalization struct {
