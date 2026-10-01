@@ -50,7 +50,10 @@ func (c ModelConfig) Available() error {
 	}
 	return nil
 }
-func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (modelReply, error) {
+
+// call sends one model round. With allowTools false the tools stay declared
+// (the conversation already contains tool calls) but the model must answer.
+func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int, allowTools bool) (modelReply, error) {
 	var reply modelReply
 	if err := c.Available(); err != nil {
 		return reply, err
@@ -64,6 +67,9 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 		}
 		endpoint += "/v1/messages"
 		body = map[string]any{"model": c.Model, "max_tokens": maxOutput, "system": investigatorPrompt, "messages": messages, "tools": defs}
+		if !allowTools {
+			body["tool_choice"] = map[string]any{"type": "none"}
+		}
 	}
 	if c.Provider == "openrouter" {
 		if endpoint == "" {
@@ -76,6 +82,9 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 		}
 		msgs := append([]any{map[string]any{"role": "system", "content": investigatorPrompt}}, messages...)
 		body = map[string]any{"model": c.Model, "max_tokens": maxOutput, "messages": msgs, "tools": tools, "provider": map[string]any{"allow_fallbacks": false, "require_parameters": true}}
+		if !allowTools {
+			body["tool_choice"] = "none"
+		}
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
