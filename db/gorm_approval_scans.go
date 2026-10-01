@@ -365,6 +365,31 @@ func (g *GormDB) GetApprovalTarget(user int, scan, id string) (*ApprovalTarget, 
 	t.AssessmentJSON = assessment.JSON
 	return &t, nil
 }
+// attachApprovalAssessments fills AssessmentJSON for a page of targets with
+// one query; listed rows otherwise carry no assessment. Snapshots stay out of
+// lists because they are large.
+func (g *GormDB) attachApprovalAssessments(targets []ApprovalTarget) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	ids := make([]string, len(targets))
+	for i, t := range targets {
+		ids[i] = t.ID
+	}
+	var rows []approvalAssessment
+	if err := g.db.Where("target_id IN ?", ids).Find(&rows).Error; err != nil {
+		return err
+	}
+	byID := make(map[string]string, len(rows))
+	for _, r := range rows {
+		byID[r.TargetID] = r.JSON
+	}
+	for i := range targets {
+		targets[i].AssessmentJSON = byID[targets[i].ID]
+	}
+	return nil
+}
+
 func (g *GormDB) ListApprovalTargets(user int, scan string, limit int, cursor string) ([]ApprovalTarget, error) {
 	if _, err := g.GetApprovalScan(user, scan); err != nil {
 		return nil, err
@@ -374,8 +399,10 @@ func (g *GormDB) ListApprovalTargets(user int, scan string, limit int, cursor st
 		q = q.Where("id > ?", cursor)
 	}
 	var out []ApprovalTarget
-	err := q.Order("id ASC").Limit(approvalLimit(limit)).Find(&out).Error
-	return out, err
+	if err := q.Order("id ASC").Limit(approvalLimit(limit)).Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, g.attachApprovalAssessments(out)
 }
 func (g *GormDB) ListCurrentApprovalTargets(user int, limit int, cursor string) ([]ApprovalTarget, error) {
 	q := g.db.Model(&ApprovalTarget{}).Select("approval_targets.*").Joins("JOIN approval_user_targets p ON p.target_id = approval_targets.id AND p.generation = approval_targets.generation").Where("p.user_id = ?", user)
@@ -383,8 +410,10 @@ func (g *GormDB) ListCurrentApprovalTargets(user int, limit int, cursor string) 
 		q = q.Where("approval_targets.id > ?", cursor)
 	}
 	var out []ApprovalTarget
-	err := q.Order("approval_targets.id ASC").Limit(approvalLimit(limit)).Find(&out).Error
-	return out, err
+	if err := q.Order("approval_targets.id ASC").Limit(approvalLimit(limit)).Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, g.attachApprovalAssessments(out)
 }
 
 // approvalLeased scopes a statement to the caller's target while its lease,
