@@ -432,8 +432,9 @@ func (p *Poller) trackedReviewCount() int {
 }
 
 // settleAutoReviewIntents moves running intents to their run's outcome. A
-// completed run counts as done only when its review reached GitHub; a run
-// that finished while the PR was a draft, closed or on another head is
+// completed run counts as done when its review reached GitHub or publishing
+// was withheld by policy; a run that finished while the PR was a draft,
+// closed or on another head is
 // superseded so a later ready or push event can review the head again. The
 // run row completes before the worker publishes and records the outcome, so
 // a completed run with no outcome yet is left alone for a grace period. Past

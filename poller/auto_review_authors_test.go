@@ -53,11 +53,12 @@ func TestPublishNeverWidensToAutoReviewAuthors(t *testing.T) {
 	require.NoError(t, database.SetSetting(SettingAutoReviewAuthors, "*"))
 	bob := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "bob"}
 
-	ts, _ := gitHubStub(t, openPRJSON, false)
+	ts, writes := gitHubStub(t, openPRJSON, false)
 	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
 
 	_, outcome := p.publishGitHubReview(context.Background(), bob, []byte(scoredSidecar))
 	assert.Equal(t, publicationNotAllowed, outcome, "auto_review_authors=* must not publish an author outside publish_enabled_authors")
+	assert.Empty(t, writes(), "nothing may reach GitHub for an author outside publish_enabled_authors")
 
 	alice := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}
 	_, outcome = p.publishGitHubReview(context.Background(), alice, []byte(scoredSidecar))
