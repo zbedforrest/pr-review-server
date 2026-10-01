@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+
+	"pr-review-server/pkg/approval"
 )
 
 type ApprovalProviderIdentity struct {
@@ -45,7 +47,7 @@ func (c *Config) ApprovalCandidates() ApprovalConfig {
 	if a.APIKey == "" {
 		a.UnavailableReason = "The selected provider requires an API key"
 	}
-	if (a.DailyInput > 0 && a.DailyInput < 600000) || (a.DailyOutput > 0 && a.DailyOutput < 12000) {
+	if (a.DailyInput > 0 && a.DailyInput < approval.TargetInputTokens) || (a.DailyOutput > 0 && a.DailyOutput < approval.TargetOutputTokens) {
 		a.UnavailableReason = "Daily token budgets, when set, must admit one investigation"
 	}
 	if raw := os.Getenv("APPROVAL_CANDIDATES_PROVIDER_IDENTITIES"); raw != "" {

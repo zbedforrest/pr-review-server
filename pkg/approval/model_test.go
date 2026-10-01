@@ -111,7 +111,7 @@ func TestNativeRejectsMissingUsageAndChargesReservation(t *testing.T) {
 	b := &testBudget{}
 	n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture", BaseURL: server.URL}}
 	_, err := n.Investigate(context.Background(), s, nil, b)
-	if err == nil || b.used.InputTokens != 100000 {
+	if err == nil || b.used.InputTokens != CallInputTokens {
 		t.Fatalf("missing usage must retain reservation: %v %+v", err, b.used)
 	}
 }
@@ -217,7 +217,7 @@ func TestNativeRecoversRejectedReadAndTracksBatchBodies(t *testing.T) {
 
 func TestNativeReportsBudgetCeilingAsInvestigationLimit(t *testing.T) {
 	s, _ := validFixture()
-	n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture"}, InitialUsage: Usage{Rounds: 16}}
+	n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture"}, InitialUsage: Usage{Rounds: MaxRounds}}
 	_, err := n.Investigate(context.Background(), s, nil, &testBudget{})
 	if !errors.Is(err, ErrInvestigationLimit) {
 		t.Fatalf("expected resource limit, got %v", err)
@@ -232,10 +232,10 @@ func TestNativeSettlesOnlyValidatedReportedLimitUsage(t *testing.T) {
 			model, stop   string
 			settled       bool
 		}{
-			{"input overage", 100001, 100, "model", "", true},
-			{"output overage", 100, 12001, "model", "", true},
-			{"truncated output", 100, 12000, "model", "limit", true},
-			{"wrong model", 100001, 100, "unexpected", "", false},
+			{"input overage", CallInputTokens + 1, 100, "model", "", true},
+			{"output overage", 100, TargetOutputTokens + 1, "model", "", true},
+			{"truncated output", 100, TargetOutputTokens, "model", "limit", true},
+			{"wrong model", CallInputTokens + 1, 100, "unexpected", "", false},
 			{"missing input", 0, 100, "model", "", false},
 			{"hostile integer", int(^uint(0) >> 1), 100, "model", "", false},
 		} {
@@ -267,7 +267,7 @@ func TestNativeSettlesOnlyValidatedReportedLimitUsage(t *testing.T) {
 					if !errors.Is(err, ErrInvestigationLimit) || budget.settlements != 1 || budget.used.InputTokens != test.input || budget.used.OutputTokens != test.output {
 						t.Fatalf("usage lost: %v %+v", err, budget)
 					}
-				} else if budget.settlements != 0 || budget.used.InputTokens != 100000 || budget.used.OutputTokens != 12000 {
+				} else if budget.settlements != 0 || budget.used.InputTokens != CallInputTokens || budget.used.OutputTokens != TargetOutputTokens {
 					t.Fatalf("untrusted usage settled: %+v", budget)
 				}
 			})
@@ -400,5 +400,39 @@ func TestNativeReturnsOversizedToolResultToTheModel(t *testing.T) {
 	}
 	if result.Decision != "candidate" {
 		t.Fatalf("unexpected decision %s", result.Decision)
+	}
+}
+
+func TestNativeAnswersARepeatedToolCallWithAPointer(t *testing.T) {
+	s, a := validFixture()
+	payload, _ := json.Marshal(a)
+	calls := 0
+	var replayed string
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		if calls == 3 {
+			raw, _ := json.Marshal(request["messages"])
+			replayed = string(raw)
+		}
+		content := []any{map[string]any{"type": "tool_use", "id": fmt.Sprintf("list%d", calls), "name": "list_evidence", "input": map[string]any{}}}
+		stop := "tool_use"
+		switch calls {
+		case 3:
+			content = []any{map[string]any{"type": "tool_use", "id": "read", "name": "read_evidence", "input": map[string]any{"evidence_id": "review"}}}
+		case 4:
+			content = []any{map[string]any{"type": "text", "text": string(payload)}}
+			stop = "end_turn"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": "model", "stop_reason": stop, "content": content, "usage": map[string]int{"input_tokens": 100, "output_tokens": 100}})
+	}))
+	defer remote.Close()
+	n := NativeInvestigator{Config: ModelConfig{Provider: "anthropic", Model: "model", APIKey: "fixture", BaseURL: remote.URL}}
+	if _, err := n.Investigate(context.Background(), s, nil, &testBudget{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(replayed, "Identical to the result of an earlier call") != 1 {
+		t.Fatalf("the second identical list_evidence call should get a pointer, not the listing again: %s", replayed)
 	}
 }

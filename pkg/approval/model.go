@@ -142,7 +142,7 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 			return reply, fmt.Errorf("invalid aggregate model usage")
 		}
 		reply.Usage = Usage{InputTokens: int(input), OutputTokens: r.Usage.Output, Rounds: 1}
-		if reply.Usage.InputTokens > 100000 || reply.Usage.OutputTokens > maxOutput {
+		if reply.Usage.InputTokens > CallInputTokens || reply.Usage.OutputTokens > maxOutput {
 			return reply, &ModelUsageLimitError{Usage: reply.Usage, Reason: "model exceeded reserved usage"}
 		}
 		if r.Stop != "end_turn" && r.Stop != "tool_use" {
@@ -197,7 +197,7 @@ func (c ModelConfig) call(ctx context.Context, messages []any, maxOutput int) (m
 		}
 		ch := r.Choices[0]
 		reply.Usage = Usage{InputTokens: r.Usage.Input, OutputTokens: r.Usage.Output, Rounds: 1}
-		if reply.Usage.InputTokens > 100000 || reply.Usage.OutputTokens > maxOutput {
+		if reply.Usage.InputTokens > CallInputTokens || reply.Usage.OutputTokens > maxOutput {
 			return reply, &ModelUsageLimitError{Usage: reply.Usage, Reason: "model exceeded reserved usage"}
 		}
 		if ch.Finish != "stop" && ch.Finish != "tool_calls" {
