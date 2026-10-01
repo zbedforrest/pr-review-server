@@ -245,3 +245,37 @@ func TestApprovalSlotsComeFromTheEnvironment(t *testing.T) {
 	t.Setenv("APPROVAL_CANDIDATES_MODEL_CONCURRENCY", "3")
 	require.Equal(t, 3, approvalModelConcurrency())
 }
+
+type approvalClaimCountingDB struct {
+	*db.GormDB
+	claims atomic.Int32
+}
+
+func (d *approvalClaimCountingDB) ClaimApprovalTargets(req db.ApprovalClaim) ([]db.ApprovalTarget, error) {
+	d.claims.Add(1)
+	return d.GormDB.ClaimApprovalTargets(req)
+}
+
+func TestApprovalFinishedTargetsClaimAgainOnlyWhileWorkMayBeQueued(t *testing.T) {
+	for _, slots := range []int{2, 50} {
+		t.Run(fmt.Sprint("slots=", slots), func(t *testing.T) {
+			t.Setenv("APPROVAL_CANDIDATES_SLOTS", strconv.Itoa(slots))
+			f := newApprovalDispatchFixture(t, 6, func(context.Context) error {
+				time.Sleep(100 * time.Millisecond)
+				return nil
+			})
+			counting := &approvalClaimCountingDB{GormDB: f.store}
+			f.s.db = counting
+			scan := approvalAPIAdmit(t, f.s, f.user, f.head, 1, 2, 3, 4, 5, 6)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			started := time.Now()
+			f.s.runApprovalWorkers(ctx)
+			f.waitForScan(t, scan.ID, 30*time.Second)
+			require.Less(t, time.Since(started), approvalIdleClaimEvery)
+			if slots == 50 {
+				require.LessOrEqual(t, counting.claims.Load(), int32(2))
+			}
+		})
+	}
+}

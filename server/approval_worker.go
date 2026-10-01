@@ -327,7 +327,10 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 }
 
 // dispatchApprovalTargets claims every free local slot in one claim, on a
-// one-second tick or as soon as a scan is admitted or a target finishes.
+// one-second tick or as soon as a scan is admitted. A finished target claims
+// at once only when the last claim filled every free slot, so queued work may
+// remain; otherwise the idle spacing holds and finishes do not each run an
+// empty claim on the gate.
 func (s *Server) dispatchApprovalTargets(ctx context.Context, store db.ApprovalStore, isCurrent func() bool) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -337,6 +340,8 @@ func (s *Server) dispatchApprovalTargets(ctx context.Context, store db.ApprovalS
 	available := s.approvalAvailable() == ""
 	nextMaintenance := time.Now().Add(time.Minute)
 	var nextClaim time.Time
+	finished := make(chan struct{}, 1)
+	backlog := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -344,6 +349,10 @@ func (s *Server) dispatchApprovalTargets(ctx context.Context, store db.ApprovalS
 		case <-ticker.C:
 		case <-s.approvalWake.channel():
 			nextClaim = time.Time{}
+		case <-finished:
+			if backlog {
+				nextClaim = time.Time{}
+			}
 		}
 		if s.approvalAvailable() != "" {
 			if available || !time.Now().Before(nextMaintenance) {
@@ -359,6 +368,7 @@ func (s *Server) dispatchApprovalTargets(ctx context.Context, store db.ApprovalS
 			continue
 		}
 		targets, err := store.ClaimApprovalTargets(db.ApprovalClaim{Worker: worker, Now: time.Now(), LeaseDuration: approvalLeaseDuration, TargetDuration: approvalTargetDuration, MaxSlots: slots, MaxPerUser: slots, MaxClaims: free})
+		backlog = err == nil && len(targets) >= free
 		if err != nil || len(targets) == 0 {
 			if err != nil {
 				log.Printf("[APPROVAL] claim targets: %v", err)
@@ -366,10 +376,18 @@ func (s *Server) dispatchApprovalTargets(ctx context.Context, store db.ApprovalS
 			nextClaim = time.Now().Add(approvalIdleClaimEvery)
 			continue
 		}
+		if !backlog {
+			nextClaim = time.Now().Add(approvalIdleClaimEvery)
+		}
 		for _, target := range targets {
 			running.Add(1)
 			go func() {
-				defer s.approvalWake.signal()
+				defer func() {
+					select {
+					case finished <- struct{}{}:
+					default:
+					}
+				}()
 				defer running.Add(-1)
 				s.investigateApproval(ctx, target)
 			}()
