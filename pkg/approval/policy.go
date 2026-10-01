@@ -152,14 +152,8 @@ func ValidateAssessment(s Snapshot, a Assessment) error {
 		claims = append(claims, artifact.Rationale)
 	}
 	for _, claim := range claims {
-		if testExecutionClaim.MatchString(claim) {
+		if claimsTestExecution(claim) {
 			return fmt.Errorf("unsupported test execution claim")
-		}
-		lower := strings.ToLower(claim)
-		for _, phrase := range []string{"i ran ", "we ran ", "i executed ", "we executed ", "executed tests", "ran the tests", "tests pass", "tests passed", "test passed", "test passes", "tests succeed", "tests succeeded", "test suite pass", "tests were run", "tests were executed", "tests have passed", "tested successfully"} {
-			if strings.Contains(lower, phrase) {
-				return fmt.Errorf("unsupported test execution claim")
-			}
 		}
 	}
 	if strings.TrimSpace(a.Summary) == "" {
@@ -356,9 +350,8 @@ func validateCitation(evidence map[string]Evidence, c Citation) error {
 
 // downgradeUnsupportedDiscoveries applies the authoritative-source rule for
 // concerns the model discovered itself before validation: a favorable
-// disposition keeps only the single cited artifact that contains its claim,
-// and one with no such artifact becomes uncertain. Both only narrow what the
-// model asserted.
+// disposition that does not rest on exactly one artifact containing its claim
+// becomes uncertain. Its evidence links stay, since artifacts reference them.
 func downgradeUnsupportedDiscoveries(s Snapshot, a *Assessment) {
 	known := map[string]bool{}
 	for _, c := range s.Concerns {
@@ -373,19 +366,10 @@ func downgradeUnsupportedDiscoveries(s Snapshot, a *Assessment) {
 		if known[c.ID] || (c.Disposition != "fixed" && c.Disposition != "not_applicable" && c.Disposition != "non_blocking") {
 			continue
 		}
-		var sources []string
-		if len(strings.TrimSpace(c.Claim)) >= 16 {
-			for _, id := range c.EvidenceIDs {
-				if strings.Contains(bodies[id], c.Claim) {
-					sources = append(sources, id)
-				}
-			}
-		}
-		if len(sources) >= 1 {
-			c.EvidenceIDs = sources[:1]
+		if len(c.EvidenceIDs) == 1 && len(strings.TrimSpace(c.Claim)) >= 16 && strings.Contains(bodies[c.EvidenceIDs[0]], c.Claim) {
 			continue
 		}
-		c.Rationale += " [No single cited artifact contains this claim, so the " + c.Disposition + " disposition is marked uncertain.]"
+		c.Rationale += " [This discovered concern does not rest on one artifact containing its claim, so the " + c.Disposition + " disposition is marked uncertain.]"
 		c.Disposition = "uncertain"
 		a.CoverageGaps = append(a.CoverageGaps, "Concern "+c.ID+": no single authoritative source for a discovered concern")
 	}
@@ -470,12 +454,16 @@ func restoreCanonicalConcerns(s Snapshot, a *Assessment) {
 }
 
 // normalizeArtifacts maps obvious classification spellings to the two the
-// policy accepts and links each concern an artifact names back to that
-// artifact; neither changes what the model judged.
-func normalizeArtifacts(a *Assessment) {
+// policy accepts and links each concern an artifact names (or the collector
+// attached to it) back to that artifact; neither changes what the model judged.
+func normalizeArtifacts(s Snapshot, a *Assessment) {
 	concerns := map[string]*Concern{}
 	for i := range a.Concerns {
 		concerns[a.Concerns[i].ID] = &a.Concerns[i]
+	}
+	collected := map[string][]string{}
+	for _, e := range s.Evidence {
+		collected[e.ID] = e.ConcernIDs
 	}
 	for i := range a.Artifacts {
 		art := &a.Artifacts[i]
@@ -485,7 +473,7 @@ func normalizeArtifacts(a *Assessment) {
 		case "non_actionable", "nonactionable", "not_actionable", "none":
 			art.Classification = "non_actionable"
 		}
-		for _, id := range art.ConcernIDs {
+		for _, id := range append(append([]string(nil), art.ConcernIDs...), collected[art.EvidenceID]...) {
 			c, ok := concerns[id]
 			if !ok {
 				continue
@@ -499,4 +487,72 @@ func normalizeArtifacts(a *Assessment) {
 			}
 		}
 	}
+}
+
+var testExecutionPhrases = []string{"i ran ", "we ran ", "i executed ", "we executed ", "executed tests", "ran the tests", "tests pass", "tests passed", "test passed", "test passes", "tests succeed", "tests succeeded", "test suite pass", "tests were run", "tests were executed", "tests have passed", "tested successfully"}
+
+// claimsTestExecution reports whether text asserts that tests were run or
+// passed; the investigator cannot run tests and CI states speak for themselves.
+func claimsTestExecution(text string) bool {
+	if testExecutionClaim.MatchString(text) {
+		return true
+	}
+	lower := strings.ToLower(text)
+	for _, phrase := range testExecutionPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripTestExecutionClaims removes the sentences of the assessment's prose
+// that assert test execution, which the policy rejects; dropping a claim never
+// makes the decision more favorable, and CI results remain in the snapshot.
+func stripTestExecutionClaims(a *Assessment) {
+	strip := func(text string) string {
+		if !claimsTestExecution(text) {
+			return text
+		}
+		var kept []string
+		for _, sentence := range splitSentences(text) {
+			if !claimsTestExecution(sentence) {
+				kept = append(kept, sentence)
+			}
+		}
+		return strings.TrimSpace(strings.Join(kept, " "))
+	}
+	a.Summary = strip(a.Summary)
+	for i := range a.Concerns {
+		a.Concerns[i].Rationale = strip(a.Concerns[i].Rationale)
+	}
+	gaps := a.CoverageGaps[:0]
+	for _, gap := range a.CoverageGaps {
+		if gap = strip(gap); gap != "" {
+			gaps = append(gaps, gap)
+		}
+	}
+	a.CoverageGaps = gaps
+	for i := range a.Artifacts {
+		if a.Artifacts[i].Rationale = strip(a.Artifacts[i].Rationale); a.Artifacts[i].Rationale == "" {
+			a.Artifacts[i].Rationale = "Classified from the artifact text."
+		}
+	}
+}
+
+func splitSentences(text string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(text); i++ {
+		if c := text[i]; (c == '.' || c == '!' || c == '?' || c == '\n') && (i+1 == len(text) || text[i+1] == ' ' || text[i+1] == '\n') {
+			if sentence := strings.TrimSpace(text[start : i+1]); sentence != "" {
+				out = append(out, sentence)
+			}
+			start = i + 1
+		}
+	}
+	if rest := strings.TrimSpace(text[start:]); rest != "" {
+		out = append(out, rest)
+	}
+	return out
 }

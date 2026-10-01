@@ -144,7 +144,8 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 				return result, fmt.Errorf("invalid_assessment: %w", err)
 			}
 			restoreCanonicalConcerns(s, &result)
-			normalizeArtifacts(&result)
+			stripTestExecutionClaims(&result)
+			normalizeArtifacts(s, &result)
 			downgradeUnsupportedDiscoveries(s, &result)
 			if err := repairByDowngrade(s, &result); err != nil {
 				if correct(fmt.Errorf("assessment validation failed: %w", err)) {
