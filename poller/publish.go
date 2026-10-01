@@ -230,7 +230,11 @@ const (
 // never fails the run.
 func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) (*publisher.Report, string) {
 	allowed, err := p.publishAllowedFor(pr.Author)
-	if err != nil || !allowed {
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: read publish allowlist: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return nil, publicationFailedPrefix + "read publish allowlist"
+	}
+	if !allowed {
 		return nil, publicationNotAllowed
 	}
 	ledger, ok := p.db.(publisher.Ledger)

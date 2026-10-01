@@ -395,7 +395,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         <p className="settings-section__notice">
           {noAutoAuthors
             ? 'No author is listed, so automatic reviews follow the publishing list above'
-            : 'Automatic reviews run and post for these authors; bots are always excluded, and replies still follow the publishing list'}
+            : 'Automatic reviews run for these authors; posting a comment still requires the publishing list above, and bots are always excluded'}
         </p>
         <LoginListField
           id="settings-lite-authors"
