@@ -152,4 +152,10 @@ type ApprovalStore interface {
 	InvalidateApprovalTargets(string, string, int, string, time.Time) error
 	InvalidateUserApprovalTargets(int, string, string, int, string, time.Time) error
 	PruneApprovalScans(time.Time) (int64, error)
+	RecordApprovalReuse(int, string, string, time.Time) error
+	FindApprovalReuse(int, string) (*ApprovalReuse, error)
+}
+
+type ApprovalReuse struct {
+	TargetID, AssessmentJSON string
 }
