@@ -242,7 +242,7 @@ func TestPolicyFixedRequiresOriginalCodeAtSourceAnchor(t *testing.T) {
 	}
 }
 
-func TestDowngradeUnsupportedDiscoveriesNarrowsOrDowngrades(t *testing.T) {
+func TestDowngradeUnsupportedDiscoveriesDowngradesWithoutDroppingLinks(t *testing.T) {
 	s := Snapshot{Evidence: []Evidence{{ID: "a", Body: "The handler skips the authorization check for admins."}, {ID: "b", Body: "Unrelated note."}}}
 	a := Assessment{Concerns: []Concern{
 		{ID: "named", Disposition: "fixed", Claim: "skips the authorization check", EvidenceIDs: []string{"b", "a"}},
@@ -250,8 +250,8 @@ func TestDowngradeUnsupportedDiscoveriesNarrowsOrDowngrades(t *testing.T) {
 		{ID: "open", Disposition: "unresolved", Claim: "a claim no artifact makes", EvidenceIDs: []string{"a", "b"}},
 	}}
 	downgradeUnsupportedDiscoveries(s, &a)
-	if got := a.Concerns[0]; got.Disposition != "fixed" || len(got.EvidenceIDs) != 1 || got.EvidenceIDs[0] != "a" {
-		t.Fatalf("a discovered fix should keep only the artifact containing its claim: %+v", got)
+	if got := a.Concerns[0]; got.Disposition != "uncertain" || len(got.EvidenceIDs) != 2 {
+		t.Fatalf("a discovered fix citing several artifacts should become uncertain and keep its links: %+v", got)
 	}
 	if a.Concerns[1].Disposition != "uncertain" {
 		t.Fatalf("a favorable disposition without a source should become uncertain: %+v", a.Concerns[1])
@@ -295,8 +295,19 @@ func TestRestoreCanonicalConcernsKeepsJudgmentAndRestoresProvenance(t *testing.T
 
 func TestNormalizeArtifactsMapsSpellingsAndLinksConcerns(t *testing.T) {
 	a := Assessment{Concerns: []Concern{{ID: "c1"}}, Artifacts: []ArtifactDisposition{{EvidenceID: "e1", Classification: "Concern", ConcernIDs: []string{"c1"}}, {EvidenceID: "e2", Classification: "non-actionable"}}}
-	normalizeArtifacts(&a)
+	normalizeArtifacts(Snapshot{}, &a)
 	if a.Artifacts[0].Classification != "concerns" || a.Artifacts[1].Classification != "non_actionable" || len(a.Concerns[0].EvidenceIDs) != 1 || a.Concerns[0].EvidenceIDs[0] != "e1" {
 		t.Fatalf("not normalized: %+v", a)
+	}
+}
+
+func TestStripTestExecutionClaimsKeepsTheRest(t *testing.T) {
+	a := Assessment{Summary: "The change moves the toast. All tests passed in CI. The fix looks complete.", CoverageGaps: []string{"We ran the tests locally."}}
+	stripTestExecutionClaims(&a)
+	if a.Summary != "The change moves the toast. The fix looks complete." || len(a.CoverageGaps) != 0 {
+		t.Fatalf("test execution sentences not removed cleanly: %q %q", a.Summary, a.CoverageGaps)
+	}
+	if claimsTestExecution(a.Summary) {
+		t.Fatal("summary still claims test execution")
 	}
 }
