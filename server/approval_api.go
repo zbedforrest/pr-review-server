@@ -488,7 +488,45 @@ func (s *Server) approvalResponse(target db.ApprovalTarget, detail bool) approva
 
 func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target db.ApprovalTarget, detail bool) (approvalTargetResponse, bool) {
 	inventory, err := s.approvalInventory(user.ID)
-	if err != nil || s.ghClient == nil {
+	if err != nil {
+		return approvalTargetResponse{}, false
+	}
+	return s.approvalReadResponseFrom(ctx, user, inventory, target, detail)
+}
+
+// approvalReadResponses builds the responses for a page of targets with one
+// inventory read and bounded parallel PR reads, keeping the page order.
+func (s *Server) approvalReadResponses(ctx context.Context, user *db.User, rows []db.ApprovalTarget) []approvalTargetResponse {
+	inventory, err := s.approvalInventory(user.ID)
+	if err != nil {
+		return []approvalTargetResponse{}
+	}
+	built := make([]*approvalTargetResponse, len(rows))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i, row := range rows {
+		wg.Add(1)
+		go func(i int, row db.ApprovalTarget) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if response, ok := s.approvalReadResponseFrom(ctx, user, inventory, row, false); ok {
+				built[i] = &response
+			}
+		}(i, row)
+	}
+	wg.Wait()
+	out := []approvalTargetResponse{}
+	for _, response := range built {
+		if response != nil {
+			out = append(out, *response)
+		}
+	}
+	return out
+}
+
+func (s *Server) approvalReadResponseFrom(ctx context.Context, user *db.User, inventory map[string]db.PRWithUserView, target db.ApprovalTarget, detail bool) (approvalTargetResponse, bool) {
+	if s.ghClient == nil {
 		return approvalTargetResponse{}, false
 	}
 	row, exists := inventory[approvalKey(target.Owner, target.Repo, target.Number)]
@@ -496,6 +534,7 @@ func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target
 		return approvalTargetResponse{}, false
 	}
 	var pr *gh.PullRequest
+	var err error
 	if target.Decision == "candidate" {
 		pr, err = s.approvalLivePR(ctx, target.Owner, target.Repo, target.Number)
 	} else {
@@ -504,9 +543,12 @@ func (s *Server) approvalReadResponse(ctx context.Context, user *db.User, target
 	if err != nil || pr.GetBase().GetRepo().GetID() != target.RepositoryID {
 		return approvalTargetResponse{}, false
 	}
-	stored, err := s.approvalStore().GetApprovalTarget(user.ID, target.ScanID, target.ID)
-	if err != nil {
-		return approvalTargetResponse{}, false
+	stored := &target
+	if detail || target.Decision == "candidate" {
+		// Listed rows omit the snapshot, which detail views and the candidate base check need.
+		if stored, err = s.approvalStore().GetApprovalTarget(user.ID, target.ScanID, target.ID); err != nil {
+			return approvalTargetResponse{}, false
+		}
 	}
 	response := s.approvalResponse(*stored, detail)
 	if target.Decision == "candidate" {
@@ -625,12 +667,7 @@ func (s *Server) handleApprovalScanByID(w http.ResponseWriter, r *http.Request) 
 			rows = rows[:limit]
 			next = rows[len(rows)-1].ID
 		}
-		targets := []approvalTargetResponse{}
-		for _, row := range rows {
-			if response, ok := s.approvalReadResponse(r.Context(), user, row, false); ok {
-				targets = append(targets, response)
-			}
-		}
+		targets := s.approvalReadResponses(r.Context(), user, rows)
 		writeV1JSON(w, 200, map[string]any{"scan": approvalScanDTO(*scan), "targets": targets, "next_cursor": next})
 		return
 	}
@@ -665,12 +702,7 @@ func (s *Server) handleApprovalCandidates(w http.ResponseWriter, r *http.Request
 		rows = rows[:limit]
 		next = rows[len(rows)-1].ID
 	}
-	targets := []approvalTargetResponse{}
-	for _, row := range rows {
-		if response, ok := s.approvalReadResponse(r.Context(), user, row, false); ok {
-			targets = append(targets, response)
-		}
-	}
+	targets := s.approvalReadResponses(r.Context(), user, rows)
 	writeV1JSON(w, 200, map[string]any{"targets": targets, "next_cursor": next})
 }
 

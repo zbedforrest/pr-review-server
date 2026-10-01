@@ -10,7 +10,13 @@ export async function approvalRequest<T>(path: string, body?: unknown, key?: str
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json', 'X-PRism-Request': '1', ...(key ? { 'Idempotency-Key': key } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const data = await response.json();
+  const text = await response.text();
+  let data: { error?: { message?: string; scan_id?: string } };
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new ApprovalAPIError(response.status === 429 ? 'PRism is busy; retrying shortly' : `Investigation request failed (${response.status})`);
+  }
   if (!response.ok) throw new ApprovalAPIError(data.error?.message || `Investigation request failed (${response.status})`, data.error?.scan_id);
   return data as T;
 }
