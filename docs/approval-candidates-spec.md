@@ -260,7 +260,7 @@ Lease expiry permits at most one recovery attempt. A new holder must not extend 
 | Feature flag | `APPROVAL_CANDIDATES_ENABLED=false` |
 | Targets per scan | 50 |
 | Active scans per user | 1 total across full scans and rechecks |
-| Concurrent investigators | 50 deployment-wide (`APPROVAL_CANDIDATES_SLOTS`, 1 to 100), all usable by one user; each process's dispatcher claims every free slot in one transaction, immediately after an admission or a finished target and otherwise at most every 5 seconds |
+| Concurrent investigators | 50 deployment-wide (`APPROVAL_CANDIDATES_SLOTS`, 1 to 100), all usable by one user; each process's dispatcher claims every free slot in one transaction, immediately after an admission, after a finished target only when its last claim filled every free slot, and otherwise at most every 5 seconds |
 | Target active deadline | 5 minutes, including collection and final validation; tools close 90 seconds before it |
 | Scan deadline | ceil(target count / slots) × 5 minutes + 5 minutes + 10 minutes queue allowance from acceptance; 20 minutes for 50 targets with 50 slots |
 | Investigator tool calls | 16 per target across recovery attempts; at most 1 tool round of 8 calls per attempt |
