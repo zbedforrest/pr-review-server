@@ -50,6 +50,9 @@ func Evaluate(s Snapshot, a Assessment) Assessment {
 		a.ReasonCodes = append(a.ReasonCodes, s.ExclusionReasons...)
 		return a
 	}
+	if s.Draft {
+		add("pr_draft")
+	}
 	blocked := false
 	if s.HumanChangesRequested {
 		blocked = true

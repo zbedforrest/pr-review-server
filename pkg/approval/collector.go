@@ -139,9 +139,7 @@ func (c *Collector) Collect(ctx context.Context, target Target, viewer Viewer) (
 	if pr.GetState() != "open" || pr.GetMerged() {
 		exclude("pr_closed")
 	}
-	if pr.GetDraft() {
-		exclude("pr_draft")
-	}
+	s.Draft = pr.GetDraft()
 	if isViewer(pr.GetUser(), viewer) {
 		exclude("own_pr")
 	}

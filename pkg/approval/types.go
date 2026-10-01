@@ -123,6 +123,7 @@ type Snapshot struct {
 	HumanChangesRequested    bool       `json:"human_changes_requested"`
 	ProviderChangesRequested bool       `json:"provider_changes_requested"`
 	ReviewInProgress         bool       `json:"review_in_progress"`
+	Draft                    bool       `json:"draft"`
 	Sources                  []Source   `json:"sources"`
 	Evidence                 []Evidence `json:"evidence"`
 	Concerns                 []Concern  `json:"concerns"`
@@ -148,6 +149,8 @@ type Assessment struct {
 	Model          string                `json:"model"`
 	AssessedAt     time.Time             `json:"assessed_at"`
 	Usage          Usage                 `json:"usage"`
+	Origin         string                `json:"origin,omitempty"`
+	ReusedFrom     string                `json:"reused_from,omitempty"`
 }
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`
