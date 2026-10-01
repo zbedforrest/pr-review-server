@@ -241,3 +241,22 @@ func TestPolicyFixedRequiresOriginalCodeAtSourceAnchor(t *testing.T) {
 		t.Fatalf("unrelated original code accepted: %s", got)
 	}
 }
+
+func TestDowngradeUnsupportedDiscoveriesNarrowsOrDowngrades(t *testing.T) {
+	s := Snapshot{Evidence: []Evidence{{ID: "a", Body: "The handler skips the authorization check for admins."}, {ID: "b", Body: "Unrelated note."}}}
+	a := Assessment{Concerns: []Concern{
+		{ID: "named", Disposition: "fixed", Claim: "skips the authorization check", EvidenceIDs: []string{"b", "a"}},
+		{ID: "unsourced", Disposition: "not_applicable", Claim: "a claim no artifact makes", EvidenceIDs: []string{"a", "b"}},
+		{ID: "open", Disposition: "unresolved", Claim: "a claim no artifact makes", EvidenceIDs: []string{"a", "b"}},
+	}}
+	downgradeUnsupportedDiscoveries(s, &a)
+	if got := a.Concerns[0]; got.Disposition != "fixed" || len(got.EvidenceIDs) != 1 || got.EvidenceIDs[0] != "a" {
+		t.Fatalf("a discovered fix should keep only the artifact containing its claim: %+v", got)
+	}
+	if a.Concerns[1].Disposition != "uncertain" {
+		t.Fatalf("a favorable disposition without a source should become uncertain: %+v", a.Concerns[1])
+	}
+	if a.Concerns[2].Disposition != "unresolved" || len(a.Concerns[2].EvidenceIDs) != 2 {
+		t.Fatalf("an unresolved concern is left as the model wrote it: %+v", a.Concerns[2])
+	}
+}

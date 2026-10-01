@@ -218,7 +218,7 @@ func dispatch(ctx context.Context, s Snapshot, repo Repository, name string, arg
 	if err != nil {
 		return "", err
 	}
-	if len(b) > 65536 {
+	if len(b) > maxToolResultBytes {
 		return "", investigationLimit(LimitToolResult, "a tool result exceeded 65,536 bytes")
 	}
 	return string(b), nil
@@ -246,53 +246,62 @@ func validateCitations(ctx context.Context, s Snapshot, repo Repository, a *Asse
 		if err != nil {
 			return err
 		}
-		if !strings.Contains(r.Text, c.Excerpt) {
-			return fmt.Errorf("code excerpt mismatch")
+		if !strings.Contains(r.Text, c.Excerpt) && !excerptNear(ctx, repo, c) {
+			return fmt.Errorf("code excerpt mismatch: %s:%d-%d does not contain the quoted excerpt", c.Path, c.StartLine, c.EndLine)
 		}
 		c.Validated = true
 		return nil
 	}
+	// A citation the server cannot verify is dropped and its concern becomes
+	// uncertain rather than failing the whole assessment: downgrading can only
+	// make the decision less favorable, never approve more.
+	fatal := func(err error) bool { return errors.Is(err, ErrInvestigationLimit) || ctx.Err() != nil }
+	kept := a.Citations[:0]
 	for i := range a.Citations {
-		if err := verify(&a.Citations[i]); err != nil {
-			return err
-		}
-	}
-	for i := range a.Concerns {
-		for j := range a.Concerns[i].Citations {
-			if err := verify(&a.Concerns[i].Citations[j]); err != nil {
+		c := a.Citations[i]
+		if err := verify(&c); err != nil {
+			if fatal(err) {
 				return err
 			}
-		}
-	}
-	for _, concern := range a.Concerns {
-		if concern.Disposition != "fixed" {
+			a.CoverageGaps = append(a.CoverageGaps, "Dropped an unverifiable citation: "+err.Error())
 			continue
 		}
-		supported := false
-		for _, current := range concern.Citations {
-			if current.Path == "" || current.Path != concern.Path || current.Revision != s.Revision.Head {
-				continue
-			}
-			hasOriginal := false
-			for _, old := range concern.Citations {
-				if old.Path == concern.Path && old.Revision == concern.OriginalRevision && old.Revision != s.Revision.Head && anchorOverlap(concern, old) {
-					hasOriginal = true
+		kept = append(kept, c)
+	}
+	a.Citations = kept
+	for i := range a.Concerns {
+		concern := &a.Concerns[i]
+		var problem error
+		valid := concern.Citations[:0]
+		for j := range concern.Citations {
+			c := concern.Citations[j]
+			if err := verify(&c); err != nil {
+				if fatal(err) {
+					return err
 				}
-			}
-			if !hasOriginal {
+				if problem == nil {
+					problem = err
+				}
 				continue
 			}
-			var err error
-			supported, err = citationChangeSupported(ctx, repo, s.Revision.Head, concern, current)
+			valid = append(valid, c)
+		}
+		concern.Citations = valid
+		if problem == nil && concern.Disposition == "fixed" {
+			supported, err := fixSupported(ctx, s, repo, *concern)
 			if err != nil {
-				return err
-			}
-			if supported {
-				break
+				if fatal(err) {
+					return err
+				}
+				problem = err
+			} else if !supported {
+				problem = fmt.Errorf("fix has no relevant cited code change")
 			}
 		}
-		if !supported {
-			return fmt.Errorf("fix has no relevant cited code change")
+		if problem != nil && concern.Disposition != "uncertain" && concern.Disposition != "unresolved" {
+			concern.Rationale += " [Server could not verify this " + concern.Disposition + " disposition (" + problem.Error() + "), so it is marked uncertain.]"
+			concern.Disposition = "uncertain"
+			a.CoverageGaps = append(a.CoverageGaps, fmt.Sprintf("Concern %s: %v", concern.ID, problem))
 		}
 	}
 
@@ -371,4 +380,52 @@ func changedLinesSupportAtAnchor(diff string, start, end int, concern *Concern) 
 		}
 	}
 	return false
+}
+
+// excerptSlack is how far outside a cited line range an excerpt may sit; a
+// model's range is often a few lines off from the code it quotes.
+const excerptSlack = 5
+
+// excerptNear reports whether c's excerpt, compared with whitespace runs
+// collapsed, appears within excerptSlack lines of the cited range.
+func excerptNear(ctx context.Context, repo Repository, c *Citation) bool {
+	start := c.StartLine - excerptSlack
+	if start < 1 {
+		start = 1
+	}
+	end := c.EndLine + excerptSlack
+	if end-start >= 400 {
+		end = start + 399
+	}
+	r, err := repo.Read(ctx, "read_file", ReadRequest{Revision: c.Revision, Path: c.Path, StartLine: start, EndLine: end})
+	if err != nil {
+		return false
+	}
+	collapse := func(text string) string { return strings.Join(strings.Fields(text), " ") }
+	excerpt := collapse(c.Excerpt)
+	return excerpt != "" && strings.Contains(collapse(r.Text), excerpt)
+}
+
+// fixSupported reports whether a fixed concern cites the original code and a
+// current-head change at the same anchor.
+func fixSupported(ctx context.Context, s Snapshot, repo Repository, concern Concern) (bool, error) {
+	for _, current := range concern.Citations {
+		if current.Path == "" || current.Path != concern.Path || current.Revision != s.Revision.Head {
+			continue
+		}
+		hasOriginal := false
+		for _, old := range concern.Citations {
+			if old.Path == concern.Path && old.Revision == concern.OriginalRevision && old.Revision != s.Revision.Head && anchorOverlap(concern, old) {
+				hasOriginal = true
+			}
+		}
+		if !hasOriginal {
+			continue
+		}
+		supported, err := citationChangeSupported(ctx, repo, s.Revision.Head, concern, current)
+		if err != nil || supported {
+			return supported, err
+		}
+	}
+	return false, nil
 }

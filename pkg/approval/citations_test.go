@@ -23,9 +23,11 @@ func TestFixedCitationRequiresChangeAtCitedCode(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assessment := Assessment{Concerns: []Concern{{ID: "concern", Path: "file.txt", StartLine: tc.oldLine, EndLine: tc.oldLine, Disposition: "fixed", OriginalRevision: base, Citations: []Citation{{Path: "file.txt", Revision: base, StartLine: tc.oldLine, EndLine: tc.oldLine, Excerpt: tc.oldText}, {Path: "file.txt", Revision: head, StartLine: tc.newLine, EndLine: tc.newLine, Excerpt: tc.newText}}}}}
-			err := validateCitations(context.Background(), snapshot, repo, &assessment)
-			if (err == nil) != tc.valid {
-				t.Fatalf("valid=%t, error=%v", tc.valid, err)
+			if err := validateCitations(context.Background(), snapshot, repo, &assessment); err != nil {
+				t.Fatal(err)
+			}
+			if fixed := assessment.Concerns[0].Disposition == "fixed"; fixed != tc.valid {
+				t.Fatalf("valid=%t, disposition=%s", tc.valid, assessment.Concerns[0].Disposition)
 			}
 		})
 	}
@@ -116,10 +118,39 @@ func TestFixedCitationRejectsUnrelatedChangedFile(t *testing.T) {
 	}
 	a := Assessment{SnapshotID: s.ID, SnapshotDigest: s.Digest, Summary: "Concern addressed by the cited change", Concerns: []Concern{assessed}, Artifacts: []ArtifactDisposition{{EvidenceID: "finding", Classification: "concerns", Rationale: "A supported concern", ConcernIDs: []string{"concern"}}, {EvidenceID: "current-summary", Classification: "non_actionable", Rationale: "No additional findings"}}}
 	repository := &citationRepositoryFixture{head: head, old: old}
-	if err := validateCitations(context.Background(), s, repository, &a); err == nil {
-		t.Fatal("unrelated changed file accepted as proof of a fix")
+	if err := validateCitations(context.Background(), s, repository, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Concerns[0].Disposition != "uncertain" {
+		t.Fatalf("unrelated changed file accepted as proof of a fix: %s", a.Concerns[0].Disposition)
 	}
 	if strings.Contains(strings.Join(repository.diffReads, ","), "README.md") {
 		t.Fatal("unrelated file was read as fix evidence")
+	}
+}
+
+func TestCodeCitationToleratesNearbyLinesAndWhitespaceOnly(t *testing.T) {
+	repo, base, head := fixtureRepository(t)
+	snapshot := Snapshot{Revision: Revision{Head: head, Base: base, MergeBase: base}, AllowedRevisions: []string{base, head}}
+	for _, tc := range []struct {
+		name    string
+		line    int
+		excerpt string
+		valid   bool
+	}{
+		{"exact", 2, "changed", true},
+		{"range two lines off", 1, "three", true},
+		{"collapsed whitespace", 2, "  changed ", true},
+		{"text not in the file", 2, "deleted", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := Assessment{Citations: []Citation{{Path: "file.txt", Revision: head, StartLine: tc.line, EndLine: tc.line, Excerpt: tc.excerpt}}}
+			if err := validateCitations(context.Background(), snapshot, repo, &a); err != nil {
+				t.Fatal(err)
+			}
+			if kept := len(a.Citations) == 1 && a.Citations[0].Validated; kept != tc.valid {
+				t.Fatalf("valid=%t, citations=%+v gaps=%v", tc.valid, a.Citations, a.CoverageGaps)
+			}
+		})
 	}
 }

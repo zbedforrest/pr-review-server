@@ -353,3 +353,40 @@ func validateCitation(evidence map[string]Evidence, c Citation) error {
 	}
 	return nil
 }
+
+// downgradeUnsupportedDiscoveries applies the authoritative-source rule for
+// concerns the model discovered itself before validation: a favorable
+// disposition keeps only the single cited artifact that contains its claim,
+// and one with no such artifact becomes uncertain. Both only narrow what the
+// model asserted.
+func downgradeUnsupportedDiscoveries(s Snapshot, a *Assessment) {
+	known := map[string]bool{}
+	for _, c := range s.Concerns {
+		known[c.ID] = true
+	}
+	bodies := map[string]string{}
+	for _, e := range s.Evidence {
+		bodies[e.ID] = e.Body
+	}
+	for i := range a.Concerns {
+		c := &a.Concerns[i]
+		if known[c.ID] || (c.Disposition != "fixed" && c.Disposition != "not_applicable" && c.Disposition != "non_blocking") {
+			continue
+		}
+		var sources []string
+		if len(strings.TrimSpace(c.Claim)) >= 16 {
+			for _, id := range c.EvidenceIDs {
+				if strings.Contains(bodies[id], c.Claim) {
+					sources = append(sources, id)
+				}
+			}
+		}
+		if len(sources) >= 1 {
+			c.EvidenceIDs = sources[:1]
+			continue
+		}
+		c.Rationale += " [No single cited artifact contains this claim, so the " + c.Disposition + " disposition is marked uncertain.]"
+		c.Disposition = "uncertain"
+		a.CoverageGaps = append(a.CoverageGaps, "Concern "+c.ID+": no single authoritative source for a discovered concern")
+	}
+}
