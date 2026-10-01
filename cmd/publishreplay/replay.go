@@ -348,7 +348,7 @@ func fileOfFingerprint(fp string) string {
 
 func fileChanged(changed []string, file string) bool {
 	for _, c := range changed {
-		if sameFile(c, file) {
+		if c == file {
 			return true
 		}
 	}

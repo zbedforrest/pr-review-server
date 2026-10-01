@@ -188,8 +188,8 @@ func (f *liveFetcher) Compare(owner, repo, base, head string) (compareResult, er
 	return res, nil
 }
 
-// prefetch warms the store for every round's sidecar and every consecutive
-// pair of distinct round heads, with a few workers so the full set finishes
+// prefetch warms the store for every round's sidecar and every ordered pair
+// of distinct round heads (a skipped round leaves LastSeenSHA two heads back), with a few workers so the full set finishes
 // in minutes rather than an hour.
 func prefetch(s *store, dumps []*prDump, bots func(*prDump) map[string]bool, workers int, logf func(string, ...any)) error {
 	type job func() error
@@ -205,9 +205,12 @@ func prefetch(s *store, dumps []*prDump, bots func(*prDump) map[string]bool, wor
 				seen[r.SHA7] = true
 				jobs = append(jobs, func() error { _, _, err := s.sidecar(d.Owner, d.Repo, d.Number, r.SHA7); return err })
 			}
-			if i > 0 && rs[i-1].SHA != r.SHA && !seenCompare[rs[i-1].SHA7+r.SHA7] {
-				seenCompare[rs[i-1].SHA7+r.SHA7] = true
-				prev := rs[i-1]
+			for _, prev := range rs[:i] {
+				prev := prev
+				if prev.SHA == r.SHA || seenCompare[prev.SHA7+r.SHA7] {
+					continue
+				}
+				seenCompare[prev.SHA7+r.SHA7] = true
 				jobs = append(jobs, func() error { _, _, err := s.compare(d.Owner, d.Repo, prev.SHA, r.SHA); return err })
 			}
 		}
