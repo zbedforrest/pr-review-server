@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -183,6 +184,17 @@ func TestNewGitRepositoryServesCachedRevisionsWithoutFetching(t *testing.T) {
 	defer r.Close()
 	if err := r.ValidateDiff(context.Background(), first, second); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMissingCommitsChecksEveryRevisionInOneProcess(t *testing.T) {
+	cache, first, second := fixtureRepository(t)
+	tree := fixtureGit(t, cache.directory, "", "mktree")
+	missing := []string{strings.Repeat("d", 40), strings.Repeat("e", 40)}
+	runs := cache.runs
+	got, err := cache.missingCommits(context.Background(), append([]string{first, second, tree}, missing...))
+	if err != nil || !reflect.DeepEqual(got, append([]string{tree}, missing...)) || cache.runs != runs+1 {
+		t.Fatalf("missing commits = %v, %v after %d git runs", got, err, cache.runs-runs)
 	}
 }
 
