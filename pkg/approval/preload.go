@@ -87,7 +87,7 @@ func BuildPreload(ctx context.Context, s Snapshot, repo Repository) (Preload, er
 		}
 		alias := "E" + strconv.Itoa(i+1)
 		p.Evidence[alias], p.evidenceAlias[e.ID] = e.ID, alias
-		if reason := autoClassification(e); reason != "" {
+		if reason := autoClassification(s, e); reason != "" {
 			p.Auto[e.ID] = reason
 		}
 	}
@@ -266,22 +266,27 @@ func (p Preload) aliases(index map[string]string, ids []string) string {
 	return strings.Join(names, ",")
 }
 
-// autoClassification names artifacts that carry no review text of their own;
-// change requests in bare reviews are already captured by the snapshot flags.
-func autoClassification(e Evidence) string {
+// autoClassification names artifacts that carry no review text of their own.
+// A bare change request is left to the model unless a snapshot flag, which
+// already blocks the target, captures it: an older-commit provider request
+// sets no flag.
+func autoClassification(s Snapshot, e Evidence) string {
 	switch e.Kind {
 	case "review_request":
 		return "Review request metadata."
 	case "review":
-		if !strings.HasPrefix(e.Body, "Review state:") {
+		state, rest, _ := strings.Cut(e.Body, "\n")
+		state, ok := strings.CutPrefix(state, "Review state:")
+		if !ok || strings.TrimSpace(rest) != "" {
 			return ""
 		}
-		rest := ""
-		if newline := strings.IndexByte(e.Body, '\n'); newline >= 0 {
-			rest = e.Body[newline+1:]
-		}
-		if strings.TrimSpace(rest) == "" {
+		switch strings.TrimSpace(state) {
+		case "APPROVED", "COMMENTED", "DISMISSED":
 			return "Review state only; no review text."
+		case "CHANGES_REQUESTED":
+			if s.HumanChangesRequested || s.ProviderChangesRequested {
+				return "Review state only; the change request is captured by the snapshot."
+			}
 		}
 	}
 	return ""
