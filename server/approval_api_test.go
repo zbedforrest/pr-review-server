@@ -32,7 +32,7 @@ func newApprovalAPITestServer(t *testing.T) (*Server, *db.GormDB, *db.User, *app
 	t.Setenv("APPROVAL_CANDIDATES_PROVIDER", "anthropic")
 	t.Setenv("APPROVAL_CANDIDATES_MODEL", "fixture-model")
 	t.Setenv("APPROVAL_CANDIDATES_DAILY_INPUT_TOKENS", "12000000")
-	t.Setenv("APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS", "200000")
+	t.Setenv("APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS", "800000")
 	t.Setenv("APPROVAL_CANDIDATES_PROVIDER_IDENTITIES", "")
 	f := &approvalAPIFixture{head: strings.Repeat("a", 40), base: strings.Repeat("b", 40), state: "open", author: "contributor", reviews: "[]"}
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

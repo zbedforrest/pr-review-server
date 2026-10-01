@@ -12,7 +12,7 @@ Set these environment variables on each server replica before enabling the featu
 | `APPROVAL_CANDIDATES_PROVIDER` | `anthropic` or `openrouter` |
 | `APPROVAL_CANDIDATES_MODEL` | Explicit model ID supported by that provider |
 | `APPROVAL_CANDIDATES_DAILY_INPUT_TOKENS` | Optional deployment-wide UTC allocation budget, at least one target allowance (6,000,000) when set; unset means unlimited |
-| `APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS` | Optional deployment-wide UTC allocation budget, at least one target allowance (100,000) when set; unset means unlimited |
+| `APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS` | Optional deployment-wide UTC allocation budget, at least one target allowance (400,000) when set; unset means unlimited |
 | `APPROVAL_CANDIDATES_CACHE_DIR` | Private writable directory, default `data/approval-cache` |
 | `APPROVAL_CANDIDATES_PROVIDER_IDENTITIES` | JSON array of verified Greptile/Copilot numeric actor IDs |
 
