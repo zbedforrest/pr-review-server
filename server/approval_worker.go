@@ -138,7 +138,7 @@ func (s *Server) approvalValidationAvailable() bool {
 const (
 	approvalTargetDuration = 8 * time.Minute
 	approvalWorkerSlots    = 4
-	approvalSlotsPerUser   = 2
+	approvalSlotsPerUser   = approvalWorkerSlots
 	// approvalIdleClaimEvery spaces a worker's claims when there is no work:
 	// every claim serializes on the approval mutation gate.
 	approvalIdleClaimEvery = 5 * time.Second

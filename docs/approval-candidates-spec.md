@@ -236,7 +236,7 @@ Lease expiry permits at most one recovery attempt. A new holder must not extend 
 | Feature flag | `APPROVAL_CANDIDATES_ENABLED=false` |
 | Targets per scan | 50 |
 | Active scans per user | 1 total across full scans and rechecks |
-| Concurrent investigators | 4 deployment-wide; at most 2 per user; idle workers claim at most every 5 seconds |
+| Concurrent investigators | 4 deployment-wide, all usable by one user (the scan deadline assumes it); idle workers claim at most every 5 seconds |
 | Target active deadline | 8 minutes, including collection and final validation; the answer is requested 3 minutes before it; 4 targets run at once |
 | Scan deadline | Target count × 8 minutes / 4 slots + 8 minutes + 10 minutes queue allowance from acceptance; about 118 minutes for 50 targets |
 | Investigator tool calls | 40 per target across recovery attempts |
