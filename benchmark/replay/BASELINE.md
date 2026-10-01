@@ -39,15 +39,15 @@ prose, so boilerplate words inflate the overlap), 209 of 498 threads resolved (0
 
 PR numbers only, repositories omitted. Top reposts (same marker + same defect / rounds): #31655 11 / 9,
 #142 3 / 8, #31365 3 / 4, #160 2 / 10. Top false fixes (fixed_without_file_change / fixed): #31944 5 / 6,
-#31365 4 / 9, #32308 4 / 7, #160 3 / 7. The full per-PR table is the `--csv` output; regenerate it rather than
-committing it.
+#31365 4 / 9, #32308 4 / 7, #160 3 / 7. The full per-PR table is the `--csv` output; it names real repositories, so write it outside the repo and
+never commit it.
 
 ## How to reproduce
 
 ```
 PRISM_BASE_URL=<review server> go run ./cmd/publishreplay \
   --dumps <audit folder>/prs --sidecars <audit folder>/sidecars \
-  --csv replay.csv --out replay.json
+  --csv <audit folder>/replay.csv --out <audit folder>/replay.json
 ```
 
 The first run fetches missing sidecars (`PRISM_TOKEN` or the gh CLI token) and the GitHub compares between

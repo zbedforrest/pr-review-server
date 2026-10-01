@@ -250,7 +250,9 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		}
 		pl, err := payload.Decode(raw)
 		if err != nil {
-			return pr, nil, fmt.Errorf("sidecar %s: %w", rd.SHA7, err)
+			logf("%s: sidecar %s: %v; round counts as missing", d.key(), rd.SHA7, err)
+			pr.RoundsMissingSidecar++
+			continue
 		}
 		previous, err := ledger.GetPublishedFindingsForPR(d.Owner, d.Repo, d.Number)
 		if err != nil {

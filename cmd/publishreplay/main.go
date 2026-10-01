@@ -48,7 +48,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("load dumps: %v", err)
 	}
-	dumps = filterDumps(dumps, *prFilter, *limit)
+	dumps, err = filterDumps(dumps, *prFilter, *limit)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	var f fetcher
 	if !*offline {
@@ -93,22 +96,25 @@ func main() {
 	fmt.Println(string(out))
 }
 
-func filterDumps(dumps []*prDump, prFilter string, limit int) []*prDump {
+func filterDumps(dumps []*prDump, prFilter string, limit int) ([]*prDump, error) {
 	if prFilter != "" {
-		want := prFilter
+		owner, want := "", prFilter
 		if i := strings.Index(want, "/"); i >= 0 {
-			want = want[i+1:]
+			owner, want = want[:i], want[i+1:]
 		}
 		var kept []*prDump
 		for _, d := range dumps {
-			if d.key() == want {
+			if d.key() == want && (owner == "" || strings.EqualFold(d.Owner, owner)) {
 				kept = append(kept, d)
 			}
+		}
+		if len(kept) == 0 {
+			return nil, fmt.Errorf("no dump matches --pr %q", prFilter)
 		}
 		dumps = kept
 	}
 	if limit > 0 && len(dumps) > limit {
 		dumps = dumps[:limit]
 	}
-	return dumps
+	return dumps, nil
 }

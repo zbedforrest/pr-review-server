@@ -51,7 +51,10 @@ func sidecarName(owner, repo string, number int, sha7 string) string {
 func (s *store) sidecar(owner, repo string, number int, sha7 string) ([]byte, bool, error) {
 	path := filepath.Join(s.dir, sidecarName(owner, repo, number, sha7))
 	if raw, err := os.ReadFile(path); err == nil {
-		return raw, true, nil
+		if json.Valid(raw) {
+			return raw, true, nil
+		}
+		_ = os.Remove(path)
 	}
 	if _, err := os.Stat(path + ".missing"); err == nil {
 		return nil, false, nil
@@ -147,7 +150,7 @@ func (f *liveFetcher) Sidecar(owner, repo string, number int, sha7 string) ([]by
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("sidecar %s: HTTP %d", sidecarName(owner, repo, number, sha7), resp.StatusCode)
 	case !json.Valid(body):
-		return nil, errNotFound
+		return nil, fmt.Errorf("sidecar %s: response is not JSON", sidecarName(owner, repo, number, sha7))
 	}
 	return body, nil
 }
@@ -195,13 +198,15 @@ func prefetch(s *store, dumps []*prDump, bots func(*prDump) map[string]bool, wor
 		d := d
 		rs := d.rounds(bots(d))
 		seen := map[string]bool{}
+		seenCompare := map[string]bool{}
 		for i, r := range rs {
 			r := r
 			if !seen[r.SHA7] {
 				seen[r.SHA7] = true
 				jobs = append(jobs, func() error { _, _, err := s.sidecar(d.Owner, d.Repo, d.Number, r.SHA7); return err })
 			}
-			if i > 0 && rs[i-1].SHA != r.SHA {
+			if i > 0 && rs[i-1].SHA != r.SHA && !seenCompare[rs[i-1].SHA7+r.SHA7] {
+				seenCompare[rs[i-1].SHA7+r.SHA7] = true
 				prev := rs[i-1]
 				jobs = append(jobs, func() error { _, _, err := s.compare(d.Owner, d.Repo, prev.SHA, r.SHA); return err })
 			}

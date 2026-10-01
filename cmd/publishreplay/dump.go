@@ -171,7 +171,7 @@ type round struct {
 func (d *prDump) rounds(bots map[string]bool) []round {
 	var out []round
 	for _, r := range d.Reviews.Nodes {
-		if !bots[bareLogin(actorLogin(r.Author))] || len(r.Commit.Oid) < 7 {
+		if !bots[bareLogin(actorLogin(r.Author))] || len(r.Commit.Oid) < 7 || r.State == "PENDING" || r.SubmittedAt.IsZero() {
 			continue
 		}
 		out = append(out, round{SHA: r.Commit.Oid, SHA7: r.Commit.Oid[:7], At: r.SubmittedAt})

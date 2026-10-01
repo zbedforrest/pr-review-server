@@ -194,14 +194,20 @@ func TestFilterDumps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := filterDumps(dumps, "acme/example#2", 0); len(got) != 1 || got[0].Number != 2 {
-		t.Fatalf("owner-qualified filter = %d dumps", len(got))
+	if got, err := filterDumps(dumps, "acme/example#2", 0); err != nil || len(got) != 1 || got[0].Number != 2 {
+		t.Fatalf("owner-qualified filter = %d dumps, %v", len(got), err)
 	}
-	if got := filterDumps(dumps, "example#1", 0); len(got) != 1 || got[0].Number != 1 {
-		t.Fatalf("bare filter = %d dumps", len(got))
+	if got, err := filterDumps(dumps, "example#1", 0); err != nil || len(got) != 1 || got[0].Number != 1 {
+		t.Fatalf("bare filter = %d dumps, %v", len(got), err)
 	}
-	if got := filterDumps(dumps, "", 1); len(got) != 1 {
-		t.Fatalf("limit = %d dumps", len(got))
+	if _, err := filterDumps(dumps, "other/example#1", 0); err == nil {
+		t.Fatal("a different owner must not match")
+	}
+	if _, err := filterDumps(dumps, "example#9", 0); err == nil {
+		t.Fatal("an unmatched filter must be an error")
+	}
+	if got, err := filterDumps(dumps, "", 1); err != nil || len(got) != 1 {
+		t.Fatalf("limit = %d dumps, %v", len(got), err)
 	}
 }
 
