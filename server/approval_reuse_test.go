@@ -79,7 +79,7 @@ func TestApprovalGateSkipsModelForFailingCI(t *testing.T) {
 	require.Contains(t, assessment.ReasonCodes, "ci_failed")
 	require.NotContains(t, assessment.ReasonCodes, "invalid_assessment")
 	require.Equal(t, "CI is failing on the current head, so no investigation ran.", result.Summary)
-	_, err := h.store.FindApprovalReuse(h.first.UserID, approval.ReuseKey(assessment.SnapshotDigest, "anthropic", "fixture-model"))
+	_, err := h.store.FindApprovalReuse(h.first.UserID, approvalDigestReuseKey(h.s.cfg.ApprovalCandidates(), assessment.SnapshotDigest))
 	require.ErrorIs(t, err, db.ErrApprovalNotFound)
 }
 
@@ -122,6 +122,15 @@ func TestApprovalReuseMissesChangedEvidence(t *testing.T) {
 	require.Equal(t, approval.OriginInvestigator, assessment.Origin)
 }
 
+func TestApprovalReuseMissesChangedReasoningEffort(t *testing.T) {
+	h := newApprovalReuseHarness(t)
+	h.run(t, h.first)
+	t.Setenv("APPROVAL_CANDIDATES_REASONING_EFFORT", "high")
+	_, assessment := h.run(t, h.next(t, "effort-scan", "full"))
+	require.Equal(t, 2, h.models)
+	require.Equal(t, approval.OriginInvestigator, assessment.Origin)
+}
+
 func TestApprovalNonCandidateSkipsFinalCollection(t *testing.T) {
 	h := newApprovalReuseHarness(t)
 	h.gaps = []string{"The review did not cover every file."}
@@ -131,7 +140,7 @@ func TestApprovalNonCandidateSkipsFinalCollection(t *testing.T) {
 	require.Equal(t, "insufficient_evidence", result.Decision)
 	require.Equal(t, "current", result.Freshness)
 	require.Equal(t, approval.OriginInvestigator, assessment.Origin)
-	found, err := h.store.FindApprovalReuse(h.first.UserID, approval.ReuseKey(assessment.SnapshotDigest, "anthropic", "fixture-model"))
+	found, err := h.store.FindApprovalReuse(h.first.UserID, approvalDigestReuseKey(h.s.cfg.ApprovalCandidates(), assessment.SnapshotDigest))
 	require.NoError(t, err)
 	require.Equal(t, h.first.ID, found.TargetID)
 	require.True(t, strings.Contains(found.AssessmentJSON, `"origin":"investigator"`))

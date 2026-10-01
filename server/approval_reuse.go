@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 
+	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/pkg/approval"
 )
@@ -19,7 +20,13 @@ func (s *Server) approvalReuseKey(a *approval.Assessment) string {
 	if a.Model != cfg.Model {
 		return ""
 	}
-	return approval.ReuseKey(a.SnapshotDigest, cfg.Provider, cfg.Model)
+	return approvalDigestReuseKey(cfg, a.SnapshotDigest)
+}
+
+// approvalDigestReuseKey folds the reasoning effort into the model so an
+// effort change does not reuse answers given under another effort.
+func approvalDigestReuseKey(cfg config.ApprovalConfig, digest string) string {
+	return approval.ReuseKey(digest, cfg.Provider, cfg.Provider+"/"+cfg.Model+"/"+cfg.ReasoningEffort)
 }
 
 // approvalPrejudged settles a target without the model: a full scan first
@@ -31,7 +38,7 @@ func (s *Server) approvalPrejudged(scan db.ApprovalScan, user int, snapshot appr
 	}
 	cfg := s.cfg.ApprovalCandidates()
 	if scan.Kind != "recheck" {
-		found, err := s.approvalStore().FindApprovalReuse(user, approval.ReuseKey(snapshot.Digest, cfg.Provider, cfg.Model))
+		found, err := s.approvalStore().FindApprovalReuse(user, approvalDigestReuseKey(cfg, snapshot.Digest))
 		if err != nil && !errors.Is(err, db.ErrApprovalNotFound) {
 			log.Printf("[APPROVAL] reuse lookup for scan %s: %v", scan.ID, err)
 		}
