@@ -94,8 +94,9 @@ type Server struct {
 	approvalExecution *approvalExecution
 	// approvalRate and approvalPRs keep approval scans inside GitHub's rate
 	// limit: a shared pause after throttling, and short-lived PR reads.
-	approvalRate approvalRateGate
-	approvalPRs  approvalPRCache
+	approvalRate         approvalRateGate
+	approvalPRs          approvalPRCache
+	approvalSidecarCache approvalSidecarCache
 	// approvalWake starts a claim at once after an admission or a finished
 	// target; approvalScanStates and approvalInventories let concurrent
 	// targets share short-lived reads; approvalLimiter bounds model requests.

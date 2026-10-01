@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	gh "github.com/google/go-github/v57/github"
@@ -52,9 +53,29 @@ type approvalReader struct {
 	client *gh.Client
 	limits ApprovalReadLimits
 	result *ApprovalEvidence
-	// limited holds the first rate-limit error; later reads fail fast with it.
+	shared *approvalShared
+}
+
+// approvalShared is the state one collection's concurrent reads share: the
+// byte ceiling and the first rate-limit error, after which reads fail fast.
+type approvalShared struct {
+	mu      sync.Mutex
+	bytes   int
 	limited error
 }
+
+func (s *approvalShared) limitedErr() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.limited
+}
+
+// approvalRequests bounds approval evidence requests in flight per process,
+// below GitHub's secondary limit of about 100 concurrent requests.
+var approvalRequests = make(chan struct{}, 60)
+
+// approvalCollectionReads is how many endpoints one collection reads at once.
+const approvalCollectionReads = 4
 
 // approvalReadError keeps the fixed text stored in manifests while letting
 // callers see the cause, so a rate limit can pause and retry collection.
@@ -64,33 +85,46 @@ func (e *approvalReadError) Error() string { return "evidence request failed" }
 func (e *approvalReadError) Unwrap() error { return e.cause }
 
 type approvalBuffer struct {
-	data  []byte
-	limit int
+	data   []byte
+	limit  int
+	shared *approvalShared
 }
 
 func (b *approvalBuffer) Write(p []byte) (int, error) {
-	if len(p) > b.limit-len(b.data) {
+	b.shared.mu.Lock()
+	defer b.shared.mu.Unlock()
+	if len(p) > b.limit-b.shared.bytes {
 		return 0, fmt.Errorf("evidence byte limit exceeded")
 	}
+	b.shared.bytes += len(p)
 	b.data = append(b.data, p...)
 	return len(p), nil
 }
 
 func (r *approvalReader) read(ctx context.Context, method, path string, body any, out any) (*gh.Response, error) {
-	if r.limited != nil {
-		return nil, r.limited
+	if err := r.shared.limitedErr(); err != nil {
+		return nil, err
 	}
 	req, err := r.client.NewRequest(method, path, body)
 	if err != nil {
 		return nil, err
 	}
-	buf := &approvalBuffer{limit: r.limits.Bytes - r.result.Bytes}
+	select {
+	case approvalRequests <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	buf := &approvalBuffer{limit: r.limits.Bytes, shared: r.shared}
 	resp, err := r.client.Do(ctx, req, buf)
-	r.result.Bytes += len(buf.data)
+	<-approvalRequests
 	if err != nil {
 		failed := &approvalReadError{cause: err}
 		if _, limited := RateLimited(err, time.Now()); limited {
-			r.limited = failed
+			r.shared.mu.Lock()
+			if r.shared.limited == nil {
+				r.shared.limited = failed
+			}
+			r.shared.mu.Unlock()
 		}
 		return resp, failed
 	}
@@ -183,7 +217,8 @@ func (c *Client) CollectApprovalEvidence(ctx context.Context, owner, repo string
 		}
 		out.AccessPartition = "installation:" + partition
 	}
-	r := &approvalReader{client: client, limits: limits, result: out}
+	shared := &approvalShared{}
+	r := &approvalReader{client: client, limits: limits, result: out, shared: shared}
 	base := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
 	pr := fmt.Sprintf("%s/pulls/%d", base, number)
 	var pull gh.PullRequest
@@ -193,33 +228,74 @@ func (c *Client) CollectApprovalEvidence(ctx context.Context, owner, repo string
 	}
 	out.PR = &pull
 	out.Endpoints = append(out.Endpoints, ApprovalEndpoint{Name: "pull", Pages: 1, Complete: true})
-	out.Reviews = approvalPages[*gh.PullRequestReview](ctx, r, "reviews", pr+"/reviews", "")
-	out.Comments = approvalPages[*gh.IssueComment](ctx, r, "comments", fmt.Sprintf("%s/issues/%d/comments", base, number), "")
-	out.InlineComments = approvalPages[*gh.PullRequestComment](ctx, r, "inline_comments", pr+"/comments", "")
 	head := pull.GetHead().GetSHA()
 	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(head) {
 		return nil, fmt.Errorf("invalid head revision")
 	}
-	out.Checks = approvalPages[*gh.CheckRun](ctx, r, "checks", base+"/commits/"+head+"/check-runs?filter=all", "check_runs")
-	out.Suites = approvalPages[*gh.CheckSuite](ctx, r, "check_suites", base+"/commits/"+head+"/check-suites", "check_suites")
-	out.Statuses = approvalPages[*gh.RepoStatus](ctx, r, "statuses", base+"/commits/"+head+"/statuses", "")
-	var comparison gh.CommitsComparison
-	_, compareErr := r.read(ctx, "GET", base+"/compare/"+pull.GetBase().GetSHA()+"..."+head, nil, &comparison)
-	compareEndpoint := ApprovalEndpoint{Name: "merge_base", Pages: 1, Complete: compareErr == nil}
-	if compareErr != nil {
-		compareEndpoint.Error = compareErr.Error()
-	} else {
-		out.MergeBase = comparison.GetMergeBaseCommit().GetSHA()
-		if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(out.MergeBase) {
-			compareEndpoint.Complete = false
-			compareEndpoint.Error = "missing merge base"
-		}
+	// Each task fills its own fields; endpoints merge in task order so the
+	// manifest does not depend on which read finished first.
+	tasks := []func(*approvalReader){
+		func(r *approvalReader) {
+			out.Reviews = approvalPages[*gh.PullRequestReview](ctx, r, "reviews", pr+"/reviews", "")
+		},
+		func(r *approvalReader) {
+			out.Comments = approvalPages[*gh.IssueComment](ctx, r, "comments", fmt.Sprintf("%s/issues/%d/comments", base, number), "")
+		},
+		func(r *approvalReader) {
+			out.InlineComments = approvalPages[*gh.PullRequestComment](ctx, r, "inline_comments", pr+"/comments", "")
+		},
+		func(r *approvalReader) {
+			out.Checks = approvalPages[*gh.CheckRun](ctx, r, "checks", base+"/commits/"+head+"/check-runs?filter=all", "check_runs")
+		},
+		func(r *approvalReader) {
+			out.Suites = approvalPages[*gh.CheckSuite](ctx, r, "check_suites", base+"/commits/"+head+"/check-suites", "check_suites")
+		},
+		func(r *approvalReader) {
+			out.Statuses = approvalPages[*gh.RepoStatus](ctx, r, "statuses", base+"/commits/"+head+"/statuses", "")
+		},
+		func(r *approvalReader) {
+			var comparison gh.CommitsComparison
+			_, compareErr := r.read(ctx, "GET", base+"/compare/"+pull.GetBase().GetSHA()+"..."+head, nil, &comparison)
+			compareEndpoint := ApprovalEndpoint{Name: "merge_base", Pages: 1, Complete: compareErr == nil}
+			if compareErr != nil {
+				compareEndpoint.Error = compareErr.Error()
+			} else {
+				out.MergeBase = comparison.GetMergeBaseCommit().GetSHA()
+				if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(out.MergeBase) {
+					compareEndpoint.Complete = false
+					compareEndpoint.Error = "missing merge base"
+				}
+			}
+			r.result.Endpoints = append(r.result.Endpoints, compareEndpoint)
+		},
+		func(r *approvalReader) {
+			out.RequestedUsers, out.RequestedTeams = r.requestedReviewers(ctx, pr+"/requested_reviewers")
+		},
+		func(r *approvalReader) {
+			r.threads(ctx, owner, repo, number)
+			out.Threads = r.result.Threads
+		},
 	}
-	out.Endpoints = append(out.Endpoints, compareEndpoint)
-	out.RequestedUsers, out.RequestedTeams = r.requestedReviewers(ctx, pr+"/requested_reviewers")
-	r.threads(ctx, owner, repo, number)
-	if r.limited != nil {
-		return nil, r.limited
+	results := make([]*ApprovalEvidence, len(tasks))
+	sem := make(chan struct{}, approvalCollectionReads)
+	var wg sync.WaitGroup
+	for i, task := range tasks {
+		results[i] = &ApprovalEvidence{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			task(&approvalReader{client: client, limits: limits, result: results[i], shared: shared})
+		}()
+	}
+	wg.Wait()
+	for _, result := range results {
+		out.Endpoints = append(out.Endpoints, result.Endpoints...)
+	}
+	out.Bytes = shared.bytes
+	if shared.limited != nil {
+		return nil, shared.limited
 	}
 	return out, nil
 }
