@@ -144,8 +144,13 @@ func (s *Server) approvalLivePR(ctx context.Context, owner, repo string, number 
 // approvalAccess returns nil when the viewer can still see the target and it
 // still belongs to the admitted repository, errApprovalNoAccess when either
 // is no longer true, and the GitHub error when access could not be checked.
+// Workers use it with a briefly cached inventory.
 func (s *Server) approvalAccess(ctx context.Context, user int, target db.ApprovalTarget) error {
-	inventory, err := s.approvalInventory(user)
+	return s.approvalAccessWith(ctx, s.approvalInventoryCached, user, target)
+}
+
+func (s *Server) approvalAccessWith(ctx context.Context, load func(int) (map[string]db.PRWithUserView, error), user int, target db.ApprovalTarget) error {
+	inventory, err := load(user)
 	if err != nil {
 		return fmt.Errorf("load visible pull requests: %w", err)
 	}
@@ -163,7 +168,7 @@ func (s *Server) approvalAccess(ctx context.Context, user int, target db.Approva
 }
 
 func (s *Server) approvalCanRead(ctx context.Context, user int, target db.ApprovalTarget) bool {
-	return s.approvalAccess(ctx, user, target) == nil
+	return s.approvalAccessWith(ctx, s.approvalInventory, user, target) == nil
 }
 
 // approvalRetryAfterRateLimit runs fn, and when GitHub rate-limits it waits

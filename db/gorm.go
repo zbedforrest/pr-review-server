@@ -3,6 +3,7 @@ package db
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"gorm.io/driver/postgres"
@@ -36,8 +37,12 @@ func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 	// Configure connection pool to stay within Cloud SQL limits (db-f1-micro = 25 max)
 	sqlDB, err := db.DB()
 	if err == nil {
-		sqlDB.SetMaxOpenConns(10)                  // Leave headroom for Cloud SQL overhead + local dev
-		sqlDB.SetMaxIdleConns(5)                   // Keep a few warm connections
+		open := 10 // Leave headroom for Cloud SQL overhead + local dev
+		if dialector.Name() == "postgres" {
+			open = maxOpenConns()
+		}
+		sqlDB.SetMaxOpenConns(open)
+		sqlDB.SetMaxIdleConns(max(open/2, 1))      // Keep a few warm connections
 		sqlDB.SetConnMaxLifetime(30 * time.Minute) // Recycle connections to avoid stale sockets
 		if d, ok := dialector.(*sqlite.Dialector); ok && d.DSN == ":memory:" {
 			// Each new connection to :memory: opens a separate, empty database.
@@ -71,6 +76,16 @@ func NewGormDB(dialector gorm.Dialector) (*GormDB, error) {
 	}
 
 	return gormDB, nil
+}
+
+// maxOpenConns reads DB_MAX_OPEN_CONNS; instances times this value must stay
+// below the database's connection limit.
+func maxOpenConns() int {
+	n, err := strconv.Atoi(os.Getenv("DB_MAX_OPEN_CONNS"))
+	if err != nil || n < 1 {
+		return 10
+	}
+	return n
 }
 
 func (g *GormDB) ensureReviewPathIndex() error {

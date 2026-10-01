@@ -16,6 +16,9 @@ Set these environment variables on each server replica before enabling the featu
 | `APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS` | Optional deployment-wide UTC allocation budget, at least one target allowance (160,000) when set; unset means unlimited |
 | `APPROVAL_CANDIDATES_CACHE_DIR` | Private writable directory, default `data/approval-cache` |
 | `APPROVAL_CANDIDATES_PROVIDER_IDENTITIES` | JSON array of verified Greptile/Copilot numeric actor IDs |
+| `APPROVAL_CANDIDATES_SLOTS` | Concurrent investigations across the deployment and for one user, default 50, clamped to 1 through 100 |
+| `APPROVAL_CANDIDATES_MODEL_CONCURRENCY` | In-flight model requests per process, default the slot count |
+| `DB_MAX_OPEN_CONNS` | PostgreSQL connections per process, default 10; idle connections are kept at half |
 
 The runtime uses the existing `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` setting. A CLI subscription does not supply these credentials. Use the same configuration on all replicas. `BASE_URL` must be the browser application's origin for browser POST validation.
 
@@ -29,7 +32,7 @@ Resolve and verify the actual GitHub numeric bot account IDs before configuratio
 
 ## Runtime and storage
 
-The investigator runs inside the Go server and uses native model HTTP APIs. A database lease limits deployment concurrency to two investigations and one per user. Two separate read-only slots handle explicit evidence revalidation. Browser navigation does not stop jobs.
+The investigator runs inside the Go server and uses native model HTTP APIs. Database leases limit deployment concurrency to `APPROVAL_CANDIDATES_SLOTS` investigations (default 50), all usable by one user. Two separate read-only slots handle explicit evidence revalidation. Browser navigation does not stop jobs.
 
 The model can only list/read frozen evidence and list/read/search/diff registered git revisions. The code reader uses a separate private bare repository, no checkout, and an ephemeral credential pipe. It disables git hooks, external diff, text conversion, ambient config, credential helpers and submodule recursion. No repository commands or tests run. Temporary repositories are removed at task completion. Startup and hourly maintenance remove abandoned managed repositories using filesystem locks, including after a process is killed. Active workers and surviving Git processes retain their repository leases. Linux and macOS are supported; shared cache mounts must provide coherent flock locking across replicas. Unmarked directories from older versions are preserved: remove those only after stopping all workers running the older version.
 
@@ -92,3 +95,13 @@ Approval work shares the server's GitHub quota. A rate-limited response (REST or
 Failed targets keep their cause: the stored summary carries a bounded error message and the server logs the full error with the target ID. Investigations stopped by a resource ceiling record which one (`budget_exhausted`, `conversation_limit`, `evidence_limit` or `tool_result_limit`). A final answer that is not a JSON object, or that misses concern verdicts or artifact classifications, gets one follow-up asking for exactly what is missing; validation is never relaxed and the follow-up spends the same budget. After that the server settles the rest without the model: missing verdicts become unresolved, unclassified artifacts become coverage gaps, unverifiable citations are dropped with their dispositions marked uncertain, and an answer that still fails validation ends as `invalid_assessment`. Unfinished check suites without check runs are not treated as pending CI.
 
 Before a broad scan, validate one PR that already has a completed review at its current head. Local testing needs authentic review history (a read-only connection to deployed review runs or imported fixtures): a database with no review runs cannot produce candidates.
+
+## Concurrency and Cloud Run
+
+Each process runs one dispatcher that claims every free slot in a single transaction, so a 50-PR scan starts all of its targets at once. Background workers need CPU outside requests: deploy with `--no-cpu-throttling` and at least one minimum instance. HTTP `--concurrency` does not limit workers. For 50 slots, size instances at 2 vCPU and 4 GiB: each investigation holds a prompt of about 1 MB, and repository setup runs git processes (at most 16 at once per process).
+
+Run Cloud Run in the same region as Cloud SQL. A cross-region statement costs 40 to 50 ms, and round trips dominate the gated writes. Keep instances times `DB_MAX_OPEN_CONNS` below the Cloud SQL connection limit with headroom for maintenance and other clients.
+
+GitHub's secondary limits allow about 100 concurrent requests and about 900 REST points per minute. A 50-PR scan issues about 600 collection requests, plus re-collection for candidates; the shared rate-limit pause handles bursts. Model requests share a process-wide limiter: a 429, 502, 503 or 529 (or a 200 body carrying a 429, 502 or 503 error) is retried with `Retry-After` or jittered exponential backoff, up to six attempts, and a 429 pauses every target together. A request is not retried when its wait plus 45 seconds would pass the target deadline; the target then fails with the provider status.
+
+Daily token caps, when set, must cover the slot count times the target allowance (2,000,000 input and 160,000 output tokens) for full parallelism; otherwise later targets fail with `budget_exhausted` until running ones release unused allowance.

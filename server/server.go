@@ -96,6 +96,13 @@ type Server struct {
 	// limit: a shared pause after throttling, and short-lived PR reads.
 	approvalRate approvalRateGate
 	approvalPRs  approvalPRCache
+	// approvalWake starts a claim at once after an admission or a finished
+	// target; approvalScanStates and approvalInventories let concurrent
+	// targets share short-lived reads; approvalLimiter bounds model requests.
+	approvalWake        approvalWake
+	approvalScanStates  approvalScanStateCache
+	approvalInventories approvalInventoryCache
+	approvalLimiter     approvalModelLimiter
 	// teams resolves team: entries of the author allowlists; shared with the
 	// poller so validation and the gates see one cache.
 	teams *github.TeamResolver
