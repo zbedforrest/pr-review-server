@@ -185,3 +185,14 @@ func TestNewGitRepositoryServesCachedRevisionsWithoutFetching(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRepositoryReadFileClampsARangePastTheEnd(t *testing.T) {
+	r, _, head := fixtureRepository(t)
+	got, err := r.Read(context.Background(), "read_file", ReadRequest{Revision: head, Path: "file.txt", StartLine: 2, EndLine: 300})
+	if err != nil || got.Text != "changed\nthree\n" {
+		t.Fatalf("range past the end should return through the last line: %+v %v", got, err)
+	}
+	if _, err := r.Read(context.Background(), "read_file", ReadRequest{Revision: head, Path: "file.txt", StartLine: 50, EndLine: 60}); err == nil {
+		t.Fatal("a range starting past the end must still be rejected")
+	}
+}
