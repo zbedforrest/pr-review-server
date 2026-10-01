@@ -128,7 +128,7 @@ func dispatch(ctx context.Context, s Snapshot, repo Repository, name string, arg
 		if offset > len(filtered) {
 			return "", fmt.Errorf("invalid cursor")
 		}
-		end := offset + 50
+		end := offset + 20
 		if end > len(filtered) {
 			end = len(filtered)
 		}

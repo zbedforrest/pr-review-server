@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"sync"
 	"time"
 
 	"pr-review-server/db"
@@ -140,10 +142,41 @@ const (
 	approvalIdleClaimEvery = 5 * time.Second
 )
 
+// approvalWorkerRevisionKey records the deployment revision whose workers
+// may claim targets. Cloud Run keeps a replaced revision's instances (and
+// their background goroutines) alive for a while after a deploy, so the
+// newest revision claims the role at startup and older ones stand down.
+const approvalWorkerRevisionKey = "approval_worker_revision"
+
 func (s *Server) runApprovalWorkers(ctx context.Context) {
 	store := s.approvalStore()
 	if store == nil {
 		return
+	}
+	revision := os.Getenv("K_REVISION")
+	if revision != "" && s.db != nil {
+		if err := s.db.SetSetting(approvalWorkerRevisionKey, revision); err != nil {
+			log.Printf("[APPROVAL] record worker revision: %v", err)
+		}
+	}
+	var currentMu sync.Mutex
+	current, checked := true, time.Time{}
+	isCurrent := func() bool {
+		if revision == "" || s.db == nil {
+			return true
+		}
+		currentMu.Lock()
+		defer currentMu.Unlock()
+		if time.Since(checked) >= 15*time.Second {
+			checked = time.Now()
+			if owner, err := s.db.GetSetting(approvalWorkerRevisionKey); err == nil && owner != "" {
+				if next := owner == revision; next != current {
+					current = next
+					log.Printf("[APPROVAL] worker revision %s is current=%t (owner %s)", revision, current, owner)
+				}
+			}
+		}
+		return current
 	}
 	if s.approvalAvailable() != "" {
 		_ = store.CancelAllApprovalScans(time.Now())
@@ -173,7 +206,7 @@ func (s *Server) runApprovalWorkers(ctx context.Context) {
 					if time.Now().Before(s.approvalRate.pausedUntil()) {
 						continue
 					}
-					if time.Now().Before(nextClaim) {
+					if time.Now().Before(nextClaim) || !isCurrent() {
 						continue
 					}
 					target, err := store.ClaimApprovalTarget(db.ApprovalClaim{Worker: worker, Now: time.Now(), LeaseDuration: 60 * time.Second, TargetDuration: approvalTargetDuration, MaxSlots: approvalWorkerSlots, MaxPerUser: approvalSlotsPerUser})

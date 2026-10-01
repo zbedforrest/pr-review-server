@@ -276,8 +276,11 @@ func (r *GitRepository) Read(ctx context.Context, name string, req ReadRequest) 
 			return ReadResult{}, err
 		}
 		lines := strings.Split(body, "\n")
-		if req.StartLine < 1 || req.EndLine < req.StartLine || req.EndLine-req.StartLine >= 400 || req.EndLine > len(lines) {
+		if req.StartLine < 1 || req.EndLine < req.StartLine || req.EndLine-req.StartLine >= 400 || req.StartLine > len(lines) {
 			return ReadResult{}, fmt.Errorf("invalid line range")
+		}
+		if req.EndLine > len(lines) {
+			req.EndLine = len(lines)
 		}
 		text := strings.Join(lines[req.StartLine-1:req.EndLine], "\n")
 		if len(text) > maxRepositoryRead {
