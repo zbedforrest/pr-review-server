@@ -245,3 +245,21 @@ func TestModelLimiterCapsConcurrentRequests(t *testing.T) {
 		t.Fatalf("peak concurrency %d, want at most 3", peak.Load())
 	}
 }
+
+func TestNativeReleasesReservationOnlyForRejectionsWithoutUsage(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		want   int
+	}{{http.StatusServiceUnavailable, 0}, {http.StatusInternalServerError, CallInputTokens}} {
+		stubModelSleep(t)
+		remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(c.status) }))
+		s, _ := validFixture()
+		b := &testBudget{}
+		_, err := NativeInvestigator{Config: modelHTTPConfig(remote.URL)}.Investigate(context.Background(), s, nil, b)
+		remote.Close()
+		var rejected *ModelStatusError
+		if !errors.As(err, &rejected) || b.used.InputTokens != c.want {
+			t.Fatalf("status %d: %v, %d input tokens charged", c.status, err, b.used.InputTokens)
+		}
+	}
+}

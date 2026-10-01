@@ -83,6 +83,14 @@ type ModelStatusError struct {
 
 func (e *ModelStatusError) Error() string { return fmt.Sprintf("model HTTP status %d", e.Status) }
 
+// withoutUsage reports a rejection the provider makes before any work, so
+// nothing was consumed.
+func (e *ModelStatusError) withoutUsage() bool { return modelRetryable(e.Status) }
+
+func modelRetryable(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == 529
+}
+
 const (
 	modelMaxAttempts = 6
 	modelRetryBase   = time.Second
@@ -142,7 +150,7 @@ func (c ModelConfig) post(ctx context.Context, endpoint string, data []byte) ([]
 				return raw, nil
 			}
 		}
-		if status != http.StatusTooManyRequests && status != http.StatusBadGateway && status != http.StatusServiceUnavailable && status != 529 {
+		if !modelRetryable(status) {
 			return nil, &ModelStatusError{Status: status}
 		}
 		delay, hinted := modelRetryAfter(header, time.Now())

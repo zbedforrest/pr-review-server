@@ -72,8 +72,13 @@ func (n NativeInvestigator) Investigate(ctx context.Context, s Snapshot, repo Re
 		log.Printf("[APPROVAL] model round %d: %s, %d input, %d output and %d reasoning tokens, %d tool calls requested, err=%v", usage.Rounds+1, time.Since(started).Round(time.Millisecond), reply.Usage.InputTokens, reply.Usage.OutputTokens, reply.Reasoning, len(reply.Calls), err)
 		if err != nil {
 			var reported *ModelUsageLimitError
+			var rejected *ModelStatusError
 			if errors.As(err, &reported) {
 				if settleErr := budget.Settle(ctx, reservation, reported.Usage); settleErr != nil {
+					return result, fmt.Errorf("record model usage: %w", settleErr)
+				}
+			} else if errors.As(err, &rejected) && rejected.withoutUsage() {
+				if settleErr := budget.Settle(ctx, reservation, Usage{}); settleErr != nil {
 					return result, fmt.Errorf("record model usage: %w", settleErr)
 				}
 			}
