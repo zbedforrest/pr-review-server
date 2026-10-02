@@ -91,13 +91,20 @@ type ChangeSet struct {
 }
 
 // SettleFooter is the one line under every root comment and the summary:
-// how an author settles a thread, and where to stop the comments entirely.
-func SettleFooter(optOutURL string) string {
-	line := "Reply <code>intentional</code> or <code>won't fix</code> to settle a thread"
-	if optOutURL != "" {
-		line += fmt.Sprintf(` · <a href="%s">Stop PRism comments on your PRs</a>`, optOutURL)
+// how an author settles a thread (only while author replies are handled)
+// and where to stop the comments entirely. Empty when neither applies.
+func SettleFooter(optOutURL string, repliesEnabled bool) string {
+	var parts []string
+	if repliesEnabled {
+		parts = append(parts, "Reply <code>intentional</code> or <code>won't fix</code> to settle a thread")
 	}
-	return "<sub>" + line + "</sub>"
+	if optOutURL != "" {
+		parts = append(parts, fmt.Sprintf(`<a href="%s">Stop PRism comments on your PRs</a>`, optOutURL))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "<sub>" + strings.Join(parts, " · ") + "</sub>"
 }
 
 func (r Round) sourceTag(id string) string {

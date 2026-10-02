@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { publishAllowedForAuthor } from './publishPolicy';
+import { OPTED_OUT_TITLE, PILOT_BLOCKED_TITLE, publishBlockedTitle, publishAllowedForAuthor } from './publishPolicy';
 
 describe('publishAllowedForAuthor', () => {
   it('allows everyone when the list is the wildcard', () => {
@@ -57,5 +57,13 @@ describe('publishAllowedForAuthor with an opt-out list', () => {
     expect(publishAllowedForAuthor('alice', 'team:core', teams, 'alice')).toBe(false);
     expect(publishAllowedForAuthor('bob', '*', undefined, 'alice')).toBe(true);
     expect(publishAllowedForAuthor('alice', '*', undefined, '')).toBe(true);
+  });
+});
+
+describe('publishBlockedTitle', () => {
+  it('names the opt-out when the author asked for silence', () => {
+    expect(publishBlockedTitle('Alice', 'bob, alice')).toBe(OPTED_OUT_TITLE);
+    expect(publishBlockedTitle('carol', 'bob, alice')).toBe(PILOT_BLOCKED_TITLE);
+    expect(publishBlockedTitle('carol', undefined)).toBe(PILOT_BLOCKED_TITLE);
   });
 });

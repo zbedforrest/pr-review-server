@@ -28,6 +28,19 @@ func (p *Poller) authorAllowed(list, author string) bool {
 // author belongs to, then "*"; empty when nothing admits them. The gates and
 // the settings API share it so they can never disagree.
 func AdmittingEntry(ctx context.Context, teams *github.TeamResolver, list, author string) string {
+	member := func(slug string) bool { return teams.IsMember(ctx, slug, author) }
+	return admittingEntry(teams, list, author, member)
+}
+
+// CachedAdmittingEntry is AdmittingEntry answered from the membership cache
+// alone, for request paths that must not wait on a team fetch; a team the
+// poller has not resolved yet admits nobody.
+func CachedAdmittingEntry(teams *github.TeamResolver, list, author string) string {
+	member := func(slug string) bool { return teams.CachedMember(slug, author) }
+	return admittingEntry(teams, list, author, member)
+}
+
+func admittingEntry(teams *github.TeamResolver, list, author string, member func(slug string) bool) string {
 	author = strings.TrimSpace(author)
 	if author == "" {
 		return ""
@@ -44,7 +57,7 @@ func AdmittingEntry(ctx context.Context, teams *github.TeamResolver, list, autho
 	}
 	if teams != nil {
 		for _, slug := range github.TeamSlugs(list, teams.Org()) {
-			if teams.IsMember(ctx, slug, author) {
+			if member(slug) {
 				return slug
 			}
 		}

@@ -14,7 +14,7 @@ import { ConfidenceBadge } from './ConfidenceBadge';
 import { GenerateSplitButton } from './GenerateSplitButton';
 import { MergeReadyIndicator } from './MergeReadyIndicator';
 import { NotesCell } from './NotesCell';
-import { publishAllowedForAuthor } from './publishPolicy';
+import { publishAllowedForAuthor, publishBlockedTitle } from './publishPolicy';
 import { PROFILE_LABELS } from './reviewProfiles';
 import { ReviewLinkMenu } from './ReviewLinkMenu';
 import { RowActionsMenu, type QuickActionsWiring } from './RowActionsMenu';
@@ -51,6 +51,7 @@ export const PRTableRow = memo(function PRTableRow({
   const publishAllowed = settings === undefined
     ? true
     : publishAllowedForAuthor(pr.author, settings.publish_enabled_authors, settings.author_list_teams, settings.publish_opt_out_authors);
+  const blockedTitle = publishBlockedTitle(pr.author, settings?.publish_opt_out_authors);
   const prUrl = `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
   const reviewUrl = pr.status === 'completed' && pr.review_url
     ? pr.review_url
@@ -242,6 +243,7 @@ export const PRTableRow = memo(function PRTableRow({
               onTriggerReview={handleTriggerReview}
               reviewPending={triggerReviewMutation.isPending}
               publishAllowed={publishAllowed}
+              publishBlockedTitle={blockedTitle}
             />
             {liteProfile && (
               <span
@@ -259,6 +261,7 @@ export const PRTableRow = memo(function PRTableRow({
             onGenerate={handleTriggerReview}
             pending={triggerReviewMutation.isPending}
             publishAllowed={publishAllowed}
+            publishBlockedTitle={blockedTitle}
           />
         )}
       </td>
@@ -272,6 +275,7 @@ export const PRTableRow = memo(function PRTableRow({
           hiddenPending={setHiddenMutation.isPending}
           deletePending={deleteMutation.isPending}
           publishAllowed={publishAllowed}
+          publishBlockedTitle={blockedTitle}
           quickActions={quickActions}
         />
       </td>

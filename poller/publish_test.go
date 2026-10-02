@@ -21,22 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPublishEnabledFor(t *testing.T) {
-	cases := []struct {
-		author, enabled string
-		want            bool
-	}{
-		{"alice", "", false},
-		{"", "*", false},
-		{"alice", "*", true},
-		{"alice", "bob, Alice ,carol", true},
-		{"dave", "bob,alice", false},
-	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, publishEnabledFor(c.author, c.enabled), "author=%q enabled=%q", c.author, c.enabled)
-	}
-}
-
 const greptileBody = `<a href="#"><img alt="P1" src="https://greptile-static-assets.s3.amazonaws.com/badges/p1.svg?v=9" align="top"></a> **Nil map write on first session**
 
 The sessions map is assigned before init so the first write panics with a nil map.

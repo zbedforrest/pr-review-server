@@ -157,3 +157,13 @@ func TestAdmittingEntry_PrefersLoginThenTeamThenWildcard(t *testing.T) {
 	assert.Equal(t, "", AdmittingEntry(ctx, p.teams, "*", ""))
 	assert.Equal(t, "", AdmittingEntry(ctx, nil, "team:xo-team", "alice"), "without a resolver teams match nobody")
 }
+
+// publishAllowedFor is the round-path gate as the tests ask it: read both
+// lists, then match.
+func (p *Poller) publishAllowedFor(author string) (bool, error) {
+	gate, err := p.publishGate()
+	if err != nil {
+		return false, err
+	}
+	return gate.Allowed(author), nil
+}

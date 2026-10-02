@@ -241,7 +241,7 @@ func TestRenderSummary_FullFooterUnchanged(t *testing.T) {
 
 func TestSettleFooter_ClosesEveryRootCommentAndTheSummary(t *testing.T) {
 	fd := f("abc", "medium", "a.go", 3, "Single sentence only.")
-	inline := RenderInline(fd, "prism-only", "", "", SettleFooter("https://prism.example/#prism-comments"))
+	inline := RenderInline(fd, "prism-only", "", "", SettleFooter("https://prism.example/#prism-comments", true))
 	wantLink := `<sub>Reply <code>intentional</code> or <code>won't fix</code> to settle a thread · <a href="https://prism.example/#prism-comments">Stop PRism comments on your PRs</a></sub>`
 	if !strings.HasSuffix(strings.TrimSpace(inline), wantLink) {
 		t.Errorf("inline must end with the settle footer:\n%s", inline)
@@ -252,7 +252,7 @@ func TestSettleFooter_ClosesEveryRootCommentAndTheSummary(t *testing.T) {
 
 	r := roundOne()
 	r.RoundNumber = 1
-	r.SettleFooter = SettleFooter("https://prism.example/#prism-comments")
+	r.SettleFooter = SettleFooter("https://prism.example/#prism-comments", true)
 	summary := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
 	if !strings.HasSuffix(strings.TrimSpace(summary), wantLink) {
 		t.Errorf("summary must end with the settle footer:\n%s", summary)
@@ -261,16 +261,23 @@ func TestSettleFooter_ClosesEveryRootCommentAndTheSummary(t *testing.T) {
 		t.Errorf("the review footer stays:\n%s", summary)
 	}
 
-	plain := SettleFooter("")
+	plain := SettleFooter("", true)
 	if strings.Contains(plain, "<a ") || !strings.Contains(plain, "settle a thread") {
 		t.Errorf("without a URL the footer keeps the settle sentence and drops the link: %q", plain)
+	}
+	linkOnly := SettleFooter("https://prism.example/#prism-comments", false)
+	if strings.Contains(linkOnly, "settle a thread") || !strings.Contains(linkOnly, "<a ") {
+		t.Errorf("with replies off the footer keeps only the link: %q", linkOnly)
+	}
+	if SettleFooter("", false) != "" {
+		t.Errorf("nothing to say, no footer")
 	}
 }
 
 func TestSettleFooter_IsInvisibleToPriorCommentAliasing(t *testing.T) {
 	for _, url := range []string{"", "https://prism.example/#prism-comments"} {
 		fd := f("abc", "medium", "a.go", 3, "Single sentence only.")
-		body := RenderInline(fd, "prism-only", "", "", SettleFooter(url))
+		body := RenderInline(fd, "prism-only", "", "", SettleFooter(url, true))
 		stripped := reconcile.StripSettleFooter(body)
 		if strings.Contains(stripped, "settle a thread") || strings.Contains(stripped, "Stop PRism comments") {
 			t.Errorf("url %q: the footer must strip cleanly:\n%s", url, stripped)

@@ -47,6 +47,7 @@ interface RowActionsMenuProps {
   deletePending: boolean;
   /** False when the PR author is outside the publish pilot, so posting is not offered. */
   publishAllowed: boolean;
+  publishBlockedTitle?: string;
   /** Omitted, or a user without the flag, renders the menu without the Quick actions item. */
   quickActions?: QuickActionsWiring;
 }
@@ -66,6 +67,7 @@ export function RowActionsMenu({
   hiddenPending,
   deletePending,
   publishAllowed,
+  publishBlockedTitle = PILOT_BLOCKED_TITLE,
   quickActions,
 }: RowActionsMenuProps) {
   const { track } = useTelemetry();
@@ -283,7 +285,7 @@ export function RowActionsMenu({
             className="row-actions__item"
             onClick={() => handleReview(true)}
             disabled={reviewInFlight || !publishAllowed}
-            title={publishAllowed ? undefined : PILOT_BLOCKED_TITLE}
+            title={publishAllowed ? undefined : publishBlockedTitle}
           >
             🔄 {verb} and post PR comment
           </button>

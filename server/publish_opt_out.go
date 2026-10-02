@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -29,10 +28,10 @@ type publishEnrollment struct {
 	EnrolledVia string `json:"enrolled_via"`
 }
 
-func (s *Server) publishEnrollmentFor(ctx context.Context, login string) publishEnrollment {
+func (s *Server) publishEnrollmentFor(login string) publishEnrollment {
 	enabled, _ := s.db.GetSetting(settingPublishEnabledAuthors)
 	optOut, _ := s.db.GetSetting(settingPublishOptOutAuthors)
-	via := s.enrolledVia(ctx, enabled, login)
+	via := s.enrolledVia(enabled, login)
 	return publishEnrollment{
 		Enrolled:    via != "",
 		OptedOut:    db.ParseLoginCSV(optOut)[strings.ToLower(strings.TrimSpace(login))],
@@ -41,9 +40,9 @@ func (s *Server) publishEnrollmentFor(ctx context.Context, login string) publish
 }
 
 // enrolledVia names the most specific entry of the allowlist that admits the
-// login: the login itself, then a team the login belongs to, then "*".
-func (s *Server) enrolledVia(ctx context.Context, enabledCSV, login string) string {
-	return poller.AdmittingEntry(ctx, s.teams, enabledCSV, login)
+// login, from the membership cache so /api/user never waits on GitHub.
+func (s *Server) enrolledVia(enabledCSV, login string) string {
+	return poller.CachedAdmittingEntry(s.teams, enabledCSV, login)
 }
 
 func (s *Server) handlePublishOptOut(w http.ResponseWriter, r *http.Request) {

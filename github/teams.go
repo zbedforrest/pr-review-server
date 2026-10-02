@@ -164,6 +164,19 @@ func (r *TeamResolver) IsMember(ctx context.Context, slug, login string) bool {
 	return entry.resolved && entry.members[login]
 }
 
+// CachedMember answers IsMember from whatever is cached, never fetching: an
+// unknown team matches nobody until a live lookup resolves it.
+func (r *TeamResolver) CachedMember(slug, login string) bool {
+	login = strings.ToLower(strings.TrimSpace(login))
+	if login == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cached, ok := r.teams[strings.ToLower(strings.TrimSpace(slug))]
+	return ok && cached.resolved && cached.members[login]
+}
+
 // AnyMember reports whether login belongs to at least one of the teams.
 func (r *TeamResolver) AnyMember(ctx context.Context, slugs []string, login string) bool {
 	for _, slug := range slugs {

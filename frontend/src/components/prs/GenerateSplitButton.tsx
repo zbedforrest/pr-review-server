@@ -17,6 +17,7 @@ interface GenerateSplitButtonProps {
   pending: boolean;
   /** False when the PR author is outside the publish pilot, so posting is not offered. */
   publishAllowed: boolean;
+  publishBlockedTitle?: string;
 }
 
 /**
@@ -24,7 +25,7 @@ interface GenerateSplitButtonProps {
  * runs the default (post to PR when allowed, otherwise dashboard only); the
  * chevron opens a menu that makes either choice explicit.
  */
-export function GenerateSplitButton({ onGenerate, pending, publishAllowed }: GenerateSplitButtonProps) {
+export function GenerateSplitButton({ onGenerate, pending, publishAllowed, publishBlockedTitle = PILOT_BLOCKED_TITLE }: GenerateSplitButtonProps) {
   const { isOpen, toggle, close, anchorRef, panelRef, position } = useDropdown({
     panelWidth: PANEL_WIDTH,
     align: 'right',
@@ -83,7 +84,7 @@ export function GenerateSplitButton({ onGenerate, pending, publishAllowed }: Gen
             className="generate-split__item"
             onClick={() => choose(true)}
             disabled={!publishAllowed}
-            title={publishAllowed ? undefined : PILOT_BLOCKED_TITLE}
+            title={publishAllowed ? undefined : publishBlockedTitle}
           >
             <span className="generate-split__item-title">Generate and post PR comment</span>
             <span className="generate-split__item-desc">Summary and inline comments posted as the Prism bot</span>

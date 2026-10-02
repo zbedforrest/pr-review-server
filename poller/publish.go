@@ -26,23 +26,6 @@ const (
 	settingPublishShowUnverified    = "publish_show_unverified"
 )
 
-// publishEnabledFor is the pure login matcher: an entry equal to the author
-// (case-insensitive) or "*". Team entries are the resolver's job, see
-// authorAllowed.
-func publishEnabledFor(author, enabledCSV string) bool {
-	author = strings.TrimSpace(author)
-	if author == "" {
-		return false
-	}
-	for _, entry := range strings.Split(enabledCSV, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "*" || strings.EqualFold(entry, author) {
-			return true
-		}
-	}
-	return false
-}
-
 // publishTargetReady decides whether a finished review may be posted: the PR
 // must be open and not a draft (benchmark replays review merged PRs, and a
 // bot comment on unfinished work is noise) and its head must still be the reviewed commit
@@ -149,15 +132,32 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		RequiredCheckViolated: pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0,
 		ProfileFooter:         profileFooter(pl.ReviewRun),
 	}
-	optOutURL := ""
 	if base := strings.TrimRight(baseURL, "/"); base != "" {
 		r.AgentLinkBase = fmt.Sprintf("%s/go/agent?o=%s&r=%s&n=%d", base, pr.Owner, pr.Repo, pr.Number)
 		r.BadgeBaseURL = base + "/badge"
 		r.DashboardURL = fmt.Sprintf("%s/api/review/%s/%s/%d?format=html", base, pr.Owner, pr.Repo, pr.Number)
-		optOutURL = base + "/#prism-comments"
 	}
-	r.SettleFooter = publisher.SettleFooter(optOutURL)
+	r.SettleFooter = publisher.SettleFooter(optOutURL(baseURL), true)
 	return r
+}
+
+// optOutURL is the dashboard anchor where an author leaves the comment pilot.
+func optOutURL(baseURL string) string {
+	if base := strings.TrimRight(baseURL, "/"); base != "" {
+		return base + "/#prism-comments"
+	}
+	return ""
+}
+
+// settleFooter is the footer for a live round: off under the kill switch,
+// and without the settle sentence while author replies are not handled.
+func (p *Poller) settleFooter() string {
+	if p.cfg.DisableSettleFooter {
+		return ""
+	}
+	mode, _ := p.db.GetSetting(settingPublishReplyMode)
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	return publisher.SettleFooter(optOutURL(p.cfg.BaseURL), mode != "" && mode != publisher.ReplyModeOff)
 }
 
 // profileFooter derives the summary footer's attribution from the sidecar's
@@ -291,7 +291,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	}
 	if !gate.Allowed(pr.Author) {
 		label := "author=" + pr.Author
-		if gate.OptedOut(pr.Author) {
+		if gate.OptedOut(pr.Author) && gate.p.authorAllowed(gate.enabled, pr.Author) {
 			p.recordHygieneEvent(pr, health.ActionOptedOut, label)
 			label += " reason=opted_out"
 		}
@@ -342,9 +342,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	pol := p.publishPolicy()
 	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
 	round.Changes = p.changeLookup(ctx, pr)
-	if p.cfg.DisableSettleFooter {
-		round.SettleFooter = ""
-	}
+	round.SettleFooter = p.settleFooter()
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: pol}
 	report, err := pub.Publish(ctx, round)
 	if errors.Is(err, publisher.ErrHeadAlreadyPublished) {

@@ -42,7 +42,7 @@ func (s *Server) userResponse(r *http.Request, user *db.User) UserResponse {
 		IsAdmin:                s.isAdmin(user),
 		QuickActionsEnabled:    s.quickActionsAvailableTo(user),
 		GitHubActionsAvailable: tokenOK,
-		publishEnrollment:      s.publishEnrollmentFor(r.Context(), user.GitHubUsername),
+		publishEnrollment:      s.publishEnrollmentFor(user.GitHubUsername),
 	}
 }
 

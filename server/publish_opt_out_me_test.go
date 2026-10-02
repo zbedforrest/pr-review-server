@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -46,9 +47,14 @@ func TestSettings_PublishOptOutAuthorsRoundTripsLoginsOnly(t *testing.T) {
 
 func TestGetUser_ReportsPublishEnrollment(t *testing.T) {
 	server, database := newNonDevTestServer(t)
-	server.SetTeamResolver(gh.NewTeamResolver("acme", fakeTeamLister{teams: map[string][]string{"xo-team": {"Bob"}}}))
+	teams := gh.NewTeamResolver("acme", fakeTeamLister{teams: map[string][]string{"xo-team": {"Bob"}}})
+	server.SetTeamResolver(teams)
 	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice,team:xo-team"))
 	require.NoError(t, database.SetSetting(settingPublishOptOutAuthors, "bob"))
+
+	cold := getUserAs(t, server, &db.User{ID: 1, GitHubUsername: "bob"})
+	assert.Equal(t, false, cold["publish_enrolled"], "an unresolved team is answered from the cache, never fetched on the request path")
+	assert.True(t, teams.IsMember(context.Background(), "xo-team", "bob"), "the poller's gate warms the cache")
 
 	cases := []struct {
 		login    string
