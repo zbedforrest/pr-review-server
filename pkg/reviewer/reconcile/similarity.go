@@ -23,9 +23,15 @@ var stopwords = map[string]bool{
 // lower-cased runs of letters and digits, dropping tokens shorter than three
 // characters and common English stopwords. Two empty sets have similarity 0.
 func Similarity(a, b string) float64 {
+	score, _ := overlap(a, b)
+	return score
+}
+
+// overlap is Similarity plus the number of shared tokens behind the score.
+func overlap(a, b string) (float64, int) {
 	ta, tb := tokens(a), tokens(b)
 	if len(ta) == 0 || len(tb) == 0 {
-		return 0
+		return 0, 0
 	}
 	inter := 0
 	for tok := range ta {
@@ -34,7 +40,7 @@ func Similarity(a, b string) float64 {
 		}
 	}
 	union := len(ta) + len(tb) - inter
-	return float64(inter) / float64(union)
+	return float64(inter) / float64(union), inter
 }
 
 func tokens(s string) map[string]bool {

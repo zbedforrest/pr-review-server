@@ -285,3 +285,78 @@ func TestAliasPrior_DoesNotAliasASiblingOntoAnIdStillPresent(t *testing.T) {
 		t.Fatalf("the published id is still emitted verbatim, so its sibling must keep its own id; got %v", aliases)
 	}
 }
+
+func TestAliasPrior_RawTextBeatsRenderedBoilerplate(t *testing.T) {
+	raw := "Clicking Start in the C2C setup modal fires showMyCamDidNotStart immediately after starting, resetting the button to Ready."
+	rendered := "**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart, resetting the button to Ready** Reasoning and how to verify How to verify: open the modal and press Start. Expected: the button stays Ready. Agent prompt: PRism finding on a.go:54 in acme/example#7: read the review comment marked and decide whether it is valid, and fix it if so; otherwise explain why not. Source: PRism · Both Fix with agent"
+	current := []payload.Finding{{ID: "a.go:5:bbbbbbbbbbbb", File: "a.go", Line: 52, Comment: raw}}
+	if Similarity(raw, rendered) >= similarityThreshold {
+		t.Fatalf("the rendered body must sit under the bar for this test to mean anything: %.2f", Similarity(raw, rendered))
+	}
+	byRendered := AliasPrior(current, []OwnComment{{FindingID: "a.go:5:aaaaaaaaaaaa", File: "a.go", Line: 54, Text: rendered}})
+	byRaw := AliasPrior(current, []OwnComment{{FindingID: "a.go:5:aaaaaaaaaaaa", File: "a.go", Line: 54, Text: "Every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready."}})
+	if len(byRendered) != 0 || byRaw["a.go:5:bbbbbbbbbbbb"] != "a.go:5:aaaaaaaaaaaa" {
+		t.Fatalf("rendered=%v raw=%v", byRendered, byRaw)
+	}
+}
+
+func TestAliasPrior_SubjectKeyIgnoresLineAndFile(t *testing.T) {
+	contract := &types.FindingContract{FindingKind: "production_behavior", Subjects: []types.FindingSubject{{Name: "Retry"}, {Name: "fetchUser"}}}
+	current := []payload.Finding{{ID: "api/users.go:20:bbbbbbbbbbbb", File: "api/users.go", Line: 205, Comment: "No delay between attempts after a 429 response.", FindingContract: contract}}
+	own := []OwnComment{{FindingID: "api/users.go:14:aaaaaaaaaaaa", File: "api/users.go", Line: 140, Text: "fetchUser retries without backoff.", Subjects: []string{"fetchuser", "retry"}}}
+	if got := AliasPrior(current, own); got[current[0].ID] != own[0].FindingID {
+		t.Fatalf("same file, kind and subjects alias at any line: %v", got)
+	}
+	moved := current
+	moved[0].File = "pkg/client/users.go"
+	if got := AliasPrior(moved, own); got[moved[0].ID] != own[0].FindingID {
+		t.Fatalf("the same subjects in another file alias too: %v", got)
+	}
+	own[0].Kind = "test_quality"
+	if got := AliasPrior(current, own); len(got) != 0 {
+		t.Fatalf("a different finding kind breaks the key: %v", got)
+	}
+	own[0].Kind = ""
+	own[0].Subjects = []string{"fetchuser"}
+	if got := AliasPrior(current, own); len(got) != 0 {
+		t.Fatalf("the subject sets must match exactly: %v", got)
+	}
+}
+
+func TestAliasPrior_TextMatchWinsOverKeyAndOneSharedWordIsNotEnough(t *testing.T) {
+	contract := &types.FindingContract{Subjects: []types.FindingSubject{{Name: "get"}}}
+	current := []payload.Finding{{ID: "a.go:7:cccccccccccc", File: "a.go", Line: 72, Comment: "The retry loop in get never backs off after a 429, so every attempt is rejected.", FindingContract: contract}}
+	own := []OwnComment{
+		{FindingID: "a.go:30:keyed", File: "a.go", Line: 305, Text: "get ignores the context deadline.", Subjects: []string{"get"}},
+		{FindingID: "a.go:7:texty", File: "a.go", Line: 70, Text: "The retry loop in get never backs off after a 429 and hammers the upstream."},
+	}
+	if got := AliasPrior(current, own); got[current[0].ID] != "a.go:7:texty" {
+		t.Fatalf("text overlap near the line outranks the subject key: %v", got)
+	}
+	short := []payload.Finding{{ID: "a.go:1:dddddddddddd", File: "a.go", Line: 11, Comment: "Low thing."}}
+	if got := AliasPrior(short, []OwnComment{{FindingID: "a.go:1:eeeeeeeeeeee", File: "a.go", Line: 10, Text: "Critical thing."}}); len(got) != 0 {
+		t.Fatalf("one shared word in two short comments is not a match: %v", got)
+	}
+}
+
+func TestSubjectNames(t *testing.T) {
+	got := SubjectNames(&types.FindingContract{Subjects: []types.FindingSubject{{Name: " FetchUser "}, {Name: "retry"}, {Name: "fetchuser"}, {Name: ""}}})
+	if len(got) != 2 || got[0] != "fetchuser" || got[1] != "retry" {
+		t.Fatalf("SubjectNames = %v", got)
+	}
+	if SubjectNames(nil) != nil {
+		t.Fatal("nil contract has no subjects")
+	}
+}
+
+func TestAliasPrior_HigherSeverityRestatementClaimsTheRowFirst(t *testing.T) {
+	own := []OwnComment{{FindingID: "forms.py:165:aaaaaaaaaaaa", File: "forms.py", Line: 1655, Text: "Re-enabling a fan club under the toggle wipes the stored spy discount because save only writes changed_data fields."}}
+	current := []payload.Finding{
+		{ID: "forms.py:166:low", Severity: "low", File: "forms.py", Line: 1665, Comment: "The fan club toggle check wipes the stored spy discount when save writes changed_data fields and the discount is absent."},
+		{ID: "forms.py:165:med", Severity: "medium", File: "forms.py", Line: 1654, Comment: "fanclub_updates is keyed off changed_data, so re-enabling the fan club under the toggle wipes the stored spy discount."},
+	}
+	got := AliasPrior(current, own)
+	if got["forms.py:165:med"] != "forms.py:165:aaaaaaaaaaaa" || got["forms.py:166:low"] != "" {
+		t.Fatalf("the medium restatement must take the row even when the low note overlaps more: %v", got)
+	}
+}
