@@ -16,7 +16,7 @@ func TestNilImpactBullets_CountsNilImpactPhrasesNotSentencesAboutNone(t *testing
 		{"Retry loop never backs off", 0},
 	}
 	for _, tc := range cases {
-		summary := "- **[LOW]** " + tc.text + " — [`a.go:1`](https://example.invalid)\n"
+		summary := "- **[LOW]** " + tc.text + " \u2014 [`a.go:1`](https://example.invalid)\n"
 		if got := nilImpactBullets(summary); got != tc.want {
 			t.Errorf("%q: nilImpactBullets = %d, want %d", tc.text, got, tc.want)
 		}
