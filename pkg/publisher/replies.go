@@ -41,6 +41,9 @@ type ThreadComment struct {
 	Author      string
 	Body        string
 	CreatedAt   time.Time
+	// ThumbsDown is GitHub's reaction rollup for the comment; who reacted
+	// takes a second call, made only when this is non-zero.
+	ThumbsDown int
 }
 
 // AuthorReply is a PR author's reply under one of our published findings.
@@ -351,23 +354,34 @@ const (
 )
 
 // Decisions the reply model can reach about an author's pushback or question.
+// Withdraw is PRism retracting its own finding (misread code, a point already
+// settled elsewhere); like a concession it dismisses the row, but the reply
+// says so in as many words.
 const (
-	DecisionConcede = "concede"
-	DecisionHold    = "hold"
-	DecisionAnswer  = "answer"
-	DecisionAbstain = "abstain"
+	DecisionConcede  = "concede"
+	DecisionHold     = "hold"
+	DecisionAnswer   = "answer"
+	DecisionAbstain  = "abstain"
+	DecisionWithdraw = "withdraw"
 )
+
+// errRequeued reports a text step whose head moved after the model decided;
+// the decision was cleared and the next scan decides again on the new head.
+var errRequeued = errors.New("reply requeued against the new head")
 
 // errClaimedElsewhere reports a text step another instance currently holds;
 // the scan neither settles the PR nor reports an outcome for it.
 var errClaimedElsewhere = errors.New("text step claimed by another instance")
 
 // ErrBudgetExhausted is what a Responder wraps when the model ran out of
-// turns or wall clock before deciding. The step then posts a fixed notice
-// instead of retrying, so a claim is never left unanswered.
+// turns or wall clock before deciding. The step then abstains with a reaction
+// and marks the finding contested, so the claim is acknowledged, nothing
+// unverified is posted, and the finding is not raised again on the PR. Under
+// the legacy policy it posts a fixed notice instead.
 var ErrBudgetExhausted = errors.New("reply model budget exhausted")
 
-// NoteBudgetExhausted marks a ledger row whose reply is the budget notice.
+// NoteBudgetExhausted marks a ledger row the model never decided: an abstain
+// under the current policy, the fixed notice under the legacy one.
 const NoteBudgetExhausted = "budget_exhausted"
 
 const budgetExhaustedReply = "PRism could not complete verification of this claim within its budget and is leaving the finding as written. Please have a reviewer confirm it."
@@ -397,6 +411,18 @@ type ReplyGitHub interface {
 	PostReply(ctx context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error)
 }
 
+// Reaction is one reaction on a review comment.
+type Reaction struct {
+	UserID  int64
+	Content string
+}
+
+// ReactionLister is the optional part of ReplyGitHub that says who reacted
+// to a comment; without it an author's thumbs-down is not read.
+type ReactionLister interface {
+	ListReactions(ctx context.Context, owner, repo string, commentID int64) ([]Reaction, error)
+}
+
 // ReplyLedger persists what we did about each author reply.
 type ReplyLedger interface {
 	ListPublishedReplyTargets() ([]db.PublishedReplyTarget, error)
@@ -414,6 +440,7 @@ type ReplyLedger interface {
 	ListPublishedRepliesForRoot(owner, repo string, number int, rootCommentID int64) ([]db.PublishedReply, error)
 	CountPublishedTextRepliesSince(owner, repo string, number int, since time.Time) (int, error)
 	SetPublishedFindingState(owner, repo string, number int, fingerprint, state string) error
+	ContestPublishedFinding(owner, repo string, number int, fingerprint string) (bool, error)
 }
 
 // PRState is the live state of a PR that gates any reaction.
@@ -425,6 +452,7 @@ type PRState struct {
 	UpdatedAt   time.Time
 	HeadSHA     string
 	BaseRef     string
+	Body        string
 }
 
 // EvidenceRef is a file:line the reply model cites for a hold.
@@ -441,9 +469,21 @@ type ReplyRequest struct {
 	HeadSHA     string
 	BaseRef     string
 	Fingerprint string
+	PRBody      string
 	Root        ThreadComment   // our inline comment
 	Thread      []ThreadComment // root and every reply under it, oldest first
 	Reply       AuthorReply     // the author reply being answered
+	Siblings    []SiblingThread // PRism's other threads on the PR, dismissed ones left out
+}
+
+// SiblingThread is another PRism finding on the same PR with whatever was
+// said under it, so the reply model sees the review as a whole (a gate it
+// already flagged two files over, an author verdict given on a twin finding).
+type SiblingThread struct {
+	Fingerprint string
+	State       string // ledger state when the ledger knows the row
+	Root        ThreadComment
+	Replies     []ThreadComment
 }
 
 // ReplyDecision is the reply model's conclusion. Reply is empty for abstain.
@@ -461,16 +501,23 @@ type ReplyDecision struct {
 // renderDecision applies the posting conventions to the model's reply before
 // it is recorded, so the ledger holds what will be posted, and returns the
 // rune count of the sentences it appended. A body with nothing postable left
-// turns the decision into an abstain.
-func renderDecision(d ReplyDecision, reply AuthorReply, root ThreadComment) (ReplyDecision, int) {
+// turns the decision into an abstain, and so does a hold that cites no
+// file:line (unless legacy): a rebuttal the reader cannot open is not posted.
+func renderDecision(d ReplyDecision, reply AuthorReply, root ThreadComment, prBody string, legacy bool) (ReplyDecision, int) {
+	abstain := func() ReplyDecision {
+		return ReplyDecision{Decision: DecisionAbstain, Cited: d.Cited, React: true, Model: d.Model, DurationMS: d.DurationMS}
+	}
 	if d.Decision == DecisionAbstain {
 		d.Reply = ""
 		return d, 0
 	}
-	ctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, Decision: d.Decision}
+	if !legacy && d.Decision == DecisionHold && len(d.Cited) == 0 {
+		return abstain(), 0
+	}
+	ctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, PRBody: prBody, Decision: d.Decision}
 	paragraph, appendix, ok := replytext.RenderParts(d.Reply, ctx)
 	if !ok {
-		return ReplyDecision{Decision: DecisionAbstain, Cited: d.Cited, React: true, Model: d.Model, DurationMS: d.DurationMS}, 0
+		return abstain(), 0
 	}
 	d.Reply = paragraph + appendix
 	return d, len([]rune(appendix))
@@ -519,7 +566,7 @@ func TextEligibility(reply AuthorReply, prior []db.PublishedReply, prTextToday i
 	for _, r := range prior {
 		if r.ReplyCommentID != 0 {
 			posted++
-			if r.Decision == DecisionConcede {
+			if r.Decision == DecisionConcede || r.Decision == DecisionWithdraw {
 				return "conceded"
 			}
 		}
@@ -583,6 +630,12 @@ type ReplyReactor struct {
 	// concession dismisses (PUBLISH_THREAD_RESOLUTION); it needs a GH that
 	// implements ThreadResolver.
 	ResolveThreads bool
+
+	// Legacy restores the reply policy before contested findings: budget
+	// exhaustion posts the fixed notice, a hold needs no citation here, a
+	// decision made against an older head is dropped instead of retaken, and
+	// neither a hold nor an author's thumbs-down marks the finding contested.
+	Legacy bool
 }
 
 func (r ReplyReactor) claimLease() time.Duration {
@@ -613,6 +666,8 @@ type ReplyReport struct {
 	Shadowed    int
 	Abstained   int
 	Dispatched  int
+	Requeued    int // decisions retaken because the head moved
+	Contested   int // findings marked contested by a thumbs-down this scan
 	TextSkipped map[string]int
 	// ThreadsResolved counts the threads closed on a posted concession,
 	// ThreadResolveFailures the ones GitHub rejected or did not list.
@@ -773,6 +828,9 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 	if err != nil {
 		return err
 	}
+	if err := r.contestThumbsDown(ctx, t, state, comments, rep); err != nil {
+		return err
+	}
 	seen := make(map[int64]db.PublishedReply, len(rows))
 	for _, row := range rows {
 		seen[row.AuthorCommentID] = row
@@ -871,7 +929,7 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 						defer r.InFlight.remove(reply.CommentID)
 					}
 					outcome, err := r.text(ctx, t, state, comments, reply, row, nil)
-					if r.OnOutcome != nil && !errors.Is(err, errClaimedElsewhere) {
+					if r.OnOutcome != nil && !errors.Is(err, errClaimedElsewhere) && !errors.Is(err, errRequeued) {
 						r.OnOutcome(outcome, err)
 					}
 				})
@@ -879,7 +937,7 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			continue
 		}
 		outcome, err := r.text(ctx, t, state, comments, reply, row, rep)
-		if errors.Is(err, errClaimedElsewhere) {
+		if errors.Is(err, errClaimedElsewhere) || errors.Is(err, errRequeued) {
 			settled = false
 			continue
 		}
@@ -926,6 +984,70 @@ func (r ReplyReactor) settlePendingReaction(ctx context.Context, t db.PublishedR
 	}
 	row.Outcome = "skipped:mode_changed"
 	return true, r.reactAndRecord(ctx, t, reply, row, rep)
+}
+
+// contestThumbsDown marks a finding contested when the PR author put a
+// thumbs-down on its root comment. The rollup on the listed comment says
+// whether anyone did; who did takes one more call per such root. Reactions do
+// not move a PR's updated_at, so one left on a quiet PR is seen on the next
+// full scan.
+func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, rep *ReplyReport) error {
+	lister, ok := r.GH.(ReactionLister)
+	if !ok || r.Legacy || !r.reacts() {
+		return nil
+	}
+	for _, c := range comments {
+		fp, isRoot := t.Roots[c.ID]
+		if !isRoot || c.ThumbsDown == 0 {
+			continue
+		}
+		reactions, err := lister.ListReactions(ctx, t.RepoOwner, t.RepoName, c.ID)
+		if err != nil {
+			return err
+		}
+		for _, re := range reactions {
+			if re.UserID != state.AuthorID || re.Content != "-1" {
+				continue
+			}
+			changed, err := r.Ledger.ContestPublishedFinding(t.RepoOwner, t.RepoName, t.PRNumber, fp)
+			if err != nil {
+				return err
+			}
+			if changed {
+				rep.Contested++
+			}
+			break
+		}
+	}
+	return nil
+}
+
+// siblings collects PRism's other threads on the PR for the reply model,
+// oldest root first, leaving out findings the ledger already dismissed.
+func (r ReplyReactor) siblings(t db.PublishedReplyTarget, comments []ThreadComment, rootID int64) []SiblingThread {
+	states := map[string]string{}
+	if l, ok := r.Ledger.(interface {
+		GetPublishedFindingsForPR(owner, repo string, number int) ([]db.PublishedFinding, error)
+	}); ok {
+		if rows, err := l.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber); err == nil {
+			for _, row := range rows {
+				states[row.Fingerprint] = row.State
+			}
+		}
+	}
+	var out []SiblingThread
+	for id, fp := range t.Roots {
+		if id == rootID || states[fp] == db.PublishedStateDismissed {
+			continue
+		}
+		thread := threadUnder(comments, id)
+		if len(thread) == 0 || thread[0].ID != id {
+			continue
+		}
+		out = append(out, SiblingThread{Fingerprint: fp, State: states[fp], Root: thread[0], Replies: thread[1:]})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Root.ID < out[j].Root.ID })
+	return out
 }
 
 func (r ReplyReactor) reactAndRecord(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, row *db.PublishedReply, rep *ReplyReport) error {
@@ -1212,13 +1334,32 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		return finish("ineligible:" + reason)
 	}
 	fingerprint := threadFingerprint(thread, root.AuthorID)
-	if row.Decision != "" && (row.DecisionHead != state.HeadSHA || row.DecisionThread != fingerprint) {
-		// The decision was made against a head or thread that has since moved;
-		// a resumed step must not post it.
-		if row.DecisionHead != state.HeadSHA {
+	// A decision stored against a thread that has since changed is never
+	// posted. One stored against an older head is retaken on the new head
+	// (the author may have pushed the fix they described), within the
+	// attempt budget; legacy drops it.
+	clearDecision := func() error {
+		if err := r.Ledger.SetPublishedReplyDecision(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, db.ReplyDecisionRecord{DeferredTo: row.DeferredTo}); err != nil {
+			return err
+		}
+		row.Decision, row.ReplyBody, row.Cited, row.Model, row.DurationMS = "", "", "", "", 0
+		row.DecisionHead, row.DecisionThread, row.DecisionReact, row.Note = "", "", false, ""
+		outcome.Decision, outcome.Note, outcome.Model, outcome.DurationMS = "", "", "", 0
+		return nil
+	}
+	if row.Decision != "" && row.DecisionThread != fingerprint {
+		return skip("thread_moved")
+	}
+	if row.Decision != "" && row.DecisionHead != state.HeadSHA {
+		if r.Legacy || row.Attempts >= r.textPolicy().MaxAttempts {
 			return skip("head_moved")
 		}
-		return skip("thread_moved")
+		if err := clearDecision(); err != nil {
+			return outcome, err
+		}
+		if rep != nil {
+			rep.Requeued++
+		}
 	}
 	decidedNow, appendixRunes := false, 0
 	if row.Decision == "" {
@@ -1227,7 +1368,8 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		decision, err := r.Responder(ctx, ReplyRequest{
 			Owner: t.RepoOwner, Repo: t.RepoName, Number: t.PRNumber, HeadSHA: state.HeadSHA, BaseRef: state.BaseRef,
-			Fingerprint: reply.Fingerprint, Root: root, Thread: thread, Reply: reply,
+			Fingerprint: reply.Fingerprint, PRBody: state.Body, Root: root, Thread: thread, Reply: reply,
+			Siblings: r.siblings(t, comments, reply.RootCommentID),
 		})
 		// A run that was cut off by shutdown is not the model failing; the
 		// claim lease keeps a crash loop to one run per lease anyway.
@@ -1240,14 +1382,20 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		switch {
 		case errors.Is(err, ErrBudgetExhausted) && ctx.Err() == nil && reply.Class != ReplyQuestion:
 			// The model never decided, so nothing it might have said can be
-			// retried; a fixed hold is posted once and the finding stands. A
-			// question has no claim to hold against, so it keeps the retry path.
-			decision = ReplyDecision{Decision: DecisionHold, Reply: budgetExhaustedReply, Cited: []EvidenceRef{}, Model: decision.Model, DurationMS: decision.DurationMS}
+			// retried. The author's claim is acknowledged with the reaction and
+			// the finding is left to humans as contested; legacy posts a fixed
+			// hold instead. A question has no claim to hold against, so it keeps
+			// the retry path.
+			budget := ReplyDecision{Decision: DecisionAbstain, React: true, Model: decision.Model, DurationMS: decision.DurationMS}
+			if r.Legacy {
+				budget = ReplyDecision{Decision: DecisionHold, Reply: budgetExhaustedReply, Cited: []EvidenceRef{}, Model: decision.Model, DurationMS: decision.DurationMS}
+			}
+			decision = budget
 			record.Note = NoteBudgetExhausted
 		case err != nil:
 			return outcome, err
 		}
-		decision, appendixRunes = renderDecision(decision, reply, root)
+		decision, appendixRunes = renderDecision(decision, reply, root, state.Body, r.Legacy)
 		cited, _ := json.Marshal(decision.Cited)
 		record.Decision, record.ReplyBody, record.Cited, record.Model, record.DurationMS, record.React = decision.Decision, decision.Reply, string(cited), decision.Model, decision.DurationMS, decision.React
 		if ours := outOfScopeSentences(decision.Reply); record.Note == "" && len(ours) > 0 && (decision.Decision == DecisionHold || decision.Decision == DecisionConcede) {
@@ -1266,11 +1414,15 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	// A row decided before this convention took effect is rendered here and
 	// written back so the ledger holds what is posted; rendering is a no-op
 	// on an already rendered body. The note is derived here so a resumed step
-	// reports it too.
-	rctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, Decision: row.Decision}
+	// reports it too. A budget notice stored under the legacy policy and not
+	// yet posted becomes the abstain the current policy would have recorded.
+	decided := row.Decision
+	if !r.Legacy && row.Note == NoteBudgetExhausted && row.Decision == DecisionHold {
+		row.Decision, row.DecisionReact, row.ReplyBody = DecisionAbstain, true, ""
+	}
+	rctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, PRBody: state.Body, Decision: row.Decision}
 	paragraph, appendix, renderable := replytext.RenderParts(row.ReplyBody, rctx)
 	text := paragraph + appendix
-	decided := row.Decision
 	if !renderable && row.Decision != DecisionAbstain {
 		row.Decision, row.DecisionReact, text = DecisionAbstain, true, ""
 	}
@@ -1297,6 +1449,11 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	case row.Decision == DecisionAbstain || !renderable:
 		if rep != nil {
 			rep.Abstained++
+		}
+		if row.Note == NoteBudgetExhausted && !r.Legacy && r.Mode == ReplyModeRespond {
+			if _, err := r.Ledger.ContestPublishedFinding(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint); err != nil {
+				return outcome, err
+			}
 		}
 		return finish("abstained")
 	case len([]rune(text))-appendixRunes > r.textPolicy().MaxChars:
@@ -1343,8 +1500,18 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		return skip("closed")
 	case fresh.Draft:
 		return skip("draft")
-	case fresh.HeadSHA != state.HeadSHA:
+	case fresh.HeadSHA != state.HeadSHA && (r.Legacy || row.Attempts >= r.textPolicy().MaxAttempts):
 		return skip("head_moved")
+	case fresh.HeadSHA != state.HeadSHA:
+		// The claim is released by the deferred cleanup since no outcome is
+		// recorded; the next scan decides again on the head the author sees.
+		if err := clearDecision(); err != nil {
+			return outcome, err
+		}
+		if rep != nil {
+			rep.Requeued++
+		}
+		return outcome, errRequeued
 	}
 	latest, err := r.GH.ListThread(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
 	if err != nil {
@@ -1372,29 +1539,36 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	return finish("posted")
 }
 
-// adopt records a posted reply and applies a concession's side effects: the
-// row is dismissed and its thread resolved. A conceded fix claim is dismissed
-// like any other concession: only dismissed fingerprints are suppressed on
-// the next review, and fingerprints hash the finding's wording rather than
-// the code, so a resolved row would come back as a fresh comment the next
-// time the reviewer phrases it the same way. The trade-off, accepted here as
-// for every concession, is that a later regression with the same wording
-// stays suppressed on this PR.
+// adopt records a posted reply and applies the decision's side effect on the
+// finding. A concession or withdrawal dismisses the row and resolves the
+// thread: a conceded fix claim is dismissed like any other concession, since
+// fingerprints hash the finding's wording rather than the code and a resolved
+// row would come back as a fresh comment the next time the reviewer phrases
+// it the same way. The trade-off, accepted for every concession, is that a
+// later regression with the same wording stays suppressed on this PR. A
+// posted hold marks the row contested: the thread stays open for humans and
+// the finding is not raised again under another wording.
 func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome, rep *ReplyReport) error {
 	if err := r.Ledger.MarkPublishedReplyPosted(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, posted.ID, posted.CreatedAt); err != nil {
 		return err
 	}
 	outcome.Posted = true
-	if outcome.Decision != DecisionConcede {
-		return nil
-	}
-	if err := r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed); err != nil {
+	switch outcome.Decision {
+	case DecisionConcede, DecisionWithdraw:
+		if err := r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed); err != nil {
+			return err
+		}
+		if rep == nil {
+			rep = &ReplyReport{}
+		}
+		outcome.Thread = r.resolveThread(ctx, t, reply.RootCommentID, rep)
+	case DecisionHold:
+		if r.Legacy {
+			return nil
+		}
+		_, err := r.Ledger.ContestPublishedFinding(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint)
 		return err
 	}
-	if rep == nil {
-		rep = &ReplyReport{}
-	}
-	outcome.Thread = r.resolveThread(ctx, t, reply.RootCommentID, rep)
 	return nil
 }
 
