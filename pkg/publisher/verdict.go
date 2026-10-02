@@ -60,8 +60,11 @@ var (
 	// "Accepted" and "expected" on their own acknowledge as often as they
 	// rule ("Accepted the suggestion"), so they need a connective or a risk
 	// noun to count.
-	verdictWeakBare      = map[string]bool{"accepted": true, "acceptable": true, "expected": true}
-	verdictWeakFollowRe  = regexp.MustCompile(`^(?:[,;:]|\s+(?:risk|behaviou?r|and|but|as|for|since|because|given|per)\b)`)
+	verdictWeakBare     = map[string]bool{"accepted": true, "acceptable": true, "expected": true}
+	verdictWeakFollowRe = regexp.MustCompile(`^(?:[,;:]\s*(?:and|but|as|for|since|because|given|per|risk|behaviou?r|known)\b|\s+(?:risk|behaviou?r|and|but|as|for|since|because|given|per)\b)`)
+	// "fine" rules only with a design context ("fine as is"); bare it is an
+	// agreement the model should read.
+	verdictFineContextRe = regexp.MustCompile(`^\s+(?:as[ -]is|by design|for (?:this|now)|here|behaviou?r|to me)\b`)
 	verdictNegatedDoneRe = regexp.MustCompile(`\b(?:not|never|no|without)\b|n't\b`)
 
 	// Form B: subject, copula, verdict ("This is intended behavior.", "That
@@ -76,19 +79,20 @@ var (
 	verdictHedgeRe = regexp.MustCompile(`\b(?:i think|i believe|i guess|i assume|i suppose|i'd say|i'd guess|not sure|unsure|maybe|perhaps|probably|possibly|might be|may be|could be|should be|iirc|afaik|i don'?t think|i doubt|i'?m not sure|if i recall|seems?|seemed|looks like|appears?)\b`)
 	// A fix commitment in the same sentence means the author is changing the
 	// code after all ("That's fine, I'll fix it anyway").
-	verdictFixRe = regexp.MustCompile(`\b(?:i'?ll|i will|we'?ll|we will|will|let me|going to|gonna)\s+(?:fix|change|update|remove|add|revert|address|drop|rework|adjust|rename|move|apply|push|clean(?: it)? up)\b|(?:^|[,;:]\s*|\b(?:i|we|so|and|but)(?:'ve| have|'m| am|'re| are)? )(?:fixed|fixing|changed|changing|updated|updating|removed|removing|reverted|reverting|addressed|addressing|reworked|applied|applying|pushed|pushing)\b|\b(?:but|however|though|although|except)\b[^.]*\b(?:bug|wrong|broken|incorrect|a problem|an issue|real gap)\b`)
+	verdictFixRe = regexp.MustCompile(`\b(?:i'?ll|i will|we'?ll|we will|will|let me|going to|gonna)\s+(?:fix|change|update|remove|add|revert|address|drop|rework|adjust|rename|move|apply|push|clean(?: it)? up)\b|(?:^|[,;:]\s*|\b(?:i|we|so|and|but)(?:'ve| have|'m| am|'re| are)? )(?:fixed|fixing|changed|changing|updated|updating|removed|removing|reverted|reverting|addressed|addressing|reworked|applied|applying|pushed|pushing)\b|\b(?:but|however|though|although|except)\b[^.]*\b(?:bug|wrong|broken|incorrect|a (?:real )?problem|an? (?:real )?issue|real gap)\b`)
 	// A modal fix request ("but it should be fixed", "we need to change
 	// this") is a commitment too; the subject guard keeps "a bigger hit area
 	// should change both together" out of it.
-	verdictModalFixRe = regexp.MustCompile(`(?:^|\b(?:it|this|that|these|those|we|i|which))\s+(?:should|needs? to|must|ought to|has to|have to)\s+(?:be\s+)?(?:fixed|changed|updated|removed|reverted|addressed|fix|change|update|remove|revert|address)\b`)
+	verdictModalFixRe = regexp.MustCompile(`(?:^|\b(?:it|this|that|these|those|we|i|which|they|you|the \S+(?: \S+){0,2}?))\s+(?:should|needs? to|must|ought to|has to|have to)\s+(?:be\s+)?(?:fixed|changed|updated|removed|reverted|addressed|fix|change|update|remove|revert|address)\b|\b(?:please|kindly)\s+(?:fix|change|update|remove|revert|address|rename|adjust|drop|rework)\b`)
 	// A later sentence that calls something broken keeps the model path even
 	// without a contrast word ("Expected. The new path is broken.").
 	verdictDefectRe = regexp.MustCompile(`\b(?:is|are|was|were)\s+(?:(?:actually|still|indeed|also|genuinely|really)\s+)?(?:a\s+)?(?:real\s+)?(?:bug|broken|wrong|incorrect|problem|issue|regression)\b|\b(?:a |the )?real (?:bug|issue|problem|gap)\b`)
 	// Editing the PR text is not a code fix ("That is the goal. I updated the
 	// description.").
 	verdictDocFixRe = regexp.MustCompile(`\b(?:fixed|fixing|changed|changing|updated|updating|added|adding|will update|i'?ll update)\s+(?:the |a |an )?(?:pr |ticket )?(?:description|title|docstring|comment|docs?|readme|changelog|note)\b`)
-	// A hedge in a trailing clause ("this is intentional, i think").
-	verdictTrailingHedgeRe = regexp.MustCompile(`(?:[,;]|\bbut)\s*(?:i think|i believe|i guess|i assume|i suppose|i'd say|not sure|i'?m not sure|maybe|perhaps|probably|possibly|iirc|afaik|i don'?t think|i doubt)\s*[.!?]*$`)
+	// An opinion anywhere after the verdict ("this is intentional, i think");
+	// modal verbs there describe behaviour ("should be fine") and stay out.
+	verdictTrailingHedgeRe = regexp.MustCompile(`\b(?:i think|i believe|i guess|i assume|i suppose|i'd say|i'd guess|not sure|unsure|i'?m not sure|maybe|perhaps|probably|possibly|iirc|afaik|i don'?t think|i doubt|if i recall|seems?|seemed|looks like|appears?)\b`)
 	// A first sentence that denies or fixes stops the scan from reading a
 	// verdict out of the second one ("Not intentional. Intended fix is in
 	// abc").
@@ -162,7 +166,10 @@ func verdictSentence(sentence string) bool {
 		return false
 	}
 	keyword, rest, ok := matchVerdict(s)
-	if !ok || claimsFix(rest) {
+	if !ok || claimsFix(rest) || verdictDefectRe.MatchString(rest) {
+		return false
+	}
+	if keyword == "fine" && !verdictFineContextRe.MatchString(rest) {
 		return false
 	}
 	clause, _, _ := strings.Cut(rest, ",")

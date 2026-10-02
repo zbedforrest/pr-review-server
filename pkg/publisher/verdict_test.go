@@ -44,7 +44,7 @@ var auditedVerdictReplies = []struct {
 	{"Duplicates cannot be created by the current purchase paths. Both paths write the sale row in the same atomic block, and the table is unique on the pair, so I removed the key dedupe on purpose.", false},
 	{"This is intentional. Opting in adds the paid check without cancelling the existing one. The new test covers this case.", true},
 	{"The shared runners are ephemeral: each job gets a fresh pod, so nothing written to the home dir survives. This composite is a port of the staging action; the line is carried over unchanged", false},
-	{"that's fine", true},
+	{"that's fine", false},
 	{"I will handle this in a follow-up PR. The expected behavior is that rejected tiles show but cannot be selected.", false},
 	{"Discussed previously, but yes, we want rejected items to appear in the modal. How the modal handles them changes in a separate PR.", false},
 	{"This is intended. On reject, a tooltip is shown on hover or tap depending on device. Otherwise we fall through to open the viewer.", true},
@@ -102,8 +102,8 @@ func TestIsVerdictOnTheAuditedIntentionalReplies(t *testing.T) {
 			settled++
 		}
 	}
-	if settled != 42 {
-		t.Errorf("fast path settles %d of %d audited verdict replies, the table expects 42", settled, len(auditedVerdictReplies))
+	if settled != 41 {
+		t.Errorf("fast path settles %d of %d audited verdict replies, the table expects 41", settled, len(auditedVerdictReplies))
 	}
 }
 
@@ -112,7 +112,7 @@ func TestIsVerdictOnTheAuditedIntentionalReplies(t *testing.T) {
 // opener, the pushback that argues rather than rules, and the guards.
 func TestIsVerdictOutsideTheAuditedClass(t *testing.T) {
 	cases := map[string]bool{
-		"This is fine. Chasing or fixing the locale error would then surface the entry error.":                    true,
+		"This is fine. Chasing or fixing the locale error would then surface the entry error.":                    false,
 		"not a bug here: the framework's `Ctx.IP()` only falls back to `RemoteIP()` when the proxy is untrusted.": true,
 		"False positive, verified the behavior locally.":                                                          true,
 		"Not changing this. `useAnchoredHost` re-resolves on `fullscreenchange`, forcing a re-render each time.":  true,
@@ -172,6 +172,14 @@ func TestIsVerdictOutsideTheAuditedClass(t *testing.T) {
 		"This is expected. The failure is a real bug in the caller.":             false,
 		"Intentional. The deadline gap is real and pre-existing":                 true,
 		"Intentional, a bigger hit area should change both together.":            true,
+		"Accepted, thanks":                                                       false,
+		"Accepted, will do":                                                      false,
+		"By design. Please fix the naming.":                                      false,
+		"Intended, but the retry should be fixed.":                               false,
+		"This is intentional, the new path is broken.":                           false,
+		"This is intentional, but the retry is a real problem.":                  false,
+		"This is intentional, though I think it still needs work.":               false,
+		"That's fine as is, the other call sites rely on it.":                    true,
 		"The `if` branch is intentional, see the design doc.":                    true,
 		"No, this is intentional: the cache is invalidated by the writer.":       true,
 		"<!-- template -->\n**By design.** The gateway retries once.":            true,
@@ -203,7 +211,8 @@ func TestClassifyReplyRanksVerdictsAfterQuestionsAndFixClaims(t *testing.T) {
 		"Fixed, it was intentional before but moved.": ReplyResolution,
 		"Not intentional, fixing.":                    ReplyPushback,
 		"I believe this is intentional, see the doc.": ReplyPushback,
-		"that's fine":                                 ReplyVerdict,
+		"that's fine":                                 ReplyOther,
+		"that's fine as is":                           ReplyVerdict,
 		"ok":                                          ReplyOther,
 	}
 	for body, want := range cases {
