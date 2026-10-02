@@ -9,8 +9,11 @@ import (
 // observeOwnReview stales the user's candidates when they request changes from
 // the dashboard; the pull request row only learns of that review on the next poll.
 func (s *Server) observeOwnReview(user int, owner, repo string, number int, state string) {
+	if state != "CHANGES_REQUESTED" || s.cfg == nil || !s.cfg.ApprovalCandidates().Enabled {
+		return
+	}
 	store := s.approvalStore()
-	if state != "CHANGES_REQUESTED" || store == nil {
+	if store == nil {
 		return
 	}
 	_ = store.InvalidateMatchingApprovalTargets(user, owner, repo, number, db.ApprovalInvalidation{CandidatesOnly: true}, "human_changes_requested", time.Now())
@@ -65,14 +68,16 @@ func (s *Server) approvalMaterialChanges(owner, repo string, number int) []appro
 		changes = append(changes, approvalChange{"head_changed", db.ApprovalInvalidation{OffHead: pr.LastCommitSHA}})
 	}
 	candidates := db.ApprovalInvalidation{CandidatesOnly: true}
-	switch {
-	case pr.CIState == "failure" || pr.CIState == "pending":
+	if pr.CIState == "failure" || pr.CIState == "pending" {
 		changes = append(changes, approvalChange{"observed_ci_change", candidates})
-	case pr.ReviewDecision == "CHANGES_REQUESTED" || pr.MyReviewStatus == "CHANGES_REQUESTED":
+	}
+	if pr.ReviewDecision == "CHANGES_REQUESTED" || pr.MyReviewStatus == "CHANGES_REQUESTED" {
 		changes = append(changes, approvalChange{"human_changes_requested", candidates})
-	case pr.Draft:
+	}
+	if pr.Draft {
 		changes = append(changes, approvalChange{"pr_draft", candidates})
-	case reviewRunning(pr.Status):
+	}
+	if reviewRunning(pr.Status) {
 		changes = append(changes, approvalChange{"review_in_progress", candidates})
 	}
 	var cleared []string

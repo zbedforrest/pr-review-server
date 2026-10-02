@@ -86,6 +86,17 @@ func TestApprovalRecoveredCIRefreshesTargetItBlocked(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "stale", result.Freshness)
 	require.Contains(t, result.ReasonCodesJSON, "blocker_cleared")
+	require.NotContains(t, result.ReasonCodesJSON, "ci_failed")
+}
+
+func TestApprovalClearingOneBlockerKeepsTheOthers(t *testing.T) {
+	s, store, target := finalizedTarget(t, "needs_attention", `["ci_failed","human_changes_requested"]`)
+	updatePR(t, store, func(pr *db.PR) { pr.CIState = "success"; pr.ReviewDecision = "CHANGES_REQUESTED" })
+	s.BroadcastEvent(EventPRUpdated, map[string]interface{}{"owner": "acme", "repo": "example", "number": 123})
+	result, err := store.GetApprovalTarget(target.UserID, target.ScanID, target.ID)
+	require.NoError(t, err)
+	require.Contains(t, result.ReasonCodesJSON, "human_changes_requested")
+	require.NotContains(t, result.ReasonCodesJSON, "ci_failed")
 }
 
 func TestApprovalRecoveredCIKeepsUnrelatedNonCandidateCurrent(t *testing.T) {

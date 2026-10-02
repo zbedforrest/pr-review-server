@@ -97,9 +97,12 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
         (affectedIDs.has(String(query.queryKey[1])) || (!!query.state.data && approvalKey(query.state.data as ApprovalTarget) === key));
       void client.cancelQueries({ queryKey: ['approval-targets'] }, { revert: false });
       void client.cancelQueries({ predicate: matchesEvidence }, { revert: false });
-      client.setQueryData<ApprovalTarget[]>(['approval-targets'], old => old?.map(withdraw));
-      client.setQueriesData<ApprovalTarget>({ queryKey: ['approval-evidence'] }, old => old ? withdraw(old) : old);
-      client.setQueriesData<{ scan: ApprovalScan; targets: ApprovalTarget[] | null }>({ queryKey: ['approval-scan'] }, old => old ? { ...old, targets: old.targets?.map(withdraw) || null } : old);
+      // Updates refetch instead: the server stales results only for material changes, before broadcasting.
+      if (message.type === 'pr_deleted') {
+        client.setQueryData<ApprovalTarget[]>(['approval-targets'], old => old?.map(withdraw));
+        client.setQueriesData<ApprovalTarget>({ queryKey: ['approval-evidence'] }, old => old ? withdraw(old) : old);
+        client.setQueriesData<{ scan: ApprovalScan; targets: ApprovalTarget[] | null }>({ queryKey: ['approval-scan'] }, old => old ? { ...old, targets: old.targets?.map(withdraw) || null } : old);
+      }
       void client.invalidateQueries({ queryKey: ['approval-targets'] });
       void client.invalidateQueries({ predicate: matchesEvidence });
     });
@@ -229,8 +232,8 @@ function rowStatus(target: ApprovalTarget, now: number): { kind: RowKind; label:
   if (isApprovalCandidate(target, now)) return { kind: 'candidate', label: 'Candidate', reason };
   if (bucket === 'stale') {
     const codes = target.reason_codes || [];
-    const blocking = codes.includes('blocker_cleared') ? [] : codes.filter(code => staleBlockers.has(code));
-    const why = (codes.includes('blocker_cleared') ? ['blocker_cleared'] : codes).filter(code => code in blockerText || code in staleText).map(code => blockerText[code] || staleText[code]).join(', ') || reason;
+    const blocking = codes.filter(code => staleBlockers.has(code));
+    const why = codes.filter(code => code in blockerText || code in staleText).map(code => blockerText[code] || staleText[code]).join(', ') || reason;
     if (blocking.length) return { kind: 'blocked', label: 'Blocked', reason: why };
     return { kind: 'other', label: codes.includes('review_in_progress') ? 'Review updating' : target.decision === 'candidate' ? 'Needs recheck' : 'Out of date', reason: why };
   }

@@ -1298,7 +1298,8 @@ func (g *GormDB) InvalidateUserApprovalTargets(user int, owner, repo string, num
 // ApprovalInvalidation narrows which of a pull request's targets an observed
 // change invalidates: OffHead keeps targets already assessed at that head,
 // CandidatesOnly leaves non-candidates, which the change cannot make worse, and
-// Cleared selects non-candidates held back by any of these now-cleared reasons.
+// Cleared selects non-candidates held back by any of these now-cleared reasons
+// and drops those reasons, so each clearing invalidates once.
 type ApprovalInvalidation struct {
 	OffHead        string
 	CandidatesOnly bool
@@ -1328,8 +1329,12 @@ func (g *GormDB) InvalidateMatchingApprovalTargets(user int, owner, repo string,
 		for _, t := range targets {
 			var reasons []string
 			_ = json.Unmarshal([]byte(t.ReasonCodesJSON), &reasons)
-			if len(match.Cleared) > 0 && !slices.ContainsFunc(reasons, func(r string) bool { return slices.Contains(match.Cleared, r) }) {
-				continue
+			if len(match.Cleared) > 0 {
+				kept := slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return slices.Contains(match.Cleared, r) })
+				if len(kept) == len(reasons) {
+					continue
+				}
+				reasons = kept
 			}
 			found := false
 			for _, r := range reasons {
