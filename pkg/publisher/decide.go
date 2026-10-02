@@ -83,6 +83,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		}
 	}
 	r.ShowUnverified = p.Policy.ShowUnverified
+	threads := newThreadIndex(p.GH, p.Policy, r.Owner, r.Repo, r.Number)
 
 	originalIDs := p.aliasToLedger(&r, rows)
 	r.Findings = p.withoutTerminal(r, rows, originalIDs)
@@ -121,6 +122,9 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	type pending struct {
 		row    *db.PublishedFinding
 		reopen bool
+		// thread is the GitHub thread change the transition owes: resolve on
+		// a fix, unresolve on a reopen, none otherwise.
+		thread threadChange
 	}
 	var writes []pending
 	written := map[string]bool{}
@@ -153,11 +157,14 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		case row.State == db.PublishedStateOpen:
 			cs, known := r.changesSince(row.LastSeenSHA)
 			file, _ := payload.FingerprintParts(id)
-			if known && cs.Files[file] {
+			if (known && cs.Files[file]) || (!known && outdatedCorroborates(ctx, threads, r, row)) {
 				d.Fixed++
 				next := *row
 				next.State = db.PublishedStateFixed
-				writes = append(writes, pending{row: &next})
+				writes = append(writes, pending{row: &next, thread: resolveThread})
+				if threads != nil && row.CommentID != 0 {
+					notes = append(notes, threadNote{commentID: row.CommentID, body: notSeenNote(r.HeadSHA)})
+				}
 				rep.Hygiene.noteResolved(row, r.HeadSHA, cs.Files)
 				continue
 			}
@@ -176,7 +183,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			next.LastSeenSHA = r.HeadSHA
 			next.Severity = f.Severity
 			backfill(&next, f, r.PriorComments[id])
-			writes = append(writes, pending{row: &next, reopen: true})
+			writes = append(writes, pending{row: &next, reopen: true, thread: unresolveThread})
 			if row.CommentID != 0 {
 				notes = append(notes, threadNote{commentID: row.CommentID, body: fmt.Sprintf("Back at %s.", shortSHA(r.HeadSHA))})
 			}
@@ -186,7 +193,20 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	rep.Confidence = Confidence(r.Findings, r.RequiredCheckViolated)
 	now := p.now()
 
-	postedThisRound, err := p.postInline(ctx, r, sel, rows, now, &rep)
+	// Threads are looked up before the rows are written so a row that
+	// predates the ThreadNodeID column keeps the id the listing found.
+	var actions []threadAction
+	if threads != nil {
+		for _, w := range writes {
+			if w.thread == noThreadChange || w.row.CommentID == 0 {
+				continue
+			}
+			w.row.ThreadNodeID = threads.nodeID(ctx, w.row.ThreadNodeID, w.row.CommentID)
+			actions = append(actions, threadAction{nodeID: w.row.ThreadNodeID, resolve: w.thread == resolveThread})
+		}
+	}
+
+	postedThisRound, err := p.postInline(ctx, r, sel, rows, now, &rep, threads)
 	if err != nil {
 		return rep, err
 	}
@@ -238,7 +258,27 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			}
 		}
 	}
+	threads.apply(ctx, actions, &rep)
 	return rep, nil
+}
+
+type threadChange int
+
+const (
+	noThreadChange threadChange = iota
+	resolveThread
+	unresolveThread
+)
+
+// outdatedCorroborates reads GitHub's outdated flag as evidence that the
+// lines a finding cited changed, for a round whose compare is unknown. It
+// counts only when the head moved and the row was last seen at the head it
+// was posted for, so the outdating cannot predate the last sighting.
+func outdatedCorroborates(ctx context.Context, threads *threadIndex, r Round, row *db.PublishedFinding) bool {
+	if threads == nil || row.CommentID == 0 || row.LastSeenSHA == "" || strings.EqualFold(row.LastSeenSHA, r.HeadSHA) || !strings.EqualFold(row.ReviewedSHA, row.LastSeenSHA) {
+		return false
+	}
+	return threads.outdated(ctx, row.CommentID)
 }
 
 // aliasToLedger gives every current finding that restates a ledger row that

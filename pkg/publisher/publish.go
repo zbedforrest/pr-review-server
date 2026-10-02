@@ -58,11 +58,17 @@ type Report struct {
 	Confidence       int
 	Hygiene          Hygiene
 	// Reopened counts fixed rows that came back; ThreadReplies the in-thread
-	// notes posted for reopens and severity changes, ThreadReplyFailures the
-	// ones GitHub rejected. Ledger policy only.
+	// notes posted for fixes, reopens and severity changes, ThreadReplyFailures
+	// the ones GitHub rejected. Ledger policy only.
 	Reopened            int
 	ThreadReplies       int
 	ThreadReplyFailures int
+	// ThreadsResolved and ThreadsUnresolved count the GitHub threads the round
+	// closed on a fix and reopened on a return; ThreadResolveFailures the
+	// calls GitHub rejected or the threads it did not list.
+	ThreadsResolved       int
+	ThreadsUnresolved     int
+	ThreadResolveFailures int
 }
 
 const summaryFingerprint = "summary"
@@ -126,7 +132,7 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 		Confidence: Confidence(r.Findings, r.RequiredCheckViolated)}
 	now := p.now()
 
-	postedThisRound, err := p.postInline(ctx, r, sel, prior, now, &rep)
+	postedThisRound, err := p.postInline(ctx, r, sel, prior, now, &rep, nil)
 	if err != nil {
 		return rep, err
 	}
@@ -211,8 +217,9 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 // postInline creates the review that carries this round's inline comments
 // and records one open finding row per comment, noting the hygiene of each
 // post against the row the ledger held before. It returns the comment id
-// each posted finding received.
-func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prior map[string]*db.PublishedFinding, now time.Time, rep *Report) (map[string]int64, error) {
+// each posted finding received. With a thread index the new rows also get
+// the node id of the thread each comment opened.
+func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prior map[string]*db.PublishedFinding, now time.Time, rep *Report, threads *threadIndex) (map[string]int64, error) {
 	postedThisRound := map[string]int64{}
 	if len(sel.Inline) == 0 {
 		return postedThisRound, nil
@@ -226,6 +233,9 @@ func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prio
 		return postedThisRound, fmt.Errorf("create review: %w", err)
 	}
 	rep.ReviewID = reviewID
+	if threads != nil {
+		threads.reload(ctx)
+	}
 	for i, f := range sel.Inline {
 		var commentID int64
 		if i < len(commentIDs) {
@@ -237,7 +247,7 @@ func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prio
 			Kind: db.PublishedKindFinding, Fingerprint: f.ID,
 			SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
 			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
-			CommentID: commentID, ReviewID: reviewID,
+			CommentID: commentID, ReviewID: reviewID, ThreadNodeID: threads.nodeID(ctx, "", commentID),
 			State: db.PublishedStateOpen, PublishedAt: now,
 			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
 		}); err != nil {

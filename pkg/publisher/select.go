@@ -27,6 +27,10 @@ type Policy struct {
 	// LegacyLedger restores the pre-ledger-memory publisher (PUBLISH_POLICY_V2
 	// set to false): open rows only, absence means fixed, reposts on return.
 	LegacyLedger bool
+	// ResolveThreads lets the ledger policy resolve a fixed finding's GitHub
+	// thread and reopen it when the finding returns (PUBLISH_THREAD_RESOLUTION);
+	// it needs a GitHub that implements ThreadResolver.
+	ResolveThreads bool
 }
 
 // PolicyV2Env is the kill switch for the ledger decision table: "false", "0",
@@ -46,9 +50,9 @@ func LegacyLedgerFromEnv() bool {
 
 // DefaultPolicy is the shipped posting policy: three inline comments per
 // round, medium severity and above, unverified first-pass claims folded, the
-// ledger decision table on.
+// ledger decision table and thread resolution on.
 func DefaultPolicy() Policy {
-	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true}
+	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true}
 }
 
 // withDefaults fills unset fields only. A zero cap is a real setting (post
