@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ProviderJev scores pull requests with TypeSafe's Jev decision model through
@@ -373,7 +374,7 @@ func scoreReasons(s Score) []string {
 	for _, d := range s.Deductions {
 		reasons = append(reasons, d.Reason)
 	}
-	if !s.Candidate && len(s.Blockers) == 0 {
+	if !s.Candidate && len(s.Blockers) == 0 && s.Value < s.Threshold {
 		reasons = append(reasons, "score_below_threshold")
 	}
 	return reasons
@@ -458,6 +459,9 @@ func clip(text string, n int) string {
 func shorten(text string, n int) string {
 	if len(text) <= n {
 		return text
+	}
+	for n > 0 && !utf8.RuneStart(text[n]) {
+		n--
 	}
 	cut := text[:n]
 	if i := strings.LastIndexByte(cut, ' '); i > n/2 {

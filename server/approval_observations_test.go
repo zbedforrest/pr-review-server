@@ -53,3 +53,13 @@ func TestApprovalFailingCIInvalidatesCandidate(t *testing.T) {
 	require.Equal(t, "stale", result.Freshness)
 	require.Contains(t, result.ReasonCodesJSON, "observed_ci_change")
 }
+
+func TestApprovalRunningReviewInvalidatesCandidate(t *testing.T) {
+	s, store, target := finalizedCandidate(t)
+	require.NoError(t, store.UpdatePRStatus("acme", "example", 123, "agent_reviewing"))
+	s.BroadcastEvent(EventPRUpdated, map[string]interface{}{"owner": "acme", "repo": "example", "number": 123})
+	result, err := store.GetApprovalTarget(target.UserID, target.ScanID, target.ID)
+	require.NoError(t, err)
+	require.Equal(t, "stale", result.Freshness)
+	require.Contains(t, result.ReasonCodesJSON, "review_in_progress")
+}

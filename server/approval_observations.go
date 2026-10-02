@@ -54,12 +54,15 @@ func (s *Server) approvalMaterialChanges(owner, repo string, number int) []appro
 	}
 	candidates := db.ApprovalInvalidation{CandidatesOnly: true}
 	switch {
-	case pr.CIState == "failure":
+	case pr.CIState == "failure" || pr.CIState == "pending":
 		changes = append(changes, approvalChange{"observed_ci_change", candidates})
-	case pr.ReviewDecision == "CHANGES_REQUESTED":
+	case pr.ReviewDecision == "CHANGES_REQUESTED" || pr.MyReviewStatus == "CHANGES_REQUESTED":
 		changes = append(changes, approvalChange{"human_changes_requested", candidates})
 	case pr.Draft:
 		changes = append(changes, approvalChange{"draft", candidates})
+	case pr.Status == "pending" || pr.Status == "generating" || pr.Status == "agent_reviewing":
+		// A review of this head is running, so the evidence a candidate rests on is about to change.
+		changes = append(changes, approvalChange{"review_in_progress", candidates})
 	}
 	return changes
 }

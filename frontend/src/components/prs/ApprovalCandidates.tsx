@@ -219,7 +219,8 @@ function rowStatus(target: ApprovalTarget, now: number): { kind: RowKind; label:
   const bucket = approvalBucket(target, now);
   const blockers = score?.blockers || [];
   const topConcern = (score?.concerns || []).find(concern => concern.risk >= 0.05);
-  const reason = blockers.length ? blockers.map(code => blockerText[code] || label(code)).join(', ') : topConcern ? cleanClaim(topConcern.claim).text : score ? 'No open concerns' : undefined;
+  const deductions = (score?.deductions || []).map(d => blockerText[d.reason] || label(d.reason));
+  const reason = blockers.length ? blockers.map(code => blockerText[code] || label(code)).join(', ') : topConcern ? [...deductions, cleanClaim(topConcern.claim).text].join(' · ') : deductions.length ? deductions.join(', ') : score ? 'No open concerns' : undefined;
   if (['failed', 'timed_out', 'cancelled'].includes(bucket)) return { kind: 'other', label: label(bucket), reason: target.summary };
   if (bucket === 'excluded') return { kind: 'other', label: 'Excluded', reason: (target.reason_codes || []).map(code => blockerText[code] || label(code)).join(', ') };
   if (isApprovalCandidate(target, now)) return { kind: 'candidate', label: 'Candidate', reason };
@@ -273,7 +274,7 @@ function EvidenceDetail({ target, status, commit, actions }: { target: ApprovalT
   return <div className="approval-detail">
     <div className="approval-detail-score">
       {score ? <ScoreBadge score={score} large /> : null}
-      <div><strong className={`approval-status approval-status--${status.kind}`}>{status.label}</strong>{score && <span className="approval-muted">Score {score.value.toFixed(0)} of 100 · candidates need {score.threshold.toFixed(0)}</span>}</div>
+      <div className="approval-detail-summary"><strong className={`approval-status approval-status--${status.kind}`}>{status.label}</strong>{score && <span className="approval-muted">Score {score.value.toFixed(0)} of 100 · candidates need {score.threshold.toFixed(0)}</span>}</div>
       <div className="approval-actions">{actions}</div>
     </div>
     {score ? <section className="approval-detail-section"><h4>Why this score</h4><ul className="approval-why">
