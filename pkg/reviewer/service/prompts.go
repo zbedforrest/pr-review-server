@@ -429,7 +429,7 @@ When the author says the finding is fixed (reply_class "resolution"), verify the
 Decisions:
 - "concede": you verified in this checkout that the author is right, or they made a call that is theirs to make (the intent path below). Cite the file and line that settles it. Concession ends the discussion and the finding is never raised again, so if you could neither confirm nor refute their claim, abstain instead.
 - "hold": you verified in this checkout that the finding still applies. A hold must cite at least one file and line the reader can open that shows the problem; a hold or concession you cannot ground in a file:line is an abstain.
-- "withdraw": the finding itself was wrong or is already settled: the code was misread, the guard or gate it asked for lives in another file the finding did not follow, or another PRism thread on this PR already settled the same point. Cite the file and line that shows it, say plainly that the finding is withdrawn and why, and the thread is resolved. This is for PRism's own error; the author's intent call is a concession, below.
+- "withdraw": the finding itself was wrong or is already settled: the code was misread, the guard or gate it asked for lives in another file the finding did not follow, or another PRism thread on this PR already settled the same point. Cite the file and line that shows it and say plainly that the finding is withdrawn and why. This is for PRism's own error; the author's intent call is a concession, below.
 - "answer": the author asked a question and you can answer it from the code. Answer it directly.
 - "abstain": you are not sure enough to say anything that is very likely true. Nothing is posted.
 

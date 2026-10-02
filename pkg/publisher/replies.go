@@ -687,7 +687,7 @@ type ReplyReport struct {
 	Shadowed    int
 	Abstained   int
 	Dispatched  int
-	Requeued    int // decisions retaken because the head moved
+	Requeued    int // decisions retaken because the head moved, inline text steps only
 	Contested   int // findings marked contested by a thumbs-down this scan
 	TextSkipped map[string]int
 	// ThreadsResolved counts the threads closed on a posted concession,
@@ -711,6 +711,7 @@ type ReplyOutcome struct {
 	Thread          string // ThreadResolved or ThreadLost after a concession, else empty
 	Model           string
 	DurationMS      int64
+	Requeued        bool // a decision made against an older head was retaken
 }
 
 func (r *ReplyReport) skipText(reason string) {
@@ -950,7 +951,10 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 						defer r.InFlight.remove(reply.CommentID)
 					}
 					outcome, err := r.text(ctx, t, state, comments, reply, row, nil)
-					if r.OnOutcome != nil && !errors.Is(err, errClaimedElsewhere) && !errors.Is(err, errRequeued) {
+					if errors.Is(err, errRequeued) {
+						err = nil
+					}
+					if r.OnOutcome != nil && !errors.Is(err, errClaimedElsewhere) {
 						r.OnOutcome(outcome, err)
 					}
 				})
@@ -958,12 +962,19 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			continue
 		}
 		outcome, err := r.text(ctx, t, state, comments, reply, row, rep)
-		if errors.Is(err, errClaimedElsewhere) || errors.Is(err, errRequeued) {
+		if errors.Is(err, errRequeued) {
+			err = nil
+		}
+		if errors.Is(err, errClaimedElsewhere) {
 			settled = false
 			continue
 		}
 		if r.OnOutcome != nil {
 			r.OnOutcome(outcome, err)
+		}
+		if outcome.Outcome == "" && err == nil {
+			settled = false
+			continue
 		}
 		if err != nil {
 			settled = false
@@ -1079,7 +1090,8 @@ func (r ReplyReactor) prContext(t db.PublishedReplyTarget, comments []ThreadComm
 	if rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber); err == nil {
 		for _, row := range rows {
 			states[row.Fingerprint] = row.State
-			if row.Kind == db.PublishedKindFinding && row.CommentID == 0 && row.State == db.PublishedStateOpen {
+			summaryOnly := row.Kind == db.PublishedKindAnnotation || (row.Kind == db.PublishedKindFinding && row.CommentID == 0)
+			if summaryOnly && row.State == db.PublishedStateOpen {
 				file, line := fingerprintAnchor(row.Fingerprint)
 				other = append(other, OtherFinding{Fingerprint: row.Fingerprint, File: file, Line: line, Severity: row.Severity, State: row.State})
 			}
@@ -1426,6 +1438,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		if err := clearDecision(); err != nil {
 			return outcome, err
 		}
+		outcome.Requeued = true
 		if rep != nil {
 			rep.Requeued++
 		}
@@ -1448,9 +1461,11 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		// A run that was cut off by shutdown is not the model failing; the
 		// claim lease keeps a crash loop to one run per lease anyway.
 		if ctx.Err() == nil {
-			if _, ierr := r.Ledger.IncrementPublishedReplyAttempts(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID); ierr != nil {
+			n, ierr := r.Ledger.IncrementPublishedReplyAttempts(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID)
+			if ierr != nil {
 				return outcome, ierr
 			}
+			row.Attempts = n
 		}
 		record := db.ReplyDecisionRecord{Head: state.HeadSHA, Thread: fingerprint, DeferredTo: row.DeferredTo}
 		switch {
@@ -1582,6 +1597,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		if err := clearDecision(); err != nil {
 			return outcome, err
 		}
+		outcome.Requeued = true
 		if rep != nil {
 			rep.Requeued++
 		}

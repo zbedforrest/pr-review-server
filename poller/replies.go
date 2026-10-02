@@ -116,9 +116,10 @@ func unstampFailedLinks(tried map[string]time.Time, errors []string) {
 }
 
 // replyTelemetryEvents turns one scan into telemetry rows: one per reply
-// handled (reply_reacted / reply_observed), one per scan error, one each for
-// requeued decisions and contested findings when there were any, one per
-// link pass that changed anything, one per link error. PR coordinates are parsed
+// handled (reply_reacted / reply_observed), one per scan error, one for the
+// findings contested this scan when there were any, one per link pass that
+// changed anything, one per link error. Requeued decisions are reported per
+// text step, since those run in the background. PR coordinates are parsed
 // from the "owner/repo#n:" prefix the reactor puts on every error.
 func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, userID int) []db.TelemetryEvent {
 	var events []db.TelemetryEvent
@@ -134,9 +135,6 @@ func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, 
 	}
 	for _, e := range rep.Errors {
 		events = append(events, replyErrorEvent("reply_scan_error", e, userID))
-	}
-	if rep.Requeued > 0 {
-		events = append(events, db.TelemetryEvent{UserID: userID, Action: "reply_requeued", Label: fmt.Sprintf("requeued=%d", rep.Requeued)})
 	}
 	if rep.Contested > 0 {
 		events = append(events, db.TelemetryEvent{UserID: userID, Action: "reply_contested", Label: fmt.Sprintf("contested=%d", rep.Contested)})
@@ -168,8 +166,17 @@ func replyErrorEvent(action, msg string, userID int) db.TelemetryEvent {
 // step settled the deferred reaction, the same reply_reacted / reply_observed
 // event a scan-time reaction produces, so the counts stay comparable.
 func replyOutcomeEvents(o publisher.ReplyOutcome, err error, userID int) []db.TelemetryEvent {
-	// A reaction settled before a later write failed still happened.
-	events := []db.TelemetryEvent{replyOutcomeEvent(o, err, userID)}
+	var events []db.TelemetryEvent
+	if o.Requeued {
+		events = append(events, db.TelemetryEvent{UserID: userID, Action: "reply_requeued",
+			Label:   truncateLabel(fmt.Sprintf("head moved comment=%d", o.AuthorCommentID), 255),
+			PROwner: o.RepoOwner, PRRepo: o.RepoName, PRNumber: o.PRNumber})
+	}
+	// A step that only requeued itself has no outcome yet; a reaction
+	// settled before a later write failed still happened.
+	if o.Outcome != "" || err != nil {
+		events = append(events, replyOutcomeEvent(o, err, userID))
+	}
 	if o.Action == publisher.ReplyActionReacted || o.Action == publisher.ReplyActionObserved {
 		events = append(events, db.TelemetryEvent{UserID: userID, Action: "reply_" + o.Action,
 			Label:   truncateLabel(fmt.Sprintf("settled decision=%s comment=%d", o.Decision, o.AuthorCommentID), 255),
@@ -349,9 +356,12 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			return strings.TrimSpace(strings.ToLower(liveMode)), p.authorMatcher(liveEnabled), nil
 		},
 		OnOutcome: func(o publisher.ReplyOutcome, err error) {
-			if err != nil {
+			switch {
+			case err != nil:
 				log.Printf("[REPLY %s/%s#%d] text step for comment %d failed, will resume: %v", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, err)
-			} else {
+			case o.Outcome == "":
+				log.Printf("[REPLY %s/%s#%d] comment %d: head moved, decision retaken next scan", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID)
+			default:
 				log.Printf("[REPLY %s/%s#%d] comment %d: outcome=%s decision=%s posted=%t action=%s%s", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, o.Outcome, o.Decision, o.Posted, o.Action, threadSuffix(o))
 			}
 			if userID := p.systemTelemetryUserID(); userID != 0 {
@@ -412,8 +422,8 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			log.Printf("[REPLIES] %s", e)
 		}
 	}
-	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d live_checked=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d text_dispatched=%d requeued=%d contested=%d errors=%d",
-		cycle, full, mode, len(targets), len(candidates), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Dispatched, rep.Requeued, rep.Contested, len(rep.Errors))
+	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d live_checked=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d text_dispatched=%d contested=%d errors=%d",
+		cycle, full, mode, len(targets), len(candidates), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Dispatched, rep.Contested, len(rep.Errors))
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
 		return

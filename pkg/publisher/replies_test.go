@@ -697,9 +697,19 @@ func TestReplyReactor_DiscardsTheReplyWhenTheThreadOrHeadMovedMeanwhile(t *testi
 		}
 		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: sha}, nil
 	}
+	var outcomes []ReplyOutcome
+	r.OnOutcome = func(o ReplyOutcome, err error) {
+		if err != nil {
+			t.Errorf("requeue is not an error: %v", err)
+		}
+		outcomes = append(outcomes, o)
+	}
 	rep, _ = r.Run(context.Background())
 	if len(gh.posted) != 0 || rep.Requeued != 1 || ledger.rows[0].Decision != "" || ledger.rows[0].Outcome != "" || ledger.rows[0].ClaimedBy != "" {
 		t.Fatalf("a head that moved during the run clears the decision for the next scan: posted=%v rep=%+v row=%+v", gh.posted, rep, ledger.rows[0])
+	}
+	if len(outcomes) != 1 || !outcomes[0].Requeued || outcomes[0].Outcome != "" {
+		t.Fatalf("the requeue reaches OnOutcome for telemetry: %+v", outcomes)
 	}
 	if r.LastScanned != nil && !r.LastScanned["acme/example#7"].IsZero() {
 		t.Fatalf("a requeued reply keeps the PR unsettled")
@@ -2061,8 +2071,9 @@ func TestReplyReactor_HandsTheModelThePROtherThreadsAndBody(t *testing.T) {
 	ledger.findings = []db.PublishedFinding{
 		{Fingerprint: "b.go:7:def", State: db.PublishedStateContested, Kind: db.PublishedKindFinding, CommentID: 90},
 		{Fingerprint: "c.go:2:ghi", State: db.PublishedStateDismissed, Kind: db.PublishedKindFinding, CommentID: 80},
-		{Fingerprint: "pkg/auth/policy.go:4:aaa", State: db.PublishedStateOpen, Kind: db.PublishedKindFinding, Severity: "medium"},
-		{Fingerprint: "d.go:0:bbb", State: db.PublishedStateDismissed, Kind: db.PublishedKindFinding},
+		{Fingerprint: "pkg/auth/policy.go:4:aaa", State: db.PublishedStateOpen, Kind: db.PublishedKindAnnotation, Severity: "medium"},
+		{Fingerprint: "pkg/auth/policy.go:9:ccc", State: db.PublishedStateOpen, Kind: db.PublishedKindFinding, Severity: "low"},
+		{Fingerprint: "d.go:0:bbb", State: db.PublishedStateDismissed, Kind: db.PublishedKindAnnotation},
 		{Fingerprint: "summary", State: db.PublishedStateOpen, Kind: db.PublishedKindSummary},
 	}
 	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
@@ -2075,7 +2086,7 @@ func TestReplyReactor_HandsTheModelThePROtherThreadsAndBody(t *testing.T) {
 	if len(got.Siblings) != 1 || got.Siblings[0].Fingerprint != "b.go:7:def" || got.Siblings[0].State != db.PublishedStateContested || got.Siblings[0].Root.ID != 90 || len(got.Siblings[0].Replies) != 1 || got.Siblings[0].Replies[0].ID != 91 {
 		t.Fatalf("siblings = %+v", got.Siblings)
 	}
-	if len(got.Other) != 1 || got.Other[0] != (OtherFinding{Fingerprint: "pkg/auth/policy.go:4:aaa", File: "pkg/auth/policy.go", Line: 40, Severity: "medium", State: db.PublishedStateOpen}) {
+	if len(got.Other) != 2 || got.Other[0] != (OtherFinding{Fingerprint: "pkg/auth/policy.go:4:aaa", File: "pkg/auth/policy.go", Line: 40, Severity: "medium", State: db.PublishedStateOpen}) || got.Other[1].Fingerprint != "pkg/auth/policy.go:9:ccc" {
 		t.Fatalf("summary-only open findings = %+v", got.Other)
 	}
 
