@@ -349,3 +349,61 @@ func TestRenderDeferralAsksForOrRepeatsTheTicketKey(t *testing.T) {
 		t.Errorf("description in passing is not the ask: %q", got)
 	}
 }
+
+func TestStatesIntent(t *testing.T) {
+	cases := map[string]bool{
+		"Tier 1 headers are gated on the translation toggle by design, so the rollout can flip both at once.": true,
+		"This is intentional: English-only entries skip other languages.":                                     true,
+		"Fixed the gate; the old behaviour was not intentional.":                                              false,
+		"Adds the SEO header experiment.":                                                                     false,
+		"":                                                                                                    false,
+	}
+	for body, want := range cases {
+		if got := StatesIntent(body); got != want {
+			t.Errorf("StatesIntent(%q) = %v, want %v", body, got, want)
+		}
+	}
+}
+
+func TestRenderPartsDropsTheRiskAskWhenThePRBodyStatesIntent(t *testing.T) {
+	ctx := Context{
+		AuthorComment: "This is intentional, the toggle gates every tier.",
+		FindingBody:   "**[MEDIUM] Tier 1 headers require the translation toggle.**",
+		PRBody:        "Both tiers are gated on the translation toggle by design until the copy is reviewed.",
+		Decision:      "concede",
+	}
+	body := "Gating every tier is your call. With the toggle off, content.ts:14 falls back to the generic header for tier 1 as well. Should this be noted in the PR description as accepted risk?"
+	paragraph, appendix, ok := RenderParts(body, ctx)
+	if !ok || appendix != "" || strings.Contains(paragraph, "accepted risk") || !strings.Contains(paragraph, "content.ts:14") {
+		t.Fatalf("paragraph=%q appendix=%q ok=%v", paragraph, appendix, ok)
+	}
+
+	ctx.PRBody = "Adds SEO headers for tag pages."
+	paragraph, appendix, ok = RenderParts("Gating every tier is your call. With the toggle off, content.ts:14 falls back to the generic header for tier 1 as well.", ctx)
+	if !ok || !strings.Contains(appendix, "accepted risk") {
+		t.Fatalf("without intent in the PR body the ask stays: paragraph=%q appendix=%q", paragraph, appendix)
+	}
+
+	ctx.PRBody = "Both tiers are gated by design."
+	if _, _, ok := RenderParts("Should this be noted in the PR description as accepted risk?", ctx); ok {
+		t.Fatalf("a body that was nothing but the ask is not postable")
+	}
+}
+
+func TestRenderPartsKeepsAWithdrawal(t *testing.T) {
+	ctx := Context{
+		AuthorComment: "This is intentional and the caller guards it.",
+		FindingBody:   "**[MEDIUM] Nil deref.**",
+		Decision:      "withdraw",
+	}
+	body := "You're right. Withdrawing this finding: the guard on a.go:8 runs before this call, so nil never reaches it."
+	paragraph, appendix, ok := RenderParts(body, ctx)
+	if !ok || appendix != "" || !strings.HasPrefix(paragraph, "Withdrawing this finding: the guard on a.go:8") {
+		t.Fatalf("paragraph=%q appendix=%q ok=%v", paragraph, appendix, ok)
+	}
+	ctx.Decision = "concede"
+	paragraph, appendix, _ = RenderParts(body, ctx)
+	if strings.Contains(paragraph, "Withdrawing") || !strings.Contains(appendix, "accepted risk") {
+		t.Fatalf("a concession on an intent claim still drops the withdrawal: paragraph=%q appendix=%q", paragraph, appendix)
+	}
+}
