@@ -112,6 +112,9 @@ type Config struct {
 	// HealthJobToken authenticates the scheduled daily health report
 	// (POST /api/health/daily); empty disables the job endpoint.
 	HealthJobToken string
+	// FeedbackDigest lets the daily health run scan GitHub for author
+	// feedback on PRism comments (FEEDBACK_DIGEST=false turns it off).
+	FeedbackDigest bool
 	// AdminLogins are bootstrap settings admins (lowercased GitHub logins), kept
 	// outside the writable settings API so admins can never lock themselves out.
 	AdminLogins []string
@@ -365,6 +368,7 @@ func Load() *Config {
 		ReplyVerdictFastPath:       !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_VERDICT_FAST_PATH")), "false"),
 		MentionHandle:              strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
 		HealthJobToken:             os.Getenv("HEALTH_JOB_TOKEN"),
+		FeedbackDigest:             !strings.EqualFold(strings.TrimSpace(os.Getenv("FEEDBACK_DIGEST")), "false"),
 		AdminLogins:                getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),
 		AnthropicAPIKey:            os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:           os.Getenv("OPENROUTER_API_KEY"),

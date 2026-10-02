@@ -21,6 +21,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/feedback"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/poller"
@@ -88,6 +89,11 @@ type Server struct {
 	wsWriteTimeout time.Duration
 	clientsMux     sync.RWMutex
 	broadcastCh    chan wsOutboundMessage
+	// feedbackGitHub and feedbackClassify let tests stand in for GitHub and
+	// the model in the daily feedback scan.
+	feedbackGitHub   feedback.GitHub
+	feedbackClassify feedback.Classifier
+	feedbackOnce     sync.Once
 	// quickActions holds the per-instance replay, duplicate and rate-limit
 	// state for POST /api/prs/quick-action.
 	quickActions      *quickActionState
@@ -384,6 +390,7 @@ func (s *Server) Start() error {
 		}
 		withAuth(s.handleDailyHealth).ServeHTTP(w, r)
 	}))
+	http.Handle(feedbackPath, withAuth(s.handleFeedback))
 	http.Handle("/api/user", withAuth(s.handleGetUser))
 	http.Handle("/api/telemetry/track", withAuth(s.handleTrackTelemetry))
 	http.Handle("/api/telemetry/stats", withAuth(s.handleTelemetryStats))

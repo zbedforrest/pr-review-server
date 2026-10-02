@@ -36,11 +36,18 @@ const (
 	ActionPublishDenied = "publish_denied_total"
 )
 
+// ActionFeedbackFrustrated: the daily feedback scan classified a new author
+// reply, comment or reaction as frustrated or very frustrated.
+const ActionFeedbackFrustrated = "feedback_frustrated"
+
 // HygieneActions lists every hygiene action, in report order.
 var HygieneActions = []string{
 	ActionRepeatedPost, ActionRepeatAfterDismiss, ActionFixedWithoutFileChange, ActionSameCommitResolve,
 	ActionSeverityEscalation, ActionVerdictSettled, ActionPublishDenied,
 }
+
+// TelemetryActions are the server-emitted counters the daily report reads.
+var TelemetryActions = append(append([]string{}, HygieneActions...), ActionFeedbackFrustrated)
 
 // hygieneLabels names each counter in the report.
 var hygieneLabels = map[string]string{
@@ -74,10 +81,11 @@ func hygieneDetail(telemetry map[string]int) string {
 	return line
 }
 
-// withoutHygiene drops the hygiene actions, which have their own line.
+// withoutHygiene drops the hygiene and feedback actions, which have their own
+// lines.
 func withoutHygiene(telemetry map[string]int) map[string]int {
-	hygiene := make(map[string]bool, len(HygieneActions))
-	for _, a := range HygieneActions {
+	hygiene := make(map[string]bool, len(TelemetryActions))
+	for _, a := range TelemetryActions {
 		hygiene[a] = true
 	}
 	out := make(map[string]int, len(telemetry))

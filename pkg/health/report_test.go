@@ -225,3 +225,73 @@ func TestEvaluateShowsZeroHygieneWhenNoEventsExist(t *testing.T) {
 	}
 	t.Fatalf("no publication hygiene check in %+v", r.Checks)
 }
+
+func feedbackFixture() FeedbackMetrics {
+	return FeedbackMetrics{
+		Scanned: true,
+		ByLabel: map[string]int{FeedbackHappy: 2, FeedbackNeutral: 5, FeedbackFrustrated: 1, FeedbackVeryFrustrated: 1},
+		Frustrated: []FeedbackQuote{
+			{Label: FeedbackVeryFrustrated, Author: "dana-dev", Quote: "This is the third time it flagged the same line after I explained it. Please stop.", URL: "https://github.com/acme/example/pull/42#discussion_r101"},
+			{Label: FeedbackFrustrated, Author: "lee-ops", Quote: "reacted -1", URL: "https://github.com/acme/example/pull/43#discussion_r500"},
+		},
+		Happy: &FeedbackQuote{Label: FeedbackHappy, Author: "sam-q", Quote: "thanks, the summary was helpful today", URL: "https://github.com/acme/example/pull/42#issuecomment-201"},
+	}
+}
+
+func TestEvaluateFeedbackLineQuotesTheUnhappyAndWarnsOnVeryFrustrated(t *testing.T) {
+	m := healthyMetrics()
+	m.Feedback = feedbackFixture()
+	r := Evaluate(m)
+	var line Check
+	for _, c := range r.Checks {
+		if c.Name == "author feedback" {
+			line = c
+		}
+	}
+	if line.Status != StatusWarn {
+		t.Fatalf("status = %s, detail = %s", line.Status, line.Detail)
+	}
+	want := `2 happy, 5 neutral, 1 frustrated, 1 very frustrated; @dana-dev (very): "This is the third time it flagged the same line after I explained it. Please stop." https://github.com/acme/example/pull/42#discussion_r101; @lee-ops: "reacted -1" https://github.com/acme/example/pull/43#discussion_r500; happy: @sam-q: "thanks, the summary was helpful today" https://github.com/acme/example/pull/42#issuecomment-201`
+	if line.Detail != want {
+		t.Errorf("detail =\n%s\nwant\n%s", line.Detail, want)
+	}
+	if r.Overall != StatusWarn || !strings.Contains(r.Headline, "author feedback") {
+		t.Errorf("overall = %s, headline = %s", r.Overall, r.Headline)
+	}
+	if !strings.Contains(r.Markdown(), "🟡 **author feedback**") {
+		t.Errorf("markdown:\n%s", r.Markdown())
+	}
+}
+
+func TestEvaluateFeedbackStatusThresholds(t *testing.T) {
+	for n, want := range map[int]Status{0: StatusOK, 1: StatusWarn, 2: StatusWarn, 3: StatusCritical, 7: StatusCritical} {
+		m := healthyMetrics()
+		m.Feedback = FeedbackMetrics{Scanned: true, ByLabel: map[string]int{FeedbackVeryFrustrated: n, FeedbackHappy: 1}}
+		if got := feedbackStatus(m.Feedback); got != want {
+			t.Errorf("%d very frustrated: status = %s, want %s", n, got, want)
+		}
+	}
+}
+
+func TestEvaluateFeedbackLineSaysWhenNothingWasScanned(t *testing.T) {
+	for _, tc := range []struct {
+		f    FeedbackMetrics
+		want string
+	}{
+		{FeedbackMetrics{}, "not scanned"},
+		{FeedbackMetrics{Note: "no GitHub client"}, "not scanned (no GitHub client)"},
+		{FeedbackMetrics{Scanned: true}, "no author feedback in the window"},
+		{FeedbackMetrics{ByLabel: map[string]int{FeedbackHappy: 1}, Note: "scan failed"}, "1 happy, 0 neutral, 0 frustrated, 0 very frustrated (stored items only; not scanned: scan failed)"},
+		{FeedbackMetrics{Scanned: true, ByLabel: map[string]int{FeedbackHappy: 1}, Note: "2 of 30 PRs could not be read"}, "1 happy, 0 neutral, 0 frustrated, 0 very frustrated (partial scan: 2 of 30 PRs could not be read)"},
+	} {
+		if got := feedbackDetail(tc.f); got != tc.want {
+			t.Errorf("%+v: %q, want %q", tc.f, got, tc.want)
+		}
+	}
+	if telemetry := TelemetryActions[len(TelemetryActions)-1]; telemetry != ActionFeedbackFrustrated {
+		t.Errorf("feedback counter missing from TelemetryActions: %v", TelemetryActions)
+	}
+	if other := withoutHygiene(map[string]int{ActionFeedbackFrustrated: 3, "reply_decision": 1}); len(other) != 1 || other["reply_decision"] != 1 {
+		t.Errorf("feedback counter leaked into the generic telemetry line: %v", other)
+	}
+}

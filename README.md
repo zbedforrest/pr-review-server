@@ -214,6 +214,28 @@ under `author_list_teams` to every signed-in dashboard user, secret teams
 included, so the row menu can apply the publish gate; list only teams whose
 membership may be shown that widely.
 
+### Daily health report and author feedback
+
+With `HEALTH_JOB_TOKEN` set, a scheduler posts `POST /api/health/daily` once a
+day (header `X-Prism-Job-Token`) and the stored report is readable at
+`GET /api/health/daily` (`?format=md` for the newest one as markdown). Each
+check is one line with a status; the overall status is the worst line.
+
+The run also scans GitHub, read-only, for what authors said about PRism's
+comments in the last 7 days on PRs the publication ledger knows: replies under
+PRism inline comments, conversation comments naming the bot (`@MENTION_HANDLE`
+or "prism") and reactions on PRism comments. Each new item is labelled
+`happy`, `neutral`, `frustrated` or `very_frustrated` with one Gemini flash
+call (the review pipeline's classification model) and a deterministic lexicon
+when the model is unavailable, then stored once per comment or reaction id, so
+a rerun classifies nothing twice. The report's `author feedback` line carries
+the day's counts, every frustrated item (login, a 140-character quote, PR
+link) and one happy quote; it turns yellow on any `very_frustrated` item and
+red on three or more in a day. Each new frustrated item records a
+`feedback_frustrated` telemetry event. `GET /api/health/feedback?format=md|json&days=1|7`
+lists the stored items for the last day or week. `FEEDBACK_DIGEST=false` turns
+the scan off; the line then says so.
+
 ### Linked ticket context (optional)
 
 The agent otherwise reviews a PR without knowing the intent recorded in its Jira ticket, and will flag deliberate decisions the author documented there. Set `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN` (a Jira API token for a service or personal account with read access) and the review fetches the tickets referenced directly in the PR title, body, or branch name (up to 3): summary, status, type, description, and the newest 10 comments. The prompt tells the agent to treat decisions recorded there as intentional, cite the ticket key when a finding touches one, and flag only when the change contradicts the ticket or its rationale no longer holds. `JIRA_PROJECT_KEYS` (comma-separated, optional) restricts which project keys count as references. The PR title and body always reach the agent, with or without Jira; the sidecar's `review_run.linked_tickets` lists the keys that informed a review.
@@ -227,6 +249,8 @@ The agent otherwise reviews a PR without knowing the intent recorded in its Jira
 - `GET /api/review/{owner}/{repo}/{pr}` — legacy/latest structured review JSON (`?format=html` / `?format=md`, `?sha=`, or `?sha=<sha>&run_id=<id>`)
 - `POST /api/prs/generate-review` — backward-compatible review creation for callers that do not need customization
 - `GET /api/status` — health check, including webhook ingress counters
+- `GET /api/health/daily`: stored daily health reports (`?format=md` for the newest as markdown); `POST` with `X-Prism-Job-Token` runs one
+- `GET /api/health/feedback`: author feedback on PRism comments (`?format=md|json`, `?days=1|7`)
 - `POST /webhooks/github` — GitHub App webhook (HMAC-authenticated; `pull_request` events feed automatic reviews, other events are acknowledged)
 
 Create a customized exact-head run with the bundled client:

@@ -126,6 +126,7 @@ func (g *GormDB) AutoMigrate() error {
 		&HealthReportModel{},
 		&WebhookDeliveryModel{},
 		&AutoReviewIntentModel{},
+		&FeedbackItemModel{},
 	); err != nil {
 		return err
 	}
@@ -256,6 +257,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&AutoReviewIntentModel{}) {
 		if err := g.db.Migrator().CreateTable(&AutoReviewIntentModel{}); err != nil {
 			return fmt.Errorf("create auto_review_intents: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&FeedbackItemModel{}) {
+		if err := g.db.Migrator().CreateTable(&FeedbackItemModel{}); err != nil {
+			return fmt.Errorf("create feedback_items: %w", err)
 		}
 	}
 	// Older revisions did not enforce one live run per target. Prefer work that
