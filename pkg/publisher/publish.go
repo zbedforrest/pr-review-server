@@ -49,6 +49,7 @@ type Report struct {
 	StillOpen        int
 	Fixed            int
 	Confidence       int
+	Hygiene          Hygiene
 }
 
 const summaryFingerprint = "summary"
@@ -82,6 +83,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 			}
 		}
 	}
+	prior := priorRows(r.Previous)
 	r.Findings = WithoutDismissed(r.Findings, r.Previous)
 	if r.RoundNumber == 0 {
 		r.RoundNumber = 1
@@ -130,6 +132,10 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 			}); err != nil {
 				return rep, fmt.Errorf("record finding %s: %w", f.ID, err)
 			}
+			// Notes follow the ledger write: a post whose row failed is a publish
+			// error, and the retry counts it when it reposts.
+			rep.Hygiene.notePosted(f, prior[f.ID])
+			rep.Hygiene.noteWritten(f, prior[f.ID])
 		}
 	}
 
@@ -209,6 +215,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		if err := p.Ledger.UpsertPublishedFinding(row); err != nil {
 			return rep, fmt.Errorf("record annotation %s: %w", f.ID, err)
 		}
+		rep.Hygiene.noteWritten(f, prior[f.ID])
 		written[f.ID] = true
 	}
 
@@ -221,9 +228,15 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		}
 		refreshed := *row
 		refreshed.LastSeenSHA = r.HeadSHA
+		// W1-1 will clamp severity per the ledger; until then the row follows
+		// the latest assertion, so an escalation is counted once.
+		if severityRank(f.Severity) > severityRank(row.Severity) {
+			refreshed.Severity = f.Severity
+		}
 		if err := p.Ledger.UpsertPublishedFinding(&refreshed); err != nil {
 			return rep, fmt.Errorf("refresh finding %s: %w", f.ID, err)
 		}
+		rep.Hygiene.noteWritten(f, row)
 	}
 	for id, row := range published {
 		if written[id] || present[id] {
@@ -234,6 +247,7 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		if err := p.Ledger.UpsertPublishedFinding(&resolved); err != nil {
 			return rep, fmt.Errorf("resolve finding %s: %w", id, err)
 		}
+		rep.Hygiene.noteResolved(row, r.HeadSHA, r.ChangedFiles)
 	}
 	return rep, nil
 }

@@ -214,6 +214,7 @@ func Evaluate(m Metrics) Report {
 	}
 
 	add("publications", StatusOK, fmt.Sprintf("%d PRs got their first summary comment, %d inline comments posted, %d annotation-only findings; %d findings currently dismissed by concession (all time)", m.Publish.Summaries, m.Publish.Inline, m.Publish.Annotations, m.Publish.Dismissed))
+	add("publication hygiene", StatusOK, hygieneDetail(m.Telemetry))
 
 	replyDetail := fmt.Sprintf("%d author replies handled", m.Replies.Handled)
 	if m.Replies.Handled > 0 {
@@ -275,8 +276,8 @@ func (r Report) Markdown() string {
 	if len(m.Runs.ByTrigger) > 0 {
 		fmt.Fprintf(&b, "\nTriggers: %s. Verdicts: %s. Critical findings: %d.\n", countList(m.Runs.ByTrigger), countList(m.Runs.Verdicts), m.Runs.Criticals)
 	}
-	if len(m.Telemetry) > 0 {
-		fmt.Fprintf(&b, "Telemetry: %s.\n", countList(m.Telemetry))
+	if other := withoutHygiene(m.Telemetry); len(other) > 0 {
+		fmt.Fprintf(&b, "Telemetry: %s.\n", countList(other))
 	}
 	return b.String()
 }

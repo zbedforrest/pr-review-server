@@ -40,3 +40,17 @@ func Fingerprint(file string, line int, comment string) string {
 	}
 	return fmt.Sprintf("%s:%d:%s", file, bucket, hex.EncodeToString(sum[:])[:fingerprintHashHexLen])
 }
+
+// FingerprintFile recovers the file a fingerprint cites. Line bucket and hash
+// never contain a colon, so the file is everything before the last two.
+func FingerprintFile(fp string) string {
+	i := strings.LastIndex(fp, ":")
+	if i < 0 {
+		return fp
+	}
+	j := strings.LastIndex(fp[:i], ":")
+	if j < 0 {
+		return fp
+	}
+	return fp[:j]
+}

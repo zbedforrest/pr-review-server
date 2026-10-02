@@ -166,3 +166,49 @@ func TestEvaluateEscalatesAnAgingAutoReviewBacklog(t *testing.T) {
 		}
 	}
 }
+
+func TestEvaluateReportsPublicationHygieneWithEveryCounter(t *testing.T) {
+	m := healthyMetrics()
+	m.Telemetry[ActionRepeatedPost] = 4
+	m.Telemetry[ActionSameCommitResolve] = 2
+	m.Telemetry[ActionVerdictSettled] = 1
+	r := Evaluate(m)
+	var line *Check
+	for i := range r.Checks {
+		if r.Checks[i].Name == "publication hygiene" {
+			line = &r.Checks[i]
+		}
+	}
+	if line == nil {
+		t.Fatalf("no publication hygiene check in %+v", r.Checks)
+	}
+	want := "4 repeated posts, 2 same-commit resolves, 0 severity escalations, 1 author verdicts settled, 0 posts stopped by the publish gate; not yet measured: repeats after dismiss, fixed without a file change"
+	if line.Detail != want || line.Status != StatusOK {
+		t.Fatalf("line = %+v\nwant %q", *line, want)
+	}
+	if r.Overall != StatusOK {
+		t.Fatalf("hygiene counters inform, they do not alarm: overall = %s", r.Overall)
+	}
+	md := r.Markdown()
+	if !strings.Contains(md, "**publication hygiene**: "+want) {
+		t.Fatalf("markdown missing the hygiene line:\n%s", md)
+	}
+	if strings.Contains(md, "Telemetry: ") && strings.Contains(md[strings.Index(md, "Telemetry: "):], ActionRepeatedPost) {
+		t.Fatalf("hygiene actions must not repeat in the generic telemetry line:\n%s", md)
+	}
+}
+
+func TestEvaluateShowsZeroHygieneWhenNoEventsExist(t *testing.T) {
+	m := healthyMetrics()
+	m.Telemetry = nil
+	r := Evaluate(m)
+	for _, c := range r.Checks {
+		if c.Name == "publication hygiene" {
+			if !strings.HasPrefix(c.Detail, "0 repeated posts, 0 same-commit resolves") {
+				t.Fatalf("detail = %q", c.Detail)
+			}
+			return
+		}
+	}
+	t.Fatalf("no publication hygiene check in %+v", r.Checks)
+}
