@@ -99,6 +99,7 @@ type Config struct {
 	// Author-reply model (pkg/reviewer/service/reply.go). Same backend and
 	// credentials as the review agent; smaller budgets, own concurrency cap.
 	ReplyModel         string // empty = the review agent's model
+	ReplyPolicyV2      bool   // REPLY_POLICY_V2, default on; false restores the fixed budget notice and uncontested holds
 	ReplyWallClockSec  int
 	ReplyMaxTurns      int
 	ReplyMaxConcurrent int
@@ -348,6 +349,7 @@ func Load() *Config {
 		ReplyWallClockSec:    getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
 		ReplyMaxTurns:        getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
 		ReplyMaxConcurrent:   getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
+		ReplyPolicyV2:        !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_POLICY_V2")), "false"),
 		MentionHandle:        strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
 		HealthJobToken:       os.Getenv("HEALTH_JOB_TOKEN"),
 		AdminLogins:          getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),

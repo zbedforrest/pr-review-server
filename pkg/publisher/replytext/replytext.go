@@ -11,9 +11,12 @@ import (
 )
 
 // Context is what the renderer knows about the thread besides the reply body.
+// PRBody is the pull request description: when it already states the intent
+// the author is defending, the accepted-risk question is not asked.
 type Context struct {
 	AuthorComment string
 	FindingBody   string
+	PRBody        string
 	Decision      string
 }
 
@@ -142,6 +145,38 @@ func AssertsIntent(comment string) bool {
 	return intentRe.MatchString(comment) && !negatedIntentRe.MatchString(comment) && !changed
 }
 
+// IntentScanRunes bounds how much of a PR description StatesIntent reads, so
+// every caller judges the same text.
+const IntentScanRunes = 4000
+
+// StatesIntent reports a PR description that calls a behavior deliberate
+// ("intentional", "by design"); a change claim in the same text does not
+// cancel it the way it does for a reply. HTML comments, checklist items and
+// questions are template furniture ("Is this breaking change intentional?")
+// and are not read.
+func StatesIntent(text string) bool {
+	text = htmlCommentRe.ReplaceAllString(text, "")
+	if r := []rune(text); len(r) > IntentScanRunes {
+		text = string(r[:IntentScanRunes])
+	}
+	var kept []string
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasSuffix(trimmed, "?") || checklistRe.MatchString(trimmed) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	text = notABugFixRe.ReplaceAllString(strings.Join(kept, "\n"), "")
+	return intentRe.MatchString(text) && !negatedIntentRe.MatchString(text)
+}
+
+var (
+	htmlCommentRe = regexp.MustCompile(`(?s)<!--.*?-->`)
+	notABugFixRe  = regexp.MustCompile(`(?i)\bnot a bug[- ](?:fix|patch|change|pr|commit)\b`)
+	checklistRe   = regexp.MustCompile(`^(?:[-*+]|\d+[.)])\s*\[[ xX]\]`)
+)
+
 // Defers reports an author reply that sends the fix elsewhere: out of scope,
 // a follow-up, a later PR, a separate ticket.
 func Defers(comment string) bool {
@@ -195,11 +230,13 @@ func Note(ctx Context) string {
 
 // Render applies the posting conventions to a reply body: no agreement
 // formula opener; no withdrawal when the author asserted intent (and, at
-// medium severity or above, the accepted-risk question); the ticket key
-// repeated or asked for when the author deferred the fix. An answer to the
-// author's question is left as written: a leading "Yes" is the answer there.
-// ok is false when nothing postable remains. Rendering an already rendered
-// body is a no-op.
+// medium severity or above, the accepted-risk question, unless the PR
+// description already states the intent); the ticket key repeated or asked
+// for when the author deferred the fix. An answer to the author's question
+// is left as written: a leading "Yes" is the answer there. A withdrawal
+// (decision "withdraw") keeps its withdrawing sentence: that is the point of
+// it. ok is false when nothing postable remains. Rendering an already
+// rendered body is a no-op.
 func Render(body string, ctx Context) (out string, ok bool) {
 	paragraph, appendix, ok := RenderParts(body, ctx)
 	return paragraph + appendix, ok
@@ -217,7 +254,7 @@ func RenderParts(body string, ctx Context) (paragraph, appendix string, ok bool)
 	if !ok {
 		return "", "", false
 	}
-	if Note(ctx) == NoteIntentAcknowledged {
+	if Note(ctx) == NoteIntentAcknowledged && ctx.Decision != "withdraw" {
 		paragraph, ok = dropWithdrawal(paragraph)
 		if !ok {
 			return "", "", false
@@ -226,7 +263,12 @@ func RenderParts(body string, ctx Context) (paragraph, appendix string, ok bool)
 		if paragraph, ok = StripAgreementOpener(paragraph); !ok {
 			return "", "", false
 		}
-		if SeverityAtLeastMedium(FindingSeverity(ctx.FindingBody)) && !descAskRe.MatchString(paragraph) {
+		switch {
+		case StatesIntent(ctx.PRBody):
+			if paragraph, ok = dropRiskAsk(paragraph); !ok {
+				return "", "", false
+			}
+		case SeverityAtLeastMedium(FindingSeverity(ctx.FindingBody)) && !descAskRe.MatchString(paragraph):
 			appendix += " " + riskAskBare
 		}
 	}
@@ -270,6 +312,25 @@ func dropWithdrawal(body string) (string, bool) {
 		}
 		cut = strings.TrimSpace(strings.TrimRight(cut, ",;: ")) + lastPunct(cut)
 		kept = append(kept, capitalize(cut))
+	}
+	out := strings.Join(kept, " ")
+	if len(kept) == 0 || !evidenceRe.MatchString(out) {
+		return "", false
+	}
+	return out, true
+}
+
+// dropRiskAsk removes the accepted-risk question when the PR description
+// already answers it. ok is false when the body was nothing but the ask or
+// its only file:line sat inside it.
+func dropRiskAsk(body string) (string, bool) {
+	var kept []string
+	for _, s := range sentenceRe.FindAllString(body, -1) {
+		s = strings.TrimSpace(s)
+		if s == "" || (descAskRe.MatchString(s) && strings.HasSuffix(s, "?")) {
+			continue
+		}
+		kept = append(kept, s)
 	}
 	out := strings.Join(kept, " ")
 	if len(kept) == 0 || !evidenceRe.MatchString(out) {

@@ -469,3 +469,18 @@ func TestMentionHandleCanBeDisabledWithAnEmptyValue(t *testing.T) {
 		t.Fatalf("an unset handle takes the default, got %q", got)
 	}
 }
+
+func TestLoad_ReplyPolicyV2DefaultsOn(t *testing.T) {
+	cases := []struct {
+		env  string
+		want bool
+	}{{"", true}, {"true", true}, {"false", false}, {"0", true}}
+	for _, c := range cases {
+		t.Run("REPLY_POLICY_V2="+c.env, func(t *testing.T) {
+			t.Setenv("REPLY_POLICY_V2", c.env)
+			if got := Load().ReplyPolicyV2; got != c.want {
+				t.Errorf("got %v want %v", got, c.want)
+			}
+		})
+	}
+}

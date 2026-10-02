@@ -61,12 +61,16 @@ func TestReplyTelemetryEventsOnePerHandledReplyPlusLinksAndErrors(t *testing.T) 
 			{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "a.go:1:abc", Class: "question", Action: "reacted", AuthorCommentID: 101},
 			{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "b.go:2:def", Class: "resolution", Action: "observed", AuthorCommentID: 102},
 		},
-		Errors: []string{"acme/example#9: list review comments: boom"},
+		Errors:    []string{"acme/example#9: list review comments: boom"},
+		Contested: 1,
 	}
 	link := publisher.LinkReport{Linked: 2, Unmatched: 1, Errors: []string{"acme/example#8: list thread: 502"}}
 	events := replyTelemetryEvents(rep, link, 3)
-	if len(events) != 5 {
+	if len(events) != 6 {
 		t.Fatalf("got %d events: %+v", len(events), events)
+	}
+	if events[3].Action != "reply_contested" || events[3].Label != "contested=1" {
+		t.Errorf("contested event = %+v", events[3])
 	}
 	if events[0].UserID != 3 || events[0].Action != "reply_reacted" || events[0].PRNumber != 7 || events[0].Label != "class=question fp=a.go:1:abc comment=101" {
 		t.Errorf("first event = %+v", events[0])
@@ -77,11 +81,11 @@ func TestReplyTelemetryEventsOnePerHandledReplyPlusLinksAndErrors(t *testing.T) 
 	if events[2].Action != "reply_scan_error" || events[2].PRNumber != 9 || events[2].PROwner != "acme" {
 		t.Errorf("error event = %+v", events[2])
 	}
-	if events[3].Action != "reply_roots_linked" || events[3].Label != "linked=2 unmatched=1" {
-		t.Errorf("link event = %+v", events[3])
+	if events[4].Action != "reply_roots_linked" || events[4].Label != "linked=2 unmatched=1" {
+		t.Errorf("link event = %+v", events[4])
 	}
-	if events[4].Action != "reply_link_error" || events[4].PRNumber != 8 {
-		t.Errorf("link error event = %+v", events[4])
+	if events[5].Action != "reply_link_error" || events[5].PRNumber != 8 {
+		t.Errorf("link error event = %+v", events[5])
 	}
 	if got := replyTelemetryEvents(publisher.ReplyReport{}, publisher.LinkReport{Unmatched: 3}, 3); len(got) != 0 {
 		t.Errorf("a pass that linked nothing is not link activity, got %+v", got)
@@ -99,12 +103,19 @@ func TestReplyInputFromRequestMapsThreadRolesAndStripsNothingElse(t *testing.T) 
 		},
 		Reply: publisher.AuthorReply{CommentID: 101, Body: "pushback", Class: publisher.ReplyPushback},
 	}
+	req.PRBody = "Gated by design."
+	req.Siblings = []publisher.SiblingThread{{Fingerprint: "b.go:7:def", State: "contested",
+		Root:    publisher.ThreadComment{ID: 90, AuthorID: 1, Author: "prism[bot]", Body: "other finding", CreatedAt: t0},
+		Replies: []publisher.ThreadComment{{ID: 91, InReplyToID: 90, AuthorID: 42, Author: "pilot", Body: "the gate is elsewhere", CreatedAt: t0.Add(time.Minute)}}}}
 	in := replyInputFromRequest(req, 1)
-	if in.Owner != "acme" || in.PRNumber != 7 || in.HeadSHA != "head1" || in.DefaultBranch != "main" || in.Fingerprint != "a.go:1:abc" || in.FindingBody != "finding" || in.AuthorReply != "pushback" || in.Class != "pushback" {
+	if in.Owner != "acme" || in.PRNumber != 7 || in.HeadSHA != "head1" || in.DefaultBranch != "main" || in.Fingerprint != "a.go:1:abc" || in.FindingBody != "finding" || in.AuthorReply != "pushback" || in.Class != "pushback" || in.PRBody != "Gated by design." {
 		t.Fatalf("input = %+v", in)
 	}
 	if len(in.Thread) != 2 || !in.Thread[0].Ours || in.Thread[1].Ours || in.Thread[1].Author != "pilot" {
 		t.Fatalf("thread = %+v", in.Thread)
+	}
+	if len(in.Siblings) != 1 || in.Siblings[0].Fingerprint != "b.go:7:def" || in.Siblings[0].State != "contested" || len(in.Siblings[0].Thread) != 2 || !in.Siblings[0].Thread[0].Ours || in.Siblings[0].Thread[1].Ours || in.Siblings[0].Thread[1].Body != "the gate is elsewhere" {
+		t.Fatalf("siblings = %+v", in.Siblings)
 	}
 }
 
@@ -202,5 +213,18 @@ func TestReplyTelemetryEventsSkipPendingRowsUntilSettled(t *testing.T) {
 	events := replyTelemetryEvents(rep, publisher.LinkReport{}, 3)
 	if len(events) != 1 || events[0].Action != "reply_reacted" {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestReplyOutcomeEventsReportARequeuedStep(t *testing.T) {
+	o := publisher.ReplyOutcome{RepoOwner: "acme", RepoName: "example", PRNumber: 7, AuthorCommentID: 101, Requeued: true}
+	events := replyOutcomeEvents(o, nil, 3)
+	if len(events) != 1 || events[0].Action != "reply_requeued" || events[0].PRNumber != 7 || events[0].Label != "head moved comment=101" {
+		t.Fatalf("events = %+v", events)
+	}
+	o.Outcome, o.Decision = "posted", "hold"
+	events = replyOutcomeEvents(o, nil, 3)
+	if len(events) != 2 || events[0].Action != "reply_requeued" || events[1].Action != "reply_decision" {
+		t.Fatalf("a retaken decision that finished reports both: %+v", events)
 	}
 }

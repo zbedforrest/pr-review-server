@@ -18,11 +18,29 @@ import (
 
 // Reply decisions, mirrored by the publisher's constants.
 const (
-	ReplyDecisionConcede = "concede"
-	ReplyDecisionHold    = "hold"
-	ReplyDecisionAnswer  = "answer"
-	ReplyDecisionAbstain = "abstain"
+	ReplyDecisionConcede  = "concede"
+	ReplyDecisionHold     = "hold"
+	ReplyDecisionAnswer   = "answer"
+	ReplyDecisionAbstain  = "abstain"
+	ReplyDecisionWithdraw = "withdraw"
 )
+
+// SiblingThread is another PRism finding on the same PR with the replies
+// under it, so the reply model sees what was already raised and answered.
+type SiblingThread struct {
+	Fingerprint string
+	State       string
+	Thread      []ReplyMessage
+}
+
+// OtherFinding is an open PRism finding on the same PR that has no inline
+// thread of its own (the summary carries it).
+type OtherFinding struct {
+	Fingerprint string
+	File        string
+	Line        int
+	Severity    string
+}
 
 // ReplyMessage is one comment in the thread under a PRism inline finding.
 type ReplyMessage struct {
@@ -33,7 +51,9 @@ type ReplyMessage struct {
 }
 
 // ReplyInput is one author reply to answer, with the finding and thread it
-// belongs to. HeadSHA is the PR head the reply was written against.
+// belongs to. HeadSHA is the PR head the reply was written against; PRBody
+// and Siblings are the rest of the PR's context the model reads before
+// deciding.
 type ReplyInput struct {
 	Owner         string
 	Repo          string
@@ -42,7 +62,10 @@ type ReplyInput struct {
 	HeadSHA       string
 	Fingerprint   string
 	FindingBody   string
+	PRBody        string
 	Thread        []ReplyMessage
+	Siblings      []SiblingThread
+	Other         []OtherFinding
 	AuthorReply   string
 	Class         string
 }
@@ -83,7 +106,7 @@ func (d replyJSON) reacts() bool {
 // producing a decision; callers post a fixed notice rather than retrying.
 var ErrReplyBudgetExhausted = errors.New("reply budget exhausted")
 
-var replyDecisions = map[string]bool{ReplyDecisionConcede: true, ReplyDecisionHold: true, ReplyDecisionAnswer: true, ReplyDecisionAbstain: true}
+var replyDecisions = map[string]bool{ReplyDecisionConcede: true, ReplyDecisionHold: true, ReplyDecisionAnswer: true, ReplyDecisionAbstain: true, ReplyDecisionWithdraw: true}
 
 // RunAgentReply checks out the PR head, hands the agent the finding, the
 // thread and the author's reply, and returns its validated decision.
@@ -200,10 +223,10 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 			out.Unresolved = append(out.Unresolved, e)
 		}
 	}
-	// A hold and a concession both assert something about the code (a
-	// concession dismisses the finding for good), so both need a file:line
-	// the reader can open.
-	if (decision.Decision == ReplyDecisionHold || decision.Decision == ReplyDecisionConcede) && len(out.Cited) == 0 {
+	// A hold, a concession and a withdrawal all assert something about the
+	// code (the latter two dismiss the finding for good), so each needs a
+	// file:line the reader can open.
+	if (decision.Decision == ReplyDecisionHold || decision.Decision == ReplyDecisionConcede || decision.Decision == ReplyDecisionWithdraw) && len(out.Cited) == 0 {
 		log.Printf("%s %s without resolving evidence (%d cited); abstaining", logPrefix, decision.Decision, len(decision.Cited))
 		out.Cited = nil
 		return out, nil
@@ -280,7 +303,48 @@ func buildReplyPrompt(in ReplyInput) (string, error) {
 		}
 		thread = append(thread, message{Author: m.Author, Role: role, At: m.At.UTC().Format(time.RFC3339), Body: stripMarkers(m.Body)})
 	}
+	type sibling struct {
+		FindingID string    `json:"finding_id"`
+		State     string    `json:"state,omitempty"`
+		Thread    []message `json:"thread"`
+	}
+	siblings := make([]sibling, 0, len(in.Siblings))
+	for _, s := range in.Siblings {
+		if len(siblings) == replyPromptMaxSiblings {
+			break
+		}
+		sib := sibling{FindingID: s.Fingerprint, State: s.State}
+		thread := s.Thread
+		if len(thread) > replyPromptSiblingReplies+1 {
+			thread = append([]ReplyMessage{thread[0]}, thread[len(thread)-replyPromptSiblingReplies:]...)
+		}
+		for i, m := range thread {
+			role, limit := "author", replyPromptSiblingReplyChars
+			if m.Ours {
+				role = "prism"
+			}
+			if i == 0 {
+				limit = replyPromptSiblingRootChars
+			}
+			sib.Thread = append(sib.Thread, message{Author: m.Author, Role: role, At: m.At.UTC().Format(time.RFC3339), Body: truncate(stripMarkers(m.Body), limit)})
+		}
+		siblings = append(siblings, sib)
+	}
+	type otherFinding struct {
+		FindingID string `json:"finding_id"`
+		File      string `json:"file"`
+		Line      int    `json:"line,omitempty"`
+		Severity  string `json:"severity,omitempty"`
+	}
+	other := make([]otherFinding, 0, len(in.Other))
+	for _, o := range in.Other {
+		if len(other) == replyPromptMaxSiblings {
+			break
+		}
+		other = append(other, otherFinding{FindingID: o.Fingerprint, File: o.File, Line: o.Line, Severity: o.Severity})
+	}
 	authorReply := stripMarkers(in.AuthorReply)
+	prBody := truncate(stripMarkers(in.PRBody), replyPromptPRBodyChars)
 	payload, err := json.MarshalIndent(map[string]any{
 		"finding_id":            in.Fingerprint,
 		"finding":               stripMarkers(in.FindingBody),
@@ -291,6 +355,10 @@ func buildReplyPrompt(in ReplyInput) (string, error) {
 		"author_asserts_intent": replytext.AssertsIntent(authorReply),
 		"author_defers":         replytext.Defers(authorReply),
 		"ticket_keys":           replytext.TicketKeys(authorReply),
+		"pr_body":               prBody,
+		"pr_body_states_intent": replytext.StatesIntent(in.PRBody),
+		"other_prism_threads":   siblings,
+		"other_open_findings":   other,
 		"head_sha":              in.HeadSHA,
 	}, "", "  ")
 	if err != nil {
@@ -299,7 +367,17 @@ func buildReplyPrompt(in ReplyInput) (string, error) {
 	return promptAgentReply + "\n\n" + string(payload), nil
 }
 
-var htmlCommentRe = regexp.MustCompile(`<!--.*?-->\s*`)
+// Caps on the PR context in the reply prompt, so a long description or a
+// busy review cannot crowd out the thread being answered.
+const (
+	replyPromptMaxSiblings       = 10
+	replyPromptSiblingReplies    = 10 // the latest ones, after the root
+	replyPromptSiblingRootChars  = 700
+	replyPromptSiblingReplyChars = 300
+	replyPromptPRBodyChars       = 4000
+)
+
+var htmlCommentRe = regexp.MustCompile(`(?s)<!--.*?-->\s*`)
 
 func stripMarkers(s string) string {
 	return strings.TrimSpace(htmlCommentRe.ReplaceAllString(s, ""))
