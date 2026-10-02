@@ -150,14 +150,14 @@ func optOutURL(baseURL string) string {
 
 // settleFooter is the footer for a live round, filled by the posting path
 // because BuildPublishRound has no settings: off under the kill switch, and
-// without the settle sentence unless the reply reactor acts on author
-// replies (react, shadow or respond).
+// with the settle sentence only in respond mode, the one mode where an
+// author's reply is answered on the thread.
 func (p *Poller) settleFooter() string {
 	if p.cfg.DisableSettleFooter {
 		return ""
 	}
 	mode, _ := p.db.GetSetting(settingPublishReplyMode)
-	return publisher.SettleFooter(optOutURL(p.cfg.BaseURL), publisher.ReplyModeReacts(strings.TrimSpace(strings.ToLower(mode))))
+	return publisher.SettleFooter(optOutURL(p.cfg.BaseURL), strings.EqualFold(strings.TrimSpace(mode), publisher.ReplyModeRespond))
 }
 
 // profileFooter derives the summary footer's attribution from the sidecar's

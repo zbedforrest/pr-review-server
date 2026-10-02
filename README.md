@@ -201,7 +201,7 @@ review comments, inline findings, reply reactions, reply text or mention
 responses, whatever `publish_enabled_authors` says, while their reviews keep
 appearing on the dashboard. Authors manage it themselves: every PRism root
 review comment and summary ends with a footer that links to the dashboard
-(and, while `publish_reply_mode` is react, shadow or respond, says how to settle a thread: reply
+(and, while `publish_reply_mode` is respond, says how to settle a thread: reply
 `intentional` or `won't fix`), where an enrolled
 author sees a banner with Leave, and an opted-out author sees Rejoin. The
 banner uses `POST` and `DELETE /api/me/publish-opt-out`, and `GET /api/user`

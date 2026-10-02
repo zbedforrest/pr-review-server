@@ -51,7 +51,7 @@ var hygieneLabels = map[string]string{
 	ActionRepeatedPost: "repeated posts", ActionRepeatAfterDismiss: "repeats after dismiss",
 	ActionFixedWithoutFileChange: "fixed without a file change", ActionSameCommitResolve: "same-commit resolves",
 	ActionSeverityEscalation: "severity escalations", ActionVerdictSettled: "author verdicts settled", ActionPublishDenied: "posts stopped by the publish gate",
-	ActionOptedOut: "posts stopped by an opt-out",
+	ActionOptedOut: "of which stopped by an opt-out",
 }
 
 // UnwiredHygiene maps each counter whose producer has not shipped yet to the

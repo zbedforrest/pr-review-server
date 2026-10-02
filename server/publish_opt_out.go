@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -40,9 +41,14 @@ func (s *Server) publishEnrollmentFor(login string) publishEnrollment {
 }
 
 // enrolledVia names the most specific entry of the allowlist that admits the
-// login, from the membership cache so /api/user never waits on GitHub.
+// login, from the membership cache so /api/user never waits on GitHub. A
+// miss warms the cache in the background, so the next load has the answer.
 func (s *Server) enrolledVia(enabledCSV, login string) string {
-	return poller.CachedAdmittingEntry(s.teams, enabledCSV, login)
+	via := poller.CachedAdmittingEntry(s.teams, enabledCSV, login)
+	if via == "" && s.teams != nil {
+		go poller.AdmittingEntry(context.Background(), s.teams, enabledCSV, login)
+	}
+	return via
 }
 
 func (s *Server) handlePublishOptOut(w http.ResponseWriter, r *http.Request) {

@@ -520,8 +520,10 @@ func TestSettleFooter_FollowsReplyModeAndTheKillSwitch(t *testing.T) {
 	assert.Contains(t, linkOnly, `href="https://prism.example/#prism-comments"`)
 	assert.NotContains(t, linkOnly, "settle a thread", "replies off: nobody acts on a verdict")
 
-	require.NoError(t, database.SetSetting(settingPublishReplyMode, "observe"))
-	assert.NotContains(t, p.settleFooter(), "settle a thread", "observe only records replies")
+	for _, mode := range []string{"observe", "react", "shadow"} {
+		require.NoError(t, database.SetSetting(settingPublishReplyMode, mode))
+		assert.NotContains(t, p.settleFooter(), "settle a thread", "%s never answers a verdict on the thread", mode)
+	}
 	require.NoError(t, database.SetSetting(settingPublishReplyMode, "Respond"))
 	assert.Contains(t, p.settleFooter(), "settle a thread")
 

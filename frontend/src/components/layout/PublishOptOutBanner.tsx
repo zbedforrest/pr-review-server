@@ -30,8 +30,7 @@ export function PublishOptOutBanner() {
           </>
         ) : (
           <>
-            <strong>PRism comments on your PRs are on</strong> ({enrolledVia(user.enrolled_via)}). Reply <code>intentional</code> or{' '}
-            <code>won't fix</code> under a comment to settle it. Leaving stops the comments; reviews stay on this dashboard.
+            <strong>PRism comments on your PRs are on</strong> ({enrolledVia(user.enrolled_via)}). Leaving stops the comments; reviews stay on this dashboard.
           </>
         )}
         {error && <span className="publish-opt-out-banner__error"> {error.message}</span>}

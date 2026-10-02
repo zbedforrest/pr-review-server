@@ -55,7 +55,7 @@ describe('PublishOptOutBanner', () => {
     renderBanner(user({ publish_enrolled: true, publish_opted_out: false, enrolled_via: 'xo-team' }));
 
     expect(screen.getByRole('status').textContent).toContain('via team xo-team');
-    expect(screen.getByRole('status').textContent).toContain('intentional');
+    expect(screen.getByRole('status').textContent).toContain('Leaving stops the comments');
     fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
 
     await waitFor(() => expect(requests()).toEqual(['POST /api/me/publish-opt-out']));

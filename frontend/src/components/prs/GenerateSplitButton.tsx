@@ -43,7 +43,7 @@ export function GenerateSplitButton({ onGenerate, pending, publishAllowed, publi
 
   const primaryTitle = publishAllowed
     ? 'Generate an AI review and post it to the PR'
-    : 'Generate an AI review (review HTML only; author is not in the comment pilot)';
+    : `Generate an AI review (review HTML only; ${publishBlockedTitle.charAt(0).toLowerCase()}${publishBlockedTitle.slice(1)})`;
 
   return (
     <span
