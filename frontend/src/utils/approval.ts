@@ -57,7 +57,7 @@ export function reconcileApprovalTarget(target: ApprovalTarget, pr: PR, latest?:
     [!!latest && latest.target_id !== target.target_id, 'superseded'],
     [pr.commit_sha !== target.revision, 'head_changed'],
     [!!pr.hidden, 'hidden'],
-    [!!pr.draft && unlisted('pr_draft'), 'draft'],
+    [!!pr.draft && unlisted('pr_draft'), 'pr_draft'],
     [!!pr.pr_state && pr.pr_state !== 'open', 'closed'],
     [!!pr.is_mine, 'self_authored'],
     [pr.ci_state === 'failure' && unlisted('ci_failed'), 'ci_failed'],

@@ -213,8 +213,8 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
 type RowKind = 'candidate' | 'close' | 'blocked' | 'work' | 'other';
 const blockerText: Record<string, string> = { ci_failed: 'CI failing', human_changes_requested: 'Changes requested', provider_changes_requested: 'Review tool requested changes', pr_draft: 'Draft', ci_pending: 'CI still running', review_in_progress: 'Review in progress', source_incomplete: 'Evidence incomplete', already_approved: 'Already approved', review_missing: 'No review of the current commit' };
 const dispositionText: Record<string, string> = { fixed: 'Fixed', not_applicable: 'Does not apply', still_present: 'Still present', style_only: 'Style only', cannot_tell: 'Unclear', unresolved: 'Unresolved', uncertain: 'Uncertain', non_blocking: 'Non-blocking' };
-const staleText: Record<string, string> = { head_changed: 'New commits pushed', observed_ci_change: 'CI changed', blocker_cleared: 'A blocker cleared', observed_pr_change: 'PR changed', closed: 'PR closed', draft: 'Draft' };
-const staleBlockers = new Set(['ci_failed', 'observed_ci_change', 'human_changes_requested', 'draft', 'pr_draft']);
+const staleText: Record<string, string> = { head_changed: 'New commits pushed', observed_ci_change: 'CI changed', blocker_cleared: 'A blocker cleared', observed_review_change: 'Changes requested', observed_pr_change: 'PR changed', closed: 'PR closed', draft: 'Draft' };
+const staleBlockers = new Set(['ci_failed', 'ci_pending', 'observed_ci_change', 'human_changes_requested', 'observed_review_change', 'draft', 'pr_draft']);
 const impactText = (impact: number) => impact >= 2.5 ? 'Severe' : impact >= 1.5 ? 'Defect' : impact >= 0.5 ? 'Minor' : 'Cosmetic';
 
 function rowStatus(target: ApprovalTarget, now: number): { kind: RowKind; label: string; reason?: string } {
@@ -229,8 +229,8 @@ function rowStatus(target: ApprovalTarget, now: number): { kind: RowKind; label:
   if (isApprovalCandidate(target, now)) return { kind: 'candidate', label: 'Candidate', reason };
   if (bucket === 'stale') {
     const codes = target.reason_codes || [];
-    const blocking = codes.filter(code => staleBlockers.has(code));
-    const why = codes.filter(code => code in blockerText || code in staleText).map(code => blockerText[code] || staleText[code]).join(', ') || reason;
+    const blocking = codes.includes('blocker_cleared') ? [] : codes.filter(code => staleBlockers.has(code));
+    const why = (codes.includes('blocker_cleared') ? ['blocker_cleared'] : codes).filter(code => code in blockerText || code in staleText).map(code => blockerText[code] || staleText[code]).join(', ') || reason;
     if (blocking.length) return { kind: 'blocked', label: 'Blocked', reason: why };
     return { kind: 'other', label: codes.includes('review_in_progress') ? 'Review updating' : target.decision === 'candidate' ? 'Needs recheck' : 'Out of date', reason: why };
   }

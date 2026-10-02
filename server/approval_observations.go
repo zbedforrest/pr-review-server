@@ -71,7 +71,7 @@ func (s *Server) approvalMaterialChanges(owner, repo string, number int) []appro
 	case pr.ReviewDecision == "CHANGES_REQUESTED" || pr.MyReviewStatus == "CHANGES_REQUESTED":
 		changes = append(changes, approvalChange{"human_changes_requested", candidates})
 	case pr.Draft:
-		changes = append(changes, approvalChange{"draft", candidates})
+		changes = append(changes, approvalChange{"pr_draft", candidates})
 	case reviewRunning(pr.Status):
 		changes = append(changes, approvalChange{"review_in_progress", candidates})
 	}
@@ -88,7 +88,9 @@ func (s *Server) approvalMaterialChanges(owner, repo string, number int) []appro
 	if !reviewRunning(pr.Status) {
 		cleared = append(cleared, "review_in_progress")
 	}
-	changes = append(changes, approvalChange{"blocker_cleared", db.ApprovalInvalidation{Cleared: cleared}})
+	if len(cleared) > 0 {
+		changes = append(changes, approvalChange{"blocker_cleared", db.ApprovalInvalidation{Cleared: cleared}})
+	}
 	return changes
 }
 

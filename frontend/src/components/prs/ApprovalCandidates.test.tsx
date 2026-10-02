@@ -93,6 +93,12 @@ describe('approval investigation controls', () => {
     expect((await screen.findByText('Blocked', { selector: '.approval-status' }))).toBeTruthy();
     expect(screen.getByText('CI changed', { selector: '.approval-reason' })).toBeTruthy();
   });
+  it('offers a recheck once the blocker that held a result back clears', async () => {
+    vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'needs_attention', freshness_state: 'stale', reason_codes: ['ci_failed', 'blocker_cleared'], summary: 'Old decision' } as unknown as ApprovalTarget]);
+    mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
+    expect(await screen.findByText('Out of date', { selector: '.approval-status' })).toBeTruthy();
+    expect(screen.getByText('A blocker cleared', { selector: '.approval-reason' })).toBeTruthy();
+  });
   it('shows expired candidates in other results and explicitly revalidates only once', async () => {
     vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, execution_status: 'completed', decision: 'candidate', freshness_state: 'expired', valid_until: new Date(0).toISOString(), reason_codes: [], summary: 'Old decision' } as unknown as ApprovalTarget]);
     mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
