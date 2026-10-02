@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"pr-review-server/db"
 )
@@ -119,6 +121,7 @@ func (s Scanner) Run(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 	if len(targets) > maxTargets {
+		log.Printf("[FEEDBACK] scanning the %d most recently commented PRs of %d", maxTargets, len(targets))
 		targets = targets[:maxTargets]
 	}
 	res := Result{Targets: len(targets)}
@@ -239,12 +242,15 @@ func reactionItems(base Item, commentID int64, reactions []Reaction, since time.
 	return items
 }
 
+// prismWordRe matches the product name as a word, not prism.js or a
+// hyphenated identifier.
+var prismWordRe = regexp.MustCompile(`(?i)(?:^|[^\w.\-])prism(?:$|[^\w.\-]|\.(?:\s|$))`)
+
 func (s Scanner) namesBot(body string) bool {
-	text := strings.ToLower(body)
-	if s.Handle != "" && strings.Contains(text, "@"+strings.ToLower(s.Handle)) {
+	if s.Handle != "" && strings.Contains(strings.ToLower(body), "@"+strings.ToLower(s.Handle)) {
 		return true
 	}
-	return strings.Contains(text, "prism")
+	return prismWordRe.MatchString(body)
 }
 
 func isBot(c Comment) bool {
@@ -262,15 +268,23 @@ func issueCommentURL(t db.FeedbackTarget, id int64) string {
 const maxStoredBody = 4000
 
 func toRow(it Item, observed time.Time) db.FeedbackItem {
-	body := it.Body
-	if len(body) > maxStoredBody {
-		body = body[:maxStoredBody]
-	}
 	return db.FeedbackItem{
 		Source: it.Source, ItemID: it.ItemID, CommentID: it.CommentID,
 		RepoOwner: it.RepoOwner, RepoName: it.RepoName, PRNumber: it.PRNumber,
-		Author: it.Author, Body: body, ReplyClass: it.ReplyClass, Reaction: it.Reaction,
+		Author: it.Author, Body: truncateBytes(it.Body, maxStoredBody), ReplyClass: it.ReplyClass, Reaction: it.Reaction,
 		Label: string(it.Label), Classifier: it.Classifier, URL: it.URL,
 		CreatedAt: it.CreatedAt.UTC(), ObservedAt: observed.UTC(),
 	}
+}
+
+// truncateBytes cuts at most max bytes without splitting a UTF-8 sequence.
+func truncateBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

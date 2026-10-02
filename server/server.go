@@ -93,7 +93,9 @@ type Server struct {
 	// the model in the daily feedback scan; feedbackScanned is the last run.
 	feedbackGitHub   feedback.GitHub
 	feedbackClassify feedback.Classifier
+	feedbackOnce     sync.Once
 	feedbackScanned  bool
+	feedbackNote     string
 	// quickActions holds the per-instance replay, duplicate and rate-limit
 	// state for POST /api/prs/quick-action.
 	quickActions      *quickActionState

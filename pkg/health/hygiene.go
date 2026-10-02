@@ -81,10 +81,11 @@ func hygieneDetail(telemetry map[string]int) string {
 	return line
 }
 
-// withoutHygiene drops the hygiene actions, which have their own line.
+// withoutHygiene drops the hygiene and feedback actions, which have their own
+// lines.
 func withoutHygiene(telemetry map[string]int) map[string]int {
-	hygiene := make(map[string]bool, len(HygieneActions))
-	for _, a := range HygieneActions {
+	hygiene := make(map[string]bool, len(TelemetryActions))
+	for _, a := range TelemetryActions {
 		hygiene[a] = true
 	}
 	out := make(map[string]int, len(telemetry))

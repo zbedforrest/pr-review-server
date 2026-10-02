@@ -368,7 +368,7 @@ func Load() *Config {
 		ReplyVerdictFastPath:       !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_VERDICT_FAST_PATH")), "false"),
 		MentionHandle:              strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
 		HealthJobToken:             os.Getenv("HEALTH_JOB_TOKEN"),
-		FeedbackDigest:             getEnvOrDefault("FEEDBACK_DIGEST", "true") != "false",
+		FeedbackDigest:             !strings.EqualFold(strings.TrimSpace(os.Getenv("FEEDBACK_DIGEST")), "false"),
 		AdminLogins:                getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),
 		AnthropicAPIKey:            os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:           os.Getenv("OPENROUTER_API_KEY"),
