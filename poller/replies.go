@@ -307,8 +307,9 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				task()
 			}()
 		},
-		ClaimLease: replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
-		Holder:     p.holderID,
+		ClaimLease:     replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
+		Holder:         p.holderID,
+		ResolveThreads: !p.threadsOff,
 		Live: func() (string, func(string) bool, error) {
 			liveMode, err := p.db.GetSetting(settingPublishReplyMode)
 			if err != nil {
@@ -437,4 +438,16 @@ func (a ghReplyAdapter) React(ctx context.Context, owner, repo string, commentID
 
 func (a ghReplyAdapter) PostReply(ctx context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error) {
 	return a.c.CreateReviewCommentReply(ctx, owner, repo, number, rootCommentID, body)
+}
+
+func (a ghReplyAdapter) ListReviewThreads(ctx context.Context, owner, repo string, number int) ([]publisher.ReviewThread, error) {
+	return listReviewThreads(ctx, a.c, owner, repo, number)
+}
+
+func (a ghReplyAdapter) ResolveThread(ctx context.Context, owner, repo, threadNodeID string) error {
+	return a.c.ResolveThread(ctx, owner, repo, threadNodeID)
+}
+
+func (a ghReplyAdapter) UnresolveThread(ctx context.Context, owner, repo, threadNodeID string) error {
+	return a.c.UnresolveThread(ctx, owner, repo, threadNodeID)
 }
