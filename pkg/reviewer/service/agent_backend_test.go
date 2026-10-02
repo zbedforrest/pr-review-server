@@ -465,6 +465,7 @@ func TestParseCodexStreamDoesNotCountAFailedCommandAsATool(t *testing.T) {
 
 func TestParseCodexStreamCountsAnEmptySearchAsATool(t *testing.T) {
 	stream := `{"type":"item.completed","item":{"type":"command_execution","command":"rg -n needle","status":"completed","exit_code":1,"aggregated_output":""}}
+{"type":"item.completed","item":{"type":"file_change"}}
 {"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
 `
 	proc := &fakeProcess{stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}
@@ -472,8 +473,8 @@ func TestParseCodexStreamCountsAnEmptySearchAsATool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseCodexStream: %v", err)
 	}
-	if res.toolCalls != 1 {
-		t.Fatalf("tool calls = %d, want 1", res.toolCalls)
+	if res.toolCalls != 2 {
+		t.Fatalf("tool calls = %d, want 2 (an empty search and an item without a status field)", res.toolCalls)
 	}
 }
 

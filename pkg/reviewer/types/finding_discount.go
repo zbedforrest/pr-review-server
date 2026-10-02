@@ -53,7 +53,7 @@ var intentPhrases = []string{
 	"appears deliberate", "appears intentional", "appears intended", "appears to be intentional", "appears to be deliberate",
 	"this may be deliberate", "this may be intentional", "this might be intentional", "this could be intentional",
 	"this is likely intentional", "this is probably intentional", "this looks intentional", "this looks deliberate",
-	"by design", "on purpose", "intentional", "deliberate", "intended behavior", "intended behaviour",
+	"by design", "on purpose", "intended behavior", "intended behaviour",
 	"if this is intentional", "if this is deliberate", "if this is intended", "if intentional", "if deliberate", "if intended",
 	"unless this is intentional", "unless this is deliberate", "unless intended",
 }

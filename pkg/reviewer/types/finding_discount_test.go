@@ -88,12 +88,13 @@ func TestSelfDiscount_UnfalsifiableIsDiscounted(t *testing.T) {
 
 func TestSelfDiscount_AssertedFindingsAreNotDiscounted(t *testing.T) {
 	for name, uncertainty := range map[string]string{
-		"confident":                     "Confident; the branch is reached on every request.",
-		"fairly confident":              "Fairly confident; the skip expression makes availability irrelevant whenever the live filter is selected.",
-		"low residual with later hedge": "Low: the only open question is whether retries mask it, which does not change the first failure.",
-		"intentionally mid-sentence":    "The guard was intentionally removed in the previous commit, so the crash is reachable today.",
-		"bare quantifier states defect": "Currently no guard rejects empty payloads, so the handler panics.",
-		"empty":                         "",
+		"confident":                      "Confident; the branch is reached on every request.",
+		"fairly confident":               "Fairly confident; the skip expression makes availability irrelevant whenever the live filter is selected.",
+		"low residual with later hedge":  "Low: the only open question is whether retries mask it, which does not change the first failure.",
+		"intentionally mid-sentence":     "The guard was intentionally removed in the previous commit, so the crash is reachable today.",
+		"bare quantifier states defect":  "Currently no guard rejects empty payloads, so the handler panics.",
+		"intent word opens an assertion": "Intentional or not, the guard is now dropped on every request.",
+		"empty":                          "",
 	} {
 		if got := SelfDiscount(falsifiableContract("Every checkout request returns a 500.", uncertainty)); got != DiscountNone {
 			t.Errorf("%s: SelfDiscount = %q, want none", name, got)

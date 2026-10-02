@@ -10,7 +10,7 @@ import (
 // auditedFalsePositives are anonymised copies of the six confirmed false
 // positives from the comment-system audit: every one claimed current impact
 // with an experiment, then conditioned the claim on something unchecked in
-// its uncertainty line. The third entry carries its second-round wording;
+// its uncertainty line. The last entry carries its second-round wording;
 // the posted first-round line is auditedFalsePositiveAsPosted below.
 var auditedFalsePositives = []struct {
 	name, severity, kind, impact, uncertainty string
@@ -35,7 +35,7 @@ var auditedFalsePositives = []struct {
 		"Whether the LIVE tab remains mounted while the broadcaster is offline is unknown, so the wasted fetch may only occur for part of the offline window."},
 }
 
-// auditedFalsePositiveAsPosted is the third audited false positive with the
+// auditedFalsePositiveAsPosted is the last audited false positive with the
 // uncertainty line that was actually posted. It is not hedged, so no lexical
 // gate hides it; the test pins that limit.
 var auditedFalsePositiveAsPosted = struct{ name, severity, kind, impact, uncertainty string }{

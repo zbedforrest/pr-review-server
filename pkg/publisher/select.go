@@ -171,10 +171,11 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 	return sel
 }
 
-// Shown is the bar for appearing on GitHub at all: a medium or critical
-// finding whose contract asserts current production impact and names an
-// experiment (the inline bar). Lower findings and self-discounted ones live
-// only on the dashboard. With the discount gate off, any critical is shown.
+// Shown is the bar for an inline comment or a summary bullet: a medium or
+// critical finding whose contract asserts current production impact and
+// names an experiment. Lower findings and self-discounted ones appear only
+// in the summary's folded notes and on the dashboard. With the discount
+// gate off, any critical is shown.
 func Shown(f payload.Finding) bool {
 	if !Publishable(f) {
 		return false

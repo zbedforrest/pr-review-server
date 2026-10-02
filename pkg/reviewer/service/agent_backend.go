@@ -263,9 +263,10 @@ var codexToolItemTypes = map[string]bool{
 // codexItemExecuted is true for a tool item that actually ran. A search
 // that found nothing exits 1 and still read the checkout; a missing
 // executable (126, 127) or a sandbox refusal, which bubblewrap reports on
-// the command's own output, did not.
+// the command's own output, did not. The item.completed envelope already
+// says the item finished, so an absent status counts as completed.
 func codexItemExecuted(item map[string]any) bool {
-	if status, _ := item["status"].(string); status != "completed" {
+	if status, ok := item["status"].(string); ok && status != "completed" {
 		return false
 	}
 	if code, ok := item["exit_code"].(float64); ok && (code == 126 || code == 127) {

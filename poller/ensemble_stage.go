@@ -134,7 +134,7 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 func capLoneRunCriticals(comments []types.LineComment) int {
 	downgraded := 0
 	for i := range comments {
-		if comments[i].FilePath != "SUMMARY" && strings.EqualFold(strings.TrimSpace(comments[i].Importance), "CRITICAL") {
+		if comments[i].FilePath != "SUMMARY" && comments[i].FilePath != "CHECK" && strings.EqualFold(strings.TrimSpace(comments[i].Importance), "CRITICAL") {
 			comments[i].Importance = "MEDIUM"
 			downgraded++
 		}
