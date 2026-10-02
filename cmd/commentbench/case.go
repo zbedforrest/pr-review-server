@@ -136,6 +136,7 @@ type ReplyExpect struct {
 	Class         string    `json:"class"`
 	Quality       string    `json:"quality"`
 	Accept        []string  `json:"accept"`
+	ClassAccept   []string  `json:"class_accept,omitempty"` // the class rule alone, also accepted in live mode
 	WantDismissed bool      `json:"want_dismissed,omitempty"`
 	Gold          bool      `json:"gold"`
 	Backed        []string  `json:"backed,omitempty"`

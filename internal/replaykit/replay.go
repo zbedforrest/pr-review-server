@@ -353,7 +353,7 @@ const (
 func ClassifyRepost(p Post, earlier []Post) RepostKind {
 	kind := RepostNone
 	for _, e := range earlier {
-		if e.FindingID == p.FindingID {
+		if p.FindingID != "" && e.FindingID == p.FindingID {
 			return RepostSameMarker
 		}
 		if SameDefect(p.File, p.Line, p.RawText, p.Subjects, e.File, e.Line, e.RawText, e.Subjects) {
@@ -363,13 +363,14 @@ func ClassifyRepost(p Post, earlier []Post) RepostKind {
 	return kind
 }
 
-// SameDefect is the alias rule from the program spec: same file, line within
-// ten, and either raw-text Jaccard at or above 0.20 or a shared subject.
+// SameDefect is the alias rule from the program spec: same file, both lines
+// known and within ten, and either raw-text Jaccard at or above 0.20 or a
+// shared subject.
 func SameDefect(file string, line int, text string, subjects []string, oFile string, oLine int, oText string, oSubjects []string) bool {
 	if !SameFile(file, oFile) {
 		return false
 	}
-	if line > 0 && oLine > 0 && abs(line-oLine) > AliasLineTolerance {
+	if line <= 0 || oLine <= 0 || abs(line-oLine) > AliasLineTolerance {
 		return false
 	}
 	if reconcile.Similarity(text, oText) >= AliasSimilarity {
@@ -386,7 +387,7 @@ func SameDefect(file string, line int, text string, subjects []string, oFile str
 }
 
 func SameFile(a, b string) bool {
-	return a == b || strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a)
+	return a == b
 }
 
 func IsFindingRow(row db.PublishedFinding) bool {

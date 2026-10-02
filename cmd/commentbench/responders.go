@@ -75,7 +75,8 @@ func cannedReply(decision string, req publisher.ReplyRequest) string {
 // the reply budget (REPLY_MAX_TURNS, REPLY_WALL_CLOCK_SEC), with read access
 // to the case's repository.
 func liveResponder(cfg service.AgentConfig) func(*Case, *Run) publisher.Responder {
-	return func(c *Case, _ *Run) publisher.Responder {
+	return func(c *Case, run *Run) publisher.Responder {
+		run.Live = true
 		return func(ctx context.Context, req publisher.ReplyRequest) (publisher.ReplyDecision, error) {
 			ourID := req.Root.AuthorID
 			thread := make([]service.ReplyMessage, 0, len(req.Thread))

@@ -27,6 +27,12 @@ type BuildOptions struct {
 	Logf        func(string, ...any)
 }
 
+func (o BuildOptions) logf(format string, args ...any) {
+	if o.Logf != nil {
+		o.Logf(format, args...)
+	}
+}
+
 // ManifestEntry is one line of manifest.json.
 type ManifestEntry struct {
 	ID             string   `json:"id"`
@@ -60,6 +66,7 @@ func buildAll(o BuildOptions, out string) (Manifest, error) {
 		return Manifest{}, err
 	}
 	ex := indexExamples(o.Audit.Verified)
+	o.Logf = logf
 	m := Manifest{Generated: time.Now().UTC(), Counts: map[string]int{}}
 	for _, apr := range o.Audit.PerPR {
 		c, entry, err := buildCase(o, apr, ex)
@@ -117,6 +124,9 @@ func buildCase(o BuildOptions, apr auditPR, ex examples) (*Case, ManifestEntry, 
 	for i, rd := range rounds {
 		info := RoundInfo{Index: i, SHA: rd.SHA, At: rd.At}
 		raw, ok, err := o.Store.Sidecar(owner, repo, d.Number, rd.SHA7)
+		if err != nil {
+			o.logf("%s: sidecar %s: %v; round left without a sidecar", apr.Key, rd.SHA7, err)
+		}
 		if err == nil && ok {
 			if pl, derr := payload.Decode(raw); derr == nil {
 				c.Sidecars[rd.SHA7] = raw
@@ -139,7 +149,11 @@ func buildCase(o BuildOptions, apr auditPR, ex examples) (*Case, ManifestEntry, 
 				if p.SHA == rd.SHA {
 					continue
 				}
-				if cmp, known, err := o.Store.Compare(owner, repo, p.SHA, rd.SHA); err == nil && known {
+				cmp, known, err := o.Store.Compare(owner, repo, p.SHA, rd.SHA)
+				if err != nil {
+					o.logf("%s: compare %s...%s: %v; changed files unknown", apr.Key, replaykit.Short(p.SHA), rd.SHA7, err)
+				}
+				if err == nil && known {
 					c.Compares[compareKey(p.SHA, rd.SHA)] = cmp.Files
 				}
 			}
@@ -214,8 +228,9 @@ func reasonCounts(fs []FindingExpect) string {
 	return strings.Join(parts, ", ")
 }
 
-// normaliseExamples keeps only the PRism comment ids an example names; an
-// example naming none of them (only other reviewers' ids) covers the PR.
+// normaliseExamples keeps only the PRism comment ids an example names. An
+// example naming no id covers the PR; one naming only other reviewers'
+// comments covers nothing here.
 func normaliseExamples(list []example, prism map[int64]bool) []example {
 	out := make([]example, 0, len(list))
 	for _, e := range list {
@@ -224,6 +239,9 @@ func normaliseExamples(list []example, prism map[int64]bool) []example {
 			if prism[id] {
 				ids[id] = true
 			}
+		}
+		if len(e.IDs) > 0 && len(ids) == 0 {
+			continue
 		}
 		out = append(out, example{Pattern: e.Pattern, IDs: ids})
 	}
@@ -387,7 +405,7 @@ func expectationFor(ac auditComment) (expect, reason, detail string) {
 func (b *caseBuilder) mapFinding(round int, marker, file string, line int, text string) (id, raw string, subjects []string, loose bool) {
 	pl := b.payloads[round]
 	if pl == nil {
-		return marker, text, nil, false
+		return "", text, nil, false
 	}
 	for _, f := range pl.Findings {
 		if f.ID == marker {
@@ -491,6 +509,7 @@ func (b *caseBuilder) replies() {
 		}
 		re := ReplyExpect{CommentID: hr.CommentID, RootCommentID: rootID, Author: hr.Login, At: hr.Created, Class: hr.Class, Quality: hr.PrismReplyQuality}
 		re.Accept, re.WantDismissed = acceptedActions(hr, rec, label)
+		re.ClassAccept, _ = acceptedActions(auditResponse{Class: hr.Class, PrismReplyQuality: "missing_when_needed"}, nil, label)
 		if settlingClasses[hr.Class] || hr.Class == "ack" {
 			re.Backed = append(re.Backed, "reply:"+hr.Class)
 		}

@@ -315,7 +315,7 @@ func scoreReplies(run *Run, s *CaseScore) {
 		}
 		cs.Expected++
 		s.RepliesScored++
-		correct := contains(re.Accept, got)
+		correct := contains(re.Accept, got) || (run.Live && contains(re.ClassAccept, got))
 		if correct && re.WantDismissed {
 			fr, has := run.FinalRows[row.Fingerprint]
 			correct = ok && has && fr.State == db.PublishedStateDismissed

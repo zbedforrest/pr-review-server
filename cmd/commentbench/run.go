@@ -27,6 +27,7 @@ type Run struct {
 	FinalRows   map[string]db.PublishedFinding
 	RootFor     map[int64]int64 // historical root comment id -> replayed root comment id
 	Synthetic   int             // stub decisions made without a recorded one
+	Live        bool            // replies came from the live reply agent
 	ReplyErrors []string
 }
 
@@ -159,7 +160,7 @@ func flipped(previous, after []db.PublishedFinding) []db.PublishedFinding {
 	}
 	var out []db.PublishedFinding
 	for _, row := range after {
-		if wasOpen[row.Fingerprint] && replaykit.IsFindingRow(row) && (row.State == db.PublishedStateResolved || row.State == "fixed") {
+		if wasOpen[row.Fingerprint] && replaykit.IsFindingRow(row) && row.State == db.PublishedStateResolved {
 			out = append(out, row)
 		}
 	}

@@ -34,6 +34,9 @@ func replayFixture(t *testing.T, name string) (*Run, CaseScore) {
 }
 
 func diffKey(d Diff) string {
+	if d.Round < 0 {
+		return fmt.Sprintf("%s reply %d", d.Kind, d.CommentID)
+	}
 	if d.CommentID != 0 {
 		return fmt.Sprintf("%s round %d comment %d", d.Kind, d.Round+1, d.CommentID)
 	}
@@ -216,6 +219,9 @@ func TestThresholdsGateOnGold(t *testing.T) {
 	fail := Thresholds{MinPostPrecision: 0.9, MinSuppressionRecall: 0.5, MaxReposts: 0, MaxWrongFixed: 0, MinSummaryCorrect: -1, MinReplyAccuracy: -1, MinResolutionRecall: -1}
 	if f := fail.check(res.Tiers[TierGold]); len(f) != 4 {
 		t.Fatalf("want four failures, got %v", f)
+	}
+	if f := (Thresholds{MinPostPrecision: 0.5, MinSuppressionRecall: -1, MaxReposts: -1, MaxWrongFixed: -1, MinSummaryCorrect: -1, MinReplyAccuracy: -1, MinResolutionRecall: -1}).check(TierMetrics{}); len(f) != 1 {
+		t.Fatalf("an unmeasured gated metric must fail, got %v", f)
 	}
 }
 
