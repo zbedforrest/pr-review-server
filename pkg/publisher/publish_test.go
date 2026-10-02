@@ -89,6 +89,7 @@ func (g *fakeGitHub) repliesTo(root int64) []string {
 type fakeLedger struct {
 	rows       map[string]*db.PublishedFinding
 	failUpsert func(*db.PublishedFinding) error
+	onRead     func()
 }
 
 func newFakeLedger() *fakeLedger { return &fakeLedger{rows: map[string]*db.PublishedFinding{}} }
@@ -129,6 +130,9 @@ func (l *fakeLedger) UpsertPublishedFinding(pf *db.PublishedFinding) error {
 }
 
 func (l *fakeLedger) GetPublishedFindingsForPR(_, _ string, _ int) ([]db.PublishedFinding, error) {
+	if l.onRead != nil {
+		l.onRead()
+	}
 	var out []db.PublishedFinding
 	for _, r := range l.rows {
 		out = append(out, *r)

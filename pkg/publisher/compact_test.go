@@ -52,7 +52,7 @@ func TestRenderInline_CompactHeadlineFromContract(t *testing.T) {
 	fd := withContract(f("x", "medium", "purr/arbiter.py", 50,
 		"On master the legacy path built its own client with verify=False. Now it shares the pooled client.\n\nThat is probably right, but if the bundle lacks the root every journey is skipped.\n\n```suggestion\nverify=get_ssl_verification(),\n```"),
 		"production_behavior", "current_impact",
-		"Legacy audience-match now verifies TLS; if the bundle lacks MMLLC ROOT every psychographic journey silently stops firing.",
+		"Legacy audience-match now verifies TLS; if the bundle lacks ACME ROOT every psychographic journey silently stops firing.",
 		"Most likely a documentation gap rather than an outage.")
 	fd.FindingContract.Falsifiability = "falsifiable"
 	fd.FindingContract.FalsifiableCondition = strp("POST to the arbiter endpoint with verify enabled")
@@ -65,7 +65,7 @@ func TestRenderInline_CompactHeadlineFromContract(t *testing.T) {
 	}
 
 	mustContain := []string{
-		"**[MEDIUM] Behavior change · Legacy audience-match now verifies TLS**\n\nLegacy audience-match now verifies TLS; if the bundle lacks MMLLC ROOT every psychographic journey silently stops firing.",
+		"**[MEDIUM] Behavior change · Legacy audience-match now verifies TLS**\n\nLegacy audience-match now verifies TLS; if the bundle lacks ACME ROOT every psychographic journey silently stops firing.",
 		"Most likely a documentation gap rather than an outage.",
 		"```suggestion\nverify=get_ssl_verification(),\n```",
 	}

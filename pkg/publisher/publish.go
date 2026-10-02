@@ -81,6 +81,11 @@ const summaryFingerprint = "summary"
 // legacy trigger) would otherwise repost and resolve rows with no code change.
 var ErrHeadAlreadyPublished = errors.New("publisher: head already published")
 
+// ErrSummaryMoved is returned by RefreshSummary when a newer round rewrote
+// the summary while the refresh was being built; the refresh is dropped so it
+// cannot overwrite the newer round's summary with a stale one.
+var ErrSummaryMoved = errors.New("publisher: summary moved to a newer round during refresh")
+
 // HeadPublished reports whether a publication round for head completed. The
 // summary row is written after the inline comments, so its LastSeenSHA names
 // the last head that was published in full.
@@ -106,15 +111,19 @@ func (p *Publisher) now() time.Time {
 // Publish posts one review round. The ledger decision table (see doc.go) is
 // the default; Policy.LegacyLedger selects the pre-memory publisher.
 func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
-	if r.Previous == nil {
+	// The guard reads the ledger afresh even when the caller supplied rows,
+	// so a round that completed since the caller loaded them is seen.
+	if r.Previous == nil || !p.Policy.RepublishSameCommit {
 		prev, err := p.Ledger.GetPublishedFindingsForPR(r.Owner, r.Repo, r.Number)
 		if err != nil {
 			return Report{}, fmt.Errorf("load published findings: %w", err)
 		}
-		r.Previous = prev
-	}
-	if !p.Policy.RepublishSameCommit && HeadPublished(r.Previous, r.HeadSHA) {
-		return Report{}, ErrHeadAlreadyPublished
+		if !p.Policy.RepublishSameCommit && HeadPublished(prev, r.HeadSHA) {
+			return Report{}, ErrHeadAlreadyPublished
+		}
+		if r.Previous == nil {
+			r.Previous = prev
+		}
 	}
 	if p.Policy.LegacyLedger {
 		return p.publishLegacy(ctx, r)
@@ -386,7 +395,26 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 	d := r.ledgerTransitions()
 	d.Fixed = fixed
 	r.transitions = &d
-	return p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryRow.CommentID, RenderSummary(r, Selection{}))
+	body := RenderSummary(r, Selection{})
+	if moved, err := p.summaryMoved(r, summaryRow); err != nil {
+		return err
+	} else if moved {
+		return ErrSummaryMoved
+	}
+	return p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryRow.CommentID, body)
+}
+
+func (p *Publisher) summaryMoved(r Round, built *db.PublishedFinding) (bool, error) {
+	rows, err := p.Ledger.GetPublishedFindingsForPR(r.Owner, r.Repo, r.Number)
+	if err != nil {
+		return false, fmt.Errorf("reload published findings: %w", err)
+	}
+	for _, row := range rows {
+		if row.Kind == db.PublishedKindSummary {
+			return row.Rounds != built.Rounds || !strings.EqualFold(row.LastSeenSHA, built.LastSeenSHA), nil
+		}
+	}
+	return true, nil
 }
 
 // ledgerTransitions splits the shown findings the way the round diff did:

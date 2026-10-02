@@ -455,8 +455,10 @@ func titleSource(f payload.Finding) string {
 			return strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
 		}
 	}
-	return strings.Trim(firstSentence(commentText(f)), "*_ ")
+	return strings.TrimSpace(emphasisMarkers.Replace(firstSentence(commentText(f))))
 }
+
+var emphasisMarkers = strings.NewReplacer("**", "", "__", "")
 
 // titleFromComment reports whether the inline title was taken from the
 // comment's first sentence rather than the contract.

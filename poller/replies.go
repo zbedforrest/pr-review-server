@@ -454,7 +454,10 @@ func (p *Poller) summaryRefresher() func(ctx context.Context, owner, repo string
 		return nil
 	}
 	return func(ctx context.Context, owner, repo string, number int) {
-		if err := p.refreshPublishedSummary(ctx, owner, repo, number); err != nil {
+		err := p.refreshPublishedSummary(ctx, owner, repo, number)
+		if errors.Is(err, publisher.ErrSummaryMoved) {
+			log.Printf("[REPLY %s/%s#%d] summary refresh after concession skipped, a newer round rewrote the summary", owner, repo, number)
+		} else if err != nil {
 			log.Printf("[REPLY %s/%s#%d] summary refresh after concession failed: %v", owner, repo, number, err)
 		}
 	}

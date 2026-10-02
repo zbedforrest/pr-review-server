@@ -27,7 +27,7 @@ func TestTitleSource_HeadlineThenAssertedImpactThenFirstSentence(t *testing.T) {
 		{"headline wins over impact", headlined, "Retry loop never backs off"},
 		{"nil impact falls back to the first sentence", immaterial, "Ordering within a group is unstable."},
 		{"unknown materiality falls back to the first sentence", unknown, "The callback binding is fragile."},
-		{"no contract is the first sentence", plain, "Nil deref** when cfg is missing."},
+		{"no contract is the first sentence", plain, "Nil deref when cfg is missing."},
 	}
 	for _, tc := range cases {
 		if got := titleSource(tc.f); got != tc.want {

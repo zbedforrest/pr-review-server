@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -54,6 +55,30 @@ func TestRefreshSummary_DropsTheConcededBulletAndKeepsTheRoundCounts(t *testing.
 	}
 	if sum := ledger.get(db.PublishedKindSummary, "summary"); sum.Rounds != 2 || sum.LastSeenSHA != "sha-2" {
 		t.Fatalf("a refresh is not a round: %+v", sum)
+	}
+}
+
+func TestRefreshSummary_SkipsTheEditWhenANewerRoundRewroteTheSummary(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, roundOne())
+	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueEdits[501]}}
+	before := gh.issueEdits[501]
+	reads := 0
+	ledger.onRead = func() {
+		reads++
+		if reads == 2 {
+			sum := ledger.get(db.PublishedKindSummary, "summary")
+			sum.LastSeenSHA, sum.Rounds = "sha-2", 2
+		}
+	}
+	refresh := roundOne()
+	refresh.HeadSHA, refresh.Previous = "", nil
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: DefaultPolicy()}
+	if err := p.RefreshSummary(context.Background(), refresh); !errors.Is(err, ErrSummaryMoved) {
+		t.Fatalf("err = %v, want ErrSummaryMoved", err)
+	}
+	if gh.issueEdits[501] != before {
+		t.Fatal("a stale refresh must not overwrite the newer summary")
 	}
 }
 

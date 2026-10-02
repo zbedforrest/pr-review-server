@@ -91,7 +91,7 @@ func TestRenderSummary_FoldsLowerSeverityNotesUnderTheBullets(t *testing.T) {
 	if !strings.HasPrefix(folded, "<details><summary>2 lower-severity notes</summary>") {
 		t.Fatalf("notes must fold under one summary line:\n%s", out)
 	}
-	if !strings.Contains(folded, "**[MEDIUM]** Retry loop has no upper bound — [`b.go:1`](https://github.com/a/b/blob/abc1234/b.go#L1)") || !strings.Contains(folded, "**[LOW]** Typo in the log message — [`a.go:1`]") {
+	if !strings.Contains(folded, "**[MEDIUM]** Retry loop has no upper bound \u2014 [`b.go:1`](https://github.com/a/b/blob/abc1234/b.go#L1)") || !strings.Contains(folded, "**[LOW]** Typo in the log message \u2014 [`a.go:1`]") {
 		t.Errorf("folded notes are one-liners titled by the comment when the contract asserts no impact, linking to the file, medium before low:\n%s", folded)
 	}
 	if strings.Contains(out, "First-pass guess") {
@@ -110,7 +110,7 @@ func TestRenderSummary_UsesBadgesWhenABadgeBaseIsSet(t *testing.T) {
 			withContract(f("l1", "low", "a.go", 2, "Nit."), "test_quality", "no_user_impact", "No impact.", ""),
 		}}
 	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
-	if !strings.Contains(out, `- <img alt="CRITICAL" src="https://prism.example/badge/critical.svg"> Requests crash — [`) {
+	if !strings.Contains(out, "- <img alt=\"CRITICAL\" src=\"https://prism.example/badge/critical.svg\"> Requests crash \u2014 [") {
 		t.Errorf("bullets must lead with the badge image:\n%s", out)
 	}
 	if !strings.Contains(out, `<img alt="LOW" src="https://prism.example/badge/low.svg"> Nit`) {

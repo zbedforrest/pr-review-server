@@ -9,7 +9,7 @@ import (
 // finding has no impact (the impact sentence rendered as the title) and an
 // inline comment titled by its bare kind label.
 
-var summaryBulletRe = regexp.MustCompile(`(?m)^- (?:\*\*\[[A-Z]+\]\*\*|<img[^>]*>) (?:\*\*[^*]+\*\* )?(.*?) — \[`)
+var summaryBulletRe = regexp.MustCompile(`(?m)^- (?:\*\*\[[A-Z]+\]\*\*|<img[^>]*>) (?:\*\*[^*]+\*\* )?(.*?) \x{2014} \[`)
 
 var nilImpactRe = regexp.MustCompile(`(?i)^(?:none\b|not? (?:user|runtime|production|demonstrated|current|direct|immediate|observable|functional|visible|impact|effect|behaviou?r|change))`)
 
