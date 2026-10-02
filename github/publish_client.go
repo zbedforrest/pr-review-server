@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/google/go-github/v57/github"
@@ -24,12 +25,14 @@ type IssueCommentInfo struct {
 	Association string // GitHub's author_association: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...
 	Body        string
 	CreatedAt   time.Time
+	Reactions   int // total reactions of every kind
 }
 
 type ReviewCommentInfo struct {
 	ID        int64
 	Author    string
 	AuthorID  int64
+	IsBot     bool
 	Body      string
 	Path      string
 	Line      int
@@ -43,6 +46,7 @@ type ReviewCommentInfo struct {
 	// OriginalCommitID is the head the comment was posted against.
 	OriginalCommitID string
 	CreatedAt        time.Time
+	Reactions        int // total reactions of every kind
 	// ThumbsDown is the -1 count from the comment's reaction rollup.
 	ThumbsDown int
 }
@@ -50,7 +54,10 @@ type ReviewCommentInfo struct {
 // CommentReaction is one reaction on a comment: who left it, which ("+1",
 // "-1", ...) and when.
 type CommentReaction struct {
+	ID        int64
 	UserID    int64
+	User      string
+	IsBot     bool
 	Content   string
 	CreatedAt time.Time
 }
@@ -174,7 +181,7 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, numb
 			return nil, fmt.Errorf("list issue comments: %w", err)
 		}
 		for _, ic := range page {
-			out = append(out, IssueCommentInfo{ID: ic.GetID(), Author: ic.GetUser().GetLogin(), IsBot: ic.GetUser().GetType() == "Bot", Association: ic.GetAuthorAssociation(), Body: ic.GetBody(), CreatedAt: ic.GetCreatedAt().Time})
+			out = append(out, IssueCommentInfo{ID: ic.GetID(), Author: ic.GetUser().GetLogin(), IsBot: ic.GetUser().GetType() == "Bot", Association: ic.GetAuthorAssociation(), Body: ic.GetBody(), CreatedAt: ic.GetCreatedAt().Time, Reactions: ic.GetReactions().GetTotalCount()})
 		}
 		if resp.NextPage == 0 {
 			return out, nil
@@ -200,6 +207,7 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 				ID:                rc.GetID(),
 				Author:            rc.GetUser().GetLogin(),
 				AuthorID:          rc.GetUser().GetID(),
+				IsBot:             rc.GetUser().GetType() == "Bot",
 				Body:              rc.GetBody(),
 				Path:              rc.GetPath(),
 				Line:              rc.GetLine(),
@@ -210,6 +218,7 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 				ReviewID:          rc.GetPullRequestReviewID(),
 				OriginalCommitID:  rc.GetOriginalCommitID(),
 				CreatedAt:         rc.GetCreatedAt().Time,
+				Reactions:         rc.GetReactions().GetTotalCount(),
 				ThumbsDown:        rc.GetReactions().GetMinusOne(),
 			})
 		}
@@ -222,54 +231,44 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 
 // ListCommentReactions lists every reaction on a review comment.
 func (c *Client) ListCommentReactions(ctx context.Context, owner, repo string, commentID int64) ([]CommentReaction, error) {
-	gh, err := c.clientFor(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
-	var out []CommentReaction
-	opts := &github.ListOptions{PerPage: listPageSize}
-	for {
-		page, resp, err := gh.Reactions.ListPullRequestCommentReactions(ctx, owner, repo, commentID, opts)
-		if err != nil {
-			return nil, fmt.Errorf("list reactions on comment %d: %w", commentID, err)
-		}
-		for _, r := range page {
-			out = append(out, CommentReaction{UserID: r.GetUser().GetID(), Content: r.GetContent()})
-		}
-		if resp.NextPage == 0 {
-			return out, nil
-		}
-		opts.Page = resp.NextPage
-	}
+	return c.listReactions(ctx, owner, repo, fmt.Sprintf("repos/%s/%s/pulls/comments/%d/reactions", owner, repo, commentID))
 }
 
 // ListIssueCommentReactions lists every reaction on a PR conversation
-// comment, such as the sticky summary. The go-github type drops created_at,
-// which the mute needs, so the page is decoded here.
+// comment, such as the sticky summary.
 func (c *Client) ListIssueCommentReactions(ctx context.Context, owner, repo string, commentID int64) ([]CommentReaction, error) {
+	return c.listReactions(ctx, owner, repo, fmt.Sprintf("repos/%s/%s/issues/comments/%d/reactions", owner, repo, commentID))
+}
+
+// listReactions decodes the reaction pages itself because the go-github
+// type drops created_at, which the mute and the feedback digest need.
+func (c *Client) listReactions(ctx context.Context, owner, repo, path string) ([]CommentReaction, error) {
 	gh, err := c.clientFor(ctx, owner, repo)
 	if err != nil {
 		return nil, err
 	}
 	var out []CommentReaction
 	for page := 1; ; {
-		req, err := gh.NewRequest("GET", fmt.Sprintf("repos/%s/%s/issues/comments/%d/reactions?per_page=%d&page=%d", owner, repo, commentID, listPageSize, page), nil)
+		req, err := gh.NewRequest(http.MethodGet, fmt.Sprintf("%s?per_page=%d&page=%d", path, listPageSize, page), nil)
 		if err != nil {
-			return nil, fmt.Errorf("list reactions on issue comment %d: %w", commentID, err)
+			return nil, fmt.Errorf("list reactions: %w", err)
 		}
 		var rows []struct {
+			ID   int64 `json:"id"`
 			User struct {
-				ID int64 `json:"id"`
+				ID    int64  `json:"id"`
+				Login string `json:"login"`
+				Type  string `json:"type"`
 			} `json:"user"`
 			Content   string    `json:"content"`
 			CreatedAt time.Time `json:"created_at"`
 		}
 		resp, err := gh.Do(ctx, req, &rows)
 		if err != nil {
-			return nil, fmt.Errorf("list reactions on issue comment %d: %w", commentID, err)
+			return nil, fmt.Errorf("list reactions: %w", err)
 		}
 		for _, r := range rows {
-			out = append(out, CommentReaction{UserID: r.User.ID, Content: r.Content, CreatedAt: r.CreatedAt})
+			out = append(out, CommentReaction{ID: r.ID, UserID: r.User.ID, User: r.User.Login, IsBot: r.User.Type == "Bot", Content: r.Content, CreatedAt: r.CreatedAt})
 		}
 		if resp.NextPage == 0 {
 			return out, nil
