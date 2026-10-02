@@ -36,7 +36,7 @@ func TestRenderInline_LongEffectSentenceIsShownInFullUnderTheCutHeadline(t *test
 	if !strings.Contains(visible, "**[MEDIUM] Behavior change · When a selected component entry fails to render, the request returns 500 with no dispositions**\n\n"+impact) {
 		t.Fatalf("a sentence too long for the headline is cut in the title and shown in full under it:\n%s", out)
 	}
-	legacy := renderInline(fd, "prism-only", "", "", true)
+	legacy := renderInline(fd, "prism-only", "", "", "", true)
 	if !strings.Contains(legacy, "**[MEDIUM] Behavior change**\n\n"+impact) {
 		t.Fatalf("legacy titles keep the bare kind label:\n%s", legacy)
 	}

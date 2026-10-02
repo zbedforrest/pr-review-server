@@ -54,7 +54,7 @@ func TestMarkedBullet_KeepsTheEllipsisOfAShortenedHeadline(t *testing.T) {
 
 func TestRenderInline_LongFirstSentenceTitleKeepsItsTailInTheFold(t *testing.T) {
 	long := "The retry helper re-enters the backoff loop with the original deadline, so a slow upstream is retried past the caller's budget and the request outlives its context by several seconds. Then more."
-	out := RenderInline(noContract("x", "medium", "a.go", 1, long), "prism-only", "", "")
+	out := RenderInline(noContract("x", "medium", "a.go", 1, long), "prism-only", "", "", "")
 	if !strings.Contains(out, "outlives its context by several seconds.") {
 		t.Fatalf("a cut title must leave the whole sentence readable in the fold:\n%s", out)
 	}
@@ -63,7 +63,7 @@ func TestRenderInline_LongFirstSentenceTitleKeepsItsTailInTheFold(t *testing.T) 
 func TestRenderInline_HeadlineWithoutImpactKeepsTheWholeComment(t *testing.T) {
 	fd := withContract(f("h", "medium", "a.go", 1, "The cache key omits the tenant. Two tenants share entries."), "latent_hazard", "unknown", "", "")
 	fd.FindingContract.Headline = "Cache key omits the tenant"
-	out := RenderInline(fd, "prism-only", "", "")
+	out := RenderInline(fd, "prism-only", "", "", "")
 	if !strings.Contains(out, "**[MEDIUM] Cache key omits the tenant**") || !strings.Contains(out, "The cache key omits the tenant. Two tenants share entries.") {
 		t.Fatalf("a contract headline must not swallow the comment's first sentence:\n%s", out)
 	}
@@ -71,7 +71,7 @@ func TestRenderInline_HeadlineWithoutImpactKeepsTheWholeComment(t *testing.T) {
 
 func TestRenderInline_ImmaterialFindingIsTitledByItsCommentAndShowsTheImpactBelow(t *testing.T) {
 	fd := withContract(f("x", "low", "a.go", 1, "Ordering within a group is unstable. The grain column was not added to ORDER BY."), "production_behavior", "no_user_impact", "No user impact; values are unchanged.", "")
-	out := RenderInline(fd, "prism-only", "", "")
+	out := RenderInline(fd, "prism-only", "", "", "")
 	visible := out[:strings.Index(out, "<details>")]
 	if !strings.Contains(visible, "**[LOW] Behavior change · Ordering within a group is unstable.**\n\nNo user impact; values are unchanged.") {
 		t.Fatalf("title from the comment, impact sentence as the calibration line:\n%s", out)
@@ -148,7 +148,7 @@ func TestRender_StoredPayloadHasNoNilImpactBulletsOrBareLabelTitles(t *testing.T
 		if isNarrative(x) {
 			continue
 		}
-		body := RenderInline(x, "prism-only", "", "")
+		body := RenderInline(x, "prism-only", "", "", "")
 		m := inlineTitleLineRe.FindStringSubmatch(body)
 		if m == nil {
 			t.Fatalf("no title line in:\n%s", body)
@@ -167,7 +167,7 @@ func TestRender_StoredPayloadHasNoNilImpactBulletsOrBareLabelTitles(t *testing.T
 		t.Errorf("legacy titles must reproduce the three nil-impact bullets, got %d:\n%s", len(m), legacy)
 	}
 	long := r.Findings[4]
-	if m := inlineTitleLineRe.FindStringSubmatch(renderInline(long, "prism-only", "", "", true)); m == nil || m[1] != "Behavior change" {
+	if m := inlineTitleLineRe.FindStringSubmatch(renderInline(long, "prism-only", "", "", "", true)); m == nil || m[1] != "Behavior change" {
 		t.Errorf("legacy titles must reproduce the bare kind label, got %v", m)
 	}
 }
