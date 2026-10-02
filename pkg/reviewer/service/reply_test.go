@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -250,5 +251,74 @@ func TestReplyPromptGuidanceIsEvidenceFirstAndCoversIntentAndDeferral(t *testing
 		if strings.Contains(prompt, banned) {
 			t.Errorf("prompt still carries %q", banned)
 		}
+	}
+}
+
+func TestRunAgentReply_WithdrawNeedsResolvingEvidenceAndKeepsItsText(t *testing.T) {
+	out, err, _ := runReply(t, `{"decision":"withdraw","reply":"Withdrawing this finding: nope.go:1 reads change.txt.","cited":[{"file":"nope.go","line":1}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Decision != "abstain" || out.Reply != "" {
+		t.Fatalf("an unsupported withdrawal must not dismiss the finding: %+v", out)
+	}
+	out, err, _ = runReply(t, `{"decision":"withdraw","reply":"Withdrawing this finding: hello.txt:1 is read by the deploy script, so change.txt is not unused.","cited":[{"file":"hello.txt","line":1}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Decision != "withdraw" || len(out.Cited) != 1 || !out.React || !strings.HasPrefix(out.Reply, "Withdrawing this finding") {
+		t.Fatalf("result = %+v", out)
+	}
+}
+
+func TestReplyPromptCarriesThePRBodyAndSiblingThreadsAndAsksToFollowImports(t *testing.T) {
+	in := replyInput("abc")
+	in.PRBody = "<!-- template -->\nThe gate applies to every tier by design."
+	in.Siblings = []SiblingThread{
+		{Fingerprint: "b.go:7:def", State: "contested", Thread: []ReplyMessage{
+			{Author: "prism", Ours: true, Body: "<!-- prism:finding:b.go:7:def -->\n**[MEDIUM] Gate missing.**", At: time.Date(2026, 9, 9, 17, 0, 0, 0, time.UTC)},
+			{Author: "pilot", Body: "The gate lives in pkg/auth, see policy.go:40.", At: time.Date(2026, 9, 9, 17, 1, 0, 0, time.UTC)},
+		}},
+	}
+	prompt, err := buildReplyPrompt(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"decision":"concede|hold|answer|abstain|withdraw"`,
+		`"withdraw": the finding itself was wrong or is already settled`,
+		"Before holding, follow the code past the file the finding names",
+		"unless pr_body_states_intent is true",
+		`"pr_body": "The gate applies to every tier by design."`,
+		`"pr_body_states_intent": true`,
+		`"other_prism_threads"`,
+		`"finding_id": "b.go:7:def"`,
+		`"state": "contested"`,
+		`"body": "**[MEDIUM] Gate missing.**"`,
+		"The gate lives in pkg/auth, see policy.go:40.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	if strings.Contains(prompt, "<!-- template -->") || strings.Contains(prompt, "prism:finding:b.go") {
+		t.Errorf("markers must be stripped from the PR body and sibling threads")
+	}
+}
+
+func TestReplyPromptCapsSiblingsAndTheirBodies(t *testing.T) {
+	in := replyInput("abc")
+	for i := 0; i < replyPromptMaxSiblings+3; i++ {
+		in.Siblings = append(in.Siblings, SiblingThread{Fingerprint: fmt.Sprintf("f%d.go:1:x", i), Thread: []ReplyMessage{{Author: "prism", Ours: true, Body: strings.Repeat("r", replyPromptSiblingRootChars+50)}}})
+	}
+	prompt, err := buildReplyPrompt(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(prompt, `"finding_id": "f`); n != replyPromptMaxSiblings {
+		t.Fatalf("siblings in prompt = %d, want %d", n, replyPromptMaxSiblings)
+	}
+	if strings.Contains(prompt, strings.Repeat("r", replyPromptSiblingRootChars+1)) {
+		t.Fatalf("sibling root bodies are truncated")
 	}
 }
