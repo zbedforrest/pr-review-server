@@ -10,19 +10,21 @@ import (
 	"pr-review-server/pkg/reviewer/payload"
 )
 
-// Round counts must stabilize: a finding that disappears is fixed exactly once,
-// and a persistent annotation-only finding is new exactly once.
+// Round counts must stabilize: a finding that disappears from a changed file
+// is fixed exactly once, and a persistent annotation-only finding is new
+// exactly once.
 func TestPublish_RoundCountsStabilizeAcrossThreeRounds(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, roundOne()) // c1, m1 inline; m2 annotation; l1 is low and never shown
+	publishRound(t, gh, ledger, ledgerRoundOne()) // c1, m1 inline; m2 annotation; l1 is low and never shown
 
-	r2 := roundOne()
+	r2 := ledgerRoundOne()
 	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
+	r2.Changes = changed("a.go")
 	r2.Findings = []payload.Finding{
 		f("sum", "unknown", "SUMMARY", 0, "Narrative."),
-		f("m1", "medium", "b.go", 20, "Medium thing."),
+		f(m1ID, "medium", "b.go", 20, "Medium thing."),
 		f("l1", "low", "a.go", 11, "Low thing."),
-		f("m2", "medium", "a.go", 99, "Medium outside hunk."),
+		f(m2ID, "medium", "a.go", 99, "Medium outside hunk."),
 	}
 	rep2 := publishRound(t, gh, ledger, r2)
 	if rep2.Fixed != 1 || rep2.StillOpen != 2 {
@@ -31,10 +33,10 @@ func TestPublish_RoundCountsStabilizeAcrossThreeRounds(t *testing.T) {
 	if !strings.Contains(gh.issueEdits[501], "**Since last review:** 0 new · 2 still open · 1 fixed") {
 		t.Fatalf("round 2 summary:\n%s", gh.issueEdits[501])
 	}
-	if c1 := ledger.get(db.PublishedKindFinding, "c1"); c1 == nil || c1.State != db.PublishedStateResolved {
-		t.Fatalf("disappeared inline finding must be marked resolved in the ledger: %+v", c1)
+	if c1 := ledger.get(db.PublishedKindFinding, c1ID); c1 == nil || c1.State != db.PublishedStateFixed {
+		t.Fatalf("a finding absent from a changed file must be marked fixed in the ledger: %+v", c1)
 	}
-	if m2 := ledger.get(db.PublishedKindAnnotation, "m2"); m2 == nil || m2.LastSeenSHA != "sha-2" {
+	if m2 := ledger.get(db.PublishedKindAnnotation, m2ID); m2 == nil || m2.LastSeenSHA != "sha-2" {
 		t.Fatalf("summary-only finding must be tracked in the ledger: %+v", m2)
 	}
 	if ledger.get(db.PublishedKindAnnotation, "l1") != nil {
@@ -43,6 +45,7 @@ func TestPublish_RoundCountsStabilizeAcrossThreeRounds(t *testing.T) {
 
 	r3 := r2
 	r3.HeadSHA = "sha-3"
+	r3.Changes = changed("a.go", "b.go")
 	rep3 := publishRound(t, gh, ledger, r3)
 	if rep3.Fixed != 0 || rep3.StillOpen != 2 {
 		t.Fatalf("round 3 report = %+v, want fixed=0 still_open=2", rep3)
@@ -133,28 +136,39 @@ func TestPublish_PromotedAnnotationKeepsFindingKind(t *testing.T) {
 	}
 }
 
-func TestPublish_ReappearingResolvedFindingIsReopenedAndReposted(t *testing.T) {
+func TestPublish_ReappearingFixedFindingIsReopenedInItsThread(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, roundOne())
+	publishRound(t, gh, ledger, ledgerRoundOne())
 
-	gone := roundOne()
+	gone := ledgerRoundOne()
 	gone.HeadSHA, gone.RoundNumber = "sha-2", 0
+	gone.Changes = changed("a.go", "b.go")
 	gone.Findings = []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "Narrative.")}
 	publishRound(t, gh, ledger, gone)
-	if row := ledger.get(db.PublishedKindFinding, "c1"); row == nil || row.State != db.PublishedStateResolved {
-		t.Fatalf("precondition: c1 resolved, got %+v", row)
+	if row := ledger.get(db.PublishedKindFinding, c1ID); row == nil || row.State != db.PublishedStateFixed {
+		t.Fatalf("precondition: c1 fixed, got %+v", row)
 	}
 
-	back := roundOne()
+	back := ledgerRoundOne()
 	back.HeadSHA, back.RoundNumber = "sha-3", 0
+	back.Changes = changed("a.go", "b.go")
 	rep := publishRound(t, gh, ledger, back)
-	if rep.InlinePosted != 2 || len(gh.reviews) != 2 {
-		t.Fatalf("reappearing findings must be posted again: %+v reviews=%d", rep, len(gh.reviews))
+	if rep.InlinePosted != 0 || len(gh.reviews) != 1 {
+		t.Fatalf("a finding that comes back must not get a second root: %+v reviews=%d", rep, len(gh.reviews))
 	}
-	if row := ledger.get(db.PublishedKindFinding, "c1"); row == nil || row.State != db.PublishedStateOpen || row.CommentID == 1001 {
-		t.Fatalf("reopened row must be open with the new comment id: %+v", row)
+	if rep.Reopened != 3 || rep.ThreadReplies != 2 {
+		t.Fatalf("c1, m1 and the m2 annotation reopen; only the two threads get a note: %+v", rep)
 	}
-	if !strings.Contains(gh.issueEdits[501], "**Since last review:** 3 new · 0 still open · 0 fixed") {
-		t.Fatalf("reappearing findings count as new:\n%s", gh.issueEdits[501])
+	if got := gh.repliesTo(1001); len(got) != 1 || got[0] != "Back at sha-3." {
+		t.Fatalf("c1 thread replies = %q", got)
+	}
+	if row := ledger.get(db.PublishedKindFinding, c1ID); row == nil || row.State != db.PublishedStateOpen || row.CommentID != 1001 || row.LastSeenSHA != "sha-3" {
+		t.Fatalf("reopened row must be open under its original comment: %+v", row)
+	}
+	if row := ledger.get(db.PublishedKindAnnotation, m2ID); row == nil || row.State != db.PublishedStateOpen {
+		t.Fatalf("reopened annotation row = %+v", row)
+	}
+	if !strings.Contains(gh.issueEdits[501], "**Since last review:** 0 new · 3 still open · 0 fixed") {
+		t.Fatalf("reopened findings count as still open, not new:\n%s", gh.issueEdits[501])
 	}
 }

@@ -70,3 +70,31 @@ func CommentableLines(patch string) map[int]bool {
 	}
 	return lines
 }
+
+// ChangedLines returns the RIGHT-side line numbers a patch adds or edits:
+// the "+" lines of every hunk, which is where a finding's anchor moves when
+// the code under it changes.
+func ChangedLines(patch string) map[int]bool {
+	lines := map[int]bool{}
+	right := 0
+	inHunk := false
+	for _, raw := range strings.Split(strings.TrimSuffix(patch, "\n"), "\n") {
+		if m := hunkHeaderRe.FindStringSubmatch(raw); m != nil {
+			right, _ = strconv.Atoi(m[1])
+			inHunk = true
+			continue
+		}
+		if !inHunk || raw == `\ No newline at end of file` {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(raw, "-"):
+		case strings.HasPrefix(raw, "+"):
+			lines[right] = true
+			right++
+		default:
+			right++
+		}
+	}
+	return lines
+}

@@ -1,0 +1,63 @@
+// Package publisher posts PRism reviews to GitHub and keeps the publication
+// ledger (db.PublishedFinding) that remembers what was posted.
+//
+// # Ledger decision table
+//
+// Publish applies this table unless Policy.LegacyLedger is set
+// (PUBLISH_POLICY_V2=false). It is the specification the replay harness
+// (cmd/publishreplay) asserts against.
+//
+// Identity. Every current finding is matched to at most one ledger row, in
+// this order: its fingerprint equals a row's; same file, line within ten of
+// the row's comment line (the bucket centre when GitHub shows no comment),
+// raw-text Jaccard >= 0.20 against the row's CommentText (the stripped
+// posted body when the row predates the column); same file and the same
+// sorted contract subjects, any line; the same subjects in another file.
+// A matched finding takes the row's fingerprint. A row whose fingerprint a
+// current finding still carries verbatim is never given to another finding.
+//
+// Inputs per prior row: its state; whether a current finding matched it
+// (present); whether HeadSHA equals the row's LastSeenSHA; the change set
+// between LastSeenSHA and HeadSHA (Round.Changes, unknown when nil or when
+// the lookup fails); and whether the lines the finding cites are inside
+// that change set (anchor changed: a changed line within three of the cited
+// line when the set carries lines, else the file having changed).
+//
+//	state                        present  same head  file changed  result
+//	open                         yes      any        any           still open; LastSeenSHA = head; severity clamp (below)
+//	open                         no       yes        n/a           still open, untouched
+//	open                         no       no         yes           fixed (W2-3 resolves the thread)
+//	open                         no       no         no or unknown still open, untouched
+//	fixed / resolved (legacy)    yes      any        any           reopened: open, LastSeenSHA = head, one reply "Back at <sha7>" in its thread, never a new root
+//	fixed / resolved             no       any        any           untouched
+//	dismissed/contested/external yes      any        any           finding dropped: not posted, not counted, row untouched (exception below)
+//	dismissed/contested/external no       any        any           untouched
+//	no row                       new      n/a        n/a           Select decides inline or summary; a shown finding gets an open row
+//
+// Already published. Select never offers a root for a finding whose row
+// has a comment id, whatever the row's state; a row without a comment (a
+// summary-only annotation) may still be promoted inline when its line
+// becomes commentable.
+//
+// Severity clamp. A finding matched to a non-terminal row keeps the row's
+// severity unless its anchor changed; an accepted change is written to the
+// row and, when the row has a thread, announced there once ("Severity
+// medium to critical at <sha7>: the cited lines changed.").
+//
+// Terminal exception. A CRITICAL security_risk matched to a terminal row
+// may post once more, as a fresh root whose text names the change, when
+// its anchor changed and exactly one terminal row exists for the point
+// (same file, same subjects). A second terminal row ends the exception; a
+// finding whose own fingerprint already equals the terminal row's cannot
+// use it, since the fresh root would carry the same marker.
+//
+// Counts. "Since last review" is the number of records that transitioned:
+// new (shown findings with no row), still open (rows that end the round
+// open, including reopened ones and absent rows no change could have
+// fixed), fixed (rows flipped to fixed this round). Hash-set differences
+// are not used.
+//
+// Memory columns. New rows store the raw agent prose (CommentText) and the
+// sorted subject names (Subjects). A row written before those columns
+// existed is filled the first round it is matched or GitHub shows its body.
+package publisher
