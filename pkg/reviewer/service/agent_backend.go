@@ -219,6 +219,9 @@ func parseCodexStreamModel(proc SpawnedProcess, logFile io.Writer, maxTurns int,
 			// Count completed concrete work items so MaxTurns remains a meaningful
 			// work bound. Provider-internal reasoning and the terminal answer are
 			// excluded because neither represents another tool/file operation.
+			if codexToolItemTypes[itemType] {
+				result.toolCalls++
+			}
 			if itemType != "" && itemType != "reasoning" && itemType != "agent_message" {
 				result.budgetUnits++
 				if result.budgetUnits%5 == 0 || result.budgetUnits == 1 {
@@ -249,6 +252,12 @@ func parseCodexStreamModel(proc SpawnedProcess, logFile io.Writer, maxTurns int,
 		return result, fmt.Errorf("read stdout: %w", err)
 	}
 	return result, nil
+}
+
+// codexToolItemTypes are the completed items that show the agent touched
+// the checkout or the network rather than answering from the prompt alone.
+var codexToolItemTypes = map[string]bool{
+	"command_execution": true, "file_change": true, "mcp_tool_call": true, "web_search": true,
 }
 
 func codexErrorMessage(v any, fallback string) string {

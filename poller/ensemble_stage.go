@@ -250,7 +250,7 @@ wait:
 	for i, o := range valid {
 		runs[i] = o.review.Comments
 	}
-	merge, model := p.mergeEnsemble(ctx, ens.MergeModel, runs)
+	merge, model := p.mergeEnsemble(ctx, ens, runs)
 	report.Merge, report.MergeModel = merge, model
 	report.TotalCostUSD += merge.Call.CostUSD
 	return ensembleReview(valid, merge, report, time.Since(start)), report, nil
@@ -258,17 +258,21 @@ wait:
 
 // mergeEnsemble merges with the configured model, then the fallback model,
 // then deterministically; it returns the result and the model that wrote it.
-func (p *Poller) mergeEnsemble(ctx context.Context, model string, runs [][]types.LineComment) (ensemble.MergeResult, string) {
+func (p *Poller) mergeEnsemble(ctx context.Context, ens *runconfig.Ensemble, runs [][]types.LineComment) (ensemble.MergeResult, string) {
+	opts := ensemble.Options{}
+	if runconfig.LiteHygieneEnabled() {
+		opts.MinSupportCritical = ens.MinSupportCritical
+	}
 	if p.cfg.OpenRouterAPIKey == "" {
-		return ensemble.Merge(ctx, runs, nil, ensemble.Options{}), "deterministic"
+		return ensemble.Merge(ctx, runs, nil, opts), "deterministic"
 	}
 	var last ensemble.MergeResult
-	for _, m := range []string{model, ensembleFallbackMergeModel} {
+	for _, m := range []string{ens.MergeModel, ensembleFallbackMergeModel} {
 		if m == "" {
 			continue
 		}
 		client := llm.NewOpenRouterClient(p.cfg.OpenRouterAPIKey, p.cfg.OpenRouterBaseURL, m, false)
-		last = ensemble.Merge(ctx, runs, &ensemble.LLMAuthor{Client: client, Model: m}, ensemble.Options{})
+		last = ensemble.Merge(ctx, runs, &ensemble.LLMAuthor{Client: client, Model: m}, opts)
 		if last.Method == "author" || last.AuthorErr == "" {
 			return last, m
 		}

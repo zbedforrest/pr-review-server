@@ -2,6 +2,7 @@ package runconfig
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -64,6 +65,9 @@ const (
 	ensembleRuns     = 5
 	ensembleQuorum   = 4
 	ensembleMinValid = 2
+	// A CRITICAL that only one of the merged runs saw is a MEDIUM: the audit
+	// traced every confirmed lite false positive to a lone-run CRITICAL.
+	ensembleMinSupportCritical = 2
 )
 
 // Ensemble configures a multi-agent review: Runs agents with the Agent
@@ -76,6 +80,9 @@ type Ensemble struct {
 	MinValid        int    `json:"min_valid"`
 	MergeModel      string `json:"merge_model"`
 	FallbackProfile string `json:"fallback_profile"`
+	// MinSupportCritical downgrades a merged CRITICAL cited by fewer runs
+	// than this to MEDIUM; zero or one keeps every CRITICAL.
+	MinSupportCritical int `json:"min_support_critical,omitempty"`
 }
 
 var profileOrder = []string{ProfileFull, ProfileLite, ProfileLiteClassic, ProfileLitePlus}
@@ -196,6 +203,7 @@ func Expand(profile string, base Effective) (Effective, error) {
 		effective.Ensemble = &Ensemble{
 			Runs: ensembleRuns, Quorum: ensembleQuorum, MinValid: ensembleMinValid,
 			MergeModel: EnsembleMergeModel, FallbackProfile: ProfileLiteClassic,
+			MinSupportCritical: ensembleMinSupportCritical,
 		}
 		effective.FirstPass = FirstPass{}
 		effective.RequiredChecks = false
@@ -327,6 +335,13 @@ func ValidTools(tools string) bool {
 
 func validPrompt(prompt string) bool {
 	return prompt == PromptPipeline || LitePrompt(prompt)
+}
+
+// LiteHygieneEnabled is the kill switch for the lite hygiene rules: the
+// ensemble's lone-run CRITICAL downgrade and the failure of a lite run that
+// executed no tool. LITE_HYGIENE=false restores the previous behaviour.
+func LiteHygieneEnabled() bool {
+	return os.Getenv("LITE_HYGIENE") != "false"
 }
 
 // LitePrompt reports whether prompt is one of the single-agent shapes that

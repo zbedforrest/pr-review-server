@@ -499,7 +499,7 @@ func RunAgentReview(
 	waitErr := proc.Wait()
 	agentCompletedAt = time.Now().UTC()
 	stderrBuf := stderrOutput()
-	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d sub_agent_turns=%d", parseResult.assistantTurns, parseResult.budgetUnits, parseResult.subAgentTurns)
+	usage := fmt.Sprintf("assistant_turns=%d budget_units=%d sub_agent_turns=%d tool_calls=%d", parseResult.assistantTurns, parseResult.budgetUnits, parseResult.subAgentTurns, parseResult.toolCalls)
 
 	// Failure messages below feed the run's error_summary, which the API now
 	// exposes; scrub the provider credential from quoted subprocess output in
@@ -550,6 +550,15 @@ func RunAgentReview(
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: no final result emitted (%s; stream: %s; stderr: %s)",
 			usage, redact(parseResult.diagnostic()), redact(stderrBuf))
+	}
+
+	// A lite agent that never ran a command or opened a file reviewed the
+	// inlined diff alone; the audit's false positives all came from such runs.
+	if parseResult.toolCalls == 0 && runconfig.LitePrompt(agentCfg.Prompt) && runconfig.LiteHygieneEnabled() {
+		log.Printf("%s %s finished without executing any tool (%s)", logPrefix, runtime.command, usage)
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: lite run executed no tool, so it read nothing beyond the prompt (%s; stderr: %s)",
+			usage, redact(stderrBuf))
 	}
 
 	comments, parseErr := parseAgentJSON(parseResult.finalOutput)
@@ -1444,6 +1453,7 @@ type agentParseResult struct {
 	inputTokens    int64    // usage.input_tokens plus cache reads and cache creation
 	outputTokens   int64
 	subAgentTurns  int // assistant events from Agent-tool sub-agents, outside the turn budget
+	toolCalls      int // tool_use blocks (Claude) or command, file, MCP and search items (Codex) the top-level agent issued
 }
 
 // noteUsage records the result event's spend and token usage. Cache reads and
@@ -1548,6 +1558,7 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 			}
 			if msg, ok := ev["message"].(map[string]any); ok {
 				result.noteServedModel(msg["model"])
+				result.toolCalls += countToolUseBlocks(msg["content"])
 			}
 			result.assistantTurns++
 			result.budgetUnits++
@@ -1591,6 +1602,17 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		return result, fmt.Errorf("read stdout: %w", err)
 	}
 	return result, nil
+}
+
+func countToolUseBlocks(content any) int {
+	blocks, _ := content.([]any)
+	n := 0
+	for _, b := range blocks {
+		if block, ok := b.(map[string]any); ok && block["type"] == "tool_use" {
+			n++
+		}
+	}
+	return n
 }
 
 func truncate(s string, max int) string {

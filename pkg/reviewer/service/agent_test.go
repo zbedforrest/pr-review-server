@@ -130,6 +130,9 @@ func TestParseAgentStream_HappyPath(t *testing.T) {
 	if got, want := res.assistantTurns, 2; got != want {
 		t.Errorf("turns: got %d want %d", got, want)
 	}
+	if got, want := res.toolCalls, 1; got != want {
+		t.Errorf("tool calls: got %d want %d", got, want)
+	}
 	if !strings.Contains(res.finalOutput, "Approve") {
 		t.Errorf("final output missing: %q", res.finalOutput)
 	}

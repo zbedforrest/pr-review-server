@@ -223,8 +223,8 @@ func TestParseCodexStreamTurnBudgetExcludesReasoningAndTerminalMessage(t *testin
 	if err != nil {
 		t.Fatalf("parseCodexStream: %v", err)
 	}
-	if res.assistantTurns != 1 || res.budgetUnits != 2 {
-		t.Fatalf("assistant turns=%d budget units=%d", res.assistantTurns, res.budgetUnits)
+	if res.assistantTurns != 1 || res.budgetUnits != 2 || res.toolCalls != 2 {
+		t.Fatalf("assistant turns=%d budget units=%d tool calls=%d", res.assistantTurns, res.budgetUnits, res.toolCalls)
 	}
 	if res.finalOutput != "[]" {
 		t.Fatalf("terminal output was discarded: %q", res.finalOutput)
@@ -440,5 +440,20 @@ func TestRunAgentReviewClaudeUsesFilteredFrozenEnvironment(t *testing.T) {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("Claude child inherited server secret %q", forbidden)
 		}
+	}
+}
+
+func TestParseCodexStreamCountsNoToolCallsForAnAnswerOnlyRun(t *testing.T) {
+	stream := `{"type":"item.completed","item":{"type":"reasoning"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}
+`
+	proc := &fakeProcess{stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, 5)
+	if err != nil {
+		t.Fatalf("parseCodexStream: %v", err)
+	}
+	if res.toolCalls != 0 {
+		t.Fatalf("tool calls = %d, want 0", res.toolCalls)
 	}
 }

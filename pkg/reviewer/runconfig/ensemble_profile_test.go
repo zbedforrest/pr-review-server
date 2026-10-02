@@ -14,7 +14,7 @@ func TestLiteExpandsToTheEnsemble(t *testing.T) {
 	if e.Agent.Backend != "openrouter" || e.Agent.Model != EnsembleModel || e.Agent.Prompt != PromptLiteArmAV2Budget || e.Agent.Effort != "high" {
 		t.Fatalf("agent = %+v", e.Agent)
 	}
-	if e.Ensemble == nil || e.Ensemble.Runs != 5 || e.Ensemble.Quorum != 4 || e.Ensemble.MinValid != 2 ||
+	if e.Ensemble == nil || e.Ensemble.Runs != 5 || e.Ensemble.Quorum != 4 || e.Ensemble.MinValid != 2 || e.Ensemble.MinSupportCritical != 2 ||
 		e.Ensemble.MergeModel != EnsembleMergeModel || e.Ensemble.FallbackProfile != ProfileLiteClassic {
 		t.Fatalf("ensemble = %+v", e.Ensemble)
 	}
@@ -48,5 +48,16 @@ func TestRunsRecordedAsLiteBeforeTheEnsembleDescribeAsClassic(t *testing.T) {
 	d := DescribeProfile(old, Effective{})
 	if d.Profile != ProfileLiteClassic || len(d.Deviations) != 0 {
 		t.Fatalf("a historical single-agent lite run must describe as classic with no deviations: %+v", d)
+	}
+}
+
+func TestLiteHygieneEnabledDefaultsOnAndFalseDisables(t *testing.T) {
+	t.Setenv("LITE_HYGIENE", "")
+	if !LiteHygieneEnabled() {
+		t.Fatal("lite hygiene should default on")
+	}
+	t.Setenv("LITE_HYGIENE", "false")
+	if LiteHygieneEnabled() {
+		t.Fatal("LITE_HYGIENE=false should disable it")
 	}
 }

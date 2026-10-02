@@ -193,7 +193,7 @@ func TestCapDiff_CapsThePrependedStat(t *testing.T) {
 
 func liteResultStream(findingsJSON string) string {
 	return `{"type":"system","subtype":"init","model":"claude-fable-5-1"}
-{"type":"assistant","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"reading"}]}}
+{"type":"assistant","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"reading"},{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}
 {"type":"result","subtype":"success","result":` + findingsJSON + `,"total_cost_usd":0.4321,"usage":{"input_tokens":1000,"cache_read_input_tokens":250,"cache_creation_input_tokens":50,"output_tokens":300}}
 `
 }
@@ -360,5 +360,46 @@ func TestArgsWithTools_IncludesAgentForLitePlus(t *testing.T) {
 	}
 	if strings.Join(rt.args("p"), " ") != def {
 		t.Fatal("args() must equal the default tool list")
+	}
+}
+
+// liteReadNothingStream answers from the prompt alone: no tool_use block.
+func liteReadNothingStream(findingsJSON string) string {
+	return `{"type":"system","subtype":"init","model":"claude-fable-5-1"}
+{"type":"assistant","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"answering"}]}}
+{"type":"result","subtype":"success","result":` + findingsJSON + `,"total_cost_usd":0.1,"usage":{"input_tokens":100,"output_tokens":30}}
+`
+}
+
+func runLiteExpectingError(t *testing.T, cfg AgentConfig, stream string) error {
+	t.Helper()
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+	spawner := &fakeSpawner{proc: &fakeProcess{stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}}
+	cfg.CloneRootDir, cfg.LogsDir, cfg.WallClock, cfg.MaxTurns = cloneRoot, t.TempDir(), time.Minute, 10
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	return err
+}
+
+func TestRunAgentReview_LiteRunThatExecutedNoToolFails(t *testing.T) {
+	err := runLiteExpectingError(t, AgentConfig{Model: "claude-fable-5-1", Prompt: runconfig.PromptLiteArmA, SkipGates: true}, liteReadNothingStream(liteFindingOnChange))
+	if err == nil || !strings.Contains(err.Error(), "executed no tool") || !strings.Contains(err.Error(), "tool_calls=0") {
+		t.Fatalf("err = %v, want a read-nothing failure", err)
+	}
+}
+
+func TestRunAgentReview_LiteHygieneOffKeepsAReadNothingRun(t *testing.T) {
+	t.Setenv("LITE_HYGIENE", "false")
+	out, _ := runLite(t, AgentConfig{Model: "claude-fable-5-1", Prompt: runconfig.PromptLiteArmA, SkipGates: true}, liteReadNothingStream(liteFindingOnChange))
+	if len(out.Comments) == 0 {
+		t.Fatal("with LITE_HYGIENE=false the run should still produce its findings")
+	}
+}
+
+func TestRunAgentReview_PipelinePromptIsNotHeldToTheLiteToolRule(t *testing.T) {
+	out, _ := runLite(t, AgentConfig{Model: "claude-fable-5-1", Prompt: runconfig.PromptPipeline}, liteReadNothingStream(liteFindingOnChange))
+	if len(out.Comments) == 0 {
+		t.Fatal("the pipeline prompt should not fail for a tool-free stream")
 	}
 }
