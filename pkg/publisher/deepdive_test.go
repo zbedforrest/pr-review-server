@@ -31,12 +31,12 @@ func TestHeadline_CutsAtClauseBoundaryNotMidWord(t *testing.T) {
 func TestRenderInline_LongEffectSentenceIsShownInFullUnderTheCutHeadline(t *testing.T) {
 	impact := "When a selected component entry fails to render, the request returns 500 with no dispositions, so the entry_payload_error row and any earlier holdout/suppression rows for that request are never recorded."
 	fd := withContract(f("x", "medium", "a.go", 3, "reasoning"), "production_behavior", "current_impact", impact, "")
-	out := RenderInline(fd, "prism-only", "", "")
+	out := RenderInline(fd, "prism-only", "", "", "")
 	visible := out[:strings.Index(out, "<details>")]
 	if !strings.Contains(visible, "**[MEDIUM] Behavior change · When a selected component entry fails to render, the request returns 500 with no dispositions**\n\n"+impact) {
 		t.Fatalf("a sentence too long for the headline is cut in the title and shown in full under it:\n%s", out)
 	}
-	legacy := renderInline(fd, "prism-only", "", "", true)
+	legacy := renderInline(fd, "prism-only", "", "", "", true)
 	if !strings.Contains(legacy, "**[MEDIUM] Behavior change**\n\n"+impact) {
 		t.Fatalf("legacy titles keep the bare kind label:\n%s", legacy)
 	}
@@ -44,7 +44,7 @@ func TestRenderInline_LongEffectSentenceIsShownInFullUnderTheCutHeadline(t *test
 
 func TestRenderInline_ShortEffectSentenceIsTheHeadlineAndNotRepeated(t *testing.T) {
 	fd := withContract(f("x", "medium", "a.go", 3, "reasoning"), "production_behavior", "current_impact", "Users see a 500 on every retry.", "")
-	out := RenderInline(fd, "prism-only", "", "")
+	out := RenderInline(fd, "prism-only", "", "", "")
 	visible := out[:strings.Index(out, "<details>")]
 	if !strings.Contains(visible, "**[MEDIUM] Behavior change · Users see a 500 on every retry**") || strings.Count(visible, "Users see a 500") != 1 {
 		t.Fatalf("a sentence that fits is the headline and appears once:\n%s", out)
@@ -53,7 +53,7 @@ func TestRenderInline_ShortEffectSentenceIsTheHeadlineAndNotRepeated(t *testing.
 
 func TestRenderInline_DetailsCarryPlainAgentPrompt(t *testing.T) {
 	fd := withContract(f("a.go:0:abc", "medium", "a.go", 3, "reasoning"), "production_behavior", "current_impact", "Users see a 500.", "")
-	out := RenderInline(fd, "prism-only", "https://prism.example/go/agent?o=acme&r=example&n=7", "")
+	out := RenderInline(fd, "prism-only", "https://prism.example/go/agent?o=acme&r=example&n=7", "", "")
 	if !strings.Contains(out, "```text\nPRism finding on a.go:3 in acme/example#7: Users see a 500.") {
 		t.Fatalf("details must include a copyable plain prompt:\n%s", out)
 	}
@@ -124,11 +124,11 @@ func TestRenderSummary_UsesBadgesWhenABadgeBaseIsSet(t *testing.T) {
 func TestRenderInline_UsesBadgeInTheTitle(t *testing.T) {
 	x := withContract(fp("h", "medium", "a.py", 3, "Body.", "agent"), "production_behavior", "current_impact", "Users see the wrong flag.", "")
 	x.FindingContract.Headline = "Flag ignores the override"
-	out := RenderInline(x, "", "", "https://prism.example/badge")
+	out := RenderInline(x, "", "", "https://prism.example/badge", "")
 	if !strings.Contains(out, "\n"+`<img alt="MEDIUM" src="https://prism.example/badge/medium.svg"> **Behavior change · Flag ignores the override**`+"\n") {
 		t.Errorf("title = badge then bold headline:\n%s", out)
 	}
-	plain := RenderInline(x, "", "", "")
+	plain := RenderInline(x, "", "", "", "")
 	if !strings.Contains(plain, "**[MEDIUM] Behavior change · Flag ignores the override**") {
 		t.Errorf("without a badge base the text label stays:\n%s", plain)
 	}

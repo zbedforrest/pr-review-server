@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"pr-review-server/auth"
+	"pr-review-server/db"
 )
 
 // UserResponse represents the current user for API responses
@@ -18,6 +19,7 @@ type UserResponse struct {
 	// GitHub token to act as the human.
 	QuickActionsEnabled    bool `json:"quick_actions_enabled"`
 	GitHubActionsAvailable bool `json:"github_actions_available"`
+	publishEnrollment
 }
 
 // handleGetUser returns information about the currently logged-in user
@@ -27,19 +29,21 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not authenticated", http.StatusUnauthorized)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.userResponse(r, user)) // nolint:errcheck
+}
 
+func (s *Server) userResponse(r *http.Request, user *db.User) UserResponse {
 	_, _, tokenOK := auth.GitHubUserToken(r)
-	response := UserResponse{
+	return UserResponse{
 		ID:                     user.ID,
 		GitHubUsername:         user.GitHubUsername,
 		GitHubAvatarURL:        user.GitHubAvatarURL,
 		IsAdmin:                s.isAdmin(user),
 		QuickActionsEnabled:    s.quickActionsAvailableTo(user),
 		GitHubActionsAvailable: tokenOK,
+		publishEnrollment:      s.publishEnrollmentFor(user.GitHubUsername),
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response) // nolint:errcheck
 }
 
 // GetUserHandler returns a handler function for /api/user

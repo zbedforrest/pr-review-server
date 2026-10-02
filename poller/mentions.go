@@ -148,6 +148,7 @@ type mentionScanner struct {
 	holder   string
 	since    time.Time
 	allowed  func(author string) bool // publish allowlist
+	optedOut func(author string) bool // opted-out PR authors get no reaction either
 	now      func() time.Time
 	log      func(format string, args ...any)
 	onEvent  func(pr github.PullRequest, by string, publish bool)
@@ -205,6 +206,7 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 		ghPR := github.PullRequest{Owner: pr.RepoOwner, Repo: pr.RepoName, Number: pr.PRNumber, CommitSHA: live.HeadSHA,
 			Title: live.Title, Author: live.Author, CreatedAt: pr.CreatedAt, Draft: live.Draft}
 		publish := m.allowed(ghPR.Author) && !ghPR.Draft
+		silent := m.optedOut != nil && m.optedOut(ghPR.Author)
 		now := m.now()
 		reserved, err := m.ledger.ReserveMention(&db.MentionTrigger{
 			CommentID: c.ID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName, PRNumber: pr.PRNumber, Holder: m.holder,
@@ -231,7 +233,7 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 				if !owned {
 					continue
 				}
-				m.acknowledge(ctx, pr, c.ID, reactionCurrent)
+				m.acknowledge(ctx, pr, c.ID, reactionCurrent, silent)
 				m.log("[MENTIONS] %s: comment %d asked for a review of %s, which completed recently", key, c.ID, short)
 				continue
 			}
@@ -276,7 +278,7 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 			continue
 		}
 		res.triggered++
-		m.acknowledge(ctx, pr, c.ID, reactionTriggered)
+		m.acknowledge(ctx, pr, c.ID, reactionTriggered, silent)
 		m.log("[MENTIONS] %s: review of %s requested by %s in comment %d (publish=%t)", key, short, c.Author, c.ID, publish)
 		if m.onEvent != nil {
 			m.onEvent(ghPR, c.Author, publish)
@@ -292,7 +294,11 @@ const (
 	reactionCurrent   = "+1"
 )
 
-func (m mentionScanner) acknowledge(ctx context.Context, pr *db.PR, commentID int64, reaction string) {
+func (m mentionScanner) acknowledge(ctx context.Context, pr *db.PR, commentID int64, reaction string, silent bool) {
+	if silent {
+		m.log("[MENTIONS] %s: comment %d not acknowledged, the PR author opted out of PRism comments", mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber), commentID)
+		return
+	}
 	if err := m.gh.ReactToIssueComment(ctx, pr.RepoOwner, pr.RepoName, commentID, reaction); err != nil {
 		m.log("[MENTIONS] %s: could not acknowledge comment %d: %v", mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber), commentID, err)
 	}
@@ -363,7 +369,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 		prs = append(prs, &all[i])
 	}
 	candidates := mentionCandidates(prs, p.mentionLastScanned, full, time.Now().UTC())
-	enabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
+	gate, err := p.publishGate()
 	if err != nil {
 		// Without the allowlist every admission would be dashboard-only with
 		// a false note; wait for the next cycle instead.
@@ -372,9 +378,9 @@ func (p *Poller) scanMentions(ctx context.Context) {
 	}
 	scanner := mentionScanner{
 		gh: mentionGitHubAdapter{p.ghClientConcrete}, ledger: ledger, handle: p.cfg.MentionHandle, holder: p.holderID, since: since,
-		allowed: p.authorMatcher(enabled),
-		now:     func() time.Time { return time.Now().UTC() },
-		log:     log.Printf,
+		allowed: gate.Allowed, optedOut: gate.OptedOut,
+		now: func() time.Time { return time.Now().UTC() },
+		log: log.Printf,
 		reviewed: func(owner, repo string, number int, headSHA string, publish bool, since time.Time) (bool, error) {
 			runs, err := p.db.ListReviewRuns(db.ReviewRunFilter{RepoOwner: owner, RepoName: repo, PRNumber: number, CommitSHA: headSHA, Status: db.ReviewRunStatusCompleted, Limit: 1})
 			if err != nil {

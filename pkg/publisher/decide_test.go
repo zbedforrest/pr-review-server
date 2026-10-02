@@ -393,7 +393,7 @@ func TestLegacyLedgerFromEnv(t *testing.T) {
 
 func TestStripRendered(t *testing.T) {
 	x := f("a.go:1:abc", "medium", "a.go", 12, "The retry loop never backs off after a 429.")
-	body := RenderInline(x, SourceTagBoth, "https://prism.example/go/agent?o=acme&r=example&n=7", "https://prism.example/badge")
+	body := RenderInline(x, SourceTagBoth, "https://prism.example/go/agent?o=acme&r=example&n=7", "https://prism.example/badge", "")
 	got := StripRendered(body)
 	for _, banned := range []string{"<!--", "<img", "Agent prompt", "Fix with agent", "Source:", "Reasoning and how to verify", "https://"} {
 		if strings.Contains(got, banned) {

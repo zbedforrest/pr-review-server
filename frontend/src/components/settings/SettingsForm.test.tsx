@@ -75,6 +75,39 @@ const postedBodies = () =>
     .filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
     .map(([, init]) => JSON.parse((init as RequestInit).body as string));
 
+describe('SettingsForm opt-out list', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('saves publish_opt_out_authors from the Publishing section as logins only', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...serverSettings, publish_opt_out_authors: 'carol' }));
+    renderForm({}, { ...serverSettings, publish_opt_out_authors: '' });
+    const input = screen.getByLabelText('Opted out of comments') as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: '*' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(saveIn('Publishing').disabled).toBe(true);
+
+    fireEvent.change(input, { target: { value: 'carol' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(saveIn('Publishing').disabled).toBe(false);
+    fireEvent.click(saveIn('Publishing'));
+
+    await waitFor(() => expect(postedBodies()).toEqual([{ publish_opt_out_authors: 'carol' }]));
+  });
+
+  it('renders the opt-out list empty when an older server omits it', () => {
+    renderForm({}, { ...serverSettings, publish_opt_out_authors: undefined });
+    expect((screen.getByLabelText('Opted out of comments') as HTMLInputElement).value).toBe('');
+  });
+});
+
 describe('SettingsForm', () => {
   beforeEach(() => {
     fetchMock.mockReset();

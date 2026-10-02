@@ -90,6 +90,7 @@ The most common ones:
 | `POLLING_INTERVAL` | No | GitHub poll cadence, default `1m` |
 | `DISABLE_POLLING` | No | Run purely as an on-demand review API |
 | `MENTION_HANDLE` | No | App login mentioned to request a review (`@<handle> review`) by the PR author or a repository owner, member or collaborator; default `prism-pr-review-server`, empty disables |
+| `PUBLISH_SETTLE_FOOTER` | No | `false` drops the settle and opt-out footer from posted comments and summaries; default on |
 | `HEALTH_JOB_TOKEN` | No | Enables `POST /api/health/daily` for a scheduler (header `X-Prism-Job-Token`); the report is stored and readable at `GET /api/health/daily` (`?format=md`) |
 | `GITHUB_WEBHOOK_SECRET` | No | Secret for the GitHub App webhook at `POST /webhooks/github` (`X-Hub-Signature-256`); empty leaves the endpoint disabled. See [Automatic reviews](#automatic-reviews-for-allowlisted-authors) |
 | `PUBLISH_RENDER_V2` | No | Default `true`: summary bullets and inline titles use the finding's headline, else its comment's first sentence, and the impact sentence only when the contract asserts current impact. `false` restores the impact-sentence titles; the word-boundary shortening of headlines over 90 runes (previously blanked) is not switchable |
@@ -191,6 +192,24 @@ reviews, `*` included: GitHub App logins (`[bot]`), authors GitHub reports as
 bots, and the `ci_status_exclude_authors` list. When the deployment policy
 rejects the profile an automatic review resolves to, the review is skipped and
 the head stays queued with the reason, rather than running a costlier profile.
+
+### Leaving the comment pilot
+
+`publish_opt_out_authors` (admin settings page, Publishing section) lists the
+logins who asked PRism to stop posting. Deny wins: an opted-out author gets no
+review comments, inline findings, reply reactions, reply text or mention
+responses, whatever `publish_enabled_authors` says, while their reviews keep
+appearing on the dashboard. Authors manage it themselves: every PRism root
+review comment and summary ends with a footer that links to the dashboard
+(and, while `publish_reply_mode` is respond, says how to settle a thread: reply
+`intentional` or `won't fix`), where an enrolled
+author sees a banner with Leave, and an opted-out author sees Rejoin. The
+banner uses `POST` and `DELETE /api/me/publish-opt-out`, and `GET /api/user`
+reports `publish_enrolled`, `publish_opted_out` and `enrolled_via` (`login`,
+a team slug, or `*`). Gate denials due to an opt-out count as
+`opted_out_total` on the daily health report's publication hygiene line.
+A mention on an opted-out author's PR still queues a dashboard review but
+gets no reaction. `PUBLISH_SETTLE_FOOTER=false` removes the footer.
 
 `GET /api/status` reports `webhook.deliveries_24h`, `webhook.last_delivery_at`,
 `webhook.intents_queued` and `webhook.oldest_queued_age_sec`, and the daily

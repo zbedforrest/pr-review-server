@@ -59,6 +59,9 @@ type Round struct {
 	ProfileFooter string
 	// LegacyTitles is Policy.LegacyTitles as applied to this round.
 	LegacyTitles bool
+	// SettleFooter is the rendered line under every root comment and the
+	// summary (see the SettleFooter function); empty omits it.
+	SettleFooter string
 
 	// PriorComments is what GitHub currently shows for PRism's own inline
 	// comments, keyed by the fingerprint in their marker: the translated line
@@ -85,6 +88,23 @@ type PriorComment struct {
 type ChangeSet struct {
 	Files map[string]bool
 	Lines map[string]map[int]bool
+}
+
+// SettleFooter is the one line under every root comment and the summary:
+// how an author settles a thread (only while author replies are handled)
+// and where to stop the comments entirely. Empty when neither applies.
+func SettleFooter(optOutURL string, repliesEnabled bool) string {
+	var parts []string
+	if repliesEnabled {
+		parts = append(parts, "Reply <code>intentional</code> or <code>won't fix</code> to settle a thread")
+	}
+	if optOutURL != "" {
+		parts = append(parts, fmt.Sprintf(`<a href="%s">Stop PRism comments on your PRs</a>`, optOutURL))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "<sub>" + strings.Join(parts, " · ") + "</sub>"
 }
 
 func (r Round) sourceTag(id string) string {
@@ -379,6 +399,9 @@ func RenderSummary(r Round, sel Selection) string {
 		fmt.Fprintf(&b, " · Reviewed by %s", r.ProfileFooter)
 	}
 	b.WriteString("</sub>\n")
+	if r.SettleFooter != "" {
+		b.WriteString(r.SettleFooter + "\n")
+	}
 	return b.String()
 }
 
@@ -529,11 +552,11 @@ func impactShownBelow(f payload.Finding, legacy bool) bool {
 // RenderInline keeps the visible part Greptile-sized: headline, one
 // calibration sentence, and the suggestion if there is one. The agent's full
 // reasoning and the verification steps fold behind a details block.
-func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string) string {
-	return renderInline(f, sourceTag, agentLinkBase, badgeBase, false)
+func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string) string {
+	return renderInline(f, sourceTag, agentLinkBase, badgeBase, settleFooter, false)
 }
 
-func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, legacy bool) string {
+func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string, legacy bool) string {
 	comment := commentText(f)
 	c := f.FindingContract
 	hasContract := c != nil && f.FindingContractStatus == "valid"
@@ -601,6 +624,9 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	}
 	if agentLinkBase != "" {
 		subs = append(subs, fmt.Sprintf(`<sub><a href="%s">Fix with agent</a></sub>`, agentLink(agentLinkBase, f)))
+	}
+	if settleFooter != "" {
+		subs = append(subs, settleFooter)
 	}
 	if len(subs) > 0 {
 		b.WriteString("\n" + strings.Join(subs, "\n") + "\n")

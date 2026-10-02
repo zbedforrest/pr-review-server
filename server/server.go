@@ -104,6 +104,8 @@ type Server struct {
 	approvalScanStates  approvalScanStateCache
 	approvalInventories approvalInventoryCache
 	approvalLimiter     approvalModelLimiter
+	// publishOptOutMu serialises the read-modify-write of the opt-out list.
+	publishOptOutMu sync.Mutex
 	// teams resolves team: entries of the author allowlists; shared with the
 	// poller so validation and the gates see one cache.
 	teams *github.TeamResolver
@@ -385,6 +387,7 @@ func (s *Server) Start() error {
 		withAuth(s.handleDailyHealth).ServeHTTP(w, r)
 	}))
 	http.Handle("/api/user", withAuth(s.handleGetUser))
+	http.Handle(publishOptOutPath, withAuth(s.handlePublishOptOut))
 	http.Handle("/api/telemetry/track", withAuth(s.handleTrackTelemetry))
 	http.Handle("/api/telemetry/stats", withAuth(s.handleTelemetryStats))
 	http.Handle("/api/review/", withAuth(s.handleGetReview))
@@ -1343,6 +1346,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ReviewNRequests          *int    `json:"review_n_requests"`
 			GenerateHTML             *bool   `json:"generate_html"`
 			PublishEnabledAuthors    *string `json:"publish_enabled_authors"`
+			PublishOptOutAuthors     *string `json:"publish_opt_out_authors"`
 			PublishInlineCap         *int    `json:"publish_inline_cap"`
 			PublishInlineMinSeverity *string `json:"publish_inline_min_severity"`
 			PublishReplyMode         *string `json:"publish_reply_mode"`
@@ -1418,7 +1422,15 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			autoAuthors = normalized
 		}
-		var publishAuthors, adminLogins, ciExcludeAuthors string
+		var publishAuthors, optOutAuthors, adminLogins, ciExcludeAuthors string
+		if req.PublishOptOutAuthors != nil {
+			normalized, err := normalizeLoginCSV(*req.PublishOptOutAuthors, false)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("%s: %v", settingPublishOptOutAuthors, err), http.StatusBadRequest)
+				return
+			}
+			optOutAuthors = normalized
+		}
 		if req.PublishEnabledAuthors != nil {
 			normalized, teams, err := normalizeAuthorCSV(*req.PublishEnabledAuthors, s.teamOrg())
 			if err != nil {
@@ -1465,6 +1477,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.PublishEnabledAuthors != nil {
 			updates = append(updates, settingWrite{settingPublishEnabledAuthors, publishAuthors})
 		}
+		if req.PublishOptOutAuthors != nil {
+			updates = append(updates, settingWrite{settingPublishOptOutAuthors, optOutAuthors})
+		}
 		if req.PublishInlineCap != nil {
 			updates = append(updates, settingWrite{settingPublishInlineCap, strconv.Itoa(*req.PublishInlineCap)})
 		}
@@ -1509,6 +1524,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.AutoReviewAuthors != nil {
 			updates = append(updates, settingWrite{poller.SettingAutoReviewAuthors, autoAuthors})
+		}
+		if req.PublishOptOutAuthors != nil {
+			s.publishOptOutMu.Lock()
+			defer s.publishOptOutMu.Unlock()
 		}
 		for _, u := range updates {
 			if err := s.writeSetting(user.GitHubUsername, u.key, u.value); err != nil {

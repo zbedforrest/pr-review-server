@@ -21,22 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPublishEnabledFor(t *testing.T) {
-	cases := []struct {
-		author, enabled string
-		want            bool
-	}{
-		{"alice", "", false},
-		{"", "*", false},
-		{"alice", "*", true},
-		{"alice", "bob, Alice ,carol", true},
-		{"dave", "bob,alice", false},
-	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, publishEnabledFor(c.author, c.enabled), "author=%q enabled=%q", c.author, c.enabled)
-	}
-}
-
 const greptileBody = `<a href="#"><img alt="P1" src="https://greptile-static-assets.s3.amazonaws.com/badges/p1.svg?v=9" align="top"></a> **Nil map write on first session**
 
 The sessions map is assigned before init so the first write panics with a nil map.
@@ -523,4 +507,26 @@ func TestRefreshPublishedSummary_RespectsThePublishGate(t *testing.T) {
 	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot"), reviewDir: t.TempDir()}
 	require.NoError(t, p.refreshPublishedSummary(context.Background(), "acme", "example", 1))
 	assert.Empty(t, writes(), "an author outside publish_enabled_authors gets no summary edit")
+}
+
+func TestSettleFooter_FollowsReplyModeAndTheKillSwitch(t *testing.T) {
+	database := NewMockDatabase()
+	p := newTestPoller(NewMockGitHubClient(), database)
+	p.cfg.BaseURL = "https://prism.example/"
+	assert.Empty(t, BuildPublishRound(github.PullRequest{Owner: "a", Repo: "b", Number: 1}, payload.Payload{}, nil, nil, nil, p.cfg.BaseURL).SettleFooter,
+		"the posting path fills the footer")
+
+	linkOnly := p.settleFooter()
+	assert.Contains(t, linkOnly, `href="https://prism.example/#prism-comments"`)
+	assert.NotContains(t, linkOnly, "settle a thread", "replies off: nobody acts on a verdict")
+
+	for _, mode := range []string{"observe", "react", "shadow"} {
+		require.NoError(t, database.SetSetting(settingPublishReplyMode, mode))
+		assert.NotContains(t, p.settleFooter(), "settle a thread", "%s never answers a verdict on the thread", mode)
+	}
+	require.NoError(t, database.SetSetting(settingPublishReplyMode, "Respond"))
+	assert.Contains(t, p.settleFooter(), "settle a thread")
+
+	p.cfg.DisableSettleFooter = true
+	assert.Empty(t, p.settleFooter())
 }

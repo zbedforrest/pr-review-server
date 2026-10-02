@@ -25,6 +25,15 @@ type OwnComment struct {
 
 var ownMarkerRe = regexp.MustCompile(`<!-- prism:finding:([^\s>]+) -->`)
 
+// settleFooterRe is the publisher's settle footer under every root comment:
+// boilerplate that must not count toward prose similarity.
+var settleFooterRe = regexp.MustCompile(`(?m)^<sub>(?:Reply <code>intentional</code> or <code>won't fix</code> to settle a thread|<a href="[^"]*">Stop PRism comments on your PRs</a>).*</sub>[ \t]*\n?`)
+
+// StripSettleFooter removes the settle footer line from a rendered body.
+func StripSettleFooter(body string) string {
+	return settleFooterRe.ReplaceAllString(body, "")
+}
+
 // ParseOwnComments extracts PRism's own prior inline comments. Ownership is
 // established by the ledger's comment ids, not by the marker: a quote-reply
 // copies the marker verbatim and anyone can type one.
@@ -40,7 +49,7 @@ func ParseOwnComments(cs []ExternalComment, ledgerCommentIDs map[int64]bool) []O
 			FindingID: m[1],
 			File:      c.Path,
 			Line:      c.Line,
-			Text:      ownMarkerRe.ReplaceAllString(c.Body, ""),
+			Text:      StripSettleFooter(ownMarkerRe.ReplaceAllString(c.Body, "")),
 		})
 	}
 	return out

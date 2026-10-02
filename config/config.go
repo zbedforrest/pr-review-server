@@ -109,6 +109,9 @@ type Config struct {
 	// MentionHandle is the App login authors mention to request a review
 	// ("@<handle> review"); empty disables mention triggers.
 	MentionHandle string
+	// DisableSettleFooter drops the settle and opt-out footer from posted
+	// comments (PUBLISH_SETTLE_FOOTER=false).
+	DisableSettleFooter bool
 	// HealthJobToken authenticates the scheduled daily health report
 	// (POST /api/health/daily); empty disables the job endpoint.
 	HealthJobToken string
@@ -364,6 +367,7 @@ func Load() *Config {
 		ReplyPolicyV2:              !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_POLICY_V2")), "false"),
 		ReplyVerdictFastPath:       !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_VERDICT_FAST_PATH")), "false"),
 		MentionHandle:              strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
+		DisableSettleFooter:        strings.EqualFold(strings.TrimSpace(os.Getenv("PUBLISH_SETTLE_FOOTER")), "false"),
 		HealthJobToken:             os.Getenv("HEALTH_JOB_TOKEN"),
 		AdminLogins:                getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),
 		AnthropicAPIKey:            os.Getenv("ANTHROPIC_API_KEY"),

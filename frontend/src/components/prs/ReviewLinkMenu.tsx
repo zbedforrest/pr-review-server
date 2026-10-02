@@ -19,6 +19,7 @@ interface ReviewLinkMenuProps {
   reviewPending: boolean;
   /** False when the PR author is outside the publish pilot, so posting is not offered. */
   publishAllowed: boolean;
+  publishBlockedTitle?: string;
 }
 
 // Keep in sync with $panel-width in ReviewLinkMenu.scss.
@@ -28,7 +29,7 @@ const CLOSE_DELAY_MS = 200;
 
 const compactModelName = (model: string) => model.split('/').pop() || model;
 
-export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending, publishAllowed }: ReviewLinkMenuProps) {
+export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending, publishAllowed, publishBlockedTitle = PILOT_BLOCKED_TITLE }: ReviewLinkMenuProps) {
   const { track } = useTelemetry();
   // Positioning + reflow live in the shared hook; this menu drives open/close
   // off hover timers rather than clicks, so it wraps open()/close().
@@ -298,7 +299,7 @@ export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending, 
             role="menuitem"
             onClick={() => handleRegenerate(true)}
             disabled={reviewInFlight || !publishAllowed}
-            title={publishAllowed ? undefined : PILOT_BLOCKED_TITLE}
+            title={publishAllowed ? undefined : publishBlockedTitle}
           >
             <span className="review-menu__icon">🔄</span> Regenerate and post PR comment
           </button>

@@ -29,6 +29,9 @@ export interface Settings {
   // GitHub logins whose PRs may receive posted reviews, comma-separated,
   // "team:<slug>" entries, or "*" for everyone.
   publish_enabled_authors: string;
+  // Logins that asked PRism to stop posting on their PRs; denied before any
+  // entry above can match. Optional: older servers omit it.
+  publish_opt_out_authors?: string;
   publish_inline_cap: number;
   publish_inline_min_severity: string;
   publish_show_unverified: boolean;

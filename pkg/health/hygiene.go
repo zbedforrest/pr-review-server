@@ -31,15 +31,19 @@ const (
 	// the reply scan.
 	ActionVerdictSettled = "verdicts_settled"
 	// ActionPublishDenied: the publish gate stopped a finished review from
-	// posting. Today that means the author is outside publish_enabled_authors;
-	// the opt-out list will add a reason label.
+	// posting: the author is outside publish_enabled_authors or opted out
+	// (label reason=opted_out).
 	ActionPublishDenied = "publish_denied_total"
+	// ActionOptedOut: the denial above was an opt-out. A subset of
+	// ActionPublishDenied, counted on its own so the opt-out's reach is
+	// visible.
+	ActionOptedOut = "opted_out_total"
 )
 
 // HygieneActions lists every hygiene action, in report order.
 var HygieneActions = []string{
 	ActionRepeatedPost, ActionRepeatAfterDismiss, ActionFixedWithoutFileChange, ActionSameCommitResolve,
-	ActionSeverityEscalation, ActionVerdictSettled, ActionPublishDenied,
+	ActionSeverityEscalation, ActionVerdictSettled, ActionPublishDenied, ActionOptedOut,
 }
 
 // hygieneLabels names each counter in the report.
@@ -47,6 +51,7 @@ var hygieneLabels = map[string]string{
 	ActionRepeatedPost: "repeated posts", ActionRepeatAfterDismiss: "repeats after dismiss",
 	ActionFixedWithoutFileChange: "fixed without a file change", ActionSameCommitResolve: "same-commit resolves",
 	ActionSeverityEscalation: "severity escalations", ActionVerdictSettled: "author verdicts settled", ActionPublishDenied: "posts stopped by the publish gate",
+	ActionOptedOut: "of which stopped by an opt-out",
 }
 
 // UnwiredHygiene maps each counter whose producer has not shipped yet to the

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { publishAllowedForAuthor } from './publishPolicy';
+import { OPTED_OUT_TITLE, PILOT_BLOCKED_TITLE, publishBlockedTitle, publishAllowedForAuthor } from './publishPolicy';
 
 describe('publishAllowedForAuthor', () => {
   it('allows everyone when the list is the wildcard', () => {
@@ -46,5 +46,24 @@ describe('publishAllowedForAuthor', () => {
   it('never allows an empty author', () => {
     expect(publishAllowedForAuthor('', 'alice,')).toBe(false);
     expect(publishAllowedForAuthor('', '*')).toBe(false);
+  });
+});
+
+describe('publishAllowedForAuthor with an opt-out list', () => {
+  it('denies an opted-out login before any login, team or wildcard entry', () => {
+    const teams = { core: { members: ['alice'], resolved_at: '2026-09-15T00:00:00Z' } };
+    expect(publishAllowedForAuthor('alice', '*', undefined, 'Alice')).toBe(false);
+    expect(publishAllowedForAuthor('alice', 'alice', undefined, ' alice ,bob')).toBe(false);
+    expect(publishAllowedForAuthor('alice', 'team:core', teams, 'alice')).toBe(false);
+    expect(publishAllowedForAuthor('bob', '*', undefined, 'alice')).toBe(true);
+    expect(publishAllowedForAuthor('alice', '*', undefined, '')).toBe(true);
+  });
+});
+
+describe('publishBlockedTitle', () => {
+  it('names the opt-out when the author asked for silence', () => {
+    expect(publishBlockedTitle('Alice', 'bob, alice')).toBe(OPTED_OUT_TITLE);
+    expect(publishBlockedTitle('carol', 'bob, alice')).toBe(PILOT_BLOCKED_TITLE);
+    expect(publishBlockedTitle('carol', undefined)).toBe(PILOT_BLOCKED_TITLE);
   });
 });

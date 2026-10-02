@@ -33,17 +33,6 @@ const (
 	autoReviewClaimGrace = 5 * time.Minute
 )
 
-// publishAllowedFor reports whether the author is on the publication
-// allowlist, by login or team. A read error denies, like the publish gate
-// always has.
-func (p *Poller) publishAllowedFor(author string) (bool, error) {
-	enabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
-	if err != nil {
-		return false, err
-	}
-	return p.authorAllowed(enabled, author), nil
-}
-
 // autoReviewReadyEnabled reads the feature switch; a missing value is off.
 func (p *Poller) autoReviewReadyEnabled() (bool, error) {
 	raw, err := p.db.GetSetting(settingAutoReviewReadyPRs)

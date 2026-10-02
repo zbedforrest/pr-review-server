@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"strings"
 	"testing"
 
 	"pr-review-server/pkg/reviewer/payload"
@@ -375,5 +376,26 @@ func TestAliasPrior_HigherSeverityRestatementClaimsTheRowFirst(t *testing.T) {
 	got := AliasPrior(current, own)
 	if got["forms.py:165:med"] != "forms.py:165:aaaaaaaaaaaa" || got["forms.py:166:low"] != "" {
 		t.Fatalf("the medium restatement must take the row even when the low note overlaps more: %v", got)
+	}
+}
+
+func TestParseOwnComments_DropsTheSettleFooterFromTheText(t *testing.T) {
+	footers := []string{
+		"<sub>Reply <code>intentional</code> or <code>won't fix</code> to settle a thread · <a href=\"https://prism.example/#prism-comments\">Stop PRism comments on your PRs</a></sub>\n",
+		"<sub>Reply <code>intentional</code> or <code>won't fix</code> to settle a thread</sub>\n",
+		"<sub><a href=\"https://prism.example/#prism-comments\">Stop PRism comments on your PRs</a></sub>\n",
+	}
+	for _, footer := range footers {
+		body := "<!-- prism:finding:a.go:0:aaaaaaaaaaaa -->\n**[MEDIUM] Nil deref when cfg is missing.**\n\n" + footer
+		own := ParseOwnComments([]ExternalComment{{ID: 501, Path: "a.go", Line: 5, Body: body}}, map[int64]bool{501: true})
+		if len(own) != 1 {
+			t.Fatalf("own = %+v", own)
+		}
+		if strings.Contains(own[0].Text, "settle a thread") || strings.Contains(own[0].Text, "prism-comments") {
+			t.Fatalf("footer must not reach the similarity text: %q", own[0].Text)
+		}
+		if !strings.Contains(own[0].Text, "Nil deref when cfg is missing.") {
+			t.Fatalf("stripping must keep the prose: %q", own[0].Text)
+		}
 	}
 }
