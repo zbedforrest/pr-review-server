@@ -19,6 +19,7 @@ const (
 	DiffSummary          = "summary_mismatch"
 	DiffReply            = "wrong_reply"
 	DiffUnresolved       = "not_resolved"
+	DiffReplyError       = "reply_error"
 )
 
 // Diff is one place the replay departed from the expectation.
@@ -53,6 +54,8 @@ type CaseScore struct {
 	Fixed             int `json:"fixed"`
 	WrongFixed        int `json:"wrong_fixed"`
 	FixedUnconfirmed  int `json:"fixed_unconfirmed"`
+	FixedUnlabelled   int `json:"fixed_unlabelled"`
+	ReplyErrors       int `json:"reply_errors"`
 	SummariesScored   int `json:"summaries_scored"`
 	SummariesCorrect  int `json:"summaries_correct"`
 	ResolutionsWanted int `json:"resolutions_expected"`
@@ -81,7 +84,10 @@ func parseSince(summary string) (newN, open, fixed int, ok bool) {
 
 func scoreCase(run *Run) CaseScore {
 	c := run.Case
-	s := CaseScore{ID: c.ID, Tier: c.Tier, Rounds: len(run.Rounds), ByClass: map[string]*ClassScore{}, SyntheticReplies: run.Synthetic}
+	s := CaseScore{ID: c.ID, Tier: c.Tier, Rounds: len(run.Rounds), ByClass: map[string]*ClassScore{}, SyntheticReplies: run.Synthetic, ReplyErrors: len(run.ReplyErrors)}
+	for _, e := range run.ReplyErrors {
+		s.Diffs = append(s.Diffs, Diff{Kind: DiffReplyError, Round: -1, Detail: e})
+	}
 	replayed := map[int]bool{}
 	for _, rr := range run.Rounds {
 		if rr.Replayed {
@@ -163,11 +169,12 @@ func scoreFixed(run *Run, m postMatch, s *CaseScore) {
 	}
 	for _, rr := range run.Rounds {
 		for _, row := range rr.Flipped {
-			s.Fixed++
 			fe := defectOfFP[row.Fingerprint]
 			if fe == nil {
+				s.FixedUnlabelled++
 				continue
 			}
+			s.Fixed++
 			if by, ok := fixedBy[fe.Defect]; ok && by <= rr.Index {
 				continue
 			}
@@ -356,6 +363,8 @@ type TierMetrics struct {
 	Fixed             int                    `json:"fixed"`
 	WrongFixed        int                    `json:"wrong_fixed"`
 	FixedUnconfirmed  int                    `json:"fixed_unconfirmed"`
+	FixedUnlabelled   int                    `json:"fixed_unlabelled"`
+	ReplyErrors       int                    `json:"reply_errors"`
 	SummariesScored   int                    `json:"summaries_scored"`
 	SummaryCorrect    *float64               `json:"summary_count_correct"`
 	ResolutionsWanted int                    `json:"resolutions_expected"`
@@ -392,6 +401,8 @@ func aggregate(scores []CaseScore) TierMetrics {
 		t.Fixed += s.Fixed
 		t.WrongFixed += s.WrongFixed
 		t.FixedUnconfirmed += s.FixedUnconfirmed
+		t.FixedUnlabelled += s.FixedUnlabelled
+		t.ReplyErrors += s.ReplyErrors
 		t.SummariesScored += s.SummariesScored
 		sumOK += s.SummariesCorrect
 		t.ResolutionsWanted += s.ResolutionsWanted

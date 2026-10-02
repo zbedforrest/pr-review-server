@@ -32,6 +32,7 @@ func metricsTable(res Result) string {
 	row("thread-resolution recall", fmt.Sprintf("%s of %d", fmtRatio(g.ResolutionRecall), g.ResolutionsWanted), fmt.Sprintf("%s of %d", fmtRatio(a.ResolutionRecall), a.ResolutionsWanted))
 	row("reply decision accuracy", fmt.Sprintf("%s of %d", fmtRatio(g.ReplyAccuracy), g.RepliesScored), fmt.Sprintf("%s of %d", fmtRatio(a.ReplyAccuracy), a.RepliesScored))
 	row("replies whose thread the replay did not post", num(g.RepliesNoThread), num(a.RepliesNoThread))
+	row("fixed flips on unlabelled rows / reply step errors", fmt.Sprintf("%d / %d", g.FixedUnlabelled, g.ReplyErrors), fmt.Sprintf("%d / %d", a.FixedUnlabelled, a.ReplyErrors))
 	row("unlabelled posts / unmapped expectations", fmt.Sprintf("%d / %d", g.UnlabeledPosts, g.UnmappedExpected), fmt.Sprintf("%d / %d", a.UnlabeledPosts, a.UnmappedExpected))
 	return b.String()
 }

@@ -16,37 +16,38 @@ Built from the 203 audited PRs. Cases name real repositories and people, so they
 
 | tier | cases | rounds (with sidecar) | findings post / suppress / unmapped | summaries | resolutions | replies |
 |---|---:|---:|---:|---:|---:|---:|
-| gold | 50 | 121 (119) | 59 / 52 / 6 | 65 | 69 | 68 |
-| accepted | 106 | 273 (269) | 174 / 140 / 6 | 136 | 121 | 91 |
-| excluded | 47 | | | | | |
+| gold | 46 | 114 (112) | 56 / 50 / 6 | 62 | 67 | 65 |
+| accepted | 108 | 275 (271) | 175 / 140 / 6 | 135 | 121 | 92 |
+| excluded | 49 | | | | | |
 
-Excluded: 42 summary-only PRs (no inline comment, so no review submission to replay), 3 refuted by a
-verifier as a whole, 2 left with nothing scorable (one after its refuted comments were dropped).
+Excluded: 42 summary-only PRs (no inline comment, so no review submission to replay), 4 refuted by a
+verifier as a whole, 3 left with nothing scorable (two after their refuted comments were dropped).
 
 ## Metrics (master)
 
 | metric | gold | accepted |
 |---|---:|---:|
-| cases | 50 | 106 |
-| rounds replayed | 119 | 269 |
-| findings that should post / be suppressed | 59 / 52 | 174 / 140 |
-| post precision | 0.569 | 0.601 |
-| post recall | 0.983 | 0.977 |
-| suppression recall | 0.154 | 0.193 |
+| cases | 46 | 108 |
+| rounds replayed | 112 | 271 |
+| findings that should post / be suppressed | 56 / 50 | 175 / 140 |
+| post precision | 0.567 | 0.602 |
+| post recall | 0.982 | 0.977 |
+| suppression recall | 0.160 | 0.193 |
 | reposts | 4 | 41 |
-| fixed flips / wrong / unconfirmed | 42 / 11 / 8 | 151 / 42 / 21 |
-| summary-count correctness | 0.446 of 65 | 0.272 of 136 |
-| thread-resolution recall | n/a of 69 | n/a of 121 |
-| reply decision accuracy | 0.476 of 63 | 0.557 of 88 |
+| fixed flips / wrong / unconfirmed | 37 / 11 / 7 | 114 / 39 / 26 |
+| summary-count correctness | 0.468 of 62 | 0.274 of 135 |
+| thread-resolution recall | n/a of 67 | n/a of 121 |
+| reply decision accuracy | 0.483 of 60 | 0.562 of 89 |
 | replies whose thread the replay did not post | 5 | 3 |
-| unlabelled posts / unmapped expectations | 5 / 6 | 44 / 6 |
+| fixed flips on unlabelled rows / reply step errors | 4 / 0 | 37 / 0 |
+| unlabelled posts / unmapped expectations | 5 / 6 | 45 / 6 |
 
 | reply class | gold correct / expected | accepted correct / expected |
 |---|---:|---:|
-| ack | 3 / 4 | 1 / 2 |
+| ack | 2 / 3 | 2 / 3 |
 | fix_claim | 5 / 10 | 28 / 42 |
 | frustration | 1 / 3 | 2 / 6 |
-| intentional_behavior | 14 / 25 | 11 / 22 |
+| intentional_behavior | 14 / 23 | 11 / 22 |
 | pushback | 7 / 21 | 5 / 13 |
 | question | 0 / 0 | 2 / 3 |
 
@@ -63,7 +64,8 @@ Stub mode made 33 (gold) and 47 (accepted) reply decisions without a recorded on
   shared subject) matches a root from an earlier round.
 - Wrong fixed: a ledger row moved out of open when the case has no fix for that defect by then and the
   defect is still raised under new wording, comes back later, or its cited file did not change.
-  Unconfirmed: a flip with none of that evidence either way.
+  Unconfirmed: a flip with none of that evidence either way. Flips of rows the audit has no label
+  for are counted apart.
 - Summary-count correctness: rounds whose "Since last review" new, still open and fixed counts,
   restricted to labelled findings, equal the expectation. Expected fixed = a fix claim whose commit landed since the
   previous round, or the defect absent from the review while its cited file changed (policy R5); a
@@ -76,10 +78,10 @@ Stub mode made 33 (gold) and 47 (accepted) reply decisions without a recorded on
   dismissed. Replies whose thread the replay never posted are counted separately, not scored.
 
 Tiers: gold when every expectation on the PR is backed by a verifier-confirmed pattern example or by a
-settling human reply (fix claim, intentional behaviour, pushback), and no verifier refuted any of its
-comments, and every finding was found by its marker in the round's sidecar (a looser file, line and
-text match is accepted only); accepted for analyst labels only; excluded when refuted as a whole, `read_ok` is false or
-nothing can be replayed. Refuted comments are dropped from their case.
+settling human reply (a fix claim from anyone, intentional behaviour or pushback from the PR author),
+no verifier refuted any of its comments, and every finding was found by its marker in the round's
+sidecar (a looser file, line and text match is accepted only); accepted for analyst labels only;
+excluded when refuted as a whole, `read_ok` is false or nothing can be replayed. Refuted comments are dropped from their case.
 
 ## Rebuild the dataset
 
@@ -104,12 +106,14 @@ go run ./cmd/commentbench run --cases $F/benchmark --json $F/benchmark/result.js
 `COMMENTBENCH_DIR` can replace `--cases`. The Markdown report lists every per-case difference
 (`posted_should_not`, `suppressed_should_post`, `repost`, `wrong_fixed`, `summary_mismatch`,
 `wrong_reply`, `not_resolved`); it names real PRs, so keep it outside git. `--anonymise` prints case
-ids as `case-N`. To gate a publisher PR on gold, pass thresholds; the command exits 1 when one fails:
+ids as `case-N`. To gate a publisher PR on gold, pass thresholds; the command exits 1 when one fails
+when a gated metric has nothing to measure (thread resolution is skipped while not applicable), or
+when a reply step failed:
 
 ```
 go run ./cmd/commentbench run --cases $F/benchmark \
-  --min-gold-post-precision 0.56 --min-gold-suppression-recall 0.15 --max-gold-reposts 4 \
-  --max-gold-wrong-fixed 11 --min-gold-summary 0.44 --min-gold-reply-accuracy 0.47
+  --min-gold-post-precision 0.56 --min-gold-suppression-recall 0.16 --max-gold-reposts 4 \
+  --max-gold-wrong-fixed 11 --min-gold-summary 0.46 --min-gold-reply-accuracy 0.48
 ```
 
 `--replies=live` runs the real reply agent (`service.RunAgentReply`) for every eligible reply instead of
@@ -118,7 +122,8 @@ the stub: one billed agent run per reply, up to `REPLY_MAX_TURNS` (20) and `REPL
 usual agent credentials (`AGENT_BACKEND`, `REPLY_MODEL` or `AGENT_MODEL`, API keys). The default stub
 replays the decision the reply ledger recorded for that author comment; without one it applies the
 class rule those decisions follow (fix claim conceded, question answered, intent claim conceded, other
-pushback held with a cite).
+pushback held with a cite). In live mode a reply the audit judged good also passes with any action
+its class rule accepts, so a model that differs from history is not marked wrong for that alone.
 
 ## Regression tests
 

@@ -235,3 +235,13 @@ func TestMarkdownReportListsDiffs(t *testing.T) {
 		}
 	}
 }
+
+func TestUnknownCaseIDIsAnError(t *testing.T) {
+	cases, err := loadCases("testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCases(context.Background(), cases, "acme/example#999", publisher.DefaultPolicy(), stubResponder); err == nil {
+		t.Fatal("a --case that matches nothing must fail")
+	}
+}

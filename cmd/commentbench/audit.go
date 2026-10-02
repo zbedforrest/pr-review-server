@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -66,6 +67,17 @@ func loadAudit(path string) (*audit, error) {
 	var a audit
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return nil, fmt.Errorf("audit: %w", err)
+	}
+	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+	for i := range a.PerPR {
+		for j := range a.PerPR[i].Comments {
+			c := &a.PerPR[i].Comments[j]
+			c.Correctness, c.FirstRaisedBy = norm(c.Correctness), norm(c.FirstRaisedBy)
+		}
+		for j := range a.PerPR[i].HumanResponses {
+			h := &a.PerPR[i].HumanResponses[j]
+			h.Class, h.PrismReplyQuality = norm(h.Class), norm(h.PrismReplyQuality)
+		}
 	}
 	return &a, nil
 }

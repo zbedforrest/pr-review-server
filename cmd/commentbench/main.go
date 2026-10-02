@@ -75,6 +75,7 @@ func cmdBuild(args []string) int {
 		a.PerPR = append(a.PerPR, more.PerPR...)
 		a.Verified = append(a.Verified, more.Verified...)
 	}
+	a.PerPR = dedupeByKey(a.PerPR, log.Printf)
 	var f replaykit.Fetcher
 	if !*offline {
 		if lf, err := replaykit.NewLiveFetcher(os.Getenv("PRISM_BASE_URL")); err == nil {
@@ -102,6 +103,25 @@ func cmdBuild(args []string) int {
 	}
 	fmt.Printf("cases: %d gold, %d accepted, %d excluded; manifest %s\n", m.Counts[TierGold], m.Counts[TierAccepted], m.Counts[TierExcluded], filepath.Join(*out, "manifest.json"))
 	return 0
+}
+
+// dedupeByKey keeps the last entry per PR key, so a label file can replace
+// an audited PR without producing two cases for it.
+func dedupeByKey(prs []auditPR, logf func(string, ...any)) []auditPR {
+	last := map[string]int{}
+	for i, p := range prs {
+		if _, dup := last[p.Key]; dup {
+			logf("%s: labelled more than once; the last label wins", p.Key)
+		}
+		last[p.Key] = i
+	}
+	out := make([]auditPR, 0, len(last))
+	for i, p := range prs {
+		if last[p.Key] == i {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 type stringList []string
@@ -181,7 +201,8 @@ func cmdRun(args []string) int {
 		log.Printf("--replies must be stub or live")
 		return 2
 	}
-	policy := publisher.Policy{InlineCap: *inlineCap, InlineMinSeverity: *minSeverity, ShowUnverified: true}
+	policy := publisher.DefaultPolicy()
+	policy.InlineCap, policy.InlineMinSeverity = *inlineCap, *minSeverity
 	res, err := runCases(context.Background(), cases, *only, policy, responder)
 	if err != nil {
 		log.Print(err)
@@ -221,10 +242,12 @@ func runCases(ctx context.Context, cases []*Case, only string, policy publisher.
 	res := Result{Generated: time.Now().UTC(), Tiers: map[string]TierMetrics{}, Capabilities: map[string]bool{
 		"changed_files": replaykit.PublisherTakesChangedFiles(), "resolve_thread": replaykit.PublisherCanResolve()}}
 	byTier := map[string][]CaseScore{}
+	matched := false
 	for _, c := range cases {
 		if only != "" && c.ID != only {
 			continue
 		}
+		matched = true
 		if c.Tier == TierExcluded {
 			continue
 		}
@@ -236,6 +259,9 @@ func runCases(ctx context.Context, cases []*Case, only string, policy publisher.
 		res.Cases = append(res.Cases, s)
 		byTier[c.Tier] = append(byTier[c.Tier], s)
 	}
+	if only != "" && !matched {
+		return res, fmt.Errorf("no case has id %q", only)
+	}
 	for _, tier := range []string{TierGold, TierAccepted} {
 		res.Tiers[tier] = aggregate(byTier[tier])
 	}
@@ -245,7 +271,11 @@ func runCases(ctx context.Context, cases []*Case, only string, policy publisher.
 func (th Thresholds) check(g TierMetrics) []string {
 	var out []string
 	below := func(name string, v *float64, min float64) {
-		if min >= 0 && v != nil && *v < min {
+		switch {
+		case min < 0:
+		case v == nil:
+			out = append(out, fmt.Sprintf("%s not measured (no expectations)", name))
+		case *v < min:
 			out = append(out, fmt.Sprintf("%s %.3f < %.3f", name, *v, min))
 		}
 	}
@@ -253,7 +283,12 @@ func (th Thresholds) check(g TierMetrics) []string {
 	below("suppression_recall", g.SuppressionRecall, th.MinSuppressionRecall)
 	below("summary_count_correct", g.SummaryCorrect, th.MinSummaryCorrect)
 	below("reply_accuracy", g.ReplyAccuracy, th.MinReplyAccuracy)
-	below("thread_resolution_recall", g.ResolutionRecall, th.MinResolutionRecall)
+	if replaykit.PublisherCanResolve() {
+		below("thread_resolution_recall", g.ResolutionRecall, th.MinResolutionRecall)
+	}
+	if g.ReplyErrors > 0 {
+		out = append(out, fmt.Sprintf("%d reply steps failed", g.ReplyErrors))
+	}
 	if th.MaxReposts >= 0 && g.Reposts > th.MaxReposts {
 		out = append(out, fmt.Sprintf("reposts %d > %d", g.Reposts, th.MaxReposts))
 	}

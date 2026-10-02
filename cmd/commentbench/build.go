@@ -153,12 +153,14 @@ func buildCase(o BuildOptions, apr auditPR, ex examples) (*Case, ManifestEntry, 
 	if entry.RoundsReplay == 0 {
 		return nil, entry, fmt.Errorf("no sidecar for any round")
 	}
-	for id, rec := range o.ReplyLedger {
-		if threadOfComment(d, id) != nil {
-			if c.Recorded == nil {
-				c.Recorded = map[int64]RecordedDecision{}
+	for _, t := range d.ReviewThreads.Nodes {
+		for _, cm := range t.Comments.Nodes {
+			if rec, ok := o.ReplyLedger[int64(cm.DatabaseID)]; ok {
+				if c.Recorded == nil {
+					c.Recorded = map[int64]RecordedDecision{}
+				}
+				c.Recorded[int64(cm.DatabaseID)] = rec
 			}
-			c.Recorded[id] = rec
 		}
 	}
 
@@ -281,6 +283,16 @@ func (b *caseBuilder) roundAt(t time.Time) int {
 
 var settlingClasses = map[string]bool{"fix_claim": true, "intentional_behavior": true, "pushback": true}
 
+func (b *caseBuilder) byAuthor(hr auditResponse) bool {
+	return strings.EqualFold(hr.Login, b.d.Author.Login)
+}
+
+// settles reports a reply that decides a finding: a fix claim from anyone
+// (the commit settles it), a verdict or pushback from the PR author only.
+func (b *caseBuilder) settles(hr auditResponse) bool {
+	return settlingClasses[hr.Class] && (hr.Class == "fix_claim" || b.byAuthor(hr))
+}
+
 func (b *caseBuilder) findings() {
 	b.byComment = map[int64]*FindingExpect{}
 	labels := map[int64]auditComment{}
@@ -329,7 +341,7 @@ func (b *caseBuilder) findings() {
 			fe.Backed = appendOnce(fe.Backed, "confirmed:"+p)
 		}
 		for _, hr := range repliesByRoot[ac.CommentID] {
-			if settlingClasses[hr.Class] {
+			if b.settles(hr) {
 				fe.Backed = appendOnce(fe.Backed, "reply:"+hr.Class)
 			}
 		}
@@ -436,7 +448,8 @@ func acceptedActions(hr auditResponse, rec *RecordedDecision, label *auditCommen
 		if rec != nil && rec.Decision != "" && rec.Decision != publisher.DecisionAbstain && !rec.BudgetExhausted {
 			return []string{rec.Decision}, false
 		}
-		return []string{ActionReact}, false
+		classRule, _ := acceptedActions(auditResponse{Class: hr.Class, PrismReplyQuality: "missing_when_needed"}, nil, label)
+		return append([]string{ActionReact}, classRule...), false
 	}
 	switch hr.Class {
 	case "fix_claim":
@@ -534,7 +547,7 @@ func (b *caseBuilder) resolutions() {
 					break
 				}
 			}
-		case hr.Class == "intentional_behavior" || replytext.AssertsIntent(hr.Quote):
+		case b.byAuthor(hr) && (hr.Class == "intentional_behavior" || replytext.AssertsIntent(hr.Quote)):
 			res = ResolutionExpect{Defect: fe.Defect, CommentID: fe.CommentID, FixedBy: -1, Why: "author verdict", Gold: true}
 		default:
 			continue
