@@ -411,6 +411,57 @@ func (p *Poller) changeLookup(ctx context.Context, pr github.PullRequest) func(b
 	}
 }
 
+// refreshPublishedSummary re-renders a PR's sticky summary from the stored
+// review of its last published head, after the reply path dismissed a
+// finding. It posts nothing new and passes the same publish gate as a round.
+func (p *Poller) refreshPublishedSummary(ctx context.Context, owner, repo string, number int) error {
+	ledger, ok := p.db.(publisher.Ledger)
+	if !ok || p.ghClientConcrete == nil {
+		return nil
+	}
+	previous, err := ledger.GetPublishedFindingsForPR(owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("load ledger: %w", err)
+	}
+	head := ""
+	for _, row := range previous {
+		if row.Kind == db.PublishedKindSummary && row.CommentID != 0 {
+			head = row.LastSeenSHA
+		}
+	}
+	if head == "" {
+		return nil
+	}
+	cached, err := p.db.GetPR(owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("load pull request: %w", err)
+	}
+	if cached == nil {
+		return nil
+	}
+	if allowed, err := p.publishAllowedFor(cached.Author); err != nil {
+		return fmt.Errorf("read publish allowlist: %w", err)
+	} else if !allowed {
+		return nil
+	}
+	pl, err := p.loadReviewPayload(ctx, owner, repo, number, head)
+	if err != nil {
+		return err
+	}
+	comments, err := p.ghClientConcrete.ListReviewComments(ctx, owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("list review comments: %w", err)
+	}
+	patches, err := p.ghClientConcrete.GetPRFilePatches(ctx, owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("list file patches: %w", err)
+	}
+	pr := github.PullRequest{Owner: owner, Repo: repo, Number: number, CommitSHA: head, Author: cached.Author}
+	round := BuildPublishRound(pr, *pl, comments, patches, previous, p.cfg.BaseURL)
+	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: p.publishPolicy()}
+	return pub.RefreshSummary(ctx, round)
+}
+
 // headPublished reports whether a publication round for this head already
 // reached GitHub: every ledger row records the last head it was posted or
 // refreshed for, and finding rows are written before the summary, so any

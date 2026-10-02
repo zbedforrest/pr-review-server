@@ -221,6 +221,8 @@ func (r Round) markedBullet(f payload.Finding, marker string) string {
 	return fmt.Sprintf("- %s %s%s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, where, r.findingLink(f))
 }
 
+const sinceLastReviewFormat = "**Since last review:** %d new · %d still open · %d fixed"
+
 const (
 	markerUnverified = "FIRST PASS · UNVERIFIED"
 	markerDisputed   = "FIRST PASS · DISPUTED"
@@ -344,7 +346,10 @@ func RenderSummary(r Round, sel Selection) string {
 	b.WriteString(recommendation(confidence) + "\n\n")
 	if r.RoundNumber > 1 {
 		d := r.diff()
-		fmt.Fprintf(&b, "**Since last review:** %d new · %d still open · %d fixed\n\n", d.New, d.StillOpen, d.Fixed)
+		if r.transitions != nil {
+			d = *r.transitions
+		}
+		fmt.Fprintf(&b, sinceLastReviewFormat+"\n\n", d.New, d.StillOpen, d.Fixed)
 	}
 	for _, f := range shown {
 		if b.Len() > SummaryMaxChars-600 {

@@ -2207,3 +2207,32 @@ func TestReplyReactor_AuditedWrongHoldsAbstainOrCite(t *testing.T) {
 		})
 	}
 }
+
+func TestReplyReactor_ConcessionRefreshesTheSummaryOnce(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right, the caller guards it. Withdrawn."}, nil
+	})
+	var refreshed []string
+	r.OnDismissed = func(_ context.Context, owner, repo string, number int) {
+		refreshed = append(refreshed, fmt.Sprintf("%s/%s#%d", owner, repo, number))
+	}
+	r.Run(context.Background())
+	if len(gh.posted) != 1 || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
+		t.Fatalf("precondition: concession posted and recorded; posted=%v states=%v", gh.posted, ledger.states)
+	}
+	if fmt.Sprint(refreshed) != "[acme/example#7]" {
+		t.Fatalf("the summary refresh runs once for the PR after the row is dismissed: %v", refreshed)
+	}
+}
+
+func TestReplyReactor_HoldDoesNotRefreshTheSummary(t *testing.T) {
+	r, _, _ := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "Line 12 reaches here with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	called := 0
+	r.OnDismissed = func(context.Context, string, string, int) { called++ }
+	r.Run(context.Background())
+	if called != 0 {
+		t.Fatalf("a hold dismisses nothing, so nothing refreshes: %d", called)
+	}
+}

@@ -646,6 +646,9 @@ type ReplyReactor struct {
 	Background func(task func())
 	InFlight   *ReplyInFlight
 	OnOutcome  func(ReplyOutcome, error)
+	// OnDismissed runs after a finding row is set dismissed by a concession,
+	// so the caller can refresh the sticky summary; nil does nothing.
+	OnDismissed func(ctx context.Context, owner, repo string, number int)
 
 	// Live, when set, re-reads the mode and allowlist right before a post so a
 	// switch flipped during a long model run is honoured. A read error leaves
@@ -1726,6 +1729,9 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, repl
 			rep = &ReplyReport{}
 		}
 		outcome.Thread = r.resolveThread(ctx, t, reply.RootCommentID, rep)
+		if r.OnDismissed != nil {
+			r.OnDismissed(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
+		}
 	case DecisionHold:
 		if r.Legacy {
 			return nil

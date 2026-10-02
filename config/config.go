@@ -127,9 +127,11 @@ type Config struct {
 	// Publisher kill switches; the zero value is the fixed behaviour and each
 	// env var set to false restores the old one. PUBLISH_RENDER_V2 titles
 	// comments and bullets by headline instead of impact sentence,
-	// PUBLISH_SAME_COMMIT_GUARD refuses a second round for a published head.
+	// PUBLISH_SAME_COMMIT_GUARD refuses a second round for a published head,
+	// PUBLISH_REFRESH_SUMMARY re-renders the summary after a concession.
 	PublishLegacyTitles        bool
 	PublishRepublishSameCommit bool
+	PublishSkipSummaryRefresh  bool
 	// ReviewDefaultProfile is the profile used when a caller names none:
 	// automatic reviews, the Generate button, and profile-less API requests.
 	ReviewDefaultProfile string
@@ -372,6 +374,7 @@ func Load() *Config {
 		RequiredChecks:             os.Getenv("REQUIRED_CHECKS") == "true",
 		PublishLegacyTitles:        !getEnvBoolOrDefault("PUBLISH_RENDER_V2", true),
 		PublishRepublishSameCommit: !getEnvBoolOrDefault("PUBLISH_SAME_COMMIT_GUARD", true),
+		PublishSkipSummaryRefresh:  !getEnvBoolOrDefault("PUBLISH_REFRESH_SUMMARY", true),
 		ReviewDefaultProfile:       strings.ToLower(strings.TrimSpace(getEnvOrDefault("REVIEW_DEFAULT_PROFILE", "full"))),
 		JiraBaseURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("JIRA_BASE_URL")), "/"),
 		JiraEmail:                  strings.TrimSpace(os.Getenv("JIRA_EMAIL")),

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -330,6 +332,96 @@ func (p *Publisher) writeSummary(ctx context.Context, r Round, sel Selection, su
 		return fmt.Errorf("record summary comment: %w", err)
 	}
 	return nil
+}
+
+// RefreshSummary re-renders the sticky summary from the round the ledger last
+// published, posting and recording nothing else. The reply path calls it after
+// a concession so the summary stops listing the conceded finding at once
+// instead of at the next push. The round is the one BuildPublishRound makes
+// from the stored payload of the published head; the ledger supplies the
+// round number, the inline links and the new / still open split, and the
+// fixed count is carried over from the summary as it stands.
+func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
+	if r.Previous == nil {
+		prev, err := p.Ledger.GetPublishedFindingsForPR(r.Owner, r.Repo, r.Number)
+		if err != nil {
+			return fmt.Errorf("load published findings: %w", err)
+		}
+		r.Previous = prev
+	}
+	var summaryRow *db.PublishedFinding
+	for i := range r.Previous {
+		if r.Previous[i].Kind == db.PublishedKindSummary {
+			summaryRow = &r.Previous[i]
+		}
+	}
+	if summaryRow == nil || summaryRow.CommentID == 0 {
+		return nil
+	}
+	if r.HeadSHA == "" {
+		r.HeadSHA = summaryRow.LastSeenSHA
+	}
+	r.RoundNumber = summaryRow.Rounds
+	r.Findings = WithoutDismissed(r.Findings, r.Previous)
+	r.LegacyTitles = p.Policy.LegacyTitles
+	r.ShowUnverified = p.Policy.ShowUnverified
+	if r.InlineComments == nil {
+		r.InlineComments = map[string]int64{}
+	}
+	for _, row := range r.Previous {
+		if row.Kind == db.PublishedKindFinding && row.CommentID != 0 {
+			r.InlineComments[row.Fingerprint] = row.CommentID
+		}
+	}
+	fixed := 0
+	if existing, err := p.GH.ListIssueComments(ctx, r.Owner, r.Repo, r.Number); err == nil {
+		for _, c := range existing {
+			if c.ID == summaryRow.CommentID {
+				if d, ok := parseSinceLastReview(c.Body); ok {
+					fixed = d.Fixed
+				}
+			}
+		}
+	}
+	d := r.ledgerTransitions()
+	d.Fixed = fixed
+	r.transitions = &d
+	return p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryRow.CommentID, RenderSummary(r, Selection{}))
+}
+
+// ledgerTransitions splits the shown findings the way the round diff did:
+// rows first published at this head are new, older open rows are still open.
+// Fixed rows are not in the ledger as a per-round fact, so it stays 0 here.
+func (r Round) ledgerTransitions() roundDiff {
+	shown := map[string]bool{}
+	for _, f := range append(append(r.currentFindings(), r.lowerSeverityNotes()...), r.unverifiedNotes()...) {
+		shown[f.ID] = true
+	}
+	var d roundDiff
+	for _, row := range r.Previous {
+		if (row.Kind != db.PublishedKindFinding && row.Kind != db.PublishedKindAnnotation) || row.State != db.PublishedStateOpen || !shown[row.Fingerprint] {
+			continue
+		}
+		if strings.EqualFold(row.ReviewedSHA, r.HeadSHA) {
+			d.New++
+		} else {
+			d.StillOpen++
+		}
+	}
+	return d
+}
+
+var sinceLastReviewRe = regexp.MustCompile(`\*\*Since last review:\*\* (\d+) new · (\d+) still open · (\d+) fixed`)
+
+func parseSinceLastReview(body string) (roundDiff, bool) {
+	m := sinceLastReviewRe.FindStringSubmatch(body)
+	if m == nil {
+		return roundDiff{}, false
+	}
+	n, _ := strconv.Atoi(m[1])
+	s, _ := strconv.Atoi(m[2])
+	f, _ := strconv.Atoi(m[3])
+	return roundDiff{New: n, StillOpen: s, Fixed: f}, true
 }
 
 // WithoutDismissed drops findings the ledger records as settled by exact
