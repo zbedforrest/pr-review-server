@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/payload"
@@ -109,6 +112,143 @@ func TestSameDefect(t *testing.T) {
 	}
 	if sameDefect("a/index.ts", 10, a, nil, "b/index.ts", 10, a, nil) {
 		t.Fatal("a shared basename under different directories must not match")
+	}
+}
+
+func TestSameDefect_UnknownLineNeverMatches(t *testing.T) {
+	text := "The retry loop in fetchUser never backs off, so a 429 from upstream is retried immediately."
+	cases := []struct {
+		name        string
+		line, oLine int
+	}{
+		{"new line unknown", 0, 140},
+		{"earlier line unknown", 140, 0},
+		{"both unknown", 0, 0},
+		{"negative line", -1, 140},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if sameDefect("api/users.go", c.line, text, []string{"fetchuser"}, "api/users.go", c.oLine, text, []string{"fetchuser"}) {
+				t.Fatal("identical text and subjects must not alias when a line is unknown")
+			}
+		})
+	}
+}
+
+func TestLoadDumps_NoFilesIsError(t *testing.T) {
+	cases := map[string]string{
+		"empty directory":   t.TempDir(),
+		"missing directory": filepath.Join(t.TempDir(), "nope"),
+	}
+	for name, dir := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadDumps(dir); err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+		})
+	}
+	if err := os.WriteFile(filepath.Join(cases["empty directory"], "notes.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDumps(cases["empty directory"]); err == nil {
+		t.Fatal("a directory without *.json must be an error")
+	}
+}
+
+type countingFetcher struct {
+	mu       sync.Mutex
+	compares map[string]int
+}
+
+func (c *countingFetcher) Sidecar(string, string, int, string) ([]byte, error) {
+	return nil, errNotFound
+}
+
+func (c *countingFetcher) Compare(owner, repo, base, head string) (compareResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.compares == nil {
+		c.compares = map[string]int{}
+	}
+	c.compares[compareKey(owner, repo, base, head)]++
+	return compareResult{Files: []string{"a.go"}}, nil
+}
+
+func dumpWithRounds(owner, repo string, number int, shas ...string) *prDump {
+	d := &prDump{Number: number, Owner: owner, Repo: repo}
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i, sha := range shas {
+		r := dumpReview{Author: &dumpActor{Login: "acme-bot"}, State: "COMMENTED", SubmittedAt: at.Add(time.Duration(i) * time.Hour)}
+		r.Commit.Oid = sha
+		d.Reviews.Nodes = append(d.Reviews.Nodes, r)
+	}
+	return d
+}
+
+func TestPrefetch_ComparesOncePerRepoAndPair(t *testing.T) {
+	const a, b = "aaaaaaa0000000000000000000000000000000000", "bbbbbbb0000000000000000000000000000000000"
+	dumps := []*prDump{
+		dumpWithRounds("acme", "example", 1, a, b),
+		dumpWithRounds("acme", "example", 2, a, b),
+		dumpWithRounds("acme", "other", 3, a, b),
+	}
+	dir := t.TempDir()
+	f := &countingFetcher{}
+	st, err := newStore(dir, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bots := func(*prDump) map[string]bool { return map[string]bool{"acme-bot": true} }
+	if err := prefetch(st, dumps, bots, 4, func(string, ...any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.compares[compareKey("acme", "example", a, b)]; n != 1 {
+		t.Errorf("acme/example compared %d times, want 1", n)
+	}
+	if n := f.compares[compareKey("acme", "other", a, b)]; n != 1 {
+		t.Errorf("acme/other compared %d times, want 1", n)
+	}
+	if len(f.compares) != 2 {
+		t.Errorf("compares = %v", f.compares)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "compare"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 2 || strings.Contains(strings.Join(names, " "), ".tmp") {
+		t.Fatalf("compare cache = %v, want exactly the two final files", names)
+	}
+}
+
+func TestWriteFileAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.json")
+	if err := writeFileAtomic(path, []byte("one")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(path, []byte("two")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "two" {
+		t.Fatalf("read = %q, %v", got, err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("temp files left behind: %d entries", len(entries))
+	}
+}
+
+func TestReplayPolicy_FlagDefaultsMatchShipped(t *testing.T) {
+	got := replayPolicy(publisher.DefaultInlineCap, publisher.DefaultInlineMinSeverity, publisher.DefaultPolicy().ShowUnverified)
+	if got != publisher.DefaultPolicy() {
+		t.Fatalf("replayPolicy defaults = %+v, want %+v", got, publisher.DefaultPolicy())
+	}
+	if p := replayPolicy(1, "high", false); p.InlineCap != 1 || p.InlineMinSeverity != "high" || p.ShowUnverified {
+		t.Fatalf("overrides not applied: %+v", p)
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,14 +71,18 @@ func (s *store) sidecar(owner, repo string, number int, sha7 string) ([]byte, bo
 	if err != nil {
 		return nil, false, err
 	}
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
+	if err := writeFileAtomic(path, raw); err != nil {
 		return nil, false, err
 	}
 	return raw, true, nil
 }
 
+func compareKey(owner, repo, base, head string) string {
+	return fmt.Sprintf("%s_%s_%s_%s", owner, repo, short(base), short(head))
+}
+
 func (s *store) compare(owner, repo, base, head string) (compareResult, bool, error) {
-	path := filepath.Join(s.dir, "compare", fmt.Sprintf("%s_%s_%s_%s.json", owner, repo, short(base), short(head)))
+	path := filepath.Join(s.dir, "compare", compareKey(owner, repo, base, head)+".json")
 	if raw, err := os.ReadFile(path); err == nil {
 		var res compareResult
 		if err := json.Unmarshal(raw, &res); err == nil {
@@ -92,10 +97,40 @@ func (s *store) compare(owner, repo, base, head string) (compareResult, bool, er
 		return compareResult{}, false, err
 	}
 	raw, _ := json.Marshal(res)
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
+	if err := writeFileAtomic(path, raw); err != nil {
 		return compareResult{}, false, err
 	}
 	return res, res.Error == "", nil
+}
+
+// writeFileAtomic publishes the file with a rename so a concurrent reader
+// never sees a partial cache entry.
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	cleanup := func(err error) error {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return cleanup(err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		return cleanup(err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 func short(sha string) string {
@@ -155,13 +190,19 @@ func (f *liveFetcher) Sidecar(owner, repo string, number int, sha7 string) ([]by
 	return body, nil
 }
 
+const compareTimeout = 2 * time.Minute
+
 func (f *liveFetcher) Compare(owner, repo, base, head string) (compareResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), compareTimeout)
+	defer cancel()
 	var stdout, stderr bytes.Buffer
-	cmd := exec.Command("gh", "api", fmt.Sprintf("repos/%s/%s/compare/%s...%s", owner, repo, base, head))
+	cmd := exec.CommandContext(ctx, "gh", "api", fmt.Sprintf("repos/%s/%s/compare/%s...%s", owner, repo, base, head))
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
+		if ctx.Err() != nil {
+			msg = "timed out after " + compareTimeout.String()
+		} else if msg == "" {
 			msg = err.Error()
 		}
 		if strings.Contains(msg, "404") || strings.Contains(msg, "Not Found") {
@@ -194,11 +235,11 @@ func (f *liveFetcher) Compare(owner, repo, base, head string) (compareResult, er
 func prefetch(s *store, dumps []*prDump, bots func(*prDump) map[string]bool, workers int, logf func(string, ...any)) error {
 	type job func() error
 	var jobs []job
+	seenCompare := map[string]bool{}
 	for _, d := range dumps {
 		d := d
 		rs := d.rounds(bots(d))
 		seen := map[string]bool{}
-		seenCompare := map[string]bool{}
 		for i, r := range rs {
 			r := r
 			if !seen[r.SHA7] {
@@ -207,10 +248,11 @@ func prefetch(s *store, dumps []*prDump, bots func(*prDump) map[string]bool, wor
 			}
 			for _, prev := range rs[:i] {
 				prev := prev
-				if prev.SHA == r.SHA || seenCompare[prev.SHA7+r.SHA7] {
+				key := compareKey(d.Owner, d.Repo, prev.SHA, r.SHA)
+				if prev.SHA == r.SHA || seenCompare[key] {
 					continue
 				}
-				seenCompare[prev.SHA7+r.SHA7] = true
+				seenCompare[key] = true
 				jobs = append(jobs, func() error { _, _, err := s.compare(d.Owner, d.Repo, prev.SHA, r.SHA); return err })
 			}
 		}

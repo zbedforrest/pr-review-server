@@ -37,6 +37,7 @@ func main() {
 	workers := flag.Int("workers", 6, "parallel fetches during prefetch")
 	inlineCap := flag.Int("inline-cap", publisher.DefaultInlineCap, "publisher inline cap per round")
 	minSeverity := flag.String("inline-min-severity", publisher.DefaultInlineMinSeverity, "publisher inline minimum severity")
+	showUnverified := flag.Bool("show-unverified", publisher.DefaultPolicy().ShowUnverified, "fold unverified first-pass claims into the summary")
 	flag.Parse()
 	if *dumpsDir == "" || *sidecarsDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv]")
@@ -57,17 +58,16 @@ func main() {
 	if !*offline {
 		lf, err := newLiveFetcher(os.Getenv("PRISM_BASE_URL"))
 		if err != nil {
-			log.Printf("fetcher: %v; replaying the cache only", err)
-		} else {
-			f = lf
+			log.Fatalf("fetcher: %v (pass --offline to replay the cache only)", err)
 		}
+		f = lf
 	}
 	st, err := newStore(*sidecarsDir, f)
 	if err != nil {
 		log.Fatalf("sidecar store: %v", err)
 	}
 	opts := Options{Dumps: dumps, Store: st, BotName: *bot, Logf: log.Printf,
-		Policy: publisher.Policy{InlineCap: *inlineCap, InlineMinSeverity: *minSeverity, ShowUnverified: true}}
+		Policy: replayPolicy(*inlineCap, *minSeverity, *showUnverified)}
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
 			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)
@@ -95,6 +95,16 @@ func main() {
 		}
 	}
 	fmt.Println(string(out))
+}
+
+// replayPolicy starts from the shipped defaults so the replay and the tests
+// run the publisher the way prod does unless a flag says otherwise.
+func replayPolicy(inlineCap int, minSeverity string, showUnverified bool) publisher.Policy {
+	p := publisher.DefaultPolicy()
+	p.InlineCap = inlineCap
+	p.InlineMinSeverity = minSeverity
+	p.ShowUnverified = showUnverified
+	return p
 }
 
 func filterDumps(dumps []*prDump, prFilter string, limit int) ([]*prDump, error) {

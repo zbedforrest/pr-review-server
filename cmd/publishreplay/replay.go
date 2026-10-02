@@ -450,13 +450,14 @@ func classifyRepost(p post, earlier []post) repostKind {
 	return kind
 }
 
-// sameDefect is the alias rule from the program spec: same file, line within
-// ten, and either raw-text Jaccard at or above 0.20 or a shared subject.
+// sameDefect is the alias rule from the program spec: same file, both lines
+// known and within ten, and either raw-text Jaccard at or above 0.20 or a
+// shared subject.
 func sameDefect(file string, line int, text string, subjects []string, oFile string, oLine int, oText string, oSubjects []string) bool {
 	if !sameFile(file, oFile) {
 		return false
 	}
-	if line > 0 && oLine > 0 && abs(line-oLine) > aliasLineTolerance {
+	if line <= 0 || oLine <= 0 || abs(line-oLine) > aliasLineTolerance {
 		return false
 	}
 	if reconcile.Similarity(text, oText) >= aliasSimilarity {

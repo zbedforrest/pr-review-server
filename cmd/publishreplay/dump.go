@@ -114,6 +114,9 @@ func loadDumps(dir string) ([]*prDump, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no dumps found: %s has no *.json files", dir)
+	}
 	sort.Strings(paths)
 	var out []*prDump
 	for _, p := range paths {
@@ -122,6 +125,9 @@ func loadDumps(dir string) ([]*prDump, error) {
 			return nil, err
 		}
 		out = append(out, d)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no dumps loaded from %s", dir)
 	}
 	return out, nil
 }
