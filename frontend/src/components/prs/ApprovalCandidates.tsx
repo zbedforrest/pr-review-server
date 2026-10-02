@@ -238,6 +238,7 @@ function rowStatus(target: ApprovalTarget, now: number): { kind: RowKind; label:
     return { kind: 'other', label: codes.includes('review_in_progress') ? 'Review updating' : target.decision === 'candidate' ? 'Needs recheck' : 'Out of date', reason: why };
   }
   if (blockers.length) return { kind: 'blocked', label: 'Blocked', reason };
+  if (score?.deductions?.some(d => d.reason === 'ci_pending')) return { kind: 'blocked', label: 'Waiting on CI', reason };
   if (score && score.value >= score.threshold * 0.6) return { kind: 'close', label: target.score?.deductions?.some(d => d.reason === 'pr_draft') ? 'Draft' : 'Close', reason };
   if (score) return { kind: 'work', label: 'Needs work', reason };
   return { kind: 'other', label: label(bucket), reason: (target.reason_codes || []).map(code => blockerText[code] || label(code)).join(', ') || target.summary };

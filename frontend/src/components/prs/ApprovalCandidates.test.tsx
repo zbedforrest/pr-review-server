@@ -99,6 +99,11 @@ describe('approval investigation controls', () => {
     expect(await screen.findByText('Out of date', { selector: '.approval-status' })).toBeTruthy();
     expect(screen.getByText('A blocker cleared', { selector: '.approval-reason' })).toBeTruthy();
   });
+  it('files a high score held back only by running CI under blocked', async () => {
+    vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'needs_attention', freshness_state: 'current', valid_until: new Date(Date.now() + 300000).toISOString(), reason_codes: ['ci_pending'], summary: 'Waiting', score: { value: 95, threshold: 80, candidate: false, blockers: [], deductions: [{ reason: 'ci_pending', points: 5 }], concerns: [] } } as unknown as ApprovalTarget]);
+    mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
+    expect(await screen.findByText('Waiting on CI', { selector: '.approval-status--blocked' })).toBeTruthy();
+  });
   it('shows expired candidates in other results and explicitly revalidates only once', async () => {
     vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, execution_status: 'completed', decision: 'candidate', freshness_state: 'expired', valid_until: new Date(0).toISOString(), reason_codes: [], summary: 'Old decision' } as unknown as ApprovalTarget]);
     mount(); fireEvent.click(await screen.findByText('Find approval candidates'));

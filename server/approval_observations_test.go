@@ -129,3 +129,13 @@ func TestApprovalCandidateStaledByPendingCIOffersRecheckOnceCIPasses(t *testing.
 	require.Contains(t, result.ReasonCodesJSON, "blocker_cleared")
 	require.NotContains(t, result.ReasonCodesJSON, "observed_ci_change")
 }
+
+func TestApprovalOwnChangeRequestSurvivesTheObservationThatFollowsIt(t *testing.T) {
+	s, store, target := finalizedCandidate(t)
+	updatePR(t, store, func(pr *db.PR) { pr.ReviewDecision = "REVIEW_REQUIRED" })
+	s.recordQuickActionReview(target.UserID, "acme", "example", 123, "CHANGES_REQUESTED")
+	result, err := store.GetApprovalTarget(target.UserID, target.ScanID, target.ID)
+	require.NoError(t, err)
+	require.Contains(t, result.ReasonCodesJSON, "human_changes_requested")
+	require.NotContains(t, result.ReasonCodesJSON, "blocker_cleared")
+}

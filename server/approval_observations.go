@@ -6,6 +6,14 @@ import (
 	"pr-review-server/db"
 )
 
+// recordQuickActionReview observes the dashboard update a quick review causes,
+// then the review itself: the row has not seen the review yet, so observing it
+// afterwards would clear the change request just recorded.
+func (s *Server) recordQuickActionReview(user int, owner, repo string, number int, state string) {
+	s.observeApprovalEvent(0, EventPRUpdated, map[string]interface{}{"owner": owner, "repo": repo, "number": number})
+	s.observeOwnReview(user, owner, repo, number, state)
+}
+
 // observeOwnReview stales the user's candidates when they request changes from
 // the dashboard; the pull request row only learns of that review on the next poll.
 func (s *Server) observeOwnReview(user int, owner, repo string, number int, state string) {
@@ -84,7 +92,8 @@ func (s *Server) approvalMaterialChanges(owner, repo string, number int) []appro
 	if pr.CIState == "success" {
 		cleared = append(cleared, "ci_failed", "ci_pending", "observed_ci_change")
 	}
-	if pr.ReviewDecision != "CHANGES_REQUESTED" && pr.MyReviewStatus != "CHANGES_REQUESTED" {
+	// An empty decision is also what unprotected repositories report, so it cannot prove a request was dismissed.
+	if pr.ReviewDecision != "" && pr.ReviewDecision != "CHANGES_REQUESTED" && pr.MyReviewStatus != "CHANGES_REQUESTED" {
 		cleared = append(cleared, "human_changes_requested", "observed_review_change")
 	}
 	if !pr.Draft {
