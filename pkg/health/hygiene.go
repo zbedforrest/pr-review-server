@@ -1,11 +1,15 @@
 package health
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Publication hygiene telemetry actions. Each is one telemetry event per
 // occurrence, recorded by the poller on the publisher and reply paths, so
 // the daily report counts them like any other action. The replay harness
-// (cmd/publishreplay) computes the same conditions offline.
+// (cmd/publishreplay, arriving with the replay PR) computes the same
+// conditions offline.
 const (
 	// ActionRepeatedPost: a root comment posted for a fingerprint that already
 	// had a root on the PR (same marker, or aliased to an earlier row).
@@ -37,12 +41,37 @@ var HygieneActions = []string{
 	ActionSeverityEscalation, ActionVerdictSettled, ActionOptedOut,
 }
 
-// hygieneDetail is the publication hygiene line: every counter, zero or not,
-// so a missing number is never mistaken for a quiet day.
+// hygieneLabels names each counter in the report.
+var hygieneLabels = map[string]string{
+	ActionRepeatedPost: "repeated posts", ActionRepeatAfterDismiss: "repeats after dismiss",
+	ActionFixedWithoutFileChange: "fixed without a file change", ActionSameCommitResolve: "same-commit resolves",
+	ActionSeverityEscalation: "severity escalations", ActionVerdictSettled: "author verdicts settled", ActionOptedOut: "posts stopped by opt-out",
+}
+
+// unwiredHygiene lists the counters whose producer has not shipped yet: the
+// dismissal alias, the changed-file compare, the author verdict path and the
+// opt-out gate. Until an event arrives their zero means "not measured", not
+// "nothing happened", and the line says so.
+var unwiredHygiene = map[string]bool{
+	ActionRepeatAfterDismiss: true, ActionFixedWithoutFileChange: true, ActionVerdictSettled: true, ActionOptedOut: true,
+}
+
+// hygieneDetail is the publication hygiene line: every measured counter, zero
+// or not, then the counters that cannot fire yet.
 func hygieneDetail(telemetry map[string]int) string {
-	return fmt.Sprintf("%d repeated posts, %d repeats after dismiss, %d fixed without a file change, %d same-commit resolves, %d severity escalations; %d author verdicts settled, %d posts stopped by opt-out",
-		telemetry[ActionRepeatedPost], telemetry[ActionRepeatAfterDismiss], telemetry[ActionFixedWithoutFileChange], telemetry[ActionSameCommitResolve],
-		telemetry[ActionSeverityEscalation], telemetry[ActionVerdictSettled], telemetry[ActionOptedOut])
+	var measured, unmeasured []string
+	for _, a := range HygieneActions {
+		if unwiredHygiene[a] && telemetry[a] == 0 {
+			unmeasured = append(unmeasured, hygieneLabels[a])
+			continue
+		}
+		measured = append(measured, fmt.Sprintf("%d %s", telemetry[a], hygieneLabels[a]))
+	}
+	line := strings.Join(measured, ", ")
+	if len(unmeasured) > 0 {
+		line += "; not yet measured: " + strings.Join(unmeasured, ", ")
+	}
+	return line
 }
 
 // withoutHygiene drops the hygiene actions, which have their own line.

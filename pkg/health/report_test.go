@@ -182,7 +182,7 @@ func TestEvaluateReportsPublicationHygieneWithEveryCounter(t *testing.T) {
 	if line == nil {
 		t.Fatalf("no publication hygiene check in %+v", r.Checks)
 	}
-	want := "4 repeated posts, 0 repeats after dismiss, 0 fixed without a file change, 2 same-commit resolves, 0 severity escalations; 1 author verdicts settled, 0 posts stopped by opt-out"
+	want := "4 repeated posts, 2 same-commit resolves, 0 severity escalations, 1 author verdicts settled; not yet measured: repeats after dismiss, fixed without a file change, posts stopped by opt-out"
 	if line.Detail != want || line.Status != StatusOK {
 		t.Fatalf("line = %+v\nwant %q", *line, want)
 	}
@@ -204,7 +204,7 @@ func TestEvaluateShowsZeroHygieneWhenNoEventsExist(t *testing.T) {
 	r := Evaluate(m)
 	for _, c := range r.Checks {
 		if c.Name == "publication hygiene" {
-			if !strings.HasPrefix(c.Detail, "0 repeated posts, 0 repeats after dismiss") {
+			if !strings.HasPrefix(c.Detail, "0 repeated posts, 0 same-commit resolves") {
 				t.Fatalf("detail = %q", c.Detail)
 			}
 			return
