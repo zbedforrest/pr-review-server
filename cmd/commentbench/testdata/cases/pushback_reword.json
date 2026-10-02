@@ -1,0 +1,432 @@
+{
+ "id": "acme/example#11",
+ "tier": "gold",
+ "owner": "acme",
+ "repo": "example",
+ "number": 11,
+ "bot": "acme-bot",
+ "dump": {
+  "number": 11,
+  "url": "https://github.com/acme/example/pull/11",
+  "state": "OPEN",
+  "headRefOid": "2222222222222222222222222222222222222222",
+  "author": {
+   "login": "dev-ana"
+  },
+  "reviews": {
+   "nodes": [
+    {
+     "author": {
+      "login": "acme-bot"
+     },
+     "databaseId": 900,
+     "state": "COMMENTED",
+     "submittedAt": "2026-09-01T10:00:00Z",
+     "commit": {
+      "oid": "1111111111111111111111111111111111111111"
+     }
+    },
+    {
+     "author": {
+      "login": "acme-bot"
+     },
+     "databaseId": 901,
+     "state": "COMMENTED",
+     "submittedAt": "2026-09-01T12:05:00Z",
+     "commit": {
+      "oid": "2222222222222222222222222222222222222222"
+     }
+    }
+   ]
+  },
+  "reviewThreads": {
+   "nodes": [
+    {
+     "id": "T101",
+     "path": "svc/retry.go",
+     "line": 42,
+     "originalLine": 42,
+     "isResolved": false,
+     "isOutdated": false,
+     "comments": {
+      "nodes": [
+       {
+        "databaseId": 101,
+        "author": {
+         "login": "acme-bot"
+        },
+        "body": "<!-- prism:finding:svc/retry.go:4:a1a1a1a1a1a1 -->\n**MEDIUM** fetchUser retries a 429 response at once with no backoff, so the rate limiter rejects each retry.",
+        "createdAt": "2026-09-01T10:00:00Z",
+        "path": "svc/retry.go",
+        "replyTo": null
+       },
+       {
+        "databaseId": 201,
+        "author": {
+         "login": "dev-ana"
+        },
+        "body": "This is intentional: the caller wraps fetchUser in a jittered backoff, so retrying here at once is by design.",
+        "createdAt": "2026-09-01T11:00:00Z",
+        "path": "svc/retry.go",
+        "replyTo": {
+         "databaseId": 101
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": "T102",
+     "path": "svc/cache.go",
+     "line": 15,
+     "originalLine": 15,
+     "isResolved": false,
+     "isOutdated": false,
+     "comments": {
+      "nodes": [
+       {
+        "databaseId": 102,
+        "author": {
+         "login": "acme-bot"
+        },
+        "body": "<!-- prism:finding:svc/cache.go:1:b2b2b2b2b2b2 -->\n**MEDIUM** The cache key omits the tenant id, so two tenants asking for the same user share one cached record.",
+        "createdAt": "2026-09-01T10:00:00Z",
+        "path": "svc/cache.go",
+        "replyTo": null
+       },
+       {
+        "databaseId": 202,
+        "author": {
+         "login": "dev-ana"
+        },
+        "body": "Fixed in 2222222, the key now includes the tenant id.",
+        "createdAt": "2026-09-01T12:01:00Z",
+        "path": "svc/cache.go",
+        "replyTo": {
+         "databaseId": 102
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": "T103",
+     "path": "svc/retry.go",
+     "line": 43,
+     "originalLine": 43,
+     "isResolved": false,
+     "isOutdated": false,
+     "comments": {
+      "nodes": [
+       {
+        "databaseId": 103,
+        "author": {
+         "login": "acme-bot"
+        },
+        "body": "<!-- prism:finding:svc/retry.go:4:c3c3c3c3c3c3 -->\n**MEDIUM** Calling it again immediately after a throttled answer keeps tripping the upstream limiter.",
+        "createdAt": "2026-09-01T12:05:00Z",
+        "path": "svc/retry.go",
+        "replyTo": null
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "commits": {
+   "nodes": [
+    {
+     "commit": {
+      "oid": "1111111111111111111111111111111111111111",
+      "committedDate": "2026-09-01T09:50:00Z",
+      "messageHeadline": "Add user fetch"
+     }
+    },
+    {
+     "commit": {
+      "oid": "2222222222222222222222222222222222222222",
+      "committedDate": "2026-09-01T12:00:00Z",
+      "messageHeadline": "Scope the cache key by tenant"
+     }
+    }
+   ]
+  }
+ },
+ "sidecars": {
+  "1111111": {
+   "schema_version": "2",
+   "owner": "acme",
+   "repo": "example",
+   "pr_number": 11,
+   "commit_sha": "1111111111111111111111111111111111111111",
+   "counts": {
+    "critical": 0,
+    "medium": 2,
+    "low": 0
+   },
+   "findings": [
+    {
+     "id": "svc/retry.go:4:a1a1a1a1a1a1",
+     "severity": "medium",
+     "provenance": "agent",
+     "file": "svc/retry.go",
+     "line": 42,
+     "comment": "fetchUser retries a 429 response at once with no backoff, so the rate limiter rejects each retry.",
+     "finding_contract": {
+      "schema_version": 1,
+      "finding_kind": "production_behavior",
+      "materiality": "current_impact",
+      "current_impact": "Users hit this on the changed path today.",
+      "counterfactual_trigger": null,
+      "falsifiability": "falsifiable",
+      "falsifiable_condition": "Exercise the changed path once.",
+      "expected_observable": "The wrong result described above.",
+      "subjects": [
+       {
+        "kind": "function",
+        "path": "svc/retry.go",
+        "name": "fetchUser"
+       }
+      ],
+      "uncertainty": "None.",
+      "severity_rationale": "Deterministic from the code.",
+      "headline": "fetchUser retries a 429 without backoff"
+     },
+     "finding_contract_status": "valid",
+     "state": "confirmed",
+     "active": true,
+     "diff_hunk": "@@ -40,6 +40,6 @@\n x\n+y\n z\n+w\n v\n u"
+    },
+    {
+     "id": "svc/cache.go:1:b2b2b2b2b2b2",
+     "severity": "medium",
+     "provenance": "agent",
+     "file": "svc/cache.go",
+     "line": 15,
+     "comment": "The cache key omits the tenant id, so two tenants asking for the same user share one cached record.",
+     "finding_contract": {
+      "schema_version": 1,
+      "finding_kind": "production_behavior",
+      "materiality": "current_impact",
+      "current_impact": "Users hit this on the changed path today.",
+      "counterfactual_trigger": null,
+      "falsifiability": "falsifiable",
+      "falsifiable_condition": "Exercise the changed path once.",
+      "expected_observable": "The wrong result described above.",
+      "subjects": [
+       {
+        "kind": "function",
+        "path": "svc/cache.go",
+        "name": "cacheKey"
+       }
+      ],
+      "uncertainty": "None.",
+      "severity_rationale": "Deterministic from the code.",
+      "headline": "Cache key ignores the tenant"
+     },
+     "finding_contract_status": "valid",
+     "state": "confirmed",
+     "active": true,
+     "diff_hunk": "@@ -13,6 +13,6 @@\n x\n+y\n z\n+w\n v\n u"
+    }
+   ]
+  },
+  "2222222": {
+   "schema_version": "2",
+   "owner": "acme",
+   "repo": "example",
+   "pr_number": 11,
+   "commit_sha": "2222222222222222222222222222222222222222",
+   "counts": {
+    "critical": 0,
+    "medium": 1,
+    "low": 0
+   },
+   "findings": [
+    {
+     "id": "svc/retry.go:4:c3c3c3c3c3c3",
+     "severity": "medium",
+     "provenance": "agent",
+     "file": "svc/retry.go",
+     "line": 43,
+     "comment": "Calling it again immediately after a throttled answer keeps tripping the upstream limiter.",
+     "finding_contract": {
+      "schema_version": 1,
+      "finding_kind": "production_behavior",
+      "materiality": "current_impact",
+      "current_impact": "Users hit this on the changed path today.",
+      "counterfactual_trigger": null,
+      "falsifiability": "falsifiable",
+      "falsifiable_condition": "Exercise the changed path once.",
+      "expected_observable": "The wrong result described above.",
+      "subjects": [
+       {
+        "kind": "function",
+        "path": "svc/retry.go",
+        "name": "fetchUser"
+       }
+      ],
+      "uncertainty": "None.",
+      "severity_rationale": "Deterministic from the code.",
+      "headline": "Throttled calls are repeated immediately"
+     },
+     "finding_contract_status": "valid",
+     "state": "confirmed",
+     "active": true,
+     "diff_hunk": "@@ -41,6 +41,6 @@\n x\n+y\n z\n+w\n v\n u"
+    }
+   ]
+  }
+ },
+ "compares": {
+  "1111111...2222222": [
+   "svc/cache.go"
+  ]
+ },
+ "rounds": [
+  {
+   "index": 0,
+   "sha": "1111111111111111111111111111111111111111",
+   "at": "2026-09-01T10:00:00Z",
+   "has_sidecar": true
+  },
+  {
+   "index": 1,
+   "sha": "2222222222222222222222222222222222222222",
+   "at": "2026-09-01T12:05:00Z",
+   "has_sidecar": true
+  }
+ ],
+ "recorded_replies": {
+  "201": {
+   "decision": "concede",
+   "reply": "The jittered backoff in svc/client.go:30 spaces the retries, so the immediate retry here is covered.",
+   "react": true
+  },
+  "202": {
+   "decision": "concede",
+   "reply": "svc/cache.go:15 now builds the key from the tenant and user ids.",
+   "react": true
+  }
+ },
+ "expect": {
+  "findings": [
+   {
+    "comment_id": 101,
+    "round": 0,
+    "finding_id": "svc/retry.go:4:a1a1a1a1a1a1",
+    "file": "svc/retry.go",
+    "line": 42,
+    "text": "fetchUser retries a 429 response at once with no backoff, so the rate limiter rejects each retry.",
+    "subjects": [
+     "fetchuser"
+    ],
+    "headline": "fetchUser retries a 429 without backoff",
+    "defect": 101,
+    "expect": "post",
+    "gold": true,
+    "backed": [
+     "reply:intentional_behavior"
+    ]
+   },
+   {
+    "comment_id": 102,
+    "round": 0,
+    "finding_id": "svc/cache.go:1:b2b2b2b2b2b2",
+    "file": "svc/cache.go",
+    "line": 15,
+    "text": "The cache key omits the tenant id, so two tenants asking for the same user share one cached record.",
+    "subjects": [
+     "cachekey"
+    ],
+    "headline": "Cache key ignores the tenant",
+    "defect": 102,
+    "expect": "post",
+    "gold": true,
+    "backed": [
+     "reply:fix_claim"
+    ]
+   },
+   {
+    "comment_id": 103,
+    "round": 1,
+    "finding_id": "svc/retry.go:4:c3c3c3c3c3c3",
+    "file": "svc/retry.go",
+    "line": 43,
+    "text": "Calling it again immediately after a throttled answer keeps tripping the upstream limiter.",
+    "subjects": [
+     "fetchuser"
+    ],
+    "headline": "Throttled calls are repeated immediately",
+    "defect": 101,
+    "expect": "suppress",
+    "gold": true,
+    "backed": [
+     "reply:intentional_behavior"
+    ],
+    "reason": "repost",
+    "detail": "repost of 101"
+   }
+  ],
+  "summaries": [
+   {
+    "round": 1,
+    "new": 0,
+    "still_open": 0,
+    "fixed": 1,
+    "gold": true
+   }
+  ],
+  "resolutions": [
+   {
+    "defect": 101,
+    "comment_id": 101,
+    "fixed_by": -1,
+    "why": "author verdict",
+    "gold": true
+   },
+   {
+    "defect": 102,
+    "comment_id": 102,
+    "fixed_by": 1,
+    "why": "fix commit 2222222",
+    "gold": true
+   }
+  ],
+  "replies": [
+   {
+    "comment_id": 201,
+    "root_comment_id": 101,
+    "author": "dev-ana",
+    "at": "2026-09-01T11:00:00Z",
+    "class": "intentional_behavior",
+    "quality": "good",
+    "accept": [
+     "react_only",
+     "concede",
+     "withdraw"
+    ],
+    "gold": true,
+    "backed": [
+     "reply:intentional_behavior"
+    ],
+    "want_dismissed": true
+   },
+   {
+    "comment_id": 202,
+    "root_comment_id": 102,
+    "author": "dev-ana",
+    "at": "2026-09-01T12:01:00Z",
+    "class": "fix_claim",
+    "quality": "good",
+    "accept": [
+     "concede"
+    ],
+    "gold": true,
+    "backed": [
+     "reply:fix_claim"
+    ]
+   }
+  ]
+ }
+}

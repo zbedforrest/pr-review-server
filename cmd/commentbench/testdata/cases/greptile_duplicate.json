@@ -1,0 +1,408 @@
+{
+ "id": "acme/example#13",
+ "tier": "gold",
+ "owner": "acme",
+ "repo": "example",
+ "number": 13,
+ "bot": "acme-bot",
+ "dump": {
+  "number": 13,
+  "url": "https://github.com/acme/example/pull/13",
+  "state": "OPEN",
+  "headRefOid": "7777777777777777777777777777777777777777",
+  "author": {
+   "login": "dev-ana"
+  },
+  "reviews": {
+   "nodes": [
+    {
+     "author": {
+      "login": "acme-bot"
+     },
+     "databaseId": 900,
+     "state": "COMMENTED",
+     "submittedAt": "2026-09-03T08:02:00Z",
+     "commit": {
+      "oid": "6666666666666666666666666666666666666666"
+     }
+    },
+    {
+     "author": {
+      "login": "acme-bot"
+     },
+     "databaseId": 901,
+     "state": "COMMENTED",
+     "submittedAt": "2026-09-03T08:30:00Z",
+     "commit": {
+      "oid": "6666666666666666666666666666666666666666"
+     }
+    },
+    {
+     "author": {
+      "login": "acme-bot"
+     },
+     "databaseId": 902,
+     "state": "COMMENTED",
+     "submittedAt": "2026-09-03T09:05:00Z",
+     "commit": {
+      "oid": "7777777777777777777777777777777777777777"
+     }
+    }
+   ]
+  },
+  "reviewThreads": {
+   "nodes": [
+    {
+     "id": "T301",
+     "path": "web/form.tsx",
+     "line": 88,
+     "originalLine": 88,
+     "isResolved": false,
+     "isOutdated": false,
+     "comments": {
+      "nodes": [
+       {
+        "databaseId": 301,
+        "author": {
+         "login": "greptile-apps[bot]"
+        },
+        "body": "<a href=\"#\"><img alt=\"P1\" src=\"https://example.invalid/p1.svg\" align=\"top\"></a> **Submit stays enabled while saving**\n\nThe submit button is not disabled while the save request is in flight, so a double click sends two requests.",
+        "createdAt": "2026-09-03T08:00:00Z",
+        "path": "web/form.tsx",
+        "replyTo": null
+       }
+      ]
+     }
+    },
+    {
+     "id": "T121",
+     "path": "web/form.tsx",
+     "line": 88,
+     "originalLine": 88,
+     "isResolved": false,
+     "isOutdated": false,
+     "comments": {
+      "nodes": [
+       {
+        "databaseId": 121,
+        "author": {
+         "login": "acme-bot"
+        },
+        "body": "<!-- prism:finding:web/form.tsx:8:a7a7a7a7a7a7 -->\n**MEDIUM** The submit button stays enabled during the in-flight save, so a double click posts the form twice.",
+        "createdAt": "2026-09-03T08:02:00Z",
+        "path": "web/form.tsx",
+        "replyTo": null
+       },
+       {
+        "databaseId": 321,
+        "author": {
+         "login": "dev-ben"
+        },
+        "body": "Same point as the Greptile thread above.",
+        "createdAt": "2026-09-03T08:20:00Z",
+        "path": "web/form.tsx",
+        "replyTo": {
+         "databaseId": 121
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": "T122",
+     "path": "web/form.tsx",
+     "line": 120,
+     "originalLine": 120,
+     "isResolved": false,
+     "isOutdated": false,
+     "comments": {
+      "nodes": [
+       {
+        "databaseId": 122,
+        "author": {
+         "login": "acme-bot"
+        },
+        "body": "<!-- prism:finding:web/form.tsx:12:b8b8b8b8b8b8 -->\n**MEDIUM** onSave swallows the rejected promise, so a failed save still shows the success toast.",
+        "createdAt": "2026-09-03T08:02:00Z",
+        "path": "web/form.tsx",
+        "replyTo": null
+       },
+       {
+        "databaseId": 221,
+        "author": {
+         "login": "dev-ana"
+        },
+        "body": "Fixed in 7777777, the toast now waits for the promise.",
+        "createdAt": "2026-09-03T09:10:00Z",
+        "path": "web/form.tsx",
+        "replyTo": {
+         "databaseId": 122
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "commits": {
+   "nodes": [
+    {
+     "commit": {
+      "oid": "6666666666666666666666666666666666666666",
+      "committedDate": "2026-09-03T07:55:00Z",
+      "messageHeadline": "Add the profile form"
+     }
+    },
+    {
+     "commit": {
+      "oid": "7777777777777777777777777777777777777777",
+      "committedDate": "2026-09-03T08:55:00Z",
+      "messageHeadline": "Wait for the save before the toast"
+     }
+    }
+   ]
+  }
+ },
+ "sidecars": {
+  "6666666": {
+   "schema_version": "2",
+   "owner": "acme",
+   "repo": "example",
+   "pr_number": 13,
+   "commit_sha": "6666666666666666666666666666666666666666",
+   "counts": {
+    "critical": 0,
+    "medium": 2,
+    "low": 0
+   },
+   "findings": [
+    {
+     "id": "web/form.tsx:8:a7a7a7a7a7a7",
+     "severity": "medium",
+     "provenance": "agent",
+     "file": "web/form.tsx",
+     "line": 88,
+     "comment": "The submit button stays enabled during the in-flight save, so a double click posts the form twice.",
+     "finding_contract": {
+      "schema_version": 1,
+      "finding_kind": "production_behavior",
+      "materiality": "current_impact",
+      "current_impact": "Users hit this on the changed path today.",
+      "counterfactual_trigger": null,
+      "falsifiability": "falsifiable",
+      "falsifiable_condition": "Exercise the changed path once.",
+      "expected_observable": "The wrong result described above.",
+      "subjects": [
+       {
+        "kind": "function",
+        "path": "web/form.tsx",
+        "name": "SubmitButton"
+       }
+      ],
+      "uncertainty": "None.",
+      "severity_rationale": "Deterministic from the code.",
+      "headline": "Submit stays enabled while saving"
+     },
+     "finding_contract_status": "valid",
+     "state": "confirmed",
+     "active": true,
+     "diff_hunk": "@@ -86,6 +86,6 @@\n x\n+y\n z\n+w\n v\n u"
+    },
+    {
+     "id": "web/form.tsx:12:b8b8b8b8b8b8",
+     "severity": "medium",
+     "provenance": "agent",
+     "file": "web/form.tsx",
+     "line": 120,
+     "comment": "onSave swallows the rejected promise, so a failed save still shows the success toast.",
+     "finding_contract": {
+      "schema_version": 1,
+      "finding_kind": "production_behavior",
+      "materiality": "current_impact",
+      "current_impact": "Users hit this on the changed path today.",
+      "counterfactual_trigger": null,
+      "falsifiability": "falsifiable",
+      "falsifiable_condition": "Exercise the changed path once.",
+      "expected_observable": "The wrong result described above.",
+      "subjects": [
+       {
+        "kind": "function",
+        "path": "web/form.tsx",
+        "name": "onSave"
+       }
+      ],
+      "uncertainty": "None.",
+      "severity_rationale": "Deterministic from the code.",
+      "headline": "Failed save shows success"
+     },
+     "finding_contract_status": "valid",
+     "state": "confirmed",
+     "active": true,
+     "diff_hunk": "@@ -118,6 +118,6 @@\n x\n+y\n z\n+w\n v\n u"
+    }
+   ]
+  },
+  "7777777": {
+   "schema_version": "2",
+   "owner": "acme",
+   "repo": "example",
+   "pr_number": 13,
+   "commit_sha": "7777777777777777777777777777777777777777",
+   "counts": {
+    "critical": 0,
+    "medium": 1,
+    "low": 0
+   },
+   "findings": [
+    {
+     "id": "web/form.tsx:8:a7a7a7a7a7a7",
+     "severity": "medium",
+     "provenance": "agent",
+     "file": "web/form.tsx",
+     "line": 88,
+     "comment": "The submit button stays enabled during the in-flight save, so a double click posts the form twice.",
+     "finding_contract": {
+      "schema_version": 1,
+      "finding_kind": "production_behavior",
+      "materiality": "current_impact",
+      "current_impact": "Users hit this on the changed path today.",
+      "counterfactual_trigger": null,
+      "falsifiability": "falsifiable",
+      "falsifiable_condition": "Exercise the changed path once.",
+      "expected_observable": "The wrong result described above.",
+      "subjects": [
+       {
+        "kind": "function",
+        "path": "web/form.tsx",
+        "name": "SubmitButton"
+       }
+      ],
+      "uncertainty": "None.",
+      "severity_rationale": "Deterministic from the code.",
+      "headline": "Submit stays enabled while saving"
+     },
+     "finding_contract_status": "valid",
+     "state": "confirmed",
+     "active": true,
+     "diff_hunk": "@@ -86,6 +86,6 @@\n x\n+y\n z\n+w\n v\n u"
+    }
+   ]
+  }
+ },
+ "compares": {
+  "6666666...7777777": [
+   "web/form.tsx"
+  ]
+ },
+ "rounds": [
+  {
+   "index": 0,
+   "sha": "6666666666666666666666666666666666666666",
+   "at": "2026-09-03T08:02:00Z",
+   "has_sidecar": true
+  },
+  {
+   "index": 1,
+   "sha": "6666666666666666666666666666666666666666",
+   "at": "2026-09-03T08:30:00Z",
+   "has_sidecar": true
+  },
+  {
+   "index": 2,
+   "sha": "7777777777777777777777777777777777777777",
+   "at": "2026-09-03T09:05:00Z",
+   "has_sidecar": true
+  }
+ ],
+ "recorded_replies": {
+  "221": {
+   "decision": "concede",
+   "reply": "web/form.tsx:118 now awaits the save before the toast.",
+   "react": true
+  }
+ },
+ "expect": {
+  "findings": [
+   {
+    "comment_id": 121,
+    "round": 0,
+    "finding_id": "web/form.tsx:8:a7a7a7a7a7a7",
+    "file": "web/form.tsx",
+    "line": 88,
+    "text": "The submit button stays enabled during the in-flight save, so a double click posts the form twice.",
+    "subjects": [
+     "submitbutton"
+    ],
+    "headline": "Submit stays enabled while saving",
+    "defect": 121,
+    "expect": "suppress",
+    "gold": true,
+    "backed": [
+     "confirmed:duplicate_of_greptile"
+    ],
+    "reason": "external",
+    "detail": "first raised by greptile"
+   },
+   {
+    "comment_id": 122,
+    "round": 0,
+    "finding_id": "web/form.tsx:12:b8b8b8b8b8b8",
+    "file": "web/form.tsx",
+    "line": 120,
+    "text": "onSave swallows the rejected promise, so a failed save still shows the success toast.",
+    "subjects": [
+     "onsave"
+    ],
+    "headline": "Failed save shows success",
+    "defect": 122,
+    "expect": "post",
+    "gold": true,
+    "backed": [
+     "reply:fix_claim"
+    ]
+   }
+  ],
+  "summaries": [
+   {
+    "round": 1,
+    "new": 0,
+    "still_open": 1,
+    "fixed": 0,
+    "gold": true
+   },
+   {
+    "round": 2,
+    "new": 0,
+    "still_open": 0,
+    "fixed": 1,
+    "gold": true
+   }
+  ],
+  "resolutions": [
+   {
+    "defect": 122,
+    "comment_id": 122,
+    "fixed_by": 2,
+    "why": "fix commit 7777777",
+    "gold": true
+   }
+  ],
+  "replies": [
+   {
+    "comment_id": 221,
+    "root_comment_id": 122,
+    "author": "dev-ana",
+    "at": "2026-09-03T09:10:00Z",
+    "class": "fix_claim",
+    "quality": "good",
+    "accept": [
+     "concede"
+    ],
+    "gold": true,
+    "backed": [
+     "reply:fix_claim"
+    ]
+   }
+  ]
+ }
+}
