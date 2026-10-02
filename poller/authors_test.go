@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"pr-review-server/db"
 	"pr-review-server/github"
 )
 
@@ -41,7 +42,6 @@ func TestAuthorAllowed_MixesLoginsWildcardAndTeams(t *testing.T) {
 	assert.True(t, p.authorAllowed("*", "dave"))
 	assert.False(t, p.authorAllowed("team:unknown", "bob"), "an unresolved team matches nobody")
 	assert.False(t, p.authorAllowed("core", "bob"), "a bare slug is a login, not a team")
-	assert.True(t, p.authorMatcher("team:core")("carol"))
 }
 
 func TestAuthorAllowed_WithoutResolverTeamsMatchNobody(t *testing.T) {
@@ -81,4 +81,65 @@ func TestAutoReviewProfileFor_TeamEntryGatesLite(t *testing.T) {
 	require.NoError(t, database.SetSetting(SettingAutoReviewLiteAuthors, "team:pilots"))
 	assert.Equal(t, "lite", p.autoReviewProfileFor("synchronize", "acme", "example", "alice"))
 	assert.Equal(t, "full", p.autoReviewProfileFor("synchronize", "acme", "example", "bob"))
+}
+
+func TestPublishGate_OptedOutLoginInATeamIsDeniedOnEveryPostingPath(t *testing.T) {
+	database := NewMockDatabase()
+	mockGH := NewMockGitHubClient()
+	p := newTestPoller(mockGH, database)
+	teamAware(p, mockGH, map[string][]string{"xo-team": {"alice", "bob"}})
+	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "team:xo-team,carol,*"))
+	require.NoError(t, database.SetSetting(SettingPublishOptOutAuthors, " Alice ,carol"))
+	require.NoError(t, database.SetSetting(settingAutoReviewReadyPRs, "true"))
+	require.NoError(t, database.SetSetting(SettingAutoReviewLiteAuthors, "team:xo-team"))
+	p.cfg.OpenRouterAPIKey = "test-openrouter-key"
+	p.cfg.AgenticReviews, p.cfg.AgentModel, p.cfg.AgentWallClockSec, p.cfg.AgentMaxTurns = true, "claude-fable-5", 900, 120
+	p.cfg.ReviewDefaultProfile = "lite"
+
+	gate, err := p.publishGate()
+	require.NoError(t, err)
+	paths := map[string]func(string) bool{
+		"review round": func(author string) bool {
+			allowed, err := p.publishAllowedFor(author)
+			require.NoError(t, err)
+			return allowed
+		},
+		"replies and mentions": gate.Allowed,
+	}
+	cases := []struct {
+		author string
+		want   bool
+		why    string
+	}{
+		{"alice", false, "opted out beats team membership"},
+		{"ALICE", false, "opt-out matches case-insensitively"},
+		{"carol", false, "opted out beats a login entry"},
+		{"bob", true, "team member who did not opt out"},
+		{"dave", true, "wildcard still admits everyone else"},
+	}
+	for name, allowed := range paths {
+		for _, tc := range cases {
+			assert.Equal(t, tc.want, allowed(tc.author), "%s: %s: %s", name, tc.author, tc.why)
+		}
+	}
+	assert.True(t, gate.OptedOut("Alice"))
+	assert.False(t, gate.OptedOut("bob"))
+
+	eligible, err := p.autoReviewEligible("alice")
+	require.NoError(t, err)
+	assert.True(t, eligible, "opt-out stops posting only; dashboard reviews continue")
+	assert.Equal(t, "lite", p.autoReviewProfileFor("synchronize", "acme", "example", "alice"), "the lite gate ignores the opt-out")
+}
+
+type unreadableSettings struct{ db.Database }
+
+func (unreadableSettings) GetSetting(string) (string, error) { return "", errors.New("db down") }
+
+func TestPublishGate_ReadErrorDeniesEveryone(t *testing.T) {
+	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
+	p.db = unreadableSettings{p.db}
+
+	gate, err := p.publishGate()
+	require.Error(t, err)
+	assert.False(t, gate.Allowed("alice"))
 }

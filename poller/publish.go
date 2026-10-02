@@ -276,19 +276,24 @@ const (
 
 // publishGitHubReview posts a completed review to the PR and reports what it
 // posted; the report is nil when no round was attempted, and the outcome
-// says why. publish_enabled_authors is the only gate on posting: an
-// automatic review of any other author stays on the dashboard, whatever
-// auto_review_authors says. Best-effort by design: the review is already
+// says why. The publish gate (publish_enabled_authors minus the opt-out
+// list) is the only gate on posting: an automatic review of any other author
+// stays on the dashboard, whatever auto_review_authors says. Best-effort by design: the review is already
 // saved and visible on the dashboard, so any failure here is logged and
 // never fails the run.
 func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) (*publisher.Report, string) {
-	allowed, err := p.publishAllowedFor(pr.Author)
+	gate, err := p.publishGate()
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: read publish allowlist: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return nil, publicationFailedPrefix + "read publish allowlist"
 	}
-	if !allowed {
-		p.recordHygieneEvent(pr, health.ActionPublishDenied, "author="+pr.Author)
+	if !gate.Allowed(pr.Author) {
+		label := "author=" + pr.Author
+		if gate.OptedOut(pr.Author) {
+			p.recordHygieneEvent(pr, health.ActionOptedOut, label)
+			label += " reason=opted_out"
+		}
+		p.recordHygieneEvent(pr, health.ActionPublishDenied, label)
 		return nil, publicationNotAllowed
 	}
 	ledger, ok := p.db.(publisher.Ledger)

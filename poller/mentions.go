@@ -363,7 +363,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 		prs = append(prs, &all[i])
 	}
 	candidates := mentionCandidates(prs, p.mentionLastScanned, full, time.Now().UTC())
-	enabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
+	gate, err := p.publishGate()
 	if err != nil {
 		// Without the allowlist every admission would be dashboard-only with
 		// a false note; wait for the next cycle instead.
@@ -372,7 +372,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 	}
 	scanner := mentionScanner{
 		gh: mentionGitHubAdapter{p.ghClientConcrete}, ledger: ledger, handle: p.cfg.MentionHandle, holder: p.holderID, since: since,
-		allowed: p.authorMatcher(enabled),
+		allowed: gate.Allowed,
 		now:     func() time.Time { return time.Now().UTC() },
 		log:     log.Printf,
 		reviewed: func(owner, repo string, number int, headSHA string, publish bool, since time.Time) (bool, error) {

@@ -135,3 +135,25 @@ func TestPollerRecordsNoUnwiredHygieneAction(t *testing.T) {
 		}
 	}
 }
+
+func TestPublishGitHubReview_OptedOutAuthorRecordsTheOptOutAndTheDenial(t *testing.T) {
+	ts, writes := gitHubStub(t, openPRJSON, false)
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "*"))
+	require.NoError(t, database.SetSetting(SettingPublishOptOutAuthors, "alice"))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+
+	_, outcome := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "Alice"}, []byte(scoredSidecar))
+
+	assert.Equal(t, publicationNotAllowed, outcome)
+	assert.Empty(t, writes())
+	stats, err := database.GetTelemetryStats(1)
+	require.NoError(t, err)
+	counts := map[string]int{}
+	for _, a := range stats.ByAction {
+		counts[a.Action] = a.Count
+	}
+	assert.Equal(t, map[string]int{health.ActionOptedOut: 1, health.ActionPublishDenied: 1}, counts)
+}

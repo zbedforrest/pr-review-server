@@ -325,7 +325,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 	}
 	cycle := p.replyScanCycle.Add(1)
 	full := cycle%replyFullScanEvery == 1
-	enabled, _ := p.db.GetSetting(settingPublishEnabledAuthors)
+	gate, _ := p.publishGate()
 	reactor := publisher.ReplyReactor{
 		GH:          ghReplyAdapter{p.ghClientConcrete},
 		Ledger:      ledger,
@@ -358,11 +358,11 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			if err != nil {
 				return "", nil, fmt.Errorf("read reply mode: %w", err)
 			}
-			liveEnabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
+			liveGate, err := p.publishGate()
 			if err != nil {
 				return "", nil, fmt.Errorf("read publish authors: %w", err)
 			}
-			return strings.TrimSpace(strings.ToLower(liveMode)), p.authorMatcher(liveEnabled), nil
+			return strings.TrimSpace(strings.ToLower(liveMode)), liveGate.Allowed, nil
 		},
 		OnOutcome: func(o publisher.ReplyOutcome, err error) {
 			switch {
@@ -379,7 +379,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				}
 			}
 		},
-		Allowed:     p.authorMatcher(enabled),
+		Allowed:     gate.Allowed,
 		OnDismissed: p.summaryRefresher(),
 		PR: func(ctx context.Context, owner, repo string, number int) (publisher.PRState, error) {
 			ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)
