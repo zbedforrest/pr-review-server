@@ -167,6 +167,7 @@ func cmdRun(args []string) int {
 			log.Print(err)
 			return 1
 		}
+		defer os.RemoveAll(scratch)
 		cfg, err := liveAgentConfig(scratch)
 		if err != nil {
 			log.Print(err)

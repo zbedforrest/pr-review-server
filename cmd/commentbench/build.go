@@ -95,8 +95,16 @@ func buildCase(o BuildOptions, apr auditPR, ex examples) (*Case, ManifestEntry, 
 	}
 	c := &Case{ID: apr.Key, Owner: owner, Repo: repo, Number: d.Number, Dump: *d, Sidecars: map[string]json.RawMessage{}, Compares: map[string][]string{}}
 	bots := d.BotLogins()
+	names := make([]string, 0, len(bots))
 	for b := range bots {
-		c.Bot = b
+		names = append(names, b)
+	}
+	sort.Strings(names)
+	if len(names) > 1 {
+		return nil, entry, fmt.Errorf("more than one PRism login: %v", names)
+	}
+	if len(names) == 1 {
+		c.Bot = names[0]
 	}
 	if !apr.ReadOK {
 		c.TierWhy = append(c.TierWhy, "read_ok false")
@@ -305,7 +313,11 @@ func (b *caseBuilder) findings() {
 			if r := b.roundAt(root.CreatedAt); r >= 0 {
 				fe.Round = r
 				marker, _ := publisher.FindingIDFromBody(root.Body)
-				fe.FindingID, fe.Text, fe.Subjects = b.mapFinding(r, marker, fe.File, fe.Line, fe.Text)
+				var loose bool
+				fe.FindingID, fe.Text, fe.Subjects, loose = b.mapFinding(r, marker, fe.File, fe.Line, fe.Text)
+				if loose {
+					fe.MappedBy = "alias"
+				}
 			}
 		}
 		if pats := covers(b.refuted, ac.CommentID); len(pats) > 0 && len(covers(b.confirmed, ac.CommentID)) == 0 {
@@ -321,7 +333,7 @@ func (b *caseBuilder) findings() {
 				fe.Backed = appendOnce(fe.Backed, "reply:"+hr.Class)
 			}
 		}
-		fe.Gold = len(fe.Backed) > 0 && fe.mapped()
+		fe.Gold = len(fe.Backed) > 0 && fe.mapped() && fe.MappedBy == ""
 		b.c.Expect.Findings = append(b.c.Expect.Findings, fe)
 	}
 	sort.SliceStable(b.c.Expect.Findings, func(i, j int) bool {
@@ -356,16 +368,18 @@ func expectationFor(ac auditComment) (expect, reason, detail string) {
 }
 
 // mapFinding finds the sidecar finding a historical root was rendered from:
-// the marker id when the round's sidecar still has it, else the closest
-// finding on the same file and nearby line.
-func (b *caseBuilder) mapFinding(round int, marker, file string, line int, text string) (string, string, []string) {
+// the marker id when the round's sidecar still has it, else (loose) the
+// closest finding on the same file and nearby line. The rendered body scores
+// lower against raw prose than raw against raw, hence half the alias bar;
+// a loose match never counts as gold.
+func (b *caseBuilder) mapFinding(round int, marker, file string, line int, text string) (id, raw string, subjects []string, loose bool) {
 	pl := b.payloads[round]
 	if pl == nil {
-		return marker, text, nil
+		return marker, text, nil, false
 	}
 	for _, f := range pl.Findings {
 		if f.ID == marker {
-			return f.ID, f.Comment, replaykit.Subjects(f)
+			return f.ID, f.Comment, replaykit.Subjects(f), false
 		}
 	}
 	best, bestScore := -1, 0.0
@@ -379,9 +393,9 @@ func (b *caseBuilder) mapFinding(round int, marker, file string, line int, text 
 	}
 	if best >= 0 && bestScore >= replaykit.AliasSimilarity/2 {
 		f := pl.Findings[best]
-		return f.ID, f.Comment, replaykit.Subjects(f)
+		return f.ID, f.Comment, replaykit.Subjects(f), true
 	}
-	return "", text, nil
+	return "", text, nil, false
 }
 
 func absInt(n int) int {
@@ -733,6 +747,7 @@ func loadReplyLedger(path string) (map[int64]RecordedDecision, error) {
 			ReplyBody       string `json:"reply_body"`
 			Cited           string `json:"cited"`
 			Note            string `json:"note"`
+			Action          string `json:"action"`
 		} `json:"recent"`
 	}
 	if err := json.Unmarshal(raw, &exp); err != nil {
@@ -743,7 +758,7 @@ func loadReplyLedger(path string) (map[int64]RecordedDecision, error) {
 		if r.Decision == "" {
 			continue
 		}
-		d := RecordedDecision{Decision: r.Decision, Reply: r.ReplyBody, React: r.Decision != publisher.DecisionHold, BudgetExhausted: r.Note == publisher.NoteBudgetExhausted}
+		d := RecordedDecision{Decision: r.Decision, Reply: r.ReplyBody, React: r.Action == publisher.ReplyActionReacted, BudgetExhausted: r.Note == publisher.NoteBudgetExhausted}
 		if r.Cited != "" {
 			_ = json.Unmarshal([]byte(r.Cited), &d.Cited)
 		}

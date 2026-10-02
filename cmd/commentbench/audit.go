@@ -84,7 +84,7 @@ type example struct {
 
 var (
 	exampleKeyRe = regexp.MustCompile(`^\s*([\w.-]+/[\w.-]+)#(\d+)`)
-	commentIDRe  = regexp.MustCompile(`\b\d{10}\b`)
+	commentIDRe  = regexp.MustCompile(`\b\d{10,}\b`)
 )
 
 func indexExamples(patterns []auditPattern) examples {

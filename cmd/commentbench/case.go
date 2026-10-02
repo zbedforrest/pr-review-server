@@ -93,6 +93,7 @@ type FindingExpect struct {
 	Text      string   `json:"text,omitempty"`
 	Subjects  []string `json:"subjects,omitempty"`
 	Headline  string   `json:"headline,omitempty"`
+	MappedBy  string   `json:"mapped_by,omitempty"` // "alias" when the marker was gone from the sidecar
 	Defect    int64    `json:"defect"`
 	Expect    string   `json:"expect"`
 	Reason    string   `json:"reason,omitempty"`

@@ -276,9 +276,11 @@ func (v *threadView) prState(context.Context, string, string, int) (publisher.PR
 			head = cm.Commit.Oid
 		}
 	}
-	for _, rd := range v.c.Dump.Rounds(v.c.bots()) {
-		if !rd.At.After(now) && head == "" {
-			head = rd.SHA
+	if head == "" {
+		for _, rd := range v.c.Dump.Rounds(v.c.bots()) {
+			if !rd.At.After(now) {
+				head = rd.SHA
+			}
 		}
 	}
 	return publisher.PRState{Open: true, AuthorID: userID(v.c.Dump.Author.Login), AuthorLogin: v.c.Dump.Author.Login, UpdatedAt: now, HeadSHA: head, BaseRef: "main"}, nil

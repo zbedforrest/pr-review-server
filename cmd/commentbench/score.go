@@ -197,8 +197,8 @@ func scoreFixed(run *Run, m postMatch, s *CaseScore) {
 	}
 }
 
-// scoreSummaries compares each later round's "Since last review" line with
-// the expectation, over labelled findings only: rows the audit has no label
+// scoreSummaries compares each later round's "Since last review" counts
+// (new, still open, fixed) with the expectation, over labelled findings only: rows the audit has no label
 // for (folded notes, annotations, unlabelled posts) are taken out of the
 // rendered counts first.
 func scoreSummaries(run *Run, m postMatch, s *CaseScore) {
@@ -218,10 +218,21 @@ func scoreSummaries(run *Run, m postMatch, s *CaseScore) {
 			continue
 		}
 		s.SummariesScored++
-		n, _, f, ok := parseSince(rr.Summary)
+		n, o, f, ok := parseSince(rr.Summary)
 		before := map[string]bool{}
 		for _, row := range rr.Previous {
 			before[row.Fingerprint] = true
+		}
+		openAfter := map[string]bool{}
+		for _, row := range rr.After {
+			if row.State == db.PublishedStateOpen {
+				openAfter[row.Fingerprint] = true
+			}
+		}
+		for _, row := range rr.Previous {
+			if replaykit.IsFindingRow(row) && row.State == db.PublishedStateOpen && !labelled[row.Fingerprint] && openAfter[row.Fingerprint] && o > 0 {
+				o--
+			}
 		}
 		for _, row := range rr.After {
 			if replaykit.IsFindingRow(row) && !before[row.Fingerprint] && !labelled[row.Fingerprint] && n > 0 {
@@ -233,11 +244,11 @@ func scoreSummaries(run *Run, m postMatch, s *CaseScore) {
 				f--
 			}
 		}
-		if ok && n == se.New && f == se.Fixed {
+		if ok && n == se.New && o == se.StillOpen && f == se.Fixed {
 			s.SummariesCorrect++
 			continue
 		}
-		s.Diffs = append(s.Diffs, Diff{Kind: DiffSummary, Round: se.Round, Detail: fmt.Sprintf("labelled findings: want %d new, %d fixed; got %d new, %d fixed", se.New, se.Fixed, n, f)})
+		s.Diffs = append(s.Diffs, Diff{Kind: DiffSummary, Round: se.Round, Detail: fmt.Sprintf("labelled findings: want %d new, %d still open, %d fixed; got %d new, %d still open, %d fixed", se.New, se.StillOpen, se.Fixed, n, o, f)})
 	}
 }
 

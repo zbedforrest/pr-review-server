@@ -47,6 +47,9 @@ func assertGaps(t *testing.T, s CaseScore, gaps []knownGap) {
 		got = append(got, diffKey(d))
 	}
 	for _, g := range gaps {
+		if g.owner == "" {
+			t.Fatalf("known gap %q names no item to remove it", g.diff)
+		}
 		want = append(want, g.diff)
 	}
 	sort.Strings(got)
@@ -146,6 +149,7 @@ func TestE2E_FixCommitCountsAndAbsenceDoesNot(t *testing.T) {
 	}
 	assertGaps(t, s, []knownGap{
 		{"wrong_fixed round 2 comment 112", "W1-1: absence is not fixed when the cited file did not change"},
+		{"summary_mismatch round 2", "W1-1: the unchanged finding is still open, not fixed"},
 		{"posted_should_not round 3 comment 114", "W1-1: every row with a comment id counts as already published"},
 		{"repost round 3", "W1-1"},
 		{"summary_mismatch round 3", "W1-1 and W1-4"},
@@ -169,6 +173,8 @@ func TestE2E_GreptileDuplicateAndSameCommitRerun(t *testing.T) {
 	}
 	assertGaps(t, s, []knownGap{
 		{"posted_should_not round 1 comment 121", "W3-1: a match to another bot's root becomes an external row"},
+		{"summary_mismatch round 2", "W3-1: an external row is not counted as a PRism finding"},
+		{"summary_mismatch round 3", "W3-1"},
 	})
 }
 
@@ -185,7 +191,7 @@ func TestFixtureAggregates(t *testing.T) {
 	got := fmt.Sprintf("cases=%d post=%d/%d precision=%s recall=%s suppression=%s reposts=%d fixed=%d wrong=%d summary=%s replies=%s resolution=%s",
 		g.Cases, g.ShouldPost, g.ShouldSuppress, fmtRatio(g.PostPrecision), fmtRatio(g.PostRecall), fmtRatio(g.SuppressionRecall),
 		g.Reposts, g.Fixed, g.WrongFixed, fmtRatio(g.SummaryCorrect), fmtRatio(g.ReplyAccuracy), fmtRatio(g.ResolutionRecall))
-	want := "cases=3 post=6/3 precision=0.667 recall=1.000 suppression=0.000 reposts=2 fixed=2 wrong=1 summary=0.600 replies=1.000 resolution=n/a"
+	want := "cases=3 post=6/3 precision=0.667 recall=1.000 suppression=0.000 reposts=2 fixed=2 wrong=1 summary=0.000 replies=1.000 resolution=n/a"
 	if got != want {
 		t.Fatalf("gold aggregate\n got %s\nwant %s", got, want)
 	}

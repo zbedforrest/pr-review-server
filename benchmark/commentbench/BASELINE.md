@@ -6,8 +6,9 @@ in-memory SQLite ledger and a recording fake GitHub, and scores what they do aga
 comment-system audit says PRism should have done. It shares its dump, sidecar and replay plumbing with
 `cmd/publishreplay` through `internal/replaykit`.
 
-Measured with this branch, whose `pkg/publisher` is identical to master's, replies in stub mode, shipped publisher defaults (inline cap 3, minimum severity medium,
-unverified claims folded). Date: 2026-10-02.
+Measured with this branch, whose `pkg/publisher` is identical to master's, replies in stub mode,
+shipped publisher defaults (inline cap 3, minimum severity medium, unverified claims folded).
+Date: 2026-10-02.
 
 ## Dataset
 
@@ -15,8 +16,8 @@ Built from the 203 audited PRs. Cases name real repositories and people, so they
 
 | tier | cases | rounds (with sidecar) | findings post / suppress / unmapped | summaries | resolutions | replies |
 |---|---:|---:|---:|---:|---:|---:|
-| gold | 57 | 149 (147) | 67 / 70 / 9 | 71 | 80 | 85 |
-| accepted | 99 | 245 (241) | 166 / 122 / 3 | 130 | 109 | 74 |
+| gold | 50 | 121 (119) | 59 / 52 / 6 | 65 | 69 | 68 |
+| accepted | 106 | 273 (269) | 174 / 140 / 6 | 136 | 121 | 91 |
 | excluded | 47 | | | | | |
 
 Excluded: 42 summary-only PRs (no inline comment, so no review submission to replay), 3 refuted by a
@@ -26,30 +27,30 @@ verifier as a whole, 2 left with nothing scorable (one after its refuted comment
 
 | metric | gold | accepted |
 |---|---:|---:|
-| cases | 57 | 99 |
-| rounds replayed | 147 | 241 |
-| findings that should post / be suppressed | 67 / 70 | 166 / 122 |
-| post precision | 0.541 | 0.616 |
-| post recall | 0.985 | 0.976 |
-| suppression recall | 0.200 | 0.172 |
-| reposts | 10 | 35 |
-| fixed flips / wrong / unconfirmed | 54 / 14 / 8 | 139 / 39 / 21 |
-| summary-count correctness | 0.549 of 71 | 0.354 of 130 |
-| thread-resolution recall | n/a of 80 | n/a of 109 |
-| reply decision accuracy | 0.463 of 80 | 0.592 of 71 |
+| cases | 50 | 106 |
+| rounds replayed | 119 | 269 |
+| findings that should post / be suppressed | 59 / 52 | 174 / 140 |
+| post precision | 0.569 | 0.601 |
+| post recall | 0.983 | 0.977 |
+| suppression recall | 0.154 | 0.193 |
+| reposts | 4 | 41 |
+| fixed flips / wrong / unconfirmed | 42 / 11 / 8 | 151 / 42 / 21 |
+| summary-count correctness | 0.446 of 65 | 0.272 of 136 |
+| thread-resolution recall | n/a of 69 | n/a of 121 |
+| reply decision accuracy | 0.476 of 63 | 0.557 of 88 |
 | replies whose thread the replay did not post | 5 | 3 |
-| unlabelled posts / unmapped expectations | 12 / 9 | 37 / 3 |
+| unlabelled posts / unmapped expectations | 5 / 6 | 44 / 6 |
 
 | reply class | gold correct / expected | accepted correct / expected |
 |---|---:|---:|
 | ack | 3 / 4 | 1 / 2 |
-| fix_claim | 9 / 16 | 24 / 36 |
-| frustration | 3 / 8 | 0 / 1 |
-| intentional_behavior | 15 / 29 | 10 / 18 |
-| pushback | 7 / 23 | 5 / 11 |
+| fix_claim | 5 / 10 | 28 / 42 |
+| frustration | 1 / 3 | 2 / 6 |
+| intentional_behavior | 14 / 25 | 11 / 22 |
+| pushback | 7 / 21 | 5 / 13 |
 | question | 0 / 0 | 2 / 3 |
 
-Stub mode made 46 (gold) and 34 (accepted) reply decisions without a recorded one; see Limits.
+Stub mode made 33 (gold) and 47 (accepted) reply decisions without a recorded one; see Limits.
 
 ## What the numbers mean
 
@@ -63,8 +64,8 @@ Stub mode made 46 (gold) and 34 (accepted) reply decisions without a recorded on
 - Wrong fixed: a ledger row moved out of open when the case has no fix for that defect by then and the
   defect is still raised under new wording, comes back later, or its cited file did not change.
   Unconfirmed: a flip with none of that evidence either way.
-- Summary-count correctness: rounds whose "Since last review" new and fixed counts, restricted to
-  labelled findings, equal the expectation. Expected fixed = a fix claim whose commit landed since the
+- Summary-count correctness: rounds whose "Since last review" new, still open and fixed counts,
+  restricted to labelled findings, equal the expectation. Expected fixed = a fix claim whose commit landed since the
   previous round, or the defect absent from the review while its cited file changed (policy R5); a
   defect settled by an author verdict is no longer counted.
 - Thread-resolution recall: expected resolutions (fix, absence with file change, author verdict) whose
@@ -76,7 +77,8 @@ Stub mode made 46 (gold) and 34 (accepted) reply decisions without a recorded on
 
 Tiers: gold when every expectation on the PR is backed by a verifier-confirmed pattern example or by a
 settling human reply (fix claim, intentional behaviour, pushback), and no verifier refuted any of its
-comments; accepted for analyst labels only; excluded when refuted as a whole, `read_ok` is false or
+comments, and every finding was found by its marker in the round's sidecar (a looser file, line and
+text match is accepted only); accepted for analyst labels only; excluded when refuted as a whole, `read_ok` is false or
 nothing can be replayed. Refuted comments are dropped from their case.
 
 ## Rebuild the dataset
@@ -106,8 +108,8 @@ ids as `case-N`. To gate a publisher PR on gold, pass thresholds; the command ex
 
 ```
 go run ./cmd/commentbench run --cases $F/benchmark \
-  --min-gold-post-precision 0.54 --min-gold-suppression-recall 0.20 --max-gold-reposts 10 \
-  --max-gold-wrong-fixed 14 --min-gold-summary 0.54 --min-gold-reply-accuracy 0.46
+  --min-gold-post-precision 0.56 --min-gold-suppression-recall 0.15 --max-gold-reposts 4 \
+  --max-gold-wrong-fixed 11 --min-gold-summary 0.44 --min-gold-reply-accuracy 0.47
 ```
 
 `--replies=live` runs the real reply agent (`service.RunAgentReply`) for every eligible reply instead of
@@ -149,10 +151,12 @@ audit entry.
 - A round is a PRism review submission; rounds that posted no inline comment are invisible, so
   summary-only PRs cannot be replayed.
 - Same-commit reruns replay one sidecar twice (the live system overwrote it); see the replay baseline.
-- Findings whose round sidecar no longer holds them are reported as unmapped and not scored (9 gold).
+- Findings whose round sidecar no longer holds them are reported as unmapped and not scored (6 gold).
 - Expected summary counts and fix rounds are derived from the labels, reply text, commit dates and the
   three-dot compares; a rebase can widen a compare and make a fix look corroborated.
-- Stub reply decisions without a ledger record are a rule, not the model; use `--replies=live` to
-  measure the model itself.
+- In stub mode a reply the audit judged good is replayed with the decision PRism actually made, so
+  stub accuracy measures the reactor (eligibility, caps, rendering, ledger state) rather than the
+  model, and stub decisions without a ledger record are a rule; use `--replies=live` to measure the
+  model itself.
 - Replies by someone other than the PR author are scored: PRism ignores them by design, and the audit
   judged some of those silences wrong.
