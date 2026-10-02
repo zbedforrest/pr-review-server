@@ -32,6 +32,7 @@ type Metrics struct {
 	AutoReview AutoReviewMetrics `json:"auto_review"`
 	Publish    PublishMetrics    `json:"publish"`
 	Replies    ReplyMetrics      `json:"replies"`
+	Feedback   FeedbackMetrics   `json:"feedback"`
 	Telemetry  map[string]int    `json:"telemetry"` // action -> events in the window
 	Lease      LeaseMetrics      `json:"lease"`
 	PRErrors   int               `json:"pr_errors"`     // PRs currently carrying an error message
@@ -90,6 +91,29 @@ type ReplyMetrics struct {
 	StuckPending  int            `json:"stuck"` // pending action, no outcome, older than an hour
 	Failed        int            `json:"failed"`
 	UnlinkedRoots int            `json:"unlinked_roots"`
+}
+
+// FeedbackMetrics is what authors said about PRism's comments in the window:
+// replies under inline findings, conversation comments naming the bot, and
+// reactions, each labelled happy, neutral, frustrated or very_frustrated.
+type FeedbackMetrics struct {
+	// Scanned is false when the daily run could not look at GitHub (no
+	// client, disabled by flag); the counts are then only what earlier runs
+	// stored.
+	Scanned bool `json:"scanned"`
+	// Note explains an unscanned window.
+	Note       string          `json:"note,omitempty"`
+	ByLabel    map[string]int  `json:"by_label"`
+	Frustrated []FeedbackQuote `json:"frustrated"`
+	Happy      *FeedbackQuote  `json:"happy,omitempty"`
+}
+
+// FeedbackQuote is one item worth a human's eyes: who, a short quote, where.
+type FeedbackQuote struct {
+	Label  string `json:"label"`
+	Author string `json:"author"`
+	Quote  string `json:"quote"`
+	URL    string `json:"url"`
 }
 
 type LeaseMetrics struct {
@@ -215,6 +239,7 @@ func Evaluate(m Metrics) Report {
 
 	add("publications", StatusOK, fmt.Sprintf("%d PRs got their first summary comment, %d inline comments posted, %d annotation-only findings; %d findings currently dismissed by concession (all time)", m.Publish.Summaries, m.Publish.Inline, m.Publish.Annotations, m.Publish.Dismissed))
 	add("publication hygiene", StatusOK, hygieneDetail(m.Telemetry))
+	add("author feedback", feedbackStatus(m.Feedback), feedbackDetail(m.Feedback))
 
 	replyDetail := fmt.Sprintf("%d author replies handled", m.Replies.Handled)
 	if m.Replies.Handled > 0 {
@@ -348,4 +373,61 @@ func sumValues(m map[string]int) int {
 		n += v
 	}
 	return n
+}
+
+const (
+	FeedbackHappy          = "happy"
+	FeedbackNeutral        = "neutral"
+	FeedbackFrustrated     = "frustrated"
+	FeedbackVeryFrustrated = "very_frustrated"
+)
+
+// feedbackStatus: one very frustrated author is worth a look, three in a day
+// is a problem with the product.
+func feedbackStatus(f FeedbackMetrics) Status {
+	switch n := f.ByLabel[FeedbackVeryFrustrated]; {
+	case n >= 3:
+		return StatusCritical
+	case n >= 1:
+		return StatusWarn
+	}
+	return StatusOK
+}
+
+func feedbackDetail(f FeedbackMetrics) string {
+	total := 0
+	for _, n := range f.ByLabel {
+		total += n
+	}
+	var b strings.Builder
+	switch {
+	case total == 0 && !f.Scanned:
+		b.WriteString("not scanned")
+		if f.Note != "" {
+			b.WriteString(" (" + f.Note + ")")
+		}
+		return b.String()
+	case total == 0:
+		return "no author feedback in the window"
+	}
+	fmt.Fprintf(&b, "%d happy, %d neutral, %d frustrated, %d very frustrated",
+		f.ByLabel[FeedbackHappy], f.ByLabel[FeedbackNeutral], f.ByLabel[FeedbackFrustrated], f.ByLabel[FeedbackVeryFrustrated])
+	if !f.Scanned {
+		b.WriteString(" (stored items only; not scanned")
+		if f.Note != "" {
+			b.WriteString(": " + f.Note)
+		}
+		b.WriteString(")")
+	}
+	for _, q := range f.Frustrated {
+		mark := ""
+		if q.Label == FeedbackVeryFrustrated {
+			mark = " (very)"
+		}
+		fmt.Fprintf(&b, "; @%s%s: \"%s\" %s", q.Author, mark, q.Quote, q.URL)
+	}
+	if f.Happy != nil {
+		fmt.Fprintf(&b, "; happy: @%s: \"%s\" %s", f.Happy.Author, f.Happy.Quote, f.Happy.URL)
+	}
+	return b.String()
 }

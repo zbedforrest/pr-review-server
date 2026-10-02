@@ -559,13 +559,19 @@ func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served st
 // that owns server-emitted telemetry. Returns 0, after logging, when the
 // user cannot be resolved; callers then skip the event.
 func (p *Poller) systemTelemetryUserID() int {
-	user, err := p.db.GetUserByUsername(systemTelemetryUser)
+	return SystemTelemetryUserID(p.db)
+}
+
+// SystemTelemetryUserID resolves (creating it once) the reserved user that
+// owns server-emitted telemetry events; zero when the database refuses.
+func SystemTelemetryUserID(database db.Database) int {
+	user, err := database.GetUserByUsername(systemTelemetryUser)
 	if err == nil && user == nil {
 		user = &db.User{GitHubID: -1, GitHubUsername: systemTelemetryUser}
-		if err = p.db.CreateUser(user); err != nil {
+		if err = database.CreateUser(user); err != nil {
 			// Concurrent writers can race the first create (github_id is
 			// unique); the loser re-fetches the row the winner made.
-			user, err = p.db.GetUserByUsername(systemTelemetryUser)
+			user, err = database.GetUserByUsername(systemTelemetryUser)
 		}
 	}
 	if err != nil || user == nil {

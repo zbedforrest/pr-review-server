@@ -36,11 +36,18 @@ const (
 	ActionPublishDenied = "publish_denied_total"
 )
 
+// ActionFeedbackFrustrated: the daily feedback scan classified a new author
+// reply, comment or reaction as frustrated or very frustrated.
+const ActionFeedbackFrustrated = "feedback_frustrated"
+
 // HygieneActions lists every hygiene action, in report order.
 var HygieneActions = []string{
 	ActionRepeatedPost, ActionRepeatAfterDismiss, ActionFixedWithoutFileChange, ActionSameCommitResolve,
 	ActionSeverityEscalation, ActionVerdictSettled, ActionPublishDenied,
 }
+
+// TelemetryActions are the server-emitted counters the daily report reads.
+var TelemetryActions = append(append([]string{}, HygieneActions...), ActionFeedbackFrustrated)
 
 // hygieneLabels names each counter in the report.
 var hygieneLabels = map[string]string{

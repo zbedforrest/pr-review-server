@@ -68,6 +68,7 @@ func (s *Server) runDailyHealth(store healthStore, now time.Time) (health.Report
 		}
 		return time.Duration(agentWallClockSec)*time.Second + poller.ReviewPipelineMargin
 	}
+	s.scanFeedback(now)
 	metrics, err := store.HealthMetrics(now.Add(-24*time.Hour), now, now, budget)
 	if err != nil {
 		return health.Report{}, err
@@ -82,6 +83,7 @@ func (s *Server) runDailyHealth(store healthStore, now time.Time) (health.Report
 		}
 	}
 	metrics.PollingDisabled = s.cfg.DisablePolling
+	metrics.Feedback = s.feedbackMetrics(now)
 	report := health.Evaluate(metrics)
 	body, err := json.Marshal(report)
 	if err != nil {
