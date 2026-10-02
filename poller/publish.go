@@ -108,7 +108,7 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		priorComments[o.FindingID] = publisher.PriorComment{Line: o.Line, Text: o.Text}
 	}
 	if pol.LegacyLedger {
-		aliases := reconcile.AliasPrior(pl.Findings, own)
+		aliases := reconcile.AliasPriorLegacy(pl.Findings, own)
 		for i := range pl.Findings {
 			if prior, ok := aliases[pl.Findings[i].ID]; ok {
 				pl.Findings[i].ID = prior

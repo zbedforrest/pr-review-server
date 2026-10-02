@@ -91,6 +91,17 @@ const minSharedTokens = 2
 // either two or more subjects or two shared words, so one enclosing
 // function alone never joins two files).
 func AliasPrior(current []payload.Finding, own []OwnComment) map[string]string {
+	return aliasPrior(current, own, false)
+}
+
+// AliasPriorLegacy is the rule the pre-ledger publisher applied: a shared
+// basename counts as the same file and one shared word can carry a text
+// match. It exists so the kill switch restores that behaviour exactly.
+func AliasPriorLegacy(current []payload.Finding, own []OwnComment) map[string]string {
+	return aliasPrior(current, own, true)
+}
+
+func aliasPrior(current []payload.Finding, own []OwnComment, legacy bool) map[string]string {
 	type cand struct {
 		cur, prior int
 		tier       int
@@ -118,7 +129,7 @@ func AliasPrior(current []payload.Finding, own []OwnComment) map[string]string {
 			keyed := len(subjects) > 0 && len(o.Subjects) > 0 && sameSubjects(subjects, o.Subjects) && (kind == "" || o.Kind == "" || kind == o.Kind)
 			// Exact paths only: a shared basename under another directory is
 			// the cross-file tier's case, with its guards.
-			if f.File != o.File {
+			if sameHere := f.File == o.File || (legacy && sameFile(f.File, o.File)); !sameHere {
 				if keyed && kind != "" && kind == o.Kind && crossFileEvidence(subjects, f.Comment, o.Text) {
 					cands = append(cands, cand{ci, oi, tierCrossFile, 0, 0})
 				}
@@ -129,7 +140,7 @@ func AliasPrior(current []payload.Finding, own []OwnComment) map[string]string {
 				distance = abs(f.Line - o.Line)
 			}
 			if distance <= lineTolerance {
-				if score, shared := overlap(f.Comment, o.Text); score >= similarityThreshold && shared >= minSharedTokens {
+				if score, shared := overlap(f.Comment, o.Text); score >= similarityThreshold && (legacy || shared >= minSharedTokens) {
 					cands = append(cands, cand{ci, oi, tierText, score, distance})
 					continue
 				}

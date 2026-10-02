@@ -53,9 +53,9 @@
 // exists, a later wording that aliases to the terminal row is handed to the
 // newest live row on the point (refreshed, or reopened in its thread) and
 // dropped when every row on the point is terminal; a third root is never
-// posted. A finding whose own fingerprint already equals the terminal
-// row's cannot use the exception, since the fresh root would carry the same
-// marker.
+// posted. The fresh root carries the settled row's subjects and, when the
+// wording and line did not move, a marker minted from the text that names
+// the change, so it never repeats the settled row's marker.
 //
 // Counts. "Since last review" is the number of records that transitioned:
 // new (shown findings with no row), still open (rows that end the round

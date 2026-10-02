@@ -138,7 +138,9 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		f, isPresent := present[id]
 		switch {
 		case row.State == db.PublishedStateOpen && isPresent:
-			d.StillOpen++
+			if shown[id] {
+				d.StillOpen++
+			}
 			if written[id] {
 				continue
 			}
