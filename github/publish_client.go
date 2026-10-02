@@ -37,6 +37,15 @@ type ReviewCommentInfo struct {
 	InReplyToID int64
 	ReviewID    int64
 	CreatedAt   time.Time
+	// ThumbsDown is the -1 count from the comment's reaction rollup.
+	ThumbsDown int
+}
+
+// CommentReaction is one reaction on a review comment: who left it and
+// which ("+1", "-1", ...).
+type CommentReaction struct {
+	UserID  int64
+	Content string
 }
 
 const listPageSize = 100
@@ -191,7 +200,31 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 				InReplyToID: rc.GetInReplyTo(),
 				ReviewID:    rc.GetPullRequestReviewID(),
 				CreatedAt:   rc.GetCreatedAt().Time,
+				ThumbsDown:  rc.GetReactions().GetMinusOne(),
 			})
+		}
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		opts.Page = resp.NextPage
+	}
+}
+
+// ListCommentReactions lists every reaction on a review comment.
+func (c *Client) ListCommentReactions(ctx context.Context, owner, repo string, commentID int64) ([]CommentReaction, error) {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	var out []CommentReaction
+	opts := &github.ListOptions{PerPage: listPageSize}
+	for {
+		page, resp, err := gh.Reactions.ListPullRequestCommentReactions(ctx, owner, repo, commentID, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list reactions on comment %d: %w", commentID, err)
+		}
+		for _, r := range page {
+			out = append(out, CommentReaction{UserID: r.GetUser().GetID(), Content: r.GetContent()})
 		}
 		if resp.NextPage == 0 {
 			return out, nil

@@ -209,3 +209,42 @@ func TestCreateCommentReactionPostsThumbsUp(t *testing.T) {
 		t.Errorf("reaction body = %v", gotBody)
 	}
 }
+
+func TestListReviewCommentsCarriesTheThumbsDownRollup(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/example/pulls/7/comments" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		fmt.Fprint(w, `[{"id": 30, "body": "root", "user": {"id": 1, "login": "bot"}, "reactions": {"+1": 2, "-1": 1}}, {"id": 31, "body": "no reactions", "user": {"id": 42, "login": "author"}}]`)
+	}))
+	defer ts.Close()
+	got, err := NewTestClient(ts.URL, "tester").ListReviewComments(context.Background(), "acme", "example", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ThumbsDown != 1 || got[1].ThumbsDown != 0 {
+		t.Fatalf("comments = %+v", got)
+	}
+}
+
+func TestListCommentReactionsPagesAndMapsUsers(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/acme/example/pulls/comments/30/reactions" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.URL.Query().Get("page") == "2" {
+			fmt.Fprint(w, `[{"id": 3, "content": "-1", "user": {"id": 42, "login": "author"}}]`)
+			return
+		}
+		w.Header().Set("Link", `<`+"http://"+r.Host+`/repos/acme/example/pulls/comments/30/reactions?page=2>; rel="next"`)
+		fmt.Fprint(w, `[{"id": 1, "content": "+1", "user": {"id": 7, "login": "peer"}}, {"id": 2, "content": "-1", "user": {"id": 8, "login": "other"}}]`)
+	}))
+	defer ts.Close()
+	got, err := NewTestClient(ts.URL, "tester").ListCommentReactions(context.Background(), "acme", "example", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0] != (CommentReaction{UserID: 7, Content: "+1"}) || got[2] != (CommentReaction{UserID: 42, Content: "-1"}) {
+		t.Fatalf("reactions = %+v", got)
+	}
+}
