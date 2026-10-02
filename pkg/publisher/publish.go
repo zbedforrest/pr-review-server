@@ -2,7 +2,10 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,6 +76,31 @@ type Report struct {
 
 const summaryFingerprint = "summary"
 
+// ErrHeadAlreadyPublished is returned by Publish when the summary row already
+// records a completed round for the head; a re-run of the same commit (API or
+// legacy trigger) would otherwise repost and resolve rows with no code change.
+var ErrHeadAlreadyPublished = errors.New("publisher: head already published")
+
+// ErrSummaryMoved is returned by RefreshSummary when a newer round rewrote
+// the summary while the refresh was being built; the refresh is dropped so it
+// cannot overwrite the newer round's summary with a stale one.
+var ErrSummaryMoved = errors.New("publisher: summary moved to a newer round during refresh")
+
+// HeadPublished reports whether a publication round for head completed. The
+// summary row is written after the inline comments, so its LastSeenSHA names
+// the last head that was published in full.
+func HeadPublished(previous []db.PublishedFinding, head string) bool {
+	if head == "" {
+		return false
+	}
+	for _, row := range previous {
+		if row.Kind == db.PublishedKindSummary && strings.EqualFold(row.LastSeenSHA, head) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Publisher) now() time.Time {
 	if p.Now != nil {
 		return p.Now()
@@ -83,12 +111,19 @@ func (p *Publisher) now() time.Time {
 // Publish posts one review round. The ledger decision table (see doc.go) is
 // the default; Policy.LegacyLedger selects the pre-memory publisher.
 func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
-	if r.Previous == nil {
+	// The guard reads the ledger afresh even when the caller supplied rows,
+	// so a round that completed since the caller loaded them is seen.
+	if r.Previous == nil || !p.Policy.RepublishSameCommit {
 		prev, err := p.Ledger.GetPublishedFindingsForPR(r.Owner, r.Repo, r.Number)
 		if err != nil {
 			return Report{}, fmt.Errorf("load published findings: %w", err)
 		}
-		r.Previous = prev
+		if !p.Policy.RepublishSameCommit && HeadPublished(prev, r.HeadSHA) {
+			return Report{}, ErrHeadAlreadyPublished
+		}
+		if r.Previous == nil {
+			r.Previous = prev
+		}
 	}
 	if p.Policy.LegacyLedger {
 		return p.publishLegacy(ctx, r)
@@ -112,6 +147,7 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 	}
 	prior := priorRows(r.Previous)
 	r.Findings = WithoutDismissed(r.Findings, r.Previous)
+	r.LegacyTitles = p.Policy.LegacyTitles
 	if r.RoundNumber == 0 {
 		r.RoundNumber = 1
 		if summaryRow != nil {
@@ -149,7 +185,8 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 		r.InlineComments[id] = cid
 	}
 
-	if err := p.writeSummary(ctx, r, sel, summaryRow, now, &rep); err != nil {
+	summaryLedger, err := p.writeSummary(ctx, r, sel, summaryRow, now, &rep)
+	if err != nil {
 		return rep, err
 	}
 
@@ -211,6 +248,10 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 		}
 		rep.Hygiene.noteResolved(row, r.HeadSHA, r.changedFilesSince(row.LastSeenSHA))
 	}
+	// Written last: HeadPublished reads this row as proof the round completed.
+	if err := p.Ledger.UpsertPublishedFinding(summaryLedger); err != nil {
+		return rep, fmt.Errorf("record summary comment: %w", err)
+	}
 	return rep, nil
 }
 
@@ -226,7 +267,7 @@ func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prio
 	}
 	inputs := make([]ReviewCommentInput, 0, len(sel.Inline))
 	for _, f := range sel.Inline {
-		inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: RenderInline(f, r.sourceTag(f.ID), r.AgentLinkBase, r.BadgeBaseURL)})
+		inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: renderInline(f, r.sourceTag(f.ID), r.AgentLinkBase, r.BadgeBaseURL, r.LegacyTitles)})
 	}
 	reviewID, commentIDs, err := p.GH.CreateReview(ctx, r.Owner, r.Repo, r.Number, r.HeadSHA, "", inputs)
 	if err != nil {
@@ -262,9 +303,10 @@ func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prio
 }
 
 // writeSummary renders the sticky summary, edits the existing comment (found
-// through the ledger or its marker) or creates it, and records the summary
-// row for this round.
-func (p *Publisher) writeSummary(ctx context.Context, r Round, sel Selection, summaryRow *db.PublishedFinding, now time.Time, rep *Report) error {
+// through the ledger or its marker) or creates it, and returns the summary
+// row for this round. The caller writes that row after every other ledger
+// write: HeadPublished reads it as proof the round completed.
+func (p *Publisher) writeSummary(ctx context.Context, r Round, sel Selection, summaryRow *db.PublishedFinding, now time.Time, rep *Report) (*db.PublishedFinding, error) {
 	summary := RenderSummary(r, sel)
 	summaryLedger := &db.PublishedFinding{
 		RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
@@ -287,7 +329,7 @@ func (p *Publisher) writeSummary(ctx context.Context, r Round, sel Selection, su
 	if summaryCommentID != 0 {
 		if err := p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryCommentID, summary); err != nil {
 			if !isNotFound(err) {
-				return fmt.Errorf("edit summary comment: %w", err)
+				return nil, fmt.Errorf("edit summary comment: %w", err)
 			}
 			summaryCommentID = 0
 		}
@@ -295,16 +337,134 @@ func (p *Publisher) writeSummary(ctx context.Context, r Round, sel Selection, su
 	if summaryCommentID == 0 {
 		id, err := p.GH.CreateIssueComment(ctx, r.Owner, r.Repo, r.Number, summary)
 		if err != nil {
-			return fmt.Errorf("create summary comment: %w", err)
+			return nil, fmt.Errorf("create summary comment: %w", err)
 		}
 		summaryCommentID = id
 	}
 	rep.SummaryCommentID = summaryCommentID
 	summaryLedger.CommentID = summaryCommentID
-	if err := p.Ledger.UpsertPublishedFinding(summaryLedger); err != nil {
-		return fmt.Errorf("record summary comment: %w", err)
+	return summaryLedger, nil
+}
+
+// RefreshSummary re-renders the sticky summary from the round the ledger last
+// published, posting and recording nothing else. The reply path calls it after
+// a concession so the summary stops listing the conceded finding at once
+// instead of at the next push. The round is the one BuildPublishRound makes
+// from the stored payload of the published head; the ledger supplies the
+// round number, the inline links and the new / still open split, and the
+// fixed count is carried over from the summary as it stands.
+func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
+	if r.Previous == nil {
+		prev, err := p.Ledger.GetPublishedFindingsForPR(r.Owner, r.Repo, r.Number)
+		if err != nil {
+			return fmt.Errorf("load published findings: %w", err)
+		}
+		r.Previous = prev
 	}
-	return nil
+	var summaryRow *db.PublishedFinding
+	for i := range r.Previous {
+		if r.Previous[i].Kind == db.PublishedKindSummary {
+			summaryRow = &r.Previous[i]
+		}
+	}
+	if summaryRow == nil || summaryRow.CommentID == 0 {
+		return nil
+	}
+	if r.HeadSHA == "" {
+		r.HeadSHA = summaryRow.LastSeenSHA
+	}
+	r.RoundNumber = summaryRow.Rounds
+	r.Findings = WithoutDismissed(r.Findings, r.Previous)
+	r.LegacyTitles = p.Policy.LegacyTitles
+	r.ShowUnverified = p.Policy.ShowUnverified
+	if r.InlineComments == nil {
+		r.InlineComments = map[string]int64{}
+	}
+	for _, row := range r.Previous {
+		if row.Kind == db.PublishedKindFinding && row.CommentID != 0 {
+			r.InlineComments[row.Fingerprint] = row.CommentID
+		}
+	}
+	existing, err := p.GH.ListIssueComments(ctx, r.Owner, r.Repo, r.Number)
+	if err != nil {
+		return fmt.Errorf("read summary comment: %w", err)
+	}
+	fixed, found := 0, false
+	for _, c := range existing {
+		if c.ID == summaryRow.CommentID {
+			found = true
+			if d, ok := parseSinceLastReview(c.Body); ok {
+				fixed = d.Fixed
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	d := r.ledgerTransitions()
+	d.Fixed = fixed
+	r.transitions = &d
+	body := RenderSummary(r, Selection{})
+	if moved, err := p.summaryMoved(r, summaryRow); err != nil {
+		return err
+	} else if moved {
+		return ErrSummaryMoved
+	}
+	return p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryRow.CommentID, body)
+}
+
+func (p *Publisher) summaryMoved(r Round, built *db.PublishedFinding) (bool, error) {
+	rows, err := p.Ledger.GetPublishedFindingsForPR(r.Owner, r.Repo, r.Number)
+	if err != nil {
+		return false, fmt.Errorf("reload published findings: %w", err)
+	}
+	for _, row := range rows {
+		if row.Kind == db.PublishedKindSummary {
+			return row.Rounds != built.Rounds || !strings.EqualFold(row.LastSeenSHA, built.LastSeenSHA), nil
+		}
+	}
+	return true, nil
+}
+
+// ledgerTransitions splits the shown findings the way the round diff did:
+// findings first published at this head are new, older open rows are still
+// open, and a folded note first posted at this head is neither.
+// Fixed rows are not in the ledger as a per-round fact, so it stays 0 here.
+func (r Round) ledgerTransitions() roundDiff {
+	current := map[string]bool{}
+	for _, f := range r.currentFindings() {
+		current[f.ID] = true
+	}
+	shown := map[string]bool{}
+	for _, f := range append(append(r.currentFindings(), r.lowerSeverityNotes()...), r.unverifiedNotes()...) {
+		shown[f.ID] = true
+	}
+	var d roundDiff
+	for _, row := range r.Previous {
+		if (row.Kind != db.PublishedKindFinding && row.Kind != db.PublishedKindAnnotation) || row.State != db.PublishedStateOpen || !shown[row.Fingerprint] {
+			continue
+		}
+		switch {
+		case !strings.EqualFold(row.ReviewedSHA, r.HeadSHA):
+			d.StillOpen++
+		case current[row.Fingerprint]:
+			d.New++
+		}
+	}
+	return d
+}
+
+var sinceLastReviewRe = regexp.MustCompile(`\*\*Since last review:\*\* (\d+) new · (\d+) still open · (\d+) fixed`)
+
+func parseSinceLastReview(body string) (roundDiff, bool) {
+	m := sinceLastReviewRe.FindStringSubmatch(body)
+	if m == nil {
+		return roundDiff{}, false
+	}
+	n, _ := strconv.Atoi(m[1])
+	s, _ := strconv.Atoi(m[2])
+	f, _ := strconv.Atoi(m[3])
+	return roundDiff{New: n, StillOpen: s, Fixed: f}, true
 }
 
 // WithoutDismissed drops findings the ledger records as settled by exact

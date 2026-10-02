@@ -215,7 +215,8 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	for id, cid := range postedThisRound {
 		r.InlineComments[id] = cid
 	}
-	if err := p.writeSummary(ctx, r, sel, summaryRow, now, &rep); err != nil {
+	summaryLedger, err := p.writeSummary(ctx, r, sel, summaryRow, now, &rep)
+	if err != nil {
 		return rep, err
 	}
 
@@ -253,6 +254,11 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		if threads != nil && w.thread != noThreadChange && w.row.CommentID != 0 {
 			actions = append(actions, threadAction{nodeID: w.row.ThreadNodeID, resolve: w.thread == resolveThread})
 		}
+	}
+	// Written last: HeadPublished reads this row as proof the round completed.
+	if err := p.Ledger.UpsertPublishedFinding(summaryLedger); err != nil {
+		threads.apply(ctx, actions, &rep)
+		return rep, fmt.Errorf("record summary comment: %w", err)
 	}
 
 	if replier, ok := p.GH.(ThreadReplier); ok {

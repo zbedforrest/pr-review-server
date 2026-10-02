@@ -2,6 +2,7 @@ package poller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -253,6 +254,10 @@ func (p *Poller) publishPolicy() publisher.Policy {
 			pol.ShowUnverified = b
 		}
 	}
+	if p.cfg != nil {
+		pol.LegacyTitles = p.cfg.PublishLegacyTitles
+		pol.RepublishSameCommit = p.cfg.PublishRepublishSameCommit
+	}
 	return pol
 }
 
@@ -261,6 +266,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 // closed, head moved) and the head may be reviewed again when it is.
 const (
 	publicationPosted        = "posted"
+	publicationAlreadyPosted = "already_posted"
 	publicationNotAllowed    = "not_allowed"
 	publicationUnavailable   = "unavailable"
 	publicationSkippedPrefix = "skipped: "
@@ -294,6 +300,17 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: sidecar unreadable: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return nil, publicationFailedPrefix + "sidecar unreadable"
 	}
+	previous, err := ledger.GetPublishedFindingsForPR(pr.Owner, pr.Repo, pr.Number)
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: load ledger: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return nil, publicationFailedPrefix + "load ledger"
+	}
+	// An API or legacy re-run of a reviewed commit must not post a second
+	// round: it would repeat the comments and resolve rows with no code change.
+	if !p.cfg.PublishRepublishSameCommit && publisher.HeadPublished(previous, pr.CommitSHA) {
+		log.Printf("[PUBLISH] %s/%s#%d: skipped, head %s was already published", pr.Owner, pr.Repo, pr.Number, shortSHA(pr.CommitSHA))
+		return nil, publicationAlreadyPosted
+	}
 	ghPR, _, err := p.ghClientConcrete.GetPR(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: fetch pull request: %v", pr.Owner, pr.Repo, pr.Number, err)
@@ -313,17 +330,16 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: list file patches: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return nil, publicationFailedPrefix + "list file patches"
 	}
-	previous, err := ledger.GetPublishedFindingsForPR(pr.Owner, pr.Repo, pr.Number)
-	if err != nil {
-		log.Printf("[PUBLISH] %s/%s#%d: load ledger: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return nil, publicationFailedPrefix + "load ledger"
-	}
 
 	pol := p.publishPolicy()
 	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
 	round.Changes = p.changeLookup(ctx, pr)
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: pol}
 	report, err := pub.Publish(ctx, round)
+	if errors.Is(err, publisher.ErrHeadAlreadyPublished) {
+		log.Printf("[PUBLISH] %s/%s#%d: skipped, head %s was published by a concurrent round", pr.Owner, pr.Repo, pr.Number, shortSHA(pr.CommitSHA))
+		return nil, publicationAlreadyPosted
+	}
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 		// Confidence is scored before the first write, so a failed round still
@@ -393,6 +409,65 @@ func (p *Poller) changeLookup(ctx context.Context, pr github.PullRequest) func(b
 		cache[base] = a
 		return a.cs, a.ok
 	}
+}
+
+// refreshPublishedSummary re-renders a PR's sticky summary from the stored
+// review of its last published head, after the reply path dismissed a
+// finding. It posts nothing new and passes the same publish gate as a round.
+func (p *Poller) refreshPublishedSummary(ctx context.Context, owner, repo string, number int) error {
+	ledger, ok := p.db.(publisher.Ledger)
+	if !ok || p.ghClientConcrete == nil {
+		return nil
+	}
+	previous, err := ledger.GetPublishedFindingsForPR(owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("load ledger: %w", err)
+	}
+	head := ""
+	for _, row := range previous {
+		if row.Kind == db.PublishedKindSummary && row.CommentID != 0 {
+			head = row.LastSeenSHA
+		}
+	}
+	if head == "" {
+		return nil
+	}
+	cached, err := p.db.GetPR(owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("load pull request: %w", err)
+	}
+	if cached == nil {
+		return nil
+	}
+	if allowed, err := p.publishAllowedFor(cached.Author); err != nil {
+		return fmt.Errorf("read publish allowlist: %w", err)
+	} else if !allowed {
+		return nil
+	}
+	ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("fetch pull request: %w", err)
+	}
+	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), head, head); !ok {
+		log.Printf("[PUBLISH] %s/%s#%d: summary refresh skipped, %s", owner, repo, number, reason)
+		return nil
+	}
+	pl, err := p.loadReviewPayload(ctx, owner, repo, number, head)
+	if err != nil {
+		return err
+	}
+	comments, err := p.ghClientConcrete.ListReviewComments(ctx, owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("list review comments: %w", err)
+	}
+	patches, err := p.ghClientConcrete.GetPRFilePatches(ctx, owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("list file patches: %w", err)
+	}
+	pr := github.PullRequest{Owner: owner, Repo: repo, Number: number, CommitSHA: head, Author: cached.Author}
+	round := BuildPublishRound(pr, *pl, comments, patches, previous, p.cfg.BaseURL)
+	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: p.publishPolicy()}
+	return pub.RefreshSummary(ctx, round)
 }
 
 // headPublished reports whether a publication round for this head already

@@ -128,6 +128,10 @@ func TestPublish_PromotedAnnotationKeepsFindingKind(t *testing.T) {
 	if ledger.get(db.PublishedKindAnnotation, "m2") != nil {
 		t.Fatalf("stale annotation snapshot must not be written back")
 	}
+	if _, err := p.Publish(context.Background(), r2); !errors.Is(err, ErrHeadAlreadyPublished) {
+		t.Fatalf("a second round for the same head is refused, got %v", err)
+	}
+	p.Policy.RepublishSameCommit = true
 	if _, err := p.Publish(context.Background(), r2); err != nil {
 		t.Fatal(err)
 	}

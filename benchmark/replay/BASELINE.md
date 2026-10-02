@@ -34,6 +34,17 @@ program spec: `same_marker_reposts` 0, `same_defect_reposts_per_pr` at most 0.05
 | rounds_per_pr_p50 | 1 | over prs_with_rounds |
 | prism_resolved_share | 0 | the publisher cannot resolve threads yet |
 
+### Renderer and round-guard metrics (added with W1-2)
+
+Measured with `--legacy-titles --same-commit-guard=false`, which reproduces master's publisher on the same
+harness commit; every other metric above is unchanged under those flags.
+
+| metric | value | note |
+|---|---:|---|
+| same_commit_rounds_skipped | 0 | rounds the publisher refused because the head was already published; target: every same-commit round whose earlier round completed |
+| nil_impact_bullets | 713 | summary bullets (over every summary render) opening with a nil-impact phrase such as "None today" or "No user impact"; target 0 |
+| bare_label_titles | 348 | inline comments titled by their bare kind label ("Behavior change", "Security", ...); target 0 |
+
 Observed in the dumps, for calibration: 498 roots, 10 same-marker reposts, 90 same-defect reposts (rendered
 prose, so boilerplate words inflate the overlap), 209 of 498 threads resolved (0.42, all by humans).
 

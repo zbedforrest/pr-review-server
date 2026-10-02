@@ -52,7 +52,7 @@ func TestLedger_AbsentOnSameHeadStaysOpen(t *testing.T) {
 	rerun.RoundNumber = 0
 	rerun.Changes = changed("a.go", "b.go")
 	rerun.Findings = []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "Narrative.")}
-	rep := publishRound(t, gh, ledger, rerun)
+	rep := republishSameHead(t, gh, ledger, rerun)
 	if rep.Fixed != 0 || rep.StillOpen != 3 {
 		t.Fatalf("a re-run on the reviewed head can fix nothing: %+v", rep)
 	}
@@ -188,7 +188,7 @@ func TestLedger_SubjectKeyAliasesAcrossLinesAndFiles(t *testing.T) {
 				f("sum", "unknown", "SUMMARY", 0, "Narrative."),
 				withSubjects(f("new-id", "critical", file, 80, "No delay between attempts after a 429 response."), "production_behavior", "fetchUser", "retry"),
 			}
-			rep := publishRound(t, gh, ledger, r)
+			rep := republishSameHead(t, gh, ledger, r)
 			if rep.InlinePosted != 0 || rep.StillOpen != 1 {
 				t.Fatalf("the subject key must alias the moved finding: %+v", rep)
 			}

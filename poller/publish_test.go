@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -200,6 +202,10 @@ func gitHubStub(t *testing.T, prJSON string, failWrites bool) (*httptest.Server,
 		}
 		if strings.HasPrefix(r.URL.Path, "/repos/") && strings.Contains(r.URL.Path, "/pulls/") && strings.Count(r.URL.Path, "/") == 5 {
 			_, _ = w.Write([]byte(prJSON))
+			return
+		}
+		if strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments") {
+			_, _ = w.Write([]byte(`[{"id":11,"body":"summary"}]`))
 			return
 		}
 		_, _ = w.Write([]byte(`[]`))
@@ -429,4 +435,89 @@ func TestBuildPublishRound_InactiveRecordsDoNotTakePartInReconciliation(t *testi
 	if len(r.Findings) != 1 || r.Findings[0].ID != "a.go:5:aaaaaaaaaaaa" {
 		t.Fatalf("the active agent finding must take the alias; the inactive merged record must not compete for it or reach the publisher: %v", active)
 	}
+}
+
+func TestPublishGitHubReview_SkipsAHeadTheSummaryRowAlreadyRecords(t *testing.T) {
+	ts, writes := gitHubStub(t, openPRJSON, false)
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting("publish_enabled_authors", "alice"))
+	require.NoError(t, database.UpsertPublishedFinding(&db.PublishedFinding{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 1,
+		Kind: db.PublishedKindSummary, Fingerprint: "summary", ReviewedSHA: "abc", LastSeenSHA: "abc", CommentID: 11, Rounds: 1, State: db.PublishedStateOpen,
+	}))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}
+
+	report, outcome := p.publishGitHubReview(context.Background(), pr, []byte(scoredSidecar))
+	assert.Nil(t, report)
+	assert.Equal(t, publicationAlreadyPosted, outcome)
+	assert.Empty(t, writes(), "a re-run of a published commit must not touch GitHub")
+
+	p.cfg.PublishRepublishSameCommit = true
+	_, outcome = p.publishGitHubReview(context.Background(), pr, []byte(scoredSidecar))
+	assert.Equal(t, publicationPosted, outcome, "the kill switch restores the old behaviour")
+	assert.NotEmpty(t, writes())
+}
+
+func TestPublishPolicy_CarriesTheRendererAndGuardSwitches(t *testing.T) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	p := &Poller{cfg: &config.Config{PublishLegacyTitles: true, PublishRepublishSameCommit: true}, db: database}
+	pol := p.publishPolicy()
+	assert.True(t, pol.LegacyTitles)
+	assert.True(t, pol.RepublishSameCommit)
+	p.cfg = &config.Config{}
+	pol = p.publishPolicy()
+	assert.False(t, pol.LegacyTitles)
+	assert.False(t, pol.RepublishSameCommit)
+}
+
+// A concession refreshes the summary from the stored review of the published
+// head: the dismissed finding leaves the sticky comment and nothing else is
+// posted. The round before it leaves a summary (POST) whose id the stub
+// fixes at 11, so the refresh is the PATCH on that comment.
+func TestRefreshPublishedSummary_EditsTheSummaryFromTheStoredReview(t *testing.T) {
+	ts, writes := gitHubStub(t, openPRJSON, false)
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting("publish_enabled_authors", "alice"))
+	require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, Author: "alice", Status: "completed"}))
+	reviewDir := t.TempDir()
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot"), reviewDir: reviewDir}
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}
+	sidecar := []byte(`{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc",
+		"findings":[{"id":"f.go:0:abc123def456","severity":"critical","provenance":"agent","state":"confirmed","active":true,"file":"f.go","line":3,"comment":"Real bug."},
+		{"id":"g.go:0:bcd234efa567","severity":"medium","provenance":"agent","state":"confirmed","active":true,"file":"g.go","line":4,"comment":"Smaller bug."}]}`)
+	require.NoError(t, os.WriteFile(filepath.Join(reviewDir, "acme_example_1_abc.json"), sidecar, 0o644))
+
+	_, outcome := p.publishGitHubReview(context.Background(), pr, sidecar)
+	require.Equal(t, publicationPosted, outcome)
+	require.Equal(t, []string{"POST /repos/acme/example/issues/1/comments"}, writes())
+	require.NoError(t, database.SetPublishedFindingState("acme", "example", 1, "f.go:0:abc123def456", db.PublishedStateDismissed))
+
+	require.NoError(t, p.refreshPublishedSummary(context.Background(), "acme", "example", 1))
+	assert.Equal(t, []string{"POST /repos/acme/example/issues/1/comments", "PATCH /repos/acme/example/issues/comments/11"}, writes())
+
+	p.cfg.PublishSkipSummaryRefresh = true
+	assert.Nil(t, p.summaryRefresher(), "the kill switch leaves the reactor without a hook")
+}
+
+func TestRefreshPublishedSummary_RespectsThePublishGate(t *testing.T) {
+	ts, writes := gitHubStub(t, openPRJSON, false)
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting("publish_enabled_authors", "alice"))
+	require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, Author: "mallory", Status: "completed"}))
+	require.NoError(t, database.UpsertPublishedFinding(&db.PublishedFinding{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 1,
+		Kind: db.PublishedKindSummary, Fingerprint: "summary", ReviewedSHA: "abc", LastSeenSHA: "abc", CommentID: 11, Rounds: 1, State: db.PublishedStateOpen,
+	}))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot"), reviewDir: t.TempDir()}
+	require.NoError(t, p.refreshPublishedSummary(context.Background(), "acme", "example", 1))
+	assert.Empty(t, writes(), "an author outside publish_enabled_authors gets no summary edit")
 }

@@ -379,7 +379,8 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				}
 			}
 		},
-		Allowed: p.authorMatcher(enabled),
+		Allowed:     p.authorMatcher(enabled),
+		OnDismissed: p.summaryRefresher(),
 		PR: func(ctx context.Context, owner, repo string, number int) (publisher.PRState, error) {
 			ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)
 			if err != nil {
@@ -440,6 +441,24 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 	if events := replyTelemetryEvents(rep, link, userID); len(events) > 0 {
 		if err := p.db.CreateTelemetryEvents(events); err != nil {
 			log.Printf("[REPLIES] WARN: could not record telemetry: %v", err)
+		}
+	}
+}
+
+// summaryRefresher is the reactor's OnDismissed hook: the sticky summary is
+// re-rendered as soon as a concession dismisses a finding, so the summary
+// stops listing it without waiting for the next push. A failure is logged;
+// the next round redraws the summary anyway.
+func (p *Poller) summaryRefresher() func(ctx context.Context, owner, repo string, number int) {
+	if p.cfg == nil || p.cfg.PublishSkipSummaryRefresh {
+		return nil
+	}
+	return func(ctx context.Context, owner, repo string, number int) {
+		err := p.refreshPublishedSummary(ctx, owner, repo, number)
+		if errors.Is(err, publisher.ErrSummaryMoved) {
+			log.Printf("[REPLY %s/%s#%d] summary refresh after concession skipped, a newer round rewrote the summary", owner, repo, number)
+		} else if err != nil {
+			log.Printf("[REPLY %s/%s#%d] summary refresh after concession failed: %v", owner, repo, number, err)
 		}
 	}
 }

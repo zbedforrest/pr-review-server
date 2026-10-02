@@ -155,7 +155,8 @@ func TestNormalizeFindingContractKeepsAShortHeadlineAndDropsABadOne(t *testing.T
 	cases := map[string]string{
 		"  Tooltip never shows long values. ": "Tooltip never shows long values",
 		"Tooltip never shows .":               "Tooltip never shows",
-		strings.Repeat("word ", 30):           "",
+		strings.Repeat("word ", 30):           strings.Repeat("word ", 16) + "word...",
+		strings.Repeat("x", 120):              strings.Repeat("x", 87) + "...",
 		"line one\nline two":                  "",
 		"":                                    "",
 	}

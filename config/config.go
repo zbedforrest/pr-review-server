@@ -123,6 +123,15 @@ type Config struct {
 	BugMemoryPath     string // local path to a bug-memory library JSON (dev/benchmark)
 	BugMemoryObject   string // GCS object name of the library (prod); Path wins if both set
 	RequiredChecks    bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
+
+	// Publisher kill switches; the zero value is the fixed behaviour and each
+	// env var set to false restores the old one. PUBLISH_RENDER_V2 titles
+	// comments and bullets by headline instead of impact sentence,
+	// PUBLISH_SAME_COMMIT_GUARD refuses a second round for a published head,
+	// PUBLISH_REFRESH_SUMMARY re-renders the summary after a concession.
+	PublishLegacyTitles        bool
+	PublishRepublishSameCommit bool
+	PublishSkipSummaryRefresh  bool
 	// ReviewDefaultProfile is the profile used when a caller names none:
 	// automatic reviews, the Generate button, and profile-less API requests.
 	ReviewDefaultProfile string
@@ -332,42 +341,45 @@ func Load() *Config {
 		FirstPassThinking:        strings.ToLower(strings.TrimSpace(os.Getenv("FIRST_PASS_THINKING"))),
 		FirstPassCacheStaggerSec: getNonNegativeEnvIntOrDefault("FIRST_PASS_CACHE_STAGGER_SEC", defaultFirstPassCacheStaggerSec),
 
-		AgenticReviews:       os.Getenv("AGENTIC_REVIEWS") == "true",
-		AgentCloneRootDir:    getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
-		AgentLogsDir:         getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
-		AgentWallClockSec:    agentWallClockSec,
-		AgentMaxTurns:        agentMaxTurns,
-		AgentMaxConcurrent:   getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
-		AgentCloneCacheMaxGB: getEnvIntOrDefault("AGENT_CLONE_CACHE_MAX_GB", 0),
-		EnsembleMaxAgents:    getEnvIntOrDefault("ENSEMBLE_MAX_AGENTS", 25),
-		AgentPrewarmRepos:    getEnvListOrDefault("AGENT_PREWARM_REPOS", nil, strings.TrimSpace),
-		NewRelicAccountID:    os.Getenv("NEW_RELIC_ACCOUNT_ID"),
-		NewRelicInsertKey:    os.Getenv("NEW_RELIC_INSERT_KEY"),
-		NewRelicLicenseKey:   os.Getenv("NEW_RELIC_LICENSE_KEY"),
-		NewRelicRegion:       os.Getenv("NEW_RELIC_REGION"),
-		AgentBackend:         agentBackend,
-		AgentModel:           agentModel,
-		AgentEffort:          agentEffort,
-		ReplyModel:           os.Getenv("REPLY_MODEL"),
-		ReplyWallClockSec:    getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
-		ReplyMaxTurns:        getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
-		ReplyMaxConcurrent:   getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
-		ReplyPolicyV2:        !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_POLICY_V2")), "false"),
-		ReplyVerdictFastPath: !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_VERDICT_FAST_PATH")), "false"),
-		MentionHandle:        strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
-		HealthJobToken:       os.Getenv("HEALTH_JOB_TOKEN"),
-		AdminLogins:          getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),
-		AnthropicAPIKey:      os.Getenv("ANTHROPIC_API_KEY"),
-		OpenRouterAPIKey:     os.Getenv("OPENROUTER_API_KEY"),
-		OpenRouterBaseURL:    os.Getenv("OPENROUTER_BASE_URL"),
-		BugMemoryPath:        os.Getenv("BUG_MEMORY_PATH"),
-		BugMemoryObject:      os.Getenv("BUG_MEMORY_OBJECT"),
-		RequiredChecks:       os.Getenv("REQUIRED_CHECKS") == "true",
-		ReviewDefaultProfile: strings.ToLower(strings.TrimSpace(getEnvOrDefault("REVIEW_DEFAULT_PROFILE", "full"))),
-		JiraBaseURL:          strings.TrimRight(strings.TrimSpace(os.Getenv("JIRA_BASE_URL")), "/"),
-		JiraEmail:            strings.TrimSpace(os.Getenv("JIRA_EMAIL")),
-		JiraAPIToken:         strings.TrimSpace(os.Getenv("JIRA_API_TOKEN")),
-		JiraProjectKeys:      getEnvListOrDefault("JIRA_PROJECT_KEYS", nil, normalizeProjectKey),
+		AgenticReviews:             os.Getenv("AGENTIC_REVIEWS") == "true",
+		AgentCloneRootDir:          getEnvOrDefault("AGENT_CLONE_ROOT_DIR", "./data/agent-clones"),
+		AgentLogsDir:               getEnvOrDefault("AGENT_LOGS_DIR", "./data/agent-logs"),
+		AgentWallClockSec:          agentWallClockSec,
+		AgentMaxTurns:              agentMaxTurns,
+		AgentMaxConcurrent:         getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
+		AgentCloneCacheMaxGB:       getEnvIntOrDefault("AGENT_CLONE_CACHE_MAX_GB", 0),
+		EnsembleMaxAgents:          getEnvIntOrDefault("ENSEMBLE_MAX_AGENTS", 25),
+		AgentPrewarmRepos:          getEnvListOrDefault("AGENT_PREWARM_REPOS", nil, strings.TrimSpace),
+		NewRelicAccountID:          os.Getenv("NEW_RELIC_ACCOUNT_ID"),
+		NewRelicInsertKey:          os.Getenv("NEW_RELIC_INSERT_KEY"),
+		NewRelicLicenseKey:         os.Getenv("NEW_RELIC_LICENSE_KEY"),
+		NewRelicRegion:             os.Getenv("NEW_RELIC_REGION"),
+		AgentBackend:               agentBackend,
+		AgentModel:                 agentModel,
+		AgentEffort:                agentEffort,
+		ReplyModel:                 os.Getenv("REPLY_MODEL"),
+		ReplyWallClockSec:          getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
+		ReplyMaxTurns:              getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
+		ReplyMaxConcurrent:         getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
+		ReplyPolicyV2:              !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_POLICY_V2")), "false"),
+		ReplyVerdictFastPath:       !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_VERDICT_FAST_PATH")), "false"),
+		MentionHandle:              strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
+		HealthJobToken:             os.Getenv("HEALTH_JOB_TOKEN"),
+		AdminLogins:                getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),
+		AnthropicAPIKey:            os.Getenv("ANTHROPIC_API_KEY"),
+		OpenRouterAPIKey:           os.Getenv("OPENROUTER_API_KEY"),
+		OpenRouterBaseURL:          os.Getenv("OPENROUTER_BASE_URL"),
+		BugMemoryPath:              os.Getenv("BUG_MEMORY_PATH"),
+		BugMemoryObject:            os.Getenv("BUG_MEMORY_OBJECT"),
+		RequiredChecks:             os.Getenv("REQUIRED_CHECKS") == "true",
+		PublishLegacyTitles:        !getEnvBoolOrDefault("PUBLISH_RENDER_V2", true),
+		PublishRepublishSameCommit: !getEnvBoolOrDefault("PUBLISH_SAME_COMMIT_GUARD", true),
+		PublishSkipSummaryRefresh:  !getEnvBoolOrDefault("PUBLISH_REFRESH_SUMMARY", true),
+		ReviewDefaultProfile:       strings.ToLower(strings.TrimSpace(getEnvOrDefault("REVIEW_DEFAULT_PROFILE", "full"))),
+		JiraBaseURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("JIRA_BASE_URL")), "/"),
+		JiraEmail:                  strings.TrimSpace(os.Getenv("JIRA_EMAIL")),
+		JiraAPIToken:               strings.TrimSpace(os.Getenv("JIRA_API_TOKEN")),
+		JiraProjectKeys:            getEnvListOrDefault("JIRA_PROJECT_KEYS", nil, normalizeProjectKey),
 
 		ReviewAgentModelsClaude:         claudeModels,
 		ReviewAgentModelsOpenRouter:     openRouterModels,
@@ -383,6 +395,15 @@ func Load() *Config {
 		ReviewMaxFirstPassSamples:       getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
 		ReviewMaxFirstPassConcurrent:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
 	}
+}
+
+// getEnvBoolOrDefault parses the usual true/false spellings; unset or
+// unparsable values keep the default, so a typo never flips a kill switch.
+func getEnvBoolOrDefault(key string, defaultValue bool) bool {
+	if value, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(key))); err == nil {
+		return value
+	}
+	return defaultValue
 }
 
 func getEnvIntOrDefault(key string, defaultValue int) int {

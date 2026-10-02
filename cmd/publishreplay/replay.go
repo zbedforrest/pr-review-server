@@ -58,6 +58,9 @@ type recorder struct {
 	resolved    map[int64]bool
 	resolves    int
 	unresolves  int
+	// Renderer defects seen in the bodies written this PR.
+	nilImpactBullets int
+	bareLabelTitles  int
 }
 
 func newRecorder() *recorder {
@@ -119,18 +122,23 @@ func (r *recorder) CreateReview(_ context.Context, _, _ string, _ int, _, _ stri
 		id, _ := publisher.FindingIDFromBody(c.Body)
 		r.posts = append(r.posts, post{Round: r.round, SHA: r.sha, CommentID: r.nextComment, FindingID: id, File: c.Path, Line: c.Line, Body: c.Body})
 		ids = append(ids, r.nextComment)
+		if bareLabelTitle(c.Body) {
+			r.bareLabelTitles++
+		}
 	}
 	return r.nextReview, ids, nil
 }
 
-func (r *recorder) CreateIssueComment(context.Context, string, string, int, string) (int64, error) {
+func (r *recorder) CreateIssueComment(_ context.Context, _, _ string, _ int, body string) (int64, error) {
 	r.nextIssue++
 	r.summaries++
+	r.nilImpactBullets += nilImpactBullets(body)
 	return r.nextIssue, nil
 }
 
-func (r *recorder) EditIssueComment(context.Context, string, string, int64, string) error {
+func (r *recorder) EditIssueComment(_ context.Context, _, _ string, _ int64, body string) error {
 	r.edits++
+	r.nilImpactBullets += nilImpactBullets(body)
 	return nil
 }
 
@@ -158,6 +166,7 @@ type PRResult struct {
 	Rounds                    int
 	RoundsMissingSidecar      int
 	SameCommitRounds          int
+	SameCommitSkipped         int
 	RootsPosted               int
 	SameMarkerReposts         int
 	SameDefectReposts         int
@@ -173,6 +182,8 @@ type PRResult struct {
 	ObservedRoots             int
 	ObservedSameMarkerReposts int
 	ObservedSameDefectReposts int
+	NilImpactBullets          int
+	BareLabelTitles           int
 }
 
 // Metrics is the JSON the command prints. Observed values come straight from
@@ -184,6 +195,9 @@ type Metrics struct {
 	RoundsReplayed       int `json:"rounds_replayed"`
 	RoundsMissingSidecar int `json:"rounds_missing_sidecar"`
 	SameCommitRounds     int `json:"same_commit_rounds"`
+	// SameCommitSkipped counts the rounds the publisher refused because the
+	// head was already published; they post and resolve nothing.
+	SameCommitSkipped int `json:"same_commit_rounds_skipped"`
 
 	RootsPosted            int     `json:"roots_posted"`
 	SameMarkerReposts      int     `json:"same_marker_reposts"`
@@ -199,6 +213,10 @@ type Metrics struct {
 	InThreadReplies        int `json:"in_thread_replies"`
 	ThreadsResolved        int `json:"threads_resolved"`
 	ThreadsUnresolved      int `json:"threads_unresolved"`
+
+	// Renderer defects over every summary and inline body written.
+	NilImpactBullets int `json:"nil_impact_bullets"`
+	BareLabelTitles  int `json:"bare_label_titles"`
 
 	CommentsPerPushP50 float64 `json:"comments_per_push_p50"`
 	RoundsPerPRP50     float64 `json:"rounds_per_pr_p50"`
@@ -278,6 +296,9 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.RoundsReplayed += pr.Rounds - pr.RoundsMissingSidecar
 		m.RoundsMissingSidecar += pr.RoundsMissingSidecar
 		m.SameCommitRounds += pr.SameCommitRounds
+		m.SameCommitSkipped += pr.SameCommitSkipped
+		m.NilImpactBullets += pr.NilImpactBullets
+		m.BareLabelTitles += pr.BareLabelTitles
 		m.RootsPosted += pr.RootsPosted
 		m.SameMarkerReposts += pr.SameMarkerReposts
 		m.SameDefectReposts += pr.SameDefectReposts
@@ -351,7 +372,10 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		pub.Now = func() time.Time { return at }
 		rec.begin(i, rd.SHA)
 		before := len(rec.posts)
-		if _, err := pub.Publish(ctx, round); err != nil {
+		if _, err := pub.Publish(ctx, round); errors.Is(err, publisher.ErrHeadAlreadyPublished) {
+			pr.SameCommitSkipped++
+			continue
+		} else if err != nil {
 			return pr, nil, fmt.Errorf("round %d (%s): %w", i+1, rd.SHA7, err)
 		}
 		pushes = append(pushes, len(rec.posts)-before)
@@ -377,6 +401,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		}
 		countResolutions(d, s, rd.SHA, previous, after, &pr, logf)
 	}
+	pr.NilImpactBullets, pr.BareLabelTitles = rec.nilImpactBullets, rec.bareLabelTitles
 	return pr, pushes, nil
 }
 
@@ -684,7 +709,7 @@ func round3(v float64) float64 {
 	return float64(int(v*1000+0.5)) / 1000
 }
 
-var csvHeader = []string{"pr", "rounds", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts"}
+var csvHeader = []string{"pr", "rounds", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -692,7 +717,7 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 		return err
 	}
 	for _, r := range rows {
-		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts)}
+		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}

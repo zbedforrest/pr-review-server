@@ -92,6 +92,9 @@ The most common ones:
 | `MENTION_HANDLE` | No | App login mentioned to request a review (`@<handle> review`) by the PR author or a repository owner, member or collaborator; default `prism-pr-review-server`, empty disables |
 | `HEALTH_JOB_TOKEN` | No | Enables `POST /api/health/daily` for a scheduler (header `X-Prism-Job-Token`); the report is stored and readable at `GET /api/health/daily` (`?format=md`) |
 | `GITHUB_WEBHOOK_SECRET` | No | Secret for the GitHub App webhook at `POST /webhooks/github` (`X-Hub-Signature-256`); empty leaves the endpoint disabled. See [Automatic reviews](#automatic-reviews-for-allowlisted-authors) |
+| `PUBLISH_RENDER_V2` | No | Default `true`: summary bullets and inline titles use the finding's headline, else its comment's first sentence, and the impact sentence only when the contract asserts current impact. `false` restores the impact-sentence titles; the word-boundary shortening of headlines over 90 runes (previously blanked) is not switchable |
+| `PUBLISH_SAME_COMMIT_GUARD` | No | Default `true`: a review of a commit the summary comment already covers is not published again (API and legacy re-runs, including a full review re-run of a head a lite review already published; its findings stay dashboard-only until the next push). `false` restores re-publication |
+| `PUBLISH_REFRESH_SUMMARY` | No | Default `true`: the sticky summary is re-rendered as soon as a reply concedes a finding. `false` waits for the next push |
 
 ### First-pass provider
 

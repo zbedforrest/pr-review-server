@@ -466,7 +466,7 @@ func (p *Poller) settleAutoReviewIntents() {
 			outcome = db.AutoReviewIntentQueued
 		case run.Status == db.ReviewRunStatusCompleted:
 			switch {
-			case intent.Publication == publicationPosted:
+			case intent.Publication == publicationPosted, intent.Publication == publicationAlreadyPosted:
 				outcome = db.AutoReviewIntentDone
 			case intent.Publication == publicationNotAllowed:
 				// The review completed and is on the dashboard; publishing was

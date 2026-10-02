@@ -34,7 +34,7 @@ func TestRenderSummary_ListsOnlyConfirmedFindingsAsBullets(t *testing.T) {
 		}
 	}
 	bullets, folded := out[:strings.Index(out, "<details>")], out[strings.Index(out, "<details>"):]
-	for _, belowBar := range []string{"Maybe a flicker", "No user impact", "a.go", "b.go"} {
+	for _, belowBar := range []string{"Might flicker", "Nit", "a.go", "b.go"} {
 		if strings.Contains(bullets, belowBar) {
 			t.Errorf("below-bar finding %q must not be a top-level bullet:\n%s", belowBar, out)
 		}

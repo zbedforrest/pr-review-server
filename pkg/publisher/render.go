@@ -57,6 +57,8 @@ type Round struct {
 	// ProfileFooter names the review flavor in the summary footer ("PRism
 	// Lite", "PRism Lite+ (custom)"); empty for an ordinary full review.
 	ProfileFooter string
+	// LegacyTitles is Policy.LegacyTitles as applied to this round.
+	LegacyTitles bool
 
 	// PriorComments is what GitHub currently shows for PRism's own inline
 	// comments, keyed by the fingerprint in their marker: the translated line
@@ -215,9 +217,15 @@ func (r Round) markedBullet(f payload.Finding, marker string) string {
 	if marker != "" {
 		marker = "**" + marker + "** "
 	}
-	text := truncateWords(strings.TrimSuffix(strings.TrimSpace(summaryText(f)), "."), 200)
+	text := strings.TrimSpace(summaryText(f, r.LegacyTitles))
+	if !strings.HasSuffix(text, "...") {
+		text = strings.TrimSuffix(text, ".")
+	}
+	text = truncateWords(text, 200)
 	return fmt.Sprintf("- %s %s%s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, where, r.findingLink(f))
 }
+
+const sinceLastReviewFormat = "**Since last review:** %d new · %d still open · %d fixed"
 
 const (
 	markerUnverified = "FIRST PASS · UNVERIFIED"
@@ -342,7 +350,10 @@ func RenderSummary(r Round, sel Selection) string {
 	b.WriteString(recommendation(confidence) + "\n\n")
 	if r.RoundNumber > 1 {
 		d := r.diff()
-		fmt.Fprintf(&b, "**Since last review:** %d new · %d still open · %d fixed\n\n", d.New, d.StillOpen, d.Fixed)
+		if r.transitions != nil {
+			d = *r.transitions
+		}
+		fmt.Fprintf(&b, sinceLastReviewFormat+"\n\n", d.New, d.StillOpen, d.Fixed)
 	}
 	for _, f := range shown {
 		if b.Len() > SummaryMaxChars-600 {
@@ -397,11 +408,34 @@ var kindLabels = map[string]string{
 
 var suggestionFenceRe = regexp.MustCompile("(?s)```suggestion\n.*?\n```")
 
-// headline is the bold line of an inline comment. With a contract it is the
-// kind label and the effect sentence; when the sentence does not fit and the
-// kind has a label, the label stands alone and RenderInline shows the sentence
-// below. Without a label the clause cut keeps the headline informative.
-func headline(f payload.Finding) string {
+// headline is the bold line of an inline comment: the kind label when the
+// contract carries an effect sentence, then the finding's title cut to fit.
+// The legacy form fell back to the bare kind label when the effect sentence
+// did not fit and left findings without a headline titled by their impact
+// sentence even when that sentence said there was none.
+func headline(f payload.Finding, legacy bool) string {
+	if legacy {
+		return legacyHeadline(f)
+	}
+	title := titleSource(f)
+	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
+		if label, ok := kindLabels[c.FindingKind]; ok {
+			return label + " · " + clauseHeadline(title, headlineMaxRunes)
+		}
+		return clauseHeadline(title, headlineMaxRunes)
+	}
+	return clauseHeadline(title, commentTitleMaxRunes)
+}
+
+const commentTitleMaxRunes = 100
+
+// titleIsWholeFirstSentence reports whether a comment-sourced title fits the
+// limit headline applied to it; a cut title leaves the sentence to the fold.
+func titleIsWholeFirstSentence(f payload.Finding, limit int) bool {
+	return len([]rune(titleSource(f))) <= limit
+}
+
+func legacyHeadline(f payload.Finding) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
 		label, hasLabel := kindLabels[c.FindingKind]
 		impact := strings.TrimSpace(c.Headline)
@@ -418,6 +452,34 @@ func headline(f payload.Finding) string {
 		return impact
 	}
 	return truncateWords(strings.Trim(firstSentence(commentText(f)), "*_ "), 100)
+}
+
+// titleSource is the one line a finding is known by: the agent's headline,
+// else its effect sentence when the contract asserts an impact that exists
+// today, else the comment's first sentence. A finding whose materiality is
+// unknown or nil must not be titled by a sentence saying so.
+func titleSource(f payload.Finding) string {
+	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" {
+		if h := strings.TrimSpace(c.Headline); h != "" {
+			return h
+		}
+		if c.Materiality == "current_impact" && strings.TrimSpace(c.CurrentImpact) != "" {
+			return strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
+		}
+	}
+	return strings.TrimSpace(emphasisMarkers.Replace(firstSentence(commentText(f))))
+}
+
+var emphasisMarkers = strings.NewReplacer("**", "", "__", "")
+
+// titleFromComment reports whether the inline title was taken from the
+// comment's first sentence rather than the contract.
+func titleFromComment(f payload.Finding) bool {
+	c := f.FindingContract
+	if c == nil || f.FindingContractStatus != "valid" {
+		return true
+	}
+	return strings.TrimSpace(c.Headline) == "" && (c.Materiality != "current_impact" || strings.TrimSpace(c.CurrentImpact) == "")
 }
 
 const headlineMaxRunes = 110
@@ -445,32 +507,40 @@ func clauseHeadline(s string, max int) string {
 	return truncateWords(s, max)
 }
 
-// headlineIsCut reports whether the impact sentence still needs to be shown
-// under the title: the title came from the agent's headline, or was cut.
-func headlineIsCut(f payload.Finding) bool {
+// impactShownBelow reports whether the effect sentence still needs to be
+// shown under the title, because the title is not that sentence in full.
+func impactShownBelow(f payload.Finding, legacy bool) bool {
 	c := f.FindingContract
 	if c == nil || f.FindingContractStatus != "valid" {
 		return false
 	}
-	if strings.TrimSpace(c.Headline) != "" {
+	impact := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
+	if legacy && strings.TrimSpace(c.Headline) != "" {
 		return true
 	}
-	impact := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
-	return clauseHeadline(impact, headlineMaxRunes) != impact
+	title := impact
+	if !legacy {
+		title = titleSource(f)
+	}
+	return clauseHeadline(title, headlineMaxRunes) != impact
 }
 
 // RenderInline keeps the visible part Greptile-sized: headline, one
 // calibration sentence, and the suggestion if there is one. The agent's full
 // reasoning and the verification steps fold behind a details block.
 func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string) string {
+	return renderInline(f, sourceTag, agentLinkBase, badgeBase, false)
+}
+
+func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, legacy bool) string {
 	comment := commentText(f)
 	c := f.FindingContract
 	hasContract := c != nil && f.FindingContractStatus == "valid"
 	compact := hasContract && strings.TrimSpace(c.CurrentImpact) != ""
 
-	// When the effect sentence does not fit the headline it is shown once,
-	// in full, under the headline (kind label alone when the kind has one).
-	title := headline(f)
+	// When the title is not the effect sentence in full, the sentence is shown
+	// once, in full, under the title.
+	title := headline(f, legacy)
 	var b strings.Builder
 	b.WriteString(FindingMarker(f.ID) + "\n")
 	if badgeBase == "" {
@@ -479,7 +549,7 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		fmt.Fprintf(&b, "%s **%s**\n", severityLabel(f.Severity, badgeBase), title)
 	}
 
-	if compact && headlineIsCut(f) {
+	if compact && impactShownBelow(f, legacy) {
 		b.WriteString("\n" + strings.TrimSpace(c.CurrentImpact) + "\n")
 	}
 	if hasContract && strings.TrimSpace(c.Uncertainty) != "" {
@@ -493,11 +563,16 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	if !compact {
 		// Without an impact sentence the headline came from the comment's first
 		// sentence; the rest of the comment is the only explanation, so show it.
-		sentence := firstSentence(comment)
-		if rest := strings.TrimSpace(strings.TrimPrefix(reasoning, sentence)); rest != "" {
+		rest := reasoning
+		if legacy || (titleFromComment(f) && titleIsWholeFirstSentence(f, commentTitleMaxRunes)) {
+			rest = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
+		}
+		if rest != "" {
 			b.WriteString("\n" + rest + "\n")
 		}
 		reasoning = ""
+	} else if !legacy && titleFromComment(f) && titleIsWholeFirstSentence(f, headlineMaxRunes) {
+		reasoning = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
 	}
 
 	var details strings.Builder
@@ -510,7 +585,7 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		fmt.Fprintf(&details, "\n**How to verify:** %s. Expected: %s.\n", condition, observable)
 	}
 	if agentLinkBase != "" {
-		fmt.Fprintf(&details, "\nAgent prompt:\n```text\n%s\n```\n", agentPrompt(agentLinkBase, f))
+		fmt.Fprintf(&details, "\nAgent prompt:\n```text\n%s\n```\n", agentPrompt(agentLinkBase, f, legacy))
 	}
 	if details.Len() > 0 {
 		b.WriteString("\n<details><summary>Reasoning and how to verify</summary>\n\n" + details.String() + "</details>\n")
@@ -552,9 +627,13 @@ func commentText(f payload.Finding) string {
 	return strings.TrimSpace(provenanceNoteRe.ReplaceAllString(strings.TrimSpace(f.Comment), ""))
 }
 
-// summaryText is the table cell for a finding: the effect sentence from the
-// contract when present, else the comment's first line.
-func summaryText(f payload.Finding) string {
+// summaryText is the bullet text for a finding: its title (see titleSource).
+// The legacy form was the effect sentence whenever the contract had one, which
+// produced bullets reading "None today; ..." for immaterial findings.
+func summaryText(f payload.Finding, legacy bool) string {
+	if !legacy {
+		return titleSource(f)
+	}
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
 		return strings.TrimSpace(c.CurrentImpact)
 	}
@@ -577,15 +656,15 @@ func truncateWords(s string, max int) string {
 
 // agentPrompt is the copyable plain-text equivalent of the agent link, for
 // people not on Claude Code. The PR coordinates come from the link base.
-func agentPrompt(base string, f payload.Finding) string {
+func agentPrompt(base string, f payload.Finding, legacy bool) string {
 	q, _ := url.ParseQuery(strings.TrimPrefix(base[strings.Index(base, "?")+1:], "?"))
 	repo := q.Get("o") + "/" + q.Get("r") + "#" + q.Get("n")
 	where := f.File
 	if f.Line > 0 {
 		where = fmt.Sprintf("%s:%d", f.File, f.Line)
 	}
-	effect := summaryText(f)
-	return fmt.Sprintf("PRism finding on %s in %s: %s Read the review comment marked %s on that PR, decide whether it is valid, and fix it if so; otherwise explain why not.", where, repo, strings.TrimSpace(effect), FindingMarker(f.ID))
+	effect := strings.TrimSuffix(strings.TrimSpace(summaryText(f, legacy)), ".") + "."
+	return fmt.Sprintf("PRism finding on %s in %s: %s Read the review comment marked %s on that PR, decide whether it is valid, and fix it if so; otherwise explain why not.", where, repo, effect, FindingMarker(f.ID))
 }
 
 func plural(n int) string {

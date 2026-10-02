@@ -17,6 +17,7 @@ type fakeGitHub struct {
 	existingIssueComments []IssueComment
 	replies               []fakeReply
 	editErr               error
+	listErr               error
 	nextCommentID         int64
 	nextIssueID           int64
 	nextReviewID          int64
@@ -64,6 +65,9 @@ func (g *fakeGitHub) EditIssueComment(_ context.Context, _, _ string, id int64, 
 }
 
 func (g *fakeGitHub) ListIssueComments(_ context.Context, _, _ string, _ int) ([]IssueComment, error) {
+	if g.listErr != nil {
+		return nil, g.listErr
+	}
 	return g.existingIssueComments, nil
 }
 
@@ -89,6 +93,7 @@ func (g *fakeGitHub) repliesTo(root int64) []string {
 type fakeLedger struct {
 	rows       map[string]*db.PublishedFinding
 	failUpsert func(*db.PublishedFinding) error
+	onRead     func()
 }
 
 func newFakeLedger() *fakeLedger { return &fakeLedger{rows: map[string]*db.PublishedFinding{}} }
@@ -129,6 +134,9 @@ func (l *fakeLedger) UpsertPublishedFinding(pf *db.PublishedFinding) error {
 }
 
 func (l *fakeLedger) GetPublishedFindingsForPR(_, _ string, _ int) ([]db.PublishedFinding, error) {
+	if l.onRead != nil {
+		l.onRead()
+	}
 	var out []db.PublishedFinding
 	for _, r := range l.rows {
 		out = append(out, *r)
@@ -147,6 +155,15 @@ func (l *fakeLedger) get(kind, fp string) *db.PublishedFinding {
 func publishRound(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round) Report {
 	t.Helper()
 	return publishWith(t, gh, ledger, r, testPolicy())
+}
+
+// republishSameHead runs a round with the same-commit guard off, the only
+// way a round reaches the ledger policy on an already published head.
+func republishSameHead(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round) Report {
+	t.Helper()
+	pol := testPolicy()
+	pol.RepublishSameCommit = true
+	return publishWith(t, gh, ledger, r, pol)
 }
 
 func publishWith(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round, pol Policy) Report {

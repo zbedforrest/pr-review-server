@@ -20,10 +20,13 @@ func summaryOnly(head string) Round {
 // legacyRound publishes through the pre-ledger publisher that
 // PUBLISH_POLICY_V2=false still selects. The defects the counters exist for
 // can only happen there; the ledger policy twins below show they no longer do.
+// The same-commit guard is off: a re-run on an already published head is the
+// only way a resolve or an escalation can land there.
 func legacyRound(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round) Report {
 	t.Helper()
 	p := &Publisher{GH: gh, Ledger: ledger, Policy: DefaultPolicy(), Now: func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }}
 	p.Policy.LegacyLedger = true
+	p.Policy.RepublishSameCommit = true
 	rep, err := p.Publish(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
@@ -277,7 +280,7 @@ func TestHygiene_LedgerPolicyNeverResolvesOnTheSameHeadOrAnUntouchedFile(t *test
 
 	rerun := summaryOnly("sha-round-1")
 	rerun.Changes = changed("a.go", "b.go")
-	rep := publishRound(t, gh, ledger, rerun)
+	rep := republishSameHead(t, gh, ledger, rerun)
 	if rep.Fixed != 0 || rep.StillOpen != 3 || !rep.Hygiene.Empty() {
 		t.Fatalf("a re-run on the same head fixes nothing: %+v", rep)
 	}
