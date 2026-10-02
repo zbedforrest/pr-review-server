@@ -15,9 +15,9 @@ type FeedbackItemModel struct {
 	Source     string    `gorm:"size:16;not null;uniqueIndex:idx_feedback_items_unique"`
 	ItemID     int64     `gorm:"not null;uniqueIndex:idx_feedback_items_unique"`
 	CommentID  int64     `gorm:"not null;default:0"`
-	RepoOwner  string    `gorm:"size:255;not null"`
-	RepoName   string    `gorm:"size:255;not null"`
-	PRNumber   int       `gorm:"not null"`
+	RepoOwner  string    `gorm:"size:255;not null;index:idx_feedback_items_pr"`
+	RepoName   string    `gorm:"size:255;not null;index:idx_feedback_items_pr"`
+	PRNumber   int       `gorm:"not null;index:idx_feedback_items_pr"`
 	Author     string    `gorm:"size:255;not null"`
 	Body       string    `gorm:"type:text"`
 	ReplyClass string    `gorm:"size:16;not null;default:''"`

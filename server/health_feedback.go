@@ -83,7 +83,7 @@ func (s *Server) scanFeedback(now time.Time) feedbackOutcome {
 		log.Printf("[FEEDBACK] scan failed after %d targets: %v", res.Targets, err)
 		outcome = feedbackOutcome{note: "scan failed"}
 	case res.Errors > 0:
-		outcome = feedbackOutcome{note: fmt.Sprintf("%d of %d PRs could not be read", res.Errors, res.Targets)}
+		outcome.note = fmt.Sprintf("%d of %d PRs could not be read", res.Errors, res.Targets)
 	}
 	// The counter follows the report's day; a backfilled older item is stored
 	// and listed in the week view but not counted as today's frustration.
