@@ -1,0 +1,554 @@
+{
+ "id": "acme/example#12",
+ "tier": "gold",
+ "owner": "acme",
+ "repo": "example",
+ "number": 12,
+ "bot": "acme-bot",
+ "dump": {
+  "number": 12,
+  "url": "https://github.com/acme/example/pull/12",
+  "state": "OPEN",
+  "headRefOid": "5555555555555555555555555555555555555555",
+  "author": {
+   "login": "dev-ana"
+  },
+  "reviews": {
+   "nodes": [
+    {
+     "author": {
+      "login": "acme-bot"
+     },
+     "databaseId": 900,
+     "state": "COMMENTED",
+     "submittedAt": "2026-09-02T09:00:00Z",
+     "commit": {
+      "oid": "3333333333333333333333333333333333333333"
+     }
+    },
+    {
+     "author": {
+      "login": "acme-bot"
+     },
+     "databaseId": 901,
+     "state": "COMMENTED",
+     "submittedAt": "2026-09-02T10:30:00Z",
+     "commit": {
+      "oid": "4444444444444444444444444444444444444444"
+     }
+    },
+    {
+     "author": {
+      "login": "acme-bot"
+     },
+     "databaseId": 902,
+     "state": "COMMENTED",
+     "submittedAt": "2026-09-02T11:30:00Z",
+     "commit": {
+      "oid": "5555555555555555555555555555555555555555"
+     }
+    }
+   ]
+  },
+  "reviewThreads": {
+   "nodes": [
+    {
+     "id": "T111",
+     "path": "api/handler.go",
+     "line": 27,
+     "originalLine": 27,
+     "isResolved": false,
+     "isOutdated": false,
+     "comments": {
+      "nodes": [
+       {
+        "databaseId": 111,
+        "author": {
+         "login": "acme-bot"
+        },
+        "body": "<!-- prism:finding:api/handler.go:2:d4d4d4d4d4d4 -->\n**MEDIUM** parseRequest reads the X-Tenant header before checking it exists, so a request without it panics.",
+        "createdAt": "2026-09-02T09:00:00Z",
+        "path": "api/handler.go",
+        "replyTo": null
+       },
+       {
+        "databaseId": 211,
+        "author": {
+         "login": "dev-ana"
+        },
+        "body": "Fixed in 4444444 by checking the header before reading it.",
+        "createdAt": "2026-09-02T10:00:00Z",
+        "path": "api/handler.go",
+        "replyTo": {
+         "databaseId": 111
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": "T112",
+     "path": "api/limits.go",
+     "line": 64,
+     "originalLine": 64,
+     "isResolved": false,
+     "isOutdated": false,
+     "comments": {
+      "nodes": [
+       {
+        "databaseId": 112,
+        "author": {
+         "login": "acme-bot"
+        },
+        "body": "<!-- prism:finding:api/limits.go:6:e5e5e5e5e5e5 -->\n**MEDIUM** allowBurst compares with <= instead of <, so a client gets one request more than its quota.",
+        "createdAt": "2026-09-02T09:00:00Z",
+        "path": "api/limits.go",
+        "replyTo": null
+       }
+      ]
+     }
+    },
+    {
+     "id": "T113",
+     "path": "api/handler_test.go",
+     "line": 12,
+     "originalLine": 12,
+     "isResolved": false,
+     "isOutdated": false,
+     "comments": {
+      "nodes": [
+       {
+        "databaseId": 113,
+        "author": {
+         "login": "acme-bot"
+        },
+        "body": "<!-- prism:finding:api/handler_test.go:1:f6f6f6f6f6f6 -->\n**MEDIUM** TestMissingHeader never asserts the 400 status, so it passes even when the handler panics.",
+        "createdAt": "2026-09-02T10:30:00Z",
+        "path": "api/handler_test.go",
+        "replyTo": null
+       },
+       {
+        "databaseId": 212,
+        "author": {
+         "login": "dev-ana"
+        },
+        "body": "Fixed in 5555555, the test now asserts the 400.",
+        "createdAt": "2026-09-02T11:10:00Z",
+        "path": "api/handler_test.go",
+        "replyTo": {
+         "databaseId": 113
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": "T114",
+     "path": "api/limits.go",
+     "line": 64,
+     "originalLine": 64,
+     "isResolved": false,
+     "isOutdated": false,
+     "comments": {
+      "nodes": [
+       {
+        "databaseId": 114,
+        "author": {
+         "login": "acme-bot"
+        },
+        "body": "<!-- prism:finding:api/limits.go:6:e5e5e5e5e5e5 -->\n**MEDIUM** allowBurst compares with <= instead of <, so a client gets one request more than its quota.",
+        "createdAt": "2026-09-02T11:30:00Z",
+        "path": "api/limits.go",
+        "replyTo": null
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "commits": {
+   "nodes": [
+    {
+     "commit": {
+      "oid": "3333333333333333333333333333333333333333",
+      "committedDate": "2026-09-02T08:50:00Z",
+      "messageHeadline": "Add tenant header"
+     }
+    },
+    {
+     "commit": {
+      "oid": "4444444444444444444444444444444444444444",
+      "committedDate": "2026-09-02T09:55:00Z",
+      "messageHeadline": "Check the header first"
+     }
+    },
+    {
+     "commit": {
+      "oid": "5555555555555555555555555555555555555555",
+      "committedDate": "2026-09-02T11:05:00Z",
+      "messageHeadline": "Assert the status in the test"
+     }
+    }
+   ]
+  }
+ },
+ "sidecars": {
+  "3333333": {
+   "schema_version": "2",
+   "owner": "acme",
+   "repo": "example",
+   "pr_number": 12,
+   "commit_sha": "3333333333333333333333333333333333333333",
+   "counts": {
+    "critical": 0,
+    "medium": 2,
+    "low": 0
+   },
+   "findings": [
+    {
+     "id": "api/handler.go:2:d4d4d4d4d4d4",
+     "severity": "medium",
+     "provenance": "agent",
+     "file": "api/handler.go",
+     "line": 27,
+     "comment": "parseRequest reads the X-Tenant header before checking it exists, so a request without it panics.",
+     "finding_contract": {
+      "schema_version": 1,
+      "finding_kind": "production_behavior",
+      "materiality": "current_impact",
+      "current_impact": "Users hit this on the changed path today.",
+      "counterfactual_trigger": null,
+      "falsifiability": "falsifiable",
+      "falsifiable_condition": "Exercise the changed path once.",
+      "expected_observable": "The wrong result described above.",
+      "subjects": [
+       {
+        "kind": "function",
+        "path": "api/handler.go",
+        "name": "parseRequest"
+       }
+      ],
+      "uncertainty": "None.",
+      "severity_rationale": "Deterministic from the code.",
+      "headline": "Missing header panics"
+     },
+     "finding_contract_status": "valid",
+     "state": "confirmed",
+     "active": true,
+     "diff_hunk": "@@ -25,6 +25,6 @@\n x\n+y\n z\n+w\n v\n u"
+    },
+    {
+     "id": "api/limits.go:6:e5e5e5e5e5e5",
+     "severity": "medium",
+     "provenance": "agent",
+     "file": "api/limits.go",
+     "line": 64,
+     "comment": "allowBurst compares with <= instead of <, so a client gets one request more than its quota.",
+     "finding_contract": {
+      "schema_version": 1,
+      "finding_kind": "production_behavior",
+      "materiality": "current_impact",
+      "current_impact": "Users hit this on the changed path today.",
+      "counterfactual_trigger": null,
+      "falsifiability": "falsifiable",
+      "falsifiable_condition": "Exercise the changed path once.",
+      "expected_observable": "The wrong result described above.",
+      "subjects": [
+       {
+        "kind": "function",
+        "path": "api/limits.go",
+        "name": "allowBurst"
+       }
+      ],
+      "uncertainty": "None.",
+      "severity_rationale": "Deterministic from the code.",
+      "headline": "Burst limit off by one"
+     },
+     "finding_contract_status": "valid",
+     "state": "confirmed",
+     "active": true,
+     "diff_hunk": "@@ -62,6 +62,6 @@\n x\n+y\n z\n+w\n v\n u"
+    }
+   ]
+  },
+  "4444444": {
+   "schema_version": "2",
+   "owner": "acme",
+   "repo": "example",
+   "pr_number": 12,
+   "commit_sha": "4444444444444444444444444444444444444444",
+   "counts": {
+    "critical": 0,
+    "medium": 1,
+    "low": 0
+   },
+   "findings": [
+    {
+     "id": "api/handler_test.go:1:f6f6f6f6f6f6",
+     "severity": "medium",
+     "provenance": "agent",
+     "file": "api/handler_test.go",
+     "line": 12,
+     "comment": "TestMissingHeader never asserts the 400 status, so it passes even when the handler panics.",
+     "finding_contract": {
+      "schema_version": 1,
+      "finding_kind": "production_behavior",
+      "materiality": "current_impact",
+      "current_impact": "Users hit this on the changed path today.",
+      "counterfactual_trigger": null,
+      "falsifiability": "falsifiable",
+      "falsifiable_condition": "Exercise the changed path once.",
+      "expected_observable": "The wrong result described above.",
+      "subjects": [
+       {
+        "kind": "function",
+        "path": "api/handler_test.go",
+        "name": "TestMissingHeader"
+       }
+      ],
+      "uncertainty": "None.",
+      "severity_rationale": "Deterministic from the code.",
+      "headline": "Test does not assert the status"
+     },
+     "finding_contract_status": "valid",
+     "state": "confirmed",
+     "active": true,
+     "diff_hunk": "@@ -10,6 +10,6 @@\n x\n+y\n z\n+w\n v\n u"
+    }
+   ]
+  },
+  "5555555": {
+   "schema_version": "2",
+   "owner": "acme",
+   "repo": "example",
+   "pr_number": 12,
+   "commit_sha": "5555555555555555555555555555555555555555",
+   "counts": {
+    "critical": 0,
+    "medium": 1,
+    "low": 0
+   },
+   "findings": [
+    {
+     "id": "api/limits.go:6:e5e5e5e5e5e5",
+     "severity": "medium",
+     "provenance": "agent",
+     "file": "api/limits.go",
+     "line": 64,
+     "comment": "allowBurst compares with <= instead of <, so a client gets one request more than its quota.",
+     "finding_contract": {
+      "schema_version": 1,
+      "finding_kind": "production_behavior",
+      "materiality": "current_impact",
+      "current_impact": "Users hit this on the changed path today.",
+      "counterfactual_trigger": null,
+      "falsifiability": "falsifiable",
+      "falsifiable_condition": "Exercise the changed path once.",
+      "expected_observable": "The wrong result described above.",
+      "subjects": [
+       {
+        "kind": "function",
+        "path": "api/limits.go",
+        "name": "allowBurst"
+       }
+      ],
+      "uncertainty": "None.",
+      "severity_rationale": "Deterministic from the code.",
+      "headline": "Burst limit off by one"
+     },
+     "finding_contract_status": "valid",
+     "state": "confirmed",
+     "active": true,
+     "diff_hunk": "@@ -62,6 +62,6 @@\n x\n+y\n z\n+w\n v\n u"
+    }
+   ]
+  }
+ },
+ "compares": {
+  "3333333...4444444": [
+   "api/handler.go",
+   "api/handler_test.go"
+  ],
+  "4444444...5555555": [
+   "api/handler_test.go"
+  ],
+  "3333333...5555555": [
+   "api/handler.go",
+   "api/handler_test.go"
+  ]
+ },
+ "rounds": [
+  {
+   "index": 0,
+   "sha": "3333333333333333333333333333333333333333",
+   "at": "2026-09-02T09:00:00Z",
+   "has_sidecar": true
+  },
+  {
+   "index": 1,
+   "sha": "4444444444444444444444444444444444444444",
+   "at": "2026-09-02T10:30:00Z",
+   "has_sidecar": true
+  },
+  {
+   "index": 2,
+   "sha": "5555555555555555555555555555555555555555",
+   "at": "2026-09-02T11:30:00Z",
+   "has_sidecar": true
+  }
+ ],
+ "recorded_replies": {
+  "211": {
+   "decision": "concede",
+   "reply": "api/handler.go:25 now returns 400 before the header is read.",
+   "react": true
+  },
+  "212": {
+   "decision": "concede",
+   "reply": "api/handler_test.go:14 now asserts the 400 status.",
+   "react": true
+  }
+ },
+ "expect": {
+  "findings": [
+   {
+    "comment_id": 111,
+    "round": 0,
+    "finding_id": "api/handler.go:2:d4d4d4d4d4d4",
+    "file": "api/handler.go",
+    "line": 27,
+    "text": "parseRequest reads the X-Tenant header before checking it exists, so a request without it panics.",
+    "subjects": [
+     "parserequest"
+    ],
+    "headline": "Missing header panics",
+    "defect": 111,
+    "expect": "post",
+    "gold": true,
+    "backed": [
+     "reply:fix_claim"
+    ]
+   },
+   {
+    "comment_id": 112,
+    "round": 0,
+    "finding_id": "api/limits.go:6:e5e5e5e5e5e5",
+    "file": "api/limits.go",
+    "line": 64,
+    "text": "allowBurst compares with <= instead of <, so a client gets one request more than its quota.",
+    "subjects": [
+     "allowburst"
+    ],
+    "headline": "Burst limit off by one",
+    "defect": 112,
+    "expect": "post",
+    "gold": true,
+    "backed": [
+     "confirmed:repeat_after_fix"
+    ]
+   },
+   {
+    "comment_id": 113,
+    "round": 1,
+    "finding_id": "api/handler_test.go:1:f6f6f6f6f6f6",
+    "file": "api/handler_test.go",
+    "line": 12,
+    "text": "TestMissingHeader never asserts the 400 status, so it passes even when the handler panics.",
+    "subjects": [
+     "testmissingheader"
+    ],
+    "headline": "Test does not assert the status",
+    "defect": 113,
+    "expect": "post",
+    "gold": true,
+    "backed": [
+     "reply:fix_claim"
+    ]
+   },
+   {
+    "comment_id": 114,
+    "round": 2,
+    "finding_id": "api/limits.go:6:e5e5e5e5e5e5",
+    "file": "api/limits.go",
+    "line": 64,
+    "text": "allowBurst compares with <= instead of <, so a client gets one request more than its quota.",
+    "subjects": [
+     "allowburst"
+    ],
+    "headline": "Burst limit off by one",
+    "defect": 112,
+    "expect": "suppress",
+    "gold": true,
+    "backed": [
+     "confirmed:repeat_after_fix"
+    ],
+    "reason": "repost",
+    "detail": "repost of 112"
+   }
+  ],
+  "summaries": [
+   {
+    "round": 1,
+    "new": 1,
+    "still_open": 1,
+    "fixed": 1,
+    "gold": true
+   },
+   {
+    "round": 2,
+    "new": 0,
+    "still_open": 1,
+    "fixed": 1,
+    "gold": true
+   }
+  ],
+  "resolutions": [
+   {
+    "defect": 111,
+    "comment_id": 111,
+    "fixed_by": 1,
+    "why": "fix commit 4444444",
+    "gold": true
+   },
+   {
+    "defect": 113,
+    "comment_id": 113,
+    "fixed_by": 2,
+    "why": "fix commit 5555555",
+    "gold": true
+   }
+  ],
+  "replies": [
+   {
+    "comment_id": 211,
+    "root_comment_id": 111,
+    "author": "dev-ana",
+    "at": "2026-09-02T10:00:00Z",
+    "class": "fix_claim",
+    "quality": "good",
+    "accept": [
+     "concede"
+    ],
+    "gold": true,
+    "backed": [
+     "reply:fix_claim"
+    ]
+   },
+   {
+    "comment_id": 212,
+    "root_comment_id": 113,
+    "author": "dev-ana",
+    "at": "2026-09-02T11:10:00Z",
+    "class": "fix_claim",
+    "quality": "good",
+    "accept": [
+     "concede"
+    ],
+    "gold": true,
+    "backed": [
+     "reply:fix_claim"
+    ]
+   }
+  ]
+ }
+}

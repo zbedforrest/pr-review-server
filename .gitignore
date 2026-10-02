@@ -70,10 +70,13 @@ DEPLOY.md
 DEPLOYMENT.md
 
 # Local eval harness: private data (case manifests, run artifacts); never commit.
-# benchmark/replay holds only the published replay baseline; its CSV and JSON outputs name real repositories.
+# benchmark/replay and benchmark/commentbench hold only their published baselines; their outputs name real repositories.
 benchmark/*
 !benchmark/replay/
 benchmark/replay/*
 !benchmark/replay/BASELINE.md
 !benchmark/replay/W1-1.md
 !benchmark/replay/W2-3.md
+!benchmark/commentbench/
+benchmark/commentbench/*
+!benchmark/commentbench/BASELINE.md
