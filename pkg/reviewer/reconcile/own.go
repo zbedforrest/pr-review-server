@@ -116,7 +116,9 @@ func AliasPrior(current []payload.Finding, own []OwnComment) map[string]string {
 				continue
 			}
 			keyed := len(subjects) > 0 && len(o.Subjects) > 0 && sameSubjects(subjects, o.Subjects) && (kind == "" || o.Kind == "" || kind == o.Kind)
-			if !sameFile(f.File, o.File) {
+			// Exact paths only: a shared basename under another directory is
+			// the cross-file tier's case, with its guards.
+			if f.File != o.File {
 				if keyed && kind != "" && kind == o.Kind && crossFileEvidence(subjects, f.Comment, o.Text) {
 					cands = append(cands, cand{ci, oi, tierCrossFile, 0, 0})
 				}
@@ -151,7 +153,13 @@ func AliasPrior(current []payload.Finding, own []OwnComment) map[string]string {
 		if a.score != b.score {
 			return a.score > b.score
 		}
-		return a.distance < b.distance
+		if a.distance != b.distance {
+			return a.distance < b.distance
+		}
+		if a.cur != b.cur {
+			return a.cur < b.cur
+		}
+		return own[a.prior].FindingID < own[b.prior].FindingID
 	})
 	aliases := map[string]string{}
 	usedPrior := map[int]bool{}

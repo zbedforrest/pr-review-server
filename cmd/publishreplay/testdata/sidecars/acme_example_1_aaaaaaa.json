@@ -28,7 +28,7 @@
     "expected_observable": "A second request within the same millisecond.",
     "subjects": [
      {
-      "kind": "function",
+      "kind": "symbol",
       "path": "svc/retry.go",
       "name": "get"
      }

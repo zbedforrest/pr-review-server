@@ -28,7 +28,7 @@
     "expected_observable": "The old profile is returned.",
     "subjects": [
      {
-      "kind": "function",
+      "kind": "symbol",
       "path": "app/cache.go",
       "name": "put"
      }

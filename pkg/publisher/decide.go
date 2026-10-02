@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/reconcile"
+	"pr-review-server/pkg/reviewer/types"
 )
 
 // anchorTolerance is how far from the cited line a changed line still counts
@@ -238,8 +240,14 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 // row's fingerprint. It returns the ids the findings carried before, keyed
 // by the id they carry now, for the one case that posts a fresh root.
 func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding) map[string]string {
+	ids := make([]string, 0, len(rows))
+	for id := range rows {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
 	own := make([]reconcile.OwnComment, 0, len(rows))
-	for id, row := range rows {
+	for _, id := range ids {
+		row := rows[id]
 		file, bucket := payload.FingerprintParts(id)
 		o := reconcile.OwnComment{CommentID: row.CommentID, FindingID: id, File: file, Line: bucket*10 + 5, Text: row.CommentText, Kind: row.FindingKind, Subjects: splitSubjects(row.Subjects)}
 		if prior, ok := r.PriorComments[id]; ok {
@@ -293,12 +301,24 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 		if !keyed || !securityException(r, row, f) {
 			continue
 		}
+		f.Comment = fmt.Sprintf("Raised again: `%s` changed at %s after this point was settled. %s", f.File, shortSHA(r.HeadSHA), f.Comment)
 		fresh := originalIDs[f.ID]
 		if fresh == "" || fresh == f.ID {
-			continue
+			// The wording and line did not move, so the marker is minted from
+			// the text that names the change.
+			fresh = payload.Fingerprint(f.File, f.Line, f.Comment)
 		}
 		f.ID = fresh
-		f.Comment = fmt.Sprintf("Raised again: `%s` changed at %s after this point was settled. %s", f.File, shortSHA(r.HeadSHA), f.Comment)
+		if row.Subjects != "" {
+			// The fresh root is keyed to the settled row so rowsOnPoint finds
+			// it whatever this wording's own subjects or file are.
+			c := *f.FindingContract
+			c.Subjects = nil
+			for _, name := range splitSubjects(row.Subjects) {
+				c.Subjects = append(c.Subjects, types.FindingSubject{Kind: "symbol", Path: f.File, Name: name})
+			}
+			f.FindingContract = &c
+		}
 		kept = append(kept, f)
 	}
 	return kept
@@ -312,9 +332,10 @@ func securityException(r Round, row *db.PublishedFinding, f payload.Finding) boo
 }
 
 // rowsOnPoint lists every other row about the same point as row: the same
-// cited file and subject set, the finding's own subjects standing in for a
-// row written before the column existed. keyed is false when neither names
-// a subject, in which case the point cannot be tracked across rows.
+// subject set in any file (a fresh root may re-anchor elsewhere), the
+// finding's own subjects standing in for a row written before the column
+// existed. keyed is false when neither names a subject, in which case the
+// point cannot be tracked across rows.
 func rowsOnPoint(rows map[string]*db.PublishedFinding, row *db.PublishedFinding, f payload.Finding) (others []*db.PublishedFinding, keyed bool) {
 	key := row.Subjects
 	if key == "" {
@@ -323,12 +344,8 @@ func rowsOnPoint(rows map[string]*db.PublishedFinding, row *db.PublishedFinding,
 	if key == "" {
 		return nil, false
 	}
-	file, _ := payload.FingerprintParts(row.Fingerprint)
 	for _, other := range rows {
-		if other == row {
-			continue
-		}
-		if otherFile, _ := payload.FingerprintParts(other.Fingerprint); otherFile == file && other.Subjects == key {
+		if other != row && other.Subjects == key {
 			others = append(others, other)
 		}
 	}

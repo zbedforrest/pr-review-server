@@ -12,7 +12,7 @@ import (
 func withSubjects(x payload.Finding, kind string, names ...string) payload.Finding {
 	x.FindingContract.FindingKind = kind
 	for _, n := range names {
-		x.FindingContract.Subjects = append(x.FindingContract.Subjects, types.FindingSubject{Kind: "function", Path: x.File, Name: n})
+		x.FindingContract.Subjects = append(x.FindingContract.Subjects, types.FindingSubject{Kind: "symbol", Path: x.File, Name: n})
 	}
 	return x
 }
@@ -171,10 +171,10 @@ func TestLedger_SubjectKeyAliasesAcrossLinesAndFiles(t *testing.T) {
 	id := fid("a.go", 10, "fetchUser retries without backoff.")
 	r1.Findings = []payload.Finding{
 		f("sum", "unknown", "SUMMARY", 0, "Narrative."),
-		withSubjects(f(id, "critical", "a.go", 10, "fetchUser retries without backoff."), "production_behavior", "fetchUser"),
+		withSubjects(f(id, "critical", "a.go", 10, "fetchUser retries without backoff."), "production_behavior", "fetchUser", "retry"),
 	}
 	publishRound(t, gh, ledger, r1)
-	if ledger.rows[id].Subjects != "fetchuser" {
+	if ledger.rows[id].Subjects != "fetchuser,retry" {
 		t.Fatalf("subjects column = %q", ledger.rows[id].Subjects)
 	}
 
@@ -186,7 +186,7 @@ func TestLedger_SubjectKeyAliasesAcrossLinesAndFiles(t *testing.T) {
 			r := moved
 			r.Findings = []payload.Finding{
 				f("sum", "unknown", "SUMMARY", 0, "Narrative."),
-				withSubjects(f("new-id", "critical", file, 80, "No delay between attempts after a 429 response."), "production_behavior", "fetchUser"),
+				withSubjects(f("new-id", "critical", file, 80, "No delay between attempts after a 429 response."), "production_behavior", "fetchUser", "retry"),
 			}
 			rep := publishRound(t, gh, ledger, r)
 			if rep.InlinePosted != 0 || rep.StillOpen != 1 {
