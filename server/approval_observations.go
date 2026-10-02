@@ -50,7 +50,7 @@ type approvalChange struct {
 // status) re-broadcast unchanged pull requests and must not mark results stale:
 // a new head stales results for older heads, a blocking state (failing CI,
 // requested changes, draft, running review) stales only candidates, and a
-// cleared blocker stales the non-candidates it held back.
+// cleared blocker re-stales the results it held back so they offer a recheck.
 
 func (s *Server) approvalMaterialChanges(owner, repo string, number int) []approvalChange {
 	if s.db == nil {
@@ -82,10 +82,10 @@ func (s *Server) approvalMaterialChanges(owner, repo string, number int) []appro
 	}
 	var cleared []string
 	if pr.CIState == "success" {
-		cleared = append(cleared, "ci_failed", "ci_pending")
+		cleared = append(cleared, "ci_failed", "ci_pending", "observed_ci_change")
 	}
 	if pr.ReviewDecision != "CHANGES_REQUESTED" && pr.MyReviewStatus != "CHANGES_REQUESTED" {
-		cleared = append(cleared, "human_changes_requested")
+		cleared = append(cleared, "human_changes_requested", "observed_review_change")
 	}
 	if !pr.Draft {
 		cleared = append(cleared, "pr_draft")
