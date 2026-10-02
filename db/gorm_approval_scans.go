@@ -1291,11 +1291,29 @@ func (g *GormDB) InvalidateApprovalTargets(owner, repo string, number int, reaso
 	return g.InvalidateUserApprovalTargets(0, owner, repo, number, reason, now)
 }
 func (g *GormDB) InvalidateUserApprovalTargets(user int, owner, repo string, number int, reason string, now time.Time) error {
+	return g.InvalidateMatchingApprovalTargets(user, owner, repo, number, ApprovalInvalidation{}, reason, now)
+}
+
+// ApprovalInvalidation narrows which of a pull request's targets an observed
+// change invalidates: OffHead keeps targets already assessed at that head, and
+// CandidatesOnly leaves non-candidates, which the change cannot make worse.
+type ApprovalInvalidation struct {
+	OffHead        string
+	CandidatesOnly bool
+}
+
+func (g *GormDB) InvalidateMatchingApprovalTargets(user int, owner, repo string, number int, match ApprovalInvalidation, reason string, now time.Time) error {
 	return g.approvalTransaction(func(tx *gorm.DB) error {
 		q := tx.Where("owner = ? AND repo = ? AND number = ? AND execution_status IN ?", strings.ToLower(owner), strings.ToLower(repo), number, []string{"collecting", "investigating", "validating", "completed"})
 		q = q.Where("execution_status <> ? OR id IN (?)", "completed", tx.Model(&approvalProjection{}).Select("target_id"))
 		if user > 0 {
 			q = q.Where("user_id = ?", user)
+		}
+		if match.OffHead != "" {
+			q = q.Where("LOWER(expected_head_sha) <> ?", strings.ToLower(match.OffHead))
+		}
+		if match.CandidatesOnly {
+			q = q.Where("decision = ?", "candidate")
 		}
 		var targets []ApprovalTarget
 		if err := q.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Find(&targets).Error; err != nil {

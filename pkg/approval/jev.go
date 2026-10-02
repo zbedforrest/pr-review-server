@@ -71,7 +71,7 @@ var (
 	DefaultScoreCutoff  = 80.0
 	blockerCap          = 20.0
 	draftDeduction      = 40.0
-	pendingCIDeduction  = 15.0
+	pendingCIDeduction  = 5.0
 	inProgressDeduction = 10.0
 	incompleteDeduction = 10.0
 )
@@ -321,7 +321,7 @@ func (j JevScorer) combine(s Snapshot, facts []string, cs []jevConcern, answers 
 		} else {
 			superseded = math.Max(superseded, risk)
 		}
-		score.Concerns = append(score.Concerns, ConcernScore{ID: c.ID, Claim: clip(c.Claim, 300), Severity: c.Severity, PResolved: round2(resolved.Noul), Impact: round2(impact.Score), Weight: round2(weight), Risk: round2(risk), Disposition: disposition.Choice, OnHead: c.OnHead})
+		score.Concerns = append(score.Concerns, ConcernScore{ID: c.ID, Claim: shorten(c.Claim, 400), Severity: c.Severity, PResolved: round2(resolved.Noul), Impact: round2(impact.Score), Weight: round2(weight), Risk: round2(risk), Disposition: disposition.Choice, OnHead: c.OnHead})
 	}
 	survive *= 1 - superseded
 	sort.SliceStable(score.Concerns, func(a, b int) bool { return score.Concerns[a].Risk > score.Concerns[b].Risk })
@@ -363,7 +363,8 @@ func (j JevScorer) combine(s Snapshot, facts []string, cs []jevConcern, answers 
 		value = math.Min(value, blockerCap)
 	}
 	score.Value = round2(math.Max(0, math.Min(100, value)))
-	score.Candidate = len(score.Blockers) == 0 && !s.Draft && score.Value >= cutoff
+	// Pending CI costs only a few points but blocks the candidate flag until checks finish.
+	score.Candidate = len(score.Blockers) == 0 && !s.Draft && !has("ci_pending") && score.Value >= cutoff
 	return score
 }
 
@@ -388,7 +389,7 @@ func scoreSummary(s Score) string {
 		if c.Risk < 0.05 || len(top) == 3 {
 			break
 		}
-		top = append(top, fmt.Sprintf("%s (%.0f%% likely unresolved, impact %.1f/3)", clip(c.Claim, 120), 100*(1-c.PResolved), c.Impact))
+		top = append(top, fmt.Sprintf("%s (%.0f%% likely unresolved, impact %.1f/3)", shorten(c.Claim, 120), 100*(1-c.PResolved), c.Impact))
 	}
 	if len(top) > 0 {
 		parts = append(parts, "Top risks: "+strings.Join(top, "; ")+".")
@@ -451,6 +452,18 @@ func clip(text string, n int) string {
 		return text
 	}
 	return text[:n] + "\n[truncated]"
+}
+
+// shorten cuts display text at a word boundary with an ellipsis.
+func shorten(text string, n int) string {
+	if len(text) <= n {
+		return text
+	}
+	cut := text[:n]
+	if i := strings.LastIndexByte(cut, ' '); i > n/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,.;:") + "…"
 }
 
 func clamp01(x float64) float64 { return math.Max(0, math.Min(1, x)) }

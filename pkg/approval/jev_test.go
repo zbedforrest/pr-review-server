@@ -153,3 +153,22 @@ func TestScrubSecretsRedactsCredentialsInEveryString(t *testing.T) {
 		t.Fatalf("expected redaction markers: %s", text)
 	}
 }
+
+func TestJevPendingCIBlocksCandidateWithASmallDeduction(t *testing.T) {
+	s := scoringSnapshot()
+	s.Checks = []Check{{Name: "unit", State: "pending", SHA: s.Revision.Head}}
+	a, _ := runScorer(t, s, func(id string, _ map[string]any) map[string]any {
+		switch {
+		case strings.HasSuffix(id, "_resolved"):
+			return map[string]any{"type": "noul", "noul": 1.0}
+		case strings.HasSuffix(id, "_impact"):
+			return impactAnswer("1")
+		case strings.HasSuffix(id, "_disposition"):
+			return map[string]any{"type": "choice", "choice": "fixed"}
+		}
+		return map[string]any{"type": "score", "score": 4.0}
+	})
+	if a.Score.Value != 100-pendingCIDeduction || a.Score.Candidate || a.Decision == "candidate" {
+		t.Fatalf("pending CI must cost %v points and block the candidate flag: %+v", pendingCIDeduction, a.Score)
+	}
+}

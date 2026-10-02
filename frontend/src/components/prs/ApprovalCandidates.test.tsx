@@ -90,10 +90,10 @@ describe('approval investigation controls', () => {
   it('shows expired candidates in other results and explicitly revalidates only once', async () => {
     vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, execution_status: 'completed', decision: 'candidate', freshness_state: 'expired', valid_until: new Date(0).toISOString(), reason_codes: [], summary: 'Old decision' } as unknown as ApprovalTarget]);
     mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
-    await screen.findByText('Other results (1)');
+    await screen.findByText('Needs recheck');
     await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledTimes(1));
     expect(api.approvalRequest).toHaveBeenCalledWith('approval-candidates/revalidate', { target_ids: ['target'] });
-    expect(screen.queryByText('View evidence')).toBeNull();
+    expect(document.querySelector('.approval-row--candidate')).toBeNull();
   });
 });
 
@@ -103,10 +103,10 @@ it('withdraws a cached open evidence decision when the current projection become
   vi.mocked(api.approvalRequest).mockResolvedValue(candidate);
   const { client } = mount();
   fireEvent.click(await screen.findByText('View evidence'));
-  await screen.findByText('candidate');
+  await waitFor(() => expect(document.querySelector('.approval-detail .approval-status--candidate')).not.toBeNull());
   await act(async () => { client.setQueryData(['approval-targets'], [{ ...candidate, freshness_state: 'stale' }]); });
-  await waitFor(() => expect(screen.queryByText('candidate')).toBeNull());
-  expect(screen.queryByText('View evidence')).toBeNull();
+  await waitFor(() => expect(document.querySelector('.approval-status--candidate')).toBeNull());
+  expect(document.querySelector('.approval-row--candidate')).toBeNull();
   expect(screen.getAllByText('Historical rationale').length).toBeGreaterThan(0);
 });
 
@@ -119,7 +119,7 @@ it('withdraws matching cached candidates immediately after review activity witho
   const listener = vi.mocked(subscribeToWebSocketMessages).mock.calls[0][0];
   act(() => listener({ type: 'pr_updated', payload: { owner: 'acme', repo: 'example', number: 1 } }));
   expect(client.getQueryData<ApprovalTarget[]>(['approval-targets'])?.[0].freshness_state).toBe('stale');
-  await waitFor(() => expect(screen.queryByText('View evidence')).toBeNull());
+  await waitFor(() => expect(document.querySelector('.approval-row--candidate')).toBeNull());
   expect(api.approvalRequest).not.toHaveBeenCalled();
 });
 it('does not subscribe to approval invalidation when disabled', async () => {
@@ -170,8 +170,8 @@ it('withdraws the row when fresh evidence reports a base change before the list 
   mount();
   fireEvent.click(await screen.findByText('View evidence'));
   await screen.findByText('base changed');
-  expect(screen.queryByText('candidate')).toBeNull();
-  expect(screen.queryByText('View evidence')).toBeNull();
+  expect(document.querySelector('.approval-status--candidate')).toBeNull();
+  expect(document.querySelector('.approval-row--candidate')).toBeNull();
 });
 it('keeps an initial evidence request running when an unrelated PR changes', async () => {
   const candidate = evidenceCandidate();
@@ -184,7 +184,7 @@ it('keeps an initial evidence request running when an unrelated PR changes', asy
   const listeners = vi.mocked(subscribeToWebSocketMessages).mock.calls;
   act(() => listeners[listeners.length - 1][0]({ type: 'pr_updated', payload: { owner: 'acme', repo: 'example', number: 2 } }));
   await act(async () => finish(candidate));
-  await screen.findByText('candidate');
+  await waitFor(() => expect(document.querySelector('.approval-detail .approval-status--candidate')).not.toBeNull());
   expect(api.approvalRequest).toHaveBeenCalledTimes(1);
   expect(screen.queryByText('CancelledError')).toBeNull();
 });
@@ -259,8 +259,8 @@ it('shows every scored result with its score, highest first', async () => {
   const scored = (number: number, value: number) => ({ target_id: `t${number}`, scan_id: 'scan', owner: 'acme', repo: 'example', number, execution_status: 'completed', decision: 'needs_attention', freshness_state: 'current', valid_until: new Date(Date.now() + 60000).toISOString(), reason_codes: ['score_below_threshold'], summary: '', score: { value, threshold: 80, candidate: false, readiness: 0, risk: 0, model: 'jev', latency_ms: 1 } }) as unknown as ApprovalTarget;
   vi.mocked(api.fetchApprovalTargets).mockResolvedValue([scored(1, 35), scored(2, 72)]);
   mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
-  await screen.findByText('Other results (2)');
-  const badges = Array.from(document.querySelectorAll('.approval-other .approval-score')).map(node => node.textContent);
+  await waitFor(() => expect(document.querySelectorAll('.approval-table .approval-score')).toHaveLength(2));
+  const badges = Array.from(document.querySelectorAll('.approval-table .approval-score')).map(node => node.textContent);
   expect(badges).toEqual(['72', '35']);
-  expect(document.querySelector('.approval-other .approval-score--mid')?.textContent).toBe('72');
+  expect(document.querySelector('.approval-table .approval-score--mid')?.textContent).toBe('72');
 });
