@@ -280,8 +280,9 @@ func severityLabel(severity, badgeBase string) string {
 	return fmt.Sprintf(`<img alt="%s" src="%s/%s.svg">`, sev, strings.TrimSuffix(badgeBase, "/"), strings.ToLower(severity))
 }
 
-// lowerSeverityNotes are confirmed findings below the inline bar: shown
-// folded so the summary stays short but nothing confirmed is hidden.
+// lowerSeverityNotes are confirmed findings below the inline bar, including
+// a CRITICAL or MEDIUM the discount gate held back: shown folded so the
+// summary stays short but nothing confirmed is hidden.
 func (r Round) lowerSeverityNotes() []payload.Finding {
 	var notes []payload.Finding
 	for _, f := range r.Findings {
@@ -365,7 +366,7 @@ func RenderSummary(r Round, sel Selection) string {
 	if len(shown) > 0 {
 		b.WriteString("\n")
 	}
-	r.writeFolded(&b, "lower-severity note", r.lowerSeverityNotes(), r.bullet)
+	r.writeFolded(&b, "folded note", r.lowerSeverityNotes(), r.bullet)
 	r.writeFolded(&b, "unverified note", r.unverifiedNotes(), r.unverifiedBullet)
 	if r.DashboardURL != "" {
 		fmt.Fprintf(&b, "[Full report](%s)\n\n", r.DashboardURL)

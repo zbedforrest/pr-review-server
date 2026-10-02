@@ -13,6 +13,15 @@ func DiscountGateEnabled() bool {
 	return os.Getenv("PUBLISH_DISCOUNT_GATE") != "false"
 }
 
+// ConditionHedgeGateEnabled extends the discount gate to an uncertainty line
+// that opens with an unchecked-condition phrase ("whether ...", "depends
+// on ...", "I could not verify ..."). On the audit's labelled comments that
+// rule hid 101 correct findings to remove 22 incorrect ones, so it ships
+// behind PUBLISH_CONDITION_HEDGE_GATE=true, default off.
+func ConditionHedgeGateEnabled() bool {
+	return os.Getenv("PUBLISH_CONDITION_HEDGE_GATE") == "true"
+}
+
 const (
 	DiscountNone        = ""
 	DiscountUnfalsified = "not_falsifiable"
@@ -50,7 +59,8 @@ var intentPhrases = []string{
 }
 
 // conditionPhrases open a claim the agent conditioned on something it did
-// not check, or admit it could not check it.
+// not check, or admit it could not check it. Only consulted when
+// ConditionHedgeGateEnabled.
 var conditionPhrases = []string{
 	"if ", "only if", "unless ", "assuming", "assumes", "assumed", "provided that", "in case ",
 	"depends on", "this depends", "it depends", "that depends", "depending on", "dependent on",
@@ -85,9 +95,10 @@ var confidenceLabels = []string{
 // DiscountNone. A finding is discounted when the agent could not state an
 // experiment (falsifiability other than falsifiable), when current_impact
 // opens by conceding no impact today or guessing at intent, or when
-// uncertainty opens with a nil-impact, intent or unchecked-condition phrase.
-// The audit found every confirmed false positive hedged this way while
-// still claiming current impact. Invalid contracts are not judged here.
+// uncertainty opens with a nil-impact or intent phrase. The unchecked-
+// condition phrases on uncertainty, which the six audited false positives
+// used, count only under ConditionHedgeGateEnabled. Invalid contracts are
+// not judged here.
 func SelfDiscount(c *FindingContract) string {
 	if c == nil {
 		return DiscountNone
@@ -106,7 +117,10 @@ func SelfDiscount(c *FindingContract) string {
 	if opensWithAny(uncertainty, nilImpactPhrases) {
 		return DiscountNilImpact
 	}
-	if opensWithAny(uncertainty, intentPhrases) || opensWithAny(uncertainty, conditionPhrases) {
+	if opensWithAny(uncertainty, intentPhrases) {
+		return DiscountHedged
+	}
+	if ConditionHedgeGateEnabled() && opensWithAny(uncertainty, conditionPhrases) {
 		return DiscountHedged
 	}
 	return DiscountNone

@@ -145,6 +145,7 @@ func validPolicyContract(kind, materiality, falsifiability string) *types.Findin
 }
 
 func TestEnforceFindingContractPolicyDemotesSelfDiscountedFindings(t *testing.T) {
+	t.Setenv("PUBLISH_CONDITION_HEDGE_GATE", "true")
 	for name, uncertainty := range map[string]string{
 		"condition":  "Medium: depends on whether the PUT keeps steps when the events list is absent.",
 		"intent":     "May be deliberate; the default was chosen for internal callers.",
@@ -187,8 +188,20 @@ func TestEnforceFindingContractPolicyKeepsAssertedCurrentImpact(t *testing.T) {
 	}
 }
 
+func TestEnforceFindingContractPolicyConditionGateOffKeepsConditionHedges(t *testing.T) {
+	contract := validPolicyContract("production_behavior", "current_impact", "falsifiable")
+	contract.CurrentImpact = "Users lose their steps."
+	contract.Uncertainty = "Medium: depends on whether the PUT keeps steps."
+	comments := []types.LineComment{{FilePath: "example.go", Importance: "CRITICAL", FindingContract: contract}}
+	EnforceFindingContractPolicy(comments)
+	if comments[0].Importance != "CRITICAL" || contract.Materiality != "current_impact" {
+		t.Fatalf("importance = %q materiality = %q, want CRITICAL/current_impact with the condition gate off", comments[0].Importance, contract.Materiality)
+	}
+}
+
 func TestEnforceFindingContractPolicyDiscountGateOffKeepsOldBehaviour(t *testing.T) {
 	t.Setenv("PUBLISH_DISCOUNT_GATE", "false")
+	t.Setenv("PUBLISH_CONDITION_HEDGE_GATE", "true")
 	contract := validPolicyContract("production_behavior", "current_impact", "falsifiable")
 	contract.CurrentImpact = "Users lose their steps."
 	contract.Uncertainty = "Medium: depends on whether the PUT keeps steps."

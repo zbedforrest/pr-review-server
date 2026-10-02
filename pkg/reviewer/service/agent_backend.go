@@ -219,7 +219,7 @@ func parseCodexStreamModel(proc SpawnedProcess, logFile io.Writer, maxTurns int,
 			// Count completed concrete work items so MaxTurns remains a meaningful
 			// work bound. Provider-internal reasoning and the terminal answer are
 			// excluded because neither represents another tool/file operation.
-			if codexToolItemTypes[itemType] {
+			if codexToolItemTypes[itemType] && codexItemExecuted(item) {
 				result.toolCalls++
 			}
 			if itemType != "" && itemType != "reasoning" && itemType != "agent_message" {
@@ -254,10 +254,23 @@ func parseCodexStreamModel(proc SpawnedProcess, logFile io.Writer, maxTurns int,
 	return result, nil
 }
 
-// codexToolItemTypes are the completed items that show the agent touched
-// the checkout or the network rather than answering from the prompt alone.
+// codexToolItemTypes are the items that show the agent touched the checkout
+// or the network rather than answering from the prompt alone.
 var codexToolItemTypes = map[string]bool{
 	"command_execution": true, "file_change": true, "mcp_tool_call": true, "web_search": true,
+}
+
+// codexItemExecuted is true for a tool item that ran to completion with a
+// zero exit code. A sandbox that refuses every command still emits the item,
+// so a failed one must not count as having read anything.
+func codexItemExecuted(item map[string]any) bool {
+	if status, _ := item["status"].(string); status != "completed" {
+		return false
+	}
+	if code, ok := item["exit_code"].(float64); ok && code != 0 {
+		return false
+	}
+	return true
 }
 
 func codexErrorMessage(v any, fallback string) string {

@@ -12,24 +12,42 @@ func falsifiableContract(impact, uncertainty string) *FindingContract {
 	}
 }
 
-func TestSelfDiscount_AuditedHedgesAreDiscounted(t *testing.T) {
-	cases := map[string]string{
-		"confidence label then condition": "Medium: depends on whether the v2 PUT keeps steps when the events list is absent, which the tool's own full-replace comment suggests it does not.",
-		"depends on an unread library":    "This depends on the framework's `IP()` using `RemoteIP()` as a fallback, which the new `fromRemote` test assumes it does not.",
-		"opens with whether":              "Whether the evaluation model defines a default ordering that makes the positional selection deterministic.",
-		"uncertain whether":               "Uncertain whether set tasks ever accumulate more than one level-1 evaluation, since creation sets the needed count to 1.",
-		"could not run commands":          "I could not execute commands in this checkout to confirm the installed client version, and the hierarchy I know makes ConnectTimeout a NetworkError.",
-		"unverified from the diff":        "Whether the simple popup unmounts synchronously enough to make a double activation harmless is unverified from the diff.",
-		"unknown mount state":             "Whether the LIVE tab remains mounted while the broadcaster is offline is unknown, so the wasted fetch may only occur for part of the offline window.",
-		"could not read the slice":        "I could not read the slice implementation (diff truncated and shell unavailable), so the replace-vs-merge behavior is inferred from the passing test.",
-		"intent guess":                    "May be deliberate: the handler drops the header on purpose for internal callers.",
-		"by design":                       "By design if the backend never emits an empty list.",
-		"conditional on the backend":      "If the backend emits the legacy shape this path is unreachable.",
-		"nil impact in uncertainty":       "None today; the flag is off in every environment.",
-	}
-	for name, uncertainty := range cases {
+var conditionHedges = map[string]string{
+	"confidence label then condition": "Medium: depends on whether the v2 PUT keeps steps when the events list is absent, which the tool's own full-replace comment suggests it does not.",
+	"depends on an unread library":    "This depends on the framework's `IP()` using `RemoteIP()` as a fallback, which the new `fromRemote` test assumes it does not.",
+	"opens with whether":              "Whether the evaluation model defines a default ordering that makes the positional selection deterministic.",
+	"uncertain whether":               "Uncertain whether set tasks ever accumulate more than one level-1 evaluation, since creation sets the needed count to 1.",
+	"could not run commands":          "I could not execute commands in this checkout to confirm the installed client version, and the hierarchy I know makes ConnectTimeout a NetworkError.",
+	"unverified from the diff":        "Whether the simple popup unmounts synchronously enough to make a double activation harmless is unverified from the diff.",
+	"unknown mount state":             "Whether the LIVE tab remains mounted while the broadcaster is offline is unknown, so the wasted fetch may only occur for part of the offline window.",
+	"could not read the slice":        "I could not read the slice implementation (diff truncated and shell unavailable), so the replace-vs-merge behavior is inferred from the passing test.",
+	"conditional on the backend":      "If the backend emits the legacy shape this path is unreachable.",
+}
+
+var intentAndNilImpactHedges = map[string]string{
+	"intent guess":              "May be deliberate: the handler drops the header on purpose for internal callers.",
+	"by design":                 "By design if the backend never emits an empty list.",
+	"nil impact in uncertainty": "None today; the flag is off in every environment.",
+}
+
+func TestSelfDiscount_IntentAndNilImpactHedgesAreDiscountedByDefault(t *testing.T) {
+	for name, uncertainty := range intentAndNilImpactHedges {
 		if got := SelfDiscount(falsifiableContract("Users lose their steps.", uncertainty)); got != DiscountHedged && got != DiscountNilImpact {
 			t.Errorf("%s: SelfDiscount = %q, want a discount", name, got)
+		}
+	}
+}
+
+func TestSelfDiscount_ConditionHedgesNeedTheConditionGate(t *testing.T) {
+	for name, uncertainty := range conditionHedges {
+		if got := SelfDiscount(falsifiableContract("Users lose their steps.", uncertainty)); got != DiscountNone {
+			t.Errorf("%s: SelfDiscount = %q with the condition gate off, want none", name, got)
+		}
+	}
+	t.Setenv("PUBLISH_CONDITION_HEDGE_GATE", "true")
+	for name, uncertainty := range conditionHedges {
+		if got := SelfDiscount(falsifiableContract("Users lose their steps.", uncertainty)); got != DiscountHedged {
+			t.Errorf("%s: SelfDiscount = %q with the condition gate on, want %q", name, got, DiscountHedged)
 		}
 	}
 }

@@ -9,7 +9,9 @@ import (
 
 // auditedFalsePositives are anonymised copies of the six confirmed false
 // positives from the comment-system audit: every one claimed current impact
-// with an experiment, then hedged the claim away in its uncertainty line.
+// with an experiment, then conditioned the claim on something unchecked in
+// its uncertainty line. The third entry carries its second-round wording;
+// the posted first-round line is auditedFalsePositiveAsPosted below.
 var auditedFalsePositives = []struct {
 	name, severity, kind, impact, uncertainty string
 }{
@@ -33,6 +35,15 @@ var auditedFalsePositives = []struct {
 		"Whether the LIVE tab remains mounted while the broadcaster is offline is unknown, so the wasted fetch may only occur for part of the offline window."},
 }
 
+// auditedFalsePositiveAsPosted is the third audited false positive with the
+// uncertainty line that was actually posted. It is not hedged, so no lexical
+// gate hides it; the test pins that limit.
+var auditedFalsePositiveAsPosted = struct{ name, severity, kind, impact, uncertainty string }{
+	"live query fetches even when the broadcast is over", "medium", "production_behavior",
+	"Selecting or remaining on the LIVE filter after the broadcast has ended issues a pointless threads request that the query function then throws away.",
+	"Fairly confident; the skip expression makes availability irrelevant whenever the live filter is selected.",
+}
+
 func auditedFinding(id string, c struct{ name, severity, kind, impact, uncertainty string }) payload.Finding {
 	x := fp(id, c.severity, "a.go", 10, c.name+".", "agent")
 	x.FindingContract = falsifiableTestContract(c.kind, "current_impact", c.impact, c.uncertainty)
@@ -43,7 +54,8 @@ func auditedFinding(id string, c struct{ name, severity, kind, impact, uncertain
 	return x
 }
 
-func TestShown_AuditedFalsePositivesFailTheGate(t *testing.T) {
+func TestShown_AuditedFalsePositivesFailTheConditionGate(t *testing.T) {
+	t.Setenv("PUBLISH_CONDITION_HEDGE_GATE", "true")
 	for i, c := range auditedFalsePositives {
 		x := auditedFinding("fp", c)
 		if err := types.ValidateFindingContract(x.FindingContract); err != nil {
@@ -59,7 +71,23 @@ func TestShown_AuditedFalsePositivesFailTheGate(t *testing.T) {
 	}
 }
 
+func TestShown_AuditedFalsePositivesPassTheDefaultGate(t *testing.T) {
+	for i, c := range auditedFalsePositives {
+		if !Shown(auditedFinding("fp", c)) {
+			t.Errorf("%d %s: the default gate has no rule that hides a condition hedge", i, c.name)
+		}
+	}
+}
+
+func TestShown_AuditedFalsePositiveAsPostedIsShownEvenWithTheConditionGate(t *testing.T) {
+	t.Setenv("PUBLISH_CONDITION_HEDGE_GATE", "true")
+	if !Shown(auditedFinding("fp", auditedFalsePositiveAsPosted)) {
+		t.Fatal("an unhedged false positive is beyond a lexical gate; want shown")
+	}
+}
+
 func TestShown_AuditedFalsePositivesWereShownBeforeTheGate(t *testing.T) {
+	t.Setenv("PUBLISH_CONDITION_HEDGE_GATE", "true")
 	t.Setenv("PUBLISH_DISCOUNT_GATE", "false")
 	for i, c := range auditedFalsePositives {
 		if !Shown(auditedFinding("fp", c)) {
@@ -77,7 +105,7 @@ func TestShown_CriticalNeedsTheSameContractAsAMedium(t *testing.T) {
 		return x
 	}
 	hedgedCritical := asserted("hedged", "critical", 2)
-	hedgedCritical.FindingContract.Uncertainty = "If the backend emits the legacy shape this path is unreachable."
+	hedgedCritical.FindingContract.Uncertainty = "May be deliberate: the legacy shape makes this path unreachable."
 	unfalsifiableCritical := asserted("unfalsifiable", "critical", 3)
 	unfalsifiableCritical.FindingContract.Falsifiability = "unknown"
 	unfalsifiableCritical.FindingContract.FalsifiableCondition, unfalsifiableCritical.FindingContract.ExpectedObservable = nil, nil

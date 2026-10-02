@@ -212,8 +212,8 @@ func TestParseCodexStreamHappyPath(t *testing.T) {
 
 func TestParseCodexStreamTurnBudgetExcludesReasoningAndTerminalMessage(t *testing.T) {
 	stream := `{"type":"item.completed","item":{"type":"reasoning"}}
-{"type":"item.completed","item":{"type":"command_execution"}}
-{"type":"item.completed","item":{"type":"file_change"}}
+{"type":"item.completed","item":{"type":"command_execution","status":"completed","exit_code":0}}
+{"type":"item.completed","item":{"type":"file_change","status":"completed"}}
 {"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
 `
 	proc := &fakeProcess{
@@ -440,6 +440,25 @@ func TestRunAgentReviewClaudeUsesFilteredFrozenEnvironment(t *testing.T) {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("Claude child inherited server secret %q", forbidden)
 		}
+	}
+}
+
+func TestParseCodexStreamDoesNotCountAFailedCommandAsATool(t *testing.T) {
+	stream := `{"type":"item.completed","item":{"type":"command_execution","command":"git diff","status":"failed","exit_code":1,"aggregated_output":"bwrap: loopback: Failed RTM_NEWADDR"}}
+{"type":"item.completed","item":{"type":"command_execution","command":"cat go.mod","status":"completed","exit_code":127}}
+{"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}
+`
+	proc := &fakeProcess{stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, 5)
+	if err != nil {
+		t.Fatalf("parseCodexStream: %v", err)
+	}
+	if res.toolCalls != 0 {
+		t.Fatalf("tool calls = %d, want 0", res.toolCalls)
+	}
+	if res.budgetUnits != 2 {
+		t.Fatalf("budget units = %d, want 2", res.budgetUnits)
 	}
 }
 
