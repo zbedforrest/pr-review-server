@@ -2041,9 +2041,13 @@ func TestReplyReactor_AuthorThumbsDownOnTheRootContestsTheFinding(t *testing.T) 
 	gh.threads["acme/example#7"][0].ThumbsDown = 1
 	gh.failReactions = true
 	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 102, InReplyToID: 100, AuthorID: 42, Body: "Is this still needed?", CreatedAt: time.Date(2026, 9, 9, 17, 2, 0, 0, time.UTC)})
+	r.LastScanned = map[string]time.Time{}
 	rep, err = r.Run(context.Background())
 	if err != nil || len(rep.Errors) != 1 || !strings.Contains(rep.Errors[0], "reactions on 100") || rep.Reacted == 0 {
 		t.Fatalf("a reactions error is reported and the scan goes on: err=%v rep=%+v", err, rep)
+	}
+	if !r.LastScanned["acme/example#7"].IsZero() {
+		t.Fatalf("a reactions error keeps the PR unsettled so the thumbs-down is read next scan")
 	}
 
 	r, gh, ledger = reactorFixture(ReplyModeReact)

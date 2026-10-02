@@ -850,7 +850,8 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 	if err != nil {
 		return err
 	}
-	if err := r.contestThumbsDown(ctx, t, state, comments, rep); err != nil {
+	reactionsRead, err := r.contestThumbsDown(ctx, t, state, comments, rep)
+	if err != nil {
 		return err
 	}
 	seen := make(map[int64]db.PublishedReply, len(rows))
@@ -860,7 +861,7 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 	// The watermark only advances when nothing on this PR failed or is still
 	// mid-flight, so incomplete text steps are resumed next cycle instead of
 	// waiting for updated_at to move.
-	settled := true
+	settled := reactionsRead
 	for _, reply := range FindAuthorReplies(comments, t.Roots, state.AuthorID, r.Since) {
 		rep.RepliesSeen++
 		row, handled := seen[reply.CommentID]
@@ -1023,12 +1024,14 @@ func (r ReplyReactor) settlePendingReaction(ctx context.Context, t db.PublishedR
 // whether anyone did; who did takes one more call per such root. Reactions do
 // not move a PR's updated_at, so one left on a quiet PR is seen on the next
 // full scan. Shadow mode writes nothing to a finding's state, like its
-// budget path.
-func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, rep *ReplyReport) error {
+// budget path. complete is false when a reactions read failed, so the
+// caller keeps the PR's watermark where it is and retries next scan.
+func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, rep *ReplyReport) (complete bool, err error) {
 	lister, ok := r.GH.(ReactionLister)
 	if !ok || r.Legacy || (r.Mode != ReplyModeReact && r.Mode != ReplyModeRespond) {
-		return nil
+		return true, nil
 	}
+	complete = true
 	var states map[string]string
 	for _, c := range comments {
 		fp, isRoot := t.Roots[c.ID]
@@ -1036,9 +1039,8 @@ func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReply
 			continue
 		}
 		if states == nil {
-			var err error
 			if states, err = r.findingStates(t); err != nil {
-				return err
+				return false, err
 			}
 		}
 		if st := states[fp]; st != "" && st != db.PublishedStateOpen && st != db.PublishedStateResolved {
@@ -1047,6 +1049,7 @@ func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReply
 		reactions, err := lister.ListReactions(ctx, t.RepoOwner, t.RepoName, c.ID)
 		if err != nil {
 			rep.Errors = append(rep.Errors, fmt.Sprintf("%s/%s#%d: reactions on %d: %v", t.RepoOwner, t.RepoName, t.PRNumber, c.ID, err))
+			complete = false
 			continue
 		}
 		for _, re := range reactions {
@@ -1055,7 +1058,7 @@ func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReply
 			}
 			changed, err := r.Ledger.ContestPublishedFinding(t.RepoOwner, t.RepoName, t.PRNumber, fp)
 			if err != nil {
-				return err
+				return false, err
 			}
 			if changed {
 				rep.Contested++
@@ -1063,7 +1066,7 @@ func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReply
 			break
 		}
 	}
-	return nil
+	return complete, nil
 }
 
 func (r ReplyReactor) findingStates(t db.PublishedReplyTarget) (map[string]string, error) {

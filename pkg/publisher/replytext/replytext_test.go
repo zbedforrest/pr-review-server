@@ -383,6 +383,10 @@ func TestRenderPartsDropsTheRiskAskWhenThePRBodyStatesIntent(t *testing.T) {
 		t.Fatalf("paragraph=%q appendix=%q ok=%v", paragraph, appendix, ok)
 	}
 
+	if _, _, ok := RenderParts("Gating every tier is your call. Should the fallback in content.ts:14 be noted in the PR description as accepted risk?", ctx); ok {
+		t.Fatalf("a body whose only file:line sits inside the dropped ask is not postable")
+	}
+
 	ctx.PRBody = "Adds SEO headers for tag pages."
 	paragraph, appendix, ok = RenderParts("Gating every tier is your call. With the toggle off, content.ts:14 falls back to the generic header for tier 1 as well.", ctx)
 	if !ok || !strings.Contains(appendix, "accepted risk") {

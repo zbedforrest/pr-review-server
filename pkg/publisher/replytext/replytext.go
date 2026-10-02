@@ -155,10 +155,10 @@ const IntentScanRunes = 4000
 // questions are template furniture ("Is this breaking change intentional?")
 // and are not read.
 func StatesIntent(text string) bool {
+	text = htmlCommentRe.ReplaceAllString(text, "")
 	if r := []rune(text); len(r) > IntentScanRunes {
 		text = string(r[:IntentScanRunes])
 	}
-	text = htmlCommentRe.ReplaceAllString(text, "")
 	var kept []string
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -321,7 +321,8 @@ func dropWithdrawal(body string) (string, bool) {
 }
 
 // dropRiskAsk removes the accepted-risk question when the PR description
-// already answers it. ok is false when the body was nothing but the ask.
+// already answers it. ok is false when the body was nothing but the ask or
+// its only file:line sat inside it.
 func dropRiskAsk(body string) (string, bool) {
 	var kept []string
 	for _, s := range sentenceRe.FindAllString(body, -1) {
@@ -331,10 +332,11 @@ func dropRiskAsk(body string) (string, bool) {
 		}
 		kept = append(kept, s)
 	}
-	if len(kept) == 0 {
+	out := strings.Join(kept, " ")
+	if len(kept) == 0 || !evidenceRe.MatchString(out) {
 		return "", false
 	}
-	return strings.Join(kept, " "), true
+	return out, true
 }
 
 // lastPunct is empty when the sentence still ends in terminal punctuation
