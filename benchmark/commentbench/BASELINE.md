@@ -3,8 +3,8 @@
 `cmd/commentbench` replays historical PRs through the real publisher (`publisher.Publish` via
 `poller.BuildPublishRound`) and the real reply reactor (`publisher.ReplyReactor`) in-process, with an
 in-memory SQLite ledger and a recording fake GitHub, and scores what they do against what the
-comment-system audit says PRism should have done. It shares its dump, sidecar and replay plumbing with
-`cmd/publishreplay` through `internal/replaykit`.
+comment-system audit says PRism should have done. Its dump, sidecar and replay plumbing lives in
+`internal/replaykit`; `cmd/publishreplay` keeps its own copy, which carries the replay metrics.
 
 Measured with this branch, whose `pkg/publisher` is identical to master's, replies in stub mode,
 shipped publisher defaults (inline cap 3, minimum severity medium, unverified claims folded).
