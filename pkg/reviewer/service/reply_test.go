@@ -322,6 +322,24 @@ func TestReplyPromptCapsSiblingsAndTheirBodies(t *testing.T) {
 	if n := strings.Count(prompt, `"finding_id": "f`); n != replyPromptMaxSiblings {
 		t.Fatalf("siblings in prompt = %d, want %d", n, replyPromptMaxSiblings)
 	}
+
+	in = replyInput("abc")
+	sib := SiblingThread{Fingerprint: "g.go:1:x", Thread: []ReplyMessage{{Author: "prism", Ours: true, Body: "root"}}}
+	for i := 0; i < replyPromptSiblingReplies+5; i++ {
+		sib.Thread = append(sib.Thread, ReplyMessage{Author: "pilot", Body: fmt.Sprintf("reply %d", i)})
+	}
+	in.Siblings = []SiblingThread{sib}
+	in.PRBody = "<!-- line one\nline two -->\nKeeps the gate."
+	prompt, err = buildReplyPrompt(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, `"body": "reply 4"`) || !strings.Contains(prompt, `"body": "reply 5"`) || !strings.Contains(prompt, `"body": "root"`) {
+		t.Fatalf("a sibling thread keeps its root and its latest %d replies", replyPromptSiblingReplies)
+	}
+	if strings.Contains(prompt, "line two") || !strings.Contains(prompt, `"pr_body": "Keeps the gate."`) {
+		t.Fatalf("multi-line template comments are stripped from the PR body")
+	}
 	if strings.Contains(prompt, strings.Repeat("r", replyPromptSiblingRootChars+1)) {
 		t.Fatalf("sibling root bodies are truncated")
 	}

@@ -167,12 +167,13 @@ func StatesIntent(text string) bool {
 		}
 		kept = append(kept, line)
 	}
-	text = strings.Join(kept, "\n")
+	text = notABugFixRe.ReplaceAllString(strings.Join(kept, "\n"), "")
 	return intentRe.MatchString(text) && !negatedIntentRe.MatchString(text)
 }
 
 var (
 	htmlCommentRe = regexp.MustCompile(`(?s)<!--.*?-->`)
+	notABugFixRe  = regexp.MustCompile(`(?i)\bnot a bug[- ](?:fix|patch|change|pr|commit)\b`)
 	checklistRe   = regexp.MustCompile(`^(?:[-*+]|\d+[.)])\s*\[[ xX]\]`)
 )
 

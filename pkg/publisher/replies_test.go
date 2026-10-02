@@ -1348,6 +1348,23 @@ func TestReplyReactor_BudgetExhaustionOnAQuestionIsRetriedNotNoticed(t *testing.
 	}
 }
 
+func TestReplyReactor_BudgetExhaustedOnAFixClaimIsRetriedNotContested(t *testing.T) {
+	runs := 0
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		runs++
+		return ReplyDecision{Model: "m"}, fmt.Errorf("%w: wall-clock timeout", ErrBudgetExhausted)
+	})
+	gh.threads["acme/example#7"][1].Body = "Fixed the race in abc1234 by taking the lock first."
+	rep, _ := r.Run(context.Background())
+	if runs != 1 || len(rep.Errors) != 1 || len(gh.posted) != 0 || ledger.rows[0].Decision != "" || ledger.states["a.go:1:abc"] != "" {
+		t.Fatalf("a fix claim the model could not check keeps the retry path: rep=%+v posted=%v row=%+v states=%v", rep, gh.posted, ledger.rows[0], ledger.states)
+	}
+	r.Run(context.Background())
+	if runs != 2 {
+		t.Fatalf("retried next cycle: runs=%d", runs)
+	}
+}
+
 func TestReplyReactor_LegacyBudgetNoticeIsRenderedAndKeepsNoteAndDeferral(t *testing.T) {
 	runs := 0
 	var outcomes []ReplyOutcome
@@ -2046,12 +2063,14 @@ func TestReplyReactor_AuthorThumbsDownOnTheRootContestsTheFinding(t *testing.T) 
 		t.Fatalf("legacy ignores reactions: states=%v", ledger.states)
 	}
 
-	r, gh, ledger = reactorFixture(ReplyModeObserve)
-	gh.threads["acme/example#7"][0].ThumbsDown = 1
-	gh.given = map[int64][]Reaction{100: {{UserID: 42, Content: "-1"}}}
-	r.Run(context.Background())
-	if ledger.states["a.go:1:abc"] != "" {
-		t.Fatalf("observe mode records and changes nothing: states=%v", ledger.states)
+	for _, mode := range []string{ReplyModeObserve, ReplyModeShadow} {
+		r, gh, ledger = reactorFixture(mode)
+		gh.threads["acme/example#7"][0].ThumbsDown = 1
+		gh.given = map[int64][]Reaction{100: {{UserID: 42, Content: "-1"}}}
+		r.Run(context.Background())
+		if ledger.states["a.go:1:abc"] != "" {
+			t.Fatalf("%s mode changes no finding state: states=%v", mode, ledger.states)
+		}
 	}
 }
 

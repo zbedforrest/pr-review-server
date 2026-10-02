@@ -1022,10 +1022,11 @@ func (r ReplyReactor) settlePendingReaction(ctx context.Context, t db.PublishedR
 // thumbs-down on its root comment. The rollup on the listed comment says
 // whether anyone did; who did takes one more call per such root. Reactions do
 // not move a PR's updated_at, so one left on a quiet PR is seen on the next
-// full scan.
+// full scan. Shadow mode writes nothing to a finding's state, like its
+// budget path.
 func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReplyTarget, state PRState, comments []ThreadComment, rep *ReplyReport) error {
 	lister, ok := r.GH.(ReactionLister)
-	if !ok || r.Legacy || !r.reacts() {
+	if !ok || r.Legacy || (r.Mode != ReplyModeReact && r.Mode != ReplyModeRespond) {
 		return nil
 	}
 	var states map[string]string
@@ -1080,21 +1081,24 @@ func (r ReplyReactor) findingStates(t db.PublishedReplyTarget) (map[string]strin
 // prContext collects the rest of PRism's review on the PR for the reply
 // model: the other inline threads, oldest root first, leaving out findings the
 // ledger already dismissed, and the open findings that only the summary
-// carries. Legacy hands the model nothing beyond the thread.
-func (r ReplyReactor) prContext(t db.PublishedReplyTarget, comments []ThreadComment, rootID int64) ([]SiblingThread, []OtherFinding) {
+// carries. Legacy hands the model nothing beyond the thread. A ledger read
+// error fails the step so it is resumed with the full context next scan.
+func (r ReplyReactor) prContext(t db.PublishedReplyTarget, comments []ThreadComment, rootID int64) ([]SiblingThread, []OtherFinding, error) {
 	if r.Legacy {
-		return nil, nil
+		return nil, nil, nil
+	}
+	rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber)
+	if err != nil {
+		return nil, nil, err
 	}
 	states := map[string]string{}
 	var other []OtherFinding
-	if rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber); err == nil {
-		for _, row := range rows {
-			states[row.Fingerprint] = row.State
-			summaryOnly := row.Kind == db.PublishedKindAnnotation || (row.Kind == db.PublishedKindFinding && row.CommentID == 0)
-			if summaryOnly && row.State == db.PublishedStateOpen {
-				file, line := fingerprintAnchor(row.Fingerprint)
-				other = append(other, OtherFinding{Fingerprint: row.Fingerprint, File: file, Line: line, Severity: row.Severity, State: row.State})
-			}
+	for _, row := range rows {
+		states[row.Fingerprint] = row.State
+		summaryOnly := row.Kind == db.PublishedKindAnnotation || (row.Kind == db.PublishedKindFinding && row.CommentID == 0)
+		if summaryOnly && row.State == db.PublishedStateOpen {
+			file, line := fingerprintAnchor(row.Fingerprint)
+			other = append(other, OtherFinding{Fingerprint: row.Fingerprint, File: file, Line: line, Severity: row.Severity, State: row.State})
 		}
 	}
 	var out []SiblingThread
@@ -1110,7 +1114,7 @@ func (r ReplyReactor) prContext(t db.PublishedReplyTarget, comments []ThreadComm
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Root.ID < out[j].Root.ID })
 	sort.Slice(other, func(i, j int) bool { return other[i].Fingerprint < other[j].Fingerprint })
-	return out, other
+	return out, other, nil
 }
 
 // fingerprintAnchor reads the file and the first line of the ten-line bucket
@@ -1452,7 +1456,10 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		if row.Attempts >= r.textPolicy().MaxAttempts {
 			return finish("failed")
 		}
-		siblings, other := r.prContext(t, comments, reply.RootCommentID)
+		siblings, other, err := r.prContext(t, comments, reply.RootCommentID)
+		if err != nil {
+			return outcome, err
+		}
 		decision, err := r.Responder(ctx, ReplyRequest{
 			Owner: t.RepoOwner, Repo: t.RepoName, Number: t.PRNumber, HeadSHA: state.HeadSHA, BaseRef: state.BaseRef,
 			Fingerprint: reply.Fingerprint, PRBody: prBody, Root: root, Thread: thread, Reply: reply,
@@ -1469,11 +1476,12 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		}
 		record := db.ReplyDecisionRecord{Head: state.HeadSHA, Thread: fingerprint, DeferredTo: row.DeferredTo}
 		switch {
-		case errors.Is(err, ErrBudgetExhausted) && ctx.Err() == nil && reply.Class != ReplyQuestion:
+		case errors.Is(err, ErrBudgetExhausted) && ctx.Err() == nil && (reply.Class == ReplyPushback || (r.Legacy && reply.Class == ReplyResolution)):
 			// The model never decided, so nothing it might have said can be
-			// retried. The author's claim is acknowledged with the reaction and
-			// the finding is left to humans as contested; legacy posts a fixed
-			// hold instead. A question has no claim to hold against, so it keeps
+			// retried. The author's pushback is acknowledged with the reaction
+			// and the finding is left to humans as contested; legacy posts a
+			// fixed hold instead, on fix claims too. A question has no claim to
+			// hold against and a fix claim is worth another look, so both keep
 			// the retry path.
 			budget := ReplyDecision{Decision: DecisionAbstain, React: true, Model: decision.Model, DurationMS: decision.DurationMS}
 			if r.Legacy {

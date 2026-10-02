@@ -314,7 +314,11 @@ func buildReplyPrompt(in ReplyInput) (string, error) {
 			break
 		}
 		sib := sibling{FindingID: s.Fingerprint, State: s.State}
-		for i, m := range s.Thread {
+		thread := s.Thread
+		if len(thread) > replyPromptSiblingReplies+1 {
+			thread = append([]ReplyMessage{thread[0]}, thread[len(thread)-replyPromptSiblingReplies:]...)
+		}
+		for i, m := range thread {
 			role, limit := "author", replyPromptSiblingReplyChars
 			if m.Ours {
 				role = "prism"
@@ -367,12 +371,13 @@ func buildReplyPrompt(in ReplyInput) (string, error) {
 // busy review cannot crowd out the thread being answered.
 const (
 	replyPromptMaxSiblings       = 10
+	replyPromptSiblingReplies    = 10 // the latest ones, after the root
 	replyPromptSiblingRootChars  = 700
 	replyPromptSiblingReplyChars = 300
 	replyPromptPRBodyChars       = 4000
 )
 
-var htmlCommentRe = regexp.MustCompile(`<!--.*?-->\s*`)
+var htmlCommentRe = regexp.MustCompile(`(?s)<!--.*?-->\s*`)
 
 func stripMarkers(s string) string {
 	return strings.TrimSpace(htmlCommentRe.ReplaceAllString(s, ""))

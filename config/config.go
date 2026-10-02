@@ -349,7 +349,7 @@ func Load() *Config {
 		ReplyWallClockSec:    getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
 		ReplyMaxTurns:        getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
 		ReplyMaxConcurrent:   getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
-		ReplyPolicyV2:        os.Getenv("REPLY_POLICY_V2") != "false",
+		ReplyPolicyV2:        !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_POLICY_V2")), "false"),
 		MentionHandle:        strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
 		HealthJobToken:       os.Getenv("HEALTH_JOB_TOKEN"),
 		AdminLogins:          getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),
