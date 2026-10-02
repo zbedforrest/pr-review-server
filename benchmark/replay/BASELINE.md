@@ -58,9 +58,9 @@ repo#number` replays one PR, `--limit N` the first N dumps.
 
 ## Fixture expectations
 
-The two fixtures under `cmd/publishreplay/testdata` pin master's behaviour: `same_marker_reposts` 1 and
-`fixed_without_file_change` 1. A publisher change that fixes those defects should move both expectations to 0
-rather than drop the test.
+The three fixtures under `cmd/publishreplay/testdata` (a same-marker repost, a rewording, a return after a
+fix) are replayed under both policies: `TestRun_FixtureMetricsLegacy` pins master's numbers and
+`TestRun_FixtureMetrics` the ledger policy's. `W1-1.md` carries the first before-and-after run.
 
 ## Limits of the measurement
 
