@@ -188,3 +188,22 @@ func TestPendingCIWithAHighScoreIsNotReportedBelowThreshold(t *testing.T) {
 		}
 	}
 }
+
+func TestJevUnreviewedHeadCostsFivePointsWithoutBlocking(t *testing.T) {
+	s := scoringSnapshot()
+	s.Sources = nil
+	a, _ := runScorer(t, s, func(id string, _ map[string]any) map[string]any {
+		switch {
+		case strings.HasSuffix(id, "_resolved"):
+			return map[string]any{"type": "noul", "noul": 1.0}
+		case strings.HasSuffix(id, "_impact"):
+			return impactAnswer("1")
+		case strings.HasSuffix(id, "_disposition"):
+			return map[string]any{"type": "choice", "choice": "fixed"}
+		}
+		return map[string]any{"type": "score", "score": 4.0}
+	})
+	if a.Score.Value != 100-noReviewDeduction || !a.Score.Candidate {
+		t.Fatalf("an unreviewed head should cost %v points and still be a candidate: %+v", noReviewDeduction, a.Score)
+	}
+}

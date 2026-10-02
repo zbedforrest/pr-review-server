@@ -6,6 +6,16 @@ import (
 	"pr-review-server/db"
 )
 
+// observeOwnReview stales the user's candidates when they request changes from
+// the dashboard; the pull request row only learns of that review on the next poll.
+func (s *Server) observeOwnReview(user int, owner, repo string, number int, state string) {
+	store := s.approvalStore()
+	if state != "CHANGES_REQUESTED" || store == nil {
+		return
+	}
+	_ = store.InvalidateMatchingApprovalTargets(user, owner, repo, number, db.ApprovalInvalidation{CandidatesOnly: true}, "human_changes_requested", time.Now())
+}
+
 func (s *Server) observeApprovalEvent(user int, eventType string, payload any) {
 	if eventType != EventPRUpdated && eventType != EventPRDeleted {
 		return
@@ -35,8 +45,10 @@ type approvalChange struct {
 // approvalMaterialChanges decides which approval results a dashboard update
 // can change. Routine refreshes (reviewer groups, approval counts, review
 // status) re-broadcast unchanged pull requests and must not mark results stale:
-// a new head stales results for older heads, and a blocking state (failing CI,
-// requested changes, draft) stales only candidates.
+// a new head stales results for older heads, a blocking state (failing CI,
+// requested changes, draft, running review) stales only candidates, and a
+// cleared blocker stales the non-candidates it held back.
+
 func (s *Server) approvalMaterialChanges(owner, repo string, number int) []approvalChange {
 	if s.db == nil {
 		return []approvalChange{{reason: "observed_pr_change"}}
@@ -60,9 +72,27 @@ func (s *Server) approvalMaterialChanges(owner, repo string, number int) []appro
 		changes = append(changes, approvalChange{"human_changes_requested", candidates})
 	case pr.Draft:
 		changes = append(changes, approvalChange{"draft", candidates})
-	case pr.Status == "pending" || pr.Status == "generating" || pr.Status == "agent_reviewing":
-		// A review of this head is running, so the evidence a candidate rests on is about to change.
+	case reviewRunning(pr.Status):
 		changes = append(changes, approvalChange{"review_in_progress", candidates})
 	}
+	var cleared []string
+	if pr.CIState == "success" {
+		cleared = append(cleared, "ci_failed", "ci_pending")
+	}
+	if pr.ReviewDecision != "CHANGES_REQUESTED" && pr.MyReviewStatus != "CHANGES_REQUESTED" {
+		cleared = append(cleared, "human_changes_requested")
+	}
+	if !pr.Draft {
+		cleared = append(cleared, "pr_draft")
+	}
+	if !reviewRunning(pr.Status) {
+		cleared = append(cleared, "review_in_progress")
+	}
+	changes = append(changes, approvalChange{"blocker_cleared", db.ApprovalInvalidation{Cleared: cleared}})
 	return changes
+}
+
+// reviewRunning matches the poller's in-flight states; "pending" is the idle default.
+func reviewRunning(status string) bool {
+	return status == "generating" || status == "agent_reviewing"
 }

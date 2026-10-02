@@ -181,10 +181,11 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
       {shownError && <p role="alert" className="approval-notice approval-notice--error">{shownError}</p>}
       {lastScan && <div className="approval-scanline" role="status" aria-live="polite"><span>{lastScan.kind === 'recheck' ? 'Recheck' : 'Last scan'} {label(lastScan.status)} · {completed} of {lastScan.total} finished · {scanCandidates} candidates</span>{active && <button disabled={busy || active.cancel_requested} onClick={() => perform(() => approvalRequest(`approval-scans/${active.scan_id}/cancel`, {}))}>{active.cancel_requested ? 'Cancelling remaining' : 'Cancel remaining'}</button>}</div>}
       {open && !allTargets.length && !active && <p className="approval-muted">{targets.isPending ? 'Loading investigations...' : 'Find PRs where existing review evidence supports a quick human approval decision.'}</p>}
+      {!rows.length && allTargets.length > visible.length && <p className="approval-muted">{allTargets.length - visible.length} results hidden by filters</p>}
       {!!rows.length && <div className={`approval-layout${selected ? ' approval-layout--selected' : ''}`}>
         <div className="approval-list">
-          <div className="approval-filters" role="tablist" aria-label="Filter results">
-            {([['all', 'All'], ['candidate', 'Candidates'], ['close', 'Close'], ['blocked', 'Blocked'], ['work', 'Needs work']] as const).map(([key, text]) => <button key={key} role="tab" aria-selected={view === key} className={view === key ? 'is-active' : ''} onClick={() => setView(key)}>{text} <span>{counts[key]}</span></button>)}
+          <div className="approval-filters" role="group" aria-label="Filter results">
+            {([['all', 'All'], ['candidate', 'Candidates'], ['close', 'Close'], ['blocked', 'Blocked'], ['work', 'Needs work']] as const).map(([key, text]) => <button key={key} aria-pressed={view === key} className={view === key ? 'is-active' : ''} onClick={() => setView(key)}>{text} <span>{counts[key]}</span></button>)}
             {allTargets.length > visible.length && <span className="approval-muted">{allTargets.length - visible.length} hidden by filters</span>}
           </div>
           {!shownRows.length && <p className="approval-muted">Nothing in this view.</p>}
@@ -210,8 +211,10 @@ export function ApprovalCandidates({ filters }: { filters: PRFilterCriteria }) {
 }
 
 type RowKind = 'candidate' | 'close' | 'blocked' | 'work' | 'other';
-const blockerText: Record<string, string> = { ci_failed: 'CI failing', human_changes_requested: 'Changes requested', provider_changes_requested: 'Review tool requested changes', pr_draft: 'Draft', ci_pending: 'CI still running', review_in_progress: 'Review in progress', source_incomplete: 'Evidence incomplete', already_approved: 'Already approved' };
+const blockerText: Record<string, string> = { ci_failed: 'CI failing', human_changes_requested: 'Changes requested', provider_changes_requested: 'Review tool requested changes', pr_draft: 'Draft', ci_pending: 'CI still running', review_in_progress: 'Review in progress', source_incomplete: 'Evidence incomplete', already_approved: 'Already approved', review_missing: 'No review of the current commit' };
 const dispositionText: Record<string, string> = { fixed: 'Fixed', not_applicable: 'Does not apply', still_present: 'Still present', style_only: 'Style only', cannot_tell: 'Unclear', unresolved: 'Unresolved', uncertain: 'Uncertain', non_blocking: 'Non-blocking' };
+const staleText: Record<string, string> = { head_changed: 'New commits pushed', observed_ci_change: 'CI changed', blocker_cleared: 'A blocker cleared', observed_pr_change: 'PR changed', closed: 'PR closed', draft: 'Draft' };
+const staleBlockers = new Set(['ci_failed', 'observed_ci_change', 'human_changes_requested', 'draft', 'pr_draft']);
 const impactText = (impact: number) => impact >= 2.5 ? 'Severe' : impact >= 1.5 ? 'Defect' : impact >= 0.5 ? 'Minor' : 'Cosmetic';
 
 function rowStatus(target: ApprovalTarget, now: number): { kind: RowKind; label: string; reason?: string } {
@@ -224,7 +227,13 @@ function rowStatus(target: ApprovalTarget, now: number): { kind: RowKind; label:
   if (['failed', 'timed_out', 'cancelled'].includes(bucket)) return { kind: 'other', label: label(bucket), reason: target.summary };
   if (bucket === 'excluded') return { kind: 'other', label: 'Excluded', reason: (target.reason_codes || []).map(code => blockerText[code] || label(code)).join(', ') };
   if (isApprovalCandidate(target, now)) return { kind: 'candidate', label: 'Candidate', reason };
-  if (bucket === 'stale') return { kind: 'other', label: (target.reason_codes || []).includes('review_in_progress') ? 'Review updating' : target.decision === 'candidate' ? 'Needs recheck' : 'Out of date', reason };
+  if (bucket === 'stale') {
+    const codes = target.reason_codes || [];
+    const blocking = codes.filter(code => staleBlockers.has(code));
+    const why = codes.filter(code => code in blockerText || code in staleText).map(code => blockerText[code] || staleText[code]).join(', ') || reason;
+    if (blocking.length) return { kind: 'blocked', label: 'Blocked', reason: why };
+    return { kind: 'other', label: codes.includes('review_in_progress') ? 'Review updating' : target.decision === 'candidate' ? 'Needs recheck' : 'Out of date', reason: why };
+  }
   if (blockers.length) return { kind: 'blocked', label: 'Blocked', reason };
   if (score && score.value >= score.threshold * 0.6) return { kind: 'close', label: target.score?.deductions?.some(d => d.reason === 'pr_draft') ? 'Draft' : 'Close', reason };
   if (score) return { kind: 'work', label: 'Needs work', reason };

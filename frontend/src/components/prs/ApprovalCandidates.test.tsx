@@ -87,6 +87,12 @@ describe('approval investigation controls', () => {
     expect(screen.getByText('Native model unavailable')).toBeTruthy();
     expect((screen.getByText('Investigate 1 PRs') as HTMLButtonElement).disabled).toBe(true);
   });
+  it('files a candidate invalidated by a CI change under blocked with the reason', async () => {
+    vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'candidate', freshness_state: 'stale', reason_codes: ['observed_ci_change'], summary: 'Old decision' } as unknown as ApprovalTarget]);
+    mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
+    expect((await screen.findByText('Blocked', { selector: '.approval-status' }))).toBeTruthy();
+    expect(screen.getByText('CI changed', { selector: '.approval-reason' })).toBeTruthy();
+  });
   it('shows expired candidates in other results and explicitly revalidates only once', async () => {
     vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, execution_status: 'completed', decision: 'candidate', freshness_state: 'expired', valid_until: new Date(0).toISOString(), reason_codes: [], summary: 'Old decision' } as unknown as ApprovalTarget]);
     mount(); fireEvent.click(await screen.findByText('Find approval candidates'));

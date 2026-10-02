@@ -75,6 +75,9 @@ var (
 	pendingCIDeduction  = 5.0
 	inProgressDeduction = 10.0
 	incompleteDeduction = 10.0
+	// Readiness should not hinge on other reviewers, so a head nobody has
+	// reviewed costs only a few points and never blocks.
+	noReviewDeduction = 5.0
 )
 
 // jevStateBudget bounds the state of one request, about 25k tokens, which
@@ -354,6 +357,9 @@ func (j JevScorer) combine(s Snapshot, facts []string, cs []jevConcern, answers 
 	}
 	if has("source_incomplete") {
 		deduct("source_incomplete", incompleteDeduction)
+	}
+	if has("review_missing") {
+		deduct("review_missing", noReviewDeduction)
 	}
 	for _, code := range []string{"ci_failed", "human_changes_requested", "provider_changes_requested"} {
 		if has(code) {
