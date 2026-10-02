@@ -180,6 +180,12 @@ func TestIsVerdictOutsideTheAuditedClass(t *testing.T) {
 		"This is intentional, but the retry is a real problem.":                  false,
 		"This is intentional, though I think it still needs work.":               false,
 		"That's fine as is, the other call sites rely on it.":                    true,
+		"The retry count is wrong. The timeout is intentional.":                  false,
+		"By design. I might be wrong.":                                           false,
+		"Maybe. This is by design.":                                              false,
+		"This is intended for now, but it needs fixing":                          false,
+		"Intentional, but it still crashes on nil input.":                        false,
+		"By design, though there's a bug in the caller.":                         false,
 		"The `if` branch is intentional, see the design doc.":                    true,
 		"No, this is intentional: the cache is invalidated by the writer.":       true,
 		"<!-- template -->\n**By design.** The gateway retries once.":            true,
@@ -232,6 +238,10 @@ func TestTextEligibilityStopsAtVerdicts(t *testing.T) {
 	settled := []db.PublishedReply{{Class: string(ReplyVerdict), Action: ReplyActionReacted, Outcome: OutcomeSettledVerdict}}
 	if got := TextEligibility(pushback, settled, 0, now, DefaultTextPolicy()); got != "settled" {
 		t.Errorf("a thread the author settled gets no more text: reason=%q", got)
+	}
+	question := AuthorReply{RootCommentID: 100, Class: ReplyQuestion, Body: "Which call site did you mean?", CreatedAt: now}
+	if got := TextEligibility(question, settled, 0, now, DefaultTextPolicy()); got != "" {
+		t.Errorf("a question after the verdict is still answered: reason=%q", got)
 	}
 }
 
@@ -295,13 +305,17 @@ func TestReplyReactor_VerdictUnderReactDismissesLikeAThumbsDownContests(t *testi
 
 func TestReplyReactor_VerdictRecordedByAnotherLeaderIsReportedOnce(t *testing.T) {
 	r, gh, ledger, _ := verdictFixture(ReplyModeRespond, t)
+	r.LastScanned = map[string]time.Time{}
 	ledger.recordExists = true
 	rep, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Verdicts) != 0 || rep.Recorded != 0 || len(rep.Handled) != 0 || len(gh.posted) != 0 {
-		t.Fatalf("the leader that recorded the row reports the verdict: rep=%+v", rep)
+	if len(rep.Verdicts) != 0 || rep.Recorded != 0 || len(rep.Handled) != 0 || len(gh.posted) != 0 || len(gh.reactions) != 0 || ledger.states["a.go:1:abc"] != "" {
+		t.Fatalf("the leader that recorded the row settles it: rep=%+v reactions=%v states=%v", rep, gh.reactions, ledger.states)
+	}
+	if len(r.LastScanned) != 0 {
+		t.Fatalf("the PR stays unsettled: %v", r.LastScanned)
 	}
 }
 
@@ -319,7 +333,7 @@ func TestReplyReactor_VerdictSettlementIsFinishedByTheNextScanAfterAFailedWrite(
 	if err != nil || len(rep.Errors) != 0 {
 		t.Fatalf("err=%v rep=%+v", err, rep)
 	}
-	if ledger.rows[0].Outcome != OutcomeSettledVerdict || *runs != 0 || len(gh.posted) != 0 || fmt.Sprint(gh.reactions) != "[101]" {
+	if ledger.rows[0].Outcome != OutcomeSettledVerdict || *runs != 0 || len(gh.posted) != 0 || fmt.Sprint(gh.reactions) != "[101 101]" {
 		t.Fatalf("the next scan finishes the settlement without the model: row=%+v runs=%d posted=%q reactions=%v", ledger.rows[0], *runs, gh.posted, gh.reactions)
 	}
 }

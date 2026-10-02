@@ -571,7 +571,8 @@ func DefaultTextPolicy() TextPolicy {
 
 // TextEligibility returns "" when a text reply may be attempted, otherwise the
 // reason it may not: class, verdict, acknowledgment, deferred, stale,
-// thread_cap, conceded, settled, pr_cap. The caps are
+// thread_cap, conceded, settled (the author ruled on the thread; a later
+// question still gets an answer), pr_cap. The caps are
 // exact within one process (text steps on a PR are serialized) and best-effort
 // across two instances that both believe they lead, where sibling replies
 // claimed separately can overshoot a cap by one.
@@ -592,7 +593,7 @@ func TextEligibility(reply AuthorReply, prior []db.PublishedReply, prTextToday i
 	}
 	posted := 0
 	for _, r := range prior {
-		if r.Outcome == OutcomeSettledVerdict {
+		if r.Outcome == OutcomeSettledVerdict && reply.Class != ReplyQuestion {
 			return "settled"
 		}
 		if r.ReplyCommentID != 0 {
@@ -901,8 +902,12 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 				settled = false
 				continue
 			}
-			if err := r.settleVerdict(ctx, t, state, reply, row, handled, rep); err != nil {
+			done, err := r.settleVerdict(ctx, t, state, reply, row, handled, rep)
+			if err != nil {
 				return err
+			}
+			if !done {
+				settled = false
 			}
 			continue
 		}
