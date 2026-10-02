@@ -176,7 +176,7 @@ func TestGormDB_UpsertPublishedFinding_KeepsAContestedRowContested(t *testing.T)
 	assert.Equal(t, PublishedStateContested, rows[0].State)
 }
 
-func TestGormDB_ContestPublishedFinding_OnlyMovesOpenRows(t *testing.T) {
+func TestGormDB_ContestPublishedFinding_MovesOpenAndResolvedRowsOnly(t *testing.T) {
 	db := newTestDB(t)
 	require.NoError(t, db.UpsertPublishedFinding(testPublished(nil)))
 	require.NoError(t, db.SetPublishedFindingState("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123", PublishedStateDismissed))
@@ -190,4 +190,12 @@ func TestGormDB_ContestPublishedFinding_OnlyMovesOpenRows(t *testing.T) {
 	changed, err = db.ContestPublishedFinding("owner", "repo", 7, "nope")
 	require.NoError(t, err)
 	assert.False(t, changed)
+
+	require.NoError(t, db.SetPublishedFindingState("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123", PublishedStateResolved))
+	changed, err = db.ContestPublishedFinding("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123")
+	require.NoError(t, err)
+	assert.True(t, changed)
+	rows, err = db.GetPublishedFindingsForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.Equal(t, PublishedStateContested, rows[0].State)
 }

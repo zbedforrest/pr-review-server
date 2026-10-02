@@ -77,6 +77,8 @@ type fakeReplyGH struct {
 	// every root comment opens thread "T<id>".
 	resolved   []string
 	resolveErr error
+	failReactions bool
+	reactionLists []int64
 }
 
 func (f *fakeReplyGH) ListReviewThreads(_ context.Context, owner, repo string, number int) ([]ReviewThread, error) {
@@ -114,6 +116,10 @@ func (f *fakeReplyGH) ListThread(_ context.Context, owner, repo string, number i
 }
 
 func (f *fakeReplyGH) ListReactions(_ context.Context, _, _ string, commentID int64) ([]Reaction, error) {
+	f.reactionLists = append(f.reactionLists, commentID)
+	if f.failReactions {
+		return nil, fmt.Errorf("502")
+	}
 	return f.given[commentID], nil
 }
 
@@ -288,7 +294,7 @@ func (f *fakeReplyLedger) ContestPublishedFinding(_, _ string, _ int, fingerprin
 	if f.states == nil {
 		f.states = map[string]string{}
 	}
-	if st := f.states[fingerprint]; st != "" && st != db.PublishedStateOpen {
+	if st := f.states[fingerprint]; st != "" && st != db.PublishedStateOpen && st != db.PublishedStateResolved {
 		return false, nil
 	}
 	f.states[fingerprint] = db.PublishedStateContested
@@ -1997,9 +2003,20 @@ func TestReplyReactor_AuthorThumbsDownOnTheRootContestsTheFinding(t *testing.T) 
 	if rep.Contested != 1 || ledger.states["a.go:1:abc"] != db.PublishedStateContested || ledger.states["c.go:1:abc"] != "" {
 		t.Fatalf("only the allowlisted author's thumbs-down counts: rep=%+v states=%v", rep, ledger.states)
 	}
+	ledger.findings = []db.PublishedFinding{{Fingerprint: "a.go:1:abc", State: db.PublishedStateContested}, {Fingerprint: "c.go:1:abc", State: db.PublishedStateOpen}}
+	listed := len(gh.reactionLists)
 	rep, _ = r.Run(context.Background())
-	if rep.Contested != 0 {
-		t.Fatalf("a second scan changes nothing: rep=%+v", rep)
+	if rep.Contested != 0 || len(gh.reactionLists) != listed {
+		t.Fatalf("a second scan changes nothing and does not re-list a contested root: rep=%+v listed=%v", rep, gh.reactionLists[listed:])
+	}
+
+	r, gh, ledger = reactorFixture(ReplyModeReact)
+	gh.threads["acme/example#7"][0].ThumbsDown = 1
+	gh.failReactions = true
+	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 102, InReplyToID: 100, AuthorID: 42, Body: "Is this still needed?", CreatedAt: time.Date(2026, 9, 9, 17, 2, 0, 0, time.UTC)})
+	rep, err = r.Run(context.Background())
+	if err != nil || len(rep.Errors) != 1 || !strings.Contains(rep.Errors[0], "reactions on 100") || rep.Reacted == 0 {
+		t.Fatalf("a reactions error is reported and the scan goes on: err=%v rep=%+v", err, rep)
 	}
 
 	r, gh, ledger = reactorFixture(ReplyModeReact)
@@ -2042,8 +2059,11 @@ func TestReplyReactor_HandsTheModelThePROtherThreadsAndBody(t *testing.T) {
 	)
 	ledger.targets[0].Roots = map[int64]string{100: "a.go:1:abc", 90: "b.go:7:def", 80: "c.go:2:ghi"}
 	ledger.findings = []db.PublishedFinding{
-		{Fingerprint: "b.go:7:def", State: db.PublishedStateContested},
-		{Fingerprint: "c.go:2:ghi", State: db.PublishedStateDismissed},
+		{Fingerprint: "b.go:7:def", State: db.PublishedStateContested, Kind: db.PublishedKindFinding, CommentID: 90},
+		{Fingerprint: "c.go:2:ghi", State: db.PublishedStateDismissed, Kind: db.PublishedKindFinding, CommentID: 80},
+		{Fingerprint: "pkg/auth/policy.go:4:aaa", State: db.PublishedStateOpen, Kind: db.PublishedKindFinding, Severity: "medium"},
+		{Fingerprint: "d.go:0:bbb", State: db.PublishedStateDismissed, Kind: db.PublishedKindFinding},
+		{Fingerprint: "summary", State: db.PublishedStateOpen, Kind: db.PublishedKindSummary},
 	}
 	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
 		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1", Body: "The toggle gates every tier by design."}, nil
@@ -2054,6 +2074,51 @@ func TestReplyReactor_HandsTheModelThePROtherThreadsAndBody(t *testing.T) {
 	}
 	if len(got.Siblings) != 1 || got.Siblings[0].Fingerprint != "b.go:7:def" || got.Siblings[0].State != db.PublishedStateContested || got.Siblings[0].Root.ID != 90 || len(got.Siblings[0].Replies) != 1 || got.Siblings[0].Replies[0].ID != 91 {
 		t.Fatalf("siblings = %+v", got.Siblings)
+	}
+	if len(got.Other) != 1 || got.Other[0] != (OtherFinding{Fingerprint: "pkg/auth/policy.go:4:aaa", File: "pkg/auth/policy.go", Line: 40, Severity: "medium", State: db.PublishedStateOpen}) {
+		t.Fatalf("summary-only open findings = %+v", got.Other)
+	}
+
+	got = ReplyRequest{}
+	r.Legacy = true
+	ledger.rows = nil
+	r.Run(context.Background())
+	if got.Reply.CommentID == 0 || got.PRBody != "" || got.Siblings != nil || got.Other != nil {
+		t.Fatalf("legacy hands the model the thread alone: %+v", got)
+	}
+}
+
+func TestReplyReactor_LegacyPostsAWithdrawAsAConcessionAndResolvesNothing(t *testing.T) {
+	resolver := &fakeResolver{}
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionWithdraw, Reply: "Withdrawing this finding: the guard on a.go:8 runs before this call, so the dereference cannot be reached with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 8}}, React: true}, nil
+	})
+	r.Threads = resolver
+	r.Legacy = true
+	gh.threads["acme/example#7"][1].Body = "This is intentional, the caller guards it and the value is never nil here."
+	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
+		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1", Body: "**[MEDIUM]** The guard order is by design."}, nil
+	}
+	rep, _ := r.Run(context.Background())
+	if rep.Responded != 1 || len(gh.posted) != 1 || strings.Contains(gh.posted[0], "Withdrawing") {
+		t.Fatalf("legacy renders the intent path as before: rep=%+v posted=%q", rep, gh.posted)
+	}
+	if ledger.rows[0].Decision != DecisionConcede || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || len(resolver.resolved) != 0 {
+		t.Fatalf("row=%+v states=%v resolved=%v", ledger.rows[0], ledger.states, resolver.resolved)
+	}
+}
+
+func TestFingerprintAnchor(t *testing.T) {
+	for fp, want := range map[string]string{
+		"pkg/auth/policy.go:4:aaa": "pkg/auth/policy.go 40",
+		"a.go:0:abc":               "a.go 0",
+		"C:/x/y.go:12:abc":         "C:/x/y.go 120",
+		"summary":                  "summary 0",
+	} {
+		file, line := fingerprintAnchor(fp)
+		if got := fmt.Sprintf("%s %d", file, line); got != want {
+			t.Errorf("fingerprintAnchor(%q) = %q, want %q", fp, got, want)
+		}
 	}
 }
 
@@ -2076,7 +2141,7 @@ func TestReplyReactor_AuditedWrongHoldsAbstainOrCite(t *testing.T) {
 			"A de-sync is not possible in the existing flow, so the property stays reliant on those two fields as is with that in mind.",
 			budget, 0, db.PublishedStateContested},
 		{"reconnect scenario denied, model out of budget",
-			"The scenario you are describing is not possible, the reconnect flow only happens on page load, where there can be no open setup dialog already.",
+			"That path cannot be hit: a reconnect is only attempted during the initial page load, and at that point no setup dialog has been opened yet.",
 			budget, 0, db.PublishedStateContested},
 		{"validation scope explained, model out of budget",
 			"This validates user submitted data passed from the frontend, which should be in the correct shape, and if it is not the validation should fail. What you describe is existing data in the store being malformed, which does not reach this path.",

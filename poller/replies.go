@@ -116,8 +116,9 @@ func unstampFailedLinks(tried map[string]time.Time, errors []string) {
 }
 
 // replyTelemetryEvents turns one scan into telemetry rows: one per reply
-// handled (reply_reacted / reply_observed), one per scan error, one per link
-// pass that changed anything, one per link error. PR coordinates are parsed
+// handled (reply_reacted / reply_observed), one per scan error, one each for
+// requeued decisions and contested findings when there were any, one per
+// link pass that changed anything, one per link error. PR coordinates are parsed
 // from the "owner/repo#n:" prefix the reactor puts on every error.
 func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, userID int) []db.TelemetryEvent {
 	var events []db.TelemetryEvent
@@ -133,6 +134,12 @@ func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, 
 	}
 	for _, e := range rep.Errors {
 		events = append(events, replyErrorEvent("reply_scan_error", e, userID))
+	}
+	if rep.Requeued > 0 {
+		events = append(events, db.TelemetryEvent{UserID: userID, Action: "reply_requeued", Label: fmt.Sprintf("requeued=%d", rep.Requeued)})
+	}
+	if rep.Contested > 0 {
+		events = append(events, db.TelemetryEvent{UserID: userID, Action: "reply_contested", Label: fmt.Sprintf("contested=%d", rep.Contested)})
 	}
 	if link.Linked > 0 {
 		events = append(events, db.TelemetryEvent{
@@ -211,9 +218,13 @@ func replyInputFromRequest(req publisher.ReplyRequest, ourID int64) service.Repl
 		}
 		siblings = append(siblings, sib)
 	}
+	other := make([]service.OtherFinding, 0, len(req.Other))
+	for _, o := range req.Other {
+		other = append(other, service.OtherFinding{Fingerprint: o.Fingerprint, File: o.File, Line: o.Line, Severity: o.Severity})
+	}
 	return service.ReplyInput{
 		Owner: req.Owner, Repo: req.Repo, DefaultBranch: req.BaseRef, PRNumber: req.Number, HeadSHA: req.HeadSHA,
-		Fingerprint: req.Fingerprint, FindingBody: req.Root.Body, PRBody: req.PRBody, Thread: thread, Siblings: siblings,
+		Fingerprint: req.Fingerprint, FindingBody: req.Root.Body, PRBody: req.PRBody, Thread: thread, Siblings: siblings, Other: other,
 		AuthorReply: req.Reply.Body, Class: string(req.Reply.Class),
 	}
 }
@@ -401,8 +412,8 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			log.Printf("[REPLIES] %s", e)
 		}
 	}
-	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d live_checked=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d text_dispatched=%d errors=%d",
-		cycle, full, mode, len(targets), len(candidates), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Dispatched, len(rep.Errors))
+	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d live_checked=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d text_dispatched=%d requeued=%d contested=%d errors=%d",
+		cycle, full, mode, len(targets), len(candidates), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Dispatched, rep.Requeued, rep.Contested, len(rep.Errors))
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
 		return

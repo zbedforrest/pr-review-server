@@ -158,3 +158,15 @@ func (g *GormDB) SetPublishedFindingState(owner, repo string, number int, finger
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ?", owner, repo, number, fingerprint).
 		Update("state", state).Error
 }
+
+// ContestPublishedFinding moves an open or resolved row to contested and
+// reports whether it did; a row already dismissed or contested is left as it
+// is, so a thumbs-down seen on every scan never undoes a later concession. A
+// resolved row moves too: the author's verdict outlives the round that
+// dropped the finding, which would otherwise come back as a new root.
+func (g *GormDB) ContestPublishedFinding(owner, repo string, number int, fingerprint string) (bool, error) {
+	res := g.db.Model(&PublishedFindingModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ? AND state IN ?", owner, repo, number, fingerprint, []string{PublishedStateOpen, PublishedStateResolved}).
+		Update("state", PublishedStateContested)
+	return res.RowsAffected > 0, res.Error
+}

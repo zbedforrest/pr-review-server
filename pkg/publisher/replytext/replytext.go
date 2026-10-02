@@ -145,12 +145,36 @@ func AssertsIntent(comment string) bool {
 	return intentRe.MatchString(comment) && !negatedIntentRe.MatchString(comment) && !changed
 }
 
-// StatesIntent reports text that calls a behavior deliberate (a PR
-// description saying "intentional" or "by design"); a change claim in the
-// same text does not cancel it the way it does for a reply.
+// IntentScanRunes bounds how much of a PR description StatesIntent reads, so
+// every caller judges the same text.
+const IntentScanRunes = 4000
+
+// StatesIntent reports a PR description that calls a behavior deliberate
+// ("intentional", "by design"); a change claim in the same text does not
+// cancel it the way it does for a reply. HTML comments, checklist items and
+// questions are template furniture ("Is this breaking change intentional?")
+// and are not read.
 func StatesIntent(text string) bool {
+	if r := []rune(text); len(r) > IntentScanRunes {
+		text = string(r[:IntentScanRunes])
+	}
+	text = htmlCommentRe.ReplaceAllString(text, "")
+	var kept []string
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasSuffix(trimmed, "?") || checklistRe.MatchString(trimmed) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	text = strings.Join(kept, "\n")
 	return intentRe.MatchString(text) && !negatedIntentRe.MatchString(text)
 }
+
+var (
+	htmlCommentRe = regexp.MustCompile(`(?s)<!--.*?-->`)
+	checklistRe   = regexp.MustCompile(`^(?:[-*+]|\d+[.)])\s*\[[ xX]\]`)
+)
 
 // Defers reports an author reply that sends the fix elsewhere: out of scope,
 // a follow-up, a later PR, a separate ticket.

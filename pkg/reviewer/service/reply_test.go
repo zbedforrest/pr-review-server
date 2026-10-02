@@ -280,11 +280,15 @@ func TestReplyPromptCarriesThePRBodyAndSiblingThreadsAndAsksToFollowImports(t *t
 			{Author: "pilot", Body: "The gate lives in pkg/auth, see policy.go:40.", At: time.Date(2026, 9, 9, 17, 1, 0, 0, time.UTC)},
 		}},
 	}
+	in.Other = []OtherFinding{{Fingerprint: "pkg/auth/policy.go:4:aaa", File: "pkg/auth/policy.go", Line: 40, Severity: "medium"}}
 	prompt, err := buildReplyPrompt(in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		`"other_open_findings"`,
+		`"file": "pkg/auth/policy.go"`,
+		`"line": 40`,
 		`"decision":"concede|hold|answer|abstain|withdraw"`,
 		`"withdraw": the finding itself was wrong or is already settled`,
 		"Before holding, follow the code past the file the finding names",

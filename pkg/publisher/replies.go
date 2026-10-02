@@ -441,6 +441,7 @@ type ReplyLedger interface {
 	CountPublishedTextRepliesSince(owner, repo string, number int, since time.Time) (int, error)
 	SetPublishedFindingState(owner, repo string, number int, fingerprint, state string) error
 	ContestPublishedFinding(owner, repo string, number int, fingerprint string) (bool, error)
+	GetPublishedFindingsForPR(owner, repo string, number int) ([]db.PublishedFinding, error)
 }
 
 // PRState is the live state of a PR that gates any reaction.
@@ -474,6 +475,18 @@ type ReplyRequest struct {
 	Thread      []ThreadComment // root and every reply under it, oldest first
 	Reply       AuthorReply     // the author reply being answered
 	Siblings    []SiblingThread // PRism's other threads on the PR, dismissed ones left out
+	Other       []OtherFinding  // PRism's open findings on the PR that have no inline thread
+}
+
+// OtherFinding is an open ledger row the summary carries without an inline
+// root, so the reply model still sees a point PRism raised elsewhere on the
+// PR. File and Line come from the fingerprint, whose line is bucketed by ten.
+type OtherFinding struct {
+	Fingerprint string
+	File        string
+	Line        int
+	Severity    string
+	State       string
 }
 
 // SiblingThread is another PRism finding on the same PR with whatever was
@@ -503,6 +516,8 @@ type ReplyDecision struct {
 // rune count of the sentences it appended. A body with nothing postable left
 // turns the decision into an abstain, and so does a hold that cites no
 // file:line (unless legacy): a rebuttal the reader cannot open is not posted.
+// Legacy has no withdraw decision, so one is posted as the concession it
+// would have been.
 func renderDecision(d ReplyDecision, reply AuthorReply, root ThreadComment, prBody string, legacy bool) (ReplyDecision, int) {
 	abstain := func() ReplyDecision {
 		return ReplyDecision{Decision: DecisionAbstain, Cited: d.Cited, React: true, Model: d.Model, DurationMS: d.DurationMS}
@@ -513,6 +528,9 @@ func renderDecision(d ReplyDecision, reply AuthorReply, root ThreadComment, prBo
 	}
 	if !legacy && d.Decision == DecisionHold && len(d.Cited) == 0 {
 		return abstain(), 0
+	}
+	if legacy && d.Decision == DecisionWithdraw {
+		d.Decision = DecisionConcede
 	}
 	ctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, PRBody: prBody, Decision: d.Decision}
 	paragraph, appendix, ok := replytext.RenderParts(d.Reply, ctx)
@@ -633,8 +651,11 @@ type ReplyReactor struct {
 
 	// Legacy restores the reply policy before contested findings: budget
 	// exhaustion posts the fixed notice, a hold needs no citation here, a
-	// decision made against an older head is dropped instead of retaken, and
-	// neither a hold nor an author's thumbs-down marks the finding contested.
+	// decision made against an older head is dropped instead of retaken,
+	// neither a hold nor an author's thumbs-down marks the finding contested,
+	// the model gets neither the PR body nor the other threads, a withdraw is
+	// posted as a concession, no thread is resolved and the accepted-risk ask
+	// ignores the PR body. The prompt text itself is not switched.
 	Legacy bool
 }
 
@@ -996,14 +1017,25 @@ func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReply
 	if !ok || r.Legacy || !r.reacts() {
 		return nil
 	}
+	var states map[string]string
 	for _, c := range comments {
 		fp, isRoot := t.Roots[c.ID]
 		if !isRoot || c.ThumbsDown == 0 {
 			continue
 		}
+		if states == nil {
+			var err error
+			if states, err = r.findingStates(t); err != nil {
+				return err
+			}
+		}
+		if st := states[fp]; st != "" && st != db.PublishedStateOpen && st != db.PublishedStateResolved {
+			continue
+		}
 		reactions, err := lister.ListReactions(ctx, t.RepoOwner, t.RepoName, c.ID)
 		if err != nil {
-			return err
+			rep.Errors = append(rep.Errors, fmt.Sprintf("%s/%s#%d: reactions on %d: %v", t.RepoOwner, t.RepoName, t.PRNumber, c.ID, err))
+			continue
 		}
 		for _, re := range reactions {
 			if re.UserID != state.AuthorID || re.Content != "-1" {
@@ -1022,16 +1054,34 @@ func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReply
 	return nil
 }
 
-// siblings collects PRism's other threads on the PR for the reply model,
-// oldest root first, leaving out findings the ledger already dismissed.
-func (r ReplyReactor) siblings(t db.PublishedReplyTarget, comments []ThreadComment, rootID int64) []SiblingThread {
+func (r ReplyReactor) findingStates(t db.PublishedReplyTarget) (map[string]string, error) {
+	rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber)
+	if err != nil {
+		return nil, err
+	}
+	states := make(map[string]string, len(rows))
+	for _, row := range rows {
+		states[row.Fingerprint] = row.State
+	}
+	return states, nil
+}
+
+// prContext collects the rest of PRism's review on the PR for the reply
+// model: the other inline threads, oldest root first, leaving out findings the
+// ledger already dismissed, and the open findings that only the summary
+// carries. Legacy hands the model nothing beyond the thread.
+func (r ReplyReactor) prContext(t db.PublishedReplyTarget, comments []ThreadComment, rootID int64) ([]SiblingThread, []OtherFinding) {
+	if r.Legacy {
+		return nil, nil
+	}
 	states := map[string]string{}
-	if l, ok := r.Ledger.(interface {
-		GetPublishedFindingsForPR(owner, repo string, number int) ([]db.PublishedFinding, error)
-	}); ok {
-		if rows, err := l.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber); err == nil {
-			for _, row := range rows {
-				states[row.Fingerprint] = row.State
+	var other []OtherFinding
+	if rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber); err == nil {
+		for _, row := range rows {
+			states[row.Fingerprint] = row.State
+			if row.Kind == db.PublishedKindFinding && row.CommentID == 0 && row.State == db.PublishedStateOpen {
+				file, line := fingerprintAnchor(row.Fingerprint)
+				other = append(other, OtherFinding{Fingerprint: row.Fingerprint, File: file, Line: line, Severity: row.Severity, State: row.State})
 			}
 		}
 	}
@@ -1047,7 +1097,26 @@ func (r ReplyReactor) siblings(t db.PublishedReplyTarget, comments []ThreadComme
 		out = append(out, SiblingThread{Fingerprint: fp, State: states[fp], Root: thread[0], Replies: thread[1:]})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Root.ID < out[j].Root.ID })
-	return out
+	sort.Slice(other, func(i, j int) bool { return other[i].Fingerprint < other[j].Fingerprint })
+	return out, other
+}
+
+// fingerprintAnchor reads the file and the first line of the ten-line bucket
+// out of a finding fingerprint (<file>:<line/10>:<hash>).
+func fingerprintAnchor(fp string) (string, int) {
+	i := strings.LastIndexByte(fp, ':')
+	if i < 0 {
+		return fp, 0
+	}
+	j := strings.LastIndexByte(fp[:i], ':')
+	if j < 0 {
+		return fp[:i], 0
+	}
+	bucket, err := strconv.Atoi(fp[j+1 : i])
+	if err != nil {
+		return fp[:j], 0
+	}
+	return fp[:j], bucket * 10
 }
 
 func (r ReplyReactor) reactAndRecord(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, row *db.PublishedReply, rep *ReplyReport) error {
@@ -1361,15 +1430,20 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 			rep.Requeued++
 		}
 	}
+	prBody := state.Body
+	if r.Legacy {
+		prBody = ""
+	}
 	decidedNow, appendixRunes := false, 0
 	if row.Decision == "" {
 		if row.Attempts >= r.textPolicy().MaxAttempts {
 			return finish("failed")
 		}
+		siblings, other := r.prContext(t, comments, reply.RootCommentID)
 		decision, err := r.Responder(ctx, ReplyRequest{
 			Owner: t.RepoOwner, Repo: t.RepoName, Number: t.PRNumber, HeadSHA: state.HeadSHA, BaseRef: state.BaseRef,
-			Fingerprint: reply.Fingerprint, PRBody: state.Body, Root: root, Thread: thread, Reply: reply,
-			Siblings: r.siblings(t, comments, reply.RootCommentID),
+			Fingerprint: reply.Fingerprint, PRBody: prBody, Root: root, Thread: thread, Reply: reply,
+			Siblings: siblings, Other: other,
 		})
 		// A run that was cut off by shutdown is not the model failing; the
 		// claim lease keeps a crash loop to one run per lease anyway.
@@ -1395,7 +1469,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 		case err != nil:
 			return outcome, err
 		}
-		decision, appendixRunes = renderDecision(decision, reply, root, state.Body, r.Legacy)
+		decision, appendixRunes = renderDecision(decision, reply, root, prBody, r.Legacy)
 		cited, _ := json.Marshal(decision.Cited)
 		record.Decision, record.ReplyBody, record.Cited, record.Model, record.DurationMS, record.React = decision.Decision, decision.Reply, string(cited), decision.Model, decision.DurationMS, decision.React
 		if ours := outOfScopeSentences(decision.Reply); record.Note == "" && len(ours) > 0 && (decision.Decision == DecisionHold || decision.Decision == DecisionConcede) {
@@ -1420,7 +1494,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	if !r.Legacy && row.Note == NoteBudgetExhausted && row.Decision == DecisionHold {
 		row.Decision, row.DecisionReact, row.ReplyBody = DecisionAbstain, true, ""
 	}
-	rctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, PRBody: state.Body, Decision: row.Decision}
+	rctx := replytext.Context{AuthorComment: reply.Body, FindingBody: root.Body, PRBody: prBody, Decision: row.Decision}
 	paragraph, appendix, renderable := replytext.RenderParts(row.ReplyBody, rctx)
 	text := paragraph + appendix
 	if !renderable && row.Decision != DecisionAbstain {

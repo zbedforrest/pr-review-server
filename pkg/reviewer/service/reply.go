@@ -33,6 +33,15 @@ type SiblingThread struct {
 	Thread      []ReplyMessage
 }
 
+// OtherFinding is an open PRism finding on the same PR that has no inline
+// thread of its own (the summary carries it).
+type OtherFinding struct {
+	Fingerprint string
+	File        string
+	Line        int
+	Severity    string
+}
+
 // ReplyMessage is one comment in the thread under a PRism inline finding.
 type ReplyMessage struct {
 	Author string
@@ -56,6 +65,7 @@ type ReplyInput struct {
 	PRBody        string
 	Thread        []ReplyMessage
 	Siblings      []SiblingThread
+	Other         []OtherFinding
 	AuthorReply   string
 	Class         string
 }
@@ -316,6 +326,19 @@ func buildReplyPrompt(in ReplyInput) (string, error) {
 		}
 		siblings = append(siblings, sib)
 	}
+	type otherFinding struct {
+		FindingID string `json:"finding_id"`
+		File      string `json:"file"`
+		Line      int    `json:"line,omitempty"`
+		Severity  string `json:"severity,omitempty"`
+	}
+	other := make([]otherFinding, 0, len(in.Other))
+	for _, o := range in.Other {
+		if len(other) == replyPromptMaxSiblings {
+			break
+		}
+		other = append(other, otherFinding{FindingID: o.Fingerprint, File: o.File, Line: o.Line, Severity: o.Severity})
+	}
 	authorReply := stripMarkers(in.AuthorReply)
 	prBody := truncate(stripMarkers(in.PRBody), replyPromptPRBodyChars)
 	payload, err := json.MarshalIndent(map[string]any{
@@ -329,8 +352,9 @@ func buildReplyPrompt(in ReplyInput) (string, error) {
 		"author_defers":         replytext.Defers(authorReply),
 		"ticket_keys":           replytext.TicketKeys(authorReply),
 		"pr_body":               prBody,
-		"pr_body_states_intent": replytext.StatesIntent(prBody),
+		"pr_body_states_intent": replytext.StatesIntent(in.PRBody),
 		"other_prism_threads":   siblings,
+		"other_open_findings":   other,
 		"head_sha":              in.HeadSHA,
 	}, "", "  ")
 	if err != nil {

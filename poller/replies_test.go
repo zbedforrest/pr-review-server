@@ -61,12 +61,17 @@ func TestReplyTelemetryEventsOnePerHandledReplyPlusLinksAndErrors(t *testing.T) 
 			{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "a.go:1:abc", Class: "question", Action: "reacted", AuthorCommentID: 101},
 			{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "b.go:2:def", Class: "resolution", Action: "observed", AuthorCommentID: 102},
 		},
-		Errors: []string{"acme/example#9: list review comments: boom"},
+		Errors:    []string{"acme/example#9: list review comments: boom"},
+		Requeued:  2,
+		Contested: 1,
 	}
 	link := publisher.LinkReport{Linked: 2, Unmatched: 1, Errors: []string{"acme/example#8: list thread: 502"}}
 	events := replyTelemetryEvents(rep, link, 3)
-	if len(events) != 5 {
+	if len(events) != 7 {
 		t.Fatalf("got %d events: %+v", len(events), events)
+	}
+	if events[3].Action != "reply_requeued" || events[3].Label != "requeued=2" || events[4].Action != "reply_contested" || events[4].Label != "contested=1" {
+		t.Errorf("counter events = %+v %+v", events[3], events[4])
 	}
 	if events[0].UserID != 3 || events[0].Action != "reply_reacted" || events[0].PRNumber != 7 || events[0].Label != "class=question fp=a.go:1:abc comment=101" {
 		t.Errorf("first event = %+v", events[0])
@@ -77,11 +82,11 @@ func TestReplyTelemetryEventsOnePerHandledReplyPlusLinksAndErrors(t *testing.T) 
 	if events[2].Action != "reply_scan_error" || events[2].PRNumber != 9 || events[2].PROwner != "acme" {
 		t.Errorf("error event = %+v", events[2])
 	}
-	if events[3].Action != "reply_roots_linked" || events[3].Label != "linked=2 unmatched=1" {
-		t.Errorf("link event = %+v", events[3])
+	if events[5].Action != "reply_roots_linked" || events[5].Label != "linked=2 unmatched=1" {
+		t.Errorf("link event = %+v", events[5])
 	}
-	if events[4].Action != "reply_link_error" || events[4].PRNumber != 8 {
-		t.Errorf("link error event = %+v", events[4])
+	if events[6].Action != "reply_link_error" || events[6].PRNumber != 8 {
+		t.Errorf("link error event = %+v", events[6])
 	}
 	if got := replyTelemetryEvents(publisher.ReplyReport{}, publisher.LinkReport{Unmatched: 3}, 3); len(got) != 0 {
 		t.Errorf("a pass that linked nothing is not link activity, got %+v", got)

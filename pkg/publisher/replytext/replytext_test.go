@@ -357,6 +357,11 @@ func TestStatesIntent(t *testing.T) {
 		"Fixed the gate; the old behaviour was not intentional.":                                              false,
 		"Adds the SEO header experiment.":                                                                     false,
 		"":                                                                                                    false,
+		"<!-- Is this change intentional? Say so here. -->\nAdds the header experiment.":               false,
+		"## Checklist\n- [ ] Confirm the behaviour change is intentional\nAdds the header experiment.": false,
+		"Is this breaking change intentional?\nAdds the header experiment.":                            false,
+		"- [x] Breaking change, on purpose\nThe gate stays on by design.":                              true,
+		strings.Repeat("filler ", IntentScanRunes/7+1) + "This is intentional.":                        false,
 	}
 	for body, want := range cases {
 		if got := StatesIntent(body); got != want {
