@@ -73,7 +73,7 @@ func (s *Server) approvalMaterialChanges(owner, repo string, number int) []appro
 		changes = append(changes, approvalChange{"head_changed", db.ApprovalInvalidation{OffHead: pr.LastCommitSHA}})
 	}
 	candidates := db.ApprovalInvalidation{CandidatesOnly: true}
-	if pr.CIState == "failure" || pr.CIState == "pending" {
+	if pr.CIState == "failure" || pr.CIState == "error" || pr.CIState == "pending" {
 		changes = append(changes, approvalChange{"observed_ci_change", candidates})
 	}
 	if pr.ReviewDecision == "CHANGES_REQUESTED" || pr.MyReviewStatus == "CHANGES_REQUESTED" {
@@ -86,7 +86,7 @@ func (s *Server) approvalMaterialChanges(owner, repo string, number int) []appro
 		changes = append(changes, approvalChange{"review_in_progress", candidates})
 	}
 	var cleared []string
-	if pr.CIState == "success" || pr.CIState == "unknown" {
+	if pr.CIState == "success" {
 		cleared = append(cleared, "ci_failed", "ci_pending", "observed_ci_change")
 	}
 	if !pr.Draft {

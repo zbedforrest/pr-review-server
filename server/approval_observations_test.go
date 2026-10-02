@@ -141,3 +141,12 @@ func TestApprovalOwnChangeRequestSurvivesTheObservationThatFollowsIt(t *testing.
 	require.Contains(t, result.ReasonCodesJSON, "human_changes_requested")
 	require.NotContains(t, result.ReasonCodesJSON, "blocker_cleared")
 }
+
+func TestApprovalCIErrorInvalidatesCandidate(t *testing.T) {
+	s, store, target := finalizedCandidate(t)
+	updatePR(t, store, func(pr *db.PR) { pr.CIState = "error" })
+	s.BroadcastEvent(EventPRUpdated, map[string]interface{}{"owner": "acme", "repo": "example", "number": 123})
+	result, err := store.GetApprovalTarget(target.UserID, target.ScanID, target.ID)
+	require.NoError(t, err)
+	require.Equal(t, "stale", result.Freshness)
+}
