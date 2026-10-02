@@ -427,9 +427,14 @@ func (p *Publisher) summaryMoved(r Round, built *db.PublishedFinding) (bool, err
 }
 
 // ledgerTransitions splits the shown findings the way the round diff did:
-// rows first published at this head are new, older open rows are still open.
+// findings first published at this head are new, older open rows are still
+// open, and a folded note first posted at this head is neither.
 // Fixed rows are not in the ledger as a per-round fact, so it stays 0 here.
 func (r Round) ledgerTransitions() roundDiff {
+	current := map[string]bool{}
+	for _, f := range r.currentFindings() {
+		current[f.ID] = true
+	}
 	shown := map[string]bool{}
 	for _, f := range append(append(r.currentFindings(), r.lowerSeverityNotes()...), r.unverifiedNotes()...) {
 		shown[f.ID] = true
@@ -439,10 +444,11 @@ func (r Round) ledgerTransitions() roundDiff {
 		if (row.Kind != db.PublishedKindFinding && row.Kind != db.PublishedKindAnnotation) || row.State != db.PublishedStateOpen || !shown[row.Fingerprint] {
 			continue
 		}
-		if strings.EqualFold(row.ReviewedSHA, r.HeadSHA) {
-			d.New++
-		} else {
+		switch {
+		case !strings.EqualFold(row.ReviewedSHA, r.HeadSHA):
 			d.StillOpen++
+		case current[row.Fingerprint]:
+			d.New++
 		}
 	}
 	return d

@@ -429,10 +429,10 @@ func headline(f payload.Finding, legacy bool) string {
 
 const commentTitleMaxRunes = 100
 
-// titleIsWholeFirstSentence reports whether a comment-sourced title shows the
-// first sentence in full; a cut title leaves the sentence to the fold.
-func titleIsWholeFirstSentence(f payload.Finding) bool {
-	return len([]rune(titleSource(f))) <= commentTitleMaxRunes
+// titleIsWholeFirstSentence reports whether a comment-sourced title fits the
+// limit headline applied to it; a cut title leaves the sentence to the fold.
+func titleIsWholeFirstSentence(f payload.Finding, limit int) bool {
+	return len([]rune(titleSource(f))) <= limit
 }
 
 func legacyHeadline(f payload.Finding) string {
@@ -564,14 +564,14 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		// Without an impact sentence the headline came from the comment's first
 		// sentence; the rest of the comment is the only explanation, so show it.
 		rest := reasoning
-		if legacy || (titleFromComment(f) && titleIsWholeFirstSentence(f)) {
+		if legacy || (titleFromComment(f) && titleIsWholeFirstSentence(f, commentTitleMaxRunes)) {
 			rest = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
 		}
 		if rest != "" {
 			b.WriteString("\n" + rest + "\n")
 		}
 		reasoning = ""
-	} else if !legacy && titleFromComment(f) && titleIsWholeFirstSentence(f) {
+	} else if !legacy && titleFromComment(f) && titleIsWholeFirstSentence(f, headlineMaxRunes) {
 		reasoning = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
 	}
 
