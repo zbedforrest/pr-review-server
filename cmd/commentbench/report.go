@@ -64,7 +64,7 @@ func classTable(res Result) string {
 
 func renderMarkdown(res Result) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# commentbench (%s replies)\n\n", res.Replies)
+	fmt.Fprintf(&b, "# commentbench (%s replies)\n\nPublisher capabilities: changed files %t, thread resolution %t.\n\n", res.Replies, res.Capabilities["changed_files"], res.Capabilities["resolve_thread"])
 	b.WriteString(metricsTable(res))
 	b.WriteString("\n")
 	b.WriteString(classTable(res))

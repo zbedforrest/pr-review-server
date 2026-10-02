@@ -166,6 +166,13 @@ func PublisherCanResolve() bool {
 	return ok
 }
 
+// PublisherTakesChangedFiles reports whether publisher.Round has a
+// ChangedFiles field SetChangedFiles can fill.
+func PublisherTakesChangedFiles() bool {
+	f, ok := reflect.TypeOf(publisher.Round{}).FieldByName("ChangedFiles")
+	return ok && (f.Type == reflect.TypeOf([]string(nil)) || f.Type == reflect.TypeOf(map[string]bool(nil)))
+}
+
 // SetChangedFiles hands the files changed since the previous round to a
 // publisher that accepts them (a Round.ChangedFiles field of []string or
 // map[string]bool) and does nothing on a publisher that does not.

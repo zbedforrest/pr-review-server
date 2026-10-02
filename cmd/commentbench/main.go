@@ -122,11 +122,14 @@ type Thresholds struct {
 
 // Result is the JSON the run writes.
 type Result struct {
-	Generated time.Time              `json:"generated"`
-	Replies   string                 `json:"replies_mode"`
-	Tiers     map[string]TierMetrics `json:"tiers"`
-	Failures  []string               `json:"threshold_failures,omitempty"`
-	Cases     []CaseScore            `json:"cases"`
+	Generated time.Time `json:"generated"`
+	Replies   string    `json:"replies_mode"`
+	// Capabilities names the publisher inputs and outputs this build has;
+	// a missing one means the related metric or input is not exercised.
+	Capabilities map[string]bool        `json:"publisher_capabilities"`
+	Tiers        map[string]TierMetrics `json:"tiers"`
+	Failures     []string               `json:"threshold_failures,omitempty"`
+	Cases        []CaseScore            `json:"cases"`
 }
 
 func cmdRun(args []string) int {
@@ -215,7 +218,8 @@ func cmdRun(args []string) int {
 
 // runCases replays and scores every non-excluded case (or the one named).
 func runCases(ctx context.Context, cases []*Case, only string, policy publisher.Policy, responder func(*Case, *Run) publisher.Responder) (Result, error) {
-	res := Result{Generated: time.Now().UTC(), Tiers: map[string]TierMetrics{}}
+	res := Result{Generated: time.Now().UTC(), Tiers: map[string]TierMetrics{}, Capabilities: map[string]bool{
+		"changed_files": replaykit.PublisherTakesChangedFiles(), "resolve_thread": replaykit.PublisherCanResolve()}}
 	byTier := map[string][]CaseScore{}
 	for _, c := range cases {
 		if only != "" && c.ID != only {
