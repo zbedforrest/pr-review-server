@@ -383,12 +383,28 @@ func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) 
 			Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**"},
 	}
 	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateOpen}}
-	r := BuildPublishRound(pr, pl, comments, nil, previous, "")
+	legacy := publisher.DefaultPolicy()
+	legacy.LegacyLedger = true
+	r := BuildPublishRoundWith(pr, pl, comments, nil, previous, "", legacy)
 	if r.Findings[0].ID != "a.go:5:aaaaaaaaaaaa" {
 		t.Fatalf("finding must take its published identity, got %q", r.Findings[0].ID)
 	}
 	if r.InlineComments["a.go:5:aaaaaaaaaaaa"] != 501 {
 		t.Fatalf("aliased finding must link to its existing comment: %v", r.InlineComments)
+	}
+
+	ledgerPolicy := publisher.DefaultPolicy()
+	ledgerPolicy.LegacyLedger = false
+	r = BuildPublishRoundWith(pr, pl, comments, nil, previous, "", ledgerPolicy)
+	if r.Findings[0].ID != "a.go:5:bbbbbbbbbbbb" {
+		t.Fatalf("under the ledger policy the publisher aliases, not the round builder: %q", r.Findings[0].ID)
+	}
+	prior, ok := r.PriorComments["a.go:5:aaaaaaaaaaaa"]
+	if !ok || prior.Line != 54 || !strings.Contains(prior.Text, "Cam To Cam") || strings.Contains(prior.Text, "<!--") {
+		t.Fatalf("the round must carry GitHub's view of the prior comment for the publisher: %+v", r.PriorComments)
+	}
+	if r.InlineComments["a.go:5:aaaaaaaaaaaa"] != 501 {
+		t.Fatalf("prior comments still link from the summary: %v", r.InlineComments)
 	}
 }
 
@@ -403,7 +419,9 @@ func TestBuildPublishRound_InactiveRecordsDoNotTakePartInReconciliation(t *testi
 	comments := []github.ReviewCommentInfo{{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54,
 		Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**"}}
 	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateOpen}}
-	r := BuildPublishRound(pr, pl, comments, nil, previous, "")
+	legacy := publisher.DefaultPolicy()
+	legacy.LegacyLedger = true
+	r := BuildPublishRoundWith(pr, pl, comments, nil, previous, "", legacy)
 	var active []string
 	for _, f := range r.Findings {
 		active = append(active, f.ID)

@@ -65,6 +65,14 @@ func publishTargetReady(state string, draft bool, headSHA, reviewedSHA string) (
 // reconciled against PRism's findings so nothing is posted twice, and the
 // file patches bound which lines may take an inline comment.
 func BuildPublishRound(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, baseURL string) publisher.Round {
+	return BuildPublishRoundWith(pr, pl, comments, patches, previous, baseURL, publisher.DefaultPolicy())
+}
+
+// BuildPublishRoundWith is BuildPublishRound under an explicit policy. The
+// legacy policy aliases reworded findings here, against GitHub's comments;
+// the ledger policy hands those comments to the publisher, which aliases
+// against the ledger itself.
+func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, baseURL string, pol publisher.Policy) publisher.Round {
 	// Only active claims reach GitHub, so only they take part in aliasing and
 	// reconciliation; an inactive record with first-pass wording must not
 	// steal a prior comment's identity from the agent finding it merged into.
@@ -93,14 +101,18 @@ func BuildPublishRound(pr github.PullRequest, pl payload.Payload, comments []git
 		}
 	}
 	own := reconcile.ParseOwnComments(external, ledgerCommentIDs)
-	aliases := reconcile.AliasPrior(pl.Findings, own)
 	inlineComments := map[string]int64{}
+	priorComments := make(map[string]publisher.PriorComment, len(own))
 	for _, o := range own {
 		inlineComments[o.FindingID] = o.CommentID
+		priorComments[o.FindingID] = publisher.PriorComment{Line: o.Line, Text: o.Text}
 	}
-	for i := range pl.Findings {
-		if prior, ok := aliases[pl.Findings[i].ID]; ok {
-			pl.Findings[i].ID = prior
+	if pol.LegacyLedger {
+		aliases := reconcile.AliasPrior(pl.Findings, own)
+		for i := range pl.Findings {
+			if prior, ok := aliases[pl.Findings[i].ID]; ok {
+				pl.Findings[i].ID = prior
+			}
 		}
 	}
 
@@ -131,6 +143,7 @@ func BuildPublishRound(pr github.PullRequest, pl payload.Payload, comments []git
 		Previous:       previous,
 		Commentable:    commentable,
 		InlineComments: inlineComments,
+		PriorComments:  priorComments,
 
 		RequiredCheckViolated: pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0,
 		ProfileFooter:         profileFooter(pl.ReviewRun),
@@ -179,6 +192,10 @@ func (a ghPublishAdapter) CreateIssueComment(ctx context.Context, owner, repo st
 
 func (a ghPublishAdapter) EditIssueComment(ctx context.Context, owner, repo string, commentID int64, body string) error {
 	return a.c.EditIssueComment(ctx, owner, repo, commentID, body)
+}
+
+func (a ghPublishAdapter) PostReply(ctx context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error) {
+	return a.c.CreateReviewCommentReply(ctx, owner, repo, number, rootCommentID, body)
 }
 
 func (a ghPublishAdapter) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]publisher.IssueComment, error) {
@@ -274,8 +291,10 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		return nil, publicationFailedPrefix + "load ledger"
 	}
 
-	round := BuildPublishRound(pr, pl, comments, patches, previous, p.cfg.BaseURL)
-	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: p.publishPolicy()}
+	pol := p.publishPolicy()
+	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
+	round.Changes = p.changeLookup(ctx, pr)
+	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: pol}
 	report, err := pub.Publish(ctx, round)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
@@ -287,6 +306,50 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d confidence=%d",
 		pr.Owner, pr.Repo, pr.Number, report.SummaryCommentID, report.ReviewID, report.InlinePosted, report.Annotations, report.StillOpen, report.Fixed, report.Confidence)
 	return &report, publicationPosted
+}
+
+// changeLookup resolves the inter-push diff between a ledger row's last-seen
+// head and the reviewed head through the GitHub compare API, once per base
+// for the round. An unreliable compare (rebase, truncation, API failure)
+// reads as unknown, so nothing is judged fixed from it.
+func (p *Poller) changeLookup(ctx context.Context, pr github.PullRequest) func(base string) (publisher.ChangeSet, bool) {
+	type answer struct {
+		cs publisher.ChangeSet
+		ok bool
+	}
+	cache := map[string]answer{}
+	return func(base string) (publisher.ChangeSet, bool) {
+		if hit, seen := cache[base]; seen {
+			return hit.cs, hit.ok
+		}
+		token := ""
+		if p.ghClientConcrete != nil {
+			token, _ = p.ghClientConcrete.CurrentToken(ctx)
+		}
+		var files []string
+		var patches map[string]string
+		var ok bool
+		if p.compareFilesFn != nil {
+			files, ok = p.compareFilesFn(ctx, pr.Owner, pr.Repo, base, pr.CommitSHA, token)
+		} else {
+			files, patches, ok = githubCompareChanges(ctx, pr.Owner, pr.Repo, base, pr.CommitSHA, token)
+		}
+		a := answer{ok: ok}
+		if ok {
+			a.cs.Files = make(map[string]bool, len(files))
+			for _, f := range files {
+				a.cs.Files[f] = true
+			}
+			if len(patches) > 0 {
+				a.cs.Lines = make(map[string]map[int]bool, len(patches))
+				for f, patch := range patches {
+					a.cs.Lines[f] = publisher.ChangedLines(patch)
+				}
+			}
+		}
+		cache[base] = a
+		return a.cs, a.ok
+	}
 }
 
 // headPublished reports whether a publication round for this head already
