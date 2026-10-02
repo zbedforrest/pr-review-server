@@ -11,7 +11,7 @@ import (
 
 var summaryBulletRe = regexp.MustCompile(`(?m)^- (?:\*\*\[[A-Z]+\]\*\*|<img[^>]*>) (?:\*\*[^*]+\*\* )?(.*?) \x{2014} \[`)
 
-var nilImpactRe = regexp.MustCompile(`(?i)^(?:none\b|not? (?:user|runtime|production|demonstrated|current|direct|immediate|observable|functional|visible|impact|effect|behaviou?r|change))`)
+var nilImpactRe = regexp.MustCompile(`(?i)^(?:none(?:\s+(?:today|yet|currently|so far|at present|right now|in practice)|[.;:,]|$)|not? (?:user|runtime|production|demonstrated|current|direct|immediate|observable|functional|visible|impact|effect|behaviou?r|change))`)
 
 var inlineTitleRe = regexp.MustCompile(`(?m)^(?:\*\*\[[A-Z]+\] (.+?)\*\*|<img[^>]*> \*\*(.+?)\*\*)$`)
 

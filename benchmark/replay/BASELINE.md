@@ -42,7 +42,7 @@ harness commit; every other metric above is unchanged under those flags.
 | metric | value | note |
 |---|---:|---|
 | same_commit_rounds_skipped | 0 | rounds the publisher refused because the head was already published; target: every same-commit round whose earlier round completed |
-| nil_impact_bullets | 780 | summary bullets (over every summary render) opening with a nil-impact phrase such as "None today" or "No user impact"; target 0 |
+| nil_impact_bullets | 713 | summary bullets (over every summary render) opening with a nil-impact phrase such as "None today" or "No user impact"; target 0 |
 | bare_label_titles | 348 | inline comments titled by their bare kind label ("Behavior change", "Security", ...); target 0 |
 
 Observed in the dumps, for calibration: 498 roots, 10 same-marker reposts, 90 same-defect reposts (rendered
