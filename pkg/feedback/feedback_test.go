@@ -46,17 +46,19 @@ func TestLexiconLabelsReactionsByContent(t *testing.T) {
 
 func TestParseLabelTakesTheFirstLabelAndKeepsVeryApart(t *testing.T) {
 	for answer, want := range map[string]Label{
-		"very_frustrated":                   VeryFrustrated,
-		"Frustrated.":                       Frustrated,
-		"The author is happy with the fix.": Happy,
-		"```\nneutral\n```":                 Neutral,
+		"very_frustrated":                      VeryFrustrated,
+		"Frustrated.":                          Frustrated,
+		"**Happy**: the author thanks the bot": Happy,
+		"```\nneutral\n```":                    Neutral,
 	} {
 		got, ok := ParseLabel(answer)
 		require.True(t, ok, answer)
 		assert.Equal(t, want, got, answer)
 	}
-	_, ok := ParseLabel("I cannot tell.")
-	assert.False(t, ok)
+	for _, answer := range []string{"I cannot tell.", "not happy", "this is not frustrated", "happiness"} {
+		_, ok := ParseLabel(answer)
+		assert.False(t, ok, answer)
+	}
 }
 
 func TestModelClassifierFallsBackToTheLexicon(t *testing.T) {
@@ -99,10 +101,11 @@ func TestQuoteFlattensAndTruncatesAtAWordBoundary(t *testing.T) {
 }
 
 type fakeGitHub struct {
-	review    map[int][]Comment
-	issue     map[int][]Comment
-	reactions map[int64][]Reaction
-	calls     int
+	review       map[int][]Comment
+	issue        map[int][]Comment
+	reactions    map[int64][]Reaction
+	calls        int
+	failReaction int64
 }
 
 func (f *fakeGitHub) ListReviewComments(_ context.Context, _, _ string, n int) ([]Comment, error) {
@@ -115,6 +118,9 @@ func (f *fakeGitHub) ListIssueComments(_ context.Context, _, _ string, n int) ([
 }
 func (f *fakeGitHub) ListReviewCommentReactions(_ context.Context, _, _ string, id int64) ([]Reaction, error) {
 	f.calls++
+	if id == f.failReaction {
+		return nil, errors.New("403 from GitHub")
+	}
 	return f.reactions[id], nil
 }
 func (f *fakeGitHub) ListIssueCommentReactions(_ context.Context, _, _ string, id int64) ([]Reaction, error) {
@@ -164,7 +170,7 @@ func fixtureScanner(now time.Time) (Scanner, *fakeGitHub, *memStore, *countingCl
 		review: map[int][]Comment{42: {
 			{ID: 100, Author: "prism-bot[bot]", IsBot: true, Body: "finding", CreatedAt: old, Reactions: 2},
 			{ID: 101, InReplyToID: 100, Author: "dana-dev", Body: "This is the third time it flagged the same line after I explained it. Please stop.", CreatedAt: recent},
-			{ID: 102, InReplyToID: 100, Author: "prism-bot[bot]", IsBot: true, Body: "Understood, withdrawn.", CreatedAt: recent},
+			{ID: 102, InReplyToID: 100, Author: "prism-bot[bot]", IsBot: true, Body: "Understood, withdrawn.", CreatedAt: recent, Reactions: 1},
 			{ID: 103, InReplyToID: 100, Author: "sam-q", Body: "Good catch, fixed in 3f2a1c9.", CreatedAt: old},
 			{ID: 104, InReplyToID: 999, Author: "sam-q", Body: "Not a PRism thread, this is wrong.", CreatedAt: recent},
 		}},
@@ -175,6 +181,7 @@ func fixtureScanner(now time.Time) (Scanner, *fakeGitHub, *memStore, *countingCl
 		}},
 		reactions: map[int64][]Reaction{
 			100: {{ID: 300, User: "dana-dev", Content: "-1", CreatedAt: recent}, {ID: 301, User: "prism-bot[bot]", IsBot: true, Content: "+1", CreatedAt: recent}},
+			102: {{ID: 303, User: "dana-dev", Content: "heart", CreatedAt: recent}},
 			200: {{ID: 302, User: "lee-ops", Content: "heart", CreatedAt: recent}},
 		},
 	}
@@ -199,7 +206,8 @@ func TestScannerCollectsRepliesMentionsAndReactionsFromHumansOnly(t *testing.T) 
 	for _, it := range res.Added {
 		got[db.FeedbackKey{Source: it.Source, ItemID: it.ItemID}] = store.rows[db.FeedbackKey{Source: it.Source, ItemID: it.ItemID}]
 	}
-	require.Len(t, got, 4, "%+v", res.Added)
+	require.Len(t, got, 5, "%+v", res.Added)
+	assert.Equal(t, string(Happy), got[db.FeedbackKey{Source: SourceReaction, ItemID: 303}].Label, "reactions on PRism's own in-thread reply count")
 	reply := got[db.FeedbackKey{Source: SourceReply, ItemID: 101}]
 	assert.Equal(t, "dana-dev", reply.Author)
 	assert.Equal(t, string(VeryFrustrated), reply.Label)
@@ -219,14 +227,14 @@ func TestScannerIsIdempotentAcrossRuns(t *testing.T) {
 	s, gh, store, classifier := fixtureScanner(now)
 	first, err := s.Run(context.Background())
 	require.NoError(t, err)
-	require.Len(t, first.Added, 4)
+	require.Len(t, first.Added, 5)
 	rows, calls := len(store.rows), classifier.calls
 
 	s.Now = func() time.Time { return now.Add(24 * time.Hour) }
 	second, err := s.Run(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, second.Added)
-	assert.Equal(t, 4, second.Seen, "the same items are listed again")
+	assert.Equal(t, 5, second.Seen, "the same items are listed again")
 	assert.Equal(t, rows, len(store.rows))
 	assert.Equal(t, calls, classifier.calls, "stored items are not re-classified")
 	assert.Greater(t, gh.calls, 0)
@@ -243,7 +251,28 @@ func TestScannerModelCapFallsBackToLexicon(t *testing.T) {
 	for _, r := range store.rows {
 		byName[r.Classifier]++
 	}
-	assert.Equal(t, map[string]int{"counted": 1, "lexicon": 3}, byName)
+	assert.Equal(t, map[string]int{"counted": 1, "lexicon": 4}, byName)
+}
+
+func TestScannerKeepsThePRWhenOneReactionPageFails(t *testing.T) {
+	now := time.Date(2026, 10, 2, 14, 0, 0, 0, time.UTC)
+	s, gh, _, _ := fixtureScanner(now)
+	gh.failReaction = 100
+	res, err := s.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Errors)
+	assert.Equal(t, 1, res.Skipped)
+	assert.Len(t, res.Added, 4, "only the failed page's reaction is missing")
+}
+
+func TestScannerStopsSpendingModelCallsNearTheDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 2, 14, 0, 0, 0, time.UTC)
+	s, _, _, classifier := fixtureScanner(now)
+	ctx, cancel := context.WithTimeout(context.Background(), modelReserve/2)
+	defer cancel()
+	_, err := s.Run(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, classifier.calls)
 }
 
 func TestDigestMarkdownAndHealthMetrics(t *testing.T) {

@@ -90,12 +90,10 @@ type Server struct {
 	clientsMux     sync.RWMutex
 	broadcastCh    chan wsOutboundMessage
 	// feedbackGitHub and feedbackClassify let tests stand in for GitHub and
-	// the model in the daily feedback scan; feedbackScanned is the last run.
+	// the model in the daily feedback scan.
 	feedbackGitHub   feedback.GitHub
 	feedbackClassify feedback.Classifier
 	feedbackOnce     sync.Once
-	feedbackScanned  bool
-	feedbackNote     string
 	// quickActions holds the per-instance replay, duplicate and rate-limit
 	// state for POST /api/prs/quick-action.
 	quickActions      *quickActionState

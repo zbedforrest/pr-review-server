@@ -47,7 +47,9 @@ func (s *Server) handleDailyHealthJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "health store unavailable", http.StatusNotImplemented)
 		return
 	}
-	report, err := s.runDailyHealth(store, time.Now().UTC())
+	// The scan runs first so its items and telemetry fall inside the window.
+	outcome := s.scanFeedback(time.Now().UTC())
+	report, err := s.runDailyHealth(store, time.Now().UTC(), outcome)
 	if err != nil {
 		log.Printf("[HEALTH] daily report failed: %v", err)
 		http.Error(w, "health report failed", http.StatusInternalServerError)
@@ -59,7 +61,7 @@ func (s *Server) handleDailyHealthJob(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(report) // nolint:errcheck
 }
 
-func (s *Server) runDailyHealth(store healthStore, now time.Time) (health.Report, error) {
+func (s *Server) runDailyHealth(store healthStore, now time.Time, feedbackRun feedbackOutcome) (health.Report, error) {
 	// A run's budget is its own agent wall clock (API callers may raise it)
 	// plus the pipeline margin for the first pass, clone and save.
 	budget := func(agentWallClockSec int) time.Duration {
@@ -68,7 +70,6 @@ func (s *Server) runDailyHealth(store healthStore, now time.Time) (health.Report
 		}
 		return time.Duration(agentWallClockSec)*time.Second + poller.ReviewPipelineMargin
 	}
-	s.scanFeedback(now)
 	metrics, err := store.HealthMetrics(now.Add(-24*time.Hour), now, now, budget)
 	if err != nil {
 		return health.Report{}, err
@@ -83,7 +84,7 @@ func (s *Server) runDailyHealth(store healthStore, now time.Time) (health.Report
 		}
 	}
 	metrics.PollingDisabled = s.cfg.DisablePolling
-	metrics.Feedback = s.feedbackMetrics(now)
+	metrics.Feedback = s.feedbackMetrics(now, feedbackRun)
 	report := health.Evaluate(metrics)
 	body, err := json.Marshal(report)
 	if err != nil {

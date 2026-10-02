@@ -35,25 +35,12 @@ func (s *Server) feedbackClassifierFor() feedback.Classifier {
 		if s.feedbackClassify != nil || s.cfg.GeminiAPIKey == "" {
 			return
 		}
-		client := llm.NewClient(llm.ProviderGemini, s.cfg.GeminiAPIKey, true, false)
+		client := llm.NewGeminiClient(s.cfg.GeminiAPIKey, true, false)
 		s.feedbackClassify = feedback.ModelClassifier{Name: llm.FlashModelName(), Ask: func(ctx context.Context, prompt string) (string, error) {
-			type answer struct {
-				text string
-				err  error
-			}
-			ch := make(chan answer, 1)
-			go func() {
-				text, _, _, _, err := client.GetReview(prompt)
-				ch <- answer{text, err}
-			}()
-			select {
-			case a := <-ch:
-				return a.text, a.err
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-time.After(feedbackModelWait):
-				return "", fmt.Errorf("classification timed out")
-			}
+			callCtx, cancel := context.WithTimeout(ctx, feedbackModelWait)
+			defer cancel()
+			text, _, _, _, err := client.GetReviewContext(callCtx, prompt)
+			return text, err
 		}}
 	})
 	if s.feedbackClassify == nil {
@@ -62,44 +49,48 @@ func (s *Server) feedbackClassifierFor() feedback.Classifier {
 	return s.feedbackClassify
 }
 
+// feedbackOutcome is how one daily scan went: whether GitHub was read in
+// full, and if not, why.
+type feedbackOutcome struct {
+	scanned bool
+	note    string
+}
+
 // scanFeedback runs the read-only GitHub scan ahead of the metrics query so
 // today's items are in the table. It never fails the report.
-func (s *Server) scanFeedback(now time.Time) {
-	s.feedbackScanned, s.feedbackNote = false, ""
+func (s *Server) scanFeedback(now time.Time) feedbackOutcome {
 	store, ok := s.db.(feedbackStore)
 	switch {
 	case !ok:
-		s.feedbackNote = "no feedback store"
-		return
+		return feedbackOutcome{note: "no feedback store"}
 	case !s.cfg.FeedbackDigest:
-		s.feedbackNote = "FEEDBACK_DIGEST=false"
-		return
+		return feedbackOutcome{note: "FEEDBACK_DIGEST=false"}
 	}
 	gh := s.feedbackGitHub
 	if gh == nil && s.ghClient != nil {
 		gh = ghFeedbackAdapter{s.ghClient}
 	}
 	if gh == nil {
-		s.feedbackNote = "no GitHub client"
-		return
+		return feedbackOutcome{note: "no GitHub client"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), feedbackScanTimeout)
 	defer cancel()
 	scanner := feedback.Scanner{Store: store, GitHub: gh, Classifier: s.feedbackClassifierFor(), Handle: s.cfg.MentionHandle, Now: func() time.Time { return now }}
 	res, err := scanner.Run(ctx)
+	outcome := feedbackOutcome{scanned: true}
 	switch {
 	case err != nil:
 		log.Printf("[FEEDBACK] scan failed after %d targets: %v", res.Targets, err)
-		s.feedbackNote = "scan failed"
+		outcome = feedbackOutcome{note: "scan failed"}
 	case res.Errors > 0:
-		s.feedbackNote = fmt.Sprintf("%d of %d PRs could not be read", res.Errors, res.Targets)
-	default:
-		s.feedbackScanned = true
+		outcome = feedbackOutcome{note: fmt.Sprintf("%d of %d PRs could not be read", res.Errors, res.Targets)}
 	}
+	// The counter follows the report's day; a backfilled older item is stored
+	// and listed in the week view but not counted as today's frustration.
 	frustrated := 0
 	var events []db.TelemetryEvent
 	for _, it := range res.Added {
-		if !it.Label.IsFrustrated() {
+		if !it.Label.IsFrustrated() || it.CreatedAt.Before(now.Add(-24*time.Hour)) {
 			continue
 		}
 		frustrated++
@@ -116,10 +107,11 @@ func (s *Server) scanFeedback(now time.Time) {
 			}
 		}
 	}
-	log.Printf("[FEEDBACK] targets=%d seen=%d new=%d frustrated=%d errors=%d", res.Targets, res.Seen, len(res.Added), frustrated, res.Errors)
+	log.Printf("[FEEDBACK] targets=%d seen=%d new=%d frustrated=%d errors=%d skipped_reaction_pages=%d", res.Targets, res.Seen, len(res.Added), frustrated, res.Errors, res.Skipped)
+	return outcome
 }
 
-func (s *Server) feedbackMetrics(now time.Time) health.FeedbackMetrics {
+func (s *Server) feedbackMetrics(now time.Time, run feedbackOutcome) health.FeedbackMetrics {
 	store, ok := s.db.(feedbackStore)
 	if !ok {
 		return health.FeedbackMetrics{Note: "no feedback store", ByLabel: map[string]int{}}
@@ -129,7 +121,7 @@ func (s *Server) feedbackMetrics(now time.Time) health.FeedbackMetrics {
 		log.Printf("[FEEDBACK] list items: %v", err)
 		return health.FeedbackMetrics{Note: "feedback query failed", ByLabel: map[string]int{}}
 	}
-	return feedback.NewDigest(items, now.Add(-24*time.Hour), now, 1).HealthMetrics(s.feedbackScanned, s.feedbackNote)
+	return feedback.NewDigest(items, now.Add(-24*time.Hour), now, 1).HealthMetrics(run.scanned, run.note)
 }
 
 // handleFeedback serves the stored feedback for the last 1 or 7 days as JSON

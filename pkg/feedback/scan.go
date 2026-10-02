@@ -86,8 +86,15 @@ type Result struct {
 	Targets int
 	Seen    int
 	Added   []Item
+	// Errors counts PRs whose comments could not be listed; Skipped counts
+	// reaction pages that failed on PRs that were otherwise read.
 	Errors  int
+	Skipped int
 }
+
+// modelReserve is how much of the scan's deadline must remain for a text item
+// to be worth a model call; after that the lexicon finishes the run.
+const modelReserve = 30 * time.Second
 
 const (
 	defaultLookback      = 7 * 24 * time.Hour
@@ -130,12 +137,13 @@ func (s Scanner) Run(ctx context.Context) (Result, error) {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
 		}
-		items, err := s.collect(ctx, t, since)
+		items, skipped, err := s.collect(ctx, t, since)
 		if err != nil {
 			log.Printf("[FEEDBACK] %s/%s#%d: %v", t.RepoOwner, t.RepoName, t.PRNumber, err)
 			res.Errors++
 			continue
 		}
+		res.Skipped += skipped
 		res.Seen += len(items)
 		known, err := s.Store.KnownFeedbackItems(t.RepoOwner, t.RepoName, t.PRNumber)
 		if err != nil {
@@ -148,7 +156,7 @@ func (s Scanner) Run(ctx context.Context) (Result, error) {
 				continue
 			}
 			var c Classifier = LexiconClassifier{}
-			if it.Source != SourceReaction && modelCalls < maxModel {
+			if it.Source != SourceReaction && modelCalls < maxModel && deadlineAllows(ctx) {
 				c, modelCalls = classifier, modelCalls+1
 			}
 			it.Label, it.Classifier = c.Classify(ctx, it)
@@ -181,18 +189,29 @@ func (s Scanner) Run(ctx context.Context) (Result, error) {
 	return res, nil
 }
 
-func (s Scanner) collect(ctx context.Context, t db.FeedbackTarget, since time.Time) ([]Item, error) {
+func deadlineAllows(ctx context.Context) bool {
+	deadline, ok := ctx.Deadline()
+	return !ok || time.Until(deadline) > modelReserve
+}
+
+// collect lists one PR. A failed reaction page is logged and skipped so the
+// PR's replies and mentions still count.
+func (s Scanner) collect(ctx context.Context, t db.FeedbackTarget, since time.Time) ([]Item, int, error) {
 	var items []Item
+	skipped := 0
 	base := Item{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber}
 	inline, err := s.GitHub.ListReviewComments(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	for _, c := range inline {
-		if t.Roots[c.ID] && c.Reactions > 0 {
+		// PRism's own in-thread replies collect reactions too.
+		ours := t.Roots[c.ID] || (isBot(c) && t.Roots[c.InReplyToID])
+		if ours && c.Reactions > 0 {
 			reactions, err := s.GitHub.ListReviewCommentReactions(ctx, t.RepoOwner, t.RepoName, c.ID)
 			if err != nil {
-				return nil, err
+				log.Printf("[FEEDBACK] %s/%s#%d: reactions on %d: %v", t.RepoOwner, t.RepoName, t.PRNumber, c.ID, err)
+				skipped++
 			}
 			items = append(items, reactionItems(base, c.ID, reactions, since, discussionURL(t, c.ID))...)
 		}
@@ -207,13 +226,14 @@ func (s Scanner) collect(ctx context.Context, t db.FeedbackTarget, since time.Ti
 	}
 	conversation, err := s.GitHub.ListIssueComments(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
 	if err != nil {
-		return nil, err
+		return nil, skipped, err
 	}
 	for _, c := range conversation {
 		if t.Summaries[c.ID] && c.Reactions > 0 {
 			reactions, err := s.GitHub.ListIssueCommentReactions(ctx, t.RepoOwner, t.RepoName, c.ID)
 			if err != nil {
-				return nil, err
+				log.Printf("[FEEDBACK] %s/%s#%d: reactions on %d: %v", t.RepoOwner, t.RepoName, t.PRNumber, c.ID, err)
+				skipped++
 			}
 			items = append(items, reactionItems(base, c.ID, reactions, since, issueCommentURL(t, c.ID))...)
 		}
@@ -225,7 +245,7 @@ func (s Scanner) collect(ctx context.Context, t db.FeedbackTarget, since time.Ti
 		it.Author, it.Body, it.CreatedAt, it.URL = c.Author, c.Body, c.CreatedAt, issueCommentURL(t, c.ID)
 		items = append(items, it)
 	}
-	return items, nil
+	return items, skipped, nil
 }
 
 func reactionItems(base Item, commentID int64, reactions []Reaction, since time.Time, url string) []Item {
