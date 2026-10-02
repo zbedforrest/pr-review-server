@@ -99,12 +99,19 @@ func TestReplyInputFromRequestMapsThreadRolesAndStripsNothingElse(t *testing.T) 
 		},
 		Reply: publisher.AuthorReply{CommentID: 101, Body: "pushback", Class: publisher.ReplyPushback},
 	}
+	req.PRBody = "Gated by design."
+	req.Siblings = []publisher.SiblingThread{{Fingerprint: "b.go:7:def", State: "contested",
+		Root:    publisher.ThreadComment{ID: 90, AuthorID: 1, Author: "prism[bot]", Body: "other finding", CreatedAt: t0},
+		Replies: []publisher.ThreadComment{{ID: 91, InReplyToID: 90, AuthorID: 42, Author: "pilot", Body: "the gate is elsewhere", CreatedAt: t0.Add(time.Minute)}}}}
 	in := replyInputFromRequest(req, 1)
-	if in.Owner != "acme" || in.PRNumber != 7 || in.HeadSHA != "head1" || in.DefaultBranch != "main" || in.Fingerprint != "a.go:1:abc" || in.FindingBody != "finding" || in.AuthorReply != "pushback" || in.Class != "pushback" {
+	if in.Owner != "acme" || in.PRNumber != 7 || in.HeadSHA != "head1" || in.DefaultBranch != "main" || in.Fingerprint != "a.go:1:abc" || in.FindingBody != "finding" || in.AuthorReply != "pushback" || in.Class != "pushback" || in.PRBody != "Gated by design." {
 		t.Fatalf("input = %+v", in)
 	}
 	if len(in.Thread) != 2 || !in.Thread[0].Ours || in.Thread[1].Ours || in.Thread[1].Author != "pilot" {
 		t.Fatalf("thread = %+v", in.Thread)
+	}
+	if len(in.Siblings) != 1 || in.Siblings[0].Fingerprint != "b.go:7:def" || in.Siblings[0].State != "contested" || len(in.Siblings[0].Thread) != 2 || !in.Siblings[0].Thread[0].Ours || in.Siblings[0].Thread[1].Ours || in.Siblings[0].Thread[1].Body != "the gate is elsewhere" {
+		t.Fatalf("siblings = %+v", in.Siblings)
 	}
 }
 

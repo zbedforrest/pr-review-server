@@ -203,9 +203,17 @@ func replyInputFromRequest(req publisher.ReplyRequest, ourID int64) service.Repl
 	for _, c := range req.Thread {
 		thread = append(thread, service.ReplyMessage{Author: c.Author, Ours: c.AuthorID == ourID, Body: c.Body, At: c.CreatedAt})
 	}
+	siblings := make([]service.SiblingThread, 0, len(req.Siblings))
+	for _, s := range req.Siblings {
+		sib := service.SiblingThread{Fingerprint: s.Fingerprint, State: s.State}
+		for _, c := range append([]publisher.ThreadComment{s.Root}, s.Replies...) {
+			sib.Thread = append(sib.Thread, service.ReplyMessage{Author: c.Author, Ours: c.AuthorID == ourID, Body: c.Body, At: c.CreatedAt})
+		}
+		siblings = append(siblings, sib)
+	}
 	return service.ReplyInput{
 		Owner: req.Owner, Repo: req.Repo, DefaultBranch: req.BaseRef, PRNumber: req.Number, HeadSHA: req.HeadSHA,
-		Fingerprint: req.Fingerprint, FindingBody: req.Root.Body, Thread: thread,
+		Fingerprint: req.Fingerprint, FindingBody: req.Root.Body, PRBody: req.PRBody, Thread: thread, Siblings: siblings,
 		AuthorReply: req.Reply.Body, Class: string(req.Reply.Class),
 	}
 }
@@ -317,6 +325,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		ClaimLease:     replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
 		Holder:         p.holderID,
 		ResolveThreads: !p.threadsOff,
+		Legacy:         !p.cfg.ReplyPolicyV2,
 		Live: func() (string, func(string) bool, error) {
 			liveMode, err := p.db.GetSetting(settingPublishReplyMode)
 			if err != nil {
@@ -354,6 +363,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				UpdatedAt:   ghPR.GetUpdatedAt().Time,
 				HeadSHA:     ghPR.GetHead().GetSHA(),
 				BaseRef:     ghPR.GetBase().GetRef(),
+				Body:        ghPR.GetBody(),
 			}, nil
 		},
 	}
@@ -436,7 +446,20 @@ func (a ghReplyAdapter) ListThread(ctx context.Context, owner, repo string, numb
 	for _, c := range comments {
 		out = append(out, publisher.ThreadComment{
 			ID: c.ID, InReplyToID: c.InReplyToID, ReviewID: c.ReviewID, AuthorID: c.AuthorID, Author: c.Author, Body: c.Body, CreatedAt: c.CreatedAt,
+			ThumbsDown: c.ThumbsDown,
 		})
+	}
+	return out, nil
+}
+
+func (a ghReplyAdapter) ListReactions(ctx context.Context, owner, repo string, commentID int64) ([]publisher.Reaction, error) {
+	reactions, err := a.c.ListCommentReactions(ctx, owner, repo, commentID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]publisher.Reaction, 0, len(reactions))
+	for _, r := range reactions {
+		out = append(out, publisher.Reaction{UserID: r.UserID, Content: r.Content})
 	}
 	return out, nil
 }
