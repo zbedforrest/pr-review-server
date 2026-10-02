@@ -31,6 +31,9 @@ func TestLexiconLabelsAnonymisedReplies(t *testing.T) {
 		{"Useless noise, can someone turn this bot off on my PRs?", VeryFrustrated},
 		{"WRONG again?! The nil check is RIGHT THERE!!", VeryFrustrated},
 		{"Thanks, but the wording is a bit misleading here.", Neutral},
+		{"This is wrong, the JSON is already validated by the HTTP layer.", Frustrated},
+		{"This is the second time this file changed in the release.", Neutral},
+		{"Third time it flagged the same line after I explained it.", VeryFrustrated},
 	}
 	for _, c := range cases {
 		got := Lexicon(Item{Source: SourceReply, Body: c.body})
@@ -49,6 +52,8 @@ func TestParseLabelTakesTheFirstLabelAndKeepsVeryApart(t *testing.T) {
 		"very_frustrated":                      VeryFrustrated,
 		"Frustrated.":                          Frustrated,
 		"**Happy**: the author thanks the bot": Happy,
+		"Very frustrated":                      VeryFrustrated,
+		"very-frustrated, asks to stop":        VeryFrustrated,
 		"```\nneutral\n```":                    Neutral,
 	} {
 		got, ok := ParseLabel(answer)
@@ -88,6 +93,10 @@ func TestModelClassifierFallsBackToTheLexicon(t *testing.T) {
 	assert.Equal(t, Frustrated, label)
 	assert.Equal(t, "lexicon", by, "reactions never spend a model call")
 	assert.Equal(t, 1, calls)
+}
+
+func TestQuoteNeutralisesLinksAndHTML(t *testing.T) {
+	assert.Equal(t, "see [this] (https://example.invalid) now", Quote("see [this](https://example.invalid) <img src=x onerror=alert(1)> now"))
 }
 
 func TestQuoteFlattensAndTruncatesAtAWordBoundary(t *testing.T) {

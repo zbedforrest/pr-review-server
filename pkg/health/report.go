@@ -412,12 +412,13 @@ func feedbackDetail(f FeedbackMetrics) string {
 	}
 	fmt.Fprintf(&b, "%d happy, %d neutral, %d frustrated, %d very frustrated",
 		f.ByLabel[FeedbackHappy], f.ByLabel[FeedbackNeutral], f.ByLabel[FeedbackFrustrated], f.ByLabel[FeedbackVeryFrustrated])
-	if !f.Scanned {
-		b.WriteString(" (stored items only; not scanned")
-		if f.Note != "" {
-			b.WriteString(": " + f.Note)
-		}
-		b.WriteString(")")
+	switch {
+	case !f.Scanned && f.Note != "":
+		b.WriteString(" (stored items only; not scanned: " + f.Note + ")")
+	case !f.Scanned:
+		b.WriteString(" (stored items only; not scanned)")
+	case f.Note != "":
+		b.WriteString(" (partial scan: " + f.Note + ")")
 	}
 	for _, q := range f.Frustrated {
 		mark := ""

@@ -156,7 +156,7 @@ func TestFeedbackEndpoint_ServesDayAndWeekAsJSONOrMarkdown(t *testing.T) {
 	user := createTestUser(t, database, "tester")
 	now := time.Now().UTC()
 	_, err := database.SaveFeedbackItems([]db.FeedbackItem{
-		{Source: "reply", ItemID: 1, CommentID: 10, RepoOwner: "acme", RepoName: "example", PRNumber: 42, Author: "dana-dev", Body: "Useless noise, turn this off.", Label: "very_frustrated", Classifier: "lexicon", URL: "https://github.com/acme/example/pull/42#discussion_r1", CreatedAt: now.Add(-2 * time.Hour), ObservedAt: now},
+		{Source: "reply", ItemID: 1, CommentID: 10, RepoOwner: "acme", RepoName: "example", PRNumber: 42, Author: "dana-dev", Body: "Useless noise, turn this off. " + strings.Repeat("The rest of this comment quotes the whole handler. ", 6) + "SECRET-TAIL", Label: "very_frustrated", Classifier: "lexicon", URL: "https://github.com/acme/example/pull/42#discussion_r1", CreatedAt: now.Add(-2 * time.Hour), ObservedAt: now},
 		{Source: "comment", ItemID: 2, CommentID: 2, RepoOwner: "acme", RepoName: "example", PRNumber: 43, Author: "sam-q", Body: "@prism-bot thanks, helpful", Label: "happy", Classifier: "lexicon", URL: "https://github.com/acme/example/pull/43#issuecomment-2", CreatedAt: now.Add(-3 * 24 * time.Hour), ObservedAt: now},
 	})
 	require.NoError(t, err)
@@ -175,6 +175,8 @@ func TestFeedbackEndpoint_ServesDayAndWeekAsJSONOrMarkdown(t *testing.T) {
 	assert.Equal(t, 1, day.Counts["very_frustrated"])
 	require.Len(t, day.Items, 1)
 	assert.Equal(t, "dana-dev", day.Items[0].Author)
+	assert.True(t, strings.HasSuffix(day.Items[0].Quote, "..."))
+	assert.NotContains(t, w.Body.String(), "SECRET-TAIL", "the JSON view carries the quote, not the stored body")
 
 	w = get("?days=7&format=json")
 	var week feedback.Digest

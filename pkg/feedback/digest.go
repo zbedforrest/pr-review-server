@@ -9,25 +9,44 @@ import (
 	"pr-review-server/pkg/health"
 )
 
-// Digest is a window of stored feedback, ready to render.
-type Digest struct {
-	Days        int               `json:"days"`
-	WindowStart time.Time         `json:"window_start"`
-	WindowEnd   time.Time         `json:"window_end"`
-	Counts      map[string]int    `json:"counts"`
-	Items       []db.FeedbackItem `json:"items"`
+// DigestItem is one stored item as the endpoint and the report show it: the
+// short quote, never the whole comment.
+type DigestItem struct {
+	Source     string    `json:"source"`
+	Author     string    `json:"author"`
+	RepoOwner  string    `json:"repo_owner"`
+	RepoName   string    `json:"repo_name"`
+	PRNumber   int       `json:"pr_number"`
+	Label      string    `json:"label"`
+	Classifier string    `json:"classifier"`
+	ReplyClass string    `json:"reply_class,omitempty"`
+	Reaction   string    `json:"reaction,omitempty"`
+	Quote      string    `json:"quote"`
+	URL        string    `json:"url"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
-func NewDigest(items []db.FeedbackItem, start, end time.Time, days int) Digest {
-	d := Digest{Days: days, WindowStart: start, WindowEnd: end, Counts: map[string]int{}, Items: items}
+// Digest is a window of stored feedback, ready to render.
+type Digest struct {
+	Days        int            `json:"days"`
+	WindowStart time.Time      `json:"window_start"`
+	WindowEnd   time.Time      `json:"window_end"`
+	Counts      map[string]int `json:"counts"`
+	Items       []DigestItem   `json:"items"`
+}
+
+func NewDigest(rows []db.FeedbackItem, start, end time.Time, days int) Digest {
+	d := Digest{Days: days, WindowStart: start, WindowEnd: end, Counts: map[string]int{}, Items: make([]DigestItem, 0, len(rows))}
 	for _, l := range Labels {
 		d.Counts[string(l)] = 0
 	}
-	for _, it := range items {
-		d.Counts[it.Label]++
-	}
-	if d.Items == nil {
-		d.Items = []db.FeedbackItem{}
+	for _, r := range rows {
+		d.Counts[r.Label]++
+		d.Items = append(d.Items, DigestItem{
+			Source: r.Source, Author: r.Author, RepoOwner: r.RepoOwner, RepoName: r.RepoName, PRNumber: r.PRNumber,
+			Label: r.Label, Classifier: r.Classifier, ReplyClass: r.ReplyClass, Reaction: r.Reaction,
+			Quote: quoteOf(r), URL: r.URL, CreatedAt: r.CreatedAt,
+		})
 	}
 	return d
 }
@@ -37,7 +56,7 @@ func NewDigest(items []db.FeedbackItem, start, end time.Time, days int) Digest {
 func (d Digest) HealthMetrics(scanned bool, note string) health.FeedbackMetrics {
 	m := health.FeedbackMetrics{Scanned: scanned, Note: note, ByLabel: d.Counts, Frustrated: []health.FeedbackQuote{}}
 	for _, it := range d.Items {
-		q := health.FeedbackQuote{Label: it.Label, Author: it.Author, Quote: quoteOf(it), URL: it.URL}
+		q := health.FeedbackQuote{Label: it.Label, Author: it.Author, Quote: it.Quote, URL: it.URL}
 		switch {
 		case Label(it.Label).IsFrustrated():
 			m.Frustrated = append(m.Frustrated, q)
@@ -48,11 +67,11 @@ func (d Digest) HealthMetrics(scanned bool, note string) health.FeedbackMetrics 
 	return m
 }
 
-func quoteOf(it db.FeedbackItem) string {
-	if it.Source == SourceReaction {
-		return "reacted " + it.Reaction
+func quoteOf(r db.FeedbackItem) string {
+	if r.Source == SourceReaction {
+		return "reacted " + r.Reaction
 	}
-	return Quote(it.Body)
+	return Quote(r.Body)
 }
 
 // Markdown renders the full list for people.
@@ -76,7 +95,7 @@ func (d Digest) Markdown() string {
 				continue
 			}
 			lines = append(lines, fmt.Sprintf("- %s @%s on %s/%s#%d (%s): \"%s\" %s",
-				it.CreatedAt.UTC().Format("01-02 15:04"), it.Author, it.RepoOwner, it.RepoName, it.PRNumber, it.Source, quoteOf(it), it.URL))
+				it.CreatedAt.UTC().Format("01-02 15:04"), it.Author, it.RepoOwner, it.RepoName, it.PRNumber, it.Source, it.Quote, it.URL))
 		}
 		if len(lines) == 0 {
 			continue
