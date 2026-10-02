@@ -136,6 +136,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
   const review = useSectionDraft(settings, ['auto_review_requested_prs', 'review_n_requests']);
   const publishing = useSectionDraft(settings, [
     'publish_enabled_authors',
+    'publish_opt_out_authors',
     'publish_inline_cap',
     'publish_inline_min_severity',
     'publish_show_unverified',
@@ -266,6 +267,18 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
           teams={settings.author_list_teams}
         />
         {noAuthorsDraft && <p className="settings-section__notice">{EMPTY_AUTHORS_NOTICE}</p>}
+        <LoginListField
+          id="settings-publish-opt-out"
+          label="Opted out of comments"
+          value={publishing.draft.publish_opt_out_authors ?? ''}
+          onChange={(next) => publishing.patch({ publish_opt_out_authors: next })}
+          authors={false}
+          disabled={disabled}
+          knownLogins={knownLogins}
+        />
+        <p className="settings-section__notice">
+          Authors who left from the dashboard banner. Nothing is posted on their PRs whatever the list above says; their reviews stay on the dashboard.
+        </p>
         <div className="settings-field">
           <div className="settings-field settings-field--inline">
             <input

@@ -40,6 +40,8 @@ var publishReplyModes = map[string]bool{"off": true, "observe": true, "react": t
 func (s *Server) addPublishSettings(ctx context.Context, response map[string]interface{}) {
 	authors, _ := s.db.GetSetting(settingPublishEnabledAuthors)
 	response[settingPublishEnabledAuthors] = authors
+	optOut, _ := s.db.GetSetting(settingPublishOptOutAuthors)
+	response[settingPublishOptOutAuthors] = optOut
 
 	cap := defaultPublishInlineCap
 	if v, err := s.db.GetSetting(settingPublishInlineCap); err == nil {

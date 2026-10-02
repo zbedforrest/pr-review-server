@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/reac
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { ToastHost } from '@/components/common/Toast';
 import { Header, StatusBar } from '@/components/layout';
+import { PublishOptOutBanner } from '@/components/layout/PublishOptOutBanner';
 import { FilterBar } from '@/components/filters';
 import { NeedsReReviewSection, ReviewPRsSection, StatusPRPanel } from '@/components/prs';
 import { useAttentionTitle } from '@/hooks/useAttentionTitle';
@@ -130,6 +131,8 @@ function AppContent() {
       />
 
       {statusPanel && <StatusPRPanel status={statusPanel} onClose={closeStatusPanel} />}
+
+      <PublishOptOutBanner />
 
       <NeedsReReviewSection />
 

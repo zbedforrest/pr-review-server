@@ -192,6 +192,21 @@ bots, and the `ci_status_exclude_authors` list. When the deployment policy
 rejects the profile an automatic review resolves to, the review is skipped and
 the head stays queued with the reason, rather than running a costlier profile.
 
+### Leaving the comment pilot
+
+`publish_opt_out_authors` (admin settings page, Publishing section) lists the
+logins who asked PRism to stop posting. Deny wins: an opted-out author gets no
+review comments, inline findings, reply reactions, reply text or mention
+responses, whatever `publish_enabled_authors` says, while their reviews keep
+appearing on the dashboard. Authors manage it themselves: every PRism comment
+and summary ends with a footer that says how to settle a thread (reply
+`intentional` or `won't fix`) and links to the dashboard, where an enrolled
+author sees a banner with Leave, and an opted-out author sees Rejoin. The
+banner uses `POST` and `DELETE /api/me/publish-opt-out`, and `GET /api/user`
+reports `publish_enrolled`, `publish_opted_out` and `enrolled_via` (`login`,
+a team slug, or `*`). Gate denials due to an opt-out count as
+`opted_out_total` on the daily health report's publication hygiene line.
+
 `GET /api/status` reports `webhook.deliveries_24h`, `webhook.last_delivery_at`,
 `webhook.intents_queued` and `webhook.oldest_queued_age_sec`, and the daily
 health report flags a backlog older than 30 minutes. Clearing

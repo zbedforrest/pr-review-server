@@ -48,3 +48,14 @@ describe('publishAllowedForAuthor', () => {
     expect(publishAllowedForAuthor('', '*')).toBe(false);
   });
 });
+
+describe('publishAllowedForAuthor with an opt-out list', () => {
+  it('denies an opted-out login before any login, team or wildcard entry', () => {
+    const teams = { core: { members: ['alice'], resolved_at: '2026-09-15T00:00:00Z' } };
+    expect(publishAllowedForAuthor('alice', '*', undefined, 'Alice')).toBe(false);
+    expect(publishAllowedForAuthor('alice', 'alice', undefined, ' alice ,bob')).toBe(false);
+    expect(publishAllowedForAuthor('alice', 'team:core', teams, 'alice')).toBe(false);
+    expect(publishAllowedForAuthor('bob', '*', undefined, 'alice')).toBe(true);
+    expect(publishAllowedForAuthor('alice', '*', undefined, '')).toBe(true);
+  });
+});

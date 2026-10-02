@@ -50,7 +50,7 @@ export const PRTableRow = memo(function PRTableRow({
   // control does not flash to its disabled form on first paint.
   const publishAllowed = settings === undefined
     ? true
-    : publishAllowedForAuthor(pr.author, settings.publish_enabled_authors, settings.author_list_teams);
+    : publishAllowedForAuthor(pr.author, settings.publish_enabled_authors, settings.author_list_teams, settings.publish_opt_out_authors);
   const prUrl = `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
   const reviewUrl = pr.status === 'completed' && pr.review_url
     ? pr.review_url

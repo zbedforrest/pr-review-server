@@ -1,0 +1,53 @@
+@use '../../styles/abstracts/variables' as *;
+
+.publish-opt-out-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-lg;
+  padding: $spacing-md $spacing-lg;
+  margin-bottom: $spacing-lg;
+  border: 1px solid $color-border;
+  border-radius: 6px;
+  background-color: $color-bg-tertiary;
+  color: $color-text-secondary;
+  font-size: 13px;
+  line-height: 1.5;
+
+  strong {
+    font-weight: 600;
+  }
+
+  code {
+    font-size: 12px;
+  }
+
+  &--left {
+    opacity: 0.85;
+  }
+
+  &__error {
+    color: $color-error-text;
+  }
+
+  &__button {
+    padding: $spacing-sm $spacing-lg;
+    background-color: transparent;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    color: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+
+    &:hover:not(:disabled) {
+      background-color: $color-bg-hover;
+    }
+
+    &:disabled {
+      cursor: default;
+      opacity: 0.6;
+    }
+  }
+}
