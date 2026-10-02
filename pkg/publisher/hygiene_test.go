@@ -280,7 +280,7 @@ func TestHygiene_LedgerPolicyNeverResolvesOnTheSameHeadOrAnUntouchedFile(t *test
 
 	rerun := summaryOnly("sha-round-1")
 	rerun.Changes = changed("a.go", "b.go")
-	rep := publishRound(t, gh, ledger, rerun)
+	rep := republishSameHead(t, gh, ledger, rerun)
 	if rep.Fixed != 0 || rep.StillOpen != 3 || !rep.Hygiene.Empty() {
 		t.Fatalf("a re-run on the same head fixes nothing: %+v", rep)
 	}

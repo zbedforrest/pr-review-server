@@ -13,23 +13,25 @@ import (
 
 func TestRefreshSummary_DropsTheConcededBulletAndKeepsTheRoundCounts(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, roundOne())
+	publishRound(t, gh, ledger, filedRound())
 
-	r2 := roundOne()
+	r2 := filedRound()
 	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
+	r2.Changes = changed("a.go", "b.go")
 	r2.Commentable["a.go"][50] = true
+	m1, n1 := payload.Fingerprint("b.go", 20, "Medium thing."), payload.Fingerprint("a.go", 50, "New critical.")
 	r2.Findings = []payload.Finding{
 		f("sum", "unknown", "SUMMARY", 0, "Narrative."),
-		f("m1", "medium", "b.go", 20, "Medium thing."),
-		f("m2", "medium", "a.go", 99, "Medium outside hunk."),
-		f("n1", "critical", "a.go", 50, "New critical."),
+		f(m1, "medium", "b.go", 20, "Medium thing."),
+		f(payload.Fingerprint("a.go", 99, "Medium outside hunk."), "medium", "a.go", 99, "Medium outside hunk."),
+		f(n1, "critical", "a.go", 50, "New critical."),
 	}
 	publishRound(t, gh, ledger, r2)
 	if !strings.Contains(gh.issueEdits[501], "**Since last review:** 1 new · 2 still open · 1 fixed") {
 		t.Fatalf("round 2 summary:\n%s", gh.issueEdits[501])
 	}
 	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueEdits[501]}}
-	ledger.rows["m1"].State = db.PublishedStateDismissed
+	ledger.rows[m1].State = db.PublishedStateDismissed
 	reviewsBefore, editsBefore := len(gh.reviews), len(gh.issueEdits)
 
 	refresh := r2
@@ -47,7 +49,7 @@ func TestRefreshSummary_DropsTheConcededBulletAndKeepsTheRoundCounts(t *testing.
 			t.Errorf("refreshed summary missing %q:\n%s", want, out)
 		}
 	}
-	if !strings.Contains(out, "#discussion_r"+itoa64(ledger.rows["n1"].CommentID)) {
+	if !strings.Contains(out, "#discussion_r"+itoa64(ledger.rows[n1].CommentID)) {
 		t.Errorf("bullets keep linking to their inline comments:\n%s", out)
 	}
 	if len(gh.reviews) != reviewsBefore || len(gh.issueEdits) != editsBefore || len(gh.issueCreates) != 1 {

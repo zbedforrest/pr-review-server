@@ -273,7 +273,9 @@ func TestThreads_SameHeadNeverResolves(t *testing.T) {
 	gh.outdated[1001] = true
 	rerun := summaryOnly("sha-round-1")
 	rerun.Changes = changed("a.go", "b.go")
-	rep := publishThreads(t, gh, ledger, rerun)
+	pol := testPolicy()
+	pol.RepublishSameCommit = true
+	rep := publishThreadsWith(t, gh, ledger, rerun, pol)
 	if rep.Fixed != 0 || len(gh.resolves) != 0 || len(gh.replies) != 0 {
 		t.Fatalf("report = %+v resolves=%v replies=%v", rep, gh.resolves, gh.replies)
 	}

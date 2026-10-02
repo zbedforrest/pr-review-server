@@ -157,6 +157,15 @@ func publishRound(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round) Rep
 	return publishWith(t, gh, ledger, r, testPolicy())
 }
 
+// republishSameHead runs a round with the same-commit guard off, the only
+// way a round reaches the ledger policy on an already published head.
+func republishSameHead(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round) Report {
+	t.Helper()
+	pol := testPolicy()
+	pol.RepublishSameCommit = true
+	return publishWith(t, gh, ledger, r, pol)
+}
+
 func publishWith(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round, pol Policy) Report {
 	t.Helper()
 	p := &Publisher{GH: gh, Ledger: ledger, Policy: pol, Now: func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }}
