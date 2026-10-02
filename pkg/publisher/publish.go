@@ -185,7 +185,8 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 		r.InlineComments[id] = cid
 	}
 
-	if err := p.writeSummary(ctx, r, sel, summaryRow, now, &rep); err != nil {
+	summaryLedger, err := p.writeSummary(ctx, r, sel, summaryRow, now, &rep)
+	if err != nil {
 		return rep, err
 	}
 
@@ -247,6 +248,10 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 		}
 		rep.Hygiene.noteResolved(row, r.HeadSHA, r.changedFilesSince(row.LastSeenSHA))
 	}
+	// Written last: HeadPublished reads this row as proof the round completed.
+	if err := p.Ledger.UpsertPublishedFinding(summaryLedger); err != nil {
+		return rep, fmt.Errorf("record summary comment: %w", err)
+	}
 	return rep, nil
 }
 
@@ -298,9 +303,10 @@ func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prio
 }
 
 // writeSummary renders the sticky summary, edits the existing comment (found
-// through the ledger or its marker) or creates it, and records the summary
-// row for this round.
-func (p *Publisher) writeSummary(ctx context.Context, r Round, sel Selection, summaryRow *db.PublishedFinding, now time.Time, rep *Report) error {
+// through the ledger or its marker) or creates it, and returns the summary
+// row for this round. The caller writes that row after every other ledger
+// write: HeadPublished reads it as proof the round completed.
+func (p *Publisher) writeSummary(ctx context.Context, r Round, sel Selection, summaryRow *db.PublishedFinding, now time.Time, rep *Report) (*db.PublishedFinding, error) {
 	summary := RenderSummary(r, sel)
 	summaryLedger := &db.PublishedFinding{
 		RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
@@ -323,7 +329,7 @@ func (p *Publisher) writeSummary(ctx context.Context, r Round, sel Selection, su
 	if summaryCommentID != 0 {
 		if err := p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryCommentID, summary); err != nil {
 			if !isNotFound(err) {
-				return fmt.Errorf("edit summary comment: %w", err)
+				return nil, fmt.Errorf("edit summary comment: %w", err)
 			}
 			summaryCommentID = 0
 		}
@@ -331,16 +337,13 @@ func (p *Publisher) writeSummary(ctx context.Context, r Round, sel Selection, su
 	if summaryCommentID == 0 {
 		id, err := p.GH.CreateIssueComment(ctx, r.Owner, r.Repo, r.Number, summary)
 		if err != nil {
-			return fmt.Errorf("create summary comment: %w", err)
+			return nil, fmt.Errorf("create summary comment: %w", err)
 		}
 		summaryCommentID = id
 	}
 	rep.SummaryCommentID = summaryCommentID
 	summaryLedger.CommentID = summaryCommentID
-	if err := p.Ledger.UpsertPublishedFinding(summaryLedger); err != nil {
-		return fmt.Errorf("record summary comment: %w", err)
-	}
-	return nil
+	return summaryLedger, nil
 }
 
 // RefreshSummary re-renders the sticky summary from the round the ledger last
@@ -382,15 +385,21 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 			r.InlineComments[row.Fingerprint] = row.CommentID
 		}
 	}
-	fixed := 0
-	if existing, err := p.GH.ListIssueComments(ctx, r.Owner, r.Repo, r.Number); err == nil {
-		for _, c := range existing {
-			if c.ID == summaryRow.CommentID {
-				if d, ok := parseSinceLastReview(c.Body); ok {
-					fixed = d.Fixed
-				}
+	existing, err := p.GH.ListIssueComments(ctx, r.Owner, r.Repo, r.Number)
+	if err != nil {
+		return fmt.Errorf("read summary comment: %w", err)
+	}
+	fixed, found := 0, false
+	for _, c := range existing {
+		if c.ID == summaryRow.CommentID {
+			found = true
+			if d, ok := parseSinceLastReview(c.Body); ok {
+				fixed = d.Fixed
 			}
 		}
+	}
+	if !found {
+		return nil
 	}
 	d := r.ledgerTransitions()
 	d.Fixed = fixed

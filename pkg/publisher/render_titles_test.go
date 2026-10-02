@@ -42,6 +42,24 @@ func TestTitleSource_HeadlineThenAssertedImpactThenFirstSentence(t *testing.T) {
 	}
 }
 
+func TestMarkedBullet_KeepsTheEllipsisOfAShortenedHeadline(t *testing.T) {
+	fd := withContract(f("a", "medium", "a.go", 1, "Retries never back off."), "production_behavior", "current_impact", "Every retry is rejected.", "")
+	fd.FindingContract.Headline = "Retry loop never backs off and keeps hammering the upstream until the..."
+	r := Round{Owner: "a", Repo: "b", HeadSHA: "abc1234"}
+	out := r.markedBullet(fd, "")
+	if !strings.Contains(out, "until the... \u2014") || strings.Contains(out, "the.. ") {
+		t.Fatalf("the ellipsis must survive the period trim:\n%s", out)
+	}
+}
+
+func TestRenderInline_LongFirstSentenceTitleKeepsItsTailInTheFold(t *testing.T) {
+	long := "The retry helper re-enters the backoff loop with the original deadline, so a slow upstream is retried past the caller's budget and the request outlives its context by several seconds. Then more."
+	out := RenderInline(noContract("x", "medium", "a.go", 1, long), "prism-only", "", "")
+	if !strings.Contains(out, "outlives its context by several seconds.") {
+		t.Fatalf("a cut title must leave the whole sentence readable in the fold:\n%s", out)
+	}
+}
+
 func TestRenderInline_ImmaterialFindingIsTitledByItsCommentAndShowsTheImpactBelow(t *testing.T) {
 	fd := withContract(f("x", "low", "a.go", 1, "Ordering within a group is unstable. The grain column was not added to ORDER BY."), "production_behavior", "no_user_impact", "No user impact; values are unchanged.", "")
 	out := RenderInline(fd, "prism-only", "", "")

@@ -17,6 +17,7 @@ type fakeGitHub struct {
 	existingIssueComments []IssueComment
 	replies               []fakeReply
 	editErr               error
+	listErr               error
 	nextCommentID         int64
 	nextIssueID           int64
 	nextReviewID          int64
@@ -64,6 +65,9 @@ func (g *fakeGitHub) EditIssueComment(_ context.Context, _, _ string, id int64, 
 }
 
 func (g *fakeGitHub) ListIssueComments(_ context.Context, _, _ string, _ int) ([]IssueComment, error) {
+	if g.listErr != nil {
+		return nil, g.listErr
+	}
 	return g.existingIssueComments, nil
 }
 

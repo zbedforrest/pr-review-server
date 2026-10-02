@@ -217,7 +217,11 @@ func (r Round) markedBullet(f payload.Finding, marker string) string {
 	if marker != "" {
 		marker = "**" + marker + "** "
 	}
-	text := truncateWords(strings.TrimSuffix(strings.TrimSpace(summaryText(f, r.LegacyTitles)), "."), 200)
+	text := strings.TrimSpace(summaryText(f, r.LegacyTitles))
+	if !strings.HasSuffix(text, "...") {
+		text = strings.TrimSuffix(text, ".")
+	}
+	text = truncateWords(text, 200)
 	return fmt.Sprintf("- %s %s%s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, where, r.findingLink(f))
 }
 
@@ -420,7 +424,15 @@ func headline(f payload.Finding, legacy bool) string {
 		}
 		return clauseHeadline(title, headlineMaxRunes)
 	}
-	return clauseHeadline(title, 100)
+	return clauseHeadline(title, commentTitleMaxRunes)
+}
+
+const commentTitleMaxRunes = 100
+
+// titleIsWholeFirstSentence reports whether a comment-sourced title shows the
+// first sentence in full; a cut title leaves the sentence to the fold.
+func titleIsWholeFirstSentence(f payload.Finding) bool {
+	return len([]rune(titleSource(f))) <= commentTitleMaxRunes
 }
 
 func legacyHeadline(f payload.Finding) string {
@@ -551,12 +563,15 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	if !compact {
 		// Without an impact sentence the headline came from the comment's first
 		// sentence; the rest of the comment is the only explanation, so show it.
-		sentence := firstSentence(comment)
-		if rest := strings.TrimSpace(strings.TrimPrefix(reasoning, sentence)); rest != "" {
+		rest := reasoning
+		if legacy || titleIsWholeFirstSentence(f) {
+			rest = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
+		}
+		if rest != "" {
 			b.WriteString("\n" + rest + "\n")
 		}
 		reasoning = ""
-	} else if !legacy && titleFromComment(f) {
+	} else if !legacy && titleFromComment(f) && titleIsWholeFirstSentence(f) {
 		reasoning = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
 	}
 

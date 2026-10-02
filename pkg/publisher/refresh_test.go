@@ -82,6 +82,25 @@ func TestRefreshSummary_SkipsTheEditWhenANewerRoundRewroteTheSummary(t *testing.
 	}
 }
 
+func TestRefreshSummary_AbortsWhenTheSummaryCannotBeRead(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, roundOne())
+	before := gh.issueEdits[501]
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: DefaultPolicy()}
+
+	gh.listErr = errors.New("rate limited")
+	if err := p.RefreshSummary(context.Background(), roundOne()); err == nil {
+		t.Fatal("a failed read must abort the refresh instead of rendering 0 fixed")
+	}
+	gh.listErr, gh.existingIssueComments = nil, nil
+	if err := p.RefreshSummary(context.Background(), roundOne()); err != nil {
+		t.Fatal(err)
+	}
+	if gh.issueEdits[501] != before {
+		t.Fatal("a summary that is no longer listed must not be edited")
+	}
+}
+
 func TestRefreshSummary_WithoutASummaryCommentDoesNothing(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
 	p := &Publisher{GH: gh, Ledger: ledger, Policy: DefaultPolicy()}

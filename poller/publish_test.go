@@ -204,6 +204,10 @@ func gitHubStub(t *testing.T, prJSON string, failWrites bool) (*httptest.Server,
 			_, _ = w.Write([]byte(prJSON))
 			return
 		}
+		if strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments") {
+			_, _ = w.Write([]byte(`[{"id":11,"body":"summary"}]`))
+			return
+		}
 		_, _ = w.Write([]byte(`[]`))
 	}))
 	t.Cleanup(ts.Close)
