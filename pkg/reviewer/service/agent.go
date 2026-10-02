@@ -1453,7 +1453,7 @@ type agentParseResult struct {
 	inputTokens    int64    // usage.input_tokens plus cache reads and cache creation
 	outputTokens   int64
 	subAgentTurns  int // assistant events from Agent-tool sub-agents, outside the turn budget
-	toolCalls      int // tool_use blocks (Claude) or command, file, MCP and search items (Codex) the top-level agent issued
+	toolCalls      int // non-error tool_result blocks (Claude) or completed command, file, MCP and search items (Codex) of the top-level agent
 }
 
 // noteUsage records the result event's spend and token usage. Cache reads and
@@ -1558,7 +1558,6 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 			}
 			if msg, ok := ev["message"].(map[string]any); ok {
 				result.noteServedModel(msg["model"])
-				result.toolCalls += countToolUseBlocks(msg["content"])
 			}
 			result.assistantTurns++
 			result.budgetUnits++
@@ -1568,6 +1567,13 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 			if result.budgetUnits > maxTurns {
 				_ = proc.Kill()
 				return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
+			}
+		case "user":
+			if ev["parent_tool_use_id"] != nil {
+				continue
+			}
+			if msg, ok := ev["message"].(map[string]any); ok {
+				result.toolCalls += countSucceededToolResults(msg["content"])
 			}
 		case "result":
 			if s, ok := ev["result"].(string); ok {
@@ -1604,11 +1610,18 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 	return result, nil
 }
 
-func countToolUseBlocks(content any) int {
+// countSucceededToolResults counts tool_result blocks that did not error. A
+// tool_use request whose tool was refused or failed is not evidence that
+// the agent read anything.
+func countSucceededToolResults(content any) int {
 	blocks, _ := content.([]any)
 	n := 0
 	for _, b := range blocks {
-		if block, ok := b.(map[string]any); ok && block["type"] == "tool_use" {
+		block, ok := b.(map[string]any)
+		if !ok || block["type"] != "tool_result" {
+			continue
+		}
+		if isError, _ := block["is_error"].(bool); !isError {
 			n++
 		}
 	}

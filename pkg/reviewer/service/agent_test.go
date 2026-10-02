@@ -114,6 +114,25 @@ const fakeStream = `{"type":"system","subtype":"init"}
 {"type":"result","result":"# Agent verdict\n\nLooks good. Approve.\n"}
 `
 
+func TestParseAgentStream_FailedToolResultsDoNotCountAsToolCalls(t *testing.T) {
+	stream := `{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"git diff"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01","is_error":true,"content":"bwrap: loopback: Failed RTM_NEWADDR"}]}}
+{"type":"assistant","parent_tool_use_id":"toolu_02","message":{"content":[{"type":"tool_use","id":"toolu_03","name":"Read","input":{}}]}}
+{"type":"user","parent_tool_use_id":"toolu_02","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_03","content":"sub-agent read"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"[]"}]}}
+{"type":"result","result":"[]"}
+`
+	proc := &fakeProcess{stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}
+	res, err := parseAgentStream(proc, &bytes.Buffer{}, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if res.toolCalls != 0 {
+		t.Fatalf("tool calls = %d, want 0 (errored result and sub-agent result must not count)", res.toolCalls)
+	}
+}
+
 // TestParseAgentStream_HappyPath exercises the stream parser directly with a
 // canned stream-json payload.
 func TestParseAgentStream_HappyPath(t *testing.T) {

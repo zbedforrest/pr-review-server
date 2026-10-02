@@ -193,7 +193,8 @@ func TestCapDiff_CapsThePrependedStat(t *testing.T) {
 
 func liteResultStream(findingsJSON string) string {
 	return `{"type":"system","subtype":"init","model":"claude-fable-5-1"}
-{"type":"assistant","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"reading"},{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}
+{"type":"assistant","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"reading"},{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"git diff"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"diff --git a/x b/x"}]}}
 {"type":"result","subtype":"success","result":` + findingsJSON + `,"total_cost_usd":0.4321,"usage":{"input_tokens":1000,"cache_read_input_tokens":250,"cache_creation_input_tokens":50,"output_tokens":300}}
 `
 }
