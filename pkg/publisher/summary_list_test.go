@@ -62,7 +62,7 @@ func TestRenderSummary_NothingShownReadsClean(t *testing.T) {
 	if !strings.Contains(out, "merge confidence 5/5") || !strings.Contains(out, "No blocking findings.") || strings.Contains(out[:strings.Index(out, "<details>")], "- **[") {
 		t.Fatalf("a round with nothing above the bar must read clean above the fold:\n%s", out)
 	}
-	if !strings.Contains(out, "<details><summary>1 lower-severity note</summary>") {
+	if !strings.Contains(out, "<details><summary>1 folded note</summary>") {
 		t.Fatalf("the low still appears folded:\n%s", out)
 	}
 }

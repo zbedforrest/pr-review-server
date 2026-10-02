@@ -52,7 +52,7 @@ func finding(file string, line int) []types.LineComment {
 }
 
 func ensembleCfg() *runconfig.Ensemble {
-	return &runconfig.Ensemble{Runs: 5, Quorum: 4, MinValid: 2, FallbackProfile: runconfig.ProfileLite}
+	return &runconfig.Ensemble{Runs: 5, Quorum: 4, MinValid: 2, MinSupportCritical: 2, FallbackProfile: runconfig.ProfileLite}
 }
 
 func testPoller() *Poller {
@@ -222,4 +222,65 @@ func TestEnsembleFallsBackToPerRunCheckoutsWhenTheSharedOneFails(t *testing.T) {
 		}
 		return true
 	})
+}
+
+func loneCriticalRuns() map[int]fakeRun {
+	shared := finding("a.go", 10)
+	withCritical := append(finding("a.go", 10), types.LineComment{ID: "A-2", FilePath: "c.go", LineNumber: 1, Importance: "CRITICAL", CommentBody: "only one run saw this"})
+	return map[int]fakeRun{
+		1: {delay: time.Millisecond, findings: withCritical},
+		2: {delay: time.Millisecond, findings: shared},
+		3: {delay: time.Millisecond, findings: shared},
+		4: {delay: time.Millisecond, findings: shared},
+		5: {delay: time.Hour},
+	}
+}
+
+func mergedImportance(t *testing.T, review *service.AgentReview, file string) string {
+	t.Helper()
+	for _, c := range review.Comments {
+		if c.FilePath == file {
+			return c.Importance
+		}
+	}
+	t.Fatalf("no merged finding on %s: %+v", file, review.Comments)
+	return ""
+}
+
+func TestEnsembleDowngradesALoneRunCriticalToMedium(t *testing.T) {
+	withFakeRuns(t, loneCriticalRuns())
+	review, _, err := testPoller().runEnsembleAgents(context.Background(), ensembleCfg(), service.AgentConfig{}, "o", "r", "main", 1, "sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mergedImportance(t, review, "c.go"); got != "MEDIUM" {
+		t.Fatalf("lone-run critical merged as %s, want MEDIUM", got)
+	}
+}
+
+func TestEnsembleLiteHygieneOffKeepsALoneRunCritical(t *testing.T) {
+	t.Setenv("LITE_HYGIENE", "false")
+	withFakeRuns(t, loneCriticalRuns())
+	review, _, err := testPoller().runEnsembleAgents(context.Background(), ensembleCfg(), service.AgentConfig{}, "o", "r", "main", 1, "sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mergedImportance(t, review, "c.go"); got != "CRITICAL" {
+		t.Fatalf("with LITE_HYGIENE=false the lone-run critical merged as %s, want CRITICAL", got)
+	}
+}
+
+func TestCapLoneRunCriticalsDowngradesEveryCriticalButTheSummary(t *testing.T) {
+	comments := []types.LineComment{
+		{FilePath: "a.go", Importance: "CRITICAL"},
+		{FilePath: "b.go", Importance: "critical"},
+		{FilePath: "c.go", Importance: "MEDIUM"},
+		{FilePath: "SUMMARY", Importance: "CRITICAL"},
+	}
+	if got := capLoneRunCriticals(comments); got != 2 {
+		t.Fatalf("downgraded = %d, want 2", got)
+	}
+	if comments[0].Importance != "MEDIUM" || comments[1].Importance != "MEDIUM" || comments[2].Importance != "MEDIUM" || comments[3].Importance != "CRITICAL" {
+		t.Fatalf("importances = %q %q %q %q", comments[0].Importance, comments[1].Importance, comments[2].Importance, comments[3].Importance)
+	}
 }

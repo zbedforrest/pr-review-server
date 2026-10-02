@@ -5,14 +5,10 @@ import (
 	"testing"
 
 	"pr-review-server/pkg/reviewer/payload"
-	"pr-review-server/pkg/reviewer/types"
 )
 
 func withContract(x payload.Finding, kind, materiality, impact, uncertainty string) payload.Finding {
-	x.FindingContract = &types.FindingContract{
-		SchemaVersion: 1, FindingKind: kind, Materiality: materiality,
-		CurrentImpact: impact, Falsifiability: "unknown", Uncertainty: uncertainty,
-	}
+	x.FindingContract = falsifiableTestContract(kind, materiality, impact, uncertainty)
 	x.FindingContractStatus = "valid"
 	return x
 }
@@ -37,8 +33,21 @@ func TestSelect_InlineRequiresCurrentImpactOnBehaviorOrSecurity(t *testing.T) {
 	if got := ids(sel.Inline); len(got) != 2 || got[0] != "sec" || got[1] != "prod" {
 		t.Fatalf("inline = %v, want [sec prod] (critical first)", got)
 	}
+	if got := ids(sel.Annotations); len(got) != 0 {
+		t.Fatalf("a critical without the inline contract is not shown at all: %v", got)
+	}
+}
+
+func TestSelect_DiscountGateOffShowsEveryCritical(t *testing.T) {
+	t.Setenv("PUBLISH_DISCOUNT_GATE", "false")
+	commentable := map[string]map[int]bool{"a.go": {4: true, 5: true}}
+	findings := []payload.Finding{
+		withContract(fp("latent", "critical", "a.go", 4, "Breaks if X.", "agent"), "latent_hazard", "future_condition_only", "Only if X.", ""),
+		noContract("nocontract", "critical", "a.go", 5, "No contract."),
+	}
+	sel := Select(findings, nil, commentable, DefaultPolicy())
 	if got := ids(sel.Annotations); len(got) != 2 || got[0] != "latent" || got[1] != "nocontract" {
-		t.Fatalf("criticals that are not inline-worthy stay in the summary; sub-bar findings vanish: %v", got)
+		t.Fatalf("with the gate off, criticals that are not inline-worthy stay in the summary: %v", got)
 	}
 }
 

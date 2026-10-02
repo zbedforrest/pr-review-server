@@ -224,7 +224,10 @@ const openPRJSON = `{"state":"open","merged":false,"draft":false,"head":{"sha":"
 // 5 - 2 - 1 = 2; with the critical conceded in the ledger the publisher says 4.
 const scoredSidecar = `{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc",
 	"required_checks":{"checks_issued":1,"checks_answered":1,"checks_violated":1},
-	"findings":[{"id":"f.go:0:abc123def456","severity":"critical","provenance":"agent","state":"confirmed","active":true,"file":"f.go","line":3,"comment":"Real bug."}]}`
+	"findings":[{"id":"f.go:0:abc123def456","severity":"critical","provenance":"agent","state":"confirmed","active":true,"file":"f.go","line":3,"comment":"Real bug.",
+	"finding_contract_status":"valid","finding_contract":{"schema_version":1,"finding_kind":"production_behavior","materiality":"current_impact",
+	"current_impact":"Every request on this path returns a 500.","falsifiability":"falsifiable","falsifiable_condition":"Send the request.","expected_observable":"A 500 instead of a 200.",
+	"subjects":[{"kind":"file","path":"f.go"}],"uncertainty":"Confident; reached on every request.","severity_rationale":"Hard failure on a live path."}}]}`
 
 func dismissedRow(owner, repo string, number int, fingerprint string) *db.PublishedFinding {
 	return &db.PublishedFinding{

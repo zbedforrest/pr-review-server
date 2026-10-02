@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"pr-review-server/pkg/reviewer/ensemble"
@@ -115,6 +116,9 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 		if runErr == nil {
 			out.CostUSD += report.TotalCostUSD
 			out.DurationMS = time.Since(started).Milliseconds()
+			if runconfig.LiteHygieneEnabled() && ens.MinSupportCritical > 1 {
+				report.Merge.Report.SupportDowngraded += capLoneRunCriticals(out.Comments)
+			}
 		}
 		return out, runErr
 	}
@@ -123,6 +127,19 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 	}
 	logEnsembleReport(pr.Owner, pr.Repo, pr.Number, report)
 	return review, nil
+}
+
+// capLoneRunCriticals applies the ensemble's support rule to the fallback
+// run, which by construction has support 1 behind every CRITICAL.
+func capLoneRunCriticals(comments []types.LineComment) int {
+	downgraded := 0
+	for i := range comments {
+		if comments[i].FilePath != "SUMMARY" && comments[i].FilePath != "CHECK" && strings.EqualFold(strings.TrimSpace(comments[i].Importance), "CRITICAL") {
+			comments[i].Importance = "MEDIUM"
+			downgraded++
+		}
+	}
+	return downgraded
 }
 
 // ensembleFallbackConfig is the single-agent config of the fallback profile,
@@ -250,7 +267,7 @@ wait:
 	for i, o := range valid {
 		runs[i] = o.review.Comments
 	}
-	merge, model := p.mergeEnsemble(ctx, ens.MergeModel, runs)
+	merge, model := p.mergeEnsemble(ctx, ens, runs)
 	report.Merge, report.MergeModel = merge, model
 	report.TotalCostUSD += merge.Call.CostUSD
 	return ensembleReview(valid, merge, report, time.Since(start)), report, nil
@@ -258,17 +275,21 @@ wait:
 
 // mergeEnsemble merges with the configured model, then the fallback model,
 // then deterministically; it returns the result and the model that wrote it.
-func (p *Poller) mergeEnsemble(ctx context.Context, model string, runs [][]types.LineComment) (ensemble.MergeResult, string) {
+func (p *Poller) mergeEnsemble(ctx context.Context, ens *runconfig.Ensemble, runs [][]types.LineComment) (ensemble.MergeResult, string) {
+	opts := ensemble.Options{}
+	if runconfig.LiteHygieneEnabled() {
+		opts.MinSupportCritical = ens.MinSupportCritical
+	}
 	if p.cfg.OpenRouterAPIKey == "" {
-		return ensemble.Merge(ctx, runs, nil, ensemble.Options{}), "deterministic"
+		return ensemble.Merge(ctx, runs, nil, opts), "deterministic"
 	}
 	var last ensemble.MergeResult
-	for _, m := range []string{model, ensembleFallbackMergeModel} {
+	for _, m := range []string{ens.MergeModel, ensembleFallbackMergeModel} {
 		if m == "" {
 			continue
 		}
 		client := llm.NewOpenRouterClient(p.cfg.OpenRouterAPIKey, p.cfg.OpenRouterBaseURL, m, false)
-		last = ensemble.Merge(ctx, runs, &ensemble.LLMAuthor{Client: client, Model: m}, ensemble.Options{})
+		last = ensemble.Merge(ctx, runs, &ensemble.LLMAuthor{Client: client, Model: m}, opts)
 		if last.Method == "author" || last.AuthorErr == "" {
 			return last, m
 		}

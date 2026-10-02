@@ -212,8 +212,8 @@ func TestParseCodexStreamHappyPath(t *testing.T) {
 
 func TestParseCodexStreamTurnBudgetExcludesReasoningAndTerminalMessage(t *testing.T) {
 	stream := `{"type":"item.completed","item":{"type":"reasoning"}}
-{"type":"item.completed","item":{"type":"command_execution"}}
-{"type":"item.completed","item":{"type":"file_change"}}
+{"type":"item.completed","item":{"type":"command_execution","status":"completed","exit_code":0}}
+{"type":"item.completed","item":{"type":"file_change","status":"completed"}}
 {"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
 `
 	proc := &fakeProcess{
@@ -223,8 +223,8 @@ func TestParseCodexStreamTurnBudgetExcludesReasoningAndTerminalMessage(t *testin
 	if err != nil {
 		t.Fatalf("parseCodexStream: %v", err)
 	}
-	if res.assistantTurns != 1 || res.budgetUnits != 2 {
-		t.Fatalf("assistant turns=%d budget units=%d", res.assistantTurns, res.budgetUnits)
+	if res.assistantTurns != 1 || res.budgetUnits != 2 || res.toolCalls != 2 {
+		t.Fatalf("assistant turns=%d budget units=%d tool calls=%d", res.assistantTurns, res.budgetUnits, res.toolCalls)
 	}
 	if res.finalOutput != "[]" {
 		t.Fatalf("terminal output was discarded: %q", res.finalOutput)
@@ -440,5 +440,55 @@ func TestRunAgentReviewClaudeUsesFilteredFrozenEnvironment(t *testing.T) {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("Claude child inherited server secret %q", forbidden)
 		}
+	}
+}
+
+func TestParseCodexStreamDoesNotCountAFailedCommandAsATool(t *testing.T) {
+	stream := `{"type":"item.completed","item":{"type":"command_execution","command":"git diff","status":"failed","exit_code":1}}
+{"type":"item.completed","item":{"type":"command_execution","command":"git diff","status":"completed","exit_code":1,"aggregated_output":"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n"}}
+{"type":"item.completed","item":{"type":"command_execution","command":"cat go.mod","status":"completed","exit_code":127}}
+{"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}
+`
+	proc := &fakeProcess{stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, 5)
+	if err != nil {
+		t.Fatalf("parseCodexStream: %v", err)
+	}
+	if res.toolCalls != 0 {
+		t.Fatalf("tool calls = %d, want 0", res.toolCalls)
+	}
+	if res.budgetUnits != 3 {
+		t.Fatalf("budget units = %d, want 3", res.budgetUnits)
+	}
+}
+
+func TestParseCodexStreamCountsAnEmptySearchAsATool(t *testing.T) {
+	stream := `{"type":"item.completed","item":{"type":"command_execution","command":"rg -n needle","status":"completed","exit_code":1,"aggregated_output":""}}
+{"type":"item.completed","item":{"type":"file_change"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
+`
+	proc := &fakeProcess{stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, 5)
+	if err != nil {
+		t.Fatalf("parseCodexStream: %v", err)
+	}
+	if res.toolCalls != 2 {
+		t.Fatalf("tool calls = %d, want 2 (an empty search and an item without a status field)", res.toolCalls)
+	}
+}
+
+func TestParseCodexStreamCountsNoToolCallsForAnAnswerOnlyRun(t *testing.T) {
+	stream := `{"type":"item.completed","item":{"type":"reasoning"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"[]"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}
+`
+	proc := &fakeProcess{stdout: bytes.NewBufferString(stream), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}
+	res, err := parseCodexStream(proc, &bytes.Buffer{}, 5)
+	if err != nil {
+		t.Fatalf("parseCodexStream: %v", err)
+	}
+	if res.toolCalls != 0 {
+		t.Fatalf("tool calls = %d, want 0", res.toolCalls)
 	}
 }

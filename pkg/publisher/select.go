@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/types"
 )
 
 // Greptile posts about half an inline comment per PR; the cap and the
@@ -170,24 +171,33 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 	return sel
 }
 
-// Shown is the bar for appearing on GitHub at all: a critical finding, or one
-// whose contract asserts current production impact (the inline bar). Lower
-// findings live only on the dashboard.
+// Shown is the bar for an inline comment or a summary bullet: a medium or
+// critical finding whose contract asserts current production impact and
+// names an experiment. Lower findings and self-discounted ones appear only
+// in the summary's folded notes and on the dashboard. With the discount
+// gate off, any critical is shown.
 func Shown(f payload.Finding) bool {
 	if !Publishable(f) {
 		return false
 	}
-	return f.Severity == "critical" || (f.Severity == "medium" && worthInline(f))
+	if !types.DiscountGateEnabled() {
+		return f.Severity == "critical" || (f.Severity == "medium" && worthInline(f))
+	}
+	return (f.Severity == "critical" || f.Severity == "medium") && worthInline(f)
 }
 
 // worthInline is the Greptile-style bar for occupying a reviewer's diff view:
 // the agent must assert an impact that exists today on a behavior or security
-// finding. Latent hazards, design and test notes, and anything with unknown
+// finding, state how to falsify it, and not hedge it away in the same breath.
+// Latent hazards, design and test notes, and anything with unknown
 // materiality stay in the folded summary table.
 func worthInline(f payload.Finding) bool {
 	c := f.FindingContract
 	if c == nil || f.FindingContractStatus != "valid" || c.Materiality != "current_impact" {
 		return false
 	}
-	return c.FindingKind == "production_behavior" || c.FindingKind == "security_risk"
+	if c.FindingKind != "production_behavior" && c.FindingKind != "security_risk" {
+		return false
+	}
+	return !types.DiscountGateEnabled() || types.SelfDiscount(c) == types.DiscountNone
 }

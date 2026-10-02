@@ -88,7 +88,7 @@ func TestRenderSummary_FoldsLowerSeverityNotesUnderTheBullets(t *testing.T) {
 		t.Fatalf("clean summary must say what it covered without a notes count in the footer:\n%s", out)
 	}
 	folded := out[strings.Index(out, "<details>"):]
-	if !strings.HasPrefix(folded, "<details><summary>2 lower-severity notes</summary>") {
+	if !strings.HasPrefix(folded, "<details><summary>2 folded notes</summary>") {
 		t.Fatalf("notes must fold under one summary line:\n%s", out)
 	}
 	if !strings.Contains(folded, "**[MEDIUM]** Retry loop has no upper bound \u2014 [`b.go:1`](https://github.com/a/b/blob/abc1234/b.go#L1)") || !strings.Contains(folded, "**[LOW]** Typo in the log message \u2014 [`a.go:1`]") {

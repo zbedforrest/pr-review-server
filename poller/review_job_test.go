@@ -1242,6 +1242,23 @@ func TestCacheRestoreUsesExactCommitSidecarMetadata(t *testing.T) {
 	assert.Contains(t, run.ActualModelsJSON, `"served_model":"fallback"`)
 }
 
+// assertedCriticalFinding is a CRITICAL that clears the inline bar: current
+// impact, an experiment and no hedge, so it is shown and costs confidence.
+func assertedCriticalFinding() payload.Finding {
+	condition, observable := "Send the request.", "A 500 instead of a 200."
+	return payload.Finding{
+		ID: "f.go:0:abc123def456", Severity: "critical", Provenance: "agent", State: "confirmed", Active: true,
+		File: "f.go", Line: 3, Comment: "Real bug.", FindingContractStatus: "valid",
+		FindingContract: &types.FindingContract{
+			SchemaVersion: 1, FindingKind: "production_behavior", Materiality: "current_impact",
+			CurrentImpact: "Every request on this path returns a 500.", Falsifiability: "falsifiable",
+			FalsifiableCondition: &condition, ExpectedObservable: &observable,
+			Subjects:    []types.FindingSubject{{Kind: "file", Path: "f.go"}},
+			Uncertainty: "Confident; reached on every request.", SeverityRationale: "Hard failure on a live path.",
+		},
+	}
+}
+
 func TestCacheRestoreScoresMergeConfidenceFromSidecar(t *testing.T) {
 	database := NewMockDatabase()
 	storage := NewMockReviewStorage()
@@ -1255,11 +1272,8 @@ func TestCacheRestoreScoresMergeConfidenceFromSidecar(t *testing.T) {
 		PRNumber: job.PR.Number, CommitSHA: job.PR.CommitSHA,
 		Counts:         payload.Counts{Critical: 1},
 		RequiredChecks: &payload.RequiredChecksInfo{Issued: 1, Answered: 1, Violated: 1},
-		Findings: []payload.Finding{{
-			ID: "f.go:0:abc123def456", Severity: "critical", Provenance: "agent", State: "confirmed", Active: true,
-			File: "f.go", Line: 3, Comment: "Real bug.",
-		}},
-		ReviewRun: &payload.ReviewRunInfo{RunID: "run-24400000000000000000000000000001"},
+		Findings:       []payload.Finding{assertedCriticalFinding()},
+		ReviewRun:      &payload.ReviewRunInfo{RunID: "run-24400000000000000000000000000001"},
 	}
 	body, err := json.Marshal(sidecar)
 	require.NoError(t, err)
@@ -2394,7 +2408,7 @@ func (w writerFunc) Write(p []byte) (int, error) { return w(p) }
 func scoredReviewGenerator() *MockReviewGenerator {
 	generator := NewMockReviewGenerator()
 	generator.DefaultResult.Comments = []types.LineComment{
-		{FilePath: "src/app.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "Nil dereference on the error path."},
+		{FilePath: "src/app.go", LineNumber: 3, Importance: "CRITICAL", CommentBody: "Nil dereference on the error path.", FindingContract: assertedCriticalFinding().FindingContract},
 	}
 	generator.DefaultResult.CriticalCount = 1
 	generator.DefaultResult.Checks = service.RequiredCheckTelemetry{ChecksIssued: 1, ChecksAnswered: 1, ChecksViolated: 1}

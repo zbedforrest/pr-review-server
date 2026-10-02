@@ -118,7 +118,7 @@ func TestRenderSummary_UnverifiedFoldFollowsLowerSeverityNotes(t *testing.T) {
 	r := unverifiedRound()
 	r.Findings = append(r.Findings, withContract(f("l1", "low", "b.go", 9, "Nit."), "test_quality", "no_user_impact", "No user impact.", ""))
 	out := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
-	lower, unv := strings.Index(out, "1 lower-severity note</summary>"), strings.Index(out, "2 unverified notes</summary>")
+	lower, unv := strings.Index(out, "1 folded note</summary>"), strings.Index(out, "2 unverified notes</summary>")
 	if lower < 0 || unv < 0 || unv < lower {
 		t.Fatalf("unverified fold must follow the lower-severity fold:\n%s", out)
 	}

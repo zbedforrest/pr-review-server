@@ -219,6 +219,9 @@ func parseCodexStreamModel(proc SpawnedProcess, logFile io.Writer, maxTurns int,
 			// Count completed concrete work items so MaxTurns remains a meaningful
 			// work bound. Provider-internal reasoning and the terminal answer are
 			// excluded because neither represents another tool/file operation.
+			if codexToolItemTypes[itemType] && codexItemExecuted(item) {
+				result.toolCalls++
+			}
 			if itemType != "" && itemType != "reasoning" && itemType != "agent_message" {
 				result.budgetUnits++
 				if result.budgetUnits%5 == 0 || result.budgetUnits == 1 {
@@ -249,6 +252,28 @@ func parseCodexStreamModel(proc SpawnedProcess, logFile io.Writer, maxTurns int,
 		return result, fmt.Errorf("read stdout: %w", err)
 	}
 	return result, nil
+}
+
+// codexToolItemTypes are the items that show the agent touched the checkout
+// or the network rather than answering from the prompt alone.
+var codexToolItemTypes = map[string]bool{
+	"command_execution": true, "file_change": true, "mcp_tool_call": true, "web_search": true,
+}
+
+// codexItemExecuted is true for a tool item that actually ran. A search
+// that found nothing exits 1 and still read the checkout; a missing
+// executable (126, 127) or a sandbox refusal, which bubblewrap reports on
+// the command's own output, did not. The item.completed envelope already
+// says the item finished, so an absent status counts as completed.
+func codexItemExecuted(item map[string]any) bool {
+	if status, ok := item["status"].(string); ok && status != "completed" {
+		return false
+	}
+	if code, ok := item["exit_code"].(float64); ok && (code == 126 || code == 127) {
+		return false
+	}
+	output, _ := item["aggregated_output"].(string)
+	return !strings.HasPrefix(strings.TrimSpace(output), "bwrap:")
 }
 
 func codexErrorMessage(v any, fallback string) string {

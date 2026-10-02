@@ -91,6 +91,7 @@ func TestEnforceFindingContractPolicyCapsNonDefectClasses(t *testing.T) {
 
 func TestEnforceFindingContractPolicyCapsUnknownMaterialityAtMedium(t *testing.T) {
 	contract := validPolicyContract("production_behavior", "unknown", "falsifiable")
+	contract.CurrentImpact = "Checkout returns a 500 for carts with a removed item."
 	comments := []types.LineComment{{
 		FilePath:        "example.go",
 		Importance:      "CRITICAL",
@@ -141,4 +142,72 @@ func validPolicyContract(kind, materiality, falsifiability string) *types.Findin
 		contract.ExpectedObservable = &observable
 	}
 	return contract
+}
+
+func TestEnforceFindingContractPolicyDemotesSelfDiscountedFindings(t *testing.T) {
+	t.Setenv("PUBLISH_CONDITION_HEDGE_GATE", "true")
+	for name, uncertainty := range map[string]string{
+		"condition":  "Medium: depends on whether the PUT keeps steps when the events list is absent.",
+		"intent":     "May be deliberate; the default was chosen for internal callers.",
+		"nil impact": "None today; the flag is off everywhere.",
+		"unread":     "I could not execute commands in this checkout to confirm the installed client version.",
+	} {
+		contract := validPolicyContract("production_behavior", "current_impact", "falsifiable")
+		contract.CurrentImpact = "Running the script to fix only a case's prerequisites wipes that case's steps."
+		contract.Uncertainty = uncertainty
+		comments := []types.LineComment{{FilePath: "example.go", Importance: "CRITICAL", FindingContract: contract}}
+		EnforceFindingContractPolicy(comments)
+		if comments[0].Importance != "LOW" || contract.Materiality != "unknown" {
+			t.Errorf("%s: importance = %q materiality = %q, want LOW/unknown", name, comments[0].Importance, contract.Materiality)
+		}
+		if err := types.ValidateFindingContract(contract); err != nil {
+			t.Errorf("%s: demoted contract is no longer valid: %v", name, err)
+		}
+	}
+}
+
+func TestEnforceFindingContractPolicyDemotesUnfalsifiableCurrentImpact(t *testing.T) {
+	contract := validPolicyContract("production_behavior", "current_impact", "unknown")
+	contract.CurrentImpact = "Every checkout request returns a 500."
+	contract.Uncertainty = "Confident."
+	comments := []types.LineComment{{FilePath: "example.go", Importance: "CRITICAL", FindingContract: contract}}
+	EnforceFindingContractPolicy(comments)
+	if comments[0].Importance != "LOW" || contract.Materiality != "unknown" {
+		t.Fatalf("importance = %q materiality = %q, want LOW/unknown", comments[0].Importance, contract.Materiality)
+	}
+}
+
+func TestEnforceFindingContractPolicyKeepsAssertedCurrentImpact(t *testing.T) {
+	contract := validPolicyContract("production_behavior", "current_impact", "falsifiable")
+	contract.CurrentImpact = "Every checkout request returns a 500."
+	contract.Uncertainty = "Confident; the branch is reached on every request."
+	comments := []types.LineComment{{FilePath: "example.go", Importance: "CRITICAL", FindingContract: contract}}
+	EnforceFindingContractPolicy(comments)
+	if comments[0].Importance != "CRITICAL" || contract.Materiality != "current_impact" {
+		t.Fatalf("importance = %q materiality = %q, want CRITICAL/current_impact", comments[0].Importance, contract.Materiality)
+	}
+}
+
+func TestEnforceFindingContractPolicyConditionGateOffKeepsConditionHedges(t *testing.T) {
+	contract := validPolicyContract("production_behavior", "current_impact", "falsifiable")
+	contract.CurrentImpact = "Users lose their steps."
+	contract.Uncertainty = "Medium: depends on whether the PUT keeps steps."
+	comments := []types.LineComment{{FilePath: "example.go", Importance: "CRITICAL", FindingContract: contract}}
+	EnforceFindingContractPolicy(comments)
+	if comments[0].Importance != "CRITICAL" || contract.Materiality != "current_impact" {
+		t.Fatalf("importance = %q materiality = %q, want CRITICAL/current_impact with the condition gate off", comments[0].Importance, contract.Materiality)
+	}
+}
+
+func TestEnforceFindingContractPolicyDiscountGateOffKeepsOldBehaviour(t *testing.T) {
+	t.Setenv("PUBLISH_DISCOUNT_GATE", "false")
+	t.Setenv("PUBLISH_CONDITION_HEDGE_GATE", "true")
+	contract := validPolicyContract("production_behavior", "current_impact", "falsifiable")
+	contract.CurrentImpact = "Users lose their steps."
+	contract.Uncertainty = "Medium: depends on whether the PUT keeps steps."
+	comments := []types.LineComment{{FilePath: "example.go", Importance: "CRITICAL", FindingContract: contract}}
+	EnforceFindingContractPolicy(comments)
+	if comments[0].Importance != "CRITICAL" || contract.Materiality != "current_impact" {
+		t.Fatalf("importance = %q materiality = %q, want CRITICAL/current_impact with the gate off", comments[0].Importance, contract.Materiality)
+	}
 }
