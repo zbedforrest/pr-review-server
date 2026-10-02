@@ -293,6 +293,10 @@ func replyAction(row db.PublishedReply, ok bool) string {
 		return ActionNone
 	case row.Outcome == "posted" && row.Decision != "":
 		return row.Decision
+	case strings.HasPrefix(row.Outcome, "settled:"):
+		// The verdict fast path dismisses the finding with a reaction: the
+		// concession without the model reply.
+		return ActionConcede
 	case row.Action == "reacted":
 		return ActionReact
 	}

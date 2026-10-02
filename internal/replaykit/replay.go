@@ -6,9 +6,10 @@ package replaykit
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,16 +125,59 @@ func (r *Recorder) PostReply(_ context.Context, _, _ string, _ int, rootCommentI
 	return r.nextComment, nil
 }
 
-// ResolveThread and UnresolveThread record thread resolution by root comment
-// id. The publisher cannot resolve yet; when publisher.GitHub gains these
-// methods, adapt the signatures here and the replay records them.
-func (r *Recorder) ResolveThread(_ context.Context, _, _ string, rootCommentID int64) error {
-	r.Resolved = append(r.Resolved, rootCommentID)
+const threadNodePrefix = "T"
+
+// ListReviewThreads opens one thread per posted root, as GitHub does.
+func (r *Recorder) ListReviewThreads(context.Context, string, string, int) ([]publisher.ReviewThread, error) {
+	out := make([]publisher.ReviewThread, 0, len(r.Posts))
+	for _, p := range r.Posts {
+		out = append(out, publisher.ReviewThread{NodeID: threadNodePrefix + strconv.FormatInt(p.CommentID, 10), RootCommentID: p.CommentID, Resolved: r.isResolved(p.CommentID)})
+	}
+	return out, nil
+}
+
+func (r *Recorder) isResolved(commentID int64) bool {
+	resolved := false
+	for _, id := range r.Resolved {
+		if id == commentID {
+			resolved = true
+		}
+	}
+	for _, id := range r.Unresolved {
+		if id == commentID {
+			resolved = false
+		}
+	}
+	return resolved
+}
+
+func rootOfThread(nodeID string) (int64, error) {
+	id, err := strconv.ParseInt(strings.TrimPrefix(nodeID, threadNodePrefix), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("unknown thread %q", nodeID)
+	}
+	return id, nil
+}
+
+// ResolveThread and UnresolveThread record thread resolution by the root
+// comment id behind the thread node.
+func (r *Recorder) ResolveThread(_ context.Context, _, _ string, nodeID string) error {
+	id, err := rootOfThread(nodeID)
+	if err != nil {
+		return err
+	}
+	if !r.isResolved(id) {
+		r.Resolved = append(r.Resolved, id)
+	}
 	return nil
 }
 
-func (r *Recorder) UnresolveThread(_ context.Context, _, _ string, rootCommentID int64) error {
-	r.Unresolved = append(r.Unresolved, rootCommentID)
+func (r *Recorder) UnresolveThread(_ context.Context, _, _ string, nodeID string) error {
+	id, err := rootOfThread(nodeID)
+	if err != nil {
+		return err
+	}
+	r.Unresolved = append(r.Unresolved, id)
 	return nil
 }
 
@@ -158,42 +202,30 @@ func (r *Recorder) OwnComments(bot string) []github.ReviewCommentInfo {
 	return out
 }
 
-// PublisherCanResolve reports whether the publisher's GitHub interface has a
-// thread resolution method yet; until it does, resolution metrics are not
-// applicable.
+// PublisherCanResolve reports whether the replay's recorder satisfies the
+// publisher's optional thread resolution interface, so resolution metrics
+// are measured.
 func PublisherCanResolve() bool {
-	_, ok := reflect.TypeOf((*publisher.GitHub)(nil)).Elem().MethodByName("ResolveThread")
+	_, ok := any(NewRecorder()).(publisher.ThreadResolver)
 	return ok
 }
 
-// PublisherTakesChangedFiles reports whether publisher.Round has a
-// ChangedFiles field SetChangedFiles can fill.
-func PublisherTakesChangedFiles() bool {
-	f, ok := reflect.TypeOf(publisher.Round{}).FieldByName("ChangedFiles")
-	return ok && (f.Type == reflect.TypeOf([]string(nil)) || f.Type == reflect.TypeOf(map[string]bool(nil)))
-}
+// PublisherTakesChangedFiles reports whether publisher.Round accepts the
+// inter-push change set SetChangedFiles fills.
+func PublisherTakesChangedFiles() bool { return true }
 
-// SetChangedFiles hands the files changed since the previous round to a
-// publisher that accepts them (a Round.ChangedFiles field of []string or
-// map[string]bool) and does nothing on a publisher that does not.
+// SetChangedFiles hands the files changed since the previous round to the
+// publisher as the change set for every base the ledger asks about; an
+// unknown compare leaves the round without one, so nothing is judged fixed.
 func SetChangedFiles(r *publisher.Round, files []string, known bool) {
 	if !known {
 		return
 	}
-	f := reflect.ValueOf(r).Elem().FieldByName("ChangedFiles")
-	if !f.IsValid() || !f.CanSet() {
-		return
+	set := make(map[string]bool, len(files))
+	for _, f := range files {
+		set[f] = true
 	}
-	switch f.Type() {
-	case reflect.TypeOf([]string(nil)):
-		f.Set(reflect.ValueOf(append([]string{}, files...)))
-	case reflect.TypeOf(map[string]bool(nil)):
-		m := make(map[string]bool, len(files))
-		for _, x := range files {
-			m[x] = true
-		}
-		f.Set(reflect.ValueOf(m))
-	}
+	r.Changes = func(string) (publisher.ChangeSet, bool) { return publisher.ChangeSet{Files: set}, true }
 }
 
 // RoundInput is everything one replayed round needs beyond the ledger.
@@ -251,6 +283,9 @@ func (p *PRReplay) PublishRound(ctx context.Context, in RoundInput) (RoundResult
 	p.Rec.Begin(in.Index, in.SHA)
 	before := len(p.Rec.Posts)
 	rep, err := p.Pub.Publish(ctx, round)
+	if errors.Is(err, publisher.ErrHeadAlreadyPublished) {
+		rep, err = publisher.Report{}, nil
+	}
 	if err != nil {
 		return res, fmt.Errorf("round %d (%s): %w", in.Index+1, Short(in.SHA), err)
 	}

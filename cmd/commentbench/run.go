@@ -76,10 +76,11 @@ func replayCase(ctx context.Context, c *Case, policy publisher.Policy, responder
 	gh := &threadView{c: c, run: run, now: func() time.Time { return now }}
 	reactor := publisher.ReplyReactor{
 		GH: gh, Ledger: ledger, Mode: publisher.ReplyModeRespond,
-		PR:      gh.prState,
-		Allowed: func(string) bool { return true },
-		Now:     func() time.Time { return now },
-		Holder:  "commentbench",
+		PR:             gh.prState,
+		Allowed:        func(string) bool { return true },
+		Now:            func() time.Time { return now },
+		Holder:         "commentbench",
+		ResolveThreads: true,
 	}
 	reactor.Responder = responder(c, run)
 
@@ -160,7 +161,7 @@ func flipped(previous, after []db.PublishedFinding) []db.PublishedFinding {
 	}
 	var out []db.PublishedFinding
 	for _, row := range after {
-		if wasOpen[row.Fingerprint] && replaykit.IsFindingRow(row) && row.State == db.PublishedStateResolved {
+		if wasOpen[row.Fingerprint] && replaykit.IsFindingRow(row) && (row.State == db.PublishedStateResolved || row.State == db.PublishedStateFixed) {
 			out = append(out, row)
 		}
 	}
@@ -267,6 +268,20 @@ func (v *threadView) React(ctx context.Context, owner, repo string, commentID in
 
 func (v *threadView) PostReply(ctx context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error) {
 	return v.run.Rec.PostReply(ctx, owner, repo, number, rootCommentID, body)
+}
+
+// The reactor resolves a conceded finding's thread through the recorder, so
+// the resolution is scored with the publisher's own.
+func (v *threadView) ListReviewThreads(ctx context.Context, owner, repo string, number int) ([]publisher.ReviewThread, error) {
+	return v.run.Rec.ListReviewThreads(ctx, owner, repo, number)
+}
+
+func (v *threadView) ResolveThread(ctx context.Context, owner, repo, nodeID string) error {
+	return v.run.Rec.ResolveThread(ctx, owner, repo, nodeID)
+}
+
+func (v *threadView) UnresolveThread(ctx context.Context, owner, repo, nodeID string) error {
+	return v.run.Rec.UnresolveThread(ctx, owner, repo, nodeID)
 }
 
 func (v *threadView) prState(context.Context, string, string, int) (publisher.PRState, error) {

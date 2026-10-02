@@ -22,7 +22,6 @@ import (
 	"os"
 	"strings"
 
-	"pr-review-server/internal/replaykit"
 	"pr-review-server/pkg/publisher"
 )
 
@@ -50,7 +49,7 @@ func main() {
 	}
 	log.SetFlags(0)
 
-	dumps, err := replaykit.LoadDumps(*dumpsDir)
+	dumps, err := loadDumps(*dumpsDir)
 	if err != nil {
 		log.Fatalf("load dumps: %v", err)
 	}
@@ -59,15 +58,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var f replaykit.Fetcher
+	var f fetcher
 	if !*offline {
-		lf, err := replaykit.NewLiveFetcher(os.Getenv("PRISM_BASE_URL"))
+		lf, err := newLiveFetcher(os.Getenv("PRISM_BASE_URL"))
 		if err != nil {
 			log.Fatalf("fetcher: %v (pass --offline to replay the cache only)", err)
 		}
 		f = lf
 	}
-	st, err := replaykit.NewStore(*sidecarsDir, f)
+	st, err := newStore(*sidecarsDir, f)
 	if err != nil {
 		log.Fatalf("sidecar store: %v", err)
 	}
@@ -76,7 +75,7 @@ func main() {
 	opts.Policy.RepublishSameCommit = !*sameCommitGuard
 	opts.Policy.LegacyTitles = *legacyTitles
 	if f != nil {
-		if err := replaykit.Prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
+		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
 			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)
 		}
 	}
@@ -115,15 +114,15 @@ func replayPolicy(inlineCap int, minSeverity string, showUnverified, legacy bool
 	return p
 }
 
-func filterDumps(dumps []*replaykit.PRDump, prFilter string, limit int) ([]*replaykit.PRDump, error) {
+func filterDumps(dumps []*prDump, prFilter string, limit int) ([]*prDump, error) {
 	if prFilter != "" {
 		owner, want := "", prFilter
 		if i := strings.Index(want, "/"); i >= 0 {
 			owner, want = want[:i], want[i+1:]
 		}
-		var kept []*replaykit.PRDump
+		var kept []*prDump
 		for _, d := range dumps {
-			if d.Key() == want && (owner == "" || strings.EqualFold(d.Owner, owner)) {
+			if d.key() == want && (owner == "" || strings.EqualFold(d.Owner, owner)) {
 				kept = append(kept, d)
 			}
 		}

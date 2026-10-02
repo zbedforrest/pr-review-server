@@ -113,9 +113,9 @@ func assertSince(t *testing.T, run *Run, round int, want string) {
 	t.Fatalf("round %d not replayed", round+1)
 }
 
-// The author calls a finding intentional and PRism concedes; the next push
-// rewords the same finding. Intended: the reword is recognised as the
-// dismissed defect and stays silent, and the cache fix counts as fixed.
+// The author calls a finding intentional and PRism settles the verdict; the
+// next push rewords the same finding. Intended: the reword is recognised as
+// the dismissed defect and stays silent, and the cache fix counts as fixed.
 func TestE2E_PushbackThenRewordStaysSilent(t *testing.T) {
 	run, s := replayFixture(t, "pushback_reword")
 
@@ -124,12 +124,11 @@ func TestE2E_PushbackThenRewordStaysSilent(t *testing.T) {
 	assertRowState(t, run, "svc/retry.go:4:a1a1a1a1a1a1", db.PublishedStateDismissed)
 	assertReply(t, run, 202, ActionConcede)
 
-	assertPosted(t, run, 1, "svc/retry.go:4:c3c3c3c3c3c3")
-	assertSince(t, run, 1, "1 new · 0 still open · 0 fixed")
+	assertPosted(t, run, 1)
+	assertSince(t, run, 1, "0 new · 0 still open · 0 fixed")
 	assertGaps(t, s, []knownGap{
-		{"posted_should_not round 2 comment 103", "W1-1: a dismissed row suppresses every later wording"},
-		{"repost round 2", "W1-1"},
-		{"summary_mismatch round 2", "W1-1 and W1-4: the reword is not new; a verified fix claim is fixed, not dismissed"},
+		{"not_resolved reply 101", "W2-2 and W2-3: a settled verdict resolves its thread"},
+		{"summary_mismatch round 2", "W1-4: a verified fix claim is fixed, not dismissed"},
 	})
 }
 
@@ -143,19 +142,18 @@ func TestE2E_FixCommitCountsAndAbsenceDoesNot(t *testing.T) {
 	assertPosted(t, run, 0, "api/handler.go:2:d4d4d4d4d4d4", "api/limits.go:6:e5e5e5e5e5e5")
 	assertReply(t, run, 211, ActionConcede)
 	assertPosted(t, run, 1, "api/handler_test.go:1:f6f6f6f6f6f6")
-	assertSince(t, run, 1, "1 new · 0 still open · 1 fixed")
+	assertSince(t, run, 1, "1 new · 1 still open · 0 fixed")
 	assertReply(t, run, 212, ActionConcede)
 
-	assertPosted(t, run, 2, "api/limits.go:6:e5e5e5e5e5e5")
-	if s.Fixed != 1 || s.WrongFixed != 1 {
-		t.Fatalf("fixed %d, wrong %d; want the one false fix only", s.Fixed, s.WrongFixed)
+	assertPosted(t, run, 2)
+	assertSince(t, run, 2, "0 new · 1 still open · 0 fixed")
+	assertRowState(t, run, "api/limits.go:6:e5e5e5e5e5e5", db.PublishedStateOpen)
+	if s.Fixed != 0 || s.WrongFixed != 0 {
+		t.Fatalf("fixed %d, wrong %d; the conceded fix claims are dismissed and the untouched finding stays open", s.Fixed, s.WrongFixed)
 	}
 	assertGaps(t, s, []knownGap{
-		{"wrong_fixed round 2 comment 112", "W1-1: absence is not fixed when the cited file did not change"},
-		{"summary_mismatch round 2", "W1-1: the unchanged finding is still open, not fixed"},
-		{"posted_should_not round 3 comment 114", "W1-1: every row with a comment id counts as already published"},
-		{"repost round 3", "W1-1"},
-		{"summary_mismatch round 3", "W1-1 and W1-4"},
+		{"summary_mismatch round 2", "W1-4: a verified fix claim is fixed, not dismissed"},
+		{"summary_mismatch round 3", "W1-4: a verified fix claim is fixed, not dismissed"},
 	})
 }
 
@@ -167,7 +165,9 @@ func TestE2E_GreptileDuplicateAndSameCommitRerun(t *testing.T) {
 
 	assertPosted(t, run, 0, "web/form.tsx:8:a7a7a7a7a7a7", "web/form.tsx:12:b8b8b8b8b8b8")
 	assertPosted(t, run, 1)
-	assertSince(t, run, 1, "0 new · 2 still open · 0 fixed")
+	if run.Rounds[1].Summary != run.Rounds[0].Summary {
+		t.Fatalf("a same-commit round leaves the summary untouched:\n%s", run.Rounds[1].Summary)
+	}
 	assertPosted(t, run, 2)
 	assertSince(t, run, 2, "0 new · 1 still open · 1 fixed")
 	assertReply(t, run, 221, ActionConcede)
@@ -176,7 +176,7 @@ func TestE2E_GreptileDuplicateAndSameCommitRerun(t *testing.T) {
 	}
 	assertGaps(t, s, []knownGap{
 		{"posted_should_not round 1 comment 121", "W3-1: a match to another bot's root becomes an external row"},
-		{"summary_mismatch round 2", "W3-1: an external row is not counted as a PRism finding"},
+		{"summary_mismatch round 2", "W3-1: an external row is not counted as a PRism finding; the same-commit round itself writes no summary"},
 		{"summary_mismatch round 3", "W3-1"},
 	})
 }
@@ -194,7 +194,7 @@ func TestFixtureAggregates(t *testing.T) {
 	got := fmt.Sprintf("cases=%d post=%d/%d precision=%s recall=%s suppression=%s reposts=%d fixed=%d wrong=%d summary=%s replies=%s resolution=%s",
 		g.Cases, g.ShouldPost, g.ShouldSuppress, fmtRatio(g.PostPrecision), fmtRatio(g.PostRecall), fmtRatio(g.SuppressionRecall),
 		g.Reposts, g.Fixed, g.WrongFixed, fmtRatio(g.SummaryCorrect), fmtRatio(g.ReplyAccuracy), fmtRatio(g.ResolutionRecall))
-	want := "cases=3 post=6/3 precision=0.667 recall=1.000 suppression=0.000 reposts=2 fixed=2 wrong=1 summary=0.000 replies=1.000 resolution=n/a"
+	want := "cases=3 post=6/3 precision=0.857 recall=1.000 suppression=0.667 reposts=0 fixed=1 wrong=0 summary=0.000 replies=1.000 resolution=0.800"
 	if got != want {
 		t.Fatalf("gold aggregate\n got %s\nwant %s", got, want)
 	}
@@ -212,11 +212,11 @@ func TestThresholdsGateOnGold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pass := Thresholds{MinPostPrecision: 0.6, MinSuppressionRecall: -1, MaxReposts: 2, MaxWrongFixed: -1, MinSummaryCorrect: -1, MinReplyAccuracy: 1, MinResolutionRecall: 0.9}
+	pass := Thresholds{MinPostPrecision: 0.8, MinSuppressionRecall: 0.6, MaxReposts: 0, MaxWrongFixed: 0, MinSummaryCorrect: -1, MinReplyAccuracy: 1, MinResolutionRecall: 0.8}
 	if f := pass.check(res.Tiers[TierGold]); len(f) != 0 {
 		t.Fatalf("thresholds met but failed: %v", f)
 	}
-	fail := Thresholds{MinPostPrecision: 0.9, MinSuppressionRecall: 0.5, MaxReposts: 0, MaxWrongFixed: 0, MinSummaryCorrect: -1, MinReplyAccuracy: -1, MinResolutionRecall: -1}
+	fail := Thresholds{MinPostPrecision: 0.9, MinSuppressionRecall: 0.7, MaxReposts: -1, MaxWrongFixed: -1, MinSummaryCorrect: 0.5, MinReplyAccuracy: -1, MinResolutionRecall: 0.9}
 	if f := fail.check(res.Tiers[TierGold]); len(f) != 4 {
 		t.Fatalf("want four failures, got %v", f)
 	}
