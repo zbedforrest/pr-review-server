@@ -83,4 +83,8 @@ func TestWithoutDismissed(t *testing.T) {
 	if got := WithoutDismissed(findings, nil); len(got) != 2 {
 		t.Fatalf("no ledger keeps every finding, got %d", len(got))
 	}
+	contested := []db.PublishedFinding{{Kind: db.PublishedKindFinding, Fingerprint: "m1", State: db.PublishedStateContested}}
+	if got := WithoutDismissed(findings, contested); len(got) != 1 || got[0].ID != "c1" {
+		t.Fatalf("a contested finding is never re-posted, got %+v", got)
+	}
 }
