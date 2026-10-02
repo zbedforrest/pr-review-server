@@ -234,6 +234,7 @@ function rowStatus(target: ApprovalTarget, now: number): { kind: RowKind; label:
     const codes = target.reason_codes || [];
     const blocking = codes.filter(code => staleBlockers.has(code));
     const why = codes.filter(code => code in blockerText || code in staleText).map(code => blockerText[code] || staleText[code]).join(', ') || reason;
+    if (codes.includes('closed')) return { kind: 'other', label: 'Closed', reason: why };
     if (blocking.length) return { kind: 'blocked', label: 'Blocked', reason: why };
     return { kind: 'other', label: codes.includes('review_in_progress') ? 'Review updating' : target.decision === 'candidate' ? 'Needs recheck' : 'Out of date', reason: why };
   }

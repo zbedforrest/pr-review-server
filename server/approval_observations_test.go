@@ -91,7 +91,7 @@ func TestApprovalRecoveredCIRefreshesTargetItBlocked(t *testing.T) {
 
 func TestApprovalClearingOneBlockerKeepsTheOthers(t *testing.T) {
 	s, store, target := finalizedTarget(t, "needs_attention", `["ci_failed","human_changes_requested"]`)
-	updatePR(t, store, func(pr *db.PR) { pr.CIState = "success"; pr.ReviewDecision = "CHANGES_REQUESTED" })
+	updatePR(t, store, func(pr *db.PR) { pr.CIState = "success"; pr.ReviewDecision = "APPROVED" })
 	s.BroadcastEvent(EventPRUpdated, map[string]interface{}{"owner": "acme", "repo": "example", "number": 123})
 	result, err := store.GetApprovalTarget(target.UserID, target.ScanID, target.ID)
 	require.NoError(t, err)
@@ -133,7 +133,9 @@ func TestApprovalCandidateStaledByPendingCIOffersRecheckOnceCIPasses(t *testing.
 func TestApprovalOwnChangeRequestSurvivesTheObservationThatFollowsIt(t *testing.T) {
 	s, store, target := finalizedCandidate(t)
 	updatePR(t, store, func(pr *db.PR) { pr.ReviewDecision = "REVIEW_REQUIRED" })
-	s.recordQuickActionReview(target.UserID, "acme", "example", 123, "CHANGES_REQUESTED")
+	s.observeOwnReview(target.UserID, "acme", "example", 123, "CHANGES_REQUESTED")
+	s.BroadcastEventToUser(target.UserID, EventPRUpdated, map[string]interface{}{"owner": "acme", "repo": "example", "number": 123})
+	s.BroadcastEvent(EventPRUpdated, map[string]interface{}{"owner": "acme", "repo": "example", "number": 123})
 	result, err := store.GetApprovalTarget(target.UserID, target.ScanID, target.ID)
 	require.NoError(t, err)
 	require.Contains(t, result.ReasonCodesJSON, "human_changes_requested")

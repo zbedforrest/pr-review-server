@@ -1296,7 +1296,7 @@ func (g *GormDB) InvalidateUserApprovalTargets(user int, owner, repo string, num
 }
 
 // ApprovalInvalidation narrows which of a pull request's targets an observed
-// change invalidates: OffHead keeps targets already assessed at that head,
+// change invalidates: OffHead selects targets assessed at an older head,
 // CandidatesOnly leaves non-candidates, which the change cannot make worse, and
 // Cleared selects completed results held back by any of these now-cleared reasons
 // and drops those reasons, so each clearing invalidates once.

@@ -6,14 +6,6 @@ import (
 	"pr-review-server/db"
 )
 
-// recordQuickActionReview observes the dashboard update a quick review causes,
-// then the review itself: the row has not seen the review yet, so observing it
-// afterwards would clear the change request just recorded.
-func (s *Server) recordQuickActionReview(user int, owner, repo string, number int, state string) {
-	s.observeApprovalEvent(0, EventPRUpdated, map[string]interface{}{"owner": owner, "repo": repo, "number": number})
-	s.observeOwnReview(user, owner, repo, number, state)
-}
-
 // observeOwnReview stales the user's candidates when they request changes from
 // the dashboard; the pull request row only learns of that review on the next poll.
 func (s *Server) observeOwnReview(user int, owner, repo string, number int, state string) {
@@ -59,13 +51,18 @@ type approvalChange struct {
 // a new head stales results for older heads, a blocking state (failing CI,
 // requested changes, draft, running review) stales only candidates, and a
 // cleared blocker re-stales the results it held back so they offer a recheck.
+// Change requests never clear here: unprotected repositories report no review
+// decision and the row lags the user's own reviews, so a dismissal needs a recheck.
 
 func (s *Server) approvalMaterialChanges(owner, repo string, number int) []approvalChange {
 	if s.db == nil {
 		return []approvalChange{{reason: "observed_pr_change"}}
 	}
 	pr, err := s.db.GetPR(owner, repo, number)
-	if err != nil || pr == nil {
+	if err != nil {
+		return nil
+	}
+	if pr == nil {
 		return []approvalChange{{reason: "observed_pr_change"}}
 	}
 	if pr.PRState != "" && pr.PRState != "open" {
@@ -89,12 +86,8 @@ func (s *Server) approvalMaterialChanges(owner, repo string, number int) []appro
 		changes = append(changes, approvalChange{"review_in_progress", candidates})
 	}
 	var cleared []string
-	if pr.CIState == "success" {
+	if pr.CIState == "success" || pr.CIState == "unknown" {
 		cleared = append(cleared, "ci_failed", "ci_pending", "observed_ci_change")
-	}
-	// An empty decision is also what unprotected repositories report, so it cannot prove a request was dismissed.
-	if pr.ReviewDecision != "" && pr.ReviewDecision != "CHANGES_REQUESTED" && pr.MyReviewStatus != "CHANGES_REQUESTED" {
-		cleared = append(cleared, "human_changes_requested", "observed_review_change")
 	}
 	if !pr.Draft {
 		cleared = append(cleared, "pr_draft")
