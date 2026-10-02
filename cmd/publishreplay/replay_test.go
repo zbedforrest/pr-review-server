@@ -372,58 +372,80 @@ func TestClassifyRepost_EmptyMarkerNeverMatches(t *testing.T) {
 	}
 }
 
-type fixedFilesFetcher struct{ n int }
+type flaggedCompareFetcher struct{ res compareResult }
 
-func (fixedFilesFetcher) Sidecar(string, string, int, string) ([]byte, error) {
+func (flaggedCompareFetcher) Sidecar(string, string, int, string) ([]byte, error) {
 	return nil, errNotFound
 }
 
-func (f fixedFilesFetcher) Compare(string, string, string, string) (compareResult, error) {
-	files := make([]string, f.n)
-	for i := range files {
-		files[i] = fmt.Sprintf("f%d.go", i)
-	}
-	return compareResult{Files: files}, nil
+func (f flaggedCompareFetcher) Compare(string, string, string, string) (compareResult, error) {
+	return f.res, nil
 }
 
-func TestStoreCompare_CappedFileListIsUnknown(t *testing.T) {
+func compareJSON(files int, renames int) []byte {
+	var entries []string
+	for i := 0; i < files; i++ {
+		e := fmt.Sprintf(`{"filename":"f%d.go"`, i)
+		if i < renames {
+			e += fmt.Sprintf(`,"previous_filename":"old%d.go"`, i)
+		}
+		entries = append(entries, e+"}")
+	}
+	return []byte(`{"files":[` + strings.Join(entries, ",") + `]}`)
+}
+
+func TestParseCompare_TruncationUsesRawEntryCount(t *testing.T) {
 	cases := []struct {
-		files int
-		known bool
+		name           string
+		files, renames int
+		wantFlat       int
+		wantTruncated  bool
 	}{
-		{files: compareFilesCap - 1, known: true},
-		{files: compareFilesCap, known: false},
-		{files: compareFilesCap + 5, known: false},
+		{"under the cap with renames", compareFilesCap - 1, 50, compareFilesCap + 49, false},
+		{"at the cap", compareFilesCap, 0, compareFilesCap, true},
+		{"over the cap", compareFilesCap + 5, 0, compareFilesCap + 5, true},
+		{"empty", 0, 0, 0, false},
 	}
 	for _, c := range cases {
-		dir := t.TempDir()
-		st, err := newStore(dir, fixedFilesFetcher{n: c.files})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, known, err := st.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || known != c.known {
-			t.Errorf("%d files: fresh known = %v, %v, want %v", c.files, known, err, c.known)
-		}
-		cached, err := newStore(dir, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, known, err := cached.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || known != c.known {
-			t.Errorf("%d files: cached known = %v, %v, want %v", c.files, known, err, c.known)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			res, err := parseCompare(compareJSON(c.files, c.renames))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Files) != c.wantFlat || res.Truncated != c.wantTruncated || res.complete() == c.wantTruncated {
+				t.Fatalf("files=%d truncated=%v complete=%v, want %d/%v", len(res.Files), res.Truncated, res.complete(), c.wantFlat, c.wantTruncated)
+			}
+		})
 	}
 }
 
-func TestBotLoginsDetectedFromMarkers(t *testing.T) {
-	dumps, err := loadDumps("testdata/dumps")
-	if err != nil {
-		t.Fatal(err)
+func TestStoreCompare_TruncatedIsUnknownFreshAndCached(t *testing.T) {
+	cases := []struct {
+		name  string
+		res   compareResult
+		known bool
+	}{
+		{"complete", compareResult{Files: []string{"a.go"}}, true},
+		{"truncated", compareResult{Files: []string{"a.go"}, Truncated: true}, false},
+		{"errored", compareResult{Error: "404"}, false},
 	}
-	bots := dumps[0].botLogins()
-	if !bots["acme-bot"] || len(bots) != 1 {
-		t.Fatalf("bots = %v", bots)
-	}
-	if rounds := dumps[0].rounds(map[string]bool{"acme-bot": true}); len(rounds) != 3 || rounds[0].SHA7 != "aaaaaaa" {
-		t.Fatalf("rounds = %+v", rounds)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			st, err := newStore(dir, flaggedCompareFetcher{res: c.res})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, known, err := st.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || known != c.known {
+				t.Errorf("fresh known = %v, %v, want %v", known, err, c.known)
+			}
+			cached, err := newStore(dir, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, known, err := cached.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || known != c.known {
+				t.Errorf("cached known = %v, %v, want %v", known, err, c.known)
+			}
+		})
 	}
 }

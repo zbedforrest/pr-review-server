@@ -28,14 +28,17 @@ type fetcher interface {
 type compareResult struct {
 	Files []string `json:"files"`
 	Error string   `json:"error,omitempty"`
+	// Truncated marks a response at the endpoint's file cap, which may have
+	// dropped the cited file.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // compareFilesCap is the most files the compare endpoint returns; it does not
-// page them, so a list this long may be missing the cited file.
+// page them.
 const compareFilesCap = 300
 
 func (r compareResult) complete() bool {
-	return r.Error == "" && len(r.Files) < compareFilesCap
+	return r.Error == "" && !r.Truncated
 }
 
 // store caches sidecars as <owner>_<repo>_<number>_<sha7>.json and compares
@@ -218,16 +221,22 @@ func (f *liveFetcher) Compare(owner, repo, base, head string) (compareResult, er
 		}
 		return compareResult{}, fmt.Errorf("gh api compare %s...%s: %s", short(base), short(head), msg)
 	}
+	return parseCompare(stdout.Bytes())
+}
+
+// parseCompare flattens the endpoint's file list, with a rename contributing
+// both names, and flags a list at the cap from the raw entry count.
+func parseCompare(raw []byte) (compareResult, error) {
 	var payload struct {
 		Files []struct {
 			Filename         string `json:"filename"`
 			PreviousFilename string `json:"previous_filename"`
 		} `json:"files"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		return compareResult{}, err
 	}
-	var res compareResult
+	res := compareResult{Truncated: len(payload.Files) >= compareFilesCap}
 	for _, fl := range payload.Files {
 		res.Files = append(res.Files, fl.Filename)
 		if fl.PreviousFilename != "" {
