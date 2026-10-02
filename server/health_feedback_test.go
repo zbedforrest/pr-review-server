@@ -56,6 +56,7 @@ func feedbackFixtureGitHub(now time.Time) fakeFeedbackGitHub {
 			{ID: 100, Author: "prism-bot[bot]", IsBot: true, Body: "finding", CreatedAt: now.Add(-48 * time.Hour), Reactions: 1},
 			{ID: 101, InReplyToID: 100, Author: "dana-dev", Body: "This is the third time it flagged the same line after I explained it. Please stop.", CreatedAt: recent},
 			{ID: 103, InReplyToID: 100, Author: "sam-q", Body: "Good catch, fixed in 3f2a1c9.", CreatedAt: recent},
+			{ID: 105, InReplyToID: 100, Author: "lee-ops", Body: "This is wrong, the value is validated upstream.", CreatedAt: now.Add(-3 * 24 * time.Hour)},
 		},
 		issue: []feedback.Comment{
 			{ID: 200, Author: "prism-bot[bot]", IsBot: true, Body: "summary", CreatedAt: now.Add(-48 * time.Hour)},
@@ -96,20 +97,26 @@ func TestDailyHealth_FeedbackScanIsIdempotentAndCountsFrustration(t *testing.T) 
 	assert.Contains(t, md, `@dana-dev (very): "This is the third time it flagged the same line after I explained it. Please stop." https://github.com/acme/example/pull/42#discussion_r101`)
 	assert.Contains(t, md, `@lee-ops: "reacted -1" https://github.com/acme/example/pull/42#discussion_r100`)
 	assert.Contains(t, md, `happy: @sam-q: "Good catch, fixed in 3f2a1c9." https://github.com/acme/example/pull/42#discussion_r103`)
-	assert.Equal(t, 3, classifier.calls)
+	assert.Equal(t, 4, classifier.calls)
 
 	items, err := database.ListFeedbackItems(now.Add(-24*time.Hour), now.Add(time.Minute))
 	require.NoError(t, err)
 	require.Len(t, items, 4)
+	week, err := database.ListFeedbackItems(now.Add(-7*24*time.Hour), now.Add(time.Minute))
+	require.NoError(t, err)
+	assert.Len(t, week, 5, "the backfilled older reply is stored for the week view")
 	stats, err := database.GetTelemetryStats(1)
 	require.NoError(t, err)
-	assert.Equal(t, 3, telemetryCount(stats, "feedback_frustrated"))
+	assert.Equal(t, 3, telemetryCount(stats, "feedback_frustrated"), "the older reply is not counted as today's frustration")
+	var report1 map[string]any
+	require.NoError(t, json.Unmarshal([]byte(rows[0].ReportJSON), &report1))
+	assert.EqualValues(t, 3, report1["metrics"].(map[string]any)["telemetry"].(map[string]any)["feedback_frustrated"], "the counter lands inside the report's own window")
 
 	run()
 	items, err = database.ListFeedbackItems(now.Add(-24*time.Hour), now.Add(time.Minute))
 	require.NoError(t, err)
 	assert.Len(t, items, 4, "a second run stores nothing new")
-	assert.Equal(t, 3, classifier.calls, "a second run classifies nothing")
+	assert.Equal(t, 4, classifier.calls, "a second run classifies nothing")
 	stats, err = database.GetTelemetryStats(1)
 	require.NoError(t, err)
 	assert.Equal(t, 3, telemetryCount(stats, "feedback_frustrated"), "a second run counts nothing twice")

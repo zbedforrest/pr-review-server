@@ -136,7 +136,11 @@ func (c *Client) ValidateAPIKey() error {
 
 // GetReview sends the prompt to the Gemini API and returns the review.
 func (c *Client) GetReview(prompt string) (string, int32, int32, int32, error) {
-	ctx := context.Background()
+	return c.GetReviewContext(context.Background(), prompt)
+}
+
+// GetReviewContext is GetReview bounded by the caller's context.
+func (c *Client) GetReviewContext(ctx context.Context, prompt string) (string, int32, int32, int32, error) {
 	resp, err := c.genaiClient.GenerateContent(ctx, genai.Text(prompt))
 	if err != nil {
 		// Check if error is related to authentication/invalid API key

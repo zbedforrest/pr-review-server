@@ -112,7 +112,8 @@ const maxPromptBody = 1500
 
 // Prompt is the classification question for one text item.
 func Prompt(item Item) string {
-	body := truncateBytes(item.Body, maxPromptBody)
+	// A comment must not be able to close the fence and address the model.
+	body := strings.ReplaceAll(truncateBytes(item.Body, maxPromptBody), `"""`, "'''")
 	hint := item.ReplyClass
 	if hint == "" {
 		hint = "none"
@@ -131,11 +132,13 @@ Comment:
 """`, hint, body)
 }
 
-var labelRe = regexp.MustCompile(`\b(very_frustrated|frustrated|happy|neutral)\b`)
+var labelRe = regexp.MustCompile(`^(very_frustrated|frustrated|happy|neutral)\b`)
 
-// ParseLabel reads the first label in a model answer.
+// ParseLabel accepts an answer that starts with a label; a sentence ("not
+// happy") does not count, the lexicon decides instead.
 func ParseLabel(answer string) (Label, bool) {
-	m := labelRe.FindString(strings.ToLower(answer))
+	text := strings.TrimLeft(strings.ToLower(answer), " \t\r\n`*\"'.:")
+	m := labelRe.FindString(text)
 	return Label(m), m != ""
 }
 
