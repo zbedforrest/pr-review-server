@@ -7,6 +7,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/reconcile"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -34,7 +35,7 @@ func TestRenderInlineFull(t *testing.T) {
 		FalsifiableCondition: strp("Run the service with no config file"),
 		ExpectedObservable:   strp("a panic in loadConfig"),
 	}
-	out := RenderInline(fd, "both", "https://prism.example/go/agent?o=acme&r=example&n=7", "")
+	out := RenderInline(fd, "both", "https://prism.example/go/agent?o=acme&r=example&n=7", "", "")
 
 	mustContain := []string{
 		FindingMarker("a.go:0:abc"),
@@ -58,7 +59,7 @@ func TestRenderInlineFull(t *testing.T) {
 func TestRenderInlineMinimal(t *testing.T) {
 	fd := f("abc", "medium", "a.go", 3, "Single sentence only.")
 	fd.FindingContract = &types.FindingContract{Falsifiability: "not_falsifiable"}
-	out := RenderInline(fd, "prism-only", "", "")
+	out := RenderInline(fd, "prism-only", "", "", "")
 	if strings.Contains(out, "How to verify") {
 		t.Errorf("non-falsifiable contract must not render verify line\n%s", out)
 	}
@@ -76,7 +77,7 @@ func TestRenderInlineMinimal(t *testing.T) {
 func TestRenderInlineTitleCapAndSuggestion(t *testing.T) {
 	long := strings.Repeat("word ", 40)
 	body := long + "\n```suggestion\nfixed := true\n```"
-	out := RenderInline(f("abc", "low", "a.go", 3, body), "", "", "")
+	out := RenderInline(f("abc", "low", "a.go", 3, body), "", "", "", "")
 	if !strings.Contains(out, "```suggestion\nfixed := true\n```") {
 		t.Errorf("suggestion fence not preserved\n%s", out)
 	}
@@ -93,7 +94,7 @@ const provenanceNote = "_[first-pass finding — retained by reconciliation, not
 
 func TestRenderInline_StripsProvenanceNoteFromTitleAndBody(t *testing.T) {
 	fd := f("x", "medium", "a.go", 3, provenanceNote+"Treating raw as context is wrong. It marks the next line commentable.")
-	out := RenderInline(fd, "prism-only", "", "")
+	out := RenderInline(fd, "prism-only", "", "", "")
 
 	if strings.Contains(out, "retained by reconciliation") {
 		t.Fatalf("provenance note must not be rendered:\n%s", out)
@@ -128,7 +129,7 @@ func TestCommentableLines_TrailingNewlineDoesNotExtendHunk(t *testing.T) {
 
 func TestRenderInline_TitleFromAlreadyBoldSentenceIsNotDoubleBold(t *testing.T) {
 	fd := f("x", "critical", "a.go", 3, "**The refresh loop upserts a stale snapshot.**\n\nDetails follow here.")
-	out := RenderInline(fd, "prism-only", "", "")
+	out := RenderInline(fd, "prism-only", "", "", "")
 	if !strings.Contains(out, "**[CRITICAL] The refresh loop upserts a stale snapshot.**") || strings.Contains(out, "****") {
 		t.Fatalf("title must not nest bold markers:\n%s", out)
 	}
@@ -144,7 +145,7 @@ func TestRenderInline_HowToVerifyReadsWellWithConditionalObservable(t *testing.T
 		FalsifiableCondition: strp("Issue a POST to the arbiter endpoint with verify enabled."),
 		ExpectedObservable:   strp("If the finding is wrong the request completes with a 2xx; if it is right httpx raises ConnectError."),
 	}
-	out := RenderInline(fd, "prism-only", "", "")
+	out := RenderInline(fd, "prism-only", "", "", "")
 	want := "**How to verify:** Issue a POST to the arbiter endpoint with verify enabled. Expected: If the finding is wrong the request completes with a 2xx; if it is right httpx raises ConnectError."
 	if !strings.Contains(out, want) {
 		t.Fatalf("how-to-verify line:\n%s", out)
@@ -235,5 +236,47 @@ func TestRenderSummary_FullFooterUnchanged(t *testing.T) {
 	}
 	if strings.Contains(out, "Reviewed by") {
 		t.Errorf("full reviews carry no profile attribution:\n%s", out)
+	}
+}
+
+func TestSettleFooter_ClosesEveryRootCommentAndTheSummary(t *testing.T) {
+	fd := f("abc", "medium", "a.go", 3, "Single sentence only.")
+	inline := RenderInline(fd, "prism-only", "", "", "https://prism.example/#prism-comments")
+	wantLink := `<sub>Reply <code>intentional</code> or <code>won't fix</code> to settle a thread · <a href="https://prism.example/#prism-comments">Stop PRism comments on your PRs</a></sub>`
+	if !strings.HasSuffix(strings.TrimSpace(inline), wantLink) {
+		t.Errorf("inline must end with the settle footer:\n%s", inline)
+	}
+	if strings.Count(inline, "<sub>") != 1 {
+		t.Errorf("the footer is one line and nothing else:\n%s", inline)
+	}
+
+	r := roundOne()
+	r.RoundNumber = 1
+	r.OptOutURL = "https://prism.example/#prism-comments"
+	summary := RenderSummary(r, Select(r.Findings, nil, r.Commentable, DefaultPolicy()))
+	if !strings.HasSuffix(strings.TrimSpace(summary), wantLink) {
+		t.Errorf("summary must end with the settle footer:\n%s", summary)
+	}
+	if !strings.Contains(summary, "<sub>Reviews (1) · reviewed sha-rou") {
+		t.Errorf("the review footer stays:\n%s", summary)
+	}
+
+	plain := SettleFooter("")
+	if strings.Contains(plain, "<a ") || !strings.Contains(plain, "settle a thread") {
+		t.Errorf("without a URL the footer keeps the settle sentence and drops the link: %q", plain)
+	}
+}
+
+func TestSettleFooter_IsInvisibleToPriorCommentAliasing(t *testing.T) {
+	for _, url := range []string{"", "https://prism.example/#prism-comments"} {
+		fd := f("abc", "medium", "a.go", 3, "Single sentence only.")
+		body := RenderInline(fd, "prism-only", "", "", url)
+		stripped := reconcile.StripSettleFooter(body)
+		if strings.Contains(stripped, "settle a thread") || strings.Contains(stripped, "Stop PRism comments") {
+			t.Errorf("url %q: the footer must strip cleanly:\n%s", url, stripped)
+		}
+		if !strings.Contains(stripped, "Single sentence only.") {
+			t.Errorf("url %q: stripping must keep the prose:\n%s", url, stripped)
+		}
 	}
 }

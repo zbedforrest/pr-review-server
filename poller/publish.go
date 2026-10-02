@@ -153,6 +153,7 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		r.AgentLinkBase = fmt.Sprintf("%s/go/agent?o=%s&r=%s&n=%d", base, pr.Owner, pr.Repo, pr.Number)
 		r.BadgeBaseURL = base + "/badge"
 		r.DashboardURL = fmt.Sprintf("%s/api/review/%s/%s/%d?format=html", base, pr.Owner, pr.Repo, pr.Number)
+		r.OptOutURL = base + "/#prism-comments"
 	}
 	return r
 }
