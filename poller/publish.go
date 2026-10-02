@@ -9,6 +9,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/pkg/health"
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/reconcile"
@@ -235,6 +236,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		return nil, publicationFailedPrefix + "read publish allowlist"
 	}
 	if !allowed {
+		p.recordHygieneEvent(pr, health.ActionPublishDenied, "author="+pr.Author)
 		return nil, publicationNotAllowed
 	}
 	ledger, ok := p.db.(publisher.Ledger)
@@ -275,13 +277,13 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	round := buildPublishRound(pr, pl, comments, patches, previous, p.cfg.BaseURL)
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: p.publishPolicy()}
 	report, err := pub.Publish(ctx, round)
-	p.recordHygiene(pr, report.Hygiene)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 		// Confidence is scored before the first write, so a failed round still
 		// reports the number the sticky comment may already show.
 		return &report, publicationFailedPrefix + "publish"
 	}
+	p.recordHygiene(pr, report.Hygiene)
 	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d confidence=%d",
 		pr.Owner, pr.Repo, pr.Number, report.SummaryCommentID, report.ReviewID, report.InlinePosted, report.Annotations, report.StillOpen, report.Fixed, report.Confidence)
 	return &report, publicationPosted

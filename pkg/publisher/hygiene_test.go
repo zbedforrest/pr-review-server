@@ -209,6 +209,34 @@ func TestHygiene_OpenInlineRowRenderedAtHigherSeverityIsAnEscalation(t *testing.
 	}
 }
 
+func TestHygiene_OpenRowEscalationIsCountedOnceAcrossPushes(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, roundOne())
+	ledger.rows["c1"].Severity = "medium"
+
+	escalated := func(head string) Round {
+		r := roundOne()
+		r.HeadSHA, r.RoundNumber = head, 0
+		for i := range r.Findings {
+			if r.Findings[i].ID == "c1" {
+				r.Findings[i].Severity = "critical"
+			}
+		}
+		return r
+	}
+	rep := publishRound(t, gh, ledger, escalated("sha-2"))
+	if got := fingerprints(rep.Hygiene.SeverityEscalations); len(got) != 1 || got[0] != "c1" {
+		t.Fatalf("first push escalations = %v, want c1", got)
+	}
+	if ledger.rows["c1"].Severity != "critical" || ledger.rows["c1"].LastSeenSHA != "sha-2" {
+		t.Fatalf("the refreshed row must carry the asserted severity: %+v", ledger.rows["c1"])
+	}
+	rep = publishRound(t, gh, ledger, escalated("sha-3"))
+	if len(rep.Hygiene.SeverityEscalations) != 0 {
+		t.Fatalf("the same severity on the next push is not a second escalation: %+v", rep.Hygiene.SeverityEscalations)
+	}
+}
+
 func TestHygiene_NoteWrittenCountsOnlyAHigherSeverity(t *testing.T) {
 	prior := &db.PublishedFinding{Fingerprint: "m1", Severity: "medium", State: db.PublishedStateOpen}
 	for _, tc := range []struct {

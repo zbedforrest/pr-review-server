@@ -122,8 +122,6 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 				commentID = commentIDs[i]
 			}
 			postedThisRound[f.ID] = commentID
-			rep.Hygiene.notePosted(f, prior[f.ID])
-			rep.Hygiene.noteWritten(f, prior[f.ID])
 			if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
 				RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
 				Kind: db.PublishedKindFinding, Fingerprint: f.ID,
@@ -134,6 +132,10 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 			}); err != nil {
 				return rep, fmt.Errorf("record finding %s: %w", f.ID, err)
 			}
+			// Notes follow the ledger write: a post whose row failed is a publish
+			// error, and the retry counts it when it reposts.
+			rep.Hygiene.notePosted(f, prior[f.ID])
+			rep.Hygiene.noteWritten(f, prior[f.ID])
 		}
 	}
 
@@ -224,14 +226,17 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		if !ok || written[f.ID] || row.LastSeenSHA == r.HeadSHA {
 			continue
 		}
-		// The ledger severity is deliberately kept (decision 6); the
-		// escalation is counted once per head the bullet renders above it.
-		rep.Hygiene.noteWritten(f, row)
 		refreshed := *row
 		refreshed.LastSeenSHA = r.HeadSHA
+		// W1-1 will clamp severity per the ledger; until then the row follows
+		// the latest assertion, so an escalation is counted once.
+		if severityRank(f.Severity) > severityRank(row.Severity) {
+			refreshed.Severity = f.Severity
+		}
 		if err := p.Ledger.UpsertPublishedFinding(&refreshed); err != nil {
 			return rep, fmt.Errorf("refresh finding %s: %w", f.ID, err)
 		}
+		rep.Hygiene.noteWritten(f, row)
 	}
 	for id, row := range published {
 		if written[id] || present[id] {

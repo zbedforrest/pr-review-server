@@ -30,30 +30,34 @@ const (
 	// down) settled a thread without a model reply. Recorded by the author
 	// verdict fast path once it exists.
 	ActionVerdictSettled = "verdicts_settled"
-	// ActionOptedOut: the publish gate denied a post because the author opted
-	// out. Recorded by the opt-out gate once it exists.
-	ActionOptedOut = "opted_out_total"
+	// ActionPublishDenied: the publish gate stopped a finished review from
+	// posting. Today that means the author is outside publish_enabled_authors;
+	// the opt-out list will add a reason label.
+	ActionPublishDenied = "publish_denied_total"
 )
 
 // HygieneActions lists every hygiene action, in report order.
 var HygieneActions = []string{
 	ActionRepeatedPost, ActionRepeatAfterDismiss, ActionFixedWithoutFileChange, ActionSameCommitResolve,
-	ActionSeverityEscalation, ActionVerdictSettled, ActionOptedOut,
+	ActionSeverityEscalation, ActionVerdictSettled, ActionPublishDenied,
 }
 
 // hygieneLabels names each counter in the report.
 var hygieneLabels = map[string]string{
 	ActionRepeatedPost: "repeated posts", ActionRepeatAfterDismiss: "repeats after dismiss",
 	ActionFixedWithoutFileChange: "fixed without a file change", ActionSameCommitResolve: "same-commit resolves",
-	ActionSeverityEscalation: "severity escalations", ActionVerdictSettled: "author verdicts settled", ActionOptedOut: "posts stopped by opt-out",
+	ActionSeverityEscalation: "severity escalations", ActionVerdictSettled: "author verdicts settled", ActionPublishDenied: "posts stopped by the publish gate",
 }
 
-// unwiredHygiene lists the counters whose producer has not shipped yet: the
-// dismissal alias, the changed-file compare, the author verdict path and the
-// opt-out gate. Until an event arrives their zero means "not measured", not
-// "nothing happened", and the line says so.
-var unwiredHygiene = map[string]bool{
-	ActionRepeatAfterDismiss: true, ActionFixedWithoutFileChange: true, ActionVerdictSettled: true, ActionOptedOut: true,
+// UnwiredHygiene maps each counter whose producer has not shipped yet to the
+// item that wires it. Until an event arrives their zero means "not measured",
+// not "nothing happened", and the report line says so. The producing
+// packages assert they emit none of these, so wiring one means removing its
+// entry here.
+var UnwiredHygiene = map[string]string{
+	ActionRepeatAfterDismiss:     "W1-1 (dismissed rows suppress every later wording)",
+	ActionFixedWithoutFileChange: "W1-1 (changed-file compare threaded into the round)",
+	ActionVerdictSettled:         "W2-2 (author verdict fast path)",
 }
 
 // hygieneDetail is the publication hygiene line: every measured counter, zero
@@ -61,7 +65,7 @@ var unwiredHygiene = map[string]bool{
 func hygieneDetail(telemetry map[string]int) string {
 	var measured, unmeasured []string
 	for _, a := range HygieneActions {
-		if unwiredHygiene[a] && telemetry[a] == 0 {
+		if _, unwired := UnwiredHygiene[a]; unwired && telemetry[a] == 0 {
 			unmeasured = append(unmeasured, hygieneLabels[a])
 			continue
 		}

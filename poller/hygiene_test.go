@@ -12,6 +12,7 @@ import (
 	"pr-review-server/github"
 	"pr-review-server/pkg/health"
 	"pr-review-server/pkg/publisher"
+	"pr-review-server/pkg/reviewer/payload"
 )
 
 func TestHygieneTelemetryEvents_OneEventPerNoteUnderTheSharedActionNames(t *testing.T) {
@@ -79,12 +80,58 @@ func TestRecordHygieneEvent_WritesOneEventWithPRCoordinates(t *testing.T) {
 	defer database.Close()
 	p := &Poller{cfg: &config.Config{}, db: database}
 
-	p.recordHygieneEvent(github.PullRequest{Owner: "acme", Repo: "example", Number: 3}, health.ActionOptedOut, "author=carol")
+	p.recordHygieneEvent(github.PullRequest{Owner: "acme", Repo: "example", Number: 3}, health.ActionPublishDenied, "author=carol")
 
 	stats, err := database.GetTelemetryStats(1)
 	require.NoError(t, err)
 	require.Equal(t, 1, stats.TotalEvents)
-	assert.Equal(t, health.ActionOptedOut, stats.ByAction[0].Action)
+	assert.Equal(t, health.ActionPublishDenied, stats.ByAction[0].Action)
 	require.Len(t, stats.TopPRs, 1)
 	assert.Equal(t, 3, stats.TopPRs[0].Number)
+}
+
+func TestPublishGitHubReview_DeniedAuthorRecordsAPublishDenial(t *testing.T) {
+	ts, writes := gitHubStub(t, openPRJSON, false)
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+
+	_, outcome := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "bob"}, []byte(scoredSidecar))
+
+	assert.Equal(t, publicationNotAllowed, outcome)
+	assert.Empty(t, writes())
+	stats, err := database.GetTelemetryStats(1)
+	require.NoError(t, err)
+	require.Len(t, stats.ByAction, 1)
+	assert.Equal(t, health.ActionPublishDenied, stats.ByAction[0].Action)
+	assert.Equal(t, 1, stats.ByAction[0].Count)
+}
+
+func TestPollerRecordsNoUnwiredHygieneAction(t *testing.T) {
+	ts, _ := gitHubStub(t, openPRJSON, false)
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc"}
+
+	for _, author := range []string{"bob", "alice", "alice"} {
+		pr.Author = author
+		p.publishGitHubReview(context.Background(), pr, []byte(scoredSidecar))
+	}
+	pl, err := payload.Decode([]byte(scoredSidecar))
+	require.NoError(t, err)
+	assert.Nil(t, buildPublishRound(pr, pl, nil, nil, nil, "").ChangedFiles,
+		"the round now carries the compare, so %s is measured: remove it from health.UnwiredHygiene", health.ActionFixedWithoutFileChange)
+
+	stats, err := database.GetTelemetryStats(1)
+	require.NoError(t, err)
+	for _, a := range stats.ByAction {
+		if item, unwired := health.UnwiredHygiene[a.Action]; unwired {
+			t.Errorf("%s is recorded but health.UnwiredHygiene still waits for %s", a.Action, item)
+		}
+	}
 }
