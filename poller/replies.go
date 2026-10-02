@@ -177,7 +177,7 @@ func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.Telem
 	if o.Note != "" {
 		note = " note=" + o.Note
 	}
-	label := fmt.Sprintf("outcome=%s decision=%s%s posted=%t action=%s model=%s ms=%d comment=%d", o.Outcome, o.Decision, note, o.Posted, o.Action, o.Model, o.DurationMS, o.AuthorCommentID)
+	label := fmt.Sprintf("outcome=%s decision=%s%s posted=%t action=%s%s model=%s ms=%d comment=%d", o.Outcome, o.Decision, note, o.Posted, o.Action, threadSuffix(o), o.Model, o.DurationMS, o.AuthorCommentID)
 	action := "reply_decision"
 	switch {
 	case err != nil:
@@ -187,6 +187,13 @@ func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.Telem
 		action = "reply_text_skipped"
 	}
 	return db.TelemetryEvent{UserID: userID, Action: action, Label: truncateLabel(label, 255), PROwner: o.RepoOwner, PRRepo: o.RepoName, PRNumber: o.PRNumber}
+}
+
+func threadSuffix(o publisher.ReplyOutcome) string {
+	if o.Thread == "" {
+		return ""
+	}
+	return " thread=" + o.Thread
 }
 
 // replyInputFromRequest shapes the reactor's request for the reply model.
@@ -307,8 +314,9 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				task()
 			}()
 		},
-		ClaimLease: replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
-		Holder:     p.holderID,
+		ClaimLease:     replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
+		Holder:         p.holderID,
+		ResolveThreads: !p.threadsOff,
 		Live: func() (string, func(string) bool, error) {
 			liveMode, err := p.db.GetSetting(settingPublishReplyMode)
 			if err != nil {
@@ -324,7 +332,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			if err != nil {
 				log.Printf("[REPLY %s/%s#%d] text step for comment %d failed, will resume: %v", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, err)
 			} else {
-				log.Printf("[REPLY %s/%s#%d] comment %d: outcome=%s decision=%s posted=%t action=%s", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, o.Outcome, o.Decision, o.Posted, o.Action)
+				log.Printf("[REPLY %s/%s#%d] comment %d: outcome=%s decision=%s posted=%t action=%s%s", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, o.Outcome, o.Decision, o.Posted, o.Action, threadSuffix(o))
 			}
 			if userID := p.systemTelemetryUserID(); userID != 0 {
 				if terr := p.db.CreateTelemetryEvents(replyOutcomeEvents(o, err, userID)); terr != nil {
@@ -417,6 +425,8 @@ func (p *Poller) replyActivation() (time.Time, error) {
 
 type ghReplyAdapter struct{ c *github.Client }
 
+var _ publisher.ThreadResolver = ghReplyAdapter{}
+
 func (a ghReplyAdapter) ListThread(ctx context.Context, owner, repo string, number int) ([]publisher.ThreadComment, error) {
 	comments, err := a.c.ListReviewComments(ctx, owner, repo, number)
 	if err != nil {
@@ -437,4 +447,16 @@ func (a ghReplyAdapter) React(ctx context.Context, owner, repo string, commentID
 
 func (a ghReplyAdapter) PostReply(ctx context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error) {
 	return a.c.CreateReviewCommentReply(ctx, owner, repo, number, rootCommentID, body)
+}
+
+func (a ghReplyAdapter) ListReviewThreads(ctx context.Context, owner, repo string, number int) ([]publisher.ReviewThread, error) {
+	return listReviewThreads(ctx, a.c, owner, repo, number)
+}
+
+func (a ghReplyAdapter) ResolveThread(ctx context.Context, owner, repo, threadNodeID string) error {
+	return a.c.ResolveThread(ctx, owner, repo, threadNodeID)
+}
+
+func (a ghReplyAdapter) UnresolveThread(ctx context.Context, owner, repo, threadNodeID string) error {
+	return a.c.UnresolveThread(ctx, owner, repo, threadNodeID)
 }

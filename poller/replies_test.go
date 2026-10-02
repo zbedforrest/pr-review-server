@@ -114,6 +114,11 @@ func TestReplyOutcomeEventDistinguishesFailuresFromDecisions(t *testing.T) {
 	if ev.Action != "reply_decision" || ev.Label != "outcome=posted decision=hold posted=true action=observed model=m ms=1200 comment=101" || ev.PRNumber != 7 || ev.UserID != 3 {
 		t.Errorf("event = %+v", ev)
 	}
+	o.Thread = publisher.ThreadResolved
+	if ev := replyOutcomeEvent(o, nil, 3); !strings.Contains(ev.Label, " action=observed thread=resolved model=m") {
+		t.Fatalf("label = %q", ev.Label)
+	}
+	o.Thread = ""
 	ev = replyOutcomeEvent(o, fmt.Errorf("wall clock"), 3)
 	if ev.Action != "reply_text_error" || ev.Label != "comment=101: wall clock" {
 		t.Errorf("error event = %+v", ev)

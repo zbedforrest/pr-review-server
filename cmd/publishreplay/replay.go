@@ -43,7 +43,8 @@ type post struct {
 
 // recorder is the fake GitHub: it hands out ids and remembers every write.
 // Its own posts are fed back into the next round as the PR's review comments,
-// exactly as the poller lists them from GitHub.
+// exactly as the poller lists them from GitHub, and every root opens a
+// thread the publisher may resolve.
 type recorder struct {
 	nextComment int64
 	nextIssue   int64
@@ -54,10 +55,58 @@ type recorder struct {
 	summaries   int
 	edits       int
 	replies     int
+	resolved    map[int64]bool
+	resolves    int
+	unresolves  int
 }
 
 func newRecorder() *recorder {
-	return &recorder{nextComment: 1_000_000, nextIssue: 2_000_000, nextReview: 3_000_000}
+	return &recorder{nextComment: 1_000_000, nextIssue: 2_000_000, nextReview: 3_000_000, resolved: map[int64]bool{}}
+}
+
+const threadNodePrefix = "T"
+
+func (r *recorder) ListReviewThreads(context.Context, string, string, int) ([]publisher.ReviewThread, error) {
+	out := make([]publisher.ReviewThread, 0, len(r.posts))
+	for _, p := range r.posts {
+		out = append(out, publisher.ReviewThread{NodeID: threadNodePrefix + strconv.FormatInt(p.CommentID, 10), RootCommentID: p.CommentID, Resolved: r.resolved[p.CommentID]})
+	}
+	return out, nil
+}
+
+func (r *recorder) ResolveThread(_ context.Context, _, _, nodeID string) error {
+	id, err := strconv.ParseInt(strings.TrimPrefix(nodeID, threadNodePrefix), 10, 64)
+	if err != nil {
+		return fmt.Errorf("unknown thread %q", nodeID)
+	}
+	if !r.resolved[id] {
+		r.resolves++
+	}
+	r.resolved[id] = true
+	return nil
+}
+
+func (r *recorder) UnresolveThread(_ context.Context, _, _, nodeID string) error {
+	id, err := strconv.ParseInt(strings.TrimPrefix(nodeID, threadNodePrefix), 10, 64)
+	if err != nil {
+		return fmt.Errorf("unknown thread %q", nodeID)
+	}
+	if r.resolved[id] {
+		r.unresolves++
+	}
+	delete(r.resolved, id)
+	return nil
+}
+
+// rootsResolved counts the roots whose thread is resolved now.
+func (r *recorder) rootsResolved() int {
+	n := 0
+	for _, p := range r.posts {
+		if r.resolved[p.CommentID] {
+			n++
+		}
+	}
+	return n
 }
 
 func (r *recorder) begin(round int, sha string) { r.round, r.sha = round, sha }
@@ -118,6 +167,9 @@ type PRResult struct {
 	FixedFileChangeUnknown    int
 	SameCommitResolves        int
 	InThreadReplies           int
+	ThreadsResolved           int
+	ThreadsUnresolved         int
+	RootsResolved             int
 	ObservedRoots             int
 	ObservedSameMarkerReposts int
 	ObservedSameDefectReposts int
@@ -145,9 +197,14 @@ type Metrics struct {
 	FixedFileChangeUnknown int `json:"fixed_file_change_unknown"`
 	SameCommitResolves     int `json:"same_commit_resolves"`
 	InThreadReplies        int `json:"in_thread_replies"`
+	ThreadsResolved        int `json:"threads_resolved"`
+	ThreadsUnresolved      int `json:"threads_unresolved"`
 
 	CommentsPerPushP50 float64 `json:"comments_per_push_p50"`
 	RoundsPerPRP50     float64 `json:"rounds_per_pr_p50"`
+	// PrismResolvedShare is the share of replayed roots whose thread the
+	// publisher itself left resolved at the end of the PR's rounds; the
+	// observed resolved_share is the human counterpart over the same roots.
 	PrismResolvedShare float64 `json:"prism_resolved_share"`
 	PrismResolvedNote  string  `json:"prism_resolved_note"`
 
@@ -201,6 +258,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	}
 	var res Result
 	var roundsPerPR, commentsPerPush []int
+	rootsResolved := 0
 	res.Metrics.PRs = len(o.Dumps)
 	for _, d := range o.Dumps {
 		bots := o.bots(d)
@@ -232,6 +290,9 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.FixedFileChangeUnknown += pr.FixedFileChangeUnknown
 		m.SameCommitResolves += pr.SameCommitResolves
 		m.InThreadReplies += pr.InThreadReplies
+		m.ThreadsResolved += pr.ThreadsResolved
+		m.ThreadsUnresolved += pr.ThreadsUnresolved
+		rootsResolved += pr.RootsResolved
 		if pr.Rounds > 0 {
 			logf("%s: rounds=%d roots=%d same_marker=%d same_defect=%d fixed=%d fixed_no_change=%d", d.key(), pr.Rounds, pr.RootsPosted, pr.SameMarkerReposts, pr.SameDefectReposts, pr.Fixed, pr.FixedWithoutFileChange)
 		}
@@ -242,7 +303,10 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	}
 	m.CommentsPerPushP50 = p50(commentsPerPush)
 	m.RoundsPerPRP50 = p50(roundsPerPR)
-	m.PrismResolvedNote = "the publisher has no thread resolution yet; share is 0 until that ships"
+	m.PrismResolvedNote = "roots whose thread the replayed publisher left resolved, over roots posted"
+	if m.RootsPosted > 0 {
+		m.PrismResolvedShare = round3(float64(rootsResolved) / float64(m.RootsPosted))
+	}
 	if m.Observed.Roots > 0 {
 		m.Observed.ResolvedShare = round3(float64(m.Observed.ThreadsResolved) / float64(m.Observed.Roots))
 	}
@@ -292,6 +356,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		}
 		pushes = append(pushes, len(rec.posts)-before)
 		pr.InThreadReplies = rec.replies
+		pr.ThreadsResolved, pr.ThreadsUnresolved, pr.RootsResolved = rec.resolves, rec.unresolves, rec.rootsResolved()
 		annotate(rec.posts[before:], round.Findings)
 		for j := before; j < len(rec.posts); j++ {
 			pr.RootsPosted++
@@ -619,7 +684,7 @@ func round3(v float64) float64 {
 	return float64(int(v*1000+0.5)) / 1000
 }
 
-var csvHeader = []string{"pr", "rounds", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts"}
+var csvHeader = []string{"pr", "rounds", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -627,7 +692,7 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 		return err
 	}
 	for _, r := range rows {
-		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts)}
+		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}

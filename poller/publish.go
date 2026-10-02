@@ -178,6 +178,8 @@ func profileFooter(run *payload.ReviewRunInfo) string {
 // interface; the two packages keep separate input structs to avoid a cycle.
 type ghPublishAdapter struct{ c *github.Client }
 
+var _ publisher.ThreadResolver = ghPublishAdapter{}
+
 func (a ghPublishAdapter) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []publisher.ReviewCommentInput) (int64, []int64, error) {
 	inputs := make([]github.ReviewCommentInput, len(comments))
 	for i, c := range comments {
@@ -198,6 +200,30 @@ func (a ghPublishAdapter) PostReply(ctx context.Context, owner, repo string, num
 	return a.c.CreateReviewCommentReply(ctx, owner, repo, number, rootCommentID, body)
 }
 
+func (a ghPublishAdapter) ListReviewThreads(ctx context.Context, owner, repo string, number int) ([]publisher.ReviewThread, error) {
+	return listReviewThreads(ctx, a.c, owner, repo, number)
+}
+
+func (a ghPublishAdapter) ResolveThread(ctx context.Context, owner, repo, threadNodeID string) error {
+	return a.c.ResolveThread(ctx, owner, repo, threadNodeID)
+}
+
+func (a ghPublishAdapter) UnresolveThread(ctx context.Context, owner, repo, threadNodeID string) error {
+	return a.c.UnresolveThread(ctx, owner, repo, threadNodeID)
+}
+
+func listReviewThreads(ctx context.Context, c *github.Client, owner, repo string, number int) ([]publisher.ReviewThread, error) {
+	infos, err := c.ListReviewThreads(ctx, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]publisher.ReviewThread, len(infos))
+	for i, t := range infos {
+		out[i] = publisher.ReviewThread{NodeID: t.NodeID, RootCommentID: t.RootCommentID, Resolved: t.Resolved, Outdated: t.Outdated}
+	}
+	return out, nil
+}
+
 func (a ghPublishAdapter) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]publisher.IssueComment, error) {
 	infos, err := a.c.ListIssueComments(ctx, owner, repo, number)
 	if err != nil {
@@ -213,6 +239,7 @@ func (a ghPublishAdapter) ListIssueComments(ctx context.Context, owner, repo str
 func (p *Poller) publishPolicy() publisher.Policy {
 	pol := publisher.DefaultPolicy()
 	pol.LegacyLedger = p.legacyLedger
+	pol.ResolveThreads = !p.threadsOff
 	if v, err := p.db.GetSetting(settingPublishInlineCap); err == nil {
 		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
 			pol.InlineCap = n
@@ -304,8 +331,9 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		return &report, publicationFailedPrefix + "publish"
 	}
 	p.recordHygiene(pr, report.Hygiene)
-	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d confidence=%d",
-		pr.Owner, pr.Repo, pr.Number, report.SummaryCommentID, report.ReviewID, report.InlinePosted, report.Annotations, report.StillOpen, report.Fixed, report.Confidence)
+	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d confidence=%d threads_resolved=%d threads_unresolved=%d thread_failures=%d",
+		pr.Owner, pr.Repo, pr.Number, report.SummaryCommentID, report.ReviewID, report.InlinePosted, report.Annotations, report.StillOpen, report.Fixed, report.Confidence,
+		report.ThreadsResolved, report.ThreadsUnresolved, report.ThreadResolveFailures)
 	return &report, publicationPosted
 }
 

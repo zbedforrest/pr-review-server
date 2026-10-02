@@ -49,7 +49,7 @@ func TestRun_FixtureMetrics(t *testing.T) {
 	m := fixtureRun(t, false).Metrics
 	want := Metrics{
 		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1,
-		RootsPosted: 3, Fixed: 1, InThreadReplies: 1,
+		RootsPosted: 3, Fixed: 1, InThreadReplies: 2, ThreadsResolved: 1, ThreadsUnresolved: 1,
 		CommentsPerPushP50: 0, RoundsPerPRP50: 3,
 	}
 	if got := comparable(m); got != want {
@@ -86,7 +86,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 	if reword.PR != "example#2" || reword.RootsPosted != 1 || reword.SameDefectReposts != 0 || reword.Fixed != 0 || reword.SameCommitRounds != 1 {
 		t.Errorf("example#2 = %+v", reword)
 	}
-	if reopen.PR != "example#3" || reopen.RootsPosted != 1 || reopen.Fixed != 1 || reopen.FixedWithoutFileChange != 0 || reopen.InThreadReplies != 1 {
+	if reopen.PR != "example#3" || reopen.RootsPosted != 1 || reopen.Fixed != 1 || reopen.FixedWithoutFileChange != 0 || reopen.InThreadReplies != 2 || reopen.ThreadsResolved != 1 || reopen.ThreadsUnresolved != 1 || reopen.RootsResolved != 0 {
 		t.Errorf("example#3 = %+v", reopen)
 	}
 	var buf bytes.Buffer
@@ -94,7 +94,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 4 || !strings.HasPrefix(lines[0], "pr,rounds,") || !strings.HasPrefix(lines[3], "example#3,3,0,0,1,0,0,0,1,0,0,0,1,") {
+	if len(lines) != 4 || !strings.HasPrefix(lines[0], "pr,rounds,") || !strings.HasPrefix(lines[3], "example#3,3,0,0,1,0,0,0,1,0,0,0,2,1,1,0,") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }

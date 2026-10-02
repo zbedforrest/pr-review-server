@@ -83,6 +83,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		}
 	}
 	r.ShowUnverified = p.Policy.ShowUnverified
+	threads := newThreadIndex(p.GH, p.Policy, r.Owner, r.Repo, r.Number)
 
 	originalIDs := p.aliasToLedger(&r, rows)
 	r.Findings = p.withoutTerminal(r, rows, originalIDs)
@@ -119,8 +120,10 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	// Transitions are decided before any write so the summary this round
 	// renders describes the ledger the round leaves behind.
 	type pending struct {
-		row    *db.PublishedFinding
-		reopen bool
+		row *db.PublishedFinding
+		// thread is the GitHub thread change the transition owes: resolve on
+		// a fix, unresolve on a reopen, none otherwise.
+		thread threadChange
 	}
 	var writes []pending
 	written := map[string]bool{}
@@ -131,7 +134,13 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		written[f.ID] = true
 	}
 	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations)}
-	for id, row := range rows {
+	ids := make([]string, 0, len(rows))
+	for id := range rows {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		row := rows[id]
 		if terminalState(row.State) {
 			continue
 		}
@@ -157,7 +166,17 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 				d.Fixed++
 				next := *row
 				next.State = db.PublishedStateFixed
-				writes = append(writes, pending{row: &next})
+				writes = append(writes, pending{row: &next, thread: resolveThread})
+				if t, found := threads.thread(ctx, row.ThreadNodeID, row.CommentID); found {
+					next.ThreadNodeID = t.NodeID
+				}
+				// The stored id stands in for the resolve, but the note needs the
+				// listing to show the thread open.
+				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved {
+					notes = append(notes, threadNote{commentID: row.CommentID, body: notSeenNote(r.HeadSHA)})
+				} else if !listed && threads.listFailed() && row.CommentID != 0 {
+					rep.ThreadReplyFailures++
+				}
 				rep.Hygiene.noteResolved(row, r.HeadSHA, cs.Files)
 				continue
 			}
@@ -176,7 +195,10 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			next.LastSeenSHA = r.HeadSHA
 			next.Severity = f.Severity
 			backfill(&next, f, r.PriorComments[id])
-			writes = append(writes, pending{row: &next, reopen: true})
+			writes = append(writes, pending{row: &next, thread: unresolveThread})
+			if t, found := threads.thread(ctx, row.ThreadNodeID, row.CommentID); found {
+				next.ThreadNodeID = t.NodeID
+			}
 			if row.CommentID != 0 {
 				notes = append(notes, threadNote{commentID: row.CommentID, body: fmt.Sprintf("Back at %s.", shortSHA(r.HeadSHA))})
 			}
@@ -186,7 +208,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	rep.Confidence = Confidence(r.Findings, r.RequiredCheckViolated)
 	now := p.now()
 
-	postedThisRound, err := p.postInline(ctx, r, sel, rows, now, &rep)
+	postedThisRound, err := p.postInline(ctx, r, sel, rows, now, &rep, threads)
 	if err != nil {
 		return rep, err
 	}
@@ -220,9 +242,16 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		}
 		rep.Hygiene.noteWritten(f, rows[f.ID])
 	}
+	var actions []threadAction
 	for _, w := range writes {
 		if err := p.Ledger.UpsertPublishedFinding(w.row); err != nil {
+			// Rows written before the failure are never revisited, so their
+			// thread changes go out now.
+			threads.apply(ctx, actions, &rep)
 			return rep, fmt.Errorf("update finding %s: %w", w.row.Fingerprint, err)
+		}
+		if threads != nil && w.thread != noThreadChange && w.row.CommentID != 0 {
+			actions = append(actions, threadAction{nodeID: w.row.ThreadNodeID, resolve: w.thread == resolveThread})
 		}
 	}
 
@@ -238,8 +267,17 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			}
 		}
 	}
+	threads.apply(ctx, actions, &rep)
 	return rep, nil
 }
+
+type threadChange int
+
+const (
+	noThreadChange threadChange = iota
+	resolveThread
+	unresolveThread
+)
 
 // aliasToLedger gives every current finding that restates a ledger row that
 // row's fingerprint. It returns the ids the findings carried before, keyed

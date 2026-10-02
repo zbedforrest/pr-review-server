@@ -87,12 +87,18 @@ func (g *fakeGitHub) repliesTo(root int64) []string {
 // and state overwritten (terminal states sticky), ids and memory columns
 // kept when the caller passes zero values.
 type fakeLedger struct {
-	rows map[string]*db.PublishedFinding
+	rows       map[string]*db.PublishedFinding
+	failUpsert func(*db.PublishedFinding) error
 }
 
 func newFakeLedger() *fakeLedger { return &fakeLedger{rows: map[string]*db.PublishedFinding{}} }
 
 func (l *fakeLedger) UpsertPublishedFinding(pf *db.PublishedFinding) error {
+	if l.failUpsert != nil {
+		if err := l.failUpsert(pf); err != nil {
+			return err
+		}
+	}
 	cp := *pf
 	if prev, ok := l.rows[pf.Fingerprint]; ok {
 		if cp.CommentID == 0 {

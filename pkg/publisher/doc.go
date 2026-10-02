@@ -28,9 +28,10 @@
 //	state                        present  same head  file changed  result
 //	open                         yes      any        any           still open; LastSeenSHA = head; severity clamp (below)
 //	open                         no       yes        n/a           still open, untouched
-//	open                         no       no         yes           fixed (W2-3 resolves the thread)
-//	open                         no       no         no or unknown still open, untouched
-//	fixed / resolved (legacy)    yes      any        any           reopened: open, LastSeenSHA = head, one reply "Back at <sha7>" in its thread, never a new root
+//	open                         no       no         yes           fixed: one reply "Not seen at <sha7>" in its thread, thread resolved
+//	open                         no       no         unknown       still open, untouched
+//	open                         no       no         no            still open, untouched
+//	fixed / resolved (legacy)    yes      any        any           reopened: open, LastSeenSHA = head, one reply "Back at <sha7>" in its thread, thread unresolved, never a new root
 //	fixed / resolved             no       any        any           untouched
 //	dismissed/contested/external yes      any        any           finding dropped: not posted, not counted, row untouched (exception below)
 //	dismissed/contested/external no       any        any           untouched
@@ -56,6 +57,20 @@
 // posted. The fresh root carries the settled row's subjects and, when the
 // wording and line did not move, a marker minted from the text that names
 // the change, so it never repeats the settled row's marker.
+//
+// Threads. Thread changes need Policy.ResolveThreads (PUBLISH_THREAD_RESOLUTION,
+// on unless set to false) and a GitHub that implements ThreadResolver; without
+// either the ledger moves and the threads stay as they are. A root's thread
+// node id is stored when the root is posted, from one listing taken after
+// the review; when that listing lags the write, or the row predates the
+// column, the id is found through the listing on the row's first transition.
+// The "Not seen" note is posted only into a thread the listing shows open;
+// a thread a human already resolved is resolved again silently. A posted
+// concession (replies.go) dismisses its row and resolves the thread the same
+// way. Thread calls follow the ledger writes and never fail a round; a lost
+// call is counted on the Report and the next round, seeing the same state,
+// does not retry it. Every thread change runs inside the publish gate, since
+// both callers are reached only for authors publish_enabled_authors admits.
 //
 // Counts. "Since last review" is the number of records that transitioned:
 // new (shown findings with no row), still open (rows that end the round
