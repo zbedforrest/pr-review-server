@@ -123,6 +123,11 @@ type Config struct {
 	BugMemoryPath     string // local path to a bug-memory library JSON (dev/benchmark)
 	BugMemoryObject   string // GCS object name of the library (prod); Path wins if both set
 	RequiredChecks    bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
+
+	// Publisher kill switches; the zero value is the fixed behaviour and each
+	// env var set to false restores the old one. PUBLISH_RENDER_V2 titles
+	// comments and bullets by headline instead of impact sentence.
+	PublishLegacyTitles bool
 	// ReviewDefaultProfile is the profile used when a caller names none:
 	// automatic reviews, the Generate button, and profile-less API requests.
 	ReviewDefaultProfile string
@@ -363,6 +368,7 @@ func Load() *Config {
 		BugMemoryPath:        os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:      os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:       os.Getenv("REQUIRED_CHECKS") == "true",
+		PublishLegacyTitles:  !getEnvBoolOrDefault("PUBLISH_RENDER_V2", true),
 		ReviewDefaultProfile: strings.ToLower(strings.TrimSpace(getEnvOrDefault("REVIEW_DEFAULT_PROFILE", "full"))),
 		JiraBaseURL:          strings.TrimRight(strings.TrimSpace(os.Getenv("JIRA_BASE_URL")), "/"),
 		JiraEmail:            strings.TrimSpace(os.Getenv("JIRA_EMAIL")),
@@ -383,6 +389,15 @@ func Load() *Config {
 		ReviewMaxFirstPassSamples:       getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
 		ReviewMaxFirstPassConcurrent:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
 	}
+}
+
+// getEnvBoolOrDefault parses the usual true/false spellings; unset or
+// unparsable values keep the default, so a typo never flips a kill switch.
+func getEnvBoolOrDefault(key string, defaultValue bool) bool {
+	if value, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(key))); err == nil {
+		return value
+	}
+	return defaultValue
 }
 
 func getEnvIntOrDefault(key string, defaultValue int) int {

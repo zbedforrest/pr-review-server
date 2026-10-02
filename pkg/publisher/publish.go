@@ -112,6 +112,7 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 	}
 	prior := priorRows(r.Previous)
 	r.Findings = WithoutDismissed(r.Findings, r.Previous)
+	r.LegacyTitles = p.Policy.LegacyTitles
 	if r.RoundNumber == 0 {
 		r.RoundNumber = 1
 		if summaryRow != nil {
@@ -226,7 +227,7 @@ func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prio
 	}
 	inputs := make([]ReviewCommentInput, 0, len(sel.Inline))
 	for _, f := range sel.Inline {
-		inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: RenderInline(f, r.sourceTag(f.ID), r.AgentLinkBase, r.BadgeBaseURL)})
+		inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: renderInline(f, r.sourceTag(f.ID), r.AgentLinkBase, r.BadgeBaseURL, r.LegacyTitles)})
 	}
 	reviewID, commentIDs, err := p.GH.CreateReview(ctx, r.Owner, r.Repo, r.Number, r.HeadSHA, "", inputs)
 	if err != nil {

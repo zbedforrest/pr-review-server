@@ -24,6 +24,9 @@ type Policy struct {
 	// ShowUnverified folds the active first-pass claims the agent did not
 	// confirm into the summary comment; they are never inline.
 	ShowUnverified bool
+	// LegacyTitles restores the pre-2026-10 titles and bullets: the effect
+	// sentence verbatim, the bare kind label when it did not fit.
+	LegacyTitles bool
 	// LegacyLedger restores the pre-ledger-memory publisher (PUBLISH_POLICY_V2
 	// set to false): open rows only, absence means fixed, reposts on return.
 	LegacyLedger bool

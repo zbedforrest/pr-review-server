@@ -171,7 +171,7 @@ func NormalizeFindingContract(contract *FindingContract) {
 	contract.CurrentImpact = strings.TrimSpace(contract.CurrentImpact)
 	contract.Uncertainty = strings.TrimSpace(contract.Uncertainty)
 	contract.SeverityRationale = strings.TrimSpace(contract.SeverityRationale)
-	contract.Headline = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(contract.Headline), "."))
+	contract.Headline = shortenHeadline(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(contract.Headline), ".")), headlineMaxRunes)
 	if validateContractText(contract.Headline, "headline", headlineMaxRunes) != nil {
 		contract.Headline = ""
 	}
@@ -189,6 +189,21 @@ func NormalizeFindingContract(contract *FindingContract) {
 		contract.Subjects[index].Path = strings.TrimSpace(contract.Subjects[index].Path)
 		contract.Subjects[index].Name = strings.TrimSpace(contract.Subjects[index].Name)
 	}
+}
+
+// shortenHeadline cuts an over-long headline at the last word boundary that
+// fits with an ellipsis; a headline the agent wrote is worth more cut than
+// dropped. Short headlines are returned unchanged.
+func shortenHeadline(headline string, maximum int) string {
+	runes := []rune(headline)
+	if len(runes) <= maximum {
+		return headline
+	}
+	cut := string(runes[:maximum-3])
+	if i := strings.LastIndex(cut, " "); i > 0 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;:") + "..."
 }
 
 func ContractStatus(contract *FindingContract) string {

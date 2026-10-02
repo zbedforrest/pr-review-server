@@ -253,6 +253,9 @@ func (p *Poller) publishPolicy() publisher.Policy {
 			pol.ShowUnverified = b
 		}
 	}
+	if p.cfg != nil {
+		pol.LegacyTitles = p.cfg.PublishLegacyTitles
+	}
 	return pol
 }
 

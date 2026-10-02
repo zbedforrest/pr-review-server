@@ -12,11 +12,14 @@ import (
 func TestHeadline_CutsAtClauseBoundaryNotMidWord(t *testing.T) {
 	fd := withContract(f("x", "medium", "internal/journey/evaluator.go", 309, "c"), "production_behavior", "current_impact",
 		"When a selected component entry fails to render, the request returns 500 with no dispositions, so the entry_payload_error row and any earlier holdout/suppression rows for that request are never recorded.", "")
-	if h := headline(fd); h != "Behavior change" {
-		t.Fatalf("a labelled kind with a long sentence keeps only the label: %q", h)
+	if h := headline(fd, true); h != "Behavior change" {
+		t.Fatalf("legacy: a labelled kind with a long sentence keeps only the label: %q", h)
+	}
+	if h := headline(fd, false); h != "Behavior change · When a selected component entry fails to render, the request returns 500 with no dispositions" {
+		t.Fatalf("a labelled kind with a long sentence keeps the label and the leading clause: %q", h)
 	}
 	fd.FindingContract.FindingKind = "unlabelled_kind"
-	h := headline(fd)
+	h := headline(fd, false)
 	if !strings.HasPrefix(h, "When a selected component entry fails to render, the request returns 500 with no dispositions") {
 		t.Fatalf("without a label the headline ends at the clause boundary: %q", h)
 	}
@@ -25,16 +28,17 @@ func TestHeadline_CutsAtClauseBoundaryNotMidWord(t *testing.T) {
 	}
 }
 
-func TestRenderInline_LongEffectSentenceAppearsOnceUnderAKindOnlyHeadline(t *testing.T) {
+func TestRenderInline_LongEffectSentenceIsShownInFullUnderTheCutHeadline(t *testing.T) {
 	impact := "When a selected component entry fails to render, the request returns 500 with no dispositions, so the entry_payload_error row and any earlier holdout/suppression rows for that request are never recorded."
 	fd := withContract(f("x", "medium", "a.go", 3, "reasoning"), "production_behavior", "current_impact", impact, "")
 	out := RenderInline(fd, "prism-only", "", "")
 	visible := out[:strings.Index(out, "<details>")]
-	if !strings.Contains(visible, "**[MEDIUM] Behavior change**\n\n"+impact) {
-		t.Fatalf("a sentence too long for the headline is shown once, under the kind label alone:\n%s", out)
+	if !strings.Contains(visible, "**[MEDIUM] Behavior change · When a selected component entry fails to render, the request returns 500 with no dispositions**\n\n"+impact) {
+		t.Fatalf("a sentence too long for the headline is cut in the title and shown in full under it:\n%s", out)
 	}
-	if strings.Count(visible, "When a selected component entry fails to render") != 1 {
-		t.Fatalf("the sentence must not be repeated as a cut headline:\n%s", out)
+	legacy := renderInline(fd, "prism-only", "", "", true)
+	if !strings.Contains(legacy, "**[MEDIUM] Behavior change**\n\n"+impact) {
+		t.Fatalf("legacy titles keep the bare kind label:\n%s", legacy)
 	}
 }
 
@@ -87,8 +91,8 @@ func TestRenderSummary_FoldsLowerSeverityNotesUnderTheBullets(t *testing.T) {
 	if !strings.HasPrefix(folded, "<details><summary>2 lower-severity notes</summary>") {
 		t.Fatalf("notes must fold under one summary line:\n%s", out)
 	}
-	if !strings.Contains(folded, "**[MEDIUM]** Maybe unbounded — [`b.go:1`](https://github.com/a/b/blob/abc1234/b.go#L1)") || !strings.Contains(folded, "**[LOW]** No impact — [`a.go:1`]") {
-		t.Errorf("folded notes are one-liners linking to the file, medium before low:\n%s", folded)
+	if !strings.Contains(folded, "**[MEDIUM]** Retry loop has no upper bound — [`b.go:1`](https://github.com/a/b/blob/abc1234/b.go#L1)") || !strings.Contains(folded, "**[LOW]** Typo in the log message — [`a.go:1`]") {
+		t.Errorf("folded notes are one-liners titled by the comment when the contract asserts no impact, linking to the file, medium before low:\n%s", folded)
 	}
 	if strings.Contains(out, "First-pass guess") {
 		t.Errorf("unconfirmed first-pass items stay off GitHub:\n%s", out)
@@ -109,7 +113,7 @@ func TestRenderSummary_UsesBadgesWhenABadgeBaseIsSet(t *testing.T) {
 	if !strings.Contains(out, `- <img alt="CRITICAL" src="https://prism.example/badge/critical.svg"> Requests crash — [`) {
 		t.Errorf("bullets must lead with the badge image:\n%s", out)
 	}
-	if !strings.Contains(out, `<img alt="LOW" src="https://prism.example/badge/low.svg"> No impact`) {
+	if !strings.Contains(out, `<img alt="LOW" src="https://prism.example/badge/low.svg"> Nit`) {
 		t.Errorf("folded notes use badges too:\n%s", out)
 	}
 	if strings.Contains(out, "**[CRITICAL]**") {
@@ -180,14 +184,14 @@ func TestRenderSummary_FoldedNotesCapOnlyWhenTheDashboardCanTakeTheRest(t *testi
 	r := Round{Owner: "a", Repo: "b", Number: 1, HeadSHA: "abc1234", RoundNumber: 1, Findings: findings}
 
 	out := RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
-	if strings.Contains(out, "more on the [dashboard]()") || !strings.Contains(out, "Note number 9") {
+	if strings.Contains(out, "more on the [dashboard]()") || !strings.Contains(out, "Nit 9") {
 		t.Errorf("without a dashboard URL every note must be listed and no empty link emitted:\n%s", out)
 	}
 
 	huge := r
 	huge.Findings = []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "n")}
 	for i := 0; i < 400; i++ {
-		huge.Findings = append(huge.Findings, withContract(f(fmt.Sprintf("h%d", i), "low", "a.go", i+1, "Nit."), "test_quality", "no_user_impact", strings.Repeat("word ", 40), ""))
+		huge.Findings = append(huge.Findings, withContract(f(fmt.Sprintf("h%d", i), "low", "a.go", i+1, strings.Repeat("word ", 40)), "test_quality", "no_user_impact", "No impact.", ""))
 	}
 	out = RenderSummary(huge, Select(huge.Findings, nil, nil, DefaultPolicy()))
 	if len(out) > SummaryMaxChars || !strings.Contains(out, "more omitted") {
@@ -196,7 +200,7 @@ func TestRenderSummary_FoldedNotesCapOnlyWhenTheDashboardCanTakeTheRest(t *testi
 
 	r.DashboardURL = "https://prism.example/r"
 	out = RenderSummary(r, Select(r.Findings, nil, nil, DefaultPolicy()))
-	if !strings.Contains(out, "- ... 2 more on the [dashboard](https://prism.example/r)") || strings.Contains(out, "Note number 8") {
+	if !strings.Contains(out, "- ... 2 more on the [dashboard](https://prism.example/r)") || strings.Contains(out, "Nit 8") {
 		t.Errorf("with a dashboard the list caps at eight and points to the rest:\n%s", out)
 	}
 }
