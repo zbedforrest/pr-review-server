@@ -1261,8 +1261,12 @@ func (f *ReplyInFlight) remove(id int64) {
 	delete(f.ids, id)
 }
 
-func (r ReplyReactor) reacts() bool {
-	return r.Mode == ReplyModeReact || r.Mode == ReplyModeShadow || r.Mode == ReplyModeRespond
+func (r ReplyReactor) reacts() bool { return ReplyModeReacts(r.Mode) }
+
+// ReplyModeReacts reports whether the reactor acts on author replies in
+// mode; observe only records them.
+func ReplyModeReacts(mode string) bool {
+	return mode == ReplyModeReact || mode == ReplyModeShadow || mode == ReplyModeRespond
 }
 
 func (r ReplyReactor) textMode() bool {

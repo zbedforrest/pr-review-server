@@ -137,7 +137,6 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		r.BadgeBaseURL = base + "/badge"
 		r.DashboardURL = fmt.Sprintf("%s/api/review/%s/%s/%d?format=html", base, pr.Owner, pr.Repo, pr.Number)
 	}
-	r.SettleFooter = publisher.SettleFooter(optOutURL(baseURL), true)
 	return r
 }
 
@@ -149,15 +148,16 @@ func optOutURL(baseURL string) string {
 	return ""
 }
 
-// settleFooter is the footer for a live round: off under the kill switch,
-// and without the settle sentence while author replies are not handled.
+// settleFooter is the footer for a live round, filled by the posting path
+// because BuildPublishRound has no settings: off under the kill switch, and
+// without the settle sentence unless the reply reactor acts on author
+// replies (react, shadow or respond).
 func (p *Poller) settleFooter() string {
 	if p.cfg.DisableSettleFooter {
 		return ""
 	}
 	mode, _ := p.db.GetSetting(settingPublishReplyMode)
-	mode = strings.TrimSpace(strings.ToLower(mode))
-	return publisher.SettleFooter(optOutURL(p.cfg.BaseURL), mode != "" && mode != publisher.ReplyModeOff)
+	return publisher.SettleFooter(optOutURL(p.cfg.BaseURL), publisher.ReplyModeReacts(strings.TrimSpace(strings.ToLower(mode))))
 }
 
 // profileFooter derives the summary footer's attribution from the sidecar's
@@ -448,9 +448,11 @@ func (p *Poller) refreshPublishedSummary(ctx context.Context, owner, repo string
 	if cached == nil {
 		return nil
 	}
-	if allowed, err := p.publishAllowedFor(cached.Author); err != nil {
+	gate, err := p.publishGate()
+	if err != nil {
 		return fmt.Errorf("read publish allowlist: %w", err)
-	} else if !allowed {
+	}
+	if !gate.Allowed(cached.Author) {
 		return nil
 	}
 	ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)

@@ -27,7 +27,7 @@ var ownMarkerRe = regexp.MustCompile(`<!-- prism:finding:([^\s>]+) -->`)
 
 // settleFooterRe is the publisher's settle footer under every root comment:
 // boilerplate that must not count toward prose similarity.
-var settleFooterRe = regexp.MustCompile(`(?m)^<sub>Reply <code>intentional</code> or <code>won't fix</code> to settle a thread.*</sub>[ \t]*\n?`)
+var settleFooterRe = regexp.MustCompile(`(?m)^<sub>(?:Reply <code>intentional</code> or <code>won't fix</code> to settle a thread|<a href="[^"]*">Stop PRism comments on your PRs</a>).*</sub>[ \t]*\n?`)
 
 // StripSettleFooter removes the settle footer line from a rendered body.
 func StripSettleFooter(body string) string {

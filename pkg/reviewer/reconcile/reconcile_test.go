@@ -380,16 +380,22 @@ func TestAliasPrior_HigherSeverityRestatementClaimsTheRowFirst(t *testing.T) {
 }
 
 func TestParseOwnComments_DropsTheSettleFooterFromTheText(t *testing.T) {
-	body := "<!-- prism:finding:a.go:0:aaaaaaaaaaaa -->\n**[MEDIUM] Nil deref when cfg is missing.**\n\n" +
-		"<sub>Reply <code>intentional</code> or <code>won't fix</code> to settle a thread · <a href=\"https://prism.example/#prism-comments\">Stop PRism comments on your PRs</a></sub>\n"
-	own := ParseOwnComments([]ExternalComment{{ID: 501, Path: "a.go", Line: 5, Body: body}}, map[int64]bool{501: true})
-	if len(own) != 1 {
-		t.Fatalf("own = %+v", own)
+	footers := []string{
+		"<sub>Reply <code>intentional</code> or <code>won't fix</code> to settle a thread · <a href=\"https://prism.example/#prism-comments\">Stop PRism comments on your PRs</a></sub>\n",
+		"<sub>Reply <code>intentional</code> or <code>won't fix</code> to settle a thread</sub>\n",
+		"<sub><a href=\"https://prism.example/#prism-comments\">Stop PRism comments on your PRs</a></sub>\n",
 	}
-	if strings.Contains(own[0].Text, "settle a thread") || strings.Contains(own[0].Text, "prism-comments") {
-		t.Fatalf("footer must not reach the similarity text: %q", own[0].Text)
-	}
-	if !strings.Contains(own[0].Text, "Nil deref when cfg is missing.") {
-		t.Fatalf("prose must stay: %q", own[0].Text)
+	for _, footer := range footers {
+		body := "<!-- prism:finding:a.go:0:aaaaaaaaaaaa -->\n**[MEDIUM] Nil deref when cfg is missing.**\n\n" + footer
+		own := ParseOwnComments([]ExternalComment{{ID: 501, Path: "a.go", Line: 5, Body: body}}, map[int64]bool{501: true})
+		if len(own) != 1 {
+			t.Fatalf("own = %+v", own)
+		}
+		if strings.Contains(own[0].Text, "settle a thread") || strings.Contains(own[0].Text, "prism-comments") {
+			t.Fatalf("footer must not reach the similarity text: %q", own[0].Text)
+		}
+		if !strings.Contains(own[0].Text, "Nil deref when cfg is missing.") {
+			t.Fatalf("stripping must keep the prose: %q", own[0].Text)
+		}
 	}
 }
