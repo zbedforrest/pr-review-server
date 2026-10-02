@@ -269,3 +269,18 @@ func TestEnsembleLiteHygieneOffKeepsALoneRunCritical(t *testing.T) {
 		t.Fatalf("with LITE_HYGIENE=false the lone-run critical merged as %s, want CRITICAL", got)
 	}
 }
+
+func TestCapLoneRunCriticalsDowngradesEveryCriticalButTheSummary(t *testing.T) {
+	comments := []types.LineComment{
+		{FilePath: "a.go", Importance: "CRITICAL"},
+		{FilePath: "b.go", Importance: "critical"},
+		{FilePath: "c.go", Importance: "MEDIUM"},
+		{FilePath: "SUMMARY", Importance: "CRITICAL"},
+	}
+	if got := capLoneRunCriticals(comments); got != 2 {
+		t.Fatalf("downgraded = %d, want 2", got)
+	}
+	if comments[0].Importance != "MEDIUM" || comments[1].Importance != "MEDIUM" || comments[2].Importance != "MEDIUM" || comments[3].Importance != "CRITICAL" {
+		t.Fatalf("importances = %q %q %q %q", comments[0].Importance, comments[1].Importance, comments[2].Importance, comments[3].Importance)
+	}
+}

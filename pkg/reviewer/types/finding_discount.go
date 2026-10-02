@@ -37,7 +37,7 @@ var nilImpactPhrases = []string{
 	"no user-visible", "no user visible", "no user-facing", "no user facing",
 	"no observable", "no runtime impact", "no behavior change", "no behaviour change",
 	"not currently reachable", "not reachable today", "nothing today", "no impact",
-	"currently none", "currently no", "today there is no", "there is no current",
+	"currently none",
 }
 
 // intentPhrases open a sentence that guesses the author meant it.
@@ -139,7 +139,7 @@ func discountOpening(text string) string {
 		if rest == "" || !strings.ContainsRune(":,;-", rune(rest[0])) {
 			continue
 		}
-		if rest = strings.TrimLeft(rest, ":,;- \t"); rest != "" {
+		if rest = strings.TrimLeft(rest, ":,;-*_ \t"); rest != "" {
 			return rest
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"pr-review-server/pkg/reviewer/ensemble"
@@ -115,6 +116,9 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 		if runErr == nil {
 			out.CostUSD += report.TotalCostUSD
 			out.DurationMS = time.Since(started).Milliseconds()
+			if runconfig.LiteHygieneEnabled() && ens.MinSupportCritical > 1 {
+				report.Merge.Report.SupportDowngraded += capLoneRunCriticals(out.Comments)
+			}
 		}
 		return out, runErr
 	}
@@ -123,6 +127,19 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 	}
 	logEnsembleReport(pr.Owner, pr.Repo, pr.Number, report)
 	return review, nil
+}
+
+// capLoneRunCriticals applies the ensemble's support rule to the fallback
+// run, which by construction has support 1 behind every CRITICAL.
+func capLoneRunCriticals(comments []types.LineComment) int {
+	downgraded := 0
+	for i := range comments {
+		if comments[i].FilePath != "SUMMARY" && strings.EqualFold(strings.TrimSpace(comments[i].Importance), "CRITICAL") {
+			comments[i].Importance = "MEDIUM"
+			downgraded++
+		}
+	}
+	return downgraded
 }
 
 // ensembleFallbackConfig is the single-agent config of the fallback profile,

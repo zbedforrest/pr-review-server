@@ -65,6 +65,19 @@ func TestSelfDiscount_NilImpactOpeningInCurrentImpact(t *testing.T) {
 	}
 }
 
+func TestSelfDiscount_EmphasisedConfidenceLabelIsStripped(t *testing.T) {
+	if got := SelfDiscount(falsifiableContract("Users lose their steps.", "**Low:** none today; the flag is off.")); got != DiscountNilImpact {
+		t.Fatalf("SelfDiscount = %q, want %q", got, DiscountNilImpact)
+	}
+	if got := SelfDiscount(falsifiableContract("Currently no guard rejects empty payloads, so the handler panics.", "Confident.")); got != DiscountNone {
+		t.Fatalf("a bare quantifier that states the defect discounted as %q", got)
+	}
+	t.Setenv("PUBLISH_CONDITION_HEDGE_GATE", "true")
+	if got := SelfDiscount(falsifiableContract("Users lose their steps.", "**Medium:** depends on whether the PUT keeps steps.")); got != DiscountHedged {
+		t.Fatalf("SelfDiscount = %q, want %q", got, DiscountHedged)
+	}
+}
+
 func TestSelfDiscount_UnfalsifiableIsDiscounted(t *testing.T) {
 	c := falsifiableContract("Users see a 500.", "Confident.")
 	c.Falsifiability, c.FalsifiableCondition, c.ExpectedObservable = "unknown", nil, nil
@@ -79,6 +92,7 @@ func TestSelfDiscount_AssertedFindingsAreNotDiscounted(t *testing.T) {
 		"fairly confident":              "Fairly confident; the skip expression makes availability irrelevant whenever the live filter is selected.",
 		"low residual with later hedge": "Low: the only open question is whether retries mask it, which does not change the first failure.",
 		"intentionally mid-sentence":    "The guard was intentionally removed in the previous commit, so the crash is reachable today.",
+		"bare quantifier states defect": "Currently no guard rejects empty payloads, so the handler panics.",
 		"empty":                         "",
 	} {
 		if got := SelfDiscount(falsifiableContract("Every checkout request returns a 500.", uncertainty)); got != DiscountNone {
