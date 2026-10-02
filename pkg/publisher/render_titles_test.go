@@ -60,6 +60,15 @@ func TestRenderInline_LongFirstSentenceTitleKeepsItsTailInTheFold(t *testing.T) 
 	}
 }
 
+func TestRenderInline_HeadlineWithoutImpactKeepsTheWholeComment(t *testing.T) {
+	fd := withContract(f("h", "medium", "a.go", 1, "The cache key omits the tenant. Two tenants share entries."), "latent_hazard", "unknown", "", "")
+	fd.FindingContract.Headline = "Cache key omits the tenant"
+	out := RenderInline(fd, "prism-only", "", "")
+	if !strings.Contains(out, "**[MEDIUM] Cache key omits the tenant**") || !strings.Contains(out, "The cache key omits the tenant. Two tenants share entries.") {
+		t.Fatalf("a contract headline must not swallow the comment's first sentence:\n%s", out)
+	}
+}
+
 func TestRenderInline_ImmaterialFindingIsTitledByItsCommentAndShowsTheImpactBelow(t *testing.T) {
 	fd := withContract(f("x", "low", "a.go", 1, "Ordering within a group is unstable. The grain column was not added to ORDER BY."), "production_behavior", "no_user_impact", "No user impact; values are unchanged.", "")
 	out := RenderInline(fd, "prism-only", "", "")

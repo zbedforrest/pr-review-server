@@ -564,7 +564,7 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		// Without an impact sentence the headline came from the comment's first
 		// sentence; the rest of the comment is the only explanation, so show it.
 		rest := reasoning
-		if legacy || titleIsWholeFirstSentence(f) {
+		if legacy || (titleFromComment(f) && titleIsWholeFirstSentence(f)) {
 			rest = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
 		}
 		if rest != "" {

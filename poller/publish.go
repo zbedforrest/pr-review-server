@@ -444,6 +444,14 @@ func (p *Poller) refreshPublishedSummary(ctx context.Context, owner, repo string
 	} else if !allowed {
 		return nil
 	}
+	ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("fetch pull request: %w", err)
+	}
+	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), head, head); !ok {
+		log.Printf("[PUBLISH] %s/%s#%d: summary refresh skipped, %s", owner, repo, number, reason)
+		return nil
+	}
 	pl, err := p.loadReviewPayload(ctx, owner, repo, number, head)
 	if err != nil {
 		return err

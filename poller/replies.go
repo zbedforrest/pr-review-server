@@ -450,7 +450,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 // stops listing it without waiting for the next push. A failure is logged;
 // the next round redraws the summary anyway.
 func (p *Poller) summaryRefresher() func(ctx context.Context, owner, repo string, number int) {
-	if p.cfg != nil && p.cfg.PublishSkipSummaryRefresh {
+	if p.cfg == nil || p.cfg.PublishSkipSummaryRefresh {
 		return nil
 	}
 	return func(ctx context.Context, owner, repo string, number int) {
