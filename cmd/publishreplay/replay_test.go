@@ -16,7 +16,7 @@ import (
 	"pr-review-server/pkg/reviewer/payload"
 )
 
-func fixtureRun(t *testing.T) Result {
+func fixtureRun(t *testing.T, legacy bool) Result {
 	t.Helper()
 	dumps, err := loadDumps("testdata/dumps")
 	if err != nil {
@@ -26,51 +26,74 @@ func fixtureRun(t *testing.T) Result {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Run(context.Background(), Options{Dumps: dumps, Store: st, Policy: publisher.DefaultPolicy()})
+	pol := publisher.DefaultPolicy()
+	pol.LegacyLedger = legacy
+	res, err := Run(context.Background(), Options{Dumps: dumps, Store: st, Policy: pol})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return res
 }
 
+func comparable(m Metrics) Metrics {
+	m.Observed = ObservedMetrics{}
+	m.PrismResolvedNote = ""
+	return m
+}
+
+// The fixtures hold a same-marker repost after an unrelated push (#1), a
+// rewording on a new line (#2) and a finding that returns after a real fix
+// (#3). The ledger policy posts each once and says the rest in the thread.
 func TestRun_FixtureMetrics(t *testing.T) {
-	m := fixtureRun(t).Metrics
-	// SameMarkerReposts 1 and FixedWithoutFileChange 1 encode master's publisher defects; both drop to 0 once the ledger fix ships.
+	m := fixtureRun(t, false).Metrics
 	want := Metrics{
-		PRs: 2, PRsWithRounds: 2, Rounds: 6, RoundsReplayed: 6, SameCommitRounds: 1,
-		RootsPosted: 4, SameMarkerReposts: 1, SameDefectReposts: 1, SameDefectRepostsPerPR: 0.5, PRsWithReposts: 2,
-		Fixed: 2, FixedWithoutFileChange: 1,
-		CommentsPerPushP50: 1, RoundsPerPRP50: 3,
+		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1,
+		RootsPosted: 3, Fixed: 1, InThreadReplies: 1,
+		CommentsPerPushP50: 0, RoundsPerPRP50: 3,
 	}
-	got := m
-	got.Observed = ObservedMetrics{}
-	got.PrismResolvedNote = ""
-	if got != want {
+	if got := comparable(m); got != want {
 		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
 	}
-	if m.Observed.Roots != 4 || m.Observed.SameMarkerReposts != 1 || m.Observed.SameDefectReposts != 0 || m.Observed.ThreadsResolved != 1 {
+	if m.Observed.Roots != 6 || m.Observed.SameMarkerReposts != 2 || m.Observed.SameDefectReposts != 0 || m.Observed.ThreadsResolved != 2 {
 		t.Fatalf("observed = %+v", m.Observed)
 	}
 }
 
+// The legacy numbers pin the defects the ledger policy removes.
+func TestRun_FixtureMetricsLegacy(t *testing.T) {
+	m := fixtureRun(t, true).Metrics
+	want := Metrics{
+		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1,
+		RootsPosted: 6, SameMarkerReposts: 2, SameDefectReposts: 1, SameDefectRepostsPerPR: 0.333, PRsWithReposts: 3,
+		Fixed: 3, FixedWithoutFileChange: 1,
+		CommentsPerPushP50: 1, RoundsPerPRP50: 3,
+	}
+	if got := comparable(m); got != want {
+		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
+	}
+}
+
 func TestRun_PerPRRowsAndCSV(t *testing.T) {
-	res := fixtureRun(t)
-	if len(res.PerPR) != 2 {
+	res := fixtureRun(t, false)
+	if len(res.PerPR) != 3 {
 		t.Fatalf("rows = %d", len(res.PerPR))
 	}
-	repost, reword := res.PerPR[0], res.PerPR[1]
-	if repost.PR != "example#1" || repost.SameMarkerReposts != 1 || repost.FixedWithoutFileChange != 1 || repost.SameDefectReposts != 0 {
+	repost, reword, reopen := res.PerPR[0], res.PerPR[1], res.PerPR[2]
+	if repost.PR != "example#1" || repost.RootsPosted != 1 || repost.SameMarkerReposts != 0 || repost.Fixed != 0 || repost.FixedWithoutFileChange != 0 {
 		t.Errorf("example#1 = %+v", repost)
 	}
-	if reword.PR != "example#2" || reword.SameDefectReposts != 1 || reword.SameMarkerReposts != 0 || reword.Fixed != 1 || reword.FixedWithoutFileChange != 0 || reword.SameCommitRounds != 1 {
+	if reword.PR != "example#2" || reword.RootsPosted != 1 || reword.SameDefectReposts != 0 || reword.Fixed != 0 || reword.SameCommitRounds != 1 {
 		t.Errorf("example#2 = %+v", reword)
+	}
+	if reopen.PR != "example#3" || reopen.RootsPosted != 1 || reopen.Fixed != 1 || reopen.FixedWithoutFileChange != 0 || reopen.InThreadReplies != 1 {
+		t.Errorf("example#3 = %+v", reopen)
 	}
 	var buf bytes.Buffer
 	if err := writeCSV(&buf, res.PerPR); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 3 || !strings.HasPrefix(lines[0], "pr,rounds,") || !strings.HasPrefix(lines[1], "example#1,3,0,0,2,1,0,0,1,1,0,0,") {
+	if len(lines) != 4 || !strings.HasPrefix(lines[0], "pr,rounds,") || !strings.HasPrefix(lines[3], "example#3,3,0,0,1,0,0,0,1,0,0,0,1,") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }
@@ -247,11 +270,11 @@ func TestWriteFileAtomic(t *testing.T) {
 }
 
 func TestReplayPolicy_FlagDefaultsMatchShipped(t *testing.T) {
-	got := replayPolicy(publisher.DefaultInlineCap, publisher.DefaultInlineMinSeverity, publisher.DefaultPolicy().ShowUnverified)
+	got := replayPolicy(publisher.DefaultInlineCap, publisher.DefaultInlineMinSeverity, publisher.DefaultPolicy().ShowUnverified, false)
 	if got != publisher.DefaultPolicy() {
 		t.Fatalf("replayPolicy defaults = %+v, want %+v", got, publisher.DefaultPolicy())
 	}
-	if p := replayPolicy(1, "high", false); p.InlineCap != 1 || p.InlineMinSeverity != "high" || p.ShowUnverified {
+	if p := replayPolicy(1, "high", false, false); p.InlineCap != 1 || p.InlineMinSeverity != "high" || p.ShowUnverified {
 		t.Fatalf("overrides not applied: %+v", p)
 	}
 }

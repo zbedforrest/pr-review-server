@@ -1,0 +1,118 @@
+{
+ "number": 3,
+ "title": "Fixture 3",
+ "url": "https://github.com/acme/example/pull/3",
+ "state": "OPEN",
+ "isDraft": false,
+ "merged": false,
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "3c3c3c3333333333333333333333333333333333",
+ "reviews": {
+  "nodes": [
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 31,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-11T10:00:00Z",
+    "commit": {
+     "oid": "3a3a3a3111111111111111111111111111111111"
+    }
+   },
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 32,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-12T10:00:00Z",
+    "commit": {
+     "oid": "3b3b3b3222222222222222222222222222222222"
+    }
+   },
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 33,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-13T10:00:00Z",
+    "commit": {
+     "oid": "3c3c3c3333333333333333333333333333333333"
+    }
+   }
+  ],
+  "totalCount": 3
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "PRRT_30",
+    "isResolved": true,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "app/cache.go",
+    "line": 30,
+    "originalLine": 30,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 301,
+       "author": {
+        "login": "acme-bot"
+       },
+       "body": "<!-- prism:finding:app/cache.go:3:c3c3c3c3c3c3 -->\n**MEDIUM** Cache entries are stored without a TTL, so a stale profile is served until the process restarts.",
+       "createdAt": "2026-09-11T10:00:00Z",
+       "updatedAt": "2026-09-11T10:00:00Z",
+       "path": "app/cache.go",
+       "originalCommit": {
+        "oid": "3a3a3a3111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "PRRT_31",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "app/cache.go",
+    "line": 30,
+    "originalLine": 30,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 302,
+       "author": {
+        "login": "acme-bot"
+       },
+       "body": "<!-- prism:finding:app/cache.go:3:c3c3c3c3c3c3 -->\n**MEDIUM** Cache entries are stored without a TTL, so a stale profile is served until the process restarts.",
+       "createdAt": "2026-09-13T10:00:00Z",
+       "updatedAt": "2026-09-13T10:00:00Z",
+       "path": "app/cache.go",
+       "originalCommit": {
+        "oid": "3a3a3a3111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ],
+  "totalCount": 2
+ },
+ "comments": {
+  "nodes": []
+ }
+}

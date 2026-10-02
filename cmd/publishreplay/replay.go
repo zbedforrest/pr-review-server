@@ -49,6 +49,7 @@ type recorder struct {
 	posts       []post
 	summaries   int
 	edits       int
+	replies     int
 }
 
 func newRecorder() *recorder {
@@ -84,6 +85,12 @@ func (r *recorder) ListIssueComments(context.Context, string, string, int) ([]pu
 	return nil, nil
 }
 
+func (r *recorder) PostReply(context.Context, string, string, int, int64, string) (int64, error) {
+	r.nextComment++
+	r.replies++
+	return r.nextComment, nil
+}
+
 func (r *recorder) ownComments() []github.ReviewCommentInfo {
 	out := make([]github.ReviewCommentInfo, 0, len(r.posts))
 	for _, p := range r.posts {
@@ -106,6 +113,7 @@ type PRResult struct {
 	FixedWithoutFileChange    int
 	FixedFileChangeUnknown    int
 	SameCommitResolves        int
+	InThreadReplies           int
 	ObservedRoots             int
 	ObservedSameMarkerReposts int
 	ObservedSameDefectReposts int
@@ -132,6 +140,7 @@ type Metrics struct {
 	FixedWithoutFileChange int `json:"fixed_without_file_change"`
 	FixedFileChangeUnknown int `json:"fixed_file_change_unknown"`
 	SameCommitResolves     int `json:"same_commit_resolves"`
+	InThreadReplies        int `json:"in_thread_replies"`
 
 	CommentsPerPushP50 float64 `json:"comments_per_push_p50"`
 	RoundsPerPRP50     float64 `json:"rounds_per_pr_p50"`
@@ -215,6 +224,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.FixedWithoutFileChange += pr.FixedWithoutFileChange
 		m.FixedFileChangeUnknown += pr.FixedFileChangeUnknown
 		m.SameCommitResolves += pr.SameCommitResolves
+		m.InThreadReplies += pr.InThreadReplies
 		if pr.Rounds > 0 {
 			logf("%s: rounds=%d roots=%d same_marker=%d same_defect=%d fixed=%d fixed_no_change=%d", d.key(), pr.Rounds, pr.RootsPosted, pr.SameMarkerReposts, pr.SameDefectReposts, pr.Fixed, pr.FixedWithoutFileChange)
 		}
@@ -264,7 +274,8 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		}
 		comments := append(externalCommentsBefore(d, bots, rd.At), rec.ownComments()...)
 		ghPR := github.PullRequest{Owner: d.Owner, Repo: d.Repo, Number: d.Number, CommitSHA: rd.SHA, Author: d.Author.Login}
-		round := poller.BuildPublishRound(ghPR, pl, comments, patchesFromHunks(pl), previous, "")
+		round := poller.BuildPublishRoundWith(ghPR, pl, comments, patchesFromHunks(pl), previous, "", policy)
+		round.Changes = changeLookup(d, s, rd.SHA, logf)
 		at := rd.At
 		pub.Now = func() time.Time { return at }
 		rec.begin(i, rd.SHA)
@@ -273,6 +284,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 			return pr, nil, fmt.Errorf("round %d (%s): %w", i+1, rd.SHA7, err)
 		}
 		pushes = append(pushes, len(rec.posts)-before)
+		pr.InThreadReplies = rec.replies
 		annotate(rec.posts[before:], round.Findings)
 		for j := before; j < len(rec.posts); j++ {
 			pr.RootsPosted++
@@ -281,6 +293,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 				pr.SameMarkerReposts++
 			case repostSameDefect:
 				pr.SameDefectReposts++
+				logf("%s: round %d same-defect repost: %s", d.key(), i+1, explainRepost(rec.posts[j], rec.posts[:before]))
 			}
 			if classifyRepost(rec.posts[j], rec.posts[before:j]) != repostNone {
 				pr.SameRoundDuplicates++
@@ -295,6 +308,26 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 	return pr, pushes, nil
 }
 
+// changeLookup gives the publisher the same compare the metrics judge it by:
+// the files changed between a row's last-seen head and this round's head.
+func changeLookup(d *prDump, s *store, head string, logf func(string, ...any)) func(base string) (publisher.ChangeSet, bool) {
+	return func(base string) (publisher.ChangeSet, bool) {
+		cmp, known, err := s.compare(d.Owner, d.Repo, base, head)
+		if err != nil {
+			logf("%s: compare %s...%s: %v; changes unknown to the publisher", d.key(), short(base), short(head), err)
+			return publisher.ChangeSet{}, false
+		}
+		if !known {
+			return publisher.ChangeSet{}, false
+		}
+		files := make(map[string]bool, len(cmp.Files))
+		for _, f := range cmp.Files {
+			files[f] = true
+		}
+		return publisher.ChangeSet{Files: files}, true
+	}
+}
+
 // countResolutions classifies every finding row the round flipped out of
 // open: same commit, cited file untouched, or a change the compare could not
 // be fetched or was too large to list in full.
@@ -307,7 +340,7 @@ func countResolutions(d *prDump, s *store, head string, previous, after []db.Pub
 	}
 	for _, row := range after {
 		prev, ok := wasOpen[row.Fingerprint]
-		if !ok || !isFindingRow(row) || row.State != db.PublishedStateResolved {
+		if !ok || !isFindingRow(row) || (row.State != db.PublishedStateResolved && row.State != db.PublishedStateFixed) {
 			continue
 		}
 		pr.Fixed++
@@ -450,6 +483,25 @@ func classifyRepost(p post, earlier []post) repostKind {
 	return kind
 }
 
+// explainRepost names the earlier post a repost aliases to and why, for the
+// log that accompanies the metric.
+func explainRepost(p post, earlier []post) string {
+	for _, e := range earlier {
+		if sameDefect(p.File, p.Line, p.RawText, p.Subjects, e.File, e.Line, e.RawText, e.Subjects) {
+			return fmt.Sprintf("%s:%d (round %d) vs %s:%d (round %d) jaccard=%.2f subjects=%v/%v new=%q prior=%q",
+				p.File, p.Line, p.Round+1, e.File, e.Line, e.Round+1, reconcile.Similarity(p.RawText, e.RawText), p.Subjects, e.Subjects, head(p.RawText), head(e.RawText))
+		}
+	}
+	return ""
+}
+
+func head(s string) string {
+	if r := []rune(s); len(r) > 90 {
+		return string(r[:90]) + "..."
+	}
+	return s
+}
+
 // sameDefect is the alias rule from the program spec: same file, both lines
 // known and within ten, and either raw-text Jaccard at or above 0.20 or a
 // shared subject.
@@ -520,7 +572,7 @@ func round3(v float64) float64 {
 	return float64(int(v*1000+0.5)) / 1000
 }
 
-var csvHeader = []string{"pr", "rounds", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts"}
+var csvHeader = []string{"pr", "rounds", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -528,7 +580,7 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 		return err
 	}
 	for _, r := range rows {
-		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts)}
+		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}
