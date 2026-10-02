@@ -134,7 +134,13 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		written[f.ID] = true
 	}
 	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations)}
-	for id, row := range rows {
+	ids := make([]string, 0, len(rows))
+	for id := range rows {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		row := rows[id]
 		if terminalState(row.State) {
 			continue
 		}
@@ -168,6 +174,8 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 				// listing to show the thread open.
 				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved {
 					notes = append(notes, threadNote{commentID: row.CommentID, body: notSeenNote(r.HeadSHA)})
+				} else if !listed && threads.listFailed() && row.CommentID != 0 {
+					rep.ThreadReplyFailures++
 				}
 				rep.Hygiene.noteResolved(row, r.HeadSHA, cs.Files)
 				continue
@@ -199,16 +207,6 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	rep.StillOpen, rep.Fixed = d.StillOpen, d.Fixed
 	rep.Confidence = Confidence(r.Findings, r.RequiredCheckViolated)
 	now := p.now()
-
-	var actions []threadAction
-	if threads != nil {
-		for _, w := range writes {
-			if w.thread == noThreadChange || w.row.CommentID == 0 {
-				continue
-			}
-			actions = append(actions, threadAction{nodeID: w.row.ThreadNodeID, resolve: w.thread == resolveThread})
-		}
-	}
 
 	postedThisRound, err := p.postInline(ctx, r, sel, rows, now, &rep, threads)
 	if err != nil {
@@ -244,9 +242,16 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		}
 		rep.Hygiene.noteWritten(f, rows[f.ID])
 	}
+	var actions []threadAction
 	for _, w := range writes {
 		if err := p.Ledger.UpsertPublishedFinding(w.row); err != nil {
+			// Rows written before the failure are never revisited, so their
+			// thread changes go out now.
+			threads.apply(ctx, actions, &rep)
 			return rep, fmt.Errorf("update finding %s: %w", w.row.Fingerprint, err)
+		}
+		if threads != nil && w.thread != noThreadChange && w.row.CommentID != 0 {
+			actions = append(actions, threadAction{nodeID: w.row.ThreadNodeID, resolve: w.thread == resolveThread})
 		}
 	}
 

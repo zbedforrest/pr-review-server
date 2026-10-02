@@ -585,12 +585,17 @@ func TestReplyReactor_ConcedeCountsALostResolve(t *testing.T) {
 	})
 	r.ResolveThreads = true
 	gh.resolveErr = fmt.Errorf("403")
+	var outcomes []ReplyOutcome
+	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
 	rep, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || len(gh.resolved) != 0 || rep.ThreadsResolved != 0 || rep.ThreadResolveFailures != 1 {
 		t.Fatalf("states=%v resolved=%v rep=%+v", ledger.states, gh.resolved, rep)
+	}
+	if len(outcomes) != 1 || outcomes[0].Thread != ThreadLost {
+		t.Fatalf("outcomes = %+v, want the lost resolve on the outcome the background path records", outcomes)
 	}
 }
 

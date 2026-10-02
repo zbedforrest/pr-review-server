@@ -632,6 +632,7 @@ type ReplyOutcome struct {
 	Posted          bool
 	Action          string // how the author's comment was acknowledged: reacted or observed
 	Note            string // NoteBudgetExhausted for the budget notice, else the renderer's note
+	Thread          string // ThreadResolved or ThreadLost after a concession, else empty
 	Model           string
 	DurationMS      int64
 }
@@ -1393,31 +1394,39 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, repl
 	if rep == nil {
 		rep = &ReplyReport{}
 	}
-	r.resolveThread(ctx, t, reply.RootCommentID, rep)
+	outcome.Thread = r.resolveThread(ctx, t, reply.RootCommentID, rep)
 	return nil
 }
+
+// Thread outcomes of a concession, carried on ReplyOutcome so the background
+// path, which has no per-scan report, still records them.
+const (
+	ThreadResolved = "resolved"
+	ThreadLost     = "lost"
+)
 
 // resolveThread closes the GitHub thread under a root comment once the
 // finding is dismissed and counts the outcome on the report. The ledger state
 // is already written, so a failure never fails the step.
-func (r ReplyReactor) resolveThread(ctx context.Context, t db.PublishedReplyTarget, rootCommentID int64, rep *ReplyReport) {
+func (r ReplyReactor) resolveThread(ctx context.Context, t db.PublishedReplyTarget, rootCommentID int64, rep *ReplyReport) string {
 	resolver, ok := r.GH.(ThreadResolver)
 	if !ok || !r.ResolveThreads || rootCommentID == 0 {
-		return
+		return ""
 	}
 	ti := &threadIndex{gh: resolver, owner: t.RepoOwner, repo: t.RepoName, number: t.PRNumber}
 	nodeID := ti.nodeIDOf(ctx, rootCommentID)
 	if nodeID == "" {
 		rep.ThreadResolveFailures++
 		log.Printf("[REPLY %s/%s#%d] no thread listed for comment %d; left open", t.RepoOwner, t.RepoName, t.PRNumber, rootCommentID)
-		return
+		return ThreadLost
 	}
 	if err := resolver.ResolveThread(ctx, t.RepoOwner, t.RepoName, nodeID); err != nil {
 		rep.ThreadResolveFailures++
 		log.Printf("[REPLY %s/%s#%d] resolve thread %s lost: %v", t.RepoOwner, t.RepoName, t.PRNumber, nodeID, err)
-		return
+		return ThreadLost
 	}
 	rep.ThreadsResolved++
+	return ThreadResolved
 }
 
 // threadFingerprint identifies the finding and everything written under it by

@@ -232,11 +232,38 @@ func TestThreads_StoredNodeIDResolvesWithoutANoteWhenTheListingFails(t *testing.
 	r2 := summaryOnly("sha-2")
 	r2.Changes = changed("a.go")
 	rep := publishThreads(t, gh, ledger, r2)
-	if rep.Fixed != 2 || rep.ThreadsResolved != 1 || rep.ThreadResolveFailures != 0 || rep.ThreadReplies != 0 || len(gh.replies) != 0 {
-		t.Fatalf("report = %+v replies=%v, want the stored id resolved and no note into an unverified thread", rep, gh.replies)
+	if rep.Fixed != 2 || rep.ThreadsResolved != 1 || rep.ThreadResolveFailures != 0 || rep.ThreadReplies != 0 || rep.ThreadReplyFailures != 1 || len(gh.replies) != 0 {
+		t.Fatalf("report = %+v replies=%v, want the stored id resolved, the note counted lost and nothing posted into an unverified thread", rep, gh.replies)
 	}
 	if sorted(gh.resolves) != "[T1001]" {
 		t.Fatalf("resolves = %v", gh.resolves)
+	}
+}
+
+func TestThreads_WrittenRowsKeepTheirThreadChangeWhenALaterWriteFails(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, ledgerRoundOne())
+
+	threadRowWritten := false
+	ledger.failUpsert = func(pf *db.PublishedFinding) error {
+		if pf.State != db.PublishedStateFixed {
+			return nil
+		}
+		if threadRowWritten {
+			return errors.New("db gone")
+		}
+		threadRowWritten = pf.CommentID != 0
+		return nil
+	}
+	r2 := summaryOnly("sha-2")
+	r2.Changes = changed("a.go", "b.go")
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: testPolicy()}
+	rep, err := p.Publish(context.Background(), r2)
+	if err == nil {
+		t.Fatal("want the write failure surfaced")
+	}
+	if len(gh.resolves) != 1 || rep.ThreadsResolved != 1 {
+		t.Fatalf("resolves=%v rep=%+v, want the one fixed row written before the failure resolved", gh.resolves, rep)
 	}
 }
 

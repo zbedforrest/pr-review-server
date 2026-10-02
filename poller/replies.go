@@ -177,7 +177,7 @@ func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.Telem
 	if o.Note != "" {
 		note = " note=" + o.Note
 	}
-	label := fmt.Sprintf("outcome=%s decision=%s%s posted=%t action=%s model=%s ms=%d comment=%d", o.Outcome, o.Decision, note, o.Posted, o.Action, o.Model, o.DurationMS, o.AuthorCommentID)
+	label := fmt.Sprintf("outcome=%s decision=%s%s posted=%t action=%s%s model=%s ms=%d comment=%d", o.Outcome, o.Decision, note, o.Posted, o.Action, threadSuffix(o), o.Model, o.DurationMS, o.AuthorCommentID)
 	action := "reply_decision"
 	switch {
 	case err != nil:
@@ -187,6 +187,13 @@ func replyOutcomeEvent(o publisher.ReplyOutcome, err error, userID int) db.Telem
 		action = "reply_text_skipped"
 	}
 	return db.TelemetryEvent{UserID: userID, Action: action, Label: truncateLabel(label, 255), PROwner: o.RepoOwner, PRRepo: o.RepoName, PRNumber: o.PRNumber}
+}
+
+func threadSuffix(o publisher.ReplyOutcome) string {
+	if o.Thread == "" {
+		return ""
+	}
+	return " thread=" + o.Thread
 }
 
 // replyInputFromRequest shapes the reactor's request for the reply model.
@@ -325,7 +332,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			if err != nil {
 				log.Printf("[REPLY %s/%s#%d] text step for comment %d failed, will resume: %v", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, err)
 			} else {
-				log.Printf("[REPLY %s/%s#%d] comment %d: outcome=%s decision=%s posted=%t action=%s", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, o.Outcome, o.Decision, o.Posted, o.Action)
+				log.Printf("[REPLY %s/%s#%d] comment %d: outcome=%s decision=%s posted=%t action=%s%s", o.RepoOwner, o.RepoName, o.PRNumber, o.AuthorCommentID, o.Outcome, o.Decision, o.Posted, o.Action, threadSuffix(o))
 			}
 			if userID := p.systemTelemetryUserID(); userID != 0 {
 				if terr := p.db.CreateTelemetryEvents(replyOutcomeEvents(o, err, userID)); terr != nil {

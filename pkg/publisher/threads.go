@@ -79,6 +79,10 @@ func (ti *threadIndex) reload(ctx context.Context) {
 	}
 }
 
+// listFailed reports a listing GitHub rejected this round, as opposed to
+// one that simply lacks a thread.
+func (ti *threadIndex) listFailed() bool { return ti != nil && ti.loaded && ti.err != nil }
+
 // lookup finds the thread a root comment opened; false when the listing
 // failed or the comment opened no thread GitHub lists.
 func (ti *threadIndex) lookup(ctx context.Context, rootCommentID int64) (ReviewThread, bool) {
