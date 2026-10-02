@@ -892,8 +892,14 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		}
 		row, handled := seen[reply.CommentID]
 		// A verdict is settled as soon as a mode that reacts sees it, whether
-		// it is new or was recorded under observe and never finished.
-		if reply.Class == ReplyVerdict && r.reacts() && (!handled || row.Outcome == "") {
+		// it is new, was recorded under observe and never finished, or was
+		// only thumbed up under shadow. A row another instance still holds
+		// for a text step (an older build mid rolling deploy) waits a scan.
+		if reply.Class == ReplyVerdict && r.reacts() && r.verdictPending(row, handled) {
+			if handled && row.Action == ReplyActionPending && r.claimedElsewhere(row) {
+				settled = false
+				continue
+			}
 			if err := r.settleVerdict(ctx, t, state, reply, row, handled, rep); err != nil {
 				return err
 			}
@@ -1256,6 +1262,17 @@ func (r ReplyReactor) textMode() bool {
 
 func (r ReplyReactor) verdictFastPath() bool {
 	return !r.Legacy && !r.NoVerdicts
+}
+
+func (r ReplyReactor) verdictPending(row db.PublishedReply, handled bool) bool {
+	if !handled || row.Outcome == "" {
+		return true
+	}
+	return row.Outcome == OutcomeShadowedVerdict && r.Mode != ReplyModeShadow
+}
+
+func (r ReplyReactor) claimedElsewhere(row db.PublishedReply) bool {
+	return row.ClaimedBy != "" && row.ClaimedBy != r.Holder && row.ClaimedAt != nil && r.now().Before(row.ClaimedAt.Add(r.claimLease()))
 }
 
 func (r ReplyReactor) now() time.Time {

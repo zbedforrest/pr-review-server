@@ -9,86 +9,86 @@ import (
 	"pr-review-server/db"
 )
 
-// auditedVerdictReplies are the 71 author replies the comment audit labelled
-// intentional_behavior, anonymised (tickets, shas, products and people
-// renamed, bodies cut to the sentences that matter). want says whether the
-// fast path settles the reply; the rest still reach the model, a bare
-// acknowledgement or the fix-claim path, exactly as before.
+// auditedVerdictReplies mirror the 71 author replies the comment audit
+// labelled intentional_behavior, paraphrased and anonymised (fake tickets,
+// shas and products, bodies cut to the clauses the classifier reads). want
+// says whether the fast path settles the reply; the rest still reach the
+// model, a bare acknowledgement or the fix-claim path, exactly as before.
 var auditedVerdictReplies = []struct {
 	body string
 	want bool
 }{
-	{"we already send these to the metrics vendor in other places.  good call out, I created the bot and yes i confirm i havent yet enabled you to look into the main repo to see where we do this!", false},
-	{"This is acceptable. It's not often that a non-db error will cause this to fail, and returning stale values for 5 seconds isn't really a concern.", true},
-	{"Import route is being deprecated. Marking this as resolved.", false},
-	{"This is why the ttl of 180 seconds exists. The stale value will not be served forever.", false},
-	{"This is intended behavior. Unregistered switches always read as false and are not editable in the database because they don't do anything and should be deleted or renamed to a registered switch.", true},
+	{"We already send these to the vendor from other call sites. Good catch, and I have not yet given the bot access to the other repo where that happens.", false},
+	{"This is acceptable. A non-db error rarely fails this, and serving a stale value for a few seconds is not a concern.", true},
+	{"That route is being retired. Marking this resolved.", false},
+	{"That is what the 180 second ttl is for. The stale value is not served forever.", false},
+	{"This is intended behavior. A switch nobody registered always reads false and cannot be edited, because it does nothing and should be removed or renamed.", true},
 	{"This is intended behavior.", true},
 	{"intended", true},
-	{"This is deliberate behavior. It actually doesn't disable the entry, as you just said English users will still receive the entry.", true},
-	{"Correct that the grants are now cluster-wide, and that's accepted for Q3. This PR is the first step of the RBAC ladder, which changes one thing per step.", false},
-	{"Accepted, and it's why this is a dedicated ingest key (`ingest-key`) and not the cluster bundle's license key. An ingest key can only write telemetry to one account; it can't read or query anything.", true},
-	{"By design; header corrected in dbfd32d. The gateway's catch-all 404s fade out over up to 15 minutes, so a late 2xx is the stable signal, and a strict end-of-window check would fail releases on one stray 404.", true},
-	{"By design. The catalog's exit codes are fixed at 75, 2 and 76 (the subcommands copy that contract later), so there is no 77. A longer auth outage fails the step, which is the right signal for an outage.", true},
-	{"By design for this PR. delete-environment is copied byte for byte from release-environment's (same 120s deadline, same missing continueOn and default); XO-1748 keeps the copies identical so a fix lands in both. The deadline-vs-retry gap is real and pre-existing", true},
-	{"By design for this PR. prod-seed-snapshot-glue is release-environment-glue less unused code; run_action's replay on a 5xx is inherited unchanged and still runs that way in release-environment. Only delete_integration_environment goes through it here, where a duplicate is a no-op or failed run.", true},
-	{"By design for Q3, same as the Greptile thread: the shared executor service account is the recorded gap until XO-1784 gives QA its own account and bucket grants. Verified its IAM: objectViewer and objectCreator on the artifacts bucket, no project-level roles.", true},
-	{"This is intentional and in the description (line 11). every other http call in prod code already uses get_ssl_verification, the legacy path was the only verify=False left and it was hitting the same upstream endpoint the migrate command verifies.", true},
-	{"This is intended, we require the user to have enough tokens for one minute of show, even with no minimum time set", true},
-	{"intentional change is intentional, muting after the show ends would be weird", true},
-	{"This would be correct behavior; if they are trying to join a show via an invalid entrypoint, we can't start to reconnect the show, so we prompt them until they decide end the show early. Without the reconnection parameter, the user could simply decline", true},
-	{"Yep, known gap for this PR. Scoped in MSG-3282, which adds the cursor and a fill loop that keeps fetching from where the page stopped until it has 50 or every source is done.", false},
-	{"This is intended: the ticket's arbitration rules say room leave clears both, room load clears a lingering toast, and deliberately leave the banner out of that. Not a bug, keeping as is.", true},
-	{"Intentional. The gate is as narrow as we can make it. Every room-page bell journey today is a follow nudge, and the \"BROADCASTER is online\" bell is a test fixture. The explicit per-entry marker you describe is the real fix and belongs upstream", true},
-	{"intentional phased state, following PRs will implement other video modes", true},
-	{"Duplicates can't be created by the current purchase paths. The legacy path checks under TippingLock, and both paths write the sale row in the same atomic block as the purchase. The sale table is unique on (set, purchaser), so I removed the key dedupe on purpose.", false},
-	{"This is intentional. Opt-in adds the paid review required for the vault without cancelling the existing messaging review. `test_free_task_does_not_skip_paid_review` covers this case.", true},
-	{"The `common` runners are ephemeral: each job gets a fresh pod that is destroyed when the job ends, so nothing written to `~/.ssh` survives into a later job. This composite is a port of `actions/deploy-staging`; this line is carried over unchanged", false},
+	{"This is deliberate behavior. It does not actually disable the entry; as you said, default-locale users still receive it.", true},
+	{"Correct that the roles are now cluster-wide, and that is accepted for the quarter. This PR is the first rung of the ladder, one change per step.", false},
+	{"Accepted, and it is why this is a dedicated ingest key and not the bundle's license key. An ingest key can only write telemetry to one account.", true},
+	{"By design; header corrected in 1a2b3c4. The catch-all 404s fade out over a few minutes, so a late 2xx is the stable signal, and a strict end-of-window check would fail releases on one stray 404.", true},
+	{"By design. The exit codes are fixed at three values, so there is no fourth. A longer auth outage fails the step, which is the right signal.", true},
+	{"By design for this PR. The delete action is copied byte for byte from the release action; ACME-1748 keeps the copies identical so a fix lands in both. The deadline-vs-retry gap is real and pre-existing", true},
+	{"By design for this PR. The seed action is the release action less unused code; the replay on a 5xx is inherited unchanged. Only the delete call goes through it here, where a duplicate is a no-op.", true},
+	{"By design for this quarter, same as the other bot's thread: the shared executor account is the recorded gap until ACME-1784 gives QA its own account. Verified its roles: object viewer and creator on the bucket, nothing project-level.", true},
+	{"This is intentional and in the description. Every other http call already uses the shared verification helper; the legacy path was the only verify=False left.", true},
+	{"This is intended, we require the user to hold enough credit for one minute even with no minimum set", true},
+	{"intentional change is intentional, muting once the session is over would be weird", true},
+	{"This would be correct behavior; if they join through an invalid entrypoint we cannot reconnect, so we prompt them until they decide to end early.", true},
+	{"Yep, known gap for this PR. Scoped in ACME-3282, which adds the cursor and a fill loop.", false},
+	{"This is intended: the ticket's rules say leaving the room clears both, loading it clears a lingering toast, and the banner stays out of that on purpose. Not a bug, keeping as is.", true},
+	{"Intentional. The gate is as narrow as we can make it. Every bell journey on this page today is a follow nudge, and the online bell is a test fixture. The per-entry marker you describe is the real fix and belongs upstream", true},
+	{"intentional phased state, following PRs add the other modes", true},
+	{"Duplicates cannot be created by the current purchase paths. Both paths write the sale row in the same atomic block, and the table is unique on the pair, so I removed the key dedupe on purpose.", false},
+	{"This is intentional. Opting in adds the paid check without cancelling the existing one. The new test covers this case.", true},
+	{"The shared runners are ephemeral: each job gets a fresh pod, so nothing written to the home dir survives. This composite is a port of the staging action; the line is carried over unchanged", false},
 	{"that's fine", true},
-	{"I will handle this in a follow up. The expected behavior is that these rejected tiles should be visible but not selectable.", false},
-	{"Discussed previously, but yes, we do want rejected media to appear in the post modal. Changes to how this will be handled in the modal itself will be done in a separate PR.", false},
-	{"This is intended. On reject, there is a tooltip that is activated on pill hover or click depending on device capability. Outside of reject, we allow the fall through to open the viewer.", true},
-	{"This was intentional, it felt like it made more sense that a pill with a tooltip would not result in the viewer opening", true},
-	{"This is intentional, there's a chat thread discussing this and agreeing that covering the title and description should be fine.", true},
-	{"Will followup with https://tracker.example/browse/XO-11995", false},
-	{"Profile tiles already handle missing previews with a matching legacy cover or placeholder. Messaging fallback handling is tracked in [MSG-3408](https://tracker.example/browse/MSG-3408) and must merge before the flag is enabled for creators with migrated media.", false},
-	{"https://tracker.example/browse/TS-2513 will handle the backfill so that anyone that requires a passport will not have an empty `require_other_id_type` field.", false},
-	{"https://tracker.example/browse/TS-2513 will handle the backfill so that anyone that requires a passport will not have an empty `require_other_id_type` field.", false},
-	{"This was done on purpose to trigger a fresh fetch when switching from Live to All, which somewhat matches existing/previous behavior. This is in case the cache is stale when we're switching filters", true},
-	{"It was not originally \"intended\" persay but, like you mentioned, it seemed to be an improvement so I decided not to gate it.", false},
-	{"That is the goal/intent. These are new and don't affect existing users. Mediasets can't have their access settings changed once they're created so we can't go from undefined (legacy) to something (new).", true},
-	{"That is the goal. I updated the description.", true},
-	{"Current legacy behavior is that a failed message with media is wiped. This PR does not change that behavior.", false},
-	{"This is intentional and fixes your earlier finding about misleading partial counts. The API's total_count counts media sets, not pictures or videos. We chose to hide incomplete counts until all pages load. Removing !hasMore would restore the original issue.", true},
-	{"This is an edge case that we actually want to happen. Current users of the endpoint are changing the host so that the click throughs go to their whitelabel because the domain location is not a currently available feature. We don't want this addition to break their current workaround.", false},
-	{"This is a new feature that has not rolled out so no one is actually using the `companion_asset` parameter so we can update it without worrying about consumers of the endpoint.", false},
-	{"Not changing this here. It's the same 16px `CloseButton` the over-chat notification uses, and a bigger hit area should change both together.", true},
+	{"I will handle this in a follow-up PR. The expected behavior is that rejected tiles show but cannot be selected.", false},
+	{"Discussed previously, but yes, we want rejected items to appear in the modal. How the modal handles them changes in a separate PR.", false},
+	{"This is intended. On reject, a tooltip is shown on hover or tap depending on device. Otherwise we fall through to open the viewer.", true},
+	{"This was intentional, it felt like a pill with a tooltip should not also open the viewer", true},
+	{"This is intentional, there is a chat thread agreeing that covering the title and description should be fine.", true},
+	{"Will follow up in https://tracker.example/browse/ACME-11995", false},
+	{"Tiles on the profile already handle a missing preview with a placeholder. The fallback is tracked in [ACME-3408](https://tracker.example/browse/ACME-3408) and must merge before the flag is enabled.", false},
+	{"https://tracker.example/browse/ACME-2513 will handle the backfill so nobody ends up with an empty id-type field.", false},
+	{"https://tracker.example/browse/ACME-2513 will handle the backfill so nobody ends up with an empty id-type field.", false},
+	{"This was done on purpose so switching filters triggers a fresh fetch, which matches the previous behavior. It covers the case where the cache is stale", true},
+	{"It was not originally intended as such but, as you mentioned, it seemed an improvement so I decided not to gate it.", false},
+	{"That is the goal/intent. These are new rows and leave existing users alone. Access settings cannot change once created so we cannot go from undefined to something.", true},
+	{"That is the goal. I updated the PR description.", true},
+	{"Current legacy behavior wipes a failed message that carries media. This PR does not change that.", false},
+	{"This is intentional and fixes your earlier finding about misleading partial counts. The total counts sets, not items. We chose to hide incomplete counts until all pages load.", true},
+	{"This is an edge case we actually want. Current users of the endpoint change the host so click-throughs go to their own domain, and we do not want to break that workaround.", false},
+	{"This is a new feature behind a flag, so nobody uses the parameter yet and we can change it without worrying about consumers.", false},
+	{"Not changing this here. It is the same 16px close button the other notification uses, and a bigger hit area should change both together.", true},
 	{"yes", false},
 	{"yes", false},
-	{"Intentional, that's what Product asked.", true},
-	{"Known and accepted per the ticket. The feed only room-gates fan club sets (purchases bypass it, recordings aren't gated), so this only affects a fan-club-only host whose room is blocked for the viewer.", true},
-	{"Paid media sets, including DM ones, aren't live in prod yet. MSG-3307 makes DM sets viewable, and this list already includes their creators so it won't need a change then.", false},
-	{"Intentional, it matches every messaging surface (check_gender_block=True), and the new test covers it.", true},
-	{"This toggle should apply to tier 1 too", false},
-	{"this feature is now dependent on the translation toggle too", false},
-	{"yes showing h2 instead is ok behavior in that case", false},
-	{"hashtag table names are required and no fallbacks should be provided", false},
+	{"Intentional, that's what the product owner asked.", true},
+	{"Known and accepted per the ticket. Only club sets are room-gated, so this only affects a club-only host whose room is blocked for the viewer.", true},
+	{"Paid sets, including direct ones, are not live yet. ACME-3307 makes them viewable, and this list already includes their creators so it will not need a change then.", false},
+	{"Intentional, it matches every other surface (the same check flag), and the new test covers it.", true},
+	{"This toggle should cover tier 1 as well", false},
+	{"this feature now depends on the translation toggle too", false},
+	{"yes rendering an h2 instead is fine in that case", false},
+	{"the table names are required, no fallback should be provided", false},
 	{"Won't fix: matches mobile.", true},
-	{"Intended. The viewer's F2F publish negotiates mid-call and should still ramp r0 from the start cap. A call no longer clears r0's cap (8a4d4301e6), so the start cap is ramped like any other session.", true},
-	{"Intended. A call keeps r0's current state. Held means the browser reports no estimate, so nothing confirms that uncapping r0 is safe, and doing it mid-broadcast risks the stack switching r0 off while live.", true},
-	{"Not changed. A null MoM cell with no note only occurs when the same row's level cell is gated, and that level cell already carries the reason as a footnote (\"No data for …\" / \"Too few samples …\"). Every other null cell now has its own footnote.", true},
-	{"Intentional. Personal cloud projects are not part of standard setup, so this page drops them. A team that still needs them can document it on its own page.", true},
-	{"Deliberate: issuing-presence-first is the fix for the no-expiration-trump gap this ticket closes, a document that cannot prove when it was issued must not displace one that can, and the two regression tests pin that intent.", true},
-	{"Deliberate, and legacy parity: the removed-payee gate is a person-wide freeze, `link_best_identity` skipped identically. If the freeze semantics should narrow, that is a policy change for its own ticket, not a gap introduced here.", true},
-	{"Deliberate: name vouching accepts any non-expired document, aged-out included, matching the long-standing sibling convention. Tightening both touches every name-check flow, a policy decision for a follow-up if wanted.", true},
-	{"By design, and matching the live glue, which retries a 401 on the token mint rather than treating it as final. The catalog template `entity-upsert-v0` makes the same call, re-minting once on a 401. On the last attempt summarize still records the row without relations, so the row is delayed, never lost.", true},
-	{"Not changed here. The inline run-create-v0 logs the same line, and this PR ports that template exactly; the same inputs already show on the run in the catalog. Trimming it to property names needs the template changed too, noted as a follow-up on XO-1750.", true},
-	{"Release test plans are per repository (only one repo has a test plan map), so one owner/repo is right for every number in the cell; linking only the confirming PR would drop the other numbers' links when the cell is rewritten. Left as is", false},
+	{"Intended. The viewer's publish negotiates mid-call and should still ramp from the start cap. A call no longer clears that cap (1b2c3d4), so it is ramped like any other session.", true},
+	{"Intended. A call keeps the current state. Held means the browser reports no estimate, so nothing confirms that uncapping is safe, and doing it mid-session risks the stack switching the layer off while live.", true},
+	{"Not changed. A null cell with no note only occurs when the same row's level cell is gated, and that cell already carries the reason as a footnote. Every other null cell now has its own footnote.", true},
+	{"Intentional. Personal projects are not part of standard setup, so this page drops them. A team that still needs them can document it on its own page.", true},
+	{"Deliberate: issued-first is the fix for the gap this ticket closes, a document that cannot prove when it was issued must not displace one that can, and two regression tests pin that intent.", true},
+	{"Deliberate, and parity with legacy: the removed-payee gate freezes the whole person, and the sibling helper skipped identically. Narrowing the freeze is a policy change for its own ticket.", true},
+	{"Deliberate: vouching accepts any unexpired document, aged-out included, matching the sibling convention. Tightening both touches every name-check flow, a policy decision for a follow-up if wanted.", true},
+	{"By design, matching the live glue: a 401 on the token mint is retried rather than treated as final. The template makes the same call. On the last attempt the row is still recorded without relations, so it is delayed, never lost.", true},
+	{"Not changed here. The inline template logs the same line, and this PR ports it exactly; the same inputs already show on the run. Trimming it needs the template changed too, noted as a follow-up on ACME-1750.", true},
+	{"Plans are per repository (one repo holds the map), so one owner/repo is right for every number in the cell; linking only the confirming PR would drop the other links when the cell is rewritten. Left as is", false},
 	{"Intentional correction.", true},
-	{"Decision taken and recorded in 300a57dd. The two pre-merge checks were run: production Redis requires a password: **NO** (the chart owner, 2026-10-01 17:38Z; `requirepass` is supported but not enabled)", false},
-	{"The maintainer then ruled (2026-10-01, decision 23) that the flip ships without the NetworkPolicy, since a per-deployment policy is what platform engineering asked to weigh fleet-wide first, and accepted the residual", false},
-	{"Resolved by the Project Lead on the maintainer's decision, not as a disagreement with the finding.", false},
-	{"Resolved by the Project Lead on the maintainer's decision, not as a disagreement with the finding.", false},
+	{"Decision taken and recorded in 3a4b5c6. The two pre-merge checks were run: the production cache requires a password: NO (the chart owner confirmed; the option is supported but not enabled)", false},
+	{"The maintainer then ruled (decision 23) that the flip ships without the network policy, since a per-deployment policy is what the platform team asked to weigh fleet-wide first, and accepted the residual", false},
+	{"Closed by the lead on the maintainer's ruling, not as a disagreement with the finding.", false},
+	{"Closed by the lead on the maintainer's ruling, not as a disagreement with the finding.", false},
 }
 
 func TestIsVerdictOnTheAuditedIntentionalReplies(t *testing.T) {
@@ -112,34 +112,34 @@ func TestIsVerdictOnTheAuditedIntentionalReplies(t *testing.T) {
 // opener, the pushback that argues rather than rules, and the guards.
 func TestIsVerdictOutsideTheAuditedClass(t *testing.T) {
 	cases := map[string]bool{
-		"This is fine. Looking into or fixing the translation error will then surface the entry error.":              true,
-		"not a bug here: the framework's `Ctx.IP()` only falls back to `RemoteIP()` when the proxy is untrusted.":    true,
-		"False positive, checked this behavior locally.":                                                             true,
-		"Not changing this. `usePurrAnchoredHost` re-resolves on `fullscreenchange`, forcing a re-render each time.": true,
-		"Same finding as the earlier thread on this line, where the clearance works out to 4px. Not changing this.":  false,
-		"This was intended what are you talking about":                                                               true,
-		"For the 5th time this is intended behavior.":                                                                true,
-		"That's the same comment as before.\n\nThis is intended. media_access = FREE is the new version.":            true,
-		"This is intended and I will make a note in the PR description.":                                             true,
-		"The author would be correct in considering this intended. Stop commenting on this test case.":               false,
-		"This isn't really a finding or a risk, it's just intended behavior.":                                        false,
-		"Yes, I'm aware. Will make a note in the PR description.":                                                    false,
-		"This is how the previous translation worked, disregarding this comment":                                     false,
-		"Out of scope for this ticket: the shown telemetry fires from existing code. Not touching it here.":          false,
-		"Also fine, this is just error order, nothing falls through the cracks.":                                     false,
-		"Please stop. I've addressed this in the previous comments.":                                                 false,
+		"This is fine. Chasing or fixing the locale error would then surface the entry error.":                    true,
+		"not a bug here: the framework's `Ctx.IP()` only falls back to `RemoteIP()` when the proxy is untrusted.": true,
+		"False positive, verified the behavior locally.":                                                          true,
+		"Not changing this. `useAnchoredHost` re-resolves on `fullscreenchange`, forcing a re-render each time.":  true,
+		"Same point as the earlier thread on this line, where the gap works out to 4px. Not changing this.":       false,
+		"This was intended, what are you on about":                                                                true,
+		"For the fourth time this is intended behavior.":                                                          true,
+		"That's the same comment as before.\n\nThis is intended. media_access = FREE is the new version.":         true,
+		"This is intended and I will make a note of it in the PR description.":                                    true,
+		"The author is right to consider this intended. Stop commenting on this test.":                            false,
+		"This isn't really a finding or a risk, just intended behavior.":                                          false,
+		"Yes, I'm aware. Will note it in the PR description.":                                                     false,
+		"This is how the old translation behaved, disregarding this comment":                                      false,
+		"Out of scope for this ticket: that telemetry fires from existing code. Not touching it here.":            false,
+		"Also fine, this is only error ordering, nothing slips through.":                                          false,
+		"Please stop. I've answered this in the earlier comments.":                                                false,
 
-		"done, a same-selection click from the list or tables recenters now (c28b4ff)":                false,
-		"Fair. Implemented error caching and stale reads up to a stale TTL":                           false,
-		"Valid, fixed in 4dc9bc2. Rejecting a late first 200 would fail envs the old gate accepted.":  false,
-		"Correct, the && short-circuit exempted room_exit from the visit-id check too. Split it.":     false,
-		"Real, and reachable beyond room navigation: the host also re-resolves on fullscreen changes": false,
-		"Agreed it wasn't doing anything useful. Removed it. d85e85d98b":                              false,
-		"Should be fixed with the latest commits":                                                     false,
-		"nice catch prism!": false,
-		"seems reasonable":  false,
-		"right again!":      false,
-		"ok?":               false,
+		"done, a repeated click from the list recenters now (1a2b3c4)":                                  false,
+		"Fair. Added error caching and stale reads up to a TTL":                                   false,
+		"Valid, fixed in 1a2b3c4. Rejecting a late first 200 would fail envs the old gate let through.": false,
+		"Correct, the && short-circuit exempted the exit event from the id check too. Split it.":        false,
+		"Real, and reachable beyond navigation: the host also re-resolves on fullscreen changes":        false,
+		"Agreed it did nothing useful. Removed it. 1a2b3c4":                                             false,
+		"Should be fixed by the latest commits":                                                         false,
+		"nice catch prism!":                                                                             false,
+		"seems reasonable":                                                                              false,
+		"right again!":                                                                                  false,
+		"ok?":                                                                                           false,
 
 		"Is this intentional?":                                                   false,
 		"Not intentional, fixing.":                                               false,
@@ -153,6 +153,18 @@ func TestIsVerdictOutsideTheAuditedClass(t *testing.T) {
 		"Intended fix is in abc1234.":                                            false,
 		"> This is intentional\n\nNo it is not, the guard runs twice.":           false,
 		"Deliberate: fixed the test instead.":                                    false,
+		"I did not do it on purpose":                                             false,
+		"I didn't do this intentionally":                                         false,
+		"we did not intentionally skip it":                                       false,
+		"I never meant to do that deliberately":                                  false,
+		"Accepted":                                                               false,
+		"Accepted the suggestion":                                                false,
+		"Accepted your suggestion, thanks":                                       false,
+		"Accepted, applied in abc1234":                                           false,
+		"Expected. Fixed in abc1234":                                             false,
+		"The ordering is intentional. Fixed the retry count though.":             false,
+		"Not a bug, I'll push a fix for the other thing":                         false,
+		"this is intentional, i think":                                           false,
 		"The `if` branch is intentional, see the design doc.":                    true,
 		"No, this is intentional: the cache is invalidated by the writer.":       true,
 		"<!-- template -->\n**By design.** The gateway retries once.":            true,
@@ -265,7 +277,7 @@ func TestReplyReactor_VerdictSettlementIsFinishedByTheNextScanAfterAFailedWrite(
 	if err != nil || len(rep.Errors) != 0 {
 		t.Fatalf("err=%v rep=%+v", err, rep)
 	}
-	if ledger.rows[0].Outcome != OutcomeSettledVerdict || *runs != 0 || len(gh.posted) != 0 || fmt.Sprint(gh.reactions) != "[101 101]" {
+	if ledger.rows[0].Outcome != OutcomeSettledVerdict || *runs != 0 || len(gh.posted) != 0 || fmt.Sprint(gh.reactions) != "[101]" {
 		t.Fatalf("the next scan finishes the settlement without the model: row=%+v runs=%d posted=%q reactions=%v", ledger.rows[0], *runs, gh.posted, gh.reactions)
 	}
 }
@@ -306,8 +318,54 @@ func TestReplyReactor_VerdictUnderShadowReactsButChangesNoFindingState(t *testin
 	if fmt.Sprint(gh.reactions) != "[101]" || ledger.states["a.go:1:abc"] != "" || len(rep.Verdicts) != 0 || *runs != 0 {
 		t.Fatalf("reactions=%v states=%v rep=%+v runs=%d", gh.reactions, ledger.states, rep, *runs)
 	}
-	if row := ledger.rows[0]; row.Outcome != OutcomeSettledVerdict || row.Action != ReplyActionReacted {
+	if row := ledger.rows[0]; row.Outcome != OutcomeShadowedVerdict || row.Action != ReplyActionReacted {
 		t.Fatalf("row=%+v", row)
+	}
+	if _, err := r.Run(context.Background()); err != nil || fmt.Sprint(gh.reactions) != "[101]" {
+		t.Fatalf("a second shadow scan does not react again: err=%v reactions=%v", err, gh.reactions)
+	}
+
+	r.Mode = ReplyModeRespond
+	rep, err = r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := ledger.rows[0]
+	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || row.Outcome != OutcomeSettledVerdict || fmt.Sprint(gh.reactions) != "[101]" {
+		t.Fatalf("respond finishes a verdict seen under shadow without reacting again: states=%v row=%+v reactions=%v", ledger.states, row, gh.reactions)
+	}
+	if *runs != 0 || len(gh.posted) != 0 || len(rep.Verdicts) != 1 {
+		t.Fatalf("runs=%d posted=%q rep=%+v", *runs, gh.posted, rep)
+	}
+}
+
+func TestReplyReactor_VerdictWaitsWhileAnotherHolderClaimsThePendingRow(t *testing.T) {
+	r, gh, ledger, runs := verdictFixture(ReplyModeRespond, t)
+	r.LastScanned = map[string]time.Time{}
+	claimedAt := r.now().Add(-time.Minute)
+	ledger.rows = []db.PublishedReply{{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
+		Fingerprint: "a.go:1:abc", AuthorID: 42, Class: string(ReplyPushback), Action: ReplyActionPending,
+		ClaimedBy: "old-build", ClaimedAt: &claimedAt,
+	}}
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.reactions) != 0 || ledger.states["a.go:1:abc"] != "" || ledger.rows[0].Outcome != "" || *runs != 0 || len(rep.Verdicts) != 0 {
+		t.Fatalf("a row another holder claims is left alone: reactions=%v states=%v row=%+v runs=%d", gh.reactions, ledger.states, ledger.rows[0], *runs)
+	}
+	if len(r.LastScanned) != 0 {
+		t.Fatalf("the PR stays unsettled so the next scan retries: %v", r.LastScanned)
+	}
+
+	expired := r.now().Add(-time.Hour)
+	ledger.rows[0].ClaimedAt = &expired
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(gh.reactions) != "[101]" || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || ledger.rows[0].Outcome != OutcomeSettledVerdict {
+		t.Fatalf("an expired claim is settled: reactions=%v states=%v row=%+v", gh.reactions, ledger.states, ledger.rows[0])
 	}
 }
 
