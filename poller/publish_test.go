@@ -430,3 +430,41 @@ func TestBuildPublishRound_InactiveRecordsDoNotTakePartInReconciliation(t *testi
 		t.Fatalf("the active agent finding must take the alias; the inactive merged record must not compete for it or reach the publisher: %v", active)
 	}
 }
+
+func TestPublishGitHubReview_SkipsAHeadTheSummaryRowAlreadyRecords(t *testing.T) {
+	ts, writes := gitHubStub(t, openPRJSON, false)
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting("publish_enabled_authors", "alice"))
+	require.NoError(t, database.UpsertPublishedFinding(&db.PublishedFinding{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 1,
+		Kind: db.PublishedKindSummary, Fingerprint: "summary", ReviewedSHA: "abc", LastSeenSHA: "abc", CommentID: 11, Rounds: 1, State: db.PublishedStateOpen,
+	}))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}
+
+	report, outcome := p.publishGitHubReview(context.Background(), pr, []byte(scoredSidecar))
+	assert.Nil(t, report)
+	assert.Equal(t, publicationAlreadyPosted, outcome)
+	assert.Empty(t, writes(), "a re-run of a published commit must not touch GitHub")
+
+	p.cfg.PublishRepublishSameCommit = true
+	_, outcome = p.publishGitHubReview(context.Background(), pr, []byte(scoredSidecar))
+	assert.Equal(t, publicationPosted, outcome, "the kill switch restores the old behaviour")
+	assert.NotEmpty(t, writes())
+}
+
+func TestPublishPolicy_CarriesTheRendererAndGuardSwitches(t *testing.T) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	p := &Poller{cfg: &config.Config{PublishLegacyTitles: true, PublishRepublishSameCommit: true}, db: database}
+	pol := p.publishPolicy()
+	assert.True(t, pol.LegacyTitles)
+	assert.True(t, pol.RepublishSameCommit)
+	p.cfg = &config.Config{}
+	pol = p.publishPolicy()
+	assert.False(t, pol.LegacyTitles)
+	assert.False(t, pol.RepublishSameCommit)
+}

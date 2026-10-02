@@ -2,6 +2,7 @@ package poller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -255,6 +256,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	}
 	if p.cfg != nil {
 		pol.LegacyTitles = p.cfg.PublishLegacyTitles
+		pol.RepublishSameCommit = p.cfg.PublishRepublishSameCommit
 	}
 	return pol
 }
@@ -264,6 +266,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 // closed, head moved) and the head may be reviewed again when it is.
 const (
 	publicationPosted        = "posted"
+	publicationAlreadyPosted = "already_posted"
 	publicationNotAllowed    = "not_allowed"
 	publicationUnavailable   = "unavailable"
 	publicationSkippedPrefix = "skipped: "
@@ -297,6 +300,17 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: sidecar unreadable: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return nil, publicationFailedPrefix + "sidecar unreadable"
 	}
+	previous, err := ledger.GetPublishedFindingsForPR(pr.Owner, pr.Repo, pr.Number)
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: load ledger: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return nil, publicationFailedPrefix + "load ledger"
+	}
+	// An API or legacy re-run of a reviewed commit must not post a second
+	// round: it would repeat the comments and resolve rows with no code change.
+	if !p.cfg.PublishRepublishSameCommit && publisher.HeadPublished(previous, pr.CommitSHA) {
+		log.Printf("[PUBLISH] %s/%s#%d: skipped, head %s was already published", pr.Owner, pr.Repo, pr.Number, shortSHA(pr.CommitSHA))
+		return nil, publicationAlreadyPosted
+	}
 	ghPR, _, err := p.ghClientConcrete.GetPR(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: fetch pull request: %v", pr.Owner, pr.Repo, pr.Number, err)
@@ -316,17 +330,16 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: list file patches: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return nil, publicationFailedPrefix + "list file patches"
 	}
-	previous, err := ledger.GetPublishedFindingsForPR(pr.Owner, pr.Repo, pr.Number)
-	if err != nil {
-		log.Printf("[PUBLISH] %s/%s#%d: load ledger: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return nil, publicationFailedPrefix + "load ledger"
-	}
 
 	pol := p.publishPolicy()
 	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
 	round.Changes = p.changeLookup(ctx, pr)
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: pol}
 	report, err := pub.Publish(ctx, round)
+	if errors.Is(err, publisher.ErrHeadAlreadyPublished) {
+		log.Printf("[PUBLISH] %s/%s#%d: skipped, head %s was published by a concurrent round", pr.Owner, pr.Repo, pr.Number, shortSHA(pr.CommitSHA))
+		return nil, publicationAlreadyPosted
+	}
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 		// Confidence is scored before the first write, so a failed round still

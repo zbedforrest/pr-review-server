@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -73,6 +74,26 @@ type Report struct {
 
 const summaryFingerprint = "summary"
 
+// ErrHeadAlreadyPublished is returned by Publish when the summary row already
+// records a completed round for the head; a re-run of the same commit (API or
+// legacy trigger) would otherwise repost and resolve rows with no code change.
+var ErrHeadAlreadyPublished = errors.New("publisher: head already published")
+
+// HeadPublished reports whether a publication round for head completed. The
+// summary row is written after the inline comments, so its LastSeenSHA names
+// the last head that was published in full.
+func HeadPublished(previous []db.PublishedFinding, head string) bool {
+	if head == "" {
+		return false
+	}
+	for _, row := range previous {
+		if row.Kind == db.PublishedKindSummary && strings.EqualFold(row.LastSeenSHA, head) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Publisher) now() time.Time {
 	if p.Now != nil {
 		return p.Now()
@@ -89,6 +110,9 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 			return Report{}, fmt.Errorf("load published findings: %w", err)
 		}
 		r.Previous = prev
+	}
+	if !p.Policy.RepublishSameCommit && HeadPublished(r.Previous, r.HeadSHA) {
+		return Report{}, ErrHeadAlreadyPublished
 	}
 	if p.Policy.LegacyLedger {
 		return p.publishLegacy(ctx, r)
