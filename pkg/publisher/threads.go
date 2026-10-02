@@ -92,24 +92,25 @@ func (ti *threadIndex) lookup(ctx context.Context, rootCommentID int64) (ReviewT
 	return t, ok
 }
 
-// nodeID is the thread node id for a root comment, preferring the id the
-// ledger stored over a listing.
-func (ti *threadIndex) nodeID(ctx context.Context, stored string, rootCommentID int64) string {
-	if stored != "" {
-		return stored
+// thread is the thread a root comment opened, looked up in the listing so
+// its resolved flag is current; a stored node id stands in when the listing
+// cannot find it. Looking it up before the row is written keeps the id on a
+// row that predates the ThreadNodeID column.
+func (ti *threadIndex) thread(ctx context.Context, stored string, rootCommentID int64) (ReviewThread, bool) {
+	if t, ok := ti.lookup(ctx, rootCommentID); ok {
+		return t, true
 	}
-	t, ok := ti.lookup(ctx, rootCommentID)
-	if !ok {
-		return ""
+	if stored == "" {
+		return ReviewThread{}, false
 	}
-	return t.NodeID
+	return ReviewThread{NodeID: stored, RootCommentID: rootCommentID}, true
 }
 
-// outdated reports whether GitHub marks the thread of a root comment
-// outdated; false whenever the index cannot say.
-func (ti *threadIndex) outdated(ctx context.Context, rootCommentID int64) bool {
-	t, ok := ti.lookup(ctx, rootCommentID)
-	return ok && t.Outdated
+// nodeIDOf is the node id of the thread a root comment opened, or empty when
+// the listing does not show it yet.
+func (ti *threadIndex) nodeIDOf(ctx context.Context, rootCommentID int64) string {
+	t, _ := ti.lookup(ctx, rootCommentID)
+	return t.NodeID
 }
 
 // threadAction is a resolve or unresolve the round owes once its ledger

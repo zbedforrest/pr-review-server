@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -30,6 +31,12 @@ func newFakeThreadGitHub() *fakeThreadGitHub {
 }
 
 func threadNode(commentID int64) string { return fmt.Sprintf("T%d", commentID) }
+
+func sorted(ids []string) string {
+	out := append([]string(nil), ids...)
+	sort.Strings(out)
+	return fmt.Sprint(out)
+}
 
 func (g *fakeThreadGitHub) ListReviewThreads(context.Context, string, string, int) ([]ReviewThread, error) {
 	g.listings++
@@ -130,7 +137,7 @@ func TestThreads_ReopenedFindingUnresolvesItsThread(t *testing.T) {
 	gone := summaryOnly("sha-2")
 	gone.Changes = changed("a.go", "b.go")
 	publishThreads(t, gh, ledger, gone)
-	if fmt.Sprint(gh.resolves) != "[T1001 T1002]" {
+	if sorted(gh.resolves) != "[T1001 T1002]" {
 		t.Fatalf("precondition: both threads resolved, got %v", gh.resolves)
 	}
 
@@ -141,7 +148,7 @@ func TestThreads_ReopenedFindingUnresolvesItsThread(t *testing.T) {
 	if rep.Reopened != 3 || rep.ThreadsUnresolved != 2 || rep.InlinePosted != 0 {
 		t.Fatalf("report = %+v, want the two threads reopened and no new root", rep)
 	}
-	if fmt.Sprint(gh.unresolves) != "[T1001 T1002]" || gh.resolved["T1001"] || gh.resolved["T1002"] {
+	if sorted(gh.unresolves) != "[T1001 T1002]" || gh.resolved["T1001"] || gh.resolved["T1002"] {
 		t.Fatalf("unresolves = %v resolved = %v", gh.unresolves, gh.resolved)
 	}
 	if got := gh.repliesTo(1001); len(got) != 2 || got[1] != "Back at sha-3." {
@@ -171,7 +178,7 @@ func TestThreads_RowWithoutStoredNodeIDIsResolvedThroughTheListing(t *testing.T)
 	}
 }
 
-func TestThreads_OutdatedThreadCorroboratesAbsenceOnlyWhileTheRowIsUnrefreshed(t *testing.T) {
+func TestThreads_UnknownCompareLeavesAnOutdatedThreadOpen(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	publishThreads(t, gh, ledger, ledgerRoundOne())
 	gh.outdated[1001] = true
@@ -179,27 +186,40 @@ func TestThreads_OutdatedThreadCorroboratesAbsenceOnlyWhileTheRowIsUnrefreshed(t
 	r2 := summaryOnly("sha-2")
 	r2.Changes = unknownChanges
 	rep := publishThreads(t, gh, ledger, r2)
-	if rep.Fixed != 1 || fmt.Sprint(gh.resolves) != "[T1001]" {
-		t.Fatalf("report = %+v resolves = %v, want c1 fixed on GitHub's word and m1 left open", rep, gh.resolves)
-	}
-	if row := ledger.get(db.PublishedKindFinding, m1ID); row.State != db.PublishedStateOpen {
-		t.Fatalf("m1's thread is current, so m1 stays open: %+v", row)
-	}
-
-	gh, ledger = newFakeThreadGitHub(), newFakeLedger()
-	publishThreads(t, gh, ledger, ledgerRoundOne())
-	seen := ledgerRoundOne()
-	seen.HeadSHA, seen.RoundNumber = "sha-2", 0
-	seen.Changes = unknownChanges
-	publishThreads(t, gh, ledger, seen)
-	gh.outdated[1001] = true
-	r3 := summaryOnly("sha-3")
-	r3.Changes = unknownChanges
-	rep = publishThreads(t, gh, ledger, r3)
-	if rep.Fixed != 0 || len(gh.resolves) != 0 {
-		t.Fatalf("a row seen after it was posted cannot be fixed by an outdated flag of unknown age: %+v resolves=%v", rep, gh.resolves)
+	if rep.Fixed != 0 || len(gh.resolves) != 0 || len(gh.replies) != 0 {
+		t.Fatalf("report = %+v resolves=%v replies=%v, want nothing fixed on an unknown compare", rep, gh.resolves, gh.replies)
 	}
 	if row := ledger.get(db.PublishedKindFinding, c1ID); row.State != db.PublishedStateOpen {
+		t.Fatalf("c1 = %+v", row)
+	}
+}
+
+func TestThreads_AlreadyResolvedThreadGetsNoNote(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, ledgerRoundOne())
+	gh.resolved["T1001"] = true
+
+	r2 := summaryOnly("sha-2")
+	r2.Changes = changed("a.go")
+	rep := publishThreads(t, gh, ledger, r2)
+	if rep.Fixed != 2 || rep.ThreadsResolved != 1 || rep.ThreadReplies != 0 || len(gh.repliesTo(1001)) != 0 {
+		t.Fatalf("report = %+v replies=%q, want the row fixed and the human's resolution left silent", rep, gh.repliesTo(1001))
+	}
+}
+
+func TestThreads_UnlistedThreadGetsNoNote(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, ledgerRoundOne())
+	ledger.rows[c1ID].ThreadNodeID = ""
+	gh.listErr = errors.New("502")
+
+	r2 := summaryOnly("sha-2")
+	r2.Changes = changed("a.go")
+	rep := publishThreads(t, gh, ledger, r2)
+	if rep.Fixed != 2 || rep.ThreadResolveFailures != 1 || rep.ThreadReplies != 0 || len(gh.replies) != 0 {
+		t.Fatalf("report = %+v replies=%v, want the resolve counted lost and no note", rep, gh.replies)
+	}
+	if row := ledger.get(db.PublishedKindFinding, c1ID); row.State != db.PublishedStateFixed {
 		t.Fatalf("c1 = %+v", row)
 	}
 }

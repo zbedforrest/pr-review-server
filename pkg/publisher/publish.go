@@ -247,7 +247,7 @@ func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prio
 			Kind: db.PublishedKindFinding, Fingerprint: f.ID,
 			SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
 			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
-			CommentID: commentID, ReviewID: reviewID, ThreadNodeID: threads.nodeID(ctx, "", commentID),
+			CommentID: commentID, ReviewID: reviewID, ThreadNodeID: threads.nodeIDOf(ctx, commentID),
 			State: db.PublishedStateOpen, PublishedAt: now,
 			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
 		}); err != nil {

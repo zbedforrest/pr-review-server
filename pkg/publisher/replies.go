@@ -1403,7 +1403,7 @@ func (r ReplyReactor) resolveThread(ctx context.Context, t db.PublishedReplyTarg
 		return false
 	}
 	ti := &threadIndex{gh: resolver, owner: t.RepoOwner, repo: t.RepoName, number: t.PRNumber}
-	nodeID := ti.nodeID(ctx, "", rootCommentID)
+	nodeID := ti.nodeIDOf(ctx, rootCommentID)
 	if nodeID == "" {
 		log.Printf("[REPLY %s/%s#%d] no thread listed for comment %d; left open", t.RepoOwner, t.RepoName, t.PRNumber, rootCommentID)
 		return false

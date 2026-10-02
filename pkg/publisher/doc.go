@@ -29,7 +29,7 @@
 //	open                         yes      any        any           still open; LastSeenSHA = head; severity clamp (below)
 //	open                         no       yes        n/a           still open, untouched
 //	open                         no       no         yes           fixed: one reply "Not seen at <sha7>" in its thread, thread resolved
-//	open                         no       no         unknown       fixed as above when GitHub lists the thread outdated and the row was last seen at the head it was posted for; else still open, untouched
+//	open                         no       no         unknown       still open, untouched
 //	open                         no       no         no            still open, untouched
 //	fixed / resolved (legacy)    yes      any        any           reopened: open, LastSeenSHA = head, one reply "Back at <sha7>" in its thread, thread unresolved, never a new root
 //	fixed / resolved             no       any        any           untouched
@@ -61,8 +61,11 @@
 // Threads. Thread changes need Policy.ResolveThreads (PUBLISH_THREAD_RESOLUTION,
 // on unless set to false) and a GitHub that implements ThreadResolver; without
 // either the ledger moves and the threads stay as they are. A root's thread
-// node id is stored when the root is posted; a row from before that column
-// finds its thread through the listing when it is first resolved. A posted
+// node id is stored when the root is posted, from one listing taken after
+// the review; when that listing lags the write, or the row predates the
+// column, the id is found through the listing on the row's first transition.
+// The "Not seen" note is posted only into a thread the listing shows open;
+// a thread a human already resolved is resolved again silently. A posted
 // concession (replies.go) dismisses its row and resolves the thread the same
 // way. Thread calls follow the ledger writes and never fail a round; a lost
 // call is counted on the Report and the next round, seeing the same state,

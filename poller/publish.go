@@ -178,6 +178,8 @@ func profileFooter(run *payload.ReviewRunInfo) string {
 // interface; the two packages keep separate input structs to avoid a cycle.
 type ghPublishAdapter struct{ c *github.Client }
 
+var _ publisher.ThreadResolver = ghPublishAdapter{}
+
 func (a ghPublishAdapter) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []publisher.ReviewCommentInput) (int64, []int64, error) {
 	inputs := make([]github.ReviewCommentInput, len(comments))
 	for i, c := range comments {

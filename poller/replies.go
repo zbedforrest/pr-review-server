@@ -418,6 +418,8 @@ func (p *Poller) replyActivation() (time.Time, error) {
 
 type ghReplyAdapter struct{ c *github.Client }
 
+var _ publisher.ThreadResolver = ghReplyAdapter{}
+
 func (a ghReplyAdapter) ListThread(ctx context.Context, owner, repo string, number int) ([]publisher.ThreadComment, error) {
 	comments, err := a.c.ListReviewComments(ctx, owner, repo, number)
 	if err != nil {
