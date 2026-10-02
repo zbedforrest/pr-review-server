@@ -19,6 +19,13 @@ import (
 
 func fixtureRun(t *testing.T, legacy bool) Result {
 	t.Helper()
+	pol := publisher.DefaultPolicy()
+	pol.LegacyLedger = legacy
+	return fixtureRunWith(t, pol)
+}
+
+func fixtureRunWith(t *testing.T, policy publisher.Policy) Result {
+	t.Helper()
 	dumps, err := loadDumps("testdata/dumps")
 	if err != nil {
 		t.Fatal(err)
@@ -27,9 +34,7 @@ func fixtureRun(t *testing.T, legacy bool) Result {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pol := publisher.DefaultPolicy()
-	pol.LegacyLedger = legacy
-	res, err := Run(context.Background(), Options{Dumps: dumps, Store: st, Policy: pol})
+	res, err := Run(context.Background(), Options{Dumps: dumps, Store: st, Policy: policy})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +53,7 @@ func comparable(m Metrics) Metrics {
 func TestRun_FixtureMetrics(t *testing.T) {
 	m := fixtureRun(t, false).Metrics
 	want := Metrics{
-		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1,
+		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1, SameCommitSkipped: 1,
 		RootsPosted: 3, Fixed: 1, InThreadReplies: 2, ThreadsResolved: 1, ThreadsUnresolved: 1,
 		CommentsPerPushP50: 0, RoundsPerPRP50: 3,
 	}
@@ -64,13 +69,22 @@ func TestRun_FixtureMetrics(t *testing.T) {
 func TestRun_FixtureMetricsLegacy(t *testing.T) {
 	m := fixtureRun(t, true).Metrics
 	want := Metrics{
-		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1,
+		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1, SameCommitSkipped: 1,
 		RootsPosted: 6, SameMarkerReposts: 2, SameDefectReposts: 1, SameDefectRepostsPerPR: 0.333, PRsWithReposts: 3,
 		Fixed: 3, FixedWithoutFileChange: 1,
 		CommentsPerPushP50: 1, RoundsPerPRP50: 3,
 	}
 	if got := comparable(m); got != want {
 		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestRun_SameCommitGuardOffReplaysTheRound(t *testing.T) {
+	policy := publisher.DefaultPolicy()
+	policy.RepublishSameCommit = true
+	m := fixtureRunWith(t, policy).Metrics
+	if m.SameCommitRounds != 1 || m.SameCommitSkipped != 0 || m.RoundsReplayed != 9 {
+		t.Fatalf("metrics = %+v", m)
 	}
 }
 

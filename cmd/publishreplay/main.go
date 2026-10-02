@@ -39,6 +39,8 @@ func main() {
 	minSeverity := flag.String("inline-min-severity", publisher.DefaultInlineMinSeverity, "publisher inline minimum severity")
 	legacy := flag.Bool("legacy", false, "replay with the pre-ledger-memory publisher (PUBLISH_POLICY_V2=false) for a baseline")
 	textOnly := flag.Bool("alias-text-only", false, "count same-defect reposts by raw-text overlap alone, without the subject key")
+	sameCommitGuard := flag.Bool("same-commit-guard", true, "refuse a round whose head was already published (PUBLISH_SAME_COMMIT_GUARD)")
+	legacyTitles := flag.Bool("legacy-titles", false, "render titles and bullets the pre-2026-10 way (PUBLISH_RENDER_V2=false)")
 	showUnverified := flag.Bool("show-unverified", publisher.DefaultPolicy().ShowUnverified, "fold unverified first-pass claims into the summary")
 	flag.Parse()
 	if *dumpsDir == "" || *sidecarsDir == "" {
@@ -70,6 +72,8 @@ func main() {
 	}
 	opts := Options{Dumps: dumps, Store: st, BotName: *bot, Logf: log.Printf, TextOnlyAlias: *textOnly,
 		Policy: replayPolicy(*inlineCap, *minSeverity, *showUnverified, *legacy)}
+	opts.Policy.RepublishSameCommit = !*sameCommitGuard
+	opts.Policy.LegacyTitles = *legacyTitles
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
 			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)
