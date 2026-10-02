@@ -12,9 +12,11 @@
 // the row's comment line (the bucket centre when GitHub shows no comment),
 // raw-text Jaccard >= 0.20 against the row's CommentText (the stripped
 // posted body when the row predates the column); same file and the same
-// sorted contract subjects, any line; the same subjects in another file.
-// A matched finding takes the row's fingerprint. A row whose fingerprint a
-// current finding still carries verbatim is never given to another finding.
+// sorted contract subjects, any line; the same kind and subjects in another
+// file when the row's kind is known and the finding names two subjects or
+// shares two words with the row. A matched finding takes the row's
+// fingerprint. A row whose fingerprint a current finding still carries
+// verbatim is never given to another finding.
 //
 // Inputs per prior row: its state; whether a current finding matched it
 // (present); whether HeadSHA equals the row's LastSeenSHA; the change set
@@ -46,10 +48,14 @@
 //
 // Terminal exception. A CRITICAL security_risk matched to a terminal row
 // may post once more, as a fresh root whose text names the change, when
-// its anchor changed and exactly one terminal row exists for the point
-// (same file, same subjects). A second terminal row ends the exception; a
-// finding whose own fingerprint already equals the terminal row's cannot
-// use it, since the fresh root would carry the same marker.
+// its anchor changed since the row was settled and no other row exists for
+// the point (same file, same subjects, any state). Once the fresh root
+// exists, a later wording that aliases to the terminal row is handed to the
+// newest live row on the point (refreshed, or reopened in its thread) and
+// dropped when every row on the point is terminal; a third root is never
+// posted. A finding whose own fingerprint already equals the terminal
+// row's cannot use the exception, since the fresh root would carry the same
+// marker.
 //
 // Counts. "Since last review" is the number of records that transitioned:
 // new (shown findings with no row), still open (rows that end the round
@@ -57,7 +63,8 @@
 // fixed), fixed (rows flipped to fixed this round). Hash-set differences
 // are not used.
 //
-// Memory columns. New rows store the raw agent prose (CommentText) and the
-// sorted subject names (Subjects). A row written before those columns
-// existed is filled the first round it is matched or GitHub shows its body.
+// Memory columns. New rows store the raw agent prose (CommentText), the
+// contract's finding kind (FindingKind) and the sorted subject names
+// (Subjects). A row written before those columns existed is filled the
+// first round it is matched or GitHub shows its body.
 package publisher

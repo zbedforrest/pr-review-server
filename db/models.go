@@ -381,6 +381,7 @@ type PublishedFindingModel struct {
 	Rounds       int       `gorm:"not null;default:0"`
 	PublishedAt  time.Time `gorm:"not null;index"`
 	CommentText  string    `gorm:"type:text"`
+	FindingKind  string    `gorm:"size:32;not null;default:''"`
 	Subjects     string    `gorm:"size:1024;not null;default:''"`
 }
 

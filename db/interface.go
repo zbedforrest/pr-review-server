@@ -218,9 +218,10 @@ type PublishedFinding struct {
 	Rounds      int
 	PublishedAt time.Time
 	// CommentText is the agent's raw prose the row was posted with, so a later
-	// round can recognise a reworded finding; Subjects is the sorted,
-	// comma-joined lower-case subject names from its contract.
+	// round can recognise a reworded finding; FindingKind and Subjects (sorted,
+	// comma-joined lower-case names) are the contract's line-independent key.
 	CommentText string
+	FindingKind string
 	Subjects    string
 }
 

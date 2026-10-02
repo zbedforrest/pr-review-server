@@ -34,7 +34,8 @@ type Policy struct {
 const PolicyV2Env = "PUBLISH_POLICY_V2"
 
 // LegacyLedgerFromEnv reports whether the environment turned the ledger
-// decision table off.
+// decision table off. The poller resolves it once at start-up; the library
+// never reads the environment itself.
 func LegacyLedgerFromEnv() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(PolicyV2Env))) {
 	case "false", "0", "off", "no":
@@ -45,9 +46,9 @@ func LegacyLedgerFromEnv() bool {
 
 // DefaultPolicy is the shipped posting policy: three inline comments per
 // round, medium severity and above, unverified first-pass claims folded, the
-// ledger decision table on unless the environment turned it off.
+// ledger decision table on.
 func DefaultPolicy() Policy {
-	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, LegacyLedger: LegacyLedgerFromEnv()}
+	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true}
 }
 
 // withDefaults fills unset fields only. A zero cap is a real setting (post

@@ -376,11 +376,11 @@ func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) 
 	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 7, CommitSHA: "abc", Author: "alice"}
 	pl := payload.Payload{Findings: []payload.Finding{
 		{ID: "a.go:5:bbbbbbbbbbbb", Severity: "critical", Provenance: "agent", File: "a.go", Line: 52,
-			Comment: "Clicking Start in the C2C setup modal fires showMyCamDidNotStart/showMyCamBroadcastStopped immediately after starting, resetting the button to Ready."},
+			Comment: "Clicking Start in the PV setup modal fires showPreviewDidNotStart/showPreviewStreamStopped immediately after starting, resetting the button to Ready."},
 	}}
 	comments := []github.ReviewCommentInfo{
 		{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54,
-			Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**"},
+			Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Peer Video start also fires showPreviewDidNotStart and showPreviewStreamStopped, resetting the button to Ready**"},
 	}
 	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateOpen}}
 	legacy := publisher.DefaultPolicy()
@@ -400,7 +400,7 @@ func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) 
 		t.Fatalf("under the ledger policy the publisher aliases, not the round builder: %q", r.Findings[0].ID)
 	}
 	prior, ok := r.PriorComments["a.go:5:aaaaaaaaaaaa"]
-	if !ok || prior.Line != 54 || !strings.Contains(prior.Text, "Cam To Cam") || strings.Contains(prior.Text, "<!--") {
+	if !ok || prior.Line != 54 || !strings.Contains(prior.Text, "Peer Video") || strings.Contains(prior.Text, "<!--") {
 		t.Fatalf("the round must carry GitHub's view of the prior comment for the publisher: %+v", r.PriorComments)
 	}
 	if r.InlineComments["a.go:5:aaaaaaaaaaaa"] != 501 {
@@ -412,12 +412,12 @@ func TestBuildPublishRound_InactiveRecordsDoNotTakePartInReconciliation(t *testi
 	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 7, CommitSHA: "abc", Author: "alice"}
 	pl := payload.Payload{SchemaVersion: payload.CurrentSchemaVersion, Findings: []payload.Finding{
 		{ID: "a.go:5:bbbbbbbbbbbb", Severity: "critical", Provenance: "agent", File: "a.go", Line: 52, State: "confirmed", Active: true,
-			Comment: "Clicking Start in the C2C setup modal fires showMyCamDidNotStart immediately after starting, resetting the button to Ready."},
+			Comment: "Clicking Start in the PV setup modal fires showPreviewDidNotStart immediately after starting, resetting the button to Ready."},
 		{ID: "a.go:5:dddddddddddd", Severity: "critical", Provenance: "first-pass", File: "a.go", Line: 54, State: "merged", Active: false,
-			Comment: "every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready"},
+			Comment: "every successful Peer Video start also fires showPreviewDidNotStart and showPreviewStreamStopped, resetting the button to Ready"},
 	}}
 	comments := []github.ReviewCommentInfo{{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54,
-		Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Cam To Cam start also fires showMyCamDidNotStart and showMyCamBroadcastStopped, resetting the button to Ready**"}}
+		Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[CRITICAL] Behavior change · every successful Peer Video start also fires showPreviewDidNotStart and showPreviewStreamStopped, resetting the button to Ready**"}}
 	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateOpen}}
 	legacy := publisher.DefaultPolicy()
 	legacy.LegacyLedger = true

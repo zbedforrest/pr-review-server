@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"pr-review-server/db"
@@ -35,6 +36,13 @@ func isFindingRow(row *db.PublishedFinding) bool {
 
 func subjectsColumn(f payload.Finding) string {
 	return strings.Join(reconcile.SubjectNames(f.FindingContract), ",")
+}
+
+func findingKindOf(f payload.Finding) string {
+	if f.FindingContract == nil {
+		return ""
+	}
+	return f.FindingContract.FindingKind
 }
 
 func splitSubjects(s string) []string {
@@ -193,7 +201,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
 			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
 			State: db.PublishedStateOpen, PublishedAt: now,
-			CommentText: f.Comment, Subjects: subjectsColumn(f),
+			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
 		}
 		if prev, ok := rows[f.ID]; ok {
 			// A row that already exists keeps its first publication and its
@@ -215,7 +223,10 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		for _, n := range notes {
 			// A missed note is not worth failing a round whose ledger is already
 			// consistent; the next round sees the same state and says nothing new.
-			if _, err := replier.PostReply(ctx, r.Owner, r.Repo, r.Number, n.commentID, n.body); err == nil {
+			if _, err := replier.PostReply(ctx, r.Owner, r.Repo, r.Number, n.commentID, n.body); err != nil {
+				rep.ThreadReplyFailures++
+				log.Printf("[PUBLISH] %s/%s#%d: thread note on comment %d lost: %v", r.Owner, r.Repo, r.Number, n.commentID, err)
+			} else {
 				rep.ThreadReplies++
 			}
 		}
@@ -230,7 +241,7 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 	own := make([]reconcile.OwnComment, 0, len(rows))
 	for id, row := range rows {
 		file, bucket := payload.FingerprintParts(id)
-		o := reconcile.OwnComment{CommentID: row.CommentID, FindingID: id, File: file, Line: bucket*10 + 5, Text: row.CommentText, Subjects: splitSubjects(row.Subjects)}
+		o := reconcile.OwnComment{CommentID: row.CommentID, FindingID: id, File: file, Line: bucket*10 + 5, Text: row.CommentText, Kind: row.FindingKind, Subjects: splitSubjects(row.Subjects)}
 		if prior, ok := r.PriorComments[id]; ok {
 			if prior.Line > 0 {
 				o.Line = prior.Line
@@ -254,9 +265,15 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 
 // withoutTerminal drops every finding that aliases to a dismissed, contested
 // or external row. The one exception: a CRITICAL security_risk whose anchor
-// changed since the row was last seen may post once more, as a fresh root
-// that names the change; a second terminal row on the same point ends that.
+// changed since the row was settled may post once more, as a fresh root that
+// names the change. Once that root exists, a later wording that aliases back
+// to the terminal row is handed to the fresh row instead, so the point keeps
+// one live thread and never a third root.
 func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFinding, originalIDs map[string]string) []payload.Finding {
+	carried := make(map[string]bool, len(r.Findings))
+	for _, f := range r.Findings {
+		carried[f.ID] = true
+	}
 	kept := make([]payload.Finding, 0, len(r.Findings))
 	for _, f := range r.Findings {
 		row, ok := rows[f.ID]
@@ -264,7 +281,16 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 			kept = append(kept, f)
 			continue
 		}
-		if !securityException(r, rows, row, f) {
+		others, keyed := rowsOnPoint(rows, row, f)
+		if len(others) > 0 {
+			if successor := liveSuccessor(others); successor != nil && !carried[successor.Fingerprint] {
+				carried[successor.Fingerprint] = true
+				f.ID = successor.Fingerprint
+				kept = append(kept, f)
+			}
+			continue
+		}
+		if !keyed || !securityException(r, row, f) {
 			continue
 		}
 		fresh := originalIDs[f.ID]
@@ -278,20 +304,49 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 	return kept
 }
 
-func securityException(r Round, rows map[string]*db.PublishedFinding, row *db.PublishedFinding, f payload.Finding) bool {
+// securityException is decision 4's one exception; withoutTerminal has
+// already established that no other row exists on the point.
+func securityException(r Round, row *db.PublishedFinding, f payload.Finding) bool {
 	c := f.FindingContract
-	if f.Severity != "critical" || c == nil || c.FindingKind != "security_risk" || !r.anchorChanged(row.LastSeenSHA, f.File, f.Line) {
-		return false
+	return f.Severity == "critical" && c != nil && c.FindingKind == "security_risk" && r.anchorChanged(row.LastSeenSHA, f.File, f.Line)
+}
+
+// rowsOnPoint lists every other row about the same point as row: the same
+// cited file and subject set, the finding's own subjects standing in for a
+// row written before the column existed. keyed is false when neither names
+// a subject, in which case the point cannot be tracked across rows.
+func rowsOnPoint(rows map[string]*db.PublishedFinding, row *db.PublishedFinding, f payload.Finding) (others []*db.PublishedFinding, keyed bool) {
+	key := row.Subjects
+	if key == "" {
+		key = subjectsColumn(f)
+	}
+	if key == "" {
+		return nil, false
 	}
 	file, _ := payload.FingerprintParts(row.Fingerprint)
-	terminal := 0
 	for _, other := range rows {
-		otherFile, _ := payload.FingerprintParts(other.Fingerprint)
-		if terminalState(other.State) && otherFile == file && (other == row || (other.Subjects != "" && other.Subjects == row.Subjects)) {
-			terminal++
+		if other == row {
+			continue
+		}
+		if otherFile, _ := payload.FingerprintParts(other.Fingerprint); otherFile == file && other.Subjects == key {
+			others = append(others, other)
 		}
 	}
-	return terminal == 1
+	return others, true
+}
+
+// liveSuccessor picks the newest non-terminal row among those on a point.
+func liveSuccessor(others []*db.PublishedFinding) *db.PublishedFinding {
+	var best *db.PublishedFinding
+	for _, o := range others {
+		if terminalState(o.State) {
+			continue
+		}
+		if best == nil || o.PublishedAt.After(best.PublishedAt) || (o.PublishedAt.Equal(best.PublishedAt) && o.ID > best.ID) {
+			best = o
+		}
+	}
+	return best
 }
 
 // clampSeverity keeps an aliased finding at its row's severity unless the
@@ -353,6 +408,9 @@ func backfill(row *db.PublishedFinding, f payload.Finding, prior PriorComment) {
 		} else if prior.Text != "" {
 			row.CommentText = StripRendered(prior.Text)
 		}
+	}
+	if row.FindingKind == "" {
+		row.FindingKind = findingKindOf(f)
 	}
 	if row.Subjects == "" {
 		row.Subjects = subjectsColumn(f)

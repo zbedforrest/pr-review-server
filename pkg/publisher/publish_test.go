@@ -107,6 +107,9 @@ func (l *fakeLedger) UpsertPublishedFinding(pf *db.PublishedFinding) error {
 		if cp.CommentText == "" {
 			cp.CommentText = prev.CommentText
 		}
+		if cp.FindingKind == "" {
+			cp.FindingKind = prev.FindingKind
+		}
 		if cp.Subjects == "" {
 			cp.Subjects = prev.Subjects
 		}

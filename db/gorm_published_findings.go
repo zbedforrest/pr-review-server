@@ -29,6 +29,7 @@ func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 		Rounds:       m.Rounds,
 		PublishedAt:  m.PublishedAt,
 		CommentText:  m.CommentText,
+		FindingKind:  m.FindingKind,
 		Subjects:     m.Subjects,
 	}
 }
@@ -57,6 +58,7 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		Rounds:       p.Rounds,
 		PublishedAt:  p.PublishedAt,
 		CommentText:  p.CommentText,
+		FindingKind:  p.FindingKind,
 		Subjects:     p.Subjects,
 	}
 	updates := map[string]interface{}{
@@ -71,6 +73,9 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 	}
 	if model.CommentText != "" {
 		updates["comment_text"] = model.CommentText
+	}
+	if model.FindingKind != "" {
+		updates["finding_kind"] = model.FindingKind
 	}
 	if model.Subjects != "" {
 		updates["subjects"] = model.Subjects

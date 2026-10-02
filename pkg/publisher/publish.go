@@ -58,9 +58,11 @@ type Report struct {
 	Confidence       int
 	Hygiene          Hygiene
 	// Reopened counts fixed rows that came back; ThreadReplies the in-thread
-	// notes posted for reopens and severity changes. Ledger policy only.
-	Reopened      int
-	ThreadReplies int
+	// notes posted for reopens and severity changes, ThreadReplyFailures the
+	// ones GitHub rejected. Ledger policy only.
+	Reopened            int
+	ThreadReplies       int
+	ThreadReplyFailures int
 }
 
 const summaryFingerprint = "summary"
@@ -237,7 +239,7 @@ func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prio
 			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
 			CommentID: commentID, ReviewID: reviewID,
 			State: db.PublishedStateOpen, PublishedAt: now,
-			CommentText: f.Comment, Subjects: subjectsColumn(f),
+			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
 		}); err != nil {
 			return postedThisRound, fmt.Errorf("record finding %s: %w", f.ID, err)
 		}

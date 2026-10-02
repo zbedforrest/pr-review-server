@@ -38,6 +38,7 @@ func main() {
 	inlineCap := flag.Int("inline-cap", publisher.DefaultInlineCap, "publisher inline cap per round")
 	minSeverity := flag.String("inline-min-severity", publisher.DefaultInlineMinSeverity, "publisher inline minimum severity")
 	legacy := flag.Bool("legacy", false, "replay with the pre-ledger-memory publisher (PUBLISH_POLICY_V2=false) for a baseline")
+	textOnly := flag.Bool("alias-text-only", false, "count same-defect reposts by raw-text overlap alone, without the subject key")
 	showUnverified := flag.Bool("show-unverified", publisher.DefaultPolicy().ShowUnverified, "fold unverified first-pass claims into the summary")
 	flag.Parse()
 	if *dumpsDir == "" || *sidecarsDir == "" {
@@ -67,7 +68,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("sidecar store: %v", err)
 	}
-	opts := Options{Dumps: dumps, Store: st, BotName: *bot, Logf: log.Printf,
+	opts := Options{Dumps: dumps, Store: st, BotName: *bot, Logf: log.Printf, TextOnlyAlias: *textOnly,
 		Policy: replayPolicy(*inlineCap, *minSeverity, *showUnverified, *legacy)}
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {

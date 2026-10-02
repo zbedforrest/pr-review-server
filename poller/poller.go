@@ -170,6 +170,8 @@ type Poller struct {
 	// unreliable (diverged history, truncated file list, API error) and the
 	// caller must not carry anything forward.
 	compareFilesFn func(ctx context.Context, owner, repo, base, head, token string) (files []string, ok bool)
+	// legacyLedger is PUBLISH_POLICY_V2 resolved once at construction.
+	legacyLedger bool
 	// agentSlots caps concurrent agent reviews per process. Each agent run
 	// holds ~1 GB of /tmp (clone) + agent memory; without a cap, two PRs
 	// triggered close together can exhaust the instance's memory budget.
@@ -398,6 +400,7 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		ghClient:         ghClient,
 		ghClientConcrete: ghClient,
 		gcsClient:        gcsClient,
+		legacyLedger:     publisher.LegacyLedgerFromEnv(),
 		reviewDir:        cfg.ReviewsDir,
 		triggerChan:      make(chan struct{}, 1), // Buffered to prevent blocking
 		activeReviews:    make(map[string]ProcessInfo),

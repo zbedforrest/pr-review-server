@@ -212,6 +212,7 @@ func (a ghPublishAdapter) ListIssueComments(ctx context.Context, owner, repo str
 
 func (p *Poller) publishPolicy() publisher.Policy {
 	pol := publisher.DefaultPolicy()
+	pol.LegacyLedger = p.legacyLedger
 	if v, err := p.db.GetSetting(settingPublishInlineCap); err == nil {
 		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
 			pol.InlineCap = n
@@ -308,6 +309,12 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	return &report, publicationPosted
 }
 
+// maxComparesPerRound bounds the compare calls one publication round may
+// make: rows keep their last-seen head until something fixes them, so a
+// long-lived PR accumulates bases, and after a rebase every one of them
+// fails. Bases past the cap read as unknown, which fixes nothing.
+const maxComparesPerRound = 8
+
 // changeLookup resolves the inter-push diff between a ledger row's last-seen
 // head and the reviewed head through the GitHub compare API, once per base
 // for the round. An unreliable compare (rebase, truncation, API failure)
@@ -318,9 +325,17 @@ func (p *Poller) changeLookup(ctx context.Context, pr github.PullRequest) func(b
 		ok bool
 	}
 	cache := map[string]answer{}
+	capped := false
 	return func(base string) (publisher.ChangeSet, bool) {
 		if hit, seen := cache[base]; seen {
 			return hit.cs, hit.ok
+		}
+		if len(cache) >= maxComparesPerRound {
+			if !capped {
+				capped = true
+				log.Printf("[PUBLISH] %s/%s#%d: more than %d distinct last-seen heads; the rest read as unchanged", pr.Owner, pr.Repo, pr.Number, maxComparesPerRound)
+			}
+			return publisher.ChangeSet{}, false
 		}
 		token := ""
 		if p.ghClientConcrete != nil {

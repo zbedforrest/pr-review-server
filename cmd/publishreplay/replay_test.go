@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -116,34 +117,82 @@ func TestRun_MissingSidecarCountsNotFails(t *testing.T) {
 	}
 }
 
+func defect(file string, line int, text string, kind string, subjects map[string]string) post {
+	p := post{File: file, Line: line, RawText: text, Kind: kind}
+	if len(subjects) > 0 {
+		p.SubjectKinds = subjects
+		for name := range subjects {
+			p.Subjects = append(p.Subjects, name)
+		}
+		sort.Strings(p.Subjects)
+	}
+	return p
+}
+
 func TestSameDefect(t *testing.T) {
 	a := "The retry loop in fetchUser never backs off, so a 429 from upstream is retried immediately."
 	b := "fetchUser hammers the endpoint after a 429 response because no delay is inserted between attempts."
-	if sameDefect("api/users.go", 140, a, nil, "api/users.go", 143, b, nil) {
+	fn := map[string]string{"fetchuser": "symbol"}
+	if sameDefect(defect("api/users.go", 140, a, "", nil), defect("api/users.go", 143, b, "", nil), false) {
 		t.Fatal("low-overlap rewording without subjects must not match")
 	}
-	if !sameDefect("api/users.go", 140, a, []string{"fetchuser"}, "api/users.go", 143, b, []string{"fetchuser"}) {
-		t.Fatal("shared subject must match")
+	if !sameDefect(defect("api/users.go", 140, a, "production_behavior", fn), defect("api/users.go", 143, b, "production_behavior", fn), false) {
+		t.Fatal("the same kind and subject set must match")
 	}
-	if !sameDefect("api/users.go", 140, a, nil, "api/users.go", 145, a, nil) {
+	if sameDefect(defect("api/users.go", 140, a, "production_behavior", fn), defect("api/users.go", 143, b, "production_behavior", fn), true) {
+		t.Fatal("the text clause alone must not match a rewording under the bar")
+	}
+	if !sameDefect(defect("api/users.go", 140, a, "", nil), defect("api/users.go", 145, a, "", nil), false) {
 		t.Fatal("same text, same file and nearby line must match")
 	}
-	if sameDefect("api/users.go", 140, a, nil, "src/api/users.go", 145, a, nil) {
+	if sameDefect(defect("api/users.go", 140, a, "", nil), defect("src/api/users.go", 145, a, "", nil), false) {
 		t.Fatal("a nested path that merely ends in the other must not match")
 	}
-	if sameDefect("api/users.go", 140, a, []string{"fetchuser"}, "api/users.go", 200, a, []string{"fetchuser"}) {
+	if sameDefect(defect("api/users.go", 140, a, "production_behavior", fn), defect("api/users.go", 200, a, "production_behavior", fn), false) {
 		t.Fatal("lines more than ten apart must not match")
 	}
-	if sameDefect("api/users.go", 140, a, nil, "api/other.go", 140, a, nil) {
+	if sameDefect(defect("api/users.go", 140, a, "", nil), defect("api/other.go", 140, a, "", nil), false) {
 		t.Fatal("different files must not match")
 	}
-	if sameDefect("a/index.ts", 10, a, nil, "b/index.ts", 10, a, nil) {
+	if sameDefect(defect("a/index.ts", 10, a, "", nil), defect("b/index.ts", 10, a, "", nil), false) {
 		t.Fatal("a shared basename under different directories must not match")
+	}
+}
+
+func TestSharedSubjectKey(t *testing.T) {
+	const kind = "production_behavior"
+	cases := []struct {
+		name string
+		p, e post
+		want bool
+	}{
+		{"enclosing function alone, different points", defect("f.py", 10, "Re-enabling the plan wipes the stored discount.", kind, map[string]string{"save": "symbol"}),
+			defect("f.py", 14, "The toggle check runs before the form is validated.", kind, map[string]string{"save": "symbol"}), true},
+		{"enclosing function shared, other subjects differ", defect("f.py", 10, "x", kind, map[string]string{"save": "symbol", "discount": "symbol"}),
+			defect("f.py", 14, "y", kind, map[string]string{"save": "symbol", "is_valid": "symbol"}), true},
+		{"enclosing function is the only subject on one side", defect("f.py", 10, "x", kind, map[string]string{"save": "symbol"}),
+			defect("f.py", 14, "y", kind, map[string]string{"save": "symbol", "is_valid": "symbol"}), false},
+		{"shared bare file", defect("f.py", 10, "x", kind, map[string]string{"f.py": "file", "a": "symbol"}),
+			defect("f.py", 14, "y", kind, map[string]string{"f.py": "file", "b": "symbol"}), false},
+		{"different finding kinds", defect("f.py", 10, "x", kind, map[string]string{"save": "symbol"}),
+			defect("f.py", 14, "y", "test_quality", map[string]string{"save": "symbol"}), false},
+		{"no kind recorded", defect("f.py", 10, "x", "", map[string]string{"save": "symbol"}),
+			defect("f.py", 14, "y", "", map[string]string{"save": "symbol"}), false},
+		{"shared selector among several", defect("t.tsx", 10, "x", kind, map[string]string{".modal": "selector", "open": "symbol"}),
+			defect("t.tsx", 14, "y", kind, map[string]string{".modal": "selector", "close": "symbol"}), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sharedSubjectKey(c.p, c.e); got != c.want {
+				t.Fatalf("sharedSubjectKey = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 
 func TestSameDefect_UnknownLineNeverMatches(t *testing.T) {
 	text := "The retry loop in fetchUser never backs off, so a 429 from upstream is retried immediately."
+	fn := map[string]string{"fetchuser": "symbol"}
 	cases := []struct {
 		name        string
 		line, oLine int
@@ -155,7 +204,7 @@ func TestSameDefect_UnknownLineNeverMatches(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if sameDefect("api/users.go", c.line, text, []string{"fetchuser"}, "api/users.go", c.oLine, text, []string{"fetchuser"}) {
+			if sameDefect(defect("api/users.go", c.line, text, "production_behavior", fn), defect("api/users.go", c.oLine, text, "production_behavior", fn), false) {
 				t.Fatal("identical text and subjects must not alias when a line is unknown")
 			}
 		})
@@ -387,10 +436,10 @@ func TestFilterDumps(t *testing.T) {
 
 func TestClassifyRepost_EmptyMarkerNeverMatches(t *testing.T) {
 	earlier := []post{{FindingID: "", File: "a.go", Line: 1, RawText: "x"}}
-	if classifyRepost(post{FindingID: "", File: "b.go", Line: 500, RawText: "y"}, earlier) != repostNone {
+	if classifyRepost(post{FindingID: "", File: "b.go", Line: 500, RawText: "y"}, earlier, false) != repostNone {
 		t.Fatal("two posts without a marker must not count as a same-marker repost")
 	}
-	if classifyRepost(post{FindingID: "f1", File: "b.go", Line: 500}, []post{{FindingID: "f1"}}) != repostSameMarker {
+	if classifyRepost(post{FindingID: "f1", File: "b.go", Line: 500}, []post{{FindingID: "f1"}}, false) != repostSameMarker {
 		t.Fatal("an equal marker must match")
 	}
 }

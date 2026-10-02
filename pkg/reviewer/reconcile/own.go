@@ -68,8 +68,8 @@ func SubjectNames(c *types.FindingContract) []string {
 }
 
 // Alias match tiers, best first: raw text overlap near the same line, the
-// line-independent (file, kind, subjects) key, and the same subjects in
-// another file after a re-anchoring.
+// line-independent (file, kind, subjects) key, and the same kind and
+// subjects in another file after a re-anchoring.
 const (
 	tierText = iota
 	tierKey
@@ -87,7 +87,9 @@ const minSharedTokens = 2
 // finding alone. Matching is greedy, one prior per finding: text matches
 // (same file, line within ten, raw Jaccard at or above 0.20) win over the
 // subject key (same file, kind and subjects, any line), which wins over a
-// cross-file subject match (same kind and subjects, different file).
+// cross-file match (different file, kind known and equal on both sides, and
+// either two or more subjects or two shared words, so one enclosing
+// function alone never joins two files).
 func AliasPrior(current []payload.Finding, own []OwnComment) map[string]string {
 	type cand struct {
 		cur, prior int
@@ -115,7 +117,7 @@ func AliasPrior(current []payload.Finding, own []OwnComment) map[string]string {
 			}
 			keyed := len(subjects) > 0 && len(o.Subjects) > 0 && sameSubjects(subjects, o.Subjects) && (kind == "" || o.Kind == "" || kind == o.Kind)
 			if !sameFile(f.File, o.File) {
-				if keyed {
+				if keyed && kind != "" && kind == o.Kind && crossFileEvidence(subjects, f.Comment, o.Text) {
 					cands = append(cands, cand{ci, oi, tierCrossFile, 0, 0})
 				}
 				continue
@@ -161,6 +163,14 @@ func AliasPrior(current []payload.Finding, own []OwnComment) map[string]string {
 		usedPrior[c.prior] = true
 	}
 	return aliases
+}
+
+func crossFileEvidence(subjects []string, text, oText string) bool {
+	if len(subjects) >= 2 {
+		return true
+	}
+	_, shared := overlap(text, oText)
+	return shared >= minSharedTokens
 }
 
 func severityRank(sev string) int {

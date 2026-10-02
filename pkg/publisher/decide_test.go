@@ -19,7 +19,9 @@ func withSubjects(x payload.Finding, kind string, names ...string) payload.Findi
 
 func unknownChanges(string) (ChangeSet, bool) { return ChangeSet{}, false }
 
-func fid(file string, line int, comment string) string { return payload.Fingerprint(file, line, comment) }
+func fid(file string, line int, comment string) string {
+	return payload.Fingerprint(file, line, comment)
+}
 
 var (
 	c1ID = fid("a.go", 10, "Critical thing.")
@@ -257,6 +259,60 @@ func TestLedger_CriticalSecurityRiskReturnsOnceWhenItsAnchorChanged(t *testing.T
 	again.Changes = moved.Changes
 	if rep := publishRound(t, gh, ledger, again); rep.InlinePosted != 0 || len(gh.reviews) != 2 {
 		t.Fatalf("two settled rows on the point end the exception: %+v", rep)
+	}
+}
+
+func TestLedger_SecurityExceptionIsOneShotWhileTheFreshRootLives(t *testing.T) {
+	const first, second, third = "The token is logged in clear text.", "The token still reaches the log in clear text.", "Clear-text token in the log output."
+	anchorMoved := func(string) (ChangeSet, bool) {
+		return ChangeSet{Files: map[string]bool{"a.go": true}, Lines: map[string]map[int]bool{"a.go": {11: true, 12: true}}}, true
+	}
+	for name, freshState := range map[string]string{"open": db.PublishedStateOpen, "fixed": db.PublishedStateFixed} {
+		t.Run(name, func(t *testing.T) {
+			gh, ledger := newFakeGitHub(), newFakeLedger()
+			publishRound(t, gh, ledger, securityRound("sha-1", 10, first))
+			ledger.rows[fid("a.go", 10, first)].State = db.PublishedStateDismissed
+			returned := securityRound("sha-3", 12, second)
+			returned.Changes = anchorMoved
+			if rep := publishRound(t, gh, ledger, returned); rep.InlinePosted != 1 {
+				t.Fatalf("setup: %+v", rep)
+			}
+			freshID := fid("a.go", 12, second)
+			ledger.rows[freshID].State = freshState
+			freshComment := ledger.rows[freshID].CommentID
+
+			again := securityRound("sha-4", 12, third)
+			again.Changes = anchorMoved
+			rep := publishRound(t, gh, ledger, again)
+			if rep.InlinePosted != 0 || len(gh.reviews) != 2 {
+				t.Fatalf("a third wording must not open a third root: %+v reviews=%d", rep, len(gh.reviews))
+			}
+			if _, posted := ledger.rows[fid("a.go", 12, third)]; posted {
+				t.Fatal("the third wording must not get its own row")
+			}
+			fresh := ledger.rows[freshID]
+			if fresh.State != db.PublishedStateOpen || fresh.LastSeenSHA != "sha-4" || rep.StillOpen != 1 {
+				t.Fatalf("the third wording refreshes the fresh row instead: %+v report=%+v", fresh, rep)
+			}
+			if ledger.rows[fid("a.go", 10, first)].State != db.PublishedStateDismissed {
+				t.Fatal("the dismissed row stays dismissed")
+			}
+			replies := gh.repliesTo(freshComment)
+			if freshState == db.PublishedStateFixed && (rep.Reopened != 1 || len(replies) != 1 || !strings.Contains(replies[0], "Back at sha-4")) {
+				t.Fatalf("a fixed fresh row reopens in its thread: %+v replies=%q", rep, replies)
+			}
+			if freshState == db.PublishedStateOpen && len(replies) != 0 {
+				t.Fatalf("an open fresh row needs no note: %q", replies)
+			}
+		})
+	}
+}
+
+func TestLedger_RowsRememberTheFindingKind(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, securityRound("sha-1", 10, "The token is logged in clear text."))
+	if row := ledger.rows[fid("a.go", 10, "The token is logged in clear text.")]; row.FindingKind != "security_risk" || row.Subjects != "token" {
+		t.Fatalf("row = %+v", row)
 	}
 }
 

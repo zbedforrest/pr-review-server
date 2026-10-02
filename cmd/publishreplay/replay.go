@@ -34,7 +34,11 @@ type post struct {
 	Line      int
 	Body      string
 	RawText   string
+	Kind      string
 	Subjects  []string
+	// SubjectKinds maps each subject name to its contract kind (symbol,
+	// selector, file, ...).
+	SubjectKinds map[string]string
 }
 
 // recorder is the fake GitHub: it hands out ids and remembers every write.
@@ -164,6 +168,9 @@ type Options struct {
 	Policy  publisher.Policy
 	BotName string
 	Logf    func(string, ...any)
+	// TextOnlyAlias counts same-defect reposts by the text clause alone, to
+	// show how much the subject clause contributes.
+	TextOnlyAlias bool
 }
 
 type Result struct {
@@ -197,7 +204,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	res.Metrics.PRs = len(o.Dumps)
 	for _, d := range o.Dumps {
 		bots := o.bots(d)
-		pr, pushes, err := replayPR(ctx, d, bots, o.Store, ledger, o.Policy, logf)
+		pr, pushes, err := replayPR(ctx, d, bots, o.Store, ledger, o.Policy, o.TextOnlyAlias, logf)
 		if err != nil {
 			return Result{}, fmt.Errorf("%s: %w", d.key(), err)
 		}
@@ -242,7 +249,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	return res, nil
 }
 
-func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, policy publisher.Policy, logf func(string, ...any)) (PRResult, []int, error) {
+func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, policy publisher.Policy, textOnly bool, logf func(string, ...any)) (PRResult, []int, error) {
 	pr := PRResult{PR: d.key()}
 	rec := newRecorder()
 	pub := &publisher.Publisher{GH: rec, Ledger: ledger, Policy: policy}
@@ -288,14 +295,14 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		annotate(rec.posts[before:], round.Findings)
 		for j := before; j < len(rec.posts); j++ {
 			pr.RootsPosted++
-			switch classifyRepost(rec.posts[j], rec.posts[:before]) {
+			switch classifyRepost(rec.posts[j], rec.posts[:before], textOnly) {
 			case repostSameMarker:
 				pr.SameMarkerReposts++
 			case repostSameDefect:
 				pr.SameDefectReposts++
-				logf("%s: round %d same-defect repost: %s", d.key(), i+1, explainRepost(rec.posts[j], rec.posts[:before]))
+				logf("%s: round %d same-defect repost: %s", d.key(), i+1, explainRepost(rec.posts[j], rec.posts[:before], textOnly))
 			}
-			if classifyRepost(rec.posts[j], rec.posts[before:j]) != repostNone {
+			if classifyRepost(rec.posts[j], rec.posts[before:j], textOnly) != repostNone {
 				pr.SameRoundDuplicates++
 			}
 		}
@@ -452,9 +459,12 @@ func annotate(posts []post, findings []payload.Finding) {
 		}
 		posts[i].RawText = f.Comment
 		if f.FindingContract != nil {
+			posts[i].Kind = f.FindingContract.FindingKind
+			posts[i].SubjectKinds = map[string]string{}
 			for _, s := range f.FindingContract.Subjects {
-				if name := strings.ToLower(strings.TrimSpace(s.Name)); name != "" {
+				if name := strings.ToLower(strings.TrimSpace(s.Name)); name != "" && posts[i].SubjectKinds[name] == "" {
 					posts[i].Subjects = append(posts[i].Subjects, name)
+					posts[i].SubjectKinds[name] = s.Kind
 				}
 			}
 			sort.Strings(posts[i].Subjects)
@@ -470,13 +480,13 @@ const (
 	repostSameDefect
 )
 
-func classifyRepost(p post, earlier []post) repostKind {
+func classifyRepost(p post, earlier []post, textOnly bool) repostKind {
 	kind := repostNone
 	for _, e := range earlier {
 		if p.FindingID != "" && e.FindingID == p.FindingID {
 			return repostSameMarker
 		}
-		if sameDefect(p.File, p.Line, p.RawText, p.Subjects, e.File, e.Line, e.RawText, e.Subjects) {
+		if sameDefect(p, e, textOnly) {
 			kind = repostSameDefect
 		}
 	}
@@ -485,11 +495,11 @@ func classifyRepost(p post, earlier []post) repostKind {
 
 // explainRepost names the earlier post a repost aliases to and why, for the
 // log that accompanies the metric.
-func explainRepost(p post, earlier []post) string {
+func explainRepost(p post, earlier []post, textOnly bool) string {
 	for _, e := range earlier {
-		if sameDefect(p.File, p.Line, p.RawText, p.Subjects, e.File, e.Line, e.RawText, e.Subjects) {
-			return fmt.Sprintf("%s:%d (round %d) vs %s:%d (round %d) jaccard=%.2f subjects=%v/%v new=%q prior=%q",
-				p.File, p.Line, p.Round+1, e.File, e.Line, e.Round+1, reconcile.Similarity(p.RawText, e.RawText), p.Subjects, e.Subjects, head(p.RawText), head(e.RawText))
+		if sameDefect(p, e, textOnly) {
+			return fmt.Sprintf("%s:%d (round %d) vs %s:%d (round %d) jaccard=%.2f kind=%s/%s subjects=%v/%v new=%q prior=%q",
+				p.File, p.Line, p.Round+1, e.File, e.Line, e.Round+1, reconcile.Similarity(p.RawText, e.RawText), p.Kind, e.Kind, p.Subjects, e.Subjects, head(p.RawText), head(e.RawText))
 		}
 	}
 	return ""
@@ -503,26 +513,63 @@ func head(s string) string {
 }
 
 // sameDefect is the alias rule from the program spec: same file, both lines
-// known and within ten, and either raw-text Jaccard at or above 0.20 or a
-// shared subject.
-func sameDefect(file string, line int, text string, subjects []string, oFile string, oLine int, oText string, oSubjects []string) bool {
-	if !sameFile(file, oFile) {
+// known and within ten, and either raw-text Jaccard at or above 0.20 or the
+// publisher's subject key (sharedSubjectKey). textOnly drops the key.
+func sameDefect(p, e post, textOnly bool) bool {
+	if !sameFile(p.File, e.File) {
 		return false
 	}
-	if line <= 0 || oLine <= 0 || abs(line-oLine) > aliasLineTolerance {
+	if p.Line <= 0 || e.Line <= 0 || abs(p.Line-e.Line) > aliasLineTolerance {
 		return false
 	}
-	if reconcile.Similarity(text, oText) >= aliasSimilarity {
+	if reconcile.Similarity(p.RawText, e.RawText) >= aliasSimilarity {
 		return true
 	}
-	for _, s := range subjects {
-		for _, o := range oSubjects {
+	return !textOnly && sharedSubjectKey(p, e)
+}
+
+// sharedSubjectKey mirrors the publisher's line-independent key: the same
+// finding kind and the same sorted subject set, or a shared symbol or
+// selector subject. A subject that is the only one on either side (a bare
+// file, or the enclosing function alone) never joins two findings: distinct
+// defects in one function share it by construction.
+func sharedSubjectKey(p, e post) bool {
+	if p.Kind == "" || p.Kind != e.Kind || len(p.Subjects) == 0 || len(e.Subjects) == 0 {
+		return false
+	}
+	if sameSubjectSet(p.Subjects, e.Subjects) {
+		return true
+	}
+	if len(p.Subjects) < 2 || len(e.Subjects) < 2 {
+		return false
+	}
+	for _, s := range p.Subjects {
+		if !specificSubject(p.SubjectKinds[s]) || !specificSubject(e.SubjectKinds[s]) {
+			continue
+		}
+		for _, o := range e.Subjects {
 			if s == o {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func specificSubject(kind string) bool {
+	return kind == "symbol" || kind == "selector"
+}
+
+func sameSubjectSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func abs(n int) int {
@@ -542,7 +589,7 @@ func observe(d *prDump, bots map[string]bool, pr *PRResult, m *ObservedMetrics) 
 			m.ThreadsResolved++
 		}
 		p := post{FindingID: r.FindingID, File: r.File, Line: r.Line, RawText: r.Text}
-		switch classifyRepost(p, earlier) {
+		switch classifyRepost(p, earlier, true) {
 		case repostSameMarker:
 			pr.ObservedSameMarkerReposts++
 		case repostSameDefect:
