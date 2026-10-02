@@ -79,8 +79,10 @@ func (r *recorder) ResolveThread(_ context.Context, _, _, nodeID string) error {
 	if err != nil {
 		return fmt.Errorf("unknown thread %q", nodeID)
 	}
+	if !r.resolved[id] {
+		r.resolves++
+	}
 	r.resolved[id] = true
-	r.resolves++
 	return nil
 }
 
@@ -89,8 +91,10 @@ func (r *recorder) UnresolveThread(_ context.Context, _, _, nodeID string) error
 	if err != nil {
 		return fmt.Errorf("unknown thread %q", nodeID)
 	}
+	if r.resolved[id] {
+		r.unresolves++
+	}
 	delete(r.resolved, id)
-	r.unresolves++
 	return nil
 }
 

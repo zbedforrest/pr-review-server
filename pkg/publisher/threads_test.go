@@ -224,6 +224,22 @@ func TestThreads_UnlistedThreadGetsNoNote(t *testing.T) {
 	}
 }
 
+func TestThreads_StoredNodeIDResolvesWithoutANoteWhenTheListingFails(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, ledgerRoundOne())
+	gh.listErr = errors.New("502")
+
+	r2 := summaryOnly("sha-2")
+	r2.Changes = changed("a.go")
+	rep := publishThreads(t, gh, ledger, r2)
+	if rep.Fixed != 2 || rep.ThreadsResolved != 1 || rep.ThreadResolveFailures != 0 || rep.ThreadReplies != 0 || len(gh.replies) != 0 {
+		t.Fatalf("report = %+v replies=%v, want the stored id resolved and no note into an unverified thread", rep, gh.replies)
+	}
+	if sorted(gh.resolves) != "[T1001]" {
+		t.Fatalf("resolves = %v", gh.resolves)
+	}
+}
+
 func TestThreads_SameHeadNeverResolves(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	publishThreads(t, gh, ledger, ledgerRoundOne())

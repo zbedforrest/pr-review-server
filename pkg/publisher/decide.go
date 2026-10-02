@@ -120,8 +120,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	// Transitions are decided before any write so the summary this round
 	// renders describes the ledger the round leaves behind.
 	type pending struct {
-		row    *db.PublishedFinding
-		reopen bool
+		row *db.PublishedFinding
 		// thread is the GitHub thread change the transition owes: resolve on
 		// a fix, unresolve on a reopen, none otherwise.
 		thread threadChange
@@ -164,9 +163,11 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 				writes = append(writes, pending{row: &next, thread: resolveThread})
 				if t, found := threads.thread(ctx, row.ThreadNodeID, row.CommentID); found {
 					next.ThreadNodeID = t.NodeID
-					if !t.Resolved {
-						notes = append(notes, threadNote{commentID: row.CommentID, body: notSeenNote(r.HeadSHA)})
-					}
+				}
+				// The stored id stands in for the resolve, but the note needs the
+				// listing to show the thread open.
+				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved {
+					notes = append(notes, threadNote{commentID: row.CommentID, body: notSeenNote(r.HeadSHA)})
 				}
 				rep.Hygiene.noteResolved(row, r.HeadSHA, cs.Files)
 				continue
@@ -186,7 +187,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			next.LastSeenSHA = r.HeadSHA
 			next.Severity = f.Severity
 			backfill(&next, f, r.PriorComments[id])
-			writes = append(writes, pending{row: &next, reopen: true, thread: unresolveThread})
+			writes = append(writes, pending{row: &next, thread: unresolveThread})
 			if t, found := threads.thread(ctx, row.ThreadNodeID, row.CommentID); found {
 				next.ThreadNodeID = t.NodeID
 			}

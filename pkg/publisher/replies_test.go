@@ -74,7 +74,8 @@ type fakeReplyGH struct {
 
 	// resolved lists the thread node ids ResolveThread was called with;
 	// every root comment opens thread "T<id>".
-	resolved []string
+	resolved   []string
+	resolveErr error
 }
 
 func (f *fakeReplyGH) ListReviewThreads(_ context.Context, owner, repo string, number int) ([]ReviewThread, error) {
@@ -93,6 +94,9 @@ func (f *fakeReplyGH) ListReviewThreads(_ context.Context, owner, repo string, n
 func (f *fakeReplyGH) ResolveThread(_ context.Context, _, _, nodeID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.resolveErr != nil {
+		return f.resolveErr
+	}
 	f.resolved = append(f.resolved, nodeID)
 	return nil
 }
@@ -571,6 +575,21 @@ func TestReplyReactor_ConcedeResolvesTheThreadWhenEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || fmt.Sprint(gh.resolved) != "[T100]" || rep.ThreadsResolved != 1 {
+		t.Fatalf("states=%v resolved=%v rep=%+v", ledger.states, gh.resolved, rep)
+	}
+}
+
+func TestReplyReactor_ConcedeCountsALostResolve(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right, the caller guards it. Withdrawn."}, nil
+	})
+	r.ResolveThreads = true
+	gh.resolveErr = fmt.Errorf("403")
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || len(gh.resolved) != 0 || rep.ThreadsResolved != 0 || rep.ThreadResolveFailures != 1 {
 		t.Fatalf("states=%v resolved=%v rep=%+v", ledger.states, gh.resolved, rep)
 	}
 }
