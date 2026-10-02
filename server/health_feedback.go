@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"pr-review-server/db"
@@ -29,21 +28,15 @@ type feedbackStore interface {
 	ListFeedbackItems(start, end time.Time) ([]db.FeedbackItem, error)
 }
 
-// feedbackClassifierOnce builds the Gemini flash client the review pipeline
-// also uses for classification, once, when a key is configured.
-var feedbackClassifierOnce sync.Once
-var feedbackClassifier feedback.Classifier
-
+// feedbackClassifierFor builds the Gemini flash client the review pipeline
+// also uses for classification, once per server, when a key is configured.
 func (s *Server) feedbackClassifierFor() feedback.Classifier {
-	if s.feedbackClassify != nil {
-		return s.feedbackClassify
-	}
-	feedbackClassifierOnce.Do(func() {
-		if s.cfg.GeminiAPIKey == "" {
+	s.feedbackOnce.Do(func() {
+		if s.feedbackClassify != nil || s.cfg.GeminiAPIKey == "" {
 			return
 		}
 		client := llm.NewClient(llm.ProviderGemini, s.cfg.GeminiAPIKey, true, false)
-		feedbackClassifier = feedback.ModelClassifier{Name: llm.FlashModelName(), Ask: func(ctx context.Context, prompt string) (string, error) {
+		s.feedbackClassify = feedback.ModelClassifier{Name: llm.FlashModelName(), Ask: func(ctx context.Context, prompt string) (string, error) {
 			type answer struct {
 				text string
 				err  error
@@ -63,17 +56,23 @@ func (s *Server) feedbackClassifierFor() feedback.Classifier {
 			}
 		}}
 	})
-	if feedbackClassifier == nil {
+	if s.feedbackClassify == nil {
 		return feedback.LexiconClassifier{}
 	}
-	return feedbackClassifier
+	return s.feedbackClassify
 }
 
 // scanFeedback runs the read-only GitHub scan ahead of the metrics query so
 // today's items are in the table. It never fails the report.
 func (s *Server) scanFeedback(now time.Time) {
+	s.feedbackScanned, s.feedbackNote = false, ""
 	store, ok := s.db.(feedbackStore)
-	if !ok || !s.cfg.FeedbackDigest {
+	switch {
+	case !ok:
+		s.feedbackNote = "no feedback store"
+		return
+	case !s.cfg.FeedbackDigest:
+		s.feedbackNote = "FEEDBACK_DIGEST=false"
 		return
 	}
 	gh := s.feedbackGitHub
@@ -81,16 +80,22 @@ func (s *Server) scanFeedback(now time.Time) {
 		gh = ghFeedbackAdapter{s.ghClient}
 	}
 	if gh == nil {
+		s.feedbackNote = "no GitHub client"
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), feedbackScanTimeout)
 	defer cancel()
 	scanner := feedback.Scanner{Store: store, GitHub: gh, Classifier: s.feedbackClassifierFor(), Handle: s.cfg.MentionHandle, Now: func() time.Time { return now }}
 	res, err := scanner.Run(ctx)
-	if err != nil {
+	switch {
+	case err != nil:
 		log.Printf("[FEEDBACK] scan failed after %d targets: %v", res.Targets, err)
+		s.feedbackNote = "scan failed"
+	case res.Errors > 0:
+		s.feedbackNote = fmt.Sprintf("%d of %d PRs could not be read", res.Errors, res.Targets)
+	default:
+		s.feedbackScanned = true
 	}
-	s.feedbackScanned = err == nil
 	frustrated := 0
 	var events []db.TelemetryEvent
 	for _, it := range res.Added {
@@ -124,16 +129,7 @@ func (s *Server) feedbackMetrics(now time.Time) health.FeedbackMetrics {
 		log.Printf("[FEEDBACK] list items: %v", err)
 		return health.FeedbackMetrics{Note: "feedback query failed", ByLabel: map[string]int{}}
 	}
-	note := ""
-	switch {
-	case !s.cfg.FeedbackDigest:
-		note = "FEEDBACK_DIGEST=false"
-	case s.feedbackGitHub == nil && s.ghClient == nil:
-		note = "no GitHub client"
-	case !s.feedbackScanned:
-		note = "scan failed"
-	}
-	return feedback.NewDigest(items, now.Add(-24*time.Hour), now, 1).HealthMetrics(s.feedbackScanned, note)
+	return feedback.NewDigest(items, now.Add(-24*time.Hour), now, 1).HealthMetrics(s.feedbackScanned, s.feedbackNote)
 }
 
 // handleFeedback serves the stored feedback for the last 1 or 7 days as JSON

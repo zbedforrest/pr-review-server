@@ -32,12 +32,12 @@ func TestGormDB_ListFeedbackTargets_OpenPRsAndRecentlyCommentedClosedOnes(t *tes
 	targets, err := db.ListFeedbackTargets(now.Add(-7 * 24 * time.Hour))
 	require.NoError(t, err)
 	require.Len(t, targets, 2, "%+v", targets)
-	assert.Equal(t, 7, targets[0].PRNumber)
-	assert.Equal(t, map[int64]bool{701: true}, targets[0].Roots)
-	assert.Equal(t, map[int64]bool{700: true}, targets[0].Summaries)
-	assert.Equal(t, map[int64]string{7010: "pushback"}, targets[0].ReplyClasses)
-	assert.Equal(t, 8, targets[1].PRNumber, "merged but commented on this week")
-	assert.Empty(t, targets[1].Summaries)
+	assert.Equal(t, 8, targets[0].PRNumber, "merged but commented on this week, and most recently")
+	assert.Empty(t, targets[0].Summaries)
+	assert.Equal(t, 7, targets[1].PRNumber)
+	assert.Equal(t, map[int64]bool{701: true}, targets[1].Roots)
+	assert.Equal(t, map[int64]bool{700: true}, targets[1].Summaries)
+	assert.Equal(t, map[int64]string{7010: "pushback"}, targets[1].ReplyClasses)
 }
 
 func TestGormDB_FeedbackItems_SaveOnceListByWindow(t *testing.T) {

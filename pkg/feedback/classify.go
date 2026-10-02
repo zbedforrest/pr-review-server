@@ -112,10 +112,7 @@ const maxPromptBody = 1500
 
 // Prompt is the classification question for one text item.
 func Prompt(item Item) string {
-	body := item.Body
-	if len(body) > maxPromptBody {
-		body = body[:maxPromptBody]
-	}
+	body := truncateBytes(item.Body, maxPromptBody)
 	hint := item.ReplyClass
 	if hint == "" {
 		hint = "none"

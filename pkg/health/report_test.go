@@ -290,4 +290,7 @@ func TestEvaluateFeedbackLineSaysWhenNothingWasScanned(t *testing.T) {
 	if telemetry := TelemetryActions[len(TelemetryActions)-1]; telemetry != ActionFeedbackFrustrated {
 		t.Errorf("feedback counter missing from TelemetryActions: %v", TelemetryActions)
 	}
+	if other := withoutHygiene(map[string]int{ActionFeedbackFrustrated: 3, "reply_decision": 1}); len(other) != 1 || other["reply_decision"] != 1 {
+		t.Errorf("feedback counter leaked into the generic telemetry line: %v", other)
+	}
 }

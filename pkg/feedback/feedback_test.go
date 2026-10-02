@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -270,4 +271,22 @@ func TestDigestMarkdownAndHealthMetrics(t *testing.T) {
 	assert.Contains(t, empty.Markdown(), "last 7 days")
 	assert.Contains(t, empty.Markdown(), "No author feedback in the window.")
 	assert.NotNil(t, empty.Items)
+}
+
+func TestNamesBotNeedsTheWordOrTheHandle(t *testing.T) {
+	s := Scanner{Handle: "prism-bot"}
+	assert.True(t, s.namesBot("@prism-bot please re-review"))
+	assert.True(t, s.namesBot("PRism flagged this already"))
+	assert.True(t, s.namesBot("thanks prism."))
+	assert.False(t, s.namesBot("see my-prism-fork"))
+	assert.False(t, s.namesBot("switched the highlighter to prism.js"))
+	assert.False(t, s.namesBot("a prismatic palette"))
+}
+
+func TestTruncateBytesKeepsUTF8Whole(t *testing.T) {
+	s := strings.Repeat("é", 10)
+	got := truncateBytes(s, 7)
+	assert.True(t, utf8.ValidString(got))
+	assert.Equal(t, 6, len(got))
+	assert.Equal(t, "abc", truncateBytes("abc", 3))
 }
