@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strconv"
@@ -577,6 +578,11 @@ type ReplyReactor struct {
 	// holder's claim blocks others (zero: 10 minutes).
 	Holder     string
 	ClaimLease time.Duration
+
+	// ResolveThreads resolves the GitHub thread of a finding a posted
+	// concession dismisses (PUBLISH_THREAD_RESOLUTION); it needs a GH that
+	// implements ThreadResolver.
+	ResolveThreads bool
 }
 
 func (r ReplyReactor) claimLease() time.Duration {
@@ -608,6 +614,8 @@ type ReplyReport struct {
 	Abstained   int
 	Dispatched  int
 	TextSkipped map[string]int
+	// ThreadsResolved counts the threads closed on a posted concession.
+	ThreadsResolved int
 }
 
 // ReplyOutcome is the result of one text step, for telemetry. Outcome is the
@@ -1177,7 +1185,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	adoptPosted := func(in []ThreadComment) (bool, error) {
 		for _, c := range in {
 			if id, ok := replyMarkerID(c.Body); ok && id == reply.CommentID && c.InReplyToID == reply.RootCommentID && c.AuthorID == root.AuthorID && c.ID != reply.CommentID {
-				return true, r.adopt(t, reply, c, &outcome)
+				return true, r.adopt(ctx, t, reply, c, &outcome, rep)
 			}
 		}
 		return false, nil
@@ -1352,7 +1360,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	if err != nil {
 		return outcome, err
 	}
-	if err := r.adopt(t, reply, ThreadComment{ID: id, CreatedAt: r.now()}, &outcome); err != nil {
+	if err := r.adopt(ctx, t, reply, ThreadComment{ID: id, CreatedAt: r.now()}, &outcome, rep); err != nil {
 		return outcome, err
 	}
 	if rep != nil {
@@ -1361,22 +1369,50 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	return finish("posted")
 }
 
-// adopt records a posted reply and applies a concession's side effect. A
-// conceded fix claim is dismissed like any other concession: only dismissed
-// fingerprints are suppressed on the next review, and fingerprints hash the
-// finding's wording rather than the code, so a resolved row would come back
-// as a fresh comment the next time the reviewer phrases it the same way.
-// The trade-off, accepted here as for every concession, is that a later
-// regression with the same wording stays suppressed on this PR.
-func (r ReplyReactor) adopt(t db.PublishedReplyTarget, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome) error {
+// adopt records a posted reply and applies a concession's side effects: the
+// row is dismissed and its thread resolved. A conceded fix claim is dismissed
+// like any other concession: only dismissed fingerprints are suppressed on
+// the next review, and fingerprints hash the finding's wording rather than
+// the code, so a resolved row would come back as a fresh comment the next
+// time the reviewer phrases it the same way. The trade-off, accepted here as
+// for every concession, is that a later regression with the same wording
+// stays suppressed on this PR.
+func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome, rep *ReplyReport) error {
 	if err := r.Ledger.MarkPublishedReplyPosted(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, posted.ID, posted.CreatedAt); err != nil {
 		return err
 	}
 	outcome.Posted = true
-	if outcome.Decision == DecisionConcede {
-		return r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed)
+	if outcome.Decision != DecisionConcede {
+		return nil
+	}
+	if err := r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed); err != nil {
+		return err
+	}
+	if r.resolveThread(ctx, t, reply.RootCommentID) && rep != nil {
+		rep.ThreadsResolved++
 	}
 	return nil
+}
+
+// resolveThread closes the GitHub thread under a root comment once the
+// finding is dismissed. The ledger state is already written, so a failure is
+// logged and never fails the step.
+func (r ReplyReactor) resolveThread(ctx context.Context, t db.PublishedReplyTarget, rootCommentID int64) bool {
+	resolver, ok := r.GH.(ThreadResolver)
+	if !ok || !r.ResolveThreads || rootCommentID == 0 {
+		return false
+	}
+	ti := &threadIndex{gh: resolver, owner: t.RepoOwner, repo: t.RepoName, number: t.PRNumber}
+	nodeID := ti.nodeID(ctx, "", rootCommentID)
+	if nodeID == "" {
+		log.Printf("[REPLY %s/%s#%d] no thread listed for comment %d; left open", t.RepoOwner, t.RepoName, t.PRNumber, rootCommentID)
+		return false
+	}
+	if err := resolver.ResolveThread(ctx, t.RepoOwner, t.RepoName, nodeID); err != nil {
+		log.Printf("[REPLY %s/%s#%d] resolve thread %s lost: %v", t.RepoOwner, t.RepoName, t.PRNumber, nodeID, err)
+		return false
+	}
+	return true
 }
 
 // threadFingerprint identifies the finding and everything written under it by

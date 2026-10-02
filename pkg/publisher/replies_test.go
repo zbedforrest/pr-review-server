@@ -71,7 +71,33 @@ type fakeReplyGH struct {
 
 	failReactOnce bool
 	failPostOnce  bool
+
+	// resolved lists the thread node ids ResolveThread was called with;
+	// every root comment opens thread "T<id>".
+	resolved []string
 }
+
+func (f *fakeReplyGH) ListReviewThreads(_ context.Context, owner, repo string, number int) ([]ReviewThread, error) {
+	key := fmt.Sprintf("%s/%s#%d", owner, repo, number)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []ReviewThread
+	for _, c := range f.threads[key] {
+		if c.InReplyToID == 0 {
+			out = append(out, ReviewThread{NodeID: fmt.Sprintf("T%d", c.ID), RootCommentID: c.ID})
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeReplyGH) ResolveThread(_ context.Context, _, _, nodeID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resolved = append(f.resolved, nodeID)
+	return nil
+}
+
+func (f *fakeReplyGH) UnresolveThread(context.Context, string, string, string) error { return nil }
 
 func (f *fakeReplyGH) ListThread(_ context.Context, owner, repo string, number int) ([]ThreadComment, error) {
 	key := fmt.Sprintf("%s/%s#%d", owner, repo, number)
@@ -529,6 +555,36 @@ func TestReplyReactor_ConcedeDismissesTheFinding(t *testing.T) {
 	}
 	if len(gh.posted) != 1 || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
 		t.Fatalf("posted=%v states=%v", gh.posted, ledger.states)
+	}
+	if len(gh.resolved) != 0 {
+		t.Fatalf("thread resolution is off unless the reactor says so: %v", gh.resolved)
+	}
+}
+
+func TestReplyReactor_ConcedeResolvesTheThreadWhenEnabled(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "You're right, the caller guards it. Withdrawn."}, nil
+	})
+	r.ResolveThreads = true
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || fmt.Sprint(gh.resolved) != "[T100]" || rep.ThreadsResolved != 1 {
+		t.Fatalf("states=%v resolved=%v rep=%+v", ledger.states, gh.resolved, rep)
+	}
+}
+
+func TestReplyReactor_HoldLeavesTheThreadOpen(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionHold, Reply: "The guard is on the other branch; line 12 reaches here with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 12}}}, nil
+	})
+	r.ResolveThreads = true
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.posted) != 1 || len(gh.resolved) != 0 || ledger.states["a.go:1:abc"] != "" {
+		t.Fatalf("posted=%v resolved=%v states=%v", gh.posted, gh.resolved, ledger.states)
 	}
 }
 
