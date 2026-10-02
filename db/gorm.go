@@ -191,7 +191,8 @@ var publishedFindingColumns = []struct {
 	postgres string
 }{
 	{"comment_text", "CommentText", "text"},
-	{"subjects", "Subjects", "varchar(1024) NOT NULL DEFAULT ''"},
+	{"finding_kind", "FindingKind", "varchar(32) NOT NULL DEFAULT ''"},
+	{"subjects", "Subjects", "text NOT NULL DEFAULT ''"},
 }
 
 var greptileStatusColumns = []struct {

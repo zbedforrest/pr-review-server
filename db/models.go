@@ -382,7 +382,7 @@ type PublishedFindingModel struct {
 	PublishedAt  time.Time `gorm:"not null;index"`
 	CommentText  string    `gorm:"type:text"`
 	FindingKind  string    `gorm:"size:32;not null;default:''"`
-	Subjects     string    `gorm:"size:1024;not null;default:''"`
+	Subjects     string    `gorm:"type:text;not null;default:''"`
 }
 
 // TableName specifies the table name for PublishedFindingModel

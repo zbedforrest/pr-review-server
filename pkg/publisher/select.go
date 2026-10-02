@@ -29,8 +29,8 @@ type Policy struct {
 	LegacyLedger bool
 }
 
-// PolicyV2Env is the kill switch for the ledger decision table; anything but
-// "false" or "0" keeps it on.
+// PolicyV2Env is the kill switch for the ledger decision table: "false", "0",
+// "off" and "no" restore the pre-ledger publisher; anything else keeps it on.
 const PolicyV2Env = "PUBLISH_POLICY_V2"
 
 // LegacyLedgerFromEnv reports whether the environment turned the ledger
