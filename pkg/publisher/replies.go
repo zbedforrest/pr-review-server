@@ -21,13 +21,16 @@ import (
 
 // ReplyClass is what an author's reply to one of our inline comments amounts
 // to. Questions, pushback and fix claims (resolution) earn a text response;
-// bare acknowledgements and everything classed other get a reaction only.
+// a verdict (intentional, by design, won't fix) dismisses the finding with a
+// reaction and no text; bare acknowledgements and everything classed other
+// get a reaction only.
 type ReplyClass string
 
 const (
 	ReplyResolution ReplyClass = "resolution"
 	ReplyQuestion   ReplyClass = "question"
 	ReplyPushback   ReplyClass = "pushback"
+	ReplyVerdict    ReplyClass = "verdict"
 	ReplyOther      ReplyClass = "other"
 )
 
@@ -64,7 +67,9 @@ var (
 
 // ClassifyReply uses anchored whole-message rules for the unambiguous cases
 // and leaves everything else as pushback, which the model handles later.
-// "Not fixed" and "Fixed?" deliberately fall through the resolution rule.
+// "Not fixed" and "Fixed?" deliberately fall through the resolution rule; a
+// fix claim outranks a verdict so "Fixed, it was intentional before" is
+// verified rather than dismissed.
 func ClassifyReply(body string) ReplyClass {
 	text := strings.ToLower(strings.TrimSpace(body))
 	if strings.Contains(text, "?") {
@@ -72,6 +77,9 @@ func ClassifyReply(body string) ReplyClass {
 	}
 	if resolutionOpeners.MatchString(text) {
 		return ReplyResolution
+	}
+	if IsVerdict(body) {
+		return ReplyVerdict
 	}
 	if acknowledgements.MatchString(text) || len([]rune(text)) < minPushbackRunes {
 		return ReplyOther
@@ -159,8 +167,8 @@ func acceptsWithoutFix(body string) bool {
 
 // wantsText reports whether a reply is one the reply model should answer:
 // questions and pushback always, fix claims unless they are a bare
-// acknowledgement or an acceptance that defers the fix, never anything
-// classed other.
+// acknowledgement or an acceptance that defers the fix, never a verdict or
+// anything classed other.
 func wantsText(reply AuthorReply) bool {
 	switch reply.Class {
 	case ReplyQuestion, ReplyPushback:
@@ -562,14 +570,17 @@ func DefaultTextPolicy() TextPolicy {
 }
 
 // TextEligibility returns "" when a text reply may be attempted, otherwise the
-// reason it may not: class, acknowledgment, deferred, stale, thread_cap,
-// conceded, pr_cap. The caps are
+// reason it may not: class, verdict, acknowledgment, deferred, stale,
+// thread_cap, conceded, settled (the author ruled on the thread; a later
+// question still gets an answer), pr_cap. The caps are
 // exact within one process (text steps on a PR are serialized) and best-effort
 // across two instances that both believe they lead, where sibling replies
 // claimed separately can overshoot a cap by one.
 func TextEligibility(reply AuthorReply, prior []db.PublishedReply, prTextToday int, now time.Time, p TextPolicy) string {
 	if !wantsText(reply) {
 		switch {
+		case reply.Class == ReplyVerdict:
+			return "verdict"
 		case reply.Class != ReplyResolution:
 			return "class"
 		case shortAcknowledgment(reply.Body):
@@ -582,6 +593,9 @@ func TextEligibility(reply AuthorReply, prior []db.PublishedReply, prTextToday i
 	}
 	posted := 0
 	for _, r := range prior {
+		if r.Outcome == OutcomeSettledVerdict && reply.Class != ReplyQuestion {
+			return "settled"
+		}
 		if r.ReplyCommentID != 0 {
 			posted++
 			if r.Decision == DecisionConcede || r.Decision == DecisionWithdraw {
@@ -649,6 +663,11 @@ type ReplyReactor struct {
 	// implements ThreadResolver.
 	ResolveThreads bool
 
+	// NoVerdicts hands an author verdict ("intentional", "won't fix") to the
+	// reply model as pushback instead of settling it with a reaction
+	// (REPLY_VERDICT_FAST_PATH=false). Legacy implies it.
+	NoVerdicts bool
+
 	// Legacy restores the reply policy before contested findings: budget
 	// exhaustion posts the fixed notice, a hold needs no citation here, a
 	// decision made against an older head is dropped instead of retaken,
@@ -694,6 +713,11 @@ type ReplyReport struct {
 	// ThreadResolveFailures the ones GitHub rejected or did not list.
 	ThreadsResolved       int
 	ThreadResolveFailures int
+
+	// Verdicts lists every author verdict that changed a finding's state
+	// this scan without a model reply: a verdict reply dismissed it, or a
+	// thumbs-down on the root contested it.
+	Verdicts []SettledVerdict
 }
 
 // ReplyOutcome is the result of one text step, for telemetry. Outcome is the
@@ -864,7 +888,29 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 	settled := reactionsRead
 	for _, reply := range FindAuthorReplies(comments, t.Roots, state.AuthorID, r.Since) {
 		rep.RepliesSeen++
+		if reply.Class == ReplyVerdict && !r.verdictFastPath() {
+			reply.Class = ReplyPushback
+		}
 		row, handled := seen[reply.CommentID]
+		// A verdict is settled as soon as a mode that reacts sees it, whether
+		// it is new, was recorded under observe and never finished, or was
+		// only thumbed up under shadow. A row a text step still holds (an
+		// older build mid rolling deploy, or an edited comment whose step is
+		// in flight here) waits a scan.
+		if reply.Class == ReplyVerdict && r.reacts() && r.verdictPending(row, handled) {
+			if handled && row.Action == ReplyActionPending && r.claimLive(row) {
+				settled = false
+				continue
+			}
+			done, err := r.settleVerdict(ctx, t, state, reply, row, handled, rep)
+			if err != nil {
+				return err
+			}
+			if !done {
+				settled = false
+			}
+			continue
+		}
 		if !handled {
 			action := ReplyActionObserved
 			switch {
@@ -1062,6 +1108,8 @@ func (r ReplyReactor) contestThumbsDown(ctx context.Context, t db.PublishedReply
 			}
 			if changed {
 				rep.Contested++
+				rep.Verdicts = append(rep.Verdicts, SettledVerdict{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber,
+					Fingerprint: fp, RootCommentID: c.ID, Kind: VerdictKindThumbsDown})
 			}
 			break
 		}
@@ -1216,6 +1264,21 @@ func (r ReplyReactor) reacts() bool {
 
 func (r ReplyReactor) textMode() bool {
 	return r.Responder != nil && (r.Mode == ReplyModeShadow || r.Mode == ReplyModeRespond)
+}
+
+func (r ReplyReactor) verdictFastPath() bool {
+	return !r.Legacy && !r.NoVerdicts
+}
+
+func (r ReplyReactor) verdictPending(row db.PublishedReply, handled bool) bool {
+	if !handled || row.Outcome == "" {
+		return true
+	}
+	return row.Outcome == OutcomeShadowedVerdict && r.Mode != ReplyModeShadow
+}
+
+func (r ReplyReactor) claimLive(row db.PublishedReply) bool {
+	return row.ClaimedBy != "" && row.ClaimedAt != nil && r.now().Before(row.ClaimedAt.Add(r.claimLease()))
 }
 
 func (r ReplyReactor) now() time.Time {
