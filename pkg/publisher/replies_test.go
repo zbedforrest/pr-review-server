@@ -2028,7 +2028,7 @@ func TestReplyReactor_AuthorThumbsDownOnTheRootContestsTheFinding(t *testing.T) 
 		t.Fatalf("a second scan changes nothing and does not re-list a contested root: rep=%+v listed=%v", rep, gh.reactionLists[listed:])
 	}
 
-	r, gh, ledger = reactorFixture(ReplyModeReact)
+	r, gh, _ = reactorFixture(ReplyModeReact)
 	gh.threads["acme/example#7"][0].ThumbsDown = 1
 	gh.failReactions = true
 	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"], ThreadComment{ID: 102, InReplyToID: 100, AuthorID: 42, Body: "Is this still needed?", CreatedAt: time.Date(2026, 9, 9, 17, 2, 0, 0, time.UTC)})
