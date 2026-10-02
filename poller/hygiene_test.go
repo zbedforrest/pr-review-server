@@ -124,7 +124,7 @@ func TestPollerRecordsNoUnwiredHygieneAction(t *testing.T) {
 	}
 	pl, err := payload.Decode([]byte(scoredSidecar))
 	require.NoError(t, err)
-	assert.Nil(t, buildPublishRound(pr, pl, nil, nil, nil, "").ChangedFiles,
+	assert.Nil(t, BuildPublishRound(pr, pl, nil, nil, nil, "").ChangedFiles,
 		"the round now carries the compare, so %s is measured: remove it from health.UnwiredHygiene", health.ActionFixedWithoutFileChange)
 
 	stats, err := database.GetTelemetryStats(1)
