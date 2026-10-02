@@ -116,7 +116,7 @@ func IsVerdict(body string) bool {
 	if len(sentences) == 0 {
 		return false
 	}
-	at := -1
+	var at int
 	switch {
 	case verdictSentence(sentences[0]):
 		at = 0
