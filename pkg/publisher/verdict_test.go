@@ -130,7 +130,7 @@ func TestIsVerdictOutsideTheAuditedClass(t *testing.T) {
 		"Please stop. I've answered this in the earlier comments.":                                                false,
 
 		"done, a repeated click from the list recenters now (1a2b3c4)":                                  false,
-		"Fair. Added error caching and stale reads up to a TTL":                                   false,
+		"Fair. Added error caching and stale reads up to a TTL":                                         false,
 		"Valid, fixed in 1a2b3c4. Rejecting a late first 200 would fail envs the old gate let through.": false,
 		"Correct, the && short-circuit exempted the exit event from the id check too. Split it.":        false,
 		"Real, and reachable beyond navigation: the host also re-resolves on fullscreen changes":        false,
@@ -165,6 +165,13 @@ func TestIsVerdictOutsideTheAuditedClass(t *testing.T) {
 		"The ordering is intentional. Fixed the retry count though.":             false,
 		"Not a bug, I'll push a fix for the other thing":                         false,
 		"this is intentional, i think":                                           false,
+		"This is intentional, but it should be fixed.":                           false,
+		"Intended, though we should fix it in a follow-up":                       false,
+		"By design. This needs to be changed before release.":                    false,
+		"This is expected behavior. The new path is broken.":                     false,
+		"This is expected. The failure is a real bug in the caller.":             false,
+		"Intentional. The deadline gap is real and pre-existing":                 true,
+		"Intentional, a bigger hit area should change both together.":            true,
 		"The `if` branch is intentional, see the design doc.":                    true,
 		"No, this is intentional: the cache is invalidated by the writer.":       true,
 		"<!-- template -->\n**By design.** The gateway retries once.":            true,
@@ -260,6 +267,32 @@ func TestReplyReactor_VerdictDismissesTheFindingWithAReactionAndNoModelReply(t *
 	}
 	if len(gh.reactions) != 0 || rep.AlreadyHandled != 1 || len(rep.Verdicts) != 0 || *runs != 0 || len(gh.posted) != 0 {
 		t.Fatalf("a second scan is a no-op: reactions=%v rep=%+v runs=%d", gh.reactions, rep, *runs)
+	}
+}
+
+func TestReplyReactor_VerdictUnderReactDismissesLikeAThumbsDownContests(t *testing.T) {
+	r, gh, ledger, runs := verdictFixture(ReplyModeReact, t)
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(gh.reactions) != "[101]" || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || *runs != 0 || len(gh.posted) != 0 {
+		t.Fatalf("reactions=%v states=%v runs=%d posted=%q", gh.reactions, ledger.states, *runs, gh.posted)
+	}
+	if row := ledger.rows[0]; row.Outcome != OutcomeSettledVerdict || len(rep.Verdicts) != 1 {
+		t.Fatalf("row=%+v rep=%+v", row, rep)
+	}
+}
+
+func TestReplyReactor_VerdictRecordedByAnotherLeaderIsReportedOnce(t *testing.T) {
+	r, gh, ledger, _ := verdictFixture(ReplyModeRespond, t)
+	ledger.recordExists = true
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Verdicts) != 0 || rep.Recorded != 0 || len(rep.Handled) != 0 || len(gh.posted) != 0 {
+		t.Fatalf("the leader that recorded the row reports the verdict: rep=%+v", rep)
 	}
 }
 

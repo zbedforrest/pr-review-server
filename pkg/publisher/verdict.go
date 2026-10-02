@@ -77,6 +77,13 @@ var (
 	// A fix commitment in the same sentence means the author is changing the
 	// code after all ("That's fine, I'll fix it anyway").
 	verdictFixRe = regexp.MustCompile(`\b(?:i'?ll|i will|we'?ll|we will|will|let me|going to|gonna)\s+(?:fix|change|update|remove|add|revert|address|drop|rework|adjust|rename|move|apply|push|clean(?: it)? up)\b|(?:^|[,;:]\s*|\b(?:i|we|so|and|but)(?:'ve| have|'m| am|'re| are)? )(?:fixed|fixing|changed|changing|updated|updating|removed|removing|reverted|reverting|addressed|addressing|reworked|applied|applying|pushed|pushing)\b|\b(?:but|however|though|although|except)\b[^.]*\b(?:bug|wrong|broken|incorrect|a problem|an issue|real gap)\b`)
+	// A modal fix request ("but it should be fixed", "we need to change
+	// this") is a commitment too; the subject guard keeps "a bigger hit area
+	// should change both together" out of it.
+	verdictModalFixRe = regexp.MustCompile(`(?:^|\b(?:it|this|that|these|those|we|i|which))\s+(?:should|needs? to|must|ought to|has to|have to)\s+(?:be\s+)?(?:fixed|changed|updated|removed|reverted|addressed|fix|change|update|remove|revert|address)\b`)
+	// A later sentence that calls something broken keeps the model path even
+	// without a contrast word ("Expected. The new path is broken.").
+	verdictDefectRe = regexp.MustCompile(`\b(?:is|are|was|were)\s+(?:(?:actually|still|indeed|also|genuinely|really)\s+)?(?:a\s+)?(?:real\s+)?(?:bug|broken|wrong|incorrect|problem|issue|regression)\b|\b(?:a |the )?real (?:bug|issue|problem|gap)\b`)
 	// Editing the PR text is not a code fix ("That is the goal. I updated the
 	// description.").
 	verdictDocFixRe = regexp.MustCompile(`\b(?:fixed|fixing|changed|changing|updated|updating|added|adding|will update|i'?ll update)\s+(?:the |a |an )?(?:pr |ticket )?(?:description|title|docstring|comment|docs?|readme|changelog|note)\b`)
@@ -115,18 +122,19 @@ func IsVerdict(body string) bool {
 		return false
 	}
 	for _, later := range sentences[at+1:] {
-		if claimsFix(later) {
+		if claimsFix(later) || verdictDefectRe.MatchString(later) {
 			return false
 		}
 	}
 	return true
 }
 
-// claimsFix reports whether a sentence says the code was or will be changed;
-// a verdict followed by one ("Expected. Fixed in abc1234") keeps the fix
-// claim path.
+// claimsFix reports whether a sentence says the code was, will be or should
+// be changed; a verdict followed by one ("Expected. Fixed in abc1234") keeps
+// the fix claim path.
 func claimsFix(sentence string) bool {
-	return verdictFixRe.MatchString(verdictDocFixRe.ReplaceAllString(sentence, " "))
+	sentence = verdictDocFixRe.ReplaceAllString(sentence, " ")
+	return verdictFixRe.MatchString(sentence) || verdictModalFixRe.MatchString(sentence)
 }
 
 // verdictSentences returns the reply's sentences, lowercased, with quoted
@@ -201,9 +209,11 @@ var htmlCommentRe = regexp.MustCompile(`(?s)<!--.*?-->`)
 // settleVerdict acts on an author verdict without running the reply model:
 // the finding is dismissed, the author's comment gets a thumbs-up, and the
 // reply row is recorded with OutcomeSettledVerdict so no text step ever runs
-// on it. Shadow mode reacts but leaves the finding's state alone, like the
-// rest of its paths, and records OutcomeShadowedVerdict so a later respond
-// scan dismisses the finding. Every write is idempotent and the outcome goes
+// on it. React and respond both dismiss, the same modes under which a
+// thumbs-down writes contested. Shadow reacts but leaves the finding's state
+// alone, like the rest of its paths, and records OutcomeShadowedVerdict so a
+// later respond scan dismisses the finding. A new row another leader
+// recorded first is left to that leader, so one verdict is reported once. Every write is idempotent and the outcome goes
 // last, so a failure part way is finished by the next scan, which sees a row
 // with no outcome. The dismissal is keyed by the thread's fingerprint, which is what
 // the publisher checks before posting any later wording of the finding.
@@ -233,10 +243,11 @@ func (r ReplyReactor) settleVerdict(ctx context.Context, t db.PublishedReplyTarg
 		if err != nil {
 			return err
 		}
-		if created {
-			rep.Recorded++
-			rep.Handled = append(rep.Handled, row)
+		if !created {
+			return nil
 		}
+		rep.Recorded++
+		rep.Handled = append(rep.Handled, row)
 	case row.Action != ReplyActionReacted:
 		if err := r.Ledger.SetPublishedReplyAction(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, ReplyActionReacted); err != nil {
 			return err

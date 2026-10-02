@@ -160,6 +160,7 @@ type fakeReplyLedger struct {
 	mu       sync.Mutex
 
 	failOutcomeOnce bool
+	recordExists    bool // another leader inserted the row between the scan's read and this write
 }
 
 func (f *fakeReplyLedger) ListUnlinkedPublishedFindings() ([]db.UnlinkedPublishedFinding, error) {
@@ -305,6 +306,9 @@ func (f *fakeReplyLedger) ContestPublishedFinding(_, _ string, _ int, fingerprin
 var holdCite = []EvidenceRef{{File: "a.go", Line: 12}}
 
 func (f *fakeReplyLedger) RecordPublishedReply(r *db.PublishedReply) (bool, error) {
+	if f.recordExists {
+		return false, nil
+	}
 	for _, x := range f.rows {
 		if x.AuthorCommentID == r.AuthorCommentID {
 			return false, nil

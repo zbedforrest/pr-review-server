@@ -48,8 +48,8 @@ func (p *Poller) recordHygiene(pr github.PullRequest, h publisher.Hygiene) {
 }
 
 // recordHygieneEvent writes one hygiene event outside a publish round: the
-// publish gate records health.ActionPublishDenied through it, and the author
-// verdict fast path will record health.ActionVerdictSettled.
+// publish gate records health.ActionPublishDenied through it. The reply scan
+// emits health.ActionVerdictSettled from replyTelemetryEvents instead.
 func (p *Poller) recordHygieneEvent(pr github.PullRequest, action, label string) {
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
