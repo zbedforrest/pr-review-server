@@ -75,8 +75,8 @@ type fakeReplyGH struct {
 
 	// resolved lists the thread node ids ResolveThread was called with;
 	// every root comment opens thread "T<id>".
-	resolved   []string
-	resolveErr error
+	resolved      []string
+	resolveErr    error
 	failReactions bool
 	reactionLists []int64
 }
@@ -637,8 +637,8 @@ func TestReplyReactor_HoldLeavesTheThreadOpen(t *testing.T) {
 	if _, err := r.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(gh.posted) != 1 || len(gh.resolved) != 0 || ledger.states["a.go:1:abc"] != "" {
-		t.Fatalf("posted=%v resolved=%v states=%v", gh.posted, gh.resolved, ledger.states)
+	if len(gh.posted) != 1 || len(gh.resolved) != 0 || ledger.states["a.go:1:abc"] != db.PublishedStateContested {
+		t.Fatalf("a posted hold contests the finding but leaves its thread open: posted=%v resolved=%v states=%v", gh.posted, gh.resolved, ledger.states)
 	}
 }
 
@@ -1955,13 +1955,6 @@ func TestReplyReactor_ResumedRenderedDecisionIsCappedWhole(t *testing.T) {
 	}
 }
 
-type fakeResolver struct{ resolved []int64 }
-
-func (f *fakeResolver) ResolveThread(_ context.Context, _, _ string, _ int, rootCommentID int64) error {
-	f.resolved = append(f.resolved, rootCommentID)
-	return nil
-}
-
 func TestReplyReactor_HoldWithoutACitationAbstainsWithAReaction(t *testing.T) {
 	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
 		return ReplyDecision{Decision: DecisionHold, Reply: "The gate is not present at this commit.", React: false}, nil
@@ -1983,37 +1976,35 @@ func TestReplyReactor_HoldWithoutACitationAbstainsWithAReaction(t *testing.T) {
 }
 
 func TestReplyReactor_WithdrawDismissesTheFindingResolvesTheThreadAndSaysSo(t *testing.T) {
-	resolver := &fakeResolver{}
 	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
 		return ReplyDecision{Decision: DecisionWithdraw, Reply: "Withdrawing this finding: the guard on a.go:8 runs before this call, so the dereference cannot be reached with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 8}}, React: true}, nil
 	})
-	r.Threads = resolver
+	r.ResolveThreads = true
 	gh.threads["acme/example#7"][1].Body = "This is intentional, the caller guards it and the value is never nil here."
 	rep, _ := r.Run(context.Background())
 	row := ledger.rows[0]
 	if rep.Responded != 1 || len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], "Withdrawing this finding: the guard on a.go:8") || strings.Contains(gh.posted[0], "accepted risk") {
 		t.Fatalf("a withdrawal keeps its withdrawing sentence and asks nothing: rep=%+v posted=%q", rep, gh.posted)
 	}
-	if row.Decision != DecisionWithdraw || row.Outcome != "posted" || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || fmt.Sprint(resolver.resolved) != "[100]" || fmt.Sprint(gh.reactions) != "[101]" {
-		t.Fatalf("row=%+v states=%v resolved=%v reactions=%v", row, ledger.states, resolver.resolved, gh.reactions)
+	if row.Decision != DecisionWithdraw || row.Outcome != "posted" || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || fmt.Sprint(gh.resolved) != "[T100]" || fmt.Sprint(gh.reactions) != "[101]" {
+		t.Fatalf("row=%+v states=%v resolved=%v reactions=%v", row, ledger.states, gh.resolved, gh.reactions)
 	}
 
-	resolver = &fakeResolver{}
 	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
 		return ReplyDecision{Decision: DecisionConcede, Reply: "The guard on a.go:8 runs before this call, so the finding does not apply.", Cited: []EvidenceRef{{File: "a.go", Line: 8}}, React: true}, nil
 	})
-	r.Threads = resolver
+	r.ResolveThreads = true
 	r.Run(context.Background())
-	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || fmt.Sprint(resolver.resolved) != "[100]" {
-		t.Fatalf("a concession resolves the thread too: states=%v resolved=%v", ledger.states, resolver.resolved)
+	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || fmt.Sprint(gh.resolved) != "[T100]" {
+		t.Fatalf("a concession resolves the thread too: states=%v resolved=%v", ledger.states, gh.resolved)
 	}
 
 	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
 		return ReplyDecision{Decision: DecisionWithdraw, Reply: "Withdrawing this finding: the guard on a.go:8 runs first.", Cited: []EvidenceRef{{File: "a.go", Line: 8}}, React: true}, nil
 	})
 	r.Run(context.Background())
-	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || len(gh.posted) != 1 {
-		t.Fatalf("no resolver configured is a no-op, not an error: states=%v posted=%v", ledger.states, gh.posted)
+	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || len(gh.posted) != 1 || len(gh.resolved) != 0 {
+		t.Fatalf("thread resolution off is a no-op, not an error: states=%v posted=%v resolved=%v", ledger.states, gh.posted, gh.resolved)
 	}
 }
 
@@ -2123,11 +2114,9 @@ func TestReplyReactor_HandsTheModelThePROtherThreadsAndBody(t *testing.T) {
 }
 
 func TestReplyReactor_LegacyPostsAWithdrawAsAConcessionAndResolvesNothing(t *testing.T) {
-	resolver := &fakeResolver{}
 	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
 		return ReplyDecision{Decision: DecisionWithdraw, Reply: "Withdrawing this finding: the guard on a.go:8 runs before this call, so the dereference cannot be reached with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 8}}, React: true}, nil
 	})
-	r.Threads = resolver
 	r.Legacy = true
 	gh.threads["acme/example#7"][1].Body = "This is intentional, the caller guards it and the value is never nil here."
 	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
@@ -2137,8 +2126,8 @@ func TestReplyReactor_LegacyPostsAWithdrawAsAConcessionAndResolvesNothing(t *tes
 	if rep.Responded != 1 || len(gh.posted) != 1 || strings.Contains(gh.posted[0], "Withdrawing") {
 		t.Fatalf("legacy renders the intent path as before: rep=%+v posted=%q", rep, gh.posted)
 	}
-	if ledger.rows[0].Decision != DecisionConcede || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || len(resolver.resolved) != 0 {
-		t.Fatalf("row=%+v states=%v resolved=%v", ledger.rows[0], ledger.states, resolver.resolved)
+	if ledger.rows[0].Decision != DecisionConcede || ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || len(gh.resolved) != 0 {
+		t.Fatalf("row=%+v states=%v resolved=%v", ledger.rows[0], ledger.states, gh.resolved)
 	}
 }
 
