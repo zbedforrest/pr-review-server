@@ -30,6 +30,14 @@ type compareResult struct {
 	Error string   `json:"error,omitempty"`
 }
 
+// compareFilesCap is the most files the compare endpoint returns; it does not
+// page them, so a list this long may be missing the cited file.
+const compareFilesCap = 300
+
+func (r compareResult) complete() bool {
+	return r.Error == "" && len(r.Files) < compareFilesCap
+}
+
 // store caches sidecars as <owner>_<repo>_<number>_<sha7>.json and compares
 // under compare/<owner>_<repo>_<base7>_<head7>.json. A sidecar the server
 // does not have is remembered with a .missing marker so it is asked for once.
@@ -86,7 +94,7 @@ func (s *store) compare(owner, repo, base, head string) (compareResult, bool, er
 	if raw, err := os.ReadFile(path); err == nil {
 		var res compareResult
 		if err := json.Unmarshal(raw, &res); err == nil {
-			return res, res.Error == "", nil
+			return res, res.complete(), nil
 		}
 	}
 	if s.f == nil {
@@ -100,7 +108,7 @@ func (s *store) compare(owner, repo, base, head string) (compareResult, bool, er
 	if err := writeFileAtomic(path, raw); err != nil {
 		return compareResult{}, false, err
 	}
-	return res, res.Error == "", nil
+	return res, res.complete(), nil
 }
 
 // writeFileAtomic publishes the file with a rename so a concurrent reader

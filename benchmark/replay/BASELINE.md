@@ -1,8 +1,10 @@
 # Publisher replay baseline
 
 Produced by `go run ./cmd/publishreplay` on master at `b5b37a7` (publisher code unchanged by the harness
-commit) over the 551 PR dumps the comment-system audit collected, with their review sidecars. Date: 2026-10-01.
-Policy: inline cap 3, minimum severity medium, unverified claims folded (the shipped defaults).
+commits) over the 551 PR dumps the comment-system audit collected, with their review sidecars. Date: 2026-10-02,
+after the harness started treating a compare at the endpoint's 300-file cap as unknown (18 resolutions moved
+from the known columns; see limits). Policy: inline cap 3, minimum severity medium, unverified claims folded
+(the shipped defaults).
 
 Every later publisher PR reports the same JSON block before and after its change. Targets are from the
 program spec: `same_marker_reposts` 0, `same_defect_reposts_per_pr` at most 0.05, `fixed_without_file_change`
@@ -25,8 +27,8 @@ program spec: `same_marker_reposts` 0, `same_defect_reposts_per_pr` at most 0.05
 | same_round_duplicates | 5 | two roots in one round that alias each other; ledger aliasing cannot remove these |
 | prs_with_reposts | 31 | |
 | fixed | 245 | ledger rows flipped out of open |
-| fixed_without_file_change | 56 | cited file untouched between LastSeenSHA and HeadSHA; target 0 |
-| fixed_file_change_unknown | 0 | every compare resolved |
+| fixed_without_file_change | 48 | cited file untouched between LastSeenSHA and HeadSHA; target 0 |
+| fixed_file_change_unknown | 18 | the compare listed 300 files, the endpoint's cap, so the cited file may be missing from it |
 | same_commit_resolves | 0 | structurally 0 in replay, see limits; `same_commit_rounds` is the exposure |
 | comments_per_push_p50 | 1 | inline comments per replayed round |
 | rounds_per_pr_p50 | 1 | over prs_with_rounds |
@@ -39,7 +41,7 @@ prose, so boilerplate words inflate the overlap), 209 of 498 threads resolved (0
 
 PR numbers only, repositories omitted. Top reposts (same marker + same defect / rounds): #31655 11 / 9,
 #142 3 / 8, #31365 3 / 4, #160 2 / 10. Top false fixes (fixed_without_file_change / fixed): #31944 5 / 6,
-#31365 4 / 9, #32308 4 / 7, #160 3 / 7. The full per-PR table is the `--csv` output; it names real repositories, so write it outside the repo and
+#32308 4 / 7, #160 3 / 7, #31655 3 / 14. Unknown compares concentrate on #30624 (4 / 8) and #31365 (4 / 9). The full per-PR table is the `--csv` output; it names real repositories, so write it outside the repo and
 never commit it.
 
 ## How to reproduce
@@ -74,4 +76,5 @@ rather than drop the test.
   the observed column is a calibration aid, not the same rule as the replayed one.
 - A 404 sidecar is remembered with a `.missing` marker; delete the marker to ask the server again.
 - Changed files come from a three-dot compare, which after a rebase spans the whole PR diff and undercounts
-  `fixed_without_file_change`.
+  `fixed_without_file_change`. The endpoint lists at most 300 files and does not page them, so a compare at
+  that size cannot prove the cited file untouched and is counted in `fixed_file_change_unknown`.

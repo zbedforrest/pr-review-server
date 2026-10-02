@@ -297,7 +297,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 
 // countResolutions classifies every finding row the round flipped out of
 // open: same commit, cited file untouched, or a change the compare could not
-// be fetched for.
+// be fetched or was too large to list in full.
 func countResolutions(d *prDump, s *store, head string, previous, after []db.PublishedFinding, pr *PRResult, logf func(string, ...any)) {
 	wasOpen := map[string]db.PublishedFinding{}
 	for _, row := range previous {
@@ -356,7 +356,7 @@ func fileChanged(changed []string, file string) bool {
 }
 
 func sameFile(a, b string) bool {
-	return a == b || strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a)
+	return a == b
 }
 
 // externalCommentsBefore is what other reviewers had on the PR when the
@@ -440,7 +440,7 @@ const (
 func classifyRepost(p post, earlier []post) repostKind {
 	kind := repostNone
 	for _, e := range earlier {
-		if e.FindingID == p.FindingID {
+		if p.FindingID != "" && e.FindingID == p.FindingID {
 			return repostSameMarker
 		}
 		if sameDefect(p.File, p.Line, p.RawText, p.Subjects, e.File, e.Line, e.RawText, e.Subjects) {

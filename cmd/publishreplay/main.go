@@ -122,6 +122,9 @@ func filterDumps(dumps []*prDump, prFilter string, limit int) ([]*prDump, error)
 		if len(kept) == 0 {
 			return nil, fmt.Errorf("no dump matches --pr %q", prFilter)
 		}
+		if owner == "" && len(kept) > 1 {
+			return nil, fmt.Errorf("--pr %q matches %d dumps; qualify it with the owner", prFilter, len(kept))
+		}
 		dumps = kept
 	}
 	if limit > 0 && len(dumps) > limit {

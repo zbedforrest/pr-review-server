@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,8 +102,11 @@ func TestSameDefect(t *testing.T) {
 	if !sameDefect("api/users.go", 140, a, []string{"fetchuser"}, "api/users.go", 143, b, []string{"fetchuser"}) {
 		t.Fatal("shared subject must match")
 	}
-	if !sameDefect("api/users.go", 140, a, nil, "src/api/users.go", 145, a, nil) {
-		t.Fatal("same text, path suffix and nearby line must match")
+	if !sameDefect("api/users.go", 140, a, nil, "api/users.go", 145, a, nil) {
+		t.Fatal("same text, same file and nearby line must match")
+	}
+	if sameDefect("api/users.go", 140, a, nil, "src/api/users.go", 145, a, nil) {
+		t.Fatal("a nested path that merely ends in the other must not match")
 	}
 	if sameDefect("api/users.go", 140, a, []string{"fetchuser"}, "api/users.go", 200, a, []string{"fetchuser"}) {
 		t.Fatal("lines more than ten apart must not match")
@@ -348,6 +352,65 @@ func TestFilterDumps(t *testing.T) {
 	}
 	if got, err := filterDumps(dumps, "", 1); err != nil || len(got) != 1 {
 		t.Fatalf("limit = %d dumps, %v", len(got), err)
+	}
+	forks := []*prDump{{Number: 1, Owner: "acme", Repo: "example"}, {Number: 1, Owner: "other", Repo: "example"}}
+	if _, err := filterDumps(forks, "example#1", 0); err == nil {
+		t.Fatal("a bare filter matching two owners must be an error")
+	}
+	if got, err := filterDumps(forks, "other/example#1", 0); err != nil || len(got) != 1 || got[0].Owner != "other" {
+		t.Fatalf("owner-qualified fork filter = %d dumps, %v", len(got), err)
+	}
+}
+
+func TestClassifyRepost_EmptyMarkerNeverMatches(t *testing.T) {
+	earlier := []post{{FindingID: "", File: "a.go", Line: 1, RawText: "x"}}
+	if classifyRepost(post{FindingID: "", File: "b.go", Line: 500, RawText: "y"}, earlier) != repostNone {
+		t.Fatal("two posts without a marker must not count as a same-marker repost")
+	}
+	if classifyRepost(post{FindingID: "f1", File: "b.go", Line: 500}, []post{{FindingID: "f1"}}) != repostSameMarker {
+		t.Fatal("an equal marker must match")
+	}
+}
+
+type fixedFilesFetcher struct{ n int }
+
+func (fixedFilesFetcher) Sidecar(string, string, int, string) ([]byte, error) {
+	return nil, errNotFound
+}
+
+func (f fixedFilesFetcher) Compare(string, string, string, string) (compareResult, error) {
+	files := make([]string, f.n)
+	for i := range files {
+		files[i] = fmt.Sprintf("f%d.go", i)
+	}
+	return compareResult{Files: files}, nil
+}
+
+func TestStoreCompare_CappedFileListIsUnknown(t *testing.T) {
+	cases := []struct {
+		files int
+		known bool
+	}{
+		{files: compareFilesCap - 1, known: true},
+		{files: compareFilesCap, known: false},
+		{files: compareFilesCap + 5, known: false},
+	}
+	for _, c := range cases {
+		dir := t.TempDir()
+		st, err := newStore(dir, fixedFilesFetcher{n: c.files})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, known, err := st.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || known != c.known {
+			t.Errorf("%d files: fresh known = %v, %v, want %v", c.files, known, err, c.known)
+		}
+		cached, err := newStore(dir, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, known, err := cached.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || known != c.known {
+			t.Errorf("%d files: cached known = %v, %v, want %v", c.files, known, err, c.known)
+		}
 	}
 }
 
