@@ -57,13 +57,13 @@ export function reconcileApprovalTarget(target: ApprovalTarget, pr: PR, latest?:
     [!!latest && latest.target_id !== target.target_id, 'superseded'],
     [pr.commit_sha !== target.revision, 'head_changed'],
     [!!pr.hidden, 'hidden'],
-    [!!pr.draft && unlisted('pr_draft'), 'draft'],
+    [!!pr.draft && unlisted('pr_draft'), 'pr_draft'],
     [!!pr.pr_state && pr.pr_state !== 'open', 'closed'],
     [!!pr.is_mine, 'self_authored'],
     [pr.ci_state === 'failure' && unlisted('ci_failed'), 'ci_failed'],
     [pr.ci_state === 'pending' && unlisted('ci_pending'), 'ci_pending'],
     [(pr.review_decision === 'CHANGES_REQUESTED' || pr.my_review_status === 'CHANGES_REQUESTED') && unlisted('human_changes_requested'), 'human_changes_requested'],
-    [['pending', 'generating', 'agent_reviewing'].includes(pr.status) && unlisted('review_in_progress'), 'review_in_progress'],
+    [['generating', 'agent_reviewing'].includes(pr.status) && unlisted('review_in_progress'), 'review_in_progress'],
     [pr.my_review_status === 'APPROVED' && pr.my_review_commit_sha === pr.commit_sha, 'already_approved'],
   ];
   const reason = observed.find(([seen]) => seen)?.[1];

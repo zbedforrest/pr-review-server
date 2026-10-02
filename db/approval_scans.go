@@ -159,6 +159,7 @@ type ApprovalStore interface {
 	FinishApprovalValidation(int, string, string, time.Time, string, string) error
 	InvalidateApprovalTargets(string, string, int, string, time.Time) error
 	InvalidateUserApprovalTargets(int, string, string, int, string, time.Time) error
+	InvalidateMatchingApprovalTargets(int, string, string, int, ApprovalInvalidation, string, time.Time) error
 	PruneApprovalScans(time.Time) (int64, error)
 	RecordApprovalReuse(int, string, string, time.Time) error
 	FindApprovalReuse(int, string) (*ApprovalReuse, error)

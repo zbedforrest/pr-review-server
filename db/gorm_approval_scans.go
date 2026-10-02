@@ -11,6 +11,7 @@ import (
 	mrand "math/rand/v2"
 	"path"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1291,11 +1292,35 @@ func (g *GormDB) InvalidateApprovalTargets(owner, repo string, number int, reaso
 	return g.InvalidateUserApprovalTargets(0, owner, repo, number, reason, now)
 }
 func (g *GormDB) InvalidateUserApprovalTargets(user int, owner, repo string, number int, reason string, now time.Time) error {
+	return g.InvalidateMatchingApprovalTargets(user, owner, repo, number, ApprovalInvalidation{}, reason, now)
+}
+
+// ApprovalInvalidation narrows which of a pull request's targets an observed
+// change invalidates: OffHead selects targets assessed at an older head,
+// CandidatesOnly leaves non-candidates, which the change cannot make worse, and
+// Cleared selects completed results held back by any of these now-cleared reasons
+// and drops those reasons, so each clearing invalidates once.
+type ApprovalInvalidation struct {
+	OffHead        string
+	CandidatesOnly bool
+	Cleared        []string
+}
+
+func (g *GormDB) InvalidateMatchingApprovalTargets(user int, owner, repo string, number int, match ApprovalInvalidation, reason string, now time.Time) error {
 	return g.approvalTransaction(func(tx *gorm.DB) error {
 		q := tx.Where("owner = ? AND repo = ? AND number = ? AND execution_status IN ?", strings.ToLower(owner), strings.ToLower(repo), number, []string{"collecting", "investigating", "validating", "completed"})
 		q = q.Where("execution_status <> ? OR id IN (?)", "completed", tx.Model(&approvalProjection{}).Select("target_id"))
 		if user > 0 {
 			q = q.Where("user_id = ?", user)
+		}
+		if match.OffHead != "" {
+			q = q.Where("LOWER(expected_head_sha) <> ?", strings.ToLower(match.OffHead))
+		}
+		if match.CandidatesOnly {
+			q = q.Where("decision = ?", "candidate")
+		}
+		if len(match.Cleared) > 0 {
+			q = q.Where("execution_status = ?", "completed")
 		}
 		var targets []ApprovalTarget
 		if err := q.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Find(&targets).Error; err != nil {
@@ -1304,6 +1329,13 @@ func (g *GormDB) InvalidateUserApprovalTargets(user int, owner, repo string, num
 		for _, t := range targets {
 			var reasons []string
 			_ = json.Unmarshal([]byte(t.ReasonCodesJSON), &reasons)
+			if len(match.Cleared) > 0 {
+				kept := slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return slices.Contains(match.Cleared, r) })
+				if len(kept) == len(reasons) {
+					continue
+				}
+				reasons = kept
+			}
 			found := false
 			for _, r := range reasons {
 				if r == reason {

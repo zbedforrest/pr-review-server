@@ -559,10 +559,10 @@ func (s *Server) approvalReadResponseFrom(ctx context.Context, user *db.User, in
 		case pr.GetHead().GetSHA() != target.ExpectedHeadSHA:
 			reason = "head_changed"
 		case pr.GetDraft():
-			reason = "draft"
+			reason = "pr_draft"
 		case pr.GetState() != "open":
 			reason = "closed"
-		case row.CIState == "failure" || row.CIState == "pending":
+		case row.CIState == "failure" || row.CIState == "error" || row.CIState == "pending":
 			reason = "observed_ci_change"
 		case row.ReviewDecision == "CHANGES_REQUESTED":
 			reason = "observed_review_change"

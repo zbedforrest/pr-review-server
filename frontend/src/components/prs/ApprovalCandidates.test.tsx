@@ -87,13 +87,30 @@ describe('approval investigation controls', () => {
     expect(screen.getByText('Native model unavailable')).toBeTruthy();
     expect((screen.getByText('Investigate 1 PRs') as HTMLButtonElement).disabled).toBe(true);
   });
+  it('files a candidate invalidated by a CI change under blocked with the reason', async () => {
+    vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'candidate', freshness_state: 'stale', reason_codes: ['observed_ci_change'], summary: 'Old decision' } as unknown as ApprovalTarget]);
+    mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
+    expect((await screen.findByText('Blocked', { selector: '.approval-status' }))).toBeTruthy();
+    expect(screen.getByText('CI changed', { selector: '.approval-reason' })).toBeTruthy();
+  });
+  it('offers a recheck once the blocker that held a result back clears', async () => {
+    vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'needs_attention', freshness_state: 'stale', reason_codes: ['blocker_cleared'], summary: 'Old decision' } as unknown as ApprovalTarget]);
+    mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
+    expect(await screen.findByText('Out of date', { selector: '.approval-status' })).toBeTruthy();
+    expect(screen.getByText('A blocker cleared', { selector: '.approval-reason' })).toBeTruthy();
+  });
+  it('files a high score held back only by running CI under blocked', async () => {
+    vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'needs_attention', freshness_state: 'current', valid_until: new Date(Date.now() + 300000).toISOString(), reason_codes: ['ci_pending'], summary: 'Waiting', score: { value: 95, threshold: 80, candidate: false, blockers: [], deductions: [{ reason: 'ci_pending', points: 5 }], concerns: [] } } as unknown as ApprovalTarget]);
+    mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
+    expect(await screen.findByText('Waiting on CI', { selector: '.approval-status--blocked' })).toBeTruthy();
+  });
   it('shows expired candidates in other results and explicitly revalidates only once', async () => {
     vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, execution_status: 'completed', decision: 'candidate', freshness_state: 'expired', valid_until: new Date(0).toISOString(), reason_codes: [], summary: 'Old decision' } as unknown as ApprovalTarget]);
     mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
-    await screen.findByText('Other results (1)');
+    await screen.findByText('Needs recheck');
     await waitFor(() => expect(api.approvalRequest).toHaveBeenCalledTimes(1));
     expect(api.approvalRequest).toHaveBeenCalledWith('approval-candidates/revalidate', { target_ids: ['target'] });
-    expect(screen.queryByText('View evidence')).toBeNull();
+    expect(document.querySelector('.approval-row--candidate')).toBeNull();
   });
 });
 
@@ -103,14 +120,14 @@ it('withdraws a cached open evidence decision when the current projection become
   vi.mocked(api.approvalRequest).mockResolvedValue(candidate);
   const { client } = mount();
   fireEvent.click(await screen.findByText('View evidence'));
-  await screen.findByText('candidate');
+  await waitFor(() => expect(document.querySelector('.approval-detail .approval-status--candidate')).not.toBeNull());
   await act(async () => { client.setQueryData(['approval-targets'], [{ ...candidate, freshness_state: 'stale' }]); });
-  await waitFor(() => expect(screen.queryByText('candidate')).toBeNull());
-  expect(screen.queryByText('View evidence')).toBeNull();
+  await waitFor(() => expect(document.querySelector('.approval-status--candidate')).toBeNull());
+  expect(document.querySelector('.approval-row--candidate')).toBeNull();
   expect(screen.getAllByText('Historical rationale').length).toBeGreaterThan(0);
 });
 
-it('withdraws matching cached candidates immediately after review activity without a model request', async () => {
+it('refetches candidates after review activity without a model request', async () => {
   const candidate = { target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'candidate', freshness_state: 'current', valid_until: new Date(Date.now() + 300000).toISOString(), reason_codes: [], summary: 'Supported' } as unknown as ApprovalTarget;
   vi.mocked(api.fetchApprovalTargets).mockResolvedValue([candidate]);
   const { client } = mount();
@@ -118,9 +135,18 @@ it('withdraws matching cached candidates immediately after review activity witho
   vi.mocked(api.fetchApprovalTargets).mockResolvedValue([{ ...candidate, freshness_state: 'stale' }]);
   const listener = vi.mocked(subscribeToWebSocketMessages).mock.calls[0][0];
   act(() => listener({ type: 'pr_updated', payload: { owner: 'acme', repo: 'example', number: 1 } }));
-  expect(client.getQueryData<ApprovalTarget[]>(['approval-targets'])?.[0].freshness_state).toBe('stale');
-  await waitFor(() => expect(screen.queryByText('View evidence')).toBeNull());
+  expect(client.getQueryData<ApprovalTarget[]>(['approval-targets'])?.[0].freshness_state).toBe('current');
+  await waitFor(() => expect(document.querySelector('.approval-row--candidate')).toBeNull());
   expect(api.approvalRequest).not.toHaveBeenCalled();
+});
+it('withdraws matching candidates immediately when the pull request is deleted', async () => {
+  const candidate = { target_id: 'target', scan_id: 'scan', owner: 'acme', repo: 'example', number: 1, revision: 'a'.repeat(40), execution_status: 'completed', decision: 'candidate', freshness_state: 'current', valid_until: new Date(Date.now() + 300000).toISOString(), reason_codes: [], summary: 'Supported' } as unknown as ApprovalTarget;
+  vi.mocked(api.fetchApprovalTargets).mockResolvedValue([candidate]);
+  const { client } = mount();
+  await screen.findByText('View evidence');
+  const listener = vi.mocked(subscribeToWebSocketMessages).mock.calls[0][0];
+  act(() => listener({ type: 'pr_deleted', payload: { owner: 'acme', repo: 'example', number: 1 } }));
+  expect(client.getQueryData<ApprovalTarget[]>(['approval-targets'])?.[0].freshness_state).toBe('stale');
 });
 it('does not subscribe to approval invalidation when disabled', async () => {
   vi.mocked(api.fetchApprovalCapabilities).mockResolvedValue({ enabled: false, available: false, unavailable_reason: 'Disabled', max_targets: 50 });
@@ -170,8 +196,8 @@ it('withdraws the row when fresh evidence reports a base change before the list 
   mount();
   fireEvent.click(await screen.findByText('View evidence'));
   await screen.findByText('base changed');
-  expect(screen.queryByText('candidate')).toBeNull();
-  expect(screen.queryByText('View evidence')).toBeNull();
+  expect(document.querySelector('.approval-status--candidate')).toBeNull();
+  expect(document.querySelector('.approval-row--candidate')).toBeNull();
 });
 it('keeps an initial evidence request running when an unrelated PR changes', async () => {
   const candidate = evidenceCandidate();
@@ -184,7 +210,7 @@ it('keeps an initial evidence request running when an unrelated PR changes', asy
   const listeners = vi.mocked(subscribeToWebSocketMessages).mock.calls;
   act(() => listeners[listeners.length - 1][0]({ type: 'pr_updated', payload: { owner: 'acme', repo: 'example', number: 2 } }));
   await act(async () => finish(candidate));
-  await screen.findByText('candidate');
+  await waitFor(() => expect(document.querySelector('.approval-detail .approval-status--candidate')).not.toBeNull());
   expect(api.approvalRequest).toHaveBeenCalledTimes(1);
   expect(screen.queryByText('CancelledError')).toBeNull();
 });
@@ -259,8 +285,8 @@ it('shows every scored result with its score, highest first', async () => {
   const scored = (number: number, value: number) => ({ target_id: `t${number}`, scan_id: 'scan', owner: 'acme', repo: 'example', number, execution_status: 'completed', decision: 'needs_attention', freshness_state: 'current', valid_until: new Date(Date.now() + 60000).toISOString(), reason_codes: ['score_below_threshold'], summary: '', score: { value, threshold: 80, candidate: false, readiness: 0, risk: 0, model: 'jev', latency_ms: 1 } }) as unknown as ApprovalTarget;
   vi.mocked(api.fetchApprovalTargets).mockResolvedValue([scored(1, 35), scored(2, 72)]);
   mount(); fireEvent.click(await screen.findByText('Find approval candidates'));
-  await screen.findByText('Other results (2)');
-  const badges = Array.from(document.querySelectorAll('.approval-other .approval-score')).map(node => node.textContent);
+  await waitFor(() => expect(document.querySelectorAll('.approval-table .approval-score')).toHaveLength(2));
+  const badges = Array.from(document.querySelectorAll('.approval-table .approval-score')).map(node => node.textContent);
   expect(badges).toEqual(['72', '35']);
-  expect(document.querySelector('.approval-other .approval-score--mid')?.textContent).toBe('72');
+  expect(document.querySelector('.approval-table .approval-score--mid')?.textContent).toBe('72');
 });

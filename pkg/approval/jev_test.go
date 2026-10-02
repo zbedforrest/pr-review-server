@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func jevFixture(t *testing.T, answer func(question string, q map[string]any) map[string]any) (*httptest.Server, *[]map[string]any) {
@@ -151,5 +152,58 @@ func TestScrubSecretsRedactsCredentialsInEveryString(t *testing.T) {
 	}
 	if !strings.Contains(text, "[redacted]") {
 		t.Fatalf("expected redaction markers: %s", text)
+	}
+}
+
+func TestJevPendingCIBlocksCandidateWithASmallDeduction(t *testing.T) {
+	s := scoringSnapshot()
+	s.Checks = []Check{{Name: "unit", State: "pending", SHA: s.Revision.Head}}
+	a, _ := runScorer(t, s, func(id string, _ map[string]any) map[string]any {
+		switch {
+		case strings.HasSuffix(id, "_resolved"):
+			return map[string]any{"type": "noul", "noul": 1.0}
+		case strings.HasSuffix(id, "_impact"):
+			return impactAnswer("1")
+		case strings.HasSuffix(id, "_disposition"):
+			return map[string]any{"type": "choice", "choice": "fixed"}
+		}
+		return map[string]any{"type": "score", "score": 4.0}
+	})
+	if a.Score.Value != 100-pendingCIDeduction || a.Score.Candidate || a.Decision == "candidate" {
+		t.Fatalf("pending CI must cost %v points and block the candidate flag: %+v", pendingCIDeduction, a.Score)
+	}
+}
+
+func TestShortenKeepsValidUTF8(t *testing.T) {
+	got := shorten(strings.Repeat("é", 300), 401)
+	if !utf8.ValidString(got) {
+		t.Fatalf("shorten cut a multi-byte rune: %q", got)
+	}
+}
+
+func TestPendingCIWithAHighScoreIsNotReportedBelowThreshold(t *testing.T) {
+	for _, r := range scoreReasons(Score{Value: 95, Threshold: 80, Deductions: []Deduction{{"ci_pending", 5}}}) {
+		if r == "score_below_threshold" {
+			t.Fatal("a 95 held back only by pending CI is not below the threshold")
+		}
+	}
+}
+
+func TestJevUnreviewedHeadCostsFivePointsWithoutBlocking(t *testing.T) {
+	s := scoringSnapshot()
+	s.Sources = nil
+	a, _ := runScorer(t, s, func(id string, _ map[string]any) map[string]any {
+		switch {
+		case strings.HasSuffix(id, "_resolved"):
+			return map[string]any{"type": "noul", "noul": 1.0}
+		case strings.HasSuffix(id, "_impact"):
+			return impactAnswer("1")
+		case strings.HasSuffix(id, "_disposition"):
+			return map[string]any{"type": "choice", "choice": "fixed"}
+		}
+		return map[string]any{"type": "score", "score": 4.0}
+	})
+	if a.Score.Value != 100-noReviewDeduction || !a.Score.Candidate {
+		t.Fatalf("an unreviewed head should cost %v points and still be a candidate: %+v", noReviewDeduction, a.Score)
 	}
 }
