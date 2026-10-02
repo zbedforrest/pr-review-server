@@ -203,7 +203,7 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 		if err := p.Ledger.UpsertPublishedFinding(&resolved); err != nil {
 			return rep, fmt.Errorf("resolve finding %s: %w", id, err)
 		}
-		rep.Hygiene.noteResolved(row, r.HeadSHA, r.ChangedFiles)
+		rep.Hygiene.noteResolved(row, r.HeadSHA, r.changedFilesSince(row.LastSeenSHA))
 	}
 	return rep, nil
 }

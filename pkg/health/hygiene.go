@@ -55,9 +55,7 @@ var hygieneLabels = map[string]string{
 // packages assert they emit none of these, so wiring one means removing its
 // entry here.
 var UnwiredHygiene = map[string]string{
-	ActionRepeatAfterDismiss:     "W1-1 (dismissed rows suppress every later wording)",
-	ActionFixedWithoutFileChange: "W1-1 (changed-file compare threaded into the round)",
-	ActionVerdictSettled:         "W2-2 (author verdict fast path)",
+	ActionVerdictSettled: "W2-2 (author verdict fast path)",
 }
 
 // hygieneDetail is the publication hygiene line: every measured counter, zero

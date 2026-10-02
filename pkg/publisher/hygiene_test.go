@@ -1,8 +1,10 @@
 package publisher
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
@@ -13,6 +15,20 @@ func summaryOnly(head string) Round {
 	r.HeadSHA, r.RoundNumber = head, 0
 	r.Findings = []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "Narrative.")}
 	return r
+}
+
+// legacyRound publishes through the pre-ledger publisher that
+// PUBLISH_POLICY_V2=false still selects. The defects the counters exist for
+// can only happen there; the ledger policy twins below show they no longer do.
+func legacyRound(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round) Report {
+	t.Helper()
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: DefaultPolicy(), Now: func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }}
+	p.Policy.LegacyLedger = true
+	rep, err := p.Publish(context.Background(), r)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	return rep
 }
 
 func fingerprints(notes []HygieneNote) []string {
@@ -31,7 +47,7 @@ func TestHygiene_CleanRoundsReportNothing(t *testing.T) {
 	}
 	r2 := roundOne()
 	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
-	r2.ChangedFiles = map[string]bool{"a.go": true, "b.go": true}
+	r2.Changes = changed("a.go", "b.go")
 	rep = publishRound(t, gh, ledger, r2)
 	if h := rep.Hygiene; len(h.RepeatedPosts)+len(h.RepeatAfterDismiss)+len(h.FixedWithoutFileChange)+len(h.SameCommitResolves)+len(h.SeverityEscalations) != 0 {
 		t.Fatalf("unchanged findings on a new head hygiene = %+v, want empty", h)
@@ -40,10 +56,10 @@ func TestHygiene_CleanRoundsReportNothing(t *testing.T) {
 
 func TestHygiene_RepostOfAResolvedRootIsARepeatedPost(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, roundOne())
-	publishRound(t, gh, ledger, summaryOnly("sha-2"))
+	legacyRound(t, gh, ledger, roundOne())
+	legacyRound(t, gh, ledger, summaryOnly("sha-2"))
 
-	rep := publishRound(t, gh, ledger, func() Round { r := roundOne(); r.HeadSHA, r.RoundNumber = "sha-3", 0; return r }())
+	rep := legacyRound(t, gh, ledger, func() Round { r := roundOne(); r.HeadSHA, r.RoundNumber = "sha-3", 0; return r }())
 	if got := fingerprints(rep.Hygiene.RepeatedPosts); len(got) != 2 || !strings.Contains(strings.Join(got, ","), "c1") || !strings.Contains(strings.Join(got, ","), "m1") {
 		t.Fatalf("repeated posts = %v, want c1 and m1", got)
 	}
@@ -82,11 +98,11 @@ func TestHygiene_RepostOverADismissedRowIsARepeatAfterDismiss(t *testing.T) {
 
 func TestHygiene_ResolveOnTheSameHeadIsASameCommitResolve(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, roundOne())
+	legacyRound(t, gh, ledger, roundOne())
 
 	rerun := summaryOnly("sha-round-1")
-	rerun.ChangedFiles = map[string]bool{}
-	rep := publishRound(t, gh, ledger, rerun)
+	rerun.Changes = changed()
+	rep := legacyRound(t, gh, ledger, rerun)
 	if rep.Fixed != 3 {
 		t.Fatalf("precondition: every tracked finding resolves on a re-run, got %+v", rep)
 	}
@@ -113,11 +129,11 @@ func filedRound() Round {
 
 func TestHygiene_ResolveWithoutTheCitedFileChangingIsCounted(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, filedRound())
+	legacyRound(t, gh, ledger, filedRound())
 
 	gone := summaryOnly("sha-2")
-	gone.ChangedFiles = map[string]bool{"b.go": true}
-	rep := publishRound(t, gh, ledger, gone)
+	gone.Changes = changed("b.go")
+	rep := legacyRound(t, gh, ledger, gone)
 	got := fingerprints(rep.Hygiene.FixedWithoutFileChange)
 	if len(got) != 2 || !strings.HasPrefix(got[0], "a.go:") || !strings.HasPrefix(got[1], "a.go:") {
 		t.Fatalf("fixed without file change = %v, want the two a.go rows and not the b.go one", got)
@@ -132,9 +148,9 @@ func TestHygiene_ResolveWithoutTheCitedFileChangingIsCounted(t *testing.T) {
 
 func TestHygiene_UnknownChangedFilesCannotJudgeAResolve(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, roundOne())
+	legacyRound(t, gh, ledger, roundOne())
 
-	rep := publishRound(t, gh, ledger, summaryOnly("sha-2"))
+	rep := legacyRound(t, gh, ledger, summaryOnly("sha-2"))
 	if rep.Fixed != 3 || len(rep.Hygiene.FixedWithoutFileChange) != 0 || len(rep.Hygiene.SameCommitResolves) != 0 {
 		t.Fatalf("without a changed-file set nothing is counted: %+v", rep)
 	}
@@ -142,8 +158,8 @@ func TestHygiene_UnknownChangedFilesCannotJudgeAResolve(t *testing.T) {
 
 func TestHygiene_HigherSeverityOnAnExistingRowIsAnEscalation(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, roundOne())
-	publishRound(t, gh, ledger, summaryOnly("sha-2"))
+	legacyRound(t, gh, ledger, roundOne())
+	legacyRound(t, gh, ledger, summaryOnly("sha-2"))
 
 	back := roundOne()
 	back.HeadSHA, back.RoundNumber = "sha-3", 0
@@ -153,7 +169,7 @@ func TestHygiene_HigherSeverityOnAnExistingRowIsAnEscalation(t *testing.T) {
 			back.Findings[i].Severity = "critical"
 		}
 	}
-	rep := publishRound(t, gh, ledger, back)
+	rep := legacyRound(t, gh, ledger, back)
 	got := strings.Join(fingerprints(rep.Hygiene.SeverityEscalations), ",")
 	if len(rep.Hygiene.SeverityEscalations) != 2 || !strings.Contains(got, "m1") || !strings.Contains(got, "m2") {
 		t.Fatalf("escalations = %v, want the reposted m1 and the annotation m2, not the unchanged c1", got)
@@ -182,7 +198,7 @@ func TestHygiene_LowerOrEqualSeverityIsNotAnEscalation(t *testing.T) {
 
 func TestHygiene_OpenInlineRowRenderedAtHigherSeverityIsAnEscalation(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, roundOne())
+	legacyRound(t, gh, ledger, roundOne())
 
 	r2 := roundOne()
 	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
@@ -193,7 +209,7 @@ func TestHygiene_OpenInlineRowRenderedAtHigherSeverityIsAnEscalation(t *testing.
 		}
 	}
 	ledger.rows["c1"].Severity = "medium"
-	rep := publishRound(t, gh, ledger, r2)
+	rep := legacyRound(t, gh, ledger, r2)
 	if rep.InlinePosted != 0 {
 		t.Fatalf("precondition: an open inline row is not reposted, got %+v", rep)
 	}
@@ -203,7 +219,7 @@ func TestHygiene_OpenInlineRowRenderedAtHigherSeverityIsAnEscalation(t *testing.
 	if d := rep.Hygiene.SeverityEscalations[0].Detail; !strings.Contains(d, "from=medium to=critical prior_state=open") {
 		t.Fatalf("detail = %q", d)
 	}
-	rep = publishRound(t, gh, ledger, r2)
+	rep = legacyRound(t, gh, ledger, r2)
 	if len(rep.Hygiene.SeverityEscalations) != 0 {
 		t.Fatalf("a re-run on the same head recounts nothing: %+v", rep.Hygiene.SeverityEscalations)
 	}
@@ -211,7 +227,7 @@ func TestHygiene_OpenInlineRowRenderedAtHigherSeverityIsAnEscalation(t *testing.
 
 func TestHygiene_OpenRowEscalationIsCountedOnceAcrossPushes(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, roundOne())
+	legacyRound(t, gh, ledger, roundOne())
 	ledger.rows["c1"].Severity = "medium"
 
 	escalated := func(head string) Round {
@@ -224,16 +240,71 @@ func TestHygiene_OpenRowEscalationIsCountedOnceAcrossPushes(t *testing.T) {
 		}
 		return r
 	}
-	rep := publishRound(t, gh, ledger, escalated("sha-2"))
+	rep := legacyRound(t, gh, ledger, escalated("sha-2"))
 	if got := fingerprints(rep.Hygiene.SeverityEscalations); len(got) != 1 || got[0] != "c1" {
 		t.Fatalf("first push escalations = %v, want c1", got)
 	}
 	if ledger.rows["c1"].Severity != "critical" || ledger.rows["c1"].LastSeenSHA != "sha-2" {
 		t.Fatalf("the refreshed row must carry the asserted severity: %+v", ledger.rows["c1"])
 	}
-	rep = publishRound(t, gh, ledger, escalated("sha-3"))
+	rep = legacyRound(t, gh, ledger, escalated("sha-3"))
 	if len(rep.Hygiene.SeverityEscalations) != 0 {
 		t.Fatalf("the same severity on the next push is not a second escalation: %+v", rep.Hygiene.SeverityEscalations)
+	}
+}
+
+func TestHygiene_LedgerPolicyReopensAFixedRowInsteadOfReposting(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, filedRound())
+	gone := summaryOnly("sha-2")
+	gone.Changes = changed("a.go", "b.go")
+	rep := publishRound(t, gh, ledger, gone)
+	if rep.Fixed != 3 || !rep.Hygiene.Empty() {
+		t.Fatalf("a fix on a changed file is clean: %+v", rep)
+	}
+
+	back := filedRound()
+	back.HeadSHA, back.RoundNumber = "sha-3", 0
+	rep = publishRound(t, gh, ledger, back)
+	if rep.InlinePosted != 0 || rep.Reopened != 3 || len(rep.Hygiene.RepeatedPosts) != 0 {
+		t.Fatalf("a returning fixed row reopens in its thread, it is not reposted: %+v", rep)
+	}
+}
+
+func TestHygiene_LedgerPolicyNeverResolvesOnTheSameHeadOrAnUntouchedFile(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, filedRound())
+
+	rerun := summaryOnly("sha-round-1")
+	rerun.Changes = changed("a.go", "b.go")
+	rep := publishRound(t, gh, ledger, rerun)
+	if rep.Fixed != 0 || rep.StillOpen != 3 || !rep.Hygiene.Empty() {
+		t.Fatalf("a re-run on the same head fixes nothing: %+v", rep)
+	}
+
+	gone := summaryOnly("sha-2")
+	gone.Changes = changed("b.go")
+	rep = publishRound(t, gh, ledger, gone)
+	if rep.Fixed != 1 || rep.StillOpen != 2 || !rep.Hygiene.Empty() {
+		t.Fatalf("only the row whose file changed is fixed: %+v", rep)
+	}
+}
+
+func TestHygiene_LedgerPolicyClampsSeverityInsteadOfEscalating(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, roundOne())
+	ledger.rows["c1"].Severity = "medium"
+
+	r2 := roundOne()
+	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
+	for i := range r2.Findings {
+		if r2.Findings[i].File != "SUMMARY" {
+			r2.Findings[i].Severity = "critical"
+		}
+	}
+	rep := publishRound(t, gh, ledger, r2)
+	if len(rep.Hygiene.SeverityEscalations) != 0 || ledger.rows["c1"].Severity != "medium" || ledger.rows["m1"].Severity != "medium" {
+		t.Fatalf("unchanged lines keep the ledger severity: %+v c1=%s m1=%s", rep.Hygiene.SeverityEscalations, ledger.rows["c1"].Severity, ledger.rows["m1"].Severity)
 	}
 }
 

@@ -149,6 +149,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			next.Severity = f.Severity
 			backfill(&next, f, r.PriorComments[id])
 			writes = append(writes, pending{row: &next})
+			rep.Hygiene.noteWritten(f, row)
 		case row.State == db.PublishedStateOpen:
 			cs, known := r.changesSince(row.LastSeenSHA)
 			file, _ := payload.FingerprintParts(id)
@@ -157,6 +158,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 				next := *row
 				next.State = db.PublishedStateFixed
 				writes = append(writes, pending{row: &next})
+				rep.Hygiene.noteResolved(row, r.HeadSHA, cs.Files)
 				continue
 			}
 			d.StillOpen++
@@ -216,6 +218,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		if err := p.Ledger.UpsertPublishedFinding(row); err != nil {
 			return rep, fmt.Errorf("record annotation %s: %w", f.ID, err)
 		}
+		rep.Hygiene.noteWritten(f, rows[f.ID])
 	}
 	for _, w := range writes {
 		if err := p.Ledger.UpsertPublishedFinding(w.row); err != nil {
@@ -396,6 +399,16 @@ func (r Round) changesSince(base string) (ChangeSet, bool) {
 		return ChangeSet{}, false
 	}
 	return r.Changes(base)
+}
+
+// changedFilesSince is the file set the hygiene notes judge a resolve by;
+// nil when the change set is unknown.
+func (r Round) changedFilesSince(base string) map[string]bool {
+	cs, ok := r.changesSince(base)
+	if !ok {
+		return nil
+	}
+	return cs.Files
 }
 
 // anchorChanged reports whether the lines a finding cites changed since
