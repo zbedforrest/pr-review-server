@@ -1,0 +1,118 @@
+{
+ "number": 1,
+ "title": "Fixture 1",
+ "url": "https://github.com/acme/example/pull/1",
+ "state": "OPEN",
+ "isDraft": false,
+ "merged": false,
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "ccccccc333333333333333333333333333333333",
+ "reviews": {
+  "nodes": [
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 11,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-01T10:00:00Z",
+    "commit": {
+     "oid": "aaaaaaa111111111111111111111111111111111"
+    }
+   },
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 12,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-02T10:00:00Z",
+    "commit": {
+     "oid": "bbbbbbb222222222222222222222222222222222"
+    }
+   },
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 13,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-03T10:00:00Z",
+    "commit": {
+     "oid": "ccccccc333333333333333333333333333333333"
+    }
+   }
+  ],
+  "totalCount": 3
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "PRRT_1",
+    "isResolved": true,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "svc/retry.go",
+    "line": 72,
+    "originalLine": 72,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 101,
+       "author": {
+        "login": "acme-bot"
+       },
+       "body": "<!-- prism:finding:svc/retry.go:7:f1f1f1f1f1f1 -->\n**CRITICAL** The retry loop in get never backs off after a 429, so every attempt is rejected by the upstream rate limiter and the request fails.",
+       "createdAt": "2026-09-01T10:00:00Z",
+       "updatedAt": "2026-09-01T10:00:00Z",
+       "path": "svc/retry.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "PRRT_2",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "svc/retry.go",
+    "line": 72,
+    "originalLine": 72,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 102,
+       "author": {
+        "login": "acme-bot"
+       },
+       "body": "<!-- prism:finding:svc/retry.go:7:f1f1f1f1f1f1 -->\n**CRITICAL** The retry loop in get never backs off after a 429, so every attempt is rejected by the upstream rate limiter and the request fails.",
+       "createdAt": "2026-09-03T10:00:00Z",
+       "updatedAt": "2026-09-03T10:00:00Z",
+       "path": "svc/retry.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ],
+  "totalCount": 2
+ },
+ "comments": {
+  "nodes": []
+ }
+}
