@@ -27,8 +27,8 @@ const (
 	// severity than the ledger holds.
 	ActionSeverityEscalation = "severity_escalations"
 	// ActionVerdictSettled: an author verdict (intentional, won't fix, thumbs
-	// down) settled a thread without a model reply. Recorded by the author
-	// verdict fast path once it exists.
+	// down) settled a finding without a model reply. Recorded per verdict by
+	// the reply scan.
 	ActionVerdictSettled = "verdicts_settled"
 	// ActionPublishDenied: the publish gate stopped a finished review from
 	// posting. Today that means the author is outside publish_enabled_authors;
@@ -54,9 +54,7 @@ var hygieneLabels = map[string]string{
 // not "nothing happened", and the report line says so. The producing
 // packages assert they emit none of these, so wiring one means removing its
 // entry here.
-var UnwiredHygiene = map[string]string{
-	ActionVerdictSettled: "W2-2 (author verdict fast path)",
-}
+var UnwiredHygiene = map[string]string{}
 
 // hygieneDetail is the publication hygiene line: every measured counter, zero
 // or not, then the counters that cannot fire yet.

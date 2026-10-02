@@ -11,6 +11,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/pkg/health"
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/service"
 )
@@ -138,6 +139,13 @@ func replyTelemetryEvents(rep publisher.ReplyReport, link publisher.LinkReport, 
 	}
 	if rep.Contested > 0 {
 		events = append(events, db.TelemetryEvent{UserID: userID, Action: "reply_contested", Label: fmt.Sprintf("contested=%d", rep.Contested)})
+	}
+	for _, v := range rep.Verdicts {
+		events = append(events, db.TelemetryEvent{
+			UserID: userID, Action: health.ActionVerdictSettled,
+			Label:   truncateLabel(fmt.Sprintf("kind=%s fp=%s root=%d comment=%d", v.Kind, v.Fingerprint, v.RootCommentID, v.AuthorCommentID), 255),
+			PROwner: v.RepoOwner, PRRepo: v.RepoName, PRNumber: v.PRNumber,
+		})
 	}
 	if link.Linked > 0 {
 		events = append(events, db.TelemetryEvent{
@@ -344,6 +352,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 		Holder:         p.holderID,
 		ResolveThreads: !p.threadsOff,
 		Legacy:         !p.cfg.ReplyPolicyV2,
+		NoVerdicts:     !p.cfg.ReplyVerdictFastPath,
 		Live: func() (string, func(string) bool, error) {
 			liveMode, err := p.db.GetSetting(settingPublishReplyMode)
 			if err != nil {
@@ -422,8 +431,8 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			log.Printf("[REPLIES] %s", e)
 		}
 	}
-	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d live_checked=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d text_dispatched=%d contested=%d errors=%d",
-		cycle, full, mode, len(targets), len(candidates), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Dispatched, rep.Contested, len(rep.Errors))
+	log.Printf("[REPLIES] cycle=%d full=%t mode=%s targets=%d live_checked=%d scanned=%d skipped=%v replies_seen=%d already_handled=%d recorded=%d reacted=%d text_dispatched=%d contested=%d verdicts=%d errors=%d",
+		cycle, full, mode, len(targets), len(candidates), rep.PRsScanned, rep.PRsSkipped, rep.RepliesSeen, rep.AlreadyHandled, rep.Recorded, rep.Reacted, rep.Dispatched, rep.Contested, len(rep.Verdicts), len(rep.Errors))
 	userID := p.systemTelemetryUserID()
 	if userID == 0 {
 		return

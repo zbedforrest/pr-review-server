@@ -167,6 +167,19 @@ func TestEvaluateEscalatesAnAgingAutoReviewBacklog(t *testing.T) {
 	}
 }
 
+func TestEvaluateCountsAuthorVerdictsEvenAtZero(t *testing.T) {
+	r := Evaluate(healthyMetrics())
+	for _, c := range r.Checks {
+		if c.Name == "publication hygiene" {
+			if !strings.Contains(c.Detail, "0 author verdicts settled") || strings.Contains(c.Detail, "measured: author verdicts") {
+				t.Fatalf("the verdict counter is wired and reads as measured at zero: %q", c.Detail)
+			}
+			return
+		}
+	}
+	t.Fatalf("no publication hygiene check in %+v", r.Checks)
+}
+
 func TestEvaluateReportsPublicationHygieneWithEveryCounter(t *testing.T) {
 	m := healthyMetrics()
 	m.Telemetry[ActionRepeatedPost] = 4

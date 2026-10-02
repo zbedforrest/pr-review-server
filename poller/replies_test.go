@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/pkg/health"
 	"pr-review-server/pkg/publisher"
 )
 
@@ -63,14 +64,27 @@ func TestReplyTelemetryEventsOnePerHandledReplyPlusLinksAndErrors(t *testing.T) 
 		},
 		Errors:    []string{"acme/example#9: list review comments: boom"},
 		Contested: 1,
+		Verdicts: []publisher.SettledVerdict{
+			{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "a.go:1:abc", RootCommentID: 100, Kind: publisher.VerdictKindThumbsDown},
+			{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "b.go:2:def", RootCommentID: 110, AuthorCommentID: 111, Kind: publisher.VerdictKindReply},
+		},
 	}
 	link := publisher.LinkReport{Linked: 2, Unmatched: 1, Errors: []string{"acme/example#8: list thread: 502"}}
 	events := replyTelemetryEvents(rep, link, 3)
-	if len(events) != 6 {
+	if len(events) != 8 {
 		t.Fatalf("got %d events: %+v", len(events), events)
 	}
 	if events[3].Action != "reply_contested" || events[3].Label != "contested=1" {
 		t.Errorf("contested event = %+v", events[3])
+	}
+	if events[4].Action != health.ActionVerdictSettled || events[4].PRNumber != 7 || events[4].Label != "kind=thumbs_down fp=a.go:1:abc root=100 comment=0" {
+		t.Errorf("thumbs-down verdict event = %+v", events[4])
+	}
+	if events[5].Action != health.ActionVerdictSettled || events[5].Label != "kind=reply fp=b.go:2:def root=110 comment=111" {
+		t.Errorf("reply verdict event = %+v", events[5])
+	}
+	if _, unwired := health.UnwiredHygiene[health.ActionVerdictSettled]; unwired {
+		t.Errorf("%s is recorded by the reply scan and must not be listed as unwired", health.ActionVerdictSettled)
 	}
 	if events[0].UserID != 3 || events[0].Action != "reply_reacted" || events[0].PRNumber != 7 || events[0].Label != "class=question fp=a.go:1:abc comment=101" {
 		t.Errorf("first event = %+v", events[0])
@@ -81,11 +95,11 @@ func TestReplyTelemetryEventsOnePerHandledReplyPlusLinksAndErrors(t *testing.T) 
 	if events[2].Action != "reply_scan_error" || events[2].PRNumber != 9 || events[2].PROwner != "acme" {
 		t.Errorf("error event = %+v", events[2])
 	}
-	if events[4].Action != "reply_roots_linked" || events[4].Label != "linked=2 unmatched=1" {
-		t.Errorf("link event = %+v", events[4])
+	if events[6].Action != "reply_roots_linked" || events[6].Label != "linked=2 unmatched=1" {
+		t.Errorf("link event = %+v", events[6])
 	}
-	if events[5].Action != "reply_link_error" || events[5].PRNumber != 8 {
-		t.Errorf("link error event = %+v", events[5])
+	if events[7].Action != "reply_link_error" || events[7].PRNumber != 8 {
+		t.Errorf("link error event = %+v", events[7])
 	}
 	if got := replyTelemetryEvents(publisher.ReplyReport{}, publisher.LinkReport{Unmatched: 3}, 3); len(got) != 0 {
 		t.Errorf("a pass that linked nothing is not link activity, got %+v", got)

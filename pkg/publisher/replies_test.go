@@ -1787,7 +1787,7 @@ func TestReplyReactor_IntentPushbackIsAcknowledgedAndRecordedNotWithdrawn(t *tes
 		return ReplyDecision{Decision: DecisionConcede, Cited: []EvidenceRef{{File: "a.go", Line: 12}},
 			Reply: "You're right. That is your call. Keeping it means a request with a nil body reaches parse on a.go:12 and the handler returns 500 instead of 400. Withdrawing this."}, nil
 	})
-	gh.threads["acme/example#7"][1].Body = "This is intentional, callers are trusted here. Not a bug, keeping as is."
+	gh.threads["acme/example#7"][1].Body = "I believe this is intentional, callers are trusted here and the value is checked upstream."
 	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
 	if _, err := r.Run(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1825,7 +1825,7 @@ func TestReplyReactor_PersistedPreConventionDecisionIsRenderedOnResume(t *testin
 		return ReplyDecision{}, fmt.Errorf("must not run: the decision is persisted")
 	})
 	r.OnOutcome = func(o ReplyOutcome, _ error) { outcomes = append(outcomes, o) }
-	gh.threads["acme/example#7"][1].Body = "This is intentional, callers are trusted here. Not a bug, keeping as is."
+	gh.threads["acme/example#7"][1].Body = "I believe this is intentional, callers are trusted here and the value is checked upstream."
 	seed := func(body string) {
 		thread := threadUnder(gh.threads["acme/example#7"], 100)
 		ledger.rows = []db.PublishedReply{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, RootCommentID: 100, AuthorCommentID: 101,
@@ -1908,7 +1908,7 @@ func TestReplyReactor_FreshDecisionKeepsItsHeadAndCitationsInTheLedger(t *testin
 		return ReplyDecision{Decision: DecisionConcede, Cited: []EvidenceRef{{File: "a.go", Line: 12}}, Model: "m", DurationMS: 7,
 			Reply: "Withdrawing this. You're right, keeping it means a nil body reaches parse on a.go:12 and returns 500."}, nil
 	})
-	gh.threads["acme/example#7"][1].Body = "This is intentional, callers are trusted here. Not a bug, keeping as is."
+	gh.threads["acme/example#7"][1].Body = "I believe this is intentional, callers are trusted here and the value is checked upstream."
 	if _, err := r.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1980,7 +1980,7 @@ func TestReplyReactor_WithdrawDismissesTheFindingResolvesTheThreadAndSaysSo(t *t
 		return ReplyDecision{Decision: DecisionWithdraw, Reply: "Withdrawing this finding: the guard on a.go:8 runs before this call, so the dereference cannot be reached with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 8}}, React: true}, nil
 	})
 	r.ResolveThreads = true
-	gh.threads["acme/example#7"][1].Body = "This is intentional, the caller guards it and the value is never nil here."
+	gh.threads["acme/example#7"][1].Body = "I believe this is intentional, the caller guards it and the value is never nil here."
 	rep, _ := r.Run(context.Background())
 	row := ledger.rows[0]
 	if rep.Responded != 1 || len(gh.posted) != 1 || !strings.HasPrefix(gh.posted[0], "Withdrawing this finding: the guard on a.go:8") || strings.Contains(gh.posted[0], "accepted risk") {
@@ -2118,7 +2118,7 @@ func TestReplyReactor_LegacyPostsAWithdrawAsAConcessionAndResolvesNothing(t *tes
 		return ReplyDecision{Decision: DecisionWithdraw, Reply: "Withdrawing this finding: the guard on a.go:8 runs before this call, so the dereference cannot be reached with nil.", Cited: []EvidenceRef{{File: "a.go", Line: 8}}, React: true}, nil
 	})
 	r.Legacy = true
-	gh.threads["acme/example#7"][1].Body = "This is intentional, the caller guards it and the value is never nil here."
+	gh.threads["acme/example#7"][1].Body = "I believe this is intentional, the caller guards it and the value is never nil here."
 	r.PR = func(_ context.Context, _, _ string, _ int) (PRState, error) {
 		return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1", Body: "**[MEDIUM]** The guard order is by design."}, nil
 	}

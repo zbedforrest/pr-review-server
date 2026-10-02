@@ -98,11 +98,14 @@ type Config struct {
 	NewRelicRegion     string
 	// Author-reply model (pkg/reviewer/service/reply.go). Same backend and
 	// credentials as the review agent; smaller budgets, own concurrency cap.
-	ReplyModel         string // empty = the review agent's model
-	ReplyPolicyV2      bool   // REPLY_POLICY_V2, default on; false restores the fixed budget notice and uncontested holds
-	ReplyWallClockSec  int
-	ReplyMaxTurns      int
-	ReplyMaxConcurrent int
+	ReplyModel    string // empty = the review agent's model
+	ReplyPolicyV2 bool   // REPLY_POLICY_V2, default on; false restores the fixed budget notice and uncontested holds
+	// ReplyVerdictFastPath settles an author's "intentional" / "won't fix"
+	// reply with a reaction and a dismissed finding instead of a model reply.
+	ReplyVerdictFastPath bool // REPLY_VERDICT_FAST_PATH, default on
+	ReplyWallClockSec    int
+	ReplyMaxTurns        int
+	ReplyMaxConcurrent   int
 	// MentionHandle is the App login authors mention to request a review
 	// ("@<handle> review"); empty disables mention triggers.
 	MentionHandle string
@@ -350,6 +353,7 @@ func Load() *Config {
 		ReplyMaxTurns:        getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),
 		ReplyMaxConcurrent:   getPositiveEnvIntOrDefault("REPLY_MAX_CONCURRENT", 2),
 		ReplyPolicyV2:        !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_POLICY_V2")), "false"),
+		ReplyVerdictFastPath: !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_VERDICT_FAST_PATH")), "false"),
 		MentionHandle:        strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
 		HealthJobToken:       os.Getenv("HEALTH_JOB_TOKEN"),
 		AdminLogins:          getEnvListOrDefault("ADMIN_LOGINS", nil, normalizeLogin),

@@ -76,6 +76,7 @@ The most common ones:
 | `QUICK_ACTIONS_ADMIN_ONLY` | No | Limit quick actions to admins while rolling out |
 | `AGENT_BACKEND` | No | `claude` (default) or `openrouter` |
 | `REPLY_POLICY_V2` | No | Reply policy for author pushback (default `true`): a reply the model could not verify within its budget abstains with a reaction instead of a canned hold, a hold must cite a file:line, a hold or author thumbs-down marks the finding `contested` so it is not re-posted, and a reply decided against an older head is retaken on the new one. `false` restores the previous posting and ledger behaviour (the reply prompt itself is not switched) |
+| `REPLY_VERDICT_FAST_PATH` | No | Author verdict fast path (default `true`): a reply under a PRism finding that rules on it ("intentional", "by design", "won't fix", "accepted risk", "not a bug") dismisses the finding, gets a thumbs-up and no model reply, so it is not raised again on the PR. `false` sends such replies to the reply model as pushback |
 | `AGENT_MODEL` | No | Backend model; OpenRouter defaults to `openai/gpt-5.6-sol` |
 | `AGENT_CLONE_CACHE_MAX_GB` | No | Cap on the repo clone caches under `AGENT_CLONE_ROOT_DIR`; least recently used idle caches are evicted past it. `0` (default) is unlimited |
 | `OPENROUTER_API_KEY` | OpenRouter backend | Authenticates Codex requests routed through OpenRouter |
