@@ -183,6 +183,17 @@ var sessionTokenColumns = []struct {
 	{"github_token_expires_at", "GitHubTokenExpiresAt", "timestamptz"},
 }
 
+// publishedFindingColumns carry the ledger memory the publisher aliases
+// reworded findings against; added after the table shipped.
+var publishedFindingColumns = []struct {
+	column   string
+	field    string
+	postgres string
+}{
+	{"comment_text", "CommentText", "text"},
+	{"subjects", "Subjects", "varchar(1024) NOT NULL DEFAULT ''"},
+}
+
 var greptileStatusColumns = []struct {
 	column   string
 	field    string
@@ -325,6 +336,13 @@ func (g *GormDB) ensureIdempotentColumns() error {
 				}
 			}
 		}
+		for _, addition := range publishedFindingColumns {
+			if !g.db.Migrator().HasColumn(&PublishedFindingModel{}, addition.column) {
+				if err := g.db.Migrator().AddColumn(&PublishedFindingModel{}, addition.field); err != nil {
+					return fmt.Errorf("add published_findings.%s: %w", addition.column, err)
+				}
+			}
+		}
 		if g.db.Migrator().HasTable(&PollerLeaseModel{}) && !g.db.Migrator().HasColumn(&PollerLeaseModel{}, "generation") {
 			if err := g.db.Migrator().AddColumn(&PollerLeaseModel{}, "Generation"); err != nil {
 				return fmt.Errorf("add poller_leases.generation: %w", err)
@@ -448,6 +466,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	for _, addition := range replyDecisionColumns {
 		if err := g.db.Exec("ALTER TABLE published_reply_models ADD COLUMN IF NOT EXISTS " + addition.column + " " + addition.postgres).Error; err != nil {
 			return fmt.Errorf("add published_reply_models.%s: %w", addition.column, err)
+		}
+	}
+	for _, addition := range publishedFindingColumns {
+		if err := g.db.Exec("ALTER TABLE published_findings ADD COLUMN IF NOT EXISTS " + addition.column + " " + addition.postgres).Error; err != nil {
+			return fmt.Errorf("add published_findings.%s: %w", addition.column, err)
 		}
 	}
 	for _, addition := range greptileStatusColumns {

@@ -28,6 +28,8 @@ func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 		State:        m.State,
 		Rounds:       m.Rounds,
 		PublishedAt:  m.PublishedAt,
+		CommentText:  m.CommentText,
+		Subjects:     m.Subjects,
 	}
 }
 
@@ -54,15 +56,24 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		State:        p.State,
 		Rounds:       p.Rounds,
 		PublishedAt:  p.PublishedAt,
+		CommentText:  p.CommentText,
+		Subjects:     p.Subjects,
 	}
 	updates := map[string]interface{}{
 		"kind":          model.Kind,
 		"source_tag":    model.SourceTag,
 		"severity":      model.Severity,
 		"last_seen_sha": model.LastSeenSHA,
-		// A concession is sticky: a publication that loaded the row before the
-		// author conceded must not flip it back to open or resolved.
-		"state": gorm.Expr("CASE WHEN published_findings.state = ? THEN published_findings.state ELSE ? END", PublishedStateDismissed, model.State),
+		// Terminal states are sticky: a publication that loaded the row before
+		// the author settled it must not flip it back to open or fixed.
+		"state": gorm.Expr("CASE WHEN published_findings.state IN (?, ?, ?) THEN published_findings.state ELSE ? END",
+			PublishedStateDismissed, PublishedStateContested, PublishedStateExternal, model.State),
+	}
+	if model.CommentText != "" {
+		updates["comment_text"] = model.CommentText
+	}
+	if model.Subjects != "" {
+		updates["subjects"] = model.Subjects
 	}
 	if model.CommentID != 0 {
 		updates["comment_id"] = model.CommentID
