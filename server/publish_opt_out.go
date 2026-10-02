@@ -8,7 +8,6 @@ import (
 
 	"pr-review-server/auth"
 	"pr-review-server/db"
-	"pr-review-server/github"
 	"pr-review-server/poller"
 )
 
@@ -44,30 +43,7 @@ func (s *Server) publishEnrollmentFor(ctx context.Context, login string) publish
 // enrolledVia names the most specific entry of the allowlist that admits the
 // login: the login itself, then a team the login belongs to, then "*".
 func (s *Server) enrolledVia(ctx context.Context, enabledCSV, login string) string {
-	login = strings.ToLower(strings.TrimSpace(login))
-	if login == "" {
-		return ""
-	}
-	wildcard := false
-	for _, part := range strings.Split(enabledCSV, ",") {
-		switch entry := strings.ToLower(strings.TrimSpace(part)); entry {
-		case login:
-			return "login"
-		case "*":
-			wildcard = true
-		}
-	}
-	if s.teams != nil {
-		for _, slug := range github.TeamSlugs(enabledCSV, s.teams.Org()) {
-			if s.teams.IsMember(ctx, slug, login) {
-				return slug
-			}
-		}
-	}
-	if wildcard {
-		return "*"
-	}
-	return ""
+	return poller.AdmittingEntry(ctx, s.teams, enabledCSV, login)
 }
 
 func (s *Server) handlePublishOptOut(w http.ResponseWriter, r *http.Request) {

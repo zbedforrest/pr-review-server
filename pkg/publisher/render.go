@@ -59,9 +59,9 @@ type Round struct {
 	ProfileFooter string
 	// LegacyTitles is Policy.LegacyTitles as applied to this round.
 	LegacyTitles bool
-	// OptOutURL is where an author stops PRism's comments on their PRs; it
-	// goes in the settle footer of every root comment and the summary.
-	OptOutURL string
+	// SettleFooter is the rendered line under every root comment and the
+	// summary (see the SettleFooter function); empty omits it.
+	SettleFooter string
 
 	// PriorComments is what GitHub currently shows for PRism's own inline
 	// comments, keyed by the fingerprint in their marker: the translated line
@@ -392,7 +392,9 @@ func RenderSummary(r Round, sel Selection) string {
 		fmt.Fprintf(&b, " · Reviewed by %s", r.ProfileFooter)
 	}
 	b.WriteString("</sub>\n")
-	b.WriteString(SettleFooter(r.OptOutURL) + "\n")
+	if r.SettleFooter != "" {
+		b.WriteString(r.SettleFooter + "\n")
+	}
 	return b.String()
 }
 
@@ -543,11 +545,11 @@ func impactShownBelow(f payload.Finding, legacy bool) bool {
 // RenderInline keeps the visible part Greptile-sized: headline, one
 // calibration sentence, and the suggestion if there is one. The agent's full
 // reasoning and the verification steps fold behind a details block.
-func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, optOutURL string) string {
-	return renderInline(f, sourceTag, agentLinkBase, badgeBase, optOutURL, false)
+func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string) string {
+	return renderInline(f, sourceTag, agentLinkBase, badgeBase, settleFooter, false)
 }
 
-func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, optOutURL string, legacy bool) string {
+func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string, legacy bool) string {
 	comment := commentText(f)
 	c := f.FindingContract
 	hasContract := c != nil && f.FindingContractStatus == "valid"
@@ -616,8 +618,12 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	if agentLinkBase != "" {
 		subs = append(subs, fmt.Sprintf(`<sub><a href="%s">Fix with agent</a></sub>`, agentLink(agentLinkBase, f)))
 	}
-	subs = append(subs, SettleFooter(optOutURL))
-	b.WriteString("\n" + strings.Join(subs, "\n") + "\n")
+	if settleFooter != "" {
+		subs = append(subs, settleFooter)
+	}
+	if len(subs) > 0 {
+		b.WriteString("\n" + strings.Join(subs, "\n") + "\n")
+	}
 	return b.String()
 }
 

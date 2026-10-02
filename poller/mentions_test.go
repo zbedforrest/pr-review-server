@@ -296,3 +296,20 @@ func TestMentionScanner_AnAlreadyAdmittedRequestIsFinalisedWithoutASecondRun(t *
 		t.Fatalf("err=%v res=%+v row=%+v reacted=%v", err, res, ledger.rows[1], gh.reacted)
 	}
 }
+
+func TestMentionScanner_OptedOutAuthorGetsADashboardReviewAndNoReaction(t *testing.T) {
+	var publishSeen []bool
+	m, gh, ledger, pr := mentionFixture(func(_ context.Context, _ github.PullRequest, publish bool) error {
+		publishSeen = append(publishSeen, publish)
+		return nil
+	})
+	m.allowed = func(string) bool { return false }
+	m.optedOut = func(a string) bool { return a == "alice" }
+	res, err := m.handlePR(context.Background(), pr)
+	if err != nil || res.triggered != 1 || len(publishSeen) != 1 || publishSeen[0] {
+		t.Fatalf("the review still runs for the dashboard: err=%v res=%+v publish=%v", err, res, publishSeen)
+	}
+	if len(gh.reactions) != 0 || !ledger.rows[1].Queued {
+		t.Fatalf("nothing is written to the PR: reactions=%v row=%+v", gh.reactions, ledger.rows[1])
+	}
+}

@@ -524,3 +524,12 @@ func TestRefreshPublishedSummary_RespectsThePublishGate(t *testing.T) {
 	require.NoError(t, p.refreshPublishedSummary(context.Background(), "acme", "example", 1))
 	assert.Empty(t, writes(), "an author outside publish_enabled_authors gets no summary edit")
 }
+
+func TestBuildPublishRound_SettleFooterLinksTheOptOutAnchor(t *testing.T) {
+	pr := github.PullRequest{Owner: "a", Repo: "b", Number: 1}
+	linked := BuildPublishRound(pr, payload.Payload{}, nil, nil, nil, "https://prism.example/")
+	assert.Contains(t, linked.SettleFooter, `href="https://prism.example/#prism-comments"`)
+	plain := BuildPublishRound(pr, payload.Payload{}, nil, nil, nil, "")
+	assert.Contains(t, plain.SettleFooter, "settle a thread")
+	assert.NotContains(t, plain.SettleFooter, "<a ")
+}

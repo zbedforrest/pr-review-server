@@ -149,12 +149,14 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		RequiredCheckViolated: pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0,
 		ProfileFooter:         profileFooter(pl.ReviewRun),
 	}
+	optOutURL := ""
 	if base := strings.TrimRight(baseURL, "/"); base != "" {
 		r.AgentLinkBase = fmt.Sprintf("%s/go/agent?o=%s&r=%s&n=%d", base, pr.Owner, pr.Repo, pr.Number)
 		r.BadgeBaseURL = base + "/badge"
 		r.DashboardURL = fmt.Sprintf("%s/api/review/%s/%s/%d?format=html", base, pr.Owner, pr.Repo, pr.Number)
-		r.OptOutURL = base + "/#prism-comments"
+		optOutURL = base + "/#prism-comments"
 	}
+	r.SettleFooter = publisher.SettleFooter(optOutURL)
 	return r
 }
 
@@ -340,6 +342,9 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	pol := p.publishPolicy()
 	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
 	round.Changes = p.changeLookup(ctx, pr)
+	if p.cfg.DisableSettleFooter {
+		round.SettleFooter = ""
+	}
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: pol}
 	report, err := pub.Publish(ctx, round)
 	if errors.Is(err, publisher.ErrHeadAlreadyPublished) {

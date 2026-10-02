@@ -1525,6 +1525,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.AutoReviewAuthors != nil {
 			updates = append(updates, settingWrite{poller.SettingAutoReviewAuthors, autoAuthors})
 		}
+		if req.PublishOptOutAuthors != nil {
+			s.publishOptOutMu.Lock()
+			defer s.publishOptOutMu.Unlock()
+		}
 		for _, u := range updates {
 			if err := s.writeSetting(user.GitHubUsername, u.key, u.value); err != nil {
 				http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)

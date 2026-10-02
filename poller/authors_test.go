@@ -143,3 +143,17 @@ func TestPublishGate_ReadErrorDeniesEveryone(t *testing.T) {
 	require.Error(t, err)
 	assert.False(t, gate.Allowed("alice"))
 }
+
+func TestAdmittingEntry_PrefersLoginThenTeamThenWildcard(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	p := newTestPoller(mockGH, NewMockDatabase())
+	teamAware(p, mockGH, map[string][]string{"xo-team": {"alice", "bob"}})
+	ctx := context.Background()
+
+	assert.Equal(t, "login", AdmittingEntry(ctx, p.teams, "team:xo-team,Alice,*", "alice"))
+	assert.Equal(t, "xo-team", AdmittingEntry(ctx, p.teams, "team:xo-team,*", "BOB"))
+	assert.Equal(t, "*", AdmittingEntry(ctx, p.teams, "team:xo-team,*", "dave"))
+	assert.Equal(t, "", AdmittingEntry(ctx, p.teams, "team:xo-team", "dave"))
+	assert.Equal(t, "", AdmittingEntry(ctx, p.teams, "*", ""))
+	assert.Equal(t, "", AdmittingEntry(ctx, nil, "team:xo-team", "alice"), "without a resolver teams match nobody")
+}

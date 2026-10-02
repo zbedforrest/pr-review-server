@@ -20,17 +20,39 @@ const SettingPublishOptOutAuthors = "publish_opt_out_authors"
 // member of that team through the resolver's cache. Without a resolver (dev
 // mode with no org, or tests) team entries match nobody.
 func (p *Poller) authorAllowed(list, author string) bool {
-	if publishEnabledFor(author, list) {
-		return true
+	return AdmittingEntry(context.Background(), p.teams, list, author) != ""
+}
+
+// AdmittingEntry names the most specific entry of an author allowlist that
+// admits author: "login" for the login itself, then the slug of a team the
+// author belongs to, then "*"; empty when nothing admits them. The gates and
+// the settings API share it so they can never disagree.
+func AdmittingEntry(ctx context.Context, teams *github.TeamResolver, list, author string) string {
+	author = strings.TrimSpace(author)
+	if author == "" {
+		return ""
 	}
-	if p.teams == nil {
-		return false
+	wildcard := false
+	for _, entry := range strings.Split(list, ",") {
+		entry = strings.TrimSpace(entry)
+		switch {
+		case entry == "*":
+			wildcard = true
+		case strings.EqualFold(entry, author):
+			return "login"
+		}
 	}
-	slugs := github.TeamSlugs(list, p.teams.Org())
-	if len(slugs) == 0 {
-		return false
+	if teams != nil {
+		for _, slug := range github.TeamSlugs(list, teams.Org()) {
+			if teams.IsMember(ctx, slug, author) {
+				return slug
+			}
+		}
 	}
-	return p.teams.AnyMember(context.Background(), slugs, author)
+	if wildcard {
+		return "*"
+	}
+	return ""
 }
 
 // optedOut reports whether author is on the opt-out list (logins only).

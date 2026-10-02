@@ -484,3 +484,14 @@ func TestLoad_ReplyPolicyV2DefaultsOn(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_SettleFooterKillSwitch(t *testing.T) {
+	t.Setenv("PUBLISH_SETTLE_FOOTER", "")
+	if Load().DisableSettleFooter {
+		t.Fatal("the footer is on by default")
+	}
+	t.Setenv("PUBLISH_SETTLE_FOOTER", "false")
+	if !Load().DisableSettleFooter {
+		t.Fatal("PUBLISH_SETTLE_FOOTER=false turns it off")
+	}
+}
