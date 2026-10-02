@@ -54,3 +54,19 @@ func FingerprintFile(fp string) string {
 	}
 	return fp[:j]
 }
+
+// FingerprintParts splits a fingerprint back into the cited file and line
+// bucket. A string without the two trailing fields is returned whole as the
+// file with bucket 0.
+func FingerprintParts(fp string) (file string, bucket int) {
+	i := strings.LastIndex(fp, ":")
+	if i < 0 {
+		return fp, 0
+	}
+	j := strings.LastIndex(fp[:i], ":")
+	if j < 0 {
+		return fp[:i], 0
+	}
+	fmt.Sscanf(fp[j+1:i], "%d", &bucket)
+	return fp[:j], bucket
+}

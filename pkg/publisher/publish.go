@@ -29,6 +29,13 @@ type GitHub interface {
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
 }
 
+// ThreadReplier is the optional slice of GitHub the ledger policy uses to
+// speak inside a thread it already owns (a reopen or a severity change). A
+// GitHub without it changes the ledger silently.
+type ThreadReplier interface {
+	PostReply(ctx context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error)
+}
+
 type Ledger interface {
 	UpsertPublishedFinding(*db.PublishedFinding) error
 	GetPublishedFindingsForPR(owner, repo string, number int) ([]db.PublishedFinding, error)
@@ -50,6 +57,12 @@ type Report struct {
 	Fixed            int
 	Confidence       int
 	Hygiene          Hygiene
+	// Reopened counts fixed rows that came back; ThreadReplies the in-thread
+	// notes posted for reopens and severity changes, ThreadReplyFailures the
+	// ones GitHub rejected. Ledger policy only.
+	Reopened            int
+	ThreadReplies       int
+	ThreadReplyFailures int
 }
 
 const summaryFingerprint = "summary"
@@ -61,6 +74,8 @@ func (p *Publisher) now() time.Time {
 	return time.Now()
 }
 
+// Publish posts one review round. The ledger decision table (see doc.go) is
+// the default; Policy.LegacyLedger selects the pre-memory publisher.
 func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 	if r.Previous == nil {
 		prev, err := p.Ledger.GetPublishedFindingsForPR(r.Owner, r.Repo, r.Number)
@@ -69,7 +84,13 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		}
 		r.Previous = prev
 	}
+	if p.Policy.LegacyLedger {
+		return p.publishLegacy(ctx, r)
+	}
+	return p.publishLedger(ctx, r)
+}
 
+func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) {
 	var summaryRow *db.PublishedFinding
 	published := map[string]*db.PublishedFinding{}
 	for i := range r.Previous {
@@ -105,38 +126,9 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		Confidence: Confidence(r.Findings, r.RequiredCheckViolated)}
 	now := p.now()
 
-	postedThisRound := map[string]int64{}
-	if len(sel.Inline) > 0 {
-		inputs := make([]ReviewCommentInput, 0, len(sel.Inline))
-		for _, f := range sel.Inline {
-			inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: RenderInline(f, r.sourceTag(f.ID), r.AgentLinkBase, r.BadgeBaseURL)})
-		}
-		reviewID, commentIDs, err := p.GH.CreateReview(ctx, r.Owner, r.Repo, r.Number, r.HeadSHA, "", inputs)
-		if err != nil {
-			return rep, fmt.Errorf("create review: %w", err)
-		}
-		rep.ReviewID = reviewID
-		for i, f := range sel.Inline {
-			var commentID int64
-			if i < len(commentIDs) {
-				commentID = commentIDs[i]
-			}
-			postedThisRound[f.ID] = commentID
-			if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
-				RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
-				Kind: db.PublishedKindFinding, Fingerprint: f.ID,
-				SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
-				ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
-				CommentID: commentID, ReviewID: reviewID,
-				State: db.PublishedStateOpen, PublishedAt: now,
-			}); err != nil {
-				return rep, fmt.Errorf("record finding %s: %w", f.ID, err)
-			}
-			// Notes follow the ledger write: a post whose row failed is a publish
-			// error, and the retry counts it when it reposts.
-			rep.Hygiene.notePosted(f, prior[f.ID])
-			rep.Hygiene.noteWritten(f, prior[f.ID])
-		}
+	postedThisRound, err := p.postInline(ctx, r, sel, prior, now, &rep)
+	if err != nil {
+		return rep, err
 	}
 
 	if r.InlineComments == nil {
@@ -151,44 +143,8 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		r.InlineComments[id] = cid
 	}
 
-	summary := RenderSummary(r, sel)
-	summaryLedger := &db.PublishedFinding{
-		RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
-		Kind: db.PublishedKindSummary, Fingerprint: summaryFingerprint,
-		ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA, Rounds: r.RoundNumber,
-		State: db.PublishedStateOpen, PublishedAt: now,
-	}
-	summaryCommentID := int64(0)
-	if summaryRow != nil {
-		summaryCommentID = summaryRow.CommentID
-		summaryLedger.ReviewedSHA = summaryRow.ReviewedSHA
-	} else if existing, err := p.GH.ListIssueComments(ctx, r.Owner, r.Repo, r.Number); err == nil {
-		for _, c := range existing {
-			if strings.Contains(c.Body, SummaryMarker) {
-				summaryCommentID = c.ID
-				break
-			}
-		}
-	}
-	if summaryCommentID != 0 {
-		if err := p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryCommentID, summary); err != nil {
-			if !isNotFound(err) {
-				return rep, fmt.Errorf("edit summary comment: %w", err)
-			}
-			summaryCommentID = 0
-		}
-	}
-	if summaryCommentID == 0 {
-		id, err := p.GH.CreateIssueComment(ctx, r.Owner, r.Repo, r.Number, summary)
-		if err != nil {
-			return rep, fmt.Errorf("create summary comment: %w", err)
-		}
-		summaryCommentID = id
-	}
-	rep.SummaryCommentID = summaryCommentID
-	summaryLedger.CommentID = summaryCommentID
-	if err := p.Ledger.UpsertPublishedFinding(summaryLedger); err != nil {
-		return rep, fmt.Errorf("record summary comment: %w", err)
+	if err := p.writeSummary(ctx, r, sel, summaryRow, now, &rep); err != nil {
+		return rep, err
 	}
 
 	written := map[string]bool{}
@@ -247,18 +203,108 @@ func (p *Publisher) Publish(ctx context.Context, r Round) (Report, error) {
 		if err := p.Ledger.UpsertPublishedFinding(&resolved); err != nil {
 			return rep, fmt.Errorf("resolve finding %s: %w", id, err)
 		}
-		rep.Hygiene.noteResolved(row, r.HeadSHA, r.ChangedFiles)
+		rep.Hygiene.noteResolved(row, r.HeadSHA, r.changedFilesSince(row.LastSeenSHA))
 	}
 	return rep, nil
 }
 
-// WithoutDismissed drops findings the ledger records as conceded. A finding
-// conceded in conversation stays conceded: it is neither posted, counted nor
-// refreshed, even if a later review raises it again.
+// postInline creates the review that carries this round's inline comments
+// and records one open finding row per comment, noting the hygiene of each
+// post against the row the ledger held before. It returns the comment id
+// each posted finding received.
+func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prior map[string]*db.PublishedFinding, now time.Time, rep *Report) (map[string]int64, error) {
+	postedThisRound := map[string]int64{}
+	if len(sel.Inline) == 0 {
+		return postedThisRound, nil
+	}
+	inputs := make([]ReviewCommentInput, 0, len(sel.Inline))
+	for _, f := range sel.Inline {
+		inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: RenderInline(f, r.sourceTag(f.ID), r.AgentLinkBase, r.BadgeBaseURL)})
+	}
+	reviewID, commentIDs, err := p.GH.CreateReview(ctx, r.Owner, r.Repo, r.Number, r.HeadSHA, "", inputs)
+	if err != nil {
+		return postedThisRound, fmt.Errorf("create review: %w", err)
+	}
+	rep.ReviewID = reviewID
+	for i, f := range sel.Inline {
+		var commentID int64
+		if i < len(commentIDs) {
+			commentID = commentIDs[i]
+		}
+		postedThisRound[f.ID] = commentID
+		if err := p.Ledger.UpsertPublishedFinding(&db.PublishedFinding{
+			RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
+			Kind: db.PublishedKindFinding, Fingerprint: f.ID,
+			SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
+			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
+			CommentID: commentID, ReviewID: reviewID,
+			State: db.PublishedStateOpen, PublishedAt: now,
+			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
+		}); err != nil {
+			return postedThisRound, fmt.Errorf("record finding %s: %w", f.ID, err)
+		}
+		// Notes follow the ledger write: a post whose row failed is a publish
+		// error, and the retry counts it when it reposts.
+		rep.Hygiene.notePosted(f, prior[f.ID])
+		rep.Hygiene.noteWritten(f, prior[f.ID])
+	}
+	return postedThisRound, nil
+}
+
+// writeSummary renders the sticky summary, edits the existing comment (found
+// through the ledger or its marker) or creates it, and records the summary
+// row for this round.
+func (p *Publisher) writeSummary(ctx context.Context, r Round, sel Selection, summaryRow *db.PublishedFinding, now time.Time, rep *Report) error {
+	summary := RenderSummary(r, sel)
+	summaryLedger := &db.PublishedFinding{
+		RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
+		Kind: db.PublishedKindSummary, Fingerprint: summaryFingerprint,
+		ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA, Rounds: r.RoundNumber,
+		State: db.PublishedStateOpen, PublishedAt: now,
+	}
+	summaryCommentID := int64(0)
+	if summaryRow != nil {
+		summaryCommentID = summaryRow.CommentID
+		summaryLedger.ReviewedSHA = summaryRow.ReviewedSHA
+	} else if existing, err := p.GH.ListIssueComments(ctx, r.Owner, r.Repo, r.Number); err == nil {
+		for _, c := range existing {
+			if strings.Contains(c.Body, SummaryMarker) {
+				summaryCommentID = c.ID
+				break
+			}
+		}
+	}
+	if summaryCommentID != 0 {
+		if err := p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryCommentID, summary); err != nil {
+			if !isNotFound(err) {
+				return fmt.Errorf("edit summary comment: %w", err)
+			}
+			summaryCommentID = 0
+		}
+	}
+	if summaryCommentID == 0 {
+		id, err := p.GH.CreateIssueComment(ctx, r.Owner, r.Repo, r.Number, summary)
+		if err != nil {
+			return fmt.Errorf("create summary comment: %w", err)
+		}
+		summaryCommentID = id
+	}
+	rep.SummaryCommentID = summaryCommentID
+	summaryLedger.CommentID = summaryCommentID
+	if err := p.Ledger.UpsertPublishedFinding(summaryLedger); err != nil {
+		return fmt.Errorf("record summary comment: %w", err)
+	}
+	return nil
+}
+
+// WithoutDismissed drops findings the ledger records as settled by exact
+// fingerprint: dismissed, contested or external rows. The ledger policy
+// applies the same rule after aliasing (see doc.go); this exact form serves
+// the legacy publisher and the dashboard's confidence score.
 func WithoutDismissed(findings []payload.Finding, previous []db.PublishedFinding) []payload.Finding {
 	dismissed := map[string]bool{}
 	for _, row := range previous {
-		if row.State == db.PublishedStateDismissed && (row.Kind == db.PublishedKindFinding || row.Kind == db.PublishedKindAnnotation) {
+		if terminalState(row.State) && (row.Kind == db.PublishedKindFinding || row.Kind == db.PublishedKindAnnotation) {
 			dismissed[row.Fingerprint] = true
 		}
 	}

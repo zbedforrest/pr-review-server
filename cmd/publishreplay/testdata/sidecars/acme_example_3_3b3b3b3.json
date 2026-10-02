@@ -1,0 +1,13 @@
+{
+ "schema_version": "2",
+ "owner": "acme",
+ "repo": "example",
+ "pr_number": 3,
+ "commit_sha": "3b3b3b3222222222222222222222222222222222",
+ "counts": {
+  "critical": 0,
+  "medium": 0,
+  "low": 0
+ },
+ "findings": []
+}

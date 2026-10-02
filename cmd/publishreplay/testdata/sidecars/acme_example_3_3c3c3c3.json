@@ -1,0 +1,46 @@
+{
+ "schema_version": "2",
+ "owner": "acme",
+ "repo": "example",
+ "pr_number": 3,
+ "commit_sha": "3c3c3c3333333333333333333333333333333333",
+ "counts": {
+  "critical": 0,
+  "medium": 1,
+  "low": 0
+ },
+ "findings": [
+  {
+   "id": "app/cache.go:3:c3c3c3c3c3c3",
+   "severity": "medium",
+   "provenance": "agent",
+   "file": "app/cache.go",
+   "line": 30,
+   "comment": "Cache entries are stored without a TTL, so a stale profile is served until the process restarts.",
+   "finding_contract": {
+    "schema_version": 1,
+    "finding_kind": "production_behavior",
+    "materiality": "current_impact",
+    "current_impact": "Users see a stale profile until the next deploy.",
+    "counterfactual_trigger": null,
+    "falsifiability": "falsifiable",
+    "falsifiable_condition": "Update a profile and reload within the hour.",
+    "expected_observable": "The old profile is returned.",
+    "subjects": [
+     {
+      "kind": "symbol",
+      "path": "app/cache.go",
+      "name": "put"
+     }
+    ],
+    "uncertainty": "None.",
+    "severity_rationale": "Deterministic: nothing evicts.",
+    "headline": "Cache entries never expire"
+   },
+   "finding_contract_status": "valid",
+   "state": "confirmed",
+   "active": true,
+   "diff_hunk": "@@ -28,4 +28,5 @@ func (c *Cache) put(key string, p Profile) {\n \tc.mu.Lock()\n+\tc.entries[key] = p\n \tc.mu.Unlock()"
+  }
+ ]
+}

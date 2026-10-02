@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"os"
 	"sort"
 	"strings"
 
@@ -23,10 +24,29 @@ type Policy struct {
 	// ShowUnverified folds the active first-pass claims the agent did not
 	// confirm into the summary comment; they are never inline.
 	ShowUnverified bool
+	// LegacyLedger restores the pre-ledger-memory publisher (PUBLISH_POLICY_V2
+	// set to false): open rows only, absence means fixed, reposts on return.
+	LegacyLedger bool
+}
+
+// PolicyV2Env is the kill switch for the ledger decision table: "false", "0",
+// "off" and "no" restore the pre-ledger publisher; anything else keeps it on.
+const PolicyV2Env = "PUBLISH_POLICY_V2"
+
+// LegacyLedgerFromEnv reports whether the environment turned the ledger
+// decision table off. The poller resolves it once at start-up; the library
+// never reads the environment itself.
+func LegacyLedgerFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(PolicyV2Env))) {
+	case "false", "0", "off", "no":
+		return true
+	}
+	return false
 }
 
 // DefaultPolicy is the shipped posting policy: three inline comments per
-// round, medium severity and above, unverified first-pass claims folded.
+// round, medium severity and above, unverified first-pass claims folded, the
+// ledger decision table on.
 func DefaultPolicy() Policy {
 	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true}
 }

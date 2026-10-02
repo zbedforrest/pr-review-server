@@ -75,3 +75,4 @@ benchmark/*
 !benchmark/replay/
 benchmark/replay/*
 !benchmark/replay/BASELINE.md
+!benchmark/replay/W1-1.md

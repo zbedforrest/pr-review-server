@@ -54,7 +54,7 @@ func TestPublishGitHubReview_RecordsSameCommitResolvesAsTelemetry(t *testing.T) 
 		Kind: db.PublishedKindFinding, Fingerprint: "g.go:0:feedfacecafe", Severity: "critical",
 		ReviewedSHA: "abc", LastSeenSHA: "abc", CommentID: 55, State: db.PublishedStateOpen,
 	}))
-	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot"), legacyLedger: true}
 
 	report, outcome := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}, []byte(scoredSidecar))
 
@@ -124,8 +124,8 @@ func TestPollerRecordsNoUnwiredHygieneAction(t *testing.T) {
 	}
 	pl, err := payload.Decode([]byte(scoredSidecar))
 	require.NoError(t, err)
-	assert.Nil(t, BuildPublishRound(pr, pl, nil, nil, nil, "").ChangedFiles,
-		"the round now carries the compare, so %s is measured: remove it from health.UnwiredHygiene", health.ActionFixedWithoutFileChange)
+	assert.Nil(t, BuildPublishRound(pr, pl, nil, nil, nil, "").Changes,
+		"the round builder leaves the compare to publishGitHubReview, which hands it over through changeLookup")
 
 	stats, err := database.GetTelemetryStats(1)
 	require.NoError(t, err)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +17,7 @@ import (
 	"pr-review-server/pkg/reviewer/payload"
 )
 
-func fixtureRun(t *testing.T) Result {
+func fixtureRun(t *testing.T, legacy bool) Result {
 	t.Helper()
 	dumps, err := loadDumps("testdata/dumps")
 	if err != nil {
@@ -26,51 +27,74 @@ func fixtureRun(t *testing.T) Result {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Run(context.Background(), Options{Dumps: dumps, Store: st, Policy: publisher.DefaultPolicy()})
+	pol := publisher.DefaultPolicy()
+	pol.LegacyLedger = legacy
+	res, err := Run(context.Background(), Options{Dumps: dumps, Store: st, Policy: pol})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return res
 }
 
+func comparable(m Metrics) Metrics {
+	m.Observed = ObservedMetrics{}
+	m.PrismResolvedNote = ""
+	return m
+}
+
+// The fixtures hold a same-marker repost after an unrelated push (#1), a
+// rewording on a new line (#2) and a finding that returns after a real fix
+// (#3). The ledger policy posts each once and says the rest in the thread.
 func TestRun_FixtureMetrics(t *testing.T) {
-	m := fixtureRun(t).Metrics
-	// SameMarkerReposts 1 and FixedWithoutFileChange 1 encode master's publisher defects; both drop to 0 once the ledger fix ships.
+	m := fixtureRun(t, false).Metrics
 	want := Metrics{
-		PRs: 2, PRsWithRounds: 2, Rounds: 6, RoundsReplayed: 6, SameCommitRounds: 1,
-		RootsPosted: 4, SameMarkerReposts: 1, SameDefectReposts: 1, SameDefectRepostsPerPR: 0.5, PRsWithReposts: 2,
-		Fixed: 2, FixedWithoutFileChange: 1,
-		CommentsPerPushP50: 1, RoundsPerPRP50: 3,
+		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1,
+		RootsPosted: 3, Fixed: 1, InThreadReplies: 1,
+		CommentsPerPushP50: 0, RoundsPerPRP50: 3,
 	}
-	got := m
-	got.Observed = ObservedMetrics{}
-	got.PrismResolvedNote = ""
-	if got != want {
+	if got := comparable(m); got != want {
 		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
 	}
-	if m.Observed.Roots != 4 || m.Observed.SameMarkerReposts != 1 || m.Observed.SameDefectReposts != 0 || m.Observed.ThreadsResolved != 1 {
+	if m.Observed.Roots != 6 || m.Observed.SameMarkerReposts != 2 || m.Observed.SameDefectReposts != 0 || m.Observed.ThreadsResolved != 2 {
 		t.Fatalf("observed = %+v", m.Observed)
 	}
 }
 
+// The legacy numbers pin the defects the ledger policy removes.
+func TestRun_FixtureMetricsLegacy(t *testing.T) {
+	m := fixtureRun(t, true).Metrics
+	want := Metrics{
+		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1,
+		RootsPosted: 6, SameMarkerReposts: 2, SameDefectReposts: 1, SameDefectRepostsPerPR: 0.333, PRsWithReposts: 3,
+		Fixed: 3, FixedWithoutFileChange: 1,
+		CommentsPerPushP50: 1, RoundsPerPRP50: 3,
+	}
+	if got := comparable(m); got != want {
+		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
+	}
+}
+
 func TestRun_PerPRRowsAndCSV(t *testing.T) {
-	res := fixtureRun(t)
-	if len(res.PerPR) != 2 {
+	res := fixtureRun(t, false)
+	if len(res.PerPR) != 3 {
 		t.Fatalf("rows = %d", len(res.PerPR))
 	}
-	repost, reword := res.PerPR[0], res.PerPR[1]
-	if repost.PR != "example#1" || repost.SameMarkerReposts != 1 || repost.FixedWithoutFileChange != 1 || repost.SameDefectReposts != 0 {
+	repost, reword, reopen := res.PerPR[0], res.PerPR[1], res.PerPR[2]
+	if repost.PR != "example#1" || repost.RootsPosted != 1 || repost.SameMarkerReposts != 0 || repost.Fixed != 0 || repost.FixedWithoutFileChange != 0 {
 		t.Errorf("example#1 = %+v", repost)
 	}
-	if reword.PR != "example#2" || reword.SameDefectReposts != 1 || reword.SameMarkerReposts != 0 || reword.Fixed != 1 || reword.FixedWithoutFileChange != 0 || reword.SameCommitRounds != 1 {
+	if reword.PR != "example#2" || reword.RootsPosted != 1 || reword.SameDefectReposts != 0 || reword.Fixed != 0 || reword.SameCommitRounds != 1 {
 		t.Errorf("example#2 = %+v", reword)
+	}
+	if reopen.PR != "example#3" || reopen.RootsPosted != 1 || reopen.Fixed != 1 || reopen.FixedWithoutFileChange != 0 || reopen.InThreadReplies != 1 {
+		t.Errorf("example#3 = %+v", reopen)
 	}
 	var buf bytes.Buffer
 	if err := writeCSV(&buf, res.PerPR); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 3 || !strings.HasPrefix(lines[0], "pr,rounds,") || !strings.HasPrefix(lines[1], "example#1,3,0,0,2,1,0,0,1,1,0,0,") {
+	if len(lines) != 4 || !strings.HasPrefix(lines[0], "pr,rounds,") || !strings.HasPrefix(lines[3], "example#3,3,0,0,1,0,0,0,1,0,0,0,1,") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }
@@ -93,34 +117,82 @@ func TestRun_MissingSidecarCountsNotFails(t *testing.T) {
 	}
 }
 
+func defect(file string, line int, text string, kind string, subjects map[string]string) post {
+	p := post{File: file, Line: line, RawText: text, Kind: kind}
+	if len(subjects) > 0 {
+		p.SubjectKinds = subjects
+		for name := range subjects {
+			p.Subjects = append(p.Subjects, name)
+		}
+		sort.Strings(p.Subjects)
+	}
+	return p
+}
+
 func TestSameDefect(t *testing.T) {
 	a := "The retry loop in fetchUser never backs off, so a 429 from upstream is retried immediately."
 	b := "fetchUser hammers the endpoint after a 429 response because no delay is inserted between attempts."
-	if sameDefect("api/users.go", 140, a, nil, "api/users.go", 143, b, nil) {
+	fn := map[string]string{"fetchuser": "symbol"}
+	if sameDefect(defect("api/users.go", 140, a, "", nil), defect("api/users.go", 143, b, "", nil), false) {
 		t.Fatal("low-overlap rewording without subjects must not match")
 	}
-	if !sameDefect("api/users.go", 140, a, []string{"fetchuser"}, "api/users.go", 143, b, []string{"fetchuser"}) {
-		t.Fatal("shared subject must match")
+	if !sameDefect(defect("api/users.go", 140, a, "production_behavior", fn), defect("api/users.go", 143, b, "production_behavior", fn), false) {
+		t.Fatal("the same kind and subject set must match")
 	}
-	if !sameDefect("api/users.go", 140, a, nil, "api/users.go", 145, a, nil) {
+	if sameDefect(defect("api/users.go", 140, a, "production_behavior", fn), defect("api/users.go", 143, b, "production_behavior", fn), true) {
+		t.Fatal("the text clause alone must not match a rewording under the bar")
+	}
+	if !sameDefect(defect("api/users.go", 140, a, "", nil), defect("api/users.go", 145, a, "", nil), false) {
 		t.Fatal("same text, same file and nearby line must match")
 	}
-	if sameDefect("api/users.go", 140, a, nil, "src/api/users.go", 145, a, nil) {
+	if sameDefect(defect("api/users.go", 140, a, "", nil), defect("src/api/users.go", 145, a, "", nil), false) {
 		t.Fatal("a nested path that merely ends in the other must not match")
 	}
-	if sameDefect("api/users.go", 140, a, []string{"fetchuser"}, "api/users.go", 200, a, []string{"fetchuser"}) {
+	if sameDefect(defect("api/users.go", 140, a, "production_behavior", fn), defect("api/users.go", 200, a, "production_behavior", fn), false) {
 		t.Fatal("lines more than ten apart must not match")
 	}
-	if sameDefect("api/users.go", 140, a, nil, "api/other.go", 140, a, nil) {
+	if sameDefect(defect("api/users.go", 140, a, "", nil), defect("api/other.go", 140, a, "", nil), false) {
 		t.Fatal("different files must not match")
 	}
-	if sameDefect("a/index.ts", 10, a, nil, "b/index.ts", 10, a, nil) {
+	if sameDefect(defect("a/index.ts", 10, a, "", nil), defect("b/index.ts", 10, a, "", nil), false) {
 		t.Fatal("a shared basename under different directories must not match")
+	}
+}
+
+func TestSharedSubjectKey(t *testing.T) {
+	const kind = "production_behavior"
+	cases := []struct {
+		name string
+		p, e post
+		want bool
+	}{
+		{"enclosing function alone, different points", defect("f.py", 10, "Re-enabling the plan wipes the stored discount.", kind, map[string]string{"save": "symbol"}),
+			defect("f.py", 14, "The toggle check runs before the form is validated.", kind, map[string]string{"save": "symbol"}), true},
+		{"enclosing function shared, other subjects differ", defect("f.py", 10, "x", kind, map[string]string{"save": "symbol", "discount": "symbol"}),
+			defect("f.py", 14, "y", kind, map[string]string{"save": "symbol", "is_valid": "symbol"}), true},
+		{"enclosing function is the only subject on one side", defect("f.py", 10, "x", kind, map[string]string{"save": "symbol"}),
+			defect("f.py", 14, "y", kind, map[string]string{"save": "symbol", "is_valid": "symbol"}), false},
+		{"shared bare file", defect("f.py", 10, "x", kind, map[string]string{"f.py": "file", "a": "symbol"}),
+			defect("f.py", 14, "y", kind, map[string]string{"f.py": "file", "b": "symbol"}), false},
+		{"different finding kinds", defect("f.py", 10, "x", kind, map[string]string{"save": "symbol"}),
+			defect("f.py", 14, "y", "test_quality", map[string]string{"save": "symbol"}), false},
+		{"no kind recorded", defect("f.py", 10, "x", "", map[string]string{"save": "symbol"}),
+			defect("f.py", 14, "y", "", map[string]string{"save": "symbol"}), false},
+		{"shared selector among several", defect("t.tsx", 10, "x", kind, map[string]string{".modal": "selector", "open": "symbol"}),
+			defect("t.tsx", 14, "y", kind, map[string]string{".modal": "selector", "close": "symbol"}), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sharedSubjectKey(c.p, c.e); got != c.want {
+				t.Fatalf("sharedSubjectKey = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 
 func TestSameDefect_UnknownLineNeverMatches(t *testing.T) {
 	text := "The retry loop in fetchUser never backs off, so a 429 from upstream is retried immediately."
+	fn := map[string]string{"fetchuser": "symbol"}
 	cases := []struct {
 		name        string
 		line, oLine int
@@ -132,7 +204,7 @@ func TestSameDefect_UnknownLineNeverMatches(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if sameDefect("api/users.go", c.line, text, []string{"fetchuser"}, "api/users.go", c.oLine, text, []string{"fetchuser"}) {
+			if sameDefect(defect("api/users.go", c.line, text, "production_behavior", fn), defect("api/users.go", c.oLine, text, "production_behavior", fn), false) {
 				t.Fatal("identical text and subjects must not alias when a line is unknown")
 			}
 		})
@@ -247,11 +319,11 @@ func TestWriteFileAtomic(t *testing.T) {
 }
 
 func TestReplayPolicy_FlagDefaultsMatchShipped(t *testing.T) {
-	got := replayPolicy(publisher.DefaultInlineCap, publisher.DefaultInlineMinSeverity, publisher.DefaultPolicy().ShowUnverified)
+	got := replayPolicy(publisher.DefaultInlineCap, publisher.DefaultInlineMinSeverity, publisher.DefaultPolicy().ShowUnverified, false)
 	if got != publisher.DefaultPolicy() {
 		t.Fatalf("replayPolicy defaults = %+v, want %+v", got, publisher.DefaultPolicy())
 	}
-	if p := replayPolicy(1, "high", false); p.InlineCap != 1 || p.InlineMinSeverity != "high" || p.ShowUnverified {
+	if p := replayPolicy(1, "high", false, false); p.InlineCap != 1 || p.InlineMinSeverity != "high" || p.ShowUnverified {
 		t.Fatalf("overrides not applied: %+v", p)
 	}
 }
@@ -364,10 +436,10 @@ func TestFilterDumps(t *testing.T) {
 
 func TestClassifyRepost_EmptyMarkerNeverMatches(t *testing.T) {
 	earlier := []post{{FindingID: "", File: "a.go", Line: 1, RawText: "x"}}
-	if classifyRepost(post{FindingID: "", File: "b.go", Line: 500, RawText: "y"}, earlier) != repostNone {
+	if classifyRepost(post{FindingID: "", File: "b.go", Line: 500, RawText: "y"}, earlier, false) != repostNone {
 		t.Fatal("two posts without a marker must not count as a same-marker repost")
 	}
-	if classifyRepost(post{FindingID: "f1", File: "b.go", Line: 500}, []post{{FindingID: "f1"}}) != repostSameMarker {
+	if classifyRepost(post{FindingID: "f1", File: "b.go", Line: 500}, []post{{FindingID: "f1"}}, false) != repostSameMarker {
 		t.Fatal("an equal marker must match")
 	}
 }

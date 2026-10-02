@@ -187,8 +187,11 @@ const (
 	PublishedKindAnnotation = "annotation"
 
 	PublishedStateOpen      = "open"
-	PublishedStateResolved  = "resolved"  // the finding stopped appearing in reviews
-	PublishedStateDismissed = "dismissed" // conceded in conversation or by reaction
+	PublishedStateResolved  = "resolved"  // legacy: the finding stopped appearing in reviews; read as fixed
+	PublishedStateFixed     = "fixed"     // absent and the cited file changed, or a verified fix claim
+	PublishedStateDismissed = "dismissed" // author verdict, PRism concession or withdrawal; terminal
+	PublishedStateContested = "contested" // PRism held or the author pushed back; terminal for reposting
+	PublishedStateExternal  = "external"  // matched another bot's or a human's root; terminal for roots
 )
 
 // PublishedFinding records what PRism has posted to a PR on GitHub, one row
@@ -214,6 +217,12 @@ type PublishedFinding struct {
 	// Rounds counts publication rounds; meaningful on the summary row only.
 	Rounds      int
 	PublishedAt time.Time
+	// CommentText is the agent's raw prose the row was posted with, so a later
+	// round can recognise a reworded finding; FindingKind and Subjects (sorted,
+	// comma-joined lower-case names) are the contract's line-independent key.
+	CommentText string
+	FindingKind string
+	Subjects    string
 }
 
 // TelemetryEvent represents a single telemetry event for creation

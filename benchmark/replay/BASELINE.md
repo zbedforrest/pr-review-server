@@ -22,7 +22,7 @@ program spec: `same_marker_reposts` 0, `same_defect_reposts_per_pr` at most 0.05
 | same_commit_rounds | 63 | a round whose head equals the previous round's head |
 | roots_posted | 485 | inline root comments the publisher would create (498 observed) |
 | same_marker_reposts | 11 | target 0 |
-| same_defect_reposts | 39 | aliases a root from an earlier round: same file, line within 10, raw Jaccard >= 0.20 or shared subject |
+| same_defect_reposts | 39 | aliases a root from an earlier round: same file, line within 10, raw Jaccard >= 0.20 or any shared subject (26 under the tightened clause below) |
 | same_defect_reposts_per_pr | 0.202 | over prs_with_rounds; target <= 0.05 |
 | same_round_duplicates | 5 | two roots in one round that alias each other; ledger aliasing cannot remove these |
 | prs_with_reposts | 31 | |
@@ -58,9 +58,9 @@ repo#number` replays one PR, `--limit N` the first N dumps.
 
 ## Fixture expectations
 
-The two fixtures under `cmd/publishreplay/testdata` pin master's behaviour: `same_marker_reposts` 1 and
-`fixed_without_file_change` 1. A publisher change that fixes those defects should move both expectations to 0
-rather than drop the test.
+The three fixtures under `cmd/publishreplay/testdata` (a same-marker repost, a rewording, a return after a
+fix) are replayed under both policies: `TestRun_FixtureMetricsLegacy` pins master's numbers and
+`TestRun_FixtureMetrics` the ledger policy's. `W1-1.md` carries the first before-and-after run.
 
 ## Limits of the measurement
 
@@ -70,6 +70,11 @@ rather than drop the test.
   exposure, so a same-commit guard is evidenced by that count, not by `same_commit_resolves`.
 - A transient sidecar or compare fetch failure is logged and counted as `rounds_missing_sidecar` or
   `fixed_file_change_unknown`; only a 404 is remembered with a `.missing` marker.
+- The subject clause of the alias rule was tightened with W1-1 to mirror the publisher's key: same
+  `finding_kind` and the same sorted subject set, or a shared `symbol` or `selector` subject that is not
+  the only subject on either side. One shared enclosing function is not a shared defect. The 39 above was
+  measured under the earlier "any shared subject" clause; the same master code reads 26 (0.135 per PR) under
+  the current one. `--alias-text-only` drops the subject clause altogether.
 - Line translation across pushes is not modelled; the alias check uses the cited lines as emitted.
 - Commentable lines come from the hunks stored with each finding, not the full PR patch set.
 - Observed same-defect reposts use text overlap only (the dumps carry rendered prose, not contract subjects), so

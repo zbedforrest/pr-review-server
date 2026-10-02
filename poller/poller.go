@@ -170,6 +170,8 @@ type Poller struct {
 	// unreliable (diverged history, truncated file list, API error) and the
 	// caller must not carry anything forward.
 	compareFilesFn func(ctx context.Context, owner, repo, base, head, token string) (files []string, ok bool)
+	// legacyLedger is PUBLISH_POLICY_V2 resolved once at construction.
+	legacyLedger bool
 	// agentSlots caps concurrent agent reviews per process. Each agent run
 	// holds ~1 GB of /tmp (clone) + agent memory; without a cap, two PRs
 	// triggered close together can exhaust the instance's memory budget.
@@ -398,6 +400,7 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		ghClient:         ghClient,
 		ghClientConcrete: ghClient,
 		gcsClient:        gcsClient,
+		legacyLedger:     publisher.LegacyLedgerFromEnv(),
 		reviewDir:        cfg.ReviewsDir,
 		triggerChan:      make(chan struct{}, 1), // Buffered to prevent blocking
 		activeReviews:    make(map[string]ProcessInfo),
@@ -1081,11 +1084,18 @@ var githubAPIBaseURL = "https://api.github.com"
 //     file no longer proves it untouched)
 //   - any transport/HTTP/decode error
 func githubCompareChangedFiles(ctx context.Context, owner, repo, base, head, token string) ([]string, bool) {
+	files, _, ok := githubCompareChanges(ctx, owner, repo, base, head, token)
+	return files, ok
+}
+
+// githubCompareChanges is githubCompareChangedFiles plus each file's patch
+// where GitHub served one, for callers that judge changes by line.
+func githubCompareChanges(ctx context.Context, owner, repo, base, head, token string) ([]string, map[string]string, bool) {
 	url := fmt.Sprintf("%s/repos/%s/%s/compare/%s...%s", githubAPIBaseURL, owner, repo, base, head)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		log.Printf("[REVIEWER] carry-forward: build compare request: %v", err)
-		return nil, false
+		return nil, nil, false
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	if token != "" {
@@ -1094,42 +1104,47 @@ func githubCompareChangedFiles(ctx context.Context, owner, repo, base, head, tok
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("[REVIEWER] carry-forward: compare %s..%s: %v", base, head, err)
-		return nil, false
+		return nil, nil, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[REVIEWER] carry-forward: compare %s..%s: HTTP %d", base, head, resp.StatusCode)
-		return nil, false
+		return nil, nil, false
 	}
 	var body struct {
 		Status string `json:"status"` // ahead | behind | diverged | identical
 		Files  []struct {
 			Filename         string `json:"filename"`
 			PreviousFilename string `json:"previous_filename"`
+			Patch            string `json:"patch"`
 		} `json:"files"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		log.Printf("[REVIEWER] carry-forward: decode compare %s..%s: %v", base, head, err)
-		return nil, false
+		return nil, nil, false
 	}
 	// "ahead" = base is an ancestor of head (a normal push): the compare's
 	// merge-base diff IS the inter-push diff. "identical" = same tree
 	// (re-review), trivially reliable with zero files.
 	if body.Status != "ahead" && body.Status != "identical" {
-		return nil, false
+		return nil, nil, false
 	}
 	if len(body.Files) >= 300 {
-		return nil, false
+		return nil, nil, false
 	}
 	files := make([]string, 0, len(body.Files))
+	patches := make(map[string]string, len(body.Files))
 	for _, f := range body.Files {
 		files = append(files, f.Filename)
+		if f.Patch != "" {
+			patches[f.Filename] = f.Patch
+		}
 		if f.PreviousFilename != "" {
 			// A rename touches both names; a finding citing either is stale.
 			files = append(files, f.PreviousFilename)
 		}
 	}
-	return files, true
+	return files, patches, true
 }
 
 // broadcastPRUpdate helper to send update events

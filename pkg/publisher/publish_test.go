@@ -15,10 +15,16 @@ type fakeGitHub struct {
 	issueCreates          []string
 	issueEdits            map[int64]string
 	existingIssueComments []IssueComment
+	replies               []fakeReply
 	editErr               error
 	nextCommentID         int64
 	nextIssueID           int64
 	nextReviewID          int64
+}
+
+type fakeReply struct {
+	root int64
+	body string
 }
 
 type fakeReview struct {
@@ -61,8 +67,25 @@ func (g *fakeGitHub) ListIssueComments(_ context.Context, _, _ string, _ int) ([
 	return g.existingIssueComments, nil
 }
 
-// fakeLedger mirrors the real table's uniqueness: one row per fingerprint,
-// with kind and state overwritten on upsert.
+func (g *fakeGitHub) PostReply(_ context.Context, _, _ string, _ int, root int64, body string) (int64, error) {
+	g.nextCommentID++
+	g.replies = append(g.replies, fakeReply{root: root, body: body})
+	return g.nextCommentID, nil
+}
+
+func (g *fakeGitHub) repliesTo(root int64) []string {
+	var out []string
+	for _, r := range g.replies {
+		if r.root == root {
+			out = append(out, r.body)
+		}
+	}
+	return out
+}
+
+// fakeLedger mirrors the real table's upsert: one row per fingerprint, kind
+// and state overwritten (terminal states sticky), ids and memory columns
+// kept when the caller passes zero values.
 type fakeLedger struct {
 	rows map[string]*db.PublishedFinding
 }
@@ -80,6 +103,18 @@ func (l *fakeLedger) UpsertPublishedFinding(pf *db.PublishedFinding) error {
 		}
 		if cp.Rounds == 0 {
 			cp.Rounds = prev.Rounds
+		}
+		if cp.CommentText == "" {
+			cp.CommentText = prev.CommentText
+		}
+		if cp.FindingKind == "" {
+			cp.FindingKind = prev.FindingKind
+		}
+		if cp.Subjects == "" {
+			cp.Subjects = prev.Subjects
+		}
+		if terminalState(prev.State) {
+			cp.State = prev.State
 		}
 		cp.ReviewedSHA = prev.ReviewedSHA
 	}
@@ -105,12 +140,35 @@ func (l *fakeLedger) get(kind, fp string) *db.PublishedFinding {
 
 func publishRound(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round) Report {
 	t.Helper()
-	p := &Publisher{GH: gh, Ledger: ledger, Policy: DefaultPolicy(), Now: func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }}
+	return publishWith(t, gh, ledger, r, testPolicy())
+}
+
+func publishWith(t *testing.T, gh *fakeGitHub, ledger *fakeLedger, r Round, pol Policy) Report {
+	t.Helper()
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: pol, Now: func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }}
 	rep, err := p.Publish(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	return rep
+}
+
+// testPolicy is the shipped policy with the ledger table on, whatever the
+// test environment says.
+func testPolicy() Policy {
+	pol := DefaultPolicy()
+	pol.LegacyLedger = false
+	return pol
+}
+
+// changed is a Round.Changes that reports the given files touched between
+// any base and the head, with no line detail.
+func changed(files ...string) func(string) (ChangeSet, bool) {
+	set := map[string]bool{}
+	for _, f := range files {
+		set[f] = true
+	}
+	return func(string) (ChangeSet, bool) { return ChangeSet{Files: set}, true }
 }
 
 func roundOne() Round {
@@ -190,17 +248,18 @@ func TestPublishRoundOne(t *testing.T) {
 
 func TestPublishRoundTwo(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, roundOne())
+	publishRound(t, gh, ledger, ledgerRoundOne())
 
-	r2 := roundOne()
+	r2 := ledgerRoundOne()
 	r2.HeadSHA = "sha-round-2"
 	r2.RoundNumber = 0 // derived from the ledger's summary row
 	r2.Findings = []payload.Finding{
 		f("sum", "unknown", "SUMMARY", 0, "Narrative."),
-		f("c1", "critical", "a.go", 10, "Critical thing."),
-		f("m3", "medium", "b.go", 21, "New medium."),
+		f(c1ID, "critical", "a.go", 10, "Critical thing."),
+		f(fid("b.go", 21, "Decode errors are ignored."), "medium", "b.go", 21, "Decode errors are ignored."),
 	}
 	r2.Commentable["b.go"][21] = true
+	r2.Changes = changed("a.go", "b.go")
 	rep := publishRound(t, gh, ledger, r2)
 
 	if len(gh.issueCreates) != 1 {
@@ -220,22 +279,25 @@ func TestPublishRoundTwo(t *testing.T) {
 		t.Fatalf("reviews = %d, want 2", len(gh.reviews))
 	}
 	rv := gh.reviews[1]
-	if len(rv.comments) != 1 || !strings.Contains(rv.comments[0].Body, FindingMarker("m3")) {
+	if len(rv.comments) != 1 || !strings.Contains(rv.comments[0].Body, FindingMarker(fid("b.go", 21, "Decode errors are ignored."))) {
 		t.Fatalf("round 2 review comments = %+v, want only m3", rv.comments)
 	}
 	if rep.SummaryCommentID != 501 || rep.ReviewID != 9002 || rep.InlinePosted != 1 || rep.Annotations != 0 || rep.StillOpen != 1 || rep.Fixed != 2 {
 		t.Errorf("report = %+v", rep)
 	}
 
-	c1 := ledger.get(db.PublishedKindFinding, "c1")
+	c1 := ledger.get(db.PublishedKindFinding, c1ID)
 	if c1.LastSeenSHA != "sha-round-2" || c1.ReviewedSHA != "sha-round-1" || c1.CommentID != 1001 || c1.State != db.PublishedStateOpen {
 		t.Errorf("still-open c1 row = %+v", c1)
 	}
-	m1 := ledger.get(db.PublishedKindFinding, "m1")
-	if m1.LastSeenSHA != "sha-round-1" || m1.State != db.PublishedStateResolved || m1.CommentID != 1002 {
-		t.Errorf("fixed m1 row must be resolved with its comment id kept: %+v", m1)
+	m1 := ledger.get(db.PublishedKindFinding, m1ID)
+	if m1.LastSeenSHA != "sha-round-1" || m1.State != db.PublishedStateFixed || m1.CommentID != 1002 {
+		t.Errorf("fixed m1 row must be fixed with its comment id kept: %+v", m1)
 	}
-	m3 := ledger.get(db.PublishedKindFinding, "m3")
+	if c1.CommentText != "Critical thing." || m1.Subjects != "" {
+		t.Errorf("rows must remember the raw prose they were posted with: c1=%q m1 subjects=%q", c1.CommentText, m1.Subjects)
+	}
+	m3 := ledger.get(db.PublishedKindFinding, fid("b.go", 21, "Decode errors are ignored."))
 	if m3 == nil || m3.CommentID != 1003 || m3.ReviewID != 9002 || m3.ReviewedSHA != "sha-round-2" {
 		t.Errorf("m3 row = %+v", m3)
 	}

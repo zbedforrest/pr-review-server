@@ -43,11 +43,6 @@ type Round struct {
 	// Commentable is file -> RIGHT-side lines a review comment may target,
 	// typically built with CommentableLines from the PR file patches.
 	Commentable map[string]map[int]bool
-	// ChangedFiles is the set of files that changed between the rows'
-	// LastSeenSHA (shared by every open row after a successful round) and
-	// HeadSHA; nil means the caller does not know, and a resolve then cannot
-	// be judged against it.
-	ChangedFiles map[string]bool
 
 	RequiredCheckViolated bool
 	DashboardURL          string
@@ -62,6 +57,32 @@ type Round struct {
 	// ProfileFooter names the review flavor in the summary footer ("PRism
 	// Lite", "PRism Lite+ (custom)"); empty for an ordinary full review.
 	ProfileFooter string
+
+	// PriorComments is what GitHub currently shows for PRism's own inline
+	// comments, keyed by the fingerprint in their marker: the translated line
+	// and the body. The ledger policy aliases reworded findings against it.
+	PriorComments map[string]PriorComment
+	// Changes resolves what changed between a ledger row's LastSeenSHA and
+	// HeadSHA; ok false means unknown, and nothing is then judged fixed.
+	Changes func(base string) (ChangeSet, bool)
+
+	// transitions is the ledger policy's record count for the summary; nil
+	// falls back to the hash-set diff.
+	transitions *roundDiff
+}
+
+// PriorComment is one of PRism's own inline comments as GitHub lists it now.
+type PriorComment struct {
+	Line int
+	Text string
+}
+
+// ChangeSet is the inter-push diff between two commits of the PR: the files
+// touched and, when the caller had the patches, the RIGHT-side lines added
+// or edited per file. Lines nil means only the file set is known.
+type ChangeSet struct {
+	Files map[string]bool
+	Lines map[string]map[int]bool
 }
 
 func (r Round) sourceTag(id string) string {
@@ -88,6 +109,9 @@ type roundDiff struct {
 }
 
 func (r Round) diff() roundDiff {
+	if r.transitions != nil {
+		return *r.transitions
+	}
 	present := map[string]bool{}
 	for _, f := range r.activeClaims() {
 		present[f.ID] = true

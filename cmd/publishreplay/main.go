@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline]
+//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy]
 //
 // Dumps are the GitHub GraphQL exports (one PR per file). Sidecars are the
 // review findings JSON per round, fetched from PRISM_BASE_URL/reviews/ with
@@ -37,6 +37,8 @@ func main() {
 	workers := flag.Int("workers", 6, "parallel fetches during prefetch")
 	inlineCap := flag.Int("inline-cap", publisher.DefaultInlineCap, "publisher inline cap per round")
 	minSeverity := flag.String("inline-min-severity", publisher.DefaultInlineMinSeverity, "publisher inline minimum severity")
+	legacy := flag.Bool("legacy", false, "replay with the pre-ledger-memory publisher (PUBLISH_POLICY_V2=false) for a baseline")
+	textOnly := flag.Bool("alias-text-only", false, "count same-defect reposts by raw-text overlap alone, without the subject key")
 	showUnverified := flag.Bool("show-unverified", publisher.DefaultPolicy().ShowUnverified, "fold unverified first-pass claims into the summary")
 	flag.Parse()
 	if *dumpsDir == "" || *sidecarsDir == "" {
@@ -66,8 +68,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("sidecar store: %v", err)
 	}
-	opts := Options{Dumps: dumps, Store: st, BotName: *bot, Logf: log.Printf,
-		Policy: replayPolicy(*inlineCap, *minSeverity, *showUnverified)}
+	opts := Options{Dumps: dumps, Store: st, BotName: *bot, Logf: log.Printf, TextOnlyAlias: *textOnly,
+		Policy: replayPolicy(*inlineCap, *minSeverity, *showUnverified, *legacy)}
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
 			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)
@@ -99,11 +101,12 @@ func main() {
 
 // replayPolicy starts from the shipped defaults so the replay and the tests
 // run the publisher the way prod does unless a flag says otherwise.
-func replayPolicy(inlineCap int, minSeverity string, showUnverified bool) publisher.Policy {
+func replayPolicy(inlineCap int, minSeverity string, showUnverified, legacy bool) publisher.Policy {
 	p := publisher.DefaultPolicy()
 	p.InlineCap = inlineCap
 	p.InlineMinSeverity = minSeverity
 	p.ShowUnverified = showUnverified
+	p.LegacyLedger = legacy
 	return p
 }
 
