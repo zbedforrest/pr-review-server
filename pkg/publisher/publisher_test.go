@@ -88,10 +88,21 @@ func TestCommentableLines(t *testing.T) {
 func f(id, sev, file string, line int, comment string) payload.Finding {
 	x := payload.Finding{ID: id, Severity: sev, File: file, Line: line, Comment: comment, State: "confirmed", Active: true}
 	if file != "SUMMARY" && file != "CHECK" {
-		x.FindingContract = &types.FindingContract{SchemaVersion: 1, FindingKind: "production_behavior", Materiality: "current_impact", Falsifiability: "unknown"}
+		x.FindingContract = falsifiableTestContract("production_behavior", "current_impact", "", "")
 		x.FindingContractStatus = "valid"
 	}
 	return x
+}
+
+// falsifiableTestContract is the inline bar in miniature: a kind, a
+// materiality and an experiment, with the impact and hedge the test wants.
+func falsifiableTestContract(kind, materiality, impact, uncertainty string) *types.FindingContract {
+	condition := "Send the request with the field unset."
+	observable := "The handler returns 500 instead of 400."
+	return &types.FindingContract{
+		SchemaVersion: 1, FindingKind: kind, Materiality: materiality, CurrentImpact: impact, Uncertainty: uncertainty,
+		Falsifiability: "falsifiable", FalsifiableCondition: &condition, ExpectedObservable: &observable,
+	}
 }
 
 func ids(fs []payload.Finding) []string {
