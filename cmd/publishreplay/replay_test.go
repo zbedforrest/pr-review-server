@@ -55,7 +55,7 @@ func TestRun_FixtureMetrics(t *testing.T) {
 	want := Metrics{
 		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1, SameCommitSkipped: 1,
 		RootsPosted: 3, Fixed: 1, InThreadReplies: 2, ThreadsResolved: 1, ThreadsUnresolved: 1,
-		CommentsPerPushP50: 0, RoundsPerPRP50: 3,
+		CommentsPerPushP50: 0, CommentsPerPushMean: 0.375, RoundsPerPRP50: 3,
 	}
 	if got := comparable(m); got != want {
 		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
@@ -72,7 +72,7 @@ func TestRun_FixtureMetricsLegacy(t *testing.T) {
 		PRs: 3, PRsWithRounds: 3, Rounds: 9, RoundsReplayed: 9, SameCommitRounds: 1, SameCommitSkipped: 1,
 		RootsPosted: 6, SameMarkerReposts: 2, SameDefectReposts: 1, SameDefectRepostsPerPR: 0.333, PRsWithReposts: 3,
 		Fixed: 3, FixedWithoutFileChange: 1,
-		CommentsPerPushP50: 1, RoundsPerPRP50: 3,
+		CommentsPerPushP50: 1, CommentsPerPushMean: 0.75, RoundsPerPRP50: 3,
 	}
 	if got := comparable(m); got != want {
 		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
@@ -108,7 +108,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 4 || !strings.HasPrefix(lines[0], "pr,rounds,") || !strings.HasPrefix(lines[3], "example#3,3,0,0,1,0,0,0,1,0,0,0,2,1,1,0,") {
+	if len(lines) != 4 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_skipped_unchanged_diff,") || !strings.HasPrefix(lines[3], "example#3,3,0,0,0,1,0,0,0,1,0,0,0,2,1,1,0,") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }
@@ -534,4 +534,133 @@ func TestStoreCompare_TruncatedIsUnknownFreshAndCached(t *testing.T) {
 			}
 		})
 	}
+}
+
+// copyFixtures gives a test its own sidecar cache to edit.
+func copyFixtures(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "compare"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"", "compare"} {
+		entries, err := os.ReadDir(filepath.Join("testdata/sidecars", sub))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join("testdata/sidecars", sub, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, sub, e.Name()), raw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return dir
+}
+
+// example#1's second round follows a merge-only push: the poller would not
+// run it, so the replay skips it and the same-marker repost it carried never
+// reaches the recorder.
+func TestRun_MergeOnlyPushSkipsTheRound(t *testing.T) {
+	dir := copyFixtures(t)
+	mergeOnly := []byte(`{"files":["a.go"],"status":"ahead","merge_only":true}`)
+	if err := os.WriteFile(filepath.Join(dir, "compare", "acme_example_aaaaaaa_bbbbbbb.json"), mergeOnly, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dumps, err := loadDumps("testdata/dumps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := newStore(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), Options{Dumps: dumps, Store: st, Policy: publisher.DefaultPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := res.Metrics
+	if m.RoundsSkippedUnchangedDiff != 1 || m.RoundsReplayed != 8 || res.PerPR[0].RoundsSkippedUnchangedDiff != 1 || res.PerPR[0].Rounds != 3 {
+		t.Fatalf("metrics = %+v per-pr = %+v", m, res.PerPR[0])
+	}
+	if m.RoundsPerPRP50 != 3 || m.Observed.RoundsPerPRP50 != 3 {
+		t.Fatalf("p50 over three PRs with 2, 3 and 3 admitted rounds is 3: admitted=%v observed=%v", m.RoundsPerPRP50, m.Observed.RoundsPerPRP50)
+	}
+	res, err = Run(context.Background(), Options{Dumps: dumps, Store: st, Policy: publisher.DefaultPolicy(), ReplayUnchangedDiff: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Metrics.RoundsSkippedUnchangedDiff != 0 || res.Metrics.RoundsReplayed != 9 {
+		t.Fatalf("with the skip off every round is replayed: %+v", res.Metrics)
+	}
+}
+
+func TestParseCompare_ReadsStatusAndMergeOnlyPushes(t *testing.T) {
+	merge := []byte(`{"status":"ahead","total_commits":1,"commits":[{"parents":[{"sha":"a"},{"sha":"b"}]}],"files":[{"filename":"x.go"}]}`)
+	res, err := parseCompare(merge)
+	if err != nil || !res.MergeOnly || res.Status != "ahead" || !res.unchangedDiff() {
+		t.Fatalf("a single merge commit is a merge-only push: %+v err=%v", res, err)
+	}
+	mixed := []byte(`{"status":"ahead","total_commits":2,"commits":[{"parents":[{"sha":"a"},{"sha":"b"}]},{"parents":[{"sha":"c"}]}],"files":[]}`)
+	if res, _ := parseCompare(mixed); res.MergeOnly || res.unchangedDiff() {
+		t.Fatalf("a merge plus a real commit is a real push: %+v", res)
+	}
+	identical := []byte(`{"status":"identical","total_commits":0,"commits":[],"files":[]}`)
+	if res, _ := parseCompare(identical); res.MergeOnly || !res.unchangedDiff() {
+		t.Fatalf("the same tree is unchanged without being merge-only: %+v", res)
+	}
+	truncated := []byte(`{"status":"ahead","total_commits":300,"commits":[{"parents":[{"sha":"a"},{"sha":"b"}]}],"files":[]}`)
+	if res, _ := parseCompare(truncated); res.MergeOnly {
+		t.Fatalf("a commit list the endpoint cut short cannot be judged: %+v", res)
+	}
+	legacy := []byte(`{"files":[{"filename":"x.go"}]}`)
+	if res, _ := parseCompare(legacy); res.Status != "unknown" || res.unchangedDiff() {
+		t.Fatalf("a response without a status is unknown, never unchanged: %+v", res)
+	}
+}
+
+func TestStore_RefetchesCompareEntriesWithoutAStatusWhenOnline(t *testing.T) {
+	dir := copyFixtures(t)
+	stale := filepath.Join(dir, "compare", "acme_example_aaaaaaa_bbbbbbb.json")
+	if err := os.WriteFile(stale, []byte(`{"files":["a.go"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &stubFetcher{compare: compareResult{Files: []string{"a.go"}, Status: "ahead", MergeOnly: true}}
+	st, err := newStore(dir, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, known, err := st.compare("acme", "example", "aaaaaaa", "bbbbbbb")
+	if err != nil || !known || !res.MergeOnly || f.compares != 1 {
+		t.Fatalf("an entry without a status is fetched again: res=%+v known=%v err=%v fetches=%d", res, known, err, f.compares)
+	}
+	if _, _, err := st.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || f.compares != 1 {
+		t.Fatalf("the refreshed entry is served from the cache: fetches=%d", f.compares)
+	}
+	offline, _ := newStore(dir, nil)
+	if err := os.WriteFile(stale, []byte(`{"files":["a.go"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if res, known, _ := offline.compare("acme", "example", "aaaaaaa", "bbbbbbb"); !known || res.unchangedDiff() {
+		t.Fatalf("offline the old entry still answers, as a real push: %+v known=%v", res, known)
+	}
+}
+
+// stubFetcher answers every compare with one canned result and counts the
+// calls; sidecars are never asked for.
+type stubFetcher struct {
+	compare  compareResult
+	compares int
+}
+
+func (s *stubFetcher) Sidecar(string, string, int, string) ([]byte, error) { return nil, errNotFound }
+func (s *stubFetcher) Compare(string, string, string, string) (compareResult, error) {
+	s.compares++
+	return s.compare, nil
 }

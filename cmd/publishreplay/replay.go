@@ -162,28 +162,29 @@ func (r *recorder) ownComments() []github.ReviewCommentInfo {
 
 // PRResult is one CSV row.
 type PRResult struct {
-	PR                        string
-	Rounds                    int
-	RoundsMissingSidecar      int
-	SameCommitRounds          int
-	SameCommitSkipped         int
-	RootsPosted               int
-	SameMarkerReposts         int
-	SameDefectReposts         int
-	SameRoundDuplicates       int
-	Fixed                     int
-	FixedWithoutFileChange    int
-	FixedFileChangeUnknown    int
-	SameCommitResolves        int
-	InThreadReplies           int
-	ThreadsResolved           int
-	ThreadsUnresolved         int
-	RootsResolved             int
-	ObservedRoots             int
-	ObservedSameMarkerReposts int
-	ObservedSameDefectReposts int
-	NilImpactBullets          int
-	BareLabelTitles           int
+	PR                         string
+	Rounds                     int
+	RoundsSkippedUnchangedDiff int
+	RoundsMissingSidecar       int
+	SameCommitRounds           int
+	SameCommitSkipped          int
+	RootsPosted                int
+	SameMarkerReposts          int
+	SameDefectReposts          int
+	SameRoundDuplicates        int
+	Fixed                      int
+	FixedWithoutFileChange     int
+	FixedFileChangeUnknown     int
+	SameCommitResolves         int
+	InThreadReplies            int
+	ThreadsResolved            int
+	ThreadsUnresolved          int
+	RootsResolved              int
+	ObservedRoots              int
+	ObservedSameMarkerReposts  int
+	ObservedSameDefectReposts  int
+	NilImpactBullets           int
+	BareLabelTitles            int
 }
 
 // Metrics is the JSON the command prints. Observed values come straight from
@@ -198,6 +199,10 @@ type Metrics struct {
 	// SameCommitSkipped counts the rounds the publisher refused because the
 	// head was already published; they post and resolve nothing.
 	SameCommitSkipped int `json:"same_commit_rounds_skipped"`
+	// RoundsSkippedUnchangedDiff counts the rounds the poller would not run:
+	// the push since the previous round left the PR diff unchanged (merge
+	// commits only, or the same tree). They are not replayed.
+	RoundsSkippedUnchangedDiff int `json:"rounds_skipped_unchanged_diff"`
 
 	RootsPosted            int     `json:"roots_posted"`
 	SameMarkerReposts      int     `json:"same_marker_reposts"`
@@ -218,8 +223,15 @@ type Metrics struct {
 	NilImpactBullets int `json:"nil_impact_bullets"`
 	BareLabelTitles  int `json:"bare_label_titles"`
 
-	CommentsPerPushP50 float64 `json:"comments_per_push_p50"`
-	RoundsPerPRP50     float64 `json:"rounds_per_pr_p50"`
+	// CommentsPerPush is over the rounds the publisher ran; RoundsPerPR over
+	// the rounds the poller would admit (observed minus unchanged-diff
+	// skips), the observed figure being under observed.
+	CommentsPerPushP50  float64 `json:"comments_per_push_p50"`
+	CommentsPerPushMean float64 `json:"comments_per_push_mean"`
+	RoundsPerPRP50      float64 `json:"rounds_per_pr_p50"`
+	// PRsAtInlinePRCap counts the PRs whose replayed roots reached the
+	// policy's lifetime inline cap.
+	PRsAtInlinePRCap int `json:"prs_at_inline_pr_cap"`
 	// PrismResolvedShare is the share of replayed roots whose thread the
 	// publisher itself left resolved at the end of the PR's rounds; the
 	// observed resolved_share is the human counterpart over the same roots.
@@ -230,6 +242,7 @@ type Metrics struct {
 }
 
 type ObservedMetrics struct {
+	RoundsPerPRP50    float64 `json:"rounds_per_pr_p50"`
 	Roots             int     `json:"roots"`
 	SameMarkerReposts int     `json:"same_marker_reposts"`
 	SameDefectReposts int     `json:"same_defect_reposts"`
@@ -246,6 +259,9 @@ type Options struct {
 	// TextOnlyAlias counts same-defect reposts by the text clause alone, to
 	// show how much the subject clause contributes.
 	TextOnlyAlias bool
+	// ReplayUnchangedDiff replays a round whose push left the PR diff
+	// unchanged, as the poller did before the unchanged-diff skip.
+	ReplayUnchangedDiff bool
 }
 
 type Result struct {
@@ -275,12 +291,12 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		return Result{}, fmt.Errorf("open ledger: %w", err)
 	}
 	var res Result
-	var roundsPerPR, commentsPerPush []int
+	var roundsPerPR, observedRoundsPerPR, commentsPerPush []int
 	rootsResolved := 0
 	res.Metrics.PRs = len(o.Dumps)
 	for _, d := range o.Dumps {
 		bots := o.bots(d)
-		pr, pushes, err := replayPR(ctx, d, bots, o.Store, ledger, o.Policy, o.TextOnlyAlias, logf)
+		pr, pushes, err := replayPR(ctx, d, bots, o.Store, ledger, o.Policy, o.TextOnlyAlias, !o.ReplayUnchangedDiff, logf)
 		if err != nil {
 			return Result{}, fmt.Errorf("%s: %w", d.key(), err)
 		}
@@ -288,13 +304,18 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		res.PerPR = append(res.PerPR, pr)
 		if pr.Rounds > 0 {
 			res.Metrics.PRsWithRounds++
-			roundsPerPR = append(roundsPerPR, pr.Rounds)
+			observedRoundsPerPR = append(observedRoundsPerPR, pr.Rounds)
+			roundsPerPR = append(roundsPerPR, pr.Rounds-pr.RoundsSkippedUnchangedDiff)
+		}
+		if cap := o.Policy.InlinePRCap; cap > 0 && pr.RootsPosted >= cap {
+			res.Metrics.PRsAtInlinePRCap++
 		}
 		commentsPerPush = append(commentsPerPush, pushes...)
 		m := &res.Metrics
 		m.Rounds += pr.Rounds
-		m.RoundsReplayed += pr.Rounds - pr.RoundsMissingSidecar
+		m.RoundsReplayed += pr.Rounds - pr.RoundsMissingSidecar - pr.RoundsSkippedUnchangedDiff
 		m.RoundsMissingSidecar += pr.RoundsMissingSidecar
+		m.RoundsSkippedUnchangedDiff += pr.RoundsSkippedUnchangedDiff
 		m.SameCommitRounds += pr.SameCommitRounds
 		m.SameCommitSkipped += pr.SameCommitSkipped
 		m.NilImpactBullets += pr.NilImpactBullets
@@ -323,7 +344,9 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.SameDefectRepostsPerPR = round3(float64(m.SameDefectReposts) / float64(m.PRsWithRounds))
 	}
 	m.CommentsPerPushP50 = p50(commentsPerPush)
+	m.CommentsPerPushMean = mean(commentsPerPush)
 	m.RoundsPerPRP50 = p50(roundsPerPR)
+	m.Observed.RoundsPerPRP50 = p50(observedRoundsPerPR)
 	m.PrismResolvedNote = "roots whose thread the replayed publisher left resolved, over roots posted"
 	if m.RootsPosted > 0 {
 		m.PrismResolvedShare = round3(float64(rootsResolved) / float64(m.RootsPosted))
@@ -334,7 +357,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	return res, nil
 }
 
-func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, policy publisher.Policy, textOnly bool, logf func(string, ...any)) (PRResult, []int, error) {
+func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, policy publisher.Policy, textOnly, skipUnchanged bool, logf func(string, ...any)) (PRResult, []int, error) {
 	pr := PRResult{PR: d.key()}
 	rec := newRecorder()
 	pub := &publisher.Publisher{GH: rec, Ledger: ledger, Policy: policy}
@@ -344,6 +367,10 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 	for i, rd := range rounds {
 		if i > 0 && rounds[i-1].SHA == rd.SHA {
 			pr.SameCommitRounds++
+		} else if i > 0 && skipUnchanged && unchangedSince(d, s, rounds[i-1].SHA, rd.SHA, logf) {
+			pr.RoundsSkippedUnchangedDiff++
+			logf("%s: round %d skipped, the push %s..%s left the diff unchanged", d.key(), i+1, short(rounds[i-1].SHA), rd.SHA7)
+			continue
 		}
 		raw, ok, err := s.sidecar(d.Owner, d.Repo, d.Number, rd.SHA7)
 		if err != nil {
@@ -403,6 +430,18 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 	}
 	pr.NilImpactBullets, pr.BareLabelTitles = rec.nilImpactBullets, rec.bareLabelTitles
 	return pr, pushes, nil
+}
+
+// unchangedSince reports whether the push from the previous round's head to
+// this one left the PR diff as it was, by the compare the harness already
+// fetches between round heads.
+func unchangedSince(d *prDump, s *store, prev, head string, logf func(string, ...any)) bool {
+	cmp, _, err := s.compare(d.Owner, d.Repo, prev, head)
+	if err != nil {
+		logf("%s: compare %s...%s: %v; push treated as a real change", d.key(), short(prev), short(head), err)
+		return false
+	}
+	return cmp.unchangedDiff()
 }
 
 // changeLookup gives the publisher the same compare the metrics judge it by:
@@ -705,11 +744,22 @@ func p50(xs []int) float64 {
 	return float64(s[n/2-1]+s[n/2]) / 2
 }
 
+func mean(xs []int) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	sum := 0
+	for _, x := range xs {
+		sum += x
+	}
+	return round3(float64(sum) / float64(len(xs)))
+}
+
 func round3(v float64) float64 {
 	return float64(int(v*1000+0.5)) / 1000
 }
 
-var csvHeader = []string{"pr", "rounds", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles"}
+var csvHeader = []string{"pr", "rounds", "rounds_skipped_unchanged_diff", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -717,7 +767,7 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 		return err
 	}
 	for _, r := range rows {
-		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles)}
+		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}

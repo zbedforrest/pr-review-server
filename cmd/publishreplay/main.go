@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy]
+//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff]
 //
 // Dumps are the GitHub GraphQL exports (one PR per file). Sidecars are the
 // review findings JSON per round, fetched from PRISM_BASE_URL/reviews/ with
@@ -36,6 +36,8 @@ func main() {
 	bot := flag.String("bot", "", "bot login that posted the rounds (default: detected from finding markers)")
 	workers := flag.Int("workers", 6, "parallel fetches during prefetch")
 	inlineCap := flag.Int("inline-cap", publisher.DefaultInlineCap, "publisher inline cap per round")
+	inlinePRCap := flag.Int("inline-pr-cap", publisher.DefaultInlinePRCap, "publisher inline cap over the life of a PR (0 = none)")
+	replayUnchanged := flag.Bool("replay-unchanged-diff", false, "replay rounds whose push left the PR diff unchanged (AUTO_REVIEW_SKIP_UNCHANGED_DIFF=false)")
 	minSeverity := flag.String("inline-min-severity", publisher.DefaultInlineMinSeverity, "publisher inline minimum severity")
 	legacy := flag.Bool("legacy", false, "replay with the pre-ledger-memory publisher (PUBLISH_POLICY_V2=false) for a baseline")
 	textOnly := flag.Bool("alias-text-only", false, "count same-defect reposts by raw-text overlap alone, without the subject key")
@@ -70,8 +72,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("sidecar store: %v", err)
 	}
-	opts := Options{Dumps: dumps, Store: st, BotName: *bot, Logf: log.Printf, TextOnlyAlias: *textOnly,
+	opts := Options{Dumps: dumps, Store: st, BotName: *bot, Logf: log.Printf, TextOnlyAlias: *textOnly, ReplayUnchangedDiff: *replayUnchanged,
 		Policy: replayPolicy(*inlineCap, *minSeverity, *showUnverified, *legacy)}
+	opts.Policy.InlinePRCap = *inlinePRCap
 	opts.Policy.RepublishSameCommit = !*sameCommitGuard
 	opts.Policy.LegacyTitles = *legacyTitles
 	if f != nil {
