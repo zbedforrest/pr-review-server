@@ -32,10 +32,11 @@ type compareResult struct {
 	// dropped the cited file.
 	Truncated bool `json:"truncated,omitempty"`
 	// Status is the endpoint's relation of head to base (ahead, behind,
-	// diverged, identical); Commits and MergeCommits count the commits
-	// between them and those with two parents, and MergeOnly says every
-	// commit is a merge, so the push changed nothing in the PR diff. Schema
-	// marks entries that carry these fields; older ones are fetched again.
+	// diverged, identical) and Commits how many commits lie between them.
+	// MergeCommits counts the merges on the push's own first-parent chain
+	// from head back to base, and MergeOnly says that chain is nothing but
+	// merges, so the push changed nothing in the PR diff. Schema marks
+	// entries that carry these fields; older ones are fetched again.
 	Status       string `json:"status,omitempty"`
 	Commits      int    `json:"commits,omitempty"`
 	MergeCommits int    `json:"merge_commits,omitempty"`
@@ -43,7 +44,7 @@ type compareResult struct {
 	Schema       int    `json:"schema,omitempty"`
 }
 
-const compareSchema = 2
+const compareSchema = 3
 
 // unchangedDiff reports a push that left the PR diff as it was: the same
 // tree, or merge commits only. It is the replay's stand-in for the poller's
@@ -245,17 +246,17 @@ func (f *liveFetcher) Compare(owner, repo, base, head string) (compareResult, er
 }
 
 // parseCompare flattens the endpoint's file list, with a rename contributing
-// both names, and flags a list at the cap from the raw entry count.
+// both names, flags a list at the cap from the raw entry count, and judges
+// the shape of the push from its commit list.
 func parseCompare(raw []byte) (compareResult, error) {
 	var payload struct {
-		Status       string `json:"status"`
-		TotalCommits int    `json:"total_commits"`
-		Commits      []struct {
-			Parents []struct {
-				SHA string `json:"sha"`
-			} `json:"parents"`
-		} `json:"commits"`
-		Files []struct {
+		Status     string `json:"status"`
+		BaseCommit struct {
+			SHA string `json:"sha"`
+		} `json:"base_commit"`
+		TotalCommits int             `json:"total_commits"`
+		Commits      []compareCommit `json:"commits"`
+		Files        []struct {
 			Filename         string `json:"filename"`
 			PreviousFilename string `json:"previous_filename"`
 		} `json:"files"`
@@ -263,7 +264,7 @@ func parseCompare(raw []byte) (compareResult, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return compareResult{}, err
 	}
-	res := compareResult{Truncated: len(payload.Files) >= compareFilesCap, Status: payload.Status, Schema: compareSchema}
+	res := compareResult{Truncated: len(payload.Files) >= compareFilesCap, Status: payload.Status, Schema: compareSchema, Commits: payload.TotalCommits}
 	if res.Status == "" {
 		res.Status = "unknown"
 	}
@@ -273,16 +274,61 @@ func parseCompare(raw []byte) (compareResult, error) {
 			res.Files = append(res.Files, fl.PreviousFilename)
 		}
 	}
-	// The endpoint lists at most 250 commits; a longer range cannot be
-	// judged merge-only.
-	res.Commits = payload.TotalCommits
-	for _, c := range payload.Commits {
-		if len(c.Parents) >= 2 {
-			res.MergeCommits++
+	// The endpoint lists at most 250 commits; a longer range cannot be judged.
+	if len(payload.Commits) > 0 && payload.TotalCommits == len(payload.Commits) {
+		res.MergeCommits, res.MergeOnly = pushShape(payload.Commits, payload.BaseCommit.SHA)
+	}
+	return res, nil
+}
+
+type compareCommit struct {
+	SHA     string `json:"sha"`
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
+}
+
+// pushShape walks the first-parent chain from the tip of the listed commits
+// back towards base. Those are the push's own commits; the rest of the list
+// is history a merge brought in from another branch, which is why counting
+// merges over the whole list never finds a merge-only push. It reports the
+// merges on the chain and whether the chain reaches base through merges
+// alone. A rebase or force-push never reaches base and reads as a real push.
+func pushShape(commits []compareCommit, base string) (merges int, mergeOnly bool) {
+	byID := make(map[string]compareCommit, len(commits))
+	isParent := map[string]bool{}
+	for _, c := range commits {
+		byID[c.SHA] = c
+		for _, p := range c.Parents {
+			isParent[p.SHA] = true
 		}
 	}
-	res.MergeOnly = len(payload.Commits) > 0 && payload.TotalCommits == len(payload.Commits) && res.MergeCommits == len(payload.Commits)
-	return res, nil
+	tip := ""
+	for _, c := range commits {
+		if !isParent[c.SHA] {
+			if tip != "" {
+				return 0, false
+			}
+			tip = c.SHA
+		}
+	}
+	cur, plain := tip, 0
+	for range commits {
+		c, ok := byID[cur]
+		if !ok || len(c.Parents) == 0 {
+			return merges, false
+		}
+		if len(c.Parents) >= 2 {
+			merges++
+		} else {
+			plain++
+		}
+		cur = c.Parents[0].SHA
+		if cur == base {
+			return merges, plain == 0
+		}
+	}
+	return merges, false
 }
 
 // prefetch warms the store for every round's sidecar and every ordered pair

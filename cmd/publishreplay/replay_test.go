@@ -569,7 +569,7 @@ func copyFixtures(t *testing.T) string {
 // reaches the recorder.
 func TestRun_MergeOnlyPushSkipsTheRound(t *testing.T) {
 	dir := copyFixtures(t)
-	mergeOnly := []byte(`{"files":["a.go"],"status":"ahead","commits":1,"merge_commits":1,"merge_only":true,"schema":2}`)
+	mergeOnly := []byte(fmt.Sprintf(`{"files":["a.go"],"status":"ahead","commits":1,"merge_commits":1,"merge_only":true,"schema":%d}`, compareSchema))
 	if err := os.WriteFile(filepath.Join(dir, "compare", "acme_example_aaaaaaa_bbbbbbb.json"), mergeOnly, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -601,22 +601,55 @@ func TestRun_MergeOnlyPushSkipsTheRound(t *testing.T) {
 	}
 }
 
-func TestParseCompare_ReadsStatusAndMergeOnlyPushes(t *testing.T) {
-	merge := []byte(`{"status":"ahead","total_commits":1,"commits":[{"parents":[{"sha":"a"},{"sha":"b"}]}],"files":[{"filename":"x.go"}]}`)
-	res, err := parseCompare(merge)
-	if err != nil || !res.MergeOnly || res.Status != "ahead" || res.Commits != 1 || res.MergeCommits != 1 || res.Schema != compareSchema || !res.unchangedDiff() {
-		t.Fatalf("a single merge commit is a merge-only push: %+v err=%v", res, err)
+// A merge of the base branch lists the base's own commits beside the merge,
+// so only the first-parent chain from the tip back to the previous head
+// tells a merge-only push from a real one.
+func TestParseCompare_JudgesThePushByItsFirstParentChain(t *testing.T) {
+	commit := func(sha string, parents ...string) string {
+		ps := ""
+		for i, p := range parents {
+			if i > 0 {
+				ps += ","
+			}
+			ps += `{"sha":"` + p + `"}`
+		}
+		return `{"sha":"` + sha + `","parents":[` + ps + `]}`
 	}
-	mixed := []byte(`{"status":"ahead","total_commits":2,"commits":[{"parents":[{"sha":"a"},{"sha":"b"}]},{"parents":[{"sha":"c"}]}],"files":[]}`)
-	if res, _ := parseCompare(mixed); res.MergeOnly || res.unchangedDiff() || res.MergeCommits != 1 || res.Commits != 2 {
-		t.Fatalf("a merge plus a real commit is a real push: %+v", res)
+	payload := func(status, base string, commits ...string) []byte {
+		return []byte(fmt.Sprintf(`{"status":%q,"base_commit":{"sha":%q},"total_commits":%d,"commits":[%s],"files":[{"filename":"x.go"}]}`,
+			status, base, len(commits), strings.Join(commits, ",")))
 	}
-	identical := []byte(`{"status":"identical","total_commits":0,"commits":[],"files":[]}`)
-	if res, _ := parseCompare(identical); res.MergeOnly || !res.unchangedDiff() {
+	mergeOfBase := payload("ahead", "h1", commit("m1", "m0"), commit("m2", "m1"), commit("M", "h1", "m2"))
+	res, err := parseCompare(mergeOfBase)
+	if err != nil || !res.MergeOnly || res.MergeCommits != 1 || res.Commits != 3 || res.Status != "ahead" || res.Schema != compareSchema || !res.unchangedDiff() {
+		t.Fatalf("a merge that brings in two base commits is merge-only: %+v err=%v", res, err)
+	}
+	twoMerges := payload("ahead", "h1", commit("m1", "m0"), commit("M1", "h1", "m1"), commit("m2", "m1"), commit("M2", "M1", "m2"))
+	if res, _ := parseCompare(twoMerges); !res.MergeOnly || res.MergeCommits != 2 {
+		t.Fatalf("two merges in a row are still merge-only: %+v", res)
+	}
+	mergeThenFix := payload("ahead", "h1", commit("m1", "m0"), commit("M", "h1", "m1"), commit("c2", "M"))
+	if res, _ := parseCompare(mergeThenFix); res.MergeOnly || res.unchangedDiff() || res.MergeCommits != 1 || res.Commits != 3 {
+		t.Fatalf("a merge followed by a real commit is a real push: %+v", res)
+	}
+	plain := payload("ahead", "h1", commit("c2", "h1"))
+	if res, _ := parseCompare(plain); res.MergeOnly || res.MergeCommits != 0 {
+		t.Fatalf("one plain commit: %+v", res)
+	}
+	rebased := payload("diverged", "h1", commit("r1", "fork"), commit("r2", "r1"))
+	if res, _ := parseCompare(rebased); res.MergeOnly || res.unchangedDiff() {
+		t.Fatalf("a rebase never reaches the previous head and reads as a real push: %+v", res)
+	}
+	mergedTheOtherWay := payload("ahead", "h1", commit("m1", "m0"), commit("M", "m1", "h1"))
+	if res, _ := parseCompare(mergedTheOtherWay); res.MergeOnly {
+		t.Fatalf("a chain that leaves the list before base cannot be judged: %+v", res)
+	}
+	identical := payload("identical", "h1")
+	if res, _ := parseCompare(identical); res.MergeOnly || res.MergeCommits != 0 || !res.unchangedDiff() {
 		t.Fatalf("the same tree is unchanged without being merge-only: %+v", res)
 	}
-	truncated := []byte(`{"status":"ahead","total_commits":300,"commits":[{"parents":[{"sha":"a"},{"sha":"b"}]}],"files":[]}`)
-	if res, _ := parseCompare(truncated); res.MergeOnly {
+	truncated := []byte(`{"status":"ahead","base_commit":{"sha":"h1"},"total_commits":300,"commits":[` + commit("M", "h1", "m1") + `],"files":[]}`)
+	if res, _ := parseCompare(truncated); res.MergeOnly || res.MergeCommits != 0 || res.Commits != 300 {
 		t.Fatalf("a commit list the endpoint cut short cannot be judged: %+v", res)
 	}
 	legacy := []byte(`{"files":[{"filename":"x.go"}]}`)
