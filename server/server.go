@@ -1348,6 +1348,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			PublishEnabledAuthors    *string `json:"publish_enabled_authors"`
 			PublishOptOutAuthors     *string `json:"publish_opt_out_authors"`
 			PublishInlineCap         *int    `json:"publish_inline_cap"`
+			PublishInlinePRCap       *int    `json:"publish_inline_pr_cap"`
 			PublishInlineMinSeverity *string `json:"publish_inline_min_severity"`
 			PublishReplyMode         *string `json:"publish_reply_mode"`
 			PublishShowUnverified    *bool   `json:"publish_show_unverified"`
@@ -1376,6 +1377,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.PublishInlineCap != nil && *req.PublishInlineCap < 0 {
 			http.Error(w, "publish_inline_cap must be zero or greater", http.StatusBadRequest)
+			return
+		}
+		if req.PublishInlinePRCap != nil && *req.PublishInlinePRCap < 0 {
+			http.Error(w, "publish_inline_pr_cap must be zero or greater", http.StatusBadRequest)
 			return
 		}
 		if req.PublishReplyMode != nil && !publishReplyModes[strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))] {
@@ -1482,6 +1487,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.PublishInlineCap != nil {
 			updates = append(updates, settingWrite{settingPublishInlineCap, strconv.Itoa(*req.PublishInlineCap)})
+		}
+		if req.PublishInlinePRCap != nil {
+			updates = append(updates, settingWrite{settingPublishInlinePRCap, strconv.Itoa(*req.PublishInlinePRCap)})
 		}
 		if req.PublishInlineMinSeverity != nil {
 			updates = append(updates, settingWrite{settingPublishInlineMinSeverity, strings.ToLower(strings.TrimSpace(*req.PublishInlineMinSeverity))})

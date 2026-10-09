@@ -71,12 +71,18 @@ func TestPublishPolicy_ReadsSettingsOverDefaults(t *testing.T) {
 	assert.Equal(t, publisher.DefaultPolicy(), pol, "no settings means the shipped policy")
 
 	require.NoError(t, database.SetSetting("publish_inline_cap", "1"))
+	require.NoError(t, database.SetSetting("publish_inline_pr_cap", "4"))
 	require.NoError(t, database.SetSetting("publish_inline_min_severity", "Critical"))
 	require.NoError(t, database.SetSetting("publish_show_unverified", "false"))
 	pol = p.publishPolicy()
 	assert.Equal(t, 1, pol.InlineCap)
+	assert.Equal(t, 4, pol.InlinePRCap)
 	assert.Equal(t, "critical", pol.InlineMinSeverity)
 	assert.False(t, pol.ShowUnverified)
+
+	p.cfg.PublishNoInlinePRBudget = true
+	assert.Equal(t, 0, p.publishPolicy().InlinePRCap, "PUBLISH_INLINE_PR_BUDGET=false removes the bound whatever the setting says")
+	p.cfg.PublishNoInlinePRBudget = false
 
 	require.NoError(t, database.SetSetting("publish_show_unverified", "not-a-bool"))
 	assert.True(t, p.publishPolicy().ShowUnverified, "an unreadable value keeps the default")

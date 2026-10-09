@@ -22,6 +22,7 @@ import (
 const (
 	settingPublishEnabledAuthors    = "publish_enabled_authors"
 	settingPublishInlineCap         = "publish_inline_cap"
+	settingPublishInlinePRCap       = "publish_inline_pr_cap"
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"
 	settingPublishShowUnverified    = "publish_show_unverified"
 )
@@ -249,6 +250,11 @@ func (p *Poller) publishPolicy() publisher.Policy {
 			pol.InlineCap = n
 		}
 	}
+	if v, err := p.db.GetSetting(settingPublishInlinePRCap); err == nil {
+		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
+			pol.InlinePRCap = n
+		}
+	}
 	if v, err := p.db.GetSetting(settingPublishInlineMinSeverity); err == nil && strings.TrimSpace(v) != "" {
 		pol.InlineMinSeverity = strings.ToLower(strings.TrimSpace(v))
 	}
@@ -260,6 +266,9 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	if p.cfg != nil {
 		pol.LegacyTitles = p.cfg.PublishLegacyTitles
 		pol.RepublishSameCommit = p.cfg.PublishRepublishSameCommit
+		if p.cfg.PublishNoInlinePRBudget {
+			pol.InlinePRCap = 0
+		}
 	}
 	return pol
 }

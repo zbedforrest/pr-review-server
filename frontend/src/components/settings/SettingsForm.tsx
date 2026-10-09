@@ -138,6 +138,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
     'publish_enabled_authors',
     'publish_opt_out_authors',
     'publish_inline_cap',
+    'publish_inline_pr_cap',
     'publish_inline_min_severity',
     'publish_show_unverified',
     'auto_review_ready_prs',
@@ -177,6 +178,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
 
   const samplesInvalid = !isCount(review.draft.review_n_requests, 1);
   const capInvalid = !isCount(publishing.draft.publish_inline_cap, 0);
+  const prCapInvalid = !isCount(publishing.draft.publish_inline_pr_cap, 0);
 
   const adminList = [
     ...new Set([...settings.admin_logins_fixed, ...normalizeLogins(settings.admin_logins, false).logins]),
@@ -249,7 +251,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         title="Publishing"
         description="Whose PRs receive posted reviews, and what gets posted"
         dirty={publishing.dirty}
-        canSave={isAdmin && !capInvalid}
+        canSave={isAdmin && !capInvalid && !prCapInvalid}
         saving={publishing.saving}
         saved={publishing.saved}
         error={publishing.error}
@@ -318,6 +320,31 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
           </span>
           {capInvalid && (
             <span id="settings-inline-cap-error" role="alert" className="settings-field__error">
+              Enter a whole number of 0 or more
+            </span>
+          )}
+        </div>
+        <div className="settings-field">
+          <label className="settings-field__label" htmlFor="settings-inline-pr-cap">
+            Inline comment cap per PR
+          </label>
+          <input
+            id="settings-inline-pr-cap"
+            type="number"
+            className="settings-field__number"
+            min={0}
+            step={1}
+            value={numberValue(publishing.draft.publish_inline_pr_cap)}
+            onChange={(e) => publishing.patch({ publish_inline_pr_cap: e.target.valueAsNumber })}
+            disabled={policyDisabled}
+            aria-invalid={prCapInvalid}
+            aria-describedby={describedBy('settings-inline-pr-cap', prCapInvalid)}
+          />
+          <span id="settings-inline-pr-cap-help" className="settings-field__help">
+            Over the life of the PR, counting resolved threads; 0 removes the bound
+          </span>
+          {prCapInvalid && (
+            <span id="settings-inline-pr-cap-error" role="alert" className="settings-field__error">
               Enter a whole number of 0 or more
             </span>
           )}
