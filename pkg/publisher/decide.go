@@ -145,6 +145,10 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	for _, row := range external.rows {
 		writes = append(writes, pending{row: row})
 	}
+	lastPublished := ""
+	if summaryRow != nil {
+		lastPublished = summaryRow.LastSeenSHA
+	}
 	ids := make([]string, 0, len(rows))
 	for id := range rows {
 		ids = append(ids, id)
@@ -195,6 +199,11 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			if next, ok := backfilled(row, r.PriorComments[id]); ok {
 				writes = append(writes, pending{row: next})
 			}
+		case concededSinceLastRound(row, isPresent, lastPublished, r.HeadSHA):
+			d.Fixed++
+			next := *row
+			next.Rounds = r.RoundNumber
+			writes = append(writes, pending{row: &next})
 		case fixedState(row.State) && isPresent:
 			d.StillOpen++
 			rep.Reopened++
@@ -292,6 +301,15 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	}
 	threads.apply(ctx, actions, &rep)
 	return rep, nil
+}
+
+// concededSinceLastRound recognises a row a conceded fix claim marked fixed
+// between rounds: still at the last published head, absent now, and not yet
+// counted. Rounds on such a row records the round whose summary counted it,
+// so the next round does not count it again.
+func concededSinceLastRound(row *db.PublishedFinding, present bool, lastPublished, head string) bool {
+	return row.State == db.PublishedStateFixed && !present && row.Rounds == 0 && lastPublished != "" &&
+		strings.EqualFold(row.LastSeenSHA, lastPublished) && !strings.EqualFold(row.LastSeenSHA, head)
 }
 
 type threadChange int

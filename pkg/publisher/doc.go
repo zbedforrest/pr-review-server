@@ -32,6 +32,7 @@
 //	open                         no       no         unknown       still open, untouched
 //	open                         no       no         no            still open, untouched
 //	fixed / resolved (legacy)    yes      any        any           reopened: open, LastSeenSHA = head, one reply "Back at <sha7>" in its thread, thread unresolved, never a new root
+//	fixed (conceded, see below)  no       no         any           counted as fixed once; Rounds = this round
 //	fixed / resolved             no       any        any           untouched
 //	dismissed/contested/external yes      any        any           finding dropped: not posted, not counted, row untouched (exception below); an external row keeps its summary link
 //	dismissed/contested/external no       any        any           untouched
@@ -83,6 +84,13 @@
 // reply runs inside the publish gate like every other write of the round.
 // Off, only Greptile roots are parsed, a match tags the finding "both" and
 // the root is still posted.
+//
+// Conceded fix claims. The reply path marks a conceded fix claim fixed, not
+// dismissed, and resolves its thread; a conceded pushback or a withdrawal
+// still dismisses. Such a row is still at the last published head when the
+// next round runs, so that round counts it as fixed once and writes its
+// round number into Rounds, which no finding row otherwise carries; a
+// settled verdict (intentional, won't fix) dismisses and resolves too.
 //
 // Threads. Thread changes need Policy.ResolveThreads (PUBLISH_THREAD_RESOLUTION,
 // on unless set to false) and a GitHub that implements ThreadResolver; without

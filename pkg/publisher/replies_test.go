@@ -1250,8 +1250,8 @@ func TestReplyReactor_FixClaimsAreVerifiedByTheModel(t *testing.T) {
 	if got.Reply.Class != ReplyResolution || rep.Responded != 1 || len(gh.posted) != 1 || len(gh.reactions) != 1 {
 		t.Fatalf("a fix claim runs the model and posts its verdict: req=%+v rep=%+v posted=%v reactions=%v", got.Reply, rep, gh.posted, gh.reactions)
 	}
-	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed {
-		t.Fatalf("a conceded fix claim is dismissed so the next review does not re-post it: states=%v", ledger.states)
+	if ledger.states["a.go:1:abc"] != db.PublishedStateFixed {
+		t.Fatalf("a conceded fix claim is fixed, so the next summary counts it and a return reopens the thread: states=%v", ledger.states)
 	}
 
 	r, gh, ledger = respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {

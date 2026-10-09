@@ -1721,14 +1721,13 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 }
 
 // adopt records a posted reply and applies the decision's side effect on the
-// finding. A concession or withdrawal dismisses the row and resolves the
-// thread: a conceded fix claim is dismissed like any other concession, since
-// fingerprints hash the finding's wording rather than the code and a resolved
-// row would come back as a fresh comment the next time the reviewer phrases
-// it the same way. The trade-off, accepted for every concession, is that a
-// later regression with the same wording stays suppressed on this PR. A
-// posted hold marks the row contested: the thread stays open for humans and
-// the finding is not raised again under another wording.
+// finding. A concession or withdrawal settles the row and resolves the
+// thread: a conceded fix claim marks the row fixed, so the next summary
+// counts the fix and the ledger reopens the thread if the point returns; a
+// concession to pushback, or a withdrawal, dismisses the row for the PR's
+// life under any wording. A posted hold marks the row contested: the thread
+// stays open for humans and the finding is not raised again under another
+// wording. Under the legacy policy every concession dismisses.
 func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome, rep *ReplyReport) error {
 	if err := r.Ledger.MarkPublishedReplyPosted(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, posted.ID, posted.CreatedAt); err != nil {
 		return err
@@ -1736,7 +1735,11 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, repl
 	outcome.Posted = true
 	switch outcome.Decision {
 	case DecisionConcede, DecisionWithdraw:
-		if err := r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed); err != nil {
+		state := db.PublishedStateDismissed
+		if outcome.Decision == DecisionConcede && reply.Class == ReplyResolution && !r.Legacy {
+			state = db.PublishedStateFixed
+		}
+		if err := r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, state); err != nil {
 			return err
 		}
 		if rep == nil {

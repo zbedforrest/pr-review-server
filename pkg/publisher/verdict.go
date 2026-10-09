@@ -222,9 +222,9 @@ func matchVerdict(s string) (keyword, rest string, ok bool) {
 var htmlCommentRe = regexp.MustCompile(`(?s)<!--.*?-->`)
 
 // settleVerdict acts on an author verdict without running the reply model:
-// the finding is dismissed, the author's comment gets a thumbs-up, and the
-// reply row is recorded with OutcomeSettledVerdict so no text step ever runs
-// on it. React and respond both dismiss, the same modes under which a
+// the finding is dismissed and its thread resolved, the author's comment gets
+// a thumbs-up, and the reply row is recorded with OutcomeSettledVerdict so no
+// text step ever runs on it. React and respond both dismiss, the same modes under which a
 // thumbs-down writes contested. Shadow reacts but leaves the finding's state
 // alone, like the rest of its paths, and records OutcomeShadowedVerdict so a
 // later respond scan dismisses the finding. The row comes first, inserted or
@@ -264,6 +264,7 @@ func (r ReplyReactor) settleVerdict(ctx context.Context, t db.PublishedReplyTarg
 		if err := r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed); err != nil {
 			return false, err
 		}
+		r.resolveThread(ctx, t, reply.RootCommentID, rep)
 	}
 	if row.Outcome != OutcomeShadowedVerdict {
 		if err := r.GH.React(ctx, t.RepoOwner, t.RepoName, reply.CommentID); err != nil {
