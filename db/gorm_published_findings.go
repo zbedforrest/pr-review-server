@@ -66,12 +66,14 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		Muted:        p.Muted,
 	}
 	// Muted is owned by SetPublishedMute; a round rewriting the summary row
-	// never clears it.
+	// never clears it, and a muted placeholder takes its first head here.
 	updates := map[string]interface{}{
 		"kind":          model.Kind,
 		"source_tag":    model.SourceTag,
 		"severity":      model.Severity,
 		"last_seen_sha": model.LastSeenSHA,
+		"reviewed_sha": gorm.Expr("CASE WHEN published_findings.reviewed_sha = '' THEN ? ELSE published_findings.reviewed_sha END",
+			model.ReviewedSHA),
 		// Terminal states are sticky: a publication that loaded the row before
 		// the author settled it must not flip it back to open or fixed.
 		"state": gorm.Expr("CASE WHEN published_findings.state IN (?, ?, ?) THEN published_findings.state ELSE ? END",

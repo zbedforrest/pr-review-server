@@ -225,6 +225,7 @@ func TestGormDB_SetPublishedMute_FlagsTheSummaryRowAndSurvivesRounds(t *testing.
 	require.NoError(t, err)
 	assert.True(t, row.Muted, "a round rewriting the summary row keeps the mute")
 	assert.Equal(t, int64(777), row.CommentID)
+	assert.Equal(t, "abc1234", row.ReviewedSHA, "the placeholder takes the first published head")
 
 	changed, err = db.SetPublishedMute("owner", "repo", 7, false)
 	require.NoError(t, err)
