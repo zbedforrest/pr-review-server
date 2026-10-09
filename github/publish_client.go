@@ -36,7 +36,9 @@ type ReviewCommentInfo struct {
 	StartLine   int
 	InReplyToID int64
 	ReviewID    int64
-	CreatedAt   time.Time
+	// OriginalCommitID is the head the comment was posted against.
+	OriginalCommitID string
+	CreatedAt        time.Time
 	// ThumbsDown is the -1 count from the comment's reaction rollup.
 	ThumbsDown int
 }
@@ -191,17 +193,18 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 		}
 		for _, rc := range page {
 			out = append(out, ReviewCommentInfo{
-				ID:          rc.GetID(),
-				Author:      rc.GetUser().GetLogin(),
-				AuthorID:    rc.GetUser().GetID(),
-				Body:        rc.GetBody(),
-				Path:        rc.GetPath(),
-				Line:        rc.GetLine(),
-				StartLine:   rc.GetStartLine(),
-				InReplyToID: rc.GetInReplyTo(),
-				ReviewID:    rc.GetPullRequestReviewID(),
-				CreatedAt:   rc.GetCreatedAt().Time,
-				ThumbsDown:  rc.GetReactions().GetMinusOne(),
+				ID:               rc.GetID(),
+				Author:           rc.GetUser().GetLogin(),
+				AuthorID:         rc.GetUser().GetID(),
+				Body:             rc.GetBody(),
+				Path:             rc.GetPath(),
+				Line:             rc.GetLine(),
+				StartLine:        rc.GetStartLine(),
+				InReplyToID:      rc.GetInReplyTo(),
+				ReviewID:         rc.GetPullRequestReviewID(),
+				OriginalCommitID: rc.GetOriginalCommitID(),
+				CreatedAt:        rc.GetCreatedAt().Time,
+				ThumbsDown:       rc.GetReactions().GetMinusOne(),
 			})
 		}
 		if resp.NextPage == 0 {

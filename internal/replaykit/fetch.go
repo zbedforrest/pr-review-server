@@ -235,6 +235,12 @@ func (f *LiveFetcher) Sidecar(owner, repo string, number int, sha7 string) ([]by
 const compareTimeout = 2 * time.Minute
 
 func (f *LiveFetcher) Compare(owner, repo, base, head string) (CompareResult, error) {
+	return CompareViaGH(owner, repo, base, head)
+}
+
+// CompareViaGH lists the files changed between two commits through the gh
+// CLI, so a tool needs nothing beyond the operator's existing login.
+func CompareViaGH(owner, repo, base, head string) (CompareResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), compareTimeout)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
