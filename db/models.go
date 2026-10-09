@@ -385,6 +385,9 @@ type PublishedFindingModel struct {
 	Subjects     string     `gorm:"type:text;not null;default:''"`
 	Muted        bool       `gorm:"not null;default:false"`
 	MuteLiftedAt *time.Time `gorm:"column:mute_lifted_at"`
+	// ExternalCommentID is the root comment of another reviewer this finding
+	// was matched to; set only on rows in the external state.
+	ExternalCommentID int64 `gorm:"not null;default:0"`
 }
 
 // TableName specifies the table name for PublishedFindingModel

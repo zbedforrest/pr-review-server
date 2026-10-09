@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/reconcile"
 )
 
 // SummaryMaxChars stays under GitHub's 65536-char comment body limit.
@@ -28,6 +30,15 @@ type GreptileOnlyRef struct {
 	CommentID int64
 }
 
+// ExternalMatch is a finding of this round that another reviewer's root
+// thread already carries: the summary links to that root instead of PRism
+// posting one of its own.
+type ExternalMatch struct {
+	Finding   payload.Finding
+	Source    reconcile.Source
+	CommentID int64
+}
+
 type Round struct {
 	Owner       string
 	Repo        string
@@ -38,6 +49,12 @@ type Round struct {
 	Findings     []payload.Finding
 	SourceTags   map[string]string
 	GreptileOnly []GreptileOnlyRef
+	// External is every other reviewer's root thread on the PR, parsed, as
+	// listed when the round was built; the ledger policy re-lists it before
+	// posting when GitHub allows. ExternalMatches is what the policy matched
+	// this round, new or remembered, for the summary.
+	External        []reconcile.ExternalFinding
+	ExternalMatches []ExternalMatch
 	// Previous nil means Publish loads the ledger itself.
 	Previous []db.PublishedFinding
 	// Commentable is file -> RIGHT-side lines a review comment may target,
@@ -386,6 +403,7 @@ func RenderSummary(r Round, sel Selection) string {
 	if len(shown) > 0 {
 		b.WriteString("\n")
 	}
+	r.writeExternal(&b)
 	r.writeFolded(&b, "folded note", r.lowerSeverityNotes(), r.bullet)
 	r.writeFolded(&b, "unverified note", r.unverifiedNotes(), r.unverifiedBullet)
 	if r.DashboardURL != "" {
@@ -403,6 +421,45 @@ func RenderSummary(r Round, sel Selection) string {
 		b.WriteString(r.SettleFooter + "\n")
 	}
 	return b.String()
+}
+
+// writeExternal lists the findings another reviewer's thread already
+// carries, each linked to that thread, so the point is visible in the
+// summary without a second root.
+func (r Round) writeExternal(b *strings.Builder) {
+	if len(r.ExternalMatches) == 0 {
+		return
+	}
+	matches := append([]ExternalMatch(nil), r.ExternalMatches...)
+	sort.SliceStable(matches, func(i, j int) bool {
+		a, c := matches[i].Finding, matches[j].Finding
+		if ra, rc := severityRank(a.Severity), severityRank(c.Severity); ra != rc {
+			return ra > rc
+		}
+		if a.File != c.File {
+			return a.File < c.File
+		}
+		return a.Line < c.Line
+	})
+	fmt.Fprintf(b, "<details><summary>%d finding%s already raised in another reviewer's thread</summary>\n\n", len(matches), plural(len(matches)))
+	for _, m := range matches {
+		if b.Len() > SummaryMaxChars-600 {
+			b.WriteString("- ... more omitted\n")
+			break
+		}
+		f := m.Finding
+		where := f.File[strings.LastIndex(f.File, "/")+1:]
+		if f.Line > 0 {
+			where = fmt.Sprintf("%s:%d", where, f.Line)
+		}
+		text := strings.TrimSpace(summaryText(f, r.LegacyTitles))
+		if !strings.HasSuffix(text, "...") {
+			text = strings.TrimSuffix(text, ".")
+		}
+		link := fmt.Sprintf("https://github.com/%s/%s/pull/%d#discussion_r%d", r.Owner, r.Repo, r.Number, m.CommentID)
+		fmt.Fprintf(b, "- %s %s — [`%s`](%s) · %s\n", severityLabel(f.Severity, r.BadgeBaseURL), truncateWords(text, 200), where, link, m.Source.Label())
+	}
+	b.WriteString("</details>\n\n")
 }
 
 // firstSentence returns the leading sentence of the comment's first line, or

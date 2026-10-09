@@ -229,6 +229,9 @@ type PublishedFinding struct {
 	// MuteLiftedAt is when the author last lifted the mute; a thumbs-down older
 	// than it was already honoured.
 	MuteLiftedAt *time.Time
+	// ExternalCommentID is the other reviewer's root comment an external row
+	// was matched to, and where PRism's one delta reply went.
+	ExternalCommentID int64
 }
 
 // TelemetryEvent represents a single telemetry event for creation

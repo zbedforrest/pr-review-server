@@ -1,0 +1,175 @@
+package publisher
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sort"
+	"strings"
+	"time"
+
+	"pr-review-server/db"
+	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/reconcile"
+)
+
+// externalReplyMarkerPrefix tags the one delta reply PRism leaves under
+// another reviewer's root, distinct from the finding marker so the reply
+// scanner never takes that thread for one of PRism's own.
+const externalReplyMarkerPrefix = "<!-- prism:external:"
+
+// ExternalReplyMarker is the hidden marker on a delta reply for finding id.
+func ExternalReplyMarker(id string) string {
+	return externalReplyMarkerPrefix + id + " -->"
+}
+
+// deltaCovered is the containment above which a sentence of PRism's finding
+// counts as already said by the other reviewer.
+const deltaCovered = 0.6
+
+// externalPass is what the cross-reviewer pass leaves for the round: the
+// external rows to write, the delta replies to post once those rows exist,
+// and the count of findings it took out of the round.
+type externalPass struct {
+	rows    []*db.PublishedFinding
+	notes   []threadNote
+	matched int
+}
+
+// refreshExternal re-lists the PR's review comments when GitHub allows and
+// replaces Round.External with every root PRism does not own, so a reviewer
+// who posted after the round was built is still reconciled against.
+func (p *Publisher) refreshExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding) {
+	lister, ok := p.GH.(ReviewCommentLister)
+	if !ok {
+		return
+	}
+	listed, err := lister.ListReviewComments(ctx, r.Owner, r.Repo, r.Number)
+	if err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: re-list review comments: %v; reconciling against the round's listing", r.Owner, r.Repo, r.Number, err)
+		return
+	}
+	own := make(map[int64]bool, len(rows))
+	for _, row := range rows {
+		if row.CommentID != 0 {
+			own[row.CommentID] = true
+		}
+	}
+	comments := make([]reconcile.ExternalComment, 0, len(listed))
+	for _, c := range listed {
+		comments = append(comments, reconcile.ExternalComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, StartLine: c.StartLine, InReplyToID: c.InReplyToID})
+	}
+	r.External = reconcile.ParseExternalComments(comments, own)
+}
+
+// rememberExternal lists, for the summary, the findings of this round that
+// alias to an external row: the point is still raised and still lives in
+// the other reviewer's thread. It runs before those findings are dropped.
+func rememberExternal(r *Round, rows map[string]*db.PublishedFinding) {
+	for _, f := range r.Findings {
+		row, ok := rows[f.ID]
+		if !ok || row.State != db.PublishedStateExternal || row.ExternalCommentID == 0 {
+			continue
+		}
+		source, _ := reconcile.SourceFromTag(row.SourceTag)
+		r.ExternalMatches = append(r.ExternalMatches, ExternalMatch{Finding: f, Source: source, CommentID: row.ExternalCommentID})
+	}
+}
+
+// matchExternal pairs the round's shown findings with the other reviewers'
+// roots and takes every match out of the round: an external row remembers
+// the point for the PR's life, the summary links to the root, and the
+// thread gets one delta reply carrying only what PRism adds, unless a row
+// already claimed that root.
+func (p *Publisher) matchExternal(r *Round, rows map[string]*db.PublishedFinding, now time.Time) externalPass {
+	var pass externalPass
+	if len(r.External) == 0 {
+		return pass
+	}
+	claimed := map[int64]bool{}
+	for _, row := range rows {
+		if row.ExternalCommentID != 0 {
+			claimed[row.ExternalCommentID] = true
+		}
+	}
+	var candidates []payload.Finding
+	for _, f := range r.currentFindings() {
+		// A finding the ledger already knows has its own history; only a
+		// point PRism has never recorded can be someone else's first.
+		if _, known := rows[f.ID]; !known {
+			candidates = append(candidates, f)
+		}
+	}
+	matches := reconcile.MatchExternal(candidates, r.External)
+	if len(matches) == 0 {
+		return pass
+	}
+	taken := make(map[string]reconcile.Match, len(matches))
+	for _, m := range matches {
+		taken[m.FindingID] = m
+	}
+	kept := make([]payload.Finding, 0, len(r.Findings))
+	for _, f := range r.Findings {
+		m, ok := taken[f.ID]
+		if !ok {
+			kept = append(kept, f)
+			continue
+		}
+		pass.matched++
+		pass.rows = append(pass.rows, &db.PublishedFinding{
+			RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
+			Kind: db.PublishedKindAnnotation, Fingerprint: f.ID,
+			SourceTag: m.External.Source.SourceTag(), Severity: f.Severity,
+			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
+			State: db.PublishedStateExternal, PublishedAt: now,
+			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
+			ExternalCommentID: m.External.CommentID,
+		})
+		r.ExternalMatches = append(r.ExternalMatches, ExternalMatch{Finding: f, Source: m.External.Source, CommentID: m.External.CommentID})
+		if claimed[m.External.CommentID] {
+			continue
+		}
+		claimed[m.External.CommentID] = true
+		if body := deltaReply(f, m.External); body != "" {
+			pass.notes = append(pass.notes, threadNote{commentID: m.External.CommentID, body: body, external: true})
+		}
+	}
+	r.Findings = kept
+	sort.SliceStable(pass.notes, func(i, j int) bool { return pass.notes[i].commentID < pass.notes[j].commentID })
+	return pass
+}
+
+// deltaReply is the one reply PRism may leave under another reviewer's root:
+// the impact sentence when the root does not state it, PRism's suggestion
+// when the root has none, and how to verify. Empty when the root already
+// says everything PRism would.
+func deltaReply(f payload.Finding, ext reconcile.ExternalFinding) string {
+	extText := strings.Join([]string{ext.Title, ext.Body, ext.Suggestion}, " ")
+	var parts []string
+	c := f.FindingContract
+	hasContract := c != nil && f.FindingContractStatus == "valid"
+	if hasContract {
+		if impact := strings.TrimSpace(c.CurrentImpact); impact != "" && !covered(impact, extText) {
+			parts = append(parts, impact)
+		}
+	}
+	if fence := suggestionFenceRe.FindString(commentText(f)); fence != "" && ext.Suggestion == "" {
+		parts = append(parts, fence)
+	}
+	if hasContract && c.Falsifiability == "falsifiable" && c.FalsifiableCondition != nil && c.ExpectedObservable != nil {
+		condition := strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), ".")
+		observable := strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), ".")
+		if !covered(condition+" "+observable, extText) {
+			parts = append(parts, fmt.Sprintf("**How to verify:** %s. Expected: %s.", condition, observable))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return ExternalReplyMarker(f.ID) + "\nPRism found the same point. What this thread does not say yet:\n\n" + strings.Join(parts, "\n\n") + "\n"
+}
+
+func covered(text, ext string) bool {
+	score, _ := reconcile.Containment(text, ext)
+	return score >= deltaCovered
+}

@@ -49,6 +49,17 @@ func TestBuildPublishRound_TagsReconciledFindingsAndBuildsLinks(t *testing.T) {
 	assert.Equal(t, "acme", r.Owner)
 	assert.Equal(t, 7, r.Number)
 	assert.Equal(t, "abcdef1234567890", r.HeadSHA)
+	assert.Empty(t, r.SourceTags, "the publisher reconciles against the parsed roots itself")
+	assert.Empty(t, r.GreptileOnly)
+	require.Len(t, r.External, 3, "every root that is not PRism's is a match candidate, humans included")
+	assert.Equal(t, int64(900), r.External[0].CommentID)
+	assert.Equal(t, "Nil map write on first session", r.External[0].Title)
+	assert.Equal(t, "human", string(r.External[2].Source))
+
+	legacy := publisher.DefaultPolicy()
+	legacy.ExternalReconcile = false
+	r = BuildPublishRoundWith(pr, pl, comments, patches, previous, "https://prism.example", legacy)
+	assert.Empty(t, r.External)
 	assert.Equal(t, "both", r.SourceTags["f1"], "PRism finding near Greptile's comment on the same file")
 	assert.Empty(t, r.SourceTags["f2"], "unmatched PRism finding stays prism-only")
 	require.Len(t, r.GreptileOnly, 1)

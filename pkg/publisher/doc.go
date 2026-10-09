@@ -33,8 +33,10 @@
 //	open                         no       no         no            still open, untouched
 //	fixed / resolved (legacy)    yes      any        any           reopened: open, LastSeenSHA = head, one reply "Back at <sha7>" in its thread, thread unresolved, never a new root
 //	fixed / resolved             no       any        any           untouched
-//	dismissed/contested/external yes      any        any           finding dropped: not posted, not counted, row untouched (exception below)
+//	dismissed/contested/external yes      any        any           finding dropped: not posted, not counted, row untouched (exception below); an external row keeps its summary link
 //	dismissed/contested/external no       any        any           untouched
+//	no row, another reviewer's   new      n/a        n/a           external row: no root, summary links to that root, one delta reply there (see Other reviewers)
+//	root on the point
 //	no row                       new      n/a        n/a           Select decides inline or summary; a shown finding gets an open row
 //
 // Already published. Select never offers a root for a finding whose row
@@ -60,6 +62,27 @@
 // posted. The fresh root carries the settled row's subjects and, when the
 // wording and line did not move, a marker minted from the text that names
 // the change, so it never repeats the settled row's marker.
+//
+// Other reviewers. With Policy.ExternalReconcile (PUBLISH_EXTERNAL_RECONCILE,
+// on unless set to false) every root thread PRism did not post (Greptile,
+// Copilot, CodeRabbit, Gemini, code scanning, other bots, humans) is a match
+// candidate for a shown finding the ledger does not know: same file, the
+// finding's line within ten of the root's range, and either containment at
+// or above 0.35 (shared tokens over the shorter of the two texts, or of one
+// side's headline against the other's body, with a floor of three shared
+// words, four for a headline) or a contract subject named in the root. The
+// roots are re-listed right before the round posts when the GitHub
+// implements ReviewCommentLister, so a reviewer who commented seconds
+// earlier is seen. A match becomes an external row (Kind annotation,
+// ExternalCommentID the root, SourceTag "external:<source>"): never a root
+// of PRism's own, dropped from the counts and the score, linked from the
+// summary under "already raised in another reviewer's thread" for as long
+// as the point is raised, and answered once inside that thread with only
+// what the root lacks (the impact sentence, the suggestion block, how to
+// verify). A root some row already claims gets no second reply. The delta
+// reply runs inside the publish gate like every other write of the round.
+// Off, only Greptile roots are parsed, a match tags the finding "both" and
+// the root is still posted.
 //
 // Threads. Thread changes need Policy.ResolveThreads (PUBLISH_THREAD_RESOLUTION,
 // on unless set to false) and a GitHub that implements ThreadResolver; without

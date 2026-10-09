@@ -183,6 +183,7 @@ type Poller struct {
 	// shipped policy for both.
 	legacyLedger bool
 	threadsOff   bool
+	externalOff  bool
 	// agentSlots caps concurrent agent reviews per process. Each agent run
 	// holds ~1 GB of /tmp (clone) + agent memory; without a cap, two PRs
 	// triggered close together can exhaust the instance's memory budget.
@@ -413,6 +414,7 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		gcsClient:        gcsClient,
 		legacyLedger:     publisher.LegacyLedgerFromEnv(),
 		threadsOff:       !publisher.ThreadResolutionFromEnv(),
+		externalOff:      !publisher.ExternalReconcileFromEnv(),
 		reviewDir:        cfg.ReviewsDir,
 		triggerChan:      make(chan struct{}, 1), // Buffered to prevent blocking
 		activeReviews:    make(map[string]ProcessInfo),

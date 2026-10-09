@@ -46,9 +46,10 @@ func publishTargetReady(state string, draft bool, headSHA, reviewedSHA string) (
 }
 
 // BuildPublishRound assembles everything the publisher needs from the review
-// sidecar plus what is already on the PR: Greptile's inline comments are
-// reconciled against PRism's findings so nothing is posted twice, and the
-// file patches bound which lines may take an inline comment.
+// sidecar plus what is already on the PR: every other reviewer's root
+// thread is parsed for the publisher to reconcile against so nothing is
+// posted twice, and the file patches bound which lines may take an inline
+// comment.
 func BuildPublishRound(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, baseURL string) publisher.Round {
 	return BuildPublishRoundWith(pr, pl, comments, patches, previous, baseURL, publisher.DefaultPolicy())
 }
@@ -56,7 +57,8 @@ func BuildPublishRound(pr github.PullRequest, pl payload.Payload, comments []git
 // BuildPublishRoundWith is BuildPublishRound under an explicit policy. The
 // legacy policy aliases reworded findings here, against GitHub's comments;
 // the ledger policy hands those comments to the publisher, which aliases
-// against the ledger itself.
+// against the ledger itself. With ExternalReconcile off, only Greptile roots
+// are parsed and a match tags the finding instead of suppressing it.
 func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, baseURL string, pol publisher.Policy) publisher.Round {
 	// Only active claims reach GitHub, so only they take part in aliasing and
 	// reconciliation; an inactive record with first-pass wording must not
@@ -101,19 +103,23 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		}
 	}
 
-	res := reconcile.Reconcile(pl.Findings, reconcile.ParseGreptileComments(external))
-
-	tags := make(map[string]string, len(res.Findings))
-	for _, t := range res.Findings {
-		if t.SourceTag != reconcile.SourceTagPrismOnly {
-			tags[t.Finding.ID] = t.SourceTag
+	var externalRoots []reconcile.ExternalFinding
+	tags := map[string]string{}
+	var greptileOnly []publisher.GreptileOnlyRef
+	if pol.ExternalReconcile {
+		externalRoots = reconcile.ParseExternalComments(external, ledgerCommentIDs)
+	} else {
+		res := reconcile.Reconcile(pl.Findings, reconcile.ParseGreptileComments(external))
+		for _, t := range res.Findings {
+			if t.SourceTag != reconcile.SourceTagPrismOnly {
+				tags[t.Finding.ID] = t.SourceTag
+			}
 		}
-	}
-	greptileOnly := make([]publisher.GreptileOnlyRef, 0, len(res.GreptileOnly))
-	for _, g := range res.GreptileOnly {
-		greptileOnly = append(greptileOnly, publisher.GreptileOnlyRef{
-			Title: g.Title, File: g.File, Line: g.StartLine, Severity: g.Severity, CommentID: g.CommentID,
-		})
+		for _, g := range res.GreptileOnly {
+			greptileOnly = append(greptileOnly, publisher.GreptileOnlyRef{
+				Title: g.Title, File: g.File, Line: g.StartLine, Severity: g.Severity, CommentID: g.CommentID,
+			})
+		}
 	}
 	commentable := make(map[string]map[int]bool, len(patches))
 	for file, patch := range patches {
@@ -125,6 +131,7 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		Findings:       pl.Findings,
 		SourceTags:     tags,
 		GreptileOnly:   greptileOnly,
+		External:       externalRoots,
 		Previous:       previous,
 		Commentable:    commentable,
 		InlineComments: inlineComments,
@@ -183,7 +190,10 @@ func profileFooter(run *payload.ReviewRunInfo) string {
 // interface; the two packages keep separate input structs to avoid a cycle.
 type ghPublishAdapter struct{ c *github.Client }
 
-var _ publisher.ThreadResolver = ghPublishAdapter{}
+var (
+	_ publisher.ThreadResolver      = ghPublishAdapter{}
+	_ publisher.ReviewCommentLister = ghPublishAdapter{}
+)
 
 func (a ghPublishAdapter) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []publisher.ReviewCommentInput) (int64, []int64, error) {
 	inputs := make([]github.ReviewCommentInput, len(comments))
@@ -229,6 +239,18 @@ func listReviewThreads(ctx context.Context, c *github.Client, owner, repo string
 	return out, nil
 }
 
+func (a ghPublishAdapter) ListReviewComments(ctx context.Context, owner, repo string, number int) ([]publisher.ReviewComment, error) {
+	infos, err := a.c.ListReviewComments(ctx, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]publisher.ReviewComment, len(infos))
+	for i, c := range infos {
+		out[i] = publisher.ReviewComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, StartLine: c.StartLine, InReplyToID: c.InReplyToID}
+	}
+	return out, nil
+}
+
 func (a ghPublishAdapter) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]publisher.IssueComment, error) {
 	infos, err := a.c.ListIssueComments(ctx, owner, repo, number)
 	if err != nil {
@@ -245,6 +267,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	pol := publisher.DefaultPolicy()
 	pol.LegacyLedger = p.legacyLedger
 	pol.ResolveThreads = !p.threadsOff
+	pol.ExternalReconcile = !p.externalOff
 	if v, err := p.db.GetSetting(settingPublishInlineCap); err == nil {
 		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
 			pol.InlineCap = n
@@ -376,9 +399,9 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		return &report, publicationFailedPrefix + "publish"
 	}
 	p.recordHygiene(pr, report.Hygiene)
-	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d confidence=%d threads_resolved=%d threads_unresolved=%d thread_failures=%d",
+	log.Printf("[PUBLISH] %s/%s#%d: summary=%d review=%d inline=%d annotations=%d still_open=%d fixed=%d confidence=%d threads_resolved=%d threads_unresolved=%d thread_failures=%d external_matched=%d external_replies=%d external_reply_failures=%d",
 		pr.Owner, pr.Repo, pr.Number, report.SummaryCommentID, report.ReviewID, report.InlinePosted, report.Annotations, report.StillOpen, report.Fixed, report.Confidence,
-		report.ThreadsResolved, report.ThreadsUnresolved, report.ThreadResolveFailures)
+		report.ThreadsResolved, report.ThreadsUnresolved, report.ThreadResolveFailures, report.ExternalMatched, report.ExternalReplies, report.ExternalReplyFailures)
 	return &report, publicationPosted
 }
 

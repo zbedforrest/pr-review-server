@@ -13,28 +13,29 @@ import (
 
 func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 	return PublishedFinding{
-		ID:           int(m.ID),
-		RepoOwner:    m.RepoOwner,
-		RepoName:     m.RepoName,
-		PRNumber:     m.PRNumber,
-		Kind:         m.Kind,
-		Fingerprint:  m.Fingerprint,
-		SourceTag:    m.SourceTag,
-		Severity:     m.Severity,
-		ReviewedSHA:  m.ReviewedSHA,
-		LastSeenSHA:  m.LastSeenSHA,
-		CommentID:    m.CommentID,
-		ThreadNodeID: m.ThreadNodeID,
-		ReviewID:     m.ReviewID,
-		CheckRunID:   m.CheckRunID,
-		State:        m.State,
-		Rounds:       m.Rounds,
-		PublishedAt:  m.PublishedAt,
-		CommentText:  m.CommentText,
-		FindingKind:  m.FindingKind,
-		Subjects:     m.Subjects,
-		Muted:        m.Muted,
-		MuteLiftedAt: m.MuteLiftedAt,
+		ID:                int(m.ID),
+		RepoOwner:         m.RepoOwner,
+		RepoName:          m.RepoName,
+		PRNumber:          m.PRNumber,
+		Kind:              m.Kind,
+		Fingerprint:       m.Fingerprint,
+		SourceTag:         m.SourceTag,
+		Severity:          m.Severity,
+		ReviewedSHA:       m.ReviewedSHA,
+		LastSeenSHA:       m.LastSeenSHA,
+		CommentID:         m.CommentID,
+		ThreadNodeID:      m.ThreadNodeID,
+		ReviewID:          m.ReviewID,
+		CheckRunID:        m.CheckRunID,
+		State:             m.State,
+		Rounds:            m.Rounds,
+		PublishedAt:       m.PublishedAt,
+		CommentText:       m.CommentText,
+		FindingKind:       m.FindingKind,
+		Subjects:          m.Subjects,
+		Muted:             m.Muted,
+		MuteLiftedAt:      m.MuteLiftedAt,
+		ExternalCommentID: m.ExternalCommentID,
 	}
 }
 
@@ -45,27 +46,28 @@ func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 // later round that re-sees the finding cannot erase where it was posted.
 func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 	model := PublishedFindingModel{
-		RepoOwner:    p.RepoOwner,
-		RepoName:     p.RepoName,
-		PRNumber:     p.PRNumber,
-		Kind:         p.Kind,
-		Fingerprint:  p.Fingerprint,
-		SourceTag:    p.SourceTag,
-		Severity:     p.Severity,
-		ReviewedSHA:  p.ReviewedSHA,
-		LastSeenSHA:  p.LastSeenSHA,
-		CommentID:    p.CommentID,
-		ThreadNodeID: p.ThreadNodeID,
-		ReviewID:     p.ReviewID,
-		CheckRunID:   p.CheckRunID,
-		State:        p.State,
-		Rounds:       p.Rounds,
-		PublishedAt:  p.PublishedAt,
-		CommentText:  p.CommentText,
-		FindingKind:  p.FindingKind,
-		Subjects:     p.Subjects,
-		Muted:        p.Muted,
-		MuteLiftedAt: p.MuteLiftedAt,
+		RepoOwner:         p.RepoOwner,
+		RepoName:          p.RepoName,
+		PRNumber:          p.PRNumber,
+		Kind:              p.Kind,
+		Fingerprint:       p.Fingerprint,
+		SourceTag:         p.SourceTag,
+		Severity:          p.Severity,
+		ReviewedSHA:       p.ReviewedSHA,
+		LastSeenSHA:       p.LastSeenSHA,
+		CommentID:         p.CommentID,
+		ThreadNodeID:      p.ThreadNodeID,
+		ReviewID:          p.ReviewID,
+		CheckRunID:        p.CheckRunID,
+		State:             p.State,
+		Rounds:            p.Rounds,
+		PublishedAt:       p.PublishedAt,
+		CommentText:       p.CommentText,
+		FindingKind:       p.FindingKind,
+		Subjects:          p.Subjects,
+		Muted:             p.Muted,
+		MuteLiftedAt:      p.MuteLiftedAt,
+		ExternalCommentID: p.ExternalCommentID,
 	}
 	// Muted is owned by SetPublishedMute; a round rewriting the summary row
 	// never clears it, and a muted placeholder takes its first head here.
@@ -104,6 +106,9 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 	}
 	if model.Rounds != 0 {
 		updates["rounds"] = model.Rounds
+	}
+	if model.ExternalCommentID != 0 {
+		updates["external_comment_id"] = model.ExternalCommentID
 	}
 	return g.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{
