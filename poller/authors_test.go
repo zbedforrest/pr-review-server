@@ -144,6 +144,20 @@ func TestPublishGate_ReadErrorDeniesEveryone(t *testing.T) {
 	assert.False(t, gate.Allowed("alice"))
 }
 
+func TestNewPublishGate_MatchesTheServerGate(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	p := newTestPoller(mockGH, NewMockDatabase())
+	teamAware(p, mockGH, map[string][]string{"xo-team": {"alice", "bob"}})
+
+	g := NewPublishGate(p.teams, "team:xo-team,carol,*", " Alice ,carol")
+	assert.False(t, g.Allowed("alice"), "opted out beats team membership")
+	assert.False(t, g.Allowed("carol"), "opted out beats a login entry")
+	assert.True(t, g.Allowed("bob"))
+	assert.True(t, g.Allowed("dave"), "wildcard admits everyone else")
+	assert.False(t, g.Allowed(""))
+	assert.False(t, NewPublishGate(nil, "alice", "").Allowed("carol"), "an unlisted author is denied")
+}
+
 func TestAdmittingEntry_PrefersLoginThenTeamThenWildcard(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	p := newTestPoller(mockGH, NewMockDatabase())

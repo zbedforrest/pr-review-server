@@ -292,20 +292,6 @@ func TestApply_LostNoteStillResolves(t *testing.T) {
 	}
 }
 
-func TestPublishGate(t *testing.T) {
-	g := publishGate(context.Background(), nil, "alice, *", "Bob")
-	if !g("alice") || !g("carol") {
-		t.Error("login and wildcard entries admit")
-	}
-	if g("bob") || g("BOB") || g("") {
-		t.Error("the opt-out list denies before the wildcard, and nobody is nobody")
-	}
-	g = publishGate(context.Background(), nil, "alice", "")
-	if g("carol") {
-		t.Error("an unlisted author is denied")
-	}
-}
-
 func TestParsePRRef(t *testing.T) {
 	owner, repo, n, err := parsePRRef("acme/example#12")
 	if err != nil || owner != "acme" || repo != "example" || n != 12 {

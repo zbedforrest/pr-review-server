@@ -304,7 +304,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	}
 	if !gate.Allowed(pr.Author) {
 		label := "author=" + pr.Author
-		if gate.OptedOut(pr.Author) && gate.p.authorAllowed(gate.enabled, pr.Author) {
+		if gate.OptedOut(pr.Author) && p.authorAllowed(gate.enabled, pr.Author) {
 			p.recordHygieneEvent(pr, health.ActionOptedOut, label)
 			label += " reason=opted_out"
 		}

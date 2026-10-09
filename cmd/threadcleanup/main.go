@@ -120,7 +120,7 @@ func main() {
 		if !publisher.ThreadResolutionFromEnv() {
 			log.Fatalf("%s is off; nothing resolved", publisher.ThreadResolutionEnv)
 		}
-		ledger, allowed, err := openLedgerGate(ctx, gh)
+		ledger, allowed, err := openLedgerGate(gh)
 		if err != nil {
 			log.Fatalf("ledger: %v", err)
 		}
@@ -256,10 +256,10 @@ func newGitHubClient(ctx context.Context) (*github.Client, error) {
 	return github.NewClient(token, os.Getenv("GITHUB_USERNAME")), nil
 }
 
-// openLedgerGate opens the ledger the server uses and builds the publish
-// gate from its settings, team entries resolved through the GitHub client
-// for GITHUB_ORG_NAME.
-func openLedgerGate(ctx context.Context, gh *github.Client) (*db.GormDB, gate, error) {
+// openLedgerGate opens the ledger the server uses and builds the server's
+// publish gate from its settings, team entries resolved through the GitHub
+// client for GITHUB_ORG_NAME.
+func openLedgerGate(gh *github.Client) (*db.GormDB, gate, error) {
 	var ledger *db.GormDB
 	var err error
 	switch {
@@ -285,18 +285,5 @@ func openLedgerGate(ctx context.Context, gh *github.Client) (*db.GormDB, gate, e
 	if org := os.Getenv("GITHUB_ORG_NAME"); org != "" {
 		teams = github.NewTeamResolver(org, gh)
 	}
-	return ledger, publishGate(ctx, teams, enabled, optOut), nil
-}
-
-// publishGate is the server's gate rebuilt from its two lists: the opt-out
-// list denies before any login, team or "*" entry admits.
-func publishGate(ctx context.Context, teams *github.TeamResolver, enabled, optOut string) gate {
-	denied := db.ParseLoginCSV(optOut)
-	return func(author string) bool {
-		author = strings.TrimSpace(author)
-		if author == "" || denied[strings.ToLower(author)] {
-			return false
-		}
-		return poller.AdmittingEntry(ctx, teams, enabled, author) != ""
-	}
+	return ledger, poller.NewPublishGate(teams, enabled, optOut).Allowed, nil
 }
