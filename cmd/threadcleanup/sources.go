@@ -41,7 +41,7 @@ func fromDump(d *replaykit.PRDump, bots map[string]bool) *pr {
 		p.Threads = append(p.Threads, thread{
 			RootCommentID: int64(root.DatabaseID), NodeID: nodeIDOf(t.ID), FindingID: id, Path: path,
 			PostedSHA: root.OriginalCommit.Oid, PostedAt: root.CreatedAt,
-			Resolved: t.IsResolved, ResolvedKnown: known, Outdated: t.IsOutdated,
+			Resolved: t.Resolved(), ResolvedKnown: known && t.IsResolved != nil, Outdated: t.IsOutdated,
 		})
 	}
 	return p

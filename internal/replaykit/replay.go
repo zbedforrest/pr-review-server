@@ -239,7 +239,8 @@ type RoundInput struct {
 	ChangedKnown bool
 }
 
-// RoundResult is what one round did.
+// RoundResult is what one round did. Skipped marks a round the publisher
+// refused because its head was already published; it wrote nothing.
 type RoundResult struct {
 	Round    publisher.Round
 	Report   publisher.Report
@@ -247,6 +248,7 @@ type RoundResult struct {
 	After    []db.PublishedFinding
 	Posts    []Post // posted this round, annotated with raw text
 	Summary  string // summary body after the round
+	Skipped  bool
 }
 
 // PRReplay replays one PR's rounds against a ledger and a recorder.
@@ -284,7 +286,7 @@ func (p *PRReplay) PublishRound(ctx context.Context, in RoundInput) (RoundResult
 	before := len(p.Rec.Posts)
 	rep, err := p.Pub.Publish(ctx, round)
 	if errors.Is(err, publisher.ErrHeadAlreadyPublished) {
-		rep, err = publisher.Report{}, nil
+		rep, err, res.Skipped = publisher.Report{}, nil, true
 	}
 	if err != nil {
 		return res, fmt.Errorf("round %d (%s): %w", in.Index+1, Short(in.SHA), err)
@@ -300,13 +302,15 @@ func (p *PRReplay) PublishRound(ctx context.Context, in RoundInput) (RoundResult
 }
 
 // ExternalCommentsBefore is what other reviewers had on the PR when the
-// round ran, so cross-bot reconciliation sees what the poller saw.
+// round ran, so cross-bot reconciliation sees what the poller saw. The
+// thread's original line stands in for the line the poller would have
+// listed then; the dump's current line has drifted with every later push.
 func (d *PRDump) ExternalCommentsBefore(bots map[string]bool, at time.Time) []github.ReviewCommentInfo {
 	var out []github.ReviewCommentInfo
 	for _, t := range d.ReviewThreads.Nodes {
-		line := t.Line
+		line := t.OriginalLine
 		if line == 0 {
-			line = t.OriginalLine
+			line = t.Line
 		}
 		for _, c := range t.Comments.Nodes {
 			login := ActorLogin(c.Author)
@@ -423,6 +427,40 @@ func SameDefect(file string, line int, text string, subjects []string, oFile str
 
 func SameFile(a, b string) bool {
 	return a == b
+}
+
+// ExternalDuplicate finds the earliest root another reviewer posted before
+// at on the same point as a PRism root: same file, lines within ten, and
+// raw-text overlap (Jaccard at or above 0.20, containment at or above the
+// external match bar, or a subject named in the root). This is the
+// external_duplicates metric's rule: a union of the publisher's rules, so a
+// duplicate the publisher misses is still counted.
+func ExternalDuplicate(file string, line int, text string, subjects []string, roots []ExternalRoot, at time.Time) (ExternalRoot, bool) {
+	for _, r := range roots {
+		if !r.At.Before(at) || !SameFile(file, r.File) || line <= 0 || r.Line <= 0 || abs(line-r.Line) > AliasLineTolerance {
+			continue
+		}
+		if sameText(text, subjects, r.Text) {
+			return r, true
+		}
+	}
+	return ExternalRoot{}, false
+}
+
+func sameText(text string, subjects []string, other string) bool {
+	if reconcile.Similarity(text, other) >= AliasSimilarity {
+		return true
+	}
+	if score, shared := reconcile.Containment(text, other); score >= reconcile.ExternalThreshold && shared >= 3 {
+		return true
+	}
+	lower := strings.ToLower(other)
+	for _, s := range subjects {
+		if s != "" && strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func IsFindingRow(row db.PublishedFinding) bool {

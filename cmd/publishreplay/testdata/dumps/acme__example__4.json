@@ -1,0 +1,125 @@
+{
+ "number": 4,
+ "title": "Fixture 4",
+ "url": "https://github.com/acme/example/pull/4",
+ "state": "OPEN",
+ "isDraft": false,
+ "merged": false,
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "4a4a4a4444444444444444444444444444444444",
+ "reviews": {
+  "nodes": [
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 41,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-04T10:00:00Z",
+    "commit": {
+     "oid": "4a4a4a4444444444444444444444444444444444"
+    }
+   }
+  ],
+  "totalCount": 1
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "PRRT_41",
+    "isResolved": null,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "svc/limits.go",
+    "line": 30,
+    "originalLine": 30,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 401,
+       "author": {
+        "login": "greptile-apps[bot]"
+       },
+       "body": "<a href=\"#\"><img alt=\"P1\" src=\"https://example.invalid/p1.svg\" align=\"top\"></a> **Burst limit off by one**\n\nallowBurst compares with <= instead of <, so a client gets one request more than its quota.\n\n<details><summary>Prompt To Fix With AI</summary>\nfix it\n</details>",
+       "createdAt": "2026-09-04T09:58:00Z",
+       "updatedAt": "2026-09-04T09:58:00Z",
+       "path": "svc/limits.go",
+       "originalCommit": {
+        "oid": "4a4a4a4444444444444444444444444444444444"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "PRRT_42",
+    "isResolved": null,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "svc/limits.go",
+    "line": 30,
+    "originalLine": 30,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 402,
+       "author": {
+        "login": "acme-bot"
+       },
+       "body": "<!-- prism:finding:svc/limits.go:3:c4c4c4c4c4c4 -->\n**MEDIUM** allowBurst compares with <= instead of <, so a client gets one request more than its quota and the limiter admits a burst of size n+1.",
+       "createdAt": "2026-09-04T10:00:00Z",
+       "updatedAt": "2026-09-04T10:00:00Z",
+       "path": "svc/limits.go",
+       "originalCommit": {
+        "oid": "4a4a4a4444444444444444444444444444444444"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "PRRT_43",
+    "isResolved": true,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "svc/other.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 403,
+       "author": {
+        "login": "greptile-apps[bot]"
+       },
+       "body": "<a href=\"#\"><img alt=\"P2\" src=\"https://example.invalid/p2.svg\" align=\"top\"></a> **Unused helper**\n\nformatKey is no longer called anywhere.",
+       "createdAt": "2026-09-04T09:58:00Z",
+       "updatedAt": "2026-09-04T09:58:00Z",
+       "path": "svc/other.go",
+       "originalCommit": {
+        "oid": "4a4a4a4444444444444444444444444444444444"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "comments": {
+  "nodes": []
+ }
+}
