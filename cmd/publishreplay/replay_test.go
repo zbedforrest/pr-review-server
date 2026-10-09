@@ -108,7 +108,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 4 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_skipped_unchanged_diff,") || !strings.HasPrefix(lines[3], "example#3,3,0,0,0,1,0,0,0,1,0,0,0,2,1,1,0,") {
+	if len(lines) != 4 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,2,1,1,0,") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }
@@ -569,7 +569,7 @@ func copyFixtures(t *testing.T) string {
 // reaches the recorder.
 func TestRun_MergeOnlyPushSkipsTheRound(t *testing.T) {
 	dir := copyFixtures(t)
-	mergeOnly := []byte(`{"files":["a.go"],"status":"ahead","merge_only":true}`)
+	mergeOnly := []byte(`{"files":["a.go"],"status":"ahead","commits":1,"merge_commits":1,"merge_only":true,"schema":2}`)
 	if err := os.WriteFile(filepath.Join(dir, "compare", "acme_example_aaaaaaa_bbbbbbb.json"), mergeOnly, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +586,7 @@ func TestRun_MergeOnlyPushSkipsTheRound(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := res.Metrics
-	if m.RoundsSkippedUnchangedDiff != 1 || m.RoundsReplayed != 8 || res.PerPR[0].RoundsSkippedUnchangedDiff != 1 || res.PerPR[0].Rounds != 3 {
+	if m.RoundsSkippedUnchangedDiff != 1 || m.RoundsAfterMergeCommit != 1 || m.RoundsReplayed != 8 || res.PerPR[0].RoundsSkippedUnchangedDiff != 1 || res.PerPR[0].Rounds != 3 {
 		t.Fatalf("metrics = %+v per-pr = %+v", m, res.PerPR[0])
 	}
 	if m.RoundsPerPRP50 != 3 || m.Observed.RoundsPerPRP50 != 3 {
@@ -604,11 +604,11 @@ func TestRun_MergeOnlyPushSkipsTheRound(t *testing.T) {
 func TestParseCompare_ReadsStatusAndMergeOnlyPushes(t *testing.T) {
 	merge := []byte(`{"status":"ahead","total_commits":1,"commits":[{"parents":[{"sha":"a"},{"sha":"b"}]}],"files":[{"filename":"x.go"}]}`)
 	res, err := parseCompare(merge)
-	if err != nil || !res.MergeOnly || res.Status != "ahead" || !res.unchangedDiff() {
+	if err != nil || !res.MergeOnly || res.Status != "ahead" || res.Commits != 1 || res.MergeCommits != 1 || res.Schema != compareSchema || !res.unchangedDiff() {
 		t.Fatalf("a single merge commit is a merge-only push: %+v err=%v", res, err)
 	}
 	mixed := []byte(`{"status":"ahead","total_commits":2,"commits":[{"parents":[{"sha":"a"},{"sha":"b"}]},{"parents":[{"sha":"c"}]}],"files":[]}`)
-	if res, _ := parseCompare(mixed); res.MergeOnly || res.unchangedDiff() {
+	if res, _ := parseCompare(mixed); res.MergeOnly || res.unchangedDiff() || res.MergeCommits != 1 || res.Commits != 2 {
 		t.Fatalf("a merge plus a real commit is a real push: %+v", res)
 	}
 	identical := []byte(`{"status":"identical","total_commits":0,"commits":[],"files":[]}`)
@@ -620,7 +620,7 @@ func TestParseCompare_ReadsStatusAndMergeOnlyPushes(t *testing.T) {
 		t.Fatalf("a commit list the endpoint cut short cannot be judged: %+v", res)
 	}
 	legacy := []byte(`{"files":[{"filename":"x.go"}]}`)
-	if res, _ := parseCompare(legacy); res.Status != "unknown" || res.unchangedDiff() {
+	if res, _ := parseCompare(legacy); res.Status != "unknown" || res.unchangedDiff() || res.Schema != compareSchema {
 		t.Fatalf("a response without a status is unknown, never unchanged: %+v", res)
 	}
 }
@@ -631,7 +631,7 @@ func TestStore_RefetchesCompareEntriesWithoutAStatusWhenOnline(t *testing.T) {
 	if err := os.WriteFile(stale, []byte(`{"files":["a.go"]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f := &stubFetcher{compare: compareResult{Files: []string{"a.go"}, Status: "ahead", MergeOnly: true}}
+	f := &stubFetcher{compare: compareResult{Files: []string{"a.go"}, Status: "ahead", MergeOnly: true, Schema: compareSchema}}
 	st, err := newStore(dir, f)
 	if err != nil {
 		t.Fatal(err)

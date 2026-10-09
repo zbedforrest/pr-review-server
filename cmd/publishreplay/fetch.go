@@ -32,12 +32,18 @@ type compareResult struct {
 	// dropped the cited file.
 	Truncated bool `json:"truncated,omitempty"`
 	// Status is the endpoint's relation of head to base (ahead, behind,
-	// diverged, identical); MergeOnly says every commit between them has two
-	// parents, so the push changed nothing in the PR diff. Entries cached
-	// before these fields existed have no Status and are fetched again.
-	Status    string `json:"status,omitempty"`
-	MergeOnly bool   `json:"merge_only,omitempty"`
+	// diverged, identical); Commits and MergeCommits count the commits
+	// between them and those with two parents, and MergeOnly says every
+	// commit is a merge, so the push changed nothing in the PR diff. Schema
+	// marks entries that carry these fields; older ones are fetched again.
+	Status       string `json:"status,omitempty"`
+	Commits      int    `json:"commits,omitempty"`
+	MergeCommits int    `json:"merge_commits,omitempty"`
+	MergeOnly    bool   `json:"merge_only,omitempty"`
+	Schema       int    `json:"schema,omitempty"`
 }
+
+const compareSchema = 2
 
 // unchangedDiff reports a push that left the PR diff as it was: the same
 // tree, or merge commits only. It is the replay's stand-in for the poller's
@@ -110,7 +116,7 @@ func (s *store) compare(owner, repo, base, head string) (compareResult, bool, er
 	path := filepath.Join(s.dir, "compare", compareKey(owner, repo, base, head)+".json")
 	if raw, err := os.ReadFile(path); err == nil {
 		var res compareResult
-		if err := json.Unmarshal(raw, &res); err == nil && (res.Status != "" || res.Error != "" || s.f == nil) {
+		if err := json.Unmarshal(raw, &res); err == nil && (res.Schema >= compareSchema || res.Error != "" || s.f == nil) {
 			return res, res.complete(), nil
 		}
 	}
@@ -257,7 +263,7 @@ func parseCompare(raw []byte) (compareResult, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return compareResult{}, err
 	}
-	res := compareResult{Truncated: len(payload.Files) >= compareFilesCap, Status: payload.Status}
+	res := compareResult{Truncated: len(payload.Files) >= compareFilesCap, Status: payload.Status, Schema: compareSchema}
 	if res.Status == "" {
 		res.Status = "unknown"
 	}
@@ -269,12 +275,13 @@ func parseCompare(raw []byte) (compareResult, error) {
 	}
 	// The endpoint lists at most 250 commits; a longer range cannot be
 	// judged merge-only.
-	res.MergeOnly = len(payload.Commits) > 0 && payload.TotalCommits == len(payload.Commits)
+	res.Commits = payload.TotalCommits
 	for _, c := range payload.Commits {
-		if len(c.Parents) < 2 {
-			res.MergeOnly = false
+		if len(c.Parents) >= 2 {
+			res.MergeCommits++
 		}
 	}
+	res.MergeOnly = len(payload.Commits) > 0 && payload.TotalCommits == len(payload.Commits) && res.MergeCommits == len(payload.Commits)
 	return res, nil
 }
 
