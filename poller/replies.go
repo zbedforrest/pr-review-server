@@ -380,6 +380,7 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 			}
 		},
 		Allowed:     gate.Allowed,
+		Muted:       p.prMutedInLedger,
 		OnDismissed: p.summaryRefresher(),
 		PR: func(ctx context.Context, owner, repo string, number int) (publisher.PRState, error) {
 			ghPR, _, err := p.ghClientConcrete.GetPR(ctx, owner, repo, number)

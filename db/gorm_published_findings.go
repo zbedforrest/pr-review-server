@@ -1,6 +1,8 @@
 package db
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -31,6 +33,7 @@ func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 		CommentText:  m.CommentText,
 		FindingKind:  m.FindingKind,
 		Subjects:     m.Subjects,
+		Muted:        m.Muted,
 	}
 }
 
@@ -60,7 +63,10 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		CommentText:  p.CommentText,
 		FindingKind:  p.FindingKind,
 		Subjects:     p.Subjects,
+		Muted:        p.Muted,
 	}
+	// Muted is owned by SetPublishedMute; a round rewriting the summary row
+	// never clears it.
 	updates := map[string]interface{}{
 		"kind":          model.Kind,
 		"source_tag":    model.SourceTag,
@@ -149,6 +155,39 @@ func (g *GormDB) GetPublishedSummaryForPR(owner, repo string, prNumber int) (Pub
 		return PublishedFinding{}, false, nil
 	}
 	return publishedFindingModelToDomain(&model), true, nil
+}
+
+// SetPublishedMute records the author's wish for silence on the summary row
+// (or clears it) and reports whether anything changed. A PR with no summary
+// row yet gets one without a comment, so the mute holds for the first round
+// as well; HeadPublished ignores it since its LastSeenSHA is empty.
+func (g *GormDB) SetPublishedMute(owner, repo string, number int, muted bool) (bool, error) {
+	res := g.db.Model(&PublishedFindingModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ? AND muted <> ?", owner, repo, number, PublishedKindSummary, muted).
+		Update("muted", muted)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	if res.RowsAffected > 0 || !muted {
+		return res.RowsAffected > 0, nil
+	}
+	var n int64
+	if err := g.db.Model(&PublishedFindingModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ?", owner, repo, number, PublishedKindSummary).
+		Count(&n).Error; err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return false, nil
+	}
+	row := PublishedFindingModel{
+		RepoOwner: owner, RepoName: repo, PRNumber: number, Kind: PublishedKindSummary, Fingerprint: PublishedKindSummary,
+		State: PublishedStateOpen, PublishedAt: time.Now().UTC(), Muted: true,
+	}
+	if err := g.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // SetPublishedFindingState changes one ledger row's state, for conceding a

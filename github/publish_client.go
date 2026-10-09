@@ -233,6 +233,30 @@ func (c *Client) ListCommentReactions(ctx context.Context, owner, repo string, c
 	}
 }
 
+// ListIssueCommentReactions lists every reaction on a PR conversation
+// comment, such as the sticky summary.
+func (c *Client) ListIssueCommentReactions(ctx context.Context, owner, repo string, commentID int64) ([]CommentReaction, error) {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	var out []CommentReaction
+	opts := &github.ListOptions{PerPage: listPageSize}
+	for {
+		page, resp, err := gh.Reactions.ListIssueCommentReactions(ctx, owner, repo, commentID, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list reactions on issue comment %d: %w", commentID, err)
+		}
+		for _, r := range page {
+			out = append(out, CommentReaction{UserID: r.GetUser().GetID(), Content: r.GetContent()})
+		}
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		opts.Page = resp.NextPage
+	}
+}
+
 // CreateIssueCommentReaction adds a reaction (for example "eyes") to a PR
 // conversation comment.
 func (c *Client) CreateIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, content string) error {

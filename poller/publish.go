@@ -271,6 +271,7 @@ const (
 	publicationPosted        = "posted"
 	publicationAlreadyPosted = "already_posted"
 	publicationNotAllowed    = "not_allowed"
+	publicationMuted         = "muted"
 	publicationUnavailable   = "unavailable"
 	publicationSkippedPrefix = "skipped: "
 	publicationFailedPrefix  = "failed: "
@@ -330,6 +331,10 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), ghPR.GetHead().GetSHA(), pr.CommitSHA); !ok {
 		log.Printf("[PUBLISH] %s/%s#%d: skipped, %s", pr.Owner, pr.Repo, pr.Number, reason)
 		return nil, publicationSkippedPrefix + reason
+	}
+	if p.prMuted(ctx, pr, previous, ghPR.GetUser().GetID()) {
+		log.Printf("[PUBLISH] %s/%s#%d: skipped, the author muted PRism on this PR", pr.Owner, pr.Repo, pr.Number)
+		return nil, publicationMuted
 	}
 	comments, err := p.ghClientConcrete.ListReviewComments(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {

@@ -193,6 +193,7 @@ var publishedFindingColumns = []struct {
 	{"comment_text", "CommentText", "text"},
 	{"finding_kind", "FindingKind", "varchar(32) NOT NULL DEFAULT ''"},
 	{"subjects", "Subjects", "text NOT NULL DEFAULT ''"},
+	{"muted", "Muted", "boolean NOT NULL DEFAULT false"},
 }
 
 var greptileStatusColumns = []struct {
@@ -479,6 +480,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	for _, addition := range publishedFindingColumns {
 		if err := g.db.Exec("ALTER TABLE published_findings ADD COLUMN IF NOT EXISTS " + addition.column + " " + addition.postgres).Error; err != nil {
 			return fmt.Errorf("add published_findings.%s: %w", addition.column, err)
+		}
+	}
+	for _, addition := range autoReviewIntentColumns {
+		if err := g.db.Exec("ALTER TABLE auto_review_intents ADD COLUMN IF NOT EXISTS " + addition.column + " " + addition.postgres).Error; err != nil {
+			return fmt.Errorf("add auto_review_intents.%s: %w", addition.column, err)
 		}
 	}
 	for _, addition := range greptileStatusColumns {

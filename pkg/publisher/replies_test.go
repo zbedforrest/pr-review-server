@@ -2236,3 +2236,15 @@ func TestReplyReactor_HoldDoesNotRefreshTheSummary(t *testing.T) {
 		t.Fatalf("a hold dismisses nothing, so nothing refreshes: %d", called)
 	}
 }
+
+func TestReplyReactor_SkipsMutedPRsWithoutListingThem(t *testing.T) {
+	r, gh, ledger := reactorFixture("react")
+	r.Muted = func(_, _ string, number int) (bool, error) { return number == 7, nil }
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.PRsSkipped["muted"] != 1 || rep.PRsScanned != 0 || len(gh.listed) != 0 || len(ledger.rows) != 0 {
+		t.Fatalf("a muted PR is neither listed nor reacted to: skipped=%v scanned=%d listed=%v rows=%d", rep.PRsSkipped, rep.PRsScanned, gh.listed, len(ledger.rows))
+	}
+}

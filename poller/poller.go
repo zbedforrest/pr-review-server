@@ -174,6 +174,10 @@ type Poller struct {
 	// automatic-review admission (nil-safe: defaults to the GitHub pulls
 	// diff; tests inject a stub).
 	prDiffFn func(ctx context.Context, owner, repo string, number int) (string, error)
+	// summaryGH reads and acknowledges reactions on the sticky summary for
+	// the per-PR mute (nil-safe: defaults to the GitHub client; tests inject
+	// a fake).
+	summaryGH summaryReactionsGitHub
 	// legacyLedger is PUBLISH_POLICY_V2 resolved once at construction and
 	// threadsOff is PUBLISH_THREAD_RESOLUTION; a zero Poller keeps the
 	// shipped policy for both.

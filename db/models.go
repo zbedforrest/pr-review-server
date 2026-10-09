@@ -383,6 +383,7 @@ type PublishedFindingModel struct {
 	CommentText  string    `gorm:"type:text"`
 	FindingKind  string    `gorm:"size:32;not null;default:''"`
 	Subjects     string    `gorm:"type:text;not null;default:''"`
+	Muted        bool      `gorm:"not null;default:false"`
 }
 
 // TableName specifies the table name for PublishedFindingModel

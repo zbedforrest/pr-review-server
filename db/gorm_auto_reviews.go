@@ -55,10 +55,11 @@ func (AutoReviewIntentModel) TableName() string { return "auto_review_intents" }
 // autoReviewIntentColumns were added after the table shipped; deployments
 // that skip AutoMigrate get them from ensureIdempotentColumns.
 var autoReviewIntentColumns = []struct {
-	column string
-	field  string
+	column   string
+	field    string
+	postgres string
 }{
-	{"patch_id", "PatchID"},
+	{"patch_id", "PatchID", "varchar(64) NOT NULL DEFAULT ''"},
 }
 
 func autoReviewIntentFromModel(m AutoReviewIntentModel) AutoReviewIntent {

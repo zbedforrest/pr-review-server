@@ -199,3 +199,43 @@ func TestGormDB_ContestPublishedFinding_MovesOpenAndResolvedRowsOnly(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, PublishedStateContested, rows[0].State)
 }
+
+func TestGormDB_SetPublishedMute_FlagsTheSummaryRowAndSurvivesRounds(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	changed, err := db.SetPublishedMute("owner", "repo", 7, true)
+	require.NoError(t, err)
+	assert.True(t, changed, "a PR without a summary row gets a muted placeholder")
+	row, found, err := db.GetPublishedSummaryForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.True(t, row.Muted)
+	assert.Zero(t, row.CommentID)
+	assert.Empty(t, row.LastSeenSHA, "the placeholder never reads as a published head")
+
+	changed, err = db.SetPublishedMute("owner", "repo", 7, true)
+	require.NoError(t, err)
+	assert.False(t, changed, "muting twice changes nothing")
+
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Kind, p.Fingerprint, p.CommentID, p.Rounds = PublishedKindSummary, PublishedKindSummary, 777, 1
+	})))
+	row, _, err = db.GetPublishedSummaryForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.True(t, row.Muted, "a round rewriting the summary row keeps the mute")
+	assert.Equal(t, int64(777), row.CommentID)
+
+	changed, err = db.SetPublishedMute("owner", "repo", 7, false)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	row, _, err = db.GetPublishedSummaryForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.False(t, row.Muted)
+	changed, err = db.SetPublishedMute("owner", "repo", 8, false)
+	require.NoError(t, err)
+	assert.False(t, changed, "clearing a mute on a PR without a row creates nothing")
+	_, found, err = db.GetPublishedSummaryForPR("owner", "repo", 8)
+	require.NoError(t, err)
+	assert.False(t, found)
+}

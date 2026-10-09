@@ -13,6 +13,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/pkg/health"
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/runconfig"
 )
@@ -42,6 +43,18 @@ func mentionCommandRe(handle string) *regexp.Regexp {
 // one.
 func mentionCommand(body, handle string) bool {
 	return mentionCommandRe(handle).MatchString(strings.ToLower(mentionQuoteRe.ReplaceAllString(body, "")))
+}
+
+// mentionStopRe builds the matcher for the per-PR mute: "@<handle> stop" (or
+// "mute"), with the same guard against talking about it.
+func mentionStopRe(handle string) *regexp.Regexp {
+	return regexp.MustCompile(`(^|[^\w@/.-])@` + regexp.QuoteMeta(strings.ToLower(handle)) + `[\s,:]+(please\s+)?(stop|mute)\b`)
+}
+
+// mentionStop reports whether a comment asks the handle to stop posting on
+// the PR.
+func mentionStop(body, handle string) bool {
+	return mentionCommandWith(mentionStopRe(handle), body)
 }
 
 func mentionCommandWith(re *regexp.Regexp, body string) bool {
@@ -120,6 +133,13 @@ type mentionLedger interface {
 	ReleaseMention(commentID int64, holder string) error
 }
 
+// mentionMuter sets and clears the per-PR mute; nil leaves stop commands
+// unanswered.
+type mentionMuter interface {
+	Mute(owner, repo string, number int) (bool, error)
+	Unmute(owner, repo string, number int) (bool, error)
+}
+
 // mentionAdmit queues a review for one request comment. It returns
 // ErrReviewAlreadyTracked when a review is already running for the PR,
 // db.ErrReviewRunConflict when this very request was admitted before (the
@@ -149,14 +169,17 @@ type mentionScanner struct {
 	since    time.Time
 	allowed  func(author string) bool // publish allowlist
 	optedOut func(author string) bool // opted-out PR authors get no reaction either
+	mute     mentionMuter
 	now      func() time.Time
 	log      func(format string, args ...any)
 	onEvent  func(pr github.PullRequest, by string, publish bool)
+	onMute   func(pr github.PullRequest, by string)
 }
 
 type mentionResult struct {
 	triggered int
 	deferred  int // requests waiting for an active review to finish, or a retry
+	muted     int
 }
 
 // handlePR acts on new review requests in one PR's conversation. The ledger
@@ -171,10 +194,18 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 		return res, err
 	}
 	key := mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)
-	command := mentionCommandRe(m.handle)
+	command, stop := mentionCommandRe(m.handle), mentionStopRe(m.handle)
 	var live *mentionPR
 	for _, c := range comments {
-		if c.IsBot || c.CreatedAt.Before(m.since) || !mentionCommandWith(command, c.Body) {
+		if c.IsBot || c.CreatedAt.Before(m.since) {
+			continue
+		}
+		if !mentionCommandWith(command, c.Body) {
+			if mentionCommandWith(stop, c.Body) {
+				if err := m.handleStop(ctx, pr, c, &res); err != nil {
+					return res, err
+				}
+			}
 			continue
 		}
 		// Authorisation against the cached author first: an unauthorised
@@ -205,6 +236,14 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 		}
 		ghPR := github.PullRequest{Owner: pr.RepoOwner, Repo: pr.RepoName, Number: pr.PRNumber, CommitSHA: live.HeadSHA,
 			Title: live.Title, Author: live.Author, CreatedAt: pr.CreatedAt, Draft: live.Draft}
+		if m.mute != nil && strings.EqualFold(c.Author, pr.Author) {
+			// The author asking for a review lifts their own mute.
+			if cleared, err := m.mute.Unmute(pr.RepoOwner, pr.RepoName, pr.PRNumber); err != nil {
+				return res, err
+			} else if cleared {
+				m.log("[MENTIONS] %s: comment %d by the author lifts the mute", key, c.ID)
+			}
+		}
 		publish := m.allowed(ghPR.Author) && !ghPR.Draft
 		silent := m.optedOut != nil && m.optedOut(ghPR.Author)
 		now := m.now()
@@ -285,6 +324,44 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 		}
 	}
 	return res, nil
+}
+
+// handleStop mutes PRism on the PR when its author asks, once per comment,
+// and acknowledges with a thumbs-up only. Anyone else's stop is ignored: the
+// author owns the PR's silence.
+func (m mentionScanner) handleStop(ctx context.Context, pr *db.PR, c github.IssueCommentInfo, res *mentionResult) error {
+	key := mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+	if m.mute == nil || !strings.EqualFold(c.Author, pr.Author) {
+		m.log("[MENTIONS] %s: ignoring stop in comment %d from %s, only the author %s may mute", key, c.ID, c.Author, pr.Author)
+		return nil
+	}
+	handled, err := m.ledger.MentionHandled(c.ID, m.now())
+	if err != nil || handled {
+		return err
+	}
+	reserved, err := m.ledger.ReserveMention(&db.MentionTrigger{
+		CommentID: c.ID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName, PRNumber: pr.PRNumber, Holder: m.holder,
+		Author: c.Author, CreatedAt: c.CreatedAt, TriggeredAt: m.now(),
+	})
+	if err != nil || !reserved {
+		return err
+	}
+	if _, err := m.mute.Mute(pr.RepoOwner, pr.RepoName, pr.PRNumber); err != nil {
+		_ = m.ledger.ReleaseMention(c.ID, m.holder)
+		return err
+	}
+	owned, err := m.ledger.FinalizeMention(c.ID, m.holder)
+	if err != nil || !owned {
+		return err
+	}
+	res.muted++
+	silent := m.optedOut != nil && m.optedOut(pr.Author)
+	m.acknowledge(ctx, pr, c.ID, reactionCurrent, silent)
+	m.log("[MENTIONS] %s: muted by %s in comment %d", key, c.Author, c.ID)
+	if m.onMute != nil {
+		m.onMute(github.PullRequest{Owner: pr.RepoOwner, Repo: pr.RepoName, Number: pr.PRNumber, Author: pr.Author}, c.Author)
+	}
+	return nil
 }
 
 // The request is answered with a reaction only; anything PRism has to say
@@ -379,8 +456,12 @@ func (p *Poller) scanMentions(ctx context.Context) {
 	scanner := mentionScanner{
 		gh: mentionGitHubAdapter{p.ghClientConcrete}, ledger: ledger, handle: p.cfg.MentionHandle, holder: p.holderID, since: since,
 		allowed: gate.Allowed, optedOut: gate.OptedOut,
-		now: func() time.Time { return time.Now().UTC() },
-		log: log.Printf,
+		mute: p.mentionMuter(),
+		now:  func() time.Time { return time.Now().UTC() },
+		log:  log.Printf,
+		onMute: func(pr github.PullRequest, by string) {
+			p.recordHygieneEvent(pr, health.ActionPRMuted, "via=stop by="+by)
+		},
 		reviewed: func(owner, repo string, number int, headSHA string, publish bool, since time.Time) (bool, error) {
 			runs, err := p.db.ListReviewRuns(db.ReviewRunFilter{RepoOwner: owner, RepoName: repo, PRNumber: number, CommitSHA: headSHA, Status: db.ReviewRunStatusCompleted, Limit: 1})
 			if err != nil {
@@ -431,7 +512,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 			}
 		},
 	}
-	triggered, deferred, failed := 0, 0, 0
+	triggered, deferred, muted, failed := 0, 0, 0, 0
 	for _, pr := range candidates {
 		key := mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)
 		res, err := scanner.handlePR(ctx, pr)
@@ -442,6 +523,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 		}
 		triggered += res.triggered
 		deferred += res.deferred
+		muted += res.muted
 		// A deferred request is retried next cycle, so the PR stays a candidate.
 		// A row without a cached time is stamped with now so it is not listed
 		// every cycle until the poll backfills the column.
@@ -454,8 +536,17 @@ func (p *Poller) scanMentions(ctx context.Context) {
 		}
 	}
 	if len(candidates) > 0 {
-		log.Printf("[MENTIONS] cycle=%d full=%t handle=%s checked=%d triggered=%d deferred=%d errors=%d", cycle, full, p.cfg.MentionHandle, len(candidates), triggered, deferred, failed)
+		log.Printf("[MENTIONS] cycle=%d full=%t handle=%s checked=%d triggered=%d deferred=%d muted=%d errors=%d", cycle, full, p.cfg.MentionHandle, len(candidates), triggered, deferred, muted, failed)
 	}
+}
+
+// mentionMuter is the scanner's mute handle; nil when the mute is off or
+// the database has no ledger.
+func (p *Poller) mentionMuter() mentionMuter {
+	if _, ok := p.muteLedger(); !ok {
+		return nil
+	}
+	return prMuter{p}
 }
 
 type mentionGitHubAdapter struct{ c *github.Client }

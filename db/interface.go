@@ -223,6 +223,9 @@ type PublishedFinding struct {
 	CommentText string
 	FindingKind string
 	Subjects    string
+	// Muted, on the summary row, records that the author asked PRism to stop
+	// posting on this PR; nothing else reaches the PR until it is cleared.
+	Muted bool
 }
 
 // TelemetryEvent represents a single telemetry event for creation
