@@ -330,6 +330,13 @@ type Database interface {
 	// NoteQueuedAutoReviewIntent records why a queued intent was not admitted
 	// in its publication outcome; false when it was no longer queued.
 	NoteQueuedAutoReviewIntent(id uint, note string) (bool, error)
+	// SetAutoReviewIntentPatchID records the patch-id of the PR diff the
+	// intent was admitted against.
+	SetAutoReviewIntentPatchID(id uint, patchID string) error
+	// SkipQueuedAutoReviewIntent settles a queued intent as done without a
+	// run, with the reason as its publication outcome; false when it was no
+	// longer queued.
+	SkipQueuedAutoReviewIntent(id uint, reason string) (bool, error)
 	SupersedeQueuedAutoReviewIntents(owner, repo string, number int, keepHeadSHA string) (int, error)
 	DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (int64, error)
 
@@ -529,7 +536,9 @@ const (
 // AutoReviewIntent is one automatic review owed to a PR head, unique per
 // (owner, repo, number, head) with owner and repo lowercased. RunID links the
 // review run that served it; Publication records how that run's GitHub
-// publication ended (see poller publication outcomes).
+// publication ended (see poller publication outcomes). PatchID is the
+// patch-id of the PR diff at admission, so a later head with the same diff
+// (a merge from the base branch, a rebase) is not reviewed again.
 type AutoReviewIntent struct {
 	ID          uint
 	RepoOwner   string
@@ -541,6 +550,7 @@ type AutoReviewIntent struct {
 	Status      string
 	RunID       string
 	Publication string
+	PatchID     string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

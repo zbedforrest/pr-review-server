@@ -566,3 +566,141 @@ func TestPublishGateStillDeniesWhenTheAllowlistIsEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, eligible)
 }
+
+const (
+	autoReviewThirdHead = "3333333333333333333333333333333333333333"
+	diffOne             = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n a\n+b\n c\n"
+	diffTwo             = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n a\n+changed\n c\n"
+)
+
+func stubDiff(diffs map[string]string, current *string) func(context.Context, string, string, int) (string, error) {
+	return func(context.Context, string, string, int) (string, error) {
+		return diffs[*current], nil
+	}
+}
+
+func (f autoReviewFixture) intentFor(t *testing.T, head string) db.AutoReviewIntent {
+	t.Helper()
+	for _, intent := range f.intents(t) {
+		if intent.HeadSHA == head {
+			return intent
+		}
+	}
+	t.Fatalf("no intent for %s", head[:7])
+	return db.AutoReviewIntent{}
+}
+
+func TestWebhookSynchronizeWaitsForTheDebounceWindowThenThePollAdmitsIt(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	f.p.cfg.AutoReviewSyncDebounceSec = 90
+	trackedReadyPR(f, autoReviewNewHead, false)
+
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+	intent := f.intentFor(t, autoReviewNewHead)
+	assert.Equal(t, db.AutoReviewIntentQueued, intent.Status, "a push is held, not admitted at once")
+	assert.Empty(t, f.generator.GenerateReviewCalls)
+
+	_, _, err := f.p.cleanupAndDetectOutdated(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, db.AutoReviewIntentQueued, f.intentFor(t, autoReviewNewHead).Status, "the poll leaves it queued inside the window")
+	assert.Empty(t, f.generator.GenerateReviewCalls)
+
+	f.db.mu.Lock()
+	for _, row := range f.db.AutoReviewIntents {
+		row.CreatedAt = row.CreatedAt.Add(-2 * time.Minute)
+	}
+	f.db.mu.Unlock()
+	_, _, err = f.p.cleanupAndDetectOutdated(context.Background())
+	require.NoError(t, err)
+	waitForDetachedReviews(t, f.p)
+	assert.Equal(t, db.AutoReviewIntentRunning, f.intentFor(t, autoReviewNewHead).Status, "past the window the poll admits it")
+	require.Len(t, f.generator.GenerateReviewCalls, 1)
+	assert.Equal(t, autoReviewNewHead, f.generator.GenerateReviewCalls[0].CommitSHA)
+}
+
+func TestWebhookReadyForReviewIsNotDebounced(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	f.p.cfg.AutoReviewSyncDebounceSec = 90
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
+	waitForDetachedReviews(t, f.p)
+	assert.Equal(t, db.AutoReviewIntentRunning, f.intentFor(t, autoReviewOldHead).Status)
+	require.Len(t, f.generator.GenerateReviewCalls, 1)
+}
+
+func TestPushWithAnUnchangedDiffIsSettledWithoutAReview(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	f.p.cfg.AutoReviewSkipUnchangedDiff = true
+	head := autoReviewOldHead
+	f.p.prDiffFn = stubDiff(map[string]string{autoReviewOldHead: diffOne, autoReviewNewHead: diffOne, autoReviewThirdHead: diffTwo}, &head)
+
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewOldHead, false)))
+	waitForDetachedReviews(t, f.p)
+	first := f.intentFor(t, autoReviewOldHead)
+	assert.Equal(t, github.PatchID(diffOne), first.PatchID, "every admitted intent records its patch id")
+	waitForReviewRunStatus(t, f.db, first.RunID, db.ReviewRunStatusCompleted)
+	require.NoError(t, f.db.SetAutoReviewIntentPublicationByRun(first.RunID, publicationPosted))
+	f.p.settleAutoReviewIntents()
+
+	head = autoReviewNewHead
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+	waitForDetachedReviews(t, f.p)
+	merge := f.intentFor(t, autoReviewNewHead)
+	assert.Equal(t, db.AutoReviewIntentDone, merge.Status, "a merge-only push is settled, not reviewed")
+	assert.Equal(t, publicationSkippedUnchangedPrefix+"1111111", merge.Publication)
+	assert.Equal(t, github.PatchID(diffOne), merge.PatchID)
+	require.Len(t, f.generator.GenerateReviewCalls, 1)
+
+	head = autoReviewThirdHead
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewThirdHead, false)))
+	waitForDetachedReviews(t, f.p)
+	assert.Equal(t, db.AutoReviewIntentRunning, f.intentFor(t, autoReviewThirdHead).Status, "a push that changes the diff is reviewed")
+	require.Len(t, f.generator.GenerateReviewCalls, 2)
+	assert.Equal(t, autoReviewThirdHead, f.generator.GenerateReviewCalls[1].CommitSHA)
+}
+
+func TestUnchangedDiffSkipNeedsACompletedEarlierReview(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	f.p.cfg.AutoReviewSkipUnchangedDiff = true
+	head := autoReviewOldHead
+	f.p.prDiffFn = stubDiff(map[string]string{autoReviewOldHead: diffOne, autoReviewNewHead: diffOne}, &head)
+
+	superseded := db.AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: autoReviewOldHead, Trigger: "synchronize", PatchID: github.PatchID(diffOne)}
+	_, err := f.db.EnsureAutoReviewIntent(&superseded, nil)
+	require.NoError(t, err)
+	_, err = f.db.UpdateAutoReviewIntentStatus(superseded.ID, nil, db.AutoReviewIntentSuperseded, "")
+	require.NoError(t, err)
+
+	head = autoReviewNewHead
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+	waitForDetachedReviews(t, f.p)
+	assert.Equal(t, db.AutoReviewIntentRunning, f.intentFor(t, autoReviewNewHead).Status, "a head whose earlier twin never completed a review is reviewed")
+	require.Len(t, f.generator.GenerateReviewCalls, 1)
+}
+
+func TestUnchangedDiffSkipIsOffWhenTheFlagIsOffOrTheDiffFails(t *testing.T) {
+	for name, arrange := range map[string]func(f autoReviewFixture){
+		"flag off": func(f autoReviewFixture) {
+			f.p.cfg.AutoReviewSkipUnchangedDiff = false
+			f.p.prDiffFn = func(context.Context, string, string, int) (string, error) { return diffOne, nil }
+		},
+		"diff unavailable": func(f autoReviewFixture) {
+			f.p.cfg.AutoReviewSkipUnchangedDiff = true
+			f.p.prDiffFn = func(context.Context, string, string, int) (string, error) { return "", fmt.Errorf("HTTP 502") }
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newAutoReviewFixture(t, true, "*")
+			arrange(f)
+			done := db.AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: autoReviewOldHead, Trigger: "ready_for_review", PatchID: github.PatchID(diffOne)}
+			_, err := f.db.EnsureAutoReviewIntent(&done, nil)
+			require.NoError(t, err)
+			_, err = f.db.UpdateAutoReviewIntentStatus(done.ID, nil, db.AutoReviewIntentDone, "run-1")
+			require.NoError(t, err)
+
+			require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+			waitForDetachedReviews(t, f.p)
+			assert.Equal(t, db.AutoReviewIntentRunning, f.intentFor(t, autoReviewNewHead).Status)
+			require.Len(t, f.generator.GenerateReviewCalls, 1)
+		})
+	}
+}

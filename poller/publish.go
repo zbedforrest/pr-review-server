@@ -274,6 +274,9 @@ const (
 	publicationUnavailable   = "unavailable"
 	publicationSkippedPrefix = "skipped: "
 	publicationFailedPrefix  = "failed: "
+	// publicationSkippedUnchangedPrefix settles a pushed head whose diff the
+	// last automatic review already covered; the head is not owed a run.
+	publicationSkippedUnchangedPrefix = "skipped: diff unchanged since "
 )
 
 // publishGitHubReview posts a completed review to the PR and reports what it

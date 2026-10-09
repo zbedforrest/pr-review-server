@@ -25,6 +25,9 @@ const (
 	defaultFirstPassOpenRouterModel = "openai/gpt-5.6-sol"
 
 	defaultFirstPassCacheStaggerSec = 8
+	// defaultAutoReviewSyncDebounceSec is how long a pushed head waits before
+	// its automatic review is admitted; most typo-fix pushes land within it.
+	defaultAutoReviewSyncDebounceSec = 90
 )
 
 type Config struct {
@@ -135,6 +138,19 @@ type Config struct {
 	PublishLegacyTitles        bool
 	PublishRepublishSameCommit bool
 	PublishSkipSummaryRefresh  bool
+	// PublishNoInlinePRBudget turns off the lifetime inline cap per PR
+	// (PUBLISH_INLINE_PR_BUDGET=false); PublishNoPRMute turns off the per-PR
+	// mute by "@<handle> stop" or a thumbs-down on the summary
+	// (PUBLISH_PR_MUTE=false).
+	PublishNoInlinePRBudget bool
+	PublishNoPRMute         bool
+	// AutoReviewSyncDebounceSec holds a pushed head for this long before its
+	// automatic review is admitted, so a burst of pushes reviews the last head
+	// once (AUTO_REVIEW_SYNC_DEBOUNCE_SEC, 0 admits at once).
+	// AutoReviewSkipUnchangedDiff skips a push whose patch-id equals the last
+	// reviewed one (AUTO_REVIEW_SKIP_UNCHANGED_DIFF=false reviews every push).
+	AutoReviewSyncDebounceSec   int
+	AutoReviewSkipUnchangedDiff bool
 	// ReviewDefaultProfile is the profile used when a caller names none:
 	// automatic reviews, the Generate button, and profile-less API requests.
 	ReviewDefaultProfile string
@@ -398,6 +414,11 @@ func Load() *Config {
 		ReviewMaxTurnsConfigured:        reviewMaxTurnsConfigured,
 		ReviewMaxFirstPassSamples:       getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
 		ReviewMaxFirstPassConcurrent:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
+
+		PublishNoInlinePRBudget:     !getEnvBoolOrDefault("PUBLISH_INLINE_PR_BUDGET", true),
+		PublishNoPRMute:             !getEnvBoolOrDefault("PUBLISH_PR_MUTE", true),
+		AutoReviewSyncDebounceSec:   getNonNegativeEnvIntOrDefault("AUTO_REVIEW_SYNC_DEBOUNCE_SEC", defaultAutoReviewSyncDebounceSec),
+		AutoReviewSkipUnchangedDiff: getEnvBoolOrDefault("AUTO_REVIEW_SKIP_UNCHANGED_DIFF", true),
 	}
 }
 

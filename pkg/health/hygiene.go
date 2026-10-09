@@ -38,12 +38,19 @@ const (
 	// ActionPublishDenied, counted on its own so the opt-out's reach is
 	// visible.
 	ActionOptedOut = "opted_out_total"
+	// ActionReviewSkippedUnchanged: a pushed head was settled without a
+	// review because its diff had the patch-id of the last reviewed head.
+	ActionReviewSkippedUnchanged = "reviews_skipped_unchanged_diff"
+	// ActionPRMuted: an author muted PRism on one PR ("@<handle> stop" or a
+	// thumbs-down on the summary); label via=stop or via=thumbs_down.
+	ActionPRMuted = "prs_muted"
 )
 
 // HygieneActions lists every hygiene action, in report order.
 var HygieneActions = []string{
 	ActionRepeatedPost, ActionRepeatAfterDismiss, ActionFixedWithoutFileChange, ActionSameCommitResolve,
 	ActionSeverityEscalation, ActionVerdictSettled, ActionPublishDenied, ActionOptedOut,
+	ActionReviewSkippedUnchanged, ActionPRMuted,
 }
 
 // hygieneLabels names each counter in the report.
@@ -51,7 +58,8 @@ var hygieneLabels = map[string]string{
 	ActionRepeatedPost: "repeated posts", ActionRepeatAfterDismiss: "repeats after dismiss",
 	ActionFixedWithoutFileChange: "fixed without a file change", ActionSameCommitResolve: "same-commit resolves",
 	ActionSeverityEscalation: "severity escalations", ActionVerdictSettled: "author verdicts settled", ActionPublishDenied: "posts stopped by the publish gate",
-	ActionOptedOut: "of which stopped by an opt-out",
+	ActionOptedOut: "of which stopped by an opt-out", ActionReviewSkippedUnchanged: "pushes skipped for an unchanged diff",
+	ActionPRMuted: "PRs muted by their author",
 }
 
 // UnwiredHygiene maps each counter whose producer has not shipped yet to the

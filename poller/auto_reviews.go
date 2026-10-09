@@ -11,6 +11,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/pkg/health"
 	"pr-review-server/pkg/reviewer/runconfig"
 )
 
@@ -30,8 +31,26 @@ const (
 	webhookDeliveryRetention = 30 * 24 * time.Hour
 	// autoReviewClaimGrace is how long a running intent may exist without its
 	// run row: admission claims the intent first, then creates the run.
-	autoReviewClaimGrace = 5 * time.Minute
+	autoReviewClaimGrace  = 5 * time.Minute
+	autoReviewTriggerSync = "synchronize"
 )
+
+// syncDebounce is how long a pushed head waits before admission; zero admits
+// at once.
+func (p *Poller) syncDebounce() time.Duration {
+	if p.cfg == nil || p.cfg.AutoReviewSyncDebounceSec <= 0 {
+		return 0
+	}
+	return time.Duration(p.cfg.AutoReviewSyncDebounceSec) * time.Second
+}
+
+// debounced reports whether a pushed head is still inside its debounce
+// window: the poll admits it once the window has passed, and a newer push in
+// the meantime supersedes it, so a burst of pushes reviews the last head once.
+func (p *Poller) debounced(intent db.AutoReviewIntent, now time.Time) bool {
+	wait := p.syncDebounce()
+	return wait > 0 && intent.Trigger == autoReviewTriggerSync && now.Sub(intent.CreatedAt) < wait
+}
 
 // autoReviewReadyEnabled reads the feature switch; a missing value is off.
 func (p *Poller) autoReviewReadyEnabled() (bool, error) {
@@ -191,6 +210,10 @@ func (p *Poller) HandleWebhookDelivery(ctx context.Context, d db.WebhookDelivery
 		return nil
 	}
 	log.Printf("[AUTO-REVIEW] delivery=%s %s: intent=%d queued by %s", d.DeliveryID, key, intent.ID, d.Action)
+	if p.debounced(intent, time.Now().UTC()) {
+		log.Printf("[AUTO-REVIEW] delivery=%s %s: intent=%d waits %s for further pushes before the poll admits it", d.DeliveryID, key, intent.ID, p.syncDebounce())
+		return nil
+	}
 	pr := github.PullRequest{
 		Owner: d.RepoOwner, Repo: d.RepoName, Number: d.PRNumber, CommitSHA: d.HeadSHA,
 		Title: d.Title, Author: d.Author, Draft: false,
@@ -221,6 +244,9 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 	defer p.autoReviewAdmitMutex.Unlock()
 	if p.trackedReviewCount() >= p.pollAdmissionLimit() {
 		log.Printf("[AUTO-REVIEW] %s intent=%d: left queued, the resident review queue is full", key, intent.ID)
+		return false
+	}
+	if p.skipUnchangedDiff(ctx, intent, pr) {
 		return false
 	}
 	profile := p.autoReviewProfileFor(intent.Trigger, pr.Owner, pr.Repo, pr.Author)
@@ -270,6 +296,79 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 	}
 	log.Printf("[AUTO-REVIEW] %s intent=%d run=%s: %s review admitted (trigger=%s delivery=%s)", key, intent.ID, job.RunID, profile, intent.Trigger, intent.DeliveryID)
 	return true
+}
+
+// skipUnchangedDiff settles a pushed head without a review when the PR diff
+// has the same patch-id as the last head an automatic review completed on:
+// a merge from the base branch, a rebase or an amended message changes the
+// head but nothing the review would read. Every admitted intent records its
+// patch-id so the next push can compare; only pushes (synchronize and the
+// poll fallback) are skipped, and a diff that cannot be read admits the
+// review as before.
+func (p *Poller) skipUnchangedDiff(ctx context.Context, intent db.AutoReviewIntent, pr github.PullRequest) bool {
+	if p.cfg == nil || !p.cfg.AutoReviewSkipUnchangedDiff {
+		return false
+	}
+	key := autoReviewKey(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+	diff, err := p.pullRequestDiff(ctx, pr.Owner, pr.Repo, pr.Number)
+	if err != nil {
+		log.Printf("[AUTO-REVIEW] %s intent=%d: diff unavailable, reviewing anyway: %v", key, intent.ID, err)
+		return false
+	}
+	patchID := github.PatchID(diff)
+	if patchID == "" {
+		return false
+	}
+	if err := p.db.SetAutoReviewIntentPatchID(intent.ID, patchID); err != nil {
+		log.Printf("[AUTO-REVIEW] %s intent=%d: could not record the patch id: %v", key, intent.ID, err)
+	}
+	if intent.Trigger != autoReviewTriggerSync && intent.Trigger != db.AutoReviewTriggerPollFallback {
+		return false
+	}
+	reviewed, err := p.db.ListAutoReviewIntents(db.AutoReviewIntentFilter{
+		RepoOwner: pr.Owner, RepoName: pr.Repo, PRNumber: pr.Number, Statuses: []string{db.AutoReviewIntentDone},
+	})
+	if err != nil {
+		log.Printf("[AUTO-REVIEW] %s intent=%d: could not read earlier intents: %v", key, intent.ID, err)
+		return false
+	}
+	var last *db.AutoReviewIntent
+	for i := range reviewed {
+		if reviewed[i].ID != intent.ID && reviewed[i].PatchID != "" {
+			last = &reviewed[i]
+		}
+	}
+	if last == nil || last.PatchID != patchID {
+		return false
+	}
+	reason := publicationSkippedUnchangedPrefix + shortSHA(last.HeadSHA)
+	skipped, err := p.db.SkipQueuedAutoReviewIntent(intent.ID, reason)
+	if err != nil {
+		log.Printf("[AUTO-REVIEW] %s intent=%d: could not settle the unchanged head: %v", key, intent.ID, err)
+		return false
+	}
+	if !skipped {
+		return false
+	}
+	log.Printf("[AUTO-REVIEW] %s intent=%d: %s, no review", key, intent.ID, reason)
+	p.recordHygieneEvent(pr, health.ActionReviewSkippedUnchanged, "since="+shortSHA(last.HeadSHA)+" trigger="+intent.Trigger)
+	return true
+}
+
+// pullRequestDiff reads the PR's unified diff through the injected reader or
+// the GitHub client; without either the diff is unavailable.
+func (p *Poller) pullRequestDiff(ctx context.Context, owner, repo string, number int) (string, error) {
+	if p.prDiffFn != nil {
+		return p.prDiffFn(ctx, owner, repo, number)
+	}
+	if p.ghClientConcrete == nil {
+		return "", errors.New("no GitHub client")
+	}
+	token, err := p.ghClientConcrete.CurrentToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	return p.ghClientConcrete.GetPRDiff(token, owner, repo, number)
 }
 
 func (p *Poller) moveAutoReviewIntent(intent db.AutoReviewIntent, from, to, runID string) {
@@ -399,6 +498,9 @@ func (p *Poller) dispatchAutoReviewIntents(ctx context.Context, prs []db.PR, sta
 			} else {
 				log.Printf("[AUTO-REVIEW] %s intent=%d: superseded, %s", key, intent.ID, reason)
 			}
+			continue
+		}
+		if p.debounced(intent, time.Now().UTC()) {
 			continue
 		}
 		if admitted >= budget {

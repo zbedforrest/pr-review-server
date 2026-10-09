@@ -170,6 +170,10 @@ type Poller struct {
 	// unreliable (diverged history, truncated file list, API error) and the
 	// caller must not carry anything forward.
 	compareFilesFn func(ctx context.Context, owner, repo, base, head, token string) (files []string, ok bool)
+	// prDiffFn reads the PR's unified diff for the unchanged-diff skip at
+	// automatic-review admission (nil-safe: defaults to the GitHub pulls
+	// diff; tests inject a stub).
+	prDiffFn func(ctx context.Context, owner, repo string, number int) (string, error)
 	// legacyLedger is PUBLISH_POLICY_V2 resolved once at construction and
 	// threadsOff is PUBLISH_THREAD_RESOLUTION; a zero Poller keeps the
 	// shipped policy for both.
