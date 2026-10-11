@@ -31,12 +31,9 @@ type CompareResult struct {
 	// Truncated marks a response at the endpoint's file cap, which may have
 	// dropped the cited file.
 	Truncated bool `json:"truncated,omitempty"`
-	// Status is the endpoint's relation of head to base (ahead, behind,
-	// diverged, identical) and Commits how many commits lie between them.
-	// MergeCommits counts the merges on the push's own first-parent chain
-	// from head back to base, and MergeOnly says that chain is nothing but
-	// merges, so the push changed nothing in the PR diff. Schema marks
-	// entries that carry the chain; a push lookup fetches older ones again.
+	// MergeOnly: the push's first-parent chain back to base is nothing but
+	// merges, so the PR diff did not change. Entries below compareSchema
+	// predate the chain and are fetched again.
 	Status       string `json:"status,omitempty"`
 	Commits      int    `json:"commits,omitempty"`
 	MergeCommits int    `json:"merge_commits,omitempty"`

@@ -237,7 +237,6 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 		ghPR := github.PullRequest{Owner: pr.RepoOwner, Repo: pr.RepoName, Number: pr.PRNumber, CommitSHA: live.HeadSHA,
 			Title: live.Title, Author: live.Author, CreatedAt: pr.CreatedAt, Draft: live.Draft}
 		if m.mute != nil && strings.EqualFold(c.Author, pr.Author) {
-			// The author asking for a review lifts their own mute.
 			if cleared, err := m.mute.Unmute(pr.RepoOwner, pr.RepoName, pr.PRNumber); err != nil {
 				return res, err
 			} else if cleared {
@@ -331,7 +330,11 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 // author owns the PR's silence.
 func (m mentionScanner) handleStop(ctx context.Context, pr *db.PR, c github.IssueCommentInfo, res *mentionResult) error {
 	key := mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber)
-	if m.mute == nil || !strings.EqualFold(c.Author, pr.Author) {
+	if m.mute == nil {
+		m.log("[MENTIONS] %s: ignoring stop in comment %d, the mute is off (PUBLISH_PR_MUTE=false)", key, c.ID)
+		return nil
+	}
+	if !strings.EqualFold(c.Author, pr.Author) {
 		m.log("[MENTIONS] %s: ignoring stop in comment %d from %s, only the author %s may mute", key, c.ID, c.Author, pr.Author)
 		return nil
 	}

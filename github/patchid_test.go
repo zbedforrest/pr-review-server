@@ -1,6 +1,9 @@
 package github
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const patchA = `diff --git a/pkg/a.go b/pkg/a.go
 index 1111111..2222222 100644
@@ -27,8 +30,14 @@ index 3333333..4444444 100644
 	if PatchID(patchA) != PatchID(moved) {
 		t.Fatal("a merge from the base branch moves hunk headers and index lines only; the id must not move")
 	}
-	if PatchID(patchA) != PatchID(patchA+"\n   \n") {
+	if PatchID(patchA) != PatchID(strings.ReplaceAll(patchA, "y := 2\n", "y := 2  \n")+"\n   \n") {
 		t.Fatal("trailing whitespace must not move the id")
+	}
+}
+
+func TestPatchID_ChangesWithIndentation(t *testing.T) {
+	if PatchID(patchA) == PatchID(strings.ReplaceAll(patchA, "+\ty := 2", "+y := 2")) {
+		t.Fatal("an indentation-only push is a real change for the reviewer and must move the id")
 	}
 }
 

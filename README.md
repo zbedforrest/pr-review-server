@@ -98,7 +98,7 @@ The most common ones:
 | `PUBLISH_REFRESH_SUMMARY` | No | Default `true`: the sticky summary is re-rendered as soon as a reply concedes a finding. `false` waits for the next push |
 | `PUBLISH_INLINE_PR_BUDGET` | No | Default `true`: `publish_inline_pr_cap` (default 6) bounds the inline comments PRism posts over the life of one PR, counting resolved and dismissed threads; later findings stay in the summary. `false` leaves only the per-round `publish_inline_cap` |
 | `PUBLISH_PR_MUTE` | No | Default `true`: a PR author mutes PRism on one PR with `@<handle> stop` in the conversation or a thumbs-down on the sticky summary; the mute is a flag on the summary ledger row, acknowledged with a reaction only, and `@<handle> review` from the author lifts it. `false` ignores both |
-| `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` | No | Default `90`: a pushed head waits this long before its automatic review is admitted, so a burst of pushes reviews the last head once; the poll admits it after the window. `0` admits every push at once |
+| `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` | No | Default `90`: a pushed head waits at least this long before its automatic review is admitted, so a burst of pushes reviews the last head once; it is admitted on the first poll after the window, so up to one `POLLING_INTERVAL` later. `0` admits every push at once |
 | `AUTO_REVIEW_SKIP_UNCHANGED_DIFF` | No | Default `true`: a push whose PR diff has the patch-id of the last automatically reviewed head (a merge from the base branch, a rebase, an amended message) is settled without a review and counted as `reviews_skipped_unchanged_diff` on the daily health report. `false` reviews every push |
 
 ### First-pass provider
@@ -174,12 +174,13 @@ stand in for it, a head PRism already commented on is not reviewed again when
 the switch is turned on, and a review that finished after the PR went back to
 draft is redone when it is ready again.
 
-Pushes are held for `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` (default 90 s) before
-the poll admits them, so a burst of pushes reviews only the last head, and a
-push that leaves the PR diff's patch-id unchanged (merging the base branch,
-rebasing, amending a message) is settled without a review
-(`AUTO_REVIEW_SKIP_UNCHANGED_DIFF`); the intent records the reason as
-`skipped: diff unchanged since <sha>`.
+Pushes are held for `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` (default 90 s) and
+admitted on the first poll after the window, so the effective hold is the
+window plus up to one `POLLING_INTERVAL`, and a burst of pushes reviews only
+the last head. A push that leaves the PR diff's patch-id unchanged (merging
+the base branch, rebasing, amending a message; indentation changes count as
+real changes) is settled without a review (`AUTO_REVIEW_SKIP_UNCHANGED_DIFF`);
+the intent records the reason as `skipped: diff unchanged since <sha>`.
 
 Deliveries arrive through the GitHub App webhook; the scheduled poll is the
 fallback for a missed delivery. To enable it:
@@ -226,9 +227,10 @@ gets no reaction. `PUBLISH_SETTLE_FOOTER=false` removes the footer.
 
 An author who wants silence on a single PR comments `@<handle> stop` (or
 `mute`), or puts a thumbs-down on the sticky summary. The stop is answered
-with a thumbs-up within a poll cycle; the thumbs-down is read when the next
-round is about to post and answered with an eyes reaction, nothing more.
-From then on no round, inline comment, reply or reaction reaches that PR,
+with a thumbs-up within a poll cycle; the thumbs-down is read by the one
+mute check every posting path makes (a round, the reply scan of a PR with new
+activity, a summary refresh) and answered with an eyes reaction, nothing
+more. From then on no round, inline comment, reply or reaction reaches that PR,
 while reviews keep appearing on the dashboard and a pushed head whose review
 was withheld counts as served. Only the PR author can mute, and only the
 author lifts it, with `@<handle> review`. The mute is a flag on the PR's

@@ -7,10 +7,11 @@ import (
 	"unicode"
 )
 
-// PatchID is git's patch-id over a unified diff: a hash of the diff content
-// with hunk line numbers, index lines and whitespace removed, so a merge from
+// PatchID is a stable id of a unified diff: a hash of its lines with hunk
+// line numbers, index lines and trailing whitespace removed, so a merge from
 // the base branch, a rebase or an amended message leaves it unchanged while
-// any change to the diffed lines moves it. An empty diff has no id.
+// any change to the diffed lines, indentation included, moves it. An empty
+// diff has no id.
 func PatchID(diff string) string {
 	if strings.TrimSpace(diff) == "" {
 		return ""
@@ -23,12 +24,7 @@ func PatchID(diff string) string {
 		case strings.HasPrefix(line, "@@"):
 			line = "@@"
 		}
-		line = strings.Map(func(r rune) rune {
-			if unicode.IsSpace(r) {
-				return -1
-			}
-			return r
-		}, line)
+		line = strings.TrimRightFunc(line, unicode.IsSpace)
 		if line == "" {
 			continue
 		}
