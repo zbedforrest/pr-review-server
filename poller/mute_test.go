@@ -37,56 +37,77 @@ func muteFixture(t *testing.T) (*Poller, *db.GormDB, *fakeSummaryGH) {
 	return &Poller{cfg: &config.Config{}, db: database, summaryGH: gh}, database, gh
 }
 
-func summaryRows(commentID int64, muted bool) []db.PublishedFinding {
-	return []db.PublishedFinding{
-		{Kind: db.PublishedKindFinding, Fingerprint: "a.go:1:abc", CommentID: 5},
-		{Kind: db.PublishedKindSummary, Fingerprint: "summary", CommentID: commentID, LastSeenSHA: "abc", Muted: muted},
-	}
+func seedSummary(t *testing.T, database *db.GormDB, commentID int64, muted bool) {
+	t.Helper()
+	require.NoError(t, database.UpsertPublishedFinding(&db.PublishedFinding{
+		RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindSummary, Fingerprint: "summary",
+		ReviewedSHA: "abc", LastSeenSHA: "abc", State: db.PublishedStateOpen, CommentID: commentID, Rounds: 1, Muted: muted,
+	}))
 }
-
-var mutePR = github.PullRequest{Owner: "acme", Repo: "example", Number: 7, Author: "alice"}
 
 func TestPRMuted_AuthorThumbsDownOnTheSummaryMutesRecordsAndAcknowledges(t *testing.T) {
 	p, database, gh := muteFixture(t)
-	require.NoError(t, database.UpsertPublishedFinding(&db.PublishedFinding{
-		RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindSummary, Fingerprint: "summary",
-		ReviewedSHA: "abc", LastSeenSHA: "abc", State: db.PublishedStateOpen, CommentID: 900, Rounds: 1,
-	}))
+	seedSummary(t, database, 900, false)
 	gh.reactions = []github.CommentReaction{{UserID: 2, Content: "-1"}, {UserID: 1, Content: "+1"}}
-	assert.False(t, p.prMuted(context.Background(), mutePR, summaryRows(900, false), 1), "someone else's thumbs-down is not the author's")
+	muted, err := p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	assert.False(t, muted, "someone else's thumbs-down is not the author's")
 	assert.Empty(t, gh.reacted)
 
 	gh.reactions = append(gh.reactions, github.CommentReaction{UserID: 1, Content: "-1"})
-	assert.True(t, p.prMuted(context.Background(), mutePR, summaryRows(900, false), 1))
+	muted, err = p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	assert.True(t, muted)
 	assert.Equal(t, []string{muteAcknowledgement}, gh.reacted)
 	row, _, err := database.GetPublishedSummaryForPR("acme", "example", 7)
 	require.NoError(t, err)
 	assert.True(t, row.Muted, "the mute is recorded on the summary row")
-	muted, err := p.prMutedInLedger("acme", "example", 7)
+
+	gh.listErr = errors.New("must not be called")
+	muted, err = p.prMuted(context.Background(), "acme", "example", 7, 1)
 	require.NoError(t, err)
-	assert.True(t, muted, "the reply scan sees the same flag")
+	assert.True(t, muted, "the recorded flag answers every later check without a GitHub read")
+	assert.Len(t, gh.reacted, 1, "the acknowledgement is left once")
 }
 
 func TestPRMuted_LedgerFlagWinsWithoutAGitHubRead(t *testing.T) {
-	p, _, gh := muteFixture(t)
+	p, database, gh := muteFixture(t)
+	seedSummary(t, database, 900, true)
 	gh.listErr = errors.New("must not be called")
-	assert.True(t, p.prMuted(context.Background(), mutePR, summaryRows(900, true), 1))
+	muted, err := p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	assert.True(t, muted)
 }
 
 func TestPRMuted_UnreadableReactionsNoSummaryOrTheFlagOffLeaveThePRUnmuted(t *testing.T) {
-	p, _, gh := muteFixture(t)
-	gh.listErr = errors.New("HTTP 502")
-	assert.False(t, p.prMuted(context.Background(), mutePR, summaryRows(900, false), 1))
-	gh.listErr = nil
+	p, database, gh := muteFixture(t)
 	gh.reactions = []github.CommentReaction{{UserID: 1, Content: "-1"}}
-	assert.False(t, p.prMuted(context.Background(), mutePR, nil, 1), "no summary row, nothing to read")
-	assert.False(t, p.prMuted(context.Background(), mutePR, summaryRows(0, false), 1), "a summary without a comment has no reactions")
-	p.cfg.PublishNoPRMute = true
-	assert.False(t, p.prMuted(context.Background(), mutePR, summaryRows(900, true), 1), "PUBLISH_PR_MUTE=false ignores even a recorded mute")
-	assert.Nil(t, p.mentionMuter())
-	muted, err := p.prMutedInLedger("acme", "example", 7)
+	muted, err := p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	assert.False(t, muted, "no summary row, nothing to read")
+
+	seedSummary(t, database, 0, false)
+	muted, err = p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	assert.False(t, muted, "a summary without a comment has no reactions")
+
+	seedSummary(t, database, 900, false)
+	gh.listErr = errors.New("HTTP 502")
+	muted, err = p.prMuted(context.Background(), "acme", "example", 7, 1)
 	require.NoError(t, err)
 	assert.False(t, muted)
+	gh.listErr = nil
+	muted, err = p.prMuted(context.Background(), "acme", "example", 7, 0)
+	require.NoError(t, err)
+	assert.False(t, muted, "without the author's id no reaction can be theirs")
+
+	seedSummary(t, database, 900, true)
+	p.cfg.PublishNoPRMute = true
+	muted, err = p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	assert.False(t, muted, "PUBLISH_PR_MUTE=false ignores even a recorded mute")
+	assert.Nil(t, p.mentionMuter())
+	assert.Empty(t, gh.reacted)
 }
 
 func TestSettlementTreatsAMutedPublicationAsDone(t *testing.T) {

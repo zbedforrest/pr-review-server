@@ -2239,7 +2239,7 @@ func TestReplyReactor_HoldDoesNotRefreshTheSummary(t *testing.T) {
 
 func TestReplyReactor_SkipsMutedPRsWithoutListingThem(t *testing.T) {
 	r, gh, ledger := reactorFixture("react")
-	r.Muted = func(_, _ string, number int) (bool, error) { return number == 7, nil }
+	r.Muted = func(_ context.Context, _, _ string, number int, _ int64) (bool, error) { return number == 7, nil }
 	rep, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)

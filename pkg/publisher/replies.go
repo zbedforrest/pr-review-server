@@ -627,8 +627,9 @@ type ReplyReactor struct {
 	PR      func(ctx context.Context, owner, repo string, number int) (PRState, error)
 	Allowed func(authorLogin string) bool
 	// Muted, when set, reports a PR whose author asked PRism to stop; its
-	// threads get neither reactions nor text until the mute is cleared.
-	Muted       func(owner, repo string, number int) (bool, error)
+	// threads get neither reactions nor text until the mute is cleared. It is
+	// asked only for a PR with new activity, since it may read GitHub.
+	Muted       func(ctx context.Context, owner, repo string, number int, authorID int64) (bool, error)
 	Mode        string
 	Since       time.Time
 	Targets     []db.PublishedReplyTarget // optional pre-filtered subset; nil means all ledger targets
@@ -866,8 +867,13 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 		rep.skip("not_allowlisted")
 		return nil
 	}
+	key := fmt.Sprintf("%s/%s#%d", t.RepoOwner, t.RepoName, t.PRNumber)
+	if r.LastScanned != nil && !r.Full && !state.UpdatedAt.IsZero() && !state.UpdatedAt.After(r.LastScanned[key]) {
+		rep.skip("unchanged")
+		return nil
+	}
 	if r.Muted != nil {
-		muted, err := r.Muted(t.RepoOwner, t.RepoName, t.PRNumber)
+		muted, err := r.Muted(ctx, t.RepoOwner, t.RepoName, t.PRNumber, state.AuthorID)
 		if err != nil {
 			return err
 		}
@@ -875,11 +881,6 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			rep.skip("muted")
 			return nil
 		}
-	}
-	key := fmt.Sprintf("%s/%s#%d", t.RepoOwner, t.RepoName, t.PRNumber)
-	if r.LastScanned != nil && !r.Full && !state.UpdatedAt.IsZero() && !state.UpdatedAt.After(r.LastScanned[key]) {
-		rep.skip("unchanged")
-		return nil
 	}
 	rep.PRsScanned++
 	comments, err := r.GH.ListThread(ctx, t.RepoOwner, t.RepoName, t.PRNumber)

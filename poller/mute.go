@@ -11,9 +11,10 @@ import (
 
 // A PR author mutes PRism on one PR with "@<handle> stop" in the
 // conversation or a thumbs-down on the sticky summary. The mute is a flag on
-// the summary ledger row: no round, inline comment, reply or reaction reaches
-// the PR while it holds, and "@<handle> review" from the author clears it.
-// PUBLISH_PR_MUTE=false turns the whole mechanism off.
+// the summary ledger row; every posting path (a round, the reply reactor, a
+// summary refresh) asks prMuted before it reaches the PR, and "@<handle>
+// review" from the author clears it. PUBLISH_PR_MUTE=false turns the whole
+// mechanism off.
 
 // muteLedger is the ledger slice the mute needs; *db.GormDB implements it.
 type muteLedger interface {
@@ -44,30 +45,21 @@ func (p *Poller) muteLedger() (muteLedger, bool) {
 	return ledger, ok
 }
 
-func summaryRow(rows []db.PublishedFinding) *db.PublishedFinding {
-	for i := range rows {
-		if rows[i].Kind == db.PublishedKindSummary {
-			return &rows[i]
-		}
-	}
-	return nil
-}
-
-// prMuted decides, right before a round posts, whether the PR is muted: by
-// the ledger flag, or by an author thumbs-down on the summary comment seen
+// prMuted is the one check every posting path makes before it reaches the
+// PR: the ledger flag, or an author thumbs-down on the summary comment seen
 // now, which is recorded and acknowledged with a reaction. A reactions read
-// that fails leaves the PR unmuted; the next round looks again.
-func (p *Poller) prMuted(ctx context.Context, pr github.PullRequest, rows []db.PublishedFinding, authorID int64) bool {
+// that fails leaves the PR unmuted; the next check looks again.
+func (p *Poller) prMuted(ctx context.Context, owner, repo string, number int, authorID int64) (bool, error) {
 	ledger, ok := p.muteLedger()
 	if !ok {
-		return false
+		return false, nil
 	}
-	summary := summaryRow(rows)
-	if summary == nil {
-		return false
+	summary, found, err := ledger.GetPublishedSummaryForPR(owner, repo, number)
+	if err != nil || !found {
+		return false, err
 	}
 	if summary.Muted {
-		return true
+		return true, nil
 	}
 	var gh summaryReactionsGitHub
 	if p.summaryGH != nil {
@@ -76,26 +68,26 @@ func (p *Poller) prMuted(ctx context.Context, pr github.PullRequest, rows []db.P
 		gh = p.ghClientConcrete
 	}
 	if gh == nil || summary.CommentID == 0 || authorID == 0 {
-		return false
+		return false, nil
 	}
-	reactions, err := gh.ListIssueCommentReactions(ctx, pr.Owner, pr.Repo, summary.CommentID)
+	reactions, err := gh.ListIssueCommentReactions(ctx, owner, repo, summary.CommentID)
 	if err != nil {
-		log.Printf("[PUBLISH] %s/%s#%d: summary reactions unreadable, not muted: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return false
+		log.Printf("[PUBLISH] %s/%s#%d: summary reactions unreadable, not muted: %v", owner, repo, number, err)
+		return false, nil
 	}
 	if !authorThumbsDown(reactions, authorID) {
-		return false
+		return false, nil
 	}
-	if _, err := ledger.SetPublishedMute(pr.Owner, pr.Repo, pr.Number, true); err != nil {
-		log.Printf("[PUBLISH] %s/%s#%d: could not record the mute: %v", pr.Owner, pr.Repo, pr.Number, err)
-		return false
+	if _, err := ledger.SetPublishedMute(owner, repo, number, true); err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: could not record the mute: %v", owner, repo, number, err)
+		return false, nil
 	}
-	p.recordHygieneEvent(pr, health.ActionPRMuted, "via=thumbs_down")
-	if err := gh.CreateIssueCommentReaction(ctx, pr.Owner, pr.Repo, summary.CommentID, muteAcknowledgement); err != nil {
-		log.Printf("[PUBLISH] %s/%s#%d: could not acknowledge the mute: %v", pr.Owner, pr.Repo, pr.Number, err)
+	p.recordHygieneEvent(github.PullRequest{Owner: owner, Repo: repo, Number: number}, health.ActionPRMuted, "via=thumbs_down")
+	if err := gh.CreateIssueCommentReaction(ctx, owner, repo, summary.CommentID, muteAcknowledgement); err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: could not acknowledge the mute: %v", owner, repo, number, err)
 	}
-	log.Printf("[PUBLISH] %s/%s#%d: muted by the author's thumbs-down on the summary", pr.Owner, pr.Repo, pr.Number)
-	return true
+	log.Printf("[PUBLISH] %s/%s#%d: muted by the author's thumbs-down on the summary", owner, repo, number)
+	return true, nil
 }
 
 func authorThumbsDown(reactions []github.CommentReaction, authorID int64) bool {
@@ -105,19 +97,6 @@ func authorThumbsDown(reactions []github.CommentReaction, authorID int64) bool {
 		}
 	}
 	return false
-}
-
-// prMutedInLedger is the reply scan's view: the flag alone, no GitHub read.
-func (p *Poller) prMutedInLedger(owner, repo string, number int) (bool, error) {
-	ledger, ok := p.muteLedger()
-	if !ok {
-		return false, nil
-	}
-	row, found, err := ledger.GetPublishedSummaryForPR(owner, repo, number)
-	if err != nil || !found {
-		return false, err
-	}
-	return row.Muted, nil
 }
 
 // prMuter is the mention scanner's handle on the mute flag.

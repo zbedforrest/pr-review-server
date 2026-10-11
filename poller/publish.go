@@ -341,7 +341,10 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: skipped, %s", pr.Owner, pr.Repo, pr.Number, reason)
 		return nil, publicationSkippedPrefix + reason
 	}
-	if p.prMuted(ctx, pr, previous, ghPR.GetUser().GetID()) {
+	if muted, err := p.prMuted(ctx, pr.Owner, pr.Repo, pr.Number, ghPR.GetUser().GetID()); err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: read mute: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return nil, publicationFailedPrefix + "read mute"
+	} else if muted {
 		log.Printf("[PUBLISH] %s/%s#%d: skipped, the author muted PRism on this PR", pr.Owner, pr.Repo, pr.Number)
 		return nil, publicationMuted
 	}
@@ -478,6 +481,12 @@ func (p *Poller) refreshPublishedSummary(ctx context.Context, owner, repo string
 	}
 	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), head, head); !ok {
 		log.Printf("[PUBLISH] %s/%s#%d: summary refresh skipped, %s", owner, repo, number, reason)
+		return nil
+	}
+	if muted, err := p.prMuted(ctx, owner, repo, number, ghPR.GetUser().GetID()); err != nil {
+		return fmt.Errorf("read mute: %w", err)
+	} else if muted {
+		log.Printf("[PUBLISH] %s/%s#%d: summary refresh skipped, the author muted PRism on this PR", owner, repo, number)
 		return nil
 	}
 	pl, err := p.loadReviewPayload(ctx, owner, repo, number, head)
