@@ -67,8 +67,10 @@
 // Other reviewers. With Policy.ExternalReconcile (PUBLISH_EXTERNAL_RECONCILE,
 // on unless set to false) every root thread PRism did not post (Greptile,
 // Copilot, CodeRabbit, Gemini, code scanning, other bots, humans) is a match
-// candidate for a shown finding the ledger does not know: same file, the
-// finding's line within ten of the root's range, and containment at or
+// candidate for a shown finding the ledger does not know, unless the thread
+// listing shows its thread resolved: same file, the finding's line within
+// ten of the root's range (an outdated root keeps its original anchor; a
+// root with no line never matches), and containment at or
 // above 0.35 (shared tokens over the shorter of the two texts, or of one
 // side's headline against the other's body, with a floor of three shared
 // words, four for a headline). A contract subject named in the root only

@@ -105,9 +105,10 @@ func (r Round) externalFindings() []payload.Finding {
 // the point for the PR's life, the summary links to the root, and the
 // thread gets one delta reply carrying only what PRism adds, unless a row
 // already claimed that root.
-func (p *Publisher) matchExternal(r *Round, rows map[string]*db.PublishedFinding, now time.Time) externalPass {
+func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding, now time.Time, threads *threadIndex) externalPass {
 	var pass externalPass
-	if len(r.External) == 0 {
+	roots := openRoots(ctx, r.External, threads)
+	if len(roots) == 0 {
 		return pass
 	}
 	claimed := map[int64]bool{}
@@ -124,7 +125,7 @@ func (p *Publisher) matchExternal(r *Round, rows map[string]*db.PublishedFinding
 			candidates = append(candidates, f)
 		}
 	}
-	matches := reconcile.MatchExternal(candidates, r.External)
+	matches := reconcile.MatchExternal(candidates, roots)
 	if len(matches) == 0 {
 		return pass
 	}
@@ -161,6 +162,23 @@ func (p *Publisher) matchExternal(r *Round, rows map[string]*db.PublishedFinding
 	r.Findings = kept
 	sort.SliceStable(pass.notes, func(i, j int) bool { return pass.notes[i].commentID < pass.notes[j].commentID })
 	return pass
+}
+
+// openRoots drops the roots whose thread the listing shows resolved: the
+// other reviewer's point is settled there, so PRism neither defers to it
+// nor replies into it.
+func openRoots(ctx context.Context, roots []reconcile.ExternalFinding, threads *threadIndex) []reconcile.ExternalFinding {
+	if threads == nil {
+		return roots
+	}
+	open := make([]reconcile.ExternalFinding, 0, len(roots))
+	for _, g := range roots {
+		if t, ok := threads.lookup(ctx, g.CommentID); ok && t.Resolved {
+			continue
+		}
+		open = append(open, g)
+	}
+	return open
 }
 
 // deltaReply is the one reply PRism may leave under another reviewer's root:

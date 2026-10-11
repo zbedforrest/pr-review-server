@@ -156,6 +156,15 @@ func TestDeltaReply_SuggestedCodeIsNeverASuggestionBlock(t *testing.T) {
 	}
 }
 
+func TestExternal_ResolvedRootIsNotACandidate(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900, Resolved: true}}
+	rep := publishThreads(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
+	if rep.ExternalMatched != 0 || rep.InlinePosted != 2 || len(gh.repliesTo(900)) != 0 {
+		t.Fatalf("a settled thread gets neither a match nor a reply: %+v replies=%v", rep, gh.repliesTo(900))
+	}
+}
+
 func TestExternal_ClaimedRootGetsNoSecondReply(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
 	publishRound(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))

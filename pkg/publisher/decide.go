@@ -93,7 +93,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	var external externalPass
 	if p.Policy.ExternalReconcile {
 		p.refreshExternal(ctx, &r, rows)
-		external = p.matchExternal(&r, rows, now)
+		external = p.matchExternal(ctx, &r, rows, now, threads)
 	}
 	notes := append(p.clampSeverity(&r, rows), external.notes...)
 
@@ -214,7 +214,6 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			next.State = db.PublishedStateOpen
 			next.LastSeenSHA = r.HeadSHA
 			next.Severity = f.Severity
-			next.Rounds = 0
 			backfill(&next, f, r.PriorComments[id])
 			writes = append(writes, pending{row: &next, thread: unresolveThread})
 			if t, found := threads.thread(ctx, row.ThreadNodeID, row.CommentID); found {

@@ -61,6 +61,13 @@ func TestBuildPublishRound_TagsReconciledFindingsAndBuildsLinks(t *testing.T) {
 	r = BuildPublishRoundWith(pr, pl, comments, patches, previous, "https://prism.example", legacy)
 	assert.Empty(t, r.External)
 	assert.Equal(t, "both", r.SourceTags["f1"], "PRism finding near Greptile's comment on the same file")
+
+	legacyLedger := publisher.DefaultPolicy()
+	legacyLedger.LegacyLedger = true
+	r = BuildPublishRoundWith(pr, pl, comments, patches, previous, "https://prism.example", legacyLedger)
+	assert.Empty(t, r.External, "the legacy publisher never reconciles external roots, so it keeps the tags")
+	assert.Equal(t, "both", r.SourceTags["f1"])
+	r = BuildPublishRoundWith(pr, pl, comments, patches, previous, "https://prism.example", legacy)
 	assert.Empty(t, r.SourceTags["f2"], "unmatched PRism finding stays prism-only")
 	require.Len(t, r.GreptileOnly, 1)
 	assert.Equal(t, int64(901), r.GreptileOnly[0].CommentID)

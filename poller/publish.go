@@ -107,7 +107,7 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 	var externalRoots []reconcile.ExternalFinding
 	tags := map[string]string{}
 	var greptileOnly []publisher.GreptileOnlyRef
-	if pol.ExternalReconcile {
+	if pol.ExternalReconcile && !pol.LegacyLedger {
 		externalRoots = reconcile.ParseExternalComments(external, ledgerCommentIDs)
 	} else {
 		res := reconcile.Reconcile(pl.Findings, reconcile.ParseGreptileComments(external))

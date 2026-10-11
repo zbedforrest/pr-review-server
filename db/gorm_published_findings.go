@@ -222,8 +222,10 @@ func (g *GormDB) SetPublishedFindingState(owner, repo string, number int, finger
 
 // MarkPublishedFindingFixed moves a row to fixed on a conceded fix claim and
 // stamps it with the PR's last published head, so the next round counts the
-// fix once even when the row was last seen at an older head. A settled row
-// (dismissed, contested, external) stays as it is.
+// fix once even when the row was last seen at an older head, and clears the
+// round that counted an earlier fix so a fix conceded after a reopen counts
+// too. A settled row (dismissed, contested, external) and a row already
+// fixed stay as they are.
 func (g *GormDB) MarkPublishedFindingFixed(owner, repo string, number int, fingerprint string) error {
 	var head string
 	if err := g.db.Model(&PublishedFindingModel{}).Select("last_seen_sha").
@@ -231,12 +233,12 @@ func (g *GormDB) MarkPublishedFindingFixed(owner, repo string, number int, finge
 		Limit(1).Scan(&head).Error; err != nil {
 		return err
 	}
-	updates := map[string]any{"state": PublishedStateFixed}
+	updates := map[string]any{"state": PublishedStateFixed, "rounds": 0}
 	if head != "" {
 		updates["last_seen_sha"] = head
 	}
 	return g.db.Model(&PublishedFindingModel{}).
-		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ? AND state NOT IN ?", owner, repo, number, fingerprint, []string{PublishedStateDismissed, PublishedStateContested, PublishedStateExternal}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ? AND state NOT IN ?", owner, repo, number, fingerprint, []string{PublishedStateDismissed, PublishedStateContested, PublishedStateExternal, PublishedStateFixed}).
 		Updates(updates).Error
 }
 
