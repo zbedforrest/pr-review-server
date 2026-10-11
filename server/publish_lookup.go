@@ -51,5 +51,8 @@ func (s *Server) publishedSummaryFor(owner, repo string, number int) (db.Publish
 		log.Printf("[API] published summary unavailable for %s/%s#%d: %v", owner, repo, number, err)
 		return db.PublishedFinding{}, false
 	}
+	if row.CommentID == 0 {
+		return db.PublishedFinding{}, false
+	}
 	return row, ok
 }
