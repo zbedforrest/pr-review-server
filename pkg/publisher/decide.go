@@ -89,6 +89,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	originalIDs := p.aliasToLedger(&r, rows)
 	rememberExternal(&r, rows)
 	r.Findings = p.withoutTerminal(r, rows, originalIDs)
+	forgetShown(&r)
 	now := p.now()
 	var external externalPass
 	if p.Policy.ExternalReconcile {

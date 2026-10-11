@@ -451,11 +451,11 @@ func ExternalDuplicate(file string, line int, text string, roots []ExternalRoot,
 // root against the other root, with no contract headline or impact on the
 // PRism side, so the metric reads the dumps alone.
 func sameText(text, other string) bool {
-	if reconcile.Similarity(text, other) >= AliasSimilarity {
-		return true
-	}
 	score, shared := reconcile.Containment(text, other)
-	return score >= reconcile.ExternalThreshold && shared >= reconcile.ExternalMinShared
+	if shared < reconcile.ExternalMinShared {
+		return false
+	}
+	return reconcile.Similarity(text, other) >= AliasSimilarity || score >= reconcile.ExternalThreshold
 }
 
 func IsFindingRow(row db.PublishedFinding) bool {

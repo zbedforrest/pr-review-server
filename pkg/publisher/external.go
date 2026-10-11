@@ -67,6 +67,26 @@ func (p *Publisher) refreshExternal(ctx context.Context, r *Round, rows map[stri
 	r.External = reconcile.ParseExternalComments(comments, own)
 }
 
+// forgetShown drops the external links of findings the round still carries
+// (a live successor row kept them), so a point is never both a bullet and a
+// linked external entry.
+func forgetShown(r *Round) {
+	if len(r.ExternalMatches) == 0 {
+		return
+	}
+	shown := make(map[string]bool, len(r.Findings))
+	for _, f := range r.Findings {
+		shown[f.File+"\x00"+f.Comment] = true
+	}
+	kept := r.ExternalMatches[:0]
+	for _, m := range r.ExternalMatches {
+		if !shown[m.Finding.File+"\x00"+m.Finding.Comment] {
+			kept = append(kept, m)
+		}
+	}
+	r.ExternalMatches = kept
+}
+
 // rememberExternal lists, for the summary, the findings of this round that
 // alias to an external row: the point is still raised and still lives in
 // the other reviewer's thread. It runs before those findings are dropped.
@@ -113,6 +133,10 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 		return pass
 	}
 	roots := openRoots(ctx, r.External, threads)
+	if threads.listFailed() {
+		log.Printf("[PUBLISH] %s/%s#%d: thread listing failed; external matching skipped this round", r.Owner, r.Repo, r.Number)
+		return pass
+	}
 	if len(roots) == 0 {
 		return pass
 	}

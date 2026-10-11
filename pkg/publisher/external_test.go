@@ -195,6 +195,24 @@ func TestExternal_NoThreadListingDeclinesMatching(t *testing.T) {
 	}
 }
 
+func TestExternal_ListingFailureDeclinesMatching(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	gh.listErr = fmt.Errorf("502")
+	rep := publishThreads(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
+	if rep.ExternalMatched != 0 || rep.InlinePosted != 2 || len(gh.repliesTo(900)) != 0 {
+		t.Fatalf("a failed listing cannot tell a settled root from an open one: %+v", rep)
+	}
+}
+
+func TestForgetShown(t *testing.T) {
+	kept := retryFinding()
+	r := Round{Findings: []payload.Finding{kept}, ExternalMatches: []ExternalMatch{{Finding: kept, CommentID: 900}, {Finding: f(m1ID, "medium", "b.go", 20, "Medium thing."), CommentID: 901}}}
+	forgetShown(&r)
+	if len(r.ExternalMatches) != 1 || r.ExternalMatches[0].CommentID != 901 {
+		t.Fatalf("a finding the round still shows keeps no external link: %+v", r.ExternalMatches)
+	}
+}
+
 func TestWithoutClaimedRoots(t *testing.T) {
 	refs := []GreptileOnlyRef{{CommentID: 900, Title: "claimed earlier"}, {CommentID: 901, Title: "claimed now"}, {CommentID: 902, Title: "still only Greptile's"}}
 	rows := map[string]*db.PublishedFinding{"a": {ExternalCommentID: 900}, "b": {}}

@@ -87,6 +87,10 @@ func TestExternalDuplicate(t *testing.T) {
 	if _, ok := ExternalDuplicate("api/users.go", 140, text, roots[:1], at); ok {
 		t.Fatal("a shared symbol with two shared words is not the same point")
 	}
+	short := []ExternalRoot{{CommentID: 5, File: "api/users.go", Line: 140, Text: "retry loop rejects", At: at.Add(-time.Minute)}}
+	if _, ok := ExternalDuplicate("api/users.go", 140, "retry loop hammers", short, at); ok {
+		t.Fatal("two short remarks sharing two words reach the Jaccard bar but not the token floor")
+	}
 	if _, ok := ExternalDuplicate("api/users.go", 140, text, roots[2:], at); ok {
 		t.Fatal("a root posted after PRism's is not an earlier duplicate")
 	}
