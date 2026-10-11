@@ -32,7 +32,7 @@ func newAutoReviewFixture(t *testing.T, switchOn bool, authors string) autoRevie
 	t.Helper()
 	mockDB := NewMockDatabase()
 	mockDB.AutoReviewEnabled = false
-	require.NoError(t, mockDB.SetSetting(settingPublishEnabledAuthors, authors))
+	require.NoError(t, mockDB.SetSetting(SettingPublishEnabledAuthors, authors))
 	if switchOn {
 		require.NoError(t, mockDB.SetSetting(settingAutoReviewReadyPRs, "true"))
 	}
@@ -403,7 +403,7 @@ func TestPollFallbackMarksAQueuedIntentDoneOnceAnotherRunPublishedTheHead(t *tes
 	database, err := db.NewGormSQLite(":memory:")
 	require.NoError(t, err)
 	defer database.Close()
-	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	require.NoError(t, database.SetSetting(SettingPublishEnabledAuthors, "alice"))
 	require.NoError(t, database.SetSetting(settingAutoReviewReadyPRs, "true"))
 	require.NoError(t, database.UpsertPR(&db.PR{
 		RepoOwner: "acme", RepoName: "example", PRNumber: 7, LastCommitSHA: autoReviewOldHead,
@@ -436,7 +436,7 @@ func TestWebhookRecordsAnAlreadyPublishedHeadAsDone(t *testing.T) {
 	database, err := db.NewGormSQLite(":memory:")
 	require.NoError(t, err)
 	defer database.Close()
-	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	require.NoError(t, database.SetSetting(SettingPublishEnabledAuthors, "alice"))
 	require.NoError(t, database.SetSetting(settingAutoReviewReadyPRs, "true"))
 	waiting := db.AutoReviewIntent{RepoOwner: "acme", RepoName: "example", PRNumber: 7, HeadSHA: autoReviewOldHead, Trigger: db.AutoReviewTriggerPollFallback}
 	_, err = database.EnsureAutoReviewIntent(&waiting, nil)
@@ -468,7 +468,7 @@ func TestPollFallbackRecordsAnAlreadyPublishedHeadAsDone(t *testing.T) {
 	database, err := db.NewGormSQLite(":memory:")
 	require.NoError(t, err)
 	defer database.Close()
-	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	require.NoError(t, database.SetSetting(SettingPublishEnabledAuthors, "alice"))
 	require.NoError(t, database.SetSetting(settingAutoReviewReadyPRs, "true"))
 	require.NoError(t, database.UpsertPR(&db.PR{
 		RepoOwner: "acme", RepoName: "example", PRNumber: 7, LastCommitSHA: autoReviewOldHead,
@@ -562,7 +562,7 @@ func TestPublishGateStillDeniesWhenTheAllowlistIsEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, eligible)
 
-	require.NoError(t, f.db.SetSetting(settingPublishEnabledAuthors, "ALICE"))
+	require.NoError(t, f.db.SetSetting(SettingPublishEnabledAuthors, "ALICE"))
 	eligible, err = f.p.autoReviewEligible("alice")
 	require.NoError(t, err)
 	assert.True(t, eligible)

@@ -1,0 +1,56 @@
+{
+ "number": 2,
+ "title": "Fixture 2",
+ "url": "https://github.com/acme/example/pull/2",
+ "state": "CLOSED",
+ "isDraft": false,
+ "merged": false,
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "bbbbbbb222222222222222222222222222222222",
+ "reviews": {
+  "nodes": []
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "PRRT_2",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "lib/parse.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "totalCount": 1,
+     "nodes": [
+      {
+       "databaseId": 201,
+       "author": {
+        "login": "acme-bot[bot]"
+       },
+       "body": "<!-- prism:finding:lib/parse.go:4:d4d4d4d4d4d4 -->\n**CRITICAL** nil deref.",
+       "createdAt": "2026-09-02T10:00:00Z",
+       "updatedAt": "2026-09-02T10:00:00Z",
+       "path": "lib/parse.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "comments": {
+  "nodes": []
+ },
+ "commits": {
+  "nodes": []
+ }
+}

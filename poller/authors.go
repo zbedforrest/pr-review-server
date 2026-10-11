@@ -74,22 +74,28 @@ func optedOut(author, optOutCSV string) bool {
 	return author != "" && db.ParseLoginCSV(optOutCSV)[author]
 }
 
-// publishGate is the one gate on posting anything to a PR, built from both
+// PublishGate is the one gate on posting anything to a PR, built from both
 // publication lists read once. Every path that writes to GitHub as PRism
 // (review rounds, inline comments, reply reactions and text, mention
-// responses) asks it; the review gates do not, so an opted-out author keeps
-// their dashboard reviews.
-type publishGate struct {
-	p       *Poller
+// responses, maintenance tools) asks it; the review gates do not, so an
+// opted-out author keeps their dashboard reviews.
+type PublishGate struct {
+	teams   *github.TeamResolver
 	enabled string
 	optOut  string
 }
 
+// NewPublishGate builds the gate from the two publication lists for a caller
+// outside the poller, so a tool can never disagree with the server.
+func NewPublishGate(teams *github.TeamResolver, enabled, optOut string) PublishGate {
+	return PublishGate{teams: teams, enabled: enabled, optOut: optOut}
+}
+
 // publishGate reads the lists. A read error denies, like the gate always
 // has: the returned gate still matches nobody.
-func (p *Poller) publishGate() (publishGate, error) {
-	g := publishGate{p: p}
-	enabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
+func (p *Poller) publishGate() (PublishGate, error) {
+	g := PublishGate{teams: p.teams}
+	enabled, err := p.db.GetSetting(SettingPublishEnabledAuthors)
 	if err != nil {
 		return g, err
 	}
@@ -102,15 +108,15 @@ func (p *Poller) publishGate() (publishGate, error) {
 }
 
 // OptedOut reports whether the author asked for silence.
-func (g publishGate) OptedOut(author string) bool {
+func (g PublishGate) OptedOut(author string) bool {
 	return optedOut(author, g.optOut)
 }
 
 // Allowed is the matcher the posting paths share: an opted-out login is
 // denied before any login, team or "*" entry of publish_enabled_authors can
 // match it.
-func (g publishGate) Allowed(author string) bool {
-	return !g.OptedOut(author) && g.p.authorAllowed(g.enabled, author)
+func (g PublishGate) Allowed(author string) bool {
+	return !g.OptedOut(author) && AdmittingEntry(context.Background(), g.teams, g.enabled, author) != ""
 }
 
 // TeamResolver exposes the poller's membership cache so the settings API

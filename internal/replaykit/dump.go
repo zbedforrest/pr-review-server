@@ -55,6 +55,9 @@ type ThreadComment struct {
 	ReplyTo    *struct {
 		DatabaseID FlexInt64 `json:"databaseId"`
 	} `json:"replyTo"`
+	OriginalCommit struct {
+		Oid string `json:"oid"`
+	} `json:"originalCommit"`
 }
 
 // Commit is one entry of the PR's commit list.
@@ -83,9 +86,14 @@ type PRDump struct {
 	Number     int    `json:"number"`
 	URL        string `json:"url"`
 	State      string `json:"state"`
+	Merged     bool   `json:"merged"`
 	HeadRefOid string `json:"headRefOid"`
 	Author     Actor  `json:"author"`
-	Reviews    struct {
+	// Source is "rest" for a dump rebuilt from the REST API, whose thread
+	// resolution flags are placeholders until ResolutionFilled is true.
+	Source           string          `json:"source"`
+	ResolutionFilled json.RawMessage `json:"resolution_filled"`
+	Reviews          struct {
 		Nodes []Review `json:"nodes"`
 	} `json:"reviews"`
 	ReviewThreads struct {
@@ -146,6 +154,12 @@ func LoadDumps(dir string) ([]*PRDump, error) {
 
 // key is the anonymised PR id used in every report: repo#number, no owner.
 func (d *PRDump) Key() string { return fmt.Sprintf("%s#%d", d.Repo, d.Number) }
+
+// ResolutionKnown reports whether the dump's IsResolved flags are real: a
+// GraphQL dump always carries them, a REST dump only after the fill pass.
+func (d *PRDump) ResolutionKnown() bool {
+	return d.Source != "rest" || strings.TrimSpace(string(d.ResolutionFilled)) == "true"
+}
 
 func BareLogin(login string) string {
 	return strings.TrimSuffix(login, "[bot]")

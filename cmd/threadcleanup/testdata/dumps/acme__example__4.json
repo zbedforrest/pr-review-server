@@ -1,0 +1,57 @@
+{
+ "number": 4,
+ "title": "Fixture 4",
+ "url": "https://github.com/acme/example/pull/4",
+ "state": "OPEN",
+ "isDraft": false,
+ "merged": false,
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "ccccccc333333333333333333333333333333333",
+ "reviews": {
+  "nodes": []
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "401",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "svc/retry.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "totalCount": 1,
+     "nodes": [
+      {
+       "databaseId": 401,
+       "author": {
+        "login": "acme-bot[bot]"
+       },
+       "body": "<!-- prism:finding:svc/retry.go:1:c9c9c9c9c9c9 -->\n**MEDIUM** retry.",
+       "createdAt": "2026-09-04T10:00:00Z",
+       "updatedAt": "2026-09-04T10:00:00Z",
+       "path": "svc/retry.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "comments": {
+  "nodes": []
+ },
+ "commits": {
+  "nodes": []
+ },
+ "source": "rest"
+}

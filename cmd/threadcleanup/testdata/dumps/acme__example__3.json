@@ -1,0 +1,151 @@
+{
+ "number": 3,
+ "title": "Fixture 3",
+ "url": "https://github.com/acme/example/pull/3",
+ "state": "OPEN",
+ "isDraft": false,
+ "merged": false,
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "ccccccc333333333333333333333333333333333",
+ "reviews": {
+  "nodes": []
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "301",
+    "isResolved": false,
+    "isOutdated": true,
+    "isCollapsed": null,
+    "path": "svc/retry.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "totalCount": 1,
+     "nodes": [
+      {
+       "databaseId": 301,
+       "author": {
+        "login": "acme-bot[bot]"
+       },
+       "body": "<!-- prism:finding:svc/retry.go:1:e5e5e5e5e5e5 -->\n**MEDIUM** retry.",
+       "createdAt": "2026-09-03T10:00:00Z",
+       "updatedAt": "2026-09-03T10:00:00Z",
+       "path": "svc/retry.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "302",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "app/cache.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "totalCount": 1,
+     "nodes": [
+      {
+       "databaseId": 302,
+       "author": {
+        "login": "acme-bot[bot]"
+       },
+       "body": "<!-- prism:finding:app/cache.go:2:f6f6f6f6f6f6 -->\n**MEDIUM** cache.",
+       "createdAt": "2026-09-03T10:00:01Z",
+       "updatedAt": "2026-09-03T10:00:01Z",
+       "path": "app/cache.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "303",
+    "isResolved": false,
+    "isOutdated": true,
+    "isCollapsed": null,
+    "path": "app/cache.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "totalCount": 1,
+     "nodes": [
+      {
+       "databaseId": 303,
+       "author": {
+        "login": "acme-bot[bot]"
+       },
+       "body": "<!-- prism:finding:app/cache.go:5:a7a7a7a7a7a7 -->\n**MEDIUM** cache again.",
+       "createdAt": "2026-09-03T10:00:02Z",
+       "updatedAt": "2026-09-03T10:00:02Z",
+       "path": "app/cache.go",
+       "originalCommit": {
+        "oid": "bbbbbbb222222222222222222222222222222222"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "304",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "app/main.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "totalCount": 1,
+     "nodes": [
+      {
+       "databaseId": 304,
+       "author": {
+        "login": "acme-bot[bot]"
+       },
+       "body": "<!-- prism:finding:app/main.go:3:b8b8b8b8b8b8 -->\n**LOW** main.",
+       "createdAt": "2026-09-03T10:00:03Z",
+       "updatedAt": "2026-09-03T10:00:03Z",
+       "path": "app/main.go",
+       "originalCommit": {
+        "oid": "ccccccc333333333333333333333333333333333"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "comments": {
+  "nodes": []
+ },
+ "commits": {
+  "nodes": []
+ },
+ "source": "rest",
+ "resolution_filled": true
+}

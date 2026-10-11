@@ -85,7 +85,7 @@ func (p *Poller) autoReviewAuthorAllowed(author string) (bool, error) {
 		return false, err
 	}
 	if strings.TrimSpace(list) == "" {
-		if list, err = p.db.GetSetting(settingPublishEnabledAuthors); err != nil {
+		if list, err = p.db.GetSetting(SettingPublishEnabledAuthors); err != nil {
 			return false, err
 		}
 	}

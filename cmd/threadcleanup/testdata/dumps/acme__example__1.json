@@ -1,0 +1,172 @@
+{
+ "number": 1,
+ "title": "Fixture 1",
+ "url": "https://github.com/acme/example/pull/1",
+ "state": "MERGED",
+ "isDraft": false,
+ "merged": true,
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "ccccccc333333333333333333333333333333333",
+ "reviews": {
+  "nodes": []
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "101",
+    "isResolved": false,
+    "isOutdated": true,
+    "isCollapsed": null,
+    "path": "svc/retry.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "totalCount": 2,
+     "nodes": [
+      {
+       "databaseId": 101,
+       "author": {
+        "login": "acme-bot[bot]"
+       },
+       "body": "<!-- prism:finding:svc/retry.go:1:a1a1a1a1a1a1 -->\n**MEDIUM** retry never backs off.",
+       "createdAt": "2026-09-01T10:00:00Z",
+       "updatedAt": "2026-09-01T10:00:00Z",
+       "path": "svc/retry.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      },
+      {
+       "databaseId": 102,
+       "author": {
+        "login": "dev"
+       },
+       "body": "fixed",
+       "createdAt": "2026-09-01T11:00:00Z",
+       "updatedAt": "2026-09-01T11:00:00Z",
+       "path": "svc/retry.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": {
+        "databaseId": 101
+       },
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "103",
+    "isResolved": true,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "app/cache.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "totalCount": 1,
+     "nodes": [
+      {
+       "databaseId": 103,
+       "author": {
+        "login": "acme-bot[bot]"
+       },
+       "body": "<!-- prism:finding:app/cache.go:2:b2b2b2b2b2b2 -->\n**MEDIUM** cache key collides.",
+       "createdAt": "2026-09-01T10:00:01Z",
+       "updatedAt": "2026-09-01T10:00:01Z",
+       "path": "app/cache.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "104",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "app/cache.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "totalCount": 1,
+     "nodes": [
+      {
+       "databaseId": 104,
+       "author": {
+        "login": "other-bot[bot]"
+       },
+       "body": "Consider a lock here.",
+       "createdAt": "2026-09-01T09:00:00Z",
+       "updatedAt": "2026-09-01T09:00:00Z",
+       "path": "app/cache.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   },
+   {
+    "id": "105",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "app/main.go",
+    "line": 10,
+    "originalLine": 10,
+    "comments": {
+     "totalCount": 1,
+     "nodes": [
+      {
+       "databaseId": 105,
+       "author": {
+        "login": "acme-bot[bot]"
+       },
+       "body": "<!-- prism:finding:app/main.go:3:c3c3c3c3c3c3 -->\nreply with a marker",
+       "createdAt": "2026-09-01T12:00:00Z",
+       "updatedAt": "2026-09-01T12:00:00Z",
+       "path": "app/main.go",
+       "originalCommit": {
+        "oid": "aaaaaaa111111111111111111111111111111111"
+       },
+       "replyTo": {
+        "databaseId": 104
+       },
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "comments": {
+  "nodes": []
+ },
+ "commits": {
+  "nodes": []
+ },
+ "source": "rest",
+ "resolution_filled": true
+}

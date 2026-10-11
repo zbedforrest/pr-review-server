@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"pr-review-server/github"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -51,9 +53,7 @@ func (r CompareResult) UnchangedDiff() bool {
 	return r.Error == "" && (r.Status == "identical" || r.MergeOnly)
 }
 
-// CompareFilesCap is the most files the compare endpoint returns; it does not
-// page them.
-const CompareFilesCap = 300
+const CompareFilesCap = github.CompareFilesCap
 
 func (r CompareResult) Complete() bool {
 	return r.Error == "" && !r.Truncated
@@ -235,6 +235,12 @@ func (f *LiveFetcher) Sidecar(owner, repo string, number int, sha7 string) ([]by
 const compareTimeout = 2 * time.Minute
 
 func (f *LiveFetcher) Compare(owner, repo, base, head string) (CompareResult, error) {
+	return CompareViaGH(owner, repo, base, head)
+}
+
+// CompareViaGH lists the files changed between two commits through the gh
+// CLI, so a tool needs nothing beyond the operator's existing login.
+func CompareViaGH(owner, repo, base, head string) (CompareResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), compareTimeout)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
@@ -274,7 +280,7 @@ func ParseCompare(raw []byte) (CompareResult, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return CompareResult{}, err
 	}
-	res := CompareResult{Truncated: len(payload.Files) >= CompareFilesCap, Status: payload.Status, Schema: compareSchema, Commits: payload.TotalCommits}
+	res := CompareResult{Truncated: len(payload.Files) >= CompareFilesCap || payload.TotalCommits > github.CompareCommitsCap, Status: payload.Status, Schema: compareSchema, Commits: payload.TotalCommits}
 	if res.Status == "" {
 		res.Status = "unknown"
 	}

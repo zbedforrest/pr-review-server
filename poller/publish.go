@@ -20,7 +20,7 @@ import (
 // GitHub publication is gated per PR author so the pilot can widen team by
 // team from the settings API without a deploy. "*" enables everyone.
 const (
-	settingPublishEnabledAuthors    = "publish_enabled_authors"
+	SettingPublishEnabledAuthors    = "publish_enabled_authors"
 	settingPublishInlineCap         = "publish_inline_cap"
 	settingPublishInlinePRCap       = "publish_inline_pr_cap"
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"
@@ -304,7 +304,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	}
 	if !gate.Allowed(pr.Author) {
 		label := "author=" + pr.Author
-		if gate.OptedOut(pr.Author) && gate.p.authorAllowed(gate.enabled, pr.Author) {
+		if gate.OptedOut(pr.Author) && p.authorAllowed(gate.enabled, pr.Author) {
 			p.recordHygieneEvent(pr, health.ActionOptedOut, label)
 			label += " reason=opted_out"
 		}
