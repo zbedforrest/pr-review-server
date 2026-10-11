@@ -18,9 +18,13 @@ type fakeSummaryGH struct {
 	reactions []github.CommentReaction
 	listErr   error
 	reacted   []string
+	onList    func()
 }
 
 func (f *fakeSummaryGH) ListIssueCommentReactions(context.Context, string, string, int64) ([]github.CommentReaction, error) {
+	if f.onList != nil {
+		f.onList()
+	}
 	return f.reactions, f.listErr
 }
 
@@ -154,4 +158,18 @@ func TestPRMuted_AReviewRequestBeforeTheThumbsDownWasReadStillLiftsIt(t *testing
 	require.NoError(t, err)
 	assert.False(t, muted)
 	assert.Empty(t, gh.reacted)
+}
+
+func TestPRMuted_AMuteAnotherPathRecordedMeanwhileIsNotAcknowledgedAgain(t *testing.T) {
+	p, database, gh := muteFixture(t)
+	seedSummary(t, database, 900, false)
+	gh.reactions = []github.CommentReaction{{UserID: 1, Content: "-1"}}
+	gh.onList = func() {
+		_, err := database.SetPublishedMute("acme", "example", 7, true)
+		require.NoError(t, err)
+	}
+	muted, err := p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	assert.True(t, muted)
+	assert.Empty(t, gh.reacted, "the path that recorded the mute first acknowledged it")
 }

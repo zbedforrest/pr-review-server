@@ -177,7 +177,8 @@ draft is redone when it is ready again.
 Pushes are held for `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` (default 90 s) and
 admitted on the first poll after the window, so the effective hold is the
 window plus up to one `POLLING_INTERVAL`, and a burst of pushes reviews only
-the last head. A push that leaves the PR diff's patch-id unchanged (merging
+the last head. The window restarts on every push, so a PR pushed to more often
+than the window is reviewed once the pushes pause. A push that leaves the PR diff's patch-id unchanged (merging
 the base branch, rebasing, amending a message, or changing only trailing
 whitespace; indentation changes count as real changes) is settled without a review (`AUTO_REVIEW_SKIP_UNCHANGED_DIFF`);
 the intent records the reason as `skipped: diff unchanged since <sha>`.

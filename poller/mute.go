@@ -79,9 +79,13 @@ func (p *Poller) prMuted(ctx context.Context, owner, repo string, number int, au
 	if !authorThumbsDown(reactions, authorID, summary.MuteLiftedAt) {
 		return false, nil
 	}
-	if _, err := ledger.SetPublishedMute(owner, repo, number, true); err != nil {
+	changed, err := ledger.SetPublishedMute(owner, repo, number, true)
+	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: could not record the mute: %v", owner, repo, number, err)
 		return false, nil
+	}
+	if !changed {
+		return true, nil
 	}
 	p.recordHygieneEvent(github.PullRequest{Owner: owner, Repo: repo, Number: number}, health.ActionPRMuted, "via=thumbs_down")
 	if err := gh.CreateIssueCommentReaction(ctx, owner, repo, summary.CommentID, muteAcknowledgement); err != nil {
