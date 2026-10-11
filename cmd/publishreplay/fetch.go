@@ -36,7 +36,7 @@ type compareResult struct {
 	// MergeCommits counts the merges on the push's own first-parent chain
 	// from head back to base, and MergeOnly says that chain is nothing but
 	// merges, so the push changed nothing in the PR diff. Schema marks
-	// entries that carry these fields; older ones are fetched again.
+	// entries that carry the chain; a push lookup fetches older ones again.
 	Status       string `json:"status,omitempty"`
 	Commits      int    `json:"commits,omitempty"`
 	MergeCommits int    `json:"merge_commits,omitempty"`
@@ -113,11 +113,24 @@ func compareKey(owner, repo, base, head string) string {
 	return fmt.Sprintf("%s_%s_%s_%s", owner, repo, short(base), short(head))
 }
 
+// compare answers which files changed between two heads from any cached
+// entry, whatever its schema: the file list has never changed shape.
 func (s *store) compare(owner, repo, base, head string) (compareResult, bool, error) {
+	return s.lookup(owner, repo, base, head, 0)
+}
+
+// push is the compare between consecutive round heads, which must carry
+// the commit chain; an entry from before the chain is fetched again when
+// online and answers as a real push when offline.
+func (s *store) push(owner, repo, base, head string) (compareResult, bool, error) {
+	return s.lookup(owner, repo, base, head, compareSchema)
+}
+
+func (s *store) lookup(owner, repo, base, head string, schema int) (compareResult, bool, error) {
 	path := filepath.Join(s.dir, "compare", compareKey(owner, repo, base, head)+".json")
 	if raw, err := os.ReadFile(path); err == nil {
 		var res compareResult
-		if err := json.Unmarshal(raw, &res); err == nil && (res.Schema >= compareSchema || res.Error != "" || s.f == nil) {
+		if err := json.Unmarshal(raw, &res); err == nil && (res.Schema >= schema || res.Error != "" || s.f == nil) {
 			return res, res.complete(), nil
 		}
 	}
@@ -348,13 +361,17 @@ func prefetch(s *store, dumps []*prDump, bots func(*prDump) map[string]bool, wor
 				seen[r.SHA7] = true
 				jobs = append(jobs, func() error { _, _, err := s.sidecar(d.Owner, d.Repo, d.Number, r.SHA7); return err })
 			}
-			for _, prev := range rs[:i] {
+			for j, prev := range rs[:i] {
 				prev := prev
 				key := compareKey(d.Owner, d.Repo, prev.SHA, r.SHA)
 				if prev.SHA == r.SHA || seenCompare[key] {
 					continue
 				}
 				seenCompare[key] = true
+				if j == i-1 {
+					jobs = append(jobs, func() error { _, _, err := s.push(d.Owner, d.Repo, prev.SHA, r.SHA); return err })
+					continue
+				}
 				jobs = append(jobs, func() error { _, _, err := s.compare(d.Owner, d.Repo, prev.SHA, r.SHA); return err })
 			}
 		}

@@ -658,7 +658,7 @@ func TestParseCompare_JudgesThePushByItsFirstParentChain(t *testing.T) {
 	}
 }
 
-func TestStore_RefetchesCompareEntriesWithoutAStatusWhenOnline(t *testing.T) {
+func TestStore_PushRefetchesEntriesWithoutTheChainWhenOnline(t *testing.T) {
 	dir := copyFixtures(t)
 	stale := filepath.Join(dir, "compare", "acme_example_aaaaaaa_bbbbbbb.json")
 	if err := os.WriteFile(stale, []byte(`{"files":["a.go"]}`), 0o644); err != nil {
@@ -669,18 +669,21 @@ func TestStore_RefetchesCompareEntriesWithoutAStatusWhenOnline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, known, err := st.compare("acme", "example", "aaaaaaa", "bbbbbbb")
-	if err != nil || !known || !res.MergeOnly || f.compares != 1 {
-		t.Fatalf("an entry without a status is fetched again: res=%+v known=%v err=%v fetches=%d", res, known, err, f.compares)
+	if res, known, err := st.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || !known || res.MergeOnly || f.compares != 0 {
+		t.Fatalf("a file lookup takes the old entry as it is: res=%+v known=%v err=%v fetches=%d", res, known, err, f.compares)
 	}
-	if _, _, err := st.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || f.compares != 1 {
+	res, known, err := st.push("acme", "example", "aaaaaaa", "bbbbbbb")
+	if err != nil || !known || !res.MergeOnly || f.compares != 1 {
+		t.Fatalf("a push lookup fetches an entry without the chain again: res=%+v known=%v err=%v fetches=%d", res, known, err, f.compares)
+	}
+	if _, _, err := st.push("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || f.compares != 1 {
 		t.Fatalf("the refreshed entry is served from the cache: fetches=%d", f.compares)
 	}
 	offline, _ := newStore(dir, nil)
 	if err := os.WriteFile(stale, []byte(`{"files":["a.go"]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if res, known, _ := offline.compare("acme", "example", "aaaaaaa", "bbbbbbb"); !known || res.unchangedDiff() {
+	if res, known, _ := offline.push("acme", "example", "aaaaaaa", "bbbbbbb"); !known || res.unchangedDiff() {
 		t.Fatalf("offline the old entry still answers, as a real push: %+v known=%v", res, known)
 	}
 }

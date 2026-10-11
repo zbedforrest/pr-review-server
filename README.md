@@ -226,8 +226,9 @@ gets no reaction. `PUBLISH_SETTLE_FOOTER=false` removes the footer.
 
 An author who wants silence on a single PR comments `@<handle> stop` (or
 `mute`), or puts a thumbs-down on the sticky summary. The stop is answered
-with a thumbs-up and the thumbs-down with an eyes reaction, nothing more;
-from then on no round, inline comment, reply or reaction reaches that PR,
+with a thumbs-up within a poll cycle; the thumbs-down is read when the next
+round is about to post and answered with an eyes reaction, nothing more.
+From then on no round, inline comment, reply or reaction reaches that PR,
 while reviews keep appearing on the dashboard and a pushed head whose review
 was withheld counts as served. Only the PR author can mute, and only the
 author lifts it, with `@<handle> review`. The mute is a flag on the PR's

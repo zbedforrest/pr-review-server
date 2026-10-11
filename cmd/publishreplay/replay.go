@@ -446,7 +446,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 // one the harness already fetches between round heads; a failed compare
 // reads as a real push with no merge commits.
 func pushSince(d *prDump, s *store, prev, head string, logf func(string, ...any)) compareResult {
-	cmp, _, err := s.compare(d.Owner, d.Repo, prev, head)
+	cmp, _, err := s.push(d.Owner, d.Repo, prev, head)
 	if err != nil {
 		logf("%s: compare %s...%s: %v; push treated as a real change", d.key(), short(prev), short(head), err)
 		return compareResult{Error: err.Error()}
