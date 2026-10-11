@@ -14,7 +14,7 @@ import (
 // fakeListingGitHub is fakeGitHub plus the review-comment listing the ledger
 // policy refreshes right before it posts.
 type fakeListingGitHub struct {
-	*fakeGitHub
+	*fakeThreadGitHub
 	comments []ReviewComment
 	listings int
 	listErr  error
@@ -54,10 +54,10 @@ func externalRound(head string, roots ...reconcile.ExternalFinding) Round {
 }
 
 func TestExternal_MatchBecomesARowALinkAndOneDeltaReply(t *testing.T) {
-	gh, ledger := newFakeGitHub(), newFakeLedger()
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	r := externalRound("sha-1", greptileRetryRoot(900))
 	r.Findings[1].Severity = "critical"
-	rep := publishRound(t, gh, ledger, r)
+	rep := publishThreads(t, gh, ledger, r)
 
 	if rep.InlinePosted != 1 || rep.ExternalMatched != 1 || rep.ExternalReplies != 1 || rep.ThreadReplies != 0 {
 		t.Fatalf("report = %+v", rep)
@@ -95,14 +95,14 @@ func TestExternal_MatchBecomesARowALinkAndOneDeltaReply(t *testing.T) {
 }
 
 func TestExternal_LaterRoundsStaySilentAndKeepTheLink(t *testing.T) {
-	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
 
 	r2 := externalRound("sha-2", greptileRetryRoot(900))
 	r2.Findings[1].Comment = "fetchUser retries a 429 response at once with no backoff, so the rate limiter rejects each retry and nothing ever succeeds."
 	r2.Findings[1].ID = fid("api/users.go", 141, r2.Findings[1].Comment)
 	r2.Findings[1].Line = 141
-	rep := publishRound(t, gh, ledger, r2)
+	rep := publishThreads(t, gh, ledger, r2)
 	if rep.InlinePosted != 0 || rep.ExternalMatched != 0 || rep.ExternalReplies != 0 || len(gh.repliesTo(900)) != 1 {
 		t.Fatalf("a reworded match aliases to the external row and posts nothing: %+v replies=%v", rep, gh.repliesTo(900))
 	}
@@ -119,10 +119,10 @@ func TestExternal_LaterRoundsStaySilentAndKeepTheLink(t *testing.T) {
 }
 
 func TestExternal_SummaryRefreshKeepsTheLinkAndTheScore(t *testing.T) {
-	gh, ledger := newFakeGitHub(), newFakeLedger()
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	r := externalRound("sha-1", greptileRetryRoot(900))
 	r.Findings[1].Severity = "critical"
-	publishRound(t, gh, ledger, r)
+	publishThreads(t, gh, ledger, r)
 	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueCreates[0]}}
 	ledger.rows[m1ID].State = db.PublishedStateDismissed
 
@@ -165,9 +165,48 @@ func TestExternal_ResolvedRootIsNotACandidate(t *testing.T) {
 	}
 }
 
-func TestExternal_ClaimedRootGetsNoSecondReply(t *testing.T) {
+func TestExternal_SummaryRefreshKeepsTheLinkForARewordedFinding(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
+	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueCreates[0]}}
+
+	refresh := externalRound("", greptileRetryRoot(900))
+	refresh.Findings[1].Comment = "fetchUser retries a 429 response at once with no backoff, so the rate limiter rejects each retry and nothing ever succeeds."
+	refresh.Findings[1].ID = fid("api/users.go", 141, refresh.Findings[1].Comment)
+	refresh.Findings[1].Line = 141
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: DefaultPolicy()}
+	if err := p.RefreshSummary(context.Background(), refresh); err != nil {
+		t.Fatal(err)
+	}
+	out := gh.issueEdits[501]
+	if !strings.Contains(out, "1 finding already raised in another reviewer's thread") || !strings.Contains(out, "#discussion_r900") {
+		t.Fatalf("a reworded finding aliases to its external row on refresh:\n%s", out)
+	}
+	if strings.Count(out, "fetchUser retries") > 0 && strings.Index(out, "fetchUser retries") < strings.Index(out, "<details>") {
+		t.Fatalf("the reworded point is listed only under the external fold:\n%s", out)
+	}
+}
+
+func TestExternal_NoThreadListingDeclinesMatching(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
+	rep := publishRound(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
+	if rep.ExternalMatched != 0 || rep.InlinePosted != 2 || len(gh.repliesTo(900)) != 0 {
+		t.Fatalf("without a listing nothing is deferred or replied into: %+v", rep)
+	}
+}
+
+func TestWithoutClaimedRoots(t *testing.T) {
+	refs := []GreptileOnlyRef{{CommentID: 900, Title: "claimed earlier"}, {CommentID: 901, Title: "claimed now"}, {CommentID: 902, Title: "still only Greptile's"}}
+	rows := map[string]*db.PublishedFinding{"a": {ExternalCommentID: 900}, "b": {}}
+	kept := withoutClaimedRoots(refs, rows, []*db.PublishedFinding{{ExternalCommentID: 901}})
+	if len(kept) != 1 || kept[0].CommentID != 902 {
+		t.Fatalf("kept = %+v", kept)
+	}
+}
+
+func TestExternal_ClaimedRootGetsNoSecondReply(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
 
 	// A terser finding that shares too little with the first row's prose to
 	// alias to it, but enough with Greptile's root to match it.
@@ -178,7 +217,7 @@ func TestExternal_ClaimedRootGetsNoSecondReply(t *testing.T) {
 	}
 	r2.Findings = []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "Narrative."), other}
 	r2.Commentable = map[string]map[int]bool{"api/users.go": {139: true}}
-	rep := publishRound(t, gh, ledger, r2)
+	rep := publishThreads(t, gh, ledger, r2)
 	if rep.InlinePosted != 0 || len(gh.repliesTo(900)) != 1 {
 		t.Fatalf("the root is claimed, so no root and no second delta: %+v replies=%d", rep, len(gh.repliesTo(900)))
 	}
@@ -188,7 +227,7 @@ func TestExternal_ClaimedRootGetsNoSecondReply(t *testing.T) {
 }
 
 func TestExternal_RelistsRightBeforePostingWhenGitHubAllows(t *testing.T) {
-	gh := &fakeListingGitHub{fakeGitHub: newFakeGitHub(), comments: []ReviewComment{
+	gh := &fakeListingGitHub{fakeThreadGitHub: newFakeThreadGitHub(), comments: []ReviewComment{
 		{ID: 901, Author: "Copilot", Path: "api/users.go", Line: 141, Body: "fetchUser retries a 429 at once: the loop never backs off, so the rate limiter rejects every retry and the call fails."},
 		{ID: 902, Author: "Copilot", Path: "api/users.go", Line: 141, InReplyToID: 901, Body: "same again"},
 	}}
@@ -205,7 +244,7 @@ func TestExternal_RelistsRightBeforePostingWhenGitHubAllows(t *testing.T) {
 		t.Fatalf("row = %+v", row)
 	}
 
-	gh2 := &fakeListingGitHub{fakeGitHub: newFakeGitHub(), listErr: fmt.Errorf("502")}
+	gh2 := &fakeListingGitHub{fakeThreadGitHub: newFakeThreadGitHub(), listErr: fmt.Errorf("502")}
 	p = &Publisher{GH: gh2, Ledger: newFakeLedger(), Policy: testPolicy()}
 	rep, err = p.Publish(context.Background(), externalRound("sha-1", greptileRetryRoot(900)))
 	if err != nil || rep.ExternalMatched != 1 {
@@ -214,14 +253,14 @@ func TestExternal_RelistsRightBeforePostingWhenGitHubAllows(t *testing.T) {
 }
 
 func TestExternal_OwnRootsAndKnownRowsAreNotMatched(t *testing.T) {
-	gh, ledger := newFakeGitHub(), newFakeLedger()
-	publishRound(t, gh, ledger, externalRound("sha-1"))
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, externalRound("sha-1"))
 	if len(gh.reviews) != 1 || len(gh.reviews[0].comments) != 2 {
 		t.Fatalf("round one posts both roots: %+v", gh.reviews)
 	}
 	// Greptile restates PRism's point after PRism posted it: the open row
 	// keeps its thread and the later root is not a match.
-	rep := publishRound(t, gh, ledger, externalRound("sha-2", greptileRetryRoot(900)))
+	rep := publishThreads(t, gh, ledger, externalRound("sha-2", greptileRetryRoot(900)))
 	if rep.ExternalMatched != 0 || rep.InlinePosted != 0 || len(gh.repliesTo(900)) != 0 {
 		t.Fatalf("report = %+v", rep)
 	}
@@ -241,11 +280,11 @@ func TestExternal_OffKeepsTheTagOnlyBehaviour(t *testing.T) {
 }
 
 func TestExternal_NoDeltaWhenTheRootSaysItAll(t *testing.T) {
-	gh, ledger := newFakeGitHub(), newFakeLedger()
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	root := greptileRetryRoot(900)
 	root.Suggestion = "time.Sleep(backoff(i))"
 	root.Body += " Send the request with the field unset. The handler returns 500 instead of 400."
-	rep := publishRound(t, gh, ledger, externalRound("sha-1", root))
+	rep := publishThreads(t, gh, ledger, externalRound("sha-1", root))
 	if rep.ExternalMatched != 1 || rep.ExternalReplies != 0 || len(gh.repliesTo(900)) != 0 {
 		t.Fatalf("report = %+v replies=%v", rep, gh.repliesTo(900))
 	}

@@ -94,6 +94,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	if p.Policy.ExternalReconcile {
 		p.refreshExternal(ctx, &r, rows)
 		external = p.matchExternal(ctx, &r, rows, now, threads)
+		r.GreptileOnly = withoutClaimedRoots(r.GreptileOnly, rows, external.rows)
 	}
 	notes := append(p.clampSeverity(&r, rows), external.notes...)
 
@@ -187,9 +188,9 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 				}
 				// The stored id stands in for the resolve, but the note needs the
 				// listing to show the thread open.
-				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved {
+				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved && threads.resolving() {
 					notes = append(notes, threadNote{commentID: row.CommentID, body: notSeenNote(r.HeadSHA)})
-				} else if !listed && threads.listFailed() && row.CommentID != 0 {
+				} else if !listed && threads.listFailed() && threads.resolving() && row.CommentID != 0 {
 					rep.ThreadReplyFailures++
 				}
 				rep.Hygiene.noteResolved(row, r.HeadSHA, cs.Files)
@@ -270,7 +271,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			threads.apply(ctx, actions, &rep)
 			return rep, fmt.Errorf("update finding %s: %w", w.row.Fingerprint, err)
 		}
-		if threads != nil && w.thread != noThreadChange && w.row.CommentID != 0 {
+		if threads.resolving() && w.thread != noThreadChange && w.row.CommentID != 0 {
 			actions = append(actions, threadAction{nodeID: w.row.ThreadNodeID, resolve: w.thread == resolveThread})
 		}
 	}

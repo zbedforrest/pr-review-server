@@ -49,18 +49,22 @@ type threadIndex struct {
 	byRoot map[int64]ReviewThread
 	loaded bool
 	err    error
+	// resolves is Policy.ResolveThreads: the listing is read either way,
+	// the resolve and unresolve calls and their notes go out only with it.
+	resolves bool
 }
 
+// newThreadIndex is nil only when GitHub cannot list threads at all.
 func newThreadIndex(gh GitHub, pol Policy, owner, repo string, number int) *threadIndex {
-	if !pol.ResolveThreads {
-		return nil
-	}
 	resolver, ok := gh.(ThreadResolver)
 	if !ok {
 		return nil
 	}
-	return &threadIndex{gh: resolver, owner: owner, repo: repo, number: number}
+	return &threadIndex{gh: resolver, owner: owner, repo: repo, number: number, resolves: pol.ResolveThreads}
 }
+
+// resolving reports whether the round may change thread state.
+func (ti *threadIndex) resolving() bool { return ti != nil && ti.resolves }
 
 func (ti *threadIndex) reload(ctx context.Context) {
 	ti.loaded = true
@@ -125,7 +129,7 @@ type threadAction struct {
 }
 
 func (ti *threadIndex) apply(ctx context.Context, actions []threadAction, rep *Report) {
-	if ti == nil {
+	if !ti.resolving() {
 		return
 	}
 	for _, a := range actions {

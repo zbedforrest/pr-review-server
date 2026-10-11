@@ -104,23 +104,26 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		}
 	}
 
+	// The Greptile reconcile still runs beside the external roots: a finding
+	// that restates a Greptile root but misses the external bar keeps its
+	// source tag, and the publisher drops a Greptile-only point once a row
+	// claims that root.
 	var externalRoots []reconcile.ExternalFinding
-	tags := map[string]string{}
-	var greptileOnly []publisher.GreptileOnlyRef
 	if pol.ExternalReconcile && !pol.LegacyLedger {
 		externalRoots = reconcile.ParseExternalComments(external, ledgerCommentIDs)
-	} else {
-		res := reconcile.Reconcile(pl.Findings, reconcile.ParseGreptileComments(external))
-		for _, t := range res.Findings {
-			if t.SourceTag != reconcile.SourceTagPrismOnly {
-				tags[t.Finding.ID] = t.SourceTag
-			}
+	}
+	tags := map[string]string{}
+	var greptileOnly []publisher.GreptileOnlyRef
+	res := reconcile.Reconcile(pl.Findings, reconcile.ParseGreptileComments(external))
+	for _, t := range res.Findings {
+		if t.SourceTag != reconcile.SourceTagPrismOnly {
+			tags[t.Finding.ID] = t.SourceTag
 		}
-		for _, g := range res.GreptileOnly {
-			greptileOnly = append(greptileOnly, publisher.GreptileOnlyRef{
-				Title: g.Title, File: g.File, Line: g.StartLine, Severity: g.Severity, CommentID: g.CommentID,
-			})
-		}
+	}
+	for _, g := range res.GreptileOnly {
+		greptileOnly = append(greptileOnly, publisher.GreptileOnlyRef{
+			Title: g.Title, File: g.File, Line: g.StartLine, Severity: g.Severity, CommentID: g.CommentID,
+		})
 	}
 	commentable := make(map[string]map[int]bool, len(patches))
 	for file, patch := range patches {

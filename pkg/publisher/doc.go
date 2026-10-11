@@ -89,8 +89,11 @@
 // no second reply. A summary refresh after a concession keeps the external
 // links. The delta reply runs inside the publish gate like every other
 // write of the round.
-// Off, only Greptile roots are parsed, a match tags the finding "both" and
-// the root is still posted.
+// The Greptile reconcile runs beside it: a finding that restates a Greptile
+// root but misses the external bar keeps its "both" tag, and a Greptile-only
+// point whose root a row claims is dropped so nothing is listed twice. Off,
+// only Greptile roots are parsed, a match tags the finding "both" and the
+// root is still posted.
 //
 // Conceded fix claims. The reply path marks a conceded fix claim fixed, not
 // dismissed, and resolves its thread; a conceded pushback or a withdrawal
@@ -99,9 +102,12 @@
 // number into Rounds, which no finding row otherwise carries; a settled
 // verdict (intentional, won't fix) dismisses and resolves too.
 //
-// Threads. Thread changes need Policy.ResolveThreads (PUBLISH_THREAD_RESOLUTION,
-// on unless set to false) and a GitHub that implements ThreadResolver; without
-// either the ledger moves and the threads stay as they are. A root's thread
+// Threads. The thread listing is read whenever the GitHub implements
+// ThreadResolver: it supplies node ids and tells a settled root from an open
+// one, and without it the round declines external matching entirely. Thread
+// changes and their notes also need Policy.ResolveThreads
+// (PUBLISH_THREAD_RESOLUTION, on unless set to false); without it the ledger
+// moves and the threads stay as they are. A root's thread
 // node id is stored when the root is posted, from one listing taken after
 // the review; when that listing lags the write, or the row predates the
 // column, the id is found through the listing on the row's first transition.
