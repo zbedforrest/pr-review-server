@@ -95,7 +95,7 @@ func TestPublishGitHubReview_DeniedAuthorRecordsAPublishDenial(t *testing.T) {
 	database, err := db.NewGormSQLite(":memory:")
 	require.NoError(t, err)
 	defer database.Close()
-	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	require.NoError(t, database.SetSetting(SettingPublishEnabledAuthors, "alice"))
 	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
 
 	_, outcome := p.publishGitHubReview(context.Background(), github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "bob"}, []byte(scoredSidecar))
@@ -114,7 +114,7 @@ func TestPollerRecordsNoUnwiredHygieneAction(t *testing.T) {
 	database, err := db.NewGormSQLite(":memory:")
 	require.NoError(t, err)
 	defer database.Close()
-	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	require.NoError(t, database.SetSetting(SettingPublishEnabledAuthors, "alice"))
 	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
 	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc"}
 
@@ -141,7 +141,7 @@ func TestPublishGitHubReview_OptedOutAuthorRecordsTheOptOutAndTheDenial(t *testi
 	database, err := db.NewGormSQLite(":memory:")
 	require.NoError(t, err)
 	defer database.Close()
-	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "*"))
+	require.NoError(t, database.SetSetting(SettingPublishEnabledAuthors, "*"))
 	require.NoError(t, database.SetSetting(SettingPublishOptOutAuthors, "alice"))
 	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
 

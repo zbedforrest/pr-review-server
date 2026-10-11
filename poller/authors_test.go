@@ -88,7 +88,7 @@ func TestPublishGate_OptedOutLoginInATeamIsDeniedOnEveryPostingPath(t *testing.T
 	mockGH := NewMockGitHubClient()
 	p := newTestPoller(mockGH, database)
 	teamAware(p, mockGH, map[string][]string{"xo-team": {"alice", "bob"}})
-	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "team:xo-team,carol,*"))
+	require.NoError(t, database.SetSetting(SettingPublishEnabledAuthors, "team:xo-team,carol,*"))
 	require.NoError(t, database.SetSetting(SettingPublishOptOutAuthors, " Alice ,carol"))
 	require.NoError(t, database.SetSetting(settingAutoReviewReadyPRs, "true"))
 	require.NoError(t, database.SetSetting(SettingAutoReviewLiteAuthors, "team:xo-team"))

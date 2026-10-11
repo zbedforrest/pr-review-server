@@ -11,10 +11,12 @@
 //
 // --dumps reads GitHub dumps (one PR per file) and is always a dry run: it
 // lists and counts, with compares through gh cached under <cache>/compare/.
-// --pr reads each PR live through the GitHub App credentials (GITHUB_TOKEN
-// or the GITHUB_APP_* variables) and, with --dry-run=false, closes the stale
-// threads. Live mode also needs the ledger (DATABASE_URL or DB_PATH) for the
-// publish gate and refuses to run while PUBLISH_THREAD_RESOLUTION is off.
+// --pr reads each PR live and, with --dry-run=false, closes the stale
+// threads. Live writes should use the GITHUB_APP_* credentials so the note
+// is PRism's: with GITHUB_TOKEN alone the note and the resolve carry the
+// token owner's human account. Live mode also needs the ledger (DATABASE_URL
+// or DB_PATH) for the publish gate and refuses to run while
+// PUBLISH_THREAD_RESOLUTION is off.
 package main
 
 import (
@@ -48,7 +50,7 @@ func main() {
 	cacheDir := flag.String("cache", "", "compare cache directory for --dumps (shared with publishreplay's --sidecars)")
 	offline := flag.Bool("offline", false, "never run gh for a compare; an uncached compare counts as unknown")
 	bot := flag.String("bot", "", "bot login that posted the threads (default: detected from finding markers)")
-	csvPath := flag.String("csv", "", "write the stale thread listing here instead of stdout")
+	csvPath := flag.String("csv", "", "write the stale thread listing here as CSV instead of TSV on stderr")
 	outPath := flag.String("out", "", "write the summary JSON here as well as to stdout")
 	limit := flag.Int("limit", 0, "scan at most this many PRs (0 = all)")
 	var refs []prRef
@@ -68,6 +70,9 @@ func main() {
 	}
 	if !*dryRun && *dumpsDir != "" {
 		log.Fatal("--dumps is a dry run; live mode takes --pr")
+	}
+	if *dumpsDir != "" && *cacheDir == "" {
+		log.Print("warning: no --cache, so every compare is unknown and stale_file_changed counts nothing")
 	}
 	bots := map[string]bool{}
 	if *bot != "" {
@@ -137,7 +142,6 @@ func main() {
 	fmt.Println(string(out))
 }
 
-// scanDumps classifies every PRism thread in a dump directory.
 func scanDumps(dumpsDir, cacheDir string, offline bool, bots map[string]bool, limit int) ([]*pr, []decision, error) {
 	dumps, err := replaykit.LoadDumps(dumpsDir)
 	if err != nil {
@@ -160,9 +164,6 @@ func scanDumps(dumpsDir, cacheDir string, offline bool, bots map[string]bool, li
 	return prs, decisions, nil
 }
 
-// dumpCompares answers compares for the dump source from the shared cache,
-// filling it through gh unless offline. Without a cache every compare is
-// unknown.
 func dumpCompares(cacheDir string, offline bool) (changedFiles, error) {
 	if cacheDir == "" {
 		return func(string, string, string, string) ([]string, bool) { return nil, false }, nil
@@ -185,8 +186,6 @@ func dumpCompares(cacheDir string, offline bool) (changedFiles, error) {
 	}, nil
 }
 
-// ghCompares is the fetcher for the dump source: compares through gh, no
-// sidecars.
 type ghCompares struct{}
 
 func (ghCompares) Sidecar(string, string, int, string) ([]byte, error) {
@@ -197,12 +196,11 @@ func (ghCompares) Compare(owner, repo, base, head string) (replaykit.CompareResu
 	return replaykit.CompareViaGH(owner, repo, base, head)
 }
 
-// writeListing prints one row per stale thread: the PR, the verdict, the
-// root comment, its path, the commit it was posted against, the head, the
-// outdated flag, when it was posted and a link to it. It names real
-// repositories, so the file belongs outside the repo.
+// writeListing names real repositories, so a CSV file belongs outside the
+// repo; without one the listing goes to stderr so stdout stays the JSON
+// summary.
 func writeListing(path string, stale []decision) error {
-	var w io.Writer = os.Stdout
+	var w io.Writer = os.Stderr
 	if path != "" {
 		fh, err := os.Create(path)
 		if err != nil {
@@ -233,8 +231,6 @@ func writeListing(path string, stale []decision) error {
 	return cw.Error()
 }
 
-// newGitHubClient builds the client the way the server does: the App
-// installation when GITHUB_APP_ID is set, a personal token otherwise.
 func newGitHubClient(ctx context.Context) (*github.Client, error) {
 	if appID := os.Getenv("GITHUB_APP_ID"); appID != "" {
 		app, err := github.NewAppClient(appID, os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH"), os.Getenv("GITHUB_APP_INSTALLATION_ID"))
@@ -256,9 +252,6 @@ func newGitHubClient(ctx context.Context) (*github.Client, error) {
 	return github.NewClient(token, os.Getenv("GITHUB_USERNAME")), nil
 }
 
-// openLedgerGate opens the ledger the server uses and builds the server's
-// publish gate from its settings, team entries resolved through the GitHub
-// client for GITHUB_ORG_NAME.
 func openLedgerGate(gh *github.Client) (*db.GormDB, gate, error) {
 	var ledger *db.GormDB
 	var err error
@@ -273,7 +266,7 @@ func openLedgerGate(gh *github.Client) (*db.GormDB, gate, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	enabled, err := ledger.GetSetting("publish_enabled_authors")
+	enabled, err := ledger.GetSetting(poller.SettingPublishEnabledAuthors)
 	if err != nil {
 		return nil, nil, err
 	}

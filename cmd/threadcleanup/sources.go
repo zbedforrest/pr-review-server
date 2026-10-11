@@ -65,7 +65,6 @@ func stateOf(state string, merged bool) prState {
 	return prOpen
 }
 
-// githubSource is the slice of the GitHub client the live reader needs.
 type githubSource interface {
 	GetPR(ctx context.Context, owner, repo string, number int) (*gogithub.PullRequest, *gogithub.Response, error)
 	ListReviewThreads(ctx context.Context, owner, repo string, number int) ([]github.ReviewThreadInfo, error)
@@ -119,7 +118,6 @@ func fromGitHub(ctx context.Context, src githubSource, owner, repo string, numbe
 	return p, nil
 }
 
-// parsePRRef reads owner/repo#number.
 func parsePRRef(s string) (owner, repo string, number int, err error) {
 	hash := strings.LastIndex(s, "#")
 	slash := strings.Index(s, "/")

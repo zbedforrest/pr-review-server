@@ -49,7 +49,7 @@ func TestPublishNeverWidensToAutoReviewAuthors(t *testing.T) {
 	database, err := db.NewGormSQLite(":memory:")
 	require.NoError(t, err)
 	defer database.Close()
-	require.NoError(t, database.SetSetting(settingPublishEnabledAuthors, "alice"))
+	require.NoError(t, database.SetSetting(SettingPublishEnabledAuthors, "alice"))
 	require.NoError(t, database.SetSetting(SettingAutoReviewAuthors, "*"))
 	bob := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "bob"}
 

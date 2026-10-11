@@ -9,15 +9,11 @@ import (
 	"pr-review-server/pkg/publisher"
 )
 
-// closer is the slice of the GitHub client live mode writes through: the
-// resolve mutation the publisher's thread resolver wraps, plus the reply
-// call the one-line note goes out on.
 type closer interface {
 	ResolveThread(ctx context.Context, owner, repo, threadNodeID string) error
 	CreateReviewCommentReply(ctx context.Context, owner, repo string, number int, commentID int64, body string) (int64, error)
 }
 
-// gate is the publish gate: whether PRism may post on this author's PRs.
 type gate func(author string) bool
 
 type applied struct {
@@ -30,7 +26,6 @@ type applied struct {
 	LedgerFailures  int `json:"ledger_failures"`
 }
 
-// note is the one line a closed thread gets, naming why it closed.
 func note(d decision) string {
 	switch d.Verdict {
 	case stalePRMerged:
@@ -42,10 +37,10 @@ func note(d decision) string {
 	}
 }
 
-// apply closes every stale thread whose author passes the gate: note first
-// so it lands in an open thread, then the resolve, then the ledger row moves
-// to fixed so the next round does not post the same note again. A lost note
-// or ledger write is counted and the thread still resolves, as in W2-3.
+// apply closes every stale thread whose author passes the gate. The resolve
+// goes first: a thread that resolved is skipped by every later run, so a
+// failing resolve never leaves a trail of notes. The note and the ledger
+// row follow and a lost one is only counted.
 func apply(ctx context.Context, gh closer, ledger publisher.Ledger, allowed gate, stale []decision, logf func(string, ...any)) applied {
 	var a applied
 	rows := map[*pr]openRows{}
@@ -60,18 +55,18 @@ func apply(ctx context.Context, gh closer, ledger publisher.Ledger, allowed gate
 			logf("%s: comment %d: no thread node id", p.ref(), d.Thread.RootCommentID)
 			continue
 		}
-		if _, err := gh.CreateReviewCommentReply(ctx, p.Owner, p.Repo, p.Number, d.Thread.RootCommentID, note(d)); err != nil {
-			a.NoteFailures++
-			logf("%s: note on comment %d lost: %v", p.ref(), d.Thread.RootCommentID, err)
-		} else {
-			a.Notes++
-		}
 		if err := gh.ResolveThread(ctx, p.Owner, p.Repo, d.Thread.NodeID); err != nil {
 			a.ResolveFailures++
 			logf("%s: resolve %s lost: %v", p.ref(), d.Thread.NodeID, err)
 			continue
 		}
 		a.Resolved++
+		if _, err := gh.CreateReviewCommentReply(ctx, p.Owner, p.Repo, p.Number, d.Thread.RootCommentID, note(d)); err != nil {
+			a.NoteFailures++
+			logf("%s: note on comment %d lost: %v", p.ref(), d.Thread.RootCommentID, err)
+		} else {
+			a.Notes++
+		}
 		if ledger == nil {
 			continue
 		}
@@ -93,8 +88,8 @@ func apply(ctx context.Context, gh closer, ledger publisher.Ledger, allowed gate
 	return a
 }
 
-// openRows indexes a PR's open finding rows by root comment id, and by
-// fingerprint for rows that predate the comment id column.
+// openRows indexes by fingerprint as well because rows predating the
+// comment id column have none.
 type openRows struct {
 	byComment     map[int64]*db.PublishedFinding
 	byFingerprint map[string]*db.PublishedFinding

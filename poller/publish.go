@@ -20,7 +20,7 @@ import (
 // GitHub publication is gated per PR author so the pilot can widen team by
 // team from the settings API without a deploy. "*" enables everyone.
 const (
-	settingPublishEnabledAuthors    = "publish_enabled_authors"
+	SettingPublishEnabledAuthors    = "publish_enabled_authors"
 	settingPublishInlineCap         = "publish_inline_cap"
 	settingPublishInlinePRCap       = "publish_inline_pr_cap"
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"

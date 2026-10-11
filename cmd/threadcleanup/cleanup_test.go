@@ -251,14 +251,14 @@ func TestApply(t *testing.T) {
 	allowed := func(author string) bool { return author != "optout" }
 	var logged []string
 	a := apply(context.Background(), gh, ledger, allowed, stale, func(f string, args ...any) { logged = append(logged, f) })
-	want := applied{Resolved: 2, Notes: 3, ResolveFailures: 2, GateDenied: 1, LedgerRows: 2}
+	want := applied{Resolved: 2, Notes: 2, ResolveFailures: 2, GateDenied: 1, LedgerRows: 2}
 	if a != want {
 		t.Errorf("applied = %+v, want %+v", a, want)
 	}
 	wantCalls := []string{
-		"note Resolving: the PR was merged.", "resolve PRRT_1",
-		"note Resolving: svc/retry.go changed after this comment (now at ccccccc); reopen it if the point still stands.", "resolve PRRT_3",
-		"note Resolving: app/cache.go changed after this comment (now at ccccccc); reopen it if the point still stands.", "resolve PRRT_bad",
+		"resolve PRRT_1", "note Resolving: the PR was merged.",
+		"resolve PRRT_3", "note Resolving: svc/retry.go changed after this comment (now at ccccccc); reopen it if the point still stands.",
+		"resolve PRRT_bad",
 	}
 	if strings.Join(gh.calls, "|") != strings.Join(wantCalls, "|") {
 		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(gh.calls, "\n"), strings.Join(wantCalls, "\n"))
@@ -287,8 +287,23 @@ func TestApply_LostNoteStillResolves(t *testing.T) {
 	if a.Resolved != 1 || a.NoteFailures != 1 || a.Notes != 0 {
 		t.Errorf("applied = %+v", a)
 	}
-	if len(gh.calls) != 2 || gh.calls[0] != "note Resolving: the PR was closed without merging." {
+	if len(gh.calls) != 2 || gh.calls[0] != "resolve PRRT_2" || gh.calls[1] != "note Resolving: the PR was closed without merging." {
 		t.Errorf("calls = %v", gh.calls)
+	}
+}
+
+func TestApply_FailedResolvePostsNothing(t *testing.T) {
+	p := &pr{Owner: "acme", Repo: "example", Number: 2, Author: "dev", State: prMerged}
+	gh := &fakeCloser{failNodeID: "PRRT_2"}
+	stale := []decision{{PR: p, Thread: thread{RootCommentID: 201, NodeID: "PRRT_2"}, Verdict: stalePRMerged}}
+	for run := 0; run < 2; run++ {
+		a := apply(context.Background(), gh, nil, func(string) bool { return true }, stale, func(string, ...any) {})
+		if a.Resolved != 0 || a.ResolveFailures != 1 || a.Notes != 0 || a.NoteFailures != 0 {
+			t.Errorf("run %d: applied = %+v", run, a)
+		}
+	}
+	if len(gh.calls) != 2 || gh.calls[0] != "resolve PRRT_2" || gh.calls[1] != "resolve PRRT_2" {
+		t.Errorf("calls = %v, want two resolves and no note", gh.calls)
 	}
 }
 

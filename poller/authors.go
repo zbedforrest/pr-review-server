@@ -95,7 +95,7 @@ func NewPublishGate(teams *github.TeamResolver, enabled, optOut string) PublishG
 // has: the returned gate still matches nobody.
 func (p *Poller) publishGate() (PublishGate, error) {
 	g := PublishGate{teams: p.teams}
-	enabled, err := p.db.GetSetting(settingPublishEnabledAuthors)
+	enabled, err := p.db.GetSetting(SettingPublishEnabledAuthors)
 	if err != nil {
 		return g, err
 	}
