@@ -220,6 +220,25 @@ func (g *GormDB) SetPublishedFindingState(owner, repo string, number int, finger
 		Update("state", state).Error
 }
 
+// MarkPublishedFindingFixed moves a row to fixed on a conceded fix claim and
+// stamps it with the PR's last published head, so the next round counts the
+// fix once even when the row was last seen at an older head.
+func (g *GormDB) MarkPublishedFindingFixed(owner, repo string, number int, fingerprint string) error {
+	var head string
+	if err := g.db.Model(&PublishedFindingModel{}).Select("last_seen_sha").
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ?", owner, repo, number, PublishedKindSummary).
+		Limit(1).Scan(&head).Error; err != nil {
+		return err
+	}
+	updates := map[string]any{"state": PublishedStateFixed}
+	if head != "" {
+		updates["last_seen_sha"] = head
+	}
+	return g.db.Model(&PublishedFindingModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ?", owner, repo, number, fingerprint).
+		Updates(updates).Error
+}
+
 // ContestPublishedFinding moves an open or resolved row to contested and
 // reports whether it did; a row already dismissed or contested is left as it
 // is, so a thumbs-down seen on every scan never undoes a later concession. A

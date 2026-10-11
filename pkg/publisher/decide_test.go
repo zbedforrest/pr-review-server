@@ -423,7 +423,6 @@ func TestChangedLines(t *testing.T) {
 func TestLedger_ConcededFixClaimCountsOnceInTheNextSummary(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
 	publishRound(t, gh, ledger, ledgerRoundOne())
-	// The reply path marks the row fixed between rounds.
 	row := ledger.get(db.PublishedKindFinding, m1ID)
 	row.State = db.PublishedStateFixed
 

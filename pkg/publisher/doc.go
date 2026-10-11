@@ -68,29 +68,34 @@
 // on unless set to false) every root thread PRism did not post (Greptile,
 // Copilot, CodeRabbit, Gemini, code scanning, other bots, humans) is a match
 // candidate for a shown finding the ledger does not know: same file, the
-// finding's line within ten of the root's range, and either containment at
-// or above 0.35 (shared tokens over the shorter of the two texts, or of one
+// finding's line within ten of the root's range, and containment at or
+// above 0.35 (shared tokens over the shorter of the two texts, or of one
 // side's headline against the other's body, with a floor of three shared
-// words, four for a headline) or a contract subject named in the root. The
-// roots are re-listed right before the round posts when the GitHub
+// words, four for a headline). A contract subject named in the root only
+// breaks a tie between roots of equal score: distinct defects share a
+// symbol all the time, so a name alone never matches. The roots are re-listed right before the round posts when the GitHub
 // implements ReviewCommentLister, so a reviewer who commented seconds
 // earlier is seen. A match becomes an external row (Kind annotation,
 // ExternalCommentID the root, SourceTag "external:<source>"): never a root
-// of PRism's own, dropped from the counts and the score, linked from the
-// summary under "already raised in another reviewer's thread" for as long
-// as the point is raised, and answered once inside that thread with only
-// what the root lacks (the impact sentence, the suggestion block, how to
-// verify). A root some row already claims gets no second reply. The delta
-// reply runs inside the publish gate like every other write of the round.
+// of PRism's own, dropped from the new and still-open counts but still in
+// the merge-confidence score (the score judges the PR, not who found the
+// defect first), linked from the summary under "already raised in another
+// reviewer's thread" for as long as the point is raised, and answered once
+// inside that thread with only what the root lacks (the impact sentence,
+// the suggested code as a plain fence since a suggestion block would apply
+// to the root's lines, how to verify). A root some row already claims gets
+// no second reply. A summary refresh after a concession keeps the external
+// links. The delta reply runs inside the publish gate like every other
+// write of the round.
 // Off, only Greptile roots are parsed, a match tags the finding "both" and
 // the root is still posted.
 //
 // Conceded fix claims. The reply path marks a conceded fix claim fixed, not
 // dismissed, and resolves its thread; a conceded pushback or a withdrawal
-// still dismisses. Such a row is still at the last published head when the
-// next round runs, so that round counts it as fixed once and writes its
-// round number into Rounds, which no finding row otherwise carries; a
-// settled verdict (intentional, won't fix) dismisses and resolves too.
+// still dismisses. The reply path stamps such a row with the last published
+// head, so the next round counts it as fixed once and writes its round
+// number into Rounds, which no finding row otherwise carries; a settled
+// verdict (intentional, won't fix) dismisses and resolves too.
 //
 // Threads. Thread changes need Policy.ResolveThreads (PUBLISH_THREAD_RESOLUTION,
 // on unless set to false) and a GitHub that implements ThreadResolver; without

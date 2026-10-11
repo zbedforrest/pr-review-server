@@ -55,7 +55,9 @@ func externalRound(head string, roots ...reconcile.ExternalFinding) Round {
 
 func TestExternal_MatchBecomesARowALinkAndOneDeltaReply(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
-	rep := publishRound(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
+	r := externalRound("sha-1", greptileRetryRoot(900))
+	r.Findings[1].Severity = "critical"
+	rep := publishRound(t, gh, ledger, r)
 
 	if rep.InlinePosted != 1 || rep.ExternalMatched != 1 || rep.ExternalReplies != 1 || rep.ThreadReplies != 0 {
 		t.Fatalf("report = %+v", rep)
@@ -71,8 +73,11 @@ func TestExternal_MatchBecomesARowALinkAndOneDeltaReply(t *testing.T) {
 	if len(replies) != 1 || !strings.HasPrefix(replies[0], ExternalReplyMarker(retryID)) {
 		t.Fatalf("delta reply = %q", replies)
 	}
-	if !strings.Contains(replies[0], "```suggestion") || !strings.Contains(replies[0], "**How to verify:**") {
-		t.Fatalf("the delta carries the suggestion and the experiment Greptile lacks: %q", replies[0])
+	if !strings.Contains(replies[0], "Suggested change for line 140:\n```\n\ttime.Sleep(backoff(i))\n```") || !strings.Contains(replies[0], "**How to verify:**") {
+		t.Fatalf("the delta carries the suggested code and the experiment Greptile lacks: %q", replies[0])
+	}
+	if strings.Contains(replies[0], "```suggestion") {
+		t.Fatalf("a suggestion block in another reviewer's thread would apply to that thread's lines: %q", replies[0])
 	}
 	if strings.Contains(replies[0], "fails for users today") {
 		t.Fatalf("an impact Greptile already states is not repeated: %q", replies[0])
@@ -84,8 +89,8 @@ func TestExternal_MatchBecomesARowALinkAndOneDeltaReply(t *testing.T) {
 	if i := strings.Index(summary, "Retry loop never backs off"); i < 0 || i < strings.Index(summary, "<details>") {
 		t.Fatalf("a matched finding is listed only under the external fold:\n%s", summary)
 	}
-	if rep.Confidence != 4 {
-		t.Fatalf("the matched finding leaves the score to PRism's own: %d", rep.Confidence)
+	if rep.Confidence != 2 || !strings.Contains(summary, "merge confidence 2/5") {
+		t.Fatalf("the matched critical still scores the PR: %d\n%s", rep.Confidence, summary)
 	}
 }
 
@@ -110,6 +115,44 @@ func TestExternal_LaterRoundsStaySilentAndKeepTheLink(t *testing.T) {
 	}
 	if rows := ledger.rows; len(rows) != 3 {
 		t.Fatalf("no second row for the point: %d rows", len(rows))
+	}
+}
+
+func TestExternal_SummaryRefreshKeepsTheLinkAndTheScore(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	r := externalRound("sha-1", greptileRetryRoot(900))
+	r.Findings[1].Severity = "critical"
+	publishRound(t, gh, ledger, r)
+	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueCreates[0]}}
+	ledger.rows[m1ID].State = db.PublishedStateDismissed
+
+	refresh := externalRound("", greptileRetryRoot(900))
+	refresh.Findings[1].Severity = "critical"
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: DefaultPolicy()}
+	if err := p.RefreshSummary(context.Background(), refresh); err != nil {
+		t.Fatal(err)
+	}
+	out := gh.issueEdits[501]
+	if strings.Contains(out, "Medium thing") {
+		t.Fatalf("the conceded finding must leave the summary:\n%s", out)
+	}
+	for _, want := range []string{"1 finding already raised in another reviewer's thread", "#discussion_r900", "merge confidence 3/5"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("refreshed summary missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestDeltaReply_SuggestedCodeIsNeverASuggestionBlock(t *testing.T) {
+	root := greptileRetryRoot(900)
+	root.StartLine, root.EndLine = 138, 141
+	body := deltaReply(retryFinding(), root)
+	if strings.Contains(body, "```suggestion") || !strings.Contains(body, "Suggested change for line 140:\n```\n\ttime.Sleep(backoff(i))\n```") {
+		t.Fatalf("delta = %q", body)
+	}
+	root.Suggestion = "time.Sleep(backoff(i))"
+	if body := deltaReply(retryFinding(), root); strings.Contains(body, "Suggested change") {
+		t.Fatalf("a root with its own suggestion gets no code: %q", body)
 	}
 }
 

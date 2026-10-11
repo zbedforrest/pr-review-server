@@ -288,6 +288,13 @@ func (f *fakeReplyLedger) SetPublishedFindingState(_, _ string, _ int, fingerpri
 	f.states[fingerprint] = state
 	return nil
 }
+func (f *fakeReplyLedger) MarkPublishedFindingFixed(_, _ string, _ int, fingerprint string) error {
+	if f.states == nil {
+		f.states = map[string]string{}
+	}
+	f.states[fingerprint] = db.PublishedStateFixed
+	return nil
+}
 func (f *fakeReplyLedger) GetPublishedFindingsForPR(_, _ string, _ int) ([]db.PublishedFinding, error) {
 	return f.findings, nil
 }

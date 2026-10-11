@@ -380,7 +380,7 @@ func (r Round) writeFolded(b *strings.Builder, label string, notes []payload.Fin
 func RenderSummary(r Round, sel Selection) string {
 	shown := r.currentFindings()
 	sortBySeverity(shown)
-	confidence := Confidence(r.Findings, r.RequiredCheckViolated)
+	confidence := r.confidence()
 
 	var b strings.Builder
 	b.WriteString(SummaryMarker + "\n")
@@ -457,7 +457,7 @@ func (r Round) writeExternal(b *strings.Builder) {
 			text = strings.TrimSuffix(text, ".")
 		}
 		link := fmt.Sprintf("https://github.com/%s/%s/pull/%d#discussion_r%d", r.Owner, r.Repo, r.Number, m.CommentID)
-		fmt.Fprintf(b, "- %s %s — [`%s`](%s) · %s\n", severityLabel(f.Severity, r.BadgeBaseURL), truncateWords(text, 200), where, link, m.Source.Label())
+		fmt.Fprintf(b, "- %s %s, [`%s`](%s) · %s\n", severityLabel(f.Severity, r.BadgeBaseURL), truncateWords(text, 200), where, link, m.Source.Label())
 	}
 	b.WriteString("</details>\n\n")
 }
@@ -487,7 +487,7 @@ var kindLabels = map[string]string{
 	"description_drift":   "Description drift",
 }
 
-var suggestionFenceRe = regexp.MustCompile("(?s)```suggestion\n.*?\n```")
+var suggestionFenceRe = regexp.MustCompile("(?s)```suggestion\n(.*?)\n```")
 
 // headline is the bold line of an inline comment: the kind label when the
 // contract carries an effect sentence, then the finding's title cut to fit.

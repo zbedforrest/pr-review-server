@@ -403,6 +403,7 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 		r.HeadSHA = summaryRow.LastSeenSHA
 	}
 	r.RoundNumber = summaryRow.Rounds
+	rememberExternal(&r, priorRows(r.Previous))
 	r.Findings = WithoutDismissed(r.Findings, r.Previous)
 	r.LegacyTitles = p.Policy.LegacyTitles
 	r.ShowUnverified = p.Policy.ShowUnverified

@@ -448,6 +448,7 @@ type ReplyLedger interface {
 	ListPublishedRepliesForRoot(owner, repo string, number int, rootCommentID int64) ([]db.PublishedReply, error)
 	CountPublishedTextRepliesSince(owner, repo string, number int, since time.Time) (int, error)
 	SetPublishedFindingState(owner, repo string, number int, fingerprint, state string) error
+	MarkPublishedFindingFixed(owner, repo string, number int, fingerprint string) error
 	ContestPublishedFinding(owner, repo string, number int, fingerprint string) (bool, error)
 	GetPublishedFindingsForPR(owner, repo string, number int) ([]db.PublishedFinding, error)
 }
@@ -1735,11 +1736,13 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, repl
 	outcome.Posted = true
 	switch outcome.Decision {
 	case DecisionConcede, DecisionWithdraw:
-		state := db.PublishedStateDismissed
+		var err error
 		if outcome.Decision == DecisionConcede && reply.Class == ReplyResolution && !r.Legacy {
-			state = db.PublishedStateFixed
+			err = r.Ledger.MarkPublishedFindingFixed(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint)
+		} else {
+			err = r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed)
 		}
-		if err := r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, state); err != nil {
+		if err != nil {
 			return err
 		}
 		if rep == nil {

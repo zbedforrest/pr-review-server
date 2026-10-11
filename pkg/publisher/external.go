@@ -23,6 +23,11 @@ func ExternalReplyMarker(id string) string {
 	return externalReplyMarkerPrefix + id + " -->"
 }
 
+// IsExternalReply reports whether body is one of PRism's delta replies.
+func IsExternalReply(body string) bool {
+	return strings.HasPrefix(body, externalReplyMarkerPrefix)
+}
+
 // deltaCovered is the containment above which a sentence of PRism's finding
 // counts as already said by the other reviewer.
 const deltaCovered = 0.6
@@ -74,6 +79,25 @@ func rememberExternal(r *Round, rows map[string]*db.PublishedFinding) {
 		source, _ := reconcile.SourceFromTag(row.SourceTag)
 		r.ExternalMatches = append(r.ExternalMatches, ExternalMatch{Finding: f, Source: source, CommentID: row.ExternalCommentID})
 	}
+}
+
+// confidence is the merge-confidence score the round reports. A finding
+// another reviewer raised first still counts: the score is a verdict on the
+// PR, not on who found the defect.
+func (r Round) confidence() int {
+	findings := r.Findings
+	if len(r.ExternalMatches) > 0 {
+		findings = append(append([]payload.Finding(nil), r.Findings...), r.externalFindings()...)
+	}
+	return Confidence(findings, r.RequiredCheckViolated)
+}
+
+func (r Round) externalFindings() []payload.Finding {
+	out := make([]payload.Finding, 0, len(r.ExternalMatches))
+	for _, m := range r.ExternalMatches {
+		out = append(out, m.Finding)
+	}
+	return out
 }
 
 // matchExternal pairs the round's shown findings with the other reviewers'
@@ -140,9 +164,11 @@ func (p *Publisher) matchExternal(r *Round, rows map[string]*db.PublishedFinding
 }
 
 // deltaReply is the one reply PRism may leave under another reviewer's root:
-// the impact sentence when the root does not state it, PRism's suggestion
-// when the root has none, and how to verify. Empty when the root already
-// says everything PRism would.
+// the impact sentence when the root does not state it, PRism's suggested
+// code when the root has none, and how to verify. Empty when the root
+// already says everything PRism would. The suggested code goes out as a
+// plain fence: a suggestion block in a reply applies to the lines that
+// thread anchors, which are the other reviewer's, not PRism's.
 func deltaReply(f payload.Finding, ext reconcile.ExternalFinding) string {
 	extText := strings.Join([]string{ext.Title, ext.Body, ext.Suggestion}, " ")
 	var parts []string
@@ -153,8 +179,8 @@ func deltaReply(f payload.Finding, ext reconcile.ExternalFinding) string {
 			parts = append(parts, impact)
 		}
 	}
-	if fence := suggestionFenceRe.FindString(commentText(f)); fence != "" && ext.Suggestion == "" {
-		parts = append(parts, fence)
+	if code := suggestedCode(commentText(f)); code != "" && ext.Suggestion == "" {
+		parts = append(parts, fmt.Sprintf("Suggested change for line %d:\n```\n%s\n```", f.Line, code))
 	}
 	if hasContract && c.Falsifiability == "falsifiable" && c.FalsifiableCondition != nil && c.ExpectedObservable != nil {
 		condition := strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), ".")
@@ -167,6 +193,15 @@ func deltaReply(f payload.Finding, ext reconcile.ExternalFinding) string {
 		return ""
 	}
 	return ExternalReplyMarker(f.ID) + "\nPRism found the same point. What this thread does not say yet:\n\n" + strings.Join(parts, "\n\n") + "\n"
+}
+
+// suggestedCode is the body of the finding's suggestion block, if any.
+func suggestedCode(comment string) string {
+	m := suggestionFenceRe.FindStringSubmatch(comment)
+	if m == nil {
+		return ""
+	}
+	return strings.TrimRight(m[1], "\n")
 }
 
 func covered(text, ext string) bool {

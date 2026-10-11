@@ -176,6 +176,23 @@ func TestGormDB_UpsertPublishedFinding_KeepsAContestedRowContested(t *testing.T)
 	assert.Equal(t, PublishedStateContested, rows[0].State)
 }
 
+func TestGormDB_MarkPublishedFindingFixed_StampsTheLastPublishedHead(t *testing.T) {
+	db := newTestDB(t)
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(nil)))
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Kind, p.Fingerprint, p.CommentID, p.LastSeenSHA = PublishedKindSummary, "summary", 9002, "fff9999"
+	})))
+	require.NoError(t, db.MarkPublishedFindingFixed("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123"))
+	rows, err := db.GetPublishedFindingsForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	for _, row := range rows {
+		if row.Kind == PublishedKindFinding {
+			assert.Equal(t, PublishedStateFixed, row.State)
+			assert.Equal(t, "fff9999", row.LastSeenSHA)
+		}
+	}
+}
+
 func TestGormDB_ContestPublishedFinding_MovesOpenAndResolvedRowsOnly(t *testing.T) {
 	db := newTestDB(t)
 	require.NoError(t, db.UpsertPublishedFinding(testPublished(nil)))

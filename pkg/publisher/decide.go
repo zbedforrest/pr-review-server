@@ -225,7 +225,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		}
 	}
 	rep.StillOpen, rep.Fixed = d.StillOpen, d.Fixed
-	rep.Confidence = Confidence(r.Findings, r.RequiredCheckViolated)
+	rep.Confidence = r.confidence()
 
 	postedThisRound, err := p.postInline(ctx, r, sel, rows, now, &rep, threads)
 	if err != nil {
@@ -304,9 +304,9 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 }
 
 // concededSinceLastRound recognises a row a conceded fix claim marked fixed
-// between rounds: still at the last published head, absent now, and not yet
-// counted. Rounds on such a row records the round whose summary counted it,
-// so the next round does not count it again.
+// between rounds: stamped with the last published head by the reply path,
+// absent now, and not yet counted. Rounds on such a row records the round
+// whose summary counted it, so the next round does not count it again.
 func concededSinceLastRound(row *db.PublishedFinding, present bool, lastPublished, head string) bool {
 	return row.State == db.PublishedStateFixed && !present && row.Rounds == 0 && lastPublished != "" &&
 		strings.EqualFold(row.LastSeenSHA, lastPublished) && !strings.EqualFold(row.LastSeenSHA, head)

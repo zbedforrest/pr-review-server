@@ -14,7 +14,7 @@ var (
 	prismMarkerRe    = regexp.MustCompile(`<!-- prism:finding:[^\s>]+ -->`)
 	htmlCommentRe    = regexp.MustCompile(`(?s)<!--.*?-->`)
 	detailsBlockRe   = regexp.MustCompile(`(?s)<details>.*?</details>`)
-	htmlTagRe        = regexp.MustCompile(`<[^>]+>`)
+	htmlTagRe        = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
 	markdownImageRe  = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
 	markdownLinkRe   = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
 	codeFenceRe      = regexp.MustCompile("(?s)```.*?```")
