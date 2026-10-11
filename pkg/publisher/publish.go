@@ -406,7 +406,7 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 	}
 	r.RoundNumber = summaryRow.Rounds
 	rememberExternal(&r, priorRows(r.Previous))
-	r.Findings = WithoutDismissed(r.Findings, r.Previous)
+	r.Findings = withoutConceded(WithoutDismissed(r.Findings, r.Previous), r.Previous)
 	r.LegacyTitles = p.Policy.LegacyTitles
 	r.ShowUnverified = p.Policy.ShowUnverified
 	if r.InlineComments == nil {
@@ -516,6 +516,28 @@ func WithoutDismissed(findings []payload.Finding, previous []db.PublishedFinding
 	kept := make([]payload.Finding, 0, len(findings))
 	for _, f := range findings {
 		if !dismissed[f.ID] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
+}
+
+// withoutConceded drops findings whose row a conceded fix claim marked
+// fixed, so a refresh stops listing them as the reply path resolves their
+// thread; the next round counts the fix.
+func withoutConceded(findings []payload.Finding, previous []db.PublishedFinding) []payload.Finding {
+	fixed := map[string]bool{}
+	for _, row := range previous {
+		if fixedState(row.State) && (row.Kind == db.PublishedKindFinding || row.Kind == db.PublishedKindAnnotation) {
+			fixed[row.Fingerprint] = true
+		}
+	}
+	if len(fixed) == 0 {
+		return findings
+	}
+	kept := make([]payload.Finding, 0, len(findings))
+	for _, f := range findings {
+		if !fixed[f.ID] {
 			kept = append(kept, f)
 		}
 	}

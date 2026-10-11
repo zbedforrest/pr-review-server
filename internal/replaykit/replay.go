@@ -455,7 +455,7 @@ func sameText(text, other string) bool {
 		return true
 	}
 	score, shared := reconcile.Containment(text, other)
-	return score >= reconcile.ExternalThreshold && shared >= 3
+	return score >= reconcile.ExternalThreshold && shared >= reconcile.ExternalMinShared
 }
 
 func IsFindingRow(row db.PublishedFinding) bool {

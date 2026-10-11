@@ -13,7 +13,7 @@ import (
 // shorter text, so its floor is one word higher.
 const (
 	ExternalThreshold         = 0.35
-	externalMinShared         = 3
+	ExternalMinShared         = 3
 	externalMinSharedHeadline = 4
 )
 
@@ -28,13 +28,13 @@ type Match struct {
 // best of whole-text containment, the PRism headline against the external
 // body and the external title against the PRism text. A pair under the
 // token floor scores 0. Whole-text Jaccard at or above the alias bar, the
-// rule this one replaced, still scores as a match; a subject name alone,
-// which the old rule also took, no longer does.
+// rule this one replaced, still scores as a match under the same floor; a
+// subject name alone, which the old rule also took, no longer does.
 func ExternalScore(p payload.Finding, g ExternalFinding) float64 {
 	pText := prismText(p)
 	gText := strings.TrimSpace(g.Title + " " + g.Body)
 	best := 0.0
-	if Similarity(p.Comment, gText) >= similarityThreshold {
+	if score, shared := overlap(p.Comment, gText); score >= similarityThreshold && shared >= ExternalMinShared {
 		best = ExternalThreshold
 	}
 	consider := func(a, b string, floor int) {
@@ -45,7 +45,7 @@ func ExternalScore(p payload.Finding, g ExternalFinding) float64 {
 			best = score
 		}
 	}
-	consider(pText, gText, externalMinShared)
+	consider(pText, gText, ExternalMinShared)
 	consider(prismHeadline(p), gText, externalMinSharedHeadline)
 	consider(g.Title, pText, externalMinSharedHeadline)
 	return best
