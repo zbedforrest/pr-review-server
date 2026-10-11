@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	gogithub "github.com/google/go-github/v57/github"
@@ -57,7 +58,7 @@ func nodeIDOf(id string) string {
 
 func stateOf(state string, merged bool) prState {
 	switch {
-	case merged:
+	case merged, strings.EqualFold(state, "merged"):
 		return prMerged
 	case strings.EqualFold(state, "closed"):
 		return prClosed
@@ -124,7 +125,8 @@ func parsePRRef(s string) (owner, repo string, number int, err error) {
 	if hash < 0 || slash < 0 || slash > hash {
 		return "", "", 0, fmt.Errorf("--pr %q: want owner/repo#number", s)
 	}
-	if _, err := fmt.Sscanf(s[hash+1:], "%d", &number); err != nil || number <= 0 {
+	number, err = strconv.Atoi(s[hash+1:])
+	if err != nil || number <= 0 {
 		return "", "", 0, fmt.Errorf("--pr %q: want owner/repo#number", s)
 	}
 	return s[:slash], s[slash+1 : hash], number, nil

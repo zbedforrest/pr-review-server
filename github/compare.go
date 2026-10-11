@@ -5,9 +5,9 @@ import (
 	"fmt"
 )
 
-// compareFilesCap is the most files the compare endpoint lists; a response
+// CompareFilesCap is the most files the compare endpoint lists; a response
 // at the cap may have dropped some.
-const compareFilesCap = 300
+const CompareFilesCap = 300
 
 // CompareFiles lists the files changed between two commits, a rename
 // contributing both names. Truncated is true when the list hit the
@@ -27,5 +27,5 @@ func (c *Client) CompareFiles(ctx context.Context, owner, repo, base, head strin
 			files = append(files, prev)
 		}
 	}
-	return files, len(cmp.Files) >= compareFilesCap, nil
+	return files, len(cmp.Files) >= CompareFilesCap, nil
 }

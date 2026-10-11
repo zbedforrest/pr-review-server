@@ -307,12 +307,43 @@ func TestApply_FailedResolvePostsNothing(t *testing.T) {
 	}
 }
 
+func TestStateOf(t *testing.T) {
+	cases := []struct {
+		state  string
+		merged bool
+		want   prState
+	}{
+		{"MERGED", false, prMerged}, {"closed", true, prMerged}, {"CLOSED", false, prClosed}, {"OPEN", false, prOpen}, {"open", false, prOpen},
+	}
+	for _, c := range cases {
+		if got := stateOf(c.state, c.merged); got != c.want {
+			t.Errorf("stateOf(%q, %v) = %q, want %q", c.state, c.merged, got, c.want)
+		}
+	}
+}
+
+func TestApply_CountsLedgerMiss(t *testing.T) {
+	p := &pr{Owner: "acme", Repo: "example", Number: 4, Author: "dev", State: prMerged}
+	gh := &fakeCloser{}
+	ledger := &fakeLedger{rows: []db.PublishedFinding{{Kind: db.PublishedKindFinding, Fingerprint: "other", CommentID: 999, State: db.PublishedStateOpen}}}
+	var logged []string
+	a := apply(context.Background(), gh, ledger, func(string) bool { return true },
+		[]decision{{PR: p, Thread: thread{RootCommentID: 401, NodeID: "PRRT_4", FindingID: "svc/a.go:1:0a0a0a0a0a0a"}, Verdict: stalePRMerged}},
+		func(f string, _ ...any) { logged = append(logged, f) })
+	if a.Resolved != 1 || a.Notes != 1 || a.LedgerRows != 0 || a.LedgerMisses != 1 || len(ledger.upserted) != 0 {
+		t.Errorf("applied = %+v, upserted %d", a, len(ledger.upserted))
+	}
+	if len(logged) != 1 {
+		t.Errorf("logged %v, want the missing row", logged)
+	}
+}
+
 func TestParsePRRef(t *testing.T) {
 	owner, repo, n, err := parsePRRef("acme/example#12")
 	if err != nil || owner != "acme" || repo != "example" || n != 12 {
 		t.Errorf("got %s %s %d %v", owner, repo, n, err)
 	}
-	for _, bad := range []string{"example#12", "acme/example", "acme/example#x", "acme#1/example", "acme/example#0"} {
+	for _, bad := range []string{"example#12", "acme/example", "acme/example#x", "acme#1/example", "acme/example#0", "acme/example#12abc", "acme/example#12 34", "acme/example#-3"} {
 		if _, _, _, err := parsePRRef(bad); err == nil {
 			t.Errorf("%q parsed", bad)
 		}

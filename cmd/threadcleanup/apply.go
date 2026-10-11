@@ -23,6 +23,7 @@ type applied struct {
 	ResolveFailures int `json:"resolve_failures"`
 	GateDenied      int `json:"gate_denied"`
 	LedgerRows      int `json:"ledger_rows"`
+	LedgerMisses    int `json:"ledger_misses"`
 	LedgerFailures  int `json:"ledger_failures"`
 }
 
@@ -75,6 +76,8 @@ func apply(ctx context.Context, gh closer, ledger publisher.Ledger, allowed gate
 		}
 		row := rows[p].find(d.Thread)
 		if row == nil {
+			a.LedgerMisses++
+			logf("%s: comment %d: no open ledger row", p.ref(), d.Thread.RootCommentID)
 			continue
 		}
 		row.State, row.ThreadNodeID = db.PublishedStateFixed, d.Thread.NodeID

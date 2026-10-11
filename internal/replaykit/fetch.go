@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"pr-review-server/github"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -51,9 +53,7 @@ func (r CompareResult) UnchangedDiff() bool {
 	return r.Error == "" && (r.Status == "identical" || r.MergeOnly)
 }
 
-// CompareFilesCap is the most files the compare endpoint returns; it does not
-// page them.
-const CompareFilesCap = 300
+const CompareFilesCap = github.CompareFilesCap
 
 func (r CompareResult) Complete() bool {
 	return r.Error == "" && !r.Truncated

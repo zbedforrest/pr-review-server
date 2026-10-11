@@ -95,14 +95,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("github: %v", err)
 		}
-		changed := func(owner, repo, base, head string) ([]string, bool) {
-			files, truncated, err := gh.CompareFiles(ctx, owner, repo, base, head)
-			if err != nil {
-				log.Printf("%s/%s compare %s...%s: %v", owner, repo, replaykit.Short(base), replaykit.Short(head), err)
-				return nil, false
-			}
-			return files, !truncated
-		}
+		changed := liveCompares(ctx, gh)
 		if *limit > 0 && len(refs) > *limit {
 			refs = refs[:*limit]
 		}
@@ -184,6 +177,28 @@ func dumpCompares(cacheDir string, offline bool) (changedFiles, error) {
 		}
 		return res.Files, ok && res.Complete()
 	}, nil
+}
+
+type compared struct {
+	files []string
+	known bool
+}
+
+func liveCompares(ctx context.Context, gh *github.Client) changedFiles {
+	seen := map[string]compared{}
+	return func(owner, repo, base, head string) ([]string, bool) {
+		key := owner + "/" + repo + " " + base + "..." + head
+		if c, ok := seen[key]; ok {
+			return c.files, c.known
+		}
+		files, truncated, err := gh.CompareFiles(ctx, owner, repo, base, head)
+		if err != nil {
+			log.Printf("%s/%s compare %s...%s: %v", owner, repo, replaykit.Short(base), replaykit.Short(head), err)
+			return nil, false
+		}
+		seen[key] = compared{files, !truncated}
+		return files, !truncated
+	}
 }
 
 type ghCompares struct{}
