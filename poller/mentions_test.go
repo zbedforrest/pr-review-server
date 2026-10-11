@@ -329,6 +329,9 @@ func (f *fakeMuter) Mute(owner, repo string, number int) (bool, error) {
 	f.muted[f.key(owner, repo, number)] = true
 	return !was, nil
 }
+func (f *fakeMuter) Muted(owner, repo string, number int) (bool, error) {
+	return f.muted[f.key(owner, repo, number)], nil
+}
 func (f *fakeMuter) Unmute(owner, repo string, number int) (bool, error) {
 	was := f.muted[f.key(owner, repo, number)]
 	delete(f.muted, f.key(owner, repo, number))
@@ -384,6 +387,11 @@ func TestMentionScanner_StopByTheAuthorMutesOnceAndAcknowledges(t *testing.T) {
 	if res.muted != 0 || len(gh.reacted) != 1 {
 		t.Fatalf("a handled stop is never acted on twice: res=%+v reacted=%v", res, gh.reacted)
 	}
+	gh.comments = append(gh.comments, github.IssueCommentInfo{ID: 13, Author: "alice", Association: "MEMBER", Body: "@prism-pr-review-server stop", CreatedAt: t0.Add(2 * time.Minute)})
+	res, _ = m.handlePR(context.Background(), pr)
+	if res.muted != 0 || len(mutedBy) != 1 || len(gh.reacted) != 2 {
+		t.Fatalf("a second stop on a muted PR is acknowledged but not counted again: res=%+v by=%v reacted=%v", res, mutedBy, gh.reacted)
+	}
 }
 
 func TestMentionScanner_WithoutAMuterAStopIsIgnored(t *testing.T) {
@@ -407,11 +415,17 @@ func TestMentionScanner_ReviewRequestByTheAuthorLiftsTheMute(t *testing.T) {
 	if !muter.muted["acme/example#7"] || admitted != 1 {
 		t.Fatalf("a collaborator's request runs the review but cannot lift the author's mute: muted=%v admitted=%d", muter.muted, admitted)
 	}
+	if len(gh.reacted) != 0 {
+		t.Fatalf("no reaction reaches a muted PR, not even the request acknowledgement: %v", gh.reacted)
+	}
 	gh.comments = []github.IssueCommentInfo{{ID: 22, Author: "alice", Association: "MEMBER", Body: "@prism-pr-review-server review", CreatedAt: m.since.Add(time.Minute)}}
 	if _, err := m.handlePR(context.Background(), pr); err != nil {
 		t.Fatal(err)
 	}
 	if muter.muted["acme/example#7"] || admitted != 2 {
 		t.Fatalf("the author's own request lifts the mute before the review: muted=%v admitted=%d", muter.muted, admitted)
+	}
+	if len(gh.reacted) != 1 || gh.reacted[0] != 22 {
+		t.Fatalf("the lifting request is acknowledged again: %v", gh.reacted)
 	}
 }

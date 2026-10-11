@@ -226,6 +226,9 @@ type PublishedFinding struct {
 	// Muted, on the summary row, records that the author asked PRism to stop
 	// posting on this PR; nothing else reaches the PR until it is cleared.
 	Muted bool
+	// MuteLiftedAt is when the author last lifted the mute; a thumbs-down older
+	// than it was already honoured.
+	MuteLiftedAt *time.Time
 }
 
 // TelemetryEvent represents a single telemetry event for creation

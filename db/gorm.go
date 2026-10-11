@@ -194,6 +194,7 @@ var publishedFindingColumns = []struct {
 	{"finding_kind", "FindingKind", "varchar(32) NOT NULL DEFAULT ''"},
 	{"subjects", "Subjects", "text NOT NULL DEFAULT ''"},
 	{"muted", "Muted", "boolean NOT NULL DEFAULT false"},
+	{"mute_lifted_at", "MuteLiftedAt", "timestamptz"},
 }
 
 var greptileStatusColumns = []struct {

@@ -137,6 +137,7 @@ type mentionLedger interface {
 // unanswered.
 type mentionMuter interface {
 	Mute(owner, repo string, number int) (bool, error)
+	Muted(owner, repo string, number int) (bool, error)
 	Unmute(owner, repo string, number int) (bool, error)
 }
 
@@ -245,6 +246,13 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 		}
 		publish := m.allowed(ghPR.Author) && !ghPR.Draft
 		silent := m.optedOut != nil && m.optedOut(ghPR.Author)
+		if m.mute != nil && !silent {
+			muted, err := m.mute.Muted(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			if err != nil {
+				return res, err
+			}
+			silent = muted
+		}
 		now := m.now()
 		reserved, err := m.ledger.ReserveMention(&db.MentionTrigger{
 			CommentID: c.ID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName, PRNumber: pr.PRNumber, Holder: m.holder,
@@ -349,7 +357,8 @@ func (m mentionScanner) handleStop(ctx context.Context, pr *db.PR, c github.Issu
 	if err != nil || !reserved {
 		return err
 	}
-	if _, err := m.mute.Mute(pr.RepoOwner, pr.RepoName, pr.PRNumber); err != nil {
+	changed, err := m.mute.Mute(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+	if err != nil {
 		_ = m.ledger.ReleaseMention(c.ID, m.holder)
 		return err
 	}
@@ -357,9 +366,13 @@ func (m mentionScanner) handleStop(ctx context.Context, pr *db.PR, c github.Issu
 	if err != nil || !owned {
 		return err
 	}
-	res.muted++
 	silent := m.optedOut != nil && m.optedOut(pr.Author)
 	m.acknowledge(ctx, pr, c.ID, reactionCurrent, silent)
+	if !changed {
+		m.log("[MENTIONS] %s: stop in comment %d, the PR was already muted", key, c.ID)
+		return nil
+	}
+	res.muted++
 	m.log("[MENTIONS] %s: muted by %s in comment %d", key, c.Author, c.ID)
 	if m.onMute != nil {
 		m.onMute(github.PullRequest{Owner: pr.RepoOwner, Repo: pr.RepoName, Number: pr.PRNumber, Author: pr.Author}, c.Author)
@@ -376,7 +389,7 @@ const (
 
 func (m mentionScanner) acknowledge(ctx context.Context, pr *db.PR, commentID int64, reaction string, silent bool) {
 	if silent {
-		m.log("[MENTIONS] %s: comment %d not acknowledged, the PR author opted out of PRism comments", mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber), commentID)
+		m.log("[MENTIONS] %s: comment %d not acknowledged, the PR author opted out of PRism comments or muted this PR", mentionKey(pr.RepoOwner, pr.RepoName, pr.PRNumber), commentID)
 		return
 	}
 	if err := m.gh.ReactToIssueComment(ctx, pr.RepoOwner, pr.RepoName, commentID, reaction); err != nil {

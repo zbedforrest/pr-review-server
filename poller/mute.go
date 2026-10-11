@@ -3,6 +3,7 @@ package poller
 import (
 	"context"
 	"log"
+	"time"
 
 	"pr-review-server/db"
 	"pr-review-server/github"
@@ -75,7 +76,7 @@ func (p *Poller) prMuted(ctx context.Context, owner, repo string, number int, au
 		log.Printf("[PUBLISH] %s/%s#%d: summary reactions unreadable, not muted: %v", owner, repo, number, err)
 		return false, nil
 	}
-	if !authorThumbsDown(reactions, authorID) {
+	if !authorThumbsDown(reactions, authorID, summary.MuteLiftedAt) {
 		return false, nil
 	}
 	if _, err := ledger.SetPublishedMute(owner, repo, number, true); err != nil {
@@ -90,11 +91,15 @@ func (p *Poller) prMuted(ctx context.Context, owner, repo string, number int, au
 	return true, nil
 }
 
-func authorThumbsDown(reactions []github.CommentReaction, authorID int64) bool {
+func authorThumbsDown(reactions []github.CommentReaction, authorID int64, liftedAt *time.Time) bool {
 	for _, r := range reactions {
-		if r.UserID == authorID && r.Content == "-1" {
-			return true
+		if r.UserID != authorID || r.Content != "-1" {
+			continue
 		}
+		if liftedAt != nil && !r.CreatedAt.After(*liftedAt) {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -108,6 +113,18 @@ func (m prMuter) Mute(owner, repo string, number int) (bool, error) {
 		return false, nil
 	}
 	return ledger.SetPublishedMute(owner, repo, number, true)
+}
+
+func (m prMuter) Muted(owner, repo string, number int) (bool, error) {
+	ledger, ok := m.p.muteLedger()
+	if !ok {
+		return false, nil
+	}
+	row, found, err := ledger.GetPublishedSummaryForPR(owner, repo, number)
+	if err != nil || !found {
+		return false, err
+	}
+	return row.Muted, nil
 }
 
 func (m prMuter) Unmute(owner, repo string, number int) (bool, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -119,4 +120,26 @@ func TestSettlementTreatsAMutedPublicationAsDone(t *testing.T) {
 	require.NoError(t, f.db.SetAutoReviewIntentPublicationByRun(intent.RunID, publicationMuted))
 	f.p.settleAutoReviewIntents()
 	assert.Equal(t, db.AutoReviewIntentDone, f.intents(t)[0].Status)
+}
+
+func TestPRMuted_ALiftedMuteIgnoresTheThumbsDownThatCausedIt(t *testing.T) {
+	p, database, gh := muteFixture(t)
+	seedSummary(t, database, 900, false)
+	earlier := time.Now().UTC().Add(-time.Hour)
+	gh.reactions = []github.CommentReaction{{UserID: 1, Content: "-1", CreatedAt: earlier}}
+	muted, err := p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	require.True(t, muted)
+
+	lifted, err := database.SetPublishedMute("acme", "example", 7, false)
+	require.NoError(t, err)
+	require.True(t, lifted)
+	muted, err = p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	assert.False(t, muted, "the author's @review lifted the mute; the old thumbs-down was already honoured")
+
+	gh.reactions = append(gh.reactions, github.CommentReaction{UserID: 1, Content: "-1", CreatedAt: time.Now().UTC().Add(time.Hour)})
+	muted, err = p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	assert.True(t, muted, "a thumbs-down newer than the lift mutes again")
 }

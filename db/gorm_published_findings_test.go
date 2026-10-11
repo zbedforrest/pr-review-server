@@ -233,10 +233,30 @@ func TestGormDB_SetPublishedMute_FlagsTheSummaryRowAndSurvivesRounds(t *testing.
 	row, _, err = db.GetPublishedSummaryForPR("owner", "repo", 7)
 	require.NoError(t, err)
 	assert.False(t, row.Muted)
+	assert.NotNil(t, row.MuteLiftedAt, "the lift time is recorded")
 	changed, err = db.SetPublishedMute("owner", "repo", 8, false)
 	require.NoError(t, err)
 	assert.False(t, changed, "clearing a mute on a PR without a row creates nothing")
 	_, found, err = db.GetPublishedSummaryForPR("owner", "repo", 8)
 	require.NoError(t, err)
 	assert.False(t, found)
+}
+
+func TestGormDB_ListPublishedSummaries_SkipsAMutedPlaceholder(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	_, err := db.SetPublishedMute("owner", "repo", 7, true)
+	require.NoError(t, err)
+	rows, err := db.ListPublishedSummaries()
+	require.NoError(t, err)
+	assert.Empty(t, rows, "a PR muted before any review has no summary comment to badge")
+
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Kind, p.Fingerprint, p.CommentID = PublishedKindSummary, PublishedKindSummary, 777
+	})))
+	rows, err = db.ListPublishedSummaries()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].Muted)
 }

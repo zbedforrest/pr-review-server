@@ -34,6 +34,7 @@ func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 		FindingKind:  m.FindingKind,
 		Subjects:     m.Subjects,
 		Muted:        m.Muted,
+		MuteLiftedAt: m.MuteLiftedAt,
 	}
 }
 
@@ -64,6 +65,7 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		FindingKind:  p.FindingKind,
 		Subjects:     p.Subjects,
 		Muted:        p.Muted,
+		MuteLiftedAt: p.MuteLiftedAt,
 	}
 	// Muted is owned by SetPublishedMute; a round rewriting the summary row
 	// never clears it, and a muted placeholder takes its first head here.
@@ -132,10 +134,11 @@ func (g *GormDB) GetPublishedFindingsForPR(owner, repo string, prNumber int) ([]
 }
 
 // ListPublishedSummaries returns the summary ledger row of every PR that has
-// been published to GitHub. Used by the dashboard list to badge those PRs.
+// been published to GitHub; a muted placeholder without a comment is not one.
+// Used by the dashboard list to badge those PRs.
 func (g *GormDB) ListPublishedSummaries() ([]PublishedFinding, error) {
 	var models []PublishedFindingModel
-	if err := g.db.Where("kind = ?", PublishedKindSummary).Find(&models).Error; err != nil {
+	if err := g.db.Where("kind = ? AND comment_id <> 0", PublishedKindSummary).Find(&models).Error; err != nil {
 		return nil, err
 	}
 	out := make([]PublishedFinding, 0, len(models))
@@ -164,9 +167,13 @@ func (g *GormDB) GetPublishedSummaryForPR(owner, repo string, prNumber int) (Pub
 // row yet gets one without a comment, so the mute holds for the first round
 // as well; HeadPublished ignores it since its LastSeenSHA is empty.
 func (g *GormDB) SetPublishedMute(owner, repo string, number int, muted bool) (bool, error) {
+	updates := map[string]interface{}{"muted": muted}
+	if !muted {
+		updates["mute_lifted_at"] = time.Now().UTC()
+	}
 	res := g.db.Model(&PublishedFindingModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ? AND muted <> ?", owner, repo, number, PublishedKindSummary, muted).
-		Update("muted", muted)
+		Updates(updates)
 	if res.Error != nil {
 		return false, res.Error
 	}
