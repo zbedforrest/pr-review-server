@@ -122,7 +122,7 @@ func fromGitHub(ctx context.Context, src githubSource, owner, repo string, numbe
 func parsePRRef(s string) (owner, repo string, number int, err error) {
 	hash := strings.LastIndex(s, "#")
 	slash := strings.Index(s, "/")
-	if hash < 0 || slash < 0 || slash > hash {
+	if hash < 0 || slash <= 0 || slash+1 >= hash {
 		return "", "", 0, fmt.Errorf("--pr %q: want owner/repo#number", s)
 	}
 	number, err = strconv.Atoi(s[hash+1:])

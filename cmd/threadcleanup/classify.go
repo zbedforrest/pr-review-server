@@ -173,11 +173,11 @@ func summarize(prs []*pr, decisions []decision) summary {
 	return s
 }
 
-// staleOnly keeps the stale decisions in PR, then posting order.
-func staleOnly(decisions []decision) []decision {
+// staleOnly keeps the wanted stale decisions in PR, then posting order.
+func staleOnly(decisions []decision, wanted map[verdict]bool) []decision {
 	var out []decision
 	for _, d := range decisions {
-		if d.Verdict.stale() {
+		if wanted[d.Verdict] {
 			out = append(out, d)
 		}
 	}

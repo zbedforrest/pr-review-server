@@ -7,7 +7,7 @@
 // Usage:
 //
 //	threadcleanup --dumps <dir> [--cache <dir>] [--offline] [--bot login] [--csv out.csv] [--out summary.json]
-//	threadcleanup --pr owner/repo#N [--pr ...] [--bot login] [--dry-run=false]
+//	threadcleanup --pr owner/repo#N [--pr ...] [--bot login] [--verdicts list] [--dry-run=false]
 //
 // --dumps reads GitHub dumps (one PR per file) and is always a dry run: it
 // lists and counts, with compares through gh cached under <cache>/compare/.
@@ -53,6 +53,7 @@ func main() {
 	csvPath := flag.String("csv", "", "write the stale thread listing here as CSV instead of TSV on stderr")
 	outPath := flag.String("out", "", "write the summary JSON here as well as to stdout")
 	limit := flag.Int("limit", 0, "scan at most this many PRs (0 = all)")
+	verdictList := flag.String("verdicts", "pr_merged,pr_closed,file_changed", "stale verdicts to list and apply, comma separated")
 	var refs []prRef
 	flag.Func("pr", "PR to read live, as owner/repo#number (repeatable)", func(s string) error {
 		owner, repo, number, err := parsePRRef(s)
@@ -64,6 +65,10 @@ func main() {
 	})
 	flag.Parse()
 	log.SetFlags(0)
+	wanted, err := parseVerdicts(*verdictList)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if (*dumpsDir == "") == (len(refs) == 0) {
 		fmt.Fprintln(os.Stderr, "usage: threadcleanup (--dumps <dir> | --pr owner/repo#N ...) [--dry-run=false]")
 		os.Exit(2)
@@ -109,7 +114,7 @@ func main() {
 		}
 	}
 
-	stale := staleOnly(decisions)
+	stale := staleOnly(decisions, wanted)
 	if err := writeListing(*csvPath, stale); err != nil {
 		log.Fatalf("listing: %v", err)
 	}
@@ -177,6 +182,18 @@ func dumpCompares(cacheDir string, offline bool) (changedFiles, error) {
 		}
 		return res.Files, ok && res.Complete()
 	}, nil
+}
+
+func parseVerdicts(list string) (map[verdict]bool, error) {
+	out := map[verdict]bool{}
+	for _, name := range strings.Split(list, ",") {
+		v := verdict(strings.TrimSpace(name))
+		if !v.stale() {
+			return nil, fmt.Errorf("--verdicts %q: want any of pr_merged, pr_closed, file_changed", name)
+		}
+		out[v] = true
+	}
+	return out, nil
 }
 
 type compared struct {
@@ -292,6 +309,8 @@ func openLedgerGate(gh *github.Client) (*db.GormDB, gate, error) {
 	var teams *github.TeamResolver
 	if org := os.Getenv("GITHUB_ORG_NAME"); org != "" {
 		teams = github.NewTeamResolver(org, gh)
+	} else if strings.Contains(enabled, "team:") {
+		return nil, nil, fmt.Errorf("%s has team entries; set GITHUB_ORG_NAME", poller.SettingPublishEnabledAuthors)
 	}
 	return ledger, poller.NewPublishGate(teams, enabled, optOut).Allowed, nil
 }

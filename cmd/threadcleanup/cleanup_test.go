@@ -20,12 +20,11 @@ const (
 	shaC = "ccccccc333333333333333333333333333333333"
 )
 
-func fixtureScan(t *testing.T, offline bool) ([]*pr, []decision) {
+var allStale = map[verdict]bool{stalePRMerged: true, stalePRClosed: true, staleFileChanged: true}
+
+func fixtureScan(t *testing.T) ([]*pr, []decision) {
 	t.Helper()
 	cache := t.TempDir()
-	if !offline {
-		t.Fatal("fixture scans run offline; the cache under testdata is copied")
-	}
 	src, _ := filepath.Glob(filepath.Join("testdata", "cache", "compare", "*.json"))
 	if len(src) == 0 {
 		t.Fatal("no compare fixtures")
@@ -41,7 +40,7 @@ func fixtureScan(t *testing.T, offline bool) ([]*pr, []decision) {
 }
 
 func TestScanDumps_FixtureVerdicts(t *testing.T) {
-	prs, decisions := fixtureScan(t, true)
+	prs, decisions := fixtureScan(t)
 	if len(prs) != 4 {
 		t.Fatalf("prs = %d, want 4", len(prs))
 	}
@@ -76,12 +75,28 @@ func TestScanDumps_FixtureVerdicts(t *testing.T) {
 	if s.StaleOutdated != 2 || s.PRsWithStale != 3 {
 		t.Errorf("outdated/prs_with_stale = %d/%d, want 2/3", s.StaleOutdated, s.PRsWithStale)
 	}
-	stale := staleOnly(decisions)
+	stale := staleOnly(decisions, allStale)
 	if len(stale) != 3 || stale[0].Thread.RootCommentID != 101 || stale[1].Thread.RootCommentID != 201 || stale[2].Thread.RootCommentID != 301 {
 		t.Errorf("stale order = %v", stale)
 	}
 	if stale[1].Thread.NodeID != "PRRT_2" || stale[0].Thread.NodeID != "" {
 		t.Errorf("node ids: graphql %q, rest %q", stale[1].Thread.NodeID, stale[0].Thread.NodeID)
+	}
+	only := staleOnly(decisions, map[verdict]bool{stalePRMerged: true, stalePRClosed: true})
+	if len(only) != 2 || only[0].Thread.RootCommentID != 101 || only[1].Thread.RootCommentID != 201 {
+		t.Errorf("without file_changed: %v", only)
+	}
+}
+
+func TestParseVerdicts(t *testing.T) {
+	got, err := parseVerdicts("pr_merged, pr_closed")
+	if err != nil || len(got) != 2 || !got[stalePRMerged] || !got[stalePRClosed] {
+		t.Errorf("got %v, %v", got, err)
+	}
+	for _, bad := range []string{"", "already_resolved", "pr_merged,nope"} {
+		if _, err := parseVerdicts(bad); err == nil {
+			t.Errorf("%q parsed", bad)
+		}
 	}
 }
 
@@ -97,9 +112,17 @@ func TestScanDumps_ExplicitBotAndNoCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := map[int64]verdict{}
 	for _, d := range decisions {
-		if d.Thread.RootCommentID == 301 && d.Verdict != skipChangeUnknown {
-			t.Errorf("without a cache the compare is unknown, got %q", d.Verdict)
+		got[d.Thread.RootCommentID] = d.Verdict
+	}
+	if len(got) != 8 {
+		t.Fatalf("decisions = %v, want 8", got)
+	}
+	want := map[int64]verdict{301: skipChangeUnknown, 302: skipChangeUnknown, 303: skipChangeUnknown, 304: skipUnchanged}
+	for id, v := range want {
+		if got[id] != v {
+			t.Errorf("comment %d without a cache: %q, want %q", id, got[id], v)
 		}
 	}
 }
@@ -343,7 +366,7 @@ func TestParsePRRef(t *testing.T) {
 	if err != nil || owner != "acme" || repo != "example" || n != 12 {
 		t.Errorf("got %s %s %d %v", owner, repo, n, err)
 	}
-	for _, bad := range []string{"example#12", "acme/example", "acme/example#x", "acme#1/example", "acme/example#0", "acme/example#12abc", "acme/example#12 34", "acme/example#-3"} {
+	for _, bad := range []string{"example#12", "acme/example", "acme/example#x", "acme#1/example", "acme/example#0", "acme/example#12abc", "acme/example#12 34", "acme/example#-3", "/example#1", "acme/#1"} {
 		if _, _, _, err := parsePRRef(bad); err == nil {
 			t.Errorf("%q parsed", bad)
 		}

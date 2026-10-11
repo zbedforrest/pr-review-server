@@ -280,7 +280,7 @@ func ParseCompare(raw []byte) (CompareResult, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return CompareResult{}, err
 	}
-	res := CompareResult{Truncated: len(payload.Files) >= CompareFilesCap, Status: payload.Status, Schema: compareSchema, Commits: payload.TotalCommits}
+	res := CompareResult{Truncated: len(payload.Files) >= CompareFilesCap || payload.TotalCommits > github.CompareCommitsCap, Status: payload.Status, Schema: compareSchema, Commits: payload.TotalCommits}
 	if res.Status == "" {
 		res.Status = "unknown"
 	}
