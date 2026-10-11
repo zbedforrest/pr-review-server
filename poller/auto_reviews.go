@@ -47,9 +47,10 @@ func (p *Poller) syncDebounce() time.Duration {
 // debounced reports whether a pushed head is still inside its debounce
 // window: the poll admits it once the window has passed, and a newer push in
 // the meantime supersedes it, so a burst of pushes reviews the last head once.
+// Without a poll nothing would admit it later, so DISABLE_POLLING admits at once.
 func (p *Poller) debounced(intent db.AutoReviewIntent, now time.Time) bool {
 	wait := p.syncDebounce()
-	return wait > 0 && intent.Trigger == autoReviewTriggerSync && now.Sub(intent.CreatedAt) < wait
+	return wait > 0 && !p.cfg.DisablePolling && intent.Trigger == autoReviewTriggerSync && now.Sub(intent.CreatedAt) < wait
 }
 
 // autoReviewReadyEnabled reads the feature switch; a missing value is off.

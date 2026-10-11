@@ -129,6 +129,7 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
 
 const numberValue = (n: number) => (Number.isNaN(n) ? '' : n);
 const isCount = (n: number, min: number) => Number.isInteger(n) && n >= min;
+const defaultInlinePRCap = 6;
 const describedBy = (id: string, invalid: boolean) => (invalid ? `${id}-help ${id}-error` : `${id}-help`);
 
 export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, replyTotals }: SettingsFormProps) {
@@ -178,7 +179,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
 
   const samplesInvalid = !isCount(review.draft.review_n_requests, 1);
   const capInvalid = !isCount(publishing.draft.publish_inline_cap, 0);
-  const prCapInvalid = !isCount(publishing.draft.publish_inline_pr_cap, 0);
+  const prCapInvalid = !isCount(publishing.draft.publish_inline_pr_cap ?? defaultInlinePRCap, 0);
 
   const adminList = [
     ...new Set([...settings.admin_logins_fixed, ...normalizeLogins(settings.admin_logins, false).logins]),
@@ -334,7 +335,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
             className="settings-field__number"
             min={0}
             step={1}
-            value={numberValue(publishing.draft.publish_inline_pr_cap)}
+            value={numberValue(publishing.draft.publish_inline_pr_cap ?? defaultInlinePRCap)}
             onChange={(e) => publishing.patch({ publish_inline_pr_cap: e.target.valueAsNumber })}
             disabled={policyDisabled}
             aria-invalid={prCapInvalid}

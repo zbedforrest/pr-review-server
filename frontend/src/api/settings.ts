@@ -33,8 +33,9 @@ export interface Settings {
   // entry above can match. Optional: older servers omit it.
   publish_opt_out_authors?: string;
   publish_inline_cap: number;
-  // Inline comments over the life of one PR, in any state; 0 removes the bound.
-  publish_inline_pr_cap: number;
+  // Inline comments over the life of one PR, in any state; 0 removes the
+  // bound. Optional: older servers omit it and the form assumes 6.
+  publish_inline_pr_cap?: number;
   publish_inline_min_severity: string;
   publish_show_unverified: boolean;
   // Review and comment automatically when an allowlisted author's PR becomes

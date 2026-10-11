@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"pr-review-server/config"
 	"pr-review-server/db"
 	"pr-review-server/github"
 	"pr-review-server/pkg/reviewer/service"
@@ -703,4 +704,13 @@ func TestUnchangedDiffSkipIsOffWhenTheFlagIsOffOrTheDiffFails(t *testing.T) {
 			require.Len(t, f.generator.GenerateReviewCalls, 1)
 		})
 	}
+}
+
+func TestDebouncedAdmitsAtOnceWhenPollingIsDisabled(t *testing.T) {
+	now := time.Now().UTC()
+	intent := db.AutoReviewIntent{Trigger: autoReviewTriggerSync, CreatedAt: now}
+	p := &Poller{cfg: &config.Config{AutoReviewSyncDebounceSec: 90}}
+	assert.True(t, p.debounced(intent, now))
+	p.cfg.DisablePolling = true
+	assert.False(t, p.debounced(intent, now), "without a poll nothing would admit the head later")
 }
