@@ -199,8 +199,13 @@ func splitFirstSentence(s string) (string, string) {
 	return s, ""
 }
 
+// commentRange is the comment's anchored lines, falling back to the
+// original anchor of an outdated comment.
 func commentRange(c ExternalComment) (int, int) {
 	start, end := c.StartLine, c.Line
+	if end == 0 {
+		start, end = c.OriginalStartLine, c.OriginalLine
+	}
 	if start == 0 {
 		start = end
 	}

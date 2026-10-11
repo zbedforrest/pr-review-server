@@ -75,7 +75,8 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 	for _, c := range comments {
 		external = append(external, reconcile.ExternalComment{
 			ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path,
-			Line: c.Line, StartLine: c.StartLine, InReplyToID: c.InReplyToID,
+			Line: c.Line, StartLine: c.StartLine, OriginalLine: c.OriginalLine, OriginalStartLine: c.OriginalStartLine,
+			InReplyToID: c.InReplyToID,
 		})
 	}
 	// Re-reviews reword findings; restatements of comments PRism already posted
@@ -246,7 +247,7 @@ func (a ghPublishAdapter) ListReviewComments(ctx context.Context, owner, repo st
 	}
 	out := make([]publisher.ReviewComment, len(infos))
 	for i, c := range infos {
-		out[i] = publisher.ReviewComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, StartLine: c.StartLine, InReplyToID: c.InReplyToID}
+		out[i] = publisher.ReviewComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, StartLine: c.StartLine, OriginalLine: c.OriginalLine, OriginalStartLine: c.OriginalStartLine, InReplyToID: c.InReplyToID}
 	}
 	return out, nil
 }

@@ -27,13 +27,17 @@ const (
 // ExternalComment is the subset of a GitHub review comment the reconciler
 // needs. StartLine is zero for single-line comments.
 type ExternalComment struct {
-	ID          int64
-	Author      string
-	Body        string
-	Path        string
-	Line        int
-	StartLine   int
-	InReplyToID int64
+	ID        int64
+	Author    string
+	Body      string
+	Path      string
+	Line      int
+	StartLine int
+	// OriginalLine and OriginalStartLine stand in when the comment's diff
+	// is outdated and GitHub reports no current line.
+	OriginalLine      int
+	OriginalStartLine int
+	InReplyToID       int64
 }
 
 // ExternalFinding is a review comment parsed into a finding.

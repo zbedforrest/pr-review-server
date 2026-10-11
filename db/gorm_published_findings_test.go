@@ -191,6 +191,16 @@ func TestGormDB_MarkPublishedFindingFixed_StampsTheLastPublishedHead(t *testing.
 			assert.Equal(t, "fff9999", row.LastSeenSHA)
 		}
 	}
+
+	require.NoError(t, db.SetPublishedFindingState("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123", PublishedStateDismissed))
+	require.NoError(t, db.MarkPublishedFindingFixed("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123"))
+	rows, err = db.GetPublishedFindingsForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	for _, row := range rows {
+		if row.Kind == PublishedKindFinding {
+			assert.Equal(t, PublishedStateDismissed, row.State, "a settled row is not reopened by a later fix claim")
+		}
+	}
 }
 
 func TestGormDB_ContestPublishedFinding_MovesOpenAndResolvedRowsOnly(t *testing.T) {

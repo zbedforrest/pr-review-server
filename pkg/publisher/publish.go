@@ -44,13 +44,15 @@ type ThreadReplier interface {
 // them right before it posts, so a reviewer who commented seconds earlier is
 // reconciled against instead of duplicated.
 type ReviewComment struct {
-	ID          int64
-	Author      string
-	Body        string
-	Path        string
-	Line        int
-	StartLine   int
-	InReplyToID int64
+	ID                int64
+	Author            string
+	Body              string
+	Path              string
+	Line              int
+	StartLine         int
+	OriginalLine      int
+	OriginalStartLine int
+	InReplyToID       int64
 }
 
 // ReviewCommentLister is the optional slice of GitHub that lists the PR's

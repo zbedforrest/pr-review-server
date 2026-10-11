@@ -28,8 +28,8 @@ type Match struct {
 // best of whole-text containment, the PRism headline against the external
 // body and the external title against the PRism text. A pair under the
 // token floor scores 0. Whole-text Jaccard at or above the alias bar, the
-// rule this one replaced, still scores as a match so nothing the old rule
-// caught is lost.
+// rule this one replaced, still scores as a match; a subject name alone,
+// which the old rule also took, no longer does.
 func ExternalScore(p payload.Finding, g ExternalFinding) float64 {
 	pText := prismText(p)
 	gText := strings.TrimSpace(g.Title + " " + g.Body)
@@ -53,7 +53,9 @@ func ExternalScore(p payload.Finding, g ExternalFinding) float64 {
 
 // MatchExternal pairs each PRism finding with the one external root it
 // restates: same file, the PRism line inside the root's range plus the
-// tolerance, and ExternalScore at or above the threshold. A contract subject
+// tolerance, and ExternalScore at or above the threshold. A root with no
+// line at all (file-level, or outdated with no original anchor) never
+// matches: without a line the text alone is not the same point. A contract subject
 // named in the root never makes a match on its own (distinct defects share
 // a symbol all the time); it only breaks ties between roots of equal score.
 // Each side is used at most once, best score first, then subject, then line
@@ -71,7 +73,7 @@ func MatchExternal(prism []payload.Finding, external []ExternalFinding) []Match 
 			continue
 		}
 		for gi, g := range external {
-			if !sameFile(p.File, g.File) || p.Line < g.StartLine-lineTolerance || p.Line > g.EndLine+lineTolerance {
+			if g.EndLine <= 0 || !sameFile(p.File, g.File) || p.Line < g.StartLine-lineTolerance || p.Line > g.EndLine+lineTolerance {
 				continue
 			}
 			score := ExternalScore(p, g)

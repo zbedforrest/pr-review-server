@@ -447,6 +447,9 @@ func ExternalDuplicate(file string, line int, text string, roots []ExternalRoot,
 	return ExternalRoot{}, false
 }
 
+// sameText is the raw-text form of reconcile.ExternalScore: the rendered
+// root against the other root, with no contract headline or impact on the
+// PRism side, so the metric reads the dumps alone.
 func sameText(text, other string) bool {
 	if reconcile.Similarity(text, other) >= AliasSimilarity {
 		return true

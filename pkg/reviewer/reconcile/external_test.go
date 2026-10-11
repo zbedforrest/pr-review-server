@@ -194,6 +194,29 @@ func TestMatchExternal_SubjectMentionAloneNeverMatches(t *testing.T) {
 	}
 }
 
+func TestMatchExternal_RootsWithoutALine(t *testing.T) {
+	text := "Concurrent PATCH or PUT calls from different automation callers can silently overwrite each other's field changes because the merge base is read outside the update transaction."
+	cases := []struct {
+		name    string
+		comment ExternalComment
+		line    int
+		want    bool
+	}{
+		{"outdated comment keeps its original anchor", ExternalComment{ID: 1, Author: "Copilot", Path: "api.go", OriginalLine: 482, OriginalStartLine: 480, Body: text}, 489, true},
+		{"outdated anchor forty lines away", ExternalComment{ID: 2, Author: "Copilot", Path: "api.go", OriginalLine: 482, Body: text}, 530, false},
+		{"file-level comment never matches", ExternalComment{ID: 3, Author: "Copilot", Path: "api.go", Body: text}, 5, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ext := ParseExternalComments([]ExternalComment{tc.comment}, nil)
+			m := MatchExternal([]payload.Finding{prismFinding("p", "api.go", tc.line, text)}, ext)
+			if (len(m) == 1) != tc.want {
+				t.Fatalf("matches = %+v, want match %t", m, tc.want)
+			}
+		})
+	}
+}
+
 func TestMatchExternal_SubjectBreaksTiesBetweenEqualRoots(t *testing.T) {
 	text := "Concurrent PATCH or PUT calls from different automation callers can silently overwrite each other's field changes because the merge base is read outside the update transaction."
 	p := contracted(prismFinding("p1", "api.go", 489, text), contract("", "", "", "Repository.Update"))
