@@ -163,27 +163,35 @@ func (g *GormDB) GetPublishedSummaryForPR(owner, repo string, prNumber int) (Pub
 }
 
 // SetPublishedMute records the author's wish for silence on the summary row
-// (or clears it) and reports whether anything changed. A PR with no summary
-// row yet gets one without a comment, so the mute holds for the first round
-// as well; HeadPublished ignores it since its LastSeenSHA is empty.
+// (or clears it) and reports whether a mute was set or cleared. A PR with no
+// summary row yet gets one without a comment, so the mute holds for the first
+// round as well; HeadPublished ignores it since its LastSeenSHA is empty.
 func (g *GormDB) SetPublishedMute(owner, repo string, number int, muted bool) (bool, error) {
-	updates := map[string]interface{}{"muted": muted}
-	if !muted {
-		updates["mute_lifted_at"] = time.Now().UTC()
+	summary := func() *gorm.DB {
+		return g.db.Model(&PublishedFindingModel{}).
+			Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ?", owner, repo, number, PublishedKindSummary)
 	}
-	res := g.db.Model(&PublishedFindingModel{}).
-		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ? AND muted <> ?", owner, repo, number, PublishedKindSummary, muted).
-		Updates(updates)
+	if !muted {
+		var wasMuted int64
+		if err := summary().Where("muted = ?", true).Count(&wasMuted).Error; err != nil {
+			return false, err
+		}
+		// The lift is stamped even when the ledger never saw the thumbs-down,
+		// so the next reactions read cannot undo the author's request.
+		if err := summary().Updates(map[string]interface{}{"muted": false, "mute_lifted_at": time.Now().UTC()}).Error; err != nil {
+			return false, err
+		}
+		return wasMuted > 0, nil
+	}
+	res := summary().Where("muted = ?", false).Update("muted", true)
 	if res.Error != nil {
 		return false, res.Error
 	}
-	if res.RowsAffected > 0 || !muted {
-		return res.RowsAffected > 0, nil
+	if res.RowsAffected > 0 {
+		return true, nil
 	}
 	var n int64
-	if err := g.db.Model(&PublishedFindingModel{}).
-		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ?", owner, repo, number, PublishedKindSummary).
-		Count(&n).Error; err != nil {
+	if err := summary().Count(&n).Error; err != nil {
 		return false, err
 	}
 	if n > 0 {

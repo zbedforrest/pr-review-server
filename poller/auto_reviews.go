@@ -241,13 +241,14 @@ func (p *Poller) HandleWebhookDelivery(ctx context.Context, d db.WebhookDelivery
 // deliveries cannot each see the last free place and all take it.
 func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReviewIntent, pr github.PullRequest) bool {
 	key := autoReviewKey(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+	patchID := p.pullRequestPatchID(ctx, intent, pr)
 	p.autoReviewAdmitMutex.Lock()
 	defer p.autoReviewAdmitMutex.Unlock()
 	if p.trackedReviewCount() >= p.pollAdmissionLimit() {
 		log.Printf("[AUTO-REVIEW] %s intent=%d: left queued, the resident review queue is full", key, intent.ID)
 		return false
 	}
-	if p.skipUnchangedDiff(ctx, intent, pr) {
+	if p.skipUnchangedDiff(intent, pr, patchID) {
 		return false
 	}
 	profile := p.autoReviewProfileFor(intent.Trigger, pr.Owner, pr.Repo, pr.Author)
@@ -299,27 +300,33 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 	return true
 }
 
-// skipUnchangedDiff settles a pushed head without a review when the PR diff
-// has the same patch-id as the last head an automatic review completed on:
-// a merge from the base branch, a rebase or an amended message changes the
-// head but nothing the review would read. Every admitted intent records its
-// patch-id so the next push can compare; only pushes (synchronize and the
-// poll fallback) are skipped, and a diff that cannot be read admits the
-// review as before.
-func (p *Poller) skipUnchangedDiff(ctx context.Context, intent db.AutoReviewIntent, pr github.PullRequest) bool {
+// pullRequestPatchID reads the PR diff's patch-id for the unchanged-diff
+// skip, before admission takes its lock so a slow GitHub read never holds
+// it; empty when the skip is off or the diff cannot be read.
+func (p *Poller) pullRequestPatchID(ctx context.Context, intent db.AutoReviewIntent, pr github.PullRequest) string {
 	if p.cfg == nil || !p.cfg.AutoReviewSkipUnchangedDiff {
-		return false
+		return ""
 	}
-	key := autoReviewKey(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 	diff, err := p.pullRequestDiff(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
-		log.Printf("[AUTO-REVIEW] %s intent=%d: diff unavailable, reviewing anyway: %v", key, intent.ID, err)
-		return false
+		log.Printf("[AUTO-REVIEW] %s intent=%d: diff unavailable, reviewing anyway: %v", autoReviewKey(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA), intent.ID, err)
+		return ""
 	}
-	patchID := github.PatchID(diff)
+	return github.PatchID(diff)
+}
+
+// skipUnchangedDiff settles a pushed head without a review when the PR diff
+// has the same patch-id as the most recent head an automatic review
+// completed on: a merge from the base branch, a rebase or an amended message
+// changes the head but nothing the review would read. Every admitted intent
+// records its patch-id so the next push can compare; only pushes
+// (synchronize and the poll fallback) are skipped, and a head whose patch-id
+// is unknown admits the review as before.
+func (p *Poller) skipUnchangedDiff(intent db.AutoReviewIntent, pr github.PullRequest, patchID string) bool {
 	if patchID == "" {
 		return false
 	}
+	key := autoReviewKey(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 	if err := p.db.SetAutoReviewIntentPatchID(intent.ID, patchID); err != nil {
 		log.Printf("[AUTO-REVIEW] %s intent=%d: could not record the patch id: %v", key, intent.ID, err)
 	}
@@ -335,11 +342,11 @@ func (p *Poller) skipUnchangedDiff(ctx context.Context, intent db.AutoReviewInte
 	}
 	var last *db.AutoReviewIntent
 	for i := range reviewed {
-		if reviewed[i].ID != intent.ID && reviewed[i].PatchID != "" {
+		if reviewed[i].ID != intent.ID && (last == nil || reviewed[i].ID > last.ID) {
 			last = &reviewed[i]
 		}
 	}
-	if last == nil || last.PatchID != patchID {
+	if last == nil || last.PatchID == "" || last.PatchID != patchID {
 		return false
 	}
 	reason := publicationSkippedUnchangedPrefix + shortSHA(last.HeadSHA)

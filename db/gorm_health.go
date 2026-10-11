@@ -178,7 +178,7 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 	}
 
 	published := g.db.Model(&PublishedFindingModel{}).Where("published_at >= ? AND published_at < ?", start, end).Session(&gorm.Session{})
-	if err := published.Where("kind = ?", PublishedKindSummary).Count(&n).Error; err != nil {
+	if err := published.Where("kind = ? AND comment_id <> 0", PublishedKindSummary).Count(&n).Error; err != nil {
 		return m, err
 	}
 	m.Publish.Summaries = int(n)

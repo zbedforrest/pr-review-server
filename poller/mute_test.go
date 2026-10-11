@@ -143,3 +143,15 @@ func TestPRMuted_ALiftedMuteIgnoresTheThumbsDownThatCausedIt(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, muted, "a thumbs-down newer than the lift mutes again")
 }
+
+func TestPRMuted_AReviewRequestBeforeTheThumbsDownWasReadStillLiftsIt(t *testing.T) {
+	p, database, gh := muteFixture(t)
+	seedSummary(t, database, 900, false)
+	gh.reactions = []github.CommentReaction{{UserID: 1, Content: "-1", CreatedAt: time.Now().UTC().Add(-time.Hour)}}
+	_, err := database.SetPublishedMute("acme", "example", 7, false)
+	require.NoError(t, err)
+	muted, err := p.prMuted(context.Background(), "acme", "example", 7, 1)
+	require.NoError(t, err)
+	assert.False(t, muted)
+	assert.Empty(t, gh.reacted)
+}

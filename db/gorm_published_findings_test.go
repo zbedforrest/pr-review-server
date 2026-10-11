@@ -260,3 +260,19 @@ func TestGormDB_ListPublishedSummaries_SkipsAMutedPlaceholder(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.True(t, rows[0].Muted)
 }
+
+func TestGormDB_SetPublishedMute_LiftStampsAnUnmutedSummaryToo(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Kind, p.Fingerprint, p.CommentID = PublishedKindSummary, PublishedKindSummary, 777
+	})))
+	changed, err := db.SetPublishedMute("owner", "repo", 7, false)
+	require.NoError(t, err)
+	assert.False(t, changed, "nothing was muted")
+	row, _, err := db.GetPublishedSummaryForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.False(t, row.Muted)
+	assert.NotNil(t, row.MuteLiftedAt, "a thumbs-down the ledger has not seen yet is lifted all the same")
+}
