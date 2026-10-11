@@ -431,36 +431,28 @@ func SameFile(a, b string) bool {
 
 // ExternalDuplicate finds the earliest root another reviewer posted before
 // at on the same point as a PRism root: same file, lines within ten, and
-// raw-text overlap (Jaccard at or above 0.20, containment at or above the
-// external match bar, or a subject named in the root). This is the
-// external_duplicates metric's rule: a union of the publisher's rules, so a
-// duplicate the publisher misses is still counted.
-func ExternalDuplicate(file string, line int, text string, subjects []string, roots []ExternalRoot, at time.Time) (ExternalRoot, bool) {
+// raw-text overlap (Jaccard at or above 0.20 or containment at or above the
+// external match bar). This is the external_duplicates metric's rule, the
+// same text rule the publisher matches by, so a false merge on a shared
+// symbol can never count as a duplicate avoided.
+func ExternalDuplicate(file string, line int, text string, roots []ExternalRoot, at time.Time) (ExternalRoot, bool) {
 	for _, r := range roots {
 		if !r.At.Before(at) || !SameFile(file, r.File) || line <= 0 || r.Line <= 0 || abs(line-r.Line) > AliasLineTolerance {
 			continue
 		}
-		if sameText(text, subjects, r.Text) {
+		if sameText(text, r.Text) {
 			return r, true
 		}
 	}
 	return ExternalRoot{}, false
 }
 
-func sameText(text string, subjects []string, other string) bool {
+func sameText(text, other string) bool {
 	if reconcile.Similarity(text, other) >= AliasSimilarity {
 		return true
 	}
-	if score, shared := reconcile.Containment(text, other); score >= reconcile.ExternalThreshold && shared >= 3 {
-		return true
-	}
-	lower := strings.ToLower(other)
-	for _, s := range subjects {
-		if s != "" && strings.Contains(lower, s) {
-			return true
-		}
-	}
-	return false
+	score, shared := reconcile.Containment(text, other)
+	return score >= reconcile.ExternalThreshold && shared >= 3
 }
 
 func IsFindingRow(row db.PublishedFinding) bool {

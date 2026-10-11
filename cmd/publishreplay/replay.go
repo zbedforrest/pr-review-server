@@ -151,7 +151,7 @@ func (r *recorder) ListIssueComments(context.Context, string, string, int) ([]pu
 // another reviewer's root is the publisher's external_replies, not one.
 func (r *recorder) PostReply(_ context.Context, _, _ string, _ int, _ int64, body string) (int64, error) {
 	r.nextComment++
-	if !strings.HasPrefix(body, publisher.ExternalReplyMarker("")[:len("<!-- prism:external:")]) {
+	if !publisher.IsExternalReply(body) {
 		r.replies++
 	}
 	return r.nextComment, nil
@@ -475,7 +475,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 			if classifyRepost(rec.posts[j], rec.posts[before:j], textOnly) != repostNone {
 				pr.SameRoundDuplicates++
 			}
-			if root, ok := replaykit.ExternalDuplicate(rec.posts[j].File, rec.posts[j].Line, rec.posts[j].RawText, rec.posts[j].Subjects, roots, rd.At); ok {
+			if root, ok := replaykit.ExternalDuplicate(rec.posts[j].File, rec.posts[j].Line, rec.posts[j].RawText, roots, rd.At); ok {
 				pr.ExternalDuplicatesNear++
 				if !root.ResolvedKnown {
 					pr.ExternalDuplicatesUnknown++
@@ -784,7 +784,7 @@ func observe(d *prDump, bots map[string]bool, pr *PRResult, m *ObservedMetrics) 
 		if r.Resolved {
 			m.ThreadsResolved++
 		}
-		if root, ok := replaykit.ExternalDuplicate(r.File, r.Line, r.Text, nil, roots, r.At); ok {
+		if root, ok := replaykit.ExternalDuplicate(r.File, r.Line, r.Text, roots, r.At); ok {
 			pr.ObservedExternalDuplicatesNear++
 			if !root.Resolved {
 				pr.ObservedExternalDuplicatesOpen++

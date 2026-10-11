@@ -53,13 +53,16 @@ func ExternalScore(p payload.Finding, g ExternalFinding) float64 {
 
 // MatchExternal pairs each PRism finding with the one external root it
 // restates: same file, the PRism line inside the root's range plus the
-// tolerance, and either ExternalScore at or above the threshold or a
-// contract subject named in the root. Each side is used at most once, best
-// score first, ties broken by line distance.
+// tolerance, and ExternalScore at or above the threshold. A contract subject
+// named in the root never makes a match on its own (distinct defects share
+// a symbol all the time); it only breaks ties between roots of equal score.
+// Each side is used at most once, best score first, then subject, then line
+// distance.
 func MatchExternal(prism []payload.Finding, external []ExternalFinding) []Match {
 	type cand struct {
 		pi, gi   int
 		score    float64
+		subject  bool
 		distance int
 	}
 	var cands []cand
@@ -72,16 +75,19 @@ func MatchExternal(prism []payload.Finding, external []ExternalFinding) []Match 
 				continue
 			}
 			score := ExternalScore(p, g)
-			if score < ExternalThreshold && !mentionsSubject(p, g) {
+			if score < ExternalThreshold {
 				continue
 			}
-			cands = append(cands, cand{pi, gi, score, lineDistance(p.Line, g)})
+			cands = append(cands, cand{pi, gi, score, mentionsSubject(p, g), lineDistance(p.Line, g)})
 		}
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		a, b := cands[i], cands[j]
 		if a.score != b.score {
 			return a.score > b.score
+		}
+		if a.subject != b.subject {
+			return a.subject
 		}
 		if a.distance != b.distance {
 			return a.distance < b.distance

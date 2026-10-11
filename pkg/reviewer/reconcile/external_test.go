@@ -165,15 +165,47 @@ func TestMatchExternal_OneRootPerFindingAndOneFindingPerRoot(t *testing.T) {
 	}
 }
 
-func TestMatchExternal_SubjectMentionCarriesALowScore(t *testing.T) {
-	p := prismFinding("p1", "app/chat.go", 120, "Nil dereference when the room lookup returns nothing.")
-	p.FindingContract = &types.FindingContract{Subjects: []types.FindingSubject{{Kind: "field", Path: "app/chat.go", Name: "originatingRoom"}}}
-	g := ExternalFinding{Source: SourceHuman, CommentID: 7, File: "app/chat.go", StartLine: 118, EndLine: 120, Title: "The synthetic privateMessage has no OriginatingRoom"}
-	if ExternalScore(p, g) >= ExternalThreshold {
-		t.Fatal("fixture must score under the bar")
+func TestMatchExternal_SubjectMentionAloneNeverMatches(t *testing.T) {
+	cases := []struct {
+		name  string
+		prism payload.Finding
+		root  ExternalFinding
+	}{
+		{"human remark naming the field",
+			contracted(prismFinding("p1", "app/chat.go", 120, "Nil dereference when the room lookup returns nothing."), contract("", "", "", "originatingRoom")),
+			ExternalFinding{Source: SourceHuman, CommentID: 7, File: "app/chat.go", StartLine: 118, EndLine: 120, Title: "The synthetic privateMessage has no OriginatingRoom"}},
+		{"another defect in the same function",
+			contracted(prismFinding("p2", "tickets/link.py", 88, "link_jira returns False on both branches, so the caller never learns the link was created and retries it on the next run."), contract("link_jira returns False on both paths", "Every successful link is retried on the next run because the caller reads False.", "", "link_jira")),
+			ExternalFinding{Source: SourceGreptile, CommentID: 8, Severity: "medium", File: "tickets/link.py", StartLine: 90, EndLine: 92, Title: "Failed links misroute split cases",
+				Body: "When link_jira raises for a split ticket the except branch routes the case to the merged queue instead of the split queue, so the follow-up lands on the wrong team."}},
+		{"generic bot heading naming the method",
+			contracted(prismFinding("p3", "app/http.go", 40, "Two external calls in the handler have no exception handling, so a timeout from either one surfaces as a 500 to the client."), contract("", "", "", "Handler.Serve")),
+			ExternalFinding{Source: SourceCodeRabbit, CommentID: 9, Severity: "medium", File: "app/http.go", StartLine: 38, EndLine: 44, Title: "Sensitive data exposure", Body: "Handler.Serve logs the full request body including the bearer token."}},
 	}
-	if m := MatchExternal([]payload.Finding{p}, []ExternalFinding{g}); len(m) != 1 {
-		t.Fatalf("subject mention must match: %+v", m)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if ExternalScore(tc.prism, tc.root) >= ExternalThreshold {
+				t.Fatal("fixture must score under the bar")
+			}
+			if m := MatchExternal([]payload.Finding{tc.prism}, []ExternalFinding{tc.root}); len(m) != 0 {
+				t.Fatalf("a shared symbol is not a shared point: %+v", m)
+			}
+		})
+	}
+}
+
+func TestMatchExternal_SubjectBreaksTiesBetweenEqualRoots(t *testing.T) {
+	text := "Concurrent PATCH or PUT calls from different automation callers can silently overwrite each other's field changes because the merge base is read outside the update transaction."
+	p := contracted(prismFinding("p1", "api.go", 489, text), contract("", "", "", "Repository.Update"))
+	plain := ExternalFinding{Source: SourceGreptile, CommentID: 31, File: "api.go", StartLine: 489, EndLine: 489, Title: "PATCH loses concurrent edits", Body: text}
+	named := plain
+	named.CommentID = 32
+	named.Body = text + " See Repository.Update."
+	if a, b := ExternalScore(p, plain), ExternalScore(p, named); a != b {
+		t.Fatalf("fixture must tie: %.2f vs %.2f", a, b)
+	}
+	if m := MatchExternal([]payload.Finding{p}, []ExternalFinding{plain, named}); len(m) != 1 || m[0].External.CommentID != 32 {
+		t.Fatalf("the root naming the subject wins the tie: %+v", m)
 	}
 }
 
@@ -217,6 +249,9 @@ func TestParseGenericComment_ProducerShapes(t *testing.T) {
 		{"unknown bot",
 			ExternalComment{ID: 6, Author: "some-linter[bot]", Path: "v.py", Line: 430, Body: "Unused import."},
 			SourceOtherBot, "unknown", "Unused import", "", ""},
+		{"human prose with comparison operators",
+			ExternalComment{ID: 7, Author: "reviewer", Path: "v.py", Line: 12, Body: "When a < b and c > d the loop never exits. The <b>bold</b> claim aside, the guard is wrong."},
+			SourceHuman, "unknown", "When a < b and c > d the loop never exits", "bold claim aside", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -81,19 +81,16 @@ func TestExternalDuplicate(t *testing.T) {
 		{CommentID: 2, File: "api/users.go", Line: 141, Text: "Retry never backs off: the loop retries a 429 at once and the rate limiter rejects every call.", At: at.Add(-time.Minute)},
 		{CommentID: 3, File: "api/users.go", Line: 140, Text: text, At: at.Add(time.Minute)},
 	}
-	if r, ok := ExternalDuplicate("api/users.go", 140, text, nil, roots, at); !ok || r.CommentID != 2 {
+	if r, ok := ExternalDuplicate("api/users.go", 140, text, roots, at); !ok || r.CommentID != 2 {
 		t.Fatalf("containment finds the earlier root on the point: %+v %v", r, ok)
 	}
-	if r, ok := ExternalDuplicate("api/users.go", 140, text, []string{"fetchuser"}, roots[:1], at); !ok || r.CommentID != 1 {
-		t.Fatalf("a named subject carries a low-overlap root: %+v %v", r, ok)
+	if _, ok := ExternalDuplicate("api/users.go", 140, text, roots[:1], at); ok {
+		t.Fatal("a shared symbol with two shared words is not the same point")
 	}
-	if _, ok := ExternalDuplicate("api/users.go", 140, text, nil, roots[:1], at); ok {
-		t.Fatal("two shared words are not the same point")
-	}
-	if _, ok := ExternalDuplicate("api/users.go", 140, text, nil, roots[2:], at); ok {
+	if _, ok := ExternalDuplicate("api/users.go", 140, text, roots[2:], at); ok {
 		t.Fatal("a root posted after PRism's is not an earlier duplicate")
 	}
-	if _, ok := ExternalDuplicate("api/users.go", 170, text, nil, roots[1:2], at); ok {
+	if _, ok := ExternalDuplicate("api/users.go", 170, text, roots[1:2], at); ok {
 		t.Fatal("thirty lines away is another point")
 	}
 }
