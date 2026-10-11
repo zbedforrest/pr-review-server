@@ -22,6 +22,7 @@ import (
 const (
 	settingPublishEnabledAuthors    = "publish_enabled_authors"
 	settingPublishInlineCap         = "publish_inline_cap"
+	settingPublishInlinePRCap       = "publish_inline_pr_cap"
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"
 	settingPublishShowUnverified    = "publish_show_unverified"
 )
@@ -249,6 +250,11 @@ func (p *Poller) publishPolicy() publisher.Policy {
 			pol.InlineCap = n
 		}
 	}
+	if v, err := p.db.GetSetting(settingPublishInlinePRCap); err == nil {
+		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
+			pol.InlinePRCap = n
+		}
+	}
 	if v, err := p.db.GetSetting(settingPublishInlineMinSeverity); err == nil && strings.TrimSpace(v) != "" {
 		pol.InlineMinSeverity = strings.ToLower(strings.TrimSpace(v))
 	}
@@ -260,6 +266,9 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	if p.cfg != nil {
 		pol.LegacyTitles = p.cfg.PublishLegacyTitles
 		pol.RepublishSameCommit = p.cfg.PublishRepublishSameCommit
+		if p.cfg.PublishNoInlinePRBudget {
+			pol.InlinePRCap = 0
+		}
 	}
 	return pol
 }
@@ -271,9 +280,13 @@ const (
 	publicationPosted        = "posted"
 	publicationAlreadyPosted = "already_posted"
 	publicationNotAllowed    = "not_allowed"
+	publicationMuted         = "muted"
 	publicationUnavailable   = "unavailable"
 	publicationSkippedPrefix = "skipped: "
 	publicationFailedPrefix  = "failed: "
+	// publicationSkippedUnchangedPrefix settles a pushed head whose diff the
+	// last automatic review already covered; the head is not owed a run.
+	publicationSkippedUnchangedPrefix = "skipped: diff unchanged since "
 )
 
 // publishGitHubReview posts a completed review to the PR and reports what it
@@ -327,6 +340,13 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), ghPR.GetHead().GetSHA(), pr.CommitSHA); !ok {
 		log.Printf("[PUBLISH] %s/%s#%d: skipped, %s", pr.Owner, pr.Repo, pr.Number, reason)
 		return nil, publicationSkippedPrefix + reason
+	}
+	if muted, err := p.prMuted(ctx, pr.Owner, pr.Repo, pr.Number, ghPR.GetUser().GetID()); err != nil {
+		log.Printf("[PUBLISH] %s/%s#%d: read mute: %v", pr.Owner, pr.Repo, pr.Number, err)
+		return nil, publicationFailedPrefix + "read mute"
+	} else if muted {
+		log.Printf("[PUBLISH] %s/%s#%d: skipped, the author muted PRism on this PR", pr.Owner, pr.Repo, pr.Number)
+		return nil, publicationMuted
 	}
 	comments, err := p.ghClientConcrete.ListReviewComments(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
@@ -461,6 +481,12 @@ func (p *Poller) refreshPublishedSummary(ctx context.Context, owner, repo string
 	}
 	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), head, head); !ok {
 		log.Printf("[PUBLISH] %s/%s#%d: summary refresh skipped, %s", owner, repo, number, reason)
+		return nil
+	}
+	if muted, err := p.prMuted(ctx, owner, repo, number, ghPR.GetUser().GetID()); err != nil {
+		return fmt.Errorf("read mute: %w", err)
+	} else if muted {
+		log.Printf("[PUBLISH] %s/%s#%d: summary refresh skipped, the author muted PRism on this PR", owner, repo, number)
 		return nil
 	}
 	pl, err := p.loadReviewPayload(ctx, owner, repo, number, head)

@@ -313,3 +313,119 @@ func TestMentionScanner_OptedOutAuthorGetsADashboardReviewAndNoReaction(t *testi
 		t.Fatalf("nothing is written to the PR: reactions=%v row=%+v", gh.reactions, ledger.rows[1])
 	}
 }
+
+type fakeMuter struct {
+	muted map[string]bool
+}
+
+func (f *fakeMuter) key(owner, repo string, number int) string {
+	return mentionKey(owner, repo, number)
+}
+func (f *fakeMuter) Mute(owner, repo string, number int) (bool, error) {
+	if f.muted == nil {
+		f.muted = map[string]bool{}
+	}
+	was := f.muted[f.key(owner, repo, number)]
+	f.muted[f.key(owner, repo, number)] = true
+	return !was, nil
+}
+func (f *fakeMuter) Muted(owner, repo string, number int) (bool, error) {
+	return f.muted[f.key(owner, repo, number)], nil
+}
+func (f *fakeMuter) Unmute(owner, repo string, number int) (bool, error) {
+	was := f.muted[f.key(owner, repo, number)]
+	delete(f.muted, f.key(owner, repo, number))
+	return was, nil
+}
+
+func TestMentionStopRecognisesStopRequestsOnly(t *testing.T) {
+	handle := "prism-pr-review-server"
+	for _, body := range []string{"@prism-pr-review-server stop", "@Prism-PR-Review-Server please stop commenting", "@prism-pr-review-server mute this one"} {
+		if !mentionStop(body, handle) {
+			t.Errorf("%q should mute", body)
+		}
+	}
+	for _, body := range []string{"@prism-pr-review-server review", "> @prism-pr-review-server stop\n\nquoting", "@prism-pr-review-server why did you stop?", "please stop @someone-else", "@prism-pr-review-server don't stop"} {
+		if mentionStop(body, handle) {
+			t.Errorf("%q should not mute", body)
+		}
+	}
+}
+
+func TestMentionScanner_StopByTheAuthorMutesOnceAndAcknowledges(t *testing.T) {
+	m, gh, ledger, pr := mentionFixture(func(context.Context, github.PullRequest, bool) error {
+		t.Fatal("a stop command never admits a review")
+		return nil
+	})
+	t0 := m.since
+	gh.comments = []github.IssueCommentInfo{
+		{ID: 11, Author: "alice", Association: "MEMBER", Body: "@prism-pr-review-server stop", CreatedAt: t0.Add(time.Minute)},
+		{ID: 12, Author: "bob", Association: "COLLABORATOR", Body: "@prism-pr-review-server stop", CreatedAt: t0.Add(time.Minute)},
+	}
+	muter := &fakeMuter{}
+	m.mute = muter
+	var mutedBy []string
+	m.onMute = func(_ github.PullRequest, by string) { mutedBy = append(mutedBy, by) }
+
+	res, err := m.handlePR(context.Background(), pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.muted != 1 || !muter.muted["acme/example#7"] || len(mutedBy) != 1 || mutedBy[0] != "alice" {
+		t.Fatalf("the author's stop mutes the PR once: res=%+v muted=%v by=%v", res, muter.muted, mutedBy)
+	}
+	if len(gh.reacted) != 1 || gh.reacted[0] != 11 || gh.reactions[0] != "+1" {
+		t.Fatalf("the stop is acknowledged with a thumbs-up and nothing else: %v %v", gh.reacted, gh.reactions)
+	}
+	if gh.liveCalls != 0 {
+		t.Fatalf("a stop needs no live PR read, got %d", gh.liveCalls)
+	}
+	if _, recorded := ledger.rows[12]; recorded {
+		t.Fatal("a collaborator's stop is ignored and leaves no row")
+	}
+	res, _ = m.handlePR(context.Background(), pr)
+	if res.muted != 0 || len(gh.reacted) != 1 {
+		t.Fatalf("a handled stop is never acted on twice: res=%+v reacted=%v", res, gh.reacted)
+	}
+	gh.comments = append(gh.comments, github.IssueCommentInfo{ID: 13, Author: "alice", Association: "MEMBER", Body: "@prism-pr-review-server stop", CreatedAt: t0.Add(2 * time.Minute)})
+	res, _ = m.handlePR(context.Background(), pr)
+	if res.muted != 0 || len(mutedBy) != 1 || len(gh.reacted) != 2 {
+		t.Fatalf("a second stop on a muted PR is acknowledged but not counted again: res=%+v by=%v reacted=%v", res, mutedBy, gh.reacted)
+	}
+}
+
+func TestMentionScanner_WithoutAMuterAStopIsIgnored(t *testing.T) {
+	m, gh, ledger, pr := mentionFixture(func(context.Context, github.PullRequest, bool) error { return nil })
+	gh.comments = []github.IssueCommentInfo{{ID: 11, Author: "alice", Association: "MEMBER", Body: "@prism-pr-review-server stop", CreatedAt: m.since.Add(time.Minute)}}
+	res, err := m.handlePR(context.Background(), pr)
+	if err != nil || res.muted != 0 || len(gh.reacted) != 0 || len(ledger.rows) != 0 {
+		t.Fatalf("err=%v res=%+v reacted=%v rows=%d", err, res, gh.reacted, len(ledger.rows))
+	}
+}
+
+func TestMentionScanner_ReviewRequestByTheAuthorLiftsTheMute(t *testing.T) {
+	admitted := 0
+	m, gh, _, pr := mentionFixture(func(context.Context, github.PullRequest, bool) error { admitted++; return nil })
+	muter := &fakeMuter{muted: map[string]bool{"acme/example#7": true}}
+	m.mute = muter
+	gh.comments = []github.IssueCommentInfo{{ID: 21, Author: "bob", Association: "COLLABORATOR", Body: "@prism-pr-review-server review", CreatedAt: m.since.Add(time.Minute)}}
+	if _, err := m.handlePR(context.Background(), pr); err != nil {
+		t.Fatal(err)
+	}
+	if !muter.muted["acme/example#7"] || admitted != 1 {
+		t.Fatalf("a collaborator's request runs the review but cannot lift the author's mute: muted=%v admitted=%d", muter.muted, admitted)
+	}
+	if len(gh.reacted) != 0 {
+		t.Fatalf("no reaction reaches a muted PR, not even the request acknowledgement: %v", gh.reacted)
+	}
+	gh.comments = []github.IssueCommentInfo{{ID: 22, Author: "alice", Association: "MEMBER", Body: "@prism-pr-review-server review", CreatedAt: m.since.Add(time.Minute)}}
+	if _, err := m.handlePR(context.Background(), pr); err != nil {
+		t.Fatal(err)
+	}
+	if muter.muted["acme/example#7"] || admitted != 2 {
+		t.Fatalf("the author's own request lifts the mute before the review: muted=%v admitted=%d", muter.muted, admitted)
+	}
+	if len(gh.reacted) != 1 || gh.reacted[0] != 22 {
+		t.Fatalf("the lifting request is acknowledged again: %v", gh.reacted)
+	}
+}

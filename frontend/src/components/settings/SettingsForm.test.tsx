@@ -12,6 +12,7 @@ const serverSettings: Settings = {
   review_n_requests: 3,
   publish_enabled_authors: 'alice,bob',
   publish_inline_cap: 5,
+  publish_inline_pr_cap: 8,
   publish_inline_min_severity: 'medium',
   publish_show_unverified: false,
   auto_review_ready_prs: false,
@@ -128,6 +129,7 @@ describe('SettingsForm', () => {
     expect(within(section('Publishing')).getByText('alice')).toBeTruthy();
     expect(within(section('Publishing')).getByText('bob')).toBeTruthy();
     expect((screen.getByLabelText('Inline comment cap') as HTMLInputElement).value).toBe('5');
+    expect((screen.getByLabelText('Inline comment cap per PR') as HTMLInputElement).value).toBe('8');
     expect((screen.getByLabelText('Minimum inline severity') as HTMLSelectElement).value).toBe('medium');
     expect((screen.getByLabelText('Show unverified findings') as HTMLInputElement).checked).toBe(false);
     expect(mode('react').checked).toBe(true);
@@ -308,6 +310,17 @@ describe('SettingsForm', () => {
     const error = within(section('Publishing')).getByRole('alert');
     expect(error.textContent).toBe('Enter a whole number of 0 or more');
     expect(cap().getAttribute('aria-describedby')).toContain(error.id);
+    fireEvent.change(cap(), { target: { value: '0' } });
+    expect(saveIn('Publishing').disabled).toBe(false);
+    expect(within(section('Publishing')).queryByRole('alert')).toBeNull();
+  });
+
+  it('will not save a negative per-PR inline cap but accepts 0 as no bound', () => {
+    renderForm();
+    const cap = () => screen.getByLabelText('Inline comment cap per PR') as HTMLInputElement;
+    fireEvent.change(cap(), { target: { value: '-1' } });
+    expect(saveIn('Publishing').disabled).toBe(true);
+    expect(cap().getAttribute('aria-invalid')).toBe('true');
     fireEvent.change(cap(), { target: { value: '0' } });
     expect(saveIn('Publishing').disabled).toBe(false);
     expect(within(section('Publishing')).queryByRole('alert')).toBeNull();

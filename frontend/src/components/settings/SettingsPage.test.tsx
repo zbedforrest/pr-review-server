@@ -12,6 +12,7 @@ const serverSettings: Settings = {
   review_n_requests: 3,
   publish_enabled_authors: 'alice',
   publish_inline_cap: 5,
+  publish_inline_pr_cap: 8,
   publish_inline_min_severity: 'medium',
   publish_show_unverified: false,
   auto_review_ready_prs: false,

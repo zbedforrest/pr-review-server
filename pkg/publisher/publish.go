@@ -161,7 +161,7 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 		}
 	}
 
-	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy)
+	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy.forRound(r.Previous))
 	r.ShowUnverified = p.Policy.ShowUnverified
 	d := r.diff()
 	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), StillOpen: d.StillOpen, Fixed: d.Fixed,

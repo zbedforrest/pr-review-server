@@ -25,6 +25,8 @@ const (
 	defaultFirstPassOpenRouterModel = "openai/gpt-5.6-sol"
 
 	defaultFirstPassCacheStaggerSec = 8
+	// Most follow-up pushes (typo fixes, lint) land within 90 s of the first.
+	defaultAutoReviewSyncDebounceSec = 90
 )
 
 type Config struct {
@@ -135,6 +137,11 @@ type Config struct {
 	PublishLegacyTitles        bool
 	PublishRepublishSameCommit bool
 	PublishSkipSummaryRefresh  bool
+	PublishNoInlinePRBudget    bool
+	PublishNoPRMute            bool
+	// AutoReviewSyncDebounceSec of 0 admits every push at once.
+	AutoReviewSyncDebounceSec   int
+	AutoReviewSkipUnchangedDiff bool
 	// ReviewDefaultProfile is the profile used when a caller names none:
 	// automatic reviews, the Generate button, and profile-less API requests.
 	ReviewDefaultProfile string
@@ -398,6 +405,11 @@ func Load() *Config {
 		ReviewMaxTurnsConfigured:        reviewMaxTurnsConfigured,
 		ReviewMaxFirstPassSamples:       getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_SAMPLES", defaultReviewFirstPassSamples),
 		ReviewMaxFirstPassConcurrent:    getPositiveEnvIntOrDefault("REVIEW_MAX_FIRST_PASS_CONCURRENT", defaultReviewFirstPassConcurrent),
+
+		PublishNoInlinePRBudget:     !getEnvBoolOrDefault("PUBLISH_INLINE_PR_BUDGET", true),
+		PublishNoPRMute:             !getEnvBoolOrDefault("PUBLISH_PR_MUTE", true),
+		AutoReviewSyncDebounceSec:   getNonNegativeEnvIntOrDefault("AUTO_REVIEW_SYNC_DEBOUNCE_SEC", defaultAutoReviewSyncDebounceSec),
+		AutoReviewSkipUnchangedDiff: getEnvBoolOrDefault("AUTO_REVIEW_SKIP_UNCHANGED_DIFF", true),
 	}
 }
 

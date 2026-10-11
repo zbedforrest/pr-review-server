@@ -176,3 +176,70 @@ func TestPublish_ReappearingFixedFindingIsReopenedInItsThread(t *testing.T) {
 		t.Fatalf("reopened findings count as still open, not new:\n%s", gh.issueEdits[501])
 	}
 }
+
+func TestPublish_LifetimeInlineCapShrinksLaterRounds(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	pol := testPolicy()
+	pol.InlineCap, pol.InlinePRCap = 3, 3
+	publishWith(t, gh, ledger, roundOne(), pol) // c1 and m1 inline
+	if len(gh.reviews) != 1 || len(gh.reviews[0].comments) != 2 {
+		t.Fatalf("round 1 posts two roots, got %+v", gh.reviews)
+	}
+
+	r2 := roundOne()
+	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
+	r2.Findings = append(r2.Findings,
+		f("c2", "critical", "a.go", 11, "Second critical on the next line."),
+		f("c3", "critical", "b.go", 20, "Third critical, over the PR cap."),
+	)
+	r2.Commentable["a.go"][11] = true
+	rep := publishWith(t, gh, ledger, r2, pol)
+	if rep.InlinePosted != 1 || len(gh.reviews) != 2 || len(gh.reviews[1].comments) != 1 {
+		t.Fatalf("round 2 has one inline left on the PR: report=%+v reviews=%d", rep, len(gh.reviews))
+	}
+	if c3 := ledger.get(db.PublishedKindAnnotation, "c3"); c3 == nil {
+		t.Fatal("the finding over the PR cap is folded into the summary as an annotation")
+	}
+
+	r3 := r2
+	r3.HeadSHA = "sha-3"
+	rep = publishWith(t, gh, ledger, r3, pol)
+	if rep.InlinePosted != 0 || len(gh.reviews) != 2 {
+		t.Fatalf("the PR cap is spent, nothing more goes inline: report=%+v reviews=%d", rep, len(gh.reviews))
+	}
+
+	unbounded := pol
+	unbounded.InlinePRCap = 0
+	r4 := r3
+	r4.HeadSHA = "sha-4"
+	rep = publishWith(t, gh, ledger, r4, unbounded)
+	if rep.InlinePosted != 1 {
+		t.Fatalf("with no PR cap the round cap alone applies: report=%+v", rep)
+	}
+}
+
+func TestPolicy_ForRoundCountsInlineRootsInEveryState(t *testing.T) {
+	rows := []db.PublishedFinding{
+		{Kind: db.PublishedKindFinding, CommentID: 1, State: db.PublishedStateOpen},
+		{Kind: db.PublishedKindFinding, CommentID: 2, State: db.PublishedStateDismissed},
+		{Kind: db.PublishedKindFinding, CommentID: 3, State: db.PublishedStateFixed},
+		{Kind: db.PublishedKindAnnotation, CommentID: 0, State: db.PublishedStateOpen},
+		{Kind: db.PublishedKindSummary, CommentID: 500},
+	}
+	if got := InlineRootsPosted(rows); got != 3 {
+		t.Fatalf("posted = %d, want the three roots with comments", got)
+	}
+	pol := Policy{InlineCap: 3, InlinePRCap: 4}.forRound(rows)
+	if pol.InlineCap != 1 {
+		t.Fatalf("round cap = %d, want the one root the PR cap leaves", pol.InlineCap)
+	}
+	if pol := (Policy{InlineCap: 3, InlinePRCap: 2}).forRound(rows); pol.InlineCap != 0 {
+		t.Fatalf("an exhausted PR cap gives a zero round cap, got %d", pol.InlineCap)
+	}
+	if pol := (Policy{InlineCap: 3}).forRound(rows); pol.InlineCap != 3 {
+		t.Fatalf("no PR cap leaves the round cap alone, got %d", pol.InlineCap)
+	}
+	if pol := (Policy{InlineCap: -1, InlinePRCap: -1}).forRound(nil); pol.InlineCap != DefaultInlineCap || pol.InlinePRCap != DefaultInlinePRCap {
+		t.Fatalf("negative caps take the defaults: %+v", pol)
+	}
+}

@@ -99,7 +99,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			r.InlineComments[id] = row.CommentID
 		}
 	}
-	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy)
+	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy.forRound(r.Previous))
 
 	shown := map[string]bool{}
 	for _, f := range r.currentFindings() {

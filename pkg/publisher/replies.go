@@ -622,10 +622,14 @@ func TextEligibility(reply AuthorReply, prior []db.PublishedReply, prTextToday i
 // the watermarks. The live value comes from PR, never from a cached PR row,
 // because the poller's copy trails GitHub's search index by minutes.
 type ReplyReactor struct {
-	GH          ReplyGitHub
-	Ledger      ReplyLedger
-	PR          func(ctx context.Context, owner, repo string, number int) (PRState, error)
-	Allowed     func(authorLogin string) bool
+	GH      ReplyGitHub
+	Ledger  ReplyLedger
+	PR      func(ctx context.Context, owner, repo string, number int) (PRState, error)
+	Allowed func(authorLogin string) bool
+	// Muted, when set, reports a PR whose author asked PRism to stop; its
+	// threads get neither reactions nor text until the mute is cleared. It is
+	// asked only for a PR with new activity, since it may read GitHub.
+	Muted       func(ctx context.Context, owner, repo string, number int, authorID int64) (bool, error)
 	Mode        string
 	Since       time.Time
 	Targets     []db.PublishedReplyTarget // optional pre-filtered subset; nil means all ledger targets
@@ -867,6 +871,16 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 	if r.LastScanned != nil && !r.Full && !state.UpdatedAt.IsZero() && !state.UpdatedAt.After(r.LastScanned[key]) {
 		rep.skip("unchanged")
 		return nil
+	}
+	if r.Muted != nil {
+		muted, err := r.Muted(ctx, t.RepoOwner, t.RepoName, t.PRNumber, state.AuthorID)
+		if err != nil {
+			return err
+		}
+		if muted {
+			rep.skip("muted")
+			return nil
+		}
 	}
 	rep.PRsScanned++
 	comments, err := r.GH.ListThread(ctx, t.RepoOwner, t.RepoName, t.PRNumber)

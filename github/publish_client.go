@@ -41,11 +41,12 @@ type ReviewCommentInfo struct {
 	ThumbsDown int
 }
 
-// CommentReaction is one reaction on a review comment: who left it and
-// which ("+1", "-1", ...).
+// CommentReaction is one reaction on a comment: who left it, which ("+1",
+// "-1", ...) and when.
 type CommentReaction struct {
-	UserID  int64
-	Content string
+	UserID    int64
+	Content   string
+	CreatedAt time.Time
 }
 
 const listPageSize = 100
@@ -230,6 +231,41 @@ func (c *Client) ListCommentReactions(ctx context.Context, owner, repo string, c
 			return out, nil
 		}
 		opts.Page = resp.NextPage
+	}
+}
+
+// ListIssueCommentReactions lists every reaction on a PR conversation
+// comment, such as the sticky summary. The go-github type drops created_at,
+// which the mute needs, so the page is decoded here.
+func (c *Client) ListIssueCommentReactions(ctx context.Context, owner, repo string, commentID int64) ([]CommentReaction, error) {
+	gh, err := c.clientFor(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	var out []CommentReaction
+	for page := 1; ; {
+		req, err := gh.NewRequest("GET", fmt.Sprintf("repos/%s/%s/issues/comments/%d/reactions?per_page=%d&page=%d", owner, repo, commentID, listPageSize, page), nil)
+		if err != nil {
+			return nil, fmt.Errorf("list reactions on issue comment %d: %w", commentID, err)
+		}
+		var rows []struct {
+			User struct {
+				ID int64 `json:"id"`
+			} `json:"user"`
+			Content   string    `json:"content"`
+			CreatedAt time.Time `json:"created_at"`
+		}
+		resp, err := gh.Do(ctx, req, &rows)
+		if err != nil {
+			return nil, fmt.Errorf("list reactions on issue comment %d: %w", commentID, err)
+		}
+		for _, r := range rows {
+			out = append(out, CommentReaction{UserID: r.User.ID, Content: r.Content, CreatedAt: r.CreatedAt})
+		}
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		page = resp.NextPage
 	}
 }
 

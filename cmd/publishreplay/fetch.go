@@ -31,6 +31,24 @@ type compareResult struct {
 	// Truncated marks a response at the endpoint's file cap, which may have
 	// dropped the cited file.
 	Truncated bool `json:"truncated,omitempty"`
+	// MergeOnly: the push's first-parent chain back to base is nothing but
+	// merges, so the PR diff did not change. Entries below compareSchema
+	// predate the chain and are fetched again.
+	Status       string `json:"status,omitempty"`
+	Commits      int    `json:"commits,omitempty"`
+	MergeCommits int    `json:"merge_commits,omitempty"`
+	MergeOnly    bool   `json:"merge_only,omitempty"`
+	Schema       int    `json:"schema,omitempty"`
+}
+
+const compareSchema = 3
+
+// unchangedDiff reports a push that left the PR diff as it was: the same
+// tree, or merge commits only. It is the replay's stand-in for the poller's
+// patch-id comparison, which needs the diff at each head; a rebase that
+// changed nothing reads as a real push here, so the count is a lower bound.
+func (r compareResult) unchangedDiff() bool {
+	return r.Error == "" && (r.Status == "identical" || r.MergeOnly)
 }
 
 // compareFilesCap is the most files the compare endpoint returns; it does not
@@ -92,11 +110,24 @@ func compareKey(owner, repo, base, head string) string {
 	return fmt.Sprintf("%s_%s_%s_%s", owner, repo, short(base), short(head))
 }
 
+// compare answers which files changed between two heads from any cached
+// entry, whatever its schema: the file list has never changed shape.
 func (s *store) compare(owner, repo, base, head string) (compareResult, bool, error) {
+	return s.lookup(owner, repo, base, head, 0)
+}
+
+// push is the compare between consecutive round heads, which must carry
+// the commit chain; an entry from before the chain is fetched again when
+// online and answers as a real push when offline.
+func (s *store) push(owner, repo, base, head string) (compareResult, bool, error) {
+	return s.lookup(owner, repo, base, head, compareSchema)
+}
+
+func (s *store) lookup(owner, repo, base, head string, schema int) (compareResult, bool, error) {
 	path := filepath.Join(s.dir, "compare", compareKey(owner, repo, base, head)+".json")
 	if raw, err := os.ReadFile(path); err == nil {
 		var res compareResult
-		if err := json.Unmarshal(raw, &res); err == nil {
+		if err := json.Unmarshal(raw, &res); err == nil && (res.Schema >= schema || res.Error != "" || s.f == nil) {
 			return res, res.complete(), nil
 		}
 	}
@@ -225,10 +256,17 @@ func (f *liveFetcher) Compare(owner, repo, base, head string) (compareResult, er
 }
 
 // parseCompare flattens the endpoint's file list, with a rename contributing
-// both names, and flags a list at the cap from the raw entry count.
+// both names, flags a list at the cap from the raw entry count, and judges
+// the shape of the push from its commit list.
 func parseCompare(raw []byte) (compareResult, error) {
 	var payload struct {
-		Files []struct {
+		Status     string `json:"status"`
+		BaseCommit struct {
+			SHA string `json:"sha"`
+		} `json:"base_commit"`
+		TotalCommits int             `json:"total_commits"`
+		Commits      []compareCommit `json:"commits"`
+		Files        []struct {
 			Filename         string `json:"filename"`
 			PreviousFilename string `json:"previous_filename"`
 		} `json:"files"`
@@ -236,14 +274,71 @@ func parseCompare(raw []byte) (compareResult, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return compareResult{}, err
 	}
-	res := compareResult{Truncated: len(payload.Files) >= compareFilesCap}
+	res := compareResult{Truncated: len(payload.Files) >= compareFilesCap, Status: payload.Status, Schema: compareSchema, Commits: payload.TotalCommits}
+	if res.Status == "" {
+		res.Status = "unknown"
+	}
 	for _, fl := range payload.Files {
 		res.Files = append(res.Files, fl.Filename)
 		if fl.PreviousFilename != "" {
 			res.Files = append(res.Files, fl.PreviousFilename)
 		}
 	}
+	// The endpoint lists at most 250 commits; a longer range cannot be judged.
+	if len(payload.Commits) > 0 && payload.TotalCommits == len(payload.Commits) {
+		res.MergeCommits, res.MergeOnly = pushShape(payload.Commits, payload.BaseCommit.SHA)
+	}
 	return res, nil
+}
+
+type compareCommit struct {
+	SHA     string `json:"sha"`
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
+}
+
+// pushShape walks the first-parent chain from the tip of the listed commits
+// back towards base. Those are the push's own commits; the rest of the list
+// is history a merge brought in from another branch, which is why counting
+// merges over the whole list never finds a merge-only push. It reports the
+// merges on the chain and whether the chain reaches base through merges
+// alone. A rebase or force-push never reaches base and reads as a real push.
+func pushShape(commits []compareCommit, base string) (merges int, mergeOnly bool) {
+	byID := make(map[string]compareCommit, len(commits))
+	isParent := map[string]bool{}
+	for _, c := range commits {
+		byID[c.SHA] = c
+		for _, p := range c.Parents {
+			isParent[p.SHA] = true
+		}
+	}
+	tip := ""
+	for _, c := range commits {
+		if !isParent[c.SHA] {
+			if tip != "" {
+				return 0, false
+			}
+			tip = c.SHA
+		}
+	}
+	cur, plain := tip, 0
+	for range commits {
+		c, ok := byID[cur]
+		if !ok || len(c.Parents) == 0 {
+			return merges, false
+		}
+		if len(c.Parents) >= 2 {
+			merges++
+		} else {
+			plain++
+		}
+		cur = c.Parents[0].SHA
+		if cur == base {
+			return merges, plain == 0
+		}
+	}
+	return merges, false
 }
 
 // prefetch warms the store for every round's sidecar and every ordered pair
@@ -263,13 +358,17 @@ func prefetch(s *store, dumps []*prDump, bots func(*prDump) map[string]bool, wor
 				seen[r.SHA7] = true
 				jobs = append(jobs, func() error { _, _, err := s.sidecar(d.Owner, d.Repo, d.Number, r.SHA7); return err })
 			}
-			for _, prev := range rs[:i] {
+			for j, prev := range rs[:i] {
 				prev := prev
 				key := compareKey(d.Owner, d.Repo, prev.SHA, r.SHA)
 				if prev.SHA == r.SHA || seenCompare[key] {
 					continue
 				}
 				seenCompare[key] = true
+				if j == i-1 {
+					jobs = append(jobs, func() error { _, _, err := s.push(d.Owner, d.Repo, prev.SHA, r.SHA); return err })
+					continue
+				}
 				jobs = append(jobs, func() error { _, _, err := s.compare(d.Owner, d.Repo, prev.SHA, r.SHA); return err })
 			}
 		}

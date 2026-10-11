@@ -1,6 +1,8 @@
 package db
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -31,6 +33,8 @@ func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 		CommentText:  m.CommentText,
 		FindingKind:  m.FindingKind,
 		Subjects:     m.Subjects,
+		Muted:        m.Muted,
+		MuteLiftedAt: m.MuteLiftedAt,
 	}
 }
 
@@ -60,12 +64,18 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		CommentText:  p.CommentText,
 		FindingKind:  p.FindingKind,
 		Subjects:     p.Subjects,
+		Muted:        p.Muted,
+		MuteLiftedAt: p.MuteLiftedAt,
 	}
+	// Muted is owned by SetPublishedMute; a round rewriting the summary row
+	// never clears it, and a muted placeholder takes its first head here.
 	updates := map[string]interface{}{
 		"kind":          model.Kind,
 		"source_tag":    model.SourceTag,
 		"severity":      model.Severity,
 		"last_seen_sha": model.LastSeenSHA,
+		"reviewed_sha": gorm.Expr("CASE WHEN published_findings.reviewed_sha = '' THEN ? ELSE published_findings.reviewed_sha END",
+			model.ReviewedSHA),
 		// Terminal states are sticky: a publication that loaded the row before
 		// the author settled it must not flip it back to open or fixed.
 		"state": gorm.Expr("CASE WHEN published_findings.state IN (?, ?, ?) THEN published_findings.state ELSE ? END",
@@ -124,10 +134,11 @@ func (g *GormDB) GetPublishedFindingsForPR(owner, repo string, prNumber int) ([]
 }
 
 // ListPublishedSummaries returns the summary ledger row of every PR that has
-// been published to GitHub. Used by the dashboard list to badge those PRs.
+// been published to GitHub; a muted placeholder without a comment is not one.
+// Used by the dashboard list to badge those PRs.
 func (g *GormDB) ListPublishedSummaries() ([]PublishedFinding, error) {
 	var models []PublishedFindingModel
-	if err := g.db.Where("kind = ?", PublishedKindSummary).Find(&models).Error; err != nil {
+	if err := g.db.Where("kind = ? AND comment_id <> 0", PublishedKindSummary).Find(&models).Error; err != nil {
 		return nil, err
 	}
 	out := make([]PublishedFinding, 0, len(models))
@@ -149,6 +160,51 @@ func (g *GormDB) GetPublishedSummaryForPR(owner, repo string, prNumber int) (Pub
 		return PublishedFinding{}, false, nil
 	}
 	return publishedFindingModelToDomain(&model), true, nil
+}
+
+// SetPublishedMute records the author's wish for silence on the summary row
+// (or clears it) and reports whether a mute was set or cleared. A PR with no
+// summary row yet gets one without a comment, so the mute holds for the first
+// round as well; HeadPublished ignores it since its LastSeenSHA is empty.
+func (g *GormDB) SetPublishedMute(owner, repo string, number int, muted bool) (bool, error) {
+	summary := func() *gorm.DB {
+		return g.db.Model(&PublishedFindingModel{}).
+			Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ?", owner, repo, number, PublishedKindSummary)
+	}
+	if !muted {
+		var wasMuted int64
+		if err := summary().Where("muted = ?", true).Count(&wasMuted).Error; err != nil {
+			return false, err
+		}
+		// The lift is stamped even when the ledger never saw the thumbs-down,
+		// so the next reactions read cannot undo the author's request.
+		if err := summary().Updates(map[string]interface{}{"muted": false, "mute_lifted_at": time.Now().UTC()}).Error; err != nil {
+			return false, err
+		}
+		return wasMuted > 0, nil
+	}
+	res := summary().Where("muted = ?", false).Update("muted", true)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	if res.RowsAffected > 0 {
+		return true, nil
+	}
+	var n int64
+	if err := summary().Count(&n).Error; err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return false, nil
+	}
+	row := PublishedFindingModel{
+		RepoOwner: owner, RepoName: repo, PRNumber: number, Kind: PublishedKindSummary, Fingerprint: PublishedKindSummary,
+		State: PublishedStateOpen, PublishedAt: time.Now().UTC(), Muted: true,
+	}
+	if err := g.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // SetPublishedFindingState changes one ledger row's state, for conceding a

@@ -22,7 +22,7 @@ func TestSettings_PublishKeysRoundTrip(t *testing.T) {
 	server, _ := newTestServer(t, "tester")
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(
-		`{"publish_enabled_authors":"Alice, *","publish_inline_cap":3,"publish_inline_min_severity":"low","publish_reply_mode":"react","publish_show_unverified":false}`))
+		`{"publish_enabled_authors":"Alice, *","publish_inline_cap":3,"publish_inline_pr_cap":0,"publish_inline_min_severity":"low","publish_reply_mode":"react","publish_show_unverified":false}`))
 	w := httptest.NewRecorder()
 	server.handleSettings(w, addUserToRequest(req, &db.User{GitHubUsername: "tester"}))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -35,6 +35,7 @@ func TestSettings_PublishKeysRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, "alice,*", got["publish_enabled_authors"])
 	assert.Equal(t, float64(3), got["publish_inline_cap"])
+	assert.Equal(t, float64(0), got["publish_inline_pr_cap"])
 	assert.Equal(t, "low", got["publish_inline_min_severity"])
 	assert.Equal(t, "react", got["publish_reply_mode"])
 	assert.Equal(t, false, got["publish_show_unverified"])
@@ -64,6 +65,7 @@ func TestSettings_PublishKeysDefaultToDisabled(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, "", got["publish_enabled_authors"])
 	assert.Equal(t, float64(publisher.DefaultInlineCap), got["publish_inline_cap"])
+	assert.Equal(t, float64(publisher.DefaultInlinePRCap), got["publish_inline_pr_cap"])
 	assert.Equal(t, "medium", got["publish_inline_min_severity"])
 	assert.Equal(t, "off", got["publish_reply_mode"])
 	assert.Equal(t, true, got["publish_show_unverified"])

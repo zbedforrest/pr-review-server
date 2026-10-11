@@ -45,11 +45,22 @@ type AutoReviewIntentModel struct {
 	Status      string    `gorm:"size:16;not null;index"`
 	RunID       string    `gorm:"column:run_id;size:36;not null;default:'';index"`
 	Publication string    `gorm:"size:128;not null;default:''"`
+	PatchID     string    `gorm:"column:patch_id;size:64;not null;default:''"`
 	CreatedAt   time.Time `gorm:"not null"`
 	UpdatedAt   time.Time `gorm:"not null"`
 }
 
 func (AutoReviewIntentModel) TableName() string { return "auto_review_intents" }
+
+// autoReviewIntentColumns were added after the table shipped; deployments
+// that skip AutoMigrate get them from ensureIdempotentColumns.
+var autoReviewIntentColumns = []struct {
+	column   string
+	field    string
+	postgres string
+}{
+	{"patch_id", "PatchID", "varchar(64) NOT NULL DEFAULT ''"},
+}
 
 func autoReviewIntentFromModel(m AutoReviewIntentModel) AutoReviewIntent {
 	return AutoReviewIntent(m)
@@ -238,6 +249,28 @@ func (g *GormDB) UpdateAutoReviewIntentStatus(id uint, from []string, to, runID 
 	res := query.Updates(updates)
 	if res.Error != nil {
 		return false, fmt.Errorf("update auto review intent %d: %w", id, res.Error)
+	}
+	return res.RowsAffected > 0, nil
+}
+
+// SetAutoReviewIntentPatchID records the patch-id of the PR diff the intent
+// was admitted against.
+func (g *GormDB) SetAutoReviewIntentPatchID(id uint, patchID string) error {
+	if err := g.db.Model(&AutoReviewIntentModel{}).Where("id = ?", id).Update("patch_id", patchID).Error; err != nil {
+		return fmt.Errorf("set auto review intent %d patch id: %w", id, err)
+	}
+	return nil
+}
+
+// SkipQueuedAutoReviewIntent settles a queued intent as done without a run,
+// recording the reason as its publication outcome, so the head is neither
+// reviewed nor owed again. It reports false when the intent was no longer
+// queued.
+func (g *GormDB) SkipQueuedAutoReviewIntent(id uint, reason string) (bool, error) {
+	res := g.db.Model(&AutoReviewIntentModel{}).Where("id = ? AND status = ?", id, AutoReviewIntentQueued).
+		Updates(map[string]interface{}{"status": AutoReviewIntentDone, "publication": reason, "updated_at": time.Now().UTC()})
+	if res.Error != nil {
+		return false, fmt.Errorf("skip auto review intent %d: %w", id, res.Error)
 	}
 	return res.RowsAffected > 0, nil
 }

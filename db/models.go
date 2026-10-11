@@ -363,26 +363,28 @@ func (FindingOutcomeModel) TableName() string {
 // (owner, repo, pr, fingerprint) for the life of the PR, overwritten on each
 // round so it always reflects the current posted state. See db.PublishedFinding.
 type PublishedFindingModel struct {
-	ID           uint      `gorm:"primaryKey;autoIncrement"`
-	RepoOwner    string    `gorm:"size:255;not null;uniqueIndex:idx_published_findings_unique"`
-	RepoName     string    `gorm:"size:255;not null;uniqueIndex:idx_published_findings_unique"`
-	PRNumber     int       `gorm:"not null;uniqueIndex:idx_published_findings_unique"`
-	Fingerprint  string    `gorm:"size:512;not null;uniqueIndex:idx_published_findings_unique"`
-	Kind         string    `gorm:"size:16;not null"`
-	SourceTag    string    `gorm:"size:32"`
-	Severity     string    `gorm:"size:16"`
-	ReviewedSHA  string    `gorm:"size:40;not null"`
-	LastSeenSHA  string    `gorm:"size:40;not null"`
-	CommentID    int64     `gorm:"not null;default:0"`
-	ThreadNodeID string    `gorm:"size:64"`
-	ReviewID     int64     `gorm:"not null;default:0"`
-	CheckRunID   int64     `gorm:"not null;default:0"`
-	State        string    `gorm:"size:16;not null"`
-	Rounds       int       `gorm:"not null;default:0"`
-	PublishedAt  time.Time `gorm:"not null;index"`
-	CommentText  string    `gorm:"type:text"`
-	FindingKind  string    `gorm:"size:32;not null;default:''"`
-	Subjects     string    `gorm:"type:text;not null;default:''"`
+	ID           uint       `gorm:"primaryKey;autoIncrement"`
+	RepoOwner    string     `gorm:"size:255;not null;uniqueIndex:idx_published_findings_unique"`
+	RepoName     string     `gorm:"size:255;not null;uniqueIndex:idx_published_findings_unique"`
+	PRNumber     int        `gorm:"not null;uniqueIndex:idx_published_findings_unique"`
+	Fingerprint  string     `gorm:"size:512;not null;uniqueIndex:idx_published_findings_unique"`
+	Kind         string     `gorm:"size:16;not null"`
+	SourceTag    string     `gorm:"size:32"`
+	Severity     string     `gorm:"size:16"`
+	ReviewedSHA  string     `gorm:"size:40;not null"`
+	LastSeenSHA  string     `gorm:"size:40;not null"`
+	CommentID    int64      `gorm:"not null;default:0"`
+	ThreadNodeID string     `gorm:"size:64"`
+	ReviewID     int64      `gorm:"not null;default:0"`
+	CheckRunID   int64      `gorm:"not null;default:0"`
+	State        string     `gorm:"size:16;not null"`
+	Rounds       int        `gorm:"not null;default:0"`
+	PublishedAt  time.Time  `gorm:"not null;index"`
+	CommentText  string     `gorm:"type:text"`
+	FindingKind  string     `gorm:"size:32;not null;default:''"`
+	Subjects     string     `gorm:"type:text;not null;default:''"`
+	Muted        bool       `gorm:"not null;default:false"`
+	MuteLiftedAt *time.Time `gorm:"column:mute_lifted_at"`
 }
 
 // TableName specifies the table name for PublishedFindingModel

@@ -96,6 +96,10 @@ The most common ones:
 | `PUBLISH_RENDER_V2` | No | Default `true`: summary bullets and inline titles use the finding's headline, else its comment's first sentence, and the impact sentence only when the contract asserts current impact. `false` restores the impact-sentence titles; the word-boundary shortening of headlines over 90 runes (previously blanked) is not switchable |
 | `PUBLISH_SAME_COMMIT_GUARD` | No | Default `true`: a review of a commit the summary comment already covers is not published again (API and legacy re-runs, including a full review re-run of a head a lite review already published; its findings stay dashboard-only until the next push). `false` restores re-publication |
 | `PUBLISH_REFRESH_SUMMARY` | No | Default `true`: the sticky summary is re-rendered as soon as a reply concedes a finding. `false` waits for the next push |
+| `PUBLISH_INLINE_PR_BUDGET` | No | Default `true`: `publish_inline_pr_cap` (default 6) bounds the inline comments PRism posts over the life of one PR, counting resolved and dismissed threads; later findings stay in the summary. `false` leaves only the per-round `publish_inline_cap` |
+| `PUBLISH_PR_MUTE` | No | Default `true`: a PR author mutes PRism on one PR with `@<handle> stop` in the conversation or a thumbs-down on the sticky summary; the mute is a flag on the summary ledger row, acknowledged with a reaction only, and `@<handle> review` from the author lifts it. `false` ignores both |
+| `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` | No | Default `90`: a pushed head waits at least this long before its automatic review is admitted, so a burst of pushes reviews the last head once; it is admitted on the first poll after the window, so up to one `POLLING_INTERVAL` later. `0` admits every push at once |
+| `AUTO_REVIEW_SKIP_UNCHANGED_DIFF` | No | Default `true`: a push whose PR diff has the patch-id of the last automatically reviewed head (a merge from the base branch, a rebase, an amended message) is settled without a review and counted as `reviews_skipped_unchanged_diff` on the daily health report. `false` reviews every push |
 
 ### First-pass provider
 
@@ -170,6 +174,15 @@ stand in for it, a head PRism already commented on is not reviewed again when
 the switch is turned on, and a review that finished after the PR went back to
 draft is redone when it is ready again.
 
+Pushes are held for `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` (default 90 s) and
+admitted on the first poll after the window, so the effective hold is the
+window plus up to one `POLLING_INTERVAL`, and a burst of pushes reviews only
+the last head. The window restarts on every push, so a PR pushed to more often
+than the window is reviewed once the pushes pause. A push that leaves the PR diff's patch-id unchanged (merging
+the base branch, rebasing, amending a message, or changing only trailing
+whitespace; indentation changes count as real changes) is settled without a review (`AUTO_REVIEW_SKIP_UNCHANGED_DIFF`);
+the intent records the reason as `skipped: diff unchanged since <sha>`.
+
 Deliveries arrive through the GitHub App webhook; the scheduled poll is the
 fallback for a missed delivery. To enable it:
 
@@ -210,6 +223,29 @@ a team slug, or `*`). Gate denials due to an opt-out count as
 `opted_out_total` on the daily health report's publication hygiene line.
 A mention on an opted-out author's PR still queues a dashboard review but
 gets no reaction. `PUBLISH_SETTLE_FOOTER=false` removes the footer.
+
+### Muting one PR
+
+An author who wants silence on a single PR comments `@<handle> stop` (or
+`mute`), or puts a thumbs-down on the sticky summary. The stop is answered
+with a thumbs-up within a poll cycle; the thumbs-down is read by the one
+mute check every posting path makes (a round, the reply scan of a PR with new
+activity, a summary refresh) and answered with an eyes reaction, nothing
+more. From then on no round, inline comment, reply or reaction reaches that PR,
+while reviews keep appearing on the dashboard and a pushed head whose review
+was withheld counts as served. Only the PR author can mute, and only the
+author lifts it, with `@<handle> review`. The mute is a flag on the PR's
+summary ledger row (`published_findings.muted`), counted as `prs_muted` on
+the daily health report; `PUBLISH_PR_MUTE=false` turns it off.
+
+### Inline budget
+
+Two caps bound inline comments (admin settings page, Publishing section):
+`publish_inline_cap` per round (default 3) and `publish_inline_pr_cap` over
+the life of the PR (default 6, 0 removes the bound), counting every inline
+root in the ledger whatever its state. A round posts at most what both
+leave; the rest of its findings appear in the summary only.
+`PUBLISH_INLINE_PR_BUDGET=false` turns the lifetime cap off.
 
 `GET /api/status` reports `webhook.deliveries_24h`, `webhook.last_delivery_at`,
 `webhook.intents_queued` and `webhook.oldest_queued_age_sec`, and the daily

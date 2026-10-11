@@ -16,6 +16,7 @@ import (
 const (
 	settingPublishEnabledAuthors    = "publish_enabled_authors"
 	settingPublishInlineCap         = "publish_inline_cap"
+	settingPublishInlinePRCap       = "publish_inline_pr_cap"
 	settingPublishInlineMinSeverity = "publish_inline_min_severity"
 	settingPublishReplyMode         = "publish_reply_mode"
 	settingPublishReplyEnabledAt    = "publish_reply_enabled_at"
@@ -25,6 +26,7 @@ const (
 	settingAutoReviewReadyPRs = "auto_review_ready_prs"
 
 	defaultPublishInlineCap         = publisher.DefaultInlineCap
+	defaultPublishInlinePRCap       = publisher.DefaultInlinePRCap
 	defaultPublishInlineMinSeverity = "medium"
 	defaultPublishReplyMode         = "off"
 	defaultPublishShowUnverified    = true
@@ -50,6 +52,14 @@ func (s *Server) addPublishSettings(ctx context.Context, response map[string]int
 		}
 	}
 	response[settingPublishInlineCap] = cap
+
+	prCap := defaultPublishInlinePRCap
+	if v, err := s.db.GetSetting(settingPublishInlinePRCap); err == nil {
+		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
+			prCap = n
+		}
+	}
+	response[settingPublishInlinePRCap] = prCap
 
 	sev := defaultPublishInlineMinSeverity
 	if v, err := s.db.GetSetting(settingPublishInlineMinSeverity); err == nil && publishSeverities[strings.TrimSpace(v)] {

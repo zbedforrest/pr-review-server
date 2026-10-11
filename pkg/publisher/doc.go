@@ -40,7 +40,10 @@
 // Already published. Select never offers a root for a finding whose row
 // has a comment id, whatever the row's state; a row without a comment (a
 // summary-only annotation) may still be promoted inline when its line
-// becomes commentable.
+// becomes commentable. The round cap (Policy.InlineCap) shrinks to what the
+// PR cap (Policy.InlinePRCap, publish_inline_pr_cap) leaves after the inline
+// roots the ledger already holds in any state; findings over either cap
+// stay summary-only annotations.
 //
 // Severity clamp. A finding matched to a non-terminal row keeps the row's
 // severity unless its anchor changed; an accepted change is written to the

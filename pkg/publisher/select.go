@@ -5,14 +5,17 @@ import (
 	"sort"
 	"strings"
 
+	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/types"
 )
 
-// Greptile posts about half an inline comment per PR; the cap and the
-// current-impact gate below are what keep PRism in that range.
+// Greptile posts about half an inline comment per PR; the caps and the
+// current-impact gate below are what keep PRism in that range. The per-round
+// cap bounds one push, the per-PR cap the whole life of the PR.
 const (
 	DefaultInlineCap         = 3
+	DefaultInlinePRCap       = 6
 	DefaultInlineMinSeverity = "medium"
 
 	summaryFile = "SUMMARY"
@@ -22,6 +25,10 @@ const (
 type Policy struct {
 	InlineCap         int
 	InlineMinSeverity string
+	// InlinePRCap bounds the inline roots posted over the life of a PR, in
+	// every state; the round cap shrinks to what is left. Zero is no bound,
+	// negative the default (PUBLISH_INLINE_PR_BUDGET=false sets zero).
+	InlinePRCap int
 	// ShowUnverified folds the active first-pass claims the agent did not
 	// confirm into the summary comment; they are never inline.
 	ShowUnverified bool
@@ -56,22 +63,52 @@ func LegacyLedgerFromEnv() bool {
 }
 
 // DefaultPolicy is the shipped posting policy: three inline comments per
-// round, medium severity and above, unverified first-pass claims folded, the
-// ledger decision table and thread resolution on.
+// round and six per PR, medium severity and above, unverified first-pass
+// claims folded, the ledger decision table and thread resolution on.
 func DefaultPolicy() Policy {
-	return Policy{InlineCap: DefaultInlineCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true}
+	return Policy{InlineCap: DefaultInlineCap, InlinePRCap: DefaultInlinePRCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true}
 }
 
-// withDefaults fills unset fields only. A zero cap is a real setting (post
-// nothing inline); negative means unset. ShowUnverified is taken as given.
+// withDefaults fills unset fields only. A zero round cap is a real setting
+// (post nothing inline) and a zero PR cap is no bound; negative means unset.
+// ShowUnverified is taken as given.
 func (p Policy) withDefaults() Policy {
 	if p.InlineCap < 0 {
 		p.InlineCap = DefaultInlineCap
+	}
+	if p.InlinePRCap < 0 {
+		p.InlinePRCap = DefaultInlinePRCap
 	}
 	if p.InlineMinSeverity == "" {
 		p.InlineMinSeverity = DefaultInlineMinSeverity
 	}
 	return p
+}
+
+// forRound is the policy one round selects under: the round cap, lowered to
+// whatever the PR cap still allows after the inline roots the ledger holds.
+func (p Policy) forRound(previous []db.PublishedFinding) Policy {
+	p = p.withDefaults()
+	if p.InlinePRCap <= 0 {
+		return p
+	}
+	if left := p.InlinePRCap - InlineRootsPosted(previous); left < p.InlineCap {
+		p.InlineCap = max(left, 0)
+	}
+	return p
+}
+
+// InlineRootsPosted counts the inline root comments the ledger records for
+// the PR, in any state: a resolved or dismissed thread still took the
+// reviewer's attention once.
+func InlineRootsPosted(previous []db.PublishedFinding) int {
+	n := 0
+	for _, row := range previous {
+		if row.Kind == db.PublishedKindFinding && row.CommentID != 0 {
+			n++
+		}
+	}
+	return n
 }
 
 type Selection struct {

@@ -199,3 +199,80 @@ func TestGormDB_ContestPublishedFinding_MovesOpenAndResolvedRowsOnly(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, PublishedStateContested, rows[0].State)
 }
+
+func TestGormDB_SetPublishedMute_FlagsTheSummaryRowAndSurvivesRounds(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	changed, err := db.SetPublishedMute("owner", "repo", 7, true)
+	require.NoError(t, err)
+	assert.True(t, changed, "a PR without a summary row gets a muted placeholder")
+	row, found, err := db.GetPublishedSummaryForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.True(t, row.Muted)
+	assert.Zero(t, row.CommentID)
+	assert.Empty(t, row.LastSeenSHA, "the placeholder never reads as a published head")
+
+	changed, err = db.SetPublishedMute("owner", "repo", 7, true)
+	require.NoError(t, err)
+	assert.False(t, changed, "muting twice changes nothing")
+
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Kind, p.Fingerprint, p.CommentID, p.Rounds = PublishedKindSummary, PublishedKindSummary, 777, 1
+	})))
+	row, _, err = db.GetPublishedSummaryForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.True(t, row.Muted, "a round rewriting the summary row keeps the mute")
+	assert.Equal(t, int64(777), row.CommentID)
+	assert.Equal(t, "abc1234", row.ReviewedSHA, "the placeholder takes the first published head")
+
+	changed, err = db.SetPublishedMute("owner", "repo", 7, false)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	row, _, err = db.GetPublishedSummaryForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.False(t, row.Muted)
+	assert.NotNil(t, row.MuteLiftedAt, "the lift time is recorded")
+	changed, err = db.SetPublishedMute("owner", "repo", 8, false)
+	require.NoError(t, err)
+	assert.False(t, changed, "clearing a mute on a PR without a row creates nothing")
+	_, found, err = db.GetPublishedSummaryForPR("owner", "repo", 8)
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
+func TestGormDB_ListPublishedSummaries_SkipsAMutedPlaceholder(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	_, err := db.SetPublishedMute("owner", "repo", 7, true)
+	require.NoError(t, err)
+	rows, err := db.ListPublishedSummaries()
+	require.NoError(t, err)
+	assert.Empty(t, rows, "a PR muted before any review has no summary comment to badge")
+
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Kind, p.Fingerprint, p.CommentID = PublishedKindSummary, PublishedKindSummary, 777
+	})))
+	rows, err = db.ListPublishedSummaries()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].Muted)
+}
+
+func TestGormDB_SetPublishedMute_LiftStampsAnUnmutedSummaryToo(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Kind, p.Fingerprint, p.CommentID = PublishedKindSummary, PublishedKindSummary, 777
+	})))
+	changed, err := db.SetPublishedMute("owner", "repo", 7, false)
+	require.NoError(t, err)
+	assert.False(t, changed, "nothing was muted")
+	row, _, err := db.GetPublishedSummaryForPR("owner", "repo", 7)
+	require.NoError(t, err)
+	assert.False(t, row.Muted)
+	assert.NotNil(t, row.MuteLiftedAt, "a thumbs-down the ledger has not seen yet is lifted all the same")
+}

@@ -911,6 +911,30 @@ func (m *MockDatabase) SetAutoReviewIntentPublicationByRun(runID, outcome string
 	return nil
 }
 
+func (m *MockDatabase) SetAutoReviewIntentPatchID(id uint, patchID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, intent := range m.AutoReviewIntents {
+		if intent.ID == id {
+			intent.PatchID = patchID
+		}
+	}
+	return nil
+}
+
+func (m *MockDatabase) SkipQueuedAutoReviewIntent(id uint, reason string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, intent := range m.AutoReviewIntents {
+		if intent.ID == id && intent.Status == db.AutoReviewIntentQueued {
+			intent.Status, intent.Publication = db.AutoReviewIntentDone, reason
+			intent.UpdatedAt = time.Now().UTC()
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *MockDatabase) NoteQueuedAutoReviewIntent(id uint, note string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
