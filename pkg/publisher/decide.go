@@ -55,10 +55,11 @@ func splitSubjects(s string) []string {
 }
 
 // threadNote is an in-thread reply the round owes once its ledger writes are
-// done.
+// done; external marks the delta reply under another reviewer's root.
 type threadNote struct {
 	commentID int64
 	body      string
+	external  bool
 }
 
 // publishLedger is the ledger decision table: identity first, then one
@@ -86,8 +87,17 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	threads := newThreadIndex(p.GH, p.Policy, r.Owner, r.Repo, r.Number)
 
 	originalIDs := p.aliasToLedger(&r, rows)
+	rememberExternal(&r, rows)
 	r.Findings = p.withoutTerminal(r, rows, originalIDs)
-	notes := p.clampSeverity(&r, rows)
+	forgetShown(&r)
+	now := p.now()
+	var external externalPass
+	if p.Policy.ExternalReconcile {
+		p.refreshExternal(ctx, &r, rows)
+		external = p.matchExternal(ctx, &r, rows, now, threads)
+		r.GreptileOnly = withoutClaimedRoots(r.GreptileOnly, rows, external.rows)
+	}
+	notes := append(p.clampSeverity(&r, rows), external.notes...)
 
 	alreadyPublished := map[string]bool{}
 	if r.InlineComments == nil {
@@ -133,7 +143,14 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	for _, f := range sel.Annotations {
 		written[f.ID] = true
 	}
-	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations)}
+	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), ExternalMatched: external.matched}
+	for _, row := range external.rows {
+		writes = append(writes, pending{row: row})
+	}
+	lastPublished := ""
+	if summaryRow != nil {
+		lastPublished = summaryRow.LastSeenSHA
+	}
 	ids := make([]string, 0, len(rows))
 	for id := range rows {
 		ids = append(ids, id)
@@ -172,9 +189,9 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 				}
 				// The stored id stands in for the resolve, but the note needs the
 				// listing to show the thread open.
-				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved {
+				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved && threads.resolving() {
 					notes = append(notes, threadNote{commentID: row.CommentID, body: notSeenNote(r.HeadSHA)})
-				} else if !listed && threads.listFailed() && row.CommentID != 0 {
+				} else if !listed && threads.listFailed() && threads.resolving() && row.CommentID != 0 {
 					rep.ThreadReplyFailures++
 				}
 				rep.Hygiene.noteResolved(row, r.HeadSHA, cs.Files)
@@ -184,6 +201,11 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			if next, ok := backfilled(row, r.PriorComments[id]); ok {
 				writes = append(writes, pending{row: next})
 			}
+		case concededSinceLastRound(row, isPresent, lastPublished, r.HeadSHA):
+			d.Fixed++
+			next := *row
+			next.Rounds = r.RoundNumber
+			writes = append(writes, pending{row: &next})
 		case fixedState(row.State) && isPresent:
 			d.StillOpen++
 			rep.Reopened++
@@ -205,8 +227,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		}
 	}
 	rep.StillOpen, rep.Fixed = d.StillOpen, d.Fixed
-	rep.Confidence = Confidence(r.Findings, r.RequiredCheckViolated)
-	now := p.now()
+	rep.Confidence = r.confidence()
 
 	postedThisRound, err := p.postInline(ctx, r, sel, rows, now, &rep, threads)
 	if err != nil {
@@ -251,7 +272,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			threads.apply(ctx, actions, &rep)
 			return rep, fmt.Errorf("update finding %s: %w", w.row.Fingerprint, err)
 		}
-		if threads != nil && w.thread != noThreadChange && w.row.CommentID != 0 {
+		if threads.resolving() && w.thread != noThreadChange && w.row.CommentID != 0 {
 			actions = append(actions, threadAction{nodeID: w.row.ThreadNodeID, resolve: w.thread == resolveThread})
 		}
 	}
@@ -265,16 +286,32 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		for _, n := range notes {
 			// A missed note is not worth failing a round whose ledger is already
 			// consistent; the next round sees the same state and says nothing new.
-			if _, err := replier.PostReply(ctx, r.Owner, r.Repo, r.Number, n.commentID, n.body); err != nil {
+			_, err := replier.PostReply(ctx, r.Owner, r.Repo, r.Number, n.commentID, n.body)
+			switch {
+			case err != nil && n.external:
+				rep.ExternalReplyFailures++
+				log.Printf("[PUBLISH] %s/%s#%d: delta reply under comment %d lost: %v", r.Owner, r.Repo, r.Number, n.commentID, err)
+			case err != nil:
 				rep.ThreadReplyFailures++
 				log.Printf("[PUBLISH] %s/%s#%d: thread note on comment %d lost: %v", r.Owner, r.Repo, r.Number, n.commentID, err)
-			} else {
+			case n.external:
+				rep.ExternalReplies++
+			default:
 				rep.ThreadReplies++
 			}
 		}
 	}
 	threads.apply(ctx, actions, &rep)
 	return rep, nil
+}
+
+// concededSinceLastRound recognises a row a conceded fix claim marked fixed
+// between rounds: stamped with the last published head by the reply path,
+// absent now, and not yet counted. Rounds on such a row records the round
+// whose summary counted it, so the next round does not count it again.
+func concededSinceLastRound(row *db.PublishedFinding, present bool, lastPublished, head string) bool {
+	return row.State == db.PublishedStateFixed && !present && row.Rounds == 0 && lastPublished != "" &&
+		strings.EqualFold(row.LastSeenSHA, lastPublished) && !strings.EqualFold(row.LastSeenSHA, head)
 }
 
 type threadChange int

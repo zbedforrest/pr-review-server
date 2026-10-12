@@ -55,3 +55,26 @@ func tokens(s string) map[string]bool {
 	}
 	return out
 }
+
+// Containment is the overlap coefficient of the word-token sets of a and b:
+// the shared tokens over the smaller set, with the number of shared tokens.
+// Unlike Jaccard it is not dragged down when one text is several times
+// longer than the other, which is the usual shape of a PRism comment next
+// to another reviewer's. Two empty sets have containment 0.
+func Containment(a, b string) (float64, int) {
+	ta, tb := tokens(a), tokens(b)
+	if len(ta) == 0 || len(tb) == 0 {
+		return 0, 0
+	}
+	inter := 0
+	for tok := range ta {
+		if tb[tok] {
+			inter++
+		}
+	}
+	smaller := len(ta)
+	if len(tb) < smaller {
+		smaller = len(tb)
+	}
+	return float64(inter) / float64(smaller), inter
+}

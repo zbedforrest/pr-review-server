@@ -34,6 +34,9 @@ type Run struct {
 type RoundRun struct {
 	Index    int
 	Replayed bool
+	// Skipped is a replayed round the publisher refused as already
+	// published; its summary is the previous round's.
+	Skipped  bool
 	Posts    []replaykit.Post
 	Summary  string
 	Flipped  []db.PublishedFinding // rows this round moved from open to resolved
@@ -125,7 +128,7 @@ func replayCase(ctx context.Context, c *Case, policy publisher.Policy, responder
 		if err != nil {
 			return nil, err
 		}
-		rr.Replayed, rr.Posts, rr.Summary, rr.Previous, rr.After = true, res.Posts, res.Summary, res.Previous, res.After
+		rr.Replayed, rr.Skipped, rr.Posts, rr.Summary, rr.Previous, rr.After = true, res.Skipped, res.Posts, res.Summary, res.Previous, res.After
 		rr.Flipped = flipped(res.Previous, res.After)
 		run.Rounds = append(run.Rounds, rr)
 		run.Posts = append(run.Posts, res.Posts...)

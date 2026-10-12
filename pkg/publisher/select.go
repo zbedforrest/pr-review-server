@@ -45,6 +45,11 @@ type Policy struct {
 	// thread and reopen it when the finding returns (PUBLISH_THREAD_RESOLUTION);
 	// it needs a GitHub that implements ThreadResolver.
 	ResolveThreads bool
+	// ExternalReconcile matches findings against every other reviewer's root
+	// thread (PUBLISH_EXTERNAL_RECONCILE): a match becomes an external ledger
+	// row with one delta reply in that thread and never a root of its own.
+	// Off, only Greptile roots are parsed and a match merely tags the finding.
+	ExternalReconcile bool
 }
 
 // PolicyV2Env is the kill switch for the ledger decision table: "false", "0",
@@ -62,11 +67,27 @@ func LegacyLedgerFromEnv() bool {
 	return false
 }
 
+// ExternalReconcileEnv is the kill switch for cross-reviewer reconciliation:
+// "false", "0", "off" and "no" restore the Greptile-only tagging; anything
+// else keeps it on.
+const ExternalReconcileEnv = "PUBLISH_EXTERNAL_RECONCILE"
+
+// ExternalReconcileFromEnv reports whether the environment left
+// cross-reviewer reconciliation on. The poller resolves it once at start-up.
+func ExternalReconcileFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(ExternalReconcileEnv))) {
+	case "false", "0", "off", "no":
+		return false
+	}
+	return true
+}
+
 // DefaultPolicy is the shipped posting policy: three inline comments per
 // round and six per PR, medium severity and above, unverified first-pass
-// claims folded, the ledger decision table and thread resolution on.
+// claims folded, the ledger decision table, thread resolution and
+// cross-reviewer reconciliation on.
 func DefaultPolicy() Policy {
-	return Policy{InlineCap: DefaultInlineCap, InlinePRCap: DefaultInlinePRCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true}
+	return Policy{InlineCap: DefaultInlineCap, InlinePRCap: DefaultInlinePRCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true, ExternalReconcile: true}
 }
 
 // withDefaults fills unset fields only. A zero round cap is a real setting

@@ -207,7 +207,8 @@ func scoreFixed(run *Run, m postMatch, s *CaseScore) {
 // scoreSummaries compares each later round's "Since last review" counts
 // (new, still open, fixed) with the expectation, over labelled findings only: rows the audit has no label
 // for (folded notes, annotations, unlabelled posts) are taken out of the
-// rendered counts first.
+// rendered counts first. A round the publisher refused as already published
+// wrote no summary, so its expectation is not scored.
 func scoreSummaries(run *Run, m postMatch, s *CaseScore) {
 	labelled := map[string]bool{}
 	for _, p := range run.Posts {
@@ -221,7 +222,7 @@ func scoreSummaries(run *Run, m postMatch, s *CaseScore) {
 	}
 	for _, se := range run.Case.Expect.Summaries {
 		rr, ok := byRound[se.Round]
-		if !ok || !rr.Replayed {
+		if !ok || !rr.Replayed || rr.Skipped {
 			continue
 		}
 		s.SummariesScored++

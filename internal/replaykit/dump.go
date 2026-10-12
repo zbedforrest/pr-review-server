@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"pr-review-server/pkg/publisher"
+	"pr-review-server/pkg/reviewer/reconcile"
 )
 
 // FlexInt64 reads a GraphQL databaseId whether the dump stored it as a number
@@ -69,17 +70,22 @@ type Commit struct {
 	} `json:"commit"`
 }
 
+// Thread is one review thread. IsResolved is nil when the dump did not
+// carry resolution state (a REST export before the GraphQL fill).
 type Thread struct {
 	ID           string `json:"id"`
 	Path         string `json:"path"`
 	Line         int    `json:"line"`
 	OriginalLine int    `json:"originalLine"`
-	IsResolved   bool   `json:"isResolved"`
+	IsResolved   *bool  `json:"isResolved"`
 	IsOutdated   bool   `json:"isOutdated"`
 	Comments     struct {
 		Nodes []ThreadComment `json:"nodes"`
 	} `json:"comments"`
 }
+
+// Resolved reports whether the thread is resolved; unknown reads as open.
+func (t Thread) Resolved() bool { return t.IsResolved != nil && *t.IsResolved }
 
 // PRDump is the subset of the GitHub GraphQL dump the replay reads.
 type PRDump struct {
@@ -242,7 +248,48 @@ func (d *PRDump) ObservedRoots(bots map[string]bool) []ObservedRoot {
 		if line == 0 {
 			line = t.Line
 		}
-		out = append(out, ObservedRoot{FindingID: id, File: t.Path, Line: line, Text: StripMarkup(root.Body), At: root.CreatedAt, Resolved: t.IsResolved})
+		out = append(out, ObservedRoot{FindingID: id, File: t.Path, Line: line, Text: StripMarkup(root.Body), At: root.CreatedAt, Resolved: t.Resolved()})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	return out
+}
+
+// ExternalRoot is a root comment on the PR that PRism did not post, with
+// the thread's resolution state as the dump records it.
+type ExternalRoot struct {
+	CommentID     int64
+	Author        string
+	File          string
+	Line          int
+	Text          string
+	At            time.Time
+	Resolved      bool
+	ResolvedKnown bool
+}
+
+// ExternalRoots lists every root comment on the PR by someone other than
+// the bot, with the thread's original line and the prose the reconciler's
+// parser reads out of the body, oldest first.
+func (d *PRDump) ExternalRoots(bots map[string]bool) []ExternalRoot {
+	var out []ExternalRoot
+	for _, t := range d.ReviewThreads.Nodes {
+		if len(t.Comments.Nodes) == 0 {
+			continue
+		}
+		root := t.Comments.Nodes[0]
+		login := ActorLogin(root.Author)
+		if root.ReplyTo != nil || bots[BareLogin(login)] || t.Path == "" {
+			continue
+		}
+		line := t.OriginalLine
+		if line == 0 {
+			line = t.Line
+		}
+		parsed := reconcile.ParseExternalComments([]reconcile.ExternalComment{{ID: int64(root.DatabaseID), Author: login, Body: root.Body, Path: t.Path, Line: line}}, nil)
+		if len(parsed) == 0 {
+			continue
+		}
+		out = append(out, ExternalRoot{CommentID: int64(root.DatabaseID), Author: login, File: t.Path, Line: line, Text: strings.TrimSpace(parsed[0].Title + " " + parsed[0].Body), At: root.CreatedAt, Resolved: t.Resolved(), ResolvedKnown: t.IsResolved != nil})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	return out

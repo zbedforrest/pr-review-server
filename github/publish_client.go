@@ -27,15 +27,19 @@ type IssueCommentInfo struct {
 }
 
 type ReviewCommentInfo struct {
-	ID          int64
-	Author      string
-	AuthorID    int64
-	Body        string
-	Path        string
-	Line        int
-	StartLine   int
-	InReplyToID int64
-	ReviewID    int64
+	ID        int64
+	Author    string
+	AuthorID  int64
+	Body      string
+	Path      string
+	Line      int
+	StartLine int
+	// OriginalLine and OriginalStartLine anchor a comment whose diff is
+	// outdated; GitHub then reports Line and StartLine as null.
+	OriginalLine      int
+	OriginalStartLine int
+	InReplyToID       int64
+	ReviewID          int64
 	// OriginalCommitID is the head the comment was posted against.
 	OriginalCommitID string
 	CreatedAt        time.Time
@@ -193,18 +197,20 @@ func (c *Client) ListReviewComments(ctx context.Context, owner, repo string, num
 		}
 		for _, rc := range page {
 			out = append(out, ReviewCommentInfo{
-				ID:               rc.GetID(),
-				Author:           rc.GetUser().GetLogin(),
-				AuthorID:         rc.GetUser().GetID(),
-				Body:             rc.GetBody(),
-				Path:             rc.GetPath(),
-				Line:             rc.GetLine(),
-				StartLine:        rc.GetStartLine(),
-				InReplyToID:      rc.GetInReplyTo(),
-				ReviewID:         rc.GetPullRequestReviewID(),
-				OriginalCommitID: rc.GetOriginalCommitID(),
-				CreatedAt:        rc.GetCreatedAt().Time,
-				ThumbsDown:       rc.GetReactions().GetMinusOne(),
+				ID:                rc.GetID(),
+				Author:            rc.GetUser().GetLogin(),
+				AuthorID:          rc.GetUser().GetID(),
+				Body:              rc.GetBody(),
+				Path:              rc.GetPath(),
+				Line:              rc.GetLine(),
+				StartLine:         rc.GetStartLine(),
+				OriginalLine:      rc.GetOriginalLine(),
+				OriginalStartLine: rc.GetOriginalStartLine(),
+				InReplyToID:       rc.GetInReplyTo(),
+				ReviewID:          rc.GetPullRequestReviewID(),
+				OriginalCommitID:  rc.GetOriginalCommitID(),
+				CreatedAt:         rc.GetCreatedAt().Time,
+				ThumbsDown:        rc.GetReactions().GetMinusOne(),
 			})
 		}
 		if resp.NextPage == 0 {

@@ -60,6 +60,24 @@ func TestRefreshSummary_DropsTheConcededBulletAndKeepsTheRoundCounts(t *testing.
 	}
 }
 
+func TestRefreshSummary_DropsAConcededFixToo(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, filedRound())
+	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueCreates[0]}}
+	m1 := payload.Fingerprint("b.go", 20, "Medium thing.")
+	ledger.rows[m1].State = db.PublishedStateFixed
+
+	refresh := filedRound()
+	refresh.RoundNumber, refresh.HeadSHA, refresh.Previous = 0, "", nil
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: DefaultPolicy()}
+	if err := p.RefreshSummary(context.Background(), refresh); err != nil {
+		t.Fatal(err)
+	}
+	if out := gh.issueEdits[501]; strings.Contains(out, "Medium thing") {
+		t.Fatalf("a finding whose fix was conceded leaves the summary at once:\n%s", out)
+	}
+}
+
 func TestRefreshSummary_SkipsTheEditWhenANewerRoundRewroteTheSummary(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
 	publishRound(t, gh, ledger, roundOne())

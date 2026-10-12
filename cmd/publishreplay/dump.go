@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"pr-review-server/internal/replaykit"
 	"pr-review-server/pkg/publisher"
+	"pr-review-server/pkg/reviewer/reconcile"
 )
 
 // flexInt64 reads a GraphQL databaseId whether the dump stored it as a number
@@ -57,17 +59,21 @@ type dumpThreadComment struct {
 	} `json:"replyTo"`
 }
 
+// dumpThread is one review thread. IsResolved is nil when the dump did not
+// carry resolution state (a REST export before the GraphQL fill).
 type dumpThread struct {
 	ID           string `json:"id"`
 	Path         string `json:"path"`
 	Line         int    `json:"line"`
 	OriginalLine int    `json:"originalLine"`
-	IsResolved   bool   `json:"isResolved"`
+	IsResolved   *bool  `json:"isResolved"`
 	IsOutdated   bool   `json:"isOutdated"`
 	Comments     struct {
 		Nodes []dumpThreadComment `json:"nodes"`
 	} `json:"comments"`
 }
+
+func (t dumpThread) resolved() bool { return t.IsResolved != nil && *t.IsResolved }
 
 // prDump is the subset of the GitHub GraphQL dump the replay reads.
 type prDump struct {
@@ -215,7 +221,34 @@ func (d *prDump) observedRoots(bots map[string]bool) []observedRoot {
 		if line == 0 {
 			line = t.Line
 		}
-		out = append(out, observedRoot{FindingID: id, File: t.Path, Line: line, Text: stripMarkup(root.Body), At: root.CreatedAt, Resolved: t.IsResolved})
+		out = append(out, observedRoot{FindingID: id, File: t.Path, Line: line, Text: stripMarkup(root.Body), At: root.CreatedAt, Resolved: t.resolved()})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	return out
+}
+
+// externalRoots lists every root comment on the PR by someone other than
+// the bot, oldest first, for the external_duplicates metrics.
+func (d *prDump) externalRoots(bots map[string]bool) []replaykit.ExternalRoot {
+	var out []replaykit.ExternalRoot
+	for _, t := range d.ReviewThreads.Nodes {
+		if len(t.Comments.Nodes) == 0 {
+			continue
+		}
+		root := t.Comments.Nodes[0]
+		login := actorLogin(root.Author)
+		if root.ReplyTo != nil || bots[bareLogin(login)] || t.Path == "" {
+			continue
+		}
+		line := t.OriginalLine
+		if line == 0 {
+			line = t.Line
+		}
+		parsed := reconcile.ParseExternalComments([]reconcile.ExternalComment{{ID: int64(root.DatabaseID), Author: login, Body: root.Body, Path: t.Path, Line: line}}, nil)
+		if len(parsed) == 0 {
+			continue
+		}
+		out = append(out, replaykit.ExternalRoot{CommentID: int64(root.DatabaseID), Author: login, File: t.Path, Line: line, Text: strings.TrimSpace(parsed[0].Title + " " + parsed[0].Body), At: root.CreatedAt, Resolved: t.resolved(), ResolvedKnown: t.IsResolved != nil})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	return out

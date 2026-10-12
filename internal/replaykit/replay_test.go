@@ -2,6 +2,7 @@ package replaykit
 
 import (
 	"testing"
+	"time"
 
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/payload"
@@ -69,5 +70,56 @@ func TestPatchesFromHunks(t *testing.T) {
 	}
 	if _, ok := patches["SUMMARY"]; ok {
 		t.Error("narrative findings have no patch")
+	}
+}
+
+func TestExternalDuplicate(t *testing.T) {
+	at := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	text := "The retry loop in fetchUser never backs off, so a 429 from upstream is retried immediately and the rate limiter keeps rejecting every call."
+	roots := []ExternalRoot{
+		{CommentID: 1, File: "api/users.go", Line: 143, Text: "fetchUser hammers the endpoint after a 429 response because no delay is inserted between attempts.", At: at.Add(-time.Minute)},
+		{CommentID: 2, File: "api/users.go", Line: 141, Text: "Retry never backs off: the loop retries a 429 at once and the rate limiter rejects every call.", At: at.Add(-time.Minute)},
+		{CommentID: 3, File: "api/users.go", Line: 140, Text: text, At: at.Add(time.Minute)},
+	}
+	if r, ok := ExternalDuplicate("api/users.go", 140, text, roots, at); !ok || r.CommentID != 2 {
+		t.Fatalf("containment finds the earlier root on the point: %+v %v", r, ok)
+	}
+	if _, ok := ExternalDuplicate("api/users.go", 140, text, roots[:1], at); ok {
+		t.Fatal("a shared symbol with two shared words is not the same point")
+	}
+	short := []ExternalRoot{{CommentID: 5, File: "api/users.go", Line: 140, Text: "retry loop rejects", At: at.Add(-time.Minute)}}
+	if _, ok := ExternalDuplicate("api/users.go", 140, "retry loop hammers", short, at); ok {
+		t.Fatal("two short remarks sharing two words reach the Jaccard bar but not the token floor")
+	}
+	if _, ok := ExternalDuplicate("api/users.go", 140, text, roots[2:], at); ok {
+		t.Fatal("a root posted after PRism's is not an earlier duplicate")
+	}
+	if _, ok := ExternalDuplicate("api/users.go", 170, text, roots[1:2], at); ok {
+		t.Fatal("thirty lines away is another point")
+	}
+}
+
+func TestExternalRoots_SkipsBotAndPrismRoots(t *testing.T) {
+	yes := true
+	var d PRDump
+	mk := func(id int64, login, body string, resolved *bool, reply bool) {
+		var th Thread
+		th.Path, th.OriginalLine, th.IsResolved = "a.go", 10, resolved
+		c := ThreadComment{DatabaseID: FlexInt64(id), Author: &Actor{Login: login}, Body: body, CreatedAt: time.Date(2026, 9, 1, 0, 0, int(id), 0, time.UTC)}
+		if reply {
+			c.ReplyTo = &struct {
+				DatabaseID FlexInt64 `json:"databaseId"`
+			}{DatabaseID: 1}
+		}
+		th.Comments.Nodes = []ThreadComment{c}
+		d.ReviewThreads.Nodes = append(d.ReviewThreads.Nodes, th)
+	}
+	mk(3, "greptile-apps[bot]", "<b>Later root</b>", &yes, false)
+	mk(1, "octocat", "A human root", nil, false)
+	mk(2, "acme-bot", "<!-- prism:finding:a.go:1:abc --> own root", nil, false)
+	mk(4, "octocat", "a reply", nil, true)
+	roots := d.ExternalRoots(map[string]bool{"acme-bot": true})
+	if len(roots) != 2 || roots[0].CommentID != 1 || roots[0].ResolvedKnown || roots[1].CommentID != 3 || !roots[1].Resolved || roots[1].Text != "Later root" {
+		t.Fatalf("roots = %+v", roots)
 	}
 }

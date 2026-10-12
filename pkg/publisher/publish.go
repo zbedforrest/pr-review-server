@@ -33,10 +33,34 @@ type GitHub interface {
 }
 
 // ThreadReplier is the optional slice of GitHub the ledger policy uses to
-// speak inside a thread it already owns (a reopen or a severity change). A
-// GitHub without it changes the ledger silently.
+// speak inside a thread it already owns (a reopen or a severity change) or
+// matched (the one delta reply under another reviewer's root). A GitHub
+// without it changes the ledger silently.
 type ThreadReplier interface {
 	PostReply(ctx context.Context, owner, repo string, number int, rootCommentID int64, body string) (int64, error)
+}
+
+// ReviewComment is one review comment on the PR as the publisher re-lists
+// them right before it posts, so a reviewer who commented seconds earlier is
+// reconciled against instead of duplicated.
+type ReviewComment struct {
+	ID                int64
+	Author            string
+	Body              string
+	Path              string
+	Line              int
+	StartLine         int
+	OriginalLine      int
+	OriginalStartLine int
+	InReplyToID       int64
+}
+
+// ReviewCommentLister is the optional slice of GitHub that lists the PR's
+// review comments. With it the ledger policy refreshes Round.External
+// immediately before CreateReview; without it the round's own listing is
+// what it reconciles against.
+type ReviewCommentLister interface {
+	ListReviewComments(ctx context.Context, owner, repo string, number int) ([]ReviewComment, error)
 }
 
 type Ledger interface {
@@ -72,6 +96,13 @@ type Report struct {
 	ThreadsResolved       int
 	ThreadsUnresolved     int
 	ThreadResolveFailures int
+	// ExternalMatched counts the findings this round matched to another
+	// reviewer's root instead of posting; ExternalReplies the delta replies
+	// posted under those roots, ExternalReplyFailures the ones GitHub
+	// rejected.
+	ExternalMatched       int
+	ExternalReplies       int
+	ExternalReplyFailures int
 }
 
 const summaryFingerprint = "summary"
@@ -374,7 +405,10 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 		r.HeadSHA = summaryRow.LastSeenSHA
 	}
 	r.RoundNumber = summaryRow.Rounds
-	r.Findings = WithoutDismissed(r.Findings, r.Previous)
+	rows := priorRows(r.Previous)
+	p.aliasToLedger(&r, rows)
+	rememberExternal(&r, rows)
+	r.Findings = withoutConceded(WithoutDismissed(r.Findings, r.Previous), r.Previous)
 	r.LegacyTitles = p.Policy.LegacyTitles
 	r.ShowUnverified = p.Policy.ShowUnverified
 	if r.InlineComments == nil {
@@ -484,6 +518,28 @@ func WithoutDismissed(findings []payload.Finding, previous []db.PublishedFinding
 	kept := make([]payload.Finding, 0, len(findings))
 	for _, f := range findings {
 		if !dismissed[f.ID] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
+}
+
+// withoutConceded drops findings whose row a conceded fix claim marked
+// fixed, so a refresh stops listing them as the reply path resolves their
+// thread; the next round counts the fix.
+func withoutConceded(findings []payload.Finding, previous []db.PublishedFinding) []payload.Finding {
+	fixed := map[string]bool{}
+	for _, row := range previous {
+		if fixedState(row.State) && (row.Kind == db.PublishedKindFinding || row.Kind == db.PublishedKindAnnotation) {
+			fixed[row.Fingerprint] = true
+		}
+	}
+	if len(fixed) == 0 {
+		return findings
+	}
+	kept := make([]payload.Finding, 0, len(findings))
+	for _, f := range findings {
+		if !fixed[f.ID] {
 			kept = append(kept, f)
 		}
 	}

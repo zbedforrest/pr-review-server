@@ -13,6 +13,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/github"
+	"pr-review-server/internal/replaykit"
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/reconcile"
@@ -146,9 +147,13 @@ func (r *recorder) ListIssueComments(context.Context, string, string, int) ([]pu
 	return nil, nil
 }
 
-func (r *recorder) PostReply(context.Context, string, string, int, int64, string) (int64, error) {
+// PostReply counts the notes in PRism's own threads; the delta reply under
+// another reviewer's root is the publisher's external_replies, not one.
+func (r *recorder) PostReply(_ context.Context, _, _ string, _ int, _ int64, body string) (int64, error) {
 	r.nextComment++
-	r.replies++
+	if !publisher.IsExternalReply(body) {
+		r.replies++
+	}
 	return r.nextComment, nil
 }
 
@@ -186,6 +191,16 @@ type PRResult struct {
 	ObservedSameDefectReposts  int
 	NilImpactBullets           int
 	BareLabelTitles            int
+	// External duplicates: roots posted on a point another reviewer's
+	// earlier root already carried, split by that thread's state; Matched
+	// and Replies are what the publisher did instead of posting.
+	ExternalDuplicatesNear         int
+	ExternalDuplicatesOpen         int
+	ExternalDuplicatesUnknown      int
+	ExternalMatched                int
+	ExternalReplies                int
+	ObservedExternalDuplicatesNear int
+	ObservedExternalDuplicatesOpen int
 }
 
 // Metrics is the JSON the command prints. Observed values come straight from
@@ -226,6 +241,20 @@ type Metrics struct {
 	NilImpactBullets int `json:"nil_impact_bullets"`
 	BareLabelTitles  int `json:"bare_label_titles"`
 
+	// ExternalDuplicatesNear counts replayed roots posted while an earlier
+	// root by another reviewer sat on the same point (same file, line within
+	// ten, text or subject overlap); Open is the subset whose thread the dump
+	// shows unresolved, counting a thread of unknown state as open, and
+	// ResolutionUnknown says how many of those are unknown. ExternalMatched
+	// and ExternalReplies are the findings the publisher matched instead of
+	// posting and the delta replies it left.
+	ExternalDuplicatesNear              int `json:"external_duplicates_near"`
+	ExternalDuplicatesOpen              int `json:"external_duplicates_open"`
+	ExternalDuplicatesResolutionUnknown int `json:"external_duplicates_resolution_unknown"`
+	PRsWithExternalDuplicates           int `json:"prs_with_external_duplicates"`
+	ExternalMatched                     int `json:"external_matched"`
+	ExternalReplies                     int `json:"external_replies"`
+
 	// CommentsPerPush is over the rounds the publisher ran; RoundsPerPR over
 	// the rounds the poller would admit (observed minus unchanged-diff
 	// skips), the observed figure being under observed.
@@ -245,12 +274,15 @@ type Metrics struct {
 }
 
 type ObservedMetrics struct {
-	RoundsPerPRP50    float64 `json:"rounds_per_pr_p50"`
-	Roots             int     `json:"roots"`
-	SameMarkerReposts int     `json:"same_marker_reposts"`
-	SameDefectReposts int     `json:"same_defect_reposts"`
-	ThreadsResolved   int     `json:"threads_resolved"`
-	ResolvedShare     float64 `json:"resolved_share"`
+	RoundsPerPRP50            float64 `json:"rounds_per_pr_p50"`
+	Roots                     int     `json:"roots"`
+	SameMarkerReposts         int     `json:"same_marker_reposts"`
+	SameDefectReposts         int     `json:"same_defect_reposts"`
+	ThreadsResolved           int     `json:"threads_resolved"`
+	ResolvedShare             float64 `json:"resolved_share"`
+	ExternalDuplicatesNear    int     `json:"external_duplicates_near"`
+	ExternalDuplicatesOpen    int     `json:"external_duplicates_open"`
+	PRsWithExternalDuplicates int     `json:"prs_with_external_duplicates"`
 }
 
 type Options struct {
@@ -338,6 +370,14 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.InThreadReplies += pr.InThreadReplies
 		m.ThreadsResolved += pr.ThreadsResolved
 		m.ThreadsUnresolved += pr.ThreadsUnresolved
+		m.ExternalDuplicatesNear += pr.ExternalDuplicatesNear
+		m.ExternalDuplicatesOpen += pr.ExternalDuplicatesOpen
+		m.ExternalDuplicatesResolutionUnknown += pr.ExternalDuplicatesUnknown
+		if pr.ExternalDuplicatesNear > 0 {
+			m.PRsWithExternalDuplicates++
+		}
+		m.ExternalMatched += pr.ExternalMatched
+		m.ExternalReplies += pr.ExternalReplies
 		rootsResolved += pr.RootsResolved
 		if pr.Rounds > 0 {
 			logf("%s: rounds=%d roots=%d same_marker=%d same_defect=%d fixed=%d fixed_no_change=%d", d.key(), pr.Rounds, pr.RootsPosted, pr.SameMarkerReposts, pr.SameDefectReposts, pr.Fixed, pr.FixedWithoutFileChange)
@@ -367,6 +407,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 	pub := &publisher.Publisher{GH: rec, Ledger: ledger, Policy: policy}
 	rounds := d.rounds(bots)
 	pr.Rounds = len(rounds)
+	roots := d.externalRoots(bots)
 	var pushes []int
 	for i, rd := range rounds {
 		if i > 0 && rounds[i-1].SHA == rd.SHA {
@@ -409,12 +450,15 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		pub.Now = func() time.Time { return at }
 		rec.begin(i, rd.SHA)
 		before := len(rec.posts)
-		if _, err := pub.Publish(ctx, round); errors.Is(err, publisher.ErrHeadAlreadyPublished) {
+		rep, err := pub.Publish(ctx, round)
+		if errors.Is(err, publisher.ErrHeadAlreadyPublished) {
 			pr.SameCommitSkipped++
 			continue
 		} else if err != nil {
 			return pr, nil, fmt.Errorf("round %d (%s): %w", i+1, rd.SHA7, err)
 		}
+		pr.ExternalMatched += rep.ExternalMatched
+		pr.ExternalReplies += rep.ExternalReplies
 		pushes = append(pushes, len(rec.posts)-before)
 		pr.InThreadReplies = rec.replies
 		pr.ThreadsResolved, pr.ThreadsUnresolved, pr.RootsResolved = rec.resolves, rec.unresolves, rec.rootsResolved()
@@ -430,6 +474,16 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 			}
 			if classifyRepost(rec.posts[j], rec.posts[before:j], textOnly) != repostNone {
 				pr.SameRoundDuplicates++
+			}
+			if root, ok := replaykit.ExternalDuplicate(rec.posts[j].File, rec.posts[j].Line, rec.posts[j].RawText, roots, rd.At); ok {
+				pr.ExternalDuplicatesNear++
+				if !root.ResolvedKnown {
+					pr.ExternalDuplicatesUnknown++
+				}
+				if !root.Resolved {
+					pr.ExternalDuplicatesOpen++
+				}
+				logf("%s: round %d external duplicate: %s:%d near %s's root %d at %s:%d", d.key(), i+1, rec.posts[j].File, rec.posts[j].Line, root.Author, root.CommentID, root.File, root.Line)
 			}
 		}
 		after, err := ledger.GetPublishedFindingsForPR(d.Owner, d.Repo, d.Number)
@@ -539,13 +593,15 @@ func sameFile(a, b string) bool {
 }
 
 // externalCommentsBefore is what other reviewers had on the PR when the
-// round ran, so cross-bot reconciliation sees what the poller saw.
+// round ran, so cross-bot reconciliation sees what the poller saw. The
+// thread's original line stands in for the line the poller would have
+// listed then; the dump's current line has drifted with every later push.
 func externalCommentsBefore(d *prDump, bots map[string]bool, at time.Time) []github.ReviewCommentInfo {
 	var out []github.ReviewCommentInfo
 	for _, t := range d.ReviewThreads.Nodes {
-		line := t.Line
+		line := t.OriginalLine
 		if line == 0 {
-			line = t.OriginalLine
+			line = t.Line
 		}
 		for _, c := range t.Comments.Nodes {
 			login := actorLogin(c.Author)
@@ -722,10 +778,17 @@ func abs(n int) int {
 // rule applied to their rendered prose.
 func observe(d *prDump, bots map[string]bool, pr *PRResult, m *ObservedMetrics) {
 	var earlier []post
+	roots := d.externalRoots(bots)
 	for _, r := range d.observedRoots(bots) {
 		pr.ObservedRoots++
 		if r.Resolved {
 			m.ThreadsResolved++
+		}
+		if root, ok := replaykit.ExternalDuplicate(r.File, r.Line, r.Text, roots, r.At); ok {
+			pr.ObservedExternalDuplicatesNear++
+			if !root.Resolved {
+				pr.ObservedExternalDuplicatesOpen++
+			}
 		}
 		p := post{FindingID: r.FindingID, File: r.File, Line: r.Line, RawText: r.Text}
 		switch classifyRepost(p, earlier, true) {
@@ -739,6 +802,11 @@ func observe(d *prDump, bots map[string]bool, pr *PRResult, m *ObservedMetrics) 
 	m.Roots += pr.ObservedRoots
 	m.SameMarkerReposts += pr.ObservedSameMarkerReposts
 	m.SameDefectReposts += pr.ObservedSameDefectReposts
+	m.ExternalDuplicatesNear += pr.ObservedExternalDuplicatesNear
+	m.ExternalDuplicatesOpen += pr.ObservedExternalDuplicatesOpen
+	if pr.ObservedExternalDuplicatesNear > 0 {
+		m.PRsWithExternalDuplicates++
+	}
 }
 
 func p50(xs []int) float64 {
@@ -769,7 +837,7 @@ func round3(v float64) float64 {
 	return float64(int(v*1000+0.5)) / 1000
 }
 
-var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles"}
+var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -777,7 +845,7 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 		return err
 	}
 	for _, r := range rows {
-		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles)}
+		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}

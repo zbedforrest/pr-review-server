@@ -176,6 +176,40 @@ func TestGormDB_UpsertPublishedFinding_KeepsAContestedRowContested(t *testing.T)
 	assert.Equal(t, PublishedStateContested, rows[0].State)
 }
 
+func TestGormDB_MarkPublishedFindingFixed_StampsTheLastPublishedHead(t *testing.T) {
+	db := newTestDB(t)
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) { p.Rounds = 2 })))
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Kind, p.Fingerprint, p.CommentID, p.LastSeenSHA = PublishedKindSummary, "summary", 9002, "fff9999"
+	})))
+	require.NoError(t, db.MarkPublishedFindingFixed("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123"))
+	finding := func() PublishedFinding {
+		rows, err := db.GetPublishedFindingsForPR("owner", "repo", 7)
+		require.NoError(t, err)
+		for _, row := range rows {
+			if row.Kind == PublishedKindFinding {
+				return row
+			}
+		}
+		t.Fatal("finding row missing")
+		return PublishedFinding{}
+	}
+	row := finding()
+	assert.Equal(t, PublishedStateFixed, row.State)
+	assert.Equal(t, "fff9999", row.LastSeenSHA)
+	assert.Equal(t, 0, row.Rounds, "the round that counted an earlier fix is cleared")
+
+	require.NoError(t, db.UpsertPublishedFinding(testPublished(func(p *PublishedFinding) {
+		p.Kind, p.Fingerprint, p.CommentID, p.LastSeenSHA = PublishedKindSummary, "summary", 9002, "aaa0000"
+	})))
+	require.NoError(t, db.MarkPublishedFindingFixed("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123"))
+	assert.Equal(t, "fff9999", finding().LastSeenSHA, "a row already fixed is not stamped again")
+
+	require.NoError(t, db.SetPublishedFindingState("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123", PublishedStateDismissed))
+	require.NoError(t, db.MarkPublishedFindingFixed("owner", "repo", 7, "pkg/api/handler.go:4:deadbeef0123"))
+	assert.Equal(t, PublishedStateDismissed, finding().State, "a settled row is not reopened by a later fix claim")
+}
+
 func TestGormDB_ContestPublishedFinding_MovesOpenAndResolvedRowsOnly(t *testing.T) {
 	db := newTestDB(t)
 	require.NoError(t, db.UpsertPublishedFinding(testPublished(nil)))

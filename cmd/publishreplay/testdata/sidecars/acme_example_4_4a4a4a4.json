@@ -1,0 +1,46 @@
+{
+ "schema_version": "2",
+ "owner": "acme",
+ "repo": "example",
+ "pr_number": 4,
+ "commit_sha": "4a4a4a4444444444444444444444444444444444",
+ "counts": {
+  "critical": 0,
+  "medium": 1,
+  "low": 0
+ },
+ "findings": [
+  {
+   "id": "svc/limits.go:3:c4c4c4c4c4c4",
+   "severity": "medium",
+   "provenance": "agent",
+   "file": "svc/limits.go",
+   "line": 30,
+   "comment": "allowBurst compares with <= instead of <, so a client gets one request more than its quota and the limiter admits a burst of size n+1.\n\n```suggestion\n\tif used < quota {\n```",
+   "finding_contract": {
+    "schema_version": 1,
+    "finding_kind": "production_behavior",
+    "materiality": "current_impact",
+    "current_impact": "A client gets one request more than its quota per window.",
+    "counterfactual_trigger": null,
+    "falsifiability": "falsifiable",
+    "falsifiable_condition": "Send quota+1 requests in one window.",
+    "expected_observable": "All of them are admitted.",
+    "subjects": [
+     {
+      "kind": "symbol",
+      "path": "svc/limits.go",
+      "name": "allowBurst"
+     }
+    ],
+    "uncertainty": "None.",
+    "severity_rationale": "Deterministic.",
+    "headline": "Burst limit admits one extra request"
+   },
+   "finding_contract_status": "valid",
+   "state": "confirmed",
+   "active": true,
+   "diff_hunk": "@@ -27,5 +27,5 @@ func allowBurst(used, quota int) bool {\n \tif quota == 0 {\n \t\treturn false\n-\treturn used < quota\n+\treturn used <= quota\n }"
+  }
+ ]
+}

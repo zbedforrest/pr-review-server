@@ -114,8 +114,9 @@ func assertSince(t *testing.T, run *Run, round int, want string) {
 }
 
 // The author calls a finding intentional and PRism settles the verdict; the
-// next push rewords the same finding. Intended: the reword is recognised as
-// the dismissed defect and stays silent, and the cache fix counts as fixed.
+// next push rewords the same finding. The reword is recognised as the
+// dismissed defect and stays silent, the verdict's thread is resolved, and
+// the conceded cache fix counts as fixed in the next summary.
 func TestE2E_PushbackThenRewordStaysSilent(t *testing.T) {
 	run, s := replayFixture(t, "pushback_reword")
 
@@ -123,18 +124,20 @@ func TestE2E_PushbackThenRewordStaysSilent(t *testing.T) {
 	assertReply(t, run, 201, ActionConcede)
 	assertRowState(t, run, "svc/retry.go:4:a1a1a1a1a1a1", db.PublishedStateDismissed)
 	assertReply(t, run, 202, ActionConcede)
+	assertRowState(t, run, "svc/cache.go:1:b2b2b2b2b2b2", db.PublishedStateFixed)
 
 	assertPosted(t, run, 1)
-	assertSince(t, run, 1, "0 new · 0 still open · 0 fixed")
-	assertGaps(t, s, []knownGap{
-		{"not_resolved reply 101", "W2-2 and W2-3: a settled verdict resolves its thread"},
-		{"summary_mismatch round 2", "W1-4: a verified fix claim is fixed, not dismissed"},
-	})
+	assertSince(t, run, 1, "0 new · 0 still open · 1 fixed")
+	if len(run.Rec.Resolved) != 2 {
+		t.Fatalf("both threads are resolved, one by the verdict and one by the conceded fix: %v", run.Rec.Resolved)
+	}
+	assertGaps(t, s, nil)
 }
 
-// One finding is fixed by a commit; another is simply missing from the next
-// review although its file never changed, and the agent raises it again a
-// round later. Intended: only the first counts as fixed, the second stays
+// One finding is fixed by a commit the author reports; another is simply
+// missing from the next review although its file never changed, and the
+// agent raises it again a round later. Only the conceded fixes count, each
+// once, in the summary after the concession; the untouched finding stays
 // open and is never posted twice.
 func TestE2E_FixCommitCountsAndAbsenceDoesNot(t *testing.T) {
 	run, s := replayFixture(t, "fix_and_false_fixed")
@@ -142,43 +145,57 @@ func TestE2E_FixCommitCountsAndAbsenceDoesNot(t *testing.T) {
 	assertPosted(t, run, 0, "api/handler.go:2:d4d4d4d4d4d4", "api/limits.go:6:e5e5e5e5e5e5")
 	assertReply(t, run, 211, ActionConcede)
 	assertPosted(t, run, 1, "api/handler_test.go:1:f6f6f6f6f6f6")
-	assertSince(t, run, 1, "1 new · 1 still open · 0 fixed")
+	assertSince(t, run, 1, "1 new · 1 still open · 1 fixed")
 	assertReply(t, run, 212, ActionConcede)
 
 	assertPosted(t, run, 2)
-	assertSince(t, run, 2, "0 new · 1 still open · 0 fixed")
+	assertSince(t, run, 2, "0 new · 1 still open · 1 fixed")
 	assertRowState(t, run, "api/limits.go:6:e5e5e5e5e5e5", db.PublishedStateOpen)
+	assertRowState(t, run, "api/handler.go:2:d4d4d4d4d4d4", db.PublishedStateFixed)
 	if s.Fixed != 0 || s.WrongFixed != 0 {
-		t.Fatalf("fixed %d, wrong %d; the conceded fix claims are dismissed and the untouched finding stays open", s.Fixed, s.WrongFixed)
+		t.Fatalf("fixed %d, wrong %d; the fixes come from concessions between rounds and the untouched finding stays open", s.Fixed, s.WrongFixed)
 	}
-	assertGaps(t, s, []knownGap{
-		{"summary_mismatch round 2", "W1-4: a verified fix claim is fixed, not dismissed"},
-		{"summary_mismatch round 3", "W1-4: a verified fix claim is fixed, not dismissed"},
-	})
+	assertGaps(t, s, nil)
 }
 
 // Greptile raised a point two minutes before PRism; the review then runs
-// again on the same commit, and a fix lands. Intended: no second root for
-// Greptile's point, a silent same-commit round, and the fix counted once.
+// again on the same commit, and a fix lands. Greptile's point gets no second
+// root: an external row, one delta reply in Greptile's thread and a summary
+// link. The same-commit round is silent and the fix is counted once.
 func TestE2E_GreptileDuplicateAndSameCommitRerun(t *testing.T) {
 	run, s := replayFixture(t, "greptile_duplicate")
 
-	assertPosted(t, run, 0, "web/form.tsx:8:a7a7a7a7a7a7", "web/form.tsx:12:b8b8b8b8b8b8")
+	assertPosted(t, run, 0, "web/form.tsx:12:b8b8b8b8b8b8")
+	assertRowState(t, run, "web/form.tsx:8:a7a7a7a7a7a7", db.PublishedStateExternal)
+	if row := run.FinalRows["web/form.tsx:8:a7a7a7a7a7a7"]; row.ExternalCommentID != 301 || row.CommentID != 0 {
+		t.Fatalf("the external row names Greptile's root and owns no comment: %+v", row)
+	}
+	deltas := 0
+	for _, rp := range run.Rec.Replies {
+		if rp.RootCommentID == 301 {
+			deltas++
+			if !strings.Contains(rp.Body, publisher.ExternalReplyMarker("web/form.tsx:8:a7a7a7a7a7a7")) {
+				t.Fatalf("delta reply lacks its marker: %q", rp.Body)
+			}
+		}
+	}
+	if deltas != 1 {
+		t.Fatalf("one delta reply under Greptile's root over three rounds, got %d", deltas)
+	}
+	if !strings.Contains(run.Rounds[0].Summary, "#discussion_r301") || !strings.Contains(run.Rounds[0].Summary, "already raised in another reviewer's thread") {
+		t.Fatalf("summary links to Greptile's thread:\n%s", run.Rounds[0].Summary)
+	}
 	assertPosted(t, run, 1)
-	if run.Rounds[1].Summary != run.Rounds[0].Summary {
+	if run.Rounds[1].Summary != run.Rounds[0].Summary || !run.Rounds[1].Skipped {
 		t.Fatalf("a same-commit round leaves the summary untouched:\n%s", run.Rounds[1].Summary)
 	}
 	assertPosted(t, run, 2)
-	assertSince(t, run, 2, "0 new · 1 still open · 1 fixed")
+	assertSince(t, run, 2, "0 new · 0 still open · 1 fixed")
 	assertReply(t, run, 221, ActionConcede)
 	if _, ok := run.Replies[321]; ok {
 		t.Fatal("a reviewer who is not the PR author got a reply step")
 	}
-	assertGaps(t, s, []knownGap{
-		{"posted_should_not round 1 comment 121", "W3-1: a match to another bot's root becomes an external row"},
-		{"summary_mismatch round 2", "W3-1: an external row is not counted as a PRism finding; the same-commit round itself writes no summary"},
-		{"summary_mismatch round 3", "W3-1"},
-	})
+	assertGaps(t, s, nil)
 }
 
 func TestFixtureAggregates(t *testing.T) {
@@ -194,7 +211,7 @@ func TestFixtureAggregates(t *testing.T) {
 	got := fmt.Sprintf("cases=%d post=%d/%d precision=%s recall=%s suppression=%s reposts=%d fixed=%d wrong=%d summary=%s replies=%s resolution=%s",
 		g.Cases, g.ShouldPost, g.ShouldSuppress, fmtRatio(g.PostPrecision), fmtRatio(g.PostRecall), fmtRatio(g.SuppressionRecall),
 		g.Reposts, g.Fixed, g.WrongFixed, fmtRatio(g.SummaryCorrect), fmtRatio(g.ReplyAccuracy), fmtRatio(g.ResolutionRecall))
-	want := "cases=3 post=6/3 precision=0.857 recall=1.000 suppression=0.667 reposts=0 fixed=1 wrong=0 summary=0.000 replies=1.000 resolution=0.800"
+	want := "cases=3 post=6/3 precision=1.000 recall=1.000 suppression=1.000 reposts=0 fixed=1 wrong=0 summary=1.000 replies=1.000 resolution=1.000"
 	if got != want {
 		t.Fatalf("gold aggregate\n got %s\nwant %s", got, want)
 	}
@@ -216,9 +233,13 @@ func TestThresholdsGateOnGold(t *testing.T) {
 	if f := pass.check(res.Tiers[TierGold]); len(f) != 0 {
 		t.Fatalf("thresholds met but failed: %v", f)
 	}
-	fail := Thresholds{MinPostPrecision: 0.9, MinSuppressionRecall: 0.7, MaxReposts: -1, MaxWrongFixed: -1, MinSummaryCorrect: 0.5, MinReplyAccuracy: -1, MinResolutionRecall: 0.9}
-	if f := fail.check(res.Tiers[TierGold]); len(f) != 4 {
-		t.Fatalf("want four failures, got %v", f)
+	fail := Thresholds{MinPostPrecision: 0.9, MinSuppressionRecall: 0.7, MaxReposts: 0, MaxWrongFixed: -1, MinSummaryCorrect: 0.5, MinReplyAccuracy: -1, MinResolutionRecall: 0.9}
+	short := TierMetrics{PostPrecision: ratio(1, 2), SuppressionRecall: ratio(1, 2), SummaryCorrect: ratio(0, 1), ResolutionRecall: ratio(1, 2), Reposts: 1}
+	if f := fail.check(short); len(f) != 5 {
+		t.Fatalf("want five failures, got %v", f)
+	}
+	if f := fail.check(res.Tiers[TierGold]); len(f) != 0 {
+		t.Fatalf("the fixtures meet the stricter thresholds too: %v", f)
 	}
 	if f := (Thresholds{MinPostPrecision: 0.5, MinSuppressionRecall: -1, MaxReposts: -1, MaxWrongFixed: -1, MinSummaryCorrect: -1, MinReplyAccuracy: -1, MinResolutionRecall: -1}).check(TierMetrics{}); len(f) != 1 {
 		t.Fatalf("an unmeasured gated metric must fail, got %v", f)
@@ -234,8 +255,15 @@ func TestMarkdownReportListsDiffs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(res.Cases) != 1 || len(res.Cases[0].Diffs) != 0 {
+		t.Fatalf("the fixture replays without differences: %+v", res.Cases)
+	}
+	if md := renderMarkdown(res); strings.Contains(md, "### acme/example#13") || !strings.Contains(md, "| post precision | 1.000 |") {
+		t.Fatalf("a clean case has no per-case section:\n%s", md)
+	}
+	res.Cases[0].Diffs = []Diff{{Kind: DiffPostedShouldNot, Round: 0, CommentID: 121, Detail: "external first raised by greptile"}}
 	md := renderMarkdown(res)
-	for _, want := range []string{"| post precision | 0.500 |", "### acme/example#13 (gold)", "posted_should_not (round 1, comment 121): external first raised by greptile", "| fix_claim | 1 / 1 |"} {
+	for _, want := range []string{"### acme/example#13 (gold)", "posted_should_not (round 1, comment 121): external first raised by greptile", "| fix_claim | 1 / 1 |"} {
 		if !strings.Contains(md, want) {
 			t.Fatalf("report lacks %q:\n%s", want, md)
 		}

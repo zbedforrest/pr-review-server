@@ -286,14 +286,14 @@ func TestThreads_KillSwitchLeavesThreadsAlone(t *testing.T) {
 	pol := testPolicy()
 	pol.ResolveThreads = false
 	publishThreadsWith(t, gh, ledger, ledgerRoundOne(), pol)
-	if row := ledger.get(db.PublishedKindFinding, c1ID); row.ThreadNodeID != "" {
-		t.Fatalf("no thread lookups with the switch off: %+v", row)
+	if row := ledger.get(db.PublishedKindFinding, c1ID); row.ThreadNodeID != "T1001" {
+		t.Fatalf("the listing is still read with the switch off: %+v", row)
 	}
 
 	r2 := summaryOnly("sha-2")
 	r2.Changes = changed("a.go")
 	rep := publishThreadsWith(t, gh, ledger, r2, pol)
-	if rep.Fixed != 2 || rep.ThreadsResolved != 0 || len(gh.resolves) != 0 || len(gh.replies) != 0 || gh.listings != 0 {
+	if rep.Fixed != 2 || rep.ThreadsResolved != 0 || len(gh.resolves) != 0 || len(gh.replies) != 0 || gh.listings == 0 {
 		t.Fatalf("the ledger still moves, GitHub threads do not: %+v resolves=%v replies=%v listings=%d", rep, gh.resolves, gh.replies, gh.listings)
 	}
 	if row := ledger.get(db.PublishedKindFinding, c1ID); row.State != db.PublishedStateFixed {

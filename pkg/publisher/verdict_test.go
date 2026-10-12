@@ -485,3 +485,22 @@ func TestReplyReactor_ThumbsDownOnTheRootIsReportedAsAVerdict(t *testing.T) {
 		t.Fatalf("verdicts=%+v", rep.Verdicts)
 	}
 }
+
+func TestReplyReactor_VerdictResolvesTheThreadWhenEnabled(t *testing.T) {
+	r, gh, ledger, _ := verdictFixture(ReplyModeRespond, t)
+	r.ResolveThreads = true
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || fmt.Sprint(gh.resolved) != "[T100]" || rep.ThreadsResolved != 1 {
+		t.Fatalf("states=%v resolved=%v rep=%+v", ledger.states, gh.resolved, rep)
+	}
+	r.Mode = ReplyModeShadow
+	gh.resolved = nil
+	r2, gh2, _, _ := verdictFixture(ReplyModeShadow, t)
+	r2.ResolveThreads = true
+	if _, err := r2.Run(context.Background()); err != nil || len(gh2.resolved) != 0 {
+		t.Fatalf("shadow settles nothing, so it resolves nothing: %v %v", gh2.resolved, err)
+	}
+}

@@ -124,6 +124,9 @@ func (l *fakeLedger) UpsertPublishedFinding(pf *db.PublishedFinding) error {
 		if cp.Subjects == "" {
 			cp.Subjects = prev.Subjects
 		}
+		if cp.ExternalCommentID == 0 {
+			cp.ExternalCommentID = prev.ExternalCommentID
+		}
 		if terminalState(prev.State) {
 			cp.State = prev.State
 		}

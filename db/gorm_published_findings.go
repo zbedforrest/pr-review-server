@@ -13,28 +13,29 @@ import (
 
 func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 	return PublishedFinding{
-		ID:           int(m.ID),
-		RepoOwner:    m.RepoOwner,
-		RepoName:     m.RepoName,
-		PRNumber:     m.PRNumber,
-		Kind:         m.Kind,
-		Fingerprint:  m.Fingerprint,
-		SourceTag:    m.SourceTag,
-		Severity:     m.Severity,
-		ReviewedSHA:  m.ReviewedSHA,
-		LastSeenSHA:  m.LastSeenSHA,
-		CommentID:    m.CommentID,
-		ThreadNodeID: m.ThreadNodeID,
-		ReviewID:     m.ReviewID,
-		CheckRunID:   m.CheckRunID,
-		State:        m.State,
-		Rounds:       m.Rounds,
-		PublishedAt:  m.PublishedAt,
-		CommentText:  m.CommentText,
-		FindingKind:  m.FindingKind,
-		Subjects:     m.Subjects,
-		Muted:        m.Muted,
-		MuteLiftedAt: m.MuteLiftedAt,
+		ID:                int(m.ID),
+		RepoOwner:         m.RepoOwner,
+		RepoName:          m.RepoName,
+		PRNumber:          m.PRNumber,
+		Kind:              m.Kind,
+		Fingerprint:       m.Fingerprint,
+		SourceTag:         m.SourceTag,
+		Severity:          m.Severity,
+		ReviewedSHA:       m.ReviewedSHA,
+		LastSeenSHA:       m.LastSeenSHA,
+		CommentID:         m.CommentID,
+		ThreadNodeID:      m.ThreadNodeID,
+		ReviewID:          m.ReviewID,
+		CheckRunID:        m.CheckRunID,
+		State:             m.State,
+		Rounds:            m.Rounds,
+		PublishedAt:       m.PublishedAt,
+		CommentText:       m.CommentText,
+		FindingKind:       m.FindingKind,
+		Subjects:          m.Subjects,
+		Muted:             m.Muted,
+		MuteLiftedAt:      m.MuteLiftedAt,
+		ExternalCommentID: m.ExternalCommentID,
 	}
 }
 
@@ -45,27 +46,28 @@ func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 // later round that re-sees the finding cannot erase where it was posted.
 func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 	model := PublishedFindingModel{
-		RepoOwner:    p.RepoOwner,
-		RepoName:     p.RepoName,
-		PRNumber:     p.PRNumber,
-		Kind:         p.Kind,
-		Fingerprint:  p.Fingerprint,
-		SourceTag:    p.SourceTag,
-		Severity:     p.Severity,
-		ReviewedSHA:  p.ReviewedSHA,
-		LastSeenSHA:  p.LastSeenSHA,
-		CommentID:    p.CommentID,
-		ThreadNodeID: p.ThreadNodeID,
-		ReviewID:     p.ReviewID,
-		CheckRunID:   p.CheckRunID,
-		State:        p.State,
-		Rounds:       p.Rounds,
-		PublishedAt:  p.PublishedAt,
-		CommentText:  p.CommentText,
-		FindingKind:  p.FindingKind,
-		Subjects:     p.Subjects,
-		Muted:        p.Muted,
-		MuteLiftedAt: p.MuteLiftedAt,
+		RepoOwner:         p.RepoOwner,
+		RepoName:          p.RepoName,
+		PRNumber:          p.PRNumber,
+		Kind:              p.Kind,
+		Fingerprint:       p.Fingerprint,
+		SourceTag:         p.SourceTag,
+		Severity:          p.Severity,
+		ReviewedSHA:       p.ReviewedSHA,
+		LastSeenSHA:       p.LastSeenSHA,
+		CommentID:         p.CommentID,
+		ThreadNodeID:      p.ThreadNodeID,
+		ReviewID:          p.ReviewID,
+		CheckRunID:        p.CheckRunID,
+		State:             p.State,
+		Rounds:            p.Rounds,
+		PublishedAt:       p.PublishedAt,
+		CommentText:       p.CommentText,
+		FindingKind:       p.FindingKind,
+		Subjects:          p.Subjects,
+		Muted:             p.Muted,
+		MuteLiftedAt:      p.MuteLiftedAt,
+		ExternalCommentID: p.ExternalCommentID,
 	}
 	// Muted is owned by SetPublishedMute; a round rewriting the summary row
 	// never clears it, and a muted placeholder takes its first head here.
@@ -104,6 +106,9 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 	}
 	if model.Rounds != 0 {
 		updates["rounds"] = model.Rounds
+	}
+	if model.ExternalCommentID != 0 {
+		updates["external_comment_id"] = model.ExternalCommentID
 	}
 	return g.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{
@@ -213,6 +218,28 @@ func (g *GormDB) SetPublishedFindingState(owner, repo string, number int, finger
 	return g.db.Model(&PublishedFindingModel{}).
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ?", owner, repo, number, fingerprint).
 		Update("state", state).Error
+}
+
+// MarkPublishedFindingFixed moves a row to fixed on a conceded fix claim and
+// stamps it with the PR's last published head, so the next round counts the
+// fix once even when the row was last seen at an older head, and clears the
+// round that counted an earlier fix so a fix conceded after a reopen counts
+// too. A settled row (dismissed, contested, external) and a row already
+// fixed or resolved stay as they are.
+func (g *GormDB) MarkPublishedFindingFixed(owner, repo string, number int, fingerprint string) error {
+	var head string
+	if err := g.db.Model(&PublishedFindingModel{}).Select("last_seen_sha").
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND kind = ?", owner, repo, number, PublishedKindSummary).
+		Limit(1).Scan(&head).Error; err != nil {
+		return err
+	}
+	updates := map[string]any{"state": PublishedStateFixed, "rounds": 0}
+	if head != "" {
+		updates["last_seen_sha"] = head
+	}
+	return g.db.Model(&PublishedFindingModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ? AND state NOT IN ?", owner, repo, number, fingerprint, []string{PublishedStateDismissed, PublishedStateContested, PublishedStateExternal, PublishedStateFixed, PublishedStateResolved}).
+		Updates(updates).Error
 }
 
 // ContestPublishedFinding moves an open or resolved row to contested and

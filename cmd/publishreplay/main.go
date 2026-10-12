@@ -44,6 +44,7 @@ func main() {
 	sameCommitGuard := flag.Bool("same-commit-guard", true, "refuse a round whose head was already published (PUBLISH_SAME_COMMIT_GUARD)")
 	legacyTitles := flag.Bool("legacy-titles", false, "render titles and bullets the pre-2026-10 way (PUBLISH_RENDER_V2=false)")
 	showUnverified := flag.Bool("show-unverified", publisher.DefaultPolicy().ShowUnverified, "fold unverified first-pass claims into the summary")
+	externalReconcile := flag.Bool("external-reconcile", true, "match findings against every other reviewer's root instead of posting (PUBLISH_EXTERNAL_RECONCILE)")
 	flag.Parse()
 	if *dumpsDir == "" || *sidecarsDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv]")
@@ -77,6 +78,7 @@ func main() {
 	opts.Policy.InlinePRCap = *inlinePRCap
 	opts.Policy.RepublishSameCommit = !*sameCommitGuard
 	opts.Policy.LegacyTitles = *legacyTitles
+	opts.Policy.ExternalReconcile = *externalReconcile
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
 			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)

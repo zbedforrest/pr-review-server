@@ -419,3 +419,28 @@ func TestChangedLines(t *testing.T) {
 		}
 	}
 }
+
+func TestLedger_ConcededFixClaimCountsOnceInTheNextSummary(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, ledgerRoundOne())
+	row := ledger.get(db.PublishedKindFinding, m1ID)
+	row.State = db.PublishedStateFixed
+
+	r2 := ledgerRoundOne()
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("README.md")
+	r2.Findings = []payload.Finding{f("sum", "unknown", "SUMMARY", 0, "Narrative."), f(c1ID, "critical", "a.go", 10, "Critical thing."), f(m2ID, "medium", "a.go", 99, "Medium outside hunk.")}
+	rep := publishRound(t, gh, ledger, r2)
+	if rep.Fixed != 1 || rep.StillOpen != 2 || len(gh.repliesTo(1002)) != 0 {
+		t.Fatalf("the conceded fix is counted without a thread note: %+v", rep)
+	}
+	if row := ledger.get(db.PublishedKindFinding, m1ID); row.State != db.PublishedStateFixed || row.Rounds != 2 || row.LastSeenSHA != "sha-round-1" {
+		t.Fatalf("row = %+v", row)
+	}
+
+	r3 := r2
+	r3.HeadSHA, r3.RoundNumber = "sha-3", 0
+	rep = publishRound(t, gh, ledger, r3)
+	if rep.Fixed != 0 || rep.StillOpen != 2 {
+		t.Fatalf("counted once: %+v", rep)
+	}
+}
