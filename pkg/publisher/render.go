@@ -430,7 +430,15 @@ func (r Round) writeExternal(b *strings.Builder) {
 	if len(r.ExternalMatches) == 0 {
 		return
 	}
-	matches := append([]ExternalMatch(nil), r.ExternalMatches...)
+	matches := make([]ExternalMatch, 0, len(r.ExternalMatches))
+	seen := make(map[int64]bool, len(r.ExternalMatches))
+	for _, m := range r.ExternalMatches {
+		if m.CommentID != 0 && seen[m.CommentID] {
+			continue
+		}
+		seen[m.CommentID] = true
+		matches = append(matches, m)
+	}
 	sort.SliceStable(matches, func(i, j int) bool {
 		a, c := matches[i].Finding, matches[j].Finding
 		if ra, rc := severityRank(a.Severity), severityRank(c.Severity); ra != rc {

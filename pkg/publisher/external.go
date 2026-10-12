@@ -46,7 +46,7 @@ type externalPass struct {
 // who posted after the round was built is still reconciled against.
 func (p *Publisher) refreshExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding) {
 	lister, ok := p.GH.(ReviewCommentLister)
-	if !ok {
+	if !ok || !hasUnknownFinding(r, rows) {
 		return
 	}
 	listed, err := lister.ListReviewComments(ctx, r.Owner, r.Repo, r.Number)
@@ -65,6 +65,17 @@ func (p *Publisher) refreshExternal(ctx context.Context, r *Round, rows map[stri
 		comments = append(comments, reconcile.ExternalComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, StartLine: c.StartLine, OriginalLine: c.OriginalLine, OriginalStartLine: c.OriginalStartLine, InReplyToID: c.InReplyToID})
 	}
 	r.External = reconcile.ParseExternalComments(comments, own)
+}
+
+// hasUnknownFinding reports whether the round shows a finding the ledger has
+// never recorded, the only kind that can match another reviewer's root.
+func hasUnknownFinding(r *Round, rows map[string]*db.PublishedFinding) bool {
+	for _, f := range r.currentFindings() {
+		if _, known := rows[f.ID]; !known {
+			return true
+		}
+	}
+	return false
 }
 
 // forgetShown drops the external links of findings the round still carries
