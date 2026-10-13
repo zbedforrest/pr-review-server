@@ -716,7 +716,11 @@ func impactShownBelow(f payload.Finding, legacy, legacyClamp bool) bool {
 		return clauseHeadline(impact, legacyHeadlineMaxRunes) != impact
 	}
 	title := titleSource(f)
-	return clauseHeadlineWith(title, contractTitleLimit(f, legacyClamp), legacyClamp) != impact
+	rendered := clauseHeadlineWith(title, contractTitleLimit(f, legacyClamp), legacyClamp)
+	if rendered == impact {
+		return false
+	}
+	return rendered != strings.TrimSuffix(strings.TrimSpace(textcut.FirstSentence(impact)), ".")
 }
 
 // RenderInline keeps the visible part Greptile-sized: headline, one
