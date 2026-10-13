@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/types"
 )
 
 // computeReviewScope finds the merge-base of HEAD with base and the changed
@@ -31,14 +32,35 @@ func computeReviewScope(ctx context.Context, dir, base string) (*payload.ReviewS
 	if err != nil {
 		return nil, err
 	}
+	baseMoved, err := gitOutput(ctx, dir, "diff", "--raw", "--no-abbrev", "--no-renames", scope.MergeBase, scope.BaseTip)
+	if err != nil {
+		return nil, err
+	}
+	// Only paths the base still differs on can be inherited: a path the base
+	// changed and then reverted may match the PR's own edit by coincidence.
+	movedOnBase := map[string]bool{}
+	for _, c := range rawChanges(baseMoved) {
+		movedOnBase[c.path] = true
+	}
 	head := map[string]string{}
+	var candidates []string
 	for _, c := range rawChanges(changed) {
-		head[c.path] = c.blob
+		if movedOnBase[c.path] {
+			head[c.path] = c.blob
+			candidates = append(candidates, c.path)
+		}
 	}
 	if len(head) == 0 {
 		return scope, nil
 	}
-	history, err := gitOutput(ctx, dir, "log", "--raw", "--no-abbrev", "--no-renames", "--diff-merges=first-parent", "--format=", scope.MergeBase+".."+scope.BaseTip)
+	logArgs := []string{"log", "--raw", "--no-abbrev", "--no-renames", "--diff-merges=first-parent", "--format=", scope.MergeBase + ".." + scope.BaseTip}
+	if len(candidates) <= maxScopedLogPaths {
+		logArgs = append(logArgs, "--")
+		for _, p := range candidates {
+			logArgs = append(logArgs, ":(literal)"+p)
+		}
+	}
+	history, err := gitOutput(ctx, dir, logArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -51,6 +73,10 @@ func computeReviewScope(ctx context.Context, dir, base string) (*payload.ReviewS
 	sort.Strings(scope.InheritedPaths)
 	return scope, nil
 }
+
+// maxScopedLogPaths bounds the pathspec handed to git log; past it the whole
+// range is read instead.
+const maxScopedLogPaths = 2000
 
 type rawChange struct{ path, blob string }
 
@@ -109,6 +135,24 @@ func withoutInherited(files []diffFile, scope *payload.ReviewScope) []diffFile {
 	return kept
 }
 
+// commentsInScope drops comments on inherited paths.
+func commentsInScope(comments []types.LineComment, scope *payload.ReviewScope) []types.LineComment {
+	if scope == nil || len(scope.InheritedPaths) == 0 {
+		return comments
+	}
+	inherited := make(map[string]bool, len(scope.InheritedPaths))
+	for _, p := range scope.InheritedPaths {
+		inherited[p] = true
+	}
+	kept := make([]types.LineComment, 0, len(comments))
+	for _, c := range comments {
+		if !inherited[c.FilePath] {
+			kept = append(kept, c)
+		}
+	}
+	return kept
+}
+
 // scopePathspec returns the pathspec arguments that keep inherited paths out
 // of a git diff, or nil when nothing is inherited.
 func scopePathspec(scope *payload.ReviewScope) []string {
@@ -134,7 +178,7 @@ func scopeNote(scope *payload.ReviewScope, baseBranch string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n## Changes inherited from %s\n\n", baseBranchLabel(baseBranch))
-	fmt.Fprintf(&b, "%d changed path(s) are left out of the diff because their content at HEAD matches a version already on the base branch: the head picked up base-branch changes (for example a sync commit without merge ancestry), and the PR did not write them. Do not review these paths and do not cite them as regressions or behavior changes of this PR:\n", len(scope.InheritedPaths))
+	fmt.Fprintf(&b, "%d changed path(s) are out of scope because their content at HEAD matches a version already on the base branch: the head picked up base-branch changes (for example a sync commit without merge ancestry), and the PR did not write them. `git diff %s...HEAD` still lists them; the change under review is that diff minus these paths. Do not review these paths and do not cite them as regressions or behavior changes of this PR:\n", len(scope.InheritedPaths), baseBranchLabel(baseBranch))
 	for _, p := range shown {
 		fmt.Fprintf(&b, "- `%s`\n", p)
 	}
@@ -146,7 +190,7 @@ func scopeNote(scope *payload.ReviewScope, baseBranch string) string {
 
 func baseBranchLabel(baseBranch string) string {
 	if baseBranch == "" {
-		return "the base branch"
+		return "origin/HEAD"
 	}
 	return "origin/" + baseBranch
 }

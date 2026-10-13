@@ -356,7 +356,7 @@ func RunAgentReview(
 	}
 
 	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets) + scopeNote(scope, defaultBranch)
-	claims := firstPassClaims(geminiComments)
+	claims := firstPassClaims(commentsInScope(geminiComments, scope))
 	var prompt, diffSource string
 	wallClock := agentCfg.WallClock
 	if isLitePrompt(agentCfg.Prompt) {

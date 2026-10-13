@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/types"
 )
 
 func scopeGit(t *testing.T, dir string, args ...string) string {
@@ -129,5 +130,37 @@ func TestPayloadWithoutScopeStillParses(t *testing.T) {
 	body, _ := json.Marshal(payload.Payload{Scope: &payload.ReviewScope{MergeBase: "m", InheritedPaths: []string{"lib.go"}}})
 	if !strings.Contains(string(body), `"scope":{"merge_base":"m","inherited_paths":["lib.go"]}`) {
 		t.Fatalf("scope not serialized: %s", body)
+	}
+}
+
+func TestReviewScopeKeepsAPathTheBaseChangedAndReverted(t *testing.T) {
+	dir := t.TempDir()
+	scopeGit(t, dir, "init", "-q", "-b", "main")
+	writeFiles(t, dir, map[string]string{"flag.go": "off\n"})
+	scopeGit(t, dir, "add", "-A")
+	scopeGit(t, dir, "commit", "-qm", "base")
+	scopeGit(t, dir, "checkout", "-qb", "feature")
+	writeFiles(t, dir, map[string]string{"flag.go": "on\n"})
+	scopeGit(t, dir, "commit", "-qam", "turn the flag on")
+	scopeGit(t, dir, "checkout", "-q", "main")
+	writeFiles(t, dir, map[string]string{"flag.go": "on\n"})
+	scopeGit(t, dir, "commit", "-qam", "try the flag")
+	writeFiles(t, dir, map[string]string{"flag.go": "off\n"})
+	scopeGit(t, dir, "commit", "-qam", "revert the flag")
+	scopeGit(t, dir, "checkout", "-q", "feature")
+	scope, err := computeReviewScope(context.Background(), dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scope.InheritedPaths) != 0 {
+		t.Fatalf("a PR edit the base tried and reverted is still the PR's change: %v", scope.InheritedPaths)
+	}
+}
+
+func TestCommentsInScopeDropsFirstPassClaimsOnInheritedPaths(t *testing.T) {
+	comments := []types.LineComment{{FilePath: "lib.go", Importance: "CRITICAL"}, {FilePath: "page.html"}, {FilePath: "SUMMARY"}}
+	got := commentsInScope(comments, &payload.ReviewScope{InheritedPaths: []string{"lib.go"}})
+	if len(got) != 2 || got[0].FilePath != "page.html" || got[1].FilePath != "SUMMARY" {
+		t.Fatalf("got %+v", got)
 	}
 }
