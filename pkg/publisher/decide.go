@@ -375,7 +375,8 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 // contract's prior_id names: the agent saw that row and said this is the
 // same point, which outranks any text or subject match. A prior_id the
 // ledger does not hold, one another finding of the round already carries or
-// claimed, or one naming the finding's own id, changes nothing. Returns the
+// claimed, or one named by a finding that is itself already a ledger row,
+// changes nothing: fingerprint equality outranks the claim. Returns the
 // row ids placed this way (now carried by the findings that named them) and
 // records each such finding's original id.
 func aliasByPriorID(r *Round, rows map[string]*db.PublishedFinding, original map[string]string) map[string]bool {
@@ -391,6 +392,9 @@ func aliasByPriorID(r *Round, rows map[string]*db.PublishedFinding, original map
 		}
 		prior := f.FindingContract.PriorID
 		if prior == f.ID || carried[prior] || claimed[prior] {
+			continue
+		}
+		if _, self := rows[f.ID]; self {
 			continue
 		}
 		if _, known := rows[prior]; !known {

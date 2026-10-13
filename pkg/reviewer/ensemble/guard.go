@@ -111,9 +111,11 @@ func Guard(d Draft, members []Member, opts Options) Result {
 			f.Importance = maxImp
 			res.Report.SeverityCapped++
 		}
-		if f.FindingContract == nil {
-			f.FindingContract = best.Finding.FindingContract
-		} else if f.FindingContract.PriorID == "" {
+		if f.FindingContract == nil && best.Finding.FindingContract != nil {
+			c := *best.Finding.FindingContract
+			f.FindingContract = &c
+		}
+		if f.FindingContract != nil && f.FindingContract.PriorID == "" {
 			carryPriorRefs(f.FindingContract, srcs)
 		}
 		f.Sources = memberIDs(srcs)
@@ -248,9 +250,10 @@ func citesFile(srcs []Member, file string) bool {
 }
 
 // carryPriorRefs keeps the prior_id a member's contract named when the
-// authored contract has none: the author never saw the earlier findings,
-// the runs did. The first member with a prior wins; relates_to is merged
-// and never repeats the prior itself.
+// contract the finding ends up with has none (authored, or copied from the
+// best member): the author never saw the earlier findings, the runs did.
+// The first member with a prior wins; relates_to is merged and never
+// repeats the prior itself.
 func carryPriorRefs(c *types.FindingContract, ms []Member) {
 	for _, m := range ms {
 		if mc := m.Finding.FindingContract; mc != nil && mc.PriorID != "" {

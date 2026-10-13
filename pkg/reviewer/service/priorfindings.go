@@ -58,24 +58,27 @@ func priorFindingsSection(priors []PriorFinding) string {
 	if rest := len(priors) - len(visible); rest > 0 {
 		fmt.Fprintf(&b, "- ...and %d more earlier findings not listed\n", rest)
 	}
-	b.WriteString(`Rules for these:
+	b.WriteString(priorFindingsRules)
+	return b.String()
+}
+
+const priorFindingsRules = `Rules for these:
 - If a finding you would report is the same point as one above (same defect, whatever the wording, line or file), set "prior_id" in its finding_contract to that label, exactly as written, and report it once with your current evidence; the earlier comment is not evidence by itself.
 - If it is a distinct point that builds on one above, list those labels in "relates_to" (array of labels) and leave "prior_id" unset.
 - A point in state dismissed, contested or external was settled by the author or belongs to another reviewer's thread: do not raise it again under any wording unless this push changed the code that settled it, and then set "prior_id" so it is matched.
 - A point in state fixed was judged addressed: raise it again, with "prior_id", only if the defect is still present at HEAD.
 - Never use a label that is not listed here. Both fields are optional and omitted on SUMMARY entries.
-`)
-	return b.String()
-}
+`
 
 const priorFindingsHeader = "\n--- FINDINGS ALREADY RAISED ON THIS PR (PRism's own earlier comments on this pull request) ---\n" +
 	"One line per earlier finding: label, state and severity, file and lines, headline, then what the author or PRism said since.\n"
 
 // visiblePriors is the prefix of priors the section lists: at most
-// priorFindingsMaxRows lines within priorFindingsSectionBudget characters.
-// Labels resolve against this same prefix.
+// priorFindingsMaxRows lines, with header, rules and the overflow line
+// within priorFindingsSectionBudget characters. Labels resolve against this
+// same prefix.
 func visiblePriors(priors []PriorFinding) []PriorFinding {
-	size := len(priorFindingsHeader)
+	size := len(priorFindingsHeader) + len(priorFindingsRules) + len(fmt.Sprintf("- ...and %d more earlier findings not listed\n", len(priors)))
 	for i, p := range priors {
 		size += len("- "+priorLabel(i)+" "+priorFindingLine(p)) + 1
 		if i == priorFindingsMaxRows || size > priorFindingsSectionBudget {

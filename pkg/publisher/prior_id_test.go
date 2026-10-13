@@ -167,3 +167,22 @@ func TestPriorID_PlacedFindingIsNotRematchedByText(t *testing.T) {
 		t.Fatal("the claimant must not get its own row")
 	}
 }
+
+func TestPriorID_AFindingAlreadyOnTheLedgerKeepsItsOwnRow(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, ledgerRoundOne())
+
+	r := ledgerRoundOne()
+	r.HeadSHA, r.RoundNumber = "sha-2", 0
+	r.Findings[1].FindingContract.PriorID = m2ID
+	publishRound(t, gh, ledger, r)
+	if row := ledger.rows[c1ID]; row.LastSeenSHA != "sha-2" || row.State != db.PublishedStateOpen {
+		t.Fatalf("the verbatim row outranks the prior_id claim: %+v", row)
+	}
+	if row := ledger.rows[m2ID]; row.LastSeenSHA != "sha-2" || row.State != db.PublishedStateOpen {
+		t.Fatalf("the named row is untouched by the mislabelled claim: %+v", row)
+	}
+	if len(gh.reviews) != 1 {
+		t.Fatalf("no new root: reviews=%d", len(gh.reviews))
+	}
+}

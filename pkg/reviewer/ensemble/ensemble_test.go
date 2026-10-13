@@ -101,11 +101,30 @@ func TestGuardCapsSeverityRelocatesAndInheritsContract(t *testing.T) {
 	}}
 	res := Guard(d, ms, Options{})
 	f := res.Findings[0]
-	if f.Importance != "MEDIUM" || f.FilePath != "a.go" || f.LineNumber != 10 || f.FindingContract != contract {
+	if f.Importance != "MEDIUM" || f.FilePath != "a.go" || f.LineNumber != 10 || !reflect.DeepEqual(f.FindingContract, contract) {
 		t.Fatalf("got %+v, want MEDIUM at a.go:10 with the source contract", f)
 	}
 	if res.Report.SeverityCapped != 1 || res.Report.Relocated != 1 {
 		t.Fatalf("report = %+v", res.Report)
+	}
+}
+
+func TestGuardCarriesAnotherMembersPriorWhenTheAuthorWroteNoContract(t *testing.T) {
+	best := lc("A", "a.go", 10, "MEDIUM", "real")
+	best.FindingContract = &types.FindingContract{SchemaVersion: 1, Headline: "Best"}
+	other := lc("B", "a.go", 12, "LOW", "same point")
+	other.FindingContract = &types.FindingContract{SchemaVersion: 1, PriorID: "a.go:1:prior"}
+	ms := Members([][]types.LineComment{{best}, {other}})
+	d := Draft{Findings: []types.LineComment{
+		{FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "merged", Sources: []string{"r1:A", "r2:B"}},
+	}}
+	res := Guard(d, ms, Options{})
+	c := res.Findings[0].FindingContract
+	if c == nil || c.Headline != "Best" || c.PriorID != "a.go:1:prior" {
+		t.Fatalf("the best member's contract is taken and the other member's prior carried: %+v", c)
+	}
+	if best.FindingContract.PriorID != "" {
+		t.Fatal("the member's own contract must not be mutated")
 	}
 }
 
