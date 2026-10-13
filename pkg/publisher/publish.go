@@ -85,8 +85,8 @@ type Report struct {
 	Confidence       int
 	Hygiene          Hygiene
 	// HunksUnknown counts absent open rows kept open because the compare
-	// to their last-seen head listed the cited file without any hunks, so
-	// the cited lines could not be placed in the change.
+	// to their last-seen head carried no hunks at all. A compare that has
+	// hunks but none for the cited file also keeps the row open, uncounted.
 	HunksUnknown int
 	// Reopened counts fixed rows that came back; ThreadReplies the in-thread
 	// notes posted for reopens and severity changes (and for fixes under

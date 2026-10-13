@@ -59,12 +59,23 @@ func Clamp(s string, max int) string {
 	if cut >= 0 {
 		return strings.TrimRight(window[:cut], " ,;:") + Marker
 	}
-	cut = strings.LastIndex(window, " ")
-	if cut < 0 {
-		cut = len(window)
+	head := window
+	if i := strings.LastIndex(head, " "); i > 0 {
+		head = head[:i]
 	}
-	head := strings.TrimRight(window[:cut], " ,;:")
-	return head + Marker + closers(head)
+	for {
+		head = strings.TrimRight(head, " ,;:")
+		closed := head + Marker + closers(head)
+		if len([]rune(closed)) <= max || head == "" {
+			return closed
+		}
+		if i := strings.LastIndex(head, " "); i > 0 {
+			head = head[:i]
+		} else {
+			r := []rune(head)
+			head = string(r[:len(r)-1])
+		}
+	}
 }
 
 // wordCut is the last balanced space at or beyond floor whose preceding

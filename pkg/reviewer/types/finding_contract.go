@@ -210,10 +210,6 @@ func NormalizeFindingContract(contract *FindingContract) {
 	}
 }
 
-// headlineCutMarker ends a cut headline; the renderer treats it as a cut it
-// must not re-trim.
-const headlineCutMarker = textcut.Marker
-
 // shortenHeadline cuts an over-long headline the way the renderer cuts a
 // bullet; a headline the agent wrote is worth more cut than dropped.
 func shortenHeadline(headline string, maximum int) string {
