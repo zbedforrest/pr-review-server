@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"strconv"
 
 	"pr-review-server/pkg/approval"
@@ -26,12 +27,20 @@ type ApprovalConfig struct {
 	DailyOutput       int64
 	Identities        []ApprovalProviderIdentity
 	UnavailableReason string
+	// Users limits the feature to these GitHub logins; empty admits every signed-in user.
+	Users []string
+}
+
+// AllowsUser reports whether a signed-in GitHub login may use approval candidates.
+func (a ApprovalConfig) AllowsUser(login string) bool {
+	return len(a.Users) == 0 || slices.Contains(a.Users, normalizeLogin(login))
 }
 
 func (c *Config) ApprovalCandidates() ApprovalConfig {
 	a := ApprovalConfig{Enabled: os.Getenv("APPROVAL_CANDIDATES_ENABLED") == "true", Provider: os.Getenv("APPROVAL_CANDIDATES_PROVIDER"), Model: os.Getenv("APPROVAL_CANDIDATES_MODEL"), CacheRoot: os.Getenv("APPROVAL_CANDIDATES_CACHE_DIR")}
 	a.DailyInput, _ = strconv.ParseInt(os.Getenv("APPROVAL_CANDIDATES_DAILY_INPUT_TOKENS"), 10, 64)
 	a.DailyOutput, _ = strconv.ParseInt(os.Getenv("APPROVAL_CANDIDATES_DAILY_OUTPUT_TOKENS"), 10, 64)
+	a.Users = getEnvListOrDefault("APPROVAL_CANDIDATES_USERS", nil, normalizeLogin)
 	a.ReasoningTokens = approval.DefaultReasoningTokens
 	if raw := os.Getenv("APPROVAL_CANDIDATES_REASONING_TOKENS"); raw != "" {
 		n, err := strconv.Atoi(raw)

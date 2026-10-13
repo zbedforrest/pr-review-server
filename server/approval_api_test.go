@@ -86,6 +86,8 @@ func approvalAPICall(s *Server, user *db.User, method, path, body, key string) *
 	switch {
 	case path == "/api/v1/approval-capabilities":
 		s.handleApprovalCapabilities(w, r)
+	case path == "/api/v1/approval-candidates/revalidate":
+		s.handleApprovalRevalidate(w, r)
 	case strings.HasPrefix(path, "/api/v1/approval-scans/"):
 		s.handleApprovalScanByID(w, r)
 	case strings.HasPrefix(path, "/api/v1/approval-scans"):
@@ -304,4 +306,19 @@ func TestApprovalAPIAcceptsThirtyFiveTargets(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(capabilities.Body.Bytes(), &response))
 	require.Equal(t, db.MaxApprovalTargetsPerScan, response.MaxTargets)
+}
+
+func TestApprovalAPIAdmitsOnlyAllowlistedUsers(t *testing.T) {
+	s, _, user, _ := newApprovalAPITestServer(t)
+	t.Setenv("APPROVAL_CANDIDATES_USERS", " "+strings.ToUpper(user.GitHubUsername)+" ")
+	require.Equal(t, 200, approvalAPICall(s, user, "GET", "/api/v1/approval-scans", "", "").Code)
+	require.Contains(t, approvalAPICall(s, user, "GET", "/api/v1/approval-capabilities", "", "").Body.String(), `"enabled":true`)
+	other := &db.User{ID: user.ID + 1, GitHubUsername: "other"}
+	for _, path := range []string{"/api/v1/approval-scans", "/api/v1/approval-candidates"} {
+		require.Equal(t, 404, approvalAPICall(s, other, "GET", path, "", "").Code, path)
+	}
+	require.Equal(t, 404, approvalAPICall(s, other, "POST", "/api/v1/approval-candidates/revalidate", `{}`, "").Code)
+	hidden := approvalAPICall(s, other, "GET", "/api/v1/approval-capabilities", "", "").Body.String()
+	require.Contains(t, hidden, `"enabled":false`)
+	require.Contains(t, hidden, `"available":false`)
 }

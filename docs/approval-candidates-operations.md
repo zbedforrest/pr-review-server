@@ -9,6 +9,7 @@ Set these environment variables on each server replica before enabling the featu
 | Variable | Value |
 | --- | --- |
 | `APPROVAL_CANDIDATES_ENABLED` | `false` initially; `true` enables admission and the UI |
+| `APPROVAL_CANDIDATES_USERS` | Comma-separated GitHub logins allowed to see and run scans; empty admits every signed-in user (sign-in already requires org membership). Others see the feature as disabled and get 404s. Logins can be renamed, so remove a login when its owner leaves |
 | `APPROVAL_CANDIDATES_PROVIDER` | `anthropic` or `openrouter` for a generative investigation, or `jev` to score pull requests with Jev through OpenRouter's System One endpoint (uses the OpenRouter key) |
 | `APPROVAL_CANDIDATES_MODEL` | Explicit model ID supported by that provider; defaults to `jev-latest` for `jev` |
 | `APPROVAL_CANDIDATES_SCORE_CUTOFF` | With `jev`, the score (0-100] a pull request needs, with no hard blocker and not a draft, to be a candidate; default 80 |
