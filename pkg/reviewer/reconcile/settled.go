@@ -11,7 +11,7 @@ import (
 )
 
 // SettledPoint is a point PRism already settled on the PR: a dismissed,
-// contested, external or fixed ledger row, with the root's prose (Text) and
+// contested or fixed ledger row, with the root's prose (Text) and
 // what PRism itself said in the thread afterwards (Replies: the concession,
 // withdrawal or verification). A finding that restates what those replies
 // settled, from another file or another part of the same file, is a repeat

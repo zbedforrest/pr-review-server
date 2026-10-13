@@ -103,29 +103,14 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		priorComments[o.FindingID] = publisher.PriorComment{Line: o.Line, Text: o.Text}
 		rootFinding[o.CommentID] = o.FindingID
 	}
-	externalRoot := map[int64]string{}
-	for _, row := range previous {
-		if row.ExternalCommentID != 0 {
-			externalRoot[row.ExternalCommentID] = row.Fingerprint
-		}
-	}
-	// PRism's own replies in a thread (concessions, verifications, the delta
-	// under another reviewer's root) name the code they accept; the
-	// settled-point alias reads them with the root. The marker alone is not
-	// ownership (a quote-reply copies it): the author must have posted one
-	// of the ledger's roots.
+	// PRism's own replies in a thread (concessions, verifications) name the
+	// code they accept; the settled-point alias reads them with the root.
+	// The marker alone is not ownership (a quote-reply copies it): the
+	// author must have posted one of the ledger's roots.
 	for _, c := range external {
-		if !ownAuthors[c.Author] {
-			continue
-		}
 		id, ok := rootFinding[c.InReplyToID]
-		if ok && !reconcile.IsOwnReply(c.Body) {
+		if !ok || !ownAuthors[c.Author] || !reconcile.IsOwnReply(c.Body) {
 			continue
-		}
-		if !ok {
-			if id, ok = externalRoot[c.InReplyToID]; !ok || !publisher.IsExternalReply(c.Body) {
-				continue
-			}
 		}
 		prior := priorComments[id]
 		prior.OwnReplies = append(prior.OwnReplies, c.Body)

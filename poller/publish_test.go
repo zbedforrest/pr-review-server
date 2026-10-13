@@ -452,9 +452,8 @@ func TestBuildPublishRound_CarriesPRismsOwnRepliesWithThePriorComment(t *testing
 	if len(prior.OwnReplies) != 1 || !strings.Contains(prior.OwnReplies[0], "backoff(i)") || strings.Contains(prior.OwnReplies[0], "jitter") {
 		t.Fatalf("only the marked reply by PRism under the ledger's root is PRism's own; a quote-reply copies the marker: %+v", prior.OwnReplies)
 	}
-	ext := r.PriorComments["b.go:9:bbbbbbbbbbbb"]
-	if len(ext.OwnReplies) != 1 || !strings.Contains(ext.OwnReplies[0], "tenant") {
-		t.Fatalf("the delta reply under the claimed root belongs to the external row: %+v", ext.OwnReplies)
+	if ext := r.PriorComments["b.go:9:bbbbbbbbbbbb"]; len(ext.OwnReplies) != 0 {
+		t.Fatalf("the delta reply restates PRism's point, it settles nothing: %+v", ext.OwnReplies)
 	}
 }
 

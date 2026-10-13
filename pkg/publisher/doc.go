@@ -26,10 +26,9 @@
 // it restates a point PRism settled in one of its own threads, from another
 // file or another part of its own file (Policy.SettledAlias,
 // PUBLISH_SETTLED_ALIAS, on unless set to false): the row is dismissed,
-// contested, external or fixed and carries at least one reply of PRism's
-// own (the concession, withdrawal or verification, or for an external row
-// the delta reply under the other reviewer's root, which
-// Round.PriorComments carries), the kinds agree or one is unknown, a
+// contested or fixed and carries at least one reply of PRism's own (the
+// concession, withdrawal or verification, which Round.PriorComments
+// carries), the kinds agree or one is unknown, a
 // specific subject of the finding (any kind but a bare file or a workflow,
 // such as a symbol, endpoint, selector or key, and never a symbol named
 // after its own file) is named in those replies, and the finding's text sits inside the thread text, root plus
@@ -42,7 +41,9 @@
 // own lines is still the table's business below. A row PRism never replied
 // under (a verdict handled by reaction alone, a thumbs-down hold, a fix the
 // change set confirmed) names nothing, so it settles no restatement from
-// elsewhere; that is the rule's boundary, not a gap in the data.
+// elsewhere, and an external row is left out because PRism's delta reply
+// there restates its own finding rather than settling it; that is the
+// rule's boundary, not a gap in the data.
 // RefreshSummary runs the same pass, since the dropped finding has no row
 // to be dropped by.
 //

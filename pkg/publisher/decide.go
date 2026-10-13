@@ -671,11 +671,13 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 	return kept
 }
 
-// settledState reports whether a row's point is settled on this PR: the
-// terminal states, and fixed (by a change or a conceded fix claim), where a
-// restatement from elsewhere is a repeat rather than a return.
+// settledState reports whether a row's point is settled on this PR by a
+// thread of PRism's own: dismissed, contested, and fixed (by a change or a
+// conceded fix claim), where a restatement from elsewhere is a repeat
+// rather than a return. An external row is left out: PRism's only reply
+// there is the delta, which restates its finding and settles nothing.
 func settledState(state string) bool {
-	return terminalState(state) || fixedState(state)
+	return state == db.PublishedStateDismissed || state == db.PublishedStateContested || fixedState(state)
 }
 
 // withoutSettled drops every finding the alias tiers left unmatched that

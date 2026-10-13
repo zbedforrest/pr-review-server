@@ -84,7 +84,7 @@ type Policy struct {
 	LibraryClaimHold   bool
 	RegressionEvidence bool
 	// SettledAlias drops a finding that restates a settled row (dismissed,
-	// contested, external or fixed) from another file or another part of
+	// contested or fixed) from another file or another part of
 	// the same file, by subject and thread text (PUBLISH_SETTLED_ALIAS, on
 	// unless set to false). Off, only the file-and-line alias tiers apply.
 	SettledAlias bool
