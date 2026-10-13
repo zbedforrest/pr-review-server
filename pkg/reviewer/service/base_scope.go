@@ -36,12 +36,12 @@ func computeReviewScope(ctx context.Context, dir, base string) (*payload.ReviewS
 	if err != nil {
 		return nil, err
 	}
-	tipBlob := map[string]string{}
+	tipState := map[string]string{}
 	for _, c := range rawChanges(baseMoved) {
-		tipBlob[c.path] = c.blob
+		tipState[c.path] = c.state()
 	}
 	for _, c := range rawChanges(changed) {
-		if tip, moved := tipBlob[c.path]; moved && tip == c.blob {
+		if tip, moved := tipState[c.path]; moved && tip == c.state() {
 			scope.InheritedPaths = append(scope.InheritedPaths, c.path)
 		}
 	}
@@ -52,10 +52,13 @@ func computeReviewScope(ctx context.Context, dir, base string) (*payload.ReviewS
 // maxScopedPaths bounds the exclude pathspec handed to git diff.
 const maxScopedPaths = 2000
 
-type rawChange struct{ path, blob string }
+type rawChange struct{ path, mode, blob string }
+
+// state is the post-image mode and blob, so a mode-only change still differs.
+func (c rawChange) state() string { return c.mode + " " + c.blob }
 
 // rawChanges parses `git --raw --no-abbrev` lines into each path's
-// post-image blob; a deletion reports the all-zero blob.
+// post-image mode and blob; a deletion reports the all-zero blob.
 func rawChanges(out string) []rawChange {
 	var changes []rawChange
 	for _, line := range strings.Split(out, "\n") {
@@ -67,7 +70,7 @@ func rawChanges(out string) []rawChange {
 		if len(fields) < 5 {
 			continue
 		}
-		changes = append(changes, rawChange{path: path, blob: fields[3]})
+		changes = append(changes, rawChange{path: path, mode: fields[1], blob: fields[3]})
 	}
 	return changes
 }
@@ -75,7 +78,7 @@ func rawChanges(out string) []rawChange {
 // reviewScopeForWorktree computes the worktree's review scope against
 // origin/<baseBranch>, fetching the base ref once if it is missing. It returns
 // nil (an unscoped review) when git cannot, or a scope with only
-// BaseFetchFailed set when the base could not be fetched at all, which
+// BaseFetchFailed set when this review could not fetch the base at all, which
 // consumers read as an unknown base.
 func reviewScopeForWorktree(ctx context.Context, dir, cacheKey, token, baseBranch, logPrefix string) *payload.ReviewScope {
 	base := "origin/HEAD"
@@ -85,9 +88,6 @@ func reviewScopeForWorktree(ctx context.Context, dir, cacheKey, token, baseBranc
 	scope, err := computeReviewScope(ctx, dir, base)
 	if err != nil && baseBranch != "" {
 		fetched := fetchBaseRef(ctx, dir, baseBranch, token, cacheKey, logPrefix)
-		if cacheKey != "" {
-			baseFetchFailures.Store(cacheKey+"\x00"+baseBranch, !fetched)
-		}
 		if scope, err = computeReviewScope(ctx, dir, base); err != nil && !fetched {
 			log.Printf("%s review scope unavailable: %s could not be fetched (%v)", logPrefix, base, err)
 			return &payload.ReviewScope{BaseFetchFailed: true}
@@ -97,7 +97,6 @@ func reviewScopeForWorktree(ctx context.Context, dir, cacheKey, token, baseBranc
 		log.Printf("%s review scope unavailable (%v); reviewing the full diff", logPrefix, err)
 		return nil
 	}
-	scope.BaseFetchFailed = baseBranch != "" && baseFetchFailed(cacheKey, baseBranch)
 	if n := len(scope.InheritedPaths); n > 0 {
 		log.Printf("%s %d changed path(s) inherited from %s left out of the review (merge-base %.7s, base tip %.7s)", logPrefix, n, base, scope.MergeBase, scope.BaseTip)
 	}
@@ -170,7 +169,7 @@ func scopeNote(scope *payload.ReviewScope, baseBranch string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n## Changes inherited from %s\n\n", baseBranchLabel(baseBranch))
-	fmt.Fprintf(&b, "%d changed path(s) are out of scope because their content at HEAD is identical to the base branch's current content: the head picked up base-branch changes (for example a sync commit without merge ancestry), and the PR did not write them. `git diff %s...HEAD` still lists them; the change under review is that diff minus these paths. Do not review these paths and do not cite them as regressions or behavior changes of this PR:\n", len(scope.InheritedPaths), baseBranchLabel(baseBranch))
+	fmt.Fprintf(&b, "%d changed path(s) are out of scope because their content at HEAD is identical to the base branch's current content, so merging the PR changes nothing in them (typically a sync commit without merge ancestry picked them up). `git diff %s...HEAD` still lists them; the change under review is that diff minus these paths. Do not review these paths and do not cite them as regressions or behavior changes of this PR:\n", len(scope.InheritedPaths), baseBranchLabel(baseBranch))
 	for _, p := range shown {
 		fmt.Fprintf(&b, "- `%s`\n", p)
 	}

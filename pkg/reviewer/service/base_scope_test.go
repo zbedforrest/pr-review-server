@@ -293,3 +293,26 @@ func TestReviewScopeReportsAnUnfetchableBase(t *testing.T) {
 		t.Fatalf("an unfetchable base must be recorded as unknown, got %+v", scope)
 	}
 }
+
+func TestReviewScopeKeepsAModeChangeTheBaseDidNotMake(t *testing.T) {
+	dir := t.TempDir()
+	scopeGit(t, dir, "init", "-q", "-b", "main")
+	writeFiles(t, dir, map[string]string{"run.sh": "echo hi\n"})
+	scopeGit(t, dir, "add", "-A")
+	scopeGit(t, dir, "commit", "-qm", "base")
+	scopeGit(t, dir, "checkout", "-qb", "feature")
+	scopeGit(t, dir, "checkout", "-q", "main")
+	writeFiles(t, dir, map[string]string{"run.sh": "echo hello\n"})
+	scopeGit(t, dir, "commit", "-qam", "base edit")
+	scopeGit(t, dir, "checkout", "-q", "feature")
+	writeFiles(t, dir, map[string]string{"run.sh": "echo hello\n"})
+	scopeGit(t, dir, "update-index", "--add", "--chmod=+x", "run.sh")
+	scopeGit(t, dir, "commit", "-qm", "sync and make executable")
+	scope, err := computeReviewScope(context.Background(), dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scope.InheritedPaths) != 0 {
+		t.Fatalf("the PR's mode change must stay in scope: %v", scope.InheritedPaths)
+	}
+}

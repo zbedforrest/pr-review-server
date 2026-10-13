@@ -1231,15 +1231,6 @@ func readWorktreeFile(root, rel string) (string, bool) {
 // instead of waiting. Worktree add/remove need no lock and run in parallel.
 var cacheMutexes sync.Map
 
-// baseFetchFailures remembers, per cache and base branch, whether the latest
-// base-branch fetch failed, which leaves origin/<base> at an older tip.
-var baseFetchFailures sync.Map
-
-func baseFetchFailed(cacheKey, branch string) bool {
-	failed, _ := baseFetchFailures.Load(cacheKey + "\x00" + branch)
-	return failed == true
-}
-
 func cacheLock(key string) *sync.Mutex {
 	m, _ := cacheMutexes.LoadOrStore(key, &sync.Mutex{})
 	return m.(*sync.Mutex)
@@ -1425,9 +1416,7 @@ func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch strin
 		baseArgs := authHeaderArgs(token)
 		baseArgs = append(baseArgs, "fetch", "--quiet", "origin",
 			fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", defaultBranch, defaultBranch))
-		out, err := runGit(ctx, cacheDir, baseArgs...)
-		baseFetchFailures.Store(cacheKey+"\x00"+defaultBranch, err != nil)
-		if err != nil {
+		if out, err := runGit(ctx, cacheDir, baseArgs...); err != nil {
 			log.Printf("%s WARN: base-branch fetch (%s): %v (%s); deterministic layer may find no diff base",
 				logPrefix, defaultBranch, err, redactToken(out, token))
 		}

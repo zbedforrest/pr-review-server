@@ -72,6 +72,8 @@ type Payload struct {
 }
 
 // ReviewScope describes what a review treated as the pull request's own change.
+// BaseFetchFailed with an empty MergeBase means the review could not fetch the
+// base at all, so the base is unknown.
 // InheritedPaths changed between MergeBase and the head but are identical to
 // BaseTip, so they are base changes the head picked up (for example a sync
 // commit with no merge ancestry), not the PR's work.
