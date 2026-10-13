@@ -84,6 +84,9 @@ type Scanner struct {
 
 type Result struct {
 	Targets int
+	// Scanned counts the targets the run got through; fewer than Targets
+	// means the deadline cut it short and the rest wait for the next run.
+	Scanned int
 	Seen    int
 	Added   []Item
 	// Errors counts PRs whose comments could not be listed; Skipped counts
@@ -135,14 +138,19 @@ func (s Scanner) Run(ctx context.Context) (Result, error) {
 	modelCalls := 0
 	for _, t := range targets {
 		if ctx.Err() != nil {
-			return res, ctx.Err()
+			break
 		}
 		items, skipped, err := s.collect(ctx, t, since)
 		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
 			log.Printf("[FEEDBACK] %s/%s#%d: %v", t.RepoOwner, t.RepoName, t.PRNumber, err)
 			res.Errors++
+			res.Scanned++
 			continue
 		}
+		res.Scanned++
 		res.Skipped += skipped
 		res.Seen += len(items)
 		known, err := s.Store.KnownFeedbackItems(t.RepoOwner, t.RepoName, t.PRNumber)
@@ -186,8 +194,14 @@ func (s Scanner) Run(ctx context.Context) (Result, error) {
 			}
 		}
 	}
+	if res.Scanned < res.Targets {
+		log.Printf("[FEEDBACK] deadline reached after %d of %d targets: %v", res.Scanned, res.Targets, ctx.Err())
+	}
 	return res, nil
 }
+
+// Partial reports a run the deadline cut short.
+func (r Result) Partial() bool { return r.Scanned < r.Targets }
 
 func deadlineAllows(ctx context.Context) bool {
 	deadline, ok := ctx.Deadline()

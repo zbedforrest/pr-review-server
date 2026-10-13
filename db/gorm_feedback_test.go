@@ -38,6 +38,13 @@ func TestGormDB_ListFeedbackTargets_OpenPRsAndRecentlyCommentedClosedOnes(t *tes
 	assert.Equal(t, map[int64]bool{701: true}, targets[1].Roots)
 	assert.Equal(t, map[int64]bool{700: true}, targets[1].Summaries)
 	assert.Equal(t, map[int64]string{7010: "pushback"}, targets[1].ReplyClasses)
+
+	_, err = db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 9, RootCommentID: 901, AuthorCommentID: 9010, Fingerprint: "c.go:1:dddddddddddd", AuthorID: 1, Class: "pushback", Action: "reacted", CreatedAt: recent})
+	require.NoError(t, err)
+	targets, err = db.ListFeedbackTargets(now.Add(-7 * 24 * time.Hour))
+	require.NoError(t, err)
+	require.Len(t, targets, 3, "a closed PR with a reply this week is scanned even when its PRism comment is old")
+	assert.Equal(t, 9, targets[2].PRNumber)
 }
 
 func TestGormDB_FeedbackItems_SaveOnceListByWindow(t *testing.T) {

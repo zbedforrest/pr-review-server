@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"pr-review-server/db"
@@ -58,7 +59,7 @@ type feedbackOutcome struct {
 
 // scanFeedback runs the read-only GitHub scan ahead of the metrics query so
 // today's items are in the table. It never fails the report.
-func (s *Server) scanFeedback(now time.Time) feedbackOutcome {
+func (s *Server) scanFeedback(ctx context.Context, now time.Time) feedbackOutcome {
 	store, ok := s.db.(feedbackStore)
 	switch {
 	case !ok:
@@ -73,17 +74,22 @@ func (s *Server) scanFeedback(now time.Time) feedbackOutcome {
 	if gh == nil {
 		return feedbackOutcome{note: "no GitHub client"}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), feedbackScanTimeout)
+	ctx, cancel := context.WithTimeout(ctx, feedbackScanTimeout)
 	defer cancel()
 	scanner := feedback.Scanner{Store: store, GitHub: gh, Classifier: s.feedbackClassifierFor(), Handle: s.cfg.MentionHandle, Now: func() time.Time { return now }}
 	res, err := scanner.Run(ctx)
 	outcome := feedbackOutcome{scanned: true}
-	switch {
-	case err != nil:
-		log.Printf("[FEEDBACK] scan failed after %d targets: %v", res.Targets, err)
+	var notes []string
+	if res.Partial() {
+		notes = append(notes, fmt.Sprintf("partial (%d of %d targets)", res.Scanned, res.Targets))
+	}
+	if res.Errors > 0 {
+		notes = append(notes, fmt.Sprintf("%d of %d PRs could not be read", res.Errors, res.Scanned))
+	}
+	outcome.note = strings.Join(notes, "; ")
+	if err != nil {
+		log.Printf("[FEEDBACK] scan failed after %d of %d targets: %v", res.Scanned, res.Targets, err)
 		outcome = feedbackOutcome{note: "scan failed"}
-	case res.Errors > 0:
-		outcome.note = fmt.Sprintf("%d of %d PRs could not be read", res.Errors, res.Targets)
 	}
 	// The counter follows the report's day; a backfilled older item is stored
 	// and listed in the week view but not counted as today's frustration.
@@ -107,7 +113,7 @@ func (s *Server) scanFeedback(now time.Time) feedbackOutcome {
 			}
 		}
 	}
-	log.Printf("[FEEDBACK] targets=%d seen=%d new=%d frustrated=%d errors=%d skipped_reaction_pages=%d", res.Targets, res.Seen, len(res.Added), frustrated, res.Errors, res.Skipped)
+	log.Printf("[FEEDBACK] targets=%d scanned=%d seen=%d new=%d frustrated=%d errors=%d skipped_reaction_pages=%d", res.Targets, res.Scanned, res.Seen, len(res.Added), frustrated, res.Errors, res.Skipped)
 	return outcome
 }
 

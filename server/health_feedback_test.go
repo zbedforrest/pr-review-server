@@ -151,6 +151,25 @@ func TestDailyHealth_FeedbackLineWhenScanIsOffOrUnavailable(t *testing.T) {
 	}
 }
 
+func TestDailyHealth_FeedbackLineSaysPartialWhenTheRequestIsCancelled(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	server.cfg.HealthJobToken = "secret-job-token"
+	server.cfg.FeedbackDigest = true
+	seedLease(t, database)
+	seedFeedbackPR(t, database)
+	server.feedbackGitHub = feedbackFixtureGitHub(time.Now().UTC())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/health/daily", nil).WithContext(ctx)
+	req.Header.Set("X-Prism-Job-Token", "secret-job-token")
+	w := httptest.NewRecorder()
+	server.handleDailyHealthJob(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	rows, err := database.ListHealthReports(1)
+	require.NoError(t, err)
+	assert.Contains(t, rows[0].Markdown, "author feedback**: no author feedback in the window (partial scan: partial (0 of 1 targets))")
+}
+
 func TestFeedbackEndpoint_ServesDayAndWeekAsJSONOrMarkdown(t *testing.T) {
 	server, database := newTestServer(t, "tester")
 	user := createTestUser(t, database, "tester")

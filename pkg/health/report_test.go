@@ -281,6 +281,7 @@ func TestEvaluateFeedbackLineSaysWhenNothingWasScanned(t *testing.T) {
 		{FeedbackMetrics{}, "not scanned"},
 		{FeedbackMetrics{Note: "no GitHub client"}, "not scanned (no GitHub client)"},
 		{FeedbackMetrics{Scanned: true}, "no author feedback in the window"},
+		{FeedbackMetrics{Scanned: true, Note: "partial (3 of 40 targets)"}, "no author feedback in the window (partial scan: partial (3 of 40 targets))"},
 		{FeedbackMetrics{ByLabel: map[string]int{FeedbackHappy: 1}, Note: "scan failed"}, "1 happy, 0 neutral, 0 frustrated, 0 very frustrated (stored items only; not scanned: scan failed)"},
 		{FeedbackMetrics{Scanned: true, ByLabel: map[string]int{FeedbackHappy: 1}, Note: "2 of 30 PRs could not be read"}, "1 happy, 0 neutral, 0 frustrated, 0 very frustrated (partial scan: 2 of 30 PRs could not be read)"},
 	} {

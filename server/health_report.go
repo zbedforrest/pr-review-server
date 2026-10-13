@@ -48,7 +48,7 @@ func (s *Server) handleDailyHealthJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The scan runs first so its items and telemetry fall inside the window.
-	outcome := s.scanFeedback(time.Now().UTC())
+	outcome := s.scanFeedback(r.Context(), time.Now().UTC())
 	report, err := s.runDailyHealth(store, time.Now().UTC(), outcome)
 	if err != nil {
 		log.Printf("[HEALTH] daily report failed: %v", err)

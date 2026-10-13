@@ -69,9 +69,9 @@ type FeedbackTarget struct {
 }
 
 // ListFeedbackTargets returns the PRs worth scanning for feedback: every open
-// PR with PRism comments, and closed ones that got a PRism comment after
-// recentSince. PRs with the newest PRism comment come first, so a capped scan
-// drops the quietest ones.
+// PR with PRism comments, and closed ones that got a PRism comment or an
+// author reply after recentSince. PRs with the newest PRism comment come
+// first, so a capped scan drops the quietest ones.
 func (g *GormDB) ListFeedbackTargets(recentSince time.Time) ([]FeedbackTarget, error) {
 	var rows []struct {
 		RepoOwner string
@@ -83,7 +83,8 @@ func (g *GormDB) ListFeedbackTargets(recentSince time.Time) ([]FeedbackTarget, e
 	err := g.db.Table("published_findings AS pf").
 		Select("pf.repo_owner, pf.repo_name, pf.pr_number, pf.kind, pf.comment_id").
 		Joins("JOIN prs ON prs.repo_owner = pf.repo_owner AND prs.repo_name = pf.repo_name AND prs.pr_number = pf.pr_number").
-		Where("pf.comment_id <> 0 AND pf.kind IN ? AND (LOWER(prs.pr_state) = 'open' OR pf.published_at >= ?)", []string{PublishedKindSummary, PublishedKindFinding}, recentSince).
+		Where("pf.comment_id <> 0 AND pf.kind IN ? AND (LOWER(prs.pr_state) = 'open' OR pf.published_at >= ? OR EXISTS (SELECT 1 FROM published_reply_models r WHERE r.repo_owner = pf.repo_owner AND r.repo_name = pf.repo_name AND r.pr_number = pf.pr_number AND r.created_at >= ?))",
+			[]string{PublishedKindSummary, PublishedKindFinding}, recentSince, recentSince).
 		Order("pf.published_at DESC, pf.comment_id").
 		Scan(&rows).Error
 	if err != nil {

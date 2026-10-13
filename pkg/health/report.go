@@ -407,6 +407,8 @@ func feedbackDetail(f FeedbackMetrics) string {
 			b.WriteString(" (" + f.Note + ")")
 		}
 		return b.String()
+	case total == 0 && f.Note != "":
+		return "no author feedback in the window (partial scan: " + f.Note + ")"
 	case total == 0:
 		return "no author feedback in the window"
 	}
