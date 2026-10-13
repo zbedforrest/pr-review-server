@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"pr-review-server/pkg/reviewer/payload"
 	"regexp"
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
 
+	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -902,7 +902,7 @@ func contextIdentifier(line, oldLit string) string {
 // parseNameStatusDiff builds diffFiles from `git diff` output: the name-status
 // listing plus the unified diff, both against base...HEAD in the worktree.
 func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, error) {
-	ns, err := runGit(ctx, dir, "diff", "--name-status", base+"...HEAD")
+	ns, err := runGit(ctx, dir, "-c", "core.quotePath=false", "diff", "--name-status", base+"...HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("name-status: %w (%s)", err, ns)
 	}
@@ -925,7 +925,7 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 		order = append(order, p)
 	}
 
-	full, err := runGit(ctx, dir, "diff", "--unified=0", base+"...HEAD")
+	full, err := runGit(ctx, dir, "-c", "core.quotePath=false", "diff", "--unified=0", base+"...HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("unified diff: %w", err)
 	}

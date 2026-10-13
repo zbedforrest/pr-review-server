@@ -151,11 +151,15 @@ func CommentsInScope(comments []types.LineComment, scope *payload.ReviewScope) [
 	}
 	kept := make([]types.LineComment, 0, len(comments))
 	for _, c := range comments {
-		if !inherited[c.FilePath] {
+		if !inherited[normalizeScopePath(c.FilePath)] {
 			kept = append(kept, c)
 		}
 	}
 	return kept
+}
+
+func normalizeScopePath(p string) string {
+	return strings.TrimLeft(strings.TrimPrefix(strings.TrimSpace(p), "./"), "/")
 }
 
 // scopePathspec returns the pathspec arguments that keep inherited paths out

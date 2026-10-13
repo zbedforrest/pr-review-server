@@ -158,7 +158,7 @@ func TestReviewScopeKeepsAPathTheBaseChangedAndReverted(t *testing.T) {
 }
 
 func TestCommentsInScopeDropsFirstPassClaimsOnInheritedPaths(t *testing.T) {
-	comments := []types.LineComment{{FilePath: "lib.go", Importance: "CRITICAL"}, {FilePath: "page.html"}, {FilePath: "SUMMARY"}}
+	comments := []types.LineComment{{FilePath: "lib.go", Importance: "CRITICAL"}, {FilePath: "./lib.go"}, {FilePath: "page.html"}, {FilePath: "SUMMARY"}}
 	got := CommentsInScope(comments, &payload.ReviewScope{InheritedPaths: []string{"lib.go"}})
 	if len(got) != 2 || got[0].FilePath != "page.html" || got[1].FilePath != "SUMMARY" {
 		t.Fatalf("got %+v", got)
@@ -209,6 +209,10 @@ func TestReviewScopeMatchesNonASCIIPaths(t *testing.T) {
 	}
 	if len(scope.InheritedPaths) != 1 || scope.InheritedPaths[0] != "café.txt" {
 		t.Fatalf("inherited = %q", scope.InheritedPaths)
+	}
+	scopeGit(t, dir, "update-ref", "refs/remotes/origin/main", "main")
+	if files := scopedDiffFiles(context.Background(), dir, "main", "", "", "", scope); len(files) != 0 {
+		t.Fatalf("the inherited non-ASCII path must leave the parsed diff: %+v", files)
 	}
 }
 
