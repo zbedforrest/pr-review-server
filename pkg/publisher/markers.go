@@ -46,6 +46,32 @@ func MergeConfidence(critical, medium int, requiredCheckViolated bool) int {
 
 var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
 
+var hunkRangeRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+
+// ParseHunks lists the hunks of a unified-diff patch from their headers: the
+// base-side and head-side ranges each change covers, context included. A
+// count GitHub omits is one line.
+func ParseHunks(patch string) []Hunk {
+	var hunks []Hunk
+	for _, raw := range strings.Split(patch, "\n") {
+		m := hunkRangeRe.FindStringSubmatch(raw)
+		if m == nil {
+			continue
+		}
+		h := Hunk{OldLines: 1, NewLines: 1}
+		h.OldStart, _ = strconv.Atoi(m[1])
+		h.NewStart, _ = strconv.Atoi(m[3])
+		if m[2] != "" {
+			h.OldLines, _ = strconv.Atoi(m[2])
+		}
+		if m[4] != "" {
+			h.NewLines, _ = strconv.Atoi(m[4])
+		}
+		hunks = append(hunks, h)
+	}
+	return hunks
+}
+
 // CommentableLines returns the RIGHT-side line numbers GitHub accepts for a
 // review comment on this file: added and context lines inside hunks.
 func CommentableLines(patch string) map[int]bool {

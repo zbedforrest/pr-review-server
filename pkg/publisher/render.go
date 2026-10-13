@@ -74,8 +74,10 @@ type Round struct {
 	// ProfileFooter names the review flavor in the summary footer ("PRism
 	// Lite", "PRism Lite+ (custom)"); empty for an ordinary full review.
 	ProfileFooter string
-	// LegacyTitles is Policy.LegacyTitles as applied to this round.
+	// LegacyTitles is Policy.LegacyTitles as applied to this round;
+	// LegacyClamp is Policy.LegacyClamp.
 	LegacyTitles bool
+	LegacyClamp  bool
 	// SettleFooter is the rendered line under every root comment and the
 	// summary (see the SettleFooter function); empty omits it.
 	SettleFooter string
@@ -87,6 +89,13 @@ type Round struct {
 	// Changes resolves what changed between a ledger row's LastSeenSHA and
 	// HeadSHA; ok false means unknown, and nothing is then judged fixed.
 	Changes func(base string) (ChangeSet, bool)
+	// Scope is the review's diff scope (payload.Payload.Scope); nil when the
+	// review did not record one. DiffFiles is the PR diff at review time as
+	// GitHub lists it, nil when the caller did not have it. A finding on a
+	// path the scope marks inherited from the base branch, or outside the PR
+	// diff, makes no fixed, reopen or severity transition.
+	Scope     *payload.ReviewScope
+	DiffFiles map[string]bool
 
 	// transitions is the ledger policy's record count for the summary; nil
 	// falls back to the hash-set diff.
@@ -101,10 +110,20 @@ type PriorComment struct {
 
 // ChangeSet is the inter-push diff between two commits of the PR: the files
 // touched and, when the caller had the patches, the RIGHT-side lines added
-// or edited per file. Lines nil means only the file set is known.
+// or edited per file and the hunks of each file. Lines or Hunks nil means
+// only the file set is known; Hunks set but empty for a file means the
+// caller had patches but not that file's (too large, binary).
 type ChangeSet struct {
 	Files map[string]bool
 	Lines map[string]map[int]bool
+	Hunks map[string][]Hunk
+}
+
+// Hunk is one unified-diff hunk header: the LEFT-side (base) and RIGHT-side
+// (head) line ranges it covers, each as a start and a count.
+type Hunk struct {
+	OldStart, OldLines int
+	NewStart, NewLines int
 }
 
 // SettleFooter is the one line under every root comment and the summary:
@@ -254,12 +273,21 @@ func (r Round) markedBullet(f payload.Finding, marker string) string {
 	if marker != "" {
 		marker = "**" + marker + "** "
 	}
-	text := strings.TrimSpace(summaryText(f, r.LegacyTitles))
-	if !strings.HasSuffix(text, "...") {
+	text := r.clampBullet(summaryText(f, r.LegacyTitles))
+	return fmt.Sprintf("- %s %s%s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, where, r.findingLink(f))
+}
+
+// bulletMaxRunes bounds one summary bullet's text.
+const bulletMaxRunes = 200
+
+// clampBullet is the bullet text: the trailing period dropped unless the
+// agent ended on an ellipsis, then cut to the bullet limit.
+func (r Round) clampBullet(text string) string {
+	text = strings.TrimSpace(text)
+	if !strings.HasSuffix(text, "...") && !strings.HasSuffix(text, cutMarker) {
 		text = strings.TrimSuffix(text, ".")
 	}
-	text = truncateWords(text, 200)
-	return fmt.Sprintf("- %s %s%s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, where, r.findingLink(f))
+	return clampText(text, bulletMaxRunes, r.LegacyClamp)
 }
 
 const sinceLastReviewFormat = "**Since last review:** %d new · %d still open · %d fixed"
@@ -283,7 +311,7 @@ func (r Round) unverifiedBullet(f payload.Finding) string {
 	}
 	line := r.markedBullet(f, markerDisputed)
 	if reason := strings.TrimSpace(f.Assessment.Reason); reason != "" {
-		line += "  - Agent: " + truncateWords(firstLine(reason), maxReasonRunes) + "\n"
+		line += "  - Agent: " + clampText(firstLine(reason), maxReasonRunes, r.LegacyClamp) + "\n"
 	}
 	return line
 }
@@ -460,12 +488,9 @@ func (r Round) writeExternal(b *strings.Builder) {
 		if f.Line > 0 {
 			where = fmt.Sprintf("%s:%d", where, f.Line)
 		}
-		text := strings.TrimSpace(summaryText(f, r.LegacyTitles))
-		if !strings.HasSuffix(text, "...") {
-			text = strings.TrimSuffix(text, ".")
-		}
+		text := r.clampBullet(summaryText(f, r.LegacyTitles))
 		link := fmt.Sprintf("https://github.com/%s/%s/pull/%d#discussion_r%d", r.Owner, r.Repo, r.Number, m.CommentID)
-		fmt.Fprintf(b, "- %s %s, [`%s`](%s) · %s\n", severityLabel(f.Severity, r.BadgeBaseURL), truncateWords(text, 200), where, link, m.Source.Label())
+		fmt.Fprintf(b, "- %s %s, [`%s`](%s) · %s\n", severityLabel(f.Severity, r.BadgeBaseURL), text, where, link, m.Source.Label())
 	}
 	b.WriteString("</details>\n\n")
 }
@@ -507,20 +532,29 @@ var suggestionFenceRe = regexp.MustCompile("(?s)```suggestion\n(.*?)\n```")
 // did not fit and left findings without a headline titled by their impact
 // sentence even when that sentence said there was none.
 func headline(f payload.Finding, legacy bool) string {
+	return headlineWith(f, legacy, false)
+}
+
+// headlineWith is headline with the cut rule chosen: the clause cut with
+// the explicit marker, or the legacy word cut with "...".
+func headlineWith(f payload.Finding, legacy, legacyClamp bool) string {
 	if legacy {
 		return legacyHeadline(f)
 	}
 	title := titleSource(f)
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
 		if label, ok := kindLabels[c.FindingKind]; ok {
-			return label + " · " + clauseHeadline(title, headlineMaxRunes)
+			return label + " · " + clauseHeadlineWith(title, headlineMaxRunes, legacyClamp)
 		}
-		return clauseHeadline(title, headlineMaxRunes)
+		return clauseHeadlineWith(title, headlineMaxRunes, legacyClamp)
 	}
-	return clauseHeadline(title, commentTitleMaxRunes)
+	return clauseHeadlineWith(title, commentTitleMaxRunes, legacyClamp)
 }
 
-const commentTitleMaxRunes = 100
+// commentTitleMaxRunes bounds a title taken from the comment's first
+// sentence; headlineMaxRunes a contract headline, which the contract itself
+// keeps within this length, so a headline the agent wrote renders whole.
+const commentTitleMaxRunes = 140
 
 // titleIsWholeFirstSentence reports whether a comment-sourced title fits the
 // limit headline applied to it; a cut title leaves the sentence to the fold.
@@ -575,7 +609,7 @@ func titleFromComment(f payload.Finding) bool {
 	return strings.TrimSpace(c.Headline) == "" && (c.Materiality != "current_impact" || strings.TrimSpace(c.CurrentImpact) == "")
 }
 
-const headlineMaxRunes = 110
+const headlineMaxRunes = 140
 
 // clauseBoundaries are the joints an effect sentence is most often built
 // around; cutting at the last one before the limit keeps a headline readable.
@@ -584,8 +618,15 @@ var clauseBoundaries = []string{", so ", "; ", " because ", ", which ", ", and "
 // clauseHeadline returns the whole sentence when it fits, else the longest
 // prefix ending at a clause boundary within the limit, else a word-boundary cut.
 func clauseHeadline(s string, max int) string {
+	return clauseHeadlineWith(s, max, false)
+}
+
+func clauseHeadlineWith(s string, max int, legacyClamp bool) string {
 	if len([]rune(s)) <= max {
 		return s
+	}
+	if !legacyClamp {
+		return clampText(s, max, false)
 	}
 	window := string([]rune(s)[:max])
 	best := -1
@@ -598,6 +639,77 @@ func clauseHeadline(s string, max int) string {
 		return strings.TrimRight(window[:best], " ,;")
 	}
 	return truncateWords(s, max)
+}
+
+// cutMarker is what a cut bullet or headline ends with: an editorial
+// omission mark the agent's own prose never produces, so a reader can tell a
+// cut from a sentence the agent left hanging.
+const cutMarker = " […]"
+
+// clampText cuts s to max runes at the best boundary before the limit: the
+// end of a sentence, else a clause joint, else a word; never inside a code
+// span; and ends it with cutMarker. Legacy restores the word cut with "...".
+// A text within the limit is returned unchanged.
+func clampText(s string, max int, legacy bool) string {
+	if legacy {
+		return truncateWords(s, max)
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	budget := max - len([]rune(cutMarker))
+	if budget < 1 {
+		return cutMarker
+	}
+	window := string(runes[:budget])
+	floor := len(window) / 3
+	cut := -1
+	// A whole first sentence reads better than a longer cut mid-sentence,
+	// so a sentence end counts from a quarter of the window on.
+	for i := len(window) - 1; i >= len(window)/4; i-- {
+		if (window[i] == '.' || window[i] == '!' || window[i] == '?') && (i+1 == len(window) || window[i+1] == ' ') && insideCode(window[:i]) < 0 {
+			cut = i + 1
+			break
+		}
+	}
+	if cut < 0 {
+		for _, b := range clauseBoundaries {
+			if i := strings.LastIndex(window, b); i > cut && i >= floor && insideCode(window[:i]) < 0 {
+				cut = i
+			}
+		}
+	}
+	if cut < 0 {
+		cut = strings.LastIndex(window, " ")
+		if cut < 0 {
+			cut = len(window)
+		}
+	}
+	if open := insideCode(window[:cut]); open >= 0 {
+		cut = open
+		if i := strings.LastIndex(window[:cut], " "); i > 0 {
+			cut = i
+		}
+	}
+	return strings.TrimRight(window[:cut], " ,;:") + cutMarker
+}
+
+// insideCode returns the byte index of the backtick that opens a code span
+// still open at the end of s, or -1 when every span is closed.
+func insideCode(s string) int {
+	open := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] != '`' {
+			continue
+		}
+		if open < 0 {
+			open = i
+		} else {
+			open = -1
+		}
+	}
+	return open
 }
 
 // impactShownBelow reports whether the effect sentence still needs to be
@@ -622,10 +734,10 @@ func impactShownBelow(f payload.Finding, legacy bool) bool {
 // calibration sentence, and the suggestion if there is one. The agent's full
 // reasoning and the verification steps fold behind a details block.
 func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string) string {
-	return renderInline(f, sourceTag, agentLinkBase, badgeBase, settleFooter, false)
+	return renderInline(f, sourceTag, agentLinkBase, badgeBase, settleFooter, false, false)
 }
 
-func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string, legacy bool) string {
+func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string, legacy, legacyClamp bool) string {
 	comment := commentText(f)
 	c := f.FindingContract
 	hasContract := c != nil && f.FindingContractStatus == "valid"
@@ -633,7 +745,7 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 
 	// When the title is not the effect sentence in full, the sentence is shown
 	// once, in full, under the title.
-	title := headline(f, legacy)
+	title := headlineWith(f, legacy, legacyClamp)
 	var b strings.Builder
 	b.WriteString(FindingMarker(f.ID) + "\n")
 	if badgeBase == "" {

@@ -388,6 +388,10 @@ type PublishedFindingModel struct {
 	// ExternalCommentID is the root comment of another reviewer this finding
 	// was matched to; set only on rows in the external state.
 	ExternalCommentID int64 `gorm:"not null;default:0"`
+	// Line is the line the finding cited at LastSeenSHA; MergeBase, on the
+	// summary row, is the merge-base the last published review diffed against.
+	Line      int    `gorm:"not null;default:0"`
+	MergeBase string `gorm:"size:40;not null;default:''"`
 }
 
 // TableName specifies the table name for PublishedFindingModel

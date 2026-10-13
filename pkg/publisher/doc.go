@@ -25,16 +25,24 @@
 // Inputs per prior row: its state; whether a current finding matched it
 // (present); whether HeadSHA equals the row's LastSeenSHA; the change set
 // between LastSeenSHA and HeadSHA (Round.Changes, unknown when nil or when
-// the lookup fails); and whether the lines the finding cites are inside
-// that change set (anchor changed: a changed line within three of the cited
-// line when the set carries lines, else the file having changed).
+// the lookup fails); whether the lines the finding cites are inside that
+// change set (anchor changed: a changed line within three of the cited line
+// when the set carries lines, a hunk within three lines on the head side
+// when it carries hunks, else the file having changed); and whether the
+// row's cited lines sit in a changed hunk (hunk changed: the row's stored
+// Line, in the base's coordinates, within three lines of a hunk's base-side
+// range; for a row written before the column, the line GitHub shows for
+// its comment against the head side, else the fingerprint's ten-line
+// bucket; unknown when the set carries no hunks for the file, and taken as
+// the file having changed when the set carries no hunks at all or
+// Policy.FixedByFile restores the file rule).
 //
-//	state                        present  same head  file changed  result
-//	open                         yes      any        any           still open; LastSeenSHA = head; severity clamp (below)
+//	state                        present  same head  hunk changed  result
+//	open                         yes      any        any           still open; LastSeenSHA = head; Line = cited line; severity clamp (below)
 //	open                         no       yes        n/a           still open, untouched
 //	open                         no       no         yes           fixed: thread resolved with no reply (Policy.ResolveNotes adds "Not seen at <sha7>")
-//	open                         no       no         unknown       still open, untouched
-//	open                         no       no         no            still open, untouched
+//	open                         no       no         unknown       still open, untouched, nothing posted
+//	open                         no       no         no            still open, untouched, nothing posted
 //	fixed / resolved (legacy)    yes      any        any           reopened: open, LastSeenSHA = head, one reply "Back at <sha7>" in its thread, thread unresolved, never a new root
 //	fixed (conceded, see below)  no       no         any           counted as fixed once; Rounds = this round
 //	fixed / resolved             no       any        any           untouched
@@ -43,6 +51,23 @@
 //	no row, another reviewer's   new      n/a        n/a           external row: no root, summary links to that root, one delta reply there (see Other reviewers)
 //	root on the point
 //	no row                       new      n/a        n/a           Select decides inline or summary; a shown finding gets an open row
+//
+// Returns. A fixed row reopens only for a finding re-detected on the root's
+// subject: when both the row and the finding name subjects and share none,
+// the text match is another point near the fixed one, so the finding keeps
+// its own identity and Select treats it as new. A row or finding without
+// subjects is matched as before. Policy.LegacyStatusNotes
+// (PUBLISH_STATUS_NOTES_V2=false) reopens on any match.
+//
+// Scope. A finding on a path the review scope (Round.Scope, from the
+// payload's scope) marks inherited from the base branch, or outside the PR
+// diff GitHub lists (Round.DiffFiles when the caller had it), makes no
+// transition: an absent row on it is not fixed, a present finding on it
+// does not reopen a fixed row (the finding is dropped for the round) and
+// its severity stays the row's. The summary row remembers the merge-base
+// the last published review diffed against; a review against another base
+// is base drift, and that round makes none of those transitions for any
+// row. Nothing is posted in any of these cases.
 //
 // Already published. Select never offers a root for a finding whose row
 // has a comment id, whatever the row's state; a row without a comment (a
@@ -56,6 +81,11 @@
 // severity unless its anchor changed; an accepted change is written to the
 // row and, when the row has a thread, announced there once ("Severity
 // medium to critical at <sha7>: the cited lines changed.").
+//
+// Status notes. A thread gets one status note per round at most: a return
+// and a severity change on one thread are one reply ("Back at <sha7>;
+// severity low to medium: the cited lines changed."). Policy.LegacyStatusNotes
+// posts them as two.
 //
 // Terminal exception. A CRITICAL security_risk matched to a terminal row
 // may post once more, as a fresh root whose text names the change, when

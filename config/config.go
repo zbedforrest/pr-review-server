@@ -153,6 +153,15 @@ type Config struct {
 	// PublishResolveNotes (PUBLISH_RESOLVE_NOTES=true) restores the one-line
 	// reply the publisher used to post into a thread it resolves.
 	PublishResolveNotes bool
+	// PublishFixedByFile (PUBLISH_FIXED_NEEDS_HUNK=false) judges an absent
+	// finding fixed when its file changed anywhere; PublishLegacyStatusNotes
+	// (PUBLISH_STATUS_NOTES_V2=false) posts a return and a severity change as
+	// two thread notes and reopens on any text match; PublishLegacyClamp
+	// (PUBLISH_RENDER_CLAMP_V2=false) cuts bullets and headlines at a word
+	// boundary with "...".
+	PublishFixedByFile       bool
+	PublishLegacyStatusNotes bool
+	PublishLegacyClamp       bool
 	// AutoReviewSyncDebounceSec of 0 admits every push at once.
 	AutoReviewSyncDebounceSec   int
 	AutoReviewSkipUnchangedDiff bool
@@ -401,6 +410,9 @@ func Load() *Config {
 		AgentPriorFindings:         getEnvBoolOrDefault("AGENT_PRIOR_FINDINGS", false),
 		PublishNoPriorIDAlias:      !getEnvBoolOrDefault("PUBLISH_PRIOR_ID_ALIAS", true),
 		PublishResolveNotes:        getEnvBoolOrDefault("PUBLISH_RESOLVE_NOTES", false),
+		PublishFixedByFile:         !getEnvBoolOrDefault("PUBLISH_FIXED_NEEDS_HUNK", true),
+		PublishLegacyStatusNotes:   !getEnvBoolOrDefault("PUBLISH_STATUS_NOTES_V2", true),
+		PublishLegacyClamp:         !getEnvBoolOrDefault("PUBLISH_RENDER_CLAMP_V2", true),
 		PublishLegacyTitles:        !getEnvBoolOrDefault("PUBLISH_RENDER_V2", true),
 		PublishRepublishSameCommit: !getEnvBoolOrDefault("PUBLISH_SAME_COMMIT_GUARD", true),
 		PublishSkipSummaryRefresh:  !getEnvBoolOrDefault("PUBLISH_REFRESH_SUMMARY", true),

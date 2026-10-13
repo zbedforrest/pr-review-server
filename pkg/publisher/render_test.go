@@ -82,11 +82,11 @@ func TestRenderInlineTitleCapAndSuggestion(t *testing.T) {
 		t.Errorf("suggestion fence not preserved\n%s", out)
 	}
 	titleLine := strings.Split(out, "\n")[1]
-	if len(titleLine) > len("**[LOW] **")+100 {
+	if len([]rune(titleLine)) > len("**[LOW] **")+commentTitleMaxRunes {
 		t.Errorf("title too long: %d chars\n%s", len(titleLine), titleLine)
 	}
-	if !strings.HasSuffix(titleLine, "...**") {
-		t.Errorf("truncated title should end with ellipsis\n%s", titleLine)
+	if !strings.HasSuffix(titleLine, "[…]**") {
+		t.Errorf("a cut title ends with the cut marker\n%s", titleLine)
 	}
 }
 

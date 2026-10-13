@@ -20,6 +20,9 @@ const (
 	// ActionFixedWithoutFileChange: a row resolved on a round where the cited
 	// file did not change between the row's last-seen head and this head.
 	ActionFixedWithoutFileChange = "fixed_without_file_change_total"
+	// ActionFixedWithoutHunkChange: a row resolved on a round where the cited
+	// file changed but no hunk of that change came near the cited lines.
+	ActionFixedWithoutHunkChange = "fixed_without_hunk_change_total"
 	// ActionSameCommitResolve: a row resolved on a round whose head equals the
 	// row's last-seen head.
 	ActionSameCommitResolve = "same_commit_resolve_total"
@@ -52,7 +55,7 @@ const ActionFeedbackFrustrated = "feedback_frustrated"
 
 // HygieneActions lists every hygiene action, in report order.
 var HygieneActions = []string{
-	ActionRepeatedPost, ActionRepeatAfterDismiss, ActionFixedWithoutFileChange, ActionSameCommitResolve,
+	ActionRepeatedPost, ActionRepeatAfterDismiss, ActionFixedWithoutFileChange, ActionFixedWithoutHunkChange, ActionSameCommitResolve,
 	ActionSeverityEscalation, ActionVerdictSettled, ActionPublishDenied, ActionOptedOut,
 	ActionReviewSkippedUnchanged, ActionPRMuted,
 }
@@ -63,7 +66,7 @@ var TelemetryActions = append(append([]string{}, HygieneActions...), ActionFeedb
 // hygieneLabels names each counter in the report.
 var hygieneLabels = map[string]string{
 	ActionRepeatedPost: "repeated posts", ActionRepeatAfterDismiss: "repeats after dismiss",
-	ActionFixedWithoutFileChange: "fixed without a file change", ActionSameCommitResolve: "same-commit resolves",
+	ActionFixedWithoutFileChange: "fixed without a file change", ActionFixedWithoutHunkChange: "fixed without a hunk change", ActionSameCommitResolve: "same-commit resolves",
 	ActionSeverityEscalation: "severity escalations", ActionVerdictSettled: "author verdicts settled", ActionPublishDenied: "posts stopped by the publish gate",
 	ActionOptedOut: "of which stopped by an opt-out", ActionReviewSkippedUnchanged: "pushes skipped for an unchanged diff",
 	ActionPRMuted: "PRs muted by their author",

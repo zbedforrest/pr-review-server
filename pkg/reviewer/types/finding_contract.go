@@ -76,7 +76,11 @@ type FindingContract struct {
 const priorRefMaxRunes = 512
 
 // Headlines are cosmetic, so a bad one is dropped rather than failing the contract.
-const headlineMaxRunes = 90
+// headlineMaxRunes is the longest headline kept whole. The prompt asks for 90
+// characters; a headline the agent ran past that is worth more rendered in
+// full than cut, up to this length, and is cut at a clause or word boundary
+// beyond it.
+const headlineMaxRunes = 140
 
 func ValidateFindingContract(contract *FindingContract) error {
 	if contract == nil {
@@ -204,19 +208,39 @@ func NormalizeFindingContract(contract *FindingContract) {
 	}
 }
 
-// shortenHeadline cuts an over-long headline at the last word boundary that
-// fits with an ellipsis; a headline the agent wrote is worth more cut than
-// dropped. Short headlines are returned unchanged.
+// headlineCutMarker ends a cut headline; the renderer treats it as a cut it
+// must not re-trim.
+const headlineCutMarker = " […]"
+
+var headlineClauseBoundaries = []string{", so ", "; ", " because ", ", which ", ", and ", ", causing ", ", leaving ", ", "}
+
+// shortenHeadline cuts an over-long headline at the last clause boundary in
+// the first part of the window, else the last word boundary, and marks the
+// cut; a headline the agent wrote is worth more cut than dropped. Short
+// headlines are returned unchanged.
 func shortenHeadline(headline string, maximum int) string {
 	runes := []rune(headline)
 	if len(runes) <= maximum {
 		return headline
 	}
-	cut := string(runes[:maximum-3])
-	if i := strings.LastIndex(cut, " "); i > 0 {
-		cut = cut[:i]
+	budget := maximum - len([]rune(headlineCutMarker))
+	if budget < 1 {
+		return headlineCutMarker[1:]
 	}
-	return strings.TrimRight(cut, " ,;:") + "..."
+	window := string(runes[:budget])
+	cut := -1
+	for _, b := range headlineClauseBoundaries {
+		if i := strings.LastIndex(window, b); i > cut && i >= len(window)/3 {
+			cut = i
+		}
+	}
+	if cut < 0 {
+		cut = strings.LastIndex(window, " ")
+		if cut <= 0 {
+			cut = len(window)
+		}
+	}
+	return strings.TrimRight(window[:cut], " ,;:") + headlineCutMarker
 }
 
 // normalizePriorRefs trims both references, drops empty, malformed and

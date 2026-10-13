@@ -560,3 +560,19 @@ func TestSettleFooter_FollowsReplyModeAndTheKillSwitch(t *testing.T) {
 	p.cfg.DisableSettleFooter = true
 	assert.Empty(t, p.settleFooter())
 }
+
+func TestBuildPublishRound_CarriesTheReviewScope(t *testing.T) {
+	raw := `{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc","counts":{},"findings":[],
+	"scope":{"merge_base":"1111111","base_tip":"2222222","inherited_paths":["lib/logo.ts","web/app.ts"],"base_fetch_failed":false}}`
+	pl, err := payload.Decode([]byte(raw))
+	require.NoError(t, err)
+	r := BuildPublishRound(github.PullRequest{Owner: "acme", Repo: "example", Number: 1}, pl, nil, nil, nil, "")
+	require.NotNil(t, r.Scope)
+	assert.Equal(t, "1111111", r.Scope.MergeBase)
+	assert.Equal(t, []string{"lib/logo.ts", "web/app.ts"}, r.Scope.InheritedPaths)
+
+	old, err := payload.Decode([]byte(scoredSidecar))
+	require.NoError(t, err)
+	assert.Nil(t, BuildPublishRound(github.PullRequest{Owner: "acme", Repo: "example", Number: 1}, old, nil, nil, nil, "").Scope,
+		"a review from before the field leaves the guard off")
+}

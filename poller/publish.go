@@ -143,6 +143,7 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 
 		RequiredCheckViolated: pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0,
 		ProfileFooter:         profileFooter(pl.ReviewRun),
+		Scope:                 pl.Scope,
 	}
 	if base := strings.TrimRight(baseURL, "/"); base != "" {
 		r.AgentLinkBase = fmt.Sprintf("%s/go/agent?o=%s&r=%s&n=%d", base, pr.Owner, pr.Repo, pr.Number)
@@ -298,6 +299,9 @@ func (p *Poller) publishPolicy() publisher.Policy {
 		}
 		pol.PriorIDAlias = !p.cfg.PublishNoPriorIDAlias
 		pol.ResolveNotes = p.cfg.PublishResolveNotes
+		pol.FixedByFile = p.cfg.PublishFixedByFile
+		pol.LegacyStatusNotes = p.cfg.PublishLegacyStatusNotes
+		pol.LegacyClamp = p.cfg.PublishLegacyClamp
 	}
 	return pol
 }
@@ -391,6 +395,10 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	pol := p.publishPolicy()
 	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
 	round.Changes = p.changeLookup(ctx, pr)
+	round.DiffFiles = make(map[string]bool, len(patches))
+	for file := range patches {
+		round.DiffFiles[file] = true
+	}
 	round.SettleFooter = p.settleFooter()
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: pol}
 	report, err := pub.Publish(ctx, round)
@@ -459,8 +467,10 @@ func (p *Poller) changeLookup(ctx context.Context, pr github.PullRequest) func(b
 			}
 			if len(patches) > 0 {
 				a.cs.Lines = make(map[string]map[int]bool, len(patches))
+				a.cs.Hunks = make(map[string][]publisher.Hunk, len(patches))
 				for f, patch := range patches {
 					a.cs.Lines[f] = publisher.ChangedLines(patch)
+					a.cs.Hunks[f] = publisher.ParseHunks(patch)
 				}
 			}
 		}
