@@ -440,7 +440,19 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 	r.RoundNumber = summaryRow.Rounds
 	rows := priorRows(r.Previous)
 	p.aliasToLedger(&r, rows)
-	rememberExternal(ctx, &r, rows, newThreadIndex(p.GH, p.Policy, r.Owner, r.Repo, r.Number), p.Policy.NoteReconcile)
+	// The same passes as the round, so a restatement the round dropped
+	// without a row of its own stays out of the re-rendered summary.
+	var threads *threadIndex
+	if p.Policy.NoteReconcile {
+		threads = newThreadIndex(p.GH, p.Policy, r.Owner, r.Repo, r.Number)
+	}
+	rememberExternal(ctx, &r, rows, threads, p.Policy.NoteReconcile)
+	if p.Policy.SettledAlias {
+		r.Findings, _ = withoutSettled(r, rows)
+	}
+	if p.Policy.BodyCheck {
+		r.Findings, _ = withoutBodyCovered(r)
+	}
 	r.Findings = withoutConceded(WithoutDismissed(r.Findings, r.Previous), r.Previous)
 	r.LegacyTitles = p.Policy.LegacyTitles
 	r.LegacyClamp = p.Policy.LegacyClamp

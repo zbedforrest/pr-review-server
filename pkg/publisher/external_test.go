@@ -156,14 +156,12 @@ func TestDeltaReply_SuggestedCodeIsNeverASuggestionBlock(t *testing.T) {
 	}
 }
 
-func TestExternal_ResolvedRootIsNotACandidateWithNoteReconcileOff(t *testing.T) {
+func TestExternal_ResolvedRootIsNotACandidate(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900, Resolved: true}}
-	pol := testPolicy()
-	pol.NoteReconcile = false
-	rep := publishThreadsWith(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)), pol)
+	rep := publishThreads(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
 	if rep.ExternalMatched != 0 || rep.ExternalSettled != 0 || rep.InlinePosted != 2 || len(gh.repliesTo(900)) != 0 {
-		t.Fatalf("under the kill switch a settled thread gets neither a match nor a reply: %+v replies=%v", rep, gh.repliesTo(900))
+		t.Fatalf("a settled thread gets neither a match nor a reply: %+v replies=%v", rep, gh.repliesTo(900))
 	}
 }
 

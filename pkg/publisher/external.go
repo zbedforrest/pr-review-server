@@ -39,8 +39,8 @@ type externalPass struct {
 	rows    []*db.PublishedFinding
 	notes   []threadNote
 	matched int
-	// settled counts the matches to a resolved thread: recorded, never
-	// linked or replied to.
+	// settled counts the folded notes matched to a resolved thread:
+	// recorded, never linked or replied to.
 	settled int
 }
 
@@ -127,8 +127,10 @@ func rememberExternal(ctx context.Context, r *Round, rows map[string]*db.Publish
 		if !ok || row.State != db.PublishedStateExternal || row.ExternalCommentID == 0 {
 			continue
 		}
-		if t, listed := threads.lookup(ctx, row.ExternalCommentID); skipSettled && listed && t.Resolved {
-			continue
+		if skipSettled {
+			if t, listed := threads.lookup(ctx, row.ExternalCommentID); listed && t.Resolved {
+				continue
+			}
 		}
 		source, _ := reconcile.SourceFromTag(row.SourceTag)
 		r.ExternalMatches = append(r.ExternalMatches, ExternalMatch{Finding: f, Source: source, CommentID: row.ExternalCommentID})
@@ -156,12 +158,14 @@ func (r Round) externalFindings() []payload.Finding {
 
 // matchExternal pairs the round's findings with the other reviewers' roots
 // and takes every match out of the round: an external row remembers the
-// point for the PR's life. A match to an open thread is linked from the
-// summary and, for a finding above the inline bar, answered with one delta
-// reply carrying only what PRism adds, unless a row already claimed that
-// root. With Policy.NoteReconcile the folded notes are candidates too, and
-// a match to a resolved thread is a settled point: recorded, never linked
-// or replied to. Without it a resolved thread is no candidate at all.
+// point for the PR's life. A shown finding matches an open thread: linked
+// from the summary and answered with one delta reply carrying only what
+// PRism adds, unless a row already claimed that root. A resolved thread is
+// no candidate for a shown finding. With Policy.NoteReconcile a folded note
+// matches a resolved thread only: the point is settled there, so the row
+// is recorded and the note dropped, never linked or replied for. A note
+// never claims an open root, so the shown finding that restates it later
+// still earns the thread's delta reply.
 func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding, now time.Time, threads *threadIndex) externalPass {
 	var pass externalPass
 	if threads == nil {
@@ -170,12 +174,15 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 		return pass
 	}
 	notes := p.Policy.NoteReconcile
-	roots, settledRoots := candidateRoots(ctx, r.External, threads, notes)
+	open, resolved := splitRoots(ctx, r.External, threads)
 	if threads.listFailed() {
 		log.Printf("[PUBLISH] %s/%s#%d: thread listing failed; external matching skipped this round", r.Owner, r.Repo, r.Number)
 		return pass
 	}
-	if len(roots) == 0 {
+	if !notes {
+		resolved = nil
+	}
+	if len(open) == 0 && len(resolved) == 0 {
 		return pass
 	}
 	claimed := map[int64]bool{}
@@ -185,9 +192,7 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 		}
 	}
 	// A finding the ledger already knows has its own history; only a point
-	// PRism has never recorded can be someone else's first. The shown
-	// findings match first, so a folded note never takes a root from the
-	// finding that would have earned the thread's delta reply.
+	// PRism has never recorded can be someone else's first.
 	var shownCandidates, noteCandidates []payload.Finding
 	for _, f := range r.externalCandidates(notes) {
 		if _, known := rows[f.ID]; known {
@@ -199,19 +204,9 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 			noteCandidates = append(noteCandidates, f)
 		}
 	}
-	matches := reconcile.MatchExternal(shownCandidates, roots)
-	if len(noteCandidates) > 0 {
-		matched := make(map[int64]bool, len(matches))
-		for _, m := range matches {
-			matched[m.External.CommentID] = true
-		}
-		var left []reconcile.ExternalFinding
-		for _, g := range roots {
-			if !matched[g.CommentID] {
-				left = append(left, g)
-			}
-		}
-		matches = append(matches, reconcile.MatchExternal(noteCandidates, left)...)
+	matches := reconcile.MatchExternal(shownCandidates, open)
+	if len(noteCandidates) > 0 && len(resolved) > 0 {
+		matches = append(matches, reconcile.MatchExternal(noteCandidates, resolved)...)
 	}
 	if len(matches) == 0 {
 		return pass
@@ -236,14 +231,14 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
 			ExternalCommentID: m.External.CommentID,
 		})
-		if settledRoots[m.External.CommentID] {
+		if !Shown(f) {
 			pass.settled++
-			log.Printf("[PUBLISH] %s/%s#%d: finding %s restates %s's resolved thread %d, dropped", r.Owner, r.Repo, r.Number, f.ID, m.External.Source.Label(), m.External.CommentID)
+			log.Printf("[PUBLISH] %s/%s#%d: note %s restates %s's resolved thread %d, dropped", r.Owner, r.Repo, r.Number, f.ID, m.External.Source.Label(), m.External.CommentID)
 			continue
 		}
 		pass.matched++
 		r.ExternalMatches = append(r.ExternalMatches, ExternalMatch{Finding: f, Source: m.External.Source, CommentID: m.External.CommentID})
-		if claimed[m.External.CommentID] || !Shown(f) {
+		if claimed[m.External.CommentID] {
 			continue
 		}
 		claimed[m.External.CommentID] = true
@@ -280,23 +275,17 @@ func withoutClaimedRoots(refs []GreptileOnlyRef, rows map[string]*db.PublishedFi
 	return kept
 }
 
-// candidateRoots splits the roots by thread state. A root whose thread the
-// listing shows resolved is settled: with keepSettled it stays a candidate
-// (its ids are returned) so a finding restating it is dropped; without, it
-// is no candidate and PRism neither defers to it nor replies into it.
-func candidateRoots(ctx context.Context, roots []reconcile.ExternalFinding, threads *threadIndex, keepSettled bool) ([]reconcile.ExternalFinding, map[int64]bool) {
-	kept := make([]reconcile.ExternalFinding, 0, len(roots))
-	settled := map[int64]bool{}
+// splitRoots sorts the roots by thread state: open threads (including ones
+// the listing does not show) and threads the listing shows resolved.
+func splitRoots(ctx context.Context, roots []reconcile.ExternalFinding, threads *threadIndex) (open, resolved []reconcile.ExternalFinding) {
 	for _, g := range roots {
 		if t, ok := threads.lookup(ctx, g.CommentID); ok && t.Resolved {
-			if !keepSettled {
-				continue
-			}
-			settled[g.CommentID] = true
+			resolved = append(resolved, g)
+			continue
 		}
-		kept = append(kept, g)
+		open = append(open, g)
 	}
-	return kept, settled
+	return open, resolved
 }
 
 // deltaReply is the one reply PRism may leave under another reviewer's root:

@@ -38,7 +38,12 @@
 // merged distinct defects of one function about half the time. The row is
 // untouched: a conceded or dismissed point never returns from elsewhere,
 // and nothing is posted or counted. An exact or near return on the row's
-// own lines is still the table's business below.
+// own lines is still the table's business below. A row PRism never replied
+// under (a verdict handled by reaction alone, a thumbs-down hold, a fix the
+// change set confirmed) names nothing, so it settles no restatement from
+// elsewhere; that is the rule's boundary, not a gap in the data.
+// RefreshSummary runs the same pass, since the dropped finding has no row
+// to be dropped by.
 //
 // Inputs per prior row: its state; whether a current finding matched it
 // (present); whether HeadSHA equals the row's LastSeenSHA; the change set
@@ -122,9 +127,8 @@
 // Other reviewers. With Policy.ExternalReconcile (PUBLISH_EXTERNAL_RECONCILE,
 // on unless set to false) every root thread PRism did not post (Greptile,
 // Copilot, CodeRabbit, Gemini, code scanning, other bots, humans) is a match
-// candidate for a shown finding the ledger does not know, and with
-// Policy.NoteReconcile (PUBLISH_NOTE_RECONCILE, on unless set to false) for
-// a folded lower-severity note too: same file, the finding's line within
+// candidate for a shown finding the ledger does not know, unless the thread
+// listing shows its thread resolved: same file, the finding's line within
 // ten of the root's range (an outdated root keeps its original anchor; a
 // root with no line never matches), and containment at or
 // above 0.35 (shared tokens over the shorter of the two texts, or of one
@@ -142,17 +146,21 @@
 // open, and, for a finding above the inline bar, answered once inside that
 // thread with only what the root lacks (the impact sentence, the suggested
 // code as a plain fence since a suggestion block would apply to the root's
-// lines, how to verify); a folded note is linked, never replied for. A root
-// some row already claims gets no second reply. A summary refresh after a
-// concession keeps the external links. The delta reply runs inside the
-// publish gate like every other write of the round.
+// lines, how to verify). A root some row already claims gets no second
+// reply. A summary refresh after a concession keeps the external links. The
+// delta reply runs inside the publish gate like every other write of the
+// round.
 //
-// Settled threads. Under Policy.NoteReconcile a root whose thread the
-// listing shows resolved is a settled point: a finding that restates it is
-// recorded as an external row and dropped, with no link and no reply, and
-// an external row whose root thread has since been resolved stops being
-// linked. Without it a resolved thread is no candidate at all and the
-// finding posts as before.
+// Settled threads. With Policy.NoteReconcile (PUBLISH_NOTE_RECONCILE, on
+// unless set to false) a folded lower-severity note is matched against the
+// roots whose thread the listing shows resolved, by the same file, line and
+// text bar: the point was raised and settled there, so the note is recorded
+// as an external row and dropped, with no link and no reply. A note never
+// matches an open thread, so it never claims a root from the shown finding
+// that would earn the thread's delta reply later. An external row whose
+// root thread has since been resolved stops being linked from the summary.
+// Off, notes are not candidates, a resolved thread is read by nobody, and
+// the summary refresh lists no threads.
 //
 // Pull request body. With Policy.BodyCheck (PUBLISH_BODY_CHECK, off unless
 // set to true) a folded note the body already states is held: one

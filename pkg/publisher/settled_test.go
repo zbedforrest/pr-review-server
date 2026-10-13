@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +103,33 @@ func TestSettled_RootProseWithoutTheReplyDoesNotCarryThePoint(t *testing.T) {
 	rep := publishThreads(t, gh, ledger, r)
 	if rep.InlinePosted != 1 || rep.SettledDropped != 0 {
 		t.Fatalf("only PRism's own reply named the fallback, so without it the finding is new: %+v", rep)
+	}
+}
+
+func TestSettled_VerdictDismissedRowWithoutAReplySettlesNothing(t *testing.T) {
+	// A reaction-only verdict leaves no reply of PRism's own, so nothing
+	// names what was rejected and the restatement is new.
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	r := settledRound("sha-3", previewRow(db.PublishedStateDismissed))
+	r.PriorComments[previewRowID] = PriorComment{Line: 126, Text: previewRootText}
+	rep := publishThreads(t, gh, ledger, r)
+	if rep.InlinePosted != 1 || rep.SettledDropped != 0 {
+		t.Fatalf("the rule's boundary: %+v", rep)
+	}
+}
+
+func TestSettled_SummaryRefreshDropsTheRestatementToo(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, settledRound("sha-3", previewRow(db.PublishedStateFixed)))
+	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueEdits[501]}}
+	refresh := settledRound("", previewRow(db.PublishedStateFixed))
+	refresh.Previous = nil
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: testPolicy()}
+	if err := p.RefreshSummary(context.Background(), refresh); err != nil {
+		t.Fatal(err)
+	}
+	if out := gh.issueEdits[501]; strings.Contains(out, "Safari") {
+		t.Fatalf("the dropped restatement has no row, so the refresh must drop it again:\n%s", out)
 	}
 }
 

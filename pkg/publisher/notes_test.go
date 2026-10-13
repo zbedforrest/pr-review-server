@@ -63,16 +63,32 @@ func TestNotes_FoldedNoteOnAResolvedThreadIsSettled(t *testing.T) {
 	}
 }
 
-func TestNotes_FoldedNoteOnAnOpenThreadIsLinkedNotReplied(t *testing.T) {
+func TestNotes_FoldedNoteOnAnOpenThreadStaysFolded(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900}}
 	rep := publishThreads(t, gh, ledger, noteRound("sha-1", greptileBuyerRoot(900)))
-	if rep.ExternalMatched != 1 || rep.ExternalSettled != 0 || rep.ExternalReplies != 0 || len(gh.repliesTo(900)) != 0 {
-		t.Fatalf("a folded note defers to the open thread without a delta reply: %+v replies=%v", rep, gh.repliesTo(900))
+	if rep.ExternalMatched != 0 || rep.ExternalSettled != 0 || len(gh.repliesTo(900)) != 0 {
+		t.Fatalf("an open thread is no candidate for a note: %+v replies=%v", rep, gh.repliesTo(900))
 	}
-	summary := gh.issueCreates[0]
-	if strings.Contains(summary, "folded note") || !strings.Contains(summary, "1 finding already raised in another reviewer's thread") || !strings.Contains(summary, "#discussion_r900") {
-		t.Fatalf("the note moves from the fold to the external link:\n%s", summary)
+	if summary := gh.issueCreates[0]; !strings.Contains(summary, "1 folded note") || strings.Contains(summary, "already raised") {
+		t.Fatalf("the note folds as before and claims no root:\n%s", summary)
+	}
+	if ledger.get(db.PublishedKindAnnotation, buyerNote().ID) != nil {
+		t.Fatal("no external row is written for a note on an open thread")
+	}
+}
+
+func TestNotes_ANoteNeverTakesTheDeltaReplyFromALaterShownFinding(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900}}
+	publishThreads(t, gh, ledger, noteRound("sha-1", greptileBuyerRoot(900)))
+	r := noteRound("sha-2", greptileBuyerRoot(900))
+	shown := buyerNote()
+	shown.FindingContract.Materiality = "current_impact"
+	r.Findings = []payload.Finding{r.Findings[0], shown}
+	rep := publishThreads(t, gh, ledger, r)
+	if rep.ExternalMatched != 1 || rep.ExternalReplies != 1 || len(gh.repliesTo(900)) != 1 {
+		t.Fatalf("the shown finding still earns the thread's one delta reply: %+v replies=%v", rep, gh.repliesTo(900))
 	}
 }
 
@@ -99,15 +115,12 @@ func TestNotes_AShownFindingMatchesBeforeANoteTakesTheRoot(t *testing.T) {
 	}
 }
 
-func TestNotes_ShownFindingOnAResolvedThreadIsSettledToo(t *testing.T) {
+func TestNotes_ShownFindingOnAResolvedThreadStillPosts(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900, Resolved: true}}
 	rep := publishThreads(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
-	if rep.ExternalSettled != 1 || rep.InlinePosted != 1 || len(gh.repliesTo(900)) != 0 {
-		t.Fatalf("a withdrawn point is not raised again inline either: %+v", rep)
-	}
-	if len(gh.reviews) != 1 || gh.reviews[0].comments[0].Path != "b.go" {
-		t.Fatalf("only the unmatched finding gets a root: %+v", gh.reviews)
+	if rep.ExternalSettled != 0 || rep.ExternalMatched != 0 || rep.InlinePosted != 2 || len(gh.repliesTo(900)) != 0 {
+		t.Fatalf("a resolved thread settles notes only; a finding above the bar gets its own root: %+v", rep)
 	}
 }
 
@@ -130,9 +143,12 @@ func TestNotes_SettledExternalRowIsNotLinkedOnLaterRounds(t *testing.T) {
 func TestNotes_OpenExternalRowStopsBeingLinkedOnceTheThreadResolves(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900}}
-	publishThreads(t, gh, ledger, noteRound("sha-1", greptileBuyerRoot(900)))
+	publishThreads(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
+	if !strings.Contains(gh.issueCreates[0], "already raised") {
+		t.Fatalf("the open thread is linked first:\n%s", gh.issueCreates[0])
+	}
 	gh.extra[0].Resolved = true
-	publishThreads(t, gh, ledger, noteRound("sha-2", greptileBuyerRoot(900)))
+	publishThreads(t, gh, ledger, externalRound("sha-2", greptileRetryRoot(900)))
 	if summary := gh.issueEdits[501]; strings.Contains(summary, "already raised") {
 		t.Fatalf("a point the other reviewer settled since is no longer listed:\n%s", summary)
 	}
@@ -141,15 +157,35 @@ func TestNotes_OpenExternalRowStopsBeingLinkedOnceTheThreadResolves(t *testing.T
 func TestNotes_SummaryRefreshDropsTheLinkOfASettledRow(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900}}
-	publishThreads(t, gh, ledger, noteRound("sha-1", greptileBuyerRoot(900)))
+	publishThreads(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
 	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueCreates[0]}}
 	gh.extra[0].Resolved = true
 	p := &Publisher{GH: gh, Ledger: ledger, Policy: testPolicy()}
-	if err := p.RefreshSummary(context.Background(), noteRound("", greptileBuyerRoot(900))); err != nil {
+	if err := p.RefreshSummary(context.Background(), externalRound("", greptileRetryRoot(900))); err != nil {
 		t.Fatal(err)
 	}
 	if out := gh.issueEdits[501]; strings.Contains(out, "already raised") {
 		t.Fatalf("the refresh reads the thread state too:\n%s", out)
+	}
+}
+
+func TestNotes_KillSwitchListsNoThreadsForExternalRows(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900}}
+	publishThreads(t, gh, ledger, externalRound("sha-1", greptileRetryRoot(900)))
+	gh.existingIssueComments = []IssueComment{{ID: 501, Body: "stale"}}
+	pol := testPolicy()
+	pol.NoteReconcile = false
+	gh.listings = 0
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: pol}
+	if err := p.RefreshSummary(context.Background(), externalRound("", greptileRetryRoot(900))); err != nil {
+		t.Fatal(err)
+	}
+	if gh.listings != 0 {
+		t.Fatalf("PUBLISH_NOTE_RECONCILE=false: the refresh listed threads %d times", gh.listings)
+	}
+	if out := gh.issueEdits[501]; !strings.Contains(out, "already raised") {
+		t.Fatalf("the external link is kept as before:\n%s", out)
 	}
 }
 
