@@ -150,6 +150,9 @@ type Config struct {
 	// PublishNoPriorIDAlias (PUBLISH_PRIOR_ID_ALIAS=false) stops the publisher
 	// from aliasing a finding to the ledger row its prior_id names.
 	PublishNoPriorIDAlias bool
+	// PublishResolveNotes (PUBLISH_RESOLVE_NOTES=true) restores the one-line
+	// reply the publisher used to post into a thread it resolves.
+	PublishResolveNotes bool
 	// AutoReviewSyncDebounceSec of 0 admits every push at once.
 	AutoReviewSyncDebounceSec   int
 	AutoReviewSkipUnchangedDiff bool
@@ -397,6 +400,7 @@ func Load() *Config {
 		RequiredChecks:             os.Getenv("REQUIRED_CHECKS") == "true",
 		AgentPriorFindings:         getEnvBoolOrDefault("AGENT_PRIOR_FINDINGS", false),
 		PublishNoPriorIDAlias:      !getEnvBoolOrDefault("PUBLISH_PRIOR_ID_ALIAS", true),
+		PublishResolveNotes:        getEnvBoolOrDefault("PUBLISH_RESOLVE_NOTES", false),
 		PublishLegacyTitles:        !getEnvBoolOrDefault("PUBLISH_RENDER_V2", true),
 		PublishRepublishSameCommit: !getEnvBoolOrDefault("PUBLISH_SAME_COMMIT_GUARD", true),
 		PublishSkipSummaryRefresh:  !getEnvBoolOrDefault("PUBLISH_REFRESH_SUMMARY", true),

@@ -85,8 +85,9 @@ type Report struct {
 	Confidence       int
 	Hygiene          Hygiene
 	// Reopened counts fixed rows that came back; ThreadReplies the in-thread
-	// notes posted for fixes, reopens and severity changes, ThreadReplyFailures
-	// the ones GitHub rejected. Ledger policy only.
+	// notes posted for reopens and severity changes (and for fixes under
+	// Policy.ResolveNotes), ThreadReplyFailures the ones GitHub rejected.
+	// Ledger policy only.
 	Reopened            int
 	ThreadReplies       int
 	ThreadReplyFailures int

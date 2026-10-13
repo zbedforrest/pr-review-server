@@ -297,6 +297,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 			pol.InlinePRCap = 0
 		}
 		pol.PriorIDAlias = !p.cfg.PublishNoPriorIDAlias
+		pol.ResolveNotes = p.cfg.PublishResolveNotes
 	}
 	return pol
 }

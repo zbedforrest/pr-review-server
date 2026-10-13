@@ -99,24 +99,24 @@ func TestThreads_NodeIDIsWrittenWhenTheRootIsPosted(t *testing.T) {
 	}
 }
 
-func TestThreads_FixedFindingGetsOneNoteAndItsThreadResolved(t *testing.T) {
+func TestThreads_FixedFindingResolvesItsThreadWithoutANote(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	publishThreads(t, gh, ledger, ledgerRoundOne())
 
 	r2 := summaryOnly("sha-2")
 	r2.Changes = changed("a.go")
 	rep := publishThreads(t, gh, ledger, r2)
-	if rep.Fixed != 2 || rep.ThreadsResolved != 1 || rep.ThreadResolveFailures != 0 || rep.ThreadReplies != 1 {
-		t.Fatalf("report = %+v, want c1 and the m2 annotation fixed, one note, one thread resolved", rep)
+	if rep.Fixed != 2 || rep.ThreadsResolved != 1 || rep.ThreadResolveFailures != 0 || rep.ThreadReplies != 0 || rep.ThreadReplyFailures != 0 {
+		t.Fatalf("report = %+v, want c1 and the m2 annotation fixed, one thread resolved, no note", rep)
 	}
-	if got := gh.repliesTo(1001); len(got) != 1 || got[0] != "Not seen at sha-2." {
-		t.Fatalf("c1 thread replies = %q", got)
+	if len(gh.replies) != 0 {
+		t.Fatalf("a resolve posts nothing, got %v", gh.replies)
 	}
 	if fmt.Sprint(gh.resolves) != "[T1001]" {
 		t.Fatalf("resolved = %v, want the c1 thread only", gh.resolves)
 	}
-	if got := gh.repliesTo(1002); len(got) != 0 {
-		t.Fatalf("m1 is still open and its thread must stay quiet: %q", got)
+	if row := ledger.get(db.PublishedKindFinding, c1ID); row.State != db.PublishedStateFixed || row.ThreadNodeID != "T1001" {
+		t.Fatalf("c1 is recorded fixed with its thread: %+v", row)
 	}
 	if row := ledger.get(db.PublishedKindFinding, m1ID); row.State != db.PublishedStateOpen {
 		t.Fatalf("m1 in the untouched b.go stays open: %+v", row)
@@ -125,8 +125,35 @@ func TestThreads_FixedFindingGetsOneNoteAndItsThreadResolved(t *testing.T) {
 	again := summaryOnly("sha-3")
 	again.Changes = changed("a.go")
 	rep = publishThreads(t, gh, ledger, again)
+	if rep.ThreadsResolved != 0 || len(gh.resolves) != 1 || len(gh.replies) != 0 {
+		t.Fatalf("a fixed row is resolved once: %+v resolves=%v replies=%v", rep, gh.resolves, gh.replies)
+	}
+}
+
+func TestThreads_ResolveNotesPolicyRestoresTheNotSeenNote(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	pol := testPolicy()
+	pol.ResolveNotes = true
+	publishThreadsWith(t, gh, ledger, ledgerRoundOne(), pol)
+
+	r2 := summaryOnly("sha-2")
+	r2.Changes = changed("a.go")
+	rep := publishThreadsWith(t, gh, ledger, r2, pol)
+	if rep.Fixed != 2 || rep.ThreadsResolved != 1 || rep.ThreadReplies != 1 {
+		t.Fatalf("report = %+v, want one note next to the one resolve", rep)
+	}
+	if got := gh.repliesTo(1001); len(got) != 1 || got[0] != "Not seen at sha-2." {
+		t.Fatalf("c1 thread replies = %q", got)
+	}
+	if got := gh.repliesTo(1002); len(got) != 0 {
+		t.Fatalf("m1 is still open and its thread must stay quiet: %q", got)
+	}
+
+	again := summaryOnly("sha-3")
+	again.Changes = changed("a.go")
+	rep = publishThreadsWith(t, gh, ledger, again, pol)
 	if rep.ThreadsResolved != 0 || len(gh.resolves) != 1 || len(gh.repliesTo(1001)) != 1 {
-		t.Fatalf("a fixed row is resolved once: %+v resolves=%v replies=%q", rep, gh.resolves, gh.repliesTo(1001))
+		t.Fatalf("a fixed row is resolved and noted once: %+v resolves=%v replies=%q", rep, gh.resolves, gh.repliesTo(1001))
 	}
 }
 
@@ -151,8 +178,8 @@ func TestThreads_ReopenedFindingUnresolvesItsThread(t *testing.T) {
 	if sorted(gh.unresolves) != "[T1001 T1002]" || gh.resolved["T1001"] || gh.resolved["T1002"] {
 		t.Fatalf("unresolves = %v resolved = %v", gh.unresolves, gh.resolved)
 	}
-	if got := gh.repliesTo(1001); len(got) != 2 || got[1] != "Back at sha-3." {
-		t.Fatalf("c1 thread replies = %q", got)
+	if got := gh.repliesTo(1001); len(got) != 1 || got[0] != "Back at sha-3." {
+		t.Fatalf("c1 thread replies = %q, want the reopen note only", got)
 	}
 }
 
@@ -224,19 +251,27 @@ func TestThreads_UnlistedThreadGetsNoNote(t *testing.T) {
 	}
 }
 
-func TestThreads_StoredNodeIDResolvesWithoutANoteWhenTheListingFails(t *testing.T) {
-	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
-	publishThreads(t, gh, ledger, ledgerRoundOne())
-	gh.listErr = errors.New("502")
+func TestThreads_StoredNodeIDResolvesWhenTheListingFails(t *testing.T) {
+	for _, notes := range []bool{false, true} {
+		gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+		pol := testPolicy()
+		pol.ResolveNotes = notes
+		publishThreadsWith(t, gh, ledger, ledgerRoundOne(), pol)
+		gh.listErr = errors.New("502")
 
-	r2 := summaryOnly("sha-2")
-	r2.Changes = changed("a.go")
-	rep := publishThreads(t, gh, ledger, r2)
-	if rep.Fixed != 2 || rep.ThreadsResolved != 1 || rep.ThreadResolveFailures != 0 || rep.ThreadReplies != 0 || rep.ThreadReplyFailures != 1 || len(gh.replies) != 0 {
-		t.Fatalf("report = %+v replies=%v, want the stored id resolved, the note counted lost and nothing posted into an unverified thread", rep, gh.replies)
-	}
-	if sorted(gh.resolves) != "[T1001]" {
-		t.Fatalf("resolves = %v", gh.resolves)
+		r2 := summaryOnly("sha-2")
+		r2.Changes = changed("a.go")
+		rep := publishThreadsWith(t, gh, ledger, r2, pol)
+		wantLost := 0
+		if notes {
+			wantLost = 1
+		}
+		if rep.Fixed != 2 || rep.ThreadsResolved != 1 || rep.ThreadResolveFailures != 0 || rep.ThreadReplies != 0 || rep.ThreadReplyFailures != wantLost || len(gh.replies) != 0 {
+			t.Fatalf("notes=%v: report = %+v replies=%v, want the stored id resolved and nothing posted into an unverified thread", notes, rep, gh.replies)
+		}
+		if sorted(gh.resolves) != "[T1001]" {
+			t.Fatalf("notes=%v: resolves = %v", notes, gh.resolves)
+		}
 	}
 }
 

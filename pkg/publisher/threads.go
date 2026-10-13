@@ -39,6 +39,20 @@ func ThreadResolutionFromEnv() bool {
 	return true
 }
 
+// ResolveNotesEnv restores the in-thread note that used to accompany a
+// resolve: only "true", "1", "on" and "yes" post it.
+const ResolveNotesEnv = "PUBLISH_RESOLVE_NOTES"
+
+// ResolveNotesFromEnv reports whether the environment asked for resolve
+// notes. The poller and threadcleanup resolve it once at start-up.
+func ResolveNotesFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(ResolveNotesEnv))) {
+	case "true", "1", "on", "yes":
+		return true
+	}
+	return false
+}
+
 // threadIndex is one round's view of the PR's review threads keyed by root
 // comment, listed on first use and again after the round posts new roots.
 type threadIndex struct {
@@ -50,8 +64,10 @@ type threadIndex struct {
 	loaded bool
 	err    error
 	// resolves is Policy.ResolveThreads: the listing is read either way,
-	// the resolve and unresolve calls and their notes go out only with it.
+	// the resolve and unresolve calls go out only with it. notes is
+	// Policy.ResolveNotes: a resolve posts its note only with both.
 	resolves bool
+	notes    bool
 }
 
 // newThreadIndex is nil only when GitHub cannot list threads at all.
@@ -60,11 +76,14 @@ func newThreadIndex(gh GitHub, pol Policy, owner, repo string, number int) *thre
 	if !ok {
 		return nil
 	}
-	return &threadIndex{gh: resolver, owner: owner, repo: repo, number: number, resolves: pol.ResolveThreads}
+	return &threadIndex{gh: resolver, owner: owner, repo: repo, number: number, resolves: pol.ResolveThreads, notes: pol.ResolveNotes}
 }
 
 // resolving reports whether the round may change thread state.
 func (ti *threadIndex) resolving() bool { return ti != nil && ti.resolves }
+
+// noting reports whether a resolve this round also posts its note.
+func (ti *threadIndex) noting() bool { return ti.resolving() && ti.notes }
 
 func (ti *threadIndex) reload(ctx context.Context) {
 	ti.loaded = true
@@ -166,7 +185,7 @@ func verb(resolve bool) string {
 }
 
 // notSeenNote is the one line a resolved thread gets when its finding is
-// judged fixed.
+// judged fixed and Policy.ResolveNotes is on.
 func notSeenNote(headSHA string) string {
 	return fmt.Sprintf("Not seen at %s.", shortSHA(headSHA))
 }

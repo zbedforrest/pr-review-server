@@ -91,6 +91,7 @@ The most common ones:
 | `DISABLE_POLLING` | No | Run purely as an on-demand review API |
 | `MENTION_HANDLE` | No | App login mentioned to request a review (`@<handle> review`) by the PR author or a repository owner, member or collaborator; default `prism-pr-review-server`, empty disables |
 | `PUBLISH_SETTLE_FOOTER` | No | `false` drops the settle and opt-out footer from posted comments and summaries; default on |
+| `PUBLISH_RESOLVE_NOTES` | No | Default `false`: resolving a PRism thread (a fixed finding, or `threadcleanup`) posts no reply; the ledger records the transition. `true` restores the old in-thread notes ("Not seen at <sha7>.", "Resolving: ...") |
 | `HEALTH_JOB_TOKEN` | No | Enables `POST /api/health/daily` for a scheduler (header `X-Prism-Job-Token`); the report is stored and readable at `GET /api/health/daily` (`?format=md`) |
 | `FEEDBACK_DIGEST` | No | `true` lets the daily health run scan GitHub for author feedback on PRism comments and classify it with a model call; default off. See [Daily health report and author feedback](#daily-health-report-and-author-feedback) |
 | `GITHUB_WEBHOOK_SECRET` | No | Secret for the GitHub App webhook at `POST /webhooks/github` (`X-Hub-Signature-256`); empty leaves the endpoint disabled. See [Automatic reviews](#automatic-reviews-for-allowlisted-authors) |
@@ -364,7 +365,7 @@ Each theme is a block of CSS custom properties in `frontend/src/styles/themes/_p
 
 - `go run ./cmd/gatecheck <worktree-dir> <base-branch>` — offline report of what the deterministic layer (gates + bug memory) would contribute for a diff; no LLM calls or API keys needed
 - `go run ./cmd/publishreplay --dumps <dir> --sidecars <dir>`: replays historical publication rounds through the publisher against an in-memory ledger and prints repost and resolution metrics; needs `PRISM_BASE_URL` to fill the cache, or `--offline`; baseline in `benchmark/replay/BASELINE.md`
-- `go run ./cmd/threadcleanup --dumps <dir> [--cache <dir>]`: lists the PRism review threads still open on merged or closed PRs, or whose cited file changed after the comment, with a count summary; `--pr owner/repo#N --dry-run=false` resolves them through the publisher's thread resolver with a one-line note, behind the publish gate and `PUBLISH_THREAD_RESOLUTION`
+- `go run ./cmd/threadcleanup --dumps <dir> [--cache <dir>]`: lists the PRism review threads still open on merged or closed PRs, or whose cited file changed after the comment, with a count summary; `--pr owner/repo#N --dry-run=false` resolves them through the publisher's thread resolver without a reply (`PUBLISH_RESOLVE_NOTES=true` adds the one-line note), behind the publish gate and `PUBLISH_THREAD_RESOLUTION`
 - `skills/claude/prism-review/` — Claude Code skill for fetching and acting on reviews; install by copying it to `~/.claude/skills/prism-review/`
 
 ## Development

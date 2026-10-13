@@ -128,7 +128,7 @@ func main() {
 			log.Fatalf("ledger: %v", err)
 		}
 		defer ledger.Close()
-		a := apply(ctx, gh, ledger, allowed, stale, log.Printf)
+		a := apply(ctx, gh, ledger, allowed, stale, publisher.ResolveNotesFromEnv(), log.Printf)
 		s.Applied = &a
 	}
 	out, _ := json.MarshalIndent(s, "", "  ")
