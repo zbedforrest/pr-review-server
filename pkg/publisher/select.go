@@ -139,8 +139,9 @@ const SettledAliasEnv = "PUBLISH_SETTLED_ALIAS"
 func SettledAliasFromEnv() bool { return !envOff(SettledAliasEnv) }
 
 // NoteReconcileEnv is the kill switch for reconciling folded notes against
-// other reviewers' threads and the pull request body: "false", "0", "off"
-// and "no" turn it off; anything else keeps it on.
+// other reviewers' resolved threads: "false", "0", "off" and "no" turn it
+// off; anything else keeps it on. The pull request body check is
+// BodyCheckEnv.
 const NoteReconcileEnv = "PUBLISH_NOTE_RECONCILE"
 
 // NoteReconcileFromEnv reports whether the environment left note

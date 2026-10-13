@@ -885,9 +885,11 @@ func externalCommentsBefore(d *prDump, bots map[string]bool, at time.Time) []git
 
 // externalThreadsBefore lists the other reviewers' threads as GitHub would
 // have at the round, for the publisher's thread index. The dump records only
-// the thread's state today, so a thread reads as resolved at the round only
-// when it is resolved now and someone had replied in it by then; a thread
-// resolved silently, or after the round, reads as open.
+// the thread's state today, so a thread reads as resolved at the round when
+// it is resolved now and someone had replied in it by then. A thread
+// resolved silently reads as open; one replied to by the round but resolved
+// only later still reads as resolved, so the settled counts are an upper
+// bound.
 func externalThreadsBefore(d *prDump, bots map[string]bool, at time.Time) []publisher.ReviewThread {
 	var out []publisher.ReviewThread
 	for _, t := range d.ReviewThreads.Nodes {
@@ -1166,20 +1168,6 @@ func findingKind(f payload.Finding) string {
 		return ""
 	}
 	return f.FindingContract.FindingKind
-}
-
-func subjectNames(f payload.Finding) []string {
-	if f.FindingContract == nil {
-		return nil
-	}
-	var out []string
-	for _, s := range f.FindingContract.Subjects {
-		if name := strings.ToLower(strings.TrimSpace(s.Name)); name != "" {
-			out = append(out, name)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 func p50(xs []int) float64 {

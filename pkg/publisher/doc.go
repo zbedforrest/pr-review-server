@@ -30,9 +30,9 @@
 // own (the concession, withdrawal or verification, or for an external row
 // the delta reply under the other reviewer's root, which
 // Round.PriorComments carries), the kinds agree or one is unknown, a
-// specific subject of the finding (a symbol, selector or key, never a bare
-// file, a workflow or a symbol named after its own file) is named in those
-// replies, and the finding's text sits inside the thread text, root plus
+// specific subject of the finding (any kind but a bare file or a workflow,
+// such as a symbol, endpoint, selector or key, and never a symbol named
+// after its own file) is named in those replies, and the finding's text sits inside the thread text, root plus
 // replies (containment at or above 0.35 with eight shared words, or its
 // headline at or above 0.5 with four). A subject the root alone names, or
 // one the row merely shares, is not evidence: on the replay set that rule

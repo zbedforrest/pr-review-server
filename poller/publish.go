@@ -89,6 +89,12 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		}
 	}
 	own := reconcile.ParseOwnComments(external, ledgerCommentIDs)
+	ownAuthors := map[string]bool{}
+	for _, c := range external {
+		if ledgerCommentIDs[c.ID] {
+			ownAuthors[c.Author] = true
+		}
+	}
 	inlineComments := map[string]int64{}
 	priorComments := make(map[string]publisher.PriorComment, len(own))
 	rootFinding := make(map[int64]string, len(own))
@@ -105,8 +111,13 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 	}
 	// PRism's own replies in a thread (concessions, verifications, the delta
 	// under another reviewer's root) name the code they accept; the
-	// settled-point alias reads them with the root.
+	// settled-point alias reads them with the root. The marker alone is not
+	// ownership (a quote-reply copies it): the author must have posted one
+	// of the ledger's roots.
 	for _, c := range external {
+		if !ownAuthors[c.Author] {
+			continue
+		}
 		id, ok := rootFinding[c.InReplyToID]
 		if ok && !reconcile.IsOwnReply(c.Body) {
 			continue
