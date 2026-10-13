@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff]
+//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false]
 //
 // Dumps are the GitHub GraphQL exports (one PR per file). Sidecars are the
 // review findings JSON per round, fetched from PRISM_BASE_URL/reviews/ with
@@ -49,7 +49,15 @@ func main() {
 	legacyStatusNotes := flag.Bool("legacy-status-notes", false, "post a return and a severity change as two notes and reopen on any text match (PUBLISH_STATUS_NOTES_V2=false)")
 	legacyClamp := flag.Bool("legacy-clamp", false, "cut bullets and headlines at a word boundary with \"...\" (PUBLISH_RENDER_CLAMP_V2=false)")
 	noScopeGuard := flag.Bool("no-scope-guard", false, "let fixed, return and severity transitions through on inherited paths, outside the PR diff and across a merge-base change (PUBLISH_SCOPE_GUARD=false)")
+	renderHygiene := flag.Bool("render-hygiene", true, "strip confidence labels and internal ids, skip praise titles, hold reason-less notes, count folded notes on the status line (PUBLISH_RENDER_HYGIENE)")
+	libraryClaimHold := flag.Bool("library-claim-hold", true, "hold findings that rest on third-party behaviour the agent did not read (PUBLISH_LIBRARY_CLAIM_HOLD)")
+	regressionEvidence := flag.Bool("regression-evidence", true, "hold regression claims the cited hunk contradicts (PUBLISH_REGRESSION_EVIDENCE)")
 	flag.Parse()
+	if !*renderHygiene {
+		// The renderer reads its kill switch from the environment, as the
+		// discount gate does.
+		_ = os.Setenv(publisher.RenderHygieneEnv, "false")
+	}
 	if *dumpsDir == "" || *sidecarsDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv]")
 		os.Exit(2)
@@ -87,6 +95,8 @@ func main() {
 	opts.Policy.LegacyStatusNotes = *legacyStatusNotes
 	opts.Policy.LegacyClamp = *legacyClamp
 	opts.Policy.NoScopeGuard = *noScopeGuard
+	opts.Policy.LibraryClaimHold = *libraryClaimHold
+	opts.Policy.RegressionEvidence = *regressionEvidence
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
 			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)
