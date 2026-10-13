@@ -56,7 +56,7 @@ func TestRun_FixtureMetrics(t *testing.T) {
 	m := fixtureRun(t, false).Metrics
 	want := Metrics{
 		PRs: 4, PRsWithRounds: 4, Rounds: 10, RoundsReplayed: 10, SameCommitRounds: 1, SameCommitSkipped: 1,
-		RootsPosted: 3, Fixed: 1, InThreadReplies: 2, ThreadsResolved: 1, ThreadsUnresolved: 1,
+		RootsPosted: 3, Fixed: 1, InThreadReplies: 1, ThreadsResolved: 1, ThreadsUnresolved: 1,
 		ExternalMatched: 1, ExternalReplies: 1,
 		CommentsPerPushP50: 0, CommentsPerPushMean: 0.333, RoundsPerPRP50: 3,
 	}
@@ -118,7 +118,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 	if reword.PR != "example#2" || reword.RootsPosted != 1 || reword.SameDefectReposts != 0 || reword.Fixed != 0 || reword.SameCommitRounds != 1 {
 		t.Errorf("example#2 = %+v", reword)
 	}
-	if reopen.PR != "example#3" || reopen.RootsPosted != 1 || reopen.Fixed != 1 || reopen.FixedWithoutFileChange != 0 || reopen.InThreadReplies != 2 || reopen.ThreadsResolved != 1 || reopen.ThreadsUnresolved != 1 || reopen.RootsResolved != 0 {
+	if reopen.PR != "example#3" || reopen.RootsPosted != 1 || reopen.Fixed != 1 || reopen.FixedWithoutFileChange != 0 || reopen.InThreadReplies != 1 || reopen.ThreadsResolved != 1 || reopen.ThreadsUnresolved != 1 || reopen.RootsResolved != 0 {
 		t.Errorf("example#3 = %+v", reopen)
 	}
 	var buf bytes.Buffer
@@ -127,7 +127,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) != 5 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.HasSuffix(lines[0], ",external_duplicates_near,external_duplicates_open,external_duplicates_unknown,external_matched,external_replies,observed_external_duplicates_near,observed_external_duplicates_open") ||
-		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,2,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1") {
+		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,1,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }

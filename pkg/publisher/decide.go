@@ -189,9 +189,9 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 				}
 				// The stored id stands in for the resolve, but the note needs the
 				// listing to show the thread open.
-				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved && threads.resolving() {
+				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved && threads.noting() {
 					notes = append(notes, threadNote{commentID: row.CommentID, body: notSeenNote(r.HeadSHA)})
-				} else if !listed && threads.listFailed() && threads.resolving() && row.CommentID != 0 {
+				} else if !listed && threads.listFailed() && threads.noting() && row.CommentID != 0 {
 					rep.ThreadReplyFailures++
 				}
 				rep.Hygiene.noteResolved(row, r.HeadSHA, cs.Files)

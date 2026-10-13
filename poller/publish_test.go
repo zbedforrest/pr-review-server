@@ -103,6 +103,11 @@ func TestPublishPolicy_ReadsSettingsOverDefaults(t *testing.T) {
 	assert.Equal(t, 0, p.publishPolicy().InlinePRCap, "PUBLISH_INLINE_PR_BUDGET=false removes the bound whatever the setting says")
 	p.cfg.PublishNoInlinePRBudget = false
 
+	assert.False(t, p.publishPolicy().ResolveNotes, "resolves post no note unless PUBLISH_RESOLVE_NOTES is set")
+	p.cfg.PublishResolveNotes = true
+	assert.True(t, p.publishPolicy().ResolveNotes)
+	p.cfg.PublishResolveNotes = false
+
 	require.NoError(t, database.SetSetting("publish_show_unverified", "not-a-bool"))
 	assert.True(t, p.publishPolicy().ShowUnverified, "an unreadable value keeps the default")
 }

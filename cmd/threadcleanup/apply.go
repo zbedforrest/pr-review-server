@@ -40,9 +40,9 @@ func note(d decision) string {
 
 // apply closes every stale thread whose author passes the gate. The resolve
 // goes first: a thread that resolved is skipped by every later run, so a
-// failing resolve never leaves a trail of notes. The note and the ledger
-// row follow and a lost one is only counted.
-func apply(ctx context.Context, gh closer, ledger publisher.Ledger, allowed gate, stale []decision, logf func(string, ...any)) applied {
+// failing resolve never leaves a trail of notes. The ledger row follows, and
+// with notes on so does the one-line note; a lost one is only counted.
+func apply(ctx context.Context, gh closer, ledger publisher.Ledger, allowed gate, stale []decision, notes bool, logf func(string, ...any)) applied {
 	var a applied
 	rows := map[*pr]openRows{}
 	for _, d := range stale {
@@ -62,11 +62,13 @@ func apply(ctx context.Context, gh closer, ledger publisher.Ledger, allowed gate
 			continue
 		}
 		a.Resolved++
-		if _, err := gh.CreateReviewCommentReply(ctx, p.Owner, p.Repo, p.Number, d.Thread.RootCommentID, note(d)); err != nil {
-			a.NoteFailures++
-			logf("%s: note on comment %d lost: %v", p.ref(), d.Thread.RootCommentID, err)
-		} else {
-			a.Notes++
+		if notes {
+			if _, err := gh.CreateReviewCommentReply(ctx, p.Owner, p.Repo, p.Number, d.Thread.RootCommentID, note(d)); err != nil {
+				a.NoteFailures++
+				logf("%s: note on comment %d lost: %v", p.ref(), d.Thread.RootCommentID, err)
+			} else {
+				a.Notes++
+			}
 		}
 		if ledger == nil {
 			continue

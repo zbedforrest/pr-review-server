@@ -273,16 +273,12 @@ func TestApply(t *testing.T) {
 	}}
 	allowed := func(author string) bool { return author != "optout" }
 	var logged []string
-	a := apply(context.Background(), gh, ledger, allowed, stale, func(f string, args ...any) { logged = append(logged, f) })
-	want := applied{Resolved: 2, Notes: 2, ResolveFailures: 2, GateDenied: 1, LedgerRows: 2}
+	a := apply(context.Background(), gh, ledger, allowed, stale, false, func(f string, args ...any) { logged = append(logged, f) })
+	want := applied{Resolved: 2, ResolveFailures: 2, GateDenied: 1, LedgerRows: 2}
 	if a != want {
 		t.Errorf("applied = %+v, want %+v", a, want)
 	}
-	wantCalls := []string{
-		"resolve PRRT_1", "note Resolving: the PR was merged.",
-		"resolve PRRT_3", "note Resolving: svc/retry.go changed after this comment (now at ccccccc); reopen it if the point still stands.",
-		"resolve PRRT_bad",
-	}
+	wantCalls := []string{"resolve PRRT_1", "resolve PRRT_3", "resolve PRRT_bad"}
 	if strings.Join(gh.calls, "|") != strings.Join(wantCalls, "|") {
 		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(gh.calls, "\n"), strings.Join(wantCalls, "\n"))
 	}
@@ -302,11 +298,32 @@ func TestApply(t *testing.T) {
 	}
 }
 
-func TestApply_LostNoteStillResolves(t *testing.T) {
+func TestApply_NotesOnPostOneLineAfterEachResolve(t *testing.T) {
+	merged := &pr{Owner: "acme", Repo: "example", Number: 1, Author: "dev", State: prMerged, HeadSHA: shaC}
+	open := &pr{Owner: "acme", Repo: "example", Number: 3, Author: "dev", State: prOpen, HeadSHA: shaC}
+	stale := []decision{
+		{PR: merged, Thread: thread{RootCommentID: 101, NodeID: "PRRT_1"}, Verdict: stalePRMerged},
+		{PR: open, Thread: thread{RootCommentID: 301, NodeID: "PRRT_3", Path: "svc/retry.go"}, Verdict: staleFileChanged},
+	}
+	gh := &fakeCloser{}
+	a := apply(context.Background(), gh, nil, func(string) bool { return true }, stale, true, func(string, ...any) {})
+	if a.Resolved != 2 || a.Notes != 2 || a.NoteFailures != 0 {
+		t.Errorf("applied = %+v", a)
+	}
+	wantCalls := []string{
+		"resolve PRRT_1", "note Resolving: the PR was merged.",
+		"resolve PRRT_3", "note Resolving: svc/retry.go changed after this comment (now at ccccccc); reopen it if the point still stands.",
+	}
+	if strings.Join(gh.calls, "|") != strings.Join(wantCalls, "|") {
+		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(gh.calls, "\n"), strings.Join(wantCalls, "\n"))
+	}
+}
+
+func TestApply_NotesOnLostNoteStillResolves(t *testing.T) {
 	p := &pr{Owner: "acme", Repo: "example", Number: 2, Author: "dev", State: prClosed}
 	gh := &fakeCloser{failNote: true}
 	a := apply(context.Background(), gh, nil, func(string) bool { return true },
-		[]decision{{PR: p, Thread: thread{RootCommentID: 201, NodeID: "PRRT_2"}, Verdict: stalePRClosed}}, func(string, ...any) {})
+		[]decision{{PR: p, Thread: thread{RootCommentID: 201, NodeID: "PRRT_2"}, Verdict: stalePRClosed}}, true, func(string, ...any) {})
 	if a.Resolved != 1 || a.NoteFailures != 1 || a.Notes != 0 {
 		t.Errorf("applied = %+v", a)
 	}
@@ -320,7 +337,7 @@ func TestApply_FailedResolvePostsNothing(t *testing.T) {
 	gh := &fakeCloser{failNodeID: "PRRT_2"}
 	stale := []decision{{PR: p, Thread: thread{RootCommentID: 201, NodeID: "PRRT_2"}, Verdict: stalePRMerged}}
 	for run := 0; run < 2; run++ {
-		a := apply(context.Background(), gh, nil, func(string) bool { return true }, stale, func(string, ...any) {})
+		a := apply(context.Background(), gh, nil, func(string) bool { return true }, stale, true, func(string, ...any) {})
 		if a.Resolved != 0 || a.ResolveFailures != 1 || a.Notes != 0 || a.NoteFailures != 0 {
 			t.Errorf("run %d: applied = %+v", run, a)
 		}
@@ -352,8 +369,8 @@ func TestApply_CountsLedgerMiss(t *testing.T) {
 	var logged []string
 	a := apply(context.Background(), gh, ledger, func(string) bool { return true },
 		[]decision{{PR: p, Thread: thread{RootCommentID: 401, NodeID: "PRRT_4", FindingID: "svc/a.go:1:0a0a0a0a0a0a"}, Verdict: stalePRMerged}},
-		func(f string, _ ...any) { logged = append(logged, f) })
-	if a.Resolved != 1 || a.Notes != 1 || a.LedgerRows != 0 || a.LedgerMisses != 1 || len(ledger.upserted) != 0 {
+		false, func(f string, _ ...any) { logged = append(logged, f) })
+	if a.Resolved != 1 || a.Notes != 0 || a.LedgerRows != 0 || a.LedgerMisses != 1 || len(ledger.upserted) != 0 {
 		t.Errorf("applied = %+v, upserted %d", a, len(ledger.upserted))
 	}
 	if len(logged) != 1 {

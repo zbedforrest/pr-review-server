@@ -45,6 +45,10 @@ type Policy struct {
 	// thread and reopen it when the finding returns (PUBLISH_THREAD_RESOLUTION);
 	// it needs a GitHub that implements ThreadResolver.
 	ResolveThreads bool
+	// ResolveNotes posts the one-line "Not seen at <sha7>" reply into a thread
+	// the round resolves (PUBLISH_RESOLVE_NOTES, off by default); off, the
+	// thread is resolved and the ledger moves with nothing posted.
+	ResolveNotes bool
 	// ExternalReconcile matches findings against every other reviewer's root
 	// thread (PUBLISH_EXTERNAL_RECONCILE): a match becomes an external ledger
 	// row with one delta reply in that thread and never a root of its own.
