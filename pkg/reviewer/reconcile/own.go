@@ -231,3 +231,12 @@ func abs(n int) int {
 	}
 	return n
 }
+
+var ownReplyMarkerRe = regexp.MustCompile(`<!-- prism:reply:v1:\d+ -->`)
+
+// IsOwnReply reports whether a review comment body is a reply PRism wrote
+// under one of its own roots: the reply policy stamps every one with the
+// marker that names the author comment it answers.
+func IsOwnReply(body string) bool {
+	return ownReplyMarkerRe.MatchString(body)
+}
