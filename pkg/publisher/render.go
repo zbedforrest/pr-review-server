@@ -628,7 +628,7 @@ func legacyHeadlineWith(f payload.Finding, legacyClamp bool) string {
 // saying so.
 func titleSource(f payload.Finding) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" {
-		if h := strings.TrimSpace(c.Headline); h != "" && !(RenderHygieneEnabled() && MentionsFindingID(h)) {
+		if h := ContractSentence(c.Headline); h != "" {
 			return h
 		}
 		if titleFromImpact(f) {
@@ -640,7 +640,7 @@ func titleSource(f payload.Finding) string {
 	// A comment that opens with a compliment is titled by the sentence that
 	// reports something; praise all the way through is held before this.
 	if sentence, ok := FirstFindingSentence(commentText(f)); ok {
-		return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(sentence)))
+		return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(StripConfidenceLabel(sentence))))
 	}
 	return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(firstSentence(commentText(f)))))
 }
@@ -744,6 +744,13 @@ func impactShownBelow(f payload.Finding, legacy, legacyClamp bool) bool {
 	return rendered != impactTitle(c)
 }
 
+// reasoningAfterTitle is the fold text of a comment-titled finding: the
+// comment after the sentences its title used, with the suggestion fence
+// replaced and internal labels stripped.
+func reasoningAfterTitle(comment string) string {
+	return StripFindingIDAsides(strings.TrimSpace(suggestionFenceRe.ReplaceAllString(commentAfterTitle(comment), "*(suggestion above)*")))
+}
+
 // RenderInline keeps the visible part Greptile-sized: headline, one
 // calibration sentence, and the suggestion if there is one. The agent's full
 // reasoning and the verification steps fold behind a details block.
@@ -787,15 +794,17 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		// Without an impact sentence the headline came from the comment's first
 		// sentence; the rest of the comment is the only explanation, so show it.
 		rest := reasoning
-		if legacy || (titleFromComment(f) && titleIsWholeFirstSentence(f, titleLimit(commentTitleMaxRunes, legacyCommentTitleMaxRunes, legacyClamp))) {
+		if legacy {
 			rest = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
+		} else if titleFromComment(f) && titleIsWholeFirstSentence(f, titleLimit(commentTitleMaxRunes, legacyCommentTitleMaxRunes, legacyClamp)) {
+			rest = reasoningAfterTitle(comment)
 		}
 		if rest != "" {
 			b.WriteString("\n" + rest + "\n")
 		}
 		reasoning = ""
 	} else if !legacy && titleFromComment(f) && titleIsWholeFirstSentence(f, titleLimit(headlineMaxRunes, legacyHeadlineMaxRunes, legacyClamp)) {
-		reasoning = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
+		reasoning = reasoningAfterTitle(comment)
 	}
 
 	var details strings.Builder

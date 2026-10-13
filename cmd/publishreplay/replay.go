@@ -168,11 +168,20 @@ func (r *recorder) EditIssueComment(_ context.Context, _, _ string, id int64, bo
 	return nil
 }
 
+// lastSummary is the body of the newest sticky summary the replay posted;
+// the highest id is the newest, since the recorder hands ids out in order.
 func (r *recorder) lastSummary() string {
-	for _, body := range r.lastSummaryBodies {
-		return body
+	return newestSummary(r.lastSummaryBodies)
+}
+
+func newestSummary(bodies map[int64]string) string {
+	var newest int64 = -1
+	for id := range bodies {
+		if id > newest {
+			newest = id
+		}
 	}
-	return ""
+	return bodies[newest]
 }
 
 func (r *recorder) noteSummary(id int64, body string) {
@@ -650,10 +659,7 @@ func countShownDefects(findings []payload.Finding, rep publisher.Report, posts [
 	for _, p := range posts {
 		posted[p.FindingID] = true
 	}
-	var summary string
-	for _, body := range summaries {
-		summary = body
-	}
+	summary := newestSummary(summaries)
 	for _, f := range findings {
 		if held[f.ID] || held[fmt.Sprintf("%s:%d", f.File, f.Line)] || !publisher.Publishable(f) {
 			continue

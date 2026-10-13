@@ -128,6 +128,7 @@ func TestIsPraise(t *testing.T) {
 		"Retry loop never backs off.":                                        false,
 		"The `sized` filter drops tables missing `total_size_bytes`.":        false,
 		"This change already drops the guard.":                               false,
+		"The retry helper is correct and ignores the deadline.":              false,
 		"The change correctly moves the logic, which regresses the cache.":   false,
 	} {
 		if got := IsPraise(text); got != want {
@@ -403,5 +404,49 @@ func TestUnverifiedLibraryClaim_HoldsTheInstructedPhraseNotAPlainClaim(t *testin
 		asserting("production_behavior", "Tooltips overflow the viewport edge.", "The repo doc may lag the pinned release.", "Clipped tooltips.", "Tooltip never slides horizontally"))
 	if !UnverifiedLibraryClaim(instructed) || UnverifiedLibraryClaim(plain) || UnverifiedLibraryClaim(cited) {
 		t.Fatalf("instructed=%v plain=%v cited=%v", UnverifiedLibraryClaim(instructed), UnverifiedLibraryClaim(plain), UnverifiedLibraryClaim(cited))
+	}
+}
+
+func TestFirstFindingSentence_ReadsPastTheFirstLine(t *testing.T) {
+	comment := "This looks good.\n\nHowever, the lock is never released on the error path.\n\n```suggestion\ndefer mu.Unlock()\n```"
+	got, ok := FirstFindingSentence(comment)
+	if !ok || got != "The lock is never released on the error path." {
+		t.Fatalf("got %q ok=%v", got, ok)
+	}
+	x := f("p1", "medium", "a.go", 10, comment)
+	if AllPraise(x) {
+		t.Fatal("a defect on a later line is not praise")
+	}
+	body := RenderInline(x, SourceTagPrismOnly, "", "", "")
+	if strings.Count(body, "never released on the error path") != 1 || strings.Contains(body, "This looks good") {
+		t.Fatalf("the reporting sentence titles the comment once and the praise is gone:\n%s", body)
+	}
+}
+
+func TestTitleSource_StripsALabelFromEverySource(t *testing.T) {
+	withHeadline := contractFinding("medium", "a.go", 10, "The lock is never released.",
+		asserting("production_behavior", "Low; requests hang after the first error.", "The retry path is untested.", "Hangs.", "Medium: lock never released"))
+	if got := titleSource(withHeadline); got != "Lock never released" {
+		t.Fatalf("headline title = %q", got)
+	}
+	withImpact := contractFinding("medium", "a.go", 10, "The lock is never released.",
+		asserting("production_behavior", "Low; requests hang after the first error.", "The retry path is untested.", "Hangs.", ""))
+	body := RenderInline(withImpact, SourceTagPrismOnly, "", "", "")
+	if strings.Contains(body, "Low;") || strings.Count(body, "equests hang after the first error") != 1 {
+		t.Fatalf("the impact sentence is the title once, without its label:\n%s", body)
+	}
+	fromComment := f("c1", "medium", "a.go", 10, "Medium: the lock is never released.")
+	if got := titleSource(fromComment); got != "The lock is never released." {
+		t.Fatalf("comment title = %q", got)
+	}
+}
+
+func TestUnverifiedLibraryClaim_IgnoresTechnicalProse(t *testing.T) {
+	prose := contractFinding("medium", "a.go", 10, "The value is read from memory after the guard, so I am certain the race is reachable.",
+		asserting("production_behavior", "Stale reads after a resize.", "The guard ordering is visible in the code.", "Data race.", "Stale read after resize"))
+	admitted := contractFinding("medium", "a.go", 10, "The action uploads nothing without `advanced-security: true`.",
+		asserting("production_behavior", "Scan results are not uploaded.", "I am recalling the default from memory.", "Visibility.", "Scan step may not upload findings"))
+	if UnverifiedLibraryClaim(prose) || !UnverifiedLibraryClaim(admitted) {
+		t.Fatalf("prose=%v admitted=%v", UnverifiedLibraryClaim(prose), UnverifiedLibraryClaim(admitted))
 	}
 }

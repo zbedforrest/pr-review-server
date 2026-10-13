@@ -115,7 +115,7 @@ func StripFindingIDAsides(text string) string {
 
 var (
 	praiseOpenerRe   = regexp.MustCompile(`(?i)^(?:(?:the|this) (?:pr|change|patch|diff|code|implementation|approach|author|test|tests|migration|refactor|fix|new \w+)|it|you|the new \w+)\b[^.]{0,60}?\b(?:correctly|properly|appropriately|nicely|cleanly|rightly|safely|sensibly)\b|^(?:good|nice|great|solid|clean|well[- ]done|looks good|lgtm|no (?:issues?|problems?|concerns?|bugs?)(?: here| found| with| in)?)\b|\b(?:is|are|looks?) (?:correct|fine|good|right|sound|solid|clean)\b|\bworks? as (?:intended|expected|designed)\b|\bis (?:a )?(?:correct|sound|sensible|reasonable|minimal|clean) (?:change|fix|approach|choice|implementation)\b`)
-	praiseNegationRe = regexp.MustCompile(`(?i)\b(?:not|never|no longer|but|however|fails?|failing|missing|misses|incorrect(?:ly)?|wrong|except|unless|only|although|though|still|broken|breaks|should|needs?|lacks?|without|regress\w*|revert\w*|leaks?|leaking|crash\w*|races?|racy|deadlock\w*|overflow\w*|corrupt\w*|panics?)\b|n't\b`)
+	praiseNegationRe = regexp.MustCompile(`(?i)\b(?:not|never|no longer|but|however|fails?|failing|missing|misses|incorrect(?:ly)?|wrong|except|unless|only|although|though|still|broken|breaks|should|needs?|lacks?|without|ignores?|ignoring|skips?|skipping|leaves?|leaving|bypass\w*|silently|regress\w*|revert\w*|leaks?|leaking|crash\w*|races?|racy|deadlock\w*|overflow\w*|corrupt\w*|panics?)\b|n't\b`)
 	contrastOpenerRe = regexp.MustCompile(`(?i)^(?:however|but|that said|still|yet|nevertheless|nonetheless|even so|unfortunately|the (?:problem|issue|catch|gap|risk) is)\b[\s,:]*`)
 )
 
@@ -130,12 +130,13 @@ func IsPraise(sentence string) bool {
 	return praiseOpenerRe.MatchString(s)
 }
 
-var sentenceSplitRe = regexp.MustCompile(`(?s)(.*?[.!?])(?:\s+|$)`)
+var sentenceSplitRe = regexp.MustCompile(`(?s)(.*?[.!?](?:\*\*|__|\*|_)?)(?:\s+|$)`)
 
-// sentences splits the first line of a comment into sentences, keeping
-// their end punctuation; the tail without punctuation is a sentence too.
+// sentences splits a comment (without its suggestion fence, lines folded)
+// into sentences, keeping their end punctuation; the tail without
+// punctuation is a sentence too.
 func sentences(text string) []string {
-	line := firstLine(text)
+	line := fold(suggestionFenceRe.ReplaceAllString(text, " "))
 	var out []string
 	rest := line
 	for rest != "" {
@@ -200,8 +201,8 @@ func ReasonlessNote(f payload.Finding) bool {
 }
 
 var (
-	memoryClaimRe    = regexp.MustCompile(`(?i)\b(?:from memory|if i recall|iirc|as i recall|as i remember|as far as i remember|i believe the (?:library|package|action|module|framework|dependency|plugin|middleware|runtime)|without (?:inspecting|reading|checking|opening) the (?:pinned|installed|vendored|bundled|upstream|library|package|action|dependency)|(?:cannot|can't|could not|couldn't|did not|didn't|unable to) (?:inspect|read|check|open|verify|confirm) the (?:pinned|installed|vendored|bundled|upstream|action's|library's|package's|dependency's|module's)|(?:not|never) (?:inspected|checked|read|verified) (?:the )?(?:pinned|installed|vendored|upstream)|unverified against the pinned|unverified (?:default|behaviou?r|option|semantics)|documented behaviou?r from memory|(?:pinned|installed|vendored) (?:release|version|source|copy) (?:is|was) not (?:available|readable|inspected|checked)|not (?:available|present|readable) in this checkout|no (?:node_modules|vendor|site-packages) (?:in|available in) this checkout)`)
-	certainDefaultRe = regexp.MustCompile(`(?i)(?:\b(?:[\w.@/-]+ )?(?:library|package|action|framework|middleware|plugin|sdk|dependency|module)(?:'s)? (?:defaults?|behaviou?r|semantics?|contract) (?:is|are) certain\b|\bdefaults? (?:is|are) certain\b|\bi am certain\b|\bcertain(?:ly)? (?:that )?the (?:library|package|action|framework|middleware|plugin|sdk|module)\b)`)
+	memoryClaimRe    = regexp.MustCompile(`(?i)\b(?:(?:recall(?:ed|ing)?|remember(?:ed|ing)?|quot(?:ed|ing)|cit(?:ed|ing)|writ(?:ten|ing)|reasoning|speaking|working|going|this is|that is|behaviou?r|docs?|documentation|defaults?|api|signature|semantics|contract) (?:this |that |it |the \w+ )?from memory\b|from memory,? (?:i|the (?:library|package|action|framework|middleware|plugin|sdk|module|default))\b|if i recall|iirc|as i recall|as i remember|as far as i remember|i believe the (?:library|package|action|module|framework|dependency|plugin|middleware|runtime)|without (?:inspecting|reading|checking|opening) the (?:pinned|installed|vendored|bundled|upstream|library|package|action|dependency)|(?:cannot|can't|could not|couldn't|did not|didn't|unable to) (?:inspect|read|check|open|verify|confirm) the (?:pinned|installed|vendored|bundled|upstream|action's|library's|package's|dependency's|module's)|(?:not|never) (?:inspected|checked|read|verified) (?:the )?(?:pinned|installed|vendored|upstream)|unverified against the pinned|unverified (?:default|behaviou?r|option|semantics)|documented behaviou?r from memory|(?:pinned|installed|vendored) (?:release|version|source|copy) (?:is|was) not (?:available|readable|inspected|checked)|not (?:available|present|readable) in this checkout|no (?:node_modules|vendor|site-packages) (?:in|available in) this checkout)`)
+	certainDefaultRe = regexp.MustCompile(`(?i)(?:\b(?:[\w.@/-]+ )?(?:library|package|action|framework|middleware|plugin|sdk|dependency|module)(?:'s)? (?:defaults?|behaviou?r|semantics?|contract) (?:is|are) certain\b|\bdefaults? (?:is|are) certain\b|\bi am certain\b[^.]{0,40}\b(?:library|package|action|framework|middleware|plugin|sdk|module|defaults?|upstream)\b|\bcertain(?:ly)? (?:that )?the (?:library|package|action|framework|middleware|plugin|sdk|module)\b)`)
 )
 
 // UnverifiedLibraryClaim reports whether a finding rests on third-party
@@ -230,8 +231,7 @@ var (
 	conditionalRe = regexp.MustCompile(`(?i)\b(?:a future|in future|if |would|could|were to|hypothetical|should (?:a|the|any)\b)`)
 	// baseRefRe is the signal that a sentence compares the head to the base
 	// branch rather than describing what the code does now.
-	baseRefRe   = regexp.MustCompile(`(?i)\b(?:previously|used to|no longer|on (?:master|main|the base branch)|before this (?:pr|change|patch|commit)|the (?:old|previous|prior|original)\b|was (?:previously|originally)|that (?:the|a|its|every|each) [^.]{0,40}?\b(?:keeps|kept|had|has|honou?rs|honou?red|applies|applied)\b|the (?:refactor|rewrite|port|pr|change|patch|diff|move|rename) (?:dropped|drops|removed|removes|lost|loses|discards|discarded))`)
-	codeSpanRe2 = regexp.MustCompile("`([^`\\n]+)`")
+	baseRefRe = regexp.MustCompile(`(?i)\b(?:previously|used to|no longer|on (?:master|main|the base branch)|before this (?:pr|change|patch|commit)|the (?:old|previous|prior|original)\b|was (?:previously|originally)|that (?:the|a|its|every|each) [^.]{0,40}?\b(?:keeps|kept|had|has|honou?rs|honou?red|applies|applied)\b|the (?:refactor|rewrite|port|pr|change|patch|diff|move|rename) (?:dropped|drops|removed|removes|lost|loses|discards|discarded))`)
 )
 
 // DropClaims lists the quoted spans a finding says the PR dropped, lost or
@@ -312,6 +312,35 @@ func UncitedRegressionClaim(f payload.Finding) bool {
 		}
 	}
 	return false
+}
+
+// commentAfterTitle is the comment without the sentences its title used up:
+// the praise opener, if any, and the reporting sentence that titles it.
+// When a sentence cannot be located again (it spanned a line break), the
+// comment is returned whole rather than cut in the wrong place.
+func commentAfterTitle(comment string) string {
+	ss := sentences(comment)
+	if len(ss) == 0 {
+		return comment
+	}
+	k := 0
+	if RenderHygieneEnabled() {
+		for k < len(ss) && IsPraise(ss[k]) {
+			k++
+		}
+		if k == len(ss) {
+			return ""
+		}
+	}
+	pos := 0
+	for i := 0; i <= k; i++ {
+		j := strings.Index(comment[pos:], ss[i])
+		if j < 0 {
+			return comment
+		}
+		pos += j + len(ss[i])
+	}
+	return strings.TrimSpace(comment[pos:])
 }
 
 // AllPraise reports whether a finding titled by its comment has nothing but
