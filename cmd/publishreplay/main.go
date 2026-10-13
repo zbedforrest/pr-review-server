@@ -54,7 +54,7 @@ func main() {
 	libraryClaimHold := flag.Bool("library-claim-hold", true, "hold findings that rest on third-party behaviour the agent did not read (PUBLISH_LIBRARY_CLAIM_HOLD)")
 	regressionEvidence := flag.Bool("regression-evidence", true, "hold regression claims the cited hunk contradicts (PUBLISH_REGRESSION_EVIDENCE)")
 	settledAlias := flag.Bool("settled-alias", true, "drop a finding that restates a settled row from another file (PUBLISH_SETTLED_ALIAS)")
-	noteReconcile := flag.Bool("note-reconcile", true, "reconcile folded notes against other reviewers' threads and treat resolved threads as settled (PUBLISH_NOTE_RECONCILE)")
+	noteReconcile := flag.Bool("note-reconcile", true, "match folded notes to other reviewers' resolved threads as settled points (PUBLISH_NOTE_RECONCILE)")
 	bodyCheck := flag.Bool("body-check", false, "hold folded notes the pull request body already states (PUBLISH_BODY_CHECK)")
 	flag.Parse()
 	// The renderer reads its kill switch from the environment, as the
