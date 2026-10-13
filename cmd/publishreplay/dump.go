@@ -57,15 +57,25 @@ type dumpThreadComment struct {
 	ReplyTo    *struct {
 		DatabaseID flexInt64 `json:"databaseId"`
 	} `json:"replyTo"`
+	OriginalCommit struct {
+		Oid string `json:"oid"`
+	} `json:"originalCommit"`
 }
 
-// dumpIssueComment is one PR conversation comment.
+// dumpIssueComment is one conversation comment on the PR; the bot's sticky
+// summary is one of them.
 type dumpIssueComment struct {
 	DatabaseID flexInt64  `json:"databaseId"`
 	Author     *dumpActor `json:"author"`
 	Body       string     `json:"body"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
+}
+
+type dumpCommit struct {
+	Commit struct {
+		Oid string `json:"oid"`
+	} `json:"commit"`
 }
 
 // dumpThread is one review thread. IsResolved is nil when the dump did not
@@ -90,6 +100,7 @@ type prDump struct {
 	URL        string    `json:"url"`
 	State      string    `json:"state"`
 	HeadRefOid string    `json:"headRefOid"`
+	Body       string    `json:"body"`
 	Author     dumpActor `json:"author"`
 	Reviews    struct {
 		Nodes []dumpReview `json:"nodes"`
@@ -102,6 +113,9 @@ type prDump struct {
 	Comments struct {
 		Nodes []dumpIssueComment `json:"nodes"`
 	} `json:"comments"`
+	Commits struct {
+		Nodes []dumpCommit `json:"nodes"`
+	} `json:"commits"`
 
 	Owner string `json:"-"`
 	Repo  string `json:"-"`
@@ -167,8 +181,9 @@ func actorLogin(a *dumpActor) string {
 }
 
 // botLogins returns the logins that posted a root comment carrying the PRism
-// finding marker on this PR, or its sticky summary, so the set identifies
-// the bot without a configured name.
+// finding marker on this PR, or the sticky summary. A published round
+// always writes one of the two, so the set identifies the bot without a
+// configured name.
 func (d *prDump) botLogins() map[string]bool {
 	out := map[string]bool{}
 	for _, t := range d.ReviewThreads.Nodes {
@@ -198,60 +213,110 @@ type round struct {
 	At   time.Time
 }
 
-// rounds are the bot's review submissions in time order. The same commit
-// may appear more than once: each submission was a publication round.
+// rounds are the bot's review submissions in time order, plus the round
+// the sticky summary records when no review carries its head (a round that
+// posted nothing inline). The same commit may appear more than once: each
+// submission was a publication round.
 func (d *prDump) rounds(bots map[string]bool) []round {
 	var out []round
+	seen := map[string]bool{}
 	for _, r := range d.Reviews.Nodes {
 		if !bots[bareLogin(actorLogin(r.Author))] || len(r.Commit.Oid) < 7 || r.State == "PENDING" || r.SubmittedAt.IsZero() {
 			continue
 		}
 		out = append(out, round{SHA: r.Commit.Oid, SHA7: r.Commit.Oid[:7], At: r.SubmittedAt})
+		seen[r.Commit.Oid[:7]] = true
 	}
-	// A round that posted no inline comment left no review submission; the
-	// sticky summary's footer still names the head it reviewed, so that head
-	// is a round too when no submission covers it.
-	if sha, at, ok := d.summaryRound(bots); ok {
-		covered := false
-		for _, r := range out {
-			if strings.HasPrefix(r.SHA, sha) {
-				covered = true
-			}
-		}
-		if !covered {
-			out = append(out, round{SHA: sha, SHA7: sha, At: at})
+	for _, r := range d.summaryRounds(bots) {
+		if !seen[r.SHA7] {
+			out = append(out, r)
+			seen[r.SHA7] = true
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	return out
 }
 
-// summaryFooterRe reads the head out of the sticky summary's footer.
-var summaryFooterRe = regexp.MustCompile(`reviewed ([0-9a-f]{7,40})`)
+var (
+	summaryReviewedRe = regexp.MustCompile(`reviewed ([0-9a-f]{7})`)
+	summaryRoundsRe   = regexp.MustCompile(`Reviews \((\d+)\)`)
+)
 
-// summaryRound is the head the bot's sticky summary says it reviewed and
-// when that summary was last written.
-func (d *prDump) summaryRound(bots map[string]bool) (string, time.Time, bool) {
-	// Comments come oldest first; the newest sticky summary names the head
-	// the last round reviewed.
-	sha, at, found := "", time.Time{}, false
+// summaryRounds reads the round the bot's sticky summary records: its
+// footer names the reviewed head, and the comment's creation time is the
+// round's time when it was the only round, its last edit otherwise (the
+// edit rewrote it for the latest head; earlier summary-only heads are
+// lost). The short sha is widened through the PR's commit list.
+func (d *prDump) summaryRounds(bots map[string]bool) []round {
+	var out []round
 	for _, c := range d.Comments.Nodes {
 		if !bots[bareLogin(actorLogin(c.Author))] || !strings.Contains(c.Body, publisher.SummaryMarker) {
 			continue
 		}
-		m := summaryFooterRe.FindStringSubmatch(c.Body)
+		m := summaryReviewedRe.FindStringSubmatch(c.Body)
 		if m == nil {
 			continue
 		}
-		when := c.UpdatedAt
-		if when.IsZero() {
-			when = c.CreatedAt
+		at := c.CreatedAt
+		if n := summaryRoundsRe.FindStringSubmatch(c.Body); n != nil && n[1] != "1" && !c.UpdatedAt.IsZero() {
+			at = c.UpdatedAt
 		}
-		if !found || !when.Before(at) {
-			sha, at, found = m[1][:7], when, true
+		if at.IsZero() {
+			continue
+		}
+		out = append(out, round{SHA: d.fullSHA(m[1]), SHA7: m[1], At: at})
+	}
+	return out
+}
+
+func (d *prDump) fullSHA(sha7 string) string {
+	for _, c := range d.Commits.Nodes {
+		if strings.HasPrefix(c.Commit.Oid, sha7) {
+			return c.Commit.Oid
 		}
 	}
-	return sha, at, found
+	if strings.HasPrefix(d.HeadRefOid, sha7) {
+		return d.HeadRefOid
+	}
+	return sha7
+}
+
+// summaryNote is one bullet of a rendered summary that reached GitHub
+// without an inline root: a folded note or a bullet linked to the file.
+type summaryNote struct {
+	File string
+	Line int
+	Text string
+}
+
+var summaryNoteRe = regexp.MustCompile(`(?m)^- (.*?) — \[` + "`" + `[^` + "`" + `]*` + "`" + `\]\(https://github\.com/[^/]+/[^/]+/blob/[^/]+/([^#)]+)#L(\d+)\)`)
+
+// summaryNotes parses the bullets of a rendered summary body that link to
+// the file rather than to a review comment: the points the round raised
+// without a thread.
+func summaryNotes(body string) []summaryNote {
+	var out []summaryNote
+	for _, m := range summaryNoteRe.FindAllStringSubmatch(body, -1) {
+		line, _ := strconv.Atoi(m[3])
+		out = append(out, summaryNote{File: m[2], Line: line, Text: stripMarkup(m[1])})
+	}
+	return out
+}
+
+// observedNotes are the bullets of the bot's sticky summary as GitHub holds
+// it now, stamped with the summary's last edit.
+func (d *prDump) observedNotes(bots map[string]bool) ([]summaryNote, time.Time) {
+	for _, c := range d.Comments.Nodes {
+		if !bots[bareLogin(actorLogin(c.Author))] || !strings.Contains(c.Body, publisher.SummaryMarker) {
+			continue
+		}
+		at := c.UpdatedAt
+		if at.IsZero() {
+			at = c.CreatedAt
+		}
+		return summaryNotes(c.Body), at
+	}
+	return nil, time.Time{}
 }
 
 // observedRoot is a PRism root comment as GitHub recorded it, used for the
@@ -263,6 +328,31 @@ type observedRoot struct {
 	Text      string
 	At        time.Time
 	Resolved  bool
+	Commit    string
+	// Replies are the bot's own replies in the thread, in time order.
+	Replies []timedText
+}
+
+type timedText struct {
+	At   time.Time
+	Text string
+}
+
+// earlierReplies are the bot's replies in the thread of root id written
+// before this root was posted: what PRism had said on that point by then.
+func (r observedRoot) earlierReplies(id string, d *prDump, bots map[string]bool) []string {
+	var out []string
+	for _, o := range d.observedRoots(bots) {
+		if o.FindingID != id {
+			continue
+		}
+		for _, reply := range o.Replies {
+			if reply.At.Before(r.At) {
+				out = append(out, reply.Text)
+			}
+		}
+	}
+	return out
 }
 
 func (d *prDump) observedRoots(bots map[string]bool) []observedRoot {
@@ -283,7 +373,13 @@ func (d *prDump) observedRoots(bots map[string]bool) []observedRoot {
 		if line == 0 {
 			line = t.Line
 		}
-		out = append(out, observedRoot{FindingID: id, File: t.Path, Line: line, Text: stripMarkup(root.Body), At: root.CreatedAt, Resolved: t.resolved()})
+		o := observedRoot{FindingID: id, File: t.Path, Line: line, Text: stripMarkup(root.Body), At: root.CreatedAt, Resolved: t.resolved(), Commit: root.OriginalCommit.Oid}
+		for _, c := range t.Comments.Nodes[1:] {
+			if bots[bareLogin(actorLogin(c.Author))] && c.ReplyTo != nil {
+				o.Replies = append(o.Replies, timedText{At: c.CreatedAt, Text: stripMarkup(c.Body)})
+			}
+		}
+		out = append(out, o)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	return out

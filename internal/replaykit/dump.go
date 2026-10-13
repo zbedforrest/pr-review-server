@@ -103,6 +103,7 @@ type PRDump struct {
 	State      string `json:"state"`
 	Merged     bool   `json:"merged"`
 	HeadRefOid string `json:"headRefOid"`
+	Body       string `json:"body"`
 	Author     Actor  `json:"author"`
 	// Source is "rest" for a dump rebuilt from the REST API, whose thread
 	// resolution flags are placeholders until ResolutionFilled is true.

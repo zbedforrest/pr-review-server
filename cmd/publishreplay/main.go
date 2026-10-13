@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false]
+//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false] [--settled-alias=false] [--note-reconcile=false]
 //
 // Dumps are the GitHub GraphQL exports (one PR per file). Sidecars are the
 // review findings JSON per round, fetched from PRISM_BASE_URL/reviews/ with
@@ -53,6 +53,8 @@ func main() {
 	renderHygiene := flag.Bool("render-hygiene", true, "strip confidence labels and internal ids, skip praise titles, hold reason-less notes, count folded notes on the status line (PUBLISH_RENDER_HYGIENE)")
 	libraryClaimHold := flag.Bool("library-claim-hold", true, "hold findings that rest on third-party behaviour the agent did not read (PUBLISH_LIBRARY_CLAIM_HOLD)")
 	regressionEvidence := flag.Bool("regression-evidence", true, "hold regression claims the cited hunk contradicts (PUBLISH_REGRESSION_EVIDENCE)")
+	settledAlias := flag.Bool("settled-alias", true, "drop a finding that restates a settled row from another file (PUBLISH_SETTLED_ALIAS)")
+	noteReconcile := flag.Bool("note-reconcile", true, "reconcile folded notes against other reviewers' threads, resolved threads and the pull request body (PUBLISH_NOTE_RECONCILE)")
 	flag.Parse()
 	// The renderer reads its kill switch from the environment, as the
 	// discount gate does; the flag wins over an inherited variable.
@@ -96,6 +98,8 @@ func main() {
 	opts.Policy.NoScopeGuard = *noScopeGuard
 	opts.Policy.LibraryClaimHold = *libraryClaimHold
 	opts.Policy.RegressionEvidence = *regressionEvidence
+	opts.Policy.SettledAlias = *settledAlias
+	opts.Policy.NoteReconcile = *noteReconcile
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
 			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)
