@@ -13,41 +13,44 @@ var (
 	bodyHeadingRe     = regexp.MustCompile(`(?m)^#+\s*`)
 )
 
+// bodyMinSubjects is how many of the note's specific subjects one paragraph
+// must name: a body that describes the changed code names one symbol of
+// most notes about it, which is not stating their point.
+const bodyMinSubjects = 2
+
 // BodyCovers reports whether the pull request body already states the
-// finding's point: one paragraph or list item of the body names a specific
-// subject of the finding and carries its headline (containment at or above
-// half with four shared words) or its text (the external bar with eight).
-// A body that merely mentions the same file is not coverage; the paragraph
-// has to say what the finding says. A description_drift finding is about
-// the body and quotes it, so it is never covered by it.
+// finding's point: one paragraph or list item of the body names two
+// specific subjects of the finding and carries its headline (containment at
+// or above half with four shared words) or its text (the external bar with
+// eight). A body that merely describes the same code is not coverage; the
+// paragraph has to say what the finding says. A description_drift finding
+// is about the body and quotes it, so it is never covered by it.
 func BodyCovers(f payload.Finding, body string) bool {
+	_, ok := BodyCoverage(f, body)
+	return ok
+}
+
+// BodyCoverage is BodyCovers with the score of the best paragraph.
+func BodyCoverage(f payload.Finding, body string) (PointScore, bool) {
 	if isPseudoFile(f.File) || strings.TrimSpace(body) == "" {
-		return false
+		return PointScore{}, false
 	}
 	if c := f.FindingContract; c != nil && c.FindingKind == "description_drift" {
-		return false
+		return PointScore{}, false
 	}
-	subjects := SpecificSubjects(f.FindingContract)
-	if len(subjects) == 0 {
-		return false
+	if len(SpecificSubjects(f.FindingContract)) < bodyMinSubjects {
+		return PointScore{}, false
 	}
-	text, headline := prismText(f), prismHeadline(f)
 	for _, para := range BodyParagraphs(body) {
-		named := false
-		for _, name := range subjects {
-			if NamesIdentifier(para, name) {
-				named = true
-				break
-			}
-		}
-		if !named {
+		ps := scoreAgainst(f, para, para)
+		if ps.SubjectsNamed < bodyMinSubjects {
 			continue
 		}
-		if _, ok := settledTextScore(text, headline, para); ok {
-			return true
+		if _, ok := ps.pass(); ok {
+			return ps, true
 		}
 	}
-	return false
+	return PointScore{}, false
 }
 
 // BodyParagraphs splits a pull request body into the units a point is

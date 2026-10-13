@@ -223,7 +223,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	}
 	// After the threads: a point another reviewer raised is remembered as
 	// external; the body check leaves no row.
-	if p.Policy.NoteReconcile {
+	if p.Policy.BodyCheck {
 		r.Findings, bodyCovered = withoutBodyCovered(r)
 	}
 	notes := append(p.clampSeverity(&r, rows, guard), external.notes...)
@@ -678,9 +678,10 @@ func settledState(state string) bool {
 
 // withoutSettled drops every finding the alias tiers left unmatched that
 // restates a settled row from another file or another part of its file:
-// same kind, a specific subject the row names or PRism named in the row's
-// thread, and the finding's text inside that thread's text. The row is left
-// as it is: nothing returns, nothing is posted, nothing is counted.
+// same kind, a specific subject PRism named in its own replies on the row's
+// thread (the concession, withdrawal or verification), and the finding's
+// text inside that thread's text. The row is left as it is: nothing
+// returns, nothing is posted, nothing is counted.
 func withoutSettled(r Round, rows map[string]*db.PublishedFinding) ([]payload.Finding, int) {
 	var points []reconcile.SettledPoint
 	ids := make([]string, 0, len(rows))
@@ -694,15 +695,20 @@ func withoutSettled(r Round, rows map[string]*db.PublishedFinding) ([]payload.Fi
 			continue
 		}
 		prior := r.PriorComments[id]
+		if len(prior.OwnReplies) == 0 {
+			// Only PRism's own reply says what the thread settled.
+			continue
+		}
 		text := row.CommentText
 		if text == "" {
 			text = StripRendered(prior.Text)
 		}
+		var replies []string
 		for _, reply := range prior.OwnReplies {
-			text += " " + StripRendered(reply)
+			replies = append(replies, StripRendered(reply))
 		}
 		file, _ := payload.FingerprintParts(id)
-		points = append(points, reconcile.SettledPoint{FindingID: id, File: file, Kind: row.FindingKind, Subjects: splitSubjects(row.Subjects), Text: text})
+		points = append(points, reconcile.SettledPoint{FindingID: id, File: file, Kind: row.FindingKind, Subjects: splitSubjects(row.Subjects), Text: text, Replies: strings.Join(replies, " ")})
 	}
 	if len(points) == 0 {
 		return r.Findings, 0

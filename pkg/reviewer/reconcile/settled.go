@@ -11,17 +11,21 @@ import (
 )
 
 // SettledPoint is a point PRism already settled on the PR: a dismissed,
-// contested, external or fixed ledger row, with everything PRism said in
-// its thread (the root's prose and PRism's own replies). A finding that
-// restates it from another file, or from another part of the same file, is
-// a repeat whatever its wording, line or severity.
+// contested, external or fixed ledger row, with the root's prose (Text) and
+// what PRism itself said in the thread afterwards (Replies: the concession,
+// withdrawal or verification). A finding that restates what those replies
+// settled, from another file or another part of the same file, is a repeat
+// whatever its wording, line or severity.
 type SettledPoint struct {
 	FindingID string
 	File      string
 	Kind      string
 	Subjects  []string
 	Text      string
+	Replies   string
 }
+
+func (s SettledPoint) thread() string { return strings.TrimSpace(s.Text + " " + s.Replies) }
 
 // A settled point has no line anchor to lean on, so the text bar is the
 // external one with a higher floor, and a headline alone must sit mostly
@@ -36,11 +40,14 @@ const (
 // MatchSettled maps the id of each finding that restates a settled point to
 // that point's id. A pair matches when the kinds agree (or one is unknown),
 // a specific subject of the finding (a symbol, selector or key, never a bare
-// file or a workflow) is one of the point's subjects or is named in the
-// thread, and the finding's text sits inside the thread text (containment
-// at or above the external bar with eight shared words, or its headline at
-// or above half with four). Pseudo-files never match. Several findings may
-// restate one point; each finding matches at most the best-scoring point.
+// file or a workflow) is named in what PRism itself replied in the thread,
+// and the finding's text sits inside the thread text (containment at or
+// above the external bar with eight shared words, or its headline at or
+// above half with four). A subject the root alone names, or one the row
+// merely shares, is not enough: distinct defects in one function share its
+// name all the time, and only the reply says what PRism conceded. Pseudo-files
+// never match. Several findings may restate one point; each finding matches
+// at most the best-scoring point.
 func MatchSettled(current []payload.Finding, settled []SettledPoint) map[string]string {
 	out := map[string]string{}
 	for _, f := range current {
@@ -60,6 +67,19 @@ func MatchSettled(current []payload.Finding, settled []SettledPoint) map[string]
 	return out
 }
 
+// PointScore is the evidence behind a settled-point decision: the
+// containment of the finding's text and of its headline in the thread text
+// with the shared word counts, and how many of the finding's specific
+// subjects PRism's own replies name.
+type PointScore struct {
+	Text            float64
+	TextShared      int
+	Headline        float64
+	HeadlineShared  int
+	SubjectsNamed   int
+	SubjectsInTotal int
+}
+
 // SamePoint reports whether finding f restates the settled point s, with the
 // text score behind the decision.
 func SamePoint(f payload.Finding, s SettledPoint) (float64, bool) {
@@ -70,43 +90,51 @@ func SamePoint(f payload.Finding, s SettledPoint) (float64, bool) {
 	if kind != "" && s.Kind != "" && kind != s.Kind {
 		return 0, false
 	}
-	if !sharesSubject(SpecificSubjects(f.FindingContract), s) {
+	ps := ScorePoint(f, s)
+	if ps.SubjectsNamed == 0 {
 		return 0, false
 	}
-	return settledTextScore(prismText(f), prismHeadline(f), s.Text)
+	return ps.pass()
 }
 
-// settledTextScore is the containment of a finding's text, or of its
-// headline, inside a settled thread's text.
-func settledTextScore(text, headline, thread string) (float64, bool) {
-	if thread == "" {
-		return 0, false
-	}
-	if score, shared := Containment(text, thread); shared >= settledMinShared && score >= ExternalThreshold {
-		return score, true
-	}
-	if headline != "" {
-		if score, shared := Containment(headline, thread); shared >= settledHeadlineMinShared && score >= settledHeadlineThreshold {
-			return score, true
+// ScorePoint measures finding f against a settled point without deciding:
+// the subjects its replies name, and the text scores against the whole
+// thread.
+func ScorePoint(f payload.Finding, s SettledPoint) PointScore {
+	return scoreAgainst(f, s.Replies, s.thread())
+}
+
+// scoreAgainst counts the finding's specific subjects named in naming and
+// scores its text and headline against text.
+func scoreAgainst(f payload.Finding, naming, text string) PointScore {
+	var ps PointScore
+	specific := SpecificSubjects(f.FindingContract)
+	ps.SubjectsInTotal = len(specific)
+	for _, name := range specific {
+		if NamesIdentifier(naming, name) {
+			ps.SubjectsNamed++
 		}
+	}
+	if text == "" {
+		return ps
+	}
+	ps.Text, ps.TextShared = Containment(prismText(f), text)
+	if h := prismHeadline(f); h != "" {
+		ps.Headline, ps.HeadlineShared = Containment(h, text)
+	}
+	return ps
+}
+
+// pass applies the text bars: the whole text at the external bar with
+// eight shared words, or the headline at half with four.
+func (ps PointScore) pass() (float64, bool) {
+	if ps.TextShared >= settledMinShared && ps.Text >= ExternalThreshold {
+		return ps.Text, true
+	}
+	if ps.HeadlineShared >= settledHeadlineMinShared && ps.Headline >= settledHeadlineThreshold {
+		return ps.Headline, true
 	}
 	return 0, false
-}
-
-func sharesSubject(subjects []string, s SettledPoint) bool {
-	if len(subjects) == 0 {
-		return false
-	}
-	named := make(map[string]bool, len(s.Subjects))
-	for _, name := range s.Subjects {
-		named[name] = true
-	}
-	for _, name := range subjects {
-		if named[strings.ToLower(name)] || NamesIdentifier(s.Text, name) {
-			return true
-		}
-	}
-	return false
 }
 
 // SpecificSubjects are the contract's subject names that identify code

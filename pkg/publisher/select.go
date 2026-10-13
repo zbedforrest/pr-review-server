@@ -89,10 +89,15 @@ type Policy struct {
 	// unless set to false). Off, only the file-and-line alias tiers apply.
 	SettledAlias bool
 	// NoteReconcile runs the summary's folded notes through the external
-	// reconcile, treats a resolved thread of another reviewer as a settled
-	// point for every finding, and holds a note the pull request body
-	// already states (PUBLISH_NOTE_RECONCILE, on unless set to false).
+	// reconcile and treats a resolved thread of another reviewer as a
+	// settled point for every finding (PUBLISH_NOTE_RECONCILE, on unless set
+	// to false).
 	NoteReconcile bool
+	// BodyCheck holds a folded note the pull request body already states
+	// (PUBLISH_BODY_CHECK, off unless set to true): on the replay set the
+	// text rule held far more notes the body merely described than notes it
+	// answered, so it ships off.
+	BodyCheck bool
 }
 
 // PolicyV2Env is the kill switch for the ledger decision table: "false", "0",
@@ -141,6 +146,20 @@ const NoteReconcileEnv = "PUBLISH_NOTE_RECONCILE"
 // NoteReconcileFromEnv reports whether the environment left note
 // reconciliation on. The poller resolves it once at start-up.
 func NoteReconcileFromEnv() bool { return !envOff(NoteReconcileEnv) }
+
+// BodyCheckEnv turns the pull request body check on: "true", "1", "on" and
+// "yes" enable it; anything else leaves it off.
+const BodyCheckEnv = "PUBLISH_BODY_CHECK"
+
+// BodyCheckFromEnv reports whether the environment turned the body check on.
+// The poller resolves it once at start-up.
+func BodyCheckFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(BodyCheckEnv))) {
+	case "true", "1", "on", "yes":
+		return true
+	}
+	return false
+}
 
 func envOff(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {

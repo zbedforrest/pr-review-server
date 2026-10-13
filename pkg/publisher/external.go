@@ -184,15 +184,35 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 			claimed[row.ExternalCommentID] = true
 		}
 	}
-	var candidates []payload.Finding
+	// A finding the ledger already knows has its own history; only a point
+	// PRism has never recorded can be someone else's first. The shown
+	// findings match first, so a folded note never takes a root from the
+	// finding that would have earned the thread's delta reply.
+	var shownCandidates, noteCandidates []payload.Finding
 	for _, f := range r.externalCandidates(notes) {
-		// A finding the ledger already knows has its own history; only a
-		// point PRism has never recorded can be someone else's first.
-		if _, known := rows[f.ID]; !known {
-			candidates = append(candidates, f)
+		if _, known := rows[f.ID]; known {
+			continue
+		}
+		if Shown(f) {
+			shownCandidates = append(shownCandidates, f)
+		} else {
+			noteCandidates = append(noteCandidates, f)
 		}
 	}
-	matches := reconcile.MatchExternal(candidates, roots)
+	matches := reconcile.MatchExternal(shownCandidates, roots)
+	if len(noteCandidates) > 0 {
+		matched := make(map[int64]bool, len(matches))
+		for _, m := range matches {
+			matched[m.External.CommentID] = true
+		}
+		var left []reconcile.ExternalFinding
+		for _, g := range roots {
+			if !matched[g.CommentID] {
+				left = append(left, g)
+			}
+		}
+		matches = append(matches, reconcile.MatchExternal(noteCandidates, left)...)
+	}
 	if len(matches) == 0 {
 		return pass
 	}

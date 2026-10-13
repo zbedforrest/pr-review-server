@@ -34,12 +34,12 @@ func fallbackFinding() payload.Finding {
 }
 
 func concededPoint(withReply bool) SettledPoint {
-	text := settledRootText
+	p := SettledPoint{FindingID: "web/src/components/preview/PreviewPlayer.tsx:12:571d811f96f7", File: "web/src/components/preview/PreviewPlayer.tsx",
+		Kind: "production_behavior", Subjects: []string{"previewplayer", "requestpermission"}, Text: settledRootText}
 	if withReply {
-		text += " " + settledReply
+		p.Replies = settledReply
 	}
-	return SettledPoint{FindingID: "web/src/components/preview/PreviewPlayer.tsx:12:571d811f96f7", File: "web/src/components/preview/PreviewPlayer.tsx",
-		Kind: "production_behavior", Subjects: []string{"previewplayer", "requestpermission"}, Text: text}
+	return p
 }
 
 func TestMatchSettled_ConcededPointRestatedFromAnotherFile(t *testing.T) {
@@ -58,9 +58,23 @@ func TestMatchSettled_RootProseAloneDoesNotCarryThePoint(t *testing.T) {
 func TestMatchSettled_SharedSymbolWithoutTheTextIsNotAMatch(t *testing.T) {
 	other := SettledPoint{FindingID: "web/src/hooks/useDevicePermissions.ts:1:aaaaaaaaaaaa", File: "web/src/hooks/useDevicePermissions.ts", Kind: "production_behavior",
 		Subjects: []string{"isdeviceblocked"},
-		Text:     "isDeviceBlocked is called on every render because the memo dependency list omits the stream id, so the permission query runs again each time the preview re-renders and the console fills with warnings."}
+		Text:     "isDeviceBlocked is called on every render because the memo dependency list omits the stream id, so the permission query runs again each time the preview re-renders and the console fills with warnings.",
+		Replies:  "Agreed, isDeviceBlocked runs once per render here; withdrawn."}
 	if got := MatchSettled([]payload.Finding{fallbackFinding()}, []SettledPoint{other}); len(got) != 0 {
 		t.Fatalf("a distinct defect on the same symbol is not the settled point: %v", got)
+	}
+}
+
+// Two findings in one endpoint share its name and much of their vocabulary;
+// the row's own subject list and the root's prose are not evidence that the
+// thread settled the second one.
+func TestMatchSettled_RowSubjectsAndRootProseAreNotEvidence(t *testing.T) {
+	f := fallbackFinding()
+	p := concededPoint(false)
+	p.Subjects = append(p.Subjects, "isdeviceblocked")
+	p.Text += " The fallback in isDeviceBlocked is a separate matter."
+	if got := MatchSettled([]payload.Finding{f}, []SettledPoint{p}); len(got) != 0 {
+		t.Fatalf("only PRism's reply says what was conceded: %v", got)
 	}
 }
 

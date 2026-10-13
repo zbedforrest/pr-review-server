@@ -23,18 +23,22 @@
 // verbatim is never given to another finding.
 //
 // Settled points. A finding the tiers above left unmatched is dropped when
-// it restates a settled row, dismissed, contested, external or fixed, from
-// another file or another part of its own file (Policy.SettledAlias,
-// PUBLISH_SETTLED_ALIAS, on unless set to false): the kinds agree or one is
-// unknown, a specific subject of the finding (a symbol, selector or key,
-// never a bare file or workflow) is one of the row's subjects or is named
-// in the row's thread (the root's prose plus PRism's own replies there,
-// which Round.PriorComments carries), and the finding's text sits inside
-// that thread text (containment at or above 0.35 with eight shared words,
-// or its headline at or above 0.5 with four). The row is untouched: a
-// conceded or dismissed point never returns from elsewhere, and nothing is
-// posted or counted. An exact or near return on the row's own lines is
-// still the table's business below.
+// it restates a point PRism settled in one of its own threads, from another
+// file or another part of its own file (Policy.SettledAlias,
+// PUBLISH_SETTLED_ALIAS, on unless set to false): the row is dismissed,
+// contested, external or fixed and carries at least one reply of PRism's
+// own (the concession, withdrawal or verification, which
+// Round.PriorComments carries), the kinds agree or one is unknown, a
+// specific subject of the finding (a symbol, selector or key, never a bare
+// file, a workflow or a symbol named after its own file) is named in those
+// replies, and the finding's text sits inside the thread text, root plus
+// replies (containment at or above 0.35 with eight shared words, or its
+// headline at or above 0.5 with four). A subject the root alone names, or
+// one the row merely shares, is not evidence: on the replay set that rule
+// merged distinct defects of one function about half the time. The row is
+// untouched: a conceded or dismissed point never returns from elsewhere,
+// and nothing is posted or counted. An exact or near return on the row's
+// own lines is still the table's business below.
 //
 // Inputs per prior row: its state; whether a current finding matched it
 // (present); whether HeadSHA equals the row's LastSeenSHA; the change set
@@ -150,11 +154,15 @@
 // linked. Without it a resolved thread is no candidate at all and the
 // finding posts as before.
 //
-// Pull request body. Under Policy.NoteReconcile a folded note the body
-// already states is held: one paragraph or list item of Round.PRBody names
-// a specific subject of the note and carries its headline or text at the
-// settled-point bar. Findings above the inline bar are never held this way;
-// no row is written, so an edited body is judged afresh next round.
+// Pull request body. With Policy.BodyCheck (PUBLISH_BODY_CHECK, off unless
+// set to true) a folded note the body already states is held: one
+// paragraph or list item of Round.PRBody names two specific subjects of
+// the note and carries its headline or text at the settled-point bar.
+// Findings above the inline bar and description_drift findings are never
+// held this way; no row is written, so an edited body is judged afresh
+// next round. It ships off: a body that describes the changed code names
+// a note's symbols and shares its words without answering it, and on the
+// replay set that was most of what the rule held.
 // The Greptile reconcile runs beside it: a finding that restates a Greptile
 // root but misses the external bar keeps its "both" tag, and a Greptile-only
 // point whose root a row claims is dropped so nothing is listed twice. Off,

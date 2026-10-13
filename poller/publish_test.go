@@ -509,10 +509,12 @@ func TestPublishPolicy_CarriesTheRendererAndGuardSwitches(t *testing.T) {
 	assert.False(t, pol.RepublishSameCommit)
 	assert.True(t, pol.SettledAlias)
 	assert.True(t, pol.NoteReconcile)
-	p.settledAliasOff, p.noteReconcileOff = true, true
+	assert.False(t, pol.BodyCheck)
+	p.settledAliasOff, p.noteReconcileOff, p.bodyCheckOn = true, true, true
 	pol = p.publishPolicy()
 	assert.False(t, pol.SettledAlias)
 	assert.False(t, pol.NoteReconcile)
+	assert.True(t, pol.BodyCheck)
 }
 
 // A concession refreshes the summary from the stored review of the published

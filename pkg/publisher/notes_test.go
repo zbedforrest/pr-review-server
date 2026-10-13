@@ -76,6 +76,29 @@ func TestNotes_FoldedNoteOnAnOpenThreadIsLinkedNotReplied(t *testing.T) {
 	}
 }
 
+func TestNotes_AShownFindingMatchesBeforeANoteTakesTheRoot(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900}}
+	r := noteRound("sha-1", greptileBuyerRoot(900))
+	shown := buyerNote()
+	shown.Comment = "`record_club_bulk` reads buyers only from `buyer_id` even when the read switch is off, so older purchases with a null `buyer_id` are missed and the member gets a `CLUB` unread row."
+	shown.ID = fid(modelsFile, 240, shown.Comment)
+	shown.Line = 240
+	shown.FindingContract.Materiality = "current_impact"
+	r.Findings = append(r.Findings, shown)
+	r.Commentable[modelsFile][240] = true
+	rep := publishThreads(t, gh, ledger, r)
+	if rep.ExternalMatched != 1 || rep.ExternalReplies != 1 || rep.InlinePosted != 0 {
+		t.Fatalf("the shown finding takes the root and its delta reply; the note folds: %+v", rep)
+	}
+	if row := ledger.get(db.PublishedKindAnnotation, shown.ID); row == nil || row.ExternalCommentID != 900 {
+		t.Fatalf("the shown finding owns the external row: %+v", row)
+	}
+	if !strings.Contains(gh.issueCreates[0], "1 folded note") {
+		t.Fatalf("the note stays folded:\n%s", gh.issueCreates[0])
+	}
+}
+
 func TestNotes_ShownFindingOnAResolvedThreadIsSettledToo(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900, Resolved: true}}
@@ -171,9 +194,15 @@ func bodyRound(head string, note payload.Finding) Round {
 	}
 }
 
+func bodyPolicy() Policy {
+	pol := testPolicy()
+	pol.BodyCheck = true
+	return pol
+}
+
 func TestNotes_ANoteThePullRequestBodyStatesIsHeld(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
-	rep := publishThreads(t, gh, ledger, bodyRound("sha-1", teamNote()))
+	rep := publishThreadsWith(t, gh, ledger, bodyRound("sha-1", teamNote()), bodyPolicy())
 	if rep.BodyCovered != 1 || rep.InlinePosted != 0 {
 		t.Fatalf("the body already says it: %+v", rep)
 	}
@@ -189,7 +218,7 @@ func TestNotes_AFindingAboveTheInlineBarIsNotHeldByTheBody(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	shown := teamNote()
 	shown.FindingContract.Materiality = "current_impact"
-	rep := publishThreads(t, gh, ledger, bodyRound("sha-1", shown))
+	rep := publishThreadsWith(t, gh, ledger, bodyRound("sha-1", shown), bodyPolicy())
 	if rep.BodyCovered != 0 || rep.InlinePosted != 1 {
 		t.Fatalf("a stated behaviour can still be a defect worth a thread: %+v", rep)
 	}
@@ -199,18 +228,16 @@ func TestNotes_ABodyThatOnlyNamesTheSubjectHoldsNothing(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	r := bodyRound("sha-1", teamNote())
 	r.PRBody = "- Drop the unused `parent_team` column; nothing maps it.\n"
-	rep := publishThreads(t, gh, ledger, r)
+	rep := publishThreadsWith(t, gh, ledger, r, bodyPolicy())
 	if rep.BodyCovered != 0 || !strings.Contains(gh.issueCreates[0], "1 folded note") {
 		t.Fatalf("naming the subject is not stating the point: %+v\n%s", rep, gh.issueCreates[0])
 	}
 }
 
-func TestNotes_BodyCheckKillSwitch(t *testing.T) {
+func TestNotes_BodyCheckIsOffByDefault(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
-	pol := testPolicy()
-	pol.NoteReconcile = false
-	rep := publishThreadsWith(t, gh, ledger, bodyRound("sha-1", teamNote()), pol)
+	rep := publishThreads(t, gh, ledger, bodyRound("sha-1", teamNote()))
 	if rep.BodyCovered != 0 || !strings.Contains(gh.issueCreates[0], "1 folded note") {
-		t.Fatalf("PUBLISH_NOTE_RECONCILE=false folds the note as before: %+v", rep)
+		t.Fatalf("without PUBLISH_BODY_CHECK the note folds as before: %+v", rep)
 	}
 }

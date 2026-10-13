@@ -144,4 +144,13 @@ func TestSettledAliasFromEnv(t *testing.T) {
 			t.Errorf("%s=%q: %v, want %v", NoteReconcileEnv, c.v, got, c.want)
 		}
 	}
+	for _, c := range []struct {
+		v    string
+		want bool
+	}{{"", false}, {"true", true}, {"1", true}, {"false", false}, {"off", false}} {
+		t.Setenv(BodyCheckEnv, c.v)
+		if got := BodyCheckFromEnv(); got != c.want {
+			t.Errorf("%s=%q: %v, want %v", BodyCheckEnv, c.v, got, c.want)
+		}
+	}
 }

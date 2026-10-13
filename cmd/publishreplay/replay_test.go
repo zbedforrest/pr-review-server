@@ -60,7 +60,7 @@ func TestRun_FixtureMetrics(t *testing.T) {
 	want := Metrics{
 		PRs: 5, PRsWithRounds: 5, Rounds: 11, RoundsReplayed: 11, SameCommitRounds: 1, SameCommitSkipped: 1,
 		RootsPosted: 3, Fixed: 1, InThreadReplies: 1, ThreadsResolved: 1, ThreadsUnresolved: 1,
-		ExternalMatched: 1, ExternalReplies: 1, ExternalSettled: 1, BodyCovered: 1,
+		ExternalMatched: 1, ExternalReplies: 1, ExternalSettled: 1,
 		CommentsPerPushP50: 0, CommentsPerPushMean: 0.3, RoundsPerPRP50: 3,
 	}
 	if got := comparable(m); got != want {
@@ -71,13 +71,24 @@ func TestRun_FixtureMetrics(t *testing.T) {
 	}
 }
 
-// With note reconciliation off the fifth round folds both notes again: one
-// sits on the settled Greptile thread, the other repeats the body.
+// With note reconciliation off the fifth round folds the note that sits on
+// the settled Greptile thread again.
 func TestRun_NoteReconcileOffFoldsTheSettledNote(t *testing.T) {
 	policy := publisher.DefaultPolicy()
 	policy.NoteReconcile = false
 	m := fixtureRunWith(t, policy).Metrics
-	if m.ExternalSettled != 0 || m.BodyCovered != 0 || m.SummaryNotesNearExternalRoot != 1 || m.SummaryNotesNearSettledRoot != 1 || m.ExternalMatched != 1 {
+	if m.ExternalSettled != 0 || m.SummaryNotesNearExternalRoot != 1 || m.SummaryNotesNearSettledRoot != 1 || m.ExternalMatched != 1 {
+		t.Fatalf("metrics = %+v", m)
+	}
+}
+
+// The body check is off by default; on, the fifth round holds the note
+// whose two subjects and point the body's team bullet states.
+func TestRun_BodyCheckHoldsTheStatedNote(t *testing.T) {
+	policy := publisher.DefaultPolicy()
+	policy.BodyCheck = true
+	m := fixtureRunWith(t, policy).Metrics
+	if m.BodyCovered != 1 || m.ExternalSettled != 1 {
 		t.Fatalf("metrics = %+v", m)
 	}
 }
@@ -104,7 +115,7 @@ func TestRun_ExternalReconcileOffPostsTheDuplicate(t *testing.T) {
 	policy := publisher.DefaultPolicy()
 	policy.ExternalReconcile = false
 	m := fixtureRunWith(t, policy).Metrics
-	if m.RootsPosted != 4 || m.ExternalDuplicatesNear != 1 || m.ExternalDuplicatesOpen != 1 || m.ExternalMatched != 0 || m.ExternalReplies != 0 || m.ExternalSettled != 0 || m.SummaryNotesNearSettledRoot != 1 || m.BodyCovered != 1 {
+	if m.RootsPosted != 4 || m.ExternalDuplicatesNear != 1 || m.ExternalDuplicatesOpen != 1 || m.ExternalMatched != 0 || m.ExternalReplies != 0 || m.ExternalSettled != 0 || m.SummaryNotesNearSettledRoot != 1 || m.BodyCovered != 0 {
 		t.Fatalf("metrics = %+v", m)
 	}
 }
@@ -124,7 +135,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 		t.Fatalf("rows = %d", len(res.PerPR))
 	}
 	repost, reword, reopen, external, settled := res.PerPR[0], res.PerPR[1], res.PerPR[2], res.PerPR[3], res.PerPR[4]
-	if settled.PR != "example#5" || settled.Rounds != 1 || settled.RootsPosted != 0 || settled.ExternalSettled != 1 || settled.BodyCovered != 1 || settled.SummaryNotesNearExternalRoot != 0 || settled.ObservedSummaryNotesNearExternalRoot != 1 || settled.ObservedSummaryNotesNearSettledRoot != 1 {
+	if settled.PR != "example#5" || settled.Rounds != 1 || settled.RootsPosted != 0 || settled.ExternalSettled != 1 || settled.BodyCovered != 0 || settled.SummaryNotesNearExternalRoot != 0 || settled.ObservedSummaryNotesNearExternalRoot != 1 || settled.ObservedSummaryNotesNearSettledRoot != 1 {
 		t.Errorf("example#5 = %+v", settled)
 	}
 	if external.PR != "example#4" || external.RootsPosted != 0 || external.ExternalMatched != 1 || external.ExternalReplies != 1 || external.ExternalDuplicatesNear != 0 || external.ObservedExternalDuplicatesNear != 1 || external.ObservedExternalDuplicatesOpen != 1 {
@@ -144,8 +155,8 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 6 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.Contains(lines[0], ",external_duplicates_near,external_duplicates_open,external_duplicates_unknown,external_matched,external_replies,observed_external_duplicates_near,observed_external_duplicates_open,held_library_claims,") || !strings.HasSuffix(lines[0], ",zero_status_lines_over_notes,noop_summary_edits,external_settled,settled_dropped,body_covered,summary_notes_near_external_root,summary_notes_near_settled_root,cross_file_same_point,observed_summary_notes_near_external_root,observed_summary_notes_near_settled_root,observed_cross_file_same_point") ||
-		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") || !strings.HasSuffix(lines[5], ",1,0,1,0,0,0,1,1,0") {
+	if len(lines) != 6 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.Contains(lines[0], ",external_duplicates_near,external_duplicates_open,external_duplicates_unknown,external_matched,external_replies,observed_external_duplicates_near,observed_external_duplicates_open,held_library_claims,") || !strings.HasSuffix(lines[0], ",zero_status_lines_over_notes,noop_summary_edits,external_settled,settled_dropped,body_covered,summary_notes_near_external_root,summary_notes_near_settled_root,observed_summary_notes_near_external_root,observed_summary_notes_near_settled_root,observed_cross_file_same_point") ||
+		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") || !strings.HasSuffix(lines[5], ",1,0,0,0,0,1,1,0") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }

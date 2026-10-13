@@ -180,14 +180,16 @@ type Poller struct {
 	summaryGH summaryReactionsGitHub
 	// legacyLedger is PUBLISH_POLICY_V2 resolved once at construction,
 	// threadsOff PUBLISH_THREAD_RESOLUTION, externalOff
-	// PUBLISH_EXTERNAL_RECONCILE, settledAliasOff PUBLISH_SETTLED_ALIAS and
-	// noteReconcileOff PUBLISH_NOTE_RECONCILE; a zero Poller keeps the
-	// shipped policy for all of them.
+	// PUBLISH_EXTERNAL_RECONCILE, settledAliasOff PUBLISH_SETTLED_ALIAS,
+	// noteReconcileOff PUBLISH_NOTE_RECONCILE and bodyCheckOn
+	// PUBLISH_BODY_CHECK; a zero Poller keeps the shipped policy for all of
+	// them.
 	legacyLedger     bool
 	threadsOff       bool
 	externalOff      bool
 	settledAliasOff  bool
 	noteReconcileOff bool
+	bodyCheckOn      bool
 	// agentSlots caps concurrent agent reviews per process. Each agent run
 	// holds ~1 GB of /tmp (clone) + agent memory; without a cap, two PRs
 	// triggered close together can exhaust the instance's memory budget.
@@ -421,6 +423,7 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		externalOff:      !publisher.ExternalReconcileFromEnv(),
 		settledAliasOff:  !publisher.SettledAliasFromEnv(),
 		noteReconcileOff: !publisher.NoteReconcileFromEnv(),
+		bodyCheckOn:      publisher.BodyCheckFromEnv(),
 		reviewDir:        cfg.ReviewsDir,
 		triggerChan:      make(chan struct{}, 1), // Buffered to prevent blocking
 		activeReviews:    make(map[string]ProcessInfo),

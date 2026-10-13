@@ -17,7 +17,6 @@ import (
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/reconcile"
-	"pr-review-server/pkg/reviewer/types"
 	"pr-review-server/poller"
 )
 
@@ -288,14 +287,14 @@ type PRResult struct {
 	// Settled points: what the publisher dropped as a restatement of a
 	// resolved thread, of one of its own settled rows, or of the PR body;
 	// the summary notes it still wrote on a point another reviewer's root
-	// carried (and the subset whose thread is resolved); and the roots it
-	// posted on a point an earlier root of its own carried in another file.
+	// carried (and the subset whose thread is resolved). The cross-file
+	// restatement is observed only: the replay posts no replies, so no row
+	// is ever settled in a thread.
 	ExternalSettled                      int
 	SettledDropped                       int
 	BodyCovered                          int
 	SummaryNotesNearExternalRoot         int
 	SummaryNotesNearSettledRoot          int
-	CrossFileSamePoint                   int
 	ObservedSummaryNotesNearExternalRoot int
 	ObservedSummaryNotesNearSettledRoot  int
 	ObservedCrossFileSamePoint           int
@@ -387,15 +386,12 @@ type Metrics struct {
 	// without a thread on a point an earlier root by another reviewer
 	// carried (same file, line within ten, text overlap), and
 	// SummaryNotesNearSettledRoot the subset whose thread the dump shows
-	// resolved. CrossFileSamePoint counts the roots posted on a point an
-	// earlier root of PRism's own carried in another file, by the
-	// settled-point rule (kind, a shared specific subject, text).
+	// resolved.
 	ExternalSettled              int `json:"external_settled"`
 	SettledDropped               int `json:"settled_dropped"`
 	BodyCovered                  int `json:"body_covered"`
 	SummaryNotesNearExternalRoot int `json:"summary_notes_near_external_root"`
 	SummaryNotesNearSettledRoot  int `json:"summary_notes_near_settled_root"`
-	CrossFileSamePoint           int `json:"cross_file_same_point"`
 
 	// CommentsPerPush is over the rounds the publisher ran; RoundsPerPR over
 	// the rounds the poller would admit (observed minus unchanged-diff
@@ -427,7 +423,8 @@ type ObservedMetrics struct {
 	PRsWithExternalDuplicates int     `json:"prs_with_external_duplicates"`
 	// The sticky summary's bullets as GitHub holds them now, and the
 	// historical roots judged by the settled-point rule against the earlier
-	// roots of other files (with PRism's own replies in their threads).
+	// roots of other files, with PRism's own replies in those threads as
+	// what it conceded.
 	SummaryNotesNearExternalRoot int `json:"summary_notes_near_external_root"`
 	SummaryNotesNearSettledRoot  int `json:"summary_notes_near_settled_root"`
 	CrossFileSamePoint           int `json:"cross_file_same_point"`
@@ -547,7 +544,6 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.BodyCovered += pr.BodyCovered
 		m.SummaryNotesNearExternalRoot += pr.SummaryNotesNearExternalRoot
 		m.SummaryNotesNearSettledRoot += pr.SummaryNotesNearSettledRoot
-		m.CrossFileSamePoint += pr.CrossFileSamePoint
 		rootsResolved += pr.RootsResolved
 		if pr.Rounds > 0 {
 			logf("%s: rounds=%d roots=%d same_marker=%d same_defect=%d fixed=%d fixed_no_change=%d fixed_no_hunk=%d double_notes=%d", d.key(), pr.Rounds, pr.RootsPosted, pr.SameMarkerReposts, pr.SameDefectReposts, pr.Fixed, pr.FixedWithoutFileChange, pr.FixedWithoutHunkChange, pr.DoubleNotes)
@@ -673,10 +669,6 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 			}
 			if classifyRepost(rec.posts[j], rec.posts[before:j], textOnly) != repostNone {
 				pr.SameRoundDuplicates++
-			}
-			if e, ok := crossFileSamePoint(rec.posts[j], rec.posts[:before]); ok {
-				pr.CrossFileSamePoint++
-				logf("%s: round %d cross-file same point: %s:%d restates %s:%d (round %d)", d.key(), i+1, rec.posts[j].File, rec.posts[j].Line, e.File, e.Line, e.Round+1)
 			}
 			if root, ok := replaykit.ExternalDuplicate(rec.posts[j].File, rec.posts[j].Line, rec.posts[j].RawText, roots, rd.At); ok {
 				pr.ExternalDuplicatesNear++
@@ -1084,36 +1076,6 @@ func noteText(pl payload.Payload, n summaryNote) string {
 	return n.Text
 }
 
-// postFinding rebuilds enough of a finding from a post for the settled-point
-// rule: its prose, kind and subjects with their kinds.
-func postFinding(p post) payload.Finding {
-	f := payload.Finding{ID: p.FindingID, File: p.File, Line: p.Line, Comment: p.RawText}
-	if p.Kind != "" || len(p.Subjects) > 0 {
-		c := &types.FindingContract{FindingKind: p.Kind}
-		for _, s := range p.Subjects {
-			c.Subjects = append(c.Subjects, types.FindingSubject{Kind: p.SubjectKinds[s], Name: s})
-		}
-		f.FindingContract = c
-	}
-	return f
-}
-
-// crossFileSamePoint finds the earlier post in another file whose point p
-// restates by the settled-point rule, judging the earlier post's prose as
-// its thread text.
-func crossFileSamePoint(p post, earlier []post) (post, bool) {
-	f := postFinding(p)
-	for _, e := range earlier {
-		if e.File == p.File {
-			continue
-		}
-		if _, ok := reconcile.SamePoint(f, reconcile.SettledPoint{FindingID: e.FindingID, File: e.File, Kind: e.Kind, Subjects: e.Subjects, Text: e.RawText}); ok {
-			return e, true
-		}
-	}
-	return post{}, false
-}
-
 // observe counts the historical roots the dump holds, with the same alias
 // rule applied to their rendered prose, and the historical summary bullets
 // against the other reviewers' roots. The settled-point rule needs the
@@ -1165,9 +1127,7 @@ func observe(d *prDump, bots map[string]bool, s *store, pr *PRResult, m *Observe
 				continue
 			}
 			point := e
-			for _, reply := range r.earlierReplies(e.FindingID, d, bots) {
-				point.Text += " " + reply
-			}
+			point.Replies = strings.Join(r.earlierReplies(e.FindingID, d, bots), " ")
 			if _, ok := reconcile.SamePoint(f, point); ok {
 				pr.ObservedCrossFileSamePoint++
 				logf("%s: observed cross-file same point: %s:%d restates %s", d.key(), r.File, r.Line, e.FindingID)
@@ -1252,7 +1212,7 @@ func round3(v float64) float64 {
 
 var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_without_hunk_change", "fixed_hunk_unknown", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "double_notes", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open",
 	"held_library_claims", "held_regression_claims", "held_praise", "held_reasonless_notes", "library_claims_shown", "uncited_regression_claims_shown", "reasonless_notes_shown", "praise_shown", "confidence_labels_rendered", "leaked_finding_ids", "source_footers", "zero_status_lines_over_notes", "noop_summary_edits",
-	"external_settled", "settled_dropped", "body_covered", "summary_notes_near_external_root", "summary_notes_near_settled_root", "cross_file_same_point", "observed_summary_notes_near_external_root", "observed_summary_notes_near_settled_root", "observed_cross_file_same_point"}
+	"external_settled", "settled_dropped", "body_covered", "summary_notes_near_external_root", "summary_notes_near_settled_root", "observed_summary_notes_near_external_root", "observed_summary_notes_near_settled_root", "observed_cross_file_same_point"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -1262,7 +1222,7 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 	for _, r := range rows {
 		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedWithoutHunkChange), itoa(r.FixedHunkUnknown), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.DoubleNotes), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen),
 			itoa(r.HeldLibraryClaims), itoa(r.HeldRegressionClaims), itoa(r.HeldPraise), itoa(r.HeldReasonless), itoa(r.LibraryClaimsShown), itoa(r.RegressionClaimsShown), itoa(r.ReasonlessNotesShown), itoa(r.PraiseShown), itoa(r.ConfidenceLabels), itoa(r.LeakedFindingIDs), itoa(r.SourceFooters), itoa(r.ZeroStatusLines), itoa(r.NoopSummaryEdits),
-			itoa(r.ExternalSettled), itoa(r.SettledDropped), itoa(r.BodyCovered), itoa(r.SummaryNotesNearExternalRoot), itoa(r.SummaryNotesNearSettledRoot), itoa(r.CrossFileSamePoint), itoa(r.ObservedSummaryNotesNearExternalRoot), itoa(r.ObservedSummaryNotesNearSettledRoot), itoa(r.ObservedCrossFileSamePoint)}
+			itoa(r.ExternalSettled), itoa(r.SettledDropped), itoa(r.BodyCovered), itoa(r.SummaryNotesNearExternalRoot), itoa(r.SummaryNotesNearSettledRoot), itoa(r.ObservedSummaryNotesNearExternalRoot), itoa(r.ObservedSummaryNotesNearSettledRoot), itoa(r.ObservedCrossFileSamePoint)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}
