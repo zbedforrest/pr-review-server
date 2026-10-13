@@ -34,6 +34,12 @@ func TestLexiconLabelsAnonymisedReplies(t *testing.T) {
 		{"This is wrong, the JSON is already validated by the HTTP layer.", Frustrated},
 		{"This is the second time this file changed in the release.", Neutral},
 		{"Third time it flagged the same line after I explained it.", VeryFrustrated},
+		{"Add an unsubscribe link to the digest", Neutral},
+		{"this helper is useless after the refactor", Neutral},
+		{"The retry spams the log on every attempt, so I dropped it.", Neutral},
+		{"Crap, I pushed the wrong branch; fixed now.", Frustrated},
+		{"This comment is useless, the field is never nil here.", Frustrated},
+		{"Can someone turn this bot off on my PRs?", VeryFrustrated},
 	}
 	for _, c := range cases {
 		got := Lexicon(Item{Source: SourceReply, Body: c.body})
@@ -282,6 +288,46 @@ func TestScannerStopsSpendingModelCallsNearTheDeadline(t *testing.T) {
 	_, err := s.Run(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 0, classifier.calls)
+}
+
+// cancelAfterIssueComments cancels the scan once the first PR is fully listed.
+type cancelAfterIssueComments struct {
+	GitHub
+	cancel context.CancelFunc
+}
+
+func (c cancelAfterIssueComments) ListIssueComments(ctx context.Context, owner, repo string, n int) ([]Comment, error) {
+	out, err := c.GitHub.ListIssueComments(ctx, owner, repo, n)
+	c.cancel()
+	return out, err
+}
+
+func TestScannerKeepsWhatItCollectedWhenTheContextExpires(t *testing.T) {
+	now := time.Date(2026, 10, 2, 14, 0, 0, 0, time.UTC)
+	s, gh, store, _ := fixtureScanner(now)
+	second := store.targets[0]
+	second.PRNumber = 43
+	store.targets = append(store.targets, second)
+	gh.review[43], gh.issue[43] = gh.review[42], gh.issue[42]
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.GitHub = cancelAfterIssueComments{GitHub: gh, cancel: cancel}
+
+	res, err := s.Run(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, res.Targets)
+	assert.Equal(t, 1, res.Scanned)
+	assert.True(t, res.Partial())
+	assert.Equal(t, 0, res.Errors)
+	assert.Len(t, res.Added, 5, "the first PR's items are stored before the cutoff")
+	assert.Len(t, store.rows, 5)
+
+	already, cancelled := context.WithCancel(context.Background())
+	cancelled()
+	res, err = s.Run(already)
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Scanned)
+	assert.True(t, res.Partial())
 }
 
 func TestDigestMarkdownAndHealthMetrics(t *testing.T) {

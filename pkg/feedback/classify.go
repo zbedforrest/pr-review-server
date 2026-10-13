@@ -37,8 +37,11 @@ const (
 )
 
 var (
-	veryFrustratedRe = regexp.MustCompile(`(?i)\b(wtf|f+u+c*k\w*|shit\w*|bullshit|crap|please stop|stop (commenting|posting|spamming|reviewing|doing this)|(second|third|fourth|fifth|nth) time (it|you|prism|the bot)|shut up|go away|useless|garbage|spam(my|ming)?|unsubscribe|turn (this|it) off|disable (this|it|the bot)|waste of (my |our )?time|stop it|make it stop|so annoying|incredibly annoying|extremely annoying|infuriating|ridiculous)\b`)
-	frustratedRe     = regexp.MustCompile(`(?i)\b(wrong|incorrect|not true|untrue|false positive|false alarm|irrelevant|nitpick\w*|pointless|unnecessary|noise|noisy|annoying|misleading|not helpful|unhelpful|hallucinat\w*|not a bug|doesn'?t make sense|makes no sense|already (handled|covered|done|the case|does)|too many comments|nope|not (an|the) issue)\b|^no[,.!]|again\?`)
+	// Single words that engineers use about code (useless, spam, crap,
+	// unsubscribe) stay out of the very frustrated list; only wording aimed
+	// at the bot or plainly hostile belongs here.
+	veryFrustratedRe = regexp.MustCompile(`(?i)\b(wtf|f+u+c*k\w*|shit\w*|bullshit|please stop|stop (commenting|posting|spamming|reviewing|doing this)|(second|third|fourth|fifth|nth) time (it|you|prism|the bot)|shut up|go away|garbage|turn (this|it)( bot)? off|disable (this|it|the bot|this bot)|waste of (my |our )?time|stop it|make it stop|so annoying|incredibly annoying|extremely annoying|infuriating|ridiculous)\b`)
+	frustratedRe     = regexp.MustCompile(`(?i)\b(wrong|incorrect|not true|untrue|false positive|false alarm|irrelevant|nitpick\w*|pointless|unnecessary|noise|noisy|annoying|misleading|not helpful|unhelpful|hallucinat\w*|not a bug|doesn'?t make sense|makes no sense|already (handled|covered|done|the case|does)|too many comments|nope|not (an|the) issue|(comment|review|suggestion|finding|bot)s? (is|are|was|were) (useless|spam|crap))\b|^no[,.!]|again\?`)
 	happyRe          = regexp.MustCompile(`(?i)\b(thanks?|thank you|thx|good catch|nice catch|great catch|helpful|love (it|this)|awesome|great (point|catch|find|call)|nice (one|find|point)|appreciate\w*|spot on|good point|fair point|you'?re right|well spotted|legit|valid point|good bot|nice bot|perfect)\b|(\+1|:\+1:|:thumbsup:|:heart:|:pray:|:tada:|👍|🙏|❤️|🎉|💯)`)
 	shoutRe          = regexp.MustCompile(`!{2,}`)
 )
