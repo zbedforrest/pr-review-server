@@ -380,3 +380,25 @@ func TestLedger_MergeBaseDriftMakesNoTransition(t *testing.T) {
 		t.Fatalf("no drift against a round that recorded no base: %+v", rep)
 	}
 }
+
+func TestLedger_UnknownBaseMakesNoTransition(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	first := singleRound("sha-1", previewFile, 100, "medium", previewText)
+	first.Scope = &payload.ReviewScope{MergeBase: "mb-1"}
+	publishThreads(t, gh, ledger, first)
+
+	unknown := absentRound("sha-2", previewFile, 100)
+	unknown.Changes, unknown.Scope = hunked(previewFile, Hunk{97, 9, 97, 7}), &payload.ReviewScope{BaseFetchFailed: true}
+	if rep := publishThreads(t, gh, ledger, unknown); rep.Fixed != 0 || len(gh.repliesTo(1001)) != 0 {
+		t.Fatalf("a review whose base could not be fetched proves nothing: %+v", rep)
+	}
+	if sum := ledger.get(db.PublishedKindSummary, "summary"); sum.MergeBase != "mb-1" {
+		t.Fatalf("an unknown base must not overwrite the recorded one: %+v", sum)
+	}
+
+	settled := absentRound("sha-3", previewFile, 100)
+	settled.Changes, settled.Scope = hunked(previewFile, Hunk{97, 9, 97, 7}), &payload.ReviewScope{MergeBase: "mb-1"}
+	if rep := publishThreads(t, gh, ledger, settled); rep.Fixed != 1 {
+		t.Fatalf("the next review on the recorded base fixes: %+v", rep)
+	}
+}
