@@ -296,6 +296,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 		if p.cfg.PublishNoInlinePRBudget {
 			pol.InlinePRCap = 0
 		}
+		pol.PriorIDAlias = !p.cfg.PublishNoPriorIDAlias
 	}
 	return pol
 }

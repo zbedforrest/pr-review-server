@@ -50,6 +50,12 @@ type Policy struct {
 	// row with one delta reply in that thread and never a root of its own.
 	// Off, only Greptile roots are parsed and a match merely tags the finding.
 	ExternalReconcile bool
+	// PriorIDAlias lets a finding whose contract names a prior_id take that
+	// ledger row's identity before the text and subject matching runs
+	// (PUBLISH_PRIOR_ID_ALIAS, on unless set to false). The agent only emits
+	// a prior_id it was shown (AGENT_PRIOR_FINDINGS), so off, the finding is
+	// matched like any other.
+	PriorIDAlias bool
 }
 
 // PolicyV2Env is the kill switch for the ledger decision table: "false", "0",
@@ -87,7 +93,7 @@ func ExternalReconcileFromEnv() bool {
 // claims folded, the ledger decision table, thread resolution and
 // cross-reviewer reconciliation on.
 func DefaultPolicy() Policy {
-	return Policy{InlineCap: DefaultInlineCap, InlinePRCap: DefaultInlinePRCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true, ExternalReconcile: true}
+	return Policy{InlineCap: DefaultInlineCap, InlinePRCap: DefaultInlinePRCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true, ExternalReconcile: true, PriorIDAlias: true}
 }
 
 // withDefaults fills unset fields only. A zero round cap is a real setting
