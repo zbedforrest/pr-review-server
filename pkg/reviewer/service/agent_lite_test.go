@@ -15,7 +15,7 @@ import (
 )
 
 func TestBuildLitePromptContent_ArmATextThenContextThenOutputFormatThenDiff(t *testing.T) {
-	prompt := buildLitePromptContent("main", liteDiff{Text: "diff --git a/x b/x\n+1\n", Source: diffSourceGit}, prContextSection("Title", "Body", nil), nil, false)
+	prompt := buildLitePromptContent("main", liteDiff{Text: "diff --git a/x b/x\n+1\n", Source: diffSourceGit}, prContextSection("Title", "Body", nil), nil, nil, false)
 	arm := strings.Index(prompt, "Review this PR.")
 	base := strings.Index(prompt, "the base is `origin/main`")
 	fetch := strings.Index(prompt, "`git diff --find-renames -U12 origin/main...HEAD`")
@@ -44,11 +44,11 @@ func TestBuildLitePromptContent_ArmATextThenContextThenOutputFormatThenDiff(t *t
 }
 
 func TestBuildLitePromptContent_TruncatedDiffChangesTheOpening(t *testing.T) {
-	complete := buildLitePromptContent("main", liteDiff{Text: "d", Source: diffSourceGit}, "", nil, false)
+	complete := buildLitePromptContent("main", liteDiff{Text: "d", Source: diffSourceGit}, "", nil, nil, false)
 	if !strings.Contains(complete, "The complete diff") || strings.Contains(complete, "too large to inline") {
 		t.Fatalf("complete opening wrong:\n%s", complete[:400])
 	}
-	partial := buildLitePromptContent("main", liteDiff{Text: "d", Source: diffSourceGit, Truncated: true}, "", nil, false)
+	partial := buildLitePromptContent("main", liteDiff{Text: "d", Source: diffSourceGit, Truncated: true}, "", nil, nil, false)
 	if strings.Contains(partial, "The complete diff") || strings.Contains(partial, "Do not fetch it again") ||
 		!strings.Contains(partial, "too large to inline in full") || !strings.Contains(partial, "Read every changed file that is not shown in full") {
 		t.Fatalf("truncated opening wrong:\n%s", partial[:600])
@@ -56,7 +56,7 @@ func TestBuildLitePromptContent_TruncatedDiffChangesTheOpening(t *testing.T) {
 }
 
 func TestBuildLitePromptContent_NoFirstPassClaimsOrDispositionText(t *testing.T) {
-	prompt := buildLitePromptContent("main", liteDiff{}, "", nil, false)
+	prompt := buildLitePromptContent("main", liteDiff{}, "", nil, nil, false)
 	for _, banned := range []string{"first-pass", "first pass", "FIRST-PASS", "source_id", "disposition", "Disposition", "PR SCOPE", "MECHANICAL ALERTS", "REQUIRED CHECKS (answer"} {
 		if strings.Contains(prompt, banned) {
 			t.Errorf("lite prompt must not mention %q", banned)
@@ -73,11 +73,11 @@ func TestBuildLitePromptContent_NoFirstPassClaimsOrDispositionText(t *testing.T)
 }
 
 func TestBuildLitePromptContent_BugMemorySectionOnlyWhenMatched(t *testing.T) {
-	without := buildLitePromptContent("main", liteDiff{Text: "d"}, "", nil, false)
+	without := buildLitePromptContent("main", liteDiff{Text: "d"}, "", nil, nil, false)
 	if strings.Contains(without, "BUG HISTORY") {
 		t.Fatal("no bug memory section without matches")
 	}
-	with := buildLitePromptContent("main", liteDiff{Text: "d"}, "", []BugMemoryEntry{{ID: "bm-1", Pattern: "Forgot to wire the new setting."}}, false)
+	with := buildLitePromptContent("main", liteDiff{Text: "d"}, "", []BugMemoryEntry{{ID: "bm-1", Pattern: "Forgot to wire the new setting."}}, nil, false)
 	section := strings.Index(with, "THIS REPO'S BUG HISTORY")
 	format := strings.Index(with, "**Output format (STRICT):**")
 	if section < 0 || !strings.Contains(with, "Forgot to wire the new setting.") || section > format {
@@ -87,10 +87,10 @@ func TestBuildLitePromptContent_BugMemorySectionOnlyWhenMatched(t *testing.T) {
 
 func TestBuildLitePromptContent_SubAgentSentenceOnlyForLitePlus(t *testing.T) {
 	const sentence = "Spawn sub-agents to investigate independent parts of the change in parallel"
-	if strings.Contains(buildLitePromptContent("main", liteDiff{Text: "d"}, "", nil, false), sentence) {
+	if strings.Contains(buildLitePromptContent("main", liteDiff{Text: "d"}, "", nil, nil, false), sentence) {
 		t.Fatal("lite must not ask for sub-agents")
 	}
-	plus := buildLitePromptContent("main", liteDiff{Text: "d"}, "", nil, true)
+	plus := buildLitePromptContent("main", liteDiff{Text: "d"}, "", nil, nil, true)
 	at := strings.Index(plus, sentence)
 	format := strings.Index(plus, "**Output format (STRICT):**")
 	if at < 0 || at > format {

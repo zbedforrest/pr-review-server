@@ -20,7 +20,8 @@ var leadingProvenanceNoteRe = regexp.MustCompile(`^\s*_\[[^\]]*\]_\s*`)
 // runs, so the line is bucketed and only a normalized prefix is hashed.
 // Mirrored in benchmark/harvest_outcomes.py; keep the two in sync.
 const (
-	fingerprintLineBucket    = 10
+	// LineBucket is the line granularity of a fingerprint.
+	LineBucket               = 10
 	fingerprintCommentPrefix = 120
 	fingerprintHashHexLen    = 12
 )
@@ -36,7 +37,7 @@ func Fingerprint(file string, line int, comment string) string {
 	sum := sha256.Sum256([]byte(norm))
 	bucket := 0
 	if line > 0 {
-		bucket = line / fingerprintLineBucket
+		bucket = line / LineBucket
 	}
 	return fmt.Sprintf("%s:%d:%s", file, bucket, hex.EncodeToString(sum[:])[:fingerprintHashHexLen])
 }

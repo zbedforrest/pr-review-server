@@ -30,6 +30,23 @@ func TestLoad_RequiredChecksFlag(t *testing.T) {
 	}
 }
 
+func TestLoad_PriorFindingsFlags(t *testing.T) {
+	t.Setenv("AGENT_PRIOR_FINDINGS", "")
+	t.Setenv("PUBLISH_PRIOR_ID_ALIAS", "")
+	if cfg := Load(); cfg.AgentPriorFindings || cfg.PublishNoPriorIDAlias {
+		t.Fatalf("defaults: prompt block off, alias on; got %+v %+v", cfg.AgentPriorFindings, cfg.PublishNoPriorIDAlias)
+	}
+	t.Setenv("AGENT_PRIOR_FINDINGS", "true")
+	t.Setenv("PUBLISH_PRIOR_ID_ALIAS", "false")
+	if cfg := Load(); !cfg.AgentPriorFindings || !cfg.PublishNoPriorIDAlias {
+		t.Fatalf("flags set: got %+v %+v", cfg.AgentPriorFindings, cfg.PublishNoPriorIDAlias)
+	}
+	t.Setenv("AGENT_PRIOR_FINDINGS", "1")
+	if Load().AgentPriorFindings {
+		t.Fatal("only the literal true enables the prompt block")
+	}
+}
+
 func TestLoadAgentBackendDefaultsToClaude(t *testing.T) {
 	t.Setenv("AGENT_BACKEND", "")
 	t.Setenv("OPENROUTER_BASE_URL", "")

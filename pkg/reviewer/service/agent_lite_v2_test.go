@@ -47,30 +47,30 @@ func TestBuildLitePromptV2Content_KeepsArmAOpeningForTruncatedDiff(t *testing.T)
 
 func TestBuildLitePromptV2Content_IgnoresBugMemoryUnlessGiven(t *testing.T) {
 	entries := []BugMemoryEntry{{ID: "bm-1", Pattern: "Forgot to wire the new setting."}}
-	v2 := buildLitePrompt(runconfig.PromptLiteArmAV2, "main", liteDiff{Text: "d"}, "", entries)
+	v2 := buildLitePrompt(runconfig.PromptLiteArmAV2, "main", liteDiff{Text: "d"}, "", entries, nil)
 	if strings.Contains(v2, "BUG HISTORY") || strings.Contains(v2, "Forgot to wire") {
 		t.Fatal("v2 must not render bug memory even when entries matched")
 	}
-	v3 := buildLitePrompt(runconfig.PromptLiteArmAV3, "main", liteDiff{Text: "d"}, prContextSection("Title", "", nil), entries)
+	v3 := buildLitePrompt(runconfig.PromptLiteArmAV3, "main", liteDiff{Text: "d"}, prContextSection("Title", "", nil), entries, nil)
 	section := strings.Index(v3, "THIS REPO'S BUG HISTORY")
 	ctx := strings.Index(v3, "--- PULL REQUEST ---")
 	format := strings.Index(v3, "**Output format (STRICT):**")
 	if section < 0 || !strings.Contains(v3, "Forgot to wire the new setting.") || !(ctx < section && section < format) {
 		t.Fatalf("v3 must render bug memory between the PR context and the output format: ctx=%d section=%d format=%d\n%s", ctx, section, format, v3)
 	}
-	if strings.Replace(v3, bugMemorySection(entries), "", 1) != buildLitePrompt(runconfig.PromptLiteArmAV2, "main", liteDiff{Text: "d"}, prContextSection("Title", "", nil), entries) {
+	if strings.Replace(v3, bugMemorySection(entries), "", 1) != buildLitePrompt(runconfig.PromptLiteArmAV2, "main", liteDiff{Text: "d"}, prContextSection("Title", "", nil), entries, nil) {
 		t.Fatal("v3 must equal v2 plus the bug memory section")
 	}
 }
 
 func TestBuildLitePrompt_LegacyNamesStillUseTheFirstBuilder(t *testing.T) {
 	entries := []BugMemoryEntry{{ID: "bm-1", Pattern: "Forgot to wire the new setting."}}
-	got := buildLitePrompt(runconfig.PromptLiteArmA, "main", liteDiff{Text: "d"}, "", entries)
-	if got != buildLitePromptContent("main", liteDiff{Text: "d"}, "", entries, false) {
+	got := buildLitePrompt(runconfig.PromptLiteArmA, "main", liteDiff{Text: "d"}, "", entries, nil)
+	if got != buildLitePromptContent("main", liteDiff{Text: "d"}, "", entries, nil, false) {
 		t.Fatal("lite_arm_a must be unchanged")
 	}
-	plus := buildLitePrompt(runconfig.PromptLiteArmASub, "main", liteDiff{Text: "d"}, "", entries)
-	if plus != buildLitePromptContent("main", liteDiff{Text: "d"}, "", entries, true) {
+	plus := buildLitePrompt(runconfig.PromptLiteArmASub, "main", liteDiff{Text: "d"}, "", entries, nil)
+	if plus != buildLitePromptContent("main", liteDiff{Text: "d"}, "", entries, nil, true) {
 		t.Fatal("lite_arm_a_sub must be unchanged")
 	}
 }
@@ -206,11 +206,11 @@ func TestArgsWithToolsAndSchema_PassesTheSchemaOnlyForTheV2AndV3Prompts(t *testi
 
 func TestBuildLitePrompt_V2SubAddsTheSubAgentSentenceBeforeTheOutputFormat(t *testing.T) {
 	const sentence = "Spawn sub-agents to investigate independent parts of the change in parallel"
-	v2 := buildLitePrompt(runconfig.PromptLiteArmAV2, "main", liteDiff{Text: "d"}, "", nil)
+	v2 := buildLitePrompt(runconfig.PromptLiteArmAV2, "main", liteDiff{Text: "d"}, "", nil, nil)
 	if strings.Contains(v2, sentence) {
 		t.Fatal("v2 must not ask for sub-agents")
 	}
-	sub := buildLitePrompt(runconfig.PromptLiteArmAV2Sub, "main", liteDiff{Text: "d"}, "", nil)
+	sub := buildLitePrompt(runconfig.PromptLiteArmAV2Sub, "main", liteDiff{Text: "d"}, "", nil, nil)
 	at := strings.Index(sub, sentence)
 	format := strings.Index(sub, "**Output format (STRICT):**")
 	if at < 0 || at > format || !strings.HasPrefix(sub, armAOpeningForMain) {
