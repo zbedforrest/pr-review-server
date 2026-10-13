@@ -21,6 +21,7 @@ import (
 
 	"pr-review-server/pkg/reviewer/heal"
 	"pr-review-server/pkg/reviewer/llm"
+	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/runconfig"
 	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
@@ -172,6 +173,9 @@ type AgentReview struct {
 	OutputTokens int64
 	// DiffSource is "git" or "api" for prompts that inline the diff, "" otherwise.
 	DiffSource string
+	// Scope is the base the diff was taken against and the paths left out as
+	// inherited from it; nil when the worktree diff was unavailable.
+	Scope *payload.ReviewScope
 	// CitedFileContents holds the worktree content of every file the findings
 	// cite, when AgentConfig.CollectCitedFiles is set.
 	CitedFileContents map[string]string
@@ -308,7 +312,8 @@ func RunAgentReview(
 	// Parse the PR diff once; the same []diffFile feeds both the mechanical
 	// gates and the bug-memory matcher, so offline dry-runs of either are
 	// predictive of production behavior.
-	diffFiles := diffFilesForWorktree(prepCtx, cloneDir, defaultBranch, agentCfg.GitHubToken, owner+"/"+repo, agentCfg.APIDiff)
+	scope := reviewScopeForWorktree(prepCtx, cloneDir, owner+"/"+repo, agentCfg.GitHubToken, defaultBranch, logPrefix)
+	diffFiles := scopedDiffFiles(prepCtx, cloneDir, defaultBranch, agentCfg.GitHubToken, owner+"/"+repo, agentCfg.APIDiff, scope)
 
 	// Mechanical gates: cheap deterministic checks over the diff + worktree.
 	// Their findings go into the prompt (the agent must address each) AND are
@@ -349,12 +354,12 @@ func RunAgentReview(
 		log.Printf("%s required checks issued: %v", logPrefix, ids)
 	}
 
-	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets)
-	claims := firstPassClaims(geminiComments)
+	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets) + scopeNote(scope, defaultBranch)
+	claims := firstPassClaims(CommentsInScope(geminiComments, scope))
 	var prompt, diffSource string
 	wallClock := agentCfg.WallClock
 	if isLitePrompt(agentCfg.Prompt) {
-		rendered := renderedDiff(prepCtx, cloneDir, defaultBranch, agentCfg.APIDiff)
+		rendered := renderedDiff(prepCtx, cloneDir, defaultBranch, agentCfg.APIDiff, scope)
 		diffSource = rendered.Source
 		if diffSource == diffSourceAPI {
 			log.Printf("%s worktree diff unavailable; inlining the API diff instead", logPrefix)
@@ -654,9 +659,9 @@ func RunAgentReview(
 	logRemovable = true
 	return &AgentReview{
 		ParseFallback:        parseErr != nil,
-		Comments:             comments,
+		Comments:             CommentsInScope(comments, scope),
 		FirstPassActive:      firstPassActive,
-		Records:              records,
+		Records:              CommentsInScope(records, scope),
 		Gates:                gates,
 		BugMemory:            memMatch,
 		PriorShown:           priorShown,
@@ -680,6 +685,7 @@ func RunAgentReview(
 		InputTokens:          parseResult.inputTokens,
 		OutputTokens:         parseResult.outputTokens,
 		DiffSource:           diffSource,
+		Scope:                scope,
 		CitedFileContents:    citedFiles,
 		GatesStartedAt:       gatesStartedAt,
 		GatesDurationMS:      gatesDurationMS,
@@ -901,7 +907,7 @@ func prScopeSection(baseBranch string, files []diffFile) string {
 	var b strings.Builder
 	b.WriteString("\n--- PR SCOPE ---\n")
 	if baseBranch != "" {
-		fmt.Fprintf(&b, "The PR's base branch is `origin/%s`. The change under review is exactly `git diff origin/%s...HEAD`. Do not diff against origin/HEAD or any other branch — on a stacked PR that drags in parent-branch changes that are out of scope, and code the PR does not touch must not be flagged.\n", baseBranch, baseBranch)
+		fmt.Fprintf(&b, "The PR's base branch is `origin/%s`. The change under review is exactly `git diff origin/%s...HEAD`, minus any paths listed under 'Changes inherited' below. Do not diff against origin/HEAD or any other branch — on a stacked PR that drags in parent-branch changes that are out of scope, and code the PR does not touch must not be flagged.\n", baseBranch, baseBranch)
 	}
 	if len(files) > 0 {
 		b.WriteString("Changed files (+added/-removed lines):\n")
@@ -1081,14 +1087,16 @@ func buildLitePromptContent(baseBranch string, diff liteDiff, prContext string, 
 // shallow history, a missing base ref) the GitHub API diff stands in; past the
 // cap that variant lists the changed paths and tells the model to read them at
 // HEAD, since the failed git command cannot recover them.
-func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string) liteDiff {
+func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string, scope *payload.ReviewScope) liteDiff {
+	pathspec := scopePathspec(scope)
 	base := "origin/HEAD"
 	if baseBranch != "" {
 		base = "origin/" + baseBranch
 	}
-	full, err := gitOutput(ctx, cloneDir, "diff", "--find-renames", "-U12", base+"...HEAD")
+	full, err := gitOutput(ctx, cloneDir, append([]string{"diff", "--find-renames", "-U12", base + "...HEAD"}, pathspec...)...)
 	if err != nil {
 		log.Printf("[AGENT] lite diff via git failed (%v); using the API diff", err)
+		apiDiff = apiDiffInScope(apiDiff, scope)
 		if len(apiDiff) <= diffInlineLimit {
 			return liteDiff{Text: apiDiff, Source: diffSourceAPI}
 		}
@@ -1102,7 +1110,7 @@ func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string) lit
 	if len(full) <= diffInlineLimit {
 		return liteDiff{Text: full, Source: diffSourceGit}
 	}
-	stat, _ := gitOutput(ctx, cloneDir, "diff", "--stat", base+"...HEAD")
+	stat, _ := gitOutput(ctx, cloneDir, append([]string{"diff", "--stat", base + "...HEAD"}, pathspec...)...)
 	return liteDiff{
 		Text:   capDiff(full, stat, fmt.Sprintf("fetch the remaining files with `git diff %s...HEAD -- <path>`", base)),
 		Source: diffSourceGit, Truncated: true,

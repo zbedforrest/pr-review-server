@@ -10,6 +10,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
+	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -901,15 +902,15 @@ func contextIdentifier(line, oldLit string) string {
 // parseNameStatusDiff builds diffFiles from `git diff` output: the name-status
 // listing plus the unified diff, both against base...HEAD in the worktree.
 func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, error) {
-	ns, err := runGit(ctx, dir, "diff", "--name-status", base+"...HEAD")
+	ns, err := runGit(ctx, dir, "-c", "core.quotePath=false", "diff", "--name-status", base+"...HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("name-status: %w (%s)", err, ns)
 	}
 	status := map[string]string{}
 	var order []string
 	for _, line := range strings.Split(strings.TrimSpace(ns), "\n") {
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 || parts[0] == "" {
 			continue
 		}
 		st := "modified"
@@ -924,7 +925,7 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 		order = append(order, p)
 	}
 
-	full, err := runGit(ctx, dir, "diff", "--unified=0", base+"...HEAD")
+	full, err := runGit(ctx, dir, "-c", "core.quotePath=false", "diff", "--unified=0", base+"...HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("unified diff: %w", err)
 	}
@@ -968,12 +969,12 @@ func unifiedDiffLines(full string) (added, removed map[string][]string, addedHun
 		// the matchers. For modified files the `+++ b/` line overwrites this.
 		if strings.HasPrefix(line, "--- a/") {
 			flushHunk(cur)
-			cur = strings.TrimPrefix(line, "--- a/")
+			cur = strings.TrimSuffix(strings.TrimPrefix(line, "--- a/"), "\t") // git appends a tab after names with spaces
 			continue
 		}
 		if strings.HasPrefix(line, "+++ b/") {
 			flushHunk(cur)
-			cur = strings.TrimPrefix(line, "+++ b/")
+			cur = strings.TrimSuffix(strings.TrimPrefix(line, "+++ b/"), "\t")
 			continue
 		}
 		if cur == "" {
@@ -998,6 +999,12 @@ func unifiedDiffLines(full string) (added, removed map[string][]string, addedHun
 // failure. It never deepens or unshallows the shared cache: that could cost
 // minutes inside a review, serialized across every review of the repo.
 func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLockKey, apiDiff string) []diffFile {
+	return scopedDiffFiles(ctx, dir, defaultBranch, token, repoLockKey, apiDiff, nil)
+}
+
+// scopedDiffFiles is diffFilesForWorktree without the scope's inherited
+// paths, dropped before the size guard so base drift cannot trip it.
+func scopedDiffFiles(ctx context.Context, dir, defaultBranch, token, repoLockKey, apiDiff string, scope *payload.ReviewScope) []diffFile {
 	if dir == "" {
 		return nil
 	}
@@ -1015,20 +1022,7 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLo
 		// per-repo mutex cloneForAgent uses. A missing merge-base (shallow
 		// cache) is not fixed by this and falls through to the API diff.
 		log.Printf("[GATES] diff vs %s failed (%v); fetching the base ref and retrying", base, err)
-		fetchBase := func() {
-			if repoLockKey != "" {
-				m := cacheLock(repoLockKey)
-				m.Lock()
-				defer m.Unlock()
-			}
-			bargs := authHeaderArgs(token)
-			bargs = append(bargs, "fetch", "--quiet", "origin",
-				fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", defaultBranch, defaultBranch))
-			if bout, berr := runGit(ctx, dir, bargs...); berr != nil {
-				log.Printf("[GATES] base-ref fetch for %s failed: %v (%s)", base, berr, redactToken(bout, token))
-			}
-		}
-		fetchBase()
+		fetchBaseRef(ctx, dir, defaultBranch, token, repoLockKey, "[GATES]")
 		files, err = parseNameStatusDiff(ctx, dir, base)
 	}
 	if err != nil {
@@ -1039,6 +1033,7 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLo
 		log.Printf("[GATES] diff vs %s failed (%v); using the PR's API diff for the deterministic layer", base, err)
 		files = diffFilesFromAPIDiff(apiDiff)
 	}
+	files = withoutInherited(files, scope)
 	// Guard pathological diffs: gates and memory are per-line regex scans.
 	total := 0
 	for _, f := range files {
@@ -1048,6 +1043,23 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLo
 		return nil
 	}
 	return files
+}
+
+// fetchBaseRef fetches origin/<branch> into the worktree's repository under
+// the per-repo cache mutex and reports whether the fetch succeeded.
+func fetchBaseRef(ctx context.Context, dir, branch, token, repoLockKey, logPrefix string) bool {
+	if repoLockKey != "" {
+		m := cacheLock(repoLockKey)
+		m.Lock()
+		defer m.Unlock()
+	}
+	args := authHeaderArgs(token)
+	args = append(args, "fetch", "--quiet", "origin", fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch))
+	if out, err := runGit(ctx, dir, args...); err != nil {
+		log.Printf("%s base-ref fetch for origin/%s failed: %v (%s)", logPrefix, branch, err, redactToken(out, token))
+		return false
+	}
+	return true
 }
 
 // diffFilesFromAPIDiff builds diffFiles from a GitHub API unified diff. File
@@ -1097,7 +1109,7 @@ type OfflineWorktreeReport struct {
 // worktree exactly as production would (same diff parse, same matchers).
 func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *BugMemoryLibrary, owner, repo string, prNumber int) OfflineWorktreeReport {
 	rep := OfflineWorktreeReport{}
-	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", "")
+	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", localReviewScope(ctx, dir, defaultBranch))
 	if files == nil {
 		return rep
 	}
@@ -1112,7 +1124,7 @@ func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *B
 // any error it returns nil findings (gates are advisory; they must never
 // fail a review).
 func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
-	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", "")
+	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", localReviewScope(ctx, dir, defaultBranch))
 	if files == nil {
 		return nil
 	}

@@ -125,6 +125,10 @@ type ReviewResult struct {
 	// the sidecar stays byte-identical to a carry-less run.
 	Carried *payload.CarryForwardInfo
 
+	// Scope is the review's diff base and inherited paths, persisted so the
+	// publisher can tell base drift from a fix.
+	Scope *payload.ReviewScope
+
 	// LinkedTickets lists the Jira keys whose content reached the agent
 	// prompt; copied onto the sidecar's ReviewRunInfo. Nil when none did.
 	LinkedTickets []string

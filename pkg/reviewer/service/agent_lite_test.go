@@ -114,7 +114,7 @@ func liteWorktree(t *testing.T) (dir, sha string) {
 
 func TestRenderedDiff_UnderCapIsVerbatim(t *testing.T) {
 	dir, _ := liteWorktree(t)
-	got := renderedDiff(context.Background(), dir, "main", "api diff")
+	got := renderedDiff(context.Background(), dir, "main", "api diff", nil)
 	if got.Source != diffSourceGit || got.Truncated {
 		t.Fatalf("source=%q truncated=%t", got.Source, got.Truncated)
 	}
@@ -141,7 +141,7 @@ func TestRenderedDiff_OverCapEmitsStatHeadAndPerPathHint(t *testing.T) {
 
 func TestRenderedDiff_FallsBackToAPIDiffWhenGitFails(t *testing.T) {
 	skipIfNoGit(t)
-	got := renderedDiff(context.Background(), t.TempDir(), "main", "diff --git a/api b/api\n+from api\n")
+	got := renderedDiff(context.Background(), t.TempDir(), "main", "diff --git a/api b/api\n+from api\n", nil)
 	if got.Source != diffSourceAPI || got.Truncated || got.Text != "diff --git a/api b/api\n+from api\n" {
 		t.Fatalf("got=%+v", got)
 	}
@@ -154,7 +154,7 @@ func TestRenderedDiff_OverCapAPIFallbackListsPathsAndReadHint(t *testing.T) {
 		fmt.Fprintf(&api, "diff --git a/pkg/f%d.go b/pkg/f%d.go\n", i, i)
 		api.WriteString(strings.Repeat("+"+strings.Repeat("y", 99)+"\n", 100))
 	}
-	got := renderedDiff(context.Background(), t.TempDir(), "main", api.String())
+	got := renderedDiff(context.Background(), t.TempDir(), "main", api.String(), nil)
 	if got.Source != diffSourceAPI || !got.Truncated {
 		t.Fatalf("source=%q truncated=%t", got.Source, got.Truncated)
 	}
