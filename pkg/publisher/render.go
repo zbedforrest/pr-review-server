@@ -90,7 +90,7 @@ type Round struct {
 	// aliases reworded findings against it.
 	PriorComments map[string]PriorComment
 	// PRBody is the pull request description; a folded note it already
-	// states is held (Policy.NoteReconcile).
+	// states is held (Policy.BodyCheck).
 	PRBody string
 	// Changes resolves what changed between a ledger row's LastSeenSHA and
 	// HeadSHA; ok false means unknown, and nothing is then judged fixed.

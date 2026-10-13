@@ -262,6 +262,24 @@ func TestLedger_CriticalSecurityRiskReturnsOnceWhenItsAnchorChanged(t *testing.T
 	}
 }
 
+func TestLedger_SecurityExceptionOutranksTheSettledPass(t *testing.T) {
+	// The re-admitted root restates the dismissed row by construction, so
+	// the settled pass must run before the exception mints it.
+	const first, second = "The token is logged in clear text.", "The token still reaches the log in clear text because the debug handler prints every request header before the redaction filter runs."
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, securityRound("sha-1", 10, first))
+	ledger.rows[fid("a.go", 10, first)].State = db.PublishedStateDismissed
+	moved := securityRound("sha-3", 12, second)
+	moved.Changes = func(string) (ChangeSet, bool) {
+		return ChangeSet{Files: map[string]bool{"a.go": true}, Lines: map[string]map[int]bool{"a.go": {11: true}}}, true
+	}
+	moved.PriorComments = map[string]PriorComment{fid("a.go", 10, first): {Line: 10, Text: first,
+		OwnReplies: []string{"Understood: the token still reaches the log in clear text because the debug handler prints every request header before the redaction filter runs, and that is intended here.\n\n<!-- prism:reply:v1:1 -->"}}}
+	if rep := publishRound(t, gh, ledger, moved); rep.InlinePosted != 1 || rep.SettledDropped != 0 {
+		t.Fatalf("the one-shot security return is not a restatement to drop: %+v", rep)
+	}
+}
+
 func TestLedger_SecurityExceptionIsOneShotWhileTheFreshRootLives(t *testing.T) {
 	const first, second, third = "The token is logged in clear text.", "The token still reaches the log in clear text.", "Clear-text token in the log output."
 	anchorMoved := func(string) (ChangeSet, bool) {

@@ -27,7 +27,8 @@
 // file or another part of its own file (Policy.SettledAlias,
 // PUBLISH_SETTLED_ALIAS, on unless set to false): the row is dismissed,
 // contested, external or fixed and carries at least one reply of PRism's
-// own (the concession, withdrawal or verification, which
+// own (the concession, withdrawal or verification, or for an external row
+// the delta reply under the other reviewer's root, which
 // Round.PriorComments carries), the kinds agree or one is unknown, a
 // specific subject of the finding (a symbol, selector or key, never a bare
 // file, a workflow or a symbol named after its own file) is named in those

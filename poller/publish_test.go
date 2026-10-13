@@ -439,12 +439,21 @@ func TestBuildPublishRound_CarriesPRismsOwnRepliesWithThePriorComment(t *testing
 		{ID: 503, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54, InReplyToID: 501, Body: "The loop on retry.go:40 now sleeps through backoff(i), so this is fixed.\n\n<!-- prism:reply:v1:502 -->"},
 		{ID: 504, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54, InReplyToID: 501, Body: "Not seen at abc1234."},
 		{ID: 505, Author: "prism-pr-review-server[bot]", Path: "b.go", Line: 9, InReplyToID: 900, Body: "Same point under another reviewer's root.\n\n<!-- prism:reply:v1:901 -->"},
+		{ID: 506, Author: "prism-pr-review-server[bot]", Path: "b.go", Line: 9, InReplyToID: 900, Body: publisher.ExternalReplyMarker("b.go:9:bbbbbbbbbbbb") + "\nPRism found the same point. What this thread does not say yet:\n\nThe cache key omits the tenant."},
+		{ID: 507, Author: "alice", Path: "b.go", Line: 9, InReplyToID: 900, Body: "noted"},
 	}
-	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateFixed}}
+	previous := []db.PublishedFinding{
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateFixed},
+		{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindAnnotation, Fingerprint: "b.go:9:bbbbbbbbbbbb", ExternalCommentID: 900, State: db.PublishedStateExternal},
+	}
 	r := BuildPublishRoundWith(pr, payload.Payload{}, comments, nil, previous, "", publisher.DefaultPolicy())
 	prior := r.PriorComments["a.go:5:aaaaaaaaaaaa"]
 	if len(prior.OwnReplies) != 1 || !strings.Contains(prior.OwnReplies[0], "backoff(i)") {
 		t.Fatalf("only the marked reply under the ledger's root is PRism's own: %+v", prior.OwnReplies)
+	}
+	ext := r.PriorComments["b.go:9:bbbbbbbbbbbb"]
+	if len(ext.OwnReplies) != 1 || !strings.Contains(ext.OwnReplies[0], "tenant") {
+		t.Fatalf("the delta reply under the claimed root belongs to the external row: %+v", ext.OwnReplies)
 	}
 }
 

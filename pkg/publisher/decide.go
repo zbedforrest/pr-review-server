@@ -202,12 +202,14 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 
 	originalIDs := p.aliasToLedger(&r, rows)
 	rememberExternal(ctx, &r, rows, threads, p.Policy.NoteReconcile)
-	r.Findings = p.withoutTerminal(r, rows, originalIDs)
-	r.Findings = withoutGuardedReturns(r, rows, guard)
 	settledDropped, bodyCovered := 0, 0
 	if p.Policy.SettledAlias {
+		// Before withoutTerminal: the root the security exception mints
+		// there restates its settled row by construction.
 		r.Findings, settledDropped = withoutSettled(r, rows)
 	}
+	r.Findings = p.withoutTerminal(r, rows, originalIDs)
+	r.Findings = withoutGuardedReturns(r, rows, guard)
 	forgetShown(&r)
 	var rep Report
 	held := p.holdFindings(&r, &rep, func(id string) bool {
