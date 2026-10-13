@@ -312,7 +312,7 @@ func RunAgentReview(
 	// Parse the PR diff once; the same []diffFile feeds both the mechanical
 	// gates and the bug-memory matcher, so offline dry-runs of either are
 	// predictive of production behavior.
-	scope := reviewScopeForWorktree(prepCtx, cloneDir, owner+"/"+repo, defaultBranch, logPrefix)
+	scope := reviewScopeForWorktree(prepCtx, cloneDir, owner+"/"+repo, agentCfg.GitHubToken, defaultBranch, logPrefix)
 	diffFiles := scopedDiffFiles(prepCtx, cloneDir, defaultBranch, agentCfg.GitHubToken, owner+"/"+repo, agentCfg.APIDiff, scope)
 
 	// Mechanical gates: cheap deterministic checks over the diff + worktree.
@@ -661,7 +661,7 @@ func RunAgentReview(
 		ParseFallback:        parseErr != nil,
 		Comments:             CommentsInScope(comments, scope),
 		FirstPassActive:      firstPassActive,
-		Records:              records,
+		Records:              CommentsInScope(records, scope),
 		Gates:                gates,
 		BugMemory:            memMatch,
 		PriorShown:           priorShown,

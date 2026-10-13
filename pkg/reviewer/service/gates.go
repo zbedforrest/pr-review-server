@@ -969,12 +969,12 @@ func unifiedDiffLines(full string) (added, removed map[string][]string, addedHun
 		// the matchers. For modified files the `+++ b/` line overwrites this.
 		if strings.HasPrefix(line, "--- a/") {
 			flushHunk(cur)
-			cur = strings.TrimPrefix(line, "--- a/")
+			cur = strings.TrimSuffix(strings.TrimPrefix(line, "--- a/"), "\t") // git appends a tab after names with spaces
 			continue
 		}
 		if strings.HasPrefix(line, "+++ b/") {
 			flushHunk(cur)
-			cur = strings.TrimPrefix(line, "+++ b/")
+			cur = strings.TrimSuffix(strings.TrimPrefix(line, "+++ b/"), "\t")
 			continue
 		}
 		if cur == "" {
@@ -1022,20 +1022,7 @@ func scopedDiffFiles(ctx context.Context, dir, defaultBranch, token, repoLockKey
 		// per-repo mutex cloneForAgent uses. A missing merge-base (shallow
 		// cache) is not fixed by this and falls through to the API diff.
 		log.Printf("[GATES] diff vs %s failed (%v); fetching the base ref and retrying", base, err)
-		fetchBase := func() {
-			if repoLockKey != "" {
-				m := cacheLock(repoLockKey)
-				m.Lock()
-				defer m.Unlock()
-			}
-			bargs := authHeaderArgs(token)
-			bargs = append(bargs, "fetch", "--quiet", "origin",
-				fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", defaultBranch, defaultBranch))
-			if bout, berr := runGit(ctx, dir, bargs...); berr != nil {
-				log.Printf("[GATES] base-ref fetch for %s failed: %v (%s)", base, berr, redactToken(bout, token))
-			}
-		}
-		fetchBase()
+		fetchBaseRef(ctx, dir, defaultBranch, token, repoLockKey, "[GATES]")
 		files, err = parseNameStatusDiff(ctx, dir, base)
 	}
 	if err != nil {
@@ -1056,6 +1043,23 @@ func scopedDiffFiles(ctx context.Context, dir, defaultBranch, token, repoLockKey
 		return nil
 	}
 	return files
+}
+
+// fetchBaseRef fetches origin/<branch> into the worktree's repository under
+// the per-repo cache mutex and reports whether the fetch succeeded.
+func fetchBaseRef(ctx context.Context, dir, branch, token, repoLockKey, logPrefix string) bool {
+	if repoLockKey != "" {
+		m := cacheLock(repoLockKey)
+		m.Lock()
+		defer m.Unlock()
+	}
+	args := authHeaderArgs(token)
+	args = append(args, "fetch", "--quiet", "origin", fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch))
+	if out, err := runGit(ctx, dir, args...); err != nil {
+		log.Printf("%s base-ref fetch for origin/%s failed: %v (%s)", logPrefix, branch, err, redactToken(out, token))
+		return false
+	}
+	return true
 }
 
 // diffFilesFromAPIDiff builds diffFiles from a GitHub API unified diff. File
@@ -1105,7 +1109,7 @@ type OfflineWorktreeReport struct {
 // worktree exactly as production would (same diff parse, same matchers).
 func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *BugMemoryLibrary, owner, repo string, prNumber int) OfflineWorktreeReport {
 	rep := OfflineWorktreeReport{}
-	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", reviewScopeForWorktree(ctx, dir, "", defaultBranch, "[GATES]"))
+	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", reviewScopeForWorktree(ctx, dir, "", "", defaultBranch, "[GATES]"))
 	if files == nil {
 		return rep
 	}
@@ -1120,7 +1124,7 @@ func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *B
 // any error it returns nil findings (gates are advisory; they must never
 // fail a review).
 func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
-	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", reviewScopeForWorktree(ctx, dir, "", defaultBranch, "[GATES]"))
+	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", reviewScopeForWorktree(ctx, dir, "", "", defaultBranch, "[GATES]"))
 	if files == nil {
 		return nil
 	}

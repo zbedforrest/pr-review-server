@@ -73,13 +73,26 @@ func rawChanges(out string) []rawChange {
 }
 
 // reviewScopeForWorktree computes the worktree's review scope against
-// origin/<baseBranch>; nil (an unscoped review) when git cannot.
-func reviewScopeForWorktree(ctx context.Context, dir, cacheKey, baseBranch, logPrefix string) *payload.ReviewScope {
+// origin/<baseBranch>, fetching the base ref once if it is missing. It returns
+// nil (an unscoped review) when git cannot, or a scope with only
+// BaseFetchFailed set when the base could not be fetched at all, which
+// consumers read as an unknown base.
+func reviewScopeForWorktree(ctx context.Context, dir, cacheKey, token, baseBranch, logPrefix string) *payload.ReviewScope {
 	base := "origin/HEAD"
 	if baseBranch != "" {
 		base = "origin/" + baseBranch
 	}
 	scope, err := computeReviewScope(ctx, dir, base)
+	if err != nil && baseBranch != "" {
+		fetched := fetchBaseRef(ctx, dir, baseBranch, token, cacheKey, logPrefix)
+		if cacheKey != "" {
+			baseFetchFailures.Store(cacheKey+"\x00"+baseBranch, !fetched)
+		}
+		if scope, err = computeReviewScope(ctx, dir, base); err != nil && !fetched {
+			log.Printf("%s review scope unavailable: %s could not be fetched (%v)", logPrefix, base, err)
+			return &payload.ReviewScope{BaseFetchFailed: true}
+		}
+	}
 	if err != nil {
 		log.Printf("%s review scope unavailable (%v); reviewing the full diff", logPrefix, err)
 		return nil

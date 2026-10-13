@@ -279,9 +279,17 @@ func TestParsedDiffKeepsPathsWithSpaces(t *testing.T) {
 	}
 	found := false
 	for _, f := range files {
-		found = found || f.Path == "my notes.txt"
+		found = found || (f.Path == "my notes.txt" && len(f.Added) == 1)
 	}
 	if !found {
-		t.Fatalf("paths = %+v", files)
+		t.Fatalf("the spaced path and its added line must parse: %+v", files)
+	}
+}
+
+func TestReviewScopeReportsAnUnfetchableBase(t *testing.T) {
+	dir := syncCommitRepo(t)
+	scope := reviewScopeForWorktree(context.Background(), dir, "", "", "missing", "[TEST]")
+	if scope == nil || !scope.BaseFetchFailed || scope.MergeBase != "" || len(scope.InheritedPaths) != 0 {
+		t.Fatalf("an unfetchable base must be recorded as unknown, got %+v", scope)
 	}
 }
