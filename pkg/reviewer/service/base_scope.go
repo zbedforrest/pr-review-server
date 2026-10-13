@@ -38,17 +38,20 @@ func computeReviewScope(ctx context.Context, dir, base string) (*payload.ReviewS
 	}
 	// Only paths the base still differs on can be inherited: a path the base
 	// changed and then reverted may match the PR's own edit by coincidence.
-	movedOnBase := map[string]bool{}
+	tipBlob := map[string]string{}
 	for _, c := range rawChanges(baseMoved) {
-		movedOnBase[c.path] = true
+		tipBlob[c.path] = c.blob
 	}
 	head := map[string]string{}
 	var candidates []string
 	for _, c := range rawChanges(changed) {
-		if movedOnBase[c.path] {
-			head[c.path] = c.blob
-			candidates = append(candidates, c.path)
+		tip, moved := tipBlob[c.path]
+		// Every deletion reports the zero blob, so a deletion only matches a base that still lacks the path.
+		if !moved || (c.blob == zeroBlob) != (tip == zeroBlob) {
+			continue
 		}
+		head[c.path] = c.blob
+		candidates = append(candidates, c.path)
 	}
 	if len(head) == 0 {
 		return scope, nil
@@ -77,6 +80,8 @@ func computeReviewScope(ctx context.Context, dir, base string) (*payload.ReviewS
 // maxScopedLogPaths bounds the pathspec handed to git log; past it the whole
 // range is read instead.
 const maxScopedLogPaths = 2000
+
+const zeroBlob = "0000000000000000000000000000000000000000"
 
 type rawChange struct{ path, blob string }
 
@@ -154,9 +159,10 @@ func commentsInScope(comments []types.LineComment, scope *payload.ReviewScope) [
 }
 
 // scopePathspec returns the pathspec arguments that keep inherited paths out
-// of a git diff, or nil when nothing is inherited.
+// of a git diff, or nil when nothing is inherited or the list is too long for
+// a command line (the prompt note and the output filter still apply).
 func scopePathspec(scope *payload.ReviewScope) []string {
-	if scope == nil || len(scope.InheritedPaths) == 0 {
+	if scope == nil || len(scope.InheritedPaths) == 0 || len(scope.InheritedPaths) > maxScopedLogPaths {
 		return nil
 	}
 	args := []string{"--", "."}

@@ -660,7 +660,7 @@ func RunAgentReview(
 	logRemovable = true
 	return &AgentReview{
 		ParseFallback:        parseErr != nil,
-		Comments:             comments,
+		Comments:             commentsInScope(comments, scope),
 		FirstPassActive:      firstPassActive,
 		Records:              records,
 		Gates:                gates,
@@ -908,7 +908,7 @@ func prScopeSection(baseBranch string, files []diffFile) string {
 	var b strings.Builder
 	b.WriteString("\n--- PR SCOPE ---\n")
 	if baseBranch != "" {
-		fmt.Fprintf(&b, "The PR's base branch is `origin/%s`. The change under review is exactly `git diff origin/%s...HEAD`. Do not diff against origin/HEAD or any other branch — on a stacked PR that drags in parent-branch changes that are out of scope, and code the PR does not touch must not be flagged.\n", baseBranch, baseBranch)
+		fmt.Fprintf(&b, "The PR's base branch is `origin/%s`. The change under review is exactly `git diff origin/%s...HEAD`, minus any paths listed under 'Changes inherited' below. Do not diff against origin/HEAD or any other branch — on a stacked PR that drags in parent-branch changes that are out of scope, and code the PR does not touch must not be flagged.\n", baseBranch, baseBranch)
 	}
 	if len(files) > 0 {
 		b.WriteString("Changed files (+added/-removed lines):\n")

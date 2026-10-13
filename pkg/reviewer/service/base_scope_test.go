@@ -164,3 +164,28 @@ func TestCommentsInScopeDropsFirstPassClaimsOnInheritedPaths(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestReviewScopeKeepsAPRDeletionOfAPathTheBaseStillHas(t *testing.T) {
+	dir := t.TempDir()
+	scopeGit(t, dir, "init", "-q", "-b", "main")
+	writeFiles(t, dir, map[string]string{"old.go": "v1\n", "keep.go": "k\n"})
+	scopeGit(t, dir, "add", "-A")
+	scopeGit(t, dir, "commit", "-qm", "base")
+	scopeGit(t, dir, "checkout", "-qb", "feature")
+	scopeGit(t, dir, "rm", "-q", "old.go")
+	scopeGit(t, dir, "commit", "-qm", "drop old.go")
+	scopeGit(t, dir, "checkout", "-q", "main")
+	scopeGit(t, dir, "rm", "-q", "old.go")
+	scopeGit(t, dir, "commit", "-qm", "drop old.go on the base")
+	writeFiles(t, dir, map[string]string{"old.go": "v2\n"})
+	scopeGit(t, dir, "add", "-A")
+	scopeGit(t, dir, "commit", "-qm", "bring old.go back")
+	scopeGit(t, dir, "checkout", "-q", "feature")
+	scope, err := computeReviewScope(context.Background(), dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scope.InheritedPaths) != 0 {
+		t.Fatalf("the base still has old.go, so deleting it is the PR's change: %v", scope.InheritedPaths)
+	}
+}
