@@ -62,10 +62,14 @@ type recorder struct {
 	// Renderer defects seen in the bodies written this PR.
 	nilImpactBullets int
 	bareLabelTitles  int
+	// notesPerThread counts the status notes each thread received in each
+	// round; doubleNotes the (round, thread) pairs that got more than one.
+	notesPerThread map[[2]int64]int
+	doubleNotes    int
 }
 
 func newRecorder() *recorder {
-	return &recorder{nextComment: 1_000_000, nextIssue: 2_000_000, nextReview: 3_000_000, resolved: map[int64]bool{}}
+	return &recorder{nextComment: 1_000_000, nextIssue: 2_000_000, nextReview: 3_000_000, resolved: map[int64]bool{}, notesPerThread: map[[2]int64]int{}}
 }
 
 const threadNodePrefix = "T"
@@ -149,10 +153,15 @@ func (r *recorder) ListIssueComments(context.Context, string, string, int) ([]pu
 
 // PostReply counts the notes in PRism's own threads; the delta reply under
 // another reviewer's root is the publisher's external_replies, not one.
-func (r *recorder) PostReply(_ context.Context, _, _ string, _ int, _ int64, body string) (int64, error) {
+func (r *recorder) PostReply(_ context.Context, _, _ string, _ int, root int64, body string) (int64, error) {
 	r.nextComment++
 	if !publisher.IsExternalReply(body) {
 		r.replies++
+		key := [2]int64{int64(r.round), root}
+		r.notesPerThread[key]++
+		if r.notesPerThread[key] == 2 {
+			r.doubleNotes++
+		}
 	}
 	return r.nextComment, nil
 }
@@ -180,9 +189,12 @@ type PRResult struct {
 	SameRoundDuplicates        int
 	Fixed                      int
 	FixedWithoutFileChange     int
+	FixedWithoutHunkChange     int
+	FixedHunkUnknown           int
 	FixedFileChangeUnknown     int
 	SameCommitResolves         int
 	InThreadReplies            int
+	DoubleNotes                int
 	ThreadsResolved            int
 	ThreadsUnresolved          int
 	RootsResolved              int
@@ -231,11 +243,19 @@ type Metrics struct {
 
 	Fixed                  int `json:"fixed"`
 	FixedWithoutFileChange int `json:"fixed_without_file_change"`
+	// FixedWithoutHunkChange counts rows fixed on a push that changed the
+	// cited file but no hunk near the cited lines; FixedHunkUnknown the
+	// rows fixed where the compare listed the file without a patch.
+	FixedWithoutHunkChange int `json:"fixed_without_hunk_change"`
+	FixedHunkUnknown       int `json:"fixed_hunk_unknown"`
 	FixedFileChangeUnknown int `json:"fixed_file_change_unknown"`
 	SameCommitResolves     int `json:"same_commit_resolves"`
 	InThreadReplies        int `json:"in_thread_replies"`
-	ThreadsResolved        int `json:"threads_resolved"`
-	ThreadsUnresolved      int `json:"threads_unresolved"`
+	// DoubleNotes counts the threads that received more than one status
+	// note in one round.
+	DoubleNotes       int `json:"double_notes"`
+	ThreadsResolved   int `json:"threads_resolved"`
+	ThreadsUnresolved int `json:"threads_unresolved"`
 
 	// Renderer defects over every summary and inline body written.
 	NilImpactBullets int `json:"nil_impact_bullets"`
@@ -365,6 +385,9 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		}
 		m.Fixed += pr.Fixed
 		m.FixedWithoutFileChange += pr.FixedWithoutFileChange
+		m.FixedWithoutHunkChange += pr.FixedWithoutHunkChange
+		m.FixedHunkUnknown += pr.FixedHunkUnknown
+		m.DoubleNotes += pr.DoubleNotes
 		m.FixedFileChangeUnknown += pr.FixedFileChangeUnknown
 		m.SameCommitResolves += pr.SameCommitResolves
 		m.InThreadReplies += pr.InThreadReplies
@@ -380,7 +403,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.ExternalReplies += pr.ExternalReplies
 		rootsResolved += pr.RootsResolved
 		if pr.Rounds > 0 {
-			logf("%s: rounds=%d roots=%d same_marker=%d same_defect=%d fixed=%d fixed_no_change=%d", d.key(), pr.Rounds, pr.RootsPosted, pr.SameMarkerReposts, pr.SameDefectReposts, pr.Fixed, pr.FixedWithoutFileChange)
+			logf("%s: rounds=%d roots=%d same_marker=%d same_defect=%d fixed=%d fixed_no_change=%d fixed_no_hunk=%d double_notes=%d", d.key(), pr.Rounds, pr.RootsPosted, pr.SameMarkerReposts, pr.SameDefectReposts, pr.Fixed, pr.FixedWithoutFileChange, pr.FixedWithoutHunkChange, pr.DoubleNotes)
 		}
 	}
 	m := &res.Metrics
@@ -460,7 +483,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		pr.ExternalMatched += rep.ExternalMatched
 		pr.ExternalReplies += rep.ExternalReplies
 		pushes = append(pushes, len(rec.posts)-before)
-		pr.InThreadReplies = rec.replies
+		pr.InThreadReplies, pr.DoubleNotes = rec.replies, rec.doubleNotes
 		pr.ThreadsResolved, pr.ThreadsUnresolved, pr.RootsResolved = rec.resolves, rec.unresolves, rec.rootsResolved()
 		annotate(rec.posts[before:], round.Findings)
 		for j := before; j < len(rec.posts); j++ {
@@ -520,11 +543,7 @@ func changeLookup(d *prDump, s *store, head string, logf func(string, ...any)) f
 		if !known {
 			return publisher.ChangeSet{}, false
 		}
-		files := make(map[string]bool, len(cmp.Files))
-		for _, f := range cmp.Files {
-			files[f] = true
-		}
-		return publisher.ChangeSet{Files: files}, true
+		return cmp.changeSet(), true
 	}
 }
 
@@ -556,8 +575,21 @@ func countResolutions(d *prDump, s *store, head string, previous, after []db.Pub
 		switch {
 		case !known:
 			pr.FixedFileChangeUnknown++
+			continue
 		case !fileChanged(cmp.Files, fileOfFingerprint(row.Fingerprint)):
 			pr.FixedWithoutFileChange++
+			continue
+		}
+		cs := cmp.changeSet()
+		if cs.Hunks == nil {
+			continue
+		}
+		switch covered, hunksKnown := publisher.RowAnchorInHunks(cs, row); {
+		case !hunksKnown:
+			pr.FixedHunkUnknown++
+		case !covered:
+			pr.FixedWithoutHunkChange++
+			logf("%s: row %s fixed at %s without a hunk near line %d (compare %s...%s)", d.key(), row.Fingerprint, short(head), row.Line, short(prev.LastSeenSHA), short(head))
 		}
 	}
 }
@@ -837,7 +869,7 @@ func round3(v float64) float64 {
 	return float64(int(v*1000+0.5)) / 1000
 }
 
-var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open"}
+var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_without_hunk_change", "fixed_hunk_unknown", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "double_notes", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -845,7 +877,7 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 		return err
 	}
 	for _, r := range rows {
-		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen)}
+		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedWithoutHunkChange), itoa(r.FixedHunkUnknown), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.DoubleNotes), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}

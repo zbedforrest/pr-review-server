@@ -127,7 +127,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) != 5 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.HasSuffix(lines[0], ",external_duplicates_near,external_duplicates_open,external_duplicates_unknown,external_matched,external_replies,observed_external_duplicates_near,observed_external_duplicates_open") ||
-		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,1,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1") {
+		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,0,0,2,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }
@@ -688,12 +688,12 @@ func TestStore_PushRefetchesEntriesWithoutTheChainWhenOnline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res, known, err := st.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || !known || res.MergeOnly || f.compares != 0 {
-		t.Fatalf("a file lookup takes the old entry as it is: res=%+v known=%v err=%v fetches=%d", res, known, err, f.compares)
+	if res, known, err := st.compare("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || !known || !res.MergeOnly || f.compares != 1 {
+		t.Fatalf("a file lookup fetches an entry without the hunks again: res=%+v known=%v err=%v fetches=%d", res, known, err, f.compares)
 	}
 	res, known, err := st.push("acme", "example", "aaaaaaa", "bbbbbbb")
 	if err != nil || !known || !res.MergeOnly || f.compares != 1 {
-		t.Fatalf("a push lookup fetches an entry without the chain again: res=%+v known=%v err=%v fetches=%d", res, known, err, f.compares)
+		t.Fatalf("the refreshed entry serves the push lookup: res=%+v known=%v err=%v fetches=%d", res, known, err, f.compares)
 	}
 	if _, _, err := st.push("acme", "example", "aaaaaaa", "bbbbbbb"); err != nil || f.compares != 1 {
 		t.Fatalf("the refreshed entry is served from the cache: fetches=%d", f.compares)
@@ -739,5 +739,49 @@ func TestExternalRoots_ResolutionState(t *testing.T) {
 	}
 	if !roots[0].Resolved || !roots[0].ResolvedKnown || roots[1].Resolved || !roots[1].ResolvedKnown || roots[2].Resolved || roots[2].ResolvedKnown {
 		t.Fatalf("resolution state = %+v", roots)
+	}
+}
+
+// example#3's fix push rewritten with hunks that stay clear of the cited
+// line 30: the hunk rule leaves the row open, the file rule fixes it and the
+// harness counts that fix as one without a hunk change.
+func TestRun_FixedWithoutHunkChangeIsCountedUnderTheFileRule(t *testing.T) {
+	dir := copyFixtures(t)
+	entry := filepath.Join(dir, "compare", "acme_example_3a3a3a3_3b3b3b3.json")
+	if err := os.WriteFile(entry, []byte(`{"files":["app/cache.go"],"status":"ahead","schema":4,"hunks":{"app/cache.go":[[80,5,80,6]]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dumps, err := loadDumps("testdata/dumps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := newStore(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(pol publisher.Policy) PRResult {
+		res, err := Run(context.Background(), Options{Dumps: dumps, Store: st, Policy: pol})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.PerPR[2]
+	}
+	hunkRule := run(publisher.DefaultPolicy())
+	if hunkRule.PR != "example#3" || hunkRule.Fixed != 0 || hunkRule.FixedWithoutHunkChange != 0 || hunkRule.InThreadReplies != 0 || hunkRule.RootsPosted != 1 {
+		t.Fatalf("under the hunk rule the row stays open and quiet: %+v", hunkRule)
+	}
+	pol := publisher.DefaultPolicy()
+	pol.FixedByFile = true
+	fileRule := run(pol)
+	if fileRule.Fixed != 1 || fileRule.FixedWithoutHunkChange != 1 || fileRule.FixedHunkUnknown != 0 {
+		t.Fatalf("under the file rule the fix is counted as one without a hunk change: %+v", fileRule)
+	}
+
+	covering := filepath.Join(dir, "compare", "acme_example_3a3a3a3_3b3b3b3.json")
+	if err := os.WriteFile(covering, []byte(`{"files":["app/cache.go"],"status":"ahead","schema":4,"hunks":{"app/cache.go":[[28,6,28,7]]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if near := run(publisher.DefaultPolicy()); near.Fixed != 1 || near.FixedWithoutHunkChange != 0 {
+		t.Fatalf("a hunk over the cited line fixes: %+v", near)
 	}
 }
