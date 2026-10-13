@@ -55,11 +55,117 @@ func splitSubjects(s string) []string {
 }
 
 // threadNote is an in-thread reply the round owes once its ledger writes are
-// done; external marks the delta reply under another reviewer's root.
+// done; external marks the delta reply under another reviewer's root. A
+// status note (not seen, return, severity change) is rendered per thread so
+// that a thread gets one note per round at most.
 type threadNote struct {
 	commentID int64
 	body      string
 	external  bool
+	kind      noteKind
+	from, to  string
+}
+
+type noteKind int
+
+const (
+	noteDelta noteKind = iota
+	noteNotSeen
+	noteReturn
+	noteSeverity
+)
+
+// renderNotes turns the round's status notes into at most one reply per
+// thread: a return and a severity change on one thread are one sentence.
+// The delta replies under other reviewers' roots pass through untouched.
+func renderNotes(notes []threadNote, head string, legacy bool) []threadNote {
+	sha := shortSHA(head)
+	render := func(n threadNote) string {
+		switch n.kind {
+		case noteNotSeen:
+			return notSeenNote(head)
+		case noteReturn:
+			return fmt.Sprintf("Back at %s.", sha)
+		case noteSeverity:
+			return fmt.Sprintf("Severity %s to %s at %s: the cited lines changed.", n.from, n.to, sha)
+		}
+		return n.body
+	}
+	if legacy {
+		out := make([]threadNote, 0, len(notes))
+		for _, n := range notes {
+			out = append(out, threadNote{commentID: n.commentID, body: render(n), external: n.external})
+		}
+		return out
+	}
+	var out []threadNote
+	perThread := map[int64]int{}
+	for _, n := range notes {
+		if n.external {
+			out = append(out, n)
+			continue
+		}
+		if i, seen := perThread[n.commentID]; seen {
+			first := &out[i]
+			if first.kind == noteReturn && n.kind == noteSeverity {
+				first.body = fmt.Sprintf("Back at %s; severity %s to %s: the cited lines changed.", sha, n.from, n.to)
+			} else if first.kind == noteSeverity && n.kind == noteReturn {
+				first.body = fmt.Sprintf("Back at %s; severity %s to %s: the cited lines changed.", sha, first.from, first.to)
+				first.kind = noteReturn
+			}
+			continue
+		}
+		perThread[n.commentID] = len(out)
+		out = append(out, threadNote{commentID: n.commentID, body: render(n), kind: n.kind, from: n.from, to: n.to})
+	}
+	return out
+}
+
+// transitionGuard names the files no fixed, return or severity transition
+// may come from this round: paths the review scope marks inherited from the
+// base branch and every path when the review's merge-base moved since the
+// last published round (base drift, which changes what the agent read
+// without any change to the PR). A path outside the PR diff GitHub lists
+// blocks a return and a severity change but not a fix: a change at the cited
+// lines is evidence whether or not the file is still in the diff. A scope
+// without a merge-base (the base fetch failed) is an unknown base and guards
+// like drift. Without a review scope, or with Policy.NoScopeGuard, nothing
+// is guarded.
+type transitionGuard struct {
+	inherited map[string]bool
+	diff      map[string]bool
+	drift     bool
+	unknown   bool
+}
+
+func newTransitionGuard(r Round, summaryRow *db.PublishedFinding, off bool) transitionGuard {
+	var g transitionGuard
+	if off || r.Scope == nil {
+		return g
+	}
+	g.diff = r.DiffFiles
+	if len(r.Scope.InheritedPaths) > 0 {
+		g.inherited = make(map[string]bool, len(r.Scope.InheritedPaths))
+		for _, path := range r.Scope.InheritedPaths {
+			g.inherited[path] = true
+		}
+	}
+	if r.Scope.MergeBase == "" {
+		g.unknown = true
+		return g
+	}
+	if summaryRow != nil && summaryRow.MergeBase != "" && !strings.EqualFold(summaryRow.MergeBase, r.Scope.MergeBase) {
+		g.drift = true
+	}
+	return g
+}
+
+func (g transitionGuard) blocks(file string) bool {
+	return g.blocksFix(file) || (g.diff != nil && !g.diff[file])
+}
+
+func (g transitionGuard) blocksFix(file string) bool {
+	return g.drift || g.unknown || g.inherited[file]
 }
 
 // publishLedger is the ledger decision table: identity first, then one
@@ -84,11 +190,20 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		}
 	}
 	r.ShowUnverified = p.Policy.ShowUnverified
+	r.LegacyClamp = p.Policy.LegacyClamp
 	threads := newThreadIndex(p.GH, p.Policy, r.Owner, r.Repo, r.Number)
+	guard := newTransitionGuard(r, summaryRow, p.Policy.NoScopeGuard)
+	if guard.drift {
+		log.Printf("[PUBLISH] %s/%s#%d: merge-base moved from %s to %s; no fixed, return or severity transition this round", r.Owner, r.Repo, r.Number, shortSHA(summaryRow.MergeBase), shortSHA(r.Scope.MergeBase))
+	}
+	if guard.unknown {
+		log.Printf("[PUBLISH] %s/%s#%d: review scope has no merge-base; no fixed, return or severity transition this round", r.Owner, r.Repo, r.Number)
+	}
 
 	originalIDs := p.aliasToLedger(&r, rows)
 	rememberExternal(&r, rows)
 	r.Findings = p.withoutTerminal(r, rows, originalIDs)
+	r.Findings = withoutGuardedReturns(r, rows, guard)
 	forgetShown(&r)
 	now := p.now()
 	var external externalPass
@@ -97,7 +212,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		external = p.matchExternal(ctx, &r, rows, now, threads)
 		r.GreptileOnly = withoutClaimedRoots(r.GreptileOnly, rows, external.rows)
 	}
-	notes := append(p.clampSeverity(&r, rows), external.notes...)
+	notes := append(p.clampSeverity(&r, rows, guard), external.notes...)
 
 	alreadyPublished := map[string]bool{}
 	if r.InlineComments == nil {
@@ -173,13 +288,25 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			next := *row
 			next.LastSeenSHA = r.HeadSHA
 			next.Severity = f.Severity
+			next.Line = f.Line
 			backfill(&next, f, r.PriorComments[id])
 			writes = append(writes, pending{row: &next})
 			rep.Hygiene.noteWritten(f, row)
 		case row.State == db.PublishedStateOpen:
-			cs, known := r.changesSince(row.LastSeenSHA)
 			file, _ := payload.FingerprintParts(id)
-			if known && cs.Files[file] {
+			if guard.blocksFix(file) {
+				// The round cannot tell whether the point is fixed, so it is
+				// neither fixed nor counted as still open.
+				continue
+			}
+			cs, fixed, hunksUnknown := r.fixedSince(row, p.Policy.FixedByFile)
+			if hunksUnknown {
+				rep.HunksUnknown++
+				if rep.HunksUnknown == 1 {
+					log.Printf("[PUBLISH] %s/%s#%d: compare %s...%s carries no hunks; absent findings on its files stay open", r.Owner, r.Repo, r.Number, shortSHA(row.LastSeenSHA), shortSHA(r.HeadSHA))
+				}
+			}
+			if fixed {
 				d.Fixed++
 				next := *row
 				next.State = db.PublishedStateFixed
@@ -189,12 +316,15 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 				}
 				// The stored id stands in for the resolve, but the note needs the
 				// listing to show the thread open.
-				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved && threads.noting() {
-					notes = append(notes, threadNote{commentID: row.CommentID, body: notSeenNote(r.HeadSHA)})
-				} else if !listed && threads.listFailed() && threads.noting() && row.CommentID != 0 {
+				if t, listed := threads.lookup(ctx, row.CommentID); listed && !t.Resolved && threads.resolving() && threads.noting() {
+					notes = append(notes, threadNote{commentID: row.CommentID, kind: noteNotSeen})
+				} else if !listed && threads.listFailed() && threads.resolving() && threads.noting() && row.CommentID != 0 {
 					rep.ThreadReplyFailures++
 				}
 				rep.Hygiene.noteResolved(row, r.HeadSHA, cs.Files)
+				if covered, known := r.anchorInHunks(cs, row); known && !covered {
+					rep.Hygiene.noteResolvedOutsideHunk(row, r.HeadSHA)
+				}
 				continue
 			}
 			d.StillOpen++
@@ -216,13 +346,14 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			next.State = db.PublishedStateOpen
 			next.LastSeenSHA = r.HeadSHA
 			next.Severity = f.Severity
+			next.Line = f.Line
 			backfill(&next, f, r.PriorComments[id])
 			writes = append(writes, pending{row: &next, thread: unresolveThread})
 			if t, found := threads.thread(ctx, row.ThreadNodeID, row.CommentID); found {
 				next.ThreadNodeID = t.NodeID
 			}
 			if row.CommentID != 0 {
-				notes = append(notes, threadNote{commentID: row.CommentID, body: fmt.Sprintf("Back at %s.", shortSHA(r.HeadSHA))})
+				notes = append(notes, threadNote{commentID: row.CommentID, kind: noteReturn})
 			}
 		}
 	}
@@ -240,6 +371,13 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	if err != nil {
 		return rep, err
 	}
+	if r.Scope != nil {
+		summaryLedger.MergeBase = r.Scope.MergeBase
+		if summaryLedger.MergeBase == "" && summaryRow != nil {
+			summaryLedger.MergeBase = summaryRow.MergeBase
+		}
+	}
+	notes = renderNotes(notes, r.HeadSHA, p.Policy.LegacyStatusNotes)
 
 	for _, f := range sel.Annotations {
 		if _, posted := postedThisRound[f.ID]; posted {
@@ -250,7 +388,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			Kind: db.PublishedKindAnnotation, Fingerprint: f.ID,
 			SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
 			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
-			State: db.PublishedStateOpen, PublishedAt: now,
+			State: db.PublishedStateOpen, PublishedAt: now, Line: f.Line,
 			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
 		}
 		if prev, ok := rows[f.ID]; ok {
@@ -363,12 +501,57 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 	}
 	aliases := reconcile.AliasPrior(unplaced, own)
 	for i := range r.Findings {
-		if prior, ok := aliases[r.Findings[i].ID]; ok && !placed[r.Findings[i].ID] {
-			original[prior] = r.Findings[i].ID
-			r.Findings[i].ID = prior
+		prior, ok := aliases[r.Findings[i].ID]
+		if !ok || placed[r.Findings[i].ID] {
+			continue
 		}
+		if !p.Policy.LegacyStatusNotes && !sameSubject(rows[prior], r.Findings[i]) {
+			// A text match near a fixed row about other symbols is another
+			// point, not the fixed one coming back: it keeps its own identity.
+			log.Printf("[PUBLISH] %s/%s#%d: finding %s matches fixed row %s by text but names other subjects, not a return", r.Owner, r.Repo, r.Number, r.Findings[i].ID, prior)
+			continue
+		}
+		original[prior] = r.Findings[i].ID
+		r.Findings[i].ID = prior
 	}
 	return original
+}
+
+// sameSubject reports whether a finding may count as the return of a fixed
+// row: the row is not fixed, either side names no subject, or they share
+// one. Open and terminal rows are matched as before; only a return needs
+// the finding re-detected on the root's subject.
+func sameSubject(row *db.PublishedFinding, f payload.Finding) bool {
+	if row == nil || !fixedState(row.State) || row.Subjects == "" {
+		return true
+	}
+	names := reconcile.SubjectNames(f.FindingContract)
+	if len(names) == 0 {
+		return true
+	}
+	for _, mine := range names {
+		for _, theirs := range splitSubjects(row.Subjects) {
+			if mine == theirs {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// withoutGuardedReturns drops a finding that would reopen a fixed row on a
+// file the guard blocks: nothing is posted, the row stays fixed and its
+// thread quiet, and the next round on a settled base sees it again.
+func withoutGuardedReturns(r Round, rows map[string]*db.PublishedFinding, guard transitionGuard) []payload.Finding {
+	kept := make([]payload.Finding, 0, len(r.Findings))
+	for _, f := range r.Findings {
+		if row, ok := rows[f.ID]; ok && fixedState(row.State) && guard.blocks(f.File) {
+			log.Printf("[PUBLISH] %s/%s#%d: finding %s would reopen a fixed row on a guarded path %s, dropped", r.Owner, r.Repo, r.Number, f.ID, f.File)
+			continue
+		}
+		kept = append(kept, f)
+	}
+	return kept
 }
 
 // aliasByPriorID hands a finding the identity of the ledger row its
@@ -508,7 +691,7 @@ func liveSuccessor(others []*db.PublishedFinding) *db.PublishedFinding {
 // clampSeverity keeps an aliased finding at its row's severity unless the
 // cited lines changed since the row was last seen; an accepted change on a
 // row with a thread is announced there once.
-func (p *Publisher) clampSeverity(r *Round, rows map[string]*db.PublishedFinding) []threadNote {
+func (p *Publisher) clampSeverity(r *Round, rows map[string]*db.PublishedFinding, guard transitionGuard) []threadNote {
 	var notes []threadNote
 	for i := range r.Findings {
 		f := &r.Findings[i]
@@ -516,13 +699,12 @@ func (p *Publisher) clampSeverity(r *Round, rows map[string]*db.PublishedFinding
 		if !ok || terminalState(row.State) || row.Severity == "" || severityRank(row.Severity) == severityRank(f.Severity) {
 			continue
 		}
-		if !r.anchorChanged(row.LastSeenSHA, f.File, f.Line) {
+		if guard.blocks(f.File) || !r.anchorChanged(row.LastSeenSHA, f.File, f.Line) {
 			f.Severity = row.Severity
 			continue
 		}
 		if row.CommentID != 0 {
-			notes = append(notes, threadNote{commentID: row.CommentID,
-				body: fmt.Sprintf("Severity %s to %s at %s: the cited lines changed.", row.Severity, f.Severity, shortSHA(r.HeadSHA))})
+			notes = append(notes, threadNote{commentID: row.CommentID, kind: noteSeverity, from: row.Severity, to: f.Severity})
 		}
 	}
 	return notes
@@ -546,19 +728,98 @@ func (r Round) changedFilesSince(base string) map[string]bool {
 }
 
 // anchorChanged reports whether the lines a finding cites changed since
-// base: by line when the change set carries lines for the file, else by the
-// file having changed at all. Unknown changes never count as a change.
+// base: by line when the change set carries lines for the file, by hunk
+// (head side) when it carries hunks, else by the file having changed at
+// all. Unknown changes never count as a change.
 func (r Round) anchorChanged(base, file string, line int) bool {
 	cs, ok := r.changesSince(base)
 	if !ok || !cs.Files[file] {
 		return false
 	}
-	lines, known := cs.Lines[file]
-	if !known || line <= 0 {
+	if line <= 0 {
 		return true
 	}
-	for l := line - anchorTolerance; l <= line+anchorTolerance; l++ {
-		if lines[l] {
+	if lines, known := cs.Lines[file]; known {
+		for l := line - anchorTolerance; l <= line+anchorTolerance; l++ {
+			if lines[l] {
+				return true
+			}
+		}
+		return false
+	}
+	if cs.Hunks != nil {
+		return hunksCover(cs.Hunks[file], line, line, true)
+	}
+	return true
+}
+
+// fixedSince judges an absent open row fixed: its file changed since the
+// row's last-seen head and, unless byFile restores the file rule, the lines
+// it cited fall inside a changed hunk of that file. A file the compare lists
+// without a patch (too large, binary) proves nothing, and neither does a
+// compare that carries no hunks at all; hunksUnknown reports the latter so
+// the round can say once that it held the row.
+func (r Round) fixedSince(row *db.PublishedFinding, byFile bool) (cs ChangeSet, fixed, hunksUnknown bool) {
+	cs, known := r.changesSince(row.LastSeenSHA)
+	file := payload.FingerprintFile(row.Fingerprint)
+	if !known || !cs.Files[file] {
+		return cs, false, false
+	}
+	if byFile {
+		return cs, true, false
+	}
+	covered, hunksKnown := r.anchorInHunks(cs, row)
+	if !hunksKnown {
+		return cs, false, cs.Hunks == nil
+	}
+	return cs, covered, false
+}
+
+// anchorInHunks reports whether the row's cited lines fall inside a hunk of
+// its file in the change set, and whether the set could tell (it carries
+// hunks and has the file's). The anchor is the row's stored line, in the
+// base's coordinates; for a row written before the column, the line GitHub
+// shows for its comment, in the head's; else the fingerprint's line bucket.
+func (r Round) anchorInHunks(cs ChangeSet, row *db.PublishedFinding) (covered, known bool) {
+	if cs.Hunks == nil {
+		return false, false
+	}
+	file, bucket := payload.FingerprintParts(row.Fingerprint)
+	hunks, ok := cs.Hunks[file]
+	if !ok || len(hunks) == 0 {
+		return false, false
+	}
+	start, end, head := row.Line, row.Line, false
+	if start <= 0 {
+		if prior := r.PriorComments[row.Fingerprint]; prior.Line > 0 {
+			start, end, head = prior.Line, prior.Line, true
+		} else {
+			start, end = bucket*payload.LineBucket, bucket*payload.LineBucket+payload.LineBucket-1
+		}
+	}
+	return hunksCover(hunks, start, end, head), true
+}
+
+// RowAnchorInHunks is anchorInHunks for a caller outside a round, such as
+// the replay harness judging a resolve it observed: the row's stored line
+// or bucket against the change set's hunks.
+func RowAnchorInHunks(cs ChangeSet, row db.PublishedFinding) (covered, known bool) {
+	return Round{}.anchorInHunks(cs, &row)
+}
+
+// hunksCover reports whether any hunk, on its base side (or head side when
+// head is set), comes within anchorTolerance lines of the range start..end.
+func hunksCover(hunks []Hunk, start, end int, head bool) bool {
+	for _, h := range hunks {
+		from, count := h.OldStart, h.OldLines
+		if head {
+			from, count = h.NewStart, h.NewLines
+		}
+		if count < 1 {
+			count = 1
+		}
+		to := from + count - 1
+		if start <= to+anchorTolerance && end >= from-anchorTolerance {
 			return true
 		}
 	}

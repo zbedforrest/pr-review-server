@@ -121,6 +121,7 @@ func replayCase(ctx context.Context, c *Case, policy publisher.Policy, responder
 		in := replaykit.RoundInput{Index: ev.round, SHA: rd.SHA, At: rd.At, Payload: pl, Comments: c.Dump.ExternalCommentsBefore(bots, rd.At)}
 		if lastReplayed != "" && lastReplayed != rd.SHA {
 			in.ChangedFiles, in.ChangedKnown = c.Compares[compareKey(lastReplayed, rd.SHA)]
+			in.ChangedHunks = c.CompareHunks[compareKey(lastReplayed, rd.SHA)]
 		} else if lastReplayed == rd.SHA {
 			in.ChangedKnown = true
 		}

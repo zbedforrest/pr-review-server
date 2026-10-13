@@ -187,14 +187,15 @@ func testPolicy() Policy {
 	return pol
 }
 
-// changed is a Round.Changes that reports the given files touched between
-// any base and the head, with no line detail.
+// changed is a Round.Changes that reports the given files rewritten end to
+// end between any base and the head: one hunk covering every line.
 func changed(files ...string) func(string) (ChangeSet, bool) {
-	set := map[string]bool{}
+	set, hunks := map[string]bool{}, map[string][]Hunk{}
 	for _, f := range files {
 		set[f] = true
+		hunks[f] = []Hunk{{OldStart: 1, OldLines: 1 << 20, NewStart: 1, NewLines: 1 << 20}}
 	}
-	return func(string) (ChangeSet, bool) { return ChangeSet{Files: set}, true }
+	return func(string) (ChangeSet, bool) { return ChangeSet{Files: set, Hunks: hunks}, true }
 }
 
 func roundOne() Round {

@@ -36,6 +36,8 @@ func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 		Muted:             m.Muted,
 		MuteLiftedAt:      m.MuteLiftedAt,
 		ExternalCommentID: m.ExternalCommentID,
+		Line:              m.Line,
+		MergeBase:         m.MergeBase,
 	}
 }
 
@@ -68,6 +70,8 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		Muted:             p.Muted,
 		MuteLiftedAt:      p.MuteLiftedAt,
 		ExternalCommentID: p.ExternalCommentID,
+		Line:              p.Line,
+		MergeBase:         p.MergeBase,
 	}
 	// Muted is owned by SetPublishedMute; a round rewriting the summary row
 	// never clears it, and a muted placeholder takes its first head here.
@@ -110,6 +114,11 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 	if model.ExternalCommentID != 0 {
 		updates["external_comment_id"] = model.ExternalCommentID
 	}
+	// Both follow the caller's row: a finding seen without a line falls back
+	// to its comment or bucket anchor, and a round without a scope leaves no
+	// merge-base for the next scoped round to call drift.
+	updates["line"] = model.Line
+	updates["merge_base"] = model.MergeBase
 	return g.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{Name: "repo_owner"},

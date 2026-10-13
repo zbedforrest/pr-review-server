@@ -232,6 +232,13 @@ type PublishedFinding struct {
 	// ExternalCommentID is the other reviewer's root comment an external row
 	// was matched to, and where PRism's one delta reply went.
 	ExternalCommentID int64
+	// Line is the line the finding cited the last time it was seen, in the
+	// coordinates of LastSeenSHA; zero on rows written before the column.
+	Line int
+	// MergeBase, on the summary row, is the merge-base the last published
+	// review diffed against; a later review against another base is base
+	// drift, never evidence of a fix or a return.
+	MergeBase string
 }
 
 // TelemetryEvent represents a single telemetry event for creation

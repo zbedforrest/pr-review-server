@@ -167,15 +167,15 @@ func TestRender_StoredPayloadHasNoNilImpactBulletsOrBareLabelTitles(t *testing.T
 		t.Errorf("legacy titles must reproduce the three nil-impact bullets, got %d:\n%s", len(m), legacy)
 	}
 	long := r.Findings[4]
-	if m := inlineTitleLineRe.FindStringSubmatch(renderInline(long, "prism-only", "", "", "", true)); m == nil || m[1] != "Behavior change" {
+	if m := inlineTitleLineRe.FindStringSubmatch(renderInline(long, "prism-only", "", "", "", true, false)); m == nil || m[1] != "Behavior change" {
 		t.Errorf("legacy titles must reproduce the bare kind label, got %v", m)
 	}
 }
 
 func TestNormalizeFindingContract_ShortensALongHeadlineForTheRenderer(t *testing.T) {
-	c := &types.FindingContract{Headline: "The pagination cursor is rebuilt from the response body so a page that repeats an id loops forever on the client side"}
+	c := &types.FindingContract{Headline: "The pagination cursor is rebuilt from the response body so a page that repeats an id loops forever on the client side, which keeps the spinner on screen and the request queue growing until the tab is closed"}
 	types.NormalizeFindingContract(c)
-	if c.Headline == "" || !strings.HasSuffix(c.Headline, "...") || len([]rune(c.Headline)) > 90 {
+	if c.Headline == "" || !strings.HasSuffix(c.Headline, "[…]") || len([]rune(c.Headline)) > 140 {
 		t.Fatalf("a long headline is shortened, not blanked: %q", c.Headline)
 	}
 	fd := withContract(f("x", "medium", "a.go", 1, "Body."), "production_behavior", "current_impact", "Clients loop forever.", "")

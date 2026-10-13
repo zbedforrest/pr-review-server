@@ -108,10 +108,10 @@ func TestBullet_TruncatesOnWordBoundaryWithoutStrayPeriods(t *testing.T) {
 	out := RenderSummary(Round{Owner: "a", Repo: "b", Number: 1, HeadSHA: "abc1234", RoundNumber: 1, Findings: []payload.Finding{fd}}, Selection{})
 	line := out[strings.Index(out, "- **[CRITICAL]**"):]
 	line = line[:strings.Index(line, " — ")]
-	if !strings.HasSuffix(line, "gamma...") && !strings.HasSuffix(line, "beta...") && !strings.HasSuffix(line, "alpha...") {
-		t.Fatalf("bullet must end on a whole word plus an ellipsis: %q", line)
+	if !strings.HasSuffix(line, "gamma […]") && !strings.HasSuffix(line, "beta […]") && !strings.HasSuffix(line, "alpha […]") {
+		t.Fatalf("bullet must end on a whole word plus the cut marker: %q", line)
 	}
-	if strings.Contains(line, "..") && !strings.Contains(line, "...") {
-		t.Fatalf("no stray double periods: %q", line)
+	if strings.Contains(line, "..") {
+		t.Fatalf("no stray periods: %q", line)
 	}
 }

@@ -23,13 +23,17 @@ type Hygiene struct {
 	RepeatedPosts          []HygieneNote
 	RepeatAfterDismiss     []HygieneNote
 	FixedWithoutFileChange []HygieneNote
+	// FixedWithoutHunkChange: the cited file changed but no hunk of that
+	// change came near the cited lines; only the file rule (FixedByFile)
+	// resolves such a row.
+	FixedWithoutHunkChange []HygieneNote
 	SameCommitResolves     []HygieneNote
 	SeverityEscalations    []HygieneNote
 }
 
 // Empty reports whether the round committed no defect.
 func (h Hygiene) Empty() bool {
-	return len(h.RepeatedPosts)+len(h.RepeatAfterDismiss)+len(h.FixedWithoutFileChange)+len(h.SameCommitResolves)+len(h.SeverityEscalations) == 0
+	return len(h.RepeatedPosts)+len(h.RepeatAfterDismiss)+len(h.FixedWithoutFileChange)+len(h.FixedWithoutHunkChange)+len(h.SameCommitResolves)+len(h.SeverityEscalations) == 0
 }
 
 // priorRows indexes every finding and annotation row the ledger holds for the
@@ -84,4 +88,10 @@ func (h *Hygiene) noteResolved(row *db.PublishedFinding, headSHA string, changed
 	if file := payload.FingerprintFile(row.Fingerprint); !changedFiles[file] {
 		h.FixedWithoutFileChange = append(h.FixedWithoutFileChange, HygieneNote{Fingerprint: row.Fingerprint, Detail: fmt.Sprintf("file=%s from=%s to=%s", file, row.LastSeenSHA, headSHA)})
 	}
+}
+
+// noteResolvedOutsideHunk records a row flipped to fixed on a head whose
+// change to the cited file left the cited lines untouched.
+func (h *Hygiene) noteResolvedOutsideHunk(row *db.PublishedFinding, headSHA string) {
+	h.FixedWithoutHunkChange = append(h.FixedWithoutHunkChange, HygieneNote{Fingerprint: row.Fingerprint, Detail: fmt.Sprintf("line=%d from=%s to=%s", row.Line, row.LastSeenSHA, headSHA)})
 }

@@ -218,6 +218,13 @@ func PublisherTakesChangedFiles() bool { return true }
 // publisher as the change set for every base the ledger asks about; an
 // unknown compare leaves the round without one, so nothing is judged fixed.
 func SetChangedFiles(r *publisher.Round, files []string, known bool) {
+	SetChanges(r, files, nil, known)
+}
+
+// SetChanges is SetChangedFiles with the compare's hunks, in the cache's
+// [old start, old lines, new start, new lines] shape; with nil hunks the
+// publisher can place no cited line in the change and fixes nothing.
+func SetChanges(r *publisher.Round, files []string, hunks map[string][][4]int, known bool) {
 	if !known {
 		return
 	}
@@ -225,7 +232,16 @@ func SetChangedFiles(r *publisher.Round, files []string, known bool) {
 	for _, f := range files {
 		set[f] = true
 	}
-	r.Changes = func(string) (publisher.ChangeSet, bool) { return publisher.ChangeSet{Files: set}, true }
+	cs := publisher.ChangeSet{Files: set}
+	if hunks != nil {
+		cs.Hunks = make(map[string][]publisher.Hunk, len(hunks))
+		for f, hs := range hunks {
+			for _, h := range hs {
+				cs.Hunks[f] = append(cs.Hunks[f], publisher.Hunk{OldStart: h[0], OldLines: h[1], NewStart: h[2], NewLines: h[3]})
+			}
+		}
+	}
+	r.Changes = func(string) (publisher.ChangeSet, bool) { return cs, true }
 }
 
 // RoundInput is everything one replayed round needs beyond the ledger.
@@ -236,6 +252,7 @@ type RoundInput struct {
 	Payload      payload.Payload
 	Comments     []github.ReviewCommentInfo // other reviewers' comments present at At
 	ChangedFiles []string
+	ChangedHunks map[string][][4]int
 	ChangedKnown bool
 }
 
@@ -279,7 +296,7 @@ func (p *PRReplay) PublishRound(ctx context.Context, in RoundInput) (RoundResult
 	comments := append(append([]github.ReviewCommentInfo{}, in.Comments...), p.Rec.OwnComments(p.Bot)...)
 	ghPR := github.PullRequest{Owner: p.Owner, Repo: p.Repo, Number: p.Number, CommitSHA: in.SHA, Author: p.Author}
 	round := poller.BuildPublishRound(ghPR, in.Payload, comments, PatchesFromHunks(in.Payload), previous, "")
-	SetChangedFiles(&round, in.ChangedFiles, in.ChangedKnown)
+	SetChanges(&round, in.ChangedFiles, in.ChangedHunks, in.ChangedKnown)
 	at := in.At
 	p.Pub.Now = func() time.Time { return at }
 	p.Rec.Begin(in.Index, in.SHA)

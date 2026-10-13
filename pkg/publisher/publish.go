@@ -84,6 +84,10 @@ type Report struct {
 	Fixed            int
 	Confidence       int
 	Hygiene          Hygiene
+	// HunksUnknown counts absent open rows kept open because the compare
+	// to their last-seen head carried no hunks at all. A compare that has
+	// hunks but none for the cited file also keeps the row open, uncounted.
+	HunksUnknown int
 	// Reopened counts fixed rows that came back; ThreadReplies the in-thread
 	// notes posted for reopens and severity changes (and for fixes under
 	// Policy.ResolveNotes), ThreadReplyFailures the ones GitHub rejected.
@@ -180,6 +184,7 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 	prior := priorRows(r.Previous)
 	r.Findings = WithoutDismissed(r.Findings, r.Previous)
 	r.LegacyTitles = p.Policy.LegacyTitles
+	r.LegacyClamp = p.Policy.LegacyClamp
 	if r.RoundNumber == 0 {
 		r.RoundNumber = 1
 		if summaryRow != nil {
@@ -235,7 +240,7 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 			Kind: db.PublishedKindAnnotation, Fingerprint: f.ID,
 			SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
 			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
-			State: db.PublishedStateOpen, PublishedAt: now,
+			State: db.PublishedStateOpen, PublishedAt: now, Line: f.Line,
 		}
 		if prev, ok := published[f.ID]; ok {
 			// A finding already posted inline keeps its comment; an annotation
@@ -299,7 +304,7 @@ func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prio
 	}
 	inputs := make([]ReviewCommentInput, 0, len(sel.Inline))
 	for _, f := range sel.Inline {
-		inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: renderInline(f, r.sourceTag(f.ID), r.AgentLinkBase, r.BadgeBaseURL, r.SettleFooter, r.LegacyTitles)})
+		inputs = append(inputs, ReviewCommentInput{Path: f.File, Line: f.Line, Body: renderInline(f, r.sourceTag(f.ID), r.AgentLinkBase, r.BadgeBaseURL, r.SettleFooter, r.LegacyTitles, r.LegacyClamp)})
 	}
 	reviewID, commentIDs, err := p.GH.CreateReview(ctx, r.Owner, r.Repo, r.Number, r.HeadSHA, "", inputs)
 	if err != nil {
@@ -321,7 +326,7 @@ func (p *Publisher) postInline(ctx context.Context, r Round, sel Selection, prio
 			SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
 			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
 			CommentID: commentID, ReviewID: reviewID, ThreadNodeID: threads.nodeIDOf(ctx, commentID),
-			State: db.PublishedStateOpen, PublishedAt: now,
+			State: db.PublishedStateOpen, PublishedAt: now, Line: f.Line,
 			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
 		}); err != nil {
 			return postedThisRound, fmt.Errorf("record finding %s: %w", f.ID, err)
@@ -411,6 +416,7 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 	rememberExternal(&r, rows)
 	r.Findings = withoutConceded(WithoutDismissed(r.Findings, r.Previous), r.Previous)
 	r.LegacyTitles = p.Policy.LegacyTitles
+	r.LegacyClamp = p.Policy.LegacyClamp
 	r.ShowUnverified = p.Policy.ShowUnverified
 	if r.InlineComments == nil {
 		r.InlineComments = map[string]int64{}

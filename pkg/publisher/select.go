@@ -60,6 +60,22 @@ type Policy struct {
 	// a prior_id it was shown (AGENT_PRIOR_FINDINGS), so off, the finding is
 	// matched like any other.
 	PriorIDAlias bool
+	// FixedByFile restores the pre-W6 fix rule (PUBLISH_FIXED_NEEDS_HUNK set
+	// to false): an absent finding is fixed when its file changed at all,
+	// whatever lines the change touched.
+	FixedByFile bool
+	// LegacyStatusNotes restores the pre-W6 thread notes
+	// (PUBLISH_STATUS_NOTES_V2 set to false): a return and a severity change
+	// on one thread are two replies, and a fixed row reopens for any finding
+	// the alias matches, whatever subject it names.
+	LegacyStatusNotes bool
+	// LegacyClamp restores the pre-W6 cuts (PUBLISH_RENDER_CLAMP_V2 set to
+	// false): bullets and headlines cut at a word boundary with "...".
+	LegacyClamp bool
+	// NoScopeGuard turns the review-scope guard off (PUBLISH_SCOPE_GUARD set
+	// to false): inherited paths, paths outside the PR diff and merge-base
+	// drift no longer block fixed, return and severity transitions.
+	NoScopeGuard bool
 }
 
 // PolicyV2Env is the kill switch for the ledger decision table: "false", "0",

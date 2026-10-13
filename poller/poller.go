@@ -1161,8 +1161,12 @@ func githubCompareChanges(ctx context.Context, owner, repo, base, head, token st
 			patches[f.Filename] = f.Patch
 		}
 		if f.PreviousFilename != "" {
-			// A rename touches both names; a finding citing either is stale.
+			// A rename touches both names; a finding citing either is stale,
+			// and the patch's base side is in the old name's coordinates.
 			files = append(files, f.PreviousFilename)
+			if f.Patch != "" {
+				patches[f.PreviousFilename] = f.Patch
+			}
 		}
 	}
 	return files, patches, true

@@ -155,10 +155,12 @@ func TestNormalizeFindingContractKeepsAShortHeadlineAndDropsABadOne(t *testing.T
 	cases := map[string]string{
 		"  Tooltip never shows long values. ": "Tooltip never shows long values",
 		"Tooltip never shows .":               "Tooltip never shows",
-		strings.Repeat("word ", 30):           strings.Repeat("word ", 16) + "word...",
-		strings.Repeat("x", 120):              strings.Repeat("x", 87) + "...",
-		"line one\nline two":                  "",
-		"":                                    "",
+		strings.Repeat("word ", 30):           strings.Repeat("word ", 26) + "word […]",
+		strings.Repeat("x", 120):              strings.Repeat("x", 120),
+		strings.Repeat("x", 200):              strings.Repeat("x", 136) + " […]",
+		"The cache is rebuilt on every request, so the first page load after a deploy waits on the full index and the health check times out before the pods are marked ready": "The cache is rebuilt on every request, so the first page load after a deploy waits on the full index and the health check times out […]",
+		"line one\nline two": "",
+		"":                   "",
 	}
 	for in, want := range cases {
 		value := validFindingContract()

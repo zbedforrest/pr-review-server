@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"pr-review-server/pkg/publisher"
 )
 
 var errNotFound = errors.New("not found")
@@ -39,9 +41,29 @@ type compareResult struct {
 	MergeCommits int    `json:"merge_commits,omitempty"`
 	MergeOnly    bool   `json:"merge_only,omitempty"`
 	Schema       int    `json:"schema,omitempty"`
+	// Hunks lists each changed file's hunks as [old start, old lines, new
+	// start, new lines]; a file the endpoint listed without a patch has no
+	// entry. Entries below schema 4 predate the hunks and are fetched again.
+	Hunks map[string][][4]int `json:"hunks,omitempty"`
 }
 
-const compareSchema = 3
+const compareSchema = 4
+
+func (r compareResult) changeSet() publisher.ChangeSet {
+	cs := publisher.ChangeSet{Files: make(map[string]bool, len(r.Files))}
+	for _, f := range r.Files {
+		cs.Files[f] = true
+	}
+	if r.Hunks != nil {
+		cs.Hunks = make(map[string][]publisher.Hunk, len(r.Hunks))
+		for f, hs := range r.Hunks {
+			for _, h := range hs {
+				cs.Hunks[f] = append(cs.Hunks[f], publisher.Hunk{OldStart: h[0], OldLines: h[1], NewStart: h[2], NewLines: h[3]})
+			}
+		}
+	}
+	return cs
+}
 
 // unchangedDiff reports a push that left the PR diff as it was: the same
 // tree, or merge commits only. It is the replay's stand-in for the poller's
@@ -113,7 +135,7 @@ func compareKey(owner, repo, base, head string) string {
 // compare answers which files changed between two heads from any cached
 // entry, whatever its schema: the file list has never changed shape.
 func (s *store) compare(owner, repo, base, head string) (compareResult, bool, error) {
-	return s.lookup(owner, repo, base, head, 0)
+	return s.lookup(owner, repo, base, head, compareSchema)
 }
 
 // push is the compare between consecutive round heads, which must carry
@@ -269,12 +291,13 @@ func parseCompare(raw []byte) (compareResult, error) {
 		Files        []struct {
 			Filename         string `json:"filename"`
 			PreviousFilename string `json:"previous_filename"`
+			Patch            string `json:"patch"`
 		} `json:"files"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return compareResult{}, err
 	}
-	res := compareResult{Truncated: len(payload.Files) >= compareFilesCap, Status: payload.Status, Schema: compareSchema, Commits: payload.TotalCommits}
+	res := compareResult{Truncated: len(payload.Files) >= compareFilesCap, Status: payload.Status, Schema: compareSchema, Commits: payload.TotalCommits, Hunks: map[string][][4]int{}}
 	if res.Status == "" {
 		res.Status = "unknown"
 	}
@@ -282,6 +305,17 @@ func parseCompare(raw []byte) (compareResult, error) {
 		res.Files = append(res.Files, fl.Filename)
 		if fl.PreviousFilename != "" {
 			res.Files = append(res.Files, fl.PreviousFilename)
+		}
+		if fl.Patch == "" {
+			continue
+		}
+		var hunks [][4]int
+		for _, h := range publisher.ParseHunks(fl.Patch) {
+			hunks = append(hunks, [4]int{h.OldStart, h.OldLines, h.NewStart, h.NewLines})
+		}
+		res.Hunks[fl.Filename] = hunks
+		if fl.PreviousFilename != "" {
+			res.Hunks[fl.PreviousFilename] = hunks
 		}
 	}
 	// The endpoint lists at most 250 commits; a longer range cannot be judged.

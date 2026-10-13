@@ -319,24 +319,34 @@ func (c *Client) CreateReviewCommentReply(ctx context.Context, owner, repo strin
 // GetPRFilePatches returns filename -> unified diff patch. Files GitHub
 // serves without a patch (binary, too large) are omitted.
 func (c *Client) GetPRFilePatches(ctx context.Context, owner, repo string, number int) (map[string]string, error) {
+	patches, _, err := c.GetPRFilePatchesAndNames(ctx, owner, repo, number)
+	return patches, err
+}
+
+// GetPRFilePatchesAndNames returns the patches GetPRFilePatches returns and, separately,
+// every filename in the PR diff, including the ones GitHub serves without a
+// patch.
+func (c *Client) GetPRFilePatchesAndNames(ctx context.Context, owner, repo string, number int) (map[string]string, []string, error) {
 	gh, err := c.clientFor(ctx, owner, repo)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := map[string]string{}
+	patches := map[string]string{}
+	var files []string
 	opts := &github.ListOptions{PerPage: listPageSize}
 	for {
 		page, resp, err := gh.PullRequests.ListFiles(ctx, owner, repo, number, opts)
 		if err != nil {
-			return nil, fmt.Errorf("list pull request files: %w", err)
+			return nil, nil, fmt.Errorf("list pull request files: %w", err)
 		}
 		for _, f := range page {
+			files = append(files, f.GetFilename())
 			if f.Patch != nil {
-				out[f.GetFilename()] = f.GetPatch()
+				patches[f.GetFilename()] = f.GetPatch()
 			}
 		}
 		if resp.NextPage == 0 {
-			return out, nil
+			return patches, files, nil
 		}
 		opts.Page = resp.NextPage
 	}

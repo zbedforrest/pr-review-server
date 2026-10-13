@@ -15,7 +15,7 @@ func TestHeadline_CutsAtClauseBoundaryNotMidWord(t *testing.T) {
 	if h := headline(fd, true); h != "Behavior change" {
 		t.Fatalf("legacy: a labelled kind with a long sentence keeps only the label: %q", h)
 	}
-	if h := headline(fd, false); h != "Behavior change · When a selected component entry fails to render, the request returns 500 with no dispositions" {
+	if h := headline(fd, false); h != "Behavior change · When a selected component entry fails to render, the request returns 500 with no dispositions […]" {
 		t.Fatalf("a labelled kind with a long sentence keeps the label and the leading clause: %q", h)
 	}
 	fd.FindingContract.FindingKind = "unlabelled_kind"
@@ -33,10 +33,10 @@ func TestRenderInline_LongEffectSentenceIsShownInFullUnderTheCutHeadline(t *test
 	fd := withContract(f("x", "medium", "a.go", 3, "reasoning"), "production_behavior", "current_impact", impact, "")
 	out := RenderInline(fd, "prism-only", "", "", "")
 	visible := out[:strings.Index(out, "<details>")]
-	if !strings.Contains(visible, "**[MEDIUM] Behavior change · When a selected component entry fails to render, the request returns 500 with no dispositions**\n\n"+impact) {
+	if !strings.Contains(visible, "**[MEDIUM] Behavior change · When a selected component entry fails to render, the request returns 500 with no dispositions […]**\n\n"+impact) {
 		t.Fatalf("a sentence too long for the headline is cut in the title and shown in full under it:\n%s", out)
 	}
-	legacy := renderInline(fd, "prism-only", "", "", "", true)
+	legacy := renderInline(fd, "prism-only", "", "", "", true, false)
 	if !strings.Contains(legacy, "**[MEDIUM] Behavior change**\n\n"+impact) {
 		t.Fatalf("legacy titles keep the bare kind label:\n%s", legacy)
 	}

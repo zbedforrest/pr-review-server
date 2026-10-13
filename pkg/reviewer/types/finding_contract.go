@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"pr-review-server/pkg/textcut"
 )
 
 const FindingContractSchemaVersion = 1
@@ -76,7 +78,11 @@ type FindingContract struct {
 const priorRefMaxRunes = 512
 
 // Headlines are cosmetic, so a bad one is dropped rather than failing the contract.
-const headlineMaxRunes = 90
+// headlineMaxRunes is the longest headline kept whole. The prompt asks for 90
+// characters; a headline the agent ran past that is worth more rendered in
+// full than cut, up to this length, and is cut at a clause or word boundary
+// beyond it.
+const headlineMaxRunes = 140
 
 func ValidateFindingContract(contract *FindingContract) error {
 	if contract == nil {
@@ -204,19 +210,10 @@ func NormalizeFindingContract(contract *FindingContract) {
 	}
 }
 
-// shortenHeadline cuts an over-long headline at the last word boundary that
-// fits with an ellipsis; a headline the agent wrote is worth more cut than
-// dropped. Short headlines are returned unchanged.
+// shortenHeadline cuts an over-long headline the way the renderer cuts a
+// bullet; a headline the agent wrote is worth more cut than dropped.
 func shortenHeadline(headline string, maximum int) string {
-	runes := []rune(headline)
-	if len(runes) <= maximum {
-		return headline
-	}
-	cut := string(runes[:maximum-3])
-	if i := strings.LastIndex(cut, " "); i > 0 {
-		cut = cut[:i]
-	}
-	return strings.TrimRight(cut, " ,;:") + "..."
+	return textcut.Clamp(headline, maximum)
 }
 
 // normalizePriorRefs trims both references, drops empty, malformed and

@@ -143,6 +143,7 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 
 		RequiredCheckViolated: pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0,
 		ProfileFooter:         profileFooter(pl.ReviewRun),
+		Scope:                 pl.Scope,
 	}
 	if base := strings.TrimRight(baseURL, "/"); base != "" {
 		r.AgentLinkBase = fmt.Sprintf("%s/go/agent?o=%s&r=%s&n=%d", base, pr.Owner, pr.Repo, pr.Number)
@@ -298,6 +299,10 @@ func (p *Poller) publishPolicy() publisher.Policy {
 		}
 		pol.PriorIDAlias = !p.cfg.PublishNoPriorIDAlias
 		pol.ResolveNotes = p.cfg.PublishResolveNotes
+		pol.FixedByFile = p.cfg.PublishFixedByFile
+		pol.LegacyStatusNotes = p.cfg.PublishLegacyStatusNotes
+		pol.LegacyClamp = p.cfg.PublishLegacyClamp
+		pol.NoScopeGuard = p.cfg.PublishNoScopeGuard
 	}
 	return pol
 }
@@ -382,7 +387,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: list review comments: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return nil, publicationFailedPrefix + "list review comments"
 	}
-	patches, err := p.ghClientConcrete.GetPRFilePatches(ctx, pr.Owner, pr.Repo, pr.Number)
+	patches, files, err := p.ghClientConcrete.GetPRFilePatchesAndNames(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: list file patches: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return nil, publicationFailedPrefix + "list file patches"
@@ -391,6 +396,10 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	pol := p.publishPolicy()
 	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
 	round.Changes = p.changeLookup(ctx, pr)
+	round.DiffFiles = make(map[string]bool, len(files))
+	for _, file := range files {
+		round.DiffFiles[file] = true
+	}
 	round.SettleFooter = p.settleFooter()
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: pol}
 	report, err := pub.Publish(ctx, round)
@@ -457,10 +466,15 @@ func (p *Poller) changeLookup(ctx context.Context, pr github.PullRequest) func(b
 			for _, f := range files {
 				a.cs.Files[f] = true
 			}
-			if len(patches) > 0 {
+			// A compare that came with patch data carries hunks even when no
+			// file had a patch, so a patch-less file proves nothing; a source
+			// without patches at all leaves every absent finding open.
+			if patches != nil {
 				a.cs.Lines = make(map[string]map[int]bool, len(patches))
+				a.cs.Hunks = make(map[string][]publisher.Hunk, len(patches))
 				for f, patch := range patches {
 					a.cs.Lines[f] = publisher.ChangedLines(patch)
+					a.cs.Hunks[f] = publisher.ParseHunks(patch)
 				}
 			}
 		}

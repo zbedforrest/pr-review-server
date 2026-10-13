@@ -11,6 +11,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/reconcile"
+	"pr-review-server/pkg/textcut"
 )
 
 // SummaryMaxChars stays under GitHub's 65536-char comment body limit.
@@ -74,8 +75,10 @@ type Round struct {
 	// ProfileFooter names the review flavor in the summary footer ("PRism
 	// Lite", "PRism Lite+ (custom)"); empty for an ordinary full review.
 	ProfileFooter string
-	// LegacyTitles is Policy.LegacyTitles as applied to this round.
+	// LegacyTitles is Policy.LegacyTitles as applied to this round;
+	// LegacyClamp is Policy.LegacyClamp.
 	LegacyTitles bool
+	LegacyClamp  bool
 	// SettleFooter is the rendered line under every root comment and the
 	// summary (see the SettleFooter function); empty omits it.
 	SettleFooter string
@@ -87,6 +90,13 @@ type Round struct {
 	// Changes resolves what changed between a ledger row's LastSeenSHA and
 	// HeadSHA; ok false means unknown, and nothing is then judged fixed.
 	Changes func(base string) (ChangeSet, bool)
+	// Scope is the review's diff scope (payload.Payload.Scope); nil when the
+	// review did not record one. DiffFiles is the PR diff at review time as
+	// GitHub lists it, nil when the caller did not have it. A finding on a
+	// path the scope marks inherited from the base branch, or outside the PR
+	// diff, makes no fixed, reopen or severity transition.
+	Scope     *payload.ReviewScope
+	DiffFiles map[string]bool
 
 	// transitions is the ledger policy's record count for the summary; nil
 	// falls back to the hash-set diff.
@@ -101,10 +111,20 @@ type PriorComment struct {
 
 // ChangeSet is the inter-push diff between two commits of the PR: the files
 // touched and, when the caller had the patches, the RIGHT-side lines added
-// or edited per file. Lines nil means only the file set is known.
+// or edited per file and the hunks of each file. Lines or Hunks nil means
+// only the file set is known; Hunks set but empty for a file means the
+// caller had patches but not that file's (too large, binary).
 type ChangeSet struct {
 	Files map[string]bool
 	Lines map[string]map[int]bool
+	Hunks map[string][]Hunk
+}
+
+// Hunk is one unified-diff hunk header: the LEFT-side (base) and RIGHT-side
+// (head) line ranges it covers, each as a start and a count.
+type Hunk struct {
+	OldStart, OldLines int
+	NewStart, NewLines int
 }
 
 // SettleFooter is the one line under every root comment and the summary:
@@ -244,6 +264,9 @@ func (r Round) bullet(f payload.Finding) string {
 	return r.markedBullet(f, "")
 }
 
+// bulletWhereSep joins a bullet's text to its file link.
+const bulletWhereSep = " \u2014 "
+
 // markedBullet is a bullet with a bold status marker between the severity and
 // the text; an empty marker renders a plain bullet.
 func (r Round) markedBullet(f payload.Finding, marker string) string {
@@ -254,12 +277,21 @@ func (r Round) markedBullet(f payload.Finding, marker string) string {
 	if marker != "" {
 		marker = "**" + marker + "** "
 	}
-	text := strings.TrimSpace(summaryText(f, r.LegacyTitles))
-	if !strings.HasSuffix(text, "...") {
+	text := r.clampBullet(summaryText(f, r.LegacyTitles))
+	return fmt.Sprintf("- %s %s%s%s[`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, bulletWhereSep, where, r.findingLink(f))
+}
+
+// bulletMaxRunes bounds one summary bullet's text.
+const bulletMaxRunes = 200
+
+// clampBullet is the bullet text: the trailing period dropped unless the
+// agent ended on an ellipsis, then cut to the bullet limit.
+func (r Round) clampBullet(text string) string {
+	text = strings.TrimSpace(text)
+	if !strings.HasSuffix(text, "...") && !strings.HasSuffix(text, cutMarker) {
 		text = strings.TrimSuffix(text, ".")
 	}
-	text = truncateWords(text, 200)
-	return fmt.Sprintf("- %s %s%s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, where, r.findingLink(f))
+	return clampText(text, bulletMaxRunes, r.LegacyClamp)
 }
 
 const sinceLastReviewFormat = "**Since last review:** %d new · %d still open · %d fixed"
@@ -283,7 +315,7 @@ func (r Round) unverifiedBullet(f payload.Finding) string {
 	}
 	line := r.markedBullet(f, markerDisputed)
 	if reason := strings.TrimSpace(f.Assessment.Reason); reason != "" {
-		line += "  - Agent: " + truncateWords(firstLine(reason), maxReasonRunes) + "\n"
+		line += "  - Agent: " + clampText(firstLine(reason), maxReasonRunes, r.LegacyClamp) + "\n"
 	}
 	return line
 }
@@ -460,33 +492,22 @@ func (r Round) writeExternal(b *strings.Builder) {
 		if f.Line > 0 {
 			where = fmt.Sprintf("%s:%d", where, f.Line)
 		}
-		text := strings.TrimSpace(summaryText(f, r.LegacyTitles))
-		if !strings.HasSuffix(text, "...") {
-			text = strings.TrimSuffix(text, ".")
-		}
+		text := r.clampBullet(summaryText(f, r.LegacyTitles))
 		link := fmt.Sprintf("https://github.com/%s/%s/pull/%d#discussion_r%d", r.Owner, r.Repo, r.Number, m.CommentID)
-		fmt.Fprintf(b, "- %s %s, [`%s`](%s) · %s\n", severityLabel(f.Severity, r.BadgeBaseURL), truncateWords(text, 200), where, link, m.Source.Label())
+		fmt.Fprintf(b, "- %s %s, [`%s`](%s) · %s\n", severityLabel(f.Severity, r.BadgeBaseURL), text, where, link, m.Source.Label())
 	}
 	b.WriteString("</details>\n\n")
 }
 
-// FirstSentence returns the leading sentence of the comment's first line, or
-// the whole first line when it has no sentence boundary.
+// FirstSentence returns the leading sentence of the comment's first line (a
+// period inside an open quote or parenthesis does not end it), or the whole
+// first line when it has no sentence boundary.
 func FirstSentence(comment string) string {
 	return firstSentence(comment)
 }
 
 func firstSentence(comment string) string {
-	line := firstLine(comment)
-	for i := 0; i < len(line); i++ {
-		switch line[i] {
-		case '.', '!', '?':
-			if i+1 == len(line) || line[i+1] == ' ' {
-				return line[:i+1]
-			}
-		}
-	}
-	return line
+	return textcut.FirstSentence(firstLine(comment))
 }
 
 var kindLabels = map[string]string{
@@ -507,20 +528,56 @@ var suggestionFenceRe = regexp.MustCompile("(?s)```suggestion\n(.*?)\n```")
 // did not fit and left findings without a headline titled by their impact
 // sentence even when that sentence said there was none.
 func headline(f payload.Finding, legacy bool) string {
+	return headlineWith(f, legacy, false)
+}
+
+// headlineWith is headline with the cut rule chosen: the clause cut with
+// the explicit marker, or the legacy word cut with "...".
+func headlineWith(f payload.Finding, legacy, legacyClamp bool) string {
 	if legacy {
-		return legacyHeadline(f)
+		return legacyHeadlineWith(f, legacyClamp)
 	}
 	title := titleSource(f)
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
+		cut := clauseHeadlineWith(title, contractTitleLimit(f, legacyClamp), legacyClamp)
 		if label, ok := kindLabels[c.FindingKind]; ok {
-			return label + " · " + clauseHeadline(title, headlineMaxRunes)
+			return label + " · " + cut
 		}
-		return clauseHeadline(title, headlineMaxRunes)
+		return cut
 	}
-	return clauseHeadline(title, commentTitleMaxRunes)
+	return clauseHeadlineWith(title, titleLimit(commentTitleMaxRunes, legacyCommentTitleMaxRunes, legacyClamp), legacyClamp)
 }
 
-const commentTitleMaxRunes = 100
+// contractTitleLimit is the headline limit for a finding with a contract
+// impact: the bullet limit when the title is that impact sentence, else the
+// headline limit (the legacy clamp keeps its own).
+func contractTitleLimit(f payload.Finding, legacyClamp bool) int {
+	if legacyClamp {
+		return legacyHeadlineMaxRunes
+	}
+	if titleFromImpact(f) {
+		return impactTitleMaxRunes
+	}
+	return headlineMaxRunes
+}
+
+// commentTitleMaxRunes bounds a title taken from the comment's first
+// sentence; headlineMaxRunes a contract headline, which the contract itself
+// keeps within this length, so a headline the agent wrote renders whole.
+// The legacy limits are what the renderer applied before the clamp with a
+// marker (PUBLISH_RENDER_CLAMP_V2=false).
+const (
+	commentTitleMaxRunes       = 140
+	legacyCommentTitleMaxRunes = 100
+	legacyHeadlineMaxRunes     = 110
+)
+
+func titleLimit(current, legacy int, legacyClamp bool) int {
+	if legacyClamp {
+		return legacy
+	}
+	return current
+}
 
 // titleIsWholeFirstSentence reports whether a comment-sourced title fits the
 // limit headline applied to it; a cut title leaves the sentence to the fold.
@@ -529,12 +586,18 @@ func titleIsWholeFirstSentence(f payload.Finding, limit int) bool {
 }
 
 func legacyHeadline(f payload.Finding) string {
+	return legacyHeadlineWith(f, false)
+}
+
+// legacyHeadlineWith is legacyHeadline with the cut rule chosen the same way
+// as headlineWith, so both kill switches together restore the old word cut.
+func legacyHeadlineWith(f payload.Finding, legacyClamp bool) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
 		label, hasLabel := kindLabels[c.FindingKind]
 		impact := strings.TrimSpace(c.Headline)
 		if impact == "" {
 			full := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
-			impact = clauseHeadline(full, headlineMaxRunes)
+			impact = clauseHeadlineWith(full, legacyHeadlineMaxRunes, legacyClamp)
 			if impact != full && hasLabel {
 				return label
 			}
@@ -544,24 +607,43 @@ func legacyHeadline(f payload.Finding) string {
 		}
 		return impact
 	}
-	return truncateWords(strings.Trim(firstSentence(commentText(f)), "*_ "), 100)
+	first := strings.Trim(firstSentence(commentText(f)), "*_ ")
+	if legacyClamp {
+		return truncateWords(first, 100)
+	}
+	return clampText(first, 100, false)
 }
 
 // titleSource is the one line a finding is known by: the agent's headline,
-// else its effect sentence when the contract asserts an impact that exists
-// today, else the comment's first sentence. A finding whose materiality is
-// unknown or nil must not be titled by a sentence saying so.
+// else the first sentence of its effect statement when the contract asserts
+// an impact that exists today, else the comment's first sentence. A finding
+// whose materiality is unknown or nil must not be titled by a sentence
+// saying so.
 func titleSource(f payload.Finding) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" {
 		if h := strings.TrimSpace(c.Headline); h != "" {
 			return h
 		}
-		if c.Materiality == "current_impact" && strings.TrimSpace(c.CurrentImpact) != "" {
-			return strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
+		if titleFromImpact(f) {
+			return strings.TrimSuffix(firstSentence(c.CurrentImpact), ".")
 		}
 	}
 	return strings.TrimSpace(emphasisMarkers.Replace(firstSentence(commentText(f))))
 }
+
+// titleFromImpact reports whether the title is the contract's effect
+// statement: no headline, and an impact the contract asserts exists today.
+func titleFromImpact(f payload.Finding) bool {
+	c := f.FindingContract
+	return c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.Headline) == "" &&
+		c.Materiality == "current_impact" && strings.TrimSpace(c.CurrentImpact) != ""
+}
+
+// impactTitleMaxRunes bounds a title that is the effect sentence itself: the
+// bullet limit, so the inline headline and the summary bullet both carry the
+// whole problem statement rather than a cut of it with the sentence repeated
+// below.
+const impactTitleMaxRunes = bulletMaxRunes
 
 var emphasisMarkers = strings.NewReplacer("**", "", "__", "")
 
@@ -575,17 +657,22 @@ func titleFromComment(f payload.Finding) bool {
 	return strings.TrimSpace(c.Headline) == "" && (c.Materiality != "current_impact" || strings.TrimSpace(c.CurrentImpact) == "")
 }
 
-const headlineMaxRunes = 110
+const headlineMaxRunes = 140
 
-// clauseBoundaries are the joints an effect sentence is most often built
-// around; cutting at the last one before the limit keeps a headline readable.
-var clauseBoundaries = []string{", so ", "; ", " because ", ", which ", ", and ", ", causing ", ", leaving ", ", "}
+var clauseBoundaries = textcut.ClauseBoundaries
 
 // clauseHeadline returns the whole sentence when it fits, else the longest
 // prefix ending at a clause boundary within the limit, else a word-boundary cut.
 func clauseHeadline(s string, max int) string {
+	return clauseHeadlineWith(s, max, false)
+}
+
+func clauseHeadlineWith(s string, max int, legacyClamp bool) string {
 	if len([]rune(s)) <= max {
 		return s
+	}
+	if !legacyClamp {
+		return clampText(s, max, false)
 	}
 	window := string([]rune(s)[:max])
 	best := -1
@@ -600,9 +687,23 @@ func clauseHeadline(s string, max int) string {
 	return truncateWords(s, max)
 }
 
+// cutMarker is what a cut bullet or headline ends with.
+const cutMarker = textcut.Marker
+
+// clampText cuts s to max runes the way textcut.Clamp does (a dropped
+// parenthetical, else a sentence, clause or word boundary outside every
+// open pair, ending with cutMarker). Legacy restores the word cut with
+// "...". A text within the limit is returned unchanged.
+func clampText(s string, max int, legacy bool) string {
+	if legacy {
+		return truncateWords(s, max)
+	}
+	return textcut.Clamp(s, max)
+}
+
 // impactShownBelow reports whether the effect sentence still needs to be
 // shown under the title, because the title is not that sentence in full.
-func impactShownBelow(f payload.Finding, legacy bool) bool {
+func impactShownBelow(f payload.Finding, legacy, legacyClamp bool) bool {
 	c := f.FindingContract
 	if c == nil || f.FindingContractStatus != "valid" {
 		return false
@@ -611,21 +712,25 @@ func impactShownBelow(f payload.Finding, legacy bool) bool {
 	if legacy && strings.TrimSpace(c.Headline) != "" {
 		return true
 	}
-	title := impact
-	if !legacy {
-		title = titleSource(f)
+	if legacy {
+		return clauseHeadline(impact, legacyHeadlineMaxRunes) != impact
 	}
-	return clauseHeadline(title, headlineMaxRunes) != impact
+	title := titleSource(f)
+	rendered := clauseHeadlineWith(title, contractTitleLimit(f, legacyClamp), legacyClamp)
+	if rendered == impact {
+		return false
+	}
+	return rendered != strings.TrimSuffix(strings.TrimSpace(textcut.FirstSentence(impact)), ".")
 }
 
 // RenderInline keeps the visible part Greptile-sized: headline, one
 // calibration sentence, and the suggestion if there is one. The agent's full
 // reasoning and the verification steps fold behind a details block.
 func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string) string {
-	return renderInline(f, sourceTag, agentLinkBase, badgeBase, settleFooter, false)
+	return renderInline(f, sourceTag, agentLinkBase, badgeBase, settleFooter, false, false)
 }
 
-func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string, legacy bool) string {
+func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string, legacy, legacyClamp bool) string {
 	comment := commentText(f)
 	c := f.FindingContract
 	hasContract := c != nil && f.FindingContractStatus == "valid"
@@ -633,7 +738,7 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 
 	// When the title is not the effect sentence in full, the sentence is shown
 	// once, in full, under the title.
-	title := headline(f, legacy)
+	title := headlineWith(f, legacy, legacyClamp)
 	var b strings.Builder
 	b.WriteString(FindingMarker(f.ID) + "\n")
 	if badgeBase == "" {
@@ -642,7 +747,7 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		fmt.Fprintf(&b, "%s **%s**\n", severityLabel(f.Severity, badgeBase), title)
 	}
 
-	if compact && impactShownBelow(f, legacy) {
+	if compact && impactShownBelow(f, legacy, legacyClamp) {
 		b.WriteString("\n" + strings.TrimSpace(c.CurrentImpact) + "\n")
 	}
 	if hasContract && strings.TrimSpace(c.Uncertainty) != "" {
@@ -657,14 +762,14 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		// Without an impact sentence the headline came from the comment's first
 		// sentence; the rest of the comment is the only explanation, so show it.
 		rest := reasoning
-		if legacy || (titleFromComment(f) && titleIsWholeFirstSentence(f, commentTitleMaxRunes)) {
+		if legacy || (titleFromComment(f) && titleIsWholeFirstSentence(f, titleLimit(commentTitleMaxRunes, legacyCommentTitleMaxRunes, legacyClamp))) {
 			rest = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
 		}
 		if rest != "" {
 			b.WriteString("\n" + rest + "\n")
 		}
 		reasoning = ""
-	} else if !legacy && titleFromComment(f) && titleIsWholeFirstSentence(f, headlineMaxRunes) {
+	} else if !legacy && titleFromComment(f) && titleIsWholeFirstSentence(f, titleLimit(headlineMaxRunes, legacyHeadlineMaxRunes, legacyClamp)) {
 		reasoning = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
 	}
 
