@@ -66,6 +66,14 @@ func TestLedger_AbsentFindingOutsideTheChangedHunksStaysOpen(t *testing.T) {
 	}
 }
 
+// notingPolicy is the test policy with the resolve note on, for tests that
+// assert the "Not seen" text; a resolve posts nothing by default.
+func notingPolicy() Policy {
+	pol := testPolicy()
+	pol.ResolveNotes = true
+	return pol
+}
+
 func TestLedger_AbsentFindingInsideAChangedHunkIsFixed(t *testing.T) {
 	for name, hunk := range map[string]Hunk{"covering": {97, 9, 97, 7}, "margin above": {102, 4, 102, 4}, "margin below": {94, 4, 94, 2}} {
 		t.Run(name, func(t *testing.T) {
@@ -73,7 +81,7 @@ func TestLedger_AbsentFindingInsideAChangedHunkIsFixed(t *testing.T) {
 			publishThreads(t, gh, ledger, singleRound("sha-1", previewFile, 100, "medium", previewText))
 			gone := absentRound("sha-2", previewFile, 100)
 			gone.Changes = hunked(previewFile, hunk)
-			rep := publishThreads(t, gh, ledger, gone)
+			rep := publishThreadsWith(t, gh, ledger, gone, notingPolicy())
 			if rep.Fixed != 1 || rep.ThreadsResolved != 1 {
 				t.Fatalf("report = %+v", rep)
 			}
@@ -155,22 +163,23 @@ func TestLedger_LegacyRowIsAnchoredByItsCommentOrBucket(t *testing.T) {
 
 func TestThreads_ReturnWithSeverityChangeIsOneNote(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
-	publishThreads(t, gh, ledger, singleRound("sha-1", headerFile, 25, "critical", headerText, "featured_mode_logos"))
+	pol := notingPolicy()
+	publishThreadsWith(t, gh, ledger, singleRound("sha-1", headerFile, 25, "critical", headerText, "featured_mode_logos"), pol)
 	touched := hunked(headerFile, Hunk{22, 8, 22, 9})
 
 	lowered := singleRound("sha-2", headerFile, 25, "low", headerText, "featured_mode_logos")
 	lowered.Changes = touched
-	publishThreads(t, gh, ledger, lowered)
+	publishThreadsWith(t, gh, ledger, lowered, pol)
 	gone := absentRound("sha-3", headerFile, 25)
 	gone.Changes = touched
-	publishThreads(t, gh, ledger, gone)
+	publishThreadsWith(t, gh, ledger, gone, pol)
 	if got := gh.repliesTo(1001); len(got) != 2 || got[0] != "Severity critical to low at sha-2: the cited lines changed." || got[1] != "Not seen at sha-3." {
 		t.Fatalf("precondition: replies = %q", got)
 	}
 
 	back := singleRound("sha-4", headerFile, 25, "medium", headerText, "featured_mode_logos")
 	back.Changes = touched
-	rep := publishThreads(t, gh, ledger, back)
+	rep := publishThreadsWith(t, gh, ledger, back, pol)
 	if rep.Reopened != 1 || rep.ThreadReplies != 1 || rep.ThreadsUnresolved != 1 {
 		t.Fatalf("report = %+v", rep)
 	}
@@ -185,7 +194,7 @@ func TestThreads_ReturnWithSeverityChangeIsOneNote(t *testing.T) {
 
 func TestThreads_LegacyStatusNotesPostTwo(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
-	pol := testPolicy()
+	pol := notingPolicy()
 	pol.LegacyStatusNotes = true
 	touched := hunked(headerFile, Hunk{22, 8, 22, 9})
 	publishThreadsWith(t, gh, ledger, singleRound("sha-1", headerFile, 25, "critical", headerText, "featured_mode_logos"), pol)
@@ -227,7 +236,7 @@ func TestLedger_ReturnOnAnotherSubjectIsNotAReopen(t *testing.T) {
 				}
 				return
 			}
-			if rep.Reopened != 0 || len(gh.repliesTo(1001)) != 1 {
+			if rep.Reopened != 0 || len(gh.repliesTo(1001)) != 0 {
 				t.Fatalf("a finding about another subject is not a return: %+v replies=%q", rep, gh.repliesTo(1001))
 			}
 			if ledger.rows[rootID].State != db.PublishedStateFixed {
@@ -281,7 +290,7 @@ func TestLedger_InheritedPathMakesNoTransition(t *testing.T) {
 		back := singleRound("sha-3", file, 40, "critical", text)
 		back.Changes, back.Scope = touched, inherited
 		rep := publishThreads(t, gh, ledger, back)
-		if rep.Reopened != 0 || rep.InlinePosted != 0 || rep.StillOpen != 0 || len(gh.repliesTo(1001)) != 1 {
+		if rep.Reopened != 0 || rep.InlinePosted != 0 || rep.StillOpen != 0 || len(gh.repliesTo(1001)) != 0 {
 			t.Fatalf("report = %+v replies=%q", rep, gh.repliesTo(1001))
 		}
 		if ledger.rows[fid(file, 40, text)].State != db.PublishedStateFixed {
@@ -323,7 +332,7 @@ func TestLedger_PathOutsideThePRDiffMakesNoReturn(t *testing.T) {
 		publishThreads(t, gh, ledger, gone)
 		back := singleRound("sha-3", file, 40, "low", text)
 		back.Changes, back.Scope, back.DiffFiles = touched, scoped, map[string]bool{"other.ts": true}
-		if rep := publishThreads(t, gh, ledger, back); rep.Reopened != 0 || rep.InlinePosted != 0 || len(gh.repliesTo(1001)) != 1 {
+		if rep := publishThreads(t, gh, ledger, back); rep.Reopened != 0 || rep.InlinePosted != 0 || len(gh.repliesTo(1001)) != 0 {
 			t.Fatalf("report = %+v replies=%q", rep, gh.repliesTo(1001))
 		}
 		if row := ledger.rows[fid(file, 40, text)]; row.State != db.PublishedStateFixed || row.Severity != "critical" {

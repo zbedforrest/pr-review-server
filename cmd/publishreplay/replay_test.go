@@ -127,7 +127,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) != 5 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.HasSuffix(lines[0], ",external_duplicates_near,external_duplicates_open,external_duplicates_unknown,external_matched,external_replies,observed_external_duplicates_near,observed_external_duplicates_open") ||
-		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,0,0,2,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1") {
+		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }
