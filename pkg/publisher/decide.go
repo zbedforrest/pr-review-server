@@ -342,7 +342,7 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 	for _, id := range ids {
 		row := rows[id]
 		file, bucket := payload.FingerprintParts(id)
-		o := reconcile.OwnComment{CommentID: row.CommentID, FindingID: id, File: file, Line: bucket*10 + 5, Text: row.CommentText, Kind: row.FindingKind, Subjects: splitSubjects(row.Subjects)}
+		o := reconcile.OwnComment{CommentID: row.CommentID, FindingID: id, File: file, Line: bucket*payload.LineBucket + payload.LineBucket/2, Text: row.CommentText, Kind: row.FindingKind, Subjects: splitSubjects(row.Subjects)}
 		if prior, ok := r.PriorComments[id]; ok {
 			if prior.Line > 0 {
 				o.Line = prior.Line

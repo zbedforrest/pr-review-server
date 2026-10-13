@@ -62,10 +62,11 @@ type FindingContract struct {
 	SeverityRationale     string           `json:"severity_rationale"`
 	Headline              string           `json:"headline,omitempty"`
 	// PriorID names the finding PRism already raised on this PR that this
-	// one restates, as the ledger fingerprint; RelatesTo lists earlier
-	// findings this distinct point builds on. Both are optional, set only
-	// when the agent was shown the earlier findings, and never fail the
-	// contract.
+	// one restates, as the ledger fingerprint: the publisher aliases on it.
+	// RelatesTo lists earlier findings this distinct point builds on; it is
+	// recorded and counted but nothing acts on it yet. Both are optional,
+	// set only when the agent was shown the earlier findings, and never
+	// fail the contract.
 	PriorID   string   `json:"prior_id,omitempty"`
 	RelatesTo []string `json:"relates_to,omitempty"`
 }

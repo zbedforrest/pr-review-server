@@ -115,7 +115,7 @@ func Guard(d Draft, members []Member, opts Options) Result {
 			c := *best.Finding.FindingContract
 			f.FindingContract = &c
 		}
-		if f.FindingContract != nil && f.FindingContract.PriorID == "" {
+		if f.FindingContract != nil {
 			carryPriorRefs(f.FindingContract, srcs)
 		}
 		f.Sources = memberIDs(srcs)
@@ -252,13 +252,16 @@ func citesFile(srcs []Member, file string) bool {
 // carryPriorRefs keeps the prior_id a member's contract named when the
 // contract the finding ends up with has none (authored, or copied from the
 // best member): the author never saw the earlier findings, the runs did.
-// The first member with a prior wins; relates_to is merged and never
-// repeats the prior itself.
+// The first member with a prior wins; relates_to is always merged and never
+// repeats the prior itself. A finding with no contract at all is left so:
+// a hollow contract would fail validation downstream.
 func carryPriorRefs(c *types.FindingContract, ms []Member) {
 	for _, m := range ms {
+		if c.PriorID != "" {
+			break
+		}
 		if mc := m.Finding.FindingContract; mc != nil && mc.PriorID != "" {
 			c.PriorID = mc.PriorID
-			break
 		}
 	}
 	seen := map[string]bool{c.PriorID: true}

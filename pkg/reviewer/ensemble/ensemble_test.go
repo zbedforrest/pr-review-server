@@ -113,17 +113,17 @@ func TestGuardCarriesAnotherMembersPriorWhenTheAuthorWroteNoContract(t *testing.
 	best := lc("A", "a.go", 10, "MEDIUM", "real")
 	best.FindingContract = &types.FindingContract{SchemaVersion: 1, Headline: "Best"}
 	other := lc("B", "a.go", 12, "LOW", "same point")
-	other.FindingContract = &types.FindingContract{SchemaVersion: 1, PriorID: "a.go:1:prior"}
+	other.FindingContract = &types.FindingContract{SchemaVersion: 1, PriorID: "a.go:1:prior", RelatesTo: []string{"c.go:0:third"}}
 	ms := Members([][]types.LineComment{{best}, {other}})
 	d := Draft{Findings: []types.LineComment{
 		{FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "merged", Sources: []string{"r1:A", "r2:B"}},
 	}}
 	res := Guard(d, ms, Options{})
 	c := res.Findings[0].FindingContract
-	if c == nil || c.Headline != "Best" || c.PriorID != "a.go:1:prior" {
-		t.Fatalf("the best member's contract is taken and the other member's prior carried: %+v", c)
+	if c == nil || c.Headline != "Best" || c.PriorID != "a.go:1:prior" || strings.Join(c.RelatesTo, ",") != "c.go:0:third" {
+		t.Fatalf("the best member's contract is taken and the other member's references carried: %+v", c)
 	}
-	if best.FindingContract.PriorID != "" {
+	if best.FindingContract.PriorID != "" || len(best.FindingContract.RelatesTo) != 0 {
 		t.Fatal("the member's own contract must not be mutated")
 	}
 }

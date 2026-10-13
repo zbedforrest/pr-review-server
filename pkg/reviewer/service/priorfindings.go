@@ -65,7 +65,8 @@ func priorFindingsSection(priors []PriorFinding) string {
 const priorFindingsRules = `Rules for these:
 - If a finding you would report is the same point as one above (same defect, whatever the wording, line or file), set "prior_id" in its finding_contract to that label, exactly as written, and report it once with your current evidence; the earlier comment is not evidence by itself.
 - If it is a distinct point that builds on one above, list those labels in "relates_to" (array of labels) and leave "prior_id" unset.
-- A point in state dismissed, contested or external was settled by the author or belongs to another reviewer's thread: do not raise it again under any wording unless this push changed the code that settled it, and then set "prior_id" so it is matched.
+- A point in state dismissed, contested or external was settled by the author or belongs to another reviewer's thread: do not raise it again under any wording; the publisher drops such a finding. The one exception is a CRITICAL security_risk whose cited code this push changed: report it with "prior_id" and say what changed.
+- These two fields are in addition to the finding_contract fields listed above.
 - A point in state fixed was judged addressed: raise it again, with "prior_id", only if the defect is still present at HEAD.
 - Never use a label that is not listed here. Both fields are optional and omitted on SUMMARY entries.
 `
