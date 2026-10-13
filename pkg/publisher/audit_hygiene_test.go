@@ -129,6 +129,8 @@ func TestIsPraise(t *testing.T) {
 		"The `sized` filter drops tables missing `total_size_bytes`.":        false,
 		"This change already drops the guard.":                               false,
 		"The retry helper is correct and ignores the deadline.":              false,
+		"Clean-room parse drops the lock.":                                   false,
+		"Solid-state cache is unguarded.":                                    false,
 		"The change correctly moves the logic, which regresses the cache.":   false,
 	} {
 		if got := IsPraise(text); got != want {
@@ -448,5 +450,40 @@ func TestUnverifiedLibraryClaim_IgnoresTechnicalProse(t *testing.T) {
 		asserting("production_behavior", "Scan results are not uploaded.", "I am recalling the default from memory.", "Visibility.", "Scan step may not upload findings"))
 	if UnverifiedLibraryClaim(prose) || !UnverifiedLibraryClaim(admitted) {
 		t.Fatalf("prose=%v admitted=%v", UnverifiedLibraryClaim(prose), UnverifiedLibraryClaim(admitted))
+	}
+}
+
+func TestTitleFromComment_AgreesWithTitleSourceOnALabelOnlyHeadline(t *testing.T) {
+	x := contractFinding("low", "a.go", 10, "The helper re-reads the file on every call. Cache the parsed result.",
+		&types.FindingContract{SchemaVersion: 1, FindingKind: "design_opinion", Materiality: "unknown", Falsifiability: "not_falsifiable",
+			CurrentImpact: "Unknown.", Uncertainty: "The call count is not measured.", SeverityRationale: "Performance preference.",
+			Headline: "Same pattern as A-1", Subjects: []types.FindingSubject{{Kind: "file", Path: "a.go"}}})
+	if !titleFromComment(x) || titleSource(x) != "The helper re-reads the file on every call." {
+		t.Fatalf("fromComment=%v title=%q", titleFromComment(x), titleSource(x))
+	}
+	body := RenderInline(x, SourceTagPrismOnly, "", "", "")
+	if strings.Count(body, "re-reads the file on every call") != 1 {
+		t.Fatalf("the first sentence is the title once:\n%s", body)
+	}
+}
+
+func TestPublishLegacy_HeldAnnotationIsNotCountedFixed(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	scan := contractFinding("medium", ".github/workflows/scan.yml", 28, "The scanner action is not configured with `advanced-security: true`.",
+		asserting("production_behavior", "Scan results are not uploaded.", "I am reading the action's documented behavior from memory.", "Visibility.", "Scan step may not upload findings"))
+	pol := testPolicy()
+	pol.LegacyLedger = true
+	pol.LibraryClaimHold = false
+	r1 := Round{Owner: "acme", Repo: "example", Number: 613, HeadSHA: "sha-1", Findings: []payload.Finding{scan}}
+	publishWith(t, gh, ledger, r1, pol)
+	if ledger.get(db.PublishedKindAnnotation, scan.ID) == nil {
+		t.Fatal("round one listed the note")
+	}
+	pol.LibraryClaimHold = true
+	r2 := r1
+	r2.HeadSHA, r2.Previous = "sha-2", nil
+	rep := publishWith(t, gh, ledger, r2, pol)
+	if rep.Fixed != 0 || !strings.Contains(gh.issueEdits[501], "0 fixed") {
+		t.Fatalf("a held note is not fixed: fixed=%d\n%s", rep.Fixed, gh.issueEdits[501])
 	}
 }

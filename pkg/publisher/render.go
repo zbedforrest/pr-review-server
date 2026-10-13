@@ -675,7 +675,7 @@ func titleFromComment(f payload.Finding) bool {
 	if c == nil || f.FindingContractStatus != "valid" {
 		return true
 	}
-	return strings.TrimSpace(c.Headline) == "" && (c.Materiality != "current_impact" || strings.TrimSpace(c.CurrentImpact) == "")
+	return ContractSentence(c.Headline) == "" && (c.Materiality != "current_impact" || strings.TrimSuffix(ContractSentence(c.CurrentImpact), ".") == "")
 }
 
 const headlineMaxRunes = 140

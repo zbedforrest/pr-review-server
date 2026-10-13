@@ -664,7 +664,8 @@ func countShownDefects(findings []payload.Finding, rep publisher.Report, posts [
 		if held[f.ID] || held[fmt.Sprintf("%s:%d", f.File, f.Line)] || !publisher.Publishable(f) {
 			continue
 		}
-		shown := posted[f.ID] || strings.Contains(summary, titlePrefix(publisher.TitleOf(f)))
+		prefix := titlePrefix(publisher.TitleOf(f))
+		shown := posted[f.ID] || (prefix != "" && strings.Contains(summary, prefix))
 		if !shown {
 			continue
 		}

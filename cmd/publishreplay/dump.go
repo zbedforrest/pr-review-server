@@ -232,6 +232,9 @@ var summaryFooterRe = regexp.MustCompile(`reviewed ([0-9a-f]{7,40})`)
 // summaryRound is the head the bot's sticky summary says it reviewed and
 // when that summary was last written.
 func (d *prDump) summaryRound(bots map[string]bool) (string, time.Time, bool) {
+	// Comments come oldest first; the newest sticky summary names the head
+	// the last round reviewed.
+	sha, at, found := "", time.Time{}, false
 	for _, c := range d.Comments.Nodes {
 		if !bots[bareLogin(actorLogin(c.Author))] || !strings.Contains(c.Body, publisher.SummaryMarker) {
 			continue
@@ -240,13 +243,15 @@ func (d *prDump) summaryRound(bots map[string]bool) (string, time.Time, bool) {
 		if m == nil {
 			continue
 		}
-		at := c.UpdatedAt
-		if at.IsZero() {
-			at = c.CreatedAt
+		when := c.UpdatedAt
+		if when.IsZero() {
+			when = c.CreatedAt
 		}
-		return m[1][:7], at, true
+		if !found || !when.Before(at) {
+			sha, at, found = m[1][:7], when, true
+		}
 	}
-	return "", time.Time{}, false
+	return sha, at, found
 }
 
 // observedRoot is a PRism root comment as GitHub recorded it, used for the
