@@ -270,6 +270,26 @@ func TestNotes_ABodyThatOnlyNamesTheSubjectHoldsNothing(t *testing.T) {
 	}
 }
 
+func TestNotes_ANoteThatOwnsARowIsNotHeldByTheBody(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	shown := teamNote()
+	shown.FindingContract.Materiality = "current_impact"
+	first := bodyRound("sha-1", shown)
+	first.PRBody = ""
+	if rep := publishThreadsWith(t, gh, ledger, first, bodyPolicy()); rep.InlinePosted != 1 {
+		t.Fatalf("setup: %+v", rep)
+	}
+	second := bodyRound("sha-2", teamNote())
+	second.Changes = changed(mappingFile)
+	rep := publishThreadsWith(t, gh, ledger, second, bodyPolicy())
+	if rep.BodyCovered != 0 || rep.Fixed != 0 {
+		t.Fatalf("a finding with its own row stays present below the bar; the body holds nothing: %+v", rep)
+	}
+	if row := ledger.get(db.PublishedKindFinding, teamNote().ID); row == nil || row.State != db.PublishedStateOpen {
+		t.Fatalf("the row stays open: %+v", row)
+	}
+}
+
 func TestNotes_BodyCheckIsOffByDefault(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
 	rep := publishThreads(t, gh, ledger, bodyRound("sha-1", teamNote()))

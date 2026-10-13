@@ -451,7 +451,7 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 		r.Findings, _ = withoutSettled(r, rows)
 	}
 	if p.Policy.BodyCheck {
-		r.Findings, _ = withoutBodyCovered(r)
+		r.Findings, _ = withoutBodyCovered(r, rows)
 	}
 	r.Findings = withoutConceded(WithoutDismissed(r.Findings, r.Previous), r.Previous)
 	r.LegacyTitles = p.Policy.LegacyTitles

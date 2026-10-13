@@ -1134,7 +1134,7 @@ func observe(d *prDump, bots map[string]bool, s *store, pr *PRResult, m *Observe
 				break
 			}
 		}
-		earlierPoints = append(earlierPoints, reconcile.SettledPoint{FindingID: r.FindingID, File: r.File, Kind: findingKind(f), Subjects: subjectNames(f), Text: f.Comment})
+		earlierPoints = append(earlierPoints, reconcile.SettledPoint{FindingID: r.FindingID, File: r.File, Kind: findingKind(f), Text: f.Comment})
 	}
 	if notes, at := d.observedNotes(bots); len(notes) > 0 {
 		for _, n := range notes {

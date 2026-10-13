@@ -20,7 +20,6 @@ type SettledPoint struct {
 	FindingID string
 	File      string
 	Kind      string
-	Subjects  []string
 	Text      string
 	Replies   string
 }

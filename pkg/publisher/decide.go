@@ -226,7 +226,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	// After the threads: a point another reviewer raised is remembered as
 	// external; the body check leaves no row.
 	if p.Policy.BodyCheck {
-		r.Findings, bodyCovered = withoutBodyCovered(r)
+		r.Findings, bodyCovered = withoutBodyCovered(r, rows)
 	}
 	notes := append(p.clampSeverity(&r, rows, guard), external.notes...)
 
@@ -710,7 +710,7 @@ func withoutSettled(r Round, rows map[string]*db.PublishedFinding) ([]payload.Fi
 			replies = append(replies, StripRendered(reply))
 		}
 		file, _ := payload.FingerprintParts(id)
-		points = append(points, reconcile.SettledPoint{FindingID: id, File: file, Kind: row.FindingKind, Subjects: splitSubjects(row.Subjects), Text: text, Replies: strings.Join(replies, " ")})
+		points = append(points, reconcile.SettledPoint{FindingID: id, File: file, Kind: row.FindingKind, Text: text, Replies: strings.Join(replies, " ")})
 	}
 	if len(points) == 0 {
 		return r.Findings, 0
@@ -738,14 +738,20 @@ func withoutSettled(r Round, rows map[string]*db.PublishedFinding) ([]payload.Fi
 
 // withoutBodyCovered drops the folded notes whose point the pull request
 // body already states; findings above the inline bar are never held this
-// way, since a stated behaviour can still be a defect worth a thread.
-func withoutBodyCovered(r Round) ([]payload.Finding, int) {
+// way, since a stated behaviour can still be a defect worth a thread, and
+// neither is a finding the ledger holds a row for, whose absence the table
+// below would read as a fix.
+func withoutBodyCovered(r Round, rows map[string]*db.PublishedFinding) ([]payload.Finding, int) {
 	if strings.TrimSpace(r.PRBody) == "" {
 		return r.Findings, 0
 	}
 	kept := make([]payload.Finding, 0, len(r.Findings))
 	covered := 0
 	for _, f := range r.Findings {
+		if _, known := rows[f.ID]; known {
+			kept = append(kept, f)
+			continue
+		}
 		if summaryNote(f) && reconcile.BodyCovers(f, r.PRBody) {
 			log.Printf("[PUBLISH] %s/%s#%d: note %s is stated in the pull request body, held", r.Owner, r.Repo, r.Number, f.ID)
 			covered++
