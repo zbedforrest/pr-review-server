@@ -222,8 +222,8 @@ func SetChangedFiles(r *publisher.Round, files []string, known bool) {
 }
 
 // SetChanges is SetChangedFiles with the compare's hunks, in the cache's
-// [old start, old lines, new start, new lines] shape; nil hunks leave the
-// change set at the file rule.
+// [old start, old lines, new start, new lines] shape; with nil hunks the
+// publisher can place no cited line in the change and fixes nothing.
 func SetChanges(r *publisher.Round, files []string, hunks map[string][][4]int, known bool) {
 	if !known {
 		return

@@ -33,15 +33,15 @@
 // Line, in the base's coordinates, within three lines of a hunk's base-side
 // range; for a row written before the column, the line GitHub shows for
 // its comment against the head side, else the fingerprint's ten-line
-// bucket; unknown when the set carries no hunks for the file, and taken as
-// the file having changed when the set carries no hunks at all or
-// Policy.FixedByFile restores the file rule).
+// bucket; unknown when the set carries no hunks for the file or no hunks at
+// all, and taken as the file having changed when Policy.FixedByFile restores
+// the file rule).
 //
 //	state                        present  same head  hunk changed  result
 //	open                         yes      any        any           still open; LastSeenSHA = head; Line = cited line; severity clamp (below)
 //	open                         no       yes        n/a           still open, untouched
 //	open                         no       no         yes           fixed: thread resolved with no reply (Policy.ResolveNotes adds "Not seen at <sha7>")
-//	open                         no       no         unknown       still open, untouched, nothing posted
+//	open                         no       no         unknown       still open, untouched, nothing posted; counted in Report.HunksUnknown and logged once when the compare had no hunks at all
 //	open                         no       no         no            still open, untouched, nothing posted
 //	fixed / resolved (legacy)    yes      any        any           reopened: open, LastSeenSHA = head, one reply "Back at <sha7>" in its thread, thread unresolved, never a new root
 //	fixed (conceded, see below)  no       no         any           counted as fixed once; Rounds = this round

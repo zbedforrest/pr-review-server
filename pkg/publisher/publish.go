@@ -84,6 +84,10 @@ type Report struct {
 	Fixed            int
 	Confidence       int
 	Hygiene          Hygiene
+	// HunksUnknown counts absent open rows kept open because the compare
+	// to their last-seen head listed the cited file without any hunks, so
+	// the cited lines could not be placed in the change.
+	HunksUnknown int
 	// Reopened counts fixed rows that came back; ThreadReplies the in-thread
 	// notes posted for reopens and severity changes (and for fixes under
 	// Policy.ResolveNotes), ThreadReplyFailures the ones GitHub rejected.

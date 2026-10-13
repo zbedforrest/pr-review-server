@@ -402,3 +402,31 @@ func TestLedger_UnknownBaseMakesNoTransition(t *testing.T) {
 		t.Fatalf("the next review on the recorded base fixes: %+v", rep)
 	}
 }
+
+// The audited "Not seen" on an unchanged workflow: a compare that carries
+// no hunks at all cannot place the cited lines, so the row stays open.
+func TestLedger_AbsentFindingWithoutAnyHunksStaysOpen(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, singleRound("sha-1", previewFile, 100, "medium", previewText))
+	gone := absentRound("sha-2", previewFile, 100)
+	gone.Changes = func(string) (ChangeSet, bool) {
+		return ChangeSet{Files: map[string]bool{previewFile: true}}, true
+	}
+	rep := publishThreads(t, gh, ledger, gone)
+	if rep.Fixed != 0 || rep.StillOpen != 1 || rep.HunksUnknown != 1 || rep.ThreadsResolved != 0 {
+		t.Fatalf("a file change without hunks proves nothing: %+v", rep)
+	}
+	if got := gh.repliesTo(1001); len(got) != 0 {
+		t.Fatalf("replies = %q", got)
+	}
+	if row := ledger.rows[fid(previewFile, 100, previewText)]; row.State != db.PublishedStateOpen {
+		t.Fatalf("row = %+v", row)
+	}
+	pol := testPolicy()
+	pol.FixedByFile = true
+	byFile := absentRound("sha-3", previewFile, 100)
+	byFile.Changes = gone.Changes
+	if rep := publishThreadsWith(t, gh, ledger, byFile, pol); rep.Fixed != 1 || rep.HunksUnknown != 0 {
+		t.Fatalf("the kill switch restores the file rule: %+v", rep)
+	}
+}

@@ -55,7 +55,7 @@ type Case struct {
 	Sidecars map[string]json.RawMessage `json:"sidecars"`           // sha7 -> review payload
 	Compares map[string][]string        `json:"compares,omitempty"` // "base7...head7" -> changed files
 	// CompareHunks holds each compare's hunks per file when the cache had
-	// them; a case built before the cache carried hunks runs the file rule.
+	// them; a case built before the cache carried hunks fixes nothing.
 	CompareHunks map[string]map[string][][4]int `json:"compare_hunks,omitempty"`
 	Rounds       []RoundInfo                    `json:"rounds"`
 

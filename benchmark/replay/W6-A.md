@@ -35,7 +35,15 @@ Of the 63 fixes the file rule granted without a hunk near the cited line, the ne
 few of them, so the margin stays at three lines plus the hunk's own context.
 
 The replay cannot show the clamp (no renderer metric counts cuts); the audited cuts are unit tests
-(`render_clamp_test.go`). The nine summary-only audited PRs have no review rounds in the dumps (rounds
+(`render_clamp_test.go`, `render_clamp_audit_test.go`).
+
+Follow-up after the peer verification of the branch: a compare that carries no hunks at all now leaves
+every absent finding open (`Report.HunksUnknown`, logged once per round) instead of falling back to the
+file rule; the kill switch still restores the file rule. Every entry in the compare cache carries hunks,
+so both replay tables above are unchanged by it. The audited "Not seen" on the workflow-lint PR is not a
+cache gap: the push between the two reviewed heads rewrote old lines 12 to 29 of the cited workflow (a
+comment two lines above the cited line 28 was deleted), so the hunk rule holds there by design; the
+finding itself was a false positive, which no line rule can tell from a fix. The nine summary-only audited PRs have no review rounds in the dumps (rounds
 come from the bot's review submissions), so they replay as zero rounds.
 
 ## Relabel benchmark (commentbench)

@@ -467,8 +467,8 @@ func (p *Poller) changeLookup(ctx context.Context, pr github.PullRequest) func(b
 				a.cs.Files[f] = true
 			}
 			// A compare that came with patch data carries hunks even when no
-			// file had a patch, so a patch-less file proves nothing; only a
-			// source without patches at all leaves the file rule.
+			// file had a patch, so a patch-less file proves nothing; a source
+			// without patches at all leaves every absent finding open.
 			if patches != nil {
 				a.cs.Lines = make(map[string]map[int]bool, len(patches))
 				a.cs.Hunks = make(map[string][]publisher.Hunk, len(patches))

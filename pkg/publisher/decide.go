@@ -299,7 +299,14 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 				// neither fixed nor counted as still open.
 				continue
 			}
-			if cs, fixed := r.fixedSince(row, p.Policy.FixedByFile); fixed {
+			cs, fixed, hunksUnknown := r.fixedSince(row, p.Policy.FixedByFile)
+			if hunksUnknown {
+				rep.HunksUnknown++
+				if rep.HunksUnknown == 1 {
+					log.Printf("[PUBLISH] %s/%s#%d: compare %s...%s carries no hunks; absent findings on its files stay open", r.Owner, r.Repo, r.Number, shortSHA(row.LastSeenSHA), shortSHA(r.HeadSHA))
+				}
+			}
+			if fixed {
 				d.Fixed++
 				next := *row
 				next.State = db.PublishedStateFixed
@@ -747,24 +754,25 @@ func (r Round) anchorChanged(base, file string, line int) bool {
 }
 
 // fixedSince judges an absent open row fixed: its file changed since the
-// row's last-seen head and, unless byFile restores the file rule or the
-// change set carries no hunks at all, the lines it cited fall inside a
-// changed hunk of that file. A file the compare lists without a patch
-// (too large, binary) proves nothing.
-func (r Round) fixedSince(row *db.PublishedFinding, byFile bool) (ChangeSet, bool) {
+// row's last-seen head and, unless byFile restores the file rule, the lines
+// it cited fall inside a changed hunk of that file. A file the compare lists
+// without a patch (too large, binary) proves nothing, and neither does a
+// compare that carries no hunks at all; hunksUnknown reports the latter so
+// the round can say once that it held the row.
+func (r Round) fixedSince(row *db.PublishedFinding, byFile bool) (cs ChangeSet, fixed, hunksUnknown bool) {
 	cs, known := r.changesSince(row.LastSeenSHA)
 	file := payload.FingerprintFile(row.Fingerprint)
 	if !known || !cs.Files[file] {
-		return cs, false
+		return cs, false, false
 	}
 	if byFile {
-		return cs, true
+		return cs, true, false
 	}
 	covered, hunksKnown := r.anchorInHunks(cs, row)
 	if !hunksKnown {
-		return cs, cs.Hunks == nil
+		return cs, false, cs.Hunks == nil
 	}
-	return cs, covered
+	return cs, covered, false
 }
 
 // anchorInHunks reports whether the row's cited lines fall inside a hunk of
