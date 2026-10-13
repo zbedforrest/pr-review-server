@@ -359,7 +359,7 @@ func RunAgentReview(
 	var prompt, diffSource string
 	wallClock := agentCfg.WallClock
 	if isLitePrompt(agentCfg.Prompt) {
-		rendered := renderedDiff(prepCtx, cloneDir, defaultBranch, agentCfg.APIDiff, scopePathspec(scope))
+		rendered := renderedDiff(prepCtx, cloneDir, defaultBranch, agentCfg.APIDiff, scope)
 		diffSource = rendered.Source
 		if diffSource == diffSourceAPI {
 			log.Printf("%s worktree diff unavailable; inlining the API diff instead", logPrefix)
@@ -1087,7 +1087,8 @@ func buildLitePromptContent(baseBranch string, diff liteDiff, prContext string, 
 // shallow history, a missing base ref) the GitHub API diff stands in; past the
 // cap that variant lists the changed paths and tells the model to read them at
 // HEAD, since the failed git command cannot recover them.
-func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string, pathspec []string) liteDiff {
+func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string, scope *payload.ReviewScope) liteDiff {
+	pathspec := scopePathspec(scope)
 	base := "origin/HEAD"
 	if baseBranch != "" {
 		base = "origin/" + baseBranch
@@ -1095,6 +1096,7 @@ func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string, pat
 	full, err := gitOutput(ctx, cloneDir, append([]string{"diff", "--find-renames", "-U12", base + "...HEAD"}, pathspec...)...)
 	if err != nil {
 		log.Printf("[AGENT] lite diff via git failed (%v); using the API diff", err)
+		apiDiff = apiDiffInScope(apiDiff, scope)
 		if len(apiDiff) <= diffInlineLimit {
 			return liteDiff{Text: apiDiff, Source: diffSourceAPI}
 		}

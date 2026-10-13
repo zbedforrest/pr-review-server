@@ -78,7 +78,7 @@ func TestReviewScopeLeavesOutContentCopiedFromTheBase(t *testing.T) {
 	if scope.MergeBase == "" || scope.BaseTip != scopeGit(t, dir, "rev-parse", "main") {
 		t.Fatalf("scope = %+v", scope)
 	}
-	diff := renderedDiff(context.Background(), dir, "main", "", scopePathspec(scope))
+	diff := renderedDiff(context.Background(), dir, "main", "", scope)
 	if diff.Source != diffSourceGit {
 		t.Fatalf("source = %q", diff.Source)
 	}
@@ -314,5 +314,15 @@ func TestReviewScopeKeepsAModeChangeTheBaseDidNotMake(t *testing.T) {
 	}
 	if len(scope.InheritedPaths) != 0 {
 		t.Fatalf("the PR's mode change must stay in scope: %v", scope.InheritedPaths)
+	}
+}
+
+func TestRenderedDiffScopesTheAPIFallback(t *testing.T) {
+	api := "diff --git a/lib.go b/lib.go\n--- a/lib.go\n+++ b/lib.go\n@@ -1 +1 @@\n-v1\n+v2\n" +
+		"diff --git a/page.html b/page.html\n--- a/page.html\n+++ b/page.html\n@@ -1 +1 @@\n-old\n+new\n" +
+		"diff --git a/gone.go b/gone.go\n--- a/gone.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
+	got := renderedDiff(context.Background(), t.TempDir(), "main", api, &payload.ReviewScope{InheritedPaths: []string{"lib.go", "gone.go"}})
+	if got.Source != diffSourceAPI || strings.Contains(got.Text, "lib.go") || strings.Contains(got.Text, "gone.go") || !strings.Contains(got.Text, "+new") {
+		t.Fatalf("fallback diff must drop inherited sections:\n%s", got.Text)
 	}
 }

@@ -1109,7 +1109,7 @@ type OfflineWorktreeReport struct {
 // worktree exactly as production would (same diff parse, same matchers).
 func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *BugMemoryLibrary, owner, repo string, prNumber int) OfflineWorktreeReport {
 	rep := OfflineWorktreeReport{}
-	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", reviewScopeForWorktree(ctx, dir, "", "", defaultBranch, "[GATES]"))
+	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", localReviewScope(ctx, dir, defaultBranch))
 	if files == nil {
 		return rep
 	}
@@ -1124,7 +1124,7 @@ func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *B
 // any error it returns nil findings (gates are advisory; they must never
 // fail a review).
 func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
-	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", reviewScopeForWorktree(ctx, dir, "", "", defaultBranch, "[GATES]"))
+	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", localReviewScope(ctx, dir, defaultBranch))
 	if files == nil {
 		return nil
 	}

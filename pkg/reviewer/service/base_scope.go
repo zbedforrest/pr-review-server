@@ -103,6 +103,69 @@ func reviewScopeForWorktree(ctx context.Context, dir, cacheKey, token, baseBranc
 	return scope
 }
 
+// localReviewScope computes the scope from refs already in the worktree,
+// never fetching; nil when the base ref is missing.
+func localReviewScope(ctx context.Context, dir, baseBranch string) *payload.ReviewScope {
+	base := "origin/HEAD"
+	if baseBranch != "" {
+		base = "origin/" + baseBranch
+	}
+	scope, err := computeReviewScope(ctx, dir, base)
+	if err != nil {
+		return nil
+	}
+	return scope
+}
+
+// apiDiffInScope drops the file sections of a unified diff whose post-image
+// path (pre-image for a deletion) is inherited.
+func apiDiffInScope(diff string, scope *payload.ReviewScope) string {
+	if scope == nil || len(scope.InheritedPaths) == 0 {
+		return diff
+	}
+	inherited := make(map[string]bool, len(scope.InheritedPaths))
+	for _, p := range scope.InheritedPaths {
+		inherited[p] = true
+	}
+	var b strings.Builder
+	for _, section := range splitDiffSections(diff) {
+		if !inherited[diffSectionPath(section)] {
+			b.WriteString(section)
+		}
+	}
+	return b.String()
+}
+
+func splitDiffSections(diff string) []string {
+	var sections []string
+	start := 0
+	for i := 0; i < len(diff); {
+		next := strings.Index(diff[i:], "\ndiff --git ")
+		if next < 0 {
+			break
+		}
+		i += next + 1
+		sections = append(sections, diff[start:i])
+		start = i
+	}
+	return append(sections, diff[start:])
+}
+
+func diffSectionPath(section string) string {
+	path := ""
+	for _, line := range strings.Split(section, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++ b/"):
+			return strings.TrimSuffix(strings.TrimPrefix(line, "+++ b/"), "\t")
+		case strings.HasPrefix(line, "--- a/"):
+			path = strings.TrimSuffix(strings.TrimPrefix(line, "--- a/"), "\t")
+		case strings.HasPrefix(line, "@@"):
+			return path
+		}
+	}
+	return path
+}
+
 // withoutInherited drops the scope's inherited paths from a parsed diff.
 func withoutInherited(files []diffFile, scope *payload.ReviewScope) []diffFile {
 	if scope == nil || len(scope.InheritedPaths) == 0 || files == nil {
@@ -169,7 +232,7 @@ func scopeNote(scope *payload.ReviewScope, baseBranch string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n## Changes inherited from %s\n\n", baseBranchLabel(baseBranch))
-	fmt.Fprintf(&b, "%d changed path(s) are out of scope because their content at HEAD is identical to the base branch's current content, so merging the PR changes nothing in them (typically a sync commit without merge ancestry picked them up). `git diff %s...HEAD` still lists them; the change under review is that diff minus these paths. Do not review these paths and do not cite them as regressions or behavior changes of this PR:\n", len(scope.InheritedPaths), baseBranchLabel(baseBranch))
+	fmt.Fprintf(&b, "%d changed path(s) are out of scope because their content at HEAD is identical to the base branch's current content, so merging the PR changes nothing in them (typically a sync commit without merge ancestry picked them up). They are left out of any diff shown here, but `git diff %s...HEAD` run directly still lists them; the change under review is that diff minus these paths. Do not review these paths and do not cite them as regressions or behavior changes of this PR:\n", len(scope.InheritedPaths), baseBranchLabel(baseBranch))
 	for _, p := range shown {
 		fmt.Fprintf(&b, "- `%s`\n", p)
 	}
