@@ -11,6 +11,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/reconcile"
+	"pr-review-server/pkg/textcut"
 )
 
 // SummaryMaxChars stays under GitHub's 65536-char comment body limit.
@@ -498,23 +499,15 @@ func (r Round) writeExternal(b *strings.Builder) {
 	b.WriteString("</details>\n\n")
 }
 
-// FirstSentence returns the leading sentence of the comment's first line, or
-// the whole first line when it has no sentence boundary.
+// FirstSentence returns the leading sentence of the comment's first line (a
+// period inside an open quote or parenthesis does not end it), or the whole
+// first line when it has no sentence boundary.
 func FirstSentence(comment string) string {
 	return firstSentence(comment)
 }
 
 func firstSentence(comment string) string {
-	line := firstLine(comment)
-	for i := 0; i < len(line); i++ {
-		switch line[i] {
-		case '.', '!', '?':
-			if i+1 == len(line) || line[i+1] == ' ' {
-				return line[:i+1]
-			}
-		}
-	}
-	return line
+	return textcut.FirstSentence(firstLine(comment))
 }
 
 var kindLabels = map[string]string{
@@ -545,17 +538,27 @@ func headlineWith(f payload.Finding, legacy, legacyClamp bool) string {
 		return legacyHeadlineWith(f, legacyClamp)
 	}
 	title := titleSource(f)
-	headlineMax, titleMax := headlineMaxRunes, commentTitleMaxRunes
-	if legacyClamp {
-		headlineMax, titleMax = legacyHeadlineMaxRunes, legacyCommentTitleMaxRunes
-	}
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
+		cut := clauseHeadlineWith(title, contractTitleLimit(f, legacyClamp), legacyClamp)
 		if label, ok := kindLabels[c.FindingKind]; ok {
-			return label + " · " + clauseHeadlineWith(title, headlineMax, legacyClamp)
+			return label + " · " + cut
 		}
-		return clauseHeadlineWith(title, headlineMax, legacyClamp)
+		return cut
 	}
-	return clauseHeadlineWith(title, titleMax, legacyClamp)
+	return clauseHeadlineWith(title, titleLimit(commentTitleMaxRunes, legacyCommentTitleMaxRunes, legacyClamp), legacyClamp)
+}
+
+// contractTitleLimit is the headline limit for a finding with a contract
+// impact: the bullet limit when the title is that impact sentence, else the
+// headline limit (the legacy clamp keeps its own).
+func contractTitleLimit(f payload.Finding, legacyClamp bool) int {
+	if legacyClamp {
+		return legacyHeadlineMaxRunes
+	}
+	if titleFromImpact(f) {
+		return impactTitleMaxRunes
+	}
+	return headlineMaxRunes
 }
 
 // commentTitleMaxRunes bounds a title taken from the comment's first
@@ -612,20 +615,35 @@ func legacyHeadlineWith(f payload.Finding, legacyClamp bool) string {
 }
 
 // titleSource is the one line a finding is known by: the agent's headline,
-// else its effect sentence when the contract asserts an impact that exists
-// today, else the comment's first sentence. A finding whose materiality is
-// unknown or nil must not be titled by a sentence saying so.
+// else the first sentence of its effect statement when the contract asserts
+// an impact that exists today, else the comment's first sentence. A finding
+// whose materiality is unknown or nil must not be titled by a sentence
+// saying so.
 func titleSource(f payload.Finding) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" {
 		if h := strings.TrimSpace(c.Headline); h != "" {
 			return h
 		}
-		if c.Materiality == "current_impact" && strings.TrimSpace(c.CurrentImpact) != "" {
-			return strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
+		if titleFromImpact(f) {
+			return strings.TrimSuffix(firstSentence(c.CurrentImpact), ".")
 		}
 	}
 	return strings.TrimSpace(emphasisMarkers.Replace(firstSentence(commentText(f))))
 }
+
+// titleFromImpact reports whether the title is the contract's effect
+// statement: no headline, and an impact the contract asserts exists today.
+func titleFromImpact(f payload.Finding) bool {
+	c := f.FindingContract
+	return c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.Headline) == "" &&
+		c.Materiality == "current_impact" && strings.TrimSpace(c.CurrentImpact) != ""
+}
+
+// impactTitleMaxRunes bounds a title that is the effect sentence itself: the
+// bullet limit, so the inline headline and the summary bullet both carry the
+// whole problem statement rather than a cut of it with the sentence repeated
+// below.
+const impactTitleMaxRunes = bulletMaxRunes
 
 var emphasisMarkers = strings.NewReplacer("**", "", "__", "")
 
@@ -641,9 +659,7 @@ func titleFromComment(f payload.Finding) bool {
 
 const headlineMaxRunes = 140
 
-// clauseBoundaries are the joints an effect sentence is most often built
-// around; cutting at the last one before the limit keeps a headline readable.
-var clauseBoundaries = []string{", so ", "; ", " because ", ", which ", ", and ", ", causing ", ", leaving ", ", "}
+var clauseBoundaries = textcut.ClauseBoundaries
 
 // clauseHeadline returns the whole sentence when it fits, else the longest
 // prefix ending at a clause boundary within the limit, else a word-boundary cut.
@@ -671,75 +687,18 @@ func clauseHeadlineWith(s string, max int, legacyClamp bool) string {
 	return truncateWords(s, max)
 }
 
-// cutMarker is what a cut bullet or headline ends with: an editorial
-// omission mark the agent's own prose never produces, so a reader can tell a
-// cut from a sentence the agent left hanging.
-const cutMarker = " […]"
+// cutMarker is what a cut bullet or headline ends with.
+const cutMarker = textcut.Marker
 
-// clampText cuts s to max runes at the best boundary before the limit: the
-// end of a sentence, else a clause joint, else a word; never inside a code
-// span; and ends it with cutMarker. Legacy restores the word cut with "...".
-// A text within the limit is returned unchanged.
+// clampText cuts s to max runes the way textcut.Clamp does (a dropped
+// parenthetical, else a sentence, clause or word boundary outside every
+// open pair, ending with cutMarker). Legacy restores the word cut with
+// "...". A text within the limit is returned unchanged.
 func clampText(s string, max int, legacy bool) string {
 	if legacy {
 		return truncateWords(s, max)
 	}
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	budget := max - len([]rune(cutMarker))
-	if budget < 1 {
-		return cutMarker
-	}
-	window := string(runes[:budget])
-	floor := len(window) / 3
-	cut := -1
-	// A whole first sentence reads better than a longer cut mid-sentence,
-	// so a sentence end counts from a quarter of the window on.
-	for i := len(window) - 1; i >= len(window)/4; i-- {
-		if (window[i] == '.' || window[i] == '!' || window[i] == '?') && (i+1 == len(window) || window[i+1] == ' ') && insideCode(window[:i]) < 0 {
-			cut = i + 1
-			break
-		}
-	}
-	if cut < 0 {
-		for _, b := range clauseBoundaries {
-			if i := strings.LastIndex(window, b); i > cut && i >= floor && insideCode(window[:i]) < 0 {
-				cut = i
-			}
-		}
-	}
-	if cut < 0 {
-		cut = strings.LastIndex(window, " ")
-		if cut < 0 {
-			cut = len(window)
-		}
-	}
-	if open := insideCode(window[:cut]); open >= 0 {
-		cut = open
-		if i := strings.LastIndex(window[:cut], " "); i > 0 {
-			cut = i
-		}
-	}
-	return strings.TrimRight(window[:cut], " ,;:") + cutMarker
-}
-
-// insideCode returns the byte index of the backtick that opens a code span
-// still open at the end of s, or -1 when every span is closed.
-func insideCode(s string) int {
-	open := -1
-	for i := 0; i < len(s); i++ {
-		if s[i] != '`' {
-			continue
-		}
-		if open < 0 {
-			open = i
-		} else {
-			open = -1
-		}
-	}
-	return open
+	return textcut.Clamp(s, max)
 }
 
 // impactShownBelow reports whether the effect sentence still needs to be
@@ -757,7 +716,7 @@ func impactShownBelow(f payload.Finding, legacy, legacyClamp bool) bool {
 		return clauseHeadline(impact, legacyHeadlineMaxRunes) != impact
 	}
 	title := titleSource(f)
-	return clauseHeadlineWith(title, titleLimit(headlineMaxRunes, legacyHeadlineMaxRunes, legacyClamp), legacyClamp) != impact
+	return clauseHeadlineWith(title, contractTitleLimit(f, legacyClamp), legacyClamp) != impact
 }
 
 // RenderInline keeps the visible part Greptile-sized: headline, one

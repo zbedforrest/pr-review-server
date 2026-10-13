@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"pr-review-server/pkg/textcut"
 )
 
 const FindingContractSchemaVersion = 1
@@ -210,37 +212,12 @@ func NormalizeFindingContract(contract *FindingContract) {
 
 // headlineCutMarker ends a cut headline; the renderer treats it as a cut it
 // must not re-trim.
-const headlineCutMarker = " […]"
+const headlineCutMarker = textcut.Marker
 
-var headlineClauseBoundaries = []string{", so ", "; ", " because ", ", which ", ", and ", ", causing ", ", leaving ", ", "}
-
-// shortenHeadline cuts an over-long headline at the last clause boundary in
-// the first part of the window, else the last word boundary, and marks the
-// cut; a headline the agent wrote is worth more cut than dropped. Short
-// headlines are returned unchanged.
+// shortenHeadline cuts an over-long headline the way the renderer cuts a
+// bullet; a headline the agent wrote is worth more cut than dropped.
 func shortenHeadline(headline string, maximum int) string {
-	runes := []rune(headline)
-	if len(runes) <= maximum {
-		return headline
-	}
-	budget := maximum - len([]rune(headlineCutMarker))
-	if budget < 1 {
-		return headlineCutMarker[1:]
-	}
-	window := string(runes[:budget])
-	cut := -1
-	for _, b := range headlineClauseBoundaries {
-		if i := strings.LastIndex(window, b); i > cut && i >= len(window)/3 {
-			cut = i
-		}
-	}
-	if cut < 0 {
-		cut = strings.LastIndex(window, " ")
-		if cut <= 0 {
-			cut = len(window)
-		}
-	}
-	return strings.TrimRight(window[:cut], " ,;:") + headlineCutMarker
+	return textcut.Clamp(headline, maximum)
 }
 
 // normalizePriorRefs trims both references, drops empty, malformed and

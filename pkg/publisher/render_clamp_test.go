@@ -49,12 +49,15 @@ func TestClampText_LegacyRestoresTheWordCut(t *testing.T) {
 	}
 }
 
-func TestMarkedBullet_CutsALongTitleAtASentenceWithTheMarker(t *testing.T) {
-	long := "The handler drops the trailing slash before matching. A request to the bare path then falls through to the catch-all route and renders the marketing page with a 200 instead of the configured redirect, which the uptime check does not notice because it only reads the status code."
+func TestMarkedBullet_CutsALongTitleAtAClauseWithTheMarker(t *testing.T) {
+	long := "A request to the bare path falls through to the catch-all route and renders the marketing page with a 200 instead of the configured redirect, which the uptime check does not notice because it only reads the status code and never the body."
+	if n := len([]rune(long)); n <= bulletMaxRunes {
+		t.Fatalf("fixture impact is %d runes", n)
+	}
 	fd := withContract(f("x", "low", "a.go", 1, "Body."), "production_behavior", "current_impact", long, "")
 	r := Round{Owner: "acme", Repo: "example", HeadSHA: "abc1234"}
 	out := r.markedBullet(fd, "")
-	if !strings.Contains(out, "The handler drops the trailing slash before matching. […]"+bulletWhereSep) {
+	if !strings.Contains(out, "which the uptime check does not notice […]"+bulletWhereSep) {
 		t.Fatalf("bullet:\n%s", out)
 	}
 	r.LegacyClamp = true
