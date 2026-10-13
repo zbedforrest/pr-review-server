@@ -776,6 +776,7 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 		// alert set even if a later stage mutates the agent output.
 		GateAlerts:    append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
 		Carried:       carriedInfo,
+		Scope:         agentOut.Scope,
 		LinkedTickets: ticketCtx.keys(),
 	}, nil
 }
@@ -2329,6 +2330,7 @@ func buildReviewSidecar(owner, repo string, prNumber int, commitSHA string, rr *
 	// the same reason as the funnels above. Nil (field omitted) when the
 	// feature is off, keeping legacy sidecars byte-identical.
 	pl.CarriedFindings = rr.Carried
+	pl.Scope = rr.Scope
 	pl.ReviewRun = rr.ReviewRun
 	body, err := json.Marshal(pl)
 	if err != nil {

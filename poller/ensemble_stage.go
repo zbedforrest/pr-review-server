@@ -310,6 +310,7 @@ func ensembleReview(valid []ensembleOutcome, merge ensemble.MergeResult, report 
 	out := &service.AgentReview{
 		Comments:          append(append([]types.LineComment(nil), merge.Findings...), types.LineComment{FilePath: "SUMMARY", Summary: merge.Summary}),
 		DiffSource:        first.DiffSource,
+		Scope:             first.Scope,
 		CloneDir:          first.CloneDir,
 		LogPath:           first.LogPath,
 		RequestedModel:    first.RequestedModel,

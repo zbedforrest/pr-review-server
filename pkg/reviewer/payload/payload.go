@@ -64,6 +64,22 @@ type Payload struct {
 	// staleness filter. Absent when the feature is off or no prior review
 	// exists, so legacy sidecars are byte-identical.
 	CarriedFindings *CarryForwardInfo `json:"carried_findings,omitempty"`
+
+	// Scope records the base the review diffed against and the changed paths
+	// it left out because their content came from the base branch. Absent on
+	// sidecars written before it existed.
+	Scope *ReviewScope `json:"scope,omitempty"`
+}
+
+// ReviewScope describes what a review treated as the pull request's own change.
+// InheritedPaths changed between MergeBase and the head but hold content the
+// base branch had after MergeBase, so they are base changes the head picked up
+// (for example a sync commit with no merge ancestry), not the PR's work.
+type ReviewScope struct {
+	MergeBase       string   `json:"merge_base,omitempty"`
+	BaseTip         string   `json:"base_tip,omitempty"`
+	InheritedPaths  []string `json:"inherited_paths,omitempty"`
+	BaseFetchFailed bool     `json:"base_fetch_failed,omitempty"`
 }
 
 // ReviewRunInfo is the durable execution metadata attached to a review.

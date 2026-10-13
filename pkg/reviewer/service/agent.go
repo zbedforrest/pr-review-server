@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"pr-review-server/pkg/reviewer/payload"
 	"strings"
 	"sync"
 	"time"
@@ -172,6 +173,9 @@ type AgentReview struct {
 	OutputTokens int64
 	// DiffSource is "git" or "api" for prompts that inline the diff, "" otherwise.
 	DiffSource string
+	// Scope is the base the diff was taken against and the paths left out as
+	// inherited from it; nil when the worktree diff was unavailable.
+	Scope *payload.ReviewScope
 	// CitedFileContents holds the worktree content of every file the findings
 	// cite, when AgentConfig.CollectCitedFiles is set.
 	CitedFileContents map[string]string
@@ -309,6 +313,8 @@ func RunAgentReview(
 	// gates and the bug-memory matcher, so offline dry-runs of either are
 	// predictive of production behavior.
 	diffFiles := diffFilesForWorktree(prepCtx, cloneDir, defaultBranch, agentCfg.GitHubToken, owner+"/"+repo, agentCfg.APIDiff)
+	scope := reviewScopeForWorktree(prepCtx, cloneDir, owner+"/"+repo, defaultBranch, logPrefix)
+	diffFiles = withoutInherited(diffFiles, scope)
 
 	// Mechanical gates: cheap deterministic checks over the diff + worktree.
 	// Their findings go into the prompt (the agent must address each) AND are
@@ -349,12 +355,12 @@ func RunAgentReview(
 		log.Printf("%s required checks issued: %v", logPrefix, ids)
 	}
 
-	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets)
+	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets) + scopeNote(scope, defaultBranch)
 	claims := firstPassClaims(geminiComments)
 	var prompt, diffSource string
 	wallClock := agentCfg.WallClock
 	if isLitePrompt(agentCfg.Prompt) {
-		rendered := renderedDiff(prepCtx, cloneDir, defaultBranch, agentCfg.APIDiff)
+		rendered := renderedDiff(prepCtx, cloneDir, defaultBranch, agentCfg.APIDiff, scopePathspec(scope))
 		diffSource = rendered.Source
 		if diffSource == diffSourceAPI {
 			log.Printf("%s worktree diff unavailable; inlining the API diff instead", logPrefix)
@@ -680,6 +686,7 @@ func RunAgentReview(
 		InputTokens:          parseResult.inputTokens,
 		OutputTokens:         parseResult.outputTokens,
 		DiffSource:           diffSource,
+		Scope:                scope,
 		CitedFileContents:    citedFiles,
 		GatesStartedAt:       gatesStartedAt,
 		GatesDurationMS:      gatesDurationMS,
@@ -1081,12 +1088,12 @@ func buildLitePromptContent(baseBranch string, diff liteDiff, prContext string, 
 // shallow history, a missing base ref) the GitHub API diff stands in; past the
 // cap that variant lists the changed paths and tells the model to read them at
 // HEAD, since the failed git command cannot recover them.
-func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string) liteDiff {
+func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string, pathspec []string) liteDiff {
 	base := "origin/HEAD"
 	if baseBranch != "" {
 		base = "origin/" + baseBranch
 	}
-	full, err := gitOutput(ctx, cloneDir, "diff", "--find-renames", "-U12", base+"...HEAD")
+	full, err := gitOutput(ctx, cloneDir, append([]string{"diff", "--find-renames", "-U12", base + "...HEAD"}, pathspec...)...)
 	if err != nil {
 		log.Printf("[AGENT] lite diff via git failed (%v); using the API diff", err)
 		if len(apiDiff) <= diffInlineLimit {
@@ -1102,7 +1109,7 @@ func renderedDiff(ctx context.Context, cloneDir, baseBranch, apiDiff string) lit
 	if len(full) <= diffInlineLimit {
 		return liteDiff{Text: full, Source: diffSourceGit}
 	}
-	stat, _ := gitOutput(ctx, cloneDir, "diff", "--stat", base+"...HEAD")
+	stat, _ := gitOutput(ctx, cloneDir, append([]string{"diff", "--stat", base + "...HEAD"}, pathspec...)...)
 	return liteDiff{
 		Text:   capDiff(full, stat, fmt.Sprintf("fetch the remaining files with `git diff %s...HEAD -- <path>`", base)),
 		Source: diffSourceGit, Truncated: true,
@@ -1224,6 +1231,15 @@ func readWorktreeFile(root, rel string) (string, bool) {
 // repo): concurrent fetches into one repo trip over each other's lock files
 // instead of waiting. Worktree add/remove need no lock and run in parallel.
 var cacheMutexes sync.Map
+
+// baseFetchFailures remembers, per cache and base branch, whether the latest
+// base-branch fetch failed, which leaves origin/<base> at an older tip.
+var baseFetchFailures sync.Map
+
+func baseFetchFailed(cacheKey, branch string) bool {
+	failed, _ := baseFetchFailures.Load(cacheKey + "\x00" + branch)
+	return failed == true
+}
 
 func cacheLock(key string) *sync.Mutex {
 	m, _ := cacheMutexes.LoadOrStore(key, &sync.Mutex{})
@@ -1410,7 +1426,9 @@ func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch strin
 		baseArgs := authHeaderArgs(token)
 		baseArgs = append(baseArgs, "fetch", "--quiet", "origin",
 			fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", defaultBranch, defaultBranch))
-		if out, err := runGit(ctx, cacheDir, baseArgs...); err != nil {
+		out, err := runGit(ctx, cacheDir, baseArgs...)
+		baseFetchFailures.Store(cacheKey+"\x00"+defaultBranch, err != nil)
+		if err != nil {
 			log.Printf("%s WARN: base-branch fetch (%s): %v (%s); deterministic layer may find no diff base",
 				logPrefix, defaultBranch, err, redactToken(out, token))
 		}

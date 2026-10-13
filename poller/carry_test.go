@@ -374,3 +374,18 @@ func TestGithubCompareChangedFiles(t *testing.T) {
 		t.Error("HTTP error must be unreliable")
 	}
 }
+
+func TestBuildReviewSidecar_PersistsReviewScope(t *testing.T) {
+	rr := &ReviewResult{Scope: &payload.ReviewScope{MergeBase: "aaaaaaa", BaseTip: "bbbbbbb", InheritedPaths: []string{"lib.go"}}}
+	body, err := buildReviewSidecar("acme", "widgets", 7, "ccccccc3333333333333", rr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got payload.Payload
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Scope == nil || got.Scope.MergeBase != "aaaaaaa" || len(got.Scope.InheritedPaths) != 1 {
+		t.Fatalf("scope = %+v", got.Scope)
+	}
+}
