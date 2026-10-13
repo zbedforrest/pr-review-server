@@ -97,9 +97,9 @@ func ContractSentence(text string) string {
 
 // bodyIDRefRe matches a parenthetical or trailing aside that only points at
 // another entry: "(same as A-1)", "(see FP-2 and FP-3)", ", as in A-1".
-var bodyIDRefRe = regexp.MustCompile(`(?i)\s*(?:\((?:see|same as|as in|like|cf\.?|per|similar to|same pattern as)?\s*(?:A|FP|P)-\d{1,3}(?:(?:\s*,\s*|\s+and\s+|\s*/\s*)(?:A|FP|P)-\d{1,3})*\)|,?\s+(?:as|like) in (?:A|FP|P)-\d{1,3}\b)`)
+var bodyIDRefRe = regexp.MustCompile(`(?i)\s*(?:\((?:see|same as|as in|like|cf\.?|per|similar to|same pattern as)?\s*(?:A|FP|P)-\d{1,2}(?:(?:\s*,\s*|\s+and\s+|\s*/\s*)(?:A|FP|P)-\d{1,2})*\)|,?\s+(?:as|like) in (?:A|FP|P)-\d{1,2}\b)`)
 
-var findingIDListRe = regexp.MustCompile(`\b(?:A|FP|P)-\d{1,3}(?:(?:\s*,\s*|\s+and\s+|\s*/\s*)(?:A|FP|P)-\d{1,3})+\b`)
+var findingIDListRe = regexp.MustCompile(`\b(?:A|FP|P)-\d{1,2}(?:(?:\s*,\s*|\s+and\s+|\s*/\s*)(?:A|FP|P)-\d{1,2})+\b`)
 
 // StripFindingIDAsides removes the asides that point at other entries by
 // their internal labels and names any label a sentence still leans on as
@@ -114,8 +114,8 @@ func StripFindingIDAsides(text string) string {
 }
 
 var (
-	praiseOpenerRe   = regexp.MustCompile(`(?i)^(?:(?:the|this) (?:pr|change|patch|diff|code|implementation|approach|author|test|tests|migration|refactor|fix|new \w+)|it|you|the new \w+)\b[^.]{0,60}?\b(?:correctly|properly|appropriately|nicely|cleanly|rightly|safely|sensibly|already|successfully)\b|^(?:good|nice|great|solid|clean|well[- ]done|looks good|lgtm|no (?:issues?|problems?|concerns?|bugs?)(?: here| found| with| in)?)\b|\b(?:is|are|looks?) (?:correct|fine|good|right|sound|solid|clean)\b|\bworks? as (?:intended|expected|designed)\b|\bis (?:a )?(?:correct|sound|sensible|reasonable|minimal|clean) (?:change|fix|approach|choice|implementation)\b`)
-	praiseNegationRe = regexp.MustCompile(`(?i)\b(?:not|never|no longer|but|however|fails?|failing|missing|misses|incorrect(?:ly)?|wrong|except|unless|only|although|though|still|broken|breaks|should|needs?|lacks?|without)\b|n't\b`)
+	praiseOpenerRe   = regexp.MustCompile(`(?i)^(?:(?:the|this) (?:pr|change|patch|diff|code|implementation|approach|author|test|tests|migration|refactor|fix|new \w+)|it|you|the new \w+)\b[^.]{0,60}?\b(?:correctly|properly|appropriately|nicely|cleanly|rightly|safely|sensibly)\b|^(?:good|nice|great|solid|clean|well[- ]done|looks good|lgtm|no (?:issues?|problems?|concerns?|bugs?)(?: here| found| with| in)?)\b|\b(?:is|are|looks?) (?:correct|fine|good|right|sound|solid|clean)\b|\bworks? as (?:intended|expected|designed)\b|\bis (?:a )?(?:correct|sound|sensible|reasonable|minimal|clean) (?:change|fix|approach|choice|implementation)\b`)
+	praiseNegationRe = regexp.MustCompile(`(?i)\b(?:not|never|no longer|but|however|fails?|failing|missing|misses|incorrect(?:ly)?|wrong|except|unless|only|although|though|still|broken|breaks|should|needs?|lacks?|without|regress\w*|revert\w*|leaks?|leaking|crash\w*|races?|racy|deadlock\w*|overflow\w*|corrupt\w*|panics?)\b|n't\b`)
 	contrastOpenerRe = regexp.MustCompile(`(?i)^(?:however|but|that said|still|yet|nevertheless|nonetheless|even so|unfortunately|the (?:problem|issue|catch|gap|risk) is)\b[\s,:]*`)
 )
 
@@ -201,14 +201,14 @@ func ReasonlessNote(f payload.Finding) bool {
 
 var (
 	memoryClaimRe    = regexp.MustCompile(`(?i)\b(?:from memory|if i recall|iirc|as i recall|as i remember|as far as i remember|i believe the (?:library|package|action|module|framework|dependency|plugin|middleware|runtime)|without (?:inspecting|reading|checking|opening) the (?:pinned|installed|vendored|bundled|upstream|library|package|action|dependency)|(?:cannot|can't|could not|couldn't|did not|didn't|unable to) (?:inspect|read|check|open|verify|confirm) the (?:pinned|installed|vendored|bundled|upstream|action's|library's|package's|dependency's|module's)|(?:not|never) (?:inspected|checked|read|verified) (?:the )?(?:pinned|installed|vendored|upstream)|unverified against the pinned|unverified (?:default|behaviou?r|option|semantics)|documented behaviou?r from memory|(?:pinned|installed|vendored) (?:release|version|source|copy) (?:is|was) not (?:available|readable|inspected|checked)|not (?:available|present|readable) in this checkout|no (?:node_modules|vendor|site-packages) (?:in|available in) this checkout)`)
-	certainDefaultRe = regexp.MustCompile(`(?i)(?:\b(?:[\w.@/-]+ )?(?:library|package|action|framework|middleware|plugin|sdk|dependency|module)(?:'s)? (?:defaults?|behaviou?r|semantics?|contract) (?:is|are) (?:certain|well[- ]documented|documented|known|standard|fixed)\b|\bdefaults? (?:is|are) certain\b|\bi am certain\b|\bcertain(?:ly)? (?:that )?the (?:library|package|action|framework|middleware|plugin|sdk|module)\b|\b(?:the )?(?:library|package|action|framework|middleware|plugin|sdk|module) (?:is )?(?:documented|known) to\b)`)
+	certainDefaultRe = regexp.MustCompile(`(?i)(?:\b(?:[\w.@/-]+ )?(?:library|package|action|framework|middleware|plugin|sdk|dependency|module)(?:'s)? (?:defaults?|behaviou?r|semantics?|contract) (?:is|are) certain\b|\bdefaults? (?:is|are) certain\b|\bi am certain\b|\bcertain(?:ly)? (?:that )?the (?:library|package|action|framework|middleware|plugin|sdk|module)\b)`)
 )
 
 // UnverifiedLibraryClaim reports whether a finding rests on third-party
 // behaviour the agent did not read: it says so (from memory, could not
 // inspect the pinned release, "unverified against the pinned version" as
 // the AGENT_CLAIM_EVIDENCE prompt instructs) or asserts a library's
-// defaults as certain. A claim like that was wrong in both audited cases;
+// defaults as certain; "documented to" is a citation, not an admission. A claim like that was wrong in both audited cases;
 // it is held, not posted. The rule is the agent's own admission: a plain
 // uncited claim with no such wording is not held, since the publisher
 // cannot tell a read default from a remembered one.

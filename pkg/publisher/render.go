@@ -427,7 +427,7 @@ func RenderSummary(r Round, sel Selection) string {
 		fmt.Fprintf(&b, sinceLastReviewFormat, d.New, d.StillOpen, d.Fixed)
 		// Folded notes have no ledger rows, so the three counts never see
 		// them; naming them keeps "0 new" from sitting over a list of six.
-		if n := len(r.lowerSeverityNotes()); n > 0 && RenderHygieneEnabled() {
+		if n := len(r.lowerSeverityNotes()) + len(r.unverifiedNotes()); n > 0 && RenderHygieneEnabled() {
 			fmt.Fprintf(&b, " · %d folded note%s", n, plural(n))
 		}
 		b.WriteString("\n\n")

@@ -642,7 +642,9 @@ func countHeld(rep publisher.Report, pr *PRResult) {
 func countShownDefects(findings []payload.Finding, rep publisher.Report, posts []post, summaries map[int64]string, pr *PRResult) {
 	held := map[string]bool{}
 	for _, h := range rep.Held {
+		// Aliasing may have renamed the id; the cited location survives it.
 		held[h.ID] = true
+		held[fmt.Sprintf("%s:%d", h.File, h.Line)] = true
 	}
 	posted := map[string]bool{}
 	for _, p := range posts {
@@ -653,7 +655,7 @@ func countShownDefects(findings []payload.Finding, rep publisher.Report, posts [
 		summary = body
 	}
 	for _, f := range findings {
-		if held[f.ID] || !publisher.Publishable(f) {
+		if held[f.ID] || held[fmt.Sprintf("%s:%d", f.File, f.Line)] || !publisher.Publishable(f) {
 			continue
 		}
 		shown := posted[f.ID] || strings.Contains(summary, titlePrefix(publisher.TitleOf(f)))

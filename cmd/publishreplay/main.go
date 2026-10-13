@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"pr-review-server/pkg/publisher"
@@ -53,11 +54,9 @@ func main() {
 	libraryClaimHold := flag.Bool("library-claim-hold", true, "hold findings that rest on third-party behaviour the agent did not read (PUBLISH_LIBRARY_CLAIM_HOLD)")
 	regressionEvidence := flag.Bool("regression-evidence", true, "hold regression claims the cited hunk contradicts (PUBLISH_REGRESSION_EVIDENCE)")
 	flag.Parse()
-	if !*renderHygiene {
-		// The renderer reads its kill switch from the environment, as the
-		// discount gate does.
-		_ = os.Setenv(publisher.RenderHygieneEnv, "false")
-	}
+	// The renderer reads its kill switch from the environment, as the
+	// discount gate does; the flag wins over an inherited variable.
+	_ = os.Setenv(publisher.RenderHygieneEnv, strconv.FormatBool(*renderHygiene))
 	if *dumpsDir == "" || *sidecarsDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv]")
 		os.Exit(2)

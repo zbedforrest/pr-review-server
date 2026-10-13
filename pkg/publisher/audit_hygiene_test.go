@@ -127,6 +127,8 @@ func TestIsPraise(t *testing.T) {
 		"The change correctly guards the read but misses the write path.":    false,
 		"Retry loop never backs off.":                                        false,
 		"The `sized` filter drops tables missing `total_size_bytes`.":        false,
+		"This change already drops the guard.":                               false,
+		"The change correctly moves the logic, which regresses the cache.":   false,
 	} {
 		if got := IsPraise(text); got != want {
 			t.Errorf("IsPraise(%q) = %v, want %v", text, got, want)
@@ -396,7 +398,10 @@ func TestUnverifiedLibraryClaim_HoldsTheInstructedPhraseNotAPlainClaim(t *testin
 	plain := contractFinding("medium", "web/src/tooltip/middlewares.ts", 70,
 		"`shift` defaults to `mainAxis: true` and `crossAxis: false`, so the tooltip never slides horizontally.",
 		asserting("production_behavior", "Tooltips overflow the viewport edge.", "The wrapper may inject its own shift middleware.", "Clipped tooltips.", "Tooltip never slides horizontally"))
-	if !UnverifiedLibraryClaim(instructed) || UnverifiedLibraryClaim(plain) {
-		t.Fatalf("instructed=%v plain=%v", UnverifiedLibraryClaim(instructed), UnverifiedLibraryClaim(plain))
+	cited := contractFinding("medium", "web/src/tooltip/middlewares.ts", 70,
+		"The library is documented to shift along the main axis only (docs/tooltips.md:12), so the tooltip never slides horizontally.",
+		asserting("production_behavior", "Tooltips overflow the viewport edge.", "The repo doc may lag the pinned release.", "Clipped tooltips.", "Tooltip never slides horizontally"))
+	if !UnverifiedLibraryClaim(instructed) || UnverifiedLibraryClaim(plain) || UnverifiedLibraryClaim(cited) {
+		t.Fatalf("instructed=%v plain=%v cited=%v", UnverifiedLibraryClaim(instructed), UnverifiedLibraryClaim(plain), UnverifiedLibraryClaim(cited))
 	}
 }
