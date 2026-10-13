@@ -139,6 +139,9 @@ func cloneFindingContract(contract *types.FindingContract) *types.FindingContrac
 	cloned.FalsifiableCondition = cloneString(contract.FalsifiableCondition)
 	cloned.ExpectedObservable = cloneString(contract.ExpectedObservable)
 	cloned.Subjects = append([]types.FindingSubject(nil), contract.Subjects...)
+	if contract.RelatesTo != nil {
+		cloned.RelatesTo = append([]string(nil), contract.RelatesTo...)
+	}
 	return &cloned
 }
 

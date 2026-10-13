@@ -111,8 +111,12 @@ func Guard(d Draft, members []Member, opts Options) Result {
 			f.Importance = maxImp
 			res.Report.SeverityCapped++
 		}
-		if f.FindingContract == nil {
-			f.FindingContract = best.Finding.FindingContract
+		if f.FindingContract == nil && best.Finding.FindingContract != nil {
+			c := *best.Finding.FindingContract
+			f.FindingContract = &c
+		}
+		if f.FindingContract != nil {
+			carryPriorRefs(f.FindingContract, append([]Member{best}, srcs...))
 		}
 		f.Sources = memberIDs(srcs)
 		for _, m := range srcs {
@@ -243,6 +247,48 @@ func citesFile(srcs []Member, file string) bool {
 		}
 	}
 	return false
+}
+
+// carryPriorRefs keeps the prior_id a member's contract named when the
+// contract the finding ends up with has none (authored, or copied from the
+// best member): the author never saw the earlier findings, the runs did.
+// The best member's prior wins, then the first other member's, and any other prior a member named
+// lands in relates_to, which is always merged and never repeats the prior
+// itself. A finding with no contract at all is left so: a hollow contract
+// would fail validation downstream.
+func carryPriorRefs(c *types.FindingContract, ms []Member) {
+	for _, m := range ms {
+		if c.PriorID != "" {
+			break
+		}
+		if mc := m.Finding.FindingContract; mc != nil && mc.PriorID != "" {
+			c.PriorID = mc.PriorID
+		}
+	}
+	seen := map[string]bool{c.PriorID: true}
+	var related []string
+	add := func(r string) {
+		if !seen[r] {
+			seen[r] = true
+			related = append(related, r)
+		}
+	}
+	for _, r := range c.RelatesTo {
+		add(r)
+	}
+	for _, m := range ms {
+		mc := m.Finding.FindingContract
+		if mc == nil {
+			continue
+		}
+		if mc.PriorID != "" {
+			add(mc.PriorID)
+		}
+		for _, r := range mc.RelatesTo {
+			add(r)
+		}
+	}
+	c.RelatesTo = related
 }
 
 // bestMember is the highest-severity member, then the one with the longest

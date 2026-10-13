@@ -8,7 +8,11 @@
 // (cmd/publishreplay) asserts against.
 //
 // Identity. Every current finding is matched to at most one ledger row, in
-// this order: its fingerprint equals a row's; same file, line within ten of
+// this order: its fingerprint equals a row's; its contract's prior_id names
+// a row (Policy.PriorIDAlias, PUBLISH_PRIOR_ID_ALIAS, on unless set to
+// false: the agent was shown the PR's ledger rows under AGENT_PRIOR_FINDINGS
+// and said this is the same point, so the match is exact, one finding per
+// row, and a prior_id the ledger does not hold is ignored); same file, line within ten of
 // the row's comment line (the bucket centre when GitHub shows no comment),
 // raw-text Jaccard >= 0.20 against the row's CommentText (the stripped
 // posted body when the row predates the column); same file and the same

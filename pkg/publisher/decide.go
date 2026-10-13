@@ -326,16 +326,23 @@ const (
 // row's fingerprint. It returns the ids the findings carried before, keyed
 // by the id they carry now, for the one case that posts a fresh root.
 func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding) map[string]string {
+	original := map[string]string{}
+	placed := map[string]bool{}
+	if p.Policy.PriorIDAlias {
+		placed = aliasByPriorID(r, rows, original)
+	}
 	ids := make([]string, 0, len(rows))
 	for id := range rows {
-		ids = append(ids, id)
+		if !placed[id] {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	own := make([]reconcile.OwnComment, 0, len(rows))
 	for _, id := range ids {
 		row := rows[id]
 		file, bucket := payload.FingerprintParts(id)
-		o := reconcile.OwnComment{CommentID: row.CommentID, FindingID: id, File: file, Line: bucket*10 + 5, Text: row.CommentText, Kind: row.FindingKind, Subjects: splitSubjects(row.Subjects)}
+		o := reconcile.OwnComment{CommentID: row.CommentID, FindingID: id, File: file, Line: bucket*payload.LineBucket + payload.LineBucket/2, Text: row.CommentText, Kind: row.FindingKind, Subjects: splitSubjects(row.Subjects)}
 		if prior, ok := r.PriorComments[id]; ok {
 			if prior.Line > 0 {
 				o.Line = prior.Line
@@ -346,15 +353,58 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 		}
 		own = append(own, o)
 	}
-	aliases := reconcile.AliasPrior(r.Findings, own)
-	original := map[string]string{}
+	// A finding its prior_id already placed is settled; only the rest are
+	// matched by text and subjects.
+	unplaced := make([]payload.Finding, 0, len(r.Findings))
+	for _, f := range r.Findings {
+		if !placed[f.ID] {
+			unplaced = append(unplaced, f)
+		}
+	}
+	aliases := reconcile.AliasPrior(unplaced, own)
 	for i := range r.Findings {
-		if prior, ok := aliases[r.Findings[i].ID]; ok {
+		if prior, ok := aliases[r.Findings[i].ID]; ok && !placed[r.Findings[i].ID] {
 			original[prior] = r.Findings[i].ID
 			r.Findings[i].ID = prior
 		}
 	}
 	return original
+}
+
+// aliasByPriorID hands a finding the identity of the ledger row its
+// contract's prior_id names: the agent saw that row and said this is the
+// same point, which outranks any text or subject match. A prior_id the
+// ledger does not hold, one another finding of the round already carries or
+// claimed, or one named by a finding that is itself already a ledger row,
+// changes nothing: fingerprint equality outranks the claim. Returns the
+// row ids placed this way (now carried by the findings that named them) and
+// records each such finding's original id.
+func aliasByPriorID(r *Round, rows map[string]*db.PublishedFinding, original map[string]string) map[string]bool {
+	claimed := map[string]bool{}
+	carried := make(map[string]bool, len(r.Findings))
+	for _, f := range r.Findings {
+		carried[f.ID] = true
+	}
+	for i := range r.Findings {
+		f := &r.Findings[i]
+		if f.FindingContract == nil || f.FindingContract.PriorID == "" {
+			continue
+		}
+		prior := f.FindingContract.PriorID
+		if prior == f.ID || carried[prior] || claimed[prior] {
+			continue
+		}
+		if _, self := rows[f.ID]; self {
+			continue
+		}
+		if _, known := rows[prior]; !known {
+			continue
+		}
+		claimed[prior] = true
+		original[prior] = f.ID
+		f.ID = prior
+	}
+	return claimed
 }
 
 // withoutTerminal drops every finding that aliases to a dismissed, contested
@@ -374,6 +424,9 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 		if !ok || !terminalState(row.State) {
 			kept = append(kept, f)
 			continue
+		}
+		if from := originalIDs[f.ID]; from != "" && from != f.ID {
+			log.Printf("[PUBLISH] %s/%s#%d: finding %s aliased to %s row %s, dropped", r.Owner, r.Repo, r.Number, from, row.State, f.ID)
 		}
 		others, keyed := rowsOnPoint(rows, row, f)
 		if len(others) > 0 {

@@ -694,6 +694,11 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 	if !effective.BugMemory {
 		bugMemory = nil
 	}
+	var priors []service.PriorFinding
+	if p.cfg.AgentPriorFindings {
+		pr := exec.Job.PR
+		priors = p.priorFindingsFor(pr.Owner, pr.Repo, pr.Number)
+	}
 	return service.AgentConfig{
 		CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
 		WallClock: time.Duration(agent.WallClockSeconds) * time.Second, MaxTurns: agent.MaxTurns,
@@ -706,6 +711,7 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 		OpenRouterBaseURL: p.cfg.OpenRouterBaseURL, BugMemory: bugMemory,
 		RequiredChecks: effective.RequiredChecks, FailureLogSink: p.persistAgentFailureLog,
 		AttemptObserver: p.providerAttemptObserver(exec),
+		PriorFindings:   priors,
 	}
 }
 

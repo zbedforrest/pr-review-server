@@ -80,6 +80,10 @@ type AgentConfig struct {
 	// bugmemory.go.
 	BugMemory *BugMemoryLibrary
 
+	// PriorFindings is what PRism already raised on this PR (AGENT_PRIOR_FINDINGS);
+	// empty leaves the prompt unchanged. See priorfindings.go.
+	PriorFindings []PriorFinding
+
 	// Tools is the Claude tool allowlist (empty = runconfig.ToolsDefault).
 	Tools string
 	// Prompt selects the prompt shape: runconfig.PromptPipeline (default,
@@ -124,6 +128,10 @@ type AgentReview struct {
 	FirstPassActive []types.LineComment
 	Records         []types.LineComment
 	BugMemory       BugMemoryMatch // which memory entries were injected/excluded (telemetry)
+	// PriorShown is how many earlier findings the prompt listed and
+	// PriorRefs what the agent's prior_id and relates_to resolved to.
+	PriorShown int
+	PriorRefs  PriorRefResolution
 
 	// Checks and CheckFindings carry the required-check enforcement output
 	// (see checks.go): funnel telemetry, and the deterministic escalations
@@ -355,9 +363,9 @@ func RunAgentReview(
 			wallClock = agentWallClock(agentCfg, true)
 			log.Printf("%s inlined diff truncated at %d chars (source=%s); agent wall clock %s", logPrefix, diffInlineLimit, diffSource, wallClock)
 		}
-		prompt = buildLitePrompt(agentCfg.Prompt, defaultBranch, rendered, prContext, memEntries)
+		prompt = buildLitePrompt(agentCfg.Prompt, defaultBranch, rendered, prContext, memEntries, agentCfg.PriorFindings)
 	} else {
-		prompt, err = buildAgentPromptContent(defaultBranch, diffFiles, prContext, claims, gates, memEntries, checks)
+		prompt, err = buildAgentPromptContent(defaultBranch, diffFiles, prContext, claims, gates, memEntries, checks, agentCfg.PriorFindings)
 		if err != nil {
 			return nil, fmt.Errorf("agent: build prompt: %w", err)
 		}
@@ -595,6 +603,12 @@ func RunAgentReview(
 		evidencePaths[i] = f.Path
 	}
 	comments, firstPassActive, records := ApplyDispositionsWithEvidenceRefs(comments, claims, evidenceRefResolves(evidencePaths, cloneDir))
+	priorRefs := ResolvePriorRefs(comments, agentCfg.PriorFindings)
+	priorShown := len(visiblePriors(agentCfg.PriorFindings))
+	if priorShown > 0 || priorRefs.Unlisted > 0 {
+		log.Printf("%s prior findings: shown=%d prior_ids=%d related=%d unlisted=%d duplicate=%d",
+			logPrefix, priorShown, priorRefs.PriorIDs, priorRefs.Related, priorRefs.Unlisted, priorRefs.Duplicate)
+	}
 
 	// Fallback if ANY served model fails to match — a transient fallback
 	// that recovers mid-run still ran turns on the wrong model. ServedModel
@@ -645,6 +659,8 @@ func RunAgentReview(
 		Records:              records,
 		Gates:                gates,
 		BugMemory:            memMatch,
+		PriorShown:           priorShown,
+		PriorRefs:            priorRefs,
 		Checks:               checkTel,
 		CheckFindings:        checkFindings,
 		RawFinal:             parseResult.finalOutput,
@@ -908,10 +924,11 @@ func prScopeSection(baseBranch string, files []diffFile) string {
 // context section (title, body, linked tickets; prContext is pre-rendered by
 // prContextSection), the mechanical-gate alerts (if any), the bug-history
 // section (if any memory entries matched), the required-checks block (if the
-// feature issued any), then a JSON block of Gemini comments. With no scope,
-// no context, no gates, no matches and no checks the prompt is
-// byte-identical to a memoryless, checkless build.
-func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext string, claims []firstPassClaim, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
+// feature issued any), the findings already raised on the PR (if any were
+// given), then a JSON block of Gemini comments. With no scope, no context,
+// no gates, no matches, no checks and no priors the prompt is byte-identical
+// to a memoryless, checkless build.
+func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext string, claims []firstPassClaim, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck, priors []PriorFinding) (string, error) {
 	if claims == nil {
 		claims = []firstPassClaim{}
 	}
@@ -931,6 +948,7 @@ func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext 
 	}
 	b.WriteString(bugMemorySection(bugHistory))
 	b.WriteString(requiredChecksSection(checks))
+	b.WriteString(priorFindingsSection(priors))
 	b.WriteString("\n--- FIRST-PASS CLAIMS (JSON; account for every source_id) ---\n")
 	b.Write(commentsJSON)
 	return b.String(), nil
@@ -948,19 +966,20 @@ func isLitePrompt(prompt string) bool {
 }
 
 // buildLitePrompt renders the lite prompt named by prompt. The v2 and v3
-// shapes share one builder and differ only in whether bug memory is shown.
-func buildLitePrompt(prompt, baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry) string {
+// shapes share one builder and differ only in whether bug memory is shown;
+// the earlier findings, when given, are shown by every shape.
+func buildLitePrompt(prompt, baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, priors []PriorFinding) string {
 	switch prompt {
 	case runconfig.PromptLiteArmAV2:
-		return buildLitePromptV2Content(baseBranch, diff, prContext, nil, false)
+		return buildLitePromptV2With(promptLiteReviewArmA, baseBranch, diff, prContext, nil, priors, false)
 	case runconfig.PromptLiteArmAV2Sub:
-		return buildLitePromptV2Content(baseBranch, diff, prContext, nil, true)
+		return buildLitePromptV2With(promptLiteReviewArmA, baseBranch, diff, prContext, nil, priors, true)
 	case runconfig.PromptLiteArmAV3:
-		return buildLitePromptV2Content(baseBranch, diff, prContext, bugHistory, false)
+		return buildLitePromptV2With(promptLiteReviewArmA, baseBranch, diff, prContext, bugHistory, priors, false)
 	case runconfig.PromptLiteArmAV2Budget:
-		return buildLitePromptV2ContentOpening(promptLiteReviewArmABudget, baseBranch, diff, prContext)
+		return buildLitePromptV2With(promptLiteReviewArmABudget, baseBranch, diff, prContext, nil, priors, false)
 	default:
-		return buildLitePromptContent(baseBranch, diff, prContext, bugHistory, prompt == runconfig.PromptLiteArmASub)
+		return buildLitePromptContent(baseBranch, diff, prContext, bugHistory, priors, prompt == runconfig.PromptLiteArmASub)
 	}
 }
 
@@ -991,15 +1010,11 @@ func agentWallClock(cfg AgentConfig, diffTruncated bool) time.Duration {
 // and the diff last. Unlike buildLitePromptContent it keeps the Arm A opening
 // even for a truncated diff: the truncation note and per-path hint travel
 // inside the diff block, as they did in the measured harness.
-func buildLitePromptV2ContentOpening(opening, baseBranch string, diff liteDiff, prContext string) string {
-	return buildLitePromptV2With(opening, baseBranch, diff, prContext, nil, false)
-}
-
 func buildLitePromptV2Content(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
-	return buildLitePromptV2With(promptLiteReviewArmA, baseBranch, diff, prContext, bugHistory, subAgents)
+	return buildLitePromptV2With(promptLiteReviewArmA, baseBranch, diff, prContext, bugHistory, nil, subAgents)
 }
 
-func buildLitePromptV2With(opening, baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
+func buildLitePromptV2With(opening, baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, priors []PriorFinding, subAgents bool) string {
 	if baseBranch == "" {
 		baseBranch = "HEAD"
 	}
@@ -1007,6 +1022,7 @@ func buildLitePromptV2With(opening, baseBranch string, diff liteDiff, prContext 
 	fmt.Fprintf(&b, opening, baseBranch, baseBranch)
 	b.WriteString(prContext)
 	b.WriteString(bugMemorySection(bugHistory))
+	b.WriteString(priorFindingsSection(priors))
 	if subAgents {
 		b.WriteString(promptLiteSubAgents)
 	}
@@ -1030,9 +1046,9 @@ type liteDiff struct {
 // buildLitePromptContent assembles the single-agent (Arm A) prompt: the
 // review instruction naming the worktree refs (a partial-diff variant when
 // the diff was cut), the PR context, the matched bug-history section, the
-// sub-agent sentence for lite_plus, the pipeline's output contract without
-// its first-pass text, and the diff last.
-func buildLitePromptContent(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
+// earlier findings on the PR, the sub-agent sentence for lite_plus, the
+// pipeline's output contract without its first-pass text, and the diff last.
+func buildLitePromptContent(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, priors []PriorFinding, subAgents bool) string {
 	if baseBranch == "" {
 		baseBranch = "HEAD"
 	}
@@ -1044,6 +1060,7 @@ func buildLitePromptContent(baseBranch string, diff liteDiff, prContext string, 
 	fmt.Fprintf(&b, opening, baseBranch, baseBranch)
 	b.WriteString(prContext)
 	b.WriteString(bugMemorySection(bugHistory))
+	b.WriteString(priorFindingsSection(priors))
 	if subAgents {
 		b.WriteString(promptLiteSubAgents)
 	}

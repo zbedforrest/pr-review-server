@@ -986,7 +986,7 @@ func TestPRScopeSection_EmptyInputsContributeNothing(t *testing.T) {
 	if got := prScopeSection("", nil); got != "" {
 		t.Errorf("empty inputs must produce no section, got %q", got)
 	}
-	prompt, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil)
+	prompt, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1038,7 +1038,7 @@ func TestBuildAgentPromptContent_PRContextSitsBetweenScopeAndAlerts(t *testing.T
 		t.Fatal("prContextSection returned nothing")
 	}
 
-	got, err := buildAgentPromptContent("main", files, prContext, nil, gates, nil, nil)
+	got, err := buildAgentPromptContent("main", files, prContext, nil, gates, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1058,7 +1058,7 @@ func TestBuildAgentPromptContent_PRContextSitsBetweenScopeAndAlerts(t *testing.T
 }
 
 func TestBuildAgentPromptContent_NoPRContextIsByteIdentical(t *testing.T) {
-	without, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil)
+	without, err := buildAgentPromptContent("", nil, "", nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1071,7 +1071,7 @@ func TestBuildAgentPromptContent_NoPRContextIsByteIdentical(t *testing.T) {
 }
 
 func TestAgentPromptAsksForAHeadline(t *testing.T) {
-	prompt, err := buildAgentPromptContent("main", nil, "", nil, nil, nil, nil)
+	prompt, err := buildAgentPromptContent("main", nil, "", nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -128,6 +128,10 @@ type Config struct {
 	BugMemoryPath     string // local path to a bug-memory library JSON (dev/benchmark)
 	BugMemoryObject   string // GCS object name of the library (prod); Path wins if both set
 	RequiredChecks    bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
+	// AgentPriorFindings shows the review agent what PRism already raised on
+	// the PR, from the publication ledger, so a restatement names its prior
+	// (AGENT_PRIOR_FINDINGS=true; off by default, a prompt change).
+	AgentPriorFindings bool
 
 	// Publisher kill switches; the zero value is the fixed behaviour and each
 	// env var set to false restores the old one. PUBLISH_RENDER_V2 titles
@@ -139,6 +143,9 @@ type Config struct {
 	PublishSkipSummaryRefresh  bool
 	PublishNoInlinePRBudget    bool
 	PublishNoPRMute            bool
+	// PublishNoPriorIDAlias (PUBLISH_PRIOR_ID_ALIAS=false) stops the publisher
+	// from aliasing a finding to the ledger row its prior_id names.
+	PublishNoPriorIDAlias bool
 	// AutoReviewSyncDebounceSec of 0 admits every push at once.
 	AutoReviewSyncDebounceSec   int
 	AutoReviewSkipUnchangedDiff bool
@@ -383,6 +390,8 @@ func Load() *Config {
 		BugMemoryPath:              os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:            os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:             os.Getenv("REQUIRED_CHECKS") == "true",
+		AgentPriorFindings:         getEnvBoolOrDefault("AGENT_PRIOR_FINDINGS", false),
+		PublishNoPriorIDAlias:      !getEnvBoolOrDefault("PUBLISH_PRIOR_ID_ALIAS", true),
 		PublishLegacyTitles:        !getEnvBoolOrDefault("PUBLISH_RENDER_V2", true),
 		PublishRepublishSameCommit: !getEnvBoolOrDefault("PUBLISH_SAME_COMMIT_GUARD", true),
 		PublishSkipSummaryRefresh:  !getEnvBoolOrDefault("PUBLISH_REFRESH_SUMMARY", true),

@@ -470,8 +470,12 @@ func (r Round) writeExternal(b *strings.Builder) {
 	b.WriteString("</details>\n\n")
 }
 
-// firstSentence returns the leading sentence of the comment's first line, or
+// FirstSentence returns the leading sentence of the comment's first line, or
 // the whole first line when it has no sentence boundary.
+func FirstSentence(comment string) string {
+	return firstSentence(comment)
+}
+
 func firstSentence(comment string) string {
 	line := firstLine(comment)
 	for i := 0; i < len(line); i++ {

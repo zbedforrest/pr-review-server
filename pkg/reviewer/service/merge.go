@@ -118,6 +118,11 @@ func MergeFindingsWithRecords(sets ...FindingSet) (merged, records []types.LineC
 				// from; an agent finding dropped here may be referenced by id
 				// (priority list, merged claims), and RemapMergeTargets follows
 				// those references to the survivor.
+				if merged[di].FindingContract != nil && c.FindingContract != nil {
+					cc := *merged[di].FindingContract
+					carryPriorRefsInto(&cc, c.FindingContract)
+					merged[di].FindingContract = &cc
+				}
 				c.State, c.Inactive, c.Assessment = StateMerged, true, nil
 				c.MergedInto, c.MergeBasis = mergeTarget(merged[di]), "proximity"
 				records = append(records, c)
@@ -379,4 +384,30 @@ func shortSHA(sha string) string {
 		return sha[:7]
 	}
 	return sha
+}
+
+// carryPriorRefsInto keeps the prior references of a folded duplicate on the
+// survivor: its prior_id when the survivor named none, otherwise as a
+// relates_to entry, and every relates_to it listed, none repeating the
+// survivor's own prior.
+func carryPriorRefsInto(dst, src *types.FindingContract) {
+	if dst.PriorID == "" {
+		dst.PriorID = src.PriorID
+	}
+	seen := map[string]bool{dst.PriorID: true}
+	var related []string
+	add := func(r string) {
+		if r != "" && !seen[r] {
+			seen[r] = true
+			related = append(related, r)
+		}
+	}
+	for _, r := range dst.RelatesTo {
+		add(r)
+	}
+	add(src.PriorID)
+	for _, r := range src.RelatesTo {
+		add(r)
+	}
+	dst.RelatesTo = related
 }

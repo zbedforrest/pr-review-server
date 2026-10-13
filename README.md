@@ -100,6 +100,8 @@ The most common ones:
 | `PUBLISH_PR_MUTE` | No | Default `true`: a PR author mutes PRism on one PR with `@<handle> stop` in the conversation or a thumbs-down on the sticky summary; the mute is a flag on the summary ledger row, acknowledged with a reaction only, and `@<handle> review` from the author lifts it. `false` ignores both |
 | `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` | No | Default `90`: a pushed head waits at least this long before its automatic review is admitted, so a burst of pushes reviews the last head once; it is admitted on the first poll after the window, so up to one `POLLING_INTERVAL` later. `0` admits every push at once |
 | `AUTO_REVIEW_SKIP_UNCHANGED_DIFF` | No | Default `true`: a push whose PR diff has the patch-id of the last automatically reviewed head (a merge from the base branch, a rebase, an amended message) is settled without a review and counted as `reviews_skipped_unchanged_diff` on the daily health report. `false` reviews every push |
+| `AGENT_PRIOR_FINDINGS` | No | Default off: `true` adds a "findings already raised on this PR" block to the review agent prompt, built from the PR's publication ledger (state, severity, file and lines, headline, author verdicts, under labels `P-1`, `P-2`, ...), and lets the finding contract carry `prior_id` (this finding restates that earlier one) and `relates_to` (distinct, builds on those). References to anything not shown are dropped before the finding is stored |
+| `PUBLISH_PRIOR_ID_ALIAS` | No | Default `true`: the publisher gives a finding whose contract names a `prior_id` that ledger row's identity before text or subject matching, so a restatement refreshes the earlier thread and a settled point stays settled. `false` matches such findings like any other |
 
 ### First-pass provider
 

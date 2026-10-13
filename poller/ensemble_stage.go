@@ -126,6 +126,11 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 		return nil, err
 	}
 	logEnsembleReport(pr.Owner, pr.Repo, pr.Number, report)
+	refs := service.ResolvePriorRefs(review.Comments, base.PriorFindings)
+	if shown := len(service.VisiblePriorFindings(base.PriorFindings)); shown > 0 || refs.Unlisted > 0 {
+		log.Printf("[ENSEMBLE] %s/%s#%d prior findings: shown=%d prior_ids=%d related=%d unlisted=%d duplicate=%d",
+			pr.Owner, pr.Repo, pr.Number, shown, refs.PriorIDs, refs.Related, refs.Unlisted, refs.Duplicate)
+	}
 	return review, nil
 }
 

@@ -61,7 +61,19 @@ type FindingContract struct {
 	Uncertainty           string           `json:"uncertainty"`
 	SeverityRationale     string           `json:"severity_rationale"`
 	Headline              string           `json:"headline,omitempty"`
+	// PriorID names the finding PRism already raised on this PR that this
+	// one restates, as the ledger fingerprint: the publisher aliases on it.
+	// RelatesTo lists earlier findings this distinct point builds on; it is
+	// recorded and counted but nothing acts on it yet. Both are optional,
+	// set only when the agent was shown the earlier findings, and never
+	// fail the contract.
+	PriorID   string   `json:"prior_id,omitempty"`
+	RelatesTo []string `json:"relates_to,omitempty"`
 }
+
+// priorRefMaxRunes bounds one prior reference; a longer value is not a
+// fingerprint or a label and is dropped.
+const priorRefMaxRunes = 512
 
 // Headlines are cosmetic, so a bad one is dropped rather than failing the contract.
 const headlineMaxRunes = 90
@@ -175,6 +187,7 @@ func NormalizeFindingContract(contract *FindingContract) {
 	if validateContractText(contract.Headline, "headline", headlineMaxRunes) != nil {
 		contract.Headline = ""
 	}
+	contract.PriorID, contract.RelatesTo = normalizePriorRefs(contract.PriorID, contract.RelatesTo)
 	for _, value := range []*string{
 		contract.CounterfactualTrigger,
 		contract.FalsifiableCondition,
@@ -204,6 +217,26 @@ func shortenHeadline(headline string, maximum int) string {
 		cut = cut[:i]
 	}
 	return strings.TrimRight(cut, " ,;:") + "..."
+}
+
+// normalizePriorRefs trims both references, drops empty, malformed and
+// repeated entries, and keeps the prior itself out of the related list.
+func normalizePriorRefs(priorID string, relatesTo []string) (string, []string) {
+	priorID = strings.TrimSpace(priorID)
+	if validateContractText(priorID, "prior id", priorRefMaxRunes) != nil {
+		priorID = ""
+	}
+	seen := map[string]bool{priorID: true}
+	var related []string
+	for _, ref := range relatesTo {
+		ref = strings.TrimSpace(ref)
+		if seen[ref] || validateContractText(ref, "related id", priorRefMaxRunes) != nil {
+			continue
+		}
+		seen[ref] = true
+		related = append(related, ref)
+	}
+	return priorID, related
 }
 
 func ContractStatus(contract *FindingContract) string {
