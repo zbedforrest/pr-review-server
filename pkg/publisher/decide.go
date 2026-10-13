@@ -425,6 +425,9 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 			kept = append(kept, f)
 			continue
 		}
+		if from := originalIDs[f.ID]; from != "" && from != f.ID {
+			log.Printf("[PUBLISH] %s/%s#%d: finding %s aliased to %s row %s, dropped", r.Owner, r.Repo, r.Number, from, row.State, f.ID)
+		}
 		others, keyed := rowsOnPoint(rows, row, f)
 		if len(others) > 0 {
 			if successor := liveSuccessor(others); successor != nil && !carried[successor.Fingerprint] {

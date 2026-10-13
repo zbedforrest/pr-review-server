@@ -252,9 +252,10 @@ func citesFile(srcs []Member, file string) bool {
 // carryPriorRefs keeps the prior_id a member's contract named when the
 // contract the finding ends up with has none (authored, or copied from the
 // best member): the author never saw the earlier findings, the runs did.
-// The first member with a prior wins; relates_to is always merged and never
-// repeats the prior itself. A finding with no contract at all is left so:
-// a hollow contract would fail validation downstream.
+// The first member with a prior wins and any other prior a member named
+// lands in relates_to, which is always merged and never repeats the prior
+// itself. A finding with no contract at all is left so: a hollow contract
+// would fail validation downstream.
 func carryPriorRefs(c *types.FindingContract, ms []Member) {
 	for _, m := range ms {
 		if c.PriorID != "" {
@@ -266,21 +267,25 @@ func carryPriorRefs(c *types.FindingContract, ms []Member) {
 	}
 	seen := map[string]bool{c.PriorID: true}
 	var related []string
-	for _, r := range c.RelatesTo {
+	add := func(r string) {
 		if !seen[r] {
 			seen[r] = true
 			related = append(related, r)
 		}
 	}
+	for _, r := range c.RelatesTo {
+		add(r)
+	}
 	for _, m := range ms {
-		if m.Finding.FindingContract == nil {
+		mc := m.Finding.FindingContract
+		if mc == nil {
 			continue
 		}
-		for _, r := range m.Finding.FindingContract.RelatesTo {
-			if !seen[r] {
-				seen[r] = true
-				related = append(related, r)
-			}
+		if mc.PriorID != "" {
+			add(mc.PriorID)
+		}
+		for _, r := range mc.RelatesTo {
+			add(r)
 		}
 	}
 	c.RelatesTo = related

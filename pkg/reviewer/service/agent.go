@@ -598,17 +598,17 @@ func RunAgentReview(
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
 	NormalizeAgentLifecycleFields(comments)
+	evidencePaths := make([]string, len(diffFiles))
+	for i, f := range diffFiles {
+		evidencePaths[i] = f.Path
+	}
+	comments, firstPassActive, records := ApplyDispositionsWithEvidenceRefs(comments, claims, evidenceRefResolves(evidencePaths, cloneDir))
 	priorRefs := ResolvePriorRefs(comments, agentCfg.PriorFindings)
 	priorShown := len(visiblePriors(agentCfg.PriorFindings))
 	if priorShown > 0 || priorRefs.Unlisted > 0 {
 		log.Printf("%s prior findings: shown=%d prior_ids=%d related=%d unlisted=%d duplicate=%d",
 			logPrefix, priorShown, priorRefs.PriorIDs, priorRefs.Related, priorRefs.Unlisted, priorRefs.Duplicate)
 	}
-	evidencePaths := make([]string, len(diffFiles))
-	for i, f := range diffFiles {
-		evidencePaths[i] = f.Path
-	}
-	comments, firstPassActive, records := ApplyDispositionsWithEvidenceRefs(comments, claims, evidenceRefResolves(evidencePaths, cloneDir))
 
 	// Fallback if ANY served model fails to match — a transient fallback
 	// that recovers mid-run still ran turns on the wrong model. ServedModel
@@ -1010,10 +1010,6 @@ func agentWallClock(cfg AgentConfig, diffTruncated bool) time.Duration {
 // and the diff last. Unlike buildLitePromptContent it keeps the Arm A opening
 // even for a truncated diff: the truncation note and per-path hint travel
 // inside the diff block, as they did in the measured harness.
-func buildLitePromptV2ContentOpening(opening, baseBranch string, diff liteDiff, prContext string) string {
-	return buildLitePromptV2With(opening, baseBranch, diff, prContext, nil, nil, false)
-}
-
 func buildLitePromptV2Content(baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, subAgents bool) string {
 	return buildLitePromptV2With(promptLiteReviewArmA, baseBranch, diff, prContext, bugHistory, nil, subAgents)
 }

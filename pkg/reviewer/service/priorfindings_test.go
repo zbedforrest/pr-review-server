@@ -207,3 +207,21 @@ func TestParseAgentJSON_KeepsPriorReferencesOnTheContract(t *testing.T) {
 		t.Fatalf("references must not fail the contract: %v", err)
 	}
 }
+
+func TestResolvePriorRefs_AnInactiveEntryHoldsNoClaim(t *testing.T) {
+	priors := []PriorFinding{{ID: "a.go:1:prior"}}
+	comments := []types.LineComment{
+		{FilePath: "a.go", LineNumber: 10, Inactive: true, FindingContract: &types.FindingContract{PriorID: "P-1"}},
+		{FilePath: "a.go", LineNumber: 12, FindingContract: &types.FindingContract{PriorID: "P-1", RelatesTo: []string{"P-1"}}},
+	}
+	res := ResolvePriorRefs(comments, priors)
+	if comments[0].FindingContract.PriorID != "" {
+		t.Fatalf("inactive entry keeps a claim: %+v", comments[0].FindingContract)
+	}
+	if comments[1].FindingContract.PriorID != "a.go:1:prior" || len(comments[1].FindingContract.RelatesTo) != 0 {
+		t.Fatalf("the surviving entry takes the prior: %+v", comments[1].FindingContract)
+	}
+	if res.PriorIDs != 1 || res.Duplicate != 0 {
+		t.Fatalf("resolution = %+v", res)
+	}
+}
