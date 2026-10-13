@@ -18,9 +18,13 @@ var (
 // subject of the finding and carries its headline (containment at or above
 // half with four shared words) or its text (the external bar with eight).
 // A body that merely mentions the same file is not coverage; the paragraph
-// has to say what the finding says.
+// has to say what the finding says. A description_drift finding is about
+// the body and quotes it, so it is never covered by it.
 func BodyCovers(f payload.Finding, body string) bool {
 	if isPseudoFile(f.File) || strings.TrimSpace(body) == "" {
+		return false
+	}
+	if c := f.FindingContract; c != nil && c.FindingKind == "description_drift" {
 		return false
 	}
 	subjects := SpecificSubjects(f.FindingContract)
@@ -29,10 +33,9 @@ func BodyCovers(f payload.Finding, body string) bool {
 	}
 	text, headline := prismText(f), prismHeadline(f)
 	for _, para := range BodyParagraphs(body) {
-		lower := strings.ToLower(para)
 		named := false
 		for _, name := range subjects {
-			if NamesIdentifier(lower, name) {
+			if NamesIdentifier(para, name) {
 				named = true
 				break
 			}

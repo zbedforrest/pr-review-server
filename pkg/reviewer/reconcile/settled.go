@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"path"
 	"sort"
 	"strings"
 	"unicode"
@@ -100,9 +101,8 @@ func sharesSubject(subjects []string, s SettledPoint) bool {
 	for _, name := range s.Subjects {
 		named[name] = true
 	}
-	text := strings.ToLower(s.Text)
 	for _, name := range subjects {
-		if named[name] || NamesIdentifier(text, name) {
+		if named[strings.ToLower(name)] || NamesIdentifier(s.Text, name) {
 			return true
 		}
 	}
@@ -111,7 +111,9 @@ func sharesSubject(subjects []string, s SettledPoint) bool {
 
 // SpecificSubjects are the contract's subject names that identify code
 // rather than a place: every kind but file and workflow, four characters or
-// longer, lower-cased, de-duplicated and sorted.
+// longer, in the case the agent wrote them, de-duplicated and sorted. A
+// symbol named after the file it lives in (a module, hook or component
+// default export) is as broad as the file and is left out too.
 func SpecificSubjects(c *types.FindingContract) []string {
 	if c == nil {
 		return nil
@@ -122,23 +124,35 @@ func SpecificSubjects(c *types.FindingContract) []string {
 		if s.Kind == "file" || s.Kind == "workflow" {
 			continue
 		}
-		name := strings.ToLower(strings.TrimSpace(s.Name))
-		if len(name) < settledMinSubjectLen || seen[name] {
+		name := strings.TrimSpace(s.Name)
+		lower := strings.ToLower(name)
+		if len(name) < settledMinSubjectLen || seen[lower] || lower == fileStem(s.Path) {
 			continue
 		}
-		seen[name] = true
+		seen[lower] = true
 		out = append(out, name)
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i]) < strings.ToLower(out[j]) })
 	return out
 }
 
-// NamesIdentifier reports whether lower-cased text names the identifier as
-// a whole word: the characters around each occurrence are not identifier
-// characters, so a shorter name inside a longer one does not count.
+func fileStem(p string) string {
+	base := path.Base(p)
+	return strings.ToLower(strings.TrimSuffix(base, path.Ext(base)))
+}
+
+// NamesIdentifier reports whether text names the identifier as a whole
+// word: the characters around each occurrence are not identifier
+// characters, so a shorter name inside a longer one does not count. A name
+// with an upper-case letter is matched in its own case, so a class or hook
+// name is not found in the ordinary word it resembles; an all-lower name is
+// matched case-insensitively.
 func NamesIdentifier(text, name string) bool {
 	if name == "" {
 		return false
+	}
+	if strings.ToLower(name) == name {
+		text = strings.ToLower(text)
 	}
 	for start := 0; ; {
 		i := strings.Index(text[start:], name)

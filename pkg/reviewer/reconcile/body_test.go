@@ -59,6 +59,18 @@ func TestBodyCovers_TheWholeBodyIsNotOneParagraph(t *testing.T) {
 	}
 }
 
+// A finding that disputes the body quotes it, which is not the body
+// stating the finding's point.
+func TestBodyCovers_DescriptionDriftIsNeverCovered(t *testing.T) {
+	f := payload.Finding{ID: "x:1:a", File: "web/.storybook/preview.tsx", Line: 177,
+		Comment: "The PR body states the rule's current level is `critical`, but axe-core defines the built-in impact of `label-content-name-mismatch` as `serious`. Consider aligning the description with the actual before value so reviewers and QA know what was reduced.",
+		FindingContract: &types.FindingContract{FindingKind: "description_drift", Subjects: []types.FindingSubject{{Kind: "config_key", Name: "label-content-name-mismatch"}}}}
+	body := "Reduces the chromatic a11y warning level of `label-content-name-mismatch` rule from `critical` to `moderate`. This rule triggers when an a11y label does not contain all the text of the target element."
+	if BodyCovers(f, body) {
+		t.Fatal("a description_drift finding is about the body, not stated by it")
+	}
+}
+
 func TestBodyCovers_NeedsASpecificSubjectAndAFile(t *testing.T) {
 	f := teamFinding()
 	f.FindingContract.Subjects = []types.FindingSubject{{Kind: "file", Path: f.File}}

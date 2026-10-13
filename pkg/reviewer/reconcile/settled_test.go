@@ -86,6 +86,21 @@ func TestMatchSettled_FileAndWorkflowSubjectsCarryNoEvidence(t *testing.T) {
 	}
 }
 
+// The audited PR's next finding named only the hook itself, which is the
+// file; its text overlaps the conceded thread because it describes the same
+// mechanism, but it is a different point (the fix's mobile scope) and the
+// audit called it good.
+func TestMatchSettled_ASymbolNamedAfterItsFileIsNoEvidence(t *testing.T) {
+	f := fallbackFinding()
+	f.Line = 20
+	f.Comment = "The PR description states \"Changes outside the toggle: none (shared components only change when isDesktop is passed)\", but this shared hook changes behavior for every consumer independently of isDesktop. When a user dismisses the browser prompt (a NotAllowedError), isDenied now remains false instead of being set to true, altering the mobile denied UX as well: mobile now renders the prompt copy and request button instead of the previous blocked state."
+	f.FindingContract.CurrentImpact = "Mobile users who dismiss the browser prompt now see the prompt copy with a retry button instead of the blocked copy the desktop-only PR description implies is unchanged."
+	f.FindingContract.Subjects = []types.FindingSubject{{Kind: "file", Path: f.File}, {Kind: "symbol", Path: f.File, Name: "useDevicePermissions"}}
+	if got := MatchSettled([]payload.Finding{f}, []SettledPoint{concededPoint(true)}); len(got) != 0 {
+		t.Fatalf("the hook's own name is the file, not a point: %v", got)
+	}
+}
+
 func TestMatchSettled_PseudoFilesNeverMatch(t *testing.T) {
 	f := fallbackFinding()
 	f.File = "SUMMARY"
@@ -99,12 +114,14 @@ func TestNamesIdentifier(t *testing.T) {
 		text, name string
 		want       bool
 	}{
-		{"routes through isdeviceblocked (usedevicepermissions.ts:20)", "isdeviceblocked", true},
-		{"the isdeviceblockedfallback helper", "isdeviceblocked", false},
-		{"calls .devicemodal--desktop here", ".devicemodal--desktop", true},
-		{"nothing here", "isdeviceblocked", false},
-		{"parent_team keeps resolving", "parent_team", true},
+		{"routes through isDeviceBlocked (useDevicePermissions.ts:20)", "isDeviceBlocked", true},
+		{"the isDeviceBlockedFallback helper", "isDeviceBlocked", false},
+		{"calls .DeviceModal--desktop here", ".DeviceModal--desktop", true},
+		{"nothing here", "isDeviceBlocked", false},
+		{"Parent_Team keeps resolving", "parent_team", true},
 		{"parent_team_id keeps resolving", "parent_team", false},
+		{"skips rejected purchases", "Purchases", false},
+		{"the Purchases reader", "Purchases", true},
 	}
 	for _, c := range cases {
 		if got := NamesIdentifier(c.text, c.name); got != c.want {
@@ -117,9 +134,10 @@ func TestSpecificSubjects(t *testing.T) {
 	c := &types.FindingContract{Subjects: []types.FindingSubject{
 		{Kind: "file", Path: "a.go"}, {Kind: "symbol", Name: "Zed"}, {Kind: "symbol", Name: " FetchUser "}, {Kind: "selector", Name: ".Modal--desktop"},
 		{Kind: "workflow", Name: "checkout flow"}, {Kind: "config_key", Name: "fetchuser"},
+		{Kind: "symbol", Path: "web/src/hooks/useDevicePermissions.ts", Name: "useDevicePermissions"},
 	}}
 	got := SpecificSubjects(c)
-	if len(got) != 2 || got[0] != ".modal--desktop" || got[1] != "fetchuser" {
+	if len(got) != 2 || got[0] != ".Modal--desktop" || got[1] != "FetchUser" {
 		t.Fatalf("SpecificSubjects = %v", got)
 	}
 	if SpecificSubjects(nil) != nil {

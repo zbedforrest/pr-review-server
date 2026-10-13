@@ -208,9 +208,6 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	if p.Policy.SettledAlias {
 		r.Findings, settledDropped = withoutSettled(r, rows)
 	}
-	if p.Policy.NoteReconcile {
-		r.Findings, bodyCovered = withoutBodyCovered(r)
-	}
 	forgetShown(&r)
 	var rep Report
 	held := p.holdFindings(&r, &rep, func(id string) bool {
@@ -223,6 +220,11 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		p.refreshExternal(ctx, &r, rows)
 		external = p.matchExternal(ctx, &r, rows, now, threads)
 		r.GreptileOnly = withoutClaimedRoots(r.GreptileOnly, rows, external.rows)
+	}
+	// After the threads: a point another reviewer raised is remembered as
+	// external; the body check leaves no row.
+	if p.Policy.NoteReconcile {
+		r.Findings, bodyCovered = withoutBodyCovered(r)
 	}
 	notes := append(p.clampSeverity(&r, rows, guard), external.notes...)
 
