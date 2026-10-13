@@ -344,6 +344,14 @@ func LiteHygieneEnabled() bool {
 	return os.Getenv("LITE_HYGIENE") != "false"
 }
 
+// ClaimEvidenceEnabled turns on the claim-evidence rules in the review
+// agent prompts: a claim about third-party behaviour must cite the pinned
+// source or a repo doc, and a regression claim must quote the removed base
+// line. A prompt change, so AGENT_CLAIM_EVIDENCE=true, default off.
+func ClaimEvidenceEnabled() bool {
+	return os.Getenv("AGENT_CLAIM_EVIDENCE") == "true"
+}
+
 // LitePrompt reports whether prompt is one of the single-agent shapes that
 // inline the diff and run without gates or required checks.
 func LitePrompt(prompt string) bool {
