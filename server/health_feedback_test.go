@@ -138,7 +138,7 @@ func TestDailyHealth_FeedbackLineWhenScanIsOffOrUnavailable(t *testing.T) {
 	for _, tc := range []struct {
 		enabled bool
 		want    string
-	}{{false, "author feedback**: not scanned (FEEDBACK_DIGEST=false)"}, {true, "author feedback**: not scanned (no GitHub client)"}} {
+	}{{false, "author feedback**: not scanned (FEEDBACK_DIGEST off)"}, {true, "author feedback**: not scanned (no GitHub client)"}} {
 		server.cfg.FeedbackDigest = tc.enabled
 		req := httptest.NewRequest(http.MethodPost, "/api/health/daily", nil)
 		req.Header.Set("X-Prism-Job-Token", "secret-job-token")

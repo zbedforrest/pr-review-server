@@ -92,6 +92,7 @@ The most common ones:
 | `MENTION_HANDLE` | No | App login mentioned to request a review (`@<handle> review`) by the PR author or a repository owner, member or collaborator; default `prism-pr-review-server`, empty disables |
 | `PUBLISH_SETTLE_FOOTER` | No | `false` drops the settle and opt-out footer from posted comments and summaries; default on |
 | `HEALTH_JOB_TOKEN` | No | Enables `POST /api/health/daily` for a scheduler (header `X-Prism-Job-Token`); the report is stored and readable at `GET /api/health/daily` (`?format=md`) |
+| `FEEDBACK_DIGEST` | No | `true` lets the daily health run scan GitHub for author feedback on PRism comments and classify it with a model call; default off. See [Daily health report and author feedback](#daily-health-report-and-author-feedback) |
 | `GITHUB_WEBHOOK_SECRET` | No | Secret for the GitHub App webhook at `POST /webhooks/github` (`X-Hub-Signature-256`); empty leaves the endpoint disabled. See [Automatic reviews](#automatic-reviews-for-allowlisted-authors) |
 | `PUBLISH_RENDER_V2` | No | Default `true`: summary bullets and inline titles use the finding's headline, else its comment's first sentence, and the impact sentence only when the contract asserts current impact. `false` restores the impact-sentence titles; the word-boundary shortening of headlines over 90 runes (previously blanked) is not switchable |
 | `PUBLISH_SAME_COMMIT_GUARD` | No | Default `true`: a review of a commit the summary comment already covers is not published again (API and legacy re-runs, including a full review re-run of a head a lite review already published; its findings stay dashboard-only until the next push). `false` restores re-publication |
@@ -290,8 +291,9 @@ the day's counts, every frustrated item (login, a 140-character quote, PR
 link) and one happy quote; it turns yellow on any `very_frustrated` item and
 red on three or more in a day. Each new frustrated item records a
 `feedback_frustrated` telemetry event. `GET /api/health/feedback?format=md|json&days=1|7`
-lists the stored items for the last day or week. `FEEDBACK_DIGEST=false` turns
-the scan off; the line then says so.
+lists the stored items for the last day or week. The scan is off by default
+because it classifies with a model; `FEEDBACK_DIGEST=true` turns it on, and the
+line says so while it is off.
 
 ### Linked ticket context (optional)
 

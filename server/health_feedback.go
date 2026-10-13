@@ -64,7 +64,7 @@ func (s *Server) scanFeedback(now time.Time) feedbackOutcome {
 	case !ok:
 		return feedbackOutcome{note: "no feedback store"}
 	case !s.cfg.FeedbackDigest:
-		return feedbackOutcome{note: "FEEDBACK_DIGEST=false"}
+		return feedbackOutcome{note: "FEEDBACK_DIGEST off"}
 	}
 	gh := s.feedbackGitHub
 	if gh == nil && s.ghClient != nil {
