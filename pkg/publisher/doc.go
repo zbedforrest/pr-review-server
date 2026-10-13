@@ -22,6 +22,20 @@
 // fingerprint. A row whose fingerprint a current finding still carries
 // verbatim is never given to another finding.
 //
+// Settled points. A finding the tiers above left unmatched is dropped when
+// it restates a settled row, dismissed, contested, external or fixed, from
+// another file or another part of its own file (Policy.SettledAlias,
+// PUBLISH_SETTLED_ALIAS, on unless set to false): the kinds agree or one is
+// unknown, a specific subject of the finding (a symbol, selector or key,
+// never a bare file or workflow) is one of the row's subjects or is named
+// in the row's thread (the root's prose plus PRism's own replies there,
+// which Round.PriorComments carries), and the finding's text sits inside
+// that thread text (containment at or above 0.35 with eight shared words,
+// or its headline at or above 0.5 with four). The row is untouched: a
+// conceded or dismissed point never returns from elsewhere, and nothing is
+// posted or counted. An exact or near return on the row's own lines is
+// still the table's business below.
+//
 // Inputs per prior row: its state; whether a current finding matched it
 // (present); whether HeadSHA equals the row's LastSeenSHA; the change set
 // between LastSeenSHA and HeadSHA (Round.Changes, unknown when nil or when
@@ -104,8 +118,9 @@
 // Other reviewers. With Policy.ExternalReconcile (PUBLISH_EXTERNAL_RECONCILE,
 // on unless set to false) every root thread PRism did not post (Greptile,
 // Copilot, CodeRabbit, Gemini, code scanning, other bots, humans) is a match
-// candidate for a shown finding the ledger does not know, unless the thread
-// listing shows its thread resolved: same file, the finding's line within
+// candidate for a shown finding the ledger does not know, and with
+// Policy.NoteReconcile (PUBLISH_NOTE_RECONCILE, on unless set to false) for
+// a folded lower-severity note too: same file, the finding's line within
 // ten of the root's range (an outdated root keeps its original anchor; a
 // root with no line never matches), and containment at or
 // above 0.35 (shared tokens over the shorter of the two texts, or of one
@@ -119,13 +134,27 @@
 // of PRism's own, dropped from the new and still-open counts but still in
 // the merge-confidence score (the score judges the PR, not who found the
 // defect first), linked from the summary under "already raised in another
-// reviewer's thread" for as long as the point is raised, and answered once
-// inside that thread with only what the root lacks (the impact sentence,
-// the suggested code as a plain fence since a suggestion block would apply
-// to the root's lines, how to verify). A root some row already claims gets
-// no second reply. A summary refresh after a concession keeps the external
-// links. The delta reply runs inside the publish gate like every other
-// write of the round.
+// reviewer's thread" for as long as the point is raised and the thread is
+// open, and, for a finding above the inline bar, answered once inside that
+// thread with only what the root lacks (the impact sentence, the suggested
+// code as a plain fence since a suggestion block would apply to the root's
+// lines, how to verify); a folded note is linked, never replied for. A root
+// some row already claims gets no second reply. A summary refresh after a
+// concession keeps the external links. The delta reply runs inside the
+// publish gate like every other write of the round.
+//
+// Settled threads. Under Policy.NoteReconcile a root whose thread the
+// listing shows resolved is a settled point: a finding that restates it is
+// recorded as an external row and dropped, with no link and no reply, and
+// an external row whose root thread has since been resolved stops being
+// linked. Without it a resolved thread is no candidate at all and the
+// finding posts as before.
+//
+// Pull request body. Under Policy.NoteReconcile a folded note the body
+// already states is held: one paragraph or list item of Round.PRBody names
+// a specific subject of the note and carries its headline or text at the
+// settled-point bar. Findings above the inline bar are never held this way;
+// no row is written, so an edited body is judged afresh next round.
 // The Greptile reconcile runs beside it: a finding that restates a Greptile
 // root but misses the external bar keeps its "both" tag, and a Greptile-only
 // point whose root a row claims is dropped so nothing is listed twice. Off,

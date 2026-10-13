@@ -201,9 +201,16 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	}
 
 	originalIDs := p.aliasToLedger(&r, rows)
-	rememberExternal(&r, rows)
+	rememberExternal(ctx, &r, rows, threads, p.Policy.NoteReconcile)
 	r.Findings = p.withoutTerminal(r, rows, originalIDs)
 	r.Findings = withoutGuardedReturns(r, rows, guard)
+	settledDropped, bodyCovered := 0, 0
+	if p.Policy.SettledAlias {
+		r.Findings, settledDropped = withoutSettled(r, rows)
+	}
+	if p.Policy.NoteReconcile {
+		r.Findings, bodyCovered = withoutBodyCovered(r)
+	}
 	forgetShown(&r)
 	var rep Report
 	held := p.holdFindings(&r, &rep, func(id string) bool {
@@ -264,6 +271,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		written[f.ID] = true
 	}
 	rep.InlinePosted, rep.Annotations, rep.ExternalMatched = len(sel.Inline), len(sel.Annotations), external.matched
+	rep.ExternalSettled, rep.SettledDropped, rep.BodyCovered = external.settled, settledDropped, bodyCovered
 	for _, row := range external.rows {
 		writes = append(writes, pending{row: row})
 	}
@@ -657,6 +665,91 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 		kept = append(kept, f)
 	}
 	return kept
+}
+
+// settledState reports whether a row's point is settled on this PR: the
+// terminal states, and fixed (by a change or a conceded fix claim), where a
+// restatement from elsewhere is a repeat rather than a return.
+func settledState(state string) bool {
+	return terminalState(state) || fixedState(state)
+}
+
+// withoutSettled drops every finding the alias tiers left unmatched that
+// restates a settled row from another file or another part of its file:
+// same kind, a specific subject the row names or PRism named in the row's
+// thread, and the finding's text inside that thread's text. The row is left
+// as it is: nothing returns, nothing is posted, nothing is counted.
+func withoutSettled(r Round, rows map[string]*db.PublishedFinding) ([]payload.Finding, int) {
+	var points []reconcile.SettledPoint
+	ids := make([]string, 0, len(rows))
+	for id := range rows {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		row := rows[id]
+		if !settledState(row.State) {
+			continue
+		}
+		prior := r.PriorComments[id]
+		text := row.CommentText
+		if text == "" {
+			text = StripRendered(prior.Text)
+		}
+		for _, reply := range prior.OwnReplies {
+			text += " " + StripRendered(reply)
+		}
+		file, _ := payload.FingerprintParts(id)
+		points = append(points, reconcile.SettledPoint{FindingID: id, File: file, Kind: row.FindingKind, Subjects: splitSubjects(row.Subjects), Text: text})
+	}
+	if len(points) == 0 {
+		return r.Findings, 0
+	}
+	unmatched := make([]payload.Finding, 0, len(r.Findings))
+	for _, f := range r.Findings {
+		if _, known := rows[f.ID]; !known {
+			unmatched = append(unmatched, f)
+		}
+	}
+	matches := reconcile.MatchSettled(unmatched, points)
+	if len(matches) == 0 {
+		return r.Findings, 0
+	}
+	kept := make([]payload.Finding, 0, len(r.Findings))
+	for _, f := range r.Findings {
+		if settled, ok := matches[f.ID]; ok {
+			log.Printf("[PUBLISH] %s/%s#%d: finding %s restates settled row %s (%s), dropped", r.Owner, r.Repo, r.Number, f.ID, settled, rows[settled].State)
+			continue
+		}
+		kept = append(kept, f)
+	}
+	return kept, len(matches)
+}
+
+// withoutBodyCovered drops the folded notes whose point the pull request
+// body already states; findings above the inline bar are never held this
+// way, since a stated behaviour can still be a defect worth a thread.
+func withoutBodyCovered(r Round) ([]payload.Finding, int) {
+	if strings.TrimSpace(r.PRBody) == "" {
+		return r.Findings, 0
+	}
+	kept := make([]payload.Finding, 0, len(r.Findings))
+	covered := 0
+	for _, f := range r.Findings {
+		if summaryNote(f) && reconcile.BodyCovers(f, r.PRBody) {
+			log.Printf("[PUBLISH] %s/%s#%d: note %s is stated in the pull request body, held", r.Owner, r.Repo, r.Number, f.ID)
+			covered++
+			continue
+		}
+		kept = append(kept, f)
+	}
+	return kept, covered
+}
+
+// summaryNote reports whether a finding reaches GitHub only as a folded
+// summary note: confirmed and publishable, but below the inline bar.
+func summaryNote(f payload.Finding) bool {
+	return Publishable(f) && !Shown(f)
 }
 
 // securityException is decision 4's one exception; withoutTerminal has

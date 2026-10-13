@@ -39,6 +39,9 @@ type externalPass struct {
 	rows    []*db.PublishedFinding
 	notes   []threadNote
 	matched int
+	// settled counts the matches to a resolved thread: recorded, never
+	// linked or replied to.
+	settled int
 }
 
 // refreshExternal re-lists the PR's review comments when GitHub allows and
@@ -46,7 +49,7 @@ type externalPass struct {
 // who posted after the round was built is still reconciled against.
 func (p *Publisher) refreshExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding) {
 	lister, ok := p.GH.(ReviewCommentLister)
-	if !ok || !hasUnknownFinding(r, rows) {
+	if !ok || !hasUnknownFinding(r, rows, p.Policy.NoteReconcile) {
 		return
 	}
 	listed, err := lister.ListReviewComments(ctx, r.Owner, r.Repo, r.Number)
@@ -69,13 +72,28 @@ func (p *Publisher) refreshExternal(ctx context.Context, r *Round, rows map[stri
 
 // hasUnknownFinding reports whether the round shows a finding the ledger has
 // never recorded, the only kind that can match another reviewer's root.
-func hasUnknownFinding(r *Round, rows map[string]*db.PublishedFinding) bool {
-	for _, f := range r.currentFindings() {
+func hasUnknownFinding(r *Round, rows map[string]*db.PublishedFinding, notes bool) bool {
+	for _, f := range r.externalCandidates(notes) {
 		if _, known := rows[f.ID]; !known {
 			return true
 		}
 	}
 	return false
+}
+
+// externalCandidates are the findings another reviewer's root may stand in
+// for: the shown findings, and with notes the folded lower-severity ones.
+func (r Round) externalCandidates(notes bool) []payload.Finding {
+	if !notes {
+		return r.currentFindings()
+	}
+	var out []payload.Finding
+	for _, f := range r.Findings {
+		if Publishable(f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // forgetShown drops the external links of findings the round still carries
@@ -101,10 +119,15 @@ func forgetShown(r *Round) {
 // rememberExternal lists, for the summary, the findings of this round that
 // alias to an external row: the point is still raised and still lives in
 // the other reviewer's thread. It runs before those findings are dropped.
-func rememberExternal(r *Round, rows map[string]*db.PublishedFinding) {
+// With skipSettled, a root whose thread the listing shows resolved is a
+// settled point and is not listed.
+func rememberExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding, threads *threadIndex, skipSettled bool) {
 	for _, f := range r.Findings {
 		row, ok := rows[f.ID]
 		if !ok || row.State != db.PublishedStateExternal || row.ExternalCommentID == 0 {
+			continue
+		}
+		if t, listed := threads.lookup(ctx, row.ExternalCommentID); skipSettled && listed && t.Resolved {
 			continue
 		}
 		source, _ := reconcile.SourceFromTag(row.SourceTag)
@@ -131,11 +154,14 @@ func (r Round) externalFindings() []payload.Finding {
 	return out
 }
 
-// matchExternal pairs the round's shown findings with the other reviewers'
-// roots and takes every match out of the round: an external row remembers
-// the point for the PR's life, the summary links to the root, and the
-// thread gets one delta reply carrying only what PRism adds, unless a row
-// already claimed that root.
+// matchExternal pairs the round's findings with the other reviewers' roots
+// and takes every match out of the round: an external row remembers the
+// point for the PR's life. A match to an open thread is linked from the
+// summary and, for a finding above the inline bar, answered with one delta
+// reply carrying only what PRism adds, unless a row already claimed that
+// root. With Policy.NoteReconcile the folded notes are candidates too, and
+// a match to a resolved thread is a settled point: recorded, never linked
+// or replied to. Without it a resolved thread is no candidate at all.
 func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding, now time.Time, threads *threadIndex) externalPass {
 	var pass externalPass
 	if threads == nil {
@@ -143,7 +169,8 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 		// open one, so nothing is deferred to and nothing is replied into.
 		return pass
 	}
-	roots := openRoots(ctx, r.External, threads)
+	notes := p.Policy.NoteReconcile
+	roots, settledRoots := candidateRoots(ctx, r.External, threads, notes)
 	if threads.listFailed() {
 		log.Printf("[PUBLISH] %s/%s#%d: thread listing failed; external matching skipped this round", r.Owner, r.Repo, r.Number)
 		return pass
@@ -158,7 +185,7 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 		}
 	}
 	var candidates []payload.Finding
-	for _, f := range r.currentFindings() {
+	for _, f := range r.externalCandidates(notes) {
 		// A finding the ledger already knows has its own history; only a
 		// point PRism has never recorded can be someone else's first.
 		if _, known := rows[f.ID]; !known {
@@ -180,7 +207,6 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 			kept = append(kept, f)
 			continue
 		}
-		pass.matched++
 		pass.rows = append(pass.rows, &db.PublishedFinding{
 			RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
 			Kind: db.PublishedKindAnnotation, Fingerprint: f.ID,
@@ -190,8 +216,14 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
 			ExternalCommentID: m.External.CommentID,
 		})
+		if settledRoots[m.External.CommentID] {
+			pass.settled++
+			log.Printf("[PUBLISH] %s/%s#%d: finding %s restates %s's resolved thread %d, dropped", r.Owner, r.Repo, r.Number, f.ID, m.External.Source.Label(), m.External.CommentID)
+			continue
+		}
+		pass.matched++
 		r.ExternalMatches = append(r.ExternalMatches, ExternalMatch{Finding: f, Source: m.External.Source, CommentID: m.External.CommentID})
-		if claimed[m.External.CommentID] {
+		if claimed[m.External.CommentID] || !Shown(f) {
 			continue
 		}
 		claimed[m.External.CommentID] = true
@@ -228,18 +260,23 @@ func withoutClaimedRoots(refs []GreptileOnlyRef, rows map[string]*db.PublishedFi
 	return kept
 }
 
-// openRoots drops the roots whose thread the listing shows resolved: the
-// other reviewer's point is settled there, so PRism neither defers to it
-// nor replies into it.
-func openRoots(ctx context.Context, roots []reconcile.ExternalFinding, threads *threadIndex) []reconcile.ExternalFinding {
-	open := make([]reconcile.ExternalFinding, 0, len(roots))
+// candidateRoots splits the roots by thread state. A root whose thread the
+// listing shows resolved is settled: with keepSettled it stays a candidate
+// (its ids are returned) so a finding restating it is dropped; without, it
+// is no candidate and PRism neither defers to it nor replies into it.
+func candidateRoots(ctx context.Context, roots []reconcile.ExternalFinding, threads *threadIndex, keepSettled bool) ([]reconcile.ExternalFinding, map[int64]bool) {
+	kept := make([]reconcile.ExternalFinding, 0, len(roots))
+	settled := map[int64]bool{}
 	for _, g := range roots {
 		if t, ok := threads.lookup(ctx, g.CommentID); ok && t.Resolved {
-			continue
+			if !keepSettled {
+				continue
+			}
+			settled[g.CommentID] = true
 		}
-		open = append(open, g)
+		kept = append(kept, g)
 	}
-	return open
+	return kept, settled
 }
 
 // deltaReply is the one reply PRism may leave under another reviewer's root:

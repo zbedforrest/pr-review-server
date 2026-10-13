@@ -111,6 +111,14 @@ type Report struct {
 	// Held lists the findings the output hygiene gate kept off GitHub this
 	// round, with the reason (see HoldReason).
 	Held []HeldFinding
+	// ExternalSettled counts the findings matched to another reviewer's
+	// resolved thread and dropped without a link or a reply; SettledDropped
+	// the findings that restated one of PRism's own settled rows from
+	// elsewhere; BodyCovered the folded notes the pull request body already
+	// stated.
+	ExternalSettled int
+	SettledDropped  int
+	BodyCovered     int
 }
 
 const summaryFingerprint = "summary"
@@ -432,7 +440,7 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 	r.RoundNumber = summaryRow.Rounds
 	rows := priorRows(r.Previous)
 	p.aliasToLedger(&r, rows)
-	rememberExternal(&r, rows)
+	rememberExternal(ctx, &r, rows, newThreadIndex(p.GH, p.Policy, r.Owner, r.Repo, r.Number), p.Policy.NoteReconcile)
 	r.Findings = withoutConceded(WithoutDismissed(r.Findings, r.Previous), r.Previous)
 	r.LegacyTitles = p.Policy.LegacyTitles
 	r.LegacyClamp = p.Policy.LegacyClamp

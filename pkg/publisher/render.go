@@ -85,9 +85,13 @@ type Round struct {
 	SettleFooter string
 
 	// PriorComments is what GitHub currently shows for PRism's own inline
-	// comments, keyed by the fingerprint in their marker: the translated line
-	// and the body. The ledger policy aliases reworded findings against it.
+	// comments, keyed by the fingerprint in their marker: the translated line,
+	// the body and PRism's own replies in the thread. The ledger policy
+	// aliases reworded findings against it.
 	PriorComments map[string]PriorComment
+	// PRBody is the pull request description; a folded note it already
+	// states is held (Policy.NoteReconcile).
+	PRBody string
 	// Changes resolves what changed between a ledger row's LastSeenSHA and
 	// HeadSHA; ok false means unknown, and nothing is then judged fixed.
 	Changes func(base string) (ChangeSet, bool)
@@ -107,10 +111,13 @@ type Round struct {
 	held map[string]bool
 }
 
-// PriorComment is one of PRism's own inline comments as GitHub lists it now.
+// PriorComment is one of PRism's own inline comments as GitHub lists it now,
+// with the replies PRism itself left in its thread (concessions name the
+// code they accept, which the settled-point alias reads).
 type PriorComment struct {
-	Line int
-	Text string
+	Line       int
+	Text       string
+	OwnReplies []string
 }
 
 // ChangeSet is the inter-push diff between two commits of the PR: the files
