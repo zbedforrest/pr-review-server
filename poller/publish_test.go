@@ -431,6 +431,23 @@ func TestBuildPublishRound_AliasesRewordedFindingsToPriorComments(t *testing.T) 
 	}
 }
 
+func TestBuildPublishRound_CarriesPRismsOwnRepliesWithThePriorComment(t *testing.T) {
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 7, CommitSHA: "abc", Author: "alice"}
+	comments := []github.ReviewCommentInfo{
+		{ID: 501, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54, Body: "<!-- prism:finding:a.go:5:aaaaaaaaaaaa -->\n**[MEDIUM]** The retry never backs off."},
+		{ID: 502, Author: "alice", Path: "a.go", Line: 54, InReplyToID: 501, Body: "fixed in abc1234"},
+		{ID: 503, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54, InReplyToID: 501, Body: "The loop on retry.go:40 now sleeps through backoff(i), so this is fixed.\n\n<!-- prism:reply:v1:502 -->"},
+		{ID: 504, Author: "prism-pr-review-server[bot]", Path: "a.go", Line: 54, InReplyToID: 501, Body: "Not seen at abc1234."},
+		{ID: 505, Author: "prism-pr-review-server[bot]", Path: "b.go", Line: 9, InReplyToID: 900, Body: "Same point under another reviewer's root.\n\n<!-- prism:reply:v1:901 -->"},
+	}
+	previous := []db.PublishedFinding{{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Kind: db.PublishedKindFinding, Fingerprint: "a.go:5:aaaaaaaaaaaa", CommentID: 501, State: db.PublishedStateFixed}}
+	r := BuildPublishRoundWith(pr, payload.Payload{}, comments, nil, previous, "", publisher.DefaultPolicy())
+	prior := r.PriorComments["a.go:5:aaaaaaaaaaaa"]
+	if len(prior.OwnReplies) != 1 || !strings.Contains(prior.OwnReplies[0], "backoff(i)") {
+		t.Fatalf("only the marked reply under the ledger's root is PRism's own: %+v", prior.OwnReplies)
+	}
+}
+
 func TestBuildPublishRound_InactiveRecordsDoNotTakePartInReconciliation(t *testing.T) {
 	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 7, CommitSHA: "abc", Author: "alice"}
 	pl := payload.Payload{SchemaVersion: payload.CurrentSchemaVersion, Findings: []payload.Finding{
@@ -490,6 +507,12 @@ func TestPublishPolicy_CarriesTheRendererAndGuardSwitches(t *testing.T) {
 	pol = p.publishPolicy()
 	assert.False(t, pol.LegacyTitles)
 	assert.False(t, pol.RepublishSameCommit)
+	assert.True(t, pol.SettledAlias)
+	assert.True(t, pol.NoteReconcile)
+	p.settledAliasOff, p.noteReconcileOff = true, true
+	pol = p.publishPolicy()
+	assert.False(t, pol.SettledAlias)
+	assert.False(t, pol.NoteReconcile)
 }
 
 // A concession refreshes the summary from the stored review of the published
