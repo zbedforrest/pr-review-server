@@ -312,9 +312,8 @@ func RunAgentReview(
 	// Parse the PR diff once; the same []diffFile feeds both the mechanical
 	// gates and the bug-memory matcher, so offline dry-runs of either are
 	// predictive of production behavior.
-	diffFiles := diffFilesForWorktree(prepCtx, cloneDir, defaultBranch, agentCfg.GitHubToken, owner+"/"+repo, agentCfg.APIDiff)
 	scope := reviewScopeForWorktree(prepCtx, cloneDir, owner+"/"+repo, defaultBranch, logPrefix)
-	diffFiles = withoutInherited(diffFiles, scope)
+	diffFiles := scopedDiffFiles(prepCtx, cloneDir, defaultBranch, agentCfg.GitHubToken, owner+"/"+repo, agentCfg.APIDiff, scope)
 
 	// Mechanical gates: cheap deterministic checks over the diff + worktree.
 	// Their findings go into the prompt (the agent must address each) AND are
@@ -356,7 +355,7 @@ func RunAgentReview(
 	}
 
 	prContext := prContextSection(agentCfg.PRTitle, agentCfg.PRBody, agentCfg.LinkedTickets) + scopeNote(scope, defaultBranch)
-	claims := firstPassClaims(commentsInScope(geminiComments, scope))
+	claims := firstPassClaims(CommentsInScope(geminiComments, scope))
 	var prompt, diffSource string
 	wallClock := agentCfg.WallClock
 	if isLitePrompt(agentCfg.Prompt) {
@@ -660,7 +659,7 @@ func RunAgentReview(
 	logRemovable = true
 	return &AgentReview{
 		ParseFallback:        parseErr != nil,
-		Comments:             commentsInScope(comments, scope),
+		Comments:             CommentsInScope(comments, scope),
 		FirstPassActive:      firstPassActive,
 		Records:              records,
 		Gates:                gates,

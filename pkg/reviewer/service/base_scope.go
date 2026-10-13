@@ -28,11 +28,11 @@ func computeReviewScope(ctx context.Context, dir, base string) (*payload.ReviewS
 	if scope.MergeBase == scope.BaseTip {
 		return scope, nil
 	}
-	changed, err := gitOutput(ctx, dir, "diff", "--raw", "--no-abbrev", "--no-renames", scope.MergeBase, "HEAD")
+	changed, err := gitOutput(ctx, dir, "-c", "core.quotePath=false", "diff", "--raw", "--no-abbrev", "--no-renames", scope.MergeBase, "HEAD")
 	if err != nil {
 		return nil, err
 	}
-	baseMoved, err := gitOutput(ctx, dir, "diff", "--raw", "--no-abbrev", "--no-renames", scope.MergeBase, scope.BaseTip)
+	baseMoved, err := gitOutput(ctx, dir, "-c", "core.quotePath=false", "diff", "--raw", "--no-abbrev", "--no-renames", scope.MergeBase, scope.BaseTip)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ func computeReviewScope(ctx context.Context, dir, base string) (*payload.ReviewS
 	if len(head) == 0 {
 		return scope, nil
 	}
-	logArgs := []string{"log", "--raw", "--no-abbrev", "--no-renames", "--diff-merges=first-parent", "--format=", scope.MergeBase + ".." + scope.BaseTip}
+	logArgs := []string{"-c", "core.quotePath=false", "log", "--raw", "--no-abbrev", "--no-renames", "--diff-merges=first-parent", "--format=", scope.MergeBase + ".." + scope.BaseTip}
 	if len(candidates) <= maxScopedLogPaths {
 		logArgs = append(logArgs, "--")
 		for _, p := range candidates {
@@ -140,8 +140,8 @@ func withoutInherited(files []diffFile, scope *payload.ReviewScope) []diffFile {
 	return kept
 }
 
-// commentsInScope drops comments on inherited paths.
-func commentsInScope(comments []types.LineComment, scope *payload.ReviewScope) []types.LineComment {
+// CommentsInScope drops comments on the scope's inherited paths.
+func CommentsInScope(comments []types.LineComment, scope *payload.ReviewScope) []types.LineComment {
 	if scope == nil || len(scope.InheritedPaths) == 0 {
 		return comments
 	}

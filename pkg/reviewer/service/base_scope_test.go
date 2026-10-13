@@ -159,7 +159,7 @@ func TestReviewScopeKeepsAPathTheBaseChangedAndReverted(t *testing.T) {
 
 func TestCommentsInScopeDropsFirstPassClaimsOnInheritedPaths(t *testing.T) {
 	comments := []types.LineComment{{FilePath: "lib.go", Importance: "CRITICAL"}, {FilePath: "page.html"}, {FilePath: "SUMMARY"}}
-	got := commentsInScope(comments, &payload.ReviewScope{InheritedPaths: []string{"lib.go"}})
+	got := CommentsInScope(comments, &payload.ReviewScope{InheritedPaths: []string{"lib.go"}})
 	if len(got) != 2 || got[0].FilePath != "page.html" || got[1].FilePath != "SUMMARY" {
 		t.Fatalf("got %+v", got)
 	}
@@ -187,5 +187,55 @@ func TestReviewScopeKeepsAPRDeletionOfAPathTheBaseStillHas(t *testing.T) {
 	}
 	if len(scope.InheritedPaths) != 0 {
 		t.Fatalf("the base still has old.go, so deleting it is the PR's change: %v", scope.InheritedPaths)
+	}
+}
+
+func TestReviewScopeMatchesNonASCIIPaths(t *testing.T) {
+	dir := t.TempDir()
+	scopeGit(t, dir, "init", "-q", "-b", "main")
+	writeFiles(t, dir, map[string]string{"café.txt": "1\n"})
+	scopeGit(t, dir, "add", "-A")
+	scopeGit(t, dir, "commit", "-qm", "base")
+	scopeGit(t, dir, "checkout", "-qb", "feature")
+	scopeGit(t, dir, "checkout", "-q", "main")
+	writeFiles(t, dir, map[string]string{"café.txt": "2\n"})
+	scopeGit(t, dir, "commit", "-qam", "base edit")
+	scopeGit(t, dir, "checkout", "-q", "feature")
+	writeFiles(t, dir, map[string]string{"café.txt": "2\n"})
+	scopeGit(t, dir, "commit", "-qam", "sync")
+	scope, err := computeReviewScope(context.Background(), dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scope.InheritedPaths) != 1 || scope.InheritedPaths[0] != "café.txt" {
+		t.Fatalf("inherited = %q", scope.InheritedPaths)
+	}
+}
+
+func TestScopedDiffFilesDropsInheritedLinesBeforeTheSizeGuard(t *testing.T) {
+	dir := syncCommitRepo(t)
+	var big strings.Builder
+	for i := 0; i < 21000; i++ {
+		big.WriteString("line\n")
+	}
+	scopeGit(t, dir, "checkout", "-q", "main")
+	writeFiles(t, dir, map[string]string{"generated.txt": big.String()})
+	scopeGit(t, dir, "add", "-A")
+	scopeGit(t, dir, "commit", "-qm", "large generated file on the base")
+	scopeGit(t, dir, "update-ref", "refs/remotes/origin/main", "main")
+	scopeGit(t, dir, "checkout", "-q", "feature")
+	writeFiles(t, dir, map[string]string{"generated.txt": big.String()})
+	scopeGit(t, dir, "add", "-A")
+	scopeGit(t, dir, "commit", "-qm", "sync the generated file")
+	if diffFilesForWorktree(context.Background(), dir, "main", "", "", "") != nil {
+		t.Fatal("fixture must trip the size guard when unscoped")
+	}
+	scope, err := computeReviewScope(context.Background(), dir, "origin/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := scopedDiffFiles(context.Background(), dir, "main", "", "", "", scope)
+	if len(files) != 1 || files[0].Path != "page.html" {
+		t.Fatalf("scoped files = %+v", files)
 	}
 }

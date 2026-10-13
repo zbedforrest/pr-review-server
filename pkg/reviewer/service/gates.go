@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"pr-review-server/pkg/reviewer/payload"
 	"regexp"
 	"strings"
 
@@ -998,6 +999,12 @@ func unifiedDiffLines(full string) (added, removed map[string][]string, addedHun
 // failure. It never deepens or unshallows the shared cache: that could cost
 // minutes inside a review, serialized across every review of the repo.
 func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLockKey, apiDiff string) []diffFile {
+	return scopedDiffFiles(ctx, dir, defaultBranch, token, repoLockKey, apiDiff, nil)
+}
+
+// scopedDiffFiles is diffFilesForWorktree without the scope's inherited
+// paths, dropped before the size guard so base drift cannot trip it.
+func scopedDiffFiles(ctx context.Context, dir, defaultBranch, token, repoLockKey, apiDiff string, scope *payload.ReviewScope) []diffFile {
 	if dir == "" {
 		return nil
 	}
@@ -1039,6 +1046,7 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLo
 		log.Printf("[GATES] diff vs %s failed (%v); using the PR's API diff for the deterministic layer", base, err)
 		files = diffFilesFromAPIDiff(apiDiff)
 	}
+	files = withoutInherited(files, scope)
 	// Guard pathological diffs: gates and memory are per-line regex scans.
 	total := 0
 	for _, f := range files {
