@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -40,17 +41,14 @@ func ThreadResolutionFromEnv() bool {
 }
 
 // ResolveNotesEnv restores the in-thread note that used to accompany a
-// resolve: only "true", "1", "on" and "yes" post it.
+// resolve; a strconv.ParseBool true value posts it, as config.Load reads it.
 const ResolveNotesEnv = "PUBLISH_RESOLVE_NOTES"
 
 // ResolveNotesFromEnv reports whether the environment asked for resolve
-// notes. The poller and threadcleanup resolve it once at start-up.
+// notes. threadcleanup resolves it once at start-up.
 func ResolveNotesFromEnv() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(ResolveNotesEnv))) {
-	case "true", "1", "on", "yes":
-		return true
-	}
-	return false
+	v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(ResolveNotesEnv)))
+	return err == nil && v
 }
 
 // threadIndex is one round's view of the PR's review threads keyed by root
