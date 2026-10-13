@@ -542,7 +542,7 @@ func headline(f payload.Finding, legacy bool) string {
 // the explicit marker, or the legacy word cut with "...".
 func headlineWith(f payload.Finding, legacy, legacyClamp bool) string {
 	if legacy {
-		return legacyHeadline(f)
+		return legacyHeadlineWith(f, legacyClamp)
 	}
 	title := titleSource(f)
 	headlineMax, titleMax := headlineMaxRunes, commentTitleMaxRunes
@@ -583,12 +583,18 @@ func titleIsWholeFirstSentence(f payload.Finding, limit int) bool {
 }
 
 func legacyHeadline(f payload.Finding) string {
+	return legacyHeadlineWith(f, false)
+}
+
+// legacyHeadlineWith is legacyHeadline with the cut rule chosen the same way
+// as headlineWith, so both kill switches together restore the old word cut.
+func legacyHeadlineWith(f payload.Finding, legacyClamp bool) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
 		label, hasLabel := kindLabels[c.FindingKind]
 		impact := strings.TrimSpace(c.Headline)
 		if impact == "" {
 			full := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
-			impact = clauseHeadline(full, legacyHeadlineMaxRunes)
+			impact = clauseHeadlineWith(full, legacyHeadlineMaxRunes, legacyClamp)
 			if impact != full && hasLabel {
 				return label
 			}
@@ -598,7 +604,11 @@ func legacyHeadline(f payload.Finding) string {
 		}
 		return impact
 	}
-	return truncateWords(strings.Trim(firstSentence(commentText(f)), "*_ "), 100)
+	first := strings.Trim(firstSentence(commentText(f)), "*_ ")
+	if legacyClamp {
+		return truncateWords(first, 100)
+	}
+	return clampText(first, 100, false)
 }
 
 // titleSource is the one line a finding is known by: the agent's headline,
