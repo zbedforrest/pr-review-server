@@ -909,8 +909,8 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 	status := map[string]string{}
 	var order []string
 	for _, line := range strings.Split(strings.TrimSpace(ns), "\n") {
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 || parts[0] == "" {
 			continue
 		}
 		st := "modified"
@@ -1105,7 +1105,7 @@ type OfflineWorktreeReport struct {
 // worktree exactly as production would (same diff parse, same matchers).
 func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *BugMemoryLibrary, owner, repo string, prNumber int) OfflineWorktreeReport {
 	rep := OfflineWorktreeReport{}
-	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", "")
+	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", reviewScopeForWorktree(ctx, dir, "", defaultBranch, "[GATES]"))
 	if files == nil {
 		return rep
 	}
@@ -1120,7 +1120,7 @@ func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *B
 // any error it returns nil findings (gates are advisory; they must never
 // fail a review).
 func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
-	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", "")
+	files := scopedDiffFiles(ctx, dir, defaultBranch, "", "", "", reviewScopeForWorktree(ctx, dir, "", defaultBranch, "[GATES]"))
 	if files == nil {
 		return nil
 	}

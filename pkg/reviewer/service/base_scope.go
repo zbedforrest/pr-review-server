@@ -12,8 +12,8 @@ import (
 )
 
 // computeReviewScope finds the merge-base of HEAD with base and the changed
-// paths whose content at HEAD matches a version base held after that
-// merge-base. Those paths came from the base branch (a sync commit with no
+// paths whose content at HEAD equals the base tip's. Merging those paths
+// changes nothing, so they came from the base branch (a sync commit with no
 // merge ancestry, or work that already landed there), not from the PR.
 func computeReviewScope(ctx context.Context, dir, base string) (*payload.ReviewScope, error) {
 	mergeBase, err := gitOutput(ctx, dir, "merge-base", base, "HEAD")
@@ -36,52 +36,21 @@ func computeReviewScope(ctx context.Context, dir, base string) (*payload.ReviewS
 	if err != nil {
 		return nil, err
 	}
-	// Only paths the base still differs on can be inherited: a path the base
-	// changed and then reverted may match the PR's own edit by coincidence.
 	tipBlob := map[string]string{}
 	for _, c := range rawChanges(baseMoved) {
 		tipBlob[c.path] = c.blob
 	}
-	head := map[string]string{}
-	var candidates []string
 	for _, c := range rawChanges(changed) {
-		tip, moved := tipBlob[c.path]
-		// Every deletion reports the zero blob, so a deletion only matches a base that still lacks the path.
-		if !moved || (c.blob == zeroBlob) != (tip == zeroBlob) {
-			continue
-		}
-		head[c.path] = c.blob
-		candidates = append(candidates, c.path)
-	}
-	if len(head) == 0 {
-		return scope, nil
-	}
-	logArgs := []string{"-c", "core.quotePath=false", "log", "--raw", "--no-abbrev", "--no-renames", "--diff-merges=first-parent", "--format=", scope.MergeBase + ".." + scope.BaseTip}
-	if len(candidates) <= maxScopedLogPaths {
-		logArgs = append(logArgs, "--")
-		for _, p := range candidates {
-			logArgs = append(logArgs, ":(literal)"+p)
-		}
-	}
-	history, err := gitOutput(ctx, dir, logArgs...)
-	if err != nil {
-		return nil, err
-	}
-	for _, c := range rawChanges(history) {
-		if blob, ok := head[c.path]; ok && blob == c.blob {
+		if tip, moved := tipBlob[c.path]; moved && tip == c.blob {
 			scope.InheritedPaths = append(scope.InheritedPaths, c.path)
-			delete(head, c.path)
 		}
 	}
 	sort.Strings(scope.InheritedPaths)
 	return scope, nil
 }
 
-// maxScopedLogPaths bounds the pathspec handed to git log; past it the whole
-// range is read instead.
-const maxScopedLogPaths = 2000
-
-const zeroBlob = "0000000000000000000000000000000000000000"
+// maxScopedPaths bounds the exclude pathspec handed to git diff.
+const maxScopedPaths = 2000
 
 type rawChange struct{ path, blob string }
 
@@ -166,7 +135,7 @@ func normalizeScopePath(p string) string {
 // of a git diff, or nil when nothing is inherited or the list is too long for
 // a command line (the prompt note and the output filter still apply).
 func scopePathspec(scope *payload.ReviewScope) []string {
-	if scope == nil || len(scope.InheritedPaths) == 0 || len(scope.InheritedPaths) > maxScopedLogPaths {
+	if scope == nil || len(scope.InheritedPaths) == 0 || len(scope.InheritedPaths) > maxScopedPaths {
 		return nil
 	}
 	args := []string{"--", "."}
@@ -188,7 +157,7 @@ func scopeNote(scope *payload.ReviewScope, baseBranch string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n## Changes inherited from %s\n\n", baseBranchLabel(baseBranch))
-	fmt.Fprintf(&b, "%d changed path(s) are out of scope because their content at HEAD matches a version already on the base branch: the head picked up base-branch changes (for example a sync commit without merge ancestry), and the PR did not write them. `git diff %s...HEAD` still lists them; the change under review is that diff minus these paths. Do not review these paths and do not cite them as regressions or behavior changes of this PR:\n", len(scope.InheritedPaths), baseBranchLabel(baseBranch))
+	fmt.Fprintf(&b, "%d changed path(s) are out of scope because their content at HEAD is identical to the base branch's current content: the head picked up base-branch changes (for example a sync commit without merge ancestry), and the PR did not write them. `git diff %s...HEAD` still lists them; the change under review is that diff minus these paths. Do not review these paths and do not cite them as regressions or behavior changes of this PR:\n", len(scope.InheritedPaths), baseBranchLabel(baseBranch))
 	for _, p := range shown {
 		fmt.Fprintf(&b, "- `%s`\n", p)
 	}

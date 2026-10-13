@@ -72,9 +72,9 @@ type Payload struct {
 }
 
 // ReviewScope describes what a review treated as the pull request's own change.
-// InheritedPaths changed between MergeBase and the head but hold content the
-// base branch had after MergeBase, so they are base changes the head picked up
-// (for example a sync commit with no merge ancestry), not the PR's work.
+// InheritedPaths changed between MergeBase and the head but are identical to
+// BaseTip, so they are base changes the head picked up (for example a sync
+// commit with no merge ancestry), not the PR's work.
 type ReviewScope struct {
 	MergeBase       string   `json:"merge_base,omitempty"`
 	BaseTip         string   `json:"base_tip,omitempty"`

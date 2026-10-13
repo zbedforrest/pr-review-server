@@ -243,3 +243,45 @@ func TestScopedDiffFilesDropsInheritedLinesBeforeTheSizeGuard(t *testing.T) {
 		t.Fatalf("scoped files = %+v", files)
 	}
 }
+
+func TestReviewScopeKeepsAHeadThatDiffersFromTheBaseTip(t *testing.T) {
+	dir := t.TempDir()
+	scopeGit(t, dir, "init", "-q", "-b", "main")
+	writeFiles(t, dir, map[string]string{"x.go": "v1\n"})
+	scopeGit(t, dir, "add", "-A")
+	scopeGit(t, dir, "commit", "-qm", "base")
+	scopeGit(t, dir, "checkout", "-qb", "feature")
+	scopeGit(t, dir, "checkout", "-q", "main")
+	writeFiles(t, dir, map[string]string{"x.go": "v2\n"})
+	scopeGit(t, dir, "commit", "-qam", "v2")
+	writeFiles(t, dir, map[string]string{"x.go": "v3\n"})
+	scopeGit(t, dir, "commit", "-qam", "v3")
+	scopeGit(t, dir, "checkout", "-q", "feature")
+	writeFiles(t, dir, map[string]string{"x.go": "v2\n"})
+	scopeGit(t, dir, "commit", "-qam", "set x to an older base value")
+	scope, err := computeReviewScope(context.Background(), dir, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scope.InheritedPaths) != 0 {
+		t.Fatalf("merging would change x.go, so it is the PR's change: %v", scope.InheritedPaths)
+	}
+}
+
+func TestParsedDiffKeepsPathsWithSpaces(t *testing.T) {
+	dir := syncCommitRepo(t)
+	writeFiles(t, dir, map[string]string{"my notes.txt": "hi\n"})
+	scopeGit(t, dir, "add", "-A")
+	scopeGit(t, dir, "commit", "-qm", "spaced name")
+	files, err := parseNameStatusDiff(context.Background(), dir, "origin/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range files {
+		found = found || f.Path == "my notes.txt"
+	}
+	if !found {
+		t.Fatalf("paths = %+v", files)
+	}
+}
