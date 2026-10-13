@@ -136,13 +136,13 @@ func TestIsPraise(t *testing.T) {
 
 // Class 6: a bare-title note with no reason behind it is held, not listed.
 func TestPublish_HoldsAReasonlessNote(t *testing.T) {
-	note := contractFinding("low", "web/src/ui/loginOverlay.tsx", 682,
-		"The `RegToggle` toggle is reused to gate autofocus behavior on the login overlay, but this toggle already controls the register form experiment via `JoinOverlayModal`. Verify whether this coupling is intentional.",
+	note := contractFinding("low", "web/src/ui/overlay.tsx", 682,
+		"The `FocusToggle` toggle is reused to gate autofocus behavior on the overlay, but this toggle already controls the signup form experiment via `SignupModal`. Verify whether this coupling is intentional.",
 		opinion("None demonstrated; behavior is as described in the PR when the shared toggle is enabled.",
 			"Medium; whether an independent toggle is desired is a product/rollout call I cannot infer from the diff alone.",
 			"It is a toggle-scoping preference rather than a defect, so it is low severity.",
-			"Login focus gated by register-form toggle"))
-	gap := contractFinding("low", "web/src/ui/loginOverlay.test.ts", 28,
+			"Login focus gated by signup-form toggle"))
+	gap := contractFinding("low", "web/src/ui/overlay.test.ts", 28,
 		"The test parameterization does not cover the mobile + toggle-off case, which exercises the fallback branch. Add the missing row.",
 		&types.FindingContract{SchemaVersion: 1, FindingKind: "test_quality", Materiality: "no_user_impact", Falsifiability: "not_falsifiable",
 			CurrentImpact: "No current user impact; the new test table omits one branch of the mobile override.", Uncertainty: "Low: the existing cases pin the primary behavior.",
@@ -256,7 +256,8 @@ func TestPublish_LibraryClaimHoldHasAKillSwitch(t *testing.T) {
 }
 
 // A hold keeps the ledger row of an earlier post alive: absence because of
-// the gate is never a fix.
+// the gate is never a fix, and a thread that is open on GitHub is listed
+// and counted as still open.
 func TestPublish_HeldFindingKeepsItsOpenRowAndIsNeverFixed(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
 	scan := contractFinding("medium", ".github/workflows/scan.yml", 28, "The scanner action is not configured with `advanced-security: true`.",
@@ -278,30 +279,30 @@ func TestPublish_HeldFindingKeepsItsOpenRowAndIsNeverFixed(t *testing.T) {
 	if row.State != db.PublishedStateOpen || row.LastSeenSHA != "sha-2" || rep.Fixed != 0 || len(gh.replies) != 0 {
 		t.Fatalf("a held finding stays open and silent: row=%+v fixed=%d replies=%d", row, rep.Fixed, len(gh.replies))
 	}
-	if !strings.Contains(gh.issueEdits[501], "0 new · 0 still open · 0 fixed") {
-		t.Fatalf("summary:\n%s", gh.issueEdits[501])
+	if !strings.Contains(gh.issueEdits[501], "0 new · 1 still open · 0 fixed") || !strings.Contains(gh.issueEdits[501], "Scan step may not upload findings") {
+		t.Fatalf("an open thread is still open, held or not:\n%s", gh.issueEdits[501])
 	}
 }
 
-// Class 10: "dropped the whitelabel precedence (`active_toggles.X and DBS`)"
+// Class 10: "dropped the branded precedence (`active_toggles.X and SITE`)"
 // when that line is a context line of the very hunk the finding cites.
 const smallLogoHunk = `@@ -13,17 +13,23 @@
          {% endif %}
          <a href="/" class="logo-link">
-           {% if active_toggles.WlblSrchEvlv and DBS and DBS.logo_image %}
--          <img src="{{ DBS.logo_image }}" class="logo" alt="Homepage" />
--          {% elif featured_logo_img %}
--          <img src="{{ featured_logo_img }}" class="logo" alt="Homepage" />
-+            <img src="{{ DBS.logo_image }}" class="logo" alt="Homepage" />
-+          {% elif featured_mode_logos %}
-+            <img src="{{ featured_mode_logos.light }}" class="logo light" alt="Homepage" />
+           {% if toggles.BrandLogo and SITE and SITE.logo %}
+-          <img src="{{ SITE.logo }}" class="logo" alt="Homepage" />
+-          {% elif promo_logo_img %}
+-          <img src="{{ promo_logo_img }}" class="logo" alt="Homepage" />
++            <img src="{{ SITE.logo }}" class="logo" alt="Homepage" />
++          {% elif promo_logos %}
++            <img src="{{ promo_logos.light }}" class="logo light" alt="Homepage" />
            {% else %}
--          <img src="{{ STATIC_URL }}images/logo-new.svg" class="logo light" alt="Homepage" />
-+            <img src="{{ STATIC_URL }}images/logo-new.svg" class="logo light" alt="Homepage" />
+-          <img src="{{ STATIC_URL }}images/logo.svg" class="logo light" alt="Homepage" />
++            <img src="{{ STATIC_URL }}images/logo.svg" class="logo light" alt="Homepage" />
            {% endif %}
-           {% if evolve_shown %}
+           {% if wide_layout %}
 -          <img src="{{ STATIC_URL }}images/logo-small.svg" class="logoSmall light" alt="Homepage" />
-+            {% if featured_mode_logos == None %}
++            {% if promo_logos == None %}
 +                <img src="{{ STATIC_URL }}images/logo-small.svg" class="logoSmall light dark" alt="Homepage" />
 +            {% endif %}
            {% endif %}
@@ -310,18 +311,18 @@ const smallLogoHunk = `@@ -13,17 +13,23 @@
 func regressionFinding(comment, impact string) payload.Finding {
 	x := contractFinding("medium", "templates/header.html", 26, comment,
 		asserting("production_behavior", impact,
-			"Medium: a whitelabel small variant may be intentionally unsupported, but the full-size logo honors DBS while this rewritten block does not.",
-			"Shows the wrong brand logo for whitelabel users on narrow viewports.", ""))
+			"Medium: a branded small variant may be intentionally unsupported, but the full-size logo honors SITE while this rewritten block does not.",
+			"Shows the wrong brand logo for branded users on narrow viewports.", ""))
 	x.DiffHunk = smallLogoHunk
 	return x
 }
 
-const inventedImpact = "On whitelabel sites at narrow widths the header small logo shows the default logo instead of the whitelabel logo."
+const inventedImpact = "On branded sites at narrow widths the header small logo shows the default logo instead of the branded logo."
 
 func TestPublish_HoldsARegressionClaimTheHunkContradicts(t *testing.T) {
-	invented := regressionFinding("The small-logo block dropped the whitelabel precedence that the full-size logo keeps (`active_toggles.WlblSrchEvlv and DBS and DBS.logo_image`). On whitelabel sites at narrow widths, the full logo is hidden and this block renders; it now falls back to the default logo instead of the site's own whitelabel logo.", inventedImpact)
-	cited := regressionFinding("The featured branch dropped the `featured_logo_img` fallback that the old block rendered, so a campaign configured through the legacy tag no longer shows its logo.",
-		"A campaign configured through the legacy featured tag shows no logo at all.")
+	invented := regressionFinding("The small-logo block dropped the branded precedence that the full-size logo keeps (`toggles.BrandLogo and SITE and SITE.logo`). On branded sites at narrow widths, the full logo is hidden and this block renders; it now falls back to the default logo instead of the site's own branded logo.", inventedImpact)
+	cited := regressionFinding("The promo branch dropped the `promo_logo_img` fallback that the old block rendered, so a campaign configured through the legacy tag no longer shows its logo.",
+		"A campaign configured through the legacy promo tag shows no logo at all.")
 	if !UncitedRegressionClaim(invented) || UncitedRegressionClaim(cited) {
 		t.Fatalf("uncited: invented=%v cited=%v", UncitedRegressionClaim(invented), UncitedRegressionClaim(cited))
 	}
@@ -329,13 +330,13 @@ func TestPublish_HoldsARegressionClaimTheHunkContradicts(t *testing.T) {
 	r := Round{Owner: "acme", Repo: "example", Number: 32509, HeadSHA: "8afc20a", Findings: []payload.Finding{invented, cited},
 		Commentable: map[string]map[int]bool{"templates/header.html": {26: true}}}
 	rep := publishRound(t, gh, ledger, r)
-	if len(gh.reviews) != 1 || len(gh.reviews[0].comments) != 1 || !strings.Contains(gh.reviews[0].comments[0].Body, "featured_logo_img") {
+	if len(gh.reviews) != 1 || len(gh.reviews[0].comments) != 1 || !strings.Contains(gh.reviews[0].comments[0].Body, "promo_logo_img") {
 		t.Fatalf("only the cited claim posts: %+v", gh.reviews)
 	}
 	if len(rep.Held) != 1 || rep.Held[0].Reason != HoldRegressionClaim {
 		t.Fatalf("held = %+v", rep.Held)
 	}
-	if strings.Contains(gh.issueCreates[0], "whitelabel precedence") || strings.Contains(gh.issueCreates[0], "narrow widths") {
+	if strings.Contains(gh.issueCreates[0], "branded precedence") || strings.Contains(gh.issueCreates[0], "narrow widths") {
 		t.Fatalf("the held claim must not headline the summary:\n%s", gh.issueCreates[0])
 	}
 }
@@ -358,5 +359,44 @@ func TestRenderHygiene_KillSwitchRestoresTheOldRendering(t *testing.T) {
 	body := RenderInline(x, SourceTagBoth, "", "", "")
 	if !strings.Contains(body, "Low; same pattern as A-1") || !strings.Contains(body, "Source: PRism · Both") {
 		t.Fatalf("kill switch ignored:\n%s", body)
+	}
+}
+
+func TestContractSentence_KeepsHyphenatedSeverityWordsAndRealIdentifiers(t *testing.T) {
+	for _, s := range []string{
+		"High-cardinality keys blow up the index.",
+		"Low-level callers skip the check.",
+		"Critical-path rendering waits on the lock.",
+		"Medium-sized payloads are fine.",
+		"The P-256 curve is hard-coded.",
+		"The schema-A-1 table has no index.",
+	} {
+		if got := ContractSentence(s); got != s {
+			t.Errorf("ContractSentence(%q) = %q", s, got)
+		}
+	}
+	for s, want := range map[string]string{
+		"Low - the nesting is visible.":    "The nesting is visible.",
+		"Medium: same pattern as A-1.":     "",
+		"High confidence, verified in CI.": "Verified in CI.",
+	} {
+		if got := ContractSentence(s); got != want {
+			t.Errorf("ContractSentence(%q) = %q, want %q", s, got, want)
+		}
+	}
+	if got := StripFindingIDAsides("The schema-A-1 table mirrors A-2."); got != "The schema-A-1 table mirrors another finding on this PR." {
+		t.Errorf("StripFindingIDAsides = %q", got)
+	}
+}
+
+func TestUnverifiedLibraryClaim_HoldsTheInstructedPhraseNotAPlainClaim(t *testing.T) {
+	instructed := contractFinding("low", "web/src/tooltip/middlewares.ts", 70,
+		"`shift` defaults to `mainAxis: true` and `crossAxis: false`, so the tooltip never slides horizontally.",
+		asserting("production_behavior", "Tooltips overflow the viewport edge.", "Unverified against the pinned version; the default may differ.", "Clipped tooltips.", "Tooltip never slides horizontally"))
+	plain := contractFinding("medium", "web/src/tooltip/middlewares.ts", 70,
+		"`shift` defaults to `mainAxis: true` and `crossAxis: false`, so the tooltip never slides horizontally.",
+		asserting("production_behavior", "Tooltips overflow the viewport edge.", "The wrapper may inject its own shift middleware.", "Clipped tooltips.", "Tooltip never slides horizontally"))
+	if !UnverifiedLibraryClaim(instructed) || UnverifiedLibraryClaim(plain) {
+		t.Fatalf("instructed=%v plain=%v", UnverifiedLibraryClaim(instructed), UnverifiedLibraryClaim(plain))
 	}
 }

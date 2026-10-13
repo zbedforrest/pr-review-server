@@ -45,18 +45,25 @@ type HeldFinding struct {
 }
 
 // findingIDRefRe matches the labels the agent gives its own entries ("A-1",
-// "FP-3", "P-2"); a sentence built on one means nothing to a reader.
-var findingIDRefRe = regexp.MustCompile(`\b(?:A|FP|P)-\d{1,3}\b`)
+// "FP-3", "P-2"); a sentence built on one means nothing to a reader. The
+// label stands alone (not "schema-A-1") and has at most two digits, so a
+// "P-256 curve" is left alone; a bare "FP-16" still reads as a label.
+var findingIDRefRe = regexp.MustCompile(`(^|[^\w-])((?:A|FP|P)-\d{1,2})($|[^\w-])`)
 
 // MentionsFindingID reports whether text leans on an internal finding label.
 func MentionsFindingID(text string) bool {
 	return findingIDRefRe.MatchString(text)
 }
 
+func replaceFindingIDs(text, with string) string {
+	return findingIDRefRe.ReplaceAllString(text, "${1}"+with+"${3}")
+}
+
 // confidenceLabelRe is the "Low;" / "Medium:" / "High confidence," opener
 // the agent puts before its uncertainty sentence. Under a severity badge it
-// reads as a second, contradicting severity.
-var confidenceLabelRe = regexp.MustCompile(`(?i)^\s*(?:(?:very |fairly )?(?:high|medium|moderate|low|critical)(?:-(?:high|low))?(?: confidence)?|confidence(?: is)? (?:high|medium|moderate|low))\s*[:;,-]\s*`)
+// reads as a second, contradicting severity. A hyphen ends the label only
+// with spaces around it, so "High-cardinality keys" is not a label.
+var confidenceLabelRe = regexp.MustCompile(`(?i)^\s*(?:(?:very |fairly )?(?:high|medium|moderate|low|critical)(?:-(?:high|low))?(?: confidence)?|confidence(?: is)? (?:high|medium|moderate|low))(?:\s*[:;,]\s*|\s+-\s+)`)
 
 // StripConfidenceLabel drops a leading confidence label and capitalises what
 // is left. Text without a label is returned as is.
@@ -103,7 +110,7 @@ func StripFindingIDAsides(text string) string {
 	}
 	text = bodyIDRefRe.ReplaceAllString(text, "")
 	text = findingIDListRe.ReplaceAllString(text, "other findings on this PR")
-	return findingIDRefRe.ReplaceAllString(text, "another finding on this PR")
+	return replaceFindingIDs(text, "another finding on this PR")
 }
 
 var (
@@ -193,15 +200,18 @@ func ReasonlessNote(f payload.Finding) bool {
 }
 
 var (
-	memoryClaimRe    = regexp.MustCompile(`(?i)\b(?:from memory|if i recall|iirc|as i recall|as i remember|as far as i remember|i believe the (?:library|package|action|module|framework|dependency|plugin|middleware|runtime)|without (?:inspecting|reading|checking|opening) the (?:pinned|installed|vendored|bundled|upstream|library|package|action|dependency)|(?:cannot|can't|could not|couldn't|did not|didn't|unable to) (?:inspect|read|check|open|verify|confirm) the (?:pinned|installed|vendored|bundled|upstream|action's|library's|package's|dependency's|module's)|(?:not|never) (?:inspected|checked|read|verified) (?:the )?(?:pinned|installed|vendored|upstream)|documented behaviou?r from memory|(?:pinned|installed|vendored) (?:release|version|source|copy) (?:is|was) not (?:available|readable|inspected|checked)|not (?:available|present|readable) in this checkout|no (?:node_modules|vendor|site-packages) (?:in|available in) this checkout)`)
+	memoryClaimRe    = regexp.MustCompile(`(?i)\b(?:from memory|if i recall|iirc|as i recall|as i remember|as far as i remember|i believe the (?:library|package|action|module|framework|dependency|plugin|middleware|runtime)|without (?:inspecting|reading|checking|opening) the (?:pinned|installed|vendored|bundled|upstream|library|package|action|dependency)|(?:cannot|can't|could not|couldn't|did not|didn't|unable to) (?:inspect|read|check|open|verify|confirm) the (?:pinned|installed|vendored|bundled|upstream|action's|library's|package's|dependency's|module's)|(?:not|never) (?:inspected|checked|read|verified) (?:the )?(?:pinned|installed|vendored|upstream)|unverified against the pinned|unverified (?:default|behaviou?r|option|semantics)|documented behaviou?r from memory|(?:pinned|installed|vendored) (?:release|version|source|copy) (?:is|was) not (?:available|readable|inspected|checked)|not (?:available|present|readable) in this checkout|no (?:node_modules|vendor|site-packages) (?:in|available in) this checkout)`)
 	certainDefaultRe = regexp.MustCompile(`(?i)(?:\b(?:[\w.@/-]+ )?(?:library|package|action|framework|middleware|plugin|sdk|dependency|module)(?:'s)? (?:defaults?|behaviou?r|semantics?|contract) (?:is|are) (?:certain|well[- ]documented|documented|known|standard|fixed)\b|\bdefaults? (?:is|are) certain\b|\bi am certain\b|\bcertain(?:ly)? (?:that )?the (?:library|package|action|framework|middleware|plugin|sdk|module)\b|\b(?:the )?(?:library|package|action|framework|middleware|plugin|sdk|module) (?:is )?(?:documented|known) to\b)`)
 )
 
 // UnverifiedLibraryClaim reports whether a finding rests on third-party
 // behaviour the agent did not read: it says so (from memory, could not
-// inspect the pinned release) or asserts a library's defaults as certain.
-// A claim like that was wrong in both audited cases; it is held, not posted,
-// until the agent cites the pinned source or a doc in the repo.
+// inspect the pinned release, "unverified against the pinned version" as
+// the AGENT_CLAIM_EVIDENCE prompt instructs) or asserts a library's
+// defaults as certain. A claim like that was wrong in both audited cases;
+// it is held, not posted. The rule is the agent's own admission: a plain
+// uncited claim with no such wording is not held, since the publisher
+// cannot tell a read default from a remembered one.
 func UnverifiedLibraryClaim(f payload.Finding) bool {
 	text := commentText(f)
 	if c := f.FindingContract; c != nil {
@@ -212,7 +222,7 @@ func UnverifiedLibraryClaim(f payload.Finding) bool {
 
 var (
 	// dropClaimRe is a sentence that says the PR took something away and
-	// quotes it: "dropped the whitelabel precedence (`DBS.logo_image`)",
+	// quotes it: "dropped the branded precedence (`SITE.logo`)",
 	// "no longer honours `current_logo`". The quoted span is the evidence
 	// the claim rests on.
 	dropClaimRe = regexp.MustCompile("(?i)\\b(?:(?:dropped|drops|removed|removes|lost|loses|discards|discarded) (?:the|its|this|that|all|every|each|any|an?)\\b|no longer (?:has|applies|honou?rs|checks|keeps|respects|guards|includes|uses|calls|passes|sets|reads|renders|returns|falls (?:back|through) to)|used to (?:have|apply|honou?r|check|keep|respect|guard|include|use|call|pass|set|read|render|return|fall (?:back|through) to)|previously (?:had|applied|honou?red|checked|kept|respected|guarded|included|used|called|passed|set|read|rendered|returned|fell (?:back|through) to))\\b[^`.]{0,80}?`([^`\\n]+)`")

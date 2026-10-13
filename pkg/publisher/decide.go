@@ -206,7 +206,10 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	r.Findings = withoutGuardedReturns(r, rows, guard)
 	forgetShown(&r)
 	var rep Report
-	held := p.holdFindings(&r, &rep)
+	held := p.holdFindings(&r, &rep, func(id string) bool {
+		row, ok := rows[id]
+		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
+	})
 	now := p.now()
 	var external externalPass
 	if p.Policy.ExternalReconcile {

@@ -202,7 +202,10 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 	}
 
 	var rep Report
-	held := p.holdFindings(&r, &rep)
+	held := p.holdFindings(&r, &rep, func(id string) bool {
+		row, ok := published[id]
+		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
+	})
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy.forRound(r.Previous))
 	r.ShowUnverified = p.Policy.ShowUnverified
 	d := r.diff()
@@ -450,7 +453,10 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 	if !found {
 		return nil
 	}
-	p.holdFindings(&r, nil)
+	p.holdFindings(&r, nil, func(id string) bool {
+		row, ok := rows[id]
+		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
+	})
 	d := r.ledgerTransitions()
 	d.Fixed = fixed
 	r.transitions = &d
@@ -479,13 +485,15 @@ func sameBody(rendered, current string) bool {
 // a held finding leaves r.Findings, is recorded on the report when there is
 // one, and is returned so the ledger policy can keep its row alive. The
 // gate runs after aliasing, so a held finding that restates a posted root
-// keeps that root open instead of reading as fixed.
-func (p *Publisher) holdFindings(r *Round, rep *Report) map[string]payload.Finding {
+// keeps that root open instead of reading as fixed. A finding whose thread
+// is already open on GitHub (threadOpen) has nothing to hold: it stays in
+// the round so the summary lists and counts it as still open.
+func (p *Publisher) holdFindings(r *Round, rep *Report, threadOpen func(id string) bool) map[string]payload.Finding {
 	held := map[string]payload.Finding{}
 	kept := make([]payload.Finding, 0, len(r.Findings))
 	for _, f := range r.Findings {
 		reason := HoldReason(f, p.Policy)
-		if reason == "" {
+		if reason == "" || (threadOpen != nil && threadOpen(f.ID)) {
 			kept = append(kept, f)
 			continue
 		}

@@ -281,9 +281,10 @@ If non-security harm requires another future change that this PR does not introd
 `
 
 // promptClaimEvidence is appended to every review prompt under
-// AGENT_CLAIM_EVIDENCE. The publisher holds what it describes: a claim
-// about a library, framework, action or package that cites nothing, and a
-// regression claim whose quoted code is still in the diff.
+// AGENT_CLAIM_EVIDENCE. The publisher holds the admissions it asks for
+// ("unverified against the pinned version", "from memory") and a
+// regression claim whose quoted code is still in the diff; a plain uncited
+// claim is held only when the agent words it this way.
 const promptClaimEvidence = `
 Evidence rules for two kinds of claim:
 - A claim about how a third-party library, framework, GitHub action, package or runtime behaves (a default, an option, what a call does) must cite where you read it in this checkout: the file under node_modules, vendor, site-packages or the lock file, or a doc in the repo, with its path and line. If you could not read the pinned version, say "unverified against the pinned version" in "uncertainty", keep the importance at LOW, and never write that the behaviour is certain or that you recall it.
