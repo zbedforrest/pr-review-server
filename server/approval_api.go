@@ -64,6 +64,14 @@ func approvalKey(owner, repo string, number int) string {
 func approvalJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
 
 func (s *Server) approvalStore() db.ApprovalStore { store, _ := s.db.(db.ApprovalStore); return store }
+func (s *Server) approvalEnabledFor(user *db.User) bool {
+	if s.cfg == nil {
+		return false
+	}
+	a := s.cfg.ApprovalCandidates()
+	return a.Enabled && a.AllowsUser(user.GitHubUsername)
+}
+
 func (s *Server) approvalAvailable() string {
 	if s.cfg == nil || !s.cfg.ApprovalCandidates().Enabled {
 		return "Approval candidates are disabled"
@@ -83,11 +91,12 @@ func (s *Server) handleApprovalCapabilities(w http.ResponseWriter, r *http.Reque
 		writeV1Error(w, 405, "method_not_allowed", "Use GET")
 		return
 	}
-	if auth.GetCurrentUser(r) == nil {
+	user := auth.GetCurrentUser(r)
+	if user == nil {
 		writeV1Error(w, 401, "unauthorized", "Authentication required")
 		return
 	}
-	enabled := s.cfg != nil && s.cfg.ApprovalCandidates().Enabled
+	enabled := s.approvalEnabledFor(user)
 	writeV1JSON(w, 200, map[string]any{"enabled": enabled, "available": s.approvalAvailable() == "", "unavailable_reason": s.approvalAvailable(), "max_targets": db.MaxApprovalTargetsPerScan, "policy_version": approval.PolicyVersion})
 }
 
@@ -98,7 +107,7 @@ func (s *Server) approvalRequest(w http.ResponseWriter, r *http.Request) (*db.Us
 		writeV1Error(w, 401, "unauthorized", "Authentication required")
 		return nil, false
 	}
-	if s.cfg == nil || !s.cfg.ApprovalCandidates().Enabled {
+	if !s.approvalEnabledFor(user) {
 		writeV1Error(w, 404, "not_found", "Approval candidates are disabled")
 		return nil, false
 	}
