@@ -114,12 +114,11 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 	if model.ExternalCommentID != 0 {
 		updates["external_comment_id"] = model.ExternalCommentID
 	}
-	if model.Line != 0 {
-		updates["line"] = model.Line
-	}
-	if model.MergeBase != "" {
-		updates["merge_base"] = model.MergeBase
-	}
+	// Both follow the caller's row: a finding seen without a line falls back
+	// to its comment or bucket anchor, and a round without a scope leaves no
+	// merge-base for the next scoped round to call drift.
+	updates["line"] = model.Line
+	updates["merge_base"] = model.MergeBase
 	return g.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{Name: "repo_owner"},

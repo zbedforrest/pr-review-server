@@ -54,11 +54,11 @@ func TestMarkedBullet_CutsALongTitleAtASentenceWithTheMarker(t *testing.T) {
 	fd := withContract(f("x", "low", "a.go", 1, "Body."), "production_behavior", "current_impact", long, "")
 	r := Round{Owner: "acme", Repo: "example", HeadSHA: "abc1234"}
 	out := r.markedBullet(fd, "")
-	if !strings.Contains(out, "The handler drops the trailing slash before matching. […] —") {
+	if !strings.Contains(out, "The handler drops the trailing slash before matching. […]"+bulletWhereSep) {
 		t.Fatalf("bullet:\n%s", out)
 	}
 	r.LegacyClamp = true
-	if out := r.markedBullet(fd, ""); !strings.Contains(out, "... —") || strings.Contains(out, "[…]") {
+	if out := r.markedBullet(fd, ""); !strings.Contains(out, "..."+bulletWhereSep) || strings.Contains(out, "[…]") {
 		t.Fatalf("legacy bullet:\n%s", out)
 	}
 }
@@ -80,7 +80,7 @@ func TestRenderInline_RendersAWholeHeadlineOver90Runes(t *testing.T) {
 		t.Fatalf("inline:\n%s", out)
 	}
 	r := Round{Owner: "acme", Repo: "example", HeadSHA: "abc1234"}
-	if bullet := r.markedBullet(fd, ""); !strings.Contains(bullet, head+" —") {
+	if bullet := r.markedBullet(fd, ""); !strings.Contains(bullet, head+bulletWhereSep) {
 		t.Fatalf("bullet:\n%s", bullet)
 	}
 }
@@ -96,7 +96,7 @@ func TestRenderInline_CutHeadlineEndsWithTheMarkerNotDots(t *testing.T) {
 		t.Fatalf("inline:\n%s", out)
 	}
 	r := Round{Owner: "acme", Repo: "example", HeadSHA: "abc1234"}
-	if bullet := r.markedBullet(fd, ""); !strings.Contains(bullet, "[…] —") {
+	if bullet := r.markedBullet(fd, ""); !strings.Contains(bullet, "[…]"+bulletWhereSep) {
 		t.Fatalf("the bullet keeps the contract's cut marker:\n%s", bullet)
 	}
 }

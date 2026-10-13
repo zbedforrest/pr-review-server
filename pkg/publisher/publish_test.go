@@ -127,12 +127,6 @@ func (l *fakeLedger) UpsertPublishedFinding(pf *db.PublishedFinding) error {
 		if cp.ExternalCommentID == 0 {
 			cp.ExternalCommentID = prev.ExternalCommentID
 		}
-		if cp.Line == 0 {
-			cp.Line = prev.Line
-		}
-		if cp.MergeBase == "" {
-			cp.MergeBase = prev.MergeBase
-		}
 		if terminalState(prev.State) {
 			cp.State = prev.State
 		}

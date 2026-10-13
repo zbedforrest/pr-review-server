@@ -162,6 +162,10 @@ type Config struct {
 	PublishFixedByFile       bool
 	PublishLegacyStatusNotes bool
 	PublishLegacyClamp       bool
+	// PublishNoScopeGuard (PUBLISH_SCOPE_GUARD=false) lets fixed, return and
+	// severity transitions through on inherited paths, paths outside the PR
+	// diff and after a merge-base change.
+	PublishNoScopeGuard bool
 	// AutoReviewSyncDebounceSec of 0 admits every push at once.
 	AutoReviewSyncDebounceSec   int
 	AutoReviewSkipUnchangedDiff bool
@@ -413,6 +417,7 @@ func Load() *Config {
 		PublishFixedByFile:         !getEnvBoolOrDefault("PUBLISH_FIXED_NEEDS_HUNK", true),
 		PublishLegacyStatusNotes:   !getEnvBoolOrDefault("PUBLISH_STATUS_NOTES_V2", true),
 		PublishLegacyClamp:         !getEnvBoolOrDefault("PUBLISH_RENDER_CLAMP_V2", true),
+		PublishNoScopeGuard:        !getEnvBoolOrDefault("PUBLISH_SCOPE_GUARD", true),
 		PublishLegacyTitles:        !getEnvBoolOrDefault("PUBLISH_RENDER_V2", true),
 		PublishRepublishSameCommit: !getEnvBoolOrDefault("PUBLISH_SAME_COMMIT_GUARD", true),
 		PublishSkipSummaryRefresh:  !getEnvBoolOrDefault("PUBLISH_REFRESH_SUMMARY", true),

@@ -263,6 +263,9 @@ func (r Round) bullet(f payload.Finding) string {
 	return r.markedBullet(f, "")
 }
 
+// bulletWhereSep joins a bullet's text to its file link.
+const bulletWhereSep = " \u2014 "
+
 // markedBullet is a bullet with a bold status marker between the severity and
 // the text; an empty marker renders a plain bullet.
 func (r Round) markedBullet(f payload.Finding, marker string) string {
@@ -274,7 +277,7 @@ func (r Round) markedBullet(f payload.Finding, marker string) string {
 		marker = "**" + marker + "** "
 	}
 	text := r.clampBullet(summaryText(f, r.LegacyTitles))
-	return fmt.Sprintf("- %s %s%s — [`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, where, r.findingLink(f))
+	return fmt.Sprintf("- %s %s%s%s[`%s`](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), marker, text, bulletWhereSep, where, r.findingLink(f))
 }
 
 // bulletMaxRunes bounds one summary bullet's text.
@@ -542,19 +545,36 @@ func headlineWith(f payload.Finding, legacy, legacyClamp bool) string {
 		return legacyHeadline(f)
 	}
 	title := titleSource(f)
+	headlineMax, titleMax := headlineMaxRunes, commentTitleMaxRunes
+	if legacyClamp {
+		headlineMax, titleMax = legacyHeadlineMaxRunes, legacyCommentTitleMaxRunes
+	}
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
 		if label, ok := kindLabels[c.FindingKind]; ok {
-			return label + " · " + clauseHeadlineWith(title, headlineMaxRunes, legacyClamp)
+			return label + " · " + clauseHeadlineWith(title, headlineMax, legacyClamp)
 		}
-		return clauseHeadlineWith(title, headlineMaxRunes, legacyClamp)
+		return clauseHeadlineWith(title, headlineMax, legacyClamp)
 	}
-	return clauseHeadlineWith(title, commentTitleMaxRunes, legacyClamp)
+	return clauseHeadlineWith(title, titleMax, legacyClamp)
 }
 
 // commentTitleMaxRunes bounds a title taken from the comment's first
 // sentence; headlineMaxRunes a contract headline, which the contract itself
 // keeps within this length, so a headline the agent wrote renders whole.
-const commentTitleMaxRunes = 140
+// The legacy limits are what the renderer applied before the clamp with a
+// marker (PUBLISH_RENDER_CLAMP_V2=false).
+const (
+	commentTitleMaxRunes       = 140
+	legacyCommentTitleMaxRunes = 100
+	legacyHeadlineMaxRunes     = 110
+)
+
+func titleLimit(current, legacy int, legacyClamp bool) int {
+	if legacyClamp {
+		return legacy
+	}
+	return current
+}
 
 // titleIsWholeFirstSentence reports whether a comment-sourced title fits the
 // limit headline applied to it; a cut title leaves the sentence to the fold.
@@ -568,7 +588,7 @@ func legacyHeadline(f payload.Finding) string {
 		impact := strings.TrimSpace(c.Headline)
 		if impact == "" {
 			full := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
-			impact = clauseHeadline(full, headlineMaxRunes)
+			impact = clauseHeadline(full, legacyHeadlineMaxRunes)
 			if impact != full && hasLabel {
 				return label
 			}
@@ -769,14 +789,14 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		// Without an impact sentence the headline came from the comment's first
 		// sentence; the rest of the comment is the only explanation, so show it.
 		rest := reasoning
-		if legacy || (titleFromComment(f) && titleIsWholeFirstSentence(f, commentTitleMaxRunes)) {
+		if legacy || (titleFromComment(f) && titleIsWholeFirstSentence(f, titleLimit(commentTitleMaxRunes, legacyCommentTitleMaxRunes, legacyClamp))) {
 			rest = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
 		}
 		if rest != "" {
 			b.WriteString("\n" + rest + "\n")
 		}
 		reasoning = ""
-	} else if !legacy && titleFromComment(f) && titleIsWholeFirstSentence(f, headlineMaxRunes) {
+	} else if !legacy && titleFromComment(f) && titleIsWholeFirstSentence(f, titleLimit(headlineMaxRunes, legacyHeadlineMaxRunes, legacyClamp)) {
 		reasoning = strings.TrimSpace(strings.TrimPrefix(reasoning, firstSentence(comment)))
 	}
 

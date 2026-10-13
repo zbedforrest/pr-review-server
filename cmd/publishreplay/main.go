@@ -48,6 +48,7 @@ func main() {
 	fixedByFile := flag.Bool("fixed-by-file", false, "judge an absent finding fixed on any change to its file, not only a hunk near its lines (PUBLISH_FIXED_NEEDS_HUNK=false)")
 	legacyStatusNotes := flag.Bool("legacy-status-notes", false, "post a return and a severity change as two notes and reopen on any text match (PUBLISH_STATUS_NOTES_V2=false)")
 	legacyClamp := flag.Bool("legacy-clamp", false, "cut bullets and headlines at a word boundary with \"...\" (PUBLISH_RENDER_CLAMP_V2=false)")
+	noScopeGuard := flag.Bool("no-scope-guard", false, "let fixed, return and severity transitions through on inherited paths, outside the PR diff and across a merge-base change (PUBLISH_SCOPE_GUARD=false)")
 	flag.Parse()
 	if *dumpsDir == "" || *sidecarsDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv]")
@@ -85,6 +86,7 @@ func main() {
 	opts.Policy.FixedByFile = *fixedByFile
 	opts.Policy.LegacyStatusNotes = *legacyStatusNotes
 	opts.Policy.LegacyClamp = *legacyClamp
+	opts.Policy.NoScopeGuard = *noScopeGuard
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
 			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)

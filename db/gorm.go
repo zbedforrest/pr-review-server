@@ -197,6 +197,8 @@ var publishedFindingColumns = []struct {
 	{"muted", "Muted", "boolean NOT NULL DEFAULT false"},
 	{"mute_lifted_at", "MuteLiftedAt", "timestamptz"},
 	{"external_comment_id", "ExternalCommentID", "bigint NOT NULL DEFAULT 0"},
+	{"line", "Line", "integer NOT NULL DEFAULT 0"},
+	{"merge_base", "MergeBase", "varchar(40) NOT NULL DEFAULT ''"},
 }
 
 var greptileStatusColumns = []struct {

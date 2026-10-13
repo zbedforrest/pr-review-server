@@ -72,6 +72,10 @@ type Policy struct {
 	// LegacyClamp restores the pre-W6 cuts (PUBLISH_RENDER_CLAMP_V2 set to
 	// false): bullets and headlines cut at a word boundary with "...".
 	LegacyClamp bool
+	// NoScopeGuard turns the review-scope guard off (PUBLISH_SCOPE_GUARD set
+	// to false): inherited paths, paths outside the PR diff and merge-base
+	// drift no longer block fixed, return and severity transitions.
+	NoScopeGuard bool
 }
 
 // PolicyV2Env is the kill switch for the ledger decision table: "false", "0",

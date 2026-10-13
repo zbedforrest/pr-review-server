@@ -254,8 +254,22 @@ func TestLedger_InheritedPathMakesNoTransition(t *testing.T) {
 		publishThreads(t, gh, ledger, singleRound("sha-1", file, 40, "critical", text))
 		gone := absentRound("sha-2", file, 40)
 		gone.Changes, gone.Scope = touched, inherited
-		if rep := publishThreads(t, gh, ledger, gone); rep.Fixed != 0 || rep.StillOpen != 1 || len(gh.repliesTo(1001)) != 0 {
+		if rep := publishThreads(t, gh, ledger, gone); rep.Fixed != 0 || rep.StillOpen != 0 || len(gh.repliesTo(1001)) != 0 {
 			t.Fatalf("report = %+v replies=%q", rep, gh.repliesTo(1001))
+		}
+		if ledger.rows[fid(file, 40, text)].State != db.PublishedStateOpen {
+			t.Fatalf("row = %+v", ledger.rows[fid(file, 40, text)])
+		}
+	})
+	t.Run("kill switch", func(t *testing.T) {
+		gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+		publishThreads(t, gh, ledger, singleRound("sha-1", file, 40, "critical", text))
+		gone := absentRound("sha-2", file, 40)
+		gone.Changes, gone.Scope = touched, inherited
+		pol := testPolicy()
+		pol.NoScopeGuard = true
+		if rep := publishThreadsWith(t, gh, ledger, gone, pol); rep.Fixed != 1 {
+			t.Fatalf("report = %+v", rep)
 		}
 	})
 	t.Run("no return", func(t *testing.T) {
@@ -286,21 +300,48 @@ func TestLedger_InheritedPathMakesNoTransition(t *testing.T) {
 	})
 }
 
-func TestLedger_PathOutsideThePRDiffMakesNoTransition(t *testing.T) {
+func TestLedger_PathOutsideThePRDiffMakesNoReturn(t *testing.T) {
 	file := "lib/logo.ts"
 	text := "The compact logo helper ignores the white-label precedence and always returns the default asset."
-	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
-	publishThreads(t, gh, ledger, singleRound("sha-1", file, 40, "critical", text))
-	gone := absentRound("sha-2", file, 40)
-	gone.Changes, gone.DiffFiles = hunked(file, Hunk{38, 6, 38, 6}), map[string]bool{"other.ts": true}
-	if rep := publishThreads(t, gh, ledger, gone); rep.Fixed != 0 || rep.StillOpen != 1 {
-		t.Fatalf("report = %+v", rep)
-	}
-	gone.DiffFiles = map[string]bool{file: true}
-	gone.HeadSHA = "sha-3"
-	if rep := publishThreads(t, gh, ledger, gone); rep.Fixed != 1 {
-		t.Fatalf("report = %+v", rep)
-	}
+	scoped := &payload.ReviewScope{MergeBase: "mb-1"}
+	touched := hunked(file, Hunk{38, 6, 38, 6})
+
+	t.Run("a hunk at the cited lines still fixes", func(t *testing.T) {
+		gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+		publishThreads(t, gh, ledger, singleRound("sha-1", file, 40, "critical", text))
+		gone := absentRound("sha-2", file, 40)
+		gone.Changes, gone.Scope, gone.DiffFiles = touched, scoped, map[string]bool{"other.ts": true}
+		if rep := publishThreads(t, gh, ledger, gone); rep.Fixed != 1 {
+			t.Fatalf("report = %+v", rep)
+		}
+	})
+	t.Run("no return or severity change", func(t *testing.T) {
+		gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+		publishThreads(t, gh, ledger, singleRound("sha-1", file, 40, "critical", text))
+		gone := absentRound("sha-2", file, 40)
+		gone.Changes, gone.Scope = touched, scoped
+		publishThreads(t, gh, ledger, gone)
+		back := singleRound("sha-3", file, 40, "low", text)
+		back.Changes, back.Scope, back.DiffFiles = touched, scoped, map[string]bool{"other.ts": true}
+		if rep := publishThreads(t, gh, ledger, back); rep.Reopened != 0 || rep.InlinePosted != 0 || len(gh.repliesTo(1001)) != 1 {
+			t.Fatalf("report = %+v replies=%q", rep, gh.repliesTo(1001))
+		}
+		if row := ledger.rows[fid(file, 40, text)]; row.State != db.PublishedStateFixed || row.Severity != "critical" {
+			t.Fatalf("row = %+v", row)
+		}
+	})
+	t.Run("the diff listing alone guards nothing", func(t *testing.T) {
+		gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+		publishThreads(t, gh, ledger, singleRound("sha-1", file, 40, "critical", text))
+		gone := absentRound("sha-2", file, 40)
+		gone.Changes, gone.Scope = touched, scoped
+		publishThreads(t, gh, ledger, gone)
+		back := singleRound("sha-3", file, 40, "critical", text)
+		back.Changes, back.DiffFiles = touched, map[string]bool{"other.ts": true}
+		if rep := publishThreads(t, gh, ledger, back); rep.Reopened != 1 {
+			t.Fatalf("report = %+v", rep)
+		}
+	})
 }
 
 func TestLedger_MergeBaseDriftMakesNoTransition(t *testing.T) {
@@ -314,7 +355,7 @@ func TestLedger_MergeBaseDriftMakesNoTransition(t *testing.T) {
 
 	drifted := absentRound("sha-2", previewFile, 100)
 	drifted.Changes, drifted.Scope = hunked(previewFile, Hunk{97, 9, 97, 7}), &payload.ReviewScope{MergeBase: "mb-2"}
-	if rep := publishThreads(t, gh, ledger, drifted); rep.Fixed != 0 || rep.StillOpen != 1 || len(gh.repliesTo(1001)) != 0 {
+	if rep := publishThreads(t, gh, ledger, drifted); rep.Fixed != 0 || rep.StillOpen != 0 || len(gh.repliesTo(1001)) != 0 {
 		t.Fatalf("a review against another base proves nothing: %+v", rep)
 	}
 	if sum := ledger.get(db.PublishedKindSummary, "summary"); sum.MergeBase != "mb-2" {
@@ -325,5 +366,17 @@ func TestLedger_MergeBaseDriftMakesNoTransition(t *testing.T) {
 	settled.Changes, settled.Scope = hunked(previewFile, Hunk{97, 9, 97, 7}), &payload.ReviewScope{MergeBase: "mb-2"}
 	if rep := publishThreads(t, gh, ledger, settled); rep.Fixed != 1 {
 		t.Fatalf("the next review on the same base fixes: %+v", rep)
+	}
+
+	unscoped := singleRound("sha-4", previewFile, 100, "medium", previewText)
+	unscoped.Changes = hunked(previewFile, Hunk{97, 9, 97, 7})
+	publishThreads(t, gh, ledger, unscoped)
+	if sum := ledger.get(db.PublishedKindSummary, "summary"); sum.MergeBase != "" {
+		t.Fatalf("a round without a scope leaves no merge-base: %+v", sum)
+	}
+	rebased := absentRound("sha-5", previewFile, 100)
+	rebased.Changes, rebased.Scope = hunked(previewFile, Hunk{97, 9, 97, 7}), &payload.ReviewScope{MergeBase: "mb-3"}
+	if rep := publishThreads(t, gh, ledger, rebased); rep.Fixed != 1 {
+		t.Fatalf("no drift against a round that recorded no base: %+v", rep)
 	}
 }

@@ -302,6 +302,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 		pol.FixedByFile = p.cfg.PublishFixedByFile
 		pol.LegacyStatusNotes = p.cfg.PublishLegacyStatusNotes
 		pol.LegacyClamp = p.cfg.PublishLegacyClamp
+		pol.NoScopeGuard = p.cfg.PublishNoScopeGuard
 	}
 	return pol
 }
@@ -386,7 +387,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: list review comments: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return nil, publicationFailedPrefix + "list review comments"
 	}
-	patches, err := p.ghClientConcrete.GetPRFilePatches(ctx, pr.Owner, pr.Repo, pr.Number)
+	patches, files, err := p.ghClientConcrete.GetPRFilePatchesAndNames(ctx, pr.Owner, pr.Repo, pr.Number)
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: list file patches: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return nil, publicationFailedPrefix + "list file patches"
@@ -395,8 +396,8 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	pol := p.publishPolicy()
 	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
 	round.Changes = p.changeLookup(ctx, pr)
-	round.DiffFiles = make(map[string]bool, len(patches))
-	for file := range patches {
+	round.DiffFiles = make(map[string]bool, len(files))
+	for _, file := range files {
 		round.DiffFiles[file] = true
 	}
 	round.SettleFooter = p.settleFooter()

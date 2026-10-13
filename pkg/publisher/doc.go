@@ -59,15 +59,18 @@
 // subjects is matched as before. Policy.LegacyStatusNotes
 // (PUBLISH_STATUS_NOTES_V2=false) reopens on any match.
 //
-// Scope. A finding on a path the review scope (Round.Scope, from the
-// payload's scope) marks inherited from the base branch, or outside the PR
-// diff GitHub lists (Round.DiffFiles when the caller had it), makes no
-// transition: an absent row on it is not fixed, a present finding on it
-// does not reopen a fixed row (the finding is dropped for the round) and
-// its severity stays the row's. The summary row remembers the merge-base
-// the last published review diffed against; a review against another base
-// is base drift, and that round makes none of those transitions for any
-// row. Nothing is posted in any of these cases.
+// Scope. With a review scope on the round (Round.Scope, from the payload's
+// scope) and Policy.NoScopeGuard off (PUBLISH_SCOPE_GUARD), a finding on a
+// path the scope marks inherited from the base branch makes no transition:
+// an absent row on it is neither fixed nor counted still open, a present
+// finding on it does not reopen a fixed row (the finding is dropped for the
+// round) and its severity stays the row's. A path outside the PR diff
+// GitHub lists (Round.DiffFiles) makes no return and no severity change but
+// may still be fixed by the hunk rule. The summary row remembers the
+// merge-base the last published review diffed against (empty after a round
+// without a scope); a review against another base is base drift, and that
+// round makes none of those transitions for any row. Nothing is posted in
+// any of these cases.
 //
 // Already published. Select never offers a root for a finding whose row
 // has a comment id, whatever the row's state; a row without a comment (a

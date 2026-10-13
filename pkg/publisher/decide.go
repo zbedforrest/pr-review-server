@@ -123,20 +123,24 @@ func renderNotes(notes []threadNote, head string, legacy bool) []threadNote {
 
 // transitionGuard names the files no fixed, return or severity transition
 // may come from this round: paths the review scope marks inherited from the
-// base branch, paths outside the PR diff GitHub lists, and every path when
-// the review's merge-base moved since the last published round (base drift,
-// which changes what the agent read without any change to the PR).
+// base branch and every path when the review's merge-base moved since the
+// last published round (base drift, which changes what the agent read
+// without any change to the PR). A path outside the PR diff GitHub lists
+// blocks a return and a severity change but not a fix: a change at the cited
+// lines is evidence whether or not the file is still in the diff. Without a
+// review scope, or with Policy.NoScopeGuard, nothing is guarded.
 type transitionGuard struct {
 	inherited map[string]bool
 	diff      map[string]bool
 	drift     bool
 }
 
-func newTransitionGuard(r Round, summaryRow *db.PublishedFinding) transitionGuard {
-	g := transitionGuard{diff: r.DiffFiles}
-	if r.Scope == nil {
+func newTransitionGuard(r Round, summaryRow *db.PublishedFinding, off bool) transitionGuard {
+	var g transitionGuard
+	if off || r.Scope == nil {
 		return g
 	}
+	g.diff = r.DiffFiles
 	if len(r.Scope.InheritedPaths) > 0 {
 		g.inherited = make(map[string]bool, len(r.Scope.InheritedPaths))
 		for _, path := range r.Scope.InheritedPaths {
@@ -150,7 +154,11 @@ func newTransitionGuard(r Round, summaryRow *db.PublishedFinding) transitionGuar
 }
 
 func (g transitionGuard) blocks(file string) bool {
-	return g.drift || g.inherited[file] || (g.diff != nil && !g.diff[file])
+	return g.blocksFix(file) || (g.diff != nil && !g.diff[file])
+}
+
+func (g transitionGuard) blocksFix(file string) bool {
+	return g.drift || g.inherited[file]
 }
 
 // publishLedger is the ledger decision table: identity first, then one
@@ -177,7 +185,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	r.ShowUnverified = p.Policy.ShowUnverified
 	r.LegacyClamp = p.Policy.LegacyClamp
 	threads := newThreadIndex(p.GH, p.Policy, r.Owner, r.Repo, r.Number)
-	guard := newTransitionGuard(r, summaryRow)
+	guard := newTransitionGuard(r, summaryRow, p.Policy.NoScopeGuard)
 	if guard.drift {
 		log.Printf("[PUBLISH] %s/%s#%d: merge-base moved from %s to %s; no fixed, return or severity transition this round", r.Owner, r.Repo, r.Number, shortSHA(summaryRow.MergeBase), shortSHA(r.Scope.MergeBase))
 	}
@@ -276,7 +284,12 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			rep.Hygiene.noteWritten(f, row)
 		case row.State == db.PublishedStateOpen:
 			file, _ := payload.FingerprintParts(id)
-			if cs, fixed := r.fixedSince(row, p.Policy.FixedByFile); fixed && !guard.blocks(file) {
+			if guard.blocksFix(file) {
+				// The round cannot tell whether the point is fixed, so it is
+				// neither fixed nor counted as still open.
+				continue
+			}
+			if cs, fixed := r.fixedSince(row, p.Policy.FixedByFile); fixed {
 				d.Fixed++
 				next := *row
 				next.State = db.PublishedStateFixed
