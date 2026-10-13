@@ -86,6 +86,8 @@ func approvalAPICall(s *Server, user *db.User, method, path, body, key string) *
 	switch {
 	case path == "/api/v1/approval-capabilities":
 		s.handleApprovalCapabilities(w, r)
+	case path == "/api/v1/approval-candidates/revalidate":
+		s.handleApprovalRevalidate(w, r)
 	case strings.HasPrefix(path, "/api/v1/approval-scans/"):
 		s.handleApprovalScanByID(w, r)
 	case strings.HasPrefix(path, "/api/v1/approval-scans"):
@@ -316,5 +318,7 @@ func TestApprovalAPIAdmitsOnlyAllowlistedUsers(t *testing.T) {
 		require.Equal(t, 404, approvalAPICall(s, other, "GET", path, "", "").Code, path)
 	}
 	require.Equal(t, 404, approvalAPICall(s, other, "POST", "/api/v1/approval-candidates/revalidate", `{}`, "").Code)
-	require.Contains(t, approvalAPICall(s, other, "GET", "/api/v1/approval-capabilities", "", "").Body.String(), `"enabled":false`)
+	hidden := approvalAPICall(s, other, "GET", "/api/v1/approval-capabilities", "", "").Body.String()
+	require.Contains(t, hidden, `"enabled":false`)
+	require.Contains(t, hidden, `"available":false`)
 }

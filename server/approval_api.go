@@ -97,7 +97,11 @@ func (s *Server) handleApprovalCapabilities(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	enabled := s.approvalEnabledFor(user)
-	writeV1JSON(w, 200, map[string]any{"enabled": enabled, "available": s.approvalAvailable() == "", "unavailable_reason": s.approvalAvailable(), "max_targets": db.MaxApprovalTargetsPerScan, "policy_version": approval.PolicyVersion})
+	reason := "Approval candidates are disabled"
+	if enabled {
+		reason = s.approvalAvailable()
+	}
+	writeV1JSON(w, 200, map[string]any{"enabled": enabled, "available": reason == "", "unavailable_reason": reason, "max_targets": db.MaxApprovalTargetsPerScan, "policy_version": approval.PolicyVersion})
 }
 
 func (s *Server) approvalRequest(w http.ResponseWriter, r *http.Request) (*db.User, bool) {
