@@ -155,6 +155,12 @@ func buildCase(o BuildOptions, apr auditPR, ex examples) (*Case, ManifestEntry, 
 				}
 				if err == nil && known {
 					c.Compares[compareKey(p.SHA, rd.SHA)] = cmp.Files
+					if cmp.Hunks != nil {
+						if c.CompareHunks == nil {
+							c.CompareHunks = map[string]map[string][][4]int{}
+						}
+						c.CompareHunks[compareKey(p.SHA, rd.SHA)] = cmp.Hunks
+					}
 				}
 			}
 			if files, ok := c.Compares[compareKey(prev.SHA, rd.SHA)]; ok {

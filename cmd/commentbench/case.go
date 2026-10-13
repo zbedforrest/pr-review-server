@@ -54,7 +54,10 @@ type Case struct {
 	Dump     replaykit.PRDump           `json:"dump"`
 	Sidecars map[string]json.RawMessage `json:"sidecars"`           // sha7 -> review payload
 	Compares map[string][]string        `json:"compares,omitempty"` // "base7...head7" -> changed files
-	Rounds   []RoundInfo                `json:"rounds"`
+	// CompareHunks holds each compare's hunks per file when the cache had
+	// them; a case built before the cache carried hunks runs the file rule.
+	CompareHunks map[string]map[string][][4]int `json:"compare_hunks,omitempty"`
+	Rounds       []RoundInfo                    `json:"rounds"`
 
 	// Recorded is what the reply model decided for each author comment id, as
 	// the reply ledger recorded it; the stub responder replays it.
