@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCreateReviewSendsDraftCommentsAndResolvesIDs(t *testing.T) {
@@ -233,7 +234,7 @@ func TestListCommentReactionsPagesAndMapsUsers(t *testing.T) {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		if r.URL.Query().Get("page") == "2" {
-			fmt.Fprint(w, `[{"id": 3, "content": "-1", "user": {"id": 42, "login": "author"}}]`)
+			fmt.Fprint(w, `[{"id": 3, "content": "-1", "user": {"id": 42, "login": "author"}, "created_at": "2026-09-08T12:01:00Z"}]`)
 			return
 		}
 		w.Header().Set("Link", `<`+"http://"+r.Host+`/repos/acme/example/pulls/comments/30/reactions?page=2>; rel="next"`)
@@ -244,7 +245,25 @@ func TestListCommentReactionsPagesAndMapsUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 || got[0] != (CommentReaction{UserID: 7, Content: "+1"}) || got[2] != (CommentReaction{UserID: 42, Content: "-1"}) {
+	at := time.Date(2026, 9, 8, 12, 1, 0, 0, time.UTC)
+	if len(got) != 3 || got[0] != (CommentReaction{ID: 1, UserID: 7, User: "peer", Content: "+1"}) || got[2] != (CommentReaction{ID: 3, UserID: 42, User: "author", Content: "-1", CreatedAt: at}) {
+		t.Fatalf("reactions = %+v", got)
+	}
+}
+
+func TestListIssueCommentReactionsFlagsBots(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/acme/example/issues/comments/40/reactions" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		fmt.Fprint(w, `[{"id": 5, "content": "eyes", "user": {"id": 9, "login": "prism[bot]", "type": "Bot"}}, {"id": 6, "content": "-1", "user": {"id": 42, "login": "author", "type": "User"}}]`)
+	}))
+	defer ts.Close()
+	got, err := NewTestClient(ts.URL, "tester").ListIssueCommentReactions(context.Background(), "acme", "example", 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !got[0].IsBot || got[1].IsBot || got[1] != (CommentReaction{ID: 6, UserID: 42, User: "author", Content: "-1"}) {
 		t.Fatalf("reactions = %+v", got)
 	}
 }
