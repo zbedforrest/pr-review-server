@@ -113,6 +113,8 @@ func Guard(d Draft, members []Member, opts Options) Result {
 		}
 		if f.FindingContract == nil {
 			f.FindingContract = best.Finding.FindingContract
+		} else if f.FindingContract.PriorID == "" {
+			carryPriorRefs(f.FindingContract, srcs)
 		}
 		f.Sources = memberIDs(srcs)
 		for _, m := range srcs {
@@ -243,6 +245,39 @@ func citesFile(srcs []Member, file string) bool {
 		}
 	}
 	return false
+}
+
+// carryPriorRefs keeps the prior_id a member's contract named when the
+// authored contract has none: the author never saw the earlier findings,
+// the runs did. The first member with a prior wins; relates_to is merged
+// and never repeats the prior itself.
+func carryPriorRefs(c *types.FindingContract, ms []Member) {
+	for _, m := range ms {
+		if mc := m.Finding.FindingContract; mc != nil && mc.PriorID != "" {
+			c.PriorID = mc.PriorID
+			break
+		}
+	}
+	seen := map[string]bool{c.PriorID: true}
+	var related []string
+	for _, r := range c.RelatesTo {
+		if !seen[r] {
+			seen[r] = true
+			related = append(related, r)
+		}
+	}
+	for _, m := range ms {
+		if m.Finding.FindingContract == nil {
+			continue
+		}
+		for _, r := range m.Finding.FindingContract.RelatesTo {
+			if !seen[r] {
+				seen[r] = true
+				related = append(related, r)
+			}
+		}
+	}
+	c.RelatesTo = related
 }
 
 // bestMember is the highest-severity member, then the one with the longest

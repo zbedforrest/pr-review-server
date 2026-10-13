@@ -172,3 +172,19 @@ func TestNormalizeFindingContractKeepsAShortHeadlineAndDropsABadOne(t *testing.T
 		}
 	}
 }
+
+func TestNormalizeFindingContract_PriorReferences(t *testing.T) {
+	c := &FindingContract{PriorID: " P-1 ", RelatesTo: []string{" P-2 ", "P-2", "", "P-1", "P-3\n", "P-\x004", "P-4"}}
+	NormalizeFindingContract(c)
+	if c.PriorID != "P-1" {
+		t.Fatalf("prior id = %q", c.PriorID)
+	}
+	if want := []string{"P-2", "P-3", "P-4"}; strings.Join(c.RelatesTo, ",") != strings.Join(want, ",") {
+		t.Fatalf("relates_to = %v, want %v", c.RelatesTo, want)
+	}
+	long := &FindingContract{PriorID: strings.Repeat("x", priorRefMaxRunes+1)}
+	NormalizeFindingContract(long)
+	if long.PriorID != "" {
+		t.Fatal("an over-long prior id is dropped")
+	}
+}

@@ -918,3 +918,12 @@ func TestBuild_CountsExcludeNarrativeEntries(t *testing.T) {
 		t.Fatalf("SUMMARY and CHECK entries are not claims: %+v", pl.Counts)
 	}
 }
+
+func TestCloneFindingContract_CopiesRelatesTo(t *testing.T) {
+	src := &types.FindingContract{PriorID: "p", RelatesTo: []string{"a", "b"}}
+	got := cloneFindingContract(src)
+	got.RelatesTo[0] = "changed"
+	if src.RelatesTo[0] != "a" || got.PriorID != "p" {
+		t.Fatalf("clone must copy the slice and the prior id: src=%v got=%+v", src.RelatesTo, got)
+	}
+}

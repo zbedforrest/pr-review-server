@@ -109,6 +109,26 @@ func TestGuardCapsSeverityRelocatesAndInheritsContract(t *testing.T) {
 	}
 }
 
+func TestGuardCarriesPriorReferencesIntoTheAuthoredContract(t *testing.T) {
+	src := lc("A", "a.go", 10, "MEDIUM", "real")
+	src.FindingContract = &types.FindingContract{SchemaVersion: 1, PriorID: "a.go:1:prior", RelatesTo: []string{"b.go:0:other"}}
+	other := lc("B", "a.go", 12, "LOW", "same point")
+	other.FindingContract = &types.FindingContract{SchemaVersion: 1, RelatesTo: []string{"a.go:1:prior", "c.go:0:third"}}
+	ms := Members([][]types.LineComment{{src}, {other}})
+	d := Draft{Findings: []types.LineComment{
+		{FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "merged", Sources: []string{"r1:A", "r2:B"},
+			FindingContract: &types.FindingContract{SchemaVersion: 1, Headline: "Authored"}},
+	}}
+	res := Guard(d, ms, Options{})
+	c := res.Findings[0].FindingContract
+	if c.Headline != "Authored" || c.PriorID != "a.go:1:prior" {
+		t.Fatalf("the authored contract keeps its text and takes the members' prior: %+v", c)
+	}
+	if got := strings.Join(c.RelatesTo, ","); got != "b.go:0:other,c.go:0:third" {
+		t.Fatalf("relates_to merged without the prior itself: %q", got)
+	}
+}
+
 func TestGuardTranslatesPriorityIDsAndForcesRequestChangesOnCritical(t *testing.T) {
 	ms := Members([][]types.LineComment{{lc("A", "a.go", 10, "CRITICAL", "bad"), lc("B", "b.go", 3, "LOW", "nit")}})
 	d := Draft{
