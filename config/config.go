@@ -390,7 +390,7 @@ func Load() *Config {
 		BugMemoryPath:              os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:            os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:             os.Getenv("REQUIRED_CHECKS") == "true",
-		AgentPriorFindings:         os.Getenv("AGENT_PRIOR_FINDINGS") == "true",
+		AgentPriorFindings:         getEnvBoolOrDefault("AGENT_PRIOR_FINDINGS", false),
 		PublishNoPriorIDAlias:      !getEnvBoolOrDefault("PUBLISH_PRIOR_ID_ALIAS", true),
 		PublishLegacyTitles:        !getEnvBoolOrDefault("PUBLISH_RENDER_V2", true),
 		PublishRepublishSameCommit: !getEnvBoolOrDefault("PUBLISH_SAME_COMMIT_GUARD", true),

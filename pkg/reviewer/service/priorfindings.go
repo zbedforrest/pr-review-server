@@ -89,6 +89,12 @@ func visiblePriors(priors []PriorFinding) []PriorFinding {
 	return priors
 }
 
+// VisiblePriorFindings is the prefix of priors the prompt listed, the set a
+// label can resolve to.
+func VisiblePriorFindings(priors []PriorFinding) []PriorFinding {
+	return visiblePriors(priors)
+}
+
 func priorFindingLine(p PriorFinding) string {
 	state := p.State
 	if state == "" {

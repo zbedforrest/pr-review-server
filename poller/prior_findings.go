@@ -75,7 +75,7 @@ func PriorFindingsFromLedger(rows []db.PublishedFinding, replies []db.PublishedR
 		switch {
 		case bucket > 0:
 			prior.LineFrom, prior.LineTo = bucket*payload.LineBucket, bucket*payload.LineBucket+payload.LineBucket-1
-		case row.Kind == db.PublishedKindFinding && row.CommentID != 0:
+		case row.CommentID != 0:
 			// An inline comment in bucket 0 sat on a line, not the whole file.
 			prior.LineFrom, prior.LineTo = 1, payload.LineBucket-1
 		}

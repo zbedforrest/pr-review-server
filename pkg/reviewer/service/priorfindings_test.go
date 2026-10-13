@@ -225,3 +225,19 @@ func TestResolvePriorRefs_AnInactiveEntryHoldsNoClaim(t *testing.T) {
 		t.Fatalf("resolution = %+v", res)
 	}
 }
+
+func TestMergeFindings_AFoldedDuplicateKeepsItsPriorOnTheSurvivor(t *testing.T) {
+	survivor := types.LineComment{FilePath: "a.go", LineNumber: 10, Importance: "MEDIUM", CommentBody: "The handler writes to a nil map.", FindingContract: &types.FindingContract{SchemaVersion: 1, RelatesTo: []string{"b.go:0:other"}}}
+	dup := types.LineComment{FilePath: "a.go", LineNumber: 12, Importance: "LOW", CommentBody: "The handler writes to a nil map on the retry path.", FindingContract: &types.FindingContract{SchemaVersion: 1, PriorID: "a.go:1:prior", RelatesTo: []string{"c.go:0:third", "b.go:0:other"}}}
+	merged, records := MergeFindingsWithRecords(FindingSet{Comments: []types.LineComment{survivor, dup}})
+	if len(merged) != 1 || len(records) != 1 {
+		t.Fatalf("merged=%d records=%d", len(merged), len(records))
+	}
+	c := merged[0].FindingContract
+	if c.PriorID != "a.go:1:prior" {
+		t.Fatalf("survivor takes the folded prior: %+v", c)
+	}
+	if got := strings.Join(c.RelatesTo, ","); got != "b.go:0:other,c.go:0:third" {
+		t.Fatalf("relates_to merged without repeats: %q", got)
+	}
+}

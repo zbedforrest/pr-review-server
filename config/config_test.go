@@ -41,9 +41,13 @@ func TestLoad_PriorFindingsFlags(t *testing.T) {
 	if cfg := Load(); !cfg.AgentPriorFindings || !cfg.PublishNoPriorIDAlias {
 		t.Fatalf("flags set: got %+v %+v", cfg.AgentPriorFindings, cfg.PublishNoPriorIDAlias)
 	}
-	t.Setenv("AGENT_PRIOR_FINDINGS", "1")
+	t.Setenv("AGENT_PRIOR_FINDINGS", " true ")
+	if !Load().AgentPriorFindings {
+		t.Fatal("the flag is parsed like the publish switches")
+	}
+	t.Setenv("AGENT_PRIOR_FINDINGS", "yes")
 	if Load().AgentPriorFindings {
-		t.Fatal("only the literal true enables the prompt block")
+		t.Fatal("an unparseable value keeps the default")
 	}
 }
 
