@@ -656,8 +656,8 @@ func impactTitle(c *types.FindingContract) string {
 // statement: no headline, and an impact the contract asserts exists today.
 func titleFromImpact(f payload.Finding) bool {
 	c := f.FindingContract
-	return c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.Headline) == "" &&
-		c.Materiality == "current_impact" && strings.TrimSpace(c.CurrentImpact) != ""
+	return c != nil && f.FindingContractStatus == "valid" && ContractSentence(c.Headline) == "" &&
+		c.Materiality == "current_impact" && impactTitle(c) != ""
 }
 
 // impactTitleMaxRunes bounds a title that is the effect sentence itself: the
@@ -675,7 +675,7 @@ func titleFromComment(f payload.Finding) bool {
 	if c == nil || f.FindingContractStatus != "valid" {
 		return true
 	}
-	return ContractSentence(c.Headline) == "" && (c.Materiality != "current_impact" || strings.TrimSuffix(ContractSentence(c.CurrentImpact), ".") == "")
+	return ContractSentence(c.Headline) == "" && !titleFromImpact(f)
 }
 
 const headlineMaxRunes = 140

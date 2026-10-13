@@ -467,6 +467,18 @@ func TestTitleFromComment_AgreesWithTitleSourceOnALabelOnlyHeadline(t *testing.T
 	}
 }
 
+func TestTitleSource_LabelOnlyHeadlineFallsToTheImpactSentence(t *testing.T) {
+	x := contractFinding("medium", "a.go", 10, "Comment.",
+		asserting("production_behavior", "Low; the retry loop re-enters with the original deadline. Callers wait past the budget.", "Uncertainty.", "Rationale.", "Same pattern as A-1"))
+	if titleFromComment(x) || !titleFromImpact(x) || titleSource(x) != "The retry loop re-enters with the original deadline" {
+		t.Fatalf("fromComment=%v fromImpact=%v title=%q", titleFromComment(x), titleFromImpact(x), titleSource(x))
+	}
+	body := RenderInline(x, SourceTagPrismOnly, "", "", "")
+	if MentionsFindingID(strings.ReplaceAll(body, FindingMarker(x.ID), "")) || strings.Contains(body, "Low;") {
+		t.Fatalf("label or id leaked:\n%s", body)
+	}
+}
+
 func TestPublishLegacy_HeldAnnotationIsNotCountedFixed(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
 	scan := contractFinding("medium", ".github/workflows/scan.yml", 28, "The scanner action is not configured with `advanced-security: true`.",
