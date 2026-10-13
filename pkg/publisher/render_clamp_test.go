@@ -100,3 +100,17 @@ func TestRenderInline_CutHeadlineEndsWithTheMarkerNotDots(t *testing.T) {
 		t.Fatalf("the bullet keeps the contract's cut marker:\n%s", bullet)
 	}
 }
+
+func TestRenderInline_LegacyClampShowsTheImpactUnderACutTitle(t *testing.T) {
+	impact := "Desktop and mobile both render the denied state with two stacked paragraphs, so the permission prompt repeats the denial message twice."
+	if n := len([]rune(impact)); n <= 110 || n > 140 {
+		t.Fatalf("fixture impact is %d runes", n)
+	}
+	fd := withContract(f("x", "medium", "a.go", 1, "Body."), "production_behavior", "current_impact", impact, "")
+	if out := renderInline(fd, "", "", "", "", false, true); strings.Count(out, "denial message twice") != 1 {
+		t.Fatalf("legacy clamp cuts the title, so the sentence must show below once:\n%s", out)
+	}
+	if out := renderInline(fd, "", "", "", "", false, false); strings.Count(out, "denial message twice") != 1 {
+		t.Fatalf("a whole title is not repeated:\n%s", out)
+	}
+}

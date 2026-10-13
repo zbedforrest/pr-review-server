@@ -466,7 +466,10 @@ func (p *Poller) changeLookup(ctx context.Context, pr github.PullRequest) func(b
 			for _, f := range files {
 				a.cs.Files[f] = true
 			}
-			if len(patches) > 0 {
+			// A compare that came with patch data carries hunks even when no
+			// file had a patch, so a patch-less file proves nothing; only a
+			// source without patches at all leaves the file rule.
+			if patches != nil {
 				a.cs.Lines = make(map[string]map[int]bool, len(patches))
 				a.cs.Hunks = make(map[string][]publisher.Hunk, len(patches))
 				for f, patch := range patches {

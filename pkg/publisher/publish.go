@@ -236,7 +236,7 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 			Kind: db.PublishedKindAnnotation, Fingerprint: f.ID,
 			SourceTag: r.sourceTag(f.ID), Severity: f.Severity,
 			ReviewedSHA: r.HeadSHA, LastSeenSHA: r.HeadSHA,
-			State: db.PublishedStateOpen, PublishedAt: now,
+			State: db.PublishedStateOpen, PublishedAt: now, Line: f.Line,
 		}
 		if prev, ok := published[f.ID]; ok {
 			// A finding already posted inline keeps its comment; an annotation

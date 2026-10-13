@@ -734,7 +734,7 @@ func insideCode(s string) int {
 
 // impactShownBelow reports whether the effect sentence still needs to be
 // shown under the title, because the title is not that sentence in full.
-func impactShownBelow(f payload.Finding, legacy bool) bool {
+func impactShownBelow(f payload.Finding, legacy, legacyClamp bool) bool {
 	c := f.FindingContract
 	if c == nil || f.FindingContractStatus != "valid" {
 		return false
@@ -743,11 +743,11 @@ func impactShownBelow(f payload.Finding, legacy bool) bool {
 	if legacy && strings.TrimSpace(c.Headline) != "" {
 		return true
 	}
-	title := impact
-	if !legacy {
-		title = titleSource(f)
+	if legacy {
+		return clauseHeadline(impact, legacyHeadlineMaxRunes) != impact
 	}
-	return clauseHeadline(title, headlineMaxRunes) != impact
+	title := titleSource(f)
+	return clauseHeadlineWith(title, titleLimit(headlineMaxRunes, legacyHeadlineMaxRunes, legacyClamp), legacyClamp) != impact
 }
 
 // RenderInline keeps the visible part Greptile-sized: headline, one
@@ -774,7 +774,7 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		fmt.Fprintf(&b, "%s **%s**\n", severityLabel(f.Severity, badgeBase), title)
 	}
 
-	if compact && impactShownBelow(f, legacy) {
+	if compact && impactShownBelow(f, legacy, legacyClamp) {
 		b.WriteString("\n" + strings.TrimSpace(c.CurrentImpact) + "\n")
 	}
 	if hasContract && strings.TrimSpace(c.Uncertainty) != "" {
