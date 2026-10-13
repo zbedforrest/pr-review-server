@@ -240,7 +240,7 @@ func TestPublishRoundOne(t *testing.T) {
 	if len(rv.comments) != 2 || rv.comments[0].Path != "a.go" || rv.comments[0].Line != 10 || rv.comments[1].Path != "b.go" || rv.comments[1].Line != 20 {
 		t.Fatalf("review comments = %+v", rv.comments)
 	}
-	if !strings.Contains(rv.comments[0].Body, FindingMarker("c1")) || !strings.Contains(rv.comments[1].Body, "Source: PRism · Both") {
+	if !strings.Contains(rv.comments[0].Body, FindingMarker("c1")) || !strings.Contains(rv.comments[1].Body, FindingMarker("m1")) || strings.Contains(rv.comments[1].Body, "Source:") {
 		t.Errorf("inline bodies wrong: %+v", rv.comments)
 	}
 	if rep.ReviewID != 9001 || rep.InlinePosted != 2 || rep.Annotations != 1 || rep.StillOpen != 0 || rep.Fixed != 0 {

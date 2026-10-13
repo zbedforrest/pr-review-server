@@ -205,6 +205,8 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	r.Findings = p.withoutTerminal(r, rows, originalIDs)
 	r.Findings = withoutGuardedReturns(r, rows, guard)
 	forgetShown(&r)
+	var rep Report
+	held := p.holdFindings(&r, &rep)
 	now := p.now()
 	var external externalPass
 	if p.Policy.ExternalReconcile {
@@ -258,7 +260,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	for _, f := range sel.Annotations {
 		written[f.ID] = true
 	}
-	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), ExternalMatched: external.matched}
+	rep.InlinePosted, rep.Annotations, rep.ExternalMatched = len(sel.Inline), len(sel.Annotations), external.matched
 	for _, row := range external.rows {
 		writes = append(writes, pending{row: row})
 	}
@@ -277,7 +279,15 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			continue
 		}
 		f, isPresent := present[id]
+		heldFinding, isHeld := held[id]
 		switch {
+		case row.State == db.PublishedStateOpen && isHeld:
+			// The gate kept the finding off GitHub; the row stays open and
+			// silent, since absence by the gate is not a fix.
+			next := *row
+			next.LastSeenSHA = r.HeadSHA
+			backfill(&next, heldFinding, r.PriorComments[id])
+			writes = append(writes, pending{row: &next})
 		case row.State == db.PublishedStateOpen && isPresent:
 			if shown[id] {
 				d.StillOpen++

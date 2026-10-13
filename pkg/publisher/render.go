@@ -11,6 +11,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/reconcile"
+	"pr-review-server/pkg/reviewer/types"
 	"pr-review-server/pkg/textcut"
 )
 
@@ -315,7 +316,7 @@ func (r Round) unverifiedBullet(f payload.Finding) string {
 	}
 	line := r.markedBullet(f, markerDisputed)
 	if reason := strings.TrimSpace(f.Assessment.Reason); reason != "" {
-		line += "  - Agent: " + clampText(firstLine(reason), maxReasonRunes, r.LegacyClamp) + "\n"
+		line += "  - Agent: " + clampText(StripFindingIDAsides(firstLine(reason)), maxReasonRunes, r.LegacyClamp) + "\n"
 	}
 	return line
 }
@@ -423,7 +424,13 @@ func RenderSummary(r Round, sel Selection) string {
 		if r.transitions != nil {
 			d = *r.transitions
 		}
-		fmt.Fprintf(&b, sinceLastReviewFormat+"\n\n", d.New, d.StillOpen, d.Fixed)
+		fmt.Fprintf(&b, sinceLastReviewFormat, d.New, d.StillOpen, d.Fixed)
+		// Folded notes have no ledger rows, so the three counts never see
+		// them; naming them keeps "0 new" from sitting over a list of six.
+		if n := len(r.lowerSeverityNotes()); n > 0 && RenderHygieneEnabled() {
+			fmt.Fprintf(&b, " · %d folded note%s", n, plural(n))
+		}
+		b.WriteString("\n\n")
 	}
 	for _, f := range shown {
 		if b.Len() > SummaryMaxChars-600 {
@@ -621,14 +628,28 @@ func legacyHeadlineWith(f payload.Finding, legacyClamp bool) string {
 // saying so.
 func titleSource(f payload.Finding) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" {
-		if h := strings.TrimSpace(c.Headline); h != "" {
+		if h := strings.TrimSpace(c.Headline); h != "" && !(RenderHygieneEnabled() && MentionsFindingID(h)) {
 			return h
 		}
 		if titleFromImpact(f) {
-			return strings.TrimSuffix(firstSentence(c.CurrentImpact), ".")
+			if impact := impactTitle(c); impact != "" {
+				return impact
+			}
 		}
 	}
-	return strings.TrimSpace(emphasisMarkers.Replace(firstSentence(commentText(f))))
+	// A comment that opens with a compliment is titled by the sentence that
+	// reports something; praise all the way through is held before this.
+	if sentence, ok := FirstFindingSentence(commentText(f)); ok {
+		return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(sentence)))
+	}
+	return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(firstSentence(commentText(f)))))
+}
+
+// impactTitle is the effect statement's first sentence as a title: cleaned
+// like every contract sentence, without its final period, and empty when
+// the sentence leans on an internal finding id.
+func impactTitle(c *types.FindingContract) string {
+	return strings.TrimSuffix(ContractSentence(firstSentence(c.CurrentImpact)), ".")
 }
 
 // titleFromImpact reports whether the title is the contract's effect
@@ -708,7 +729,7 @@ func impactShownBelow(f payload.Finding, legacy, legacyClamp bool) bool {
 	if c == nil || f.FindingContractStatus != "valid" {
 		return false
 	}
-	impact := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
+	impact := strings.TrimSuffix(ContractSentence(c.CurrentImpact), ".")
 	if legacy && strings.TrimSpace(c.Headline) != "" {
 		return true
 	}
@@ -720,7 +741,7 @@ func impactShownBelow(f payload.Finding, legacy, legacyClamp bool) bool {
 	if rendered == impact {
 		return false
 	}
-	return rendered != strings.TrimSuffix(strings.TrimSpace(textcut.FirstSentence(impact)), ".")
+	return rendered != impactTitle(c)
 }
 
 // RenderInline keeps the visible part Greptile-sized: headline, one
@@ -748,16 +769,20 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	}
 
 	if compact && impactShownBelow(f, legacy, legacyClamp) {
-		b.WriteString("\n" + strings.TrimSpace(c.CurrentImpact) + "\n")
+		if impact := ContractSentence(c.CurrentImpact); impact != "" {
+			b.WriteString("\n" + impact + "\n")
+		}
 	}
-	if hasContract && strings.TrimSpace(c.Uncertainty) != "" {
-		b.WriteString("\n" + strings.TrimSpace(c.Uncertainty) + "\n")
+	if hasContract {
+		if uncertainty := ContractSentence(c.Uncertainty); uncertainty != "" {
+			b.WriteString("\n" + uncertainty + "\n")
+		}
 	}
 	if fence := suggestionFenceRe.FindString(comment); fence != "" {
 		b.WriteString("\n" + fence + "\n")
 	}
 
-	reasoning := strings.TrimSpace(suggestionFenceRe.ReplaceAllString(comment, "*(suggestion above)*"))
+	reasoning := StripFindingIDAsides(strings.TrimSpace(suggestionFenceRe.ReplaceAllString(comment, "*(suggestion above)*")))
 	if !compact {
 		// Without an impact sentence the headline came from the comment's first
 		// sentence; the rest of the comment is the only explanation, so show it.
@@ -790,11 +815,16 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	}
 
 	var subs []string
-	switch sourceTag {
-	case SourceTagBoth:
-		subs = append(subs, "<sub>Source: PRism · Both</sub>")
-	case SourceTagGreptileOnly:
-		subs = append(subs, "<sub>Source: Greptile</sub>")
+	// The source line named which reviewers raised the point; the summary
+	// now links the other reviewer's thread instead, so the line only puzzled
+	// readers.
+	if !RenderHygieneEnabled() {
+		switch sourceTag {
+		case SourceTagBoth:
+			subs = append(subs, "<sub>Source: PRism · Both</sub>")
+		case SourceTagGreptileOnly:
+			subs = append(subs, "<sub>Source: Greptile</sub>")
+		}
 	}
 	if agentLinkBase != "" {
 		subs = append(subs, fmt.Sprintf(`<sub><a href="%s">Fix with agent</a></sub>`, agentLink(agentLinkBase, f)))
