@@ -303,9 +303,11 @@ func summaryNotes(body string) []summaryNote {
 	return out
 }
 
-// observedNotes are the bullets of the bot's sticky summary as GitHub holds
-// it now, stamped with the summary's last edit.
+// observedNotes are the bullets of the bot's newest sticky summary as
+// GitHub holds it now, stamped with that summary's last edit.
 func (d *prDump) observedNotes(bots map[string]bool) ([]summaryNote, time.Time) {
+	var notes []summaryNote
+	var newest time.Time
 	for _, c := range d.Comments.Nodes {
 		if !bots[bareLogin(actorLogin(c.Author))] || !strings.Contains(c.Body, publisher.SummaryMarker) {
 			continue
@@ -314,9 +316,12 @@ func (d *prDump) observedNotes(bots map[string]bool) ([]summaryNote, time.Time) 
 		if at.IsZero() {
 			at = c.CreatedAt
 		}
-		return summaryNotes(c.Body), at
+		if at.Before(newest) {
+			continue
+		}
+		notes, newest = summaryNotes(c.Body), at
 	}
-	return nil, time.Time{}
+	return notes, newest
 }
 
 // observedRoot is a PRism root comment as GitHub recorded it, used for the
