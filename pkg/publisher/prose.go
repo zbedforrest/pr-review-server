@@ -6,11 +6,12 @@ import (
 )
 
 // tagLikeRe matches HTML that GitHub renders as markup when written in
-// prose: start, end and self-closing tags (attributes need an "=", so
-// "i<n and j>m" stays prose), comments and declarations. So
+// prose: start, end and self-closing tags (attributes need an "=", or a known
+// element name for bare ones like <input disabled>, so "i<n and j>m" stays
+// prose), comments and declarations. So
 // `renders an <img> with an empty src` loses its subject or shows a broken
 // image, and a <!-- comment --> hides its words.
-var tagLikeRe = regexp.MustCompile(`</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>\n]*=[^<>\n]*)?\s*/?>|<!--[^\n]*?-->|<![A-Za-z][^<>\n]*>|<\?[^<>\n]*?\?>`)
+var tagLikeRe = regexp.MustCompile(`</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>\n]*=[^<>\n]*)?\s*/?>|<(?i:a|audio|button|details|dialog|div|embed|form|iframe|img|input|link|meta|object|option|p|script|select|source|span|style|summary|table|td|textarea|th|tr|video)(?:\s+[A-Za-z][\w:-]*)+\s*/?>|<!--[^\n]*?-->|<![A-Za-z][^<>\n]*>|<\?[^<>\n]*?\?>`)
 
 var (
 	backtickFenceRe = regexp.MustCompile("^(`{3,})[^`]*$")

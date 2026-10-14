@@ -173,3 +173,9 @@ func TestEscapeProseHTMLKeepsWrappersApartFromNeighbouringSpans(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestEscapeProseHTMLCodesKnownElementsWithBareAttributes(t *testing.T) {
+	if got := EscapeProseHTML("the form adds <input disabled> and a <details open> block while i<n and j>m"); got != "the form adds `<input disabled>` and a `<details open>` block while i<n and j>m" {
+		t.Fatalf("got %q", got)
+	}
+}

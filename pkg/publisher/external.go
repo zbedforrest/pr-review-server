@@ -308,10 +308,10 @@ func deltaReply(f payload.Finding, ext reconcile.ExternalFinding) string {
 		parts = append(parts, fmt.Sprintf("Suggested change for line %d:\n```\n%s\n```", f.Line, code))
 	}
 	if hasContract && c.Falsifiability == "falsifiable" && c.FalsifiableCondition != nil && c.ExpectedObservable != nil {
-		condition := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), "."))
-		observable := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), "."))
+		condition := strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), ".")
+		observable := strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), ".")
 		if !covered(condition+" "+observable, extText) {
-			parts = append(parts, fmt.Sprintf("**How to verify:** %s. Expected: %s.", condition, observable))
+			parts = append(parts, fmt.Sprintf("**How to verify:** %s. Expected: %s.", EscapeProseHTML(condition), EscapeProseHTML(observable)))
 		}
 	}
 	if len(parts) == 0 {
