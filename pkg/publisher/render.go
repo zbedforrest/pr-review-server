@@ -836,8 +836,8 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		details.WriteString(reasoning + "\n")
 	}
 	if hasContract && c.Falsifiability == "falsifiable" && c.FalsifiableCondition != nil && c.ExpectedObservable != nil {
-		condition := strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), ".")
-		observable := strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), ".")
+		condition := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), "."))
+		observable := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), "."))
 		fmt.Fprintf(&details, "\n**How to verify:** %s. Expected: %s.\n", condition, observable)
 	}
 	if agentLinkBase != "" {
@@ -888,7 +888,7 @@ func agentLink(base string, f payload.Finding) string {
 var provenanceNoteRe = regexp.MustCompile(`^_\[[^\]]*\]_\s*`)
 
 func commentText(f payload.Finding) string {
-	return strings.TrimSpace(provenanceNoteRe.ReplaceAllString(strings.TrimSpace(f.Comment), ""))
+	return EscapeProseHTML(strings.TrimSpace(provenanceNoteRe.ReplaceAllString(strings.TrimSpace(f.Comment), "")))
 }
 
 // summaryText is the bullet text for a finding: its title (see titleSource).

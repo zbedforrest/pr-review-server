@@ -101,7 +101,7 @@ func ContractSentence(text string) string {
 	if MentionsFindingID(text) {
 		return ""
 	}
-	return StripConfidenceLabel(text)
+	return EscapeProseHTML(StripConfidenceLabel(text))
 }
 
 // bodyIDRefRe matches a parenthetical or trailing aside that only points at
@@ -174,16 +174,41 @@ func FirstFindingSentence(comment string) (string, bool) {
 	if !RenderHygieneEnabled() || !IsPraise(ss[0]) {
 		return ss[0], true
 	}
+	var candidates []string
 	for _, s := range ss[1:] {
 		s = contrastOpenerRe.ReplaceAllString(s, "")
 		if s == "" || IsPraise(s) {
 			continue
 		}
-		r := []rune(s)
-		r[0] = unicode.ToUpper(r[0])
-		return string(r), true
+		candidates = append(candidates, s)
 	}
-	return "", false
+	if len(candidates) == 0 {
+		return "", false
+	}
+	// After a compliment the next sentence is often context; title by the one
+	// that states the problem when there is one.
+	chosen := candidates[0]
+	for _, s := range candidates {
+		if StatesProblem(s) {
+			chosen = s
+			break
+		}
+	}
+	r := []rune(chosen)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r), true
+}
+
+var (
+	consequenceRe = regexp.MustCompile(`(?i)if[^.]*(?:will|would|can|could|may|might)`)
+	defectWordRe  = regexp.MustCompile(`(?i)(?:risk\w*|drift\w*|lose|loses|losing|lost|errors?|stale|undefined|null|empty|invalid|duplicate\w*|mismatch\w*|unreachable|unhandled|uncaught)`)
+)
+
+// StatesProblem reports whether a sentence says what goes wrong: a defect
+// word or an "if X, Y will ..." consequence, rather than only describing the
+// code.
+func StatesProblem(sentence string) bool {
+	return praiseNegationRe.MatchString(sentence) || consequenceRe.MatchString(sentence) || defectWordRe.MatchString(sentence)
 }
 
 var (

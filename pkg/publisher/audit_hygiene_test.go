@@ -108,9 +108,9 @@ func TestTitleSource_SkipsAPraiseOpener(t *testing.T) {
 		t.Fatal("fixture contract is invalid")
 	}
 	got := titleSource(x)
-	want := "The deploy workflow also derives both the port name and this env var from the per-environment `SERVICE_HTTP2_ENABLED` variable."
+	want := "If that variable is unset for dev, a workflow deploy will revert the service to HTTP/1.1."
 	if got != want {
-		t.Fatalf("title = %q, want the first sentence that reports something", got)
+		t.Fatalf("title = %q, want the sentence that states the problem", got)
 	}
 	r := Round{Owner: "acme", Repo: "example", Number: 41, HeadSHA: "6b4506b", RoundNumber: 1, Findings: []payload.Finding{x}}
 	if summary := RenderSummary(r, Selection{}); strings.Contains(summary, "correctly pairs") {
