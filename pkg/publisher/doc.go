@@ -22,6 +22,31 @@
 // fingerprint. A row whose fingerprint a current finding still carries
 // verbatim is never given to another finding.
 //
+// Settled points. A finding the tiers above left unmatched is dropped when
+// it restates a point PRism settled in one of its own threads, from another
+// file or another part of its own file (Policy.SettledAlias,
+// PUBLISH_SETTLED_ALIAS, on unless set to false): the row is dismissed,
+// contested or fixed and carries at least one reply of PRism's own (the
+// concession, withdrawal or verification, which Round.PriorComments
+// carries), the kinds agree or one is unknown, a
+// specific subject of the finding (any kind but a bare file or a workflow,
+// such as a symbol, endpoint, selector or key, and never a symbol named
+// after its own file) is named in those replies, and the finding's text sits inside the thread text, root plus
+// replies (containment at or above 0.35 with eight shared words, or its
+// headline at or above 0.5 with four). A subject the root alone names, or
+// one the row merely shares, is not evidence: on the replay set that rule
+// merged distinct defects of one function about half the time. The row is
+// untouched: a conceded or dismissed point never returns from elsewhere,
+// and nothing is posted or counted. An exact or near return on the row's
+// own lines is still the table's business below. A row PRism never replied
+// under (a verdict handled by reaction alone, a thumbs-down hold, a fix the
+// change set confirmed) names nothing, so it settles no restatement from
+// elsewhere, and an external row is left out because PRism's delta reply
+// there restates its own finding rather than settling it; that is the
+// rule's boundary, not a gap in the data.
+// RefreshSummary runs the same pass, since the dropped finding has no row
+// to be dropped by.
+//
 // Inputs per prior row: its state; whether a current finding matched it
 // (present); whether HeadSHA equals the row's LastSeenSHA; the change set
 // between LastSeenSHA and HeadSHA (Round.Changes, unknown when nil or when
@@ -119,13 +144,35 @@
 // of PRism's own, dropped from the new and still-open counts but still in
 // the merge-confidence score (the score judges the PR, not who found the
 // defect first), linked from the summary under "already raised in another
-// reviewer's thread" for as long as the point is raised, and answered once
-// inside that thread with only what the root lacks (the impact sentence,
-// the suggested code as a plain fence since a suggestion block would apply
-// to the root's lines, how to verify). A root some row already claims gets
-// no second reply. A summary refresh after a concession keeps the external
-// links. The delta reply runs inside the publish gate like every other
-// write of the round.
+// reviewer's thread" for as long as the point is raised and the thread is
+// open, and, for a finding above the inline bar, answered once inside that
+// thread with only what the root lacks (the impact sentence, the suggested
+// code as a plain fence since a suggestion block would apply to the root's
+// lines, how to verify). A root some row already claims gets no second
+// reply. A summary refresh after a concession keeps the external links. The
+// delta reply runs inside the publish gate like every other write of the
+// round.
+//
+// Settled threads. With Policy.NoteReconcile (PUBLISH_NOTE_RECONCILE, on
+// unless set to false) a folded lower-severity note is matched against the
+// roots whose thread the listing shows resolved, by the same file, line and
+// text bar: the point was raised and settled there, so the note is recorded
+// as an external row and dropped, with no link and no reply. A note never
+// matches an open thread, so it never claims a root from the shown finding
+// that would earn the thread's delta reply later. An external row whose
+// root thread has since been resolved stops being linked from the summary.
+// Off, notes are not candidates, a resolved thread is read by nobody, and
+// the summary refresh lists no threads.
+//
+// Pull request body. With Policy.BodyCheck (PUBLISH_BODY_CHECK, off unless
+// set to true) a folded note the body already states is held: one
+// paragraph or list item of Round.PRBody names two specific subjects of
+// the note and carries its headline or text at the settled-point bar.
+// Findings above the inline bar and description_drift findings are never
+// held this way; no row is written, so an edited body is judged afresh
+// next round. It ships off: a body that describes the changed code names
+// a note's symbols and shares its words without answering it, and on the
+// replay set that was most of what the rule held.
 // The Greptile reconcile runs beside it: a finding that restates a Greptile
 // root but misses the external bar keeps its "both" tag, and a Greptile-only
 // point whose root a row claims is dropped so nothing is listed twice. Off,

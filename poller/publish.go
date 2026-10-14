@@ -89,11 +89,32 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		}
 	}
 	own := reconcile.ParseOwnComments(external, ledgerCommentIDs)
+	ownAuthors := map[string]bool{}
+	for _, c := range external {
+		if ledgerCommentIDs[c.ID] {
+			ownAuthors[c.Author] = true
+		}
+	}
 	inlineComments := map[string]int64{}
 	priorComments := make(map[string]publisher.PriorComment, len(own))
+	rootFinding := make(map[int64]string, len(own))
 	for _, o := range own {
 		inlineComments[o.FindingID] = o.CommentID
 		priorComments[o.FindingID] = publisher.PriorComment{Line: o.Line, Text: o.Text}
+		rootFinding[o.CommentID] = o.FindingID
+	}
+	// PRism's own replies in a thread (concessions, verifications) name the
+	// code they accept; the settled-point alias reads them with the root.
+	// The marker alone is not ownership (a quote-reply copies it): the
+	// author must have posted one of the ledger's roots.
+	for _, c := range external {
+		id, ok := rootFinding[c.InReplyToID]
+		if !ok || !ownAuthors[c.Author] || !reconcile.IsOwnReply(c.Body) {
+			continue
+		}
+		prior := priorComments[id]
+		prior.OwnReplies = append(prior.OwnReplies, c.Body)
+		priorComments[id] = prior
 	}
 	if pol.LegacyLedger {
 		aliases := reconcile.AliasPriorLegacy(pl.Findings, own)
@@ -273,6 +294,9 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	pol.LegacyLedger = p.legacyLedger
 	pol.ResolveThreads = !p.threadsOff
 	pol.ExternalReconcile = !p.externalOff
+	pol.SettledAlias = !p.settledAliasOff
+	pol.NoteReconcile = !p.noteReconcileOff
+	pol.BodyCheck = p.bodyCheckOn
 	if v, err := p.db.GetSetting(settingPublishInlineCap); err == nil {
 		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
 			pol.InlineCap = n
@@ -397,6 +421,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 
 	pol := p.publishPolicy()
 	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
+	round.PRBody = ghPR.GetBody()
 	round.Changes = p.changeLookup(ctx, pr)
 	round.DiffFiles = make(map[string]bool, len(files))
 	for _, file := range files {
@@ -547,8 +572,10 @@ func (p *Poller) refreshPublishedSummary(ctx context.Context, owner, repo string
 		return fmt.Errorf("list file patches: %w", err)
 	}
 	pr := github.PullRequest{Owner: owner, Repo: repo, Number: number, CommitSHA: head, Author: cached.Author}
-	round := BuildPublishRound(pr, *pl, comments, patches, previous, p.cfg.BaseURL)
-	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: p.publishPolicy()}
+	pol := p.publishPolicy()
+	round := BuildPublishRoundWith(pr, *pl, comments, patches, previous, p.cfg.BaseURL, pol)
+	round.PRBody = ghPR.GetBody()
+	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: pol}
 	return pub.RefreshSummary(ctx, round)
 }
 

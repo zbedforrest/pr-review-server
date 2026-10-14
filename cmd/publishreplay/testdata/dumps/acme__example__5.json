@@ -1,0 +1,97 @@
+{
+ "number": 5,
+ "title": "Fixture 5",
+ "url": "https://github.com/acme/example/pull/5",
+ "state": "OPEN",
+ "isDraft": false,
+ "merged": false,
+ "body": "## Code Changes\n\n- `team` mapping: the identifier is `(.databaseId // .id) | tostring`, the same numeric team id in every payload shape; the `parentTeam` mapping keys on `.id` and keeps resolving, so both mappings key the same teams by the same identifier today.\n- Drop the unused onboarding action.\n",
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "5a5a5a5555555555555555555555555555555555",
+ "reviews": {
+  "nodes": [],
+  "totalCount": 0
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "PRRT_51",
+    "isResolved": true,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "svc/buyers.go",
+    "line": 241,
+    "originalLine": 241,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 501,
+       "author": {
+        "login": "greptile-apps[bot]"
+       },
+       "body": "<a href=\"#\"><img alt=\"P1\" src=\"https://example.invalid/p1.svg\" align=\"top\"></a> **Older buyers get wrong badges**\n\nrecordClubBulk reads buyers only from buyerID, even when the buyer read switch is off. If older purchases still have a null buyerID, this query misses those buyers. The existing purchase reader uses userID until those rows are backfilled, so a member who bought earlier gets a club unread row and the bought set shows NEW on the club tab instead of purchased.",
+       "createdAt": "2026-09-05T09:00:00Z",
+       "updatedAt": "2026-09-05T09:00:00Z",
+       "path": "svc/buyers.go",
+       "originalCommit": {
+        "oid": "5a5a5a5555555555555555555555555555555555"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      },
+      {
+       "databaseId": 502,
+       "author": {
+        "login": "dev"
+       },
+       "body": "Not an issue, the buyerID backfill is complete and the read switch is on.",
+       "createdAt": "2026-09-05T09:10:00Z",
+       "updatedAt": "2026-09-05T09:10:00Z",
+       "path": "svc/buyers.go",
+       "originalCommit": {
+        "oid": "5a5a5a5555555555555555555555555555555555"
+       },
+       "replyTo": {
+        "databaseId": 501
+       },
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "commits": {
+  "nodes": [
+   {
+    "commit": {
+     "oid": "5a5a5a5555555555555555555555555555555555",
+     "committedDate": "2026-09-05T08:00:00Z",
+     "messageHeadline": "Read buyers from the mirror column"
+    }
+   }
+  ]
+ },
+ "comments": {
+  "nodes": [
+   {
+    "databaseId": 5001,
+    "author": {
+     "login": "acme-bot"
+    },
+    "body": "<!-- prism:summary:v1 -->\n### PRism review: merge confidence 5/5\nNo blocking findings.\n\n<details><summary>2 folded notes</summary>\n\n- **[MEDIUM]** recordClubBulk reads the mirrored buyerID column unconditionally to find who already bought a set, but the column is only populated on save and may be null for rows written before the backfill — [`buyers.go:241`](https://github.com/acme/example/blob/5a5a5a5555555555555555555555555555555555/svc/buyers.go#L241)\n- **[LOW]** The parentTeam mapping keys on .id while the team mapping uses databaseId — [`mapping.yml:175`](https://github.com/acme/example/blob/5a5a5a5555555555555555555555555555555555/svc/mapping.yml#L175)\n</details>\n\n<sub>Reviews (1) · reviewed 5a5a5a5 · 2 changed files</sub>\n",
+    "createdAt": "2026-09-05T10:00:00Z",
+    "updatedAt": "2026-09-05T10:00:00Z",
+    "reactions": {
+     "nodes": []
+    }
+   }
+  ]
+ }
+}

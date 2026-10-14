@@ -49,22 +49,47 @@ func comparable(m Metrics) Metrics {
 
 // The fixtures hold a same-marker repost after an unrelated push (#1), a
 // rewording on a new line (#2), a finding that returns after a real fix
-// (#3) and a point Greptile raised two minutes earlier (#4). The ledger
-// policy posts each of the first three once and says the rest in the
-// thread; the fourth becomes an external row with one delta reply.
+// (#3), a point Greptile raised two minutes earlier (#4) and a summary-only
+// round whose folded notes restate a Greptile thread the author settled and
+// a point the pull request body states (#5). The ledger policy posts each
+// of the first three once and says the rest in the thread; the fourth
+// becomes an external row with one delta reply; the fifth round writes a
+// summary with neither note.
 func TestRun_FixtureMetrics(t *testing.T) {
 	m := fixtureRun(t, false).Metrics
 	want := Metrics{
-		PRs: 4, PRsWithRounds: 4, Rounds: 10, RoundsReplayed: 10, SameCommitRounds: 1, SameCommitSkipped: 1,
+		PRs: 5, PRsWithRounds: 5, Rounds: 11, RoundsReplayed: 11, SameCommitRounds: 1, SameCommitSkipped: 1,
 		RootsPosted: 3, Fixed: 1, InThreadReplies: 1, ThreadsResolved: 1, ThreadsUnresolved: 1,
-		ExternalMatched: 1, ExternalReplies: 1,
-		CommentsPerPushP50: 0, CommentsPerPushMean: 0.333, RoundsPerPRP50: 3,
+		ExternalMatched: 1, ExternalReplies: 1, ExternalSettled: 1,
+		CommentsPerPushP50: 0, CommentsPerPushMean: 0.3, RoundsPerPRP50: 3,
 	}
 	if got := comparable(m); got != want {
 		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
 	}
-	if o := m.Observed; o.Roots != 7 || o.SameMarkerReposts != 2 || o.SameDefectReposts != 0 || o.ThreadsResolved != 2 || o.ExternalDuplicatesNear != 1 || o.ExternalDuplicatesOpen != 1 || o.PRsWithExternalDuplicates != 1 {
+	if o := m.Observed; o.Roots != 7 || o.SameMarkerReposts != 2 || o.SameDefectReposts != 0 || o.ThreadsResolved != 2 || o.ExternalDuplicatesNear != 1 || o.ExternalDuplicatesOpen != 1 || o.PRsWithExternalDuplicates != 1 || o.SummaryNotesNearExternalRoot != 1 || o.SummaryNotesNearSettledRoot != 1 {
 		t.Fatalf("observed = %+v", m.Observed)
+	}
+}
+
+// With note reconciliation off the fifth round folds the note that sits on
+// the settled Greptile thread again.
+func TestRun_NoteReconcileOffFoldsTheSettledNote(t *testing.T) {
+	policy := publisher.DefaultPolicy()
+	policy.NoteReconcile = false
+	m := fixtureRunWith(t, policy).Metrics
+	if m.ExternalSettled != 0 || m.SummaryNotesNearExternalRoot != 1 || m.SummaryNotesNearSettledRoot != 1 || m.ExternalMatched != 1 {
+		t.Fatalf("metrics = %+v", m)
+	}
+}
+
+// The body check is off by default; on, the fifth round holds the note
+// whose two subjects and point the body's team bullet states.
+func TestRun_BodyCheckHoldsTheStatedNote(t *testing.T) {
+	policy := publisher.DefaultPolicy()
+	policy.BodyCheck = true
+	m := fixtureRunWith(t, policy).Metrics
+	if m.BodyCovered != 1 || m.ExternalSettled != 1 {
+		t.Fatalf("metrics = %+v", m)
 	}
 }
 
@@ -74,11 +99,12 @@ func TestRun_FixtureMetrics(t *testing.T) {
 func TestRun_FixtureMetricsLegacy(t *testing.T) {
 	m := fixtureRun(t, true).Metrics
 	want := Metrics{
-		PRs: 4, PRsWithRounds: 4, Rounds: 10, RoundsReplayed: 10, SameCommitRounds: 1, SameCommitSkipped: 1,
-		RootsPosted: 7, SameMarkerReposts: 2, SameDefectReposts: 1, SameDefectRepostsPerPR: 0.25, PRsWithReposts: 3,
+		PRs: 5, PRsWithRounds: 5, Rounds: 11, RoundsReplayed: 11, SameCommitRounds: 1, SameCommitSkipped: 1,
+		RootsPosted: 7, SameMarkerReposts: 2, SameDefectReposts: 1, SameDefectRepostsPerPR: 0.2, PRsWithReposts: 3,
 		Fixed: 3, FixedWithoutFileChange: 1,
 		ExternalDuplicatesNear: 1, ExternalDuplicatesOpen: 1, ExternalDuplicatesResolutionUnknown: 1, PRsWithExternalDuplicates: 1,
-		CommentsPerPushP50: 1, CommentsPerPushMean: 0.778, RoundsPerPRP50: 3,
+		SummaryNotesNearExternalRoot: 1, SummaryNotesNearSettledRoot: 1,
+		CommentsPerPushP50: 1, CommentsPerPushMean: 0.7, RoundsPerPRP50: 3,
 	}
 	if got := comparable(m); got != want {
 		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
@@ -89,7 +115,7 @@ func TestRun_ExternalReconcileOffPostsTheDuplicate(t *testing.T) {
 	policy := publisher.DefaultPolicy()
 	policy.ExternalReconcile = false
 	m := fixtureRunWith(t, policy).Metrics
-	if m.RootsPosted != 4 || m.ExternalDuplicatesNear != 1 || m.ExternalDuplicatesOpen != 1 || m.ExternalMatched != 0 || m.ExternalReplies != 0 {
+	if m.RootsPosted != 4 || m.ExternalDuplicatesNear != 1 || m.ExternalDuplicatesOpen != 1 || m.ExternalMatched != 0 || m.ExternalReplies != 0 || m.ExternalSettled != 0 || m.SummaryNotesNearSettledRoot != 1 || m.BodyCovered != 0 {
 		t.Fatalf("metrics = %+v", m)
 	}
 }
@@ -98,17 +124,20 @@ func TestRun_SameCommitGuardOffReplaysTheRound(t *testing.T) {
 	policy := publisher.DefaultPolicy()
 	policy.RepublishSameCommit = true
 	m := fixtureRunWith(t, policy).Metrics
-	if m.SameCommitRounds != 1 || m.SameCommitSkipped != 0 || m.RoundsReplayed != 10 {
+	if m.SameCommitRounds != 1 || m.SameCommitSkipped != 0 || m.RoundsReplayed != 11 {
 		t.Fatalf("metrics = %+v", m)
 	}
 }
 
 func TestRun_PerPRRowsAndCSV(t *testing.T) {
 	res := fixtureRun(t, false)
-	if len(res.PerPR) != 4 {
+	if len(res.PerPR) != 5 {
 		t.Fatalf("rows = %d", len(res.PerPR))
 	}
-	repost, reword, reopen, external := res.PerPR[0], res.PerPR[1], res.PerPR[2], res.PerPR[3]
+	repost, reword, reopen, external, settled := res.PerPR[0], res.PerPR[1], res.PerPR[2], res.PerPR[3], res.PerPR[4]
+	if settled.PR != "example#5" || settled.Rounds != 1 || settled.RootsPosted != 0 || settled.ExternalSettled != 1 || settled.BodyCovered != 0 || settled.SummaryNotesNearExternalRoot != 0 || settled.ObservedSummaryNotesNearExternalRoot != 1 || settled.ObservedSummaryNotesNearSettledRoot != 1 {
+		t.Errorf("example#5 = %+v", settled)
+	}
 	if external.PR != "example#4" || external.RootsPosted != 0 || external.ExternalMatched != 1 || external.ExternalReplies != 1 || external.ExternalDuplicatesNear != 0 || external.ObservedExternalDuplicatesNear != 1 || external.ObservedExternalDuplicatesOpen != 1 {
 		t.Errorf("example#4 = %+v", external)
 	}
@@ -126,8 +155,8 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 5 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.Contains(lines[0], ",external_duplicates_near,external_duplicates_open,external_duplicates_unknown,external_matched,external_replies,observed_external_duplicates_near,observed_external_duplicates_open,held_library_claims,") || !strings.HasSuffix(lines[0], ",zero_status_lines_over_notes,noop_summary_edits") ||
-		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0") {
+	if len(lines) != 6 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.Contains(lines[0], ",external_duplicates_near,external_duplicates_open,external_duplicates_unknown,external_matched,external_replies,observed_external_duplicates_near,observed_external_duplicates_open,held_library_claims,") || !strings.HasSuffix(lines[0], ",zero_status_lines_over_notes,noop_summary_edits,external_settled,settled_dropped,body_covered,summary_notes_near_external_root,summary_notes_near_settled_root,observed_summary_notes_near_external_root,observed_summary_notes_near_settled_root,observed_cross_file_same_point") ||
+		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") || !strings.HasSuffix(lines[5], ",1,0,0,0,0,1,1,0") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }
@@ -605,17 +634,17 @@ func TestRun_MergeOnlyPushSkipsTheRound(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := res.Metrics
-	if m.RoundsSkippedUnchangedDiff != 1 || m.RoundsAfterMergeCommit != 1 || m.RoundsReplayed != 9 || res.PerPR[0].RoundsSkippedUnchangedDiff != 1 || res.PerPR[0].Rounds != 3 {
+	if m.RoundsSkippedUnchangedDiff != 1 || m.RoundsAfterMergeCommit != 1 || m.RoundsReplayed != 10 || res.PerPR[0].RoundsSkippedUnchangedDiff != 1 || res.PerPR[0].Rounds != 3 {
 		t.Fatalf("metrics = %+v per-pr = %+v", m, res.PerPR[0])
 	}
-	if m.RoundsPerPRP50 != 2.5 || m.Observed.RoundsPerPRP50 != 3 {
-		t.Fatalf("p50 over four PRs with 2, 3, 3 and 1 admitted rounds is 2.5: admitted=%v observed=%v", m.RoundsPerPRP50, m.Observed.RoundsPerPRP50)
+	if m.RoundsPerPRP50 != 2 || m.Observed.RoundsPerPRP50 != 3 {
+		t.Fatalf("p50 over five PRs with 2, 3, 3, 1 and 1 admitted rounds is 2: admitted=%v observed=%v", m.RoundsPerPRP50, m.Observed.RoundsPerPRP50)
 	}
 	res, err = Run(context.Background(), Options{Dumps: dumps, Store: st, Policy: publisher.DefaultPolicy(), ReplayUnchangedDiff: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Metrics.RoundsSkippedUnchangedDiff != 0 || res.Metrics.RoundsReplayed != 10 {
+	if res.Metrics.RoundsSkippedUnchangedDiff != 0 || res.Metrics.RoundsReplayed != 11 {
 		t.Fatalf("with the skip off every round is replayed: %+v", res.Metrics)
 	}
 }

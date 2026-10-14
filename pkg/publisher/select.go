@@ -83,6 +83,21 @@ type Policy struct {
 	// A held finding stays on the dashboard and keeps its ledger row alive.
 	LibraryClaimHold   bool
 	RegressionEvidence bool
+	// SettledAlias drops a finding that restates a settled row (dismissed,
+	// contested or fixed) from another file or another part of
+	// the same file, by subject and thread text (PUBLISH_SETTLED_ALIAS, on
+	// unless set to false). Off, only the file-and-line alias tiers apply.
+	SettledAlias bool
+	// NoteReconcile runs the summary's folded notes through the external
+	// reconcile and treats a resolved thread of another reviewer as a
+	// settled point for every finding (PUBLISH_NOTE_RECONCILE, on unless set
+	// to false).
+	NoteReconcile bool
+	// BodyCheck holds a folded note the pull request body already states
+	// (PUBLISH_BODY_CHECK, off unless set to true): on the replay set the
+	// text rule held far more notes the body merely described than notes it
+	// answered, so it ships off.
+	BodyCheck bool
 }
 
 // PolicyV2Env is the kill switch for the ledger decision table: "false", "0",
@@ -115,13 +130,54 @@ func ExternalReconcileFromEnv() bool {
 	return true
 }
 
+// SettledAliasEnv is the kill switch for the settled-point alias: "false",
+// "0", "off" and "no" turn it off; anything else keeps it on.
+const SettledAliasEnv = "PUBLISH_SETTLED_ALIAS"
+
+// SettledAliasFromEnv reports whether the environment left the settled-point
+// alias on. The poller resolves it once at start-up.
+func SettledAliasFromEnv() bool { return !envOff(SettledAliasEnv) }
+
+// NoteReconcileEnv is the kill switch for reconciling folded notes against
+// other reviewers' resolved threads: "false", "0", "off" and "no" turn it
+// off; anything else keeps it on. The pull request body check is
+// BodyCheckEnv.
+const NoteReconcileEnv = "PUBLISH_NOTE_RECONCILE"
+
+// NoteReconcileFromEnv reports whether the environment left note
+// reconciliation on. The poller resolves it once at start-up.
+func NoteReconcileFromEnv() bool { return !envOff(NoteReconcileEnv) }
+
+// BodyCheckEnv turns the pull request body check on: "true", "1", "on" and
+// "yes" enable it; anything else leaves it off.
+const BodyCheckEnv = "PUBLISH_BODY_CHECK"
+
+// BodyCheckFromEnv reports whether the environment turned the body check on.
+// The poller resolves it once at start-up.
+func BodyCheckFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(BodyCheckEnv))) {
+	case "true", "1", "on", "yes":
+		return true
+	}
+	return false
+}
+
+func envOff(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "false", "0", "off", "no":
+		return true
+	}
+	return false
+}
+
 // DefaultPolicy is the shipped posting policy: three inline comments per
 // round and six per PR, medium severity and above, unverified first-pass
 // claims folded, the ledger decision table, thread resolution,
-// cross-reviewer reconciliation and both claim holds on.
+// cross-reviewer reconciliation, both claim holds, the settled-point alias
+// and note reconciliation on.
 func DefaultPolicy() Policy {
 	return Policy{InlineCap: DefaultInlineCap, InlinePRCap: DefaultInlinePRCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true, ExternalReconcile: true, PriorIDAlias: true,
-		LibraryClaimHold: true, RegressionEvidence: true}
+		LibraryClaimHold: true, RegressionEvidence: true, SettledAlias: true, NoteReconcile: true}
 }
 
 // withDefaults fills unset fields only. A zero round cap is a real setting

@@ -251,6 +251,7 @@ type RoundInput struct {
 	At           time.Time
 	Payload      payload.Payload
 	Comments     []github.ReviewCommentInfo // other reviewers' comments present at At
+	Body         string                     // the pull request description
 	ChangedFiles []string
 	ChangedHunks map[string][][4]int
 	ChangedKnown bool
@@ -296,6 +297,7 @@ func (p *PRReplay) PublishRound(ctx context.Context, in RoundInput) (RoundResult
 	comments := append(append([]github.ReviewCommentInfo{}, in.Comments...), p.Rec.OwnComments(p.Bot)...)
 	ghPR := github.PullRequest{Owner: p.Owner, Repo: p.Repo, Number: p.Number, CommitSHA: in.SHA, Author: p.Author}
 	round := poller.BuildPublishRound(ghPR, in.Payload, comments, PatchesFromHunks(in.Payload), previous, "")
+	round.PRBody = in.Body
 	SetChanges(&round, in.ChangedFiles, in.ChangedHunks, in.ChangedKnown)
 	at := in.At
 	p.Pub.Now = func() time.Time { return at }

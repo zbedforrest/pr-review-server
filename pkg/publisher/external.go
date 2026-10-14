@@ -39,6 +39,9 @@ type externalPass struct {
 	rows    []*db.PublishedFinding
 	notes   []threadNote
 	matched int
+	// settled counts the folded notes matched to a resolved thread:
+	// recorded, never linked or replied to.
+	settled int
 }
 
 // refreshExternal re-lists the PR's review comments when GitHub allows and
@@ -46,7 +49,7 @@ type externalPass struct {
 // who posted after the round was built is still reconciled against.
 func (p *Publisher) refreshExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding) {
 	lister, ok := p.GH.(ReviewCommentLister)
-	if !ok || !hasUnknownFinding(r, rows) {
+	if !ok || !hasUnknownFinding(r, rows, p.Policy.NoteReconcile) {
 		return
 	}
 	listed, err := lister.ListReviewComments(ctx, r.Owner, r.Repo, r.Number)
@@ -69,13 +72,28 @@ func (p *Publisher) refreshExternal(ctx context.Context, r *Round, rows map[stri
 
 // hasUnknownFinding reports whether the round shows a finding the ledger has
 // never recorded, the only kind that can match another reviewer's root.
-func hasUnknownFinding(r *Round, rows map[string]*db.PublishedFinding) bool {
-	for _, f := range r.currentFindings() {
+func hasUnknownFinding(r *Round, rows map[string]*db.PublishedFinding, notes bool) bool {
+	for _, f := range r.externalCandidates(notes) {
 		if _, known := rows[f.ID]; !known {
 			return true
 		}
 	}
 	return false
+}
+
+// externalCandidates are the findings another reviewer's root may stand in
+// for: the shown findings, and with notes the folded lower-severity ones.
+func (r Round) externalCandidates(notes bool) []payload.Finding {
+	if !notes {
+		return r.currentFindings()
+	}
+	var out []payload.Finding
+	for _, f := range r.Findings {
+		if Publishable(f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // forgetShown drops the external links of findings the round still carries
@@ -101,11 +119,18 @@ func forgetShown(r *Round) {
 // rememberExternal lists, for the summary, the findings of this round that
 // alias to an external row: the point is still raised and still lives in
 // the other reviewer's thread. It runs before those findings are dropped.
-func rememberExternal(r *Round, rows map[string]*db.PublishedFinding) {
+// With skipSettled, a root whose thread the listing shows resolved is a
+// settled point and is not listed.
+func rememberExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding, threads *threadIndex, skipSettled bool) {
 	for _, f := range r.Findings {
 		row, ok := rows[f.ID]
 		if !ok || row.State != db.PublishedStateExternal || row.ExternalCommentID == 0 {
 			continue
+		}
+		if skipSettled {
+			if t, listed := threads.lookup(ctx, row.ExternalCommentID); listed && t.Resolved {
+				continue
+			}
 		}
 		source, _ := reconcile.SourceFromTag(row.SourceTag)
 		r.ExternalMatches = append(r.ExternalMatches, ExternalMatch{Finding: f, Source: source, CommentID: row.ExternalCommentID})
@@ -131,11 +156,16 @@ func (r Round) externalFindings() []payload.Finding {
 	return out
 }
 
-// matchExternal pairs the round's shown findings with the other reviewers'
-// roots and takes every match out of the round: an external row remembers
-// the point for the PR's life, the summary links to the root, and the
-// thread gets one delta reply carrying only what PRism adds, unless a row
-// already claimed that root.
+// matchExternal pairs the round's findings with the other reviewers' roots
+// and takes every match out of the round: an external row remembers the
+// point for the PR's life. A shown finding matches an open thread: linked
+// from the summary and answered with one delta reply carrying only what
+// PRism adds, unless a row already claimed that root. A resolved thread is
+// no candidate for a shown finding. With Policy.NoteReconcile a folded note
+// matches a resolved thread only: the point is settled there, so the row
+// is recorded and the note dropped, never linked or replied for. A note
+// never claims an open root, so the shown finding that restates it later
+// still earns the thread's delta reply.
 func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding, now time.Time, threads *threadIndex) externalPass {
 	var pass externalPass
 	if threads == nil {
@@ -143,12 +173,16 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 		// open one, so nothing is deferred to and nothing is replied into.
 		return pass
 	}
-	roots := openRoots(ctx, r.External, threads)
+	notes := p.Policy.NoteReconcile
+	open, resolved := splitRoots(ctx, r.External, threads)
 	if threads.listFailed() {
 		log.Printf("[PUBLISH] %s/%s#%d: thread listing failed; external matching skipped this round", r.Owner, r.Repo, r.Number)
 		return pass
 	}
-	if len(roots) == 0 {
+	if !notes {
+		resolved = nil
+	}
+	if len(open) == 0 && len(resolved) == 0 {
 		return pass
 	}
 	claimed := map[int64]bool{}
@@ -157,15 +191,23 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 			claimed[row.ExternalCommentID] = true
 		}
 	}
-	var candidates []payload.Finding
-	for _, f := range r.currentFindings() {
-		// A finding the ledger already knows has its own history; only a
-		// point PRism has never recorded can be someone else's first.
-		if _, known := rows[f.ID]; !known {
-			candidates = append(candidates, f)
+	// A finding the ledger already knows has its own history; only a point
+	// PRism has never recorded can be someone else's first.
+	var shownCandidates, noteCandidates []payload.Finding
+	for _, f := range r.externalCandidates(notes) {
+		if _, known := rows[f.ID]; known {
+			continue
+		}
+		if Shown(f) {
+			shownCandidates = append(shownCandidates, f)
+		} else {
+			noteCandidates = append(noteCandidates, f)
 		}
 	}
-	matches := reconcile.MatchExternal(candidates, roots)
+	matches := reconcile.MatchExternal(shownCandidates, open)
+	if len(noteCandidates) > 0 && len(resolved) > 0 {
+		matches = append(matches, reconcile.MatchExternal(noteCandidates, resolved)...)
+	}
 	if len(matches) == 0 {
 		return pass
 	}
@@ -180,7 +222,6 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 			kept = append(kept, f)
 			continue
 		}
-		pass.matched++
 		pass.rows = append(pass.rows, &db.PublishedFinding{
 			RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number,
 			Kind: db.PublishedKindAnnotation, Fingerprint: f.ID,
@@ -190,6 +231,12 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 			CommentText: f.Comment, FindingKind: findingKindOf(f), Subjects: subjectsColumn(f),
 			ExternalCommentID: m.External.CommentID,
 		})
+		if !Shown(f) {
+			pass.settled++
+			log.Printf("[PUBLISH] %s/%s#%d: note %s restates %s's resolved thread %d, dropped", r.Owner, r.Repo, r.Number, f.ID, m.External.Source.Label(), m.External.CommentID)
+			continue
+		}
+		pass.matched++
 		r.ExternalMatches = append(r.ExternalMatches, ExternalMatch{Finding: f, Source: m.External.Source, CommentID: m.External.CommentID})
 		if claimed[m.External.CommentID] {
 			continue
@@ -228,18 +275,17 @@ func withoutClaimedRoots(refs []GreptileOnlyRef, rows map[string]*db.PublishedFi
 	return kept
 }
 
-// openRoots drops the roots whose thread the listing shows resolved: the
-// other reviewer's point is settled there, so PRism neither defers to it
-// nor replies into it.
-func openRoots(ctx context.Context, roots []reconcile.ExternalFinding, threads *threadIndex) []reconcile.ExternalFinding {
-	open := make([]reconcile.ExternalFinding, 0, len(roots))
+// splitRoots sorts the roots by thread state: open threads (including ones
+// the listing does not show) and threads the listing shows resolved.
+func splitRoots(ctx context.Context, roots []reconcile.ExternalFinding, threads *threadIndex) (open, resolved []reconcile.ExternalFinding) {
 	for _, g := range roots {
 		if t, ok := threads.lookup(ctx, g.CommentID); ok && t.Resolved {
+			resolved = append(resolved, g)
 			continue
 		}
 		open = append(open, g)
 	}
-	return open
+	return open, resolved
 }
 
 // deltaReply is the one reply PRism may leave under another reviewer's root:
