@@ -644,7 +644,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		pr.SettledDropped += rep.SettledDropped
 		pr.BodyCovered += rep.BodyCovered
 		for _, n := range summaryNotes(rec.roundSummary) {
-			root, ok := replaykit.ExternalDuplicate(n.File, n.Line, noteText(pl, n), roots, rd.At)
+			root, ok := nearExternalRoot(pl, n, roots, rd.At)
 			if !ok {
 				continue
 			}
@@ -1065,6 +1065,17 @@ func abs(n int) int {
 		return -n
 	}
 	return n
+}
+
+// nearExternalRoot finds the other reviewer's root a replayed summary
+// bullet sits on, by the bullet's own text (what a reader compares, and
+// what the observed counterpart reads from the dumps) or by the raw agent
+// prose behind it.
+func nearExternalRoot(pl payload.Payload, n summaryNote, roots []replaykit.ExternalRoot, at time.Time) (replaykit.ExternalRoot, bool) {
+	if root, ok := replaykit.ExternalDuplicate(n.File, n.Line, n.Text, roots, at); ok {
+		return root, true
+	}
+	return replaykit.ExternalDuplicate(n.File, n.Line, noteText(pl, n), roots, at)
 }
 
 // noteText is the raw agent prose behind a summary bullet when the sidecar
