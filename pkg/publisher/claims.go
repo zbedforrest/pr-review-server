@@ -36,7 +36,8 @@ const (
 )
 
 // HeldFinding is a finding the output hygiene gate kept off GitHub this
-// round; it stays on the dashboard and keeps its ledger row alive.
+// round; it stays on the dashboard and keeps alive any ledger row it
+// aliases to.
 type HeldFinding struct {
 	ID     string
 	File   string
@@ -56,7 +57,15 @@ func MentionsFindingID(text string) bool {
 }
 
 func replaceFindingIDs(text, with string) string {
-	return findingIDRefRe.ReplaceAllString(text, "${1}"+with+"${3}")
+	// The right boundary is consumed, so labels one space apart need a
+	// second pass.
+	for {
+		next := findingIDRefRe.ReplaceAllString(text, "${1}"+with+"${3}")
+		if next == text {
+			return next
+		}
+		text = next
+	}
 }
 
 // confidenceLabelRe is the "Low;" / "Medium:" / "High confidence," opener
@@ -99,7 +108,7 @@ func ContractSentence(text string) string {
 // another entry: "(same as A-1)", "(see FP-2 and FP-3)", ", as in A-1".
 var bodyIDRefRe = regexp.MustCompile(`(?i)\s*(?:\((?:see|same as|as in|like|cf\.?|per|similar to|same pattern as)?\s*(?:A|FP|P)-\d{1,2}(?:(?:\s*,\s*|\s+and\s+|\s*/\s*)(?:A|FP|P)-\d{1,2})*\)|,?\s+(?:as|like) in (?:A|FP|P)-\d{1,2}\b)`)
 
-var findingIDListRe = regexp.MustCompile(`\b(?:A|FP|P)-\d{1,2}(?:(?:\s*,\s*|\s+and\s+|\s*/\s*)(?:A|FP|P)-\d{1,2})+\b`)
+var findingIDListRe = regexp.MustCompile(`\b(?:A|FP|P)-\d{1,2}(?:(?:\s*,\s*|\s+and\s+|\s*/\s*|\s+)(?:A|FP|P)-\d{1,2})+\b`)
 
 // StripFindingIDAsides removes the asides that point at other entries by
 // their internal labels and names any label a sentence still leans on as
@@ -201,8 +210,12 @@ func ReasonlessNote(f payload.Finding) bool {
 }
 
 var (
-	memoryClaimRe    = regexp.MustCompile(`(?i)\b(?:(?:recall(?:ed|ing)?|remember(?:ed|ing)?|quot(?:ed|ing)|cit(?:ed|ing)|writ(?:ten|ing)|reasoning|speaking|working|going|this is|that is|behaviou?r|docs?|documentation|defaults?|api|signature|semantics|contract) (?:this |that |it |the \w+ )?from memory\b|from memory,? (?:i|the (?:library|package|action|framework|middleware|plugin|sdk|module|default))\b|if i recall|iirc|as i recall|as i remember|as far as i remember|i believe the (?:library|package|action|module|framework|dependency|plugin|middleware|runtime)|without (?:inspecting|reading|checking|opening) the (?:pinned|installed|vendored|bundled|upstream|library|package|action|dependency)|(?:cannot|can't|could not|couldn't|did not|didn't|unable to) (?:inspect|read|check|open|verify|confirm) the (?:pinned|installed|vendored|bundled|upstream|action's|library's|package's|dependency's|module's)|(?:not|never) (?:inspected|checked|read|verified) (?:the )?(?:pinned|installed|vendored|upstream)|unverified against the pinned|unverified (?:default|behaviou?r|option|semantics)|documented behaviou?r from memory|(?:pinned|installed|vendored) (?:release|version|source|copy) (?:is|was) not (?:available|readable|inspected|checked)|not (?:available|present|readable) in this checkout|no (?:node_modules|vendor|site-packages) (?:in|available in) this checkout)`)
-	certainDefaultRe = regexp.MustCompile(`(?i)(?:\b(?:[\w.@/-]+ )?(?:library|package|action|framework|middleware|plugin|sdk|dependency|module)(?:'s)? (?:defaults?|behaviou?r|semantics?|contract) (?:is|are) certain\b|\bdefaults? (?:is|are) certain\b|\bi am certain\b[^.]{0,40}\b(?:library|package|action|framework|middleware|plugin|sdk|module|defaults?|upstream)\b|\bcertain(?:ly)? (?:that )?the (?:library|package|action|framework|middleware|plugin|sdk|module)\b)`)
+	memoryClaimRe = regexp.MustCompile(`(?i)\b(?:(?:recall(?:ed|ing)?|remember(?:ed|ing)?|quot(?:ed|ing)|cit(?:ed|ing)|writ(?:ten|ing)|reasoning|speaking|working|going|this is|that is|behaviou?r|docs?|documentation|defaults?|api|signature|semantics|contract) (?:this |that |it |the \w+ )?from memory\b|from memory,? (?:i|the (?:library|package|action|framework|middleware|plugin|sdk|module|default))\b|if i recall|iirc|as i recall|as i remember|as far as i remember|i believe the (?:library|package|action|module|framework|dependency|plugin|middleware|runtime)|without (?:inspecting|reading|checking|opening) the (?:pinned|installed|vendored|bundled|upstream|library|package|action|dependency)|(?:cannot|can't|could not|couldn't|did not|didn't|unable to) (?:inspect|read|check|open|verify|confirm) the (?:pinned|installed|vendored|bundled|upstream|action's|library's|package's|dependency's|module's)|(?:not|never) (?:inspected|checked|read|verified) (?:the )?(?:pinned|installed|vendored|upstream)|unverified against the pinned|unverified (?:default|behaviou?r|option|semantics)|documented behaviou?r from memory|(?:pinned|installed|vendored) (?:release|version|source|copy) (?:is|was) not (?:available|readable|inspected|checked)|not (?:available|present|readable) in this checkout|no (?:node_modules|vendor|site-packages) (?:in|available in) this checkout)`)
+	// libraryEvidenceRe is the citation the AGENT_CLAIM_EVIDENCE prompt asks
+	// for: a path and line under node_modules, vendor or site-packages, in a
+	// lock file, or in a doc in the repo.
+	libraryEvidenceRe = regexp.MustCompile(`(?i)(?:\b(?:node_modules|vendor|site-packages)/[\w./@-]+|[\w./@-]*(?:\.lock|-lock\.json|-lock\.yaml|go\.sum|go\.mod)|\b[\w./-]+\.(?:md|rst|txt|adoc)):\d+\b`)
+	certainDefaultRe  = regexp.MustCompile(`(?i)(?:\b(?:[\w.@/-]+ )?(?:library|package|action|framework|middleware|plugin|sdk|dependency|module)(?:'s)? (?:defaults?|behaviou?r|semantics?|contract) (?:is|are) certain\b|\bdefaults? (?:is|are) certain\b|\bi am certain\b[^.]{0,40}\b(?:library|package|action|framework|middleware|plugin|sdk|module|defaults?|upstream)\b|\bcertain(?:ly)? (?:that )?the (?:library|package|action|framework|middleware|plugin|sdk|module)\b)`)
 )
 
 // UnverifiedLibraryClaim reports whether a finding rests on third-party
@@ -212,11 +225,16 @@ var (
 // defaults as certain; "documented to" is a citation, not an admission. A claim like that was wrong in both audited cases;
 // it is held, not posted. The rule is the agent's own admission: a plain
 // uncited claim with no such wording is not held, since the publisher
-// cannot tell a read default from a remembered one.
+// cannot tell a read default from a remembered one. A citation of the kind
+// the prompt asks for (a pinned source, lock file or repo doc with a line)
+// is the evidence the hold exists to demand, so it lifts the hold.
 func UnverifiedLibraryClaim(f payload.Finding) bool {
 	text := commentText(f)
 	if c := f.FindingContract; c != nil {
 		text += "\n" + c.Uncertainty + "\n" + c.CurrentImpact + "\n" + c.SeverityRationale
+	}
+	if libraryEvidenceRe.MatchString(text) {
+		return false
 	}
 	return memoryClaimRe.MatchString(text) || certainDefaultRe.MatchString(text)
 }

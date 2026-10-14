@@ -202,18 +202,20 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 	}
 
 	var rep Report
-	all := r.Findings
 	held := p.holdFindings(&r, &rep, func(id string) bool {
 		row, ok := published[id]
 		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
 	})
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy.forRound(r.Previous))
 	r.ShowUnverified = p.Policy.ShowUnverified
-	// The counts see the held findings as present: absence by the gate is
-	// not a fix.
-	full := r
-	full.Findings = all
-	d := full.diff()
+	// The counts see a held finding as present but not shown: absence by
+	// the gate is not a fix, and the summary never announces what it lists
+	// nowhere.
+	r.held = make(map[string]bool, len(held))
+	for id := range held {
+		r.held[id] = true
+	}
+	d := r.diff()
 	r.transitions = &d
 	rep.InlinePosted, rep.Annotations, rep.StillOpen, rep.Fixed = len(sel.Inline), len(sel.Annotations), d.StillOpen, d.Fixed
 	rep.Confidence = Confidence(r.Findings, r.RequiredCheckViolated)

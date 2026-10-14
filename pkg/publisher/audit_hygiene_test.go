@@ -479,6 +479,51 @@ func TestTitleSource_LabelOnlyHeadlineFallsToTheImpactSentence(t *testing.T) {
 	}
 }
 
+func TestStripFindingIDAsides_LabelsOneSpaceApart(t *testing.T) {
+	for in, want := range map[string]string{
+		"Same as A-1 A-2 here.":       "Same as other findings on this PR here.",
+		"Same as A-1 and then A-2.":   "Same as another finding on this PR and then another finding on this PR.",
+		"A-1 A-2 A-3 share the root.": "other findings on this PR share the root.",
+	} {
+		if got := StripFindingIDAsides(in); got != want || MentionsFindingID(got) {
+			t.Fatalf("%q -> %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestUnverifiedLibraryClaim_ACitedPathLiftsTheHold(t *testing.T) {
+	cited := contractFinding("low", "web/src/tooltip/middlewares.ts", 70,
+		"`shift` defaults to `mainAxis: true`, so the tooltip never slides horizontally.",
+		asserting("production_behavior", "Tooltips overflow the viewport edge.", "Unverified against the pinned version; docs/tooltips.md:12 documents the default.", "Clipped tooltips.", "Tooltip never slides horizontally"))
+	pinned := contractFinding("low", "web/src/tooltip/middlewares.ts", 70,
+		"`shift` defaults to `mainAxis: true` (node_modules/@acme/ui/dist/shift.js:41), so the tooltip never slides horizontally.",
+		asserting("production_behavior", "Tooltips overflow the viewport edge.", "I am certain the library default is main axis only.", "Clipped tooltips.", "Tooltip never slides horizontally"))
+	bare := contractFinding("low", "web/src/tooltip/middlewares.ts", 70,
+		"`shift` defaults to `mainAxis: true`, so the tooltip never slides horizontally.",
+		asserting("production_behavior", "Tooltips overflow the viewport edge.", "Unverified against the pinned version; see web/src/tooltip/middlewares.ts:70.", "Clipped tooltips.", "Tooltip never slides horizontally"))
+	if UnverifiedLibraryClaim(cited) || UnverifiedLibraryClaim(pinned) || !UnverifiedLibraryClaim(bare) {
+		t.Fatalf("cited=%v pinned=%v bare=%v", UnverifiedLibraryClaim(cited), UnverifiedLibraryClaim(pinned), UnverifiedLibraryClaim(bare))
+	}
+}
+
+func TestPublishLegacy_NewlyHeldFindingIsNotCountedNew(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	posted := contractFinding("medium", "a.go", 10, "The retry loop re-enters with the original deadline.",
+		asserting("production_behavior", "Callers wait past the budget.", "The deadline is not re-read.", "Timeouts.", "Retry loop ignores the deadline"))
+	scan := contractFinding("medium", ".github/workflows/scan.yml", 28, "The scanner action is not configured with `advanced-security: true`.",
+		asserting("production_behavior", "Scan results are not uploaded.", "I am reading the action's documented behavior from memory.", "Visibility.", "Scan step may not upload findings"))
+	pol := testPolicy()
+	pol.LegacyLedger = true
+	r1 := Round{Owner: "acme", Repo: "example", Number: 613, HeadSHA: "sha-1", Findings: []payload.Finding{posted}}
+	publishWith(t, gh, ledger, r1, pol)
+	r2 := r1
+	r2.HeadSHA, r2.Previous, r2.Findings = "sha-2", nil, []payload.Finding{posted, scan}
+	rep := publishWith(t, gh, ledger, r2, pol)
+	if len(rep.Held) != 1 || !strings.Contains(gh.issueEdits[501], "0 new · 1 still open · 0 fixed") {
+		t.Fatalf("held=%d\n%s", len(rep.Held), gh.issueEdits[501])
+	}
+}
+
 func TestPublishLegacy_HeldAnnotationIsNotCountedFixed(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
 	scan := contractFinding("medium", ".github/workflows/scan.yml", 28, "The scanner action is not configured with `advanced-security: true`.",

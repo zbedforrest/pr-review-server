@@ -123,3 +123,16 @@ func TestExternalRoots_SkipsBotAndPrismRoots(t *testing.T) {
 		t.Fatalf("roots = %+v", roots)
 	}
 }
+
+func TestSummaryRound_NewestSummaryWins(t *testing.T) {
+	d := &PRDump{}
+	bot := &Actor{Login: "prism[bot]"}
+	d.Comments.Nodes = []IssueComment{
+		{Author: bot, Body: publisher.SummaryMarker + " reviewed aaaaaaa1", CreatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)},
+		{Author: bot, Body: publisher.SummaryMarker + " reviewed bbbbbbb2", CreatedAt: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)},
+	}
+	sha, at, ok := d.summaryRound(map[string]bool{"prism": true})
+	if !ok || sha != "bbbbbbb" || at.Day() != 2 {
+		t.Fatalf("got %q %v %v", sha, at, ok)
+	}
+}

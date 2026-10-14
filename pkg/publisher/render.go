@@ -102,6 +102,9 @@ type Round struct {
 	// transitions is the ledger policy's record count for the summary; nil
 	// falls back to the hash-set diff.
 	transitions *roundDiff
+	// held are the findings the output hygiene gate removed from Findings
+	// this round; the counts treat them as present, never as shown.
+	held map[string]bool
 }
 
 // PriorComment is one of PRism's own inline comments as GitHub lists it now.
@@ -175,6 +178,9 @@ func (r Round) diff() roundDiff {
 	present := map[string]bool{}
 	for _, f := range r.activeClaims() {
 		present[f.ID] = true
+	}
+	for id := range r.held {
+		present[id] = true
 	}
 	shown := map[string]bool{}
 	for _, f := range append(append(r.currentFindings(), r.lowerSeverityNotes()...), r.unverifiedNotes()...) {
@@ -640,7 +646,10 @@ func titleSource(f payload.Finding) string {
 	// A comment that opens with a compliment is titled by the sentence that
 	// reports something; praise all the way through is held before this.
 	if sentence, ok := FirstFindingSentence(commentText(f)); ok {
-		return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(StripConfidenceLabel(sentence))))
+		if RenderHygieneEnabled() {
+			sentence = StripConfidenceLabel(sentence)
+		}
+		return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(sentence)))
 	}
 	return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(firstSentence(commentText(f)))))
 }
