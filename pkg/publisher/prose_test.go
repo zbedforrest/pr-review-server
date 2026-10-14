@@ -159,3 +159,17 @@ func TestEscapeProseHTMLLeavesUnspacedComparisonsAlone(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestEscapeProseHTMLLeavesIndentedCodeBlocksAlone(t *testing.T) {
+	in := "Render this:\n\n    <img src=\"x\">\n\nand <br> after.\n"
+	want := "Render this:\n\n    <img src=\"x\">\n\nand `<br>` after.\n"
+	if got := EscapeProseHTML(in); got != want {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEscapeProseHTMLKeepsWrappersApartFromNeighbouringSpans(t *testing.T) {
+	if got := EscapeProseHTML("``a``<img>``b``"); got != "``a`` `<img>` ``b``" {
+		t.Fatalf("got %q", got)
+	}
+}

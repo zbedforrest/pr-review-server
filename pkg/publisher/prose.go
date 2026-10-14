@@ -25,12 +25,22 @@ func EscapeProseHTML(text string) string {
 	}
 	var b strings.Builder
 	fence := ""
+	// An indented code block starts after a blank line and runs while lines
+	// stay indented by four columns.
+	afterBlank, indented := true, false
 	for _, line := range strings.SplitAfter(text, "\n") {
 		trimmed := strings.TrimSpace(line)
 		switch {
 		case fence == "":
 			if open := fenceOpening(trimmed); open != "" {
 				fence = open
+				b.WriteString(line)
+				afterBlank, indented = false, false
+				continue
+			}
+			indented = trimmed != "" && (indented || afterBlank) && (strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t"))
+			afterBlank = trimmed == "" || (afterBlank && indented)
+			if indented {
 				b.WriteString(line)
 				continue
 			}
@@ -96,14 +106,22 @@ func escapeOutsideCodeSpans(line string) string {
 		return line
 	}
 	var b strings.Builder
-	for _, s := range segs {
+	for i, s := range segs {
 		if s.code {
 			b.WriteString(s.text)
 			continue
 		}
 		// Unmatched backticks could pair with a wrapper and push a tag back
 		// out of its span, so they become entities on a line with a tag.
-		b.WriteString(tagLikeRe.ReplaceAllString(strings.ReplaceAll(s.text, "`", "&#96;"), "`$0`"))
+		out := tagLikeRe.ReplaceAllString(strings.ReplaceAll(s.text, "`", "&#96;"), "`$0`")
+		// A wrapper touching a neighbouring span's delimiter would merge into it.
+		if i > 0 && strings.HasPrefix(out, "`") {
+			out = " " + out
+		}
+		if i+1 < len(segs) && strings.HasSuffix(out, "`") {
+			out += " "
+		}
+		b.WriteString(out)
 	}
 	return b.String()
 }
