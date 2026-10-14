@@ -38,6 +38,17 @@ const NoteProblemClauseEnv = "PUBLISH_NOTE_PROBLEM_CLAUSE"
 // RenderHygieneEnabled, because the renderer has no policy in hand.
 func NoteProblemClauseEnabled() bool { return !envOff(NoteProblemClauseEnv) }
 
+// ProblemClauseStartEnv is the kill switch for the standalone problem
+// clause: a headline, bullet or inline title whose leading clause was
+// dropped starts at the problem clause, capitalised, with no marker, and
+// no rendered line opens with the marker or a lowercase connective.
+// "false", "0", "off" and "no" restore the "[…] but ..." form.
+const ProblemClauseStartEnv = "PUBLISH_PROBLEM_CLAUSE_START"
+
+// ProblemClauseStartEnabled reads its kill switch at call time, like
+// NoteProblemClauseEnabled.
+func ProblemClauseStartEnabled() bool { return !envOff(ProblemClauseStartEnv) }
+
 // Hold reasons, as the Report and the hygiene telemetry name them.
 const (
 	HoldLibraryClaim    = "unverified_library_claim"

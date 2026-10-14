@@ -249,7 +249,14 @@
 // leading clause already names the defect (StatesProblem) or the trailing
 // clause opens with a qualifier or anaphor ("but only when", "but this
 // flag") and so says nothing alone; and a comment that opens by quoting
-// the PR description is titled by the sentence after it. Under either
-// setting a word cut avoids ending on a connective or subordinator and a
-// sentence ends after any closing quote that follows its period.
+// the PR description is titled by the sentence after it. Under
+// PUBLISH_PROBLEM_CLAUSE_START (on unless set to false, read at call time)
+// the shown clause opens the line itself, capitalised and without the
+// marker or its connective ("The cache is never invalidated ...", not
+// "[…] but the cache ..."), a contrast inside an unclosed subordinate
+// clause ("Where A but B, C") yields the main clause C, and no bullet,
+// title or headline opens with the marker or a lowercase connective.
+// Under either setting a word cut avoids ending on a connective or
+// subordinator and a sentence ends after any closing quote that follows
+// its period.
 package publisher

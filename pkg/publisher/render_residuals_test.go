@@ -16,7 +16,7 @@ const (
 	smokeQuoteNote = "The PR description states: 'Room-scoped handling (the session check, with `leave_room` exempt) now applies to `toast_overlay` too.' However, the implementation deliberately does the opposite: the `toast_overlay` case has no `leave_room` exemption, as acknowledged in the in-code comment (lines 494-496). The PR description should be corrected to accurately reflect that `toast_overlay` gets no `leave_room` exemption, unlike `chat_banner` and `push_banner`."
 	smokeQuoteWant = "The implementation deliberately does the opposite: the `toast_overlay` case has no `leave_room` exemption, as acknowledged in the in-code comment (lines 494-496)"
 	smokeGuardNote = "The current guard `selectSessionDossierRoom(getState()) !== room` only rejects when the session has moved off `room`, but `leave_room` responses can arrive while the session still reads the departed room (as the existing stale-response test and comment on `chat_banner_notification` document). This means `toast_overlay` will still fire on `leave_room` when the session hasn't moved yet, contradicting the stated intent."
-	smokeGuardWant = "[…] but `leave_room` responses can arrive while the session still reads the departed room (as the existing stale-response test and comment on `chat_banner_notification` document)"
+	smokeGuardWant = "`leave_room` responses can arrive while the session still reads the departed room (as the existing stale-response test and comment on `chat_banner_notification` document)"
 )
 
 func TestFoldedNotes_SmokeAuditNotesStateTheProblem(t *testing.T) {
