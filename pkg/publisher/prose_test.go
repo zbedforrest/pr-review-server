@@ -117,3 +117,29 @@ func TestEscapeProseHTMLCodesCommentsAndDeclarations(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestStatesProblemIgnoresNeutralDescriptions(t *testing.T) {
+	for _, sentence := range []string{
+		"The cache reuses the stale entries between runs.",
+		"If the caller passes a name, the helper can look it up.",
+		"The list may be empty on first load.",
+	} {
+		if StatesProblem(sentence) {
+			t.Errorf("%q is description, not a problem", sentence)
+		}
+	}
+}
+
+func TestCommentTextStaysRawForClaimAnalysis(t *testing.T) {
+	f := contractFinding("medium", "templates/header.html", 3, "The header no longer renders <img> for the small logo.", nil)
+	if got := commentText(f); !strings.Contains(got, " <img> ") {
+		t.Fatalf("analysis text was escaped: %q", got)
+	}
+}
+
+func TestStrayBacktickInAnotherSegmentCannotReopenAnEscapedTag(t *testing.T) {
+	got := EscapeProseHTML("a stray ` then `code` then <img> tag")
+	if got != "a stray ` then `code&#96; then `<img>` tag" {
+		t.Fatalf("got %q", got)
+	}
+}

@@ -215,8 +215,8 @@ func capitalized(s string) string {
 }
 
 var (
-	consequenceRe = regexp.MustCompile(`(?i)\bif\b[^.]*\b(?:will|would|can|could|may|might)\b`)
-	defectWordRe  = regexp.MustCompile(`(?i)\b(?:not|never|no longer|fails?|failing|failed|missing|misses|incorrect(?:ly)?|wrong|broken|breaks|ignores?|ignoring|skips?|skipping|bypass\w*|silently|regress\w*|revert\w*|leaks?|leaking|crash\w*|races?|racy|deadlock\w*|overflow\w*|corrupt\w*|panics?|risk\w*|drift\w*|lose|loses|losing|lost|errors?|stale|undefined|null|empty|invalid|duplicate\w*|mismatch\w*|unreachable|unhandled|uncaught)\b|n't\b`)
+	consequenceRe = regexp.MustCompile(`(?i)\bif\b[^.]*\b(?:will|would)\b`)
+	defectWordRe  = regexp.MustCompile(`(?i)\b(?:never|no longer|fails?|failing|failed|missing|incorrect(?:ly)?|wrong|broken|breaks|ignores|ignoring|bypass(?:es|ed)?|silently|regress\w*|reverts?|reverting|leaks?|leaking|crash\w*|racy|deadlock\w*|overflows?|corrupt\w*|panics?|loses|losing|lost|drifts?)\b`)
 )
 
 // StatesProblem reports whether a sentence says what goes wrong: a defect

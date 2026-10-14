@@ -66,8 +66,12 @@ func closesFence(trimmed, fence string) bool {
 // with a run of backticks and closes at the next run of the same length; a
 // run with no match is literal text, as in CommonMark.
 func escapeOutsideCodeSpans(line string) string {
-	var b strings.Builder
-	prose := 0
+	type segment struct {
+		text string
+		code bool
+	}
+	var segs []segment
+	prose, tagged := 0, false
 	for i := 0; i < len(line); {
 		if line[i] != '`' {
 			i++
@@ -79,23 +83,28 @@ func escapeOutsideCodeSpans(line string) string {
 			i += run
 			continue
 		}
-		b.WriteString(escapeProse(line[prose:i]))
-		b.WriteString(line[i : end+run])
+		segs = append(segs, segment{line[prose:i], false}, segment{line[i : end+run], true})
 		i = end + run
 		prose = i
 	}
-	b.WriteString(escapeProse(line[prose:]))
-	return b.String()
-}
-
-// escapeProse wraps tag-like tokens in code spans. Backticks left in prose
-// are unmatched, and one could pair with a wrapper and push the tag back out
-// of its span, so they become entities when a tag is wrapped.
-func escapeProse(prose string) string {
-	if !tagLikeRe.MatchString(prose) {
-		return prose
+	segs = append(segs, segment{line[prose:], false})
+	for _, s := range segs {
+		tagged = tagged || (!s.code && tagLikeRe.MatchString(s.text))
 	}
-	return tagLikeRe.ReplaceAllString(strings.ReplaceAll(prose, "`", "&#96;"), "`$0`")
+	if !tagged {
+		return line
+	}
+	var b strings.Builder
+	for _, s := range segs {
+		if s.code {
+			b.WriteString(s.text)
+			continue
+		}
+		// Unmatched backticks could pair with a wrapper and push a tag back
+		// out of its span, so they become entities on a line with a tag.
+		b.WriteString(tagLikeRe.ReplaceAllString(strings.ReplaceAll(s.text, "`", "&#96;"), "`$0`"))
+	}
+	return b.String()
 }
 
 func backtickRun(s string, i int) int {

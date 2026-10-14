@@ -611,9 +611,9 @@ func titleIsWholeFirstSentence(f payload.Finding, limit int) bool {
 func legacyHeadlineWith(f payload.Finding, legacyClamp bool) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
 		label, hasLabel := kindLabels[c.FindingKind]
-		impact := strings.TrimSpace(c.Headline)
+		impact := EscapeProseHTML(strings.TrimSpace(c.Headline))
 		if impact == "" {
-			full := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
+			full := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), "."))
 			impact = clauseHeadlineWith(full, legacyHeadlineMaxRunes, legacyClamp)
 			if impact != full && hasLabel {
 				return label
@@ -624,7 +624,7 @@ func legacyHeadlineWith(f payload.Finding, legacyClamp bool) string {
 		}
 		return impact
 	}
-	first := strings.Trim(firstSentence(commentText(f)), "*_ ")
+	first := EscapeProseHTML(strings.Trim(firstSentence(commentText(f)), "*_ "))
 	if legacyClamp {
 		return truncateWords(first, 100)
 	}
@@ -653,9 +653,9 @@ func titleSource(f payload.Finding) string {
 		if RenderHygieneEnabled() {
 			sentence = StripConfidenceLabel(sentence)
 		}
-		return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(sentence)))
+		return EscapeProseHTML(strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(sentence))))
 	}
-	return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(firstSentence(commentText(f)))))
+	return EscapeProseHTML(strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(firstSentence(commentText(f))))))
 }
 
 // impactTitle is the effect statement's first sentence as a title: cleaned
@@ -780,7 +780,7 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 }
 
 func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string, legacy, legacyClamp bool) string {
-	comment := commentText(f)
+	comment := EscapeProseHTML(commentText(f))
 	c := f.FindingContract
 	hasContract := c != nil && f.FindingContractStatus == "valid"
 	compact := hasContract && strings.TrimSpace(c.CurrentImpact) != ""
@@ -885,7 +885,7 @@ func agentLink(base string, f payload.Finding) string {
 var provenanceNoteRe = regexp.MustCompile(`^_\[[^\]]*\]_\s*`)
 
 func commentText(f payload.Finding) string {
-	return EscapeProseHTML(strings.TrimSpace(provenanceNoteRe.ReplaceAllString(strings.TrimSpace(f.Comment), "")))
+	return strings.TrimSpace(provenanceNoteRe.ReplaceAllString(strings.TrimSpace(f.Comment), ""))
 }
 
 // summaryText is the bullet text for a finding: its title (see titleSource).
@@ -898,7 +898,7 @@ func summaryText(f payload.Finding, legacy bool) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
 		return EscapeProseHTML(strings.TrimSpace(c.CurrentImpact))
 	}
-	return strings.Trim(firstLine(commentText(f)), "*_ ")
+	return EscapeProseHTML(strings.Trim(firstLine(commentText(f)), "*_ "))
 }
 
 // truncateWords cuts at the last word boundary before max runes and appends
