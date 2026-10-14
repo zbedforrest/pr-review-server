@@ -48,7 +48,7 @@ func TestFoldedNotes_SmokeAuditNotesStateTheProblem(t *testing.T) {
 }
 
 func TestIsContext_ClosingQuoteOfAnyShape(t *testing.T) {
-	for _, s := range []string{`He asked "why not."`, "He asked “why not.”", "The body says 'done.'", "The body says ‘done.’"} {
+	for _, s := range []string{`He asked "why not."`, "He asked “why not.”", "He asked 'why not.'", "He asked ‘why not.’"} {
 		if !IsContext(s) {
 			t.Fatalf("%q is context", s)
 		}

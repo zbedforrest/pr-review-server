@@ -257,8 +257,12 @@ func (p Policy) matchOptions() reconcile.MatchOptions {
 }
 
 // shownSentence is the sentence the summary bullet shows for a finding the
-// contract does not title: the first sentence that reports something.
+// contract does not title (as the renderer judges it): the first sentence
+// that reports something. Empty when the contract titles the bullet.
 func shownSentence(f payload.Finding) string {
+	if !titleFromComment(f) {
+		return ""
+	}
 	if s, ok := FirstFindingSentence(commentText(f)); ok {
 		return s
 	}

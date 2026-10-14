@@ -146,18 +146,16 @@ func prismText(p payload.Finding) string {
 }
 
 // noteSentence is the sentence the summary shows for a finding its
-// contract does not title (no headline, no current impact): what shown
-// picks, else the first sentence of the comment. Empty for a finding the
-// headline or impact already names.
+// contract does not title: what shown picks (empty when the contract
+// titles it), else the first sentence of a comment whose contract has no
+// headline and asserts no current impact.
 func noteSentence(p payload.Finding, shown func(payload.Finding) string) string {
+	if shown != nil {
+		return strings.TrimSpace(shown(p))
+	}
 	if c := p.FindingContract; c != nil {
 		if strings.TrimSpace(c.Headline) != "" || (c.Materiality == "current_impact" && strings.TrimSpace(c.CurrentImpact) != "") {
 			return ""
-		}
-	}
-	if shown != nil {
-		if s := strings.TrimSpace(shown(p)); s != "" {
-			return s
 		}
 	}
 	first, _ := splitFirstSentence(strings.Join(strings.Fields(p.Comment), " "))

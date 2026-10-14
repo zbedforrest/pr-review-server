@@ -338,3 +338,15 @@ func TestMatchOptions_ScoreTheSentenceTheBulletShows(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestMatchOptions_ShownSentenceFollowsTheRendererTitle(t *testing.T) {
+	comment := "The fanout skip reads `buyer_id` unconditionally, but the purchase read path does not."
+	titled := payload.Finding{Comment: comment, FindingContractStatus: "valid", FindingContract: &types.FindingContract{Headline: "Fanout skip reads the mirror column only"}}
+	if got := shownSentence(titled); got != "" {
+		t.Fatalf("a contract headline titles the bullet: %q", got)
+	}
+	dropped := payload.Finding{Comment: comment, FindingContractStatus: "invalid", FindingContract: &types.FindingContract{Headline: "Fanout skip reads the mirror column only"}}
+	if got := shownSentence(dropped); !strings.HasPrefix(got, "The fanout skip reads") {
+		t.Fatalf("an unaccepted contract leaves the comment sentence as the title: %q", got)
+	}
+}

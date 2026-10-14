@@ -233,7 +233,7 @@ func IsContext(sentence string) bool {
 		return true
 	}
 	last, _ := utf8.DecodeLastRuneInString(s)
-	return strings.ContainsRune(`'"”’`, last) && strings.ContainsAny(s, `'"“”`)
+	return strings.ContainsRune(`'"”’`, last) && strings.ContainsAny(s, `'"“”‘’`)
 }
 
 func capitalized(s string) string {
