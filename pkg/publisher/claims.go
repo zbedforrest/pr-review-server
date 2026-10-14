@@ -180,9 +180,8 @@ func FirstFindingSentence(comment string) (string, bool) {
 
 // titleSentence picks the sentence that titles a comment: the first one,
 // unless it is praise. After a compliment (often followed by context) it
-// prefers a sentence with a defect word, then an "if X, Y will" consequence,
-// then the first that is not praise. ok is false when the comment is praise
-// all the way through.
+// prefers a sentence that states a problem, then the first that is not
+// praise. ok is false when the comment is praise all the way through.
 func titleSentence(ss []string) (int, bool) {
 	if len(ss) == 0 {
 		return 0, false
@@ -190,24 +189,18 @@ func titleSentence(ss []string) (int, bool) {
 	if !RenderHygieneEnabled() || !IsPraise(ss[0]) {
 		return 0, true
 	}
-	first, consequence := -1, -1
+	first := -1
 	for i := 1; i < len(ss); i++ {
 		s := contrastOpenerRe.ReplaceAllString(ss[i], "")
 		if s == "" || IsPraise(s) {
 			continue
 		}
-		if defectWordRe.MatchString(s) {
+		if StatesProblem(s) {
 			return i, true
-		}
-		if consequence < 0 && consequenceRe.MatchString(s) {
-			consequence = i
 		}
 		if first < 0 {
 			first = i
 		}
-	}
-	if consequence >= 0 {
-		return consequence, true
 	}
 	return first, first >= 0
 }
@@ -222,15 +215,13 @@ func capitalized(s string) string {
 }
 
 var (
-	consequenceRe = regexp.MustCompile(`(?i)\bif\b[^.]*\b(?:will|would)\b`)
-	defectWordRe  = regexp.MustCompile(`(?i)\b(?:never|fails?|failing|failed|missing|incorrect(?:ly)?|wrong|broken|breaks|ignores|ignoring|bypass(?:es|ed)?|silently|regress\w*|reverts?|reverting|leaks?|leaking|crash\w*|racy|deadlock\w*|overflows?|corrupt\w*|panics?|loses|losing|lost|drifts?|drops|dropped|overwrites|overwritten|clobber\w*)\b`)
+	defectWordRe = regexp.MustCompile(`(?i)\b(?:never|fails?|failing|failed|missing|incorrect(?:ly)?|wrong|broken|breaks|ignores|ignoring|bypass(?:es|ed)?|silently|regress\w*|reverts?|reverting|leaks?|leaking|crash\w*|racy|deadlock\w*|overflows?|corrupt\w*|panics?|loses|losing|lost|drifts?|drops|dropped|overwrites|overwritten|clobber\w*)\b`)
 )
 
-// StatesProblem reports whether a sentence says what goes wrong: a defect
-// word or an "if X, Y will ..." consequence, rather than only describing the
-// code.
+// StatesProblem reports whether a sentence says what goes wrong, by a defect
+// word, rather than only describing the code.
 func StatesProblem(sentence string) bool {
-	return consequenceRe.MatchString(sentence) || defectWordRe.MatchString(sentence)
+	return defectWordRe.MatchString(sentence)
 }
 
 var (

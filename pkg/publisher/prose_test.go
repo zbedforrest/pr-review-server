@@ -122,6 +122,7 @@ func TestStatesProblemIgnoresNeutralDescriptions(t *testing.T) {
 	for _, sentence := range []string{
 		"The cache reuses the stale entries between runs.",
 		"If the caller passes a name, the helper can look it up.",
+		"If the flag is on, the job will read the new table.",
 		"The list may be empty on first load.",
 	} {
 		if StatesProblem(sentence) {
@@ -150,5 +151,11 @@ func TestTitlePrefersADefectWordOverANeutralConditional(t *testing.T) {
 	title, _ := FirstFindingSentence(comment)
 	if !strings.HasPrefix(title, "That read silently drops rows") {
 		t.Fatalf("title = %q", title)
+	}
+}
+
+func TestEscapeProseHTMLLeavesUnspacedComparisonsAlone(t *testing.T) {
+	if got := EscapeProseHTML("loop while i<n and j>m, then render <img src=\"x\">"); got != "loop while i<n and j>m, then render `<img src=\"x\">`" {
+		t.Fatalf("got %q", got)
 	}
 }

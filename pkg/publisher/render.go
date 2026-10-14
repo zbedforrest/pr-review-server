@@ -329,7 +329,7 @@ func (r Round) unverifiedBullet(f payload.Finding) string {
 	}
 	line := r.markedBullet(f, markerDisputed)
 	if reason := strings.TrimSpace(f.Assessment.Reason); reason != "" {
-		line += "  - Agent: " + EscapeProseHTML(clampText(StripFindingIDAsides(firstLine(reason)), maxReasonRunes, r.LegacyClamp)) + "\n"
+		line += "  - Agent: " + clampText(EscapeProseHTML(StripFindingIDAsides(firstLine(reason))), maxReasonRunes, r.LegacyClamp) + "\n"
 	}
 	return line
 }
