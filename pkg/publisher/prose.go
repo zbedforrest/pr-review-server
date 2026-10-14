@@ -114,7 +114,8 @@ func escapeOutsideCodeSpans(line string) string {
 		}
 		// Unmatched backticks could pair with a wrapper and push a tag back
 		// out of its span, so they become entities on a line with a tag.
-		out := tagLikeRe.ReplaceAllString(strings.ReplaceAll(s.text, "`", "&#96;"), "`$0`")
+		// Prose holds no backticks by now, so a double run is two touching wrappers.
+		out := strings.ReplaceAll(tagLikeRe.ReplaceAllString(strings.ReplaceAll(s.text, "`", "&#96;"), "`$0`"), "``", "` `")
 		// A wrapper touching a neighbouring span's delimiter would merge into it.
 		if i > 0 && strings.HasPrefix(out, "`") {
 			out = " " + out

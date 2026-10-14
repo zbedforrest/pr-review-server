@@ -215,7 +215,7 @@ func capitalized(s string) string {
 }
 
 var (
-	defectWordRe = regexp.MustCompile(`(?i)\b(?:fails?|failing|failed|missing|incorrect(?:ly)?|wrong|broken|breaks|ignores|ignoring|bypass(?:es|ed)?|silently|regress\w*|reverts?|reverting|leaks?|leaking|crash\w*|racy|deadlock\w*|overflows?|corrupt\w*|panics?|loses|losing|lost|drifts?|drops|dropped|overwrites|overwritten|clobber\w*)\b`)
+	defectWordRe = regexp.MustCompile(`(?i)\b(?:fails?|failing|failed|missing|incorrect(?:ly)?|wrong|broken|break|breaks|ignore|ignores|ignoring|bypass(?:es|ed)?|silently|regress\w*|reverts?|reverting|leaks?|leaking|crash\w*|racy|deadlock\w*|overflows?|corrupt\w*|panics?|lose|loses|losing|lost|drifts?|drop|drops|dropped|overwrite|overwrites|overwritten|clobber\w*|truncat\w*)\b`)
 )
 
 // StatesProblem reports whether a sentence says what goes wrong, by a defect

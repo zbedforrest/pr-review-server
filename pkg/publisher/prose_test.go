@@ -179,3 +179,9 @@ func TestEscapeProseHTMLCodesKnownElementsWithBareAttributes(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestEscapeProseHTMLSeparatesTouchingTags(t *testing.T) {
+	if got := EscapeProseHTML("an empty <b></b> pair"); got != "an empty `<b>` `</b>` pair" {
+		t.Fatalf("got %q", got)
+	}
+}
