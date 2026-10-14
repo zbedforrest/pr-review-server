@@ -101,7 +101,7 @@ func ContractSentence(text string) string {
 	if MentionsFindingID(text) {
 		return ""
 	}
-	return StripConfidenceLabel(text)
+	return EscapeProseHTML(StripConfidenceLabel(text))
 }
 
 // bodyIDRefRe matches a parenthetical or trailing aside that only points at
@@ -168,22 +168,60 @@ func sentences(text string) []string {
 // the way through.
 func FirstFindingSentence(comment string) (string, bool) {
 	ss := sentences(comment)
-	if len(ss) == 0 {
+	i, ok := titleSentence(ss)
+	if !ok {
 		return "", false
 	}
-	if !RenderHygieneEnabled() || !IsPraise(ss[0]) {
+	if i == 0 {
 		return ss[0], true
 	}
-	for _, s := range ss[1:] {
-		s = contrastOpenerRe.ReplaceAllString(s, "")
+	return capitalized(contrastOpenerRe.ReplaceAllString(ss[i], "")), true
+}
+
+// titleSentence picks the sentence that titles a comment: the first one,
+// unless it is praise. After a compliment (often followed by context) it
+// prefers a sentence that states a problem, then the first that is not
+// praise. ok is false when the comment is praise all the way through.
+func titleSentence(ss []string) (int, bool) {
+	if len(ss) == 0 {
+		return 0, false
+	}
+	if !RenderHygieneEnabled() || !IsPraise(ss[0]) {
+		return 0, true
+	}
+	first := -1
+	for i := 1; i < len(ss); i++ {
+		s := contrastOpenerRe.ReplaceAllString(ss[i], "")
 		if s == "" || IsPraise(s) {
 			continue
 		}
-		r := []rune(s)
-		r[0] = unicode.ToUpper(r[0])
-		return string(r), true
+		if StatesProblem(s) {
+			return i, true
+		}
+		if first < 0 {
+			first = i
+		}
 	}
-	return "", false
+	return first, first >= 0
+}
+
+func capitalized(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
+var (
+	defectWordRe = regexp.MustCompile(`(?i)\b(?:fails?|failing|failed|missing|incorrect(?:ly)?|wrong|broken|break|breaks|ignore|ignores|ignoring|bypass(?:es|ed)?|silently|regress\w*|reverts?|reverting|leaks?|leaking|crash\w*|racy|deadlock\w*|overflows?|corrupt\w*|panics?|lose|loses|losing|lost|drifts?|drop|drops|dropped|overwrite|overwrites|overwritten|clobber\w*|truncat\w*)\b`)
+)
+
+// StatesProblem reports whether a sentence says what goes wrong, by a defect
+// word, rather than only describing the code.
+func StatesProblem(sentence string) bool {
+	return defectWordRe.MatchString(sentence)
 }
 
 var (
@@ -341,24 +379,26 @@ func commentAfterTitle(comment string) string {
 	if len(ss) == 0 {
 		return comment
 	}
-	k := 0
-	if RenderHygieneEnabled() {
-		for k < len(ss) && IsPraise(ss[k]) {
-			k++
-		}
-		if k == len(ss) {
-			return ""
-		}
+	t, ok := titleSentence(ss)
+	if !ok {
+		return ""
 	}
 	pos := 0
-	for i := 0; i <= k; i++ {
+	var kept []string
+	for i := 0; i <= t; i++ {
 		j := strings.Index(comment[pos:], ss[i])
 		if j < 0 {
 			return comment
 		}
 		pos += j + len(ss[i])
+		if i == t {
+			break
+		}
+		if s := contrastOpenerRe.ReplaceAllString(ss[i], ""); s != "" && !IsPraise(ss[i]) && !IsPraise(s) {
+			kept = append(kept, capitalized(s))
+		}
 	}
-	return strings.TrimSpace(comment[pos:])
+	return strings.TrimSpace(strings.Join(append(kept, strings.TrimSpace(comment[pos:])), " "))
 }
 
 // AllPraise reports whether a finding titled by its comment has nothing but

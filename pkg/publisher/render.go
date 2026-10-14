@@ -329,7 +329,7 @@ func (r Round) unverifiedBullet(f payload.Finding) string {
 	}
 	line := r.markedBullet(f, markerDisputed)
 	if reason := strings.TrimSpace(f.Assessment.Reason); reason != "" {
-		line += "  - Agent: " + clampText(StripFindingIDAsides(firstLine(reason)), maxReasonRunes, r.LegacyClamp) + "\n"
+		line += "  - Agent: " + clampText(EscapeProseHTML(StripFindingIDAsides(firstLine(reason))), maxReasonRunes, r.LegacyClamp) + "\n"
 	}
 	return line
 }
@@ -605,18 +605,15 @@ func titleIsWholeFirstSentence(f payload.Finding, limit int) bool {
 	return len([]rune(titleSource(f))) <= limit
 }
 
-func legacyHeadline(f payload.Finding) string {
-	return legacyHeadlineWith(f, false)
-}
-
-// legacyHeadlineWith is legacyHeadline with the cut rule chosen the same way
-// as headlineWith, so both kill switches together restore the old word cut.
+// legacyHeadlineWith is the pre-2026-10 headline with the cut rule chosen the
+// same way as headlineWith, so both kill switches together restore the old
+// word cut.
 func legacyHeadlineWith(f payload.Finding, legacyClamp bool) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
 		label, hasLabel := kindLabels[c.FindingKind]
-		impact := strings.TrimSpace(c.Headline)
+		impact := EscapeProseHTML(strings.TrimSpace(c.Headline))
 		if impact == "" {
-			full := strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), ".")
+			full := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(c.CurrentImpact), "."))
 			impact = clauseHeadlineWith(full, legacyHeadlineMaxRunes, legacyClamp)
 			if impact != full && hasLabel {
 				return label
@@ -627,7 +624,7 @@ func legacyHeadlineWith(f payload.Finding, legacyClamp bool) string {
 		}
 		return impact
 	}
-	first := strings.Trim(firstSentence(commentText(f)), "*_ ")
+	first := EscapeProseHTML(strings.Trim(firstSentence(commentText(f)), "*_ "))
 	if legacyClamp {
 		return truncateWords(first, 100)
 	}
@@ -656,9 +653,9 @@ func titleSource(f payload.Finding) string {
 		if RenderHygieneEnabled() {
 			sentence = StripConfidenceLabel(sentence)
 		}
-		return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(sentence)))
+		return EscapeProseHTML(strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(sentence))))
 	}
-	return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(firstSentence(commentText(f)))))
+	return EscapeProseHTML(strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(firstSentence(commentText(f))))))
 }
 
 // impactTitle is the effect statement's first sentence as a title: cleaned
@@ -783,7 +780,7 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 }
 
 func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string, legacy, legacyClamp bool) string {
-	comment := commentText(f)
+	comment := EscapeProseHTML(commentText(f))
 	c := f.FindingContract
 	hasContract := c != nil && f.FindingContractStatus == "valid"
 	compact := hasContract && strings.TrimSpace(c.CurrentImpact) != ""
@@ -836,8 +833,8 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		details.WriteString(reasoning + "\n")
 	}
 	if hasContract && c.Falsifiability == "falsifiable" && c.FalsifiableCondition != nil && c.ExpectedObservable != nil {
-		condition := strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), ".")
-		observable := strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), ".")
+		condition := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), "."))
+		observable := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), "."))
 		fmt.Fprintf(&details, "\n**How to verify:** %s. Expected: %s.\n", condition, observable)
 	}
 	if agentLinkBase != "" {
@@ -899,9 +896,9 @@ func summaryText(f payload.Finding, legacy bool) string {
 		return titleSource(f)
 	}
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
-		return strings.TrimSpace(c.CurrentImpact)
+		return EscapeProseHTML(strings.TrimSpace(c.CurrentImpact))
 	}
-	return strings.Trim(firstLine(commentText(f)), "*_ ")
+	return EscapeProseHTML(strings.Trim(firstLine(commentText(f)), "*_ "))
 }
 
 // truncateWords cuts at the last word boundary before max runes and appends

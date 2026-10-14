@@ -546,7 +546,7 @@ func renderDecision(d ReplyDecision, reply AuthorReply, root ThreadComment, prBo
 	if !ok {
 		return abstain(), 0
 	}
-	d.Reply = paragraph + appendix
+	d.Reply = EscapeProseHTML(paragraph) + appendix
 	return d, len([]rune(appendix))
 }
 

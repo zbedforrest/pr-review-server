@@ -301,7 +301,7 @@ func deltaReply(f payload.Finding, ext reconcile.ExternalFinding) string {
 	hasContract := c != nil && f.FindingContractStatus == "valid"
 	if hasContract {
 		if impact := strings.TrimSpace(c.CurrentImpact); impact != "" && !covered(impact, extText) {
-			parts = append(parts, impact)
+			parts = append(parts, EscapeProseHTML(impact))
 		}
 	}
 	if code := suggestedCode(commentText(f)); code != "" && ext.Suggestion == "" {
@@ -311,7 +311,7 @@ func deltaReply(f payload.Finding, ext reconcile.ExternalFinding) string {
 		condition := strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), ".")
 		observable := strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), ".")
 		if !covered(condition+" "+observable, extText) {
-			parts = append(parts, fmt.Sprintf("**How to verify:** %s. Expected: %s.", condition, observable))
+			parts = append(parts, fmt.Sprintf("**How to verify:** %s. Expected: %s.", EscapeProseHTML(condition), EscapeProseHTML(observable)))
 		}
 	}
 	if len(parts) == 0 {
