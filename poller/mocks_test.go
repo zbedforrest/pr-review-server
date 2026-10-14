@@ -1068,17 +1068,19 @@ func (m *MockDatabase) GetUserByUsername(username string) (*db.User, error) {
 	defer m.mu.RUnlock()
 	for i := range m.Users {
 		if m.Users[i].GitHubUsername == username {
-			return &m.Users[i], nil
+			u := m.Users[i]
+			return &u, nil
 		}
 	}
 	return nil, nil
 }
 
+// GetAllUsers returns a copy: review jobs create users concurrently with the
+// poll loop that reads them.
 func (m *MockDatabase) GetAllUsers() ([]db.User, error) {
-	if m.Users == nil {
-		return []db.User{}, nil
-	}
-	return m.Users, nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]db.User{}, m.Users...), nil
 }
 
 func (m *MockDatabase) CreateUser(user *db.User) error {

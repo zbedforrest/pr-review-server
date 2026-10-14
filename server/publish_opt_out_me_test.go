@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,7 +55,8 @@ func TestGetUser_ReportsPublishEnrollment(t *testing.T) {
 
 	cold := getUserAs(t, server, &db.User{ID: 1, GitHubUsername: "bob"})
 	assert.Equal(t, false, cold["publish_enrolled"], "an unresolved team is answered from the cache, never fetched on the request path")
-	assert.True(t, teams.IsMember(context.Background(), "xo-team", "bob"), "the poller's gate warms the cache")
+	require.Eventually(t, func() bool { return teams.IsMember(context.Background(), "xo-team", "bob") }, 5*time.Second, 10*time.Millisecond,
+		"the background warm-up started by the cold load resolves the team")
 
 	cases := []struct {
 		login    string
