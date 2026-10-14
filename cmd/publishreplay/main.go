@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false] [--settled-alias=false] [--note-reconcile=false] [--body-check] [--note-sentence-match=false] [--note-problem-clause=false]
+//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false] [--settled-alias=false] [--note-reconcile=false] [--body-check] [--note-sentence-match=false] [--note-problem-clause=false] [--problem-clause-start=false]
 //
 // Dumps are the GitHub GraphQL exports (one PR per file). Sidecars are the
 // review findings JSON per round, fetched from PRISM_BASE_URL/reviews/ with
@@ -58,11 +58,13 @@ func main() {
 	bodyCheck := flag.Bool("body-check", false, "hold folded notes the pull request body already states (PUBLISH_BODY_CHECK)")
 	noteSentenceMatch := flag.Bool("note-sentence-match", true, "score a finding against another reviewer's root by the sentence its note shows too (PUBLISH_NOTE_SENTENCE_MATCH)")
 	noteProblemClause := flag.Bool("note-problem-clause", true, "cut a bullet to its problem clause rather than its context clause, never ending on a connective, and title a comment that quotes the PR by the sentence after it (PUBLISH_NOTE_PROBLEM_CLAUSE)")
+	problemClauseStart := flag.Bool("problem-clause-start", true, "start a cut bullet or title at its problem clause, capitalised and without the marker, never on the marker or a lowercase connective (PUBLISH_PROBLEM_CLAUSE_START)")
 	flag.Parse()
 	// The renderer reads its kill switches from the environment, as the
 	// discount gate does; the flags win over an inherited variable.
 	_ = os.Setenv(publisher.RenderHygieneEnv, strconv.FormatBool(*renderHygiene))
 	_ = os.Setenv(publisher.NoteProblemClauseEnv, strconv.FormatBool(*noteProblemClause))
+	_ = os.Setenv(publisher.ProblemClauseStartEnv, strconv.FormatBool(*problemClauseStart))
 	if *dumpsDir == "" || *sidecarsDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv]")
 		os.Exit(2)
