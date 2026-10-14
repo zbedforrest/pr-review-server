@@ -83,7 +83,7 @@ func TestStatesProblemNeedsAWholeWordIf(t *testing.T) {
 
 func TestEscapeProseHTMLRespectsCodeSpansOnTrickyLines(t *testing.T) {
 	cases := map[string]string{
-		"emits `<img>` and a stray ` tick near <br>": "emits `<img>` and a stray ` tick near `<br>`",
+		"emits `<img>` and a stray ` tick near <br>": "emits `<img>` and a stray &#96; tick near `<br>`",
 		"wrap ``a <b> c`` and <i>":                   "wrap ``a <b> c`` and `<i>`",
 		"`<img>` then <img> then `x`":                "`<img>` then `<img>` then `x`",
 	}
@@ -100,5 +100,20 @@ func TestContextWithADiscourseWordDoesNotTitleThePraiseLedFinding(t *testing.T) 
 	title, _ := FirstFindingSentence(comment)
 	if !strings.HasPrefix(title, "If it is unset, a deploy will revert") {
 		t.Fatalf("title = %q", title)
+	}
+}
+
+func TestEscapeProseHTMLOnlyTreatsRealFencesAsCode(t *testing.T) {
+	in := "```js``` is inline, then <img>.\n````\n```\n<b>\n````\nafter <i>\n"
+	want := "```js``` is inline, then `<img>`.\n````\n```\n<b>\n````\nafter `<i>`\n"
+	if got := EscapeProseHTML(in); got != want {
+		t.Fatalf("got:\n%s", got)
+	}
+}
+
+func TestEscapeProseHTMLCodesCommentsAndDeclarations(t *testing.T) {
+	got := EscapeProseHTML("the template keeps an <!-- slot --> placeholder before <!DOCTYPE html>")
+	if got != "the template keeps an `<!-- slot -->` placeholder before `<!DOCTYPE html>`" {
+		t.Fatalf("got %q", got)
 	}
 }

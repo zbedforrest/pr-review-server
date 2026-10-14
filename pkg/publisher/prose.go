@@ -5,10 +5,16 @@ import (
 	"strings"
 )
 
-// tagLikeRe matches an HTML start, end or self-closing tag. GitHub renders
-// one written in prose as markup, so `renders an <img> with an empty src`
-// loses its subject or shows a broken image.
-var tagLikeRe = regexp.MustCompile(`</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>\n]*)?/?>`)
+// tagLikeRe matches HTML that GitHub renders as markup when written in
+// prose: start, end and self-closing tags, comments and declarations. So
+// `renders an <img> with an empty src` loses its subject or shows a broken
+// image, and a <!-- comment --> hides its words.
+var tagLikeRe = regexp.MustCompile(`</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>\n]*)?/?>|<!--[^\n]*?-->|<![A-Za-z][^<>\n]*>|<\?[^<>\n]*?\?>`)
+
+var (
+	backtickFenceRe = regexp.MustCompile("^(`{3,})[^`]*$")
+	tildeFenceRe    = regexp.MustCompile(`^(~{3,})`)
+)
 
 // EscapeProseHTML puts tag-like tokens in agent prose into code spans,
 // leaving fenced blocks and existing code spans as they are.
@@ -20,23 +26,40 @@ func EscapeProseHTML(text string) string {
 	fence := ""
 	for _, line := range strings.SplitAfter(text, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if fence == "" && (strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")) {
-			fence = trimmed[:3]
-			b.WriteString(line)
-			continue
-		}
-		if fence != "" && strings.HasPrefix(trimmed, fence) {
+		switch {
+		case fence == "":
+			if open := fenceOpening(trimmed); open != "" {
+				fence = open
+				b.WriteString(line)
+				continue
+			}
+			b.WriteString(escapeOutsideCodeSpans(line))
+		case closesFence(trimmed, fence):
 			fence = ""
 			b.WriteString(line)
-			continue
-		}
-		if fence != "" {
+		default:
 			b.WriteString(line)
-			continue
 		}
-		b.WriteString(escapeOutsideCodeSpans(line))
 	}
 	return b.String()
+}
+
+// fenceOpening returns the delimiter run when a line opens a fenced block.
+func fenceOpening(trimmed string) string {
+	if m := backtickFenceRe.FindStringSubmatch(trimmed); m != nil {
+		return m[1]
+	}
+	if m := tildeFenceRe.FindStringSubmatch(trimmed); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// closesFence reports whether a line is a closing run of the fence's
+// character at least as long as the opening one.
+func closesFence(trimmed, fence string) bool {
+	run := strings.TrimRight(trimmed, " \t")
+	return len(run) >= len(fence) && strings.Trim(run, fence[:1]) == ""
 }
 
 // escapeOutsideCodeSpans escapes the prose of one line. A code span opens
@@ -56,13 +79,23 @@ func escapeOutsideCodeSpans(line string) string {
 			i += run
 			continue
 		}
-		b.WriteString(tagLikeRe.ReplaceAllString(line[prose:i], "`$0`"))
+		b.WriteString(escapeProse(line[prose:i]))
 		b.WriteString(line[i : end+run])
 		i = end + run
 		prose = i
 	}
-	b.WriteString(tagLikeRe.ReplaceAllString(line[prose:], "`$0`"))
+	b.WriteString(escapeProse(line[prose:]))
 	return b.String()
+}
+
+// escapeProse wraps tag-like tokens in code spans. Backticks left in prose
+// are unmatched, and one could pair with a wrapper and push the tag back out
+// of its span, so they become entities when a tag is wrapped.
+func escapeProse(prose string) string {
+	if !tagLikeRe.MatchString(prose) {
+		return prose
+	}
+	return tagLikeRe.ReplaceAllString(strings.ReplaceAll(prose, "`", "&#96;"), "`$0`")
 }
 
 func backtickRun(s string, i int) int {
