@@ -20,6 +20,9 @@ const (
 	ReviewRunStatusTimedOut  = "timed_out"
 	ReviewRunStatusCancelled = "cancelled"
 	MaxReviewRunListLimit    = 500
+	// ReviewTriggerAutoReady is the trigger source of automatic reviews
+	// (webhook and poll fallback); the daily round cap counts these only.
+	ReviewTriggerAutoReady = "auto_ready"
 )
 
 // ReviewRun is the durable identity, immutable configuration, and lifecycle

@@ -289,3 +289,26 @@ func TestSettleFooter_IsInvisibleToPriorCommentAliasing(t *testing.T) {
 		}
 	}
 }
+
+func TestPushesCappedFooter_IsOneSegmentOfTheReviewsLine(t *testing.T) {
+	r := roundOne()
+	r.RoundNumber = 4
+	r.SettleFooter = SettleFooter("https://prism.example/#prism-comments", true)
+	sel := Select(r.Findings, nil, r.Commentable, DefaultPolicy())
+	plain := RenderSummary(r, sel)
+	if strings.Contains(plain, PushesCappedFooter) {
+		t.Fatalf("an uncapped PR says nothing about further pushes:\n%s", plain)
+	}
+	r.PushesCapped = true
+	capped := RenderSummary(r, sel)
+	want := "<sub>Reviews (4) · reviewed sha-rou · 2 changed files · Further pushes today are reviewed on request</sub>"
+	if !strings.Contains(capped, want) {
+		t.Fatalf("capped footer:\n%s", capped)
+	}
+	if strings.Count(capped, PushesCappedFooter) != 1 {
+		t.Fatalf("the line appears once:\n%s", capped)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(capped), "</a></sub>") {
+		t.Fatalf("the settle footer still closes the summary:\n%s", capped)
+	}
+}

@@ -98,6 +98,35 @@ func TestGormDB_HealthMetrics_CountsTheWindow(t *testing.T) {
 	assert.Equal(t, 1, m.Publish.Inline)
 	assert.Equal(t, 4, m.Replies.Handled)
 	assert.Equal(t, 1, m.Replies.StuckPending, "untouched rows, rows active in the last hour, and rows on PRs the scan no longer visits are not stuck")
+	assert.Empty(t, m.AutoReview.RoundsPerPRDay, "no automatic runs in this window")
+}
+
+func TestGormDB_HealthMetrics_RoundsPerPRDay(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Date(2026, 9, 10, 14, 0, 0, 0, time.UTC)
+	start := now.Add(-24 * time.Hour)
+	auto := func(id string, number int, acceptedAgo time.Duration, status string) {
+		accepted := now.Add(-acceptedAgo)
+		require.NoError(t, db.db.Create(&ReviewRunModel{
+			RunID: id, RepoOwner: "acme", RepoName: "example", PRNumber: number, CommitSHA: "abc", TriggerSource: ReviewTriggerAutoReady, Status: status,
+			RequestedConfigJSON: "{}", EffectiveConfigJSON: "{}", ConfigSourcesJSON: "{}", ConfigHash: "h", ConfigSchemaVersion: 3,
+			AcceptedAt: accepted, QueuedAt: accepted, CompletedAt: &accepted,
+		}).Error)
+	}
+	// PR 5: three rounds today, one yesterday (the window starts at 14:00 the
+	// day before, so 13:00 the previous day is outside it); PR 6: one round
+	// plus a cancelled admission that never ran.
+	auto("d1", 5, time.Hour, ReviewRunStatusCompleted)
+	auto("d2", 5, 2*time.Hour, ReviewRunStatusCompleted)
+	auto("d3", 5, 3*time.Hour, ReviewRunStatusFailed)
+	auto("d4", 5, 15*time.Hour, ReviewRunStatusCompleted)
+	auto("d5", 5, 25*time.Hour, ReviewRunStatusCompleted)
+	auto("d6", 6, 4*time.Hour, ReviewRunStatusCompleted)
+	auto("d7", 6, 5*time.Hour, ReviewRunStatusCancelled)
+
+	m, err := db.HealthMetrics(start, now, now, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 3, 1}, m.AutoReview.RoundsPerPRDay, "automatic rounds per PR per UTC day, oldest day first; cancelled and out-of-window runs do not count")
 }
 
 func TestGormDB_HealthReports_RoundTrip(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"pr-review-server/db"
 	"pr-review-server/github"
@@ -183,10 +184,12 @@ func optOutURL(baseURL string) string {
 }
 
 // liveRound is the round for anything that reaches GitHub, the posting path
-// and the summary refresh alike, so both render the same settle footer.
+// and the summary refresh alike, so both render the same settle footer and
+// the same daily-cap footer.
 func (p *Poller) liveRound(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, pol publisher.Policy) publisher.Round {
 	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
 	round.SettleFooter = p.settleFooter()
+	round.PushesCapped = p.pushesCapped(pr.Owner, pr.Repo, pr.Number, time.Now().UTC())
 	return round
 }
 

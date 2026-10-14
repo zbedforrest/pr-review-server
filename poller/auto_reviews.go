@@ -21,7 +21,7 @@ import (
 // paths; the review-run ledger stays the source of truth for execution.
 const (
 	settingAutoReviewReadyPRs = "auto_review_ready_prs"
-	autoReviewTriggerSource   = "auto_ready"
+	autoReviewTriggerSource   = db.ReviewTriggerAutoReady
 	// autoReviewPublicationGrace is how long after a run completes its
 	// publication outcome may still be unrecorded before settlement reconciles
 	// the intent against the publication ledger instead.
@@ -249,6 +249,9 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 		return false
 	}
 	if p.skipUnchangedDiff(intent, pr, patchID) {
+		return false
+	}
+	if p.skipDailyRoundCap(intent, pr, time.Now().UTC()) {
 		return false
 	}
 	profile := p.autoReviewProfileFor(intent.Trigger, pr.Owner, pr.Repo, pr.Author)

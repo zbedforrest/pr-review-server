@@ -16,6 +16,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/publisher"
+	"pr-review-server/poller"
 )
 
 func TestSettings_PublishKeysRoundTrip(t *testing.T) {
@@ -66,6 +67,7 @@ func TestSettings_PublishKeysDefaultToDisabled(t *testing.T) {
 	assert.Equal(t, "", got["publish_enabled_authors"])
 	assert.Equal(t, float64(publisher.DefaultInlineCap), got["publish_inline_cap"])
 	assert.Equal(t, float64(publisher.DefaultInlinePRCap), got["publish_inline_pr_cap"])
+	assert.Equal(t, float64(poller.DefaultAutoReviewDailyRoundCap), got["auto_review_daily_round_cap"])
 	assert.Equal(t, "medium", got["publish_inline_min_severity"])
 	assert.Equal(t, "off", got["publish_reply_mode"])
 	assert.Equal(t, true, got["publish_show_unverified"])
@@ -354,4 +356,28 @@ func TestSettings_CIStatusExcludeAuthorsRejectsStar(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"*" is not a valid login`)
 	stored, _ := database.GetSetting(db.SettingCIStatusExcludeAuthors)
 	assert.Equal(t, db.DefaultCIStatusExcludeAuthors, stored)
+}
+
+func TestSettings_DailyRoundCapRoundTripsAndRejectsNegatives(t *testing.T) {
+	server, database := newTestServer(t, "tester")
+	w := httptest.NewRecorder()
+	server.handleSettings(w, addUserToRequest(httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"auto_review_daily_round_cap":2}`)), &db.User{GitHubUsername: "tester"}))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	stored, err := database.GetSetting(poller.SettingAutoReviewDailyRoundCap)
+	require.NoError(t, err)
+	assert.Equal(t, "2", stored)
+
+	w = httptest.NewRecorder()
+	server.handleSettings(w, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, float64(2), got["auto_review_daily_round_cap"])
+
+	w = httptest.NewRecorder()
+	server.handleSettings(w, addUserToRequest(httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"auto_review_daily_round_cap":0}`)), &db.User{GitHubUsername: "tester"}))
+	require.Equal(t, http.StatusOK, w.Code, "0 removes the bound")
+
+	w = httptest.NewRecorder()
+	server.handleSettings(w, addUserToRequest(httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"auto_review_daily_round_cap":-1}`)), &db.User{GitHubUsername: "tester"}))
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }

@@ -64,10 +64,61 @@ type QueueMetrics struct {
 	RunningOverTwiceBudget int `json:"running_over_twice_budget"`
 }
 
-// AutoReviewMetrics is the automatic review intent backlog.
+// AutoReviewMetrics is the automatic review intent backlog and the day's
+// automatic rounds per PR.
 type AutoReviewMetrics struct {
 	Queued          int           `json:"queued"`
 	OldestQueuedAge time.Duration `json:"oldest_queued_age_ns"`
+	// SyncDebounce is how long a pushed head waits before admission, so the
+	// backlog line can say that a head inside the window is not late.
+	SyncDebounce time.Duration `json:"sync_debounce_ns"`
+	// RoundsPerPRDay is one count per PR and UTC day: the automatic rounds
+	// admitted for that PR on that day within the window. DailyRoundCap is
+	// the configured cap (0 = none); Evaluate fills DailyRounds from both.
+	RoundsPerPRDay []int           `json:"rounds_per_pr_day"`
+	DailyRoundCap  int             `json:"daily_round_cap"`
+	DailyRounds    DailyRoundStats `json:"rounds_per_pr_per_day"`
+}
+
+// DailyRoundStats summarises automatic rounds per PR per UTC day.
+type DailyRoundStats struct {
+	PRDays int     `json:"pr_days"`
+	P50    float64 `json:"p50"`
+	Max    int     `json:"max"`
+	Cap    int     `json:"cap"`
+	// AtCap counts the PR-days that used exactly the cap; OverCap those
+	// with more rounds than the cap allows, which the cap should keep at 0.
+	AtCap   int `json:"pr_days_at_cap"`
+	OverCap int `json:"pr_days_over_cap"`
+}
+
+// SummariseDailyRounds reduces per-PR-day round counts against a cap; a cap
+// of 0 (no bound) leaves AtCap and OverCap at 0.
+func SummariseDailyRounds(counts []int, cap int) DailyRoundStats {
+	s := DailyRoundStats{PRDays: len(counts), Cap: cap}
+	if len(counts) == 0 {
+		return s
+	}
+	sorted := append([]int(nil), counts...)
+	sort.Ints(sorted)
+	n := len(sorted)
+	if n%2 == 1 {
+		s.P50 = float64(sorted[n/2])
+	} else {
+		s.P50 = float64(sorted[n/2-1]+sorted[n/2]) / 2
+	}
+	s.Max = sorted[n-1]
+	if cap > 0 {
+		for _, c := range sorted {
+			switch {
+			case c > cap:
+				s.OverCap++
+			case c == cap:
+				s.AtCap++
+			}
+		}
+	}
+	return s
 }
 
 // PublishMetrics counts ledger rows first created in the window: PRs that got
@@ -207,6 +258,9 @@ func Evaluate(m Metrics) Report {
 		add("queue age", StatusOK, fmt.Sprintf("%d queued", m.Queue.Queued))
 	}
 	backlog := fmt.Sprintf("%d heads owed a review, oldest waiting %s", m.AutoReview.Queued, dur(m.AutoReview.OldestQueuedAge.Milliseconds()))
+	if m.AutoReview.SyncDebounce > 0 {
+		backlog += fmt.Sprintf(" (a pushed head waits %s before admission)", dur(m.AutoReview.SyncDebounce.Milliseconds()))
+	}
 	switch {
 	case m.AutoReview.Queued == 0:
 		add("auto-review backlog", StatusOK, "no heads waiting")
@@ -217,6 +271,8 @@ func Evaluate(m Metrics) Report {
 	default:
 		add("auto-review backlog", StatusOK, backlog)
 	}
+	r.Metrics.AutoReview.DailyRounds = SummariseDailyRounds(m.AutoReview.RoundsPerPRDay, m.AutoReview.DailyRoundCap)
+	add("auto-review rounds per PR per day", StatusOK, dailyRoundsDetail(r.Metrics.AutoReview.DailyRounds, m.Telemetry[ActionReviewSkippedDailyCap]))
 	switch {
 	case m.Queue.RunningOverTwiceBudget > 0:
 		add("running reviews", StatusCritical, fmt.Sprintf("%d running, %d past twice their budget (oldest %s)", m.Queue.Running, m.Queue.RunningOverTwiceBudget, dur(m.Queue.OldestRunningAge.Milliseconds())))
@@ -268,6 +324,39 @@ func Evaluate(m Metrics) Report {
 
 	r.Headline = headline(r, attempted, completed, cancelled)
 	return r
+}
+
+// dailyRoundsDetail is the rounds-per-PR-per-day line: the spread, how the
+// cap held, and the pushes it turned away.
+func dailyRoundsDetail(s DailyRoundStats, skipped int) string {
+	if s.PRDays == 0 {
+		return "no automatic rounds in the window"
+	}
+	line := fmt.Sprintf("p50 %s, max %d over %d PR-day%s", trimFloat(s.P50), s.Max, s.PRDays, plural(s.PRDays))
+	if s.Cap > 0 {
+		line += fmt.Sprintf("; cap %d: %d at it, %d over it, %d push%s skipped by it", s.Cap, s.AtCap, s.OverCap, skipped, pluralES(skipped))
+	} else {
+		line += "; no daily cap"
+	}
+	return line
+}
+
+func trimFloat(v float64) string {
+	return strings.TrimSuffix(strings.TrimSuffix(fmt.Sprintf("%.1f", v), "0"), ".")
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func pluralES(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "es"
 }
 
 func headline(r Report, total, completed, cancelled int) string {

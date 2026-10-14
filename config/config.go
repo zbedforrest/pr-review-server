@@ -177,6 +177,9 @@ type Config struct {
 	// AutoReviewSyncDebounceSec of 0 admits every push at once.
 	AutoReviewSyncDebounceSec   int
 	AutoReviewSkipUnchangedDiff bool
+	// AutoReviewNoDailyRoundCap (AUTO_REVIEW_DAILY_ROUND_CAP=false) admits
+	// every push whatever auto_review_daily_round_cap says.
+	AutoReviewNoDailyRoundCap bool
 	// ReviewDefaultProfile is the profile used when a caller names none:
 	// automatic reviews, the Generate button, and profile-less API requests.
 	ReviewDefaultProfile string
@@ -455,6 +458,7 @@ func Load() *Config {
 		PublishNoPRMute:             !getEnvBoolOrDefault("PUBLISH_PR_MUTE", true),
 		AutoReviewSyncDebounceSec:   getNonNegativeEnvIntOrDefault("AUTO_REVIEW_SYNC_DEBOUNCE_SEC", defaultAutoReviewSyncDebounceSec),
 		AutoReviewSkipUnchangedDiff: getEnvBoolOrDefault("AUTO_REVIEW_SKIP_UNCHANGED_DIFF", true),
+		AutoReviewNoDailyRoundCap:   !getEnvBoolOrDefault("AUTO_REVIEW_DAILY_ROUND_CAP", true),
 	}
 }
 

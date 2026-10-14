@@ -86,6 +86,8 @@ func (s *Server) addPublishSettings(ctx context.Context, response map[string]int
 		}
 	}
 	response[settingAutoReviewReadyPRs] = autoReviewReady
+	dailyCap, _ := s.db.GetSetting(poller.SettingAutoReviewDailyRoundCap)
+	response[poller.SettingAutoReviewDailyRoundCap] = poller.ParseDailyRoundCap(dailyCap)
 
 	rawProfiles, _ := s.db.GetSetting(poller.SettingAutoReviewProfileByTrigger)
 	profilePolicy, err := poller.ParseAutoReviewProfilePolicy(rawProfiles)

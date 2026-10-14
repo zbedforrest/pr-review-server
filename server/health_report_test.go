@@ -36,6 +36,9 @@ func TestDailyHealth_JobTokenRunsAndStoresAReport(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, "warn", got["overall"], "an empty day is a quiet day, not a failure")
 	assert.Contains(t, got["headline"], "Quiet day")
+	autoReview := got["metrics"].(map[string]any)["auto_review"].(map[string]any)
+	assert.Equal(t, float64(4), autoReview["daily_round_cap"], "the report carries the cap the poller enforces")
+	assert.Equal(t, float64(0), autoReview["rounds_per_pr_per_day"].(map[string]any)["pr_days"])
 
 	rows, err := database.ListHealthReports(5)
 	require.NoError(t, err)
