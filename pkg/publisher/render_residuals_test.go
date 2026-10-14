@@ -57,3 +57,23 @@ func TestIsContext_ClosingQuoteOfAnyShape(t *testing.T) {
 		t.Fatal("a plain statement is not context")
 	}
 }
+
+func TestTitleSentence_KeepsAProblemSentenceThatEndsOnAQuote(t *testing.T) {
+	got, _ := FirstFindingSentence("The guard silently accepts a 429 as 'ok.' However, the next call retries it.")
+	if !strings.HasPrefix(got, "The guard silently accepts a 429") {
+		t.Fatalf("got %q", got)
+	}
+	got, _ = FirstFindingSentence("The PR description says the handler is 'idempotent.' However, the second call re-sends the receipt.")
+	if !strings.HasPrefix(got, "The second call re-sends") {
+		t.Fatalf("got %q", got)
+	}
+	if ss := sentences("The helper (e.g.) drops the row. Then nothing."); ss[0] != "The helper (e.g.) drops the row." {
+		t.Fatalf("got %q", ss[0])
+	}
+}
+
+func TestIsContext_NeedsAQuotationOpenedEarlier(t *testing.T) {
+	if IsContext("The handler drops the users'") {
+		t.Fatal("a trailing apostrophe is not a quotation")
+	}
+}

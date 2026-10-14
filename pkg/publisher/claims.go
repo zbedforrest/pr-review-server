@@ -150,11 +150,11 @@ func IsPraise(sentence string) bool {
 	return praiseOpenerRe.MatchString(s)
 }
 
-var sentenceSplitRe = regexp.MustCompile(`(?s)(.*?[.!?]['"”’)\]]*(?:\*\*|__|\*|_)?['"”’)\]]*)(?:\s+|$)`)
+var sentenceSplitRe = regexp.MustCompile(`(?s)(.*?[.!?]['"”’]*(?:\*\*|__|\*|_)?['"”’]*)(?:\s+|$)`)
 
 // sentences splits a comment (without its suggestion fence, lines folded)
-// into sentences, keeping their end punctuation and any closing quote or
-// bracket after it; the tail without punctuation is a sentence too.
+// into sentences, keeping their end punctuation and any closing quote
+// after it; the tail without punctuation is a sentence too.
 func sentences(text string) []string {
 	line := fold(suggestionFenceRe.ReplaceAllString(text, " "))
 	var out []string
@@ -198,7 +198,7 @@ func titleSentence(ss []string) (int, bool) {
 		return 0, false
 	}
 	if !RenderHygieneEnabled() || !IsPraise(ss[0]) {
-		if len(ss) > 1 && NoteProblemClauseEnabled() && IsContext(ss[0]) && contrastOpenerRe.MatchString(ss[1]) {
+		if len(ss) > 1 && NoteProblemClauseEnabled() && IsContext(ss[0]) && !StatesProblem(ss[0]) && contrastOpenerRe.MatchString(ss[1]) {
 			return 1, true
 		}
 		return 0, true
@@ -221,9 +221,11 @@ func titleSentence(ss []string) (int, bool) {
 
 var contextOpenerRe = regexp.MustCompile(`(?i)^(?:(?:the|this|per the|according to the|as the)\s+)?(?:pr\s+|pull request\s+|commit\s+)?(?:description|body|summary|title|docstring|comment|changelog|message|ticket|issue|spec|readme)\b[^.]{0,40}?\b(?:states?|says?|said|claims?|notes?|reads?|describes?|mentions?|promises?|documents?|explains?|asserts?|calls? out|suggests?|implies)\b`)
 
-// IsContext reports whether a sentence only relays what the PR, its
+// IsContext reports whether a sentence relays what the PR, its
 // description or a comment says, as the setup for the problem the next
-// sentence states: it opens by citing that text, or closes a quotation.
+// sentence states: it opens by citing that text, or closes a quotation
+// opened earlier in it. Whether it also states a problem is the caller's
+// question (StatesProblem).
 func IsContext(sentence string) bool {
 	s := strings.TrimSpace(emphasisMarkers.Replace(sentence))
 	if s == "" {
@@ -232,8 +234,8 @@ func IsContext(sentence string) bool {
 	if contextOpenerRe.MatchString(s) {
 		return true
 	}
-	last, _ := utf8.DecodeLastRuneInString(s)
-	return strings.ContainsRune(`'"”’`, last) && strings.ContainsAny(s, `'"“”‘’`)
+	last, n := utf8.DecodeLastRuneInString(s)
+	return strings.ContainsRune(`'"”’`, last) && strings.ContainsAny(s[:len(s)-n], `'"“‘`)
 }
 
 func capitalized(s string) string {

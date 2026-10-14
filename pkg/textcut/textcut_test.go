@@ -195,3 +195,24 @@ func TestClamp_ProblemClauseSurvivesNonASCIICase(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestClamp_WalksPastAJointWhoseTailCannotStandAlone(t *testing.T) {
+	s := "The retry helper works for every caller in the service, but only when the budget is set; however, the second attempt ignores the deadline and re-enters the backoff loop with a fresh budget every time"
+	got := ClampWith(s, 110, Options{KeepProblemClause: true})
+	if !strings.HasPrefix(got, "[…] however, the second attempt ignores") || len([]rune(got)) > 110 {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestClamp_LastResortCutAvoidsAConnective(t *testing.T) {
+	got := ClampWith("Writes to the "+strings.Repeat("x", 300), 40, Options{KeepProblemClause: true})
+	if len([]rune(got)) > 40 || strings.HasPrefix(got, "Writes to the […]") || strings.HasPrefix(got, "Writes to […]") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFirstSentence_ABracketIsNotASentenceEnd(t *testing.T) {
+	if got := FirstSentence("The helper (e.g.) drops the row. Then nothing."); got != "The helper (e.g.) drops the row." {
+		t.Fatalf("got %q", got)
+	}
+}

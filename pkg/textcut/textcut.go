@@ -4,6 +4,7 @@
 package textcut
 
 import (
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -98,13 +99,14 @@ var tailOpeners = map[string]bool{
 	"their": true, "there": true, "such": true, "then": true,
 }
 
-// problemClause is the text from the first contrast joint on, when both
-// the context before it and the clause after it have a few words, the
-// context does not already state the problem and the clause stands alone.
+// problemClause is the text from the first contrast joint, in text order,
+// at which the context before it and the clause after it have a few words,
+// the context does not already state the problem and the clause stands
+// alone.
 func problemClause(s string, headStatesProblem func(string) bool) (string, bool) {
 	lower := asciiLower(s)
 	balanced := balancedPrefixes(s)
-	best := -1
+	var joints []int
 	for _, j := range problemJoints {
 		for from := 0; ; {
 			i := strings.Index(lower[from:], j)
@@ -112,28 +114,27 @@ func problemClause(s string, headStatesProblem func(string) bool) (string, bool)
 				break
 			}
 			i += from
-			if balanced[i] && (best < 0 || i < best) {
-				best = i
-				break
+			if balanced[i] {
+				joints = append(joints, i)
 			}
 			from = i + 1
 		}
 	}
-	if best < 0 {
-		return "", false
+	sort.Ints(joints)
+	for _, at := range joints {
+		head, tail := s[:at], strings.TrimLeft(s[at:], " ,;")
+		if len(strings.Fields(head)) < 2 || len(strings.Fields(tail)) < 4 {
+			continue
+		}
+		if headStatesProblem != nil && headStatesProblem(head) {
+			return "", false
+		}
+		if words := strings.Fields(tail); tailOpeners[strings.Trim(strings.ToLower(words[1]), "`,;:")] {
+			continue
+		}
+		return tail, true
 	}
-	head, tail := s[:best], strings.TrimLeft(s[best:], " ,;")
-	if len(strings.Fields(head)) < 2 || len(strings.Fields(tail)) < 4 {
-		return "", false
-	}
-	if headStatesProblem != nil && headStatesProblem(head) {
-		return "", false
-	}
-	words := strings.Fields(tail)
-	if tailOpeners[strings.Trim(strings.ToLower(words[1]), "`,;:")] {
-		return "", false
-	}
-	return tail, true
+	return "", false
 }
 
 // asciiLower lowers the ASCII letters only, so every byte offset in the
@@ -190,6 +191,10 @@ func cutRight(s string, max int, opts Options) string {
 	}
 	for {
 		head = strings.TrimRight(head, " ,;:")
+		if opts.KeepProblemClause && strings.Contains(head, " ") && functionWords[lastWord(head)] {
+			head = head[:strings.LastIndex(head, " ")]
+			continue
+		}
 		closed := head + Marker + closers(head)
 		if len([]rune(closed)) <= max || head == "" {
 			return closed
@@ -274,8 +279,9 @@ func FirstSentence(line string) string {
 }
 
 // sentenceEnd reports whether a sentence ends at byte i: a period,
-// exclamation or question mark, then any closing quotes or brackets, then
-// a space or the end of the text. end is the offset just past the closers.
+// exclamation or question mark, then any closing quotes, then a space or
+// the end of the text; a closing bracket is not a sentence end, so
+// "(e.g.)" stays inside its sentence. end is the offset past the quotes.
 func sentenceEnd(s string, i int) (end int, ok bool) {
 	switch s[i] {
 	case '.', '!', '?':
@@ -285,7 +291,7 @@ func sentenceEnd(s string, i int) (end int, ok bool) {
 	end = i + 1
 	for end < len(s) {
 		r, n := utf8.DecodeRuneInString(s[end:])
-		if !strings.ContainsRune(`'")]”’`, r) {
+		if !strings.ContainsRune(`'"”’`, r) {
 			break
 		}
 		end += n

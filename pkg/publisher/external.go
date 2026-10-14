@@ -263,10 +263,14 @@ func shownSentence(f payload.Finding) string {
 	if !titleFromComment(f) {
 		return ""
 	}
-	if s, ok := FirstFindingSentence(commentText(f)); ok {
-		return s
+	sentence, ok := FirstFindingSentence(commentText(f))
+	if !ok {
+		sentence = firstSentence(commentText(f))
 	}
-	return firstSentence(commentText(f))
+	if RenderHygieneEnabled() {
+		sentence = StripConfidenceLabel(sentence)
+	}
+	return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(sentence)))
 }
 
 // withoutSettledNotes drops, for a re-rendered summary, the folded notes
