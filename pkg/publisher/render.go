@@ -605,12 +605,9 @@ func titleIsWholeFirstSentence(f payload.Finding, limit int) bool {
 	return len([]rune(titleSource(f))) <= limit
 }
 
-func legacyHeadline(f payload.Finding) string {
-	return legacyHeadlineWith(f, false)
-}
-
-// legacyHeadlineWith is legacyHeadline with the cut rule chosen the same way
-// as headlineWith, so both kill switches together restore the old word cut.
+// legacyHeadlineWith is the pre-2026-10 headline with the cut rule chosen the
+// same way as headlineWith, so both kill switches together restore the old
+// word cut.
 func legacyHeadlineWith(f payload.Finding, legacyClamp bool) string {
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
 		label, hasLabel := kindLabels[c.FindingKind]

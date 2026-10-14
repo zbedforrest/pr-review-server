@@ -17,14 +17,20 @@ func EscapeProseHTML(text string) string {
 		return text
 	}
 	var b strings.Builder
-	inFence := false
+	fence := ""
 	for _, line := range strings.SplitAfter(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inFence = !inFence
+		trimmed := strings.TrimSpace(line)
+		if fence == "" && (strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")) {
+			fence = trimmed[:3]
 			b.WriteString(line)
 			continue
 		}
-		if inFence {
+		if fence != "" && strings.HasPrefix(trimmed, fence) {
+			fence = ""
+			b.WriteString(line)
+			continue
+		}
+		if fence != "" {
 			b.WriteString(line)
 			continue
 		}

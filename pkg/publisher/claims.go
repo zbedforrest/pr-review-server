@@ -168,40 +168,55 @@ func sentences(text string) []string {
 // the way through.
 func FirstFindingSentence(comment string) (string, bool) {
 	ss := sentences(comment)
-	if len(ss) == 0 {
+	i, ok := titleSentence(ss)
+	if !ok {
 		return "", false
 	}
-	if !RenderHygieneEnabled() || !IsPraise(ss[0]) {
+	if i == 0 {
 		return ss[0], true
 	}
-	var candidates []string
-	for _, s := range ss[1:] {
-		s = contrastOpenerRe.ReplaceAllString(s, "")
+	return capitalized(contrastOpenerRe.ReplaceAllString(ss[i], "")), true
+}
+
+// titleSentence picks the sentence that titles a comment: the first one,
+// unless it is praise, then the first later sentence that states a problem
+// (a compliment is often followed by context), else the first that is not
+// praise. ok is false when the comment is praise all the way through.
+func titleSentence(ss []string) (int, bool) {
+	if len(ss) == 0 {
+		return 0, false
+	}
+	if !RenderHygieneEnabled() || !IsPraise(ss[0]) {
+		return 0, true
+	}
+	first := -1
+	for i := 1; i < len(ss); i++ {
+		s := contrastOpenerRe.ReplaceAllString(ss[i], "")
 		if s == "" || IsPraise(s) {
 			continue
 		}
-		candidates = append(candidates, s)
-	}
-	if len(candidates) == 0 {
-		return "", false
-	}
-	// After a compliment the next sentence is often context; title by the one
-	// that states the problem when there is one.
-	chosen := candidates[0]
-	for _, s := range candidates {
 		if StatesProblem(s) {
-			chosen = s
-			break
+			return i, true
+		}
+		if first < 0 {
+			first = i
 		}
 	}
-	r := []rune(chosen)
+	return first, first >= 0
+}
+
+func capitalized(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
 	r[0] = unicode.ToUpper(r[0])
-	return string(r), true
+	return string(r)
 }
 
 var (
-	consequenceRe = regexp.MustCompile(`(?i)if[^.]*(?:will|would|can|could|may|might)`)
-	defectWordRe  = regexp.MustCompile(`(?i)(?:risk\w*|drift\w*|lose|loses|losing|lost|errors?|stale|undefined|null|empty|invalid|duplicate\w*|mismatch\w*|unreachable|unhandled|uncaught)`)
+	consequenceRe = regexp.MustCompile(`(?i)\bif\b[^.]*\b(?:will|would|can|could|may|might)\b`)
+	defectWordRe  = regexp.MustCompile(`(?i)\b(?:risk\w*|drift\w*|lose|loses|losing|lost|errors?|stale|undefined|null|empty|invalid|duplicate\w*|mismatch\w*|unreachable|unhandled|uncaught)\b`)
 )
 
 // StatesProblem reports whether a sentence says what goes wrong: a defect
@@ -366,24 +381,26 @@ func commentAfterTitle(comment string) string {
 	if len(ss) == 0 {
 		return comment
 	}
-	k := 0
-	if RenderHygieneEnabled() {
-		for k < len(ss) && IsPraise(ss[k]) {
-			k++
-		}
-		if k == len(ss) {
-			return ""
-		}
+	t, ok := titleSentence(ss)
+	if !ok {
+		return ""
 	}
 	pos := 0
-	for i := 0; i <= k; i++ {
+	var kept []string
+	for i := 0; i <= t; i++ {
 		j := strings.Index(comment[pos:], ss[i])
 		if j < 0 {
 			return comment
 		}
 		pos += j + len(ss[i])
+		if i == t {
+			break
+		}
+		if s := contrastOpenerRe.ReplaceAllString(ss[i], ""); s != "" && !IsPraise(ss[i]) && !IsPraise(s) {
+			kept = append(kept, capitalized(s))
+		}
 	}
-	return strings.TrimSpace(comment[pos:])
+	return strings.TrimSpace(strings.Join(append(kept, strings.TrimSpace(comment[pos:])), " "))
 }
 
 // AllPraise reports whether a finding titled by its comment has nothing but

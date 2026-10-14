@@ -300,7 +300,7 @@ func deltaReply(f payload.Finding, ext reconcile.ExternalFinding) string {
 	c := f.FindingContract
 	hasContract := c != nil && f.FindingContractStatus == "valid"
 	if hasContract {
-		if impact := strings.TrimSpace(c.CurrentImpact); impact != "" && !covered(impact, extText) {
+		if impact := EscapeProseHTML(strings.TrimSpace(c.CurrentImpact)); impact != "" && !covered(impact, extText) {
 			parts = append(parts, impact)
 		}
 	}

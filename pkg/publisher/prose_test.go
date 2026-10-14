@@ -55,3 +55,28 @@ func TestTitleAfterPraiseKeepsTheFirstSentenceWhenItStatesTheProblem(t *testing.
 		t.Fatalf("title = %q", title)
 	}
 }
+
+func TestEscapeProseHTMLLeavesTildeFencesAlone(t *testing.T) {
+	in := "Before <img>.\n~~~html\n<img src=\"x\">\n~~~\nAfter <br>.\n"
+	want := "Before `<img>`.\n~~~html\n<img src=\"x\">\n~~~\nAfter `<br>`.\n"
+	if got := EscapeProseHTML(in); got != want {
+		t.Fatalf("got:\n%s", got)
+	}
+}
+
+func TestFoldAfterAProblemTitleKeepsTheContextOnce(t *testing.T) {
+	comment := "The PR correctly pairs `use_h2 = true` with `H2_ENABLED=true`. " +
+		"However, the deploy workflow also derives both values from `DEPLOY_H2`. " +
+		"If that variable is unset, a workflow deploy will revert the service. Confirm it is set."
+	got := commentAfterTitle(comment)
+	want := "The deploy workflow also derives both values from `DEPLOY_H2`. Confirm it is set."
+	if got != want {
+		t.Fatalf("fold = %q, want %q", got, want)
+	}
+}
+
+func TestStatesProblemNeedsAWholeWordIf(t *testing.T) {
+	if StatesProblem("The modified deploy path will also re-derive both values.") {
+		t.Fatal("`modified` is not a conditional")
+	}
+}
