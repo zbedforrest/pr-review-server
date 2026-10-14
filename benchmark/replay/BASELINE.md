@@ -48,6 +48,33 @@ harness commit; every other metric above is unchanged under those flags.
 Observed in the dumps, for calibration: 498 roots, 10 same-marker reposts, 90 same-defect reposts (rendered
 prose, so boilerplate words inflate the overlap), 209 of 498 threads resolved (0.42, all by humans).
 
+### Output hygiene metrics (added with W6-B, 2026-10-13 audit)
+
+Measured over the rebuilt 731-PR dumps with `--render-hygiene=false --library-claim-hold=false
+--regression-evidence=false` (before) and the shipped defaults (after). From W6-B on, a round that posted no
+inline comment is still a round: the sticky summary's footer names the head it reviewed, so summary-only PRs
+replay too (`prs_with_rounds` 256 to 731, `rounds` 619 to 1159 on the same dumps; the per-PR figures use the
+wider denominator).
+
+| metric | before | after | note |
+|---|---:|---:|---|
+| held_library_claims | 0 | 11 | findings that admit resting on third-party behaviour the agent did not read; kept off GitHub |
+| held_regression_claims | 0 | 4 | "dropped the X" claims whose hunk still shows X on a kept line |
+| held_reasonless_notes | 0 | 13 | design opinions with a bare headline, no impact and a self-declared preference |
+| library_claims_shown | 11 | 0 | the same claims that reached an inline title or a summary bullet; target 0 |
+| uncited_regression_claims_shown | 4 | 0 | target 0 |
+| reasonless_notes_shown | 13 | 0 | target 0 |
+| praise_shown | 1 | 0 | a compliment rendered as an inline title or a summary bullet; target 0 |
+| confidence_labels_rendered | 34 | 0 | visible inline lines opening with "Low;", "Medium:" and the like under a badge; target 0 |
+| leaked_finding_ids | 7 | 0 | bodies showing an internal `A-1` style label outside the marker; target 0 |
+| source_footers | 13 | 0 | "Source: PRism · Both" lines; target 0 |
+| zero_status_lines_over_notes | 26 | 0 | "0 new · 0 still open · 0 fixed" over folded notes the line did not count; target 0 |
+| noop_summary_edits | 0 | 0 | summary edits whose body did not change; the replay never refreshes, so the unit test is the evidence |
+
+`PUBLISH_CONDITION_HEDGE_GATE=true` on the same dumps posts 343 roots instead of 497 and hides 292 of the 820
+findings the default gate shows (36%); on the 14 audited PRs it hides two incorrect inline findings and no
+correct one, while the two holds above catch three more incorrect ones. It stays off.
+
 ## Where the reposts and false fixes concentrate
 
 PR numbers only, repositories omitted. Top reposts (same marker + same defect / rounds): #31655 11 / 9,

@@ -108,6 +108,9 @@ type Report struct {
 	ExternalMatched       int
 	ExternalReplies       int
 	ExternalReplyFailures int
+	// Held lists the findings the output hygiene gate kept off GitHub this
+	// round, with the reason (see HoldReason).
+	Held []HeldFinding
 }
 
 const summaryFingerprint = "summary"
@@ -198,11 +201,24 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 		}
 	}
 
+	var rep Report
+	held := p.holdFindings(&r, &rep, func(id string) bool {
+		row, ok := published[id]
+		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
+	})
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy.forRound(r.Previous))
 	r.ShowUnverified = p.Policy.ShowUnverified
+	// The counts see a held finding as present but not shown: absence by
+	// the gate is not a fix, and the summary never announces what it lists
+	// nowhere.
+	r.held = make(map[string]bool, len(held))
+	for id := range held {
+		r.held[id] = true
+	}
 	d := r.diff()
-	rep := Report{InlinePosted: len(sel.Inline), Annotations: len(sel.Annotations), StillOpen: d.StillOpen, Fixed: d.Fixed,
-		Confidence: Confidence(r.Findings, r.RequiredCheckViolated)}
+	r.transitions = &d
+	rep.InlinePosted, rep.Annotations, rep.StillOpen, rep.Fixed = len(sel.Inline), len(sel.Annotations), d.StillOpen, d.Fixed
+	rep.Confidence = Confidence(r.Findings, r.RequiredCheckViolated)
 	now := p.now()
 
 	postedThisRound, err := p.postInline(ctx, r, sel, prior, now, &rep, nil)
@@ -256,6 +272,9 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 	}
 
 	present := map[string]bool{}
+	for id := range held {
+		present[id] = true
+	}
 	for _, f := range r.activeClaims() {
 		present[f.ID] = true
 		row, ok := published[f.ID]
@@ -430,10 +449,10 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 	if err != nil {
 		return fmt.Errorf("read summary comment: %w", err)
 	}
-	fixed, found := 0, false
+	fixed, found, current := 0, false, ""
 	for _, c := range existing {
 		if c.ID == summaryRow.CommentID {
-			found = true
+			found, current = true, c.Body
 			if d, ok := parseSinceLastReview(c.Body); ok {
 				fixed = d.Fixed
 			}
@@ -442,16 +461,58 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 	if !found {
 		return nil
 	}
+	p.holdFindings(&r, nil, func(id string) bool {
+		row, ok := rows[id]
+		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
+	})
 	d := r.ledgerTransitions()
 	d.Fixed = fixed
 	r.transitions = &d
 	body := RenderSummary(r, Selection{})
+	if RenderHygieneEnabled() && sameBody(body, current) {
+		return nil
+	}
 	if moved, err := p.summaryMoved(r, summaryRow); err != nil {
 		return err
 	} else if moved {
 		return ErrSummaryMoved
 	}
 	return p.GH.EditIssueComment(ctx, r.Owner, r.Repo, summaryRow.CommentID, body)
+}
+
+// sameBody compares a rendered summary with the one GitHub shows, which
+// comes back with its line endings and trailing whitespace normalised.
+func sameBody(rendered, current string) bool {
+	norm := func(s string) string {
+		return strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n"))
+	}
+	return norm(rendered) == norm(current)
+}
+
+// holdFindings applies the output hygiene gate (HoldReason) to the round:
+// a held finding leaves r.Findings, is recorded on the report when there is
+// one, and is returned so the ledger policy can keep its row alive. The
+// gate runs after aliasing, so a held finding that restates a posted root
+// keeps that root open instead of reading as fixed. A finding whose thread
+// is already open on GitHub (threadOpen) has nothing to hold: it stays in
+// the round so the summary lists and counts it as still open.
+func (p *Publisher) holdFindings(r *Round, rep *Report, threadOpen func(id string) bool) map[string]payload.Finding {
+	held := map[string]payload.Finding{}
+	kept := make([]payload.Finding, 0, len(r.Findings))
+	for _, f := range r.Findings {
+		reason := HoldReason(f, p.Policy)
+		if reason == "" || (threadOpen != nil && threadOpen(f.ID)) {
+			kept = append(kept, f)
+			continue
+		}
+		held[f.ID] = f
+		if rep != nil {
+			rep.Held = append(rep.Held, HeldFinding{ID: f.ID, File: f.File, Line: f.Line, Reason: reason})
+			rep.Hygiene.noteHeld(f, reason)
+		}
+	}
+	r.Findings = kept
+	return held
 }
 
 func (p *Publisher) summaryMoved(r Round, built *db.PublishedFinding) (bool, error) {

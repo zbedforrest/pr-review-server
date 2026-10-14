@@ -47,6 +47,10 @@ const (
 	// ActionPRMuted: an author muted PRism on one PR ("@<handle> stop" or a
 	// thumbs-down on the summary); label via=stop or via=thumbs_down.
 	ActionPRMuted = "prs_muted"
+	// ActionFindingHeld: the output hygiene gate kept a finding off GitHub
+	// (label reason=unverified_library_claim, uncited_regression_claim,
+	// praise or reasonless_note); it stays on the dashboard.
+	ActionFindingHeld = "findings_held"
 )
 
 // ActionFeedbackFrustrated: the daily feedback scan classified a new author
@@ -57,7 +61,7 @@ const ActionFeedbackFrustrated = "feedback_frustrated"
 var HygieneActions = []string{
 	ActionRepeatedPost, ActionRepeatAfterDismiss, ActionFixedWithoutFileChange, ActionFixedWithoutHunkChange, ActionSameCommitResolve,
 	ActionSeverityEscalation, ActionVerdictSettled, ActionPublishDenied, ActionOptedOut,
-	ActionReviewSkippedUnchanged, ActionPRMuted,
+	ActionReviewSkippedUnchanged, ActionPRMuted, ActionFindingHeld,
 }
 
 // TelemetryActions are the server-emitted counters the daily report reads.
@@ -69,7 +73,7 @@ var hygieneLabels = map[string]string{
 	ActionFixedWithoutFileChange: "fixed without a file change", ActionFixedWithoutHunkChange: "fixed without a hunk change", ActionSameCommitResolve: "same-commit resolves",
 	ActionSeverityEscalation: "severity escalations", ActionVerdictSettled: "author verdicts settled", ActionPublishDenied: "posts stopped by the publish gate",
 	ActionOptedOut: "of which stopped by an opt-out", ActionReviewSkippedUnchanged: "pushes skipped for an unchanged diff",
-	ActionPRMuted: "PRs muted by their author",
+	ActionPRMuted: "PRs muted by their author", ActionFindingHeld: "findings held by the output hygiene gate",
 }
 
 // UnwiredHygiene maps each counter whose producer has not shipped yet to the

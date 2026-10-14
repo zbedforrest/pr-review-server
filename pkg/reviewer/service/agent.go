@@ -944,6 +944,7 @@ func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, prContext 
 	}
 	var b strings.Builder
 	b.WriteString(promptAgentReview)
+	b.WriteString(claimEvidenceSection())
 	b.WriteString(prScopeSection(baseBranch, diffFiles))
 	b.WriteString(prContext)
 	if len(gates) > 0 {
@@ -1020,6 +1021,15 @@ func buildLitePromptV2Content(baseBranch string, diff liteDiff, prContext string
 	return buildLitePromptV2With(promptLiteReviewArmA, baseBranch, diff, prContext, bugHistory, nil, subAgents)
 }
 
+// claimEvidenceSection is the claim-evidence block, or nothing when
+// AGENT_CLAIM_EVIDENCE is off, so the prompt stays byte-identical.
+func claimEvidenceSection() string {
+	if !runconfig.ClaimEvidenceEnabled() {
+		return ""
+	}
+	return promptClaimEvidence
+}
+
 func buildLitePromptV2With(opening, baseBranch string, diff liteDiff, prContext string, bugHistory []BugMemoryEntry, priors []PriorFinding, subAgents bool) string {
 	if baseBranch == "" {
 		baseBranch = "HEAD"
@@ -1033,6 +1043,7 @@ func buildLitePromptV2With(opening, baseBranch string, diff liteDiff, prContext 
 		b.WriteString(promptLiteSubAgents)
 	}
 	b.WriteString(promptLiteOutputFormatV2)
+	b.WriteString(claimEvidenceSection())
 	b.WriteString("\n<diff>\n")
 	b.WriteString(diff.Text)
 	if !strings.HasSuffix(diff.Text, "\n") {
@@ -1071,6 +1082,7 @@ func buildLitePromptContent(baseBranch string, diff liteDiff, prContext string, 
 		b.WriteString(promptLiteSubAgents)
 	}
 	b.WriteString(promptLiteOutputFormat)
+	b.WriteString(claimEvidenceSection())
 	b.WriteString("\n<diff>\n")
 	b.WriteString(diff.Text)
 	if !strings.HasSuffix(diff.Text, "\n") {

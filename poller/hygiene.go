@@ -25,6 +25,7 @@ func hygieneTelemetryEvents(pr github.PullRequest, h publisher.Hygiene, userID i
 	add(health.ActionFixedWithoutHunkChange, h.FixedWithoutHunkChange)
 	add(health.ActionSameCommitResolve, h.SameCommitResolves)
 	add(health.ActionSeverityEscalation, h.SeverityEscalations)
+	add(health.ActionFindingHeld, h.Held)
 	return events
 }
 

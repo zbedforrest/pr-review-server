@@ -42,13 +42,15 @@ func TestRenderInlineFull(t *testing.T) {
 		"**[CRITICAL] Nil deref when cfg is missing.**",
 		"The config loader returns nil on a missing file and the caller dereferences it.",
 		"**How to verify:** Run the service with no config file. Expected: a panic in loadConfig.",
-		"<sub>Source: PRism · Both</sub>",
 		`<sub><a href="https://prism.example/go/agent?o=acme&r=example&n=7&f=a.go%3A0%3Aabc&p=pkg%2Fa.go&l=3">Fix with agent</a></sub>`,
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(out, s) {
 			t.Errorf("inline missing %q\n%s", s, out)
 		}
+	}
+	if strings.Contains(out, "Source:") {
+		t.Errorf("the source footer is gone\n%s", out)
 	}
 	visible := out[:strings.Index(out, "<details>")]
 	if strings.Count(visible, "Nil deref when cfg is missing.") != 1 {

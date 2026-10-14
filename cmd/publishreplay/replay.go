@@ -66,10 +66,18 @@ type recorder struct {
 	// round; doubleNotes the (round, thread) pairs that got more than one.
 	notesPerThread map[[2]int64]int
 	doubleNotes    int
+	// Output hygiene defects of the 2026-10-13 audit, read off the bodies.
+	confidenceLabels  int
+	leakedFindingIDs  int
+	sourceFooters     int
+	praiseShown       int
+	zeroStatusLines   int
+	noopSummaryEdits  int
+	lastSummaryBodies map[int64]string
 }
 
 func newRecorder() *recorder {
-	return &recorder{nextComment: 1_000_000, nextIssue: 2_000_000, nextReview: 3_000_000, resolved: map[int64]bool{}, notesPerThread: map[[2]int64]int{}}
+	return &recorder{nextComment: 1_000_000, nextIssue: 2_000_000, nextReview: 3_000_000, resolved: map[int64]bool{}, notesPerThread: map[[2]int64]int{}, lastSummaryBodies: map[int64]string{}}
 }
 
 const threadNodePrefix = "T"
@@ -130,6 +138,16 @@ func (r *recorder) CreateReview(_ context.Context, _, _ string, _ int, _, _ stri
 		if bareLabelTitle(c.Body) {
 			r.bareLabelTitles++
 		}
+		r.confidenceLabels += confidenceLabelLines(c.Body)
+		if leaksFindingID(c.Body) {
+			r.leakedFindingIDs++
+		}
+		if sourceFooterRe.MatchString(c.Body) {
+			r.sourceFooters++
+		}
+		if praiseTitle(c.Body) {
+			r.praiseShown++
+		}
 	}
 	return r.nextReview, ids, nil
 }
@@ -137,14 +155,45 @@ func (r *recorder) CreateReview(_ context.Context, _, _ string, _ int, _, _ stri
 func (r *recorder) CreateIssueComment(_ context.Context, _, _ string, _ int, body string) (int64, error) {
 	r.nextIssue++
 	r.summaries++
-	r.nilImpactBullets += nilImpactBullets(body)
+	r.noteSummary(r.nextIssue, body)
 	return r.nextIssue, nil
 }
 
-func (r *recorder) EditIssueComment(_ context.Context, _, _ string, _ int64, body string) error {
+func (r *recorder) EditIssueComment(_ context.Context, _, _ string, id int64, body string) error {
 	r.edits++
-	r.nilImpactBullets += nilImpactBullets(body)
+	if r.lastSummaryBodies[id] == body {
+		r.noopSummaryEdits++
+	}
+	r.noteSummary(id, body)
 	return nil
+}
+
+// lastSummary is the body of the newest sticky summary the replay posted;
+// the highest id is the newest, since the recorder hands ids out in order.
+func (r *recorder) lastSummary() string {
+	return newestSummary(r.lastSummaryBodies)
+}
+
+func newestSummary(bodies map[int64]string) string {
+	var newest int64 = -1
+	for id := range bodies {
+		if id > newest {
+			newest = id
+		}
+	}
+	return bodies[newest]
+}
+
+func (r *recorder) noteSummary(id int64, body string) {
+	r.lastSummaryBodies[id] = body
+	r.nilImpactBullets += nilImpactBullets(body)
+	r.praiseShown += praiseBullets(body)
+	if leaksFindingID(body) {
+		r.leakedFindingIDs++
+	}
+	if zeroStatusOverNotes(body) {
+		r.zeroStatusLines++
+	}
 }
 
 func (r *recorder) ListIssueComments(context.Context, string, string, int) ([]publisher.IssueComment, error) {
@@ -203,6 +252,21 @@ type PRResult struct {
 	ObservedSameDefectReposts  int
 	NilImpactBullets           int
 	BareLabelTitles            int
+	// Output hygiene (2026-10-13 audit): what the gate held, by reason, and
+	// what still reached a rendered body.
+	HeldLibraryClaims     int
+	HeldRegressionClaims  int
+	HeldPraise            int
+	HeldReasonless        int
+	LibraryClaimsShown    int
+	RegressionClaimsShown int
+	ReasonlessNotesShown  int
+	PraiseShown           int
+	ConfidenceLabels      int
+	LeakedFindingIDs      int
+	SourceFooters         int
+	ZeroStatusLines       int
+	NoopSummaryEdits      int
 	// External duplicates: roots posted on a point another reviewer's
 	// earlier root already carried, split by that thread's state; Matched
 	// and Replies are what the publisher did instead of posting.
@@ -260,6 +324,24 @@ type Metrics struct {
 	// Renderer defects over every summary and inline body written.
 	NilImpactBullets int `json:"nil_impact_bullets"`
 	BareLabelTitles  int `json:"bare_label_titles"`
+
+	// Output hygiene (2026-10-13 audit, classes 2, 6, 9 and 10). The held
+	// counts are what the gate kept off GitHub; the shown counts are the
+	// same defects that still reached a rendered body (an inline title or a
+	// summary bullet), and the rest are read off the bodies alone.
+	HeldLibraryClaims     int `json:"held_library_claims"`
+	HeldRegressionClaims  int `json:"held_regression_claims"`
+	HeldPraise            int `json:"held_praise"`
+	HeldReasonless        int `json:"held_reasonless_notes"`
+	LibraryClaimsShown    int `json:"library_claims_shown"`
+	RegressionClaimsShown int `json:"uncited_regression_claims_shown"`
+	ReasonlessNotesShown  int `json:"reasonless_notes_shown"`
+	PraiseShown           int `json:"praise_shown"`
+	ConfidenceLabels      int `json:"confidence_labels_rendered"`
+	LeakedFindingIDs      int `json:"leaked_finding_ids"`
+	SourceFooters         int `json:"source_footers"`
+	ZeroStatusLines       int `json:"zero_status_lines_over_notes"`
+	NoopSummaryEdits      int `json:"noop_summary_edits"`
 
 	// ExternalDuplicatesNear counts replayed roots posted while an earlier
 	// root by another reviewer sat on the same point (same file, line within
@@ -376,6 +458,19 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.SameCommitSkipped += pr.SameCommitSkipped
 		m.NilImpactBullets += pr.NilImpactBullets
 		m.BareLabelTitles += pr.BareLabelTitles
+		m.HeldLibraryClaims += pr.HeldLibraryClaims
+		m.HeldRegressionClaims += pr.HeldRegressionClaims
+		m.HeldPraise += pr.HeldPraise
+		m.HeldReasonless += pr.HeldReasonless
+		m.LibraryClaimsShown += pr.LibraryClaimsShown
+		m.RegressionClaimsShown += pr.RegressionClaimsShown
+		m.ReasonlessNotesShown += pr.ReasonlessNotesShown
+		m.PraiseShown += pr.PraiseShown
+		m.ConfidenceLabels += pr.ConfidenceLabels
+		m.LeakedFindingIDs += pr.LeakedFindingIDs
+		m.SourceFooters += pr.SourceFooters
+		m.ZeroStatusLines += pr.ZeroStatusLines
+		m.NoopSummaryEdits += pr.NoopSummaryEdits
 		m.RootsPosted += pr.RootsPosted
 		m.SameMarkerReposts += pr.SameMarkerReposts
 		m.SameDefectReposts += pr.SameDefectReposts
@@ -482,6 +577,19 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		}
 		pr.ExternalMatched += rep.ExternalMatched
 		pr.ExternalReplies += rep.ExternalReplies
+		countHeld(rep, &pr)
+		for _, h := range rep.Held {
+			logf("%s: round %d held %s:%d (%s)", d.key(), i+1, h.File, h.Line, h.Reason)
+		}
+		countShownDefects(round.Findings, rep, rec.posts[before:], rec.lastSummaryBodies, &pr)
+		for j := before; j < len(rec.posts); j++ {
+			if leaksFindingID(rec.posts[j].Body) {
+				logf("%s: round %d inline %s:%d leaks a finding label", d.key(), i+1, rec.posts[j].File, rec.posts[j].Line)
+			}
+		}
+		if leaksFindingID(rec.lastSummary()) {
+			logf("%s: round %d summary leaks a finding label", d.key(), i+1)
+		}
 		pushes = append(pushes, len(rec.posts)-before)
 		pr.InThreadReplies, pr.DoubleNotes = rec.replies, rec.doubleNotes
 		pr.ThreadsResolved, pr.ThreadsUnresolved, pr.RootsResolved = rec.resolves, rec.unresolves, rec.rootsResolved()
@@ -516,7 +624,68 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		countResolutions(d, s, rd.SHA, previous, after, &pr, logf)
 	}
 	pr.NilImpactBullets, pr.BareLabelTitles = rec.nilImpactBullets, rec.bareLabelTitles
+	pr.PraiseShown, pr.ConfidenceLabels, pr.LeakedFindingIDs = rec.praiseShown, rec.confidenceLabels, rec.leakedFindingIDs
+	pr.SourceFooters, pr.ZeroStatusLines, pr.NoopSummaryEdits = rec.sourceFooters, rec.zeroStatusLines, rec.noopSummaryEdits
 	return pr, pushes, nil
+}
+
+func countHeld(rep publisher.Report, pr *PRResult) {
+	for _, h := range rep.Held {
+		switch h.Reason {
+		case publisher.HoldLibraryClaim:
+			pr.HeldLibraryClaims++
+		case publisher.HoldRegressionClaim:
+			pr.HeldRegressionClaims++
+		case publisher.HoldPraise:
+			pr.HeldPraise++
+		case publisher.HoldReasonless:
+			pr.HeldReasonless++
+		}
+	}
+}
+
+// countShownDefects counts the round's findings that the claim rules flag
+// and that still reached a body: an inline post of this round, or a bullet
+// of the summary the round left behind (matched by title prefix, which is
+// what the bullet renders).
+func countShownDefects(findings []payload.Finding, rep publisher.Report, posts []post, summaries map[int64]string, pr *PRResult) {
+	held := map[string]bool{}
+	for _, h := range rep.Held {
+		// Aliasing may have renamed the id; the cited location survives it.
+		held[h.ID] = true
+		held[fmt.Sprintf("%s:%d", h.File, h.Line)] = true
+	}
+	posted := map[string]bool{}
+	for _, p := range posts {
+		posted[p.FindingID] = true
+	}
+	summary := newestSummary(summaries)
+	for _, f := range findings {
+		if held[f.ID] || held[fmt.Sprintf("%s:%d", f.File, f.Line)] || !publisher.Publishable(f) {
+			continue
+		}
+		prefix := titlePrefix(publisher.TitleOf(f))
+		shown := posted[f.ID] || (prefix != "" && strings.Contains(summary, prefix))
+		if !shown {
+			continue
+		}
+		switch {
+		case publisher.UnverifiedLibraryClaim(f):
+			pr.LibraryClaimsShown++
+		case publisher.UncitedRegressionClaim(f):
+			pr.RegressionClaimsShown++
+		case publisher.ReasonlessNote(f):
+			pr.ReasonlessNotesShown++
+		}
+	}
+}
+
+func titlePrefix(title string) string {
+	r := []rune(strings.TrimSuffix(strings.TrimSpace(title), "."))
+	if len(r) > 60 {
+		r = r[:60]
+	}
+	return string(r)
 }
 
 // pushSince is the compare from the previous round's head to this one, the
@@ -869,7 +1038,8 @@ func round3(v float64) float64 {
 	return float64(int(v*1000+0.5)) / 1000
 }
 
-var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_without_hunk_change", "fixed_hunk_unknown", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "double_notes", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open"}
+var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_without_hunk_change", "fixed_hunk_unknown", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "double_notes", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open",
+	"held_library_claims", "held_regression_claims", "held_praise", "held_reasonless_notes", "library_claims_shown", "uncited_regression_claims_shown", "reasonless_notes_shown", "praise_shown", "confidence_labels_rendered", "leaked_finding_ids", "source_footers", "zero_status_lines_over_notes", "noop_summary_edits"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -877,7 +1047,8 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 		return err
 	}
 	for _, r := range rows {
-		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedWithoutHunkChange), itoa(r.FixedHunkUnknown), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.DoubleNotes), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen)}
+		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedWithoutHunkChange), itoa(r.FixedHunkUnknown), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.DoubleNotes), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen),
+			itoa(r.HeldLibraryClaims), itoa(r.HeldRegressionClaims), itoa(r.HeldPraise), itoa(r.HeldReasonless), itoa(r.LibraryClaimsShown), itoa(r.RegressionClaimsShown), itoa(r.ReasonlessNotesShown), itoa(r.PraiseShown), itoa(r.ConfidenceLabels), itoa(r.LeakedFindingIDs), itoa(r.SourceFooters), itoa(r.ZeroStatusLines), itoa(r.NoopSummaryEdits)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}

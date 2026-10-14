@@ -70,6 +70,15 @@ type Commit struct {
 	} `json:"commit"`
 }
 
+// IssueComment is one PR conversation comment.
+type IssueComment struct {
+	DatabaseID FlexInt64 `json:"databaseId"`
+	Author     *Actor    `json:"author"`
+	Body       string    `json:"body"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
 // Thread is one review thread. IsResolved is nil when the dump did not
 // carry resolution state (a REST export before the GraphQL fill).
 type Thread struct {
@@ -108,6 +117,11 @@ type PRDump struct {
 	Commits struct {
 		Nodes []Commit `json:"nodes"`
 	} `json:"commits"`
+	// Comments are the PR's issue comments; the bot's sticky summary among
+	// them names the last head a round reviewed.
+	Comments struct {
+		Nodes []IssueComment `json:"nodes"`
+	} `json:"comments"`
 
 	Owner string `json:"-"`
 	Repo  string `json:"-"`
@@ -179,8 +193,8 @@ func ActorLogin(a *Actor) string {
 }
 
 // botLogins returns the logins that posted a root comment carrying the PRism
-// finding marker on this PR. A published round always posts at least one
-// such comment, so the set identifies the bot without a configured name.
+// finding marker on this PR, or its sticky summary, so the set identifies
+// the bot without a configured name.
 func (d *PRDump) BotLogins() map[string]bool {
 	out := map[string]bool{}
 	for _, t := range d.ReviewThreads.Nodes {
@@ -193,6 +207,12 @@ func (d *PRDump) BotLogins() map[string]bool {
 		}
 		if _, ok := publisher.FindingIDFromBody(root.Body); ok {
 			out[BareLogin(ActorLogin(root.Author))] = true
+		}
+	}
+	// A summary-only PR has no marked root; the sticky summary names the bot.
+	for _, c := range d.Comments.Nodes {
+		if strings.Contains(c.Body, publisher.SummaryMarker) {
+			out[BareLogin(ActorLogin(c.Author))] = true
 		}
 	}
 	return out
@@ -215,8 +235,50 @@ func (d *PRDump) Rounds(bots map[string]bool) []Round {
 		}
 		out = append(out, Round{SHA: r.Commit.Oid, SHA7: r.Commit.Oid[:7], At: r.SubmittedAt})
 	}
+	// A round that posted no inline comment left no review submission; the
+	// sticky summary's footer still names the head it reviewed, so that head
+	// is a round too when no submission covers it.
+	if sha, at, ok := d.summaryRound(bots); ok {
+		covered := false
+		for _, r := range out {
+			if strings.HasPrefix(r.SHA, sha) {
+				covered = true
+			}
+		}
+		if !covered {
+			out = append(out, Round{SHA: sha, SHA7: sha, At: at})
+		}
+	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	return out
+}
+
+// summaryFooterRe reads the head out of the sticky summary's footer.
+var summaryFooterRe = regexp.MustCompile(`reviewed ([0-9a-f]{7,40})`)
+
+// summaryRound is the head the bot's sticky summary says it reviewed and
+// when that summary was last written.
+func (d *PRDump) summaryRound(bots map[string]bool) (string, time.Time, bool) {
+	// Comments come oldest first; the newest sticky summary names the head
+	// the last round reviewed.
+	sha, at, found := "", time.Time{}, false
+	for _, c := range d.Comments.Nodes {
+		if !bots[BareLogin(ActorLogin(c.Author))] || !strings.Contains(c.Body, publisher.SummaryMarker) {
+			continue
+		}
+		m := summaryFooterRe.FindStringSubmatch(c.Body)
+		if m == nil {
+			continue
+		}
+		when := c.UpdatedAt
+		if when.IsZero() {
+			when = c.CreatedAt
+		}
+		if !found || !when.Before(at) {
+			sha, at, found = m[1][:7], when, true
+		}
+	}
+	return sha, at, found
 }
 
 // ObservedRoot is a PRism root comment as GitHub recorded it, used for the

@@ -167,4 +167,25 @@
 // contract's finding kind (FindingKind) and the sorted subject names
 // (Subjects). A row written before those columns existed is filled the
 // first round it is matched or GitHub shows its body.
+//
+// Output hygiene. After aliasing and before selection, HoldReason keeps a
+// finding off GitHub for the round: praise with nothing behind it and a
+// design opinion that concedes no impact and calls itself a preference
+// (PUBLISH_RENDER_HYGIENE), a claim that admits it rests on third-party
+// behaviour the agent did not read ("from memory", "unverified against the
+// pinned version", "defaults are certain"; Policy.LibraryClaimHold,
+// PUBLISH_LIBRARY_CLAIM_HOLD; the rule is the admission, not a cited-path
+// check, and AGENT_CLAIM_EVIDENCE makes the agent write the admission) and
+// a regression claim whose cited hunk still shows the code it says was
+// dropped (Policy.RegressionEvidence, PUBLISH_REGRESSION_EVIDENCE). A held
+// finding is neither posted nor listed; it is reported on Report.Held and
+// as a hygiene note, and a row it aliases to stays open with its LastSeenSHA
+// advanced, never fixed, never reopened. A finding whose thread is already
+// open on GitHub is not held: the summary lists and counts it as still
+// open. The renderer, under the same
+// PUBLISH_RENDER_HYGIENE switch read at call time, strips a confidence label
+// and any internal finding label from the contract sentences, titles a
+// comment that opens with a compliment by its first reporting sentence,
+// drops the source footer, names the folded notes on the status line and
+// refreshes nothing when the summary body did not change.
 package publisher

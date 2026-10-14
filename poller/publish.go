@@ -303,6 +303,8 @@ func (p *Poller) publishPolicy() publisher.Policy {
 		pol.LegacyStatusNotes = p.cfg.PublishLegacyStatusNotes
 		pol.LegacyClamp = p.cfg.PublishLegacyClamp
 		pol.NoScopeGuard = p.cfg.PublishNoScopeGuard
+		pol.LibraryClaimHold = !p.cfg.PublishNoLibraryClaimHold
+		pol.RegressionEvidence = !p.cfg.PublishNoRegressionEvidence
 	}
 	return pol
 }

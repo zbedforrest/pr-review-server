@@ -76,6 +76,13 @@ type Policy struct {
 	// to false): inherited paths, paths outside the PR diff and merge-base
 	// drift no longer block fixed, return and severity transitions.
 	NoScopeGuard bool
+	// LibraryClaimHold keeps a finding that rests on third-party behaviour
+	// the agent did not read off GitHub (PUBLISH_LIBRARY_CLAIM_HOLD, on
+	// unless set to false); RegressionEvidence does the same for a
+	// regression claim that quotes no removed line (PUBLISH_REGRESSION_EVIDENCE).
+	// A held finding stays on the dashboard and keeps its ledger row alive.
+	LibraryClaimHold   bool
+	RegressionEvidence bool
 }
 
 // PolicyV2Env is the kill switch for the ledger decision table: "false", "0",
@@ -110,10 +117,11 @@ func ExternalReconcileFromEnv() bool {
 
 // DefaultPolicy is the shipped posting policy: three inline comments per
 // round and six per PR, medium severity and above, unverified first-pass
-// claims folded, the ledger decision table, thread resolution and
-// cross-reviewer reconciliation on.
+// claims folded, the ledger decision table, thread resolution,
+// cross-reviewer reconciliation and both claim holds on.
 func DefaultPolicy() Policy {
-	return Policy{InlineCap: DefaultInlineCap, InlinePRCap: DefaultInlinePRCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true, ExternalReconcile: true, PriorIDAlias: true}
+	return Policy{InlineCap: DefaultInlineCap, InlinePRCap: DefaultInlinePRCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true, ExternalReconcile: true, PriorIDAlias: true,
+		LibraryClaimHold: true, RegressionEvidence: true}
 }
 
 // withDefaults fills unset fields only. A zero round cap is a real setting

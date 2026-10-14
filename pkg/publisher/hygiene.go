@@ -29,11 +29,19 @@ type Hygiene struct {
 	FixedWithoutHunkChange []HygieneNote
 	SameCommitResolves     []HygieneNote
 	SeverityEscalations    []HygieneNote
+	// Held records the findings the output hygiene gate kept off GitHub,
+	// one note per finding with the hold reason as its detail.
+	Held []HygieneNote
 }
 
-// Empty reports whether the round committed no defect.
+// Empty reports whether the round committed no defect and held nothing.
 func (h Hygiene) Empty() bool {
-	return len(h.RepeatedPosts)+len(h.RepeatAfterDismiss)+len(h.FixedWithoutFileChange)+len(h.FixedWithoutHunkChange)+len(h.SameCommitResolves)+len(h.SeverityEscalations) == 0
+	return len(h.RepeatedPosts)+len(h.RepeatAfterDismiss)+len(h.FixedWithoutFileChange)+len(h.FixedWithoutHunkChange)+len(h.SameCommitResolves)+len(h.SeverityEscalations)+len(h.Held) == 0
+}
+
+// noteHeld records a finding the output hygiene gate kept off GitHub.
+func (h *Hygiene) noteHeld(f payload.Finding, reason string) {
+	h.Held = append(h.Held, HygieneNote{Fingerprint: f.ID, Detail: "reason=" + reason + " file=" + f.File})
 }
 
 // priorRows indexes every finding and annotation row the ledger holds for the
