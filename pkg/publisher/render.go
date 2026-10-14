@@ -738,26 +738,34 @@ func clampText(s string, max int, legacy bool) string {
 	return textcut.Clamp(s, max)
 }
 
-// impactShownBelow reports whether the effect sentence still needs to be
-// shown under the title, because the title is not that sentence in full.
-func impactShownBelow(f payload.Finding, legacy, legacyClamp bool) bool {
+// impactBelowTitle is the part of the effect statement still owed under the
+// title: nothing when the title is the statement in full, the sentences
+// after the first when the title is that first sentence, otherwise the whole
+// statement.
+func impactBelowTitle(f payload.Finding, legacy, legacyClamp bool) string {
 	c := f.FindingContract
 	if c == nil || f.FindingContractStatus != "valid" {
-		return false
+		return ""
 	}
-	impact := strings.TrimSuffix(ContractSentence(c.CurrentImpact), ".")
+	cleaned := ContractSentence(c.CurrentImpact)
+	impact := strings.TrimSuffix(cleaned, ".")
 	if legacy && strings.TrimSpace(c.Headline) != "" {
-		return true
+		return cleaned
 	}
 	if legacy {
-		return clauseHeadline(impact, legacyHeadlineMaxRunes) != impact
+		if clauseHeadline(impact, legacyHeadlineMaxRunes) != impact {
+			return cleaned
+		}
+		return ""
 	}
 	title := titleSource(f)
-	rendered := clauseHeadlineWith(title, contractTitleLimit(f, legacyClamp), legacyClamp)
-	if rendered == impact {
-		return false
+	switch clauseHeadlineWith(title, contractTitleLimit(f, legacyClamp), legacyClamp) {
+	case impact:
+		return ""
+	case impactTitle(c):
+		return strings.TrimSpace(strings.TrimPrefix(cleaned, firstSentence(cleaned)))
 	}
-	return rendered != impactTitle(c)
+	return cleaned
 }
 
 // reasoningAfterTitle is the fold text of a comment-titled finding: the
@@ -780,8 +788,8 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	hasContract := c != nil && f.FindingContractStatus == "valid"
 	compact := hasContract && strings.TrimSpace(c.CurrentImpact) != ""
 
-	// When the title is not the effect sentence in full, the sentence is shown
-	// once, in full, under the title.
+	// What the title does not already say of the effect statement is shown
+	// once under it.
 	title := headlineWith(f, legacy, legacyClamp)
 	var b strings.Builder
 	b.WriteString(FindingMarker(f.ID) + "\n")
@@ -791,8 +799,8 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		fmt.Fprintf(&b, "%s **%s**\n", severityLabel(f.Severity, badgeBase), title)
 	}
 
-	if compact && impactShownBelow(f, legacy, legacyClamp) {
-		if impact := ContractSentence(c.CurrentImpact); impact != "" {
+	if compact {
+		if impact := impactBelowTitle(f, legacy, legacyClamp); impact != "" {
 			b.WriteString("\n" + impact + "\n")
 		}
 	}

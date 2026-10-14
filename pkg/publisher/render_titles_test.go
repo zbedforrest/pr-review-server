@@ -60,6 +60,21 @@ func TestRenderInline_LongFirstSentenceTitleKeepsItsTailInTheFold(t *testing.T) 
 	}
 }
 
+func TestRenderInline_ImpactTitledFindingShowsTheRestOfTheImpactBelow(t *testing.T) {
+	fd := withContract(f("a", "medium", "a.go", 1, "The retry helper drops the deadline."), "production_behavior", "current_impact", "Every retry is rejected. The caller waits out the full timeout before it sees the error.", "")
+	out := RenderInline(fd, "prism-only", "", "", "")
+	if strings.Count(out, "Every retry is rejected") != 1 || !strings.Contains(out, "**[MEDIUM] Behavior change \u00b7 Every retry is rejected**") {
+		t.Fatalf("the first sentence is the title and appears nowhere else:\n%s", out)
+	}
+	if strings.Count(out, "The caller waits out the full timeout before it sees the error.") != 1 {
+		t.Fatalf("the rest of the impact is shown once under the title:\n%s", out)
+	}
+	whole := withContract(f("b", "medium", "a.go", 1, "The retry helper drops the deadline."), "production_behavior", "current_impact", "Every retry is rejected.", "")
+	if out := RenderInline(whole, "prism-only", "", "", ""); strings.Count(out, "Every retry is rejected") != 1 {
+		t.Fatalf("a one-sentence impact is the title alone:\n%s", out)
+	}
+}
+
 func TestRenderInline_HeadlineWithoutImpactKeepsTheWholeComment(t *testing.T) {
 	fd := withContract(f("h", "medium", "a.go", 1, "The cache key omits the tenant. Two tenants share entries."), "latent_hazard", "unknown", "", "")
 	fd.FindingContract.Headline = "Cache key omits the tenant"
