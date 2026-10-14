@@ -251,5 +251,5 @@
 // flag") and so says nothing alone; and a comment that opens by quoting
 // the PR description is titled by the sentence after it. Under either
 // setting a word cut avoids ending on a connective or subordinator and a
-// sentence ends after any closing quote or bracket that follows its period.
+// sentence ends after any closing quote that follows its period.
 package publisher

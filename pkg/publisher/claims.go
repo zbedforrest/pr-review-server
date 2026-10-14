@@ -198,7 +198,7 @@ func titleSentence(ss []string) (int, bool) {
 		return 0, false
 	}
 	if !RenderHygieneEnabled() || !IsPraise(ss[0]) {
-		if len(ss) > 1 && NoteProblemClauseEnabled() && IsContext(ss[0]) && !StatesProblem(ss[0]) && contrastOpenerRe.MatchString(ss[1]) {
+		if len(ss) > 1 && NoteProblemClauseEnabled() && IsContext(ss[0]) && !StatesProblem(ss[0]) && standsAlone(ss[1]) {
 			return 1, true
 		}
 		return 0, true
@@ -217,6 +217,19 @@ func titleSentence(ss []string) (int, bool) {
 		}
 	}
 	return first, first >= 0
+}
+
+var anaphorOpenerRe = regexp.MustCompile(`(?i)^(?:this|that|these|those|it|its|they|their|such)\b`)
+
+// standsAlone reports whether a sentence that follows a context sentence
+// can title the comment: it opens with a contrast word, and what follows
+// is neither praise nor an anaphor pointing back at the context.
+func standsAlone(sentence string) bool {
+	if !contrastOpenerRe.MatchString(sentence) {
+		return false
+	}
+	rest := contrastOpenerRe.ReplaceAllString(sentence, "")
+	return rest != "" && !IsPraise(rest) && !anaphorOpenerRe.MatchString(rest)
 }
 
 var contextOpenerRe = regexp.MustCompile(`(?i)^(?:(?:the|this|per the|according to the|as the)\s+)?(?:pr\s+|pull request\s+|commit\s+)?(?:description|body|summary|title|docstring|comment|changelog|message|ticket|issue|spec|readme)\b[^.]{0,40}?\b(?:states?|says?|said|claims?|notes?|reads?|describes?|mentions?|promises?|documents?|explains?|asserts?|calls? out|suggests?|implies)\b`)

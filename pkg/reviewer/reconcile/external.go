@@ -153,7 +153,7 @@ func noteSentence(p payload.Finding, shown func(payload.Finding) string) string 
 	if shown != nil {
 		return strings.TrimSpace(shown(p))
 	}
-	if c := p.FindingContract; c != nil {
+	if c := p.FindingContract; c != nil && p.FindingContractStatus == "valid" {
 		if strings.TrimSpace(c.Headline) != "" || (c.Materiality == "current_impact" && strings.TrimSpace(c.CurrentImpact) != "") {
 			return ""
 		}

@@ -77,3 +77,14 @@ func TestIsContext_NeedsAQuotationOpenedEarlier(t *testing.T) {
 		t.Fatal("a trailing apostrophe is not a quotation")
 	}
 }
+
+func TestTitleSentence_ContextSkipNeedsASentenceThatStandsAlone(t *testing.T) {
+	for _, c := range []string{
+		"The PR description says the overlay is 'room scoped.' However, this flag is set elsewhere and nothing else changes.",
+		"The PR description says the overlay is 'room scoped.' However, nice work on the test coverage here.",
+	} {
+		if got, _ := FirstFindingSentence(c); !strings.HasPrefix(got, "The PR description says") {
+			t.Fatalf("got %q", got)
+		}
+	}
+}
