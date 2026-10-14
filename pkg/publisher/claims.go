@@ -216,14 +216,14 @@ func capitalized(s string) string {
 
 var (
 	consequenceRe = regexp.MustCompile(`(?i)\bif\b[^.]*\b(?:will|would|can|could|may|might)\b`)
-	defectWordRe  = regexp.MustCompile(`(?i)\b(?:risk\w*|drift\w*|lose|loses|losing|lost|errors?|stale|undefined|null|empty|invalid|duplicate\w*|mismatch\w*|unreachable|unhandled|uncaught)\b`)
+	defectWordRe  = regexp.MustCompile(`(?i)\b(?:not|never|no longer|fails?|failing|failed|missing|misses|incorrect(?:ly)?|wrong|broken|breaks|ignores?|ignoring|skips?|skipping|bypass\w*|silently|regress\w*|revert\w*|leaks?|leaking|crash\w*|races?|racy|deadlock\w*|overflow\w*|corrupt\w*|panics?|risk\w*|drift\w*|lose|loses|losing|lost|errors?|stale|undefined|null|empty|invalid|duplicate\w*|mismatch\w*|unreachable|unhandled|uncaught)\b|n't\b`)
 )
 
 // StatesProblem reports whether a sentence says what goes wrong: a defect
 // word or an "if X, Y will ..." consequence, rather than only describing the
 // code.
 func StatesProblem(sentence string) bool {
-	return praiseNegationRe.MatchString(sentence) || consequenceRe.MatchString(sentence) || defectWordRe.MatchString(sentence)
+	return consequenceRe.MatchString(sentence) || defectWordRe.MatchString(sentence)
 }
 
 var (

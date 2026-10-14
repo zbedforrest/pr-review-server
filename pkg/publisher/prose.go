@@ -39,14 +39,53 @@ func EscapeProseHTML(text string) string {
 	return b.String()
 }
 
+// escapeOutsideCodeSpans escapes the prose of one line. A code span opens
+// with a run of backticks and closes at the next run of the same length; a
+// run with no match is literal text, as in CommonMark.
 func escapeOutsideCodeSpans(line string) string {
-	parts := strings.Split(line, "`")
-	if len(parts)%2 == 0 {
-		// An unpaired backtick: GitHub shows it literally, so every segment is prose.
-		return tagLikeRe.ReplaceAllString(line, "`$0`")
+	var b strings.Builder
+	prose := 0
+	for i := 0; i < len(line); {
+		if line[i] != '`' {
+			i++
+			continue
+		}
+		run := backtickRun(line, i)
+		end := closingRun(line, i+run, run)
+		if end < 0 {
+			i += run
+			continue
+		}
+		b.WriteString(tagLikeRe.ReplaceAllString(line[prose:i], "`$0`"))
+		b.WriteString(line[i : end+run])
+		i = end + run
+		prose = i
 	}
-	for i := 0; i < len(parts); i += 2 {
-		parts[i] = tagLikeRe.ReplaceAllString(parts[i], "`$0`")
+	b.WriteString(tagLikeRe.ReplaceAllString(line[prose:], "`$0`"))
+	return b.String()
+}
+
+func backtickRun(s string, i int) int {
+	n := 0
+	for i+n < len(s) && s[i+n] == '`' {
+		n++
 	}
-	return strings.Join(parts, "`")
+	return n
+}
+
+// closingRun returns where the next run of exactly n backticks starts at or
+// after from, or -1.
+func closingRun(s string, from, n int) int {
+	for i := from; i < len(s); {
+		if s[i] != '`' {
+			i++
+			continue
+		}
+		run := backtickRun(s, i)
+		if run == n {
+			return i
+		}
+		i += run
+	}
+	return -1
 }

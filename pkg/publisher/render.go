@@ -896,7 +896,7 @@ func summaryText(f payload.Finding, legacy bool) string {
 		return titleSource(f)
 	}
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
-		return strings.TrimSpace(c.CurrentImpact)
+		return EscapeProseHTML(strings.TrimSpace(c.CurrentImpact))
 	}
 	return strings.Trim(firstLine(commentText(f)), "*_ ")
 }

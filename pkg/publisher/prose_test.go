@@ -80,3 +80,25 @@ func TestStatesProblemNeedsAWholeWordIf(t *testing.T) {
 		t.Fatal("`modified` is not a conditional")
 	}
 }
+
+func TestEscapeProseHTMLRespectsCodeSpansOnTrickyLines(t *testing.T) {
+	cases := map[string]string{
+		"emits `<img>` and a stray ` tick near <br>": "emits `<img>` and a stray ` tick near `<br>`",
+		"wrap ``a <b> c`` and <i>":                   "wrap ``a <b> c`` and `<i>`",
+		"`<img>` then <img> then `x`":                "`<img>` then `<img>` then `x`",
+	}
+	for in, want := range cases {
+		if got := EscapeProseHTML(in); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestContextWithADiscourseWordDoesNotTitleThePraiseLedFinding(t *testing.T) {
+	comment := "The PR correctly pairs A with B. However, the deploy workflow also only derives both values from DEPLOY_H2. " +
+		"If it is unset, a deploy will revert the service."
+	title, _ := FirstFindingSentence(comment)
+	if !strings.HasPrefix(title, "If it is unset, a deploy will revert") {
+		t.Fatalf("title = %q", title)
+	}
+}
