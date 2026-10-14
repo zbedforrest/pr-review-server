@@ -143,3 +143,25 @@ func TestParseSinceLastReview(t *testing.T) {
 }
 
 func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
+
+func TestRefreshSummary_DropsANoteWhoseThreadWasResolvedSinceTheRound(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900}}
+	publishThreads(t, gh, ledger, noteRound("sha-1", greptileBuyerRoot(900)))
+	if !strings.Contains(gh.issueCreates[0], "1 folded note") {
+		t.Fatalf("the note is folded while the thread is open:\n%s", gh.issueCreates[0])
+	}
+	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueCreates[0]}}
+	gh.extra[0].Resolved = true
+
+	refresh := noteRound("sha-1", greptileBuyerRoot(900))
+	refresh.Previous = nil
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: testPolicy()}
+	if err := p.RefreshSummary(context.Background(), refresh); err != nil {
+		t.Fatal(err)
+	}
+	out, edited := gh.issueEdits[501]
+	if !edited || strings.Contains(out, "folded note") {
+		t.Fatalf("a note whose thread is now settled leaves the summary on refresh (edited=%v):\n%s", edited, out)
+	}
+}

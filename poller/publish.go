@@ -296,6 +296,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	pol.ExternalReconcile = !p.externalOff
 	pol.SettledAlias = !p.settledAliasOff
 	pol.NoteReconcile = !p.noteReconcileOff
+	pol.NoteSentenceMatch = !p.sentenceMatchOff
 	pol.BodyCheck = p.bodyCheckOn
 	if v, err := p.db.GetSetting(settingPublishInlineCap); err == nil {
 		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {

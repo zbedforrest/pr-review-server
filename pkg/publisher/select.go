@@ -98,6 +98,12 @@ type Policy struct {
 	// text rule held far more notes the body merely described than notes it
 	// answered, so it ships off.
 	BodyCheck bool
+	// NoteSentenceMatch scores a finding against another reviewer's root by
+	// the sentence the summary shows for it as well as by its headline,
+	// impact and whole text (PUBLISH_NOTE_SENTENCE_MATCH, on unless set to
+	// false), so a note whose impact sentence concedes nothing today still
+	// matches the thread that raised its point.
+	NoteSentenceMatch bool
 }
 
 // PolicyV2Env is the kill switch for the ledger decision table: "false", "0",
@@ -148,6 +154,14 @@ const NoteReconcileEnv = "PUBLISH_NOTE_RECONCILE"
 // reconciliation on. The poller resolves it once at start-up.
 func NoteReconcileFromEnv() bool { return !envOff(NoteReconcileEnv) }
 
+// NoteSentenceMatchEnv is the kill switch for scoring a finding by the
+// sentence the summary shows: "false", "0", "off" and "no" turn it off.
+const NoteSentenceMatchEnv = "PUBLISH_NOTE_SENTENCE_MATCH"
+
+// NoteSentenceMatchFromEnv reports whether the environment left the
+// sentence match on. The poller resolves it once at start-up.
+func NoteSentenceMatchFromEnv() bool { return !envOff(NoteSentenceMatchEnv) }
+
 // BodyCheckEnv turns the pull request body check on: "true", "1", "on" and
 // "yes" enable it; anything else leaves it off.
 const BodyCheckEnv = "PUBLISH_BODY_CHECK"
@@ -177,7 +191,7 @@ func envOff(name string) bool {
 // and note reconciliation on.
 func DefaultPolicy() Policy {
 	return Policy{InlineCap: DefaultInlineCap, InlinePRCap: DefaultInlinePRCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true, ExternalReconcile: true, PriorIDAlias: true,
-		LibraryClaimHold: true, RegressionEvidence: true, SettledAlias: true, NoteReconcile: true}
+		LibraryClaimHold: true, RegressionEvidence: true, SettledAlias: true, NoteReconcile: true, NoteSentenceMatch: true}
 }
 
 // withDefaults fills unset fields only. A zero round cap is a real setting
