@@ -726,13 +726,14 @@ const cutMarker = textcut.Marker
 
 // clampText cuts s to max runes the way textcut.Clamp does (a dropped
 // parenthetical, else a sentence, clause or word boundary outside every
-// open pair, ending with cutMarker). Legacy restores the word cut with
-// "...". A text within the limit is returned unchanged.
+// open pair, ending with cutMarker), keeping the problem clause over the
+// context clause under PUBLISH_NOTE_PROBLEM_CLAUSE. Legacy restores the
+// word cut with "...". A text within the limit is returned unchanged.
 func clampText(s string, max int, legacy bool) string {
 	if legacy {
 		return truncateWords(s, max)
 	}
-	return textcut.Clamp(s, max)
+	return textcut.ClampWith(s, max, textcut.Options{KeepProblemClause: NoteProblemClauseEnabled()})
 }
 
 // impactBelowTitle is the part of the effect statement still owed under the

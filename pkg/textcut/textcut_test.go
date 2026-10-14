@@ -86,3 +86,62 @@ func TestClamp_ClosedPairNeverExceedsTheLimit(t *testing.T) {
 		}
 	}
 }
+
+// The two folded notes of the 2026-10-14 smoke re-audit, anonymised: one
+// cut after "However" with the problem left out, one cut before the "but"
+// clause that states the problem.
+const (
+	smokeQuoteNote   = "The PR description states: 'Room-scoped handling (the session check, with `leave_room` exempt) now applies to `toast_overlay` too.' However, the implementation deliberately does the opposite: the `toast_overlay` case has no `leave_room` exemption, as acknowledged in the in-code comment (lines 494-496)."
+	smokeGuardNote   = "The current guard `selectSessionDossierRoom(getState()) !== room` only rejects when the session has moved off `room`, but `leave_room` responses can arrive while the session still reads the departed room (as the existing stale-response test and comment on `chat_banner_notification` document)"
+	smokeGuardWant   = "[…] but `leave_room` responses can arrive while the session still reads the departed room (as the existing stale-response test and comment on `chat_banner_notification` document)"
+	smokeQuoteWant   = "The PR description states: 'Room-scoped handling (the session check, with `leave_room` exempt) now applies to `toast_overlay` too.'"
+	smokeNoteMaxRune = 200
+)
+
+func TestFirstSentence_EndsAfterAClosingQuote(t *testing.T) {
+	if got := FirstSentence(smokeQuoteNote); got != smokeQuoteWant {
+		t.Fatalf("got %q", got)
+	}
+	if got := FirstSentence(`He wrote "stop." Then nothing.`); got != `He wrote "stop."` {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestClamp_KeepsTheProblemClauseOverTheLeadingContext(t *testing.T) {
+	if got := ClampWith(smokeGuardNote, smokeNoteMaxRune, Options{KeepProblemClause: true}); got != smokeGuardWant {
+		t.Fatalf("got  %q\nwant %q", got, smokeGuardWant)
+	}
+	s := "The helper returns the cached value whenever the key is present, but the cache is never invalidated when the row is deleted, so a deleted row is served until the process restarts"
+	got := ClampWith(s, 120, Options{KeepProblemClause: true})
+	if !strings.HasPrefix(got, "[…] but the cache is never invalidated") || len([]rune(got)) > 120 {
+		t.Fatalf("got %q", got)
+	}
+	if got := Clamp(smokeGuardNote, smokeNoteMaxRune); strings.HasPrefix(got, "[…]") {
+		t.Fatalf("without the option the cut stays on the right: %q", got)
+	}
+	if got := ClampWith(smokeGuardNote, 30, Options{KeepProblemClause: true}); strings.HasPrefix(got, "[…]") || len([]rune(got)) > 30 {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestClamp_NeverEndsOnAConnective(t *testing.T) {
+	connectives := map[string]bool{"however": true, "but": true, "only": true, "when": true, "unless": true, "so": true, "that": true, "which": true, "because": true, "and": true, "or": true}
+	for _, s := range []string{smokeQuoteNote, smokeGuardNote,
+		"The retry helper honours the deadline only when the first attempt fails fast, however, every later attempt re-enters the backoff loop with a fresh deadline"} {
+		for max := 30; max < len([]rune(s)); max++ {
+			got := ClampWith(s, max, Options{KeepProblemClause: true})
+			if n := len([]rune(got)); n > max {
+				t.Fatalf("max %d: %d runes: %q", max, n, got)
+			}
+			text := strings.TrimSuffix(strings.TrimSpace(got), Marker)
+			text = strings.TrimRight(text, " ,;:`)]\"'”")
+			words := strings.Fields(text)
+			if len(words) == 0 {
+				continue
+			}
+			if last := strings.ToLower(strings.Trim(words[len(words)-1], "`,;:.")); connectives[last] {
+				t.Fatalf("max %d: cut ends on %q: %q", max, last, got)
+			}
+		}
+	}
+}

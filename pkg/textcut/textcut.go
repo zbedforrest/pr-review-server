@@ -3,7 +3,10 @@
 // delimiter.
 package textcut
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // Marker ends a cut: an editorial omission mark the agent's own prose never
 // produces, so a reader can tell a cut from a sentence left hanging. Inside
@@ -14,6 +17,16 @@ const Marker = " […]"
 // around; cutting at the last one before the limit keeps a line readable.
 var ClauseBoundaries = []string{", so ", "; ", " because ", ", which ", ", and ", ", causing ", ", leaving ", ", "}
 
+// Options selects the cut rules beyond the balanced cut.
+type Options struct {
+	// KeepProblemClause prefers the clause that states the problem: a text
+	// whose "but", "yet" or "however" clause does not fit loses its leading
+	// context clause (replaced by the marker) rather than that clause, and
+	// no cut ends on a connective or subordinator ("however", "only",
+	// "when", "because" ...), which would leave the problem unsaid.
+	KeepProblemClause bool
+}
+
 // Clamp cuts s to max runes. A text within the limit is returned unchanged.
 // A longer one first loses its parentheticals, left to right, when that
 // alone brings it within the limit, so "X (aside) does Y, so Z" keeps its
@@ -23,13 +36,80 @@ var ClauseBoundaries = []string{", so ", "; ", " because ", ", which ", ", and "
 // When no balanced cut exists in the window, the cut lands on the last
 // word and the open pairs are closed after the marker.
 func Clamp(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
+	return ClampWith(s, max, Options{})
+}
+
+// ClampWith is Clamp under the given options.
+func ClampWith(s string, max int, opts Options) string {
+	if len([]rune(s)) <= max {
 		return s
 	}
 	if reduced, ok := dropParentheticals(s, max); ok {
 		return reduced
 	}
+	if opts.KeepProblemClause {
+		if tail, ok := problemClause(s); ok {
+			budget := max - len([]rune(leadMarker))
+			if budget >= minTailRunes {
+				if len([]rune(tail)) <= budget {
+					return leadMarker + tail
+				}
+				if reduced, ok := dropParentheticals(tail, budget); ok {
+					return leadMarker + reduced
+				}
+				return leadMarker + cutRight(tail, budget, opts)
+			}
+		}
+	}
+	return cutRight(s, max, opts)
+}
+
+// leadMarker opens a text whose leading clause was dropped.
+const leadMarker = "[…] "
+
+// minTailRunes is the least room a problem clause gets; under it a marker
+// and a few words would say less than a cut from the right.
+const minTailRunes = 40
+
+// problemJoints introduce the clause a sentence builds up to: the contrast
+// after the context. Each is matched case-insensitively outside open pairs.
+var problemJoints = []string{", but ", "; but ", " but ", ", yet ", "; yet ", ", however, ", "; however, ", " however, ", ", whereas "}
+
+// problemClause is the text from the first contrast joint on, when both
+// the context before it and the clause after it have a few words.
+func problemClause(s string) (string, bool) {
+	lower := strings.ToLower(s)
+	balanced := balancedPrefixes(s)
+	best := -1
+	for _, j := range problemJoints {
+		for from := 0; ; {
+			i := strings.Index(lower[from:], j)
+			if i < 0 {
+				break
+			}
+			i += from
+			if balanced[i] && (best < 0 || i < best) {
+				best = i
+				break
+			}
+			from = i + 1
+		}
+	}
+	if best < 0 {
+		return "", false
+	}
+	head, tail := s[:best], strings.TrimLeft(s[best:], " ,;")
+	if len(strings.Fields(head)) < 2 || len(strings.Fields(tail)) < 4 {
+		return "", false
+	}
+	return tail, true
+}
+
+// cutRight cuts s from the right to max runes: at the end of a sentence,
+// else a clause joint, else a word, outside every open pair, and ends with
+// Marker; with KeepProblemClause never on a connective.
+func cutRight(s string, max int, opts Options) string {
+	runes := []rune(s)
 	budget := max - len([]rune(Marker))
 	if budget < 1 {
 		return strings.TrimSpace(Marker)
@@ -41,8 +121,8 @@ func Clamp(s string, max int) string {
 	// A whole first sentence reads better than a longer cut mid-sentence,
 	// so a sentence end counts from a quarter of the window on.
 	for i := len(window) - 1; i >= len(window)/4; i-- {
-		if sentenceEndAt(window, i) && balanced[i+1] {
-			cut = i + 1
+		if end, ok := sentenceEnd(window, i); ok && end <= len(window) && balanced[end] {
+			cut = end
 			break
 		}
 	}
@@ -51,6 +131,9 @@ func Clamp(s string, max int) string {
 			if i := strings.LastIndex(window, b); i > cut && i >= floor && balanced[i] {
 				cut = i
 			}
+		}
+		if cut >= 0 && opts.KeepProblemClause {
+			cut = beforeConnectives(window, cut, floor)
 		}
 	}
 	if cut < 0 {
@@ -86,11 +169,29 @@ func wordCut(window string, floor int, balanced []bool) int {
 		if window[i] != ' ' || !balanced[i] {
 			continue
 		}
-		if !functionWords[strings.ToLower(window[strings.LastIndex(window[:i], " ")+1:i])] {
+		if !functionWords[lastWord(window[:i])] {
 			return i
 		}
 	}
 	return -1
+}
+
+// beforeConnectives moves a clause cut back over the function words it
+// would otherwise end on ("However", "only when"), or to -1 when that
+// drops it under floor.
+func beforeConnectives(window string, cut, floor int) int {
+	for cut >= floor {
+		head := strings.TrimRight(window[:cut], " ,;:")
+		if !functionWords[lastWord(head)] {
+			return cut
+		}
+		cut = strings.LastIndex(head, " ")
+	}
+	return -1
+}
+
+func lastWord(s string) string {
+	return strings.ToLower(strings.Trim(s[strings.LastIndex(s, " ")+1:], "`,;:"))
 }
 
 var functionWords = map[string]bool{
@@ -100,6 +201,9 @@ var functionWords = map[string]bool{
 	"so": true, "yet": true, "is": true, "are": true, "was": true, "were": true, "be": true, "been": true,
 	"that": true, "which": true, "who": true, "whose": true, "when": true, "where": true, "while": true,
 	"not": true, "no": true, "its": true, "their": true, "this": true, "these": true, "those": true,
+	"however": true, "only": true, "unless": true, "because": true, "although": true, "though": true,
+	"whereas": true, "since": true, "if": true, "then": true, "thus": true, "hence": true, "until": true,
+	"even": true, "still": true, "also": true, "either": true, "neither": true, "whether": true,
 }
 
 // FirstSentence returns the leading sentence of line: up to the first
@@ -110,14 +214,15 @@ func FirstSentence(line string) string {
 	balanced := balancedPrefixes(line)
 	first := -1
 	for i := 0; i < len(line); i++ {
-		if !sentenceEndAt(line, i) {
+		end, ok := sentenceEnd(line, i)
+		if !ok {
 			continue
 		}
-		if balanced[i+1] {
-			return line[:i+1]
+		if balanced[end] {
+			return line[:end]
 		}
 		if first < 0 {
-			first = i + 1
+			first = end
 		}
 	}
 	if first > 0 {
@@ -126,12 +231,27 @@ func FirstSentence(line string) string {
 	return line
 }
 
-func sentenceEndAt(s string, i int) bool {
+// sentenceEnd reports whether a sentence ends at byte i: a period,
+// exclamation or question mark, then any closing quotes or brackets, then
+// a space or the end of the text. end is the offset just past the closers.
+func sentenceEnd(s string, i int) (end int, ok bool) {
 	switch s[i] {
 	case '.', '!', '?':
-		return i+1 == len(s) || s[i+1] == ' '
+	default:
+		return 0, false
 	}
-	return false
+	end = i + 1
+	for end < len(s) {
+		r, n := utf8.DecodeRuneInString(s[end:])
+		if !strings.ContainsRune(`'")]”’`, r) {
+			break
+		}
+		end += n
+	}
+	if end == len(s) || s[end] == ' ' {
+		return end, true
+	}
+	return 0, false
 }
 
 // pairs tracks the delimiters open at a point in the text. Inside a code
