@@ -162,7 +162,14 @@
 // that would earn the thread's delta reply later. An external row whose
 // root thread has since been resolved stops being linked from the summary.
 // Off, notes are not candidates, a resolved thread is read by nobody, and
-// the summary refresh lists no threads.
+// the summary refresh lists no threads. The text bar reads, besides the
+// headline, impact and whole text, the sentence the bullet shows for a
+// note the contract does not title (Policy.NoteSentenceMatch,
+// PUBLISH_NOTE_SENTENCE_MATCH, on unless set to false): a latent hazard's
+// impact sentence concedes nothing today and shares nothing with the thread
+// that raised its point. A summary refresh runs the same note pass without
+// writing: a note whose thread was resolved since the round leaves the
+// summary at once and the next round records the row.
 //
 // Pull request body. With Policy.BodyCheck (PUBLISH_BODY_CHECK, off unless
 // set to true) a folded note the body already states is held: one
@@ -234,5 +241,15 @@
 // and any internal finding label from the contract sentences, titles a
 // comment that opens with a compliment by its first reporting sentence,
 // drops the source footer, names the folded notes on the status line and
-// refreshes nothing when the summary body did not change.
+// refreshes nothing when the summary body did not change. Under
+// PUBLISH_NOTE_PROBLEM_CLAUSE (on unless set to false, read at call time)
+// a bullet, inline title or headline over its limit keeps the clause that
+// states the problem: a "but", "yet" or "however" clause that fits is
+// shown whole with its leading context replaced by the marker, unless the
+// leading clause already names the defect (StatesProblem) or the trailing
+// clause opens with a qualifier or anaphor ("but only when", "but this
+// flag") and so says nothing alone; and a comment that opens by quoting
+// the PR description is titled by the sentence after it. Under either
+// setting a word cut avoids ending on a connective or subordinator and a
+// sentence ends after any closing quote that follows its period.
 package publisher

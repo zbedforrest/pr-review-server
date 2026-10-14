@@ -346,3 +346,21 @@ func TestExternalScore_KeepsTheJaccardRule(t *testing.T) {
 		t.Fatal("the alias rule still matches")
 	}
 }
+
+func TestExternalScore_ReadsTheSentenceANoteShowsWhenTheImpactConcedesNothing(t *testing.T) {
+	root := ExternalFinding{Source: SourceGreptile, CommentID: 9, File: "store/models.py", StartLine: 241, EndLine: 241,
+		Title: "Older buyers get wrong badges",
+		Body:  "`record_club_bulk` reads buyers only from `buyer_id`, even when the buyer read switch is off. If older purchases still have a null `buyer_id`, this query misses those buyers. The existing purchase reader uses `user_id` until those rows are backfilled. A member who bought before joining the toggle cohort has no purchase state row. Publishing that set for club members then creates a `CLUB` unread row, so the bought set shows NEW on Club instead of Purchased. Use `user_id` while the read switch is off, or fall back to it for null `buyer_id` values."}
+	note := payload.Finding{ID: "store/models.py:24:aaaaaaaaaaaa", File: "store/models.py", Line: 241, Severity: "low",
+		Comment:         "The fanout skip reads `buyer_id` unconditionally, but the purchase read path does not. `Purchases._active()` selects `buyer_id` only when `READ_SWAP` is on and additionally requires `bought_at__isnull=False`, otherwise it uses `user_id`. Since `buyer_id`/`bought_at` are nullable mirror fields with no backfill, on pre-backfill rows the fanout skip silently matches nothing and the two paths disagree about who bought a set, leaving `club` unread rows for owned sets.",
+		FindingContract: &types.FindingContract{FindingKind: "latent_hazard", Materiality: "future_condition_only", CurrentImpact: "None demonstrated where the mirror columns are populated, since new purchases write both fields."}}
+	if whole, _ := Containment(prismText(note), root.Title+" "+root.Body); whole >= ExternalThreshold {
+		t.Fatalf("fixture: the whole text already passes at %.2f", whole)
+	}
+	if got := ExternalScore(note, root); got < ExternalThreshold {
+		t.Fatalf("score %.3f under the bar: the sentence the summary shows restates the root", got)
+	}
+	if m := MatchExternal([]payload.Finding{note}, []ExternalFinding{root}); len(m) != 1 {
+		t.Fatalf("no match: %+v", m)
+	}
+}

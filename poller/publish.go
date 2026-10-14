@@ -182,10 +182,18 @@ func optOutURL(baseURL string) string {
 	return ""
 }
 
-// settleFooter is the footer for a live round, filled by the posting path
-// because BuildPublishRound has no settings: off under the kill switch, and
-// with the settle sentence only in respond mode, the one mode where an
-// author's reply is answered on the thread.
+// liveRound is the round for anything that reaches GitHub, the posting path
+// and the summary refresh alike, so both render the same settle footer.
+func (p *Poller) liveRound(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, pol publisher.Policy) publisher.Round {
+	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
+	round.SettleFooter = p.settleFooter()
+	return round
+}
+
+// settleFooter is the footer for a live round, filled by liveRound because
+// BuildPublishRound has no settings: off under the kill switch, and with
+// the settle sentence only in respond mode, the one mode where an author's
+// reply is answered on the thread.
 func (p *Poller) settleFooter() string {
 	if p.cfg.DisableSettleFooter {
 		return ""
@@ -296,6 +304,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	pol.ExternalReconcile = !p.externalOff
 	pol.SettledAlias = !p.settledAliasOff
 	pol.NoteReconcile = !p.noteReconcileOff
+	pol.NoteSentenceMatch = !p.sentenceMatchOff
 	pol.BodyCheck = p.bodyCheckOn
 	if v, err := p.db.GetSetting(settingPublishInlineCap); err == nil {
 		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
@@ -420,14 +429,13 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 	}
 
 	pol := p.publishPolicy()
-	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
+	round := p.liveRound(pr, pl, comments, patches, previous, pol)
 	round.PRBody = ghPR.GetBody()
 	round.Changes = p.changeLookup(ctx, pr)
 	round.DiffFiles = make(map[string]bool, len(files))
 	for _, file := range files {
 		round.DiffFiles[file] = true
 	}
-	round.SettleFooter = p.settleFooter()
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: pol}
 	report, err := pub.Publish(ctx, round)
 	if errors.Is(err, publisher.ErrHeadAlreadyPublished) {
@@ -573,7 +581,7 @@ func (p *Poller) refreshPublishedSummary(ctx context.Context, owner, repo string
 	}
 	pr := github.PullRequest{Owner: owner, Repo: repo, Number: number, CommitSHA: head, Author: cached.Author}
 	pol := p.publishPolicy()
-	round := BuildPublishRoundWith(pr, *pl, comments, patches, previous, p.cfg.BaseURL, pol)
+	round := p.liveRound(pr, *pl, comments, patches, previous, pol)
 	round.PRBody = ghPR.GetBody()
 	pub := &publisher.Publisher{GH: ghPublishAdapter{p.ghClientConcrete}, Ledger: ledger, Policy: pol}
 	return pub.RefreshSummary(ctx, round)

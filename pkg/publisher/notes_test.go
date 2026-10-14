@@ -297,3 +297,56 @@ func TestNotes_BodyCheckIsOffByDefault(t *testing.T) {
 		t.Fatalf("without PUBLISH_BODY_CHECK the note folds as before: %+v", rep)
 	}
 }
+
+// The 2026-10-14 smoke re-audit residual, anonymised: five days after the
+// withdrawn thread above, a lite review raised the same point again as a
+// LOW latent hazard whose impact sentence concedes nothing today. Its full
+// text sits under the external bar; the sentence the note shows does not.
+const buyerLaterText = "The fanout skip reads `buyer_id` unconditionally, but the purchase read path does not. `Purchases._active()` selects `buyer_id` only when `READ_SWAP` is on and additionally requires `bought_at__isnull=False`, otherwise it uses `user_id`. Since `buyer_id`/`bought_at` are nullable mirror fields with no backfill, on pre-backfill rows the fanout skip silently matches nothing and the two paths disagree about who bought a set, leaving `club` unread rows for owned sets."
+
+func buyerLaterNote() payload.Finding {
+	x := f(fid(modelsFile, 241, buyerLaterText), "low", modelsFile, 241, buyerLaterText)
+	x.FindingContract.FindingKind = "latent_hazard"
+	x.FindingContract.Materiality = "future_condition_only"
+	x.FindingContract.CurrentImpact = "None demonstrated where the mirror columns are populated, since new purchases write both fields."
+	x.FindingContract.Subjects = buyerNote().FindingContract.Subjects
+	return x
+}
+
+func TestNotes_LaterLowRestatementOfAWithdrawnThreadIsSettled(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	gh.extra = []ReviewThread{{NodeID: "T900", RootCommentID: 900, Resolved: true, Outdated: true}}
+	r := noteRound("sha-2", greptileBuyerRoot(900))
+	r.Findings[1] = buyerLaterNote()
+	rep := publishThreads(t, gh, ledger, r)
+	if rep.ExternalSettled != 1 || rep.ExternalMatched != 0 || rep.InlinePosted != 0 || len(gh.repliesTo(900)) != 0 {
+		t.Fatalf("the later note restates the withdrawn thread: %+v replies=%v", rep, gh.repliesTo(900))
+	}
+	summary := gh.issueCreates[0]
+	if strings.Contains(summary, "folded note") || strings.Contains(summary, "fanout skip") {
+		t.Fatalf("a settled point is not folded again:\n%s", summary)
+	}
+	if row := ledger.get(db.PublishedKindAnnotation, buyerLaterNote().ID); row == nil || row.State != db.PublishedStateExternal || row.ExternalCommentID != 900 {
+		t.Fatalf("the point is remembered as external: %+v", row)
+	}
+}
+
+func TestMatchOptions_ScoreTheSentenceTheBulletShows(t *testing.T) {
+	f := payload.Finding{Comment: "Nice cleanup of the fanout path. However, the fanout skip reads `buyer_id` unconditionally, but the purchase read path does not. The rest follows."}
+	got := DefaultPolicy().matchOptions().ShownSentence(f)
+	if !strings.HasPrefix(got, "The fanout skip reads `buyer_id` unconditionally") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMatchOptions_ShownSentenceFollowsTheRendererTitle(t *testing.T) {
+	comment := "The fanout skip reads `buyer_id` unconditionally, but the purchase read path does not."
+	titled := payload.Finding{Comment: comment, FindingContractStatus: "valid", FindingContract: &types.FindingContract{Headline: "Fanout skip reads the mirror column only"}}
+	if got := shownSentence(titled); got != "" {
+		t.Fatalf("a contract headline titles the bullet: %q", got)
+	}
+	dropped := payload.Finding{Comment: comment, FindingContractStatus: "invalid", FindingContract: &types.FindingContract{Headline: "Fanout skip reads the mirror column only"}}
+	if got := shownSentence(dropped); !strings.HasPrefix(got, "The fanout skip reads") {
+		t.Fatalf("an unaccepted contract leaves the comment sentence as the title: %q", got)
+	}
+}

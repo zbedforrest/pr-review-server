@@ -204,9 +204,9 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 			noteCandidates = append(noteCandidates, f)
 		}
 	}
-	matches := reconcile.MatchExternal(shownCandidates, open)
+	matches := reconcile.MatchExternalWith(shownCandidates, open, p.Policy.matchOptions())
 	if len(noteCandidates) > 0 && len(resolved) > 0 {
-		matches = append(matches, reconcile.MatchExternal(noteCandidates, resolved)...)
+		matches = append(matches, reconcile.MatchExternalWith(noteCandidates, resolved, p.Policy.matchOptions())...)
 	}
 	if len(matches) == 0 {
 		return pass
@@ -249,6 +249,66 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 	r.Findings = kept
 	sort.SliceStable(pass.notes, func(i, j int) bool { return pass.notes[i].commentID < pass.notes[j].commentID })
 	return pass
+}
+
+// matchOptions is the external scoring the policy selects.
+func (p Policy) matchOptions() reconcile.MatchOptions {
+	return reconcile.MatchOptions{NoteSentence: p.NoteSentenceMatch, ShownSentence: shownSentence}
+}
+
+// shownSentence is the sentence the summary bullet shows for a finding the
+// contract does not title (as the renderer judges it): the first sentence
+// that reports something. Empty when the contract titles the bullet.
+func shownSentence(f payload.Finding) string {
+	if !titleFromComment(f) {
+		return ""
+	}
+	sentence, ok := FirstFindingSentence(commentText(f))
+	if !ok {
+		sentence = firstSentence(commentText(f))
+	}
+	if RenderHygieneEnabled() {
+		sentence = StripConfidenceLabel(sentence)
+	}
+	return strings.TrimSpace(emphasisMarkers.Replace(StripFindingIDAsides(sentence)))
+}
+
+// withoutSettledNotes drops, for a re-rendered summary, the folded notes
+// that restate a root whose thread the listing now shows resolved: the
+// round's note pass records such a note as external and drops it; a
+// refresh records nothing, so it only leaves the note out and the next
+// round writes the row. Without a listing nothing is dropped.
+func withoutSettledNotes(ctx context.Context, r Round, rows map[string]*db.PublishedFinding, threads *threadIndex, pol Policy) []payload.Finding {
+	if threads == nil || len(r.External) == 0 {
+		return r.Findings
+	}
+	_, resolved := splitRoots(ctx, r.External, threads)
+	if threads.listFailed() || len(resolved) == 0 {
+		return r.Findings
+	}
+	var notes []payload.Finding
+	for _, f := range r.Findings {
+		if _, known := rows[f.ID]; !known && summaryNote(f) {
+			notes = append(notes, f)
+		}
+	}
+	matches := reconcile.MatchExternalWith(notes, resolved, pol.matchOptions())
+	if len(matches) == 0 {
+		return r.Findings
+	}
+	settled := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		settled[m.FindingID] = true
+	}
+	kept := make([]payload.Finding, 0, len(r.Findings))
+	for _, f := range r.Findings {
+		if settled[f.ID] {
+			log.Printf("[PUBLISH] %s/%s#%d: note %s restates a resolved thread, left out of the refreshed summary", r.Owner, r.Repo, r.Number, f.ID)
+			continue
+		}
+		kept = append(kept, f)
+	}
+	return kept
 }
 
 // withoutClaimedRoots drops the Greptile-only points whose root an external

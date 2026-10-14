@@ -2,7 +2,9 @@ package poller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -609,4 +611,57 @@ func TestBuildPublishRound_CarriesTheReviewScope(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, BuildPublishRound(github.PullRequest{Owner: "acme", Repo: "example", Number: 1}, old, nil, nil, nil, "").Scope,
 		"a review from before the field leaves the guard off")
+}
+
+// The 2026-10-14 smoke re-audit: the settle footer was missing on one
+// summary and present on two. The missing one had been re-edited by the
+// reply path, which built its round without the footer.
+func TestRefreshPublishedSummary_CarriesTheSameSettleFooterAsTheRound(t *testing.T) {
+	var mu sync.Mutex
+	bodies := map[string]string{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			raw, _ := io.ReadAll(r.Body)
+			var in struct{ Body string }
+			_ = json.Unmarshal(raw, &in)
+			mu.Lock()
+			bodies[r.Method+" "+r.URL.Path] = in.Body
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"id":11}`))
+			return
+		}
+		switch {
+		case strings.Contains(r.URL.Path, "/pulls/") && strings.Count(r.URL.Path, "/") == 5:
+			_, _ = w.Write([]byte(openPRJSON))
+		case strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
+			_, _ = w.Write([]byte(`[{"id":11,"body":"summary"}]`))
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	t.Cleanup(ts.Close)
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting("publish_enabled_authors", "alice"))
+	require.NoError(t, database.SetSetting(settingPublishReplyMode, "respond"))
+	require.NoError(t, database.UpsertPR(&db.PR{RepoOwner: "acme", RepoName: "example", PRNumber: 1, Author: "alice", Status: "completed"}))
+	reviewDir := t.TempDir()
+	p := &Poller{cfg: &config.Config{BaseURL: "https://prism.example"}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot"), reviewDir: reviewDir}
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}
+	sidecar := []byte(`{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc",
+		"findings":[{"id":"f.go:0:abc123def456","severity":"critical","provenance":"agent","state":"confirmed","active":true,"file":"f.go","line":3,"comment":"Real bug."},
+		{"id":"g.go:0:bcd234efa567","severity":"medium","provenance":"agent","state":"confirmed","active":true,"file":"g.go","line":4,"comment":"Smaller bug."}]}`)
+	require.NoError(t, os.WriteFile(filepath.Join(reviewDir, "acme_example_1_abc.json"), sidecar, 0o644))
+
+	_, outcome := p.publishGitHubReview(context.Background(), pr, sidecar)
+	require.Equal(t, publicationPosted, outcome)
+	footer := p.settleFooter()
+	require.Contains(t, footer, "settle a thread")
+	assert.Contains(t, bodies["POST /repos/acme/example/issues/1/comments"], footer, "the round renders the footer")
+	require.NoError(t, database.SetPublishedFindingState("acme", "example", 1, "f.go:0:abc123def456", db.PublishedStateDismissed))
+
+	require.NoError(t, p.refreshPublishedSummary(context.Background(), "acme", "example", 1))
+	assert.Contains(t, bodies["PATCH /repos/acme/example/issues/comments/11"], footer, "the refresh renders the same footer")
 }

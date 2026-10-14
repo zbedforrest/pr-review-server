@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"pr-review-server/pkg/reviewer/payload"
 )
@@ -26,6 +27,16 @@ func RenderHygieneEnabled() bool {
 	}
 	return true
 }
+
+// NoteProblemClauseEnv is the kill switch for the problem-clause cut and
+// the context-sentence skip: "false", "0", "off" and "no" restore a cut
+// from the right and a title taken from the first sentence whatever it
+// quotes.
+const NoteProblemClauseEnv = "PUBLISH_NOTE_PROBLEM_CLAUSE"
+
+// NoteProblemClauseEnabled reads its kill switch at call time, like
+// RenderHygieneEnabled, because the renderer has no policy in hand.
+func NoteProblemClauseEnabled() bool { return !envOff(NoteProblemClauseEnv) }
 
 // Hold reasons, as the Report and the hygiene telemetry name them.
 const (
@@ -139,11 +150,11 @@ func IsPraise(sentence string) bool {
 	return praiseOpenerRe.MatchString(s)
 }
 
-var sentenceSplitRe = regexp.MustCompile(`(?s)(.*?[.!?](?:\*\*|__|\*|_)?)(?:\s+|$)`)
+var sentenceSplitRe = regexp.MustCompile(`(?s)(.*?[.!?]['"”’]*(?:\*\*|__|\*|_)?['"”’]*)(?:\s+|$)`)
 
 // sentences splits a comment (without its suggestion fence, lines folded)
-// into sentences, keeping their end punctuation; the tail without
-// punctuation is a sentence too.
+// into sentences, keeping their end punctuation and any closing quote
+// after it; the tail without punctuation is a sentence too.
 func sentences(text string) []string {
 	line := fold(suggestionFenceRe.ReplaceAllString(text, " "))
 	var out []string
@@ -187,6 +198,9 @@ func titleSentence(ss []string) (int, bool) {
 		return 0, false
 	}
 	if !RenderHygieneEnabled() || !IsPraise(ss[0]) {
+		if len(ss) > 1 && NoteProblemClauseEnabled() && IsContext(ss[0]) && !StatesProblem(ss[0]) && standsAlone(ss[1]) {
+			return 1, true
+		}
 		return 0, true
 	}
 	first := -1
@@ -203,6 +217,38 @@ func titleSentence(ss []string) (int, bool) {
 		}
 	}
 	return first, first >= 0
+}
+
+var anaphorOpenerRe = regexp.MustCompile(`(?i)^(?:this|that|these|those|it|its|they|their|such)\b`)
+
+// standsAlone reports whether a sentence that follows a context sentence
+// can title the comment: it opens with a contrast word, and what follows
+// is neither praise nor an anaphor pointing back at the context.
+func standsAlone(sentence string) bool {
+	if !contrastOpenerRe.MatchString(sentence) {
+		return false
+	}
+	rest := contrastOpenerRe.ReplaceAllString(sentence, "")
+	return rest != "" && !IsPraise(rest) && !anaphorOpenerRe.MatchString(rest)
+}
+
+var contextOpenerRe = regexp.MustCompile(`(?i)^(?:(?:the|this|per the|according to the|as the)\s+)?(?:pr\s+|pull request\s+|commit\s+)?(?:description|body|summary|title|docstring|comment|changelog|message|ticket|issue|spec|readme)\b[^.]{0,40}?\b(?:states?|says?|said|claims?|notes?|reads?|describes?|mentions?|promises?|documents?|explains?|asserts?|calls? out|suggests?|implies)\b`)
+
+// IsContext reports whether a sentence relays what the PR, its
+// description or a comment says, as the setup for the problem the next
+// sentence states: it opens by citing that text, or closes a quotation
+// opened earlier in it. Whether it also states a problem is the caller's
+// question (StatesProblem).
+func IsContext(sentence string) bool {
+	s := strings.TrimSpace(emphasisMarkers.Replace(sentence))
+	if s == "" {
+		return false
+	}
+	if contextOpenerRe.MatchString(s) {
+		return true
+	}
+	last, n := utf8.DecodeLastRuneInString(s)
+	return strings.ContainsRune(`'"”’`, last) && strings.ContainsAny(s[:len(s)-n], `'"“‘`)
 }
 
 func capitalized(s string) string {

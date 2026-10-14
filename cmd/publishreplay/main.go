@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false] [--settled-alias=false] [--note-reconcile=false] [--body-check]
+//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false] [--settled-alias=false] [--note-reconcile=false] [--body-check] [--note-sentence-match=false] [--note-problem-clause=false]
 //
 // Dumps are the GitHub GraphQL exports (one PR per file). Sidecars are the
 // review findings JSON per round, fetched from PRISM_BASE_URL/reviews/ with
@@ -56,10 +56,13 @@ func main() {
 	settledAlias := flag.Bool("settled-alias", true, "drop a finding that restates a settled row from another file (PUBLISH_SETTLED_ALIAS)")
 	noteReconcile := flag.Bool("note-reconcile", true, "match folded notes to other reviewers' resolved threads as settled points (PUBLISH_NOTE_RECONCILE)")
 	bodyCheck := flag.Bool("body-check", false, "hold folded notes the pull request body already states (PUBLISH_BODY_CHECK)")
+	noteSentenceMatch := flag.Bool("note-sentence-match", true, "score a finding against another reviewer's root by the sentence its note shows too (PUBLISH_NOTE_SENTENCE_MATCH)")
+	noteProblemClause := flag.Bool("note-problem-clause", true, "cut a bullet to its problem clause rather than its context clause, never ending on a connective, and title a comment that quotes the PR by the sentence after it (PUBLISH_NOTE_PROBLEM_CLAUSE)")
 	flag.Parse()
-	// The renderer reads its kill switch from the environment, as the
-	// discount gate does; the flag wins over an inherited variable.
+	// The renderer reads its kill switches from the environment, as the
+	// discount gate does; the flags win over an inherited variable.
 	_ = os.Setenv(publisher.RenderHygieneEnv, strconv.FormatBool(*renderHygiene))
+	_ = os.Setenv(publisher.NoteProblemClauseEnv, strconv.FormatBool(*noteProblemClause))
 	if *dumpsDir == "" || *sidecarsDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv]")
 		os.Exit(2)
@@ -102,6 +105,7 @@ func main() {
 	opts.Policy.SettledAlias = *settledAlias
 	opts.Policy.NoteReconcile = *noteReconcile
 	opts.Policy.BodyCheck = *bodyCheck
+	opts.Policy.NoteSentenceMatch = *noteSentenceMatch
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
 			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)
