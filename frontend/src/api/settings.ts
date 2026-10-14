@@ -41,6 +41,10 @@ export interface Settings {
   // Review and comment automatically when an allowlisted author's PR becomes
   // ready for review, opens ready, or gets a new push.
   auto_review_ready_prs: boolean;
+  // Automatic rounds admitted per PR per UTC day; later pushes that day wait
+  // for a review on request. 0 removes the bound. Optional: older servers
+  // omit it and the form assumes 4.
+  auto_review_daily_round_cap?: number;
   publish_reply_mode: ReplyMode;
   // RFC3339 stamp of when replies were last switched on; "" whenever the mode is off.
   publish_reply_enabled_at: string;
