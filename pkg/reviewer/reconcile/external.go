@@ -32,6 +32,10 @@ type MatchOptions struct {
 	// its impact sentence, which for a latent hazard concedes nothing today
 	// and shares nothing with the thread that raised its point.
 	NoteSentence bool
+	// ShownSentence picks the sentence the summary shows for a finding, as
+	// the renderer does (a praise opener or a quoted context sentence
+	// skipped); nil takes the comment's first sentence.
+	ShownSentence func(payload.Finding) string
 }
 
 // ExternalScore is ExternalScoreWith under the shipped options.
@@ -65,7 +69,7 @@ func ExternalScoreWith(p payload.Finding, g ExternalFinding, opts MatchOptions) 
 	consider(prismHeadline(p), gText, externalMinSharedHeadline)
 	consider(g.Title, pText, externalMinSharedHeadline)
 	if opts.NoteSentence {
-		consider(noteSentence(p), gText, externalMinSharedHeadline)
+		consider(noteSentence(p, opts.ShownSentence), gText, externalMinSharedHeadline)
 	}
 	return best
 }
@@ -142,13 +146,18 @@ func prismText(p payload.Finding) string {
 }
 
 // noteSentence is the sentence the summary shows for a finding its
-// contract does not title: the first sentence of the comment, as the
-// renderer picks it, when the contract has no headline and asserts no
-// current impact. Empty for a finding the headline or impact already names.
-func noteSentence(p payload.Finding) string {
+// contract does not title (no headline, no current impact): what shown
+// picks, else the first sentence of the comment. Empty for a finding the
+// headline or impact already names.
+func noteSentence(p payload.Finding, shown func(payload.Finding) string) string {
 	if c := p.FindingContract; c != nil {
 		if strings.TrimSpace(c.Headline) != "" || (c.Materiality == "current_impact" && strings.TrimSpace(c.CurrentImpact) != "") {
 			return ""
+		}
+	}
+	if shown != nil {
+		if s := strings.TrimSpace(shown(p)); s != "" {
+			return s
 		}
 	}
 	first, _ := splitFirstSentence(strings.Join(strings.Fields(p.Comment), " "))

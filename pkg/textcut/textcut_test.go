@@ -145,3 +145,53 @@ func TestClamp_NeverEndsOnAConnective(t *testing.T) {
 		}
 	}
 }
+
+func TestClamp_KeepsTheLeadingClauseWhenItStatesTheProblem(t *testing.T) {
+	statesProblem := func(s string) bool { return strings.Contains(s, "drops") }
+	for name, tc := range map[string]struct {
+		text, wantPrefix string
+		max              int
+	}{
+		"tail opens with a qualifier": {
+			text:       "Every request takes a connection from the pool and never returns it to the pool, so the pool is exhausted after the first hundred requests, but only when `KEEPALIVE` is off, which is the default in the deployed config",
+			wantPrefix: "Every request takes a connection",
+			max:        140,
+		},
+		"tail opens with an anaphor": {
+			text:       "The desktop denied state hides the retry button whenever `isMicPermissionDenied` is true, but this flag is set from `isMicBlocked()`, whose behavior on browsers that cannot query mic permission treats a dismissed prompt as a block",
+			wantPrefix: "The desktop denied state hides",
+			max:        140,
+		},
+		"head states the defect": {
+			text:       "The migration drops `legacy_id` before the backfill has copied the last batch of rows into the new column, but the job is retried nightly and reads the same column",
+			wantPrefix: "The migration drops",
+			max:        120,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := ClampWith(tc.text, tc.max, Options{KeepProblemClause: true, HeadStatesProblem: statesProblem})
+			if !strings.HasPrefix(got, tc.wantPrefix) || len([]rune(got)) > tc.max {
+				t.Fatalf("got %q", got)
+			}
+		})
+	}
+}
+
+func TestClamp_PrefersTheRightCutWhenTheTailMustBeCutShorter(t *testing.T) {
+	s := "The formatter caches the first locale it sees for the lifetime of the process, but the result is rendered per locale by the template layer, which re-reads the cache on every request from a different region"
+	got := ClampWith(s, 90, Options{KeepProblemClause: true})
+	if strings.HasPrefix(got, "[…]") && strings.HasSuffix(got, Marker) && len([]rune(got)) < 60 {
+		t.Fatalf("cut at both ends: %q", got)
+	}
+	if len([]rune(got)) > 90 || len([]rune(got)) < 70 {
+		t.Fatalf("got %d runes: %q", len([]rune(got)), got)
+	}
+}
+
+func TestClamp_ProblemClauseSurvivesNonASCIICase(t *testing.T) {
+	s := strings.Repeat("İ", 30) + " x, but a b c d e f g h i j k l m n o p q r s t u v w x y z"
+	got := ClampWith(s, 60, Options{KeepProblemClause: true})
+	if !strings.HasPrefix(got, "[…] but a b c") {
+		t.Fatalf("got %q", got)
+	}
+}

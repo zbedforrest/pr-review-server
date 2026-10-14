@@ -330,3 +330,11 @@ func TestNotes_LaterLowRestatementOfAWithdrawnThreadIsSettled(t *testing.T) {
 		t.Fatalf("the point is remembered as external: %+v", row)
 	}
 }
+
+func TestMatchOptions_ScoreTheSentenceTheBulletShows(t *testing.T) {
+	f := payload.Finding{Comment: "Nice cleanup of the fanout path. However, the fanout skip reads `buyer_id` unconditionally, but the purchase read path does not. The rest follows."}
+	got := DefaultPolicy().matchOptions().ShownSentence(f)
+	if !strings.HasPrefix(got, "The fanout skip reads `buyer_id` unconditionally") {
+		t.Fatalf("got %q", got)
+	}
+}

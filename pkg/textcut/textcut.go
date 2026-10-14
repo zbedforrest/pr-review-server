@@ -23,8 +23,15 @@ type Options struct {
 	// whose "but", "yet" or "however" clause does not fit loses its leading
 	// context clause (replaced by the marker) rather than that clause, and
 	// no cut ends on a connective or subordinator ("however", "only",
-	// "when", "because" ...), which would leave the problem unsaid.
+	// "when", "because" ...), which would leave the problem unsaid. The
+	// leading clause is kept when HeadStatesProblem says it states the
+	// defect, or when the trailing clause opens with a qualifier or an
+	// anaphor ("but only when", "but this flag"), which reads as nothing
+	// on its own.
 	KeepProblemClause bool
+	// HeadStatesProblem reports whether a leading clause already says what
+	// goes wrong; nil treats every leading clause as context.
+	HeadStatesProblem func(string) bool
 }
 
 // Clamp cuts s to max runes. A text within the limit is returned unchanged.
@@ -48,7 +55,7 @@ func ClampWith(s string, max int, opts Options) string {
 		return reduced
 	}
 	if opts.KeepProblemClause {
-		if tail, ok := problemClause(s); ok {
+		if tail, ok := problemClause(s, opts.HeadStatesProblem); ok {
 			budget := max - len([]rune(leadMarker))
 			if budget >= minTailRunes {
 				if len([]rune(tail)) <= budget {
@@ -57,7 +64,13 @@ func ClampWith(s string, max int, opts Options) string {
 				if reduced, ok := dropParentheticals(tail, budget); ok {
 					return leadMarker + reduced
 				}
-				return leadMarker + cutRight(tail, budget, opts)
+				// A tail cut at both ends says less than a right cut that
+				// keeps more of the text.
+				fromTail, fromRight := leadMarker+cutRight(tail, budget, opts), cutRight(s, max, opts)
+				if len([]rune(fromTail)) >= len([]rune(fromRight)) {
+					return fromTail
+				}
+				return fromRight
 			}
 		}
 	}
@@ -75,10 +88,21 @@ const minTailRunes = 40
 // after the context. Each is matched case-insensitively outside open pairs.
 var problemJoints = []string{", but ", "; but ", " but ", ", yet ", "; yet ", ", however, ", "; however, ", " however, ", ", whereas "}
 
+// tailOpeners are the words a trailing clause cannot open with and still
+// stand alone: a qualifier narrows the leading clause's problem, an anaphor
+// points back at it.
+var tailOpeners = map[string]bool{
+	"only": true, "just": true, "merely": true, "solely": true, "except": true, "unless": true, "if": true,
+	"when": true, "whenever": true, "where": true, "while": true, "until": true, "not": true,
+	"this": true, "that": true, "these": true, "those": true, "it": true, "its": true, "they": true,
+	"their": true, "there": true, "such": true, "then": true,
+}
+
 // problemClause is the text from the first contrast joint on, when both
-// the context before it and the clause after it have a few words.
-func problemClause(s string) (string, bool) {
-	lower := strings.ToLower(s)
+// the context before it and the clause after it have a few words, the
+// context does not already state the problem and the clause stands alone.
+func problemClause(s string, headStatesProblem func(string) bool) (string, bool) {
+	lower := asciiLower(s)
 	balanced := balancedPrefixes(s)
 	best := -1
 	for _, j := range problemJoints {
@@ -102,7 +126,25 @@ func problemClause(s string) (string, bool) {
 	if len(strings.Fields(head)) < 2 || len(strings.Fields(tail)) < 4 {
 		return "", false
 	}
+	if headStatesProblem != nil && headStatesProblem(head) {
+		return "", false
+	}
+	words := strings.Fields(tail)
+	if tailOpeners[strings.Trim(strings.ToLower(words[1]), "`,;:")] {
+		return "", false
+	}
 	return tail, true
+}
+
+// asciiLower lowers the ASCII letters only, so every byte offset in the
+// result is an offset in s.
+func asciiLower(s string) string {
+	return strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + 'a' - 'A'
+		}
+		return r
+	}, s)
 }
 
 // cutRight cuts s from the right to max runes: at the end of a sentence,

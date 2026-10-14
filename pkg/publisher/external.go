@@ -253,7 +253,16 @@ func (p *Publisher) matchExternal(ctx context.Context, r *Round, rows map[string
 
 // matchOptions is the external scoring the policy selects.
 func (p Policy) matchOptions() reconcile.MatchOptions {
-	return reconcile.MatchOptions{NoteSentence: p.NoteSentenceMatch}
+	return reconcile.MatchOptions{NoteSentence: p.NoteSentenceMatch, ShownSentence: shownSentence}
+}
+
+// shownSentence is the sentence the summary bullet shows for a finding the
+// contract does not title: the first sentence that reports something.
+func shownSentence(f payload.Finding) string {
+	if s, ok := FirstFindingSentence(commentText(f)); ok {
+		return s
+	}
+	return firstSentence(commentText(f))
 }
 
 // withoutSettledNotes drops, for a re-rendered summary, the folded notes

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"pr-review-server/pkg/reviewer/payload"
 )
@@ -231,7 +232,8 @@ func IsContext(sentence string) bool {
 	if contextOpenerRe.MatchString(s) {
 		return true
 	}
-	return strings.ContainsAny(string(s[len(s)-1]), `'"”’`) && strings.ContainsAny(s, `'"“”`)
+	last, _ := utf8.DecodeLastRuneInString(s)
+	return strings.ContainsRune(`'"”’`, last) && strings.ContainsAny(s, `'"“”`)
 }
 
 func capitalized(s string) string {
