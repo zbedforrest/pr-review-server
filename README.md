@@ -100,7 +100,7 @@ The most common ones:
 | `PUBLISH_REFRESH_SUMMARY` | No | Default `true`: the sticky summary is re-rendered as soon as a reply concedes a finding. `false` waits for the next push |
 | `PUBLISH_INLINE_PR_BUDGET` | No | Default `true`: `publish_inline_pr_cap` (default 6) bounds the inline comments PRism posts over the life of one PR, counting resolved and dismissed threads; later findings stay in the summary. `false` leaves only the per-round `publish_inline_cap` |
 | `PUBLISH_PR_MUTE` | No | Default `true`: a PR author mutes PRism on one PR with `@<handle> stop` in the conversation or a thumbs-down on the sticky summary; the mute is a flag on the summary ledger row, acknowledged with a reaction only, and `@<handle> review` from the author lifts it. `false` ignores both |
-| `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` | No | Default `90`: a pushed head waits at least this long before its automatic review is admitted, so a burst of pushes reviews the last head once; it is admitted on the first poll after the window, so up to one `POLLING_INTERVAL` later. `0` admits every push at once |
+| `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` | No | Default `600` (ten minutes): a pushed head waits at least this long before its automatic review is admitted, so a burst of pushes reviews the last head once; it is admitted on the first poll after the window, so up to one `POLLING_INTERVAL` later. `0` admits every push at once |
 | `AUTO_REVIEW_SKIP_UNCHANGED_DIFF` | No | Default `true`: a push whose PR diff has the patch-id of the last automatically reviewed head (a merge from the base branch, a rebase, an amended message) is settled without a review and counted as `reviews_skipped_unchanged_diff` on the daily health report. `false` reviews every push |
 | `AGENT_PRIOR_FINDINGS` | No | Default off: `true` adds a "findings already raised on this PR" block to the review agent prompt, built from the PR's publication ledger (state, severity, file and lines, headline, author verdicts, under labels `P-1`, `P-2`, ...), and lets the finding contract carry `prior_id` (this finding restates that earlier one) and `relates_to` (distinct, builds on those). References to anything not shown are dropped before the finding is stored |
 | `PUBLISH_RENDER_HYGIENE` | No | Default `true`: the renderer strips a confidence label ("Low;", "Medium:") and any internal finding label (`A-1`, `FP-2`) from the sentences under a comment's badge, titles a comment that opens with a compliment by its first sentence that reports something, holds a praise-only finding and a design opinion that admits no impact and calls itself a preference, drops the "Source: PRism · Both" footer, names the folded notes on the "Since last review" line and skips a summary refresh that would change nothing. `false` restores the previous rendering |
@@ -189,14 +189,16 @@ stand in for it, a head PRism already commented on is not reviewed again when
 the switch is turned on, and a review that finished after the PR went back to
 draft is redone when it is ready again.
 
-Pushes are held for `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` (default 90 s) and
-admitted on the first poll after the window, so the effective hold is the
-window plus up to one `POLLING_INTERVAL`, and a burst of pushes reviews only
-the last head. The window restarts on every push, so a PR pushed to more often
-than the window is reviewed once the pushes pause. A push that leaves the PR diff's patch-id unchanged (merging
-the base branch, rebasing, amending a message, or changing only trailing
-whitespace; indentation changes count as real changes) is settled without a review (`AUTO_REVIEW_SKIP_UNCHANGED_DIFF`);
-the intent records the reason as `skipped: diff unchanged since <sha>`.
+Pushes are held for `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` (default 600 s, ten
+minutes) and admitted on the first poll after the window, so the effective
+hold is the window plus up to one `POLLING_INTERVAL`, and a burst of pushes
+reviews only the last head. The window restarts on every push, so a PR pushed
+to more often than the window is reviewed once the pushes pause. A push that
+leaves the PR diff's patch-id unchanged (merging the base branch, rebasing,
+amending a message, or changing only trailing whitespace; indentation changes
+count as real changes) is settled without a review
+(`AUTO_REVIEW_SKIP_UNCHANGED_DIFF`); the intent records the reason as
+`skipped: diff unchanged since <sha>`.
 
 Deliveries arrive through the GitHub App webhook; the scheduled poll is the
 fallback for a missed delivery. To enable it:

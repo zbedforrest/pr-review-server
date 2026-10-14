@@ -25,8 +25,9 @@ const (
 	defaultFirstPassOpenRouterModel = "openai/gpt-5.6-sol"
 
 	defaultFirstPassCacheStaggerSec = 8
-	// Most follow-up pushes (typo fixes, lint) land within 90 s of the first.
-	defaultAutoReviewSyncDebounceSec = 90
+	// Ten minutes: the audit of 2026-10-14 saw PRs reviewed up to 13 times a
+	// day because every push outside a 90 s window became a round.
+	defaultAutoReviewSyncDebounceSec = 600
 )
 
 type Config struct {
