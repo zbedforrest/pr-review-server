@@ -143,3 +143,12 @@ func TestStrayBacktickInAnotherSegmentCannotReopenAnEscapedTag(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestTitlePrefersADefectWordOverANeutralConditional(t *testing.T) {
+	comment := "The PR correctly wires the flag. If the flag is on, the job will read the new table. " +
+		"That read silently drops rows written before the migration."
+	title, _ := FirstFindingSentence(comment)
+	if !strings.HasPrefix(title, "That read silently drops rows") {
+		t.Fatalf("title = %q", title)
+	}
+}
