@@ -44,6 +44,9 @@ const (
 	// ActionReviewSkippedUnchanged: a pushed head was settled without a
 	// review because its diff had the patch-id of the last reviewed head.
 	ActionReviewSkippedUnchanged = "reviews_skipped_unchanged_diff"
+	// ActionReviewSkippedDailyCap: a pushed head was settled without a review
+	// because the PR had already had its day's automatic rounds.
+	ActionReviewSkippedDailyCap = "reviews_skipped_daily_round_cap"
 	// ActionPRMuted: an author muted PRism on one PR ("@<handle> stop" or a
 	// thumbs-down on the summary); label via=stop or via=thumbs_down.
 	ActionPRMuted = "prs_muted"
@@ -61,7 +64,7 @@ const ActionFeedbackFrustrated = "feedback_frustrated"
 var HygieneActions = []string{
 	ActionRepeatedPost, ActionRepeatAfterDismiss, ActionFixedWithoutFileChange, ActionFixedWithoutHunkChange, ActionSameCommitResolve,
 	ActionSeverityEscalation, ActionVerdictSettled, ActionPublishDenied, ActionOptedOut,
-	ActionReviewSkippedUnchanged, ActionPRMuted, ActionFindingHeld,
+	ActionReviewSkippedUnchanged, ActionReviewSkippedDailyCap, ActionPRMuted, ActionFindingHeld,
 }
 
 // TelemetryActions are the server-emitted counters the daily report reads.
@@ -73,7 +76,8 @@ var hygieneLabels = map[string]string{
 	ActionFixedWithoutFileChange: "fixed without a file change", ActionFixedWithoutHunkChange: "fixed without a hunk change", ActionSameCommitResolve: "same-commit resolves",
 	ActionSeverityEscalation: "severity escalations", ActionVerdictSettled: "author verdicts settled", ActionPublishDenied: "posts stopped by the publish gate",
 	ActionOptedOut: "of which stopped by an opt-out", ActionReviewSkippedUnchanged: "pushes skipped for an unchanged diff",
-	ActionPRMuted: "PRs muted by their author", ActionFindingHeld: "findings held by the output hygiene gate",
+	ActionReviewSkippedDailyCap: "pushes skipped by the daily round cap",
+	ActionPRMuted:               "PRs muted by their author", ActionFindingHeld: "findings held by the output hygiene gate",
 }
 
 // UnwiredHygiene maps each counter whose producer has not shipped yet to the

@@ -83,6 +83,10 @@ type Round struct {
 	// SettleFooter is the rendered line under every root comment and the
 	// summary (see the SettleFooter function); empty omits it.
 	SettleFooter string
+	// PushesCapped says the PR has had its day's automatic rounds, so the
+	// summary footer tells the author that further pushes today are reviewed
+	// on request; the poller sets it from the daily round cap.
+	PushesCapped bool
 
 	// PriorComments is what GitHub currently shows for PRism's own inline
 	// comments, keyed by the fingerprint in their marker: the translated line,
@@ -137,6 +141,10 @@ type Hunk struct {
 	OldStart, OldLines int
 	NewStart, NewLines int
 }
+
+// PushesCappedFooter is the summary footer segment for a PR that has had
+// its day's automatic rounds (auto_review_daily_round_cap).
+const PushesCappedFooter = "Further pushes today are reviewed on request"
 
 // SettleFooter is the one line under every root comment and the summary:
 // how an author settles a thread (only while author replies are handled)
@@ -467,6 +475,9 @@ func RenderSummary(r Round, sel Selection) string {
 	}
 	if r.ProfileFooter != "" {
 		fmt.Fprintf(&b, " · Reviewed by %s", r.ProfileFooter)
+	}
+	if r.PushesCapped {
+		b.WriteString(" · " + PushesCappedFooter)
 	}
 	b.WriteString("</sub>\n")
 	if r.SettleFooter != "" {

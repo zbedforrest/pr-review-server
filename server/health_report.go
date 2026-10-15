@@ -84,6 +84,10 @@ func (s *Server) runDailyHealth(store healthStore, now time.Time, feedbackRun fe
 		}
 	}
 	metrics.PollingDisabled = s.cfg.DisablePolling
+	metrics.AutoReview.DailyRoundCap = poller.DailyRoundCap(s.db, s.cfg)
+	if !s.cfg.DisablePolling && s.cfg.AutoReviewSyncDebounceSec > 0 {
+		metrics.AutoReview.SyncDebounce = time.Duration(s.cfg.AutoReviewSyncDebounceSec) * time.Second
+	}
 	metrics.Feedback = s.feedbackMetrics(now, feedbackRun)
 	report := health.Evaluate(metrics)
 	body, err := json.Marshal(report)

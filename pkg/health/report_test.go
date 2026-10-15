@@ -195,7 +195,7 @@ func TestEvaluateReportsPublicationHygieneWithEveryCounter(t *testing.T) {
 	if line == nil {
 		t.Fatalf("no publication hygiene check in %+v", r.Checks)
 	}
-	want := "4 repeated posts, 0 repeats after dismiss, 0 fixed without a file change, 0 fixed without a hunk change, 2 same-commit resolves, 0 severity escalations, 1 author verdicts settled, 0 posts stopped by the publish gate, 0 of which stopped by an opt-out, 0 pushes skipped for an unchanged diff, 0 PRs muted by their author, 0 findings held by the output hygiene gate"
+	want := "4 repeated posts, 0 repeats after dismiss, 0 fixed without a file change, 0 fixed without a hunk change, 2 same-commit resolves, 0 severity escalations, 1 author verdicts settled, 0 posts stopped by the publish gate, 0 of which stopped by an opt-out, 0 pushes skipped for an unchanged diff, 0 pushes skipped by the daily round cap, 0 PRs muted by their author, 0 findings held by the output hygiene gate"
 	if line.Detail != want || line.Status != StatusOK {
 		t.Fatalf("line = %+v\nwant %q", *line, want)
 	}
@@ -295,4 +295,72 @@ func TestEvaluateFeedbackLineSaysWhenNothingWasScanned(t *testing.T) {
 	if other := withoutHygiene(map[string]int{ActionFeedbackFrustrated: 3, "reply_decision": 1}); len(other) != 1 || other["reply_decision"] != 1 {
 		t.Errorf("feedback counter leaked into the generic telemetry line: %v", other)
 	}
+}
+
+func TestSummariseDailyRounds(t *testing.T) {
+	got := SummariseDailyRounds([]int{1, 4, 2, 5, 4, 1}, 4)
+	want := DailyRoundStats{PRDays: 6, P50: 3, Max: 5, Cap: 4, AtCap: 2, OverCap: 1}
+	if got != want {
+		t.Fatalf("got %+v want %+v", got, want)
+	}
+	if got := SummariseDailyRounds([]int{3, 1, 2}, 0); got != (DailyRoundStats{PRDays: 3, P50: 2, Max: 3}) {
+		t.Fatalf("no cap means nothing is at or over it: %+v", got)
+	}
+	if got := SummariseDailyRounds(nil, 4); got != (DailyRoundStats{Cap: 4}) {
+		t.Fatalf("no rounds: %+v", got)
+	}
+}
+
+func TestEvaluateReportsRoundsPerPRPerDay(t *testing.T) {
+	m := healthyMetrics()
+	m.AutoReview.RoundsPerPRDay = []int{1, 1, 4, 6}
+	m.AutoReview.DailyRoundCap = 4
+	m.Telemetry[ActionReviewSkippedDailyCap] = 3
+	r := Evaluate(m)
+	var line *Check
+	for i := range r.Checks {
+		if r.Checks[i].Name == "auto-review rounds per PR per day" {
+			line = &r.Checks[i]
+		}
+	}
+	if line == nil {
+		t.Fatalf("no rounds line in %+v", r.Checks)
+	}
+	want := "p50 2.5, max 6 over 4 PR-days; cap 4: 1 at it, 1 over it, 3 pushes skipped by it"
+	if line.Detail != want || line.Status != StatusOK {
+		t.Fatalf("line = %+v\nwant %q", *line, want)
+	}
+	if got := r.Metrics.AutoReview.DailyRounds; got != (DailyRoundStats{PRDays: 4, P50: 2.5, Max: 6, Cap: 4, AtCap: 1, OverCap: 1}) {
+		t.Fatalf("stored stats = %+v", got)
+	}
+	if r.Overall != StatusOK {
+		t.Fatalf("the rounds line informs, it does not alarm: %s", r.Overall)
+	}
+
+	m.AutoReview.RoundsPerPRDay = nil
+	for _, c := range Evaluate(m).Checks {
+		if c.Name == "auto-review rounds per PR per day" && c.Detail != "no automatic rounds in the window" {
+			t.Fatalf("empty window: %q", c.Detail)
+		}
+	}
+	m.AutoReview.RoundsPerPRDay, m.AutoReview.DailyRoundCap = []int{2, 7}, 0
+	for _, c := range Evaluate(m).Checks {
+		if c.Name == "auto-review rounds per PR per day" && c.Detail != "p50 4.5, max 7 over 2 PR-days; no daily cap" {
+			t.Fatalf("cap off: %q", c.Detail)
+		}
+	}
+}
+
+func TestEvaluateBacklogLineNamesTheDebounceWindow(t *testing.T) {
+	m := healthyMetrics()
+	m.AutoReview = AutoReviewMetrics{Queued: 2, OldestQueuedAge: 7 * time.Minute, SyncDebounce: 10 * time.Minute}
+	for _, c := range Evaluate(m).Checks {
+		if c.Name == "auto-review backlog" {
+			if c.Status != StatusOK || c.Detail != "2 heads owed a review, oldest waiting 7m00s (a pushed head waits 10m00s before admission)" {
+				t.Fatalf("backlog = %+v", c)
+			}
+			return
+		}
+	}
+	t.Fatal("no backlog check")
 }

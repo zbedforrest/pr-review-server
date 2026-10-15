@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"pr-review-server/pkg/health"
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/payload"
 )
@@ -62,6 +63,7 @@ func TestRun_FixtureMetrics(t *testing.T) {
 		RootsPosted: 3, Fixed: 1, InThreadReplies: 1, ThreadsResolved: 1, ThreadsUnresolved: 1,
 		ExternalMatched: 1, ExternalReplies: 1, ExternalSettled: 1,
 		CommentsPerPushP50: 0, CommentsPerPushMean: 0.3, RoundsPerPRP50: 3,
+		RoundsPerPRPerDay: health.DailyRoundStats{PRDays: 10, P50: 1, Max: 1},
 	}
 	if got := comparable(m); got != want {
 		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
@@ -105,6 +107,7 @@ func TestRun_FixtureMetricsLegacy(t *testing.T) {
 		ExternalDuplicatesNear: 1, ExternalDuplicatesOpen: 1, ExternalDuplicatesResolutionUnknown: 1, PRsWithExternalDuplicates: 1,
 		SummaryNotesNearExternalRoot: 1, SummaryNotesNearSettledRoot: 1,
 		CommentsPerPushP50: 1, CommentsPerPushMean: 0.7, RoundsPerPRP50: 3,
+		RoundsPerPRPerDay: health.DailyRoundStats{PRDays: 10, P50: 1, Max: 1},
 	}
 	if got := comparable(m); got != want {
 		t.Fatalf("metrics\n got %+v\nwant %+v", got, want)
@@ -156,7 +159,7 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) != 6 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.Contains(lines[0], ",external_duplicates_near,external_duplicates_open,external_duplicates_unknown,external_matched,external_replies,observed_external_duplicates_near,observed_external_duplicates_open,held_library_claims,") || !strings.HasSuffix(lines[0], ",zero_status_lines_over_notes,noop_summary_edits,leading_markers,external_settled,settled_dropped,body_covered,summary_notes_near_external_root,summary_notes_near_settled_root,observed_summary_notes_near_external_root,observed_summary_notes_near_settled_root,observed_cross_file_same_point") ||
-		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") || !strings.HasSuffix(lines[5], ",1,0,0,0,0,1,1,0") {
+		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") || !strings.HasSuffix(lines[5], ",1,0,0,0,0,1,1,0") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }
@@ -812,5 +815,61 @@ func TestRun_FixedWithoutHunkChangeIsCountedUnderTheFileRule(t *testing.T) {
 	}
 	if near := run(publisher.DefaultPolicy()); near.Fixed != 1 || near.FixedWithoutHunkChange != 0 {
 		t.Fatalf("a hunk over the cited line fixes: %+v", near)
+	}
+}
+
+func sameDayFixture(t *testing.T) []*prDump {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/dumps/acme__example__1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := strings.NewReplacer("2026-09-02T10", "2026-09-01T11", "2026-09-03T10", "2026-09-01T12").Replace(string(raw))
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "acme__example__1.json"), []byte(moved), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dumps, err := loadDumps(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dumps
+}
+
+func TestRun_DailyRoundCapSkipsTheDaysLaterRounds(t *testing.T) {
+	st, err := newStore("testdata/sidecars", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(dailyCap int) Metrics {
+		res, err := Run(context.Background(), Options{Dumps: sameDayFixture(t), Store: st, Policy: publisher.DefaultPolicy(), DailyRoundCap: dailyCap})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Metrics
+	}
+	uncapped := run(0)
+	if uncapped.Rounds != 3 || uncapped.RoundsReplayed != 3 || uncapped.RoundsSkippedDailyCap != 0 || uncapped.RoundsPerPRP50 != 3 {
+		t.Fatalf("uncapped = %+v", uncapped)
+	}
+	if uncapped.RoundsPerPRPerDay != (health.DailyRoundStats{PRDays: 1, P50: 3, Max: 3}) {
+		t.Fatalf("uncapped per day = %+v", uncapped.RoundsPerPRPerDay)
+	}
+	if uncapped.Observed.RoundsPerPRPerDay != (health.DailyRoundStats{PRDays: 1, P50: 3, Max: 3, Cap: 4}) {
+		t.Fatalf("observed per day is judged against the default cap: %+v", uncapped.Observed.RoundsPerPRPerDay)
+	}
+
+	capped := run(2)
+	if capped.Rounds != 3 || capped.RoundsReplayed != 2 || capped.RoundsSkippedDailyCap != 1 || capped.RoundsPerPRP50 != 2 {
+		t.Fatalf("capped = %+v", capped)
+	}
+	if capped.RoundsPerPRPerDay != (health.DailyRoundStats{PRDays: 1, P50: 2, Max: 2, Cap: 2, AtCap: 1}) {
+		t.Fatalf("capped per day = %+v", capped.RoundsPerPRPerDay)
+	}
+	if capped.Observed != uncapped.Observed {
+		t.Fatalf("the cap changes nothing observed: %+v vs %+v", capped.Observed, uncapped.Observed)
+	}
+	if capped.RootsPosted != uncapped.RootsPosted || capped.SameMarkerReposts != uncapped.SameMarkerReposts {
+		t.Fatalf("the admitted rounds post what they posted before: capped %+v uncapped %+v", capped, uncapped)
 	}
 }
