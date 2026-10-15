@@ -20,7 +20,7 @@ import (
 // again from another file as a new MEDIUM, and the author answered a
 // fourth time. The second MEDIUM of that round is a distinct point.
 const (
-	earlierFile     = "store/api/views.py"
+	earlierFile     = "store/models.py"
 	earlierRootText = "The buyer lookup in `record_fanclub_bulk` hardcodes `purchaser_id`, but every other purchase read branches on `PURCHASER_READ_SWAP` and falls back to parent `user_id` (`Purchases._active`, `store/views.py` methods). The `purchaser_id` column can be null for rows written before it was added or before the backfill ran, so with the switch off the fanout lookup misses older buyers."
 	earlierImpact   = "When the purchaser read swap switch is off and purchaser_id is not populated, fanout may write a FAN_CLUB unread row for a member who already bought the set."
 	earlierReason   = "intentional. Same answer as the earlier threads on this. The purchaser_id backfill is done in prod (OPS-1821, zero nulls and zero mismatches verified) and purchaser_read_swap is on for both writes and the viewer ownership check. The switch-off state this describes doesn't exist anymore, and fanout writes already use purchaser_id, so reading it here matches what gets written."
@@ -254,12 +254,23 @@ func TestCrossPR_ACriticalRestatementOfASettledRowPosts(t *testing.T) {
 	}
 }
 
-func TestCrossPR_APointSettledInAnotherFileIsAnotherPoint(t *testing.T) {
+func TestCrossPR_AnotherFileNeedsASharedConfigKey(t *testing.T) {
+	// The fixture is the purchaser read switch: settled in the model file,
+	// raised again in the view file, shared as a config key.
+	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger(earlierVerdictPoint())
+	if rep := publishLater(t, gh, ledger, laterPRRound(), testPolicy()); rep.CrossPRSettled != 1 {
+		t.Fatalf("a config key carries the point across files: %+v", rep)
+	}
+	// The same prose with only a symbol shared is another point in another file.
+	symbolOnly := subjectFinding(laterFile, 280, laterDeleteText, laterDeleteHeadline, laterDeleteImpact,
+		types.FindingSubject{Kind: "symbol", Path: laterFile, Name: "record_fanclub_bulk"})
+	if _, score, ok := ScoreSettledElsewhere(symbolOnly, []db.SettledPoint{earlierVerdictPoint()}); ok {
+		t.Fatalf("a symbol does not carry a point into another file: %+v", score)
+	}
 	point := earlierVerdictPoint()
-	point.File = "store/models.py"
-	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger(point)
-	if rep := publishLater(t, gh, ledger, laterPRRound(), testPolicy()); rep.InlinePosted != 2 || rep.CrossPRSettled != 0 {
-		t.Fatalf("the same symbol and prose in another file is raised again: %+v", rep)
+	point.File = laterFile
+	if _, _, ok := ScoreSettledElsewhere(symbolOnly, []db.SettledPoint{point}); !ok {
+		t.Fatal("in the same file the symbol carries it")
 	}
 }
 

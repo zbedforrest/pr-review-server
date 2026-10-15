@@ -72,21 +72,18 @@ func ScoreSettledElsewhere(f payload.Finding, points []db.SettledPoint) (db.Sett
 	if len(points) == 0 || isPseudoFile(f.File) || f.Severity == "critical" {
 		return db.SettledPoint{}, reconcile.EarlierScore{}, false
 	}
-	// Only a point settled in the finding's own file can be the same point:
-	// across files the replay corpus matched on shared generic symbols
-	// (start, lookup, failures) and prose that happened to overlap, and the
-	// hand-checked pairs were distinct defects. A pattern repeated in
-	// another file costs the author one more sentence; a wrong match hides
-	// the finding for thirty days.
+	// The matcher takes the point's file: another file needs a shared
+	// config key, the one kind of subject that spans files (the purchaser
+	// read switch was settled in a model and raised again in a view).
 	var same []db.SettledPoint
 	for _, pt := range points {
-		if settles(pt.Source) && pt.File != "" && pt.File == f.File {
+		if settles(pt.Source) && pt.File != "" {
 			same = append(same, pt)
 		}
 	}
 	best, bestScore := -1, reconcile.EarlierScore{}
 	for i, pt := range same {
-		score, ok := reconcile.SameEarlierPoint(f, reconcile.EarlierPoint{Subjects: splitSubjects(pt.Subjects), Text: pt.Text, Kind: pt.FindingKind})
+		score, ok := reconcile.SameEarlierPoint(f, reconcile.EarlierPoint{Subjects: splitSubjects(pt.Subjects), Text: pt.Text, Kind: pt.FindingKind, File: pt.File})
 		if !ok {
 			continue
 		}

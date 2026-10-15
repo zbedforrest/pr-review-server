@@ -20,6 +20,8 @@ type EarlierPoint struct {
 	Subjects []string
 	Text     string
 	Kind     string
+	// File is where the point was settled; empty when unknown.
+	File string
 }
 
 // A settled point from another PR has neither a line nor a file to lean on,
@@ -57,6 +59,13 @@ func SameEarlierPoint(f payload.Finding, p EarlierPoint) (EarlierScore, bool) {
 	if s.Subject == "" {
 		return s, false
 	}
+	// Across files only a subject that spans files carries the point: a
+	// config key (a switch read wherever it matters). A symbol lives in
+	// its file, and in the replay corpus cross-file symbol matches were
+	// distinct defects that happened to share a name and some prose.
+	if p.File != "" && p.File != f.File && subjectKind(f, s.Subject) != "config_key" {
+		return s, false
+	}
 	if p.Text == "" {
 		return s, false
 	}
@@ -86,6 +95,22 @@ func MatchEarlier(f payload.Finding, points []EarlierPoint) (int, EarlierScore, 
 		}
 	}
 	return best, bestScore, best >= 0
+}
+
+// subjectKind is the kind the finding's contract gives the subject key,
+// or "" when the key is not one of its subjects.
+func subjectKind(f payload.Finding, key string) string {
+	if f.FindingContract == nil {
+		return ""
+	}
+	for _, s := range f.FindingContract.Subjects {
+		for _, k := range SubjectKeys(s.Name) {
+			if k == key {
+				return s.Kind
+			}
+		}
+	}
+	return ""
 }
 
 func sharedEarlierSubject(f payload.Finding, p EarlierPoint) string {
