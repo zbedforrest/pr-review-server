@@ -664,6 +664,9 @@ type ReplyReactor struct {
 	// author settles, on PRism's threads and on other reviewers', for their
 	// later pull requests; off, the scan writes no settled point.
 	CrossPRSettled bool
+	// ExternalReconcile (PUBLISH_EXTERNAL_RECONCILE) lets the scan record
+	// other reviewers' threads; off, PRism does not act on them anywhere.
+	ExternalReconcile bool
 
 	// Live, when set, re-reads the mode and allowlist right before a post so a
 	// switch flipped during a long model run is honoured. A read error leaves
@@ -1749,7 +1752,12 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, auth
 	case DecisionConcede, DecisionWithdraw:
 		var err error
 		if outcome.Decision == DecisionConcede && reply.Class == ReplyResolution && !r.Legacy {
+			stood := r.rowDismissed(t, reply.Fingerprint)
 			err = r.Ledger.MarkPublishedFindingFixed(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint)
+			// A fix after a stand on the same thread leaves the stand behind.
+			if err == nil && stood {
+				r.rememberSettled(t, author, reply, db.SettledSourceSuperseded)
+			}
 		} else {
 			err = r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed)
 			// A conceded fix claim under the legacy policy dismisses but is
@@ -1776,6 +1784,21 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, auth
 		return err
 	}
 	return nil
+}
+
+// rowDismissed reports whether the finding's ledger row stands dismissed,
+// that is, the author settled it earlier in the thread.
+func (r ReplyReactor) rowDismissed(t db.PublishedReplyTarget, fingerprint string) bool {
+	rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber)
+	if err != nil {
+		return false
+	}
+	for _, have := range rows {
+		if have.Fingerprint == fingerprint && isFindingRow(&have) {
+			return have.State == db.PublishedStateDismissed
+		}
+	}
+	return false
 }
 
 // rememberSettled records the dismissed finding as a point the author
@@ -1869,7 +1892,7 @@ func threadFingerprint(thread []ThreadComment, ourID int64) string {
 // nobody withdrew makes it matter; otherwise withdrawals alone count.
 func (r ReplyReactor) rememberExternalSettled(ctx context.Context, t db.PublishedReplyTarget, author string, comments []ThreadComment) {
 	store, ok := r.Ledger.(SettledPointStore)
-	if !ok || !r.CrossPRSettled || strings.TrimSpace(author) == "" {
+	if !ok || !r.CrossPRSettled || !r.ExternalReconcile || strings.TrimSpace(author) == "" {
 		return
 	}
 	own := make(map[int64]bool, len(t.Roots))

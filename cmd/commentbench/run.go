@@ -84,6 +84,8 @@ func replayCase(ctx context.Context, c *Case, policy publisher.Policy, responder
 		Now:            func() time.Time { return now },
 		Holder:         "commentbench",
 		ResolveThreads: true,
+		// The bench replays other reviewers' threads as prod does.
+		ExternalReconcile: true,
 	}
 	reactor.Responder = responder(c, run)
 

@@ -369,6 +369,8 @@ func TestCrossPR_ADeferralSettlesNothing(t *testing.T) {
 		"Known drift, on purpose. The backend settled on purchased.",
 		"we handle this in the shared client, the caller never sees a nil.",
 		"the caller should handle this in the retry path, so this branch is fine.",
+		"No follow-up is needed, the cache is cleared on save.",
+		"this doesn't warrant a follow-up, it is dead code.",
 		"we fix it in the caller after the parse, so this branch is unreachable.",
 	} {
 		if Deferred(body) {

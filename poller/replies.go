@@ -348,12 +348,13 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				task()
 			}()
 		},
-		ClaimLease:     replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
-		Holder:         p.holderID,
-		ResolveThreads: !p.threadsOff,
-		Legacy:         !p.cfg.ReplyPolicyV2,
-		CrossPRSettled: !p.crossPRSettledOff,
-		NoVerdicts:     !p.cfg.ReplyVerdictFastPath,
+		ClaimLease:        replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
+		Holder:            p.holderID,
+		ResolveThreads:    !p.threadsOff,
+		Legacy:            !p.cfg.ReplyPolicyV2,
+		CrossPRSettled:    !p.crossPRSettledOff,
+		ExternalReconcile: !p.externalOff,
+		NoVerdicts:        !p.cfg.ReplyVerdictFastPath,
 		Live: func() (string, func(string) bool, error) {
 			liveMode, err := p.db.GetSetting(settingPublishReplyMode)
 			if err != nil {

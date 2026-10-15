@@ -569,7 +569,7 @@ func respondFixture(mode string, decide Responder) (*ReplyReactor, *fakeReplyGH,
 		{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Roots: map[int64]string{100: "a.go:1:abc"}},
 	}}
 	r := &ReplyReactor{
-		GH: gh, Ledger: ledger, Mode: mode, Since: t0.Add(-2 * time.Hour), Responder: decide, CrossPRSettled: true,
+		GH: gh, Ledger: ledger, Mode: mode, Since: t0.Add(-2 * time.Hour), Responder: decide, CrossPRSettled: true, ExternalReconcile: true,
 		Now: func() time.Time { return t0 },
 		PR: func(_ context.Context, _, _ string, _ int) (PRState, error) {
 			return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1"}, nil

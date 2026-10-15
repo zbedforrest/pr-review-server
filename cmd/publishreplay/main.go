@@ -147,8 +147,9 @@ func main() {
 func renderPairs(pairs []CrossPRPair) string {
 	var b strings.Builder
 	b.WriteString("| outcome | pr | round | severity | file:line | headline | settled on | settled file | source | subject | score | settled at |\n|---|---|---:|---|---|---|---|---|---|---|---:|---|\n")
+	cell := strings.NewReplacer("|", "\\|", "\n", " ").Replace
 	for _, p := range pairs {
-		fmt.Fprintf(&b, "| %s | %s | %d | %s | %s:%d | %s | #%d | %s | %s | %s | %.2f | %s |\n", p.Outcome, p.PR, p.Round, p.Severity, p.File, p.Line, strings.ReplaceAll(p.Headline, "|", "\\|"), p.SettledPR, p.SettledFile, p.SettledSource, p.Subject, p.Score, p.SettledAt)
+		fmt.Fprintf(&b, "| %s | %s | %d | %s | %s:%d | %s | #%d | %s | %s | %s | %.2f | %s |\n", p.Outcome, cell(p.PR), p.Round, p.Severity, cell(p.File), p.Line, cell(p.Headline), p.SettledPR, cell(p.SettledFile), p.SettledSource, cell(p.Subject), p.Score, p.SettledAt)
 	}
 	return b.String()
 }

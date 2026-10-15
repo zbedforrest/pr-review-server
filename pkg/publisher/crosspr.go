@@ -157,7 +157,9 @@ func (p *Publisher) withoutSettledElsewhere(r *Round, rows map[string]*db.Publis
 func rememberSettled(r *Round, rows map[string]*db.PublishedFinding) {
 	for _, f := range r.Findings {
 		row, ok := rows[f.ID]
-		if !ok || row.State != db.PublishedStateSettled || row.SettledPRNumber == 0 {
+		// A critical over a settled row posts as a fresh root (withoutTerminal),
+		// so it is not listed as settled too.
+		if !ok || row.State != db.PublishedStateSettled || row.SettledPRNumber == 0 || f.Severity == "critical" {
 			continue
 		}
 		r.SettledMatches = append(r.SettledMatches, SettledMatch{Finding: f, PRNumber: row.SettledPRNumber, CommentID: row.SettledCommentID})
