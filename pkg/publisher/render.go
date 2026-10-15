@@ -746,7 +746,8 @@ func clampText(s string, max int, legacy bool) string {
 	if legacy {
 		return truncateWords(s, max)
 	}
-	return textcut.ClampWith(s, max, textcut.Options{KeepProblemClause: NoteProblemClauseEnabled(), HeadStatesProblem: StatesProblem, MarkDroppedLead: !ProblemClauseStartEnabled()})
+	out := textcut.ClampWith(s, max, textcut.Options{KeepProblemClause: NoteProblemClauseEnabled(), HeadStatesProblem: StatesProblem, MarkDroppedLead: !ProblemClauseStartEnabled()})
+	return standaloneTitle(out)
 }
 
 // impactBelowTitle is the part of the effect statement still owed under the

@@ -23,13 +23,13 @@ var ClauseBoundaries = []string{", so ", "; ", " because ", ", which ", ", and "
 type Options struct {
 	// KeepProblemClause prefers the clause that states the problem: a text
 	// whose "but", "yet" or "however" clause does not fit loses its leading
-	// context clause (replaced by the marker) rather than that clause, and
-	// no cut ends on a connective or subordinator ("however", "only",
-	// "when", "because" ...), which would leave the problem unsaid. The
-	// leading clause is kept when HeadStatesProblem says it states the
-	// defect, or when the trailing clause opens with a qualifier or an
-	// anaphor ("but only when", "but this flag"), which reads as nothing
-	// on its own.
+	// context clause rather than that clause (the marker stands in for it
+	// only under MarkDroppedLead), and no cut ends on a connective or
+	// subordinator ("however", "only", "when", "because" ...), which would
+	// leave the problem unsaid. The leading clause is kept when
+	// HeadStatesProblem says it states the defect, or when the trailing
+	// clause opens with a qualifier or an anaphor ("but only when", "but
+	// this flag"), which reads as nothing on its own.
 	KeepProblemClause bool
 	// HeadStatesProblem reports whether a leading clause already says what
 	// goes wrong; nil treats every leading clause as context.
@@ -40,7 +40,9 @@ type Options struct {
 	MarkDroppedLead bool
 }
 
-// Clamp cuts s to max runes. A text within the limit is returned unchanged.
+// Clamp cuts s to max runes. A text within the limit is returned unchanged
+// (ClampWith under KeepProblemClause without MarkDroppedLead passes it
+// through StandAlone, so it never opens with the marker or a connective).
 // A longer one first loses its parentheticals, left to right, when that
 // alone brings it within the limit, so "X (aside) does Y, so Z" keeps its
 // consequence. Otherwise it is cut before the limit at the end of a
@@ -305,22 +307,23 @@ func StandAlone(s string) string {
 }
 
 // stripLead drops a leading marker, or a coordinator that is lowercase or
-// follows a stripped marker. A code span is never a connective, and "so"
-// stays because it also opens "so far" and "so that".
+// follows a stripped marker. A code span is never a connective; "so" stays
+// because it also opens "so far" and "so that", and "nor" because dropping
+// it inverts the claim.
 func stripLead(s string, afterMarker bool) (string, bool) {
 	if mark := strings.TrimSpace(Marker); strings.HasPrefix(s, mark) {
-		return strings.TrimLeft(s[len(mark):], " ,;:"), true
+		return strings.TrimSpace(strings.TrimLeft(s[len(mark):], " ,;:")), true
 	}
 	words := strings.Fields(s)
-	if len(words) < 2 {
+	if len(words) < 2 || !strings.HasPrefix(s, words[0]) {
 		return s, false
 	}
 	first := strings.Trim(words[0], ",;:")
 	lower := strings.ToLower(first)
-	if !coordinators[lower] || lower == "so" || (!afterMarker && first != lower) {
+	if !coordinators[lower] || lower == "so" || lower == "nor" || (!afterMarker && first != lower) {
 		return s, false
 	}
-	return strings.TrimLeft(strings.TrimPrefix(s, words[0]), " ,;:"), true
+	return strings.TrimSpace(strings.TrimLeft(s[len(words[0]):], " ,;:")), true
 }
 
 // OpensWithMarkerOrConnective reports whether s starts with the marker or

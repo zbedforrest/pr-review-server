@@ -272,6 +272,9 @@ func TestStandAlone(t *testing.T) {
 		"so that the cache stays warm it re-runs": "So that the cache stays warm it re-runs",
 		"`but` is a reserved word here":           "`but` is a reserved word here",
 		"`and` joins the two filters":             "`and` joins the two filters",
+		"nor does the sweeper clear it":           "Nor does the sweeper clear it",
+		"but\tbut the row is served":              "The row is served",
+		"[…]\tbut the row is served":              "The row is served",
 	} {
 		if got := StandAlone(in); got != want {
 			t.Errorf("StandAlone(%q) = %q, want %q", in, got, want)

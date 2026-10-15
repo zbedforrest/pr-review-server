@@ -58,6 +58,13 @@ func TestTitleOf_OpensTheWayTheRenderedTitleDoes(t *testing.T) {
 	}
 }
 
+func TestClampText_StandsAloneWhenTheProblemClauseSwitchIsOff(t *testing.T) {
+	t.Setenv(NoteProblemClauseEnv, "false")
+	if got, want := clampText("but the cache is stale", 80, false), "The cache is stale"; got != want {
+		t.Fatalf("clampText = %q, want %q", got, want)
+	}
+}
+
 func TestHeadline_NeverOpensWithTheMarkerOrAConnective(t *testing.T) {
 	r := Round{Owner: "acme", Repo: "example", HeadSHA: "abc1234"}
 	findings := []payload.Finding{
