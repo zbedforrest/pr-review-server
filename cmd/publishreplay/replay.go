@@ -827,7 +827,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 			}
 			f, ok := findingsByID[row.Fingerprint]
 			if !ok {
-				f = payload.Finding{ID: row.Fingerprint, File: fileOfFingerprint(row.Fingerprint), Line: row.Line, Comment: row.CommentText}
+				f = payload.Finding{ID: row.Fingerprint, File: fileOfFingerprint(row.Fingerprint), Line: row.Line, Comment: row.CommentText, Severity: row.Severity}
 			}
 			pairs = append(pairs, crossPRPair(d, i, f, settledPointOf(ledger, d, rd.At, row), "settled"))
 			logf("%s: round %d finding %s:%d settled earlier on #%d, dropped", d.key(), i+1, f.File, f.Line, row.SettledPRNumber)

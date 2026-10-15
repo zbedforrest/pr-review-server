@@ -650,8 +650,12 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 		if from := originalIDs[f.ID]; from != "" && from != f.ID {
 			log.Printf("[PUBLISH] %s/%s#%d: finding %s aliased to %s row %s, dropped", r.Owner, r.Repo, r.Number, from, row.State, f.ID)
 		}
+		// A settled row is the cross-PR memory's; a critical finding is
+		// never settled by it, at the match or afterwards, whatever other
+		// rows share the point.
+		settledCritical := row.State == db.PublishedStateSettled && f.Severity == "critical"
 		others, keyed := rowsOnPoint(rows, row, f)
-		if len(others) > 0 {
+		if len(others) > 0 && !settledCritical {
 			if successor := liveSuccessor(others); successor != nil && !carried[successor.Fingerprint] {
 				carried[successor.Fingerprint] = true
 				f.ID = successor.Fingerprint
@@ -659,9 +663,6 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 			}
 			continue
 		}
-		// A settled row is the cross-PR memory's; a critical finding is
-		// never settled by it, at the match or afterwards.
-		settledCritical := row.State == db.PublishedStateSettled && f.Severity == "critical"
 		if !settledCritical && (!keyed || !securityException(r, row, f)) {
 			continue
 		}
