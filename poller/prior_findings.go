@@ -50,7 +50,9 @@ func (p *Poller) priorFindingsFor(owner, repo string, number int, author string)
 		log.Printf("[REVIEWER] %s/%s#%d: prior findings: load settled points: %v", owner, repo, number, err)
 		return priors
 	}
-	return append(priors, SettledElsewherePriors(points, number)...)
+	// First, so the prompt's row cap cuts ledger rows before the points
+	// the agent must not raise again.
+	return append(SettledElsewherePriors(points, number), priors...)
 }
 
 // settledElsewhereMax bounds the settled points the prompt lists, newest

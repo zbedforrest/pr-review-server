@@ -352,8 +352,8 @@ func TestThreadSettled_ResolvedThreadsCountOnlyWhenTheAuthorStoodByTheCode(t *te
 			t.Errorf("an open thread answered %q is not settled", c.reply)
 		}
 		th.Withdrawn = true
-		if !ThreadSettled(th, false) {
-			t.Errorf("a withdrawn thread answered %q is settled", c.reply)
+		if got := ThreadSettled(th, false); got != c.settled {
+			t.Errorf("withdrawn thread answered %q: settled=%v, want %v", c.reply, got, c.settled)
 		}
 	}
 	if ThreadSettled(reconcile.ExternalThread{Withdrawn: true}, true) {
@@ -423,7 +423,7 @@ func TestCrossPR_AThreadWithdrawnOnThisPRSettlesAShownFindingInTheSameRound(t *t
 	if row == nil || row.State != db.PublishedStateSettled || row.SettledPRNumber != 668 || row.SettledCommentID != 3101 {
 		t.Fatalf("row = %+v", row)
 	}
-	if summary := gh.issueCreates[0]; !strings.Contains(summary, fmt.Sprintf("Settled earlier on [#668](%s)", SettledThreadURL("acme", "example", 668, 3101))) {
+	if summary := gh.issueCreates[0]; !strings.Contains(summary, fmt.Sprintf("Settled on [#668](%s)", SettledThreadURL("acme", "example", 668, 3101))) {
 		t.Fatalf("the summary links the withdrawn thread:\n%s", summary)
 	}
 }

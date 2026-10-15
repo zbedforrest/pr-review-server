@@ -59,7 +59,7 @@ func MatchSettledElsewhere(f payload.Finding, points []db.SettledPoint) (db.Sett
 	}
 	earlier := make([]reconcile.EarlierPoint, 0, len(points))
 	for _, pt := range points {
-		earlier = append(earlier, reconcile.EarlierPoint{Subjects: splitSubjects(pt.Subjects), Text: pt.Text})
+		earlier = append(earlier, reconcile.EarlierPoint{Subjects: splitSubjects(pt.Subjects), Text: pt.Text, Kind: pt.FindingKind})
 	}
 	i, _, ok := reconcile.MatchEarlier(f, earlier)
 	if !ok {
@@ -134,19 +134,13 @@ func rememberSettled(r *Round, rows map[string]*db.PublishedFinding) {
 }
 
 // ThreadSettled reports whether another reviewer's thread counts as a
-// point the author settled: answered by the author, and either withdrawn
-// by the reviewer, or resolved after the author's last reply stood by the
-// code (a verdict or pushback). A thread the author answered with a fix
-// claim or a bare acknowledgement and then resolved is a fix, not a
-// settlement, and must not silence the point on their later pull requests.
+// point the author settled: withdrawn by the reviewer or resolved, after
+// the author's last reply stood by the code (a verdict or pushback). A
+// thread the author answered with a fix claim or a bare acknowledgement,
+// then withdrawn or resolved, is a fix, not a settlement, and must not
+// silence the point on their later pull requests.
 func ThreadSettled(t reconcile.ExternalThread, resolved bool) bool {
-	if len(t.AuthorReplies) == 0 {
-		return false
-	}
-	if t.Withdrawn {
-		return true
-	}
-	if !resolved {
+	if len(t.AuthorReplies) == 0 || (!t.Withdrawn && !resolved) {
 		return false
 	}
 	last := t.AuthorReplies[len(t.AuthorReplies)-1]
@@ -154,8 +148,9 @@ func ThreadSettled(t reconcile.ExternalThread, resolved bool) bool {
 	case ReplyVerdict:
 		return true
 	case ReplyPushback:
-		first := FirstSentence(last)
-		return !hasCommitSha(last) && !fixClaimRe.MatchString(first) && !workClaimRe.MatchString(first)
+		// A leading "fixed" or "done" is a resolution already; here only
+		// a cited commit or an opening work verb reads as a fix.
+		return !hasCommitSha(last) && !workClaimRe.MatchString(last)
 	}
 	return false
 }

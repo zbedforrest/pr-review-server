@@ -567,7 +567,11 @@ func (r Round) writeSettled(b *strings.Builder) {
 			where = fmt.Sprintf("%s:%d", where, f.Line)
 		}
 		text := r.clampBullet(summaryText(f, r.LegacyTitles))
-		fmt.Fprintf(b, "- %s %s, `%s` · Settled earlier on [#%d](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), text, where, m.PRNumber, SettledThreadURL(r.Owner, r.Repo, m.PRNumber, m.CommentID))
+		label := "Settled earlier on"
+		if m.PRNumber == r.Number {
+			label = "Settled on"
+		}
+		fmt.Fprintf(b, "- %s %s, `%s` · %s [#%d](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), text, where, label, m.PRNumber, SettledThreadURL(r.Owner, r.Repo, m.PRNumber, m.CommentID))
 	}
 	b.WriteString("</details>\n\n")
 }

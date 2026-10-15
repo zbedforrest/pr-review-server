@@ -9,11 +9,14 @@ import (
 )
 
 // EarlierPoint is a point the PR author settled on an earlier pull request
-// of the repo: its specific subject names (lower-cased) and the prose of
-// the settled thread (root, impact, the author's answer).
+// of the repo: its specific subject names (lower-cased), the prose of the
+// settled thread (root, impact, the author's answer) and its contract kind
+// when the point came from a PRism finding (empty for another reviewer's
+// thread, which carries no contract).
 type EarlierPoint struct {
 	Subjects []string
 	Text     string
+	Kind     string
 }
 
 // A settled point from another PR has neither a line nor a file to lean on,
@@ -40,9 +43,13 @@ type EarlierScore struct {
 // names its prose quotes), and f's headline or impact sentence sits inside
 // p's text at the external bar (or its whole text with eight shared
 // words). Both conditions, never one: distinct defects share a symbol all
-// the time, and two findings about one switch can read alike.
+// the time, and two findings about one switch can read alike. Kinds must
+// agree when both are known, as on the same PR.
 func SameEarlierPoint(f payload.Finding, p EarlierPoint) (EarlierScore, bool) {
 	var s EarlierScore
+	if kind := findingKind(f); kind != "" && p.Kind != "" && !strings.EqualFold(kind, p.Kind) {
+		return s, false
+	}
 	s.Subject = sharedEarlierSubject(f, p)
 	if s.Subject == "" {
 		return s, false
@@ -155,4 +162,11 @@ func identifierLike(s string) bool {
 		}
 	}
 	return letters >= 2
+}
+
+func findingKind(f payload.Finding) string {
+	if f.FindingContract == nil {
+		return ""
+	}
+	return strings.TrimSpace(f.FindingContract.FindingKind)
 }

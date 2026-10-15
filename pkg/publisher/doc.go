@@ -56,9 +56,10 @@
 // folded note against such a thread is the note reconcile's business). A
 // point is settled by the author's verdict on a PRism thread (the reply
 // path records it), or by another reviewer's thread the author answered
-// that the reviewer then withdrew, or that the listing shows resolved
-// after an author reply that stood by the code (ThreadSettled: a verdict
-// or pushback, never a fix claim or a bare acknowledgement); the reply
+// standing by the code (ThreadSettled: a verdict or pushback, never a fix
+// claim or a bare acknowledgement) that the reviewer then withdrew or that
+// the listing shows resolved; a cross-PR match also needs the contract
+// kinds to agree when both are known; the reply
 // scan and the round both record it, keyed by the thread. Dismissed rows
 // older than the table are read back through the reply ledger. With the
 // policy off nothing is matched or recorded; a row settled earlier stays
