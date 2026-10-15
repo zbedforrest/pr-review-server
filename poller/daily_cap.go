@@ -122,7 +122,8 @@ func (p *Poller) pushesCapped(owner, repo string, number int, now time.Time) boo
 }
 
 // requeueCappedHead gives a head the cap turned away its review back: on a
-// ready delivery (exempt from the cap) or once the UTC day has rolled over.
+// ready delivery (exempt from the cap) or once the UTC day has rolled over,
+// unless a manual run published the head meanwhile.
 func (p *Poller) requeueCappedHead(owner, repo string, number int, head, trigger, deliveryID string, now time.Time, newDayOnly bool) bool {
 	intents, err := p.db.ListAutoReviewIntents(db.AutoReviewIntentFilter{RepoOwner: owner, RepoName: repo, PRNumber: number, HeadSHA: head, Statuses: []string{db.AutoReviewIntentDone}})
 	if err != nil {
@@ -132,6 +133,14 @@ func (p *Poller) requeueCappedHead(owner, repo string, number int, head, trigger
 	for _, intent := range intents {
 		if intent.Publication != publicationSkippedDailyCap || (newDayOnly && !intent.UpdatedAt.Before(utcDayStart(now))) {
 			continue
+		}
+		published, err := p.headPublished(owner, repo, number, head)
+		if err != nil {
+			log.Printf("[AUTO-REVIEW] %s: read publication ledger failed: %v", autoReviewKey(owner, repo, number, head), err)
+			return false
+		}
+		if published {
+			return false
 		}
 		requeued, err := p.db.RequeueCappedAutoReviewIntent(intent.ID, trigger, deliveryID)
 		if err != nil {
