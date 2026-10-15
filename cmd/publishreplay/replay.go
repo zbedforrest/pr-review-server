@@ -306,12 +306,43 @@ type PRResult struct {
 	ObservedSummaryNotesNearExternalRoot int
 	ObservedSummaryNotesNearSettledRoot  int
 	ObservedCrossFileSamePoint           int
+	// Cross-PR settled memory: roots the publisher still posted on a point
+	// the author settled on an earlier PR of the repo within thirty days,
+	// the findings it dropped as settled instead, and the historical
+	// counterpart read off the dumps.
+	CrossPRResettled         int
+	CrossPRSettled           int
+	ObservedCrossPRResettled int
 
 	// dailyRounds is one count per UTC day the PR had rounds on: the
 	// distinct-head rounds the poller would admit (observed minus the
 	// unchanged-diff and daily-cap skips); observedDailyRounds the same
 	// before either skip.
 	dailyRounds, observedDailyRounds []int
+}
+
+// CrossPRPair is one new root (or a finding the publisher dropped) on a
+// point the same author settled on an earlier pull request, for the owner
+// to spot-check.
+type CrossPRPair struct {
+	PR       string `json:"pr"`
+	Round    int    `json:"round"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Headline string `json:"headline"`
+	Severity string `json:"severity"`
+	// Score and Subject are the containment and the shared subject behind
+	// the match, recomputed against the settled point alone.
+	Score         float64 `json:"score"`
+	Subject       string  `json:"subject"`
+	SettledPR     int     `json:"settled_pr"`
+	SettledSource string  `json:"settled_source"`
+	SettledAt     string  `json:"settled_at"`
+	SettledFile   string  `json:"settled_file"`
+	// Outcome is "posted" (the replayed publisher still posted the root),
+	// "settled" (it wrote a settled row instead) or "observed" (the
+	// historical root in the dump).
+	Outcome string `json:"outcome"`
 }
 
 // Metrics is the JSON the command prints. Observed values come straight from
@@ -416,6 +447,17 @@ type Metrics struct {
 	SummaryNotesNearExternalRoot int `json:"summary_notes_near_external_root"`
 	SummaryNotesNearSettledRoot  int `json:"summary_notes_near_settled_root"`
 
+	// CrossPRResettled counts replayed roots posted on a point the same
+	// author settled on an earlier PR of the repo within thirty days (an
+	// author verdict under a PRism root, or another reviewer's thread the
+	// author answered that was withdrawn or resolved, read off the dumps
+	// and seeded into the settled store before the replay); CrossPRSettled
+	// the findings the publisher dropped as settled rows instead;
+	// SettledPointsSeeded the points the dumps yielded.
+	CrossPRResettled    int `json:"cross_pr_resettled"`
+	CrossPRSettled      int `json:"cross_pr_settled"`
+	SettledPointsSeeded int `json:"settled_points_seeded"`
+
 	// CommentsPerPush is over the rounds the publisher ran; RoundsPerPR over
 	// the rounds the poller would admit (observed minus unchanged-diff
 	// skips), the observed figure being under observed.
@@ -454,6 +496,11 @@ type ObservedMetrics struct {
 	SummaryNotesNearExternalRoot int `json:"summary_notes_near_external_root"`
 	SummaryNotesNearSettledRoot  int `json:"summary_notes_near_settled_root"`
 	CrossFileSamePoint           int `json:"cross_file_same_point"`
+	// CrossPRResettled counts the historical roots posted on a point the
+	// same author had settled on an earlier PR of the repo within thirty
+	// days, judged on the contract behind each root when its sidecar is
+	// cached.
+	CrossPRResettled int `json:"cross_pr_resettled"`
 }
 
 type Options struct {
@@ -476,6 +523,9 @@ type Options struct {
 type Result struct {
 	Metrics Metrics
 	PerPR   []PRResult
+	// CrossPRPairs lists every cross-PR settled match, replayed and
+	// observed, for the PR body.
+	CrossPRPairs []CrossPRPair
 }
 
 func (o Options) bots(d *prDump) map[string]bool {
@@ -503,13 +553,15 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	var roundsPerPR, observedRoundsPerPR, commentsPerPush, dailyRounds, observedDailyRounds []int
 	rootsResolved := 0
 	res.Metrics.PRs = len(o.Dumps)
+	res.Metrics.SettledPointsSeeded = seedSettledPoints(ledger, o.Dumps, o.bots, o.Store, logf)
 	for _, d := range o.Dumps {
 		bots := o.bots(d)
-		pr, pushes, err := replayPR(ctx, d, bots, o.Store, ledger, o.Policy, o.TextOnlyAlias, !o.ReplayUnchangedDiff, o.DailyRoundCap, logf)
+		pr, pushes, pairs, err := replayPR(ctx, d, bots, o.Store, ledger, o.Policy, o.TextOnlyAlias, !o.ReplayUnchangedDiff, o.DailyRoundCap, logf)
 		if err != nil {
 			return Result{}, fmt.Errorf("%s: %w", d.key(), err)
 		}
-		observe(d, bots, o.Store, &pr, &res.Metrics.Observed, logf)
+		pairs = append(pairs, observe(d, bots, o.Store, ledger, &pr, &res.Metrics.Observed, logf)...)
+		res.CrossPRPairs = append(res.CrossPRPairs, pairs...)
 		res.PerPR = append(res.PerPR, pr)
 		if pr.Rounds > 0 {
 			res.Metrics.PRsWithRounds++
@@ -577,6 +629,9 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.BodyCovered += pr.BodyCovered
 		m.SummaryNotesNearExternalRoot += pr.SummaryNotesNearExternalRoot
 		m.SummaryNotesNearSettledRoot += pr.SummaryNotesNearSettledRoot
+		m.CrossPRResettled += pr.CrossPRResettled
+		m.CrossPRSettled += pr.CrossPRSettled
+		m.Observed.CrossPRResettled += pr.ObservedCrossPRResettled
 		rootsResolved += pr.RootsResolved
 		if pr.Rounds > 0 {
 			logf("%s: rounds=%d roots=%d same_marker=%d same_defect=%d fixed=%d fixed_no_change=%d fixed_no_hunk=%d double_notes=%d", d.key(), pr.Rounds, pr.RootsPosted, pr.SameMarkerReposts, pr.SameDefectReposts, pr.Fixed, pr.FixedWithoutFileChange, pr.FixedWithoutHunkChange, pr.DoubleNotes)
@@ -602,8 +657,77 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	return res, nil
 }
 
-func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, policy publisher.Policy, textOnly, skipUnchanged bool, dailyCap int, logf func(string, ...any)) (PRResult, []int, error) {
+// seedSettledPoints records, before any round runs, every point the dumps
+// show an author settled (an author verdict under a PRism root, another
+// reviewer's thread the author answered that was withdrawn or resolved),
+// dated by the reply that settled it, so a later PR's rounds meet what the
+// live store would hold. Contracts come from the cached sidecar of the
+// commit each root was posted on.
+func seedSettledPoints(ledger *db.GormDB, dumps []*prDump, bots func(*prDump) map[string]bool, s *store, logf func(string, ...any)) int {
+	n := 0
+	for _, d := range dumps {
+		kit, err := replaykit.LoadDump(d.Path)
+		if err != nil {
+			logf("%s: settled points not seeded: %v", d.key(), err)
+			continue
+		}
+		cache := map[string]map[string]payload.Finding{}
+		lookup := func(sha7, id string) (payload.Finding, bool) {
+			if s == nil {
+				return payload.Finding{}, false
+			}
+			if _, ok := cache[sha7]; !ok {
+				cache[sha7] = map[string]payload.Finding{}
+				if raw, ok, err := s.sidecar(d.Owner, d.Repo, d.Number, sha7); err == nil && ok {
+					if pl, err := payload.Decode(raw); err == nil {
+						for _, f := range pl.Findings {
+							cache[sha7][f.ID] = f
+						}
+					}
+				}
+			}
+			f, ok := cache[sha7][id]
+			return f, ok
+		}
+		for _, p := range kit.SettledPointsOf(bots(d), lookup) {
+			point := p
+			if err := ledger.RecordSettledPoint(&point); err != nil {
+				logf("%s: settled point %d not seeded: %v", d.key(), p.CommentID, err)
+				continue
+			}
+			n++
+			logf("%s: settled point seeded: %s %s at %s (%s)", d.key(), p.Source, p.File, p.SettledAt.Format(time.RFC3339), head(p.Reason))
+		}
+	}
+	return n
+}
+
+// settledPointOf finds the point a settled row names in the store, for the
+// pair listing; a point the store no longer lists is named by the row alone.
+func settledPointOf(ledger *db.GormDB, d *prDump, at time.Time, row db.PublishedFinding) db.SettledPoint {
+	points, err := ledger.ListSettledPoints(d.Owner, d.Repo, d.Author.Login, at.Add(-publisher.SettledWindow), at)
+	if err == nil {
+		for _, pt := range points {
+			if pt.PRNumber == row.SettledPRNumber && pt.CommentID == row.SettledCommentID {
+				return pt
+			}
+		}
+	}
+	// The store no longer lists the point; the row's file is the point's
+	// file under the same-file rule, the rest is unknown.
+	return db.SettledPoint{PRNumber: row.SettledPRNumber, CommentID: row.SettledCommentID, File: payload.FingerprintFile(row.Fingerprint)}
+}
+
+// crossPRPair describes a finding against the point it raises again.
+func crossPRPair(d *prDump, round int, f payload.Finding, pt db.SettledPoint, outcome string) CrossPRPair {
+	_, score, _ := publisher.ScoreSettledElsewhere(f, []db.SettledPoint{pt})
+	return CrossPRPair{PR: d.key(), Round: round + 1, File: f.File, Line: f.Line, Headline: head(publisher.TitleOf(f)), Severity: f.Severity, Score: score.Text, Subject: score.Subject,
+		SettledPR: pt.PRNumber, SettledSource: pt.Source, SettledAt: pt.SettledAt.Format(time.RFC3339), SettledFile: pt.File, Outcome: outcome}
+}
+
+func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, policy publisher.Policy, textOnly, skipUnchanged bool, dailyCap int, logf func(string, ...any)) (PRResult, []int, []CrossPRPair, error) {
 	pr := PRResult{PR: d.key()}
+	var pairs []CrossPRPair
 	rec := newRecorder()
 	pub := &publisher.Publisher{GH: rec, Ledger: ledger, Policy: policy}
 	rounds := d.rounds(bots)
@@ -655,7 +779,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		}
 		previous, err := ledger.GetPublishedFindingsForPR(d.Owner, d.Repo, d.Number)
 		if err != nil {
-			return pr, nil, err
+			return pr, nil, nil, err
 		}
 		comments := append(externalCommentsBefore(d, bots, rd.At), rec.ownComments()...)
 		rec.external = externalThreadsBefore(d, bots, rd.At)
@@ -672,7 +796,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 			pr.SameCommitSkipped++
 			continue
 		} else if err != nil {
-			return pr, nil, fmt.Errorf("round %d (%s): %w", i+1, rd.SHA7, err)
+			return pr, nil, nil, fmt.Errorf("round %d (%s): %w", i+1, rd.SHA7, err)
 		}
 		pr.ExternalMatched += rep.ExternalMatched
 		pr.ExternalReplies += rep.ExternalReplies
@@ -707,8 +831,20 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		pr.InThreadReplies, pr.DoubleNotes = rec.replies, rec.doubleNotes
 		pr.ThreadsResolved, pr.ThreadsUnresolved, pr.RootsResolved = rec.resolves, rec.unresolves, rec.rootsResolved()
 		annotate(rec.posts[before:], round.Findings)
+		findingsByID := map[string]payload.Finding{}
+		for _, f := range round.Findings {
+			findingsByID[f.ID] = f
+		}
+		pr.CrossPRSettled += rep.CrossPRSettled
 		for j := before; j < len(rec.posts); j++ {
 			pr.RootsPosted++
+			if f, ok := findingsByID[rec.posts[j].FindingID]; ok {
+				if pt, ok := replaykit.SettledElsewhere(ledger, d.Owner, d.Repo, d.Author.Login, d.Number, rd.At, f); ok {
+					pr.CrossPRResettled++
+					pairs = append(pairs, crossPRPair(d, i, f, pt, "posted"))
+					logf("%s: round %d root %s:%d raises again a point %s settled on #%d (%s)", d.key(), i+1, f.File, f.Line, d.Author.Login, pt.PRNumber, pt.Source)
+				}
+			}
 			switch classifyRepost(rec.posts[j], rec.posts[:before], textOnly) {
 			case repostSameMarker:
 				pr.SameMarkerReposts++
@@ -732,7 +868,18 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		}
 		after, err := ledger.GetPublishedFindingsForPR(d.Owner, d.Repo, d.Number)
 		if err != nil {
-			return pr, nil, err
+			return pr, nil, nil, err
+		}
+		for _, row := range after {
+			if row.State != db.PublishedStateSettled || !row.PublishedAt.Equal(rd.At) {
+				continue
+			}
+			f, ok := findingsByID[row.Fingerprint]
+			if !ok {
+				f = payload.Finding{ID: row.Fingerprint, File: fileOfFingerprint(row.Fingerprint), Line: row.Line, Comment: row.CommentText, Severity: row.Severity}
+			}
+			pairs = append(pairs, crossPRPair(d, i, f, settledPointOf(ledger, d, rd.At, row), "settled"))
+			logf("%s: round %d finding %s:%d settled earlier on #%d, dropped", d.key(), i+1, f.File, f.Line, row.SettledPRNumber)
 		}
 		countResolutions(d, s, rd.SHA, previous, after, &pr, logf)
 	}
@@ -741,7 +888,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 	pr.PraiseShown, pr.ConfidenceLabels, pr.LeakedFindingIDs = rec.praiseShown, rec.confidenceLabels, rec.leakedFindingIDs
 	pr.SourceFooters, pr.ZeroStatusLines, pr.NoopSummaryEdits = rec.sourceFooters, rec.zeroStatusLines, rec.noopSummaryEdits
 	pr.LeadingMarkers = rec.leadingMarkers
-	return pr, pushes, nil
+	return pr, pushes, pairs, nil
 }
 
 // dailyRounds tallies a PR's rounds per UTC day, as they happened and as the
@@ -1184,7 +1331,8 @@ func noteText(pl payload.Payload, n summaryNote) string {
 // contract behind each root, read from the cached sidecar of the commit it
 // was posted on; a root whose sidecar is not cached is judged on its prose
 // alone and can only fail the subject test.
-func observe(d *prDump, bots map[string]bool, s *store, pr *PRResult, m *ObservedMetrics, logf func(string, ...any)) {
+func observe(d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, pr *PRResult, m *ObservedMetrics, logf func(string, ...any)) []CrossPRPair {
+	var pairs []CrossPRPair
 	var earlier []post
 	var earlierPoints []reconcile.SettledPoint
 	roots := d.externalRoots(bots)
@@ -1222,7 +1370,12 @@ func observe(d *prDump, bots map[string]bool, s *store, pr *PRResult, m *Observe
 			}
 		}
 		if sf, ok := findings[r.FindingID]; ok {
-			f.Comment, f.FindingContract = sf.Comment, sf.FindingContract
+			f.Comment, f.FindingContract, f.Severity = sf.Comment, sf.FindingContract, sf.Severity
+		}
+		if pt, ok := replaykit.SettledElsewhere(ledger, d.Owner, d.Repo, d.Author.Login, d.Number, r.At, f); ok {
+			pr.ObservedCrossPRResettled++
+			pairs = append(pairs, crossPRPair(d, 0, f, pt, "observed"))
+			logf("%s: observed root %s:%d raises again a point %s settled on #%d (%s)", d.key(), r.File, r.Line, d.Author.Login, pt.PRNumber, pt.Source)
 		}
 		for _, e := range earlierPoints {
 			if e.File == r.File {
@@ -1261,6 +1414,7 @@ func observe(d *prDump, bots map[string]bool, s *store, pr *PRResult, m *Observe
 	if pr.ObservedExternalDuplicatesNear > 0 {
 		m.PRsWithExternalDuplicates++
 	}
+	return pairs
 }
 
 func findingKind(f payload.Finding) string {
@@ -1300,7 +1454,8 @@ func round3(v float64) float64 {
 
 var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_skipped_daily_cap", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_without_hunk_change", "fixed_hunk_unknown", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "double_notes", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open",
 	"held_library_claims", "held_regression_claims", "held_praise", "held_reasonless_notes", "library_claims_shown", "uncited_regression_claims_shown", "reasonless_notes_shown", "praise_shown", "confidence_labels_rendered", "leaked_finding_ids", "source_footers", "zero_status_lines_over_notes", "noop_summary_edits", "leading_markers",
-	"external_settled", "settled_dropped", "body_covered", "summary_notes_near_external_root", "summary_notes_near_settled_root", "observed_summary_notes_near_external_root", "observed_summary_notes_near_settled_root", "observed_cross_file_same_point"}
+	"external_settled", "settled_dropped", "body_covered", "summary_notes_near_external_root", "summary_notes_near_settled_root", "observed_summary_notes_near_external_root", "observed_summary_notes_near_settled_root", "observed_cross_file_same_point",
+	"cross_pr_resettled", "cross_pr_settled", "observed_cross_pr_resettled"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -1310,7 +1465,8 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 	for _, r := range rows {
 		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsSkippedDailyCap), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedWithoutHunkChange), itoa(r.FixedHunkUnknown), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.DoubleNotes), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen),
 			itoa(r.HeldLibraryClaims), itoa(r.HeldRegressionClaims), itoa(r.HeldPraise), itoa(r.HeldReasonless), itoa(r.LibraryClaimsShown), itoa(r.RegressionClaimsShown), itoa(r.ReasonlessNotesShown), itoa(r.PraiseShown), itoa(r.ConfidenceLabels), itoa(r.LeakedFindingIDs), itoa(r.SourceFooters), itoa(r.ZeroStatusLines), itoa(r.NoopSummaryEdits), itoa(r.LeadingMarkers),
-			itoa(r.ExternalSettled), itoa(r.SettledDropped), itoa(r.BodyCovered), itoa(r.SummaryNotesNearExternalRoot), itoa(r.SummaryNotesNearSettledRoot), itoa(r.ObservedSummaryNotesNearExternalRoot), itoa(r.ObservedSummaryNotesNearSettledRoot), itoa(r.ObservedCrossFileSamePoint)}
+			itoa(r.ExternalSettled), itoa(r.SettledDropped), itoa(r.BodyCovered), itoa(r.SummaryNotesNearExternalRoot), itoa(r.SummaryNotesNearSettledRoot), itoa(r.ObservedSummaryNotesNearExternalRoot), itoa(r.ObservedSummaryNotesNearSettledRoot), itoa(r.ObservedCrossFileSamePoint),
+			itoa(r.CrossPRResettled), itoa(r.CrossPRSettled), itoa(r.ObservedCrossPRResettled)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}

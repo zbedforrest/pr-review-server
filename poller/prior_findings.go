@@ -1,9 +1,11 @@
 package poller
 
 import (
+	"fmt"
 	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/publisher"
@@ -19,9 +21,10 @@ type priorFindingsLedger interface {
 }
 
 // priorFindingsFor loads what PRism already posted on the PR for the agent
-// prompt. Any failure yields nothing: the block is advisory and a review
-// must not wait on it.
-func (p *Poller) priorFindingsFor(owner, repo string, number int) []service.PriorFinding {
+// prompt, followed by the points the author settled recently in the repo
+// (PUBLISH_CROSS_PR_SETTLED). Any failure yields nothing: the block is
+// advisory and a review must not wait on it.
+func (p *Poller) priorFindingsFor(owner, repo string, number int, author string) []service.PriorFinding {
 	ledger, ok := p.db.(priorFindingsLedger)
 	if !ok {
 		return nil
@@ -36,7 +39,63 @@ func (p *Poller) priorFindingsFor(owner, repo string, number int) []service.Prio
 		log.Printf("[REVIEWER] %s/%s#%d: prior findings: load replies: %v", owner, repo, number, err)
 		replies = nil
 	}
-	return PriorFindingsFromLedger(rows, replies)
+	priors := PriorFindingsFromLedger(rows, replies)
+	store, ok := p.db.(publisher.SettledPointStore)
+	if !ok || p.crossPRSettledOff || strings.TrimSpace(author) == "" {
+		return priors
+	}
+	now := time.Now().UTC()
+	points, err := store.ListSettledPoints(owner, repo, author, now.Add(-publisher.SettledWindow), now)
+	if err != nil {
+		log.Printf("[REVIEWER] %s/%s#%d: prior findings: load settled points: %v", owner, repo, number, err)
+		return priors
+	}
+	// First, so the prompt's row cap cuts ledger rows before the points
+	// the agent must not raise again.
+	return append(SettledElsewherePriors(points, number), priors...)
+}
+
+// settledElsewhereMax bounds the settled points the prompt lists, newest
+// first. The list is advisory: the publisher enforces every point in the
+// window whether or not the agent saw it, so an older point the agent
+// raises again is still dropped there.
+const settledElsewhereMax = 10
+
+// SettledElsewherePriors turns the author's settled points from other
+// pull requests into prompt entries: the file, the headline and the
+// author's reason, newest first, at most settledElsewhereMax. A point the
+// author settled on one of PRism's own threads of this pull request is
+// its dismissed ledger row, listed with the rows; a thread another
+// reviewer opened here that the author settled is listed like one from
+// elsewhere. (A settled ledger row is not a point: it marks a finding of
+// this PR that one of these points covered, and that point is listed.) The headline and reason are what a reviewer and the author
+// wrote, as the ledger rows' author replies already are; the agent reads
+// the whole PR conversation anyway, and the rules name these lines as
+// context, never as evidence or instruction.
+func SettledElsewherePriors(points []db.SettledPoint, number int) []service.PriorFinding {
+	sorted := append([]db.SettledPoint(nil), points...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].SettledAt.After(sorted[j].SettledAt) })
+	var out []service.PriorFinding
+	for _, pt := range sorted {
+		if (pt.PRNumber == number && pt.Fingerprint != "") || pt.Source == db.SettledSourceDeferred || pt.Source == db.SettledSourceSuperseded {
+			continue
+		}
+		headline := pt.Headline
+		if headline == "" {
+			headline = priorHeadline(pt.Text)
+		}
+		id := fmt.Sprintf("settled:%d:%d", pt.PRNumber, pt.CommentID)
+		if pt.CommentID == 0 {
+			// A point without a thread root is told apart by its fingerprint.
+			id = fmt.Sprintf("settled:%d:%s", pt.PRNumber, pt.Fingerprint)
+		}
+		out = append(out, service.PriorFinding{ID: id, State: db.PublishedStateSettled, File: pt.File,
+			Headline: headline, SettledOnPR: pt.PRNumber, Reason: pt.Reason})
+		if len(out) == settledElsewhereMax {
+			break
+		}
+	}
+	return out
 }
 
 // priorStateOrder lists the rows an agent most needs to know about first:
@@ -46,6 +105,7 @@ var priorStateOrder = map[string]int{
 	db.PublishedStateOpen:      0,
 	db.PublishedStateContested: 1,
 	db.PublishedStateDismissed: 2,
+	db.PublishedStateSettled:   2,
 	db.PublishedStateExternal:  3,
 	db.PublishedStateFixed:     4,
 	db.PublishedStateResolved:  4,
@@ -53,14 +113,15 @@ var priorStateOrder = map[string]int{
 
 // PriorFindingsFromLedger turns the PR's ledger rows and recorded author
 // replies into the list the agent is shown: finding and annotation rows
-// only, the legacy resolved state read as fixed, the cited lines recovered
+// only (a settled row stays out: SettledElsewherePriors lists the point it
+// names), the legacy resolved state read as fixed, the cited lines recovered
 // from the fingerprint's bucket, the headline taken from the stored prose,
 // and the thread's verdicts in the order they were handled.
 func PriorFindingsFromLedger(rows []db.PublishedFinding, replies []db.PublishedReply) []service.PriorFinding {
 	verdicts := priorVerdicts(replies)
 	var out []service.PriorFinding
 	for _, row := range rows {
-		if row.Kind != db.PublishedKindFinding && row.Kind != db.PublishedKindAnnotation {
+		if (row.Kind != db.PublishedKindFinding && row.Kind != db.PublishedKindAnnotation) || row.State == db.PublishedStateSettled {
 			continue
 		}
 		file, bucket := payload.FingerprintParts(row.Fingerprint)

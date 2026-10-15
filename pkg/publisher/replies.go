@@ -17,6 +17,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/publisher/replytext"
+	"pr-review-server/pkg/reviewer/reconcile"
 )
 
 // ReplyClass is what an author's reply to one of our inline comments amounts
@@ -44,6 +45,11 @@ type ThreadComment struct {
 	Author      string
 	Body        string
 	CreatedAt   time.Time
+	// Path, Line and OriginalLine place the comment in the diff; the
+	// external thread scan needs them, the author-reply handling does not.
+	Path         string
+	Line         int
+	OriginalLine int
 	// ThumbsDown is GitHub's reaction rollup for the comment; who reacted
 	// takes a second call, made only when this is non-zero.
 	ThumbsDown int
@@ -654,6 +660,13 @@ type ReplyReactor struct {
 	// OnDismissed runs after a finding row is set dismissed by a concession,
 	// so the caller can refresh the sticky summary; nil does nothing.
 	OnDismissed func(ctx context.Context, owner, repo string, number int)
+	// CrossPRSettled (PUBLISH_CROSS_PR_SETTLED) records the points the
+	// author settles, on PRism's threads and on other reviewers', for their
+	// later pull requests; off, the scan writes no settled point.
+	CrossPRSettled bool
+	// ExternalReconcile (PUBLISH_EXTERNAL_RECONCILE) lets the scan record
+	// other reviewers' threads; off, PRism does not act on them anywhere.
+	ExternalReconcile bool
 
 	// Live, when set, re-reads the mode and allowlist right before a post so a
 	// switch flipped during a long model run is honoured. A read error leaves
@@ -892,6 +905,7 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 	if err != nil {
 		return err
 	}
+	r.rememberExternalSettled(ctx, t, state.AuthorLogin, comments)
 	reactionsRead, err := r.contestThumbsDown(ctx, t, state, comments, rep)
 	if err != nil {
 		return err
@@ -956,6 +970,11 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			if created {
 				rep.Recorded++
 				rep.Handled = append(rep.Handled, row)
+				// A deferral or a fix report on a thread the author had stood
+				// by leaves the stand behind, whether or not a text step runs.
+				if (Deferred(reply.Body) || reply.Class == ReplyResolution) && r.rowDismissed(t, reply.Fingerprint) {
+					r.rememberSettled(t, state.AuthorLogin, reply, db.SettledSourceSuperseded)
+				}
 			}
 		} else {
 			rep.AlreadyHandled++
@@ -1479,7 +1498,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	adoptPosted := func(in []ThreadComment) (bool, error) {
 		for _, c := range in {
 			if id, ok := replyMarkerID(c.Body); ok && id == reply.CommentID && c.InReplyToID == reply.RootCommentID && c.AuthorID == root.AuthorID && c.ID != reply.CommentID {
-				return true, r.adopt(ctx, t, reply, c, &outcome, rep)
+				return true, r.adopt(ctx, t, state.AuthorLogin, reply, c, &outcome, rep)
 			}
 		}
 		return false, nil
@@ -1712,7 +1731,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	if err != nil {
 		return outcome, err
 	}
-	if err := r.adopt(ctx, t, reply, ThreadComment{ID: id, CreatedAt: r.now()}, &outcome, rep); err != nil {
+	if err := r.adopt(ctx, t, state.AuthorLogin, reply, ThreadComment{ID: id, CreatedAt: r.now()}, &outcome, rep); err != nil {
 		return outcome, err
 	}
 	if rep != nil {
@@ -1729,7 +1748,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 // life under any wording. A posted hold marks the row contested: the thread
 // stays open for humans and the finding is not raised again under another
 // wording. Under the legacy policy every concession dismisses.
-func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome, rep *ReplyReport) error {
+func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, author string, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome, rep *ReplyReport) error {
 	if err := r.Ledger.MarkPublishedReplyPosted(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, posted.ID, posted.CreatedAt); err != nil {
 		return err
 	}
@@ -1738,9 +1757,19 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, repl
 	case DecisionConcede, DecisionWithdraw:
 		var err error
 		if outcome.Decision == DecisionConcede && reply.Class == ReplyResolution && !r.Legacy {
+			stood := r.rowDismissed(t, reply.Fingerprint)
 			err = r.Ledger.MarkPublishedFindingFixed(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint)
+			// A fix after a stand on the same thread leaves the stand behind.
+			if err == nil && stood {
+				r.rememberSettled(t, author, reply, db.SettledSourceSuperseded)
+			}
 		} else {
 			err = r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed)
+			// A conceded fix claim under the legacy policy dismisses but is
+			// a fix, not a stand.
+			if err == nil && reply.Class != ReplyResolution {
+				r.rememberSettled(t, author, reply, db.SettledSourceConceded)
+			}
 		}
 		if err != nil {
 			return err
@@ -1760,6 +1789,59 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, repl
 		return err
 	}
 	return nil
+}
+
+// rowDismissed reports whether the finding's ledger row stands dismissed,
+// that is, the author settled it earlier in the thread.
+func (r ReplyReactor) rowDismissed(t db.PublishedReplyTarget, fingerprint string) bool {
+	rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber)
+	if err != nil {
+		return false
+	}
+	for _, have := range rows {
+		if have.Fingerprint == fingerprint && isFindingRow(&have) {
+			return have.State == db.PublishedStateDismissed
+		}
+	}
+	return false
+}
+
+// rememberSettled records the dismissed finding as a point the author
+// settled (or deferred), for their later pull requests in the repo. Best effort: the
+// ledger state is already written, and a ledger without the store or a
+// failed write changes nothing here.
+func (r ReplyReactor) rememberSettled(t db.PublishedReplyTarget, author string, reply AuthorReply, source string) {
+	store, ok := r.Ledger.(SettledPointStore)
+	if !ok || !r.CrossPRSettled || strings.TrimSpace(author) == "" {
+		return
+	}
+	// A reply that defers the point is recorded as deferred: it settles
+	// nothing and replaces a stand the thread recorded earlier.
+	if Deferred(reply.Body) {
+		source = db.SettledSourceDeferred
+	}
+	rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber)
+	if err != nil {
+		log.Printf("[REPLY %s/%s#%d] settled point for %s not recorded: %v", t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, err)
+		return
+	}
+	// A row the ledger lost still leaves a point with the reply's reason;
+	// without subjects it settles nothing but is shown to the agent.
+	row := db.PublishedFinding{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, Fingerprint: reply.Fingerprint, CommentID: reply.RootCommentID}
+	for _, have := range rows {
+		if have.Fingerprint == reply.Fingerprint && isFindingRow(&have) {
+			row = have
+			break
+		}
+	}
+	at := reply.CreatedAt
+	if at.IsZero() {
+		at = r.now()
+	}
+	point := SettledPointFromRow(row, author, source, reply.Body, at)
+	if err := store.RecordSettledPoint(&point); err != nil {
+		log.Printf("[REPLY %s/%s#%d] settled point for %s not recorded: %v", t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, err)
+	}
 }
 
 // Thread outcomes of a concession, carried on ReplyOutcome so the background
@@ -1805,4 +1887,46 @@ func threadFingerprint(thread []ThreadComment, ourID int64) string {
 		fmt.Fprintf(h, "%d:%d:%s\x00", c.ID, len(c.Body), c.Body)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// rememberExternalSettled records, from the scan's own listing, every
+// other reviewer's thread the author settled (ThreadSettled), so a point
+// answered after PRism's last round on the PR is remembered without
+// waiting for another round. Resolution is read from the thread listing
+// when GitHub resolves threads for us, and only when an answered thread
+// nobody withdrew makes it matter; otherwise withdrawals alone count.
+func (r ReplyReactor) rememberExternalSettled(ctx context.Context, t db.PublishedReplyTarget, author string, comments []ThreadComment) {
+	store, ok := r.Ledger.(SettledPointStore)
+	if !ok || !r.CrossPRSettled || !r.ExternalReconcile || strings.TrimSpace(author) == "" {
+		return
+	}
+	own := make(map[int64]bool, len(t.Roots))
+	for id := range t.Roots {
+		own[id] = true
+	}
+	external := make([]reconcile.ExternalComment, 0, len(comments))
+	for _, c := range comments {
+		external = append(external, reconcile.ExternalComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, OriginalLine: c.OriginalLine, InReplyToID: c.InReplyToID, CreatedAt: c.CreatedAt})
+	}
+	threads := reconcile.BuildExternalThreads(external, reconcile.ParseExternalComments(external, own), author)
+	needListing := false
+	for _, th := range threads {
+		if len(th.AuthorReplies) > 0 && !th.Withdrawn {
+			needListing = true
+			break
+		}
+	}
+	resolvedRoots := map[int64]bool{}
+	if resolver, ok := r.GH.(ThreadResolver); ok && needListing {
+		listed, err := resolver.ListReviewThreads(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
+		if err != nil {
+			log.Printf("[REPLY %s/%s#%d] threads not listed, resolved external threads not recorded this scan: %v", t.RepoOwner, t.RepoName, t.PRNumber, err)
+		}
+		for _, th := range listed {
+			if th.Resolved {
+				resolvedRoots[th.RootCommentID] = true
+			}
+		}
+	}
+	recordSettledThreads(store, t.RepoOwner, t.RepoName, t.PRNumber, author, threads, func(root int64) bool { return resolvedRoots[root] }, r.now(), "REPLY")
 }

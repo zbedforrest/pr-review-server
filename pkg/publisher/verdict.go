@@ -264,6 +264,7 @@ func (r ReplyReactor) settleVerdict(ctx context.Context, t db.PublishedReplyTarg
 		if err := r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed); err != nil {
 			return false, err
 		}
+		r.rememberSettled(t, state.AuthorLogin, reply, db.SettledSourceVerdict)
 		r.resolveThread(ctx, t, reply.RootCommentID, rep)
 	}
 	if row.Outcome != OutcomeShadowedVerdict {

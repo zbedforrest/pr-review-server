@@ -188,7 +188,8 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 		return m, err
 	}
 	m.Publish.Inline = int(n)
-	if err := published.Where("kind = ?", PublishedKindAnnotation).Count(&n).Error; err != nil {
+	// A settled row is an annotation nothing was folded for.
+	if err := published.Where("kind = ? AND state <> ?", PublishedKindAnnotation, PublishedStateSettled).Count(&n).Error; err != nil {
 		return m, err
 	}
 	m.Publish.Annotations = int(n)

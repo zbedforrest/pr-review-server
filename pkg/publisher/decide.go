@@ -21,7 +21,7 @@ const anchorTolerance = 3
 // finding on this PR.
 func terminalState(state string) bool {
 	switch state {
-	case db.PublishedStateDismissed, db.PublishedStateContested, db.PublishedStateExternal:
+	case db.PublishedStateDismissed, db.PublishedStateContested, db.PublishedStateExternal, db.PublishedStateSettled:
 		return true
 	}
 	return false
@@ -202,12 +202,25 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 
 	originalIDs := p.aliasToLedger(&r, rows)
 	rememberExternal(ctx, &r, rows, threads, p.Policy.NoteReconcile)
+	rememberSettled(&r, rows)
 	settledDropped, bodyCovered := 0, 0
 	if p.Policy.SettledAlias {
 		// Before withoutTerminal: the root the security exception mints
 		// there restates its settled row by construction.
 		r.Findings, settledDropped = withoutSettled(r, rows)
 	}
+	now := p.now()
+	// The threads other reviewers withdrew are recorded first so one they
+	// took back before this round settles it; before withoutTerminal too,
+	// since a point settled elsewhere is a new row the terminal pass never
+	// sees.
+	// The round's threads are refreshed first so a caller that built the
+	// round without them still records what other reviewers withdrew.
+	if p.Policy.ExternalReconcile {
+		p.refreshExternal(ctx, &r, rows)
+	}
+	p.recordExternalSettled(ctx, r, threads, now)
+	settledRows, crossPRSettled := p.withoutSettledElsewhere(&r, rows, now)
 	r.Findings = p.withoutTerminal(r, rows, originalIDs)
 	r.Findings = withoutGuardedReturns(r, rows, guard)
 	forgetShown(&r)
@@ -216,10 +229,8 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		row, ok := rows[id]
 		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
 	})
-	now := p.now()
 	var external externalPass
 	if p.Policy.ExternalReconcile {
-		p.refreshExternal(ctx, &r, rows)
 		external = p.matchExternal(ctx, &r, rows, now, threads)
 		r.GreptileOnly = withoutClaimedRoots(r.GreptileOnly, rows, external.rows)
 	}
@@ -275,8 +286,11 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		written[f.ID] = true
 	}
 	rep.InlinePosted, rep.Annotations, rep.ExternalMatched = len(sel.Inline), len(sel.Annotations), external.matched
-	rep.ExternalSettled, rep.SettledDropped, rep.BodyCovered = external.settled, settledDropped, bodyCovered
+	rep.ExternalSettled, rep.SettledDropped, rep.BodyCovered, rep.CrossPRSettled = external.settled, settledDropped, bodyCovered, crossPRSettled
 	for _, row := range external.rows {
+		writes = append(writes, pending{row: row})
+	}
+	for _, row := range settledRows {
 		writes = append(writes, pending{row: row})
 	}
 	lastPublished := ""
@@ -636,8 +650,12 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 		if from := originalIDs[f.ID]; from != "" && from != f.ID {
 			log.Printf("[PUBLISH] %s/%s#%d: finding %s aliased to %s row %s, dropped", r.Owner, r.Repo, r.Number, from, row.State, f.ID)
 		}
+		// A settled row is the cross-PR memory's; a critical finding is
+		// never settled by it, at the match or afterwards, whatever other
+		// rows share the point.
+		settledCritical := row.State == db.PublishedStateSettled && f.Severity == "critical"
 		others, keyed := rowsOnPoint(rows, row, f)
-		if len(others) > 0 {
+		if len(others) > 0 && !settledCritical {
 			if successor := liveSuccessor(others); successor != nil && !carried[successor.Fingerprint] {
 				carried[successor.Fingerprint] = true
 				f.ID = successor.Fingerprint
@@ -645,10 +663,14 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 			}
 			continue
 		}
-		if !keyed || !securityException(r, row, f) {
+		if !settledCritical && (!keyed || !securityException(r, row, f)) {
 			continue
 		}
-		f.Comment = fmt.Sprintf("Raised again: `%s` changed at %s after this point was settled. %s", f.File, shortSHA(r.HeadSHA), f.Comment)
+		if settledCritical {
+			f.Comment = fmt.Sprintf("Raised again at critical after this point was settled earlier. %s", f.Comment)
+		} else {
+			f.Comment = fmt.Sprintf("Raised again: `%s` changed at %s after this point was settled. %s", f.File, shortSHA(r.HeadSHA), f.Comment)
+		}
 		fresh := originalIDs[f.ID]
 		if fresh == "" || fresh == f.ID {
 			// The wording and line did not move, so the marker is minted from
@@ -656,7 +678,7 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 			fresh = payload.Fingerprint(f.File, f.Line, f.Comment)
 		}
 		f.ID = fresh
-		if row.Subjects != "" {
+		if row.Subjects != "" && f.FindingContract != nil {
 			// The fresh root is keyed to the settled row so rowsOnPoint finds
 			// it whatever this wording's own subjects or file are.
 			c := *f.FindingContract

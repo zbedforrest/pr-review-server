@@ -98,6 +98,12 @@ type Policy struct {
 	// text rule held far more notes the body merely described than notes it
 	// answered, so it ships off.
 	BodyCheck bool
+	// CrossPRSettled drops a new finding that raises again a point the PR
+	// author settled on an earlier pull request of the repo within thirty
+	// days (PUBLISH_CROSS_PR_SETTLED, on unless set to false): a settled row
+	// with no root, one folded summary line naming the earlier thread. It
+	// needs a Ledger that implements SettledPointStore.
+	CrossPRSettled bool
 	// NoteSentenceMatch scores a finding against another reviewer's root by
 	// the sentence the summary shows for it as well as by its headline,
 	// impact and whole text (PUBLISH_NOTE_SENTENCE_MATCH, on unless set to
@@ -162,6 +168,14 @@ const NoteSentenceMatchEnv = "PUBLISH_NOTE_SENTENCE_MATCH"
 // sentence match on. The poller resolves it once at start-up.
 func NoteSentenceMatchFromEnv() bool { return !envOff(NoteSentenceMatchEnv) }
 
+// CrossPRSettledEnv is the kill switch for the cross-PR settled memory:
+// "false", "0", "off" and "no" turn it off; anything else keeps it on.
+const CrossPRSettledEnv = "PUBLISH_CROSS_PR_SETTLED"
+
+// CrossPRSettledFromEnv reports whether the environment left the cross-PR
+// settled memory on. The poller resolves it once at start-up.
+func CrossPRSettledFromEnv() bool { return !envOff(CrossPRSettledEnv) }
+
 // BodyCheckEnv turns the pull request body check on: "true", "1", "on" and
 // "yes" enable it; anything else leaves it off.
 const BodyCheckEnv = "PUBLISH_BODY_CHECK"
@@ -187,11 +201,11 @@ func envOff(name string) bool {
 // DefaultPolicy is the shipped posting policy: three inline comments per
 // round and six per PR, medium severity and above, unverified first-pass
 // claims folded, the ledger decision table, thread resolution,
-// cross-reviewer reconciliation, both claim holds, the settled-point alias
-// and note reconciliation on.
+// cross-reviewer reconciliation, both claim holds, the settled-point alias,
+// note reconciliation and the cross-PR settled memory on.
 func DefaultPolicy() Policy {
 	return Policy{InlineCap: DefaultInlineCap, InlinePRCap: DefaultInlinePRCap, InlineMinSeverity: DefaultInlineMinSeverity, ShowUnverified: true, ResolveThreads: true, ExternalReconcile: true, PriorIDAlias: true,
-		LibraryClaimHold: true, RegressionEvidence: true, SettledAlias: true, NoteReconcile: true, NoteSentenceMatch: true}
+		LibraryClaimHold: true, RegressionEvidence: true, SettledAlias: true, NoteReconcile: true, NoteSentenceMatch: true, CrossPRSettled: true}
 }
 
 // withDefaults fills unset fields only. A zero round cap is a real setting

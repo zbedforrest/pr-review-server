@@ -119,6 +119,8 @@ type prDump struct {
 
 	Owner string `json:"-"`
 	Repo  string `json:"-"`
+	// Path is the file the dump was loaded from.
+	Path string `json:"-"`
 }
 
 var pullURLRe = regexp.MustCompile(`github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
@@ -136,7 +138,7 @@ func loadDump(path string) (*prDump, error) {
 	if m == nil {
 		return nil, fmt.Errorf("%s: no pull request url", filepath.Base(path))
 	}
-	d.Owner, d.Repo = m[1], m[2]
+	d.Owner, d.Repo, d.Path = m[1], m[2], path
 	if d.Number == 0 {
 		d.Number, _ = strconv.Atoi(m[3])
 	}

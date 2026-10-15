@@ -53,6 +53,7 @@ type ReviewComment struct {
 	OriginalLine      int
 	OriginalStartLine int
 	InReplyToID       int64
+	CreatedAt         time.Time
 }
 
 // ReviewCommentLister is the optional slice of GitHub that lists the PR's
@@ -119,6 +120,10 @@ type Report struct {
 	ExternalSettled int
 	SettledDropped  int
 	BodyCovered     int
+	// CrossPRSettled counts the findings dropped this round because the
+	// author settled their point on an earlier pull request of the repo,
+	// or in another reviewer's thread on this one.
+	CrossPRSettled int
 }
 
 const summaryFingerprint = "summary"
@@ -447,12 +452,16 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 		threads = newThreadIndex(p.GH, p.Policy, r.Owner, r.Repo, r.Number)
 	}
 	rememberExternal(ctx, &r, rows, threads, p.Policy.NoteReconcile)
+	rememberSettled(&r, rows)
 	if p.Policy.NoteReconcile && p.Policy.ExternalReconcile {
 		r.Findings = withoutSettledNotes(ctx, r, rows, threads, p.Policy)
 	}
 	if p.Policy.SettledAlias {
 		r.Findings, _ = withoutSettled(r, rows)
 	}
+	// A refresh writes no row; the match only keeps the finding out and
+	// names the earlier thread until the next round records it.
+	p.withoutSettledElsewhere(&r, rows, p.now())
 	if p.Policy.BodyCheck {
 		r.Findings, _ = withoutBodyCovered(r, rows)
 	}

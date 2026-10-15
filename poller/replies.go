@@ -348,11 +348,13 @@ func (p *Poller) scanAuthorReplies(ctx context.Context) {
 				task()
 			}()
 		},
-		ClaimLease:     replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
-		Holder:         p.holderID,
-		ResolveThreads: !p.threadsOff,
-		Legacy:         !p.cfg.ReplyPolicyV2,
-		NoVerdicts:     !p.cfg.ReplyVerdictFastPath,
+		ClaimLease:        replyClaimLease(time.Duration(p.cfg.ReplyWallClockSec) * time.Second),
+		Holder:            p.holderID,
+		ResolveThreads:    !p.threadsOff,
+		Legacy:            !p.cfg.ReplyPolicyV2,
+		CrossPRSettled:    !p.crossPRSettledOff,
+		ExternalReconcile: !p.externalOff,
+		NoVerdicts:        !p.cfg.ReplyVerdictFastPath,
 		Live: func() (string, func(string) bool, error) {
 			liveMode, err := p.db.GetSetting(settingPublishReplyMode)
 			if err != nil {
@@ -496,7 +498,7 @@ func (a ghReplyAdapter) ListThread(ctx context.Context, owner, repo string, numb
 	for _, c := range comments {
 		out = append(out, publisher.ThreadComment{
 			ID: c.ID, InReplyToID: c.InReplyToID, ReviewID: c.ReviewID, AuthorID: c.AuthorID, Author: c.Author, Body: c.Body, CreatedAt: c.CreatedAt,
-			ThumbsDown: c.ThumbsDown,
+			Path: c.Path, Line: c.Line, OriginalLine: c.OriginalLine, ThumbsDown: c.ThumbsDown,
 		})
 	}
 	return out, nil

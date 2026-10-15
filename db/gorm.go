@@ -120,6 +120,7 @@ func (g *GormDB) AutoMigrate() error {
 		&FindingOutcomeModel{},
 		&PublishedFindingModel{},
 		&PublishedReplyModel{},
+		&SettledPointModel{},
 		&ReviewRunModel{},
 		&ReviewStageAttemptModel{},
 		&MentionTriggerModel{},
@@ -199,6 +200,8 @@ var publishedFindingColumns = []struct {
 	{"external_comment_id", "ExternalCommentID", "bigint NOT NULL DEFAULT 0"},
 	{"line", "Line", "integer NOT NULL DEFAULT 0"},
 	{"merge_base", "MergeBase", "varchar(40) NOT NULL DEFAULT ''"},
+	{"settled_pr_number", "SettledPRNumber", "integer NOT NULL DEFAULT 0"},
+	{"settled_comment_id", "SettledCommentID", "bigint NOT NULL DEFAULT 0"},
 }
 
 var greptileStatusColumns = []struct {
@@ -232,6 +235,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&PublishedReplyModel{}) {
 		if err := g.db.Migrator().CreateTable(&PublishedReplyModel{}); err != nil {
 			return fmt.Errorf("create published_reply_models: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&SettledPointModel{}) {
+		if err := g.db.Migrator().CreateTable(&SettledPointModel{}); err != nil {
+			return fmt.Errorf("create settled_points: %w", err)
 		}
 	}
 	if !g.db.Migrator().HasTable(&ReviewRunModel{}) {

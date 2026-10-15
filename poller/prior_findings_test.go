@@ -113,9 +113,34 @@ func TestAgentConfigForExecution_PriorFindingsOnlyBehindTheFlag(t *testing.T) {
 func TestPriorFindingsFor_NothingWithoutALedger(t *testing.T) {
 	p := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
 	p.cfg.AgentPriorFindings = true
-	assert.Nil(t, p.priorFindingsFor("acme", "example", 1))
+	assert.Nil(t, p.priorFindingsFor("acme", "example", 1, "dev"))
 	unavailable := newTestPoller(NewMockGitHubClient(), NewMockDatabase())
 	unavailable.db = &ledgerUnavailable{NewMockDatabase()}
 	unavailable.cfg.AgentPriorFindings = true
-	assert.Nil(t, unavailable.priorFindingsFor("acme", "example", 1), "a ledger without replies does not qualify")
+	assert.Nil(t, unavailable.priorFindingsFor("acme", "example", 1, "dev"), "a ledger without replies does not qualify")
+}
+
+func TestSettledElsewherePriors_ListsTheAuthorsSettledPointsNewestFirst(t *testing.T) {
+	at := time.Date(2026, 10, 14, 15, 3, 0, 0, time.UTC)
+	points := []db.SettledPoint{
+		{PRNumber: 596, CommentID: 4001, File: "store/models.py", Headline: "Buyer lookup hardcodes purchaser_id", Reason: "intentional, the backfill is done", SettledAt: at},
+		{PRNumber: 668, CommentID: 5001, Fingerprint: "store/api/views.py:28:abc", File: "store/api/views.py", Headline: "Own thread on this PR", SettledAt: at.Add(time.Hour)},
+		{PRNumber: 668, CommentID: 5002, File: "store/api/views.py", Headline: "Older purchases cannot be deleted", Reason: "The backfill is done in prod.", SettledAt: at.Add(2 * time.Hour)},
+		{PRNumber: 500, CommentID: 3001, File: "web/app.tsx", Text: "The modal closes on escape. Second sentence.", Reason: "by design", SettledAt: at.Add(-24 * time.Hour)},
+	}
+	got := SettledElsewherePriors(points, 668)
+	require.Len(t, got, 3, "the point PRism posted on this PR is listed from the ledger instead")
+	assert.Equal(t, "settled:668:5002", got[0].ID)
+	assert.Equal(t, 668, got[0].SettledOnPR)
+	assert.Equal(t, "settled:596:4001", got[1].ID)
+	assert.Equal(t, db.PublishedStateSettled, got[1].State)
+	assert.Equal(t, "Buyer lookup hardcodes purchaser_id", got[1].Headline)
+	assert.Equal(t, "intentional, the backfill is done", got[1].Reason)
+	assert.Equal(t, "The modal closes on escape.", got[2].Headline, "a point without a headline is titled by its first sentence")
+
+	var many []db.SettledPoint
+	for i := 0; i < settledElsewhereMax+5; i++ {
+		many = append(many, db.SettledPoint{PRNumber: 100 + i, CommentID: int64(i + 1), File: "a.go", Headline: "x", SettledAt: at.Add(time.Duration(i) * time.Minute)})
+	}
+	assert.Len(t, SettledElsewherePriors(many, 1), settledElsewhereMax)
 }

@@ -182,16 +182,17 @@ type Poller struct {
 	// threadsOff PUBLISH_THREAD_RESOLUTION, externalOff
 	// PUBLISH_EXTERNAL_RECONCILE, settledAliasOff PUBLISH_SETTLED_ALIAS,
 	// noteReconcileOff PUBLISH_NOTE_RECONCILE, sentenceMatchOff
-	// PUBLISH_NOTE_SENTENCE_MATCH and bodyCheckOn
-	// PUBLISH_BODY_CHECK; a zero Poller keeps the shipped policy for all of
-	// them.
-	legacyLedger     bool
-	threadsOff       bool
-	externalOff      bool
-	settledAliasOff  bool
-	noteReconcileOff bool
-	sentenceMatchOff bool
-	bodyCheckOn      bool
+	// PUBLISH_NOTE_SENTENCE_MATCH, bodyCheckOn PUBLISH_BODY_CHECK and
+	// crossPRSettledOff PUBLISH_CROSS_PR_SETTLED; a zero Poller keeps the
+	// shipped policy for all of them.
+	legacyLedger      bool
+	threadsOff        bool
+	externalOff       bool
+	settledAliasOff   bool
+	noteReconcileOff  bool
+	sentenceMatchOff  bool
+	bodyCheckOn       bool
+	crossPRSettledOff bool
 	// agentSlots caps concurrent agent reviews per process. Each agent run
 	// holds ~1 GB of /tmp (clone) + agent memory; without a cap, two PRs
 	// triggered close together can exhaust the instance's memory budget.
@@ -415,25 +416,26 @@ func (p *Poller) runLeaderElection(ctx context.Context) {
 
 func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsClient *gcs.Client) *Poller {
 	p := &Poller{
-		cfg:              cfg,
-		db:               database,
-		ghClient:         ghClient,
-		ghClientConcrete: ghClient,
-		gcsClient:        gcsClient,
-		legacyLedger:     publisher.LegacyLedgerFromEnv(),
-		threadsOff:       !publisher.ThreadResolutionFromEnv(),
-		externalOff:      !publisher.ExternalReconcileFromEnv(),
-		settledAliasOff:  !publisher.SettledAliasFromEnv(),
-		noteReconcileOff: !publisher.NoteReconcileFromEnv(),
-		sentenceMatchOff: !publisher.NoteSentenceMatchFromEnv(),
-		bodyCheckOn:      publisher.BodyCheckFromEnv(),
-		reviewDir:        cfg.ReviewsDir,
-		triggerChan:      make(chan struct{}, 1), // Buffered to prevent blocking
-		activeReviews:    make(map[string]ProcessInfo),
-		agentSpawner:     service.DefaultSpawner{},
-		lookPath:         osexec.LookPath,
-		holderID:         newHolderID(),
-		generation:       time.Now().UnixNano(),
+		cfg:               cfg,
+		db:                database,
+		ghClient:          ghClient,
+		ghClientConcrete:  ghClient,
+		gcsClient:         gcsClient,
+		legacyLedger:      publisher.LegacyLedgerFromEnv(),
+		threadsOff:        !publisher.ThreadResolutionFromEnv(),
+		externalOff:       !publisher.ExternalReconcileFromEnv(),
+		settledAliasOff:   !publisher.SettledAliasFromEnv(),
+		noteReconcileOff:  !publisher.NoteReconcileFromEnv(),
+		sentenceMatchOff:  !publisher.NoteSentenceMatchFromEnv(),
+		bodyCheckOn:       publisher.BodyCheckFromEnv(),
+		crossPRSettledOff: !publisher.CrossPRSettledFromEnv(),
+		reviewDir:         cfg.ReviewsDir,
+		triggerChan:       make(chan struct{}, 1), // Buffered to prevent blocking
+		activeReviews:     make(map[string]ProcessInfo),
+		agentSpawner:      service.DefaultSpawner{},
+		lookPath:          osexec.LookPath,
+		holderID:          newHolderID(),
+		generation:        time.Now().UnixNano(),
 	}
 	if ghClient != nil && cfg.GitHubOrgName != "" {
 		p.teams = github.NewTeamResolver(cfg.GitHubOrgName, ghClient)

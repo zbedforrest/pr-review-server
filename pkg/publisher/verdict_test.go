@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -278,6 +279,12 @@ func TestReplyReactor_VerdictDismissesTheFindingWithAReactionAndNoModelReply(t *
 	if len(rep.Verdicts) != 1 || rep.Verdicts[0] != (SettledVerdict{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "a.go:1:abc", RootCommentID: 100, AuthorCommentID: 101, Kind: VerdictKindReply}) {
 		t.Fatalf("verdicts=%+v", rep.Verdicts)
 	}
+	if len(ledger.settled) != 1 {
+		t.Fatalf("the verdict is remembered for the author's later pull requests: %+v", ledger.settled)
+	}
+	if p := ledger.settled[0]; p.Author != "pilot" || p.Source != db.SettledSourceVerdict || p.PRNumber != 7 || p.CommentID != 100 || p.Fingerprint != "a.go:1:abc" || !strings.Contains(p.Reason, "intentional") || !strings.Contains(p.Text, "intentional") {
+		t.Fatalf("settled point = %+v", p)
+	}
 
 	gh.reactions = nil
 	rep, err = r.Run(context.Background())
@@ -502,5 +509,16 @@ func TestReplyReactor_VerdictResolvesTheThreadWhenEnabled(t *testing.T) {
 	r2.ResolveThreads = true
 	if _, err := r2.Run(context.Background()); err != nil || len(gh2.resolved) != 0 {
 		t.Fatalf("shadow settles nothing, so it resolves nothing: %v %v", gh2.resolved, err)
+	}
+}
+
+func TestReplyReactor_VerdictIsNotRememberedWithCrossPRSettledOff(t *testing.T) {
+	r, _, ledger, _ := verdictFixture(ReplyModeRespond, t)
+	r.CrossPRSettled = false
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || len(ledger.settled) != 0 {
+		t.Fatalf("the verdict still dismisses but records no point: states=%v settled=%+v", ledger.states, ledger.settled)
 	}
 }

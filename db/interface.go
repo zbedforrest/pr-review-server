@@ -192,6 +192,7 @@ const (
 	PublishedStateDismissed = "dismissed" // author verdict, PRism concession or withdrawal; terminal
 	PublishedStateContested = "contested" // PRism held or the author pushed back; terminal for reposting
 	PublishedStateExternal  = "external"  // matched another bot's or a human's root; terminal for roots
+	PublishedStateSettled   = "settled"   // restates a point the author settled on an earlier PR of the repo; terminal
 )
 
 // PublishedFinding records what PRism has posted to a PR on GitHub, one row
@@ -239,7 +240,56 @@ type PublishedFinding struct {
 	// review diffed against; a later review against another base is base
 	// drift, never evidence of a fix or a return.
 	MergeBase string
+	// SettledPRNumber and SettledCommentID, on a settled row, name the
+	// earlier pull request and thread where the author settled the point.
+	SettledPRNumber  int
+	SettledCommentID int64
 }
+
+// SettledPoint is a point a PR author settled: an intentional or won't-fix
+// verdict on a PRism thread, or another reviewer's thread the author
+// answered that the reviewer withdrew or that was resolved. A later PR of
+// the same author in the repo must not raise it again as new.
+type SettledPoint struct {
+	ID        int
+	RepoOwner string
+	RepoName  string
+	PRNumber  int
+	// CommentID is the root comment of the settled thread; zero when the
+	// point was settled without one.
+	CommentID int64
+	// Author is the PR author's login, lower-cased.
+	Author string
+	// Source says how it was settled: verdict, withdrawn, resolved or conceded.
+	Source      string
+	Fingerprint string
+	File        string
+	FindingKind string
+	// Subjects are the point's specific subject names (symbols, keys,
+	// endpoints), lower-cased and comma-joined.
+	Subjects string
+	Headline string
+	// Text is the thread's prose the match reads: the root, its impact
+	// sentence and the author's answer.
+	Text string
+	// Reason is the author's answer, for the agent prompt.
+	Reason    string
+	SettledAt time.Time
+}
+
+// Settled point sources.
+const (
+	SettledSourceVerdict   = "verdict"
+	SettledSourceWithdrawn = "withdrawn"
+	SettledSourceResolved  = "resolved"
+	SettledSourceConceded  = "conceded"
+	// SettledSourceDeferred marks a thread whose author later put the point
+	// off to follow-up work: it supersedes a stand and settles nothing.
+	SettledSourceDeferred = "deferred"
+	// SettledSourceSuperseded marks a thread whose author stood by the
+	// code and then reported a fix: the stand is gone and settles nothing.
+	SettledSourceSuperseded = "superseded"
+)
 
 // TelemetryEvent represents a single telemetry event for creation
 type TelemetryEvent struct {

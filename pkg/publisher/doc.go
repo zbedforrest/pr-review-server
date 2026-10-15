@@ -47,6 +47,35 @@
 // RefreshSummary runs the same pass, since the dropped finding has no row
 // to be dropped by.
 //
+// Points settled on other pull requests. With Policy.CrossPRSettled
+// (PUBLISH_CROSS_PR_SETTLED, on unless set to false) and a Ledger that
+// implements SettledPointStore, a publishable finding the ledger does not
+// know is dropped when it raises again a point the author settled within
+// thirty days: on another pull request of the repo, or in a thread another
+// reviewer withdrew on this one (for a finding above the inline bar; a
+// folded note against such a thread is the note reconcile's business). A
+// point is settled by the author's verdict on a PRism thread (the reply
+// path records it), or by another reviewer's thread the author answered
+// standing by the code (ThreadSettled: a verdict or pushback, never a fix
+// claim or a bare acknowledgement) that the reviewer then withdrew or that
+// the listing shows resolved; a cross-PR match also needs the contract
+// kinds to agree when both are known; the reply
+// scan and the round both record it, keyed by the thread. Dismissed rows
+// older than the table are read back through the reply ledger. With the
+// policy off nothing is matched or recorded; a row settled earlier stays
+// terminal and keeps its summary line. The match needs both a
+// specific subject of the finding that the point names (as a contract
+// subject, or as an identifier in the thread's prose) and the finding's
+// headline or impact sentence inside the thread's prose at the external
+// bar with four shared words (or its whole text with eight). The finding
+// becomes a settled row (Kind annotation, terminal, SettledPRNumber and
+// SettledCommentID naming the thread), posts nothing, counts nothing, and
+// the summary lists it under "settled earlier by the author" with a link
+// to that thread for as long as the review raises it. A CRITICAL finding
+// of any kind is exempt, at the match and afterwards: a wrong match would
+// hide it for thirty days, so a point that comes back at critical over its
+// settled row is posted as a fresh root that names the earlier settlement.
+//
 // Inputs per prior row: its state; whether a current finding matched it
 // (present); whether HeadSHA equals the row's LastSeenSHA; the change set
 // between LastSeenSHA and HeadSHA (Round.Changes, unknown when nil or when
@@ -71,8 +100,10 @@
 //	fixed / resolved (legacy)    yes      any        any           reopened: open, LastSeenSHA = head, one reply "Back at <sha7>" in its thread, thread unresolved, never a new root
 //	fixed (conceded, see below)  no       no         any           counted as fixed once; Rounds = this round
 //	fixed / resolved             no       any        any           untouched
-//	dismissed/contested/external yes      any        any           finding dropped: not posted, not counted, row untouched (exception below); an external row keeps its summary link
-//	dismissed/contested/external no       any        any           untouched
+//	dismissed/contested/         yes      any        any           finding dropped: not posted, not counted, row untouched (exception below); an external row keeps its summary link, a settled row its "settled earlier" line
+//	external/settled
+//	dismissed/contested/         no       any        any           untouched
+//	external/settled
 //	no row, another reviewer's   new      n/a        n/a           external row: no root, summary links to that root, one delta reply there (see Other reviewers)
 //	root on the point
 //	no row                       new      n/a        n/a           Select decides inline or summary; a shown finding gets an open row

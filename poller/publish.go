@@ -77,7 +77,7 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 		external = append(external, reconcile.ExternalComment{
 			ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path,
 			Line: c.Line, StartLine: c.StartLine, OriginalLine: c.OriginalLine, OriginalStartLine: c.OriginalStartLine,
-			InReplyToID: c.InReplyToID,
+			InReplyToID: c.InReplyToID, CreatedAt: c.CreatedAt,
 		})
 	}
 	// Re-reviews reword findings; restatements of comments PRism already posted
@@ -153,15 +153,16 @@ func BuildPublishRoundWith(pr github.PullRequest, pl payload.Payload, comments [
 	}
 
 	r := publisher.Round{
-		Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number, HeadSHA: pr.CommitSHA,
-		Findings:       pl.Findings,
-		SourceTags:     tags,
-		GreptileOnly:   greptileOnly,
-		External:       externalRoots,
-		Previous:       previous,
-		Commentable:    commentable,
-		InlineComments: inlineComments,
-		PriorComments:  priorComments,
+		Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number, HeadSHA: pr.CommitSHA, Author: pr.Author,
+		Findings:        pl.Findings,
+		SourceTags:      tags,
+		GreptileOnly:    greptileOnly,
+		External:        externalRoots,
+		ExternalThreads: reconcile.BuildExternalThreads(external, externalRoots, pr.Author),
+		Previous:        previous,
+		Commentable:     commentable,
+		InlineComments:  inlineComments,
+		PriorComments:   priorComments,
 
 		RequiredCheckViolated: pl.RequiredChecks != nil && pl.RequiredChecks.Violated > 0,
 		ProfileFooter:         profileFooter(pl.ReviewRun),
@@ -283,7 +284,7 @@ func (a ghPublishAdapter) ListReviewComments(ctx context.Context, owner, repo st
 	}
 	out := make([]publisher.ReviewComment, len(infos))
 	for i, c := range infos {
-		out[i] = publisher.ReviewComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, StartLine: c.StartLine, OriginalLine: c.OriginalLine, OriginalStartLine: c.OriginalStartLine, InReplyToID: c.InReplyToID}
+		out[i] = publisher.ReviewComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, StartLine: c.StartLine, OriginalLine: c.OriginalLine, OriginalStartLine: c.OriginalStartLine, InReplyToID: c.InReplyToID, CreatedAt: c.CreatedAt}
 	}
 	return out, nil
 }
@@ -309,6 +310,7 @@ func (p *Poller) publishPolicy() publisher.Policy {
 	pol.NoteReconcile = !p.noteReconcileOff
 	pol.NoteSentenceMatch = !p.sentenceMatchOff
 	pol.BodyCheck = p.bodyCheckOn
+	pol.CrossPRSettled = !p.crossPRSettledOff
 	if v, err := p.db.GetSetting(settingPublishInlineCap); err == nil {
 		if n, convErr := strconv.Atoi(strings.TrimSpace(v)); convErr == nil && n >= 0 {
 			pol.InlineCap = n

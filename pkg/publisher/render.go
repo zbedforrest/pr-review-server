@@ -41,12 +41,24 @@ type ExternalMatch struct {
 	CommentID int64
 }
 
+// SettledMatch is a finding of this round that raises again a point the
+// author settled on an earlier pull request: the summary names that
+// thread instead of PRism posting a root.
+type SettledMatch struct {
+	Finding   payload.Finding
+	PRNumber  int
+	CommentID int64
+}
+
 type Round struct {
 	Owner       string
 	Repo        string
 	Number      int
 	HeadSHA     string
 	RoundNumber int
+	// Author is the pull request author's login; the cross-PR settled
+	// memory is kept per repo and author.
+	Author string
 
 	Findings     []payload.Finding
 	SourceTags   map[string]string
@@ -57,6 +69,11 @@ type Round struct {
 	// this round, new or remembered, for the summary.
 	External        []reconcile.ExternalFinding
 	ExternalMatches []ExternalMatch
+	// ExternalThreads are the same roots with the author's replies and the
+	// reviewer's withdrawal, for the cross-PR settled memory; SettledMatches
+	// is what that memory matched this round, new or remembered.
+	ExternalThreads []reconcile.ExternalThread
+	SettledMatches  []SettledMatch
 	// Previous nil means Publish loads the ledger itself.
 	Previous []db.PublishedFinding
 	// Commentable is file -> RIGHT-side lines a review comment may target,
@@ -464,6 +481,7 @@ func RenderSummary(r Round, sel Selection) string {
 		b.WriteString("\n")
 	}
 	r.writeExternal(&b)
+	r.writeSettled(&b)
 	r.writeFolded(&b, "folded note", r.lowerSeverityNotes(), r.bullet)
 	r.writeFolded(&b, "unverified note", r.unverifiedNotes(), r.unverifiedBullet)
 	if r.DashboardURL != "" {
@@ -528,6 +546,61 @@ func (r Round) writeExternal(b *strings.Builder) {
 		fmt.Fprintf(b, "- %s %s, [`%s`](%s) · %s\n", severityLabel(f.Severity, r.BadgeBaseURL), text, where, link, m.Source.Label())
 	}
 	b.WriteString("</details>\n\n")
+}
+
+// writeSettled lists the findings that raise again a point the author
+// settled on an earlier pull request, one folded line each naming that
+// thread, so the point is visible without a new root.
+func (r Round) writeSettled(b *strings.Builder) {
+	if len(r.SettledMatches) == 0 {
+		return
+	}
+	matches := append([]SettledMatch(nil), r.SettledMatches...)
+	sort.SliceStable(matches, func(i, j int) bool {
+		a, c := matches[i].Finding, matches[j].Finding
+		if ra, rc := severityRank(a.Severity), severityRank(c.Severity); ra != rc {
+			return ra > rc
+		}
+		if a.File != c.File {
+			return a.File < c.File
+		}
+		return a.Line < c.Line
+	})
+	header := "settled by the author"
+	for _, m := range matches {
+		if m.PRNumber != r.Number {
+			header = "settled earlier by the author"
+			break
+		}
+	}
+	fmt.Fprintf(b, "<details><summary>%d point%s %s</summary>\n\n", len(matches), plural(len(matches)), header)
+	for _, m := range matches {
+		if b.Len() > SummaryMaxChars-600 {
+			b.WriteString("- ... more omitted\n")
+			break
+		}
+		f := m.Finding
+		where := f.File[strings.LastIndex(f.File, "/")+1:]
+		if f.Line > 0 {
+			where = fmt.Sprintf("%s:%d", where, f.Line)
+		}
+		text := r.clampBullet(summaryText(f, r.LegacyTitles))
+		label := "Settled earlier on"
+		if m.PRNumber == r.Number {
+			label = "Settled on"
+		}
+		fmt.Fprintf(b, "- %s %s, `%s` · %s [#%d](%s)\n", severityLabel(f.Severity, r.BadgeBaseURL), text, where, label, m.PRNumber, SettledThreadURL(r.Owner, r.Repo, m.PRNumber, m.CommentID))
+	}
+	b.WriteString("</details>\n\n")
+}
+
+// SettledThreadURL links the thread a point was settled in, or the pull
+// request when the point had no thread.
+func SettledThreadURL(owner, repo string, number int, commentID int64) string {
+	if commentID == 0 {
+		return fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, number)
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/pull/%d#discussion_r%d", owner, repo, number, commentID)
 }
 
 // FirstSentence returns the leading sentence of the comment's first line (a
