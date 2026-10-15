@@ -74,9 +74,9 @@ func BuildExternalThreads(cs []ExternalComment, roots []ExternalFinding, author 
 		login := strings.ToLower(c.Author)
 		switch {
 		case author != "" && login == author:
-			// A nod after the withdrawal (thanks) is not the stand the
-			// reviewer took back; a longer reply may still defer or fix it.
-			if t.Withdrawn && courtesyReply(c.Body) {
+			// A nod (thanks) after a reply, or after the withdrawal, is not
+			// the stand; a longer reply may still defer or fix the point.
+			if courtesyReply(c.Body) && (t.Withdrawn || len(t.AuthorReplies) > 0) {
 				continue
 			}
 			t.AuthorReplies = append(t.AuthorReplies, c.Body)

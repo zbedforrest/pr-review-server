@@ -167,15 +167,15 @@ func TestCrossPR_PointTheAuthorSettledOnAnEarlierPRIsNotRaisedAgain(t *testing.T
 }
 
 func TestCrossPR_TheSettledRowStaysSilentOnLaterRounds(t *testing.T) {
-	gh, ledger := newFakeSettledLedger(earlierVerdictPoint()), newFakeThreadGitHub()
-	publishLater(t, ledger, gh, laterPRRound(), testPolicy())
+	ledger, gh := newFakeSettledLedger(earlierVerdictPoint()), newFakeThreadGitHub()
+	publishLater(t, gh, ledger, laterPRRound(), testPolicy())
 	r2 := laterPRRound()
 	r2.HeadSHA = "0b0b0b0"
-	rep := publishLater(t, ledger, gh, r2, testPolicy())
-	if rep.InlinePosted != 0 || rep.CrossPRSettled != 0 || rep.StillOpen != 1 || len(ledger.reviews) != 1 {
+	rep := publishLater(t, gh, ledger, r2, testPolicy())
+	if rep.InlinePosted != 0 || rep.CrossPRSettled != 0 || rep.StillOpen != 1 || len(gh.reviews) != 1 {
 		t.Fatalf("the second round posts nothing new and counts the loop as still open: %+v", rep)
 	}
-	row := gh.get(db.PublishedKindAnnotation, laterDeleteFinding().ID)
+	row := ledger.get(db.PublishedKindAnnotation, laterDeleteFinding().ID)
 	if row == nil || row.State != db.PublishedStateSettled || row.SettledPRNumber != 596 {
 		t.Fatalf("the settled row is untouched: %+v", row)
 	}
@@ -317,15 +317,17 @@ func TestCrossPR_ALaterDeferralSupersedesTheStand(t *testing.T) {
 	}
 }
 
-func TestCrossPR_ACourtesyReplyAfterTheWithdrawalKeepsTheStand(t *testing.T) {
-	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger()
-	gh.extra = []ReviewThread{{NodeID: "E3001", RootCommentID: 3001}}
-	comments := greptileThread(true)
-	comments = append(comments, reconcile.ExternalComment{ID: 3004, Author: "dev-ana", Path: earlierFile, Line: 241, InReplyToID: 3001,
-		Body: "Thanks!", CreatedAt: comments[2].CreatedAt.Add(time.Minute)})
-	publishLater(t, gh, ledger, earlierPRRound(comments), testPolicy())
-	if len(ledger.recorded) != 1 || ledger.recorded[0].Source != db.SettledSourceWithdrawn {
-		t.Fatalf("the stand before the withdrawal is what counts: %+v", ledger.recorded)
+func TestCrossPR_ACourtesyReplyKeepsTheStand(t *testing.T) {
+	for name, at := range map[string]int{"after the withdrawal": 1, "before the withdrawal": -1} {
+		gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger()
+		gh.extra = []ReviewThread{{NodeID: "E3001", RootCommentID: 3001}}
+		comments := greptileThread(true)
+		comments = append(comments, reconcile.ExternalComment{ID: 3004, Author: "dev-ana", Path: earlierFile, Line: 241, InReplyToID: 3001,
+			Body: "Thanks!", CreatedAt: comments[2].CreatedAt.Add(time.Duration(at) * 10 * time.Second)})
+		publishLater(t, gh, ledger, earlierPRRound(comments), testPolicy())
+		if len(ledger.recorded) != 1 || ledger.recorded[0].Source != db.SettledSourceWithdrawn {
+			t.Fatalf("a nod %s is not the stand: %+v", name, ledger.recorded)
+		}
 	}
 }
 

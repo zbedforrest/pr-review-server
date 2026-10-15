@@ -41,12 +41,15 @@ func (p *Publisher) settledPoints(r Round, now time.Time) (elsewhere, here []db.
 		return nil, nil
 	}
 	for _, pt := range points {
+		// A point from another reviewer's thread (no fingerprint) is acted
+		// on only under the external reconcile, wherever it was settled.
+		if pt.Fingerprint == "" && !p.Policy.ExternalReconcile {
+			continue
+		}
 		switch {
 		case pt.PRNumber != r.Number:
 			elsewhere = append(elsewhere, pt)
-		case pt.Fingerprint == "" && p.Policy.ExternalReconcile:
-			// Other reviewers' threads on this PR are acted on only under
-			// the external reconcile.
+		case pt.Fingerprint == "":
 			here = append(here, pt)
 		}
 	}
