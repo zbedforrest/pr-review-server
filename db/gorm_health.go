@@ -1,6 +1,8 @@
 package db
 
 import (
+	"sort"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -235,6 +237,13 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 	}
 	m.Replies.UnlinkedRoots = len(unlinked)
 
+	var autoRuns []ReviewRunModel
+	if err := g.db.Where("trigger_source = ? AND status IN ? AND accepted_at >= ? AND accepted_at < ?", ReviewTriggerAutoReady, ReviewRunStatusesCountedAsRounds, start, end).
+		Select("repo_owner, repo_name, pr_number, accepted_at").Find(&autoRuns).Error; err != nil {
+		return m, err
+	}
+	m.AutoReview.RoundsPerPRDay = roundsPerPRDay(autoRuns)
+
 	rows = nil
 	if err := g.db.Model(&TelemetryEventModel{}).Where("created_at >= ? AND created_at < ? AND (action LIKE 'reply\\_%' ESCAPE '\\' OR action = 'agent_model_fallback' OR action IN ?)", start, end, health.TelemetryActions).
 		Select("action AS key, count(*) AS count").Group("action").Scan(&rows).Error; err != nil {
@@ -255,4 +264,41 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 	}
 	m.PRErrors = int(n)
 	return m, nil
+}
+
+// roundsPerPRDay counts admitted automatic runs per PR per UTC day, in a
+// stable order so a stored report reads the same twice.
+func roundsPerPRDay(runs []ReviewRunModel) []int {
+	type prDay struct {
+		owner, repo string
+		number      int
+		day         string
+	}
+	counts := map[prDay]int{}
+	for _, run := range runs {
+		key := prDay{strings.ToLower(run.RepoOwner), strings.ToLower(run.RepoName), run.PRNumber, run.AcceptedAt.UTC().Format("2006-01-02")}
+		counts[key]++
+	}
+	keys := make([]prDay, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.day != b.day {
+			return a.day < b.day
+		}
+		if a.owner != b.owner {
+			return a.owner < b.owner
+		}
+		if a.repo != b.repo {
+			return a.repo < b.repo
+		}
+		return a.number < b.number
+	})
+	out := make([]int, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, counts[k])
+	}
+	return out
 }

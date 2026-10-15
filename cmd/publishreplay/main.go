@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false] [--settled-alias=false] [--note-reconcile=false] [--body-check] [--note-sentence-match=false] [--note-problem-clause=false] [--cross-pr-settled=false] [--pairs pairs.md]
+//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false] [--settled-alias=false] [--note-reconcile=false] [--body-check] [--note-sentence-match=false] [--note-problem-clause=false] [--problem-clause-start=false] [--cross-pr-settled=false] [--pairs pairs.md]
 //
 // Dumps are the GitHub GraphQL exports (one PR per file). Sidecars are the
 // review findings JSON per round, fetched from PRISM_BASE_URL/reviews/ with
@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"pr-review-server/pkg/publisher"
+	"pr-review-server/poller"
 )
 
 func main() {
@@ -39,6 +40,7 @@ func main() {
 	inlineCap := flag.Int("inline-cap", publisher.DefaultInlineCap, "publisher inline cap per round")
 	inlinePRCap := flag.Int("inline-pr-cap", publisher.DefaultInlinePRCap, "publisher inline cap over the life of a PR (0 = none)")
 	replayUnchanged := flag.Bool("replay-unchanged-diff", false, "replay rounds whose push left the PR diff unchanged (AUTO_REVIEW_SKIP_UNCHANGED_DIFF=false)")
+	dailyRoundCap := flag.Int("daily-round-cap", 0, "automatic rounds admitted per PR per UTC day; later distinct-head rounds that day are skipped (auto_review_daily_round_cap, prod default "+strconv.Itoa(poller.DefaultAutoReviewDailyRoundCap)+"; 0 = replay every round). Days follow the review's submitted time, the poller's accepted time, so a round near midnight can land a day apart")
 	minSeverity := flag.String("inline-min-severity", publisher.DefaultInlineMinSeverity, "publisher inline minimum severity")
 	legacy := flag.Bool("legacy", false, "replay with the pre-ledger-memory publisher (PUBLISH_POLICY_V2=false) for a baseline")
 	textOnly := flag.Bool("alias-text-only", false, "count same-defect reposts by raw-text overlap alone, without the subject key")
@@ -60,11 +62,13 @@ func main() {
 	crossPRSettled := flag.Bool("cross-pr-settled", true, "drop a new finding that raises again a point the author settled on an earlier PR of the repo within thirty days (PUBLISH_CROSS_PR_SETTLED)")
 	pairsPath := flag.String("pairs", "", "write every cross-PR settled pair (replayed and observed) here as a markdown table")
 	noteProblemClause := flag.Bool("note-problem-clause", true, "cut a bullet to its problem clause rather than its context clause, never ending on a connective, and title a comment that quotes the PR by the sentence after it (PUBLISH_NOTE_PROBLEM_CLAUSE)")
+	problemClauseStart := flag.Bool("problem-clause-start", true, "start a cut bullet or title at its problem clause, capitalised and without the marker, never on the marker or a lowercase connective (PUBLISH_PROBLEM_CLAUSE_START)")
 	flag.Parse()
 	// The renderer reads its kill switches from the environment, as the
 	// discount gate does; the flags win over an inherited variable.
 	_ = os.Setenv(publisher.RenderHygieneEnv, strconv.FormatBool(*renderHygiene))
 	_ = os.Setenv(publisher.NoteProblemClauseEnv, strconv.FormatBool(*noteProblemClause))
+	_ = os.Setenv(publisher.ProblemClauseStartEnv, strconv.FormatBool(*problemClauseStart))
 	if *dumpsDir == "" || *sidecarsDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv]")
 		os.Exit(2)
@@ -95,6 +99,7 @@ func main() {
 	opts := Options{Dumps: dumps, Store: st, BotName: *bot, Logf: log.Printf, TextOnlyAlias: *textOnly, ReplayUnchangedDiff: *replayUnchanged,
 		Policy: replayPolicy(*inlineCap, *minSeverity, *showUnverified, *legacy)}
 	opts.Policy.InlinePRCap = *inlinePRCap
+	opts.DailyRoundCap = *dailyRoundCap
 	opts.Policy.RepublishSameCommit = !*sameCommitGuard
 	opts.Policy.LegacyTitles = *legacyTitles
 	opts.Policy.ExternalReconcile = *externalReconcile

@@ -21,7 +21,7 @@ import (
 // paths; the review-run ledger stays the source of truth for execution.
 const (
 	settingAutoReviewReadyPRs = "auto_review_ready_prs"
-	autoReviewTriggerSource   = "auto_ready"
+	autoReviewTriggerSource   = db.ReviewTriggerAutoReady
 	// autoReviewPublicationGrace is how long after a run completes its
 	// publication outcome may still be unrecorded before settlement reconciles
 	// the intent against the publication ledger instead.
@@ -181,6 +181,9 @@ func (p *Poller) HandleWebhookDelivery(ctx context.Context, d db.WebhookDelivery
 	} else if n > 0 {
 		log.Printf("[AUTO-REVIEW] delivery=%s %s: superseded %d queued intent(s) for older heads", d.DeliveryID, key, n)
 	}
+	if d.Action != autoReviewTriggerSync {
+		p.requeueCappedHead(d.RepoOwner, d.RepoName, d.PRNumber, d.HeadSHA, d.Action, d.DeliveryID, time.Now().UTC(), false)
+	}
 	intent := db.AutoReviewIntent{
 		RepoOwner: d.RepoOwner, RepoName: d.RepoName, PRNumber: d.PRNumber, HeadSHA: d.HeadSHA,
 		Trigger: d.Action, DeliveryID: d.DeliveryID,
@@ -249,6 +252,9 @@ func (p *Poller) admitAutoReviewIntent(ctx context.Context, intent db.AutoReview
 		return false
 	}
 	if p.skipUnchangedDiff(intent, pr, patchID) {
+		return false
+	}
+	if p.skipDailyRoundCap(intent, pr, time.Now().UTC()) {
 		return false
 	}
 	profile := p.autoReviewProfileFor(intent.Trigger, pr.Owner, pr.Repo, pr.Author)
@@ -342,7 +348,7 @@ func (p *Poller) skipUnchangedDiff(intent db.AutoReviewIntent, pr github.PullReq
 	}
 	var last *db.AutoReviewIntent
 	for i := range reviewed {
-		if reviewed[i].ID != intent.ID && (last == nil || reviewed[i].ID > last.ID) {
+		if reviewed[i].ID != intent.ID && !settledWithoutReview(reviewed[i]) && (last == nil || reviewed[i].ID > last.ID) {
 			last = &reviewed[i]
 		}
 	}
@@ -361,6 +367,12 @@ func (p *Poller) skipUnchangedDiff(intent db.AutoReviewIntent, pr github.PullReq
 	log.Printf("[AUTO-REVIEW] %s intent=%d: %s, no review", key, intent.ID, reason)
 	p.recordHygieneEvent(pr, health.ActionReviewSkippedUnchanged, "since="+shortSHA(last.HeadSHA)+" trigger="+intent.Trigger)
 	return true
+}
+
+// settledWithoutReview reports a done intent whose head was never reviewed,
+// so it cannot anchor the unchanged-diff comparison.
+func settledWithoutReview(intent db.AutoReviewIntent) bool {
+	return intent.Publication == publicationSkippedDailyCap || strings.HasPrefix(intent.Publication, publicationSkippedUnchangedPrefix)
 }
 
 // pullRequestDiff reads the PR's unified diff through the injected reader or
@@ -394,7 +406,8 @@ func (p *Poller) moveAutoReviewIntent(intent db.AutoReviewIntent, from, to, runI
 // head whose review already reached GitHub (by any run) is recorded as done,
 // so switching the feature on does not re-review every open PR; a head whose
 // intent was superseded (a draft round trip the webhook missed) is queued
-// again; a failed head is not retried until a new push. existing is the PR's
+// again, as is a head the daily round cap turned away once the UTC day has
+// rolled over; a failed head is not retried until a new push. existing is the PR's
 // non-superseded intents from this cycle's index.
 func (p *Poller) ensureFallbackAutoReviewIntent(pr db.PR, head string, existing []db.AutoReviewIntent) {
 	key := autoReviewKey(pr.RepoOwner, pr.RepoName, pr.PRNumber, head)
@@ -417,6 +430,7 @@ func (p *Poller) ensureFallbackAutoReviewIntent(pr db.PR, head string, existing 
 		}
 	}
 	if current != nil && current.Status != db.AutoReviewIntentQueued {
+		p.requeueCappedHead(pr.RepoOwner, pr.RepoName, pr.PRNumber, head, db.AutoReviewTriggerPollFallback, "", time.Now().UTC(), true)
 		return
 	}
 	published, err := p.headPublished(pr.RepoOwner, pr.RepoName, pr.PRNumber, head)

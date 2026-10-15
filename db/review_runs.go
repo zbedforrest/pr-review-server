@@ -20,7 +20,26 @@ const (
 	ReviewRunStatusTimedOut  = "timed_out"
 	ReviewRunStatusCancelled = "cancelled"
 	MaxReviewRunListLimit    = 500
+	// ReviewTriggerAutoReady is the trigger source of automatic reviews
+	// (webhook and poll fallback); the daily round cap counts these only.
+	ReviewTriggerAutoReady = "auto_ready"
 )
+
+// ReviewRunStatusesCountedAsRounds are the statuses of a run that ran or is
+// running; a run that never started, failed or timed out posted nothing and
+// never counts against the daily round cap.
+var ReviewRunStatusesCountedAsRounds = []string{ReviewRunStatusRunning, ReviewRunStatusCompleted}
+
+// ReviewRunCountsAsRound reports whether a run of this status counts as an
+// automatic round.
+func ReviewRunCountsAsRound(status string) bool {
+	for _, s := range ReviewRunStatusesCountedAsRounds {
+		if s == status {
+			return true
+		}
+	}
+	return false
+}
 
 // ReviewRun is the durable identity, immutable configuration, and lifecycle
 // record for one review execution. Target fields are intentionally duplicated

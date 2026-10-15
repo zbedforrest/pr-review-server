@@ -14,6 +14,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/github"
 	"pr-review-server/internal/replaykit"
+	"pr-review-server/pkg/health"
 	"pr-review-server/pkg/publisher"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/reconcile"
@@ -76,6 +77,7 @@ type recorder struct {
 	leakedFindingIDs  int
 	sourceFooters     int
 	praiseShown       int
+	leadingMarkers    int
 	zeroStatusLines   int
 	noopSummaryEdits  int
 	lastSummaryBodies map[int64]string
@@ -153,6 +155,9 @@ func (r *recorder) CreateReview(_ context.Context, _, _ string, _ int, _, _ stri
 		if praiseTitle(c.Body) {
 			r.praiseShown++
 		}
+		if leadingMarkerTitle(c.Body) {
+			r.leadingMarkers++
+		}
 	}
 	return r.nextReview, ids, nil
 }
@@ -195,6 +200,7 @@ func (r *recorder) noteSummary(id int64, body string) {
 	r.lastSummaryBodies[id] = body
 	r.nilImpactBullets += nilImpactBullets(body)
 	r.praiseShown += praiseBullets(body)
+	r.leadingMarkers += leadingMarkerBullets(body)
 	if leaksFindingID(body) {
 		r.leakedFindingIDs++
 	}
@@ -236,6 +242,7 @@ type PRResult struct {
 	Rounds                     int
 	RoundsAfterMergeCommit     int
 	RoundsSkippedUnchangedDiff int
+	RoundsSkippedDailyCap      int
 	RoundsMissingSidecar       int
 	SameCommitRounds           int
 	SameCommitSkipped          int
@@ -274,6 +281,7 @@ type PRResult struct {
 	SourceFooters         int
 	ZeroStatusLines       int
 	NoopSummaryEdits      int
+	LeadingMarkers        int
 	// External duplicates: roots posted on a point another reviewer's
 	// earlier root already carried, split by that thread's state; Matched
 	// and Replies are what the publisher did instead of posting.
@@ -305,6 +313,12 @@ type PRResult struct {
 	CrossPRResettled         int
 	CrossPRSettled           int
 	ObservedCrossPRResettled int
+
+	// dailyRounds is one count per UTC day the PR had rounds on: the
+	// distinct-head rounds the poller would admit (observed minus the
+	// unchanged-diff and daily-cap skips); observedDailyRounds the same
+	// before either skip.
+	dailyRounds, observedDailyRounds []int
 }
 
 // CrossPRPair is one new root (or a finding the publisher dropped) on a
@@ -349,6 +363,11 @@ type Metrics struct {
 	// poller would not run and the replay does not replay.
 	RoundsAfterMergeCommit     int `json:"rounds_after_merge_commit"`
 	RoundsSkippedUnchangedDiff int `json:"rounds_skipped_unchanged_diff"`
+	// RoundsSkippedDailyCap counts the rounds the daily round cap would
+	// have turned away; RoundsPerPRPerDay is the admitted rounds per PR per
+	// UTC day after the cap, judged against the cap in force.
+	RoundsSkippedDailyCap int                    `json:"rounds_skipped_daily_cap"`
+	RoundsPerPRPerDay     health.DailyRoundStats `json:"rounds_per_pr_per_day"`
 
 	RootsPosted            int     `json:"roots_posted"`
 	SameMarkerReposts      int     `json:"same_marker_reposts"`
@@ -394,6 +413,10 @@ type Metrics struct {
 	SourceFooters         int `json:"source_footers"`
 	ZeroStatusLines       int `json:"zero_status_lines_over_notes"`
 	NoopSummaryEdits      int `json:"noop_summary_edits"`
+	// LeadingMarkers counts the inline titles and summary bullets that
+	// open with the clamp marker or a lowercase connective (2026-10-14
+	// annoyance audit).
+	LeadingMarkers int `json:"leading_markers"`
 
 	// ExternalDuplicatesNear counts replayed roots posted while an earlier
 	// root by another reviewer sat on the same point (same file, line within
@@ -454,15 +477,18 @@ type Metrics struct {
 }
 
 type ObservedMetrics struct {
-	RoundsPerPRP50            float64 `json:"rounds_per_pr_p50"`
-	Roots                     int     `json:"roots"`
-	SameMarkerReposts         int     `json:"same_marker_reposts"`
-	SameDefectReposts         int     `json:"same_defect_reposts"`
-	ThreadsResolved           int     `json:"threads_resolved"`
-	ResolvedShare             float64 `json:"resolved_share"`
-	ExternalDuplicatesNear    int     `json:"external_duplicates_near"`
-	ExternalDuplicatesOpen    int     `json:"external_duplicates_open"`
-	PRsWithExternalDuplicates int     `json:"prs_with_external_duplicates"`
+	RoundsPerPRP50 float64 `json:"rounds_per_pr_p50"`
+	// RoundsPerPRPerDay is the distinct-head rounds per PR per UTC day as
+	// they happened, judged against the default daily cap.
+	RoundsPerPRPerDay         health.DailyRoundStats `json:"rounds_per_pr_per_day"`
+	Roots                     int                    `json:"roots"`
+	SameMarkerReposts         int                    `json:"same_marker_reposts"`
+	SameDefectReposts         int                    `json:"same_defect_reposts"`
+	ThreadsResolved           int                    `json:"threads_resolved"`
+	ResolvedShare             float64                `json:"resolved_share"`
+	ExternalDuplicatesNear    int                    `json:"external_duplicates_near"`
+	ExternalDuplicatesOpen    int                    `json:"external_duplicates_open"`
+	PRsWithExternalDuplicates int                    `json:"prs_with_external_duplicates"`
 	// The sticky summary's bullets as GitHub holds them now, and the
 	// historical roots judged by the settled-point rule against the earlier
 	// roots of other files, with PRism's own replies in those threads as
@@ -489,6 +515,9 @@ type Options struct {
 	// ReplayUnchangedDiff replays a round whose push left the PR diff
 	// unchanged, as the poller did before the unchanged-diff skip.
 	ReplayUnchangedDiff bool
+	// DailyRoundCap skips a PR's rounds past this many on one UTC day, as
+	// auto_review_daily_round_cap does; 0 replays them all.
+	DailyRoundCap int
 }
 
 type Result struct {
@@ -521,13 +550,13 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		return Result{}, fmt.Errorf("open ledger: %w", err)
 	}
 	var res Result
-	var roundsPerPR, observedRoundsPerPR, commentsPerPush []int
+	var roundsPerPR, observedRoundsPerPR, commentsPerPush, dailyRounds, observedDailyRounds []int
 	rootsResolved := 0
 	res.Metrics.PRs = len(o.Dumps)
 	res.Metrics.SettledPointsSeeded = seedSettledPoints(ledger, o.Dumps, o.bots, o.Store, logf)
 	for _, d := range o.Dumps {
 		bots := o.bots(d)
-		pr, pushes, pairs, err := replayPR(ctx, d, bots, o.Store, ledger, o.Policy, o.TextOnlyAlias, !o.ReplayUnchangedDiff, logf)
+		pr, pushes, pairs, err := replayPR(ctx, d, bots, o.Store, ledger, o.Policy, o.TextOnlyAlias, !o.ReplayUnchangedDiff, o.DailyRoundCap, logf)
 		if err != nil {
 			return Result{}, fmt.Errorf("%s: %w", d.key(), err)
 		}
@@ -537,17 +566,20 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		if pr.Rounds > 0 {
 			res.Metrics.PRsWithRounds++
 			observedRoundsPerPR = append(observedRoundsPerPR, pr.Rounds)
-			roundsPerPR = append(roundsPerPR, pr.Rounds-pr.RoundsSkippedUnchangedDiff)
+			roundsPerPR = append(roundsPerPR, pr.Rounds-pr.RoundsSkippedUnchangedDiff-pr.RoundsSkippedDailyCap)
 		}
+		dailyRounds = append(dailyRounds, pr.dailyRounds...)
+		observedDailyRounds = append(observedDailyRounds, pr.observedDailyRounds...)
 		if cap := o.Policy.InlinePRCap; cap > 0 && pr.RootsPosted >= cap {
 			res.Metrics.PRsAtInlinePRCap++
 		}
 		commentsPerPush = append(commentsPerPush, pushes...)
 		m := &res.Metrics
 		m.Rounds += pr.Rounds
-		m.RoundsReplayed += pr.Rounds - pr.RoundsMissingSidecar - pr.RoundsSkippedUnchangedDiff
+		m.RoundsReplayed += pr.Rounds - pr.RoundsMissingSidecar - pr.RoundsSkippedUnchangedDiff - pr.RoundsSkippedDailyCap
 		m.RoundsMissingSidecar += pr.RoundsMissingSidecar
 		m.RoundsSkippedUnchangedDiff += pr.RoundsSkippedUnchangedDiff
+		m.RoundsSkippedDailyCap += pr.RoundsSkippedDailyCap
 		m.RoundsAfterMergeCommit += pr.RoundsAfterMergeCommit
 		m.SameCommitRounds += pr.SameCommitRounds
 		m.SameCommitSkipped += pr.SameCommitSkipped
@@ -566,6 +598,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.SourceFooters += pr.SourceFooters
 		m.ZeroStatusLines += pr.ZeroStatusLines
 		m.NoopSummaryEdits += pr.NoopSummaryEdits
+		m.LeadingMarkers += pr.LeadingMarkers
 		m.RootsPosted += pr.RootsPosted
 		m.SameMarkerReposts += pr.SameMarkerReposts
 		m.SameDefectReposts += pr.SameDefectReposts
@@ -612,6 +645,8 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	m.CommentsPerPushMean = mean(commentsPerPush)
 	m.RoundsPerPRP50 = p50(roundsPerPR)
 	m.Observed.RoundsPerPRP50 = p50(observedRoundsPerPR)
+	m.RoundsPerPRPerDay = health.SummariseDailyRounds(dailyRounds, o.DailyRoundCap)
+	m.Observed.RoundsPerPRPerDay = health.SummariseDailyRounds(observedDailyRounds, poller.DefaultAutoReviewDailyRoundCap)
 	m.PrismResolvedNote = "roots whose thread the replayed publisher left resolved, over roots posted"
 	if m.RootsPosted > 0 {
 		m.PrismResolvedShare = round3(float64(rootsResolved) / float64(m.RootsPosted))
@@ -690,7 +725,7 @@ func crossPRPair(d *prDump, round int, f payload.Finding, pt db.SettledPoint, ou
 		SettledPR: pt.PRNumber, SettledSource: pt.Source, SettledAt: pt.SettledAt.Format(time.RFC3339), SettledFile: pt.File, Outcome: outcome}
 }
 
-func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, policy publisher.Policy, textOnly, skipUnchanged bool, logf func(string, ...any)) (PRResult, []int, []CrossPRPair, error) {
+func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, policy publisher.Policy, textOnly, skipUnchanged bool, dailyCap int, logf func(string, ...any)) (PRResult, []int, []CrossPRPair, error) {
 	pr := PRResult{PR: d.key()}
 	var pairs []CrossPRPair
 	rec := newRecorder()
@@ -699,8 +734,10 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 	pr.Rounds = len(rounds)
 	roots := d.externalRoots(bots)
 	var pushes []int
+	days := newDailyRounds()
 	for i, rd := range rounds {
-		if i > 0 && rounds[i-1].SHA == rd.SHA {
+		sameCommit := i > 0 && rounds[i-1].SHA == rd.SHA
+		if sameCommit {
 			pr.SameCommitRounds++
 		} else if i > 0 {
 			push := pushSince(d, s, rounds[i-1].SHA, rd.SHA, logf)
@@ -708,10 +745,22 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 				pr.RoundsAfterMergeCommit++
 			}
 			if skipUnchanged && push.unchangedDiff() {
+				days.observe(rd.At)
 				pr.RoundsSkippedUnchangedDiff++
 				logf("%s: round %d skipped, the push %s..%s left the diff unchanged", d.key(), i+1, short(rounds[i-1].SHA), rd.SHA7)
 				continue
 			}
+		}
+		// A same-commit round is a manual re-run of a reviewed head, which
+		// the cap exempts; every other round is an automatic admission.
+		if !sameCommit {
+			days.observe(rd.At)
+			if dailyCap > 0 && days.admittedOn(rd.At) >= dailyCap {
+				pr.RoundsSkippedDailyCap++
+				logf("%s: round %d skipped, the PR had its %d rounds for %s", d.key(), i+1, dailyCap, rd.At.UTC().Format("2006-01-02"))
+				continue
+			}
+			days.admit(rd.At)
 		}
 		raw, ok, err := s.sidecar(d.Owner, d.Repo, d.Number, rd.SHA7)
 		if err != nil {
@@ -834,10 +883,50 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 		}
 		countResolutions(d, s, rd.SHA, previous, after, &pr, logf)
 	}
+	pr.dailyRounds, pr.observedDailyRounds = days.counts()
 	pr.NilImpactBullets, pr.BareLabelTitles = rec.nilImpactBullets, rec.bareLabelTitles
 	pr.PraiseShown, pr.ConfidenceLabels, pr.LeakedFindingIDs = rec.praiseShown, rec.confidenceLabels, rec.leakedFindingIDs
 	pr.SourceFooters, pr.ZeroStatusLines, pr.NoopSummaryEdits = rec.sourceFooters, rec.zeroStatusLines, rec.noopSummaryEdits
+	pr.LeadingMarkers = rec.leadingMarkers
 	return pr, pushes, pairs, nil
+}
+
+// dailyRounds tallies a PR's rounds per UTC day, as they happened and as the
+// poller would admit them.
+type dailyRounds struct {
+	observed, admitted map[string]int
+	order              []string
+}
+
+func newDailyRounds() *dailyRounds {
+	return &dailyRounds{observed: map[string]int{}, admitted: map[string]int{}}
+}
+
+func (d *dailyRounds) day(at time.Time) string {
+	key := at.UTC().Format("2006-01-02")
+	if _, seen := d.observed[key]; !seen {
+		d.order = append(d.order, key)
+		d.observed[key] = 0
+	}
+	return key
+}
+
+func (d *dailyRounds) observe(at time.Time) { d.observed[d.day(at)]++ }
+func (d *dailyRounds) admit(at time.Time)   { d.admitted[d.day(at)]++ }
+
+func (d *dailyRounds) admittedOn(at time.Time) int { return d.admitted[d.day(at)] }
+
+// counts returns the admitted and observed rounds per day, in first-seen
+// order; a day whose every round was skipped still appears in observed and
+// is absent from admitted.
+func (d *dailyRounds) counts() (admitted, observed []int) {
+	for _, key := range d.order {
+		observed = append(observed, d.observed[key])
+		if n := d.admitted[key]; n > 0 {
+			admitted = append(admitted, n)
+		}
+	}
+	return admitted, observed
 }
 
 func countHeld(rep publisher.Report, pr *PRResult) {
@@ -1363,8 +1452,8 @@ func round3(v float64) float64 {
 	return float64(int(v*1000+0.5)) / 1000
 }
 
-var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_without_hunk_change", "fixed_hunk_unknown", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "double_notes", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open",
-	"held_library_claims", "held_regression_claims", "held_praise", "held_reasonless_notes", "library_claims_shown", "uncited_regression_claims_shown", "reasonless_notes_shown", "praise_shown", "confidence_labels_rendered", "leaked_finding_ids", "source_footers", "zero_status_lines_over_notes", "noop_summary_edits",
+var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_skipped_daily_cap", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_without_hunk_change", "fixed_hunk_unknown", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "double_notes", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open",
+	"held_library_claims", "held_regression_claims", "held_praise", "held_reasonless_notes", "library_claims_shown", "uncited_regression_claims_shown", "reasonless_notes_shown", "praise_shown", "confidence_labels_rendered", "leaked_finding_ids", "source_footers", "zero_status_lines_over_notes", "noop_summary_edits", "leading_markers",
 	"external_settled", "settled_dropped", "body_covered", "summary_notes_near_external_root", "summary_notes_near_settled_root", "observed_summary_notes_near_external_root", "observed_summary_notes_near_settled_root", "observed_cross_file_same_point",
 	"cross_pr_resettled", "cross_pr_settled", "observed_cross_pr_resettled"}
 
@@ -1374,8 +1463,8 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 		return err
 	}
 	for _, r := range rows {
-		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedWithoutHunkChange), itoa(r.FixedHunkUnknown), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.DoubleNotes), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen),
-			itoa(r.HeldLibraryClaims), itoa(r.HeldRegressionClaims), itoa(r.HeldPraise), itoa(r.HeldReasonless), itoa(r.LibraryClaimsShown), itoa(r.RegressionClaimsShown), itoa(r.ReasonlessNotesShown), itoa(r.PraiseShown), itoa(r.ConfidenceLabels), itoa(r.LeakedFindingIDs), itoa(r.SourceFooters), itoa(r.ZeroStatusLines), itoa(r.NoopSummaryEdits),
+		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsSkippedDailyCap), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedWithoutHunkChange), itoa(r.FixedHunkUnknown), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.DoubleNotes), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen),
+			itoa(r.HeldLibraryClaims), itoa(r.HeldRegressionClaims), itoa(r.HeldPraise), itoa(r.HeldReasonless), itoa(r.LibraryClaimsShown), itoa(r.RegressionClaimsShown), itoa(r.ReasonlessNotesShown), itoa(r.PraiseShown), itoa(r.ConfidenceLabels), itoa(r.LeakedFindingIDs), itoa(r.SourceFooters), itoa(r.ZeroStatusLines), itoa(r.NoopSummaryEdits), itoa(r.LeadingMarkers),
 			itoa(r.ExternalSettled), itoa(r.SettledDropped), itoa(r.BodyCovered), itoa(r.SummaryNotesNearExternalRoot), itoa(r.SummaryNotesNearSettledRoot), itoa(r.ObservedSummaryNotesNearExternalRoot), itoa(r.ObservedSummaryNotesNearSettledRoot), itoa(r.ObservedCrossFileSamePoint),
 			itoa(r.CrossPRResettled), itoa(r.CrossPRSettled), itoa(r.ObservedCrossPRResettled)}
 		if err := cw.Write(rec); err != nil {

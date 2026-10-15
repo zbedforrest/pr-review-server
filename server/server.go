@@ -1360,6 +1360,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			PublishReplyMode         *string `json:"publish_reply_mode"`
 			PublishShowUnverified    *bool   `json:"publish_show_unverified"`
 			AutoReviewReadyPRs       *bool   `json:"auto_review_ready_prs"`
+			AutoReviewDailyRoundCap  *int    `json:"auto_review_daily_round_cap"`
 			AdminLogins              *string `json:"admin_logins"`
 			CIStatusExcludeAuthors   *string `json:"ci_status_exclude_authors"`
 			// AutoReviewProfileByTrigger accepts the object form the GET returns
@@ -1388,6 +1389,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.PublishInlinePRCap != nil && *req.PublishInlinePRCap < 0 {
 			http.Error(w, "publish_inline_pr_cap must be zero or greater", http.StatusBadRequest)
+			return
+		}
+		if req.AutoReviewDailyRoundCap != nil && *req.AutoReviewDailyRoundCap < 0 {
+			http.Error(w, "auto_review_daily_round_cap must be zero or greater", http.StatusBadRequest)
 			return
 		}
 		if req.PublishReplyMode != nil && !publishReplyModes[strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))] {
@@ -1506,6 +1511,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.AutoReviewReadyPRs != nil {
 			updates = append(updates, settingWrite{settingAutoReviewReadyPRs, strconv.FormatBool(*req.AutoReviewReadyPRs)})
+		}
+		if req.AutoReviewDailyRoundCap != nil {
+			updates = append(updates, settingWrite{poller.SettingAutoReviewDailyRoundCap, strconv.Itoa(*req.AutoReviewDailyRoundCap)})
 		}
 		if req.PublishReplyMode != nil {
 			mode := strings.ToLower(strings.TrimSpace(*req.PublishReplyMode))

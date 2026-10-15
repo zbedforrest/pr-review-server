@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -25,8 +26,9 @@ const (
 	defaultFirstPassOpenRouterModel = "openai/gpt-5.6-sol"
 
 	defaultFirstPassCacheStaggerSec = 8
-	// Most follow-up pushes (typo fixes, lint) land within 90 s of the first.
-	defaultAutoReviewSyncDebounceSec = 90
+	// Ten minutes: the audit of 2026-10-14 saw PRs reviewed up to 13 times a
+	// day because every push outside a 90 s window became a round.
+	defaultAutoReviewSyncDebounceSec = 600
 )
 
 type Config struct {
@@ -176,6 +178,9 @@ type Config struct {
 	// AutoReviewSyncDebounceSec of 0 admits every push at once.
 	AutoReviewSyncDebounceSec   int
 	AutoReviewSkipUnchangedDiff bool
+	// AutoReviewNoDailyRoundCap (AUTO_REVIEW_DAILY_ROUND_CAP=false) admits
+	// every push whatever auto_review_daily_round_cap says.
+	AutoReviewNoDailyRoundCap bool
 	// ReviewDefaultProfile is the profile used when a caller names none:
 	// automatic reviews, the Generate button, and profile-less API requests.
 	ReviewDefaultProfile string
@@ -454,14 +459,19 @@ func Load() *Config {
 		PublishNoPRMute:             !getEnvBoolOrDefault("PUBLISH_PR_MUTE", true),
 		AutoReviewSyncDebounceSec:   getNonNegativeEnvIntOrDefault("AUTO_REVIEW_SYNC_DEBOUNCE_SEC", defaultAutoReviewSyncDebounceSec),
 		AutoReviewSkipUnchangedDiff: getEnvBoolOrDefault("AUTO_REVIEW_SKIP_UNCHANGED_DIFF", true),
+		AutoReviewNoDailyRoundCap:   !getEnvBoolOrDefault("AUTO_REVIEW_DAILY_ROUND_CAP", true),
 	}
 }
 
 // getEnvBoolOrDefault parses the usual true/false spellings; unset or
 // unparsable values keep the default, so a typo never flips a kill switch.
 func getEnvBoolOrDefault(key string, defaultValue bool) bool {
-	if value, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(key))); err == nil {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if value, err := strconv.ParseBool(raw); err == nil {
 		return value
+	}
+	if raw != "" {
+		log.Printf("[CONFIG] %s=%q is not a boolean, keeping the default %t", key, raw, defaultValue)
 	}
 	return defaultValue
 }

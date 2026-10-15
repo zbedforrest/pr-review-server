@@ -403,6 +403,10 @@ type Database interface {
 	// run, with the reason as its publication outcome; false when it was no
 	// longer queued.
 	SkipQueuedAutoReviewIntent(id uint, reason string) (bool, error)
+	// RequeueCappedAutoReviewIntent queues again an intent the daily round
+	// cap settled, under the new trigger; false when it was not such an
+	// intent.
+	RequeueCappedAutoReviewIntent(id uint, trigger, deliveryID string) (bool, error)
 	SupersedeQueuedAutoReviewIntents(owner, repo string, number int, keepHeadSHA string) (int, error)
 	DeleteTerminalAutoReviewIntentsBefore(cutoff time.Time) (int64, error)
 
@@ -590,11 +594,15 @@ type WebhookStatus struct {
 
 // Automatic review intent statuses and triggers.
 const (
-	AutoReviewIntentQueued     = "queued"
-	AutoReviewIntentRunning    = "running"
-	AutoReviewIntentDone       = "done"
-	AutoReviewIntentSuperseded = "superseded"
-	AutoReviewIntentFailed     = "failed"
+	AutoReviewIntentQueued  = "queued"
+	AutoReviewIntentRunning = "running"
+	AutoReviewIntentDone    = "done"
+	// AutoReviewPublicationSkippedDailyCap settles a push the daily round
+	// cap turned away; the head owes a review again on a ready delivery or
+	// the next UTC day.
+	AutoReviewPublicationSkippedDailyCap = "skipped: daily round cap"
+	AutoReviewIntentSuperseded           = "superseded"
+	AutoReviewIntentFailed               = "failed"
 
 	AutoReviewTriggerPollFallback = "poll_fallback"
 )

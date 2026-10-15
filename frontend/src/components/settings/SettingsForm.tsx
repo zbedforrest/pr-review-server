@@ -130,6 +130,7 @@ function useSectionDraft<K extends keyof Settings>(settings: Settings, keys: rea
 const numberValue = (n: number) => (Number.isNaN(n) ? '' : n);
 const isCount = (n: number, min: number) => Number.isInteger(n) && n >= min;
 const defaultInlinePRCap = 6;
+const defaultDailyRoundCap = 4;
 const describedBy = (id: string, invalid: boolean) => (invalid ? `${id}-help ${id}-error` : `${id}-help`);
 
 export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, replyTotals }: SettingsFormProps) {
@@ -143,6 +144,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
     'publish_inline_min_severity',
     'publish_show_unverified',
     'auto_review_ready_prs',
+    'auto_review_daily_round_cap',
   ]);
   const replies = useSectionDraft(settings, ['publish_reply_mode']);
   const profiles = useSectionDraft(settings, [
@@ -180,6 +182,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
   const samplesInvalid = !isCount(review.draft.review_n_requests, 1);
   const capInvalid = !isCount(publishing.draft.publish_inline_cap, 0);
   const prCapInvalid = !isCount(publishing.draft.publish_inline_pr_cap ?? defaultInlinePRCap, 0);
+  const dailyCapInvalid = !isCount(publishing.draft.auto_review_daily_round_cap ?? defaultDailyRoundCap, 0);
 
   const adminList = [
     ...new Set([...settings.admin_logins_fixed, ...normalizeLogins(settings.admin_logins, false).logins]),
@@ -252,7 +255,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
         title="Publishing"
         description="Whose PRs receive posted reviews, and what gets posted"
         dirty={publishing.dirty}
-        canSave={isAdmin && !capInvalid && !prCapInvalid}
+        canSave={isAdmin && !capInvalid && !prCapInvalid && !dailyCapInvalid}
         saving={publishing.saving}
         saved={publishing.saved}
         error={publishing.error}
@@ -299,6 +302,32 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
           <span id="settings-auto-review-ready-help" className="settings-field__help">
             {AUTO_REVIEW_READY_HELP}
           </span>
+        </div>
+        <div className="settings-field">
+          <label className="settings-field__label" htmlFor="settings-daily-round-cap">
+            Automatic rounds per PR per day
+          </label>
+          <input
+            id="settings-daily-round-cap"
+            type="number"
+            className="settings-field__number"
+            min={0}
+            step={1}
+            value={numberValue(publishing.draft.auto_review_daily_round_cap ?? defaultDailyRoundCap)}
+            onChange={(e) => publishing.patch({ auto_review_daily_round_cap: e.target.valueAsNumber })}
+            disabled={disabled}
+            aria-invalid={dailyCapInvalid}
+            aria-describedby={describedBy('settings-daily-round-cap', dailyCapInvalid)}
+          />
+          <span id="settings-daily-round-cap-help" className="settings-field__help">
+            Counted per UTC day; pushes past the cap are reviewed on request and manual reviews never count. 0 removes the bound
+            {settings.auto_review_daily_round_cap_enforced === false && '. Not applied: the server runs with AUTO_REVIEW_DAILY_ROUND_CAP=false'}
+          </span>
+          {dailyCapInvalid && (
+            <span id="settings-daily-round-cap-error" role="alert" className="settings-field__error">
+              Enter a whole number of 0 or more
+            </span>
+          )}
         </div>
         <div className="settings-field">
           <label className="settings-field__label" htmlFor="settings-inline-cap">
