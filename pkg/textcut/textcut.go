@@ -305,16 +305,19 @@ func StandAlone(s string) string {
 }
 
 // stripLead drops a leading marker, or a coordinator that is lowercase or
-// follows a stripped marker.
+// follows a stripped marker. A code span is never a connective, and "so"
+// stays because it also opens "so far" and "so that".
 func stripLead(s string, afterMarker bool) (string, bool) {
 	if mark := strings.TrimSpace(Marker); strings.HasPrefix(s, mark) {
 		return strings.TrimLeft(s[len(mark):], " ,;:"), true
 	}
 	words := strings.Fields(s)
-	if len(words) < 2 || !coordinators[cleanWord(words[0])] {
+	if len(words) < 2 {
 		return s, false
 	}
-	if first := strings.Trim(words[0], ",;:"); !afterMarker && first != strings.ToLower(first) {
+	first := strings.Trim(words[0], ",;:")
+	lower := strings.ToLower(first)
+	if !coordinators[lower] || lower == "so" || (!afterMarker && first != lower) {
 		return s, false
 	}
 	return strings.TrimLeft(strings.TrimPrefix(s, words[0]), " ,;:"), true

@@ -47,6 +47,17 @@ func TestHeadline_DroppedLeadStartsAtTheProblemClause(t *testing.T) {
 	}
 }
 
+func TestTitleOf_OpensTheWayTheRenderedTitleDoes(t *testing.T) {
+	fd := f("e", "medium", "pkg/cache/store.go", 10, "but the cache is never invalidated when the row is deleted, so a deleted row is served until the process restarts")
+	if got, want := TitleOf(fd), "The cache is never invalidated when the row is deleted, so a deleted row is served until the process restarts"; got != want {
+		t.Fatalf("TitleOf = %q, want %q", got, want)
+	}
+	t.Setenv(ProblemClauseStartEnv, "false")
+	if got := TitleOf(fd); !strings.HasPrefix(got, "but the cache") {
+		t.Fatalf("kill switch: TitleOf = %q", got)
+	}
+}
+
 func TestHeadline_NeverOpensWithTheMarkerOrAConnective(t *testing.T) {
 	r := Round{Owner: "acme", Repo: "example", HeadSHA: "abc1234"}
 	findings := []payload.Finding{

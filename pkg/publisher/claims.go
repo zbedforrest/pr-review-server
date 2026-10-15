@@ -509,7 +509,8 @@ func HasConfidenceLabel(text string) bool {
 }
 
 // TitleOf is the one line a finding is listed by, for callers outside the
-// package that compare rendered bodies against findings.
+// package that compare rendered bodies against findings; it opens the way
+// the rendered title does.
 func TitleOf(f payload.Finding) string {
-	return titleSource(f)
+	return standaloneTitle(titleSource(f))
 }
