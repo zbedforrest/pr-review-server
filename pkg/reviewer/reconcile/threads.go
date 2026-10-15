@@ -20,7 +20,7 @@ type ExternalThread struct {
 	SettledAt time.Time
 }
 
-var withdrawalRe = regexp.MustCompile(`(?i)\bwithdraw(?:ing|n|s|al)?\b|\bno (?:further |code )?changes? (?:is |are )?(?:needed|necessary|required)\b|\bnot necessary\b|\bnothing to change\b`)
+var withdrawalRe = regexp.MustCompile(`(?i)\bwithdr(?:aw|awing|awn|aws|awal|ew)\b|\bno (?:further |code )?changes? (?:is |are )?(?:needed|necessary|required)\b|\bnot necessary\b|\bnothing to change\b`)
 
 // IsWithdrawal reports whether a reviewer's reply takes its own point back.
 func IsWithdrawal(body string) bool {

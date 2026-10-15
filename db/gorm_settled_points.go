@@ -1,6 +1,7 @@
 package db
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,7 @@ func (g *GormDB) ListSettledPoints(owner, repo, author string, since, until time
 			out = append(out, p)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].SettledAt.After(out[j].SettledAt) })
 	return out, nil
 }
 
@@ -106,6 +108,9 @@ func (g *GormDB) derivedSettledPoints(owner, repo, author string, since, until t
 		var settledAt time.Time
 		reason, source := "", ""
 		for _, r := range byRow[settledKey(row.PRNumber, row.Fingerprint, 0)] {
+			if !r.CreatedAt.After(since) || r.CreatedAt.After(until) {
+				continue
+			}
 			switch {
 			case r.Class == "verdict":
 				settledAt, reason, source = r.CreatedAt, r.Body, SettledSourceVerdict
@@ -113,7 +118,7 @@ func (g *GormDB) derivedSettledPoints(owner, repo, author string, since, until t
 				settledAt, reason, source = r.CreatedAt, r.Body, SettledSourceConceded
 			}
 		}
-		if settledAt.IsZero() || !settledAt.After(since) || settledAt.After(until) {
+		if settledAt.IsZero() {
 			continue
 		}
 		out = append(out, SettledPoint{

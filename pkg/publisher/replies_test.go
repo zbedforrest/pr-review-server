@@ -2338,3 +2338,17 @@ func TestReplyReactor_ScanRemembersAResolvedExternalThreadOnlyWhenTheAuthorStood
 		t.Fatalf("the kill switch stops recording: %+v", ledger.settled)
 	}
 }
+
+func TestReplyReactor_LegacyConcededFixClaimDismissesWithoutASettledPoint(t *testing.T) {
+	r, gh, ledger := respondFixture(ReplyModeRespond, func(_ context.Context, _ ReplyRequest) (ReplyDecision, error) {
+		return ReplyDecision{Decision: DecisionConcede, Reply: "Confirmed fixed.", React: true}, nil
+	})
+	r.Legacy = true
+	gh.threads["acme/example#7"][1].Body = "Fixed in a82796ac, the guard now runs before the deref."
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ledger.states["a.go:1:abc"] != db.PublishedStateDismissed || len(ledger.settled) != 0 {
+		t.Fatalf("a conceded fix is dismissed under legacy but never remembered as a stand: states=%v settled=%+v", ledger.states, ledger.settled)
+	}
+}

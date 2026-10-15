@@ -197,7 +197,7 @@ func TestLedger_SubjectKeyAliasesAcrossLinesAndFiles(t *testing.T) {
 }
 
 func TestLedger_TerminalRowsSuppressEveryLaterWording(t *testing.T) {
-	for _, state := range []string{db.PublishedStateDismissed, db.PublishedStateContested, db.PublishedStateExternal} {
+	for _, state := range []string{db.PublishedStateDismissed, db.PublishedStateContested, db.PublishedStateExternal, db.PublishedStateSettled} {
 		t.Run(state, func(t *testing.T) {
 			gh, ledger := newFakeGitHub(), newFakeLedger()
 			publishRound(t, gh, ledger, ledgerRoundOne())

@@ -451,7 +451,9 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 		threads = newThreadIndex(p.GH, p.Policy, r.Owner, r.Repo, r.Number)
 	}
 	rememberExternal(ctx, &r, rows, threads, p.Policy.NoteReconcile)
-	rememberSettled(&r, rows)
+	if p.Policy.CrossPRSettled {
+		rememberSettled(&r, rows)
+	}
 	if p.Policy.NoteReconcile && p.Policy.ExternalReconcile {
 		r.Findings = withoutSettledNotes(ctx, r, rows, threads, p.Policy)
 	}

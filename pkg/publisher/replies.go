@@ -1752,7 +1752,9 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, auth
 			err = r.Ledger.MarkPublishedFindingFixed(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint)
 		} else {
 			err = r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed)
-			if err == nil {
+			// A conceded fix claim under the legacy policy dismisses but is
+			// a fix, not a stand.
+			if err == nil && reply.Class != ReplyResolution {
 				r.rememberSettled(t, author, reply, db.SettledSourceConceded)
 			}
 		}

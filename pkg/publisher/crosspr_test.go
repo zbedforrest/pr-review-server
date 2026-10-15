@@ -359,6 +359,11 @@ func TestThreadSettled_ResolvedThreadsCountOnlyWhenTheAuthorStoodByTheCode(t *te
 	if ThreadSettled(reconcile.ExternalThread{Withdrawn: true}, true) {
 		t.Error("a thread nobody answered is not settled")
 	}
+	for _, body := range []string{"I withdrew the finding.", "Withdrawing this one.", "No change is needed here."} {
+		if !reconcile.IsWithdrawal(body) {
+			t.Errorf("%q is a withdrawal", body)
+		}
+	}
 }
 
 func TestCrossPR_AThreadNobodyAnsweredOrStillOpenIsNotSettled(t *testing.T) {

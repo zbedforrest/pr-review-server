@@ -48,7 +48,7 @@ func (d *PRDump) SettledPointsOf(bots map[string]bool, finding func(sha7, id str
 			continue
 		}
 		for _, c := range t.Comments.Nodes[1:] {
-			if strings.ToLower(ActorLogin(c.Author)) != author || !publisher.IsVerdict(c.Body) {
+			if strings.ToLower(ActorLogin(c.Author)) != author || publisher.ClassifyReply(c.Body) != publisher.ReplyVerdict {
 				continue
 			}
 			row := db.PublishedFinding{RepoOwner: d.Owner, RepoName: d.Repo, PRNumber: d.Number, Kind: db.PublishedKindFinding, Fingerprint: id, CommentID: int64(root.DatabaseID),
@@ -71,14 +71,16 @@ func (d *PRDump) SettledPointsOf(bots map[string]bool, finding func(sha7, id str
 		}
 	}
 	roots := reconcile.ParseExternalComments(comments, nil)
-	resolved := map[int64]bool{}
+	resolved, ownRoot := map[int64]bool{}, map[int64]bool{}
 	for _, t := range d.ReviewThreads.Nodes {
 		if len(t.Comments.Nodes) > 0 {
-			resolved[int64(t.Comments.Nodes[0].DatabaseID)] = t.Resolved()
+			root := t.Comments.Nodes[0]
+			resolved[int64(root.DatabaseID)] = t.Resolved()
+			ownRoot[int64(root.DatabaseID)] = bots[BareLogin(ActorLogin(root.Author))]
 		}
 	}
 	for _, th := range reconcile.BuildExternalThreads(comments, roots, author) {
-		if bots[BareLogin(strings.ToLower(th.Root.Source.Label()))] {
+		if ownRoot[th.Root.CommentID] {
 			continue
 		}
 		if !publisher.ThreadSettled(th, resolved[th.Root.CommentID]) {
