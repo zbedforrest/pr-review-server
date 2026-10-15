@@ -311,15 +311,20 @@ type PRResult struct {
 // point the same author settled on an earlier pull request, for the owner
 // to spot-check.
 type CrossPRPair struct {
-	PR            string `json:"pr"`
-	Round         int    `json:"round"`
-	File          string `json:"file"`
-	Line          int    `json:"line"`
-	Headline      string `json:"headline"`
-	SettledPR     int    `json:"settled_pr"`
-	SettledSource string `json:"settled_source"`
-	SettledAt     string `json:"settled_at"`
-	SettledFile   string `json:"settled_file"`
+	PR       string `json:"pr"`
+	Round    int    `json:"round"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Headline string `json:"headline"`
+	Severity string `json:"severity"`
+	// Score and Subject are the containment and the shared subject behind
+	// the match, recomputed against the settled point alone.
+	Score         float64 `json:"score"`
+	Subject       string  `json:"subject"`
+	SettledPR     int     `json:"settled_pr"`
+	SettledSource string  `json:"settled_source"`
+	SettledAt     string  `json:"settled_at"`
+	SettledFile   string  `json:"settled_file"`
 	// Outcome is "posted" (the replayed publisher still posted the root),
 	// "settled" (it wrote a settled row instead) or "observed" (the
 	// historical root in the dump).
@@ -678,7 +683,8 @@ func settledPointOf(ledger *db.GormDB, d *prDump, at time.Time, row db.Published
 
 // crossPRPair describes a finding against the point it raises again.
 func crossPRPair(d *prDump, round int, f payload.Finding, pt db.SettledPoint, outcome string) CrossPRPair {
-	return CrossPRPair{PR: d.key(), Round: round + 1, File: f.File, Line: f.Line, Headline: head(publisher.TitleOf(f)),
+	_, score, _ := publisher.ScoreSettledElsewhere(f, []db.SettledPoint{pt})
+	return CrossPRPair{PR: d.key(), Round: round + 1, File: f.File, Line: f.Line, Headline: head(publisher.TitleOf(f)), Severity: f.Severity, Score: score.Text, Subject: score.Subject,
 		SettledPR: pt.PRNumber, SettledSource: pt.Source, SettledAt: pt.SettledAt.Format(time.RFC3339), SettledFile: pt.File, Outcome: outcome}
 }
 

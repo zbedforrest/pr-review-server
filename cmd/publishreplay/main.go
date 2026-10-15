@@ -146,9 +146,9 @@ func main() {
 // renderPairs is the markdown table of cross-PR settled pairs.
 func renderPairs(pairs []CrossPRPair) string {
 	var b strings.Builder
-	b.WriteString("| outcome | pr | round | file:line | headline | settled on | source | settled at |\n|---|---|---:|---|---|---|---|---|\n")
+	b.WriteString("| outcome | pr | round | severity | file:line | headline | settled on | settled file | source | subject | score | settled at |\n|---|---|---:|---|---|---|---|---|---|---|---:|---|\n")
 	for _, p := range pairs {
-		fmt.Fprintf(&b, "| %s | %s | %d | %s:%d | %s | #%d | %s | %s |\n", p.Outcome, p.PR, p.Round, p.File, p.Line, strings.ReplaceAll(p.Headline, "|", "\\|"), p.SettledPR, p.SettledSource, p.SettledAt)
+		fmt.Fprintf(&b, "| %s | %s | %d | %s | %s:%d | %s | #%d | %s | %s | %s | %.2f | %s |\n", p.Outcome, p.PR, p.Round, p.Severity, p.File, p.Line, strings.ReplaceAll(p.Headline, "|", "\\|"), p.SettledPR, p.SettledFile, p.SettledSource, p.Subject, p.Score, p.SettledAt)
 	}
 	return b.String()
 }

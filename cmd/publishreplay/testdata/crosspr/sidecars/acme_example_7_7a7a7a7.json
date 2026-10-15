@@ -11,10 +11,10 @@
  },
  "findings": [
   {
-   "id": "svc/api.go:3:a7a7a7a7a7a7",
+   "id": "svc/store.go:3:a7a7a7a7a7a7",
    "severity": "medium",
    "provenance": "agent",
-   "file": "svc/api.go",
+   "file": "svc/store.go",
    "line": 30,
    "comment": "`purchaseIDs` filters on `purchaserID` unconditionally, but `purchaserID` was added nullable and is only populated by a separate backfill. While the switch `PURCHASER_READ_SWAP` is off, the purchased feed resolves purchases through `userID`, so a legacy row is listed but the delete lookup cannot find it and returns 400.",
    "finding_contract": {
@@ -29,11 +29,11 @@
     "subjects": [
      {
       "kind": "file",
-      "path": "svc/api.go"
+      "path": "svc/store.go"
      },
      {
       "kind": "symbol",
-      "path": "svc/api.go",
+      "path": "svc/store.go",
       "name": "DeleteView.purchaseIDs"
      },
      {

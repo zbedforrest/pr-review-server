@@ -54,25 +54,49 @@ func (p *Publisher) settledPoints(r Round, now time.Time) (elsewhere, here []db.
 // (reconcile.SameEarlierPoint). A CRITICAL security_risk is exempt, as
 // decision 4 exempts it on its own PR.
 func MatchSettledElsewhere(f payload.Finding, points []db.SettledPoint) (db.SettledPoint, bool) {
-	if len(points) == 0 || isPseudoFile(f.File) || criticalSecurity(f) {
-		return db.SettledPoint{}, false
+	pt, _, ok := ScoreSettledElsewhere(f, points)
+	return pt, ok
+}
+
+// ScoreSettledElsewhere is MatchSettledElsewhere with the containment and
+// the shared subject behind the match, for the replay's pair listing.
+func ScoreSettledElsewhere(f payload.Finding, points []db.SettledPoint) (db.SettledPoint, reconcile.EarlierScore, bool) {
+	if len(points) == 0 || isPseudoFile(f.File) || f.Severity == "critical" {
+		return db.SettledPoint{}, reconcile.EarlierScore{}, false
 	}
-	earlier := make([]reconcile.EarlierPoint, 0, len(points))
+	// Only a point settled in the finding's own file can be the same point:
+	// across files the replay corpus matched on shared generic symbols
+	// (start, lookup, failures) and prose that happened to overlap, and the
+	// hand-checked pairs were distinct defects. A pattern repeated in
+	// another file costs the author one more sentence; a wrong match hides
+	// the finding for thirty days.
+	var same []db.SettledPoint
 	for _, pt := range points {
+		if pt.File != "" && pt.File == f.File {
+			same = append(same, pt)
+		}
+	}
+	earlier := make([]reconcile.EarlierPoint, 0, len(same))
+	for _, pt := range same {
 		earlier = append(earlier, reconcile.EarlierPoint{Subjects: splitSubjects(pt.Subjects), Text: pt.Text, Kind: pt.FindingKind})
 	}
-	i, _, ok := reconcile.MatchEarlier(f, earlier)
+	i, score, ok := reconcile.MatchEarlier(f, earlier)
 	if !ok {
-		return db.SettledPoint{}, false
+		return db.SettledPoint{}, score, false
 	}
-	return points[i], true
+	return same[i], score, true
 }
 
 func isPseudoFile(file string) bool { return file == summaryFile || file == checkFile }
 
-func criticalSecurity(f payload.Finding) bool {
-	return f.Severity == "critical" && f.FindingContract != nil && f.FindingContract.FindingKind == "security_risk"
-}
+// deferralRe marks a reply that puts the point off to later work rather
+// than standing by the code: a follow-up, the next pull request, a ticket,
+// "for now". The later pull request is where the point must be met again.
+var deferralRe = regexp.MustCompile(`(?i)\bfollow[- ]?ups?\b|\b(?:next|later|future|separate|another|subsequent|second|two|other)\s+(?:prs?|pull requests?|changes?|commits?)\b|\buntil\s+(?:the\s+|those\s+|that\s+|a\s+)?(?:next|follow|later|two|other|subsequent|new|future)\b|\bfor now\b|\btemporar(?:y|ily)\b|\b(?:made|created?|filed?|opened?|wrote)\s+(?:a\s+)?(?:jira\s+)?(?:ticket|task|issue|story)\b|\b(?:handle|address|revisit|tackle|fix|clean(?:ed)?\s+up)\s+(?:this|that|it|these|those)?\s*(?:in|after|later|afterwards|once)\b`)
+
+// Deferred reports whether an author's reply defers the point to later
+// work instead of settling it.
+func Deferred(reason string) bool { return deferralRe.MatchString(reason) }
 
 // withoutSettledElsewhere drops every publishable finding the ledger does
 // not know that raises again a point the author settled on an earlier pull
@@ -134,23 +158,29 @@ func rememberSettled(r *Round, rows map[string]*db.PublishedFinding) {
 }
 
 // ThreadSettled reports whether another reviewer's thread counts as a
-// point the author settled: withdrawn by the reviewer or resolved, after
-// the author's last reply stood by the code (a verdict or pushback). A
-// thread the author answered with a fix claim or a bare acknowledgement,
-// then withdrawn or resolved, is a fix, not a settlement, and must not
-// silence the point on their later pull requests.
+// point the author settled: withdrawn by the reviewer after the author's
+// last reply stood by the code (a verdict or pushback), or resolved after
+// an explicit verdict. A resolved thread is settled by whoever clicked
+// resolve, so only the author's own verdict counts there: in the replay
+// corpus most resolved threads the author answered in prose were fix
+// reports. A thread the author answered with a fix claim, a bare
+// acknowledgement or a deferral to later work is not a settlement and
+// must not silence the point on their later pull requests.
 func ThreadSettled(t reconcile.ExternalThread, resolved bool) bool {
 	if len(t.AuthorReplies) == 0 || (!t.Withdrawn && !resolved) {
 		return false
 	}
 	last := t.AuthorReplies[len(t.AuthorReplies)-1]
+	if Deferred(last) {
+		return false
+	}
 	switch ClassifyReply(last) {
 	case ReplyVerdict:
 		return true
 	case ReplyPushback:
 		// A leading "fixed" or "done" is a resolution already; here only
 		// a cited commit or an opening work verb reads as a fix.
-		return !hasCommitSha(last) && !workClaimRe.MatchString(last)
+		return t.Withdrawn && !hasCommitSha(last) && !workClaimRe.MatchString(last)
 	}
 	return false
 }

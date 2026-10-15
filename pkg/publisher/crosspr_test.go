@@ -20,7 +20,7 @@ import (
 // again from another file as a new MEDIUM, and the author answered a
 // fourth time. The second MEDIUM of that round is a distinct point.
 const (
-	earlierFile     = "store/models.py"
+	earlierFile     = "store/api/views.py"
 	earlierRootText = "The buyer lookup in `record_fanclub_bulk` hardcodes `purchaser_id`, but every other purchase read branches on `PURCHASER_READ_SWAP` and falls back to parent `user_id` (`Purchases._active`, `store/views.py` methods). The `purchaser_id` column can be null for rows written before it was added or before the backfill ran, so with the switch off the fanout lookup misses older buyers."
 	earlierImpact   = "When the purchaser read swap switch is off and purchaser_id is not populated, fanout may write a FAN_CLUB unread row for a member who already bought the set."
 	earlierReason   = "intentional. Same answer as the earlier threads on this. The purchaser_id backfill is done in prod (OPS-1821, zero nulls and zero mismatches verified) and purchaser_read_swap is on for both writes and the viewer ownership check. The switch-off state this describes doesn't exist anymore, and fanout writes already use purchaser_id, so reading it here matches what gets written."
@@ -211,13 +211,56 @@ func TestCrossPR_ThePointSettledOnThisPRIsTheLedgersBusiness(t *testing.T) {
 	}
 }
 
-func TestCrossPR_ACriticalSecurityRiskIsExempt(t *testing.T) {
-	r := laterPRRound()
-	r.Findings[1].Severity = "critical"
-	r.Findings[1].FindingContract.FindingKind = "security_risk"
-	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger(earlierVerdictPoint())
-	if rep := publishLater(t, gh, ledger, r, testPolicy()); rep.InlinePosted != 2 || rep.CrossPRSettled != 0 {
-		t.Fatalf("decision 4's exception holds across pull requests: %+v", rep)
+func TestCrossPR_ACriticalFindingIsExempt(t *testing.T) {
+	for _, kind := range []string{"security_risk", "production_behavior"} {
+		r := laterPRRound()
+		r.Findings[1].Severity = "critical"
+		r.Findings[1].FindingContract.FindingKind = kind
+		gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger(earlierVerdictPoint())
+		if rep := publishLater(t, gh, ledger, r, testPolicy()); rep.InlinePosted != 2 || rep.CrossPRSettled != 0 {
+			t.Fatalf("a critical %s is raised again whatever the author settled: %+v", kind, rep)
+		}
+	}
+}
+
+func TestCrossPR_APointSettledInAnotherFileIsAnotherPoint(t *testing.T) {
+	point := earlierVerdictPoint()
+	point.File = "store/models.py"
+	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger(point)
+	if rep := publishLater(t, gh, ledger, laterPRRound(), testPolicy()); rep.InlinePosted != 2 || rep.CrossPRSettled != 0 {
+		t.Fatalf("the same symbol and prose in another file is raised again: %+v", rep)
+	}
+}
+
+func TestCrossPR_ADeferralSettlesNothing(t *testing.T) {
+	for _, body := range []string{
+		"Fair. I'm actually gonna pull this line until the next PRs, as the next PRs should do the work of fixing this.",
+		"Intentionally left to expire. This will be cleaned up in a followup PR.",
+		"Featured logos as a feature will be dark until the two followup PRs.",
+		"Not an issue for now, the backfill lands in a separate PR.",
+		"made a jira ticket to handle this in a followup",
+	} {
+		if !Deferred(body) {
+			t.Errorf("%q defers the point", body)
+		}
+		gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger()
+		gh.extra = []ReviewThread{{NodeID: "E3001", RootCommentID: 3001, Resolved: true}}
+		comments := greptileThread(true)
+		comments[1].Body = body
+		publishLater(t, gh, ledger, earlierPRRound(comments), testPolicy())
+		if len(ledger.recorded) != 0 {
+			t.Errorf("a deferral the reviewer withdrew or resolved settles nothing: %q -> %+v", body, ledger.recorded)
+		}
+	}
+	for _, body := range []string{
+		"This would be correct behavior; we prompt them until they decide to end the show early.",
+		"Not an issue. The purchaser_id backfill is complete in prod.",
+		"Intentional, the two flags are read by different workers.",
+		"Known drift, on purpose. The backend settled on purchased.",
+	} {
+		if Deferred(body) {
+			t.Errorf("%q stands by the code", body)
+		}
 	}
 }
 
@@ -327,33 +370,37 @@ func TestCrossPR_AThreadTheAuthorFixedAndResolvedIsNotSettled(t *testing.T) {
 
 func TestThreadSettled_ResolvedThreadsCountOnlyWhenTheAuthorStoodByTheCode(t *testing.T) {
 	cases := []struct {
-		reply   string
-		settled bool
+		reply               string
+		resolved, withdrawn bool
 	}{
-		{"Fixed in a82796ac", false},
-		{"Fixed, the desktop block now overrides the mobile one.", false},
-		{"Removed", false},
-		{"I fixed this in 3adf5849 along with the loop.", false},
-		{"Added store/testdb_integration_test.go: against a scratch database it covers the cleanup path.", false},
-		{"ok", false},
-		{"will fix", false},
-		{"Is this still reachable after the guard?", false},
-		{"intentional", true},
-		{"this just adds bloat imo", true},
-		{"the new page is behind MyCollUpgrd, so the old gate is never hit.", true},
-		{"Not an issue. The purchaser_id backfill is complete in prod.", true},
+		{"Fixed in a82796ac", false, false},
+		{"Fixed, the desktop block now overrides the mobile one.", false, false},
+		{"Removed", false, false},
+		{"I fixed this in 3adf5849 along with the loop.", false, false},
+		{"Added store/testdb_integration_test.go: against a scratch database it covers the cleanup path.", false, false},
+		{"ok", false, false},
+		{"will fix", false, false},
+		{"Is this still reachable after the guard?", false, false},
+		{"I will handle this in a follow-up PR, but the items in the Content Vault should match.", false, false},
+		{"intentional", true, true},
+		{"Not an issue. The purchaser_id backfill is complete in prod.", true, true},
+		// A stand in prose settles a thread the reviewer withdrew; under a
+		// resolve that anyone may have clicked it does not.
+		{"this just adds bloat imo", false, true},
+		{"the new page is behind MyCollUpgrd, so the old gate is never hit.", false, true},
+		{"The feed's own queries don't grow. Every query grabs stuff for the whole page at once.", false, true},
 	}
 	for _, c := range cases {
 		th := reconcile.ExternalThread{AuthorReplies: []string{c.reply}}
-		if got := ThreadSettled(th, true); got != c.settled {
-			t.Errorf("resolved thread answered %q: settled=%v, want %v", c.reply, got, c.settled)
+		if got := ThreadSettled(th, true); got != c.resolved {
+			t.Errorf("resolved thread answered %q: settled=%v, want %v", c.reply, got, c.resolved)
 		}
 		if ThreadSettled(th, false) {
 			t.Errorf("an open thread answered %q is not settled", c.reply)
 		}
 		th.Withdrawn = true
-		if got := ThreadSettled(th, false); got != c.settled {
-			t.Errorf("withdrawn thread answered %q: settled=%v, want %v", c.reply, got, c.settled)
+		if got := ThreadSettled(th, false); got != c.withdrawn {
+			t.Errorf("withdrawn thread answered %q: settled=%v, want %v", c.reply, got, c.withdrawn)
 		}
 	}
 	if ThreadSettled(reconcile.ExternalThread{Withdrawn: true}, true) {

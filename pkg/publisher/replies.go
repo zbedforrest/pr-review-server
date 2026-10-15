@@ -1784,7 +1784,7 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, auth
 // failed write changes nothing here.
 func (r ReplyReactor) rememberSettled(t db.PublishedReplyTarget, author string, reply AuthorReply, source string) {
 	store, ok := r.Ledger.(SettledPointStore)
-	if !ok || !r.CrossPRSettled || strings.TrimSpace(author) == "" {
+	if !ok || !r.CrossPRSettled || strings.TrimSpace(author) == "" || Deferred(reply.Body) {
 		return
 	}
 	rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber)

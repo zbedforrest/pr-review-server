@@ -25,7 +25,7 @@ func crossPRRun(t *testing.T, policy publisher.Policy) Result {
 }
 
 // The author called the purchaser-id point intentional on #6; two days
-// later #7 raised it again from another file and the bot posted it (the
+// later #7 raised it again in the same file and the bot posted it (the
 // observed root). The replayed publisher seeds the verdict and writes a
 // settled row instead of the root.
 func TestRun_CrossPRSettledPointIsNotPostedAgain(t *testing.T) {

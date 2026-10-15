@@ -32,7 +32,7 @@
     "isResolved": false,
     "isOutdated": false,
     "isCollapsed": null,
-    "path": "svc/api.go",
+    "path": "svc/store.go",
     "line": 30,
     "originalLine": 30,
     "comments": {
@@ -42,10 +42,10 @@
        "author": {
         "login": "acme-bot"
        },
-       "body": "<!-- prism:finding:svc/api.go:3:a7a7a7a7a7a7 -->\n**MEDIUM** Delete filters on un-backfilled purchaserID\n\nA user whose purchase row has a null purchaserID (pre-backfill) still sees the set in the purchased feed but gets a 400 on delete and no removal is written.",
+       "body": "<!-- prism:finding:svc/store.go:3:a7a7a7a7a7a7 -->\n**MEDIUM** Delete filters on un-backfilled purchaserID\n\nA user whose purchase row has a null purchaserID (pre-backfill) still sees the set in the purchased feed but gets a 400 on delete and no removal is written.",
        "createdAt": "2026-09-08T10:00:00Z",
        "updatedAt": "2026-09-08T10:00:00Z",
-       "path": "svc/api.go",
+       "path": "svc/store.go",
        "originalCommit": {
         "oid": "7a7a7a7777777777777777777777777777777777"
        },

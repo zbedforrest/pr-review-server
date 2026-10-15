@@ -48,7 +48,7 @@ func (d *PRDump) SettledPointsOf(bots map[string]bool, finding func(sha7, id str
 			continue
 		}
 		for _, c := range t.Comments.Nodes[1:] {
-			if strings.ToLower(ActorLogin(c.Author)) != author || publisher.ClassifyReply(c.Body) != publisher.ReplyVerdict {
+			if strings.ToLower(ActorLogin(c.Author)) != author || publisher.ClassifyReply(c.Body) != publisher.ReplyVerdict || publisher.Deferred(c.Body) {
 				continue
 			}
 			row := db.PublishedFinding{RepoOwner: d.Owner, RepoName: d.Repo, PRNumber: d.Number, Kind: db.PublishedKindFinding, Fingerprint: id, CommentID: int64(root.DatabaseID),
