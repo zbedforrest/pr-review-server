@@ -121,7 +121,8 @@ type Report struct {
 	SettledDropped  int
 	BodyCovered     int
 	// CrossPRSettled counts the findings dropped this round because the
-	// author settled their point on an earlier pull request of the repo.
+	// author settled their point on an earlier pull request of the repo,
+	// or in another reviewer's thread on this one.
 	CrossPRSettled int
 }
 

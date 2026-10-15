@@ -156,7 +156,9 @@ func (g *GormDB) derivedSettledPoints(owner, repo, author string, since, until t
 	return out, nil
 }
 
-// FingerprintFile reads the file out of a file:bucket:hash fingerprint.
+// FingerprintFile reads the file out of a file:bucket:hash fingerprint,
+// as payload.FingerprintFile does (a fingerprint with fewer parts is its
+// own file), so a derived point and a recorded one file alike.
 func FingerprintFile(fp string) string {
 	i := strings.LastIndex(fp, ":")
 	if i < 0 {
@@ -164,7 +166,7 @@ func FingerprintFile(fp string) string {
 	}
 	j := strings.LastIndex(fp[:i], ":")
 	if j < 0 {
-		return fp[:i]
+		return fp
 	}
 	return fp[:j]
 }

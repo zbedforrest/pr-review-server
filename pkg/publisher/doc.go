@@ -72,7 +72,9 @@
 // SettledCommentID naming the thread), posts nothing, counts nothing, and
 // the summary lists it under "settled earlier by the author" with a link
 // to that thread for as long as the review raises it. A CRITICAL finding
-// of any kind is exempt: a wrong match would hide it for thirty days.
+// of any kind is exempt when the match is made: a wrong match would hide
+// it for thirty days. Once a settled row exists it is terminal like a
+// dismissed one, whatever severity the point comes back at.
 //
 // Inputs per prior row: its state; whether a current finding matched it
 // (present); whether HeadSHA equals the row's LastSeenSHA; the change set

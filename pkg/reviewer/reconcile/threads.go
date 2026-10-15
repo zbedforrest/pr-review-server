@@ -22,7 +22,7 @@ type ExternalThread struct {
 
 var (
 	withdrawalRe   = regexp.MustCompile(`(?i)\b(?:i(?:'m| am| will|'ll| have|'ve|'d| would)?\s+(?:be\s+|now\s+|also\s+)?withdr(?:aw|awing|awn|aws|ew)|withdrawing (?:the|this|my|it)|withdrawn)\b|\bno (?:further |code )?changes? (?:is |are )?(?:needed|necessary|required)\b`)
-	noWithdrawalRe = regexp.MustCompile(`(?i)\b(?:not|never|don't|won't|wouldn't|can't|cannot|shouldn't|doesn't|didn't|isn't|aren't|wasn't|weren't|shan't|no need to|no reason to)\s+(?:be\s+|going to\s+|yet\s+|need to be\s+)?withdr`)
+	noWithdrawalRe = regexp.MustCompile(`(?i)\b(?:not|never|don't|won't|wouldn't|can't|cannot|shouldn't|doesn't|didn't|isn't|aren't|wasn't|weren't|haven't|hasn't|hadn't|shan't|no need to|no reason to)\s+(?:be\s+|going to\s+|yet\s+|need to be\s+)?withdr`)
 )
 
 // IsWithdrawal reports whether a reviewer's reply takes its own point

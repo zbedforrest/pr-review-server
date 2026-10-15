@@ -474,7 +474,7 @@ func TestThreadSettled_ResolvedThreadsCountOnlyWhenTheAuthorStoodByTheCode(t *te
 			t.Errorf("%q is a withdrawal", body)
 		}
 	}
-	for _, body := range []string{"I would not withdraw the migration yet.", "This shouldn't be withdrawn.", "This doesn't need to be withdrawn, the race is real.", "there's no need to withdraw it", "the fix is not necessary here", "this is not necessary to merge, but the null branch should still be fixed", "nothing to change in the caller, the callee is wrong", "The withdrawal flow still double-charges."} {
+	for _, body := range []string{"I would not withdraw the migration yet.", "This shouldn't be withdrawn.", "This doesn't need to be withdrawn, the race is real.", "I haven't withdrawn this, the race is still real.", "It hasn't been withdrawn.", "there's no need to withdraw it", "the fix is not necessary here", "this is not necessary to merge, but the null branch should still be fixed", "nothing to change in the caller, the callee is wrong", "The withdrawal flow still double-charges."} {
 		if reconcile.IsWithdrawal(body) {
 			t.Errorf("%q is not a withdrawal", body)
 		}
