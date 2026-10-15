@@ -1,9 +1,12 @@
 package reconcile
 
 import (
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"pr-review-server/pkg/reviewer/payload"
 )
@@ -95,13 +98,50 @@ func sharedEarlierSubject(f payload.Finding, p EarlierPoint) string {
 	text := strings.ToLower(p.Text)
 	for _, name := range SpecificSubjects(f.FindingContract) {
 		for _, key := range SubjectKeys(name) {
-			if theirs[key] || NamesIdentifier(text, key) {
+			// A generic key is passed over, not fatal: the next shared key
+			// may name the point.
+			if (theirs[key] || NamesIdentifier(text, key)) && !GenericSubject(key, f.File) {
 				return key
 			}
 		}
 	}
 	return ""
 }
+
+// GenericSubject reports whether the shared subject is too plain to carry a
+// match: a short name (start, main, lookup, user_id) that distinct defects
+// name all the time, a token with fewer than five letters, or the file's
+// own stem (creators for creators.py). A dotted name or a long one is
+// specific enough.
+func GenericSubject(subject, file string) bool {
+	subject = strings.ToLower(strings.TrimSpace(subject))
+	if subject == "" {
+		return true
+	}
+	stem := strings.ToLower(strings.TrimSuffix(filepath.Base(file), filepath.Ext(file)))
+	if subject == stem {
+		return true
+	}
+	letters := 0
+	for _, r := range subject {
+		if unicode.IsLetter(r) {
+			letters++
+		}
+	}
+	if letters < genericSubjectMinLetters {
+		return true
+	}
+	// A short qualified name (user_id, created_at) is as common as a
+	// short word; a long one, or a dotted one, names something.
+	return utf8.RuneCountInString(subject) < genericSubjectMaxLen && !strings.ContainsAny(subject, ".:#")
+}
+
+// genericSubjectMinLetters is the letter count under which a token (v2,
+// s3, md5) is generic whatever else it carries.
+const genericSubjectMinLetters = 5
+
+// genericSubjectMaxLen is the length under which a name is generic.
+const genericSubjectMaxLen = 10
 
 // SubjectKeys are the lower-cased forms a subject name is compared under:
 // the name itself and, for a dotted or qualified name, its last segment,

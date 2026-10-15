@@ -555,10 +555,10 @@ func (r Round) writeSettled(b *strings.Builder) {
 		}
 		return a.Line < c.Line
 	})
-	header := "settled earlier by the author"
+	header := "settled by the author"
 	for _, m := range matches {
-		if m.PRNumber == r.Number {
-			header = "settled by the author"
+		if m.PRNumber != r.Number {
+			header = "settled earlier by the author"
 			break
 		}
 	}

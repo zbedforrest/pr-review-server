@@ -42,9 +42,11 @@ func (g *GormDB) RecordSettledPoint(p *SettledPoint) error {
 // whose reply ledger holds the author's verdict or PRism's concession, so
 // points settled before the table existed are remembered too; a recorded
 // row for the same thread wins.
-// A derived point needs the PR's row for its author: a pull request the
-// cleanup pruned is outside the derivation, which bridges the rows written
-// before the table existed and nothing more.
+// A derived point needs the author's identity: a pull request the cleanup
+// pruned is still derived while another PR of the author is tracked, through
+// the reply's author id; with no tracked PR of the author it is out of
+// reach. The derivation bridges the rows written before the table existed
+// and nothing more.
 func (g *GormDB) ListSettledPoints(owner, repo, author string, since, until time.Time) ([]SettledPoint, error) {
 	author = strings.ToLower(strings.TrimSpace(author))
 	var models []SettledPointModel

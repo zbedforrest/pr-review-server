@@ -3,12 +3,9 @@ package publisher
 import (
 	"context"
 	"log"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/publisher/replytext"
@@ -80,14 +77,14 @@ func ScoreSettledElsewhere(f payload.Finding, points []db.SettledPoint) (db.Sett
 	// the finding for thirty days.
 	var same []db.SettledPoint
 	for _, pt := range points {
-		if pt.Source != db.SettledSourceDeferred && pt.File != "" && pt.File == f.File {
+		if settles(pt.Source) && pt.File != "" && pt.File == f.File {
 			same = append(same, pt)
 		}
 	}
 	best, bestScore := -1, reconcile.EarlierScore{}
 	for i, pt := range same {
 		score, ok := reconcile.SameEarlierPoint(f, reconcile.EarlierPoint{Subjects: splitSubjects(pt.Subjects), Text: pt.Text, Kind: pt.FindingKind})
-		if !ok || genericSubject(score.Subject, f.File) {
+		if !ok {
 			continue
 		}
 		if best < 0 || score.Text > bestScore.Text {
@@ -99,41 +96,6 @@ func ScoreSettledElsewhere(f payload.Finding, points []db.SettledPoint) (db.Sett
 	}
 	return same[best], bestScore, true
 }
-
-// genericSubject reports whether the shared subject is too plain to carry a
-// match: a short name (start, main, lookup, user_id) that distinct defects
-// name all the time, a token with fewer than five letters, or the file's
-// own stem (creators for creators.py). A dotted name or a long one is
-// specific enough.
-func genericSubject(subject, file string) bool {
-	subject = strings.ToLower(strings.TrimSpace(subject))
-	if subject == "" {
-		return true
-	}
-	stem := strings.ToLower(strings.TrimSuffix(filepath.Base(file), filepath.Ext(file)))
-	if subject == stem {
-		return true
-	}
-	letters := 0
-	for _, r := range subject {
-		if unicode.IsLetter(r) {
-			letters++
-		}
-	}
-	if letters < genericSubjectMinLetters {
-		return true
-	}
-	// A short qualified name (user_id, created_at) is as common as a
-	// short word; a long one, or a dotted one, names something.
-	return utf8.RuneCountInString(subject) < genericSubjectMaxLen && !strings.ContainsAny(subject, ".:#")
-}
-
-// genericSubjectMinLetters is the letter count under which a token (v2,
-// s3, md5) is generic whatever else it carries.
-const genericSubjectMinLetters = 5
-
-// genericSubjectMaxLen is the length under which a bare word is generic.
-const genericSubjectMaxLen = 10
 
 func isPseudoFile(file string) bool { return file == summaryFile || file == checkFile }
 
@@ -230,6 +192,30 @@ func ThreadSettled(t reconcile.ExternalThread, resolved bool) bool {
 	return false
 }
 
+// settles reports whether a recorded source still stands: a deferred or
+// superseded row is inert, kept so it replaces the stand it followed.
+func settles(source string) bool {
+	return source != db.SettledSourceDeferred && source != db.SettledSourceSuperseded
+}
+
+// standThenFix reports whether the author stood by the code in an earlier
+// reply of the thread and reported a fix in the last one.
+func standThenFix(replies []string) bool {
+	if len(replies) < 2 {
+		return false
+	}
+	last := replies[len(replies)-1]
+	if ClassifyReply(last) != ReplyResolution && !hasCommitSha(last) && !workClaimRe.MatchString(last) {
+		return false
+	}
+	for _, earlier := range replies[:len(replies)-1] {
+		if ClassifyReply(earlier) == ReplyVerdict {
+			return true
+		}
+	}
+	return false
+}
+
 // workClaimRe opens a reply that reports work done rather than a stand.
 var workClaimRe = regexp.MustCompile(`(?i)^\s*(?:i\s+(?:have\s+|just\s+)?|i've\s+)?(added|implemented|changed|moved|renamed|switched|reverted|dropped|replaced|refactored|extracted|made|fixed|updated|removed|rewrote|reworked)\b`)
 
@@ -268,6 +254,11 @@ func recordSettledThreads(store SettledPointStore, owner, repo string, number in
 			// A deferral replaces the stand the thread may have recorded.
 			point = SettledPointOfThread(owner, repo, number, author, t, now)
 			point.Source = db.SettledSourceDeferred
+		case standThenFix(t.AuthorReplies):
+			// The author stood by the code and then fixed it: the stand the
+			// thread may have recorded is gone.
+			point = SettledPointOfThread(owner, repo, number, author, t, now)
+			point.Source = db.SettledSourceSuperseded
 		case ThreadSettled(t, resolved(t.Root.CommentID)):
 			point = SettledPointOfThread(owner, repo, number, author, t, now)
 		default:

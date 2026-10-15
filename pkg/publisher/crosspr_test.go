@@ -273,8 +273,8 @@ func TestCrossPR_ABareShortSubjectCarriesNoMatch(t *testing.T) {
 		{"user_id", "a.py", true}, {"fan_club", "a.py", true}, {"created_at", "a.py", false}, {"purchaser_read_swap", "a.py", false},
 		{"companion_asset", "forms.py", false}, {"showtipmenu", "x.tsx", false}, {"DeleteView._purchase_ids", "views.py", false},
 	} {
-		if got := genericSubject(c.subject, c.file); got != c.generic {
-			t.Errorf("genericSubject(%q, %q) = %v", c.subject, c.file, got)
+		if got := reconcile.GenericSubject(c.subject, c.file); got != c.generic {
+			t.Errorf("GenericSubject(%q, %q) = %v", c.subject, c.file, got)
 		}
 	}
 	bare := subjectFinding(laterFile, 280, laterDeleteText, laterDeleteHeadline, laterDeleteImpact, types.FindingSubject{Kind: "symbol", Path: laterFile, Name: "swap"})
@@ -282,6 +282,13 @@ func TestCrossPR_ABareShortSubjectCarriesNoMatch(t *testing.T) {
 	point.Subjects = "swap"
 	if _, score, ok := ScoreSettledElsewhere(bare, []db.SettledPoint{point}); ok {
 		t.Fatalf("a point whose only shared subject is a bare word is raised again: %+v", score)
+	}
+	// A generic key first in the order is passed over for a specific one.
+	both := subjectFinding(laterFile, 280, laterDeleteText, laterDeleteHeadline, laterDeleteImpact,
+		types.FindingSubject{Kind: "symbol", Path: laterFile, Name: "options"}, types.FindingSubject{Kind: "config_key", Name: "PURCHASER_READ_SWAP"})
+	point.Subjects = "options,purchaser_read_swap"
+	if _, score, ok := ScoreSettledElsewhere(both, []db.SettledPoint{point}); !ok || score.Subject != "purchaser_read_swap" {
+		t.Fatalf("the specific shared subject carries the match past a generic one: ok=%v %+v", ok, score)
 	}
 	if _, score, ok := ScoreSettledElsewhere(laterDeleteFinding(), []db.SettledPoint{earlierVerdictPoint()}); !ok || score.Subject != "purchaser_read_swap" {
 		t.Fatalf("a qualified subject carries the match: ok=%v %+v", ok, score)
@@ -307,6 +314,25 @@ func TestCrossPR_ALaterDeferralSupersedesTheStand(t *testing.T) {
 	later, laterLedger := newFakeThreadGitHub(), newFakeSettledLedger(ledger.points...)
 	if rep := publishLater(t, later, laterLedger, laterPRRound(), testPolicy()); rep.CrossPRSettled != 0 || rep.InlinePosted != 2 {
 		t.Fatalf("a deferred point settles nothing: %+v", rep)
+	}
+}
+
+func TestCrossPR_AFixAfterAStandSupersedesIt(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger()
+	gh.extra = []ReviewThread{{NodeID: "E3001", RootCommentID: 3001}}
+	publishLater(t, gh, ledger, earlierPRRound(greptileThread(true)), testPolicy())
+	comments := greptileThread(true)
+	comments = append(comments, reconcile.ExternalComment{ID: 3004, Author: "dev-ana", Path: earlierFile, Line: 241, InReplyToID: 3001,
+		Body: "Fixed in a82796ac after all, the reader now falls back to user_id.", CreatedAt: comments[2].CreatedAt.Add(time.Hour)})
+	again := earlierPRRound(comments)
+	again.HeadSHA = "bbe8764"
+	publishLater(t, gh, ledger, again, testPolicy())
+	if len(ledger.recorded) != 1 || ledger.recorded[0].Source != db.SettledSourceSuperseded {
+		t.Fatalf("the fix replaces the stand: %+v", ledger.recorded)
+	}
+	later, laterLedger := newFakeThreadGitHub(), newFakeSettledLedger(ledger.points...)
+	if rep := publishLater(t, later, laterLedger, laterPRRound(), testPolicy()); rep.CrossPRSettled != 0 || rep.InlinePosted != 2 {
+		t.Fatalf("a superseded point settles nothing: %+v", rep)
 	}
 }
 

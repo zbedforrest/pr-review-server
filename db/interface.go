@@ -286,6 +286,9 @@ const (
 	// SettledSourceDeferred marks a thread whose author later put the point
 	// off to follow-up work: it supersedes a stand and settles nothing.
 	SettledSourceDeferred = "deferred"
+	// SettledSourceSuperseded marks a thread whose author stood by the
+	// code and then reported a fix: the stand is gone and settles nothing.
+	SettledSourceSuperseded = "superseded"
 )
 
 // TelemetryEvent represents a single telemetry event for creation
