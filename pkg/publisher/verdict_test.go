@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,6 +278,12 @@ func TestReplyReactor_VerdictDismissesTheFindingWithAReactionAndNoModelReply(t *
 	}
 	if len(rep.Verdicts) != 1 || rep.Verdicts[0] != (SettledVerdict{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Fingerprint: "a.go:1:abc", RootCommentID: 100, AuthorCommentID: 101, Kind: VerdictKindReply}) {
 		t.Fatalf("verdicts=%+v", rep.Verdicts)
+	}
+	if len(ledger.settled) != 1 {
+		t.Fatalf("the verdict is remembered for the author's later pull requests: %+v", ledger.settled)
+	}
+	if p := ledger.settled[0]; p.Author != "pilot" || p.Source != db.SettledSourceVerdict || p.PRNumber != 7 || p.CommentID != 100 || p.Fingerprint != "a.go:1:abc" || !strings.Contains(p.Reason, "intentional") || !strings.Contains(p.Text, "intentional") {
+		t.Fatalf("settled point = %+v", p)
 	}
 
 	gh.reactions = nil

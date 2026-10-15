@@ -65,9 +65,10 @@ func (p *Publisher) refreshExternal(ctx context.Context, r *Round, rows map[stri
 	}
 	comments := make([]reconcile.ExternalComment, 0, len(listed))
 	for _, c := range listed {
-		comments = append(comments, reconcile.ExternalComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, StartLine: c.StartLine, OriginalLine: c.OriginalLine, OriginalStartLine: c.OriginalStartLine, InReplyToID: c.InReplyToID})
+		comments = append(comments, reconcile.ExternalComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, StartLine: c.StartLine, OriginalLine: c.OriginalLine, OriginalStartLine: c.OriginalStartLine, InReplyToID: c.InReplyToID, CreatedAt: c.CreatedAt})
 	}
 	r.External = reconcile.ParseExternalComments(comments, own)
+	r.ExternalThreads = reconcile.BuildExternalThreads(comments, r.External, r.Author)
 }
 
 // hasUnknownFinding reports whether the round shows a finding the ledger has

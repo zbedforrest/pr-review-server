@@ -1479,7 +1479,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	adoptPosted := func(in []ThreadComment) (bool, error) {
 		for _, c := range in {
 			if id, ok := replyMarkerID(c.Body); ok && id == reply.CommentID && c.InReplyToID == reply.RootCommentID && c.AuthorID == root.AuthorID && c.ID != reply.CommentID {
-				return true, r.adopt(ctx, t, reply, c, &outcome, rep)
+				return true, r.adopt(ctx, t, state.AuthorLogin, reply, c, &outcome, rep)
 			}
 		}
 		return false, nil
@@ -1712,7 +1712,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 	if err != nil {
 		return outcome, err
 	}
-	if err := r.adopt(ctx, t, reply, ThreadComment{ID: id, CreatedAt: r.now()}, &outcome, rep); err != nil {
+	if err := r.adopt(ctx, t, state.AuthorLogin, reply, ThreadComment{ID: id, CreatedAt: r.now()}, &outcome, rep); err != nil {
 		return outcome, err
 	}
 	if rep != nil {
@@ -1729,7 +1729,7 @@ func (r ReplyReactor) text(ctx context.Context, t db.PublishedReplyTarget, state
 // life under any wording. A posted hold marks the row contested: the thread
 // stays open for humans and the finding is not raised again under another
 // wording. Under the legacy policy every concession dismisses.
-func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome, rep *ReplyReport) error {
+func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, author string, reply AuthorReply, posted ThreadComment, outcome *ReplyOutcome, rep *ReplyReport) error {
 	if err := r.Ledger.MarkPublishedReplyPosted(t.RepoOwner, t.RepoName, t.PRNumber, reply.CommentID, posted.ID, posted.CreatedAt); err != nil {
 		return err
 	}
@@ -1741,6 +1741,9 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, repl
 			err = r.Ledger.MarkPublishedFindingFixed(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint)
 		} else {
 			err = r.Ledger.SetPublishedFindingState(t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, db.PublishedStateDismissed)
+			if err == nil {
+				r.rememberSettled(t, author, reply, db.SettledSourceConceded)
+			}
 		}
 		if err != nil {
 			return err
@@ -1760,6 +1763,39 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, repl
 		return err
 	}
 	return nil
+}
+
+// rememberSettled records the dismissed finding as a point the author
+// settled, for their later pull requests in the repo. Best effort: the
+// ledger state is already written, and a ledger without the store or a
+// failed write changes nothing here.
+func (r ReplyReactor) rememberSettled(t db.PublishedReplyTarget, author string, reply AuthorReply, source string) {
+	store, ok := r.Ledger.(SettledPointStore)
+	if !ok || strings.TrimSpace(author) == "" {
+		return
+	}
+	rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber)
+	if err != nil {
+		log.Printf("[REPLY %s/%s#%d] settled point for %s not recorded: %v", t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, err)
+		return
+	}
+	// A row the ledger lost still leaves a point with the reply's reason;
+	// without subjects it settles nothing but is shown to the agent.
+	row := db.PublishedFinding{RepoOwner: t.RepoOwner, RepoName: t.RepoName, PRNumber: t.PRNumber, Fingerprint: reply.Fingerprint, CommentID: reply.RootCommentID}
+	for _, have := range rows {
+		if have.Fingerprint == reply.Fingerprint && isFindingRow(&have) {
+			row = have
+			break
+		}
+	}
+	at := reply.CreatedAt
+	if at.IsZero() {
+		at = r.now()
+	}
+	point := SettledPointFromRow(row, author, source, reply.Body, at)
+	if err := store.RecordSettledPoint(&point); err != nil {
+		log.Printf("[REPLY %s/%s#%d] settled point for %s not recorded: %v", t.RepoOwner, t.RepoName, t.PRNumber, reply.Fingerprint, err)
+	}
 }
 
 // Thread outcomes of a concession, carried on ReplyOutcome so the background

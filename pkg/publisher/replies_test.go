@@ -153,6 +153,7 @@ func (f *fakeReplyGH) PostReply(_ context.Context, owner, repo string, number in
 type fakeReplyLedger struct {
 	targets  []db.PublishedReplyTarget
 	findings []db.PublishedFinding
+	settled  []db.SettledPoint
 	rows     []db.PublishedReply
 	unlinked []db.UnlinkedPublishedFinding
 	linked   map[uint]int64
@@ -297,6 +298,15 @@ func (f *fakeReplyLedger) MarkPublishedFindingFixed(_, _ string, _ int, fingerpr
 }
 func (f *fakeReplyLedger) GetPublishedFindingsForPR(_, _ string, _ int) ([]db.PublishedFinding, error) {
 	return f.findings, nil
+}
+func (f *fakeReplyLedger) RecordSettledPoint(p *db.SettledPoint) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.settled = append(f.settled, *p)
+	return nil
+}
+func (f *fakeReplyLedger) ListSettledPoints(_, _, _ string, _, _ time.Time) ([]db.SettledPoint, error) {
+	return f.settled, nil
 }
 func (f *fakeReplyLedger) ContestPublishedFinding(_, _ string, _ int, fingerprint string) (bool, error) {
 	if f.states == nil {

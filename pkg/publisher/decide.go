@@ -21,7 +21,7 @@ const anchorTolerance = 3
 // finding on this PR.
 func terminalState(state string) bool {
 	switch state {
-	case db.PublishedStateDismissed, db.PublishedStateContested, db.PublishedStateExternal:
+	case db.PublishedStateDismissed, db.PublishedStateContested, db.PublishedStateExternal, db.PublishedStateSettled:
 		return true
 	}
 	return false
@@ -202,12 +202,20 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 
 	originalIDs := p.aliasToLedger(&r, rows)
 	rememberExternal(ctx, &r, rows, threads, p.Policy.NoteReconcile)
+	rememberSettled(&r, rows)
 	settledDropped, bodyCovered := 0, 0
 	if p.Policy.SettledAlias {
 		// Before withoutTerminal: the root the security exception mints
 		// there restates its settled row by construction.
 		r.Findings, settledDropped = withoutSettled(r, rows)
 	}
+	now := p.now()
+	// The threads other reviewers withdrew are recorded first so one they
+	// took back before this round settles it; before withoutTerminal too,
+	// since a point settled elsewhere is a new row the terminal pass never
+	// sees.
+	p.recordExternalSettled(ctx, r, threads, now)
+	settledRows, crossPRSettled := p.withoutSettledElsewhere(&r, rows, now)
 	r.Findings = p.withoutTerminal(r, rows, originalIDs)
 	r.Findings = withoutGuardedReturns(r, rows, guard)
 	forgetShown(&r)
@@ -216,7 +224,6 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		row, ok := rows[id]
 		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
 	})
-	now := p.now()
 	var external externalPass
 	if p.Policy.ExternalReconcile {
 		p.refreshExternal(ctx, &r, rows)
@@ -275,8 +282,11 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		written[f.ID] = true
 	}
 	rep.InlinePosted, rep.Annotations, rep.ExternalMatched = len(sel.Inline), len(sel.Annotations), external.matched
-	rep.ExternalSettled, rep.SettledDropped, rep.BodyCovered = external.settled, settledDropped, bodyCovered
+	rep.ExternalSettled, rep.SettledDropped, rep.BodyCovered, rep.CrossPRSettled = external.settled, settledDropped, bodyCovered, crossPRSettled
 	for _, row := range external.rows {
+		writes = append(writes, pending{row: row})
+	}
+	for _, row := range settledRows {
 		writes = append(writes, pending{row: row})
 	}
 	lastPublished := ""
