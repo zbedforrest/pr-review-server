@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false] [--settled-alias=false] [--note-reconcile=false] [--body-check] [--note-sentence-match=false] [--note-problem-clause=false]
+//	publishreplay --dumps <dir> --sidecars <dir> [--limit N] [--pr repo#number] [--csv out.csv] [--out metrics.json] [--offline] [--legacy] [--inline-pr-cap N] [--replay-unchanged-diff] [--render-hygiene=false] [--library-claim-hold=false] [--regression-evidence=false] [--settled-alias=false] [--note-reconcile=false] [--body-check] [--note-sentence-match=false] [--note-problem-clause=false] [--cross-pr-settled=false] [--pairs pairs.md]
 //
 // Dumps are the GitHub GraphQL exports (one PR per file). Sidecars are the
 // review findings JSON per round, fetched from PRISM_BASE_URL/reviews/ with
@@ -57,6 +57,8 @@ func main() {
 	noteReconcile := flag.Bool("note-reconcile", true, "match folded notes to other reviewers' resolved threads as settled points (PUBLISH_NOTE_RECONCILE)")
 	bodyCheck := flag.Bool("body-check", false, "hold folded notes the pull request body already states (PUBLISH_BODY_CHECK)")
 	noteSentenceMatch := flag.Bool("note-sentence-match", true, "score a finding against another reviewer's root by the sentence its note shows too (PUBLISH_NOTE_SENTENCE_MATCH)")
+	crossPRSettled := flag.Bool("cross-pr-settled", true, "drop a new finding that raises again a point the author settled on an earlier PR of the repo within thirty days (PUBLISH_CROSS_PR_SETTLED)")
+	pairsPath := flag.String("pairs", "", "write every cross-PR settled pair (replayed and observed) here as a markdown table")
 	noteProblemClause := flag.Bool("note-problem-clause", true, "cut a bullet to its problem clause rather than its context clause, never ending on a connective, and title a comment that quotes the PR by the sentence after it (PUBLISH_NOTE_PROBLEM_CLAUSE)")
 	flag.Parse()
 	// The renderer reads its kill switches from the environment, as the
@@ -106,6 +108,7 @@ func main() {
 	opts.Policy.NoteReconcile = *noteReconcile
 	opts.Policy.BodyCheck = *bodyCheck
 	opts.Policy.NoteSentenceMatch = *noteSentenceMatch
+	opts.Policy.CrossPRSettled = *crossPRSettled
 	if f != nil {
 		if err := prefetch(st, dumps, opts.bots, *workers, log.Printf); err != nil {
 			log.Printf("prefetch finished with errors; the replay retries each fetch once more and counts what still fails as missing: %v", err)
@@ -126,6 +129,11 @@ func main() {
 		}
 		_ = fh.Close()
 	}
+	if *pairsPath != "" {
+		if err := os.WriteFile(*pairsPath, []byte(renderPairs(res.CrossPRPairs)), 0o644); err != nil {
+			log.Fatalf("pairs: %v", err)
+		}
+	}
 	out, _ := json.MarshalIndent(res.Metrics, "", "  ")
 	if *outPath != "" {
 		if err := os.WriteFile(*outPath, append(out, '\n'), 0o644); err != nil {
@@ -133,6 +141,16 @@ func main() {
 		}
 	}
 	fmt.Println(string(out))
+}
+
+// renderPairs is the markdown table of cross-PR settled pairs.
+func renderPairs(pairs []CrossPRPair) string {
+	var b strings.Builder
+	b.WriteString("| outcome | pr | round | file:line | headline | settled on | source | settled at |\n|---|---|---:|---|---|---|---|---|\n")
+	for _, p := range pairs {
+		fmt.Fprintf(&b, "| %s | %s | %d | %s:%d | %s | #%d | %s | %s |\n", p.Outcome, p.PR, p.Round, p.File, p.Line, strings.ReplaceAll(p.Headline, "|", "\\|"), p.SettledPR, p.SettledSource, p.SettledAt)
+	}
+	return b.String()
 }
 
 // replayPolicy starts from the shipped defaults so the replay and the tests

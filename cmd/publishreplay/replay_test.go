@@ -54,13 +54,14 @@ func comparable(m Metrics) Metrics {
 // a point the pull request body states (#5). The ledger policy posts each
 // of the first three once and says the rest in the thread; the fourth
 // becomes an external row with one delta reply; the fifth round writes a
-// summary with neither note.
+// summary with neither note. The fifth PR's settled Greptile thread is the
+// one point the dumps seed into the cross-PR store.
 func TestRun_FixtureMetrics(t *testing.T) {
 	m := fixtureRun(t, false).Metrics
 	want := Metrics{
 		PRs: 5, PRsWithRounds: 5, Rounds: 11, RoundsReplayed: 11, SameCommitRounds: 1, SameCommitSkipped: 1,
 		RootsPosted: 3, Fixed: 1, InThreadReplies: 1, ThreadsResolved: 1, ThreadsUnresolved: 1,
-		ExternalMatched: 1, ExternalReplies: 1, ExternalSettled: 1,
+		ExternalMatched: 1, ExternalReplies: 1, ExternalSettled: 1, SettledPointsSeeded: 1,
 		CommentsPerPushP50: 0, CommentsPerPushMean: 0.3, RoundsPerPRP50: 3,
 	}
 	if got := comparable(m); got != want {
@@ -103,7 +104,7 @@ func TestRun_FixtureMetricsLegacy(t *testing.T) {
 		RootsPosted: 7, SameMarkerReposts: 2, SameDefectReposts: 1, SameDefectRepostsPerPR: 0.2, PRsWithReposts: 3,
 		Fixed: 3, FixedWithoutFileChange: 1,
 		ExternalDuplicatesNear: 1, ExternalDuplicatesOpen: 1, ExternalDuplicatesResolutionUnknown: 1, PRsWithExternalDuplicates: 1,
-		SummaryNotesNearExternalRoot: 1, SummaryNotesNearSettledRoot: 1,
+		SummaryNotesNearExternalRoot: 1, SummaryNotesNearSettledRoot: 1, SettledPointsSeeded: 1,
 		CommentsPerPushP50: 1, CommentsPerPushMean: 0.7, RoundsPerPRP50: 3,
 	}
 	if got := comparable(m); got != want {
@@ -155,8 +156,8 @@ func TestRun_PerPRRowsAndCSV(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 6 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.Contains(lines[0], ",external_duplicates_near,external_duplicates_open,external_duplicates_unknown,external_matched,external_replies,observed_external_duplicates_near,observed_external_duplicates_open,held_library_claims,") || !strings.HasSuffix(lines[0], ",zero_status_lines_over_notes,noop_summary_edits,external_settled,settled_dropped,body_covered,summary_notes_near_external_root,summary_notes_near_settled_root,observed_summary_notes_near_external_root,observed_summary_notes_near_settled_root,observed_cross_file_same_point") ||
-		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") || !strings.HasSuffix(lines[5], ",1,0,0,0,0,1,1,0") {
+	if len(lines) != 6 || !strings.HasPrefix(lines[0], "pr,rounds,rounds_after_merge_commit,rounds_skipped_unchanged_diff,") || !strings.Contains(lines[0], ",external_duplicates_near,external_duplicates_open,external_duplicates_unknown,external_matched,external_replies,observed_external_duplicates_near,observed_external_duplicates_open,held_library_claims,") || !strings.HasSuffix(lines[0], ",zero_status_lines_over_notes,noop_summary_edits,external_settled,settled_dropped,body_covered,summary_notes_near_external_root,summary_notes_near_settled_root,observed_summary_notes_near_external_root,observed_summary_notes_near_settled_root,observed_cross_file_same_point,cross_pr_resettled,cross_pr_settled,observed_cross_pr_resettled") ||
+		!strings.HasPrefix(lines[3], "example#3,3,0,0,0,0,1,0,0,0,1,0,0,0,0,0,1,0,1,1,0,") || !strings.HasSuffix(lines[4], ",0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0") || !strings.HasSuffix(lines[5], ",1,0,0,0,0,1,1,0,0,0,0") {
 		t.Fatalf("csv:\n%s", buf.String())
 	}
 }

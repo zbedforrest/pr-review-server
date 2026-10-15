@@ -1,0 +1,96 @@
+{
+ "number": 6,
+ "title": "Fixture 6",
+ "url": "https://github.com/acme/example/pull/6",
+ "state": "MERGED",
+ "isDraft": false,
+ "merged": true,
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "6a6a6a6666666666666666666666666666666666",
+ "reviews": {
+  "nodes": [
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 61,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-06T10:00:00Z",
+    "commit": {
+     "oid": "6a6a6a6666666666666666666666666666666666"
+    }
+   }
+  ],
+  "totalCount": 1
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "PRRT_61",
+    "isResolved": true,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "svc/store.go",
+    "line": 24,
+    "originalLine": 24,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 601,
+       "author": {
+        "login": "acme-bot"
+       },
+       "body": "<!-- prism:finding:svc/store.go:2:f6f6f6f6f6f6 -->\n**MEDIUM** The buyer lookup in `recordBulk` hardcodes `purchaserID`, but every other purchase read branches on `PURCHASER_READ_SWAP` and falls back to `userID`. The `purchaserID` column can be null for rows written before the backfill ran, so with the switch off the fanout lookup misses older buyers.",
+       "createdAt": "2026-09-06T10:00:00Z",
+       "updatedAt": "2026-09-06T10:00:00Z",
+       "path": "svc/store.go",
+       "originalCommit": {
+        "oid": "6a6a6a6666666666666666666666666666666666"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      },
+      {
+       "databaseId": 602,
+       "author": {
+        "login": "dev"
+       },
+       "body": "This is intentional. The purchaserID backfill is done in prod (zero nulls and zero mismatches verified) and PURCHASER_READ_SWAP is on for both writes and the viewer ownership check, so the switch-off state this describes does not exist anymore.",
+       "createdAt": "2026-09-06T11:00:00Z",
+       "updatedAt": "2026-09-06T11:00:00Z",
+       "path": "svc/store.go",
+       "originalCommit": {
+        "oid": "6a6a6a6666666666666666666666666666666666"
+       },
+       "replyTo": {
+        "databaseId": 601
+       },
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "comments": {
+  "nodes": [],
+  "totalCount": 0
+ },
+ "commits": {
+  "nodes": [
+   {
+    "commit": {
+     "oid": "6a6a6a6666666666666666666666666666666666"
+    }
+   }
+  ],
+  "totalCount": 1
+ },
+ "body": ""
+}

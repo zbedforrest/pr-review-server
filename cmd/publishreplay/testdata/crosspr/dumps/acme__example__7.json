@@ -1,0 +1,77 @@
+{
+ "number": 7,
+ "title": "Fixture 7",
+ "url": "https://github.com/acme/example/pull/7",
+ "state": "OPEN",
+ "isDraft": false,
+ "merged": false,
+ "author": {
+  "login": "dev"
+ },
+ "headRefOid": "7a7a7a7777777777777777777777777777777777",
+ "reviews": {
+  "nodes": [
+   {
+    "author": {
+     "login": "acme-bot"
+    },
+    "databaseId": 71,
+    "state": "COMMENTED",
+    "submittedAt": "2026-09-08T10:00:00Z",
+    "commit": {
+     "oid": "7a7a7a7777777777777777777777777777777777"
+    }
+   }
+  ],
+  "totalCount": 1
+ },
+ "reviewThreads": {
+  "nodes": [
+   {
+    "id": "PRRT_71",
+    "isResolved": false,
+    "isOutdated": false,
+    "isCollapsed": null,
+    "path": "svc/api.go",
+    "line": 30,
+    "originalLine": 30,
+    "comments": {
+     "nodes": [
+      {
+       "databaseId": 701,
+       "author": {
+        "login": "acme-bot"
+       },
+       "body": "<!-- prism:finding:svc/api.go:3:a7a7a7a7a7a7 -->\n**MEDIUM** Delete filters on un-backfilled purchaserID\n\nA user whose purchase row has a null purchaserID (pre-backfill) still sees the set in the purchased feed but gets a 400 on delete and no removal is written.",
+       "createdAt": "2026-09-08T10:00:00Z",
+       "updatedAt": "2026-09-08T10:00:00Z",
+       "path": "svc/api.go",
+       "originalCommit": {
+        "oid": "7a7a7a7777777777777777777777777777777777"
+       },
+       "replyTo": null,
+       "reactions": {
+        "nodes": []
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "comments": {
+  "nodes": [],
+  "totalCount": 0
+ },
+ "commits": {
+  "nodes": [
+   {
+    "commit": {
+     "oid": "7a7a7a7777777777777777777777777777777777"
+    }
+   }
+  ],
+  "totalCount": 1
+ },
+ "body": ""
+}
