@@ -232,6 +232,29 @@ func TestCrossPR_APointSettledInAnotherFileIsAnotherPoint(t *testing.T) {
 	}
 }
 
+func TestCrossPR_ABareShortSubjectCarriesNoMatch(t *testing.T) {
+	for _, c := range []struct {
+		subject, file string
+		generic       bool
+	}{
+		{"start", "a/b.ts", true}, {"output", "x/models.py", true}, {"creators", "collection/api/creators.py", true}, {"", "x.py", true},
+		{"companion_asset", "forms.py", false}, {"showtipmenu", "x.tsx", false}, {"DeleteView._purchase_ids", "views.py", false},
+	} {
+		if got := genericSubject(c.subject, c.file); got != c.generic {
+			t.Errorf("genericSubject(%q, %q) = %v", c.subject, c.file, got)
+		}
+	}
+	bare := subjectFinding(laterFile, 280, laterDeleteText, laterDeleteHeadline, laterDeleteImpact, types.FindingSubject{Kind: "symbol", Path: laterFile, Name: "swap"})
+	point := earlierVerdictPoint()
+	point.Subjects = "swap"
+	if _, score, ok := ScoreSettledElsewhere(bare, []db.SettledPoint{point}); ok {
+		t.Fatalf("a point whose only shared subject is a bare word is raised again: %+v", score)
+	}
+	if _, score, ok := ScoreSettledElsewhere(laterDeleteFinding(), []db.SettledPoint{earlierVerdictPoint()}); !ok || score.Subject != "purchaser_read_swap" {
+		t.Fatalf("a qualified subject carries the match: ok=%v %+v", ok, score)
+	}
+}
+
 func TestCrossPR_ADeferralSettlesNothing(t *testing.T) {
 	for _, body := range []string{
 		"Fair. I'm actually gonna pull this line until the next PRs, as the next PRs should do the work of fixing this.",
@@ -382,6 +405,8 @@ func TestThreadSettled_ResolvedThreadsCountOnlyWhenTheAuthorStoodByTheCode(t *te
 		{"will fix", false, false},
 		{"Is this still reachable after the guard?", false, false},
 		{"I will handle this in a follow-up PR, but the items in the Content Vault should match.", false, false},
+		{"I made it so that if the items already exist in the store, to skip the fetch.", false, false},
+		{"Updated, the reader now falls back to user_id.", false, false},
 		{"intentional", true, true},
 		{"Not an issue. The purchaser_id backfill is complete in prod.", true, true},
 		// A stand in prose settles a thread the reviewer withdrew; under a

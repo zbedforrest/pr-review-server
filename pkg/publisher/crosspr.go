@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"log"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -76,16 +77,44 @@ func ScoreSettledElsewhere(f payload.Finding, points []db.SettledPoint) (db.Sett
 			same = append(same, pt)
 		}
 	}
-	earlier := make([]reconcile.EarlierPoint, 0, len(same))
-	for _, pt := range same {
-		earlier = append(earlier, reconcile.EarlierPoint{Subjects: splitSubjects(pt.Subjects), Text: pt.Text, Kind: pt.FindingKind})
+	best, bestScore := -1, reconcile.EarlierScore{}
+	for i, pt := range same {
+		score, ok := reconcile.SameEarlierPoint(f, reconcile.EarlierPoint{Subjects: splitSubjects(pt.Subjects), Text: pt.Text, Kind: pt.FindingKind})
+		if !ok || genericSubject(score.Subject, f.File) {
+			continue
+		}
+		if best < 0 || score.Text > bestScore.Text {
+			best, bestScore = i, score
+		}
 	}
-	i, score, ok := reconcile.MatchEarlier(f, earlier)
-	if !ok {
-		return db.SettledPoint{}, score, false
+	if best < 0 {
+		return db.SettledPoint{}, bestScore, false
 	}
-	return same[i], score, true
+	return same[best], bestScore, true
 }
+
+// genericSubject reports whether the shared subject is too plain to carry a
+// match: a bare short word (start, main, lookup, output) that distinct
+// defects name all the time, or the file's own stem (creators for
+// creators.py). A qualified name, one with a separator or a digit, or a
+// long one is specific enough.
+func genericSubject(subject, file string) bool {
+	subject = strings.ToLower(strings.TrimSpace(subject))
+	if subject == "" {
+		return true
+	}
+	stem := strings.ToLower(strings.TrimSuffix(filepath.Base(file), filepath.Ext(file)))
+	if subject == stem {
+		return true
+	}
+	if strings.ContainsAny(subject, "_.:#-0123456789") {
+		return false
+	}
+	return len(subject) < genericSubjectMaxLen
+}
+
+// genericSubjectMaxLen is the length under which a bare word is generic.
+const genericSubjectMaxLen = 10
 
 func isPseudoFile(file string) bool { return file == summaryFile || file == checkFile }
 
@@ -186,7 +215,7 @@ func ThreadSettled(t reconcile.ExternalThread, resolved bool) bool {
 }
 
 // workClaimRe opens a reply that reports work done rather than a stand.
-var workClaimRe = regexp.MustCompile(`(?i)^\s*(added|implemented|changed|moved|renamed|switched|reverted|dropped|replaced|refactored|extracted)\b`)
+var workClaimRe = regexp.MustCompile(`(?i)^\s*(?:i\s+(?:have\s+|just\s+)?|i've\s+)?(added|implemented|changed|moved|renamed|switched|reverted|dropped|replaced|refactored|extracted|made|fixed|updated|removed|rewrote|reworked)\b`)
 
 // SettledPointOfThread is the point another reviewer's thread becomes
 // when ThreadSettled holds: the root's prose and identifiers, the author's
