@@ -662,6 +662,20 @@ func seedSettledPoints(ledger *db.GormDB, dumps []*prDump, bots func(*prDump) ma
 	return n
 }
 
+// settledPointOf finds the point a settled row names in the store, for the
+// pair listing; a point the store no longer lists is named by the row alone.
+func settledPointOf(ledger *db.GormDB, d *prDump, at time.Time, row db.PublishedFinding) db.SettledPoint {
+	points, err := ledger.ListSettledPoints(d.Owner, d.Repo, d.Author.Login, at.Add(-publisher.SettledWindow), at)
+	if err == nil {
+		for _, pt := range points {
+			if pt.PRNumber == row.SettledPRNumber && pt.CommentID == row.SettledCommentID {
+				return pt
+			}
+		}
+	}
+	return db.SettledPoint{PRNumber: row.SettledPRNumber, CommentID: row.SettledCommentID}
+}
+
 // crossPRPair describes a finding against the point it raises again.
 func crossPRPair(d *prDump, round int, f payload.Finding, pt db.SettledPoint, outcome string) CrossPRPair {
 	return CrossPRPair{PR: d.key(), Round: round + 1, File: f.File, Line: f.Line, Headline: head(publisher.TitleOf(f)),
@@ -807,7 +821,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 			if !ok {
 				f = payload.Finding{ID: row.Fingerprint, File: fileOfFingerprint(row.Fingerprint), Line: row.Line, Comment: row.CommentText}
 			}
-			pairs = append(pairs, crossPRPair(d, i, f, db.SettledPoint{PRNumber: row.SettledPRNumber, CommentID: row.SettledCommentID}, "settled"))
+			pairs = append(pairs, crossPRPair(d, i, f, settledPointOf(ledger, d, rd.At, row), "settled"))
 			logf("%s: round %d finding %s:%d settled earlier on #%d, dropped", d.key(), i+1, f.File, f.Line, row.SettledPRNumber)
 		}
 		countResolutions(d, s, rd.SHA, previous, after, &pr, logf)
