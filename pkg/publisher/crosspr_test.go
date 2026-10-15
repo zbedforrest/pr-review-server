@@ -229,6 +229,31 @@ func TestCrossPR_ACriticalFindingIsExempt(t *testing.T) {
 	}
 }
 
+func TestCrossPR_ACriticalRestatementOfASettledRowPosts(t *testing.T) {
+	ledger, gh := newFakeSettledLedger(earlierVerdictPoint()), newFakeThreadGitHub()
+	if rep := publishLater(t, gh, ledger, laterPRRound(), testPolicy()); rep.CrossPRSettled != 1 {
+		t.Fatalf("round 1 settles the delete finding: %+v", rep)
+	}
+	r2 := laterPRRound()
+	r2.HeadSHA = "0b0b0b0"
+	r2.Findings[1].Severity = "critical"
+	rep := publishLater(t, gh, ledger, r2, testPolicy())
+	if rep.InlinePosted != 1 || rep.CrossPRSettled != 0 {
+		t.Fatalf("a critical restatement over the settled row posts a fresh root: %+v", rep)
+	}
+	posted := false
+	for _, rv := range gh.reviews {
+		for _, c := range rv.comments {
+			if strings.Contains(c.Body, "Raised again at critical after this point was settled earlier") {
+				posted = true
+			}
+		}
+	}
+	if !posted {
+		t.Fatalf("the fresh root names the earlier settlement: %+v", gh.reviews)
+	}
+}
+
 func TestCrossPR_APointSettledInAnotherFileIsAnotherPoint(t *testing.T) {
 	point := earlierVerdictPoint()
 	point.File = "store/models.py"
@@ -317,6 +342,7 @@ func TestCrossPR_ADeferralSettlesNothing(t *testing.T) {
 		"Intentional, the two flags are read by different workers.",
 		"Known drift, on purpose. The backend settled on purchased.",
 		"we handle this in the shared client, the caller never sees a nil.",
+		"the caller should handle this in the retry path, so this branch is fine.",
 		"we fix it in the caller after the parse, so this branch is unreachable.",
 	} {
 		if Deferred(body) {

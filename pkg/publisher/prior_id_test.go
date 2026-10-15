@@ -75,7 +75,9 @@ func TestPriorID_NamingASettledRowDropsTheFinding(t *testing.T) {
 			gh, ledger := newFakeGitHub(), newFakeLedger()
 			publishRound(t, gh, ledger, ledgerRoundOne())
 			ledger.rows[c1ID].State = state
-			rep := publishRound(t, gh, ledger, priorIDRound("sha-2", c1ID))
+			r := priorIDRound("sha-2", c1ID)
+			belowCritical(&r, state == db.PublishedStateSettled)
+			rep := publishRound(t, gh, ledger, r)
 			if rep.InlinePosted != 0 || rep.StillOpen != 2 {
 				t.Fatalf("a wording the agent ties to a settled row is terminal: %+v", rep)
 			}

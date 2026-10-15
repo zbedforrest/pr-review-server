@@ -49,7 +49,9 @@ type externalPass struct {
 // who posted after the round was built is still reconciled against.
 func (p *Publisher) refreshExternal(ctx context.Context, r *Round, rows map[string]*db.PublishedFinding) {
 	lister, ok := p.GH.(ReviewCommentLister)
-	if !ok || !hasUnknownFinding(r, rows, p.Policy.NoteReconcile) {
+	// A round built without its threads is listed too, so what other
+	// reviewers withdrew here is recorded whether or not anything is new.
+	if !ok || (!hasUnknownFinding(r, rows, p.Policy.NoteReconcile) && (r.ExternalThreads != nil || strings.TrimSpace(r.Author) == "")) {
 		return
 	}
 	listed, err := lister.ListReviewComments(ctx, r.Owner, r.Repo, r.Number)

@@ -659,10 +659,17 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 			}
 			continue
 		}
-		if !keyed || !securityException(r, row, f) {
+		// A settled row is the cross-PR memory's; a critical finding is
+		// never settled by it, at the match or afterwards.
+		settledCritical := row.State == db.PublishedStateSettled && f.Severity == "critical"
+		if !settledCritical && (!keyed || !securityException(r, row, f)) {
 			continue
 		}
-		f.Comment = fmt.Sprintf("Raised again: `%s` changed at %s after this point was settled. %s", f.File, shortSHA(r.HeadSHA), f.Comment)
+		if settledCritical {
+			f.Comment = fmt.Sprintf("Raised again at critical after this point was settled earlier. %s", f.Comment)
+		} else {
+			f.Comment = fmt.Sprintf("Raised again: `%s` changed at %s after this point was settled. %s", f.File, shortSHA(r.HeadSHA), f.Comment)
+		}
 		fresh := originalIDs[f.ID]
 		if fresh == "" || fresh == f.ID {
 			// The wording and line did not move, so the marker is minted from

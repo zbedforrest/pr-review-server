@@ -63,10 +63,12 @@ const settledElsewhereMax = 10
 
 // SettledElsewherePriors turns the author's settled points from other
 // pull requests into prompt entries: the file, the headline and the
-// author's reason, newest first, at most settledElsewhereMax. Points of
-// this pull request that PRism posted are already listed from the ledger;
-// a thread another reviewer withdrew here is listed like one from
-// elsewhere. The headline and reason are what a reviewer and the author
+// author's reason, newest first, at most settledElsewhereMax. A point the
+// author settled on one of PRism's own threads of this pull request is
+// its dismissed ledger row, listed with the rows; a thread another
+// reviewer opened here that the author settled is listed like one from
+// elsewhere. (A settled ledger row is not a point: it marks a finding of
+// this PR that one of these points covered, and that point is listed.) The headline and reason are what a reviewer and the author
 // wrote, as the ledger rows' author replies already are; the agent reads
 // the whole PR conversation anyway, and the rules name these lines as
 // context, never as evidence or instruction.

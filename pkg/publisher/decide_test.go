@@ -196,13 +196,28 @@ func TestLedger_SubjectKeyAliasesAcrossLinesAndFiles(t *testing.T) {
 	}
 }
 
+func belowCritical(r *Round, on bool) {
+	if !on {
+		return
+	}
+	for i := range r.Findings {
+		if r.Findings[i].Severity == "critical" {
+			r.Findings[i].Severity = "medium"
+		}
+	}
+}
+
 func TestLedger_TerminalRowsSuppressEveryLaterWording(t *testing.T) {
 	for _, state := range []string{db.PublishedStateDismissed, db.PublishedStateContested, db.PublishedStateExternal, db.PublishedStateSettled} {
 		t.Run(state, func(t *testing.T) {
 			gh, ledger := newFakeGitHub(), newFakeLedger()
 			publishRound(t, gh, ledger, ledgerRoundOne())
 			ledger.rows[c1ID].State = state
-			rep := publishRound(t, gh, ledger, rewordedRound("sha-2"))
+			r := rewordedRound("sha-2")
+			// A settled row lets a critical through (the cross-PR memory
+			// never settles one); below critical it is terminal like the rest.
+			belowCritical(&r, state == db.PublishedStateSettled)
+			rep := publishRound(t, gh, ledger, r)
 			if rep.InlinePosted != 0 || len(gh.reviews) != 1 {
 				t.Fatalf("a settled point must not come back under new words: %+v", rep)
 			}

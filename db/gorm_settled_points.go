@@ -2,6 +2,7 @@ package db
 
 import (
 	"pr-review-server/pkg/publisher/replytext"
+	"pr-review-server/pkg/reviewer/payload"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,6 +42,9 @@ func (g *GormDB) RecordSettledPoint(p *SettledPoint) error {
 // whose reply ledger holds the author's verdict or PRism's concession, so
 // points settled before the table existed are remembered too; a recorded
 // row for the same thread wins.
+// A derived point needs the PR's row for its author: a pull request the
+// cleanup pruned is outside the derivation, which bridges the rows written
+// before the table existed and nothing more.
 func (g *GormDB) ListSettledPoints(owner, repo, author string, since, until time.Time) ([]SettledPoint, error) {
 	author = strings.ToLower(strings.TrimSpace(author))
 	var models []SettledPointModel
@@ -156,17 +160,6 @@ func (g *GormDB) derivedSettledPoints(owner, repo, author string, since, until t
 	return out, nil
 }
 
-// FingerprintFile reads the file out of a file:bucket:hash fingerprint,
-// as payload.FingerprintFile does (a fingerprint with fewer parts is its
-// own file), so a derived point and a recorded one file alike.
-func FingerprintFile(fp string) string {
-	i := strings.LastIndex(fp, ":")
-	if i < 0 {
-		return fp
-	}
-	j := strings.LastIndex(fp[:i], ":")
-	if j < 0 {
-		return fp
-	}
-	return fp[:j]
-}
+// FingerprintFile is payload.FingerprintFile, so a derived point and a
+// recorded one file alike.
+func FingerprintFile(fp string) string { return payload.FingerprintFile(fp) }
