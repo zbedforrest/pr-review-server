@@ -27,7 +27,12 @@ func (g *GormDB) RecordSettledPoint(p *SettledPoint) error {
 		Author: strings.ToLower(strings.TrimSpace(p.Author)), Source: p.Source, Fingerprint: p.Fingerprint, File: p.File,
 		FindingKind: p.FindingKind, Subjects: p.Subjects, Headline: p.Headline, Text: p.Text, Reason: p.Reason, SettledAt: p.SettledAt,
 	}
-	return g.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&model).Error
+	// A thread is one row; a later record replaces it, so an author's
+	// deferral after a stand supersedes the stand.
+	return g.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}, {Name: "comment_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"author", "source", "fingerprint", "file", "finding_kind", "subjects", "headline", "text", "reason", "settled_at"}),
+	}).Create(&model).Error
 }
 
 // ListSettledPoints returns the points an author settled in a repo with a
@@ -124,7 +129,12 @@ func (g *GormDB) derivedSettledPoints(owner, repo, author string, since, until t
 		var settledAt time.Time
 		reason, source := "", ""
 		for _, r := range byRow[settledKey(row.PRNumber, row.Fingerprint, 0)] {
-			if !r.CreatedAt.After(since) || r.CreatedAt.After(until) || replytext.Deferred(r.Body) {
+			if !r.CreatedAt.After(since) || r.CreatedAt.After(until) {
+				continue
+			}
+			if replytext.Deferred(r.Body) {
+				// A deferral after a stand supersedes it.
+				settledAt, reason, source = time.Time{}, "", ""
 				continue
 			}
 			switch {

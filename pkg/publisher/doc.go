@@ -71,8 +71,8 @@
 // becomes a settled row (Kind annotation, terminal, SettledPRNumber and
 // SettledCommentID naming the thread), posts nothing, counts nothing, and
 // the summary lists it under "settled earlier by the author" with a link
-// to that thread for as long as the review raises it. A CRITICAL
-// security_risk is exempt, as decision 4 exempts it on its own PR.
+// to that thread for as long as the review raises it. A CRITICAL finding
+// of any kind is exempt: a wrong match would hide it for thirty days.
 //
 // Inputs per prior row: its state; whether a current finding matched it
 // (present); whether HeadSHA equals the row's LastSeenSHA; the change set

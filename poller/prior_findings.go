@@ -70,7 +70,7 @@ func SettledElsewherePriors(points []db.SettledPoint, number int) []service.Prio
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].SettledAt.After(sorted[j].SettledAt) })
 	var out []service.PriorFinding
 	for _, pt := range sorted {
-		if pt.PRNumber == number && pt.Fingerprint != "" {
+		if (pt.PRNumber == number && pt.Fingerprint != "") || pt.Source == db.SettledSourceDeferred {
 			continue
 		}
 		headline := pt.Headline

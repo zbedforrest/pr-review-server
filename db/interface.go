@@ -283,6 +283,9 @@ const (
 	SettledSourceWithdrawn = "withdrawn"
 	SettledSourceResolved  = "resolved"
 	SettledSourceConceded  = "conceded"
+	// SettledSourceDeferred marks a thread whose author later put the point
+	// off to follow-up work: it supersedes a stand and settles nothing.
+	SettledSourceDeferred = "deferred"
 )
 
 // TelemetryEvent represents a single telemetry event for creation

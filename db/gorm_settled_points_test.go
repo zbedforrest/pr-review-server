@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGormDB_SettledPoints_RecordOncePerThreadAndListByAuthorWindow(t *testing.T) {
+func TestGormDB_SettledPoints_OneRowPerThreadAndListByAuthorWindow(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()
 
@@ -22,11 +22,12 @@ func TestGormDB_SettledPoints_RecordOncePerThreadAndListByAuthorWindow(t *testin
 
 	got, err := db.ListSettledPoints("acme", "example", "dev-ana", at.Add(-30*24*time.Hour), at.Add(24*time.Hour))
 	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, "intentional, the backfill is done", got[0].Reason)
+	require.Len(t, got, 1, "a thread is one row; the later record replaces it")
+	require.Equal(t, "a second answer", got[0].Reason)
 	require.Equal(t, "dev-ana", got[0].Author)
-	require.True(t, got[0].SettledAt.Equal(at))
+	require.True(t, got[0].SettledAt.Equal(at.Add(time.Hour)))
 
+	require.NoError(t, db.RecordSettledPoint(first))
 	got, err = db.ListSettledPoints("acme", "example", "dev-ana", at, at.Add(24*time.Hour))
 	require.NoError(t, err)
 	require.Empty(t, got, "a point settled at the window's open edge is outside it")
@@ -103,6 +104,29 @@ func TestGormDB_SettledPoints_DerivedFromDismissedRowsWithAVerdictReply(t *testi
 	got, err = db.ListSettledPoints("acme", "example", "dev-ana", verdictAt.Add(-time.Hour), verdictAt.Add(time.Hour))
 	require.NoError(t, err)
 	require.Len(t, got, 1, "a verdict that defers the point to a follow-up settles nothing")
+
+	stood := testPublished(func(p *PublishedFinding) {
+		p.RepoOwner, p.RepoName, p.PRNumber = "acme", "example", 596
+		p.Fingerprint, p.CommentID, p.State, p.PublishedAt = "store/feed.py:7:dddddddddddd", 4006, PublishedStateDismissed, posted
+	})
+	require.NoError(t, db.UpsertPublishedFinding(stood))
+	for i, body := range []string{"intentional, the feed is paged on purpose", "Actually we'll rework this in a follow-up PR."} {
+		_, err = db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 596, RootCommentID: 4006, AuthorCommentID: int64(5006 + i),
+			Fingerprint: stood.Fingerprint, AuthorID: 77, Class: "verdict", Action: "reacted", Body: body, CreatedAt: verdictAt.Add(time.Duration(i) * time.Minute)})
+		require.NoError(t, err)
+	}
+	got, err = db.ListSettledPoints("acme", "example", "dev-ana", verdictAt.Add(-time.Hour), verdictAt.Add(time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a later deferral supersedes the earlier stand")
+	require.Equal(t, int64(4001), got[0].CommentID)
+
+	deferredRow := recorded
+	deferredRow.Source = SettledSourceDeferred
+	require.NoError(t, db.RecordSettledPoint(&deferredRow))
+	got, err = db.ListSettledPoints("acme", "example", "dev-ana", posted.Add(-time.Hour), verdictAt.Add(time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, 1, "recording a thread again replaces its row")
+	require.Equal(t, SettledSourceDeferred, got[0].Source)
 }
 
 func TestGormDB_SettledPoints_DerivedFromAClosedPRWhoseRowCleanupDeleted(t *testing.T) {

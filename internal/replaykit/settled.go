@@ -47,10 +47,34 @@ func (d *PRDump) SettledPointsOf(bots map[string]bool, finding func(sha7, id str
 		if !ok {
 			continue
 		}
+		// The author's last verdict or deferral under the root decides; a
+		// deferral after a stand supersedes it.
+		var settling *struct {
+			body   string
+			at     time.Time
+			source string
+		}
 		for _, c := range t.Comments.Nodes[1:] {
-			if strings.ToLower(ActorLogin(c.Author)) != author || publisher.ClassifyReply(c.Body) != publisher.ReplyVerdict || publisher.Deferred(c.Body) {
+			if strings.ToLower(ActorLogin(c.Author)) != author {
 				continue
 			}
+			switch {
+			case publisher.Deferred(c.Body):
+				settling = &struct {
+					body   string
+					at     time.Time
+					source string
+				}{c.Body, c.CreatedAt, db.SettledSourceDeferred}
+			case publisher.ClassifyReply(c.Body) == publisher.ReplyVerdict:
+				settling = &struct {
+					body   string
+					at     time.Time
+					source string
+				}{c.Body, c.CreatedAt, db.SettledSourceVerdict}
+			}
+		}
+		if settling != nil {
+			c := settling
 			row := db.PublishedFinding{RepoOwner: d.Owner, RepoName: d.Repo, PRNumber: d.Number, Kind: db.PublishedKindFinding, Fingerprint: id, CommentID: int64(root.DatabaseID),
 				CommentText: StripMarkup(root.Body)}
 			if finding != nil && len(root.OriginalCommit.Oid) >= 7 {
@@ -66,8 +90,7 @@ func (d *PRDump) SettledPointsOf(bots map[string]bool, finding func(sha7, id str
 			if row.Subjects == "" {
 				row.Subjects = strings.Join(reconcile.CodeIdentifiers(root.Body), ",")
 			}
-			out = append(out, publisher.SettledPointFromRow(row, author, db.SettledSourceVerdict, c.Body, c.CreatedAt))
-			break
+			out = append(out, publisher.SettledPointFromRow(row, author, c.source, c.body, c.at))
 		}
 	}
 	roots := reconcile.ParseExternalComments(comments, nil)

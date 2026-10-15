@@ -1779,13 +1779,18 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, auth
 }
 
 // rememberSettled records the dismissed finding as a point the author
-// settled, for their later pull requests in the repo. Best effort: the
+// settled (or deferred), for their later pull requests in the repo. Best effort: the
 // ledger state is already written, and a ledger without the store or a
 // failed write changes nothing here.
 func (r ReplyReactor) rememberSettled(t db.PublishedReplyTarget, author string, reply AuthorReply, source string) {
 	store, ok := r.Ledger.(SettledPointStore)
-	if !ok || !r.CrossPRSettled || strings.TrimSpace(author) == "" || Deferred(reply.Body) {
+	if !ok || !r.CrossPRSettled || strings.TrimSpace(author) == "" {
 		return
+	}
+	// A reply that defers the point is recorded as deferred: it settles
+	// nothing and replaces a stand the thread recorded earlier.
+	if Deferred(reply.Body) {
+		source = db.SettledSourceDeferred
 	}
 	rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber)
 	if err != nil {

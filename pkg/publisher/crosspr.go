@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/publisher/replytext"
@@ -75,7 +76,7 @@ func ScoreSettledElsewhere(f payload.Finding, points []db.SettledPoint) (db.Sett
 	// the finding for thirty days.
 	var same []db.SettledPoint
 	for _, pt := range points {
-		if pt.File != "" && pt.File == f.File {
+		if pt.Source != db.SettledSourceDeferred && pt.File != "" && pt.File == f.File {
 			same = append(same, pt)
 		}
 	}
@@ -109,11 +110,24 @@ func genericSubject(subject, file string) bool {
 	if subject == stem {
 		return true
 	}
+	letters := 0
+	for _, r := range subject {
+		if unicode.IsLetter(r) {
+			letters++
+		}
+	}
+	if letters < genericSubjectMinLetters {
+		return true
+	}
 	if strings.ContainsAny(subject, "_.:#-0123456789") {
 		return false
 	}
 	return len(subject) < genericSubjectMaxLen
 }
+
+// genericSubjectMinLetters is the letter count under which a token (v2,
+// s3, md5) is generic whatever else it carries.
+const genericSubjectMinLetters = 5
 
 // genericSubjectMaxLen is the length under which a bare word is generic.
 const genericSubjectMaxLen = 10
@@ -237,14 +251,23 @@ func SettledPointOfThread(owner, repo string, number int, author string, t recon
 
 // recordSettledThreads remembers every thread in threads that ThreadSettled
 // holds for, so the author's later pull requests do not meet the point
-// again. Recording is keyed by the thread, so a scan that sees it again
-// writes nothing. resolved answers for a root the listing shows resolved.
+// again, and every thread the author's last reply defers, as a deferred
+// row that supersedes an earlier stand. Recording is keyed by the thread,
+// so a scan that sees it again rewrites the same row. resolved answers for
+// a root the listing shows resolved.
 func recordSettledThreads(store SettledPointStore, owner, repo string, number int, author string, threads []reconcile.ExternalThread, resolved func(int64) bool, now time.Time, tag string) {
 	for _, t := range threads {
-		if !ThreadSettled(t, resolved(t.Root.CommentID)) {
+		var point db.SettledPoint
+		switch {
+		case len(t.AuthorReplies) > 0 && Deferred(t.AuthorReplies[len(t.AuthorReplies)-1]):
+			// A deferral replaces the stand the thread may have recorded.
+			point = SettledPointOfThread(owner, repo, number, author, t, now)
+			point.Source = db.SettledSourceDeferred
+		case ThreadSettled(t, resolved(t.Root.CommentID)):
+			point = SettledPointOfThread(owner, repo, number, author, t, now)
+		default:
 			continue
 		}
-		point := SettledPointOfThread(owner, repo, number, author, t, now)
 		if err := store.RecordSettledPoint(&point); err != nil {
 			log.Printf("[%s] %s/%s#%d: record settled thread %d: %v", tag, owner, repo, number, t.Root.CommentID, err)
 		}

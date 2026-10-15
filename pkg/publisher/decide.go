@@ -214,6 +214,11 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	// took back before this round settles it; before withoutTerminal too,
 	// since a point settled elsewhere is a new row the terminal pass never
 	// sees.
+	// The round's threads are refreshed first so a caller that built the
+	// round without them still records what other reviewers withdrew.
+	if p.Policy.ExternalReconcile {
+		p.refreshExternal(ctx, &r, rows)
+	}
 	p.recordExternalSettled(ctx, r, threads, now)
 	settledRows, crossPRSettled := p.withoutSettledElsewhere(&r, rows, now)
 	r.Findings = p.withoutTerminal(r, rows, originalIDs)
@@ -226,7 +231,6 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	})
 	var external externalPass
 	if p.Policy.ExternalReconcile {
-		p.refreshExternal(ctx, &r, rows)
 		external = p.matchExternal(ctx, &r, rows, now, threads)
 		r.GreptileOnly = withoutClaimedRoots(r.GreptileOnly, rows, external.rows)
 	}

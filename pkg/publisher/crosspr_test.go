@@ -93,8 +93,14 @@ func newFakeSettledLedger(points ...db.SettledPoint) *fakeSettledLedger {
 }
 
 func (l *fakeSettledLedger) RecordSettledPoint(p *db.SettledPoint) error {
-	for _, have := range l.recorded {
+	for i, have := range l.recorded {
 		if have.PRNumber == p.PRNumber && have.CommentID == p.CommentID {
+			l.recorded[i] = *p
+			for j := range l.points {
+				if l.points[j].PRNumber == p.PRNumber && l.points[j].CommentID == p.CommentID {
+					l.points[j] = *p
+				}
+			}
 			return nil
 		}
 	}
@@ -238,6 +244,7 @@ func TestCrossPR_ABareShortSubjectCarriesNoMatch(t *testing.T) {
 		generic       bool
 	}{
 		{"start", "a/b.ts", true}, {"output", "x/models.py", true}, {"creators", "collection/api/creators.py", true}, {"", "x.py", true},
+		{"v2", "a.go", true}, {"s3", "a.go", true}, {"md5", "a.go", true}, {"utf8", "a.go", true}, {"sha256", "a.go", true},
 		{"companion_asset", "forms.py", false}, {"showtipmenu", "x.tsx", false}, {"DeleteView._purchase_ids", "views.py", false},
 	} {
 		if got := genericSubject(c.subject, c.file); got != c.generic {
@@ -252,6 +259,28 @@ func TestCrossPR_ABareShortSubjectCarriesNoMatch(t *testing.T) {
 	}
 	if _, score, ok := ScoreSettledElsewhere(laterDeleteFinding(), []db.SettledPoint{earlierVerdictPoint()}); !ok || score.Subject != "purchaser_read_swap" {
 		t.Fatalf("a qualified subject carries the match: ok=%v %+v", ok, score)
+	}
+}
+
+func TestCrossPR_ALaterDeferralSupersedesTheStand(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger()
+	gh.extra = []ReviewThread{{NodeID: "E3001", RootCommentID: 3001}}
+	publishLater(t, gh, ledger, earlierPRRound(greptileThread(true)), testPolicy())
+	if len(ledger.recorded) != 1 || ledger.recorded[0].Source != db.SettledSourceWithdrawn {
+		t.Fatalf("recorded = %+v", ledger.recorded)
+	}
+	comments := greptileThread(true)
+	comments = append(comments, reconcile.ExternalComment{ID: 3004, Author: "dev-ana", Path: earlierFile, Line: 241, InReplyToID: 3001,
+		Body: "Actually, we'll rework this in a follow-up PR.", CreatedAt: comments[2].CreatedAt.Add(time.Hour)})
+	again := earlierPRRound(comments)
+	again.HeadSHA = "bbe8764"
+	publishLater(t, gh, ledger, again, testPolicy())
+	if len(ledger.recorded) != 1 || ledger.recorded[0].Source != db.SettledSourceDeferred {
+		t.Fatalf("the deferral replaces the stand: %+v", ledger.recorded)
+	}
+	later, laterLedger := newFakeThreadGitHub(), newFakeSettledLedger(ledger.points...)
+	if rep := publishLater(t, later, laterLedger, laterPRRound(), testPolicy()); rep.CrossPRSettled != 0 || rep.InlinePosted != 2 {
+		t.Fatalf("a deferred point settles nothing: %+v", rep)
 	}
 }
 
@@ -271,8 +300,12 @@ func TestCrossPR_ADeferralSettlesNothing(t *testing.T) {
 		comments := greptileThread(true)
 		comments[1].Body = body
 		publishLater(t, gh, ledger, earlierPRRound(comments), testPolicy())
-		if len(ledger.recorded) != 0 {
-			t.Errorf("a deferral the reviewer withdrew or resolved settles nothing: %q -> %+v", body, ledger.recorded)
+		if len(ledger.recorded) != 1 || ledger.recorded[0].Source != db.SettledSourceDeferred {
+			t.Errorf("a deferral the reviewer withdrew or resolved is recorded as deferred, not settled: %q -> %+v", body, ledger.recorded)
+		}
+		later, laterLedger := newFakeThreadGitHub(), newFakeSettledLedger(ledger.points...)
+		if rep := publishLater(t, later, laterLedger, laterPRRound(), testPolicy()); rep.CrossPRSettled != 0 || rep.InlinePosted != 2 {
+			t.Errorf("a deferred point settles nothing: %q -> %+v", body, rep)
 		}
 	}
 	for _, body := range []string{
@@ -436,7 +469,7 @@ func TestThreadSettled_ResolvedThreadsCountOnlyWhenTheAuthorStoodByTheCode(t *te
 			t.Errorf("%q is a withdrawal", body)
 		}
 	}
-	for _, body := range []string{"I would not withdraw the migration yet.", "the fix is not necessary here", "this is not necessary to merge, but the null branch should still be fixed", "nothing to change in the caller, the callee is wrong", "The withdrawal flow still double-charges."} {
+	for _, body := range []string{"I would not withdraw the migration yet.", "This shouldn't be withdrawn.", "This doesn't need to be withdrawn, the race is real.", "there's no need to withdraw it", "the fix is not necessary here", "this is not necessary to merge, but the null branch should still be fixed", "nothing to change in the caller, the callee is wrong", "The withdrawal flow still double-charges."} {
 		if reconcile.IsWithdrawal(body) {
 			t.Errorf("%q is not a withdrawal", body)
 		}
