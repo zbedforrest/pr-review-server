@@ -345,7 +345,7 @@ func (p *Poller) skipUnchangedDiff(intent db.AutoReviewIntent, pr github.PullReq
 	}
 	var last *db.AutoReviewIntent
 	for i := range reviewed {
-		if reviewed[i].ID != intent.ID && (last == nil || reviewed[i].ID > last.ID) {
+		if reviewed[i].ID != intent.ID && !settledWithoutReview(reviewed[i]) && (last == nil || reviewed[i].ID > last.ID) {
 			last = &reviewed[i]
 		}
 	}
@@ -364,6 +364,12 @@ func (p *Poller) skipUnchangedDiff(intent db.AutoReviewIntent, pr github.PullReq
 	log.Printf("[AUTO-REVIEW] %s intent=%d: %s, no review", key, intent.ID, reason)
 	p.recordHygieneEvent(pr, health.ActionReviewSkippedUnchanged, "since="+shortSHA(last.HeadSHA)+" trigger="+intent.Trigger)
 	return true
+}
+
+// settledWithoutReview reports a done intent whose head was never reviewed,
+// so it cannot anchor the unchanged-diff comparison.
+func settledWithoutReview(intent db.AutoReviewIntent) bool {
+	return intent.Publication == publicationSkippedDailyCap || strings.HasPrefix(intent.Publication, publicationSkippedUnchangedPrefix)
 }
 
 // pullRequestDiff reads the PR's unified diff through the injected reader or

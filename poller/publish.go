@@ -189,7 +189,7 @@ func optOutURL(baseURL string) string {
 func (p *Poller) liveRound(pr github.PullRequest, pl payload.Payload, comments []github.ReviewCommentInfo, patches map[string]string, previous []db.PublishedFinding, pol publisher.Policy) publisher.Round {
 	round := BuildPublishRoundWith(pr, pl, comments, patches, previous, p.cfg.BaseURL, pol)
 	round.SettleFooter = p.settleFooter()
-	round.PushesCapped = p.pushesCapped(pr.Owner, pr.Repo, pr.Number, time.Now().UTC())
+	round.PushesCapped = !p.cfg.DisableSettleFooter && p.pushesCapped(pr.Owner, pr.Repo, pr.Number, time.Now().UTC())
 	return round
 }
 

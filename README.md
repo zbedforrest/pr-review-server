@@ -202,8 +202,10 @@ count as real changes) is settled without a review
 `skipped: diff unchanged since <sha>`.
 
 A PR gets at most `auto_review_daily_round_cap` automatic rounds per UTC day
-(admin settings page, Publishing section; default 4, 0 removes the bound),
-counting the automatic reviews admitted for it since midnight UTC. A push past
+from pushes (admin settings page, Publishing section; default 4, 0 removes
+the bound), counting the automatic reviews admitted for it since midnight
+UTC. A PR becoming ready counts toward the day but is never held back, so a
+PR-day can end one over the cap. A push past
 the cap is settled as `skipped: daily round cap` with nothing posted, and the
 sticky summary's footer says "Further pushes today are reviewed on request"
 from the day's last admitted round until the next day's first. A skipped head

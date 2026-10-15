@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"pr-review-server/db"
+	"pr-review-server/github"
 	"pr-review-server/pkg/health"
 )
 
@@ -98,6 +99,29 @@ func TestDailyRoundCapIgnoresRunsThatPostedNothing(t *testing.T) {
 	assert.Equal(t, db.AutoReviewIntentRunning, f.intentFor(t, autoReviewNewHead).Status, "an outage's failed runs do not use up the day")
 	require.Len(t, f.generator.GenerateReviewCalls, 1)
 	assert.Empty(t, f.hygieneEvents(t, health.ActionReviewSkippedDailyCap))
+}
+
+func TestCappedHeadNeverAnchorsTheUnchangedDiffSkip(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	f.p.cfg.AutoReviewSkipUnchangedDiff = true
+	head := autoReviewNewHead
+	f.p.prDiffFn = stubDiff(map[string]string{autoReviewNewHead: diffOne, autoReviewThirdHead: diffOne}, &head)
+	for i, id := range []string{"a1", "a2", "a3", "a4"} {
+		seedRun(t, f, id, autoReviewTriggerSource, db.ReviewRunStatusCompleted, earlierToday().Add(time.Duration(i)*time.Minute))
+	}
+	trackedReadyPR(f, autoReviewNewHead, false)
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+	waitForDetachedReviews(t, f.p)
+	capped := f.intentFor(t, autoReviewNewHead)
+	require.Equal(t, publicationSkippedDailyCap, capped.Publication)
+	assert.Equal(t, github.PatchID(diffOne), capped.PatchID)
+
+	f.p.cfg.AutoReviewNoDailyRoundCap = true
+	head = autoReviewThirdHead
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewThirdHead, false)))
+	waitForDetachedReviews(t, f.p)
+	assert.Equal(t, db.AutoReviewIntentRunning, f.intentFor(t, autoReviewThirdHead).Status, "a rebase of a head nobody reviewed is reviewed once the cap lifts")
+	require.Len(t, f.generator.GenerateReviewCalls, 1)
 }
 
 func TestDailyRoundCapRollsOverAtMidnightUTC(t *testing.T) {

@@ -87,7 +87,8 @@ type DailyRoundStats struct {
 	Max    int     `json:"max"`
 	Cap    int     `json:"cap"`
 	// AtCap counts the PR-days that used exactly the cap; OverCap those
-	// with more rounds than the cap allows, which the cap should keep at 0.
+	// past it, which a ready-for-review admission (exempt from the cap) can
+	// still produce.
 	AtCap   int `json:"pr_days_at_cap"`
 	OverCap int `json:"pr_days_over_cap"`
 }
