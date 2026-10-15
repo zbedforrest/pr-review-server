@@ -317,6 +317,18 @@ func TestCrossPR_ALaterDeferralSupersedesTheStand(t *testing.T) {
 	}
 }
 
+func TestCrossPR_ACourtesyReplyAfterTheWithdrawalKeepsTheStand(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger()
+	gh.extra = []ReviewThread{{NodeID: "E3001", RootCommentID: 3001}}
+	comments := greptileThread(true)
+	comments = append(comments, reconcile.ExternalComment{ID: 3004, Author: "dev-ana", Path: earlierFile, Line: 241, InReplyToID: 3001,
+		Body: "Thanks!", CreatedAt: comments[2].CreatedAt.Add(time.Minute)})
+	publishLater(t, gh, ledger, earlierPRRound(comments), testPolicy())
+	if len(ledger.recorded) != 1 || ledger.recorded[0].Source != db.SettledSourceWithdrawn {
+		t.Fatalf("the stand before the withdrawal is what counts: %+v", ledger.recorded)
+	}
+}
+
 func TestCrossPR_AFixAfterAStandSupersedesIt(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger()
 	gh.extra = []ReviewThread{{NodeID: "E3001", RootCommentID: 3001}}
@@ -345,6 +357,7 @@ func TestCrossPR_ADeferralSettlesNothing(t *testing.T) {
 		"made a jira ticket to handle this in a followup",
 		"I'll handle this in the next change once the model lands.",
 		"We're going to fix it after this ships.",
+		"Won't fix in this PR, tracked in XO-291.",
 	} {
 		if !Deferred(body) {
 			t.Errorf("%q defers the point", body)
@@ -371,6 +384,7 @@ func TestCrossPR_ADeferralSettlesNothing(t *testing.T) {
 		"the caller should handle this in the retry path, so this branch is fine.",
 		"No follow-up is needed, the cache is cleared on save.",
 		"this doesn't warrant a follow-up, it is dead code.",
+		"Intentional; the temporary shim stays, and the other changes are cosmetic.",
 		"we fix it in the caller after the parse, so this branch is unreachable.",
 	} {
 		if Deferred(body) {

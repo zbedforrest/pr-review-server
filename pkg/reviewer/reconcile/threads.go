@@ -25,6 +25,14 @@ var (
 	noWithdrawalRe = regexp.MustCompile(`(?i)\b(?:not|never|don't|won't|wouldn't|can't|cannot|shouldn't|doesn't|didn't|isn't|aren't|wasn't|weren't|haven't|hasn't|hadn't|shan't|no need to|no reason to)\s+(?:be\s+|been\s+|going to\s+|yet\s+|need to be\s+)?withdr`)
 )
 
+// courtesyReply is a reply too short to carry a stand, a fix or a
+// deferral: a thanks, an emoji, a nod.
+func courtesyReply(body string) bool {
+	return len([]rune(strings.TrimSpace(body))) <= courtesyMaxRunes
+}
+
+const courtesyMaxRunes = 40
+
 // conditionalWithdrawalRe is a withdrawal that hangs on a condition.
 var conditionalWithdrawalRe = regexp.MustCompile(`(?i)withdr\w*\s+(?:this|it|the finding|the point)?\s*(?:if|once|when|after|unless|provided|as soon as)\b`)
 
@@ -66,6 +74,11 @@ func BuildExternalThreads(cs []ExternalComment, roots []ExternalFinding, author 
 		login := strings.ToLower(c.Author)
 		switch {
 		case author != "" && login == author:
+			// A nod after the withdrawal (thanks) is not the stand the
+			// reviewer took back; a longer reply may still defer or fix it.
+			if t.Withdrawn && courtesyReply(c.Body) {
+				continue
+			}
 			t.AuthorReplies = append(t.AuthorReplies, c.Body)
 			if !t.Withdrawn {
 				t.SettledAt = c.CreatedAt
