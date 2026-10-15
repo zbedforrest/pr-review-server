@@ -334,6 +334,7 @@ func TestThreadSettled_ResolvedThreadsCountOnlyWhenTheAuthorStoodByTheCode(t *te
 		{"Fixed, the desktop block now overrides the mobile one.", false},
 		{"Removed", false},
 		{"I fixed this in 3adf5849 along with the loop.", false},
+		{"Added store/testdb_integration_test.go: against a scratch database it covers the cleanup path.", false},
 		{"ok", false},
 		{"will fix", false},
 		{"Is this still reachable after the guard?", false},

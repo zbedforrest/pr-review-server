@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -151,10 +152,14 @@ func ThreadSettled(t reconcile.ExternalThread, resolved bool) bool {
 	case ReplyVerdict:
 		return true
 	case ReplyPushback:
-		return !hasCommitSha(last) && !fixClaimRe.MatchString(FirstSentence(last))
+		first := FirstSentence(last)
+		return !hasCommitSha(last) && !fixClaimRe.MatchString(first) && !workClaimRe.MatchString(first)
 	}
 	return false
 }
+
+// workClaimRe opens a reply that reports work done rather than a stand.
+var workClaimRe = regexp.MustCompile(`(?i)^\s*(added|implemented|changed|moved|renamed|switched|reverted|dropped|replaced|refactored|extracted)\b`)
 
 // SettledPointOfThread is the point another reviewer's thread becomes
 // when ThreadSettled holds: the root's prose and identifiers, the author's
