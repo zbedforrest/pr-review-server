@@ -205,13 +205,15 @@ A PR gets at most `auto_review_daily_round_cap` automatic rounds per UTC day
 from pushes (admin settings page, Publishing section; default 4, 0 removes
 the bound), counting the automatic reviews admitted for it since midnight
 UTC. A PR becoming ready counts toward the day but is never held back, so a
-PR-day can end one over the cap. A push past
+PR-day can end above the cap. The health report's PR-days cover its 24-hour
+window, so the UTC day it opens in is counted from the window's start. A push past
 the cap is settled as `skipped: daily round cap` with nothing posted, and the
 sticky summary's footer says "Further pushes today are reviewed on request"
 from the day's last admitted round until the next day's first. A skipped head
-stays unreviewed until the next push or a review on request; the next UTC day
-admits new pushes again. Only completed, running and queued automatic runs
-count, so an outage's failed runs never use up a PR's day. Only pushes are
+is reviewed on request, when the PR is made ready again, or by the poll on
+the next UTC day; new pushes count against the new day. Only completed and
+running automatic runs count, so an outage's failed runs and runs that never
+started do not use up a PR's day. Only pushes are
 capped (`synchronize` deliveries and the poll fallback, which also stands in
 for a missed ready-for-review delivery): a PR becoming ready for review
 through the webhook is reviewed whatever the day held, and manual reviews

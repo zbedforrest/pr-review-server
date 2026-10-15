@@ -16,7 +16,7 @@ import (
 const (
 	SettingAutoReviewDailyRoundCap = "auto_review_daily_round_cap"
 	DefaultAutoReviewDailyRoundCap = 4
-	publicationSkippedDailyCap     = "skipped: daily round cap"
+	publicationSkippedDailyCap     = db.AutoReviewPublicationSkippedDailyCap
 )
 
 type settingReader interface {
@@ -55,8 +55,8 @@ func utcDayStart(now time.Time) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-// dailyAutoRounds counts the automatic runs since midnight UTC that posted or
-// will post; a cancelled, failed or timed-out run annoyed nobody.
+// dailyAutoRounds counts the automatic runs since midnight UTC that ran or
+// are running; a run that never started or that failed annoyed nobody.
 func (p *Poller) dailyAutoRounds(owner, repo string, number int, now time.Time) (int, error) {
 	runs, err := p.db.ListReviewRuns(db.ReviewRunFilter{RepoOwner: owner, RepoName: repo, PRNumber: number, Limit: db.MaxReviewRunListLimit})
 	if err != nil {
@@ -119,4 +119,29 @@ func (p *Poller) pushesCapped(owner, repo string, number int, now time.Time) boo
 		return false
 	}
 	return rounds >= limit
+}
+
+// requeueCappedHead gives a head the cap turned away its review back: on a
+// ready delivery (exempt from the cap) or once the UTC day has rolled over.
+func (p *Poller) requeueCappedHead(owner, repo string, number int, head, trigger, deliveryID string, now time.Time, newDayOnly bool) bool {
+	intents, err := p.db.ListAutoReviewIntents(db.AutoReviewIntentFilter{RepoOwner: owner, RepoName: repo, PRNumber: number, HeadSHA: head, Statuses: []string{db.AutoReviewIntentDone}})
+	if err != nil {
+		log.Printf("[AUTO-REVIEW] %s: could not read the head's intent: %v", autoReviewKey(owner, repo, number, head), err)
+		return false
+	}
+	for _, intent := range intents {
+		if intent.Publication != publicationSkippedDailyCap || (newDayOnly && !intent.UpdatedAt.Before(utcDayStart(now))) {
+			continue
+		}
+		requeued, err := p.db.RequeueCappedAutoReviewIntent(intent.ID, trigger, deliveryID)
+		if err != nil {
+			log.Printf("[AUTO-REVIEW] %s intent=%d: could not requeue the capped head: %v", autoReviewKey(owner, repo, number, head), intent.ID, err)
+			return false
+		}
+		if requeued {
+			log.Printf("[AUTO-REVIEW] %s intent=%d: capped head queued again by %s", autoReviewKey(owner, repo, number, head), intent.ID, trigger)
+		}
+		return requeued
+	}
+	return false
 }

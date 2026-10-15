@@ -275,6 +275,15 @@ func (g *GormDB) SkipQueuedAutoReviewIntent(id uint, reason string) (bool, error
 	return res.RowsAffected > 0, nil
 }
 
+func (g *GormDB) RequeueCappedAutoReviewIntent(id uint, trigger, deliveryID string) (bool, error) {
+	res := g.db.Model(&AutoReviewIntentModel{}).Where("id = ? AND status = ? AND publication = ?", id, AutoReviewIntentDone, AutoReviewPublicationSkippedDailyCap).
+		Updates(map[string]interface{}{"status": AutoReviewIntentQueued, "trigger": trigger, "delivery_id": deliveryID, "run_id": "", "publication": "", "updated_at": time.Now().UTC()})
+	if res.Error != nil {
+		return false, fmt.Errorf("requeue capped auto review intent %d: %w", id, res.Error)
+	}
+	return res.RowsAffected > 0, nil
+}
+
 // SetAutoReviewIntentPublicationByRun records how the run's GitHub
 // publication ended on the intent it served; a run no intent links to is a
 // no-op.

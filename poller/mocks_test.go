@@ -935,6 +935,19 @@ func (m *MockDatabase) SkipQueuedAutoReviewIntent(id uint, reason string) (bool,
 	return false, nil
 }
 
+func (m *MockDatabase) RequeueCappedAutoReviewIntent(id uint, trigger, deliveryID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, intent := range m.AutoReviewIntents {
+		if intent.ID == id && intent.Status == db.AutoReviewIntentDone && intent.Publication == db.AutoReviewPublicationSkippedDailyCap {
+			intent.Status, intent.Trigger, intent.DeliveryID, intent.RunID, intent.Publication = db.AutoReviewIntentQueued, trigger, deliveryID, "", ""
+			intent.UpdatedAt = time.Now().UTC()
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *MockDatabase) NoteQueuedAutoReviewIntent(id uint, note string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

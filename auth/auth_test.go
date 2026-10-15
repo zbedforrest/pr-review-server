@@ -253,6 +253,9 @@ func (m *MockDatabase) SetAutoReviewIntentPatchID(id uint, patchID string) error
 func (m *MockDatabase) SkipQueuedAutoReviewIntent(id uint, reason string) (bool, error) {
 	return false, nil
 }
+func (m *MockDatabase) RequeueCappedAutoReviewIntent(id uint, trigger, deliveryID string) (bool, error) {
+	return false, nil
+}
 func (m *MockDatabase) GetWebhookStatus(since time.Time) (db.WebhookStatus, error) {
 	return db.WebhookStatus{}, nil
 }

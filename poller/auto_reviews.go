@@ -181,6 +181,9 @@ func (p *Poller) HandleWebhookDelivery(ctx context.Context, d db.WebhookDelivery
 	} else if n > 0 {
 		log.Printf("[AUTO-REVIEW] delivery=%s %s: superseded %d queued intent(s) for older heads", d.DeliveryID, key, n)
 	}
+	if d.Action != autoReviewTriggerSync {
+		p.requeueCappedHead(d.RepoOwner, d.RepoName, d.PRNumber, d.HeadSHA, d.Action, d.DeliveryID, time.Now().UTC(), false)
+	}
 	intent := db.AutoReviewIntent{
 		RepoOwner: d.RepoOwner, RepoName: d.RepoName, PRNumber: d.PRNumber, HeadSHA: d.HeadSHA,
 		Trigger: d.Action, DeliveryID: d.DeliveryID,
@@ -403,7 +406,8 @@ func (p *Poller) moveAutoReviewIntent(intent db.AutoReviewIntent, from, to, runI
 // head whose review already reached GitHub (by any run) is recorded as done,
 // so switching the feature on does not re-review every open PR; a head whose
 // intent was superseded (a draft round trip the webhook missed) is queued
-// again; a failed head is not retried until a new push. existing is the PR's
+// again, as is a head the daily round cap turned away once the UTC day has
+// rolled over; a failed head is not retried until a new push. existing is the PR's
 // non-superseded intents from this cycle's index.
 func (p *Poller) ensureFallbackAutoReviewIntent(pr db.PR, head string, existing []db.AutoReviewIntent) {
 	key := autoReviewKey(pr.RepoOwner, pr.RepoName, pr.PRNumber, head)
@@ -426,6 +430,7 @@ func (p *Poller) ensureFallbackAutoReviewIntent(pr db.PR, head string, existing 
 		}
 	}
 	if current != nil && current.Status != db.AutoReviewIntentQueued {
+		p.requeueCappedHead(pr.RepoOwner, pr.RepoName, pr.PRNumber, head, db.AutoReviewTriggerPollFallback, "", time.Now().UTC(), true)
 		return
 	}
 	published, err := p.headPublished(pr.RepoOwner, pr.RepoName, pr.PRNumber, head)

@@ -99,6 +99,62 @@ func TestDailyRoundCapIgnoresRunsThatPostedNothing(t *testing.T) {
 	assert.Equal(t, db.AutoReviewIntentRunning, f.intentFor(t, autoReviewNewHead).Status, "an outage's failed runs do not use up the day")
 	require.Len(t, f.generator.GenerateReviewCalls, 1)
 	assert.Empty(t, f.hygieneEvents(t, health.ActionReviewSkippedDailyCap))
+
+	queued := newAutoReviewFixture(t, true, "*")
+	seedRun(t, queued, "q1", autoReviewTriggerSource, db.ReviewRunStatusQueued, earlierToday())
+	rounds, err := queued.p.dailyAutoRounds("acme", "example", 7, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Equal(t, 0, rounds, "a run that never started does not count")
+}
+
+func TestCappedHeadIsReviewedWhenThePRIsMadeReadyAgain(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	for i, id := range []string{"a1", "a2", "a3", "a4"} {
+		seedRun(t, f, id, autoReviewTriggerSource, db.ReviewRunStatusCompleted, earlierToday().Add(time.Duration(i)*time.Minute))
+	}
+	trackedReadyPR(f, autoReviewNewHead, false)
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+	waitForDetachedReviews(t, f.p)
+	require.Equal(t, publicationSkippedDailyCap, f.intentFor(t, autoReviewNewHead).Publication)
+
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("ready_for_review", autoReviewNewHead, false)))
+	waitForDetachedReviews(t, f.p)
+	intent := f.intentFor(t, autoReviewNewHead)
+	assert.Equal(t, db.AutoReviewIntentRunning, intent.Status, "a ready delivery is exempt from the cap, even for a capped head")
+	assert.Equal(t, "ready_for_review", intent.Trigger)
+	require.Len(t, f.generator.GenerateReviewCalls, 1)
+}
+
+func TestCappedHeadIsReviewedByThePollOnTheNextDay(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	for i, id := range []string{"a1", "a2", "a3", "a4"} {
+		seedRun(t, f, id, autoReviewTriggerSource, db.ReviewRunStatusCompleted, earlierToday().Add(time.Duration(i)*time.Minute))
+	}
+	trackedReadyPR(f, autoReviewNewHead, false)
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+	waitForDetachedReviews(t, f.p)
+	capped := f.intentFor(t, autoReviewNewHead)
+	require.Equal(t, publicationSkippedDailyCap, capped.Publication)
+
+	_, _, err := f.p.cleanupAndDetectOutdated(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, db.AutoReviewIntentDone, f.intentFor(t, autoReviewNewHead).Status, "the same day the poll leaves a capped head alone")
+
+	f.db.mu.Lock()
+	for _, row := range f.db.AutoReviewIntents {
+		row.UpdatedAt = utcDayStart(time.Now()).Add(-time.Hour)
+	}
+	for _, run := range f.db.ReviewRuns {
+		run.AcceptedAt = utcDayStart(time.Now()).Add(-time.Hour)
+	}
+	f.db.mu.Unlock()
+	_, _, err = f.p.cleanupAndDetectOutdated(context.Background())
+	require.NoError(t, err)
+	waitForDetachedReviews(t, f.p)
+	intent := f.intentFor(t, autoReviewNewHead)
+	assert.Equal(t, db.AutoReviewIntentRunning, intent.Status, "next UTC day the poll queues the capped head again and admits it")
+	assert.Equal(t, db.AutoReviewTriggerPollFallback, intent.Trigger)
+	require.Len(t, f.generator.GenerateReviewCalls, 1)
 }
 
 func TestCappedHeadNeverAnchorsTheUnchangedDiffSkip(t *testing.T) {

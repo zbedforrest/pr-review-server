@@ -25,10 +25,10 @@ const (
 	ReviewTriggerAutoReady = "auto_ready"
 )
 
-// ReviewRunStatusesCountedAsRounds are the statuses of a run that reached or
-// will reach the author; a cancelled, failed or timed-out run posted nothing
-// and never counts against the daily round cap.
-var ReviewRunStatusesCountedAsRounds = []string{ReviewRunStatusQueued, ReviewRunStatusRunning, ReviewRunStatusCompleted}
+// ReviewRunStatusesCountedAsRounds are the statuses of a run that ran or is
+// running; a run that never started, failed or timed out posted nothing and
+// never counts against the daily round cap.
+var ReviewRunStatusesCountedAsRounds = []string{ReviewRunStatusRunning, ReviewRunStatusCompleted}
 
 // ReviewRunCountsAsRound reports whether a run of this status counts as an
 // automatic round.
