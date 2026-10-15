@@ -352,8 +352,10 @@ func lastPunct(s string) string {
 
 // deferralRe marks a reply that puts the point off to later work rather
 // than standing by the code: a follow-up, the next pull request, a ticket,
-// "for now". The later pull request is where the point must be met again.
-var deferralRe = regexp.MustCompile(`(?i)\bfollow[- ]?ups?\b|\b(?:next|later|future|separate|another|subsequent|second|two|other)\s+(?:prs?|pull requests?|changes?|commits?)\b|\buntil\s+(?:the\s+|those\s+|that\s+|a\s+)?(?:next|follow|later|two|other|subsequent|new|future)\b|\bfor now\b|\btemporar(?:y|ily)\b|\b(?:made|created?|filed?|opened?|wrote)\s+(?:a\s+)?(?:jira\s+)?(?:ticket|task|issue|story)\b|\b(?:handle|address|revisit|tackle|fix|clean(?:ed)?\s+up)\s+(?:this|that|it|these|those)?\s*(?:in|after|later|afterwards|once)\b`)
+// "for now", a promise to handle it later. A present-tense "we handle this
+// in the caller" is a stand, so the verb branch needs a forward marker.
+// The later pull request is where the point must be met again.
+var deferralRe = regexp.MustCompile(`(?i)\bfollow[- ]?ups?\b|\b(?:next|later|future|separate|another|subsequent|second|two|other)\s+(?:prs?|pull requests?|changes?|commits?)\b|\buntil\s+(?:the\s+|those\s+|that\s+|a\s+)?(?:next|follow|later|two|other|subsequent|new|future)\b|\bfor now\b|\btemporar(?:y|ily)\b|\b(?:made|created?|filed?|opened?|wrote)\s+(?:a\s+)?(?:jira\s+)?(?:ticket|task|issue|story)\b|\b(?:will|'ll|going to|gonna|plan(?:ning)? to|intend(?:ing)? to|want to|let's|should|could|can|to)\s+(?:handle|address|revisit|tackle|fix|clean(?:\s+\w+)?\s+up)\s+(?:this|that|it|these|those)?\s*(?:in|after|later|afterwards|once|when)\b`)
 
 // Deferred reports whether an author's reply defers the point to later
 // work instead of settling it. The publisher's record paths and the

@@ -74,7 +74,7 @@ const priorFindingsRules = `Rules for these:
 - A point in state dismissed, contested or external was settled by the author or belongs to another reviewer's thread: do not raise it again under any wording; a finding whose "prior_id" names it is dropped before posting. The one exception is a CRITICAL security_risk whose cited code this push changed: report it with "prior_id" and say what changed.
 - These two fields go inside finding_contract alongside its other fields.
 - A point in state fixed was judged addressed: raise it again, with "prior_id", only if the defect is still present at HEAD.
-- A point marked "settled on #N" was settled by this author on that pull request (an earlier one, or this one when N is its number), with the reason shown: do not raise it again unless the code here differs in a way that answers the reason, and then say how. A CRITICAL finding is the exception: report it with "prior_id" and your current evidence, the publisher posts it regardless.
+- A point marked "settled on #N" was settled by this author on that pull request (an earlier one, or this one when N is its number), with the reason shown: do not raise it again in that file unless the code here differs in a way that answers the reason, and then say how; the same subject in another file is a distinct point. A CRITICAL finding is the exception: report it with "prior_id" and your current evidence, the publisher posts it regardless.
 - Never use a label that is not listed here. Both fields are optional and omitted on SUMMARY entries.
 `
 

@@ -98,10 +98,10 @@
 //	fixed / resolved (legacy)    yes      any        any           reopened: open, LastSeenSHA = head, one reply "Back at <sha7>" in its thread, thread unresolved, never a new root
 //	fixed (conceded, see below)  no       no         any           counted as fixed once; Rounds = this round
 //	fixed / resolved             no       any        any           untouched
-//	dismissed/contested/external yes      any        any           finding dropped: not posted, not counted, row untouched (exception below); an external row keeps its summary link, a settled row its "settled earlier" line
-//	/settled
-//	dismissed/contested/external no       any        any           untouched
-//	/settled
+//	dismissed/contested/         yes      any        any           finding dropped: not posted, not counted, row untouched (exception below); an external row keeps its summary link, a settled row its "settled earlier" line
+//	external/settled
+//	dismissed/contested/         no       any        any           untouched
+//	external/settled
 //	no row, another reviewer's   new      n/a        n/a           external row: no root, summary links to that root, one delta reply there (see Other reviewers)
 //	root on the point
 //	no row                       new      n/a        n/a           Select decides inline or summary; a shown finding gets an open row

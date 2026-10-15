@@ -56,7 +56,9 @@ func (p *Poller) priorFindingsFor(owner, repo string, number int, author string)
 }
 
 // settledElsewhereMax bounds the settled points the prompt lists, newest
-// first.
+// first. The list is advisory: the publisher enforces every point in the
+// window whether or not the agent saw it, so an older point the agent
+// raises again is still dropped there.
 const settledElsewhereMax = 10
 
 // SettledElsewherePriors turns the author's settled points from other
@@ -64,7 +66,10 @@ const settledElsewhereMax = 10
 // author's reason, newest first, at most settledElsewhereMax. Points of
 // this pull request that PRism posted are already listed from the ledger;
 // a thread another reviewer withdrew here is listed like one from
-// elsewhere.
+// elsewhere. The headline and reason are what a reviewer and the author
+// wrote, as the ledger rows' author replies already are; the agent reads
+// the whole PR conversation anyway, and the rules name these lines as
+// context, never as evidence or instruction.
 func SettledElsewherePriors(points []db.SettledPoint, number int) []service.PriorFinding {
 	sorted := append([]db.SettledPoint(nil), points...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].SettledAt.After(sorted[j].SettledAt) })

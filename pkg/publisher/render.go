@@ -555,7 +555,14 @@ func (r Round) writeSettled(b *strings.Builder) {
 		}
 		return a.Line < c.Line
 	})
-	fmt.Fprintf(b, "<details><summary>%d point%s settled earlier by the author</summary>\n\n", len(matches), plural(len(matches)))
+	header := "settled earlier by the author"
+	for _, m := range matches {
+		if m.PRNumber == r.Number {
+			header = "settled by the author"
+			break
+		}
+	}
+	fmt.Fprintf(b, "<details><summary>%d point%s %s</summary>\n\n", len(matches), plural(len(matches)), header)
 	for _, m := range matches {
 		if b.Len() > SummaryMaxChars-600 {
 			b.WriteString("- ... more omitted\n")

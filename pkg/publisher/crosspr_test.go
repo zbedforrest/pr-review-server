@@ -292,6 +292,8 @@ func TestCrossPR_ADeferralSettlesNothing(t *testing.T) {
 		"Featured logos as a feature will be dark until the two followup PRs.",
 		"Not an issue for now, the backfill lands in a separate PR.",
 		"made a jira ticket to handle this in a followup",
+		"I'll handle this in the next change once the model lands.",
+		"We're going to fix it after this ships.",
 	} {
 		if !Deferred(body) {
 			t.Errorf("%q defers the point", body)
@@ -314,6 +316,8 @@ func TestCrossPR_ADeferralSettlesNothing(t *testing.T) {
 		"Not an issue. The purchaser_id backfill is complete in prod.",
 		"Intentional, the two flags are read by different workers.",
 		"Known drift, on purpose. The backend settled on purchased.",
+		"we handle this in the shared client, the caller never sees a nil.",
+		"we fix it in the caller after the parse, so this branch is unreachable.",
 	} {
 		if Deferred(body) {
 			t.Errorf("%q stands by the code", body)
