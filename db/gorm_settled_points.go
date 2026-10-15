@@ -1,6 +1,7 @@
 package db
 
 import (
+	"pr-review-server/pkg/publisher/replytext"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,7 +124,7 @@ func (g *GormDB) derivedSettledPoints(owner, repo, author string, since, until t
 		var settledAt time.Time
 		reason, source := "", ""
 		for _, r := range byRow[settledKey(row.PRNumber, row.Fingerprint, 0)] {
-			if !r.CreatedAt.After(since) || r.CreatedAt.After(until) {
+			if !r.CreatedAt.After(since) || r.CreatedAt.After(until) || replytext.Deferred(r.Body) {
 				continue
 			}
 			switch {

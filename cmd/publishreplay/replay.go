@@ -1279,7 +1279,7 @@ func observe(d *prDump, bots map[string]bool, s *store, ledger *db.GormDB, pr *P
 			}
 		}
 		if sf, ok := findings[r.FindingID]; ok {
-			f.Comment, f.FindingContract = sf.Comment, sf.FindingContract
+			f.Comment, f.FindingContract, f.Severity = sf.Comment, sf.FindingContract, sf.Severity
 		}
 		if pt, ok := replaykit.SettledElsewhere(ledger, d.Owner, d.Repo, d.Author.Login, d.Number, r.At, f); ok {
 			pr.ObservedCrossPRResettled++

@@ -349,3 +349,13 @@ func lastPunct(s string) string {
 	}
 	return "."
 }
+
+// deferralRe marks a reply that puts the point off to later work rather
+// than standing by the code: a follow-up, the next pull request, a ticket,
+// "for now". The later pull request is where the point must be met again.
+var deferralRe = regexp.MustCompile(`(?i)\bfollow[- ]?ups?\b|\b(?:next|later|future|separate|another|subsequent|second|two|other)\s+(?:prs?|pull requests?|changes?|commits?)\b|\buntil\s+(?:the\s+|those\s+|that\s+|a\s+)?(?:next|follow|later|two|other|subsequent|new|future)\b|\bfor now\b|\btemporar(?:y|ily)\b|\b(?:made|created?|filed?|opened?|wrote)\s+(?:a\s+)?(?:jira\s+)?(?:ticket|task|issue|story)\b|\b(?:handle|address|revisit|tackle|fix|clean(?:ed)?\s+up)\s+(?:this|that|it|these|those)?\s*(?:in|after|later|afterwards|once)\b`)
+
+// Deferred reports whether an author's reply defers the point to later
+// work instead of settling it. The publisher's record paths and the
+// ledger's derived read of pre-table dismissals apply the same rule.
+func Deferred(reason string) bool { return deferralRe.MatchString(reason) }

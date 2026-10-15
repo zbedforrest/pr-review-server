@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"pr-review-server/db"
+	"pr-review-server/pkg/publisher/replytext"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/reconcile"
 )
@@ -52,8 +53,9 @@ func (p *Publisher) settledPoints(r Round, now time.Time) (elsewhere, here []db.
 
 // MatchSettledElsewhere pairs a finding with the point the author settled
 // on another pull request that it raises again, under the cross-PR rule
-// (reconcile.SameEarlierPoint). A CRITICAL security_risk is exempt, as
-// decision 4 exempts it on its own PR.
+// (reconcile.SameEarlierPoint), in the finding's own file. A CRITICAL
+// finding of any kind is exempt: a wrong match would hide it for thirty
+// days, and one more answer from the author is the cheaper error.
 func MatchSettledElsewhere(f payload.Finding, points []db.SettledPoint) (db.SettledPoint, bool) {
 	pt, _, ok := ScoreSettledElsewhere(f, points)
 	return pt, ok
@@ -118,14 +120,9 @@ const genericSubjectMaxLen = 10
 
 func isPseudoFile(file string) bool { return file == summaryFile || file == checkFile }
 
-// deferralRe marks a reply that puts the point off to later work rather
-// than standing by the code: a follow-up, the next pull request, a ticket,
-// "for now". The later pull request is where the point must be met again.
-var deferralRe = regexp.MustCompile(`(?i)\bfollow[- ]?ups?\b|\b(?:next|later|future|separate|another|subsequent|second|two|other)\s+(?:prs?|pull requests?|changes?|commits?)\b|\buntil\s+(?:the\s+|those\s+|that\s+|a\s+)?(?:next|follow|later|two|other|subsequent|new|future)\b|\bfor now\b|\btemporar(?:y|ily)\b|\b(?:made|created?|filed?|opened?|wrote)\s+(?:a\s+)?(?:jira\s+)?(?:ticket|task|issue|story)\b|\b(?:handle|address|revisit|tackle|fix|clean(?:ed)?\s+up)\s+(?:this|that|it|these|those)?\s*(?:in|after|later|afterwards|once)\b`)
-
 // Deferred reports whether an author's reply defers the point to later
-// work instead of settling it.
-func Deferred(reason string) bool { return deferralRe.MatchString(reason) }
+// work instead of settling it (replytext.Deferred).
+func Deferred(reason string) bool { return replytext.Deferred(reason) }
 
 // withoutSettledElsewhere drops every publishable finding the ledger does
 // not know that raises again a point the author settled on an earlier pull

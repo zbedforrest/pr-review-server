@@ -91,6 +91,18 @@ func TestGormDB_SettledPoints_DerivedFromDismissedRowsWithAVerdictReply(t *testi
 	got, err = db.ListSettledPoints("acme", "example", "dev-ana", verdictAt.Add(-time.Hour), verdictAt.Add(time.Hour))
 	require.NoError(t, err)
 	require.Len(t, got, 1, "a conceded fix claim is a fix, not a stand")
+
+	deferred := testPublished(func(p *PublishedFinding) {
+		p.RepoOwner, p.RepoName, p.PRNumber = "acme", "example", 596
+		p.Fingerprint, p.CommentID, p.State, p.PublishedAt = "store/cache.py:5:cccccccccccc", 4004, PublishedStateDismissed, posted
+	})
+	require.NoError(t, db.UpsertPublishedFinding(deferred))
+	_, err = db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 596, RootCommentID: 4004, AuthorCommentID: 5004,
+		Fingerprint: deferred.Fingerprint, AuthorID: 77, Class: "verdict", Action: "reacted", Body: "Intentionally left to expire. This will be cleaned up in a followup PR.", CreatedAt: verdictAt})
+	require.NoError(t, err)
+	got, err = db.ListSettledPoints("acme", "example", "dev-ana", verdictAt.Add(-time.Hour), verdictAt.Add(time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a verdict that defers the point to a follow-up settles nothing")
 }
 
 func TestGormDB_SettledPoints_DerivedFromAClosedPRWhoseRowCleanupDeleted(t *testing.T) {
