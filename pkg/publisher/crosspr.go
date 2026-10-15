@@ -130,41 +130,81 @@ func rememberSettled(r *Round, rows map[string]*db.PublishedFinding) {
 	}
 }
 
-// recordExternalSettled remembers every other reviewer's thread the author
-// answered that the reviewer then withdrew or that is resolved now, so the
-// author's later pull requests do not meet the point again. Recording is
-// keyed by the thread, so a round that sees it again writes nothing.
+// ThreadSettled reports whether another reviewer's thread counts as a
+// point the author settled: answered by the author, and either withdrawn
+// by the reviewer, or resolved after the author's last reply stood by the
+// code (a verdict or pushback). A thread the author answered with a fix
+// claim or a bare acknowledgement and then resolved is a fix, not a
+// settlement, and must not silence the point on their later pull requests.
+func ThreadSettled(t reconcile.ExternalThread, resolved bool) bool {
+	if len(t.AuthorReplies) == 0 {
+		return false
+	}
+	if t.Withdrawn {
+		return true
+	}
+	if !resolved {
+		return false
+	}
+	last := t.AuthorReplies[len(t.AuthorReplies)-1]
+	switch ClassifyReply(last) {
+	case ReplyVerdict:
+		return true
+	case ReplyPushback:
+		return !hasCommitSha(last) && !fixClaimRe.MatchString(FirstSentence(last))
+	}
+	return false
+}
+
+// SettledPointOfThread is the point another reviewer's thread becomes
+// when ThreadSettled holds: the root's prose and identifiers, the author's
+// replies as the reason, dated by the reply or withdrawal that settled it.
+func SettledPointOfThread(owner, repo string, number int, author string, t reconcile.ExternalThread, now time.Time) db.SettledPoint {
+	source := db.SettledSourceResolved
+	if t.Withdrawn {
+		source = db.SettledSourceWithdrawn
+	}
+	at := t.SettledAt
+	if at.IsZero() {
+		at = now
+	}
+	rootText := strings.TrimSpace(t.Root.Title + " " + t.Root.Body)
+	reason := strings.Join(t.AuthorReplies, " ")
+	return db.SettledPoint{
+		RepoOwner: owner, RepoName: repo, PRNumber: number, CommentID: t.Root.CommentID, Author: author, Source: source,
+		File: t.Root.File, Subjects: strings.Join(reconcile.CodeIdentifiers(rootText), ","), Headline: t.Root.Title,
+		Text: rootText + " " + reason, Reason: reason, SettledAt: at,
+	}
+}
+
+// recordSettledThreads remembers every thread in threads that ThreadSettled
+// holds for, so the author's later pull requests do not meet the point
+// again. Recording is keyed by the thread, so a scan that sees it again
+// writes nothing. resolved answers for a root the listing shows resolved.
+func recordSettledThreads(store SettledPointStore, owner, repo string, number int, author string, threads []reconcile.ExternalThread, resolved func(int64) bool, now time.Time, tag string) {
+	for _, t := range threads {
+		if !ThreadSettled(t, resolved(t.Root.CommentID)) {
+			continue
+		}
+		point := SettledPointOfThread(owner, repo, number, author, t, now)
+		if err := store.RecordSettledPoint(&point); err != nil {
+			log.Printf("[%s] %s/%s#%d: record settled thread %d: %v", tag, owner, repo, number, t.Root.CommentID, err)
+		}
+	}
+}
+
+// recordExternalSettled remembers, from a publish round, every other
+// reviewer's thread the author settled (ThreadSettled).
 func (p *Publisher) recordExternalSettled(ctx context.Context, r Round, threads *threadIndex, now time.Time) {
 	store, ok := p.Ledger.(SettledPointStore)
 	if !ok || !p.Policy.CrossPRSettled || strings.TrimSpace(r.Author) == "" {
 		return
 	}
-	for _, t := range r.ExternalThreads {
-		resolved := false
-		if listed, found := threads.lookup(ctx, t.Root.CommentID); found {
-			resolved = listed.Resolved
-		}
-		if !t.Settled(resolved) {
-			continue
-		}
-		source := db.SettledSourceResolved
-		if t.Withdrawn {
-			source = db.SettledSourceWithdrawn
-		}
-		at := t.SettledAt
-		if at.IsZero() {
-			at = now
-		}
-		rootText := strings.TrimSpace(t.Root.Title + " " + t.Root.Body)
-		reason := strings.Join(t.AuthorReplies, " ")
-		if err := store.RecordSettledPoint(&db.SettledPoint{
-			RepoOwner: r.Owner, RepoName: r.Repo, PRNumber: r.Number, CommentID: t.Root.CommentID, Author: r.Author, Source: source,
-			File: t.Root.File, Subjects: strings.Join(reconcile.CodeIdentifiers(rootText), ","), Headline: t.Root.Title,
-			Text: rootText + " " + reason, Reason: reason, SettledAt: at,
-		}); err != nil {
-			log.Printf("[PUBLISH] %s/%s#%d: record settled thread %d: %v", r.Owner, r.Repo, r.Number, t.Root.CommentID, err)
-		}
+	resolved := func(root int64) bool {
+		listed, found := threads.lookup(ctx, root)
+		return found && listed.Resolved
 	}
+	recordSettledThreads(store, r.Owner, r.Repo, r.Number, r.Author, r.ExternalThreads, resolved, now, "PUBLISH")
 }
 
 // SettledPointFromRow is the settled point a PRism thread becomes when the

@@ -68,30 +68,44 @@ func settledKey(pr int, fingerprint string, commentID int64) string {
 	return strconv.Itoa(pr) + ":f:" + fingerprint
 }
 
-// derivedSettledPoints reads the author's dismissed ledger rows posted
-// since the window opened, each dated by the reply that settled it.
+// derivedSettledPoints reads the author's dismissed ledger rows whose
+// reply ledger holds a verdict or concession inside the window, each dated
+// by that reply; the rows and their replies come in one query each.
 func (g *GormDB) derivedSettledPoints(owner, repo, author string, since, until time.Time) ([]SettledPoint, error) {
 	var rows []PublishedFindingModel
 	err := g.db.Table("published_findings AS pf").
-		Select("pf.*").
+		Select("DISTINCT pf.*").
 		Joins("JOIN prs ON prs.repo_owner = pf.repo_owner AND prs.repo_name = pf.repo_name AND prs.pr_number = pf.pr_number").
-		Where("pf.repo_owner = ? AND pf.repo_name = ? AND LOWER(prs.author) = ? AND pf.state = ? AND pf.kind IN ? AND pf.published_at > ?",
-			owner, repo, author, PublishedStateDismissed, []string{PublishedKindFinding, PublishedKindAnnotation}, since).
+		Joins("JOIN published_reply_models AS pr ON pr.repo_owner = pf.repo_owner AND pr.repo_name = pf.repo_name AND pr.pr_number = pf.pr_number AND pr.fingerprint = pf.fingerprint").
+		Where("pf.repo_owner = ? AND pf.repo_name = ? AND LOWER(prs.author) = ? AND pf.state = ? AND pf.kind IN ?",
+			owner, repo, author, PublishedStateDismissed, []string{PublishedKindFinding, PublishedKindAnnotation}).
+		Where("pr.created_at > ? AND pr.created_at <= ? AND (pr.class = ? OR pr.decision IN ?)", since, until, "verdict", []string{"concede", "withdraw"}).
 		Scan(&rows).Error
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
+	numbers := make([]int, 0, len(rows))
+	fingerprints := make([]string, 0, len(rows))
+	for i := range rows {
+		numbers = append(numbers, rows[i].PRNumber)
+		fingerprints = append(fingerprints, rows[i].Fingerprint)
+	}
+	var replies []PublishedReplyModel
+	if err := g.db.Where("repo_owner = ? AND repo_name = ? AND pr_number IN ? AND fingerprint IN ?", owner, repo, numbers, fingerprints).
+		Order("created_at ASC, id ASC").Find(&replies).Error; err != nil {
+		return nil, err
+	}
+	byRow := map[string][]PublishedReplyModel{}
+	for _, r := range replies {
+		k := settledKey(r.PRNumber, r.Fingerprint, 0)
+		byRow[k] = append(byRow[k], r)
+	}
 	var out []SettledPoint
 	for i := range rows {
 		row := &rows[i]
-		var replies []PublishedReplyModel
-		if err := g.db.Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ?", owner, repo, row.PRNumber, row.Fingerprint).
-			Order("created_at ASC, id ASC").Find(&replies).Error; err != nil {
-			return nil, err
-		}
 		var settledAt time.Time
 		reason, source := "", ""
-		for _, r := range replies {
+		for _, r := range byRow[settledKey(row.PRNumber, row.Fingerprint, 0)] {
 			switch {
 			case r.Class == "verdict":
 				settledAt, reason, source = r.CreatedAt, r.Body, SettledSourceVerdict

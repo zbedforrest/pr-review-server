@@ -69,13 +69,6 @@ func BuildExternalThreads(cs []ExternalComment, roots []ExternalFinding, author 
 	return out
 }
 
-// Settled reports whether the thread counts as settled by the author:
-// answered, and either withdrawn by the reviewer or resolved (which the
-// caller reads off the thread listing).
-func (t ExternalThread) Settled(resolved bool) bool {
-	return len(t.AuthorReplies) > 0 && (t.Withdrawn || resolved)
-}
-
 func stableSortByTime(cs []ExternalComment) {
 	for i := 1; i < len(cs); i++ {
 		for j := i; j > 0 && cs[j].CreatedAt.Before(cs[j-1].CreatedAt); j-- {

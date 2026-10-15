@@ -79,6 +79,9 @@ type fakeReplyGH struct {
 	resolveErr    error
 	failReactions bool
 	reactionLists []int64
+	// resolvedRoots are the root comment ids whose thread the listing
+	// shows resolved.
+	resolvedRoots map[int64]bool
 }
 
 func (f *fakeReplyGH) ListReviewThreads(_ context.Context, owner, repo string, number int) ([]ReviewThread, error) {
@@ -88,7 +91,7 @@ func (f *fakeReplyGH) ListReviewThreads(_ context.Context, owner, repo string, n
 	var out []ReviewThread
 	for _, c := range f.threads[key] {
 		if c.InReplyToID == 0 {
-			out = append(out, ReviewThread{NodeID: fmt.Sprintf("T%d", c.ID), RootCommentID: c.ID})
+			out = append(out, ReviewThread{NodeID: fmt.Sprintf("T%d", c.ID), RootCommentID: c.ID, Resolved: f.resolvedRoots[c.ID]})
 		}
 	}
 	return out, nil
@@ -302,6 +305,11 @@ func (f *fakeReplyLedger) GetPublishedFindingsForPR(_, _ string, _ int) ([]db.Pu
 func (f *fakeReplyLedger) RecordSettledPoint(p *db.SettledPoint) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	for _, have := range f.settled {
+		if have.PRNumber == p.PRNumber && have.CommentID == p.CommentID {
+			return nil
+		}
+	}
 	f.settled = append(f.settled, *p)
 	return nil
 }
@@ -561,7 +569,7 @@ func respondFixture(mode string, decide Responder) (*ReplyReactor, *fakeReplyGH,
 		{RepoOwner: "acme", RepoName: "example", PRNumber: 7, Roots: map[int64]string{100: "a.go:1:abc"}},
 	}}
 	r := &ReplyReactor{
-		GH: gh, Ledger: ledger, Mode: mode, Since: t0.Add(-2 * time.Hour), Responder: decide,
+		GH: gh, Ledger: ledger, Mode: mode, Since: t0.Add(-2 * time.Hour), Responder: decide, CrossPRSettled: true,
 		Now: func() time.Time { return t0 },
 		PR: func(_ context.Context, _, _ string, _ int) (PRState, error) {
 			return PRState{Open: true, AuthorID: 42, AuthorLogin: "pilot", HeadSHA: "head1"}, nil
@@ -2263,5 +2271,70 @@ func TestReplyReactor_SkipsMutedPRsWithoutListingThem(t *testing.T) {
 	}
 	if rep.PRsSkipped["muted"] != 1 || rep.PRsScanned != 0 || len(gh.listed) != 0 || len(ledger.rows) != 0 {
 		t.Fatalf("a muted PR is neither listed nor reacted to: skipped=%v scanned=%d listed=%v rows=%d", rep.PRsSkipped, rep.PRsScanned, gh.listed, len(ledger.rows))
+	}
+}
+
+// externalThreadFixture is a PR where Greptile raised a point the author
+// answered after PRism's last round: nothing of PRism's is in the thread.
+func externalThreadFixture(authorReply string, withdrawn bool) (*ReplyReactor, *fakeReplyGH, *fakeReplyLedger) {
+	r, gh, ledger := respondFixture(ReplyModeReact, nil)
+	t0 := r.Now()
+	thread := []ThreadComment{
+		{ID: 300, AuthorID: 9, Author: "greptile-apps[bot]", Path: "store/models.py", Line: 241, Body: "**Older buyers get wrong badges**\n\n`record_fanclub_bulk` reads buyers only from `purchaser_id`, even when the read switch is off, so older purchases with a null `purchaser_id` are missed.", CreatedAt: t0.Add(-30 * time.Minute)},
+		{ID: 301, InReplyToID: 300, AuthorID: 42, Author: "pilot", Path: "store/models.py", Line: 241, Body: authorReply, CreatedAt: t0.Add(-20 * time.Minute)},
+	}
+	if withdrawn {
+		thread = append(thread, ThreadComment{ID: 302, InReplyToID: 300, AuthorID: 9, Author: "greptile-apps[bot]", Path: "store/models.py", Line: 241, Body: "Understood, no change is needed here; withdrawing the finding.", CreatedAt: t0.Add(-19 * time.Minute)})
+	}
+	gh.threads["acme/example#7"] = append(gh.threads["acme/example#7"][:1], thread...)
+	return r, gh, ledger
+}
+
+func TestReplyReactor_ScanRemembersAWithdrawnExternalThreadTheAuthorAnswered(t *testing.T) {
+	r, _, ledger := externalThreadFixture("Not an issue, the purchaser_id backfill is complete in prod and new rows get it on save.", true)
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.settled) != 1 {
+		t.Fatalf("settled = %+v", ledger.settled)
+	}
+	if p := ledger.settled[0]; p.CommentID != 300 || p.Source != db.SettledSourceWithdrawn || p.Author != "pilot" || p.File != "store/models.py" || !strings.Contains(p.Subjects, "purchaser_id") || !strings.Contains(p.Reason, "backfill") {
+		t.Fatalf("settled point = %+v", p)
+	}
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.settled) != 1 {
+		t.Fatalf("a thread is recorded once: %+v", ledger.settled)
+	}
+}
+
+func TestReplyReactor_ScanRemembersAResolvedExternalThreadOnlyWhenTheAuthorStoodByTheCode(t *testing.T) {
+	r, gh, ledger := externalThreadFixture("Fixed in a82796ac.", false)
+	gh.resolvedRoots = map[int64]bool{300: true}
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.settled) != 0 {
+		t.Fatalf("a fix the author resolved is not a settlement: %+v", ledger.settled)
+	}
+
+	r, gh, ledger = externalThreadFixture("This is intentional, the read switch is already on in prod.", false)
+	gh.resolvedRoots = map[int64]bool{300: true}
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.settled) != 1 || ledger.settled[0].Source != db.SettledSourceResolved {
+		t.Fatalf("settled = %+v", ledger.settled)
+	}
+
+	r, gh, ledger = externalThreadFixture("This is intentional, the read switch is already on in prod.", false)
+	r.CrossPRSettled = false
+	gh.resolvedRoots = map[int64]bool{300: true}
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.settled) != 0 {
+		t.Fatalf("the kill switch stops recording: %+v", ledger.settled)
 	}
 }

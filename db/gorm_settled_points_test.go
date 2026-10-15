@@ -75,4 +75,8 @@ func TestGormDB_SettledPoints_DerivedFromDismissedRowsWithAVerdictReply(t *testi
 	require.NoError(t, err)
 	require.Len(t, got, 1, "a recorded row replaces the derived one for the same thread")
 	require.Equal(t, "recorded first", got[0].Reason)
+
+	got, err = db.ListSettledPoints("acme", "example", "dev-ana", verdictAt.Add(-time.Hour), verdictAt.Add(time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a row posted before the window whose verdict falls inside it is derived")
 }

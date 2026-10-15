@@ -17,6 +17,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/publisher/replytext"
+	"pr-review-server/pkg/reviewer/reconcile"
 )
 
 // ReplyClass is what an author's reply to one of our inline comments amounts
@@ -44,6 +45,11 @@ type ThreadComment struct {
 	Author      string
 	Body        string
 	CreatedAt   time.Time
+	// Path, Line and OriginalLine place the comment in the diff; the
+	// external thread scan needs them, the author-reply handling does not.
+	Path         string
+	Line         int
+	OriginalLine int
 	// ThumbsDown is GitHub's reaction rollup for the comment; who reacted
 	// takes a second call, made only when this is non-zero.
 	ThumbsDown int
@@ -654,6 +660,10 @@ type ReplyReactor struct {
 	// OnDismissed runs after a finding row is set dismissed by a concession,
 	// so the caller can refresh the sticky summary; nil does nothing.
 	OnDismissed func(ctx context.Context, owner, repo string, number int)
+	// CrossPRSettled (PUBLISH_CROSS_PR_SETTLED) records the points the
+	// author settles, on PRism's threads and on other reviewers', for their
+	// later pull requests; off, the scan writes no settled point.
+	CrossPRSettled bool
 
 	// Live, when set, re-reads the mode and allowlist right before a post so a
 	// switch flipped during a long model run is honoured. A read error leaves
@@ -892,6 +902,7 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 	if err != nil {
 		return err
 	}
+	r.rememberExternalSettled(ctx, t, state.AuthorLogin, comments)
 	reactionsRead, err := r.contestThumbsDown(ctx, t, state, comments, rep)
 	if err != nil {
 		return err
@@ -1771,7 +1782,7 @@ func (r ReplyReactor) adopt(ctx context.Context, t db.PublishedReplyTarget, auth
 // failed write changes nothing here.
 func (r ReplyReactor) rememberSettled(t db.PublishedReplyTarget, author string, reply AuthorReply, source string) {
 	store, ok := r.Ledger.(SettledPointStore)
-	if !ok || strings.TrimSpace(author) == "" {
+	if !ok || !r.CrossPRSettled || strings.TrimSpace(author) == "" {
 		return
 	}
 	rows, err := r.Ledger.GetPublishedFindingsForPR(t.RepoOwner, t.RepoName, t.PRNumber)
@@ -1841,4 +1852,46 @@ func threadFingerprint(thread []ThreadComment, ourID int64) string {
 		fmt.Fprintf(h, "%d:%d:%s\x00", c.ID, len(c.Body), c.Body)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// rememberExternalSettled records, from the scan's own listing, every
+// other reviewer's thread the author settled (ThreadSettled), so a point
+// answered after PRism's last round on the PR is remembered without
+// waiting for another round. Resolution is read from the thread listing
+// when GitHub resolves threads for us, and only when an answered thread
+// nobody withdrew makes it matter; otherwise withdrawals alone count.
+func (r ReplyReactor) rememberExternalSettled(ctx context.Context, t db.PublishedReplyTarget, author string, comments []ThreadComment) {
+	store, ok := r.Ledger.(SettledPointStore)
+	if !ok || !r.CrossPRSettled || strings.TrimSpace(author) == "" {
+		return
+	}
+	own := make(map[int64]bool, len(t.Roots))
+	for id := range t.Roots {
+		own[id] = true
+	}
+	external := make([]reconcile.ExternalComment, 0, len(comments))
+	for _, c := range comments {
+		external = append(external, reconcile.ExternalComment{ID: c.ID, Author: c.Author, Body: c.Body, Path: c.Path, Line: c.Line, OriginalLine: c.OriginalLine, InReplyToID: c.InReplyToID, CreatedAt: c.CreatedAt})
+	}
+	threads := reconcile.BuildExternalThreads(external, reconcile.ParseExternalComments(external, own), author)
+	needListing := false
+	for _, th := range threads {
+		if len(th.AuthorReplies) > 0 && !th.Withdrawn {
+			needListing = true
+			break
+		}
+	}
+	resolvedRoots := map[int64]bool{}
+	if resolver, ok := r.GH.(ThreadResolver); ok && needListing {
+		listed, err := resolver.ListReviewThreads(ctx, t.RepoOwner, t.RepoName, t.PRNumber)
+		if err != nil {
+			log.Printf("[REPLY %s/%s#%d] threads not listed, resolved external threads not recorded this scan: %v", t.RepoOwner, t.RepoName, t.PRNumber, err)
+		}
+		for _, th := range listed {
+			if th.Resolved {
+				resolvedRoots[th.RootCommentID] = true
+			}
+		}
+	}
+	recordSettledThreads(store, t.RepoOwner, t.RepoName, t.PRNumber, author, threads, func(root int64) bool { return resolvedRoots[root] }, r.now(), "REPLY")
 }

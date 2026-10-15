@@ -15,7 +15,8 @@ import (
 // PRism root (the finding's contract from the sidecar of the commit the
 // root was posted on, when the loader has it), and another reviewer's
 // thread the author answered that the reviewer withdrew or that is
-// resolved now. Each point is dated by the reply that settled it.
+// resolved now with the author standing by the code (publisher.ThreadSettled).
+// Each point is dated by the reply that settled it.
 func (d *PRDump) SettledPointsOf(bots map[string]bool, finding func(sha7, id string) (payload.Finding, bool)) []db.SettledPoint {
 	author := strings.ToLower(d.Author.Login)
 	if author == "" {
@@ -80,20 +81,10 @@ func (d *PRDump) SettledPointsOf(bots map[string]bool, finding func(sha7, id str
 		if bots[BareLogin(strings.ToLower(th.Root.Source.Label()))] {
 			continue
 		}
-		if !th.Settled(resolved[th.Root.CommentID]) {
+		if !publisher.ThreadSettled(th, resolved[th.Root.CommentID]) {
 			continue
 		}
-		source := db.SettledSourceResolved
-		if th.Withdrawn {
-			source = db.SettledSourceWithdrawn
-		}
-		rootText := strings.TrimSpace(th.Root.Title + " " + th.Root.Body)
-		reason := strings.Join(th.AuthorReplies, " ")
-		out = append(out, db.SettledPoint{
-			RepoOwner: d.Owner, RepoName: d.Repo, PRNumber: d.Number, CommentID: th.Root.CommentID, Author: author, Source: source,
-			File: th.Root.File, Subjects: strings.Join(reconcile.CodeIdentifiers(rootText), ","), Headline: th.Root.Title,
-			Text: rootText + " " + reason, Reason: reason, SettledAt: th.SettledAt,
-		})
+		out = append(out, publisher.SettledPointOfThread(d.Owner, d.Repo, d.Number, author, th, th.SettledAt))
 	}
 	return out
 }

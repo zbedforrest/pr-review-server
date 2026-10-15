@@ -56,9 +56,12 @@
 // folded note against such a thread is the note reconcile's business). A
 // point is settled by the author's verdict on a PRism thread (the reply
 // path records it), or by another reviewer's thread the author answered
-// that the reviewer then withdrew or that the listing shows resolved (the
-// round records it, keyed by the thread); dismissed rows older than the
-// table are read back through the reply ledger. The match needs both a
+// that the reviewer then withdrew, or that the listing shows resolved
+// after an author reply that stood by the code (ThreadSettled: a verdict
+// or pushback, never a fix claim or a bare acknowledgement); the reply
+// scan and the round both record it, keyed by the thread. Dismissed rows
+// older than the table are read back through the reply ledger. With the
+// policy off nothing is matched, recorded or listed. The match needs both a
 // specific subject of the finding that the point names (as a contract
 // subject, or as an identifier in the thread's prose) and the finding's
 // headline or impact sentence inside the thread's prose at the external

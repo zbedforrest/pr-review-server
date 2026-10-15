@@ -314,6 +314,52 @@ func TestCrossPR_AResolvedThreadTheAuthorAnsweredIsRemembered(t *testing.T) {
 	}
 }
 
+func TestCrossPR_AThreadTheAuthorFixedAndResolvedIsNotSettled(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger()
+	gh.extra = []ReviewThread{{NodeID: "E3001", RootCommentID: 3001, Resolved: true}}
+	comments := greptileThread(false)
+	comments[1].Body = "Fixed in a82796ac, the reader now falls back to user_id."
+	publishLater(t, gh, ledger, earlierPRRound(comments), testPolicy())
+	if len(ledger.recorded) != 0 {
+		t.Fatalf("a fix the author resolved settles nothing: %+v", ledger.recorded)
+	}
+}
+
+func TestThreadSettled_ResolvedThreadsCountOnlyWhenTheAuthorStoodByTheCode(t *testing.T) {
+	cases := []struct {
+		reply   string
+		settled bool
+	}{
+		{"Fixed in a82796ac", false},
+		{"Fixed, the desktop block now overrides the mobile one.", false},
+		{"Removed", false},
+		{"I fixed this in 3adf5849 along with the loop.", false},
+		{"ok", false},
+		{"will fix", false},
+		{"Is this still reachable after the guard?", false},
+		{"intentional", true},
+		{"this just adds bloat imo", true},
+		{"the new page is behind MyCollUpgrd, so the old gate is never hit.", true},
+		{"Not an issue. The purchaser_id backfill is complete in prod.", true},
+	}
+	for _, c := range cases {
+		th := reconcile.ExternalThread{AuthorReplies: []string{c.reply}}
+		if got := ThreadSettled(th, true); got != c.settled {
+			t.Errorf("resolved thread answered %q: settled=%v, want %v", c.reply, got, c.settled)
+		}
+		if ThreadSettled(th, false) {
+			t.Errorf("an open thread answered %q is not settled", c.reply)
+		}
+		th.Withdrawn = true
+		if !ThreadSettled(th, false) {
+			t.Errorf("a withdrawn thread answered %q is settled", c.reply)
+		}
+	}
+	if ThreadSettled(reconcile.ExternalThread{Withdrawn: true}, true) {
+		t.Error("a thread nobody answered is not settled")
+	}
+}
+
 func TestCrossPR_AThreadNobodyAnsweredOrStillOpenIsNotSettled(t *testing.T) {
 	gh, ledger := newFakeThreadGitHub(), newFakeSettledLedger()
 	gh.extra = []ReviewThread{{NodeID: "E3001", RootCommentID: 3001}}

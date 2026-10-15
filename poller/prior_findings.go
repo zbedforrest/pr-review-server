@@ -91,6 +91,7 @@ var priorStateOrder = map[string]int{
 	db.PublishedStateOpen:      0,
 	db.PublishedStateContested: 1,
 	db.PublishedStateDismissed: 2,
+	db.PublishedStateSettled:   2,
 	db.PublishedStateExternal:  3,
 	db.PublishedStateFixed:     4,
 	db.PublishedStateResolved:  4,
@@ -98,14 +99,15 @@ var priorStateOrder = map[string]int{
 
 // PriorFindingsFromLedger turns the PR's ledger rows and recorded author
 // replies into the list the agent is shown: finding and annotation rows
-// only, the legacy resolved state read as fixed, the cited lines recovered
+// only (a settled row stays out: SettledElsewherePriors lists the point it
+// names), the legacy resolved state read as fixed, the cited lines recovered
 // from the fingerprint's bucket, the headline taken from the stored prose,
 // and the thread's verdicts in the order they were handled.
 func PriorFindingsFromLedger(rows []db.PublishedFinding, replies []db.PublishedReply) []service.PriorFinding {
 	verdicts := priorVerdicts(replies)
 	var out []service.PriorFinding
 	for _, row := range rows {
-		if row.Kind != db.PublishedKindFinding && row.Kind != db.PublishedKindAnnotation {
+		if (row.Kind != db.PublishedKindFinding && row.Kind != db.PublishedKindAnnotation) || row.State == db.PublishedStateSettled {
 			continue
 		}
 		file, bucket := payload.FingerprintParts(row.Fingerprint)
