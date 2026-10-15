@@ -321,6 +321,7 @@ export function SettingsForm({ settings, isAdmin, currentLogin, knownLogins, rep
           />
           <span id="settings-daily-round-cap-help" className="settings-field__help">
             Counted per UTC day; pushes past the cap are reviewed on request and manual reviews never count. 0 removes the bound
+            {settings.auto_review_daily_round_cap_enforced === false && '. Not applied: the server runs with AUTO_REVIEW_DAILY_ROUND_CAP=false'}
           </span>
           {dailyCapInvalid && (
             <span id="settings-daily-round-cap-error" role="alert" className="settings-field__error">

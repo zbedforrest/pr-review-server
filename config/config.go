@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -465,8 +466,12 @@ func Load() *Config {
 // getEnvBoolOrDefault parses the usual true/false spellings; unset or
 // unparsable values keep the default, so a typo never flips a kill switch.
 func getEnvBoolOrDefault(key string, defaultValue bool) bool {
-	if value, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(key))); err == nil {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if value, err := strconv.ParseBool(raw); err == nil {
 		return value
+	}
+	if raw != "" {
+		log.Printf("[CONFIG] %s=%q is not a boolean, keeping the default %t", key, raw, defaultValue)
 	}
 	return defaultValue
 }

@@ -45,6 +45,9 @@ export interface Settings {
   // for a review on request. 0 removes the bound. Optional: older servers
   // omit it and the form assumes 4.
   auto_review_daily_round_cap?: number;
+  // False when AUTO_REVIEW_DAILY_ROUND_CAP=false on the server, so the cap
+  // above is stored but not applied.
+  auto_review_daily_round_cap_enforced?: boolean;
   publish_reply_mode: ReplyMode;
   // RFC3339 stamp of when replies were last switched on; "" whenever the mode is off.
   publish_reply_enabled_at: string;

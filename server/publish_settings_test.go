@@ -372,6 +372,15 @@ func TestSettings_DailyRoundCapRoundTripsAndRejectsNegatives(t *testing.T) {
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, float64(2), got["auto_review_daily_round_cap"])
+	assert.Equal(t, true, got["auto_review_daily_round_cap_enforced"])
+
+	server.cfg.AutoReviewNoDailyRoundCap = true
+	w = httptest.NewRecorder()
+	server.handleSettings(w, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, float64(2), got["auto_review_daily_round_cap"], "the stored value is still shown")
+	assert.Equal(t, false, got["auto_review_daily_round_cap_enforced"], "but the kill switch says it is not applied")
+	server.cfg.AutoReviewNoDailyRoundCap = false
 
 	w = httptest.NewRecorder()
 	server.handleSettings(w, addUserToRequest(httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"auto_review_daily_round_cap":0}`)), &db.User{GitHubUsername: "tester"}))

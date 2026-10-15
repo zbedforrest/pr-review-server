@@ -113,9 +113,6 @@ func TestGormDB_HealthMetrics_RoundsPerPRDay(t *testing.T) {
 			AcceptedAt: accepted, QueuedAt: accepted, CompletedAt: &accepted,
 		}).Error)
 	}
-	// PR 5: three rounds today, one yesterday (the window starts at 14:00 the
-	// day before, so 13:00 the previous day is outside it); PR 6: one round
-	// plus a cancelled admission that never ran.
 	auto("d1", 5, time.Hour, ReviewRunStatusCompleted)
 	auto("d2", 5, 2*time.Hour, ReviewRunStatusCompleted)
 	auto("d3", 5, 3*time.Hour, ReviewRunStatusFailed)
@@ -123,10 +120,11 @@ func TestGormDB_HealthMetrics_RoundsPerPRDay(t *testing.T) {
 	auto("d5", 5, 25*time.Hour, ReviewRunStatusCompleted)
 	auto("d6", 6, 4*time.Hour, ReviewRunStatusCompleted)
 	auto("d7", 6, 5*time.Hour, ReviewRunStatusCancelled)
+	auto("d8", 6, 6*time.Hour, ReviewRunStatusTimedOut)
 
 	m, err := db.HealthMetrics(start, now, now, nil)
 	require.NoError(t, err)
-	assert.Equal(t, []int{1, 3, 1}, m.AutoReview.RoundsPerPRDay, "automatic rounds per PR per UTC day, oldest day first; cancelled and out-of-window runs do not count")
+	assert.Equal(t, []int{1, 2, 1}, m.AutoReview.RoundsPerPRDay, "automatic rounds per PR per UTC day, oldest day first; cancelled, failed, timed-out and out-of-window runs do not count")
 }
 
 func TestGormDB_HealthReports_RoundTrip(t *testing.T) {

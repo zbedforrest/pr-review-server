@@ -818,8 +818,6 @@ func TestRun_FixedWithoutHunkChangeIsCountedUnderTheFileRule(t *testing.T) {
 	}
 }
 
-// sameDayFixture copies the repost fixture (#1, three rounds on three days)
-// with its three rounds moved onto one UTC day.
 func sameDayFixture(t *testing.T) []*prDump {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/dumps/acme__example__1.json")

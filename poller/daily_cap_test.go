@@ -12,8 +12,6 @@ import (
 	"pr-review-server/pkg/health"
 )
 
-// seedRun records a finished review run for the fixture PR; the daily cap
-// counts it when it is automatic and accepted on the day in question.
 func seedRun(t *testing.T, f autoReviewFixture, id, trigger, status string, acceptedAt time.Time) {
 	t.Helper()
 	require.NoError(t, f.db.CreateReviewRun(&db.ReviewRun{
@@ -23,8 +21,6 @@ func seedRun(t *testing.T, f autoReviewFixture, id, trigger, status string, acce
 	}))
 }
 
-// earlierToday is a moment on the current UTC day that stays on it however
-// close to midnight the test runs.
 func earlierToday() time.Time {
 	return utcDayStart(time.Now()).Add(time.Second)
 }
@@ -78,12 +74,28 @@ func TestDailyRoundCapCountsOnlyAdmittedAutomaticRounds(t *testing.T) {
 
 	rounds, err := f.p.dailyAutoRounds("acme", "example", 7, time.Now().UTC())
 	require.NoError(t, err)
-	assert.Equal(t, 3, rounds, "manual reviews and a rejected admission never count")
+	assert.Equal(t, 2, rounds, "manual reviews, a rejected admission and a failed run never count")
 
 	trackedReadyPR(f, autoReviewNewHead, false)
 	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
 	waitForDetachedReviews(t, f.p)
 	assert.Equal(t, db.AutoReviewIntentRunning, f.intentFor(t, autoReviewNewHead).Status, "three automatic rounds leave room for a fourth")
+	require.Len(t, f.generator.GenerateReviewCalls, 1)
+	assert.Empty(t, f.hygieneEvents(t, health.ActionReviewSkippedDailyCap))
+}
+
+func TestDailyRoundCapIgnoresRunsThatPostedNothing(t *testing.T) {
+	f := newAutoReviewFixture(t, true, "*")
+	for i, id := range []string{"f1", "f2", "f3"} {
+		seedRun(t, f, id, autoReviewTriggerSource, db.ReviewRunStatusFailed, earlierToday().Add(time.Duration(i)*time.Minute))
+	}
+	seedRun(t, f, "t1", autoReviewTriggerSource, db.ReviewRunStatusTimedOut, earlierToday())
+	seedRun(t, f, "c1", autoReviewTriggerSource, db.ReviewRunStatusCancelled, earlierToday())
+	trackedReadyPR(f, autoReviewNewHead, false)
+
+	require.NoError(t, f.p.HandleWebhookDelivery(context.Background(), readyDelivery("synchronize", autoReviewNewHead, false)))
+	waitForDetachedReviews(t, f.p)
+	assert.Equal(t, db.AutoReviewIntentRunning, f.intentFor(t, autoReviewNewHead).Status, "an outage's failed runs do not use up the day")
 	require.Len(t, f.generator.GenerateReviewCalls, 1)
 	assert.Empty(t, f.hygieneEvents(t, health.ActionReviewSkippedDailyCap))
 }

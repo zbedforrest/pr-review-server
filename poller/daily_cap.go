@@ -12,20 +12,13 @@ import (
 	"pr-review-server/pkg/health"
 )
 
-// A PR gets at most auto_review_daily_round_cap automatic rounds per UTC
-// day. Rounds are the automatic review runs admitted for the PR since
-// midnight UTC; manual reviews (@review, generate-review, the dashboard) are
-// a different trigger source and never count. A push past the cap is
-// settled without a review and the sticky summary's footer says that further
-// pushes today are reviewed on request. AUTO_REVIEW_DAILY_ROUND_CAP=false
-// turns the cap off; the setting at 0 removes the bound.
+// Only automatic runs count: manual trigger sources never reach the cap.
 const (
 	SettingAutoReviewDailyRoundCap = "auto_review_daily_round_cap"
 	DefaultAutoReviewDailyRoundCap = 4
 	publicationSkippedDailyCap     = "skipped: daily round cap"
 )
 
-// settingReader is the slice of the database the cap reads.
 type settingReader interface {
 	GetSetting(key string) (string, error)
 }
@@ -57,15 +50,13 @@ func (p *Poller) dailyRoundCap() int {
 	return DailyRoundCap(p.db, p.cfg)
 }
 
-// utcDayStart is midnight UTC of the day now falls in.
 func utcDayStart(now time.Time) time.Time {
 	y, m, d := now.UTC().Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-// dailyAutoRounds counts the automatic review runs admitted for the PR since
-// the UTC day began. A run rejected on admission is cancelled and never ran,
-// so it does not count.
+// dailyAutoRounds counts the automatic runs since midnight UTC that posted or
+// will post; a cancelled, failed or timed-out run annoyed nobody.
 func (p *Poller) dailyAutoRounds(owner, repo string, number int, now time.Time) (int, error) {
 	runs, err := p.db.ListReviewRuns(db.ReviewRunFilter{RepoOwner: owner, RepoName: repo, PRNumber: number, Limit: db.MaxReviewRunListLimit})
 	if err != nil {
@@ -74,7 +65,7 @@ func (p *Poller) dailyAutoRounds(owner, repo string, number int, now time.Time) 
 	since := utcDayStart(now)
 	n := 0
 	for _, run := range runs {
-		if run.TriggerSource == autoReviewTriggerSource && run.Status != db.ReviewRunStatusCancelled && !run.AcceptedAt.Before(since) {
+		if run.TriggerSource == autoReviewTriggerSource && db.ReviewRunCountsAsRound(run.Status) && !run.AcceptedAt.Before(since) {
 			n++
 		}
 	}

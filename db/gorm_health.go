@@ -237,7 +237,7 @@ func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallC
 	m.Replies.UnlinkedRoots = len(unlinked)
 
 	var autoRuns []ReviewRunModel
-	if err := g.db.Where("trigger_source = ? AND status <> ? AND accepted_at >= ? AND accepted_at < ?", ReviewTriggerAutoReady, ReviewRunStatusCancelled, start, end).
+	if err := g.db.Where("trigger_source = ? AND status IN ? AND accepted_at >= ? AND accepted_at < ?", ReviewTriggerAutoReady, ReviewRunStatusesCountedAsRounds, start, end).
 		Select("repo_owner, repo_name, pr_number, accepted_at").Find(&autoRuns).Error; err != nil {
 		return m, err
 	}

@@ -40,7 +40,7 @@ func main() {
 	inlineCap := flag.Int("inline-cap", publisher.DefaultInlineCap, "publisher inline cap per round")
 	inlinePRCap := flag.Int("inline-pr-cap", publisher.DefaultInlinePRCap, "publisher inline cap over the life of a PR (0 = none)")
 	replayUnchanged := flag.Bool("replay-unchanged-diff", false, "replay rounds whose push left the PR diff unchanged (AUTO_REVIEW_SKIP_UNCHANGED_DIFF=false)")
-	dailyRoundCap := flag.Int("daily-round-cap", poller.DefaultAutoReviewDailyRoundCap, "automatic rounds admitted per PR per UTC day; later pushes that day are skipped (auto_review_daily_round_cap; 0 = none)")
+	dailyRoundCap := flag.Int("daily-round-cap", 0, "automatic rounds admitted per PR per UTC day; later distinct-head rounds that day are skipped (auto_review_daily_round_cap, prod default "+strconv.Itoa(poller.DefaultAutoReviewDailyRoundCap)+"; 0 = replay every round). Days follow the review's submitted time, the poller's accepted time, so a round near midnight can land a day apart")
 	minSeverity := flag.String("inline-min-severity", publisher.DefaultInlineMinSeverity, "publisher inline minimum severity")
 	legacy := flag.Bool("legacy", false, "replay with the pre-ledger-memory publisher (PUBLISH_POLICY_V2=false) for a baseline")
 	textOnly := flag.Bool("alias-text-only", false, "count same-defect reposts by raw-text overlap alone, without the subject key")

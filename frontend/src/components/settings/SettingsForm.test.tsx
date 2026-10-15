@@ -341,6 +341,11 @@ describe('SettingsForm', () => {
     expect(within(section('Publishing')).queryByRole('alert')).toBeNull();
   });
 
+  it('says when the server does not apply the daily round cap', () => {
+    renderForm({}, { ...serverSettings, auto_review_daily_round_cap_enforced: false });
+    expect(screen.getByText(/Not applied: the server runs with AUTO_REVIEW_DAILY_ROUND_CAP=false/)).toBeTruthy();
+  });
+
   it('asks before choosing respond and keeps the radio and the server untouched when cancelled', () => {
     vi.mocked(window.confirm).mockReturnValue(false);
     renderForm();
