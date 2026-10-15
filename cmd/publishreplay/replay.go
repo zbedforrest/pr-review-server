@@ -76,6 +76,7 @@ type recorder struct {
 	leakedFindingIDs  int
 	sourceFooters     int
 	praiseShown       int
+	leadingMarkers    int
 	zeroStatusLines   int
 	noopSummaryEdits  int
 	lastSummaryBodies map[int64]string
@@ -153,6 +154,9 @@ func (r *recorder) CreateReview(_ context.Context, _, _ string, _ int, _, _ stri
 		if praiseTitle(c.Body) {
 			r.praiseShown++
 		}
+		if leadingMarkerTitle(c.Body) {
+			r.leadingMarkers++
+		}
 	}
 	return r.nextReview, ids, nil
 }
@@ -195,6 +199,7 @@ func (r *recorder) noteSummary(id int64, body string) {
 	r.lastSummaryBodies[id] = body
 	r.nilImpactBullets += nilImpactBullets(body)
 	r.praiseShown += praiseBullets(body)
+	r.leadingMarkers += leadingMarkerBullets(body)
 	if leaksFindingID(body) {
 		r.leakedFindingIDs++
 	}
@@ -274,6 +279,7 @@ type PRResult struct {
 	SourceFooters         int
 	ZeroStatusLines       int
 	NoopSummaryEdits      int
+	LeadingMarkers        int
 	// External duplicates: roots posted on a point another reviewer's
 	// earlier root already carried, split by that thread's state; Matched
 	// and Replies are what the publisher did instead of posting.
@@ -363,6 +369,10 @@ type Metrics struct {
 	SourceFooters         int `json:"source_footers"`
 	ZeroStatusLines       int `json:"zero_status_lines_over_notes"`
 	NoopSummaryEdits      int `json:"noop_summary_edits"`
+	// LeadingMarkers counts the inline titles and summary bullets that
+	// open with the clamp marker or a lowercase connective (2026-10-14
+	// annoyance audit).
+	LeadingMarkers int `json:"leading_markers"`
 
 	// ExternalDuplicatesNear counts replayed roots posted while an earlier
 	// root by another reviewer sat on the same point (same file, line within
@@ -514,6 +524,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.SourceFooters += pr.SourceFooters
 		m.ZeroStatusLines += pr.ZeroStatusLines
 		m.NoopSummaryEdits += pr.NoopSummaryEdits
+		m.LeadingMarkers += pr.LeadingMarkers
 		m.RootsPosted += pr.RootsPosted
 		m.SameMarkerReposts += pr.SameMarkerReposts
 		m.SameDefectReposts += pr.SameDefectReposts
@@ -690,6 +701,7 @@ func replayPR(ctx context.Context, d *prDump, bots map[string]bool, s *store, le
 	pr.NilImpactBullets, pr.BareLabelTitles = rec.nilImpactBullets, rec.bareLabelTitles
 	pr.PraiseShown, pr.ConfidenceLabels, pr.LeakedFindingIDs = rec.praiseShown, rec.confidenceLabels, rec.leakedFindingIDs
 	pr.SourceFooters, pr.ZeroStatusLines, pr.NoopSummaryEdits = rec.sourceFooters, rec.zeroStatusLines, rec.noopSummaryEdits
+	pr.LeadingMarkers = rec.leadingMarkers
 	return pr, pushes, nil
 }
 
@@ -1210,7 +1222,7 @@ func round3(v float64) float64 {
 }
 
 var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_without_hunk_change", "fixed_hunk_unknown", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "double_notes", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open",
-	"held_library_claims", "held_regression_claims", "held_praise", "held_reasonless_notes", "library_claims_shown", "uncited_regression_claims_shown", "reasonless_notes_shown", "praise_shown", "confidence_labels_rendered", "leaked_finding_ids", "source_footers", "zero_status_lines_over_notes", "noop_summary_edits",
+	"held_library_claims", "held_regression_claims", "held_praise", "held_reasonless_notes", "library_claims_shown", "uncited_regression_claims_shown", "reasonless_notes_shown", "praise_shown", "confidence_labels_rendered", "leaked_finding_ids", "source_footers", "zero_status_lines_over_notes", "noop_summary_edits", "leading_markers",
 	"external_settled", "settled_dropped", "body_covered", "summary_notes_near_external_root", "summary_notes_near_settled_root", "observed_summary_notes_near_external_root", "observed_summary_notes_near_settled_root", "observed_cross_file_same_point"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
@@ -1220,7 +1232,7 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 	}
 	for _, r := range rows {
 		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedWithoutHunkChange), itoa(r.FixedHunkUnknown), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.DoubleNotes), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen),
-			itoa(r.HeldLibraryClaims), itoa(r.HeldRegressionClaims), itoa(r.HeldPraise), itoa(r.HeldReasonless), itoa(r.LibraryClaimsShown), itoa(r.RegressionClaimsShown), itoa(r.ReasonlessNotesShown), itoa(r.PraiseShown), itoa(r.ConfidenceLabels), itoa(r.LeakedFindingIDs), itoa(r.SourceFooters), itoa(r.ZeroStatusLines), itoa(r.NoopSummaryEdits),
+			itoa(r.HeldLibraryClaims), itoa(r.HeldRegressionClaims), itoa(r.HeldPraise), itoa(r.HeldReasonless), itoa(r.LibraryClaimsShown), itoa(r.RegressionClaimsShown), itoa(r.ReasonlessNotesShown), itoa(r.PraiseShown), itoa(r.ConfidenceLabels), itoa(r.LeakedFindingIDs), itoa(r.SourceFooters), itoa(r.ZeroStatusLines), itoa(r.NoopSummaryEdits), itoa(r.LeadingMarkers),
 			itoa(r.ExternalSettled), itoa(r.SettledDropped), itoa(r.BodyCovered), itoa(r.SummaryNotesNearExternalRoot), itoa(r.SummaryNotesNearSettledRoot), itoa(r.ObservedSummaryNotesNearExternalRoot), itoa(r.ObservedSummaryNotesNearSettledRoot), itoa(r.ObservedCrossFileSamePoint)}
 		if err := cw.Write(rec); err != nil {
 			return err

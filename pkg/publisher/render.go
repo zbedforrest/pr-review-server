@@ -559,13 +559,23 @@ func headlineWith(f payload.Finding, legacy, legacyClamp bool) string {
 	}
 	title := titleSource(f)
 	if c := f.FindingContract; c != nil && f.FindingContractStatus == "valid" && strings.TrimSpace(c.CurrentImpact) != "" {
-		cut := clauseHeadlineWith(title, contractTitleLimit(f, legacyClamp), legacyClamp)
+		cut := standaloneTitle(clauseHeadlineWith(title, contractTitleLimit(f, legacyClamp), legacyClamp))
 		if label, ok := kindLabels[c.FindingKind]; ok {
 			return label + " · " + cut
 		}
 		return cut
 	}
-	return clauseHeadlineWith(title, titleLimit(commentTitleMaxRunes, legacyCommentTitleMaxRunes, legacyClamp), legacyClamp)
+	return standaloneTitle(clauseHeadlineWith(title, titleLimit(commentTitleMaxRunes, legacyCommentTitleMaxRunes, legacyClamp), legacyClamp))
+}
+
+// standaloneTitle keeps a title that fit its limit from opening with the
+// marker or a lowercase connective, as clampText does for a cut one, under
+// PUBLISH_PROBLEM_CLAUSE_START.
+func standaloneTitle(s string) string {
+	if ProblemClauseStartEnabled() {
+		return textcut.StandAlone(s)
+	}
+	return s
 }
 
 // contractTitleLimit is the headline limit for a finding with a contract
@@ -727,13 +737,17 @@ const cutMarker = textcut.Marker
 // clampText cuts s to max runes the way textcut.Clamp does (a dropped
 // parenthetical, else a sentence, clause or word boundary outside every
 // open pair, ending with cutMarker), keeping the problem clause over the
-// context clause under PUBLISH_NOTE_PROBLEM_CLAUSE. Legacy restores the
-// word cut with "...". A text within the limit is returned unchanged.
+// context clause under PUBLISH_NOTE_PROBLEM_CLAUSE; under
+// PUBLISH_PROBLEM_CLAUSE_START that clause opens the line capitalised and
+// unmarked. Legacy restores the word cut with "...". A text within the
+// limit is returned unchanged, except that it never opens with the marker
+// or a lowercase connective.
 func clampText(s string, max int, legacy bool) string {
 	if legacy {
 		return truncateWords(s, max)
 	}
-	return textcut.ClampWith(s, max, textcut.Options{KeepProblemClause: NoteProblemClauseEnabled(), HeadStatesProblem: StatesProblem})
+	out := textcut.ClampWith(s, max, textcut.Options{KeepProblemClause: NoteProblemClauseEnabled(), HeadStatesProblem: StatesProblem, MarkDroppedLead: !ProblemClauseStartEnabled()})
+	return standaloneTitle(out)
 }
 
 // impactBelowTitle is the part of the effect statement still owed under the

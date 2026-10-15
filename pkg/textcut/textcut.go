@@ -6,6 +6,7 @@ package textcut
 import (
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -22,20 +23,26 @@ var ClauseBoundaries = []string{", so ", "; ", " because ", ", which ", ", and "
 type Options struct {
 	// KeepProblemClause prefers the clause that states the problem: a text
 	// whose "but", "yet" or "however" clause does not fit loses its leading
-	// context clause (replaced by the marker) rather than that clause, and
-	// no cut ends on a connective or subordinator ("however", "only",
-	// "when", "because" ...), which would leave the problem unsaid. The
-	// leading clause is kept when HeadStatesProblem says it states the
-	// defect, or when the trailing clause opens with a qualifier or an
-	// anaphor ("but only when", "but this flag"), which reads as nothing
-	// on its own.
+	// context clause rather than that clause (the marker stands in for it
+	// only under MarkDroppedLead), and no cut ends on a connective or
+	// subordinator ("however", "only", "when", "because" ...), which would
+	// leave the problem unsaid. The leading clause is kept when
+	// HeadStatesProblem says it states the defect, or when the trailing
+	// clause opens with a qualifier or an anaphor ("but only when", "but
+	// this flag"), which reads as nothing on its own.
 	KeepProblemClause bool
 	// HeadStatesProblem reports whether a leading clause already says what
 	// goes wrong; nil treats every leading clause as context.
 	HeadStatesProblem func(string) bool
+	// MarkDroppedLead renders a dropped leading clause as the marker plus its
+	// connective ("[…] but ..."), the pre-2026-10-14 form; off, the text
+	// starts at the problem clause, capitalised and unmarked.
+	MarkDroppedLead bool
 }
 
-// Clamp cuts s to max runes. A text within the limit is returned unchanged.
+// Clamp cuts s to max runes. A text within the limit is returned unchanged
+// (ClampWith under KeepProblemClause without MarkDroppedLead passes it
+// through StandAlone, so it never opens with the marker or a connective).
 // A longer one first loses its parentheticals, left to right, when that
 // alone brings it within the limit, so "X (aside) does Y, so Z" keeps its
 // consequence. Otherwise it is cut before the limit at the end of a
@@ -49,6 +56,14 @@ func Clamp(s string, max int) string {
 
 // ClampWith is Clamp under the given options.
 func ClampWith(s string, max int, opts Options) string {
+	out := clampWith(s, max, opts)
+	if opts.KeepProblemClause && !opts.MarkDroppedLead {
+		return StandAlone(out)
+	}
+	return out
+}
+
+func clampWith(s string, max int, opts Options) string {
 	if len([]rune(s)) <= max {
 		return s
 	}
@@ -56,18 +71,21 @@ func ClampWith(s string, max int, opts Options) string {
 		return reduced
 	}
 	if opts.KeepProblemClause {
-		if tail, ok := problemClause(s, opts.HeadStatesProblem); ok {
-			budget := max - len([]rune(leadMarker))
+		if tail, ok := problemClause(s, opts); ok {
+			lead, budget := "", max
+			if opts.MarkDroppedLead {
+				lead, budget = leadMarker, max-len([]rune(leadMarker))
+			}
 			if budget >= minTailRunes {
 				if len([]rune(tail)) <= budget {
-					return leadMarker + tail
+					return lead + tail
 				}
 				if reduced, ok := dropParentheticals(tail, budget); ok {
-					return leadMarker + reduced
+					return lead + reduced
 				}
 				// A tail cut at both ends says less than a right cut that
 				// keeps more of the text.
-				fromTail, fromRight := leadMarker+cutRight(tail, budget, opts), cutRight(s, max, opts)
+				fromTail, fromRight := lead+cutRight(tail, budget, opts), cutRight(s, max, opts)
 				if len([]rune(fromTail)) >= len([]rune(fromRight)) {
 					return fromTail
 				}
@@ -99,14 +117,38 @@ var tailOpeners = map[string]bool{
 	"their": true, "there": true, "such": true, "then": true,
 }
 
+// subordinators open a clause that cannot be the problem on its own
+// ("Where A but B, C" states its problem in C).
+var subordinators = map[string]bool{
+	"where": true, "when": true, "whenever": true, "while": true, "if": true, "unless": true, "although": true,
+	"though": true, "because": true, "since": true, "after": true, "before": true, "once": true, "as": true,
+	"given": true, "whereas": true, "until": true, "even": true,
+}
+
+// coordinators join two clauses that each stand alone; one at the start of
+// a line is dropped.
+var coordinators = map[string]bool{"but": true, "yet": true, "and": true, "or": true, "nor": true, "so": true, "however": true, "whereas": true}
+
+// clauseOpeners are the words a problem clause cannot open with: a
+// subordinator or a relative leaves the clause hanging on what preceded it.
+var clauseOpeners = map[string]bool{
+	"which": true, "because": true, "although": true, "though": true, "since": true, "whereas": true, "and": true,
+	"or": true, "nor": true, "so": true, "as": true, "thus": true, "hence": true, "rather": true, "also": true,
+	"even": true, "still": true, "instead": true, "yet": true, "but": true, "however": true,
+}
+
+type joint struct{ at, end int }
+
 // problemClause is the text from the first contrast joint, in text order,
 // at which the context before it and the clause after it have a few words,
 // the context does not already state the problem and the clause stands
-// alone.
-func problemClause(s string, headStatesProblem func(string) bool) (string, bool) {
+// alone. With MarkDroppedLead the clause keeps its connective; otherwise
+// it starts after the connective, capitalised, and a joint inside an
+// unclosed subordinate clause yields the main clause that follows it.
+func problemClause(s string, opts Options) (string, bool) {
 	lower := asciiLower(s)
 	balanced := balancedPrefixes(s)
-	var joints []int
+	var joints []joint
 	for _, j := range problemJoints {
 		for from := 0; ; {
 			i := strings.Index(lower[from:], j)
@@ -115,26 +157,205 @@ func problemClause(s string, headStatesProblem func(string) bool) (string, bool)
 			}
 			i += from
 			if balanced[i] {
-				joints = append(joints, i)
+				joints = append(joints, joint{i, i + len(j)})
 			}
 			from = i + 1
 		}
 	}
-	sort.Ints(joints)
-	for _, at := range joints {
-		head, tail := s[:at], strings.TrimLeft(s[at:], " ,;")
-		if len(strings.Fields(head)) < 2 || len(strings.Fields(tail)) < 4 {
+	sort.Slice(joints, func(a, b int) bool { return joints[a].at < joints[b].at })
+	for _, j := range joints {
+		head := s[:j.at]
+		if len(strings.Fields(head)) < 2 {
 			continue
 		}
-		if headStatesProblem != nil && headStatesProblem(head) {
+		if opts.HeadStatesProblem != nil && opts.HeadStatesProblem(head) {
 			return "", false
 		}
-		if words := strings.Fields(tail); tailOpeners[strings.Trim(strings.ToLower(words[1]), "`,;:")] {
+		if opts.MarkDroppedLead {
+			tail := strings.TrimLeft(s[j.at:], " ,;")
+			words := strings.Fields(tail)
+			if len(words) < 4 || tailOpeners[cleanWord(words[1])] {
+				continue
+			}
+			return tail, true
+		}
+		if subordinateOpen(head, balanced) {
+			if main, ok := mainClauseAfter(s, j.end, balanced); ok {
+				return capitalise(main), true
+			}
 			continue
 		}
-		return tail, true
+		clause := strings.TrimLeft(s[j.end:], " ,;")
+		if words := strings.Fields(clause); len(words) < 3 || tailOpeners[cleanWord(words[0])] || clauseOpeners[cleanWord(words[0])] {
+			continue
+		}
+		return capitalise(clause), true
 	}
 	return "", false
+}
+
+// subordinateOpen reports whether head is a subordinate clause still open
+// at its end: it starts with a subordinator and no balanced comma has
+// closed it, a list comma ("Where a, b and c share X") not counting.
+func subordinateOpen(head string, balanced []bool) bool {
+	words := strings.Fields(head)
+	if len(words) == 0 || !subordinators[cleanWord(words[0])] {
+		return false
+	}
+	last := -1
+	for i := balancedComma(head, 0, balanced); i >= 0; i = balancedComma(head, i+1, balanced) {
+		last = i
+	}
+	return last < 0 || listComma(head[last+1:])
+}
+
+// listComma reports whether the text after a comma reads as the end of a
+// list ("b and c share", "or c share"), not a clause of its own.
+func listComma(rest string) bool {
+	words := strings.Fields(rest)
+	for i := 0; i < len(words) && i < 2; i++ {
+		if w := cleanWord(words[i]); w == "and" || w == "or" {
+			return true
+		}
+	}
+	return false
+}
+
+// mainClauseAfter is the first clause after a balanced comma at or past
+// from whose first word can open a line and that has a few words; a
+// consequence participle ("leaving", "causing") continues the clause
+// before it.
+func mainClauseAfter(s string, from int, balanced []bool) (string, bool) {
+	for i := balancedComma(s, from, balanced); i >= 0; i = balancedComma(s, i+1, balanced) {
+		clause := strings.TrimLeft(s[i+1:], " ,;")
+		words := strings.Fields(clause)
+		if len(words) < 4 {
+			continue
+		}
+		if first := cleanWord(words[0]); tailOpeners[first] || clauseOpeners[first] || consequenceParticiples[first] {
+			continue
+		}
+		return clause, true
+	}
+	return "", false
+}
+
+var consequenceParticiples = map[string]bool{
+	"leaving": true, "causing": true, "making": true, "giving": true, "allowing": true, "forcing": true,
+	"keeping": true, "resulting": true, "meaning": true, "leading": true, "letting": true, "sending": true,
+	"reducing": true, "increasing": true, "turning": true, "breaking": true, "losing": true, "dropping": true,
+}
+
+// balancedComma is the offset of the first ", " at or past from that sits
+// outside every open pair, or -1.
+func balancedComma(s string, from int, balanced []bool) int {
+	for i := from; ; {
+		j := strings.Index(s[i:], ", ")
+		if j < 0 {
+			return -1
+		}
+		if balanced[i+j] {
+			return i + j
+		}
+		i += j + 1
+	}
+}
+
+func cleanWord(w string) string {
+	return strings.Trim(strings.ToLower(w), "`,;:.")
+}
+
+// lowercaseNames are the tools and branches written in lowercase that a
+// line may open with; only these are exempt from capitalisation.
+var lowercaseNames = map[string]bool{
+	"npm": true, "npx": true, "pnpm": true, "yarn": true, "pip": true, "git": true, "go": true, "node": true,
+	"docker": true, "kubectl": true, "make": true, "main": true, "master": true,
+}
+
+// capitalise upper-cases the first letter of s when its first word is a
+// plain lowercase word, hyphens and apostrophes included ("free-approved",
+// "don't"); an identifier ("purchaser_id", "isMicBlocked"), a code span, a
+// number or a lowercase tool or branch name ("npm", "main") is left alone.
+func capitalise(s string) string {
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return s
+	}
+	if lowercaseNames[cleanWord(words[0])] {
+		return s
+	}
+	for _, r := range strings.TrimRight(words[0], ",;:.") {
+		if strings.ContainsRune("-'’", r) {
+			continue
+		}
+		if !unicode.IsLetter(r) || unicode.IsUpper(r) {
+			return s
+		}
+	}
+	r, n := utf8.DecodeRuneInString(s)
+	return string(unicode.ToUpper(r)) + s[n:]
+}
+
+// StandAlone makes s open a line: a leading marker or lowercase
+// coordinating connective ("[…] but", "however,") is dropped and the first
+// word is capitalised when it is a plain lowercase function word or
+// connective. Prose that already opens a line ("So far ...", "Nor does
+// ...") is left alone, as is a text that is nothing but the marker.
+func StandAlone(s string) string {
+	out, stripped := strings.TrimSpace(s), false
+	for {
+		rest, ok := stripLead(out, stripped)
+		if !ok {
+			break
+		}
+		out, stripped = rest, true
+	}
+	if out == "" {
+		return s
+	}
+	if words := strings.Fields(out); stripped || functionWords[cleanWord(words[0])] || tailOpeners[cleanWord(words[0])] || OpensWithMarkerOrConnective(out) {
+		return capitalise(out)
+	}
+	return out
+}
+
+// stripLead drops a leading marker, or a coordinator that is lowercase or
+// follows a stripped marker. A code span is never a connective; "so" stays
+// because it also opens "so far" and "so that", and "nor" because dropping
+// it inverts the claim.
+func stripLead(s string, afterMarker bool) (string, bool) {
+	if mark := strings.TrimSpace(Marker); strings.HasPrefix(s, mark) {
+		return strings.TrimSpace(strings.TrimLeft(s[len(mark):], " ,;:")), true
+	}
+	words := strings.Fields(s)
+	if len(words) < 2 || !strings.HasPrefix(s, words[0]) {
+		return s, false
+	}
+	first := strings.Trim(words[0], ",;:")
+	lower := strings.ToLower(first)
+	if !coordinators[lower] || lower == "so" || lower == "nor" || (!afterMarker && first != lower) {
+		return s, false
+	}
+	return strings.TrimSpace(strings.TrimLeft(s[len(words[0]):], " ,;:")), true
+}
+
+// OpensWithMarkerOrConnective reports whether s starts with the marker or
+// a lowercase connective, which is how a clamp that dropped the leading
+// clause used to read.
+func OpensWithMarkerOrConnective(s string) bool {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, strings.TrimSpace(Marker)) {
+		return true
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return false
+	}
+	first := strings.Trim(words[0], ",;:")
+	if first != strings.ToLower(first) {
+		return false
+	}
+	return coordinators[first] || subordinators[first] || clauseOpeners[first] || first == "only" || first == "that" || first == "which"
 }
 
 // asciiLower lowers the ASCII letters only, so every byte offset in the

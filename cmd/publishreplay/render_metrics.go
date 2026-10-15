@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"pr-review-server/pkg/publisher"
+	"pr-review-server/pkg/textcut"
 )
 
 // Renderer defects the program tracks: a summary bullet whose text says the
@@ -116,4 +117,36 @@ func zeroStatusOverNotes(summary string) bool {
 		return false
 	}
 	return m[1] == "0" && m[2] == "0" && m[3] == "0" && !strings.Contains(m[4], "folded note")
+}
+
+// Leading markers (2026-10-14 annoyance audit): a title or bullet that
+// opens with the clamp marker or a lowercase connective, which is how a cut
+// that dropped its leading clause used to read.
+
+var kindLabelPrefixRe = regexp.MustCompile(`^[A-Z][a-z]+(?: [a-z]+)? · `)
+
+// leadingMarkerTitle reports whether an inline comment's title, after its
+// kind label, opens with the marker or a lowercase connective.
+func leadingMarkerTitle(inline string) bool {
+	m := inlineTitleRe.FindStringSubmatch(inline)
+	if m == nil {
+		return false
+	}
+	title := m[1]
+	if title == "" {
+		title = m[2]
+	}
+	return textcut.OpensWithMarkerOrConnective(kindLabelPrefixRe.ReplaceAllString(strings.TrimSpace(title), ""))
+}
+
+// leadingMarkerBullets counts the summary bullets whose text opens with
+// the marker or a lowercase connective.
+func leadingMarkerBullets(summary string) int {
+	n := 0
+	for _, m := range summaryBulletRe.FindAllStringSubmatch(summary, -1) {
+		if textcut.OpensWithMarkerOrConnective(strings.TrimSpace(m[1])) {
+			n++
+		}
+	}
+	return n
 }
