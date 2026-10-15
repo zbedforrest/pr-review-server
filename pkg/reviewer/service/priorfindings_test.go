@@ -241,3 +241,15 @@ func TestMergeFindings_AFoldedDuplicateKeepsItsPriorOnTheSurvivor(t *testing.T) 
 		t.Fatalf("relates_to merged without repeats: %q", got)
 	}
 }
+
+func TestPriorFindingLine_SettledElsewhereNamesThePRAndTheReason(t *testing.T) {
+	p := PriorFinding{ID: "settled:596:4001", State: "settled", File: "store/models.py", Headline: "Buyer lookup hardcodes purchaser_id", SettledOnPR: 596, Reason: "intentional, the backfill is done"}
+	got := priorFindingLine(p)
+	want := "[settled on #596] store/models.py: Buyer lookup hardcodes purchaser_id (author: intentional, the backfill is done)"
+	if got != want {
+		t.Fatalf("line = %q, want %q", got, want)
+	}
+	if section := priorFindingsSection([]PriorFinding{p}); !strings.Contains(section, "- P-1 "+want) || !strings.Contains(section, `A point marked "settled on #N"`) {
+		t.Fatalf("section:\n%s", section)
+	}
+}

@@ -26,12 +26,18 @@ type PriorFinding struct {
 	// Verdicts are what the author and PRism said in the thread since, in
 	// order ("author: intentional", "PRism conceded").
 	Verdicts []string
+	// SettledOnPR names the earlier pull request of this repo where the
+	// author settled the point; Reason is what they said. Zero for a point
+	// of this pull request.
+	SettledOnPR int
+	Reason      string
 }
 
 const (
 	priorFindingsMaxRows       = 40
 	priorFindingsHeadlineMax   = 200
 	priorFindingsVerdictMax    = 80
+	priorFindingsReasonMax     = 160
 	priorFindingsSectionBudget = 8000
 )
 
@@ -68,10 +74,11 @@ const priorFindingsRules = `Rules for these:
 - A point in state dismissed, contested or external was settled by the author or belongs to another reviewer's thread: do not raise it again under any wording; a finding whose "prior_id" names it is dropped before posting. The one exception is a CRITICAL security_risk whose cited code this push changed: report it with "prior_id" and say what changed.
 - These two fields go inside finding_contract alongside its other fields.
 - A point in state fixed was judged addressed: raise it again, with "prior_id", only if the defect is still present at HEAD.
+- A point marked "settled on #N" was settled by this author on that earlier pull request, with the reason shown: do not raise it again unless the code here differs in a way that answers the reason, and then say how.
 - Never use a label that is not listed here. Both fields are optional and omitted on SUMMARY entries.
 `
 
-const priorFindingsHeader = "\n--- FINDINGS ALREADY RAISED ON THIS PR (PRism's own earlier comments on this pull request) ---\n" +
+const priorFindingsHeader = "\n--- FINDINGS ALREADY RAISED ON THIS PR (PRism's own earlier comments on this pull request, and points this author settled recently in this repo) ---\n" +
 	"One line per earlier finding: label, state and severity, file and lines, headline, then what the author or PRism said since.\n"
 
 // visiblePriors is the prefix of priors the section lists: at most
@@ -100,6 +107,9 @@ func priorFindingLine(p PriorFinding) string {
 	if state == "" {
 		state = "open"
 	}
+	if p.SettledOnPR > 0 {
+		state = fmt.Sprintf("settled on #%d", p.SettledOnPR)
+	}
 	var b strings.Builder
 	b.WriteString("[" + state)
 	if p.Severity != "" {
@@ -120,6 +130,9 @@ func priorFindingLine(p PriorFinding) string {
 		if v = sanitizeText(v, priorFindingsVerdictMax); v != "" {
 			verdicts = append(verdicts, v)
 		}
+	}
+	if reason := sanitizeText(p.Reason, priorFindingsReasonMax); reason != "" {
+		verdicts = append(verdicts, "author: "+reason)
 	}
 	if len(verdicts) > 0 {
 		b.WriteString(" (" + strings.Join(verdicts, "; ") + ")")

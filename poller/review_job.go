@@ -697,7 +697,7 @@ func (p *Poller) agentConfigForExecution(exec *reviewExecution, gitToken string)
 	var priors []service.PriorFinding
 	if p.cfg.AgentPriorFindings {
 		pr := exec.Job.PR
-		priors = p.priorFindingsFor(pr.Owner, pr.Repo, pr.Number)
+		priors = p.priorFindingsFor(pr.Owner, pr.Repo, pr.Number, pr.Author)
 	}
 	return service.AgentConfig{
 		CloneRootDir: p.cfg.AgentCloneRootDir, LogsDir: p.cfg.AgentLogsDir,
