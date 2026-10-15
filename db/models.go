@@ -392,12 +392,38 @@ type PublishedFindingModel struct {
 	// summary row, is the merge-base the last published review diffed against.
 	Line      int    `gorm:"not null;default:0"`
 	MergeBase string `gorm:"size:40;not null;default:''"`
+	// SettledPRNumber and SettledCommentID, on a settled row, name the
+	// earlier pull request and thread the point was settled in.
+	SettledPRNumber  int   `gorm:"not null;default:0"`
+	SettledCommentID int64 `gorm:"not null;default:0"`
 }
 
 // TableName specifies the table name for PublishedFindingModel
 func (PublishedFindingModel) TableName() string {
 	return "published_findings"
 }
+
+// SettledPointModel is one point a PR author settled, kept per repo and
+// author so a later PR does not raise it again; one row per thread.
+type SettledPointModel struct {
+	ID          uint      `gorm:"primaryKey;autoIncrement"`
+	RepoOwner   string    `gorm:"size:255;not null;uniqueIndex:idx_settled_points_unique;index:idx_settled_points_author,priority:1"`
+	RepoName    string    `gorm:"size:255;not null;uniqueIndex:idx_settled_points_unique;index:idx_settled_points_author,priority:2"`
+	PRNumber    int       `gorm:"not null;uniqueIndex:idx_settled_points_unique"`
+	CommentID   int64     `gorm:"not null;default:0;uniqueIndex:idx_settled_points_unique"`
+	Author      string    `gorm:"size:255;not null;index:idx_settled_points_author,priority:3"`
+	Source      string    `gorm:"size:16;not null;default:''"`
+	Fingerprint string    `gorm:"size:512;not null;default:''"`
+	File        string    `gorm:"size:512;not null;default:''"`
+	FindingKind string    `gorm:"size:32;not null;default:''"`
+	Subjects    string    `gorm:"type:text;not null;default:''"`
+	Headline    string    `gorm:"type:text"`
+	Text        string    `gorm:"type:text"`
+	Reason      string    `gorm:"type:text"`
+	SettledAt   time.Time `gorm:"not null;index"`
+}
+
+func (SettledPointModel) TableName() string { return "settled_points" }
 
 // PublishedReplyModel records one PR-author reply under a PRism inline
 // comment and what PRism did about it. One row per author comment.

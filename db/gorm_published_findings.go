@@ -38,6 +38,8 @@ func publishedFindingModelToDomain(m *PublishedFindingModel) PublishedFinding {
 		ExternalCommentID: m.ExternalCommentID,
 		Line:              m.Line,
 		MergeBase:         m.MergeBase,
+		SettledPRNumber:   m.SettledPRNumber,
+		SettledCommentID:  m.SettledCommentID,
 	}
 }
 
@@ -72,6 +74,8 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 		ExternalCommentID: p.ExternalCommentID,
 		Line:              p.Line,
 		MergeBase:         p.MergeBase,
+		SettledPRNumber:   p.SettledPRNumber,
+		SettledCommentID:  p.SettledCommentID,
 	}
 	// Muted is owned by SetPublishedMute; a round rewriting the summary row
 	// never clears it, and a muted placeholder takes its first head here.
@@ -84,8 +88,8 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 			model.ReviewedSHA),
 		// Terminal states are sticky: a publication that loaded the row before
 		// the author settled it must not flip it back to open or fixed.
-		"state": gorm.Expr("CASE WHEN published_findings.state IN (?, ?, ?) THEN published_findings.state ELSE ? END",
-			PublishedStateDismissed, PublishedStateContested, PublishedStateExternal, model.State),
+		"state": gorm.Expr("CASE WHEN published_findings.state IN (?, ?, ?, ?) THEN published_findings.state ELSE ? END",
+			PublishedStateDismissed, PublishedStateContested, PublishedStateExternal, PublishedStateSettled, model.State),
 	}
 	if model.CommentText != "" {
 		updates["comment_text"] = model.CommentText
@@ -113,6 +117,10 @@ func (g *GormDB) UpsertPublishedFinding(p *PublishedFinding) error {
 	}
 	if model.ExternalCommentID != 0 {
 		updates["external_comment_id"] = model.ExternalCommentID
+	}
+	if model.SettledPRNumber != 0 {
+		updates["settled_pr_number"] = model.SettledPRNumber
+		updates["settled_comment_id"] = model.SettledCommentID
 	}
 	// Both follow the caller's row: a finding seen without a line falls back
 	// to its comment or bucket anchor, and a round without a scope leaves no
@@ -247,7 +255,7 @@ func (g *GormDB) MarkPublishedFindingFixed(owner, repo string, number int, finge
 		updates["last_seen_sha"] = head
 	}
 	return g.db.Model(&PublishedFindingModel{}).
-		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ? AND state NOT IN ?", owner, repo, number, fingerprint, []string{PublishedStateDismissed, PublishedStateContested, PublishedStateExternal, PublishedStateFixed, PublishedStateResolved}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ? AND fingerprint = ? AND state NOT IN ?", owner, repo, number, fingerprint, []string{PublishedStateDismissed, PublishedStateContested, PublishedStateExternal, PublishedStateSettled, PublishedStateFixed, PublishedStateResolved}).
 		Updates(updates).Error
 }
 
