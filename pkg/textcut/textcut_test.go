@@ -215,6 +215,16 @@ func TestClamp_DroppedLeadStartsAtTheProblemClauseCapitalised(t *testing.T) {
 			max:  110,
 			want: "npm install fails on the pinned registry and the job retries forever",
 		},
+		"closed subordinate head keeps the clause after the contrast": {
+			in:   "When the flag is off, the handler returns early but the cache entry is stale, the next reader gets the old row and the sweeper never sees it",
+			max:  120,
+			want: "The cache entry is stale, the next reader gets the old row and the sweeper never sees it",
+		},
+		"gerund-led main clause after an open subordinate head": {
+			in:   "Where every writer in the pool shares a connection but holds the lock for the whole batch, invalidating on write is skipped and the next reader gets the old row",
+			max:  120,
+			want: "Invalidating on write is skipped and the next reader gets the old row",
+		},
 		"subordinate clause closed before the contrast": {
 			in:   "When the flag is off, the handler returns early but the cache entry written just before the return is never invalidated by the sweeper and is served to the next caller",
 			max:  120,

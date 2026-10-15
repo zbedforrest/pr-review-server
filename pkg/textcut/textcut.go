@@ -179,16 +179,11 @@ func problemClause(s string, opts Options) (string, bool) {
 			}
 			return tail, true
 		}
-		// A head that opens with a subordinator may still be open at the
-		// joint even when a list comma sits inside it ("Where a, b and c
-		// share X but differ by Y, Z"), so the main clause is tried first.
-		if opensWithSubordinator(head) {
+		if subordinateOpen(head, balanced) {
 			if main, ok := mainClauseAfter(s, j.end, balanced); ok {
 				return capitalise(main), true
 			}
-			if subordinateOpen(head, balanced) {
-				continue
-			}
+			continue
 		}
 		clause := strings.TrimLeft(s[j.end:], " ,;")
 		if words := strings.Fields(clause); len(words) < 3 || tailOpeners[cleanWord(words[0])] || clauseOpeners[cleanWord(words[0])] {
@@ -201,27 +196,43 @@ func problemClause(s string, opts Options) (string, bool) {
 
 // subordinateOpen reports whether head is a subordinate clause still open
 // at its end: it starts with a subordinator and no balanced comma has
-// closed it.
+// closed it, a list comma ("Where a, b and c share X") not counting.
 func subordinateOpen(head string, balanced []bool) bool {
-	return opensWithSubordinator(head) && balancedComma(head, 0, balanced) < 0
-}
-
-func opensWithSubordinator(head string) bool {
 	words := strings.Fields(head)
-	return len(words) > 0 && subordinators[cleanWord(words[0])]
+	if len(words) == 0 || !subordinators[cleanWord(words[0])] {
+		return false
+	}
+	last := -1
+	for i := balancedComma(head, 0, balanced); i >= 0; i = balancedComma(head, i+1, balanced) {
+		last = i
+	}
+	return last < 0 || listComma(head[last+1:])
 }
 
-// mainClauseAfter is the clause after the first balanced comma at or past
-// from whose first word can open a line, when it has a few words; a
-// participle ("leaving", "causing") continues the clause before it.
+// listComma reports whether the text after a comma reads as the end of a
+// list ("b and c share", "or c share"), not a clause of its own.
+func listComma(rest string) bool {
+	words := strings.Fields(rest)
+	for i := 0; i < len(words) && i < 2; i++ {
+		if w := cleanWord(words[i]); w == "and" || w == "or" {
+			return true
+		}
+	}
+	return false
+}
+
+// mainClauseAfter is the first clause after a balanced comma at or past
+// from whose first word can open a line and that has a few words; a
+// consequence participle ("leaving", "causing") continues the clause
+// before it.
 func mainClauseAfter(s string, from int, balanced []bool) (string, bool) {
 	for i := balancedComma(s, from, balanced); i >= 0; i = balancedComma(s, i+1, balanced) {
 		clause := strings.TrimLeft(s[i+1:], " ,;")
 		words := strings.Fields(clause)
 		if len(words) < 4 {
-			return "", false
+			continue
 		}
-		if first := cleanWord(words[0]); tailOpeners[first] || clauseOpeners[first] || participle(first) {
+		if first := cleanWord(words[0]); tailOpeners[first] || clauseOpeners[first] || consequenceParticiples[first] {
 			continue
 		}
 		return clause, true
@@ -229,8 +240,10 @@ func mainClauseAfter(s string, from int, balanced []bool) (string, bool) {
 	return "", false
 }
 
-func participle(w string) bool {
-	return strings.HasSuffix(w, "ing") && !strings.HasSuffix(w, "thing")
+var consequenceParticiples = map[string]bool{
+	"leaving": true, "causing": true, "making": true, "giving": true, "allowing": true, "forcing": true,
+	"keeping": true, "resulting": true, "meaning": true, "leading": true, "letting": true, "sending": true,
+	"reducing": true, "increasing": true, "turning": true, "breaking": true, "losing": true, "dropping": true,
 }
 
 // balancedComma is the offset of the first ", " at or past from that sits
@@ -252,8 +265,8 @@ func cleanWord(w string) string {
 	return strings.Trim(strings.ToLower(w), "`,;:.")
 }
 
-// lowercaseNames are tools and branches written in lowercase that a line
-// may open with.
+// lowercaseNames are the tools and branches written in lowercase that a
+// line may open with; only these are exempt from capitalisation.
 var lowercaseNames = map[string]bool{
 	"npm": true, "npx": true, "pnpm": true, "yarn": true, "pip": true, "git": true, "go": true, "node": true,
 	"docker": true, "kubectl": true, "make": true, "main": true, "master": true,
