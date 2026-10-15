@@ -3,6 +3,8 @@
 // duplicates one and every finding carries a source tag.
 package reconcile
 
+import "time"
+
 // Source names the review producer a finding came from.
 type Source string
 
@@ -38,6 +40,8 @@ type ExternalComment struct {
 	OriginalLine      int
 	OriginalStartLine int
 	InReplyToID       int64
+	// CreatedAt orders a thread's replies; zero when the caller has none.
+	CreatedAt time.Time
 }
 
 // ExternalFinding is a review comment parsed into a finding.
