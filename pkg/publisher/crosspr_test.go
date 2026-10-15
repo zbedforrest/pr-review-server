@@ -179,7 +179,7 @@ func TestCrossPR_TheSettledRowStaysSilentOnLaterRounds(t *testing.T) {
 	if row == nil || row.State != db.PublishedStateSettled || row.SettledPRNumber != 596 {
 		t.Fatalf("the settled row is untouched: %+v", row)
 	}
-	summary := ledger.issueEdits[501]
+	summary := gh.issueEdits[501]
 	if !strings.Contains(summary, "Settled earlier on [#596]") || !strings.Contains(summary, "0 new · 1 still open · 0 fixed") {
 		t.Fatalf("the refreshed summary still names the earlier thread and never counts the point:\n%s", summary)
 	}
