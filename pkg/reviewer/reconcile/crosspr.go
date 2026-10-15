@@ -132,9 +132,15 @@ func GenericSubject(subject, file string) bool {
 		return true
 	}
 	// A short qualified name (user_id, created_at) is as common as a
-	// short word; a long one, or a dotted one, names something.
-	return utf8.RuneCountInString(subject) < genericSubjectMaxLen && !strings.ContainsAny(subject, ".:#")
+	// short word, and a column-shaped suffix adds nothing to it
+	// (purchaser_id is purchaser); a long one, or a dotted one, names
+	// something.
+	stemmed := columnSuffixRe.ReplaceAllString(subject, "")
+	return utf8.RuneCountInString(stemmed) < genericSubjectMaxLen && !strings.ContainsAny(subject, ".:#")
 }
+
+// columnSuffixRe is the column-shaped tail a name is judged without.
+var columnSuffixRe = regexp.MustCompile(`_(?:at|by|id|ids|key|name|on|time|date)$`)
 
 // genericSubjectMinLetters is the letter count under which a token (v2,
 // s3, md5) is generic whatever else it carries.

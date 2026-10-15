@@ -65,6 +65,12 @@ func (d *PRDump) SettledPointsOf(bots map[string]bool, finding func(sha7, id str
 					at     time.Time
 					source string
 				}{c.Body, c.CreatedAt, db.SettledSourceDeferred}
+			case settling != nil && settling.source == db.SettledSourceVerdict && publisher.ClassifyReply(c.Body) == publisher.ReplyResolution:
+				settling = &struct {
+					body   string
+					at     time.Time
+					source string
+				}{c.Body, c.CreatedAt, db.SettledSourceSuperseded}
 			case publisher.ClassifyReply(c.Body) == publisher.ReplyVerdict:
 				settling = &struct {
 					body   string

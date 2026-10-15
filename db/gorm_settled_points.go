@@ -138,8 +138,8 @@ func (g *GormDB) derivedSettledPoints(owner, repo, author string, since, until t
 			if !r.CreatedAt.After(since) || r.CreatedAt.After(until) {
 				continue
 			}
-			if replytext.Deferred(r.Body) {
-				// A deferral after a stand supersedes it.
+			if replytext.Deferred(r.Body) || (r.Class == "resolution" && !settledAt.IsZero()) {
+				// A deferral or a fix after a stand supersedes it.
 				settledAt, reason, source = time.Time{}, "", ""
 				continue
 			}

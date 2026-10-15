@@ -970,6 +970,11 @@ func (r ReplyReactor) scan(ctx context.Context, t db.PublishedReplyTarget, rep *
 			if created {
 				rep.Recorded++
 				rep.Handled = append(rep.Handled, row)
+				// A deferral or a fix report on a thread the author had stood
+				// by leaves the stand behind, whether or not a text step runs.
+				if (Deferred(reply.Body) || reply.Class == ReplyResolution) && r.rowDismissed(t, reply.Fingerprint) {
+					r.rememberSettled(t, state.AuthorLogin, reply, db.SettledSourceSuperseded)
+				}
 			}
 		} else {
 			rep.AlreadyHandled++

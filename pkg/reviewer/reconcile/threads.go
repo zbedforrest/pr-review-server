@@ -25,12 +25,15 @@ var (
 	noWithdrawalRe = regexp.MustCompile(`(?i)\b(?:not|never|don't|won't|wouldn't|can't|cannot|shouldn't|doesn't|didn't|isn't|aren't|wasn't|weren't|haven't|hasn't|hadn't|shan't|no need to|no reason to)\s+(?:be\s+|been\s+|going to\s+|yet\s+|need to be\s+)?withdr`)
 )
 
+// conditionalWithdrawalRe is a withdrawal that hangs on a condition.
+var conditionalWithdrawalRe = regexp.MustCompile(`(?i)withdr\w*\s+(?:this|it|the finding|the point)?\s*(?:if|once|when|after|unless|provided|as soon as)\b`)
+
 // IsWithdrawal reports whether a reviewer's reply takes its own point
 // back: an explicit withdrawal in the first person or aimed at the
-// thread, or the "no change is needed" form, never a negated one or a
-// passing "not necessary".
+// thread, or the "no change is needed" form, never a negated or a
+// conditional one or a passing "not necessary".
 func IsWithdrawal(body string) bool {
-	return withdrawalRe.MatchString(body) && !noWithdrawalRe.MatchString(body)
+	return withdrawalRe.MatchString(body) && !noWithdrawalRe.MatchString(body) && !conditionalWithdrawalRe.MatchString(body)
 }
 
 // BuildExternalThreads pairs each parsed root with the PR author's replies
