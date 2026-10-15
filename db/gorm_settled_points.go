@@ -71,18 +71,33 @@ func settledKey(pr int, fingerprint string, commentID int64) string {
 }
 
 // derivedSettledPoints reads the author's dismissed ledger rows whose
-// reply ledger holds a verdict or concession inside the window, each dated
-// by that reply; the rows and their replies come in one query each.
+// reply ledger holds a verdict or a conceded stand inside the window, each
+// dated by that reply. The author is recovered from the PR row where one
+// still exists, else from the numeric author id of their replies on any
+// tracked PR (cleanup deletes the PR row when a PR closes; the ledgers
+// stay). A conceded fix claim is a fix, not a stand.
 func (g *GormDB) derivedSettledPoints(owner, repo, author string, since, until time.Time) ([]SettledPoint, error) {
-	var rows []PublishedFindingModel
-	err := g.db.Table("published_findings AS pf").
+	var ids []int64
+	if err := g.db.Table("published_reply_models AS pr").
+		Distinct("pr.author_id").
+		Joins("JOIN prs ON prs.repo_owner = pr.repo_owner AND prs.repo_name = pr.repo_name AND prs.pr_number = pr.pr_number").
+		Where("pr.repo_owner = ? AND pr.repo_name = ? AND LOWER(prs.author) = ? AND pr.author_id <> 0", owner, repo, author).
+		Scan(&ids).Error; err != nil {
+		return nil, err
+	}
+	q := g.db.Table("published_findings AS pf").
 		Select("DISTINCT pf.*").
-		Joins("JOIN prs ON prs.repo_owner = pf.repo_owner AND prs.repo_name = pf.repo_name AND prs.pr_number = pf.pr_number").
 		Joins("JOIN published_reply_models AS pr ON pr.repo_owner = pf.repo_owner AND pr.repo_name = pf.repo_name AND pr.pr_number = pf.pr_number AND pr.fingerprint = pf.fingerprint").
-		Where("pf.repo_owner = ? AND pf.repo_name = ? AND LOWER(prs.author) = ? AND pf.state = ? AND pf.kind IN ?",
-			owner, repo, author, PublishedStateDismissed, []string{PublishedKindFinding, PublishedKindAnnotation}).
-		Where("pr.created_at > ? AND pr.created_at <= ? AND (pr.class = ? OR pr.decision IN ?)", since, until, "verdict", []string{"concede", "withdraw"}).
-		Scan(&rows).Error
+		Joins("LEFT JOIN prs ON prs.repo_owner = pf.repo_owner AND prs.repo_name = pf.repo_name AND prs.pr_number = pf.pr_number").
+		Where("pf.repo_owner = ? AND pf.repo_name = ? AND pf.state = ? AND pf.kind IN ?", owner, repo, PublishedStateDismissed, []string{PublishedKindFinding, PublishedKindAnnotation}).
+		Where("pr.created_at > ? AND pr.created_at <= ? AND (pr.class = ? OR (pr.class <> ? AND pr.decision IN ?))", since, until, "verdict", "resolution", []string{"concede", "withdraw"})
+	if len(ids) > 0 {
+		q = q.Where("LOWER(prs.author) = ? OR pr.author_id IN ?", author, ids)
+	} else {
+		q = q.Where("LOWER(prs.author) = ?", author)
+	}
+	var rows []PublishedFindingModel
+	err := q.Scan(&rows).Error
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
@@ -114,7 +129,7 @@ func (g *GormDB) derivedSettledPoints(owner, repo, author string, since, until t
 			switch {
 			case r.Class == "verdict":
 				settledAt, reason, source = r.CreatedAt, r.Body, SettledSourceVerdict
-			case r.Decision == "concede" || r.Decision == "withdraw":
+			case r.Class != "resolution" && (r.Decision == "concede" || r.Decision == "withdraw"):
 				settledAt, reason, source = r.CreatedAt, r.Body, SettledSourceConceded
 			}
 		}

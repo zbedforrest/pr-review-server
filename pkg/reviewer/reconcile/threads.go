@@ -20,11 +20,17 @@ type ExternalThread struct {
 	SettledAt time.Time
 }
 
-var withdrawalRe = regexp.MustCompile(`(?i)\bwithdr(?:aw|awing|awn|aws|awal|ew)\b|\bno (?:further |code )?changes? (?:is |are )?(?:needed|necessary|required)\b|\bnot necessary\b|\bnothing to change\b`)
+var (
+	withdrawalRe   = regexp.MustCompile(`(?i)\b(?:i(?:'m| am| will|'ll| have|'ve|'d| would)?\s+(?:be\s+|now\s+|also\s+)?withdr(?:aw|awing|awn|aws|ew)|withdrawing (?:the|this|my|it)|withdrawn)\b|\bno (?:further |code )?changes? (?:is |are )?(?:needed|necessary|required)\b`)
+	noWithdrawalRe = regexp.MustCompile(`(?i)\b(?:not|never|don't|won't|wouldn't|can't|cannot)\s+(?:be\s+|going to\s+|yet\s+)?withdr`)
+)
 
-// IsWithdrawal reports whether a reviewer's reply takes its own point back.
+// IsWithdrawal reports whether a reviewer's reply takes its own point
+// back: an explicit withdrawal in the first person or aimed at the
+// thread, or the "no change is needed" form, never a negated one or a
+// passing "not necessary".
 func IsWithdrawal(body string) bool {
-	return withdrawalRe.MatchString(body)
+	return withdrawalRe.MatchString(body) && !noWithdrawalRe.MatchString(body)
 }
 
 // BuildExternalThreads pairs each parsed root with the PR author's replies

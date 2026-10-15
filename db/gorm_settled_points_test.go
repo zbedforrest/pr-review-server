@@ -79,4 +79,54 @@ func TestGormDB_SettledPoints_DerivedFromDismissedRowsWithAVerdictReply(t *testi
 	got, err = db.ListSettledPoints("acme", "example", "dev-ana", verdictAt.Add(-time.Hour), verdictAt.Add(time.Hour))
 	require.NoError(t, err)
 	require.Len(t, got, 1, "a row posted before the window whose verdict falls inside it is derived")
+
+	conceded := testPublished(func(p *PublishedFinding) {
+		p.RepoOwner, p.RepoName, p.PRNumber = "acme", "example", 596
+		p.Fingerprint, p.CommentID, p.State, p.PublishedAt = "store/views.py:3:bbbbbbbbbbbb", 4003, PublishedStateDismissed, posted
+	})
+	require.NoError(t, db.UpsertPublishedFinding(conceded))
+	_, err = db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 596, RootCommentID: 4003, AuthorCommentID: 5003,
+		Fingerprint: conceded.Fingerprint, AuthorID: 77, Class: "resolution", Action: "reacted", Decision: "concede", Body: "Fixed in a82796ac", CreatedAt: verdictAt})
+	require.NoError(t, err)
+	got, err = db.ListSettledPoints("acme", "example", "dev-ana", verdictAt.Add(-time.Hour), verdictAt.Add(time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a conceded fix claim is a fix, not a stand")
+}
+
+func TestGormDB_SettledPoints_DerivedFromAClosedPRWhoseRowCleanupDeleted(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	posted := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	verdictAt := posted.Add(time.Hour)
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "acme", RepoName: "example", PRNumber: 596, Author: "dev-ana", LastCommitSHA: "8c858a5", Status: "completed"}))
+	row := testPublished(func(p *PublishedFinding) {
+		p.RepoOwner, p.RepoName, p.PRNumber = "acme", "example", 596
+		p.Fingerprint, p.CommentID, p.State, p.PublishedAt = "store/models.py:24:ce55dc9e9abf", 4001, PublishedStateDismissed, posted
+		p.Subjects = "purchaser_read_swap"
+	})
+	require.NoError(t, db.UpsertPublishedFinding(row))
+	_, err := db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 596, RootCommentID: 4001, AuthorCommentID: 5001,
+		Fingerprint: row.Fingerprint, AuthorID: 77, Class: "verdict", Action: "reacted", Body: "intentional", CreatedAt: verdictAt})
+	require.NoError(t, err)
+	require.NoError(t, db.DeletePR("acme", "example", 596))
+
+	got, err := db.ListSettledPoints("acme", "example", "dev-ana", posted.Add(-time.Hour), verdictAt.Add(time.Hour))
+	require.NoError(t, err)
+	require.Empty(t, got, "without any tracked PR of the author their replies cannot be told apart")
+
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "acme", RepoName: "example", PRNumber: 668, Author: "Dev-Ana", LastCommitSHA: "6c25465", Status: "pending"}))
+	open := testPublished(func(p *PublishedFinding) {
+		p.RepoOwner, p.RepoName, p.PRNumber = "acme", "example", 668
+		p.Fingerprint, p.CommentID, p.PublishedAt = "store/feed.py:9:dddddddddddd", 4009, verdictAt
+	})
+	require.NoError(t, db.UpsertPublishedFinding(open))
+	_, err = db.RecordPublishedReply(&PublishedReply{RepoOwner: "acme", RepoName: "example", PRNumber: 668, RootCommentID: 4009, AuthorCommentID: 5009,
+		Fingerprint: open.Fingerprint, AuthorID: 77, Class: "pushback", Action: "reacted", Body: "The feed reads purchaser_id already.", CreatedAt: verdictAt.Add(time.Hour)})
+	require.NoError(t, err)
+	got, err = db.ListSettledPoints("acme", "example", "dev-ana", posted.Add(-time.Hour), verdictAt.Add(2*time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, 1, "the author's reply id on a tracked PR recovers the closed PR's dismissal")
+	require.Equal(t, 596, got[0].PRNumber)
+	require.Equal(t, "intentional", got[0].Reason)
 }

@@ -202,9 +202,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 
 	originalIDs := p.aliasToLedger(&r, rows)
 	rememberExternal(ctx, &r, rows, threads, p.Policy.NoteReconcile)
-	if p.Policy.CrossPRSettled {
-		rememberSettled(&r, rows)
-	}
+	rememberSettled(&r, rows)
 	settledDropped, bodyCovered := 0, 0
 	if p.Policy.SettledAlias {
 		// Before withoutTerminal: the root the security exception mints

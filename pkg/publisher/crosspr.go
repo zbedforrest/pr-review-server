@@ -120,7 +120,9 @@ func (p *Publisher) withoutSettledElsewhere(r *Round, rows map[string]*db.Publis
 
 // rememberSettled lists, for the summary, the findings of this round whose
 // row is settled: the point is still raised and still settled elsewhere.
-// It runs before withoutTerminal drops them.
+// It runs before withoutTerminal drops them, with the policy on or off: a
+// settled row is terminal (decision 4), so the line that explains why the
+// point is absent stays with it.
 func rememberSettled(r *Round, rows map[string]*db.PublishedFinding) {
 	for _, f := range r.Findings {
 		row, ok := rows[f.ID]

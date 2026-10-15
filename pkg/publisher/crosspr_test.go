@@ -359,9 +359,14 @@ func TestThreadSettled_ResolvedThreadsCountOnlyWhenTheAuthorStoodByTheCode(t *te
 	if ThreadSettled(reconcile.ExternalThread{Withdrawn: true}, true) {
 		t.Error("a thread nobody answered is not settled")
 	}
-	for _, body := range []string{"I withdrew the finding.", "Withdrawing this one.", "No change is needed here."} {
+	for _, body := range []string{"I withdrew the finding.", "Withdrawing this one.", "No change is needed here.", "Finding withdrawn.", "I'll withdraw this.", greptileWithdraw, samePRWithdraw} {
 		if !reconcile.IsWithdrawal(body) {
 			t.Errorf("%q is a withdrawal", body)
+		}
+	}
+	for _, body := range []string{"I would not withdraw the migration yet.", "the fix is not necessary here", "this is not necessary to merge, but the null branch should still be fixed", "nothing to change in the caller, the callee is wrong", "The withdrawal flow still double-charges."} {
+		if reconcile.IsWithdrawal(body) {
+			t.Errorf("%q is not a withdrawal", body)
 		}
 	}
 }
