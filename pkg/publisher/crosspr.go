@@ -47,7 +47,9 @@ func (p *Publisher) settledPoints(r Round, now time.Time) (elsewhere, here []db.
 		switch {
 		case pt.PRNumber != r.Number:
 			elsewhere = append(elsewhere, pt)
-		case pt.Fingerprint == "":
+		case pt.Fingerprint == "" && p.Policy.ExternalReconcile:
+			// Other reviewers' threads on this PR are acted on only under
+			// the external reconcile.
 			here = append(here, pt)
 		}
 	}
@@ -278,10 +280,12 @@ func recordSettledThreads(store SettledPointStore, owner, repo string, number in
 }
 
 // recordExternalSettled remembers, from a publish round, every other
-// reviewer's thread the author settled (ThreadSettled).
+// reviewer's thread the author settled (ThreadSettled), under the external
+// reconcile: with PUBLISH_EXTERNAL_RECONCILE off PRism does not act on
+// other reviewers' threads, so it records nothing from them either.
 func (p *Publisher) recordExternalSettled(ctx context.Context, r Round, threads *threadIndex, now time.Time) {
 	store, ok := p.Ledger.(SettledPointStore)
-	if !ok || !p.Policy.CrossPRSettled || strings.TrimSpace(r.Author) == "" {
+	if !ok || !p.Policy.CrossPRSettled || !p.Policy.ExternalReconcile || strings.TrimSpace(r.Author) == "" {
 		return
 	}
 	resolved := func(root int64) bool {

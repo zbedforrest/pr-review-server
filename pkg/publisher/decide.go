@@ -677,7 +677,7 @@ func (p *Publisher) withoutTerminal(r Round, rows map[string]*db.PublishedFindin
 			fresh = payload.Fingerprint(f.File, f.Line, f.Comment)
 		}
 		f.ID = fresh
-		if row.Subjects != "" {
+		if row.Subjects != "" && f.FindingContract != nil {
 			// The fresh root is keyed to the settled row so rowsOnPoint finds
 			// it whatever this wording's own subjects or file are.
 			c := *f.FindingContract

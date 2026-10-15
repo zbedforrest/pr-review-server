@@ -93,6 +93,15 @@ func (d *PRDump) SettledPointsOf(bots map[string]bool, finding func(sha7, id str
 			out = append(out, publisher.SettledPointFromRow(row, author, c.source, c.body, c.at))
 		}
 	}
+	var latest time.Time
+	for _, c := range comments {
+		if c.CreatedAt.After(latest) {
+			latest = c.CreatedAt
+		}
+	}
+	if latest.IsZero() {
+		latest = time.Now().UTC()
+	}
 	roots := reconcile.ParseExternalComments(comments, nil)
 	resolved, ownRoot := map[int64]bool{}, map[int64]bool{}
 	for _, t := range d.ReviewThreads.Nodes {
@@ -109,7 +118,9 @@ func (d *PRDump) SettledPointsOf(bots map[string]bool, finding func(sha7, id str
 		if !publisher.ThreadSettled(th, resolved[th.Root.CommentID]) {
 			continue
 		}
-		out = append(out, publisher.SettledPointOfThread(d.Owner, d.Repo, d.Number, author, th, th.SettledAt))
+		// A dumped thread without comment times is dated by the dump's
+		// latest comment, so the seeded point stays inside a window.
+		out = append(out, publisher.SettledPointOfThread(d.Owner, d.Repo, d.Number, author, th, latest))
 	}
 	return out
 }

@@ -84,7 +84,12 @@ func SettledElsewherePriors(points []db.SettledPoint, number int) []service.Prio
 		if headline == "" {
 			headline = priorHeadline(pt.Text)
 		}
-		out = append(out, service.PriorFinding{ID: fmt.Sprintf("settled:%d:%d", pt.PRNumber, pt.CommentID), State: db.PublishedStateSettled, File: pt.File,
+		id := fmt.Sprintf("settled:%d:%d", pt.PRNumber, pt.CommentID)
+		if pt.CommentID == 0 {
+			// A point without a thread root is told apart by its fingerprint.
+			id = fmt.Sprintf("settled:%d:%s", pt.PRNumber, pt.Fingerprint)
+		}
+		out = append(out, service.PriorFinding{ID: id, State: db.PublishedStateSettled, File: pt.File,
 			Headline: headline, SettledOnPR: pt.PRNumber, Reason: pt.Reason})
 		if len(out) == settledElsewhereMax {
 			break
