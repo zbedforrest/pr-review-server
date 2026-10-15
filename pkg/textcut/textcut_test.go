@@ -200,6 +200,21 @@ func TestClamp_DroppedLeadStartsAtTheProblemClauseCapitalised(t *testing.T) {
 			max:  110,
 			want: "purchaser_id is read unconditionally before the guard runs and the row may be missing",
 		},
+		"list comma inside the unclosed subordinate clause": {
+			in:   "Where a, b and c share a trigger but differ by target_audience or assign_countries, the higher-priority one now holds the slot and the other is dropped",
+			max:  120,
+			want: "The higher-priority one now holds the slot and the other is dropped",
+		},
+		"participle after the contrast is not a main clause": {
+			in:   "When the flag is off, the handler returns early but the cache entry is never invalidated by the sweeper, leaving the next caller with a deleted row until the restart",
+			max:  120,
+			want: "The cache entry is never invalidated by the sweeper, leaving the next caller with a deleted row until the restart",
+		},
+		"lowercase tool name is not capitalised": {
+			in:   "The script runs on every CI job for the whole matrix with the lockfile checked in, but npm install fails on the pinned registry and the job retries forever",
+			max:  110,
+			want: "npm install fails on the pinned registry and the job retries forever",
+		},
 		"subordinate clause closed before the contrast": {
 			in:   "When the flag is off, the handler returns early but the cache entry written just before the return is never invalidated by the sweeper and is served to the next caller",
 			max:  120,
@@ -232,19 +247,27 @@ func TestClamp_SkipsAClauseThatOpensWithAConnective(t *testing.T) {
 
 func TestStandAlone(t *testing.T) {
 	for in, want := range map[string]string{
-		"[…] but the cache is stale":   "The cache is stale",
-		"[…] but don't implement it":   "Don't implement it",
-		"[…] but free-approved gets x": "Free-approved gets x",
-		"[…] but x-ray_id is read":     "x-ray_id is read",
-		"[…] however, the job re-runs": "The job re-runs",
-		"but `foo` is nil":             "`foo` is nil",
-		"the handler drops the row":    "The handler drops the row",
-		"npm install fails on CI":      "npm install fails on CI",
-		"isMicBlocked treats a prompt": "isMicBlocked treats a prompt",
-		"when the flag is off, X":      "When the flag is off, X",
-		"[…]":                          "[…]",
-		"":                             "",
-		"The row is served":            "The row is served",
+		"[…] but the cache is stale":           "The cache is stale",
+		"[…] but don't implement it":           "Don't implement it",
+		"[…] but free-approved gets x":         "Free-approved gets x",
+		"[…] but x-ray_id is read":             "x-ray_id is read",
+		"[…] however, the job re-runs":         "The job re-runs",
+		"but `foo` is nil":                     "`foo` is nil",
+		"the handler drops the row":            "The handler drops the row",
+		"npm install fails on CI":              "npm install fails on CI",
+		"isMicBlocked treats a prompt":         "isMicBlocked treats a prompt",
+		"when the flag is off, X":              "When the flag is off, X",
+		"[…]":                                  "[…]",
+		"":                                     "",
+		"The row is served":                    "The row is served",
+		"So far the handler reads the flag":    "So far the handler reads the flag",
+		"Nor does the sweeper clear it":        "Nor does the sweeper clear it",
+		"However, the claim holds":             "However, the claim holds",
+		"Yet another reader ignores it":        "Yet another reader ignores it",
+		"rather than failing closed, it opens": "Rather than failing closed, it opens",
+		"after the restart the row is served":  "After the restart the row is served",
+		"[…] But the cache is stale":           "The cache is stale",
+		"main fell through and served it":      "main fell through and served it",
 	} {
 		if got := StandAlone(in); got != want {
 			t.Errorf("StandAlone(%q) = %q, want %q", in, got, want)

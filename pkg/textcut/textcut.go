@@ -34,13 +34,9 @@ type Options struct {
 	// HeadStatesProblem reports whether a leading clause already says what
 	// goes wrong; nil treats every leading clause as context.
 	HeadStatesProblem func(string) bool
-	// MarkDroppedLead renders a dropped leading clause the way the renderer
-	// did before W7-3: the marker, then the connective ("[…] but ..."). Off,
-	// the text starts at the problem clause itself, capitalised, with no
-	// marker; a contrast inside an unclosed subordinate clause ("Where A
-	// but B, C") yields the main clause after it; a clause that opens with
-	// a connective ("but because", "but which") is not a problem clause;
-	// and no result opens with the marker or a lowercase connective.
+	// MarkDroppedLead renders a dropped leading clause as the marker plus its
+	// connective ("[…] but ..."), the pre-2026-10-14 form; off, the text
+	// starts at the problem clause, capitalised and unmarked.
 	MarkDroppedLead bool
 }
 
@@ -181,11 +177,16 @@ func problemClause(s string, opts Options) (string, bool) {
 			}
 			return tail, true
 		}
-		if subordinateOpen(head, balanced) {
+		// A head that opens with a subordinator may still be open at the
+		// joint even when a list comma sits inside it ("Where a, b and c
+		// share X but differ by Y, Z"), so the main clause is tried first.
+		if opensWithSubordinator(head) {
 			if main, ok := mainClauseAfter(s, j.end, balanced); ok {
 				return capitalise(main), true
 			}
-			continue
+			if subordinateOpen(head, balanced) {
+				continue
+			}
 		}
 		clause := strings.TrimLeft(s[j.end:], " ,;")
 		if words := strings.Fields(clause); len(words) < 3 || tailOpeners[cleanWord(words[0])] || clauseOpeners[cleanWord(words[0])] {
@@ -200,15 +201,17 @@ func problemClause(s string, opts Options) (string, bool) {
 // at its end: it starts with a subordinator and no balanced comma has
 // closed it.
 func subordinateOpen(head string, balanced []bool) bool {
+	return opensWithSubordinator(head) && balancedComma(head, 0, balanced) < 0
+}
+
+func opensWithSubordinator(head string) bool {
 	words := strings.Fields(head)
-	if len(words) == 0 || !subordinators[cleanWord(words[0])] {
-		return false
-	}
-	return balancedComma(head, 0, balanced) < 0
+	return len(words) > 0 && subordinators[cleanWord(words[0])]
 }
 
 // mainClauseAfter is the clause after the first balanced comma at or past
-// from whose first word can open a line, when it has a few words.
+// from whose first word can open a line, when it has a few words; a
+// participle ("leaving", "causing") continues the clause before it.
 func mainClauseAfter(s string, from int, balanced []bool) (string, bool) {
 	for i := balancedComma(s, from, balanced); i >= 0; i = balancedComma(s, i+1, balanced) {
 		clause := strings.TrimLeft(s[i+1:], " ,;")
@@ -216,12 +219,16 @@ func mainClauseAfter(s string, from int, balanced []bool) (string, bool) {
 		if len(words) < 4 {
 			return "", false
 		}
-		if first := cleanWord(words[0]); tailOpeners[first] || clauseOpeners[first] {
+		if first := cleanWord(words[0]); tailOpeners[first] || clauseOpeners[first] || participle(first) {
 			continue
 		}
 		return clause, true
 	}
 	return "", false
+}
+
+func participle(w string) bool {
+	return strings.HasSuffix(w, "ing") && !strings.HasSuffix(w, "thing")
 }
 
 // balancedComma is the offset of the first ", " at or past from that sits
@@ -243,13 +250,23 @@ func cleanWord(w string) string {
 	return strings.Trim(strings.ToLower(w), "`,;:.")
 }
 
+// lowercaseNames are tools and branches written in lowercase that a line
+// may open with.
+var lowercaseNames = map[string]bool{
+	"npm": true, "npx": true, "pnpm": true, "yarn": true, "pip": true, "git": true, "go": true, "node": true,
+	"docker": true, "kubectl": true, "make": true, "main": true, "master": true,
+}
+
 // capitalise upper-cases the first letter of s when its first word is a
 // plain lowercase word, hyphens and apostrophes included ("free-approved",
-// "don't"); an identifier ("purchaser_id", "isMicBlocked"), a code span or
-// a number is left alone.
+// "don't"); an identifier ("purchaser_id", "isMicBlocked"), a code span, a
+// number or a lowercase tool or branch name ("npm", "main") is left alone.
 func capitalise(s string) string {
 	words := strings.Fields(s)
 	if len(words) == 0 {
+		return s
+	}
+	if lowercaseNames[cleanWord(words[0])] {
 		return s
 	}
 	for _, r := range strings.TrimRight(words[0], ",;:.") {
@@ -264,14 +281,15 @@ func capitalise(s string) string {
 	return string(unicode.ToUpper(r)) + s[n:]
 }
 
-// StandAlone makes s open a line: a leading marker or coordinating
-// connective ("[…] but", "however,") is dropped and the first word is
-// capitalised when it is a plain lowercase function word or connective.
-// A text that is nothing but the marker is returned as is.
+// StandAlone makes s open a line: a leading marker or lowercase
+// coordinating connective ("[…] but", "however,") is dropped and the first
+// word is capitalised when it is a plain lowercase function word or
+// connective. Prose that already opens a line ("So far ...", "Nor does
+// ...") is left alone, as is a text that is nothing but the marker.
 func StandAlone(s string) string {
 	out, stripped := strings.TrimSpace(s), false
 	for {
-		rest, ok := stripLead(out)
+		rest, ok := stripLead(out, stripped)
 		if !ok {
 			break
 		}
@@ -280,18 +298,23 @@ func StandAlone(s string) string {
 	if out == "" {
 		return s
 	}
-	if words := strings.Fields(out); stripped || functionWords[cleanWord(words[0])] || tailOpeners[cleanWord(words[0])] {
+	if words := strings.Fields(out); stripped || functionWords[cleanWord(words[0])] || tailOpeners[cleanWord(words[0])] || OpensWithMarkerOrConnective(out) {
 		return capitalise(out)
 	}
 	return out
 }
 
-func stripLead(s string) (string, bool) {
+// stripLead drops a leading marker, or a coordinator that is lowercase or
+// follows a stripped marker.
+func stripLead(s string, afterMarker bool) (string, bool) {
 	if mark := strings.TrimSpace(Marker); strings.HasPrefix(s, mark) {
 		return strings.TrimLeft(s[len(mark):], " ,;:"), true
 	}
 	words := strings.Fields(s)
 	if len(words) < 2 || !coordinators[cleanWord(words[0])] {
+		return s, false
+	}
+	if first := strings.Trim(words[0], ",;:"); !afterMarker && first != strings.ToLower(first) {
 		return s, false
 	}
 	return strings.TrimLeft(strings.TrimPrefix(s, words[0]), " ,;:"), true

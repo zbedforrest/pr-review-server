@@ -371,7 +371,7 @@ type Metrics struct {
 	NoopSummaryEdits      int `json:"noop_summary_edits"`
 	// LeadingMarkers counts the inline titles and summary bullets that
 	// open with the clamp marker or a lowercase connective (2026-10-14
-	// annoyance audit, W7-3).
+	// annoyance audit).
 	LeadingMarkers int `json:"leading_markers"`
 
 	// ExternalDuplicatesNear counts replayed roots posted while an earlier
