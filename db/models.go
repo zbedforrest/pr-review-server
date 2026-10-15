@@ -406,14 +406,16 @@ func (PublishedFindingModel) TableName() string {
 // SettledPointModel is one point a PR author settled, kept per repo and
 // author so a later PR does not raise it again; one row per thread.
 type SettledPointModel struct {
-	ID          uint      `gorm:"primaryKey;autoIncrement"`
-	RepoOwner   string    `gorm:"size:255;not null;uniqueIndex:idx_settled_points_unique;index:idx_settled_points_author,priority:1"`
-	RepoName    string    `gorm:"size:255;not null;uniqueIndex:idx_settled_points_unique;index:idx_settled_points_author,priority:2"`
-	PRNumber    int       `gorm:"not null;uniqueIndex:idx_settled_points_unique"`
-	CommentID   int64     `gorm:"not null;default:0;uniqueIndex:idx_settled_points_unique"`
-	Author      string    `gorm:"size:255;not null;index:idx_settled_points_author,priority:3"`
-	Source      string    `gorm:"size:16;not null;default:''"`
-	Fingerprint string    `gorm:"size:512;not null;default:''"`
+	ID        uint   `gorm:"primaryKey;autoIncrement"`
+	RepoOwner string `gorm:"size:255;not null;uniqueIndex:idx_settled_points_unique;index:idx_settled_points_author,priority:1"`
+	RepoName  string `gorm:"size:255;not null;uniqueIndex:idx_settled_points_unique;index:idx_settled_points_author,priority:2"`
+	PRNumber  int    `gorm:"not null;uniqueIndex:idx_settled_points_unique"`
+	CommentID int64  `gorm:"not null;default:0;uniqueIndex:idx_settled_points_unique"`
+	Author    string `gorm:"size:255;not null;index:idx_settled_points_author,priority:3"`
+	Source    string `gorm:"size:16;not null;default:''"`
+	// Fingerprint is part of the key so a thread the ledger lost (comment
+	// id 0) still keeps one row per point.
+	Fingerprint string    `gorm:"size:512;not null;default:'';uniqueIndex:idx_settled_points_unique"`
 	File        string    `gorm:"size:512;not null;default:''"`
 	FindingKind string    `gorm:"size:32;not null;default:''"`
 	Subjects    string    `gorm:"type:text;not null;default:''"`

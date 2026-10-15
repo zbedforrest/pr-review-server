@@ -94,10 +94,10 @@ func newFakeSettledLedger(points ...db.SettledPoint) *fakeSettledLedger {
 
 func (l *fakeSettledLedger) RecordSettledPoint(p *db.SettledPoint) error {
 	for i, have := range l.recorded {
-		if have.PRNumber == p.PRNumber && have.CommentID == p.CommentID {
+		if have.PRNumber == p.PRNumber && have.CommentID == p.CommentID && have.Fingerprint == p.Fingerprint {
 			l.recorded[i] = *p
 			for j := range l.points {
-				if l.points[j].PRNumber == p.PRNumber && l.points[j].CommentID == p.CommentID {
+				if l.points[j].PRNumber == p.PRNumber && l.points[j].CommentID == p.CommentID && l.points[j].Fingerprint == p.Fingerprint {
 					l.points[j] = *p
 				}
 			}
@@ -245,6 +245,7 @@ func TestCrossPR_ABareShortSubjectCarriesNoMatch(t *testing.T) {
 	}{
 		{"start", "a/b.ts", true}, {"output", "x/models.py", true}, {"creators", "collection/api/creators.py", true}, {"", "x.py", true},
 		{"v2", "a.go", true}, {"s3", "a.go", true}, {"md5", "a.go", true}, {"utf8", "a.go", true}, {"sha256", "a.go", true},
+		{"user_id", "a.py", true}, {"fan_club", "a.py", true}, {"created_at", "a.py", false}, {"purchaser_read_swap", "a.py", false},
 		{"companion_asset", "forms.py", false}, {"showtipmenu", "x.tsx", false}, {"DeleteView._purchase_ids", "views.py", false},
 	} {
 		if got := genericSubject(c.subject, c.file); got != c.generic {

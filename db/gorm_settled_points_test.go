@@ -127,6 +127,20 @@ func TestGormDB_SettledPoints_DerivedFromDismissedRowsWithAVerdictReply(t *testi
 	require.NoError(t, err)
 	require.Len(t, got, 1, "recording a thread again replaces its row")
 	require.Equal(t, SettledSourceDeferred, got[0].Source)
+
+	for _, fp := range []string{"store/a.py:1:aaaaaaaaaaaa", "store/b.py:2:bbbbbbbbbbbb"} {
+		require.NoError(t, db.RecordSettledPoint(&SettledPoint{RepoOwner: "acme", RepoName: "example", PRNumber: 596, CommentID: 0, Author: "dev-ana",
+			Source: SettledSourceVerdict, Fingerprint: fp, File: FingerprintFile(fp), Reason: "intentional", SettledAt: verdictAt}))
+	}
+	got, err = db.ListSettledPoints("acme", "example", "dev-ana", verdictAt.Add(-time.Minute), verdictAt.Add(time.Minute))
+	require.NoError(t, err)
+	var lost []string
+	for _, p := range got {
+		if p.CommentID == 0 {
+			lost = append(lost, p.Fingerprint)
+		}
+	}
+	require.Len(t, lost, 2, "points whose thread the ledger lost keep one row each")
 }
 
 func TestGormDB_SettledPoints_DerivedFromAClosedPRWhoseRowCleanupDeleted(t *testing.T) {

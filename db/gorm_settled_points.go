@@ -18,9 +18,9 @@ func settledPointModelToDomain(m *SettledPointModel) SettledPoint {
 	}
 }
 
-// RecordSettledPoint stores a settled point once per thread: a second
-// record for the same (owner, repo, pr, comment) is a no-op, so the first
-// settlement's time and reason stand.
+// RecordSettledPoint stores a settled point once per thread: a later
+// record for the same (owner, repo, pr, comment, fingerprint) replaces the
+// earlier one, so a deferral after a stand supersedes the stand.
 func (g *GormDB) RecordSettledPoint(p *SettledPoint) error {
 	model := SettledPointModel{
 		RepoOwner: p.RepoOwner, RepoName: p.RepoName, PRNumber: p.PRNumber, CommentID: p.CommentID,
@@ -30,7 +30,7 @@ func (g *GormDB) RecordSettledPoint(p *SettledPoint) error {
 	// A thread is one row; a later record replaces it, so an author's
 	// deferral after a stand supersedes the stand.
 	return g.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}, {Name: "comment_id"}},
+		Columns:   []clause.Column{{Name: "repo_owner"}, {Name: "repo_name"}, {Name: "pr_number"}, {Name: "comment_id"}, {Name: "fingerprint"}},
 		DoUpdates: clause.AssignmentColumns([]string{"author", "source", "fingerprint", "file", "finding_kind", "subjects", "headline", "text", "reason", "settled_at"}),
 	}).Create(&model).Error
 }

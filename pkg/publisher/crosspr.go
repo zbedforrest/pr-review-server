@@ -29,8 +29,9 @@ type SettledPointStore interface {
 
 // settledPoints are the author's settled points within the window: those
 // of other pull requests of the repo (elsewhere), and the threads other
-// reviewers withdrew on this one (here), which no ledger row stands for. A
-// point of this PR that PRism itself posted is the ledger's business.
+// reviewers opened on this one that the author settled (here: withdrawn,
+// or resolved after the author's verdict), which no ledger row stands for.
+// A point of this PR that PRism itself posted is the ledger's business.
 func (p *Publisher) settledPoints(r Round, now time.Time) (elsewhere, here []db.SettledPoint) {
 	store, ok := p.Ledger.(SettledPointStore)
 	if !ok || !p.Policy.CrossPRSettled || strings.TrimSpace(r.Author) == "" {
@@ -97,10 +98,10 @@ func ScoreSettledElsewhere(f payload.Finding, points []db.SettledPoint) (db.Sett
 }
 
 // genericSubject reports whether the shared subject is too plain to carry a
-// match: a bare short word (start, main, lookup, output) that distinct
-// defects name all the time, or the file's own stem (creators for
-// creators.py). A qualified name, one with a separator or a digit, or a
-// long one is specific enough.
+// match: a short name (start, main, lookup, user_id) that distinct defects
+// name all the time, a token with fewer than five letters, or the file's
+// own stem (creators for creators.py). A dotted name or a long one is
+// specific enough.
 func genericSubject(subject, file string) bool {
 	subject = strings.ToLower(strings.TrimSpace(subject))
 	if subject == "" {
@@ -119,10 +120,9 @@ func genericSubject(subject, file string) bool {
 	if letters < genericSubjectMinLetters {
 		return true
 	}
-	if strings.ContainsAny(subject, "_.:#-0123456789") {
-		return false
-	}
-	return len(subject) < genericSubjectMaxLen
+	// A short qualified name (user_id, created_at) is as common as a
+	// short word; a long one, or a dotted one, names something.
+	return len(subject) < genericSubjectMaxLen && !strings.ContainsAny(subject, ".:#")
 }
 
 // genericSubjectMinLetters is the letter count under which a token (v2,
@@ -141,10 +141,12 @@ func Deferred(reason string) bool { return replytext.Deferred(reason) }
 // withoutSettledElsewhere drops every publishable finding the ledger does
 // not know that raises again a point the author settled on an earlier pull
 // request, or, for a finding above the inline bar, in a thread another
-// reviewer withdrew on this one (a folded note against such a thread is
-// the note reconcile's business): a settled row is written in its place
-// and the summary names the settled thread. Nothing is posted, nothing is
-// counted.
+// reviewer opened on this one that the author settled. The inline bar on
+// the same PR is about ownership, not evidence: a folded note against a
+// thread of this PR is the note reconcile's business, while a point
+// settled on another PR has no other owner, so it settles a folded note
+// too. A settled row is written in its place and the summary names the
+// settled thread. Nothing is posted, nothing is counted.
 func (p *Publisher) withoutSettledElsewhere(r *Round, rows map[string]*db.PublishedFinding, now time.Time) ([]*db.PublishedFinding, int) {
 	elsewhere, here := p.settledPoints(*r, now)
 	if len(elsewhere) == 0 && len(here) == 0 {
