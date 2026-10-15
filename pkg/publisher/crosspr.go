@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/publisher/replytext"
@@ -122,7 +123,7 @@ func genericSubject(subject, file string) bool {
 	}
 	// A short qualified name (user_id, created_at) is as common as a
 	// short word; a long one, or a dotted one, names something.
-	return len(subject) < genericSubjectMaxLen && !strings.ContainsAny(subject, ".:#")
+	return utf8.RuneCountInString(subject) < genericSubjectMaxLen && !strings.ContainsAny(subject, ".:#")
 }
 
 // genericSubjectMinLetters is the letter count under which a token (v2,

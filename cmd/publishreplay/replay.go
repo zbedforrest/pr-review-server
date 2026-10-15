@@ -678,7 +678,9 @@ func settledPointOf(ledger *db.GormDB, d *prDump, at time.Time, row db.Published
 			}
 		}
 	}
-	return db.SettledPoint{PRNumber: row.SettledPRNumber, CommentID: row.SettledCommentID}
+	// The store no longer lists the point; the row's file is the point's
+	// file under the same-file rule, the rest is unknown.
+	return db.SettledPoint{PRNumber: row.SettledPRNumber, CommentID: row.SettledCommentID, File: payload.FingerprintFile(row.Fingerprint)}
 }
 
 // crossPRPair describes a finding against the point it raises again.
