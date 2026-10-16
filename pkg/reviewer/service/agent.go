@@ -1442,10 +1442,21 @@ func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch strin
 }
 
 // headLagRetries and headLagWait bound the wait for GitHub's pull/N/head
-// to catch up with a push; the wait is a variable so tests skip it.
+// to catch up with a push; headLagSleep is the wait itself, a variable so
+// tests can move the ref instead of sleeping.
 const headLagRetries = 3
 
-var headLagWait = 3 * time.Second
+var (
+	headLagWait  = 3 * time.Second
+	headLagSleep = func(ctx context.Context, d time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+			return nil
+		}
+	}
+)
 
 // ensureHeadCommit makes sure the commit the review was asked for is in the
 // cache after the PR head fetch. GitHub updates refs/pull/N/head a moment
@@ -1470,10 +1481,8 @@ func ensureHeadCommit(ctx context.Context, cacheDir, fetchSpec string, prNumber 
 		if attempt == headLagRetries {
 			break
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(headLagWait):
+		if err := headLagSleep(ctx, headLagWait); err != nil {
+			return err
 		}
 		refArgs := authHeaderArgs(token)
 		refArgs = append(refArgs, "fetch", "--quiet", "origin", fetchSpec)
