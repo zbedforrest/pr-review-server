@@ -1289,7 +1289,7 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 		release()
 		return noopCleanup, err
 	}
-	if err := fetchAgentRefs(ctx, owner+"/"+repo, cacheDir, defaultBranch, prNumber, token, logPrefix); err != nil {
+	if err := fetchAgentRefs(ctx, owner+"/"+repo, cacheDir, defaultBranch, prNumber, commitSHA, token, logPrefix); err != nil {
 		release()
 		return noopCleanup, err
 	}
@@ -1398,10 +1398,20 @@ func ensureAgentCache(ctx context.Context, cloneRoot, owner, repo, defaultBranch
 	return cacheDir, nil
 }
 
-// fetchAgentRefs fetches the PR head ref and its base branch into the cache
-// under the per-repo mutex. Neither fetch passes --depth: that would
-// re-shallow the shared cache.
-func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch string, prNumber int, token, logPrefix string) error {
+// fetchAgentRefs brings what a review needs into the cache: the PR head
+// ref and its base branch (fetchHeadAndBase), then the commit the review
+// asked for when the head ref does not reach it yet (ensureHeadCommit:
+// a fetch by name, else the head ref again after a wait of a few seconds).
+// No fetch here passes --depth: that would re-shallow the shared cache.
+func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch string, prNumber int, commitSHA, token, logPrefix string) error {
+	if err := fetchHeadAndBase(ctx, cacheKey, cacheDir, defaultBranch, prNumber, token, logPrefix); err != nil {
+		return err
+	}
+	return ensureHeadCommit(ctx, cacheKey, cacheDir, prNumber, commitSHA, token, logPrefix)
+}
+
+// fetchHeadAndBase is the head-ref and base-branch fetch under the mutex.
+func fetchHeadAndBase(ctx context.Context, cacheKey, cacheDir, defaultBranch string, prNumber int, token, logPrefix string) error {
 	mu := cacheLock(cacheKey)
 	mu.Lock()
 	defer mu.Unlock()
@@ -1436,6 +1446,98 @@ func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch strin
 		}
 	}
 	return nil
+}
+
+// headLagRetries and headLagWait bound the wait for GitHub's pull/N/head
+// to catch up with a push; headLagSleep is the wait itself, a variable so
+// tests can move the ref instead of sleeping (the package's tests do not
+// run in parallel).
+const headLagRetries = 3
+
+var (
+	headLagWait  = 3 * time.Second
+	headLagSleep = func(ctx context.Context, d time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+			return nil
+		}
+	}
+)
+
+// ensureHeadCommit makes sure the commit the review was asked for is in the
+// cache after the PR head fetch. GitHub updates refs/pull/N/head a moment
+// after a push, so a review queued on the push can fetch the previous head
+// and the worktree add then fails on an "invalid reference". The commit is
+// fetched by its own name (GitHub serves any reachable commit), and failing
+// that the head ref is fetched again after a short wait. Each git call
+// takes the cache mutex on its own, so the wait holds up nobody else, and
+// a sibling that fetched the commit meanwhile ends the wait.
+func ensureHeadCommit(ctx context.Context, cacheKey, cacheDir string, prNumber int, commitSHA, token, logPrefix string) error {
+	if commitSHA == "" {
+		return nil
+	}
+	mu := cacheLock(cacheKey)
+	locked := func(fn func()) {
+		mu.Lock()
+		defer mu.Unlock()
+		fn()
+	}
+	have := func() (ok bool) {
+		locked(func() { ok = hasCommit(ctx, cacheDir, commitSHA) })
+		return ok
+	}
+	if have() {
+		return nil
+	}
+	prRef := fmt.Sprintf("refs/agent-pr/%d", prNumber)
+	fetchSpec := fmt.Sprintf("+pull/%d/head:%s", prNumber, prRef)
+	for attempt := 1; attempt <= headLagRetries; attempt++ {
+		log.Printf("%s pull/%d/head lacks %s (try %d of %d): fetching the commit itself", logPrefix, prNumber, shortSHA(commitSHA), attempt, headLagRetries)
+		locked(func() {
+			shaArgs := authHeaderArgs(token)
+			shaArgs = append(shaArgs, "fetch", "--quiet", "origin", commitSHA)
+			if out, err := runGit(ctx, cacheDir, shaArgs...); err != nil {
+				log.Printf("%s fetch %s by name: %v (%s)", logPrefix, shortSHA(commitSHA), err, redactToken(out, token))
+			} else if hasCommit(ctx, cacheDir, commitSHA) {
+				// The cache's PR ref follows the reviewed commit, as it
+				// would after a timely head fetch.
+				if out, err := runGit(ctx, cacheDir, "update-ref", prRef, commitSHA); err != nil {
+					log.Printf("%s update-ref %s: %v (%s)", logPrefix, prRef, err, redactToken(out, token))
+				}
+			}
+		})
+		if have() {
+			return nil
+		}
+		if attempt == headLagRetries {
+			break
+		}
+		if err := headLagSleep(ctx, headLagWait); err != nil {
+			return err
+		}
+		if have() {
+			return nil
+		}
+		locked(func() {
+			refArgs := authHeaderArgs(token)
+			refArgs = append(refArgs, "fetch", "--quiet", "origin", fetchSpec)
+			if out, err := runGit(ctx, cacheDir, refArgs...); err != nil {
+				log.Printf("%s refetch %s: %v (%s)", logPrefix, fetchSpec, err, redactToken(out, token))
+			}
+		})
+		if have() {
+			return nil
+		}
+	}
+	return fmt.Errorf("git fetch pr (cache): pull/%d/head does not reach %s after %d tries; the ref may lag the push", prNumber, shortSHA(commitSHA), headLagRetries)
+}
+
+// hasCommit reports whether the cache holds the commit.
+func hasCommit(ctx context.Context, cacheDir, commitSHA string) bool {
+	_, err := runGit(ctx, cacheDir, "cat-file", "-e", commitSHA+"^{commit}")
+	return err == nil
 }
 
 // authHeaderArgs returns the leading `git -c http.extraheader=...` flags

@@ -293,3 +293,103 @@ func TestRunAgentReview_PrepBudgetExhaustedIsCloneTimeout(t *testing.T) {
 		t.Fatal("agent must not spawn once the prep budget is gone")
 	}
 }
+
+// The PR head ref on GitHub can lag the push it reports: the fetch brings
+// the previous head and the worktree add fails on the commit the review
+// was queued for. The cache is a single-branch clone of the base, as in
+// production, so the pushed commit is absent until the recovery fetches
+// it: by its own name when the server serves reachable commits, else from
+// the head ref once it has moved.
+func TestFetchAgentRefs_RecoversACommitTheHeadRefDoesNotReachYet(t *testing.T) {
+	bare, oldHead := setupLocalBareRepo(t)
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// A newer commit on the branch that pull/1/head has not caught up with.
+	work := t.TempDir()
+	run(work, "clone", "-q", bare, ".")
+	run(work, "fetch", "-q", "origin", "refs/pull/1/head:featbranch")
+	run(work, "checkout", "-q", "featbranch")
+	if err := os.WriteFile(filepath.Join(work, "later.txt"), []byte("later"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(work, "add", ".")
+	run(work, "commit", "-q", "-m", "pushed after the ref was read")
+	newHead := run(work, "rev-parse", "HEAD")
+	run(work, "push", "-q", "origin", "featbranch:refs/heads/featbranch")
+
+	newCache := func() string {
+		dir := t.TempDir()
+		run(dir, "clone", "-q", "--no-local", "--no-checkout", "--single-branch", "--branch", "main", bare, ".")
+		if hasCommit(context.Background(), dir, newHead) {
+			t.Fatal("the single-branch cache must not hold the pushed commit yet")
+		}
+		return dir
+	}
+	oldWait, oldSleep := headLagWait, headLagSleep
+	t.Cleanup(func() { headLagWait, headLagSleep = oldWait, oldSleep })
+	headLagWait = 0
+	ctx := context.Background()
+
+	t.Run("by name when the server serves reachable commits", func(t *testing.T) {
+		run(bare, "config", "uploadpack.allowReachableSHA1InWant", "true")
+		t.Cleanup(func() { run(bare, "config", "--unset", "uploadpack.allowReachableSHA1InWant") })
+		slept := 0
+		headLagSleep = func(context.Context, time.Duration) error { slept++; return nil }
+		cache := newCache()
+		if err := fetchAgentRefs(ctx, "t/lag-name", cache, "main", 1, newHead, "", "[test]"); err != nil {
+			t.Fatalf("fetchAgentRefs: %v", err)
+		}
+		if !hasCommit(ctx, cache, newHead) || !hasCommit(ctx, cache, oldHead) || slept != 0 {
+			t.Fatalf("the pushed commit is fetched by name on the first try: slept=%d", slept)
+		}
+		if got := run(cache, "rev-parse", "refs/agent-pr/1"); got != newHead {
+			t.Fatalf("the cache's PR ref follows the reviewed commit: %s", got)
+		}
+	})
+
+	t.Run("from the head ref once it has moved", func(t *testing.T) {
+		// A commit the server does not have yet at all: the by-name fetch
+		// fails, and the push lands during the wait, moving pull/1/head.
+		if err := os.WriteFile(filepath.Join(work, "later2.txt"), []byte("later2"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		run(work, "add", ".")
+		run(work, "commit", "-q", "-m", "pushed during the wait")
+		unpushed := run(work, "rev-parse", "HEAD")
+		moved := 0
+		headLagSleep = func(context.Context, time.Duration) error {
+			if moved == 0 {
+				run(work, "push", "-q", "-f", "origin", "featbranch:refs/pull/1/head")
+			}
+			moved++
+			return nil
+		}
+		t.Cleanup(func() { run(bare, "update-ref", "refs/pull/1/head", oldHead) })
+		cache := newCache()
+		if err := fetchAgentRefs(ctx, "t/lag-ref", cache, "main", 1, unpushed, "", "[test]"); err != nil {
+			t.Fatalf("fetchAgentRefs: %v", err)
+		}
+		if !hasCommit(ctx, cache, unpushed) || moved != 1 {
+			t.Fatalf("the ref is refetched after one wait: moved=%d", moved)
+		}
+	})
+
+	t.Run("gives up after the retries", func(t *testing.T) {
+		waits := 0
+		headLagSleep = func(context.Context, time.Duration) error { waits++; return nil }
+		cache := newCache()
+		err := fetchAgentRefs(ctx, "t/lag-none", cache, "main", 1, strings.Repeat("0", 40), "", "[test]")
+		if err == nil || !strings.Contains(err.Error(), "does not reach") || waits != headLagRetries-1 {
+			t.Fatalf("a commit nobody can serve is an error after %d tries: err=%v waits=%d", headLagRetries, err, waits)
+		}
+	})
+}
