@@ -1398,11 +1398,11 @@ func ensureAgentCache(ctx context.Context, cloneRoot, owner, repo, defaultBranch
 	return cacheDir, nil
 }
 
-// fetchAgentRefs fetches the PR head ref and its base branch into the cache
-// under the per-repo mutex, then makes sure the commit the review asked
-// for is there (ensureHeadCommit), which can wait a few seconds for
-// GitHub's head ref to catch up with a push. Neither fetch passes --depth:
-// that would re-shallow the shared cache.
+// fetchAgentRefs brings what a review needs into the cache: the PR head
+// ref and its base branch (fetchHeadAndBase), then the commit the review
+// asked for when the head ref does not reach it yet (ensureHeadCommit:
+// a fetch by name, else the head ref again after a wait of a few seconds).
+// No fetch here passes --depth: that would re-shallow the shared cache.
 func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch string, prNumber int, commitSHA, token, logPrefix string) error {
 	if err := fetchHeadAndBase(ctx, cacheKey, cacheDir, defaultBranch, prNumber, token, logPrefix); err != nil {
 		return err
@@ -1504,7 +1504,7 @@ func ensureHeadCommit(ctx context.Context, cacheKey, cacheDir string, prNumber i
 				// The cache's PR ref follows the reviewed commit, as it
 				// would after a timely head fetch.
 				if out, err := runGit(ctx, cacheDir, "update-ref", prRef, commitSHA); err != nil {
-					log.Printf("%s update-ref %s: %v (%s)", logPrefix, prRef, err, out)
+					log.Printf("%s update-ref %s: %v (%s)", logPrefix, prRef, err, redactToken(out, token))
 				}
 			}
 		})
@@ -1516,6 +1516,9 @@ func ensureHeadCommit(ctx context.Context, cacheKey, cacheDir string, prNumber i
 		}
 		if err := headLagSleep(ctx, headLagWait); err != nil {
 			return err
+		}
+		if have() {
+			return nil
 		}
 		locked(func() {
 			refArgs := authHeaderArgs(token)
