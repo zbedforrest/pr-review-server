@@ -1289,7 +1289,7 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 		release()
 		return noopCleanup, err
 	}
-	if err := fetchAgentRefs(ctx, owner+"/"+repo, cacheDir, defaultBranch, prNumber, token, logPrefix); err != nil {
+	if err := fetchAgentRefs(ctx, owner+"/"+repo, cacheDir, defaultBranch, prNumber, commitSHA, token, logPrefix); err != nil {
 		release()
 		return noopCleanup, err
 	}
@@ -1401,7 +1401,7 @@ func ensureAgentCache(ctx context.Context, cloneRoot, owner, repo, defaultBranch
 // fetchAgentRefs fetches the PR head ref and its base branch into the cache
 // under the per-repo mutex. Neither fetch passes --depth: that would
 // re-shallow the shared cache.
-func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch string, prNumber int, token, logPrefix string) error {
+func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch string, prNumber int, commitSHA, token, logPrefix string) error {
 	mu := cacheLock(cacheKey)
 	mu.Lock()
 	defer mu.Unlock()
@@ -1417,6 +1417,9 @@ func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch strin
 		return fmt.Errorf("git fetch pr (cache): %w (%s)", err, redactToken(out, token))
 	}
 	log.Printf("%s git fetch DONE in %s", logPrefix, time.Since(t1))
+	if err := ensureHeadCommit(ctx, cacheDir, fetchSpec, prNumber, commitSHA, token, logPrefix); err != nil {
+		return err
+	}
 
 	// Fetch the PR's base branch into the cache. The cache is single-branch,
 	// so without this origin/<base> never exists for a PR based on any other
@@ -1436,6 +1439,65 @@ func fetchAgentRefs(ctx context.Context, cacheKey, cacheDir, defaultBranch strin
 		}
 	}
 	return nil
+}
+
+// headLagRetries and headLagWait bound the wait for GitHub's pull/N/head
+// to catch up with a push; the wait is a variable so tests skip it.
+const headLagRetries = 3
+
+var headLagWait = 3 * time.Second
+
+// ensureHeadCommit makes sure the commit the review was asked for is in the
+// cache after the PR head fetch. GitHub updates refs/pull/N/head a moment
+// after a push, so a review queued on the push can fetch the previous head
+// and the worktree add then fails on an "invalid reference". The commit is
+// fetched by its own name (GitHub serves any reachable commit), and failing
+// that the head ref is fetched again after a short wait.
+func ensureHeadCommit(ctx context.Context, cacheDir, fetchSpec string, prNumber int, commitSHA, token, logPrefix string) error {
+	if commitSHA == "" || hasCommit(ctx, cacheDir, commitSHA) {
+		return nil
+	}
+	for attempt := 1; attempt <= headLagRetries; attempt++ {
+		log.Printf("%s pull/%d/head lacks %s (try %d of %d): fetching the commit itself", logPrefix, prNumber, shortCommit(commitSHA), attempt, headLagRetries)
+		shaArgs := authHeaderArgs(token)
+		shaArgs = append(shaArgs, "fetch", "--quiet", "origin", commitSHA)
+		if out, err := runGit(ctx, cacheDir, shaArgs...); err != nil {
+			log.Printf("%s fetch %s by name: %v (%s)", logPrefix, shortCommit(commitSHA), err, redactToken(out, token))
+		}
+		if hasCommit(ctx, cacheDir, commitSHA) {
+			return nil
+		}
+		if attempt == headLagRetries {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(headLagWait):
+		}
+		refArgs := authHeaderArgs(token)
+		refArgs = append(refArgs, "fetch", "--quiet", "origin", fetchSpec)
+		if out, err := runGit(ctx, cacheDir, refArgs...); err != nil {
+			log.Printf("%s refetch %s: %v (%s)", logPrefix, fetchSpec, err, redactToken(out, token))
+		}
+		if hasCommit(ctx, cacheDir, commitSHA) {
+			return nil
+		}
+	}
+	return fmt.Errorf("git fetch pr (cache): pull/%d/head does not reach %s after %d tries; the ref may lag the push", prNumber, shortCommit(commitSHA), headLagRetries)
+}
+
+// hasCommit reports whether the cache holds the commit.
+func hasCommit(ctx context.Context, cacheDir, commitSHA string) bool {
+	_, err := runGit(ctx, cacheDir, "cat-file", "-e", commitSHA+"^{commit}")
+	return err == nil
+}
+
+func shortCommit(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 // authHeaderArgs returns the leading `git -c http.extraheader=...` flags

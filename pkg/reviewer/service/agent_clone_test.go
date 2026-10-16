@@ -293,3 +293,52 @@ func TestRunAgentReview_PrepBudgetExhaustedIsCloneTimeout(t *testing.T) {
 		t.Fatal("agent must not spawn once the prep budget is gone")
 	}
 }
+
+// The PR head ref on GitHub can lag the push it reports: the fetch brings
+// the previous head and the worktree add fails on the commit the review
+// was queued for. The commit is then fetched by its own name, and the
+// cache holds it before the worktree is made.
+func TestFetchAgentRefs_FetchesACommitTheHeadRefDoesNotReachYet(t *testing.T) {
+	bare, oldHead := setupLocalBareRepo(t)
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// A newer commit on the branch that pull/1/head has not caught up with.
+	work := t.TempDir()
+	run(work, "clone", "-q", bare, ".")
+	run(work, "checkout", "-q", "-b", "featbranch", "origin/main")
+	run(work, "fetch", "-q", "origin", "refs/pull/1/head:featbranch-pr")
+	run(work, "reset", "-q", "--hard", "featbranch-pr")
+	if err := os.WriteFile(filepath.Join(work, "later.txt"), []byte("later"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(work, "add", ".")
+	run(work, "commit", "-q", "-m", "pushed after the ref was read")
+	newHead := run(work, "rev-parse", "HEAD")
+	run(work, "push", "-q", "origin", "featbranch:refs/heads/featbranch")
+	run(bare, "config", "uploadpack.allowReachableSHA1InWant", "true")
+
+	cache := t.TempDir()
+	run(cache, "clone", "-q", "--no-checkout", bare, ".")
+	oldWait := headLagWait
+	headLagWait = 0
+	t.Cleanup(func() { headLagWait = oldWait })
+	ctx := context.Background()
+	if err := fetchAgentRefs(ctx, "t/lag", cache, "main", 1, newHead, "", "[test]"); err != nil {
+		t.Fatalf("fetchAgentRefs: %v", err)
+	}
+	if !hasCommit(ctx, cache, newHead) || !hasCommit(ctx, cache, oldHead) {
+		t.Fatal("the cache holds the pushed commit and the ref's head")
+	}
+	if err := fetchAgentRefs(ctx, "t/lag", cache, "main", 1, strings.Repeat("0", 40), "", "[test]"); err == nil || !strings.Contains(err.Error(), "does not reach") {
+		t.Fatalf("a commit nobody can serve is an error after the retries: %v", err)
+	}
+}
