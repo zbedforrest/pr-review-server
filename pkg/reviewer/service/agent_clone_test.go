@@ -354,26 +354,30 @@ func TestFetchAgentRefs_RecoversACommitTheHeadRefDoesNotReachYet(t *testing.T) {
 	})
 
 	t.Run("from the head ref once it has moved", func(t *testing.T) {
+		// A commit the server does not have yet at all: the by-name fetch
+		// fails, and the push lands during the wait, moving pull/1/head.
+		if err := os.WriteFile(filepath.Join(work, "later2.txt"), []byte("later2"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		run(work, "add", ".")
+		run(work, "commit", "-q", "-m", "pushed during the wait")
+		unpushed := run(work, "rev-parse", "HEAD")
 		moved := 0
 		headLagSleep = func(context.Context, time.Duration) error {
-			// The wait is where GitHub catches up: the ref moves to the push.
 			if moved == 0 {
-				run(bare, "update-ref", "refs/pull/1/head", newHead)
+				run(work, "push", "-q", "-f", "origin", "featbranch:refs/pull/1/head")
 			}
 			moved++
 			return nil
 		}
+		t.Cleanup(func() { run(bare, "update-ref", "refs/pull/1/head", oldHead) })
 		cache := newCache()
-		// Protocol v2 serves any reachable commit by name; v0 refuses an
-		// unadvertised one, as a server without allowReachableSHA1InWant does.
-		run(cache, "config", "protocol.version", "0")
-		if err := fetchAgentRefs(ctx, "t/lag-ref", cache, "main", 1, newHead, "", "[test]"); err != nil {
+		if err := fetchAgentRefs(ctx, "t/lag-ref", cache, "main", 1, unpushed, "", "[test]"); err != nil {
 			t.Fatalf("fetchAgentRefs: %v", err)
 		}
-		if !hasCommit(ctx, cache, newHead) || moved != 1 {
+		if !hasCommit(ctx, cache, unpushed) || moved != 1 {
 			t.Fatalf("the ref is refetched after one wait: moved=%d", moved)
 		}
-		run(bare, "update-ref", "refs/pull/1/head", oldHead)
 	})
 
 	t.Run("gives up after the retries", func(t *testing.T) {
