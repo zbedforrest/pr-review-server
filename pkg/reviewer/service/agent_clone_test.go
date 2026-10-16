@@ -351,6 +351,9 @@ func TestFetchAgentRefs_RecoversACommitTheHeadRefDoesNotReachYet(t *testing.T) {
 		if !hasCommit(ctx, cache, newHead) || !hasCommit(ctx, cache, oldHead) || slept != 0 {
 			t.Fatalf("the pushed commit is fetched by name on the first try: slept=%d", slept)
 		}
+		if got := run(cache, "rev-parse", "refs/agent-pr/1"); got != newHead {
+			t.Fatalf("the cache's PR ref follows the reviewed commit: %s", got)
+		}
 	})
 
 	t.Run("from the head ref once it has moved", func(t *testing.T) {
