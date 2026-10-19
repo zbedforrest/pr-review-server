@@ -182,11 +182,52 @@ func (b *builder) finding(c types.LineComment) ([]string, error) {
 		return nil, err
 	}
 
+	ids = append(ids, b.subjects(c, path)...)
+	if err := b.ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	refs, err := b.refs(c, path, headStart, headEnd)
 	if err != nil {
 		return nil, err
 	}
 	return append(ids, refs...), nil
+}
+
+// subjects adds the code of each contract subject that lives in another
+// file, around the subject's name when it appears there. A subject path the
+// repository does not hold (an untracked dependency, generated code) is
+// said so, which keeps a library claim from being dropped for lack of it.
+func (b *builder) subjects(c types.LineComment, path string) []string {
+	if c.FindingContract == nil {
+		return nil
+	}
+	var ids []string
+	seen := map[string]bool{path: true}
+	for _, s := range c.FindingContract.Subjects {
+		p := strings.TrimLeft(strings.TrimPrefix(strings.TrimSpace(s.Path), "./"), "/")
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		lines, err := b.read(b.in.Head, p)
+		if err != nil {
+			ids = append(ids, b.note(p, "subject source not in the repository at head: "+reason(err)))
+			continue
+		}
+		at := 1
+		if s.Name != "" {
+			for i, l := range lines {
+				if strings.Contains(l, s.Name) {
+					at = i + 1
+					break
+				}
+			}
+		}
+		start, end := clamp(at-b.lim.BaseContext, at+b.lim.HeadContext, len(lines))
+		ids = append(ids, b.add(Item{Kind: KindHead, Path: p, Rev: b.in.Head, Start: start, End: end, Text: numbered(lines, start, end)}))
+	}
+	return ids
 }
 
 // baseItems adds the hunk covering line and the base text it replaced. A line

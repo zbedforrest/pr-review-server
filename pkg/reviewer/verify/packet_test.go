@@ -223,3 +223,38 @@ func TestSymbols_TakesSubjectsThenCodeSpansThenCompoundNames(t *testing.T) {
 		t.Fatalf("symbols = %s", got)
 	}
 }
+
+func TestBuild_SubjectsInOtherFilesAreIncludedOrNotedMissing(t *testing.T) {
+	r := newRepo(t)
+	r.write("api/handler.go", "package api\n\nfunc Handle() {}\n")
+	r.write("lib/limits.go", lines("pad", 40)+"func checkLimit() {}\n"+lines("tail", 40))
+	head := r.commit()
+
+	c := types.LineComment{FilePath: "api/handler.go", LineNumber: 3, CommentBody: "claim",
+		FindingContract: &types.FindingContract{Subjects: []types.FindingSubject{
+			{Kind: "symbol", Path: "./lib/limits.go", Name: "checkLimit"},
+			{Kind: "file", Path: "node_modules/react/index.js"},
+			{Kind: "file", Path: "api/handler.go"},
+		}}}
+	p, err := Build(context.Background(), RepoGit{Dir: r.dir}, Input{Head: head, Base: head, Findings: []Finding{{Key: "F1", Comment: c}}}, DefaultLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := items(p, "F1")
+	var subject *Item
+	for i, it := range got[KindHead] {
+		if it.Path == "lib/limits.go" {
+			subject = &got[KindHead][i]
+		}
+	}
+	if subject == nil || subject.Start != 31 || !strings.Contains(subject.Text, "   41| func checkLimit() {}") {
+		t.Fatalf("subject item = %+v", subject)
+	}
+	var notes []string
+	for _, it := range got[KindNote] {
+		notes = append(notes, it.Path+": "+it.Text)
+	}
+	if len(notes) != 1 || notes[0] != "node_modules/react/index.js: subject source not in the repository at head: path not found at that revision" {
+		t.Fatalf("notes = %v", notes)
+	}
+}
