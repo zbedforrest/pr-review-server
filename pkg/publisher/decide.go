@@ -73,7 +73,33 @@ const (
 	noteNotSeen
 	noteReturn
 	noteSeverity
+	// noteWithdrawn is the verifier's withdrawal of a posted finding; its
+	// body is composed from the decision (withdrawalNote).
+	noteWithdrawn
 )
+
+// withdrawalNote is the reply under a root the verifier refuted: the reason
+// and the quoted evidence, so the author sees why without the packet.
+func withdrawalNote(v *types.Verification) string {
+	var b strings.Builder
+	b.WriteString("Withdrawn: the code does not support this.")
+	if v == nil {
+		return b.String()
+	}
+	if reason := strings.TrimSpace(v.Reason); reason != "" {
+		b.WriteString(" ")
+		b.WriteString(reason)
+		if !strings.HasSuffix(reason, ".") {
+			b.WriteString(".")
+		}
+	}
+	if ev := strings.TrimSpace(v.Evidence); ev != "" {
+		b.WriteString("\n\n```\n")
+		b.WriteString(ev)
+		b.WriteString("\n```")
+	}
+	return b.String()
+}
 
 // renderNotes turns the round's status notes into at most one reply per
 // thread: a return and a severity change on one thread are one sentence.
@@ -225,7 +251,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 	r.Findings = withoutGuardedReturns(r, rows, guard)
 	forgetShown(&r)
 	var rep Report
-	held := p.holdFindings(&r, &rep, func(id string) bool {
+	held, refuted := p.holdFindings(&r, &rep, func(id string) bool {
 		row, ok := rows[id]
 		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
 	})
@@ -309,7 +335,21 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		}
 		f, isPresent := present[id]
 		heldFinding, isHeld := held[id]
+		refutedFinding, isRefuted := refuted[id]
 		switch {
+		case row.State == db.PublishedStateOpen && isRefuted:
+			// The verifier refuted a posted root: PRism withdraws it in the
+			// thread, resolves the thread and dismisses the row, which is
+			// terminal and never counts as fixed.
+			rep.Refuted++
+			next := *row
+			next.State = db.PublishedStateDismissed
+			next.LastSeenSHA = r.HeadSHA
+			writes = append(writes, pending{row: &next, thread: resolveThread})
+			if t, found := threads.thread(ctx, row.ThreadNodeID, row.CommentID); found {
+				next.ThreadNodeID = t.NodeID
+			}
+			notes = append(notes, threadNote{commentID: row.CommentID, kind: noteWithdrawn, body: withdrawalNote(refutedFinding.Verification)})
 		case row.State == db.PublishedStateOpen && isHeld:
 			// The gate kept the finding off GitHub; the row stays open and
 			// silent, since absence by the gate is not a fix.
@@ -529,6 +569,20 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 			}
 		}
 		own = append(own, o)
+	}
+	// A revised finding carries the text it replaced; the row posted with
+	// that text is its own, whatever the revision reads like.
+	for i, f := range r.Findings {
+		v := f.Verification
+		if placed[f.ID] || rows[f.ID] != nil || v == nil || v.PriorComment == "" {
+			continue
+		}
+		prior := payload.Fingerprint(f.File, f.Line, v.PriorComment)
+		if row, ok := rows[prior]; ok && !placed[prior] && sameSubject(row, f) {
+			original[prior] = f.ID
+			r.Findings[i].ID = prior
+			placed[prior] = true
+		}
 	}
 	// A finding its prior_id already placed is settled; only the rest are
 	// matched by text and subjects.

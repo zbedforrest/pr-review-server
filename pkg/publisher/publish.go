@@ -112,6 +112,10 @@ type Report struct {
 	// Held lists the findings the output hygiene gate kept off GitHub this
 	// round, with the reason (see HoldReason).
 	Held []HeldFinding
+	// Refuted counts the posted findings the repo-evidence verifier refuted
+	// this round: each got a withdrawal reply, its thread resolved and its
+	// row dismissed, and none counts as fixed.
+	Refuted int
 	// ExternalSettled counts the findings matched to another reviewer's
 	// resolved thread and dropped without a link or a reply; SettledDropped
 	// the findings that restated one of PRism's own settled rows from
@@ -215,10 +219,15 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 	}
 
 	var rep Report
-	held := p.holdFindings(&r, &rep, func(id string) bool {
+	held, refuted := p.holdFindings(&r, &rep, func(id string) bool {
 		row, ok := published[id]
 		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
 	})
+	// The legacy ledger has no withdrawal; a refuted root stays open and
+	// silent like a held one rather than reading as fixed.
+	for id, f := range refuted {
+		held[id] = f
+	}
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy.forRound(r.Previous))
 	r.ShowUnverified = p.Policy.ShowUnverified
 	// The counts see a held finding as present but not shown: absence by
@@ -527,13 +536,20 @@ func sameBody(rendered, current string) bool {
 // gate runs after aliasing, so a held finding that restates a posted root
 // keeps that root open instead of reading as fixed. A finding whose thread
 // is already open on GitHub (threadOpen) has nothing to hold: it stays in
-// the round so the summary lists and counts it as still open.
-func (p *Publisher) holdFindings(r *Round, rep *Report, threadOpen func(id string) bool) map[string]payload.Finding {
-	held := map[string]payload.Finding{}
+// the round so the summary lists and counts it as still open, unless the
+// verifier refuted it; such a finding leaves the round too and is returned
+// apart, so the ledger policy can withdraw it.
+func (p *Publisher) holdFindings(r *Round, rep *Report, threadOpen func(id string) bool) (held, refuted map[string]payload.Finding) {
+	held, refuted = map[string]payload.Finding{}, map[string]payload.Finding{}
 	kept := make([]payload.Finding, 0, len(r.Findings))
 	for _, f := range r.Findings {
 		reason := HoldReason(f, p.Policy)
-		if reason == "" || (threadOpen != nil && threadOpen(f.ID)) {
+		open := threadOpen != nil && threadOpen(f.ID)
+		if open && reason == HoldVerifierDrop {
+			refuted[f.ID] = f
+			continue
+		}
+		if reason == "" || open {
 			kept = append(kept, f)
 			continue
 		}
@@ -544,7 +560,7 @@ func (p *Publisher) holdFindings(r *Round, rep *Report, threadOpen func(id strin
 		}
 	}
 	r.Findings = kept
-	return held
+	return held, refuted
 }
 
 func (p *Publisher) summaryMoved(r Round, built *db.PublishedFinding) (bool, error) {

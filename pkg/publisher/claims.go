@@ -55,6 +55,11 @@ const (
 	HoldRegressionClaim = "uncited_regression_claim"
 	HoldPraise          = "praise"
 	HoldReasonless      = "reasonless_note"
+	// HoldVerifierHold and HoldVerifierDrop are the repo-evidence verifier's
+	// applied decisions on a finding that has no open thread yet: neither
+	// posts, and a drop records the refuting evidence on the report.
+	HoldVerifierHold = "verifier_hold"
+	HoldVerifierDrop = "verifier_drop"
 )
 
 // HeldFinding is a finding the output hygiene gate kept off GitHub this
@@ -472,6 +477,11 @@ func AllPraise(f payload.Finding) bool {
 // this round, or "" when it may post. Praise and reason-less notes are
 // rendering hygiene; the two claim rules have their own switches.
 func HoldReason(f payload.Finding, p Policy) string {
+	// The verifier's decision covers folded notes too, so it is read before
+	// the publishable check that only gates inline bullets.
+	if reason := verifierHold(f); reason != "" {
+		return reason
+	}
 	if !Publishable(f) {
 		return ""
 	}
@@ -490,6 +500,20 @@ func HoldReason(f payload.Finding, p Policy) string {
 		return HoldRegressionClaim
 	}
 	return ""
+}
+
+// verifierHold names the verifier's applied hold or drop on f. A CRITICAL
+// is never dropped: the verifier's own validation turns such a drop into a
+// hold, and the publisher reads it the same way should one arrive.
+func verifierHold(f payload.Finding) string {
+	v := f.Verification
+	if !v.Suppresses() {
+		return ""
+	}
+	if v.Refutes() && f.Severity != "critical" {
+		return HoldVerifierDrop
+	}
+	return HoldVerifierHold
 }
 
 // NilImpactOpener reports whether an impact sentence concedes there is
