@@ -339,17 +339,23 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 		switch {
 		case row.State == db.PublishedStateOpen && isRefuted:
 			// The verifier refuted a posted root: PRism withdraws it in the
-			// thread, resolves the thread and dismisses the row, which is
-			// terminal and never counts as fixed.
-			rep.Refuted++
+			// thread first, then resolves the thread and dismisses the row,
+			// which is terminal and never counts as fixed. A withdrawal
+			// GitHub rejects leaves the row open and silent, so the next
+			// round tries again instead of resolving a thread with no word.
 			next := *row
-			next.State = db.PublishedStateDismissed
 			next.LastSeenSHA = r.HeadSHA
+			if !p.withdraw(ctx, r, row.CommentID, refutedFinding, &rep) {
+				backfill(&next, refutedFinding, r.PriorComments[id])
+				writes = append(writes, pending{row: &next})
+				continue
+			}
+			rep.Refuted++
+			next.State = db.PublishedStateDismissed
 			writes = append(writes, pending{row: &next, thread: resolveThread})
 			if t, found := threads.thread(ctx, row.ThreadNodeID, row.CommentID); found {
 				next.ThreadNodeID = t.NodeID
 			}
-			notes = append(notes, threadNote{commentID: row.CommentID, kind: noteWithdrawn, body: withdrawalNote(refutedFinding.Verification)})
 		case row.State == db.PublishedStateOpen && isHeld:
 			// The gate kept the finding off GitHub; the row stays open and
 			// silent, since absence by the gate is not a fix.
@@ -368,6 +374,11 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			next.LastSeenSHA = r.HeadSHA
 			next.Severity = f.Severity
 			next.Line = f.Line
+			if v := f.Verification; v != nil && v.Applied && v.Status == types.VerifyRevise {
+				// The row follows the revision so the next revise, and the
+				// text match, read the wording GitHub now shows.
+				next.CommentText = f.Comment
+			}
 			backfill(&next, f, r.PriorComments[id])
 			writes = append(writes, pending{row: &next})
 			rep.Hygiene.noteWritten(f, row)
@@ -611,20 +622,19 @@ func aliasRevisions(r *Round, rows map[string]*db.PublishedFinding, original map
 		}
 		prior := payload.Fingerprint(f.File, f.Line, v.PriorComment)
 		if row, ok := rows[prior]; !ok || placed[prior] || !sameSubject(row, f) {
+			// Only an unambiguous text match counts: two rows in the file with
+			// the same text leave the revision its own identity.
 			prior = ""
 			want := fold(v.PriorComment)
-			ids := make([]string, 0, len(rows))
-			for id := range rows {
-				ids = append(ids, id)
-			}
-			sort.Strings(ids)
-			for _, id := range ids {
-				row := rows[id]
+			for id, row := range rows {
 				if file, _ := payload.FingerprintParts(id); file != f.File || placed[id] || fold(row.CommentText) != want || !sameSubject(row, f) {
 					continue
 				}
+				if prior != "" {
+					prior = ""
+					break
+				}
 				prior = id
-				break
 			}
 		}
 		if prior == "" {
@@ -634,6 +644,22 @@ func aliasRevisions(r *Round, rows map[string]*db.PublishedFinding, original map
 		r.Findings[i].ID = prior
 		placed[prior] = true
 	}
+}
+
+// withdraw posts the verifier's withdrawal under a refuted root and reports
+// whether it landed; without a replier nothing is withdrawn.
+func (p *Publisher) withdraw(ctx context.Context, r Round, commentID int64, f payload.Finding, rep *Report) bool {
+	replier, ok := p.GH.(ThreadReplier)
+	if !ok || commentID == 0 {
+		return false
+	}
+	if _, err := replier.PostReply(ctx, r.Owner, r.Repo, r.Number, commentID, withdrawalNote(f.Verification)); err != nil {
+		rep.ThreadReplyFailures++
+		log.Printf("[PUBLISH] %s/%s#%d: withdrawal under comment %d lost, root stays open: %v", r.Owner, r.Repo, r.Number, commentID, err)
+		return false
+	}
+	rep.ThreadReplies++
+	return true
 }
 
 // sameSubject reports whether a finding may count as the return of a fixed

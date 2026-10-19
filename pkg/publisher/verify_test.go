@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +10,8 @@ import (
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/types"
 )
+
+var errTestReply = errors.New("reply rejected")
 
 func verified(x payload.Finding, status string, applied bool) payload.Finding {
 	x.Verification = &types.Verification{Status: status, Applied: applied, Reason: "The base branch already guards this call", Evidence: "base b.go:20: if conn == nil { return }"}
@@ -210,5 +213,103 @@ func TestVerify_LegacyLedgerKeepsARefutedRootOpenAndReportsItHeld(t *testing.T) 
 	}
 	if len(rep.Held) != 1 || rep.Held[0].ID != "m1" || rep.Held[0].Reason != HoldVerifierDrop {
 		t.Fatalf("held = %+v", rep.Held)
+	}
+}
+
+func TestVerify_SuppressedFoldedNoteNeverRenders(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	r := ledgerRoundOne()
+	for i := range r.Findings {
+		if r.Findings[i].ID == "l1" {
+			r.Findings[i] = verified(r.Findings[i], types.VerifyHold, true)
+		}
+	}
+	rep := publishRound(t, gh, ledger, r)
+	if len(rep.Held) != 1 || rep.Held[0].ID != "l1" || rep.Held[0].Reason != HoldVerifierHold {
+		t.Fatalf("held = %+v", rep.Held)
+	}
+	if strings.Contains(gh.issueCreates[0], "Low thing") {
+		t.Fatalf("a held low note is not folded into the summary:\n%s", gh.issueCreates[0])
+	}
+}
+
+func TestVerify_ACriticalDropOnAPostedRootStaysOpen(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, ledgerRoundOne())
+	r2 := ledgerRoundOne()
+	for i := range r2.Findings {
+		if r2.Findings[i].ID == c1ID {
+			r2.Findings[i] = verified(r2.Findings[i], types.VerifyDrop, true)
+		}
+	}
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("a.go")
+	rep := publishThreads(t, gh, ledger, r2)
+	row := ledger.get(db.PublishedKindFinding, c1ID)
+	if row.State != db.PublishedStateOpen || rep.Refuted != 0 || rep.Fixed != 0 || len(gh.replies) != 0 || len(gh.resolves) != 0 {
+		t.Fatalf("a critical is never withdrawn: row=%+v rep=%+v replies=%v resolves=%v", row, rep, gh.replies, gh.resolves)
+	}
+	if !strings.Contains(gh.issueEdits[501], "Critical thing") {
+		t.Fatalf("the open critical is still listed:\n%s", gh.issueEdits[501])
+	}
+}
+
+func TestVerify_LostWithdrawalLeavesTheRootOpenForTheNextRound(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, ledgerRoundOne())
+	r2 := withM1(ledgerRoundOne(), verified(f(m1ID, "medium", "b.go", 20, "Medium thing."), types.VerifyDrop, true))
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
+	gh.replyErr = errTestReply
+	rep := publishThreads(t, gh, ledger, r2)
+	row := ledger.get(db.PublishedKindFinding, m1ID)
+	if row.State != db.PublishedStateOpen || row.LastSeenSHA != "sha-2" || rep.Refuted != 0 || rep.Fixed != 0 || rep.ThreadReplyFailures != 1 || len(gh.resolves) != 0 {
+		t.Fatalf("a lost withdrawal resolves nothing: row=%+v rep=%+v resolves=%v", row, rep, gh.resolves)
+	}
+	gh.replyErr = nil
+	r3 := withM1(ledgerRoundOne(), verified(f(m1ID, "medium", "b.go", 20, "Medium thing."), types.VerifyDrop, true))
+	r3.HeadSHA, r3.RoundNumber, r3.Changes = "sha-3", 0, changed("b.go")
+	rep = publishThreads(t, gh, ledger, r3)
+	if ledger.get(db.PublishedKindFinding, m1ID).State != db.PublishedStateDismissed || rep.Refuted != 1 || len(gh.repliesTo(row.CommentID)) != 1 {
+		t.Fatalf("the next round withdraws it: rep=%+v", rep)
+	}
+}
+
+func TestVerify_SecondRevisionFollowsTheFirst(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, ledgerRoundOne())
+	first := f(fid("b.go", 20, "Medium thing, first revision."), "medium", "b.go", 20, "Medium thing, first revision.")
+	first.Verification = &types.Verification{Status: types.VerifyRevise, Applied: true, PriorComment: "Medium thing."}
+	r2 := withM1(ledgerRoundOne(), first)
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
+	publishRound(t, gh, ledger, r2)
+	if row := ledger.get(db.PublishedKindFinding, m1ID); row.CommentText != first.Comment {
+		t.Fatalf("the row follows the revision: %+v", row)
+	}
+	second := f(fid("b.go", 20, "Medium thing, second revision."), "medium", "b.go", 20, "Medium thing, second revision.")
+	second.Verification = &types.Verification{Status: types.VerifyRevise, Applied: true, PriorComment: first.Comment}
+	r3 := withM1(ledgerRoundOne(), second)
+	r3.HeadSHA, r3.RoundNumber, r3.Changes = "sha-3", 0, changed("b.go")
+	reviews := len(gh.reviews)
+	publishRound(t, gh, ledger, r3)
+	if ledger.get(db.PublishedKindFinding, second.ID) != nil || len(gh.reviews) != reviews || ledger.get(db.PublishedKindFinding, m1ID).State != db.PublishedStateOpen {
+		t.Fatal("the second revision stays on the same root")
+	}
+}
+
+func TestVerify_AmbiguousPriorTextKeepsTheRevisionItsOwnIdentity(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	r1 := ledgerRoundOne()
+	twin := f(fid("b.go", 60, "Medium thing."), "medium", "b.go", 60, "Medium thing.")
+	r1.Findings = append(r1.Findings, twin)
+	r1.Commentable["b.go"][60] = true
+	publishRound(t, gh, ledger, r1)
+	revised := f(fid("b.go", 47, "Medium thing, revised."), "medium", "b.go", 47, "Medium thing, revised.")
+	revised.Verification = &types.Verification{Status: types.VerifyRevise, Applied: true, PriorComment: "Medium thing."}
+	r2 := withM1(ledgerRoundOne(), revised)
+	r2.Findings = append(r2.Findings, twin)
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
+	r2.Commentable["b.go"][47], r2.Commentable["b.go"][60] = true, true
+	publishRound(t, gh, ledger, r2)
+	if ledger.get(db.PublishedKindFinding, revised.ID) == nil {
+		t.Fatal("two rows with the prior text: the revision posts under its own id rather than guessing")
 	}
 }

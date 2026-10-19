@@ -57,7 +57,7 @@ const (
 	HoldReasonless      = "reasonless_note"
 	// HoldVerifierHold and HoldVerifierDrop are the repo-evidence verifier's
 	// applied decisions on a finding that has no open thread yet: neither
-	// posts, and a drop records the refuting evidence on the report.
+	// posts; the decision itself stays on the finding in the review sidecar.
 	HoldVerifierHold = "verifier_hold"
 	HoldVerifierDrop = "verifier_drop"
 )
