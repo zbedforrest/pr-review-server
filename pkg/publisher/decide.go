@@ -79,7 +79,7 @@ const (
 // and the quoted evidence, so the author sees why without the packet.
 func withdrawalNote(v *types.Verification) string {
 	var b strings.Builder
-	b.WriteString("Withdrawn: the code does not support this.")
+	b.WriteString(withdrawalPrefix)
 	if v == nil {
 		return b.String()
 	}
@@ -101,9 +101,10 @@ func withdrawalNote(v *types.Verification) string {
 	return b.String()
 }
 
-// withdrawalPrefix opens every withdrawal reply; a thread that already
-// carries one is not withdrawn twice.
-const withdrawalPrefix = "Withdrawn:"
+// withdrawalPrefix opens every verifier withdrawal; a thread that already
+// carries one is not withdrawn twice. It is the whole first sentence, so
+// another reply that happens to start with "Withdrawn" does not count.
+const withdrawalPrefix = "Withdrawn: the code does not support this."
 
 // renderNotes turns the round's status notes into at most one reply per
 // thread: a return and a severity change on one thread are one sentence.
@@ -626,14 +627,17 @@ func aliasRevisions(r *Round, rows map[string]*db.PublishedFinding, original map
 		if placed[f.ID] || rows[f.ID] != nil || v == nil || !v.Applied || v.Status != types.VerifyRevise || v.PriorComment == "" {
 			continue
 		}
+		// A terminal row is a home too: a revision of a point this PR has
+		// settled is dropped with it by withoutTerminal, as any rewording is.
 		prior := payload.Fingerprint(f.File, f.Line, v.PriorComment)
 		if row, ok := rows[prior]; !ok || placed[prior] || !sameSubject(row, f) {
 			// Only an unambiguous text match counts: two rows in the file with
-			// the same text leave the revision its own identity.
+			// the same text leave the revision its own identity. The text is
+			// compared the way fingerprints read it, line aside.
 			prior = ""
-			want := fold(v.PriorComment)
+			want := payload.Fingerprint(f.File, 0, v.PriorComment)
 			for id, row := range rows {
-				if file, _ := payload.FingerprintParts(id); file != f.File || placed[id] || fold(row.CommentText) != want || !sameSubject(row, f) {
+				if file, _ := payload.FingerprintParts(id); file != f.File || placed[id] || !sameSubject(row, f) || payload.Fingerprint(f.File, 0, row.CommentText) != want {
 					continue
 				}
 				if prior != "" {

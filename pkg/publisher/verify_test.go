@@ -198,7 +198,7 @@ func TestVerify_RevisedFindingAliasesByPriorTextWhenTheLineDrifted(t *testing.T)
 	}
 }
 
-func TestVerify_LegacyLedgerKeepsARefutedRootOpenAndReportsItHeld(t *testing.T) {
+func TestVerify_LegacyLedgerKeepsARefutedRootOpenAndListed(t *testing.T) {
 	gh, ledger := newFakeGitHub(), newFakeLedger()
 	legacyRound(t, gh, ledger, roundOne())
 	r2 := roundOne()
@@ -210,11 +210,11 @@ func TestVerify_LegacyLedgerKeepsARefutedRootOpenAndReportsItHeld(t *testing.T) 
 	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
 	rep := legacyRound(t, gh, ledger, r2)
 	row := ledger.get(db.PublishedKindFinding, "m1")
-	if row == nil || row.State != db.PublishedStateOpen || rep.Refuted != 0 || len(gh.replies) != 0 {
+	if row == nil || row.State != db.PublishedStateOpen || rep.Refuted != 0 || len(gh.replies) != 0 || len(rep.Held) != 0 {
 		t.Fatalf("the legacy ledger withdraws nothing; the root stays open: row=%+v rep=%+v", row, rep)
 	}
-	if len(rep.Held) != 1 || rep.Held[0].ID != "m1" || rep.Held[0].Reason != HoldVerifierDrop {
-		t.Fatalf("held = %+v", rep.Held)
+	if !strings.Contains(gh.issueEdits[501], "Medium thing") {
+		t.Fatalf("its thread is still open, so it is still listed:\n%s", gh.issueEdits[501])
 	}
 }
 
@@ -353,14 +353,34 @@ func TestVerify_SummaryRefreshKeepsARefutedRootListed(t *testing.T) {
 	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueCreates[0]}}
 	refresh := withM1(ledgerRoundOne(), verified(f(m1ID, "medium", "b.go", 20, "Medium thing."), types.VerifyDrop, true))
 	refresh.RoundNumber, refresh.HeadSHA, refresh.Previous = 0, "", nil
+	refresh.PushesCapped = true
 	p := &Publisher{GH: gh, Ledger: ledger, Policy: testPolicy()}
 	if err := p.RefreshSummary(context.Background(), refresh); err != nil {
 		t.Fatal(err)
 	}
-	if body, edited := gh.issueEdits[501]; edited && !strings.Contains(body, "Medium thing") {
-		t.Fatalf("a refresh withdraws nothing, so the root stays listed:\n%s", body)
+	body, edited := gh.issueEdits[501]
+	if !edited || !strings.Contains(body, "Medium thing") {
+		t.Fatalf("a refresh withdraws nothing, so the root stays listed (edited=%v):\n%s", edited, body)
 	}
 	if len(gh.replies) != 0 || ledger.get(db.PublishedKindFinding, m1ID).State != db.PublishedStateOpen {
 		t.Fatalf("a refresh posts and dismisses nothing: replies=%v", gh.replies)
+	}
+}
+
+func TestVerify_RevisionOfAWithdrawnPointStaysWithdrawn(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, ledgerRoundOne())
+	r2 := withM1(ledgerRoundOne(), verified(f(m1ID, "medium", "b.go", 20, "Medium thing."), types.VerifyDrop, true))
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
+	publishThreads(t, gh, ledger, r2)
+
+	revised := f(fid("b.go", 20, "Medium thing, revised."), "medium", "b.go", 20, "Medium thing, revised.")
+	revised.Verification = &types.Verification{Status: types.VerifyRevise, Applied: true, PriorComment: "Medium thing."}
+	r3 := withM1(ledgerRoundOne(), revised)
+	r3.HeadSHA, r3.RoundNumber, r3.Changes = "sha-3", 0, changed("b.go")
+	reviews := len(gh.reviews)
+	publishThreads(t, gh, ledger, r3)
+	if ledger.get(db.PublishedKindFinding, revised.ID) != nil || len(gh.reviews) != reviews || ledger.get(db.PublishedKindFinding, m1ID).State != db.PublishedStateDismissed {
+		t.Fatal("a revision of a point PRism withdrew is a rewording of a settled point and does not post")
 	}
 }

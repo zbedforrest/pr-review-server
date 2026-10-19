@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -224,13 +225,8 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
 	})
 	// The legacy ledger has no withdrawal; a refuted root stays open and
-	// silent like a held one rather than reading as fixed, and is reported
-	// as held.
-	for id, f := range refuted {
-		held[id] = f
-		rep.Held = append(rep.Held, HeldFinding{ID: f.ID, File: f.File, Line: f.Line, Reason: HoldVerifierDrop})
-		rep.Hygiene.noteHeld(f, HoldVerifierDrop)
-	}
+	// listed, since its thread is still open on GitHub.
+	r.Findings = append(r.Findings, sortedFindings(refuted)...)
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy.forRound(r.Previous))
 	r.ShowUnverified = p.Policy.ShowUnverified
 	// The counts see a held finding as present but not shown: absence by
@@ -511,9 +507,7 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 	})
 	// A refresh makes no transition, so a root the verifier refuted stays
 	// listed until a round withdraws it.
-	for _, f := range refuted {
-		r.Findings = append(r.Findings, f)
-	}
+	r.Findings = append(r.Findings, sortedFindings(refuted)...)
 	d := r.ledgerTransitions()
 	d.Fixed = fixed
 	r.transitions = &d
@@ -569,6 +563,17 @@ func (p *Publisher) holdFindings(r *Round, rep *Report, threadOpen func(id strin
 	}
 	r.Findings = kept
 	return held, refuted
+}
+
+// sortedFindings lists a map's findings by id, so a round reads the same
+// whatever order the map yields.
+func sortedFindings(m map[string]payload.Finding) []payload.Finding {
+	out := make([]payload.Finding, 0, len(m))
+	for _, f := range m {
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 func (p *Publisher) summaryMoved(r Round, built *db.PublishedFinding) (bool, error) {
