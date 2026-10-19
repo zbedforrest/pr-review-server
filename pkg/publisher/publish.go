@@ -224,9 +224,12 @@ func (p *Publisher) publishLegacy(ctx context.Context, r Round) (Report, error) 
 		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
 	})
 	// The legacy ledger has no withdrawal; a refuted root stays open and
-	// silent like a held one rather than reading as fixed.
+	// silent like a held one rather than reading as fixed, and is reported
+	// as held.
 	for id, f := range refuted {
 		held[id] = f
+		rep.Held = append(rep.Held, HeldFinding{ID: f.ID, File: f.File, Line: f.Line, Reason: HoldVerifierDrop})
+		rep.Hygiene.noteHeld(f, HoldVerifierDrop)
 	}
 	sel := Select(r.Findings, alreadyPublished, r.Commentable, p.Policy.forRound(r.Previous))
 	r.ShowUnverified = p.Policy.ShowUnverified

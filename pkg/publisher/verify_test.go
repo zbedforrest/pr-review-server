@@ -153,3 +153,62 @@ func TestVerify_RevisedFindingKeepsItsRowAndRendersTheRevision(t *testing.T) {
 		t.Fatalf("the summary renders the revision:\n%s", gh.issueEdits[501])
 	}
 }
+
+func TestVerify_ShadowOrNonReviseDecisionDoesNotAlias(t *testing.T) {
+	for name, v := range map[string]*types.Verification{
+		"shadow revise": {Status: types.VerifyRevise, Applied: false, PriorComment: "Medium thing."},
+		"applied keep":  {Status: types.VerifyKeep, Applied: true, PriorComment: "Medium thing."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gh, ledger := newFakeGitHub(), newFakeLedger()
+			publishRound(t, gh, ledger, ledgerRoundOne())
+			other := f(fid("b.go", 20, "Another point on this line."), "medium", "b.go", 20, "Another point on this line.")
+			other.Verification = v
+			r2 := withM1(ledgerRoundOne(), other)
+			r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
+			publishRound(t, gh, ledger, r2)
+			if row := ledger.get(db.PublishedKindFinding, other.ID); row == nil {
+				t.Fatal("without an applied revise the finding keeps its own identity and posts")
+			}
+		})
+	}
+}
+
+func TestVerify_RevisedFindingAliasesByPriorTextWhenTheLineDrifted(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, ledgerRoundOne())
+
+	revised := f(fid("b.go", 47, "Medium thing, revised."), "medium", "b.go", 47, "Medium thing, revised.")
+	revised.Verification = &types.Verification{Status: types.VerifyRevise, Applied: true, PriorComment: "Medium thing."}
+	r2 := withM1(ledgerRoundOne(), revised)
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
+	r2.Commentable["b.go"][47] = true
+	reviews := len(gh.reviews)
+	rep := publishRound(t, gh, ledger, r2)
+	if row := ledger.get(db.PublishedKindFinding, m1ID); row == nil || row.State != db.PublishedStateOpen || row.Line != 47 || rep.Fixed != 0 {
+		t.Fatalf("the drifted revision is still the posted row: row=%+v rep=%+v", row, rep)
+	}
+	if ledger.get(db.PublishedKindFinding, revised.ID) != nil || len(gh.reviews) != reviews {
+		t.Fatalf("no second root: reviews=%d", len(gh.reviews))
+	}
+}
+
+func TestVerify_LegacyLedgerKeepsARefutedRootOpenAndReportsItHeld(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	legacyRound(t, gh, ledger, roundOne())
+	r2 := roundOne()
+	for i := range r2.Findings {
+		if r2.Findings[i].ID == "m1" {
+			r2.Findings[i] = verified(r2.Findings[i], types.VerifyDrop, true)
+		}
+	}
+	r2.HeadSHA, r2.RoundNumber = "sha-2", 0
+	rep := legacyRound(t, gh, ledger, r2)
+	row := ledger.get(db.PublishedKindFinding, "m1")
+	if row == nil || row.State != db.PublishedStateOpen || rep.Refuted != 0 || len(gh.replies) != 0 {
+		t.Fatalf("the legacy ledger withdraws nothing; the root stays open: row=%+v rep=%+v", row, rep)
+	}
+	if len(rep.Held) != 1 || rep.Held[0].ID != "m1" || rep.Held[0].Reason != HoldVerifierDrop {
+		t.Fatalf("held = %+v", rep.Held)
+	}
+}

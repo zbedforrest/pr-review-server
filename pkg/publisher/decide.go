@@ -548,6 +548,7 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 	if p.Policy.PriorIDAlias {
 		placed = aliasByPriorID(r, rows, original)
 	}
+	aliasRevisions(r, rows, original, placed)
 	ids := make([]string, 0, len(rows))
 	for id := range rows {
 		if !placed[id] {
@@ -569,20 +570,6 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 			}
 		}
 		own = append(own, o)
-	}
-	// A revised finding carries the text it replaced; the row posted with
-	// that text is its own, whatever the revision reads like.
-	for i, f := range r.Findings {
-		v := f.Verification
-		if placed[f.ID] || rows[f.ID] != nil || v == nil || v.PriorComment == "" {
-			continue
-		}
-		prior := payload.Fingerprint(f.File, f.Line, v.PriorComment)
-		if row, ok := rows[prior]; ok && !placed[prior] && sameSubject(row, f) {
-			original[prior] = f.ID
-			r.Findings[i].ID = prior
-			placed[prior] = true
-		}
 	}
 	// A finding its prior_id already placed is settled; only the rest are
 	// matched by text and subjects.
@@ -608,6 +595,45 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 		r.Findings[i].ID = prior
 	}
 	return original
+}
+
+// aliasRevisions gives a finding the verifier revised (an applied revise
+// carrying the text it replaced) the row posted with that text, so the
+// revision renders under the existing root instead of opening a second one.
+// The row is found by the prior text's fingerprint, or by the prior text
+// itself when the cited line drifted since the row was posted; a row placed
+// here is out of the text match that follows.
+func aliasRevisions(r *Round, rows map[string]*db.PublishedFinding, original map[string]string, placed map[string]bool) {
+	for i, f := range r.Findings {
+		v := f.Verification
+		if placed[f.ID] || rows[f.ID] != nil || v == nil || !v.Applied || v.Status != types.VerifyRevise || v.PriorComment == "" {
+			continue
+		}
+		prior := payload.Fingerprint(f.File, f.Line, v.PriorComment)
+		if row, ok := rows[prior]; !ok || placed[prior] || !sameSubject(row, f) {
+			prior = ""
+			want := fold(v.PriorComment)
+			ids := make([]string, 0, len(rows))
+			for id := range rows {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			for _, id := range ids {
+				row := rows[id]
+				if file, _ := payload.FingerprintParts(id); file != f.File || placed[id] || fold(row.CommentText) != want || !sameSubject(row, f) {
+					continue
+				}
+				prior = id
+				break
+			}
+		}
+		if prior == "" {
+			continue
+		}
+		original[prior] = f.ID
+		r.Findings[i].ID = prior
+		placed[prior] = true
+	}
 }
 
 // sameSubject reports whether a finding may count as the return of a fixed
