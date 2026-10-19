@@ -927,3 +927,40 @@ func TestCloneFindingContract_CopiesRelatesTo(t *testing.T) {
 		t.Fatalf("clone must copy the slice and the prior id: src=%v got=%+v", src.RelatesTo, got)
 	}
 }
+
+func TestBuild_ClonesVerificationAndRoundTripsIt(t *testing.T) {
+	in := &types.Verification{Status: types.VerifyDrop, Applied: true, Cites: []string{"P2"}, Evidence: "return nil"}
+	p := Build("o", "r", 1, "sha", []types.LineComment{{
+		FilePath: "a.go", LineNumber: 3, CommentBody: "claim", Importance: "medium", Verification: in,
+	}}, "", nil)
+
+	got := p.Findings[0].Verification
+	if got == nil || got == in || got.Status != types.VerifyDrop || got.Evidence != "return nil" {
+		t.Fatalf("verification = %+v", got)
+	}
+	got.Cites[0] = "P9"
+	if in.Cites[0] != "P2" {
+		t.Fatalf("build shared the cites slice with its input")
+	}
+	if back := p.ToLineComments()[0].Verification; back == nil || back.Status != types.VerifyDrop {
+		t.Fatalf("round trip lost verification: %+v", back)
+	}
+}
+
+func TestVerification_OnlyAppliedHoldsAndDropsSuppress(t *testing.T) {
+	cases := []struct {
+		v                   *types.Verification
+		suppresses, refutes bool
+	}{
+		{nil, false, false},
+		{&types.Verification{Status: types.VerifyDrop}, false, false},
+		{&types.Verification{Status: types.VerifyDrop, Applied: true}, true, true},
+		{&types.Verification{Status: types.VerifyHold, Applied: true}, true, false},
+		{&types.Verification{Status: types.VerifyRevise, Applied: true}, false, false},
+	}
+	for _, c := range cases {
+		if c.v.Suppresses() != c.suppresses || c.v.Refutes() != c.refutes {
+			t.Errorf("%+v: suppresses=%v refutes=%v", c.v, c.v.Suppresses(), c.v.Refutes())
+		}
+	}
+}

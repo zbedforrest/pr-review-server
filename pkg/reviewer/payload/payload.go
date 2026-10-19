@@ -276,6 +276,8 @@ type Finding struct {
 	Original   *types.OriginalClaim `json:"original,omitempty"`
 	MergedInto string               `json:"merged_into,omitempty"`
 	MergeBasis string               `json:"merge_basis,omitempty"`
+	// Verification is the repo-evidence verifier's decision, when it ran.
+	Verification *types.Verification `json:"verification,omitempty"`
 	// Summary is the structured SUMMARY the agent emitted (SUMMARY entries only).
 	Summary      *types.SummaryBlock `json:"summary,omitempty"`
 	DiffHunk     string              `json:"diff_hunk,omitempty"`
@@ -347,6 +349,16 @@ func cloneOriginal(o *types.OriginalClaim) *types.OriginalClaim {
 		return nil
 	}
 	out := *o
+	return &out
+}
+
+func cloneVerification(v *types.Verification) *types.Verification {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	out.Cites = append([]string(nil), v.Cites...)
+	out.PriorContract = cloneFindingContract(v.PriorContract)
 	return &out
 }
 
@@ -489,6 +501,7 @@ func (p Payload) ToLineComments() []types.LineComment {
 			Original:        f.Original,
 			MergedInto:      f.MergedInto,
 			MergeBasis:      f.MergeBasis,
+			Verification:    f.Verification,
 			Summary:         f.Summary,
 		})
 	}
@@ -599,6 +612,7 @@ func Build(
 			Assessment:            cloneDisposition(c.Assessment),
 			Original:              cloneOriginal(c.Original),
 			Summary:               cloneSummary(c.Summary),
+			Verification:          cloneVerification(c.Verification),
 		}
 		f.MergeBasis = c.MergeBasis
 		if c.MergedInto != "" {
