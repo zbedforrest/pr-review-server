@@ -666,7 +666,9 @@ func (p *Publisher) withdraw(ctx context.Context, r Round, commentID int64, f pa
 	if !ok || commentID == 0 {
 		return false
 	}
-	if _, err := replier.PostReply(ctx, r.Owner, r.Repo, r.Number, commentID, withdrawalNote(f.Verification)); err != nil {
+	// The marker is what makes the reply PRism's own to the poller, which
+	// is how the next round sees it under the root.
+	if _, err := replier.PostReply(ctx, r.Owner, r.Repo, r.Number, commentID, withdrawalNote(f.Verification)+"\n\n"+ReplyMarker(commentID)); err != nil {
 		rep.ThreadReplyFailures++
 		log.Printf("[PUBLISH] %s/%s#%d: withdrawal under comment %d lost, root stays open: %v", r.Owner, r.Repo, r.Number, commentID, err)
 		return false

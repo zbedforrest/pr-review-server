@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"pr-review-server/db"
 	"pr-review-server/pkg/reviewer/payload"
+	"pr-review-server/pkg/reviewer/reconcile"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -325,9 +327,40 @@ func TestVerify_WithdrawalReplyIsHygienicAndPostedOnce(t *testing.T) {
 	m1 := ledger.get(db.PublishedKindFinding, m1ID)
 	r2 := withM1(ledgerRoundOne(), verified(f(m1ID, "medium", "b.go", 20, "Medium thing."), types.VerifyDrop, true))
 	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
-	r2.PriorComments = map[string]PriorComment{m1ID: {Line: 20, Text: "Medium thing.", OwnReplies: []string{"Withdrawn: the code does not support this."}}}
+	r2.PriorComments = map[string]PriorComment{m1ID: {Line: 20, Text: "Medium thing.", OwnReplies: []string{"Withdrawn: the code does not support this.\n\n" + ReplyMarker(m1.CommentID)}}}
 	rep := publishThreads(t, gh, ledger, r2)
 	if len(gh.repliesTo(m1.CommentID)) != 0 || rep.Refuted != 1 || ledger.get(db.PublishedKindFinding, m1ID).State != db.PublishedStateDismissed {
 		t.Fatalf("a withdrawal GitHub already shows is not posted again: replies=%v rep=%+v", gh.replies, rep)
+	}
+}
+
+func TestVerify_WithdrawalCarriesTheOwnReplyMarker(t *testing.T) {
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, ledgerRoundOne())
+	m1 := ledger.get(db.PublishedKindFinding, m1ID)
+	r2 := withM1(ledgerRoundOne(), verified(f(m1ID, "medium", "b.go", 20, "Medium thing."), types.VerifyDrop, true))
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
+	publishThreads(t, gh, ledger, r2)
+	replies := gh.repliesTo(m1.CommentID)
+	if len(replies) != 1 || !reconcile.IsOwnReply(replies[0]) || !strings.HasPrefix(replies[0], withdrawalPrefix) {
+		t.Fatalf("the withdrawal is marked as PRism's own reply: %q", replies)
+	}
+}
+
+func TestVerify_SummaryRefreshKeepsARefutedRootListed(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, ledgerRoundOne())
+	gh.existingIssueComments = []IssueComment{{ID: 501, Body: gh.issueCreates[0]}}
+	refresh := withM1(ledgerRoundOne(), verified(f(m1ID, "medium", "b.go", 20, "Medium thing."), types.VerifyDrop, true))
+	refresh.RoundNumber, refresh.HeadSHA, refresh.Previous = 0, "", nil
+	p := &Publisher{GH: gh, Ledger: ledger, Policy: testPolicy()}
+	if err := p.RefreshSummary(context.Background(), refresh); err != nil {
+		t.Fatal(err)
+	}
+	if body, edited := gh.issueEdits[501]; edited && !strings.Contains(body, "Medium thing") {
+		t.Fatalf("a refresh withdraws nothing, so the root stays listed:\n%s", body)
+	}
+	if len(gh.replies) != 0 || ledger.get(db.PublishedKindFinding, m1ID).State != db.PublishedStateOpen {
+		t.Fatalf("a refresh posts and dismisses nothing: replies=%v", gh.replies)
 	}
 }

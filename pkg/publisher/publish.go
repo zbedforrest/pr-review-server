@@ -505,10 +505,15 @@ func (p *Publisher) RefreshSummary(ctx context.Context, r Round) error {
 	if !found {
 		return nil
 	}
-	p.holdFindings(&r, nil, func(id string) bool {
+	_, refuted := p.holdFindings(&r, nil, func(id string) bool {
 		row, ok := rows[id]
 		return ok && row.CommentID != 0 && row.State == db.PublishedStateOpen
 	})
+	// A refresh makes no transition, so a root the verifier refuted stays
+	// listed until a round withdraws it.
+	for _, f := range refuted {
+		r.Findings = append(r.Findings, f)
+	}
 	d := r.ledgerTransitions()
 	d.Fixed = fixed
 	r.transitions = &d
