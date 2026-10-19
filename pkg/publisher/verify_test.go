@@ -320,7 +320,7 @@ func TestVerify_AmbiguousPriorTextKeepsTheRevisionItsOwnIdentity(t *testing.T) {
 }
 
 func TestVerify_WithdrawalReplyIsHygienicAndPostedOnce(t *testing.T) {
-	note := withdrawalNote(&types.Verification{Reason: "(A-1) The base <b>already</b> guards this", Evidence: "b.go:20\n```\nif conn == nil { return }"})
+	note := withdrawalNote(&types.Verification{Reason: "(A-1) The base <b>already</b> guards this ```", Evidence: "b.go:20\n```\nif conn == nil { return }"})
 	if strings.Contains(note, "A-1") || !strings.Contains(note, "`<b>`") || strings.Count(note, "```") != 2 || !strings.HasPrefix(note, withdrawalPrefix) {
 		t.Fatalf("note = %q", note)
 	}

@@ -510,7 +510,7 @@ func verifierHold(f payload.Finding) string {
 	if !v.Suppresses() {
 		return ""
 	}
-	if v.Refutes() && f.Severity != "critical" {
+	if v.Refutes() && !strings.EqualFold(strings.TrimSpace(f.Severity), "critical") {
 		return HoldVerifierDrop
 	}
 	return HoldVerifierHold

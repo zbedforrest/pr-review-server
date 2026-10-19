@@ -86,7 +86,7 @@ func withdrawalNote(v *types.Verification) string {
 	// The reason is prose the author reads, so it gets the same hygiene as
 	// a rendered body; the evidence sits in a code block, which only a fence
 	// inside it could break.
-	if reason := strings.TrimSpace(EscapeProseHTML(StripConfidenceLabel(StripFindingIDAsides(v.Reason)))); reason != "" {
+	if reason := strings.TrimSpace(EscapeProseHTML(StripConfidenceLabel(StripFindingIDAsides(strings.ReplaceAll(v.Reason, "```", "` ` `"))))); reason != "" {
 		b.WriteString(" ")
 		b.WriteString(reason)
 		if !strings.HasSuffix(reason, ".") {
@@ -671,6 +671,7 @@ func (p *Publisher) withdraw(ctx context.Context, r Round, commentID int64, f pa
 	}
 	replier, ok := p.GH.(ThreadReplier)
 	if !ok || commentID == 0 {
+		log.Printf("[PUBLISH] %s/%s#%d: no reply client for the withdrawal under comment %d, root stays open", r.Owner, r.Repo, r.Number, commentID)
 		return false
 	}
 	// The marker is what makes the reply PRism's own to the poller, which
