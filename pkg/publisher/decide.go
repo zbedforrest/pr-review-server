@@ -73,9 +73,6 @@ const (
 	noteNotSeen
 	noteReturn
 	noteSeverity
-	// noteWithdrawn is the verifier's withdrawal of a posted finding; its
-	// body is composed from the decision (withdrawalNote).
-	noteWithdrawn
 )
 
 // withdrawalNote is the reply under a root the verifier refuted: the reason
