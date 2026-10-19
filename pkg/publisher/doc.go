@@ -276,9 +276,10 @@
 // round, PRism replies with a withdrawal quoting the refuting evidence,
 // resolves the thread and dismisses the row (terminal, never fixed, never
 // reposted; Report.Refuted). A revised finding is aliased to the row posted
-// with the text it replaced, so the revision renders under the existing
-// root. A decision the verifier recorded in shadow (Applied false) changes
-// nothing. The renderer, under the same
+// with the text it replaced, so the summary lists the revision under the
+// existing root and no second root opens; the inline comment is not
+// edited. A decision the verifier recorded in shadow (Applied false)
+// changes nothing. The renderer, under the same
 // PUBLISH_RENDER_HYGIENE switch read at call time, strips a confidence label
 // and any internal finding label from the contract sentences, titles a
 // comment that opens with a compliment by its first reporting sentence,

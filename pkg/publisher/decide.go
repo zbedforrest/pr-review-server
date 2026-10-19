@@ -83,20 +83,27 @@ func withdrawalNote(v *types.Verification) string {
 	if v == nil {
 		return b.String()
 	}
-	if reason := strings.TrimSpace(v.Reason); reason != "" {
+	// The reason is prose the author reads, so it gets the same hygiene as
+	// a rendered body; the evidence sits in a code block, which only a fence
+	// inside it could break.
+	if reason := strings.TrimSpace(EscapeProseHTML(StripConfidenceLabel(StripFindingIDAsides(v.Reason)))); reason != "" {
 		b.WriteString(" ")
 		b.WriteString(reason)
 		if !strings.HasSuffix(reason, ".") {
 			b.WriteString(".")
 		}
 	}
-	if ev := strings.TrimSpace(v.Evidence); ev != "" {
+	if ev := strings.TrimSpace(strings.ReplaceAll(v.Evidence, "```", "` ` `")); ev != "" {
 		b.WriteString("\n\n```\n")
 		b.WriteString(ev)
 		b.WriteString("\n```")
 	}
 	return b.String()
 }
+
+// withdrawalPrefix opens every withdrawal reply; a thread that already
+// carries one is not withdrawn twice.
+const withdrawalPrefix = "Withdrawn:"
 
 // renderNotes turns the round's status notes into at most one reply per
 // thread: a return and a severity change on one thread are one sentence.
@@ -342,7 +349,7 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			// round tries again instead of resolving a thread with no word.
 			next := *row
 			next.LastSeenSHA = r.HeadSHA
-			if !p.withdraw(ctx, r, row.CommentID, refutedFinding, &rep) {
+			if !p.withdraw(ctx, r, row.CommentID, refutedFinding, r.PriorComments[id].OwnReplies, &rep) {
 				backfill(&next, refutedFinding, r.PriorComments[id])
 				writes = append(writes, pending{row: &next})
 				continue
@@ -373,7 +380,8 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			next.Line = f.Line
 			if v := f.Verification; v != nil && v.Applied && v.Status == types.VerifyRevise {
 				// The row follows the revision so the next revise, and the
-				// text match, read the wording GitHub now shows.
+				// text match, read the wording the summary now lists; the
+				// inline comment itself is not edited.
 				next.CommentText = f.Comment
 			}
 			backfill(&next, f, r.PriorComments[id])
@@ -607,10 +615,11 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 
 // aliasRevisions gives a finding the verifier revised (an applied revise
 // carrying the text it replaced) the row posted with that text, so the
-// revision renders under the existing root instead of opening a second one.
-// The row is found by the prior text's fingerprint, or by the prior text
-// itself when the cited line drifted since the row was posted; a row placed
-// here is out of the text match that follows.
+// revision is listed under the existing root's identity instead of opening
+// a second one (the inline comment is not edited). The row is found by the
+// prior text's fingerprint, or by the prior text itself when the cited line
+// drifted since the row was posted; a row placed here is marked placed, so
+// the AliasPrior text match later in aliasToLedger leaves it alone.
 func aliasRevisions(r *Round, rows map[string]*db.PublishedFinding, original map[string]string, placed map[string]bool) {
 	for i, f := range r.Findings {
 		v := f.Verification
@@ -644,8 +653,15 @@ func aliasRevisions(r *Round, rows map[string]*db.PublishedFinding, original map
 }
 
 // withdraw posts the verifier's withdrawal under a refuted root and reports
-// whether it landed; without a replier nothing is withdrawn.
-func (p *Publisher) withdraw(ctx context.Context, r Round, commentID int64, f payload.Finding, rep *Report) bool {
+// whether it landed; without a replier nothing is withdrawn. A withdrawal
+// GitHub already shows (a round that posted it and then failed before its
+// ledger write) counts as landed, so the thread gets one.
+func (p *Publisher) withdraw(ctx context.Context, r Round, commentID int64, f payload.Finding, ownReplies []string, rep *Report) bool {
+	for _, reply := range ownReplies {
+		if strings.HasPrefix(strings.TrimSpace(reply), withdrawalPrefix) {
+			return true
+		}
+	}
 	replier, ok := p.GH.(ThreadReplier)
 	if !ok || commentID == 0 {
 		return false

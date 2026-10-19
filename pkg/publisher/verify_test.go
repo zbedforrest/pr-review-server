@@ -313,3 +313,21 @@ func TestVerify_AmbiguousPriorTextKeepsTheRevisionItsOwnIdentity(t *testing.T) {
 		t.Fatal("two rows with the prior text: the revision posts under its own id rather than guessing")
 	}
 }
+
+func TestVerify_WithdrawalReplyIsHygienicAndPostedOnce(t *testing.T) {
+	note := withdrawalNote(&types.Verification{Reason: "(A-1) The base <b>already</b> guards this", Evidence: "b.go:20\n```\nif conn == nil { return }"})
+	if strings.Contains(note, "A-1") || !strings.Contains(note, "`<b>`") || strings.Count(note, "```") != 2 || !strings.HasPrefix(note, withdrawalPrefix) {
+		t.Fatalf("note = %q", note)
+	}
+
+	gh, ledger := newFakeThreadGitHub(), newFakeLedger()
+	publishThreads(t, gh, ledger, ledgerRoundOne())
+	m1 := ledger.get(db.PublishedKindFinding, m1ID)
+	r2 := withM1(ledgerRoundOne(), verified(f(m1ID, "medium", "b.go", 20, "Medium thing."), types.VerifyDrop, true))
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
+	r2.PriorComments = map[string]PriorComment{m1ID: {Line: 20, Text: "Medium thing.", OwnReplies: []string{"Withdrawn: the code does not support this."}}}
+	rep := publishThreads(t, gh, ledger, r2)
+	if len(gh.repliesTo(m1.CommentID)) != 0 || rep.Refuted != 1 || ledger.get(db.PublishedKindFinding, m1ID).State != db.PublishedStateDismissed {
+		t.Fatalf("a withdrawal GitHub already shows is not posted again: replies=%v rep=%+v", gh.replies, rep)
+	}
+}
