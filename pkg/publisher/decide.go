@@ -351,6 +351,9 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			next := *row
 			next.LastSeenSHA = r.HeadSHA
 			if !p.withdraw(ctx, r, row.CommentID, refutedFinding, r.PriorComments[id].OwnReplies, &rep) {
+				// Still open on GitHub, so still listed and counted.
+				r.Findings = append(r.Findings, refutedFinding)
+				d.StillOpen++
 				backfill(&next, refutedFinding, r.PriorComments[id])
 				writes = append(writes, pending{row: &next})
 				continue

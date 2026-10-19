@@ -266,6 +266,9 @@ func TestVerify_LostWithdrawalLeavesTheRootOpenForTheNextRound(t *testing.T) {
 	if row.State != db.PublishedStateOpen || row.LastSeenSHA != "sha-2" || rep.Refuted != 0 || rep.Fixed != 0 || rep.ThreadReplyFailures != 1 || len(gh.resolves) != 0 {
 		t.Fatalf("a lost withdrawal resolves nothing: row=%+v rep=%+v resolves=%v", row, rep, gh.resolves)
 	}
+	if rep.StillOpen != 3 || !strings.Contains(gh.issueEdits[501], "Medium thing") || !strings.Contains(gh.issueEdits[501], "3 still open") {
+		t.Fatalf("the root is still open on GitHub, so it is listed and counted: still_open=%d\n%s", rep.StillOpen, gh.issueEdits[501])
+	}
 	gh.replyErr = nil
 	r3 := withM1(ledgerRoundOne(), verified(f(m1ID, "medium", "b.go", 20, "Medium thing."), types.VerifyDrop, true))
 	r3.HeadSHA, r3.RoundNumber, r3.Changes = "sha-3", 0, changed("b.go")
