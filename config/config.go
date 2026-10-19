@@ -91,6 +91,19 @@ type Config struct {
 	// EnsembleMaxAgents caps concurrent ensemble agent processes per server,
 	// on top of the one agent slot each ensemble review holds.
 	EnsembleMaxAgents int
+	// EnsembleVerify is the repo-evidence verifier's mode for ensemble
+	// reviews: off, shadow (decisions recorded, nothing applied) or on.
+	EnsembleVerify string
+	// VerifyModel judges findings; VerifyWallClockSec bounds one call;
+	// VerifyMaxInputTokens skips packets estimated larger; once
+	// VerifyDailyBudgetUSD is spent (UTC day) verification stops until the
+	// next day, 0 meaning no cap. VerifyShadowSample is the share of
+	// dashboard-only reviews verified in shadow mode.
+	VerifyModel          string
+	VerifyWallClockSec   int
+	VerifyMaxInputTokens int
+	VerifyDailyBudgetUSD float64
+	VerifyShadowSample   float64
 	// AgentPrewarmRepos are owner/repo clone caches built at startup; empty
 	// warms the most-reviewed repos instead.
 	AgentPrewarmRepos []string
@@ -398,6 +411,12 @@ func Load() *Config {
 		AgentMaxConcurrent:          getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
 		AgentCloneCacheMaxGB:        getEnvIntOrDefault("AGENT_CLONE_CACHE_MAX_GB", 0),
 		EnsembleMaxAgents:           getEnvIntOrDefault("ENSEMBLE_MAX_AGENTS", 25),
+		EnsembleVerify:              verifyMode(os.Getenv("ENSEMBLE_VERIFY")),
+		VerifyModel:                 getEnvOrDefault("VERIFY_MODEL", "anthropic/claude-fable-5.1"),
+		VerifyWallClockSec:          getEnvIntOrDefault("VERIFY_WALL_CLOCK_SEC", 180),
+		VerifyMaxInputTokens:        getEnvIntOrDefault("VERIFY_MAX_INPUT_TOKENS", 150000),
+		VerifyDailyBudgetUSD:        getEnvFloatOrDefault("VERIFY_DAILY_BUDGET_USD", 150),
+		VerifyShadowSample:          min(max(getEnvFloatOrDefault("VERIFY_SHADOW_SAMPLE", 1), 0), 1),
 		AgentPrewarmRepos:           getEnvListOrDefault("AGENT_PREWARM_REPOS", nil, strings.TrimSpace),
 		NewRelicAccountID:           os.Getenv("NEW_RELIC_ACCOUNT_ID"),
 		NewRelicInsertKey:           os.Getenv("NEW_RELIC_INSERT_KEY"),
@@ -472,6 +491,28 @@ func getEnvBoolOrDefault(key string, defaultValue bool) bool {
 	}
 	if raw != "" {
 		log.Printf("[CONFIG] %s=%q is not a boolean, keeping the default %t", key, raw, defaultValue)
+	}
+	return defaultValue
+}
+
+// verifyMode reads ENSEMBLE_VERIFY; anything but shadow or on is off.
+func verifyMode(raw string) string {
+	switch mode := strings.ToLower(strings.TrimSpace(raw)); mode {
+	case "shadow", "on":
+		return mode
+	case "", "off":
+	default:
+		log.Printf("[CONFIG] ENSEMBLE_VERIFY=%q is not off, shadow or on; verification is off", raw)
+	}
+	return "off"
+}
+
+func getEnvFloatOrDefault(key string, defaultValue float64) float64 {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		if f, err := strconv.ParseFloat(value, 64); err == nil {
+			return f
+		}
+		log.Printf("[CONFIG] %s=%q is not a number, keeping the default %g", key, value, defaultValue)
 	}
 	return defaultValue
 }

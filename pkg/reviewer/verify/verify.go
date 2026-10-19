@@ -46,6 +46,11 @@ const (
 	maxQuoteLines    = 12
 )
 
+// EstimateTokens approximates the prompt size for a budget check.
+func EstimateTokens(pkt *Packet, findings []Finding) int {
+	return (len(verifySystem) + len(verifyPrompt(pkt, findings))) / 4
+}
+
 // Verify judges findings against pkt. On an error no finding was judged and
 // the caller publishes the merge unchanged.
 func (v Verifier) Verify(ctx context.Context, pkt *Packet, findings []Finding) (Result, error) {
