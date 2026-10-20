@@ -54,6 +54,7 @@ func newVerifyFixture(t *testing.T, mode, author, reply string) *verifyFixture {
 	cfg.VerifyWallClockSec = 30
 	cfg.VerifyMaxInputTokens = 100000
 	cfg.VerifyShadowSample = 1
+	cfg.VerifyPacketCall = true
 	db := NewMockDatabase()
 	_ = db.SetSetting(SettingPublishEnabledAuthors, "alice")
 	storage := &MockReviewStorage{}
@@ -272,5 +273,16 @@ func TestVerifyDoesNotEscalateWhenTurnedOff(t *testing.T) {
 	calls := stubVerifyAgent(t, nil, errors.New("unexpected"))
 	if rep := f.run(); rep.Escalated != 0 || len(*calls) != 0 {
 		t.Fatalf("report=%+v calls=%d", rep, len(*calls))
+	}
+}
+
+func TestVerifyWithoutThePacketCallSendsEveryFindingToTheAgent(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "alice", "unused")
+	f.p.cfg.VerifyPacketCall = false
+	f.p.cfg.OpenRouterAPIKey = ""
+	calls := stubVerifyAgent(t, &verify.AgentDecision{Key: "F1", Decision: "drop", Reason: "r", Cites: []verify.AgentCite{{File: "a.go", Start: 1, End: 1}}, Quote: "a.go:1\nx"}, nil)
+	rep := f.run()
+	if f.completer.calls != 0 || len(*calls) != 1 || rep.Status != "applied" || f.review.Comments[0].Verification.Status != types.VerifyDrop {
+		t.Fatalf("calls=%d agent=%d report=%+v v=%+v", f.completer.calls, len(*calls), rep, f.review.Comments[0].Verification)
 	}
 }

@@ -107,7 +107,10 @@ type Config struct {
 	// VerifyEscalate sends findings the packet check marks unavailable to a
 	// read-only agent run (VerifyAgent*; backend and model default to the
 	// review agent's backend with Opus 5.5).
-	VerifyEscalate          bool
+	VerifyEscalate bool
+	// VerifyPacketCall runs the one-call packet check first; off, every
+	// finding goes straight to the verify agent.
+	VerifyPacketCall        bool
 	VerifyAgentBackend      string
 	VerifyAgentModel        string
 	VerifyAgentWallClockSec int
@@ -426,6 +429,7 @@ func Load() *Config {
 		VerifyDailyBudgetUSD:        getEnvFloatOrDefault("VERIFY_DAILY_BUDGET_USD", 150),
 		VerifyShadowSample:          min(max(getEnvFloatOrDefault("VERIFY_SHADOW_SAMPLE", 1), 0), 1),
 		VerifyEscalate:              getEnvBoolOrDefault("VERIFY_ESCALATE", true),
+		VerifyPacketCall:            getEnvBoolOrDefault("VERIFY_PACKET_CALL", true),
 		VerifyAgentBackend:          os.Getenv("VERIFY_AGENT_BACKEND"),
 		VerifyAgentModel:            os.Getenv("VERIFY_AGENT_MODEL"),
 		VerifyAgentWallClockSec:     getEnvIntOrDefault("VERIFY_AGENT_WALL_CLOCK_SEC", 420),

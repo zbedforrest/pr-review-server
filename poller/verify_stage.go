@@ -185,7 +185,7 @@ func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input,
 		rep.Status, rep.Skip = "skipped", "over_budget"
 		return nil
 	}
-	if p.cfg.OpenRouterAPIKey == "" {
+	if p.cfg.VerifyPacketCall && p.cfg.OpenRouterAPIKey == "" {
 		rep.Status, rep.Skip = "skipped", "no_key"
 		return nil
 	}
@@ -199,6 +199,17 @@ func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input,
 	if p.cfg.VerifyMaxInputTokens > 0 && rep.EstimatedTokens > p.cfg.VerifyMaxInputTokens {
 		rep.Status, rep.Skip = "skipped", "too_large"
 		return nil
+	}
+	if !p.cfg.VerifyPacketCall {
+		comments := make([]types.LineComment, 0, len(in.Findings))
+		for _, f := range in.Findings {
+			c := f.Comment
+			c.Verification = &types.Verification{Status: types.VerifyUnavailable}
+			comments = append(comments, c)
+		}
+		rep.Status = "ok"
+		p.escalateVerify(ctx, t, in, pkt, comments, rep)
+		return comments
 	}
 	v := verify.Verifier{Client: newVerifyCompleter(p.cfg.OpenRouterAPIKey, p.cfg.OpenRouterBaseURL, p.cfg.VerifyModel), Model: p.cfg.VerifyModel}
 	res, err := v.Verify(ctx, pkt, in.Findings)
