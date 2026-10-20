@@ -310,12 +310,11 @@ func TestVerify_AmbiguousPriorTextKeepsTheRevisionItsOwnIdentity(t *testing.T) {
 	revised := f(fid("b.go", 47, "Medium thing, revised."), "medium", "b.go", 47, "Medium thing, revised.")
 	revised.Verification = &types.Verification{Status: types.VerifyRevise, Applied: true, PriorComment: "Medium thing."}
 	r2 := withM1(ledgerRoundOne(), revised)
-	r2.Findings = append(r2.Findings, twin)
 	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
-	r2.Commentable["b.go"][47], r2.Commentable["b.go"][60] = true, true
+	r2.Commentable["b.go"][47] = true
 	publishRound(t, gh, ledger, r2)
 	if ledger.get(db.PublishedKindFinding, revised.ID) == nil {
-		t.Fatal("two rows with the prior text: the revision posts under its own id rather than guessing")
+		t.Fatal("two rows with the prior text and neither carried this round: the revision posts under its own id rather than guessing")
 	}
 }
 
@@ -385,5 +384,47 @@ func TestVerify_RevisionOfAWithdrawnPointStaysWithdrawn(t *testing.T) {
 	publishThreads(t, gh, ledger, r3)
 	if ledger.get(db.PublishedKindFinding, revised.ID) != nil || len(gh.reviews) != reviews || ledger.get(db.PublishedKindFinding, m1ID).State != db.PublishedStateDismissed {
 		t.Fatal("a revision of a point PRism withdrew is a rewording of a settled point and does not post")
+	}
+}
+
+func TestVerify_RevisionWithCorrectedSubjectsStillFindsAFixedRow(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	r1 := ledgerRoundOne()
+	for i := range r1.Findings {
+		if r1.Findings[i].ID == m1ID {
+			r1.Findings[i] = withSubjects(r1.Findings[i], "production_behavior", "oldName")
+		}
+	}
+	publishRound(t, gh, ledger, r1)
+	fixing := summaryOnly("sha-2")
+	fixing.Changes = changed("b.go")
+	publishRound(t, gh, ledger, fixing)
+	if ledger.get(db.PublishedKindFinding, m1ID).State != db.PublishedStateFixed {
+		t.Fatal("round two fixed m1")
+	}
+
+	revised := withSubjects(f(fid("b.go", 20, "Medium thing, revised."), "medium", "b.go", 20, "Medium thing, revised."), "production_behavior", "newName")
+	priorContract := *withSubjects(f(m1ID, "medium", "b.go", 20, "Medium thing."), "production_behavior", "oldName").FindingContract
+	revised.Verification = &types.Verification{Status: types.VerifyRevise, Applied: true, PriorComment: "Medium thing.", PriorContract: &priorContract}
+	r3 := withM1(ledgerRoundOne(), revised)
+	r3.HeadSHA, r3.RoundNumber, r3.Changes = "sha-3", 0, changed("b.go")
+	reviews := len(gh.reviews)
+	rep := publishRound(t, gh, ledger, r3)
+	if ledger.get(db.PublishedKindFinding, revised.ID) != nil || len(gh.reviews) != reviews || rep.Reopened != 1 {
+		t.Fatalf("the revision is the fixed row returning, not a second root: rep=%+v reviews=%d", rep, len(gh.reviews))
+	}
+}
+
+func TestVerify_RevisionDoesNotShareARowWithARestatement(t *testing.T) {
+	gh, ledger := newFakeGitHub(), newFakeLedger()
+	publishRound(t, gh, ledger, ledgerRoundOne())
+	revised := f(fid("b.go", 20, "Medium thing, revised."), "medium", "b.go", 20, "Medium thing, revised.")
+	revised.Verification = &types.Verification{Status: types.VerifyRevise, Applied: true, PriorComment: "Medium thing."}
+	r2 := ledgerRoundOne()
+	r2.Findings = append(r2.Findings, revised)
+	r2.HeadSHA, r2.RoundNumber, r2.Changes = "sha-2", 0, changed("b.go")
+	publishRound(t, gh, ledger, r2)
+	if ledger.get(db.PublishedKindFinding, revised.ID) == nil {
+		t.Fatal("with the restatement already on the row, the revision keeps its own identity")
 	}
 }

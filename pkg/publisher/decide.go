@@ -625,22 +625,34 @@ func (p *Publisher) aliasToLedger(r *Round, rows map[string]*db.PublishedFinding
 // drifted since the row was posted; a row placed here is marked placed, so
 // the AliasPrior text match later in aliasToLedger leaves it alone.
 func aliasRevisions(r *Round, rows map[string]*db.PublishedFinding, original map[string]string, placed map[string]bool) {
+	carried := make(map[string]bool, len(r.Findings))
+	for _, f := range r.Findings {
+		carried[f.ID] = true
+	}
 	for i, f := range r.Findings {
 		v := f.Verification
 		if placed[f.ID] || rows[f.ID] != nil || v == nil || !v.Applied || v.Status != types.VerifyRevise || v.PriorComment == "" {
 			continue
 		}
+		// The row was posted with the prior contract, so that is what its
+		// subjects are compared against; a revise may have corrected them.
+		was := f
+		if v.PriorContract != nil {
+			was.FindingContract = v.PriorContract
+		}
 		// A terminal row is a home too: a revision of a point this PR has
 		// settled is dropped with it by withoutTerminal, as any rewording is.
+		// A row another finding of the round already carries is not: the
+		// revision keeps its own identity rather than sharing the row.
 		prior := payload.Fingerprint(f.File, f.Line, v.PriorComment)
-		if row, ok := rows[prior]; !ok || placed[prior] || !sameSubject(row, f) {
+		if row, ok := rows[prior]; !ok || placed[prior] || carried[prior] || !sameSubject(row, was) {
 			// Only an unambiguous text match counts: two rows in the file with
 			// the same text leave the revision its own identity. The text is
 			// compared the way fingerprints read it, line aside.
 			prior = ""
 			want := payload.Fingerprint(f.File, 0, v.PriorComment)
 			for id, row := range rows {
-				if file, _ := payload.FingerprintParts(id); file != f.File || placed[id] || !sameSubject(row, f) || payload.Fingerprint(f.File, 0, row.CommentText) != want {
+				if file, _ := payload.FingerprintParts(id); file != f.File || placed[id] || carried[id] || !sameSubject(row, was) || payload.Fingerprint(f.File, 0, row.CommentText) != want {
 					continue
 				}
 				if prior != "" {
@@ -655,7 +667,7 @@ func aliasRevisions(r *Round, rows map[string]*db.PublishedFinding, original map
 		}
 		original[prior] = f.ID
 		r.Findings[i].ID = prior
-		placed[prior] = true
+		placed[prior], carried[prior] = true, true
 	}
 }
 
@@ -671,6 +683,7 @@ func (p *Publisher) withdraw(ctx context.Context, r Round, commentID int64, f pa
 	}
 	replier, ok := p.GH.(ThreadReplier)
 	if !ok || commentID == 0 {
+		rep.ThreadReplyFailures++
 		log.Printf("[PUBLISH] %s/%s#%d: no reply client for the withdrawal under comment %d, root stays open", r.Owner, r.Repo, r.Number, commentID)
 		return false
 	}
