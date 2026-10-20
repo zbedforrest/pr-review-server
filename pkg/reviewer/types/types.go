@@ -65,7 +65,9 @@ const (
 // Verification is the verifier's decision on one merged finding. It is kept
 // apart from State because any State other than confirmed is unpublishable.
 // Applied is false in shadow mode, where publishers must ignore the decision.
-// Phase is 2 when the escalation agent made the decision. Proposed is the
+// LowValue marks a LOW finding the agent judged not worth posting (true
+// but not actionable); it keeps the note off GitHub like a hold, with
+// ValueReason saying why. Phase is 2 when the escalation agent made the decision. Proposed is the
 // model's decision when policy recorded a different
 // Status (an invalid decision, or a hold or drop on a CRITICAL). Cites are
 // evidence packet item ids; Evidence quotes the cited text so a
@@ -81,13 +83,15 @@ type Verification struct {
 	Evidence      string           `json:"evidence,omitempty"`
 	Model         string           `json:"model,omitempty"`
 	PriorComment  string           `json:"prior_comment,omitempty"`
+	LowValue      bool             `json:"low_value,omitempty"`
+	ValueReason   string           `json:"value_reason,omitempty"`
 	PriorContract *FindingContract `json:"prior_contract,omitempty"`
 }
 
 // Suppresses reports whether an applied decision keeps the finding from
 // being posted as new.
 func (v *Verification) Suppresses() bool {
-	return v != nil && v.Applied && (v.Status == VerifyHold || v.Status == VerifyDrop)
+	return v != nil && v.Applied && (v.Status == VerifyHold || v.Status == VerifyDrop || v.LowValue)
 }
 
 // Refutes reports whether an applied decision withdraws the finding.

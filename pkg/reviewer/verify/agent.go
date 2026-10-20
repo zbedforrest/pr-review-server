@@ -49,6 +49,11 @@ type AgentDecision struct {
 	Unresolved []string
 	Quote      string
 	Revised    *Revision
+	// WorthPosting is nil when the agent did not say; ValueReason explains a
+	// false; DuplicateOf names another finding key this one restates.
+	WorthPosting *bool
+	ValueReason  string
+	DuplicateOf  string
 }
 
 type agentReply struct {
@@ -59,6 +64,9 @@ type agentReply struct {
 		Reason   string    `json:"reason"`
 		Quote    *string   `json:"refuting_quote"`
 		Revised  *Revision `json:"revised"`
+		Worth    *bool     `json:"worth_posting"`
+		ValueWhy string    `json:"value_reason"`
+		DupOf    *string   `json:"duplicate_of"`
 	} `json:"decisions"`
 }
 
@@ -92,7 +100,11 @@ func ResolveAgentReply(raw, headDir, baseDir string) ([]AgentDecision, error) {
 	}
 	out := make([]AgentDecision, 0, len(reply.Decisions))
 	for _, d := range reply.Decisions {
-		ad := AgentDecision{Key: d.Key, Decision: strings.ToLower(strings.TrimSpace(d.Decision)), Reason: d.Reason, Revised: d.Revised}
+		ad := AgentDecision{Key: d.Key, Decision: strings.ToLower(strings.TrimSpace(d.Decision)), Reason: d.Reason, Revised: d.Revised,
+			WorthPosting: d.Worth, ValueReason: strings.TrimSpace(d.ValueWhy)}
+		if d.DupOf != nil {
+			ad.DuplicateOf = strings.TrimSpace(*d.DupOf)
+		}
 		for _, s := range d.Cites {
 			c, ok := ParseCite(s)
 			if ok {
@@ -183,16 +195,28 @@ func readQuote(c AgentCite, headDir, baseDir string) string {
 }
 
 // ApplyAgent records an escalated decision on the finding under the same
-// rules as Phase 1.
+// rules as Phase 1, then marks a LOW finding the agent judged not worth
+// posting. Only LOW findings are ever hidden for value, and only with a
+// stated reason; a duplicate names the finding it repeats.
 func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) {
 	cites := make([]string, 0, len(d.Cites))
 	for _, ci := range d.Cites {
 		cites = append(cites, ci.String())
 	}
-	return applyRuling(c, ruling{
+	out, valid := applyRuling(c, ruling{
 		decision: d.Decision, reason: d.Reason, cites: cites, revised: d.Revised,
 		evidence: func() string { return d.Quote },
 	})
+	v := out.Verification
+	low := strings.EqualFold(strings.TrimSpace(out.Importance), "LOW")
+	if low && d.WorthPosting != nil && !*d.WorthPosting && d.ValueReason != "" && (v.Status == types.VerifyKeep || v.Status == types.VerifyRevise || v.Status == types.VerifyUnavailable) {
+		v.LowValue = true
+		v.ValueReason = cut(d.ValueReason, maxReasonRunes)
+		if d.DuplicateOf != "" {
+			v.ValueReason = cut("duplicate of "+d.DuplicateOf+": "+v.ValueReason, maxReasonRunes)
+		}
+	}
+	return out, valid
 }
 
 // AgentPrompt is the escalation run's prompt: the findings Phase 1 could not
@@ -220,7 +244,16 @@ Cites are "path:line" or "path:start-end" relative to the repository root at hea
 
 Severity: CRITICAL is data loss, a security hole, a crash, or a broken core flow for real users now. MEDIUM is a user-visible defect or a likely bug. LOW is maintainability, tests, docs, or performance without a stated user impact.
 
-Return one JSON object: {"decisions":[{"key":"F1","decision":"keep|revise|hold|drop|evidence_unavailable","cites":["path:line"],"reason":"one or two plain sentences","refuting_quote":"path:start-end or null","revised":null or {"line_number":0,"importance":"CRITICAL|MEDIUM|LOW","headline":"","comment_body":"","materiality":"current_impact|future_condition_only|no_user_impact|unknown","current_impact":"","counterfactual_trigger":null,"falsifiability":"falsifiable|not_falsifiable|unknown","falsifiable_condition":null,"expected_observable":null,"uncertainty":"","severity_rationale":""}}]}
+Separately, judge whether each finding is worth posting to the author at all ("worth_posting"), whatever its truth. Say false, with a one-sentence "value_reason", when the author would reasonably ignore it:
+- speculation about a path the code does not reach, or about a hypothetical future change;
+- a nitpick (naming, wording, style, import order, comment text) with no defect behind it;
+- it argues against behavior the PR description, a code comment or a test states is intended;
+- the concern is already handled elsewhere (cite where);
+- it restates another finding in this list (set "duplicate_of" to that key);
+- it is not caused by this PR's change, or only restates the PR description.
+Say true for a real defect of any size, a test gap around logic that can break, or documentation that would mislead a reader. When unsure, say true.
+
+Return one JSON object: {"decisions":[{"key":"F1","decision":"keep|revise|hold|drop|evidence_unavailable","worth_posting":true,"value_reason":"","duplicate_of":null,"cites":["path:line"],"reason":"one or two plain sentences","refuting_quote":"path:start-end or null","revised":null or {"line_number":0,"importance":"CRITICAL|MEDIUM|LOW","headline":"","comment_body":"","materiality":"current_impact|future_condition_only|no_user_impact|unknown","current_impact":"","counterfactual_trigger":null,"falsifiability":"falsifiable|not_falsifiable|unknown","falsifiable_condition":null,"expected_observable":null,"uncertainty":"","severity_rationale":""}}]}
 `
 
 // Subset is the packet narrowed to what these findings cite plus the shared

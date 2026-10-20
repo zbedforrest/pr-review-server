@@ -139,3 +139,48 @@ func TestPacketSubset_KeepsOnlyTheBatchsItemsAndTheirIDs(t *testing.T) {
 		t.Fatal("P1 resolved in a subset without it")
 	}
 }
+
+func TestApplyAgent_HidesOnlyLowFindingsJudgedNotWorthPosting(t *testing.T) {
+	no, yes := false, true
+	low := types.LineComment{FilePath: "a.go", LineNumber: 1, Importance: "LOW", CommentBody: "rename this variable"}
+	medium := low
+	medium.Importance = "MEDIUM"
+	keep := func(w *bool, why, dup string) AgentDecision {
+		return AgentDecision{Key: "F1", Decision: "keep", Reason: "true", WorthPosting: w, ValueReason: why, DuplicateOf: dup}
+	}
+	cases := []struct {
+		name string
+		c    types.LineComment
+		d    AgentDecision
+		want bool
+	}{
+		{"low nitpick", low, keep(&no, "naming only", ""), true},
+		{"medium never hidden", medium, keep(&no, "naming only", ""), false},
+		{"no reason", low, keep(&no, "", ""), false},
+		{"worth posting", low, keep(&yes, "", ""), false},
+		{"unsaid", low, keep(nil, "", ""), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := ApplyAgent(tc.c, tc.d)
+			c.Verification.Applied = true
+			if c.Verification.LowValue != tc.want || c.Verification.Suppresses() != tc.want {
+				t.Fatalf("verification = %+v", c.Verification)
+			}
+		})
+	}
+	c, _ := ApplyAgent(low, keep(&no, "same point as F2", "F2"))
+	if c.Verification.ValueReason != "duplicate of F2: same point as F2" {
+		t.Fatalf("reason = %q", c.Verification.ValueReason)
+	}
+}
+
+func TestResolveAgentReply_ReadsTheValueJudgement(t *testing.T) {
+	got, err := ResolveAgentReply(`{"decisions":[{"key":"F1","decision":"keep","worth_posting":false,"value_reason":"style only","duplicate_of":"F3","cites":[],"reason":"r","refuting_quote":null,"revised":null}]}`, t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].WorthPosting == nil || *got[0].WorthPosting || got[0].ValueReason != "style only" || got[0].DuplicateOf != "F3" {
+		t.Fatalf("decision = %+v", got[0])
+	}
+}
