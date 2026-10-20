@@ -308,8 +308,10 @@ func noteCodexUsage(r *agentParseResult, ev map[string]any, baseURL, modelSlug s
 	input, cached, output := count("input_tokens"), count("cached_input_tokens"), count("output_tokens")
 	r.inputTokens += int64(input)
 	r.outputTokens += int64(output)
-	if price, ok := openRouterPrices.price(baseURL, modelSlug); ok {
-		r.costUSD += ((input-cached)*price[0] + cached*price[1] + output*price[2]) / 1e6
+	if modelSlug != "" {
+		if price, ok := openRouterPrices.price(baseURL, modelSlug); ok {
+			r.costUSD += ((input-cached)*price[0] + cached*price[1] + output*price[2]) / 1e6
+		}
 	}
 	log.Printf("[AGENT] codex usage input=%d cached=%d output=%d reasoning=%d", int64(input), int64(cached), int64(output), int64(count("reasoning_output_tokens")))
 }

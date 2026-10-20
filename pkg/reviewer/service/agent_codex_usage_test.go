@@ -21,6 +21,7 @@ func TestParseCodexStreamRecordsUsageAndPricesKnownModels(t *testing.T) {
 	clock := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	openRouterPrices = priceBookAt(srv, &clock)
 	t.Cleanup(func() { openRouterPrices = prev })
+	priced(openRouterPrices, srv.URL, "deepseek/deepseek-v4.1-flash")
 	res, err := parseCodexStreamModel(codexProc(stream), &bytes.Buffer{}, 10, srv.URL, "deepseek/deepseek-v4.1-flash")
 	if err != nil {
 		t.Fatalf("parse: %v", err)

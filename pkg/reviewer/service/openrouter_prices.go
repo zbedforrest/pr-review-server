@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"sync"
@@ -13,8 +14,8 @@ import (
 )
 
 // openRouterListPrices is USD per million tokens: input, cached input, output.
-// It is the fallback until a live listing has been read; values as listed
-// on 2026-10-20.
+// It prices a model only until a live listing of its root has been read;
+// values as listed on 2026-10-20.
 var openRouterListPrices = map[string][3]float64{
 	"deepseek/deepseek-v4.1-flash": {0.02832, 0.000566, 0.12},
 	"anthropic/claude-fable-5.1":   {10, 0.25, 50},
@@ -27,51 +28,68 @@ const (
 )
 
 // openRouterPriceBook prices Codex usage, which reports tokens but no cost,
-// from the model listing of the OpenRouter root the runtime talks to. The
-// listing is read once per process and refreshed daily, because a
-// hard-coded price drifted 10x from the list price within weeks. A refresh
-// runs outside the lock, so callers price from the last listing or the
-// table while it is in flight.
+// from the model listing of each OpenRouter root the runtime talks to. A
+// listing is read in the background the first time a root is priced and
+// refreshed daily, because a hard-coded price drifted 10x from the list
+// price within weeks; until it arrives the table prices the usage.
 type openRouterPriceBook struct {
 	client *http.Client
 	now    func() time.Time
 
-	mu          sync.Mutex
-	url         string
+	mu       sync.Mutex
+	roots    map[string]*openRouterListing
+	warned   map[string]bool
+	inflight sync.WaitGroup
+}
+
+type openRouterListing struct {
+	prices      map[string][3]float64
 	nextAttempt time.Time
 	refreshing  bool
-	prices      map[string][3]float64
 }
 
 var openRouterPrices = &openRouterPriceBook{client: &http.Client{Timeout: 10 * time.Second}, now: time.Now}
 
 func (b *openRouterPriceBook) price(baseURL, model string) ([3]float64, bool) {
-	url := baseURL + "/models"
 	b.mu.Lock()
-	if url != b.url {
-		b.url, b.prices, b.nextAttempt = url, nil, time.Time{}
-	}
-	if !b.refreshing && !b.now().Before(b.nextAttempt) {
-		b.refreshing = true
-		b.mu.Unlock()
-		live, err := b.fetch(url)
-		b.mu.Lock()
-		b.refreshing = false
-		if b.url == url {
-			if err != nil {
-				log.Printf("[AGENT] openrouter model listing: %v; pricing from the last listing or the built-in table", err)
-				b.nextAttempt = b.now().Add(openRouterPriceRetry)
-			} else {
-				b.prices, b.nextAttempt = live, b.now().Add(openRouterPriceTTL)
-			}
-		}
-	}
 	defer b.mu.Unlock()
-	if p, ok := b.prices[model]; ok {
-		return p, true
+	if b.roots == nil {
+		b.roots, b.warned = map[string]*openRouterListing{}, map[string]bool{}
 	}
-	p, ok := openRouterListPrices[model]
+	l := b.roots[baseURL]
+	if l == nil {
+		l = &openRouterListing{}
+		b.roots[baseURL] = l
+	}
+	if !l.refreshing && !b.now().Before(l.nextAttempt) {
+		l.refreshing = true
+		b.inflight.Add(1)
+		go b.refresh(baseURL, l)
+	}
+	if l.prices == nil {
+		p, ok := openRouterListPrices[model]
+		return p, ok
+	}
+	p, ok := l.prices[model]
+	if !ok && !b.warned[baseURL+" "+model] {
+		b.warned[baseURL+" "+model] = true
+		log.Printf("[AGENT] openrouter model listing at %s has no price for %s; its cost goes unrecorded", baseURL, model)
+	}
 	return p, ok
+}
+
+func (b *openRouterPriceBook) refresh(baseURL string, l *openRouterListing) {
+	defer b.inflight.Done()
+	live, err := b.fetch(baseURL + "/models")
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	l.refreshing = false
+	if err != nil {
+		log.Printf("[AGENT] openrouter model listing at %s: %v; pricing from the last listing or the built-in table", baseURL, err)
+		l.nextAttempt = b.now().Add(openRouterPriceRetry)
+		return
+	}
+	l.prices, l.nextAttempt = live, b.now().Add(openRouterPriceTTL)
 }
 
 func (b *openRouterPriceBook) fetch(url string) (map[string][3]float64, error) {
@@ -101,7 +119,7 @@ func (b *openRouterPriceBook) fetch(url string) (map[string][3]float64, error) {
 	}
 	perMillion := func(s string) (float64, bool) {
 		v, err := strconv.ParseFloat(s, 64)
-		return v * 1e6, err == nil && v >= 0
+		return v * 1e6, err == nil && v >= 0 && !math.IsInf(v, 0) && !math.IsNaN(v)
 	}
 	prices := make(map[string][3]float64, len(body.Data))
 	for _, m := range body.Data {
