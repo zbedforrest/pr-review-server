@@ -1,6 +1,7 @@
 // verifyreplay runs the repo-evidence verifier offline over a directory of
 // review sidecars and writes, per sidecar, the review as the verifier in on
-// mode would leave it: held and dropped findings removed, revisions applied.
+// mode would leave it: held and dropped findings removed (or kept with their
+// decision under --keep-suppressed), revisions applied.
 // Scoring the output beside the input (benchmark/score.py, clean_fp.py)
 // measures what verification costs in recall and saves in false positives.
 //
@@ -65,6 +66,7 @@ func main() {
 	model := flag.String("model", "anthropic/claude-fable-5.1", "verifier model")
 	timeout := flag.Duration("timeout", 5*time.Minute, "per-case timeout")
 	dry := flag.Bool("dry", false, "build packets and report their size without calling the model")
+	flag.BoolVar(&keepSuppressed, "keep-suppressed", false, "keep held and dropped findings in the output with their applied Verification, as production does, for a publisher pass")
 	flag.Parse()
 	key := os.Getenv("OPENROUTER_API_KEY")
 	if *in == "" || *out == "" || *clones == "" || (key == "" && !*dry) {
@@ -146,6 +148,10 @@ func main() {
 	}
 	fmt.Printf("cases=%d spent=$%.2f est_input_tokens=%d decisions=%v\n", len(results), spent, tokens, totals)
 }
+
+// keepSuppressed writes held and dropped findings instead of removing them;
+// removal is what a recall scorer, which counts active claims, needs.
+var keepSuppressed bool
 
 // replay verifies one sidecar and writes its on-mode result. A case that
 // fails is written unchanged, as production would publish it.
@@ -238,7 +244,11 @@ func replay(ctx context.Context, v verify.Verifier, clones, outDir, path string)
 		c.Verification.Applied = true
 		at := index[i]
 		if c.Verification.Suppresses() {
-			drop[at] = true
+			if keepSuppressed {
+				pl.Findings[at].Verification = c.Verification
+			} else {
+				drop[at] = true
+			}
 			continue
 		}
 		if c.Verification.Status == types.VerifyRevise {
