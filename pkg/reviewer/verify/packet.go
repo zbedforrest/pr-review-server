@@ -35,6 +35,7 @@ type Limits struct {
 	MaxSymbols   int
 	PRTextChars  int
 	MaxFileBytes int
+	MaxLineRunes int
 }
 
 var DefaultLimits = Limits{
@@ -48,6 +49,7 @@ var DefaultLimits = Limits{
 	MaxSymbols:   6,
 	PRTextChars:  4000,
 	MaxFileBytes: 1 << 20,
+	MaxLineRunes: 300,
 }
 
 // Finding is one merged finding to verify; Key is how the model refers to it.
@@ -174,7 +176,7 @@ func (b *builder) finding(c types.LineComment) ([]string, error) {
 		ids = append(ids, b.note(path, "head source unavailable: "+reason(err)))
 	default:
 		headStart, headEnd = clamp(line-b.lim.HeadContext, line+b.lim.HeadContext, len(head))
-		ids = append(ids, b.add(Item{Kind: KindHead, Path: path, Rev: b.in.Head, Start: headStart, End: headEnd, Text: numbered(head, headStart, headEnd)}))
+		ids = append(ids, b.add(Item{Kind: KindHead, Path: path, Rev: b.in.Head, Start: headStart, End: headEnd, Text: b.numbered(head, headStart, headEnd)}))
 	}
 
 	ids = append(ids, b.baseItems(path, line)...)
@@ -225,7 +227,7 @@ func (b *builder) subjects(c types.LineComment, path string) []string {
 			}
 		}
 		start, end := clamp(at-b.lim.BaseContext, at+b.lim.HeadContext, len(lines))
-		ids = append(ids, b.add(Item{Kind: KindHead, Path: p, Rev: b.in.Head, Start: start, End: end, Text: numbered(lines, start, end)}))
+		ids = append(ids, b.add(Item{Kind: KindHead, Path: p, Rev: b.in.Head, Start: start, End: end, Text: b.numbered(lines, start, end)}))
 	}
 	return ids
 }
@@ -259,7 +261,7 @@ func (b *builder) baseItems(path string, line int) []string {
 	}
 	var start, end int
 	if covering != nil {
-		ids = append(ids, b.add(Item{Kind: KindHunk, Path: path, Start: covering.newStart, End: covering.newStart + covering.newCount - 1, Text: firstLines(covering.text, b.lim.MaxHunkLines)}))
+		ids = append(ids, b.add(Item{Kind: KindHunk, Path: path, Start: covering.newStart, End: covering.newStart + covering.newCount - 1, Text: b.clip(firstLines(covering.text, b.lim.MaxHunkLines))}))
 		spanEnd := covering.oldStart + max(covering.oldCount, 1) - 1
 		spanEnd = min(spanEnd, covering.oldStart+b.lim.MaxSpanLines)
 		start, end = clamp(covering.oldStart-b.lim.BaseContext, spanEnd+b.lim.BaseContext, len(base))
@@ -269,7 +271,7 @@ func (b *builder) baseItems(path string, line int) []string {
 	if start > end {
 		return append(ids, b.note(path, "base has no lines at the mapped location"))
 	}
-	return append(ids, b.add(Item{Kind: KindBase, Path: path, Rev: b.in.Base, Start: start, End: end, Text: numbered(base, start, end)}))
+	return append(ids, b.add(Item{Kind: KindBase, Path: path, Rev: b.in.Base, Start: start, End: end, Text: b.numbered(base, start, end)}))
 }
 
 func (b *builder) refs(c types.LineComment, path string, headStart, headEnd int) ([]string, error) {
@@ -304,7 +306,7 @@ func (b *builder) refs(c types.LineComment, path string, headStart, headEnd int)
 				continue
 			}
 			s, e := clamp(h.Line-b.lim.RefContext, h.Line+b.lim.RefContext, len(lines))
-			ids = append(ids, b.add(Item{Kind: KindRef, Path: h.Path, Rev: b.in.Head, Start: s, End: e, Text: "reference to " + sym + "\n" + numbered(lines, s, e)}))
+			ids = append(ids, b.add(Item{Kind: KindRef, Path: h.Path, Rev: b.in.Head, Start: s, End: e, Text: "reference to " + sym + "\n" + b.numbered(lines, s, e)}))
 			taken++
 			total++
 		}
@@ -467,12 +469,33 @@ func clamp(start, end, n int) (int, int) {
 	return max(start, 1), min(end, n)
 }
 
-func numbered(lines []string, start, end int) string {
-	var b strings.Builder
+func (b *builder) numbered(lines []string, start, end int) string {
+	var out strings.Builder
 	for i := start; i <= end; i++ {
-		fmt.Fprintf(&b, "%5d| %s\n", i, lines[i-1])
+		fmt.Fprintf(&out, "%5d| %s\n", i, clipLine(lines[i-1], b.lim.MaxLineRunes))
 	}
-	return strings.TrimSuffix(b.String(), "\n")
+	return strings.TrimSuffix(out.String(), "\n")
+}
+
+func (b *builder) clip(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		lines[i] = clipLine(l, b.lim.MaxLineRunes)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// clipLine cuts a line past n runes; minified bundles hold whole files on
+// one line.
+func clipLine(line string, n int) string {
+	if n <= 0 || len(line) <= n {
+		return line
+	}
+	r := []rune(line)
+	if len(r) <= n {
+		return line
+	}
+	return string(r[:n]) + fmt.Sprintf(" [%d more chars]", len(r)-n)
 }
 
 func reason(err error) string {

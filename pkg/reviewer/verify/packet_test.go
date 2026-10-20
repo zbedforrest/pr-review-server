@@ -258,3 +258,20 @@ func TestBuild_SubjectsInOtherFilesAreIncludedOrNotedMissing(t *testing.T) {
 		t.Fatalf("notes = %v", notes)
 	}
 }
+
+func TestBuild_ClipsMinifiedLines(t *testing.T) {
+	r := newRepo(t)
+	r.write("app.js", "callMe()\n")
+	r.write("vendor/bundle.min.js", "var a="+strings.Repeat("x", 5000)+";callMe();\n")
+	head := r.commit()
+
+	c := types.LineComment{FilePath: "app.js", LineNumber: 1, CommentBody: "`callMe` is wrong"}
+	p, err := Build(context.Background(), RepoGit{Dir: r.dir}, Input{Head: head, Base: head, Findings: []Finding{{Key: "F1", Comment: c}}}, DefaultLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := items(p, "F1")[KindRef]
+	if len(refs) != 1 || len(refs[0].Text) > 400 || !strings.Contains(refs[0].Text, "more chars]") {
+		t.Fatalf("refs = %+v", refs)
+	}
+}
