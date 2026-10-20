@@ -89,6 +89,7 @@ type Config struct {
 	AgentBackend         string // claude (default) or openrouter
 	AgentModel           string // backend model id for agent reviews (empty = backend default)
 	AgentEffort          string // backend reasoning effort for agent reviews (empty = service default)
+	AgentPinBase         bool   // review against a fix-free checkout pinned at the PR's own base (benchmarks)
 	// EnsembleMaxAgents caps concurrent ensemble agent processes per server,
 	// on top of the one agent slot each ensemble review holds.
 	EnsembleMaxAgents int
@@ -447,6 +448,7 @@ func Load() *Config {
 		AgentBackend:                agentBackend,
 		AgentModel:                  agentModel,
 		AgentEffort:                 agentEffort,
+		AgentPinBase:                os.Getenv("AGENT_PIN_BASE") == "true",
 		ReplyModel:                  os.Getenv("REPLY_MODEL"),
 		ReplyWallClockSec:           getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
 		ReplyMaxTurns:               getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),

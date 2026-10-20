@@ -101,6 +101,12 @@ type AgentConfig struct {
 	// prompt falls back to it when the worktree diff cannot be produced.
 	APIDiff string
 
+	// BasePin, when set, reviews against a per-PR clone that holds nothing
+	// newer than the PR, origin/<base> pinned at the PR's own base (see
+	// cloneForAgentPinned). Benchmarks over historical PRs set it; nil uses
+	// the shared cache that tracks the live base.
+	BasePin *BasePin
+
 	// RequiredChecks converts fired gates + matched memory entries into
 	// forced-choice checks the agent must answer with evidence, enforced
 	// deterministically post-parse (see checks.go). Off by default; when off
@@ -289,7 +295,7 @@ func RunAgentReview(
 
 	cleanupClone := func() error { return nil }
 	if agentCfg.SharedCheckout == "" {
-		cleanupClone, err = cloneForAgent(prepCtx, agentCfg.CloneRootDir, cloneDir, owner, repo, defaultBranch, prNumber, commitSHA, agentCfg.GitHubToken)
+		cleanupClone, err = cloneForAgent(prepCtx, agentCfg.CloneRootDir, cloneDir, owner, repo, defaultBranch, prNumber, commitSHA, agentCfg.GitHubToken, agentCfg.BasePin)
 	}
 	if err != nil {
 		log.Printf("%s clone FAILED after %s: %v", logPrefix, time.Since(prepStart), err)
@@ -1271,7 +1277,10 @@ func cacheLock(key string) *sync.Mutex {
 //
 // Each step logs a START / DONE pair with a duration so it's obvious where
 // any future slowness lives.
-func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBranch string, prNumber int, commitSHA, token string) (cleanup func() error, err error) {
+func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBranch string, prNumber int, commitSHA, token string, pin *BasePin) (cleanup func() error, err error) {
+	if pin != nil {
+		return cloneForAgentPinned(ctx, cloneRoot, dir, owner, repo, defaultBranch, prNumber, commitSHA, token, *pin)
+	}
 	noopCleanup := func() error { return nil }
 
 	// Absolute paths everywhere: git's `worktree add <relative-path>` resolves
@@ -1306,11 +1315,15 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	}
 	log.Printf("%s git worktree add DONE in %s", logPrefix, time.Since(t2))
 
-	// Cleanup: remove the worktree (files + git's worktree registration).
-	// `worktree remove --force` handles both atomically; we use a fresh
-	// background context because the run's ctx may already be expired by
-	// the time the deferred cleanup runs.
-	cleanup = func() error {
+	return removeWorktree(cloneRoot, cacheDir, absDir, logPrefix, release), nil
+}
+
+// removeWorktree is the cleanup a checkout returns: it removes the worktree
+// (files and git's registration) under a fresh background context, since the
+// run's ctx may already be expired by the time the deferred cleanup runs,
+// then releases the cache use and sweeps the caches.
+func removeWorktree(cloneRoot, cacheDir, absDir, logPrefix string, release func()) func() error {
+	return func() error {
 		defer maybeEvictCloneCaches(cloneRoot)
 		defer release()
 		log.Printf("%s git worktree remove %s START", logPrefix, absDir)
@@ -1325,7 +1338,6 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 		log.Printf("%s git worktree remove DONE in %s", logPrefix, time.Since(t))
 		return nil
 	}
-	return cleanup, nil
 }
 
 // AgentCacheDir is owner/repo's clone cache under cloneRoot. It outlives
@@ -1821,7 +1833,7 @@ func PrepareSharedCheckout(ctx context.Context, agentCfg AgentConfig, owner, rep
 	prepCtx, cancel := context.WithTimeout(ctx, prepBudget)
 	defer cancel()
 	dir := filepath.Join(agentCfg.CloneRootDir, fmt.Sprintf("%s__%s__pr%d__shared__%d_%s", owner, repo, prNumber, time.Now().UnixNano(), randomSuffix()))
-	cleanup, err := cloneForAgent(prepCtx, agentCfg.CloneRootDir, dir, owner, repo, defaultBranch, prNumber, commitSHA, agentCfg.GitHubToken)
+	cleanup, err := cloneForAgent(prepCtx, agentCfg.CloneRootDir, dir, owner, repo, defaultBranch, prNumber, commitSHA, agentCfg.GitHubToken, agentCfg.BasePin)
 	if err != nil {
 		return "", nil, fmt.Errorf("agent: shared checkout: %w", err)
 	}

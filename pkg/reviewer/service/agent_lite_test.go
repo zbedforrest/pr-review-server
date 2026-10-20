@@ -104,7 +104,7 @@ func liteWorktree(t *testing.T) (dir, sha string) {
 	cloneRoot := t.TempDir()
 	seedAgentCache(t, cloneRoot, "acme", "example", bare)
 	dir = filepath.Join(cloneRoot, "wt")
-	cleanup, err := cloneForAgent(context.Background(), cloneRoot, dir, "acme", "example", "main", 1, sha, "")
+	cleanup, err := cloneForAgent(context.Background(), cloneRoot, dir, "acme", "example", "main", 1, sha, "", nil)
 	if err != nil {
 		t.Fatalf("cloneForAgent: %v", err)
 	}

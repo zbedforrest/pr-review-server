@@ -609,6 +609,20 @@ func (c *Client) GetPR(ctx context.Context, owner, repo string, prNumber int) (*
 	return gh.PullRequests.Get(ctx, owner, repo, prNumber)
 }
 
+// GetPRBase reads where a PR's base stands: its merge commit once merged
+// (empty before; the API's merge_commit_sha of an open PR is a test merge),
+// and the base tip the API reports.
+func (c *Client) GetPRBase(ctx context.Context, owner, repo string, prNumber int) (mergeCommitSHA, baseSHA string, err error) {
+	pr, _, err := c.GetPR(ctx, owner, repo, prNumber)
+	if err != nil {
+		return "", "", err
+	}
+	if pr.GetMerged() {
+		mergeCommitSHA = pr.GetMergeCommitSHA()
+	}
+	return mergeCommitSHA, pr.GetBase().GetSHA(), nil
+}
+
 // ListReviews fetches all reviews for a PR
 func (c *Client) ListReviews(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestReview, *github.Response, error) {
 	opts := &github.ListOptions{PerPage: 100}

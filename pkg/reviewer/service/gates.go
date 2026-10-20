@@ -1048,6 +1048,10 @@ func scopedDiffFiles(ctx context.Context, dir, defaultBranch, token, repoLockKey
 // fetchBaseRef fetches origin/<branch> into the worktree's repository under
 // the per-repo cache mutex and reports whether the fetch succeeded.
 func fetchBaseRef(ctx context.Context, dir, branch, token, repoLockKey, logPrefix string) bool {
+	if out, err := runGit(ctx, dir, "config", "--get", "prism.basepin"); err == nil && strings.TrimSpace(out) != "" {
+		log.Printf("%s origin/%s is pinned at %s; the live branch stays out of this checkout", logPrefix, branch, strings.TrimSpace(out))
+		return false
+	}
 	if repoLockKey != "" {
 		m := cacheLock(repoLockKey)
 		m.Lock()
