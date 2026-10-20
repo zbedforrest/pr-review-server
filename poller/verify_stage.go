@@ -39,6 +39,11 @@ type VerifyReport struct {
 	PacketItems     int            `json:"packet_items,omitempty"`
 	EstimatedTokens int            `json:"estimated_tokens,omitempty"`
 	Call            *llm.Call      `json:"call,omitempty"`
+	Escalated       int            `json:"escalated,omitempty"`
+	AgentDecisions  map[string]int `json:"agent_decisions,omitempty"`
+	AgentCostUSD    float64        `json:"agent_cost_usd,omitempty"`
+	AgentMS         int64          `json:"agent_ms,omitempty"`
+	AgentError      string         `json:"agent_error,omitempty"`
 	DurationMS      int64          `json:"duration_ms"`
 	Artifact        string         `json:"artifact,omitempty"`
 }
@@ -96,7 +101,14 @@ var (
 		return llm.NewOpenRouterClient(apiKey, baseURL, model, false)
 	}
 	verifySampleDraw = rand.Float64
+	escalateVerifyFn = service.EscalateVerify
 )
+
+// verifyTarget is the review a verification belongs to.
+type verifyTarget struct {
+	Owner, Repo, BaseRef, CloneRoot string
+	Number                          int
+}
 
 // verifyEnsembleReview runs the repo-evidence verifier on a merged ensemble
 // review. In on mode a publish-bound review waits for it and its decisions
@@ -132,13 +144,13 @@ func (p *Poller) verifyEnsembleReview(ctx context.Context, execution *reviewExec
 	if review.Scope != nil {
 		in.Base = review.Scope.MergeBase
 	}
-	dir := service.AgentCacheDir(base.CloneRootDir, job.PR.Owner, job.PR.Repo)
-	wall := time.Duration(p.cfg.VerifyWallClockSec) * time.Second
+	target := verifyTarget{Owner: job.PR.Owner, Repo: job.PR.Repo, Number: job.PR.Number, BaseRef: result.BaseRef, CloneRoot: base.CloneRootDir}
+	wall := p.verifyWallClock()
 
 	if !rep.Sync {
 		rep.Status = "pending"
 		rep.Artifact = verifyArtifactName(job)
-		go p.recordVerification(job, dir, in, wall, *rep)
+		go p.recordVerification(job, target, in, wall, *rep)
 		return rep
 	}
 	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < wall {
@@ -147,7 +159,7 @@ func (p *Poller) verifyEnsembleReview(ctx context.Context, execution *reviewExec
 	}
 	vctx, cancel := context.WithTimeout(ctx, wall)
 	defer cancel()
-	verified := p.runVerify(vctx, dir, in, rep)
+	verified := p.runVerify(vctx, target, in, rep)
 	if rep.Status != "ok" {
 		return rep
 	}
@@ -166,7 +178,7 @@ func (p *Poller) verifyEnsembleReview(ctx context.Context, execution *reviewExec
 
 // runVerify builds the packet and makes the call, filling rep. Status is
 // "ok" only when every finding got a decision.
-func (p *Poller) runVerify(ctx context.Context, dir string, in verify.Input, rep *VerifyReport) []types.LineComment {
+func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input, rep *VerifyReport) []types.LineComment {
 	start := time.Now()
 	defer func() { rep.DurationMS = time.Since(start).Milliseconds() }()
 	if !p.verifySpend.allow(start, p.cfg.VerifyDailyBudgetUSD) {
@@ -177,7 +189,7 @@ func (p *Poller) runVerify(ctx context.Context, dir string, in verify.Input, rep
 		rep.Status, rep.Skip = "skipped", "no_key"
 		return nil
 	}
-	pkt, err := verify.Build(ctx, newVerifyGit(dir), in, verify.DefaultLimits)
+	pkt, err := verify.Build(ctx, newVerifyGit(service.AgentCacheDir(t.CloneRoot, t.Owner, t.Repo)), in, verify.DefaultLimits)
 	if err != nil {
 		rep.Status, rep.Error = "failed", err.Error()
 		return nil
@@ -206,15 +218,83 @@ func (p *Poller) runVerify(ctx context.Context, dir string, in verify.Input, rep
 		return nil
 	}
 	rep.Status = "ok"
+	if p.cfg.VerifyEscalate {
+		p.escalateVerify(ctx, t, in, pkt, res.Comments, rep)
+	}
 	return res.Comments
+}
+
+// escalateVerify runs the escalation agent over the findings the packet
+// could not settle and folds its account into rep.
+func (p *Poller) escalateVerify(ctx context.Context, t verifyTarget, in verify.Input, pkt *verify.Packet, comments []types.LineComment, rep *VerifyReport) {
+	start := time.Now()
+	if !p.verifySpend.allow(start, p.cfg.VerifyDailyBudgetUSD) {
+		rep.AgentError = "over_budget"
+		return
+	}
+	res, err := escalateVerifyFn(ctx, p.verifyAgentConfig(ctx, t.CloneRoot), p.agentSpawner, service.VerifyAgentInput{
+		Owner: t.Owner, Repo: t.Repo, DefaultBranch: t.BaseRef, PRNumber: t.Number,
+		HeadSHA: in.Head, BaseSHA: in.Base, Packet: pkt, Findings: in.Findings,
+	}, comments)
+	rep.Escalated, rep.AgentMS = res.Escalated, res.DurationMS
+	if err != nil {
+		rep.AgentError = err.Error()
+		return
+	}
+	if res.Escalated == 0 {
+		return
+	}
+	p.verifySpend.add(start, res.CostUSD)
+	rep.AgentCostUSD, rep.AgentDecisions = res.CostUSD, res.Decisions
+	rep.Decisions = map[string]int{}
+	for _, c := range comments {
+		rep.Decisions[c.Verification.Status]++
+	}
+}
+
+func (p *Poller) verifyAgentConfig(ctx context.Context, cloneRoot string) service.AgentConfig {
+	backend := p.cfg.VerifyAgentBackend
+	if backend == "" {
+		backend = p.cfg.AgentBackend
+	}
+	model := p.cfg.VerifyAgentModel
+	if model == "" {
+		model = "claude-fable-5-1"
+		if strings.EqualFold(backend, service.AgentBackendOpenRouter) {
+			model = "anthropic/claude-fable-5.1"
+		}
+	}
+	token := ""
+	if p.ghClientConcrete != nil {
+		if tok, err := p.ghClientConcrete.CurrentToken(ctx); err == nil {
+			token = tok
+		}
+	}
+	return service.AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: p.cfg.AgentLogsDir,
+		WallClock: time.Duration(p.cfg.VerifyAgentWallClockSec) * time.Second, MaxTurns: p.cfg.VerifyAgentMaxTurns,
+		GitHubToken: token, Backend: backend, Model: model, Effort: p.cfg.AgentEffort,
+		AnthropicAPIKey: p.cfg.AnthropicAPIKey, OpenRouterAPIKey: p.cfg.OpenRouterAPIKey, OpenRouterBaseURL: p.cfg.OpenRouterBaseURL,
+		FailureLogSink: p.persistAgentFailureLog,
+	}
+}
+
+// verifyWallClock bounds one verification: the packet call, plus the agent
+// run when escalation is on.
+func (p *Poller) verifyWallClock() time.Duration {
+	wall := time.Duration(p.cfg.VerifyWallClockSec) * time.Second
+	if p.cfg.VerifyEscalate {
+		wall += time.Duration(p.cfg.VerifyAgentWallClockSec) * time.Second
+	}
+	return wall
 }
 
 // recordVerification verifies in the background and saves the decisions
 // beside the run's sidecar without touching the review.
-func (p *Poller) recordVerification(job ReviewJob, dir string, in verify.Input, wall time.Duration, rep VerifyReport) {
+func (p *Poller) recordVerification(job ReviewJob, t verifyTarget, in verify.Input, wall time.Duration, rep VerifyReport) {
 	ctx, cancel := context.WithTimeout(context.Background(), wall)
 	defer cancel()
-	verified := p.runVerify(ctx, dir, in, &rep)
+	verified := p.runVerify(ctx, t, in, &rep)
 	if rep.Status == "ok" {
 		rep.Status = "recorded"
 	}
@@ -258,9 +338,10 @@ func logVerify(job ReviewJob, rep VerifyReport) {
 	if rep.Call != nil {
 		cost = rep.Call.CostUSD
 	}
-	log.Printf("[VERIFY %s/%s#%d] mode=%s sync=%t status=%s skip=%s findings=%d decisions=%v missing=%d invalid=%d items=%d est_tokens=%d cost=$%.4f ms=%d err=%q",
+	log.Printf("[VERIFY %s/%s#%d] mode=%s sync=%t status=%s skip=%s findings=%d decisions=%v missing=%d invalid=%d items=%d est_tokens=%d cost=$%.4f ms=%d err=%q escalated=%d agent=%v agent_cost=$%.4f agent_ms=%d agent_err=%q",
 		job.PR.Owner, job.PR.Repo, job.PR.Number, rep.Mode, rep.Sync, rep.Status, rep.Skip, rep.Findings, rep.Decisions,
-		len(rep.Missing), len(rep.Invalid), rep.PacketItems, rep.EstimatedTokens, cost, rep.DurationMS, rep.Error)
+		len(rep.Missing), len(rep.Invalid), rep.PacketItems, rep.EstimatedTokens, cost, rep.DurationMS, rep.Error,
+		rep.Escalated, rep.AgentDecisions, rep.AgentCostUSD, rep.AgentMS, rep.AgentError)
 }
 
 // verifyTimeoutAllowance is the time on mode adds to an ensemble review.
@@ -268,5 +349,5 @@ func (p *Poller) verifyTimeoutAllowance() time.Duration {
 	if p.cfg == nil || p.cfg.EnsembleVerify != verifyModeOn {
 		return 0
 	}
-	return time.Duration(p.cfg.VerifyWallClockSec) * time.Second
+	return p.verifyWallClock()
 }

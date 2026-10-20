@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"pr-review-server/pkg/reviewer/types"
 	"pr-review-server/pkg/reviewer/verify"
 )
 
@@ -177,3 +178,59 @@ func baseWorktree(ctx context.Context, cloneRoot, owner, repo, dir, sha string) 
 		return nil
 	}, nil
 }
+
+// EscalationResult is what EscalateVerify did.
+type EscalationResult struct {
+	Escalated  int
+	Decisions  map[string]int
+	CostUSD    float64
+	Model      string
+	DurationMS int64
+}
+
+// EscalateVerify hands the findings Phase 1 marked unavailable (up to
+// verify.MaxAgentFindings) to one RunAgentVerify run and records its
+// decisions on comments in place, which align with findings. On an error
+// the findings stay unavailable, so they publish as merged.
+func EscalateVerify(ctx context.Context, cfg AgentConfig, spawner Spawner, in VerifyAgentInput, comments []types.LineComment) (EscalationResult, error) {
+	var res EscalationResult
+	all := in.Findings
+	index := map[string]int{}
+	in.Findings = nil
+	for i, c := range comments {
+		if c.Verification != nil && c.Verification.Status == types.VerifyUnavailable && len(in.Findings) < verify.MaxAgentFindings {
+			index[all[i].Key] = i
+			in.Findings = append(in.Findings, all[i])
+		}
+	}
+	res.Escalated = len(in.Findings)
+	if res.Escalated == 0 {
+		return res, nil
+	}
+	started := time.Now()
+	defer func() { res.DurationMS = time.Since(started).Milliseconds() }()
+	out, err := runVerifyAgentFn(ctx, cfg, spawner, in)
+	if err != nil {
+		return res, err
+	}
+	res.CostUSD, res.Model, res.Decisions = out.CostUSD, out.ServedModel, map[string]int{}
+	for _, d := range out.Decisions {
+		i, ok := index[d.Key]
+		if !ok {
+			continue
+		}
+		delete(index, d.Key)
+		c, _ := verify.ApplyAgent(all[i].Comment, d)
+		c.Verification.Phase, c.Verification.Model = 2, out.ServedModel
+		comments[i] = c
+		res.Decisions[c.Verification.Status]++
+	}
+	for _, i := range index {
+		comments[i].Verification.Phase = 2
+		res.Decisions["no_decision"]++
+	}
+	return res, nil
+}
+
+// runVerifyAgentFn is RunAgentVerify; tests replace it.
+var runVerifyAgentFn = RunAgentVerify

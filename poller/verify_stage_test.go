@@ -3,6 +3,7 @@ package poller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -207,4 +208,69 @@ func TestReviewTimeoutGrowsOnlyForEnsembleReviewsInOnMode(t *testing.T) {
 
 func ensembleEffective(runs int) runconfig.Effective {
 	return runconfig.Effective{Agent: runconfig.Agent{WallClockSeconds: 360}, Ensemble: &runconfig.Ensemble{Runs: runs}}
+}
+
+const unavailableF1 = `{"decisions":[{"key":"F1","decision":"evidence_unavailable","cites":[],"reason":"The handler is in another file.","refuting_quote":null,"revised":null}]}`
+
+func stubVerifyAgent(t *testing.T, d *verify.AgentDecision, err error) *[]service.VerifyAgentInput {
+	t.Helper()
+	var calls []service.VerifyAgentInput
+	orig := escalateVerifyFn
+	escalateVerifyFn = func(_ context.Context, _ service.AgentConfig, _ service.Spawner, in service.VerifyAgentInput, comments []types.LineComment) (service.EscalationResult, error) {
+		calls = append(calls, in)
+		res := service.EscalationResult{Escalated: 1}
+		if err != nil {
+			return res, err
+		}
+		res.CostUSD, res.Decisions = 0.4, map[string]int{}
+		for i, c := range comments {
+			if c.Verification.Status == types.VerifyUnavailable {
+				applied, _ := verify.ApplyAgent(in.Findings[i].Comment, *d)
+				applied.Verification.Phase = 2
+				comments[i] = applied
+				res.Decisions[applied.Verification.Status]++
+			}
+		}
+		return res, nil
+	}
+	t.Cleanup(func() { escalateVerifyFn = orig })
+	return &calls
+}
+
+func TestVerifyEscalatesUnavailableFindingsToTheAgent(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "alice", unavailableF1)
+	f.p.cfg.VerifyEscalate = true
+	calls := stubVerifyAgent(t, &verify.AgentDecision{
+		Key: "F1", Decision: "drop", Reason: "The handler returns early.", Cites: []verify.AgentCite{{File: "b.go", Start: 4, End: 4}}, Quote: "b.go:4\nreturn",
+	}, nil)
+	rep := f.run()
+	v := f.review.Comments[0].Verification
+	if len(*calls) != 1 || (*calls)[0].BaseSHA != "base123" || (*calls)[0].Owner != "o" {
+		t.Fatalf("calls = %+v", *calls)
+	}
+	if rep.Status != "applied" || rep.Escalated != 1 || rep.AgentCostUSD != 0.4 || v.Status != types.VerifyDrop || v.Phase != 2 || !v.Applied || v.Evidence != "b.go:4\nreturn" {
+		t.Fatalf("report=%+v verification=%+v", rep, v)
+	}
+	if rep.Decisions[types.VerifyDrop] != 1 || rep.Decisions[types.VerifyUnavailable] != 0 {
+		t.Fatalf("decisions = %v", rep.Decisions)
+	}
+}
+
+func TestVerifyKeepsFindingsUnavailableWhenTheAgentFails(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "alice", unavailableF1)
+	f.p.cfg.VerifyEscalate = true
+	stubVerifyAgent(t, nil, errors.New("wall-clock timeout"))
+	rep := f.run()
+	v := f.review.Comments[0].Verification
+	if rep.Status != "applied" || rep.AgentError != "wall-clock timeout" || v.Status != types.VerifyUnavailable || v.Suppresses() {
+		t.Fatalf("report=%+v verification=%+v", rep, v)
+	}
+}
+
+func TestVerifyDoesNotEscalateWhenTurnedOff(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "alice", unavailableF1)
+	calls := stubVerifyAgent(t, nil, errors.New("unexpected"))
+	if rep := f.run(); rep.Escalated != 0 || len(*calls) != 0 {
+		t.Fatalf("report=%+v calls=%d", rep, len(*calls))
+	}
 }

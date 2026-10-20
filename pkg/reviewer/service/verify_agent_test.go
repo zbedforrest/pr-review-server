@@ -73,3 +73,41 @@ func TestRunAgentVerify_FinalMessageWithoutJSONIsAnError(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+func TestEscalateVerify_SendsOnlyUnavailableFindingsAndAppliesTheirDecisions(t *testing.T) {
+	orig := runVerifyAgentFn
+	var sent []string
+	runVerifyAgentFn = func(_ context.Context, _ AgentConfig, _ Spawner, in VerifyAgentInput) (*VerifyAgentResult, error) {
+		for _, f := range in.Findings {
+			sent = append(sent, f.Key)
+		}
+		return &VerifyAgentResult{ServedModel: "m", CostUSD: 0.5, Decisions: []verify.AgentDecision{
+			{Key: "F2", Decision: "hold", Reason: "r", Cites: []verify.AgentCite{{File: "a.go", Start: 1, End: 1}}},
+			{Key: "F1", Decision: "drop", Reason: "not escalated", Cites: []verify.AgentCite{{File: "a.go", Start: 1, End: 1}}},
+		}}, nil
+	}
+	t.Cleanup(func() { runVerifyAgentFn = orig })
+	mk := func(key, status string) (verify.Finding, types.LineComment) {
+		c := types.LineComment{FilePath: "a.go", LineNumber: 1, Importance: "MEDIUM", CommentBody: key}
+		f := verify.Finding{Key: key, Comment: c}
+		c.Verification = &types.Verification{Status: status}
+		return f, c
+	}
+	f1, c1 := mk("F1", types.VerifyKeep)
+	f2, c2 := mk("F2", types.VerifyUnavailable)
+	f3, c3 := mk("F3", types.VerifyUnavailable)
+	comments := []types.LineComment{c1, c2, c3}
+	res, err := EscalateVerify(context.Background(), AgentConfig{}, nil, VerifyAgentInput{Findings: []verify.Finding{f1, f2, f3}}, comments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(sent, ",") != "F2,F3" || res.Escalated != 2 || res.CostUSD != 0.5 {
+		t.Fatalf("sent=%v res=%+v", sent, res)
+	}
+	if comments[0].Verification.Status != types.VerifyKeep || comments[1].Verification.Status != types.VerifyHold || comments[1].Verification.Phase != 2 {
+		t.Fatalf("comments = %+v %+v", comments[0].Verification, comments[1].Verification)
+	}
+	if comments[2].Verification.Status != types.VerifyUnavailable || comments[2].Verification.Phase != 2 || res.Decisions["no_decision"] != 1 {
+		t.Fatalf("F3 = %+v decisions=%v", comments[2].Verification, res.Decisions)
+	}
+}

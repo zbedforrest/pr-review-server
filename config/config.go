@@ -104,6 +104,14 @@ type Config struct {
 	VerifyMaxInputTokens int
 	VerifyDailyBudgetUSD float64
 	VerifyShadowSample   float64
+	// VerifyEscalate sends findings the packet check marks unavailable to a
+	// read-only agent run (VerifyAgent*; backend and model default to the
+	// review agent's backend with Fable).
+	VerifyEscalate          bool
+	VerifyAgentBackend      string
+	VerifyAgentModel        string
+	VerifyAgentWallClockSec int
+	VerifyAgentMaxTurns     int
 	// AgentPrewarmRepos are owner/repo clone caches built at startup; empty
 	// warms the most-reviewed repos instead.
 	AgentPrewarmRepos []string
@@ -417,6 +425,11 @@ func Load() *Config {
 		VerifyMaxInputTokens:        getEnvIntOrDefault("VERIFY_MAX_INPUT_TOKENS", 150000),
 		VerifyDailyBudgetUSD:        getEnvFloatOrDefault("VERIFY_DAILY_BUDGET_USD", 150),
 		VerifyShadowSample:          min(max(getEnvFloatOrDefault("VERIFY_SHADOW_SAMPLE", 1), 0), 1),
+		VerifyEscalate:              getEnvBoolOrDefault("VERIFY_ESCALATE", true),
+		VerifyAgentBackend:          os.Getenv("VERIFY_AGENT_BACKEND"),
+		VerifyAgentModel:            os.Getenv("VERIFY_AGENT_MODEL"),
+		VerifyAgentWallClockSec:     getEnvIntOrDefault("VERIFY_AGENT_WALL_CLOCK_SEC", 420),
+		VerifyAgentMaxTurns:         getEnvIntOrDefault("VERIFY_AGENT_MAX_TURNS", 40),
 		AgentPrewarmRepos:           getEnvListOrDefault("AGENT_PREWARM_REPOS", nil, strings.TrimSpace),
 		NewRelicAccountID:           os.Getenv("NEW_RELIC_ACCOUNT_ID"),
 		NewRelicInsertKey:           os.Getenv("NEW_RELIC_INSERT_KEY"),
