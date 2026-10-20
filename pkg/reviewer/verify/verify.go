@@ -134,17 +134,19 @@ type revision struct {
 	SeverityRationale     string  `json:"severity_rationale"`
 }
 
-// apply turns one decision into the finding's Verification, demoting any
-// decision that breaks a rule to a hold. It reports whether the decision
-// was valid as given.
+// apply turns one decision into the finding's Verification. Only a cited
+// hold or drop on a non-CRITICAL finding suppresses it; any decision that
+// breaks a rule, and any hold or drop on a CRITICAL, keeps the finding as
+// merged with the model's decision recorded in Proposed. It reports whether
+// the decision was valid as given.
 func apply(c types.LineComment, d decision, pkt *Packet, own []string) (types.LineComment, bool) {
 	relevant := relevantCites(d.Cites, own)
 	v := &types.Verification{Cites: relevant, Reason: cut(d.Reason, maxReasonRunes)}
 	c.Verification = v
-	hold := func(why string) (types.LineComment, bool) {
-		v.Status = types.VerifyHold
+	keepAs := func(proposed, why string, valid bool) (types.LineComment, bool) {
+		v.Status, v.Proposed = types.VerifyKeep, proposed
 		v.Reason = cut(strings.TrimSpace(why+". "+v.Reason), maxReasonRunes)
-		return c, false
+		return c, valid
 	}
 	critical := strings.EqualFold(strings.TrimSpace(c.Importance), "CRITICAL")
 
@@ -152,35 +154,35 @@ func apply(c types.LineComment, d decision, pkt *Packet, own []string) (types.Li
 	case "keep":
 		v.Status = types.VerifyKeep
 		return c, true
-	case "hold":
-		v.Status = types.VerifyHold
-		return c, true
 	case "evidence_unavailable":
 		v.Status = types.VerifyUnavailable
 		return c, true
-	case "drop":
+	case "hold", "drop":
+		status := types.VerifyHold
+		if d.Decision == "drop" {
+			status = types.VerifyDrop
+		}
 		if len(relevant) == 0 {
-			return hold("drop without a cite to this finding's evidence")
+			return keepAs(status, d.Decision+" without a cite to this finding's evidence", false)
+		}
+		if status == types.VerifyDrop {
+			v.Evidence = evidence(pkt, relevant, d.Quote)
 		}
 		if critical {
-			v.Status = types.VerifyHold
-			v.Reason = cut("refuted CRITICAL held, never dropped. "+v.Reason, maxReasonRunes)
-			v.Evidence = evidence(pkt, relevant, d.Quote)
-			return c, true
+			return keepAs(status, "CRITICAL never suppressed", true)
 		}
-		v.Status = types.VerifyDrop
-		v.Evidence = evidence(pkt, relevant, d.Quote)
+		v.Status = status
 		return c, true
 	case "revise":
 		if len(relevant) == 0 {
-			return hold("revise without a cite to this finding's evidence")
+			return keepAs(types.VerifyRevise, "revise without a cite to this finding's evidence", false)
 		}
 		if d.Revised == nil {
-			return hold("revise without a replacement")
+			return keepAs(types.VerifyRevise, "revise without a replacement", false)
 		}
 		revised, why := revise(c, *d.Revised)
 		if why != "" {
-			return hold(why)
+			return keepAs(types.VerifyRevise, why, false)
 		}
 		revised.Verification = v
 		v.Status = types.VerifyRevise
@@ -188,7 +190,7 @@ func apply(c types.LineComment, d decision, pkt *Packet, own []string) (types.Li
 		v.PriorContract = c.FindingContract
 		return revised, true
 	}
-	return hold("unknown decision " + strconv.Quote(d.Decision))
+	return keepAs(d.Decision, "unknown decision "+strconv.Quote(d.Decision), false)
 }
 
 func relevantCites(cites, own []string) []string {
@@ -240,6 +242,7 @@ func revise(c types.LineComment, r revision) (types.LineComment, string) {
 	contract.ExpectedObservable = r.ExpectedObservable
 	contract.Uncertainty = r.Uncertainty
 	contract.SeverityRationale = r.SeverityRationale
+	reconcileContract(&contract)
 	types.NormalizeFindingContract(&contract)
 	if err := types.ValidateFindingContract(&contract); err != nil {
 		return c, "revised contract is invalid: " + err.Error()
@@ -255,6 +258,22 @@ func revise(c types.LineComment, r revision) (types.LineComment, string) {
 	out.CommentBody = body
 	out.FindingContract = &contract
 	return out, ""
+}
+
+// reconcileContract clears the fields a revised contract's own choices rule
+// out, so a model that filled every schema field still validates: a trigger
+// only belongs to future-only materiality, an experiment only to falsifiable
+// findings, and opinions and description drift are never falsifiable.
+func reconcileContract(c *types.FindingContract) {
+	if c.FindingKind == "design_opinion" || c.FindingKind == "description_drift" {
+		c.Falsifiability = "not_falsifiable"
+	}
+	if c.Materiality != "future_condition_only" {
+		c.CounterfactualTrigger = nil
+	}
+	if c.Falsifiability != "falsifiable" {
+		c.FalsifiableCondition, c.ExpectedObservable = nil, nil
+	}
 }
 
 var secretPatterns = []*regexp.Regexp{

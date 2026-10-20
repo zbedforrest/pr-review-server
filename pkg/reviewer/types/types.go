@@ -65,11 +65,14 @@ const (
 // Verification is the verifier's decision on one merged finding. It is kept
 // apart from State because any State other than confirmed is unpublishable.
 // Applied is false in shadow mode, where publishers must ignore the decision.
-// Cites are evidence packet item ids; Evidence quotes the cited text so a
+// Proposed is the model's decision when policy recorded a different
+// Status (an invalid decision, or a hold or drop on a CRITICAL). Cites are
+// evidence packet item ids; Evidence quotes the cited text so a
 // withdrawal can show it without the packet. For a revise, the finding
 // already carries the replacement and Prior* hold what it replaced.
 type Verification struct {
 	Status        string           `json:"status"`
+	Proposed      string           `json:"proposed,omitempty"`
 	Applied       bool             `json:"applied"`
 	Reason        string           `json:"reason,omitempty"`
 	Cites         []string         `json:"cites,omitempty"`

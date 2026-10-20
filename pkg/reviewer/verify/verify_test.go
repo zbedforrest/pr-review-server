@@ -92,25 +92,42 @@ func TestVerify_DropWithAQuotedBaseCiteCarriesTheRefutingLines(t *testing.T) {
 	}
 }
 
-func TestVerify_DropCitingAnotherFindingsEvidenceBecomesHold(t *testing.T) {
+func TestVerify_UncitedHoldsAndDropsKeepTheFinding(t *testing.T) {
 	res, _ := run(t,
 		map[string]any{"key": "F1", "decision": "drop", "cites": []string{"P3", "P4"}},
 		map[string]any{"key": "F2", "decision": "keep"},
-		map[string]any{"key": "F3", "decision": "keep"},
+		map[string]any{"key": "F3", "decision": "hold"},
 	)
-	if status(res, 0) != types.VerifyHold || strings.Join(res.Invalid, ",") != "F1" {
-		t.Fatalf("got %+v invalid=%v", res.Comments[0].Verification, res.Invalid)
+	if v := res.Comments[0].Verification; v.Status != types.VerifyKeep || v.Proposed != types.VerifyDrop || v.Evidence != "" || v.Suppresses() {
+		t.Fatalf("drop = %+v", v)
+	}
+	if v := res.Comments[2].Verification; v.Status != types.VerifyKeep || v.Proposed != types.VerifyHold {
+		t.Fatalf("hold = %+v", v)
+	}
+	if strings.Join(res.Invalid, ",") != "F1,F3" {
+		t.Fatalf("invalid = %v", res.Invalid)
 	}
 }
 
-func TestVerify_ARefutedCriticalIsHeldWithItsEvidence(t *testing.T) {
+func TestVerify_ACitedHoldOnAMediumHoldsIt(t *testing.T) {
+	res, _ := run(t,
+		map[string]any{"key": "F1", "decision": "hold", "cites": []string{"P1"}},
+		map[string]any{"key": "F2", "decision": "keep"},
+		map[string]any{"key": "F3", "decision": "keep"},
+	)
+	if v := res.Comments[0].Verification; v.Status != types.VerifyHold || v.Proposed != "" {
+		t.Fatalf("got %+v", v)
+	}
+}
+
+func TestVerify_ACriticalIsNeverSuppressedButTheProposalIsRecorded(t *testing.T) {
 	res, _ := run(t,
 		map[string]any{"key": "F1", "decision": "keep", "cites": []string{"P1"}},
 		map[string]any{"key": "F2", "decision": "drop", "cites": []string{"P3"}},
 		map[string]any{"key": "F3", "decision": "keep"},
 	)
 	v := res.Comments[1].Verification
-	if v.Status != types.VerifyHold || v.Evidence != "b.go:1\npackage b" || len(res.Invalid) != 0 {
+	if v.Status != types.VerifyKeep || v.Proposed != types.VerifyDrop || v.Evidence != "b.go:1\npackage b" || len(res.Invalid) != 0 {
 		t.Fatalf("verification = %+v", v)
 	}
 }
@@ -148,7 +165,7 @@ func TestVerify_ReviseReplacesTheWholeFindingAndKeepsThePrior(t *testing.T) {
 	}
 }
 
-func TestVerify_ReviseThatBreaksARuleIsHeldUnchanged(t *testing.T) {
+func TestVerify_ReviseThatBreaksARuleKeepsTheFindingUnchanged(t *testing.T) {
 	cases := map[string]map[string]any{
 		"moved too far":    revised(30, nil),
 		"invalid contract": revised(2, func(r map[string]any) { r["falsifiability"] = "falsifiable" }),
@@ -163,7 +180,7 @@ func TestVerify_ReviseThatBreaksARuleIsHeldUnchanged(t *testing.T) {
 				map[string]any{"key": "F3", "decision": "keep"},
 			)
 			c := res.Comments[0]
-			if c.Verification.Status != types.VerifyHold || c.CommentBody != "The PR removed the limit check" || c.LineNumber != 2 {
+			if c.Verification.Status != types.VerifyKeep || c.Verification.Proposed != types.VerifyRevise || c.CommentBody != "The PR removed the limit check" || c.LineNumber != 2 {
 				t.Fatalf("got %+v %+v", c, c.Verification)
 			}
 		})
@@ -204,5 +221,20 @@ func TestVerifyPrompt_ListsEachFindingsEvidenceAndEscapesItemText(t *testing.T) 
 	}
 	if strings.Count(fc.got.User, "</item>") != 4 {
 		t.Fatalf("item text was not escaped:\n%s", fc.got.User)
+	}
+}
+
+func TestVerify_ReviseClearsContractFieldsItsOwnChoicesRuleOut(t *testing.T) {
+	res, _ := run(t,
+		map[string]any{"key": "F1", "decision": "revise", "cites": []string{"P1"}, "revised": revised(2, func(r map[string]any) {
+			r["counterfactual_trigger"] = "If traffic grows."
+			r["falsifiable_condition"] = "Send 11 requests."
+		})},
+		map[string]any{"key": "F2", "decision": "keep"},
+		map[string]any{"key": "F3", "decision": "keep"},
+	)
+	c := res.Comments[0]
+	if c.Verification.Status != types.VerifyRevise || c.FindingContract.CounterfactualTrigger != nil || c.FindingContract.FalsifiableCondition != nil {
+		t.Fatalf("got %+v %+v", c.Verification, c.FindingContract)
 	}
 }
