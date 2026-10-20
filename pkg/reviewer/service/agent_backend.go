@@ -296,13 +296,6 @@ func codexErrorMessage(v any, fallback string) string {
 	return fallback
 }
 
-// openRouterListPrices is USD per million tokens: input, cached input, output.
-var openRouterListPrices = map[string][3]float64{
-	"deepseek/deepseek-v4.1-flash": {0.30, 0.006, 1.20},
-	"anthropic/claude-fable-5.1":   {10, 0.25, 50},
-	"anthropic/claude-opus-5.5":    {4, 0.20, 20},
-}
-
 func noteCodexUsage(r *agentParseResult, ev map[string]any, modelSlug string) {
 	usage, ok := ev["usage"].(map[string]any)
 	if !ok {
@@ -315,7 +308,7 @@ func noteCodexUsage(r *agentParseResult, ev map[string]any, modelSlug string) {
 	input, cached, output := count("input_tokens"), count("cached_input_tokens"), count("output_tokens")
 	r.inputTokens += int64(input)
 	r.outputTokens += int64(output)
-	if price, ok := openRouterListPrices[modelSlug]; ok {
+	if price, ok := openRouterPrices.price(modelSlug); ok {
 		r.costUSD += ((input-cached)*price[0] + cached*price[1] + output*price[2]) / 1e6
 	}
 	log.Printf("[AGENT] codex usage input=%d cached=%d output=%d reasoning=%d", int64(input), int64(cached), int64(output), int64(count("reasoning_output_tokens")))
