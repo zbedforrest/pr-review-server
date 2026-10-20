@@ -110,7 +110,7 @@ type decision struct {
 	Cites    []string  `json:"cites"`
 	Reason   string    `json:"reason"`
 	Quote    *quote    `json:"refuting_quote"`
-	Revised  *revision `json:"revised"`
+	Revised  *Revision `json:"revised"`
 }
 
 type quote struct {
@@ -119,7 +119,7 @@ type quote struct {
 	End   int    `json:"end_line"`
 }
 
-type revision struct {
+type Revision struct {
 	LineNumber            int     `json:"line_number"`
 	Importance            string  `json:"importance"`
 	Headline              string  `json:"headline"`
@@ -134,14 +134,33 @@ type revision struct {
 	SeverityRationale     string  `json:"severity_rationale"`
 }
 
-// apply turns one decision into the finding's Verification. Only a cited
-// hold or drop on a non-CRITICAL finding suppresses it; any decision that
-// breaks a rule, and any hold or drop on a CRITICAL, keeps the finding as
-// merged with the model's decision recorded in Proposed. It reports whether
-// the decision was valid as given.
+// ruling is one decision in the form both phases share: cites already
+// checked (packet ids for Phase 1, resolving file:line for the agent), and
+// the withdrawal quote built from them.
+type ruling struct {
+	decision string
+	reason   string
+	cites    []string
+	evidence func() string
+	revised  *Revision
+}
+
+// apply turns one Phase 1 decision into the finding's Verification.
 func apply(c types.LineComment, d decision, pkt *Packet, own []string) (types.LineComment, bool) {
 	relevant := relevantCites(d.Cites, own)
-	v := &types.Verification{Cites: relevant, Reason: cut(d.Reason, maxReasonRunes)}
+	return applyRuling(c, ruling{
+		decision: d.Decision, reason: d.Reason, cites: relevant, revised: d.Revised,
+		evidence: func() string { return evidence(pkt, relevant, d.Quote) },
+	})
+}
+
+// applyRuling records a ruling on the finding. Only a cited hold or drop on
+// a non-CRITICAL finding suppresses it; any decision that breaks a rule, and
+// any hold or drop on a CRITICAL, keeps the finding as merged with the
+// model's decision recorded in Proposed. It reports whether the decision was
+// valid as given.
+func applyRuling(c types.LineComment, r ruling) (types.LineComment, bool) {
+	v := &types.Verification{Cites: r.cites, Reason: cut(r.reason, maxReasonRunes)}
 	c.Verification = v
 	keepAs := func(proposed, why string, valid bool) (types.LineComment, bool) {
 		v.Status, v.Proposed = types.VerifyKeep, proposed
@@ -150,7 +169,7 @@ func apply(c types.LineComment, d decision, pkt *Packet, own []string) (types.Li
 	}
 	critical := strings.EqualFold(strings.TrimSpace(c.Importance), "CRITICAL")
 
-	switch d.Decision {
+	switch r.decision {
 	case "keep":
 		v.Status = types.VerifyKeep
 		return c, true
@@ -159,14 +178,14 @@ func apply(c types.LineComment, d decision, pkt *Packet, own []string) (types.Li
 		return c, true
 	case "hold", "drop":
 		status := types.VerifyHold
-		if d.Decision == "drop" {
+		if r.decision == "drop" {
 			status = types.VerifyDrop
 		}
-		if len(relevant) == 0 {
-			return keepAs(status, d.Decision+" without a cite to this finding's evidence", false)
+		if len(r.cites) == 0 {
+			return keepAs(status, r.decision+" without a cite to this finding's evidence", false)
 		}
 		if status == types.VerifyDrop {
-			v.Evidence = evidence(pkt, relevant, d.Quote)
+			v.Evidence = r.evidence()
 		}
 		if critical {
 			return keepAs(status, "CRITICAL never suppressed", true)
@@ -174,13 +193,13 @@ func apply(c types.LineComment, d decision, pkt *Packet, own []string) (types.Li
 		v.Status = status
 		return c, true
 	case "revise":
-		if len(relevant) == 0 {
+		if len(r.cites) == 0 {
 			return keepAs(types.VerifyRevise, "revise without a cite to this finding's evidence", false)
 		}
-		if d.Revised == nil {
+		if r.revised == nil {
 			return keepAs(types.VerifyRevise, "revise without a replacement", false)
 		}
-		revised, why := revise(c, *d.Revised)
+		revised, why := revise(c, *r.revised)
 		if why != "" {
 			return keepAs(types.VerifyRevise, why, false)
 		}
@@ -190,7 +209,7 @@ func apply(c types.LineComment, d decision, pkt *Packet, own []string) (types.Li
 		v.PriorContract = c.FindingContract
 		return revised, true
 	}
-	return keepAs(d.Decision, "unknown decision "+strconv.Quote(d.Decision), false)
+	return keepAs(r.decision, "unknown decision "+strconv.Quote(r.decision), false)
 }
 
 func relevantCites(cites, own []string) []string {
@@ -215,7 +234,7 @@ var suggestionBlock = regexp.MustCompile("(?s)```suggestion.*?```")
 // revise builds the replacement finding, or says why it must be held: it
 // may not move beyond the original line's neighborhood, change the file or
 // kind, carry an invalid contract, run long, or contain a credential.
-func revise(c types.LineComment, r revision) (types.LineComment, string) {
+func revise(c types.LineComment, r Revision) (types.LineComment, string) {
 	if c.FindingContract == nil {
 		return c, "revise of a finding without a contract"
 	}
