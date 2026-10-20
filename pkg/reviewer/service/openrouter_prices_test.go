@@ -3,6 +3,8 @@ package service
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -11,21 +13,36 @@ const flashListing = `{"data":[{"id":"deepseek/deepseek-v4.1-flash","pricing":{"
 
 type priceServer struct {
 	*httptest.Server
-	hits int
+	hits atomic.Int64
+	mu   sync.Mutex
 	body string
 	code int
+	// gate, when set, holds every response until the test closes it.
+	gate chan struct{}
 }
 
 func newPriceServer(t *testing.T, body string) *priceServer {
 	t.Helper()
 	s := &priceServer{body: body, code: http.StatusOK}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		s.hits++
-		w.WriteHeader(s.code)
-		_, _ = w.Write([]byte(s.body))
+		s.hits.Add(1)
+		s.mu.Lock()
+		code, body, gate := s.code, s.body, s.gate
+		s.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(s.Close)
 	return s
+}
+
+func (s *priceServer) respond(code int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.code, s.body = code, body
 }
 
 func priceBookAt(s *priceServer, clock *time.Time) *openRouterPriceBook {
@@ -43,9 +60,14 @@ func TestPriceBookReadsTheLiveListingInTheBackground(t *testing.T) {
 	srv := newPriceServer(t, flashListing)
 	clock := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	book := priceBookAt(srv, &clock)
+	srv.gate = make(chan struct{})
 	if p, ok := book.price(srv.URL, "deepseek/deepseek-v4.1-flash"); !ok || p != openRouterListPrices["deepseek/deepseek-v4.1-flash"] {
 		t.Fatalf("before the listing arrives the table prices the model: %v, %v", p, ok)
 	}
+	if _, ok := book.price(srv.URL, "acme/no-cache"); ok {
+		t.Fatal("a model only the listing prices has no price before the listing arrives")
+	}
+	close(srv.gate)
 	book.inflight.Wait()
 	p, ok := book.price(srv.URL, "deepseek/deepseek-v4.1-flash")
 	if !ok || p != [3]float64{0.02832, 0.000566, 0.12} {
@@ -59,19 +81,19 @@ func TestPriceBookReadsTheLiveListingInTheBackground(t *testing.T) {
 			t.Fatalf("%s must not be priced", m)
 		}
 	}
-	if srv.hits != 1 {
-		t.Fatalf("listing fetched %d times", srv.hits)
+	if n := srv.hits.Load(); n != 1 {
+		t.Fatalf("listing fetched %d times", n)
 	}
 	clock = clock.Add(openRouterPriceTTL)
 	priced(book, srv.URL, "acme/no-cache")
-	if srv.hits != 2 {
-		t.Fatalf("listing not refreshed after the TTL: %d fetches", srv.hits)
+	if n := srv.hits.Load(); n != 2 {
+		t.Fatalf("listing not refreshed after the TTL: %d fetches", n)
 	}
 }
 
 func TestPriceBookFallsBackAndRetriesHourly(t *testing.T) {
 	srv := newPriceServer(t, "")
-	srv.code = http.StatusBadGateway
+	srv.respond(http.StatusBadGateway, "")
 	clock := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	book := priceBookAt(srv, &clock)
 	p, ok := priced(book, srv.URL, "deepseek/deepseek-v4.1-flash")
@@ -81,16 +103,16 @@ func TestPriceBookFallsBackAndRetriesHourly(t *testing.T) {
 	if _, ok := priced(book, srv.URL, "anthropic/claude-fable-5.1"); ok {
 		t.Fatal("the table has no Fable entry")
 	}
-	if srv.hits != 1 {
-		t.Fatalf("a failed listing was refetched %d times within the retry window", srv.hits)
+	if n := srv.hits.Load(); n != 1 {
+		t.Fatalf("a failed listing was refetched %d times within the retry window", n)
 	}
 	clock = clock.Add(openRouterPriceRetry)
-	srv.code, srv.body = http.StatusOK, flashListing
+	srv.respond(http.StatusOK, flashListing)
 	if p, ok := priced(book, srv.URL, "acme/no-cache"); !ok || p != [3]float64{1, 1, 2} {
 		t.Fatalf("after the retry window price = %v, %v", p, ok)
 	}
-	if srv.hits != 2 {
-		t.Fatalf("listing fetched %d times", srv.hits)
+	if n := srv.hits.Load(); n != 2 {
+		t.Fatalf("listing fetched %d times", n)
 	}
 }
 
@@ -106,8 +128,8 @@ func TestPriceBookKeepsOneListingPerRoot(t *testing.T) {
 	if p, ok := book.price(public.URL, "acme/no-cache"); !ok || p != [3]float64{1, 1, 2} {
 		t.Fatalf("the public listing was lost on a root switch: %v, %v", p, ok)
 	}
-	if public.hits != 1 || gateway.hits != 1 {
-		t.Fatalf("fetches public=%d gateway=%d", public.hits, gateway.hits)
+	if public.hits.Load() != 1 || gateway.hits.Load() != 1 {
+		t.Fatalf("fetches public=%d gateway=%d", public.hits.Load(), gateway.hits.Load())
 	}
 }
 
@@ -117,7 +139,7 @@ func TestPriceBookKeepsTheLastListingWhenARefreshFails(t *testing.T) {
 	book := priceBookAt(srv, &clock)
 	priced(book, srv.URL, "acme/no-cache")
 	clock = clock.Add(openRouterPriceTTL)
-	srv.code, srv.body = http.StatusBadGateway, ""
+	srv.respond(http.StatusBadGateway, "")
 	if p, ok := priced(book, srv.URL, "acme/no-cache"); !ok || p != [3]float64{1, 1, 2} {
 		t.Fatalf("a failed refresh lost the last listing: %v, %v", p, ok)
 	}
@@ -144,7 +166,7 @@ func TestCodexUsageIsPricedFromTheBook(t *testing.T) {
 	}
 	noModel := &agentParseResult{}
 	noteCodexUsage(noModel, usage, srv.URL, "")
-	if noModel.costUSD != 0 || noModel.inputTokens != 1000000 || srv.hits != 1 {
-		t.Fatalf("usage without a model records tokens, no cost and no listing read: %+v, %d fetches", noModel, srv.hits)
+	if noModel.costUSD != 0 || noModel.inputTokens != 1000000 || srv.hits.Load() != 1 {
+		t.Fatalf("usage without a model records tokens, no cost and no listing read: %+v, %d fetches", noModel, srv.hits.Load())
 	}
 }
