@@ -275,7 +275,7 @@ func TestCloneForAgentPinned_ReusesTheCacheAcrossRuns(t *testing.T) {
 		t.Fatalf("second: %v", err)
 	}
 	defer func() { _ = second() }()
-	if trace := readTrace(); strings.Contains(trace, "fetch") {
+	if trace := readTrace(); strings.Contains(trace, "git fetch") {
 		t.Fatalf("a second run of the same PR reuses the pinned cache without fetching; trace:\n%s", trace)
 	}
 	if got := strings.TrimSpace(gitIn(t, dir, "rev-parse", "origin/main")); got != r.baseAtMergeSHA {

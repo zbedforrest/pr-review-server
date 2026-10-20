@@ -145,7 +145,6 @@ func ensurePinnedCache(ctx context.Context, cache pinnedCache, owner, repo, defa
 		for _, args := range [][]string{
 			{"init", "--quiet"},
 			{"remote", "add", "origin", cloneURLFor(owner, repo)},
-			{"config", "remote.origin.fetch", headSpec},
 		} {
 			if out, err := runGit(ctx, cache.dir, args...); err != nil {
 				_ = os.RemoveAll(cache.dir)
@@ -154,6 +153,10 @@ func ensurePinnedCache(ctx context.Context, cache pinnedCache, owner, repo, defa
 		}
 	} else if err != nil {
 		return fmt.Errorf("stat pinned cache .git: %w", err)
+	}
+	// Re-set on every run: a kept cache may be reused at a newer head.
+	if out, err := runGit(ctx, cache.dir, "config", "remote.origin.fetch", headSpec); err != nil {
+		return fmt.Errorf("git config remote.origin.fetch (pinned): %w (%s)", err, out)
 	}
 
 	fetch := func(depth string) error {
