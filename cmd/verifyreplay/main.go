@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -46,15 +47,19 @@ type decisionLine struct {
 }
 
 type caseResult struct {
-	Case       string         `json:"case"`
-	Status     string         `json:"status"`
-	Error      string         `json:"error,omitempty"`
-	Findings   int            `json:"findings"`
-	Decisions  map[string]int `json:"decisions,omitempty"`
-	Items      int            `json:"packet_items"`
-	EstTokens  int            `json:"estimated_tokens"`
-	CostUSD    float64        `json:"cost_usd"`
-	DurationMS int64          `json:"duration_ms"`
+	Case         string         `json:"case"`
+	Status       string         `json:"status"`
+	Error        string         `json:"error,omitempty"`
+	Findings     int            `json:"findings"`
+	Decisions    map[string]int `json:"decisions,omitempty"`
+	Items        int            `json:"packet_items"`
+	EstTokens    int            `json:"estimated_tokens"`
+	CostUSD      float64        `json:"cost_usd"`
+	Escalated    int            `json:"escalated,omitempty"`
+	AgentCostUSD float64        `json:"agent_cost_usd,omitempty"`
+	AgentMS      int64          `json:"agent_ms,omitempty"`
+	AgentError   string         `json:"agent_error,omitempty"`
+	DurationMS   int64          `json:"duration_ms"`
 }
 
 func main() {
@@ -66,6 +71,11 @@ func main() {
 	model := flag.String("model", "anthropic/claude-fable-5.1", "verifier model")
 	timeout := flag.Duration("timeout", 5*time.Minute, "per-case timeout")
 	dry := flag.Bool("dry", false, "build packets and report their size without calling the model")
+	flag.BoolVar(&escalate, "escalate", false, "send findings the packet check marks unavailable to the read-only verify agent")
+	agentBackend := flag.String("agent-backend", service.AgentBackendOpenRouter, "escalation agent backend (openrouter runs codex; claude runs the Claude CLI)")
+	agentModel := flag.String("agent-model", "anthropic/claude-fable-5.1", "escalation agent model")
+	agentTurns := flag.Int("agent-turns", 40, "escalation agent turn budget")
+	agentWall := flag.Duration("agent-wall", 7*time.Minute, "escalation agent wall clock")
 	flag.BoolVar(&keepSuppressed, "keep-suppressed", false, "keep held and dropped findings in the output with their applied Verification, as production does, for a publisher pass")
 	flag.Parse()
 	key := os.Getenv("OPENROUTER_API_KEY")
@@ -88,6 +98,11 @@ func main() {
 	sort.Strings(cases)
 	client := llm.NewOpenRouterClient(key, os.Getenv("OPENROUTER_BASE_URL"), *model, false)
 	v := verify.Verifier{Client: client, Model: *model}
+	agentCfg = service.AgentConfig{
+		CloneRootDir: *clones, LogsDir: filepath.Join(*out, "agent-logs"), WallClock: *agentWall, MaxTurns: *agentTurns,
+		Backend: *agentBackend, Model: *agentModel, OpenRouterAPIKey: key, OpenRouterBaseURL: os.Getenv("OPENROUTER_BASE_URL"),
+		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
+	}
 	if *dry {
 		v.Client = nil
 	}
@@ -119,7 +134,7 @@ func main() {
 			results = append(results, res)
 			lines = append(lines, dl...)
 			mu.Unlock()
-			log.Printf("%s %s findings=%d decisions=%v cost=$%.3f %dms %s", res.Case, res.Status, res.Findings, res.Decisions, res.CostUSD, res.DurationMS, res.Error)
+			log.Printf("%s %s findings=%d decisions=%v cost=$%.3f %dms %s escalated=%d agent=$%.3f %dms %s", res.Case, res.Status, res.Findings, res.Decisions, res.CostUSD, res.DurationMS, res.Error, res.Escalated, res.AgentCostUSD, res.AgentMS, res.AgentError)
 		}(path)
 	}
 	wg.Wait()
@@ -153,12 +168,17 @@ func main() {
 // removal is what a recall scorer, which counts active claims, needs.
 var keepSuppressed bool
 
+var (
+	escalate bool
+	agentCfg service.AgentConfig
+)
+
 // replay verifies one sidecar and writes its on-mode result. A case that
 // fails is written unchanged, as production would publish it.
-func replay(ctx context.Context, v verify.Verifier, clones, outDir, path string) (caseResult, []decisionLine) {
+func replay(ctx context.Context, v verify.Verifier, clones, outDir, path string) (out caseResult, _ []decisionLine) {
 	start := time.Now()
 	res := caseResult{Case: filepath.Base(path)}
-	defer func() { res.DurationMS = time.Since(start).Milliseconds() }()
+	defer func() { out.DurationMS = time.Since(start).Milliseconds() }()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		res.Status, res.Error = "failed", err.Error()
@@ -221,6 +241,16 @@ func replay(ctx context.Context, v verify.Verifier, clones, outDir, path string)
 		write(raw)
 		return res, nil
 	}
+	if escalate && vr.Complete() {
+		in := service.VerifyAgentInput{Owner: pl.Owner, Repo: pl.Repo, DefaultBranch: defaultBranch(ctx, clones, pl.Owner, pl.Repo),
+			PRNumber: pl.PRNumber, HeadSHA: input.Head, BaseSHA: input.Base, Packet: pkt, Findings: findings}
+		er, err := service.EscalateVerify(ctx, agentCfg, service.DefaultSpawner{}, in, vr.Comments)
+		res.Escalated, res.AgentCostUSD, res.AgentMS = er.Escalated, er.CostUSD, er.DurationMS
+		res.CostUSD += er.CostUSD
+		if err != nil {
+			res.AgentError = err.Error()
+		}
+	}
 	res.Decisions = map[string]int{}
 	var lines []decisionLine
 	for i, c := range vr.Comments {
@@ -275,6 +305,15 @@ func replay(ctx context.Context, v verify.Verifier, clones, outDir, path string)
 	}
 	write(body)
 	return res, lines
+}
+
+// defaultBranch reads the clone cache's origin HEAD, falling back to master.
+func defaultBranch(ctx context.Context, clones, owner, repo string) string {
+	out, err := exec.CommandContext(ctx, "git", "-C", service.AgentCacheDir(clones, owner, repo), "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
+	if err != nil {
+		return "master"
+	}
+	return strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
 }
 
 func writeJSONL(path string, lines []decisionLine) {
