@@ -199,9 +199,54 @@ func TestCloneForAgentPinned_OpenPRPinsTheReportedBase(t *testing.T) {
 	}
 }
 
+func cloneCacheCap(t *testing.T, n int64) {
+	t.Helper()
+	SetCloneCacheMaxBytes(n)
+	t.Cleanup(func() { SetCloneCacheMaxBytes(0) })
+}
+
+func TestCloneForAgentPinned_FastForwardMergePinsBelowThePRCommits(t *testing.T) {
+	r := setupMergedPRRepo(t, false)
+	pinnedCloneURL(t, r.url)
+	cloneRoot := t.TempDir()
+	dir := filepath.Join(cloneRoot, "wt")
+	cleanup, err := cloneForAgent(context.Background(), cloneRoot, dir, "acme", "example", "main", 1, r.headSHA, "", &BasePin{MergeCommitSHA: r.headSHA, Commits: 1})
+	if err != nil {
+		t.Fatalf("cloneForAgent: %v", err)
+	}
+	defer func() { _ = cleanup() }()
+	if got := strings.TrimSpace(gitIn(t, dir, "rev-parse", "origin/main")); got != r.forkSHA {
+		t.Fatalf("origin/main = %s, want the commit below the PR's own %s", got, r.forkSHA)
+	}
+	if _, err := cloneForAgent(context.Background(), cloneRoot, filepath.Join(cloneRoot, "wt2"), "acme", "example", "main", 2, r.headSHA, "", &BasePin{MergeCommitSHA: r.headSHA}); err == nil || !strings.Contains(err.Error(), "commit count") {
+		t.Fatalf("a fast-forward merge without the commit count must fail, got %v", err)
+	}
+}
+
+func TestCloneForAgentPinned_UncappedCacheGoesWithTheWorktree(t *testing.T) {
+	r := setupMergedPRRepo(t, false)
+	pinnedCloneURL(t, r.url)
+	cloneRoot := t.TempDir()
+	cacheDir := filepath.Join(cloneRoot, ".cache", "acme__example__pr1__pinned")
+	cleanup, err := cloneForAgent(context.Background(), cloneRoot, filepath.Join(cloneRoot, "wt"), "acme", "example", "main", 1, r.headSHA, "", &BasePin{MergeCommitSHA: r.mergeSHA})
+	if err != nil {
+		t.Fatalf("cloneForAgent: %v", err)
+	}
+	if _, err := os.Stat(cacheDir); err != nil {
+		t.Fatalf("pinned cache during the review: %v", err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+		t.Fatal("without a cache cap the pinned cache must go with the worktree")
+	}
+}
+
 func TestCloneForAgentPinned_ReusesTheCacheAcrossRuns(t *testing.T) {
 	r := setupMergedPRRepo(t, false)
 	pinnedCloneURL(t, r.url)
+	cloneCacheCap(t, 1<<40)
 	cloneRoot := t.TempDir()
 	pin := &BasePin{MergeCommitSHA: r.mergeSHA}
 	first, err := cloneForAgent(context.Background(), cloneRoot, filepath.Join(cloneRoot, "wt1"), "acme", "example", "main", 1, r.headSHA, "", pin)
@@ -229,7 +274,7 @@ func TestCloneForAgentPinned_ReusesTheCacheAcrossRuns(t *testing.T) {
 // setupOldForkMergedRepo is setupOldForkRepo's history with the PR merged at
 // the top of main by a merge commit and a fix after it: the fork at commit 50
 // sits past a 200-deep fetch of the merge parent, so the pin must deepen.
-func setupOldForkMergedRepo(t *testing.T) (r mergedPRRepo) {
+func setupOldForkMergedRepo(t *testing.T, mainCommits int) (r mergedPRRepo) {
 	t.Helper()
 	skipIfNoGit(t)
 	bare := t.TempDir()
@@ -237,17 +282,17 @@ func setupOldForkMergedRepo(t *testing.T) (r mergedPRRepo) {
 	gitIn(t, bare, "config", "uploadpack.allowAnySHA1InWant", "true")
 	var stream bytes.Buffer
 	stream.WriteString("blob\nmark :1\ndata 3\nhi\n\n")
-	for i := 1; i <= 300; i++ {
+	for i := 1; i <= mainCommits; i++ {
 		fmt.Fprintf(&stream, "commit refs/heads/main\nmark :%d\ncommitter test <test@example.com> %d +0000\ndata %d\ncommit %d\n",
-			1000+i, 1700000000+i, len(fmt.Sprintf("commit %d", i)), i)
+			10000+i, 1700000000+i, len(fmt.Sprintf("commit %d", i)), i)
 		if i > 1 {
-			fmt.Fprintf(&stream, "from :%d\n", 1000+i-1)
+			fmt.Fprintf(&stream, "from :%d\n", 10000+i-1)
 		}
 		fmt.Fprintf(&stream, "M 100644 :1 file%d.txt\n\n", i)
 	}
 	stream.WriteString("blob\nmark :2\ndata 8\nfeature\n\n")
-	stream.WriteString("commit refs/pull/1/head\nmark :2000\ncommitter test <test@example.com> 1700001000 +0000\ndata 9\npr commit\nfrom :1050\nM 100644 :2 feature.txt\n\n")
-	stream.WriteString("commit refs/heads/main\nmark :3000\ncommitter test <test@example.com> 1700002000 +0000\ndata 5\nmerge\nfrom :1300\nmerge :2000\nM 100644 :2 feature.txt\n\n")
+	stream.WriteString("commit refs/pull/1/head\nmark :2000\ncommitter test <test@example.com> 1700001000 +0000\ndata 9\npr commit\nfrom :10050\nM 100644 :2 feature.txt\n\n")
+	fmt.Fprintf(&stream, "commit refs/heads/main\nmark :3000\ncommitter test <test@example.com> 1700002000 +0000\ndata 5\nmerge\nfrom :%d\nmerge :2000\nM 100644 :2 feature.txt\n\n", 10000+mainCommits)
 	stream.WriteString("blob\nmark :3\ndata 3\nfix\n")
 	stream.WriteString("commit refs/heads/main\nmark :4000\ncommitter test <test@example.com> 1700003000 +0000\ndata 3\nfix\nfrom :3000\nM 100644 :3 feature.txt\n\n")
 	cmd := exec.Command("git", "fast-import", "--quiet")
@@ -261,19 +306,35 @@ func setupOldForkMergedRepo(t *testing.T) (r mergedPRRepo) {
 }
 
 func TestCloneForAgentPinned_DeepensUntilTheBaseAndHeadConnect(t *testing.T) {
-	r := setupOldForkMergedRepo(t)
-	pinnedCloneURL(t, r.url)
-	cloneRoot := t.TempDir()
-	readTrace := traceGit(t)
-	dir := filepath.Join(cloneRoot, "wt")
-	cleanup, err := cloneForAgent(context.Background(), cloneRoot, dir, "acme", "example", "main", 1, r.headSHA, "", &BasePin{MergeCommitSHA: r.mergeSHA})
-	if err != nil {
-		t.Fatalf("cloneForAgent: %v", err)
+	for _, tc := range []struct {
+		name        string
+		mainCommits int
+		step        string
+	}{
+		{"fork past the fetch depth", 300, "--deepen=1000"},
+		{"fork past every deepen step", 6500, "--unshallow"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := setupOldForkMergedRepo(t, tc.mainCommits)
+			pinnedCloneURL(t, r.url)
+			cloneRoot := t.TempDir()
+			readTrace := traceGit(t)
+			dir := filepath.Join(cloneRoot, "wt")
+			cleanup, err := cloneForAgent(context.Background(), cloneRoot, dir, "acme", "example", "main", 1, r.headSHA, "", &BasePin{MergeCommitSHA: r.mergeSHA})
+			if err != nil {
+				t.Fatalf("cloneForAgent: %v", err)
+			}
+			defer func() { _ = cleanup() }()
+			if trace := readTrace(); !strings.Contains(trace, tc.step) {
+				t.Fatalf("the pin must widen history with %s; trace:\n%s", tc.step, trace)
+			}
+			assertPinnedPastDeepening(t, dir, r)
+		})
 	}
-	defer func() { _ = cleanup() }()
-	if trace := readTrace(); !strings.Contains(trace, "--deepen=1000") {
-		t.Fatalf("a fork past the fetch depth must deepen; trace:\n%s", trace)
-	}
+}
+
+func assertPinnedPastDeepening(t *testing.T, dir string, r mergedPRRepo) {
+	t.Helper()
 	if got := strings.TrimSpace(gitIn(t, dir, "rev-parse", "origin/main")); got != r.baseAtMergeSHA {
 		t.Fatalf("origin/main = %s, want %s", got, r.baseAtMergeSHA)
 	}

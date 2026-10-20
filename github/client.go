@@ -609,21 +609,28 @@ func (c *Client) GetPR(ctx context.Context, owner, repo string, prNumber int) (*
 	return gh.PullRequests.Get(ctx, owner, repo, prNumber)
 }
 
-// GetPRBase reads where a PR's base stands: its merge commit once merged
-// (empty before; the API's merge_commit_sha of an open PR is a test merge),
-// and the base tip the API reports.
-func (c *Client) GetPRBase(ctx context.Context, owner, repo string, prNumber int) (mergeCommitSHA, baseSHA string, err error) {
+// PRBase is where a PR's base stands: its merge commit once merged (empty
+// before; the API's merge_commit_sha of an open PR is a test merge), the
+// base tip the API reports, and the PR's commit count.
+type PRBase struct {
+	MergeCommitSHA string
+	BaseSHA        string
+	Commits        int
+}
+
+func (c *Client) GetPRBase(ctx context.Context, owner, repo string, prNumber int) (PRBase, error) {
 	pr, _, err := c.GetPR(ctx, owner, repo, prNumber)
 	if err != nil {
-		return "", "", err
+		return PRBase{}, err
 	}
+	base := PRBase{BaseSHA: pr.GetBase().GetSHA(), Commits: pr.GetCommits()}
 	if pr.GetMerged() {
-		mergeCommitSHA = pr.GetMergeCommitSHA()
-		if mergeCommitSHA == "" {
-			return "", "", fmt.Errorf("%s/%s#%d is merged but the API reports no merge commit", owner, repo, prNumber)
+		base.MergeCommitSHA = pr.GetMergeCommitSHA()
+		if base.MergeCommitSHA == "" {
+			return PRBase{}, fmt.Errorf("%s/%s#%d is merged but the API reports no merge commit", owner, repo, prNumber)
 		}
 	}
-	return mergeCommitSHA, pr.GetBase().GetSHA(), nil
+	return base, nil
 }
 
 // ListReviews fetches all reviews for a PR

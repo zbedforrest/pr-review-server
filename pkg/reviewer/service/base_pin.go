@@ -12,10 +12,12 @@ import (
 )
 
 // BasePin says where a PR's own base stood, from the PR API: the merge
-// commit of a merged PR, else the base tip reported for an open one.
+// commit of a merged PR, else the base tip reported for an open one, and the
+// PR's commit count for a fast-forward merge whose merge commit is the head.
 type BasePin struct {
 	MergeCommitSHA string
 	BaseSHA        string
+	Commits        int
 }
 
 func (p BasePin) anchor() string {
@@ -37,6 +39,25 @@ var cloneURLFor = func(owner, repo string) string {
 // head share history; the last step completes it.
 var basePinDeepenSteps = []string{"--deepen=1000", "--deepen=5000", "--unshallow"}
 
+// pinnedCache is the per-PR cache a pinned review checks out from.
+type pinnedCache struct {
+	key, dir, logPrefix string
+}
+
+func pinnedCacheFor(cloneRoot, owner, repo string, prNumber int) (pinnedCache, error) {
+	absCloneRoot, err := filepath.Abs(cloneRoot)
+	if err != nil {
+		return pinnedCache{}, fmt.Errorf("abs cloneRoot: %w", err)
+	}
+	name := fmt.Sprintf("%s__%s__pr%d__pinned", owner, repo, prNumber)
+	return pinnedCache{
+		// The same key evictCloneCaches derives from the directory name.
+		key:       owner + "/" + strings.TrimPrefix(name, owner+"__"),
+		dir:       filepath.Join(absCloneRoot, ".cache", name),
+		logPrefix: fmt.Sprintf("[AGENT %s/%s#%d pinned]", owner, repo, prNumber),
+	}, nil
+}
+
 // cloneForAgentPinned is cloneForAgent for a review that must not see
 // anything newer than the PR: a per-PR clone holding only the reviewed head
 // commit and the PR's own base, both fetched by SHA (not by ref, which could
@@ -45,67 +66,93 @@ var basePinDeepenSteps = []string{"--deepen=1000", "--deepen=5000", "--unshallow
 // no later fetch brings a live branch in, and the object store never holds a
 // commit made after the PR. Benchmarks over historical PRs need this: in the
 // shared cache origin/<base> is today's tip, which already contains the fix.
-// Each PR keeps its own cache under the clone root until the cache cap
-// (AGENT_CLONE_CACHE_MAX_GB) evicts it, so a benchmark deployment sets one.
+// With a cache cap set (AGENT_CLONE_CACHE_MAX_GB) the per-PR cache stays for
+// the next run of the same PR until evicted; without one it is removed with
+// the worktree, so pinned reviews cannot fill an uncapped clone root.
 func cloneForAgentPinned(ctx context.Context, cloneRoot, dir, owner, repo, defaultBranch string, prNumber int, commitSHA, token string, pin BasePin) (cleanup func() error, err error) {
 	noopCleanup := func() error { return nil }
-	if pin.anchor() == "" {
-		return noopCleanup, errors.New("base pin: the PR has neither a merge commit nor a base SHA")
-	}
-	absCloneRoot, err := filepath.Abs(cloneRoot)
-	if err != nil {
-		return noopCleanup, fmt.Errorf("abs cloneRoot: %w", err)
-	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return noopCleanup, fmt.Errorf("abs worktree dir: %w", err)
+	}
+	cache, err := pinnedCacheFor(cloneRoot, owner, repo, prNumber)
+	if err != nil {
+		return noopCleanup, err
+	}
+	release := acquireCacheUse(cache.key)
+	if err := ensurePinnedCache(ctx, cache, owner, repo, defaultBranch, prNumber, commitSHA, token, pin); err != nil {
+		release()
+		return noopCleanup, err
+	}
+	t := time.Now()
+	if out, err := runGit(ctx, cache.dir, "worktree", "add", "--detach", absDir, commitSHA); err != nil {
+		release()
+		return noopCleanup, fmt.Errorf("git worktree add: %w (%s)", err, out)
+	}
+	log.Printf("%s git worktree add DONE in %s", cache.logPrefix, time.Since(t))
+	removeTree := removeWorktree(cloneRoot, cache.dir, absDir, cache.logPrefix, release)
+	return func() error {
+		err := removeTree()
+		dropUncappedPinnedCache(cache)
+		return err
+	}, nil
+}
+
+// warmPinnedCache populates a PR's pinned cache ahead of the checkout, so the
+// fetch and any deepening run under the caller's budget rather than the
+// per-review prep budget, as ensureAgentCache does for the shared cache.
+func warmPinnedCache(ctx context.Context, cloneRoot, owner, repo, defaultBranch string, prNumber int, commitSHA, token string, pin BasePin) error {
+	cache, err := pinnedCacheFor(cloneRoot, owner, repo, prNumber)
+	if err != nil {
+		return err
+	}
+	release := acquireCacheUse(cache.key)
+	defer release()
+	return ensurePinnedCache(ctx, cache, owner, repo, defaultBranch, prNumber, commitSHA, token, pin)
+}
+
+// ensurePinnedCache leaves the cache holding the head commit and the pin
+// anchor with origin/<base> pinned (idempotent: a populated cache costs only
+// a merge-base check). Holds the cache mutex.
+func ensurePinnedCache(ctx context.Context, cache pinnedCache, owner, repo, defaultBranch string, prNumber int, commitSHA, token string, pin BasePin) error {
+	if pin.anchor() == "" {
+		return errors.New("base pin: the PR has neither a merge commit nor a base SHA")
 	}
 	branch := defaultBranch
 	if branch == "" {
 		branch = "base"
 	}
-	name := fmt.Sprintf("%s__%s__pr%d__pinned", owner, repo, prNumber)
-	// The same key evictCloneCaches derives from the directory name.
-	cacheKey := owner + "/" + strings.TrimPrefix(name, owner+"__")
-	cacheDir := filepath.Join(absCloneRoot, ".cache", name)
-	cloneURL := cloneURLFor(owner, repo)
-	logPrefix := fmt.Sprintf("[AGENT %s/%s#%d pinned]", owner, repo, prNumber)
 	headSpec := fmt.Sprintf("+%s:refs/agent-pr/%d", commitSHA, prNumber)
 	anchorRef := fmt.Sprintf("refs/agent-base/%d", prNumber)
 	anchorSpec := "+" + pin.anchor() + ":" + anchorRef
 
-	release := acquireCacheUse(cacheKey)
-	fail := func(err error) (func() error, error) {
-		release()
-		return noopCleanup, err
-	}
-	mu := cacheLock(cacheKey)
+	mu := cacheLock(cache.key)
 	mu.Lock()
 	defer mu.Unlock()
 
-	if _, err := os.Stat(filepath.Join(cacheDir, ".git")); os.IsNotExist(err) {
-		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-			return fail(fmt.Errorf("create pinned cache: %w", err))
+	if _, err := os.Stat(filepath.Join(cache.dir, ".git")); os.IsNotExist(err) {
+		if err := os.MkdirAll(cache.dir, 0o755); err != nil {
+			return fmt.Errorf("create pinned cache: %w", err)
 		}
 		for _, args := range [][]string{
 			{"init", "--quiet"},
-			{"remote", "add", "origin", cloneURL},
+			{"remote", "add", "origin", cloneURLFor(owner, repo)},
 			{"config", "remote.origin.fetch", headSpec},
 		} {
-			if out, err := runGit(ctx, cacheDir, args...); err != nil {
-				_ = os.RemoveAll(cacheDir)
-				return fail(fmt.Errorf("git %s (pinned cache init): %w (%s)", args[0], err, out))
+			if out, err := runGit(ctx, cache.dir, args...); err != nil {
+				_ = os.RemoveAll(cache.dir)
+				return fmt.Errorf("git %s (pinned cache init): %w (%s)", args[0], err, out)
 			}
 		}
 	} else if err != nil {
-		return fail(fmt.Errorf("stat pinned cache .git: %w", err))
+		return fmt.Errorf("stat pinned cache .git: %w", err)
 	}
 
 	fetch := func(depth string) error {
 		args := authHeaderArgs(token)
 		args = append(args, "fetch", "--quiet", depth, "origin", headSpec, anchorSpec)
-		out, err := runGit(ctx, cacheDir, args...)
-		if err != nil && strings.Contains(out, "does not make sense") {
+		out, err := runGit(ctx, cache.dir, args...)
+		if err != nil && depth == "--unshallow" && strings.Contains(out, "does not make sense") {
 			return nil
 		}
 		if err != nil {
@@ -114,44 +161,57 @@ func cloneForAgentPinned(ctx context.Context, cloneRoot, dir, owner, repo, defau
 		return nil
 	}
 	t0 := time.Now()
-	if !hasCommit(ctx, cacheDir, commitSHA) || !hasCommit(ctx, cacheDir, pin.anchor()) {
-		log.Printf("%s fetch head and base anchor %s START", logPrefix, pin.anchor())
+	if !hasCommit(ctx, cache.dir, commitSHA) || !hasCommit(ctx, cache.dir, pin.anchor()) {
+		log.Printf("%s fetch head and base anchor %s START", cache.logPrefix, pin.anchor())
 		if err := fetch(basePinDepth); err != nil {
-			return fail(err)
+			return err
 		}
-		if !hasCommit(ctx, cacheDir, commitSHA) {
-			return fail(fmt.Errorf("base pin: the remote did not serve head commit %s", commitSHA))
+		if !hasCommit(ctx, cache.dir, commitSHA) {
+			return fmt.Errorf("base pin: the remote did not serve head commit %s", commitSHA)
 		}
 	}
-	pinSHA, err := basePinSHA(ctx, cacheDir, pin, anchorRef, commitSHA, fetch)
+	pinSHA, err := basePinSHA(ctx, cache.dir, pin, anchorRef, commitSHA, fetch)
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	for _, args := range [][]string{
 		{"update-ref", "refs/remotes/origin/" + branch, pinSHA},
 		{"symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/" + branch},
 		{"config", "prism.basepin", pinSHA},
 	} {
-		if out, err := runGit(ctx, cacheDir, args...); err != nil {
-			return fail(fmt.Errorf("git %s (base pin): %w (%s)", args[0], err, out))
+		if out, err := runGit(ctx, cache.dir, args...); err != nil {
+			return fmt.Errorf("git %s (base pin): %w (%s)", args[0], err, out)
 		}
 	}
-	log.Printf("%s origin/%s pinned at %s (anchor %s) in %s", logPrefix, branch, pinSHA, pin.anchor(), time.Since(t0))
+	log.Printf("%s origin/%s pinned at %s (anchor %s) in %s", cache.logPrefix, branch, pinSHA, pin.anchor(), time.Since(t0))
+	return nil
+}
 
-	t1 := time.Now()
-	if out, err := runGit(ctx, cacheDir, "worktree", "add", "--detach", absDir, commitSHA); err != nil {
-		return fail(fmt.Errorf("git worktree add: %w (%s)", err, out))
+// dropUncappedPinnedCache removes a pinned cache nobody uses when no cache
+// cap bounds the clone root.
+func dropUncappedPinnedCache(cache pinnedCache) {
+	mu := cacheLock(cache.key)
+	mu.Lock()
+	defer mu.Unlock()
+	cloneCache.Lock()
+	keep := cloneCache.maxBytes > 0 || cloneCache.inUse[cache.key] > 0
+	cloneCache.Unlock()
+	if keep {
+		return
 	}
-	log.Printf("%s git worktree add DONE in %s", logPrefix, time.Since(t1))
-	return removeWorktree(cloneRoot, cacheDir, absDir, logPrefix, release), nil
+	if err := os.RemoveAll(cache.dir); err != nil {
+		log.Printf("%s removing the pinned cache failed: %v", cache.logPrefix, err)
+	}
 }
 
 // basePinSHA picks the commit origin/<base> is pinned at. For a PR merged
 // with a merge commit it is the merge's first parent: the base as it stood at
 // merge time. A squash or rebase merge leaves a single-parent commit, so the
-// pin is the fork point, the merge-base of that commit and the PR head. An
-// open PR pins at the base tip the API reported. History is widened until the
-// pin and the head connect, which the three-dot diff needs.
+// pin is the fork point, the merge-base of that commit and the PR head. A
+// fast-forward merge reports the head itself as the merge commit, so the pin
+// is the commit the PR's own commits sit on. An open PR pins at the base tip
+// the API reported. History is widened until the pin and the head connect,
+// which the three-dot diff needs.
 func basePinSHA(ctx context.Context, cacheDir string, pin BasePin, anchorRef, commitSHA string, fetch func(depth string) error) (string, error) {
 	connect := func(a, b string) error {
 		for i := 0; ; i++ {
@@ -173,6 +233,19 @@ func basePinSHA(ctx context.Context, cacheDir string, pin BasePin, anchorRef, co
 			return "", err
 		}
 		pinSHA = pin.BaseSHA
+	case pin.MergeCommitSHA == commitSHA:
+		if pin.Commits <= 0 {
+			return "", errors.New("base pin: a fast-forward merge needs the PR's commit count")
+		}
+		below := fmt.Sprintf("%s~%d", commitSHA, pin.Commits)
+		if err := connect(below, commitSHA); err != nil {
+			return "", err
+		}
+		out, err := runGit(ctx, cacheDir, "rev-parse", "--verify", below+"^{commit}")
+		if err != nil {
+			return "", fmt.Errorf("base pin: %s: %w (%s)", below, err, out)
+		}
+		pinSHA = strings.TrimSpace(out)
 	default:
 		out, err := runGit(ctx, cacheDir, "rev-list", "--parents", "-n", "1", anchorRef)
 		if err != nil {
