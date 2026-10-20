@@ -348,6 +348,10 @@ func (p *Publisher) publishLedger(ctx context.Context, r Round) (Report, error) 
 			// which is terminal and never counts as fixed. A withdrawal
 			// GitHub rejects leaves the row open and silent, so the next
 			// round tries again instead of resolving a thread with no word.
+			// The reply goes out before the writes on purpose: a thread must
+			// never be resolved without its withdrawal, and a round that
+			// fails after the reply is covered by the once-per-thread guard
+			// in withdraw, which reads the reply back off GitHub.
 			next := *row
 			next.LastSeenSHA = r.HeadSHA
 			if !p.withdraw(ctx, r, row.CommentID, refutedFinding, r.PriorComments[id].OwnReplies, &rep) {

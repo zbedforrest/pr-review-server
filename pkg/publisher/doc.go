@@ -275,7 +275,9 @@
 // is the one exception to the open-thread rule: the finding leaves the
 // round, PRism replies with a withdrawal quoting the refuting evidence,
 // resolves the thread and dismisses the row (terminal, never fixed, never
-// reposted; Report.Refuted). A revised finding is aliased to the row posted
+// reposted; Report.Refuted). Only a publication round withdraws: a summary
+// refresh and the legacy ledger make no transition, so they list the
+// refuted root as still open until a round withdraws it. A revised finding is aliased to the row posted
 // with the text it replaced, so the summary lists the revision under the
 // existing root and no second root opens; the inline comment is not
 // edited. A decision the verifier recorded in shadow (Applied false)
