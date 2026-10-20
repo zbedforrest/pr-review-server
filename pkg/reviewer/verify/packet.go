@@ -89,10 +89,18 @@ type Packet struct {
 // Item returns the item with the given ID.
 func (p *Packet) Item(id string) (Item, bool) {
 	n, err := strconv.Atoi(strings.TrimPrefix(id, "P"))
-	if err != nil || !strings.HasPrefix(id, "P") || n < 1 || n > len(p.Items) {
+	if err != nil || !strings.HasPrefix(id, "P") || n < 1 {
 		return Item{}, false
 	}
-	return p.Items[n-1], true
+	if n <= len(p.Items) && p.Items[n-1].ID == id {
+		return p.Items[n-1], true
+	}
+	for _, it := range p.Items {
+		if it.ID == id {
+			return it, true
+		}
+	}
+	return Item{}, false
 }
 
 type builder struct {

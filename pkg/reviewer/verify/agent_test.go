@@ -121,3 +121,21 @@ func TestResolveAgentReply_RefusesCitesThroughASymlinkOutOfTheCheckout(t *testin
 		t.Fatalf("resolved through a symlink: %+v", got[0])
 	}
 }
+
+func TestPacketSubset_KeepsOnlyTheBatchsItemsAndTheirIDs(t *testing.T) {
+	pkt, findings := fixture()
+	sub := pkt.Subset(findings[1:2])
+	var ids []string
+	for _, it := range sub.Items {
+		ids = append(ids, it.ID)
+	}
+	if strings.Join(ids, ",") != "P3,P4" || len(sub.ByFinding) != 1 {
+		t.Fatalf("subset items=%v byFinding=%v", ids, sub.ByFinding)
+	}
+	if it, ok := sub.Item("P3"); !ok || it.Path != "b.go" {
+		t.Fatalf("P3 lookup = %+v %v", it, ok)
+	}
+	if _, ok := sub.Item("P1"); ok {
+		t.Fatal("P1 resolved in a subset without it")
+	}
+}

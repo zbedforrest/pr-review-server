@@ -12,9 +12,12 @@ import (
 	"pr-review-server/pkg/reviewer/types"
 )
 
-// MaxAgentFindings bounds one escalation run; findings past it stay
-// unavailable.
-var MaxAgentFindings = 8
+// MaxAgentFindings is the size of one escalation batch and MaxAgentBatches
+// the number of batches per review; findings past both stay unavailable.
+var (
+	MaxAgentFindings = 6
+	MaxAgentBatches  = 4
+)
 
 // AgentCite is a line range the agent cited, at head or at the merge-base.
 type AgentCite struct {
@@ -219,3 +222,25 @@ Severity: CRITICAL is data loss, a security hole, a crash, or a broken core flow
 
 Return one JSON object: {"decisions":[{"key":"F1","decision":"keep|revise|hold|drop|evidence_unavailable","cites":["path:line"],"reason":"one or two plain sentences","refuting_quote":"path:start-end or null","revised":null or {"line_number":0,"importance":"CRITICAL|MEDIUM|LOW","headline":"","comment_body":"","materiality":"current_impact|future_condition_only|no_user_impact|unknown","current_impact":"","counterfactual_trigger":null,"falsifiability":"falsifiable|not_falsifiable|unknown","falsifiable_condition":null,"expected_observable":null,"uncertainty":"","severity_rationale":""}}]}
 `
+
+// Subset is the packet narrowed to what these findings cite plus the shared
+// items, keeping item IDs so cites stay valid.
+func (p *Packet) Subset(findings []Finding) *Packet {
+	keep := map[string]bool{}
+	for _, id := range p.Shared {
+		keep[id] = true
+	}
+	out := &Packet{ByFinding: map[string][]string{}, Shared: p.Shared}
+	for _, f := range findings {
+		out.ByFinding[f.Key] = p.ByFinding[f.Key]
+		for _, id := range p.ByFinding[f.Key] {
+			keep[id] = true
+		}
+	}
+	for _, it := range p.Items {
+		if keep[it.ID] {
+			out.Items = append(out.Items, it)
+		}
+	}
+	return out
+}

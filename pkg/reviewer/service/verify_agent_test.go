@@ -3,8 +3,11 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -109,5 +112,66 @@ func TestEscalateVerify_SendsOnlyUnavailableFindingsAndAppliesTheirDecisions(t *
 	}
 	if comments[2].Verification.Status != types.VerifyUnavailable || comments[2].Verification.Phase != 2 || res.Decisions["no_decision"] != 1 {
 		t.Fatalf("F3 = %+v decisions=%v", comments[2].Verification, res.Decisions)
+	}
+}
+
+func TestEscalateVerify_RunsBatchesInParallelAndKeepsAFailedBatchUnavailable(t *testing.T) {
+	origFn, origSize := runVerifyAgentFn, verify.MaxAgentFindings
+	verify.MaxAgentFindings = 2
+	var mu sync.Mutex
+	var batches [][]string
+	runVerifyAgentFn = func(_ context.Context, _ AgentConfig, _ Spawner, in VerifyAgentInput) (*VerifyAgentResult, error) {
+		var keys []string
+		var ds []verify.AgentDecision
+		for _, f := range in.Findings {
+			keys = append(keys, f.Key)
+			ds = append(ds, verify.AgentDecision{Key: f.Key, Decision: "keep", Reason: "ok"})
+		}
+		mu.Lock()
+		batches = append(batches, keys)
+		mu.Unlock()
+		if keys[0] == "F3" {
+			return nil, errors.New("wall-clock timeout")
+		}
+		return &VerifyAgentResult{ServedModel: "m", CostUSD: 0.1, Decisions: ds}, nil
+	}
+	t.Cleanup(func() { runVerifyAgentFn, verify.MaxAgentFindings = origFn, origSize })
+
+	var findings []verify.Finding
+	var comments []types.LineComment
+	for i := 1; i <= 5; i++ {
+		key := fmt.Sprintf("F%d", i)
+		c := types.LineComment{FilePath: "a.go", LineNumber: i, Importance: "LOW", CommentBody: key}
+		findings = append(findings, verify.Finding{Key: key, Comment: c})
+		c.Verification = &types.Verification{Status: types.VerifyUnavailable}
+		comments = append(comments, c)
+	}
+	res, err := EscalateVerify(context.Background(), AgentConfig{}, nil, VerifyAgentInput{Findings: findings}, comments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Batches != 3 || res.FailedBatches != 1 || len(batches) != 3 || res.CostUSD < 0.19 || res.CostUSD > 0.21 {
+		t.Fatalf("res=%+v batches=%v", res, batches)
+	}
+	for i, want := range []string{"keep", "keep", "unavailable", "unavailable", "keep"} {
+		if comments[i].Verification.Status != want {
+			t.Errorf("F%d = %s, want %s", i+1, comments[i].Verification.Status, want)
+		}
+	}
+}
+
+func TestEscalateVerify_ReturnsAnErrorOnlyWhenEveryBatchFails(t *testing.T) {
+	orig := runVerifyAgentFn
+	runVerifyAgentFn = func(context.Context, AgentConfig, Spawner, VerifyAgentInput) (*VerifyAgentResult, error) {
+		return nil, errors.New("boom")
+	}
+	t.Cleanup(func() { runVerifyAgentFn = orig })
+	c := types.LineComment{FilePath: "a.go", LineNumber: 1, CommentBody: "x", Verification: &types.Verification{Status: types.VerifyUnavailable}}
+	comments := []types.LineComment{c}
+	if _, err := EscalateVerify(context.Background(), AgentConfig{}, nil, VerifyAgentInput{Findings: []verify.Finding{{Key: "F1", Comment: c}}}, comments); err == nil {
+		t.Fatal("want error")
+	}
+	if comments[0].Verification.Status != types.VerifyUnavailable {
+		t.Fatalf("status = %s", comments[0].Verification.Status)
 	}
 }

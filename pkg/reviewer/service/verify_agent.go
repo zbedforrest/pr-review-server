@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"pr-review-server/pkg/reviewer/types"
@@ -181,54 +182,104 @@ func baseWorktree(ctx context.Context, cloneRoot, owner, repo, dir, sha string) 
 
 // EscalationResult is what EscalateVerify did.
 type EscalationResult struct {
-	Escalated  int
-	Decisions  map[string]int
-	CostUSD    float64
-	Model      string
-	DurationMS int64
+	Escalated     int
+	Batches       int
+	FailedBatches int
+	Decisions     map[string]int
+	CostUSD       float64
+	Model         string
+	DurationMS    int64
 }
 
-// EscalateVerify hands the findings Phase 1 marked unavailable (up to
-// verify.MaxAgentFindings) to one RunAgentVerify run and records its
-// decisions on comments in place, which align with findings. On an error
-// the findings stay unavailable, so they publish as merged.
+// AgentBatchParallel bounds how many escalation batches run at once.
+var AgentBatchParallel = 3
+
+// EscalateVerify hands the findings Phase 1 marked unavailable to the verify
+// agent in batches of verify.MaxAgentFindings, up to verify.MaxAgentBatches,
+// run in parallel on their own worktrees, and records the decisions on
+// comments in place (comments align with findings). A batch that fails leaves
+// its findings unavailable, so they publish as merged; the error is returned
+// only when every batch failed.
 func EscalateVerify(ctx context.Context, cfg AgentConfig, spawner Spawner, in VerifyAgentInput, comments []types.LineComment) (res EscalationResult, err error) {
 	all := in.Findings
 	index := map[string]int{}
-	in.Findings = nil
+	var pending []verify.Finding
 	for i, c := range comments {
-		if c.Verification != nil && c.Verification.Status == types.VerifyUnavailable && len(in.Findings) < verify.MaxAgentFindings {
+		if c.Verification != nil && c.Verification.Status == types.VerifyUnavailable && len(pending) < verify.MaxAgentFindings*verify.MaxAgentBatches {
 			index[all[i].Key] = i
-			in.Findings = append(in.Findings, all[i])
+			pending = append(pending, all[i])
 		}
 	}
-	res.Escalated = len(in.Findings)
+	res.Escalated = len(pending)
 	if res.Escalated == 0 {
 		return res, nil
 	}
 	started := time.Now()
 	defer func() { res.DurationMS = time.Since(started).Milliseconds() }()
-	out, err := runVerifyAgentFn(ctx, cfg, spawner, in)
-	if err != nil {
-		return res, err
+
+	var batches [][]verify.Finding
+	for len(pending) > 0 {
+		n := min(verify.MaxAgentFindings, len(pending))
+		batches = append(batches, pending[:n])
+		pending = pending[n:]
 	}
-	res.CostUSD, res.Model, res.Decisions = out.CostUSD, out.ServedModel, map[string]int{}
-	for _, d := range out.Decisions {
-		i, ok := index[d.Key]
-		if !ok {
-			continue
-		}
-		delete(index, d.Key)
-		c, _ := verify.ApplyAgent(all[i].Comment, d)
-		c.Verification.Phase, c.Verification.Model = 2, out.ServedModel
-		comments[i] = c
-		res.Decisions[c.Verification.Status]++
+	res.Batches, res.Decisions = len(batches), map[string]int{}
+	var mu sync.Mutex
+	var errs []error
+	sem := make(chan struct{}, max(1, AgentBatchParallel))
+	var wg sync.WaitGroup
+	for _, batch := range batches {
+		wg.Add(1)
+		go func(batch []verify.Finding) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			sub := in
+			sub.Findings = batch
+			if in.Packet != nil {
+				sub.Packet = in.Packet.Subset(batch)
+			}
+			out, runErr := runVerifyAgentFn(ctx, cfg, spawner, sub)
+			mu.Lock()
+			defer mu.Unlock()
+			if runErr != nil {
+				res.FailedBatches++
+				errs = append(errs, runErr)
+				return
+			}
+			res.CostUSD += out.CostUSD
+			res.Model = out.ServedModel
+			for _, d := range out.Decisions {
+				i, ok := index[d.Key]
+				if !ok || !inBatch(batch, d.Key) {
+					continue
+				}
+				delete(index, d.Key)
+				c, _ := verify.ApplyAgent(all[i].Comment, d)
+				c.Verification.Phase, c.Verification.Model = 2, out.ServedModel
+				comments[i] = c
+				res.Decisions[c.Verification.Status]++
+			}
+		}(batch)
 	}
+	wg.Wait()
 	for _, i := range index {
 		comments[i].Verification.Phase = 2
 		res.Decisions["no_decision"]++
 	}
+	if res.FailedBatches == res.Batches {
+		return res, errors.Join(errs...)
+	}
 	return res, nil
+}
+
+func inBatch(batch []verify.Finding, key string) bool {
+	for _, f := range batch {
+		if f.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // runVerifyAgentFn is RunAgentVerify; tests replace it.
