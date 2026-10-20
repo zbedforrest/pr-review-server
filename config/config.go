@@ -106,7 +106,7 @@ type Config struct {
 	VerifyShadowSample   float64
 	// VerifyEscalate sends findings the packet check marks unavailable to a
 	// read-only agent run (VerifyAgent*; backend and model default to the
-	// review agent's backend with Fable).
+	// review agent's backend with Opus 5.5).
 	VerifyEscalate          bool
 	VerifyAgentBackend      string
 	VerifyAgentModel        string

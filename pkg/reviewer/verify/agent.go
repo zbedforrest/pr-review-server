@@ -14,7 +14,7 @@ import (
 
 // MaxAgentFindings bounds one escalation run; findings past it stay
 // unavailable.
-const MaxAgentFindings = 8
+var MaxAgentFindings = 8
 
 // AgentCite is a line range the agent cited, at head or at the merge-base.
 type AgentCite struct {

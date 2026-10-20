@@ -71,9 +71,11 @@ func main() {
 	model := flag.String("model", "anthropic/claude-fable-5.1", "verifier model")
 	timeout := flag.Duration("timeout", 5*time.Minute, "per-case timeout")
 	dry := flag.Bool("dry", false, "build packets and report their size without calling the model")
+	flag.BoolVar(&agentAll, "agent-all", false, "skip the packet call and send every finding to the verify agent (implies --escalate)")
+	flag.IntVar(&verify.MaxAgentFindings, "agent-max-findings", verify.MaxAgentFindings, "findings per escalation run")
 	flag.BoolVar(&escalate, "escalate", false, "send findings the packet check marks unavailable to the read-only verify agent")
-	agentBackend := flag.String("agent-backend", service.AgentBackendOpenRouter, "escalation agent backend (openrouter runs codex; claude runs the Claude CLI)")
-	agentModel := flag.String("agent-model", "anthropic/claude-fable-5.1", "escalation agent model")
+	agentBackend := flag.String("agent-backend", service.AgentBackendClaude, "escalation agent backend (claude runs the Claude CLI; openrouter runs codex, which re-sends uncached context every turn)")
+	agentModel := flag.String("agent-model", "claude-opus-5-5", "escalation agent model")
 	agentTurns := flag.Int("agent-turns", 40, "escalation agent turn budget")
 	agentWall := flag.Duration("agent-wall", 7*time.Minute, "escalation agent wall clock")
 	flag.BoolVar(&keepSuppressed, "keep-suppressed", false, "keep held and dropped findings in the output with their applied Verification, as production does, for a publisher pass")
@@ -169,6 +171,7 @@ func main() {
 var keepSuppressed bool
 
 var (
+	agentAll bool
 	escalate bool
 	agentCfg service.AgentConfig
 )
@@ -234,14 +237,23 @@ func replay(ctx context.Context, v verify.Verifier, clones, outDir, path string)
 		}
 		return res, nil
 	}
-	vr, err := v.Verify(ctx, pkt, findings)
+	var vr verify.Result
+	if agentAll {
+		for _, f := range findings {
+			c := f.Comment
+			c.Verification = &types.Verification{Status: types.VerifyUnavailable}
+			vr.Comments = append(vr.Comments, c)
+		}
+	} else {
+		vr, err = v.Verify(ctx, pkt, findings)
+	}
 	res.CostUSD = vr.Call.CostUSD
 	if err != nil {
 		res.Status, res.Error = "failed", err.Error()
 		write(raw)
 		return res, nil
 	}
-	if escalate && vr.Complete() {
+	if (escalate || agentAll) && vr.Complete() {
 		in := service.VerifyAgentInput{Owner: pl.Owner, Repo: pl.Repo, DefaultBranch: defaultBranch(ctx, clones, pl.Owner, pl.Repo),
 			PRNumber: pl.PRNumber, HeadSHA: input.Head, BaseSHA: input.Base, Packet: pkt, Findings: findings}
 		er, err := service.EscalateVerify(ctx, agentCfg, service.DefaultSpawner{}, in, vr.Comments)
