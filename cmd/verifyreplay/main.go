@@ -101,7 +101,7 @@ func main() {
 	agentCfg = service.AgentConfig{
 		CloneRootDir: *clones, LogsDir: filepath.Join(*out, "agent-logs"), WallClock: *agentWall, MaxTurns: *agentTurns,
 		Backend: *agentBackend, Model: *agentModel, OpenRouterAPIKey: key, OpenRouterBaseURL: os.Getenv("OPENROUTER_BASE_URL"),
-		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"), GitHubToken: os.Getenv("GITHUB_TOKEN"),
 	}
 	if *dry {
 		v.Client = nil

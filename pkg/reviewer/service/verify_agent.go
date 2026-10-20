@@ -192,8 +192,7 @@ type EscalationResult struct {
 // verify.MaxAgentFindings) to one RunAgentVerify run and records its
 // decisions on comments in place, which align with findings. On an error
 // the findings stay unavailable, so they publish as merged.
-func EscalateVerify(ctx context.Context, cfg AgentConfig, spawner Spawner, in VerifyAgentInput, comments []types.LineComment) (EscalationResult, error) {
-	var res EscalationResult
+func EscalateVerify(ctx context.Context, cfg AgentConfig, spawner Spawner, in VerifyAgentInput, comments []types.LineComment) (res EscalationResult, err error) {
 	all := in.Findings
 	index := map[string]int{}
 	in.Findings = nil
