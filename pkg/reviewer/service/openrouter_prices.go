@@ -33,6 +33,13 @@ const (
 // listing is read in the background the first time a root is priced and
 // refreshed daily, because a hard-coded price drifted 10x from the list
 // price within weeks; until it arrives the table prices the usage.
+//
+// The listing's price is the model-level one, which OpenRouter takes from
+// its cheapest endpoint. With no provider order pinned, a call can be
+// served by a dearer endpoint (the spread is about 20x for some models),
+// so this is an estimate on the low side, not the bill. Pinning
+// providers.order, or pricing each generation by its id, would make it
+// exact.
 type openRouterPriceBook struct {
 	client *http.Client
 	now    func() time.Time
