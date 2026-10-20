@@ -17,13 +17,15 @@ import (
 type mergedPRRepo struct {
 	url                              string
 	forkSHA, baseAtMergeSHA, headSHA string
-	mergeSHA, fixSHA                 string
+	mergeSHA, fixSHA, lateSHA        string
 }
 
 // setupMergedPRRepo builds main c1 (fork), PR c2 on it under refs/pull/1/head
 // adding change.txt, main c3 (base moved), the merge of the PR into main (a
 // merge commit, or a squash commit with one parent), then the fix commit on
-// main touching change.txt and adding fix.txt.
+// main touching change.txt and adding fix.txt. The PR branch then gets one
+// more commit after the merge, so refs/pull/1/head is ahead of the reviewed
+// head.
 func setupMergedPRRepo(t *testing.T, squash bool) mergedPRRepo {
 	t.Helper()
 	skipIfNoGit(t)
@@ -72,6 +74,11 @@ func setupMergedPRRepo(t *testing.T, squash bool) mergedPRRepo {
 	run("add", ".")
 	run("commit", "-q", "-m", "fix the bug")
 	r.fixSHA = run("rev-parse", "HEAD")
+	run("checkout", "-q", "feat")
+	write("late.txt", "pushed after the merge")
+	run("add", ".")
+	run("commit", "-q", "-m", "late push")
+	r.lateSHA = run("rev-parse", "HEAD")
 
 	bare := t.TempDir()
 	gitIn(t, bare, "init", "-q", "--bare", "-b", "main", ".")
@@ -120,11 +127,14 @@ func TestCloneForAgentPinned_MergeCommitPinsTheBaseAtMergeTime(t *testing.T) {
 	if gitOK(dir, "show", "origin/main:fix.txt") {
 		t.Fatal("origin/main must not contain the fix")
 	}
-	if strings.Contains(gitIn(t, dir, "log", "--all", "--format=%H"), r.fixSHA) {
-		t.Fatal("no ref may reach the fix commit")
+	if all := gitIn(t, dir, "log", "--all", "--format=%H"); strings.Contains(all, r.fixSHA) || strings.Contains(all, r.lateSHA) {
+		t.Fatal("no ref may reach the fix commit or a commit pushed to the branch after the reviewed head")
 	}
-	if got := strings.TrimSpace(gitIn(t, dir, "config", "remote.origin.fetch")); got != "+refs/pull/1/head:refs/agent-pr/1" {
-		t.Fatalf("remote refspec must name only the PR head, got %q", got)
+	if gitOK(dir, "cat-file", "-e", r.lateSHA+"^{commit}") {
+		t.Fatal("the head is fetched by SHA, so a later push to the branch must not enter the clone")
+	}
+	if got := strings.TrimSpace(gitIn(t, dir, "config", "remote.origin.fetch")); got != "+"+r.headSHA+":refs/agent-pr/1" {
+		t.Fatalf("remote refspec must name only the reviewed head commit, got %q", got)
 	}
 	files := diffFilesForWorktree(context.Background(), dir, "main", "", "acme/example__pr1__pinned", "")
 	if len(files) != 1 || files[0].Path != "change.txt" || files[0].Status != "added" {

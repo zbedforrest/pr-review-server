@@ -1012,6 +1012,15 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusConflict
 			}
 			log.Printf("[API] generate-review: could not queue %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
+			if status != http.StatusConflict {
+				// The row is already generating; show the failure as
+				// ProcessReviewImmediate would.
+				if projected, perr := s.db.SetPRErrorIfNoLiveReview(req.Owner, req.Repo, req.Number, err.Error()); perr != nil {
+					log.Printf("[API] generate-review: failed to persist error status for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, perr)
+				} else if projected {
+					s.BroadcastEvent(EventPRUpdated, map[string]interface{}{"owner": req.Owner, "repo": req.Repo, "number": req.Number})
+				}
+			}
 			http.Error(w, fmt.Sprintf("Could not queue review: %v", err), status)
 			return
 		}

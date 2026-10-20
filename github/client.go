@@ -619,6 +619,9 @@ func (c *Client) GetPRBase(ctx context.Context, owner, repo string, prNumber int
 	}
 	if pr.GetMerged() {
 		mergeCommitSHA = pr.GetMergeCommitSHA()
+		if mergeCommitSHA == "" {
+			return "", "", fmt.Errorf("%s/%s#%d is merged but the API reports no merge commit", owner, repo, prNumber)
+		}
 	}
 	return mergeCommitSHA, pr.GetBase().GetSHA(), nil
 }

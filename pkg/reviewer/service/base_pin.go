@@ -38,12 +38,15 @@ var cloneURLFor = func(owner, repo string) string {
 var basePinDeepenSteps = []string{"--deepen=1000", "--deepen=5000", "--unshallow"}
 
 // cloneForAgentPinned is cloneForAgent for a review that must not see
-// anything newer than the PR: a per-PR clone holding only the PR head and the
-// PR's own base, both fetched by SHA, with origin/<base> pinned at that base
-// (basePinSHA). The remote's refspec names only the PR head, so no later
-// fetch brings a live branch in, and the object store never holds a commit
-// made after the PR. Benchmarks over historical PRs need this: in the shared
-// cache origin/<base> is today's tip, which already contains the fix.
+// anything newer than the PR: a per-PR clone holding only the reviewed head
+// commit and the PR's own base, both fetched by SHA (not by ref, which could
+// carry commits pushed to the branch later), with origin/<base> pinned at
+// that base (basePinSHA). The remote's refspec names only the head commit, so
+// no later fetch brings a live branch in, and the object store never holds a
+// commit made after the PR. Benchmarks over historical PRs need this: in the
+// shared cache origin/<base> is today's tip, which already contains the fix.
+// Each PR keeps its own cache under the clone root until the cache cap
+// (AGENT_CLONE_CACHE_MAX_GB) evicts it, so a benchmark deployment sets one.
 func cloneForAgentPinned(ctx context.Context, cloneRoot, dir, owner, repo, defaultBranch string, prNumber int, commitSHA, token string, pin BasePin) (cleanup func() error, err error) {
 	noopCleanup := func() error { return nil }
 	if pin.anchor() == "" {
@@ -67,7 +70,7 @@ func cloneForAgentPinned(ctx context.Context, cloneRoot, dir, owner, repo, defau
 	cacheDir := filepath.Join(absCloneRoot, ".cache", name)
 	cloneURL := cloneURLFor(owner, repo)
 	logPrefix := fmt.Sprintf("[AGENT %s/%s#%d pinned]", owner, repo, prNumber)
-	headSpec := fmt.Sprintf("+refs/pull/%d/head:refs/agent-pr/%d", prNumber, prNumber)
+	headSpec := fmt.Sprintf("+%s:refs/agent-pr/%d", commitSHA, prNumber)
 	anchorRef := fmt.Sprintf("refs/agent-base/%d", prNumber)
 	anchorSpec := "+" + pin.anchor() + ":" + anchorRef
 
@@ -117,7 +120,7 @@ func cloneForAgentPinned(ctx context.Context, cloneRoot, dir, owner, repo, defau
 			return fail(err)
 		}
 		if !hasCommit(ctx, cacheDir, commitSHA) {
-			return fail(fmt.Errorf("base pin: pull/%d/head does not reach %s", prNumber, commitSHA))
+			return fail(fmt.Errorf("base pin: the remote did not serve head commit %s", commitSHA))
 		}
 	}
 	pinSHA, err := basePinSHA(ctx, cacheDir, pin, anchorRef, commitSHA, fetch)
