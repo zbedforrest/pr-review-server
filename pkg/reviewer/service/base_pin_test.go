@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mergedPRRepo is a bare repository with the history a benchmark case has: a
@@ -272,5 +273,32 @@ func TestCloneForAgentPinned_DeepensUntilTheBaseAndHeadConnect(t *testing.T) {
 	files := diffFilesForWorktree(context.Background(), dir, "main", "", "", "")
 	if len(files) != 1 || files[0].Path != "feature.txt" || files[0].Status != "added" {
 		t.Fatalf("diff after deepening: got %+v", files)
+	}
+}
+
+func TestRunAgentReview_PinnedReviewNeverBuildsTheSharedCache(t *testing.T) {
+	r := setupMergedPRRepo(t, false)
+	pinnedCloneURL(t, r.url)
+	cloneRoot := t.TempDir()
+	spawner := &fakeSpawner{proc: &fakeProcess{stdout: bytes.NewBufferString(fakeStream), stderr: &bytes.Buffer{}, killCh: make(chan struct{})}}
+	if _, err := RunAgentReview(context.Background(), AgentConfig{
+		CloneRootDir: cloneRoot, LogsDir: t.TempDir(), WallClock: time.Minute, MaxTurns: 10,
+		BasePin: &BasePin{MergeCommitSHA: r.mergeSHA},
+	}, spawner, "acme", "example", "main", 1, r.headSHA, nil); err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cloneRoot, ".cache", "acme__example")); !os.IsNotExist(err) {
+		t.Fatal("a pinned review built the shared cache of the live base")
+	}
+	dir, cleanup, err := PrepareSharedCheckout(context.Background(), AgentConfig{CloneRootDir: cloneRoot, BasePin: &BasePin{MergeCommitSHA: r.mergeSHA}}, "acme", "example", "main", 1, r.headSHA)
+	if err != nil {
+		t.Fatalf("PrepareSharedCheckout: %v", err)
+	}
+	defer func() { _ = cleanup() }()
+	if got := strings.TrimSpace(gitIn(t, dir, "rev-parse", "origin/main")); got != r.baseAtMergeSHA {
+		t.Fatalf("shared checkout origin/main = %s, want %s", got, r.baseAtMergeSHA)
+	}
+	if _, err := os.Stat(filepath.Join(cloneRoot, ".cache", "acme__example")); !os.IsNotExist(err) {
+		t.Fatal("a pinned shared checkout built the shared cache of the live base")
 	}
 }

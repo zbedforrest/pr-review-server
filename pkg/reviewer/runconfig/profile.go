@@ -212,6 +212,9 @@ func Expand(profile string, base Effective) (Effective, error) {
 	default:
 		return Effective{}, invalid("profile", "unknown profile %q (want full, lite, lite_classic, or lite_plus)", profile)
 	}
+	// The pin is a property of the checkout, not of a stage, so every profile
+	// keeps the deployment's setting.
+	effective.Agent.PinBase = base.Agent.PinBase
 	effective.Agent.TurnBudgetUnit, effective.Agent.TurnBudgetVersion = TurnBudgetSemantics(effective.Agent.Backend)
 	return effective, nil
 }

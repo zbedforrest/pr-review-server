@@ -933,6 +933,22 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 		createdAtPtr = &createdAt
 	}
 
+	// Resolve a requested config before any row changes, so a rejected
+	// config leaves no PR marked generating with nothing queued.
+	var configuredJob *poller.ReviewJob
+	if s.poller != nil && req.Config != nil {
+		pr := github.PullRequest{Owner: req.Owner, Repo: req.Repo, Number: req.Number, CommitSHA: headSHA,
+			Title: title, Author: author, CreatedAt: createdAtPtr, Draft: draft}
+		job, err := s.poller.PrepareReviewJob(pr, *req.Config, true, "legacy_api", nil)
+		if err != nil {
+			log.Printf("[API] generate-review: config rejected for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
+			http.Error(w, fmt.Sprintf("Invalid config: %v", err), http.StatusBadRequest)
+			return
+		}
+		job.SkipPublish = req.Publish != nil && !*req.Publish
+		configuredJob = &job
+	}
+
 	// Upsert the PR as generating. SetPRGenerating's OnConflict makes this an
 	// insert when the PR is new to us (the merged-PR case) and an update when
 	// it already exists.
@@ -989,17 +1005,8 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 	// Start the review immediately, bypassing the poll cycle entirely.
 	// force=true so the per-commit cache never short-circuits an explicit
 	// on-demand request. Background context: the review outlives this request.
-	if s.poller != nil && req.Config != nil {
-		pr := github.PullRequest{Owner: req.Owner, Repo: req.Repo, Number: req.Number, CommitSHA: headSHA,
-			Title: title, Author: author, CreatedAt: createdAtPtr, Draft: draft}
-		job, err := s.poller.PrepareReviewJob(pr, *req.Config, true, "legacy_api", nil)
-		if err != nil {
-			log.Printf("[API] generate-review: config rejected for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
-			http.Error(w, fmt.Sprintf("Invalid config: %v", err), http.StatusBadRequest)
-			return
-		}
-		job.SkipPublish = req.Publish != nil && !*req.Publish
-		if err := s.poller.ProcessReviewJob(context.Background(), job); err != nil {
+	if configuredJob != nil {
+		if err := s.poller.ProcessReviewJob(context.Background(), *configuredJob); err != nil {
 			status := http.StatusInternalServerError
 			if errors.Is(err, poller.ErrReviewAlreadyTracked) {
 				status = http.StatusConflict

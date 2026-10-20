@@ -448,7 +448,7 @@ func Load() *Config {
 		AgentBackend:                agentBackend,
 		AgentModel:                  agentModel,
 		AgentEffort:                 agentEffort,
-		AgentPinBase:                os.Getenv("AGENT_PIN_BASE") == "true",
+		AgentPinBase:                strings.EqualFold(strings.TrimSpace(os.Getenv("AGENT_PIN_BASE")), "true"),
 		ReplyModel:                  os.Getenv("REPLY_MODEL"),
 		ReplyWallClockSec:           getPositiveEnvIntOrDefault("REPLY_WALL_CLOCK_SEC", 180),
 		ReplyMaxTurns:               getPositiveEnvIntOrDefault("REPLY_MAX_TURNS", 20),

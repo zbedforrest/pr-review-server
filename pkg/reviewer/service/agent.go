@@ -282,6 +282,9 @@ func RunAgentReview(
 	prepStart := time.Now()
 	if agentCfg.SharedCheckout != "" {
 		cloneDir = agentCfg.SharedCheckout
+	} else if agentCfg.BasePin != nil {
+		// A pinned review never touches the shared cache: that clone holds
+		// the live base, which is what the pin keeps out.
 	} else if _, err := ensureAgentCache(ctx, agentCfg.CloneRootDir, owner, repo, defaultBranch, agentCfg.GitHubToken, logPrefix); err != nil {
 		log.Printf("%s cache init FAILED after %s: %v", logPrefix, time.Since(prepStart), err)
 		return nil, fmt.Errorf("agent: clone: %w", err)
@@ -1823,8 +1826,10 @@ func PrepareSharedCheckout(ctx context.Context, agentCfg AgentConfig, owner, rep
 	if err := os.MkdirAll(agentCfg.CloneRootDir, 0o755); err != nil {
 		return "", nil, fmt.Errorf("agent: create clone root: %w", err)
 	}
-	if _, err := ensureAgentCache(ctx, agentCfg.CloneRootDir, owner, repo, defaultBranch, agentCfg.GitHubToken, logPrefix); err != nil {
-		return "", nil, fmt.Errorf("agent: clone: %w", err)
+	if agentCfg.BasePin == nil {
+		if _, err := ensureAgentCache(ctx, agentCfg.CloneRootDir, owner, repo, defaultBranch, agentCfg.GitHubToken, logPrefix); err != nil {
+			return "", nil, fmt.Errorf("agent: clone: %w", err)
+		}
 	}
 	prepBudget := agentCfg.PrepBudget
 	if prepBudget <= 0 {

@@ -428,3 +428,17 @@ func TestResolvePinBaseIsARequestOverrideOffByDefault(t *testing.T) {
 		t.Fatalf("requested pin_base: %+v sources=%v", pinned.Effective.Agent, pinned.Sources)
 	}
 }
+
+func TestExpandKeepsTheDeploymentPinAcrossProfiles(t *testing.T) {
+	base := testDefaults()
+	base.Agent.PinBase = true
+	for _, profile := range []string{ProfileFull, ProfileLite, ProfileLiteClassic, ProfileLitePlus} {
+		effective, err := Expand(profile, base)
+		if err != nil {
+			t.Fatalf("%s: %v", profile, err)
+		}
+		if !effective.Agent.PinBase {
+			t.Fatalf("%s drops the deployment pin", profile)
+		}
+	}
+}
