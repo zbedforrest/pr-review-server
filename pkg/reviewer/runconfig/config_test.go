@@ -442,3 +442,21 @@ func TestExpandKeepsTheDeploymentPinAcrossProfiles(t *testing.T) {
 		}
 	}
 }
+
+func TestDescribeProfileReportsARequestedPin(t *testing.T) {
+	base := testDefaults()
+	pinned, err := Resolve(Overrides{Agent: &AgentOverrides{PinBase: ptr(true)}}, base, testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := DescribeProfile(pinned.Effective, base)
+	found := false
+	for _, d := range desc.Deviations {
+		if strings.Contains(d, "pinned base") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a requested pin must show as a deviation, got %v", desc.Deviations)
+	}
+}

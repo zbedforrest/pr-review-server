@@ -223,6 +223,18 @@ func TestCloneForAgentPinned_FastForwardMergePinsBelowThePRCommits(t *testing.T)
 	}
 }
 
+func TestCloneForAgentPinned_FailedPinLeavesNoUncappedCache(t *testing.T) {
+	r := setupMergedPRRepo(t, false)
+	pinnedCloneURL(t, r.url)
+	cloneRoot := t.TempDir()
+	if _, err := cloneForAgent(context.Background(), cloneRoot, filepath.Join(cloneRoot, "wt"), "acme", "example", "main", 1, strings.Repeat("0", 40), "", &BasePin{MergeCommitSHA: r.mergeSHA}); err == nil {
+		t.Fatal("a head the remote cannot serve must fail the pin")
+	}
+	if _, err := os.Stat(filepath.Join(cloneRoot, ".cache", "acme__example__pr1__pinned")); !os.IsNotExist(err) {
+		t.Fatal("a failed pin must not leave a partial cache behind without a cap")
+	}
+}
+
 func TestCloneForAgentPinned_UncappedCacheGoesWithTheWorktree(t *testing.T) {
 	r := setupMergedPRRepo(t, false)
 	pinnedCloneURL(t, r.url)

@@ -59,13 +59,14 @@ func pinnedCacheFor(cloneRoot, owner, repo string, prNumber int) (pinnedCache, e
 }
 
 // cloneForAgentPinned is cloneForAgent for a review that must not see
-// anything newer than the PR: a per-PR clone holding only the reviewed head
-// commit and the PR's own base, both fetched by SHA (not by ref, which could
-// carry commits pushed to the branch later), with origin/<base> pinned at
-// that base (basePinSHA). The remote's refspec names only the head commit, so
-// no later fetch brings a live branch in, and the object store never holds a
-// commit made after the PR. Benchmarks over historical PRs need this: in the
-// shared cache origin/<base> is today's tip, which already contains the fix.
+// anything newer than the PR's merge: a per-PR clone whose only fetched tips
+// are the reviewed head commit and the pin anchor (the merge commit, or the
+// reported base of an open PR), both by SHA rather than by ref, which could
+// carry commits pushed later. Deepening follows the parents of those tips,
+// and the remote's refspec names only the head commit, so no fetch brings a
+// live branch in, and origin/<base> is pinned at the PR's own base
+// (basePinSHA). Benchmarks over historical PRs need this: in the shared
+// cache origin/<base> is today's tip, which already contains the fix.
 // With a cache cap set (AGENT_CLONE_CACHE_MAX_GB) the per-PR cache stays for
 // the next run of the same PR until evicted; without one it is removed with
 // the worktree, so pinned reviews cannot fill an uncapped clone root.
@@ -80,14 +81,17 @@ func cloneForAgentPinned(ctx context.Context, cloneRoot, dir, owner, repo, defau
 		return noopCleanup, err
 	}
 	release := acquireCacheUse(cache.key)
-	if err := ensurePinnedCache(ctx, cache, owner, repo, defaultBranch, prNumber, commitSHA, token, pin); err != nil {
+	fail := func(err error) (func() error, error) {
 		release()
+		dropUncappedPinnedCache(cache)
 		return noopCleanup, err
+	}
+	if err := ensurePinnedCache(ctx, cache, owner, repo, defaultBranch, prNumber, commitSHA, token, pin); err != nil {
+		return fail(err)
 	}
 	t := time.Now()
 	if out, err := runGit(ctx, cache.dir, "worktree", "add", "--detach", absDir, commitSHA); err != nil {
-		release()
-		return noopCleanup, fmt.Errorf("git worktree add: %w (%s)", err, out)
+		return fail(fmt.Errorf("git worktree add: %w (%s)", err, out))
 	}
 	log.Printf("%s git worktree add DONE in %s", cache.logPrefix, time.Since(t))
 	removeTree := removeWorktree(cloneRoot, cache.dir, absDir, cache.logPrefix, release)
@@ -107,8 +111,12 @@ func warmPinnedCache(ctx context.Context, cloneRoot, owner, repo, defaultBranch 
 		return err
 	}
 	release := acquireCacheUse(cache.key)
-	defer release()
-	return ensurePinnedCache(ctx, cache, owner, repo, defaultBranch, prNumber, commitSHA, token, pin)
+	err = ensurePinnedCache(ctx, cache, owner, repo, defaultBranch, prNumber, commitSHA, token, pin)
+	release()
+	if err != nil {
+		dropUncappedPinnedCache(cache)
+	}
+	return err
 }
 
 // ensurePinnedCache leaves the cache holding the head commit and the pin
@@ -209,7 +217,9 @@ func dropUncappedPinnedCache(cache pinnedCache) {
 // merge time. A squash or rebase merge leaves a single-parent commit, so the
 // pin is the fork point, the merge-base of that commit and the PR head. A
 // fast-forward merge reports the head itself as the merge commit, so the pin
-// is the commit the PR's own commits sit on. An open PR pins at the base tip
+// is the commit below the PR's own commits, taken to lie on the head's
+// first-parent chain (a PR that merged side branches of its own would pin
+// too deep, which still keeps the fix out). An open PR pins at the base tip
 // the API reported. History is widened until the pin and the head connect,
 // which the three-dot diff needs.
 func basePinSHA(ctx context.Context, cacheDir string, pin BasePin, anchorRef, commitSHA string, fetch func(depth string) error) (string, error) {

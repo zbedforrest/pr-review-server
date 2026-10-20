@@ -291,6 +291,7 @@ func DescribeProfile(effective Effective, base Effective) ProfileDescription {
 	note("tools", effective.Agent.Tools, canonical.Agent.Tools)
 	note("prompt", effective.Agent.Prompt, canonical.Agent.Prompt)
 	note("agent", onOff(effective.Agent.Enabled), onOff(canonical.Agent.Enabled))
+	note("pinned base", onOff(effective.Agent.PinBase), onOff(canonical.Agent.PinBase))
 	note("first pass", onOff(effective.FirstPass.Enabled), onOff(canonical.FirstPass.Enabled))
 	if effective.FirstPass.Enabled && canonical.FirstPass.Enabled {
 		note("first-pass samples", fmt.Sprint(effective.FirstPass.Samples), fmt.Sprint(canonical.FirstPass.Samples))
