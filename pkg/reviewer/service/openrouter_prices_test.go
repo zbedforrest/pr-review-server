@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const flashListing = `{"data":[{"id":"deepseek/deepseek-v4.1-flash","pricing":{"prompt":"0.00000002832","completion":"0.00000012","input_cache_read":"0.000000000566"}},{"id":"acme/no-cache","pricing":{"prompt":"0.000001","completion":"0.000002"}},{"id":"acme/unpriced","pricing":{"prompt":"","completion":"0.000002"}},{"id":"acme/infinite","pricing":{"prompt":"Inf","completion":"0.000002"}}]}`
+const flashListing = `{"data":[{"id":"deepseek/deepseek-v4.1-flash","pricing":{"prompt":"0.00000002832","completion":"0.00000012","input_cache_read":"0.000000000566"}},{"id":"acme/no-cache","pricing":{"prompt":"0.000001","completion":"0.000002"}},{"id":"acme/unpriced","pricing":{"prompt":"","completion":"0.000002"}},{"id":"acme/infinite","pricing":{"prompt":"Inf","completion":"0.000002"}},{"id":"acme/overflow","pricing":{"prompt":"1e305","completion":"0.000002"}}]}`
 
 type priceServer struct {
 	*httptest.Server
@@ -54,7 +54,7 @@ func TestPriceBookReadsTheLiveListingInTheBackground(t *testing.T) {
 	if p, ok := book.price(srv.URL, "acme/no-cache"); !ok || p != [3]float64{1, 1, 2} {
 		t.Fatalf("uncached price = %v, %v", p, ok)
 	}
-	for _, m := range []string{"acme/unpriced", "acme/infinite", "acme/unlisted"} {
+	for _, m := range []string{"acme/unpriced", "acme/infinite", "acme/overflow", "acme/unlisted"} {
 		if _, ok := book.price(srv.URL, m); ok {
 			t.Fatalf("%s must not be priced", m)
 		}
@@ -100,7 +100,7 @@ func TestPriceBookKeepsOneListingPerRoot(t *testing.T) {
 	clock := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	book := priceBookAt(public, &clock)
 	priced(book, public.URL, "acme/no-cache")
-	if p, ok := priced(book, gateway.URL, "acme/no-cache"); !ok || p != [3]float64{3, 3, 4} {
+	if p, ok := priced(book, gateway.URL+"/", "acme/no-cache"); !ok || p != [3]float64{3, 3, 4} {
 		t.Fatalf("gateway price = %v, %v", p, ok)
 	}
 	if p, ok := book.price(public.URL, "acme/no-cache"); !ok || p != [3]float64{1, 1, 2} {

@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -66,21 +67,21 @@ func (b *openRouterPriceBook) price(baseURL, model string) ([3]float64, bool) {
 		b.inflight.Add(1)
 		go b.refresh(baseURL, l)
 	}
-	if l.prices == nil {
-		p, ok := openRouterListPrices[model]
-		return p, ok
+	source, prices := "listing", l.prices
+	if prices == nil {
+		source, prices = "built-in table", openRouterListPrices
 	}
-	p, ok := l.prices[model]
+	p, ok := prices[model]
 	if !ok && !b.warned[baseURL+" "+model] {
 		b.warned[baseURL+" "+model] = true
-		log.Printf("[AGENT] openrouter model listing at %s has no price for %s; its cost goes unrecorded", baseURL, model)
+		log.Printf("[AGENT] openrouter %s for %s has no price for %s; its cost goes unrecorded", source, baseURL, model)
 	}
 	return p, ok
 }
 
 func (b *openRouterPriceBook) refresh(baseURL string, l *openRouterListing) {
 	defer b.inflight.Done()
-	live, err := b.fetch(baseURL + "/models")
+	live, err := b.fetch(strings.TrimRight(baseURL, "/") + "/models")
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	l.refreshing = false
@@ -119,7 +120,8 @@ func (b *openRouterPriceBook) fetch(url string) (map[string][3]float64, error) {
 	}
 	perMillion := func(s string) (float64, bool) {
 		v, err := strconv.ParseFloat(s, 64)
-		return v * 1e6, err == nil && v >= 0 && !math.IsInf(v, 0) && !math.IsNaN(v)
+		v *= 1e6
+		return v, err == nil && v >= 0 && !math.IsInf(v, 0) && !math.IsNaN(v)
 	}
 	prices := make(map[string][3]float64, len(body.Data))
 	for _, m := range body.Data {
