@@ -70,7 +70,8 @@ const (
 // ValueReason saying why. Phase is 2 when the escalation agent made the decision. Proposed is the
 // model's decision when policy recorded a different
 // Status (an invalid decision, or a hold or drop on a CRITICAL). Cites are
-// evidence packet item ids; Evidence quotes the cited text so a
+// evidence references: packet item ids (P3) from the one-call check, or
+// path:line and base:path:line from the agent; Evidence quotes the cited text so a
 // withdrawal can show it without the packet. For a revise, the finding
 // already carries the replacement and Prior* hold what it replaced.
 type Verification struct {

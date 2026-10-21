@@ -194,3 +194,13 @@ func TestApplyAgent_RecordsTheValueReasonOnHigherSeveritiesWithoutHiding(t *test
 		t.Fatalf("verification = %+v", c.Verification)
 	}
 }
+
+func TestApplyAgent_DoesNotHideAFindingWhoseDecisionWasInvalid(t *testing.T) {
+	no := false
+	low := types.LineComment{FilePath: "a.go", LineNumber: 1, Importance: "LOW", CommentBody: "x"}
+	c, valid := ApplyAgent(low, AgentDecision{Key: "F1", Decision: "drop", Reason: "r", WorthPosting: &no, ValueReason: "nit"})
+	c.Verification.Applied = true
+	if valid || c.Verification.LowValue || c.Verification.Suppresses() {
+		t.Fatalf("valid=%v verification=%+v", valid, c.Verification)
+	}
+}

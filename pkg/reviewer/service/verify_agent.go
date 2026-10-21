@@ -131,23 +131,26 @@ func RunAgentVerify(ctx context.Context, cfg AgentConfig, spawner Spawner, in Ve
 	waitErr := proc.Wait()
 	stderrBuf := stderrOutput()
 	redact := func(s string) string { return truncate(redactToken(s, credentialValue), 600) }
+	// A failed run still spent tokens; the result carries what the stream
+	// reported so callers can count it against the budget.
+	spent := &VerifyAgentResult{RequestedModel: runtime.model, CostUSD: parsed.costUSD, DurationMS: time.Since(started).Milliseconds()}
 	switch {
 	case parseErr != nil && strings.Contains(parseErr.Error(), "max-turns"):
-		return nil, fmt.Errorf("verify agent: turn budget exhausted: %v", parseErr)
+		return spent, fmt.Errorf("verify agent: turn budget exhausted: %v", parseErr)
 	case runCtx.Err() == context.DeadlineExceeded:
-		return nil, fmt.Errorf("verify agent: wall-clock timeout (%s)", cfg.WallClock)
+		return spent, fmt.Errorf("verify agent: wall-clock timeout (%s)", cfg.WallClock)
 	case parseErr != nil:
-		return nil, fmt.Errorf("verify agent: %w (stderr: %s)", parseErr, redact(stderrBuf))
+		return spent, fmt.Errorf("verify agent: %w (stderr: %s)", parseErr, redact(stderrBuf))
 	case parsed.streamErr != "":
-		return nil, fmt.Errorf("verify agent: CLI reported error: %s", redact(parsed.streamErr))
+		return spent, fmt.Errorf("verify agent: CLI reported error: %s", redact(parsed.streamErr))
 	case waitErr != nil:
-		return nil, fmt.Errorf("verify agent: %s exited with error: %w (stderr: %s)", runtime.command, waitErr, redact(stderrBuf))
+		return spent, fmt.Errorf("verify agent: %s exited with error: %w (stderr: %s)", runtime.command, waitErr, redact(stderrBuf))
 	case parsed.finalOutput == "":
-		return nil, fmt.Errorf("verify agent: no final result emitted (stream: %s)", redact(parsed.diagnostic()))
+		return spent, fmt.Errorf("verify agent: no final result emitted (stream: %s)", redact(parsed.diagnostic()))
 	}
 	decisions, err := verify.ResolveAgentReply(parsed.finalOutput, headDir, baseDir)
 	if err != nil {
-		return nil, err
+		return spent, err
 	}
 	succeeded = true
 	out := &VerifyAgentResult{
@@ -257,12 +260,14 @@ func EscalateVerify(ctx context.Context, cfg AgentConfig, spawner Spawner, in Ve
 			out, runErr := runVerifyAgentFn(ctx, cfg, spawner, sub)
 			mu.Lock()
 			defer mu.Unlock()
+			if out != nil {
+				res.CostUSD += out.CostUSD
+			}
 			if runErr != nil {
 				res.FailedBatches++
 				errs = append(errs, runErr)
 				return
 			}
-			res.CostUSD += out.CostUSD
 			res.Model = out.ServedModel
 			for _, d := range out.Decisions {
 				i, ok := index[d.Key]

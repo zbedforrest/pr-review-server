@@ -209,7 +209,7 @@ func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) 
 		evidence: func() string { return d.Quote },
 	})
 	v := out.Verification
-	if d.WorthPosting == nil || *d.WorthPosting || d.ValueReason == "" {
+	if !valid || d.WorthPosting == nil || *d.WorthPosting || d.ValueReason == "" {
 		return out, valid
 	}
 	v.ValueReason = cut(d.ValueReason, maxReasonRunes)

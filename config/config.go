@@ -2,6 +2,7 @@ package config
 
 import (
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -526,7 +527,7 @@ func verifyMode(raw string) string {
 
 func getEnvFloatOrDefault(key string, defaultValue float64) float64 {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		if f, err := strconv.ParseFloat(value, 64); err == nil {
+		if f, err := strconv.ParseFloat(value, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
 			return f
 		}
 		log.Printf("[CONFIG] %s=%q is not a number, keeping the default %g", key, value, defaultValue)

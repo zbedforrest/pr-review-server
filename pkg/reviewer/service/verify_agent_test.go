@@ -206,3 +206,16 @@ func TestEscalateVerify_HoldsAServerSlotPerBatch(t *testing.T) {
 		t.Fatalf("err=%v res=%+v peak=%d", err, res, peak)
 	}
 }
+
+func TestEscalateVerify_CountsTheCostOfAFailedBatch(t *testing.T) {
+	orig := runVerifyAgentFn
+	runVerifyAgentFn = func(context.Context, AgentConfig, Spawner, VerifyAgentInput) (*VerifyAgentResult, error) {
+		return &VerifyAgentResult{CostUSD: 0.7}, errors.New("wall-clock timeout")
+	}
+	t.Cleanup(func() { runVerifyAgentFn = orig })
+	c := types.LineComment{FilePath: "a.go", LineNumber: 1, CommentBody: "x", Verification: &types.Verification{Status: types.VerifyUnavailable}}
+	res, err := EscalateVerify(context.Background(), AgentConfig{}, nil, VerifyAgentInput{Findings: []verify.Finding{{Key: "F1", Comment: c}}}, []types.LineComment{c})
+	if err == nil || res.CostUSD != 0.7 {
+		t.Fatalf("err=%v cost=%v", err, res.CostUSD)
+	}
+}

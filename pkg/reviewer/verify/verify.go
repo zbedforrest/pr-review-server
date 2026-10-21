@@ -148,6 +148,9 @@ type ruling struct {
 // apply turns one Phase 1 decision into the finding's Verification.
 func apply(c types.LineComment, d decision, pkt *Packet, own []string) (types.LineComment, bool) {
 	relevant := relevantCites(d.Cites, own)
+	if d.Decision != "keep" && d.Decision != "evidence_unavailable" {
+		relevant = codeCites(pkt, relevant)
+	}
 	return applyRuling(c, ruling{
 		decision: d.Decision, reason: d.Reason, cites: relevant, revised: d.Revised,
 		evidence: func() string { return evidence(pkt, relevant, d.Quote) },
@@ -210,6 +213,18 @@ func applyRuling(c types.LineComment, r ruling) (types.LineComment, bool) {
 		return revised, true
 	}
 	return keepAs(r.decision, "unknown decision "+strconv.Quote(r.decision), false)
+}
+
+// codeCites drops cites to notes and the PR text: a fact about what could
+// not be fetched shows nothing about the code.
+func codeCites(pkt *Packet, cites []string) []string {
+	var out []string
+	for _, id := range cites {
+		if it, ok := pkt.Item(id); ok && it.Kind != KindNote && it.Kind != KindPR {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func relevantCites(cites, own []string) []string {

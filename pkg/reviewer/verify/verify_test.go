@@ -254,3 +254,24 @@ func TestEvidence_FallsThroughAHunkCiteToQuotableCode(t *testing.T) {
 		t.Fatalf("evidence = %q", got)
 	}
 }
+
+func TestVerify_AHoldCitingOnlyANoteKeepsTheFinding(t *testing.T) {
+	pkt, findings := fixture()
+	pkt.Items = append(pkt.Items, Item{ID: "P5", Kind: KindNote, Path: "a.go", Text: "base unavailable"})
+	pkt.ByFinding["F1"] = append(pkt.ByFinding["F1"], "P5")
+	fc := &fakeCompleter{reply: `{"decisions":[{"key":"F1","decision":"hold","cites":["P5"],"reason":"r","refuting_quote":null,"revised":null},{"key":"F2","decision":"keep","cites":[],"reason":"r","refuting_quote":null,"revised":null},{"key":"F3","decision":"keep","cites":[],"reason":"r","refuting_quote":null,"revised":null}]}`}
+	res, err := Verifier{Client: fc}.Verify(context.Background(), pkt, findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := res.Comments[0].Verification; v.Status != types.VerifyKeep || v.Proposed != types.VerifyHold {
+		t.Fatalf("verification = %+v", v)
+	}
+}
+
+func TestVerifyPrompt_ToleratesANilPacket(t *testing.T) {
+	_, findings := fixture()
+	if p := AgentPrompt(nil, findings[:1], "/base"); !strings.Contains(p, `"key": "F1"`) {
+		t.Fatalf("prompt:\n%s", p)
+	}
+}

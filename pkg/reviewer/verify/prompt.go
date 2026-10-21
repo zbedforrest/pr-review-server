@@ -100,6 +100,9 @@ type promptFinding struct {
 }
 
 func verifyPrompt(pkt *Packet, findings []Finding) string {
+	if pkt == nil {
+		pkt = &Packet{}
+	}
 	var b strings.Builder
 	b.WriteString("FINDINGS (data)\n")
 	pf := make([]promptFinding, 0, len(findings))

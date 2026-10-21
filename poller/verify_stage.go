@@ -70,7 +70,8 @@ type verifyArtifactEntry struct {
 // verifySpend is the verifier's spend for the current UTC day. allow and
 // add are separate, so concurrent verifications can each pass the check
 // before any records its cost; the overshoot is bounded by the work in
-// flight (about a dollar each), which the daily cap tolerates.
+// flight (about a dollar each), which the daily cap tolerates. The counter is
+// per process: with N server instances the ceiling is N times the cap.
 type verifySpend struct {
 	mu  sync.Mutex
 	day string
@@ -106,6 +107,10 @@ var (
 	verifySampleDraw = rand.Float64
 	escalateVerifyFn = service.EscalateVerify
 )
+
+// verifyBackground bounds background verifications per process; one that
+// finds it full is skipped rather than queued.
+var verifyBackground = make(chan struct{}, 4)
 
 // verifyTarget is the review a verification belongs to.
 type verifyTarget struct {
@@ -153,7 +158,15 @@ func (p *Poller) verifyEnsembleReview(ctx context.Context, execution *reviewExec
 	if !rep.Sync {
 		rep.Status = "pending"
 		rep.Artifact = verifyArtifactName(job)
-		go p.recordVerification(job, target, in, wall, *rep)
+		select {
+		case verifyBackground <- struct{}{}:
+			go func() {
+				defer func() { <-verifyBackground }()
+				p.recordVerification(job, target, in, wall, *rep)
+			}()
+		default:
+			rep.Status, rep.Skip, rep.Artifact = "skipped", "busy", ""
+		}
 		return rep
 	}
 	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < wall {
@@ -220,7 +233,7 @@ func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input,
 	}
 	v := verify.Verifier{Client: newVerifyCompleter(p.cfg.OpenRouterAPIKey, p.cfg.OpenRouterBaseURL, p.cfg.VerifyModel), Model: p.cfg.VerifyModel}
 	res, err := v.Verify(ctx, pkt, in.Findings)
-	p.verifySpend.add(start, res.Call.CostUSD)
+	p.verifySpend.add(time.Now(), res.Call.CostUSD)
 	rep.Call = &res.Call
 	if err != nil {
 		rep.Status, rep.Error = "failed", err.Error()
@@ -255,6 +268,8 @@ func (p *Poller) escalateVerify(ctx context.Context, t verifyTarget, in verify.I
 		HeadSHA: in.Head, BaseSHA: in.Base, Packet: pkt, Findings: in.Findings, Slots: p.ensembleSlots,
 	}, comments)
 	rep.Escalated, rep.AgentMS = res.Escalated, res.DurationMS
+	p.verifySpend.add(time.Now(), res.CostUSD)
+	rep.AgentCostUSD = res.CostUSD
 	if err != nil {
 		rep.AgentError = err.Error()
 		return
@@ -262,8 +277,7 @@ func (p *Poller) escalateVerify(ctx context.Context, t verifyTarget, in verify.I
 	if res.Escalated == 0 {
 		return
 	}
-	p.verifySpend.add(start, res.CostUSD)
-	rep.AgentCostUSD, rep.AgentDecisions = res.CostUSD, res.Decisions
+	rep.AgentDecisions = res.Decisions
 	rep.Decisions = map[string]int{}
 	for _, c := range comments {
 		rep.Decisions[c.Verification.Status]++
