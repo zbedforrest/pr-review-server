@@ -131,10 +131,12 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 		report.Verify = v
 		if v.Sync {
 			logVerify(execution.Job, *v)
+			cost := v.AgentCostUSD
 			if v.Call != nil {
-				report.TotalCostUSD += v.Call.CostUSD
-				review.CostUSD += v.Call.CostUSD
+				cost += v.Call.CostUSD
 			}
+			report.TotalCostUSD += cost
+			review.CostUSD += cost
 		}
 	}
 	refs := service.ResolvePriorRefs(review.Comments, base.PriorFindings)

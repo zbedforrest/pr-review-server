@@ -238,3 +238,13 @@ func TestVerify_ReviseClearsContractFieldsItsOwnChoicesRuleOut(t *testing.T) {
 		t.Fatalf("got %+v %+v", c.Verification, c.FindingContract)
 	}
 }
+
+func TestEvidence_FallsThroughAHunkCiteToQuotableCode(t *testing.T) {
+	pkt := &Packet{Items: []Item{
+		{ID: "P1", Kind: KindHunk, Path: "a.go", Start: 1, End: 2, Text: "@@ -1 +1 @@\n-old\n+new"},
+		{ID: "P2", Kind: KindHead, Path: "a.go", Start: 1, End: 1, Text: "    1| new"},
+	}}
+	if got := evidence(pkt, []string{"P1", "P2"}, nil); got != "a.go:1\nnew" {
+		t.Fatalf("evidence = %q", got)
+	}
+}

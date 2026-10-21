@@ -175,3 +175,34 @@ func TestEscalateVerify_ReturnsAnErrorOnlyWhenEveryBatchFails(t *testing.T) {
 		t.Fatalf("status = %s", comments[0].Verification.Status)
 	}
 }
+
+func TestEscalateVerify_HoldsAServerSlotPerBatch(t *testing.T) {
+	origFn, origSize := runVerifyAgentFn, verify.MaxAgentFindings
+	verify.MaxAgentFindings = 1
+	var mu sync.Mutex
+	running, peak := 0, 0
+	runVerifyAgentFn = func(_ context.Context, _ AgentConfig, _ Spawner, in VerifyAgentInput) (*VerifyAgentResult, error) {
+		mu.Lock()
+		running++
+		peak = max(peak, running)
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		running--
+		mu.Unlock()
+		return &VerifyAgentResult{Decisions: []verify.AgentDecision{{Key: in.Findings[0].Key, Decision: "keep", Reason: "ok"}}}, nil
+	}
+	t.Cleanup(func() { runVerifyAgentFn, verify.MaxAgentFindings = origFn, origSize })
+	var findings []verify.Finding
+	var comments []types.LineComment
+	for i := 1; i <= 3; i++ {
+		c := types.LineComment{FilePath: "a.go", LineNumber: i, CommentBody: fmt.Sprint(i)}
+		findings = append(findings, verify.Finding{Key: fmt.Sprintf("F%d", i), Comment: c})
+		c.Verification = &types.Verification{Status: types.VerifyUnavailable}
+		comments = append(comments, c)
+	}
+	res, err := EscalateVerify(context.Background(), AgentConfig{}, nil, VerifyAgentInput{Findings: findings, Slots: make(chan struct{}, 1)}, comments)
+	if err != nil || res.Batches != 3 || peak != 1 {
+		t.Fatalf("err=%v res=%+v peak=%d", err, res, peak)
+	}
+}

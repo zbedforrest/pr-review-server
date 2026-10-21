@@ -1328,18 +1328,18 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	return cleanup, nil
 }
 
-// ensureAgentCache makes sure a complete cache clone of owner/repo exists at
-// <cloneRoot>/.cache/<owner>__<repo> and returns its path. A cache miss costs
-// a full single-branch clone; a cache an older build left shallow is completed
-// once with --unshallow. Both are one-time costs, so callers pass a context
-// bounded by the run rather than the per-review prep budget. Holds the
-// per-repo mutex.
 // AgentCacheDir is owner/repo's clone cache under cloneRoot. It outlives
 // the review worktrees made from it, so its objects stay readable after them.
 func AgentCacheDir(cloneRoot, owner, repo string) string {
 	return filepath.Join(cloneRoot, ".cache", fmt.Sprintf("%s__%s", owner, repo))
 }
 
+// ensureAgentCache makes sure a complete cache clone of owner/repo exists at
+// <cloneRoot>/.cache/<owner>__<repo> and returns its path. A cache miss costs
+// a full single-branch clone; a cache an older build left shallow is completed
+// once with --unshallow. Both are one-time costs, so callers pass a context
+// bounded by the run rather than the per-review prep budget. Holds the
+// per-repo mutex.
 func ensureAgentCache(ctx context.Context, cloneRoot, owner, repo, defaultBranch, token, logPrefix string) (string, error) {
 	absCloneRoot, err := filepath.Abs(cloneRoot)
 	if err != nil {

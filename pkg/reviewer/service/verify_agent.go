@@ -23,6 +23,9 @@ type VerifyAgentInput struct {
 	HeadSHA, BaseSHA           string
 	Packet                     *verify.Packet
 	Findings                   []verify.Finding
+	// Slots, when set, is the server's shared agent-process cap; every
+	// escalation batch holds one while its agent runs.
+	Slots chan struct{}
 }
 
 // VerifyAgentResult is the escalation run's resolved decisions and cost.
@@ -234,6 +237,18 @@ func EscalateVerify(ctx context.Context, cfg AgentConfig, spawner Spawner, in Ve
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			if in.Slots != nil {
+				select {
+				case in.Slots <- struct{}{}:
+					defer func() { <-in.Slots }()
+				case <-ctx.Done():
+					mu.Lock()
+					res.FailedBatches++
+					errs = append(errs, ctx.Err())
+					mu.Unlock()
+					return
+				}
+			}
 			sub := in
 			sub.Findings = batch
 			if in.Packet != nil {

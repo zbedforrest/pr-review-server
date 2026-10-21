@@ -286,3 +286,13 @@ func TestVerifyWithoutThePacketCallSendsEveryFindingToTheAgent(t *testing.T) {
 		t.Fatalf("calls=%d agent=%d report=%+v v=%+v", f.completer.calls, len(*calls), rep, f.review.Comments[0].Verification)
 	}
 }
+
+func TestVerifyOnCountsAgentSpendInTheReviewCost(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "alice", unavailableF1)
+	f.p.cfg.VerifyEscalate = true
+	stubVerifyAgent(t, &verify.AgentDecision{Key: "F1", Decision: "keep", Reason: "ok"}, nil)
+	rep := f.run()
+	if rep.AgentCostUSD != 0.4 || rep.Call == nil {
+		t.Fatalf("report = %+v", rep)
+	}
+}

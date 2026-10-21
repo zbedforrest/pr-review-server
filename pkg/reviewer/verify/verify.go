@@ -336,7 +336,9 @@ func evidence(pkt *Packet, cites []string, q *quote) string {
 	}
 	for _, id := range cites {
 		if it, ok := pick(id); ok {
-			return quoteLines(it, it.Start, min(it.End, it.Start+maxQuoteLines-1))
+			if q := quoteLines(it, it.Start, min(it.End, it.Start+maxQuoteLines-1)); q != "" {
+				return q
+			}
 		}
 	}
 	it, _ := pkt.Item(cites[0])

@@ -245,7 +245,7 @@ func (p *Poller) escalateVerify(ctx context.Context, t verifyTarget, in verify.I
 	}
 	res, err := escalateVerifyFn(ctx, p.verifyAgentConfig(ctx, t.CloneRoot), p.agentSpawner, service.VerifyAgentInput{
 		Owner: t.Owner, Repo: t.Repo, DefaultBranch: t.BaseRef, PRNumber: t.Number,
-		HeadSHA: in.Head, BaseSHA: in.Base, Packet: pkt, Findings: in.Findings,
+		HeadSHA: in.Head, BaseSHA: in.Base, Packet: pkt, Findings: in.Findings, Slots: p.ensembleSlots,
 	}, comments)
 	rep.Escalated, rep.AgentMS = res.Escalated, res.DurationMS
 	if err != nil {
