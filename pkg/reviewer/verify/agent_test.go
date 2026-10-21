@@ -184,3 +184,13 @@ func TestResolveAgentReply_ReadsTheValueJudgement(t *testing.T) {
 		t.Fatalf("decision = %+v", got[0])
 	}
 }
+
+func TestApplyAgent_RecordsTheValueReasonOnHigherSeveritiesWithoutHiding(t *testing.T) {
+	no := false
+	medium := types.LineComment{FilePath: "a.go", LineNumber: 1, Importance: "MEDIUM", CommentBody: "x"}
+	c, _ := ApplyAgent(medium, AgentDecision{Key: "F1", Decision: "keep", Reason: "r", WorthPosting: &no, ValueReason: "restates F2", DuplicateOf: "F2"})
+	c.Verification.Applied = true
+	if c.Verification.LowValue || c.Verification.Suppresses() || c.Verification.ValueReason != "duplicate of F2: restates F2" {
+		t.Fatalf("verification = %+v", c.Verification)
+	}
+}

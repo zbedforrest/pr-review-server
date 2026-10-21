@@ -167,7 +167,13 @@ func TestVerify_ReviseReplacesTheWholeFindingAndKeepsThePrior(t *testing.T) {
 
 func TestVerify_ReviseThatBreaksARuleKeepsTheFindingUnchanged(t *testing.T) {
 	cases := map[string]map[string]any{
-		"moved too far":    revised(30, nil),
+		"moved too far": revised(30, nil),
+		"line zero":     revised(0, nil),
+		"credential in a contract field": revised(2, func(r map[string]any) {
+			r["falsifiability"] = "falsifiable"
+			r["falsifiable_condition"] = "export ghp_abcdefghijklmnopqrstuvwxyz0123"
+			r["expected_observable"] = "x"
+		}),
 		"invalid contract": revised(2, func(r map[string]any) { r["falsifiability"] = "falsifiable" }),
 		"credential":       revised(2, func(r map[string]any) { r["comment_body"] = "token ghp_abcdefghijklmnopqrstuvwxyz0123" }),
 		"empty body":       revised(2, func(r map[string]any) { r["comment_body"] = "```suggestion\nx\n```" }),

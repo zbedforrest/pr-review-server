@@ -238,7 +238,7 @@ func revise(c types.LineComment, r Revision) (types.LineComment, string) {
 	if c.FindingContract == nil {
 		return c, "revise of a finding without a contract"
 	}
-	if r.LineNumber < c.LineNumber-reviseLineWindow || r.LineNumber > c.LineNumber+reviseLineWindow {
+	if r.LineNumber < 1 || r.LineNumber < c.LineNumber-reviseLineWindow || r.LineNumber > c.LineNumber+reviseLineWindow {
 		return c, "revise moved the finding too far"
 	}
 	importance := strings.ToUpper(strings.TrimSpace(r.Importance))
@@ -266,7 +266,13 @@ func revise(c types.LineComment, r Revision) (types.LineComment, string) {
 	if err := types.ValidateFindingContract(&contract); err != nil {
 		return c, "revised contract is invalid: " + err.Error()
 	}
-	for _, text := range []string{body, contract.Headline, contract.CurrentImpact, contract.Uncertainty, contract.SeverityRationale} {
+	texts := []string{body, contract.Headline, contract.CurrentImpact, contract.Uncertainty, contract.SeverityRationale}
+	for _, p := range []*string{contract.CounterfactualTrigger, contract.FalsifiableCondition, contract.ExpectedObservable} {
+		if p != nil {
+			texts = append(texts, *p)
+		}
+	}
+	for _, text := range texts {
 		if hasSecret(text) {
 			return c, "revised text contains a credential-shaped string"
 		}
@@ -342,7 +348,14 @@ func evidence(pkt *Packet, cites []string, q *quote) string {
 		}
 	}
 	it, _ := pkt.Item(cites[0])
-	return cut(it.Text, maxReasonRunes)
+	loc := it.Path
+	if it.Start > 0 {
+		loc += ":" + strconv.Itoa(it.Start)
+		if it.End > it.Start {
+			loc += "-" + strconv.Itoa(it.End)
+		}
+	}
+	return cut(strings.TrimSpace(loc+"\n"+firstLines(it.Text, maxQuoteLines)), maxReasonRunes)
 }
 
 func quoteLines(it Item, start, end int) string {

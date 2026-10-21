@@ -67,7 +67,10 @@ type verifyArtifactEntry struct {
 	Verified *types.LineComment `json:"verified,omitempty"`
 }
 
-// verifySpend is the verifier's spend for the current UTC day.
+// verifySpend is the verifier's spend for the current UTC day. allow and
+// add are separate, so concurrent verifications can each pass the check
+// before any records its cost; the overshoot is bounded by the work in
+// flight (about a dollar each), which the daily cap tolerates.
 type verifySpend struct {
 	mu  sync.Mutex
 	day string
@@ -185,9 +188,13 @@ func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input,
 		rep.Status, rep.Skip = "skipped", "over_budget"
 		return nil
 	}
-	if p.cfg.VerifyPacketCall && p.cfg.OpenRouterAPIKey == "" {
-		rep.Status, rep.Skip = "skipped", "no_key"
-		return nil
+	packetCall := p.cfg.VerifyPacketCall
+	if packetCall && p.cfg.OpenRouterAPIKey == "" {
+		if !p.cfg.VerifyEscalate {
+			rep.Status, rep.Skip = "skipped", "no_key"
+			return nil
+		}
+		packetCall = false
 	}
 	pkt, err := verify.Build(ctx, newVerifyGit(service.AgentCacheDir(t.CloneRoot, t.Owner, t.Repo)), in, verify.DefaultLimits)
 	if err != nil {
@@ -200,7 +207,7 @@ func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input,
 		rep.Status, rep.Skip = "skipped", "too_large"
 		return nil
 	}
-	if !p.cfg.VerifyPacketCall {
+	if !packetCall {
 		comments := make([]types.LineComment, 0, len(in.Findings))
 		for _, f := range in.Findings {
 			c := f.Comment
@@ -290,12 +297,14 @@ func (p *Poller) verifyAgentConfig(ctx context.Context, cloneRoot string) servic
 	}
 }
 
-// verifyWallClock bounds one verification: the packet call, plus the agent
-// run when escalation is on.
+// verifyWallClock bounds one verification: the packet call, plus one agent
+// wall clock per wave of parallel escalation batches when any finding can
+// reach the agent.
 func (p *Poller) verifyWallClock() time.Duration {
 	wall := time.Duration(p.cfg.VerifyWallClockSec) * time.Second
-	if p.cfg.VerifyEscalate {
-		wall += time.Duration(p.cfg.VerifyAgentWallClockSec) * time.Second
+	if p.cfg.VerifyEscalate || !p.cfg.VerifyPacketCall {
+		waves := (verify.MaxAgentBatches + service.AgentBatchParallel - 1) / max(1, service.AgentBatchParallel)
+		wall += time.Duration(waves*p.cfg.VerifyAgentWallClockSec) * time.Second
 	}
 	return wall
 }

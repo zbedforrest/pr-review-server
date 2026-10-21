@@ -296,3 +296,26 @@ func TestVerifyOnCountsAgentSpendInTheReviewCost(t *testing.T) {
 		t.Fatalf("report = %+v", rep)
 	}
 }
+
+func TestVerifyWithoutAnOpenRouterKeyFallsBackToTheAgent(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "alice", "unused")
+	f.p.cfg.OpenRouterAPIKey = ""
+	f.p.cfg.VerifyEscalate = true
+	calls := stubVerifyAgent(t, &verify.AgentDecision{Key: "F1", Decision: "keep", Reason: "ok"}, nil)
+	if rep := f.run(); rep.Skip != "" || len(*calls) != 1 || f.completer.calls != 0 {
+		t.Fatalf("report=%+v agent=%d packet=%d", rep, len(*calls), f.completer.calls)
+	}
+}
+
+func TestVerifyWallClockCoversEveryWaveOfBatches(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "alice", "unused")
+	f.p.cfg.VerifyEscalate, f.p.cfg.VerifyAgentWallClockSec = true, 100
+	waves := (verify.MaxAgentBatches + service.AgentBatchParallel - 1) / service.AgentBatchParallel
+	if got, want := f.p.verifyWallClock(), time.Duration(30+waves*100)*time.Second; got != want {
+		t.Fatalf("wall = %v, want %v", got, want)
+	}
+	f.p.cfg.VerifyEscalate, f.p.cfg.VerifyPacketCall = false, false
+	if got, want := f.p.verifyWallClock(), time.Duration(30+waves*100)*time.Second; got != want {
+		t.Fatalf("agent-only wall = %v, want %v", got, want)
+	}
+}

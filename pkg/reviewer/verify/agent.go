@@ -197,7 +197,8 @@ func readQuote(c AgentCite, headDir, baseDir string) string {
 // ApplyAgent records an escalated decision on the finding under the same
 // rules as Phase 1, then marks a LOW finding the agent judged not worth
 // posting. Only LOW findings are ever hidden for value, and only with a
-// stated reason; a duplicate names the finding it repeats.
+// stated reason; a duplicate names the finding it repeats. The reason is
+// recorded on higher severities too, for analysis, without hiding them.
 func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) {
 	cites := make([]string, 0, len(d.Cites))
 	for _, ci := range d.Cites {
@@ -208,14 +209,15 @@ func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) 
 		evidence: func() string { return d.Quote },
 	})
 	v := out.Verification
-	low := strings.EqualFold(strings.TrimSpace(out.Importance), "LOW")
-	if low && d.WorthPosting != nil && !*d.WorthPosting && d.ValueReason != "" && (v.Status == types.VerifyKeep || v.Status == types.VerifyRevise || v.Status == types.VerifyUnavailable) {
-		v.LowValue = true
-		v.ValueReason = cut(d.ValueReason, maxReasonRunes)
-		if d.DuplicateOf != "" {
-			v.ValueReason = cut("duplicate of "+d.DuplicateOf+": "+v.ValueReason, maxReasonRunes)
-		}
+	if d.WorthPosting == nil || *d.WorthPosting || d.ValueReason == "" {
+		return out, valid
 	}
+	v.ValueReason = cut(d.ValueReason, maxReasonRunes)
+	if d.DuplicateOf != "" {
+		v.ValueReason = cut("duplicate of "+d.DuplicateOf+": "+v.ValueReason, maxReasonRunes)
+	}
+	low := strings.EqualFold(strings.TrimSpace(out.Importance), "LOW")
+	v.LowValue = low && (v.Status == types.VerifyKeep || v.Status == types.VerifyRevise || v.Status == types.VerifyUnavailable)
 	return out, valid
 }
 
