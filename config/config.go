@@ -438,7 +438,7 @@ func Load() *Config {
 		VerifyAgentBackend:          os.Getenv("VERIFY_AGENT_BACKEND"),
 		VerifyAgentModel:            os.Getenv("VERIFY_AGENT_MODEL"),
 		VerifyAgentWallClockSec:     getPositiveEnvIntOrDefault("VERIFY_AGENT_WALL_CLOCK_SEC", 420),
-		VerifyAgentMaxTurns:         getEnvIntOrDefault("VERIFY_AGENT_MAX_TURNS", 40),
+		VerifyAgentMaxTurns:         getPositiveEnvIntOrDefault("VERIFY_AGENT_MAX_TURNS", 40),
 		AgentPrewarmRepos:           getEnvListOrDefault("AGENT_PREWARM_REPOS", nil, strings.TrimSpace),
 		NewRelicAccountID:           os.Getenv("NEW_RELIC_ACCOUNT_ID"),
 		NewRelicInsertKey:           os.Getenv("NEW_RELIC_INSERT_KEY"),

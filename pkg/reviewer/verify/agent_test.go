@@ -216,3 +216,10 @@ func TestApplyAgent_NeverHidesACriticalRevisedDownToLow(t *testing.T) {
 		t.Fatalf("verification = %+v", c.Verification)
 	}
 }
+
+func TestEstimateAgentTokens_CountsTheAgentPromptNotThePacketCall(t *testing.T) {
+	pkt, findings := fixture()
+	if a, p := EstimateAgentTokens(pkt, findings), EstimateTokens(pkt, findings); a <= 0 || a == p {
+		t.Fatalf("agent=%d packet=%d", a, p)
+	}
+}

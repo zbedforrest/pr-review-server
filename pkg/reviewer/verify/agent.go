@@ -221,6 +221,12 @@ func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) 
 	return out, valid
 }
 
+// EstimateAgentTokens approximates the escalation prompts for these
+// findings, the starting context the agent reads before exploring.
+func EstimateAgentTokens(pkt *Packet, findings []Finding) int {
+	return len(AgentPrompt(pkt, findings, "")) / 4
+}
+
 // AgentPrompt is the escalation run's prompt: the findings Phase 1 could not
 // judge, what Phase 1 saw for each, and where the merge-base checkout is.
 func AgentPrompt(pkt *Packet, findings []Finding, baseDir string) string {

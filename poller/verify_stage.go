@@ -225,6 +225,9 @@ func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input,
 	}
 	rep.PacketItems = len(pkt.Items)
 	rep.EstimatedTokens = verify.EstimateTokens(pkt, in.Findings)
+	if !packetCall {
+		rep.EstimatedTokens = verify.EstimateAgentTokens(pkt, in.Findings)
+	}
 	if p.cfg.VerifyMaxInputTokens > 0 && rep.EstimatedTokens > p.cfg.VerifyMaxInputTokens {
 		rep.Status, rep.Skip = "skipped", "too_large"
 		return nil
