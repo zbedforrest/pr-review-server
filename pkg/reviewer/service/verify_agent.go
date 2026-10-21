@@ -263,6 +263,9 @@ func EscalateVerify(ctx context.Context, cfg AgentConfig, spawner Spawner, in Ve
 			if out != nil {
 				res.CostUSD += out.CostUSD
 			}
+			if runErr == nil && out == nil {
+				runErr = errors.New("verify agent: no result")
+			}
 			if runErr != nil {
 				res.FailedBatches++
 				errs = append(errs, runErr)

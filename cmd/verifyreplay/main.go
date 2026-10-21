@@ -121,7 +121,9 @@ func main() {
 		mu.Unlock()
 		if over {
 			log.Printf("budget $%.2f reached; %s and later cases not run", *maxUSD, filepath.Base(path))
+			mu.Lock()
 			results = append(results, caseResult{Case: filepath.Base(path), Status: "not_run_budget"})
+			mu.Unlock()
 			continue
 		}
 		sem <- struct{}{}

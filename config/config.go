@@ -109,7 +109,8 @@ type Config struct {
 	// read-only agent run (VerifyAgent*; backend and model default to the
 	// review agent's backend with Opus 5.5).
 	VerifyEscalate bool
-	// VerifyPacketCall runs the one-call packet check first; off, every
+	// VerifyPacketCall runs the one-call packet check first; off (the
+	// default, the configuration the fresh-window test measured), every
 	// finding goes straight to the verify agent.
 	VerifyPacketCall        bool
 	VerifyAgentBackend      string
@@ -425,15 +426,15 @@ func Load() *Config {
 		EnsembleMaxAgents:           getEnvIntOrDefault("ENSEMBLE_MAX_AGENTS", 25),
 		EnsembleVerify:              verifyMode(os.Getenv("ENSEMBLE_VERIFY")),
 		VerifyModel:                 getEnvOrDefault("VERIFY_MODEL", "anthropic/claude-fable-5.1"),
-		VerifyWallClockSec:          getEnvIntOrDefault("VERIFY_WALL_CLOCK_SEC", 180),
+		VerifyWallClockSec:          getPositiveEnvIntOrDefault("VERIFY_WALL_CLOCK_SEC", 180),
 		VerifyMaxInputTokens:        getEnvIntOrDefault("VERIFY_MAX_INPUT_TOKENS", 150000),
 		VerifyDailyBudgetUSD:        getEnvFloatOrDefault("VERIFY_DAILY_BUDGET_USD", 150),
 		VerifyShadowSample:          min(max(getEnvFloatOrDefault("VERIFY_SHADOW_SAMPLE", 1), 0), 1),
 		VerifyEscalate:              getEnvBoolOrDefault("VERIFY_ESCALATE", true),
-		VerifyPacketCall:            getEnvBoolOrDefault("VERIFY_PACKET_CALL", true),
+		VerifyPacketCall:            getEnvBoolOrDefault("VERIFY_PACKET_CALL", false),
 		VerifyAgentBackend:          os.Getenv("VERIFY_AGENT_BACKEND"),
 		VerifyAgentModel:            os.Getenv("VERIFY_AGENT_MODEL"),
-		VerifyAgentWallClockSec:     getEnvIntOrDefault("VERIFY_AGENT_WALL_CLOCK_SEC", 420),
+		VerifyAgentWallClockSec:     getPositiveEnvIntOrDefault("VERIFY_AGENT_WALL_CLOCK_SEC", 420),
 		VerifyAgentMaxTurns:         getEnvIntOrDefault("VERIFY_AGENT_MAX_TURNS", 40),
 		AgentPrewarmRepos:           getEnvListOrDefault("AGENT_PREWARM_REPOS", nil, strings.TrimSpace),
 		NewRelicAccountID:           os.Getenv("NEW_RELIC_ACCOUNT_ID"),

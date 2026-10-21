@@ -48,7 +48,10 @@ func (g RepoGit) run(ctx context.Context, args ...string) (string, int, error) {
 }
 
 func (g RepoGit) Show(ctx context.Context, rev, path string) (string, error) {
-	if _, _, err := g.run(ctx, "cat-file", "-e", rev+":"+path); err != nil {
+	if _, code, err := g.run(ctx, "cat-file", "-e", rev+":"+path); err != nil {
+		if ctx.Err() != nil || code != 128 {
+			return "", err
+		}
 		return "", ErrNotFound
 	}
 	out, _, err := g.run(ctx, "show", rev+":"+path)

@@ -279,6 +279,7 @@ func TestVerifyDoesNotEscalateWhenTurnedOff(t *testing.T) {
 func TestVerifyWithoutThePacketCallSendsEveryFindingToTheAgent(t *testing.T) {
 	f := newVerifyFixture(t, verifyModeOn, "alice", "unused")
 	f.p.cfg.VerifyPacketCall = false
+	f.p.cfg.VerifyEscalate = true
 	f.p.cfg.OpenRouterAPIKey = ""
 	calls := stubVerifyAgent(t, &verify.AgentDecision{Key: "F1", Decision: "drop", Reason: "r", Cites: []verify.AgentCite{{File: "a.go", Start: 1, End: 1}}, Quote: "a.go:1\nx"}, nil)
 	rep := f.run()
@@ -315,7 +316,32 @@ func TestVerifyWallClockCoversEveryWaveOfBatches(t *testing.T) {
 		t.Fatalf("wall = %v, want %v", got, want)
 	}
 	f.p.cfg.VerifyEscalate, f.p.cfg.VerifyPacketCall = false, false
-	if got, want := f.p.verifyWallClock(), time.Duration(30+waves*100)*time.Second; got != want {
-		t.Fatalf("agent-only wall = %v, want %v", got, want)
+	if got := f.p.verifyWallClock(); got != 30*time.Second {
+		t.Fatalf("agent-off wall = %v", got)
+	}
+}
+
+func TestVerifyWithTheAgentOffAndNoPacketCallSkips(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "alice", "unused")
+	f.p.cfg.VerifyPacketCall, f.p.cfg.VerifyEscalate = false, false
+	calls := stubVerifyAgent(t, &verify.AgentDecision{Key: "F1", Decision: "keep", Reason: "ok"}, nil)
+	if rep := f.run(); rep.Skip != "agent_off" || len(*calls) != 0 {
+		t.Fatalf("report=%+v calls=%d", rep, len(*calls))
+	}
+}
+
+func TestShadowVerificationStopsBeforeTheWholeBudget(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "alice", dropF1)
+	f.p.cfg.VerifyDailyBudgetUSD = 1
+	f.p.verifySpend.add(time.Now(), 0.8)
+	rep := &VerifyReport{Mode: verifyModeShadow}
+	f.p.runVerify(context.Background(), verifyTarget{CloneRoot: "/tmp/x"}, verify.Input{Findings: []verify.Finding{{Key: "F1", Comment: f.review.Comments[0]}}}, rep)
+	if rep.Skip != "over_budget" {
+		t.Fatalf("shadow report = %+v", rep)
+	}
+	sync := &VerifyReport{Mode: verifyModeOn, Sync: true}
+	f.p.runVerify(context.Background(), verifyTarget{CloneRoot: "/tmp/x"}, verify.Input{Findings: []verify.Finding{{Key: "F1", Comment: f.review.Comments[0]}}}, sync)
+	if sync.Skip == "over_budget" {
+		t.Fatalf("publish-bound run was starved: %+v", sync)
 	}
 }

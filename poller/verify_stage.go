@@ -108,6 +108,11 @@ var (
 	escalateVerifyFn = service.EscalateVerify
 )
 
+// verifyShadowBudgetShare is the part of the daily budget background
+// (shadow) verifications may spend, so they cannot starve the publish-bound
+// ones that change what posts.
+const verifyShadowBudgetShare = 0.7
+
 // verifyBackground bounds background verifications per process; one that
 // finds it full is skipped rather than queued.
 var verifyBackground = make(chan struct{}, 4)
@@ -197,17 +202,21 @@ func (p *Poller) verifyEnsembleReview(ctx context.Context, execution *reviewExec
 func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input, rep *VerifyReport) []types.LineComment {
 	start := time.Now()
 	defer func() { rep.DurationMS = time.Since(start).Milliseconds() }()
-	if !p.verifySpend.allow(start, p.cfg.VerifyDailyBudgetUSD) {
+	capUSD := p.cfg.VerifyDailyBudgetUSD
+	if !rep.Sync {
+		capUSD *= verifyShadowBudgetShare
+	}
+	if !p.verifySpend.allow(start, capUSD) {
 		rep.Status, rep.Skip = "skipped", "over_budget"
 		return nil
 	}
 	packetCall := p.cfg.VerifyPacketCall
 	if packetCall && p.cfg.OpenRouterAPIKey == "" {
-		if !p.cfg.VerifyEscalate {
-			rep.Status, rep.Skip = "skipped", "no_key"
-			return nil
-		}
 		packetCall = false
+	}
+	if !packetCall && !p.cfg.VerifyEscalate {
+		rep.Status, rep.Skip = "skipped", "agent_off"
+		return nil
 	}
 	pkt, err := verify.Build(ctx, newVerifyGit(service.AgentCacheDir(t.CloneRoot, t.Owner, t.Repo)), in, verify.DefaultLimits)
 	if err != nil {
@@ -316,7 +325,7 @@ func (p *Poller) verifyAgentConfig(ctx context.Context, cloneRoot string) servic
 // reach the agent.
 func (p *Poller) verifyWallClock() time.Duration {
 	wall := time.Duration(p.cfg.VerifyWallClockSec) * time.Second
-	if p.cfg.VerifyEscalate || !p.cfg.VerifyPacketCall {
+	if p.cfg.VerifyEscalate {
 		waves := (verify.MaxAgentBatches + service.AgentBatchParallel - 1) / max(1, service.AgentBatchParallel)
 		wall += time.Duration(waves*p.cfg.VerifyAgentWallClockSec) * time.Second
 	}

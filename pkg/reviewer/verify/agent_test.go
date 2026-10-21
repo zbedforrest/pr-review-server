@@ -204,3 +204,15 @@ func TestApplyAgent_DoesNotHideAFindingWhoseDecisionWasInvalid(t *testing.T) {
 		t.Fatalf("valid=%v verification=%+v", valid, c.Verification)
 	}
 }
+
+func TestApplyAgent_NeverHidesACriticalRevisedDownToLow(t *testing.T) {
+	no := false
+	critical := types.LineComment{FilePath: "a.go", LineNumber: 2, Importance: "CRITICAL", CommentBody: "The PR removed the limit check", FindingContract: validContract()}
+	d := AgentDecision{Key: "F1", Decision: "revise", Reason: "r", Cites: []AgentCite{{File: "a.go", Start: 1, End: 1}}, WorthPosting: &no, ValueReason: "minor",
+		Revised: &Revision{LineNumber: 2, Importance: "LOW", Headline: "h", CommentBody: "smaller", Materiality: "no_user_impact", CurrentImpact: "none", Falsifiability: "not_falsifiable", Uncertainty: "u", SeverityRationale: "s"}}
+	c, _ := ApplyAgent(critical, d)
+	c.Verification.Applied = true
+	if c.Verification.Status != types.VerifyRevise || c.Verification.LowValue || c.Verification.Suppresses() {
+		t.Fatalf("verification = %+v", c.Verification)
+	}
+}
