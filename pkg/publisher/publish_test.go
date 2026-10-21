@@ -18,6 +18,7 @@ type fakeGitHub struct {
 	replies               []fakeReply
 	editErr               error
 	listErr               error
+	replyErr              error
 	nextCommentID         int64
 	nextIssueID           int64
 	nextReviewID          int64
@@ -72,6 +73,9 @@ func (g *fakeGitHub) ListIssueComments(_ context.Context, _, _ string, _ int) ([
 }
 
 func (g *fakeGitHub) PostReply(_ context.Context, _, _ string, _ int, root int64, body string) (int64, error) {
+	if g.replyErr != nil {
+		return 0, g.replyErr
+	}
 	g.nextCommentID++
 	g.replies = append(g.replies, fakeReply{root: root, body: body})
 	return g.nextCommentID, nil

@@ -267,7 +267,21 @@
 // as a hygiene note, and a row it aliases to stays open with its LastSeenSHA
 // advanced, never fixed, never reopened. A finding whose thread is already
 // open on GitHub is not held: the summary lists and counts it as still
-// open. The renderer, under the same
+// open. The repo-evidence verifier's applied decision (types.Verification)
+// is read before the publishable check, so it covers folded notes too: a
+// hold or drop on a finding with no open thread is a hold like the others
+// (verifier_hold, verifier_drop; a CRITICAL drop is read as a hold), a hold
+// on a posted root leaves it open and silent, and a drop on a posted root
+// is the one exception to the open-thread rule: the finding leaves the
+// round, PRism replies with a withdrawal quoting the refuting evidence,
+// resolves the thread and dismisses the row (terminal, never fixed, never
+// reposted; Report.Refuted). Only a publication round withdraws: a summary
+// refresh and the legacy ledger make no transition, so they list the
+// refuted root as still open until a round withdraws it. A revised finding is aliased to the row posted
+// with the text it replaced, so the summary lists the revision under the
+// existing root and no second root opens; the inline comment is not
+// edited. A decision the verifier recorded in shadow (Applied false)
+// changes nothing. The renderer, under the same
 // PUBLISH_RENDER_HYGIENE switch read at call time, strips a confidence label
 // and any internal finding label from the contract sentences, titles a
 // comment that opens with a compliment by its first reporting sentence,

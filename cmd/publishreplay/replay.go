@@ -274,14 +274,19 @@ type PRResult struct {
 	HeldReasonless        int
 	LibraryClaimsShown    int
 	RegressionClaimsShown int
-	ReasonlessNotesShown  int
-	PraiseShown           int
-	ConfidenceLabels      int
-	LeakedFindingIDs      int
-	SourceFooters         int
-	ZeroStatusLines       int
-	NoopSummaryEdits      int
-	LeadingMarkers        int
+	// Repo-evidence verifier: new findings it held or dropped off GitHub,
+	// and posted roots it withdrew.
+	VerifierHeld         int
+	VerifierDropped      int
+	Refuted              int
+	ReasonlessNotesShown int
+	PraiseShown          int
+	ConfidenceLabels     int
+	LeakedFindingIDs     int
+	SourceFooters        int
+	ZeroStatusLines      int
+	NoopSummaryEdits     int
+	LeadingMarkers       int
 	// External duplicates: roots posted on a point another reviewer's
 	// earlier root already carried, split by that thread's state; Matched
 	// and Replies are what the publisher did instead of posting.
@@ -406,13 +411,18 @@ type Metrics struct {
 	HeldReasonless        int `json:"held_reasonless_notes"`
 	LibraryClaimsShown    int `json:"library_claims_shown"`
 	RegressionClaimsShown int `json:"uncited_regression_claims_shown"`
-	ReasonlessNotesShown  int `json:"reasonless_notes_shown"`
-	PraiseShown           int `json:"praise_shown"`
-	ConfidenceLabels      int `json:"confidence_labels_rendered"`
-	LeakedFindingIDs      int `json:"leaked_finding_ids"`
-	SourceFooters         int `json:"source_footers"`
-	ZeroStatusLines       int `json:"zero_status_lines_over_notes"`
-	NoopSummaryEdits      int `json:"noop_summary_edits"`
+	// Repo-evidence verifier (chunk 8): new findings held or dropped off
+	// GitHub by an applied decision, and posted roots withdrawn.
+	VerifierHeld         int `json:"verifier_held"`
+	VerifierDropped      int `json:"verifier_dropped"`
+	Refuted              int `json:"refuted"`
+	ReasonlessNotesShown int `json:"reasonless_notes_shown"`
+	PraiseShown          int `json:"praise_shown"`
+	ConfidenceLabels     int `json:"confidence_labels_rendered"`
+	LeakedFindingIDs     int `json:"leaked_finding_ids"`
+	SourceFooters        int `json:"source_footers"`
+	ZeroStatusLines      int `json:"zero_status_lines_over_notes"`
+	NoopSummaryEdits     int `json:"noop_summary_edits"`
 	// LeadingMarkers counts the inline titles and summary bullets that
 	// open with the clamp marker or a lowercase connective (2026-10-14
 	// annoyance audit).
@@ -589,6 +599,9 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.HeldRegressionClaims += pr.HeldRegressionClaims
 		m.HeldPraise += pr.HeldPraise
 		m.HeldReasonless += pr.HeldReasonless
+		m.VerifierHeld += pr.VerifierHeld
+		m.VerifierDropped += pr.VerifierDropped
+		m.Refuted += pr.Refuted
 		m.LibraryClaimsShown += pr.LibraryClaimsShown
 		m.RegressionClaimsShown += pr.RegressionClaimsShown
 		m.ReasonlessNotesShown += pr.ReasonlessNotesShown
@@ -930,6 +943,7 @@ func (d *dailyRounds) counts() (admitted, observed []int) {
 }
 
 func countHeld(rep publisher.Report, pr *PRResult) {
+	pr.Refuted += rep.Refuted
 	for _, h := range rep.Held {
 		switch h.Reason {
 		case publisher.HoldLibraryClaim:
@@ -940,6 +954,10 @@ func countHeld(rep publisher.Report, pr *PRResult) {
 			pr.HeldPraise++
 		case publisher.HoldReasonless:
 			pr.HeldReasonless++
+		case publisher.HoldVerifierHold:
+			pr.VerifierHeld++
+		case publisher.HoldVerifierDrop:
+			pr.VerifierDropped++
 		}
 	}
 }
@@ -1455,7 +1473,7 @@ func round3(v float64) float64 {
 var csvHeader = []string{"pr", "rounds", "rounds_after_merge_commit", "rounds_skipped_unchanged_diff", "rounds_skipped_daily_cap", "rounds_missing_sidecar", "same_commit_rounds", "roots_posted", "same_marker_reposts", "same_defect_reposts", "same_round_duplicates", "fixed", "fixed_without_file_change", "fixed_without_hunk_change", "fixed_hunk_unknown", "fixed_file_change_unknown", "same_commit_resolves", "in_thread_replies", "double_notes", "threads_resolved", "threads_unresolved", "roots_resolved", "observed_roots", "observed_same_marker_reposts", "observed_same_defect_reposts", "same_commit_rounds_skipped", "nil_impact_bullets", "bare_label_titles", "external_duplicates_near", "external_duplicates_open", "external_duplicates_unknown", "external_matched", "external_replies", "observed_external_duplicates_near", "observed_external_duplicates_open",
 	"held_library_claims", "held_regression_claims", "held_praise", "held_reasonless_notes", "library_claims_shown", "uncited_regression_claims_shown", "reasonless_notes_shown", "praise_shown", "confidence_labels_rendered", "leaked_finding_ids", "source_footers", "zero_status_lines_over_notes", "noop_summary_edits", "leading_markers",
 	"external_settled", "settled_dropped", "body_covered", "summary_notes_near_external_root", "summary_notes_near_settled_root", "observed_summary_notes_near_external_root", "observed_summary_notes_near_settled_root", "observed_cross_file_same_point",
-	"cross_pr_resettled", "cross_pr_settled", "observed_cross_pr_resettled"}
+	"cross_pr_resettled", "cross_pr_settled", "observed_cross_pr_resettled", "verifier_held", "verifier_dropped", "refuted"}
 
 func writeCSV(w io.Writer, rows []PRResult) error {
 	cw := csv.NewWriter(w)
@@ -1466,7 +1484,7 @@ func writeCSV(w io.Writer, rows []PRResult) error {
 		rec := []string{r.PR, itoa(r.Rounds), itoa(r.RoundsAfterMergeCommit), itoa(r.RoundsSkippedUnchangedDiff), itoa(r.RoundsSkippedDailyCap), itoa(r.RoundsMissingSidecar), itoa(r.SameCommitRounds), itoa(r.RootsPosted), itoa(r.SameMarkerReposts), itoa(r.SameDefectReposts), itoa(r.SameRoundDuplicates), itoa(r.Fixed), itoa(r.FixedWithoutFileChange), itoa(r.FixedWithoutHunkChange), itoa(r.FixedHunkUnknown), itoa(r.FixedFileChangeUnknown), itoa(r.SameCommitResolves), itoa(r.InThreadReplies), itoa(r.DoubleNotes), itoa(r.ThreadsResolved), itoa(r.ThreadsUnresolved), itoa(r.RootsResolved), itoa(r.ObservedRoots), itoa(r.ObservedSameMarkerReposts), itoa(r.ObservedSameDefectReposts), itoa(r.SameCommitSkipped), itoa(r.NilImpactBullets), itoa(r.BareLabelTitles), itoa(r.ExternalDuplicatesNear), itoa(r.ExternalDuplicatesOpen), itoa(r.ExternalDuplicatesUnknown), itoa(r.ExternalMatched), itoa(r.ExternalReplies), itoa(r.ObservedExternalDuplicatesNear), itoa(r.ObservedExternalDuplicatesOpen),
 			itoa(r.HeldLibraryClaims), itoa(r.HeldRegressionClaims), itoa(r.HeldPraise), itoa(r.HeldReasonless), itoa(r.LibraryClaimsShown), itoa(r.RegressionClaimsShown), itoa(r.ReasonlessNotesShown), itoa(r.PraiseShown), itoa(r.ConfidenceLabels), itoa(r.LeakedFindingIDs), itoa(r.SourceFooters), itoa(r.ZeroStatusLines), itoa(r.NoopSummaryEdits), itoa(r.LeadingMarkers),
 			itoa(r.ExternalSettled), itoa(r.SettledDropped), itoa(r.BodyCovered), itoa(r.SummaryNotesNearExternalRoot), itoa(r.SummaryNotesNearSettledRoot), itoa(r.ObservedSummaryNotesNearExternalRoot), itoa(r.ObservedSummaryNotesNearSettledRoot), itoa(r.ObservedCrossFileSamePoint),
-			itoa(r.CrossPRResettled), itoa(r.CrossPRSettled), itoa(r.ObservedCrossPRResettled)}
+			itoa(r.CrossPRResettled), itoa(r.CrossPRSettled), itoa(r.ObservedCrossPRResettled), itoa(r.VerifierHeld), itoa(r.VerifierDropped), itoa(r.Refuted)}
 		if err := cw.Write(rec); err != nil {
 			return err
 		}
