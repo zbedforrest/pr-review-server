@@ -76,7 +76,7 @@ func main() {
 	flag.BoolVar(&escalate, "escalate", false, "send findings the packet check marks unavailable to the read-only verify agent")
 	agentBackend := flag.String("agent-backend", service.AgentBackendClaude, "escalation agent backend (claude runs the Claude CLI; openrouter runs codex, which re-sends uncached context every turn)")
 	agentModel := flag.String("agent-model", "claude-opus-5-5", "escalation agent model")
-	agentTurns := flag.Int("agent-turns", 40, "escalation agent turn budget")
+	agentTurns := flag.Int("agent-turns", 100, "escalation agent turn budget")
 	agentWall := flag.Duration("agent-wall", 7*time.Minute, "escalation agent wall clock")
 	flag.BoolVar(&keepSuppressed, "keep-suppressed", false, "keep held and dropped findings in the output with their applied Verification, as production does, for a publisher pass")
 	flag.Parse()
