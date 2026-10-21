@@ -529,3 +529,12 @@ func TestGetEnvFloatOrDefaultRejectsNonFiniteValues(t *testing.T) {
 		t.Errorf("42.5 -> %v", got)
 	}
 }
+
+func TestVerifyBudgetKeepsTheDefaultForANegativeValue(t *testing.T) {
+	if got := verifyBudget(-150); got != 150 {
+		t.Fatalf("negative -> %v", got)
+	}
+	if got := verifyBudget(0); got != 0 {
+		t.Fatalf("zero -> %v", got)
+	}
+}

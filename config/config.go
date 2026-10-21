@@ -100,7 +100,7 @@ type Config struct {
 	// VerifyModel judges findings; VerifyWallClockSec bounds one call;
 	// VerifyMaxInputTokens skips packets estimated larger; once
 	// VerifyDailyBudgetUSD is spent (UTC day) verification stops until the
-	// next day, 0 meaning no cap (a negative value reads as 0).
+	// next day, 0 meaning no cap (a negative value keeps the default).
 	// VerifyShadowSample is the share of dashboard-only reviews verified in
 	// shadow mode.
 	VerifyModel          string
@@ -431,7 +431,7 @@ func Load() *Config {
 		VerifyModel:                 getEnvOrDefault("VERIFY_MODEL", "anthropic/claude-fable-5.1"),
 		VerifyWallClockSec:          getPositiveEnvIntOrDefault("VERIFY_WALL_CLOCK_SEC", 180),
 		VerifyMaxInputTokens:        getEnvIntOrDefault("VERIFY_MAX_INPUT_TOKENS", 150000),
-		VerifyDailyBudgetUSD:        max(0, getEnvFloatOrDefault("VERIFY_DAILY_BUDGET_USD", 150)),
+		VerifyDailyBudgetUSD:        verifyBudget(getEnvFloatOrDefault("VERIFY_DAILY_BUDGET_USD", 150)),
 		VerifyShadowSample:          min(max(getEnvFloatOrDefault("VERIFY_SHADOW_SAMPLE", 1), 0), 1),
 		VerifyEscalate:              getEnvBoolOrDefault("VERIFY_ESCALATE", true),
 		VerifyPacketCall:            getEnvBoolOrDefault("VERIFY_PACKET_CALL", false),
@@ -515,6 +515,16 @@ func getEnvBoolOrDefault(key string, defaultValue bool) bool {
 		log.Printf("[CONFIG] %s=%q is not a boolean, keeping the default %t", key, raw, defaultValue)
 	}
 	return defaultValue
+}
+
+// verifyBudget keeps the default cap for a negative VERIFY_DAILY_BUDGET_USD,
+// which would otherwise read as "no cap".
+func verifyBudget(usd float64) float64 {
+	if usd < 0 {
+		log.Printf("[CONFIG] VERIFY_DAILY_BUDGET_USD=%g is negative, keeping the default 150", usd)
+		return 150
+	}
+	return usd
 }
 
 // verifyMode reads ENSEMBLE_VERIFY; anything but shadow or on is off.
