@@ -872,6 +872,9 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 		// Publish false keeps the review off GitHub (dashboard only). Nil
 		// means the default, which is to publish when the author is enabled.
 		Publish *bool `json:"publish"`
+		// Config carries the same per-run overrides as the v1 API; omitted
+		// means deployment defaults.
+		Config *runconfig.Overrides `json:"config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[API] generate-review: bad request body: %v", err)
@@ -930,6 +933,22 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 		createdAtPtr = &createdAt
 	}
 
+	// Resolve a requested config before any row changes, so a rejected
+	// config leaves no PR marked generating with nothing queued.
+	var configuredJob *poller.ReviewJob
+	if s.poller != nil && req.Config != nil {
+		pr := github.PullRequest{Owner: req.Owner, Repo: req.Repo, Number: req.Number, CommitSHA: headSHA,
+			Title: title, Author: author, CreatedAt: createdAtPtr, Draft: draft}
+		job, err := s.poller.PrepareReviewJob(pr, *req.Config, true, "legacy_api", nil)
+		if err != nil {
+			log.Printf("[API] generate-review: config rejected for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
+			http.Error(w, fmt.Sprintf("Invalid config: %v", err), http.StatusBadRequest)
+			return
+		}
+		job.SkipPublish = req.Publish != nil && !*req.Publish
+		configuredJob = &job
+	}
+
 	// Upsert the PR as generating. SetPRGenerating's OnConflict makes this an
 	// insert when the PR is new to us (the merged-PR case) and an update when
 	// it already exists.
@@ -986,7 +1005,26 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 	// Start the review immediately, bypassing the poll cycle entirely.
 	// force=true so the per-commit cache never short-circuits an explicit
 	// on-demand request. Background context: the review outlives this request.
-	if s.poller != nil {
+	if configuredJob != nil {
+		if err := s.poller.ProcessReviewJob(context.Background(), *configuredJob); err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, poller.ErrReviewAlreadyTracked) {
+				status = http.StatusConflict
+			}
+			log.Printf("[API] generate-review: could not queue %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
+			if status != http.StatusConflict {
+				// The row is already generating; show the failure as
+				// ProcessReviewImmediate would.
+				if projected, perr := s.db.SetPRErrorIfNoLiveReview(req.Owner, req.Repo, req.Number, err.Error()); perr != nil {
+					log.Printf("[API] generate-review: failed to persist error status for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, perr)
+				} else if projected {
+					s.BroadcastEvent(EventPRUpdated, map[string]interface{}{"owner": req.Owner, "repo": req.Repo, "number": req.Number})
+				}
+			}
+			http.Error(w, fmt.Sprintf("Could not queue review: %v", err), status)
+			return
+		}
+	} else if s.poller != nil {
 		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, headSHA, title, author, createdAtPtr, draft, true, req.Publish == nil || *req.Publish)
 	}
 

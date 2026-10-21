@@ -670,6 +670,14 @@ func (p *Poller) runAgentStage(ctx context.Context, execution *reviewExecution, 
 	agentCfg.APIDiff = result.Diff
 	ticketCtx := p.linkedTicketContext(ctx, pr, result.PRBody)
 	ticketCtx.applyTo(&agentCfg)
+	if execution.Job.Config.Effective.Agent.PinBase {
+		base, err := p.ghClientConcrete.GetPRBase(ctx, pr.Owner, pr.Repo, pr.Number)
+		if err != nil {
+			log.Printf("[REVIEWER] ERROR: PR %d base pin lookup failed: %v", pr.Number, err)
+			return nil, fmt.Errorf("agent review: base pin: %w", err)
+		}
+		agentCfg.BasePin = &service.BasePin{MergeCommitSHA: base.MergeCommitSHA, BaseSHA: base.BaseSHA, Commits: base.Commits}
+	}
 	// Pass the PR's true base branch so the clone and the deterministic-layer
 	// diff (gates, bug memory, required checks) are computed against it. With
 	// "" the diff falls back to origin/HEAD, which inflates the changed-line

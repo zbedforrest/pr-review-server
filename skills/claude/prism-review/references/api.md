@@ -37,6 +37,10 @@ Create options map directly to the v1 request:
 | `--expected-head-sha` | `target.expected_head_sha` |
 | `--idempotency-key` | `Idempotency-Key` header |
 
+`config.agent.pin_base` has no client option; set it in the request body when
+reviewing a merged PR as a benchmark, so `origin/<base>` is pinned at the PR's
+own base instead of today's tip (which already contains the fix).
+
 The server validates requested settings against the deployment's capability
 policy. A backend switch should normally specify both `--backend` and a model
 listed for that backend. `max_turns` uses the backend-specific unit and version

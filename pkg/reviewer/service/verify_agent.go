@@ -67,7 +67,7 @@ func RunAgentVerify(ctx context.Context, cfg AgentConfig, spawner Spawner, in Ve
 	defer cancel()
 	started := time.Now()
 
-	cleanupHead, err := cloneForAgent(runCtx, cfg.CloneRootDir, headDir, in.Owner, in.Repo, in.DefaultBranch, in.PRNumber, in.HeadSHA, cfg.GitHubToken)
+	cleanupHead, err := cloneForAgent(runCtx, cfg.CloneRootDir, headDir, in.Owner, in.Repo, in.DefaultBranch, in.PRNumber, in.HeadSHA, cfg.GitHubToken, cfg.BasePin)
 	if err != nil {
 		return nil, fmt.Errorf("verify agent: clone: %w", err)
 	}

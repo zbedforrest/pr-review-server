@@ -1,7 +1,9 @@
 package runconfig
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -403,5 +405,58 @@ func TestHashChangesWithEffectiveConfig(t *testing.T) {
 	}
 	if base == other {
 		t.Fatal("config hash did not change")
+	}
+}
+
+func TestResolvePinBaseIsARequestOverrideOffByDefault(t *testing.T) {
+	plain, err := Resolve(Overrides{}, testDefaults(), testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Effective.Agent.PinBase || plain.Sources["agent.pin_base"] != SourceDeploymentDefault {
+		t.Fatalf("default pin_base: %+v sources=%v", plain.Effective.Agent, plain.Sources)
+	}
+	body, _ := json.Marshal(plain.Effective)
+	if strings.Contains(string(body), "pin_base") {
+		t.Fatalf("an unpinned snapshot serializes as before, got %s", body)
+	}
+	pinned, err := Resolve(Overrides{Agent: &AgentOverrides{PinBase: ptr(true)}}, testDefaults(), testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pinned.Effective.Agent.PinBase || pinned.Sources["agent.pin_base"] != SourceRequest || pinned.Hash == plain.Hash {
+		t.Fatalf("requested pin_base: %+v sources=%v", pinned.Effective.Agent, pinned.Sources)
+	}
+}
+
+func TestExpandKeepsTheDeploymentPinAcrossProfiles(t *testing.T) {
+	base := testDefaults()
+	base.Agent.PinBase = true
+	for _, profile := range []string{ProfileFull, ProfileLite, ProfileLiteClassic, ProfileLitePlus} {
+		effective, err := Expand(profile, base)
+		if err != nil {
+			t.Fatalf("%s: %v", profile, err)
+		}
+		if !effective.Agent.PinBase {
+			t.Fatalf("%s drops the deployment pin", profile)
+		}
+	}
+}
+
+func TestDescribeProfileReportsARequestedPin(t *testing.T) {
+	base := testDefaults()
+	pinned, err := Resolve(Overrides{Agent: &AgentOverrides{PinBase: ptr(true)}}, base, testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := DescribeProfile(pinned.Effective, base)
+	found := false
+	for _, d := range desc.Deviations {
+		if strings.Contains(d, "pinned base") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a requested pin must show as a deviation, got %v", desc.Deviations)
 	}
 }

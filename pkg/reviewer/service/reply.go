@@ -133,7 +133,9 @@ func RunAgentReply(ctx context.Context, cfg AgentConfig, spawner Spawner, in Rep
 	defer cancel()
 	started := time.Now()
 
-	cleanupClone, err := cloneForAgent(runCtx, cfg.CloneRootDir, cloneDir, in.Owner, in.Repo, in.DefaultBranch, in.PRNumber, in.HeadSHA, cfg.GitHubToken)
+	// A reply answers a person on a live PR, so it reads the live base; the
+	// pin is for reviews of historical PRs.
+	cleanupClone, err := cloneForAgent(runCtx, cfg.CloneRootDir, cloneDir, in.Owner, in.Repo, in.DefaultBranch, in.PRNumber, in.HeadSHA, cfg.GitHubToken, nil)
 	if err != nil {
 		return nil, fmt.Errorf("reply: clone: %w", err)
 	}

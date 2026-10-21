@@ -50,6 +50,7 @@ type AgentOverrides struct {
 	Effort           *string `json:"effort,omitempty"`
 	WallClockSeconds *int    `json:"wall_clock_seconds,omitempty"`
 	MaxTurns         *int    `json:"max_turns,omitempty"`
+	PinBase          *bool   `json:"pin_base,omitempty"`
 	// Prompt selects a prompt shape within the profile's family (a lite
 	// profile may name any lite_* prompt); omitted means the profile's own.
 	Prompt *string `json:"prompt,omitempty"`
@@ -89,6 +90,11 @@ type Agent struct {
 	Prompt            string `json:"prompt"`
 	TurnBudgetUnit    string `json:"turn_budget_unit"`
 	TurnBudgetVersion int    `json:"turn_budget_version"`
+	// PinBase reviews a historical PR against a fix-free, per-PR checkout
+	// whose origin/<base> is pinned at the PR's own base (merge parent or
+	// fork point) instead of the live branch tip. Benchmarks need it; a live
+	// review of an open PR does not.
+	PinBase bool `json:"pin_base,omitempty"`
 }
 
 type FirstPass struct {
@@ -214,6 +220,10 @@ func Resolve(requested Overrides, defaults Effective, policy Policy) (Snapshot, 
 		if a.MaxTurns != nil {
 			effective.Agent.MaxTurns = *a.MaxTurns
 			sources["agent.max_turns"] = SourceRequest
+		}
+		if a.PinBase != nil {
+			effective.Agent.PinBase = *a.PinBase
+			sources["agent.pin_base"] = SourceRequest
 		}
 		if a.Prompt != nil {
 			effective.Agent.Prompt = strings.ToLower(strings.TrimSpace(*a.Prompt))
@@ -466,6 +476,7 @@ func defaultSources() map[string]string {
 		"agent.effort":              SourceDeploymentDefault,
 		"agent.wall_clock_seconds":  SourceDeploymentDefault,
 		"agent.max_turns":           SourceDeploymentDefault,
+		"agent.pin_base":            SourceDeploymentDefault,
 		"agent.tools":               SourceDerived,
 		"agent.prompt":              SourceDerived,
 		"agent.turn_budget_unit":    SourceDerived,

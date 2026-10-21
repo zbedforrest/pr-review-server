@@ -345,6 +345,7 @@ func (p *Poller) ReviewConfigDefaultsAndPolicy() (runconfig.Effective, runconfig
 			Effort:           effort,
 			WallClockSeconds: p.cfg.AgentWallClockSec,
 			MaxTurns:         p.cfg.AgentMaxTurns,
+			PinBase:          p.cfg.AgentPinBase,
 		},
 		FirstPass:      runconfig.FirstPass{Samples: nRequests, Provider: string(firstPassProvider), Model: firstPassModel},
 		RequiredChecks: p.cfg.RequiredChecks,

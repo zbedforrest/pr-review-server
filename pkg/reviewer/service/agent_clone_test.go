@@ -104,7 +104,7 @@ func TestCloneForAgent_CompletesShallowCacheOnceThenKeepsItComplete(t *testing.T
 		t.Helper()
 		start := time.Now()
 		dir := filepath.Join(cloneRoot, fmt.Sprintf("wt%d", n))
-		cleanup, err := cloneForAgent(context.Background(), cloneRoot, dir, "acme", "example", "main", 1, prSHA, "")
+		cleanup, err := cloneForAgent(context.Background(), cloneRoot, dir, "acme", "example", "main", 1, prSHA, "", nil)
 		if err != nil {
 			t.Fatalf("review %d cloneForAgent: %v", n, err)
 		}

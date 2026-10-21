@@ -158,6 +158,8 @@ Changing a single review does not change these deployment defaults. If both runt
 
 Configuration snapshots use schema version 3. `max_turns` is explicitly backend-specific: Claude counts assistant stream events, while OpenRouter/Codex counts completed non-reasoning work items and excludes the terminal answer. Capabilities and every durable run expose `turn_budget_unit` and `turn_budget_version`, so clients must not compare raw turn counts across backends as though they represented the same event.
 
+`config.agent.pin_base` (`AGENT_PIN_BASE=true` makes it the deployment default; a request sets it per run either way) reviews a historical PR against a fix-free checkout: a per-PR clone holding only the PR head and the PR's own base, with `origin/<base>` pinned at the merge commit's first parent (the fork point for a squash or rebase merge, the reported base tip for an open PR). The shared cache tracks the live base branch, which for a merged PR already contains its fix, so benchmarks over past PRs must set this; live reviews of open PRs do not need it. With `AGENT_CLONE_CACHE_MAX_GB` set, each pinned PR keeps its own clone under `AGENT_CLONE_ROOT_DIR` for its next run until evicted; without the cap the clone is removed with the review's worktree, so a benchmark deployment that repeats cases sets the cap.
+
 ### Recommended configuration
 
 Gates and feature flags all default to off, and the defaults are deliberately conservative. For the strongest reviews, enable the deterministic layer and force the agent to answer it:
