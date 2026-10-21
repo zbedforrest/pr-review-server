@@ -100,8 +100,8 @@ func TestPriceBookFallsBackAndRetriesHourly(t *testing.T) {
 	if !ok || p != openRouterListPrices["deepseek/deepseek-v4.1-flash"] {
 		t.Fatalf("price = %v, %v", p, ok)
 	}
-	if _, ok := priced(book, srv.URL, "anthropic/claude-fable-5.1"); ok {
-		t.Fatal("the table has no Fable entry")
+	if _, ok := priced(book, srv.URL, "acme/unlisted"); ok {
+		t.Fatal("the table priced a model it does not list")
 	}
 	if n := srv.hits.Load(); n != 1 {
 		t.Fatalf("a failed listing was refetched %d times within the retry window", n)
