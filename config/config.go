@@ -93,13 +93,16 @@ type Config struct {
 	// on top of the one agent slot each ensemble review holds.
 	EnsembleMaxAgents int
 	// EnsembleVerify is the repo-evidence verifier's mode for ensemble
-	// reviews: off, shadow (decisions recorded, nothing applied) or on.
+	// reviews: off, shadow (decisions recorded, nothing applied) or on. On
+	// marks decisions applied; what posts changes only with the publisher
+	// half that reads them (PR #207).
 	EnsembleVerify string
 	// VerifyModel judges findings; VerifyWallClockSec bounds one call;
 	// VerifyMaxInputTokens skips packets estimated larger; once
 	// VerifyDailyBudgetUSD is spent (UTC day) verification stops until the
-	// next day, 0 meaning no cap. VerifyShadowSample is the share of
-	// dashboard-only reviews verified in shadow mode.
+	// next day, 0 meaning no cap (a negative value reads as 0).
+	// VerifyShadowSample is the share of dashboard-only reviews verified in
+	// shadow mode.
 	VerifyModel          string
 	VerifyWallClockSec   int
 	VerifyMaxInputTokens int
@@ -428,7 +431,7 @@ func Load() *Config {
 		VerifyModel:                 getEnvOrDefault("VERIFY_MODEL", "anthropic/claude-fable-5.1"),
 		VerifyWallClockSec:          getPositiveEnvIntOrDefault("VERIFY_WALL_CLOCK_SEC", 180),
 		VerifyMaxInputTokens:        getEnvIntOrDefault("VERIFY_MAX_INPUT_TOKENS", 150000),
-		VerifyDailyBudgetUSD:        getEnvFloatOrDefault("VERIFY_DAILY_BUDGET_USD", 150),
+		VerifyDailyBudgetUSD:        max(0, getEnvFloatOrDefault("VERIFY_DAILY_BUDGET_USD", 150)),
 		VerifyShadowSample:          min(max(getEnvFloatOrDefault("VERIFY_SHADOW_SAMPLE", 1), 0), 1),
 		VerifyEscalate:              getEnvBoolOrDefault("VERIFY_ESCALATE", true),
 		VerifyPacketCall:            getEnvBoolOrDefault("VERIFY_PACKET_CALL", false),

@@ -345,3 +345,17 @@ func TestShadowVerificationStopsBeforeTheWholeBudget(t *testing.T) {
 		t.Fatalf("publish-bound run was starved: %+v", sync)
 	}
 }
+
+func TestShadowEscalationStopsBeforeTheWholeBudget(t *testing.T) {
+	f := newVerifyFixture(t, verifyModeOn, "alice", "unused")
+	f.p.cfg.VerifyDailyBudgetUSD = 1
+	f.p.verifySpend.add(time.Now(), 0.8)
+	calls := stubVerifyAgent(t, &verify.AgentDecision{Key: "F1", Decision: "keep", Reason: "ok"}, nil)
+	rep := &VerifyReport{Mode: verifyModeShadow}
+	c := f.review.Comments[0]
+	c.Verification = &types.Verification{Status: types.VerifyUnavailable}
+	f.p.escalateVerify(context.Background(), verifyTarget{}, verify.Input{Findings: []verify.Finding{{Key: "F1", Comment: f.review.Comments[0]}}}, nil, []types.LineComment{c}, rep)
+	if rep.AgentError != "over_budget" || len(*calls) != 0 {
+		t.Fatalf("report=%+v calls=%d", rep, len(*calls))
+	}
+}

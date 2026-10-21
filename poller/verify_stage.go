@@ -29,7 +29,7 @@ type VerifyReport struct {
 	Sync   bool   `json:"sync"`
 	Status string `json:"status"` // applied, recorded, pending, incomplete, failed, skipped
 	// Skip is why verification did not run: no_findings, not_sampled,
-	// over_budget, too_large, no_key, deadline.
+	// over_budget, too_large, agent_off, busy, deadline.
 	Skip            string         `json:"skip,omitempty"`
 	Error           string         `json:"error,omitempty"`
 	Findings        int            `json:"findings"`
@@ -268,7 +268,11 @@ func (p *Poller) runVerify(ctx context.Context, t verifyTarget, in verify.Input,
 // could not settle and folds its account into rep.
 func (p *Poller) escalateVerify(ctx context.Context, t verifyTarget, in verify.Input, pkt *verify.Packet, comments []types.LineComment, rep *VerifyReport) {
 	start := time.Now()
-	if !p.verifySpend.allow(start, p.cfg.VerifyDailyBudgetUSD) {
+	capUSD := p.cfg.VerifyDailyBudgetUSD
+	if !rep.Sync {
+		capUSD *= verifyShadowBudgetShare
+	}
+	if !p.verifySpend.allow(start, capUSD) {
 		rep.AgentError = "over_budget"
 		return
 	}
