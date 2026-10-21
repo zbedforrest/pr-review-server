@@ -41,7 +41,8 @@ RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o pr-review-server .
 FROM alpine:3.22
 
 # Pinned so the npm layer's cache key changes with the version; an unpinned
-# install reused a stale CLI layer that newer models reject.
+# install reused a stale CLI layer that newer models reject. Bump when a
+# configured agent model needs a newer CLI.
 ARG CLAUDE_CODE_VERSION=2.1.306
 ARG CODEX_VERSION=0.155.0
 
@@ -58,6 +59,7 @@ RUN apk --no-cache add \
     nodejs \
     npm \
  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
+ && claude --version && codex --version \
  && npm cache clean --force
 
 WORKDIR /app
