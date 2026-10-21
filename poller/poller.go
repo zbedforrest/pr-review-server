@@ -201,6 +201,8 @@ type Poller struct {
 	agentSlots chan struct{}
 	// ensembleSlots caps the extra agent processes ensemble reviews fan out.
 	ensembleSlots chan struct{}
+	// verifySpend is the repo-evidence verifier's spend today.
+	verifySpend verifySpend
 	// telemetry records review and ensemble events: structured JSON log
 	// lines, plus New Relic when it is configured.
 	telemetry telemetry.Recorder

@@ -46,6 +46,58 @@ type LineComment struct {
 	// "proximity" when the same-file nearby-line heuristic folded it.
 	MergedInto string `json:"merged_into,omitempty"`
 	MergeBasis string `json:"merge_basis,omitempty"`
+	// Verification is the repo-evidence verifier's decision on this finding;
+	// nil when the verifier did not run.
+	Verification *Verification `json:"verification,omitempty"`
+}
+
+// Verification statuses.
+const (
+	VerifyKeep        = "keep"
+	VerifyRevise      = "revise"
+	VerifyHold        = "hold"
+	VerifyDrop        = "drop"
+	VerifyUnavailable = "unavailable"
+	VerifySkipped     = "skipped"
+	VerifyFailed      = "failed"
+)
+
+// Verification is the verifier's decision on one merged finding. It is kept
+// apart from State because any State other than confirmed is unpublishable.
+// Applied is false in shadow mode, where publishers must ignore the decision.
+// LowValue marks a LOW finding the agent judged not worth posting (true
+// but not actionable); it keeps the note off GitHub like a hold, with
+// ValueReason saying why. Phase is 2 when the escalation agent made the decision. Proposed is the
+// model's decision when policy recorded a different
+// Status (an invalid decision, or a hold or drop on a CRITICAL). Cites are
+// evidence references: packet item ids (P3) from the one-call check, or
+// path:line and base:path:line from the agent; Evidence quotes the cited text so a
+// withdrawal can show it without the packet. For a revise, the finding
+// already carries the replacement and Prior* hold what it replaced.
+type Verification struct {
+	Status        string           `json:"status"`
+	Phase         int              `json:"phase,omitempty"`
+	Proposed      string           `json:"proposed,omitempty"`
+	Applied       bool             `json:"applied"`
+	Reason        string           `json:"reason,omitempty"`
+	Cites         []string         `json:"cites,omitempty"`
+	Evidence      string           `json:"evidence,omitempty"`
+	Model         string           `json:"model,omitempty"`
+	PriorComment  string           `json:"prior_comment,omitempty"`
+	LowValue      bool             `json:"low_value,omitempty"`
+	ValueReason   string           `json:"value_reason,omitempty"`
+	PriorContract *FindingContract `json:"prior_contract,omitempty"`
+}
+
+// Suppresses reports whether an applied decision keeps the finding from
+// being posted as new.
+func (v *Verification) Suppresses() bool {
+	return v != nil && v.Applied && (v.Status == VerifyHold || v.Status == VerifyDrop || v.LowValue)
+}
+
+// Refutes reports whether an applied decision withdraws the finding.
+func (v *Verification) Refutes() bool {
+	return v != nil && v.Applied && v.Status == VerifyDrop
 }
 
 // Disposition is the agent's verdict on one first-pass claim.

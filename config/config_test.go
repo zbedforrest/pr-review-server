@@ -516,3 +516,25 @@ func TestLoad_SettleFooterKillSwitch(t *testing.T) {
 		t.Fatal("PUBLISH_SETTLE_FOOTER=false turns it off")
 	}
 }
+
+func TestGetEnvFloatOrDefaultRejectsNonFiniteValues(t *testing.T) {
+	for _, v := range []string{"NaN", "Inf", "+Inf", "-Inf"} {
+		t.Setenv("VERIFY_TEST_FLOAT", v)
+		if got := getEnvFloatOrDefault("VERIFY_TEST_FLOAT", 150); got != 150 {
+			t.Errorf("%s -> %v", v, got)
+		}
+	}
+	t.Setenv("VERIFY_TEST_FLOAT", "42.5")
+	if got := getEnvFloatOrDefault("VERIFY_TEST_FLOAT", 150); got != 42.5 {
+		t.Errorf("42.5 -> %v", got)
+	}
+}
+
+func TestVerifyBudgetKeepsTheDefaultForANegativeValue(t *testing.T) {
+	if got := verifyBudget(-150); got != 150 {
+		t.Fatalf("negative -> %v", got)
+	}
+	if got := verifyBudget(0); got != 0 {
+		t.Fatalf("zero -> %v", got)
+	}
+}

@@ -634,7 +634,11 @@ func (p *Poller) reviewTimeout(cfg runconfig.Effective) time.Duration {
 	if margin <= 0 {
 		margin = ReviewPipelineMargin
 	}
-	return reviewTimeoutWithMargin(cfg, margin)
+	timeout := reviewTimeoutWithMargin(cfg, margin)
+	if cfg.Ensemble != nil && cfg.Ensemble.Runs > 1 {
+		timeout += p.verifyTimeoutAllowance()
+	}
+	return timeout
 }
 
 // defaultReviewProfile is the profile for callers that name none, from

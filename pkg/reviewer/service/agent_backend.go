@@ -299,6 +299,8 @@ func codexErrorMessage(v any, fallback string) string {
 // openRouterListPrices is USD per million tokens: input, cached input, output.
 var openRouterListPrices = map[string][3]float64{
 	"deepseek/deepseek-v4.1-flash": {0.30, 0.006, 1.20},
+	"anthropic/claude-fable-5.1":   {10, 0.25, 50},
+	"anthropic/claude-opus-5.5":    {4, 0.20, 20},
 }
 
 func noteCodexUsage(r *agentParseResult, ev map[string]any, modelSlug string) {

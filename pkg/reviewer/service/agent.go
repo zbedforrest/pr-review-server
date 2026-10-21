@@ -1328,6 +1328,12 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	return cleanup, nil
 }
 
+// AgentCacheDir is owner/repo's clone cache under cloneRoot. It outlives
+// the review worktrees made from it, so its objects stay readable after them.
+func AgentCacheDir(cloneRoot, owner, repo string) string {
+	return filepath.Join(cloneRoot, ".cache", fmt.Sprintf("%s__%s", owner, repo))
+}
+
 // ensureAgentCache makes sure a complete cache clone of owner/repo exists at
 // <cloneRoot>/.cache/<owner>__<repo> and returns its path. A cache miss costs
 // a full single-branch clone; a cache an older build left shallow is completed
@@ -1339,7 +1345,7 @@ func ensureAgentCache(ctx context.Context, cloneRoot, owner, repo, defaultBranch
 	if err != nil {
 		return "", fmt.Errorf("abs cloneRoot: %w", err)
 	}
-	cacheDir := filepath.Join(absCloneRoot, ".cache", fmt.Sprintf("%s__%s", owner, repo))
+	cacheDir := AgentCacheDir(absCloneRoot, owner, repo)
 	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
 
 	mu := cacheLock(owner + "/" + repo)
