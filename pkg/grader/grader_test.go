@@ -87,3 +87,11 @@ func TestPromptTruncatesTheBodyOnACharacterBoundary(t *testing.T) {
 	assert.Contains(t, p, strings.Repeat("é", maxBodyChars)+"\n[truncated]")
 	assert.True(t, utf8.ValidString(p))
 }
+
+func TestParseReplyIgnoresBracketsAroundTheArray(t *testing.T) {
+	reply := "Checked arr[i] first.\n" + `[{"id":"c1","grade":"OK","category":"-","reason":"see x.go:2 [line 2]"}]` + "\nDone [all graded]."
+	got, err := ParseReply(reply, items("c1"))
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "see x.go:2 [line 2]", got[0].Reason)
+}

@@ -73,17 +73,18 @@ func RunAgentGrade(ctx context.Context, cfg AgentConfig, spawner Spawner, in Gra
 	}()
 	baseNote := "(unavailable for this run)"
 	if in.BaseSHA != "" {
+		// Grading without the base the comments were judged against would
+		// mark change claims BAD blind; fail so the batch is retried.
 		dir, cleanupBase, err := baseWorktree(runCtx, cfg.CloneRootDir, in.Owner, in.Repo, headDir+"__base", in.BaseSHA)
 		if err != nil {
-			log.Printf("%s base checkout unavailable: %v", logPrefix, err)
-		} else {
-			baseNote = dir
-			defer func() {
-				if cerr := cleanupBase(); cerr != nil {
-					log.Printf("%s WARN: base worktree cleanup failed: %v", logPrefix, cerr)
-				}
-			}()
+			return nil, fmt.Errorf("grade agent: base checkout: %w", err)
 		}
+		baseNote = dir
+		defer func() {
+			if cerr := cleanupBase(); cerr != nil {
+				log.Printf("%s WARN: base worktree cleanup failed: %v", logPrefix, cerr)
+			}
+		}()
 	}
 	prompt, err := grader.Prompt(in.Title, in.Body, in.HeadSHA, in.BaseSHA, baseNote, in.Items)
 	if err != nil {

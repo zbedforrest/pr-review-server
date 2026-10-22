@@ -89,6 +89,28 @@ func TestRunDailyGradeCatchesUpOlderCommentsAndCountsSkippedItems(t *testing.T) 
 	assert.Zero(t, rep.Graded)
 }
 
+func TestRunDailyGradeCountsEarlierSpendTodayAgainstTheBudget(t *testing.T) {
+	p, database := newGradePoller(t, 5)
+	now := time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC)
+	seedGradeFindings(t, database, now.Add(-time.Hour), 1)
+	require.NoError(t, database.SaveCommentGrades([]db.CommentGradeModel{{Ref: "f:999", RepoOwner: "acme", RepoName: "example", PRNumber: 9,
+		Kind: "inline", PostedAt: now, Grade: "OK", CostUSD: 5, GradedAt: now.Add(-2 * time.Hour)}}))
+	calls := 0
+	stubGradeAgent(t, 1.0, &calls)
+
+	rep, err := p.RunDailyGrade(context.Background(), now, nil)
+	require.NoError(t, err)
+	assert.Zero(t, calls, "an earlier run today already spent the $5 cap")
+	assert.Equal(t, "budget", rep.Stopped)
+}
+
+func TestRunDailyGradeNeverRunsOnANonPollingDeployment(t *testing.T) {
+	p, _ := newGradePoller(t, 20)
+	p.cfg.DisablePolling = true
+	_, err := p.RunDailyGrade(context.Background(), time.Now(), nil)
+	assert.ErrorIs(t, err, ErrNotLeader)
+}
+
 func TestRunDailyGradeRefusesWhenDisabledOrAlreadyRunning(t *testing.T) {
 	p, _ := newGradePoller(t, 20)
 	p.cfg.GraderEnabled = false

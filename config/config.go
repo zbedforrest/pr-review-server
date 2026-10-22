@@ -121,9 +121,10 @@ type Config struct {
 	VerifyAgentModel        string
 	VerifyAgentWallClockSec int
 	VerifyAgentMaxTurns     int
-	// GraderEnabled lets the scheduled job (POST /api/health/grade) grade the
-	// day's posted comments; GraderDailyBudgetUSD stops a run once spent,
-	// GraderMaxItems caps the comments graded per run.
+	// GraderEnabled lets the scheduled job (POST /api/health/grade) grade
+	// comments posted in the last week that have no grade yet, oldest first;
+	// GraderDailyBudgetUSD caps grading spend per UTC day and GraderMaxItems
+	// the comments graded per run.
 	GraderEnabled        bool
 	GraderModel          string
 	GraderDailyBudgetUSD float64

@@ -72,13 +72,9 @@ func Prompt(title, body, headSHA, baseSHA, baseDir string, items []Item) (string
 // ParseReply reads the judge's JSON array, keeping only well-formed grades
 // for ids that were asked about; an item graded twice keeps the first.
 func ParseReply(reply string, items []Item) ([]Grade, error) {
-	start, end := strings.Index(reply, "["), strings.LastIndex(reply, "]")
-	if start < 0 || end <= start {
-		return nil, fmt.Errorf("grader: no JSON array in reply")
-	}
-	var raw []Grade
-	if err := json.Unmarshal([]byte(reply[start:end+1]), &raw); err != nil {
-		return nil, fmt.Errorf("grader: parse reply: %w", err)
+	raw, err := firstGradeArray(reply)
+	if err != nil {
+		return nil, err
 	}
 	asked := make(map[string]bool, len(items))
 	for _, it := range items {
@@ -98,6 +94,24 @@ func ParseReply(reply string, items []Item) ([]Grade, error) {
 		return nil, fmt.Errorf("grader: reply graded none of the %d items", len(items))
 	}
 	return out, nil
+}
+
+// firstGradeArray decodes the first JSON array of objects in reply, starting
+// at each "[" in turn; a decoder stops at the end of one value, so prose or
+// brackets after the array cannot spoil it.
+func firstGradeArray(reply string) ([]Grade, error) {
+	for i := strings.IndexByte(reply, '['); i >= 0; {
+		var raw []Grade
+		if err := json.NewDecoder(strings.NewReader(reply[i:])).Decode(&raw); err == nil && len(raw) > 0 {
+			return raw, nil
+		}
+		next := strings.IndexByte(reply[i+1:], '[')
+		if next < 0 {
+			break
+		}
+		i += next + 1
+	}
+	return nil, fmt.Errorf("grader: no JSON array of grades in reply")
 }
 
 // Candidate is one posted comment eligible for grading, with where it lives.

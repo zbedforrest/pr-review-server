@@ -130,8 +130,15 @@ func (g *GormDB) SaveCommentGrades(grades []CommentGradeModel) error {
 	return g.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "ref"}}, DoNothing: true}).Create(&grades).Error
 }
 
+// GradeSpendSince is what grading has cost since t.
+func (g *GormDB) GradeSpendSince(t time.Time) (float64, error) {
+	var total float64
+	err := g.db.Model(&CommentGradeModel{}).Where("graded_at >= ?", t).Select("COALESCE(SUM(cost_usd), 0)").Scan(&total).Error
+	return total, err
+}
+
 // qualityMetrics summarises grades made in [start, end) plus a daily BAD
-// rate for the seven days ending at end.
+// rate, by the day comments were posted, for the seven days ending at end.
 func (g *GormDB) qualityMetrics(start, end time.Time) (health.QualityMetrics, error) {
 	q := health.QualityMetrics{ByGrade: map[string]int{}, ByKind: map[string]map[string]int{}, BadCategories: map[string]int{}}
 	var rows []CommentGradeModel
@@ -160,11 +167,11 @@ func (g *GormDB) qualityMetrics(start, end time.Time) (health.QualityMetrics, er
 	for d := 6; d >= 0; d-- {
 		dayEnd := end.Add(-time.Duration(d) * 24 * time.Hour)
 		var total, bad int64
-		day := g.db.Model(&CommentGradeModel{}).Where("graded_at >= ? AND graded_at < ?", dayEnd.Add(-24*time.Hour), dayEnd)
+		day := g.db.Model(&CommentGradeModel{}).Where("posted_at >= ? AND posted_at < ?", dayEnd.Add(-24*time.Hour), dayEnd)
 		if err := day.Count(&total).Error; err != nil {
 			return q, err
 		}
-		if err := g.db.Model(&CommentGradeModel{}).Where("graded_at >= ? AND graded_at < ? AND grade = ?", dayEnd.Add(-24*time.Hour), dayEnd, "BAD").Count(&bad).Error; err != nil {
+		if err := g.db.Model(&CommentGradeModel{}).Where("posted_at >= ? AND posted_at < ? AND grade = ?", dayEnd.Add(-24*time.Hour), dayEnd, "BAD").Count(&bad).Error; err != nil {
 			return q, err
 		}
 		q.Trend = append(q.Trend, health.QualityDay{Date: dayEnd.Add(-time.Second).UTC().Format("2006-01-02"), Graded: int(total), Bad: int(bad)})

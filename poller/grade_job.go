@@ -38,6 +38,7 @@ type GradeReport struct {
 
 type gradeStore interface {
 	GradeCandidates(start, end time.Time) ([]db.GradeCandidate, error)
+	GradeSpendSince(t time.Time) (float64, error)
 	SaveCommentGrades([]db.CommentGradeModel) error
 }
 
@@ -90,6 +91,10 @@ func (p *Poller) RunDailyGrade(ctx context.Context, now time.Time, onStart func(
 		cands = append(cands, grader.Candidate{Ref: r.Ref, Owner: r.RepoOwner, Repo: r.RepoName, PRNumber: r.PRNumber,
 			HeadSHA: r.HeadSHA, BaseSHA: r.MergeBase, CommentURL: commentURL(r), Item: item})
 	}
+	spentToday, err := store.GradeSpendSince(now.Truncate(24 * time.Hour))
+	if err != nil {
+		return rep, fmt.Errorf("grade spend: %w", err)
+	}
 	kept, dropped := grader.Select(cands, p.cfg.GraderMaxItems)
 	rep.Selected, rep.Skipped = len(kept), dropped
 
@@ -100,7 +105,8 @@ func (p *Poller) RunDailyGrade(ctx context.Context, now time.Time, onStart func(
 
 	batches := grader.ByPR(kept)
 	for i, batch := range batches {
-		if p.cfg.GraderDailyBudgetUSD > 0 && rep.CostUSD >= p.cfg.GraderDailyBudgetUSD {
+		// Checked between batches, so a run can pass the cap by one batch.
+		if p.cfg.GraderDailyBudgetUSD > 0 && spentToday+rep.CostUSD >= p.cfg.GraderDailyBudgetUSD {
 			rep.Stopped = "budget"
 			for _, b := range batches[i:] {
 				rep.Skipped += len(b)
@@ -109,6 +115,10 @@ func (p *Poller) RunDailyGrade(ctx context.Context, now time.Time, onStart func(
 		}
 		if ctx.Err() != nil {
 			rep.Stopped = "cancelled"
+			break
+		}
+		if i > 0 && !p.holdsGradeLease() {
+			rep.Stopped = "lost_lease"
 			break
 		}
 		rep.Batches++
@@ -129,10 +139,13 @@ func (p *Poller) RunDailyGrade(ctx context.Context, now time.Time, onStart func(
 }
 
 // holdsGradeLease checks the poller lease without failing open (unlike the
-// poll loop, a wrong answer here costs a paid run) and without entering the
-// election on a deployment that does not poll.
+// poll loop, a wrong answer here costs a paid run). A deployment that does
+// not poll never holds the lease and never grades.
 func (p *Poller) holdsGradeLease() bool {
-	if p.holderID == "" || p.cfg.DisablePolling {
+	if p.cfg.DisablePolling {
+		return false
+	}
+	if p.holderID == "" {
 		return true
 	}
 	leader, err := p.db.TryAcquireOrRenewLeadership(p.holderID, p.generation, leaderLeaseTTL)
