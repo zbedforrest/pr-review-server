@@ -93,6 +93,8 @@ The most common ones:
 | `PUBLISH_SETTLE_FOOTER` | No | `false` drops the settle and opt-out footer from posted comments and summaries; default on |
 | `PUBLISH_RESOLVE_NOTES` | No | Default `false`: resolving a PRism thread (a fixed finding, or `threadcleanup`) posts no reply; the ledger records the transition. `true` restores the old in-thread notes ("Not seen at <sha7>.", "Resolving: ...") |
 | `HEALTH_JOB_TOKEN` | No | Enables `POST /api/health/daily` for a scheduler (header `X-Prism-Job-Token`); the report is stored and readable at `GET /api/health/daily` (`?format=md`) |
+| `GRADER_ENABLED` | No | `true` lets `POST /api/health/grade` (same job token) grade posted comments on the audit rubric for the health report's comment quality line; off by default |
+| `GRADER_MODEL`, `GRADER_DAILY_BUDGET_USD`, `GRADER_MAX_ITEMS`, `GRADER_WALL_CLOCK_SEC`, `GRADER_MAX_TURNS` | No | Grader judge model (`claude-fable-5-1`), spend cap per UTC day (`20`), comments per run (`60`), and per-PR agent limits (`900`, `120`) |
 | `FEEDBACK_DIGEST` | No | `true` lets the daily health run scan GitHub for author feedback on PRism comments and classify it with a model call; default off. See [Daily health report and author feedback](#daily-health-report-and-author-feedback) |
 | `GITHUB_WEBHOOK_SECRET` | No | Secret for the GitHub App webhook at `POST /webhooks/github` (`X-Hub-Signature-256`); empty leaves the endpoint disabled. See [Automatic reviews](#automatic-reviews-for-allowlisted-authors) |
 | `PUBLISH_RENDER_V2` | No | Default `true`: summary bullets and inline titles use the finding's headline, else its comment's first sentence, and the impact sentence only when the contract asserts current impact. `false` restores the impact-sentence titles; the word-boundary shortening of headlines over 90 runes (previously blanked) is not switchable |
@@ -353,6 +355,7 @@ The agent otherwise reviews a PR without knowing the intent recorded in its Jira
 - `POST /api/prs/generate-review` — backward-compatible review creation for callers that do not need customization
 - `GET /api/status` — health check, including webhook ingress counters
 - `GET /api/health/daily`: stored daily health reports (`?format=md` for the newest as markdown); `POST` with `X-Prism-Job-Token` runs one
+- `POST /api/health/grade`: with `X-Prism-Job-Token` and `GRADER_ENABLED=true`, starts a background run that grades the last week's ungraded comments (lease holder only; `202` when started, `409` when not the lease holder or already running)
 - `GET /api/health/feedback`: author feedback on PRism comments (`?format=md|json`, `?days=1|7`)
 - `POST /webhooks/github` — GitHub App webhook (HMAC-authenticated; `pull_request` events feed automatic reviews, other events are acknowledged)
 

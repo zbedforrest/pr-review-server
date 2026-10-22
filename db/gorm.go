@@ -128,6 +128,7 @@ func (g *GormDB) AutoMigrate() error {
 		&WebhookDeliveryModel{},
 		&AutoReviewIntentModel{},
 		&FeedbackItemModel{},
+		&CommentGradeModel{},
 	); err != nil {
 		return err
 	}
@@ -230,6 +231,11 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if !g.db.Migrator().HasTable(&PublishedFindingModel{}) {
 		if err := g.db.Migrator().CreateTable(&PublishedFindingModel{}); err != nil {
 			return fmt.Errorf("create published_findings: %w", err)
+		}
+	}
+	if !g.db.Migrator().HasTable(&CommentGradeModel{}) {
+		if err := g.db.Migrator().CreateTable(&CommentGradeModel{}); err != nil {
+			return fmt.Errorf("create comment_grades: %w", err)
 		}
 	}
 	if !g.db.Migrator().HasTable(&PublishedReplyModel{}) {

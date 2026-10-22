@@ -121,6 +121,16 @@ type Config struct {
 	VerifyAgentModel        string
 	VerifyAgentWallClockSec int
 	VerifyAgentMaxTurns     int
+	// GraderEnabled lets the scheduled job (POST /api/health/grade) grade
+	// comments posted in the last week that have no grade yet, oldest first;
+	// GraderDailyBudgetUSD caps grading spend per UTC day and GraderMaxItems
+	// the comments graded per run.
+	GraderEnabled        bool
+	GraderModel          string
+	GraderDailyBudgetUSD float64
+	GraderMaxItems       int
+	GraderWallClockSec   int
+	GraderMaxTurns       int
 	// AgentPrewarmRepos are owner/repo clone caches built at startup; empty
 	// warms the most-reviewed repos instead.
 	AgentPrewarmRepos []string
@@ -440,6 +450,12 @@ func Load() *Config {
 		VerifyAgentModel:            os.Getenv("VERIFY_AGENT_MODEL"),
 		VerifyAgentWallClockSec:     getPositiveEnvIntOrDefault("VERIFY_AGENT_WALL_CLOCK_SEC", 420),
 		VerifyAgentMaxTurns:         getPositiveEnvIntOrDefault("VERIFY_AGENT_MAX_TURNS", 100),
+		GraderEnabled:               getEnvBoolOrDefault("GRADER_ENABLED", false),
+		GraderModel:                 getEnvOrDefault("GRADER_MODEL", "claude-fable-5-1"),
+		GraderDailyBudgetUSD:        graderBudget(getEnvFloatOrDefault("GRADER_DAILY_BUDGET_USD", 20)),
+		GraderMaxItems:              getPositiveEnvIntOrDefault("GRADER_MAX_ITEMS", 60),
+		GraderWallClockSec:          getPositiveEnvIntOrDefault("GRADER_WALL_CLOCK_SEC", 900),
+		GraderMaxTurns:              getPositiveEnvIntOrDefault("GRADER_MAX_TURNS", 120),
 		AgentPrewarmRepos:           getEnvListOrDefault("AGENT_PREWARM_REPOS", nil, strings.TrimSpace),
 		NewRelicAccountID:           os.Getenv("NEW_RELIC_ACCOUNT_ID"),
 		NewRelicInsertKey:           os.Getenv("NEW_RELIC_INSERT_KEY"),
@@ -517,6 +533,16 @@ func getEnvBoolOrDefault(key string, defaultValue bool) bool {
 		log.Printf("[CONFIG] %s=%q is not a boolean, keeping the default %t", key, raw, defaultValue)
 	}
 	return defaultValue
+}
+
+// graderBudget keeps the default cap for a negative GRADER_DAILY_BUDGET_USD,
+// so a typo cannot lift the cap.
+func graderBudget(usd float64) float64 {
+	if usd < 0 {
+		log.Printf("[CONFIG] GRADER_DAILY_BUDGET_USD=%g is negative, keeping the default 20", usd)
+		return 20
+	}
+	return usd
 }
 
 // verifyBudget keeps the default cap for a negative VERIFY_DAILY_BUDGET_USD,

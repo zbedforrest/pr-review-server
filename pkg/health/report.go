@@ -33,6 +33,7 @@ type Metrics struct {
 	Publish    PublishMetrics    `json:"publish"`
 	Replies    ReplyMetrics      `json:"replies"`
 	Feedback   FeedbackMetrics   `json:"feedback"`
+	Quality    QualityMetrics    `json:"quality"`
 	Telemetry  map[string]int    `json:"telemetry"` // action -> events in the window
 	Lease      LeaseMetrics      `json:"lease"`
 	PRErrors   int               `json:"pr_errors"`     // PRs currently carrying an error message
@@ -158,6 +159,37 @@ type FeedbackMetrics struct {
 	ByLabel    map[string]int  `json:"by_label"`
 	Frustrated []FeedbackQuote `json:"frustrated"`
 	Happy      *FeedbackQuote  `json:"happy,omitempty"`
+}
+
+// QualityMetrics is the daily grader's verdicts on comments graded in the
+// window, on the audit rubric (GOOD, OK, BAD).
+type QualityMetrics struct {
+	// Enabled is whether the deployment runs the grader; an enabled grader
+	// that graded nothing is a failure, not a quiet day.
+	Enabled       bool                      `json:"enabled"`
+	Graded        int                       `json:"graded"`
+	ByGrade       map[string]int            `json:"by_grade"`
+	ByKind        map[string]map[string]int `json:"by_kind"`
+	BadCategories map[string]int            `json:"bad_categories"`
+	Worst         []QualityExample          `json:"worst"`
+	Trend         []QualityDay              `json:"trend"`
+	CostUSD       float64                   `json:"cost_usd"`
+}
+
+// QualityExample is one comment graded BAD.
+type QualityExample struct {
+	Kind     string `json:"kind"`
+	Severity string `json:"severity"`
+	Category string `json:"category"`
+	Reason   string `json:"reason"`
+	URL      string `json:"url"`
+}
+
+// QualityDay is one day of the BAD-rate trend.
+type QualityDay struct {
+	Date   string `json:"date"`
+	Graded int    `json:"graded"`
+	Bad    int    `json:"bad"`
 }
 
 // FeedbackQuote is one item worth a human's eyes: who, a short quote, where.
@@ -297,6 +329,7 @@ func Evaluate(m Metrics) Report {
 	add("publications", StatusOK, fmt.Sprintf("%d PRs got their first summary comment, %d inline comments posted, %d annotation-only findings; %d findings currently dismissed by concession (all time)", m.Publish.Summaries, m.Publish.Inline, m.Publish.Annotations, m.Publish.Dismissed))
 	add("publication hygiene", StatusOK, hygieneDetail(m.Telemetry))
 	add("author feedback", feedbackStatus(m.Feedback), feedbackDetail(m.Feedback))
+	add("comment quality", qualityStatus(m.Quality), qualityDetail(m.Quality))
 
 	replyDetail := fmt.Sprintf("%d author replies handled", m.Replies.Handled)
 	if m.Replies.Handled > 0 {
@@ -523,4 +556,77 @@ func feedbackDetail(f FeedbackMetrics) string {
 		fmt.Fprintf(&b, "; happy: @%s: \"%s\" %s", f.Happy.Author, f.Happy.Quote, f.Happy.URL)
 	}
 	return b.String()
+}
+
+// Comment-quality thresholds: the share of graded comments judged BAD. The
+// 2026-10 audits measured about 48% before the verifier and about 20% after.
+const (
+	qualityMinGraded   = 10
+	qualityWarnBadRate = 0.35
+	qualityCritBadRate = 0.50
+)
+
+func qualityStatus(q QualityMetrics) Status {
+	if q.Enabled && q.Graded == 0 {
+		return StatusWarn
+	}
+	if q.Graded < qualityMinGraded {
+		return StatusOK
+	}
+	switch rate := float64(q.ByGrade["BAD"]) / float64(q.Graded); {
+	case rate >= qualityCritBadRate:
+		return StatusCritical
+	case rate >= qualityWarnBadRate:
+		return StatusWarn
+	}
+	return StatusOK
+}
+
+func qualityDetail(q QualityMetrics) string {
+	if q.Graded == 0 {
+		if q.Enabled {
+			return "grader enabled but nothing graded in the window (check the scheduled job and [GRADE] logs)"
+		}
+		return "no comments graded in the window"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d graded: %d good, %d ok, %d bad (%d%% bad)", q.Graded, q.ByGrade["GOOD"], q.ByGrade["OK"], q.ByGrade["BAD"], 100*q.ByGrade["BAD"]/q.Graded)
+	if q.Graded < qualityMinGraded {
+		b.WriteString(", too few to judge")
+	}
+	kinds := make([]string, 0, len(q.ByKind))
+	for k := range q.ByKind {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	for _, k := range kinds {
+		n := sumValues(q.ByKind[k])
+		fmt.Fprintf(&b, "; %s %d/%d bad", k, q.ByKind[k]["BAD"], n)
+	}
+	if len(q.BadCategories) > 0 {
+		fmt.Fprintf(&b, "; bad by kind of problem: %s", countList(q.BadCategories))
+	}
+	var trend []string
+	for _, d := range q.Trend {
+		if d.Graded == 0 {
+			trend = append(trend, "-")
+			continue
+		}
+		trend = append(trend, fmt.Sprintf("%d%%", 100*d.Bad/d.Graded))
+	}
+	if len(trend) > 0 {
+		fmt.Fprintf(&b, "; bad rate by post date, last 7 days %s", strings.Join(trend, " "))
+	}
+	for _, w := range q.Worst {
+		fmt.Fprintf(&b, "; worst: %s %s %s (%s) %s", w.Severity, w.Kind, w.Category, clip(w.Reason, 200), w.URL)
+	}
+	fmt.Fprintf(&b, "; grading cost $%.2f", q.CostUSD)
+	return b.String()
+}
+
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
