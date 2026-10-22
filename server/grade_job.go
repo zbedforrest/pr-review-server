@@ -12,11 +12,7 @@ import (
 	"pr-review-server/poller"
 )
 
-const (
-	dailyGradePath = "/api/health/grade"
-	// gradeRunTimeout bounds one background grading run.
-	gradeRunTimeout = 3 * time.Hour
-)
+const dailyGradePath = "/api/health/grade"
 
 type dailyGrader interface {
 	RunDailyGrade(ctx context.Context, now time.Time, onStart func()) (poller.GradeReport, error)
@@ -49,7 +45,10 @@ func (s *Server) handleDailyGradeJob(w http.ResponseWriter, r *http.Request) {
 	}
 	started := make(chan error, 1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), gradeRunTimeout)
+		// Room for every selected comment to be its own PR batch at the full
+		// agent wall clock; the daily budget normally ends a run far sooner.
+		timeout := time.Duration(max(1, s.cfg.GraderMaxItems)*max(1, s.cfg.GraderWallClockSec)) * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		begun := false
 		rep, err := g.RunDailyGrade(ctx, time.Now().UTC(), func() { begun = true; started <- nil })

@@ -69,17 +69,32 @@ func Prompt(title, body, headSHA, baseSHA, baseDir string, items []Item) (string
 	).Replace(promptTemplate), nil
 }
 
-// ParseReply reads the judge's JSON array, keeping only well-formed grades
-// for ids that were asked about; an item graded twice keeps the first.
+// ParseReply reads the judge's grades from the first JSON array in reply
+// that grades at least one asked item, so prose, brackets or an echoed copy
+// of the input around it cannot spoil it. An item graded twice keeps the
+// first grade.
 func ParseReply(reply string, items []Item) ([]Grade, error) {
-	raw, err := firstGradeArray(reply)
-	if err != nil {
-		return nil, err
-	}
 	asked := make(map[string]bool, len(items))
 	for _, it := range items {
 		asked[it.ID] = true
 	}
+	for i := strings.IndexByte(reply, '['); i >= 0; {
+		var raw []Grade
+		if err := json.NewDecoder(strings.NewReader(reply[i:])).Decode(&raw); err == nil {
+			if out := validGrades(raw, asked); len(out) > 0 {
+				return out, nil
+			}
+		}
+		next := strings.IndexByte(reply[i+1:], '[')
+		if next < 0 {
+			break
+		}
+		i += next + 1
+	}
+	return nil, fmt.Errorf("grader: reply graded none of the %d items", len(items))
+}
+
+func validGrades(raw []Grade, asked map[string]bool) []Grade {
 	seen := map[string]bool{}
 	var out []Grade
 	for _, g := range raw {
@@ -90,28 +105,7 @@ func ParseReply(reply string, items []Item) ([]Grade, error) {
 		seen[g.ID] = true
 		out = append(out, g)
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("grader: reply graded none of the %d items", len(items))
-	}
-	return out, nil
-}
-
-// firstGradeArray decodes the first JSON array of objects in reply, starting
-// at each "[" in turn; a decoder stops at the end of one value, so prose or
-// brackets after the array cannot spoil it.
-func firstGradeArray(reply string) ([]Grade, error) {
-	for i := strings.IndexByte(reply, '['); i >= 0; {
-		var raw []Grade
-		if err := json.NewDecoder(strings.NewReader(reply[i:])).Decode(&raw); err == nil && len(raw) > 0 {
-			return raw, nil
-		}
-		next := strings.IndexByte(reply[i+1:], '[')
-		if next < 0 {
-			break
-		}
-		i += next + 1
-	}
-	return nil, fmt.Errorf("grader: no JSON array of grades in reply")
+	return out
 }
 
 // Candidate is one posted comment eligible for grading, with where it lives.

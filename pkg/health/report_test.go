@@ -372,7 +372,7 @@ func TestCommentQualityCheckFlagsAHighBadRate(t *testing.T) {
 		t.Fatalf("status = %s, want warn", got)
 	}
 	detail := qualityDetail(q)
-	for _, want := range []string{"20 graded: 5 good, 7 ok, 8 bad (40% bad)", "7-day bad rate - 40%", "grading cost $12.50"} {
+	for _, want := range []string{"20 graded: 5 good, 7 ok, 8 bad (40% bad)", "bad rate by post date, last 7 days - 40%", "grading cost $12.50"} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("detail %q missing %q", detail, want)
 		}

@@ -452,7 +452,7 @@ func Load() *Config {
 		VerifyAgentMaxTurns:         getPositiveEnvIntOrDefault("VERIFY_AGENT_MAX_TURNS", 100),
 		GraderEnabled:               getEnvBoolOrDefault("GRADER_ENABLED", false),
 		GraderModel:                 getEnvOrDefault("GRADER_MODEL", "claude-fable-5-1"),
-		GraderDailyBudgetUSD:        max(getEnvFloatOrDefault("GRADER_DAILY_BUDGET_USD", 20), 0),
+		GraderDailyBudgetUSD:        graderBudget(getEnvFloatOrDefault("GRADER_DAILY_BUDGET_USD", 20)),
 		GraderMaxItems:              getPositiveEnvIntOrDefault("GRADER_MAX_ITEMS", 60),
 		GraderWallClockSec:          getPositiveEnvIntOrDefault("GRADER_WALL_CLOCK_SEC", 900),
 		GraderMaxTurns:              getPositiveEnvIntOrDefault("GRADER_MAX_TURNS", 120),
@@ -533,6 +533,16 @@ func getEnvBoolOrDefault(key string, defaultValue bool) bool {
 		log.Printf("[CONFIG] %s=%q is not a boolean, keeping the default %t", key, raw, defaultValue)
 	}
 	return defaultValue
+}
+
+// graderBudget keeps the default cap for a negative GRADER_DAILY_BUDGET_USD,
+// so a typo cannot lift the cap.
+func graderBudget(usd float64) float64 {
+	if usd < 0 {
+		log.Printf("[CONFIG] GRADER_DAILY_BUDGET_USD=%g is negative, keeping the default 20", usd)
+		return 20
+	}
+	return usd
 }
 
 // verifyBudget keeps the default cap for a negative VERIFY_DAILY_BUDGET_USD,

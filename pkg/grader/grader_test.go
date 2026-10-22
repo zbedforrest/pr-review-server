@@ -95,3 +95,11 @@ func TestParseReplyIgnoresBracketsAroundTheArray(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, "see x.go:2 [line 2]", got[0].Reason)
 }
+
+func TestParseReplySkipsAnEchoedCopyOfTheItems(t *testing.T) {
+	reply := `Items: [{"id":"c1","kind":"inline","comment":"x"}]` + "\n" + `[{"id":"c1","grade":"GOOD","category":"-","reason":"a.go:1"}]`
+	got, err := ParseReply(reply, items("c1"))
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, GradeGood, got[0].Grade)
+}

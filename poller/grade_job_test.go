@@ -2,6 +2,7 @@ package poller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -102,6 +103,26 @@ func TestRunDailyGradeCountsEarlierSpendTodayAgainstTheBudget(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, calls, "an earlier run today already spent the $5 cap")
 	assert.Equal(t, "budget", rep.Stopped)
+}
+
+func TestRunDailyGradeCountsFailedBatchSpendAgainstLaterRuns(t *testing.T) {
+	p, database := newGradePoller(t, 3)
+	now := time.Date(2026, 10, 23, 8, 0, 0, 0, time.UTC)
+	seedGradeFindings(t, database, now.Add(-time.Hour), 1, 2)
+	prev := gradeAgentFn
+	t.Cleanup(func() { gradeAgentFn = prev })
+	calls := 0
+	gradeAgentFn = func(_ context.Context, _ service.AgentConfig, _ service.Spawner, _ service.GradeAgentInput) (*service.GradeAgentResult, error) {
+		calls++
+		return &service.GradeAgentResult{CostUSD: 2}, errors.New("judge timed out")
+	}
+
+	rep, err := p.RunDailyGrade(context.Background(), now, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 2, rep.Failed)
+	_, err = p.RunDailyGrade(context.Background(), now.Add(time.Hour), nil)
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls, "the $4 the failed batches cost already passed the $3 cap")
 }
 
 func TestRunDailyGradeNeverRunsOnANonPollingDeployment(t *testing.T) {

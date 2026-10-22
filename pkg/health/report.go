@@ -615,7 +615,7 @@ func qualityDetail(q QualityMetrics) string {
 		trend = append(trend, fmt.Sprintf("%d%%", 100*d.Bad/d.Graded))
 	}
 	if len(trend) > 0 {
-		fmt.Fprintf(&b, "; 7-day bad rate %s", strings.Join(trend, " "))
+		fmt.Fprintf(&b, "; bad rate by post date, last 7 days %s", strings.Join(trend, " "))
 	}
 	for _, w := range q.Worst {
 		fmt.Fprintf(&b, "; worst: %s %s %s (%s) %s", w.Severity, w.Kind, w.Category, clip(w.Reason, 200), w.URL)

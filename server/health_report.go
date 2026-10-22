@@ -89,7 +89,7 @@ func (s *Server) runDailyHealth(store healthStore, now time.Time, feedbackRun fe
 		metrics.AutoReview.SyncDebounce = time.Duration(s.cfg.AutoReviewSyncDebounceSec) * time.Second
 	}
 	metrics.Feedback = s.feedbackMetrics(now, feedbackRun)
-	metrics.Quality.Enabled = s.cfg.GraderEnabled
+	metrics.Quality.Enabled = s.cfg.GraderEnabled && !s.cfg.DisablePolling
 	report := health.Evaluate(metrics)
 	body, err := json.Marshal(report)
 	if err != nil {

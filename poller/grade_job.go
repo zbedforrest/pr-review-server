@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,6 +46,25 @@ type gradeStore interface {
 var gradeAgentFn = service.RunAgentGrade
 
 var gradeRunning atomic.Bool
+
+// unrecordedSpend is what failed batches cost on gradeSpendDay. Successful
+// spend lives in comment_grades; this keeps failures under the daily cap
+// too, for the life of the process (only the lease holder grades).
+var (
+	unrecordedMu    sync.Mutex
+	unrecordedDay   string
+	unrecordedSpend float64
+)
+
+func failedSpend(day string, add float64) float64 {
+	unrecordedMu.Lock()
+	defer unrecordedMu.Unlock()
+	if unrecordedDay != day {
+		unrecordedDay, unrecordedSpend = day, 0
+	}
+	unrecordedSpend += add
+	return unrecordedSpend
+}
 
 // gradeLookback is how far back a run looks for ungraded comments, so a
 // day over the cap or the budget is caught up later instead of lost.
@@ -91,10 +111,12 @@ func (p *Poller) RunDailyGrade(ctx context.Context, now time.Time, onStart func(
 		cands = append(cands, grader.Candidate{Ref: r.Ref, Owner: r.RepoOwner, Repo: r.RepoName, PRNumber: r.PRNumber,
 			HeadSHA: r.HeadSHA, BaseSHA: r.MergeBase, CommentURL: commentURL(r), Item: item})
 	}
+	day := now.UTC().Format("2006-01-02")
 	spentToday, err := store.GradeSpendSince(now.Truncate(24 * time.Hour))
 	if err != nil {
 		return rep, fmt.Errorf("grade spend: %w", err)
 	}
+	spentToday += failedSpend(day, 0)
 	kept, dropped := grader.Select(cands, p.cfg.GraderMaxItems)
 	rep.Selected, rep.Skipped = len(kept), dropped
 
@@ -129,6 +151,7 @@ func (p *Poller) RunDailyGrade(ctx context.Context, now time.Time, onStart func(
 			rep.Missing += len(batch) - graded
 		}
 		if err != nil {
+			failedSpend(day, cost)
 			rep.Failed++
 			log.Printf("[GRADE %s/%s#%d] %v", batch[0].Owner, batch[0].Repo, batch[0].PRNumber, err)
 		}
