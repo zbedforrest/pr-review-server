@@ -56,8 +56,8 @@ func Prompt(title, body, headSHA, baseSHA, baseDir string, items []Item) (string
 	if err != nil {
 		return "", err
 	}
-	if len(body) > maxBodyChars {
-		body = body[:maxBodyChars] + "\n[truncated]"
+	if r := []rune(body); len(r) > maxBodyChars {
+		body = string(r[:maxBodyChars]) + "\n[truncated]"
 	}
 	return strings.NewReplacer(
 		"{{TITLE}}", title,

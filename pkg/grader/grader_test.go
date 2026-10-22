@@ -3,6 +3,7 @@ package grader
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -77,4 +78,12 @@ func TestPromptFillsPlaceholdersAndTruncatesTheBody(t *testing.T) {
 	}
 	assert.NotContains(t, p, "{{")
 	assert.NotContains(t, p, strings.Repeat("x", maxBodyChars+1))
+}
+
+func TestPromptTruncatesTheBodyOnACharacterBoundary(t *testing.T) {
+	body := strings.Repeat("é", maxBodyChars+1)
+	p, err := Prompt("t", body, "h", "b", "d", items("c1"))
+	require.NoError(t, err)
+	assert.Contains(t, p, strings.Repeat("é", maxBodyChars)+"\n[truncated]")
+	assert.True(t, utf8.ValidString(p))
 }

@@ -23,14 +23,17 @@ var (
 
 // GradeReport is what one daily grading run did.
 type GradeReport struct {
-	Candidates int     `json:"candidates"`
-	Selected   int     `json:"selected"`
-	Graded     int     `json:"graded"`
-	Skipped    int     `json:"skipped"`
-	Batches    int     `json:"batches"`
-	Failed     int     `json:"failed"`
-	CostUSD    float64 `json:"cost_usd"`
-	Stopped    string  `json:"stopped,omitempty"`
+	Candidates int `json:"candidates"`
+	Selected   int `json:"selected"`
+	Graded     int `json:"graded"`
+	Skipped    int `json:"skipped"`
+	Batches    int `json:"batches"`
+	Failed     int `json:"failed"`
+	// Missing counts items a judge reply left out; they stay ungraded and
+	// are offered again on the next run.
+	Missing int     `json:"missing"`
+	CostUSD float64 `json:"cost_usd"`
+	Stopped string  `json:"stopped,omitempty"`
 }
 
 type gradeStore interface {
@@ -42,9 +45,14 @@ var gradeAgentFn = service.RunAgentGrade
 
 var gradeRunning atomic.Bool
 
-// RunDailyGrade grades the comments posted in the 24 hours before now, one
-// agent run per PR head, until the run budget is spent. Only the poller
-// lease holder runs it, so a deploy overlap cannot grade the same day twice.
+// gradeLookback is how far back a run looks for ungraded comments, so a
+// day over the cap or the budget is caught up later instead of lost.
+const gradeLookback = 7 * 24 * time.Hour
+
+// RunDailyGrade grades ungraded comments posted in the week before now,
+// oldest first, one agent run per PR head, until the run budget is spent.
+// Only the poller lease holder runs it, so a deploy overlap cannot pay to
+// grade the same comments twice.
 // onStart, when set, is called once the run has passed its checks and begun.
 func (p *Poller) RunDailyGrade(ctx context.Context, now time.Time, onStart func()) (GradeReport, error) {
 	var rep GradeReport
@@ -55,7 +63,7 @@ func (p *Poller) RunDailyGrade(ctx context.Context, now time.Time, onStart func(
 		return rep, ErrGraderBusy
 	}
 	defer gradeRunning.Store(false)
-	if !p.updateLeadership(ctx) {
+	if !p.holdsGradeLease() {
 		return rep, ErrNotLeader
 	}
 	store, ok := p.db.(gradeStore)
@@ -65,7 +73,7 @@ func (p *Poller) RunDailyGrade(ctx context.Context, now time.Time, onStart func(
 	if onStart != nil {
 		onStart()
 	}
-	rows, err := store.GradeCandidates(now.Add(-24*time.Hour), now)
+	rows, err := store.GradeCandidates(now.Add(-gradeLookback), now)
 	if err != nil {
 		return rep, fmt.Errorf("grade candidates: %w", err)
 	}
@@ -107,14 +115,32 @@ func (p *Poller) RunDailyGrade(ctx context.Context, now time.Time, onStart func(
 		graded, cost, err := p.gradeBatch(ctx, cfg, batch, byID, store, now)
 		rep.CostUSD += cost
 		rep.Graded += graded
+		if err == nil {
+			rep.Missing += len(batch) - graded
+		}
 		if err != nil {
 			rep.Failed++
 			log.Printf("[GRADE %s/%s#%d] %v", batch[0].Owner, batch[0].Repo, batch[0].PRNumber, err)
 		}
 	}
-	log.Printf("[GRADE] candidates=%d selected=%d graded=%d skipped=%d batches=%d failed=%d cost=$%.2f stopped=%s",
-		rep.Candidates, rep.Selected, rep.Graded, rep.Skipped, rep.Batches, rep.Failed, rep.CostUSD, rep.Stopped)
+	log.Printf("[GRADE] candidates=%d selected=%d graded=%d missing=%d skipped=%d batches=%d failed=%d cost=$%.2f stopped=%s",
+		rep.Candidates, rep.Selected, rep.Graded, rep.Missing, rep.Skipped, rep.Batches, rep.Failed, rep.CostUSD, rep.Stopped)
 	return rep, nil
+}
+
+// holdsGradeLease checks the poller lease without failing open (unlike the
+// poll loop, a wrong answer here costs a paid run) and without entering the
+// election on a deployment that does not poll.
+func (p *Poller) holdsGradeLease() bool {
+	if p.holderID == "" || p.cfg.DisablePolling {
+		return true
+	}
+	leader, err := p.db.TryAcquireOrRenewLeadership(p.holderID, p.generation, leaderLeaseTTL)
+	if err != nil {
+		log.Printf("[GRADE] lease check failed, not grading: %v", err)
+		return false
+	}
+	return leader
 }
 
 func (p *Poller) gradeBatch(ctx context.Context, cfg service.AgentConfig, batch []grader.Candidate, byID map[string]db.GradeCandidate, store gradeStore, now time.Time) (int, float64, error) {
@@ -146,6 +172,9 @@ func (p *Poller) gradeBatch(ctx context.Context, cfg service.AgentConfig, batch 
 	}
 	if err != nil {
 		return 0, cost, err
+	}
+	if len(res.Grades) == 0 {
+		return 0, cost, nil
 	}
 	share := cost / float64(len(res.Grades))
 	rows := make([]db.CommentGradeModel, 0, len(res.Grades))

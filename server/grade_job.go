@@ -51,16 +51,16 @@ func (s *Server) handleDailyGradeJob(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), gradeRunTimeout)
 		defer cancel()
-		rep, err := g.RunDailyGrade(ctx, time.Now().UTC(), func() { started <- nil })
-		if err != nil {
-			select {
-			case started <- err:
-			default:
-				log.Printf("[GRADE] run failed: %v", err)
-			}
-			return
+		begun := false
+		rep, err := g.RunDailyGrade(ctx, time.Now().UTC(), func() { begun = true; started <- nil })
+		switch {
+		case err != nil && !begun:
+			started <- err
+		case err != nil:
+			log.Printf("[GRADE] run failed: %v", err)
+		default:
+			log.Printf("[GRADE] run done: graded=%d cost=$%.2f", rep.Graded, rep.CostUSD)
 		}
-		log.Printf("[GRADE] run done: graded=%d cost=$%.2f", rep.Graded, rep.CostUSD)
 	}()
 	err := <-started
 	switch {

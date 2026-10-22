@@ -164,6 +164,9 @@ type FeedbackMetrics struct {
 // QualityMetrics is the daily grader's verdicts on comments graded in the
 // window, on the audit rubric (GOOD, OK, BAD).
 type QualityMetrics struct {
+	// Enabled is whether the deployment runs the grader; an enabled grader
+	// that graded nothing is a failure, not a quiet day.
+	Enabled       bool                      `json:"enabled"`
 	Graded        int                       `json:"graded"`
 	ByGrade       map[string]int            `json:"by_grade"`
 	ByKind        map[string]map[string]int `json:"by_kind"`
@@ -564,6 +567,9 @@ const (
 )
 
 func qualityStatus(q QualityMetrics) Status {
+	if q.Enabled && q.Graded == 0 {
+		return StatusWarn
+	}
 	if q.Graded < qualityMinGraded {
 		return StatusOK
 	}
@@ -578,6 +584,9 @@ func qualityStatus(q QualityMetrics) Status {
 
 func qualityDetail(q QualityMetrics) string {
 	if q.Graded == 0 {
+		if q.Enabled {
+			return "grader enabled but nothing graded in the window (check the scheduled job and [GRADE] logs)"
+		}
 		return "no comments graded in the window"
 	}
 	var b strings.Builder

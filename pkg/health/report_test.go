@@ -387,4 +387,7 @@ func TestCommentQualityCheckFlagsAHighBadRate(t *testing.T) {
 	if got := qualityDetail(QualityMetrics{}); got != "no comments graded in the window" {
 		t.Errorf("empty detail = %q", got)
 	}
+	if got := qualityStatus(QualityMetrics{Enabled: true}); got != StatusWarn {
+		t.Errorf("enabled grader that graded nothing: status = %s, want warn", got)
+	}
 }

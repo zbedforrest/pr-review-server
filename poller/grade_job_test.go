@@ -71,6 +71,24 @@ func TestRunDailyGradeGradesEachPRAndStopsAtTheBudget(t *testing.T) {
 	assert.Len(t, cands, 1, "graded comments are not offered again")
 }
 
+func TestRunDailyGradeCatchesUpOlderCommentsAndCountsSkippedItems(t *testing.T) {
+	p, database := newGradePoller(t, 20)
+	now := time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC)
+	seedGradeFindings(t, database, now.Add(-72*time.Hour), 1)
+	seedGradeFindings(t, database, now.Add(-9*24*time.Hour), 2)
+	prev := gradeAgentFn
+	t.Cleanup(func() { gradeAgentFn = prev })
+	gradeAgentFn = func(_ context.Context, _ service.AgentConfig, _ service.Spawner, in service.GradeAgentInput) (*service.GradeAgentResult, error) {
+		return &service.GradeAgentResult{Model: "judge", CostUSD: 0.4}, nil
+	}
+
+	rep, err := p.RunDailyGrade(context.Background(), now, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, rep.Candidates, "a three-day-old comment is still owed a grade; a nine-day-old one is not")
+	assert.Equal(t, 1, rep.Missing)
+	assert.Zero(t, rep.Graded)
+}
+
 func TestRunDailyGradeRefusesWhenDisabledOrAlreadyRunning(t *testing.T) {
 	p, _ := newGradePoller(t, 20)
 	p.cfg.GraderEnabled = false
