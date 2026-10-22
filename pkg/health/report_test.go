@@ -364,3 +364,27 @@ func TestEvaluateBacklogLineNamesTheDebounceWindow(t *testing.T) {
 	}
 	t.Fatal("no backlog check")
 }
+
+func TestCommentQualityCheckFlagsAHighBadRate(t *testing.T) {
+	q := QualityMetrics{Graded: 20, ByGrade: map[string]int{"GOOD": 5, "OK": 7, "BAD": 8}, ByKind: map[string]map[string]int{"inline": {"BAD": 8, "OK": 7, "GOOD": 5}},
+		BadCategories: map[string]int{"wrong-claim": 8}, Trend: []QualityDay{{Date: "2026-10-21"}, {Date: "2026-10-22", Graded: 20, Bad: 8}}, CostUSD: 12.5}
+	if got := qualityStatus(q); got != StatusWarn {
+		t.Fatalf("status = %s, want warn", got)
+	}
+	detail := qualityDetail(q)
+	for _, want := range []string{"20 graded: 5 good, 7 ok, 8 bad (40% bad)", "7-day bad rate - 40%", "grading cost $12.50"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("detail %q missing %q", detail, want)
+		}
+	}
+	q.ByGrade["BAD"], q.ByGrade["OK"] = 11, 4
+	if got := qualityStatus(q); got != StatusCritical {
+		t.Errorf("status = %s, want critical", got)
+	}
+	if got := qualityStatus(QualityMetrics{Graded: 3, ByGrade: map[string]int{"BAD": 3}}); got != StatusOK {
+		t.Errorf("too few graded: status = %s, want ok", got)
+	}
+	if got := qualityDetail(QualityMetrics{}); got != "no comments graded in the window" {
+		t.Errorf("empty detail = %q", got)
+	}
+}

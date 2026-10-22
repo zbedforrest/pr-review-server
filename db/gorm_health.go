@@ -95,6 +95,11 @@ func toMap(rows []countRow) map[string]int {
 // wall clock (zero when the row has none), including pipeline overhead.
 func (g *GormDB) HealthMetrics(start, end, now time.Time, budget func(agentWallClockSec int) time.Duration) (health.Metrics, error) {
 	m := health.Metrics{WindowStart: start, WindowEnd: end, Now: now}
+	quality, err := g.qualityMetrics(start, end)
+	if err != nil {
+		return m, err
+	}
+	m.Quality = quality
 	var rows []countRow
 
 	inWindow := g.db.Model(&ReviewRunModel{}).Where("completed_at >= ? AND completed_at < ?", start, end).Session(&gorm.Session{})

@@ -392,6 +392,7 @@ func (s *Server) Start() error {
 		}
 		withAuth(s.handleDailyHealth).ServeHTTP(w, r)
 	}))
+	http.Handle(dailyGradePath, http.HandlerFunc(s.handleDailyGradeJob))
 	http.Handle(feedbackPath, withAuth(s.handleFeedback))
 	http.Handle("/api/user", withAuth(s.handleGetUser))
 	http.Handle(publishOptOutPath, withAuth(s.handlePublishOptOut))
