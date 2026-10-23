@@ -3,6 +3,7 @@ package db
 import (
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm/clause"
@@ -155,8 +156,9 @@ func (g *GormDB) qualityMetrics(start, end time.Time) (health.QualityMetrics, er
 		}
 		q.ByKind[r.Kind][r.Grade]++
 		if r.Grade == "BAD" {
-			r.Category = grader.NormalizeCategory(r.Grade, r.Category)
-			q.BadCategories[r.Category]++
+			if c := strings.TrimSpace(r.Category); c != "" && c != "-" {
+				q.BadCategories[grader.NormalizeCategory(r.Grade, c)]++
+			}
 			q.Worst = append(q.Worst, health.QualityExample{Kind: r.Kind, Severity: r.Severity, Category: r.Category, Reason: grader.RedactSecrets(r.Reason), URL: r.CommentURL})
 		}
 	}

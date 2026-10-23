@@ -65,6 +65,7 @@ func TestQualityMetricsSummarisesTheWindowAndTheWeek(t *testing.T) {
 		{Ref: "f:1", Kind: "inline", Severity: "medium", Grade: "BAD", Category: "wrong-claim", Reason: "x.env:2 SECRET_TOKEN=abcd1234wxyz", CommentURL: "u1", CostUSD: 0.5, GradedAt: end.Add(-time.Hour)},
 		{Ref: "f:2", Kind: "inline", Severity: "low", Grade: "BAD", Category: "objects-to-deliberate-choice", Reason: "r2", CostUSD: 0.5, GradedAt: end.Add(-time.Hour)},
 		{Ref: "f:3", Kind: "summary_note", Grade: "GOOD", CostUSD: 0.5, GradedAt: end.Add(-time.Hour)},
+		{Ref: "f:5", Kind: "reply", Grade: "BAD", Category: "-", GradedAt: end.Add(-time.Hour)},
 		{Ref: "f:4", Kind: "inline", Grade: "OK", GradedAt: end.Add(-50 * time.Hour)},
 	}
 	for i := range grades {
@@ -74,15 +75,15 @@ func TestQualityMetricsSummarisesTheWindowAndTheWeek(t *testing.T) {
 
 	q, err := g.qualityMetrics(end.Add(-24*time.Hour), end)
 	require.NoError(t, err)
-	assert.Equal(t, 3, q.Graded)
-	assert.Equal(t, map[string]int{"BAD": 2, "GOOD": 1}, q.ByGrade)
+	assert.Equal(t, 4, q.Graded)
+	assert.Equal(t, map[string]int{"BAD": 3, "GOOD": 1}, q.ByGrade)
 	assert.Equal(t, 2, q.ByKind["inline"]["BAD"])
 	assert.Equal(t, map[string]int{"wrong-claim": 1, "other": 1}, q.BadCategories, "free-form categories stored earlier are folded into the fixed list")
-	require.Len(t, q.Worst, 2)
+	require.Len(t, q.Worst, 3)
 	assert.Equal(t, "medium", q.Worst[0].Severity)
 	assert.Equal(t, "x.env:2 SECRET_TOKEN=[redacted]", q.Worst[0].Reason, "rows stored before redaction are masked on the way out")
 	assert.InDelta(t, 1.5, q.CostUSD, 1e-9)
 	require.Len(t, q.Trend, 7)
-	assert.Equal(t, 3, q.Trend[6].Graded)
+	assert.Equal(t, 4, q.Trend[6].Graded)
 	assert.Equal(t, 1, q.Trend[4].Graded)
 }

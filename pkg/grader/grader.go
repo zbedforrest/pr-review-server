@@ -134,14 +134,18 @@ func NormalizeCategory(grade, category string) string {
 }
 
 var (
-	secretAssignment = regexp.MustCompile("(?i)\\b([A-Z0-9_.-]*(?:password|passwd|pwd|_pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential))\\b([\"']?\\s*[:=]\\s*)([\"'`]?)[^\\s\"'`,;)]{4,}")
-	secretToken      = regexp.MustCompile("\\b(?:ghp_|gho_|ghs_|github_pat_|sk-|sk_live_|xox[abpr]-|AKIA)[A-Za-z0-9_-]{8,}|(?i)\\bbearer\\s+[A-Za-z0-9._~+/-]{12,}")
+	secretAssignment = regexp.MustCompile("(?i)\\b([A-Z0-9_.-]*(?:password|passwd|pwd|_pass|secret|secret[_-]?key|token|api[_-]?key|access[_-]?key|private[_-]?key|credential))\\b([\"']?\\s*[:=]\\s*)([\"'`]?)[^\\s\"'`,;)]{4,}")
+	secretProse      = regexp.MustCompile(`(?i)\b((?:password|passwd|secret|token|api key|credential)s?\s+(?:is|was|of)\s+)["']?[^\s"',;)]{6,}`)
+	secretURL        = regexp.MustCompile(`(://[^\s:/@]+:)[^\s@/]+@`)
+	secretToken      = regexp.MustCompile(`\b(?:ghp_|gho_|ghs_|github_pat_|sk-|sk_live_|xox[abpr]-|AKIA)[A-Za-z0-9_-]{8,}|(?i)\bbearer\s+[A-Za-z0-9._~+/-]{12,}`)
 )
 
 // RedactSecrets masks values that look like credentials, so a reason that
 // quotes one cannot carry it into stored grades or the health report.
 func RedactSecrets(s string) string {
 	s = secretAssignment.ReplaceAllString(s, "${1}${2}${3}[redacted]")
+	s = secretProse.ReplaceAllString(s, "${1}[redacted]")
+	s = secretURL.ReplaceAllString(s, "${1}[redacted]@")
 	return secretToken.ReplaceAllString(s, "[redacted]")
 }
 
