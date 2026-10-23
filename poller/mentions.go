@@ -162,6 +162,13 @@ const (
 	mentionTriggerSource  = "mention"
 )
 
+// publishesDraft reports whether this run may post on a draft PR: only a
+// review the author asked for by mention, and only when the deployment
+// allows it.
+func (p *Poller) publishesDraft(job ReviewJob) bool {
+	return job.TriggerSource == mentionTriggerSource && p.cfg.MentionPublishDrafts
+}
+
 // mentionScanner is the testable core of the mention trigger.
 type mentionScanner struct {
 	gh       mentionGitHub

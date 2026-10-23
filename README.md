@@ -269,7 +269,8 @@ a team slug, or `*`). Gate denials due to an opt-out count as
 A mention on an opted-out author's PR still queues a dashboard review but
 gets no reaction. A mention on a draft PR is dashboard-only unless
 `MENTION_PUBLISH_DRAFTS=true`, when the explicit request is honoured and the
-review is posted. `PUBLISH_SETTLE_FOOTER=false` removes the footer.
+review is posted with the verifier applied as on any published review. Reply
+scanning and the sticky summary refresh still wait for the PR to leave draft. `PUBLISH_SETTLE_FOOTER=false` removes the footer.
 
 ### Muting one PR
 

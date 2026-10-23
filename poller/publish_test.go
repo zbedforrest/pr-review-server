@@ -152,6 +152,45 @@ func TestPublishTargetReady(t *testing.T) {
 // A closed, merged or draft PR must never receive bot comments, and neither
 // may a PR whose author is not enabled, whoever requested the review. The
 // guard has to hold at the real publish entry point.
+func TestPublishGitHubReviewWith_LetsAMentionRunPastTheDraftGate(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/acme/example/pulls/1" {
+			_, _ = w.Write([]byte(`{"state":"open","merged":false,"draft":true,"head":{"sha":"abc"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer ts.Close()
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting("publish_enabled_authors", "alice"))
+	p := &Poller{cfg: &config.Config{}, db: database, ghClientConcrete: github.NewTestClient(ts.URL, "bot")}
+	pr := github.PullRequest{Owner: "acme", Repo: "example", Number: 1, CommitSHA: "abc", Author: "alice"}
+	sidecar := []byte(`{"schema_version":"1","owner":"acme","repo":"example","pr_number":1,"commit_sha":"abc","findings":[]}`)
+
+	_, outcome := p.publishGitHubReviewWith(context.Background(), pr, sidecar, false)
+	assert.Contains(t, outcome, "pull request is a draft")
+	_, outcome = p.publishGitHubReviewWith(context.Background(), pr, sidecar, true)
+	assert.NotContains(t, outcome, "pull request is a draft")
+}
+
+func TestReviewPublishBound_CountsAMentionRunOnADraftOnlyWhenConfigured(t *testing.T) {
+	database, err := db.NewGormSQLite(":memory:")
+	require.NoError(t, err)
+	defer database.Close()
+	require.NoError(t, database.SetSetting("publish_enabled_authors", "alice"))
+	job := ReviewJob{PR: github.PullRequest{Owner: "acme", Repo: "example", Number: 1, Author: "alice", Draft: true}, TriggerSource: mentionTriggerSource}
+
+	p := &Poller{cfg: &config.Config{}, db: database}
+	assert.False(t, p.reviewPublishBound(job))
+	p.cfg.MentionPublishDrafts = true
+	assert.True(t, p.reviewPublishBound(job))
+	job.TriggerSource = "poller"
+	assert.False(t, p.reviewPublishBound(job))
+}
+
 func TestPublishGitHubReview_DoesNotWriteToClosedDraftOrUnlistedAuthorPRs(t *testing.T) {
 	for _, tc := range []struct {
 		name, prJSON, author string
