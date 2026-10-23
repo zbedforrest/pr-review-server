@@ -153,8 +153,12 @@ func TestPublishTargetReady(t *testing.T) {
 // may a PR whose author is not enabled, whoever requested the review. The
 // guard has to hold at the real publish entry point.
 func TestPublishGitHubReviewWith_LetsAMentionRunPastTheDraftGate(t *testing.T) {
+	var writes []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			writes = append(writes, r.Method+" "+r.URL.Path)
+		}
 		if r.Method == http.MethodGet && r.URL.Path == "/repos/acme/example/pulls/1" {
 			_, _ = w.Write([]byte(`{"state":"open","merged":false,"draft":true,"head":{"sha":"abc"}}`))
 			return
@@ -172,8 +176,10 @@ func TestPublishGitHubReviewWith_LetsAMentionRunPastTheDraftGate(t *testing.T) {
 
 	_, outcome := p.publishGitHubReviewWith(context.Background(), pr, sidecar, false)
 	assert.Contains(t, outcome, "pull request is a draft")
+	assert.Empty(t, writes)
 	_, outcome = p.publishGitHubReviewWith(context.Background(), pr, sidecar, true)
 	assert.NotContains(t, outcome, "pull request is a draft")
+	assert.NotEmpty(t, writes, "the round must reach GitHub once the draft gate is passed")
 }
 
 func TestReviewPublishBound_CountsAMentionRunOnADraftOnlyWhenConfigured(t *testing.T) {
