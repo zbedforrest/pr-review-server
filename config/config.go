@@ -153,6 +153,9 @@ type Config struct {
 	// MentionHandle is the App login authors mention to request a review
 	// ("@<handle> review"); empty disables mention triggers.
 	MentionHandle string
+	// MentionPublishDrafts lets a mention on a draft PR post its review;
+	// automatic and poller reviews of drafts stay dashboard-only.
+	MentionPublishDrafts bool
 	// DisableSettleFooter drops the settle and opt-out footer from posted
 	// comments (PUBLISH_SETTLE_FOOTER=false).
 	DisableSettleFooter bool
@@ -472,6 +475,7 @@ func Load() *Config {
 		ReplyPolicyV2:               !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_POLICY_V2")), "false"),
 		ReplyVerdictFastPath:        !strings.EqualFold(strings.TrimSpace(os.Getenv("REPLY_VERDICT_FAST_PATH")), "false"),
 		MentionHandle:               strings.TrimSpace(getEnvOrDefaultAllowEmpty("MENTION_HANDLE", "prism-pr-review-server")),
+		MentionPublishDrafts:        strings.EqualFold(strings.TrimSpace(os.Getenv("MENTION_PUBLISH_DRAFTS")), "true"),
 		DisableSettleFooter:         strings.EqualFold(strings.TrimSpace(os.Getenv("PUBLISH_SETTLE_FOOTER")), "false"),
 		HealthJobToken:              os.Getenv("HEALTH_JOB_TOKEN"),
 		FeedbackDigest:              strings.EqualFold(strings.TrimSpace(os.Getenv("FEEDBACK_DIGEST")), "true"),
