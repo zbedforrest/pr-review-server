@@ -135,7 +135,7 @@ func NormalizeCategory(grade, category string) string {
 
 var (
 	secretAssignment = regexp.MustCompile("(?i)\\b([A-Z0-9_.-]*(?:password|passwd|pwd|_pass|secret|secret[_-]?key|token|api[_-]?key|access[_-]?key|private[_-]?key|credential))\\b([\"']?\\s*[:=]\\s*)([\"'`]?)[^\\s\"'`,;)]{4,}")
-	secretProse      = regexp.MustCompile(`(?i)\b((?:password|passwd|secret|token|api key|credential)s?\s+(?:is|was|of)\s+)["']?[^\s"',;)]{6,}`)
+	secretProse      = regexp.MustCompile(`(?i)\b((?:password|passwd|secret|token|api key|credential)s?\s+(?:is|was|of)\s+)(["']?)([^\s"',;)]{6,})`)
 	secretURL        = regexp.MustCompile(`(://[^\s:/@]+:)[^\s@/]+@`)
 	secretToken      = regexp.MustCompile(`\b(?:ghp_|gho_|ghs_|github_pat_|sk-|sk_live_|xox[abpr]-|AKIA)[A-Za-z0-9_-]{8,}|(?i)\bbearer\s+[A-Za-z0-9._~+/-]{12,}`)
 )
@@ -144,7 +144,15 @@ var (
 // quotes one cannot carry it into stored grades or the health report.
 func RedactSecrets(s string) string {
 	s = secretAssignment.ReplaceAllString(s, "${1}${2}${3}[redacted]")
-	s = secretProse.ReplaceAllString(s, "${1}[redacted]")
+	s = secretProse.ReplaceAllStringFunc(s, func(m string) string {
+		// Prose like "the token is expired" is not a value; only a quoted or
+		// digit-bearing word after "is", "was" or "of" is masked.
+		parts := secretProse.FindStringSubmatch(m)
+		if parts[2] == "" && !strings.ContainsAny(parts[3], "0123456789") {
+			return m
+		}
+		return parts[1] + parts[2] + "[redacted]"
+	})
 	s = secretURL.ReplaceAllString(s, "${1}[redacted]@")
 	return secretToken.ReplaceAllString(s, "[redacted]")
 }

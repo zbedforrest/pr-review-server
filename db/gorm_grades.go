@@ -159,7 +159,7 @@ func (g *GormDB) qualityMetrics(start, end time.Time) (health.QualityMetrics, er
 			if c := strings.TrimSpace(r.Category); c != "" && c != "-" {
 				q.BadCategories[grader.NormalizeCategory(r.Grade, c)]++
 			}
-			q.Worst = append(q.Worst, health.QualityExample{Kind: r.Kind, Severity: r.Severity, Category: r.Category, Reason: grader.RedactSecrets(r.Reason), URL: r.CommentURL})
+			q.Worst = append(q.Worst, health.QualityExample{Kind: r.Kind, Severity: r.Severity, Category: grader.NormalizeCategory(r.Grade, r.Category), Reason: grader.RedactSecrets(r.Reason), URL: r.CommentURL})
 		}
 	}
 	sort.SliceStable(q.Worst, func(i, j int) bool { return severityRank(q.Worst[i].Severity) > severityRank(q.Worst[j].Severity) })

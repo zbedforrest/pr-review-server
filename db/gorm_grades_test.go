@@ -81,6 +81,9 @@ func TestQualityMetricsSummarisesTheWindowAndTheWeek(t *testing.T) {
 	assert.Equal(t, map[string]int{"wrong-claim": 1, "other": 1}, q.BadCategories, "free-form categories stored earlier are folded into the fixed list")
 	require.Len(t, q.Worst, 3)
 	assert.Equal(t, "medium", q.Worst[0].Severity)
+	for _, w := range q.Worst {
+		assert.NotEqual(t, "objects-to-deliberate-choice", w.Category, "worst examples use the same folded categories as the counts")
+	}
 	assert.Equal(t, "x.env:2 SECRET_TOKEN=[redacted]", q.Worst[0].Reason, "rows stored before redaction are masked on the way out")
 	assert.InDelta(t, 1.5, q.CostUSD, 1e-9)
 	require.Len(t, q.Trend, 7)
