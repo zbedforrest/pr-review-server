@@ -90,6 +90,7 @@ The most common ones:
 | `POLLING_INTERVAL` | No | GitHub poll cadence, default `1m` |
 | `DISABLE_POLLING` | No | Run purely as an on-demand review API |
 | `MENTION_HANDLE` | No | App login mentioned to request a review (`@<handle> review`) by the PR author or a repository owner, member or collaborator; default `prism-pr-review-server`, empty disables |
+| `MENTION_PUBLISH_DRAFTS` | No | `true` lets a mention on a draft PR post its review; default off, drafts get a dashboard-only review |
 | `PUBLISH_SETTLE_FOOTER` | No | `false` drops the settle and opt-out footer from posted comments and summaries; default on |
 | `PUBLISH_RESOLVE_NOTES` | No | Default `false`: resolving a PRism thread (a fixed finding, or `threadcleanup`) posts no reply; the ledger records the transition. `true` restores the old in-thread notes ("Not seen at <sha7>.", "Resolving: ...") |
 | `HEALTH_JOB_TOKEN` | No | Enables `POST /api/health/daily` for a scheduler (header `X-Prism-Job-Token`); the report is stored and readable at `GET /api/health/daily` (`?format=md`) |
@@ -267,6 +268,11 @@ a team slug, or `*`). Gate denials due to an opt-out count as
 `opted_out_total` on the daily health report's publication hygiene line.
 A mention on an opted-out author's PR still queues a dashboard review but
 gets no reaction. `PUBLISH_SETTLE_FOOTER=false` removes the footer.
+
+A mention on a draft PR is dashboard-only unless `MENTION_PUBLISH_DRAFTS=true`,
+when the explicit request is honoured and the review is posted with the
+verifier applied as on any published review. Reply scanning and the sticky
+summary refresh still wait for the PR to leave draft.
 
 ### Muting one PR
 

@@ -157,7 +157,17 @@ type mentionRecentlyReviewed func(owner, repo string, number int, headSHA string
 
 // mentionCoalesceWindow is how long a completed review of a head answers
 // further requests for the same head.
-const mentionCoalesceWindow = 30 * time.Minute
+const (
+	mentionCoalesceWindow = 30 * time.Minute
+	mentionTriggerSource  = "mention"
+)
+
+// publishesDraft reports whether this run may post on a draft PR: only a
+// review the author asked for by mention, and only when the deployment
+// allows it.
+func (p *Poller) publishesDraft(job ReviewJob) bool {
+	return job.TriggerSource == mentionTriggerSource && p.cfg.MentionPublishDrafts
+}
 
 // mentionScanner is the testable core of the mention trigger.
 type mentionScanner struct {
@@ -170,11 +180,13 @@ type mentionScanner struct {
 	since    time.Time
 	allowed  func(author string) bool // publish allowlist
 	optedOut func(author string) bool // opted-out PR authors get no reaction either
-	mute     mentionMuter
-	now      func() time.Time
-	log      func(format string, args ...any)
-	onEvent  func(pr github.PullRequest, by string, publish bool)
-	onMute   func(pr github.PullRequest, by string)
+	// publishDrafts lets an explicit request on a draft PR post its review.
+	publishDrafts bool
+	mute          mentionMuter
+	now           func() time.Time
+	log           func(format string, args ...any)
+	onEvent       func(pr github.PullRequest, by string, publish bool)
+	onMute        func(pr github.PullRequest, by string)
 }
 
 type mentionResult struct {
@@ -244,7 +256,7 @@ func (m mentionScanner) handlePR(ctx context.Context, pr *db.PR) (mentionResult,
 				m.log("[MENTIONS] %s: comment %d by the author lifts the mute", key, c.ID)
 			}
 		}
-		publish := m.allowed(ghPR.Author) && !ghPR.Draft
+		publish := m.allowed(ghPR.Author) && (!ghPR.Draft || m.publishDrafts)
 		silent := m.optedOut != nil && m.optedOut(ghPR.Author)
 		if m.mute != nil && !silent {
 			muted, err := m.mute.Muted(pr.RepoOwner, pr.RepoName, pr.PRNumber)
@@ -471,7 +483,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 	}
 	scanner := mentionScanner{
 		gh: mentionGitHubAdapter{p.ghClientConcrete}, ledger: ledger, handle: p.cfg.MentionHandle, holder: p.holderID, since: since,
-		allowed: gate.Allowed, optedOut: gate.OptedOut,
+		allowed: gate.Allowed, optedOut: gate.OptedOut, publishDrafts: p.cfg.MentionPublishDrafts,
 		mute: p.mentionMuter(),
 		now:  func() time.Time { return time.Now().UTC() },
 		log:  log.Printf,
@@ -508,7 +520,7 @@ func (p *Poller) scanMentions(ctx context.Context) {
 			return false, nil
 		},
 		admit: func(ctx context.Context, pr github.PullRequest, commentID int64, publish bool) error {
-			job, err := p.defaultReviewJob(pr, true, "mention")
+			job, err := p.defaultReviewJob(pr, true, mentionTriggerSource)
 			if err != nil {
 				return err
 			}

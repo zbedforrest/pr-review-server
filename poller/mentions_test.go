@@ -246,6 +246,22 @@ func TestMentionScanner_DraftOrOutsidePilotIsAcknowledgedWithoutANote(t *testing
 	}
 }
 
+func TestMentionScanner_PublishesADraftReviewWhenConfigured(t *testing.T) {
+	var publishSeen []bool
+	m, gh, _, pr := mentionFixture(func(_ context.Context, _ github.PullRequest, publish bool) error {
+		publishSeen = append(publishSeen, publish)
+		return nil
+	})
+	gh.live.Draft = true
+	m.publishDrafts = true
+	if _, err := m.handlePR(context.Background(), pr); err != nil {
+		t.Fatal(err)
+	}
+	if len(publishSeen) != 1 || !publishSeen[0] {
+		t.Fatalf("publish=%v", publishSeen)
+	}
+}
+
 func TestMentionScanner_IgnoresRequestsOnAPRThatClosedMeanwhile(t *testing.T) {
 	m, gh, ledger, pr := mentionFixture(func(context.Context, github.PullRequest, bool) error {
 		t.Fatal("must not admit a review of a closed PR")
