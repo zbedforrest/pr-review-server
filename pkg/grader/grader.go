@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -44,6 +45,18 @@ type Grade struct {
 	Reason   string `json:"reason"`
 }
 
+// BadCategories and OKCategories are the only categories a grade may carry,
+// so the health report's breakdown counts a fixed set; anything else the
+// judge says becomes CategoryOther.
+var (
+	BadCategories = []string{"wrong-claim", "wrong-mechanism", "invented-regression", "pre-existing", "deliberate-choice",
+		"speculative", "nitpick", "low-value-test-ask", "severity-inflated", "duplicate", "restates-pr", "noise"}
+	OKCategories = []string{"overstated-severity", "overstated-scope", "minor-detail-wrong", "marginal-value"}
+)
+
+// CategoryOther replaces a category outside the fixed lists.
+const CategoryOther = "other"
+
 //go:embed prompt.md
 var promptTemplate string
 
@@ -66,6 +79,8 @@ func Prompt(title, body, headSHA, baseSHA, baseDir string, items []Item) (string
 		"{{BASE}}", baseSHA,
 		"{{BASE_DIR}}", baseDir,
 		"{{ITEMS}}", string(itemsJSON),
+		"{{BAD_CATEGORIES}}", quoteList(BadCategories),
+		"{{OK_CATEGORIES}}", quoteList(OKCategories),
 	).Replace(promptTemplate), nil
 }
 
@@ -94,6 +109,40 @@ func ParseReply(reply string, items []Item) ([]Grade, error) {
 	return nil, fmt.Errorf("grader: reply graded none of the %d items", len(items))
 }
 
+func quoteList(v []string) string {
+	q := make([]string, len(v))
+	for i, s := range v {
+		q[i] = `"` + s + `"`
+	}
+	return strings.Join(q, ", ")
+}
+
+func normalizeCategory(grade, category string) string {
+	category = strings.ToLower(strings.TrimSpace(category))
+	allowed := map[string][]string{GradeBad: BadCategories, GradeOK: OKCategories}[grade]
+	if allowed == nil {
+		return "-"
+	}
+	for _, c := range allowed {
+		if c == category {
+			return c
+		}
+	}
+	return CategoryOther
+}
+
+var (
+	secretAssignment = regexp.MustCompile("(?i)\\b([A-Z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential)[A-Z0-9_.-]*)(\\s*[:=]\\s*)([\"'`]?)[^\\s\"'`,;)]{4,}")
+	secretToken      = regexp.MustCompile(`\b(?:ghp_|gho_|ghs_|github_pat_|sk-|sk_live_|xox[abpr]-|AKIA)[A-Za-z0-9_-]{8,}`)
+)
+
+// RedactSecrets masks values that look like credentials, so a reason that
+// quotes one cannot carry it into stored grades or the health report.
+func RedactSecrets(s string) string {
+	s = secretAssignment.ReplaceAllString(s, "${1}${2}${3}[redacted]")
+	return secretToken.ReplaceAllString(s, "[redacted]")
+}
+
 func validGrades(raw []Grade, asked map[string]bool) []Grade {
 	seen := map[string]bool{}
 	var out []Grade
@@ -103,6 +152,8 @@ func validGrades(raw []Grade, asked map[string]bool) []Grade {
 			continue
 		}
 		seen[g.ID] = true
+		g.Category = normalizeCategory(g.Grade, g.Category)
+		g.Reason = RedactSecrets(g.Reason)
 		out = append(out, g)
 	}
 	return out

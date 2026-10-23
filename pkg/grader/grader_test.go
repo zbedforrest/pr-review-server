@@ -103,3 +103,38 @@ func TestParseReplySkipsAnEchoedCopyOfTheItems(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, GradeGood, got[0].Grade)
 }
+
+func TestParseReplyMapsCategoriesToTheFixedLists(t *testing.T) {
+	reply := `[{"id":"c1","grade":"BAD","category":"Deliberate-Choice","reason":"r"},
+{"id":"c2","grade":"BAD","category":"objects-to-deliberate-choice","reason":"r"},
+{"id":"c3","grade":"OK","category":"overstated-severity","reason":"r"},
+{"id":"c4","grade":"GOOD","category":"correctness","reason":"r"}]`
+	got, err := ParseReply(reply, items("c1", "c2", "c3", "c4"))
+	require.NoError(t, err)
+	var cats []string
+	for _, g := range got {
+		cats = append(cats, g.Category)
+	}
+	assert.Equal(t, []string{"deliberate-choice", CategoryOther, "overstated-severity", "-"}, cats)
+}
+
+func TestRedactSecretsMasksCredentialValues(t *testing.T) {
+	cases := map[string]string{
+		"Dockerfile:45 `ENV DB_PASSWORD=Xk3vQ9pLm2` is unchanged":   "Dockerfile:45 `ENV DB_PASSWORD=[redacted]` is unchanged",
+		`config sets api_key: "abcd1234efgh" at app.py:3`:           `config sets api_key: "[redacted]" at app.py:3`,
+		"a token ghp_abcdefghijklmnop1234 leaked":                   "a token [redacted] leaked",
+		"the password policy in auth.py:10 predates the PR (wrong)": "the password policy in auth.py:10 predates the PR (wrong)",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, RedactSecrets(in))
+	}
+}
+
+func TestPromptListsTheCategoriesAndTheSecurityException(t *testing.T) {
+	p, err := Prompt("t", "b", "h", "b", "d", items("c1"))
+	require.NoError(t, err)
+	assert.Contains(t, p, `"deliberate-choice"`)
+	assert.Contains(t, p, `"overstated-severity"`)
+	assert.Contains(t, p, "committed secret")
+	assert.NotContains(t, p, "{{")
+}

@@ -62,7 +62,7 @@ func TestQualityMetricsSummarisesTheWindowAndTheWeek(t *testing.T) {
 	g := newTestDB(t)
 	end := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
 	grades := []CommentGradeModel{
-		{Ref: "f:1", Kind: "inline", Severity: "medium", Grade: "BAD", Category: "wrong-claim", Reason: "r1", CommentURL: "u1", CostUSD: 0.5, GradedAt: end.Add(-time.Hour)},
+		{Ref: "f:1", Kind: "inline", Severity: "medium", Grade: "BAD", Category: "wrong-claim", Reason: "x.env:2 SECRET_TOKEN=abcd1234wxyz", CommentURL: "u1", CostUSD: 0.5, GradedAt: end.Add(-time.Hour)},
 		{Ref: "f:2", Kind: "inline", Severity: "low", Grade: "BAD", Category: "nitpick", Reason: "r2", CostUSD: 0.5, GradedAt: end.Add(-time.Hour)},
 		{Ref: "f:3", Kind: "summary_note", Grade: "GOOD", CostUSD: 0.5, GradedAt: end.Add(-time.Hour)},
 		{Ref: "f:4", Kind: "inline", Grade: "OK", GradedAt: end.Add(-50 * time.Hour)},
@@ -80,6 +80,7 @@ func TestQualityMetricsSummarisesTheWindowAndTheWeek(t *testing.T) {
 	assert.Equal(t, map[string]int{"wrong-claim": 1, "nitpick": 1}, q.BadCategories)
 	require.Len(t, q.Worst, 2)
 	assert.Equal(t, "medium", q.Worst[0].Severity)
+	assert.Equal(t, "x.env:2 SECRET_TOKEN=[redacted]", q.Worst[0].Reason, "rows stored before redaction are masked on the way out")
 	assert.InDelta(t, 1.5, q.CostUSD, 1e-9)
 	require.Len(t, q.Trend, 7)
 	assert.Equal(t, 3, q.Trend[6].Graded)

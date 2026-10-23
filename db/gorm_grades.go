@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/gorm/clause"
 
+	"pr-review-server/pkg/grader"
 	"pr-review-server/pkg/health"
 )
 
@@ -157,7 +158,7 @@ func (g *GormDB) qualityMetrics(start, end time.Time) (health.QualityMetrics, er
 			if r.Category != "" && r.Category != "-" {
 				q.BadCategories[r.Category]++
 			}
-			q.Worst = append(q.Worst, health.QualityExample{Kind: r.Kind, Severity: r.Severity, Category: r.Category, Reason: r.Reason, URL: r.CommentURL})
+			q.Worst = append(q.Worst, health.QualityExample{Kind: r.Kind, Severity: r.Severity, Category: r.Category, Reason: grader.RedactSecrets(r.Reason), URL: r.CommentURL})
 		}
 	}
 	sort.SliceStable(q.Worst, func(i, j int) bool { return severityRank(q.Worst[i].Severity) > severityRank(q.Worst[j].Severity) })

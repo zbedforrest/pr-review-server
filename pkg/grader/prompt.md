@@ -23,8 +23,13 @@ Grades:
   - the comment is about behavior or code that predates this PR, or asks for coverage of a branch this PR did not touch;
   - the comment objects to a choice the PR deliberately made (stated in its description, in a code comment, or asserted by its tests) without showing a concrete failure, or it is a pure style, whitespace or naming nit, or a "please verify" with no defect shown.
   A real issue that is merely overstated or of modest value stays OK.
+- Security exception: a comment that correctly flags a committed secret or credential, or an exploitable security hole, is never BAD for predating the PR.
 
 Items (JSON):
 {{ITEMS}}
 
-Reply with ONLY a JSON array, one object per item, nothing else: {"id": ..., "grade": "GOOD|OK|BAD", "category": short kebab-case or "-", "reason": one or two sentences with concrete file:line evidence}. Grade every id.
+Category: for BAD use exactly one of {{BAD_CATEGORIES}}; for OK use one of {{OK_CATEGORIES}}; for GOOD use "-".
+
+Never quote a secret, password, token or key value in a reason; name the file and line instead.
+
+Reply with ONLY a JSON array, one object per item, nothing else: {"id": ..., "grade": "GOOD|OK|BAD", "category": ..., "reason": one or two sentences with concrete file:line evidence}. Grade every id.
