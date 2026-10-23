@@ -37,12 +37,28 @@ func (DefaultSpawner) SpawnWithEnv(ctx context.Context, name string, args []stri
 	return spawnCommand(ctx, name, args, dir, environment)
 }
 
+// withoutNUL drops NUL bytes from arguments: exec rejects any argument that
+// holds one (EINVAL), and a prompt quoting a binary file or odd PR text can.
+func withoutNUL(args []string) []string {
+	out := args
+	for i, a := range args {
+		if strings.IndexByte(a, 0) < 0 {
+			continue
+		}
+		if &out[0] == &args[0] {
+			out = append([]string(nil), args...)
+		}
+		out[i] = strings.ReplaceAll(a, "\x00", "")
+	}
+	return out
+}
+
 func spawnCommand(ctx context.Context, name string, args []string, dir string, environment []string) (SpawnedProcess, error) {
 	// Use Command (not CommandContext) so we control kill behavior ourselves.
 	// CommandContext's auto-kill only signals the direct child, leaving any
 	// process-group children orphaned. We watch ctx.Done in a goroutine and
 	// group-kill instead.
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, withoutNUL(args)...)
 	// make preserves the distinction between an explicit empty environment
 	// and nil, which os/exec interprets as inheriting the parent environment.
 	cmd.Env = append(make([]string, 0, len(environment)), environment...)
