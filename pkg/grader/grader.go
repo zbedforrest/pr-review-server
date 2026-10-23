@@ -117,7 +117,9 @@ func quoteList(v []string) string {
 	return strings.Join(q, ", ")
 }
 
-func normalizeCategory(grade, category string) string {
+// NormalizeCategory maps a grade's category onto the fixed lists: "-" for
+// GOOD, CategoryOther for anything unlisted.
+func NormalizeCategory(grade, category string) string {
 	category = strings.ToLower(strings.TrimSpace(category))
 	allowed := map[string][]string{GradeBad: BadCategories, GradeOK: OKCategories}[grade]
 	if allowed == nil {
@@ -132,8 +134,8 @@ func normalizeCategory(grade, category string) string {
 }
 
 var (
-	secretAssignment = regexp.MustCompile("(?i)\\b([A-Z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential)[A-Z0-9_.-]*)(\\s*[:=]\\s*)([\"'`]?)[^\\s\"'`,;)]{4,}")
-	secretToken      = regexp.MustCompile(`\b(?:ghp_|gho_|ghs_|github_pat_|sk-|sk_live_|xox[abpr]-|AKIA)[A-Za-z0-9_-]{8,}`)
+	secretAssignment = regexp.MustCompile("(?i)\\b([A-Z0-9_.-]*(?:password|passwd|pwd|_pass|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential))\\b([\"']?\\s*[:=]\\s*)([\"'`]?)[^\\s\"'`,;)]{4,}")
+	secretToken      = regexp.MustCompile("\\b(?:ghp_|gho_|ghs_|github_pat_|sk-|sk_live_|xox[abpr]-|AKIA)[A-Za-z0-9_-]{8,}|(?i)\\bbearer\\s+[A-Za-z0-9._~+/-]{12,}")
 )
 
 // RedactSecrets masks values that look like credentials, so a reason that
@@ -152,7 +154,7 @@ func validGrades(raw []Grade, asked map[string]bool) []Grade {
 			continue
 		}
 		seen[g.ID] = true
-		g.Category = normalizeCategory(g.Grade, g.Category)
+		g.Category = NormalizeCategory(g.Grade, g.Category)
 		g.Reason = RedactSecrets(g.Reason)
 		out = append(out, g)
 	}

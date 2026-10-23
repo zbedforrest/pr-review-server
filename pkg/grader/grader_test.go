@@ -124,6 +124,9 @@ func TestRedactSecretsMasksCredentialValues(t *testing.T) {
 		`config sets api_key: "abcd1234efgh" at app.py:3`:           `config sets api_key: "[redacted]" at app.py:3`,
 		"a token ghp_abcdefghijklmnop1234 leaked":                   "a token [redacted] leaked",
 		"the password policy in auth.py:10 predates the PR (wrong)": "the password policy in auth.py:10 predates the PR (wrong)",
+		`settings.json:4 has "password": "hunter2xyz"`:              `settings.json:4 has "password": "[redacted]"`,
+		"llm.py:9 sets max_tokens: 4000 per call":                   "llm.py:9 sets max_tokens: 4000 per call",
+		"curl sends Authorization: Bearer abcdefghijklmnop123":      "curl sends Authorization: [redacted]",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, RedactSecrets(in))
