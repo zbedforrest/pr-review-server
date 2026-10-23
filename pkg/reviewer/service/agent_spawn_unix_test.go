@@ -213,3 +213,34 @@ exit 3
 	}
 	waitForProcessGroupGone(t, proc)
 }
+
+func TestDefaultSpawnerAcceptsArgumentsHoldingNUL(t *testing.T) {
+	proc, err := DefaultSpawner{}.SpawnWithEnv(context.Background(), "sh", []string{"-c", "printf '%s' \"$0\"", "pro\x00mpt"}, "", os.Environ())
+	if err != nil {
+		t.Fatalf("spawn with a NUL in an argument: %v", err)
+	}
+	var out bytes.Buffer
+	if _, err := out.ReadFrom(proc.Stdout()); err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "prompt" {
+		t.Fatalf("child saw %q, want %q", out.String(), "prompt")
+	}
+}
+
+func TestWithoutNULCopiesOnlyWhenItMustChangeSomething(t *testing.T) {
+	clean := []string{"a", "b"}
+	if got := withoutNUL(clean); &got[0] != &clean[0] {
+		t.Error("clean arguments were copied")
+	}
+	dirty := []string{"a", "b\x00c"}
+	if got := withoutNUL(dirty); got[1] != "bc" {
+		t.Errorf("got %q, want %q", got[1], "bc")
+	}
+	if dirty[1] != "b\x00c" {
+		t.Error("the caller's slice was modified")
+	}
+}
