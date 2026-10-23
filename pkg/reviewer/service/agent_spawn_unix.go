@@ -40,13 +40,13 @@ func (DefaultSpawner) SpawnWithEnv(ctx context.Context, name string, args []stri
 // withoutNUL drops NUL bytes from arguments: exec rejects any argument that
 // holds one (EINVAL), and a prompt quoting a binary file or odd PR text can.
 func withoutNUL(args []string) []string {
-	out := args
+	out, copied := args, false
 	for i, a := range args {
 		if strings.IndexByte(a, 0) < 0 {
 			continue
 		}
-		if &out[0] == &args[0] {
-			out = append([]string(nil), args...)
+		if !copied {
+			out, copied = append([]string(nil), args...), true
 		}
 		out[i] = strings.ReplaceAll(a, "\x00", "")
 	}
