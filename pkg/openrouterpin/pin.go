@@ -26,7 +26,7 @@ type Prefs struct {
 }
 
 // Enabled reports whether the preferences would change any request.
-func (p Prefs) Enabled() bool { return len(p.Order) > 0 || len(p.Ignore) > 0 }
+func (p Prefs) Enabled() bool { return p.Match != "" && (len(p.Order) > 0 || len(p.Ignore) > 0) }
 
 // Start serves the proxy on a loopback port and returns the base URL to use in
 // place of upstream (an OpenRouter API root such as https://openrouter.ai/api/v1)
@@ -99,7 +99,7 @@ func withProvider(body []byte, prefs Prefs) []byte {
 	if raw, ok := m["model"]; !ok || json.Unmarshal(raw, &model) != nil || !strings.HasPrefix(model, prefs.Match) {
 		return body
 	}
-	if _, set := m["provider"]; set {
+	if raw, set := m["provider"]; set && string(raw) != "null" {
 		return body
 	}
 	provider := map[string]any{"allow_fallbacks": true}

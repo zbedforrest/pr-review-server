@@ -106,3 +106,13 @@ func TestEmptyMatchPinsNothing(t *testing.T) {
 		t.Fatalf("empty match changed the body: %s", got)
 	}
 }
+
+func TestNullProviderStillGetsPreferences(t *testing.T) {
+	got := withProvider([]byte(`{"model":"deepseek/x","provider":null}`), Prefs{Match: "deepseek/", Order: []string{"digitalocean"}})
+	if !strings.Contains(string(got), `"order":["digitalocean"]`) {
+		t.Fatalf("null provider was not replaced: %s", got)
+	}
+	if (Prefs{Order: []string{"digitalocean"}}).Enabled() {
+		t.Error("preferences without a match prefix count as enabled")
+	}
+}
