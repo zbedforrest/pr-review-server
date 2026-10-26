@@ -374,9 +374,10 @@ func verifyArtifactName(job ReviewJob) string {
 }
 
 // reviewPublishBound reports whether the review will try to post: publish
-// is not skipped, the PR is not a draft and the author passes the gate.
+// is not skipped, the PR is not a draft (or the run may post on one) and the
+// author passes the gate.
 func (p *Poller) reviewPublishBound(job ReviewJob) bool {
-	if job.SkipPublish || job.PR.Draft {
+	if job.SkipPublish || (job.PR.Draft && !p.publishesDraft(job)) {
 		return false
 	}
 	gate, err := p.publishGate()

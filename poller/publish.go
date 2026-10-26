@@ -371,6 +371,12 @@ const (
 // saved and visible on the dashboard, so any failure here is logged and
 // never fails the run.
 func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest, sidecar []byte) (*publisher.Report, string) {
+	return p.publishGitHubReviewWith(ctx, pr, sidecar, false)
+}
+
+// publishGitHubReviewWith is publishGitHubReview with draftOK, which lets a
+// review the author asked for by mention post while the PR is still a draft.
+func (p *Poller) publishGitHubReviewWith(ctx context.Context, pr github.PullRequest, sidecar []byte, draftOK bool) (*publisher.Report, string) {
 	gate, err := p.publishGate()
 	if err != nil {
 		log.Printf("[PUBLISH] %s/%s#%d: read publish allowlist: %v", pr.Owner, pr.Repo, pr.Number, err)
@@ -411,7 +417,7 @@ func (p *Poller) publishGitHubReview(ctx context.Context, pr github.PullRequest,
 		log.Printf("[PUBLISH] %s/%s#%d: fetch pull request: %v", pr.Owner, pr.Repo, pr.Number, err)
 		return nil, publicationFailedPrefix + "fetch pull request"
 	}
-	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft(), ghPR.GetHead().GetSHA(), pr.CommitSHA); !ok {
+	if ok, reason := publishTargetReady(ghPR.GetState(), ghPR.GetDraft() && !draftOK, ghPR.GetHead().GetSHA(), pr.CommitSHA); !ok {
 		log.Printf("[PUBLISH] %s/%s#%d: skipped, %s", pr.Owner, pr.Repo, pr.Number, reason)
 		return nil, publicationSkippedPrefix + reason
 	}

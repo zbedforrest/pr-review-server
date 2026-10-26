@@ -4240,7 +4240,7 @@ func (p *Poller) runReviewJob(job ReviewJob, queuedCtx context.Context, reviewSv
 	var published *publisher.Report
 	if !job.SkipPublish {
 		var outcome string
-		published, outcome = p.publishGitHubReview(prCtx, pr, sidecarBody)
+		published, outcome = p.publishGitHubReviewWith(prCtx, pr, sidecarBody, p.publishesDraft(job))
 		if job.TriggerSource == autoReviewTriggerSource {
 			if err := p.db.SetAutoReviewIntentPublicationByRun(job.RunID, outcome); err != nil {
 				log.Printf("[AUTO-REVIEW] run %s: could not record publication outcome %q: %v", job.RunID, outcome, err)
