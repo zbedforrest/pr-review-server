@@ -201,6 +201,9 @@ func (p *Poller) gradeBatch(ctx context.Context, cfg service.AgentConfig, batch 
 			return 0, 0, ctx.Err()
 		}
 	}
+	// Installation tokens expire within the hour and a run can outlast one,
+	// so each batch clones with a token fetched just before it.
+	cfg.GitHubToken = p.freshGitHubToken(ctx, cfg.GitHubToken)
 	res, err := gradeAgentFn(ctx, cfg, p.agentSpawner, in)
 	cost := 0.0
 	if res != nil {
@@ -226,6 +229,18 @@ func (p *Poller) gradeBatch(ctx context.Context, cfg service.AgentConfig, batch 
 		return 0, cost, fmt.Errorf("save grades: %w", err)
 	}
 	return len(rows), cost, nil
+}
+
+func (p *Poller) freshGitHubToken(ctx context.Context, fallback string) string {
+	if p.ghClientConcrete == nil {
+		return fallback
+	}
+	tok, err := p.ghClientConcrete.CurrentToken(ctx)
+	if err != nil || tok == "" {
+		log.Printf("[GRADE] token refresh failed, reusing the run token: %v", err)
+		return fallback
+	}
+	return tok
 }
 
 func commentURL(c db.GradeCandidate) string {
