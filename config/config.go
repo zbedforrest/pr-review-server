@@ -487,7 +487,7 @@ func Load() *Config {
 		OpenRouterBaseURL:           os.Getenv("OPENROUTER_BASE_URL"),
 		OpenRouterProviderOrder:     getEnvListOrDefault("OPENROUTER_PROVIDER_ORDER", nil, strings.TrimSpace),
 		OpenRouterProviderIgnore:    getEnvListOrDefault("OPENROUTER_PROVIDER_IGNORE", nil, strings.TrimSpace),
-		OpenRouterProviderMatch:     getEnvOrDefault("OPENROUTER_PROVIDER_MATCH", "deepseek/"),
+		OpenRouterProviderMatch:     strings.TrimSpace(getEnvOrDefault("OPENROUTER_PROVIDER_MATCH", "deepseek/")),
 		BugMemoryPath:               os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:             os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:              os.Getenv("REQUIRED_CHECKS") == "true",

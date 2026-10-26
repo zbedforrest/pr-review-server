@@ -7,24 +7,38 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 )
 
-func echoUpstream(t *testing.T) (*url.URL, *[]map[string]any, *[]string) {
+type seen struct {
+	mu     sync.Mutex
+	bodies []map[string]any
+	paths  []string
+}
+
+func (s *seen) at(i int) (map[string]any, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bodies[i], s.paths[i]
+}
+
+func echoUpstream(t *testing.T) (*url.URL, *seen) {
 	t.Helper()
-	var bodies []map[string]any
-	var paths []string
+	s := &seen{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.URL.Path)
 		var m map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&m)
-		bodies = append(bodies, m)
+		s.mu.Lock()
+		s.paths = append(s.paths, r.URL.Path)
+		s.bodies = append(s.bodies, m)
+		s.mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: ok\n\n")
 	}))
 	t.Cleanup(srv.Close)
 	up, _ := url.Parse(srv.URL + "/api/v1")
-	return up, &bodies, &paths
+	return up, s
 }
 
 func post(t *testing.T, h http.Handler, path, body string) string {
@@ -41,44 +55,54 @@ func post(t *testing.T, h http.Handler, path, body string) string {
 }
 
 func TestMatchingModelGetsProviderPreferences(t *testing.T) {
-	up, bodies, paths := echoUpstream(t)
+	up, s := echoUpstream(t)
 	h := Handler(up, Prefs{Match: "deepseek/", Order: []string{"digitalocean", "fireworks"}, Ignore: []string{"google-vertex"}})
 
 	if got := post(t, h, "/responses", `{"model":"deepseek/deepseek-v4.1-flash","input":"x","stream":true}`); got != "data: ok\n\n" {
 		t.Fatalf("response not streamed through: %q", got)
 	}
-	if (*paths)[0] != "/api/v1/responses" {
-		t.Errorf("path %q, want /api/v1/responses", (*paths)[0])
+	body, path := s.at(0)
+	if path != "/api/v1/responses" {
+		t.Errorf("path %q, want /api/v1/responses", path)
 	}
-	provider, _ := (*bodies)[0]["provider"].(map[string]any)
+	provider, _ := body["provider"].(map[string]any)
 	if provider == nil {
 		t.Fatal("provider preferences missing")
 	}
 	if got, _ := json.Marshal(provider); string(got) != `{"allow_fallbacks":true,"ignore":["google-vertex"],"order":["digitalocean","fireworks"]}` {
 		t.Errorf("provider = %s", got)
 	}
-	if (*bodies)[0]["input"] != "x" {
+	if body["input"] != "x" {
 		t.Error("other fields were not kept")
 	}
 }
 
 func TestOtherModelsAndExplicitProvidersPassUnchanged(t *testing.T) {
-	up, bodies, _ := echoUpstream(t)
+	up, s := echoUpstream(t)
 	h := Handler(up, Prefs{Match: "deepseek/", Order: []string{"digitalocean"}})
 
 	post(t, h, "/chat/completions", `{"model":"anthropic/claude-haiku-4.5","messages":[]}`)
 	post(t, h, "/chat/completions", `{"model":"deepseek/deepseek-v4.1-flash","provider":{"only":["together"]}}`)
 
-	if _, set := (*bodies)[0]["provider"]; set {
+	other, _ := s.at(0)
+	if _, set := other["provider"]; set {
 		t.Error("a non-matching model got provider preferences")
 	}
-	if got, _ := json.Marshal((*bodies)[1]["provider"]); string(got) != `{"only":["together"]}` {
+	explicit, _ := s.at(1)
+	if got, _ := json.Marshal(explicit["provider"]); string(got) != `{"only":["together"]}` {
 		t.Errorf("an explicit provider was overwritten: %s", got)
 	}
 }
 
 func TestStartRejectsABadUpstream(t *testing.T) {
-	if _, err := Start("not a url", Prefs{Order: []string{"x"}}); err == nil {
+	if _, _, err := Start("not a url", Prefs{Order: []string{"x"}}); err == nil {
 		t.Fatal("want an error for a bad upstream")
+	}
+}
+
+func TestEmptyMatchPinsNothing(t *testing.T) {
+	body := []byte(`{"model":"deepseek/deepseek-v4.1-flash"}`)
+	if got := withProvider(body, Prefs{Order: []string{"digitalocean"}}); string(got) != string(body) {
+		t.Fatalf("empty match changed the body: %s", got)
 	}
 }

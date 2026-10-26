@@ -269,7 +269,7 @@ func startOpenRouterPin(cfg *config.Config) {
 	if upstream == "" {
 		upstream = llm.DefaultOpenRouterBaseURL
 	}
-	local, err := openrouterpin.Start(upstream, prefs)
+	local, _, err := openrouterpin.Start(upstream, prefs)
 	if err != nil {
 		log.Fatalf("OpenRouter provider preferences: %v", err)
 	}

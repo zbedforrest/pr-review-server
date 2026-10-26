@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -28,18 +29,24 @@ type Prefs struct {
 func (p Prefs) Enabled() bool { return len(p.Order) > 0 || len(p.Ignore) > 0 }
 
 // Start serves the proxy on a loopback port and returns the base URL to use in
-// place of upstream (an OpenRouter API root such as https://openrouter.ai/api/v1).
-func Start(upstream string, prefs Prefs) (string, error) {
+// place of upstream (an OpenRouter API root such as https://openrouter.ai/api/v1)
+// and a function that stops it.
+func Start(upstream string, prefs Prefs) (string, func() error, error) {
 	up, err := url.Parse(strings.TrimRight(upstream, "/"))
 	if err != nil || up.Scheme == "" || up.Host == "" {
-		return "", fmt.Errorf("openrouterpin: bad upstream %q", upstream)
+		return "", nil, fmt.Errorf("openrouterpin: bad upstream %q", upstream)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return "", fmt.Errorf("openrouterpin: listen: %w", err)
+		return "", nil, fmt.Errorf("openrouterpin: listen: %w", err)
 	}
-	go func() { _ = http.Serve(ln, Handler(up, prefs)) }()
-	return "http://" + ln.Addr().String(), nil
+	srv := &http.Server{Handler: Handler(up, prefs)}
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("[OR-PIN] proxy stopped, OpenRouter calls will fail: %v", err)
+		}
+	}()
+	return "http://" + ln.Addr().String(), srv.Close, nil
 }
 
 // Handler forwards every request to upstream, with the request path appended
@@ -47,6 +54,7 @@ func Start(upstream string, prefs Prefs) (string, error) {
 func Handler(up *url.URL, prefs Prefs) http.Handler {
 	return &httputil.ReverseProxy{
 		FlushInterval: -1,
+		ErrorLog:      log.New(log.Writer(), "[OR-PIN] ", log.LstdFlags),
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(up)
 			pr.Out.Host = up.Host
@@ -63,15 +71,26 @@ func apply(r *http.Request, prefs Prefs) {
 	}
 	body, err := io.ReadAll(r.Body)
 	_ = r.Body.Close()
-	if err == nil {
-		body = withProvider(body, prefs)
+	if err != nil {
+		// Forwarding a truncated body would send malformed JSON upstream;
+		// failing the read makes the proxy answer 502 instead.
+		r.Body = io.NopCloser(errReader{err})
+		return
 	}
+	body = withProvider(body, prefs)
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
 }
 
+type errReader struct{ err error }
+
+func (e errReader) Read([]byte) (int, error) { return 0, e.err }
+
 func withProvider(body []byte, prefs Prefs) []byte {
+	if prefs.Match == "" {
+		return body
+	}
 	var m map[string]json.RawMessage
 	if json.Unmarshal(body, &m) != nil {
 		return body
