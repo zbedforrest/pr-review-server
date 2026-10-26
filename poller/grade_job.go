@@ -237,6 +237,7 @@ func (p *Poller) freshGitHubToken(ctx context.Context, fallback string) string {
 	}
 	tok, err := p.ghClientConcrete.CurrentToken(ctx)
 	if err != nil || tok == "" {
+		log.Printf("[GRADE] token refresh failed, reusing the run token: %v", err)
 		return fallback
 	}
 	return tok
