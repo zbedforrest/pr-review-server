@@ -171,9 +171,15 @@ type Config struct {
 	AnthropicAPIKey   string
 	OpenRouterAPIKey  string // OpenRouter credential; deployment-only, never exposed in capabilities
 	OpenRouterBaseURL string // OpenRouter API root (empty = service default)
-	BugMemoryPath     string // local path to a bug-memory library JSON (dev/benchmark)
-	BugMemoryObject   string // GCS object name of the library (prod); Path wins if both set
-	RequiredChecks    bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
+	// OpenRouterProviderOrder and OpenRouterProviderIgnore are OpenRouter
+	// provider preferences for models starting with OpenRouterProviderMatch,
+	// applied by a loopback proxy at startup (fallbacks stay allowed).
+	OpenRouterProviderOrder  []string
+	OpenRouterProviderIgnore []string
+	OpenRouterProviderMatch  string
+	BugMemoryPath            string // local path to a bug-memory library JSON (dev/benchmark)
+	BugMemoryObject          string // GCS object name of the library (prod); Path wins if both set
+	RequiredChecks           bool   // convert fired gates/memory entries into forced-choice agent checks (pkg/reviewer/service/checks.go)
 	// AgentPriorFindings shows the review agent what PRism already raised on
 	// the PR, from the publication ledger, so a restatement names its prior
 	// (AGENT_PRIOR_FINDINGS=true; off by default, a prompt change).
@@ -479,6 +485,9 @@ func Load() *Config {
 		AnthropicAPIKey:             os.Getenv("ANTHROPIC_API_KEY"),
 		OpenRouterAPIKey:            os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterBaseURL:           os.Getenv("OPENROUTER_BASE_URL"),
+		OpenRouterProviderOrder:     getEnvListOrDefault("OPENROUTER_PROVIDER_ORDER", nil, strings.TrimSpace),
+		OpenRouterProviderIgnore:    getEnvListOrDefault("OPENROUTER_PROVIDER_IGNORE", nil, strings.TrimSpace),
+		OpenRouterProviderMatch:     strings.TrimSpace(getEnvOrDefault("OPENROUTER_PROVIDER_MATCH", "deepseek/")),
 		BugMemoryPath:               os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:             os.Getenv("BUG_MEMORY_OBJECT"),
 		RequiredChecks:              os.Getenv("REQUIRED_CHECKS") == "true",

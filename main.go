@@ -15,6 +15,7 @@ import (
 	"pr-review-server/db"
 	"pr-review-server/gcs"
 	"pr-review-server/github"
+	"pr-review-server/pkg/openrouterpin"
 	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/poller"
@@ -38,6 +39,7 @@ func main() {
 // In dev mode, users are auto-logged-in based on GITHUB_USERNAME.
 // In prod mode, users authenticate via OAuth.
 func start(cfg *config.Config) {
+	startOpenRouterPin(cfg)
 	// Validate required config
 	if refuseImplicitDevMode(os.Getenv("K_SERVICE"), os.Getenv("DEV_MODE"), cfg.IsDevMode()) {
 		log.Fatal("Refusing to start: GITHUB_APP_CLIENT_ID is missing on Cloud Run, which would run production in dev mode with every request as the admin dev user. Set GITHUB_APP_CLIENT_ID, or DEV_MODE=true if this instance is meant to run in dev mode.")
@@ -253,4 +255,24 @@ func start(cfg *config.Config) {
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+// startOpenRouterPin routes OpenRouter calls through the provider-preference
+// proxy when preferences are configured; a proxy that cannot start is fatal so
+// a deployment never runs believing it is pinned when it is not.
+func startOpenRouterPin(cfg *config.Config) {
+	prefs := openrouterpin.Prefs{Match: cfg.OpenRouterProviderMatch, Order: cfg.OpenRouterProviderOrder, Ignore: cfg.OpenRouterProviderIgnore}
+	if !prefs.Enabled() {
+		return
+	}
+	upstream := cfg.OpenRouterBaseURL
+	if upstream == "" {
+		upstream = llm.DefaultOpenRouterBaseURL
+	}
+	local, _, err := openrouterpin.Start(upstream, prefs)
+	if err != nil {
+		log.Fatalf("OpenRouter provider preferences: %v", err)
+	}
+	cfg.OpenRouterBaseURL = local
+	log.Printf("[CONFIG] OpenRouter provider preferences for %s*: order=%v ignore=%v (via %s)", prefs.Match, prefs.Order, prefs.Ignore, local)
 }

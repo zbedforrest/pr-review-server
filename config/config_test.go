@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"pr-review-server/pkg/reviewer/llm"
@@ -536,5 +537,26 @@ func TestVerifyBudgetKeepsTheDefaultForANegativeValue(t *testing.T) {
 	}
 	if got := verifyBudget(0); got != 0 {
 		t.Fatalf("zero -> %v", got)
+	}
+}
+
+func TestLoadOpenRouterProviderPreferences(t *testing.T) {
+	t.Setenv("OPENROUTER_PROVIDER_ORDER", "digitalocean, fireworks")
+	t.Setenv("OPENROUTER_PROVIDER_IGNORE", "google-vertex")
+	t.Setenv("OPENROUTER_PROVIDER_MATCH", " deepseek/ ")
+	cfg := Load()
+	if strings.Join(cfg.OpenRouterProviderOrder, ",") != "digitalocean,fireworks" || strings.Join(cfg.OpenRouterProviderIgnore, ",") != "google-vertex" {
+		t.Errorf("order=%q ignore=%q", cfg.OpenRouterProviderOrder, cfg.OpenRouterProviderIgnore)
+	}
+	if cfg.OpenRouterProviderMatch != "deepseek/" {
+		t.Errorf("match=%q, want the trimmed prefix", cfg.OpenRouterProviderMatch)
+	}
+
+	t.Setenv("OPENROUTER_PROVIDER_ORDER", "")
+	t.Setenv("OPENROUTER_PROVIDER_IGNORE", "")
+	t.Setenv("OPENROUTER_PROVIDER_MATCH", "")
+	cfg = Load()
+	if len(cfg.OpenRouterProviderOrder) != 0 || len(cfg.OpenRouterProviderIgnore) != 0 || cfg.OpenRouterProviderMatch != "deepseek/" {
+		t.Errorf("defaults: order=%q ignore=%q match=%q", cfg.OpenRouterProviderOrder, cfg.OpenRouterProviderIgnore, cfg.OpenRouterProviderMatch)
 	}
 }
