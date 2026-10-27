@@ -269,6 +269,7 @@ Separately, judge whether each finding is worth posting to the author at all ("w
 - the concern is already handled elsewhere (cite where);
 - it restates another finding in this list (set "duplicate_of" to that key);
 - it is not caused by this PR's change, or only restates the PR description.
+Judge this the same way at every severity: a MEDIUM that accurately describes a change the PR description, a code comment or a test says is intended, without showing a concrete failure the author did not account for, is not worth posting; nor is a MEDIUM about behavior that is unchanged from the merge-base. Read the pull request text for stated intent before deciding.
 Say true for a real defect of any size, a test gap around logic that can break, or documentation that would mislead a reader. When unsure, say true.
 
 Return one JSON object: {"decisions":[{"key":"F1","decision":"keep|revise|hold|drop|evidence_unavailable","worth_posting":true,"value_reason":"","duplicate_of":null,"cites":["path:line"],"reason":"one or two plain sentences","refuting_quote":"path:start-end or null","revised":null or {"line_number":0,"importance":"CRITICAL|MEDIUM|LOW","headline":"","comment_body":"","materiality":"current_impact|future_condition_only|no_user_impact|unknown","current_impact":"","counterfactual_trigger":null,"falsifiability":"falsifiable|not_falsifiable|unknown","falsifiable_condition":null,"expected_observable":null,"uncertainty":"","severity_rationale":""}}]}
