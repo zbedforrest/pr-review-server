@@ -65,9 +65,10 @@ const (
 // Verification is the verifier's decision on one merged finding. It is kept
 // apart from State because any State other than confirmed is unpublishable.
 // Applied is false in shadow mode, where publishers must ignore the decision.
-// LowValue marks a LOW finding the agent judged not worth posting (true
-// but not actionable); it keeps the note off GitHub like a hold, with
-// ValueReason saying why. Phase is 2 when the escalation agent made the decision. Proposed is the
+// LowValue marks a finding that was LOW before verification and that the
+// agent judged not worth posting (true but not actionable); it keeps the
+// note off GitHub like a hold, with ValueReason saying why. A MEDIUM judged
+// the same way is lowered to LOW instead, with DemotedFrom set. Phase is 2 when the escalation agent made the decision. Proposed is the
 // model's decision when policy recorded a different
 // Status (an invalid decision, or a hold or drop on a CRITICAL). Cites are
 // evidence references: packet item ids (P3) from the one-call check, or

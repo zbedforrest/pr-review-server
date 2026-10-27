@@ -195,10 +195,10 @@ func readQuote(c AgentCite, headDir, baseDir string) string {
 }
 
 // ApplyAgent records an escalated decision on the finding under the same
-// rules as Phase 1, then marks a LOW finding the agent judged not worth
-// posting. Only LOW findings are ever hidden for value, and only with a
-// stated reason; a duplicate names the finding it repeats. The reason is
-// recorded on higher severities too, for analysis, without hiding them.
+// rules as Phase 1, then acts on the agent's value judgement: a LOW finding
+// judged not worth posting is hidden, and a MEDIUM one is lowered to LOW
+// (see DemoteMediumNotWorth). Both need a stated reason; a duplicate names
+// the finding it repeats. A finding that started CRITICAL is never touched.
 func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) {
 	cites := make([]string, 0, len(d.Cites))
 	for _, ci := range d.Cites {
@@ -226,8 +226,9 @@ func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) 
 	return out, valid
 }
 
-// DemoteMediumNotWorth posts a MEDIUM the agent judged not worth posting as a
-// LOW note instead (VERIFY_DEMOTE_MEDIUM); it is still shown, never hidden.
+// DemoteMediumNotWorth posts a MEDIUM the agent judged not worth posting at
+// LOW instead (VERIFY_DEMOTE_MEDIUM), so it follows the LOW publishing rules
+// rather than being hidden by the verifier; set from config in poller.New.
 var DemoteMediumNotWorth = true
 
 // EstimateAgentTokens approximates the escalation prompts for these

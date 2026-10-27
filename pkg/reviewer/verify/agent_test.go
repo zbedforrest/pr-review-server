@@ -204,10 +204,22 @@ func TestApplyAgent_KeepsSeverityWhenDemotionIsOffOrTheFindingIsWorthPosting(t *
 	if c, _ := ApplyAgent(medium, AgentDecision{Key: "F1", Decision: "keep", Reason: "r", WorthPosting: &yes}); c.Importance != "MEDIUM" {
 		t.Errorf("a worth-posting MEDIUM became %q", c.Importance)
 	}
+	prev := DemoteMediumNotWorth
 	DemoteMediumNotWorth = false
-	defer func() { DemoteMediumNotWorth = true }()
+	t.Cleanup(func() { DemoteMediumNotWorth = prev })
 	if c, _ := ApplyAgent(medium, AgentDecision{Key: "F1", Decision: "keep", Reason: "r", WorthPosting: &no, ValueReason: "intended per the PR"}); c.Importance != "MEDIUM" || c.Verification.DemotedFrom != "" {
 		t.Errorf("with demotion off: importance %q demoted_from %q", c.Importance, c.Verification.DemotedFrom)
+	}
+}
+
+func TestApplyAgent_NeverDemotesACriticalRevisedToMedium(t *testing.T) {
+	no := false
+	critical := types.LineComment{FilePath: "a.go", LineNumber: 2, Importance: "CRITICAL", CommentBody: "The PR removed the limit check", FindingContract: validContract()}
+	d := AgentDecision{Key: "F1", Decision: "revise", Reason: "r", Cites: []AgentCite{{File: "a.go", Start: 1, End: 1}}, WorthPosting: &no, ValueReason: "restates the PR",
+		Revised: &Revision{LineNumber: 2, Importance: "MEDIUM", Headline: "h", CommentBody: "smaller", Materiality: "current_impact", CurrentImpact: "some", Falsifiability: "not_falsifiable", Uncertainty: "u", SeverityRationale: "s"}}
+	c, _ := ApplyAgent(critical, d)
+	if c.Verification.Status != types.VerifyRevise || c.Importance != "MEDIUM" || c.Verification.DemotedFrom != "" {
+		t.Fatalf("importance %q status %q demoted_from %q", c.Importance, c.Verification.Status, c.Verification.DemotedFrom)
 	}
 }
 
