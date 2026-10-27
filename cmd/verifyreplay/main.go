@@ -78,6 +78,7 @@ func main() {
 	agentModel := flag.String("agent-model", "claude-opus-5-5", "escalation agent model")
 	agentTurns := flag.Int("agent-turns", 100, "escalation agent turn budget")
 	agentWall := flag.Duration("agent-wall", 7*time.Minute, "escalation agent wall clock")
+	flag.BoolVar(&verify.DemoteMediumNotWorth, "demote-medium", true, "post a MEDIUM the agent judges not worth posting as a LOW note (VERIFY_DEMOTE_MEDIUM)")
 	flag.BoolVar(&keepSuppressed, "keep-suppressed", false, "keep held and dropped findings in the output with their applied Verification, as production does, for a publisher pass")
 	flag.Parse()
 	key := os.Getenv("OPENROUTER_API_KEY")
