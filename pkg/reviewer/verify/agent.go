@@ -217,9 +217,18 @@ func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) 
 		v.ValueReason = cut("duplicate of "+d.DuplicateOf+": "+v.ValueReason, maxReasonRunes)
 	}
 	low := strings.EqualFold(strings.TrimSpace(out.Importance), "LOW") && strings.EqualFold(strings.TrimSpace(c.Importance), "LOW")
-	v.LowValue = low && (v.Status == types.VerifyKeep || v.Status == types.VerifyRevise || v.Status == types.VerifyUnavailable)
+	standing := v.Status == types.VerifyKeep || v.Status == types.VerifyRevise || v.Status == types.VerifyUnavailable
+	v.LowValue = low && standing
+	if DemoteMediumNotWorth && standing && strings.EqualFold(strings.TrimSpace(out.Importance), "MEDIUM") && !strings.EqualFold(strings.TrimSpace(c.Importance), "CRITICAL") {
+		v.DemotedFrom = out.Importance
+		out.Importance = "LOW"
+	}
 	return out, valid
 }
+
+// DemoteMediumNotWorth posts a MEDIUM the agent judged not worth posting as a
+// LOW note instead (VERIFY_DEMOTE_MEDIUM); it is still shown, never hidden.
+var DemoteMediumNotWorth = true
 
 // EstimateAgentTokens approximates the escalation prompts for these
 // findings, the starting context the agent reads before exploring.

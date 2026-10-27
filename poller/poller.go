@@ -32,6 +32,7 @@ import (
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/tickets"
 	"pr-review-server/pkg/reviewer/types"
+	"pr-review-server/pkg/reviewer/verify"
 )
 
 // Timeout constants for review process management.
@@ -417,6 +418,7 @@ func (p *Poller) runLeaderElection(ctx context.Context) {
 }
 
 func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsClient *gcs.Client) *Poller {
+	verify.DemoteMediumNotWorth = cfg.VerifyDemoteMedium
 	p := &Poller{
 		cfg:               cfg,
 		db:                database,

@@ -75,17 +75,20 @@ const (
 // withdrawal can show it without the packet. For a revise, the finding
 // already carries the replacement and Prior* hold what it replaced.
 type Verification struct {
-	Status        string           `json:"status"`
-	Phase         int              `json:"phase,omitempty"`
-	Proposed      string           `json:"proposed,omitempty"`
-	Applied       bool             `json:"applied"`
-	Reason        string           `json:"reason,omitempty"`
-	Cites         []string         `json:"cites,omitempty"`
-	Evidence      string           `json:"evidence,omitempty"`
-	Model         string           `json:"model,omitempty"`
-	PriorComment  string           `json:"prior_comment,omitempty"`
-	LowValue      bool             `json:"low_value,omitempty"`
-	ValueReason   string           `json:"value_reason,omitempty"`
+	Status       string   `json:"status"`
+	Phase        int      `json:"phase,omitempty"`
+	Proposed     string   `json:"proposed,omitempty"`
+	Applied      bool     `json:"applied"`
+	Reason       string   `json:"reason,omitempty"`
+	Cites        []string `json:"cites,omitempty"`
+	Evidence     string   `json:"evidence,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	PriorComment string   `json:"prior_comment,omitempty"`
+	LowValue     bool     `json:"low_value,omitempty"`
+	ValueReason  string   `json:"value_reason,omitempty"`
+	// DemotedFrom is the severity a finding judged not worth posting had
+	// before it was posted as a LOW note instead.
+	DemotedFrom   string           `json:"demoted_from,omitempty"`
 	PriorContract *FindingContract `json:"prior_contract,omitempty"`
 }
 
