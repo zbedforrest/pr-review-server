@@ -116,7 +116,10 @@ type Config struct {
 	// VerifyPacketCall runs the one-call packet check first; off (the
 	// default, the configuration the fresh-window test measured), every
 	// finding goes straight to the verify agent.
-	VerifyPacketCall        bool
+	VerifyPacketCall bool
+	// VerifyDemoteMedium posts a MEDIUM the verify agent judged not worth
+	// posting as a LOW note (default on).
+	VerifyDemoteMedium      bool
 	VerifyAgentBackend      string
 	VerifyAgentModel        string
 	VerifyAgentWallClockSec int
@@ -455,6 +458,7 @@ func Load() *Config {
 		VerifyShadowSample:          min(max(getEnvFloatOrDefault("VERIFY_SHADOW_SAMPLE", 1), 0), 1),
 		VerifyEscalate:              getEnvBoolOrDefault("VERIFY_ESCALATE", true),
 		VerifyPacketCall:            getEnvBoolOrDefault("VERIFY_PACKET_CALL", false),
+		VerifyDemoteMedium:          getEnvBoolOrDefault("VERIFY_DEMOTE_MEDIUM", true),
 		VerifyAgentBackend:          os.Getenv("VERIFY_AGENT_BACKEND"),
 		VerifyAgentModel:            os.Getenv("VERIFY_AGENT_MODEL"),
 		VerifyAgentWallClockSec:     getPositiveEnvIntOrDefault("VERIFY_AGENT_WALL_CLOCK_SEC", 420),

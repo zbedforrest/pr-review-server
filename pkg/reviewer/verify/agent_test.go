@@ -185,13 +185,49 @@ func TestResolveAgentReply_ReadsTheValueJudgement(t *testing.T) {
 	}
 }
 
-func TestApplyAgent_RecordsTheValueReasonOnHigherSeveritiesWithoutHiding(t *testing.T) {
+func TestApplyAgent_PostsAMediumJudgedNotWorthPostingAsALowNote(t *testing.T) {
 	no := false
 	medium := types.LineComment{FilePath: "a.go", LineNumber: 1, Importance: "MEDIUM", CommentBody: "x"}
 	c, _ := ApplyAgent(medium, AgentDecision{Key: "F1", Decision: "keep", Reason: "r", WorthPosting: &no, ValueReason: "restates F2", DuplicateOf: "F2"})
 	c.Verification.Applied = true
 	if c.Verification.LowValue || c.Verification.Suppresses() || c.Verification.ValueReason != "duplicate of F2: restates F2" {
 		t.Fatalf("verification = %+v", c.Verification)
+	}
+	if c.Importance != "LOW" || c.Verification.DemotedFrom != "MEDIUM" {
+		t.Fatalf("importance = %q demoted_from = %q, want LOW from MEDIUM", c.Importance, c.Verification.DemotedFrom)
+	}
+}
+
+func TestApplyAgent_KeepsSeverityWhenDemotionIsOffOrTheFindingIsWorthPosting(t *testing.T) {
+	no, yes := false, true
+	medium := types.LineComment{FilePath: "a.go", LineNumber: 1, Importance: "MEDIUM", CommentBody: "x"}
+	if c, _ := ApplyAgent(medium, AgentDecision{Key: "F1", Decision: "keep", Reason: "r", WorthPosting: &yes}); c.Importance != "MEDIUM" {
+		t.Errorf("a worth-posting MEDIUM became %q", c.Importance)
+	}
+	prev := DemoteMediumNotWorth
+	DemoteMediumNotWorth = false
+	t.Cleanup(func() { DemoteMediumNotWorth = prev })
+	if c, _ := ApplyAgent(medium, AgentDecision{Key: "F1", Decision: "keep", Reason: "r", WorthPosting: &no, ValueReason: "intended per the PR"}); c.Importance != "MEDIUM" || c.Verification.DemotedFrom != "" {
+		t.Errorf("with demotion off: importance %q demoted_from %q", c.Importance, c.Verification.DemotedFrom)
+	}
+}
+
+func TestApplyAgent_NeverDemotesACriticalRevisedToMedium(t *testing.T) {
+	no := false
+	critical := types.LineComment{FilePath: "a.go", LineNumber: 2, Importance: "CRITICAL", CommentBody: "The PR removed the limit check", FindingContract: validContract()}
+	d := AgentDecision{Key: "F1", Decision: "revise", Reason: "r", Cites: []AgentCite{{File: "a.go", Start: 1, End: 1}}, WorthPosting: &no, ValueReason: "restates the PR",
+		Revised: &Revision{LineNumber: 2, Importance: "MEDIUM", Headline: "h", CommentBody: "smaller", Materiality: "current_impact", CurrentImpact: "some", Falsifiability: "not_falsifiable", Uncertainty: "u", SeverityRationale: "s"}}
+	c, _ := ApplyAgent(critical, d)
+	if c.Verification.Status != types.VerifyRevise || c.Importance != "MEDIUM" || c.Verification.DemotedFrom != "" {
+		t.Fatalf("importance %q status %q demoted_from %q", c.Importance, c.Verification.Status, c.Verification.DemotedFrom)
+	}
+}
+
+func TestApplyAgent_NeverDemotesACritical(t *testing.T) {
+	no := false
+	crit := types.LineComment{FilePath: "a.go", LineNumber: 1, Importance: "CRITICAL", CommentBody: "x"}
+	if c, _ := ApplyAgent(crit, AgentDecision{Key: "F1", Decision: "keep", Reason: "r", WorthPosting: &no, ValueReason: "restates the PR"}); c.Importance != "CRITICAL" || c.Verification.DemotedFrom != "" {
+		t.Fatalf("critical became %q (demoted_from %q)", c.Importance, c.Verification.DemotedFrom)
 	}
 }
 

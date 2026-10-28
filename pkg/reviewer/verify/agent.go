@@ -195,10 +195,10 @@ func readQuote(c AgentCite, headDir, baseDir string) string {
 }
 
 // ApplyAgent records an escalated decision on the finding under the same
-// rules as Phase 1, then marks a LOW finding the agent judged not worth
-// posting. Only LOW findings are ever hidden for value, and only with a
-// stated reason; a duplicate names the finding it repeats. The reason is
-// recorded on higher severities too, for analysis, without hiding them.
+// rules as Phase 1, then acts on the agent's value judgement: a LOW finding
+// judged not worth posting is hidden, and a MEDIUM one is lowered to LOW
+// (see DemoteMediumNotWorth). Both need a stated reason; a duplicate names
+// the finding it repeats. A finding that started CRITICAL is never touched.
 func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) {
 	cites := make([]string, 0, len(d.Cites))
 	for _, ci := range d.Cites {
@@ -217,9 +217,19 @@ func ApplyAgent(c types.LineComment, d AgentDecision) (types.LineComment, bool) 
 		v.ValueReason = cut("duplicate of "+d.DuplicateOf+": "+v.ValueReason, maxReasonRunes)
 	}
 	low := strings.EqualFold(strings.TrimSpace(out.Importance), "LOW") && strings.EqualFold(strings.TrimSpace(c.Importance), "LOW")
-	v.LowValue = low && (v.Status == types.VerifyKeep || v.Status == types.VerifyRevise || v.Status == types.VerifyUnavailable)
+	standing := v.Status == types.VerifyKeep || v.Status == types.VerifyRevise || v.Status == types.VerifyUnavailable
+	v.LowValue = low && standing
+	if DemoteMediumNotWorth && standing && strings.EqualFold(strings.TrimSpace(out.Importance), "MEDIUM") && !strings.EqualFold(strings.TrimSpace(c.Importance), "CRITICAL") {
+		v.DemotedFrom = out.Importance
+		out.Importance = "LOW"
+	}
 	return out, valid
 }
+
+// DemoteMediumNotWorth posts a MEDIUM the agent judged not worth posting at
+// LOW instead (VERIFY_DEMOTE_MEDIUM), so it follows the LOW publishing rules
+// rather than being hidden by the verifier; set from config in poller.New.
+var DemoteMediumNotWorth = true
 
 // EstimateAgentTokens approximates the escalation prompts for these
 // findings, the starting context the agent reads before exploring.
@@ -259,6 +269,7 @@ Separately, judge whether each finding is worth posting to the author at all ("w
 - the concern is already handled elsewhere (cite where);
 - it restates another finding in this list (set "duplicate_of" to that key);
 - it is not caused by this PR's change, or only restates the PR description.
+Judge this the same way at every severity: a MEDIUM that accurately describes a change the PR description, a code comment or a test says is intended, without showing a concrete failure the author did not account for, is not worth posting; nor is a MEDIUM about behavior that is unchanged from the merge-base. Read the pull request text for stated intent before deciding.
 Say true for a real defect of any size, a test gap around logic that can break, or documentation that would mislead a reader. When unsure, say true.
 
 Return one JSON object: {"decisions":[{"key":"F1","decision":"keep|revise|hold|drop|evidence_unavailable","worth_posting":true,"value_reason":"","duplicate_of":null,"cites":["path:line"],"reason":"one or two plain sentences","refuting_quote":"path:start-end or null","revised":null or {"line_number":0,"importance":"CRITICAL|MEDIUM|LOW","headline":"","comment_body":"","materiality":"current_impact|future_condition_only|no_user_impact|unknown","current_impact":"","counterfactual_trigger":null,"falsifiability":"falsifiable|not_falsifiable|unknown","falsifiable_condition":null,"expected_observable":null,"uncertainty":"","severity_rationale":""}}]}
