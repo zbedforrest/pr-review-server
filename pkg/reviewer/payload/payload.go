@@ -278,6 +278,8 @@ type Finding struct {
 	MergeBasis string               `json:"merge_basis,omitempty"`
 	// Verification is the repo-evidence verifier's decision, when it ran.
 	Verification *types.Verification `json:"verification,omitempty"`
+	// Display is the rewrite the inline comment shows, when one ran.
+	Display *types.Display `json:"display,omitempty"`
 	// Summary is the structured SUMMARY the agent emitted (SUMMARY entries only).
 	Summary      *types.SummaryBlock `json:"summary,omitempty"`
 	DiffHunk     string              `json:"diff_hunk,omitempty"`
@@ -502,6 +504,7 @@ func (p Payload) ToLineComments() []types.LineComment {
 			MergedInto:      f.MergedInto,
 			MergeBasis:      f.MergeBasis,
 			Verification:    f.Verification,
+			Display:         f.Display,
 			Summary:         f.Summary,
 		})
 	}
@@ -613,6 +616,10 @@ func Build(
 			Original:              cloneOriginal(c.Original),
 			Summary:               cloneSummary(c.Summary),
 			Verification:          cloneVerification(c.Verification),
+		}
+		if c.Display != nil {
+			d := *c.Display
+			f.Display = &d
 		}
 		f.MergeBasis = c.MergeBasis
 		if c.MergedInto != "" {
