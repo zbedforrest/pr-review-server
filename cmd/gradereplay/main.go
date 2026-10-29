@@ -6,7 +6,7 @@
 //
 //	[{"owner":"o","repo":"r","pr":1,"head":"<sha>","base":"<sha>","title":"...","body":"...","items":[grader.Item...]}]
 //
-// Each batch's result is written to <out>/<owner>__<repo>__<pr>.json.
+// Each batch's result is written to <out>/<owner>__<repo>__<pr>__<head7>.json.
 package main
 
 import (
@@ -79,7 +79,7 @@ func main() {
 	sem := make(chan struct{}, max(1, *par))
 	var wg sync.WaitGroup
 	for _, b := range batches {
-		path := filepath.Join(*out, fmt.Sprintf("%s__%s__%d.json", b.Owner, b.Repo, b.PR))
+		path := filepath.Join(*out, fmt.Sprintf("%s__%s__%d__%.7s.json", b.Owner, b.Repo, b.PR, b.Head))
 		if _, err := os.Stat(path); err == nil {
 			continue
 		}

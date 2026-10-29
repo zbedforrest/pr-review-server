@@ -124,6 +124,12 @@ type Config struct {
 	VerifyAgentModel        string
 	VerifyAgentWallClockSec int
 	VerifyAgentMaxTurns     int
+	// QualityGate grades every finding about to post with the grader rubric
+	// before publishing: off, shadow (record only) or on (a BAD grade keeps
+	// the finding off GitHub; a CRITICAL posts as a LOW note). Gate errors
+	// publish as before. QualityGateBudgetUSD caps gate spend per UTC day.
+	QualityGate          string
+	QualityGateBudgetUSD float64
 	// GraderEnabled lets the scheduled job (POST /api/health/grade) grade
 	// comments posted in the last week that have no grade yet, oldest first;
 	// GraderDailyBudgetUSD caps grading spend per UTC day and GraderMaxItems
@@ -463,6 +469,8 @@ func Load() *Config {
 		VerifyAgentModel:            os.Getenv("VERIFY_AGENT_MODEL"),
 		VerifyAgentWallClockSec:     getPositiveEnvIntOrDefault("VERIFY_AGENT_WALL_CLOCK_SEC", 420),
 		VerifyAgentMaxTurns:         getPositiveEnvIntOrDefault("VERIFY_AGENT_MAX_TURNS", 100),
+		QualityGate:                 qualityGateMode(os.Getenv("QUALITY_GATE")),
+		QualityGateBudgetUSD:        qualityGateBudget(getEnvFloatOrDefault("QUALITY_GATE_DAILY_BUDGET_USD", 40)),
 		GraderEnabled:               getEnvBoolOrDefault("GRADER_ENABLED", false),
 		GraderModel:                 getEnvOrDefault("GRADER_MODEL", "claude-fable-5-1"),
 		GraderDailyBudgetUSD:        graderBudget(getEnvFloatOrDefault("GRADER_DAILY_BUDGET_USD", 20)),
@@ -550,6 +558,28 @@ func getEnvBoolOrDefault(key string, defaultValue bool) bool {
 		log.Printf("[CONFIG] %s=%q is not a boolean, keeping the default %t", key, raw, defaultValue)
 	}
 	return defaultValue
+}
+
+// qualityGateBudget keeps the default cap for a negative
+// QUALITY_GATE_DAILY_BUDGET_USD, so a typo cannot lift the cap.
+func qualityGateBudget(usd float64) float64 {
+	if usd < 0 {
+		log.Printf("[CONFIG] QUALITY_GATE_DAILY_BUDGET_USD=%g is negative, keeping the default 40", usd)
+		return 40
+	}
+	return usd
+}
+
+// qualityGateMode accepts off, shadow or on; anything else is off.
+func qualityGateMode(raw string) string {
+	switch m := strings.ToLower(strings.TrimSpace(raw)); m {
+	case "shadow", "on":
+		return m
+	case "", "off":
+	default:
+		log.Printf("[CONFIG] QUALITY_GATE=%q is not off, shadow or on; the gate is off", raw)
+	}
+	return "off"
 }
 
 // graderBudget keeps the default cap for a negative GRADER_DAILY_BUDGET_USD,
