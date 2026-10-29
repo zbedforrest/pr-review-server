@@ -81,3 +81,5 @@ benchmark/replay/*
 !benchmark/commentbench/
 benchmark/commentbench/*
 !benchmark/commentbench/BASELINE.md
+/verifyreplay
+/gradereplay

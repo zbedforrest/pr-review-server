@@ -470,7 +470,7 @@ func Load() *Config {
 		VerifyAgentWallClockSec:     getPositiveEnvIntOrDefault("VERIFY_AGENT_WALL_CLOCK_SEC", 420),
 		VerifyAgentMaxTurns:         getPositiveEnvIntOrDefault("VERIFY_AGENT_MAX_TURNS", 100),
 		QualityGate:                 qualityGateMode(os.Getenv("QUALITY_GATE")),
-		QualityGateBudgetUSD:        max(getEnvFloatOrDefault("QUALITY_GATE_DAILY_BUDGET_USD", 40), 0),
+		QualityGateBudgetUSD:        qualityGateBudget(getEnvFloatOrDefault("QUALITY_GATE_DAILY_BUDGET_USD", 40)),
 		GraderEnabled:               getEnvBoolOrDefault("GRADER_ENABLED", false),
 		GraderModel:                 getEnvOrDefault("GRADER_MODEL", "claude-fable-5-1"),
 		GraderDailyBudgetUSD:        graderBudget(getEnvFloatOrDefault("GRADER_DAILY_BUDGET_USD", 20)),
@@ -558,6 +558,16 @@ func getEnvBoolOrDefault(key string, defaultValue bool) bool {
 		log.Printf("[CONFIG] %s=%q is not a boolean, keeping the default %t", key, raw, defaultValue)
 	}
 	return defaultValue
+}
+
+// qualityGateBudget keeps the default cap for a negative
+// QUALITY_GATE_DAILY_BUDGET_USD, so a typo cannot lift the cap.
+func qualityGateBudget(usd float64) float64 {
+	if usd < 0 {
+		log.Printf("[CONFIG] QUALITY_GATE_DAILY_BUDGET_USD=%g is negative, keeping the default 40", usd)
+		return 40
+	}
+	return usd
 }
 
 // qualityGateMode accepts off, shadow or on; anything else is off.

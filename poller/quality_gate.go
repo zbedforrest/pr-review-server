@@ -117,14 +117,17 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 	cfg.MaxTurns = p.cfg.GraderMaxTurns
 
 	if rep.Mode == gateModeShadow {
+		// The background run gets its own report and findings, so nothing it
+		// writes is shared with the review the caller keeps publishing.
+		r := GateReport{Mode: rep.Mode, Grades: map[string]int{}}
+		comments := append([]types.LineComment(nil), review.Comments...)
 		select {
 		case gateBackground <- struct{}{}:
 			go func() {
 				defer func() { <-gateBackground }()
 				gctx, cancel := context.WithTimeout(context.Background(), cfg.WallClock)
 				defer cancel()
-				r := *rep
-				p.runGate(gctx, cfg, in, review.Comments, index, &r, day, false)
+				p.runGate(gctx, cfg, in, comments, index, &r, day, false)
 			}()
 			rep.Status = "pending"
 		default:
