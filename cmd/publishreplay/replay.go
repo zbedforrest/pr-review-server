@@ -278,6 +278,7 @@ type PRResult struct {
 	// and posted roots it withdrew.
 	VerifierHeld         int
 	VerifierDropped      int
+	QualityGateHeld      int
 	Refuted              int
 	ReasonlessNotesShown int
 	PraiseShown          int
@@ -415,6 +416,7 @@ type Metrics struct {
 	// GitHub by an applied decision, and posted roots withdrawn.
 	VerifierHeld         int `json:"verifier_held"`
 	VerifierDropped      int `json:"verifier_dropped"`
+	QualityGateHeld      int `json:"quality_gate_held"`
 	Refuted              int `json:"refuted"`
 	ReasonlessNotesShown int `json:"reasonless_notes_shown"`
 	PraiseShown          int `json:"praise_shown"`
@@ -601,6 +603,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		m.HeldReasonless += pr.HeldReasonless
 		m.VerifierHeld += pr.VerifierHeld
 		m.VerifierDropped += pr.VerifierDropped
+		m.QualityGateHeld += pr.QualityGateHeld
 		m.Refuted += pr.Refuted
 		m.LibraryClaimsShown += pr.LibraryClaimsShown
 		m.RegressionClaimsShown += pr.RegressionClaimsShown
@@ -958,6 +961,8 @@ func countHeld(rep publisher.Report, pr *PRResult) {
 			pr.VerifierHeld++
 		case publisher.HoldVerifierDrop:
 			pr.VerifierDropped++
+		case publisher.HoldQualityGate:
+			pr.QualityGateHeld++
 		}
 	}
 }

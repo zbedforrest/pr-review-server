@@ -121,6 +121,12 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 			if runconfig.LiteHygieneEnabled() && ens.MinSupportCritical > 1 {
 				report.Merge.Report.SupportDowngraded += capLoneRunCriticals(out.Comments)
 			}
+			if g := p.qualityGateReview(ctx, execution, base, result, out); g != nil {
+				report.Gate = g
+				if g.Mode == gateModeOn {
+					out.CostUSD += g.CostUSD
+				}
+			}
 		}
 		return out, runErr
 	}

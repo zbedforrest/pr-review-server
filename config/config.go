@@ -124,16 +124,16 @@ type Config struct {
 	VerifyAgentModel        string
 	VerifyAgentWallClockSec int
 	VerifyAgentMaxTurns     int
-	// GraderEnabled lets the scheduled job (POST /api/health/grade) grade
-	// comments posted in the last week that have no grade yet, oldest first;
-	// GraderDailyBudgetUSD caps grading spend per UTC day and GraderMaxItems
-	// the comments graded per run.
 	// QualityGate grades every finding about to post with the grader rubric
 	// before publishing: off, shadow (record only) or on (a BAD grade keeps
 	// the finding off GitHub; a CRITICAL posts as a LOW note). Gate errors
 	// publish as before. QualityGateBudgetUSD caps gate spend per UTC day.
 	QualityGate          string
 	QualityGateBudgetUSD float64
+	// GraderEnabled lets the scheduled job (POST /api/health/grade) grade
+	// comments posted in the last week that have no grade yet, oldest first;
+	// GraderDailyBudgetUSD caps grading spend per UTC day and GraderMaxItems
+	// the comments graded per run.
 	GraderEnabled        bool
 	GraderModel          string
 	GraderDailyBudgetUSD float64
@@ -571,10 +571,13 @@ func qualityGateBudget(usd float64) float64 {
 }
 
 // qualityGateMode accepts off, shadow or on; anything else is off.
-func qualityGateMode(v string) string {
-	switch m := strings.ToLower(strings.TrimSpace(v)); m {
+func qualityGateMode(raw string) string {
+	switch m := strings.ToLower(strings.TrimSpace(raw)); m {
 	case "shadow", "on":
 		return m
+	case "", "off":
+	default:
+		log.Printf("[CONFIG] QUALITY_GATE=%q is not off, shadow or on; the gate is off", raw)
 	}
 	return "off"
 }

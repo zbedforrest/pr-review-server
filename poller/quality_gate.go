@@ -70,19 +70,24 @@ func (p *Poller) gateTimeoutAllowance() time.Duration {
 	return time.Duration(p.cfg.GraderWallClockSec) * time.Second
 }
 
-// qualityGateReview grades every finding a publish-bound review is about to
-// post with the grader rubric. In on mode a BAD grade keeps the finding off
-// GitHub (a CRITICAL is posted as a LOW note instead); shadow mode only
-// records. Any failure leaves the review as it was.
+// qualityGateReview grades every finding a publish-bound Lite (ensemble)
+// review is about to post with the grader rubric, including the fallback
+// run's review. In on mode a BAD grade keeps the finding off GitHub (a
+// CRITICAL is posted as a LOW note instead); shadow mode only records. Any
+// failure leaves the review as it was, and every outcome logs a [GATE] line.
 func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecution, base service.AgentConfig, result *service.ReviewResult, review *service.AgentReview) *GateReport {
 	if p.cfg == nil || (p.cfg.QualityGate != gateModeShadow && p.cfg.QualityGate != gateModeOn) {
 		return nil
 	}
 	rep := &GateReport{Mode: p.cfg.QualityGate, Grades: map[string]int{}}
 	job := execution.Job
-	if !p.reviewPublishBound(job) {
-		rep.Status, rep.Skip = "skipped", "not_publish_bound"
+	skip := func(why string) *GateReport {
+		rep.Status, rep.Skip = "skipped", why
+		log.Printf("[GATE %s/%s#%d] {\"mode\":%q,\"status\":\"skipped\",\"skip\":%q}", job.PR.Owner, job.PR.Repo, job.PR.Number, rep.Mode, why)
 		return rep
+	}
+	if !p.reviewPublishBound(job) {
+		return skip("not_publish_bound")
 	}
 	var items []grader.Item
 	var index []int
@@ -98,13 +103,11 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 		index = append(index, i)
 	}
 	if len(items) == 0 {
-		rep.Status, rep.Skip = "skipped", "no_findings"
-		return rep
+		return skip("no_findings")
 	}
 	day := time.Now().UTC().Format("2006-01-02")
 	if p.cfg.QualityGateBudgetUSD > 0 && gateSpent(day, 0) >= p.cfg.QualityGateBudgetUSD {
-		rep.Status, rep.Skip = "skipped", "over_budget"
-		return rep
+		return skip("over_budget")
 	}
 	in := service.GradeAgentInput{Owner: job.PR.Owner, Repo: job.PR.Repo, PRNumber: job.PR.Number, DefaultBranch: result.BaseRef,
 		HeadSHA: job.PR.CommitSHA, Title: result.PRTitle, Body: result.PRBody, Items: items}
@@ -132,13 +135,12 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 			}()
 			rep.Status = "pending"
 		default:
-			rep.Status, rep.Skip = "skipped", "busy"
+			return skip("busy")
 		}
 		return rep
 	}
 	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < cfg.WallClock {
-		rep.Status, rep.Skip = "skipped", "deadline"
-		return rep
+		return skip("deadline")
 	}
 	gctx, cancel := context.WithTimeout(ctx, cfg.WallClock)
 	defer cancel()
