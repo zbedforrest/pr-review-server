@@ -356,6 +356,14 @@ func ClaimEvidenceEnabled() bool {
 	return os.Getenv("AGENT_CLAIM_EVIDENCE") == "true"
 }
 
+// LiteCurrentImpactFailuresEnabled adds a materiality rule to the lite
+// output contract: a failure, cancellation or concurrency path the merged
+// code can reach today is current impact, not a future condition. A prompt
+// change, so LITE_CURRENT_IMPACT_FAILURES=true, default off.
+func LiteCurrentImpactFailuresEnabled() bool {
+	return os.Getenv("LITE_CURRENT_IMPACT_FAILURES") == "true"
+}
+
 // LitePrompt reports whether prompt is one of the single-agent shapes that
 // inline the diff and run without gates or required checks.
 func LitePrompt(prompt string) bool {

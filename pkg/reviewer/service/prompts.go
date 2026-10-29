@@ -370,6 +370,10 @@ Add exactly one summary entry {"file_path": "SUMMARY", "line_number": 0, "summar
 If you find no issues worth flagging, return the SUMMARY entry only, with "approve".
 `
 
+// promptLiteCurrentImpactFailures is added under LITE_CURRENT_IMPACT_FAILURES.
+const promptLiteCurrentImpactFailures = `Materiality of failure paths: a failure, cancellation, timeout, retry, partial write or concurrent request that can happen with this PR's code as merged is "current_impact", even when it takes bad luck or load to occur. Use "future_condition_only" only when the harm needs a further code or configuration change that this PR does not make.
+`
+
 // liteFindingsJSONSchema is handed to the Claude CLI as --json-schema for the
 // v2 and v3 prompts. The findings array holds both ordinary findings and the
 // SUMMARY entry, so only the anchor fields are required per item and the
