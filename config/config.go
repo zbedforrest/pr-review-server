@@ -29,7 +29,7 @@ const (
 	defaultFirstPassCacheStaggerSec = 8
 	// Ten minutes: the audit of 2026-10-14 saw PRs reviewed up to 13 times a
 	// day because every push outside a 90 s window became a round.
-	defaultAutoReviewSyncDebounceSec = 600
+	defaultAutoReviewSyncDebounceSec = 120
 )
 
 type Config struct {

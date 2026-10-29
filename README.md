@@ -107,7 +107,7 @@ The most common ones:
 | `PUBLISH_REFRESH_SUMMARY` | No | Default `true`: the sticky summary is re-rendered as soon as a reply concedes a finding. `false` waits for the next push |
 | `PUBLISH_INLINE_PR_BUDGET` | No | Default `true`: `publish_inline_pr_cap` (default 6) bounds the inline comments PRism posts over the life of one PR, counting resolved and dismissed threads; later findings stay in the summary. `false` leaves only the per-round `publish_inline_cap` |
 | `PUBLISH_PR_MUTE` | No | Default `true`: a PR author mutes PRism on one PR with `@<handle> stop` in the conversation or a thumbs-down on the sticky summary; the mute is a flag on the summary ledger row, acknowledged with a reaction only, and `@<handle> review` from the author lifts it. `false` ignores both |
-| `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` | No | Default `600` (ten minutes): a pushed head waits at least this long before its automatic review is admitted, so a burst of pushes reviews the last head once; it is admitted on the first poll after the window, so up to one `POLLING_INTERVAL` later. `0` admits every push at once |
+| `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` | No | Default `120` (two minutes): a pushed head waits at least this long before its automatic review is admitted, so a burst of pushes reviews the last head once; it is admitted on the first poll after the window, so up to one `POLLING_INTERVAL` later. `0` admits every push at once |
 | `AUTO_REVIEW_SKIP_UNCHANGED_DIFF` | No | Default `true`: a push whose PR diff has the patch-id of the last automatically reviewed head (a merge from the base branch, a rebase, an amended message) is settled without a review and counted as `reviews_skipped_unchanged_diff` on the daily health report. `false` reviews every push |
 | `AUTO_REVIEW_DAILY_ROUND_CAP` | No | Default `true`: a PR gets at most `auto_review_daily_round_cap` automatic rounds per UTC day (setting, default 4; 0 removes the bound); a later push that day is settled as `skipped: daily round cap`, counted as `reviews_skipped_daily_round_cap` on the daily health report, and the sticky summary's footer says "Further pushes today are reviewed on request". Manual reviews (`@<handle> review`, generate-review, the dashboard) never count and are never capped. `false` admits every push |
 | `AGENT_PRIOR_FINDINGS` | No | Default off: `true` adds a "findings already raised on this PR" block to the review agent prompt, built from the PR's publication ledger (state, severity, file and lines, headline, author verdicts, under labels `P-1`, `P-2`, ...), and lets the finding contract carry `prior_id` (this finding restates that earlier one) and `relates_to` (distinct, builds on those). References to anything not shown are dropped before the finding is stored |
@@ -200,7 +200,7 @@ stand in for it, a head PRism already commented on is not reviewed again when
 the switch is turned on, and a review that finished after the PR went back to
 draft is redone when it is ready again.
 
-Pushes are held for `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` (default 600 s, ten
+Pushes are held for `AUTO_REVIEW_SYNC_DEBOUNCE_SEC` (default 120 s, two
 minutes) and admitted on the first poll after the window, so the effective
 hold is the window plus up to one `POLLING_INTERVAL`, and a burst of pushes
 reviews only the last head. The window restarts on every push, so a PR pushed
