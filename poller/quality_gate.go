@@ -121,13 +121,14 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 		// writes is shared with the review the caller keeps publishing.
 		r := GateReport{Mode: rep.Mode, Grades: map[string]int{}}
 		comments := append([]types.LineComment(nil), review.Comments...)
+		run := gateRunFn
 		select {
 		case gateBackground <- struct{}{}:
 			go func() {
 				defer func() { <-gateBackground }()
 				gctx, cancel := context.WithTimeout(context.Background(), cfg.WallClock)
 				defer cancel()
-				p.runGate(gctx, cfg, in, comments, index, &r, day, false)
+				p.runGate(gctx, run, cfg, in, comments, index, &r, day, false)
 			}()
 			rep.Status = "pending"
 		default:
@@ -141,16 +142,16 @@ func (p *Poller) qualityGateReview(ctx context.Context, execution *reviewExecuti
 	}
 	gctx, cancel := context.WithTimeout(ctx, cfg.WallClock)
 	defer cancel()
-	p.runGate(gctx, cfg, in, review.Comments, index, rep, day, true)
+	p.runGate(gctx, gateRunFn, cfg, in, review.Comments, index, rep, day, true)
 	return rep
 }
 
 // runGate runs the grader and records each grade on its finding; apply
 // changes what posts. Shadow runs pass a copy of the report and never apply,
 // so they only log.
-func (p *Poller) runGate(ctx context.Context, cfg service.AgentConfig, in service.GradeAgentInput, comments []types.LineComment, index []int, rep *GateReport, day string, apply bool) {
+func (p *Poller) runGate(ctx context.Context, run func(context.Context, service.AgentConfig, service.Spawner, service.GradeAgentInput) (*service.GradeAgentResult, error), cfg service.AgentConfig, in service.GradeAgentInput, comments []types.LineComment, index []int, rep *GateReport, day string, apply bool) {
 	started := time.Now()
-	res, err := gateRunFn(ctx, cfg, p.agentSpawner, in)
+	res, err := run(ctx, cfg, p.agentSpawner, in)
 	if res != nil {
 		rep.CostUSD = res.CostUSD
 		gateSpent(day, res.CostUSD)
