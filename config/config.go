@@ -130,6 +130,13 @@ type Config struct {
 	// publish as before. QualityGateBudgetUSD caps gate spend per UTC day.
 	QualityGate          string
 	QualityGateBudgetUSD float64
+	// PublishRewrite rewrites each finding about to post inline into a short
+	// title and a direct body (trigger, consequence, fix) before publishing:
+	// off, shadow (log the rewrite only) or on (the comment shows it; the
+	// full finding moves into its details). Errors publish as before.
+	PublishRewrite             string
+	PublishRewriteModel        string
+	PublishRewriteWallClockSec int
 	// GraderEnabled lets the scheduled job (POST /api/health/grade) grade
 	// comments posted in the last week that have no grade yet, oldest first;
 	// GraderDailyBudgetUSD caps grading spend per UTC day and GraderMaxItems
@@ -471,6 +478,9 @@ func Load() *Config {
 		VerifyAgentMaxTurns:         getPositiveEnvIntOrDefault("VERIFY_AGENT_MAX_TURNS", 100),
 		QualityGate:                 qualityGateMode(os.Getenv("QUALITY_GATE")),
 		QualityGateBudgetUSD:        qualityGateBudget(getEnvFloatOrDefault("QUALITY_GATE_DAILY_BUDGET_USD", 40)),
+		PublishRewrite:              stageMode("PUBLISH_REWRITE", os.Getenv("PUBLISH_REWRITE")),
+		PublishRewriteModel:         getEnvOrDefault("PUBLISH_REWRITE_MODEL", "claude-sonnet-5-5"),
+		PublishRewriteWallClockSec:  getPositiveEnvIntOrDefault("PUBLISH_REWRITE_WALL_CLOCK_SEC", 120),
 		GraderEnabled:               getEnvBoolOrDefault("GRADER_ENABLED", false),
 		GraderModel:                 getEnvOrDefault("GRADER_MODEL", "claude-fable-5-1"),
 		GraderDailyBudgetUSD:        graderBudget(getEnvFloatOrDefault("GRADER_DAILY_BUDGET_USD", 20)),
@@ -572,12 +582,17 @@ func qualityGateBudget(usd float64) float64 {
 
 // qualityGateMode accepts off, shadow or on; anything else is off.
 func qualityGateMode(raw string) string {
+	return stageMode("QUALITY_GATE", raw)
+}
+
+// stageMode reads an off/shadow/on switch, logging any other value as off.
+func stageMode(name, raw string) string {
 	switch m := strings.ToLower(strings.TrimSpace(raw)); m {
 	case "shadow", "on":
 		return m
 	case "", "off":
 	default:
-		log.Printf("[CONFIG] QUALITY_GATE=%q is not off, shadow or on; the gate is off", raw)
+		log.Printf("[CONFIG] %s=%q is not off, shadow or on; it is off", name, raw)
 	}
 	return "off"
 }

@@ -879,6 +879,9 @@ func RenderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 }
 
 func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, badgeBase string, settleFooter string, legacy, legacyClamp bool) string {
+	if d := displayOf(f); d != nil && !legacy {
+		return renderDisplayInline(f, *d, sourceTag, agentLinkBase, badgeBase, settleFooter)
+	}
 	comment := EscapeProseHTML(commentText(f))
 	c := f.FindingContract
 	hasContract := c != nil && f.FindingContractStatus == "valid"
@@ -889,11 +892,7 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	title := headlineWith(f, legacy, legacyClamp)
 	var b strings.Builder
 	b.WriteString(FindingMarker(f.ID) + "\n")
-	if badgeBase == "" {
-		fmt.Fprintf(&b, "**[%s] %s**\n", strings.ToUpper(f.Severity), title)
-	} else {
-		fmt.Fprintf(&b, "%s **%s**\n", severityLabel(f.Severity, badgeBase), title)
-	}
+	b.WriteString(inlineHeader(f.Severity, title, badgeBase))
 
 	if compact {
 		if impact := impactBelowTitle(f, legacy, legacyClamp); impact != "" {
@@ -931,10 +930,8 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	if reasoning != "" {
 		details.WriteString(reasoning + "\n")
 	}
-	if hasContract && c.Falsifiability == "falsifiable" && c.FalsifiableCondition != nil && c.ExpectedObservable != nil {
-		condition := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), "."))
-		observable := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), "."))
-		fmt.Fprintf(&details, "\n**How to verify:** %s. Expected: %s.\n", condition, observable)
+	if hasContract {
+		details.WriteString(howToVerify(c))
 	}
 	if agentLinkBase != "" {
 		fmt.Fprintf(&details, "\nAgent prompt:\n```text\n%s\n```\n", agentPrompt(agentLinkBase, f, legacy))
@@ -943,6 +940,20 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 		b.WriteString("\n<details><summary>Reasoning and how to verify</summary>\n\n" + details.String() + "</details>\n")
 	}
 
+	b.WriteString(inlineFooter(f, sourceTag, agentLinkBase, settleFooter))
+	return b.String()
+}
+
+// inlineHeader is the severity label and bold title that open an inline comment.
+func inlineHeader(severity, title, badgeBase string) string {
+	if badgeBase == "" {
+		return fmt.Sprintf("**[%s] %s**\n", strings.ToUpper(severity), title)
+	}
+	return fmt.Sprintf("%s **%s**\n", severityLabel(severity, badgeBase), title)
+}
+
+// inlineFooter is the line of links under an inline comment.
+func inlineFooter(f payload.Finding, sourceTag, agentLinkBase, settleFooter string) string {
 	var subs []string
 	// The source line named which reviewers raised the point; the summary
 	// now links the other reviewer's thread instead, so the line only puzzled
@@ -961,10 +972,20 @@ func renderInline(f payload.Finding, sourceTag string, agentLinkBase string, bad
 	if settleFooter != "" {
 		subs = append(subs, settleFooter)
 	}
-	if len(subs) > 0 {
-		b.WriteString("\n" + strings.Join(subs, "\n") + "\n")
+	if len(subs) == 0 {
+		return ""
 	}
-	return b.String()
+	return "\n" + strings.Join(subs, "\n") + "\n"
+}
+
+// howToVerify is the falsifiable check a contract names, or empty.
+func howToVerify(c *types.FindingContract) string {
+	if c.Falsifiability != "falsifiable" || c.FalsifiableCondition == nil || c.ExpectedObservable == nil {
+		return ""
+	}
+	condition := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(*c.FalsifiableCondition), "."))
+	observable := EscapeProseHTML(strings.TrimSuffix(strings.TrimSpace(*c.ExpectedObservable), "."))
+	return fmt.Sprintf("\n**How to verify:** %s. Expected: %s.\n", condition, observable)
 }
 
 // agentLink appends the finding coordinates to a base that already carries
@@ -991,6 +1012,9 @@ func commentText(f payload.Finding) string {
 // The legacy form was the effect sentence whenever the contract had one, which
 // produced bullets reading "None today; ..." for immaterial findings.
 func summaryText(f payload.Finding, legacy bool) string {
+	if d := displayOf(f); d != nil && !legacy {
+		return EscapeProseHTML(d.Title)
+	}
 	if !legacy {
 		return titleSource(f)
 	}

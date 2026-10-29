@@ -78,6 +78,7 @@ type EnsembleReport struct {
 	TotalCostUSD float64              `json:"total_cost_usd"`
 	Verify       *VerifyReport        `json:"verify,omitempty"`
 	Gate         *GateReport          `json:"gate,omitempty"`
+	Rewrite      *RewriteReport       `json:"rewrite,omitempty"`
 }
 
 type ensembleOutcome struct {
@@ -127,6 +128,12 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 					out.CostUSD += g.CostUSD
 				}
 			}
+			if r := p.rewriteReview(ctx, execution, base, out); r != nil {
+				report.Rewrite = r
+				if r.Mode == gateModeOn {
+					out.CostUSD += r.CostUSD
+				}
+			}
 		}
 		return out, runErr
 	}
@@ -151,6 +158,13 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 		if g.Mode == gateModeOn {
 			report.TotalCostUSD += g.CostUSD
 			review.CostUSD += g.CostUSD
+		}
+	}
+	if r := p.rewriteReview(ctx, execution, base, review); r != nil {
+		report.Rewrite = r
+		if r.Mode == gateModeOn {
+			report.TotalCostUSD += r.CostUSD
+			review.CostUSD += r.CostUSD
 		}
 	}
 	refs := service.ResolvePriorRefs(review.Comments, base.PriorFindings)
@@ -448,6 +462,7 @@ type ensembleSidecar struct {
 	TotalCostUSD float64         `json:"total_cost_usd"`
 	Verify       *VerifyReport   `json:"verify,omitempty"`
 	Gate         *GateReport     `json:"gate,omitempty"`
+	Rewrite      *RewriteReport  `json:"rewrite,omitempty"`
 }
 
 // sidecar returns the compact form, or nil (no sidecar field) for a nil report.
@@ -460,7 +475,7 @@ func (r *EnsembleReport) sidecar() any {
 		StopReason: r.StopReason, QuorumMS: r.QuorumMS, Fallback: r.Fallback,
 		MergeMethod: r.Merge.Method, MergeModel: r.MergeModel, MergeError: r.Merge.AuthorErr, MergeCall: r.Merge.Call,
 		Clusters: r.Merge.Clusters, Guard: r.Merge.Report, Support: r.Merge.Support, TotalCostUSD: r.TotalCostUSD,
-		Verify: r.Verify, Gate: r.Gate,
+		Verify: r.Verify, Gate: r.Gate, Rewrite: r.Rewrite,
 	}
 }
 
