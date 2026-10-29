@@ -1056,6 +1056,9 @@ func buildLitePromptV2With(opening, baseBranch string, diff liteDiff, prContext 
 		b.WriteString(promptLiteSubAgents)
 	}
 	b.WriteString(promptLiteOutputFormatV2)
+	if runconfig.LiteCurrentImpactFailuresEnabled() {
+		b.WriteString(promptLiteCurrentImpactFailures)
+	}
 	b.WriteString(claimEvidenceSection())
 	b.WriteString("\n<diff>\n")
 	b.WriteString(diff.Text)
