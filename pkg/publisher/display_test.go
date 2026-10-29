@@ -69,3 +69,11 @@ func TestSummaryTextUsesTheRewriteTitle(t *testing.T) {
 		t.Errorf("summaryText = %q", got)
 	}
 }
+
+func TestTitleOfUsesTheRewriteTitle(t *testing.T) {
+	fd := f("abc", "medium", "a.go", 3, "Nil deref when cfg is missing. The loader returns nil.")
+	fd.Display = &types.Display{Title: "Missing config crashes startup", Body: "Body."}
+	if got := TitleOf(fd); got != "Missing config crashes startup" {
+		t.Errorf("TitleOf = %q", got)
+	}
+}

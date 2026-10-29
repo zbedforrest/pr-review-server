@@ -134,9 +134,12 @@ type Config struct {
 	// title and a direct body (trigger, consequence, fix) before publishing:
 	// off, shadow (log the rewrite only) or on (the comment shows it; the
 	// full finding moves into its details). Errors publish as before.
+	// PublishRewriteBudgetUSD caps rewrite spend per UTC day, shadow included;
+	// 0 means no cap.
 	PublishRewrite             string
 	PublishRewriteModel        string
 	PublishRewriteWallClockSec int
+	PublishRewriteBudgetUSD    float64
 	// GraderEnabled lets the scheduled job (POST /api/health/grade) grade
 	// comments posted in the last week that have no grade yet, oldest first;
 	// GraderDailyBudgetUSD caps grading spend per UTC day and GraderMaxItems
@@ -481,6 +484,7 @@ func Load() *Config {
 		PublishRewrite:              stageMode("PUBLISH_REWRITE", os.Getenv("PUBLISH_REWRITE")),
 		PublishRewriteModel:         getEnvOrDefault("PUBLISH_REWRITE_MODEL", "claude-sonnet-5-5"),
 		PublishRewriteWallClockSec:  getPositiveEnvIntOrDefault("PUBLISH_REWRITE_WALL_CLOCK_SEC", 120),
+		PublishRewriteBudgetUSD:     max(getEnvFloatOrDefault("PUBLISH_REWRITE_DAILY_BUDGET_USD", 10), 0),
 		GraderEnabled:               getEnvBoolOrDefault("GRADER_ENABLED", false),
 		GraderModel:                 getEnvOrDefault("GRADER_MODEL", "claude-fable-5-1"),
 		GraderDailyBudgetUSD:        graderBudget(getEnvFloatOrDefault("GRADER_DAILY_BUDGET_USD", 20)),

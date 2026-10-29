@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"pr-review-server/pkg/reviewer/service"
@@ -38,7 +39,20 @@ type rewriteItem struct {
 var (
 	rewriteRunFn      = service.RunRewrite
 	rewriteBackground = make(chan struct{}, 4)
+	rewriteSpendMu    sync.Mutex
+	rewriteSpendDay   string
+	rewriteSpend      float64
 )
+
+func rewriteSpent(day string, add float64) float64 {
+	rewriteSpendMu.Lock()
+	defer rewriteSpendMu.Unlock()
+	if rewriteSpendDay != day {
+		rewriteSpendDay, rewriteSpend = day, 0
+	}
+	rewriteSpend += add
+	return rewriteSpend
+}
 
 // rewriteTimeoutAllowance is the time on mode adds to an ensemble review.
 func (p *Poller) rewriteTimeoutAllowance() time.Duration {
@@ -48,8 +62,9 @@ func (p *Poller) rewriteTimeoutAllowance() time.Duration {
 	return time.Duration(p.cfg.PublishRewriteWallClockSec) * time.Second
 }
 
-// rewriteReview rewrites every finding a publish-bound Lite review is about
-// to post inline (MEDIUM and CRITICAL, not held by the verifier or the gate)
+// rewriteReview rewrites every finding the Lite ensemble (or its fallback)
+// is about to post inline (MEDIUM and CRITICAL, not held by the verifier or
+// the gate); findings merged in after this stage keep the default form
 // into a short title and a direct body. On mode sets the finding's Display;
 // shadow mode only logs. Any failure leaves the review as it was, and every
 // outcome logs a [REWRITE] line.
@@ -68,6 +83,9 @@ func (p *Poller) rewriteReview(ctx context.Context, execution *reviewExecution, 
 	if !p.reviewPublishBound(job) {
 		return skip("not_publish_bound")
 	}
+	if p.cfg.PublishLegacyTitles {
+		return skip("legacy_titles")
+	}
 	var index []int
 	for i, c := range review.Comments {
 		if c.FilePath == "SUMMARY" || c.FilePath == "CHECK" || c.Inactive || c.Verification.Suppresses() ||
@@ -81,6 +99,10 @@ func (p *Poller) rewriteReview(ctx context.Context, execution *reviewExecution, 
 		return skip("no_inline_findings")
 	}
 	rep.Items = len(in.Items)
+	day := time.Now().UTC().Format("2006-01-02")
+	if p.cfg.PublishRewriteBudgetUSD > 0 && rewriteSpent(day, 0) >= p.cfg.PublishRewriteBudgetUSD {
+		return skip("over_budget")
+	}
 	cfg := p.verifyAgentConfig(ctx, base.CloneRootDir)
 	cfg.Backend, cfg.Model = service.AgentBackendClaude, p.cfg.PublishRewriteModel
 	cfg.WallClock = time.Duration(p.cfg.PublishRewriteWallClockSec) * time.Second
@@ -96,7 +118,7 @@ func (p *Poller) rewriteReview(ctx context.Context, execution *reviewExecution, 
 				defer func() { <-rewriteBackground }()
 				rctx, cancel := context.WithTimeout(context.Background(), cfg.WallClock)
 				defer cancel()
-				p.runRewrite(rctx, run, cfg, in, comments, index, &r, false)
+				p.runRewrite(rctx, run, cfg, in, comments, index, &r, day, false)
 			}()
 			rep.Status = "pending"
 		default:
@@ -107,7 +129,7 @@ func (p *Poller) rewriteReview(ctx context.Context, execution *reviewExecution, 
 	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < cfg.WallClock {
 		return skip("deadline")
 	}
-	p.runRewrite(ctx, rewriteRunFn, cfg, in, review.Comments, index, rep, true)
+	p.runRewrite(ctx, rewriteRunFn, cfg, in, review.Comments, index, rep, day, true)
 	return rep
 }
 
@@ -121,11 +143,12 @@ func rewriteInputItem(id string, c types.LineComment) rewrite.Item {
 
 // runRewrite runs the model and, when apply is set, records each rewrite on
 // its finding. Shadow runs pass copies and never apply, so they only log.
-func (p *Poller) runRewrite(ctx context.Context, run func(context.Context, service.AgentConfig, service.Spawner, service.RewriteInput) (*service.RewriteResult, error), cfg service.AgentConfig, in service.RewriteInput, comments []types.LineComment, index []int, rep *RewriteReport, apply bool) {
+func (p *Poller) runRewrite(ctx context.Context, run func(context.Context, service.AgentConfig, service.Spawner, service.RewriteInput) (*service.RewriteResult, error), cfg service.AgentConfig, in service.RewriteInput, comments []types.LineComment, index []int, rep *RewriteReport, day string, apply bool) {
 	started := time.Now()
 	res, err := run(ctx, cfg, p.agentSpawner, in)
 	if res != nil {
 		rep.CostUSD = res.CostUSD
+		rewriteSpent(day, res.CostUSD)
 	}
 	rep.DurationMS = time.Since(started).Milliseconds()
 	if err != nil {

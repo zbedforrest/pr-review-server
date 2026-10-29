@@ -27,11 +27,11 @@ type Result struct {
 	Body  string `json:"body"`
 }
 
-// Limits a rewrite must meet to be used; the prompt asks for less, so these
-// only reject replies that ignored it.
+// Limits a rewrite must meet to be used: the prompt's 6 and 80 words with a
+// little slack, since a reply a word over is still the shape asked for.
 const (
-	MaxTitleWords = 9
-	MaxBodyWords  = 130
+	MaxTitleWords = 8
+	MaxBodyWords  = 100
 )
 
 // JSONSchema is the reply shape, handed to the CLI as its structured-output

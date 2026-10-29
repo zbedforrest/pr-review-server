@@ -504,6 +504,7 @@ func (p Payload) ToLineComments() []types.LineComment {
 			MergedInto:      f.MergedInto,
 			MergeBasis:      f.MergeBasis,
 			Verification:    f.Verification,
+			Display:         f.Display,
 			Summary:         f.Summary,
 		})
 	}

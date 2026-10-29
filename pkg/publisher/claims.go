@@ -540,5 +540,8 @@ func HasConfidenceLabel(text string) bool {
 // package that compare rendered bodies against findings; it opens the way
 // the rendered title does.
 func TitleOf(f payload.Finding) string {
+	if d := displayOf(f); d != nil {
+		return EscapeProseHTML(strings.TrimSpace(d.Title))
+	}
 	return standaloneTitle(titleSource(f))
 }

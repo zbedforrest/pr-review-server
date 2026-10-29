@@ -109,3 +109,19 @@ func TestRewriteSkipsWhenOffOrNothingPostsInline(t *testing.T) {
 		t.Fatalf("report = %+v calls %d", rep, f.calls.Load())
 	}
 }
+
+func TestRewriteSkipsOverBudgetAndLegacyTitles(t *testing.T) {
+	f := newRewriteFixture(t, gateModeOn, nil)
+	f.p.cfg.PublishRewriteBudgetUSD = 0.01
+	day := time.Now().UTC().Format("2006-01-02")
+	rewriteSpent(day, 0.02)
+	t.Cleanup(func() { rewriteSpent(day, -0.02) })
+	if rep := f.run(); rep.Skip != "over_budget" || f.calls.Load() != 0 {
+		t.Fatalf("report = %+v calls %d", rep, f.calls.Load())
+	}
+	f = newRewriteFixture(t, gateModeOn, nil)
+	f.p.cfg.PublishLegacyTitles = true
+	if rep := f.run(); rep.Skip != "legacy_titles" || f.calls.Load() != 0 {
+		t.Fatalf("report = %+v calls %d", rep, f.calls.Load())
+	}
+}
