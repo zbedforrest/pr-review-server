@@ -372,7 +372,8 @@ func worthInline(f payload.Finding) bool {
 	if c == nil || f.FindingContractStatus != "valid" || c.Materiality != "current_impact" {
 		return false
 	}
-	if c.FindingKind != "production_behavior" && c.FindingKind != "security_risk" {
+	if c.FindingKind != "production_behavior" && c.FindingKind != "security_risk" &&
+		(c.FindingKind != "operational_risk" || !InlineOperationalRiskEnabled()) {
 		return false
 	}
 	return !types.DiscountGateEnabled() || types.SelfDiscount(c) == types.DiscountNone

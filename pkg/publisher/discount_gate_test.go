@@ -120,3 +120,23 @@ func TestShown_CriticalNeedsTheSameContractAsAMedium(t *testing.T) {
 		t.Fatalf("discounted criticals must not reach the summary either: %v", ids(sel.Annotations))
 	}
 }
+
+func TestShown_OperationalRiskPostsInlineOnlyWithItsSwitch(t *testing.T) {
+	commentable := map[string]map[int]bool{"a.go": {1: true}}
+	buildBreak := fp("build", "critical", "a.go", 1, "The new import does not exist.", "agent")
+	buildBreak.FindingContract = falsifiableTestContract("operational_risk", "current_impact", "The frontend build fails on this commit.", "Confident; the module is not in the tree.")
+	buildBreak.FindingContractStatus = "valid"
+
+	t.Setenv(InlineOperationalRiskEnv, "")
+	if Shown(buildBreak) {
+		t.Fatal("an operational risk is shown with the switch off")
+	}
+	t.Setenv(InlineOperationalRiskEnv, "true")
+	if got := ids(Select([]payload.Finding{buildBreak}, nil, commentable, DefaultPolicy()).Inline); len(got) != 1 {
+		t.Fatalf("inline = %v, want the build break", got)
+	}
+	buildBreak.FindingContract.Materiality = "unknown"
+	if Shown(buildBreak) {
+		t.Fatal("an operational risk without a current impact is shown")
+	}
+}
