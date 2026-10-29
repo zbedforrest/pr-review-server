@@ -544,3 +544,10 @@ func TestPublishLegacy_HeldAnnotationIsNotCountedFixed(t *testing.T) {
 		t.Fatalf("a held note is not fixed: fixed=%d\n%s", rep.Fixed, gh.issueEdits[501])
 	}
 }
+
+func TestHoldReasonNamesTheQualityGate(t *testing.T) {
+	f := payload.Finding{File: "a.go", Line: 1, Severity: "medium", Comment: "x", Verification: &types.Verification{Status: types.VerifySkipped, Gate: "BAD", GateApplied: true}}
+	if got := HoldReason(f, Policy{}); got != HoldQualityGate {
+		t.Fatalf("HoldReason = %q, want %q", got, HoldQualityGate)
+	}
+}

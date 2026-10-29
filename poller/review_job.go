@@ -637,7 +637,7 @@ func (p *Poller) reviewTimeout(cfg runconfig.Effective) time.Duration {
 	}
 	timeout := reviewTimeoutWithMargin(cfg, margin)
 	if cfg.Ensemble != nil && cfg.Ensemble.Runs > 1 {
-		timeout += p.verifyTimeoutAllowance()
+		timeout += p.verifyTimeoutAllowance() + p.gateTimeoutAllowance()
 	}
 	return timeout
 }

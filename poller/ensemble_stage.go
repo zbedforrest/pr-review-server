@@ -77,6 +77,7 @@ type EnsembleReport struct {
 	MergeModel   string               `json:"merge_model"`
 	TotalCostUSD float64              `json:"total_cost_usd"`
 	Verify       *VerifyReport        `json:"verify,omitempty"`
+	Gate         *GateReport          `json:"gate,omitempty"`
 }
 
 type ensembleOutcome struct {
@@ -137,6 +138,13 @@ func (p *Poller) runEnsembleStage(ctx context.Context, execution *reviewExecutio
 			}
 			report.TotalCostUSD += cost
 			review.CostUSD += cost
+		}
+	}
+	if g := p.qualityGateReview(ctx, execution, base, result, review); g != nil {
+		report.Gate = g
+		if g.Mode == gateModeOn {
+			report.TotalCostUSD += g.CostUSD
+			review.CostUSD += g.CostUSD
 		}
 	}
 	refs := service.ResolvePriorRefs(review.Comments, base.PriorFindings)
@@ -433,6 +441,7 @@ type ensembleSidecar struct {
 	Support      []int           `json:"support"`
 	TotalCostUSD float64         `json:"total_cost_usd"`
 	Verify       *VerifyReport   `json:"verify,omitempty"`
+	Gate         *GateReport     `json:"gate,omitempty"`
 }
 
 // sidecar returns the compact form, or nil (no sidecar field) for a nil report.
@@ -445,7 +454,7 @@ func (r *EnsembleReport) sidecar() any {
 		StopReason: r.StopReason, QuorumMS: r.QuorumMS, Fallback: r.Fallback,
 		MergeMethod: r.Merge.Method, MergeModel: r.MergeModel, MergeError: r.Merge.AuthorErr, MergeCall: r.Merge.Call,
 		Clusters: r.Merge.Clusters, Guard: r.Merge.Report, Support: r.Merge.Support, TotalCostUSD: r.TotalCostUSD,
-		Verify: r.Verify,
+		Verify: r.Verify, Gate: r.Gate,
 	}
 }
 

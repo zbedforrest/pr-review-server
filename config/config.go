@@ -128,6 +128,12 @@ type Config struct {
 	// comments posted in the last week that have no grade yet, oldest first;
 	// GraderDailyBudgetUSD caps grading spend per UTC day and GraderMaxItems
 	// the comments graded per run.
+	// QualityGate grades every finding about to post with the grader rubric
+	// before publishing: off, shadow (record only) or on (a BAD grade keeps
+	// the finding off GitHub; a CRITICAL posts as a LOW note). Gate errors
+	// publish as before. QualityGateBudgetUSD caps gate spend per UTC day.
+	QualityGate          string
+	QualityGateBudgetUSD float64
 	GraderEnabled        bool
 	GraderModel          string
 	GraderDailyBudgetUSD float64
@@ -463,6 +469,8 @@ func Load() *Config {
 		VerifyAgentModel:            os.Getenv("VERIFY_AGENT_MODEL"),
 		VerifyAgentWallClockSec:     getPositiveEnvIntOrDefault("VERIFY_AGENT_WALL_CLOCK_SEC", 420),
 		VerifyAgentMaxTurns:         getPositiveEnvIntOrDefault("VERIFY_AGENT_MAX_TURNS", 100),
+		QualityGate:                 qualityGateMode(os.Getenv("QUALITY_GATE")),
+		QualityGateBudgetUSD:        max(getEnvFloatOrDefault("QUALITY_GATE_DAILY_BUDGET_USD", 40), 0),
 		GraderEnabled:               getEnvBoolOrDefault("GRADER_ENABLED", false),
 		GraderModel:                 getEnvOrDefault("GRADER_MODEL", "claude-fable-5-1"),
 		GraderDailyBudgetUSD:        graderBudget(getEnvFloatOrDefault("GRADER_DAILY_BUDGET_USD", 20)),
@@ -550,6 +558,15 @@ func getEnvBoolOrDefault(key string, defaultValue bool) bool {
 		log.Printf("[CONFIG] %s=%q is not a boolean, keeping the default %t", key, raw, defaultValue)
 	}
 	return defaultValue
+}
+
+// qualityGateMode accepts off, shadow or on; anything else is off.
+func qualityGateMode(v string) string {
+	switch m := strings.ToLower(strings.TrimSpace(v)); m {
+	case "shadow", "on":
+		return m
+	}
+	return "off"
 }
 
 // graderBudget keeps the default cap for a negative GRADER_DAILY_BUDGET_USD,

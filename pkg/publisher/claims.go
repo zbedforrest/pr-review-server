@@ -60,6 +60,7 @@ const (
 	// posts; the decision itself stays on the finding in the review sidecar.
 	HoldVerifierHold = "verifier_hold"
 	HoldVerifierDrop = "verifier_drop"
+	HoldQualityGate  = "quality_gate"
 )
 
 // HeldFinding is a finding the output hygiene gate kept off GitHub this
@@ -509,6 +510,9 @@ func verifierHold(f payload.Finding) string {
 	v := f.Verification
 	if !v.Suppresses() {
 		return ""
+	}
+	if v.GateDrops() {
+		return HoldQualityGate
 	}
 	if v.Refutes() && !strings.EqualFold(strings.TrimSpace(f.Severity), "critical") {
 		return HoldVerifierDrop

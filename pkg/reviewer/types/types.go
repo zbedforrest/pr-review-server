@@ -87,6 +87,15 @@ type Verification struct {
 	PriorComment string   `json:"prior_comment,omitempty"`
 	LowValue     bool     `json:"low_value,omitempty"`
 	ValueReason  string   `json:"value_reason,omitempty"`
+	// Gate is the pre-publish quality gate's grade (GOOD, OK or BAD) on the
+	// finding as it would post; GateApplied is false in shadow mode. A BAD
+	// grade keeps the finding off GitHub, except that a CRITICAL is posted as
+	// a LOW note instead (GateDemoted).
+	Gate         string `json:"gate,omitempty"`
+	GateCategory string `json:"gate_category,omitempty"`
+	GateReason   string `json:"gate_reason,omitempty"`
+	GateApplied  bool   `json:"gate_applied,omitempty"`
+	GateDemoted  bool   `json:"gate_demoted,omitempty"`
 	// DemotedFrom is the severity a finding judged not worth posting had
 	// before it was posted as a LOW note instead.
 	DemotedFrom   string           `json:"demoted_from,omitempty"`
@@ -96,7 +105,12 @@ type Verification struct {
 // Suppresses reports whether an applied decision keeps the finding from
 // being posted as new.
 func (v *Verification) Suppresses() bool {
-	return v != nil && v.Applied && (v.Status == VerifyHold || v.Status == VerifyDrop || v.LowValue)
+	return v != nil && (v.Applied && (v.Status == VerifyHold || v.Status == VerifyDrop || v.LowValue) || v.GateDrops())
+}
+
+// GateDrops reports whether the applied quality gate keeps the finding off GitHub.
+func (v *Verification) GateDrops() bool {
+	return v != nil && v.GateApplied && v.Gate == "BAD" && !v.GateDemoted
 }
 
 // Refutes reports whether an applied decision withdraws the finding.
