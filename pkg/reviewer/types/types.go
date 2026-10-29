@@ -49,6 +49,16 @@ type LineComment struct {
 	// Verification is the repo-evidence verifier's decision on this finding;
 	// nil when the verifier did not run.
 	Verification *Verification `json:"verification,omitempty"`
+	// Display is the short title and direct body the inline comment shows in
+	// place of the headline and impact; CommentBody, and so the finding's
+	// identity, is unchanged. Nil when no rewrite ran.
+	Display *Display `json:"display,omitempty"`
+}
+
+// Display is a finding rewritten for posting.
+type Display struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 
 // Verification statuses.

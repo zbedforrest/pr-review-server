@@ -28,6 +28,23 @@ func RenderHygieneEnabled() bool {
 	return true
 }
 
+// InlineOperationalRiskEnv lets an operational-risk finding with a current
+// impact (a broken build, a failed deploy, a job that stops running) be shown
+// and posted inline like a behavior finding. Off by default: it widens what
+// posts, so it is meant to run with the quality gate on. "true", "1", "on"
+// and "yes" turn it on.
+const InlineOperationalRiskEnv = "PUBLISH_INLINE_OPERATIONAL_RISK"
+
+// InlineOperationalRiskEnabled reads the switch at call time, because Shown
+// has no policy in hand.
+func InlineOperationalRiskEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(InlineOperationalRiskEnv))) {
+	case "true", "1", "on", "yes":
+		return true
+	}
+	return false
+}
+
 // NoteProblemClauseEnv is the kill switch for the problem-clause cut and
 // the context-sentence skip: "false", "0", "off" and "no" restore a cut
 // from the right and a title taken from the first sentence whatever it
@@ -540,5 +557,8 @@ func HasConfidenceLabel(text string) bool {
 // package that compare rendered bodies against findings; it opens the way
 // the rendered title does.
 func TitleOf(f payload.Finding) string {
+	if d := displayOf(f); d != nil {
+		return EscapeProseHTML(strings.TrimSpace(d.Title))
+	}
 	return standaloneTitle(titleSource(f))
 }
