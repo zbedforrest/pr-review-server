@@ -140,3 +140,31 @@ func TestShown_OperationalRiskPostsInlineOnlyWithItsSwitch(t *testing.T) {
 		t.Fatal("an operational risk without a current impact is shown")
 	}
 }
+
+func TestShown_GateGoodPostsAnySeverityInlineOnlyWithItsSwitch(t *testing.T) {
+	commentable := map[string]map[int]bool{"a.go": {1: true, 2: true}}
+	testNote := fp("tests", "low", "a.go", 1, "The new test asserts nothing.", "agent")
+	testNote.FindingContract = falsifiableTestContract("test_quality", "no_user_impact", "No user impact.", "Confident.")
+	testNote.FindingContractStatus = "valid"
+	testNote.Verification = &types.Verification{Gate: "GOOD", GateApplied: true}
+	behavior := fp("bug", "medium", "a.go", 2, "The handler drops the error.", "agent")
+	behavior.FindingContract = falsifiableTestContract("production_behavior", "current_impact", "Errors are lost today.", "Confident.")
+	behavior.FindingContractStatus = "valid"
+
+	t.Setenv(GateEndorsedInlineEnv, "")
+	if Shown(testNote) {
+		t.Fatal("a gate-endorsed LOW is shown with the switch off")
+	}
+	t.Setenv(GateEndorsedInlineEnv, "true")
+	if got := ids(Select([]payload.Finding{testNote, behavior}, nil, commentable, DefaultPolicy()).Inline); len(got) != 2 || got[0] != behavior.ID {
+		t.Fatalf("inline = %v, want the medium first, then the endorsed note", got)
+	}
+	testNote.Verification.GateApplied = false
+	if Shown(testNote) {
+		t.Fatal("a shadow GOOD grade is shown")
+	}
+	testNote.Verification = &types.Verification{Gate: "OK", GateApplied: true}
+	if Shown(testNote) {
+		t.Fatal("an OK grade is shown")
+	}
+}

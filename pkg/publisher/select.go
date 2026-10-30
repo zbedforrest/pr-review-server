@@ -328,7 +328,7 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 		if !Shown(f) || alreadyPublished[f.ID] {
 			continue
 		}
-		if severityRank(f.Severity) >= minRank && f.Line > 0 && commentable[f.File][f.Line] && worthInline(f) {
+		if f.Line > 0 && commentable[f.File][f.Line] && (gateEndorsed(f) || severityRank(f.Severity) >= minRank && worthInline(f)) {
 			candidates = append(candidates, f)
 		} else {
 			rest = append(rest, f)
@@ -351,10 +351,14 @@ func Select(findings []payload.Finding, alreadyPublished map[string]bool, commen
 // critical finding whose contract asserts current production impact and
 // names an experiment. Lower findings and self-discounted ones appear only
 // in the summary's folded notes and on the dashboard. With the discount
-// gate off, any critical is shown.
+// gate off, any critical is shown. A finding the quality gate endorsed is
+// shown at any severity when PUBLISH_GATE_GOOD_INLINE is on.
 func Shown(f payload.Finding) bool {
 	if !Publishable(f) {
 		return false
+	}
+	if gateEndorsed(f) {
+		return true
 	}
 	if !types.DiscountGateEnabled() {
 		return f.Severity == "critical" || (f.Severity == "medium" && worthInline(f))
