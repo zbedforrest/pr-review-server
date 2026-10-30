@@ -45,6 +45,22 @@ func InlineOperationalRiskEnabled() bool {
 	return false
 }
 
+// GateEndorsedInlineEnv lets a finding the applied quality gate graded GOOD be
+// shown and posted inline whatever its severity or contract, ranked below
+// MEDIUM and CRITICAL and still under the inline caps. Off by default; it
+// only acts with QUALITY_GATE=on, since shadow grades are never applied.
+const GateEndorsedInlineEnv = "PUBLISH_GATE_GOOD_INLINE"
+
+func gateEndorsed(f payload.Finding) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(GateEndorsedInlineEnv))) {
+	case "true", "1", "on", "yes":
+	default:
+		return false
+	}
+	v := f.Verification
+	return v != nil && v.GateApplied && v.Gate == "GOOD"
+}
+
 // NoteProblemClauseEnv is the kill switch for the problem-clause cut and
 // the context-sentence skip: "false", "0", "off" and "no" restore a cut
 // from the right and a title taken from the first sentence whatever it
